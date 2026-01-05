@@ -1,6 +1,6 @@
 { config, pkgs, lib, ... }:
 let
-  userinfo = import ./data/users.nix;
+  userdata = import ./data/userdata.nix;
 in
 {
 	home-manager.backupFileExtension = "hm.backup";
@@ -55,9 +55,9 @@ in
 			enable = true;
 			settings = {
 				user = {
-					name = userinfo.pvl.name;
-					email = userinfo.pvl.email;
-					signingKey = userinfo.pvl.sshKey;
+					name = userdata.pvl.name;
+					email = userdata.pvl.email;
+					signingKey = userdata.pvl.sshKey;
 				};
 				commit.gpgSign = true;
 				gpg.format = "ssh";

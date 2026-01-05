@@ -1,6 +1,6 @@
 { config, pkgs, lib, ... }:
 let
-  userinfo = import ./data/users.nix;
+  userdata = import ./data/userdata.nix;
 in
 {
     users.mutableUsers = false;
@@ -9,19 +9,19 @@ in
       hashedPassword = "!"; # Disable
     };
 
-    users.users.pvl = {
+    users.users.${userdata.pvl.username} = {
       isNormalUser = true;
-      description = userinfo.pvl.name;
-      uid = 1000;
-      group = "pvl";
-      hashedPassword = userinfo.pvl.hashedPassword;
+      description = userdata.pvl.name;
+      uid = userdata.pvl.uid;
+      group = userdata.pvl.username;
+      hashedPassword = userdata.pvl.hashedPassword;
       extraGroups = [ "users" "networkmanager" "wheel" "tss" "seat" "incus-admin" ];
-      openssh.authorizedKeys.keys = [ userinfo.pvl.sshKey ];
+      openssh.authorizedKeys.keys = [ userdata.pvl.sshKey ];
       packages = with pkgs; [];
     };
     
-    users.groups.pvl = {
-      gid = 1000;
+    users.groups.${userdata.pvl.username} = {
+      gid = userdata.pvl.uid;
     };
 
     users.users.gnome-remote-desktop.extraGroups = [ "tss" ];

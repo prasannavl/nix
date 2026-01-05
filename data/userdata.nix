@@ -1,5 +1,7 @@
 {
   pvl = {
+    username = "pvl";
+    uid = 1000;
     name = "Prasanna Loganathar";
     email = "pvl@prasannavl.com";
     sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIAAsB0nJcxF0wjuzXK0VTF1jbQbT24C1MM8NesCuwBb";
