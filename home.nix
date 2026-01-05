@@ -13,6 +13,8 @@ in
 			gnomeExtensions.impatience
 			gnomeExtensions.p7-borders
 			gnomeExtensions.p7-commands
+			gnomeExtensions.bluetooth-quick-connect
+			gnomeExtensions.brightness-control-using-ddcutil
 		];
 		programs.bash.enable = true;
 
@@ -39,14 +41,50 @@ in
 						impatience.extensionUuid
 						p7-borders.extensionUuid
 						p7-commands.extensionUuid
+						bluetooth-quick-connect.extensionUuid
+						brightness-control-using-ddcutil.extensionUuid
 					];
 					disabled-extensions = [];
+					favorite-apps = [
+						"google-chrome.desktop"
+						"org.gnome.Terminal.desktop"
+						"org.gnome.Nautilus.desktop"
+						"org.gnome.TextEditor.desktop"
+						"code.desktop"
+						"dev.zed.Zed.desktop"
+						"org.gnome.Calculator.desktop"
+						"md.obsidian.Obsidian.desktop"
+						"chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default.desktop"
+						"antigravity.desktop"
+					];
 				};
 				"org/gnome/desktop/wm/preferences" = {
-						"button-layout" = ":minimize,maximize,close";
+					"button-layout" = ":minimize,maximize,close";
 				};
 				"org/gnome/desktop/interface" = {
-						color-scheme = "prefer-dark";
+					color-scheme = "prefer-dark";
+				};
+				"org/gnome/shell/keybindings" = {
+					screenshot = [ "<Shift>Print" "<Shift><Super>c" ];
+					screenshot-window = [ "<Alt>Print" "<Alt><Super>c" ];
+					show-screenshot-ui = [ "Print" "<Super>c" ];
+				};
+
+				"org/gnome/shell/extensions/dash-to-panel" = {
+					appicon-margin = 0;
+					appicon-padding = 8;
+					dot-style-focused = "DASHES";
+					dot-style-unfocused = "DASHES";
+					extension-version = 72;
+					global-border-radius = 0;
+					hide-overview-on-startup = true;
+					hot-keys = true;
+					show-favorites = true;
+				};
+				"org/gnome/shell/extensions/bluetooth-quick-connect" = {
+					keep-menu-on-toggle = true;
+					refresh-button-on = true;
+					show-battery-value-on = true;
 				};
 			};
 		};
