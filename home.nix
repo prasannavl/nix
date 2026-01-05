@@ -1,0 +1,90 @@
+{ config, pkgs, lib, ... }:
+
+{
+	home-manager.backupFileExtension = "hm.backup";
+	home-manager.users.pvl = {
+		home.packages = with pkgs; [
+			atool
+			gnomeExtensions.dash-to-panel
+			gnomeExtensions.appindicator
+			gnomeExtensions.caffeine
+			gnomeExtensions.impatience
+			gnomeExtensions.p7-borders
+			gnomeExtensions.p7-commands
+		];
+		programs.bash.enable = true;
+
+		programs.firefox = {
+			enable = true;
+			profiles = {
+				default = {
+					settings = {
+						"general.smoothScroll" = false;
+					};
+				};
+			};
+  		};
+		
+		dconf = {
+			enable = true;
+			settings = {
+				"org/gnome/shell" = {
+					disable-user-extensions = false;
+					enabled-extensions = with pkgs.gnomeExtensions; [
+						dash-to-panel.extensionUuid
+						appindicator.extensionUuid
+						caffeine.extensionUuid
+						impatience.extensionUuid
+						p7-borders.extensionUuid
+						p7-commands.extensionUuid
+					];
+					disabled-extensions = [];
+				};
+				"org/gnome/desktop/wm/preferences" = {
+						"button-layout" = ":minimize,maximize,close";
+				};
+				"org/gnome/desktop/interface" = {
+						color-scheme = "prefer-dark";
+				};
+			};
+		};
+
+		programs.git = {
+			enable = true;
+			settings = {
+				user = {
+					name = "Prasanna Loganathar";
+					email = "pvl@prasannavl.com";
+					signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIAAsB0nJcxF0wjuzXK0VTF1jbQbT24C1MM8NesCuwBb";
+				};
+
+				commit.gpgSign = true;
+				gpg.format = "ssh";
+				core.autocrlf = "input";
+				
+				grep = {
+					extendRegexp = true;
+					lineNumber = true;
+				};
+
+				merge.conflictstyle = "diff3";
+				push.autoSetupRemote = true;
+
+				alias = {
+					l = "log --oneline";
+					log-full = "log --pretty=format:\"%h%x09%an%x09%ad%x09%s\"";
+				};
+			};
+			lfs.enable = true;
+			ignores = [
+				".DS_Store"
+				"result"
+			];
+		};
+
+		# The state version is required and should stay at the version you
+		# originally installed.
+		home.stateVersion = "25.11";
+  };
+}
+
