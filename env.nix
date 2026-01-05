@@ -10,6 +10,7 @@
     gnome-tweaks nvtopPackages.full
     git tree nvd lazygit
     tree dconf-editor
+    google-chrome
   ];
 
   fonts.packages = with pkgs; [
