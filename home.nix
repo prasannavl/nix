@@ -1,5 +1,7 @@
 { config, pkgs, lib, ... }:
-
+let
+  userinfo = import ./data/users.nix;
+in
 {
 	home-manager.backupFileExtension = "hm.backup";
 	home-manager.users.pvl = {
@@ -53,11 +55,10 @@
 			enable = true;
 			settings = {
 				user = {
-					name = "Prasanna Loganathar";
-					email = "pvl@prasannavl.com";
-					signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIAAsB0nJcxF0wjuzXK0VTF1jbQbT24C1MM8NesCuwBb";
+					name = userinfo.pvl.name;
+					email = userinfo.pvl.email;
+					signingKey = userinfo.pvl.sshKey;
 				};
-
 				commit.gpgSign = true;
 				gpg.format = "ssh";
 				core.autocrlf = "input";
@@ -75,6 +76,7 @@
 					log-full = "log --pretty=format:\"%h%x09%an%x09%ad%x09%s\"";
 				};
 			};
+
 			lfs.enable = true;
 			ignores = [
 				".DS_Store"
