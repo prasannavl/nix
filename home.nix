@@ -65,8 +65,8 @@ in
 						"code.desktop"
 						"dev.zed.Zed.desktop"
 						"org.gnome.Calculator.desktop"
-						# "md.obsidian.Obsidian.desktop"
-						"Obsidian.desktop"
+						"md.obsidian.Obsidian.desktop"
+						# "Obsidian.desktop"
 						"chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default.desktop"
 						"antigravity.desktop"
 					];
