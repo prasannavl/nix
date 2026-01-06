@@ -14,6 +14,8 @@
     ddcutil
     obsidian zed-editor
     solaar
+    gnome-power-manager dmidecode powertop
+    brightnessctl
   ];
 
   fonts.packages = with pkgs; [

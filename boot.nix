@@ -9,14 +9,14 @@
     enable = true;
     tpm2.enable = true;
   };
-  boot.kernelModules = [ "ramoops" "pstore" "pstore_ram" ];
+  boot.kernelModules = [ ];
   boot.kernelParams = [
     "quiet"
     "amdgpu.dcdebugmask=0x10"
     "fbcon=map:0"
-    "ramoops.mem_size=0x100000"
-    "ramoops.record_size=0x10000"
-    "ramoops.console_size=0x8000"
+    # "ramoops.mem_size=0x100000"
+    # "ramoops.record_size=0x10000"
+    # "ramoops.console_size=0x8000"
     "vt.global_cursor_default=0"
     # "video=HDMI-A-1:1920x1080@60e"
   ];

@@ -4,7 +4,7 @@
     [ 
       ./boot.nix
       ./gnome.nix
-      ./graphics.nix
+      ./hardware-auto.nix
       ./hardware.nix
       ./home.nix
       ./locale.nix
