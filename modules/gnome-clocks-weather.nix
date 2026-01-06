@@ -57,12 +57,10 @@ let
     ];
 
   mkLocations = cities: map (city: g.mkVariant (loc city)) cities;
-  
-  # Creates a GVariant array element representing a dictionary with one "location" entry
   mkClockEntry = city: [
-    (g.mkDictionaryEntry [ "location" (g.mkVariant (loc city)) ])
+    (g.mkDictionaryEntry "location" (g.mkVariant (loc city)))
   ];
-  
+
   worldClockCities = [
     cities.singapore
     cities.newYork
@@ -71,26 +69,26 @@ let
     cities.london
     cities.sanFrancisco
   ];
-  
+
   weatherCities = [ (builtins.head worldClockCities) ];
-in
-{
-  # shell
-  "org/gnome/shell/world-clocks" = {
-    locations = mkLocations worldClockCities;
-  };
+  
+in {
+  dconfSettings = {
+    "org/gnome/shell/world-clocks" = {
+      locations = mkLocations worldClockCities;
+    };
 
-  "org/gnome/shell/weather" = {
-    automatic-location = true;
-    locations = mkLocations weatherCities;
-  };
+    "org/gnome/shell/weather" = {
+      automatic-location = true;
+      locations = mkLocations weatherCities;
+    };
 
-  # app
-  "org/gnome/clocks" = {
-    world-clocks = map mkClockEntry worldClockCities;
-  };
+    "org/gnome/clocks" = {
+      world-clocks = map mkClockEntry worldClockCities;
+    };
 
-  "org/gnome/Weather" = {
-    locations = mkLocations weatherCities;
+    "org/gnome/Weather" = {
+      locations = mkLocations weatherCities;
+    };
   };
 }

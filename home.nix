@@ -1,12 +1,20 @@
 { config, pkgs, lib, ... }:
 let
-  userdata = import ./data/userdata.nix;
+	userdata = import ./modules/userdata.nix;
 in
 {
 	home-manager.backupFileExtension = "hm.backup";
 	home-manager.users.pvl = { config, ... }:
 	let
-		gnome-clocks-weather = import ./pkgs/gnome-clocks-weather.nix { lib = config.lib; };
+		mods = import ./modules {
+			lib = lib;
+			config = config;
+			userdata = userdata;
+			modules = [
+				./modules/gnome-clocks-weather.nix
+				./modules/gnome-wallpaper.nix
+			];
+		};
 	in
 	{
 		home.packages = with pkgs; [
@@ -39,9 +47,9 @@ in
 			};
   		};
 		
-		dconf = {
-			enable = true;
-			settings = {
+			dconf = {
+				enable = true;
+				settings = {
 				"org/gnome/shell" = {
 					disable-user-extensions = false;
 					enabled-extensions = with pkgs.gnomeExtensions; [
@@ -59,14 +67,15 @@ in
 					disabled-extensions = [];
 					favorite-apps = [
 						"google-chrome.desktop"
-						"org.gnome.Terminal.desktop"
+						# "org.gnome.Terminal.desktop"
+						"org.gnome.Console.desktop"
 						"org.gnome.Nautilus.desktop"
 						"org.gnome.TextEditor.desktop"
 						"code.desktop"
 						"dev.zed.Zed.desktop"
 						"org.gnome.Calculator.desktop"
-						"md.obsidian.Obsidian.desktop"
-						# "Obsidian.desktop"
+						# "md.obsidian.Obsidian.desktop"
+						"obsidian.desktop"
 						"chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default.desktop"
 						"antigravity.desktop"
 					];
@@ -129,7 +138,7 @@ in
 					button-location = 1;
 					ddcutil-binary-path = "${pkgs.ddcutil}/bin/ddcutil";
 				};
-			} // gnome-clocks-weather;
+			} // mods.dconfSettings;
 		};
 
 		programs.git = {
@@ -165,9 +174,11 @@ in
 			];
 		};
 
-		home.file.".config/chrome-flags.conf".text = ''
-			--disable-smooth-scrolling
-		'';
+		home.file = {
+			".config/chrome-flags.conf".text = ''
+				--disable-smooth-scrolling
+			'';
+		} // mods.homeFiles;
 
 		# The state version is required and should stay at the version you
 		# originally installed.

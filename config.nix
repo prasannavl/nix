@@ -3,7 +3,6 @@
   imports =
     [ 
       ./boot.nix
-      ./env.nix
       ./gnome.nix
       ./graphics.nix
       ./hardware.nix
@@ -11,6 +10,7 @@
       ./locale.nix
       ./misc.nix
       ./network.nix
+      ./packages.nix
       ./programs.nix
       ./security.nix
       ./services.nix

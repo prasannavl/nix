@@ -1,6 +1,6 @@
 { config, pkgs, lib, ... }:
 let
-  userdata = import ./data/userdata.nix;
+  userdata = import ./modules/userdata.nix;
 in
 {
     users.mutableUsers = false;
@@ -17,7 +17,7 @@ in
       uid = userdata.pvl.uid;
       group = userdata.pvl.username;
       hashedPassword = userdata.pvl.hashedPassword;
-      extraGroups = [ "users" "networkmanager" "wheel" "tss" "seat"  "i2c" "incus-admin" ];
+      extraGroups = [ "users" "networkmanager" "wheel" "tss" "seat"  "i2c" "incus-admin" "podman" ];
       openssh.authorizedKeys.keys = [ userdata.pvl.sshKey ];
       packages = with pkgs; [];
     };
