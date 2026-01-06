@@ -7,14 +7,20 @@ in
 	home-manager.users.pvl = {
 		home.packages = with pkgs; [
 			atool
-			gnomeExtensions.dash-to-panel
 			gnomeExtensions.appindicator
+			gnomeExtensions.auto-move-windows
+			gnomeExtensions.bluetooth-quick-connect
+			gnomeExtensions.brightness-control-using-ddcutil
 			gnomeExtensions.caffeine
+			gnomeExtensions.clipboard-indicator
+			gnomeExtensions.dash-to-panel
+			gnomeExtensions.gsconnect
 			gnomeExtensions.impatience
 			gnomeExtensions.p7-borders
 			gnomeExtensions.p7-commands
-			gnomeExtensions.bluetooth-quick-connect
-			gnomeExtensions.brightness-control-using-ddcutil
+			gnomeExtensions.native-window-placement
+			gnomeExtensions.windownavigator
+			gnomeExtensions.workspace-indicator
 		];
 		programs.bash.enable = true;
 
@@ -35,14 +41,16 @@ in
 				"org/gnome/shell" = {
 					disable-user-extensions = false;
 					enabled-extensions = with pkgs.gnomeExtensions; [
-						dash-to-panel.extensionUuid
 						appindicator.extensionUuid
+						bluetooth-quick-connect.extensionUuid
+						brightness-control-using-ddcutil.extensionUuid
 						caffeine.extensionUuid
+						clipboard-indicator.extensionUuid
+						dash-to-panel.extensionUuid
 						impatience.extensionUuid
 						p7-borders.extensionUuid
 						p7-commands.extensionUuid
-						bluetooth-quick-connect.extensionUuid
-						brightness-control-using-ddcutil.extensionUuid
+						windownavigator.extensionUuid
 					];
 					disabled-extensions = [];
 					favorite-apps = [
@@ -64,12 +72,31 @@ in
 				"org/gnome/desktop/interface" = {
 					color-scheme = "prefer-dark";
 				};
+				"org/gnome/desktop/sound" = {
+					allow-volume-above-100-percent = true;
+				};
+
+				"org/gnome/desktop/interface" = {
+					# accent-color = "blue";
+					clock-format = "12h";
+					clock-show-seconds = true;
+					clock-show-weekday = true;
+					# color-scheme = "prefer-dark";
+					# document-font-name = "Cantarell 11";
+					# enable-animations = true;
+					# enable-hot-corners = true;
+					# font-name = "Cantarell 11";
+					# gtk-theme = "Adwaita";
+					# icon-theme = "Adwaita";
+					# monospace-font-name = "Monospace 12";
+					# overlay-scrolling = true;
+					show-battery-percentage = true;
+				};
 				"org/gnome/shell/keybindings" = {
 					screenshot = [ "<Shift>Print" "<Shift><Super>c" ];
 					screenshot-window = [ "<Alt>Print" "<Alt><Super>c" ];
 					show-screenshot-ui = [ "Print" "<Super>c" ];
 				};
-
 				"org/gnome/shell/extensions/dash-to-panel" = {
 					appicon-margin = 0;
 					appicon-padding = 8;
@@ -85,6 +112,10 @@ in
 					keep-menu-on-toggle = true;
 					refresh-button-on = true;
 					show-battery-value-on = true;
+				};
+				"org/gnome/shell/extensions/display-brightness-ddcutil" = {
+					button-location = 1;
+					ddcutil-binary-path = "${pkgs.ddcutil}/bin/ddcutil";
 				};
 			};
 		};
@@ -124,7 +155,6 @@ in
 
 		home.file.".config/chrome-flags.conf".text = ''
 			--disable-smooth-scrolling
-			--enable-parallel-downloading
 		'';
 
 		# The state version is required and should stay at the version you

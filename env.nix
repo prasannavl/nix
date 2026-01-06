@@ -11,6 +11,7 @@
     git tree nvd lazygit
     tree dconf-editor
     google-chrome
+    ddcutil
   ];
 
   fonts.packages = with pkgs; [
