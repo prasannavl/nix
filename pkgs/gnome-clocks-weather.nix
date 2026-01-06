@@ -23,19 +23,19 @@ let
     };
 
     utc = {
-      city = "Coordinated Universal Time (UTC)"; code = "@UTC"; enabled = false;
+      city = "Coordinated Universal Time (UTC)"; code = "@UTC"; enabled = true;
       p1 = [ ];
       p2 = [ ];
     };
 
     london = {
-      city = "London"; code = "EGWU"; enabled = false;
+      city = "London"; code = "EGWU"; enabled = true;
       p1 = [ 0.89971722940307675 (-0.007272211034407213) ];
       p2 = [ 0.89971722940307675 (-0.007272211034407213) ];
     };
 
     sanFrancisco = {
-      city = "San Francisco"; code = "KOAK"; enabled = false;
+      city = "San Francisco"; code = "KOAK"; enabled = true;
       p1 = [ 0.65832848982162007 (-2.133408063190589) ];
       p2 = [ 0.65832848982162007 (-2.133408063190589) ];
     };
@@ -57,46 +57,40 @@ let
     ];
 
   mkLocations = cities: map (city: g.mkVariant (loc city)) cities;
+  
+  # Creates a GVariant array element representing a dictionary with one "location" entry
+  mkClockEntry = city: [
+    (g.mkDictionaryEntry [ "location" (g.mkVariant (loc city)) ])
+  ];
+  
+  worldClockCities = [
+    cities.singapore
+    cities.newYork
+    cities.chennai
+    cities.utc
+    cities.london
+    cities.sanFrancisco
+  ];
+  
+  weatherCities = [ (builtins.head worldClockCities) ];
 in
 {
   # shell
   "org/gnome/shell/world-clocks" = {
-    locations = mkLocations [
-      cities.singapore
-      cities.newYork
-      cities.chennai
-      cities.utc
-      cities.london
-      cities.sanFrancisco
-    ];
+    locations = mkLocations worldClockCities;
+  };
+
+  "org/gnome/shell/weather" = {
+    automatic-location = true;
+    locations = mkLocations weatherCities;
   };
 
   # app
   "org/gnome/clocks" = {
-    world-clocks = map (city:
-      g.mkDictionaryEntry [ "location" (g.mkVariant (loc city)) ]
-    ) [
-      cities.singapore
-      cities.newYork
-      cities.chennai
-      cities.utc
-      cities.london
-      cities.sanFrancisco
-    ];
+    world-clocks = map mkClockEntry worldClockCities;
   };
 
-  # shell
-  "org/gnome/shell/weather" = {
-    automatic-location = true;
-    locations = mkLocations [
-      cities.singapore
-    ];
-  };
-
-  # app
   "org/gnome/Weather" = {
-    locations = mkLocations [
-      cities.singapore
-    ];
+    locations = mkLocations weatherCities;
   };
 }
