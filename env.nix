@@ -12,6 +12,7 @@
     tree dconf-editor
     google-chrome
     ddcutil
+    obsidian zed-editor
   ];
 
   fonts.packages = with pkgs; [

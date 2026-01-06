@@ -4,7 +4,11 @@ let
 in
 {
 	home-manager.backupFileExtension = "hm.backup";
-	home-manager.users.pvl = {
+	home-manager.users.pvl = { config, ... }:
+	let
+		gnome-clocks-weather = import ./pkgs/gnome-clocks-weather.nix { lib = config.lib; };
+	in
+	{
 		home.packages = with pkgs; [
 			atool
 			gnomeExtensions.appindicator
@@ -61,7 +65,8 @@ in
 						"code.desktop"
 						"dev.zed.Zed.desktop"
 						"org.gnome.Calculator.desktop"
-						"md.obsidian.Obsidian.desktop"
+						# "md.obsidian.Obsidian.desktop"
+						"Obsidian.desktop"
 						"chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default.desktop"
 						"antigravity.desktop"
 					];
@@ -124,7 +129,7 @@ in
 					button-location = 1;
 					ddcutil-binary-path = "${pkgs.ddcutil}/bin/ddcutil";
 				};
-			};
+			} // gnome-clocks-weather;
 		};
 
 		programs.git = {
@@ -167,6 +172,6 @@ in
 		# The state version is required and should stay at the version you
 		# originally installed.
 		home.stateVersion = "25.11";
-  };
+	};
 }
 
