@@ -10,7 +10,9 @@
     tpm2.enable = true;
   };
   boot.kernelParams = [
-    # "video=HDMI-A-1:1920x1080@60e"  
+    "quiet"
+    "amdgpu.dcdebugmask=0x10"
+    # "video=HDMI-A-1:1920x1080@60e"
   ];
   boot.kernelPackages = pkgs.linuxPackages_latest;
 }
