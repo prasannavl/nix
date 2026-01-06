@@ -9,13 +9,15 @@ in
       hashedPassword = "!"; # Disable
     };
 
+    users.groups.i2c = { };
+
     users.users.${userdata.pvl.username} = {
       isNormalUser = true;
       description = userdata.pvl.name;
       uid = userdata.pvl.uid;
       group = userdata.pvl.username;
       hashedPassword = userdata.pvl.hashedPassword;
-      extraGroups = [ "users" "networkmanager" "wheel" "tss" "seat" "incus-admin" ];
+      extraGroups = [ "users" "networkmanager" "wheel" "tss" "seat"  "i2c" "incus-admin" ];
       openssh.authorizedKeys.keys = [ userdata.pvl.sshKey ];
       packages = with pkgs; [];
     };
