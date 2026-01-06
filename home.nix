@@ -75,6 +75,12 @@ in
 				"org/gnome/desktop/sound" = {
 					allow-volume-above-100-percent = true;
 				};
+				"org/gnome/desktop/a11y" = {
+					always-show-universal-access-status = true;
+				};
+				"org/gnome/desktop/remote-desktop/rdp" = {
+					enable = true;
+				};
 
 				"org/gnome/desktop/interface" = {
 					# accent-color = "blue";

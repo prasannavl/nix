@@ -1,14 +1,13 @@
 { config, lib, pkgs, ... }:
 {
-  systemd.services."gnome-remote-desktop" = {
-    wantedBy = [ "graphical.target" ];
-  };
-
   # Desktop environment
   services.displayManager.gdm.enable = true;
   services.displayManager.gdm.autoSuspend = false;
   services.desktopManager.gnome.enable = true;
 
+  services.gnome.remoteDesktop.enable = true;
+  services.gnome.remoteDesktop.enableRemoteLogin = true;
+  
   services.desktopManager.gnome.extraGSettingsOverrides = ''
     [org.gnome.mutter]
     experimental-features=['scale-monitor-framebuffer', 'variable-refresh-rate', 'xwayland-native-scaling']
