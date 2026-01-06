@@ -8,6 +8,11 @@
   programs.seahorse.enable = true;
   programs.firefox.enable = true;
   
+  programs.neovim = {
+    enable = true;
+    defaultEditor = true;
+  };
+
   programs.vscode = {
     enable = true;
     extensions = with pkgs.vscode-extensions; [

@@ -113,11 +113,30 @@ in
 					# overlay-scrolling = true;
 					show-battery-percentage = true;
 				};
+
 				"org/gnome/shell/keybindings" = {
 					screenshot = [ "<Shift>Print" "<Shift><Super>c" ];
 					screenshot-window = [ "<Alt>Print" "<Alt><Super>c" ];
 					show-screenshot-ui = [ "Print" "<Super>c" ];
 				};
+
+				"org/gnome/settings-daemon/plugins/media-keys" = {
+					help = []; # Disable F1 help
+				};
+
+				"org/gnome/desktop/wm/keybindings" = {
+					show-desktop = [ "<Super>d" ];
+					maximize-vertically = [ "<Super>z" ];
+					begin-move = [ "<Shift><Super>m" ];
+					begin-resize = [ "<Shift><Super>r" ];
+					toggle-fullscreen = [ "<Shift><Super>f" ];
+					toggle-maximized  = [ "<Super>f" ];
+					switch-windows = [ "<Alt>Tab" ];
+					switch-windows-backward = [ "<Shift><Alt>Tab" ];
+					switch-applications = [ "<Super>Tab" ];
+					switch-applications-backward = [ "<Shift><Super>Tab" ];
+				};
+
 				"org/gnome/shell/extensions/dash-to-panel" = {
 					appicon-margin = 0;
 					appicon-padding = 8;
@@ -129,15 +148,18 @@ in
 					hot-keys = true;
 					show-favorites = true;
 				};
+
 				"org/gnome/shell/extensions/bluetooth-quick-connect" = {
 					keep-menu-on-toggle = true;
 					refresh-button-on = true;
 					show-battery-value-on = true;
 				};
+
 				"org/gnome/shell/extensions/display-brightness-ddcutil" = {
 					button-location = 1;
 					ddcutil-binary-path = "${pkgs.ddcutil}/bin/ddcutil";
 				};
+
 			} // mods.dconfSettings;
 		};
 
