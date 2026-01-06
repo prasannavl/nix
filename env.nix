@@ -13,6 +13,7 @@
     google-chrome
     ddcutil
     obsidian zed-editor
+    solaar
   ];
 
   fonts.packages = with pkgs; [
