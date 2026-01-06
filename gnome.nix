@@ -4,9 +4,6 @@
   services.displayManager.gdm.enable = true;
   services.displayManager.gdm.autoSuspend = false;
   services.desktopManager.gnome.enable = true;
-
-  services.gnome.remoteDesktop.enable = true;
-  services.gnome.remoteDesktop.enableRemoteLogin = true;
   
   services.desktopManager.gnome.extraGSettingsOverrides = ''
     [org.gnome.mutter]
@@ -30,8 +27,18 @@
         # Force the UI scaling factor to 1
         scaling-factor = lib.gvariant.mkUint32 1;
       };
+
+      "org/gnome/desktop/remote-desktop/rdp" = {
+        enable = true;
+        view-only = false;
+      };
     };
   }];
+
+  systemd.services."gnome-remote-desktop" = {
+    wantedBy = [ "display-manager.service" ];
+    after = [ "display-manager.service" ];
+  };
 
   # programs.dconf.profiles.user.databases = [];
 }

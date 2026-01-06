@@ -80,6 +80,7 @@ in
 				};
 				"org/gnome/desktop/remote-desktop/rdp" = {
 					enable = true;
+					view-only = false;
 				};
 
 				"org/gnome/desktop/interface" = {
