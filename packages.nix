@@ -1,4 +1,8 @@
-{ config, pkgs, ... }:
+{ config, pkgs, inputs, ... }:
+let
+  llm-agent-pkgs = inputs.llm-agents.packages.${pkgs.system};
+  antigravity-pkgs = inputs.antigravity.packages.${pkgs.system};
+in
 {
   environment.systemPackages = with pkgs; [
     vim tmux wget htop curl
@@ -18,6 +22,8 @@
     gnome-power-manager dmidecode powertop
     brightnessctl ghostty ente-auth
     ranger imagemagick
+    llm-agent-pkgs.kilocode-cli
+    antigravity-pkgs.default
   ];
 
   fonts.packages = with pkgs; [
