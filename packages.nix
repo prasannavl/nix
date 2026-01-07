@@ -22,6 +22,7 @@ in
     gnome-power-manager dmidecode powertop
     brightnessctl ghostty ente-auth
     ranger imagemagick
+    cheese
     llm-agent-pkgs.kilocode-cli
     antigravity-pkgs.default
   ];
