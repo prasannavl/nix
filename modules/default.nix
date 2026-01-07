@@ -23,4 +23,6 @@ in {
   services = mergeAttrs "services";
   programs = mergeAttrs "programs";
   homePackages = mergeLists "homePackages";
+  gnomeShellExtensions = mergeLists "gnomeShellExtensions";
+  gnomeFavoriteApps = mergeLists "gnomeFavoriteApps";
 }

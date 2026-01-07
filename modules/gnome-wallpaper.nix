@@ -9,6 +9,7 @@
 , primaryColor ? "#1b1f2a"
 , secondaryColor ? "#10131a"
 , traceExists ? false
+, ...
 }:
 
 let

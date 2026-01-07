@@ -23,6 +23,7 @@
       yzhang.markdown-all-in-one
       jnoortheen.nix-ide
       arrterian.nix-env-selector
+      kilocode.kilo-code
     ];
   };
   

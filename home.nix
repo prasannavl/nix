@@ -8,40 +8,38 @@ in
 	let
 		mods = import ./modules {
 			lib = lib;
+			pkgs = pkgs;
 			config = config;
 			userdata = userdata;
 			modules = [
+				./modules/gnome-extensions/appindicator.nix
+				./modules/gnome-extensions/auto-move-windows.nix
+				./modules/gnome-extensions/bluetooth-quick-connect.nix
+				./modules/gnome-extensions/brightness-control-using-ddcutil.nix
+				./modules/gnome-extensions/caffeine.nix
+				./modules/gnome-extensions/clipboard-indicator.nix
+				./modules/gnome-extensions/dash-to-panel.nix
+				./modules/gnome-extensions/gsconnect.nix
+				./modules/gnome-extensions/impatience.nix
+				./modules/gnome-extensions/native-window-placement.nix
+				./modules/gnome-extensions/p7-borders.nix
+				./modules/gnome-extensions/p7-commands.nix
+				./modules/gnome-extensions/windownavigator.nix
+				./modules/gnome-extensions/workspace-indicator.nix
+				./modules/gnome-keybindings.nix
+				./modules/gnome-shell-favorites.nix
 				./modules/gnome-clocks-weather.nix
 				./modules/gnome-wallpaper.nix
 			];
 		};
 		gvariant = lib.gvariant;
-		mkDict = entries:
-			let
-				entryNames = builtins.attrNames entries;
-			in
-				gvariant.mkArray (
-					map (name: gvariant.mkDictionaryEntry name entries.${name}) entryNames
-				);
 	in
 	{
-		home.packages = with pkgs; [
-			atool
-			gnomeExtensions.appindicator
-			gnomeExtensions.auto-move-windows
-			gnomeExtensions.bluetooth-quick-connect
-			gnomeExtensions.brightness-control-using-ddcutil
-			gnomeExtensions.caffeine
-			gnomeExtensions.clipboard-indicator
-			gnomeExtensions.dash-to-panel
-			gnomeExtensions.gsconnect
-			gnomeExtensions.impatience
-			gnomeExtensions.p7-borders
-			gnomeExtensions.p7-commands
-			gnomeExtensions.native-window-placement
-			gnomeExtensions.windownavigator
-			gnomeExtensions.workspace-indicator
-		];
+		home.packages = with pkgs;
+			[
+				atool
+			]
+			++ mods.homePackages;
 		programs.bash.enable = true;
 
 		programs.firefox = {
@@ -60,34 +58,9 @@ in
 			settings = {
 				"org/gnome/shell" = {
 					disable-user-extensions = false;
-					enabled-extensions = with pkgs.gnomeExtensions; [
-						appindicator.extensionUuid
-						bluetooth-quick-connect.extensionUuid
-						brightness-control-using-ddcutil.extensionUuid
-						caffeine.extensionUuid
-						clipboard-indicator.extensionUuid
-						dash-to-panel.extensionUuid
-						impatience.extensionUuid
-						p7-borders.extensionUuid
-						p7-commands.extensionUuid
-						windownavigator.extensionUuid
-					];
+					enabled-extensions = lib.unique mods.gnomeShellExtensions;
 					disabled-extensions = [];
-					favorite-apps = [
-						"google-chrome.desktop"
-						# "org.gnome.Terminal.desktop"
-						# "org.gnome.Console.desktop"
-						"com.mitchellh.ghostty.desktop"
-						"org.gnome.Nautilus.desktop"
-						"org.gnome.TextEditor.desktop"
-						"code.desktop"
-						"dev.zed.Zed.desktop"
-						"org.gnome.Calculator.desktop"
-						# "md.obsidian.Obsidian.desktop"
-						"obsidian.desktop"
-						"chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default.desktop"
-						"antigravity.desktop"
-					];
+					favorite-apps = mods.gnomeFavoriteApps;
 				};
 
 				"org/gnome/settings-daemon/plugins/power" = {
@@ -131,92 +104,6 @@ in
 					# monospace-font-name = "Monospace 12";
 					# overlay-scrolling = true;
 					show-battery-percentage = true;
-				};
-
-				"org/gnome/shell/keybindings" = {
-					screenshot = [ "<Shift>Print" "<Shift><Super>c" ];
-					screenshot-window = [ "<Alt>Print" "<Alt><Super>c" ];
-					show-screenshot-ui = [ "Print" "<Super>c" ];
-				};
-
-				"org/gnome/settings-daemon/plugins/media-keys" = {
-					help = []; # Disable F1 help
-					custom-keybindings = [
-						"/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/"
-						"/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1/"
-						"/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom2/"
-					];
-				};
-
-				"org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0" = {
-					binding = "<Super>Return";
-					command = "kgx";
-					name = "Terminal";
-				};
-
-				"org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1" = {
-					binding = "<Alt><Super>g";
-					command = "sudo /home/pvl/bin/amdgpu-reset.sh";
-					name = "Reset amdgpu";
-				};
-
-				"org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom2" = {
-					binding = "<Alt><Super>r";
-					command = "/home/pvl/bin/mutter-reset-displays.sh";
-					name = "Reset displays - mutter";
-				};
-
-				"org/gnome/desktop/wm/keybindings" = {
-					show-desktop = [ "<Super>d" ];
-					maximize-vertically = [ "<Super>z" ];
-					begin-move = [ "<Shift><Super>m" ];
-					begin-resize = [ "<Shift><Super>r" ];
-					toggle-fullscreen = [ "<Shift><Super>f" ];
-					toggle-maximized  = [ "<Super>f" ];
-					switch-windows = [ "<Alt>Tab" ];
-					switch-windows-backward = [ "<Shift><Alt>Tab" ];
-					switch-applications = [ "<Super>Tab" ];
-					switch-applications-backward = [ "<Shift><Super>Tab" ];
-				};
-
-				"org/gnome/shell/extensions/dash-to-panel" = {
-					appicon-margin = 0;
-					appicon-padding = 8;
-					dot-style-focused = "DASHES";
-					dot-style-unfocused = "DASHES";
-					extension-version = 72;
-					global-border-radius = 0;
-					hide-overview-on-startup = true;
-					hot-keys = true;
-					show-favorites = true;
-
-					# Set zero animation on hover: workaround Chrome apps
-					# like ChatGPT wrong icon selection
-					animate-appicon-hover = true;
-					animate-appicon-hover-animation-travel =
-						mkDict {
-							SIMPLE = 0.0;
-							RIPPLE = 0.4;
-							PLANK  = 0.0;
-						};
-
-					animate-appicon-hover-animation-duration =
-						mkDict {
-							SIMPLE = gvariant.mkUint32 0;
-							RIPPLE = gvariant.mkUint32 130;
-							PLANK  = gvariant.mkUint32 100;
-						};
-				};
-
-				"org/gnome/shell/extensions/bluetooth-quick-connect" = {
-					keep-menu-on-toggle = true;
-					refresh-button-on = true;
-					show-battery-value-on = true;
-				};
-
-				"org/gnome/shell/extensions/display-brightness-ddcutil" = {
-					button-location = 1;
-					ddcutil-binary-path = "${pkgs.ddcutil}/bin/ddcutil";
 				};
 
 			} // mods.dconfSettings;
