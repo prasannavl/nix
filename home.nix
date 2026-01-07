@@ -53,11 +53,11 @@ in
 					};
 				};
 			};
-  		};
+  	};
 		
-			dconf = {
-				enable = true;
-				settings = {
+		dconf = {
+			enable = true;
+			settings = {
 				"org/gnome/shell" = {
 					disable-user-extensions = false;
 					enabled-extensions = with pkgs.gnomeExtensions; [
@@ -76,7 +76,8 @@ in
 					favorite-apps = [
 						"google-chrome.desktop"
 						# "org.gnome.Terminal.desktop"
-						"org.gnome.Console.desktop"
+						# "org.gnome.Console.desktop"
+						"com.mitchellh.ghostty.desktop"
 						"org.gnome.Nautilus.desktop"
 						"org.gnome.TextEditor.desktop"
 						"code.desktop"
@@ -88,6 +89,16 @@ in
 						"antigravity.desktop"
 					];
 				};
+
+				"org/gnome/settings-daemon/plugins/power" = {
+					sleep-inactive-ac-type = "nothing";
+				};
+
+				"org/gnome/desktop/session" = {
+					# Idle timeout (seconds)
+					idle-delay = gvariant.mkUint32 480;
+				};
+
 				"org/gnome/desktop/wm/preferences" = {
 					"button-layout" = ":minimize,maximize,close";
 				};
@@ -242,6 +253,14 @@ in
 				".DS_Store"
 				"result"
 			];
+		};
+
+		programs.ranger = {
+			enable = true;
+			extraConfig = ''
+				set preview_images true
+				set preview_images_method kitty
+			'';
 		};
 
 		home.file = {

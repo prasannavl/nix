@@ -2,7 +2,7 @@
 {
   environment.systemPackages = with pkgs; [
     vim tmux wget htop curl
-    bash-completion ranger fd ripgrep
+    bash-completion fd ripgrep 
     pciutils tmux mesa-demos libva-utils vulkan-tools wdisplays iperf3
     sway fuzzel alacritty foot wl-clipboard wmenu xdg-desktop-portal-wlr
     podman-compose cloudflared tailscale
@@ -16,7 +16,8 @@
     obsidian zed-editor
     solaar
     gnome-power-manager dmidecode powertop
-    brightnessctl ghostty
+    brightnessctl ghostty ente-auth
+    ranger imagemagick
   ];
 
   fonts.packages = with pkgs; [
