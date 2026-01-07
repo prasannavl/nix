@@ -16,7 +16,7 @@
     obsidian zed-editor
     solaar
     gnome-power-manager dmidecode powertop
-    brightnessctl
+    brightnessctl ghostty
   ];
 
   fonts.packages = with pkgs; [

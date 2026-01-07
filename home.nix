@@ -15,6 +15,14 @@ in
 				./modules/gnome-wallpaper.nix
 			];
 		};
+		gvariant = lib.gvariant;
+		mkDict = entries:
+			let
+				entryNames = builtins.attrNames entries;
+			in
+				gvariant.mkArray (
+					map (name: gvariant.mkDictionaryEntry name entries.${name}) entryNames
+				);
 	in
 	{
 		home.packages = with pkgs; [
@@ -122,6 +130,29 @@ in
 
 				"org/gnome/settings-daemon/plugins/media-keys" = {
 					help = []; # Disable F1 help
+					custom-keybindings = [
+						"/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/"
+						"/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1/"
+						"/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom2/"
+					];
+				};
+
+				"org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0" = {
+					binding = "<Super>Return";
+					command = "kgx";
+					name = "Terminal";
+				};
+
+				"org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1" = {
+					binding = "<Alt><Super>g";
+					command = "sudo /home/pvl/bin/amdgpu-reset.sh";
+					name = "Reset amdgpu";
+				};
+
+				"org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom2" = {
+					binding = "<Alt><Super>r";
+					command = "/home/pvl/bin/mutter-reset-displays.sh";
+					name = "Reset displays - mutter";
 				};
 
 				"org/gnome/desktop/wm/keybindings" = {
@@ -147,6 +178,23 @@ in
 					hide-overview-on-startup = true;
 					hot-keys = true;
 					show-favorites = true;
+
+					# Set zero animation on hover: workaround Chrome apps
+					# like ChatGPT wrong icon selection
+					animate-appicon-hover = true;
+					animate-appicon-hover-animation-travel =
+						mkDict {
+							SIMPLE = 0.0;
+							RIPPLE = 0.4;
+							PLANK  = 0.0;
+						};
+
+					animate-appicon-hover-animation-duration =
+						mkDict {
+							SIMPLE = gvariant.mkUint32 0;
+							RIPPLE = gvariant.mkUint32 130;
+							PLANK  = gvariant.mkUint32 100;
+						};
 				};
 
 				"org/gnome/shell/extensions/bluetooth-quick-connect" = {
