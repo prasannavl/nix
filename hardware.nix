@@ -1,6 +1,7 @@
 { config, pkgs, ... }:
 {
   hardware.enableAllFirmware = true;
+  hardware.logitech.wireless.enable = true;
 
   # Hardware graphics configuration
   hardware.graphics = {
