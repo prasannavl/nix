@@ -40,18 +40,59 @@ in
 				atool
 			]
 			++ mods.homePackages;
-		programs.bash.enable = true;
-
-		programs.firefox = {
-			enable = true;
-			profiles = {
-				default = {
-					settings = {
-						"general.smoothScroll" = false;
+		programs = {
+			bash.enable = true;
+			firefox = {
+				enable = true;
+				profiles = {
+					default = {
+						settings = {
+							"general.smoothScroll" = false;
+						};
 					};
 				};
+	  	};
+			git = {
+				enable = true;
+				settings = {
+					user = {
+						name = userdata.pvl.name;
+						email = userdata.pvl.email;
+						signingKey = userdata.pvl.sshKey;
+					};
+					commit.gpgSign = true;
+					gpg.format = "ssh";
+					core.autocrlf = "input";
+					
+					grep = {
+						extendRegexp = true;
+						lineNumber = true;
+					};
+
+					merge.conflictstyle = "diff3";
+					push.autoSetupRemote = true;
+
+					alias = {
+						l = "log --oneline";
+						log-full = "log --pretty=format:\"%h%x09%an%x09%ad%x09%s\"";
+					};
+				};
+
+				lfs.enable = true;
+				ignores = [
+					".DS_Store"
+					"result"
+				];
 			};
-  	};
+			ranger = {
+				enable = true;
+				extraConfig = ''
+					set preview_images true
+					set preview_images_method kitty
+				'';
+			};
+		} // mods.programs;
+		services = mods.services;
 		
 		dconf = {
 			enable = true;
@@ -75,9 +116,6 @@ in
 				"org/gnome/desktop/wm/preferences" = {
 					"button-layout" = ":minimize,maximize,close";
 				};
-				"org/gnome/desktop/interface" = {
-					color-scheme = "prefer-dark";
-				};
 				"org/gnome/desktop/sound" = {
 					allow-volume-above-100-percent = true;
 				};
@@ -90,6 +128,7 @@ in
 				};
 
 				"org/gnome/desktop/interface" = {
+					color-scheme = "prefer-dark";
 					# accent-color = "blue";
 					clock-format = "12h";
 					clock-show-seconds = true;
@@ -117,47 +156,6 @@ in
 			} // mods.dconfSettings;
 		};
 
-		programs.git = {
-			enable = true;
-			settings = {
-				user = {
-					name = userdata.pvl.name;
-					email = userdata.pvl.email;
-					signingKey = userdata.pvl.sshKey;
-				};
-				commit.gpgSign = true;
-				gpg.format = "ssh";
-				core.autocrlf = "input";
-				
-				grep = {
-					extendRegexp = true;
-					lineNumber = true;
-				};
-
-				merge.conflictstyle = "diff3";
-				push.autoSetupRemote = true;
-
-				alias = {
-					l = "log --oneline";
-					log-full = "log --pretty=format:\"%h%x09%an%x09%ad%x09%s\"";
-				};
-			};
-
-			lfs.enable = true;
-			ignores = [
-				".DS_Store"
-				"result"
-			];
-		};
-
-		programs.ranger = {
-			enable = true;
-			extraConfig = ''
-				set preview_images true
-				set preview_images_method kitty
-			'';
-		};
-
 		home.file = {
 			".config/containers/storage.conf".text = ''
 				[storage]
@@ -177,4 +175,3 @@ in
 		home.stateVersion = "25.11";
 	};
 }
-
