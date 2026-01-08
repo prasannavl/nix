@@ -17,9 +17,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixos-hardware.url = "github:nixos/nixos-hardware";
+    vscode-ext = { 
+      url = "github:nix-community/nix-vscode-extensions";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, home-manager, llm-agents, antigravity, ... }@inputs: {
+  outputs = { self, nixpkgs, home-manager, llm-agents, antigravity, vscode-ext, ... }@inputs: {
     nixosConfigurations.pvl-a1 = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       specialArgs = { inherit inputs; };
@@ -27,7 +31,10 @@
         ./config.nix
         home-manager.nixosModules.home-manager
         {
-          nixpkgs.overlays = [ (import ./overlays.nix) ];
+          nixpkgs.overlays = [ 
+            (import ./overlays.nix) 
+            inputs.vscode-ext.overlays.default 
+          ];
         }
       ];
     };

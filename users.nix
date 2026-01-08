@@ -11,6 +11,10 @@ in
 
     users.groups.i2c = { };
 
+    users.groups.${userdata.pvl.username} = {
+      gid = userdata.pvl.uid;
+    };
+
     users.users.${userdata.pvl.username} = {
       isNormalUser = true;
       description = userdata.pvl.name;
@@ -20,10 +24,6 @@ in
       extraGroups = [ "users" "networkmanager" "wheel" "tss" "seat"  "i2c" "incus-admin" "podman" ];
       openssh.authorizedKeys.keys = [ userdata.pvl.sshKey ];
       packages = with pkgs; [];
-    };
-    
-    users.groups.${userdata.pvl.username} = {
-      gid = userdata.pvl.uid;
     };
 
     users.users.gnome-remote-desktop.extraGroups = [ "tss" ];

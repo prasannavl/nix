@@ -16,14 +16,23 @@
   programs.vscode = {
     enable = true;
     extensions = with pkgs.vscode-extensions; [
+      ms-vscode-remote.remote-ssh
+      ms-vscode-remote.remote-ssh-edit
+      ms-vscode-remote.remote-containers
+      ms-vscode.remote-explorer
+      ms-azuretools.vscode-containers
+      ms-vscode.hexeditor
+      ms-vscode.cpptools-extension-pack
       github.copilot
       github.copilot-chat
-      # openai.chatgpt
+
       vscodevim.vim
       yzhang.markdown-all-in-one
       jnoortheen.nix-ide
       arrterian.nix-env-selector
       kilocode.kilo-code
+
+      pkgs.vscode-marketplace.openai.chatgpt
     ];
   };
   

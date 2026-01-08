@@ -106,9 +106,9 @@ in
 					show-battery-percentage = true;
 				};
 
-				"org/gnome/Console" = {
-					shell = [ "tmux" ];
-				};
+				# "org/gnome/Console" = {
+				# 	shell = [ "tmux" ];
+				# };
 
 			} // mods.dconfSettings;
 		};
@@ -155,6 +155,14 @@ in
 		};
 
 		home.file = {
+			".config/containers/storage.conf".text = ''
+				[storage]
+				driver = "overlay"
+
+				[storage.options]
+				mount_program = "${pkgs.fuse-overlayfs}/bin/fuse-overlayfs"
+			'';
+
 			".config/chrome-flags.conf".text = ''
 				--disable-smooth-scrolling
 			'';

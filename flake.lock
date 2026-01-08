@@ -142,7 +142,8 @@
         "llm-agents": "llm-agents",
         "nixos-hardware": "nixos-hardware",
         "nixpkgs": "nixpkgs",
-        "unstable": "unstable"
+        "unstable": "unstable",
+        "vscode-ext": "vscode-ext"
       }
     },
     "systems": {
@@ -209,6 +210,26 @@
         "owner": "nixos",
         "ref": "nixos-unstable",
         "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "vscode-ext": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1767801188,
+        "narHash": "sha256-ZTKnuZ0t2doZvM2lJkR1CN0mqMzzKZQjn56AYEXFYIk=",
+        "owner": "nix-community",
+        "repo": "nix-vscode-extensions",
+        "rev": "9105a8f0b15ae40064092b1cbac7cdbf010966ec",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "nix-vscode-extensions",
         "type": "github"
       }
     }

@@ -6,6 +6,9 @@
   virtualisation.podman = {
     enable = true;
     dockerCompat = true;
+    defaultNetwork.settings.dns_enabled = true;
   };
   virtualisation.incus.enable = true;
+
+  security.unprivilegedUsernsClone = true;
 }

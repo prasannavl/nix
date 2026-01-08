@@ -1,7 +1,7 @@
 { config, pkgs, inputs, ... }:
 let
-  llm-agent-pkgs = inputs.llm-agents.packages.${pkgs.system};
-  antigravity-pkgs = inputs.antigravity.packages.${pkgs.system};
+  llm-agent-pkgs = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
+  antigravity-pkgs = inputs.antigravity.packages.${pkgs.stdenv.hostPlatform.system};
 in
 {
   environment.systemPackages = with pkgs; [
@@ -25,6 +25,13 @@ in
     cheese
     llm-agent-pkgs.kilocode-cli
     antigravity-pkgs.default
+    distrobox e2fsprogs
+
+    btrfs-progs
+    slirp4netns
+    fuse-overlayfs
+
+    python3
   ];
 
   fonts.packages = with pkgs; [

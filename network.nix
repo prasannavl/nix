@@ -5,7 +5,7 @@
   networking.networkmanager.enable = true;
   networking.nftables.enable = true;
   
-  networking.firewall.enable = false;
-  # networking.firewall.allowedTCPPorts = [ ... ];
-  # networking.firewall.allowedUDPPorts = [ ... ];
+  networking.firewall.enable = true;
+  networking.firewall.allowedTCPPorts = [ ];
+  networking.firewall.allowedUDPPorts = [ ];
 }
