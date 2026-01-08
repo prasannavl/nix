@@ -142,13 +142,30 @@
         ]
       },
       "locked": {
-        "lastModified": 1767867625,
-        "narHash": "sha256-SX5SgsbzABQBe5sBIgNZxq9MZeO3140DCl/HkqYH084=",
+        "lastModified": 1767876779,
+        "narHash": "sha256-6ndDyjK3W/EcUnQO9VdvSHmzKZ/Mgo+x8cOd0C3NwkQ=",
         "path": "/home/pvl/src/pvl/p7-borders",
         "type": "path"
       },
       "original": {
         "path": "/home/pvl/src/pvl/p7-borders",
+        "type": "path"
+      }
+    },
+    "p7-cmds": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1767876802,
+        "narHash": "sha256-AL2XMnIFU7aSczCGUV5Hl0qVtdV9Urww29hesmIgGsQ=",
+        "path": "/home/pvl/src/pvl/p7-cmds",
+        "type": "path"
+      },
+      "original": {
+        "path": "/home/pvl/src/pvl/p7-cmds",
         "type": "path"
       }
     },
@@ -160,6 +177,7 @@
         "nixos-hardware": "nixos-hardware",
         "nixpkgs": "nixpkgs",
         "p7-borders": "p7-borders",
+        "p7-cmds": "p7-cmds",
         "unstable": "unstable",
         "vscode-ext": "vscode-ext"
       }
