@@ -32,6 +32,8 @@ in
     fuse-overlayfs
 
     python3
+    libreoffice xournalpp inkscape gimp
+    logitech-udev-rules
   ];
 
   fonts.packages = with pkgs; [
