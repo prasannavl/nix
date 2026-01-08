@@ -106,6 +106,10 @@ in
 					show-battery-percentage = true;
 				};
 
+				"org/gnome/desktop/calendar" = {
+					show-weekdate = true;
+				};
+
 				# "org/gnome/Console" = {
 				# 	shell = [ "tmux" ];
 				# };
