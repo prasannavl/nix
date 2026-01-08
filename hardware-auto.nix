@@ -8,32 +8,45 @@
     [ (modulesPath + "/installer/scan/not-detected.nix")
     ];
 
-  boot.initrd.availableKernelModules = [ "nvme" "xhci_pci" "thunderbolt" "usbhid" "usb_storage" "sd_mod" "sdhci_pci" ];
   boot.initrd.kernelModules = [ ];
+  boot.initrd.availableKernelModules = [ "nvme" "xhci_pci" "thunderbolt" "usbhid" "usb_storage" "sd_mod" "sdhci_pci" ];
+  boot.initrd.luks.devices."luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313".device = "/dev/disk/by-uuid/d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
+
   boot.kernelModules = [ "kvm-amd" ];
   boot.extraModulePackages = [ ];
 
-  fileSystems."/" =
-    { device = "/dev/mapper/luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
-      fsType = "btrfs";
-      options = [ "subvol=@" ];
-    };
+  fileSystems = {
+    "/" =
+      { device = "/dev/mapper/luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
+        fsType = "btrfs";
+        options = [ "subvol=@" "compress=zstd" ];
+      };
 
-  boot.initrd.luks.devices."luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313".device = "/dev/disk/by-uuid/d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
+    "/home" =
+      { device = "/dev/mapper/luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
+        fsType = "btrfs";
+        options = [ "subvol=@home" "compress=zstd" ];
+      };
 
-  fileSystems."/home" =
-    { device = "/dev/mapper/luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
-      fsType = "btrfs";
-      options = [ "subvol=@home" ];
-    };
+    "/swap" =
+      { device = "/dev/mapper/luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
+        fsType = "btrfs";
+        options = [ "subvol=@swap" ];
+      };
 
-  fileSystems."/boot" =
-    { device = "/dev/disk/by-uuid/1C11-ED9A";
-      fsType = "vfat";
-      options = [ "fmask=0077" "dmask=0077" ];
-    };
+    "/boot" =
+      { device = "/dev/disk/by-uuid/1C11-ED9A";
+        fsType = "vfat";
+        options = [ "fmask=0077" "dmask=0077" ];
+      };
+  };
 
-  swapDevices = [ ];
+  swapDevices = [ 
+    {
+      device = "/swap/swap0";
+      size = 64 * 1024 * 1024; # Size in GB
+    }
+  ];
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
   hardware.cpu.amd.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
