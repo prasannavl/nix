@@ -133,14 +133,8 @@ in
 					clock-format = "12h";
 					clock-show-seconds = true;
 					clock-show-weekday = true;
-					# color-scheme = "prefer-dark";
-					# document-font-name = "Cantarell 11";
 					# enable-animations = true;
 					# enable-hot-corners = true;
-					# font-name = "Cantarell 11";
-					# gtk-theme = "Adwaita";
-					# icon-theme = "Adwaita";
-					# monospace-font-name = "Monospace 12";
 					# overlay-scrolling = true;
 					show-battery-percentage = true;
 				};
