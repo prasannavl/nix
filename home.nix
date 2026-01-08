@@ -23,7 +23,7 @@ in
 				./modules/gnome-extensions/impatience.nix
 				./modules/gnome-extensions/native-window-placement.nix
 				./modules/gnome-extensions/p7-borders.nix
-				./modules/gnome-extensions/p7-commands.nix
+				./modules/gnome-extensions/p7-cmds.nix
 				./modules/gnome-extensions/windownavigator.nix
 				./modules/gnome-extensions/workspace-indicator.nix
 				./modules/gnome-keybindings.nix

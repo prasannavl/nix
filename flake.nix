@@ -16,6 +16,10 @@
       url = "github:jacopone/antigravity-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    p7-borders = {
+      url = "path:/home/pvl/src/pvl/p7-borders";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixos-hardware.url = "github:nixos/nixos-hardware";
     vscode-ext = { 
       url = "github:nix-community/nix-vscode-extensions";
@@ -32,7 +36,7 @@
         home-manager.nixosModules.home-manager
         {
           nixpkgs.overlays = [ 
-            (import ./overlays.nix) 
+            (import ./overlays.nix { inherit inputs; }) 
             inputs.vscode-ext.overlays.default 
           ];
         }
