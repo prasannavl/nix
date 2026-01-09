@@ -8,7 +8,6 @@
     ./gnome.nix
     ./hardware.nix
     ./hardwarex.nix
-    ./home.nix
     ./locale.nix
     ./misc.nix
     ./network.nix

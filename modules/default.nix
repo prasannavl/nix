@@ -1,6 +1,15 @@
 {modules, ...} @ args: let
   sharedArgs = builtins.removeAttrs args ["modules"];
-  moduleResults = map (modulePath: import modulePath sharedArgs) modules;
+  normalizeModule = module:
+    if builtins.isAttrs module
+    then module
+    else {path = module; args = {};};
+  normalizedModules = map normalizeModule modules;
+  moduleResults =
+    map
+    (module:
+      import module.path (sharedArgs // (module.args or {})))
+    normalizedModules;
 
   mergeAttrs = attr:
     builtins.foldl'
