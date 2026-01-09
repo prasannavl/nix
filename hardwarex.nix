@@ -2,6 +2,9 @@
 {
   hardware.enableAllFirmware = true;
   hardware.logitech.wireless.enable = true;
+  
+  # AMD Strix / ASUS bug, ignore microcode until BIOS update
+  hardware.cpu.amd.updateMicrocode = false;
 
   # Hardware graphics configuration
   hardware.graphics = {
