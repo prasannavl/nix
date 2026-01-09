@@ -9,17 +9,20 @@
 
   systemd.services =
     let
+      sanitizeUnitName = path: lib.replaceStrings ["/"] ["-"] (lib.strings.removePrefix "/" path);
       mkSwapService = swapEntry:
         let
           swapFile = swapEntry.device;
           swapSizeMB = swapEntry.size;
-          name = "ensure-swapfile-" + lib.replaceStrings ["/"] ["-"] (lib.strings.removePrefix "/" swapFile);
+          name = "ensure-swapfile-" + sanitizeUnitName swapFile;
+          swapUnit = "swap" + sanitizeUnitName swapFile + ".swap";
         in
         {
           name = name;
           value = {
-            wantedBy = [ "swap.target" ];
-            before = [ "swap.target" ];
+            wantedBy = [ swapUnit ];
+            before = [ swapUnit ];
+            after = [ "local-fs.target" ];
             unitConfig.RequiresMountsFor = [ "/swap" ];
             serviceConfig.Type = "oneshot";
             script = ''
