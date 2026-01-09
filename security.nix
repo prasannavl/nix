@@ -1,10 +1,13 @@
-{ config, pkgs, ... }:
 {
+  config,
+  pkgs,
+  ...
+}: {
   security.tpm2 = {
-     enable = true;
-     abrmd.enable = true;
-     tctiEnvironment.enable = true;
-     pkcs11.enable = true;
+    enable = true;
+    abrmd.enable = true;
+    tctiEnvironment.enable = true;
+    pkcs11.enable = true;
   };
   security.rtkit.enable = true;
   security.pam.services.login.enableGnomeKeyring = true;
@@ -16,7 +19,17 @@
   '';
 
   security.pam.loginLimits = [
-    { domain = "*";    type = "-"; item = "nofile"; value = "1048576"; }
-    { domain = "root"; type = "-"; item = "nofile"; value = "1048576"; }
+    {
+      domain = "*";
+      type = "-";
+      item = "nofile";
+      value = "1048576";
+    }
+    {
+      domain = "root";
+      type = "-";
+      item = "nofile";
+      value = "1048576";
+    }
   ];
 }

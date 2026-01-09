@@ -1,6 +1,6 @@
 {
   description = "NixOS Config";
-  
+
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
     unstable.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -8,7 +8,7 @@
       url = "github:nix-community/home-manager/release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    llm-agents = { 
+    llm-agents = {
       url = "github:numtide/llm-agents.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
@@ -25,25 +25,38 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixos-hardware.url = "github:nixos/nixos-hardware";
-    vscode-ext = { 
+    vscode-ext = {
       url = "github:nix-community/nix-vscode-extensions";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, home-manager, llm-agents, antigravity, vscode-ext, ... }@inputs: {
+  outputs = {
+    self,
+    nixpkgs,
+    home-manager,
+    llm-agents,
+    antigravity,
+    vscode-ext,
+    ...
+  } @ inputs: let
+    system = "x86_64-linux";
+    pkgs = nixpkgs.legacyPackages.${system};
+  in {
+    formatter.${system} = pkgs.alejandra;
+
     nixosConfigurations.pvl-a1 = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      specialArgs = { inherit inputs; };
+      inherit system;
+      specialArgs = {inherit inputs;};
       modules = [
         home-manager.nixosModules.home-manager
         {
-          nixpkgs.overlays = [ 
+          nixpkgs.overlays = [
             # (import ./overlays/unstable-sys.nix { inherit inputs; })
-            (import ./overlays/unstable.nix { inherit inputs; })
-            inputs.vscode-ext.overlays.default 
-            (import ./overlays/pvl.nix { inherit inputs; }) 
-          ]; 
+            (import ./overlays/unstable.nix {inherit inputs;})
+            inputs.vscode-ext.overlays.default
+            (import ./overlays/pvl.nix {inherit inputs;})
+          ];
         }
         ./config.nix
       ];

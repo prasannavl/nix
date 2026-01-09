@@ -1,8 +1,6 @@
-{ pkgs, ... }:
-
-let
+{pkgs, ...}: let
   extension = pkgs.gnomeExtensions.clipboard-indicator;
 in {
-  homePackages = [ extension ];
-  gnomeShellExtensions = [ extension.extensionUuid ];
+  homePackages = [extension];
+  gnomeShellExtensions = [extension.extensionUuid];
 }

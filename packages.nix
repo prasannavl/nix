@@ -1,48 +1,89 @@
-{ config, pkgs, inputs, ... }:
-let
+{
+  config,
+  pkgs,
+  inputs,
+  ...
+}: let
   llm-agent-pkgs = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
   antigravity-pkgs = inputs.antigravity.packages.${pkgs.stdenv.hostPlatform.system};
-in
-{
+in {
   environment.systemPackages = with pkgs; [
-    vim tmux wget htop curl
-    bash-completion fd ripgrep 
-    pciutils wdisplays iperf3 jq
-    sway fuzzel alacritty foot wl-clipboard wmenu xdg-desktop-portal-wlr
-    podman-compose cloudflared tailscale
-    vlc pavucontrol alsa-utils
-    gnome-tweaks nvtopPackages.full
-    git tree lazygit python3
-    nvd nix-index
+    vim
+    tmux
+    wget
+    htop
+    curl
+    bash-completion
+    fd
+    ripgrep
+    pciutils
+    wdisplays
+    iperf3
+    jq
+    sway
+    fuzzel
+    alacritty
+    foot
+    wl-clipboard
+    wmenu
+    xdg-desktop-portal-wlr
+    podman-compose
+    cloudflared
+    tailscale
+    vlc
+    pavucontrol
+    alsa-utils
+    gnome-tweaks
+    nvtopPackages.full
+    git
+    tree
+    lazygit
+    python3
+    nvd
+    nix-index
     dconf-editor
     google-chrome
     ddcutil
-    obsidian zed-editor
+    obsidian
+    zed-editor
     solaar
-    gnome-power-manager dmidecode powertop
-    brightnessctl ghostty ente-auth
-    ranger imagemagick
+    gnome-power-manager
+    dmidecode
+    powertop
+    brightnessctl
+    ghostty
+    ente-auth
+    ranger
+    imagemagick
     cheese
     llm-agent-pkgs.kilocode-cli
     antigravity-pkgs.default
-    distrobox e2fsprogs
+    distrobox
+    e2fsprogs
     # fuse-overlayfs
-    libreoffice xournalpp inkscape gimp
+    libreoffice
+    xournalpp
+    inkscape
+    gimp
     logitech-udev-rules
 
     xdg-utils
     xdg-user-dirs
     gnome-control-center
-    smartmontools nvme-cli
-    
+    smartmontools
+    nvme-cli
+
     xorg.xev
     xorg.xeyes
-    xprop xset
+    xprop
+    xset
     v4l-utils
     evtest
 
     # Unstable
-    mesa-demos libva-utils vulkan-tools
+    mesa-demos
+    libva-utils
+    vulkan-tools
     crun
   ];
 

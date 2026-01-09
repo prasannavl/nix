@@ -1,6 +1,4 @@
-{ ... }:
-
-{
+{...}: {
   gnomeFavoriteApps = [
     "google-chrome.desktop"
     # "org.gnome.Terminal.desktop"

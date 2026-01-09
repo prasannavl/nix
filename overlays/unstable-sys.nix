@@ -1,9 +1,7 @@
-{ inputs }:
-final: prev:
-let
+{inputs}: final: prev: let
   unstable = import inputs.unstable {
     system = prev.stdenv.hostPlatform.system;
-    config = prev.config // { allowUnfree = true; };
+    config = prev.config // {allowUnfree = true;};
   };
   lib = prev.lib;
   multiLibPkgs = [
@@ -18,34 +16,37 @@ let
     "vulkan-loader"
     "vulkan-tools"
   ];
-  mkMultiLibOverlay = pkgs: builtins.listToAttrs (map (name: {
-    inherit name;
-    value = pkgs.${name};
-  }) multiLibPkgs);
+  mkMultiLibOverlay = pkgs:
+    builtins.listToAttrs (map (name: {
+        inherit name;
+        value = pkgs.${name};
+      })
+      multiLibPkgs);
   multilibOverlay = mkMultiLibOverlay unstable;
   multilibOverlay32 = mkMultiLibOverlay unstable.pkgsi686Linux;
-  mkCrossOverlay = builtins.mapAttrs (name: crossPkgs:
-    if builtins.hasAttr name unstable.pkgsCross
-    then crossPkgs // mkMultiLibOverlay unstable.pkgsCross.${name}
-    else crossPkgs
+  mkCrossOverlay = builtins.mapAttrs (
+    name: crossPkgs:
+      if builtins.hasAttr name unstable.pkgsCross
+      then crossPkgs // mkMultiLibOverlay unstable.pkgsCross.${name}
+      else crossPkgs
   );
 in
-lib.foldl' (acc: attrs: acc // attrs) {} [
-  # Kernel from unstable.
-  # {
-  #   linuxPackages = unstable.linuxPackages;
-  #   linuxPackages_latest = unstable.linuxPackages_latest;
-  # }
+  lib.foldl' (acc: attrs: acc // attrs) {} [
+    # Kernel from unstable.
+    # {
+    #   linuxPackages = unstable.linuxPackages;
+    #   linuxPackages_latest = unstable.linuxPackages_latest;
+    # }
 
-  # Firmware from unstable.
-  # { linux-firmware = unstable.linux-firmware; }
+    # Firmware from unstable.
+    # { linux-firmware = unstable.linux-firmware; }
 
-  # Cross-compilation overlays if needed
-  # { pkgsCross = mkCrossOverlay prev.pkgsCross; }
+    # Cross-compilation overlays if needed
+    # { pkgsCross = mkCrossOverlay prev.pkgsCross; }
 
-  # 32-bit override only for the selected graphics stack.
-  # { pkgsi686Linux = prev.pkgsi686Linux // multilibOverlay32; }
+    # 32-bit override only for the selected graphics stack.
+    # { pkgsi686Linux = prev.pkgsi686Linux // multilibOverlay32; }
 
-  # Mesa / OpenGL / Vulkan stack from unstable.
-  # multilibOverlay
-]
+    # Mesa / OpenGL / Vulkan stack from unstable.
+    # multilibOverlay
+  ]

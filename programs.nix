@@ -1,5 +1,8 @@
-{ config, pkgs, ... }:
 {
+  config,
+  pkgs,
+  ...
+}: {
   programs.mtr.enable = true;
   programs.gnupg.agent = {
     enable = true;
@@ -7,7 +10,7 @@
   };
   programs.seahorse.enable = true;
   programs.firefox.enable = true;
-  
+
   programs.neovim = {
     enable = true;
     defaultEditor = true;
@@ -35,7 +38,7 @@
       pkgs.vscode-marketplace.openai.chatgpt
     ];
   };
-  
+
   programs.nix-ld.enable = true;
   programs.nix-ld.libraries = with pkgs; [];
 }

@@ -1,11 +1,9 @@
-{ ... }:
-
-{
+{...}: {
   dconfSettings = {
     "org/gnome/shell/keybindings" = {
-      screenshot = [ "<Shift>Print" "<Shift><Super>c" ];
-      screenshot-window = [ "<Alt>Print" "<Alt><Super>c" ];
-      show-screenshot-ui = [ "Print" "<Super>c" ];
+      screenshot = ["<Shift>Print" "<Shift><Super>c"];
+      screenshot-window = ["<Alt>Print" "<Alt><Super>c"];
+      show-screenshot-ui = ["Print" "<Super>c"];
     };
 
     "org/gnome/settings-daemon/plugins/media-keys" = {
@@ -36,16 +34,16 @@
     };
 
     "org/gnome/desktop/wm/keybindings" = {
-      show-desktop = [ "<Super>d" ];
-      maximize-vertically = [ "<Super>z" ];
-      begin-move = [ "<Shift><Super>m" ];
-      begin-resize = [ "<Shift><Super>r" ];
-      toggle-fullscreen = [ "<Shift><Super>f" ];
-      toggle-maximized = [ "<Super>f" ];
-      switch-windows = [ "<Alt>Tab" ];
-      switch-windows-backward = [ "<Shift><Alt>Tab" ];
-      switch-applications = [ "<Super>Tab" ];
-      switch-applications-backward = [ "<Shift><Super>Tab" ];
+      show-desktop = ["<Super>d"];
+      maximize-vertically = ["<Super>z"];
+      begin-move = ["<Shift><Super>m"];
+      begin-resize = ["<Shift><Super>r"];
+      toggle-fullscreen = ["<Shift><Super>f"];
+      toggle-maximized = ["<Super>f"];
+      switch-windows = ["<Alt>Tab"];
+      switch-windows-backward = ["<Shift><Alt>Tab"];
+      switch-applications = ["<Super>Tab"];
+      switch-applications-backward = ["<Shift><Super>Tab"];
     };
   };
 }

@@ -1,24 +1,26 @@
-{ config, pkgs, ... }:
 {
-  imports =
-    [ 
-      ./boot.nix
-      ./gnome.nix
-      ./hardware.nix
-      ./hardwarex.nix
-      ./home.nix
-      ./locale.nix
-      ./misc.nix
-      ./network.nix
-      ./packages.nix
-      ./programs.nix
-      ./security.nix
-      ./services.nix
-      ./swap.nix
-      ./systemd.nix
-      ./users.nix
-      ./xdg.nix
-    ];
+  config,
+  pkgs,
+  ...
+}: {
+  imports = [
+    ./boot.nix
+    ./gnome.nix
+    ./hardware.nix
+    ./hardwarex.nix
+    ./home.nix
+    ./locale.nix
+    ./misc.nix
+    ./network.nix
+    ./packages.nix
+    ./programs.nix
+    ./security.nix
+    ./services.nix
+    ./swap.nix
+    ./systemd.nix
+    ./users.nix
+    ./xdg.nix
+  ];
 
   nix.settings.experimental-features = [
     "nix-command"
@@ -32,7 +34,7 @@
   nixpkgs.config.allowUnfree = true;
 
   # Handy to have this linked for debugging
-  environment.pathsToLink = [ "/libexec" ];
+  environment.pathsToLink = ["/libexec"];
 
   # This value determines the NixOS release from which the default
   # settings for stateful data, like file locations and database versions

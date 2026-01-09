@@ -1,5 +1,8 @@
-{ config, pkgs, ... }:
 {
+  config,
+  pkgs,
+  ...
+}: {
   services.avahi = {
     enable = true;
     nssmdns4 = true;
@@ -17,7 +20,7 @@
   services.seatd.enable = true;
   services.openssh.enable = true;
   services.tailscale.enable = true;
-  
+
   services.printing.enable = true;
   # Enable touchpad support (enabled default in most desktopManager).
   # services.xserver.libinput.enable = true;
@@ -37,7 +40,7 @@
     layout = "us";
     variant = "";
   };
-  
+
   services.fail2ban.enable = true;
   services.flatpak.enable = true;
 
@@ -55,7 +58,7 @@
     enable = true;
     keyboards = {
       default = {
-        ids = [ "0001:0001:3cf016cc" ];
+        ids = ["0001:0001:3cf016cc"];
         settings = {
           main = {
             "leftmeta+leftshift+f23" = "layer(control)";

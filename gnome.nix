@@ -1,5 +1,9 @@
-{ config, lib, pkgs, ... }:
 {
+  config,
+  lib,
+  pkgs,
+  ...
+}: {
   # Desktop environment
   services.displayManager.gdm.enable = true;
   services.displayManager.gdm.autoSuspend = false;
@@ -13,38 +17,40 @@
   services.gnome.core-apps.enable = true;
   services.gnome.gnome-remote-desktop.enable = true;
 
-  # Gnome using wsdd for Windows network discovery 
+  # Gnome using wsdd for Windows network discovery
   services.samba-wsdd.enable = true;
   services.samba-wsdd.openFirewall = true;
 
-  programs.dconf.profiles.gdm.databases = [{
-    settings = {
-      "org/gnome/mutter" = {
-        # Empty list disables fractional scaling support
-        # experimental-features = lib.mkForce [ ]; 
-        experimental-features = [
-          "scale-monitor-framebuffer" # Enables fractional scaling (125% 150% 175%)
-          "variable-refresh-rate" # Enables Variable Refresh Rate (VRR) on compatible displays
-          "xwayland-native-scaling" # Scales Xwayland applications to look crisp on HiDPI screens
-        ];
-        # Physical mode forces integer-only scaling (1, 2, etc.)
-        layout-mode = "physical";
-      };
-      "org/gnome/desktop/interface" = {
-        # Force the UI scaling factor to 1
-        scaling-factor = lib.gvariant.mkUint32 1;
-      };
+  programs.dconf.profiles.gdm.databases = [
+    {
+      settings = {
+        "org/gnome/mutter" = {
+          # Empty list disables fractional scaling support
+          # experimental-features = lib.mkForce [ ];
+          experimental-features = [
+            "scale-monitor-framebuffer" # Enables fractional scaling (125% 150% 175%)
+            "variable-refresh-rate" # Enables Variable Refresh Rate (VRR) on compatible displays
+            "xwayland-native-scaling" # Scales Xwayland applications to look crisp on HiDPI screens
+          ];
+          # Physical mode forces integer-only scaling (1, 2, etc.)
+          layout-mode = "physical";
+        };
+        "org/gnome/desktop/interface" = {
+          # Force the UI scaling factor to 1
+          scaling-factor = lib.gvariant.mkUint32 1;
+        };
 
-      "org/gnome/desktop/remote-desktop/rdp" = {
-        enable = true;
-        view-only = false;
+        "org/gnome/desktop/remote-desktop/rdp" = {
+          enable = true;
+          view-only = false;
+        };
       };
-    };
-  }];
+    }
+  ];
 
   systemd.services."gnome-remote-desktop" = {
-    wantedBy = [ "display-manager.service" ];
-    after = [ "display-manager.service" ];
+    wantedBy = ["display-manager.service"];
+    after = ["display-manager.service"];
     environment = {
       # Ensure GDM uses the system GNOME Shell wrapper.
       XDG_DATA_DIRS = "/run/current-system/sw/share";

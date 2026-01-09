@@ -1,8 +1,11 @@
-{ config, pkgs, ... }:
 {
+  config,
+  pkgs,
+  ...
+}: {
   hardware.enableAllFirmware = true;
   hardware.logitech.wireless.enable = true;
-  
+
   # AMD Strix / ASUS bug, ignore microcode until BIOS update
   hardware.cpu.amd.updateMicrocode = false;
 
@@ -12,7 +15,7 @@
     enable32Bit = true;
     package = pkgs.mesa;
     package32 = pkgs.pkgsi686Linux.mesa;
-    
+
     extraPackages = with pkgs; [
       libva
       libva-vdpau-driver
@@ -52,5 +55,5 @@
   };
 
   # X server configuration
-  services.xserver.videoDrivers = [ "nvidia" ];
+  services.xserver.videoDrivers = ["nvidia"];
 }

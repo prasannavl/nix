@@ -1,12 +1,9 @@
-{ inputs }:
-final: prev:
-let
+{inputs}: final: prev: let
   unstable = import inputs.unstable {
     system = prev.stdenv.hostPlatform.system;
     config = prev.config;
   };
-in
-{
+in {
   unstable = unstable;
   vscode = unstable.vscode;
   crun = unstable.crun;

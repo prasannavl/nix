@@ -1,5 +1,8 @@
-{ stdenv, fetchzip, glib }:
-
+{
+  stdenv,
+  fetchzip,
+  glib,
+}:
 stdenv.mkDerivation rec {
   pname = "gnome-shell-extension-p7-cmds";
   version = "12";
@@ -12,7 +15,7 @@ stdenv.mkDerivation rec {
 
   uuid = "p7-cmds@prasannavl.com";
 
-  nativeBuildInputs = [ glib ];
+  nativeBuildInputs = [glib];
 
   buildPhase = ''
     runHook preBuild

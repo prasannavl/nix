@@ -1,5 +1,8 @@
-{ config, pkgs, ... }:
 {
+  config,
+  pkgs,
+  ...
+}: {
   systemd.settings.Manager = {
     # Notify pre-timeout
     RuntimeWatchdogPreSec = "60s";
@@ -22,7 +25,7 @@
   '';
 
   systemd.services.keyd.serviceConfig = {
-    CapabilityBoundingSet = [ "CAP_SETGID" ];
-    AmbientCapabilities = [ "CAP_SETGID" ];
+    CapabilityBoundingSet = ["CAP_SETGID"];
+    AmbientCapabilities = ["CAP_SETGID"];
   };
 }

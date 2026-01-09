@@ -1,8 +1,11 @@
-{ config, pkgs, ... }:
 {
+  config,
+  pkgs,
+  ...
+}: {
   boot.loader = {
     timeout = 3;
-    systemd-boot = { 
+    systemd-boot = {
       enable = true;
       configurationLimit = 10;
     };
@@ -24,7 +27,7 @@
   ];
   boot.kernel.sysctl = {
     "kernel.sysrq" = 1;
-    
+
     # panic
     "kernel.panic_on_oops" = 0;
     "kernel.panic" = 60;
@@ -44,7 +47,7 @@
     # core dumps
     "kernel.core_uses_pid" = 1;
 
-    # inotify 
+    # inotify
     "fs.inotify.max_queued_events" = 16384;
     "fs.inotify.max_user_instances" = 4096;
     "fs.inotify.max_user_watches" = 1048576;
