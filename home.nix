@@ -151,13 +151,13 @@ in
 		};
 
 		home.file = {
-			".config/containers/storage.conf".text = ''
-				[storage]
-				driver = "overlay"
+			# ".config/containers/storage.conf".text = ''
+			# 	[storage]
+			# 	driver = "overlay"
 
-				[storage.options]
-				mount_program = "${pkgs.fuse-overlayfs}/bin/fuse-overlayfs"
-			'';
+			# 	[storage.options]
+			# 	mount_program = "${pkgs.fuse-overlayfs}/bin/fuse-overlayfs"
+			# '';
 
 			".config/chrome-flags.conf".text = ''
 				--disable-smooth-scrolling

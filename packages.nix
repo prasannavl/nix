@@ -29,7 +29,7 @@ in
 
     btrfs-progs
     slirp4netns
-    fuse-overlayfs
+    # fuse-overlayfs
 
     python3
     libreoffice xournalpp inkscape gimp

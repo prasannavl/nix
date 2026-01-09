@@ -12,7 +12,6 @@
     enable = true;
     tpm2.enable = true;
   };
-  boot.kernelModules = [ ];
   boot.kernelParams = [
     "quiet"
     "amdgpu.dcdebugmask=0x10"

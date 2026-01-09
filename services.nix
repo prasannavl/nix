@@ -26,4 +26,5 @@
 
   services.gnome.gnome-remote-desktop.enable = true;
   services.fail2ban.enable = true;
+  services.flatpak.enable = true;
 }

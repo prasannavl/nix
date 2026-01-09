@@ -24,6 +24,10 @@ in
       extraGroups = [ "users" "networkmanager" "wheel" "tss" "seat"  "i2c" "incus-admin" "podman" ];
       openssh.authorizedKeys.keys = [ userdata.pvl.sshKey ];
       packages = with pkgs; [];
+
+      # For distrobox, podman, flatpak, etc
+      # subUidRanges = [ { startUid = 100000; count = 65536; } ];
+      # subGidRanges = [ { startGid = 100000; count = 65536; } ];
     };
 
     users.users.gnome-remote-desktop.extraGroups = [ "tss" ];
