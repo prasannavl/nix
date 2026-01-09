@@ -36,6 +36,14 @@ in
 		gvariant = lib.gvariant;
 	in
 	{
+		xdg = {
+			enable = true;
+			userDirs = {
+				enable = true;
+				createDirectories = true;
+			};
+		};
+
 		home.packages = with pkgs;
 			[
 				atool

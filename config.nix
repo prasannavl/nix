@@ -15,7 +15,9 @@
       ./security.nix
       ./services.nix
       ./swap.nix
+      ./systemd.nix
       ./users.nix
+      ./xdg.nix
     ];
 
   nix.settings.experimental-features = [
@@ -28,6 +30,9 @@
     options = "--delete-older-than 14d";
   };
   nixpkgs.config.allowUnfree = true;
+
+  # Handy to have this linked for debugging
+  environment.pathsToLink = [ "/libexec" ];
 
   # This value determines the NixOS release from which the default
   # settings for stateful data, like file locations and database versions

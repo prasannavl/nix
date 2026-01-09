@@ -30,6 +30,17 @@ in
     libreoffice xournalpp inkscape gimp
     logitech-udev-rules
 
+    xdg-utils
+    xdg-user-dirs
+    gnome-control-center
+    smartmontools nvme-cli
+    
+    xorg.xev
+    xorg.xeyes
+    xprop xset
+    v4l-utils
+    evtest
+
     # Unstable
     mesa-demos libva-utils vulkan-tools
     crun

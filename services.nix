@@ -1,6 +1,19 @@
 { config, pkgs, ... }:
 {
-  services.resolved.enable = true;
+  services.avahi = {
+    enable = true;
+    nssmdns4 = true;
+    nssmdns6 = true;
+  };
+
+  services.resolved = {
+    enable = true;
+    # Choose one mDNS stack, avahi is nicer.
+    extraConfig = ''
+      MulticastDNS=no
+    '';
+  };
+
   services.seatd.enable = true;
   services.openssh.enable = true;
   services.tailscale.enable = true;
@@ -15,6 +28,7 @@
     alsa.enable = true;
     alsa.support32Bit = true;
     pulse.enable = true;
+    wireplumber.enable = true;
     #jack.enable = true;
   };
 
@@ -23,8 +37,7 @@
     layout = "us";
     variant = "";
   };
-
-  services.gnome.gnome-remote-desktop.enable = true;
+  
   services.fail2ban.enable = true;
   services.flatpak.enable = true;
 
@@ -51,25 +64,4 @@
       };
     };
   };
-
-  services.logind = {
-    lidSwitch = "suspend";
-    lidSwitchExternalPower = "ignore";
-    lidSwitchDocked = "ignore";
-  };
-
-  systemd.settings.Manager = {
-    # Notify pre-timeout
-    RuntimeWatchdogPreSec = "60s";
-    # Reboot if PID 1 hangs (set to "off" to disable)
-    RuntimeWatchdogSec = "off";
-    # HW watchdog reset limit during shutdown/reboot
-    RebootWatchdogSec = "5min";
-    DefaultLimitNOFILE = "1048576";
-  };
-
-  # user conf
-  systemd.user.extraConfig = ''
-    DefaultLimitNOFILE=1048576
-  '';
 }

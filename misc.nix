@@ -10,5 +10,5 @@
   };
   virtualisation.incus.enable = true;
 
-  security.unprivilegedUsernsClone = true;
+  # security.unprivilegedUsernsClone = true; # only needed in hardened setups
 }

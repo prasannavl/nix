@@ -3,12 +3,19 @@
   # Desktop environment
   services.displayManager.gdm.enable = true;
   services.displayManager.gdm.autoSuspend = false;
+
   services.desktopManager.gnome.enable = true;
-  
   services.desktopManager.gnome.extraGSettingsOverrides = ''
     [org.gnome.mutter]
     experimental-features=['scale-monitor-framebuffer', 'variable-refresh-rate', 'xwayland-native-scaling']
   '';
+
+  services.gnome.core-apps.enable = true;
+  services.gnome.gnome-remote-desktop.enable = true;
+
+  # Gnome using wsdd for Windows network discovery 
+  services.samba-wsdd.enable = true;
+  services.samba-wsdd.openFirewall = true;
 
   programs.dconf.profiles.gdm.databases = [{
     settings = {
@@ -38,7 +45,17 @@
   systemd.services."gnome-remote-desktop" = {
     wantedBy = [ "display-manager.service" ];
     after = [ "display-manager.service" ];
+    environment = {
+      # Ensure GDM uses the system GNOME Shell wrapper.
+      XDG_DATA_DIRS = "/run/current-system/sw/share";
+    };
   };
 
   # programs.dconf.profiles.user.databases = [];
+
+  # xdg.portal = {
+  #   enable = true;
+  #   extraPortals = [ pkgs.xdg-desktop-portal-gnome ];
+  #   config.common.default = "gnome";
+  # };
 }
