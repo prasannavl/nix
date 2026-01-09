@@ -7,7 +7,7 @@ in
   environment.systemPackages = with pkgs; [
     vim tmux wget htop curl
     bash-completion fd ripgrep 
-    pciutils wdisplays iperf3
+    pciutils wdisplays iperf3 jq
     sway fuzzel alacritty foot wl-clipboard wmenu xdg-desktop-portal-wlr
     podman-compose cloudflared tailscale
     vlc pavucontrol alsa-utils
