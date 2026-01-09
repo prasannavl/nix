@@ -36,14 +36,16 @@
       system = "x86_64-linux";
       specialArgs = { inherit inputs; };
       modules = [
-        ./config.nix
         home-manager.nixosModules.home-manager
         {
           nixpkgs.overlays = [ 
-            (import ./overlays.nix { inherit inputs; }) 
+            # (import ./overlays/unstable-sys.nix { inherit inputs; })
+            (import ./overlays/unstable.nix { inherit inputs; })
             inputs.vscode-ext.overlays.default 
-          ];
+            (import ./overlays/pvl.nix { inherit inputs; }) 
+          ]; 
         }
+        ./config.nix
       ];
     };
   };

@@ -7,12 +7,12 @@ in
   environment.systemPackages = with pkgs; [
     vim tmux wget htop curl
     bash-completion fd ripgrep 
-    pciutils mesa-demos libva-utils vulkan-tools wdisplays iperf3
+    pciutils wdisplays iperf3
     sway fuzzel alacritty foot wl-clipboard wmenu xdg-desktop-portal-wlr
     podman-compose cloudflared tailscale
     vlc pavucontrol alsa-utils
     gnome-tweaks nvtopPackages.full
-    git tree lazygit
+    git tree lazygit python3
     nvd nix-index
     dconf-editor
     google-chrome
@@ -26,14 +26,13 @@ in
     llm-agent-pkgs.kilocode-cli
     antigravity-pkgs.default
     distrobox e2fsprogs
-
-    btrfs-progs
-    slirp4netns
     # fuse-overlayfs
-
-    python3
     libreoffice xournalpp inkscape gimp
     logitech-udev-rules
+
+    # Unstable
+    mesa-demos libva-utils vulkan-tools
+    crun
   ];
 
   fonts.packages = with pkgs; [

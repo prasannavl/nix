@@ -3,6 +3,7 @@ let
 	userdata = import ./modules/userdata.nix;
 in
 {
+	home-manager.useGlobalPkgs = true;
 	home-manager.backupFileExtension = "hm.backup";
 	home-manager.users.pvl = { config, ... }:
 	let
