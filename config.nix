@@ -14,6 +14,7 @@
       ./programs.nix
       ./security.nix
       ./services.nix
+      ./swap.nix
       ./users.nix
     ];
 

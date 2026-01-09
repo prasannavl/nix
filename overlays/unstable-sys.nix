@@ -1,7 +1,7 @@
 { inputs }:
 final: prev:
 let
-  unstablePkgs = import inputs.unstable {
+  unstable = import inputs.unstable {
     system = prev.stdenv.hostPlatform.system;
     config = prev.config // { allowUnfree = true; };
   };
@@ -22,25 +22,23 @@ let
     inherit name;
     value = pkgs.${name};
   }) multiLibPkgs);
-  multilibOverlay = mkMultiLibOverlay unstablePkgs;
-  multilibOverlay32 = mkMultiLibOverlay unstablePkgs.pkgsi686Linux;
+  multilibOverlay = mkMultiLibOverlay unstable;
+  multilibOverlay32 = mkMultiLibOverlay unstable.pkgsi686Linux;
   mkCrossOverlay = builtins.mapAttrs (name: crossPkgs:
-    if builtins.hasAttr name unstablePkgs.pkgsCross
-    then crossPkgs // mkMultiLibOverlay unstablePkgs.pkgsCross.${name}
+    if builtins.hasAttr name unstable.pkgsCross
+    then crossPkgs // mkMultiLibOverlay unstable.pkgsCross.${name}
     else crossPkgs
   );
 in
 lib.foldl' (acc: attrs: acc // attrs) {} [
-  { unstable = unstablePkgs; }
-
   # Kernel from unstable.
   # {
-  #   linuxPackages = unstablePkgs.linuxPackages;
-  #   linuxPackages_latest = unstablePkgs.linuxPackages_latest;
+  #   linuxPackages = unstable.linuxPackages;
+  #   linuxPackages_latest = unstable.linuxPackages_latest;
   # }
 
   # Firmware from unstable.
-  # { linux-firmware = unstablePkgs.linux-firmware; }
+  # { linux-firmware = unstable.linux-firmware; }
 
   # Cross-compilation overlays if needed
   # { pkgsCross = mkCrossOverlay prev.pkgsCross; }
