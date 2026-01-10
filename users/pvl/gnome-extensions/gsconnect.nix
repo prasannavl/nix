@@ -1,5 +1,5 @@
 {pkgs, ...}: let
   extension = pkgs.gnomeExtensions.gsconnect;
 in {
-  homePackages = [extension];
+  home.packages = [extension];
 }

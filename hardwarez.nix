@@ -5,6 +5,7 @@
 }: {
   hardware.enableAllFirmware = true;
   hardware.logitech.wireless.enable = true;
+  hardware.i2c.enable = true;
 
   # AMD Strix / ASUS bug, ignore microcode until BIOS update
   hardware.cpu.amd.updateMicrocode = false;

@@ -87,7 +87,7 @@
 
   weatherCities = [(builtins.head worldClockCities)];
 in {
-  dconfSettings = {
+  dconf.settings = {
     "org/gnome/shell/world-clocks" = {
       locations = mkLocations worldClockCities;
     };

@@ -1,5 +1,5 @@
 {...}: {
-  dconfSettings = {
+  dconf.settings = {
     "org/gnome/shell/keybindings" = {
       screenshot = ["<Shift>Print" "<Shift><Super>c"];
       screenshot-window = ["<Alt>Print" "<Alt><Super>c"];

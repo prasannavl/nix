@@ -7,7 +7,7 @@
     ./boot.nix
     ./gnome.nix
     ./hardware.nix
-    ./hardwarex.nix
+    ./hardwarez.nix
     ./locale.nix
     ./misc.nix
     ./network.nix

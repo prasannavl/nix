@@ -10,10 +10,11 @@
   in
     gvariant.mkArray (map (name: gvariant.mkDictionaryEntry name entries.${name}) names);
 in {
-  homePackages = [extension];
-  gnomeShellExtensions = [extension.extensionUuid];
-
-  dconfSettings = {
+  home.packages = [extension];
+  dconf.settings = {
+    "org/gnome/shell" = {
+      enabled-extensions = lib.mkAfter [extension.extensionUuid];
+    };
     "org/gnome/shell/extensions/dash-to-panel" = {
       appicon-margin = 0;
       appicon-padding = 8;

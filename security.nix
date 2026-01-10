@@ -32,4 +32,6 @@
       value = "1048576";
     }
   ];
+
+  # security.unprivilegedUsernsClone = true; # only needed in hardened setups
 }
