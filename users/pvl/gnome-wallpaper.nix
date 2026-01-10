@@ -1,7 +1,4 @@
-{
-  wallpaperUri,
-  ...
-}: let
+{wallpaperUri, ...}: let
   pictureOptions = "zoom";
   colorShadingType = "solid";
   primaryColor = "#1b1f2a";

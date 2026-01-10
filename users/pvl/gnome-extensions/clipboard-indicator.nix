@@ -1,4 +1,8 @@
-{pkgs, lib, ...}: let
+{
+  pkgs,
+  lib,
+  ...
+}: let
   extension = pkgs.gnomeExtensions.clipboard-indicator;
 in {
   home.packages = [extension];

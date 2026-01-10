@@ -1,4 +1,8 @@
-{pkgs, lib, ...}: let
+{
+  pkgs,
+  lib,
+  ...
+}: let
   extension = pkgs.gnomeExtensions.p7-borders;
 in {
   home.packages = [extension];

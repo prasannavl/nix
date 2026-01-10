@@ -1,4 +1,8 @@
-{pkgs, lib, ...}: let
+{
+  pkgs,
+  lib,
+  ...
+}: let
   extension = pkgs.gnomeExtensions.bluetooth-quick-connect;
 in {
   home.packages = [extension];

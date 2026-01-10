@@ -1,4 +1,8 @@
-{pkgs, lib, ...}: let
+{
+  pkgs,
+  lib,
+  ...
+}: let
   extension = pkgs.gnomeExtensions.windownavigator;
 in {
   home.packages = [extension];

@@ -1,4 +1,8 @@
-{pkgs, lib, ...}: let
+{
+  pkgs,
+  lib,
+  ...
+}: let
   extension = pkgs.gnomeExtensions.appindicator;
 in {
   home.packages = [extension];

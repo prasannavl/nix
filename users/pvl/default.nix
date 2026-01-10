@@ -5,9 +5,9 @@
   ...
 }: let
   userdata = (import ../userdata.nix).pvl;
-  username = userdata.username;
 in {
   users.groups.pvl = {
+    # We keep uid and gid the same for simplicity
     gid = userdata.uid;
   };
 
@@ -15,7 +15,7 @@ in {
     isNormalUser = true;
     description = userdata.name;
     uid = userdata.uid;
-    group = username;
+    group = userdata.username;
     hashedPassword = userdata.hashedPassword;
     extraGroups = ["users" "networkmanager" "wheel" "tss" "seat" "i2c" "incus-admin" "podman" "keyd"];
     openssh.authorizedKeys.keys = [userdata.sshKey];
@@ -26,7 +26,7 @@ in {
     # subGidRanges = [ { startGid = 100000; count = 65536; } ];
   };
 
-  home-manager.users.pvl = { config, ... }: {
+  home-manager.users.pvl = {config, ...}: {
     _module.args = {inherit userdata;};
 
     imports = [
