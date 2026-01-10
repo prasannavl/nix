@@ -17,7 +17,17 @@ in {
     uid = userdata.uid;
     group = userdata.username;
     hashedPassword = userdata.hashedPassword;
-    extraGroups = ["users" "networkmanager" "wheel" "tss" "seat" "i2c" "incus-admin" "podman" "keyd"];
+    extraGroups = [
+      "users"
+      "networkmanager"
+      "wheel"
+      "tss"
+      "seat"
+      "i2c"
+      "podman"
+      "keyd"
+      "incus-admin"
+    ];
     openssh.authorizedKeys.keys = [userdata.sshKey];
     packages = with pkgs; [];
 
