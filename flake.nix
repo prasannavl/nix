@@ -16,6 +16,10 @@
       url = "github:jacopone/antigravity-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    codex-cli = {
+      url = "github:sadjow/codex-cli-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     p7-borders = {
       url = "path:/home/pvl/src/pvl/p7-borders";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -37,6 +41,7 @@
     home-manager,
     llm-agents,
     antigravity,
+    codex-cli,
     vscode-ext,
     ...
   } @ inputs: let

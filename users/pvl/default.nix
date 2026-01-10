@@ -17,6 +17,7 @@ in {
     uid = userdata.uid;
     group = userdata.username;
     hashedPassword = userdata.hashedPassword;
+    linger = true;
     extraGroups = [
       "users"
       "networkmanager"

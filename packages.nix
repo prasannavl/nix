@@ -6,6 +6,7 @@
 }: let
   llm-agent-pkgs = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
   antigravity-pkgs = inputs.antigravity.packages.${pkgs.stdenv.hostPlatform.system};
+  codex-cli-pkgs = inputs.codex-cli.packages.${pkgs.stdenv.hostPlatform.system};
 in {
   environment.systemPackages = with pkgs; [
     vim
@@ -58,6 +59,7 @@ in {
     cheese
     llm-agent-pkgs.kilocode-cli
     antigravity-pkgs.default
+    codex-cli-pkgs.default
     distrobox
     e2fsprogs
     # fuse-overlayfs
@@ -85,6 +87,7 @@ in {
     libva-utils
     vulkan-tools
     crun
+    runc
   ];
 
   fonts.packages = with pkgs; [
