@@ -62,7 +62,6 @@ in {
     codex-cli-pkgs.default
     distrobox
     e2fsprogs
-    # fuse-overlayfs
     libreoffice
     xournalpp
     inkscape
