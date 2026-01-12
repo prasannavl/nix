@@ -5,6 +5,7 @@
 }: {
   imports = [
     ./boot.nix
+    ./flatpak.nix
     ./gnome.nix
     ./hardware.nix
     ./hardwarez.nix

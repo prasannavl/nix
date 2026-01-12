@@ -42,7 +42,7 @@
   };
 
   services.fail2ban.enable = true;
-  services.flatpak.enable = true;
+  services.fwupd.enable = true;
 
   services.udev.extraHwdb = ''
     # AT Translated Set 2 keyboard
@@ -67,4 +67,5 @@
       };
     };
   };
+
 }
