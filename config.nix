@@ -19,7 +19,6 @@
     ./swap.nix
     ./systemd.nix
     ./users.nix
-    ./xdg.nix
   ];
 
   nix.settings = {

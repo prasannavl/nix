@@ -17,7 +17,7 @@
       swapFile = swapEntry.device;
       swapSizeMB = swapEntry.size;
       name = "ensure-swapfile-" + sanitizeUnitName swapFile;
-      swapUnit = "swap" + sanitizeUnitName swapFile + ".swap";
+      swapUnit = sanitizeUnitName swapFile + ".swap";
     in {
       name = name;
       value = {
