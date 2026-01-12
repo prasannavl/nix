@@ -68,6 +68,7 @@ in {
     gimp
     logitech-udev-rules
     hydra-check
+    cachix
 
     xdg-utils
     xdg-user-dirs
