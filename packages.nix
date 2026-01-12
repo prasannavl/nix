@@ -67,6 +67,7 @@ in {
     inkscape
     gimp
     logitech-udev-rules
+    hydra-check
 
     xdg-utils
     xdg-user-dirs
