@@ -36,7 +36,9 @@ in {
       "incus-admin"
     ];
     openssh.authorizedKeys.keys = [userdata.sshKey];
-    packages = with pkgs; [];
+    packages = with pkgs; [
+      glib.dev
+    ];
   };
 
   home-manager.users.pvl = {config, ...}: {

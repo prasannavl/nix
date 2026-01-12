@@ -87,6 +87,8 @@ in {
     vulkan-tools
     crun
     runc
+    gnumake
+    lm_sensors
   ];
 
   fonts.packages = with pkgs; [
