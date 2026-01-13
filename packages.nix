@@ -91,6 +91,7 @@ in {
     runc
     gnumake
     lm_sensors
+    jan
   ];
 
   fonts.packages = with pkgs; [

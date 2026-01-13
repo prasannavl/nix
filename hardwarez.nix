@@ -55,6 +55,8 @@
     };
   };
 
+  hardware.nvidia-container-toolkit.enable = true;
+
   # X server configuration
   services.xserver.videoDrivers = ["nvidia"];
 }

@@ -23,11 +23,20 @@
       value = {
         wantedBy = [swapUnit];
         before = [swapUnit];
-        after = ["local-fs.target"];
-        unitConfig.RequiresMountsFor = ["/swap"];
+        after = ["swap.mount"];
+        unitConfig = {
+          DefaultDependencies = "no";
+        };
         serviceConfig.Type = "oneshot";
         script = ''
-          if [ ! -f ${swapFile} ]; then
+          if [ ! -d /swap ]; then
+            echo "/swap is not available, skipping swapfile creation"
+            exit 0
+          fi
+          if [ -f ${swapFile} ]; then
+            echo "${swapFile} ready"
+            exit 0
+          else
             echo "Creating swapfile ${swapFile} (${toString swapSizeMB}M)"
             ${pkgs.btrfs-progs}/bin/btrfs filesystem mkswapfile --size ${toString swapSizeMB}M ${swapFile}
           fi

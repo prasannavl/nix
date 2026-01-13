@@ -48,12 +48,25 @@
     }
   ];
 
-  systemd.services."gnome-remote-desktop" = {
+  systemd.services.gnome-remote-desktop = {
     wantedBy = ["display-manager.service"];
     after = ["display-manager.service"];
-    environment = {
-      # Ensure GDM uses the system GNOME Shell wrapper.
-      XDG_DATA_DIRS = "/run/current-system/sw/share";
+    serviceConfig = {
+      Environment = [
+        "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+        "SHELL=/run/current-system/sw/bin/bash"
+        "XDG_DATA_DIRS=/run/current-system/sw/share"
+      ];
+    };
+  };
+
+  systemd.services.gnome-remote-desktop-configuration = {
+    serviceConfig = {
+      Environment = [
+        "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+        "SHELL=/run/current-system/sw/bin/bash"
+        "XDG_DATA_DIRS=/run/current-system/sw/share"
+      ];
     };
   };
 
@@ -61,7 +74,7 @@
 
   xdg.portal = {
     enable = true;
-    extraPortals = [ pkgs.xdg-desktop-portal-gnome ];
+    extraPortals = [pkgs.xdg-desktop-portal-gnome];
     config.common.default = "gnome";
   };
 }
