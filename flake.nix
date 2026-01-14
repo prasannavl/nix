@@ -16,8 +16,8 @@
       url = "github:jacopone/antigravity-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    codex-cli = {
-      url = "github:sadjow/codex-cli-nix";
+    codex = {
+      url = "github:openai/codex";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     p7-borders = {
@@ -41,7 +41,7 @@
     home-manager,
     llm-agents,
     antigravity,
-    codex-cli,
+    codex,
     vscode-ext,
     ...
   } @ inputs: let

@@ -36,9 +36,9 @@ in {
       "incus-admin"
     ];
     openssh.authorizedKeys.keys = [userdata.sshKey];
-    packages = with pkgs; [
-      glib.dev
-    ];
+    # Home manager pkgs are merged with this 
+    # we just use that
+    packages = [];
   };
 
   home-manager.users.pvl = import ./home.nix;

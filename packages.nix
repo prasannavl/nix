@@ -6,7 +6,7 @@
 }: let
   llm-agent-pkgs = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
   antigravity-pkgs = inputs.antigravity.packages.${pkgs.stdenv.hostPlatform.system};
-  codex-cli-pkgs = inputs.codex-cli.packages.${pkgs.stdenv.hostPlatform.system};
+  codex-pkgs = inputs.codex.packages.${pkgs.stdenv.hostPlatform.system};
 in {
   environment.systemPackages = with pkgs; [
     vim
@@ -57,9 +57,8 @@ in {
     ranger
     imagemagick
     cheese
-    llm-agent-pkgs.kilocode-cli
-    antigravity-pkgs.default
-    codex-cli-pkgs.default
+    git-credential-manager
+
     distrobox
     e2fsprogs
     libreoffice
@@ -69,7 +68,6 @@ in {
     logitech-udev-rules
     hydra-check
     cachix
-    git-credential-manager
 
     xdg-utils
     xdg-user-dirs
@@ -91,6 +89,10 @@ in {
     runc
     gnumake
     lm_sensors
+
+    llm-agent-pkgs.kilocode-cli
+    antigravity-pkgs.default
+    codex-pkgs.default
     jan
 
     rustup

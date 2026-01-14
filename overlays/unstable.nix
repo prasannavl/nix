@@ -5,6 +5,7 @@
   };
 in {
   unstable = unstable;
+  
   vscode = unstable.vscode;
   crun = unstable.crun;
   jan = unstable.jan;
