@@ -28,11 +28,11 @@
       url = "path:/home/pvl/src/pvl/p7-cmds";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nixos-hardware.url = "github:nixos/nixos-hardware";
     vscode-ext = {
       url = "github:nix-community/nix-vscode-extensions";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nixos-hardware.url = "github:nixos/nixos-hardware";
   };
 
   outputs = {

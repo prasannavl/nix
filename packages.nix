@@ -93,6 +93,15 @@ in {
     lm_sensors
     jan
 
+    rustup
+    cargo
+    rustc
+    rustfmt
+    rust-analyzer
+    git-secrets
+    git-crypt
+    sops
+    age
   ];
 
   fonts.packages = with pkgs; [
