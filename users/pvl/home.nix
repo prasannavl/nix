@@ -9,7 +9,7 @@ in {
   _module.args = {inherit userdata;};
 
   imports = [
-    ./gnome-extensions
+    ./gnome-extensions.nix
     ./gnome-dconf.nix
     ./gnome-keybindings.nix
     ./gnome-shell-favorites.nix
