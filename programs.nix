@@ -32,13 +32,9 @@
       jnoortheen.nix-ide
       arrterian.nix-env-selector
 
-      github.copilot
       github.copilot-chat
       pkgs.vscode-marketplace.openai.chatgpt
       pkgs.vscode-marketplace.continue.continue
-      kilocode.kilo-code
-      pkgs.vscode-marketplace.saoudrizwan.claude-dev
-      pkgs.vscode-marketplace.warm3snow.vscode-ollama
     ];
   };
 
