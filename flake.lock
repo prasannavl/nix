@@ -162,8 +162,8 @@
         ]
       },
       "locked": {
-        "lastModified": 1768412854,
-        "narHash": "sha256-gVIE3gBLujW0cgbyd3NTtKEcr8GFB02iksU/cCS9aIg=",
+        "lastModified": 1768417334,
+        "narHash": "sha256-qqo25qoJLuLQ8ENOQlo6yCaRtXOW1gsIP8BablbW3H8=",
         "path": "/home/pvl/src/pvl/p7-borders",
         "type": "path"
       },

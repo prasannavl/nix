@@ -102,6 +102,13 @@
     {
       extension = pkgs.gnomeExtensions.p7-borders;
       enable = true;
+      dconf = {
+        "org/gnome/shell/extensions/p7-borders" = {
+            default-enabled = true;
+            default-maximized-borders = true;
+            modal-enabled = true;
+        };
+      };
     }
     {
       extension = pkgs.gnomeExtensions.p7-cmds;
