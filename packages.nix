@@ -69,6 +69,7 @@ in {
     logitech-udev-rules
     hydra-check
     cachix
+    git-credential-manager
 
     xdg-utils
     xdg-user-dirs
@@ -83,7 +84,6 @@ in {
     v4l-utils
     evtest
 
-    # Unstable
     mesa-demos
     libva-utils
     vulkan-tools
@@ -92,9 +92,11 @@ in {
     gnumake
     lm_sensors
     jan
+
   ];
 
   fonts.packages = with pkgs; [
     noto-fonts
+    dejavu_fonts
   ];
 }

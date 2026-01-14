@@ -10,18 +10,19 @@
       commit.gpgSign = true;
       gpg.format = "ssh";
       core.autocrlf = "input";
-
       grep = {
         extendRegexp = true;
         lineNumber = true;
       };
-
       merge.conflictstyle = "diff3";
       push.autoSetupRemote = true;
-
       alias = {
         l = "log --oneline";
         ll = "log --pretty=format:\"%h%x09%an%x09%ad%x09%s\"";
+      };
+      credential = {
+        helper = ["" "manager"];
+        credentialStore = "secretservice";
       };
     };
 
@@ -30,5 +31,10 @@
       ".DS_Store"
       "result"
     ];
+  };
+
+  programs.gh = {
+    enable = true;
+    gitCredentialHelper.enable = true;
   };
 }
