@@ -17,6 +17,9 @@
     '';
   };
 
+  services.automatic-timezoned.enable = true;
+  services.geoclue2.geoProviderUrl = "https://api.beacondb.net/v1/geolocate";
+
   services.seatd.enable = true;
   services.openssh.enable = true;
   services.tailscale.enable = true;
