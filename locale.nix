@@ -1,20 +1,32 @@
 {
   config,
   pkgs,
+  lib,
   ...
-}: {
-  time.timeZone = "Asia/Singapore";
+}: let
+  tzUTC = "UTC";
+  tzSG = "Asia/Singapore";
+  tzIN = "Asia/Kolkata";
+  tzUS_NY = "America/New_York";
+  localeUS = "en_US.UTF-8";
+  localeSG = "en_SG.UTF-8";
+  localeIN = "en_IN.UTF-8";
+  
+  tz = tzSG;
+  locale = localeUS;
+in {
+  time.timeZone = lib.mkDefault tz;
 
-  i18n.defaultLocale = "en_SG.UTF-8";
+  i18n.defaultLocale = locale;
   i18n.extraLocaleSettings = {
-    LC_ADDRESS = "en_SG.UTF-8";
-    LC_IDENTIFICATION = "en_SG.UTF-8";
-    LC_MEASUREMENT = "en_SG.UTF-8";
-    LC_MONETARY = "en_SG.UTF-8";
-    LC_NAME = "en_SG.UTF-8";
-    LC_NUMERIC = "en_SG.UTF-8";
-    LC_PAPER = "en_SG.UTF-8";
-    LC_TELEPHONE = "en_SG.UTF-8";
-    LC_TIME = "en_SG.UTF-8";
+    LC_ADDRESS = locale;
+    LC_IDENTIFICATION = locale;
+    LC_MEASUREMENT = locale;
+    LC_MONETARY = locale;
+    LC_NAME = locale;
+    LC_NUMERIC = locale;
+    LC_PAPER = locale;
+    LC_TELEPHONE = locale;
+    LC_TIME = locale;
   };
 }
