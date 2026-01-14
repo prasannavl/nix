@@ -9,20 +9,7 @@ in {
   _module.args = {inherit userdata;};
 
   imports = [
-    ./gnome-extensions/appindicator.nix
-    ./gnome-extensions/auto-move-windows.nix
-    ./gnome-extensions/bluetooth-quick-connect.nix
-    ./gnome-extensions/brightness-control-using-ddcutil.nix
-    ./gnome-extensions/caffeine.nix
-    ./gnome-extensions/clipboard-indicator.nix
-    ./gnome-extensions/dash-to-panel.nix
-    ./gnome-extensions/gsconnect.nix
-    ./gnome-extensions/impatience.nix
-    ./gnome-extensions/native-window-placement.nix
-    ./gnome-extensions/p7-borders.nix
-    ./gnome-extensions/p7-cmds.nix
-    ./gnome-extensions/windownavigator.nix
-    ./gnome-extensions/workspace-indicator.nix
+    ./gnome-extensions
     ./gnome-dconf.nix
     ./gnome-keybindings.nix
     ./gnome-shell-favorites.nix
