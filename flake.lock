@@ -8,11 +8,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1768381958,
-        "narHash": "sha256-g7+IVOWdVldPa7H0+hh+WZ2YkcOsJDP3Zq04uGDkniY=",
+        "lastModified": 1768422311,
+        "narHash": "sha256-91sJfFjQC999KOkMCGEcfk9GyQ8Ve9MzN27kKsoiORw=",
         "owner": "jacopone",
         "repo": "antigravity-nix",
-        "rev": "c6bd7a02c74e4688fa5d2a808f94d9347cac3a8b",
+        "rev": "5a12fae3b38571188abac90452bdb28e3b3a8623",
         "type": "github"
       },
       "original": {
@@ -50,11 +50,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1768412572,
-        "narHash": "sha256-Lm5c/tb2WkksO0yYswU10nDAHkjKlS8VMZ7WPVNQI24=",
+        "lastModified": 1768442122,
+        "narHash": "sha256-K8smlfGkkgboW4P479lSwc68t37nY0dO+UT9tGezsoA=",
         "owner": "openai",
         "repo": "codex",
-        "rev": "4283a7432bbdc124c4e9851733bdc7c9205a2a41",
+        "rev": "a09711332af89502e40102dcefa993642f37455c",
         "type": "github"
       },
       "original": {
@@ -111,11 +111,11 @@
         "treefmt-nix": "treefmt-nix"
       },
       "locked": {
-        "lastModified": 1768400511,
-        "narHash": "sha256-dUbrS/tP1X4oCq9o9q+9BaJzrdbWPwHTMNmErlqaVL0=",
+        "lastModified": 1768446478,
+        "narHash": "sha256-cllIrxNMIzl0s7Opkdq+4wLvcv3ECfoVUvKYHcAJ0bc=",
         "owner": "numtide",
         "repo": "llm-agents.nix",
-        "rev": "2380a3f42c4047a714921d3df7272a8055908b00",
+        "rev": "6019307a0df2df8a657bf35a4696f42118d5f0d1",
         "type": "github"
       },
       "original": {
@@ -162,8 +162,8 @@
         ]
       },
       "locked": {
-        "lastModified": 1768417334,
-        "narHash": "sha256-qqo25qoJLuLQ8ENOQlo6yCaRtXOW1gsIP8BablbW3H8=",
+        "lastModified": 1768454165,
+        "narHash": "sha256-v0yu0ZRZmnKioGOR08AcC2TZPVDW71r/1EDyzTBbWPU=",
         "path": "/home/pvl/src/pvl/p7-borders",
         "type": "path"
       },
@@ -179,7 +179,7 @@
         ]
       },
       "locked": {
-        "lastModified": 1768412903,
+        "lastModified": 1768454222,
         "narHash": "sha256-TafJ3fx5Twqcef0iw4slILbYdwXe0KacqK1ZX3WCMYw=",
         "path": "/home/pvl/src/pvl/p7-cmds",
         "type": "path"
@@ -256,11 +256,11 @@
     },
     "unstable": {
       "locked": {
-        "lastModified": 1768127708,
-        "narHash": "sha256-1Sm77VfZh3mU0F5OqKABNLWxOuDeHIlcFjsXeeiPazs=",
+        "lastModified": 1768305791,
+        "narHash": "sha256-AIdl6WAn9aymeaH/NvBj0H9qM+XuAuYbGMZaP0zcXAQ=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "ffbc9f8cbaacfb331b6017d5a5abb21a492c9a38",
+        "rev": "1412caf7bf9e660f2f962917c14b1ea1c3bc695e",
         "type": "github"
       },
       "original": {
@@ -277,11 +277,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1768357185,
-        "narHash": "sha256-NYd0KUgsPZpnDn6gbnheYRezrW+/37JEDpacLjTy+90=",
+        "lastModified": 1768443224,
+        "narHash": "sha256-U2UHV+8Ygba2eFhFSnl15wMuKqNR884V2mo2fLO9wy0=",
         "owner": "nix-community",
         "repo": "nix-vscode-extensions",
-        "rev": "14c64d4e2e2c79d2cddcaf9d58dd74ae739d1aad",
+        "rev": "151bb82df60a9ffcd2fef1116e4c9baf133b3ec5",
         "type": "github"
       },
       "original": {

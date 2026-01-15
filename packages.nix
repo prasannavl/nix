@@ -104,6 +104,7 @@ in {
     git-crypt
     sops
     age
+    sbctl
   ];
 
   fonts.packages = with pkgs; [
