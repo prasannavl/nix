@@ -104,9 +104,9 @@
       enable = true;
       dconf = {
         "org/gnome/shell/extensions/p7-borders" = {
-            default-enabled = true;
-            default-maximized-borders = true;
-            modal-enabled = true;
+          default-enabled = true;
+          default-maximized-borders = true;
+          modal-enabled = true;
         };
       };
     }

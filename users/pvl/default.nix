@@ -36,7 +36,7 @@ in {
       "incus-admin"
     ];
     openssh.authorizedKeys.keys = [userdata.sshKey];
-    # Home manager pkgs are merged with this 
+    # Home manager pkgs are merged with this
     # we just use that
     packages = [];
   };

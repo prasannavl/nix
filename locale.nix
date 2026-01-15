@@ -11,7 +11,7 @@
   localeUS = "en_US.UTF-8";
   localeSG = "en_SG.UTF-8";
   localeIN = "en_IN.UTF-8";
-  
+
   tz = tzSG;
   locale = localeUS;
 in {
