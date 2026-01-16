@@ -17,7 +17,6 @@
   };
   boot.kernelParams = [
     "quiet"
-    "amdgpu.dcdebugmask=0x10"
     "fbcon=map:0"
     # "ramoops.mem_size=0x100000"
     # "ramoops.record_size=0x10000"
