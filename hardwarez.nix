@@ -9,6 +9,7 @@
 
   # AMD Strix / ASUS bug, ignore microcode until BIOS update
   hardware.cpu.amd.updateMicrocode = false;
+  hardware.amdgpu.initrd.enable = true;
 
   # Hardware graphics configuration
   hardware.graphics = {
@@ -33,10 +34,15 @@
 
   # NVIDIA driver package configuration
   hardware.nvidia.package = config.boot.kernelPackages.nvidiaPackages.mkDriver {
-    version = "580.119.02";
-    sha256_64bit = "sha256-gCD139PuiK7no4mQ0MPSr+VHUemhcLqerdfqZwE47Nc=";
-    openSha256 = "sha256-l3IQDoopOt0n0+Ig+Ee3AOcFCGJXhbH1Q1nh1TEAHTE=";
-    settingsSha256 = "sha256-sI/ly6gNaUw0QZFWWkMbrkSstzf0hvcdSaogTUoTecI=";
+    # version = "580.119.02";
+    # sha256_64bit = "sha256-gCD139PuiK7no4mQ0MPSr+VHUemhcLqerdfqZwE47Nc=";
+    # openSha256 = "sha256-l3IQDoopOt0n0+Ig+Ee3AOcFCGJXhbH1Q1nh1TEAHTE=";
+    # settingsSha256 = "sha256-sI/ly6gNaUw0QZFWWkMbrkSstzf0hvcdSaogTUoTecI=";
+    
+    version = "580.126.09";
+    sha256_64bit = "sha256-TKxT5I+K3/Zh1HyHiO0kBZokjJ/YCYzq/QiKSYmG7CY=";
+    openSha256 = "sha256-ychsaurbQ2KNFr/SAprKI2tlvAigoKoFU1H7+SaxSrY=";
+    settingsSha256 = "sha256-4SfCWp3swUp+x+4cuIZ7SA5H7/NoizqgPJ6S9fm90fA=";
     persistencedSha256 = pkgs.lib.fakeHash; # Not used with nvidiaPersistenced = false.
   };
 
@@ -48,8 +54,11 @@
     open = true;
     nvidiaSettings = true;
     nvidiaPersistenced = false;
+    dynamicBoost.enable = true;
+    # forceFullCompositionPipeline = true;
     prime = {
       offload.enable = true;
+      offload.enableOffloadCmd = true;
       amdgpuBusId = "PCI:102:0:0";
       nvidiaBusId = "PCI:100:0:0";
     };
