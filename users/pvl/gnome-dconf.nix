@@ -43,7 +43,12 @@ in {
         show-weekdate = true;
       };
       "org/gnome/desktop/datetime" = {
-        automatic-timezone = true;
+        # We use systemd automatic timezone
+        # Enabling this is harmless too, but 
+        # results in notification of change
+        # each time in a different timezone for laptops, 
+        # since we have default TZ set.
+        # automatic-timezone = true;
       };
       "org/gnome/system/location" = {
         enabled = true;
