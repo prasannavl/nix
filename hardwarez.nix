@@ -49,11 +49,6 @@
       nvidiaBusId = "PCI:100:0:0";
     };
     package = config.boot.kernelPackages.nvidiaPackages.mkDriver {
-      # version = "580.119.02";
-      # sha256_64bit = "sha256-gCD139PuiK7no4mQ0MPSr+VHUemhcLqerdfqZwE47Nc=";
-      # openSha256 = "sha256-l3IQDoopOt0n0+Ig+Ee3AOcFCGJXhbH1Q1nh1TEAHTE=";
-      # settingsSha256 = "sha256-sI/ly6gNaUw0QZFWWkMbrkSstzf0hvcdSaogTUoTecI=";
-
       version = "580.126.09";
       sha256_64bit = "sha256-TKxT5I+K3/Zh1HyHiO0kBZokjJ/YCYzq/QiKSYmG7CY=";
       openSha256 = "sha256-ychsaurbQ2KNFr/SAprKI2tlvAigoKoFU1H7+SaxSrY=";
@@ -76,12 +71,17 @@
   #
   # Adds the missing asus functionality to Linux.
   # https://asus-linux.org/manual/asusctl-manual/
-  services.asusd = {
-    enable = true;
-    # We don't need this, A14 doesn't
-    # have the LED.
-    # enableUserService = true;
-  };
+  # It generates a lot of spam logs.
+  # We just have it disabled for now. 
+  # We don't really need it. supergfx is what
+  # we really need.
+  # services.asusd = {
+  #   enable = true;
+  #   # We don't need this, A14 doesn't
+  #   # have the LED.
+  #   # enableUserService = true;
+  # };
+
   services.supergfxd.enable = true;
   services.hardware.openrgb.enable = true;
 
