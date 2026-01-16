@@ -14,8 +14,15 @@
     experimental-features=['scale-monitor-framebuffer', 'variable-refresh-rate', 'xwayland-native-scaling']
   '';
 
-  services.gnome.core-apps.enable = true;
   services.gnome.gnome-remote-desktop.enable = true;
+
+  # The following should be automatically set, but we're
+  # being explicit.
+  services.gnome.core-apps.enable = true;
+  services.gnome.gnome-keyring.enable = true;
+  # services.gnome.gnome-online-accounts.enable = true;
+  services.gvfs.enable = true;
+  services.udev.packages = [ pkgs.gnome-settings-daemon ];
 
   # Gnome using wsdd for Windows network discovery
   services.samba-wsdd.enable = true;
