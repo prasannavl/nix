@@ -22,7 +22,7 @@
   services.gnome.gnome-keyring.enable = true;
   # services.gnome.gnome-online-accounts.enable = true;
   services.gvfs.enable = true;
-  services.udev.packages = [ pkgs.gnome-settings-daemon ];
+  services.udev.packages = [pkgs.gnome-settings-daemon];
 
   # Gnome using wsdd for Windows network discovery
   services.samba-wsdd.enable = true;

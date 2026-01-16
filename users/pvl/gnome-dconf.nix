@@ -44,9 +44,9 @@ in {
       };
       "org/gnome/desktop/datetime" = {
         # We use systemd automatic timezone
-        # Enabling this is harmless too, but 
+        # Enabling this is harmless too, but
         # results in notification of change
-        # each time in a different timezone for laptops, 
+        # each time in a different timezone for laptops,
         # since we have default TZ set.
         # automatic-timezone = true;
       };
