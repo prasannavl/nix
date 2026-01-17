@@ -35,36 +35,14 @@
     nixos-hardware.url = "github:nixos/nixos-hardware";
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    home-manager,
-    llm-agents,
-    antigravity,
-    codex,
-    vscode-ext,
-    ...
-  } @ inputs: let
+  outputs = inputs: let
     system = "x86_64-linux";
-    pkgs = nixpkgs.legacyPackages.${system};
+    pkgs = inputs.nixpkgs.legacyPackages.${system};
   in {
     formatter.${system} = pkgs.alejandra;
 
-    nixosConfigurations.pvl-a1 = nixpkgs.lib.nixosSystem {
-      inherit system;
-      specialArgs = {inherit inputs;};
-      modules = [
-        home-manager.nixosModules.home-manager
-        {
-          nixpkgs.overlays = [
-            # (import ./overlays/unstable-sys.nix { inherit inputs; })
-            (import ./overlays/unstable.nix {inherit inputs;})
-            inputs.vscode-ext.overlays.default
-            (import ./overlays/pvl.nix {inherit inputs;})
-          ];
-        }
-        ./config.nix
-      ];
+    nixosConfigurations = import ./hosts {
+      inherit inputs system;
     };
   };
 }

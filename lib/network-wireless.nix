@@ -1,16 +1,11 @@
 {
-  config,
   pkgs,
   ...
 }: {
-  networking.hostName = "pvl-a1";
-  # networking.wireless.enable = true;  # Enables wireless support via wpa_supplicant.
-  networking.networkmanager.enable = true;
-  networking.nftables.enable = true;
 
-  networking.firewall.enable = true;
-  networking.firewall.allowedTCPPorts = [];
-  networking.firewall.allowedUDPPorts = [];
+  # Enables wireless support via wpa_supplicant.
+  # We use nm instead.
+  # networking.wireless.enable = true;
 
   networking.networkmanager.wifi = {
     backend = "iwd";
@@ -37,7 +32,7 @@
 
   # Restart after suspend to clear stale driver state for buggy firmware
   systemd.services.networkmanager-restart-on-suspend = {
-    description = "Restart NetworkManager after suspend for buggy network cards like MediaTek, etc";
+    description = "Restart NetworkManager after suspend for buggy network cards";
     wantedBy = [
       "suspend.target"
       "hibernate.target"

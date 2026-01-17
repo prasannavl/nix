@@ -32,6 +32,10 @@
   );
 in
   lib.foldl' (acc: attrs: acc // attrs) {} [
+    # 
+    # Note that these will trigger an overall world rebuild
+    # since it's in the lowest part of the DAG.
+    # 
     # Kernel from unstable.
     # {
     #   linuxPackages = unstable.linuxPackages;

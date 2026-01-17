@@ -47,7 +47,6 @@ in {
     ddcutil
     obsidian
     zed-editor
-    solaar
     gnome-power-manager
     dmidecode
     powertop
@@ -65,7 +64,6 @@ in {
     xournalpp
     inkscape
     gimp
-    logitech-udev-rules
     hydra-check
     cachix
 
