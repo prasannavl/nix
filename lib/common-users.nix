@@ -1,13 +1,4 @@
-{
-  config,
-  pkgs,
-  lib,
-  ...
-}: {
-  imports = [
-    ../../users/pvl
-  ];
-
+{...}: {
   users.mutableUsers = false;
 
   users.users.root = {
@@ -15,9 +6,8 @@
   };
 
   users.groups.i2c = {};
-  # Fix missing groups referenced by dbus/keyd
+  # Fix missing groups referenced by dbus
   users.groups.netdev = {};
-  users.groups.keyd = {};
 
   home-manager.useGlobalPkgs = true;
   home-manager.useUserPackages = true;

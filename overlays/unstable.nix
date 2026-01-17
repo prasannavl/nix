@@ -9,4 +9,5 @@ in {
   vscode = unstable.vscode;
   crun = unstable.crun;
   jan = unstable.jan;
+  tailscale = unstable.tailscale;
 }

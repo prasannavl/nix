@@ -10,10 +10,9 @@ modules and composed via `flake.nix`.
 - `hosts/<host>/default.nix`: host-specific configuration.
 - `hosts/pvl-a1/sys.nix`: hardware module for pvl-a1.
 - `users/pvl/home.nix`: Home Manager configuration for user `pvl`.
-- `hosts/pvl-a1/boot.nix`, `hardware/`, `hosts/pvl-a1/network.nix`, `hosts/pvl-a1/services.nix`,
-  `hosts/pvl-a1/programs.nix`, `hosts/pvl-a1/packages.nix`, `hosts/pvl-a1/security.nix`,
-  `hosts/pvl-a1/users.nix`, `hosts/pvl-a1/swap.nix`, `hosts/pvl-a1/locale.nix`,
-  `hosts/pvl-a1/misc.nix`, `hosts/pvl-a1/gnome.nix`:
+- `lib/devices/`, `lib/common-services.nix`, `lib/common-programs.nix`,
+  `hosts/pvl-a1/packages.nix`, `hosts/pvl-a1/users.nix`, `lib/swap-auto-files.nix`,
+  `lib/common-locale.nix`, `lib/common-virtualization.nix`, `lib/gnome.nix`:
   topic-specific NixOS modules imported by `hosts/pvl-a1/config.nix`.
 - `modules/`: Home Manager helper modules (GNOME extensions, dconf, files).
 - `overlays/`: custom overlays used by the system.

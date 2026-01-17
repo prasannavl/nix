@@ -49,6 +49,13 @@
     };
   };
 
+  swapDevices = [
+    {
+      device = "/swap/swap0";
+      size = 64 * 1024; # Size in MB
+    }
+  ];
+
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
   hardware.cpu.amd.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
 }

@@ -4,10 +4,11 @@
   ...
 }: {
   imports = [
-    ./lib/common.nix
-    ./lib/common-graphics.nix
-    ./lib/amdgpu-strix.nix
-    ./lib/logitech.nix
+    ../common-hardware.nix
+    ../common-graphics.nix
+    ../hardware/amdgpu-strix.nix
+    ../hardware/logitech.nix
+    ../hardware/tpm.nix
   ];
 
   # AMD Strix / GMtek bug, ignore microcode until BIOS update

@@ -24,19 +24,8 @@
   services.openssh.enable = true;
   services.tailscale.enable = true;
 
-  services.printing.enable = true;
   # Enable touchpad support (enabled default in most desktopManager).
   # services.xserver.libinput.enable = true;
-
-  services.pulseaudio.enable = false;
-  services.pipewire = {
-    enable = true;
-    alsa.enable = true;
-    alsa.support32Bit = true;
-    pulse.enable = true;
-    wireplumber.enable = true;
-    #jack.enable = true;
-  };
 
   services.xserver.enable = true;
   services.xserver.xkb = {

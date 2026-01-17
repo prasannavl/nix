@@ -4,13 +4,6 @@
   pkgs,
   ...
 }: {
-  swapDevices = [
-    {
-      device = "/swap/swap0";
-      size = 64 * 1024; # Size in MB
-    }
-  ];
-
   systemd.services = let
     sanitizeUnitName = path: lib.replaceStrings ["/"] ["-"] (lib.strings.removePrefix "/" path);
     mkSwapService = swapEntry: let

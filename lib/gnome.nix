@@ -4,6 +4,11 @@
   pkgs,
   ...
 }: {
+  # Enable GNOME Keyring for login service
+  security.pam.services.login.enableGnomeKeyring = true;
+  security.rtkit.enable = true;
+  security.polkit.enable = true;
+
   # Desktop environment
   services.displayManager.gdm.enable = true;
   services.displayManager.gdm.autoSuspend = false;

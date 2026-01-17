@@ -24,17 +24,18 @@ in {
     group = userdata.username;
     hashedPassword = userdata.hashedPassword;
     linger = true;
-    extraGroups = [
-      "users"
-      "networkmanager"
-      "wheel"
-      "tss"
-      "seat"
-      "i2c"
-      "podman"
-      "keyd"
-      "incus-admin"
-    ];
+    extraGroups =
+      [
+        "users"
+        "networkmanager"
+        "wheel"
+        "tss"
+        "seat"
+        "i2c"
+        "podman"
+        "incus-admin"
+      ]
+      ++ lib.optional config.services.keyd.enable "keyd";
     openssh.authorizedKeys.keys = [userdata.sshKey];
     # Home manager pkgs are merged with this
     # we just use that

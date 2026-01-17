@@ -4,13 +4,12 @@
   ...
 }: {
   imports = [
-    ./lib/common.nix
-    ./lib/common-graphics.nix
-    ./lib/amdgpu-strix.nix
-    ./lib/logitech.nix
-    ./lib/mt7921e.nix
-    ./lib/nvidia.nix
-    ./lib/openrgb.nix
+    ../hardware/amdgpu-strix.nix
+    ../hardware/logitech.nix
+    ../hardware/mt7921e.nix
+    ../hardware/nvidia.nix
+    ../hardware/openrgb.nix
+    ../hardware/tpm.nix
   ];
 
   # AMD Strix / ASUS bug, ignore microcode until BIOS update
