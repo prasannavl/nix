@@ -2,7 +2,7 @@
   imports = [
     ./core.nix
     ../audio.nix
-    ../x11.nix
+    ../desktop-base.nix
     ../gpg.nix
     ../mdns.nix
   ];
