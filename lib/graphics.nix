@@ -1,5 +1,6 @@
 {pkgs, ...}: {
-  # Hardware graphics configuration
+  
+  # Configure the mesa stack
   hardware.graphics = {
     enable = true;
     enable32Bit = true;

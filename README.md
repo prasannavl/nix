@@ -6,15 +6,14 @@ modules and composed via `flake.nix`.
 ## Layout
 
 - `flake.nix`: flake inputs and system definition.
-- `hosts/pvl-a1/nix.nix`: shared Nix settings (caches, GC, allowUnfree).
-- `hosts/<host>/default.nix`: host-specific configuration.
-- `hosts/pvl-a1/sys.nix`: hardware module for pvl-a1.
+- `hosts/<host>/default.nix`: host-specific system definition and module imports.
+- `hosts/<host>/sys.nix`: host-local overrides and hardware quirks.
 - `users/pvl/home.nix`: Home Manager configuration for user `pvl`.
-- `lib/devices/`, `lib/common-services.nix`, `lib/common-programs.nix`,
-  `hosts/pvl-a1/packages.nix`, `hosts/pvl-a1/users.nix`, `lib/swap-auto-files.nix`,
-  `lib/common-locale.nix`, `lib/common-virtualization.nix`, `lib/gnome.nix`:
-  topic-specific NixOS modules imported by `hosts/pvl-a1/config.nix`.
-- `modules/`: Home Manager helper modules (GNOME extensions, dconf, files).
+- `lib/*.nix`: single-topic NixOS modules imported directly by hosts.
+- `lib/devices/`: full device modules; compose `lib/hardware/` pieces.
+- `lib/hardware/`: hardware fragments, used only from `lib/devices/` (hosts should
+  not import these directly).
+- `lib/profiles/`: profile bundles that group common module sets for hosts.
 - `overlays/`: custom overlays used by the system.
 - `pkgs/`: local package definitions (if any).
 
@@ -28,5 +27,5 @@ modules and composed via `flake.nix`.
 
 ## Notes
 
-- GNOME settings and extensions are managed via Home Manager under `home.nix`
-  and `modules/`.
+- User settings are managed via under `users/` and also use home manager with 
+  `home.nix` and self organized modules.

@@ -1,4 +1,5 @@
 {...}: {
+  # Enable all firmware
   hardware.enableAllFirmware = true;
   hardware.i2c.enable = true;
 

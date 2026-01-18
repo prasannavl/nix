@@ -10,6 +10,7 @@
     ../hardware/nvidia.nix
     ../hardware/openrgb.nix
     ../hardware/tpm.nix
+    ../keyd.nix
   ];
 
   # AMD Strix / ASUS bug, ignore microcode until BIOS update
@@ -31,7 +32,6 @@
 
   # Key remaps
   services.keyd = {
-    enable = true;
     keyboards = {
       default = {
         ids = ["0001:0001:3cf016cc"];

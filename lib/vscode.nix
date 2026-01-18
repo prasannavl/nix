@@ -1,21 +1,4 @@
-{
-  config,
-  pkgs,
-  ...
-}: {
-  programs.mtr.enable = true;
-  programs.gnupg.agent = {
-    enable = true;
-    enableSSHSupport = true;
-  };
-  programs.seahorse.enable = true;
-  programs.firefox.enable = true;
-
-  programs.neovim = {
-    enable = true;
-    defaultEditor = true;
-  };
-
+{pkgs, ...}: {
   programs.vscode = {
     enable = true;
     extensions = with pkgs.vscode-extensions; [
@@ -37,7 +20,4 @@
       pkgs.vscode-marketplace.continue.continue
     ];
   };
-
-  programs.nix-ld.enable = true;
-  programs.nix-ld.libraries = with pkgs; [];
 }
