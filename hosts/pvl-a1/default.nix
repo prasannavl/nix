@@ -13,41 +13,8 @@
       }
       {
         imports = [
-          ../../lib/nix.nix
           ../../lib/devices/asus-fa401wv.nix
-          ../../lib/audio.nix
-          ../../lib/boot.nix
-          ../../lib/flatpak.nix
-          ../../lib/gdm-rdp.nix
-          ../../lib/gdm.nix
-          ../../lib/gnome.nix
-          ../../lib/gpg.nix
-          ../../lib/graphics.nix
-          ../../lib/hardware.nix
-          ../../lib/incus.nix
-          ../../lib/kernel.nix
-          ../../lib/printing.nix
-          ../../lib/incus.nix
-          ../../lib/kernel.nix
-          ../../lib/locale.nix
-          ../../lib/mdns.nix
-          ../../lib/neovim.nix
-          ../../lib/network-wifi.nix
-          ../../lib/network.nix
-          ../../lib/nix-ld.nix
-          ../../lib/printing.nix
-          ../../lib/security.nix
-          ../../lib/sudo.nix
           ../../lib/swap-auto.nix
-          ../../lib/systemd.nix
-          ../../lib/sysctl-inotify.nix
-          ../../lib/sysctl-kernel-coredump.nix
-          ../../lib/sysctl-kernel-panic.nix
-          ../../lib/sysctl-kernel-sysrq.nix
-          ../../lib/sysctl-vm.nix
-          ../../lib/users.nix
-          ../../lib/virtualization.nix
-          ../../lib/x11.nix
           ../../lib/profiles/all.nix
           ./sys.nix
           ./packages.nix

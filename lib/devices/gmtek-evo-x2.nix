@@ -4,6 +4,7 @@
   ...
 }: {
   imports = [
+    ../hardware/mesa.nix
     ../hardware/amdgpu-strix.nix
     ../hardware/logitech.nix
     ../hardware/tpm.nix

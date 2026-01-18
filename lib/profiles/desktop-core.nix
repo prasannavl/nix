@@ -1,6 +1,12 @@
 {...}: {
   imports = [
+    ./core.nix
     ../audio.nix
-    ../graphics.nix
+    ../x11.nix
+    ../gpg.nix
+    ../mdns.nix
   ];
+
+  programs.seahorse.enable = true;
+  programs.firefox.enable = true;
 }

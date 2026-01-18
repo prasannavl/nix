@@ -1,6 +1,8 @@
 {...}: {
   imports = [
     ./desktop-core.nix
-    ../seatd.nix
+    # ../seatd.nix
   ];
+
+  programs.sway.enable = true;
 }

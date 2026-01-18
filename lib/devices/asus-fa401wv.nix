@@ -4,10 +4,11 @@
   ...
 }: {
   imports = [
+    ../hardware/mesa.nix
     ../hardware/amdgpu-strix.nix
+    ../hardware/nvidia.nix
     ../hardware/logitech.nix
     ../hardware/mt7921e.nix
-    ../hardware/nvidia.nix
     ../hardware/openrgb.nix
     ../hardware/tpm.nix
     ../keyd.nix

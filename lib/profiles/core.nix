@@ -15,7 +15,9 @@
     ../sysctl-kernel-sysrq.nix
     ../sysctl-vm.nix
     ../users.nix
-    ../mdns.nix
     ../hardware.nix
+    ../nix-ld.nix
   ];
+
+  programs.mtr.enable = true;
 }
