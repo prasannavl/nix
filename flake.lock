@@ -162,8 +162,8 @@
         ]
       },
       "locked": {
-        "lastModified": 1768454165,
-        "narHash": "sha256-v0yu0ZRZmnKioGOR08AcC2TZPVDW71r/1EDyzTBbWPU=",
+        "lastModified": 1768728516,
+        "narHash": "sha256-yPAkKLrqErQt+JCMlnLYXwiCJ62mNqj0oZkXd7/O1og=",
         "path": "/home/pvl/src/pvl/p7-borders",
         "type": "path"
       },
@@ -179,8 +179,8 @@
         ]
       },
       "locked": {
-        "lastModified": 1768482251,
-        "narHash": "sha256-8ClX0+CY963oUXC9/sFP22wfwjxaSJp5qKzfYLuocuc=",
+        "lastModified": 1768728759,
+        "narHash": "sha256-ikcHuM+e2XqHpzsI/6vGOBGcl2zm2t55/6JeIO6OMxQ=",
         "path": "/home/pvl/src/pvl/p7-cmds",
         "type": "path"
       },
