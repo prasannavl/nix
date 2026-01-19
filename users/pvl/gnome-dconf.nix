@@ -48,7 +48,7 @@ in {
         # results in notification of change
         # each time in a different timezone for laptops,
         # since we have default TZ set.
-        automatic-timezone = true;
+        # automatic-timezone = true;
       };
       "org/gnome/system/location" = {
         enabled = true;
