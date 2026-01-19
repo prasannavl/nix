@@ -24,7 +24,11 @@
   # This doesn't always work however. So 
   # we use tzupdate as fallback.
   services.automatic-timezoned.enable = true;
-  services.geoclue2.geoProviderUrl = "https://api.beacondb.net/v1/geolocate";
+  geoclue2 = {
+    # see: https://github.com/NixOS/nixpkgs/issues/68489#issuecomment-1484030107
+    enableDemoAgent = lib.mkForce true;
+    geoProviderUrl = "https://beacondb.net/v1/geolocate";
+  };
 
   # Automatic timezones based on geo ip.
   # Not as accurate as automatic-timezoned above
