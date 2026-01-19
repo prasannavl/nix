@@ -5,10 +5,11 @@
       "flakes"
     ];
     substituters = [
-      "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store"
       "https://cache.nixos.org"
     ];
     extra-substituters = [
+      # Another geo-cache for nixos.org, no key needed, as it's the same
+      "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store"
       "https://nix-community.cachix.org"
       "https://numtide.cachix.org"
     ];
