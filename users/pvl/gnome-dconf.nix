@@ -53,6 +53,19 @@ in {
       "org/gnome/system/location" = {
         enabled = true;
       };
+      "org/gnome/nautilus/icon-view" = {
+        default-zoom-level = "small-plus";
+      };
+      "org/gnome/nautilus/list-view" = {
+        default-visible-columns = [
+          "name"
+          "size"
+          "owner"
+          "group"
+          "permissions"
+          "date_modified"
+        ];
+      };
       # "org/gnome/Console" = {
       #  shell = [ "tmux" ];
       # };
