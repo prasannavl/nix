@@ -9,15 +9,16 @@ in {
   _module.args = {inherit userdata;};
 
   imports = [
-    ./gnome-extensions.nix
-    ./gnome-dconf.nix
-    ./gnome-keybindings.nix
-    ./gnome-shell-favorites.nix
-    ./gnome-clocks-weather.nix
-    (import ./gnome-wallpaper.nix {
+    ./gnome/gnome-extensions.nix
+    ./gnome/gnome-dconf.nix
+    ./gnome/gnome-keybindings.nix
+    ./gnome/gnome-shell-favorites.nix
+    ./gnome/gnome-clocks-weather.nix
+    (import ./gnome/gnome-wallpaper.nix {
       wallpaperUri = "file://${config.home.homeDirectory}/src/dotfiles/x/files/backgrounds/sw.png";
     })
-    ./programs-git.nix
+    ./git
+    ./tmux
   ];
 
   xdg = {

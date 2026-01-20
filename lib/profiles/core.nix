@@ -17,8 +17,7 @@
     ../users.nix
     ../hardware.nix
     ../nix-ld.nix
-    ../programs/tmux.nix
-    ../programs/neovim.nix
+    ../neovim.nix
   ];
 
   programs.bash = { 

@@ -1,8 +1,8 @@
 {...}: {
   imports = [
     ./desktop-gnome.nix
-    ../programs/vscode.nix
-    ../programs/incus.nix
+    ../vscode.nix
+    ../incus.nix
     ../virtualization.nix
   ];
 }
