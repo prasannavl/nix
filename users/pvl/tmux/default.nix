@@ -1,10 +1,6 @@
 { config, pkgs, ... }:
 
 {
-  home.packages = with pkgs; [
-    xsel
-  ];
-
   programs.tmux = {
     enable = true;
     terminal = "tmux-256color";
@@ -73,4 +69,9 @@
       { plugin = tmux-thumbs; }
     ];
   };
+
+  # deps
+  home.packages = with pkgs; [
+    xsel
+  ];
 }

@@ -18,6 +18,7 @@
           ../../lib/profiles/all.nix
           ./sys.nix
           ./packages.nix
+          ./firewall.nix
           ../../users/pvl
         ];
 

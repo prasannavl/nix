@@ -18,6 +18,7 @@ in {
       wallpaperUri = "file://${config.home.homeDirectory}/src/dotfiles/x/files/backgrounds/sw.png";
     })
     ./git
+    ./inputrc
     ./tmux
   ];
 
