@@ -27,4 +27,5 @@
   programs.htop.enable = true;
   programs.mtr.enable = true;
   programs.git.enable = true;
+  programs.tmux.enable = true;
 }
