@@ -3,8 +3,6 @@
   packages = {
     core = with pkgs; [
       vim
-      neovim
-      tmux
       wget
       htop
       curl

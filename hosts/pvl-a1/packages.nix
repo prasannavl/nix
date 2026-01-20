@@ -11,7 +11,6 @@
   packages = {
     core = with pkgs; [
       vim
-      tmux
       wget
       htop
       curl
@@ -172,4 +171,13 @@ in {
     ++ packages.misc;
 
   fonts.packages = packages.fonts;
+
+  programs = { 
+    seahorse.enable = true;
+    tcpdump.enable = true;
+    wireshark.enable = true;
+    nix-index.enable = true;
+    atop.enable = true;
+    ryzen-monitor-ng.enable = true;
+  };
 }

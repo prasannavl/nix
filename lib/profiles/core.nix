@@ -17,6 +17,8 @@
     ../users.nix
     ../hardware.nix
     ../nix-ld.nix
+    ../programs/tmux.nix
+    ../programs/neovim.nix
   ];
 
   programs.mtr.enable = true;
