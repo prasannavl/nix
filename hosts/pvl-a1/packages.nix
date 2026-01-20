@@ -12,12 +12,10 @@
     core = with pkgs; [
       wget
       curl
-      bash-completion
       fd
       ripgrep
       jq
       tree
-      git
       lazygit
       ranger
       nvtopPackages.full

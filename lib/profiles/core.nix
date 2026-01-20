@@ -21,7 +21,11 @@
     ../programs/neovim.nix
   ];
 
-  programs.mtr.enable = true;
+  programs.bash = { 
+    enable = true;
+    completion.enable = true;
+  };
   programs.htop.enable = true;
+  programs.mtr.enable = true;
   programs.git.enable = true;
 }

@@ -4,12 +4,10 @@
     core = with pkgs; [
       wget
       curl
-      bash-completion
       fd
       ripgrep
       ranger
       tree
-      git
     ];
 
     wayland = with pkgs; [
