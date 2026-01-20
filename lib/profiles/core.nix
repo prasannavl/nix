@@ -22,4 +22,6 @@
   ];
 
   programs.mtr.enable = true;
+  programs.htop.enable = true;
+  programs.git.enable = true;
 }

@@ -2,9 +2,7 @@
   # Keep groups isolated so they can be lifted into lib/profiles later.
   packages = {
     core = with pkgs; [
-      vim
       wget
-      htop
       curl
       bash-completion
       fd
