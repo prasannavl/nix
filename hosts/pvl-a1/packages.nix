@@ -139,6 +139,9 @@
     ];
 
     misc = with pkgs; [
+      fzf
+      nethogs
+      sysstat
     ];
 
     fonts = with pkgs; [
@@ -174,6 +177,7 @@ in {
     wireshark.enable = true;
     nix-index.enable = true;
     atop.enable = true;
-    ryzen-monitor-ng.enable = true;
+    iftop.enable = true;
+    iotop.enable = true;
   };
 }
