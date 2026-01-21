@@ -66,9 +66,9 @@ in {
           "date_modified"
         ];
       };
-      # "org/gnome/Console" = {
-      #  shell = [ "tmux" ];
-      # };
+      "org/gnome/Console" = {
+       shell = [ "tmux" ];
+      };
     };
   };
 }
