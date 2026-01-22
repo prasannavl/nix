@@ -162,14 +162,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1768728516,
-        "narHash": "sha256-yPAkKLrqErQt+JCMlnLYXwiCJ62mNqj0oZkXd7/O1og=",
-        "path": "/home/pvl/src/pvl/p7-borders",
-        "type": "path"
+        "lastModified": 1768728460,
+        "narHash": "sha256-4n/0IkwPv7iItyFgeo8j11eo64oANcPJpXV9/5NVe28=",
+        "owner": "prasannavl",
+        "repo": "p7-borders-shell-extension",
+        "rev": "f934243a3d0d00a1cf0adc5ad05aeb0966e26ae4",
+        "type": "github"
       },
       "original": {
-        "path": "/home/pvl/src/pvl/p7-borders",
-        "type": "path"
+        "owner": "prasannavl",
+        "repo": "p7-borders-shell-extension",
+        "type": "github"
       }
     },
     "p7-cmds": {
@@ -179,14 +182,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1768728759,
-        "narHash": "sha256-ikcHuM+e2XqHpzsI/6vGOBGcl2zm2t55/6JeIO6OMxQ=",
-        "path": "/home/pvl/src/pvl/p7-cmds",
-        "type": "path"
+        "lastModified": 1768728679,
+        "narHash": "sha256-ZIc2Povs00w8a/1Vmw+j0dBkurNFkHQ9osL53HFsi5k=",
+        "owner": "prasannavl",
+        "repo": "p7-cmds-shell-extension",
+        "rev": "3898d86b8a5c3f0d54c61a53297ce0434edcc51f",
+        "type": "github"
       },
       "original": {
-        "path": "/home/pvl/src/pvl/p7-cmds",
-        "type": "path"
+        "owner": "prasannavl",
+        "repo": "p7-cmds-shell-extension",
+        "type": "github"
       }
     },
     "root": {

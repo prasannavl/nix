@@ -21,11 +21,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     p7-borders = {
-      url = "path:/home/pvl/src/pvl/p7-borders";
+      url = "github:prasannavl/p7-borders-shell-extension";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     p7-cmds = {
-      url = "path:/home/pvl/src/pvl/p7-cmds";
+      url = "github:prasannavl/p7-cmds-shell-extension";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     vscode-ext = {
