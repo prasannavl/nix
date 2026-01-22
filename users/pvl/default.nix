@@ -27,15 +27,16 @@ in {
     extraGroups =
       [
         "users"
-        "networkmanager"
         "wheel"
-        "tss"
-        "seat"
-        "i2c"
-        "podman"
-        "incus-admin"
       ]
-      ++ lib.optional config.services.keyd.enable "keyd";
+      ++ lib.optional config.security.tpm2.enable "tss"
+      ++ lib.optional config.hardware.i2c.enable "i2c"
+      ++ lib.optional config.networking.networkmanager.enable "networkmanager"
+      ++ lib.optional config.services.seatd.enable "seat"
+      ++ lib.optional config.services.keyd.enable "keyd"
+      ++ lib.optional config.virtualisation.podman.enable "podman"
+      ++ lib.optional config.virtualisation.incus.enable "incus-admin";
+
     openssh.authorizedKeys.keys = [userdata.sshKey];
     # Home manager pkgs are merged with this
     # we just use that
