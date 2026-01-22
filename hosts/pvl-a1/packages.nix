@@ -142,10 +142,13 @@
       fzf
       nethogs
       sysstat
+      wavemon
     ];
 
     fonts = with pkgs; [
       noto-fonts
+      noto-fonts-cjk-sans
+      noto-fonts-color-emoji
       dejavu_fonts
     ];
   };
@@ -169,7 +172,15 @@ in {
     ++ packages.ai
     ++ packages.misc;
 
-  fonts.packages = packages.fonts;
+  fonts = { 
+    enableDefaultPackages = true;
+    packages =  with pkgs; [
+      fira-code
+      fira-code-symbols
+    ] ++ 
+    packages.fonts ++ 
+    builtins.filter lib.attrsets.isDerivation (builtins.attrValues pkgs.nerd-fonts);
+  };
 
   programs = { 
     seahorse.enable = true;
