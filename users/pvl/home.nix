@@ -13,6 +13,7 @@ in {
     ./git
     ./inputrc
     ./tmux
+    ./gtk
   ];
 
   xdg = {
