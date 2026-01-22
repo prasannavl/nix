@@ -11,7 +11,9 @@
     "org.gnome.Calculator.desktop"
     # "md.obsidian.Obsidian.desktop"
     "obsidian.desktop"
-    "chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default.desktop"
+    "chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default.desktop" # ChatGPT
+    "chrome-jklgmpcgloflmcdifnofaohlcmeghadj-Default.desktop" # Google AI
+    "chrome-caidcmannjgahlnbpmidmiecjcoiiigg-Default.desktop" # Google Gemini
     "antigravity.desktop"
   ];
 }
