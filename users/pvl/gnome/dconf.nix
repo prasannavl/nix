@@ -29,15 +29,15 @@ in {
         view-only = false;
       };
       "org/gnome/desktop/interface" = {
-        color-scheme = "prefer-dark";
-        # accent-color = "blue";
         clock-format = "12h";
         clock-show-seconds = true;
         clock-show-weekday = true;
+        show-battery-percentage = true;
+        # color-scheme = "prefer-dark";
+        # accent-color = "blue";
         # enable-animations = true;
         # enable-hot-corners = true;
         # overlay-scrolling = true;
-        show-battery-percentage = true;
       };
       "org/gnome/desktop/calendar" = {
         show-weekdate = true;
@@ -67,7 +67,7 @@ in {
         ];
       };
       "org/gnome/Console" = {
-       shell = [ "tmux" ];
+        shell = [ "tmux" ];
       };
     };
   };
