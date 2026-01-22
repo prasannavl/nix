@@ -1,3 +1,7 @@
-{config, lib, ...}: {
+{
+  config,
+  lib,
+  ...
+}: {
   services.seatd.enable = true;
 }

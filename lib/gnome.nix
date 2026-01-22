@@ -1,4 +1,8 @@
-{config, pkgs, ...}: {
+{
+  config,
+  pkgs,
+  ...
+}: {
   security.rtkit.enable = true;
   security.polkit.enable = true;
   security.pam.services.login.enableGnomeKeyring = true;
@@ -9,7 +13,7 @@
     experimental-features=['scale-monitor-framebuffer', 'variable-refresh-rate', 'xwayland-native-scaling']
   '';
   services.gnome.core-apps.enable = true;
-  
+
   services.gnome.gnome-keyring.enable = true;
   services.gnome.gcr-ssh-agent.enable = true;
   # Disable other known agents if using gcr-ssh-agent.
@@ -23,8 +27,6 @@
   # Gnome using wsdd for Windows network discovery
   services.samba-wsdd.enable = true;
   services.samba-wsdd.openFirewall = true;
-
-
 
   # programs.dconf.profiles.user.databases = [];
 

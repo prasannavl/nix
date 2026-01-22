@@ -1,5 +1,4 @@
 {pkgs, ...}: {
-  
   # Configure the mesa stack
   hardware.graphics = {
     enable = true;

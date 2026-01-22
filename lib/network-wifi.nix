@@ -1,8 +1,4 @@
-{
-  pkgs,
-  ...
-}: {
-
+{pkgs, ...}: {
   # Enables wireless support via wpa_supplicant.
   # We use nm instead.
   # networking.wireless.enable = true;

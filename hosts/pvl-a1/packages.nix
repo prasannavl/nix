@@ -172,17 +172,19 @@ in {
     ++ packages.ai
     ++ packages.misc;
 
-  fonts = { 
+  fonts = {
     enableDefaultPackages = true;
-    packages =  with pkgs; [
-      fira-code
-      fira-code-symbols
-    ] ++ 
-    packages.fonts ++ 
-    builtins.filter lib.attrsets.isDerivation (builtins.attrValues pkgs.nerd-fonts);
+    packages = with pkgs;
+      [
+        fira-code
+        fira-code-symbols
+      ]
+      ++ packages.fonts
+      ++ builtins.filter lib.attrsets.isDerivation
+      (builtins.attrValues pkgs.nerd-fonts);
   };
 
-  programs = { 
+  programs = {
     seahorse.enable = true;
     tcpdump.enable = true;
     wireshark.enable = true;

@@ -1,4 +1,9 @@
-{config, lib, pkgs, ...}: {
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: {
   services.gnome.gnome-remote-desktop.enable = true;
 
   programs.dconf.profiles.gdm.databases = [

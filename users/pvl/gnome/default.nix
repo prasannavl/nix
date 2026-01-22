@@ -1,7 +1,4 @@
-{
-  config,
-  ...
-}: {
+{config, ...}: {
   imports = [
     ./extensions.nix
     ./dconf.nix

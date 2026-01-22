@@ -67,7 +67,7 @@ in {
         ];
       };
       "org/gnome/Console" = {
-        shell = [ "tmux" ];
+        shell = ["tmux"];
       };
     };
   };

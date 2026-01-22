@@ -25,7 +25,7 @@
     dates = "weekly";
     options = "--delete-older-than 14d";
   };
-  
+
   nixpkgs.config.allowUnfree = true;
 
   # Handy to have this linked for debugging

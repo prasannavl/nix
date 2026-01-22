@@ -1,8 +1,5 @@
-{
-  lib,
-  ...
-}: {
-  # We automatically set this below.  # 
+{lib, ...}: {
+  # We automatically set this below.  #
   # time.timeZone = "Asia/Singapore";
 
   i18n.defaultLocale = "en_US.UTF-8";

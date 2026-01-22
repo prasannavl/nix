@@ -20,7 +20,7 @@
     ../neovim.nix
   ];
 
-  programs.bash = { 
+  programs.bash = {
     enable = true;
     completion.enable = true;
   };

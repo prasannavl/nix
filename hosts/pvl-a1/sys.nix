@@ -14,8 +14,8 @@
 
   boot.initrd.kernelModules = [];
   boot.initrd.availableKernelModules = ["nvme" "xhci_pci" "thunderbolt" "usbhid" "usb_storage" "sd_mod" "sdhci_pci"];
-  
-  boot.initrd.luks.devices."luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313" = { 
+
+  boot.initrd.luks.devices."luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313" = {
     device = "/dev/disk/by-uuid/d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
     allowDiscards = true;
   };

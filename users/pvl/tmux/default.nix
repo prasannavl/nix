@@ -1,6 +1,8 @@
-{ config, pkgs, ... }:
-
 {
+  config,
+  pkgs,
+  ...
+}: {
   programs.tmux = {
     enable = true;
     terminal = "tmux-256color";
@@ -29,12 +31,12 @@
     '';
 
     plugins = with pkgs.tmuxPlugins; [
-      { plugin = sensible; }
+      {plugin = sensible;}
 
       # keybind/layout helpers
-      { plugin = pain-control; }
-      { plugin = copycat; }
-      { plugin = open; }
+      {plugin = pain-control;}
+      {plugin = copycat;}
+      {plugin = open;}
 
       # mouse/scroll behavior
       {
@@ -58,15 +60,15 @@
       }
 
       # ui
-      { plugin = prefix-highlight; }
+      {plugin = prefix-highlight;}
 
       # session persistence
-      { plugin = resurrect; }
-      { plugin = continuum; }
+      {plugin = resurrect;}
+      {plugin = continuum;}
 
       # others
-      { plugin = logging; }
-      { plugin = tmux-thumbs; }
+      {plugin = logging;}
+      {plugin = tmux-thumbs;}
     ];
   };
 
