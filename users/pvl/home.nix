@@ -9,6 +9,7 @@ in {
   _module.args = {inherit userdata;};
 
   imports = [
+    ./bash
     ./gnome
     ./git
     ./firefox
@@ -32,10 +33,6 @@ in {
   home.packages = with pkgs; [
     atool
   ];
-
-  programs = {
-    bash.enable = true;
-  };
 
   home.file = {
     # ".config/containers/storage.conf".text = ''
