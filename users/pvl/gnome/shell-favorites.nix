@@ -15,5 +15,6 @@
     "chrome-jklgmpcgloflmcdifnofaohlcmeghadj-Default.desktop" # Google AI
     "chrome-caidcmannjgahlnbpmidmiecjcoiiigg-Default.desktop" # Google Gemini
     "antigravity.desktop"
+    "chrome-gjcmcplpgihbecacndmmbaenpfgimlec-Default.desktop" # NotebookLM
   ];
 }
