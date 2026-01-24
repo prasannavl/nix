@@ -162,11 +162,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1769111123,
-        "narHash": "sha256-SHFoWmgDy7nBJhiIw01nTH6guZehZRiXULhe41MONxs=",
+        "lastModified": 1769228238,
+        "narHash": "sha256-F+il5xw0qq8rjgQmJ6FGZtbvTODFfmG4mc6MZD0Lb/8=",
         "owner": "prasannavl",
         "repo": "p7-borders-shell-extension",
-        "rev": "309b5d320dc7c7a1cdd2c41b02b939ee29fac4f0",
+        "rev": "fefbe53a697f1eae860a61c5ef99b2183f0b5b35",
         "type": "github"
       },
       "original": {
