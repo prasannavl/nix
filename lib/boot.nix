@@ -10,4 +10,5 @@
   boot.initrd.systemd = {
     enable = true;
   };
+  boot.tmp.useTmpfs = true;
 }
