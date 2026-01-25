@@ -17,6 +17,22 @@
   # AMD Strix / ASUS bug, ignore microcode until BIOS update
   hardware.cpu.amd.updateMicrocode = false;
 
+  boot.extraModprobeConfig = ''    
+    # Attempt amdgpu binds before nvidia. This doesn't happen if the 
+    # PCI device comes earlier, but we try anyway.
+    softdep nvidia pre: amdgpu
+    softdep nvidia_drm pre: amdgpu
+    softdep nouveau pre: amdgpu
+  '';
+
+  # Additional stable paths
+  services.udev.extraRules = ''
+    KERNEL=="card*", ATTRS{vendor}=="0x1002", SYMLINK+="dri/zcard-amd"
+    KERNEL=="card*", ATTRS{vendor}=="0x10de", SYMLINK+="dri/zcard-nvidia"
+    KERNEL=="renderD*", ATTRS{vendor}=="0x1002", SYMLINK+="dri/zrender-amd"
+    KERNEL=="renderD*", ATTRS{vendor}=="0x10de", SYMLINK+="dri/zrender-nvidia"
+  '';
+
   # Adds the missing asus functionality to Linux.
   # https://asus-linux.org/manual/asusctl-manual/
   # Note: It generates a lot of spam logs currently
@@ -38,7 +54,7 @@
         ids = ["0001:0001:3cf016cc"];
         settings = {
           main = {
-            # Right ctrl Key mapping
+            # Right ctrl key mapping (from co-pilot key)
             "leftmeta+leftshift+f23" = "layer(control)";
           };
         };
@@ -46,13 +62,18 @@
     };
   };
 
-  # Sysrq key maps due to the lack of print scr
   services.udev.extraHwdb = ''
-    # AT Translated Set 2 keyboard
+    # Sysrq key maps (Since it lacks print scr)
+    # ===
+    # dev: AT Translated Set 2 keyboard
+    # key: Fn + Left Ctrl
     evdev:name:AT Translated Set 2 keyboard:*
      KEYBOARD_KEY_dd=sysrq
 
-    # Asus WMI hotkeys
+    # dev: Asus WMI hotkeys
+    # key: Armory crate
+    # notes: This isn't picked up kernel as it only
+    # listens to AT device.
     evdev:name:Asus WMI hotkeys:*
      KEYBOARD_KEY_38=sysrq
   '';
