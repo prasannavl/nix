@@ -34,6 +34,7 @@
       sway
       fuzzel
       wmenu
+      niri
       xdg-desktop-portal-wlr
       wdisplays
     ];
@@ -143,6 +144,8 @@
       nethogs
       sysstat
       wavemon
+      networkmanagerapplet
+      dig
     ];
 
     fonts = with pkgs; [

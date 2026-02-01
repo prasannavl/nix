@@ -12,6 +12,9 @@ inputs.nixpkgs.lib.nixosSystem {
       nixpkgs.overlays = import ../../overlays {inherit inputs;};
     }
     {
+      home-manager.extraSpecialArgs = {inherit inputs;};
+    }
+    {
       imports = [
         ../../lib/devices/asus-fa401wv.nix
         ../../lib/swap-auto.nix

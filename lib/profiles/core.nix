@@ -1,4 +1,4 @@
-{...}: {
+{pkgs, ...}: {
   imports = [
     ../nix.nix
     ../boot.nix
@@ -28,4 +28,11 @@
   programs.mtr.enable = true;
   programs.git.enable = true;
   programs.tmux.enable = true;
+
+  environment.systemPackages = with pkgs; [
+    powertop
+    pciutils
+    usbutils
+    ethtool
+  ];
 }
