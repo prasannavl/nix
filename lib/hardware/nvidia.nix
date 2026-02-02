@@ -3,7 +3,7 @@
   pkgs,
   ...
 }: {
-  boot.extraModprobeConfig = ''    
+  boot.extraModprobeConfig = ''
     # default is /tmp, but we use tmpOnTmpfs
     # so we relieve this off the RAM
     options nvidia NVreg_TemporaryFilePath=/var/tmp

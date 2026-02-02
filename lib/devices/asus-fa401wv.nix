@@ -17,8 +17,8 @@
   # AMD Strix / ASUS bug, ignore microcode until BIOS update
   hardware.cpu.amd.updateMicrocode = false;
 
-  boot.extraModprobeConfig = ''    
-    # Attempt amdgpu binds before nvidia. This doesn't happen if the 
+  boot.extraModprobeConfig = ''
+    # Attempt amdgpu binds before nvidia. This doesn't happen if the
     # PCI device comes earlier, but we try anyway.
     softdep nvidia pre: amdgpu
     softdep nvidia_drm pre: amdgpu

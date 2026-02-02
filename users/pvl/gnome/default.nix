@@ -1,4 +1,8 @@
-{config, ...}: {
+{
+  config,
+  pkgs,
+  ...
+}: {
   imports = [
     ./extensions.nix
     ./dconf.nix
@@ -9,4 +13,16 @@
       wallpaperUri = "file://${config.home.homeDirectory}/src/dotfiles/x/files/backgrounds/sw.png";
     })
   ];
+
+  xdg.portal = {
+    enable = true;
+    extraPortals = [
+      pkgs.xdg-desktop-portal-gnome
+    ];
+    config = {
+      gnome = {
+        default = ["gnome"];
+      };
+    };
+  };
 }

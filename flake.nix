@@ -40,20 +40,27 @@
     };
   };
 
-  outputs = inputs@{nixpkgs, flake-utils, home-manager, ...}: let
+  outputs = inputs @ {
+    nixpkgs,
+    flake-utils,
+    home-manager,
+    ...
+  }: let
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
       {nixpkgs.overlays = overlays;}
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
-  in flake-utils.lib.eachDefaultSystem (system: let
-    pkgs = nixpkgs.legacyPackages.${system};
-  in {
-    formatter = pkgs.alejandra;
-  }) // {
-    nixosConfigurations = import ./hosts {
-      inherit inputs commonModules;
+  in
+    flake-utils.lib.eachDefaultSystem (system: let
+      pkgs = nixpkgs.legacyPackages.${system};
+    in {
+      formatter = pkgs.alejandra;
+    })
+    // {
+      nixosConfigurations = import ./hosts {
+        inherit inputs commonModules;
+      };
     };
-  };
 }

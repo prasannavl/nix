@@ -1,4 +1,8 @@
-{config, lib, ...}: let
+{
+  config,
+  lib,
+  ...
+}: let
   src = ./.inputrc;
   useXdg = config.home.preferXdgDirectories;
 in

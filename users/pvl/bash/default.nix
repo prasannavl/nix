@@ -7,12 +7,14 @@
   bashrcFiles =
     lib.filterAttrs (_: type: type == "regular")
     (builtins.readDir bashrcDir);
-  bashrcLinks = lib.mapAttrs' (
-    name: _:
-      lib.nameValuePair "bash/bashrc.d/${name}" {
-        source = bashrcDir + "/${name}";
-      }
-  ) bashrcFiles;
+  bashrcLinks =
+    lib.mapAttrs' (
+      name: _:
+        lib.nameValuePair "bash/bashrc.d/${name}" {
+          source = bashrcDir + "/${name}";
+        }
+    )
+    bashrcFiles;
 in {
   programs.bash = {
     enable = true;

@@ -11,7 +11,7 @@
       pkgs.xdg-desktop-portal-wlr
       pkgs.xdg-desktop-portal-gtk
     ];
-    config = { 
+    config = {
       common.default = "gtk";
       sway = {
         default = ["wlr" "gtk"];

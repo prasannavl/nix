@@ -5,11 +5,11 @@
 }:
 stdenv.mkDerivation rec {
   pname = "gnome-shell-extension-p7-borders";
-  version = "35";
+  version = "36";
 
   src = fetchzip {
     url = "https://extensions.gnome.org/extension-data/p7-bordersprasannavl.com.v${version}.shell-extension.zip";
-    sha256 = "sha256-DZ+eKJuE/i5HG6VTudpOmPO5U88X3Hr4y98uS16XCrQ=";
+    sha256 = "sha256-UB86ex/mEHaebkCHdq/vl/HqIN+lyHjVyX9mJlIDL0k=";
     stripRoot = false;
   };
 

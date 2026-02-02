@@ -5,11 +5,11 @@
 }:
 stdenv.mkDerivation rec {
   pname = "gnome-shell-extension-p7-cmds";
-  version = "23";
+  version = "24";
 
   src = fetchzip {
     url = "https://extensions.gnome.org/extension-data/p7-cmdsprasannavl.com.v${version}.shell-extension.zip";
-    sha256 = "sha256-ezbyvxQQvPOnLWvwbaeHe5tKTXyfmL349kkaAJObRMY=";
+    sha256 = "sha256-54+fisfpSVuV8cKUSETNGpyD8Vv1tw37M5Oe5NNMGN4=";
     stripRoot = false;
   };
 
