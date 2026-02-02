@@ -25,6 +25,12 @@ in {
 
   home.preferXdgDirectories = true;
 
+  programs.zoxide = {
+    enable = true;
+    enableBashIntegration = true;
+  };
+  programs.fzf.enable = true;
+
   xdg = {
     enable = true;
     userDirs = {
@@ -45,9 +51,9 @@ in {
     #   [storage.options]
     #   mount_program = "${pkgs.fuse-overlayfs}/bin/fuse-overlayfs"
     # '';
-    ".config/chrome-flags.conf".text = ''
-      --disable-smooth-scrolling
-    '';
+    # ".config/chrome-flags.conf".text = ''
+    #   --disable-smooth-scrolling
+    # '';
   };
 
   # The state version is required and should stay at the version you
