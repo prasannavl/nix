@@ -2,26 +2,11 @@
   config,
   pkgs,
   lib,
-  inputs,
   ...
 }: let
   userdata = (import ../userdata.nix).pvl;
 in {
   _module.args = {inherit userdata;};
-
-  imports = [
-    inputs.noctalia.homeModules.default
-    ./bash
-    ./gnome
-    ./git
-    ./firefox
-    ./inputrc
-    ./gtk
-    ./ranger
-    ./tmux
-    ./neovim
-    ./sway
-  ];
 
   home.preferXdgDirectories = true;
 

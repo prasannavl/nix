@@ -2,10 +2,27 @@
   config,
   pkgs,
   lib,
+  inputs,
   ...
 }: let
   userdata = (import ../userdata.nix).pvl;
+  modulePaths = [
+    ./bash
+    ./gnome
+    ./git
+    ./firefox
+    ./inputrc
+    ./gtk
+    ./ranger
+    ./tmux
+    ./neovim
+    ./sway
+  ];
 in {
+  _module.args = {inherit userdata;};
+
+  imports = map (path: (import path).nixos) modulePaths;
+
   # Use the dedicated user group Debian style.
   # NixOS defaults here of users group will break unexpected things
   # like podman, OCI containers in certain configurations.
@@ -43,5 +60,12 @@ in {
     packages = [];
   };
 
-  home-manager.users.pvl = import ./home.nix;
+  home-manager.users.pvl = {
+    imports =
+      [
+        inputs.noctalia.homeModules.default
+        ./home.nix
+      ]
+      ++ map (path: (import path).home) modulePaths;
+  };
 }
