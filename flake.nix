@@ -4,6 +4,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
     unstable.url = "github:nixos/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
     home-manager = {
       url = "github:nix-community/home-manager/release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -39,14 +40,20 @@
     };
   };
 
-  outputs = inputs: let
-    system = "x86_64-linux";
-    pkgs = inputs.nixpkgs.legacyPackages.${system};
+  outputs = inputs@{nixpkgs, flake-utils, home-manager, ...}: let
+    overlays = import ./overlays {inherit inputs;};
+    commonModules = [
+      home-manager.nixosModules.home-manager
+      {nixpkgs.overlays = overlays;}
+      {home-manager.extraSpecialArgs = {inherit inputs;};}
+    ];
+  in flake-utils.lib.eachDefaultSystem (system: let
+    pkgs = nixpkgs.legacyPackages.${system};
   in {
-    formatter.${system} = pkgs.alejandra;
-
+    formatter = pkgs.alejandra;
+  }) // {
     nixosConfigurations = import ./hosts {
-      inherit inputs system;
+      inherit inputs commonModules;
     };
   };
 }

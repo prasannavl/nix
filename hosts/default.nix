@@ -1,8 +1,16 @@
 {
   inputs,
-  system,
+  commonModules,
   ...
 }: {
-  pvl-a1 = import ./pvl-a1 {inherit inputs system;};
-  pvl-x2 = import ./pvl-x2 {inherit inputs system;};
+  pvl-a1 = inputs.nixpkgs.lib.nixosSystem {
+    system = inputs.flake-utils.lib.system.x86_64-linux;
+    specialArgs = {inherit inputs;};
+    modules = commonModules ++ [./pvl-a1];
+  };
+  pvl-x2 = inputs.nixpkgs.lib.nixosSystem {
+    system = inputs.flake-utils.lib.system.x86_64-linux;
+    specialArgs = {inherit inputs;};
+    modules = commonModules ++ [./pvl-x2];
+  };
 }

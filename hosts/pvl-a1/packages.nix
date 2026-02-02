@@ -4,9 +4,10 @@
   inputs,
   ...
 }: let
-  llm-agent-pkgs = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
-  antigravity-pkgs = inputs.antigravity.packages.${pkgs.stdenv.hostPlatform.system};
-  codex-pkgs = inputs.codex.packages.${pkgs.stdenv.hostPlatform.system};
+  system = pkgs.stdenv.hostPlatform.system;
+  llm-agent-pkgs = inputs.llm-agents.packages.${system};
+  antigravity-pkgs = inputs.antigravity.packages.${system};
+  codex-pkgs = inputs.codex.packages.${system};
   # Keep groups isolated so they can be lifted into lib/profiles later.
   packages = {
     core = with pkgs; [
