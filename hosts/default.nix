@@ -2,9 +2,9 @@
   inputs,
   commonModules,
   ...
-}: let 
+}: let
   nixpkgs = inputs.nixpkgs;
-  flake-utils = inputs.flake-utils; 
+  flake-utils = inputs.flake-utils;
 in {
   pvl-a1 = nixpkgs.lib.nixosSystem {
     system = flake-utils.lib.system.x86_64-linux;

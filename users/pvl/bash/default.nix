@@ -1,24 +1,24 @@
 {
-  config,
-  lib,
-  ...
-}: let
-  bashrcDir = ./bashrc.d;
-  bashrcFiles =
-    lib.filterAttrs (_: type: type == "regular")
-    (builtins.readDir bashrcDir);
-  bashrcLinks =
-    lib.mapAttrs' (
-      name: _:
-        lib.nameValuePair "bash/bashrc.d/${name}" {
-          source = bashrcDir + "/${name}";
-        }
-    )
-    bashrcFiles;
-in {
-  nixos = {};
+  nixos = {...}: {};
 
   home = {
+    config,
+    lib,
+    ...
+  }: let
+    bashrcDir = ./bashrc.d;
+    bashrcFiles =
+      lib.filterAttrs (_: type: type == "regular")
+      (builtins.readDir bashrcDir);
+    bashrcLinks =
+      lib.mapAttrs' (
+        name: _:
+          lib.nameValuePair "bash/bashrc.d/${name}" {
+            source = bashrcDir + "/${name}";
+          }
+      )
+      bashrcFiles;
+  in {
     programs.bash = {
       enable = true;
       initExtra = lib.mkAfter ''

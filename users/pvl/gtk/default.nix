@@ -1,12 +1,7 @@
 {
-  config,
-  pkgs,
-  lib,
-  ...
-}: {
-  nixos = {};
+  nixos = {...}: {};
 
-  home = let
+  home = {config, ...}: let
     homeDir = config.home.homeDirectory;
   in {
     gtk = {

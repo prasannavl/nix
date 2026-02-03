@@ -1,13 +1,12 @@
 {
-  config,
-  lib,
-  ...
-}: let
-  src = ./.inputrc;
-in {
-  nixos = {};
+  nixos = {...}: {};
 
-  home = let
+  home = {
+    config,
+    lib,
+    ...
+  }: let
+    src = ./.inputrc;
     useXdg = config.home.preferXdgDirectories;
   in
     lib.mkMerge [

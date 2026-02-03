@@ -1,11 +1,9 @@
 {
-  ...
-}: {
-  nixos = {
+  nixos = {...}: {
     programs.neovim.enable = true;
   };
 
-  home = {
+  home = {...}: {
     programs.neovim = {
       enable = true;
       viAlias = true;
