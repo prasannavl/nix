@@ -19,7 +19,7 @@
       inputs.flake-utils.follows = "flake-utils";
     };
     codex = {
-      url = "github:openai/codex";
+      url = "github:openai/codex/4210fb9e6cb3f50bb93d8fdfcb4494af27a36352";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     p7-borders = {
