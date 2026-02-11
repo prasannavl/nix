@@ -1,22 +1,7 @@
 {
-  config,
   pkgs,
-  lib,
-  osConfig ? {},
   ...
-}: let
-  userdata = (import ../userdata.nix).pvl;
-  hostName = osConfig.networking.hostName or "";
-  hostModules = {
-    pvl-x2 = [];
-    pvl-a1 = [];
-  };
-  selectedModulePaths = lib.attrByPath [hostName] [] hostModules;
-in {
-  _module.args = {inherit userdata;};
-
-  imports = selectedModulePaths;
-
+}: {
   home.preferXdgDirectories = true;
 
   programs.zoxide = {
@@ -32,7 +17,7 @@ in {
       createDirectories = true;
     };
   };
-  
+
 
   home.packages = with pkgs; [
     atool

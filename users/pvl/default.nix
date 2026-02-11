@@ -26,8 +26,6 @@
   selectedModulePaths = baseModules ++ lib.attrByPath [hostName] [] hostModules;
   selectedModules = map (path: import path) selectedModulePaths;
 in {
-  _module.args = {inherit userdata;};
-
   imports = map (x: x.nixos) selectedModules;
 
   # Use the dedicated user group Debian style.
@@ -71,6 +69,7 @@ in {
     imports =
       [
         inputs.noctalia.homeModules.default
+        { _module.args = {inherit userdata; }; }
         ./home.nix
       ]
       ++ map (x: x.home) selectedModules;
