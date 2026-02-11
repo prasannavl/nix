@@ -3,12 +3,12 @@
   pkgs,
   lib,
   inputs,
+  hostName,
   ...
 }: let
   userdata = (import ../userdata.nix).pvl;
-  modulePaths = [
+  baseModules = [
     ./bash
-    ./gnome
     ./git
     ./firefox
     ./inputrc
@@ -16,12 +16,19 @@
     ./ranger
     ./tmux
     ./neovim
+    ./vscode
     ./sway
   ];
+  hostModules = {
+    pvl-a1 = [./gnome];
+    pvl-x2 = [];
+  };
+  selectedModulePaths = baseModules ++ lib.attrByPath [hostName] [] hostModules;
+  selectedModules = map (path: import path) selectedModulePaths;
 in {
   _module.args = {inherit userdata;};
 
-  imports = map (path: (import path).nixos) modulePaths;
+  imports = map (x: x.nixos) selectedModules;
 
   # Use the dedicated user group Debian style.
   # NixOS defaults here of users group will break unexpected things
@@ -66,6 +73,6 @@ in {
         inputs.noctalia.homeModules.default
         ./home.nix
       ]
-      ++ map (path: (import path).home) modulePaths;
+      ++ map (x: x.home) selectedModules;
   };
 }
