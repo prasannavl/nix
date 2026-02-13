@@ -17,6 +17,13 @@
   # AMD Strix / ASUS bug, ignore microcode until BIOS update
   hardware.cpu.amd.updateMicrocode = false;
 
+  hardware.nvidia = {
+    prime = {
+      amdgpuBusId = "PCI:102:0:0";
+      nvidiaBusId = "PCI:100:0:0";
+    };
+  };
+
   boot.extraModprobeConfig = ''
     # Attempt amdgpu binds before nvidia. This doesn't happen if the
     # PCI device comes earlier, but we try anyway.

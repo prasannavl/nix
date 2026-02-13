@@ -29,8 +29,6 @@
     prime = {
       offload.enable = true;
       offload.enableOffloadCmd = true;
-      amdgpuBusId = "PCI:102:0:0";
-      nvidiaBusId = "PCI:100:0:0";
     };
     package = config.boot.kernelPackages.nvidiaPackages.mkDriver {
       version = "580.126.09";
