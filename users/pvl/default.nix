@@ -50,6 +50,9 @@ in {
       [
         "users"
         "wheel"
+        "video"
+        "audio"
+        "render"
       ]
       ++ lib.optional config.security.tpm2.enable "tss"
       ++ lib.optional config.hardware.i2c.enable "i2c"

@@ -35,6 +35,10 @@
       sway
       fuzzel
       wmenu
+      swaylock
+      swayidle
+      dmenu
+      foot
       niri
       xdg-desktop-portal-wlr
       wdisplays
@@ -79,6 +83,8 @@
       rustfmt
       rust-analyzer
       zed-editor
+      nixd
+      alejandra
     ];
 
     nixTools = with pkgs; [

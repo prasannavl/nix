@@ -35,4 +35,10 @@
     extraPortals = [pkgs.xdg-desktop-portal-gnome];
     config.common.default = "gnome";
   };
+
+  environment.systemPackages = with pkgs; [
+    gnome-screenshot
+    gnome-sound-recorder
+    remmina
+  ];
 }
