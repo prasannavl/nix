@@ -1,7 +1,4 @@
-{
-  pkgs,
-  ...
-}: {
+{pkgs, ...}: {
   home.preferXdgDirectories = true;
 
   programs.zoxide = {

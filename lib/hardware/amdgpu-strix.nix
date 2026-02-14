@@ -5,6 +5,6 @@
     "amdgpu.dcdebugmask=0x10"
   ];
 
-  boot.initrd.kernelModules = [ "amdgpu" ];
-  boot.kernelModules = [ "amdgpu" ];
+  boot.initrd.kernelModules = ["amdgpu"];
+  boot.kernelModules = ["amdgpu"];
 }

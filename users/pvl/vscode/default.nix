@@ -1,10 +1,7 @@
 {
   nixos = {...}: {};
 
-  home = {
-    pkgs,
-    ...
-  }: {
+  home = {pkgs, ...}: {
     programs.vscode = {
       enable = true;
       profiles.default = {

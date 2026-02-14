@@ -21,7 +21,7 @@
   ];
   hostModules = {
     pvl-a1 = [./gnome];
-    pvl-x2 = [];
+    pvl-x2 = [./gnome];
   };
   selectedModulePaths = baseModules ++ lib.attrByPath [hostName] [] hostModules;
   selectedModules = map (path: import path) selectedModulePaths;
@@ -72,7 +72,7 @@ in {
     imports =
       [
         inputs.noctalia.homeModules.default
-        { _module.args = {inherit userdata; }; }
+        {_module.args = {inherit userdata;};}
         ./home.nix
       ]
       ++ map (x: x.home) selectedModules;

@@ -2,7 +2,7 @@
   nixos = {pkgs, ...}: {
     programs.sway.enable = true;
     programs.sway.wrapperFeatures.gtk = true;
-    
+
     environment.systemPackages = with pkgs; [
       swayidle
       swaylock
@@ -14,7 +14,7 @@
 
   home = {pkgs, ...}: {
     # home manager rebinds alt as Mod4 key
-    # and others to keep it i3 compat. 
+    # and others to keep it i3 compat.
     # wayland.windowManager.sway.enable = true;
 
     xdg.portal = {
