@@ -1,4 +1,4 @@
-{...}: {
+{pkgs, ...}: {
   imports = [
     ../../lib/devices/asus-fa401wv.nix
     ../../lib/swap-auto.nix
@@ -6,6 +6,7 @@
     ./sys.nix
     ./packages.nix
     ./firewall.nix
+    ./containers.nix
     ../../users/pvl
   ];
 
