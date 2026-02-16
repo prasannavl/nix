@@ -22,4 +22,13 @@ in {
     };
     modules = commonModules ++ [./pvl-x2];
   };
+
+  llmug-rivendell = nixpkgs.lib.nixosSystem {
+    system = "x86_64-linux";
+    specialArgs = {
+      inherit inputs;
+      hostName = "llmug-rivendell";
+    };
+    modules = commonModules ++ [./llmug-rivendell];
+  };
 }

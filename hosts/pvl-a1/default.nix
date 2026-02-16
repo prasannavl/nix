@@ -6,7 +6,7 @@
     ./sys.nix
     ./packages.nix
     ./firewall.nix
-    ./containers.nix
+    ./incus-containers.nix
     ../../users/pvl
   ];
 
