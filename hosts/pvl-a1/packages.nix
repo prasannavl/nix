@@ -153,6 +153,12 @@
       wavemon
       networkmanagerapplet
       dig
+      qbittorrent
+      mpv
+      catt
+      go-chromecast
+      ffmpeg
+      patchelf
     ];
 
     fonts = with pkgs; [
