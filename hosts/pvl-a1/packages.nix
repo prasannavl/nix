@@ -159,6 +159,7 @@
       go-chromecast
       ffmpeg
       patchelf
+      opencode
     ];
 
     fonts = with pkgs; [

@@ -31,6 +31,19 @@
   home.activation.cloneDotfiles = lib.hm.dag.entryAfter ["writeBoundary"] ''
     repo_url="https://github.com/prasannavl/dotfiles.git"
     dotfiles_dir="${config.home.homeDirectory}/dotfiles"
+    export GIT_SSH_COMMAND="${pkgs.openssh}/bin/ssh"
+
+    # Run dotfiles network sync only when switching/testing into a new HM
+    # generation. On normal boot re-activation oldGenPath == newGenPath.
+    should_sync=0
+    if [ -z "''${oldGenPath:-}" ] || [ "$oldGenPath" != "$newGenPath" ]; then
+      should_sync=1
+    fi
+
+    if [ "$should_sync" -ne 1 ]; then
+      echo "Skipping dotfiles git sync (no Home Manager generation change)."
+      exit 0
+    fi
 
     if [ -d "$dotfiles_dir/.git" ]; then
       $DRY_RUN_CMD ${pkgs.git}/bin/git -C "$dotfiles_dir" fetch --all --prune

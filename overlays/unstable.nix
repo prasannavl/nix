@@ -8,6 +8,10 @@ in {
 
   vscode = unstable.vscode;
   crun = unstable.crun;
+  incus = unstable.incus;
+  incus-lts = unstable.incus-lts;
+  lxc = unstable.lxc;
+  lxcfs = unstable.lxcfs;
   jan = unstable.jan;
   tailscale = unstable.tailscale;
 }
