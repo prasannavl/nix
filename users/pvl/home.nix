@@ -24,6 +24,10 @@
     atool
   ];
 
+  home.sessionPath = [
+    "$HOME/bin"
+  ];
+
   home.activation.cloneDotfiles = lib.hm.dag.entryAfter ["writeBoundary"] ''
     repo_url="https://github.com/prasannavl/dotfiles.git"
     dotfiles_dir="${config.home.homeDirectory}/dotfiles"
