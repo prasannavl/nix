@@ -18,17 +18,22 @@
     };
 
     home.activation.linkEditableNvim = lib.hm.dag.entryAfter ["cloneDotfiles"] ''
-      dotfiles_nvim="${config.home.homeDirectory}/dotfiles/nvim/.config/nvim"
-      nvim_link="${config.home.homeDirectory}/.config/nvim"
+      hm_link_editable_nvim() {
+        local dotfiles_nvim nvim_link
+        dotfiles_nvim="${config.home.homeDirectory}/dotfiles/nvim/.config/nvim"
+        nvim_link="${config.home.homeDirectory}/.config/nvim"
 
-      $DRY_RUN_CMD ${pkgs.coreutils}/bin/mkdir -p "${config.home.homeDirectory}/.config"
+        $DRY_RUN_CMD ${pkgs.coreutils}/bin/mkdir -p "${config.home.homeDirectory}/.config"
 
-      if [ -e "$nvim_link" ] && [ ! -L "$nvim_link" ]; then
-        echo "Refusing to replace non-symlink path: $nvim_link" >&2
-        exit 1
-      fi
+        if [ -e "$nvim_link" ] && [ ! -L "$nvim_link" ]; then
+          echo "Refusing to replace non-symlink path: $nvim_link" >&2
+          return 1
+        fi
 
-      $DRY_RUN_CMD ${pkgs.coreutils}/bin/ln -sfn "$dotfiles_nvim" "$nvim_link"
+        $DRY_RUN_CMD ${pkgs.coreutils}/bin/ln -sfn "$dotfiles_nvim" "$nvim_link"
+      }
+
+      hm_link_editable_nvim
     '';
 
     home.packages = with pkgs; [
