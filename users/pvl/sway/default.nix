@@ -54,7 +54,7 @@
     menu = "${pkgs.wmenu}/bin/wmenu-run";
     runner = "${pkgs.fuzzel}/bin/fuzzel --list-executables-in-path";
     launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
-    sessionHelper = "${config.home.homeDirectory}/bin/sway-session.sh";
+    lockCmd = "${pkgs.swaylock}/bin/swaylock";
     grimshot = "${pkgs.sway-contrib.grimshot}/bin/grimshot";
     grim = "${pkgs.grim}/bin/grim";
     swaymsg = "${pkgs.sway}/bin/swaymsg";
@@ -164,7 +164,7 @@
           "${mod}+Shift+0" = "move container to workspace number 10";
 
           "${mod}+q" = "kill";
-          "${mod}+Escape" = "exec ${sessionHelper} lock";
+          "${mod}+Escape" = "exec ${lockCmd}";
           "${mod}+Ctrl+space" = "focus mode_toggle";
           "${mod}+b" = "splith";
           "${mod}+v" = "splitv";
@@ -250,8 +250,8 @@
         floating_modifier ${mod} normal
         seat * xcursor_theme ${cursorTheme} ${toString cursorSize}
 
-        bindswitch --no-warn --locked --reload lid:on exec ${sessionHelper} lid-closed
-        bindswitch --no-warn --locked --reload lid:off exec ${sessionHelper} lid-opened
+        bindswitch --no-warn --locked --reload lid:on output * power off, exec ${lockCmd}
+        bindswitch --no-warn --locked --reload lid:off output * power on
 
         bindgesture swipe:3:left workspace next
         bindgesture swipe:3:right workspace prev
