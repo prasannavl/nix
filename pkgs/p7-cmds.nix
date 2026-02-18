@@ -5,15 +5,23 @@
 }:
 stdenv.mkDerivation rec {
   pname = "gnome-shell-extension-p7-cmds";
-  version = "24";
+  version = "30";
+
+  uuid = "p7-cmds@prasannavl.com";
+  passthru.extensionUuid = uuid;
+
+  meta = {
+    description = "A GNOME shell extension for adding compositor tweaks";
+    homepage = "https://github.com/prasannavl/p7-cmds-shell-extension";
+    compatibility = "GNOME Shell 45+";
+  };
 
   src = fetchzip {
-    url = "https://extensions.gnome.org/extension-data/p7-cmdsprasannavl.com.v${version}.shell-extension.zip";
-    sha256 = "sha256-54+fisfpSVuV8cKUSETNGpyD8Vv1tw37M5Oe5NNMGN4=";
+    url = "https://extensions.gnome.org/extension-data/${uuid}.v${version}.shell-extension.zip";
+    sha256 = "sha256-3nqNHDnrwBorzE9+O6wrGtp3DapGJ8EbsJtmqQKqZPU=";
     stripRoot = false;
   };
 
-  uuid = "p7-cmds@prasannavl.com";
 
   nativeBuildInputs = [glib];
 
@@ -32,11 +40,4 @@ stdenv.mkDerivation rec {
     runHook postInstall
   '';
 
-  passthru.extensionUuid = uuid;
-
-  meta = {
-    description = "A GNOME shell extension for adding compositor tweaks";
-    homepage = "https://github.com/prasannavl/p7-cmds-shell-extension";
-    compatibility = "GNOME Shell 45+";
-  };
 }
