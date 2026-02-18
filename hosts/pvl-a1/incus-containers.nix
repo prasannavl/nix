@@ -94,6 +94,8 @@ in {
     '';
   };
 
+#### - Containers - ####
+
   systemd.services.incus-nginx-container = {
     description = "Ensure nginx container is present and running in Incus";
     wantedBy = ["multi-user.target"];
