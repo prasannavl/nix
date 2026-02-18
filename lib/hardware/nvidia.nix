@@ -1,6 +1,7 @@
 {
   config,
   pkgs,
+  lib,
   ...
 }: {
   boot.extraModprobeConfig = ''
@@ -19,16 +20,17 @@
   # NVIDIA hardware settings
   hardware.nvidia = {
     modesetting.enable = true;
-    powerManagement.enable = true;
-    powerManagement.finegrained = true;
-    open = true;
-    nvidiaSettings = true;
-    dynamicBoost.enable = true;
-    nvidiaPersistenced = false;
+    powerManagement.enable = lib.mkDefault true;
+    powerManagement.finegrained = lib.mkDefault true;
+    open = lib.mkDefault true;
+    nvidiaSettings = lib.mkDefault true;
+    nvidiaPersistenced = lib.mkDefault false;
     # forceFullCompositionPipeline = true;
-    prime = {
+    prime = rec {
       offload.enable = true;
-      offload.enableOffloadCmd = true;
+      offload.enableOffloadCmd = offload.enable;
+      # For nvidia main GPU as  main renderer.
+      # sync.enable = true;
     };
     package = pkgs.callPackage ../../pkgs/nvidia-driver.nix {inherit config;};
   };

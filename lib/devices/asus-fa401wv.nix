@@ -18,14 +18,11 @@
   hardware.cpu.amd.updateMicrocode = false;
 
   hardware.nvidia = {
-    modesetting.enable = true;
-    powerManagement.enable = true;
-    powerManagement.finegrained = true;
-    open = true;
-    nvidiaSettings = true;
     nvidiaPersistenced = false;
     dynamicBoost.enable = false;
     prime = {
+      offload.enable = true;
+      reverseSync.enable = true;
       amdgpuBusId = "PCI:102:0:0";
       nvidiaBusId = "PCI:100:0:0";
     };
