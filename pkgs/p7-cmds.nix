@@ -23,7 +23,6 @@ stdenv.mkDerivation rec {
     stripRoot = false;
   };
 
-
   nativeBuildInputs = [glib];
 
   buildPhase = ''
