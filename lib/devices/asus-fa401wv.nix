@@ -18,6 +18,13 @@
   hardware.cpu.amd.updateMicrocode = false;
 
   hardware.nvidia = {
+    modesetting.enable = true;
+    powerManagement.enable = true;
+    powerManagement.finegrained = true;
+    open = true;
+    nvidiaSettings = true;
+    nvidiaPersistenced = false;
+    dynamicBoost.enable = false;
     prime = {
       amdgpuBusId = "PCI:102:0:0";
       nvidiaBusId = "PCI:100:0:0";
