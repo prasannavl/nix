@@ -8,6 +8,7 @@ stdenv.mkDerivation rec {
   version = "37";
 
   uuid = "p7-borders@prasannavl.com";
+  extensionDataUuid = builtins.replaceStrings ["@"] [""] uuid;
   passthru.extensionUuid = uuid;
 
   meta = {
@@ -17,7 +18,7 @@ stdenv.mkDerivation rec {
   };
 
   src = fetchzip {
-    url = "https://extensions.gnome.org/extension-data/${uuid}.v${version}.shell-extension.zip";
+    url = "https://extensions.gnome.org/extension-data/${extensionDataUuid}.v${version}.shell-extension.zip";
     sha256 = "sha256-DOBZqVex868uaxIysckMuv0ti1Lv9KW2tdU7hvrNHAU=";
     stripRoot = false;
   };
