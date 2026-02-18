@@ -3,20 +3,31 @@
     pkgs,
     ...
   }: {
-    environment.systemPackages = with pkgs; [
-      swayidle
-      swaylock
-      foot
-      dmenu
-      wdisplays
-      sway-contrib.grimshot
-      grim 
-      slurp
-      brightnessctl
-      pavucontrol
-      lxqt.lxqt-policykit
-      pulseaudio
-    ];
+    environment.systemPackages =
+      with pkgs; [
+        alacritty
+        foot
+        ghostty
+        niri
+        wl-clipboard
+        xdg-utils
+        xdg-user-dirs
+        sway
+        fuzzel
+        wmenu
+        xdg-desktop-portal-wlr
+        wdisplays
+        swayidle
+        swaylock
+        dmenu
+        sway-contrib.grimshot
+        grim
+        slurp
+        brightnessctl
+        pavucontrol
+        lxqt.lxqt-policykit
+        pulseaudio
+      ];
   };
 
   home = {
@@ -52,8 +63,8 @@
     pactl = "${pkgs.pulseaudio}/bin/pactl";
     brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";
     pgrep = "${pkgs.procps}/bin/pgrep";
-    pkill = "${pkgs.procps}/bin/pkill";
     sudo = "${pkgs.sudo}/bin/sudo";
+    systemctl = "${pkgs.systemd}/bin/systemctl";
     which = "${pkgs.which}/bin/which";
     barCmd = "${config.programs.noctalia-shell.package}/bin/noctalia-shell";
     wallpaper = ../../../data/backgrounds/sw.png;
@@ -205,15 +216,15 @@
         startup = [
           {
             always = true;
-            command = "${pkill} -x lxqt-policykit-agent || true; ${lxpolkit}";
+            command = "${systemctl} --user restart sway-lxqt-policykit.service";
           }
           {
             always = true;
-            command = "${pkill} -x shikane || true; ${shikane}";
+            command = "${systemctl} --user restart sway-shikane.service";
           }
           {
             always = true;
-            command = "${pkill} quickshell || true; ${barCmd}";
+            command = "${systemctl} --user restart sway-noctalia-shell.service";
           }
         ];
 
@@ -286,6 +297,50 @@
 
     programs.noctalia-shell = {
       enable = true;
+    };
+
+    systemd.user.services = {
+      sway-lxqt-policykit = {
+        Unit = {
+          Description = "LXQt PolicyKit Agent for Sway";
+          PartOf = ["sway-session.target"];
+          After = ["sway-session.target"];
+        };
+        Service = {
+          ExecStart = lxpolkit;
+          Restart = "on-failure";
+          RestartSec = 1;
+        };
+        Install.WantedBy = ["sway-session.target"];
+      };
+
+      sway-shikane = {
+        Unit = {
+          Description = "Shikane Output Profile Daemon for Sway";
+          PartOf = ["sway-session.target"];
+          After = ["sway-session.target"];
+        };
+        Service = {
+          ExecStart = shikane;
+          Restart = "on-failure";
+          RestartSec = 1;
+        };
+        Install.WantedBy = ["sway-session.target"];
+      };
+
+      sway-noctalia-shell = {
+        Unit = {
+          Description = "Noctalia Shell for Sway";
+          PartOf = ["sway-session.target"];
+          After = ["sway-session.target"];
+        };
+        Service = {
+          ExecStart = barCmd;
+          Restart = "on-failure";
+          RestartSec = 1;
+        };
+        Install.WantedBy = ["sway-session.target"];
+      };
     };
   };
 }

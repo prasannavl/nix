@@ -22,28 +22,6 @@
       nvtopPackages.full
     ];
 
-    wayland = with pkgs; [
-      alacritty
-      foot
-      ghostty
-      wl-clipboard
-      xdg-utils
-      xdg-user-dirs
-    ];
-
-    sway = with pkgs; [
-      sway
-      fuzzel
-      wmenu
-      swaylock
-      swayidle
-      dmenu
-      foot
-      niri
-      xdg-desktop-portal-wlr
-      wdisplays
-    ];
-
     gnome = with pkgs; [
       gnome-control-center
       gnome-tweaks
@@ -173,8 +151,6 @@ in {
   # Toggle whole groups by commenting out the line below.
   environment.systemPackages =
     packages.core
-    ++ packages.wayland
-    ++ packages.sway
     ++ packages.gnome
     ++ packages.audioVideo
     ++ packages.productivity

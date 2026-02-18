@@ -14,20 +14,6 @@
       tree
     ];
 
-    wayland = with pkgs; [
-      alacritty
-      foot
-      wl-clipboard
-    ];
-
-    sway = with pkgs; [
-      sway
-      fuzzel
-      wmenu
-      xdg-desktop-portal-wlr
-      wdisplays
-    ];
-
     gnome = with pkgs; [
       gnome-tweaks
     ];
@@ -76,8 +62,6 @@ in {
   # Toggle whole groups by commenting out the line below.
   environment.systemPackages =
     packages.core
-    ++ packages.wayland
-    ++ packages.sway
     ++ packages.gnome
     ++ packages.audioVideo
     ++ packages.graphics
