@@ -1,5 +1,5 @@
 {...}: {
   imports = [
-    (import ../../users/pvl).systemdContainerMinimal
+    (import ../../users/pvl).systemdContainer
   ];
 }

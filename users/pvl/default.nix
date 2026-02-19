@@ -52,11 +52,11 @@ in rec {
   allModules = desktopGnomeModules;
   all = mkModule allModules;
 
-  systemdContainerMinimalModules = [
+  systemdContainerModules = [
     ./bash
     ./inputrc
   ];
-  systemdContainerMinimal = mkModule systemdContainerMinimalModules;
+  systemdContainer = mkModule systemdContainerModules;
 
   default = all;
 }
