@@ -18,7 +18,7 @@ in rec {
   ];
   core = mkModule coreModules;
 
-  desktopCoreModules =
+  desktop-core-modules =
     coreModules
     ++ [
       ./zoxide
@@ -27,17 +27,17 @@ in rec {
       ./gtk
       ./sway
     ];
-  desktopCore = mkModule desktopCoreModules;
+  desktop-core = mkModule desktop-core-modules;
 
-  desktopGnomeMinimalModules =
-    desktopCoreModules
+  desktop-gnome-minimal-modules =
+    desktop-core-modules
     ++ [
       ./gnome
     ];
-  desktopGnomeMinimal = mkModule desktopGnomeMinimalModules;
+  desktop-gnome-minimal = mkModule desktop-gnome-minimal-modules;
 
-  desktopGnomeModules =
-    desktopGnomeMinimalModules
+  desktop-gnome-modules =
+    desktop-gnome-minimal-modules
     ++ [
       ./tmux
       ./git
@@ -47,16 +47,16 @@ in rec {
       ./dotfiles-link-bin
       ./xdg-user-dirs
     ];
-  desktopGnome = mkModule desktopGnomeModules;
+  desktop-gnome = mkModule desktop-gnome-modules;
 
-  allModules = desktopGnomeModules;
-  all = mkModule allModules;
+  all-modules = desktop-gnome-modules;
+  all = mkModule all-modules;
 
-  systemdContainerModules = [
+  systemd-container-modules = [
     ./bash
     ./inputrc
   ];
-  systemdContainer = mkModule systemdContainerModules;
+  systemd-container = mkModule systemd-container-modules;
 
   default = all;
 }
