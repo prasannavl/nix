@@ -4,6 +4,5 @@
     ../gdm-rdp.nix
     ../flatpak.nix
     ../printing.nix
-    ../handbrake.nix
   ];
 }

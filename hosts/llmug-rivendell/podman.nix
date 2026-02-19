@@ -1,6 +1,4 @@
-{
-  ...
-}: {
+{...}: {
   systemd.tmpfiles.rules = [
     "d /var/lib/llmug 0755 root root -"
     "d /var/lib/llmug/nginx 0755 root root -"

@@ -17,15 +17,20 @@
     ./ranger
     ./neovim
   ];
-  desktop = core ++ [
-    ./firefox
-    ./gtk
-    ./sway
-    ./gnome
-  ];
-  desktopDev = desktop ++ coreDev ++ [
-    ./vscode
-  ];
+  desktop =
+    core
+    ++ [
+      ./firefox
+      ./gtk
+      ./sway
+      ./gnome
+    ];
+  desktopDev =
+    desktop
+    ++ coreDev
+    ++ [
+      ./vscode
+    ];
   hostModules = {
     pvl-a1 = desktopDev;
     pvl-x2 = coreDev ++ desktop;

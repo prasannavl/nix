@@ -33,7 +33,7 @@
       # For nvidia main GPU as  main renderer.
       # sync.enable = true;
     };
-    package = pkgs.callPackage ../../pkgs/nvidia-driver.nix {inherit config;};
+    package = pkgs.nvidiaCustomForKernel config.boot.kernelPackages;
   };
   hardware.nvidia-container-toolkit.enable = true;
 

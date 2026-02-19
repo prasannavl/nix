@@ -25,8 +25,10 @@
   services.udev.packages = [pkgs.gnome-settings-daemon];
 
   # Gnome using wsdd for Windows network discovery
-  services.samba-wsdd.enable = true;
-  services.samba-wsdd.openFirewall = true;
+  services.samba-wsdd = {
+    enable = true;
+    openFirewall = true;
+  };
 
   # programs.dconf.profiles.user.databases = [];
 

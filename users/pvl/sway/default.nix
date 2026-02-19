@@ -1,33 +1,29 @@
 {
-  nixos = {
-    pkgs,
-    ...
-  }: {
-    environment.systemPackages =
-      with pkgs; [
-        alacritty
-        foot
-        ghostty
-        niri
-        wl-clipboard
-        xdg-utils
-        xdg-user-dirs
-        sway
-        fuzzel
-        wmenu
-        xdg-desktop-portal-wlr
-        wdisplays
-        swayidle
-        swaylock
-        dmenu
-        sway-contrib.grimshot
-        grim
-        slurp
-        brightnessctl
-        pavucontrol
-        lxqt.lxqt-policykit
-        pulseaudio
-      ];
+  nixos = {pkgs, ...}: {
+    environment.systemPackages = with pkgs; [
+      alacritty
+      foot
+      ghostty
+      niri
+      wl-clipboard
+      xdg-utils
+      xdg-user-dirs
+      sway
+      fuzzel
+      wmenu
+      xdg-desktop-portal-wlr
+      wdisplays
+      swayidle
+      swaylock
+      dmenu
+      sway-contrib.grimshot
+      grim
+      slurp
+      brightnessctl
+      pavucontrol
+      lxqt.lxqt-policykit
+      pulseaudio
+    ];
   };
 
   home = {

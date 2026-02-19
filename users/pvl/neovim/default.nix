@@ -1,7 +1,12 @@
 {
   nixos = {...}: {};
 
-  home = {config, lib, pkgs, ...}: {
+  home = {
+    config,
+    lib,
+    pkgs,
+    ...
+  }: {
     programs.neovim = {
       enable = true;
       defaultEditor = true;
@@ -9,11 +14,11 @@
       vimAlias = true;
       # We don't do config here, we link the whole nvim config from our dotfiles.
       # plugins = [
-        # We basically use the LazyVim distro instead
-        # of using the lazy plugin manager directly.
-        # We let it download and manage. 
-        # Note: mason and friends, will not work without nixld.
-        # pkgs.vimPlugins.lazy-nvim
+      # We basically use the LazyVim distro instead
+      # of using the lazy plugin manager directly.
+      # We let it download and manage.
+      # Note: mason and friends, will not work without nixld.
+      # pkgs.vimPlugins.lazy-nvim
       # ];
     };
 

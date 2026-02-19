@@ -1,9 +1,5 @@
-{
-  config,
-  pkgs,
-  ...
-}:
-config.boot.kernelPackages.nvidiaPackages.mkDriver {
+{kernelPackages}:
+kernelPackages.nvidiaPackages.mkDriver {
   version = "580.126.18";
   sha256_64bit = "sha256-p3gbLhwtZcZYCRTHbnntRU0ClF34RxHAMwcKCSqatJ0=";
   openSha256 = "sha256-1Q2wuDdZ6KiA/2L3IDN4WXF8t63V/4+JfrFeADI1Cjg=";

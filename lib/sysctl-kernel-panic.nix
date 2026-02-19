@@ -1,7 +1,4 @@
-{
-  config,
-  ...
-}: {
+{config, ...}: {
   config = {
     boot.kernel.sysctl = let
       reboot = config.x.panicReboot == 1;

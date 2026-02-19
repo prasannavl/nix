@@ -34,6 +34,7 @@
       pavucontrol
       alsa-utils
       cheese
+      handbrake-wrapped
     ];
 
     productivity = with pkgs; [

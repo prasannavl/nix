@@ -39,5 +39,4 @@ stdenv.mkDerivation rec {
     cp -r . $out/share/gnome-shell/extensions/${uuid}
     runHook postInstall
   '';
-
 }

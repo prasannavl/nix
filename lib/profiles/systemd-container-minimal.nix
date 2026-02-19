@@ -1,4 +1,8 @@
-{pkgs, modulesPath,...}: {
+{
+  pkgs,
+  modulesPath,
+  ...
+}: {
   imports = [
     (modulesPath + "/virtualisation/lxc-container.nix")
     (modulesPath + "/virtualisation/lxc-image-metadata.nix")
@@ -63,7 +67,10 @@
     hashedPassword = "!"; # Disable
   };
 
-  environment.systemPackages = [ 
-    (pkgs.writeShellApplication { name = "hello"; text = "echo hello world!"; }) 
+  environment.systemPackages = [
+    (pkgs.writeShellApplication {
+      name = "hello";
+      text = "echo hello world!";
+    })
   ];
 }

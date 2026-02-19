@@ -4,7 +4,6 @@
   ...
 }: {
   systemd.targets.machines.enable = true;
-
   virtualisation.containers.enable = true;
   virtualisation.podman = {
     enable = true;
