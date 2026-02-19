@@ -102,6 +102,11 @@ in {
         ${incus} config device set llmug-rivendell eth0 ipv4.address=${llmugStaticIPv4}
       fi
 
+      # Existing instances may predate GPU passthrough configuration.
+      if ! ${incus} config device get llmug-rivendell gpu type >/dev/null 2>&1; then
+        ${incus} config device add llmug-rivendell gpu gpu
+      fi
+
       pending_source="$(${incus} config get llmug-rivendell user.nix-pending-image-id 2>/dev/null || true)"
       status="$(${incus} list llmug-rivendell --format csv -c s 2>/dev/null || true)"
       if [ -n "$pending_source" ] && [ "$pending_source" = "$image_source" ] && [ "$status" = "STOPPED" ]; then

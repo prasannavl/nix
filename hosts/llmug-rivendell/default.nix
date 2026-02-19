@@ -1,4 +1,8 @@
-{pkgs, ...}: {
+{
+  config,
+  pkgs,
+  ...
+}: {
   imports = [
     ../../lib/profiles/systemd-container-minimal.nix
     ../../lib/hardware/nvidia.nix
@@ -11,16 +15,13 @@
   ];
 
   hardware.nvidia = {
-    nvidiaPersistenced = false;
-    dynamicBoost.enable = false;
     prime = {
-      offload.enable = true;
-      reverseSync.enable = true;
       amdgpuBusId = "PCI:102:0:0";
       nvidiaBusId = "PCI:100:0:0";
     };
   };
-
+  # The host kernel is used, we only choose this so
+  # drivers like nvidia can compile for the right modules.
   boot.kernelPackages = pkgs.linuxPackages_latest;
 
   systemd.tmpfiles.rules = [
