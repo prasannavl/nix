@@ -11,7 +11,9 @@
       networks = [
         {
           config = {
-            "ipv4.address" = "auto";
+            "ipv4.address" = "10.42.0.1/24";
+            "ipv4.dhcp.ranges" = "10.42.0.100-10.42.0.199";
+            "ipv4.nat" = "true";
             "ipv6.address" = "auto";
           };
           description = "";

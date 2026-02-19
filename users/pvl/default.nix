@@ -58,9 +58,14 @@ in {
       [
         "users"
         "wheel"
-        "video"
         "audio"
+        "video"
         "render"
+        "netdev"
+        "lpadmin"
+        "cdrom"
+        "floppy"
+        "kvm"
       ]
       ++ lib.optional config.security.tpm2.enable "tss"
       ++ lib.optional config.hardware.i2c.enable "i2c"

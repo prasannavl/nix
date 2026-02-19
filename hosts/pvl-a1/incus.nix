@@ -11,6 +11,7 @@
   llmugRootfs = inputs.self.nixosConfigurations.llmug-rivendell.config.system.build.tarball;
   llmugMetadataFile = "${llmugMetadata}/tarball/${llmugImageFile}";
   llmugRootfsFile = "${llmugRootfs}/tarball/${llmugImageFile}";
+  llmugStaticIPv4 = "10.42.0.23";
 in {
   systemd.tmpfiles.rules = [
     "d /srv 0755 root root -"
@@ -95,6 +96,10 @@ in {
         ${incus} config device add llmug-rivendell ssh proxy listen=tcp:0.0.0.0:2223 connect=tcp:127.0.0.1:22
         ${incus} config device add llmug-rivendell state disk source=/srv/llmug-rivendell path=/var/lib shift=true
         ${incus} config device add llmug-rivendell gpu gpu
+        # Keep a stable container address outside the bridge DHCP allocation.
+        ${incus} config device override llmug-rivendell eth0 ipv4.address=${llmugStaticIPv4}
+      else
+        ${incus} config device set llmug-rivendell eth0 ipv4.address=${llmugStaticIPv4}
       fi
 
       pending_source="$(${incus} config get llmug-rivendell user.nix-pending-image-id 2>/dev/null || true)"

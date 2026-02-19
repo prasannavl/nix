@@ -14,6 +14,7 @@
       tmux
       git
       htop
+      nvtopPackages.full
     ];
 
     network = with pkgs; [
