@@ -50,6 +50,12 @@ in {
 
       ${incus} image import ${llmugMetadataFile} ${llmugRootfsFile} --alias llmug-rivendell-nixos
       ${incus} image set-property local:llmug-rivendell-nixos user.nix-image-id "$image_source"
+
+      # Stage image update for the existing instance. It will be applied only
+      # when the instance is already stopped by normal operations.
+      if ${incus} info llmug-rivendell >/dev/null 2>&1; then
+        ${incus} config set llmug-rivendell user.nix-pending-image-id "$image_source"
+      fi
     '';
   };
 
@@ -75,6 +81,8 @@ in {
     script = ''
       set -euo pipefail
 
+      image_source="${llmugMetadataFile}|${llmugRootfsFile}"
+
       created=0
       if ! ${incus} info llmug-rivendell >/dev/null 2>&1; then
         ${incus} create local:llmug-rivendell-nixos llmug-rivendell
@@ -82,24 +90,18 @@ in {
       fi
 
       if [ "$created" -eq 1 ]; then
-        ${incus} config edit llmug-rivendell <<'EOF'
-config:
-  security.privileged: "false"
-  security.nested: "true"
-devices:
-  ssh:
-    type: proxy
-    listen: tcp:0.0.0.0:2223
-    connect: tcp:127.0.0.1:22
-  state:
-    type: disk
-    source: /srv/llmug-rivendell
-    path: /var/lib
-  gpu:
-    type: gpu
-profiles:
-- default
-EOF
+        ${incus} config set llmug-rivendell security.privileged false
+        ${incus} config set llmug-rivendell security.nesting true
+        ${incus} config device add llmug-rivendell ssh proxy listen=tcp:0.0.0.0:2223 connect=tcp:127.0.0.1:22
+        ${incus} config device add llmug-rivendell state disk source=/srv/llmug-rivendell path=/var/lib shift=true
+        ${incus} config device add llmug-rivendell gpu gpu
+      fi
+
+      pending_source="$(${incus} config get llmug-rivendell user.nix-pending-image-id 2>/dev/null || true)"
+      status="$(${incus} list llmug-rivendell --format csv -c s 2>/dev/null || true)"
+      if [ -n "$pending_source" ] && [ "$pending_source" = "$image_source" ] && [ "$status" = "STOPPED" ]; then
+        ${incus} rebuild local:llmug-rivendell-nixos llmug-rivendell
+        ${incus} config unset llmug-rivendell user.nix-pending-image-id
       fi
 
       ${incus} start llmug-rivendell >/dev/null 2>&1 || true

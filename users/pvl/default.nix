@@ -7,23 +7,31 @@
   ...
 }: let
   userdata = (import ../userdata.nix).pvl;
-  baseModules = [
+  core = [
     ./bash
-    ./git
-    ./firefox
     ./inputrc
-    ./gtk
-    ./ranger
+  ];
+  coreDev = [
     ./tmux
+    ./git
+    ./ranger
     ./neovim
-    ./vscode
+  ];
+  desktop = core ++ [
+    ./firefox
+    ./gtk
     ./sway
+    ./gnome
+  ];
+  desktopDev = desktop ++ coreDev ++ [
+    ./vscode
   ];
   hostModules = {
-    pvl-a1 = [./gnome];
-    pvl-x2 = [./gnome];
+    pvl-a1 = desktopDev;
+    pvl-x2 = coreDev ++ desktop;
+    llmug-rivendell = coreDev;
   };
-  selectedModulePaths = baseModules ++ lib.attrByPath [hostName] [] hostModules;
+  selectedModulePaths = core ++ lib.attrByPath [hostName] [] hostModules;
   selectedModules = map (path: import path) selectedModulePaths;
 in {
   imports = map (x: x.nixos) selectedModules;

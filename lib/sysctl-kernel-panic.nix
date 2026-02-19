@@ -1,14 +1,7 @@
 {
-  lib,
   config,
   ...
 }: {
-  options.x.panicReboot = lib.mkOption {
-    type = lib.types.enum [0 1];
-    default = 1;
-    description = "Enable or disable panic recovery sysctl settings.";
-  };
-
   config = {
     boot.kernel.sysctl = let
       reboot = config.x.panicReboot == 1;

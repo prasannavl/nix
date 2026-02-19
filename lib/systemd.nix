@@ -1,15 +1,8 @@
 {
   config,
-  lib,
   pkgs,
   ...
 }: {
-  options.x.fdlimit = lib.mkOption {
-    type = lib.types.int;
-    default = 1048576;
-    description = "Global file descriptor limit used by systemd and PAM.";
-  };
-
   config = {
     systemd.settings.Manager = {
       # Notify pre-timeout

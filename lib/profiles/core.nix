@@ -1,5 +1,6 @@
 {pkgs, ...}: {
   imports = [
+    ../options.nix
     ../nix.nix
     ../boot.nix
     ../kernel.nix

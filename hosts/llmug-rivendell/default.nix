@@ -1,15 +1,12 @@
 {...}: {
   imports = [
-    ../../lib/nix.nix
-    ../../lib/locale.nix
-    ../../lib/sudo.nix
+    ../../lib/profiles/systemd-container-minimal.nix
     ./sys.nix
     ./packages.nix
     ./firewall.nix
-    ./image.nix
+    ../../users/pvl
   ];
 
   networking.hostName = "llmug-rivendell";
-
   system.stateVersion = "25.11";
 }
