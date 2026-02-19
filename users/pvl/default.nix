@@ -66,12 +66,6 @@ in {
           };
           home.preferXdgDirectories = true;
 
-          programs.zoxide = {
-            enable = true;
-            enableBashIntegration = true;
-          };
-          programs.fzf.enable = true;
-
           home.packages = with pkgs; [
             atool
           ];

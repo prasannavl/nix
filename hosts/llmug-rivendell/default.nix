@@ -4,10 +4,9 @@
   ...
 }: {
   imports = [
-    ../../lib/profiles/systemd-container-minimal.nix
+    ../../lib/profiles/systemd-container.nix
     ../../lib/hardware/nvidia.nix
     ../../lib/virtualization.nix
-    ./sys.nix
     ./packages.nix
     ./firewall.nix
     ./podman.nix

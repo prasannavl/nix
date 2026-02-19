@@ -1,5 +1,5 @@
 {...}: {
   imports = [
-    ../../users/pvl/profiles/desktop-dev.nix
+    (import ../../users/pvl/profiles/all.nix).default
   ];
 }

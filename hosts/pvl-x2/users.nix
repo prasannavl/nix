@@ -1,5 +1,5 @@
 {...}: {
   imports = [
-    ../../users/pvl/profiles/desktop.nix
+    (import ../../users/pvl/profiles/desktop-gnome.nix).default
   ];
 }

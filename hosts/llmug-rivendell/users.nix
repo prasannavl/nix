@@ -1,5 +1,5 @@
 {...}: {
   imports = [
-    ../../users/pvl/profiles/core-dev.nix
+    (import ../../users/pvl/profiles/systemd-container-minimal.nix).default
   ];
 }
