@@ -1,43 +1,12 @@
-{
+{modules}: {
   config,
   pkgs,
   lib,
   inputs,
-  hostName,
   ...
 }: let
   userdata = (import ../userdata.nix).pvl;
-  core = [
-    ./bash
-    ./inputrc
-  ];
-  coreDev = [
-    ./tmux
-    ./git
-    ./ranger
-    ./neovim
-  ];
-  desktop =
-    core
-    ++ [
-      ./firefox
-      ./gtk
-      ./sway
-      ./gnome
-    ];
-  desktopDev =
-    desktop
-    ++ coreDev
-    ++ [
-      ./vscode
-    ];
-  hostModules = {
-    pvl-a1 = desktopDev;
-    pvl-x2 = coreDev ++ desktop;
-    llmug-rivendell = coreDev;
-  };
-  selectedModulePaths = core ++ lib.attrByPath [hostName] [] hostModules;
-  selectedModules = map (path: import path) selectedModulePaths;
+  selectedModules = map (path: import path) modules;
 in {
   imports = map (x: x.nixos) selectedModules;
 
@@ -91,8 +60,32 @@ in {
       [
         inputs.noctalia.homeModules.default
         {_module.args = {inherit userdata;};}
-        ./home.nix
+        {
+          xdg = {
+            enable = true;
+          };
+          home.preferXdgDirectories = true;
+
+          programs.zoxide = {
+            enable = true;
+            enableBashIntegration = true;
+          };
+          programs.fzf.enable = true;
+
+          home.packages = with pkgs; [
+            atool
+          ];
+
+          home.sessionPath = [
+            "$HOME/bin"
+          ];
+
+          # The state version is required and should stay at the version you
+          # originally installed.
+          home.stateVersion = "25.11";
+        }
       ]
-      ++ map (x: x.home) selectedModules;
+      ++ map (x: x.home) selectedModules
+      ;
   };
 }

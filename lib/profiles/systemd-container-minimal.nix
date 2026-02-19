@@ -1,6 +1,7 @@
 {
   pkgs,
   modulesPath,
+  hostName,
   ...
 }: {
   imports = [
@@ -23,6 +24,7 @@
   boot.enableContainers = false;
   services.getty.autologinUser = null;
 
+  networking.hostName = hostName;
   time.timeZone = "Asia/Singapore";
   i18n.defaultLocale = "en_US.UTF-8";
 
@@ -61,11 +63,6 @@
   services.fail2ban.enable = true;
 
   security.sudo.wheelNeedsPassword = false;
-
-  users.mutableUsers = false;
-  users.users.root = {
-    hashedPassword = "!"; # Disable
-  };
 
   environment.systemPackages = [
     (pkgs.writeShellApplication {

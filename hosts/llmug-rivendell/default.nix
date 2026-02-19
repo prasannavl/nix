@@ -11,7 +11,7 @@
     ./packages.nix
     ./firewall.nix
     ./podman.nix
-    ../../users/pvl
+    ./users.nix
   ];
 
   hardware.nvidia = {
@@ -41,7 +41,4 @@
     }
   ];
   services.openssh.settings.PermitRootLogin = "no";
-
-  networking.hostName = "llmug-rivendell";
-  system.stateVersion = "25.11";
 }

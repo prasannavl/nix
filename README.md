@@ -8,7 +8,7 @@ modules and composed via `flake.nix`.
 - `flake.nix`: flake inputs and system definition.
 - `hosts/<host>/default.nix`: host-specific system definition and module imports.
 - `hosts/<host>/sys.nix`: host-local overrides and hardware quirks.
-- `users/pvl/home.nix`: Home Manager configuration for user `pvl`.
+- `users/pvl/default.nix`: Base user + Home Manager module builder for `pvl`.
 - `lib/*.nix`: single-topic NixOS modules imported directly by hosts.
 - `lib/devices/`: full device modules; compose `lib/hardware/` pieces.
 - `lib/hardware/`: hardware fragments, used only from `lib/devices/` (hosts should
@@ -28,4 +28,4 @@ modules and composed via `flake.nix`.
 ## Notes
 
 - User settings are managed via under `users/` and also use home manager with 
-  `home.nix` and self organized modules.
+  `default.nix` builder and self-organized modules.
