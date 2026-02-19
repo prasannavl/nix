@@ -1,85 +1,62 @@
-{modules}: {
-  config,
-  pkgs,
-  lib,
-  inputs,
-  ...
-}: let
+let
   userdata = (import ../userdata.nix).pvl;
-  selectedModules = map (path: import path) modules;
-in {
-  imports = map (x: x.nixos) selectedModules;
-
-  # Use the dedicated user group Debian style.
-  # NixOS defaults here of users group will break unexpected things
-  # like podman, OCI containers in certain configurations.
-  users.groups.pvl = {
-    # We keep uid and gid the same for simplicity
-    gid = userdata.uid;
-  };
-
-  users.users.pvl = {
-    isNormalUser = true;
-    description = userdata.name;
-    uid = userdata.uid;
-    # Note: Without a dedicated group, podman and OCI containers
-    # runtimes with keep-id will not work and will cause misleading
-    # permission errors.
-    group = userdata.username;
-    hashedPassword = userdata.hashedPassword;
-    linger = true;
-    extraGroups =
-      [
-        "users"
-        "wheel"
-        "audio"
-        "video"
-        "render"
-        "netdev"
-        "lpadmin"
-        "cdrom"
-        "floppy"
-        "kvm"
-      ]
-      ++ lib.optional config.security.tpm2.enable "tss"
-      ++ lib.optional config.hardware.i2c.enable "i2c"
-      ++ lib.optional config.networking.networkmanager.enable "networkmanager"
-      ++ lib.optional config.services.seatd.enable "seat"
-      ++ lib.optional config.services.keyd.enable "keyd"
-      ++ lib.optional config.virtualisation.podman.enable "podman"
-      ++ lib.optional config.virtualisation.incus.enable "incus-admin";
-
-    openssh.authorizedKeys.keys = [userdata.sshKey];
-    # Home manager pkgs are merged with this
-    # we just use that
-    packages = [];
-  };
-
-  home-manager.users.pvl = {
+  mkModule = modules: {...}: let
+    selectedModules = map (path: import path) modules;
+  in {
     imports =
-      [
-        inputs.noctalia.homeModules.default
-        {_module.args = {inherit userdata;};}
-        {
-          xdg = {
-            enable = true;
-          };
-          home.preferXdgDirectories = true;
-
-          home.packages = with pkgs; [
-            atool
-          ];
-
-          home.sessionPath = [
-            "$HOME/bin"
-          ];
-
-          # The state version is required and should stay at the version you
-          # originally installed.
-          home.stateVersion = "25.11";
-        }
-      ]
-      ++ map (x: x.home) selectedModules
-      ;
+      map (x: x.nixos) selectedModules
+      ++ [
+        (import ./user.nix {inherit userdata;})
+        (import ./home.nix {inherit userdata selectedModules;})
+      ];
   };
+in rec {
+  coreModules = [
+    ./bash
+    ./inputrc
+    ./dotfiles
+  ];
+  core = mkModule coreModules;
+
+  desktopCoreModules =
+    coreModules
+    ++ [
+      ./zoxide
+      ./fzf
+      ./firefox
+      ./gtk
+      ./sway
+    ];
+  desktopCore = mkModule desktopCoreModules;
+
+  desktopGnomeMinimalModules =
+    desktopCoreModules
+    ++ [
+      ./gnome
+    ];
+  desktopGnomeMinimal = mkModule desktopGnomeMinimalModules;
+
+  desktopGnomeModules =
+    desktopGnomeMinimalModules
+    ++ [
+      ./tmux
+      ./git
+      ./ranger
+      ./neovim
+      ./vscode
+      ./dotfiles-link-bin
+      ./xdg-user-dirs
+    ];
+  desktopGnome = mkModule desktopGnomeModules;
+
+  allModules = desktopGnomeModules;
+  all = mkModule allModules;
+
+  systemdContainerMinimalModules = [
+    ./bash
+    ./inputrc
+  ];
+  systemdContainerMinimal = mkModule systemdContainerMinimalModules;
+
+  default = all;
 }

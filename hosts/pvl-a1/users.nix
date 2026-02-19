@@ -1,5 +1,5 @@
 {...}: {
   imports = [
-    (import ../../users/pvl/profiles/all.nix).default
+    (import ../../users/pvl).all
   ];
 }
