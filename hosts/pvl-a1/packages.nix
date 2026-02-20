@@ -63,7 +63,7 @@
       rustc
       rustfmt
       rust-analyzer
-      zed-editor
+      zed-wrapped
       nixd
       alejandra
     ];

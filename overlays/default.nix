@@ -6,6 +6,7 @@
   (
     final: prev: {
       handbrake-wrapped = final.callPackage ../pkgs/handbrake.nix {};
+      zed-wrapped = final.callPackage ../pkgs/zed.nix {};
       nvidiaCustomForKernel = kernelPackages:
         final.callPackage ../pkgs/nvidia-driver.nix {inherit kernelPackages;};
       nvidia-custom = final.nvidiaCustomForKernel final.linuxPackages;
