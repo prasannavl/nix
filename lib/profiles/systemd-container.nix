@@ -12,6 +12,7 @@
     ../systemd.nix
     ../security.nix
     ../sudo.nix
+    ../nixbot.nix
     ../nix-ld.nix
     ../users.nix
   ];

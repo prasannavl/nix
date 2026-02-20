@@ -1,0 +1,8 @@
+keys:
+  - &pvl ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIAAsB0nJcxF0wjuzXK0VTF1jbQbT24C1MM8NesCuwBb
+creation_rules:
+  - path_regex: hosts/nixbot\.sops\.yaml$
+    encrypted_regex: '^(key|knownHosts)$'
+    key_groups:
+      - age: 
+        - *pvl

@@ -1,0 +1,62 @@
+name: nixbot
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      hosts:
+        description: Comma/space-separated hosts, or all
+        required: true
+        default: all
+        type: string
+      deploy:
+        description: Run deploy (otherwise build only)
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    if: github.ref == 'refs/heads/main'
+    name: Run nixbot deploy script
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Execute nixbot deploy script
+        shell: bash
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          INPUT_HOSTS: ${{ github.event.inputs.hosts }}
+          INPUT_DEPLOY: ${{ github.event.inputs.deploy }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          hosts="all"
+          action="build"
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            hosts="${INPUT_HOSTS:-all}"
+            if [ "${INPUT_DEPLOY:-true}" = "true" ]; then
+              action="deploy"
+            fi
+          fi
+
+          nix shell nixpkgs#sops nixpkgs#jq -c scripts/nixbot-deploy.sh \
+            --hosts "${hosts}" \
+            --action "${action}" \
+            --goal switch \
+            --config hosts/nixbot.yaml
