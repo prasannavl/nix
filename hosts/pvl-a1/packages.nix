@@ -20,6 +20,8 @@
       lazygit
       ranger
       nvtopPackages.full
+      sshfs
+      nixos-container
     ];
 
     gnome = with pkgs; [
