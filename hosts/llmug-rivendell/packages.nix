@@ -15,6 +15,7 @@
       git
       htop
       nvtopPackages.full
+      podman-compose
     ];
 
     network = with pkgs; [

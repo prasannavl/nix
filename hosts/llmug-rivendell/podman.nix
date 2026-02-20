@@ -1,27 +1,29 @@
 {...}: {
   systemd.tmpfiles.rules = [
-    "d /var/lib/llmug 0755 root root -"
-    "d /var/lib/llmug/nginx 0755 root root -"
-    "d /var/lib/llmug/open-webui 0755 root root -"
-    "d /var/lib/llmug/ollama 0755 root root -"
+    "d /var/lib/llmug 0755 llmug llmug -"
+    "d /var/lib/llmug/nginx.pod 0750 llmug llmug -"
+    "d /var/lib/llmug/open-webui.pod 0750 llmug llmug -"
+    "d /var/lib/llmug/ollama.pod 0750 llmug llmug -"
   ];
 
   virtualisation.oci-containers.containers = {
     nginx-container = {
       image = "docker.io/library/nginx:latest";
       autoStart = true;
+      podman.user = "llmug";
       ports = ["0.0.0.0:8080:80"];
       volumes = [
-        "/var/lib/llmug/nginx:/usr/share/nginx/html"
+        "/var/lib/llmug/nginx.pod:/usr/share/nginx/html"
       ];
     };
 
     ollama = {
       image = "docker.io/ollama/ollama:latest";
       autoStart = true;
+      podman.user = "llmug";
       ports = ["0.0.0.0:11434:11434"];
       volumes = [
-        "/var/lib/llmug/ollama:/root/.ollama"
+        "/var/lib/llmug/ollama.pod:/root/.ollama"
       ];
       extraOptions = [
         "--device=nvidia.com/gpu=all"
@@ -31,15 +33,22 @@
     open-webui = {
       image = "ghcr.io/open-webui/open-webui:main";
       autoStart = true;
+      podman.user = "llmug";
       ports = ["0.0.0.0:3000:8080"];
       environment = {
         OLLAMA_BASE_URL = "http://host.containers.internal:11434";
       };
       volumes = [
-        "/var/lib/llmug/open-webui:/app/backend/data"
+        "/var/lib/llmug/open-webui.pod:/app/backend/data"
       ];
       dependsOn = ["ollama"];
     };
+  };
+
+  systemd.services = {
+    podman-nginx-container.serviceConfig.Delegate = true;
+    podman-ollama.serviceConfig.Delegate = true;
+    podman-open-webui.serviceConfig.Delegate = true;
   };
 
   networking.firewall.allowedTCPPorts = [
