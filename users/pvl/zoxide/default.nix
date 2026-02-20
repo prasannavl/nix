@@ -1,9 +1,7 @@
 {
   nixos = {...}: {};
 
-  home = {
-    ...
-  }: {
+  home = {...}: {
     programs.zoxide = {
       enable = true;
       enableBashIntegration = true;
