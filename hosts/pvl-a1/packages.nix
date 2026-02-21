@@ -58,9 +58,10 @@
     dev = with pkgs; [
       python3
       gnumake
-      rustup
+      # rustup
       cargo
       rustc
+      rustPlatform.rustLibSrc
       rustfmt
       rust-analyzer
       zed-wrapped
@@ -167,6 +168,10 @@ in {
     ++ packages.security
     ++ packages.ai
     ++ packages.misc;
+
+  environment.sessionVariables = {
+    RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}/lib/rustlib/src/rust/library";
+  };
 
   fonts = {
     enableDefaultPackages = true;
