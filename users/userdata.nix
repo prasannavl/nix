@@ -1,4 +1,9 @@
 {
+  nixbot = {
+    username = "nixbot";
+    uid = 10000;
+    sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOVbOBRhD/RoCDHVxDGOxrTKcT5AkCBKYlHMU0q1brJP";
+  };
   pvl = {
     username = "pvl";
     uid = 1000;

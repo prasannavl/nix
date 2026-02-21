@@ -1,13 +1,14 @@
 {...}: let
-  deploySshKey = (import ../users/userdata.nix).pvl.sshKey;
+  userdata = (import ../users/userdata.nix).nixbot;
 in {
   users.users.nixbot = {
+    uid = userdata.uid;
     isNormalUser = true;
-    description = "Automated deployment user";
+    description = "nixbot - automation bot for nix deployments";
+    hashedPassword = "!";
     createHome = true;
     home = "/var/lib/nixbot";
-    hashedPassword = "!";
-    openssh.authorizedKeys.keys = [deploySshKey];
+    openssh.authorizedKeys.keys = [userdata.sshKey];
   };
 
   security.sudo.extraRules = [

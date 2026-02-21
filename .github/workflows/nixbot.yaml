@@ -38,7 +38,7 @@ jobs:
       - name: Execute nixbot deploy script
         shell: bash
         env:
-          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.GH_AGE_KEY }}
           INPUT_HOSTS: ${{ github.event.inputs.hosts }}
           INPUT_DEPLOY: ${{ github.event.inputs.deploy }}
           EVENT_NAME: ${{ github.event_name }}
@@ -59,4 +59,4 @@ jobs:
             --hosts "${hosts}" \
             --action "${action}" \
             --goal switch \
-            --config hosts/nixbot.yaml
+            --config hosts/nixbot.nix
