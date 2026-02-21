@@ -3,7 +3,7 @@ name: nixbot
 on:
   push:
     branches:
-      - main
+      - master
   workflow_dispatch:
     inputs:
       hosts:
@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   run:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/master'
     name: Run nixbot deploy script
     runs-on: ubuntu-latest
     steps:
