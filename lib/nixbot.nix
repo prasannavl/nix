@@ -1,9 +1,14 @@
 {...}: let
   userdata = (import ../users/userdata.nix).nixbot;
 in {
+  users.groups.nixbot = {
+    gid = userdata.uid;
+  };
+
   users.users.nixbot = {
     uid = userdata.uid;
-    isNormalUser = true;
+    group = "nixbot";
+    isSystemUser = true;
     description = "nixbot - automation bot for nix deployments";
     hashedPassword = "!";
     createHome = true;
