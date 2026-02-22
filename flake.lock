@@ -205,11 +205,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1770972222,
-        "narHash": "sha256-a+ZMNPttZdcl96+j7yAk3vHYSE3pqcIc62+fXlydzDw=",
+        "lastModified": 1771768558,
+        "narHash": "sha256-vsvvWK7ao1hpPTnOHbi4f7oRlACMvLbjNWWF9ykqGYQ=",
         "owner": "prasannavl",
         "repo": "p7-cmds-shell-extension",
-        "rev": "a09c405ca1879a4f3e8fc9336b511c314758325d",
+        "rev": "3578cc432499e298470773e16fd6556cca246c81",
         "type": "github"
       },
       "original": {
