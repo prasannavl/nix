@@ -170,7 +170,7 @@ in {
     ++ packages.misc;
 
   environment.sessionVariables = {
-    RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}/lib/rustlib/src/rust/library";
+    RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
   };
 
   fonts = {
