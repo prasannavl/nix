@@ -14,4 +14,5 @@ in {
   lxcfs = unstable.lxcfs;
   jan = unstable.jan;
   tailscale = unstable.tailscale;
+  xdg-desktop-portal-wlr = unstable.xdg-desktop-portal-wlr;
 }
