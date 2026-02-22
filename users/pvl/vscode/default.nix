@@ -67,11 +67,11 @@
           };
           "nix" = {
             "enableLanguageServer" = true;
-            "serverPath" = "nixd";
+            "serverPath" = "${pkgs.nixdnixd}/bin/nixd";
             "serverSettings" = {
               "nixd" = {
                 "formatting" = {
-                  "command" = ["alejandra"];
+                  "command" = ["${pkgs.alejandra}/bin/alejandra"];
                 };
               };
             };
