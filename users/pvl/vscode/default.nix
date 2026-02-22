@@ -67,7 +67,7 @@
           };
           "nix" = {
             "enableLanguageServer" = true;
-            "serverPath" = "${pkgs.nixdnixd}/bin/nixd";
+            "serverPath" = "${pkgs.nixd}/bin/nixd";
             "serverSettings" = {
               "nixd" = {
                 "formatting" = {
