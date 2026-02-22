@@ -1,4 +1,8 @@
-{lib, pkgs, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   imports = [
     ../../lib/devices/asus-fa401wv.nix
     ../../lib/swap-auto.nix

@@ -56,8 +56,7 @@
           "window.autoDetectColorScheme" = true;
           "github.copilot.nextEditSuggestions.enabled" = true;
           "containers.containerClient" = "com.microsoft.visualstudio.containers.podman";
-          "containers.orchestratorClient" =
-            "com.microsoft.visualstudio.orchestrators.podmancompose";
+          "containers.orchestratorClient" = "com.microsoft.visualstudio.orchestrators.podmancompose";
           "workbench.startupEditor" = "none";
           "continue.enableNextEdit" = true;
           "continue.enableQuickActions" = true;
