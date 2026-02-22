@@ -49,34 +49,6 @@
             when = "canNavigateForward";
           }
         ];
-
-        userSettings = {
-          "editor.wordWrap" = "bounded";
-          "window.commandCenter" = false;
-          "window.autoDetectColorScheme" = true;
-          "github.copilot.nextEditSuggestions.enabled" = true;
-          "containers.containerClient" = "com.microsoft.visualstudio.containers.podman";
-          "containers.orchestratorClient" = "com.microsoft.visualstudio.orchestrators.podmancompose";
-          "workbench.startupEditor" = "none";
-          "continue.enableNextEdit" = true;
-          "continue.enableQuickActions" = true;
-          "nixEnvSelector" = {
-            "suggestion" = false;
-            "nixEnvSelector.useFlakes" = true;
-          };
-          "nix" = {
-            "enableLanguageServer" = true;
-            "serverPath" = "${pkgs.nixd}/bin/nixd";
-            "serverSettings" = {
-              "nixd" = {
-                "formatting" = {
-                  "command" = ["${pkgs.alejandra}/bin/alejandra"];
-                };
-              };
-            };
-          };
-          "rust-analyzer.cargo.sysrootSrc" = "${pkgs.rustPlatform.rustLibSrc}";
-        };
       };
     };
   };
