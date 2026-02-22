@@ -9,6 +9,7 @@
     imports = [
       ./extensions.nix
       ./dconf.nix
+      ./apps.nix
       ./keybindings.nix
       ./shell-favorites.nix
       ./clocks-weather.nix

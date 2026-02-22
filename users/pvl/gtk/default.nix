@@ -12,6 +12,10 @@
     onHosts = hosts: entry: lib.optional (lib.elem hostName hosts) entry;
     notHosts = hosts: entry: lib.optional (!(lib.elem hostName hosts)) entry;
   in {
+    imports = [
+      ./apps.nix
+    ];
+
     gtk = {
       enable = true;
       gtk3 = {
