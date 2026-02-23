@@ -23,27 +23,35 @@ permissions:
 jobs:
   run:
     if: github.ref == 'refs/heads/master'
-    name: Run nixbot deploy script
+    name: Trigger remote nixbot
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
         with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          args: --accept-routes
 
-      - name: Execute nixbot deploy script
+      - name: Trigger deploy from bastion over SSH
         shell: bash
         env:
-          SOPS_AGE_KEY: ${{ secrets.GH_AGE_KEY }}
+          BASTION_HOST: ${{ secrets.NIXBOT_BASTION_HOST }}
+          BASTION_USER: ${{ secrets.NIXBOT_BASTION_USER }}
+          BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
+          BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
           INPUT_HOSTS: ${{ github.event.inputs.hosts }}
           INPUT_DEPLOY: ${{ github.event.inputs.deploy }}
           EVENT_NAME: ${{ github.event_name }}
+          GIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+
+          host="${BASTION_HOST:-?BASTION_HOST not set}"
+          user="${BASTION_USER:-?BASTION_USER not set}"
+          if [ -z "${BASTION_SSH_KEY:-}" ]; then
+            echo "Missing required secret: NIXBOT_BASTION_SSH_KEY" >&2
+            exit 1
+          fi
 
           hosts="all"
           action="build"
@@ -55,8 +63,37 @@ jobs:
             fi
           fi
 
-          nix shell nixpkgs#sops nixpkgs#jq -c scripts/nixbot-deploy.sh \
-            --hosts "${hosts}" \
-            --action "${action}" \
-            --goal switch \
-            --config hosts/nixbot.nix
+          if [ "${hosts}" != "all" ]; then
+            hosts="$(printf '%s' "${hosts}" \
+              | tr ', ' '\n\n' \
+              | sed '/^$/d' \
+              | sort -u \
+              | paste -sd, -)"
+            if [ -z "${hosts}" ]; then
+              echo "No valid hosts after normalization" >&2
+              exit 1
+            fi
+          fi
+
+          key_file="$(mktemp)"
+          known_hosts_file="$(mktemp)"
+          chmod 600 "${key_file}" "${known_hosts_file}"
+          printf '%s\n' "${BASTION_SSH_KEY}" > "${key_file}"
+
+          if [ -n "${BASTION_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "${BASTION_KNOWN_HOSTS}" > "${known_hosts_file}"
+          else
+            ssh-keyscan -H "${host}" > "${known_hosts_file}" 2>/dev/null
+          fi
+
+          ssh_opts=(
+            -i "${key_file}"
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="${known_hosts_file}"
+          )
+
+          ssh "${ssh_opts[@]}" "${user}@${host}" \
+            "--sha ${GIT_SHA} --hosts ${hosts} --action ${action}"
+
+          rm -f "${key_file}" "${known_hosts_file}"

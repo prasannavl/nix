@@ -8,6 +8,8 @@
     };
     pvl-x2 = {
       target = "pvl-x2";
+      bootstrapNixbotKey = "data/secrets/nixbot.key";
+      bootstrapUser = "pvl";
     };
     llmug-rivendell = {
       target = "llmug-rivendell";

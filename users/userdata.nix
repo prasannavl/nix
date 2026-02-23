@@ -3,6 +3,7 @@
     username = "nixbot";
     uid = 10000;
     sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOVbOBRhD/RoCDHVxDGOxrTKcT5AkCBKYlHMU0q1brJP";
+    bastionSshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBC+WylBLVXmMjiZ51/5SfT2c4gU729wEL9C7DWarW7e nixbot-bastion-github-actions";
   };
   pvl = {
     username = "pvl";

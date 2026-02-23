@@ -9,7 +9,7 @@
     ../network-wifi.nix
     ../security.nix
     ../sudo.nix
-    ../nixbot.nix
+    ../nixbot
     ../systemd.nix
     ../sysctl-inotify.nix
     ../sysctl-kernel-coredump.nix
@@ -32,6 +32,7 @@
   programs.tmux.enable = true;
 
   environment.systemPackages = with pkgs; [
+    ssh-import-id 
     powertop
     pciutils
     usbutils

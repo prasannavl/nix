@@ -1,5 +1,5 @@
-{...}: let
-  userdata = (import ../users/userdata.nix).nixbot;
+{lib, pkgs, ...}: let
+  userdata = (import ../../users/userdata.nix).nixbot;
 in {
   users.groups.nixbot = {
     gid = userdata.uid;
@@ -13,6 +13,7 @@ in {
     hashedPassword = "!";
     createHome = true;
     home = "/var/lib/nixbot";
+    shell = pkgs.bashInteractive;
     openssh.authorizedKeys.keys = [userdata.sshKey];
   };
 
@@ -27,4 +28,6 @@ in {
       ];
     }
   ];
+
+  nix.settings.trusted-users = lib.mkAfter ["nixbot"];
 }

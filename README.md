@@ -17,83 +17,26 @@ modules and composed via `flake.nix`.
 
 Workflow: `.github/workflows/nixbot.yaml`.
 
-- Pull requests: build all hosts.
-- Push to `main`: build all hosts.
+- Push to `master`: trigger build-only run.
 - Manual (`workflow_dispatch`): set `hosts` and optionally deploy.
 
-The workflow is intentionally thin and calls `scripts/nixbot-deploy.sh`.
+The workflow is intentionally thin: it only SSHes into the configured bastion host.
 
-Runner prerequisite:
+## Deployment
 
-- CI must provide `SOPS_AGE_KEY` (for example from GitHub secret `GH_AGE_KEY`).
+High-level architecture:
 
-## Architecture
+- GitHub Actions connects to bastion (`pvl-x2`) using a restricted ingress key and forced command (`ssh-gate`).
+- Bastion runs `scripts/nixbot-deploy.sh` to build/deploy selected NixOS hosts.
+- Deploy SSH key material is stored as SOPS-encrypted secrets in `data/secrets/*.key`, with bootstrap and rotation rules documented in deployment docs.
 
-Deploy auth is split into two layers:
+Deployment-specific architecture, key model, bootstrap flow, rotation procedure,
+and operational notes are documented in:
 
-1. GitHub runner decryption key:
-   - `hosts/nixbot.nix` is plain Nix data and does not require decryption.
-   - Workflow sets `SOPS_AGE_KEY` from GitHub Secrets.
-2. Nixbot SSH deploy key:
-   - `defaults.key` (or host `key`) points to an encrypted key file (for example `data/secrets/nixbot.key`).
-   - `nixbot-deploy.sh` decrypts key files in `data/secrets` in place, uses key file paths with SSH `-i`, then re-encrypts on cleanup.
+- `docs/deployment.md`
 
-This means the runner only needs the age private key, while the actual SSH deploy key
-stays encrypted at rest in `data/secrets/nixbot.key`.
+Primary files for deployment are:
 
-## Deploy Script
-
-- `scripts/nixbot-deploy.sh`
-
-Examples:
-
-- `scripts/nixbot-deploy.sh --hosts "llmug-rivendell"`
-- `scripts/nixbot-deploy.sh --hosts "pvl-a1,llmug-rivendell"`
-- `scripts/nixbot-deploy.sh`
-- `scripts/nixbot-deploy.sh --hosts "llmug-rivendell" --action build`
-- `scripts/nixbot-deploy.sh --hosts "llmug-rivendell" --force`
-- `scripts/nixbot-deploy.sh --hosts "llmug-rivendell" --dry`
-- `scripts/nixbot-deploy.sh --config hosts/nixbot.nix`
-
-Deploy behavior:
-
-- By default, deploy is skipped per host when built toplevel path matches remote `/run/current-system`.
-- Use `--force` to deploy even when unchanged.
-- Use `--dry` to print deploy commands and avoid execution.
-
-## Deploy Config
-
-`hosts/nixbot.nix` contains non-secret deploy mapping:
-
-```nix
-{
-  hosts = {
-    pvl-a1 = {
-      target = "10.0.0.10";
-      user = "root";
-      key = "data/secrets/nixbot.key";
-    };
-  };
-
-  defaults = {
-    user = "root";
-    key = "data/secrets/nixbot.key";
-    knownHosts = "10.0.0.10 ssh-ed25519 AAAA...";
-  };
-}
-```
-
-Notes:
-
-- `target` can be hostname, IP, or `host:port`.
-- `key` is a path to a SOPS-encrypted private key file.
-- During deploy, the script decrypts secrets in place, uses key file paths directly for SSH, and re-encrypts on cleanup.
-- `knownHosts` can be set in `defaults` or per host.
-
-## SOPS Setup
-
-1. Add age recipient(s) in `.sops.yaml` (including the GitHub runner's public age key).
-2. Populate `hosts/nixbot.nix`.
-3. Create and encrypt deploy key file(s), for example:
-   - `sops --encrypt --in-place data/secrets/nixbot.key`
-4. In CI, set `SOPS_AGE_KEY` from a GitHub secret that contains the age private key.
+- `hosts/nixbot.nix` (deploy target mapping/defaults)
+- `scripts/nixbot-deploy.sh` (build/deploy orchestration)
+- `lib/nixbot/bastion.nix` (bastion-side nixbot setup)

@@ -9,6 +9,10 @@
       url = "github:nix-community/home-manager/release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixos-hardware.url = "github:nixos/nixos-hardware";
     vscode-ext = {
       url = "github:nix-community/nix-vscode-extensions";
@@ -45,11 +49,13 @@
     nixpkgs,
     flake-utils,
     home-manager,
+    sops-nix,
     ...
   }: let
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
+      sops-nix.nixosModules.sops
       {nixpkgs.overlays = overlays;}
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];

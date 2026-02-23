@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+"${repo_root}/scripts/sops-check-secrets.sh" --staged-only

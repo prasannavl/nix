@@ -44,9 +44,6 @@ vars() {
   DEPLOY_HOSTS_JSON='{}'
   DEPLOY_TMP_DIR=""
   DEPLOY_CONFIG_DIR=""
-  DEPLOY_SECRETS_DIR=""
-  DEPLOY_SECRETS_DECRYPTED=0
-  declare -ga DEPLOY_DECRYPTED_FILES=()
 }
 
 parse_args() {
@@ -190,13 +187,6 @@ parse_args() {
 }
 
 cleanup() {
-  if [ "${DEPLOY_SECRETS_DECRYPTED}" -eq 1 ]; then
-    local f
-    for f in "${DEPLOY_DECRYPTED_FILES[@]}"; do
-      [ -f "${f}" ] || continue
-      sops --encrypt --in-place "${f}" >/dev/null 2>&1 || true
-    done
-  fi
   if [ -n "${DEPLOY_TMP_DIR}" ] && [ -d "${DEPLOY_TMP_DIR}" ]; then
     rm -rf "${DEPLOY_TMP_DIR}"
   fi
@@ -228,7 +218,6 @@ init_deploy_settings() {
   local config_json="$1"
 
   DEPLOY_CONFIG_DIR="$(cd "$(dirname "${DEPLOY_CONFIG_PATH}")" && pwd -P)"
-  DEPLOY_SECRETS_DIR="${DEPLOY_CONFIG_DIR}/../data/secrets"
   DEPLOY_DEFAULT_USER="$(jq -r '.defaults.user // "root"' <<<"${config_json}")"
   DEPLOY_DEFAULT_KEY_PATH="$(jq -r '.defaults.key // ""' <<<"${config_json}")"
   DEPLOY_DEFAULT_KNOWN_HOSTS="$(jq -r '.defaults.knownHosts // ""' <<<"${config_json}")"
@@ -239,6 +228,10 @@ init_deploy_settings() {
   fi
   if [ -n "${DEPLOY_KEY_PATH_OVERRIDE}" ]; then
     DEPLOY_DEFAULT_KEY_PATH="${DEPLOY_KEY_PATH_OVERRIDE}"
+  elif [ -n "${DEPLOY_USER_OVERRIDE}" ]; then
+    # If user is overridden but key is not, don't force the default deploy key.
+    # This allows SSH agent/default identities for the overridden user.
+    DEPLOY_DEFAULT_KEY_PATH=""
   fi
   if [ -n "${DEPLOY_KNOWN_HOSTS_OVERRIDE}" ]; then
     DEPLOY_DEFAULT_KNOWN_HOSTS="${DEPLOY_KNOWN_HOSTS_OVERRIDE}"
@@ -276,33 +269,30 @@ resolve_key_source_path() {
   printf '%s/%s\n' "${DEPLOY_CONFIG_DIR}" "${key_path}"
 }
 
-decrypt_secrets_dir_in_place() {
-  local secrets_dir="$1"
-  local f
-  local -a files=()
+resolve_runtime_key_file() {
+  local key_path="$1"
+  local src_path out_file
 
-  if [ ! -d "${secrets_dir}" ]; then
+  src_path="$(resolve_key_source_path "${key_path}")"
+  if [ ! -f "${src_path}" ]; then
+    printf '%s\n' "${src_path}"
     return
   fi
 
-  while IFS= read -r -d '' f; do
-    files+=("${f}")
-  done < <(find "${secrets_dir}" -type f -print0)
-
-  for f in "${files[@]}"; do
-    if sops --decrypt --output /dev/null "${f}" >/dev/null 2>&1; then
-      sops --decrypt --in-place "${f}"
-      DEPLOY_DECRYPTED_FILES+=("${f}")
-    fi
-  done
-
-  if [ "${#DEPLOY_DECRYPTED_FILES[@]}" -gt 0 ]; then
-    DEPLOY_SECRETS_DECRYPTED=1
+  if sops --decrypt --output /dev/null "${src_path}" >/dev/null 2>&1; then
+    ensure_tmp_dir
+    out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
+    sops --decrypt --output "${out_file}" "${src_path}"
+    chmod 600 "${out_file}"
+    printf '%s\n' "${out_file}"
+    return
   fi
+
+  printf '%s\n' "${src_path}"
 }
 
 load_all_hosts_json() {
-  nix flake show --json --no-write-lock-file \
+  nix flake show --json --no-write-lock-file 2>/dev/null \
     | jq -c '.nixosConfigurations | keys'
 }
 
@@ -345,15 +335,25 @@ build_host() {
   local out_path
 
   echo "==> Building ${node}" >&2
-  out_path="$(nix build --print-out-paths ".#nixosConfigurations.${node}.config.system.build.toplevel")"
+  if ! out_path="$(nix build --print-out-paths ".#nixosConfigurations.${node}.config.system.build.toplevel")"; then
+    echo "Build failed for ${node}" >&2
+    return 1
+  fi
+  if [ -z "${out_path}" ]; then
+    echo "Build produced no output path for ${node}" >&2
+    return 1
+  fi
   echo "Built out path: ${out_path}" >&2
-  nix path-info --closure-size --human-readable "${out_path}" >&2
+  if ! nix path-info --closure-size --human-readable "${out_path}" >&2; then
+    echo "Unable to resolve closure size for ${node}: ${out_path}" >&2
+    return 1
+  fi
   printf '%s\n' "${out_path}"
 }
 
 resolve_deploy_target() {
   local node="$1"
-  local host_cfg user target key_path known_hosts
+  local host_cfg user target key_path known_hosts bootstrap_nixbot_key bootstrap_user bootstrap_key_path
 
   host_cfg="$(jq -c --arg h "${node}" '.[$h] // {}' <<<"${DEPLOY_HOSTS_JSON}")"
 
@@ -361,6 +361,9 @@ resolve_deploy_target() {
   target="$(jq -r '.target // empty' <<<"${host_cfg}")"
   key_path="$(jq -r '.key // empty' <<<"${host_cfg}")"
   known_hosts="$(jq -r '.knownHosts // empty' <<<"${host_cfg}")"
+  bootstrap_nixbot_key="$(jq -r '.bootstrapNixbotKey // empty' <<<"${host_cfg}")"
+  bootstrap_user="$(jq -r '.bootstrapUser // empty' <<<"${host_cfg}")"
+  bootstrap_key_path="$(jq -r '.bootstrapKey // empty' <<<"${host_cfg}")"
 
   if [ -z "${user}" ]; then
     user="${DEPLOY_DEFAULT_USER}"
@@ -376,13 +379,70 @@ resolve_deploy_target() {
   if [ -z "${known_hosts}" ]; then
     known_hosts="${DEPLOY_DEFAULT_KNOWN_HOSTS}"
   fi
-
+  if [ -z "${bootstrap_user}" ]; then
+    bootstrap_user="root"
+  fi
   jq -cn \
     --arg user "${user}" \
     --arg target "${target}" \
     --arg keyPath "${key_path}" \
     --arg knownHosts "${known_hosts}" \
-    '{user: $user, target: $target, keyPath: $keyPath, knownHosts: $knownHosts}'
+    --arg bootstrapNixbotKey "${bootstrap_nixbot_key}" \
+    --arg bootstrapUser "${bootstrap_user}" \
+    --arg bootstrapKeyPath "${bootstrap_key_path}" \
+    '{user: $user, target: $target, keyPath: $keyPath, knownHosts: $knownHosts, bootstrapNixbotKey: $bootstrapNixbotKey, bootstrapUser: $bootstrapUser, bootstrapKeyPath: $bootstrapKeyPath}'
+}
+
+inject_bootstrap_nixbot_key() {
+  local node="$1"
+  local bootstrap_ssh_target="$2"
+  local bootstrap_nixbot_key_path="$3"
+  local -a bootstrap_ssh_opts=("${@:4}")
+  local bootstrap_key_file remote_tmp expected_bootstrap_fpr
+  local remote_has_key_cmd remote_install_cmd
+  local bootstrap_dest="/var/lib/nixbot/.ssh/bootstrap_id_ed25519"
+
+  if [ -z "${bootstrap_nixbot_key_path}" ]; then
+    return
+  fi
+
+  bootstrap_key_file="$(resolve_runtime_key_file "${bootstrap_nixbot_key_path}")"
+  if [ ! -f "${bootstrap_key_file}" ]; then
+    echo "Bootstrap nixbot key not found for ${node}: ${bootstrap_nixbot_key_path} (resolved: ${bootstrap_key_file})" >&2
+    exit 1
+  fi
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    echo "DRY: would inject bootstrap nixbot key ${bootstrap_key_file} -> ${bootstrap_ssh_target}:${bootstrap_dest}"
+    return
+  fi
+
+  expected_bootstrap_fpr="$(ssh-keygen -lf "${bootstrap_key_file}" 2>/dev/null | tr -s ' ' | cut -d ' ' -f2)"
+  if [ -z "${expected_bootstrap_fpr}" ]; then
+    echo "Unable to compute bootstrap key fingerprint from ${bootstrap_key_file}" >&2
+    exit 1
+  fi
+
+  remote_has_key_cmd='dest="'"${bootstrap_dest}"'"; want="'"${expected_bootstrap_fpr}"'"; get_fpr() { if [ "$(id -u)" -eq 0 ]; then ssh-keygen -lf "$dest" 2>/dev/null | tr -s " " | cut -d " " -f2; elif command -v sudo >/dev/null 2>&1; then sudo -n ssh-keygen -lf "$dest" 2>/dev/null | tr -s " " | cut -d " " -f2; else ssh-keygen -lf "$dest" 2>/dev/null | tr -s " " | cut -d " " -f2; fi; }; [ "$(get_fpr || true)" = "$want" ]'
+  if ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "${remote_has_key_cmd}" >/dev/null 2>&1; then
+    echo "==> Skipping bootstrap nixbot key for ${node}; matching key already present on target"
+    return
+  fi
+
+  remote_tmp="$(ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" 'umask 077; mktemp /tmp/nixbot-bootstrap-key.XXXXXX')"
+  if [ -z "${remote_tmp}" ]; then
+    echo "Failed to allocate remote temporary file for bootstrap key on ${node}" >&2
+    exit 1
+  fi
+
+  scp "${bootstrap_ssh_opts[@]}" "${bootstrap_key_file}" "${bootstrap_ssh_target}:${remote_tmp}"
+
+  remote_install_cmd='if [ "$(id -u)" -eq 0 ]; then install -d -m 0755 /var/lib/nixbot && install -d -m 0700 /var/lib/nixbot/.ssh && install -m 0400 '"${remote_tmp}"' '"${bootstrap_dest}"' && rm -f '"${remote_tmp}"' && if id -u nixbot >/dev/null 2>&1; then chown -R nixbot:nixbot /var/lib/nixbot/.ssh; fi; elif command -v sudo >/dev/null 2>&1; then sudo install -d -m 0755 /var/lib/nixbot && sudo install -d -m 0700 /var/lib/nixbot/.ssh && sudo install -m 0400 '"${remote_tmp}"' '"${bootstrap_dest}"' && rm -f '"${remote_tmp}"' && if id -u nixbot >/dev/null 2>&1; then sudo chown -R nixbot:nixbot /var/lib/nixbot/.ssh; fi; else echo "sudo is required to install '"${bootstrap_dest}"' as non-root" >&2; exit 1; fi'
+  echo "==> Injecting bootstrap nixbot key for ${node}"
+  if ! ssh -tt "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "${remote_install_cmd}" </dev/tty; then
+    ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
+    exit 1
+  fi
 }
 
 ensure_known_hosts_file() {
@@ -412,37 +472,50 @@ ensure_known_host() {
   fi
 
   if ! grep -Fq "${target_host}" "${known_hosts_file}"; then
-    ssh-keyscan -H "${target_host}" >> "${known_hosts_file}" 2>/dev/null || true
+    ssh-keyscan "${target_host}" >> "${known_hosts_file}" 2>/dev/null || true
   fi
 }
 
 deploy_host() {
   local node="$1"
   local built_out_path="$2"
-  local target_info user host key_path key_file known_hosts known_hosts_file ssh_target remote_current_path
+  local target_info user host key_path key_file known_hosts bootstrap_nixbot_key bootstrap_user bootstrap_key_path bootstrap_key_file known_hosts_file ssh_target bootstrap_ssh_target deploy_ssh_target remote_current_path
   local build_host=""
   local -a ssh_opts=()
+  local -a bootstrap_ssh_opts=()
+  local -a deploy_ssh_opts=()
   local -a rebuild_cmd=()
   local nix_sshopts=""
+  local bootstrap_nix_sshopts=""
+  local deploy_nix_sshopts=""
+  local using_bootstrap_fallback=0
+  local deploy_user=""
+  local need_ask_sudo_password=0
 
   target_info="$(resolve_deploy_target "${node}")"
   user="$(jq -r '.user' <<<"${target_info}")"
   host="$(jq -r '.target' <<<"${target_info}")"
   key_path="$(jq -r '.keyPath // empty' <<<"${target_info}")"
   known_hosts="$(jq -r '.knownHosts // empty' <<<"${target_info}")"
+  bootstrap_nixbot_key="$(jq -r '.bootstrapNixbotKey // empty' <<<"${target_info}")"
+  bootstrap_user="$(jq -r '.bootstrapUser // empty' <<<"${target_info}")"
+  bootstrap_key_path="$(jq -r '.bootstrapKeyPath // empty' <<<"${target_info}")"
 
   ssh_target="${user}@${host}"
+  bootstrap_ssh_target="${bootstrap_user}@${host}"
 
   if [ "${DRY_RUN}" -eq 0 ]; then
     known_hosts_file="$(ensure_known_hosts_file "${node}" "${known_hosts}")"
     ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
 
-    ssh_opts=(-o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
-    nix_sshopts="-o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
+    ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
+    nix_sshopts="-o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
+    bootstrap_ssh_opts=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
+    bootstrap_nix_sshopts="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
   fi
 
   if [ -n "${key_path}" ]; then
-    key_file="$(resolve_key_source_path "${key_path}")"
+    key_file="$(resolve_runtime_key_file "${key_path}")"
     if [ ! -f "${key_file}" ]; then
       echo "Deploy SSH key file not found: ${key_path} (resolved: ${key_file})" >&2
       exit 1
@@ -455,22 +528,66 @@ deploy_host() {
     fi
   fi
 
+  if [ -n "${bootstrap_key_path}" ]; then
+    bootstrap_key_file="$(resolve_runtime_key_file "${bootstrap_key_path}")"
+    if [ ! -f "${bootstrap_key_file}" ]; then
+      echo "Bootstrap SSH key file not found: ${bootstrap_key_path} (resolved: ${bootstrap_key_file})" >&2
+      exit 1
+    fi
+    if [ "${DRY_RUN}" -eq 0 ]; then
+      bootstrap_ssh_opts=(-i "${bootstrap_key_file}" -o IdentitiesOnly=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
+      bootstrap_nix_sshopts="-i ${bootstrap_key_file} -o IdentitiesOnly=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
+    else
+      bootstrap_ssh_opts=(-i "${bootstrap_key_file}" -o IdentitiesOnly=yes)
+      bootstrap_nix_sshopts="-i ${bootstrap_key_file} -o IdentitiesOnly=yes"
+    fi
+  fi
+
+  deploy_ssh_target="${ssh_target}"
+  deploy_ssh_opts=("${ssh_opts[@]}")
+  deploy_nix_sshopts="${nix_sshopts}"
+  if [ "${DRY_RUN}" -eq 0 ]; then
+    if [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
+      if ! ssh "${ssh_opts[@]}" "${ssh_target}" "true" >/dev/null 2>&1; then
+        inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_nixbot_key}" "${bootstrap_ssh_opts[@]}"
+        echo "==> Primary deploy target ${ssh_target} is unavailable; falling back to bootstrap target ${bootstrap_ssh_target} for this run"
+        deploy_ssh_target="${bootstrap_ssh_target}"
+        deploy_ssh_opts=("${bootstrap_ssh_opts[@]}")
+        deploy_nix_sshopts="${bootstrap_nix_sshopts}"
+        using_bootstrap_fallback=1
+      fi
+    else
+      inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_nixbot_key}" "${bootstrap_ssh_opts[@]}"
+    fi
+  elif [ -n "${bootstrap_nixbot_key}" ]; then
+    inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_nixbot_key}" "${bootstrap_ssh_opts[@]}"
+  fi
+
+  deploy_user="${deploy_ssh_target%%@*}"
+  if [ "${using_bootstrap_fallback}" -eq 1 ] || { [ "${deploy_user}" != "root" ] && [ "${deploy_user}" != "nixbot" ]; }; then
+    need_ask_sudo_password=1
+  fi
+
   if [ "${DEPLOY_IF_CHANGED}" -eq 1 ]; then
-    remote_current_path="$(ssh "${ssh_opts[@]}" "${ssh_target}" 'readlink -f /run/current-system 2>/dev/null || true')"
+    remote_current_path="$(ssh "${deploy_ssh_opts[@]}" "${deploy_ssh_target}" 'readlink -f /run/current-system 2>/dev/null || true')"
     if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${built_out_path}" ]; then
       echo "==> Skipping ${node}; already on ${built_out_path}"
       return
     fi
   fi
 
-  echo "==> Deploying ${node} to ${ssh_target} (goal=${GOAL})"
+  echo "==> Deploying ${node} to ${deploy_ssh_target} (goal=${GOAL})"
 
   case "${BUILD_HOST}" in
     local)
-      build_host=""
+      if [ "${using_bootstrap_fallback}" -eq 1 ] || { [ -n "${DEPLOY_USER_OVERRIDE}" ] && [ "${deploy_ssh_target%%@*}" != "root" ]; }; then
+        build_host="${deploy_ssh_target}"
+      else
+        build_host=""
+      fi
       ;;
     target)
-      build_host="${ssh_target}"
+      build_host="${deploy_ssh_target}"
       ;;
     *)
       build_host="${BUILD_HOST}"
@@ -478,18 +595,28 @@ deploy_host() {
   esac
 
   rebuild_cmd=(
-    nix run nixpkgs#nixos-rebuild -- "${GOAL}"
+    nixos-rebuild
     --flake ".#${node}"
-    --target-host "${ssh_target}"
+    --target-host "${deploy_ssh_target}"
     --sudo
   )
+
+  if [ "${need_ask_sudo_password}" -eq 1 ]; then
+    rebuild_cmd+=(--ask-sudo-password)
+  fi
+
+  if [ "${using_bootstrap_fallback}" -eq 1 ]; then
+    rebuild_cmd+=(--use-substitutes)
+  fi
+
+  rebuild_cmd+=("${GOAL}")
 
   if [ -n "${build_host}" ]; then
     rebuild_cmd+=(--build-host "${build_host}")
   fi
 
-  if [ -n "${nix_sshopts}" ]; then
-    rebuild_cmd=(env "NIX_SSHOPTS=${nix_sshopts}" "${rebuild_cmd[@]}")
+  if [ -n "${deploy_nix_sshopts}" ]; then
+    rebuild_cmd=(env "NIX_SSHOPTS=${deploy_nix_sshopts}" "${rebuild_cmd[@]}")
   fi
 
   if [ "${DRY_RUN}" -eq 1 ]; then
@@ -500,49 +627,129 @@ deploy_host() {
   fi
 }
 
-run_host() {
-  local node="$1"
-  local built_out_path
-
-  built_out_path="$(build_host "${node}")"
-  if [ "${ACTION}" = "deploy" ]; then
-    deploy_host "${node}" "${built_out_path}"
-  fi
-}
-
 run_hosts() {
   local selected_json="$1"
   local node active_jobs
   local -a selected_hosts=()
   local -a failed_hosts=()
   local -a failed_codes=()
-  local log_dir status_dir log_file status_file rc
+  local build_log_dir build_status_dir deploy_log_dir deploy_status_dir build_out_dir
+  local log_file status_file out_file rc built_out_path
 
   mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
+  ensure_tmp_dir
+  build_log_dir="${DEPLOY_TMP_DIR}/logs.build"
+  build_status_dir="${DEPLOY_TMP_DIR}/status.build"
+  deploy_log_dir="${DEPLOY_TMP_DIR}/logs.deploy"
+  deploy_status_dir="${DEPLOY_TMP_DIR}/status.deploy"
+  build_out_dir="${DEPLOY_TMP_DIR}/build-outs"
+  mkdir -p "${build_log_dir}" "${build_status_dir}" "${deploy_log_dir}" "${deploy_status_dir}" "${build_out_dir}"
 
   if [ "${JOBS}" -eq 1 ]; then
     for node in "${selected_hosts[@]}"; do
       [ -n "${node}" ] || continue
-      run_host "${node}"
+      out_file="${build_out_dir}/${node}.path"
+      if ! built_out_path="$(build_host "${node}")"; then
+        return 1
+      fi
+      printf '%s\n' "${built_out_path}" > "${out_file}"
+    done
+  else
+    active_jobs=0
+    for node in "${selected_hosts[@]}"; do
+      [ -n "${node}" ] || continue
+      log_file="${build_log_dir}/${node}.log"
+      status_file="${build_status_dir}/${node}.rc"
+      out_file="${build_out_dir}/${node}.path"
+      (
+        set +e
+        built_out_path="$(
+          build_host "${node}" > >(sed -u "s/^/[${node}] /" | tee -a "${log_file}") \
+            2> >(sed -u "s/^/[${node}] /" | tee -a "${log_file}" >&2)
+        )"
+        rc="$?"
+        if [ "${rc}" = "0" ]; then
+          printf '%s\n' "${built_out_path}" > "${out_file}"
+        fi
+        printf '%s\n' "${rc}" > "${status_file}"
+        exit "${rc}"
+      ) &
+      active_jobs=$((active_jobs + 1))
+
+      if [ "${active_jobs}" -ge "${JOBS}" ]; then
+        wait -n || true
+        active_jobs=$((active_jobs - 1))
+      fi
+    done
+
+    while [ "${active_jobs}" -gt 0 ]; do
+      wait -n || true
+      active_jobs=$((active_jobs - 1))
+    done
+
+    for node in "${selected_hosts[@]}"; do
+      status_file="${build_status_dir}/${node}.rc"
+      if [ ! -s "${status_file}" ]; then
+        failed_hosts+=("${node}")
+        failed_codes+=("missing-status")
+        continue
+      fi
+      rc="$(cat "${status_file}")"
+      if [ "${rc}" != "0" ]; then
+        failed_hosts+=("${node}")
+        failed_codes+=("${rc}")
+      fi
+    done
+
+    if [ "${#failed_hosts[@]}" -gt 0 ]; then
+      echo "Build phase failed for ${#failed_hosts[@]} host(s):" >&2
+      for i in "${!failed_hosts[@]}"; do
+        node="${failed_hosts[$i]}"
+        rc="${failed_codes[$i]}"
+        echo "  - ${node} (exit=${rc}, log=${build_log_dir}/${node}.log)" >&2
+      done
+      exit 1
+    fi
+  fi
+
+  if [ "${ACTION}" = "build" ]; then
+    return
+  fi
+
+  failed_hosts=()
+  failed_codes=()
+
+  if [ "${JOBS}" -eq 1 ]; then
+    for node in "${selected_hosts[@]}"; do
+      [ -n "${node}" ] || continue
+      out_file="${build_out_dir}/${node}.path"
+      if [ ! -s "${out_file}" ]; then
+        echo "Missing built output path for ${node}: ${out_file}" >&2
+        return 1
+      fi
+      built_out_path="$(cat "${out_file}")"
+      deploy_host "${node}" "${built_out_path}"
     done
     return
   fi
 
-  ensure_tmp_dir
-  log_dir="${DEPLOY_TMP_DIR}/logs"
-  status_dir="${DEPLOY_TMP_DIR}/status"
-  mkdir -p "${log_dir}" "${status_dir}"
-
   active_jobs=0
   for node in "${selected_hosts[@]}"; do
     [ -n "${node}" ] || continue
-    log_file="${log_dir}/${node}.log"
-    status_file="${status_dir}/${node}.rc"
+    log_file="${deploy_log_dir}/${node}.log"
+    status_file="${deploy_status_dir}/${node}.rc"
+    out_file="${build_out_dir}/${node}.path"
     (
       set +e
-      run_host "${node}" > >(sed -u "s/^/[${node}] /" | tee -a "${log_file}") \
-        2> >(sed -u "s/^/[${node}] /" | tee -a "${log_file}" >&2)
-      rc="$?"
+      if [ ! -s "${out_file}" ]; then
+        echo "Missing built output path for ${node}: ${out_file}" >&2
+        rc=1
+      else
+        built_out_path="$(cat "${out_file}")"
+        deploy_host "${node}" "${built_out_path}" > >(sed -u "s/^/[${node}] /" | tee -a "${log_file}") \
+          2> >(sed -u "s/^/[${node}] /" | tee -a "${log_file}" >&2)
+        rc="$?"
+      fi
       printf '%s\n' "${rc}" > "${status_file}"
       exit "${rc}"
     ) &
@@ -560,7 +767,7 @@ run_hosts() {
   done
 
   for node in "${selected_hosts[@]}"; do
-    status_file="${status_dir}/${node}.rc"
+    status_file="${deploy_status_dir}/${node}.rc"
     if [ ! -s "${status_file}" ]; then
       failed_hosts+=("${node}")
       failed_codes+=("missing-status")
@@ -574,11 +781,11 @@ run_hosts() {
   done
 
   if [ "${#failed_hosts[@]}" -gt 0 ]; then
-    echo "Parallel run failed for ${#failed_hosts[@]} host(s):" >&2
+    echo "Deploy phase failed for ${#failed_hosts[@]} host(s):" >&2
     for i in "${!failed_hosts[@]}"; do
       node="${failed_hosts[$i]}"
       rc="${failed_codes[$i]}"
-      echo "  - ${node} (exit=${rc}, log=${log_dir}/${node}.log)" >&2
+      echo "  - ${node} (exit=${rc}, log=${deploy_log_dir}/${node}.log)" >&2
     done
     exit 1
   fi
@@ -598,9 +805,6 @@ main() {
     fi
     config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
     init_deploy_settings "${config_json}"
-    if [ "${DRY_RUN}" -eq 0 ]; then
-      decrypt_secrets_dir_in_place "${DEPLOY_SECRETS_DIR}"
-    fi
   fi
 
   all_hosts_json="$(load_all_hosts_json)"

@@ -1,5 +1,6 @@
 {...}: {
   imports = [
+    ../../lib/nixbot/bastion.nix
     ../../lib/devices/gmtek-evo-x2.nix
     ../../lib/swap-auto.nix
     ../../lib/profiles/all.nix
