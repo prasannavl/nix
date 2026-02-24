@@ -8,7 +8,7 @@
     };
     pvl-x2 = {
       target = "pvl-x2";
-      bootstrapNixbotKey = "data/secrets/nixbot.key";
+      bootstrapNixbotKey = "data/secrets/nixbot.key.age";
       bootstrapUser = "pvl";
     };
     llmug-rivendell = {
@@ -18,7 +18,7 @@
 
   defaults = {
     user = "nixbot";
-    key = "data/secrets/nixbot.key";
+    key = "data/secrets/nixbot.key.age";
     knownHosts = null;
   };
 }

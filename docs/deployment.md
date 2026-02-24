@@ -1,20 +1,19 @@
 # Deployment Decisions
 
-This document records the deployment architecture and key-handling decisions for `nixbot`.
+This document records the deployment architecture and key-handling model for `nixbot`.
 
 ## Current Model
 
 - Bastion host: `pvl-x2` (`hosts/pvl-x2/default.nix`, imports `lib/nixbot/bastion.nix`)
 - Deploy orchestration: `scripts/nixbot-deploy.sh`
 - Deploy mapping/config: `hosts/nixbot.nix`
-- Secrets storage: `data/secrets/*.key` (SOPS-encrypted)
+- Secrets storage: `data/secrets/*.age` (age/agenix)
 
 ## Key Roles
 
 ### 1) GitHub Actions -> Bastion
 
 - Keypair: `nixbot-bastion-ssh.key` / `nixbot-bastion-ssh.key.pub`
-- Private key is used only by GitHub Actions (`NIXBOT_BASTION_SSH_KEY`).
 - Public key is restricted on bastion with forced command:
   - `/var/lib/nixbot/ssh-gate.sh`
 - Config source:
@@ -25,57 +24,38 @@ This document records the deployment architecture and key-handling decisions for
 
 - Keypair: `nixbot.key` / `nixbot.pub`
 - `nixbot.pub` is the authorized deploy key on target hosts.
-- `nixbot.key` is SOPS-encrypted at `data/secrets/nixbot.key`.
-- Deploy script uses this key directly (after decrypt-in-place):
-  - `hosts/nixbot.nix` defaults:
-    - `user = "nixbot"`
-    - `key = "data/secrets/nixbot.key"`
+- Encrypted secret file:
+  - `data/secrets/nixbot.key.age`
+- Deploy mapping defaults (`hosts/nixbot.nix`):
+  - `user = "nixbot"`
+  - `key = "data/secrets/nixbot.key.age"`
 
-### 3) sops-nix Runtime Decryption on Bastion
+### 3) Runtime Secret Install on Bastion (agenix)
 
-- On bastion, `sops-nix` installs `nixbot.key` to:
+- `agenix` installs the deploy key to:
   - `/var/lib/nixbot/.ssh/id_ed25519`
-- `sops-nix` decrypts using SSH identity path:
-  - `sops.age.sshKeyPaths = [ "/var/lib/nixbot/.ssh/id_ed25519" ]`
+- Decryption identity path (bootstrap key):
+  - `age.identityPaths = [ "/var/lib/nixbot/.ssh/bootstrap_id_ed25519" ]`
 - Config source: `lib/nixbot/bastion.nix`
 
 ## Bootstrap Strategy
 
-Bootstrap is intentionally simple and does **not** rotate or inject SSH host keys.
-
-- `hosts/nixbot.nix` has per-host optional:
-  - `bootstrapNixbotKey = "data/secrets/nixbot.key"`
+- `hosts/nixbot.nix` supports per-host:
+  - `bootstrapNixbotKey = "data/secrets/nixbot.key.age"`
 - During deploy, `scripts/nixbot-deploy.sh`:
-  - decrypts secrets in `data/secrets` in place
-  - injects decrypted `nixbot.key` to target:
-    - `/var/lib/nixbot/.ssh/id_ed25519`
-  - applies perms/ownership (`0400`, `nixbot:nixbot` when user exists)
+  - decrypts `*.age` key files using local age identity file (`AGE_KEY_FILE`)
+  - injects bootstrap key to:
+    - `/var/lib/nixbot/.ssh/bootstrap_id_ed25519`
   - continues with `nixos-rebuild`
 
-This avoids touching `/etc/ssh/ssh_host_*` keys entirely.
+## Recipients
 
-## Why This Model
-
-- One deploy key source of truth: `data/secrets/nixbot.key`
-- Simpler key rotation and less moving parts
-- No host-key mutation during deploy (avoids known_hosts churn)
-- Keeps GH ingress key separated from internal deploy key
-
-## Key Rotation Procedure
-
-1. Add new deploy public key to all target hosts (keep old key temporarily).
-2. Replace and re-encrypt `data/secrets/nixbot.key`.
-3. Deploy all hosts.
-4. Remove old public key from authorized keys.
-
-If needed, keep `bootstrapNixbotKey` configured during transition.
+- agenix recipients file:
+  - `data/secrets/default.nix`
+- This maps each `*.age` secret path to recipient public keys.
 
 ## Operational Notes
 
-- `scripts/nixbot-deploy.sh` decrypts secrets in place and re-encrypts on cleanup.
-- `--dry` does not perform decrypt/inject steps.
-- `knownHosts = null` means deploy script uses `ssh-keyscan` for temporary host pinning file.
+- `--dry` does not perform remote injection.
+- `knownHosts = null` means deploy script uses `ssh-keyscan` for temporary host pinning.
 - For strict pinning, set `knownHosts` per host in `hosts/nixbot.nix`.
-- To prevent committing plaintext secrets, enable repo hooks once:
-  - `scripts/git-install-hooks.sh`
-  - This enables `.githooks/pre-commit`, which validates staged `data/secrets/*.key` files are valid SOPS-encrypted blobs.

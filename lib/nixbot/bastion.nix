@@ -18,14 +18,13 @@ in {
     "d /var/lib/nixbot/.ssh 0700 nixbot nixbot -"
   ];
 
-  sops.secrets.nixbot-ssh-key = {
-    sopsFile = ../../data/secrets/nixbot.key;
-    format = "binary";
+  age.secrets.nixbot-ssh-key = {
+    file = ../../data/secrets/nixbot.key.age;
     path = "/var/lib/nixbot/.ssh/id_ed25519";
     owner = "nixbot";
     group = "nixbot";
     mode = "0400";
   };
 
-  sops.age.sshKeyPaths = ["/var/lib/nixbot/.ssh/bootstrap_id_ed25519"];
+  age.identityPaths = ["/var/lib/nixbot/.ssh/bootstrap_id_ed25519"];
 }

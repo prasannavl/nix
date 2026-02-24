@@ -1,9 +1,0 @@
-keys:
-  - &pvl ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIAAsB0nJcxF0wjuzXK0VTF1jbQbT24C1MM8NesCuwBb
-  - &nixbot ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOVbOBRhD/RoCDHVxDGOxrTKcT5AkCBKYlHMU0q1brJP
-creation_rules:
-  - path_regex: data/secrets/.*\.key$
-    key_groups:
-      - age:
-        - *pvl
-        - *nixbot

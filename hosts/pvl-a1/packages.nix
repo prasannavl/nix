@@ -116,7 +116,6 @@
       git-secrets
       git-crypt
       git-credential-manager
-      sops
       age
       sbctl
       ente-auth

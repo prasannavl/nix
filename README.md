@@ -11,7 +11,7 @@ modules and composed via `flake.nix`.
 - `lib/*.nix`: single-topic NixOS modules imported directly by hosts.
 - `overlays/`: custom overlays used by the system.
 - `hosts/nixbot.nix`: deploy mapping (plain Nix attrset).
-- `.sops.yaml`: SOPS encryption rules/recipients.
+- `data/secrets/default.nix`: agenix recipients map for `*.age` files.
 
 ## GitHub Actions Deploy
 
@@ -28,7 +28,7 @@ High-level architecture:
 
 - GitHub Actions connects to bastion (`pvl-x2`) using a restricted ingress key and forced command (`ssh-gate`).
 - Bastion runs `scripts/nixbot-deploy.sh` to build/deploy selected NixOS hosts.
-- Deploy SSH key material is stored as SOPS-encrypted secrets in `data/secrets/*.key`, with bootstrap and rotation rules documented in deployment docs.
+- Deploy SSH key material is stored as age-encrypted secrets in `data/secrets/*.age`, with bootstrap and rotation rules documented in deployment docs.
 
 Deployment-specific architecture, key model, bootstrap flow, rotation procedure,
 and operational notes are documented in:

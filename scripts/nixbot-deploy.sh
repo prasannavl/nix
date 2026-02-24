@@ -17,7 +17,7 @@ Options:
   --config         Nix deploy config path (default: hosts/nixbot.nix)
 
 Environment:
-  SOPS_AGE_KEY           Age private key used by sops for decryption/encryption
+  AGE_KEY_FILE           Age/SSH identity file used for decrypting *.age secrets (default: ~/.ssh/id_ed25519)
   DEPLOY_USER            Optional default user override
   DEPLOY_SSH_KEY_PATH    Optional encrypted key file path override for all hosts
   DEPLOY_SSH_KNOWN_HOSTS Optional known_hosts override for all hosts
@@ -271,7 +271,7 @@ resolve_key_source_path() {
 
 resolve_runtime_key_file() {
   local key_path="$1"
-  local src_path out_file
+  local src_path out_file age_key_file
 
   src_path="$(resolve_key_source_path "${key_path}")"
   if [ ! -f "${src_path}" ]; then
@@ -279,10 +279,16 @@ resolve_runtime_key_file() {
     return
   fi
 
-  if sops --decrypt --output /dev/null "${src_path}" >/dev/null 2>&1; then
+  if [[ "${src_path}" = *.age ]]; then
+    age_key_file="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
+    echo "Using decrypt identity: ${age_key_file} for ${src_path}" >&2
+    if [ ! -f "${age_key_file}" ]; then
+      echo "Decrypt identity file not found: ${age_key_file}" >&2
+      exit 1
+    fi
     ensure_tmp_dir
     out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
-    sops --decrypt --output "${out_file}" "${src_path}"
+    age --decrypt -i "${age_key_file}" -o "${out_file}" "${src_path}"
     chmod 600 "${out_file}"
     printf '%s\n' "${out_file}"
     return
@@ -799,8 +805,8 @@ main() {
   parse_args "$@"
 
   if [ "${ACTION}" = "deploy" ]; then
-    if ! command -v sops >/dev/null 2>&1; then
-      echo "'sops' command is required for deploy key decryption" >&2
+    if ! command -v age >/dev/null 2>&1; then
+      echo "'age' command is required for deploy key decryption" >&2
       exit 1
     fi
     config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"

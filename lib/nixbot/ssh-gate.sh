@@ -114,7 +114,7 @@ run_deploy() {
   GIT_SSH_COMMAND="${GIT_SSH_CMD}" git fetch --prune origin
   git checkout --detach "${SHA}"
 
-  nix shell nixpkgs#sops nixpkgs#jq -c "${DEPLOY_SCRIPT}" \
+  nix shell nixpkgs#age nixpkgs#jq -c "${DEPLOY_SCRIPT}" \
     --hosts "${HOSTS}" \
     --action "${ACTION}" \
     --goal "${DEPLOY_GOAL}" \

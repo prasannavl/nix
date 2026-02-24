@@ -1,1 +1,1 @@
-data/secrets/*.key -text diff
+data/secrets/*.age -text diff
