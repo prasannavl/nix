@@ -24,8 +24,8 @@
     powerManagement.finegrained = lib.mkDefault true;
     open = lib.mkDefault true;
     nvidiaSettings = lib.mkDefault true;
+    dynamicBoost.enable = lib.mkDefault true;
     nvidiaPersistenced = lib.mkDefault false;
-    dynamicBoost.enable = lib.mkDefault false;
     # forceFullCompositionPipeline = true;
     prime = rec {
       offload.enable = true;
