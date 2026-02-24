@@ -59,16 +59,7 @@
               volumes:
                 - /var/lib/llmug/open-webui:/app/backend/data:Z
         '';
-        serviceOverrides = {
-          after = [
-            "network-online.target"
-            "llmug-ollama.service"
-          ];
-          wants = [
-            "network-online.target"
-            "llmug-ollama.service"
-          ];
-        };
+        dependsOn = ["ollama"];
       };
     };
   };

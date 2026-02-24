@@ -55,6 +55,24 @@
         default = {};
         description = "Extra attributes merged into generated systemd.user.services.<name>.";
       };
+
+      dependsOn = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Hard dependencies. Generates Requires+After. Plain names resolve to generated services in this stack; unit names like foo.service are used as-is.";
+      };
+
+      wants = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Soft dependencies. Generates Wants+After. Plain names resolve to generated services in this stack; unit names like foo.service are used as-is.";
+      };
+
+      waitForNetwork = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether to add network-online.target to Wants+After.";
+      };
     };
   });
 
@@ -128,6 +146,24 @@
       then service.serviceName
       else "${stack.servicePrefix}${serviceName}";
 
+    resolveGeneratedServiceName = svcName: let
+      svc = stack.services.${svcName};
+    in
+      if svc.serviceName != null
+      then svc.serviceName
+      else "${stack.servicePrefix}${svcName}";
+
+    resolveDependencyUnit = dep:
+      if builtins.hasAttr dep stack.services
+      then "${resolveGeneratedServiceName dep}.service"
+      else if builtins.match ".*\\.[A-Za-z0-9_-]+$" dep != null
+      then dep
+      else "${stack.servicePrefix}${dep}.service";
+
+    dependsOnUnits = lib.unique (map resolveDependencyUnit service.dependsOn);
+    wantsUnits = lib.unique (map resolveDependencyUnit service.wants);
+    networkOnlineUnits = lib.optional service.waitForNetwork "network-online.target";
+
     podmanComposeCmd = "${pkgs.podman}/bin/podman compose -f ${resolvedComposeFile}";
 
     etcPathMatch = builtins.match "^/etc/(.+)$" resolvedSourceFile;
@@ -138,10 +174,11 @@
 
     baseSystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName}";
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
+      after = lib.unique (networkOnlineUnits ++ dependsOnUnits ++ wantsUnits);
+      wants = lib.unique (networkOnlineUnits ++ wantsUnits);
       wantedBy = ["default.target"];
       unitConfig.ConditionUser = resolvedUser;
+      unitConfig.Requires = dependsOnUnits;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
