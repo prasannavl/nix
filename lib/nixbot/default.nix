@@ -29,5 +29,12 @@ in {
     }
   ];
 
+  services.openssh.extraConfig = lib.mkAfter ''
+    Match User nixbot
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      AuthenticationMethods publickey
+  '';
+
   nix.settings.trusted-users = lib.mkAfter ["nixbot"];
 }

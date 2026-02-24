@@ -4,7 +4,7 @@
     repoUrl = "ssh://git@github.com/prasannavl/nix.git";
   };
 in {
-  users.users.nixbot.openssh.authorizedKeys.keys = lib.mkAfter [
+  users.users.nixbot.openssh.authorizedKeys.keys = lib.mkForce [
     ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="/var/lib/nixbot/ssh-gate.sh" ${userdata.bastionSshKey}''
   ];
 
