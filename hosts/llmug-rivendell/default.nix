@@ -6,6 +6,7 @@
   imports = [
     ../../lib/profiles/systemd-container.nix
     ../../lib/hardware/nvidia.nix
+    ../../lib/podman.nix
     ../../lib/virtualization.nix
     ./packages.nix
     ./firewall.nix
