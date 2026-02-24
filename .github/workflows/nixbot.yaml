@@ -94,7 +94,7 @@ jobs:
             -o UserKnownHostsFile="${known_hosts_file}"
           )
 
-          ssh "${ssh_opts[@]}" "${user}@${host}" \
+          ssh "${ssh_opts[@]}" -- "${user}@${host}" \
             "--sha ${GIT_SHA} --hosts ${hosts} --action ${action}"
 
           rm -f "${key_file}" "${known_hosts_file}"

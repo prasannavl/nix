@@ -22,6 +22,11 @@ deny() {
   exit 1
 }
 
+print_cmd() {
+  printf '%q ' "$@"
+  echo
+}
+
 parse_cli_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -60,11 +65,17 @@ parse_request() {
   local -a args=()
 
   if [ -n "${ORIGINAL_COMMAND}" ]; then
+    echo "Received SSH_ORIGINAL_COMMAND:"
+    echo "${ORIGINAL_COMMAND}"
     read -r -a args <<<"${ORIGINAL_COMMAND}"
     parse_cli_args "${args[@]}"
     return
   fi
 
+  if [ "$#" -gt 0 ]; then
+    echo "Received CLI command:"
+    print_cmd "$@"
+  fi
   parse_cli_args "$@"
 }
 
@@ -113,6 +124,9 @@ run_deploy() {
   cd "${REPO_PATH}"
   GIT_SSH_COMMAND="${GIT_SSH_CMD}" git fetch --prune origin
   git checkout --detach "${SHA}"
+
+  echo "Executing deploy command:"
+  print_cmd nix shell nixpkgs#age nixpkgs#jq -c "${DEPLOY_SCRIPT}" --hosts "${HOSTS}" --action "${ACTION}" --goal "${DEPLOY_GOAL}" --config "${DEPLOY_CONFIG}"
 
   nix shell nixpkgs#age nixpkgs#jq -c "${DEPLOY_SCRIPT}" \
     --hosts "${HOSTS}" \
