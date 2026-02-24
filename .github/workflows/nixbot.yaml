@@ -25,6 +25,7 @@ jobs:
     if: github.ref == 'refs/heads/master'
     name: Trigger remote nixbot
     runs-on: ubuntu-latest
+    environment: default
     steps:
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
