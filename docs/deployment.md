@@ -81,8 +81,9 @@ Important: successful forced-command bootstrap check does not imply general shel
    - `data/secrets/nixbot-bastion-ssh.key.age`
 4. Deploy bastion first, then the rest of hosts.
 5. Update CI secret `NIXBOT_BASTION_SSH_KEY` to the new bastion private key.
-6. Validate forced-command access and one full deploy run.
-7. Remove old public keys from both lists, re-encrypt again, and deploy.
+6. If you run `scripts/nixbot-deploy.sh` from outside bastion, also rotate `DEPLOY_BASTION_SSH_KEY_PATH` (forced-command bootstrap check key) to the new bastion ingress key file.
+7. Validate forced-command access and one full deploy run.
+8. Remove old public keys from both lists, re-encrypt again, and deploy.
 
 ### Bastion-First Single-Pass Cutover With Legacy Node Access
 Use this when you want bastion on new keys immediately, but some nodes still only trust the old `nixbot` key.
@@ -94,8 +95,11 @@ Use this when you want bastion on new keys immediately, but some nodes still onl
 3. Set defaults in `hosts/nixbot.nix` to the new key.
 4. Add per-host `key` overrides for nodes that still require legacy auth, for example:
    - `hosts.<old-node>.key = "data/secrets/nixbot-legacy.key.age";`
-5. Deploy bastion and switch CI ingress key to the new bastion key.
-6. Run deploys in phase 2 to migrate old nodes onto new public key trust.
-7. Remove per-host legacy `key` overrides, remove legacy secret material, re-encrypt recipients without legacy keys.
+5. For nodes that still require old bootstrap injection material, also set:
+   - `hosts.<old-node>.bootstrapNixbotKey = "data/secrets/nixbot-legacy.key.age";`
+6. Deploy bastion and switch CI ingress key to the new bastion key.
+7. If applicable, switch `DEPLOY_BASTION_SSH_KEY_PATH` for local orchestrator runs to the new bastion ingress key.
+8. Run deploys in phase 2 to migrate old nodes onto new public key trust.
+9. Remove per-host legacy `key` and `bootstrapNixbotKey` overrides, remove legacy secret material, re-encrypt recipients without legacy keys.
 
 Important: this flow is for controlled migration. If compromise is suspected, do revoke-first incident rotation instead of overlap.
