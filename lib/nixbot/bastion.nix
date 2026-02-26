@@ -1,21 +1,26 @@
-{lib, pkgs, ...}: let
+{
+  pkgs,
+  ...
+}: let
   userdata = (import ../../users/userdata.nix).nixbot;
-  sshGateScript = pkgs.replaceVars ./ssh-gate.sh {
-    repoUrl = "ssh://git@github.com/prasannavl/nix.git";
-  };
+  bastionSshKeys = if userdata ? bastionSshKeys then userdata.bastionSshKeys else [userdata.bastionSshKey];
+  forcedCommandKey = key: ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="/var/lib/nixbot/nixbot-deploy.sh" ${key}'';
 in {
-  users.users.nixbot.openssh.authorizedKeys.keys = lib.mkForce [
-    ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="/var/lib/nixbot/ssh-gate.sh" ${userdata.bastionSshKey}''
-  ];
+  users.users.nixbot.openssh.authorizedKeys.keys = map forcedCommandKey bastionSshKeys;
 
   system.activationScripts.nixbotSshGate = ''
     install -d -m 0755 -o nixbot -g nixbot /var/lib/nixbot
-    install -m 0755 -o root -g root ${sshGateScript} /var/lib/nixbot/ssh-gate.sh
+    install -m 0755 ${../../scripts/nixbot-deploy.sh} /var/lib/nixbot/nixbot-deploy.sh
     install -d -m 0700 -o nixbot -g nixbot /var/lib/nixbot/.ssh
   '';
 
   systemd.tmpfiles.rules = [
     "d /var/lib/nixbot/.ssh 0700 nixbot nixbot -"
+  ];
+
+  environment.systemPackages = with pkgs; [
+    age
+    jq
   ];
 
   age.secrets.nixbot-ssh-key = {

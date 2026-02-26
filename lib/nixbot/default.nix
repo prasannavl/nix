@@ -1,5 +1,6 @@
 {lib, pkgs, ...}: let
   userdata = (import ../../users/userdata.nix).nixbot;
+  sshKeys = if userdata ? sshKeys then userdata.sshKeys else [userdata.sshKey];
 in {
   users.groups.nixbot = {
     gid = userdata.uid;
@@ -14,7 +15,7 @@ in {
     createHome = true;
     home = "/var/lib/nixbot";
     shell = pkgs.bashInteractive;
-    openssh.authorizedKeys.keys = [userdata.sshKey];
+    openssh.authorizedKeys.keys = sshKeys;
   };
 
   security.sudo.extraRules = [
