@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   run:
@@ -33,35 +34,15 @@ jobs:
           set -euo pipefail
           echo "TS_HOSTNAME=gh-nixbot-${GITHUB_RUN_NUMBER}ts" >> "$GITHUB_ENV"
 
-      - name: Verify Tailscale OAuth secrets in CI
-        shell: bash
-        env:
-          TS_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
-          TS_OAUTH_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
-        run: |
-          set -euo pipefail
-
-          echo "id_len=${#TS_OAUTH_CLIENT_ID} secret_len=${#TS_OAUTH_SECRET}"
-          code="$(curl -sS -o /tmp/ts-oauth-token.json -w '%{http_code}' \
-            -u "${TS_OAUTH_CLIENT_ID}:${TS_OAUTH_SECRET}" \
-            -d 'grant_type=client_credentials' \
-            -d 'scope=auth_keys' \
-            -d 'tags=tag:ci' \
-            https://api.tailscale.com/api/v2/oauth/token)"
-          echo "oauth_token_http_code=${code}"
-          cat /tmp/ts-oauth-token.json
-          test "${code}" = "200"
-
       - name: Connect to Tailscale
         id: tailscale
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          audience: ${{ secrets.TAILSCALE_OIDC_AUDIENCE }}
           tags: tag:ci
           hostname: ${{ env.TS_HOSTNAME }}
           version: latest
-          use-cache: "false"
 
       - name: Trigger deploy from bastion over SSH
         if: steps.tailscale.outcome == 'success'
