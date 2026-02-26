@@ -28,6 +28,8 @@ jobs:
     environment: prod
     steps:
       - name: Connect to Tailscale
+        id: tailscale
+        continue-on-error: true
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
@@ -35,7 +37,45 @@ jobs:
           tags: tag:ci
           args: --accept-routes
 
+      - name: Collect Tailscale diagnostics on failure
+        if: steps.tailscale.outcome == 'failure'
+        shell: bash
+        run: |
+          set +e
+
+          echo "::group::tailscale binaries"
+          which tailscale || true
+          which tailscaled || true
+          tailscale version || true
+          tailscaled --version || true
+          echo "::endgroup::"
+
+          echo "::group::tailscale client status"
+          sudo tailscale status --peers=false || true
+          sudo tailscale ip || true
+          echo "::endgroup::"
+
+          echo "::group::tailscaled logs (journalctl)"
+          sudo journalctl -u tailscaled --no-pager -n 200 || true
+          echo "::endgroup::"
+
+          echo "::group::tailscaled process list"
+          ps aux | grep -E '[t]ailscaled|[t]ailscale up' || true
+          echo "::endgroup::"
+
+          echo "::group::possible tailscale log files"
+          sudo find /tmp /var/log -maxdepth 3 -type f \( -name '*tailscale*' -o -name '*tailscaled*' \) -print 2>/dev/null || true
+          echo "::endgroup::"
+
+      - name: Fail job if Tailscale connection failed
+        if: steps.tailscale.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Tailscale connection failed; see diagnostics above." >&2
+          exit 1
+
       - name: Trigger deploy from bastion over SSH
+        if: steps.tailscale.outcome == 'success'
         shell: bash
         env:
           BASTION_HOST: ${{ secrets.NIXBOT_BASTION_HOST }}
