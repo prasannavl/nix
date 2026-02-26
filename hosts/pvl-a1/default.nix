@@ -11,7 +11,6 @@
     ./packages.nix
     ./firewall.nix
     ./podman.nix
-    # ./incus.nix
     ./users.nix
   ];
 }
