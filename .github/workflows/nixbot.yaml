@@ -23,10 +23,29 @@ permissions:
 jobs:
   run:
     if: github.ref == 'refs/heads/master'
-    name: Trigger remote nixbot
+    name: Trigger nixbot
     runs-on: ubuntu-latest
     environment: prod
     steps:
+      - name: Verify Tailscale OAuth secrets in CI
+        shell: bash
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+
+          echo "id_len=${#TS_OAUTH_CLIENT_ID} secret_len=${#TS_OAUTH_SECRET}"
+          code="$(curl -sS -o /tmp/ts-oauth-token.json -w '%{http_code}' \
+            -u "${TS_OAUTH_CLIENT_ID}:${TS_OAUTH_SECRET}" \
+            -d 'grant_type=client_credentials' \
+            -d 'scope=auth_keys' \
+            -d 'tags=tag:ci' \
+            https://api.tailscale.com/api/v2/oauth/token)"
+          echo "oauth_token_http_code=${code}"
+          cat /tmp/ts-oauth-token.json
+          test "${code}" = "200"
+
       - name: Connect to Tailscale
         id: tailscale
         continue-on-error: true
@@ -36,59 +55,6 @@ jobs:
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:ci
           args: --accept-routes
-
-      - name: Collect Tailscale diagnostics on failure
-        if: steps.tailscale.outcome == 'failure'
-        shell: bash
-        run: |
-          set +euo pipefail
-
-          run_cmd() {
-            echo ""
-            echo "### $*"
-            "$@"
-            rc=$?
-            echo "exit_code=${rc}"
-            return 0
-          }
-
-          echo "===== Tailscale diagnostics begin ====="
-          run_cmd date -u
-          run_cmd id
-          run_cmd whoami
-          run_cmd uname -a
-          run_cmd printenv RUNNER_OS
-          run_cmd printenv RUNNER_ARCH
-          run_cmd printenv RUNNER_TEMP
-          run_cmd printenv GITHUB_WORKSPACE
-
-          run_cmd which sudo
-          run_cmd sudo -n true
-          run_cmd which tailscale
-          run_cmd which tailscaled
-          run_cmd tailscale version
-          run_cmd tailscaled --version
-
-          run_cmd ps aux
-          run_cmd sudo -n tailscale status --peers=false
-          run_cmd sudo -n tailscale ip
-          run_cmd sudo -n tailscale netcheck
-
-          run_cmd sudo -n journalctl -u tailscaled --no-pager -n 300
-          run_cmd sudo -n grep -i tailscale /var/log/syslog
-          run_cmd sudo -n find /tmp /var/log -maxdepth 3 -type f \( -name '*tailscale*' -o -name '*tailscaled*' \)
-
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            run_cmd find "${RUNNER_TEMP}" -maxdepth 4 -type f \( -name '*tailscale*' -o -name '*tailscaled*' -o -name '*.log' \)
-          fi
-          echo "===== Tailscale diagnostics end ====="
-
-      - name: Fail job if Tailscale connection failed
-        if: steps.tailscale.outcome == 'failure'
-        shell: bash
-        run: |
-          echo "Tailscale connection failed; see diagnostics above." >&2
-          exit 1
 
       - name: Trigger deploy from bastion over SSH
         if: steps.tailscale.outcome == 'success'

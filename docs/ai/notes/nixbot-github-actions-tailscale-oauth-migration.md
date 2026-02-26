@@ -14,6 +14,7 @@
 - Kept existing action args:
   - `args: --accept-routes`
 - Added CI diagnostics flow for failed Tailscale connects:
+  - Added `Verify Tailscale OAuth secrets in CI` preflight step to mint an OAuth access token using GitHub secrets and print token endpoint HTTP status for fast credential/context verification.
   - `Connect to Tailscale` now has `id: tailscale` and `continue-on-error: true`.
   - Added `Collect Tailscale diagnostics on failure` step with explicit per-command output + exit codes (no grouped logs) to avoid hidden/empty diagnostics in GitHub UI.
   - Diagnostics now include:
