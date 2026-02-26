@@ -3,13 +3,11 @@
     username = "nixbot";
     uid = 10000;
     sshKeys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOVbOBRhD/RoCDHVxDGOxrTKcT5AkCBKYlHMU0q1brJP"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILcebdSP8tXYbp+vX0VM/cBFFh8sjLQOcf1futIV8sWD nixbot-deploy-2026q1"
     ];
     bastionSshKeys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBC+WylBLVXmMjiZ51/5SfT2c4gU729wEL9C7DWarW7e nixbot-bastion-github-actions"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF221ghIGV2YzknYaDxSeo0LAD+8tNd4xUz0UMwsUdsc nixbot-bastion-github-actions-2026q1"
     ];
-
-    # Backward-compatible aliases for modules/scripts still reading singular attrs.
     sshKey = builtins.head sshKeys;
     bastionSshKey = builtins.head bastionSshKeys;
   };

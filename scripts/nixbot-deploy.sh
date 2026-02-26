@@ -501,6 +501,7 @@ check_bootstrap_via_forced_command() {
   local ssh_target="$2"
   local -a ssh_opts=("${@:3}")
   local -a check_ssh_opts=()
+  local -a check_remote_cmd=()
   local check_output=""
   local check_sha=""
   local check_key_file=""
@@ -555,12 +556,17 @@ check_bootstrap_via_forced_command() {
     remote_config_path="${REPO_PATH%/}/${DEPLOY_CONFIG_PATH}"
   fi
 
+  check_remote_cmd=(/var/lib/nixbot/nixbot-deploy.sh --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
   if [ -n "${check_sha}" ]; then
-    if check_output="$(ssh "${check_ssh_opts[@]}" -- "${ssh_target}" --sha "${check_sha}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}" 2>&1)"; then
+    check_remote_cmd=(/var/lib/nixbot/nixbot-deploy.sh --sha "${check_sha}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
+  fi
+
+  if [ -n "${check_sha}" ]; then
+    if check_output="$(ssh "${check_ssh_opts[@]}" "${ssh_target}" "${check_remote_cmd[@]}" 2>&1)"; then
       echo "==> Bootstrap key validated via forced command for ${node}"
       return 0
     fi
-  elif check_output="$(ssh "${check_ssh_opts[@]}" -- "${ssh_target}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}" 2>&1)"; then
+  elif check_output="$(ssh "${check_ssh_opts[@]}" "${ssh_target}" "${check_remote_cmd[@]}" 2>&1)"; then
     echo "==> Bootstrap key validated via forced command for ${node}"
     return 0
   fi
@@ -1145,6 +1151,16 @@ main() {
     echo "Received SSH_ORIGINAL_COMMAND:"
     echo "${SSH_ORIGINAL_COMMAND}"
     read -r -a request_args <<<"${SSH_ORIGINAL_COMMAND}"
+    if [ "${#request_args[@]}" -gt 0 ] && [ "${request_args[0]}" = "--" ]; then
+      request_args=("${request_args[@]:1}")
+    fi
+    if [ "${#request_args[@]}" -gt 0 ]; then
+      case "${request_args[0]}" in
+        nixbot-deploy.sh|*/nixbot-deploy.sh)
+          request_args=("${request_args[@]:1}")
+          ;;
+      esac
+    fi
   fi
 
   parse_args "${request_args[@]}"

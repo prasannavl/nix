@@ -4,11 +4,17 @@ This playbook prepares key material for `docs/ai/playbooks/nixbot-key-rotation-e
 
 ## Confirmation Protocol (Mandatory)
 
-Before every step:
-1. Agent prints step number, exact command(s), and expected outcome.
-2. Agent asks: `Proceed with Step <N>? (yes/no)`
-3. Execute only on explicit `yes`.
-4. On failure, stop and ask how to proceed.
+One-time confirmation gate:
+1. Agent prints the full workflow plan:
+   - all commands it will run
+   - expected outcomes for each step
+2. Agent asks once: `Proceed with keygen workflow? (yes/no)`
+3. If `yes`, execute steps sequentially without additional confirmations.
+4. On failure, stop immediately and ask how to proceed.
+5. On user stop/abort request, halt before next step.
+
+Execution behavior:
+- no additional prompts after initial `yes` unless a step fails.
 
 ## Inputs
 
@@ -21,7 +27,7 @@ Before every step:
 - `NEW_NIXBOT_PUB`
 - `NEW_BASTION_PUB`
 - `NEW_NIXBOT_KEY_AGE` (usually `data/secrets/nixbot.key.age` or staged path)
-- `NEW_BASTION_KEY_PRIVATE` (private key text/path for GitHub secret `NIXBOT_BASTION_SSH_KEY`)
+- `NEW_BASTION_KEY_PRIVATE` (private key file path for GitHub secret `NIXBOT_BASTION_SSH_KEY`)
 - optional `LEGACY_NIXBOT_KEY_AGE` for bastion-first cutover mode
 
 ## Step 1: Create Secure Working Directory
@@ -107,16 +113,14 @@ Preferred:
 Expected outcome:
 - updated `.age` files in `data/secrets`.
 
-## Step 7: Prepare CI Secret Payload
+## Step 7: Manual CI Secret Update (No Key Output)
 
-Run:
-
-```bash
-cat "${KEYGEN_DIR}/nixbot-bastion-ssh.key"
-```
+Actions:
+1. Use local file `${KEYGEN_DIR}/nixbot-bastion-ssh.key` to update GitHub secret `NIXBOT_BASTION_SSH_KEY`.
+2. Do not print, `cat`, or echo private key contents in agent output.
 
 Expected outcome:
-- private key content ready for GitHub `NIXBOT_BASTION_SSH_KEY`.
+- GitHub `NIXBOT_BASTION_SSH_KEY` updated without exposing key material in terminal logs.
 
 ## Step 8: Cleanup Local Plaintext Keys
 
@@ -137,5 +141,5 @@ Use generated values with:
 - `docs/ai/playbooks/nixbot-key-rotation-execution.md`
 
 Recommended next sequence:
-1. Run execution playbook Mode B for bastion-first cutover.
-2. Keep legacy node overrides only until phase-2 migration completes.
+1. Run execution playbook Mode A for overlap rotation from current repo state.
+2. Remove old keys after validation deploys pass.

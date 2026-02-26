@@ -11,6 +11,10 @@ Set these before execution:
 - `NEW_NIXBOT_KEY_AGE`: age file path for new deploy private key (example: `data/secrets/nixbot.key.age`).
 - `NEW_BASTION_KEY_PRIVATE`: path to new bastion private key file used by CI/local SSH calls.
 
+Sensitive handling:
+- Never print, `cat`, or echo `NEW_BASTION_KEY_PRIVATE` contents in terminal output.
+- Use path-only handling and manual secret updates for GitHub `NIXBOT_BASTION_SSH_KEY`.
+
 Optional for bastion-first cutover:
 
 - `LEGACY_NIXBOT_KEY_AGE`: age file path containing old deploy private key material (example: `data/secrets/nixbot-legacy.key.age`).
@@ -61,6 +65,7 @@ Expected outcome:
 Actions:
 - update GitHub secret `NIXBOT_BASTION_SSH_KEY` to new private key.
 - if running local orchestrator checks, set `DEPLOY_BASTION_SSH_KEY_PATH` to new bastion key age file/path.
+- do not print private key material during this step.
 
 Expected outcome:
 - forced-command calls authenticate with new ingress key.
