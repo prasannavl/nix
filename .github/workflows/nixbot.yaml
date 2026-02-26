@@ -48,13 +48,14 @@ jobs:
 
       - name: Connect to Tailscale
         id: tailscale
-        continue-on-error: true
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:ci
           args: --accept-routes
+          version: latest
+          use-cache: "false"
 
       - name: Trigger deploy from bastion over SSH
         if: steps.tailscale.outcome == 'success'
