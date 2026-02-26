@@ -5,5 +5,6 @@ let
   recipients = [pvl] ++ nixbotKeys;
 in {
   "data/secrets/nixbot.key.age".publicKeys = recipients;
+  "data/secrets/nixbot-legacy.key.age".publicKeys = recipients;
   "data/secrets/nixbot-bastion-ssh.key.age".publicKeys = recipients;
 }

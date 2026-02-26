@@ -33,6 +33,10 @@ Before every step:
 
 ## Mode A: Planned Overlap Rotation
 
+Mode A safety precondition:
+- Only use Mode A if all target hosts already trust `NEW_NIXBOT_PUB` before bastion switches to `NEW_NIXBOT_KEY_AGE`.
+- If any host may still require the old deploy key for SSH auth, use Mode B with `LEGACY_NIXBOT_KEY_AGE`.
+
 ### Step 1: Add New Public Keys (Overlap)
 Edit `users/userdata.nix`:
 - append `NEW_NIXBOT_PUB` to `nixbot.sshKeys`
@@ -50,6 +54,7 @@ scripts/age-secrets.sh encrypt data/secrets
 
 Expected outcome:
 - managed `.age` files updated with recipients from `data/secrets/default.nix`.
+- active deploy key material remains compatible with hosts targeted in Step 5 (or Mode B is used).
 
 ### Step 3: Deploy Bastion First
 Run:
@@ -104,9 +109,10 @@ Expected outcome:
 2. Ensure `LEGACY_NIXBOT_KEY_AGE` exists and is listed in `data/secrets/default.nix`.
 3. In `hosts/nixbot.nix`:
    - keep defaults on new key (`defaults.key = NEW_NIXBOT_KEY_AGE`)
+   - keep bootstrap defaults on new key (`defaults.bootstrapKey = NEW_NIXBOT_KEY_AGE`)
    - for each legacy node add:
      - `hosts.<node>.key = LEGACY_NIXBOT_KEY_AGE`
-     - `hosts.<node>.bootstrapNixbotKey = LEGACY_NIXBOT_KEY_AGE`
+     - `hosts.<node>.bootstrapKey = LEGACY_NIXBOT_KEY_AGE`
 
 Expected outcome:
 - bastion/new nodes can use new key.
@@ -149,7 +155,7 @@ Expected outcome:
 - legacy nodes now trust new public keys.
 
 ### Step 5: Remove Legacy Overrides + Material
-1. Remove per-host `key` and `bootstrapNixbotKey` legacy overrides from `hosts/nixbot.nix`.
+1. Remove per-host `key` and `bootstrapKey` legacy overrides from `hosts/nixbot.nix`.
 2. Remove legacy recipients/secret usage.
 3. Re-encrypt and deploy:
 

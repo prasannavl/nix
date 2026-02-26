@@ -12,5 +12,5 @@ Date: 2026-02-26
   - required operator inputs
   - mandatory confirmation protocol
   - Mode A: planned overlap rotation
-  - Mode B: bastion-first single-pass cutover with per-host `key` + `bootstrapNixbotKey` legacy overrides
+  - Mode B: bastion-first single-pass cutover with per-host `key` + `bootstrapKey` legacy overrides
   - incident caveat (revoke-first)

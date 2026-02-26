@@ -40,7 +40,7 @@ If bootstrap fails, fallback uses configured bootstrap user/key path.
   - `age`, `jq`
 - Ensure runtime SSH dir/permissions exist.
 - Configure age identity bootstrap path:
-  - `/var/lib/nixbot/.ssh/bootstrap_id_ed25519`
+  - `/var/lib/nixbot/.ssh/id_ed25519`
 
 ## Deploy Mapping (`hosts/nixbot.nix`)
 Defaults:
@@ -48,7 +48,11 @@ Defaults:
 - `key = "data/secrets/nixbot.key.age"`
 
 Optional per-host:
-- `bootstrapNixbotKey`, `bootstrapUser`, `bootstrapKeyPath`, `knownHosts`
+- `bootstrapKey`, `bootstrapUser`, `bootstrapKeyPath`, `knownHosts`
+
+Defaults may also include:
+- `bootstrapKey`
+- `bootstrapUser`
 
 ## Runtime Behavior Notes
 - Forced-command bootstrap success does not guarantee generic shell access.

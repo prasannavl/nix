@@ -31,5 +31,5 @@ in {
     mode = "0400";
   };
 
-  age.identityPaths = ["/var/lib/nixbot/.ssh/bootstrap_id_ed25519"];
+  age.identityPaths = ["/var/lib/nixbot/.ssh/id_ed25519"];
 }

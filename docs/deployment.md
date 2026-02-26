@@ -31,7 +31,7 @@ This document describes the current `nixbot` deployment architecture and securit
 - Installed from:
   - `data/secrets/nixbot.key.age`
 - Age bootstrap identity path:
-  - `/var/lib/nixbot/.ssh/bootstrap_id_ed25519`
+  - `/var/lib/nixbot/.ssh/id_ed25519`
 
 ## Bastion Wiring Requirements
 In `lib/nixbot/bastion.nix`:
@@ -43,8 +43,8 @@ In `lib/nixbot/bastion.nix`:
   - `environment.systemPackages` includes `age` and `jq`
 
 ## Bootstrap Strategy
-`hosts/nixbot.nix` supports per-host fallback fields:
-- `bootstrapNixbotKey`
+`hosts/nixbot.nix` supports bootstrap fallback fields:
+- `bootstrapKey` (defaults + optional per-host override)
 - `bootstrapUser`
 - `bootstrapKeyPath`
 
@@ -54,16 +54,20 @@ During deploy, script behavior is:
 3. If primary shell access fails, run forced-command bootstrap check (`--action check-bootstrap`) via bastion key.
 4. If bootstrap check still fails, inject bootstrap key using bootstrap user path.
 5. Continue deployment (currently via `nixos-rebuild --target-host`).
+6. `--bootstrap` skips step 2 probing and forces bootstrap target selection for deploy/snapshot/rollback operations.
 
 Important: successful forced-command bootstrap check does not imply general shell access for `nixos-rebuild --target-host`.
 
 ## Deploy Config Defaults (`hosts/nixbot.nix`)
 - `defaults.user = "nixbot"`
 - `defaults.key = "data/secrets/nixbot.key.age"`
+- `defaults.bootstrapKey = "data/secrets/nixbot.key.age"`
+- `defaults.bootstrapUser = "root"` (or your chosen bootstrap account)
 - `knownHosts = null` means temporary `ssh-keyscan` host pinning.
 
 ## Operational Notes
 - `--action check-bootstrap` validates bootstrap key availability/decryption without build/deploy.
+- `--bootstrap` forces bootstrap path usage even when primary `user@host` is reachable.
 - `--dry` prints deploy commands; it does not perform remote activation.
 - Per-run bootstrap readiness is cached to avoid duplicate fallback checks during snapshot + deploy phases.
 
@@ -96,10 +100,10 @@ Use this when you want bastion on new keys immediately, but some nodes still onl
 4. Add per-host `key` overrides for nodes that still require legacy auth, for example:
    - `hosts.<old-node>.key = "data/secrets/nixbot-legacy.key.age";`
 5. For nodes that still require old bootstrap injection material, also set:
-   - `hosts.<old-node>.bootstrapNixbotKey = "data/secrets/nixbot-legacy.key.age";`
+   - `hosts.<old-node>.bootstrapKey = "data/secrets/nixbot-legacy.key.age";`
 6. Deploy bastion and switch CI ingress key to the new bastion key.
 7. If applicable, switch `DEPLOY_BASTION_SSH_KEY_PATH` for local orchestrator runs to the new bastion ingress key.
 8. Run deploys in phase 2 to migrate old nodes onto new public key trust.
-9. Remove per-host legacy `key` and `bootstrapNixbotKey` overrides, remove legacy secret material, re-encrypt recipients without legacy keys.
+9. Remove per-host legacy `key` and `bootstrapKey` overrides, remove legacy secret material, re-encrypt recipients without legacy keys.
 
 Important: this flow is for controlled migration. If compromise is suspected, do revoke-first incident rotation instead of overlap.

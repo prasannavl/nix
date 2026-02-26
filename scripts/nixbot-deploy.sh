@@ -4,7 +4,7 @@ set -Eeuo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--jobs <n>] [--force] [--dry] [--no-rollback] [--ssh-key <path>] [--config <path>]
+  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--jobs <n>] [--force] [--bootstrap] [--dry] [--no-rollback] [--ssh-key <path>] [--config <path>]
 
 Options:
   --sha            Optional commit to checkout before running deploy workflow
@@ -14,6 +14,7 @@ Options:
   --build-host     local|target|<ssh-host> (default: local)
   --jobs           Number of hosts to process in parallel (default: 1)
   --force          Deploy even when built path matches remote /run/current-system
+  --bootstrap      Always use bootstrap user/key path for deploy/snapshot/rollback SSH target selection
   --dry            Print deploy command instead of executing deploy step
   --no-rollback    Disable rollback of successful hosts when any deploy fails
   --ssh-key        SSH key path for deploy target auth (must be .age when explicitly set)
@@ -42,6 +43,7 @@ init_vars() {
   BUILD_HOST="local"
   JOBS=1
   DEPLOY_IF_CHANGED=1
+  FORCE_BOOTSTRAP_PATH=0
   DRY_RUN=0
   ROLLBACK_ON_FAILURE=1
   DEPLOY_CONFIG_PATH="hosts/nixbot.nix"
@@ -60,6 +62,9 @@ init_vars() {
   DEPLOY_DEFAULT_USER="root"
   DEPLOY_DEFAULT_KEY_PATH=""
   DEPLOY_DEFAULT_KNOWN_HOSTS=""
+  DEPLOY_DEFAULT_BOOTSTRAP_KEY=""
+  DEPLOY_DEFAULT_BOOTSTRAP_USER="root"
+  DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH=""
   DEPLOY_HOSTS_JSON='{}'
 
   DEPLOY_TMP_DIR=""
@@ -138,6 +143,10 @@ parse_args() {
         ;;
       --force)
         DEPLOY_IF_CHANGED=0
+        shift
+        ;;
+      --bootstrap)
+        FORCE_BOOTSTRAP_PATH=1
         shift
         ;;
       --dry)
@@ -279,6 +288,9 @@ init_deploy_settings() {
   DEPLOY_DEFAULT_USER="$(jq -r '.defaults.user // "root"' <<<"${config_json}")"
   DEPLOY_DEFAULT_KEY_PATH="$(jq -r '.defaults.key // ""' <<<"${config_json}")"
   DEPLOY_DEFAULT_KNOWN_HOSTS="$(jq -r '.defaults.knownHosts // ""' <<<"${config_json}")"
+  DEPLOY_DEFAULT_BOOTSTRAP_KEY="$(jq -r '.defaults.bootstrapKey // ""' <<<"${config_json}")"
+  DEPLOY_DEFAULT_BOOTSTRAP_USER="$(jq -r '.defaults.bootstrapUser // "root"' <<<"${config_json}")"
+  DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH="$(jq -r '.defaults.bootstrapKeyPath // ""' <<<"${config_json}")"
   DEPLOY_HOSTS_JSON="$(jq -c '.hosts // {}' <<<"${config_json}")"
 
   if [ -n "${DEPLOY_USER_OVERRIDE}" ]; then
@@ -394,7 +406,7 @@ validate_selected_hosts() {
 
 resolve_deploy_target() {
   local node="$1"
-  local host_cfg user target key_path known_hosts bootstrap_nixbot_key bootstrap_user bootstrap_key_path
+  local host_cfg user target key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path
 
   host_cfg="$(jq -c --arg h "${node}" '.[$h] // {}' <<<"${DEPLOY_HOSTS_JSON}")"
 
@@ -402,25 +414,27 @@ resolve_deploy_target() {
   target="$(jq -r '.target // empty' <<<"${host_cfg}")"
   key_path="$(jq -r '.key // empty' <<<"${host_cfg}")"
   known_hosts="$(jq -r '.knownHosts // empty' <<<"${host_cfg}")"
-  bootstrap_nixbot_key="$(jq -r '.bootstrapNixbotKey // empty' <<<"${host_cfg}")"
+  bootstrap_key="$(jq -r '.bootstrapKey // empty' <<<"${host_cfg}")"
   bootstrap_user="$(jq -r '.bootstrapUser // empty' <<<"${host_cfg}")"
-  bootstrap_key_path="$(jq -r '.bootstrapKeyPath // .bootstrapKey // empty' <<<"${host_cfg}")"
+  bootstrap_key_path="$(jq -r '.bootstrapKeyPath // empty' <<<"${host_cfg}")"
 
   [ -n "${user}" ] || user="${DEPLOY_DEFAULT_USER}"
   [ -n "${target}" ] || target="${node}"
   [ -n "${key_path}" ] || key_path="${DEPLOY_DEFAULT_KEY_PATH}"
   [ -n "${known_hosts}" ] || known_hosts="${DEPLOY_DEFAULT_KNOWN_HOSTS}"
-  [ -n "${bootstrap_user}" ] || bootstrap_user="root"
+  [ -n "${bootstrap_key}" ] || bootstrap_key="${DEPLOY_DEFAULT_BOOTSTRAP_KEY}"
+  [ -n "${bootstrap_user}" ] || bootstrap_user="${DEPLOY_DEFAULT_BOOTSTRAP_USER}"
+  [ -n "${bootstrap_key_path}" ] || bootstrap_key_path="${DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH}"
 
   jq -cn \
     --arg user "${user}" \
     --arg target "${target}" \
     --arg keyPath "${key_path}" \
     --arg knownHosts "${known_hosts}" \
-    --arg bootstrapNixbotKey "${bootstrap_nixbot_key}" \
+    --arg bootstrapKey "${bootstrap_key}" \
     --arg bootstrapUser "${bootstrap_user}" \
     --arg bootstrapKeyPath "${bootstrap_key_path}" \
-    '{user: $user, target: $target, keyPath: $keyPath, knownHosts: $knownHosts, bootstrapNixbotKey: $bootstrapNixbotKey, bootstrapUser: $bootstrapUser, bootstrapKeyPath: $bootstrapKeyPath}'
+    '{user: $user, target: $target, keyPath: $keyPath, knownHosts: $knownHosts, bootstrapKey: $bootstrapKey, bootstrapUser: $bootstrapUser, bootstrapKeyPath: $bootstrapKeyPath}'
 }
 
 build_host() {
@@ -588,7 +602,7 @@ inject_bootstrap_nixbot_key() {
   local -a bootstrap_ssh_opts=("${@:4}")
   local bootstrap_key_file remote_tmp expected_bootstrap_fpr
   local remote_has_key_cmd remote_install_cmd
-  local bootstrap_dest="/var/lib/nixbot/.ssh/bootstrap_id_ed25519"
+  local bootstrap_dest="/var/lib/nixbot/.ssh/id_ed25519"
 
   if [ -z "${bootstrap_nixbot_key_path}" ]; then
     return
@@ -627,7 +641,7 @@ inject_bootstrap_nixbot_key() {
 
 prepare_deploy_context() {
   local node="$1"
-  local target_info user host key_path known_hosts bootstrap_nixbot_key bootstrap_user bootstrap_key_path
+  local target_info user host key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path
   local known_hosts_file key_file bootstrap_key_file
   local ssh_target bootstrap_ssh_target
   local -a ssh_opts=()
@@ -641,7 +655,7 @@ prepare_deploy_context() {
   host="$(jq -r '.target' <<<"${target_info}")"
   key_path="$(jq -r '.keyPath // empty' <<<"${target_info}")"
   known_hosts="$(jq -r '.knownHosts // empty' <<<"${target_info}")"
-  bootstrap_nixbot_key="$(jq -r '.bootstrapNixbotKey // empty' <<<"${target_info}")"
+  bootstrap_key="$(jq -r '.bootstrapKey // empty' <<<"${target_info}")"
   bootstrap_user="$(jq -r '.bootstrapUser // empty' <<<"${target_info}")"
   bootstrap_key_path="$(jq -r '.bootstrapKeyPath // empty' <<<"${target_info}")"
 
@@ -688,6 +702,24 @@ prepare_deploy_context() {
   PREP_DEPLOY_NIX_SSHOPTS="${nix_sshopts}"
   PREP_USING_BOOTSTRAP_FALLBACK=0
 
+  if [ "${FORCE_BOOTSTRAP_PATH}" -eq 1 ]; then
+    echo "==> Forcing bootstrap path for ${node}: ${bootstrap_ssh_target}"
+    PREP_DEPLOY_SSH_TARGET="${bootstrap_ssh_target}"
+    PREP_DEPLOY_SSH_OPTS=("${bootstrap_ssh_opts[@]}")
+    PREP_DEPLOY_NIX_SSHOPTS="${bootstrap_nix_sshopts}"
+    PREP_USING_BOOTSTRAP_FALLBACK=1
+
+    if [ -n "${bootstrap_key}" ]; then
+      if is_bootstrap_ready "${node}"; then
+        echo "==> Reusing bootstrap readiness for ${node} from earlier step"
+      else
+        inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}"
+        mark_bootstrap_ready "${node}"
+      fi
+    fi
+    return
+  fi
+
   if [ "${DRY_RUN}" -eq 0 ]; then
     if [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
       if ! ssh "${ssh_opts[@]}" "${ssh_target}" "true" >/dev/null 2>&1; then
@@ -697,10 +729,10 @@ prepare_deploy_context() {
           echo "==> Reusing bootstrap readiness for ${node} from earlier step"
           validated_via_forced_command=1
         else
-          if [ -n "${bootstrap_nixbot_key}" ] && check_bootstrap_via_forced_command "${node}" "${ssh_target}" "${ssh_opts[@]}"; then
+          if [ -n "${bootstrap_key}" ] && check_bootstrap_via_forced_command "${node}" "${ssh_target}" "${ssh_opts[@]}"; then
             validated_via_forced_command=1
           else
-            inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_nixbot_key}" "${bootstrap_ssh_opts[@]}"
+            inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}"
           fi
         fi
 
@@ -718,10 +750,10 @@ prepare_deploy_context() {
         mark_bootstrap_ready "${node}"
       fi
     else
-      inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_nixbot_key}" "${bootstrap_ssh_opts[@]}"
+      inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}"
     fi
-  elif [ -n "${bootstrap_nixbot_key}" ]; then
-    inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_nixbot_key}" "${bootstrap_ssh_opts[@]}"
+  elif [ -n "${bootstrap_key}" ]; then
+    inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}"
   fi
 }
 
@@ -881,7 +913,7 @@ deploy_host() {
 
 run_bootstrap_key_checks() {
   local selected_json="$1"
-  local node target_info bootstrap_nixbot_key bootstrap_key_file
+  local node target_info bootstrap_key bootstrap_key_file
   local fpr=""
   local rc=0
   local -a selected_hosts=()
@@ -892,23 +924,23 @@ run_bootstrap_key_checks() {
     [ -n "${node}" ] || continue
 
     target_info="$(resolve_deploy_target "${node}")"
-    bootstrap_nixbot_key="$(jq -r '.bootstrapNixbotKey // empty' <<<"${target_info}")"
+    bootstrap_key="$(jq -r '.bootstrapKey // empty' <<<"${target_info}")"
 
-    if [ -z "${bootstrap_nixbot_key}" ]; then
-      echo "==> ${node}: no bootstrapNixbotKey configured"
+    if [ -z "${bootstrap_key}" ]; then
+      echo "==> ${node}: no bootstrapKey configured"
       continue
     fi
 
-    bootstrap_key_file="$(resolve_runtime_key_file "${bootstrap_nixbot_key}")"
+    bootstrap_key_file="$(resolve_runtime_key_file "${bootstrap_key}")"
     if [ ! -f "${bootstrap_key_file}" ]; then
-      echo "==> ${node}: bootstrap key missing: ${bootstrap_nixbot_key} (resolved: ${bootstrap_key_file})" >&2
+      echo "==> ${node}: bootstrap key missing: ${bootstrap_key} (resolved: ${bootstrap_key_file})" >&2
       rc=1
       continue
     fi
 
     fpr="$(ssh-keygen -lf "${bootstrap_key_file}" 2>/dev/null | tr -s ' ' | cut -d ' ' -f2 || true)"
     if [ -z "${fpr}" ]; then
-      echo "==> ${node}: bootstrap key unreadable: ${bootstrap_nixbot_key} (resolved: ${bootstrap_key_file})" >&2
+      echo "==> ${node}: bootstrap key unreadable: ${bootstrap_key} (resolved: ${bootstrap_key_file})" >&2
       rc=1
       continue
     fi
