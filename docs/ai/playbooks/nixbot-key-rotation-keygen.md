@@ -27,6 +27,7 @@ Execution behavior:
 - `NEW_NIXBOT_PUB`
 - `NEW_BASTION_PUB`
 - `NEW_NIXBOT_KEY_AGE` (usually `data/secrets/nixbot.key.age` or staged path)
+- `NEW_NIXBOT_KEY_PRIVATE` (private key file path for GitHub repo SSH deploy-key secret)
 - `NEW_BASTION_KEY_PRIVATE` (private key file path for GitHub secret `NIXBOT_BASTION_SSH_KEY`)
 - optional `LEGACY_NIXBOT_KEY_AGE` for bastion-first cutover mode
 
@@ -116,10 +117,12 @@ Expected outcome:
 ## Step 7: Manual CI Secret Update (No Key Output)
 
 Actions:
-1. Use local file `${KEYGEN_DIR}/nixbot-bastion-ssh.key` to update GitHub secret `NIXBOT_BASTION_SSH_KEY`.
-2. Do not print, `cat`, or echo private key contents in agent output.
+1. Use local file `${KEYGEN_DIR}/nixbot.key` to update the GitHub secret used for repo SSH deploy-key auth (name per your repo settings).
+2. Use local file `${KEYGEN_DIR}/nixbot-bastion-ssh.key` to update GitHub secret `NIXBOT_BASTION_SSH_KEY`.
+3. Do not print, `cat`, or echo private key contents in agent output.
 
 Expected outcome:
+- GitHub repo SSH deploy-key secret updated to the rotated nixbot key.
 - GitHub `NIXBOT_BASTION_SSH_KEY` updated without exposing key material in terminal logs.
 
 ## Step 8: Cleanup Local Plaintext Keys

@@ -28,10 +28,15 @@ This document describes the current `nixbot` deployment architecture and securit
 ### 3) Bastion Runtime Private Key + Secrets
 - Bastion stores deploy private key at:
   - `/var/lib/nixbot/.ssh/id_ed25519`
+- During overlap rotation, bastion may also retain legacy deploy key at:
+  - `/var/lib/nixbot/.ssh/id_ed25519_legacy`
 - Installed from:
   - `data/secrets/nixbot.key.age`
+- Legacy optional install source:
+  - `data/secrets/nixbot-legacy.key.age`
 - Age bootstrap identity path:
   - `/var/lib/nixbot/.ssh/id_ed25519`
+  - `/var/lib/nixbot/.ssh/id_ed25519_legacy` (when legacy key exists)
 
 ## Bastion Wiring Requirements
 In `lib/nixbot/bastion.nix`:
@@ -41,6 +46,7 @@ In `lib/nixbot/bastion.nix`:
 - Ensure runtime prerequisites:
   - `/var/lib/nixbot/.ssh` exists, mode `0700`, owner `nixbot`
   - `environment.systemPackages` includes `age` and `jq`
+- Ensure nixbot SSH client identity order includes both current and legacy key paths during rotation.
 
 ## Bootstrap Strategy
 `hosts/nixbot.nix` supports bootstrap fallback fields:

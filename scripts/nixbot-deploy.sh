@@ -603,6 +603,7 @@ inject_bootstrap_nixbot_key() {
   local bootstrap_key_file remote_tmp expected_bootstrap_fpr
   local remote_has_key_cmd remote_install_cmd
   local bootstrap_dest="/var/lib/nixbot/.ssh/id_ed25519"
+  local bootstrap_legacy_dest="/var/lib/nixbot/.ssh/id_ed25519_legacy"
 
   if [ -z "${bootstrap_nixbot_key_path}" ]; then
     return
@@ -619,7 +620,7 @@ inject_bootstrap_nixbot_key() {
   expected_bootstrap_fpr="$(ssh-keygen -lf "${bootstrap_key_file}" 2>/dev/null | tr -s ' ' | cut -d ' ' -f2)"
   [ -n "${expected_bootstrap_fpr}" ] || die "Unable to compute bootstrap key fingerprint from ${bootstrap_key_file}"
 
-  remote_has_key_cmd='dest="'"${bootstrap_dest}"'"; want="'"${expected_bootstrap_fpr}"'"; get_fpr() { if [ "$(id -u)" -eq 0 ]; then ssh-keygen -lf "$dest" 2>/dev/null | tr -s " " | cut -d " " -f2; elif command -v sudo >/dev/null 2>&1; then sudo -n ssh-keygen -lf "$dest" 2>/dev/null | tr -s " " | cut -d " " -f2; else ssh-keygen -lf "$dest" 2>/dev/null | tr -s " " | cut -d " " -f2; fi; }; [ "$(get_fpr || true)" = "$want" ]'
+  remote_has_key_cmd="$(build_remote_has_bootstrap_key_cmd "${bootstrap_dest}" "${expected_bootstrap_fpr}")"
   if ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "${remote_has_key_cmd}" >/dev/null 2>&1; then
     echo "==> Skipping bootstrap nixbot key for ${node}; matching key already present on target"
     return
@@ -630,13 +631,62 @@ inject_bootstrap_nixbot_key() {
 
   scp "${bootstrap_ssh_opts[@]}" "${bootstrap_key_file}" "${bootstrap_ssh_target}:${remote_tmp}"
 
-  remote_install_cmd='if [ "$(id -u)" -eq 0 ]; then install -d -m 0755 /var/lib/nixbot && install -d -m 0700 /var/lib/nixbot/.ssh && install -m 0400 '"${remote_tmp}"' '"${bootstrap_dest}"' && rm -f '"${remote_tmp}"' && if id -u nixbot >/dev/null 2>&1; then chown -R nixbot:nixbot /var/lib/nixbot/.ssh; fi; elif command -v sudo >/dev/null 2>&1; then sudo install -d -m 0755 /var/lib/nixbot && sudo install -d -m 0700 /var/lib/nixbot/.ssh && sudo install -m 0400 '"${remote_tmp}"' '"${bootstrap_dest}"' && rm -f '"${remote_tmp}"' && if id -u nixbot >/dev/null 2>&1; then sudo chown -R nixbot:nixbot /var/lib/nixbot/.ssh; fi; else echo "sudo is required to install '"${bootstrap_dest}"' as non-root" >&2; exit 1; fi'
+  remote_install_cmd="$(build_remote_bootstrap_install_cmd "${remote_tmp}" "${bootstrap_dest}" "${bootstrap_legacy_dest}")"
 
   echo "==> Injecting bootstrap nixbot key for ${node}"
   if ! ssh -tt "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "${remote_install_cmd}" </dev/tty; then
     ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
     exit 1
   fi
+}
+
+build_remote_bootstrap_install_cmd() {
+  local remote_tmp="$1"
+  local bootstrap_dest="$2"
+  local bootstrap_legacy_dest="$3"
+
+  cat <<EOF
+install_bootstrap_key() {
+  remote_tmp='${remote_tmp}'
+  bootstrap_dest='${bootstrap_dest}'
+  bootstrap_legacy_dest='${bootstrap_legacy_dest}'
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required to install \${bootstrap_dest}" >&2
+    return 1
+  fi
+
+  sudo install -d -m 0755 /var/lib/nixbot
+  sudo install -d -m 0700 /var/lib/nixbot/.ssh
+  if sudo test -f "\${bootstrap_dest}"; then
+    sudo install -m 0400 "\${bootstrap_dest}" "\${bootstrap_legacy_dest}"
+  fi
+  sudo install -m 0400 "\${remote_tmp}" "\${bootstrap_dest}"
+  rm -f "\${remote_tmp}"
+
+  if sudo id -u nixbot >/dev/null 2>&1; then
+    sudo chown -R nixbot:nixbot /var/lib/nixbot/.ssh
+  fi
+
+  return 0
+}
+install_bootstrap_key
+EOF
+}
+
+build_remote_has_bootstrap_key_cmd() {
+  local bootstrap_dest="$1"
+  local expected_bootstrap_fpr="$2"
+
+  cat <<EOF
+dest='${bootstrap_dest}'
+want='${expected_bootstrap_fpr}'
+if ! command -v sudo >/dev/null 2>&1; then
+  echo "sudo is required to validate \${dest}" >&2
+  exit 1
+fi
+[ "\$(sudo -n ssh-keygen -lf "\${dest}" 2>/dev/null | tr -s " " | cut -d " " -f2 || true)" = "\${want}" ]
+EOF
 }
 
 prepare_deploy_context() {

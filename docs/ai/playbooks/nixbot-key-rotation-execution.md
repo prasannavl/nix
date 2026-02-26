@@ -9,16 +9,27 @@ Set these before execution:
 - `NEW_NIXBOT_PUB`: new public key for normal nixbot login/deploy.
 - `NEW_BASTION_PUB`: new public key for CI/local forced-command ingress.
 - `NEW_NIXBOT_KEY_AGE`: age file path for new deploy private key (example: `data/secrets/nixbot.key.age`).
+- `NEW_NIXBOT_KEY_PRIVATE`: path to new nixbot deploy private key file used for GitHub repo SSH access.
 - `NEW_BASTION_KEY_PRIVATE`: path to new bastion private key file used by CI/local SSH calls.
 
 Sensitive handling:
+- Never print, `cat`, or echo `NEW_NIXBOT_KEY_PRIVATE` contents in terminal output.
 - Never print, `cat`, or echo `NEW_BASTION_KEY_PRIVATE` contents in terminal output.
-- Use path-only handling and manual secret updates for GitHub `NIXBOT_BASTION_SSH_KEY`.
+- Use path-only handling and manual secret updates for GitHub secrets.
 
 Optional for bastion-first cutover:
 
 - `LEGACY_NIXBOT_KEY_AGE`: age file path containing old deploy private key material (example: `data/secrets/nixbot-legacy.key.age`).
 - `LEGACY_NODES`: comma-separated nodes still requiring old key trust.
+
+## Bootstrap Overwrite Rule (Critical)
+
+- Bootstrap injection writes the selected bootstrap private key to `/var/lib/nixbot/.ssh/id_ed25519` on the target.
+- On replacement, previous key should be retained at `/var/lib/nixbot/.ssh/id_ed25519_legacy`.
+- On bastion (`pvl-x2`), that file is also the deploy identity used to SSH from bastion to other hosts.
+- Bastion nixbot SSH client should attempt both identities (`id_ed25519`, then `id_ed25519_legacy`) during overlap.
+- During rotation, if bastion is bootstrapped with the new key before legacy hosts trust that key, bastion can lose SSH access to legacy hosts.
+- Therefore, when legacy hosts still require old trust, keep and use `LEGACY_NIXBOT_KEY_AGE` for those nodes (including `bootstrapKey` where applicable) until migration is complete.
 
 ## Confirmation Protocol (Mandatory)
 
@@ -68,11 +79,13 @@ Expected outcome:
 
 ### Step 4: Switch CI/Local Forced-Command Key
 Actions:
+- update GitHub secret used for repo SSH deploy-key auth (nixbot deploy key; name per your repo settings) to `NEW_NIXBOT_KEY_PRIVATE`.
 - update GitHub secret `NIXBOT_BASTION_SSH_KEY` to new private key.
 - if running local orchestrator checks, set `DEPLOY_BASTION_SSH_KEY_PATH` to new bastion key age file/path.
 - do not print private key material during this step.
 
 Expected outcome:
+- GitHub workflows can still clone/fetch `ssh://git@github.com/prasannavl/nix.git` with the rotated nixbot key.
 - forced-command calls authenticate with new ingress key.
 
 ### Step 5: Validate End-to-End
@@ -136,12 +149,15 @@ Run:
 ```
 
 Then rotate:
+- GitHub secret used for repo SSH deploy-key auth (nixbot deploy key; name per your repo settings) to new private key.
 - GitHub `NIXBOT_BASTION_SSH_KEY` to new private key.
 - local `DEPLOY_BASTION_SSH_KEY_PATH` to new key path (if used).
 
 Expected outcome:
 - bastion is on new key model.
+- GitHub workflows retain repo SSH access after key rotation.
 - ingress auth uses new bastion key.
+- bastion deploy identity at `/var/lib/nixbot/.ssh/id_ed25519` remains compatible with any still-legacy hosts you need to reach next.
 
 ### Step 4: Phase-2 Migrate Legacy Nodes
 Run deploy for legacy nodes first, then all:
@@ -153,6 +169,7 @@ Run deploy for legacy nodes first, then all:
 
 Expected outcome:
 - legacy nodes now trust new public keys.
+- after this point, bastion can safely run with only new deploy identity.
 
 ### Step 5: Remove Legacy Overrides + Material
 1. Remove per-host `key` and `bootstrapKey` legacy overrides from `hosts/nixbot.nix`.

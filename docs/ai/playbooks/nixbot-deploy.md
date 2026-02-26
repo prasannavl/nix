@@ -58,6 +58,10 @@ Defaults may also include:
 - Forced-command bootstrap success does not guarantee generic shell access.
 - Script may still fallback to bootstrap user for `nixos-rebuild --target-host` flow.
 - Script caches bootstrap readiness within one run.
+- Bootstrap injection installs key material to `/var/lib/nixbot/.ssh/id_ed25519` on the target.
+- When replacing `/var/lib/nixbot/.ssh/id_ed25519`, bootstrap preserves the previous key at `/var/lib/nixbot/.ssh/id_ed25519_legacy`.
+- On bastion, that path is also the deploy identity used for downstream host SSH; during rotation, use legacy key overrides until legacy hosts trust the new key.
+- Bastion nixbot SSH client should attempt both identities (`id_ed25519`, then `id_ed25519_legacy`) during overlap windows.
 
 ## Validation Commands
 - Forced-command help:
