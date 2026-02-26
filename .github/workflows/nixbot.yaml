@@ -25,12 +25,14 @@ jobs:
     if: github.ref == 'refs/heads/master'
     name: Trigger remote nixbot
     runs-on: ubuntu-latest
-    environment: default
+    environment: prod
     steps:
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          tags: tag:ci
           args: --accept-routes
 
       - name: Trigger deploy from bastion over SSH
