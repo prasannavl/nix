@@ -15,11 +15,14 @@
   - `args: --accept-routes`
 - Added CI diagnostics flow for failed Tailscale connects:
   - `Connect to Tailscale` now has `id: tailscale` and `continue-on-error: true`.
-  - Added `Collect Tailscale diagnostics on failure` step to emit:
-    - tailscale binary/version info
-    - `tailscale status` and `tailscale ip`
-    - `journalctl -u tailscaled` logs
-    - process list and potential log files under `/tmp` and `/var/log`
+  - Added `Collect Tailscale diagnostics on failure` step with explicit per-command output + exit codes (no grouped logs) to avoid hidden/empty diagnostics in GitHub UI.
+  - Diagnostics now include:
+    - runner identity/environment details
+    - `sudo -n` availability checks
+    - tailscale binary/version checks
+    - `tailscale status`, `tailscale ip`, and `tailscale netcheck`
+    - `journalctl -u tailscaled` and syslog grep output
+    - process list and log-file discovery in `/tmp`, `/var/log`, and `${RUNNER_TEMP}`
   - Added explicit failure step so job still fails after logs are captured.
   - Guarded deploy step with `if: steps.tailscale.outcome == 'success'`.
 

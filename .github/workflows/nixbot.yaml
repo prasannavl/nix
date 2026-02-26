@@ -41,31 +41,47 @@ jobs:
         if: steps.tailscale.outcome == 'failure'
         shell: bash
         run: |
-          set +e
+          set +euo pipefail
 
-          echo "::group::tailscale binaries"
-          which tailscale || true
-          which tailscaled || true
-          tailscale version || true
-          tailscaled --version || true
-          echo "::endgroup::"
+          run_cmd() {
+            echo ""
+            echo "### $*"
+            "$@"
+            rc=$?
+            echo "exit_code=${rc}"
+            return 0
+          }
 
-          echo "::group::tailscale client status"
-          sudo tailscale status --peers=false || true
-          sudo tailscale ip || true
-          echo "::endgroup::"
+          echo "===== Tailscale diagnostics begin ====="
+          run_cmd date -u
+          run_cmd id
+          run_cmd whoami
+          run_cmd uname -a
+          run_cmd printenv RUNNER_OS
+          run_cmd printenv RUNNER_ARCH
+          run_cmd printenv RUNNER_TEMP
+          run_cmd printenv GITHUB_WORKSPACE
 
-          echo "::group::tailscaled logs (journalctl)"
-          sudo journalctl -u tailscaled --no-pager -n 200 || true
-          echo "::endgroup::"
+          run_cmd which sudo
+          run_cmd sudo -n true
+          run_cmd which tailscale
+          run_cmd which tailscaled
+          run_cmd tailscale version
+          run_cmd tailscaled --version
 
-          echo "::group::tailscaled process list"
-          ps aux | grep -E '[t]ailscaled|[t]ailscale up' || true
-          echo "::endgroup::"
+          run_cmd ps aux
+          run_cmd sudo -n tailscale status --peers=false
+          run_cmd sudo -n tailscale ip
+          run_cmd sudo -n tailscale netcheck
 
-          echo "::group::possible tailscale log files"
-          sudo find /tmp /var/log -maxdepth 3 -type f \( -name '*tailscale*' -o -name '*tailscaled*' \) -print 2>/dev/null || true
-          echo "::endgroup::"
+          run_cmd sudo -n journalctl -u tailscaled --no-pager -n 300
+          run_cmd sudo -n grep -i tailscale /var/log/syslog
+          run_cmd sudo -n find /tmp /var/log -maxdepth 3 -type f \( -name '*tailscale*' -o -name '*tailscaled*' \)
+
+          if [ -n "${RUNNER_TEMP:-}" ]; then
+            run_cmd find "${RUNNER_TEMP}" -maxdepth 4 -type f \( -name '*tailscale*' -o -name '*tailscaled*' -o -name '*.log' \)
+          fi
+          echo "===== Tailscale diagnostics end ====="
 
       - name: Fail job if Tailscale connection failed
         if: steps.tailscale.outcome == 'failure'
