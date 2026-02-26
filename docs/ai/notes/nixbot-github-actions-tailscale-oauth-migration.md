@@ -19,6 +19,11 @@
   - Added action inputs to avoid stale client/cache behavior while debugging OAuth login failures:
     - `version: latest`
     - `use-cache: "false"`
+  - Removed `args: --accept-routes` because the action already includes `--accept-routes` internally.
+  - Added a generated per-run hostname and passed it to the action:
+    - format: `gh-nixbot-YYYYMMDD-<run_number>ts`
+    - exported via `GITHUB_ENV` as `TS_HOSTNAME`
+    - used in action input `hostname: ${{ env.TS_HOSTNAME }}`
 
 ## Follow-up
 - Ensure repository/environment secrets exist:

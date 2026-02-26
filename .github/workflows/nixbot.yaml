@@ -27,6 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
+      - name: Build unique Tailscale hostname
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "TS_HOSTNAME=gh-nixbot-${GITHUB_RUN_NUMBER}ts" >> "$GITHUB_ENV"
+
       - name: Verify Tailscale OAuth secrets in CI
         shell: bash
         env:
@@ -53,7 +59,7 @@ jobs:
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:ci
-          args: --accept-routes
+          hostname: ${{ env.TS_HOSTNAME }}
           version: latest
           use-cache: "false"
 
