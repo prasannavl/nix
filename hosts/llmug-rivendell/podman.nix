@@ -26,7 +26,10 @@
         "/var/lib/llmug/ollama.pod:/root/.ollama"
       ];
       extraOptions = [
-        "--device=nvidia.com/gpu=all"
+        "--group-add=video"
+        "--group-add=render"
+        "--device=/dev/dri:/dev/dri"
+        "--device=/dev/kfd:/dev/kfd"
       ];
     };
 

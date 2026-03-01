@@ -1,7 +1,9 @@
 {...}: {
   networking.firewall = {
+    logRefusedConnections = false;
     trustedInterfaces = ["incusbr0"];
   };
+
   # Internal network only
   # All ports except https are locked down on the network
   # firewall and only accessible through the tailscale interface.
@@ -19,7 +21,9 @@
     9300
     9980
     # beszel
-    9080
+    8090
+    # dockge
+    5001
     # vaultwarden
     2000
     # portainer

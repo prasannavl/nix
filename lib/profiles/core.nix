@@ -32,7 +32,7 @@
   programs.tmux.enable = true;
 
   environment.systemPackages = with pkgs; [
-    ssh-import-id 
+    ssh-import-id
     powertop
     pciutils
     usbutils

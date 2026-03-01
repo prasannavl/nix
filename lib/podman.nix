@@ -8,10 +8,22 @@
 
   serviceType = lib.types.submodule ({...}: {
     options = {
-      composeText = lib.mkOption {
-        type = lib.types.nullOr lib.types.lines;
+      source = lib.mkOption {
+        type = lib.types.nullOr (lib.types.oneOf [lib.types.lines lib.types.attrs lib.types.path]);
         default = null;
-        description = "Compose YAML content for this service. Mutually exclusive with composeFile.";
+        description = "Main compose source content. Attrsets are rendered to YAML; strings are copied as-is; paths are used directly.";
+      };
+
+      files = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.oneOf [lib.types.lines lib.types.attrs lib.types.path]);
+        default = {};
+        description = "Additional files keyed by filename. Attrset values are rendered to YAML; string values are copied as-is; path values are used directly. Can override compose.yml from source.";
+      };
+
+      entryFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional compose entry filename inside workingDir. When null, podman compose default file discovery is used in workingDir.";
       };
 
       user = lib.mkOption {
@@ -20,34 +32,32 @@
         description = "Override user for this service.";
       };
 
-      sourceFile = lib.mkOption {
+      workingDir = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Source compose YAML path for composeText mode. Defaults to <sourceDir>/<service>.yml.";
+        description = "Override working directory for podman compose project context.";
       };
 
-      composeDir = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Target compose working directory.";
+      sourcePaths = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        readOnly = true;
+        internal = true;
+        description = "Resolved source paths by filename.";
       };
 
-      composeFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Existing compose file path used directly by podman compose. Mutually exclusive with composeText.";
+      runtimePaths = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        readOnly = true;
+        internal = true;
+        description = "Resolved runtime paths by filename.";
       };
 
       serviceName = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Override generated systemd user service name.";
-      };
-
-      manageEtc = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Whether to generate environment.etc entry in composeText mode. Ignored when composeFile is set.";
       };
 
       serviceOverrides = lib.mkOption {
@@ -87,13 +97,7 @@
       workingDir = lib.mkOption {
         type = lib.types.str;
         default = "/var/lib/podman-${name}";
-        description = "Default working directory root; each service uses <workingDir>/<service> when composeDir/composeFile is unset.";
-      };
-
-      sourceDir = lib.mkOption {
-        type = lib.types.str;
-        default = "/etc/podman-${name}";
-        description = "Default source root for compose YAML files; each service uses <sourceDir>/<service>.yml.";
+        description = "Default working directory root; each service uses <workingDir>/<service> when service workingDir is unset.";
       };
 
       servicePrefix = lib.mkOption {
@@ -111,35 +115,24 @@
   });
 
   mkResolvedService = {
-    stackName,
     stack,
     serviceName,
     service,
   }: let
-    useComposeFile = service.composeFile != null;
-    useComposeText = service.composeText != null;
-
     resolvedUser =
       if service.user != null
       then service.user
       else stack.user;
 
-    resolvedComposeDir =
-      if service.composeDir != null
-      then service.composeDir
-      else if useComposeFile
-      then builtins.dirOf service.composeFile
+    resolvedWorkingDir =
+      if service.workingDir != null
+      then service.workingDir
       else "${stack.workingDir}/${serviceName}";
 
     resolvedComposeFile =
-      if useComposeFile
-      then service.composeFile
-      else "${resolvedComposeDir}/compose.yml";
-
-    resolvedSourceFile =
-      if service.sourceFile != null
-      then service.sourceFile
-      else "${stack.sourceDir}/${serviceName}.yml";
+      if service.entryFile != null
+      then service.runtimePaths.${service.entryFile}
+      else null;
 
     resolvedSystemdServiceName =
       if service.serviceName != null
@@ -164,13 +157,48 @@
     wantsUnits = lib.unique (map resolveDependencyUnit service.wants);
     networkOnlineUnits = lib.optional service.waitForNetwork "network-online.target";
 
-    podmanComposeCmd = "${pkgs.podman}/bin/podman compose -f ${resolvedComposeFile}";
-
-    etcPathMatch = builtins.match "^/etc/(.+)$" resolvedSourceFile;
-    etcPath =
-      if etcPathMatch != null
-      then builtins.elemAt etcPathMatch 0
-      else throw "services.podmanCompose.${stackName}.services.${serviceName}: sourceFile must be under /etc when manageEtc=true, got ${resolvedSourceFile}";
+    podmanComposeCmd = "${pkgs.podman}/bin/podman compose${lib.optionalString (resolvedComposeFile != null) " -f ${resolvedComposeFile}"}";
+    manifestPath = "$runtime_dir/podman-compose/${resolvedSystemdServiceName}.manifest";
+    linkCmdsBody = lib.concatStringsSep "\n" (
+      [
+        "set -eu"
+        "runtime_dir=\"$XDG_RUNTIME_DIR\""
+        "[ -n \"$runtime_dir\" ]"
+        "${pkgs.coreutils}/bin/install -d -m 0750 ${resolvedWorkingDir}"
+        "${pkgs.coreutils}/bin/install -d -m 0700 \"$runtime_dir/podman-compose\""
+        "tmp_manifest=\"${manifestPath}.tmp\""
+        ": > \"$tmp_manifest\""
+      ]
+      ++ map
+      (fileName: let
+        src = lib.escapeShellArg service.sourcePaths.${fileName};
+        dst = lib.escapeShellArg service.runtimePaths.${fileName};
+        dstDir = lib.escapeShellArg (builtins.dirOf service.runtimePaths.${fileName});
+      in ''
+        ${pkgs.coreutils}/bin/install -d -m 0750 ${dstDir}
+        ${pkgs.coreutils}/bin/ln -sfn ${src} ${dst}
+        ${pkgs.coreutils}/bin/printf '%s\n' ${dst} >> "$tmp_manifest"
+      '')
+      (builtins.attrNames service.sourcePaths)
+      ++ [
+        "${pkgs.coreutils}/bin/mv -f \"$tmp_manifest\" ${manifestPath}"
+      ]
+    );
+    cleanupCmdBody = ''
+      set -eu
+      runtime_dir="$XDG_RUNTIME_DIR"
+      [ -n "$runtime_dir" ]
+      if [ -f ${manifestPath} ]; then
+        while IFS= read -r path; do
+          if [ -L "$path" ]; then
+            ${pkgs.coreutils}/bin/rm -f "$path"
+          fi
+        done < ${manifestPath}
+        ${pkgs.coreutils}/bin/rm -f ${manifestPath}
+      fi
+    '';
+    linkScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-link-files" linkCmdsBody;
+    cleanupScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-cleanup-files" cleanupCmdBody;
 
     baseSystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName}";
@@ -182,37 +210,38 @@
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        # Rootless Podman needs newuidmap/newgidmap NixOS wrappers.
         Environment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin";
-        WorkingDirectory = resolvedComposeDir;
+        # Allow first start when the compose working directory doesn't exist yet.
+        # ExecStartPre creates it before ExecStart runs.
+        WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${podmanComposeCmd} up -d --remove-orphans";
         ExecStop = "${podmanComposeCmd} down";
         ExecReload = "${podmanComposeCmd} up -d --remove-orphans";
+        ExecStartPre = "${linkScript}";
+        ExecStopPost = "${cleanupScript}";
         TimeoutStartSec = 900;
         TimeoutStopSec = 300;
       };
-    }
-    // lib.optionalAttrs (!useComposeFile) {
-      serviceConfig.ExecStartPre = "${pkgs.coreutils}/bin/install -m 0640 ${resolvedSourceFile} ${resolvedComposeFile}";
     };
+    mergedSystemdService = lib.recursiveUpdate baseSystemdService service.serviceOverrides;
   in {
-    etc =
-      if service.manageEtc && useComposeText
-      then {
-        "${etcPath}".text = service.composeText;
-      }
-      else {};
     systemdServiceName = resolvedSystemdServiceName;
-    systemdService = lib.recursiveUpdate baseSystemdService service.serviceOverrides;
+    systemdUser = resolvedUser;
+    systemdService = mergedSystemdService;
+    restartStamp = builtins.hashString "sha256" (builtins.toJSON {
+      unit = mergedSystemdService;
+      sourcePaths = service.sourcePaths;
+      runtimePaths = service.runtimePaths;
+    });
   };
 
   resolvedServices = lib.concatLists (
     lib.mapAttrsToList (
-      stackName: stack:
+      _: stack:
         lib.mapAttrsToList (
           serviceName: service:
             mkResolvedService {
-              inherit stackName stack serviceName service;
+              inherit stack serviceName service;
             }
         )
         stack.services
@@ -220,29 +249,106 @@
     cfg
   );
 in {
+  imports = [
+    ./systemd-user-manager.nix
+  ];
+
   options.services.podmanCompose = lib.mkOption {
     type = lib.types.attrsOf stackType;
     default = {};
     description = "Podman compose stacks. Example: services.podmanCompose.stack1.services.web = { ... };";
+    apply = stacks:
+      lib.mapAttrs
+      (stackName: stack: let
+        renderValue = serviceName: fileName: value: let
+          safeName = builtins.replaceStrings ["/" "."] ["__" "_"] fileName;
+          outName = "podman-compose-${stackName}-${serviceName}-${safeName}";
+          rendered =
+            if builtins.isAttrs value
+            then lib.generators.toYAML {} value
+            else if builtins.isPath value
+            then builtins.readFile value
+            else value;
+        in
+          if builtins.isPath value
+          then builtins.toString value
+          else builtins.toString (pkgs.writeText outName rendered);
+      in
+        stack
+        // {
+          services =
+            lib.mapAttrs
+            (serviceName: service: let
+              useSource = service.source != null;
+              effectiveFilesRaw = (lib.optionalAttrs useSource {"compose.yml" = service.source;}) // service.files;
+              resolvedWorkingDir =
+                if service.workingDir != null
+                then service.workingDir
+                else "${stack.workingDir}/${serviceName}";
+            in
+              service
+              // {
+                sourcePaths = lib.mapAttrs (fileName: value: renderValue serviceName fileName value) effectiveFilesRaw;
+                runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveFilesRaw;
+              })
+            stack.services;
+        })
+      stacks;
   };
 
   config = {
-    assertions = lib.concatLists (lib.mapAttrsToList
-      (stackName: stack:
-        lib.mapAttrsToList
-        (serviceName: service: {
-          assertion = (service.composeText != null) != (service.composeFile != null);
-          message = "services.podmanCompose.${stackName}.services.${serviceName}: set exactly one of composeText or composeFile.";
-        })
-        stack.services)
-      cfg);
+    systemd.tmpfiles.rules = lib.concatLists (
+      lib.mapAttrsToList
+      (_: stack: [
+        "d ${stack.workingDir} 0750 ${stack.user} ${stack.user} -"
+      ])
+      cfg
+    );
 
-    environment.etc = lib.foldl' (acc: s: acc // s.etc) {} resolvedServices;
+    assertions =
+      lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.source != null || service.files != {};
+            message = "services.podmanCompose.${stackName}.services.${serviceName}: set source and/or files.";
+          })
+          stack.services)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.entryFile == null || builtins.hasAttr service.entryFile service.runtimePaths;
+            message = "services.podmanCompose.${stackName}.services.${serviceName}: entryFile '${toString service.entryFile}' is not defined in source/files.";
+          })
+          stack.services)
+        cfg
+      );
+
     systemd.user.services = lib.listToAttrs (
       map (
         s: {
           name = s.systemdServiceName;
           value = s.systemdService;
+        }
+      )
+      resolvedServices
+    );
+
+    services.systemdUserManager.bridges = lib.listToAttrs (
+      map (
+        s: {
+          name = s.systemdServiceName;
+          value = {
+            user = s.systemdUser;
+            unit = "${s.systemdServiceName}.service";
+            restartTriggers = [s.restartStamp];
+            serviceName = "systemd-user-manger-podman-${s.systemdServiceName}";
+          };
         }
       )
       resolvedServices

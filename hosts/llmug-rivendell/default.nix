@@ -5,7 +5,6 @@
 }: {
   imports = [
     ../../lib/profiles/systemd-container.nix
-    ../../lib/hardware/nvidia.nix
     ../../lib/podman.nix
     ../../lib/virtualization.nix
     ./packages.nix
@@ -15,14 +14,7 @@
     ./users.nix
   ];
 
-  hardware.nvidia = {
-    prime = {
-      amdgpuBusId = "PCI:102:0:0";
-      nvidiaBusId = "PCI:100:0:0";
-    };
-  };
-  # The host kernel is used, we only choose this so
-  # drivers like nvidia can compile for the right modules.
+  # Keep latest kernel packages for container image parity with host features.
   boot.kernelPackages = pkgs.linuxPackages_latest;
 
   systemd.tmpfiles.rules = [

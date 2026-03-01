@@ -10,7 +10,7 @@
   - installs `/var/lib/nixbot/.ssh/config` for user `nixbot` with identity order:
     - `/var/lib/nixbot/.ssh/id_ed25519`
     - `/var/lib/nixbot/.ssh/id_ed25519_legacy`
-  - optional agenix secret `nixbot-ssh-key-legacy` from `data/secrets/nixbot-legacy.key.age` when present.
+  - optional agenix secret `nixbot-ssh-key-legacy` from `data/secrets/nixbot/nixbot-legacy.key.age` when present.
   - `age.identityPaths` includes legacy identity path when legacy key exists.
 
 ## Intended Effect

@@ -26,7 +26,7 @@ Execution behavior:
 
 - `NEW_NIXBOT_PUB`
 - `NEW_BASTION_PUB`
-- `NEW_NIXBOT_KEY_AGE` (usually `data/secrets/nixbot.key.age` or staged path)
+- `NEW_NIXBOT_KEY_AGE` (usually `data/secrets/nixbot/nixbot.key.age` or staged path)
 - `NEW_NIXBOT_KEY_PRIVATE` (private key file path for GitHub repo SSH deploy-key secret)
 - `NEW_BASTION_KEY_PRIVATE` (private key file path for GitHub secret `NIXBOT_BASTION_SSH_KEY`)
 - optional `LEGACY_NIXBOT_KEY_AGE` for bastion-first cutover mode
@@ -83,8 +83,8 @@ Actions:
    - append contents of `${KEYGEN_DIR}/nixbot.key.pub` to `nixbot.sshKeys`
    - append contents of `${KEYGEN_DIR}/nixbot-bastion-ssh.key.pub` to `nixbot.bastionSshKeys`
 2. Optionally refresh helper public-key files:
-   - `data/secrets/nixbot.pub`
-   - `data/secrets/nixbot-bastion-ssh.key.pub`
+   - `data/secrets/nixbot/nixbot.pub`
+   - `data/secrets/bastion/nixbot-bastion-ssh.key.pub`
 
 Expected outcome:
 - repo contains new public keys for overlap/cutover flow.
@@ -98,14 +98,14 @@ Important:
 Run (deterministic recipients from `data/secrets/default.nix`):
 
 ```bash
-mapfile -t NIXBOT_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/nixbot.key.age".publicKeys[]')
-mapfile -t BASTION_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/nixbot-bastion-ssh.key.age".publicKeys[]')
+mapfile -t NIXBOT_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/nixbot/nixbot.key.age".publicKeys[]')
+mapfile -t BASTION_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/bastion/nixbot-bastion-ssh.key.age".publicKeys[]')
 
 NIXBOT_ARGS=(); for r in "${NIXBOT_RECIPS[@]}"; do NIXBOT_ARGS+=(-r "$r"); done
 BASTION_ARGS=(); for r in "${BASTION_RECIPS[@]}"; do BASTION_ARGS+=(-r "$r"); done
 
-age "${NIXBOT_ARGS[@]}" -o data/secrets/nixbot.key.age "${KEYGEN_DIR}/nixbot.key"
-age "${BASTION_ARGS[@]}" -o data/secrets/nixbot-bastion-ssh.key.age "${KEYGEN_DIR}/nixbot-bastion-ssh.key"
+age "${NIXBOT_ARGS[@]}" -o data/secrets/nixbot/nixbot.key.age "${KEYGEN_DIR}/nixbot.key"
+age "${BASTION_ARGS[@]}" -o data/secrets/bastion/nixbot-bastion-ssh.key.age "${KEYGEN_DIR}/nixbot-bastion-ssh.key"
 ```
 
 Preferred:

@@ -8,11 +8,15 @@ in {
 
   vscode = unstable.vscode;
   crun = unstable.crun;
-  incus = unstable.incus;
-  incus-lts = unstable.incus-lts;
+  # incus = unstable.incus;
+  # incus-lts = unstable.incus-lts;
   lxc = unstable.lxc;
   lxcfs = unstable.lxcfs;
   jan = unstable.jan;
   tailscale = unstable.tailscale;
+  sway = unstable.sway;
+  swayidle = unstable.swayidle;
+  swaylock = unstable.swaylock;
+  wlroots = unstable.wlroots;
   xdg-desktop-portal-wlr = unstable.xdg-desktop-portal-wlr;
 }

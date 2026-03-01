@@ -24,11 +24,11 @@ permissions:
 jobs:
   run:
     if: github.ref == 'refs/heads/master'
-    name: Trigger nixbot
+    name: nixbot
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - name: Build unique Tailscale hostname
+      - name: Build Tailscale hostname
         shell: bash
         run: |
           set -euo pipefail
@@ -44,8 +44,7 @@ jobs:
           hostname: ${{ env.TS_HOSTNAME }}
           version: latest
 
-      - name: Trigger deploy from bastion over SSH
-        if: steps.tailscale.outcome == 'success'
+      - name: Remote build
         shell: bash
         env:
           BASTION_HOST: ${{ secrets.NIXBOT_BASTION_HOST }}

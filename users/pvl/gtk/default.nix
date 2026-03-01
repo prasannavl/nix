@@ -5,6 +5,7 @@
     config,
     lib,
     osConfig,
+    pkgs,
     ...
   }: let
     homeDir = config.home.homeDirectory;
@@ -20,6 +21,22 @@
       enable = true;
       gtk3 = {
         enable = true;
+
+        iconTheme = {
+          name = "Adwaita";
+          package = pkgs.adwaita-icon-theme;
+        };
+
+        theme = {
+          name = "Adwaita";
+          package = pkgs.gnome-themes-extra;
+        };
+
+        cursorTheme = {
+          name = "Adwaita";
+          package = pkgs.adwaita-icon-theme;
+        };
+
         bookmarks = lib.flatten [
           "file:/// /"
           "file:///${homeDir}/Documents"

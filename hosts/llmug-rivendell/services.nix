@@ -18,11 +18,10 @@
   services.podmanCompose.llmug = {
     user = "llmug";
     workingDir = "/var/lib/llmug/compose";
-    sourceDir = "/etc/llmug/compose";
     servicePrefix = "llmug-";
 
     services = {
-      nginx.composeText = ''
+      nginx.source = ''
         services:
           nginx:
             image: docker.io/library/nginx:latest
@@ -33,7 +32,7 @@
               - /var/lib/llmug/nginx:/usr/share/nginx/html:Z
       '';
 
-      ollama.composeText = ''
+      ollama.source = ''
         services:
           ollama:
             image: docker.io/ollama/ollama:latest
@@ -42,12 +41,16 @@
               - "0.0.0.0:21434:11434"
             volumes:
               - /var/lib/llmug/ollama:/root/.ollama:Z
+            group_add:
+              - video
+              - render
             devices:
-              - nvidia.com/gpu=all
+              - /dev/dri:/dev/dri
+              - /dev/kfd:/dev/kfd
       '';
 
       open-webui = {
-        composeText = ''
+        source = ''
           services:
             open-webui:
               image: ghcr.io/open-webui/open-webui:main

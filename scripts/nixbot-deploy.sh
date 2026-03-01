@@ -65,6 +65,7 @@ init_vars() {
   DEPLOY_DEFAULT_BOOTSTRAP_KEY=""
   DEPLOY_DEFAULT_BOOTSTRAP_USER="root"
   DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH=""
+  DEPLOY_DEFAULT_AGE_IDENTITY_KEY=""
   DEPLOY_HOSTS_JSON='{}'
 
   DEPLOY_TMP_DIR=""
@@ -81,6 +82,7 @@ init_vars() {
   PREP_DEPLOY_SSH_TARGET=""
   PREP_DEPLOY_NIX_SSHOPTS=""
   PREP_USING_BOOTSTRAP_FALLBACK=0
+  PREP_DEPLOY_AGE_IDENTITY_KEY=""
   PREP_DEPLOY_SSH_OPTS=()
 }
 
@@ -291,6 +293,7 @@ init_deploy_settings() {
   DEPLOY_DEFAULT_BOOTSTRAP_KEY="$(jq -r '.defaults.bootstrapKey // ""' <<<"${config_json}")"
   DEPLOY_DEFAULT_BOOTSTRAP_USER="$(jq -r '.defaults.bootstrapUser // "root"' <<<"${config_json}")"
   DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH="$(jq -r '.defaults.bootstrapKeyPath // ""' <<<"${config_json}")"
+  DEPLOY_DEFAULT_AGE_IDENTITY_KEY="$(jq -r '.defaults.ageIdentityKey // ""' <<<"${config_json}")"
   DEPLOY_HOSTS_JSON="$(jq -c '.hosts // {}' <<<"${config_json}")"
 
   if [ -n "${DEPLOY_USER_OVERRIDE}" ]; then
@@ -406,7 +409,7 @@ validate_selected_hosts() {
 
 resolve_deploy_target() {
   local node="$1"
-  local host_cfg user target key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path
+  local host_cfg user target key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path age_identity_key
 
   host_cfg="$(jq -c --arg h "${node}" '.[$h] // {}' <<<"${DEPLOY_HOSTS_JSON}")"
 
@@ -417,6 +420,7 @@ resolve_deploy_target() {
   bootstrap_key="$(jq -r '.bootstrapKey // empty' <<<"${host_cfg}")"
   bootstrap_user="$(jq -r '.bootstrapUser // empty' <<<"${host_cfg}")"
   bootstrap_key_path="$(jq -r '.bootstrapKeyPath // empty' <<<"${host_cfg}")"
+  age_identity_key="$(jq -r '.ageIdentityKey // empty' <<<"${host_cfg}")"
 
   [ -n "${user}" ] || user="${DEPLOY_DEFAULT_USER}"
   [ -n "${target}" ] || target="${node}"
@@ -425,6 +429,7 @@ resolve_deploy_target() {
   [ -n "${bootstrap_key}" ] || bootstrap_key="${DEPLOY_DEFAULT_BOOTSTRAP_KEY}"
   [ -n "${bootstrap_user}" ] || bootstrap_user="${DEPLOY_DEFAULT_BOOTSTRAP_USER}"
   [ -n "${bootstrap_key_path}" ] || bootstrap_key_path="${DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH}"
+  [ -n "${age_identity_key}" ] || age_identity_key="${DEPLOY_DEFAULT_AGE_IDENTITY_KEY}"
 
   jq -cn \
     --arg user "${user}" \
@@ -434,7 +439,8 @@ resolve_deploy_target() {
     --arg bootstrapKey "${bootstrap_key}" \
     --arg bootstrapUser "${bootstrap_user}" \
     --arg bootstrapKeyPath "${bootstrap_key_path}" \
-    '{user: $user, target: $target, keyPath: $keyPath, knownHosts: $knownHosts, bootstrapKey: $bootstrapKey, bootstrapUser: $bootstrapUser, bootstrapKeyPath: $bootstrapKeyPath}'
+    --arg ageIdentityKey "${age_identity_key}" \
+    '{user: $user, target: $target, keyPath: $keyPath, knownHosts: $knownHosts, bootstrapKey: $bootstrapKey, bootstrapUser: $bootstrapUser, bootstrapKeyPath: $bootstrapKeyPath, ageIdentityKey: $ageIdentityKey}'
 }
 
 build_host() {
@@ -689,9 +695,81 @@ fi
 EOF
 }
 
+inject_host_age_identity_key() {
+  local node="$1"
+  local ssh_target="$2"
+  local age_identity_key_path="$3"
+  local -a ssh_opts=("${@:4}")
+  local age_identity_key_file remote_tmp expected_sha
+  local remote_dest="/var/lib/nixbot/.age/identity"
+  local remote_has_cmd remote_install_cmd
+
+  if [ -z "${age_identity_key_path}" ]; then
+    return
+  fi
+
+  age_identity_key_file="$(resolve_runtime_key_file "${age_identity_key_path}")"
+  [ -f "${age_identity_key_file}" ] || die "Host age identity key not found for ${node}: ${age_identity_key_path} (resolved: ${age_identity_key_file})"
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    echo "DRY: would inject host age identity ${age_identity_key_file} -> ${ssh_target}:${remote_dest}"
+    return
+  fi
+
+  expected_sha="$(sha256sum "${age_identity_key_file}" | awk '{print $1}')"
+  [ -n "${expected_sha}" ] || die "Unable to compute host age identity checksum for ${node}"
+
+  remote_has_cmd="$(cat <<EOF
+dest='${remote_dest}'
+want='${expected_sha}'
+if ! command -v sudo >/dev/null 2>&1; then
+  echo "sudo is required to validate \${dest}" >&2
+  exit 1
+fi
+[ "\$(sudo -n sha256sum "\${dest}" 2>/dev/null | awk '{print \$1}' || true)" = "\${want}" ]
+EOF
+)"
+  if ssh "${ssh_opts[@]}" "${ssh_target}" "${remote_has_cmd}" >/dev/null 2>&1; then
+    echo "==> Skipping host age identity for ${node}; matching key already present on target"
+    return
+  fi
+
+  remote_tmp="$(ssh "${ssh_opts[@]}" "${ssh_target}" 'umask 077; mktemp /tmp/nixbot-age-identity.XXXXXX')"
+  [ -n "${remote_tmp}" ] || die "Failed to allocate remote temporary file for host age identity on ${node}"
+
+  scp "${ssh_opts[@]}" "${age_identity_key_file}" "${ssh_target}:${remote_tmp}"
+
+  remote_install_cmd="$(cat <<EOF
+install_age_identity() {
+  remote_tmp='${remote_tmp}'
+  remote_dest='${remote_dest}'
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required to install \${remote_dest}" >&2
+    return 1
+  fi
+
+  sudo install -d -m 0755 /var/lib/nixbot
+  sudo install -d -m 0700 /var/lib/nixbot/.age
+  sudo install -m 0400 "\${remote_tmp}" "\${remote_dest}"
+  sudo chown root:root "\${remote_dest}"
+  rm -f "\${remote_tmp}"
+  return 0
+}
+install_age_identity
+EOF
+)"
+
+  echo "==> Injecting host age identity for ${node}"
+  if ! ssh -tt "${ssh_opts[@]}" "${ssh_target}" "${remote_install_cmd}" </dev/tty; then
+    ssh "${ssh_opts[@]}" "${ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
+    exit 1
+  fi
+}
+
 prepare_deploy_context() {
   local node="$1"
-  local target_info user host key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path
+  local target_info user host key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path age_identity_key
   local known_hosts_file key_file bootstrap_key_file
   local ssh_target bootstrap_ssh_target
   local -a ssh_opts=()
@@ -708,6 +786,7 @@ prepare_deploy_context() {
   bootstrap_key="$(jq -r '.bootstrapKey // empty' <<<"${target_info}")"
   bootstrap_user="$(jq -r '.bootstrapUser // empty' <<<"${target_info}")"
   bootstrap_key_path="$(jq -r '.bootstrapKeyPath // empty' <<<"${target_info}")"
+  age_identity_key="$(jq -r '.ageIdentityKey // empty' <<<"${target_info}")"
 
   ssh_target="${user}@${host}"
   bootstrap_ssh_target="${bootstrap_user}@${host}"
@@ -751,6 +830,7 @@ prepare_deploy_context() {
   PREP_DEPLOY_SSH_OPTS=("${ssh_opts[@]}")
   PREP_DEPLOY_NIX_SSHOPTS="${nix_sshopts}"
   PREP_USING_BOOTSTRAP_FALLBACK=0
+  PREP_DEPLOY_AGE_IDENTITY_KEY="${age_identity_key}"
 
   if [ "${FORCE_BOOTSTRAP_PATH}" -eq 1 ]; then
     echo "==> Forcing bootstrap path for ${node}: ${bootstrap_ssh_target}"
@@ -901,6 +981,7 @@ deploy_host() {
   local -a rebuild_cmd=()
 
   prepare_deploy_context "${node}"
+  inject_host_age_identity_key "${node}" "${PREP_DEPLOY_SSH_TARGET}" "${PREP_DEPLOY_AGE_IDENTITY_KEY}" "${PREP_DEPLOY_SSH_OPTS[@]}"
 
   deploy_user="${PREP_DEPLOY_SSH_TARGET%%@*}"
 
