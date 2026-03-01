@@ -14,9 +14,6 @@
     ./users.nix
   ];
 
-  # Keep latest kernel packages for container image parity with host features.
-  boot.kernelPackages = pkgs.linuxPackages_latest;
-
   systemd.tmpfiles.rules = [
     "d /var/lib/llmug 0755 llmug llmug -"
     "d /var/lib/llmug/machine 0700 root root -"

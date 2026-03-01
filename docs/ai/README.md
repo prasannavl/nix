@@ -21,3 +21,4 @@
 - `docs/ai/notes/pvl-x2-services-yaml-source-format.md`: Converted `pvl-x2` compose definitions in `services.nix` to explicit YAML string sources (including `immich` and helper compose files).
 - `docs/ai/notes/pvl-podman-compose-systemd-quoting-fix.md`: Fix for `services.podmanCompose` generated user units failing with `Unbalanced quoting` due to stray quote in `ExecStartPre` script generation.
 - `docs/ai/notes/pvl-podman-compose-user-unit-restart-on-switch.md`: Added reusable `systemd-user-manager` bridge wiring so Podman user units use old-stop/new-start-style switch behavior on definition changes.
+- `docs/ai/notes/pvl-a1-suspend-resume-candidates-2026-03-02.md`: Investigation notes for pvl-a1 suspend/resume failures after recent updates, with ranked candidates and rollback tests.
