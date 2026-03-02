@@ -17,6 +17,6 @@
     # "video=HDMI-A-1:3840x1600@60e"
   ];
 
-  # boot.kernelPackages = pkgs.linuxPackages_latest;
-  boot.kernelPackages = pkgs.linuxKernel.packages.linux_6_18;
+  boot.kernelPackages = pkgs.linuxPackages_latest;
+  # boot.kernelPackages = pkgs.linuxKernel.packages.linux_6_18;
 }
