@@ -59,11 +59,22 @@
       {nixpkgs.overlays = overlays;}
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
+    formatterPkgsFor = pkgs:
+      with pkgs; [
+        treefmt
+        alejandra
+        deno
+      ];
   in
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
+      formatterPkgs = formatterPkgsFor pkgs;
     in {
-      formatter = pkgs.alejandra;
+      formatter = pkgs.writeShellApplication {
+        name = "treefmt";
+        runtimeInputs = formatterPkgs;
+        text = "treefmt";
+      };
     })
     // {
       nixosConfigurations = import ./hosts {

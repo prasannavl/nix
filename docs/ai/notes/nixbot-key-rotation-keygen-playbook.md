@@ -3,9 +3,11 @@
 Date: 2026-02-26
 
 ## User Direction
+
 - Add a second playbook for preparing key material before execution phases.
 
 ## Output
+
 - Added `docs/ai/playbooks/nixbot-key-rotation-keygen.md` with:
   - mandatory per-step confirmation gating
   - key generation commands for new nixbot and bastion keys

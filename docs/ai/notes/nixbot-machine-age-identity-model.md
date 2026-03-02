@@ -11,7 +11,9 @@
 
 ## Goal
 
-Switch activation-time agenix decryption to per-machine identities while keeping:
+Switch activation-time agenix decryption to per-machine identities while
+keeping:
+
 - separate bastion ingress SSH key model,
 - shared nixbot deploy SSH key model.
 
@@ -35,19 +37,24 @@ Switch activation-time agenix decryption to per-machine identities while keeping
 
 ## Bastion Adjustment
 
-- Reverted bastion key materialization to normal agenix-managed `age.secrets.*` for:
+- Reverted bastion key materialization to normal agenix-managed `age.secrets.*`
+  for:
   - `/var/lib/nixbot/.ssh/id_ed25519`
   - `/var/lib/nixbot/.ssh/id_ed25519_legacy`
 - Removed manual decrypt loop from bastion activation script.
-- Bootstrap loop is avoided because `age.identityPaths` no longer points at `/var/lib/nixbot/.ssh/*`.
+- Bootstrap loop is avoided because `age.identityPaths` no longer points at
+  `/var/lib/nixbot/.ssh/*`.
 
 ## Validation
 
 - `bash -n scripts/nixbot-deploy.sh` passed.
 - `nix eval --json --file data/secrets/default.nix` passed.
-- `nix build .#nixosConfigurations.pvl-x2.config.system.build.toplevel --no-link -L` passed.
+- `nix build .#nixosConfigurations.pvl-x2.config.system.build.toplevel --no-link -L`
+  passed.
 
 ## Rotation Policy
 
-- Machine age identity rotation defaults to single-step replace (no legacy path) because deploy injects identity before activation.
-- Legacy overlap is optional and intended only for unusual partial/out-of-band activation paths.
+- Machine age identity rotation defaults to single-step replace (no legacy path)
+  because deploy injects identity before activation.
+- Legacy overlap is optional and intended only for unusual partial/out-of-band
+  activation paths.
