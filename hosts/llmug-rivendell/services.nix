@@ -17,10 +17,10 @@
 
   services.podmanCompose.llmug = {
     user = "llmug";
-    workingDir = "/var/lib/llmug/compose";
+    stackDir = "/var/lib/llmug/compose";
     servicePrefix = "llmug-";
 
-    services = {
+    instances = {
       nginx.source = ''
         services:
           nginx:

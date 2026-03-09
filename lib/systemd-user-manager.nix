@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.services.systemdUserManager;
+  bridges = lib.attrValues cfg.bridges;
 
   unitType = lib.types.submodule ({
     name,
@@ -37,41 +38,167 @@
     };
   });
 
+  sanitizeUserKey = user: let
+    readable = lib.strings.sanitizeDerivationName user;
+    digest = builtins.substring 0 8 (builtins.hashString "sha256" user);
+  in "${readable}-${digest}";
+
+  reloadServiceNameForUser = user: "systemd-user-manager-reload-${sanitizeUserKey user}";
+  userUidFor = user: let
+    users = config.users.users;
+  in
+    if builtins.hasAttr user users && users.${user}.uid != null
+    then users.${user}.uid
+    else throw "services.systemdUserManager.bridges: user '${user}' is missing or has null uid in users.users";
+
+  bridgesByUser =
+    builtins.foldl'
+    (acc: bridge: let
+      key = bridge.user;
+      current = acc.${key} or [];
+    in
+      acc
+      // {
+        ${key} = current ++ [bridge];
+      })
+    {}
+    bridges;
+
+  mkMachineUserctlRetryLib = escapedMachine: ''
+    is_transient_userctl_error() {
+      printf '%s' "$1" | ${pkgs.gnugrep}/bin/grep -Eq \
+        'Transport endpoint is not connected|Failed to connect to bus|Connection refused|No such file or directory'
+    }
+    userctl() {
+      local out rc i
+      i=0
+      while [ "$i" -lt 15 ]; do
+        out="$(${pkgs.systemd}/bin/systemctl --user --machine=${escapedMachine} "$@" 2>&1)" && {
+          [ -n "$out" ] && printf '%s\n' "$out" >&2
+          return 0
+        }
+        rc=$?
+        if is_transient_userctl_error "$out"; then
+          i=$((i + 1))
+          ${pkgs.coreutils}/bin/sleep 0.2
+          continue
+        fi
+        [ -n "$out" ] && printf '%s\n' "$out" >&2
+        return $rc
+      done
+      [ -n "$out" ] && printf '%s\n' "$out" >&2
+      return $rc
+    }
+  '';
+
+  mkReloadService = user: userBridges: let
+    machine = "${user}@";
+    escapedMachine = lib.escapeShellArg machine;
+    serviceName = reloadServiceNameForUser user;
+    userUid = userUidFor user;
+    userAtService = "user@${toString userUid}.service";
+    userManagerStatePath = "/run/systemd/users/${toString userUid}";
+    restartTriggers = lib.concatMap (bridge: bridge.restartTriggers) userBridges;
+    reloadScript = pkgs.writeShellScript "systemd-user-manager-${serviceName}-reload" ''
+      set -eu
+      ${mkMachineUserctlRetryLib escapedMachine}
+      userctl daemon-reload
+    '';
+  in {
+    name = serviceName;
+    value = {
+      description = "Reload systemd --user manager for ${user}";
+      after = [userAtService];
+      wantedBy = [
+        "multi-user.target"
+        userAtService
+      ];
+      restartTriggers = restartTriggers;
+      restartIfChanged = true;
+      stopIfChanged = true;
+      unitConfig.ConditionPathExists = userManagerStatePath;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = "root";
+        ExecStart = "${reloadScript}";
+      };
+    };
+  };
+
   mkBridgeService = bridgeName: bridge: let
-    escapedUser = lib.escapeShellArg bridge.user;
     escapedUnit = lib.escapeShellArg bridge.unit;
     stateFile = "/run/nixos/systemd-user-manager/${bridge.serviceName}.was-active";
     escapedStateFile = lib.escapeShellArg stateFile;
+    stopSeenFile = "/run/nixos/systemd-user-manager/${bridge.serviceName}.stop-seen";
+    escapedStopSeenFile = lib.escapeShellArg stopSeenFile;
     machine = "${bridge.user}@";
     escapedMachine = lib.escapeShellArg machine;
+    reloadServiceName = reloadServiceNameForUser bridge.user;
+    userUid = userUidFor bridge.user;
+    userAtService = "user@${toString userUid}.service";
+    userManagerStatePath = "/run/systemd/users/${toString userUid}";
 
     startScript = pkgs.writeShellScript "systemd-user-manager-${bridgeName}-start" ''
       set -eu
-      if [ ! -f ${escapedStateFile} ]; then
+      ${mkMachineUserctlRetryLib escapedMachine}
+      if [ -f ${escapedStateFile} ]; then
+        # Replay prior-active state as restart intent.
+        userctl --no-block restart ${escapedUnit}
+        ${pkgs.coreutils}/bin/rm -f ${escapedStateFile} ${escapedStopSeenFile}
         exit 0
       fi
-      ${pkgs.coreutils}/bin/rm -f ${escapedStateFile}
-      ${pkgs.systemd}/bin/systemctl --user --machine=${escapedMachine} start ${escapedUnit} || true
+      if [ -f ${escapedStopSeenFile} ]; then
+        ${pkgs.coreutils}/bin/rm -f ${escapedStopSeenFile}
+        exit 0
+      fi
+      # No old-generation stop record: treat as new bridge/service and start it.
+      userctl --no-block start ${escapedUnit}
     '';
 
     stopScript = pkgs.writeShellScript "systemd-user-manager-${bridgeName}-stop" ''
       set -eu
+      ${mkMachineUserctlRetryLib escapedMachine}
+      was_active=0
+      if userctl --quiet is-active ${escapedUnit}; then
+        was_active=1
+      else
+        rc=$?
+        if [ "$rc" -eq 3 ]; then
+          was_active=0
+        else
+          # Query failures are treated conservatively to preserve restart intent.
+          was_active=1
+        fi
+      fi
       ${pkgs.coreutils}/bin/install -d -m 0755 /run/nixos/systemd-user-manager
-      if ${pkgs.systemd}/bin/systemctl --user --machine=${escapedMachine} --quiet is-active ${escapedUnit}; then
+      ${pkgs.coreutils}/bin/touch ${escapedStopSeenFile}
+      if [ "$was_active" -eq 1 ]; then
         ${pkgs.coreutils}/bin/touch ${escapedStateFile}
-        ${pkgs.systemd}/bin/systemctl --user --machine=${escapedMachine} stop ${escapedUnit} || true
       else
         ${pkgs.coreutils}/bin/rm -f ${escapedStateFile}
       fi
+      # Always attempt stop on bridge stop so old-generation teardown is not
+      # skipped by pre-check races.
+      userctl stop ${escapedUnit}
     '';
   in {
     name = bridge.serviceName;
     value = {
       description = "Bridge switch behavior for ${bridge.user} user unit ${bridge.unit}";
-      wantedBy = ["multi-user.target"];
+      after = [
+        "${reloadServiceName}.service"
+        userAtService
+      ];
+      requires = ["${reloadServiceName}.service"];
+      wantedBy = [
+        "multi-user.target"
+        userAtService
+      ];
       restartTriggers = bridge.restartTriggers;
       restartIfChanged = true;
       stopIfChanged = true;
+      unitConfig.ConditionPathExists = userManagerStatePath;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -92,6 +219,26 @@ in {
   };
 
   config = {
-    systemd.services = lib.listToAttrs (lib.mapAttrsToList mkBridgeService cfg.bridges);
+    assertions =
+      lib.concatMap (
+        bridge: [
+          {
+            assertion = builtins.hasAttr bridge.user config.users.users;
+            message = "services.systemdUserManager.bridges.${bridge.serviceName}: users.users.${bridge.user} is not defined";
+          }
+          {
+            assertion = (! builtins.hasAttr bridge.user config.users.users) || (config.users.users.${bridge.user}.uid != null);
+            message = "services.systemdUserManager.bridges.${bridge.serviceName}: users.users.${bridge.user}.uid must be set";
+          }
+        ]
+      )
+      bridges;
+
+    systemd.services =
+      lib.listToAttrs
+      (
+        (lib.mapAttrsToList mkReloadService bridgesByUser)
+        ++ (lib.mapAttrsToList mkBridgeService cfg.bridges)
+      );
   };
 }

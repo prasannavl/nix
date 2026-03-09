@@ -17,13 +17,13 @@
       files = lib.mkOption {
         type = lib.types.attrsOf (lib.types.oneOf [lib.types.lines lib.types.attrs lib.types.path]);
         default = {};
-        description = "Additional files keyed by filename. Attrset values are rendered to YAML; string values are copied as-is; path values are used directly. Can override compose.yml from source.";
+        description = "Additional files keyed by destination path. Attrset values are rendered to YAML; string values are copied as-is; path values support both files and directories (directories are expanded recursively under the destination path). Can override compose.yml from source.";
       };
 
       entryFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
+        type = lib.types.nullOr (lib.types.oneOf [lib.types.str (lib.types.listOf lib.types.str)]);
         default = null;
-        description = "Optional compose entry filename inside workingDir. When null, podman compose default file discovery is used in workingDir.";
+        description = "Optional compose entry filename(s) inside workingDir. Set a string for one file or a list for ordered repeated `-f` arguments. When null and source is set, `compose.yml` in workingDir is used; otherwise podman compose default file discovery is used in workingDir.";
       };
 
       user = lib.mkOption {
@@ -39,7 +39,7 @@
       };
 
       sourcePaths = lib.mkOption {
-        type = lib.types.attrsOf lib.types.str;
+        type = lib.types.attrsOf lib.types.path;
         default = {};
         readOnly = true;
         internal = true;
@@ -86,6 +86,16 @@
     };
   });
 
+  instanceFnType = lib.types.mkOptionType {
+    name = "podman-compose-instance-function";
+    description = "Function that receives derived instance context and returns an instance attrset.";
+    check = builtins.isFunction;
+    merge = loc: defs:
+      if builtins.length defs == 1
+      then (builtins.head defs).value
+      else throw "services.podmanCompose.${lib.concatStringsSep "." loc}: multiple function definitions are not supported.";
+  };
+
   stackType = lib.types.submodule ({name, ...}: {
     options = {
       user = lib.mkOption {
@@ -94,10 +104,10 @@
         description = "Default user for services in this stack.";
       };
 
-      workingDir = lib.mkOption {
+      stackDir = lib.mkOption {
         type = lib.types.str;
         default = "/var/lib/podman-${name}";
-        description = "Default working directory root; each service uses <workingDir>/<service> when service workingDir is unset.";
+        description = "Default stack directory root; each instance uses <stackDir>/<instance> when instance workingDir is unset.";
       };
 
       servicePrefix = lib.mkOption {
@@ -106,10 +116,10 @@
         description = "Prefix for generated systemd user service names in this stack.";
       };
 
-      services = lib.mkOption {
-        type = lib.types.attrsOf serviceType;
+      instances = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.oneOf [instanceFnType serviceType]);
         default = {};
-        description = "Compose services in this stack keyed by service name.";
+        description = "Compose instances in this stack keyed by instance name. Each value can be an instance attrset or a function receiving { stackName, instanceName, user, uid, workDir, stackDir, podmanSocket } and returning an instance attrset. podmanSocket resolves to /run/podman/podman.sock for root stacks, otherwise /run/user/<uid>/podman/podman.sock.";
       };
     };
   });
@@ -127,12 +137,17 @@
     resolvedWorkingDir =
       if service.workingDir != null
       then service.workingDir
-      else "${stack.workingDir}/${serviceName}";
+      else "${stack.stackDir}/${serviceName}";
 
-    resolvedComposeFile =
+    resolvedComposeFiles =
       if service.entryFile != null
-      then service.runtimePaths.${service.entryFile}
-      else null;
+      then
+        if builtins.isList service.entryFile
+        then map (file: service.runtimePaths.${file}) service.entryFile
+        else [service.runtimePaths.${service.entryFile}]
+      else if service.source != null
+      then [service.runtimePaths."compose.yml"]
+      else [];
 
     resolvedSystemdServiceName =
       if service.serviceName != null
@@ -140,14 +155,14 @@
       else "${stack.servicePrefix}${serviceName}";
 
     resolveGeneratedServiceName = svcName: let
-      svc = stack.services.${svcName};
+      svc = stack.instances.${svcName};
     in
       if svc.serviceName != null
       then svc.serviceName
       else "${stack.servicePrefix}${svcName}";
 
     resolveDependencyUnit = dep:
-      if builtins.hasAttr dep stack.services
+      if builtins.hasAttr dep stack.instances
       then "${resolveGeneratedServiceName dep}.service"
       else if builtins.match ".*\\.[A-Za-z0-9_-]+$" dep != null
       then dep
@@ -157,7 +172,8 @@
     wantsUnits = lib.unique (map resolveDependencyUnit service.wants);
     networkOnlineUnits = lib.optional service.waitForNetwork "network-online.target";
 
-    podmanComposeCmd = "${pkgs.podman}/bin/podman compose${lib.optionalString (resolvedComposeFile != null) " -f ${resolvedComposeFile}"}";
+    composeFileArgs = lib.concatMapStringsSep "" (composeFile: " -f ${lib.escapeShellArg composeFile}") resolvedComposeFiles;
+    podmanComposeCmd = "${pkgs.podman}/bin/podman compose${composeFileArgs}";
     manifestPath = "$runtime_dir/podman-compose/${resolvedSystemdServiceName}.manifest";
     linkCmdsBody = lib.concatStringsSep "\n" (
       [
@@ -244,7 +260,7 @@
               inherit stack serviceName service;
             }
         )
-        stack.services
+        stack.instances
     )
     cfg
   );
@@ -256,42 +272,120 @@ in {
   options.services.podmanCompose = lib.mkOption {
     type = lib.types.attrsOf stackType;
     default = {};
-    description = "Podman compose stacks. Example: services.podmanCompose.stack1.services.web = { ... };";
+    description = "Podman compose stacks. Example: services.podmanCompose.stack1.instances.web = { ... };";
     apply = stacks:
       lib.mapAttrs
       (stackName: stack: let
         renderValue = serviceName: fileName: value: let
           safeName = builtins.replaceStrings ["/" "."] ["__" "_"] fileName;
           outName = "podman-compose-${stackName}-${serviceName}-${safeName}";
-          rendered =
-            if builtins.isAttrs value
-            then lib.generators.toYAML {} value
-            else if builtins.isPath value
-            then builtins.readFile value
-            else value;
         in
           if builtins.isPath value
-          then builtins.toString value
-          else builtins.toString (pkgs.writeText outName rendered);
+          then
+            pkgs.runCommandLocal outName {} ''
+              set -eu
+              src=${value}
+              ${pkgs.coreutils}/bin/cp -f "$src" "$out"
+            ''
+          else
+            pkgs.writeText outName (
+              if builtins.isAttrs value
+              then lib.generators.toYAML {} value
+              else value
+            );
+        expandFileValue = dstPrefix: value:
+          if builtins.isPath value
+          then let
+            pathString = toString value;
+            pathName = builtins.baseNameOf pathString;
+            pathParent = builtins.dirOf pathString;
+            pathKind = (builtins.readDir pathParent).${pathName};
+          in
+            if pathKind == "directory"
+            then
+              lib.concatMapAttrs
+              (name: kind: let
+                childSrc = value + "/${name}";
+                childDst =
+                  if dstPrefix == ""
+                  then name
+                  else "${dstPrefix}/${name}";
+              in
+                if kind == "directory"
+                then expandFileValue childDst childSrc
+                else if kind == "regular" || kind == "symlink"
+                then {"${childDst}" = childSrc;}
+                else {})
+              (builtins.readDir value)
+            else {"${dstPrefix}" = value;}
+          else {"${dstPrefix}" = value;};
       in
         stack
         // {
-          services =
+          instances = let
+              instancesWithContext =
+                lib.mapAttrs
+                (serviceName: serviceOrFn:
+                  if builtins.isFunction serviceOrFn
+                  then let
+                    resolvedUser = stack.user;
+                    userUid =
+                      if resolvedUser == "root"
+                      then "0"
+                      else if builtins.hasAttr resolvedUser config.users.users && config.users.users.${resolvedUser}.uid != null
+                      then toString config.users.users.${resolvedUser}.uid
+                      else throw "services.podmanCompose.${stackName}: stack user '${resolvedUser}' must exist in config.users.users with a non-null uid when using function-valued instances.";
+                    podmanSocket =
+                      if resolvedUser == "root"
+                      then "/run/podman/podman.sock"
+                      else "/run/user/${userUid}/podman/podman.sock";
+                  in
+                    serviceOrFn {
+                      inherit stackName serviceName;
+                      instanceName = serviceName;
+                      user = resolvedUser;
+                      uid = userUid;
+                      workDir = "${stack.stackDir}/${serviceName}";
+                      stackDir = stack.stackDir;
+                      inherit podmanSocket;
+                    }
+                else serviceOrFn)
+              stack.instances;
+          in
             lib.mapAttrs
             (serviceName: service: let
-              useSource = service.source != null;
-              effectiveFilesRaw = (lib.optionalAttrs useSource {"compose.yml" = service.source;}) // service.files;
+              normalizedService =
+                {
+                  source = null;
+                  files = {};
+                  entryFile = null;
+                  user = null;
+                  workingDir = null;
+                  serviceName = null;
+                  serviceOverrides = {};
+                  dependsOn = [];
+                  wants = [];
+                  waitForNetwork = true;
+                }
+                // service;
+              useSource = normalizedService.source != null;
+              sourceCompose =
+                if builtins.isPath normalizedService.source
+                then builtins.readFile normalizedService.source
+                else normalizedService.source;
+              filesExpanded = lib.concatMapAttrs (dstPath: value: expandFileValue dstPath value) normalizedService.files;
+              effectiveFilesRaw = (lib.optionalAttrs useSource {"compose.yml" = sourceCompose;}) // filesExpanded;
               resolvedWorkingDir =
-                if service.workingDir != null
-                then service.workingDir
-                else "${stack.workingDir}/${serviceName}";
+                if normalizedService.workingDir != null
+                then normalizedService.workingDir
+                else "${stack.stackDir}/${serviceName}";
             in
-              service
+              normalizedService
               // {
                 sourcePaths = lib.mapAttrs (fileName: value: renderValue serviceName fileName value) effectiveFilesRaw;
                 runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveFilesRaw;
               })
-            stack.services;
+            instancesWithContext;
         })
       stacks;
   };
@@ -300,7 +394,7 @@ in {
     systemd.tmpfiles.rules = lib.concatLists (
       lib.mapAttrsToList
       (_: stack: [
-        "d ${stack.workingDir} 0750 ${stack.user} ${stack.user} -"
+        "d ${stack.stackDir} 0750 ${stack.user} ${stack.user} -"
       ])
       cfg
     );
@@ -312,9 +406,9 @@ in {
           lib.mapAttrsToList
           (serviceName: service: {
             assertion = service.source != null || service.files != {};
-            message = "services.podmanCompose.${stackName}.services.${serviceName}: set source and/or files.";
+            message = "services.podmanCompose.${stackName}.instances.${serviceName}: set source and/or files.";
           })
-          stack.services)
+          stack.instances)
         cfg
       )
       ++ lib.concatLists (
@@ -322,10 +416,17 @@ in {
         (stackName: stack:
           lib.mapAttrsToList
           (serviceName: service: {
-            assertion = service.entryFile == null || builtins.hasAttr service.entryFile service.runtimePaths;
-            message = "services.podmanCompose.${stackName}.services.${serviceName}: entryFile '${toString service.entryFile}' is not defined in source/files.";
+            assertion =
+              service.entryFile
+              == null
+              || (
+                if builtins.isList service.entryFile
+                then lib.all (file: builtins.hasAttr file service.runtimePaths) service.entryFile
+                else builtins.hasAttr service.entryFile service.runtimePaths
+              );
+            message = "services.podmanCompose.${stackName}.instances.${serviceName}: entryFile '${toString service.entryFile}' is not defined in source/files.";
           })
-          stack.services)
+          stack.instances)
         cfg
       );
 
@@ -347,7 +448,7 @@ in {
             user = s.systemdUser;
             unit = "${s.systemdServiceName}.service";
             restartTriggers = [s.restartStamp];
-            serviceName = "systemd-user-manger-podman-${s.systemdServiceName}";
+            serviceName = "systemd-user-manager-podman-${s.systemdServiceName}";
           };
         }
       )
