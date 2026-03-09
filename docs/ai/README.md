@@ -67,6 +67,16 @@
 - `docs/ai/notes/pvl-podman-compose-envsecrets-schema-simplification-2026-03-09.md`:
   Removed the redundant `envSecrets.<composeService>.files` layer so secrets are
   now declared directly as `envSecrets.<composeService>.<ENV_VAR> = <path>`.
+- `docs/ai/notes/pvl-x2-service-secret-key-suffix-2026-03-09.md`: Renamed the
+  repo-managed service secret payloads under `data/secrets/services/` from
+  `*.age` to `*.key.age` and updated the `pvl-x2` compose secret loader plus
+  recipients map to match the plaintext/encrypted naming convention expected by
+  `scripts/age-secrets.sh`.
+- `docs/ai/notes/age-secrets-default-scope-2026-03-09.md`: Expanded
+  `scripts/age-secrets.sh` so its default run scope covers all managed secrets
+  from `data/secrets/default.nix`, including
+  `data/secrets/services/**/*.key.age`, while still allowing subtree-scoped
+  runs.
 - `docs/ai/notes/pvl-podman-compose-systemd-quoting-fix.md`: Fix for
   `services.podmanCompose` generated user units failing with
   `Unbalanced quoting` due to stray quote in `ExecStartPre` script generation.

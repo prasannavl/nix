@@ -16,7 +16,8 @@ Behavior:
   (no mode) Auto-toggle: encrypt if any managed plaintext exists, otherwise decrypt.
 
 Notes:
-  - Default dir is data/secrets.
+  - Default scope is all files listed in data/secrets/default.nix.
+  - Pass [dir] to limit the run to one managed subtree, such as data/secrets or data/services.
   - Only files listed in data/secrets/default.nix are managed.
   - encrypt does not delete plaintext source files.
   - decrypt uses AGE_KEY_FILE, or defaults to ~/.ssh/id_ed25519.
@@ -49,9 +50,14 @@ load_recipients_json() {
 
 load_managed_files() {
   local root="$1"
-  local target_dir="$2"
+  local target_dir="${2:-}"
   local recipients_json="$3"
   local target_rel
+
+  if [ -z "$target_dir" ]; then
+    jq -r 'keys[]' <<<"$recipients_json"
+    return 0
+  fi
 
   target_rel="$(realpath --relative-to "$root" "$target_dir")"
   jq -r --arg pfx "${target_rel}/" 'keys[] | select(startswith($pfx))' <<<"$recipients_json"
@@ -121,10 +127,6 @@ main() {
       ;;
   esac
 
-  if [ -z "${target_dir}" ]; then
-    target_dir="data/secrets"
-  fi
-
   case "$mode" in
     -e) mode="encrypt" ;;
     -d) mode="decrypt" ;;
@@ -136,14 +138,20 @@ main() {
   require_cmd realpath
 
   root="$(repo_root)"
-  target_dir="$root/$target_dir"
-  [ -d "$target_dir" ] || die "Directory not found: $target_dir"
+  if [ -n "${target_dir}" ]; then
+    target_dir="$root/$target_dir"
+    [ -d "$target_dir" ] || die "Directory not found: $target_dir"
+  fi
 
   recipients_json="$(load_recipients_json "$root")"
   mapfile -t managed < <(load_managed_files "$root" "$target_dir" "$recipients_json")
 
   if [ "${#managed[@]}" -eq 0 ]; then
-    echo "No managed secrets found under $target_dir (from data/secrets/default.nix)"
+    if [ -n "${target_dir}" ]; then
+      echo "No managed secrets found under $target_dir (from data/secrets/default.nix)"
+    else
+      echo "No managed secrets found in data/secrets/default.nix"
+    fi
     exit 0
   fi
 
@@ -175,7 +183,11 @@ main() {
       [ -f "$f" ] && files+=("$f")
     done
     if [ "${#files[@]}" -eq 0 ]; then
-      echo "No managed plaintext .key files found under $target_dir"
+      if [ -n "${target_dir}" ]; then
+        echo "No managed plaintext .key files found under $target_dir"
+      else
+        echo "No managed plaintext .key files found"
+      fi
       exit 0
     fi
     for f in "${files[@]}"; do
@@ -189,7 +201,11 @@ main() {
     [ -f "$f" ] && files+=("$f")
   done
   if [ "${#files[@]}" -eq 0 ]; then
-    echo "No managed .age files found under $target_dir"
+    if [ -n "${target_dir}" ]; then
+      echo "No managed .age files found under $target_dir"
+    else
+      echo "No managed .age files found"
+    fi
     exit 0
   fi
   for f in "${files[@]}"; do

@@ -50,7 +50,7 @@ OpenCloud support, function-valued instance ergonomics, and the later
   than copied from live host state, then active plaintext secrets were migrated
   to `age.secrets` plus `envSecrets`.
 - The committed encrypted sources for the migrated `pvl-x2` stacks now live
-  under `data/services/<service>/*.age`.
+  under `data/secrets/services/<service>/*.key.age`.
 - OpenCloud now uses one tree import: `files = { "" = ./compose/opencloud; };`
   plus an ordered multi-file `entryFile` list for compose layering.
 
@@ -62,7 +62,7 @@ OpenCloud support, function-valued instance ergonomics, and the later
   decrypted env files copied into compose workdirs.
 - The first rollout on `pvl-x2` moved those active secrets to `age.secrets`
   entries in `hosts/pvl-x2/services.nix` and encrypted sources under
-  `data/services/<service>/*.age`.
+  `data/secrets/services/<service>/*.key.age`.
 - The migrated env vars were:
   - `beszel`: `KEY`, `TOKEN`
   - `docmost`: `APP_SECRET`, `DATABASE_URL`, `POSTGRES_PASSWORD`

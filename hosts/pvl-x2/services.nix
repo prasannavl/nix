@@ -107,7 +107,7 @@
         then service
         else fileName;
     in {
-      file = ../../data/services/${service}/${resolvedFileName}.age;
+      file = ../../data/secrets/services/${service}/${resolvedFileName}.key.age;
       owner = composeSecretUser;
       group = composeSecretUser;
     };

@@ -33,13 +33,13 @@ in {
   "data/secrets/machine/pvl-a1.key.age".publicKeys = adminsWithNixbot;
   "data/secrets/machine/pvl-x2.key.age".publicKeys = adminsWithNixbot;
   "data/secrets/machine/llmug-rivendell.key.age".publicKeys = adminsWithNixbot;
-  "data/services/beszel/key.age".publicKeys = machines.pvl-x2.withAdmins;
-  "data/services/beszel/token.age".publicKeys = machines.pvl-x2.withAdmins;
-  "data/services/docmost/app-secret.age".publicKeys = machines.pvl-x2.withAdmins;
-  "data/services/docmost/database-url.age".publicKeys = machines.pvl-x2.withAdmins;
-  "data/services/docmost/postgres-password.age".publicKeys = machines.pvl-x2.withAdmins;
-  "data/services/immich/db-password.age".publicKeys = machines.pvl-x2.withAdmins;
-  "data/services/shadowsocks/password.age".publicKeys = machines.pvl-x2.withAdmins;
+  "data/secrets/services/beszel/key.key.age".publicKeys = machines.pvl-x2.withAdmins;
+  "data/secrets/services/beszel/token.key.age".publicKeys = machines.pvl-x2.withAdmins;
+  "data/secrets/services/docmost/app-secret.key.age".publicKeys = machines.pvl-x2.withAdmins;
+  "data/secrets/services/docmost/database-url.key.age".publicKeys = machines.pvl-x2.withAdmins;
+  "data/secrets/services/docmost/postgres-password.key.age".publicKeys = machines.pvl-x2.withAdmins;
+  "data/secrets/services/immich/db-password.key.age".publicKeys = machines.pvl-x2.withAdmins;
+  "data/secrets/services/shadowsocks/password.key.age".publicKeys = machines.pvl-x2.withAdmins;
 
   # Host machine recipients are intended for per-host runtime secret ACLs.
   # Example use:
