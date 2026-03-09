@@ -6,95 +6,23 @@
   key-rotation playbook with mandatory confirmation gates.
 - `docs/ai/playbooks/nixbot-key-rotation-keygen.md`: Agent-executable
   key-generation and secret-packaging playbook for rotation prep.
-- `docs/ai/notes/nixbot-bastion-key-model.md`: Final key-model decision
-  (forced-command bastion key + regular nixbot key via default module).
-- `docs/ai/notes/nixbot-bastion-legacy-identity-retention.md`: Bastion
-  key-rotation change to retain and attempt legacy SSH identity.
-- `docs/ai/notes/nixbot-bastion-manual-key-decrypt-activation.md`: Replaced
-  bastion `age.secrets` for deploy keys with activation-script decrypt/install
-  to remove the agenix identity bootstrap loop.
-- `docs/ai/notes/nixbot-machine-age-identity-model.md`: Switched to per-host
-  machine age identity injection (`/var/lib/nixbot/.age/identity`) for
-  activation-time agenix decrypt, with deploy-script support and host key
-  mapping.
-- `docs/ai/notes/nixbot-remote-build-known-hosts-2026-03-09.md`: Fixed
-  cross-host remote builds failing SSH strict host key checks because the temp
-  `known_hosts` file only contained the deploy target and not the separate
-  remote build host.
-- `docs/ai/notes/nixbot-github-actions-bastion-known-hosts-fallback-2026-03-09.md`:
-  Moved bastion known-hosts fallback into `scripts/nixbot-deploy.sh` so
-  `--bastion-trigger` uses provided host keys strictly when set, otherwise
-  populates a strict temp `known_hosts` via `ssh-keyscan`.
-- `docs/ai/notes/nixbot-deploy-bootstrap-flag.md`: Added `--bootstrap` option to
-  force bootstrap deploy target path selection.
-- `docs/ai/notes/nixbot-deploy-flow-consolidated-2026-03.md`: Consolidated
-  summary of March 2026 deploy-script changes: bastion trigger mode, same-user
-  bootstrap caching, and eval-only remote-build preflight.
-- `docs/ai/notes/nixbot-forced-command-bootstrap-check-bash-dash-error.md`:
-  Root-cause fix for forced-command bootstrap checks that surfaced as
-  `bash: --: invalid option`.
-- `docs/ai/notes/nixbot-github-actions-tailscale-oauth-migration.md`: Migration
-  of GitHub Actions Tailscale auth from deprecated auth key input to OAuth
-  credentials and CI tag.
-- `docs/ai/notes/nixbot-key-rotation-legacy-key-recovery.md`: Incident recovery
-  for legacy-host lockout after bastion key cutover (restored overlap keys +
-  temporary legacy key overrides).
-- `docs/ai/notes/nixbot-key-rotation-execution-process.md`: Process notes
-  capturing execution-time refinements to the nixbot key-rotation run.
-- `docs/ai/notes/nixbot-key-rotation-keygen-playbook.md`: Process notes for
-  converting ad-hoc key-generation steps into a reusable playbook.
-- `docs/ai/notes/nixbot-key-rotation-sensitive-output-and-confirmation-policy.md`:
-  Operator security constraints (no secret output) and confirmation-policy
-  defaults for rotation.
-- `docs/ai/notes/nixbot-key-rotation-overlap-and-bastion-cutover.md`: Key-list
-  overlap implementation and bastion-first phased cutover runbook.
-- `docs/ai/notes/llmug-rivendell-ollama-amd-on-pvl-x2.md`: Reconfigured
+- `docs/ai/notes/deployment/deployment-fixes-consolidated-2026-03.md`: Small
+  deployment unblockers, currently the `incus` `checkPhase` SIGBUS mitigation.
+- `docs/ai/notes/hosts/llmug-rivendell-ollama-amd-on-pvl-x2.md`: Reconfigured
   `llmug-rivendell` Ollama GPU access from NVIDIA CDI to AMD (`/dev/dri` +
   `/dev/kfd`) for deployment on `pvl-x2`.
-- `docs/ai/notes/pvl-x2-beszel-podman-compose.md`: Added Beszel/Beszel Agent
-  Podman compose service wiring on `pvl-x2` (imports, service definition,
-  firewall port alignment).
-- `docs/ai/notes/pvl-x2-services-source-format-nix-attrs.md`: Corrected
-  `pvl-x2/services.nix` compose definitions to Nix attrset source format
-  (module-rendered YAML), including `immich` helper files.
-- `docs/ai/notes/pvl-x2-services-yaml-source-format.md`: Converted `pvl-x2`
-  compose definitions in `services.nix` to explicit YAML string sources
-  (including `immich` and helper compose files).
-- `docs/ai/notes/pvl-podman-compose-consolidated-2026-03.md`: Consolidated
-  summary of March 2026 `services.podmanCompose` evolution, including `pvl-x2`
-  compose migration, path/materialization fixes, `envSecrets`, and the
-  `pvl-x2` secret migration outcome.
-- `docs/ai/notes/pvl-podman-compose-envsecrets-schema-simplification-2026-03-09.md`:
-  Removed the redundant `envSecrets.<composeService>.files` layer so secrets are
-  now declared directly as `envSecrets.<composeService>.<ENV_VAR> = <path>`.
-- `docs/ai/notes/pvl-x2-service-secret-key-suffix-2026-03-09.md`: Renamed the
-  repo-managed service secret payloads under `data/secrets/services/` from
-  `*.age` to `*.key.age` and updated the `pvl-x2` compose secret loader plus
-  recipients map to match the plaintext/encrypted naming convention expected by
-  `scripts/age-secrets.sh`.
-- `docs/ai/notes/age-secrets-default-scope-2026-03-09.md`: Expanded
-  `scripts/age-secrets.sh` so its default run scope covers all managed secrets
-  from `data/secrets/default.nix`, including
-  `data/secrets/services/**/*.key.age`, while still allowing subtree-scoped
-  runs.
-- `docs/ai/notes/pvl-podman-compose-systemd-quoting-fix.md`: Fix for
-  `services.podmanCompose` generated user units failing with
-  `Unbalanced quoting` due to stray quote in `ExecStartPre` script generation.
-- `docs/ai/notes/pvl-podman-compose-user-unit-restart-on-switch.md`: Added
-  reusable `systemd-user-manager` bridge wiring so Podman user units use
-  old-stop/new-start-style switch behavior on definition changes.
-- `docs/ai/notes/pvl-systemd-user-manager-consolidated-2026-03.md`: Consolidated
-  summary of the March 2026 bridge lifecycle, marker semantics, boot-order
-  handling, and retry/transport decisions for `lib/systemd-user-manager.nix`.
-- `docs/ai/notes/pvl-deployment-fixes-consolidated-2026-03.md`: Consolidated
-  small March 2026 deployment unblockers, currently the `incus` check-phase
-  SIGBUS mitigation.
-- `docs/ai/notes/pvl-a1-suspend-resume-candidates-2026-03-02.md`: Investigation
-  notes for pvl-a1 suspend/resume failures after recent updates, with ranked
-  candidates and rollback tests.
-- `docs/ai/notes/pvl-a1-gnome-autolock-not-triggering-2026-03-02.md`:
-  Investigation notes for pvl-a1 GNOME idle lock not triggering on AC; confirms
-  active idle inhibition (`mutter`) with Caffeine extension as likely source.
-- `docs/ai/notes/pvl-a1-amdxdna-firmware-protocol-mismatch-2026-03-02.md`:
-  Confirms persistent `amdxdna` firmware protocol mismatch across both 6.18.13
-  and 6.19.3 on pvl-a1, with host-scoped blacklist as immediate mitigation.
+- `docs/ai/notes/hosts/pvl-a1-desktop-investigations-consolidated-2026-03.md`:
+  Consolidated `pvl-a1` desktop investigation state for suspend watchdogs, GNOME
+  idle inhibition, and `amdxdna` mismatch handling.
+- `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Consolidated
+  `nixbot` deploy architecture, bootstrap flow, machine-age identity model,
+  host-key handling, and GitHub Actions connectivity state.
+- `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
+  Consolidated `nixbot` rotation model, legacy-host recovery lessons, operator
+  guardrails, and the playbook relationship.
+- `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
+  Consolidated `services.podmanCompose` and `systemd-user-manager` platform
+  model, including file materialization, `envSecrets`, and unit lifecycle.
+- `docs/ai/notes/services/pvl-x2-service-migration-consolidated-2026-03.md`:
+  Consolidated `pvl-x2` service adoption into repo-managed compose stacks and
+  the aligned service-secret migration.
