@@ -19,6 +19,9 @@
   mapping.
 - `docs/ai/notes/nixbot-deploy-bootstrap-flag.md`: Added `--bootstrap` option to
   force bootstrap deploy target path selection.
+- `docs/ai/notes/nixbot-deploy-flow-consolidated-2026-03.md`: Consolidated
+  summary of March 2026 deploy-script changes: bastion trigger mode, same-user
+  bootstrap caching, and eval-only remote-build preflight.
 - `docs/ai/notes/nixbot-forced-command-bootstrap-check-bash-dash-error.md`:
   Root-cause fix for forced-command bootstrap checks that surfaced as
   `bash: --: invalid option`.
@@ -49,12 +52,23 @@
 - `docs/ai/notes/pvl-x2-services-yaml-source-format.md`: Converted `pvl-x2`
   compose definitions in `services.nix` to explicit YAML string sources
   (including `immich` and helper compose files).
+- `docs/ai/notes/pvl-podman-compose-consolidated-2026-03.md`: Consolidated
+  summary of March 2026 `services.podmanCompose` evolution, including `pvl-x2`
+  compose migration, OpenCloud wiring, path materialization fixes, and
+  function-valued instance ergonomics.
 - `docs/ai/notes/pvl-podman-compose-systemd-quoting-fix.md`: Fix for
   `services.podmanCompose` generated user units failing with
   `Unbalanced quoting` due to stray quote in `ExecStartPre` script generation.
 - `docs/ai/notes/pvl-podman-compose-user-unit-restart-on-switch.md`: Added
   reusable `systemd-user-manager` bridge wiring so Podman user units use
   old-stop/new-start-style switch behavior on definition changes.
+- `docs/ai/notes/pvl-systemd-user-manager-consolidated-2026-03.md`:
+  Consolidated summary of the March 2026 bridge lifecycle, marker semantics,
+  boot-order handling, and retry/transport decisions for
+  `lib/systemd-user-manager.nix`.
+- `docs/ai/notes/pvl-deployment-fixes-consolidated-2026-03.md`: Consolidated
+  small March 2026 deployment unblockers, currently the `incus` check-phase
+  SIGBUS mitigation.
 - `docs/ai/notes/pvl-a1-suspend-resume-candidates-2026-03-02.md`: Investigation
   notes for pvl-a1 suspend/resume failures after recent updates, with ranked
   candidates and rollback tests.

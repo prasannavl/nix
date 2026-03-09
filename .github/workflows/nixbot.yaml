@@ -44,68 +44,34 @@ jobs:
           hostname: ${{ env.TS_HOSTNAME }}
           version: latest
 
-      - name: Remote build
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Remote action
         shell: bash
         env:
-          BASTION_HOST: ${{ secrets.NIXBOT_BASTION_HOST }}
-          BASTION_USER: ${{ secrets.NIXBOT_BASTION_USER }}
-          BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
-          BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
-          INPUT_HOSTS: ${{ github.event.inputs.hosts }}
-          INPUT_DEPLOY: ${{ github.event.inputs.deploy }}
-          EVENT_NAME: ${{ github.event_name }}
-          GIT_SHA: ${{ github.sha }}
+          DEPLOY_BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
+          DEPLOY_BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
+          GITHUB_INPUT_HOSTS: ${{ github.event.inputs.hosts || '' }}
+          GITHUB_INPUT_DEPLOY: ${{ github.event.inputs.deploy || '' }}
         run: |
           set -euo pipefail
 
-          host="${BASTION_HOST:-?BASTION_HOST not set}"
-          user="${BASTION_USER:-?BASTION_USER not set}"
-          if [ -z "${BASTION_SSH_KEY:-}" ]; then
+          if [ -z "${DEPLOY_BASTION_SSH_KEY:-}" ]; then
             echo "Missing required secret: NIXBOT_BASTION_SSH_KEY" >&2
             exit 1
           fi
 
-          hosts="all"
+          input_hosts="${GITHUB_INPUT_HOSTS:-all}"
+          input_deploy="${GITHUB_INPUT_DEPLOY:-false}"
+          hosts="${input_hosts:-all}"
           action="build"
-
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            hosts="${INPUT_HOSTS:-all}"
-            if [ "${INPUT_DEPLOY:-true}" = "true" ]; then
-              action="deploy"
-            fi
+          if [ "${input_deploy}" = "true" ]; then
+            action="deploy"
           fi
 
-          if [ "${hosts}" != "all" ]; then
-            hosts="$(printf '%s' "${hosts}" \
-              | tr ', ' '\n\n' \
-              | sed '/^$/d' \
-              | sort -u \
-              | paste -sd, -)"
-            if [ -z "${hosts}" ]; then
-              echo "No valid hosts after normalization" >&2
-              exit 1
-            fi
-          fi
-
-          key_file="$(mktemp)"
-          known_hosts_file="$(mktemp)"
-          chmod 600 "${key_file}" "${known_hosts_file}"
-          printf '%s\n' "${BASTION_SSH_KEY}" > "${key_file}"
-
-          if [ -n "${BASTION_KNOWN_HOSTS:-}" ]; then
-            printf '%s\n' "${BASTION_KNOWN_HOSTS}" > "${known_hosts_file}"
-          else
-            ssh-keyscan -H "${host}" > "${known_hosts_file}" 2>/dev/null
-          fi
-
-          ssh_opts=(
-            -i "${key_file}"
-            -o IdentitiesOnly=yes
-            -o StrictHostKeyChecking=yes
-            -o UserKnownHostsFile="${known_hosts_file}"
-          )
-
-          ssh "${ssh_opts[@]}" -- "${user}@${host}" \
-            "--sha ${GIT_SHA} --hosts ${hosts} --action ${action}"
-
-          rm -f "${key_file}" "${known_hosts_file}"
+          ./scripts/nixbot-deploy.sh \
+            --bastion-trigger \
+            --hosts "${hosts}" \
+            --action "${action}" \
+            --sha "${GITHUB_SHA}"

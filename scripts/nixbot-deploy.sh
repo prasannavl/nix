@@ -4,30 +4,77 @@ set -Eeuo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--jobs <n>] [--force] [--bootstrap] [--dry] [--no-rollback] [--ssh-key <path>] [--config <path>]
+  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--jobs <n>] [--force] [--bootstrap] [--dry] [--no-rollback] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
 
-Options:
-  --sha            Optional commit to checkout before running deploy workflow
-  --hosts          Comma/space-separated host list, or `all` (default: all)
+Core Workflow Options:
   --action         build|deploy|check-bootstrap (default: deploy)
+  --hosts          Comma/space-separated host list, or `all` (default: all)
   --goal           switch|boot|test|dry-activate (default: switch, deploy only)
-  --build-host     local|target|<ssh-host> (default: local)
   --jobs           Number of hosts to process in parallel (default: 1)
+  --sha            Optional commit to checkout before running deploy workflow
+
+Deploy Target/Auth Options:
+  --user           Default deploy user override
+  --ssh-key        SSH key path for deploy target auth (must be .age when explicitly set)
+  --known-hosts    known_hosts override for all hosts
+  --build-host     local|target|<ssh-host> (default: local)
+  --config         Nix deploy config path (default: hosts/nixbot.nix)
+  --age-key-file   Age/SSH identity file used for decrypting *.age secrets
+
+Behavior Options:
   --force          Deploy even when built path matches remote /run/current-system
-  --bootstrap      Always use bootstrap user/key path for deploy/snapshot/rollback SSH target selection
   --dry            Print deploy command instead of executing deploy step
   --no-rollback    Disable rollback of successful hosts when any deploy fails
-  --ssh-key        SSH key path for deploy target auth (must be .age when explicitly set)
-  --config         Nix deploy config path (default: hosts/nixbot.nix)
 
-Environment:
-  AGE_KEY_FILE                Age/SSH identity file used for decrypting *.age secrets (default: ~/.ssh/id_ed25519)
-  DEPLOY_USER                 Optional default user override
-  DEPLOY_SSH_KEY_PATH         Optional .age key file path override for all hosts
-  DEPLOY_SSH_KNOWN_HOSTS      Optional known_hosts override for all hosts
-  DEPLOY_BASTION_SSH_KEY_PATH Optional .age key file path override for forced-command bootstrap checks
-  DEPLOY_REPO_URL             Repo URL used when --sha requires cloning missing checkout
-  DEPLOY_REPO_PATH            Repo checkout path used for --sha workflow
+Bootstrap/Forced-Command Options:
+  --bootstrap      Always use bootstrap user/key path for deploy/snapshot/rollback SSH target selection
+  --bastion-check-ssh-key-path .age key path override for forced-command bootstrap checks
+
+Remote Trigger Options:
+  --bastion-trigger Trigger this script remotely on bastion via SSH and exit
+  --bastion-host   Bastion hostname/IP used by --bastion-trigger (default: pvl-x2)
+  --bastion-user   Bastion user used by --bastion-trigger (default: nixbot)
+  --bastion-ssh-key Optional SSH private key content used by --bastion-trigger
+  --bastion-known-hosts Optional known_hosts content used by --bastion-trigger
+
+Repo Options:
+  --repo-url       Repo URL used when --sha requires cloning missing checkout
+  --repo-path      Repo checkout path used for --sha workflow
+
+Environment (Core):
+  DEPLOY_ACTION               Same as --action
+  DEPLOY_HOSTS                Same as --hosts
+  DEPLOY_GOAL                 Same as --goal
+  DEPLOY_JOBS                 Same as --jobs
+  DEPLOY_SHA                  Same as --sha
+
+Environment (Deploy Target/Auth):
+  DEPLOY_USER                 Same as --user
+  DEPLOY_SSH_KEY              Same as --ssh-key
+  DEPLOY_SSH_KNOWN_HOSTS      Same as --known-hosts
+  DEPLOY_BUILD_HOST           Same as --build-host
+  DEPLOY_CONFIG               Same as --config
+  AGE_KEY_FILE                Same as --age-key-file
+
+Environment (Behavior):
+  DEPLOY_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
+  DEPLOY_DRY                  Same as --dry (bool)
+  DEPLOY_NO_ROLLBACK          Same as --no-rollback (bool)
+
+Environment (Bootstrap/Forced-Command):
+  DEPLOY_BOOTSTRAP            Same as --bootstrap (bool)
+  DEPLOY_BASTION_SSH_KEY_PATH Same as --bastion-check-ssh-key-path
+
+Environment (Remote Trigger):
+  DEPLOY_BASTION_TRIGGER      Same as --bastion-trigger (bool)
+  DEPLOY_BASTION_HOST         Same as --bastion-host
+  DEPLOY_BASTION_USER         Same as --bastion-user
+  DEPLOY_BASTION_SSH_KEY      Same as --bastion-ssh-key
+  DEPLOY_BASTION_KNOWN_HOSTS  Same as --bastion-known-hosts
+
+Environment (Repo):
+  DEPLOY_REPO_URL             Same as --repo-url
+  DEPLOY_REPO_PATH            Same as --repo-path
 USAGE
 }
 
@@ -37,26 +84,50 @@ die() {
 }
 
 init_vars() {
-  HOSTS_RAW="all"
-  ACTION="deploy"
-  GOAL="switch"
-  BUILD_HOST="local"
-  JOBS=1
+  HOSTS_RAW="${DEPLOY_HOSTS:-all}"
+  ACTION="${DEPLOY_ACTION:-deploy}"
+  GOAL="${DEPLOY_GOAL:-switch}"
+  BUILD_HOST="${DEPLOY_BUILD_HOST:-local}"
+  JOBS="${DEPLOY_JOBS:-1}"
   DEPLOY_IF_CHANGED=1
   FORCE_BOOTSTRAP_PATH=0
   DRY_RUN=0
   ROLLBACK_ON_FAILURE=1
-  DEPLOY_CONFIG_PATH="hosts/nixbot.nix"
-  SHA=""
+  DEPLOY_CONFIG_PATH="${DEPLOY_CONFIG:-hosts/nixbot.nix}"
+  SHA="${DEPLOY_SHA:-}"
+  BASTION_TRIGGER=0
+  BASTION_TRIGGER_HOST="${DEPLOY_BASTION_HOST:-pvl-x2}"
+  BASTION_TRIGGER_USER="${DEPLOY_BASTION_USER:-nixbot}"
+  BASTION_TRIGGER_SSH_KEY="${DEPLOY_BASTION_SSH_KEY:-}"
+  BASTION_TRIGGER_KNOWN_HOSTS="${DEPLOY_BASTION_KNOWN_HOSTS:-}"
+  BASTION_TRIGGER_SSH_OPTS=()
+  AGE_KEY_FILE_OVERRIDE="${AGE_KEY_FILE:-}"
 
   DEPLOY_USER_OVERRIDE="${DEPLOY_USER:-}"
-  DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY_PATH:-}"
+  DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY:-}"
   DEPLOY_KNOWN_HOSTS_OVERRIDE="${DEPLOY_SSH_KNOWN_HOSTS:-}"
   DEPLOY_BASTION_KEY_PATH_OVERRIDE="${DEPLOY_BASTION_SSH_KEY_PATH:-}"
   DEPLOY_KEY_OVERRIDE_EXPLICIT=0
 
-  if [ -n "${DEPLOY_SSH_KEY_PATH:-}" ]; then
+  if [ -n "${DEPLOY_SSH_KEY:-}" ]; then
     DEPLOY_KEY_OVERRIDE_EXPLICIT=1
+  fi
+
+  if parse_bool_env "${DEPLOY_FORCE:-0}"; then
+    DEPLOY_IF_CHANGED=0
+  fi
+  if parse_bool_env "${DEPLOY_BOOTSTRAP:-0}"; then
+    FORCE_BOOTSTRAP_PATH=1
+  fi
+  if parse_bool_env "${DEPLOY_DRY:-0}"; then
+    DRY_RUN=1
+    DEPLOY_IF_CHANGED=0
+  fi
+  if parse_bool_env "${DEPLOY_NO_ROLLBACK:-0}"; then
+    ROLLBACK_ON_FAILURE=0
+  fi
+  if parse_bool_env "${DEPLOY_BASTION_TRIGGER:-0}"; then
+    BASTION_TRIGGER=1
   fi
 
   DEPLOY_DEFAULT_USER="root"
@@ -73,8 +144,10 @@ init_vars() {
   BOOTSTRAP_READY_NODES=""
 
   REPO_BASE="/var/lib/nixbot"
-  REPO_PATH="${DEPLOY_REPO_PATH:-${REPO_BASE}/nix}"
-  REPO_URL="${DEPLOY_REPO_URL:-ssh://git@github.com/prasannavl/nix.git}"
+  REPO_PATH_OVERRIDE="${DEPLOY_REPO_PATH:-}"
+  REPO_URL_OVERRIDE="${DEPLOY_REPO_URL:-}"
+  REPO_PATH="${REPO_PATH_OVERRIDE:-${REPO_BASE}/nix}"
+  REPO_URL="${REPO_URL_OVERRIDE:-ssh://git@github.com/prasannavl/nix.git}"
   REPO_SSH_KEY_PATH="${REPO_BASE}/.ssh/id_ed25519"
   REPO_GIT_SSH_COMMAND="ssh -i ${REPO_SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
@@ -84,6 +157,28 @@ init_vars() {
   PREP_USING_BOOTSTRAP_FALLBACK=0
   PREP_DEPLOY_AGE_IDENTITY_KEY=""
   PREP_DEPLOY_SSH_OPTS=()
+}
+
+parse_bool_env() {
+  local raw="${1:-}"
+  case "${raw}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    ""|0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    *) die "Unsupported boolean value: ${raw}" ;;
+  esac
+}
+
+normalize_hosts_input() {
+  local raw="$1"
+  if [ "${raw}" = "all" ]; then
+    printf 'all\n'
+    return
+  fi
+  printf '%s' "${raw}" \
+    | tr ', ' '\n\n' \
+    | sed '/^$/d' \
+    | sort -u \
+    | paste -sd, -
 }
 
 parse_args() {
@@ -160,6 +255,15 @@ parse_args() {
         ROLLBACK_ON_FAILURE=0
         shift
         ;;
+      --user)
+        [ "$#" -ge 2 ] || die "Missing value for --user"
+        DEPLOY_USER_OVERRIDE="${2:-}"
+        shift 2
+        ;;
+      --user=*)
+        DEPLOY_USER_OVERRIDE="${1#--user=}"
+        shift
+        ;;
       --ssh-key)
         [ "$#" -ge 2 ] || die "Missing value for --ssh-key"
         DEPLOY_KEY_PATH_OVERRIDE="${2:-}"
@@ -171,6 +275,15 @@ parse_args() {
         DEPLOY_KEY_OVERRIDE_EXPLICIT=1
         shift
         ;;
+      --known-hosts)
+        [ "$#" -ge 2 ] || die "Missing value for --known-hosts"
+        DEPLOY_KNOWN_HOSTS_OVERRIDE="${2:-}"
+        shift 2
+        ;;
+      --known-hosts=*)
+        DEPLOY_KNOWN_HOSTS_OVERRIDE="${1#--known-hosts=}"
+        shift
+        ;;
       --config)
         [ "$#" -ge 2 ] || die "Missing value for --config"
         DEPLOY_CONFIG_PATH="${2:-}"
@@ -178,6 +291,86 @@ parse_args() {
         ;;
       --config=*)
         DEPLOY_CONFIG_PATH="${1#--config=}"
+        shift
+        ;;
+      --age-key-file)
+        [ "$#" -ge 2 ] || die "Missing value for --age-key-file"
+        AGE_KEY_FILE_OVERRIDE="${2:-}"
+        shift 2
+        ;;
+      --age-key-file=*)
+        AGE_KEY_FILE_OVERRIDE="${1#--age-key-file=}"
+        shift
+        ;;
+      --repo-url)
+        [ "$#" -ge 2 ] || die "Missing value for --repo-url"
+        REPO_URL="${2:-}"
+        REPO_URL_OVERRIDE="${REPO_URL}"
+        shift 2
+        ;;
+      --repo-url=*)
+        REPO_URL="${1#--repo-url=}"
+        REPO_URL_OVERRIDE="${REPO_URL}"
+        shift
+        ;;
+      --repo-path)
+        [ "$#" -ge 2 ] || die "Missing value for --repo-path"
+        REPO_PATH="${2:-}"
+        REPO_PATH_OVERRIDE="${REPO_PATH}"
+        shift 2
+        ;;
+      --repo-path=*)
+        REPO_PATH="${1#--repo-path=}"
+        REPO_PATH_OVERRIDE="${REPO_PATH}"
+        shift
+        ;;
+      --bastion-check-ssh-key-path)
+        [ "$#" -ge 2 ] || die "Missing value for --bastion-check-ssh-key-path"
+        DEPLOY_BASTION_KEY_PATH_OVERRIDE="${2:-}"
+        shift 2
+        ;;
+      --bastion-check-ssh-key-path=*)
+        DEPLOY_BASTION_KEY_PATH_OVERRIDE="${1#--bastion-check-ssh-key-path=}"
+        shift
+        ;;
+      --bastion-trigger)
+        BASTION_TRIGGER=1
+        shift
+        ;;
+      --bastion-host)
+        [ "$#" -ge 2 ] || die "Missing value for --bastion-host"
+        BASTION_TRIGGER_HOST="${2:-}"
+        shift 2
+        ;;
+      --bastion-host=*)
+        BASTION_TRIGGER_HOST="${1#--bastion-host=}"
+        shift
+        ;;
+      --bastion-user)
+        [ "$#" -ge 2 ] || die "Missing value for --bastion-user"
+        BASTION_TRIGGER_USER="${2:-}"
+        shift 2
+        ;;
+      --bastion-user=*)
+        BASTION_TRIGGER_USER="${1#--bastion-user=}"
+        shift
+        ;;
+      --bastion-ssh-key)
+        [ "$#" -ge 2 ] || die "Missing value for --bastion-ssh-key"
+        BASTION_TRIGGER_SSH_KEY="${2:-}"
+        shift 2
+        ;;
+      --bastion-ssh-key=*)
+        BASTION_TRIGGER_SSH_KEY="${1#--bastion-ssh-key=}"
+        shift
+        ;;
+      --bastion-known-hosts)
+        [ "$#" -ge 2 ] || die "Missing value for --bastion-known-hosts"
+        BASTION_TRIGGER_KNOWN_HOSTS="${2:-}"
+        shift 2
+        ;;
+      --bastion-known-hosts=*)
+        BASTION_TRIGGER_KNOWN_HOSTS="${1#--bastion-known-hosts=}"
         shift
         ;;
       -h|--help)
@@ -213,6 +406,11 @@ parse_args() {
   if [ -n "${SHA}" ] && ! [[ "${SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
     die "Unsupported --sha: ${SHA}"
   fi
+
+  if [ "${BASTION_TRIGGER}" -eq 1 ]; then
+    [ -n "${BASTION_TRIGGER_HOST}" ] || die "--bastion-host value is required"
+    [ -n "${BASTION_TRIGGER_USER}" ] || die "--bastion-user value is required"
+  fi
 }
 
 cleanup() {
@@ -232,6 +430,57 @@ ensure_tmp_dir() {
   fi
 }
 
+configure_bastion_trigger_ssh_opts() {
+  local key_file known_hosts_file
+
+  BASTION_TRIGGER_SSH_OPTS=()
+
+  if [ -z "${BASTION_TRIGGER_SSH_KEY}" ] && [ -z "${BASTION_TRIGGER_KNOWN_HOSTS}" ]; then
+    return
+  fi
+
+  ensure_tmp_dir
+
+  if [ -n "${BASTION_TRIGGER_SSH_KEY}" ]; then
+    key_file="$(mktemp "${DEPLOY_TMP_DIR}/bastion-key.XXXXXX")"
+    printf '%s\n' "${BASTION_TRIGGER_SSH_KEY}" > "${key_file}"
+    chmod 600 "${key_file}"
+    BASTION_TRIGGER_SSH_OPTS+=(-i "${key_file}" -o IdentitiesOnly=yes)
+  fi
+
+  if [ -n "${BASTION_TRIGGER_KNOWN_HOSTS}" ]; then
+    known_hosts_file="$(mktemp "${DEPLOY_TMP_DIR}/bastion-known-hosts.XXXXXX")"
+    printf '%s\n' "${BASTION_TRIGGER_KNOWN_HOSTS}" > "${known_hosts_file}"
+    chmod 600 "${known_hosts_file}"
+    BASTION_TRIGGER_SSH_OPTS+=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile="${known_hosts_file}")
+  fi
+}
+
+run_bastion_trigger() {
+  local trigger_sha trigger_hosts
+
+  trigger_sha="${SHA}"
+  if [ -z "${trigger_sha}" ]; then
+    trigger_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+  fi
+  [ -n "${trigger_sha}" ] || die "Could not resolve local HEAD; pass --sha/DEPLOY_SHA explicitly"
+  [[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
+
+  case "${ACTION}" in
+    build|deploy|check-bootstrap) ;;
+    *) die "Unsupported --action for --bastion-trigger: ${ACTION}" ;;
+  esac
+
+  trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
+  [ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
+
+  configure_bastion_trigger_ssh_opts
+
+  echo "Triggering bastion deploy: host=${BASTION_TRIGGER_HOST} user=${BASTION_TRIGGER_USER} sha=${trigger_sha} hosts=${trigger_hosts} action=${ACTION}" >&2
+  ssh "${BASTION_TRIGGER_SSH_OPTS[@]}" -- "${BASTION_TRIGGER_USER}@${BASTION_TRIGGER_HOST}" \
+    "--sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
+}
+
 require_cmds() {
   local missing=0 cmd
   for cmd in "$@"; do
@@ -248,8 +497,8 @@ ensure_repo_for_sha() {
     return
   fi
 
-  if [ -n "${DEPLOY_REPO_PATH:-}" ]; then
-    REPO_PATH="${DEPLOY_REPO_PATH}"
+  if [ -n "${REPO_PATH_OVERRIDE:-}" ]; then
+    REPO_PATH="${REPO_PATH_OVERRIDE}"
   elif [ -d ".git" ]; then
     REPO_PATH="$(pwd -P)"
   fi
@@ -464,6 +713,25 @@ build_host() {
     return 1
   fi
 
+  printf '%s\n' "${out_path}"
+}
+
+eval_host_out_path() {
+  local node="$1"
+  local out_path
+
+  echo "==> Evaluating ${node} output path for remote build" >&2
+  if ! out_path="$(nix eval --raw ".#nixosConfigurations.${node}.config.system.build.toplevel.outPath")"; then
+    echo "Evaluation failed for ${node}" >&2
+    return 1
+  fi
+
+  [ -n "${out_path}" ] || {
+    echo "Evaluation produced no output path for ${node}" >&2
+    return 1
+  }
+
+  echo "Planned out path: ${out_path}" >&2
   printf '%s\n' "${out_path}"
 }
 
@@ -880,7 +1148,12 @@ prepare_deploy_context() {
         mark_bootstrap_ready "${node}"
       fi
     else
-      inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}"
+      if is_bootstrap_ready "${node}"; then
+        echo "==> Reusing bootstrap readiness for ${node} from earlier step"
+      else
+        inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}"
+        mark_bootstrap_ready "${node}"
+      fi
     fi
   elif [ -n "${bootstrap_key}" ]; then
     inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}"
@@ -1120,7 +1393,11 @@ run_hosts() {
     for node in "${selected_hosts[@]}"; do
       [ -n "${node}" ] || continue
       out_file="${build_out_dir}/${node}.path"
-      if ! built_out_path="$(build_host "${node}")"; then
+      if [ "${ACTION}" = "deploy" ] && [ "${BUILD_HOST}" != "local" ]; then
+        if ! built_out_path="$(eval_host_out_path "${node}")"; then
+          return 1
+        fi
+      elif ! built_out_path="$(build_host "${node}")"; then
         return 1
       fi
       printf '%s\n' "${built_out_path}" > "${out_file}"
@@ -1136,7 +1413,11 @@ run_hosts() {
       (
         set +e
         built_out_path="$({
-          build_host "${node}";
+          if [ "${ACTION}" = "deploy" ] && [ "${BUILD_HOST}" != "local" ]; then
+            eval_host_out_path "${node}"
+          else
+            build_host "${node}"
+          fi
         } > >(sed -u "s/^/[${node}] /" | tee -a "${log_file}") 2> >(sed -u "s/^/[${node}] /" | tee -a "${log_file}" >&2))"
         rc="$?"
         if [ "${rc}" = "0" ]; then
@@ -1327,6 +1608,14 @@ main() {
   fi
 
   parse_args "${request_args[@]}"
+  if [ -n "${AGE_KEY_FILE_OVERRIDE}" ]; then
+    export AGE_KEY_FILE="${AGE_KEY_FILE_OVERRIDE}"
+  fi
+  if [ "${BASTION_TRIGGER}" -eq 1 ]; then
+    run_bastion_trigger
+    return
+  fi
+
   ensure_repo_for_sha
 
   if [ "${ACTION}" = "deploy" ] || [ "${ACTION}" = "check-bootstrap" ]; then

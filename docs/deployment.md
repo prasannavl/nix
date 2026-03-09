@@ -19,6 +19,9 @@ security model.
 - That key is forced-command-only on bastion:
   - command: `/var/lib/nixbot/nixbot-deploy.sh`
   - no shell / no forwarding flags.
+- CI/local trigger does not SCP/upload deploy scripts to bastion at runtime. It
+  must invoke the pre-installed forced-command script path above. This prevents
+  turning deploy ingress into arbitrary remote code execution.
 - Source of key material:
   - `users/userdata.nix` (`nixbot.bastionSshKeys`, fallback
     `nixbot.bastionSshKey`)

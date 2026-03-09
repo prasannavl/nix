@@ -22,7 +22,12 @@ Workflow: `.github/workflows/nixbot.yaml`.
 - Manual (`workflow_dispatch`): set `hosts` and optionally deploy.
 
 The workflow is intentionally thin: it only SSHes into the configured bastion
-host.
+host via `scripts/nixbot-deploy.sh --bastion-trigger`.
+
+Security note: deploy does **not** SCP/upload a script to bastion at runtime.
+The bastion forced-command key is restricted to the pre-installed
+`/var/lib/nixbot/nixbot-deploy.sh` path, so CI/local trigger only invokes that
+allowed command.
 
 ## Deployment
 
