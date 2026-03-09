@@ -18,7 +18,7 @@ let
   machineKeyFiles;
   adminsWithBastion =
     adminsWithNixbot
-    ++ builtins.head machines.pvl-x2;
+    ++ machines.pvl-x2;
 in
   with machines; {
     "data/secrets/nixbot/nixbot.key.age".publicKeys = adminsWithBastion;
