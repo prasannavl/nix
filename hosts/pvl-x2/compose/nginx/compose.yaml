@@ -1,0 +1,7 @@
+services:
+  nginx:
+    image: nginx
+    user: 0:0
+    restart: unless-stopped
+    ports:
+      - 10800:80

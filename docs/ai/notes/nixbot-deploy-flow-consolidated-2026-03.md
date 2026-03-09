@@ -11,8 +11,8 @@ remote-build preflight behavior.
 - `scripts/nixbot-deploy.sh` now has a built-in bastion trigger mode via
   `--bastion-trigger`, so workflows and operators can use one script for both
   local deploy orchestration and bastion-side trigger execution.
-- Trigger inputs follow normal deploy option/env precedence:
-  argument override, then environment, then built-in defaults.
+- Trigger inputs follow normal deploy option/env precedence: argument override,
+  then environment, then built-in defaults.
 - Host normalization for bastion-trigger mode matches the main deploy path.
 - When the deploy user and bootstrap user are the same, bootstrap key injection
   is cached per host within a run so snapshot and deploy phases do not repeat
@@ -32,8 +32,8 @@ remote-build preflight behavior.
 
 ## Canonical interpretation
 
-Treat this file as the canonical summary for the following superseded
-March 2026 notes:
+Treat this file as the canonical summary for the following superseded March 2026
+notes:
 
 - `nixbot-local-bastion-trigger-script-2026-03-03.md`
 - `nixbot-bootstrap-ready-cache-same-user-2026-03-07.md`

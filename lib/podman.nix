@@ -46,6 +46,14 @@
         description = "Resolved source paths by filename.";
       };
 
+      envSecretRuntimePaths = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        readOnly = true;
+        internal = true;
+        description = "Staged host paths for generated env secret files by compose service.";
+      };
+
       runtimePaths = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
         default = {};
@@ -82,6 +90,12 @@
         type = lib.types.bool;
         default = true;
         description = "Whether to add network-online.target to Wants+After.";
+      };
+
+      envSecrets = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
+        default = {};
+        description = "Per-compose-service file-backed environment secret injection. Maps compose service name to environment variable name to host secret file path. Generates an additional compose override file that adds a generated env_file so the image entrypoint/cmd remain unchanged.";
       };
     };
   });
@@ -196,6 +210,35 @@
         ${pkgs.coreutils}/bin/printf '%s\n' ${dst} >> "$tmp_manifest"
       '')
       (builtins.attrNames service.sourcePaths)
+      ++ lib.concatMap
+      (composeServiceName: let
+        dst = lib.escapeShellArg service.envSecretRuntimePaths.${composeServiceName};
+        dstDir = lib.escapeShellArg (builtins.dirOf service.envSecretRuntimePaths.${composeServiceName});
+      in
+        [
+          ''
+            ${pkgs.coreutils}/bin/install -d -m 0700 ${dstDir}
+            tmp_secret_env="${service.envSecretRuntimePaths.${composeServiceName}}.tmp"
+            : > "$tmp_secret_env"
+          ''
+        ]
+        ++ map
+        (envName: let
+          src = lib.escapeShellArg service.envSecrets.${composeServiceName}.${envName};
+        in ''
+          ${pkgs.coreutils}/bin/printf '%s=' ${lib.escapeShellArg envName} >> "$tmp_secret_env"
+          ${pkgs.coreutils}/bin/tr -d '\n' < ${src} >> "$tmp_secret_env"
+          ${pkgs.coreutils}/bin/printf '\n' >> "$tmp_secret_env"
+        '')
+        (builtins.attrNames service.envSecrets.${composeServiceName})
+        ++ [
+          ''
+            ${pkgs.coreutils}/bin/chmod 0400 "$tmp_secret_env"
+            ${pkgs.coreutils}/bin/mv -f "$tmp_secret_env" ${dst}
+            ${pkgs.coreutils}/bin/printf '%s\n' ${dst} >> "$tmp_manifest"
+          ''
+        ])
+      (builtins.attrNames service.envSecrets)
       ++ [
         "${pkgs.coreutils}/bin/mv -f \"$tmp_manifest\" ${manifestPath}"
       ]
@@ -206,7 +249,7 @@
       [ -n "$runtime_dir" ]
       if [ -f ${manifestPath} ]; then
         while IFS= read -r path; do
-          if [ -L "$path" ]; then
+          if [ -e "$path" ] || [ -L "$path" ]; then
             ${pkgs.coreutils}/bin/rm -f "$path"
           fi
         done < ${manifestPath}
@@ -323,32 +366,32 @@ in {
         stack
         // {
           instances = let
-              instancesWithContext =
-                lib.mapAttrs
-                (serviceName: serviceOrFn:
-                  if builtins.isFunction serviceOrFn
-                  then let
-                    resolvedUser = stack.user;
-                    userUid =
-                      if resolvedUser == "root"
-                      then "0"
-                      else if builtins.hasAttr resolvedUser config.users.users && config.users.users.${resolvedUser}.uid != null
-                      then toString config.users.users.${resolvedUser}.uid
-                      else throw "services.podmanCompose.${stackName}: stack user '${resolvedUser}' must exist in config.users.users with a non-null uid when using function-valued instances.";
-                    podmanSocket =
-                      if resolvedUser == "root"
-                      then "/run/podman/podman.sock"
-                      else "/run/user/${userUid}/podman/podman.sock";
-                  in
-                    serviceOrFn {
-                      inherit stackName serviceName;
-                      instanceName = serviceName;
-                      user = resolvedUser;
-                      uid = userUid;
-                      workDir = "${stack.stackDir}/${serviceName}";
-                      stackDir = stack.stackDir;
-                      inherit podmanSocket;
-                    }
+            instancesWithContext =
+              lib.mapAttrs
+              (serviceName: serviceOrFn:
+                if builtins.isFunction serviceOrFn
+                then let
+                  resolvedUser = stack.user;
+                  userUid =
+                    if resolvedUser == "root"
+                    then "0"
+                    else if builtins.hasAttr resolvedUser config.users.users && config.users.users.${resolvedUser}.uid != null
+                    then toString config.users.users.${resolvedUser}.uid
+                    else throw "services.podmanCompose.${stackName}: stack user '${resolvedUser}' must exist in config.users.users with a non-null uid when using function-valued instances.";
+                  podmanSocket =
+                    if resolvedUser == "root"
+                    then "/run/podman/podman.sock"
+                    else "/run/user/${userUid}/podman/podman.sock";
+                in
+                  serviceOrFn {
+                    inherit stackName serviceName;
+                    instanceName = serviceName;
+                    user = resolvedUser;
+                    uid = userUid;
+                    workDir = "${stack.stackDir}/${serviceName}";
+                    stackDir = stack.stackDir;
+                    inherit podmanSocket;
+                  }
                 else serviceOrFn)
               stack.instances;
           in
@@ -366,6 +409,7 @@ in {
                   dependsOn = [];
                   wants = [];
                   waitForNetwork = true;
+                  envSecrets = {};
                 }
                 // service;
               useSource = normalizedService.source != null;
@@ -373,17 +417,53 @@ in {
                 if builtins.isPath normalizedService.source
                 then builtins.readFile normalizedService.source
                 else normalizedService.source;
+              envSecretsOverrideFileName = "__podman-env-secrets.override.yml";
+              envSecretsOverride =
+                if normalizedService.envSecrets == {}
+                then {}
+                else {
+                  services =
+                    lib.mapAttrs (
+                      composeServiceName: _: {
+                        env_file = [envSecretRuntimePaths.${composeServiceName}];
+                      }
+                    )
+                    normalizedService.envSecrets;
+                };
+              normalizedEntryFile = let
+                baseEntryFiles =
+                  if normalizedService.entryFile != null
+                  then
+                    if builtins.isList normalizedService.entryFile
+                    then normalizedService.entryFile
+                    else [normalizedService.entryFile]
+                  else if useSource
+                  then ["compose.yml"]
+                  else [];
+              in
+                if envSecretsOverride == {}
+                then normalizedService.entryFile
+                else baseEntryFiles ++ [envSecretsOverrideFileName];
               filesExpanded = lib.concatMapAttrs (dstPath: value: expandFileValue dstPath value) normalizedService.files;
-              effectiveFilesRaw = (lib.optionalAttrs useSource {"compose.yml" = sourceCompose;}) // filesExpanded;
+              effectiveFilesRaw =
+                (lib.optionalAttrs useSource {"compose.yml" = sourceCompose;})
+                // filesExpanded
+                // (lib.optionalAttrs (envSecretsOverride != {}) {"${envSecretsOverrideFileName}" = envSecretsOverride;});
               resolvedWorkingDir =
                 if normalizedService.workingDir != null
                 then normalizedService.workingDir
                 else "${stack.stackDir}/${serviceName}";
+              envSecretRuntimePaths =
+                lib.mapAttrs
+                (composeServiceName: _: "${resolvedWorkingDir}/.podman-env-secrets/${composeServiceName}.env")
+                normalizedService.envSecrets;
             in
               normalizedService
               // {
+                inherit envSecretRuntimePaths;
                 sourcePaths = lib.mapAttrs (fileName: value: renderValue serviceName fileName value) effectiveFilesRaw;
                 runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveFilesRaw;
+                entryFile = normalizedEntryFile;
               })
             instancesWithContext;
         })
@@ -409,6 +489,31 @@ in {
             message = "services.podmanCompose.${stackName}.instances.${serviceName}: set source and/or files.";
           })
           stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.envSecrets == {} || service.source != null || service.entryFile != null;
+            message = "services.podmanCompose.${stackName}.instances.${serviceName}: envSecrets requires source or entryFile so podman compose can include the generated override file.";
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.concatMap
+          (serviceName:
+            lib.mapAttrsToList
+            (composeServiceName: secretCfg: {
+              assertion = secretCfg != {};
+              message = "services.podmanCompose.${stackName}.instances.${serviceName}.envSecrets.${composeServiceName}: set at least one secret file.";
+            })
+            stack.instances.${serviceName}.envSecrets)
+          (builtins.attrNames stack.instances))
         cfg
       )
       ++ lib.concatLists (

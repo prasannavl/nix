@@ -3,9 +3,8 @@
 ## Scope
 
 Consolidates the March 2026 iteration cycle around
-`lib/systemd-user-manager.nix`, which exists to make generated
-`systemd --user` units behave more like NixOS-managed system units during
-`nixos-rebuild switch`.
+`lib/systemd-user-manager.nix`, which exists to make generated `systemd --user`
+units behave more like NixOS-managed system units during `nixos-rebuild switch`.
 
 ## Stable design
 
@@ -61,8 +60,8 @@ Stop logic:
 
 ## Canonical interpretation
 
-Treat this file as the canonical summary for the following superseded
-March 2026 notes:
+Treat this file as the canonical summary for the following superseded March 2026
+notes:
 
 - `pvl-systemd-user-manager-daemon-reload-on-switch-2026-03-02.md`
 - `pvl-systemd-user-manager-per-user-reload-ordering-2026-03-03.md`

@@ -53,7 +53,6 @@
       lm_sensors
     ];
 
-
     security = with pkgs; [
       sbctl
       age

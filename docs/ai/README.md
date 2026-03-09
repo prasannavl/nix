@@ -58,18 +58,20 @@
   (including `immich` and helper compose files).
 - `docs/ai/notes/pvl-podman-compose-consolidated-2026-03.md`: Consolidated
   summary of March 2026 `services.podmanCompose` evolution, including `pvl-x2`
-  compose migration, OpenCloud wiring, path materialization fixes, and
-  function-valued instance ergonomics.
+  compose migration, path/materialization fixes, `envSecrets`, and the
+  `pvl-x2` secret migration outcome.
+- `docs/ai/notes/pvl-podman-compose-envsecrets-schema-simplification-2026-03-09.md`:
+  Removed the redundant `envSecrets.<composeService>.files` layer so secrets are
+  now declared directly as `envSecrets.<composeService>.<ENV_VAR> = <path>`.
 - `docs/ai/notes/pvl-podman-compose-systemd-quoting-fix.md`: Fix for
   `services.podmanCompose` generated user units failing with
   `Unbalanced quoting` due to stray quote in `ExecStartPre` script generation.
 - `docs/ai/notes/pvl-podman-compose-user-unit-restart-on-switch.md`: Added
   reusable `systemd-user-manager` bridge wiring so Podman user units use
   old-stop/new-start-style switch behavior on definition changes.
-- `docs/ai/notes/pvl-systemd-user-manager-consolidated-2026-03.md`:
-  Consolidated summary of the March 2026 bridge lifecycle, marker semantics,
-  boot-order handling, and retry/transport decisions for
-  `lib/systemd-user-manager.nix`.
+- `docs/ai/notes/pvl-systemd-user-manager-consolidated-2026-03.md`: Consolidated
+  summary of the March 2026 bridge lifecycle, marker semantics, boot-order
+  handling, and retry/transport decisions for `lib/systemd-user-manager.nix`.
 - `docs/ai/notes/pvl-deployment-fixes-consolidated-2026-03.md`: Consolidated
   small March 2026 deployment unblockers, currently the `incus` check-phase
   SIGBUS mitigation.

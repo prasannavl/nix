@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  portainer:
+    image: portainer/portainer-ce:lts
+    container_name: portainer
+    ports:
+      - "8001:8000"
+      - "9444:9443"
+    restart: always
+    privileged: true
+    volumes:
+      - type: bind
+        source: ${XDG_RUNTIME_DIR}/podman/podman.sock
+        target: /var/run/docker.sock
+      - ./data:/data
