@@ -768,6 +768,15 @@ ensure_known_host() {
   fi
 }
 
+ssh_host_from_target() {
+  local target="$1"
+
+  target="${target##*@}"
+  target="${target#\[}"
+  target="${target%\]}"
+  printf '%s\n' "${target}"
+}
+
 mark_bootstrap_ready() {
   local node="$1"
   case " ${BOOTSTRAP_READY_NODES} " in
@@ -1038,7 +1047,7 @@ EOF
 prepare_deploy_context() {
   local node="$1"
   local target_info user host key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path age_identity_key
-  local known_hosts_file key_file bootstrap_key_file
+  local known_hosts_file key_file bootstrap_key_file build_host_host=""
   local ssh_target bootstrap_ssh_target
   local -a ssh_opts=()
   local -a bootstrap_ssh_opts=()
@@ -1062,6 +1071,16 @@ prepare_deploy_context() {
   if [ "${DRY_RUN}" -eq 0 ]; then
     known_hosts_file="$(ensure_known_hosts_file "${node}" "${known_hosts}")"
     ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
+    case "${BUILD_HOST}" in
+      local|target)
+        ;;
+      *)
+        build_host_host="$(ssh_host_from_target "${BUILD_HOST}")"
+        if [ -n "${build_host_host}" ] && [ "${build_host_host}" != "${host}" ]; then
+          ensure_known_host "${build_host_host}" "${known_hosts}" "${known_hosts_file}"
+        fi
+        ;;
+    esac
 
     ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
     nix_sshopts="-o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"

@@ -17,6 +17,10 @@
   machine age identity injection (`/var/lib/nixbot/.age/identity`) for
   activation-time agenix decrypt, with deploy-script support and host key
   mapping.
+- `docs/ai/notes/nixbot-remote-build-known-hosts-2026-03-09.md`: Fixed
+  cross-host remote builds failing SSH strict host key checks because the temp
+  `known_hosts` file only contained the deploy target and not the separate
+  remote build host.
 - `docs/ai/notes/nixbot-deploy-bootstrap-flag.md`: Added `--bootstrap` option to
   force bootstrap deploy target path selection.
 - `docs/ai/notes/nixbot-deploy-flow-consolidated-2026-03.md`: Consolidated
