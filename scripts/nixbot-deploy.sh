@@ -431,13 +431,9 @@ ensure_tmp_dir() {
 }
 
 configure_bastion_trigger_ssh_opts() {
-  local key_file known_hosts_file
+  local key_file known_hosts_file scanned_known_hosts
 
   BASTION_TRIGGER_SSH_OPTS=()
-
-  if [ -z "${BASTION_TRIGGER_SSH_KEY}" ] && [ -z "${BASTION_TRIGGER_KNOWN_HOSTS}" ]; then
-    return
-  fi
 
   ensure_tmp_dir
 
@@ -449,11 +445,16 @@ configure_bastion_trigger_ssh_opts() {
   fi
 
   if [ -n "${BASTION_TRIGGER_KNOWN_HOSTS}" ]; then
-    known_hosts_file="$(mktemp "${DEPLOY_TMP_DIR}/bastion-known-hosts.XXXXXX")"
-    printf '%s\n' "${BASTION_TRIGGER_KNOWN_HOSTS}" > "${known_hosts_file}"
-    chmod 600 "${known_hosts_file}"
-    BASTION_TRIGGER_SSH_OPTS+=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile="${known_hosts_file}")
+    scanned_known_hosts="${BASTION_TRIGGER_KNOWN_HOSTS}"
+  else
+    scanned_known_hosts="$(ssh-keyscan -H "${BASTION_TRIGGER_HOST}" 2>/dev/null || true)"
+    [ -n "${scanned_known_hosts}" ] || die "Could not determine bastion host key for ${BASTION_TRIGGER_HOST}. Pass --bastion-known-hosts/DEPLOY_BASTION_KNOWN_HOSTS or ensure ssh-keyscan can reach the bastion."
   fi
+
+  known_hosts_file="$(mktemp "${DEPLOY_TMP_DIR}/bastion-known-hosts.XXXXXX")"
+  printf '%s\n' "${scanned_known_hosts}" > "${known_hosts_file}"
+  chmod 600 "${known_hosts_file}"
+  BASTION_TRIGGER_SSH_OPTS+=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile="${known_hosts_file}")
 }
 
 run_bastion_trigger() {

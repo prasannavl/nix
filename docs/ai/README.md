@@ -21,6 +21,10 @@
   cross-host remote builds failing SSH strict host key checks because the temp
   `known_hosts` file only contained the deploy target and not the separate
   remote build host.
+- `docs/ai/notes/nixbot-github-actions-bastion-known-hosts-fallback-2026-03-09.md`:
+  Moved bastion known-hosts fallback into `scripts/nixbot-deploy.sh` so
+  `--bastion-trigger` uses provided host keys strictly when set, otherwise
+  populates a strict temp `known_hosts` via `ssh-keyscan`.
 - `docs/ai/notes/nixbot-deploy-bootstrap-flag.md`: Added `--bootstrap` option to
   force bootstrap deploy target path selection.
 - `docs/ai/notes/nixbot-deploy-flow-consolidated-2026-03.md`: Consolidated
