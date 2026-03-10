@@ -1363,12 +1363,19 @@ snapshot_host_generation() {
   local node="$1"
   local snapshot_file="$2"
   local remote_current_path
+  local target_desc=""
 
-  prepare_deploy_context "${node}"
-  remote_current_path="$(ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" 'readlink -f /run/current-system 2>/dev/null || true')"
+  remote_current_path="$(
+    prepare_deploy_context "${node}" 1>&2
+    ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" 'readlink -f /run/current-system 2>/dev/null || true'
+  )"
+
+  if [ -n "${PREP_DEPLOY_SSH_TARGET:-}" ]; then
+    target_desc=" on ${PREP_DEPLOY_SSH_TARGET}"
+  fi
 
   if [ -z "${remote_current_path}" ]; then
-    echo "Unable to snapshot current generation for ${node} on ${PREP_DEPLOY_SSH_TARGET}" >&2
+    echo "Unable to snapshot current generation for ${node}${target_desc}" >&2
     return 1
   fi
 
@@ -1710,12 +1717,16 @@ run_hosts() {
   # Snapshot phase.
   if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
     echo "==> Recording current generations before deployment"
-    for node in "${selected_hosts[@]}"; do
-      [ -n "${node}" ] || continue
-      if ! snapshot_host_generation "${node}" "${snapshot_dir}/${node}.path"; then
-        echo "==> Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
-      fi
-    done
+    while IFS= read -r level_group; do
+      [ -n "${level_group}" ] || continue
+      mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
+      for node in "${level_hosts[@]}"; do
+        [ -n "${node}" ] || continue
+        if ! snapshot_host_generation "${node}" "${snapshot_dir}/${node}.path"; then
+          echo "==> Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
+        fi
+      done
+    done < <(jq -c '.[]' <<<"${levels_json}")
   fi
 
   failed_hosts=()

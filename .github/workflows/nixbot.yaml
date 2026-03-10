@@ -21,6 +21,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: nixbot-master
+  cancel-in-progress: false
+
 jobs:
   run:
     if: github.ref == 'refs/heads/master'
