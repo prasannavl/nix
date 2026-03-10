@@ -4,4 +4,4 @@ services:
     user: 0:0
     restart: unless-stopped
     ports:
-      - 10800:80
+      - "${NGINX_HTTP_PORT}:80"

@@ -23,6 +23,9 @@
 - `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
   Consolidated `services.podmanCompose` and `systemd-user-manager` platform
   model, including file materialization, `envSecrets`, and unit lifecycle.
+- `docs/ai/notes/services/pvl-x2-compose-config-centralization-2026-03.md`:
+  Centralized `pvl-x2` compose port metadata in per-instance Nix definitions and
+  reused it for compose generation and firewall rules.
 - `docs/ai/notes/services/pvl-x2-service-migration-consolidated-2026-03.md`:
   Consolidated `pvl-x2` service adoption into repo-managed compose stacks and
   the aligned service-secret migration.

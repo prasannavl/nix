@@ -97,6 +97,31 @@
         default = {};
         description = "Per-compose-service file-backed environment secret injection. Maps compose service name to environment variable name to host secret file path. Generates an additional compose override file that adds a generated env_file so the image entrypoint/cmd remain unchanged.";
       };
+
+      exposedPorts = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.submodule ({...}: {
+          options = {
+            port = lib.mkOption {
+              type = lib.types.port;
+              description = "Host port exposed by this compose instance.";
+            };
+
+            protocols = lib.mkOption {
+              type = lib.types.listOf (lib.types.enum ["tcp" "udp"]);
+              default = ["tcp"];
+              description = "Protocols to expose for this port.";
+            };
+
+            openFirewall = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Whether this port should be included when deriving firewall rules from services.podmanCompose.";
+            };
+          };
+        }));
+        default = {};
+        description = "Named host ports exposed by this compose instance, for example http/https/main. Intended for reuse in compose definitions and host policy like firewall rules.";
+      };
     };
   });
 
@@ -307,6 +332,23 @@
     )
     cfg
   );
+
+  allExposedPorts = lib.concatLists (
+    lib.mapAttrsToList (
+      _: stack:
+        lib.mapAttrsToList (_: service: lib.attrValues service.exposedPorts) stack.instances
+    )
+    cfg
+  );
+
+  firewallExposedPorts = builtins.filter (portCfg: portCfg.openFirewall or false) (lib.concatLists allExposedPorts);
+
+  firewallPortsForProtocol = protocol:
+    lib.unique (
+      map (portCfg: portCfg.port) (
+        builtins.filter (portCfg: builtins.elem protocol (portCfg.protocols or ["tcp"])) firewallExposedPorts
+      )
+    );
 in {
   imports = [
     ./systemd-user-manager.nix
@@ -410,6 +452,7 @@ in {
                   wants = [];
                   waitForNetwork = true;
                   envSecrets = {};
+                  exposedPorts = {};
                 }
                 // service;
               useSource = normalizedService.source != null;
@@ -471,6 +514,9 @@ in {
   };
 
   config = {
+    networking.firewall.allowedTCPPorts = firewallPortsForProtocol "tcp";
+    networking.firewall.allowedUDPPorts = firewallPortsForProtocol "udp";
+
     systemd.tmpfiles.rules = lib.concatLists (
       lib.mapAttrsToList
       (_: stack: [

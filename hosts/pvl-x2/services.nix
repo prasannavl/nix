@@ -5,8 +5,20 @@
     servicePrefix = "pvl-";
 
     instances = {
-      beszel = {
+      beszel = {podmanSocket, ...}: rec {
+        exposedPorts.http = {
+          port = 8090;
+          openFirewall = true;
+        };
+
         source = ./compose/beszel/docker-compose.yml;
+
+        files.".env" = ''
+          BESZEL_HTTP_PORT=${toString exposedPorts.http.port}
+          BESZEL_HUB_URL=http://localhost:${toString exposedPorts.http.port}
+          PODMAN_SOCKET=${podmanSocket}
+        '';
+
         envSecrets."beszel-agent" = {
           KEY = config.age.secrets.beszel-key.path;
           TOKEN = config.age.secrets.beszel-token.path;
@@ -18,13 +30,18 @@
         stackDir,
         podmanSocket,
         ...
-      }: {
+      }: rec {
+        exposedPorts.http = {
+          port = 5001;
+          openFirewall = true;
+        };
+
         source = {
           services.dockge = {
             image = "louislam/dockge:1";
             restart = "unless-stopped";
             user = "0:0";
-            ports = ["5001:5001"];
+            ports = ["${toString exposedPorts.http.port}:5001"];
             volumes = [
               "${podmanSocket}:/var/run/docker.sock"
               "${workDir}/data:/app/data"
@@ -35,35 +52,118 @@
         };
       };
 
-      portainer.source = ./compose/portainer/docker-compose.yml;
+      portainer = {podmanSocket, ...}: rec {
+        exposedPorts = {
+          http = {
+            port = 8001;
+            openFirewall = true;
+          };
+          https.port = 9444;
+        };
 
-      nginx = {
-        source = ./compose/nginx/compose.yaml;
-        files.".env" = ./compose/nginx/.env;
+        source = ./compose/portainer/docker-compose.yml;
+
+        files.".env" = ''
+          PORTAINER_HTTP_PORT=${toString exposedPorts.http.port}
+          PORTAINER_HTTPS_PORT=${toString exposedPorts.https.port}
+          PODMAN_SOCKET=${podmanSocket}
+        '';
       };
 
-      shadowsocks = {
+      nginx = rec {
+        exposedPorts.http.port = 10800;
+
+        source = ./compose/nginx/compose.yaml;
+        files.".env" = ''
+          NGINX_HTTP_PORT=${toString exposedPorts.http.port}
+        '';
+      };
+
+      shadowsocks = rec {
+        exposedPorts.main = {
+          port = 8388;
+          protocols = [
+            "tcp"
+            "udp"
+          ];
+          openFirewall = true;
+        };
+
         source = ./compose/shadowsocks/docker-compose.yml;
+
+        files.".env" = ''
+          SHADOWSOCKS_PORT=${toString exposedPorts.main.port}
+        '';
+
         envSecrets.shadowsocks.PASSWORD = config.age.secrets.shadowsocks-password.path;
       };
 
-      immich = {
+      immich = rec {
+        exposedPorts.http = {
+          port = 2283;
+          openFirewall = true;
+        };
+
         source = ./compose/immich/docker-compose.yml;
+
         files = {
+          ".env" = ''
+            UPLOAD_LOCATION=./data
+            DB_DATA_LOCATION=./postgres
+            IMMICH_VERSION=release
+            IMMICH_HTTP_PORT=${toString exposedPorts.http.port}
+            DB_USERNAME=postgres
+            DB_DATABASE_NAME=immich
+          '';
           "hwaccel.ml.yml" = ./compose/immich/hwaccel.ml.yml;
           "hwaccel.transcoding.yml" = ./compose/immich/hwaccel.transcoding.yml;
-          ".env" = ./compose/immich/.env;
         };
+
         envSecrets = {
           immich-server.DB_PASSWORD = config.age.secrets.immich-db-password.path;
           database.POSTGRES_PASSWORD = config.age.secrets.immich-db-password.path;
         };
       };
 
-      memos.source = ./compose/memos/docker-compose.yaml;
-      ollama.source = ./compose/ollama/docker-compose.yml;
-      docmost = {
+      memos = rec {
+        exposedPorts.http = {
+          port = 5230;
+          openFirewall = true;
+        };
+
+        source = ./compose/memos/docker-compose.yaml;
+
+        files.".env" = ''
+          MEMOS_HTTP_PORT=${toString exposedPorts.http.port}
+        '';
+      };
+
+      ollama = rec {
+        exposedPorts = {
+          api.port = 11434;
+          web.port = 4000;
+        };
+
+        source = ./compose/ollama/docker-compose.yml;
+
+        files.".env" = ''
+          OLLAMA_API_PORT=${toString exposedPorts.api.port}
+          OPEN_WEBUI_PORT=${toString exposedPorts.web.port}
+        '';
+      };
+
+      docmost = rec {
+        exposedPorts.http = {
+          port = 3000;
+          openFirewall = true;
+        };
+
         source = ./compose/docmost/docker-compose.yml;
+
+        files.".env" = ''
+          DOCMOST_HTTP_PORT=${toString exposedPorts.http.port}
+        '';
+
         envSecrets = {
           docmost = {
             APP_SECRET = config.age.secrets.docmost-app-secret.path;
@@ -72,7 +172,19 @@
           db.POSTGRES_PASSWORD = config.age.secrets.docmost-postgres-password.path;
         };
       };
-      vaultwarden.source = ./compose/vaultwarden/docker-compose.yml;
+
+      vaultwarden = rec {
+        exposedPorts.http = {
+          port = 2000;
+          openFirewall = true;
+        };
+
+        source = ./compose/vaultwarden/docker-compose.yml;
+        
+        files.".env" = ''
+          VAULTWARDEN_HTTP_PORT=${toString exposedPorts.http.port}
+        '';
+      };
 
       # opencloud = {
       #   entryFile = [

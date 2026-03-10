@@ -5,12 +5,12 @@ services:
     image: portainer/portainer-ce:lts
     container_name: portainer
     ports:
-      - "8001:8000"
-      - "9444:9443"
+      - "${PORTAINER_HTTP_PORT}:8000"
+      - "${PORTAINER_HTTPS_PORT}:9443"
     restart: always
     privileged: true
     volumes:
       - type: bind
-        source: ${XDG_RUNTIME_DIR}/podman/podman.sock
+        source: ${PODMAN_SOCKET}
         target: /var/run/docker.sock
       - ./data:/data

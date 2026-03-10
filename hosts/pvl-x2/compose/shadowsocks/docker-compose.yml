@@ -2,8 +2,8 @@ services:
   shadowsocks:
     image: shadowsocks/shadowsocks-libev
     ports:
-      - "8388:8388/tcp"
-      - "8388:8388/udp"
+      - "${SHADOWSOCKS_PORT}:8388/tcp"
+      - "${SHADOWSOCKS_PORT}:8388/udp"
     environment:
       - METHOD=aes-256-gcm
     restart: always

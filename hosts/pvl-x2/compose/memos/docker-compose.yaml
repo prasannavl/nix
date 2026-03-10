@@ -6,5 +6,5 @@ services:
     volumes:
       - ./data/:/var/opt/memos
     ports:
-      - 5230:5230
+      - "${MEMOS_HTTP_PORT}:5230"
     restart: always

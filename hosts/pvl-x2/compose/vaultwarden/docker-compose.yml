@@ -5,8 +5,8 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: "https://vault.p7log.com"
-    user: 0:0    
+    user: 0:0
     volumes:
       - ./data/:/data/
     ports:
-      - 2000:80
+      - "${VAULTWARDEN_HTTP_PORT}:80"
