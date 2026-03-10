@@ -22,6 +22,14 @@ security model.
 - CI/local trigger does not SCP/upload deploy scripts to bastion at runtime. It
   must invoke the pre-installed forced-command script path above. This prevents
   turning deploy ingress into arbitrary remote code execution.
+- Do not enable `--use-repo-script` / `DEPLOY_USE_REPO_SCRIPT=1` in CI by
+  default. The security reason is that it would let the forced-command ingress
+  path execute newly fetched repo script logic before bastion itself has been
+  updated to that trusted version. CI should stay pinned to the installed
+  bastion wrapper and use a two-phase rollout when deploy-script behavior
+  changes:
+  1. deploy bastion/script-wrapper changes first
+  2. let later runs use the updated installed wrapper
 - Source of key material:
   - `users/userdata.nix` (`nixbot.bastionSshKeys`, fallback
     `nixbot.bastionSshKey`)

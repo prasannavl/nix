@@ -24,6 +24,8 @@
   ordering for `nixbot` builds/deploys via `hosts.nixbot.<host>.deps`.
 - `docs/ai/notes/nixbot/deploy-snapshot-fallback-2026-03.md`: Best-effort
   upfront generation snapshots with dependency-wave retries before deploy.
+- `docs/ai/notes/nixbot/bastion-reexec-checked-out-script-2026-03.md`: Optional
+  bastion re-exec into the checked-out repo script for `--sha` runs.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Consolidated `nixbot` rotation model, legacy-host recovery lessons, operator
   guardrails, and the playbook relationship.

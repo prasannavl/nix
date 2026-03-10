@@ -4,7 +4,7 @@ set -Eeuo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
 
 Core Workflow Options:
   --action         build|deploy|check-bootstrap (default: deploy)
@@ -42,6 +42,9 @@ Remote Trigger Options:
 Repo Options:
   --repo-url       Repo URL used when --sha requires cloning missing checkout
   --repo-path      Repo checkout path used for --sha workflow
+  --use-repo-script Re-exec from checked-out repo script after --sha checkout;
+                    keep disabled in CI for security and prefer a two-phase
+                    bastion rollout
 
 Environment (Core):
   DEPLOY_ACTION               Same as --action
@@ -79,6 +82,7 @@ Environment (Remote Trigger):
 Environment (Repo):
   DEPLOY_REPO_URL             Same as --repo-url
   DEPLOY_REPO_PATH            Same as --repo-path
+  DEPLOY_USE_REPO_SCRIPT      Same as --use-repo-script (bool)
 USAGE
 }
 
@@ -108,6 +112,7 @@ init_vars() {
   BASTION_TRIGGER_KNOWN_HOSTS="${DEPLOY_BASTION_KNOWN_HOSTS:-}"
   BASTION_TRIGGER_SSH_OPTS=()
   AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
+  REEXEC_FROM_REPO=0
 
   DEPLOY_USER_OVERRIDE="${DEPLOY_USER:-}"
   DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY:-}"
@@ -137,6 +142,9 @@ init_vars() {
   fi
   if parse_bool_env "${DEPLOY_BASTION_TRIGGER:-0}"; then
     BASTION_TRIGGER=1
+  fi
+  if parse_bool_env "${DEPLOY_USE_REPO_SCRIPT:-0}"; then
+    REEXEC_FROM_REPO=1
   fi
 
   DEPLOY_DEFAULT_USER="root"
@@ -340,6 +348,10 @@ parse_args() {
         REPO_PATH="${1#--repo-path=}"
         shift
         ;;
+      --use-repo-script)
+        REEXEC_FROM_REPO=1
+        shift
+        ;;
       --bastion-check-ssh-key-path)
         [ "$#" -ge 2 ] || die "Missing value for --bastion-check-ssh-key-path"
         DEPLOY_BASTION_KEY_PATH_OVERRIDE="${2:-}"
@@ -538,6 +550,30 @@ ensure_repo_for_sha() {
     git fetch --prune origin
   fi
   git checkout --detach "${SHA}"
+}
+
+reexec_repo_script_if_needed() {
+  local current_script repo_script current_resolved repo_resolved
+  local -a request_args=("$@")
+
+  [ -n "${SHA}" ] || return 0
+  [ "${REEXEC_FROM_REPO}" -eq 1 ] || return 0
+  [ "${NIXBOT_REEXECED_FROM_REPO:-0}" != "1" ] || return 0
+
+  current_script="${BASH_SOURCE[0]:-$0}"
+  repo_script="${REPO_PATH%/}/scripts/nixbot-deploy.sh"
+
+  [ -f "${repo_script}" ] || die "Repo deploy script missing after checkout: ${repo_script}"
+
+  current_resolved="$(readlink -f "${current_script}" 2>/dev/null || printf '%s\n' "${current_script}")"
+  repo_resolved="$(readlink -f "${repo_script}" 2>/dev/null || printf '%s\n' "${repo_script}")"
+
+  if [ "${current_resolved}" = "${repo_resolved}" ]; then
+    return 0
+  fi
+
+  echo "==> Re-executing deploy from checked-out repo script ${repo_script}" >&2
+  exec env NIXBOT_REEXECED_FROM_REPO=1 bash "${repo_script}" "${request_args[@]}"
 }
 
 load_deploy_config_json() {
@@ -1901,6 +1937,7 @@ main() {
   fi
 
   ensure_repo_for_sha
+  reexec_repo_script_if_needed "${request_args[@]}"
 
   if [ "${ACTION}" = "deploy" ]; then
     require_cmds age
