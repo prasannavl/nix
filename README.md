@@ -59,5 +59,8 @@ Deploy ordering notes:
   deploy.
 - Build parallelism is controlled by `DEPLOY_BUILD_JOBS` / `--build-jobs`.
 - Deploy parallelism is controlled by `DEPLOY_JOBS` / `--deploy-jobs`.
+- `DEPLOY_BASTION_FIRST` / `--bastion-first` prioritizes the bastion host
+  first for both build ordering and deploy waves when that host is selected.
+  This override ignores the bastion host's own `deps` for ordering.
 - Deploy derives dependency waves from `deps`, so dependents wait for their
   selected dependencies while same-wave hosts can still run in parallel.

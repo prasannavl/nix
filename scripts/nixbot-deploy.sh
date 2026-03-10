@@ -4,7 +4,7 @@ set -Eeuo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--dry] [--no-rollback] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
 
 Core Workflow Options:
   --action         build|deploy|check-bootstrap (default: deploy)
@@ -24,6 +24,7 @@ Deploy Target/Auth Options:
 
 Behavior Options:
   --force          Deploy even when built path matches remote /run/current-system
+  --bastion-first  Prioritize bastion host first for build and deploy when selected
   --dry            Print deploy command instead of executing deploy step
   --no-rollback    Disable rollback of successful hosts when any deploy fails
 
@@ -60,6 +61,7 @@ Environment (Deploy Target/Auth):
 
 Environment (Behavior):
   DEPLOY_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
+  DEPLOY_BASTION_FIRST        Same as --bastion-first (bool)
   DEPLOY_DRY                  Same as --dry (bool)
   DEPLOY_NO_ROLLBACK          Same as --no-rollback (bool)
 
@@ -94,6 +96,7 @@ init_vars() {
   DEPLOY_PARALLEL_JOBS="${DEPLOY_JOBS:-1}"
   DEPLOY_IF_CHANGED=1
   FORCE_BOOTSTRAP_PATH=0
+  PRIORITIZE_BASTION_FIRST=0
   DRY_RUN=0
   ROLLBACK_ON_FAILURE=1
   DEPLOY_CONFIG_PATH="${DEPLOY_CONFIG:-hosts/nixbot.nix}"
@@ -104,7 +107,7 @@ init_vars() {
   BASTION_TRIGGER_SSH_KEY="${DEPLOY_BASTION_SSH_KEY:-}"
   BASTION_TRIGGER_KNOWN_HOSTS="${DEPLOY_BASTION_KNOWN_HOSTS:-}"
   BASTION_TRIGGER_SSH_OPTS=()
-  AGE_KEY_FILE_OVERRIDE="${AGE_KEY_FILE:-}"
+  AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
 
   DEPLOY_USER_OVERRIDE="${DEPLOY_USER:-}"
   DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY:-}"
@@ -118,6 +121,9 @@ init_vars() {
 
   if parse_bool_env "${DEPLOY_FORCE:-0}"; then
     DEPLOY_IF_CHANGED=0
+  fi
+  if parse_bool_env "${DEPLOY_BASTION_FIRST:-0}"; then
+    PRIORITIZE_BASTION_FIRST=1
   fi
   if parse_bool_env "${DEPLOY_BOOTSTRAP:-0}"; then
     FORCE_BOOTSTRAP_PATH=1
@@ -147,10 +153,8 @@ init_vars() {
   BOOTSTRAP_READY_NODES=""
 
   REPO_BASE="/var/lib/nixbot"
-  REPO_PATH_OVERRIDE="${DEPLOY_REPO_PATH:-}"
-  REPO_URL_OVERRIDE="${DEPLOY_REPO_URL:-}"
-  REPO_PATH="${REPO_PATH_OVERRIDE:-${REPO_BASE}/nix}"
-  REPO_URL="${REPO_URL_OVERRIDE:-ssh://git@github.com/prasannavl/nix.git}"
+  REPO_PATH="${DEPLOY_REPO_PATH:-${REPO_BASE}/nix}"
+  REPO_URL="${DEPLOY_REPO_URL:-ssh://git@github.com/prasannavl/nix.git}"
   REPO_SSH_KEY_PATH="${REPO_BASE}/.ssh/id_ed25519"
   REPO_GIT_SSH_COMMAND="ssh -i ${REPO_SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
@@ -258,6 +262,10 @@ parse_args() {
         FORCE_BOOTSTRAP_PATH=1
         shift
         ;;
+      --bastion-first)
+        PRIORITIZE_BASTION_FIRST=1
+        shift
+        ;;
       --dry)
         DRY_RUN=1
         DEPLOY_IF_CHANGED=0
@@ -307,33 +315,29 @@ parse_args() {
         ;;
       --age-key-file)
         [ "$#" -ge 2 ] || die "Missing value for --age-key-file"
-        AGE_KEY_FILE_OVERRIDE="${2:-}"
+        AGE_DECRYPT_IDENTITY_FILE="${2:-}"
         shift 2
         ;;
       --age-key-file=*)
-        AGE_KEY_FILE_OVERRIDE="${1#--age-key-file=}"
+        AGE_DECRYPT_IDENTITY_FILE="${1#--age-key-file=}"
         shift
         ;;
       --repo-url)
         [ "$#" -ge 2 ] || die "Missing value for --repo-url"
         REPO_URL="${2:-}"
-        REPO_URL_OVERRIDE="${REPO_URL}"
         shift 2
         ;;
       --repo-url=*)
         REPO_URL="${1#--repo-url=}"
-        REPO_URL_OVERRIDE="${REPO_URL}"
         shift
         ;;
       --repo-path)
         [ "$#" -ge 2 ] || die "Missing value for --repo-path"
         REPO_PATH="${2:-}"
-        REPO_PATH_OVERRIDE="${REPO_PATH}"
         shift 2
         ;;
       --repo-path=*)
         REPO_PATH="${1#--repo-path=}"
-        REPO_PATH_OVERRIDE="${REPO_PATH}"
         shift
         ;;
       --bastion-check-ssh-key-path)
@@ -511,9 +515,7 @@ ensure_repo_for_sha() {
     return
   fi
 
-  if [ -n "${REPO_PATH_OVERRIDE:-}" ]; then
-    REPO_PATH="${REPO_PATH_OVERRIDE}"
-  elif [ -d ".git" ]; then
+  if [ -d ".git" ]; then
     REPO_PATH="$(pwd -P)"
   fi
 
@@ -609,7 +611,7 @@ resolve_key_source_path() {
 resolve_runtime_key_file() {
   local key_path="$1"
   local require_age="${2:-0}"
-  local src_path out_file age_key_file
+  local src_path out_file
 
   src_path="$(resolve_key_source_path "${key_path}")"
   if [ ! -f "${src_path}" ]; then
@@ -622,12 +624,11 @@ resolve_runtime_key_file() {
   fi
 
   if [[ "${src_path}" = *.age ]]; then
-    age_key_file="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
-    echo "Using decrypt identity: ${age_key_file} for ${src_path}" >&2
-    [ -f "${age_key_file}" ] || die "Decrypt identity file not found: ${age_key_file}"
+    echo "Using decrypt identity: ${AGE_DECRYPT_IDENTITY_FILE} for ${src_path}" >&2
+    [ -f "${AGE_DECRYPT_IDENTITY_FILE}" ] || die "Decrypt identity file not found: ${AGE_DECRYPT_IDENTITY_FILE}"
     ensure_tmp_dir
     out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
-    age --decrypt -i "${age_key_file}" -o "${out_file}" "${src_path}"
+    age --decrypt -i "${AGE_DECRYPT_IDENTITY_FILE}" -o "${out_file}" "${src_path}"
     chmod 600 "${out_file}"
     printf '%s\n' "${out_file}"
     return
@@ -660,6 +661,7 @@ order_selected_hosts_json() {
   local selected_json="$1"
   local all_hosts_json="$2"
   local node dep progress
+  local bastion_host="${BASTION_TRIGGER_HOST}"
   local -a selected_hosts=()
   local -a ordered_hosts=()
   local -a deps=()
@@ -687,6 +689,9 @@ order_selected_hosts_json() {
     mapfile -t deps < <(jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}")
     for dep in "${deps[@]}"; do
       [ -n "${dep}" ] || continue
+      if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+        continue
+      fi
       if [ -z "${all_host_set["${dep}"]+x}" ]; then
         die "Unknown dependency declared for ${node}: ${dep}"
       fi
@@ -696,6 +701,15 @@ order_selected_hosts_json() {
       fi
     done
   done
+
+  if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${bastion_host}"]+x}" ]; then
+    emitted_host_set["${bastion_host}"]=1
+    ordered_hosts+=("${bastion_host}")
+    while IFS= read -r dep; do
+      [ -n "${dep}" ] || continue
+      indegree["${dep}"]=$((indegree["${dep}"] - 1))
+    done <<<"${dependents["${bastion_host}"]:-}"
+  fi
 
   while [ "${#ordered_hosts[@]}" -lt "${#selected_hosts[@]}" ]; do
     progress=0
@@ -736,6 +750,7 @@ order_selected_hosts_json() {
 selected_host_levels_json() {
   local selected_json="$1"
   local node dep dep_level node_level max_level level
+  local bastion_host="${BASTION_TRIGGER_HOST}"
   local -a selected_hosts=()
   declare -A selected_host_set=()
   declare -A host_level=()
@@ -750,6 +765,10 @@ selected_host_levels_json() {
   max_level=0
   for node in "${selected_hosts[@]}"; do
     [ -n "${node}" ] || continue
+    if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+      host_level["${node}"]=0
+      continue
+    fi
     node_level=0
     while IFS= read -r dep; do
       [ -n "${dep}" ] || continue
@@ -761,6 +780,10 @@ selected_host_levels_json() {
         fi
       fi
     done < <(jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}")
+
+    if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${bastion_host}"]+x}" ] && [ "${node_level}" -lt 1 ]; then
+      node_level=1
+    fi
 
     host_level["${node}"]="${node_level}"
     if [ "${node_level}" -gt "${max_level}" ]; then
@@ -1525,6 +1548,7 @@ run_bootstrap_key_checks() {
 run_hosts() {
   local selected_json="$1"
   local node active_jobs level_group
+  local bastion_host="${BASTION_TRIGGER_HOST}"
   local -a selected_hosts=()
   local -a level_hosts=()
   local -a failed_hosts=()
@@ -1570,9 +1594,25 @@ run_hosts() {
       printf '%s\n' "${built_out_path}" > "${out_file}"
     done
   else
+    if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${#selected_hosts[@]}" -gt 0 ] && [ "${selected_hosts[0]}" = "${bastion_host}" ]; then
+      node="${bastion_host}"
+      out_file="${build_out_dir}/${node}.path"
+      if [ "${ACTION}" = "deploy" ] && [ "${BUILD_HOST}" != "local" ]; then
+        if ! built_out_path="$(eval_host_out_path "${node}")"; then
+          return 1
+        fi
+      elif ! built_out_path="$(build_host "${node}")"; then
+        return 1
+      fi
+      printf '%s\n' "${built_out_path}" > "${out_file}"
+    fi
+
     active_jobs=0
     for node in "${selected_hosts[@]}"; do
       [ -n "${node}" ] || continue
+      if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+        continue
+      fi
       log_file="${build_log_dir}/${node}.log"
       status_file="${build_status_dir}/${node}.rc"
       out_file="${build_out_dir}/${node}.path"
@@ -1782,9 +1822,6 @@ main() {
   fi
 
   parse_args "${request_args[@]}"
-  if [ -n "${AGE_KEY_FILE_OVERRIDE}" ]; then
-    export AGE_KEY_FILE="${AGE_KEY_FILE_OVERRIDE}"
-  fi
   if [ "${BASTION_TRIGGER}" -eq 1 ]; then
     run_bastion_trigger
     return

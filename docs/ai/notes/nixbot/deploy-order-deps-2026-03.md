@@ -17,6 +17,12 @@ Minimal dependency-aware ordering for `scripts/nixbot-deploy.sh`.
 - Build and deploy concurrency are controlled separately:
   - `DEPLOY_BUILD_JOBS` / `--build-jobs`
   - `DEPLOY_JOBS` / `--deploy-jobs`
+- Bastion can be explicitly prioritized:
+  - `DEPLOY_BASTION_FIRST` / `--bastion-first`
+  - if enabled and selected, the bastion host is forced to the front of build
+    ordering and into the first deploy wave
+  - this override ignores the bastion host's own `deps`
+  - other hosts still derive their order from `deps`
 
 ## Validation Rules
 
