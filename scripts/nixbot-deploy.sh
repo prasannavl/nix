@@ -1376,6 +1376,39 @@ snapshot_host_generation() {
   echo "==> Snapshot ${node}: ${remote_current_path}"
 }
 
+snapshot_exists() {
+  local snapshot_file="$1"
+
+  [ -s "${snapshot_file}" ]
+}
+
+ensure_wave_snapshots() {
+  local snapshot_dir="$1"
+  shift
+
+  local node snapshot_file rc=0
+
+  [ "${DRY_RUN}" -eq 0 ] || return 0
+  [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] || return 0
+  [ "$#" -gt 0 ] || return 0
+
+  for node in "$@"; do
+    [ -n "${node}" ] || continue
+    snapshot_file="${snapshot_dir}/${node}.path"
+    if snapshot_exists "${snapshot_file}"; then
+      continue
+    fi
+
+    echo "==> Retrying generation snapshot for ${node} before deploy"
+    if ! snapshot_host_generation "${node}" "${snapshot_file}"; then
+      echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
+      rc=1
+    fi
+  done
+
+  return "${rc}"
+}
+
 rollback_host_to_snapshot() {
   local node="$1"
   local snapshot_path="$2"
@@ -1680,7 +1713,7 @@ run_hosts() {
     for node in "${selected_hosts[@]}"; do
       [ -n "${node}" ] || continue
       if ! snapshot_host_generation "${node}" "${snapshot_dir}/${node}.path"; then
-        return 1
+        echo "==> Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
       fi
     done
   fi
@@ -1693,6 +1726,11 @@ run_hosts() {
   if [ "${DEPLOY_PARALLEL_JOBS}" -eq 1 ]; then
     for node in "${selected_hosts[@]}"; do
       [ -n "${node}" ] || continue
+      if ! ensure_wave_snapshots "${snapshot_dir}" "${node}"; then
+        failed_hosts+=("${node}")
+        failed_codes+=("snapshot")
+        break
+      fi
       out_file="${build_out_dir}/${node}.path"
       if [ ! -s "${out_file}" ]; then
         echo "Missing built output path for ${node}: ${out_file}" >&2
@@ -1726,6 +1764,28 @@ run_hosts() {
   while IFS= read -r level_group; do
     [ -n "${level_group}" ] || continue
     mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
+    if ! ensure_wave_snapshots "${snapshot_dir}" "${level_hosts[@]}"; then
+      failed_hosts=()
+      failed_codes=()
+      for node in "${level_hosts[@]}"; do
+        [ -n "${node}" ] || continue
+        if ! snapshot_exists "${snapshot_dir}/${node}.path"; then
+          failed_hosts+=("${node}")
+          failed_codes+=("snapshot")
+        fi
+      done
+
+      echo "Deploy phase failed for ${#failed_hosts[@]} host(s):" >&2
+      for i in "${!failed_hosts[@]}"; do
+        echo "  - ${failed_hosts[$i]} (exit=${failed_codes[$i]})" >&2
+      done
+
+      if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
+        rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts[@]}" || true
+      fi
+
+      exit 1
+    fi
     active_jobs=0
 
     for node in "${level_hosts[@]}"; do
