@@ -20,6 +20,9 @@
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Consolidated
   `nixbot` deploy architecture, bootstrap flow, machine-age identity model,
   host-key handling, and GitHub Actions connectivity state.
+- `docs/ai/notes/nixbot/deploy-log-formatting-2026-03.md`: Added simple
+  phase/host headers to `nixbot-deploy.sh` logs for clearer build, snapshot,
+  deploy, and rollback demarcation.
 - `docs/ai/notes/nixbot/deploy-order-deps-2026-03.md`: Dependency-aware host
   ordering for `nixbot` builds/deploys via `hosts.nixbot.<host>.deps`.
 - `docs/ai/notes/nixbot/deploy-snapshot-fallback-2026-03.md`: Best-effort

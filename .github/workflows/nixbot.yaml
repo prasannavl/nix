@@ -76,6 +76,7 @@ jobs:
 
           ./scripts/nixbot-deploy.sh \
             --bastion-trigger \
+            --bastion-first \
             --hosts "${hosts}" \
             --action "${action}" \
             --sha "${GITHUB_SHA}"
