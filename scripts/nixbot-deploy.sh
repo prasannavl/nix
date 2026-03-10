@@ -1365,10 +1365,12 @@ snapshot_host_generation() {
   local remote_current_path
   local target_desc=""
 
-  remote_current_path="$(
+  if ! remote_current_path="$(
     prepare_deploy_context "${node}" 1>&2
     ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" 'readlink -f /run/current-system 2>/dev/null || true'
-  )"
+  )"; then
+    remote_current_path=""
+  fi
 
   if [ -n "${PREP_DEPLOY_SSH_TARGET:-}" ]; then
     target_desc=" on ${PREP_DEPLOY_SSH_TARGET}"
