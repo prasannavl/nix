@@ -11,6 +11,9 @@
 - `docs/ai/notes/hosts/llmug-rivendell-ollama-amd-on-pvl-x2.md`: Reconfigured
   `llmug-rivendell` Ollama GPU access from NVIDIA CDI to AMD (`/dev/dri` +
   `/dev/kfd`) for deployment on `pvl-x2`.
+- `docs/ai/notes/hosts/llmug-rivendell-tailscale-login-2026-03.md`: Added
+  `llmug-rivendell` Tailscale autologin wiring via an agenix-managed auth key at
+  `data/secrets/tailscale/llmug-rivendell.key.age`.
 - `docs/ai/notes/hosts/pvl-a1-desktop-investigations-consolidated-2026-03.md`:
   Consolidated `pvl-a1` desktop investigation state for suspend watchdogs, GNOME
   idle inhibition, and `amdxdna` mismatch handling.

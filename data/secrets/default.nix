@@ -27,6 +27,7 @@ in
     "data/secrets/machine/pvl-a1.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/pvl-x2.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/llmug-rivendell.key.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tailscale/llmug-rivendell.key.age".publicKeys = admins ++ llmug-rivendell;
     "data/secrets/services/beszel/key.key.age".publicKeys = admins ++ pvl-x2;
     "data/secrets/services/beszel/token.key.age".publicKeys = admins ++ pvl-x2;
     "data/secrets/services/docmost/app-secret.key.age".publicKeys = admins ++ pvl-x2;
