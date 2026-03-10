@@ -20,6 +20,8 @@
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Consolidated
   `nixbot` deploy architecture, bootstrap flow, machine-age identity model,
   host-key handling, and GitHub Actions connectivity state.
+- `docs/ai/notes/nixbot/deploy-order-deps-2026-03.md`: Dependency-aware host
+  ordering for `nixbot` builds/deploys via `hosts.nixbot.<host>.deps`.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Consolidated `nixbot` rotation model, legacy-host recovery lessons, operator
   guardrails, and the playbook relationship.

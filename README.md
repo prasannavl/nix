@@ -50,3 +50,14 @@ Primary files for deployment are:
 - `hosts/nixbot.nix` (deploy target mapping/defaults)
 - `scripts/nixbot-deploy.sh` (build/deploy orchestration)
 - `lib/nixbot/bastion.nix` (bastion-side nixbot setup)
+
+Deploy ordering notes:
+
+- `hosts/nixbot.nix` may declare per-host `deps = [ ... ];` for build/deploy
+  ordering.
+- `scripts/nixbot-deploy.sh` still builds all selected hosts before starting
+  deploy.
+- Build parallelism is controlled by `DEPLOY_BUILD_JOBS` / `--build-jobs`.
+- Deploy parallelism is controlled by `DEPLOY_JOBS` / `--deploy-jobs`.
+- Deploy derives dependency waves from `deps`, so dependents wait for their
+  selected dependencies while same-wave hosts can still run in parallel.

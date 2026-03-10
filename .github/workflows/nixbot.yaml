@@ -63,7 +63,7 @@ jobs:
           fi
 
           input_hosts="${GITHUB_INPUT_HOSTS:-all}"
-          input_deploy="${GITHUB_INPUT_DEPLOY:-false}"
+          input_deploy="${GITHUB_INPUT_DEPLOY:-true}"
           hosts="${input_hosts:-all}"
           action="build"
           if [ "${input_deploy}" = "true" ]; then

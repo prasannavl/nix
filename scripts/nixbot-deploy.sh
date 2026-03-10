@@ -4,13 +4,14 @@ set -Eeuo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--jobs <n>] [--force] [--bootstrap] [--dry] [--no-rollback] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--dry] [--no-rollback] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
 
 Core Workflow Options:
   --action         build|deploy|check-bootstrap (default: deploy)
   --hosts          Comma/space-separated host list, or `all` (default: all)
   --goal           switch|boot|test|dry-activate (default: switch, deploy only)
-  --jobs           Number of hosts to process in parallel (default: 1)
+  --build-jobs     Number of hosts to build in parallel (default: 1)
+  --deploy-jobs    Number of hosts to deploy in parallel within a dependency wave (default: 1)
   --sha            Optional commit to checkout before running deploy workflow
 
 Deploy Target/Auth Options:
@@ -45,7 +46,8 @@ Environment (Core):
   DEPLOY_ACTION               Same as --action
   DEPLOY_HOSTS                Same as --hosts
   DEPLOY_GOAL                 Same as --goal
-  DEPLOY_JOBS                 Same as --jobs
+  DEPLOY_BUILD_JOBS           Same as --build-jobs
+  DEPLOY_JOBS                 Same as --deploy-jobs
   DEPLOY_SHA                  Same as --sha
 
 Environment (Deploy Target/Auth):
@@ -88,7 +90,8 @@ init_vars() {
   ACTION="${DEPLOY_ACTION:-deploy}"
   GOAL="${DEPLOY_GOAL:-switch}"
   BUILD_HOST="${DEPLOY_BUILD_HOST:-local}"
-  JOBS="${DEPLOY_JOBS:-1}"
+  BUILD_JOBS="${DEPLOY_BUILD_JOBS:-1}"
+  DEPLOY_PARALLEL_JOBS="${DEPLOY_JOBS:-1}"
   DEPLOY_IF_CHANGED=1
   FORCE_BOOTSTRAP_PATH=0
   DRY_RUN=0
@@ -177,7 +180,7 @@ normalize_hosts_input() {
   printf '%s' "${raw}" \
     | tr ', ' '\n\n' \
     | sed '/^$/d' \
-    | sort -u \
+    | awk '!seen[$0]++' \
     | paste -sd, -
 }
 
@@ -229,13 +232,22 @@ parse_args() {
         BUILD_HOST="${1#--build-host=}"
         shift
         ;;
-      --jobs)
-        [ "$#" -ge 2 ] || die "Missing value for --jobs"
-        JOBS="${2:-}"
+      --build-jobs)
+        [ "$#" -ge 2 ] || die "Missing value for --build-jobs"
+        BUILD_JOBS="${2:-}"
         shift 2
         ;;
-      --jobs=*)
-        JOBS="${1#--jobs=}"
+      --build-jobs=*)
+        BUILD_JOBS="${1#--build-jobs=}"
+        shift
+        ;;
+      --deploy-jobs)
+        [ "$#" -ge 2 ] || die "Missing value for --deploy-jobs"
+        DEPLOY_PARALLEL_JOBS="${2:-}"
+        shift 2
+        ;;
+      --deploy-jobs=*)
+        DEPLOY_PARALLEL_JOBS="${1#--deploy-jobs=}"
         shift
         ;;
       --force)
@@ -402,7 +414,8 @@ parse_args() {
     *) ;;
   esac
 
-  [[ "${JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --jobs: ${JOBS} (must be a positive integer)"
+  [[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --build-jobs: ${BUILD_JOBS} (must be a positive integer)"
+  [[ "${DEPLOY_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${DEPLOY_PARALLEL_JOBS} (must be a positive integer)"
   if [ -n "${SHA}" ] && ! [[ "${SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
     die "Unsupported --sha: ${SHA}"
   fi
@@ -638,9 +651,141 @@ select_hosts_json() {
   printf '%s' "${HOSTS_RAW}" \
     | tr ', ' '\n\n' \
     | sed '/^$/d' \
-    | sort -u \
+    | awk '!seen[$0]++' \
     | jq -R . \
     | jq -s .
+}
+
+order_selected_hosts_json() {
+  local selected_json="$1"
+  local all_hosts_json="$2"
+  local node dep progress
+  local -a selected_hosts=()
+  local -a ordered_hosts=()
+  local -a deps=()
+  declare -A all_host_set=()
+  declare -A selected_host_set=()
+  declare -A emitted_host_set=()
+  declare -A indegree=()
+  declare -A dependents=()
+
+  mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
+
+  for node in $(jq -r '.[]' <<<"${all_hosts_json}"); do
+    [ -n "${node}" ] || continue
+    all_host_set["${node}"]=1
+  done
+
+  for node in "${selected_hosts[@]}"; do
+    [ -n "${node}" ] || continue
+    selected_host_set["${node}"]=1
+    indegree["${node}"]=0
+  done
+
+  for node in "${selected_hosts[@]}"; do
+    [ -n "${node}" ] || continue
+    mapfile -t deps < <(jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}")
+    for dep in "${deps[@]}"; do
+      [ -n "${dep}" ] || continue
+      if [ -z "${all_host_set["${dep}"]+x}" ]; then
+        die "Unknown dependency declared for ${node}: ${dep}"
+      fi
+      if [ -n "${selected_host_set["${dep}"]+x}" ]; then
+        indegree["${node}"]=$((indegree["${node}"] + 1))
+        dependents["${dep}"]+="${node}"$'\n'
+      fi
+    done
+  done
+
+  while [ "${#ordered_hosts[@]}" -lt "${#selected_hosts[@]}" ]; do
+    progress=0
+    for node in "${selected_hosts[@]}"; do
+      [ -n "${node}" ] || continue
+      if [ -n "${emitted_host_set["${node}"]+x}" ]; then
+        continue
+      fi
+      if [ "${indegree["${node}"]}" -ne 0 ]; then
+        continue
+      fi
+
+      emitted_host_set["${node}"]=1
+      ordered_hosts+=("${node}")
+      progress=1
+
+      while IFS= read -r dep; do
+        [ -n "${dep}" ] || continue
+        indegree["${dep}"]=$((indegree["${dep}"] - 1))
+      done <<<"${dependents["${node}"]:-}"
+    done
+
+    if [ "${progress}" -eq 0 ]; then
+      local -a cycle_hosts=()
+      for node in "${selected_hosts[@]}"; do
+        [ -n "${node}" ] || continue
+        if [ -z "${emitted_host_set["${node}"]+x}" ]; then
+          cycle_hosts+=("${node}")
+        fi
+      done
+      die "Host dependency cycle detected among: ${cycle_hosts[*]}"
+    fi
+  done
+
+  jq -cn '$ARGS.positional' --args "${ordered_hosts[@]}"
+}
+
+selected_host_levels_json() {
+  local selected_json="$1"
+  local node dep dep_level node_level max_level level
+  local -a selected_hosts=()
+  declare -A selected_host_set=()
+  declare -A host_level=()
+
+  mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
+
+  for node in "${selected_hosts[@]}"; do
+    [ -n "${node}" ] || continue
+    selected_host_set["${node}"]=1
+  done
+
+  max_level=0
+  for node in "${selected_hosts[@]}"; do
+    [ -n "${node}" ] || continue
+    node_level=0
+    while IFS= read -r dep; do
+      [ -n "${dep}" ] || continue
+      if [ -n "${selected_host_set["${dep}"]+x}" ]; then
+        dep_level="${host_level["${dep}"]:-}"
+        [ -n "${dep_level}" ] || die "Dependency level missing for ${node}: ${dep}"
+        if [ $((dep_level + 1)) -gt "${node_level}" ]; then
+          node_level=$((dep_level + 1))
+        fi
+      fi
+    done < <(jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}")
+
+    host_level["${node}"]="${node_level}"
+    if [ "${node_level}" -gt "${max_level}" ]; then
+      max_level="${node_level}"
+    fi
+  done
+
+  {
+    for ((level=0; level<=max_level; level++)); do
+      for node in "${selected_hosts[@]}"; do
+        [ -n "${node}" ] || continue
+        if [ "${host_level["${node}"]}" -eq "${level}" ]; then
+          printf '%s\t%s\n' "${level}" "${node}"
+        fi
+      done
+    done
+  } | jq -Rn '
+    reduce inputs as $line ({};
+      ($line | split("\t")) as $parts
+      | .[$parts[0]] = (.[$parts[0]] // []) + [$parts[1]]
+    )
+    | to_entries
+    | sort_by(.key | tonumber)
+    | map(.value)
+  '
 }
 
 validate_selected_hosts() {
@@ -1379,15 +1524,16 @@ run_bootstrap_key_checks() {
 
 run_hosts() {
   local selected_json="$1"
-  local node active_jobs
+  local node active_jobs level_group
   local -a selected_hosts=()
+  local -a level_hosts=()
   local -a failed_hosts=()
   local -a failed_codes=()
   local -a successful_hosts=()
 
   local build_log_dir build_status_dir deploy_log_dir deploy_status_dir
   local build_out_dir snapshot_dir rollback_log_dir rollback_status_dir
-  local log_file status_file out_file rc built_out_path
+  local log_file status_file out_file rc built_out_path levels_json
 
   if [ "${ACTION}" = "check-bootstrap" ]; then
     run_bootstrap_key_checks "${selected_json}"
@@ -1395,6 +1541,7 @@ run_hosts() {
   fi
 
   mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
+  levels_json="$(selected_host_levels_json "${selected_json}")"
 
   ensure_tmp_dir
   build_log_dir="${DEPLOY_TMP_DIR}/logs.build"
@@ -1409,7 +1556,7 @@ run_hosts() {
   mkdir -p "${build_log_dir}" "${build_status_dir}" "${deploy_log_dir}" "${deploy_status_dir}" "${build_out_dir}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}"
 
   # Build phase.
-  if [ "${JOBS}" -eq 1 ]; then
+  if [ "${BUILD_JOBS}" -eq 1 ]; then
     for node in "${selected_hosts[@]}"; do
       [ -n "${node}" ] || continue
       out_file="${build_out_dir}/${node}.path"
@@ -1448,7 +1595,7 @@ run_hosts() {
       ) &
 
       active_jobs=$((active_jobs + 1))
-      if [ "${active_jobs}" -ge "${JOBS}" ]; then
+      if [ "${active_jobs}" -ge "${BUILD_JOBS}" ]; then
         wait -n || true
         active_jobs=$((active_jobs - 1))
       fi
@@ -1503,7 +1650,7 @@ run_hosts() {
   successful_hosts=()
 
   # Deploy phase.
-  if [ "${JOBS}" -eq 1 ]; then
+  if [ "${DEPLOY_PARALLEL_JOBS}" -eq 1 ]; then
     for node in "${selected_hosts[@]}"; do
       [ -n "${node}" ] || continue
       out_file="${build_out_dir}/${node}.path"
@@ -1536,70 +1683,77 @@ run_hosts() {
     return
   fi
 
-  active_jobs=0
-  for node in "${selected_hosts[@]}"; do
-    [ -n "${node}" ] || continue
+  while IFS= read -r level_group; do
+    [ -n "${level_group}" ] || continue
+    mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
+    active_jobs=0
 
-    log_file="${deploy_log_dir}/${node}.log"
-    status_file="${deploy_status_dir}/${node}.rc"
-    out_file="${build_out_dir}/${node}.path"
+    for node in "${level_hosts[@]}"; do
+      [ -n "${node}" ] || continue
 
-    (
-      set +e
-      if [ ! -s "${out_file}" ]; then
-        echo "Missing built output path for ${node}: ${out_file}" >&2
-        rc=1
-      else
-        built_out_path="$(cat "${out_file}")"
-        deploy_host "${node}" "${built_out_path}" > >(sed -u "s/^/[${node}] /" | tee -a "${log_file}") \
-          2> >(sed -u "s/^/[${node}] /" | tee -a "${log_file}" >&2)
-        rc="$?"
+      log_file="${deploy_log_dir}/${node}.log"
+      status_file="${deploy_status_dir}/${node}.rc"
+      out_file="${build_out_dir}/${node}.path"
+
+      (
+        set +e
+        if [ ! -s "${out_file}" ]; then
+          echo "Missing built output path for ${node}: ${out_file}" >&2
+          rc=1
+        else
+          built_out_path="$(cat "${out_file}")"
+          deploy_host "${node}" "${built_out_path}" > >(sed -u "s/^/[${node}] /" | tee -a "${log_file}") \
+            2> >(sed -u "s/^/[${node}] /" | tee -a "${log_file}" >&2)
+          rc="$?"
+        fi
+        printf '%s\n' "${rc}" > "${status_file}"
+        exit "${rc}"
+      ) &
+
+      active_jobs=$((active_jobs + 1))
+      if [ "${active_jobs}" -ge "${DEPLOY_PARALLEL_JOBS}" ]; then
+        wait -n || true
+        active_jobs=$((active_jobs - 1))
       fi
-      printf '%s\n' "${rc}" > "${status_file}"
-      exit "${rc}"
-    ) &
-
-    active_jobs=$((active_jobs + 1))
-    if [ "${active_jobs}" -ge "${JOBS}" ]; then
-      wait -n || true
-      active_jobs=$((active_jobs - 1))
-    fi
-  done
-
-  while [ "${active_jobs}" -gt 0 ]; do
-    wait -n || true
-    active_jobs=$((active_jobs - 1))
-  done
-
-  for node in "${selected_hosts[@]}"; do
-    status_file="${deploy_status_dir}/${node}.rc"
-    if [ ! -s "${status_file}" ]; then
-      failed_hosts+=("${node}")
-      failed_codes+=("missing-status")
-      continue
-    fi
-
-    rc="$(cat "${status_file}")"
-    if [ "${rc}" != "0" ]; then
-      failed_hosts+=("${node}")
-      failed_codes+=("${rc}")
-    else
-      successful_hosts+=("${node}")
-    fi
-  done
-
-  if [ "${#failed_hosts[@]}" -gt 0 ]; then
-    echo "Deploy phase failed for ${#failed_hosts[@]} host(s):" >&2
-    for i in "${!failed_hosts[@]}"; do
-      echo "  - ${failed_hosts[$i]} (exit=${failed_codes[$i]}, log=${deploy_log_dir}/${failed_hosts[$i]}.log)" >&2
     done
 
-    if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
-      rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts[@]}" || true
-    fi
+    while [ "${active_jobs}" -gt 0 ]; do
+      wait -n || true
+      active_jobs=$((active_jobs - 1))
+    done
 
-    exit 1
-  fi
+    failed_hosts=()
+    failed_codes=()
+    for node in "${level_hosts[@]}"; do
+      status_file="${deploy_status_dir}/${node}.rc"
+      if [ ! -s "${status_file}" ]; then
+        failed_hosts+=("${node}")
+        failed_codes+=("missing-status")
+        continue
+      fi
+
+      rc="$(cat "${status_file}")"
+      if [ "${rc}" != "0" ]; then
+        failed_hosts+=("${node}")
+        failed_codes+=("${rc}")
+      else
+        successful_hosts+=("${node}")
+      fi
+    done
+
+    if [ "${#failed_hosts[@]}" -gt 0 ]; then
+      echo "Deploy phase failed for ${#failed_hosts[@]} host(s):" >&2
+      for i in "${!failed_hosts[@]}"; do
+        echo "  - ${failed_hosts[$i]} (exit=${failed_codes[$i]}, log=${deploy_log_dir}/${failed_hosts[$i]}.log)" >&2
+      done
+
+      if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
+        rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts[@]}" || true
+      fi
+
+      exit 1
+    fi
+  done < <(jq -c '.[]' <<<"${levels_json}")
 }
 
 main() {
@@ -1638,8 +1792,11 @@ main() {
 
   ensure_repo_for_sha
 
-  if [ "${ACTION}" = "deploy" ] || [ "${ACTION}" = "check-bootstrap" ]; then
+  if [ "${ACTION}" = "deploy" ]; then
     require_cmds age
+  fi
+
+  if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
     config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
     init_deploy_settings "${config_json}"
   fi
@@ -1651,6 +1808,7 @@ main() {
   all_hosts_json="$(load_all_hosts_json)"
   selected_json="$(select_hosts_json "${all_hosts_json}")"
   validate_selected_hosts "${selected_json}" "${all_hosts_json}"
+  selected_json="$(order_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
 
   run_hosts "${selected_json}"
 }
