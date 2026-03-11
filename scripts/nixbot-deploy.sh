@@ -546,6 +546,7 @@ configure_bastion_trigger_ssh_opts() {
 
 run_bastion_trigger() {
   local trigger_sha trigger_hosts
+  local remote_command
 
   trigger_sha="${SHA}"
   if [ -z "${trigger_sha}" ]; then
@@ -569,8 +570,13 @@ run_bastion_trigger() {
   echo "Action: ${ACTION}" >&2
   echo "Hosts: ${trigger_hosts}" >&2
   echo "SHA: ${trigger_sha}" >&2
+  remote_command="--sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
+  if [ "${DEPLOY_IF_CHANGED}" -eq 0 ]; then
+    remote_command="${remote_command} --force"
+    echo "Force: true" >&2
+  fi
   ssh "${BASTION_TRIGGER_SSH_OPTS[@]}" -- "${BASTION_TRIGGER_USER}@${BASTION_TRIGGER_HOST}" \
-    "--sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
+    "${remote_command}"
 }
 
 require_cmds() {
