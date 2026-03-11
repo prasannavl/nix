@@ -93,6 +93,14 @@ die() {
   exit 1
 }
 
+resolve_ssh_tty_stdin_path() {
+  if : </dev/tty 2>/dev/null; then
+    printf '/dev/tty\n'
+  else
+    printf '/dev/null\n'
+  fi
+}
+
 init_vars() {
   HOSTS_RAW="${DEPLOY_HOSTS:-all}"
   ACTION="${DEPLOY_ACTION:-deploy}"
@@ -117,10 +125,6 @@ init_vars() {
   BASTION_TRIGGER_SSH_OPTS=()
   AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
   REEXEC_FROM_REPO=0
-  SSH_TTY_STDIN_PATH="/dev/null"
-  if [ -r "/dev/tty" ]; then
-    SSH_TTY_STDIN_PATH="/dev/tty"
-  fi
 
   DEPLOY_USER_OVERRIDE="${DEPLOY_USER:-}"
   DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY:-}"
@@ -1264,7 +1268,7 @@ inject_bootstrap_nixbot_key() {
   remote_install_cmd="$(build_remote_bootstrap_install_cmd "${remote_tmp}" "${bootstrap_dest}" "${bootstrap_legacy_dest}")"
 
   echo "==> Injecting bootstrap nixbot key for ${node}"
-  if ! ssh -tt "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "${remote_install_cmd}" <"${SSH_TTY_STDIN_PATH}"; then
+  if ! ssh -tt "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "${remote_install_cmd}" <"$(resolve_ssh_tty_stdin_path)"; then
     # shellcheck disable=SC2029
     ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
     return 1
@@ -1403,7 +1407,7 @@ EOF
 )"
 
   echo "==> Injecting host age identity for ${node}"
-  if ! ssh -tt "${ssh_opts[@]}" "${ssh_target}" "${remote_install_cmd}" <"${SSH_TTY_STDIN_PATH}"; then
+  if ! ssh -tt "${ssh_opts[@]}" "${ssh_target}" "${remote_install_cmd}" <"$(resolve_ssh_tty_stdin_path)"; then
     # shellcheck disable=SC2029
     ssh "${ssh_opts[@]}" "${ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
     return 1
@@ -1910,7 +1914,7 @@ rollback_host_to_snapshot() {
 
   echo "${snapshot_path}" >&2
   if should_ask_sudo_password "${deploy_user}" "${PREP_USING_BOOTSTRAP_FALLBACK}"; then
-    ssh -tt "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "${rollback_cmd}" <"${SSH_TTY_STDIN_PATH}"
+    ssh -tt "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "${rollback_cmd}" <"$(resolve_ssh_tty_stdin_path)"
   else
     # shellcheck disable=SC2029
     ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "${rollback_cmd}"

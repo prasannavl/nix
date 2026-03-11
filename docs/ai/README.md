@@ -26,6 +26,9 @@
   `nixbot` deploy architecture, bastion/bootstrap trust boundaries,
   dependency-wave orchestration, snapshot semantics, status/logging rules, and
   GitHub Actions connectivity state.
+- `docs/ai/notes/nixbot/deploy-noninteractive-tty-fallback-2026-03.md`: Fixed
+  `nixbot` deploy's `/dev/tty` probe so host age identity injection works in
+  non-interactive service/wrapper runs.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Consolidated `nixbot` rotation model, legacy-host recovery lessons, operator
   guardrails, and the playbook relationship.
