@@ -4,7 +4,7 @@
 
 - `llmug-rivendell` runs as an Incus container on `pvl-x2`.
 - `pvl-x2` provides AMD GPU devices, not NVIDIA CDI runtime support.
-- Ollama service definitions were still wired for NVIDIA and could not start.
+- The original Ollama wiring assumed NVIDIA and could not start here.
 
 ## Final state
 
@@ -17,5 +17,6 @@
 
 ## Effect
 
-- Ollama on `llmug-rivendell` is aligned with AMD GPU access on `pvl-x2` instead
-  of depending on NVIDIA-specific runtime wiring.
+- Keep guest GPU assumptions aligned with the actual parent host hardware.
+- For this workload, AMD device passthrough replaces NVIDIA-specific runtime
+  assumptions.

@@ -11,24 +11,21 @@
 - `docs/ai/notes/hosts/llmug-rivendell-ollama-amd-on-pvl-x2.md`: Reconfigured
   `llmug-rivendell` Ollama GPU access from NVIDIA CDI to AMD (`/dev/dri` +
   `/dev/kfd`) for deployment on `pvl-x2`.
+- `docs/ai/notes/hosts/incus-bootstrap-deploy-flow-2026-03.md`: Replaced the
+  host-specific `llmug-rivendell` Incus image with a reusable generic bootstrap
+  image under `lib/images` and taught `nixbot` to auto-include dependency hosts
+  for deploys.
 - `docs/ai/notes/hosts/llmug-rivendell-tailscale-login-2026-03.md`: Added
-  `llmug-rivendell` Tailscale autologin wiring via an agenix-managed auth key at
-  `data/secrets/tailscale/llmug-rivendell.key.age`.
+  `llmug-rivendell` Tailscale autologin wiring via an agenix-managed secret at
+  `data/secrets/tailscale/llmug-rivendell.key.age`, now used for OAuth-based
+  tagged login.
 - `docs/ai/notes/hosts/pvl-a1-desktop-investigations-consolidated-2026-03.md`:
   Consolidated `pvl-a1` desktop investigation state for suspend watchdogs, GNOME
   idle inhibition, and `amdxdna` mismatch handling.
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Consolidated
-  `nixbot` deploy architecture, bootstrap flow, machine-age identity model,
-  host-key handling, and GitHub Actions connectivity state.
-- `docs/ai/notes/nixbot/deploy-log-formatting-2026-03.md`: Added simple
-  phase/host headers to `nixbot-deploy.sh` logs for clearer build, snapshot,
-  deploy, and rollback demarcation.
-- `docs/ai/notes/nixbot/deploy-order-deps-2026-03.md`: Dependency-aware host
-  ordering for `nixbot` builds/deploys via `hosts.nixbot.<host>.deps`.
-- `docs/ai/notes/nixbot/deploy-snapshot-fallback-2026-03.md`: Best-effort
-  upfront generation snapshots with dependency-wave retries before deploy.
-- `docs/ai/notes/nixbot/bastion-reexec-checked-out-script-2026-03.md`: Optional
-  bastion re-exec into the checked-out repo script for `--sha` runs.
+  `nixbot` deploy architecture, bastion/bootstrap trust boundaries,
+  dependency-wave orchestration, snapshot semantics, status/logging rules, and
+  GitHub Actions connectivity state.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Consolidated `nixbot` rotation model, legacy-host recovery lessons, operator
   guardrails, and the playbook relationship.

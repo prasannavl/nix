@@ -174,10 +174,26 @@ init_vars() {
   ROLLBACK_OK_HOSTS=()
   ROLLBACK_FAILED_HOSTS=()
 
-  REPO_BASE="/var/lib/nixbot"
+  BASTION_TRIGGER_KEY_PATH="data/secrets/bastion/nixbot-bastion-ssh.key.age"
+  REMOTE_NIXBOT_BASE="/var/lib/nixbot"
+  REMOTE_NIXBOT_SSH_DIR="${REMOTE_NIXBOT_BASE}/.ssh"
+  REMOTE_NIXBOT_AGE_DIR="${REMOTE_NIXBOT_BASE}/.age"
+  REMOTE_NIXBOT_DEPLOY_SCRIPT="${REMOTE_NIXBOT_BASE}/nixbot-deploy.sh"
+  REMOTE_NIXBOT_PRIMARY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519"
+  REMOTE_NIXBOT_LEGACY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519_legacy"
+  REMOTE_NIXBOT_AGE_IDENTITY="${REMOTE_NIXBOT_AGE_DIR}/identity"
+  REMOTE_CURRENT_SYSTEM_PATH="/run/current-system"
+  DEPLOY_TMP_DIR_PREFIX="/dev/shm/nixbot-deploy."
+  BASTION_KNOWN_HOSTS_PREFIX="bastion-known-hosts"
+  NODE_KNOWN_HOSTS_PREFIX="known_hosts"
+  REPO_DEPLOY_SCRIPT_REL="scripts/nixbot-deploy.sh"
+  REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="/tmp/nixbot-bootstrap-key."
+  REMOTE_AGE_IDENTITY_TMP_PREFIX="/tmp/nixbot-age-identity."
+
+  REPO_BASE="${REMOTE_NIXBOT_BASE}"
   REPO_PATH="${DEPLOY_REPO_PATH:-${REPO_BASE}/nix}"
   REPO_URL="${DEPLOY_REPO_URL:-ssh://git@github.com/prasannavl/nix.git}"
-  REPO_SSH_KEY_PATH="${REPO_BASE}/.ssh/id_ed25519"
+  REPO_SSH_KEY_PATH="${REMOTE_NIXBOT_PRIMARY_KEY}"
   REPO_GIT_SSH_COMMAND="ssh -i ${REPO_SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
   # Prepared per-node context.
@@ -475,18 +491,29 @@ ensure_tmp_dir() {
     return
   fi
   if [ -d "/dev/shm" ] && [ -w "/dev/shm" ]; then
-    DEPLOY_TMP_DIR="$(mktemp -d /dev/shm/nixbot-deploy.XXXXXX)"
+    DEPLOY_TMP_DIR="$(mktemp -d "${DEPLOY_TMP_DIR_PREFIX}XXXXXX")"
   else
     DEPLOY_TMP_DIR="$(mktemp -d)"
   fi
 }
 
 configure_bastion_trigger_ssh_opts() {
-  local key_file known_hosts_file scanned_known_hosts
+  local key_file known_hosts_file scanned_known_hosts default_bastion_key_path
 
   BASTION_TRIGGER_SSH_OPTS=()
 
   ensure_tmp_dir
+
+  if [ -z "${BASTION_TRIGGER_SSH_KEY}" ]; then
+    default_bastion_key_path="${BASTION_TRIGGER_KEY_PATH}"
+    if key_file="$(resolve_key_source_path "${default_bastion_key_path}")" && [ -f "${key_file}" ] && [ -f "${AGE_DECRYPT_IDENTITY_FILE}" ]; then
+      if BASTION_TRIGGER_SSH_KEY="$(age --decrypt -i "${AGE_DECRYPT_IDENTITY_FILE}" "${key_file}" 2>/dev/null)"; then
+        :
+      else
+        BASTION_TRIGGER_SSH_KEY=""
+      fi
+    fi
+  fi
 
   if [ -n "${BASTION_TRIGGER_SSH_KEY}" ]; then
     key_file="$(mktemp "${DEPLOY_TMP_DIR}/bastion-key.XXXXXX")"
@@ -502,7 +529,7 @@ configure_bastion_trigger_ssh_opts() {
     [ -n "${scanned_known_hosts}" ] || die "Could not determine bastion host key for ${BASTION_TRIGGER_HOST}. Pass --bastion-known-hosts/DEPLOY_BASTION_KNOWN_HOSTS or ensure ssh-keyscan can reach the bastion."
   fi
 
-  known_hosts_file="$(mktemp "${DEPLOY_TMP_DIR}/bastion-known-hosts.XXXXXX")"
+  known_hosts_file="$(mktemp "${DEPLOY_TMP_DIR}/${BASTION_KNOWN_HOSTS_PREFIX}.XXXXXX")"
   printf '%s\n' "${scanned_known_hosts}" > "${known_hosts_file}"
   chmod 600 "${known_hosts_file}"
   BASTION_TRIGGER_SSH_OPTS+=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile="${known_hosts_file}")
@@ -567,7 +594,7 @@ ensure_repo_for_sha() {
     fi
   fi
 
-  [ -f "${REPO_PATH}/scripts/nixbot-deploy.sh" ] || die "deploy script missing in repo checkout: ${REPO_PATH}/scripts/nixbot-deploy.sh"
+  [ -f "${REPO_PATH}/${REPO_DEPLOY_SCRIPT_REL}" ] || die "deploy script missing in repo checkout: ${REPO_PATH}/${REPO_DEPLOY_SCRIPT_REL}"
 
   cd "${REPO_PATH}"
   if [ -f "${REPO_SSH_KEY_PATH}" ]; then
@@ -587,7 +614,7 @@ reexec_repo_script_if_needed() {
   [ "${NIXBOT_REEXECED_FROM_REPO:-0}" != "1" ] || return 0
 
   current_script="${BASH_SOURCE[0]:-$0}"
-  repo_script="${REPO_PATH%/}/scripts/nixbot-deploy.sh"
+  repo_script="${REPO_PATH%/}/${REPO_DEPLOY_SCRIPT_REL}"
 
   [ -f "${repo_script}" ] || die "Repo deploy script missing after checkout: ${repo_script}"
 
@@ -719,6 +746,49 @@ select_hosts_json() {
     | awk '!seen[$0]++' \
     | jq -R . \
     | jq -s .
+}
+
+expand_selected_hosts_json() {
+  local selected_json="$1"
+  local all_hosts_json="$2"
+  local node dep
+  local -a queue=()
+  local -a expanded_hosts=()
+  declare -A all_host_set=()
+  declare -A seen_host_set=()
+
+  for node in $(jq -r '.[]' <<<"${all_hosts_json}"); do
+    [ -n "${node}" ] || continue
+    all_host_set["${node}"]=1
+  done
+
+  mapfile -t queue < <(jq -r '.[]' <<<"${selected_json}")
+
+  while [ "${#queue[@]}" -gt 0 ]; do
+    node="${queue[0]}"
+    queue=("${queue[@]:1}")
+
+    [ -n "${node}" ] || continue
+    [ -n "${all_host_set["${node}"]+x}" ] || die "Unknown host requested: ${node}"
+    if [ -n "${seen_host_set["${node}"]+x}" ]; then
+      continue
+    fi
+
+    seen_host_set["${node}"]=1
+    expanded_hosts+=("${node}")
+
+    while IFS= read -r dep; do
+      [ -n "${dep}" ] || continue
+      if [ -z "${all_host_set["${dep}"]+x}" ]; then
+        die "Unknown dependency declared for ${node}: ${dep}"
+      fi
+      if [ -z "${seen_host_set["${dep}"]+x}" ]; then
+        queue+=("${dep}")
+      fi
+    done < <(jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}")
+  done
+
+  jq -cn '$ARGS.positional' --args "${expanded_hosts[@]}"
 }
 
 order_selected_hosts_json() {
@@ -987,7 +1057,7 @@ ensure_known_hosts_file() {
 
   ensure_tmp_dir
   safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
-  known_hosts_file="${DEPLOY_TMP_DIR}/known_hosts.${safe_node}"
+  known_hosts_file="${DEPLOY_TMP_DIR}/${NODE_KNOWN_HOSTS_PREFIX}.${safe_node}"
 
   if [ -n "${known_hosts}" ]; then
     printf '%s\n' "${known_hosts}" > "${known_hosts_file}"
@@ -1098,9 +1168,9 @@ check_bootstrap_via_forced_command() {
     remote_config_path="${REPO_PATH%/}/${DEPLOY_CONFIG_PATH}"
   fi
 
-  check_remote_cmd=(/var/lib/nixbot/nixbot-deploy.sh --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
+  check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
   if [ -n "${check_sha}" ]; then
-    check_remote_cmd=(/var/lib/nixbot/nixbot-deploy.sh --sha "${check_sha}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
+    check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" --sha "${check_sha}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
   fi
 
   if [ -n "${check_sha}" ]; then
@@ -1130,8 +1200,8 @@ inject_bootstrap_nixbot_key() {
   local -a bootstrap_ssh_opts=("${@:4}")
   local bootstrap_key_file remote_tmp expected_bootstrap_fpr
   local remote_has_key_cmd remote_install_cmd
-  local bootstrap_dest="/var/lib/nixbot/.ssh/id_ed25519"
-  local bootstrap_legacy_dest="/var/lib/nixbot/.ssh/id_ed25519_legacy"
+  local bootstrap_dest="${REMOTE_NIXBOT_PRIMARY_KEY}"
+  local bootstrap_legacy_dest="${REMOTE_NIXBOT_LEGACY_KEY}"
 
   if [ -z "${bootstrap_nixbot_key_path}" ]; then
     return
@@ -1154,7 +1224,7 @@ inject_bootstrap_nixbot_key() {
     return
   fi
 
-  remote_tmp="$(ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" 'umask 077; mktemp /tmp/nixbot-bootstrap-key.XXXXXX')"
+  remote_tmp="$(ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "umask 077; mktemp ${REMOTE_BOOTSTRAP_KEY_TMP_PREFIX}XXXXXX")"
   [ -n "${remote_tmp}" ] || die "Failed to allocate remote temporary file for bootstrap key on ${node}"
 
   scp "${bootstrap_ssh_opts[@]}" "${bootstrap_key_file}" "${bootstrap_ssh_target}:${remote_tmp}"
@@ -1184,8 +1254,8 @@ install_bootstrap_key() {
     return 1
   fi
 
-  sudo install -d -m 0755 /var/lib/nixbot
-  sudo install -d -m 0700 /var/lib/nixbot/.ssh
+  sudo install -d -m 0755 ${REMOTE_NIXBOT_BASE}
+  sudo install -d -m 0700 ${REMOTE_NIXBOT_SSH_DIR}
   if sudo test -f "\${bootstrap_dest}"; then
     sudo install -m 0400 "\${bootstrap_dest}" "\${bootstrap_legacy_dest}"
   fi
@@ -1193,7 +1263,7 @@ install_bootstrap_key() {
   rm -f "\${remote_tmp}"
 
   if sudo id -u nixbot >/dev/null 2>&1; then
-    sudo chown -R nixbot:nixbot /var/lib/nixbot/.ssh
+    sudo chown -R nixbot:nixbot ${REMOTE_NIXBOT_SSH_DIR}
   fi
 
   return 0
@@ -1223,7 +1293,7 @@ inject_host_age_identity_key() {
   local age_identity_key_path="$3"
   local -a ssh_opts=("${@:4}")
   local age_identity_key_file remote_tmp expected_sha
-  local remote_dest="/var/lib/nixbot/.age/identity"
+  local remote_dest="${REMOTE_NIXBOT_AGE_IDENTITY}"
   local remote_has_cmd remote_install_cmd
 
   if [ -z "${age_identity_key_path}" ]; then
@@ -1256,7 +1326,7 @@ EOF
     return
   fi
 
-  remote_tmp="$(ssh "${ssh_opts[@]}" "${ssh_target}" 'umask 077; mktemp /tmp/nixbot-age-identity.XXXXXX')"
+  remote_tmp="$(ssh "${ssh_opts[@]}" "${ssh_target}" "umask 077; mktemp ${REMOTE_AGE_IDENTITY_TMP_PREFIX}XXXXXX")"
   [ -n "${remote_tmp}" ] || die "Failed to allocate remote temporary file for host age identity on ${node}"
 
   scp "${ssh_opts[@]}" "${age_identity_key_file}" "${ssh_target}:${remote_tmp}"
@@ -1271,8 +1341,8 @@ install_age_identity() {
     return 1
   fi
 
-  sudo install -d -m 0755 /var/lib/nixbot
-  sudo install -d -m 0700 /var/lib/nixbot/.age
+  sudo install -d -m 0755 ${REMOTE_NIXBOT_BASE}
+  sudo install -d -m 0700 ${REMOTE_NIXBOT_AGE_DIR}
   sudo install -m 0400 "\${remote_tmp}" "\${remote_dest}"
   sudo chown root:root "\${remote_dest}"
   rm -f "\${remote_tmp}"
@@ -1443,7 +1513,7 @@ snapshot_host_generation() {
   log_host_stage "snapshot" "${node}"
   if ! remote_current_path="$(
     prepare_deploy_context "${node}" 1>&2
-    ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" 'readlink -f /run/current-system 2>/dev/null || true'
+    ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
   )"; then
     remote_current_path=""
   fi
@@ -1463,6 +1533,168 @@ snapshot_exists() {
   [ -s "${snapshot_file}" ]
 }
 
+wave_needs_snapshot_retry() {
+  local snapshot_dir="$1"
+  shift
+
+  local node
+
+  [ "${DRY_RUN}" -eq 0 ] || return 1
+  [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] || return 1
+
+  for node in "$@"; do
+    [ -n "${node}" ] || continue
+    if ! snapshot_exists "${snapshot_dir}/${node}.path"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+wait_for_job_slot() {
+  local -n active_jobs_ref="$1"
+  local max_jobs="$2"
+
+  if [ "${active_jobs_ref}" -ge "${max_jobs}" ]; then
+    wait -n || true
+    active_jobs_ref=$((active_jobs_ref - 1))
+  fi
+}
+
+drain_job_slots() {
+  local -n active_jobs_ref="$1"
+
+  while [ "${active_jobs_ref}" -gt 0 ]; do
+    wait -n || true
+    active_jobs_ref=$((active_jobs_ref - 1))
+  done
+}
+
+run_build_job() {
+  local node="$1"
+  local out_file="$2"
+  local status_file="$3"
+  local log_file="${4:-}"
+  local built_out_path rc
+
+  (
+    set +e
+    if [ -n "${log_file}" ]; then
+      built_out_path="$(resolve_build_out_path "${node}" \
+        > >(host_log_filter "${node}" | tee -a "${log_file}") \
+        2> >(host_log_filter "${node}" | tee -a "${log_file}" >&2))"
+    elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+      built_out_path="$(resolve_build_out_path "${node}" 2> >(host_log_filter "${node}" >&2))"
+    else
+      built_out_path="$(resolve_build_out_path "${node}")"
+    fi
+    rc="$?"
+    if [ "${rc}" = "0" ]; then
+      printf '%s\n' "${built_out_path}" > "${out_file}"
+    fi
+    printf '%s\n' "${rc}" > "${status_file}"
+    exit "${rc}"
+  )
+}
+
+record_build_status() {
+  local node="$1"
+  local status_file="$2"
+  local -n built_hosts_ref="$3"
+  local -n failed_hosts_ref="$4"
+  local -n failed_codes_ref="$5"
+  local rc
+
+  if [ ! -s "${status_file}" ]; then
+    failed_hosts_ref+=("${node}")
+    failed_codes_ref+=("missing-status")
+    return 1
+  fi
+
+  rc="$(cat "${status_file}")"
+  if [ "${rc}" != "0" ]; then
+    failed_hosts_ref+=("${node}")
+    failed_codes_ref+=("${rc}")
+    return 1
+  fi
+
+  built_hosts_ref+=("${node}")
+  return 0
+}
+
+log_snapshot_retry_transition() {
+  local snapshot_dir="$1"
+  local level_index="$2"
+  shift 2
+
+  if ! wave_needs_snapshot_retry "${snapshot_dir}" "$@"; then
+    return 1
+  fi
+
+  log_section "Phase: Snapshot"
+  if [ "$#" -eq 1 ]; then
+    log_subsection "Snapshot Wave ${level_index}: $1"
+  else
+    log_subsection "Snapshot Wave ${level_index}: $(join_by_comma "$@")"
+  fi
+  return 0
+}
+
+run_deploy_job() {
+  local node="$1"
+  local out_file="$2"
+  local status_file="$3"
+  local log_file="${4:-}"
+  local built_out_path rc
+
+  (
+    set +e
+    if [ ! -s "${out_file}" ]; then
+      echo "Missing built output path for ${node}: ${out_file}" >&2
+      rc=1
+    else
+      built_out_path="$(cat "${out_file}")"
+      if [ -n "${log_file}" ]; then
+        deploy_host "${node}" "${built_out_path}" \
+          > >(host_log_filter "${node}" | tee -a "${log_file}") \
+          2>&1
+      elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+        deploy_host "${node}" "${built_out_path}" \
+          > >(host_log_filter "${node}") \
+          2>&1
+      else
+        deploy_host "${node}" "${built_out_path}"
+      fi
+      rc="$?"
+    fi
+    printf '%s\n' "${rc}" > "${status_file}"
+    exit "${rc}"
+  )
+}
+
+record_deploy_status() {
+  local node="$1"
+  local status_file="$2"
+  local -n successful_hosts_ref="$3"
+  local -n deploy_failed_hosts_ref="$4"
+  local rc
+
+  if [ ! -s "${status_file}" ]; then
+    deploy_failed_hosts_ref+=("${node}")
+    return 1
+  fi
+
+  rc="$(cat "${status_file}")"
+  if [ "${rc}" != "0" ]; then
+    deploy_failed_hosts_ref+=("${node}")
+    return 1
+  fi
+
+  successful_hosts_ref+=("${node}")
+  return 0
+}
+
 ensure_wave_snapshots() {
   local snapshot_dir="$1"
   shift
@@ -1480,7 +1712,6 @@ ensure_wave_snapshots() {
       continue
     fi
 
-    log_host_stage "snapshot" "${node}" "retry"
     if ! snapshot_host_generation "${node}" "${snapshot_file}"; then
       echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
       rc=1
@@ -1569,7 +1800,7 @@ deploy_host() {
   deploy_user="${PREP_DEPLOY_SSH_TARGET%%@*}"
 
   if [ "${DEPLOY_IF_CHANGED}" -eq 1 ]; then
-    remote_current_path="$(ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" 'readlink -f /run/current-system 2>/dev/null || true')"
+    remote_current_path="$(ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true")"
     if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${built_out_path}" ]; then
       echo "[${node}] deploy | skip" >&2
       echo "${built_out_path}" >&2
@@ -1677,12 +1908,20 @@ run_hosts() {
   local -a failed_codes=()
   local -a successful_hosts=()
   local -a built_hosts=()
+  local -a snapshot_failed_hosts=()
   local -a deploy_failed_hosts=()
+  local -a build_hosts=()
+  local -a level_groups=()
 
   local build_log_dir build_status_dir deploy_log_dir deploy_status_dir
   local build_out_dir snapshot_dir rollback_log_dir rollback_status_dir
-  local log_file status_file out_file rc built_out_path levels_json
+  local log_file status_file out_file levels_json
   local level_index final_rc=0
+  local build_parallel=0
+  local deploy_parallel=0
+  local snapshot_retry_logged=0
+  local deploy_wave_failed=0
+  local build_sync_leading_bastion=0
 
   if [ "${ACTION}" = "check-bootstrap" ]; then
     run_bootstrap_key_checks "${selected_json}"
@@ -1691,6 +1930,14 @@ run_hosts() {
 
   mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
   levels_json="$(selected_host_levels_json "${selected_json}")"
+  mapfile -t level_groups < <(jq -c '.[]' <<<"${levels_json}")
+  build_hosts=("${selected_hosts[@]}")
+  if [ "${BUILD_JOBS}" -gt 1 ]; then
+    build_parallel=1
+  fi
+  if [ "${DEPLOY_PARALLEL_JOBS}" -gt 1 ]; then
+    deploy_parallel=1
+  fi
 
   ensure_tmp_dir
   build_log_dir="${DEPLOY_TMP_DIR}/logs.build"
@@ -1714,87 +1961,49 @@ run_hosts() {
 
   # Build phase.
   log_section "Phase: Build"
-  if [ "${BUILD_JOBS}" -eq 1 ]; then
-    for node in "${selected_hosts[@]}"; do
-      [ -n "${node}" ] || continue
-      out_file="${build_out_dir}/${node}.path"
-      if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-        built_out_path="$(resolve_build_out_path "${node}" 2> >(host_log_filter "${node}" >&2))" || {
-          failed_hosts+=("${node}")
-          failed_codes+=("1")
-          break
-        }
-      else
-        built_out_path="$(resolve_build_out_path "${node}")" || {
-          failed_hosts+=("${node}")
-          failed_codes+=("1")
-          break
-        }
-      fi
-      printf '%s\n' "${built_out_path}" > "${out_file}"
-      built_hosts+=("${node}")
-    done
-  else
-    if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${#selected_hosts[@]}" -gt 0 ] && [ "${selected_hosts[0]}" = "${bastion_host}" ]; then
-      node="${bastion_host}"
-      out_file="${build_out_dir}/${node}.path"
-      if ! built_out_path="$(resolve_build_out_path "${node}" 2> >(host_log_filter "${node}" >&2))"; then
-        failed_hosts+=("${node}")
-        failed_codes+=("1")
-      else
-        printf '%s\n' "${built_out_path}" > "${out_file}"
-        built_hosts+=("${node}")
-      fi
+  if [ "${build_parallel}" -eq 1 ] && [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] \
+    && [ "${#build_hosts[@]}" -gt 0 ] && [ "${build_hosts[0]}" = "${bastion_host}" ]; then
+    build_sync_leading_bastion=1
+    node="${bastion_host}"
+    status_file="${build_status_dir}/${node}.rc"
+    out_file="${build_out_dir}/${node}.path"
+    run_build_job "${node}" "${out_file}" "${status_file}"
+    record_build_status "${node}" "${status_file}" built_hosts failed_hosts failed_codes || true
+  fi
+
+  active_jobs=0
+  for node in "${build_hosts[@]}"; do
+    [ -n "${node}" ] || continue
+    if [ "${build_sync_leading_bastion}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+      continue
     fi
 
-    active_jobs=0
-    for node in "${selected_hosts[@]}"; do
-      [ -n "${node}" ] || continue
-      if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
-        continue
-      fi
+    status_file="${build_status_dir}/${node}.rc"
+    out_file="${build_out_dir}/${node}.path"
+    log_file=""
+    if [ "${build_parallel}" -eq 1 ]; then
       log_file="${build_log_dir}/${node}.log"
-      status_file="${build_status_dir}/${node}.rc"
-      out_file="${build_out_dir}/${node}.path"
-
-      (
-        set +e
-        built_out_path="$(resolve_build_out_path "${node}" > >(host_log_filter "${node}" | tee -a "${log_file}") 2> >(host_log_filter "${node}" | tee -a "${log_file}" >&2))"
-        rc="$?"
-        if [ "${rc}" = "0" ]; then
-          printf '%s\n' "${built_out_path}" > "${out_file}"
-        fi
-        printf '%s\n' "${rc}" > "${status_file}"
-        exit "${rc}"
-      ) &
-
+      run_build_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
       active_jobs=$((active_jobs + 1))
-      if [ "${active_jobs}" -ge "${BUILD_JOBS}" ]; then
-        wait -n || true
-        active_jobs=$((active_jobs - 1))
-      fi
-    done
+      wait_for_job_slot active_jobs "${BUILD_JOBS}"
+      continue
+    fi
 
-    while [ "${active_jobs}" -gt 0 ]; do
-      wait -n || true
-      active_jobs=$((active_jobs - 1))
-    done
+    run_build_job "${node}" "${out_file}" "${status_file}"
+    if ! record_build_status "${node}" "${status_file}" built_hosts failed_hosts failed_codes; then
+      break
+    fi
+  done
 
-    for node in "${selected_hosts[@]}"; do
+  if [ "${build_parallel}" -eq 1 ]; then
+    drain_job_slots active_jobs
+    for node in "${build_hosts[@]}"; do
+      [ -n "${node}" ] || continue
       status_file="${build_status_dir}/${node}.rc"
-      if [ ! -s "${status_file}" ]; then
-        failed_hosts+=("${node}")
-        failed_codes+=("missing-status")
+      if [ "${build_sync_leading_bastion}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
         continue
       fi
-
-      rc="$(cat "${status_file}")"
-      if [ "${rc}" != "0" ]; then
-        failed_hosts+=("${node}")
-        failed_codes+=("${rc}")
-      else
-        built_hosts+=("${node}")
-      fi
+      record_build_status "${node}" "${status_file}" built_hosts failed_hosts failed_codes || true
     done
   fi
 
@@ -1817,6 +2026,7 @@ run_hosts() {
       0 \
       0 \
       0 \
+      0 \
       "${selected_hosts[@]}" \
       "${built_hosts[@]}" \
       "${failed_hosts[@]}"
@@ -1826,9 +2036,9 @@ run_hosts() {
   # Snapshot phase.
   if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
     log_section "Phase: Snapshot"
-    level_index=0
-    while IFS= read -r level_group; do
-      [ -n "${level_group}" ] || continue
+    if [ "${#level_groups[@]}" -gt 0 ]; then
+      level_index=0
+      level_group="${level_groups[0]}"
       mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
       log_subsection "Snapshot Wave ${level_index}: $(join_by_comma "${level_hosts[@]}")"
       for node in "${level_hosts[@]}"; do
@@ -1843,8 +2053,7 @@ run_hosts() {
           echo "Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
         fi
       done
-      level_index=$((level_index + 1))
-    done < <(jq -c '.[]' <<<"${levels_json}")
+    fi
   fi
 
   failed_hosts=()
@@ -1852,75 +2061,19 @@ run_hosts() {
 
   # Deploy phase.
   log_section "Phase: Deploy"
-  if [ "${DEPLOY_PARALLEL_JOBS}" -eq 1 ]; then
-    for node in "${selected_hosts[@]}"; do
-      [ -n "${node}" ] || continue
-      if ! ensure_wave_snapshots "${snapshot_dir}" "${node}"; then
-        deploy_failed_hosts+=("${node}")
-        break
-      fi
-      out_file="${build_out_dir}/${node}.path"
-      if [ ! -s "${out_file}" ]; then
-        echo "Missing built output path for ${node}: ${out_file}" >&2
-        deploy_failed_hosts+=("${node}")
-        break
-      fi
-
-      built_out_path="$(cat "${out_file}")"
-      if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-        deploy_host "${node}" "${built_out_path}" \
-          > >(host_log_filter "${node}") \
-          2>&1
-      else
-        deploy_host "${node}" "${built_out_path}"
-      fi
-      if [ "$?" -eq 0 ]; then
-        successful_hosts+=("${node}")
-      else
-        deploy_failed_hosts+=("${node}")
-        break
-      fi
-    done
-
-    if [ "${#deploy_failed_hosts[@]}" -gt 0 ]; then
-      echo "Deploy phase failed for ${#deploy_failed_hosts[@]} host(s):" >&2
-      for i in "${!deploy_failed_hosts[@]}"; do
-        echo "  - ${deploy_failed_hosts[$i]}" >&2
-      done
-      if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
-        rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts[@]}" || true
-      fi
-      final_rc=1
-    fi
-
-    print_run_summary \
-      "${ACTION}" \
-      "${final_rc}" \
-      "${#selected_hosts[@]}" \
-      "${#built_hosts[@]}" \
-      "${#failed_hosts[@]}" \
-      "${#successful_hosts[@]}" \
-      "${#deploy_failed_hosts[@]}" \
-      "${#ROLLBACK_OK_HOSTS[@]}" \
-      "${#ROLLBACK_FAILED_HOSTS[@]}" \
-      "${selected_hosts[@]}" \
-      "${built_hosts[@]}" \
-      "${failed_hosts[@]}" \
-      "${successful_hosts[@]}" \
-      "${deploy_failed_hosts[@]}" \
-      "${ROLLBACK_OK_HOSTS[@]}" \
-      "${ROLLBACK_FAILED_HOSTS[@]}"
-    return "${final_rc}"
-  fi
-
-  while IFS= read -r level_group; do
+  level_index=0
+  for level_group in "${level_groups[@]}"; do
     [ -n "${level_group}" ] || continue
     mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
-    log_subsection "Deploy Wave: $(join_by_comma "${level_hosts[@]}")"
+    snapshot_retry_logged=0
+    if log_snapshot_retry_transition "${snapshot_dir}" "${level_index}" "${level_hosts[@]}"; then
+      snapshot_retry_logged=1
+    fi
     if ! ensure_wave_snapshots "${snapshot_dir}" "${level_hosts[@]}"; then
       for node in "${level_hosts[@]}"; do
         [ -n "${node}" ] || continue
         if ! snapshot_exists "${snapshot_dir}/${node}.path"; then
+          snapshot_failed_hosts+=("${node}")
           deploy_failed_hosts+=("${node}")
         fi
       done
@@ -1937,62 +2090,54 @@ run_hosts() {
       final_rc=1
       break
     fi
+    if [ "${snapshot_retry_logged}" -eq 1 ]; then
+      log_section "Phase: Deploy"
+    fi
+    log_subsection "Deploy Wave: $(join_by_comma "${level_hosts[@]}")"
+    deploy_wave_failed=0
     active_jobs=0
 
     for node in "${level_hosts[@]}"; do
       [ -n "${node}" ] || continue
 
-      log_file="${deploy_log_dir}/${node}.log"
       status_file="${deploy_status_dir}/${node}.rc"
       out_file="${build_out_dir}/${node}.path"
-
-      (
-        set +e
-        if [ ! -s "${out_file}" ]; then
-          echo "Missing built output path for ${node}: ${out_file}" >&2
-          rc=1
-        else
-          built_out_path="$(cat "${out_file}")"
-          deploy_host "${node}" "${built_out_path}" \
-            > >(host_log_filter "${node}" | tee -a "${log_file}") \
-            2>&1
-          rc="$?"
-        fi
-        printf '%s\n' "${rc}" > "${status_file}"
-        exit "${rc}"
-      ) &
-
-      active_jobs=$((active_jobs + 1))
-      if [ "${active_jobs}" -ge "${DEPLOY_PARALLEL_JOBS}" ]; then
-        wait -n || true
-        active_jobs=$((active_jobs - 1))
-      fi
-    done
-
-    while [ "${active_jobs}" -gt 0 ]; do
-      wait -n || true
-      active_jobs=$((active_jobs - 1))
-    done
-
-    for node in "${level_hosts[@]}"; do
-      status_file="${deploy_status_dir}/${node}.rc"
-      if [ ! -s "${status_file}" ]; then
-        deploy_failed_hosts+=("${node}")
+      log_file=""
+      if [ "${deploy_parallel}" -eq 1 ]; then
+        log_file="${deploy_log_dir}/${node}.log"
+        run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
+        active_jobs=$((active_jobs + 1))
+        wait_for_job_slot active_jobs "${DEPLOY_PARALLEL_JOBS}"
         continue
       fi
 
-      rc="$(cat "${status_file}")"
-      if [ "${rc}" != "0" ]; then
-        deploy_failed_hosts+=("${node}")
-      else
-        successful_hosts+=("${node}")
+      run_deploy_job "${node}" "${out_file}" "${status_file}"
+      if ! record_deploy_status "${node}" "${status_file}" successful_hosts deploy_failed_hosts; then
+        deploy_wave_failed=1
+        break
       fi
     done
 
-    if [ "${#deploy_failed_hosts[@]}" -gt 0 ]; then
+    if [ "${deploy_parallel}" -eq 1 ]; then
+      drain_job_slots active_jobs
+      for node in "${level_hosts[@]}"; do
+        [ -n "${node}" ] || continue
+        status_file="${deploy_status_dir}/${node}.rc"
+        record_deploy_status "${node}" "${status_file}" successful_hosts deploy_failed_hosts || true
+      done
+      if [ "${#deploy_failed_hosts[@]}" -gt 0 ]; then
+        deploy_wave_failed=1
+      fi
+    fi
+
+    if [ "${deploy_wave_failed}" -eq 1 ]; then
       echo "Deploy phase failed for ${#deploy_failed_hosts[@]} host(s):" >&2
       for i in "${!deploy_failed_hosts[@]}"; do
-        echo "  - ${deploy_failed_hosts[$i]} (log=${deploy_log_dir}/${deploy_failed_hosts[$i]}.log)" >&2
+        if [ "${deploy_parallel}" -eq 1 ]; then
+          echo "  - ${deploy_failed_hosts[$i]} (log=${deploy_log_dir}/${deploy_failed_hosts[$i]}.log)" >&2
+        else
+          echo "  - ${deploy_failed_hosts[$i]}" >&2
+        fi
       done
 
       if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
@@ -2002,7 +2147,8 @@ run_hosts() {
       final_rc=1
       break
     fi
-  done < <(jq -c '.[]' <<<"${levels_json}")
+    level_index=$((level_index + 1))
+  done
 
   print_run_summary \
     "${ACTION}" \
@@ -2010,6 +2156,7 @@ run_hosts() {
     "${#selected_hosts[@]}" \
     "${#built_hosts[@]}" \
     "${#failed_hosts[@]}" \
+    "${#snapshot_failed_hosts[@]}" \
     "${#successful_hosts[@]}" \
     "${#deploy_failed_hosts[@]}" \
     "${#ROLLBACK_OK_HOSTS[@]}" \
@@ -2017,6 +2164,7 @@ run_hosts() {
     "${selected_hosts[@]}" \
     "${built_hosts[@]}" \
     "${failed_hosts[@]}" \
+    "${snapshot_failed_hosts[@]}" \
     "${successful_hosts[@]}" \
     "${deploy_failed_hosts[@]}" \
     "${ROLLBACK_OK_HOSTS[@]}" \
@@ -2152,15 +2300,18 @@ host_final_status() {
   shift 2
   local build_ok_count="$1"
   local build_failed_count="$2"
-  local deploy_ok_count="$3"
-  local deploy_failed_count="$4"
-  local rollback_ok_count="$5"
-  local rollback_failed_count="$6"
-  shift 6
+  local snapshot_failed_count="$3"
+  local deploy_ok_count="$4"
+  local deploy_failed_count="$5"
+  local rollback_ok_count="$6"
+  local rollback_failed_count="$7"
+  shift 7
   local -a build_ok_hosts=("${@:1:${build_ok_count}}")
   shift "${build_ok_count}"
   local -a build_failed_hosts=("${@:1:${build_failed_count}}")
   shift "${build_failed_count}"
+  local -a snapshot_failed_hosts=("${@:1:${snapshot_failed_count}}")
+  shift "${snapshot_failed_count}"
   local -a deploy_ok_hosts=("${@:1:${deploy_ok_count}}")
   shift "${deploy_ok_count}"
   local -a deploy_failed_hosts=("${@:1:${deploy_failed_count}}")
@@ -2185,12 +2336,16 @@ host_final_status() {
 
   if array_contains "${node}" "${rollback_failed_hosts[@]}"; then
     printf '%s' 'FAIL (rollback)'
+  elif array_contains "${node}" "${snapshot_failed_hosts[@]}"; then
+    printf '%s' 'FAIL (snapshot)'
   elif array_contains "${node}" "${deploy_failed_hosts[@]}"; then
     printf '%s' 'FAIL (deploy)'
   elif array_contains "${node}" "${rollback_ok_hosts[@]}"; then
     printf '%s' 'rolled back'
   elif array_contains "${node}" "${deploy_ok_hosts[@]}"; then
     printf '%s' 'ok'
+  elif array_contains "${node}" "${build_ok_hosts[@]}"; then
+    printf '%s' 'built'
   else
     printf '%s' 'FAIL'
   fi
@@ -2202,17 +2357,20 @@ print_run_summary() {
   local selected_count="$3"
   local build_ok_count="$4"
   local build_failed_count="$5"
-  local deploy_ok_count="$6"
-  local deploy_failed_count="$7"
-  local rollback_ok_count="$8"
-  local rollback_failed_count="$9"
-  shift 9
+  local snapshot_failed_count="$6"
+  local deploy_ok_count="$7"
+  local deploy_failed_count="$8"
+  local rollback_ok_count="$9"
+  local rollback_failed_count="${10}"
+  shift 10
   local -a selected_hosts=("${@:1:${selected_count}}")
   shift "${selected_count}"
   local -a build_ok_hosts=("${@:1:${build_ok_count}}")
   shift "${build_ok_count}"
   local -a build_failed_hosts=("${@:1:${build_failed_count}}")
   shift "${build_failed_count}"
+  local -a snapshot_failed_hosts=("${@:1:${snapshot_failed_count}}")
+  shift "${snapshot_failed_count}"
   local -a deploy_ok_hosts=("${@:1:${deploy_ok_count}}")
   shift "${deploy_ok_count}"
   local -a deploy_failed_hosts=("${@:1:${deploy_failed_count}}")
@@ -2232,12 +2390,14 @@ print_run_summary() {
       "${node}" \
       "${#build_ok_hosts[@]}" \
       "${#build_failed_hosts[@]}" \
+      "${#snapshot_failed_hosts[@]}" \
       "${#deploy_ok_hosts[@]}" \
       "${#deploy_failed_hosts[@]}" \
       "${#rollback_ok_hosts[@]}" \
       "${#rollback_failed_hosts[@]}" \
       "${build_ok_hosts[@]}" \
       "${build_failed_hosts[@]}" \
+      "${snapshot_failed_hosts[@]}" \
       "${deploy_ok_hosts[@]}" \
       "${deploy_failed_hosts[@]}" \
       "${rollback_ok_hosts[@]}" \
@@ -2307,6 +2467,7 @@ main() {
   all_hosts_json="$(load_all_hosts_json)"
   selected_json="$(select_hosts_json "${all_hosts_json}")"
   validate_selected_hosts "${selected_json}" "${all_hosts_json}"
+  selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
   selected_json="$(order_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
 
   run_hosts "${selected_json}"

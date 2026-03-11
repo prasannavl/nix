@@ -8,25 +8,21 @@ cleanup that followed.
 
 ## Host adoption
 
-- `hosts/pvl-x2/services.nix` became the repo-managed home for the `pvl`
-  user-run compose stacks.
-- The early migration brought `beszel`, `dockge`, `docmost`, and `immich` into
+- `hosts/pvl-x2/services.nix` is the repo-managed home for the `pvl` user-run
+  compose stacks.
+- Early migration moved `beszel`, `dockge`, `docmost`, and `immich` into
   `services.podmanCompose`.
 - Compose trees live under `hosts/pvl-x2/compose/` and materialize into managed
-  stack directories at runtime.
-- Firewall alignment was updated for the adopted services, including Beszel on
-  `8090` and Dockge on `5001`.
+  runtime directories.
 
 ## Secret migration outcome
 
-- Active plaintext service secrets were moved to encrypted repo-managed files
-  under `data/secrets/services/<service>/`.
-- Encrypted payloads now use the `.key.age` suffix so they match the plaintext
-  naming convention expected by `scripts/age-secrets.sh`.
-- `scripts/age-secrets.sh` default scope now includes all managed entries from
+- Active plaintext service secrets moved to encrypted repo-managed files under
+  `data/secrets/services/<service>/`.
+- Encrypted payloads use the `.key.age` suffix so they align with
+  `scripts/age-secrets.sh` expectations.
+- `scripts/age-secrets.sh` now covers all managed entries from
   `data/secrets/default.nix`, including `data/secrets/services/**/*.key.age`.
-- `hosts/pvl-x2/services.nix` and `data/secrets/default.nix` were updated to
-  match the renamed service-secret paths.
 
 ## Active migrated secrets
 
@@ -39,10 +35,9 @@ cleanup that followed.
 
 ## Practical interpretation
 
-- `pvl-x2` service definitions are now repo-managed and compatible with the
-  consolidated Podman compose platform model.
-- Service secrets are encrypted, default-managed by `age-secrets.sh`, and named
-  consistently with the rest of `data/secrets`.
+- `pvl-x2` services are now repo-managed under the shared Podman compose model.
+- Service secrets are encrypted, included in the default `age-secrets.sh`
+  scope, and named consistently with the rest of `data/secrets`.
 
 ## Superseded notes
 

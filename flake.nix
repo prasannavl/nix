@@ -80,5 +80,8 @@
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;
       };
+      nixosImages = import ./lib/images {
+        inherit inputs commonModules;
+      };
     };
 }

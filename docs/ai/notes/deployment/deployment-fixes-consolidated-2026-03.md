@@ -6,12 +6,12 @@ Small deployment unblockers that do not need standalone long-lived notes.
 
 ## Incus build unblock
 
-- `./scripts/nixbot-deploy.sh --hosts=pvl-x2` hit an `incus-6.22.0` `checkPhase`
-  SIGBUS in sandboxed builds.
-- Repository-side mitigation is:
+- `./scripts/nixbot-deploy.sh --hosts=pvl-x2` hit an `incus-6.22.0`
+  `checkPhase` SIGBUS in sandboxed builds.
+- Durable mitigation is to disable that package check phase:
   `virtualisation.incus.package = pkgs.incus.overrideAttrs (_: { doCheck = false; });`
-- Rationale: package build output was usable while the test failure was
-  intermittent and environment-specific.
+- Rationale: the built artifact was usable and the failure looked
+  environment-specific, not like a deterministic package defect.
 
 ## Superseded notes
 

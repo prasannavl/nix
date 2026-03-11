@@ -2,60 +2,57 @@
 
 ## Scope
 
-Canonical summary of the March 2026 `nixbot` rotation model, incident recovery,
-operator constraints, and the playbooks created from that work.
+Canonical summary of the March 2026 `nixbot` key-rotation model, the failure
+mode that mattered, and the operator guardrails that should stay in place.
 
-## Rotation model
+## Durable model
 
-- `users/userdata.nix` uses list-based keys for overlap rotations:
+- `users/userdata.nix` supports overlap rotation with list-based keys:
   - `nixbot.sshKeys`
   - `nixbot.bastionSshKeys`
-- Backward-compatible single-key aliases remain available.
 - `lib/nixbot/default.nix` installs all normal deploy keys from `sshKeys`.
 - `lib/nixbot/bastion.nix` installs all forced-command ingress keys from
   `bastionSshKeys`.
-- `data/secrets/default.nix` includes all `nixbot` deploy-key recipients needed
-  for the active overlap set.
+- `data/secrets/default.nix` must include recipients for every active deploy
+  key in the overlap set.
+- Machine age identity rotation is usually single-step because deploy injects
+  the host identity before activation; SSH deploy-key rotation is the riskier
+  path.
 
-## Operational model
+## Preferred operating pattern
 
-- Preferred default is Mode A overlap rotation when all targets already trust
-  the new deploy public key.
-- Bastion-first single-pass cutover is supported through per-host
-  `key`/`bootstrapKey` overrides in `hosts/nixbot.nix` for nodes that still need
-  the legacy private key.
-- Bastion keeps `/var/lib/nixbot/.ssh/id_ed25519_legacy` available so downstream
-  SSH can still try the old key during overlap.
-- Machine age identity rotation is normally single-step because deploy injects
-  the host identity before activation.
+- Default to overlap rotation when all targets already trust the new public key.
+- Use per-host `key` and `bootstrapKey` overrides in `hosts/nixbot.nix` only
+  for legacy nodes that still need the old private key after bastion starts
+  carrying the new one.
+- Keep `/var/lib/nixbot/.ssh/id_ed25519_legacy` available on bastion during the
+  overlap window so downstream SSH can still fall back cleanly.
 
-## Incident recovery captured
+## Captured mistake
 
-- A rotation incident occurred when bastion switched to new deploy private key
-  material before all downstream hosts trusted the new public key.
-- Recovery steps were:
-  - restore overlap public keys in `users/userdata.nix`
-  - recover old private key as `data/secrets/nixbot/nixbot-legacy.key.age`
-  - add recipient mapping for the legacy encrypted key
-  - pin legacy hosts with temporary per-host `key` and `bootstrapKey` overrides
-- The durable lesson is that bastion key cutover and target-host trust rollout
-  must stay aligned, or legacy-node overrides must exist before bastion moves.
+- The failure mode was cutting bastion over to new deploy private key material
+  before all downstream hosts trusted the new public key.
+- Recovery required restoring overlap public keys, reintroducing the legacy
+  encrypted private key, wiring its recipients, and pinning legacy hosts to
+  temporary key overrides.
+- Durable rule: bastion private-key cutover and target-host trust rollout must
+  move together, or legacy-host overrides must be prepared first.
 
-## Operator policy
+## Operator constraints
 
-- Agents must never print private key material.
-- GitHub secret updates are manual and path-based.
-- The key-generation playbook uses one upfront confirmation gate.
+- Never print private key material.
+- GitHub secret updates remain manual and path-based.
+- The key-generation playbook uses one confirmation gate up front.
 - The execution playbook requires confirmation before each execution step.
 
-## Playbook outputs
+## Execution surface
 
-- `docs/ai/playbooks/nixbot-key-rotation-keygen.md` is the reusable key
-  preparation workflow.
-- `docs/ai/playbooks/nixbot-key-rotation-execution.md` is the reusable phased
-  rotation workflow.
-- Those playbooks are the execution surface; this note records the decisions and
-  guardrails behind them.
+- `docs/ai/playbooks/nixbot-key-rotation-keygen.md` is the reusable key-prep
+  workflow.
+- `docs/ai/playbooks/nixbot-key-rotation-execution.md` is the phased execution
+  workflow.
+- This note is policy and design memory; the playbooks are the step-by-step
+  operational entrypoints.
 
 ## Superseded notes
 

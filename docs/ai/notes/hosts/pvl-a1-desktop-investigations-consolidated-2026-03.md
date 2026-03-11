@@ -9,17 +9,15 @@ mismatch noise.
 ## Suspend and resume
 
 - Host is an ASUS FA401WV-class laptop using AMD iGPU + NVIDIA dGPU with
-  `supergfxd` and only `s2idle` available.
-- Strongest signal was repeated watchdog-expiry reboot behavior during suspend:
-  journal evidence showed `PM: suspend entry (s2idle)` without matching exit,
-  followed by next-boot watchdog reset reasons, aligned with
-  `RuntimeWatchdogSec=5min`.
-- Ranked next tests were:
-  - disable runtime watchdog and retest
-  - compare behavior on `6.18.13` and `6.19.3`
-  - only then A/B NVIDIA version, `reverseSync`, and `supergfxd`
-  - if it degrades to black-screen instead of reboot, test
-    `nvidia_wmi_ec_backlight`
+  `supergfxd` and only `s2idle`.
+- The strongest signal was suspend hanging until the runtime watchdog forced a
+  reboot: `PM: suspend entry (s2idle)` without a matching resume, then
+  next-boot watchdog reset evidence.
+- Durable triage order:
+  - test with runtime watchdog disabled
+  - compare kernel lines (`6.18.13`, `6.19.3`)
+  - only then vary NVIDIA stack details such as `reverseSync` and `supergfxd`
+  - if the symptom changes to black screen, test `nvidia_wmi_ec_backlight`
 
 ## GNOME auto-lock
 
@@ -41,11 +39,10 @@ mismatch noise.
 
 ## Practical interpretation
 
-- Suspend failure triage should prioritize watchdog behavior first.
-- GNOME auto-lock failure was caused by idle inhibition, not misconfigured lock
-  settings.
-- `amdxdna` errors were real but likely orthogonal noise relative to the
-  suspend-reboot path.
+- Prioritize watchdog behavior before broader suspend speculation.
+- Treat GNOME autolock failure as idle inhibition, not a settings bug.
+- Treat `amdxdna` probe failures as likely unrelated noise unless the NPU is
+  actually needed.
 
 ## Superseded notes
 

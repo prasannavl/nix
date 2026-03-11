@@ -2,80 +2,136 @@
 
 ## Scope
 
-Canonical state for the March 2026 `nixbot` deploy system: bastion ingress,
-bootstrap behavior, machine-age identity injection, forced-command handling,
-remote-build host-key handling, and GitHub Actions connectivity.
+Canonical durable state for the March 2026 `nixbot` deploy system: bastion
+ingress, bootstrap and identity handling, dependency-aware orchestration,
+snapshot/rollback rules, logging semantics, and CI connectivity.
 
-## Stable architecture
+## Core architecture
 
-- CI and local operators enter the bastion with a forced-command key only.
-- The regular `nixbot` SSH key remains a normal shell/deploy key and is still
-  defined through `lib/nixbot/default.nix`.
-- `lib/nixbot/bastion.nix` adds only the forced-command authorized key and does
-  not override the normal `nixbot` key setup.
-- Activation-time `agenix` decrypt uses per-host machine identity at
-  `/var/lib/nixbot/.age/identity`, not `/var/lib/nixbot/.ssh/id_ed25519`.
+- `scripts/nixbot-deploy.sh` is the only supported orchestration entrypoint for
+  local runs and bastion-triggered runs.
+- Bastion ingress uses forced-command keys only; the normal `nixbot` SSH key
+  remains a standard deploy/shell key from `lib/nixbot/default.nix`.
+- Activation-time secret decrypt uses the host machine age identity at
+  `/var/lib/nixbot/.age/identity`, not the deploy SSH key.
+- Shared deploy SSH keys and per-host age identities are intentionally separate
+  trust domains.
 
-## Deploy flow
+## Connectivity and bootstrap model
 
-- `scripts/nixbot-deploy.sh` is the canonical entrypoint for both local
-  orchestration and bastion-trigger execution via `--bastion-trigger`.
-- Normal path is: resolve target -> prefer primary `nixbot@host` path -> fall
-  back to bootstrap path when required.
-- `--bootstrap` forces bootstrap target selection even if the primary path is
-  reachable.
-- When deploy user and bootstrap user are the same, bootstrap-key installation
-  is cached per host for the duration of a run.
-- Forced-command bootstrap probes execute `/var/lib/nixbot/nixbot-deploy.sh ...`
-  explicitly so SSH does not hand option-like arguments to `bash`.
+- Normal targeting prefers `nixbot@host`; bootstrap is fallback, not the
+  default. `--bootstrap` forces the bootstrap path even if the primary path is
+  healthy.
+- Forced-command bootstrap probes must execute
+  `/var/lib/nixbot/nixbot-deploy.sh ...` explicitly so SSH does not pass
+  option-like arguments to `bash`.
+- When deploy and bootstrap users match, bootstrap-key installation is cached
+  per host for the duration of one run.
+- Bastion-triggered runs stay pinned to the installed bastion wrapper by
+  default. Re-exec into the checked-out repo script is opt-in only
+  (`--use-repo-script` / `DEPLOY_USE_REPO_SCRIPT=1`) and guarded against loops.
+- Keep repo-script re-exec disabled in CI and routine forced-command use: it
+  bypasses the normal "deploy bastion logic first, then rely on it later" trust
+  boundary.
 
-## Identity and secret handling
+## Identity, keys, and host verification
 
-- `hosts/nixbot.nix` maps each host's activation identity with
+- `hosts/nixbot.nix` maps activation identities with
   `hosts.<name>.ageIdentityKey = "data/secrets/machine/<host>.key.age"`.
-- `scripts/nixbot-deploy.sh` injects that machine key to
-  `/var/lib/nixbot/.age/identity` before activation.
-- Bastion deploy keys stay as normal `age.secrets.*` material under
+- Deploy injects that identity to `/var/lib/nixbot/.age/identity` before
+  activation.
+- Bastion deploy keys remain normal `age.secrets.*` material under
   `/var/lib/nixbot/.ssh`.
-- When bootstrap replaces `/var/lib/nixbot/.ssh/id_ed25519`, the previous key is
-  preserved as `/var/lib/nixbot/.ssh/id_ed25519_legacy`.
-- Bastion-side SSH prefers the current key first and then the legacy key during
-  overlap windows.
+- If bootstrap replaces `/var/lib/nixbot/.ssh/id_ed25519`, the old key is kept
+  as `/var/lib/nixbot/.ssh/id_ed25519_legacy`; bastion-side SSH tries current
+  first, then legacy.
+- All bastion-managed SSH uses strict host-key checking with dedicated
+  temporary `known_hosts` files.
+- `--bastion-trigger` prefers provided bastion host keys and only falls back to
+  `ssh-keyscan -H <bastion-host>` when needed; absence of host-key material is
+  fatal.
+- If `DEPLOY_BUILD_HOST` differs from the target, that host must also be added
+  to temporary `known_hosts` so remote copy/build hops succeed.
 
-## Host-key and remote-build behavior
+## Orchestration rules
 
-- The deploy script always uses strict host-key checking with dedicated
-  temporary `known_hosts` files when it manages host keys itself.
-- For `--bastion-trigger`, provided bastion known-hosts content is preferred;
-  otherwise the script falls back to `ssh-keyscan -H <bastion-host>` and fails
-  hard if no key material can be obtained.
-- When `DEPLOY_BUILD_HOST` is distinct from the deploy target, that build host
-  is also added to the temporary `known_hosts` file so `nix-copy-closure` and
-  other SSH hops do not fail.
-- For non-local remote builds, preflight records `toplevel.outPath` with
-  `nix eval` and leaves realisation to `nixos-rebuild --build-host`.
+- Host metadata may declare `hosts.<name>.deps = [ ... ]` in `hosts/nixbot.nix`.
+- Selected hosts are expanded to include selected hosts' dependencies, then
+  topologically ordered.
+- Explicit `--hosts a,b,c` order remains the stable tie-breaker when multiple
+  hosts are ready at once.
+- Build and deploy are separate concurrency domains:
+  - build: `DEPLOY_BUILD_JOBS` / `--build-jobs`
+  - deploy: `DEPLOY_JOBS` / `--deploy-jobs`
+- Build can run across all selected hosts in parallel and still completes
+  before deploy starts.
+- Deploy is wave-based: a host only enters a wave after its selected
+  dependencies have succeeded.
+- `DEPLOY_BASTION_FIRST` / `--bastion-first` is a narrow override: if bastion
+  is selected, it can be forced to the front of build order and wave 1 even if
+  its own `deps` would place it later.
+- Unknown selected hosts, unknown dependencies among selected hosts, or cycles
+  in the selected dependency graph must fail the run before build/deploy starts.
 
-## GitHub Actions state
+## Snapshot and rollback semantics
 
-- `.github/workflows/nixbot.yaml` now uses Tailscale OAuth/OIDC credentials
-  instead of the deprecated auth-key input.
-- Required workflow changes are:
+- Rollback safety is tied to recording the host's pre-deploy
+  `/run/current-system` generation before that host deploys.
+- Only wave 1 is snapshotted up front. Later waves are snapshotted on demand
+  right before their deploy wave.
+- Initial snapshot failures for later-wave hosts are deferred, not fatal.
+- A host whose rollback snapshot still cannot be captured when its wave is
+  reached must not deploy.
+- Final summary semantics should preserve the true terminal state:
+  - snapshot-blocked hosts: `FAIL (snapshot)`
+  - built-but-never-deployed hosts after a global failure: `built`
+  - deployed-then-reverted hosts after another host fails: `rolled back`
+
+## Flow and logging lessons
+
+- Sequential and parallel control flow should share helpers and data shaping so
+  behavior does not drift between modes.
+- Materialize dependency-wave JSON into shell arrays before foreground
+  `ssh`/`nixos-rebuild` loops; otherwise stdin consumption can silently truncate
+  later waves.
+- Logging should stay plain text and stderr-oriented, but consistently mark:
+  - top-level phases
+  - per-host stage banners
+  - deploy/snapshot wave boundaries
+  - host-prefixed streamed output when jobs run in parallel
+- When deploy temporarily re-enters snapshot retry work, logs must print
+  `Phase: Snapshot` before the retry and `Phase: Deploy` when returning, so the
+  phase transition is explicit.
+
+## CI state
+
+- `.github/workflows/nixbot.yaml` uses Tailscale OAuth/OIDC instead of the old
+  auth-key flow.
+- Required workflow traits are:
   - `tailscale/github-action@v4`
   - `permissions.id-token: write`
   - `oauth-client-id`, `audience`, and `tags: tag:ci`
-  - generated per-run hostname via `TS_HOSTNAME`
+  - generated per-run `TS_HOSTNAME`
 
-## Practical interpretation
+## Maintenance guidance
 
-- Bastion ingress is constrained to the deploy script.
-- Shared deploy SSH keys and host-local age identities are separate concerns.
-- Bootstrap behavior is explicit, cache-aware, and compatible with forced
-  command entry.
-- Remote builds and bastion-trigger runs now behave under the same strict host
-  verification model as direct deploys.
+- Add new deploy behavior once in shared helpers, not by splitting sequential
+  and parallel paths again.
+- Preserve the trust boundary between the installed bastion wrapper and freshly
+  checked-out repo code unless a run explicitly opts out.
+- Treat dependency metadata as orchestration hints only; it is not a substitute
+  for host-level correctness or service readiness checks.
 
 ## Superseded notes
 
+- `docs/ai/notes/nixbot/bastion-reexec-checked-out-script-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-flow-consolidation-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-log-formatting-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-order-deps-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-snapshot-fallback-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-snapshot-retry-phase-logging-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-summary-built-status-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-summary-snapshot-status-2026-03.md`
 - `docs/ai/notes/nixbot-bastion-key-model.md`
 - `docs/ai/notes/nixbot-bastion-legacy-identity-retention.md`
 - `docs/ai/notes/nixbot-bastion-manual-key-decrypt-activation.md`
