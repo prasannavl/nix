@@ -94,7 +94,7 @@ die() {
 }
 
 resolve_ssh_tty_stdin_path() {
-  if : </dev/tty 2>/dev/null; then
+  if [ -t 0 ] || [ -t 1 ] || [ -t 2 ]; then
     printf '/dev/tty\n'
   else
     printf '/dev/null\n'

@@ -6,10 +6,17 @@
   lib,
   ...
 }: let
-  tailscaleAuthKeyAge =
+  tailscaleAuthKeyAgeSource =
     if tailscaleAuthKeyName == null || tailscaleAuthKeyName == ""
     then null
     else ../data/secrets + "/tailscale/${tailscaleAuthKeyName}.key.age";
+  tailscaleAuthKeyAge =
+    if tailscaleAuthKeyAgeSource == null || !builtins.pathExists tailscaleAuthKeyAgeSource
+    then null
+    else builtins.path {
+      path = tailscaleAuthKeyAgeSource;
+      name = "tailscale-${tailscaleAuthKeyName}-auth-key.age";
+    };
 in
   {
     systemd.tmpfiles.rules = [
@@ -28,9 +35,9 @@ in
       }
     ];
   }
-  // lib.mkIf (tailscaleAuthKeyAge != null && builtins.pathExists tailscaleAuthKeyAge) {
+  // lib.mkIf (tailscaleAuthKeyAge != null) {
     age.secrets.tailscale-auth-key = {
-      file = builtins.toPath tailscaleAuthKeyAge;
+      file = tailscaleAuthKeyAge;
     };
 
     services.tailscale.authKeyFile = config.age.secrets.tailscale-auth-key.path;

@@ -7,15 +7,21 @@
 
 ## Issue
 
-- `scripts/nixbot-deploy.sh` previously selected `/dev/tty` with `[ -r /dev/tty ]`.
-- That check is insufficient: the later redirection can still fail with `/dev/tty: No such device or address`, aborting deploy during host age identity injection before activation starts.
+- `scripts/nixbot-deploy.sh` selected `/dev/tty` by probing it directly from the
+  shell helper.
+- In Bash, the `/dev/tty` open for a redirection happens before `2>/dev/null`
+  can suppress the failure, so a non-interactive run still emits
+  `/dev/tty: No such device or address` and aborts deploy during host age
+  identity injection before activation starts.
 
 ## Decision
 
 - Resolve the stdin source for `ssh -tt` at the point of use, not once during
   script initialization.
-- The helper probes `/dev/tty` by actually opening it: `: </dev/tty 2>/dev/null`.
-- If the open fails in the current execution context, fall back to `/dev/null`.
+- The helper must not open `/dev/tty` during the probe.
+- Treat the presence of any attached standard stream (`[ -t 0 ] || [ -t 1 ] ||
+  [ -t 2 ]`) as the signal to use `/dev/tty`; otherwise fall back to
+  `/dev/null`.
 
 ## Result
 
