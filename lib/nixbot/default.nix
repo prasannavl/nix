@@ -49,11 +49,16 @@ in {
   # Machine-scoped agenix identity used for activation-time decrypts.
   age.identityPaths = ["/var/lib/nixbot/.age/identity"];
 
+  system.activationScripts.nixbotHomeDir = ''
+    install -d -m 0755 -o nixbot -g nixbot /var/lib/nixbot
+  '';
+
   system.activationScripts.nixbotAgenixIdentityDir = ''
     install -d -m 0700 -o root -g root /var/lib/nixbot/.age
   '';
 
   systemd.tmpfiles.rules = [
+    "d /var/lib/nixbot 0755 nixbot nixbot -"
     "d /var/lib/nixbot/.age 0700 root root -"
   ];
 }

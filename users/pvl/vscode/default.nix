@@ -21,6 +21,7 @@
           arrterian.nix-env-selector
           rust-lang.rust-analyzer
           fill-labs.dependi
+          hashicorp.terraform
 
           github.copilot-chat
           pkgs.vscode-marketplace.openai.chatgpt
