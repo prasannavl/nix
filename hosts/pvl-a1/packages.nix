@@ -141,6 +141,7 @@
       ffmpeg
       patchelf
       opencode
+      shellcheck
     ];
 
     fonts = with pkgs; [
