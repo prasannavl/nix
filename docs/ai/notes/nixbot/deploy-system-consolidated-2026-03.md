@@ -33,6 +33,9 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Keep repo-script re-exec disabled in CI and routine forced-command use: it
   bypasses the normal "deploy bastion logic first, then rely on it later" trust
   boundary.
+- `--bastion-trigger` must forward explicit behavior overrides that affect
+  deploy gating, including `--force`, so the bastion-side run preserves the
+  caller's changed-only vs force semantics.
 
 ## Identity, keys, and host verification
 

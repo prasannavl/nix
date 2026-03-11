@@ -1,2 +1,6 @@
 result/
 data/secrets/**/*.key
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log

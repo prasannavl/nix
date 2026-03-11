@@ -26,6 +26,10 @@
   `nixbot` deploy architecture, bastion/bootstrap trust boundaries,
   dependency-wave orchestration, snapshot semantics, status/logging rules, and
   GitHub Actions connectivity state.
+- `docs/ai/notes/nixbot/nixbot-home-dir-perms-2026-03.md`: Ensured
+  `/var/lib/nixbot` is created as a usable `nixbot` home directory on all
+  hosts so remote snapshot/deploy probes do not emit home-directory permission
+  errors.
 - `docs/ai/notes/nixbot/deploy-noninteractive-tty-fallback-2026-03.md`: Fixed
   `nixbot` deploy's `/dev/tty` probe so host age identity injection works in
   non-interactive service/wrapper runs.
@@ -35,6 +39,10 @@
 - `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
   Consolidated `services.podmanCompose` and `systemd-user-manager` platform
   model, including file materialization, `envSecrets`, and unit lifecycle.
+- `docs/ai/notes/services/opentofu-cloudflare-dns-2026-03.md`: Replaced the
+  experimental Nix-based Cloudflare DNS approach with a root `tf/` OpenTofu
+  stack using the official Cloudflare provider, plus a `tf/`-scoped GitHub
+  Actions workflow for validation and apply.
 - `docs/ai/notes/services/pvl-x2-compose-config-centralization-2026-03.md`:
   Centralized `pvl-x2` compose port metadata in per-instance Nix definitions and
   reused it for compose generation and firewall rules.
