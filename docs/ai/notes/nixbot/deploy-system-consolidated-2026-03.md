@@ -91,6 +91,16 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 
 - Sequential and parallel control flow should share helpers and data shaping so
   behavior does not drift between modes.
+- Keep `run_hosts` as a thin orchestrator. Build-phase setup, snapshot retry
+  handling, and deploy-wave execution should live in dedicated helpers so
+  rollback/failure semantics stay aligned across future edits.
+- Nested Bash nameref helpers must not reuse the caller's local variable names
+  (for example `foo_ref` passed to a helper that also declares
+  `local -n foo_ref=...`), or Bash 5.3 emits circular-name-reference warnings
+  and the helper may not update the intended array.
+- Do not rely on `set -e` to abort later commands inside a command substitution
+  or grouped command used for assignment. If a preparation step must gate the
+  next command, test it explicitly before running the probe/action.
 - Materialize dependency-wave JSON into shell arrays before foreground
   `ssh`/`nixos-rebuild` loops; otherwise stdin consumption can silently truncate
   later waves.
@@ -99,9 +109,19 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   - per-host stage banners
   - deploy/snapshot wave boundaries
   - host-prefixed streamed output when jobs run in parallel
+- Keep `Phase` and `Wave` headings directly adjacent with no extra blank
+  separator, but preserve a blank line before each host-stage banner (for
+  example between `--- ... Wave ... ---` and
+  `---------- host | snapshot ----------`).
 - When deploy temporarily re-enters snapshot retry work, logs must print
   `Phase: Snapshot` before the retry and `Phase: Deploy` when returning, so the
   phase transition is explicit.
+- Per-host preparation helpers must return failures up to the wave controller;
+  they must not terminate the whole script directly, or rollback will be
+  skipped.
+- Final phase summary output should place `Result: ...` on its own separated
+  line after the host/failure summary, without an extra trailing blank line
+  after the result itself.
 
 ## CI state
 
