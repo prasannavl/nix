@@ -11,7 +11,7 @@
       deps = [];
     };
     llmug-rivendell = {
-      target = "10.42.0.23";
+      target = "10.10.20.10";
       ageIdentityKey = "data/secrets/machine/llmug-rivendell.key.age";
       deps = [ "pvl-x2" ];
     };

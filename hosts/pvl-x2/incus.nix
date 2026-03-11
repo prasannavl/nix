@@ -18,7 +18,7 @@
 
   incusMachines = {
     llmug-rivendell = {
-      ipv4Address = "10.42.0.23";
+      ipv4Address = "10.10.20.10";
       stateDir = "/var/lib/machines/llmug-rivendell";
       stateDirMode = "0750";
       extraCreateCommands = [
@@ -81,8 +81,8 @@ in {
     networks = [
       {
         config = {
-          "ipv4.address" = "10.42.0.1/24";
-          "ipv4.dhcp.ranges" = "10.42.0.100-10.42.0.199";
+          "ipv4.address" = "10.10.20.1/24";
+          "ipv4.dhcp.ranges" = "10.10.20.100-10.10.20.199";
           "ipv4.nat" = "true";
           "ipv6.address" = "auto";
         };
