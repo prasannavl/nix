@@ -1820,17 +1820,25 @@ run_deploy_job() {
     else
       built_out_path="$(cat "${out_file}")"
       if [ -n "${log_file}" ]; then
-        deploy_host "${node}" "${built_out_path}" \
-          > >(host_log_filter "${node}" | tee -a "${log_file}") \
-          2>&1
+        if run_with_combined_output deploy_host "${node}" "${built_out_path}" \
+          > >(host_log_filter "${node}" | tee -a "${log_file}")
+        then
+          rc=0
+        else
+          rc="$?"
+        fi
       elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-        deploy_host "${node}" "${built_out_path}" \
-          > >(host_log_filter "${node}") \
-          2>&1
+        if run_with_combined_output deploy_host "${node}" "${built_out_path}" \
+          > >(host_log_filter "${node}")
+        then
+          rc=0
+        else
+          rc="$?"
+        fi
       else
         deploy_host "${node}" "${built_out_path}"
+        rc="$?"
       fi
-      rc="$?"
     fi
     printf '%s\n' "${rc}" > "${status_file}"
     exit "${rc}"
@@ -2013,9 +2021,8 @@ rollback_successful_hosts() {
     status_file="${rollback_status_dir}/${node}.rc"
     log_file="${rollback_log_dir}/${node}.log"
 
-    if rollback_host_to_snapshot "${node}" "$(cat "${snapshot_dir}/${node}.path")" \
-      > >(host_log_filter "${node}" rollback | tee -a "${log_file}") \
-      2>&1; then
+    if run_with_combined_output rollback_host_to_snapshot "${node}" "$(cat "${snapshot_dir}/${node}.path")" \
+      > >(host_log_filter "${node}" rollback | tee -a "${log_file}"); then
       printf '0\n' > "${status_file}"
       ROLLBACK_OK_HOSTS+=("${node}")
     else
@@ -2670,6 +2677,13 @@ host_log_filter() {
   fi
 }
 
+run_with_combined_output() {
+  (
+    exec 2>&1
+    "$@"
+  )
+}
+
 array_contains() {
   local needle="$1"
   shift
@@ -2808,6 +2822,7 @@ print_run_summary() {
 ensure_runtime_shell() {
   local script_path
   local flake_path
+  local -a nix_shell_cmd=()
   local -a runtime_packages=(
     nixpkgs#age
     nixpkgs#git
@@ -2827,8 +2842,14 @@ ensure_runtime_shell() {
   fi
 
   script_path="${BASH_SOURCE[0]:-$0}"
-  flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
-  exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env NIXBOT_DEPLOY_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+  if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+    nix_shell_cmd=(nix shell "${runtime_packages[@]}")
+  else
+    flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
+    nix_shell_cmd=(nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}")
+  fi
+
+  exec "${nix_shell_cmd[@]}" -c env NIXBOT_DEPLOY_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 
 main() {

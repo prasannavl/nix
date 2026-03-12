@@ -27,6 +27,9 @@
   `nixbot` deploy architecture, bastion/bootstrap trust boundaries,
   dependency-wave orchestration, snapshot semantics, status/logging rules, and
   GitHub Actions connectivity state.
+- `docs/ai/notes/nixbot/log-stream-ordering-2026-03.md`: Normalized deploy and
+  rollback log capture so child processes emit a single ordered output stream,
+  avoiding stdout/stderr reordering artifacts in status lines.
 - `docs/ai/notes/nixbot/nixbot-home-dir-perms-2026-03.md`: Ensured
   `/var/lib/nixbot` is created as a usable `nixbot` home directory on all
   hosts so remote snapshot/deploy probes do not emit home-directory permission
