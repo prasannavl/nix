@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+RUNTIME_SHELL_FLAG="${NIXBOT_DEPLOY_IN_NIX_SHELL:-0}"
+
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|tf|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
 
 Core Workflow Options:
-  --action         build|deploy|check-bootstrap (default: deploy)
+  --action         build|deploy|tf|check-bootstrap (default: deploy)
   --hosts          Comma/space-separated host list, or `all` (default: all)
   --goal           switch|boot|test|dry-activate (default: switch, deploy only)
   --build-jobs     Number of hosts to build in parallel (default: 1)
@@ -85,6 +87,19 @@ Environment (Repo):
   DEPLOY_REPO_URL             Same as --repo-url
   DEPLOY_REPO_PATH            Same as --repo-path
   DEPLOY_USE_REPO_SCRIPT      Same as --use-repo-script (bool)
+
+Environment (OpenTofu `--action tf`):
+  CLOUDFLARE_API_TOKEN        Cloudflare API token for DNS changes
+  R2_ACCOUNT_ID               Cloudflare account ID used for the R2 endpoint
+  R2_STATE_BUCKET             R2 bucket name for OpenTofu state
+  R2_ACCESS_KEY_ID            R2 access key ID
+  R2_SECRET_ACCESS_KEY        R2 secret access key
+  R2_STATE_KEY                Optional state object key
+  DEPLOY_TF_DIR               Optional OpenTofu working dir (default: tf)
+
+Runtime:
+  The script always re-execs inside `nix shell` to provide a consistent
+  toolchain: age, git, jq, nixos-rebuild, openssh, and opentofu.
 USAGE
 }
 
@@ -125,6 +140,7 @@ init_vars() {
   BASTION_TRIGGER_SSH_OPTS=()
   AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
   REEXEC_FROM_REPO=0
+  TF_WORK_DIR="${DEPLOY_TF_DIR:-tf}"
 
   DEPLOY_USER_OVERRIDE="${DEPLOY_USER:-}"
   DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY:-}"
@@ -197,6 +213,12 @@ init_vars() {
   REPO_DEPLOY_SCRIPT_REL="scripts/nixbot-deploy.sh"
   REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="/tmp/nixbot-bootstrap-key."
   REMOTE_AGE_IDENTITY_TMP_PREFIX="/tmp/nixbot-age-identity."
+  TF_CLOUDFLARE_API_TOKEN_PATH="data/secrets/cloudflare/api-token.key.age"
+  TF_R2_ACCOUNT_ID_PATH="data/secrets/cloudflare/r2-account-id.key.age"
+  TF_R2_STATE_BUCKET_PATH="data/secrets/cloudflare/r2-state-bucket.key.age"
+  TF_R2_ACCESS_KEY_ID_PATH="data/secrets/cloudflare/r2-access-key-id.key.age"
+  TF_R2_SECRET_ACCESS_KEY_PATH="data/secrets/cloudflare/r2-secret-access-key.key.age"
+  TF_SENSITIVE_VARS_PATH="data/secrets/cloudflare/zones-sensitive.auto.tfvars.age"
 
   REPO_BASE="${REMOTE_NIXBOT_BASE}"
   REPO_PATH="${DEPLOY_REPO_PATH:-${REPO_BASE}/nix}"
@@ -210,6 +232,49 @@ init_vars() {
   PREP_USING_BOOTSTRAP_FALLBACK=0
   PREP_DEPLOY_AGE_IDENTITY_KEY=""
   PREP_DEPLOY_SSH_OPTS=()
+}
+
+set_env_from_file_if_unset() {
+  local var_name="$1"
+  local file_path="$2"
+  local value=""
+
+  if [ -n "${!var_name:-}" ] || [ ! -f "${file_path}" ]; then
+    return
+  fi
+
+  value="$(<"${file_path}")"
+  if [ -z "${value}" ]; then
+    return
+  fi
+
+  printf -v "${var_name}" '%s' "${value}"
+  export "${var_name}"
+}
+
+load_tf_runtime_secrets() {
+  local decrypted_file=""
+
+  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    decrypted_file="$(resolve_runtime_key_file "${TF_CLOUDFLARE_API_TOKEN_PATH}" 1)"
+    set_env_from_file_if_unset "CLOUDFLARE_API_TOKEN" "${decrypted_file}"
+  fi
+  if [ -z "${R2_ACCOUNT_ID:-}" ]; then
+    decrypted_file="$(resolve_runtime_key_file "${TF_R2_ACCOUNT_ID_PATH}" 1)"
+    set_env_from_file_if_unset "R2_ACCOUNT_ID" "${decrypted_file}"
+  fi
+  if [ -z "${R2_STATE_BUCKET:-}" ]; then
+    decrypted_file="$(resolve_runtime_key_file "${TF_R2_STATE_BUCKET_PATH}" 1)"
+    set_env_from_file_if_unset "R2_STATE_BUCKET" "${decrypted_file}"
+  fi
+  if [ -z "${R2_ACCESS_KEY_ID:-}" ]; then
+    decrypted_file="$(resolve_runtime_key_file "${TF_R2_ACCESS_KEY_ID_PATH}" 1)"
+    set_env_from_file_if_unset "R2_ACCESS_KEY_ID" "${decrypted_file}"
+  fi
+  if [ -z "${R2_SECRET_ACCESS_KEY:-}" ]; then
+    decrypted_file="$(resolve_runtime_key_file "${TF_R2_SECRET_ACCESS_KEY_PATH}" 1)"
+    set_env_from_file_if_unset "R2_SECRET_ACCESS_KEY" "${decrypted_file}"
+  fi
 }
 
 parse_bool_env() {
@@ -458,7 +523,7 @@ parse_args() {
   [ -n "${HOSTS_RAW}" ] || die "--hosts cannot be empty"
 
   case "${ACTION}" in
-    build|deploy|check-bootstrap) ;;
+    build|deploy|tf|check-bootstrap) ;;
     *) die "Unsupported --action: ${ACTION}" ;;
   esac
 
@@ -556,7 +621,7 @@ run_bastion_trigger() {
   [[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
 
   case "${ACTION}" in
-    build|deploy|check-bootstrap) ;;
+    build|deploy|tf|check-bootstrap) ;;
     *) die "Unsupported --action for --bastion-trigger: ${ACTION}" ;;
   esac
 
@@ -2415,6 +2480,86 @@ run_hosts() {
   return "${final_rc}"
 }
 
+run_tf_action() {
+  local tf_dir
+  local state_key
+  local endpoint
+  local plan_file
+  local sensitive_var_file
+  local -a init_cmd=()
+  local -a plan_cmd=()
+  local -a apply_cmd=()
+
+  require_cmds nix
+
+  tf_dir="${TF_WORK_DIR}"
+  if [[ "${tf_dir}" != /* ]]; then
+    tf_dir="$(pwd -P)/${tf_dir}"
+  fi
+  [ -d "${tf_dir}" ] || die "OpenTofu directory not found: ${tf_dir}"
+
+  load_tf_runtime_secrets
+
+  [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "Missing required environment variable: CLOUDFLARE_API_TOKEN"
+  [ -n "${R2_ACCOUNT_ID:-}" ] || die "Missing required environment variable: R2_ACCOUNT_ID"
+  [ -n "${R2_STATE_BUCKET:-}" ] || die "Missing required environment variable: R2_STATE_BUCKET"
+  [ -n "${R2_ACCESS_KEY_ID:-}" ] || die "Missing required environment variable: R2_ACCESS_KEY_ID"
+  [ -n "${R2_SECRET_ACCESS_KEY:-}" ] || die "Missing required environment variable: R2_SECRET_ACCESS_KEY"
+
+  state_key="${R2_STATE_KEY:-cloudflare-dns/terraform.tfstate}"
+  endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+  log_section "Phase: OpenTofu"
+  echo "Working dir: ${tf_dir}" >&2
+  echo "State bucket: ${R2_STATE_BUCKET}" >&2
+  echo "State key: ${state_key}" >&2
+  echo "Endpoint: ${endpoint}" >&2
+
+  init_cmd=(
+    tofu -chdir="${tf_dir}" init
+    -backend-config="bucket=${R2_STATE_BUCKET}"
+    -backend-config="key=${state_key}"
+    -backend-config="region=auto"
+    -backend-config="endpoint=${endpoint}"
+    -backend-config="access_key=${R2_ACCESS_KEY_ID}"
+    -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}"
+    -backend-config="skip_credentials_validation=true"
+    -backend-config="skip_region_validation=true"
+    -backend-config="skip_requesting_account_id=true"
+    -backend-config="use_path_style=true"
+  )
+
+  sensitive_var_file="$(resolve_runtime_key_file "${TF_SENSITIVE_VARS_PATH}")"
+  if [ -f "${sensitive_var_file}" ]; then
+    echo "Sensitive tfvars: ${TF_SENSITIVE_VARS_PATH}" >&2
+  else
+    echo "Sensitive tfvars: not present, continuing with public zones only" >&2
+  fi
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    plan_cmd=(tofu -chdir="${tf_dir}" plan -input=false)
+    if [ -f "${sensitive_var_file}" ]; then
+      plan_cmd+=(-var-file="${sensitive_var_file}")
+    fi
+    "${init_cmd[@]}"
+    "${plan_cmd[@]}"
+    return
+  fi
+
+  ensure_tmp_dir
+  plan_file="$(mktemp "${DEPLOY_TMP_DIR}/tfplan.XXXXXX")"
+
+  plan_cmd=(tofu -chdir="${tf_dir}" plan -input=false -out="${plan_file}")
+  if [ -f "${sensitive_var_file}" ]; then
+    plan_cmd+=(-var-file="${sensitive_var_file}")
+  fi
+  apply_cmd=(tofu -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}")
+
+  "${init_cmd[@]}"
+  "${plan_cmd[@]}"
+  "${apply_cmd[@]}"
+}
+
 # Logging helpers.
 host_phase_border() {
   local phase="$1"
@@ -2660,10 +2805,37 @@ print_run_summary() {
 }
 # End logging helpers.
 
+ensure_runtime_shell() {
+  local script_path
+  local flake_path
+  local -a runtime_packages=(
+    nixpkgs#age
+    nixpkgs#git
+    nixpkgs#jq
+    nixpkgs#nixos-rebuild
+    nixpkgs#openssh
+    nixpkgs#opentofu
+  )
+
+  if [ "${RUNTIME_SHELL_FLAG}" = "1" ]; then
+    return
+  fi
+
+  if ! command -v nix >/dev/null 2>&1; then
+    echo "Required command not found: nix" >&2
+    exit 1
+  fi
+
+  script_path="${BASH_SOURCE[0]:-$0}"
+  flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
+  exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env NIXBOT_DEPLOY_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+}
+
 main() {
   local config_json="" all_hosts_json="" selected_json=""
   local -a request_args=("$@")
 
+  ensure_runtime_shell "$@"
   init_vars
   trap cleanup EXIT
 
@@ -2696,6 +2868,11 @@ main() {
 
   if [ "${ACTION}" = "deploy" ] || [ "${ACTION}" = "check-bootstrap" ]; then
     require_cmds age
+  fi
+
+  if [ "${ACTION}" = "tf" ]; then
+    run_tf_action
+    return
   fi
 
   if [ -f "${DEPLOY_CONFIG_PATH}" ]; then

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+RUNTIME_SHELL_FLAG="${AGE_SECRETS_IN_NIX_SHELL:-0}"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -13,7 +15,7 @@ Usage:
   scripts/age-secrets.sh [-v] [path]
 
 Behavior:
-  encrypt   Encrypts managed *.key files to *.key.age.
+  encrypt   Encrypts managed plaintext files to managed *.age files.
   decrypt   Decrypts managed *.age files to plaintext alongside them (drops .age suffix).
   clean     Deletes managed plaintext files that correspond to managed *.age files.
   (no mode) Auto-toggle: encrypt if any managed plaintext exists, otherwise decrypt.
@@ -361,6 +363,29 @@ run_mode() {
   esac
 }
 
+ensure_runtime_shell() {
+  local script_path
+  local flake_path
+  local -a runtime_packages=(
+    nixpkgs#age
+    nixpkgs#coreutils
+    nixpkgs#git
+    nixpkgs#jq
+  )
+
+  if [ "${RUNTIME_SHELL_FLAG}" = "1" ]; then
+    return
+  fi
+
+  if ! command -v nix >/dev/null 2>&1; then
+    die "'nix' is required but not found in PATH"
+  fi
+
+  script_path="${BASH_SOURCE[0]:-$0}"
+  flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
+  exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env AGE_SECRETS_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+}
+
 main() {
   local mode=""
   local target_path=""
@@ -374,6 +399,7 @@ main() {
   local -a clean_candidates=()
   local plaintext_count=0
 
+  ensure_runtime_shell "$@"
   parse_args mode target_path verbose "$@"
   requested_mode="$mode"
 
