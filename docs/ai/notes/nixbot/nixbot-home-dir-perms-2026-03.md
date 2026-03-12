@@ -2,7 +2,8 @@
 
 ## Context
 
-- `llmug-rivendell` deploy and snapshot probes connected as `nixbot` but emitted:
+- A containerized guest's deploy and snapshot probes connected as `nixbot` but
+  emitted:
   - `Could not chdir to home directory /var/lib/nixbot: Permission denied`
   - `bash: /var/lib/nixbot/.bashrc: Permission denied`
 - The deploy runner treated those probes as success because the remote commands
@@ -25,7 +26,7 @@
 
 - Bastion hosts already did this in `lib/nixbot/bastion.nix`; non-bastion hosts
   still relied on user creation semantics, which were not sufficient for the
-  containerized `llmug-rivendell` case.
+  containerized guest case.
 - Keeping the fix in the shared module preserves the deploy contract:
   connecting as `nixbot` must provide a usable home directory before any shell
   startup or remote probe runs.

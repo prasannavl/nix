@@ -36,7 +36,7 @@ Optional for bastion-first cutover:
   `/var/lib/nixbot/.ssh/id_ed25519` on the target.
 - On replacement, previous key should be retained at
   `/var/lib/nixbot/.ssh/id_ed25519_legacy`.
-- On bastion (`pvl-x2`), that file is also the deploy identity used to SSH from
+- On the bastion host, that file is also the deploy identity used to SSH from
   bastion to other hosts.
 - Bastion nixbot SSH client should attempt both identities (`id_ed25519`, then
   `id_ed25519_legacy`) during overlap.
@@ -97,7 +97,7 @@ Expected outcome:
 Run:
 
 ```bash
-./scripts/nixbot-deploy.sh --hosts pvl-x2 --action deploy --force
+./scripts/nixbot-deploy.sh --hosts <bastion-host> --action deploy --force
 ```
 
 Expected outcome:
@@ -117,8 +117,8 @@ Actions:
 
 Expected outcome:
 
-- GitHub workflows can still clone/fetch
-  `ssh://git@github.com/prasannavl/nix.git` with the rotated nixbot key.
+- GitHub workflows can still clone/fetch the repository over SSH with the
+  rotated nixbot key.
 - forced-command calls authenticate with new ingress key.
 
 ### Step 5: Validate End-to-End
@@ -126,7 +126,7 @@ Expected outcome:
 Run:
 
 ```bash
-./scripts/nixbot-deploy.sh --hosts pvl-x2 --action check-bootstrap --force
+./scripts/nixbot-deploy.sh --hosts <bastion-host> --action check-bootstrap --force
 ./scripts/nixbot-deploy.sh --hosts all --action deploy --force
 ```
 
@@ -190,7 +190,7 @@ Expected outcome:
 Run:
 
 ```bash
-./scripts/nixbot-deploy.sh --hosts pvl-x2 --action deploy --force
+./scripts/nixbot-deploy.sh --hosts <bastion-host> --action deploy --force
 ```
 
 Then rotate:

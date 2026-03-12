@@ -3,7 +3,9 @@
 ## Context
 
 - Deploys that inject the host machine age identity use `ssh -tt ... <"${SSH_TTY_STDIN_PATH}"` so interactive runs can satisfy a remote `sudo` prompt when needed.
-- In non-interactive contexts (for example the installed `nixbot` service/wrapper on `pvl-x2`), `/dev/tty` may exist in the filesystem but still be unusable because the process has no controlling terminal.
+- In non-interactive contexts (for example the installed `nixbot`
+  service/wrapper on the bastion host), `/dev/tty` may exist in the filesystem
+  but still be unusable because the process has no controlling terminal.
 
 ## Issue
 

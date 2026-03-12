@@ -2,8 +2,8 @@
 
 ## Scope
 
-Durable model for Incus guests that bootstrap on `pvl-x2` and then transition
-to normal `nixbot` host deployment.
+Durable model for Incus guests that bootstrap on the parent host and then
+transition to normal `nixbot` host deployment.
 
 ## Core design
 
@@ -12,14 +12,14 @@ to normal `nixbot` host deployment.
 - Use `lib/incus-machine.nix` for shared guest bootstrap concerns:
   persistent host keys under `/var/lib/machine/*` and optional Tailscale auth
   wiring.
-- `hosts/pvl-x2/incus.nix` owns guest creation and first boot.
+- `hosts/<parent-host>/incus.nix` owns guest creation and first boot.
 - The guest's own host definition still owns its real configuration and later
   deploys.
 
 ## Deployment rule
 
 - `hosts/nixbot.nix` should target the guest's stable pre-Tailscale reachable
-  address when needed, such as `llmug-rivendell` on `10.42.0.23`.
+  address when needed, but concrete guest names and IPs should stay in config.
 - Requested deploy hosts must expand to include declared dependencies before
   ordering, so selecting an Incus guest implicitly includes the parent host that
   creates and starts it.

@@ -1,18 +1,18 @@
-# llmug-rivendell Ollama AMD GPU Reconfiguration
+# Incus Guest Ollama AMD GPU Reconfiguration
 
 ## Context
 
-- `llmug-rivendell` runs as an Incus container on `pvl-x2`.
-- `pvl-x2` provides AMD GPU devices, not NVIDIA CDI runtime support.
+- The guest runs as an Incus container on its parent host.
+- The parent host provides AMD GPU devices, not NVIDIA CDI runtime support.
 - The original Ollama wiring assumed NVIDIA and could not start here.
 
 ## Final state
 
-- `hosts/llmug-rivendell/services.nix` now grants Ollama access to `/dev/dri`
+- `hosts/<guest>/services.nix` now grants Ollama access to `/dev/dri`
   and `/dev/kfd` and adds `video` and `render` groups.
-- `hosts/llmug-rivendell/podman.nix` matches that device and group model for the
+- `hosts/<guest>/podman.nix` matches that device and group model for the
   containerized Ollama service.
-- `hosts/llmug-rivendell/default.nix` no longer imports NVIDIA-specific host
+- `hosts/<guest>/default.nix` no longer imports NVIDIA-specific host
   assumptions for this workload.
 
 ## Effect

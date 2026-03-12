@@ -1,4 +1,4 @@
-# llmug-rivendell Tailscale Login 2026-03
+# Incus Guest Tailscale Login 2026-03
 
 ## Durable state
 
