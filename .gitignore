@@ -1,5 +1,6 @@
 result/
 data/secrets/**/*.key
+data/secrets/**/*.tfvars
 **/.terraform/
 *.tfstate
 *.tfstate.*

@@ -50,6 +50,23 @@ Primary files for deployment are:
 - `hosts/nixbot.nix` (deploy target mapping/defaults)
 - `scripts/nixbot-deploy.sh` (build/deploy orchestration)
 - `lib/nixbot/bastion.nix` (bastion-side nixbot setup)
+- `scripts/nixbot-deploy.sh` re-execs itself into a `nix shell` toolchain so
+  deploy runs use the same packaged command set everywhere, pinned via this
+  repo's flake inputs.
+
+## OpenTofu
+
+Infrastructure managed outside NixOS modules lives in `tf/`.
+
+- `tf/`: OpenTofu configuration, currently used for Cloudflare DNS.
+- `tf/README.md`: documents the Cloudflare R2-backed OpenTofu state setup.
+- `scripts/nixbot-deploy.sh --action tf`: runs the OpenTofu stack locally or
+  through the bastion-trigger path used by `nixbot`.
+- `.github/workflows/nixbot.yaml`: can dispatch `action=tf` through the same
+  bastion-based workflow path used for build/deploy.
+- Terraform credentials can be stored as repo-managed age secrets under
+  `data/secrets/cloudflare/*.key.age`; `--action tf` decrypts them on
+  demand using the existing bastion age key.
 
 Deploy ordering notes:
 

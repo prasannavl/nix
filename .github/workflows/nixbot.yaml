@@ -6,6 +6,15 @@ on:
       - master
   workflow_dispatch:
     inputs:
+      action:
+        description: build, deploy, or tf
+        required: true
+        default: deploy
+        type: choice
+        options:
+          - deploy
+          - build
+          - tf
       hosts:
         description: Comma/space-separated hosts, or all
         required: true
@@ -56,6 +65,7 @@ jobs:
         env:
           DEPLOY_BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
           DEPLOY_BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
+          GITHUB_INPUT_ACTION: ${{ github.event.inputs.action || '' }}
           GITHUB_INPUT_HOSTS: ${{ github.event.inputs.hosts || '' }}
           GITHUB_INPUT_DEPLOY: ${{ github.event.inputs.deploy || '' }}
         run: |
@@ -66,11 +76,15 @@ jobs:
             exit 1
           fi
 
+          input_action="${GITHUB_INPUT_ACTION:-}"
           input_hosts="${GITHUB_INPUT_HOSTS:-all}"
           input_deploy="${GITHUB_INPUT_DEPLOY:-true}"
           hosts="${input_hosts:-all}"
-          action="build"
-          if [ "${input_deploy}" = "true" ]; then
+          action="${input_action:-}"
+          if [ -z "${action}" ]; then
+            action="build"
+          fi
+          if [ -z "${input_action}" ] && [ "${input_deploy}" = "true" ]; then
             action="deploy"
           fi
 
