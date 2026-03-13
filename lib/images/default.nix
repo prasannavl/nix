@@ -11,8 +11,10 @@ in {
       inherit inputs;
       hostName = "incus-bootstrap";
     };
-    modules = commonModules ++ [
-      ./incus-bootstrap.nix
-    ];
+    modules =
+      commonModules
+      ++ [
+        ./incus-bootstrap.nix
+      ];
   };
 }

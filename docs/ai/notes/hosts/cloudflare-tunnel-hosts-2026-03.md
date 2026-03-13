@@ -38,12 +38,10 @@ services.cloudflared = {
 
 Current placeholder wiring:
 
-- `pvl-x2` uses placeholder tunnel UUID
-  `11111111-1111-1111-1111-111111111111` with example routes for
-  `memos`, `docmost`, and `vaultwarden`.
+- `pvl-x2` uses placeholder tunnel UUID `11111111-1111-1111-1111-111111111111`
+  with example routes for `memos`, `docmost`, and `vaultwarden`.
 - `llmug-rivendell` uses placeholder tunnel UUID
-  `22222222-2222-2222-2222-222222222222` with an example route for
-  `open-webui`.
+  `22222222-2222-2222-2222-222222222222` with an example route for `open-webui`.
 - These values are intended to be replaced with real UUIDs, hostnames, and
   credentials filenames.
 

@@ -9,9 +9,8 @@ transition to normal `nixbot` host deployment.
 
 - Use one reusable bootstrap image from `lib/images/incus-bootstrap.nix`, not a
   guest-specific seed image.
-- Use `lib/incus-machine.nix` for shared guest bootstrap concerns:
-  persistent host keys under `/var/lib/machine/*` and optional Tailscale auth
-  wiring.
+- Use `lib/incus-machine.nix` for shared guest bootstrap concerns: persistent
+  host keys under `/var/lib/machine/*` and optional Tailscale auth wiring.
 - `hosts/<parent-host>/incus.nix` owns guest creation and first boot.
 - The guest's own host definition still owns its real configuration and later
   deploys.

@@ -9,8 +9,8 @@
 ## Decision
 
 - Added `clean` and `-c` to `scripts/age-secrets.sh`.
-- `clean` only targets plaintext files that are the sibling of a managed
-  `*.age` entry from `data/secrets/default.nix`.
+- `clean` only targets plaintext files that are the sibling of a managed `*.age`
+  entry from `data/secrets/default.nix`.
 - The command supports the existing optional directory scope filter so an
   operator can clean all managed plaintext secrets or just one managed subtree.
 - Added an `init_vars` helper so runtime defaults such as the decrypt identity
@@ -41,8 +41,8 @@
   all selected files and continue past per-file decrypt failures, reporting a
   failing exit status after the batch instead of aborting on the first failure.
 - Fixed two regressions from that batch-decrypt refactor:
-  - decrypt temp-file cleanup no longer trips `set -u` via a stale `RETURN`
-    trap on `tmp_output`
+  - decrypt temp-file cleanup no longer trips `set -u` via a stale `RETURN` trap
+    on `tmp_output`
   - candidate filtering for `clean`/`encrypt` no longer trips `set -e` on
     missing files while scanning the managed set
 - Fixed a positional-argument regression in `parse_args` where the explicit

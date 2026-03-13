@@ -67,8 +67,8 @@ security model.
 - In short:
   - ingress to bastion uses `nixbot.bastionSshKeys`
   - bastion to other hosts uses `nixbot.sshKeys`
-  - activation-time secret decrypt uses the machine age identity, not either
-    SSH key class
+  - activation-time secret decrypt uses the machine age identity, not either SSH
+    key class
 
 ### 3) Bastion Runtime Private Key + Secrets
 
@@ -119,8 +119,8 @@ these steady-state assumptions:
 - `/var/lib/nixbot/.age/identity` is not installed on the target
 - the host has not yet been switched onto the repo's `nixbot`/agenix model
 
-Bootstrap matters especially for bastion because the bastion host is the first trust
-anchor for the whole fleet:
+Bootstrap matters especially for bastion because the bastion host is the first
+trust anchor for the whole fleet:
 
 - CI and remote operators enter through bastion first, not directly to every
   node
@@ -189,11 +189,11 @@ shell access for `nixos-rebuild --target-host`.
 
 - A brand-new or partially configured host cannot decrypt agenix secrets until
   it has its machine age identity.
-- A host also cannot participate in the normal bastion-to-node deploy path
-  until it trusts `nixbot` and has the expected SSH material in place.
-- Bootstrap breaks that chicken-and-egg problem by using some pre-existing
-  admin path just long enough to install the `nixbot` and age identity state
-  that the steady-state model requires.
+- A host also cannot participate in the normal bastion-to-node deploy path until
+  it trusts `nixbot` and has the expected SSH material in place.
+- Bootstrap breaks that chicken-and-egg problem by using some pre-existing admin
+  path just long enough to install the `nixbot` and age identity state that the
+  steady-state model requires.
 
 ## Key Exchange And Trust Installation
 
@@ -225,8 +225,8 @@ shell access for `nixos-rebuild --target-host`.
   - copied to a temporary remote file over the bootstrap account
   - installed remotely as `/var/lib/nixbot/.ssh/id_ed25519`
   - any previous key is preserved as `/var/lib/nixbot/.ssh/id_ed25519_legacy`
-- This is the key handoff that lets a fresh node start accepting
-  `nixbot@host` deploy connections on later runs.
+- This is the key handoff that lets a fresh node start accepting `nixbot@host`
+  deploy connections on later runs.
 
 ### Runtime machine-identity exchange during activation
 
@@ -272,15 +272,15 @@ shell access for `nixos-rebuild --target-host`.
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
   - this host is also the bastion, so its machine recipient is included on the
-    shared bastion deploy-key secret and the bastion Cloudflare/OpenTofu
-    runtime secrets
+    shared bastion deploy-key secret and the bastion Cloudflare/OpenTofu runtime
+    secrets
 - `<incus-guest>`
   - deploy metadata: `hosts/nixbot.nix` ->
     `hosts.<incus-guest>.ageIdentityKey = "data/secrets/machine/<incus-guest>.key.age"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
-  - host also consumes `data/secrets/tailscale/<incus-guest>.key.age`
-    directly through `lib/incus-machine.nix`
+  - host also consumes `data/secrets/tailscale/<incus-guest>.key.age` directly
+    through `lib/incus-machine.nix`
 
 ### Bastion identities and secrets
 
@@ -325,11 +325,9 @@ shell access for `nixos-rebuild --target-host`.
   - `scripts/nixbot-deploy.sh --action tf` auto-loads them into the OpenTofu
     environment when shell variables are absent
 - Incus-guest Tailscale auth:
-  - source file:
-    `data/secrets/tailscale/<incus-guest>.key.age`
+  - source file: `data/secrets/tailscale/<incus-guest>.key.age`
   - recipients: admins + `<incus-guest>`
-  - `lib/incus-machine.nix` exposes it as
-    `services.tailscale.authKeyFile`
+  - `lib/incus-machine.nix` exposes it as `services.tailscale.authKeyFile`
 
 ### Incus guest secret notes
 
@@ -339,8 +337,7 @@ shell access for `nixos-rebuild --target-host`.
   - optional service secrets encrypted to that guest's machine recipient
 - The one shared guest-specific convenience path today is in
   `lib/incus-machine.nix`:
-  - optional Tailscale auth secret at
-    `data/secrets/tailscale/<host>.key.age`
+  - optional Tailscale auth secret at `data/secrets/tailscale/<host>.key.age`
   - wired to `services.tailscale.authKeyFile` only if the encrypted file exists
 - Incus guest SSH host keys are persisted under `/var/lib/machine/*`, but those
   are runtime-generated host keys, not repo-managed agenix secrets.
@@ -353,14 +350,11 @@ shell access for `nixos-rebuild --target-host`.
 ### New machine identity
 
 1. Generate a new age identity for the host.
-2. Commit the public recipient to
-   `data/secrets/machine/<host>.key.pub`.
-3. Encrypt the private identity to
-   `data/secrets/machine/<host>.key.age`.
+2. Commit the public recipient to `data/secrets/machine/<host>.key.pub`.
+3. Encrypt the private identity to `data/secrets/machine/<host>.key.age`.
 4. Add the new `.key.age` entry and its recipients in
    `data/secrets/default.nix`.
-5. Point `hosts/nixbot.nix` at that secret with
-   `hosts.<host>.ageIdentityKey`.
+5. Point `hosts/nixbot.nix` at that secret with `hosts.<host>.ageIdentityKey`.
 6. Re-encrypt managed secrets so any host-specific secrets now include the new
    machine recipient.
 
@@ -385,8 +379,7 @@ Use this order for a clean-room rebuild of the current model.
    - private key becomes `data/secrets/nixbot/nixbot.key.age`
 3. Generate the bastion ingress SSH keypair.
    - public key goes into `users/userdata.nix` (`nixbot.bastionSshKeys`)
-   - private key becomes
-     `data/secrets/bastion/nixbot-bastion-ssh.key.age`
+   - private key becomes `data/secrets/bastion/nixbot-bastion-ssh.key.age`
 4. Generate one machine age identity per host.
    - private identities become `data/secrets/machine/<host>.key.age`
    - public recipients become `data/secrets/machine/<host>.key.pub`
@@ -411,14 +404,13 @@ Use this order for a clean-room rebuild of the current model.
      `/var/lib/nixbot/nixbot-deploy.sh`
    - the bastion should hold `/var/lib/nixbot/.ssh/id_ed25519`
 9. Deploy the remaining hosts through `scripts/nixbot-deploy.sh`.
-   - first managed deploy to each host injects
-     `/var/lib/nixbot/.age/identity`
+   - first managed deploy to each host injects `/var/lib/nixbot/.age/identity`
    - after that, agenix can decrypt host-local secrets during activation
 10. Only after bastion and machine identities are working, add higher-level
     service secrets.
     - bastion-host service secrets can be activated once bastion decrypt works
-    - Incus-guest Tailscale auth can be activated once that host's
-      machine identity is wired and deployable
+    - Incus-guest Tailscale auth can be activated once that host's machine
+      identity is wired and deployable
 
 ## Scratch Bootstrap Failure Modes
 

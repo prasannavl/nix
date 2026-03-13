@@ -11,8 +11,8 @@ mismatch noise.
 - Host is an ASUS FA401WV-class laptop using AMD iGPU + NVIDIA dGPU with
   `supergfxd` and only `s2idle`.
 - The strongest signal was suspend hanging until the runtime watchdog forced a
-  reboot: `PM: suspend entry (s2idle)` without a matching resume, then
-  next-boot watchdog reset evidence.
+  reboot: `PM: suspend entry (s2idle)` without a matching resume, then next-boot
+  watchdog reset evidence.
 - Durable triage order:
   - test with runtime watchdog disabled
   - compare kernel lines (`6.18.13`, `6.19.3`)

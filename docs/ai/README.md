@@ -8,13 +8,12 @@
   key-generation and secret-packaging playbook for rotation prep.
 - `docs/ai/notes/deployment/deployment-fixes-consolidated-2026-03.md`: Small
   deployment unblockers, currently the `incus` `checkPhase` SIGBUS mitigation.
-- `docs/ai/notes/hosts/llmug-rivendell-ollama-amd-on-pvl-x2.md`: Reconfigured
-  an Incus guest's Ollama GPU access from NVIDIA CDI assumptions to AMD
-  passthrough (`/dev/dri` + `/dev/kfd`) on its parent host.
+- `docs/ai/notes/hosts/llmug-rivendell-ollama-amd-on-pvl-x2.md`: Reconfigured an
+  Incus guest's Ollama GPU access from NVIDIA CDI assumptions to AMD passthrough
+  (`/dev/dri` + `/dev/kfd`) on its parent host.
 - `docs/ai/notes/hosts/incus-bootstrap-deploy-flow-2026-03.md`: Replaced a
   host-specific Incus image with a reusable generic bootstrap image under
-  `lib/images` and taught `nixbot` to auto-include dependency hosts for
-  deploys.
+  `lib/images` and taught `nixbot` to auto-include dependency hosts for deploys.
 - `docs/ai/notes/hosts/incus-machine-tailscale-block-refactor-2026-03.md`:
   Grouped the reusable guest Tailscale secret discovery and module settings in
   `lib/incus-machine.nix` into one isolated Tailscale block without changing
@@ -39,9 +38,8 @@
   rollback log capture so child processes emit a single ordered output stream,
   avoiding stdout/stderr reordering artifacts in status lines.
 - `docs/ai/notes/nixbot/nixbot-home-dir-perms-2026-03.md`: Ensured
-  `/var/lib/nixbot` is created as a usable `nixbot` home directory on all
-  hosts so remote snapshot/deploy probes do not emit home-directory permission
-  errors.
+  `/var/lib/nixbot` is created as a usable `nixbot` home directory on all hosts
+  so remote snapshot/deploy probes do not emit home-directory permission errors.
 - `docs/ai/notes/nixbot/deploy-noninteractive-tty-fallback-2026-03.md`: Fixed
   `nixbot` deploy's `/dev/tty` probe so host age identity injection works in
   non-interactive service/wrapper runs.
@@ -57,23 +55,22 @@
   `scripts/nixbot-deploy.sh --action tf` locally, via bastion, or from the
   existing `nixbot` GitHub workflow.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Removed
-  concrete domains and a personal repository SSH URL from documentation so
-  those values remain in config and operational state instead of docs.
+  concrete domains and a personal repository SSH URL from documentation so those
+  values remain in config and operational state instead of docs.
 - `docs/ai/notes/services/openssh-module-centralization-2026-03.md`: Extracted
   shared OpenSSH enablement into `lib/openssh.nix` so daemon settings can be
   centralized without changing existing profile inclusion points.
 - `docs/ai/notes/services/opentofu-cloudflare-tf-secrets-2026-03.md`: Added
-  repo-managed Cloudflare and R2 runtime secrets for `--action tf`, decrypted
-  on demand by `scripts/nixbot-deploy.sh` from
-  `data/secrets/cloudflare/*.key.age` when environment variables are
-  absent.
+  repo-managed Cloudflare and R2 runtime secrets for `--action tf`, decrypted on
+  demand by `scripts/nixbot-deploy.sh` from `data/secrets/cloudflare/*.key.age`
+  when environment variables are absent.
 - `docs/ai/notes/services/opentofu-cloudflare-sensitive-tfvars-2026-03.md`:
-  Split Cloudflare DNS Terraform inputs into public-safe and encrypted
-  sensitive layers, merged at runtime by `scripts/nixbot-deploy.sh --action tf`.
+  Split Cloudflare DNS Terraform inputs into public-safe and encrypted sensitive
+  layers, merged at runtime by `scripts/nixbot-deploy.sh --action tf`.
 - `docs/ai/notes/nixbot/runtime-shell-consolidation-2026-03.md`: Standardized
   `scripts/nixbot-deploy.sh` to re-exec inside a single `nix shell` runtime so
-  deploy, bastion-trigger, and Terraform paths use the same packaged command
-  set instead of mixing host-installed tools with ad hoc `nix shell` calls.
+  deploy, bastion-trigger, and Terraform paths use the same packaged command set
+  instead of mixing host-installed tools with ad hoc `nix shell` calls.
 - `docs/ai/notes/secrets/age-secrets-clean-flag-2026-03.md`: Added
   `scripts/age-secrets.sh clean` / `-c` to remove decrypted plaintext siblings
   of managed `*.age` secrets without touching unmanaged files.
@@ -82,8 +79,8 @@
   ingress and deploy identities, service secret delivery, and clean-room
   bootstrap order.
 - `docs/ai/notes/services/pvl-x2-compose-config-centralization-2026-03.md`:
-  Centralized bastion-host compose port metadata in per-instance Nix
-  definitions and reused it for compose generation and firewall rules.
+  Centralized bastion-host compose port metadata in per-instance Nix definitions
+  and reused it for compose generation and firewall rules.
 - `docs/ai/notes/services/pvl-x2-service-migration-consolidated-2026-03.md`:
   Consolidated bastion-host service adoption into repo-managed compose stacks
   and the aligned service-secret migration.

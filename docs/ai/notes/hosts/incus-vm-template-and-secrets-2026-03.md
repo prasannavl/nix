@@ -2,9 +2,8 @@
 
 ## Scope
 
-Canonical summary of the current reusable Incus guest model, its secret
-surface, and the steps for adding another guest by copying an existing guest
-pattern.
+Canonical summary of the current reusable Incus guest model, its secret surface,
+and the steps for adding another guest by copying an existing guest pattern.
 
 ## Durable model
 
@@ -21,8 +20,8 @@ pattern.
 - Optional shared guest helper secret:
   - `data/secrets/tailscale/<host>.key.age`
   - consumed by `lib/incus-machine.nix` when present
-- Persistent SSH host keys live at `/var/lib/machine/*`, but those are
-  generated runtime state, not repo-managed agenix secrets.
+- Persistent SSH host keys live at `/var/lib/machine/*`, but those are generated
+  runtime state, not repo-managed agenix secrets.
 
 ## Template steps for a new guest
 

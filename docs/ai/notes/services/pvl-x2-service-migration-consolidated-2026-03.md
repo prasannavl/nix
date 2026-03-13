@@ -36,8 +36,8 @@ cleanup that followed.
 ## Practical interpretation
 
 - `pvl-x2` services are now repo-managed under the shared Podman compose model.
-- Service secrets are encrypted, included in the default `age-secrets.sh`
-  scope, and named consistently with the rest of `data/secrets`.
+- Service secrets are encrypted, included in the default `age-secrets.sh` scope,
+  and named consistently with the rest of `data/secrets`.
 
 ## Superseded notes
 

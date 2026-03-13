@@ -48,8 +48,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - If bootstrap replaces `/var/lib/nixbot/.ssh/id_ed25519`, the old key is kept
   as `/var/lib/nixbot/.ssh/id_ed25519_legacy`; bastion-side SSH tries current
   first, then legacy.
-- All bastion-managed SSH uses strict host-key checking with dedicated
-  temporary `known_hosts` files.
+- All bastion-managed SSH uses strict host-key checking with dedicated temporary
+  `known_hosts` files.
 - `--bastion-trigger` prefers provided bastion host keys and only falls back to
   `ssh-keyscan -H <bastion-host>` when needed; absence of host-key material is
   fatal.
@@ -66,13 +66,13 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Build and deploy are separate concurrency domains:
   - build: `DEPLOY_BUILD_JOBS` / `--build-jobs`
   - deploy: `DEPLOY_JOBS` / `--deploy-jobs`
-- Build can run across all selected hosts in parallel and still completes
-  before deploy starts.
+- Build can run across all selected hosts in parallel and still completes before
+  deploy starts.
 - Deploy is wave-based: a host only enters a wave after its selected
   dependencies have succeeded.
-- `DEPLOY_BASTION_FIRST` / `--bastion-first` is a narrow override: if bastion
-  is selected, it can be forced to the front of build order and wave 1 even if
-  its own `deps` would place it later.
+- `DEPLOY_BASTION_FIRST` / `--bastion-first` is a narrow override: if bastion is
+  selected, it can be forced to the front of build order and wave 1 even if its
+  own `deps` would place it later.
 - Unknown selected hosts, unknown dependencies among selected hosts, or cycles
   in the selected dependency graph must fail the run before build/deploy starts.
 

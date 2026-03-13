@@ -2,8 +2,8 @@
 
 ## Decision
 
-- Grouped all reusable Tailscale-specific logic in `lib/incus-machine.nix`
-  into one cohesive conditional block at the end of the module.
+- Grouped all reusable Tailscale-specific logic in `lib/incus-machine.nix` into
+  one cohesive conditional block at the end of the module.
 - Kept the existing behavior: the guest only wires the secret and
   `services.tailscale` settings when the encrypted
   `data/secrets/tailscale/<name>.key.age` file exists.
@@ -14,9 +14,8 @@
 
 ## Rationale
 
-- The prior module still left Tailscale-specific secret discovery in a
-  separate top-level `let`, away from the actual `services.tailscale`
-  configuration.
+- The prior module still left Tailscale-specific secret discovery in a separate
+  top-level `let`, away from the actual `services.tailscale` configuration.
 - Keeping the path lookup and conditional module fragment together makes the
-  Tailscale block self-contained and easier to modify without touching the
-  rest of the module.
+  Tailscale block self-contained and easier to modify without touching the rest
+  of the module.

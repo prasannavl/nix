@@ -20,8 +20,8 @@ only be decrypted at `--action tf` runtime.
 - Updated `scripts/nixbot-deploy.sh` so `--action tf` decrypts that encrypted
   tfvars file into its temp dir and passes it to `tofu plan` via `-var-file`
   when present.
-- Generalized `scripts/age-secrets.sh` help text so managed non-`.key` files
-  are described correctly.
+- Generalized `scripts/age-secrets.sh` help text so managed non-`.key` files are
+  described correctly.
 
 ## Operational Notes
 
@@ -29,11 +29,10 @@ only be decrypted at `--action tf` runtime.
 - Sensitive records belong in
   `data/secrets/cloudflare/zones-sensitive.auto.tfvars.age` under
   `secret_zones = {}`.
-- Reusable encrypted values belong in the same file under `secrets = {}` and
-  can be referenced as `var.secrets["key"]`.
-- `scripts/nixbot-deploy.sh --action tf` continues to work without the
-  sensitive tfvars secret; it logs that it is proceeding with public zones
-  only.
+- Reusable encrypted values belong in the same file under `secrets = {}` and can
+  be referenced as `var.secrets["key"]`.
+- `scripts/nixbot-deploy.sh --action tf` continues to work without the sensitive
+  tfvars secret; it logs that it is proceeding with public zones only.
 - This split hides origin values from the plaintext repo, but Terraform state,
   plan output, and Cloudflare itself can still expose the applied values to
   authorized operators.

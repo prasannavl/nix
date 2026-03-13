@@ -8,12 +8,12 @@
 
 ## Final state
 
-- `hosts/<guest>/services.nix` now grants Ollama access to `/dev/dri`
-  and `/dev/kfd` and adds `video` and `render` groups.
+- `hosts/<guest>/services.nix` now grants Ollama access to `/dev/dri` and
+  `/dev/kfd` and adds `video` and `render` groups.
 - `hosts/<guest>/podman.nix` matches that device and group model for the
   containerized Ollama service.
-- `hosts/<guest>/default.nix` no longer imports NVIDIA-specific host
-  assumptions for this workload.
+- `hosts/<guest>/default.nix` no longer imports NVIDIA-specific host assumptions
+  for this workload.
 
 ## Effect
 

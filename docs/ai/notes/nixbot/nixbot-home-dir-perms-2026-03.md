@@ -12,8 +12,8 @@
 
 ## Decision
 
-- Make the shared `lib/nixbot/default.nix` module enforce `/var/lib/nixbot` as
-  a real `nixbot:nixbot` home directory on every host, not just bastion hosts.
+- Make the shared `lib/nixbot/default.nix` module enforce `/var/lib/nixbot` as a
+  real `nixbot:nixbot` home directory on every host, not just bastion hosts.
 
 ## Change
 
@@ -27,6 +27,6 @@
 - Bastion hosts already did this in `lib/nixbot/bastion.nix`; non-bastion hosts
   still relied on user creation semantics, which were not sufficient for the
   containerized guest case.
-- Keeping the fix in the shared module preserves the deploy contract:
-  connecting as `nixbot` must provide a usable home directory before any shell
-  startup or remote probe runs.
+- Keeping the fix in the shared module preserves the deploy contract: connecting
+  as `nixbot` must provide a usable home directory before any shell startup or
+  remote probe runs.

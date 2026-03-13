@@ -22,7 +22,7 @@
           rust-lang.rust-analyzer
           fill-labs.dependi
           hashicorp.terraform
-          
+
           github.copilot-chat
           pkgs.vscode-marketplace.openai.chatgpt
           pkgs.vscode-marketplace.continue.continue

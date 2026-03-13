@@ -35,15 +35,15 @@ injection, unit lifecycle, and related platform fixes.
 
 ## Systemd lifecycle model
 
-- Generated Podman user units are managed through
-  `lib/systemd-user-manager.nix` bridge units so changes participate in
-  old-stop/new-start behavior during `nixos-rebuild switch` and `test`.
+- Generated Podman user units are managed through `lib/systemd-user-manager.nix`
+  bridge units so changes participate in old-stop/new-start behavior during
+  `nixos-rebuild switch` and `test`.
 - Bridge state lives under `/run/nixos/systemd-user-manager/` and is gated on
   user-manager availability.
 - Changed active units restart, changed inactive units stay inactive, and newly
   bridged units start once on first activation.
-- Emit one reload unit per user manager so `systemctl --user daemon-reload`
-  only runs once per user.
+- Emit one reload unit per user manager so `systemctl --user daemon-reload` only
+  runs once per user.
 
 ## Platform fixes
 

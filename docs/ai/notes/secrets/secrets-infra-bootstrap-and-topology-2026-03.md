@@ -49,8 +49,8 @@ Documents the repo's current secret topology from four angles:
 - Bootstrap means using a pre-existing admin path to get a host onto the normal
   `nixbot` deploy model.
 - A host is not fully bootstrapped yet if normal `nixbot@host` access,
-  `/var/lib/nixbot/.ssh/id_ed25519`, or `/var/lib/nixbot/.age/identity` is
-  still missing.
+  `/var/lib/nixbot/.ssh/id_ed25519`, or `/var/lib/nixbot/.age/identity` is still
+  missing.
 - Bastion must be bootstrapped first because it is the trust anchor for the
   later CI/operator -> bastion -> fleet path.
 - `hosts/nixbot.nix` expresses the bootstrap path through:
@@ -122,9 +122,9 @@ Documents the repo's current secret topology from four angles:
     `check_bootstrap_via_forced_command()`
   - if that is still not enough, it falls back to `${bootstrapUser}@host`
 - Runtime deploy-key exchange:
-  - `scripts/nixbot-deploy.sh` `inject_bootstrap_nixbot_key()` copies the
-    shared `nixbot` private key to `/var/lib/nixbot/.ssh/id_ed25519` on the
-    target when bootstrap is needed
+  - `scripts/nixbot-deploy.sh` `inject_bootstrap_nixbot_key()` copies the shared
+    `nixbot` private key to `/var/lib/nixbot/.ssh/id_ed25519` on the target when
+    bootstrap is needed
 - Runtime machine-identity exchange:
   - `scripts/nixbot-deploy.sh` `inject_host_age_identity_key()` copies the
     host-specific age identity to `/var/lib/nixbot/.age/identity` before

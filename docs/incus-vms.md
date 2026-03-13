@@ -39,16 +39,14 @@ the same `nixbot` + machine-age-identity model used by other nodes.
 A representative guest is defined across four layers:
 
 1. Flake host entry
-   - `hosts/default.nix` defines the guest as a normal
-     `nixosConfiguration`
+   - `hosts/default.nix` defines the guest as a normal `nixosConfiguration`
 2. Guest OS composition
    - `hosts/<guest>/default.nix` imports:
      - `lib/profiles/systemd-container.nix`
      - `lib/incus-machine.nix`
      - host-local modules for packages, firewall, podman, services, users
 3. Parent-host creation/start
-   - `hosts/<parent-host>/incus.nix` creates and starts the Incus guest from
-     the
+   - `hosts/<parent-host>/incus.nix` creates and starts the Incus guest from the
      reusable bootstrap image
 4. Deploy targeting
    - `hosts/nixbot.nix` points deploys at the guest's stable Incus address,

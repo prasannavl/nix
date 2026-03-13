@@ -29,5 +29,5 @@ OpenTofu-only `nix shell` wrapper.
 - When invoked as an SSH forced command (`SSH_ORIGINAL_COMMAND` is set), the
   wrapper now skips `--inputs-from` entirely and starts a plain
   `nix shell nixpkgs#...` runtime. That avoids coupling the ingress wrapper's
-  install path to flake-root discovery while keeping normal local/repo-root
-  runs pinned to repo inputs.
+  install path to flake-root discovery while keeping normal local/repo-root runs
+  pinned to repo inputs.

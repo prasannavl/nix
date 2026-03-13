@@ -224,12 +224,12 @@
       group = composeSecretUser;
     };
   in {
-      beszel-key = mkComposeSecret "beszel" "key";
-      beszel-token = mkComposeSecret "beszel" "token";
-      docmost-app-secret = mkComposeSecret "docmost" "app-secret";
-      docmost-database-url = mkComposeSecret "docmost" "database-url";
-      docmost-postgres-password = mkComposeSecret "docmost" "postgres-password";
-      immich-db-password = mkComposeSecret "immich" "db-password";
-      shadowsocks-password = mkComposeSecret "shadowsocks" "password";
-    };
+    beszel-key = mkComposeSecret "beszel" "key";
+    beszel-token = mkComposeSecret "beszel" "token";
+    docmost-app-secret = mkComposeSecret "docmost" "app-secret";
+    docmost-database-url = mkComposeSecret "docmost" "database-url";
+    docmost-postgres-password = mkComposeSecret "docmost" "postgres-password";
+    immich-db-password = mkComposeSecret "immich" "db-password";
+    shadowsocks-password = mkComposeSecret "shadowsocks" "password";
+  };
 }

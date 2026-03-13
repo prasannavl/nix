@@ -1,7 +1,8 @@
 # OpenSSH Module Centralization
 
 - Date: 2026-03-13
-- Scope: `lib/openssh.nix`, `lib/network.nix`, `lib/profiles/systemd-container.nix`
+- Scope: `lib/openssh.nix`, `lib/network.nix`,
+  `lib/profiles/systemd-container.nix`
 
 ## Summary
 

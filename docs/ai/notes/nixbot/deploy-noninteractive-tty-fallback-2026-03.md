@@ -2,7 +2,9 @@
 
 ## Context
 
-- Deploys that inject the host machine age identity use `ssh -tt ... <"${SSH_TTY_STDIN_PATH}"` so interactive runs can satisfy a remote `sudo` prompt when needed.
+- Deploys that inject the host machine age identity use
+  `ssh -tt ... <"${SSH_TTY_STDIN_PATH}"` so interactive runs can satisfy a
+  remote `sudo` prompt when needed.
 - In non-interactive contexts (for example the installed `nixbot`
   service/wrapper on the bastion host), `/dev/tty` may exist in the filesystem
   but still be unusable because the process has no controlling terminal.
@@ -21,9 +23,10 @@
 - Resolve the stdin source for `ssh -tt` at the point of use, not once during
   script initialization.
 - The helper must not open `/dev/tty` during the probe.
-- Treat the presence of any attached standard stream (`[ -t 0 ] || [ -t 1 ] ||
-  [ -t 2 ]`) as the signal to use `/dev/tty`; otherwise fall back to
-  `/dev/null`.
+- Treat the presence of any attached standard stream
+  (`[ -t 0 ] || [ -t 1 ] ||
+  [ -t 2 ]`) as the signal to use `/dev/tty`;
+  otherwise fall back to `/dev/null`.
 
 ## Result
 

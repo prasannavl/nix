@@ -13,8 +13,8 @@ mode that mattered, and the operator guardrails that should stay in place.
 - `lib/nixbot/default.nix` installs all normal deploy keys from `sshKeys`.
 - `lib/nixbot/bastion.nix` installs all forced-command ingress keys from
   `bastionSshKeys`.
-- `data/secrets/default.nix` must include recipients for every active deploy
-  key in the overlap set.
+- `data/secrets/default.nix` must include recipients for every active deploy key
+  in the overlap set.
 - Machine age identity rotation is usually single-step because deploy injects
   the host identity before activation; SSH deploy-key rotation is the riskier
   path.
@@ -22,9 +22,9 @@ mode that mattered, and the operator guardrails that should stay in place.
 ## Preferred operating pattern
 
 - Default to overlap rotation when all targets already trust the new public key.
-- Use per-host `key` and `bootstrapKey` overrides in `hosts/nixbot.nix` only
-  for legacy nodes that still need the old private key after bastion starts
-  carrying the new one.
+- Use per-host `key` and `bootstrapKey` overrides in `hosts/nixbot.nix` only for
+  legacy nodes that still need the old private key after bastion starts carrying
+  the new one.
 - Keep `/var/lib/nixbot/.ssh/id_ed25519_legacy` available on bastion during the
   overlap window so downstream SSH can still fall back cleanly.
 

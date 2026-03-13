@@ -65,8 +65,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - `.github/workflows/nixbot.yaml`: can dispatch `action=tf` through the same
   bastion-based workflow path used for build/deploy.
 - Terraform credentials can be stored as repo-managed age secrets under
-  `data/secrets/cloudflare/*.key.age`; `--action tf` decrypts them on
-  demand using the existing bastion age key.
+  `data/secrets/cloudflare/*.key.age`; `--action tf` decrypts them on demand
+  using the existing bastion age key.
 
 Deploy ordering notes:
 
@@ -76,8 +76,8 @@ Deploy ordering notes:
   deploy.
 - Build parallelism is controlled by `DEPLOY_BUILD_JOBS` / `--build-jobs`.
 - Deploy parallelism is controlled by `DEPLOY_JOBS` / `--deploy-jobs`.
-- `DEPLOY_BASTION_FIRST` / `--bastion-first` prioritizes the bastion host
-  first for both build ordering and deploy waves when that host is selected.
-  This override ignores the bastion host's own `deps` for ordering.
+- `DEPLOY_BASTION_FIRST` / `--bastion-first` prioritizes the bastion host first
+  for both build ordering and deploy waves when that host is selected. This
+  override ignores the bastion host's own `deps` for ordering.
 - Deploy derives dependency waves from `deps`, so dependents wait for their
   selected dependencies while same-wave hosts can still run in parallel.

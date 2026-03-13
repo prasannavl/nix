@@ -4,8 +4,8 @@ This directory is the source of truth for Cloudflare-managed DNS.
 
 ## Scope
 
-This stack manages the Cloudflare DNS zones declared in
-`zones.auto.tfvars` and, when needed, the encrypted
+This stack manages the Cloudflare DNS zones declared in `zones.auto.tfvars` and,
+when needed, the encrypted
 `data/secrets/cloudflare/zones-sensitive.auto.tfvars.age`. Keep concrete domain
 names in config and secrets, not in documentation.
 
@@ -17,7 +17,8 @@ names in config and secrets, not in documentation.
 - `main.tf`: zone lookups and DNS record resources.
 - `zones.auto.tfvars`: authoritative public-safe record definitions.
 - `data/secrets/cloudflare/zones-sensitive.auto.tfvars.age`: authoritative
-  encrypted record definitions loaded only for `scripts/nixbot-deploy.sh
+  encrypted record definitions loaded only for
+  `scripts/nixbot-deploy.sh
   --action tf`.
 
 ## Auth
@@ -46,8 +47,8 @@ Those secrets stay in the repo and are decrypted on demand by
 
 ## Remote State
 
-The configuration uses Cloudflare R2 for remote state via the `s3` backend.
-R2 is S3-compatible, so OpenTofu can talk to it through normal backend config.
+The configuration uses Cloudflare R2 for remote state via the `s3` backend. R2
+is S3-compatible, so OpenTofu can talk to it through normal backend config.
 
 Example init:
 
@@ -97,8 +98,8 @@ R2_SECRET_ACCESS_KEY=... \
 
 The deploy script always enters a `nix shell` runtime using this repo's flake
 inputs, so `tofu` does not need to be preinstalled separately on the machine
-running it. When the secret tfvars file exists, the script decrypts it
-into a temp file and passes it via `-var-file` for that run only.
+running it. When the secret tfvars file exists, the script decrypts it into a
+temp file and passes it via `-var-file` for that run only.
 
 Dry-run:
 
@@ -111,8 +112,7 @@ R2_SECRET_ACCESS_KEY=... \
 ./scripts/nixbot-deploy.sh --action tf --dry
 ```
 
-From GitHub Actions, use the existing `nixbot` workflow with
-`workflow_dispatch` and select `action=tf`. That executes through the bastion
-trigger path, so the required Cloudflare and R2 credentials must either be
-present in the bastion environment or committed as the encrypted repo secret
-files above.
+From GitHub Actions, use the existing `nixbot` workflow with `workflow_dispatch`
+and select `action=tf`. That executes through the bastion trigger path, so the
+required Cloudflare and R2 credentials must either be present in the bastion
+environment or committed as the encrypted repo secret files above.
