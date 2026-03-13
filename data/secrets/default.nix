@@ -35,6 +35,8 @@ in
     "data/secrets/cloudflare/r2-access-key-id.key.age".publicKeys = admins ++ pvl-x2;
     "data/secrets/cloudflare/r2-secret-access-key.key.age".publicKeys = admins ++ pvl-x2;
     "data/secrets/cloudflare/zones-sensitive.auto.tfvars.age".publicKeys = admins ++ pvl-x2;
+    "data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age".publicKeys = admins ++ pvl-x2;
+    "data/secrets/cloudflare/tunnels/llmug-rivendell-main.credentials.json.age".publicKeys = admins ++ llmug-rivendell;
 
     "data/secrets/tailscale/llmug-rivendell.key.age".publicKeys = admins ++ llmug-rivendell;
 

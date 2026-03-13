@@ -15,11 +15,19 @@
   host-specific Incus image with a reusable generic bootstrap image under
   `lib/images` and taught `nixbot` to auto-include dependency hosts for
   deploys.
+- `docs/ai/notes/hosts/incus-machine-tailscale-block-refactor-2026-03.md`:
+  Grouped the reusable guest Tailscale secret discovery and module settings in
+  `lib/incus-machine.nix` into one isolated Tailscale block without changing
+  behavior.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
   reusable Incus guest template and secret model for future guests.
 - `docs/ai/notes/hosts/llmug-rivendell-tailscale-login-2026-03.md`: Added
   reusable guest Tailscale autologin wiring via an agenix-managed secret in the
   standard `data/secrets/tailscale/<host>.key.age` location.
+- `docs/ai/notes/hosts/cloudflare-tunnel-hosts-2026-03.md`: Added reusable
+  Cloudflare Tunnel host wiring for `pvl-x2` and `llmug-rivendell` using direct
+  native `services.cloudflared.tunnels` declarations with agenix-managed
+  credentials files.
 - `docs/ai/notes/hosts/pvl-a1-desktop-investigations-consolidated-2026-03.md`:
   Consolidated a desktop host investigation covering suspend watchdogs, GNOME
   idle inhibition, and `amdxdna` mismatch handling.
@@ -51,6 +59,9 @@
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Removed
   concrete domains and a personal repository SSH URL from documentation so
   those values remain in config and operational state instead of docs.
+- `docs/ai/notes/services/openssh-module-centralization-2026-03.md`: Extracted
+  shared OpenSSH enablement into `lib/openssh.nix` so daemon settings can be
+  centralized without changing existing profile inclusion points.
 - `docs/ai/notes/services/opentofu-cloudflare-tf-secrets-2026-03.md`: Added
   repo-managed Cloudflare and R2 runtime secrets for `--action tf`, decrypted
   on demand by `scripts/nixbot-deploy.sh` from
