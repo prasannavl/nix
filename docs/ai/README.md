@@ -8,7 +8,7 @@
   key-generation and secret-packaging playbook for rotation prep.
 - `docs/ai/notes/deployment/deployment-fixes-consolidated-2026-03.md`: Small
   deployment unblockers, currently the `incus` `checkPhase` SIGBUS mitigation.
-- `docs/ai/notes/hosts/llmug-rivendell-ollama-amd-on-pvl-x2.md`: Reconfigured an
+- `docs/ai/notes/hosts/incus-guest-ollama-amd-gpu-2026-03.md`: Reconfigured an
   Incus guest's Ollama GPU access from NVIDIA CDI assumptions to AMD passthrough
   (`/dev/dri` + `/dev/kfd`) on its parent host.
 - `docs/ai/notes/hosts/incus-bootstrap-deploy-flow-2026-03.md`: Replaced a
@@ -20,14 +20,14 @@
   behavior.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
   reusable Incus guest template and secret model for future guests.
-- `docs/ai/notes/hosts/llmug-rivendell-tailscale-login-2026-03.md`: Added
+- `docs/ai/notes/hosts/incus-guest-tailscale-login-2026-03.md`: Added
   reusable guest Tailscale autologin wiring via an agenix-managed secret in the
   standard `data/secrets/tailscale/<host>.key.age` location.
 - `docs/ai/notes/hosts/cloudflare-tunnel-hosts-2026-03.md`: Added reusable
-  Cloudflare Tunnel host wiring for `pvl-x2` and `llmug-rivendell` using direct
-  native `services.cloudflared.tunnels` declarations with agenix-managed
-  credentials files.
-- `docs/ai/notes/hosts/pvl-a1-desktop-investigations-consolidated-2026-03.md`:
+  Cloudflare Tunnel host wiring using direct native
+  `services.cloudflared.tunnels` declarations with agenix-managed credentials
+  files.
+- `docs/ai/notes/hosts/desktop-investigations-consolidated-2026-03.md`:
   Consolidated a desktop host investigation covering suspend watchdogs, GNOME
   idle inhibition, and `amdxdna` mismatch handling.
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Consolidated
@@ -54,8 +54,8 @@
   stack using the official Cloudflare provider, executed through
   `scripts/nixbot-deploy.sh --action tf` locally, via bastion, or from the
   existing `nixbot` GitHub workflow.
-- `docs/ai/notes/services/gap3-ai-test-a-record-2026-03.md`: Added a test apex
-  `A` record for `gap3.ai` to the public-safe OpenTofu Cloudflare DNS tfvars.
+- `docs/ai/notes/services/public-dns-test-a-record-2026-03.md`: Added a test
+  apex `A` record to the public-safe OpenTofu Cloudflare DNS tfvars.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Removed
   concrete domains and a personal repository SSH URL from documentation so those
   values remain in config and operational state instead of docs.
@@ -67,12 +67,9 @@
   demand by `scripts/nixbot-deploy.sh` from `data/secrets/cloudflare/*.key.age`
   when environment variables are absent.
 - `docs/ai/notes/services/opentofu-cloudflare-sensitive-tfvars-2026-03.md`:
-  Split Cloudflare DNS Terraform inputs into public-safe and encrypted sensitive
-  layers, merged at runtime by `scripts/nixbot-deploy.sh --action tf`.
-- `docs/ai/notes/services/nixbot-all-tf-gating-2026-03.md`: Made
-  `scripts/nixbot-deploy.sh` the sole source of truth for whether the TF phase
-  runs, added default `--action all`, and updated the main `nixbot` workflow to
-  expose `all|build|deploy|tf` plus `dry` and `force`.
+  Canonical sensitive-input note for the OpenTofu Cloudflare stack, including
+  public/secret tfvars split, directory autoloading, mixed-record type
+  relaxation, and imported secret zone data.
 - `docs/ai/notes/nixbot/runtime-shell-consolidation-2026-03.md`: Standardized
   `scripts/nixbot-deploy.sh` to re-exec inside a single `nix shell` runtime so
   deploy, bastion-trigger, and Terraform paths use the same packaged command set
@@ -84,9 +81,9 @@
   Canonical secret-topology note covering per-machine age identities, bastion
   ingress and deploy identities, service secret delivery, and clean-room
   bootstrap order.
-- `docs/ai/notes/services/pvl-x2-compose-config-centralization-2026-03.md`:
+- `docs/ai/notes/services/bastion-compose-config-centralization-2026-03.md`:
   Centralized bastion-host compose port metadata in per-instance Nix definitions
   and reused it for compose generation and firewall rules.
-- `docs/ai/notes/services/pvl-x2-service-migration-consolidated-2026-03.md`:
+- `docs/ai/notes/services/bastion-service-migration-consolidated-2026-03.md`:
   Consolidated bastion-host service adoption into repo-managed compose stacks
   and the aligned service-secret migration.

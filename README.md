@@ -33,8 +33,8 @@ allowed command.
 
 High-level architecture:
 
-- GitHub Actions connects to bastion (`pvl-x2`) using a restricted ingress key
-  and forced command (`ssh-gate`).
+- GitHub Actions connects to the configured bastion host using a restricted
+  ingress key and forced command (`ssh-gate`).
 - Bastion runs `scripts/nixbot-deploy.sh` to build/deploy selected NixOS hosts.
 - Deploy SSH key material is stored as age-encrypted secrets in
   `data/secrets/*.age`, with bootstrap and rotation rules documented in

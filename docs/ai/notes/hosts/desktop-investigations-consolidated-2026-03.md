@@ -1,8 +1,8 @@
-# pvl-a1 Desktop Investigations Consolidated Notes (2026-03)
+# Desktop Investigations Consolidated Notes (2026-03)
 
 ## Scope
 
-Canonical summary of the March 2026 `pvl-a1` desktop investigations covering
+Canonical summary of the March 2026 desktop investigations covering
 suspend/resume failures, GNOME idle lock behavior, and `amdxdna` firmware
 mismatch noise.
 
@@ -34,8 +34,8 @@ mismatch noise.
   mismatch, not a display-driver crash.
 - The mismatch reproduced across both observed kernel lines (`6.18.13` and
   `6.19.3`), so this was not a simple kernel-regression story.
-- Immediate safe mitigation was to blacklist `amdxdna` on `pvl-a1` if the NPU
-  was not needed.
+- Immediate safe mitigation was to blacklist `amdxdna` on the affected desktop
+  host if the NPU was not needed.
 
 ## Practical interpretation
 
@@ -46,6 +46,4 @@ mismatch noise.
 
 ## Superseded notes
 
-- `docs/ai/notes/pvl-a1-amdxdna-firmware-protocol-mismatch-2026-03-02.md`
-- `docs/ai/notes/pvl-a1-gnome-autolock-not-triggering-2026-03-02.md`
-- `docs/ai/notes/pvl-a1-suspend-resume-candidates-2026-03-02.md`
+- Earlier per-host desktop investigation notes from 2026-03-02.

@@ -55,10 +55,5 @@ injection, unit lifecycle, and related platform fixes.
 
 ## Superseded notes
 
-- `docs/ai/notes/pvl-podman-compose-consolidated-2026-03.md`
-- `docs/ai/notes/pvl-podman-compose-envsecrets-schema-simplification-2026-03-09.md`
-- `docs/ai/notes/pvl-podman-compose-systemd-quoting-fix.md`
-- `docs/ai/notes/pvl-podman-compose-user-unit-restart-on-switch.md`
-- `docs/ai/notes/pvl-systemd-user-manager-consolidated-2026-03.md`
-- `docs/ai/notes/pvl-x2-services-source-format-nix-attrs.md`
-- `docs/ai/notes/pvl-x2-services-yaml-source-format.md`
+- Earlier Podman compose, `envSecrets`, systemd quoting, restart, user-manager,
+  and service source-format notes from March 2026.

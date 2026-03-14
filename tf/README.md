@@ -5,9 +5,8 @@ This directory is the source of truth for Cloudflare-managed DNS.
 ## Scope
 
 This stack manages the Cloudflare DNS zones declared in `zones.auto.tfvars` and,
-when needed, the encrypted
-`data/secrets/cloudflare/zones-sensitive.auto.tfvars.age`. Keep concrete domain
-names in config and secrets, not in documentation.
+when needed, the encrypted `data/secrets/tf/*.tfvars.age` files. Keep concrete
+domain names in config and secrets, not in documentation.
 
 ## Layout
 
@@ -16,9 +15,8 @@ names in config and secrets, not in documentation.
 - `providers.tf`: Cloudflare provider configuration.
 - `main.tf`: zone lookups and DNS record resources.
 - `zones.auto.tfvars`: authoritative public-safe record definitions.
-- `data/secrets/cloudflare/zones-sensitive.auto.tfvars.age`: authoritative
-  encrypted record definitions loaded only for
-  `scripts/nixbot-deploy.sh
+- `data/secrets/tf/*.tfvars.age`: authoritative encrypted Terraform variable
+  files loaded only for `scripts/nixbot-deploy.sh
   --action tf`.
 
 ## Auth
@@ -31,16 +29,16 @@ export CLOUDFLARE_API_TOKEN=...
 
 The token should have DNS edit access for the managed zones.
 
-On `pvl-x2`, `scripts/nixbot-deploy.sh --action tf` can load the required
-Cloudflare, R2, and sensitive DNS values from repo-managed age secret files
-instead of exported shell variables:
+On the bastion host, `scripts/nixbot-deploy.sh --action tf` can load the
+required Cloudflare, R2, and sensitive DNS values from repo-managed age secret
+files instead of exported shell variables:
 
 - `data/secrets/cloudflare/api-token.key.age`
 - `data/secrets/cloudflare/r2-account-id.key.age`
 - `data/secrets/cloudflare/r2-state-bucket.key.age`
 - `data/secrets/cloudflare/r2-access-key-id.key.age`
 - `data/secrets/cloudflare/r2-secret-access-key.key.age`
-- `data/secrets/cloudflare/zones-sensitive.auto.tfvars.age`
+- any `data/secrets/tf/*.tfvars.age` files
 
 Those secrets stay in the repo and are decrypted on demand by
 `scripts/nixbot-deploy.sh` using the bastion's existing age identity.
@@ -69,11 +67,13 @@ tofu -chdir=tf init \
 ## Workflow
 
 1. Populate `zones.auto.tfvars` with public-safe records only.
-2. Put any origin-bearing or otherwise sensitive records in
-   `data/secrets/cloudflare/zones-sensitive.auto.tfvars.age` using the
-   `secret_zones` variable.
-3. Put reusable encrypted values in that same secret tfvars file under
-   `secrets = {}` and reference them from Terraform as `var.secrets["name"]`.
+2. Put any origin-bearing or otherwise sensitive records in a
+   `data/secrets/tf/*.tfvars.age` file, for example
+   `data/secrets/tf/cloudflare-zones.tfvars.age`, using the `secret_zones`
+   variable.
+3. Put reusable encrypted values in a `data/secrets/tf/*.tfvars.age` file, for
+   example `data/secrets/tf/secrets.tfvars.age`, under `secrets = {}` and
+   reference them from Terraform as `var.secrets["name"]`.
 4. Import existing Cloudflare DNS records into state before the first apply if
    those zones already contain records you want OpenTofu to own.
 5. Run `tofu -chdir=tf plan`.
@@ -98,8 +98,9 @@ R2_SECRET_ACCESS_KEY=... \
 
 The deploy script always enters a `nix shell` runtime using this repo's flake
 inputs, so `tofu` does not need to be preinstalled separately on the machine
-running it. When the secret tfvars file exists, the script decrypts it into a
-temp file and passes it via `-var-file` for that run only.
+running it. When encrypted secret tfvars files exist under `data/secrets/tf/`,
+the script decrypts each `*.tfvars.age` file into a temp file and passes it via
+`-var-file` for that run only, in sorted path order.
 
 Dry-run:
 

@@ -15,6 +15,8 @@ state.
   without embedding the full repo URL.
 - Generalized operational docs and AI notes so live hostnames, guest names, and
   example internal addresses no longer appear in prose.
+- Renamed several AI notes so host and zone identifiers no longer appear in the
+  docs index solely through note filenames.
 
 ## Notes
 

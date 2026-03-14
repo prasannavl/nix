@@ -1,13 +1,13 @@
-# gap3.ai Test A Record 2026-03
+# Public DNS Test A Record 2026-03
 
 ## Summary
 
-Added a test apex `A` record for `gap3.ai` in the public-safe OpenTofu tfvars.
+Added a test apex `A` record in the public-safe OpenTofu tfvars.
 
 ## What Changed
 
 - Added `name = "@"`, `type = "A"`, `content = "1.1.1.1"` under
-  `tf/zones.auto.tfvars` for the `gap3.ai` zone.
+  `tf/zones.auto.tfvars` for a public-safe zone entry.
 
 ## Notes
 

@@ -1,7 +1,7 @@
 # Cloudflare Tunnel Host Wiring 2026-03
 
-Configured `pvl-x2` and `llmug-rivendell` directly with native
-`services.cloudflared.tunnels` entries instead of a repo-local wrapper module.
+Configured hosts directly with native `services.cloudflared.tunnels` entries
+instead of a repo-local wrapper module.
 
 Behavior:
 
@@ -14,7 +14,7 @@ Example shape:
 
 ```nix
 age.secrets.cloudflare-tunnel-main-credentials = {
-  file = ../../data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age;
+  file = ../../data/secrets/cloudflare/tunnels/<host>-main.credentials.json.age;
   owner = "root";
   group = "root";
   mode = "0400";
@@ -38,12 +38,9 @@ services.cloudflared = {
 
 Current placeholder wiring:
 
-- `pvl-x2` uses placeholder tunnel UUID `11111111-1111-1111-1111-111111111111`
-  with example routes for `memos`, `docmost`, and `vaultwarden`.
-- `llmug-rivendell` uses placeholder tunnel UUID
-  `22222222-2222-2222-2222-222222222222` with an example route for `open-webui`.
-- These values are intended to be replaced with real UUIDs, hostnames, and
-  credentials filenames.
+- Placeholder tunnel UUIDs and example routes are used only to show the shape.
+- Real UUIDs, hostnames, and credential filenames belong in config and secrets,
+  not in docs.
 
 Operational note:
 

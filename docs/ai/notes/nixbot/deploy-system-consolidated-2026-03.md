@@ -75,6 +75,19 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   own `deps` would place it later.
 - Unknown selected hosts, unknown dependencies among selected hosts, or cycles
   in the selected dependency graph must fail the run before build/deploy starts.
+- `--action all` is the default public mode:
+  - run the TF phase first only when TF-relevant paths changed, unless
+    `--force` overrides the skip
+  - then continue with the normal host build + deploy flow
+- TF change detection lives only in `scripts/nixbot-deploy.sh` and currently
+  covers:
+  - `tf/**`
+  - `data/secrets/cloudflare/*.age`
+  - `data/secrets/tf/**`
+- `--dry` stays a flag, not a separate action:
+  - `all --dry` means TF plan-only when needed, then build/deploy dry-run
+  - `deploy --dry` keeps the host deploy dry-run behavior
+  - `tf --dry` runs TF plan-only
 
 ## Snapshot and rollback semantics
 
@@ -143,6 +156,10 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   - `permissions.id-token: write`
   - `oauth-client-id`, `audience`, and `tags: tag:ci`
   - generated per-run `TS_HOSTNAME`
+- Manual dispatch should stay aligned with the script surface:
+  `action = all|build|deploy|tf`, plus `dry` and `force`.
+- The separate TF-only workflow was removed; the main `nixbot` workflow
+  delegates TF gating decisions to `scripts/nixbot-deploy.sh`.
 
 ## Maintenance guidance
 
@@ -175,3 +192,4 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - `docs/ai/notes/nixbot-github-actions-tailscale-oauth-migration.md`
 - `docs/ai/notes/nixbot-machine-age-identity-model.md`
 - `docs/ai/notes/nixbot-remote-build-known-hosts-2026-03-09.md`
+- `docs/ai/notes/services/nixbot-all-tf-gating-2026-03.md`

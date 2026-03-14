@@ -112,8 +112,8 @@ Defaults may also include:
   - optional `--bastion-trigger`
   - optional TF phase
   - host orchestration
-- Keep SSH option assembly centralized in helpers so primary and bootstrap
-  paths share the same `known_hosts` and identity wiring rules.
+- Keep SSH option assembly centralized in helpers so primary and bootstrap paths
+  share the same `known_hosts` and identity wiring rules.
 
 ## Machine Age Identity Rotation Policy
 
