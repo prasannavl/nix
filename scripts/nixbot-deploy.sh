@@ -6,10 +6,10 @@ RUNTIME_SHELL_FLAG="${NIXBOT_DEPLOY_IN_NIX_SHELL:-0}"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action build|deploy|tf|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
 
 Core Workflow Options:
-  --action         build|deploy|tf|check-bootstrap (default: deploy)
+  --action         all|build|deploy|tf|check-bootstrap (default: all)
   --hosts          Comma/space-separated host list, or `all` (default: all)
   --goal           switch|boot|test|dry-activate (default: switch, deploy only)
   --build-jobs     Number of hosts to build in parallel (default: 1)
@@ -118,12 +118,14 @@ resolve_ssh_tty_stdin_path() {
 
 init_vars() {
   HOSTS_RAW="${DEPLOY_HOSTS:-all}"
-  ACTION="${DEPLOY_ACTION:-deploy}"
+  ACTION="${DEPLOY_ACTION:-all}"
   GOAL="${DEPLOY_GOAL:-switch}"
   BUILD_HOST="${DEPLOY_BUILD_HOST:-local}"
   BUILD_JOBS="${DEPLOY_BUILD_JOBS:-1}"
   DEPLOY_PARALLEL_JOBS="${DEPLOY_JOBS:-1}"
   DEPLOY_IF_CHANGED=1
+  TF_IF_CHANGED=1
+  FORCE_REQUESTED=0
   FORCE_BOOTSTRAP_PATH=0
   PRIORITIZE_BASTION_FIRST=0
   DRY_RUN=0
@@ -141,6 +143,7 @@ init_vars() {
   AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
   REEXEC_FROM_REPO=0
   TF_WORK_DIR="${DEPLOY_TF_DIR:-tf}"
+  TF_CHANGE_BASE_REF=""
 
   DEPLOY_USER_OVERRIDE="${DEPLOY_USER:-}"
   DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY:-}"
@@ -154,6 +157,8 @@ init_vars() {
 
   if parse_bool_env "${DEPLOY_FORCE:-0}"; then
     DEPLOY_IF_CHANGED=0
+    TF_IF_CHANGED=0
+    FORCE_REQUESTED=1
   fi
   if parse_bool_env "${DEPLOY_BASTION_FIRST:-0}"; then
     PRIORITIZE_BASTION_FIRST=1
@@ -367,6 +372,8 @@ parse_args() {
         ;;
       --force)
         DEPLOY_IF_CHANGED=0
+        TF_IF_CHANGED=0
+        FORCE_REQUESTED=1
         shift
         ;;
       --bootstrap)
@@ -523,7 +530,7 @@ parse_args() {
   [ -n "${HOSTS_RAW}" ] || die "--hosts cannot be empty"
 
   case "${ACTION}" in
-    build|deploy|tf|check-bootstrap) ;;
+    all|build|deploy|tf|check-bootstrap) ;;
     *) die "Unsupported --action: ${ACTION}" ;;
   esac
 
@@ -621,7 +628,7 @@ run_bastion_trigger() {
   [[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
 
   case "${ACTION}" in
-    build|deploy|tf|check-bootstrap) ;;
+    all|build|deploy|tf|check-bootstrap) ;;
     *) die "Unsupported --action for --bastion-trigger: ${ACTION}" ;;
   esac
 
@@ -636,7 +643,11 @@ run_bastion_trigger() {
   echo "Hosts: ${trigger_hosts}" >&2
   echo "SHA: ${trigger_sha}" >&2
   remote_command="--sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
-  if [ "${DEPLOY_IF_CHANGED}" -eq 0 ]; then
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    remote_command="${remote_command} --dry"
+    echo "Dry run: true" >&2
+  fi
+  if [ "${FORCE_REQUESTED}" -eq 1 ]; then
     remote_command="${remote_command} --force"
     echo "Force: true" >&2
   fi
@@ -653,6 +664,79 @@ require_cmds() {
     fi
   done
   [ "${missing}" -eq 0 ] || exit 1
+}
+
+is_deploy_style_action() {
+  [ "${ACTION}" = "deploy" ] || [ "${ACTION}" = "all" ]
+}
+
+is_tf_candidate_path() {
+  local path="$1"
+  case "${path}" in
+    tf|tf/*) return 0 ;;
+    data/secrets/cloudflare/api-token.key.age) return 0 ;;
+    data/secrets/cloudflare/r2-access-key-id.key.age) return 0 ;;
+    data/secrets/cloudflare/r2-account-id.key.age) return 0 ;;
+    data/secrets/cloudflare/r2-secret-access-key.key.age) return 0 ;;
+    data/secrets/cloudflare/r2-state-bucket.key.age) return 0 ;;
+    data/secrets/cloudflare/zones-sensitive.auto.tfvars.age) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+resolve_tf_change_base_ref() {
+  local target_ref="${1:-HEAD}"
+
+  if [ -n "${TF_CHANGE_BASE_REF}" ] && git rev-parse --verify "${TF_CHANGE_BASE_REF}" >/dev/null 2>&1; then
+    printf '%s\n' "${TF_CHANGE_BASE_REF}"
+    return 0
+  fi
+  if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
+    return 1
+  fi
+  if git rev-parse --verify "${target_ref}^1" >/dev/null 2>&1; then
+    printf '%s^1\n' "${target_ref}"
+    return 0
+  fi
+  return 1
+}
+
+should_run_tf_action() {
+  local target_ref base_ref diff_output diff_status
+  local path=""
+
+  if [ "${TF_IF_CHANGED}" -eq 0 ]; then
+    echo "OpenTofu change detection bypassed by --force" >&2
+    return 0
+  fi
+
+  target_ref="${SHA:-HEAD}"
+  if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
+    echo "OpenTofu change detection unavailable for ${target_ref}; running TF" >&2
+    return 0
+  fi
+
+  if ! base_ref="$(resolve_tf_change_base_ref "${target_ref}")"; then
+    echo "OpenTofu change base unavailable for ${target_ref}; running TF" >&2
+    return 0
+  fi
+
+  diff_output="$(git diff --name-only "${base_ref}" "${target_ref}" -- 2>/dev/null)" || diff_status=$?
+  if [ "${diff_status:-0}" -ne 0 ]; then
+    echo "OpenTofu change detection failed for ${base_ref}..${target_ref}; running TF" >&2
+    return 0
+  fi
+
+  while IFS= read -r path; do
+    [ -n "${path}" ] || continue
+    if is_tf_candidate_path "${path}"; then
+      echo "OpenTofu change detected: ${path}" >&2
+      return 0
+    fi
+  done <<< "${diff_output}"
+
+  echo "OpenTofu unchanged; skipping TF action" >&2
+  return 1
 }
 
 ensure_repo_for_sha() {
@@ -677,6 +761,7 @@ ensure_repo_for_sha() {
   [ -f "${REPO_PATH}/${REPO_DEPLOY_SCRIPT_REL}" ] || die "deploy script missing in repo checkout: ${REPO_PATH}/${REPO_DEPLOY_SCRIPT_REL}"
 
   cd "${REPO_PATH}"
+  TF_CHANGE_BASE_REF="$(git rev-parse --verify refs/remotes/origin/master 2>/dev/null || true)"
   if [ -f "${REPO_SSH_KEY_PATH}" ]; then
     GIT_SSH_COMMAND="${REPO_GIT_SSH_COMMAND}" git fetch --prune origin
   else
@@ -1130,7 +1215,7 @@ eval_host_out_path() {
 resolve_build_out_path() {
   local node="$1"
 
-  if [ "${ACTION}" = "deploy" ] && [ "${BUILD_HOST}" != "local" ]; then
+  if is_deploy_style_action && [ "${BUILD_HOST}" != "local" ]; then
     eval_host_out_path "${node}"
   else
     build_host "${node}"
@@ -2401,7 +2486,7 @@ run_hosts() {
   log_section "nixbot"
   echo "Action: ${ACTION}" >&2
   print_host_block "Hosts" "${selected_hosts[@]}"
-  if [ "${ACTION}" = "deploy" ]; then
+  if is_deploy_style_action; then
     echo "Goal: ${GOAL}" >&2
     echo "Build host: ${BUILD_HOST}" >&2
   fi
@@ -2887,13 +2972,17 @@ main() {
   ensure_repo_for_sha
   reexec_repo_script_if_needed "${request_args[@]}"
 
-  if [ "${ACTION}" = "deploy" ] || [ "${ACTION}" = "check-bootstrap" ]; then
+  if is_deploy_style_action || [ "${ACTION}" = "check-bootstrap" ]; then
     require_cmds age
   fi
 
-  if [ "${ACTION}" = "tf" ]; then
-    run_tf_action
-    return
+  if [ "${ACTION}" = "all" ] || [ "${ACTION}" = "tf" ]; then
+    if should_run_tf_action; then
+      run_tf_action
+    fi
+    if [ "${ACTION}" = "tf" ]; then
+      return
+    fi
   fi
 
   if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
@@ -2901,7 +2990,7 @@ main() {
     init_deploy_settings "${config_json}"
   fi
 
-  if [ "${ACTION}" = "deploy" ]; then
+  if is_deploy_style_action; then
     require_cmds nixos-rebuild
   fi
 
