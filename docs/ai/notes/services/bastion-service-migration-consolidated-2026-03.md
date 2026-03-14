@@ -3,9 +3,8 @@
 ## Scope
 
 Canonical summary of the March 2026 bastion-host service migration into
-repo-managed
-Podman compose stacks, including initial service adoption and the secret-layout
-cleanup that followed.
+repo-managed Podman compose stacks, including initial service adoption and the
+secret-layout cleanup that followed.
 
 ## Host adoption
 

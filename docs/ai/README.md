@@ -20,9 +20,9 @@
   behavior.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
   reusable Incus guest template and secret model for future guests.
-- `docs/ai/notes/hosts/incus-guest-tailscale-login-2026-03.md`: Added
-  reusable guest Tailscale autologin wiring via an agenix-managed secret in the
-  standard `data/secrets/tailscale/<host>.key.age` location.
+- `docs/ai/notes/hosts/incus-guest-tailscale-login-2026-03.md`: Added reusable
+  guest Tailscale autologin wiring via an agenix-managed secret in the standard
+  `data/secrets/tailscale/<host>.key.age` location.
 - `docs/ai/notes/hosts/cloudflare-tunnel-hosts-2026-03.md`: Added reusable
   Cloudflare Tunnel host wiring using direct native
   `services.cloudflared.tunnels` declarations with agenix-managed credentials

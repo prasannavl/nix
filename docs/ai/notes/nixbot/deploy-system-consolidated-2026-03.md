@@ -76,8 +76,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Unknown selected hosts, unknown dependencies among selected hosts, or cycles
   in the selected dependency graph must fail the run before build/deploy starts.
 - `--action all` is the default public mode:
-  - run the TF phase first only when TF-relevant paths changed, unless
-    `--force` overrides the skip
+  - run the TF phase first only when TF-relevant paths changed, unless `--force`
+    overrides the skip
   - then continue with the normal host build + deploy flow
 - TF change detection lives only in `scripts/nixbot-deploy.sh` and currently
   covers:

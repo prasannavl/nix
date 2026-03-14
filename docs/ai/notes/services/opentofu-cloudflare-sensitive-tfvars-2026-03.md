@@ -52,7 +52,8 @@ only be decrypted at `--action tf` runtime.
 - Imported records preserve exported TTLs, proxied flags, and MX priorities.
 - Zones with no managed non-NS/SOA records are still represented explicitly as
   `records = []` so the imported zone set is complete.
-- The import source was the provided text exports under `/home/pvl/Downloads/cf/`.
+- The import source was the provided text exports under
+  `/home/pvl/Downloads/cf/`.
 - No `.key` files under `data/secrets` were read.
 
 ## Canonical Interpretation
