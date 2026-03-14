@@ -220,7 +220,7 @@ init_vars() {
   TF_R2_STATE_BUCKET_PATH="data/secrets/cloudflare/r2-state-bucket.key.age"
   TF_R2_ACCESS_KEY_ID_PATH="data/secrets/cloudflare/r2-access-key-id.key.age"
   TF_R2_SECRET_ACCESS_KEY_PATH="data/secrets/cloudflare/r2-secret-access-key.key.age"
-  TF_SENSITIVE_VARS_PATH="data/secrets/cloudflare/zones-sensitive.auto.tfvars.age"
+  TF_SECRETS_DIR="data/secrets/tf"
 
   REPO_BASE="${REMOTE_NIXBOT_BASE}"
   REPO_PATH="${DEPLOY_REPO_PATH:-${REPO_BASE}/nix}"
@@ -231,6 +231,20 @@ init_vars() {
   clear_prepared_deploy_context
 
   normalize_host_action
+}
+
+is_tf_candidate_path() {
+  local path="$1"
+  case "${path}" in
+    tf|tf/*) return 0 ;;
+    data/secrets/cloudflare/api-token.key.age) return 0 ;;
+    data/secrets/cloudflare/r2-access-key-id.key.age) return 0 ;;
+    data/secrets/cloudflare/r2-account-id.key.age) return 0 ;;
+    data/secrets/cloudflare/r2-secret-access-key.key.age) return 0 ;;
+    data/secrets/cloudflare/r2-state-bucket.key.age) return 0 ;;
+    data/secrets/tf|data/secrets/tf/*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 set_env_from_file_if_unset() {
@@ -702,20 +716,6 @@ is_bootstrap_check_action() {
 
 action_includes_tf_phase() {
   [ "${ACTION}" = "all" ] || [ "${ACTION}" = "tf" ]
-}
-
-is_tf_candidate_path() {
-  local path="$1"
-  case "${path}" in
-    tf|tf/*) return 0 ;;
-    data/secrets/cloudflare/api-token.key.age) return 0 ;;
-    data/secrets/cloudflare/r2-access-key-id.key.age) return 0 ;;
-    data/secrets/cloudflare/r2-account-id.key.age) return 0 ;;
-    data/secrets/cloudflare/r2-secret-access-key.key.age) return 0 ;;
-    data/secrets/cloudflare/r2-state-bucket.key.age) return 0 ;;
-    data/secrets/cloudflare/zones-sensitive.auto.tfvars.age) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 resolve_tf_change_base_ref() {
@@ -2799,18 +2799,26 @@ run_tf_action() {
     -backend-config="use_path_style=true"
   )
 
-  sensitive_var_file="$(resolve_runtime_key_file "${TF_SENSITIVE_VARS_PATH}")"
-  if [ -f "${sensitive_var_file}" ]; then
-    echo "Sensitive tfvars: ${TF_SENSITIVE_VARS_PATH}" >&2
-  else
-    echo "Sensitive tfvars: not present, continuing with public zones only" >&2
+  tf_var_files=()
+  while IFS= read -r tf_var_path; do
+    resolved_tf_var_file="$(resolve_runtime_key_file "${tf_var_path}")"
+    if [ -f "${resolved_tf_var_file}" ]; then
+      echo "Sensitive tfvars: ${tf_var_path}" >&2
+      tf_var_files+=("${resolved_tf_var_file}")
+    else
+      echo "Sensitive tfvars: ${tf_var_path} not present" >&2
+    fi
+  done < <(find "${TF_SECRETS_DIR}" -maxdepth 1 -type f -name '*.tfvars.age' | sort)
+
+  if [ "${#tf_var_files[@]}" -eq 0 ]; then
+    echo "Sensitive tfvars: no *.tfvars.age files found under ${TF_SECRETS_DIR}" >&2
   fi
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     plan_cmd=(tofu -chdir="${tf_dir}" plan -input=false)
-    if [ -f "${sensitive_var_file}" ]; then
-      plan_cmd+=(-var-file="${sensitive_var_file}")
-    fi
+    for tf_var_file in "${tf_var_files[@]}"; do
+      plan_cmd+=(-var-file="${tf_var_file}")
+    done
     "${init_cmd[@]}"
     "${plan_cmd[@]}"
     return
@@ -2820,9 +2828,9 @@ run_tf_action() {
   plan_file="$(mktemp "${DEPLOY_TMP_DIR}/tfplan.XXXXXX")"
 
   plan_cmd=(tofu -chdir="${tf_dir}" plan -input=false -out="${plan_file}")
-  if [ -f "${sensitive_var_file}" ]; then
-    plan_cmd+=(-var-file="${sensitive_var_file}")
-  fi
+  for tf_var_file in "${tf_var_files[@]}"; do
+    plan_cmd+=(-var-file="${tf_var_file}")
+  done
   apply_cmd=(tofu -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}")
 
   "${init_cmd[@]}"

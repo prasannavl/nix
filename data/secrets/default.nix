@@ -38,7 +38,10 @@ in
     "data/secrets/cloudflare/r2-state-bucket.key.age".publicKeys = admins ++ pvl-x2;
     "data/secrets/cloudflare/r2-access-key-id.key.age".publicKeys = admins ++ pvl-x2;
     "data/secrets/cloudflare/r2-secret-access-key.key.age".publicKeys = admins ++ pvl-x2;
-    "data/secrets/cloudflare/zones-sensitive.auto.tfvars.age".publicKeys = admins ++ pvl-x2;
+
+    # Terraform Secrets
+    "data/secrets/tf/secrets.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-zones.tfvars.age".publicKeys = adminsWithNixbot;
 
     # Cloudflare tunnels
     "data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age".publicKeys = admins ++ pvl-x2;

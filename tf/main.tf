@@ -1,5 +1,5 @@
 data "cloudflare_zone" "zone" {
-  for_each = var.zones
+  for_each = local.zone_names
 
   filter = {
     match  = "all"
