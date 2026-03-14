@@ -97,10 +97,18 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Keep `run_hosts` as a thin orchestrator. Build-phase setup, snapshot retry
   handling, and deploy-wave execution should live in dedicated helpers so
   rollback/failure semantics stay aligned across future edits.
+- Keep `main` phase-oriented: argument parsing, optional bastion-trigger hop,
+  optional TF phase, then host orchestration should remain split across small
+  top-level helpers rather than one large control-flow block.
 - Nested Bash nameref helpers must not reuse the caller's local variable names
   (for example `foo_ref` passed to a helper that also declares
   `local -n foo_ref=...`), or Bash 5.3 emits circular-name-reference warnings
   and the helper may not update the intended array.
+- Keep `PREP_*` as the shared deploy-context store, but only read it through
+  small materialization helpers (`use_prepared_*`) so per-host phases take the
+  minimum context they need instead of reaching into globals directly.
+- Reset `PREP_*` once at the start of `prepare_deploy_context`; failed
+  preparation must not leave stale context behind for later phases.
 - Do not rely on `set -e` to abort later commands inside a command substitution
   or grouped command used for assignment. If a preparation step must gate the
   next command, test it explicitly before running the probe/action.
@@ -140,6 +148,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 
 - Add new deploy behavior once in shared helpers, not by splitting sequential
   and parallel paths again.
+- Build SSH option lists through shared helpers for known-hosts and identity
+  overlays; do not duplicate primary/bootstrap option assembly in-line.
 - Preserve the trust boundary between the installed bastion wrapper and freshly
   checked-out repo code unless a run explicitly opts out.
 - Treat dependency metadata as orchestration hints only; it is not a substitute

@@ -54,6 +54,8 @@
   stack using the official Cloudflare provider, executed through
   `scripts/nixbot-deploy.sh --action tf` locally, via bastion, or from the
   existing `nixbot` GitHub workflow.
+- `docs/ai/notes/services/gap3-ai-test-a-record-2026-03.md`: Added a test apex
+  `A` record for `gap3.ai` to the public-safe OpenTofu Cloudflare DNS tfvars.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Removed
   concrete domains and a personal repository SSH URL from documentation so those
   values remain in config and operational state instead of docs.
@@ -67,6 +69,10 @@
 - `docs/ai/notes/services/opentofu-cloudflare-sensitive-tfvars-2026-03.md`:
   Split Cloudflare DNS Terraform inputs into public-safe and encrypted sensitive
   layers, merged at runtime by `scripts/nixbot-deploy.sh --action tf`.
+- `docs/ai/notes/services/nixbot-all-tf-gating-2026-03.md`: Made
+  `scripts/nixbot-deploy.sh` the sole source of truth for whether the TF phase
+  runs, added default `--action all`, and updated the main `nixbot` workflow to
+  expose `all|build|deploy|tf` plus `dry` and `force`.
 - `docs/ai/notes/nixbot/runtime-shell-consolidation-2026-03.md`: Standardized
   `scripts/nixbot-deploy.sh` to re-exec inside a single `nix shell` runtime so
   deploy, bastion-trigger, and Terraform paths use the same packaged command set

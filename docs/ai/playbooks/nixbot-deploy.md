@@ -77,6 +77,9 @@ Defaults may also include:
 - Script may still fallback to bootstrap user for `nixos-rebuild --target-host`
   flow.
 - Script caches bootstrap readiness within one run.
+- Script keeps per-host prepared deploy state in `PREP_*`, but host phases
+  should materialize that state through the helper readers instead of accessing
+  globals ad hoc.
 - Bootstrap injection installs key material to `/var/lib/nixbot/.ssh/id_ed25519`
   on the target.
 - When replacing `/var/lib/nixbot/.ssh/id_ed25519`, bootstrap preserves the
@@ -92,7 +95,8 @@ Defaults may also include:
 ## Effective Deploy Sequence
 
 1. Build host system closure.
-2. Resolve bootstrap/primary SSH path and prepare deploy context.
+2. Resolve bootstrap/primary SSH path, reset any stale prepared context, and
+   prepare the deploy context.
 3. Ensure target has deploy bootstrap key when needed
    (`/var/lib/nixbot/.ssh/id_ed25519`).
 4. Inject host machine age identity from `hosts.<node>.ageIdentityKey` to
@@ -100,6 +104,16 @@ Defaults may also include:
 5. Run `nixos-rebuild` on target.
 6. agenix decrypts with
    `age.identityPaths = [ "/var/lib/nixbot/.age/identity" ]`.
+
+## Script Structure Guidance
+
+- Keep top-level flow phase-oriented:
+  - parse args
+  - optional `--bastion-trigger`
+  - optional TF phase
+  - host orchestration
+- Keep SSH option assembly centralized in helpers so primary and bootstrap
+  paths share the same `known_hosts` and identity wiring rules.
 
 ## Machine Age Identity Rotation Policy
 

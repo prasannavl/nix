@@ -119,6 +119,7 @@ resolve_ssh_tty_stdin_path() {
 init_vars() {
   HOSTS_RAW="${DEPLOY_HOSTS:-all}"
   ACTION="${DEPLOY_ACTION:-all}"
+  HOST_ACTION=""
   GOAL="${DEPLOY_GOAL:-switch}"
   BUILD_HOST="${DEPLOY_BUILD_HOST:-local}"
   BUILD_JOBS="${DEPLOY_BUILD_JOBS:-1}"
@@ -156,9 +157,7 @@ init_vars() {
   fi
 
   if parse_bool_env "${DEPLOY_FORCE:-0}"; then
-    DEPLOY_IF_CHANGED=0
-    TF_IF_CHANGED=0
-    FORCE_REQUESTED=1
+    enable_force_mode
   fi
   if parse_bool_env "${DEPLOY_BASTION_FIRST:-0}"; then
     PRIORITIZE_BASTION_FIRST=1
@@ -167,18 +166,16 @@ init_vars() {
     FORCE_BOOTSTRAP_PATH=1
   fi
   if parse_bool_env "${DEPLOY_DRY:-0}"; then
-    DRY_RUN=1
-    DEPLOY_IF_CHANGED=0
+    enable_dry_run_mode
   fi
   if parse_bool_env "${DEPLOY_NO_ROLLBACK:-0}"; then
     ROLLBACK_ON_FAILURE=0
   fi
   if [ -n "${DEPLOY_PREFIX_HOST_LOGS:-}" ]; then
-    PREFIX_HOST_LOGS_EXPLICIT=1
     if parse_bool_env "${DEPLOY_PREFIX_HOST_LOGS}"; then
-      FORCE_PREFIX_HOST_LOGS=1
+      set_prefix_host_logs_mode 1
     else
-      FORCE_PREFIX_HOST_LOGS=0
+      set_prefix_host_logs_mode 0
     fi
   fi
   if parse_bool_env "${DEPLOY_BASTION_TRIGGER:-0}"; then
@@ -231,12 +228,9 @@ init_vars() {
   REPO_SSH_KEY_PATH="${REMOTE_NIXBOT_PRIMARY_KEY}"
   REPO_GIT_SSH_COMMAND="ssh -i ${REPO_SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
-  # Prepared per-node context.
-  PREP_DEPLOY_SSH_TARGET=""
-  PREP_DEPLOY_NIX_SSHOPTS=""
-  PREP_USING_BOOTSTRAP_FALLBACK=0
-  PREP_DEPLOY_AGE_IDENTITY_KEY=""
-  PREP_DEPLOY_SSH_OPTS=()
+  clear_prepared_deploy_context
+
+  normalize_host_action
 }
 
 set_env_from_file_if_unset() {
@@ -254,7 +248,7 @@ set_env_from_file_if_unset() {
   fi
 
   printf -v "${var_name}" '%s' "${value}"
-  export "${var_name}"
+  export "${var_name?}"
 }
 
 load_tf_runtime_secrets() {
@@ -288,6 +282,34 @@ parse_bool_env() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     ""|0|false|FALSE|no|NO|off|OFF) return 1 ;;
     *) die "Unsupported boolean value: ${raw}" ;;
+  esac
+}
+
+enable_force_mode() {
+  DEPLOY_IF_CHANGED=0
+  TF_IF_CHANGED=0
+  FORCE_REQUESTED=1
+}
+
+enable_dry_run_mode() {
+  DRY_RUN=1
+  DEPLOY_IF_CHANGED=0
+}
+
+set_prefix_host_logs_mode() {
+  local enabled="$1"
+  PREFIX_HOST_LOGS_EXPLICIT=1
+  FORCE_PREFIX_HOST_LOGS="${enabled}"
+}
+
+normalize_host_action() {
+  case "${ACTION}" in
+    all)
+      HOST_ACTION="deploy"
+      ;;
+    *)
+      HOST_ACTION="${ACTION}"
+      ;;
   esac
 }
 
@@ -371,9 +393,7 @@ parse_args() {
         shift
         ;;
       --force)
-        DEPLOY_IF_CHANGED=0
-        TF_IF_CHANGED=0
-        FORCE_REQUESTED=1
+        enable_force_mode
         shift
         ;;
       --bootstrap)
@@ -385,8 +405,7 @@ parse_args() {
         shift
         ;;
       --dry)
-        DRY_RUN=1
-        DEPLOY_IF_CHANGED=0
+        enable_dry_run_mode
         shift
         ;;
       --no-rollback)
@@ -394,8 +413,7 @@ parse_args() {
         shift
         ;;
       --prefix-host-logs)
-        FORCE_PREFIX_HOST_LOGS=1
-        PREFIX_HOST_LOGS_EXPLICIT=1
+        set_prefix_host_logs_mode 1
         shift
         ;;
       --user)
@@ -533,6 +551,7 @@ parse_args() {
     all|build|deploy|tf|check-bootstrap) ;;
     *) die "Unsupported --action: ${ACTION}" ;;
   esac
+  normalize_host_action
 
   case "${GOAL}" in
     switch|boot|test|dry-activate) ;;
@@ -642,6 +661,9 @@ run_bastion_trigger() {
   echo "Action: ${ACTION}" >&2
   echo "Hosts: ${trigger_hosts}" >&2
   echo "SHA: ${trigger_sha}" >&2
+  # Intentionally forward only the bastion-safe subset here. The remote side is
+  # expected to use its repo-local defaults/config for everything else so local
+  # operator overrides do not silently reshape bastion execution.
   remote_command="--sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
   if [ "${DRY_RUN}" -eq 1 ]; then
     remote_command="${remote_command} --dry"
@@ -667,7 +689,19 @@ require_cmds() {
 }
 
 is_deploy_style_action() {
-  [ "${ACTION}" = "deploy" ] || [ "${ACTION}" = "all" ]
+  [ "${HOST_ACTION}" = "deploy" ]
+}
+
+is_host_build_only_action() {
+  [ "${HOST_ACTION}" = "build" ]
+}
+
+is_bootstrap_check_action() {
+  [ "${ACTION}" = "check-bootstrap" ]
+}
+
+action_includes_tf_phase() {
+  [ "${ACTION}" = "all" ] || [ "${ACTION}" = "tf" ]
 }
 
 is_tf_candidate_path() {
@@ -740,6 +774,8 @@ should_run_tf_action() {
 }
 
 ensure_repo_for_sha() {
+  local remote_default_ref=""
+
   if [ -z "${SHA}" ]; then
     return
   fi
@@ -761,11 +797,17 @@ ensure_repo_for_sha() {
   [ -f "${REPO_PATH}/${REPO_DEPLOY_SCRIPT_REL}" ] || die "deploy script missing in repo checkout: ${REPO_PATH}/${REPO_DEPLOY_SCRIPT_REL}"
 
   cd "${REPO_PATH}"
-  TF_CHANGE_BASE_REF="$(git rev-parse --verify refs/remotes/origin/master 2>/dev/null || true)"
   if [ -f "${REPO_SSH_KEY_PATH}" ]; then
     GIT_SSH_COMMAND="${REPO_GIT_SSH_COMMAND}" git fetch --prune origin
   else
     git fetch --prune origin
+  fi
+  remote_default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "${remote_default_ref}" ]; then
+    TF_CHANGE_BASE_REF="$(git rev-parse --verify "${remote_default_ref}" 2>/dev/null || true)"
+  fi
+  if [ -z "${TF_CHANGE_BASE_REF}" ]; then
+    TF_CHANGE_BASE_REF="$(git rev-parse --verify refs/remotes/origin/master 2>/dev/null || true)"
   fi
   git checkout --detach "${SHA}"
 }
@@ -1408,25 +1450,22 @@ inject_bootstrap_nixbot_key() {
     return
   fi
 
-  # shellcheck disable=SC2029
-  remote_tmp="$(ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "umask 077; mktemp ${REMOTE_BOOTSTRAP_KEY_TMP_PREFIX}XXXXXX")"
+  remote_tmp="$(create_remote_tmp_file "${bootstrap_ssh_target}" "${REMOTE_BOOTSTRAP_KEY_TMP_PREFIX}" "${bootstrap_ssh_opts[@]}")"
   if [ -z "${remote_tmp}" ]; then
     echo "Failed to allocate remote temporary file for bootstrap key on ${node}" >&2
     return 1
   fi
 
-  if ! scp "${bootstrap_ssh_opts[@]}" "${bootstrap_key_file}" "${bootstrap_ssh_target}:${remote_tmp}"; then
-    # shellcheck disable=SC2029
-    ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
+  if ! copy_local_file_to_remote_tmp "${bootstrap_key_file}" "${bootstrap_ssh_target}" "${remote_tmp}" "${bootstrap_ssh_opts[@]}"; then
+    cleanup_remote_tmp_file "${bootstrap_ssh_target}" "${remote_tmp}" "${bootstrap_ssh_opts[@]}"
     return 1
   fi
 
   remote_install_cmd="$(build_remote_bootstrap_install_cmd "${remote_tmp}" "${bootstrap_dest}" "${bootstrap_legacy_dest}")"
 
   echo "==> Injecting bootstrap nixbot key for ${node}"
-  if ! ssh -tt "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "${remote_install_cmd}" <"$(resolve_ssh_tty_stdin_path)"; then
-    # shellcheck disable=SC2029
-    ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
+  if ! run_remote_install_with_tty "${bootstrap_ssh_target}" "${remote_install_cmd}" "${bootstrap_ssh_opts[@]}"; then
+    cleanup_remote_tmp_file "${bootstrap_ssh_target}" "${remote_tmp}" "${bootstrap_ssh_opts[@]}"
     return 1
   fi
 }
@@ -1435,33 +1474,72 @@ build_remote_bootstrap_install_cmd() {
   local remote_tmp="$1"
   local bootstrap_dest="$2"
   local bootstrap_legacy_dest="$3"
+  # shellcheck disable=SC2016
+  local before_install_cmd='if sudo test -f "${remote_dest}"; then sudo install -m 0400 "${remote_dest}" "${bootstrap_legacy_dest}"; fi'
+  # shellcheck disable=SC2016
+  local after_install_cmd='if sudo id -u nixbot >/dev/null 2>&1; then sudo chown -R nixbot:nixbot '"${REMOTE_NIXBOT_SSH_DIR}"'; fi'
+
+  build_remote_install_file_cmd \
+    "${remote_tmp}" \
+    "${bootstrap_dest}" \
+    "${REMOTE_NIXBOT_SSH_DIR}" \
+    "0700" \
+    "0400" \
+    "${before_install_cmd}" \
+    "${after_install_cmd}" \
+    "bootstrap_legacy_dest='${bootstrap_legacy_dest}'"
+}
+
+build_remote_install_file_cmd() {
+  local remote_tmp="$1"
+  local remote_dest="$2"
+  local remote_dir="$3"
+  local remote_dir_mode="$4"
+  local remote_file_mode="$5"
+  local before_install_cmd="${6:-}"
+  local after_install_cmd="${7:-}"
+  local extra_vars="${8:-}"
 
   cat <<EOF
-install_bootstrap_key() {
+install_managed_file() {
   remote_tmp='${remote_tmp}'
-  bootstrap_dest='${bootstrap_dest}'
-  bootstrap_legacy_dest='${bootstrap_legacy_dest}'
+  remote_dest='${remote_dest}'
+  remote_dir='${remote_dir}'
+  remote_dir_mode='${remote_dir_mode}'
+  remote_file_mode='${remote_file_mode}'
+  ${extra_vars}
 
   if ! command -v sudo >/dev/null 2>&1; then
-    echo "sudo is required to install \${bootstrap_dest}" >&2
+    echo "sudo is required to install \${remote_dest}" >&2
     return 1
   fi
 
   sudo install -d -m 0755 ${REMOTE_NIXBOT_BASE}
-  sudo install -d -m 0700 ${REMOTE_NIXBOT_SSH_DIR}
-  if sudo test -f "\${bootstrap_dest}"; then
-    sudo install -m 0400 "\${bootstrap_dest}" "\${bootstrap_legacy_dest}"
-  fi
-  sudo install -m 0400 "\${remote_tmp}" "\${bootstrap_dest}"
+  sudo install -d -m "\${remote_dir_mode}" "\${remote_dir}"
+  ${before_install_cmd}
+  sudo install -m "\${remote_file_mode}" "\${remote_tmp}" "\${remote_dest}"
   rm -f "\${remote_tmp}"
-
-  if sudo id -u nixbot >/dev/null 2>&1; then
-    sudo chown -R nixbot:nixbot ${REMOTE_NIXBOT_SSH_DIR}
-  fi
-
+  ${after_install_cmd}
   return 0
 }
-install_bootstrap_key
+install_managed_file
+EOF
+}
+
+build_remote_file_value_check_cmd() {
+  local remote_dest="$1"
+  local expected_value="$2"
+  local read_cmd="$3"
+
+  cat <<EOF
+dest='${remote_dest}'
+want='${expected_value}'
+if ! command -v sudo >/dev/null 2>&1; then
+  echo "sudo is required to validate \${dest}" >&2
+  exit 1
+fi
+current="\$(DEST="\${dest}" sudo -n env DEST="\${dest}" sh -c '${read_cmd}' 2>/dev/null || true)"
+[ "\${current}" = "\${want}" ]
 EOF
 }
 
@@ -1469,15 +1547,166 @@ build_remote_has_bootstrap_key_cmd() {
   local bootstrap_dest="$1"
   local expected_bootstrap_fpr="$2"
 
-  cat <<EOF
-dest='${bootstrap_dest}'
-want='${expected_bootstrap_fpr}'
-if ! command -v sudo >/dev/null 2>&1; then
-  echo "sudo is required to validate \${dest}" >&2
-  exit 1
-fi
-[ "\$(sudo -n ssh-keygen -lf "\${dest}" 2>/dev/null | tr -s " " | cut -d " " -f2 || true)" = "\${want}" ]
-EOF
+  # shellcheck disable=SC2016
+  build_remote_file_value_check_cmd \
+    "${bootstrap_dest}" \
+    "${expected_bootstrap_fpr}" \
+    'ssh-keygen -lf "$DEST" | tr -s " " | cut -d " " -f2'
+}
+
+create_remote_tmp_file() {
+  local ssh_target="$1"
+  local tmp_prefix="$2"
+  shift 2
+  local -a ssh_opts=("$@")
+
+  # shellcheck disable=SC2029
+  ssh "${ssh_opts[@]}" "${ssh_target}" "umask 077; mktemp ${tmp_prefix}XXXXXX"
+}
+
+cleanup_remote_tmp_file() {
+  local ssh_target="$1"
+  local remote_tmp="$2"
+  shift 2
+  local -a ssh_opts=("$@")
+
+  [ -n "${remote_tmp}" ] || return 0
+  # shellcheck disable=SC2029
+  ssh "${ssh_opts[@]}" "${ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
+}
+
+copy_local_file_to_remote_tmp() {
+  local local_file="$1"
+  local ssh_target="$2"
+  local remote_tmp="$3"
+  shift 3
+  local -a ssh_opts=("$@")
+
+  scp "${ssh_opts[@]}" "${local_file}" "${ssh_target}:${remote_tmp}"
+}
+
+run_remote_install_with_tty() {
+  local ssh_target="$1"
+  local install_cmd="$2"
+  shift 2
+  local -a ssh_opts=("$@")
+
+  ssh -tt "${ssh_opts[@]}" "${ssh_target}" "${install_cmd}" <"$(resolve_ssh_tty_stdin_path)"
+}
+
+set_prepared_deploy_context() {
+  local ssh_target="$1"
+  local nix_sshopts="$2"
+  local using_bootstrap_fallback="$3"
+  local age_identity_key="$4"
+  shift 4
+  local -a ssh_opts=("$@")
+
+  PREP_DEPLOY_SSH_TARGET="${ssh_target}"
+  PREP_DEPLOY_SSH_OPTS=("${ssh_opts[@]}")
+  PREP_DEPLOY_NIX_SSHOPTS="${nix_sshopts}"
+  PREP_USING_BOOTSTRAP_FALLBACK="${using_bootstrap_fallback}"
+  PREP_DEPLOY_AGE_IDENTITY_KEY="${age_identity_key}"
+}
+
+clear_prepared_deploy_context() {
+  PREP_DEPLOY_SSH_TARGET=""
+  PREP_DEPLOY_NIX_SSHOPTS=""
+  PREP_USING_BOOTSTRAP_FALLBACK=0
+  PREP_DEPLOY_AGE_IDENTITY_KEY=""
+  PREP_DEPLOY_SSH_OPTS=()
+}
+
+use_prepared_deploy_context() {
+  local -n ssh_target_out="$1"
+  local -n nix_sshopts_out="$2"
+  local -n using_bootstrap_fallback_out="$3"
+  local -n age_identity_key_out="$4"
+  local -n ssh_opts_out="$5"
+
+  # shellcheck disable=SC2034
+  ssh_target_out="${PREP_DEPLOY_SSH_TARGET}"
+  # shellcheck disable=SC2034
+  nix_sshopts_out="${PREP_DEPLOY_NIX_SSHOPTS}"
+  # shellcheck disable=SC2034
+  using_bootstrap_fallback_out="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  # shellcheck disable=SC2034
+  age_identity_key_out="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+  # shellcheck disable=SC2034
+  ssh_opts_out=("${PREP_DEPLOY_SSH_OPTS[@]}")
+}
+
+init_known_hosts_ssh_context() {
+  local batch_mode="$1"
+  local known_hosts_file="$2"
+  # shellcheck disable=SC2178
+  local -n ssh_opts_out="$3"
+  local -n nix_sshopts_out="$4"
+
+  ssh_opts_out=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
+  nix_sshopts_out="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
+
+  if [ "${batch_mode}" -eq 1 ]; then
+    ssh_opts_out=(-o BatchMode=yes "${ssh_opts_out[@]}")
+    nix_sshopts_out="-o BatchMode=yes ${nix_sshopts_out}"
+  fi
+}
+
+apply_identity_to_ssh_context() {
+  local key_file="$1"
+  # shellcheck disable=SC2178
+  local -n ssh_opts_out="$2"
+  local -n nix_sshopts_out="$3"
+
+  ssh_opts_out=(-i "${key_file}" -o IdentitiesOnly=yes "${ssh_opts_out[@]}")
+  if [ -n "${nix_sshopts_out}" ]; then
+    nix_sshopts_out="-i ${key_file} -o IdentitiesOnly=yes ${nix_sshopts_out}"
+  else
+    nix_sshopts_out="-i ${key_file} -o IdentitiesOnly=yes"
+  fi
+}
+
+use_prepared_ssh_context() {
+  local -n ssh_target_out="$1"
+  # shellcheck disable=SC2178
+  local -n ssh_opts_out="$2"
+
+  # shellcheck disable=SC2034
+  ssh_target_out="${PREP_DEPLOY_SSH_TARGET}"
+  # shellcheck disable=SC2034
+  ssh_opts_out=("${PREP_DEPLOY_SSH_OPTS[@]}")
+}
+
+use_prepared_ssh_sudo_context() {
+  local -n ssh_target_out="$1"
+  local -n using_bootstrap_fallback_out="$2"
+  # shellcheck disable=SC2178
+  local -n ssh_opts_out="$3"
+
+  # shellcheck disable=SC2034
+  ssh_target_out="${PREP_DEPLOY_SSH_TARGET}"
+  # shellcheck disable=SC2034
+  using_bootstrap_fallback_out="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  # shellcheck disable=SC2034
+  ssh_opts_out=("${PREP_DEPLOY_SSH_OPTS[@]}")
+}
+
+ensure_bootstrap_key_ready() {
+  local node="$1"
+  local bootstrap_ssh_target="$2"
+  local bootstrap_nixbot_key_path="$3"
+  shift 3
+  local -a bootstrap_ssh_opts=("$@")
+
+  if [ -z "${bootstrap_nixbot_key_path}" ]; then
+    return 0
+  fi
+  if is_bootstrap_ready "${node}"; then
+    echo "==> Reusing bootstrap readiness for ${node} from earlier step"
+    return 0
+  fi
+  inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_nixbot_key_path}" "${bootstrap_ssh_opts[@]}" || return 1
+  mark_bootstrap_ready "${node}"
 }
 
 inject_host_age_identity_key() {
@@ -1512,60 +1741,41 @@ inject_host_age_identity_key() {
     return 1
   fi
 
-  remote_has_cmd="$(cat <<EOF
-dest='${remote_dest}'
-want='${expected_sha}'
-if ! command -v sudo >/dev/null 2>&1; then
-  echo "sudo is required to validate \${dest}" >&2
-  exit 1
-fi
-[ "\$(sudo -n sha256sum "\${dest}" 2>/dev/null | awk '{print \$1}' || true)" = "\${want}" ]
-EOF
-)"
+  # shellcheck disable=SC2016
+  remote_has_cmd="$(build_remote_file_value_check_cmd \
+    "${remote_dest}" \
+    "${expected_sha}" \
+    'set -- $(sha256sum "$DEST"); printf "%s\n" "$1"')"
   # shellcheck disable=SC2029
   if ssh "${ssh_opts[@]}" "${ssh_target}" "${remote_has_cmd}" >/dev/null 2>&1; then
     echo "==> Skipping host age identity for ${node}; matching key already present on target"
     return
   fi
 
-  # shellcheck disable=SC2029
-  remote_tmp="$(ssh "${ssh_opts[@]}" "${ssh_target}" "umask 077; mktemp ${REMOTE_AGE_IDENTITY_TMP_PREFIX}XXXXXX")"
+  remote_tmp="$(create_remote_tmp_file "${ssh_target}" "${REMOTE_AGE_IDENTITY_TMP_PREFIX}" "${ssh_opts[@]}")"
   if [ -z "${remote_tmp}" ]; then
     echo "Failed to allocate remote temporary file for host age identity on ${node}" >&2
     return 1
   fi
 
-  if ! scp "${ssh_opts[@]}" "${age_identity_key_file}" "${ssh_target}:${remote_tmp}"; then
-    # shellcheck disable=SC2029
-    ssh "${ssh_opts[@]}" "${ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
+  if ! copy_local_file_to_remote_tmp "${age_identity_key_file}" "${ssh_target}" "${remote_tmp}" "${ssh_opts[@]}"; then
+    cleanup_remote_tmp_file "${ssh_target}" "${remote_tmp}" "${ssh_opts[@]}"
     return 1
   fi
 
-  remote_install_cmd="$(cat <<EOF
-install_age_identity() {
-  remote_tmp='${remote_tmp}'
-  remote_dest='${remote_dest}'
-
-  if ! command -v sudo >/dev/null 2>&1; then
-    echo "sudo is required to install \${remote_dest}" >&2
-    return 1
-  fi
-
-  sudo install -d -m 0755 ${REMOTE_NIXBOT_BASE}
-  sudo install -d -m 0700 ${REMOTE_NIXBOT_AGE_DIR}
-  sudo install -m 0400 "\${remote_tmp}" "\${remote_dest}"
-  sudo chown root:root "\${remote_dest}"
-  rm -f "\${remote_tmp}"
-  return 0
-}
-install_age_identity
-EOF
-)"
+  # shellcheck disable=SC2016
+  remote_install_cmd="$(build_remote_install_file_cmd \
+    "${remote_tmp}" \
+    "${remote_dest}" \
+    "${REMOTE_NIXBOT_AGE_DIR}" \
+    "0700" \
+    "0400" \
+    "" \
+    'sudo chown root:root "${remote_dest}"')"
 
   echo "==> Injecting host age identity for ${node}"
-  if ! ssh -tt "${ssh_opts[@]}" "${ssh_target}" "${remote_install_cmd}" <"$(resolve_ssh_tty_stdin_path)"; then
-    # shellcheck disable=SC2029
-    ssh "${ssh_opts[@]}" "${ssh_target}" "rm -f '${remote_tmp}'" >/dev/null 2>&1 || true
+  if ! run_remote_install_with_tty "${ssh_target}" "${remote_install_cmd}" "${ssh_opts[@]}"; then
+    cleanup_remote_tmp_file "${ssh_target}" "${remote_tmp}" "${ssh_opts[@]}"
     return 1
   fi
 }
@@ -1580,6 +1790,7 @@ prepare_deploy_context() {
   local nix_sshopts=""
   local bootstrap_nix_sshopts=""
 
+  clear_prepared_deploy_context
   target_info="$(resolve_deploy_target "${node}")"
 
   user="$(jq -r '.user' <<<"${target_info}")"
@@ -1608,11 +1819,8 @@ prepare_deploy_context() {
         ;;
     esac
 
-    ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
-    nix_sshopts="-o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
-
-    bootstrap_ssh_opts=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
-    bootstrap_nix_sshopts="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
+    init_known_hosts_ssh_context 1 "${known_hosts_file}" ssh_opts nix_sshopts
+    init_known_hosts_ssh_context 0 "${known_hosts_file}" bootstrap_ssh_opts bootstrap_nix_sshopts
   fi
 
   if [ -n "${key_path}" ]; then
@@ -1623,12 +1831,7 @@ prepare_deploy_context() {
       echo "Deploy SSH key file not found: ${key_path} (resolved: ${key_file})" >&2
       return 1
     fi
-    ssh_opts=(-i "${key_file}" -o IdentitiesOnly=yes "${ssh_opts[@]}")
-    if [ -n "${nix_sshopts}" ]; then
-      nix_sshopts="-i ${key_file} -o IdentitiesOnly=yes ${nix_sshopts}"
-    else
-      nix_sshopts="-i ${key_file} -o IdentitiesOnly=yes"
-    fi
+    apply_identity_to_ssh_context "${key_file}" ssh_opts nix_sshopts
   fi
 
   if [ -n "${bootstrap_key_path}" ]; then
@@ -1640,36 +1843,15 @@ prepare_deploy_context() {
       return 1
     fi
 
-    if [ "${DRY_RUN}" -eq 0 ]; then
-      bootstrap_ssh_opts=(-i "${bootstrap_key_file}" -o IdentitiesOnly=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
-      bootstrap_nix_sshopts="-i ${bootstrap_key_file} -o IdentitiesOnly=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
-    else
-      bootstrap_ssh_opts=(-i "${bootstrap_key_file}" -o IdentitiesOnly=yes)
-      bootstrap_nix_sshopts="-i ${bootstrap_key_file} -o IdentitiesOnly=yes"
-    fi
+    apply_identity_to_ssh_context "${bootstrap_key_file}" bootstrap_ssh_opts bootstrap_nix_sshopts
   fi
 
-  PREP_DEPLOY_SSH_TARGET="${ssh_target}"
-  PREP_DEPLOY_SSH_OPTS=("${ssh_opts[@]}")
-  PREP_DEPLOY_NIX_SSHOPTS="${nix_sshopts}"
-  PREP_USING_BOOTSTRAP_FALLBACK=0
-  PREP_DEPLOY_AGE_IDENTITY_KEY="${age_identity_key}"
+  set_prepared_deploy_context "${ssh_target}" "${nix_sshopts}" 0 "${age_identity_key}" "${ssh_opts[@]}"
 
   if [ "${FORCE_BOOTSTRAP_PATH}" -eq 1 ]; then
     echo "==> Forcing bootstrap path for ${node}: ${bootstrap_ssh_target}"
-    PREP_DEPLOY_SSH_TARGET="${bootstrap_ssh_target}"
-    PREP_DEPLOY_SSH_OPTS=("${bootstrap_ssh_opts[@]}")
-    PREP_DEPLOY_NIX_SSHOPTS="${bootstrap_nix_sshopts}"
-    PREP_USING_BOOTSTRAP_FALLBACK=1
-
-    if [ -n "${bootstrap_key}" ]; then
-      if is_bootstrap_ready "${node}"; then
-        echo "==> Reusing bootstrap readiness for ${node} from earlier step"
-      else
-        inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
-        mark_bootstrap_ready "${node}"
-      fi
-    fi
+    ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
+    set_prepared_deploy_context "${bootstrap_ssh_target}" "${bootstrap_nix_sshopts}" 1 "${age_identity_key}" "${bootstrap_ssh_opts[@]}"
     return
   fi
 
@@ -1681,12 +1863,11 @@ prepare_deploy_context() {
         if is_bootstrap_ready "${node}"; then
           echo "==> Reusing bootstrap readiness for ${node} from earlier step"
           validated_via_forced_command=1
+        elif [ -n "${bootstrap_key}" ] && check_bootstrap_via_forced_command "${node}" "${ssh_target}" "${ssh_opts[@]}"; then
+          validated_via_forced_command=1
+          mark_bootstrap_ready "${node}"
         else
-          if [ -n "${bootstrap_key}" ] && check_bootstrap_via_forced_command "${node}" "${ssh_target}" "${ssh_opts[@]}"; then
-            validated_via_forced_command=1
-          else
-            inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
-          fi
+          ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
         fi
 
         if [ "${validated_via_forced_command}" -eq 1 ]; then
@@ -1695,23 +1876,14 @@ prepare_deploy_context() {
           echo "==> Primary deploy target ${ssh_target} is unavailable; falling back to bootstrap target ${bootstrap_ssh_target} for this run"
         fi
 
-        PREP_DEPLOY_SSH_TARGET="${bootstrap_ssh_target}"
-        PREP_DEPLOY_SSH_OPTS=("${bootstrap_ssh_opts[@]}")
-        PREP_DEPLOY_NIX_SSHOPTS="${bootstrap_nix_sshopts}"
-        PREP_USING_BOOTSTRAP_FALLBACK=1
-
-        mark_bootstrap_ready "${node}"
+        set_prepared_deploy_context "${bootstrap_ssh_target}" "${bootstrap_nix_sshopts}" 1 "${age_identity_key}" "${bootstrap_ssh_opts[@]}"
+        return
       fi
     else
-      if is_bootstrap_ready "${node}"; then
-        echo "==> Reusing bootstrap readiness for ${node} from earlier step"
-      else
-        inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
-        mark_bootstrap_ready "${node}"
-      fi
+      ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
     fi
   elif [ -n "${bootstrap_key}" ]; then
-    inject_bootstrap_nixbot_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
+    ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
   fi
 }
 
@@ -1729,12 +1901,14 @@ should_ask_sudo_password() {
 snapshot_host_generation() {
   local node="$1"
   local snapshot_file="$2"
-  local remote_current_path
+  local remote_current_path ssh_target
+  local -a ssh_opts=()
 
   log_host_stage "snapshot" "${node}"
   prepare_deploy_context "${node}" || return 1
+  use_prepared_ssh_context ssh_target ssh_opts
   # shellcheck disable=SC2029
-  if ! remote_current_path="$(ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true")"; then
+  if ! remote_current_path="$(ssh "${ssh_opts[@]}" "${ssh_target}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true")"; then
     remote_current_path=""
   fi
 
@@ -2062,7 +2236,8 @@ ensure_wave_snapshots() {
 rollback_host_to_snapshot() {
   local node="$1"
   local snapshot_path="$2"
-  local rollback_cmd deploy_user
+  local rollback_cmd deploy_user ssh_target using_bootstrap_fallback
+  local -a ssh_opts=()
 
   [ -n "${snapshot_path}" ] || {
     echo "Rollback snapshot is empty for ${node}" >&2
@@ -2071,17 +2246,18 @@ rollback_host_to_snapshot() {
 
   log_host_stage "rollback" "${node}"
   prepare_deploy_context "${node}" || return 1
-  deploy_user="${PREP_DEPLOY_SSH_TARGET%%@*}"
+  use_prepared_ssh_sudo_context ssh_target using_bootstrap_fallback ssh_opts
+  deploy_user="${ssh_target%%@*}"
 
   # shellcheck disable=SC2016
   rollback_cmd='set -euo pipefail; snap="'"${snapshot_path}"'"; if [ ! -x "${snap}/bin/switch-to-configuration" ]; then echo "snapshot is not activatable: ${snap}" >&2; exit 1; fi; if [ "$(id -u)" -eq 0 ]; then "${snap}/bin/switch-to-configuration" switch; elif command -v sudo >/dev/null 2>&1; then sudo "${snap}/bin/switch-to-configuration" switch; else echo "sudo is required for rollback as non-root user" >&2; exit 1; fi'
 
   echo "${snapshot_path}" >&2
-  if should_ask_sudo_password "${deploy_user}" "${PREP_USING_BOOTSTRAP_FALLBACK}"; then
-    ssh -tt "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "${rollback_cmd}" <"$(resolve_ssh_tty_stdin_path)"
+  if should_ask_sudo_password "${deploy_user}" "${using_bootstrap_fallback}"; then
+    ssh -tt "${ssh_opts[@]}" "${ssh_target}" "${rollback_cmd}" <"$(resolve_ssh_tty_stdin_path)"
   else
     # shellcheck disable=SC2029
-    ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "${rollback_cmd}"
+    ssh "${ssh_opts[@]}" "${ssh_target}" "${rollback_cmd}"
   fi
 }
 
@@ -2128,19 +2304,21 @@ rollback_successful_hosts() {
 deploy_host() {
   local node="$1"
   local built_out_path="$2"
-  local remote_current_path
+  local remote_current_path ssh_target nix_sshopts using_bootstrap_fallback age_identity_key
   local deploy_user build_host=""
   local -a rebuild_cmd=()
+  local -a ssh_opts=()
 
   log_host_stage "deploy" "${node}" "${GOAL}"
   prepare_deploy_context "${node}" || return 1
-  inject_host_age_identity_key "${node}" "${PREP_DEPLOY_SSH_TARGET}" "${PREP_DEPLOY_AGE_IDENTITY_KEY}" "${PREP_DEPLOY_SSH_OPTS[@]}" || return 1
+  use_prepared_deploy_context ssh_target nix_sshopts using_bootstrap_fallback age_identity_key ssh_opts
+  inject_host_age_identity_key "${node}" "${ssh_target}" "${age_identity_key}" "${ssh_opts[@]}" || return 1
 
-  deploy_user="${PREP_DEPLOY_SSH_TARGET%%@*}"
+  deploy_user="${ssh_target%%@*}"
 
   if [ "${DEPLOY_IF_CHANGED}" -eq 1 ]; then
     # shellcheck disable=SC2029
-    remote_current_path="$(ssh "${PREP_DEPLOY_SSH_OPTS[@]}" "${PREP_DEPLOY_SSH_TARGET}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true")"
+    remote_current_path="$(ssh "${ssh_opts[@]}" "${ssh_target}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true")"
     if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${built_out_path}" ]; then
       echo "[${node}] deploy | skip" >&2
       echo "${built_out_path}" >&2
@@ -2150,12 +2328,12 @@ deploy_host() {
 
   case "${BUILD_HOST}" in
     local)
-      if [ "${PREP_USING_BOOTSTRAP_FALLBACK}" -eq 1 ] || { [ -n "${DEPLOY_USER_OVERRIDE}" ] && [ "${PREP_DEPLOY_SSH_TARGET%%@*}" != "root" ]; }; then
-        build_host="${PREP_DEPLOY_SSH_TARGET}"
+      if [ "${using_bootstrap_fallback}" -eq 1 ] || { [ -n "${DEPLOY_USER_OVERRIDE}" ] && [ "${ssh_target%%@*}" != "root" ]; }; then
+        build_host="${ssh_target}"
       fi
       ;;
     target)
-      build_host="${PREP_DEPLOY_SSH_TARGET}"
+      build_host="${ssh_target}"
       ;;
     *)
       build_host="${BUILD_HOST}"
@@ -2165,15 +2343,15 @@ deploy_host() {
   rebuild_cmd=(
     nixos-rebuild
     --flake ".#${node}"
-    --target-host "${PREP_DEPLOY_SSH_TARGET}"
+    --target-host "${ssh_target}"
     --sudo
   )
 
-  if should_ask_sudo_password "${deploy_user}" "${PREP_USING_BOOTSTRAP_FALLBACK}"; then
+  if should_ask_sudo_password "${deploy_user}" "${using_bootstrap_fallback}"; then
     rebuild_cmd+=(--ask-sudo-password)
   fi
 
-  if [ "${PREP_USING_BOOTSTRAP_FALLBACK}" -eq 1 ]; then
+  if [ "${using_bootstrap_fallback}" -eq 1 ]; then
     rebuild_cmd+=(--use-substitutes)
   fi
 
@@ -2183,8 +2361,8 @@ deploy_host() {
     rebuild_cmd+=(--build-host "${build_host}")
   fi
 
-  if [ -n "${PREP_DEPLOY_NIX_SSHOPTS}" ]; then
-    rebuild_cmd=(env "NIX_SSHOPTS=${PREP_DEPLOY_NIX_SSHOPTS}" "${rebuild_cmd[@]}")
+  if [ -n "${nix_sshopts}" ]; then
+    rebuild_cmd=(env "NIX_SSHOPTS=${nix_sshopts}" "${rebuild_cmd[@]}")
   fi
 
   if [ "${DRY_RUN}" -eq 1 ]; then
@@ -2454,7 +2632,7 @@ run_hosts() {
   local build_parallel=0
   local deploy_parallel=0
 
-  if [ "${ACTION}" = "check-bootstrap" ]; then
+  if is_bootstrap_check_action; then
     run_bootstrap_key_checks "${selected_json}"
     return $?
   fi
@@ -2505,7 +2683,7 @@ run_hosts() {
     final_rc=1
   fi
 
-  if [ "${ACTION}" = "build" ] || [ "${final_rc}" -ne 0 ]; then
+  if is_host_build_only_action || [ "${final_rc}" -ne 0 ]; then
     print_run_summary \
       "${ACTION}" \
       "${final_rc}" \
@@ -2650,6 +2828,40 @@ run_tf_action() {
   "${init_cmd[@]}"
   "${plan_cmd[@]}"
   "${apply_cmd[@]}"
+}
+
+run_tf_phase_if_requested() {
+  if action_includes_tf_phase; then
+    if should_run_tf_action; then
+      run_tf_action
+    fi
+    if [ "${ACTION}" = "tf" ]; then
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+run_host_action() {
+  local config_json="" all_hosts_json="" selected_json=""
+
+  if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
+    config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
+    init_deploy_settings "${config_json}"
+  fi
+
+  if is_deploy_style_action; then
+    require_cmds nixos-rebuild
+  fi
+
+  all_hosts_json="$(load_all_hosts_json)"
+  selected_json="$(select_hosts_json "${all_hosts_json}")"
+  validate_selected_hosts "${selected_json}" "${all_hosts_json}"
+  selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
+  selected_json="$(order_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
+
+  run_hosts "${selected_json}"
 }
 
 # Logging helpers.
@@ -2938,7 +3150,6 @@ ensure_runtime_shell() {
 }
 
 main() {
-  local config_json="" all_hosts_json="" selected_json=""
   local -a request_args=("$@")
 
   ensure_runtime_shell "$@"
@@ -2972,35 +3183,15 @@ main() {
   ensure_repo_for_sha
   reexec_repo_script_if_needed "${request_args[@]}"
 
-  if is_deploy_style_action || [ "${ACTION}" = "check-bootstrap" ]; then
+  if is_deploy_style_action || is_bootstrap_check_action; then
     require_cmds age
   fi
 
-  if [ "${ACTION}" = "all" ] || [ "${ACTION}" = "tf" ]; then
-    if should_run_tf_action; then
-      run_tf_action
-    fi
-    if [ "${ACTION}" = "tf" ]; then
-      return
-    fi
+  if ! run_tf_phase_if_requested; then
+    return
   fi
 
-  if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
-    config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
-    init_deploy_settings "${config_json}"
-  fi
-
-  if is_deploy_style_action; then
-    require_cmds nixos-rebuild
-  fi
-
-  all_hosts_json="$(load_all_hosts_json)"
-  selected_json="$(select_hosts_json "${all_hosts_json}")"
-  validate_selected_hosts "${selected_json}" "${all_hosts_json}"
-  selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
-  selected_json="$(order_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
-
-  run_hosts "${selected_json}"
+  run_host_action
 }
 
 main "$@"

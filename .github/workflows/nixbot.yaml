@@ -7,11 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: build, deploy, or tf
+        description: all, build, deploy, or tf
         required: true
-        default: deploy
+        default: all
         type: choice
         options:
+          - all
           - deploy
           - build
           - tf
@@ -20,10 +21,10 @@ on:
         required: true
         default: all
         type: string
-      deploy:
-        description: Run deploy (otherwise build only)
+      dry:
+        description: Run TF plan / deploy dry-run when supported by the action
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -67,7 +68,7 @@ jobs:
           DEPLOY_BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
           GITHUB_INPUT_ACTION: ${{ github.event.inputs.action || '' }}
           GITHUB_INPUT_HOSTS: ${{ github.event.inputs.hosts || '' }}
-          GITHUB_INPUT_DEPLOY: ${{ github.event.inputs.deploy || '' }}
+          GITHUB_INPUT_DRY: ${{ github.event.inputs.dry || '' }}
         run: |
           set -euo pipefail
 
@@ -78,14 +79,15 @@ jobs:
 
           input_action="${GITHUB_INPUT_ACTION:-}"
           input_hosts="${GITHUB_INPUT_HOSTS:-all}"
-          input_deploy="${GITHUB_INPUT_DEPLOY:-true}"
+          input_dry="${GITHUB_INPUT_DRY:-false}"
           hosts="${input_hosts:-all}"
           action="${input_action:-}"
+          extra_args=()
           if [ -z "${action}" ]; then
-            action="build"
+            action="all"
           fi
-          if [ -z "${input_action}" ] && [ "${input_deploy}" = "true" ]; then
-            action="deploy"
+          if [ "${input_dry}" = "true" ]; then
+            extra_args+=(--dry)
           fi
 
           ./scripts/nixbot-deploy.sh \
@@ -93,4 +95,5 @@ jobs:
             --bastion-first \
             --hosts "${hosts}" \
             --action "${action}" \
+            "${extra_args[@]}" \
             --sha "${GITHUB_SHA}"
