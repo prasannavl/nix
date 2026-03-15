@@ -69,6 +69,9 @@ jobs:
 
       - name: Cache Nix runtime
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+          use-gha-cache: true
 
       - name: Warm nixbot runtime shell
         shell: bash
