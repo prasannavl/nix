@@ -41,7 +41,10 @@ in
 
     # Terraform Secrets
     "data/secrets/tf/secrets.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare-zones.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare/main.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare/stage.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare/archive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare/inactive.tfvars.age".publicKeys = adminsWithNixbot;
 
     # Cloudflare tunnels
     "data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age".publicKeys = admins ++ pvl-x2;

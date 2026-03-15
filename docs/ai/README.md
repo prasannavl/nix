@@ -40,6 +40,13 @@
 - `docs/ai/notes/nixbot/github-actions-nix-bootstrap-2026-03.md`: Bootstrapped
   Nix in the GitHub `nixbot` workflow so CI runners satisfy the deploy script's
   `nix shell` runtime requirement.
+- `docs/ai/notes/nixbot/github-actions-runtime-warmup-and-cache-2026-03.md`:
+  Added a dedicated runtime warm-up step and GitHub-side Nix cache so `Remote
+  action` logs no longer absorb the initial `nix shell` closure fetch.
+- `docs/ai/notes/nixbot/runtime-toolchain-unification-2026-03.md`: Unified the
+  deploy script's runtime installable list and required-command verification so
+  `nix shell`, `--ensure-deps`, and normal execution share one toolchain
+  contract.
 - `docs/ai/notes/nixbot/nixbot-home-dir-perms-2026-03.md`: Ensured
   `/var/lib/nixbot` is created as a usable `nixbot` home directory on all hosts
   so remote snapshot/deploy probes do not emit home-directory permission errors.

@@ -67,6 +67,18 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
+      - name: Cache Nix runtime
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Warm nixbot runtime shell
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Warm the nixbot runtime closure before the real deploy so the
+          # initial fetch/install noise stays out of the Remote action logs.
+          ./scripts/nixbot-deploy.sh --ensure-deps >/dev/null
+
       - name: Remote action
         shell: bash
         env:

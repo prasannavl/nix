@@ -5,8 +5,8 @@ This directory is the source of truth for Cloudflare-managed DNS.
 ## Scope
 
 This stack manages the Cloudflare DNS zones declared in `zones.auto.tfvars` and,
-when needed, the encrypted `data/secrets/tf/*.tfvars.age` files. Keep concrete
-domain names in config and secrets, not in documentation.
+when needed, the encrypted `data/secrets/tf/` secret tfvars tree. Keep
+concrete domain names in config and secrets, not in documentation.
 
 ## Layout
 
@@ -15,9 +15,11 @@ domain names in config and secrets, not in documentation.
 - `providers.tf`: Cloudflare provider configuration.
 - `main.tf`: zone lookups and DNS record resources.
 - `zones.auto.tfvars`: authoritative public-safe record definitions.
-- `data/secrets/tf/*.tfvars.age`: authoritative encrypted Terraform variable
-  files loaded only for `scripts/nixbot-deploy.sh
-  --action tf`.
+- `data/secrets/tf/**/*.tfvars.age`: authoritative encrypted Terraform variable
+  files loaded only for `scripts/nixbot-deploy.sh --action tf`.
+- `data/secrets/tf/cloudflare/{main,stage,archive,inactive}.tfvars.age`:
+  grouped encrypted Cloudflare DNS inputs mapped to the corresponding
+  `secret_zones_*` Terraform variables.
 
 ## Auth
 
@@ -38,7 +40,7 @@ files instead of exported shell variables:
 - `data/secrets/cloudflare/r2-state-bucket.key.age`
 - `data/secrets/cloudflare/r2-access-key-id.key.age`
 - `data/secrets/cloudflare/r2-secret-access-key.key.age`
-- any `data/secrets/tf/*.tfvars.age` files
+- any `data/secrets/tf/**/*.tfvars.age` files
 
 Those secrets stay in the repo and are decrypted on demand by
 `scripts/nixbot-deploy.sh` using the bastion's existing age identity.
@@ -67,10 +69,10 @@ tofu -chdir=tf init \
 ## Workflow
 
 1. Populate `zones.auto.tfvars` with public-safe records only.
-2. Put any origin-bearing or otherwise sensitive records in a
-   `data/secrets/tf/*.tfvars.age` file, for example
-   `data/secrets/tf/cloudflare-zones.tfvars.age`, using the `secret_zones`
-   variable.
+2. Put any origin-bearing or otherwise sensitive Cloudflare records in the
+   grouped `data/secrets/tf/cloudflare/` files using the matching top-level
+   Terraform variables: `secret_zones_main`, `secret_zones_stage`,
+   `secret_zones_archive`, and `secret_zones_inactive`.
 3. Put reusable encrypted values in a `data/secrets/tf/*.tfvars.age` file, for
    example `data/secrets/tf/secrets.tfvars.age`, under `secrets = {}` and
    reference them from Terraform as `var.secrets["name"]`.
@@ -99,8 +101,8 @@ R2_SECRET_ACCESS_KEY=... \
 The deploy script always enters a `nix shell` runtime using this repo's flake
 inputs, so `tofu` does not need to be preinstalled separately on the machine
 running it. When encrypted secret tfvars files exist under `data/secrets/tf/`,
-the script decrypts each `*.tfvars.age` file into a temp file and passes it via
-`-var-file` for that run only, in sorted path order.
+the script decrypts each `*.tfvars.age` file in the tree into temp files and
+passes them via `-var-file` for that run only, in sorted path order.
 
 Dry-run:
 

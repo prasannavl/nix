@@ -8,37 +8,55 @@ only be decrypted at `--action tf` runtime.
 
 ## What Changed
 
-- Added `variable "secret_zones"` alongside `zones` in `tf/variables.tf`.
+- Added grouped `secret_zones_*` variables alongside `zones` in
+  `tf/variables.tf`.
 - Added `variable "secrets"` for reusable encrypted values loaded from a secret
   tfvars file.
-- Updated `tf/main.tf` to merge `zones` and `secret_zones` per zone by
-  concatenating their `records` lists before creating `cloudflare_dns_record`
-  resources.
+- Updated `tf/main.tf` to merge `zones` and all `secret_zones_*` groups per
+  zone by concatenating their `records` lists before creating
+  `cloudflare_dns_record` resources.
 - Updated `tf/main.tf` so Cloudflare zone lookup covers the union of `zones` and
-  `secret_zones`, including zones that only exist in the encrypted layer.
-- Relaxed `tf/variables.tf` so `zones` and `secret_zones` use `type = any`,
-  while validation still enforces that records include `name`, `type`, and
-  either `content` or `data`.
+  all `secret_zones_*` groups, including zones that only exist in the encrypted
+  layer.
+- Relaxed `tf/variables.tf` so `zones` and the `secret_zones_*` variables use
+  `type = any`, while validation still enforces that records include `name`,
+  `type`, and either `content` or `data`.
 - Registered the encrypted Terraform tfvars files in `data/secrets/default.nix`
   with the same recipients as the existing Cloudflare/R2 Terraform secrets.
 - Updated `scripts/nixbot-deploy.sh` so `--action tf` decrypts the encrypted
   tfvars files into its temp dir and passes them to `tofu plan` via `-var-file`
   when present.
 - Changed `scripts/nixbot-deploy.sh` to auto-discover all
-  `data/secrets/tf/*.tfvars.age` files instead of relying on a hardcoded secret
-  tfvars list.
+  `data/secrets/tf/**/*.tfvars.age` files instead of relying on a hardcoded
+  secret tfvars list.
+- Split the Cloudflare sensitive zone data from one monolithic
+  `data/secrets/tf/cloudflare-zones.tfvars.age` file into grouped files under
+  `data/secrets/tf/cloudflare/`, one per top-level Terraform variable family:
+  `main`, `stage`, `archive`, and `inactive`.
+- Kept `scripts/nixbot-deploy.sh` generic: it just decrypts and passes all
+  discovered `*.tfvars.age` files through as `-var-file` inputs.
 - Generalized `scripts/age-secrets.sh` help text so managed non-`.key` files are
   described correctly.
 
 ## Operational Notes
 
 - Public-safe records still live in `tf/zones.auto.tfvars` under `zones = {}`.
-- Sensitive records belong in `data/secrets/tf/cloudflare-zones.tfvars.age`
-  under `secret_zones = {}`.
+- Sensitive Cloudflare records belong in grouped files under
+  `data/secrets/tf/cloudflare/`, using `secret_zones_main`,
+  `secret_zones_stage`, `secret_zones_archive`, and
+  `secret_zones_inactive`.
+- Current assignment is:
+  `secret_zones_main` contains the primary active zones,
+  `secret_zones_stage` contains staging-oriented zones,
+  `secret_zones_archive` contains archived zones, and
+  `secret_zones_inactive` contains inactive or placeholder zones whose
+  `records = []`.
+- All four `secret_zones_*` groups are explicit top-level maps so zones can be
+  reclassified without changing the deploy runtime behavior.
 - Reusable encrypted values belong in `data/secrets/tf/secrets.tfvars.age` under
   `secrets = {}` and can be referenced as `var.secrets["key"]`.
-- All `*.tfvars.age` files under `data/secrets/tf/` are loaded in sorted order
-  at `--action tf` runtime; non-matching files in that directory are ignored.
+- All `*.tfvars.age` files under the `data/secrets/tf/` tree are loaded in
+  sorted path order at `--action tf` runtime; non-matching files are ignored.
 - `scripts/nixbot-deploy.sh --action tf` continues to work without the sensitive
   tfvars secret; it logs that it is proceeding with public zones only.
 - This split hides origin values from the plaintext repo, but Terraform state,
@@ -51,7 +69,7 @@ only be decrypted at `--action tf` runtime.
   provided zone export set.
 - Imported records preserve exported TTLs, proxied flags, and MX priorities.
 - Zones with no managed non-NS/SOA records are still represented explicitly as
-  `records = []` so the imported zone set is complete.
+  `records = []` in the inactive group so the imported zone set is complete.
 - The import source was the provided text exports under
   `/home/pvl/Downloads/cf/`.
 - No `.key` files under `data/secrets` were read.

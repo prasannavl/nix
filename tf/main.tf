@@ -9,14 +9,24 @@ data "cloudflare_zone" "zone" {
 }
 
 locals {
-  zone_names = toset(concat(keys(var.zones), keys(var.secret_zones)))
+  secret_zone_groups = [
+    var.secret_zones_main,
+    var.secret_zones_stage,
+    var.secret_zones_archive,
+    var.secret_zones_inactive,
+  ]
+
+  zone_names = toset(flatten(concat(
+    [keys(var.zones)],
+    [for group in local.secret_zone_groups : keys(group)]
+  )))
 
   merged_zones = {
     for zone_name in local.zone_names : zone_name => {
-      records = concat(
+      records = flatten(concat(
         try(var.zones[zone_name].records, []),
-        try(var.secret_zones[zone_name].records, [])
-      )
+        [for group in local.secret_zone_groups : try(group[zone_name].records, [])]
+      ))
     }
   }
 

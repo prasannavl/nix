@@ -3,10 +3,32 @@ set -Eeuo pipefail
 
 RUNTIME_SHELL_FLAG="${NIXBOT_DEPLOY_IN_NIX_SHELL:-0}"
 
+# Keep the runtime shell installables and expected commands aligned so re-exec,
+# warm-up, and normal execution all share one toolchain contract.
+readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
+  nixpkgs#age
+  nixpkgs#git
+  nixpkgs#jq
+  nixpkgs#nixos-rebuild
+  nixpkgs#openssh
+  nixpkgs#opentofu
+)
+readonly -a NIXBOT_RUNTIME_COMMANDS=(
+  nix
+  age
+  git
+  jq
+  nixos-rebuild
+  ssh
+  scp
+  ssh-keygen
+  tofu
+)
+
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
 
 Core Workflow Options:
   --action         all|build|deploy|tf|check-bootstrap (default: all)
@@ -25,6 +47,8 @@ Deploy Target/Auth Options:
   --age-key-file   Age/SSH identity file used for decrypting *.age secrets
 
 Behavior Options:
+  --ensure-deps    Re-exec into the runtime shell, verify required tools exist,
+                   and exit without performing deploy work
   --force          Deploy even when built path matches remote /run/current-system
   --bastion-first  Prioritize bastion host first for build and deploy when selected
   --dry            Print deploy command instead of executing deploy step
@@ -119,6 +143,7 @@ resolve_ssh_tty_stdin_path() {
 init_vars() {
   HOSTS_RAW="${DEPLOY_HOSTS:-all}"
   ACTION="${DEPLOY_ACTION:-all}"
+  ENSURE_DEPS_ONLY=0
   HOST_ACTION=""
   GOAL="${DEPLOY_GOAL:-switch}"
   BUILD_HOST="${DEPLOY_BUILD_HOST:-local}"
@@ -343,6 +368,10 @@ normalize_hosts_input() {
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --ensure-deps)
+        ENSURE_DEPS_ONLY=1
+        shift
+        ;;
       --sha)
         [ "$#" -ge 2 ] || die "Missing value for --sha"
         SHA="${2:-}"
@@ -841,7 +870,6 @@ reexec_repo_script_if_needed() {
 load_deploy_config_json() {
   local path="$1"
   [ -f "${path}" ] || die "Deploy config not found: ${path}"
-  require_cmds nix
   nix eval --json --file "${path}"
 }
 
@@ -2755,12 +2783,12 @@ run_tf_action() {
   local state_key
   local endpoint
   local plan_file
-  local sensitive_var_file
+  local discovered_tf_var_files=0
+  local resolved_tf_var_file
   local -a init_cmd=()
   local -a plan_cmd=()
   local -a apply_cmd=()
-
-  require_cmds nix
+  local -a tf_var_files=()
 
   tf_dir="${TF_WORK_DIR}"
   if [[ "${tf_dir}" != /* ]]; then
@@ -2799,8 +2827,8 @@ run_tf_action() {
     -backend-config="use_path_style=true"
   )
 
-  tf_var_files=()
   while IFS= read -r tf_var_path; do
+    discovered_tf_var_files=$((discovered_tf_var_files + 1))
     resolved_tf_var_file="$(resolve_runtime_key_file "${tf_var_path}")"
     if [ -f "${resolved_tf_var_file}" ]; then
       echo "Sensitive tfvars: ${tf_var_path}" >&2
@@ -2808,9 +2836,9 @@ run_tf_action() {
     else
       echo "Sensitive tfvars: ${tf_var_path} not present" >&2
     fi
-  done < <(find "${TF_SECRETS_DIR}" -maxdepth 1 -type f -name '*.tfvars.age' | sort)
+  done < <(find "${TF_SECRETS_DIR}" -type f -name '*.tfvars.age' | sort)
 
-  if [ "${#tf_var_files[@]}" -eq 0 ]; then
+  if [ "${discovered_tf_var_files}" -eq 0 ]; then
     echo "Sensitive tfvars: no *.tfvars.age files found under ${TF_SECRETS_DIR}" >&2
   fi
 
@@ -2857,10 +2885,6 @@ run_host_action() {
   if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
     config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
     init_deploy_settings "${config_json}"
-  fi
-
-  if is_deploy_style_action; then
-    require_cmds nixos-rebuild
   fi
 
   all_hosts_json="$(load_all_hosts_json)"
@@ -3128,33 +3152,26 @@ ensure_runtime_shell() {
   local script_path
   local flake_path
   local -a nix_shell_cmd=()
-  local -a runtime_packages=(
-    nixpkgs#age
-    nixpkgs#git
-    nixpkgs#jq
-    nixpkgs#nixos-rebuild
-    nixpkgs#openssh
-    nixpkgs#opentofu
-  )
 
   if [ "${RUNTIME_SHELL_FLAG}" = "1" ]; then
     return
   fi
 
-  if ! command -v nix >/dev/null 2>&1; then
-    echo "Required command not found: nix" >&2
-    exit 1
-  fi
+  require_cmds nix
 
   script_path="${BASH_SOURCE[0]:-$0}"
   if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
-    nix_shell_cmd=(nix shell "${runtime_packages[@]}")
+    nix_shell_cmd=(nix shell "${NIXBOT_RUNTIME_INSTALLABLES[@]}")
   else
     flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
-    nix_shell_cmd=(nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}")
+    nix_shell_cmd=(nix shell --inputs-from "${flake_path}" "${NIXBOT_RUNTIME_INSTALLABLES[@]}")
   fi
 
   exec "${nix_shell_cmd[@]}" -c env NIXBOT_DEPLOY_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+}
+
+ensure_runtime_tools() {
+  require_cmds "${NIXBOT_RUNTIME_COMMANDS[@]}"
 }
 
 main() {
@@ -3163,8 +3180,6 @@ main() {
   ensure_runtime_shell "$@"
   init_vars
   trap cleanup EXIT
-
-  require_cmds jq ssh scp ssh-keygen
 
   if [ "${#request_args[@]}" -eq 0 ] && [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
     echo "Received SSH_ORIGINAL_COMMAND:"
@@ -3183,6 +3198,11 @@ main() {
   fi
 
   parse_args "${request_args[@]}"
+  ensure_runtime_tools
+  if [ "${ENSURE_DEPS_ONLY}" -eq 1 ]; then
+    return
+  fi
+
   if [ "${BASTION_TRIGGER}" -eq 1 ]; then
     run_bastion_trigger
     return
@@ -3190,10 +3210,6 @@ main() {
 
   ensure_repo_for_sha
   reexec_repo_script_if_needed "${request_args[@]}"
-
-  if is_deploy_style_action || is_bootstrap_check_action; then
-    require_cmds age
-  fi
 
   if ! run_tf_phase_if_requested; then
     return

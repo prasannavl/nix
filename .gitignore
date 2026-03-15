@@ -1,6 +1,9 @@
 result/
-data/secrets/**/*.key
-data/secrets/**/*.tfvars
+data/secrets/**
+!data/secrets/**/
+!data/secrets/**/*.age
+!data/secrets/**/default.nix
+!data/secrets/**/*.pub
 **/.terraform/
 *.tfstate
 *.tfstate.*
