@@ -51,6 +51,8 @@ Use this index as the canonical map for `docs/ai/**`.
   convergence decision.
 - `docs/ai/notes/services/cloudflare-opentofu-consolidated-2026-03.md`:
   Canonical Cloudflare OpenTofu layout, input model, and source-of-truth rules.
+- `docs/ai/notes/services/cloudflare-tunnel-state-adoption-plan-2026-03.md`:
+  Tunnel state-adoption plan, ownership-boundary decision, and execution steps.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Documentation
   cleanup rules for sensitive operational details.
 - `docs/ai/notes/services/openssh-module-centralization-2026-03.md`: Shared
@@ -63,8 +65,8 @@ Use this index as the canonical map for `docs/ai/**`.
 ## Playbooks
 
 - `docs/ai/playbooks/ai-docs-reconsolidation.md`: Periodic cleanup workflow for
-  reconsolidating `docs/ai/notes`, folding completed `runs` back into notes, and
-  refreshing the index.
+  reconsolidating `docs/ai/notes`, folding completed `runs` back into notes,
+  sanitizing durable identifiers, and refreshing the index.
 - `docs/ai/playbooks/cloudflare-email-routing.md`: Declarative Cloudflare Email
   Routing execution workflow.
 - `docs/ai/playbooks/cloudflare-state-adoption.md`: Non-DNS Cloudflare

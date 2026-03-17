@@ -367,7 +367,7 @@ emit_tf_secret_paths_for_project() {
       ;;
     cloudflare-platform)
       [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
-      for dir in account access r2 zone-dnssec zone-settings zone-security rulesets page-rules email-routing; do
+      for dir in account access tunnels r2 zone-dnssec zone-settings zone-security rulesets page-rules email-routing; do
         [ -d "${cf}/${dir}" ] && find "${cf}/${dir}" -type f -name '*.tfvars.age' | sort
       done
       ;;

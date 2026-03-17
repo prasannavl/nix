@@ -10,6 +10,7 @@ of the dashboard.
 
 - `tf/cloudflare-platform/`
   - Zero Trust Access identity providers, groups, policies, applications
+  - Zero Trust cloudflared tunnels, remote tunnel configs, and private network routes
   - Workers KV namespaces
   - Email Routing destination addresses
   - R2 buckets and bucket-side features
@@ -35,7 +36,7 @@ of the dashboard.
   - Access service tokens
   - Access custom pages
   - Access mTLS hostname settings
-  - Zero Trust Gateway/device posture/tunnels
+  - Zero Trust Gateway/device posture
   - Worker secrets that cannot be read back from Cloudflare
 
 ## Source Of Truth
@@ -49,6 +50,8 @@ of the dashboard.
   - `data/secrets/tf/cloudflare/`
 - Export refresh:
   - `scripts/cloudflare-export.py`
+  - tunnel export writes `data/secrets/tf/cloudflare/tunnels/account.tfvars.age`
+    and intentionally omits unrecoverable runtime tunnel credentials/secrets
 
 ## Preconditions
 
@@ -56,6 +59,8 @@ of the dashboard.
    - full export if multiple surfaces changed
    - targeted export if only one surface changed, for example
      `python scripts/cloudflare-export.py --only access`
+   - tunnel-only refresh is available via
+     `python scripts/cloudflare-export.py --only tunnels`
 2. Review the generated tfvars and normalize names/keys before import.
 3. Run:
    - `nix shell nixpkgs#opentofu -c tofu -chdir=tf/cloudflare-platform init`
@@ -113,6 +118,23 @@ Import these first because other platform resources may reference them.
     `module.cloudflare_platform.cloudflare_r2_custom_domain.custom_domain["<bucket>/custom-domain/<index>"]`
   - event notification:
     `module.cloudflare_platform.cloudflare_r2_bucket_event_notification.event_notification["<bucket>/event-notification/<index>"]`
+
+- cloudflared tunnels
+  - tunnel object:
+    `module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared.tunnel["<key>"]`
+  - tunnel import ID: `<account_id>/<tunnel_id>`
+  - config:
+    `module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_config.config["<key>"]`
+  - config import ID: `<account_id>/<tunnel_id>`
+  - route:
+    `module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_route.route["<key>/<cidr>"]`
+  - route import ID: `<account_id>/<route_id>`
+  - exporter emits `config_src`, remote config ingress/origin-request blocks,
+    and private network routes. It does not emit `tunnel_secret` or host-side
+    credentials because Cloudflare does not expose those values for read-back.
+  - local/YAML-managed tunnels should usually import only the tunnel object and
+    private network routes. Remote dashboard-managed tunnels can additionally
+    import the config resource.
 
 ### Wave 2: Platform Zone-Level
 
@@ -228,6 +250,6 @@ This keeps the import pass auditable and makes retries deterministic.
   from a confirmed successful trial during execution.
 - On March 16, 2026, the Access slice was normalized to a true no-op plan and
   then the R2 slice was adopted:
-  - buckets: `priyasuyash`, `pvl-cloudflare-tf`
-  - managed domain: `priyasuyash`
+  - buckets: two modeled R2 bucket instances
+  - managed domain: one already-enabled bucket-side managed domain
 - Email Routing destination verification remains manual even after import.

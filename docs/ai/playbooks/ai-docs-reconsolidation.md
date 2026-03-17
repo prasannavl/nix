@@ -31,6 +31,10 @@ Run this playbook when one or more of these are true:
    moved.
 5. Preserve only short provenance in canonical notes; do not keep multiple full
    copies of the same story.
+6. Sanitize durable docs so concrete hostnames, domains, bucket names, Worker
+   names, and similar operational identifiers are replaced with generic,
+   role-based placeholders unless the literal name is required to explain a
+   repo path or interface.
 
 ## Preparation
 
@@ -71,6 +75,22 @@ For each superseded note:
    final import/adoption outcomes.
 4. Add or update a short `Superseded notes` section in the canonical note.
 
+### 2.5. Sanitize durable identifiers
+
+Before finalizing any surviving note or playbook:
+
+1. Replace concrete operational names with generic placeholders where the exact
+   live value is not needed, for example:
+   - `<bastion-host>` instead of a real bastion hostname
+   - `<zone>` instead of a real domain
+   - `<bucket>` instead of a real R2 bucket name
+   - `<worker>` instead of a specific Worker service name
+2. Keep examples executable in structure, but not tied to live naming.
+3. Leave real values in runtime/configuration files alone; this sanitization is
+   for documentation, notes, and playbooks.
+4. If a literal repo path must stay because it is the real interface, explain it
+   in generic terms around the path rather than duplicating extra concrete prose.
+
 ### 3. Reclassify playbooks vs notes
 
 For each document being reviewed:
@@ -106,6 +126,8 @@ For each completed run folder:
    into notes.
 4. Make sure every surviving `docs/ai/**` doc that should be discoverable is
    represented in the index.
+5. Make sure index descriptions also stay generic and do not reintroduce live
+   identifiers through summaries.
 
 ## Verification
 
@@ -119,6 +141,8 @@ For each completed run folder:
    deleted note or run manifest.
 5. If `docs/ai/runs/` is empty after cleanup, leave it empty rather than
    reintroducing placeholder clutter.
+6. Confirm the surviving docs use generic role-based placeholders instead of
+   live hostnames, domains, or other operational names where possible.
 
 ## Output expectations
 

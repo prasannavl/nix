@@ -19,7 +19,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "tunnel" {
 
   account_id = var.cloudflare_account_id
   name       = try(each.value.name, each.key)
-  secret     = try(each.value.secret, null)
+  tunnel_secret = try(each.value.tunnel_secret, try(each.value.secret, null))
   config_src = try(each.value.config_src, "cloudflare")
 }
 

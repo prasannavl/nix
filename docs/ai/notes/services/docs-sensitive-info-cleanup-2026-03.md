@@ -2,14 +2,13 @@
 
 ## Summary
 
-Removed concrete domain names and a personal repository SSH URL from
-documentation so those values remain only in configuration and operational
-state.
+Removed concrete operational identifiers from documentation so live names stay
+in configuration and operational state instead of durable notes and playbooks.
 
 ## What Changed
 
 - Replaced the explicit zone list in `tf/README.md` with a reference to
-  `zones.auto.tfvars`.
+  `dns.auto.tfvars`.
 - Reworded the OpenTofu DNS task note to refer to managed zones generically.
 - Reworded the nixbot key-rotation playbook to describe repository SSH access
   without embedding the full repo URL.
@@ -17,8 +16,15 @@ state.
   example internal addresses no longer appear in prose.
 - Renamed several AI notes so host and zone identifiers no longer appear in the
   docs index solely through note filenames.
+- Generalized Cloudflare adoption notes and playbooks to use placeholders such
+  as `<zone>`, `<bucket>`, `<worker>`, and `<bastion-host>` instead of concrete
+  live names.
+- Updated the AI reconsolidation playbook so future cleanup passes include this
+  sanitization step by default.
 
 ## Notes
 
 - Runtime and configuration files were intentionally left unchanged.
 - No secret file contents were read during this cleanup.
+- When literal repo paths or interfaces must be shown, keep the structure but
+  prefer generic placeholders in the surrounding examples.

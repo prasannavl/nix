@@ -46,16 +46,16 @@ existing Nix and OpenTofu flow.
    changes.
 3. Run `./scripts/nixbot-deploy.sh --action tf-apps`.
 
-For `llmug-hello`, there is also a Nix-backed path:
+For an existing repo-local Worker, there is also a Nix-backed path:
 
-1. In `pkgs/cloudflare-workers/llmug-hello/`, run `nix build` once the worker
+1. In `pkgs/cloudflare-workers/<worker>/`, run `nix build` once the worker
    directory is tracked by Git. Before that, use `nix build path:.`.
-2. In `pkgs/cloudflare-workers/llmug-hello/`, run
+2. In `pkgs/cloudflare-workers/<worker>/`, run
    `nix run path:.#deploy -- --dry` to sync and immediately hand off to the
    normal Cloudflare OpenTofu deploy flow.
 3. The root flake exposes the build as
-   `.#pkgs.x86_64-linux.cloudflare-workers.llmug-hello` and the deploy
-   installable as `.#pkgs.x86_64-linux.cloudflare-workers.llmug-hello.deploy`.
+   `.#pkgs.x86_64-linux.cloudflare-workers.<worker>` and the deploy installable
+   as `.#pkgs.x86_64-linux.cloudflare-workers.<worker>.deploy`.
 
 ## Adopt An Existing Dashboard Worker
 

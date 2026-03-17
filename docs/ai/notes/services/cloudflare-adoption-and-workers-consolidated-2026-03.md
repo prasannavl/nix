@@ -32,11 +32,11 @@ so future changes come from the repo instead of the dashboard.
 - The exporter writes encrypted Terraform inputs under
   `data/secrets/tf/cloudflare/<category>/` and repo-managed Worker trees under
   `pkgs/cloudflare-workers/`.
-- `llmug-hello` briefly used a mirrored assets fallback while investigating the
+- One Worker briefly used a mirrored assets fallback while investigating the
   live deployment, but the actual local source tree was later copied into
-  `pkgs/cloudflare-workers/llmug-hello/` and became the canonical repo source.
+  `pkgs/cloudflare-workers/<worker>/` and became the canonical repo source.
 - Workers Builds API probing stayed blocked by Cloudflare-side token/API
-  behavior, so the durable repo decision was to keep `llmug-hello` locally
+  behavior, so the durable repo decision was to keep that Worker locally
   repo-managed here instead of modeling an external Builds integration.
 
 ## Adoption status
@@ -47,45 +47,45 @@ Completed on 2026-03-16:
 
 - Access account-level resources were imported and normalized to a true no-op
   plan.
-- R2 buckets `priyasuyash` and `pvl-cloudflare-tf` were imported.
-- The `priyasuyash` R2 managed domain was safely adopted through targeted apply
-  because provider import support was not available.
+- Two modeled R2 buckets were imported.
+- One already-enabled R2 managed domain was safely adopted through targeted
+  apply because provider import support was not available.
 - The remaining nine modeled platform resources were imported serially.
 - `./scripts/nixbot-deploy.sh --action tf-platform --dry` is now no-op.
 
 Imported platform backlog that mattered:
 
 - R2:
-  - `module.cloudflare_platform.cloudflare_r2_bucket.bucket["priyasuyash"]`
-  - `module.cloudflare_platform.cloudflare_r2_bucket.bucket["pvl-cloudflare-tf"]`
-  - `module.cloudflare_platform.cloudflare_r2_managed_domain.managed_domain["priyasuyash"]`
+  - `module.cloudflare_platform.cloudflare_r2_bucket.bucket["<bucket-a>"]`
+  - `module.cloudflare_platform.cloudflare_r2_bucket.bucket["<bucket-b>"]`
+  - `module.cloudflare_platform.cloudflare_r2_managed_domain.managed_domain["<bucket-with-managed-domain>"]`
 - DNSSEC:
-  - `module.cloudflare_platform.cloudflare_zone_dnssec.dnssec["gap3.ai"]`
-  - `module.cloudflare_platform.cloudflare_zone_dnssec.dnssec["llmug.com"]`
+  - `module.cloudflare_platform.cloudflare_zone_dnssec.dnssec["<zone-a>"]`
+  - `module.cloudflare_platform.cloudflare_zone_dnssec.dnssec["<zone-b>"]`
 - zone settings and certificate packs:
-  - `module.cloudflare_platform.cloudflare_zone_setting.general_setting["prasannavl.com/browser_cache_ttl"]`
-  - `module.cloudflare_platform.cloudflare_zone_setting.security_setting["llmug.com/always_use_https"]`
-  - `module.cloudflare_platform.cloudflare_certificate_pack.certificate_pack["llmug.com/certificate-pack/google-txt-llmug-com"]`
-  - `module.cloudflare_platform.cloudflare_certificate_pack.certificate_pack["llmug.com/certificate-pack/google-txt-llmug-com-www-llmug-com"]`
+  - `module.cloudflare_platform.cloudflare_zone_setting.general_setting["<zone>/<setting_id>"]`
+  - `module.cloudflare_platform.cloudflare_zone_setting.security_setting["<zone>/<setting_id>"]`
+  - `module.cloudflare_platform.cloudflare_certificate_pack.certificate_pack["<logical-key-a>"]`
+  - `module.cloudflare_platform.cloudflare_certificate_pack.certificate_pack["<logical-key-b>"]`
 - Email Routing:
-  - `module.cloudflare_platform.cloudflare_email_routing_settings.email_routing_settings["p7log.com"]`
-  - `module.cloudflare_platform.cloudflare_email_routing_settings.email_routing_settings["prasannavl.com"]`
-  - `module.cloudflare_platform.cloudflare_email_routing_rule.email_routing_rule["prasannavl.com/email-rule/0"]`
+  - `module.cloudflare_platform.cloudflare_email_routing_settings.email_routing_settings["<zone-a>"]`
+  - `module.cloudflare_platform.cloudflare_email_routing_settings.email_routing_settings["<zone-b>"]`
+  - `module.cloudflare_platform.cloudflare_email_routing_rule.email_routing_rule["<zone>/email-rule/0"]`
 
 ### Apps / Workers
 
 Completed on 2026-03-16:
 
-- `llmug-hello` Worker resources were imported into `tf/cloudflare-apps` remote
-  state.
+- One repo-managed Worker's resources were imported into
+  `tf/cloudflare-apps` remote state.
 
 Imported Worker resources:
 
-- `module.cloudflare_apps.cloudflare_worker.worker["llmug-hello"]`
-- `module.cloudflare_apps.cloudflare_worker_version.version["llmug-hello"]`
-- `module.cloudflare_apps.cloudflare_workers_deployment.deployment["llmug-hello"]`
-- `module.cloudflare_apps.cloudflare_workers_script_subdomain.subdomain["llmug-hello"]`
-- `module.cloudflare_apps.cloudflare_workers_custom_domain.domain["llmug-hello/domain/0"]`
+- `module.cloudflare_apps.cloudflare_worker.worker["<worker>"]`
+- `module.cloudflare_apps.cloudflare_worker_version.version["<worker>"]`
+- `module.cloudflare_apps.cloudflare_workers_deployment.deployment["<worker>"]`
+- `module.cloudflare_apps.cloudflare_workers_script_subdomain.subdomain["<worker>"]`
+- `module.cloudflare_apps.cloudflare_workers_custom_domain.domain["<worker>/domain/0"]`
 
 Current steady-state decision:
 

@@ -44,6 +44,7 @@ in
     "data/secrets/tf/cloudflare/secrets.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/cloudflare/account/account.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/cloudflare/access/account.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare/tunnels/account.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/cloudflare/dns/main.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/cloudflare/dns/stage.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/cloudflare/dns/archive.tfvars.age".publicKeys = adminsWithNixbot;

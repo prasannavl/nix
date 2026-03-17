@@ -143,6 +143,37 @@ ACCESS_APPLICATION_KEYS = {
     "target_criteria",
     "type",
 }
+TUNNEL_ORIGIN_REQUEST_FIELD_MAP = {
+    "caPool": "ca_pool",
+    "ca_pool": "ca_pool",
+    "connectTimeout": "connect_timeout",
+    "connect_timeout": "connect_timeout",
+    "disableChunkedEncoding": "disable_chunked_encoding",
+    "disable_chunked_encoding": "disable_chunked_encoding",
+    "http2Origin": "http2_origin",
+    "http2_origin": "http2_origin",
+    "httpHostHeader": "http_host_header",
+    "http_host_header": "http_host_header",
+    "keepAliveConnections": "keep_alive_connections",
+    "keep_alive_connections": "keep_alive_connections",
+    "keepAliveTimeout": "keep_alive_timeout",
+    "keep_alive_timeout": "keep_alive_timeout",
+    "matchSNIToHost": "match_sn_ito_host",
+    "matchSNItoHost": "match_sn_ito_host",
+    "match_sn_ito_host": "match_sn_ito_host",
+    "noHappyEyeballs": "no_happy_eyeballs",
+    "no_happy_eyeballs": "no_happy_eyeballs",
+    "noTLSVerify": "no_tls_verify",
+    "no_tls_verify": "no_tls_verify",
+    "originServerName": "origin_server_name",
+    "origin_server_name": "origin_server_name",
+    "proxyType": "proxy_type",
+    "proxy_type": "proxy_type",
+    "tcpKeepAlive": "tcp_keep_alive",
+    "tcp_keep_alive": "tcp_keep_alive",
+    "tlsTimeout": "tls_timeout",
+    "tls_timeout": "tls_timeout",
+}
 
 
 def log(message: str):
@@ -666,6 +697,254 @@ def merge_dicts(base, overlay):
     return merged
 
 
+def first_present(mapping, *keys):
+    if not isinstance(mapping, dict):
+        return None
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return None
+
+
+def normalize_listish(value):
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def build_tunnel_keys(tunnels):
+    used_keys = set()
+    key_by_id = {}
+    for tunnel in sorted(
+        tunnels,
+        key=lambda item: (
+            slugify((item.get("name") or "").strip()),
+            item.get("id") or "",
+        ),
+    ):
+        tunnel_id = tunnel.get("id")
+        if not tunnel_id:
+            continue
+        base = slugify((tunnel.get("name") or "").strip() or tunnel_id or "tunnel")
+        key_by_id[tunnel_id] = unique_key(base, used_keys, "tunnel")
+    return key_by_id
+
+
+def tunnel_config_source(tunnel):
+    config_src = tunnel.get("config_src")
+    if config_src in {"cloudflare", "local"}:
+        return config_src
+    remote_config = tunnel.get("remote_config")
+    if remote_config is True:
+        return "cloudflare"
+    if remote_config is False:
+        return "local"
+    return None
+
+
+def normalize_tunnel_access_config(access):
+    if not isinstance(access, dict):
+        return None
+    normalized = compact_value({
+        "aud_tag": normalize_listish(first_present(access, "aud_tag", "audTag")),
+        "required": first_present(access, "required"),
+        "team_name": first_present(access, "team_name", "teamName"),
+    })
+    if not normalized:
+        return None
+    if "aud_tag" not in normalized or "team_name" not in normalized:
+        return None
+    return normalized
+
+
+def normalize_tunnel_origin_request(origin_request):
+    if not isinstance(origin_request, dict):
+        return None
+    normalized = {}
+    for source_key, destination_key in TUNNEL_ORIGIN_REQUEST_FIELD_MAP.items():
+        value = first_present(origin_request, source_key)
+        if value is not None:
+            normalized[destination_key] = value
+    access = normalize_tunnel_access_config(first_present(origin_request, "access"))
+    if access:
+        normalized["access"] = access
+    compacted = compact_value(normalized)
+    if compacted in (None, {}, []):
+        return {}
+    return compacted
+
+
+def normalize_tunnel_ingress_rule(rule):
+    if not isinstance(rule, dict):
+        return None
+    hostname = first_present(rule, "hostname")
+    normalized = compact_value({
+        "hostname": hostname,
+        "path": first_present(rule, "path"),
+        "service": first_present(rule, "service"),
+    }) or {}
+    raw_origin_request = first_present(rule, "origin_request", "originRequest")
+    if raw_origin_request is not None:
+        normalized["origin_request"] = normalize_tunnel_origin_request(raw_origin_request) or {}
+    elif hostname is not None:
+        normalized["origin_request"] = {}
+    return normalized or None
+
+
+def normalize_tunnel_config(config_result):
+    raw_config = first_present(config_result, "config")
+    if raw_config is None and isinstance(config_result, dict):
+        raw_config = config_result
+    if not isinstance(raw_config, dict):
+        return None
+    ingress = [
+        normalized
+        for rule in try_get_list(first_present(raw_config, "ingress"))
+        if (normalized := normalize_tunnel_ingress_rule(rule)) is not None
+    ]
+    normalized = {}
+    if ingress:
+        normalized["ingress"] = ingress
+    origin_request = normalize_tunnel_origin_request(
+        first_present(raw_config, "origin_request", "originRequest")
+    )
+    if origin_request is not None:
+        normalized["origin_request"] = origin_request
+    return normalized or None
+
+
+def fetch_tunnel_config(tunnel):
+    tunnel_id = tunnel["id"]
+    payload = cf_get_json(
+        f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations"
+    )
+    return tunnel_id, payload
+
+
+def fetch_tunnel_inventory():
+    log("[api] listing cloudflared tunnels")
+    tunnels_payload = cf_paginate(
+        f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/cfd_tunnel?is_deleted=false"
+    )
+    log("[api] listing tunnel routes")
+    routes_payload = cf_paginate(
+        f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/teamnet/routes"
+    )
+    tunnel_configs = {}
+    warnings = []
+
+    tunnels = tunnels_payload if isinstance(tunnels_payload, list) else []
+    config_candidates = [
+        tunnel
+        for tunnel in tunnels
+        if tunnel_config_source(tunnel) != "local"
+    ]
+    if config_candidates:
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(config_candidates)))) as executor:
+            futures = {
+                executor.submit(fetch_tunnel_config, tunnel): tunnel
+                for tunnel in config_candidates
+            }
+            for future in as_completed(futures):
+                tunnel = futures[future]
+                tunnel_id, payload = future.result()
+                if payload.get("success") and payload.get("result") is not None:
+                    tunnel_configs[tunnel_id] = payload["result"]
+                    continue
+                if tunnel_config_source(tunnel) == "cloudflare":
+                    warnings.append({
+                        "tunnel": tunnel.get("name") or tunnel_id,
+                        "config_error": payload,
+                    })
+
+    return {
+        "tunnels": tunnels,
+        "tunnel_routes": routes_payload if isinstance(routes_payload, list) else [],
+        "tunnel_configs": tunnel_configs,
+        "warnings": warnings,
+    }
+
+
+def build_tunnel_tfvars(tunnel_inventory):
+    tunnels = tunnel_inventory.get("tunnels", [])
+    tunnel_configs_by_id = tunnel_inventory.get("tunnel_configs", {})
+    tunnel_routes = tunnel_inventory.get("tunnel_routes", [])
+    tunnel_key_by_id = build_tunnel_keys(tunnels)
+    route_map = defaultdict(list)
+    warnings = list(tunnel_inventory.get("warnings", []))
+
+    tunnels_tf = {}
+    for tunnel in sorted(
+        tunnels,
+        key=lambda item: tunnel_key_by_id.get(item.get("id"), item.get("id") or ""),
+    ):
+        tunnel_id = tunnel.get("id")
+        tunnel_key = tunnel_key_by_id.get(tunnel_id)
+        if not tunnel_id or tunnel_key is None:
+            continue
+        tunnels_tf[tunnel_key] = compact_value({
+            "name": tunnel.get("name") or tunnel_key,
+            "config_src": tunnel_config_source(tunnel),
+        })
+
+    tunnel_configs_tf = {}
+    for tunnel_id, config_result in sorted(tunnel_configs_by_id.items()):
+        tunnel_key = tunnel_key_by_id.get(tunnel_id)
+        if tunnel_key is None:
+            continue
+        normalized_config = normalize_tunnel_config(config_result)
+        if normalized_config:
+            tunnel_configs_tf[tunnel_key] = {"config": normalized_config}
+            continue
+        warnings.append({
+            "tunnel": tunnel_key,
+            "warning": "Tunnel config contains no Terraform-supported ingress/origin_request fields",
+        })
+
+    for route in tunnel_routes:
+        if not isinstance(route, dict):
+            continue
+        tunnel_id = route.get("tunnel_id")
+        tunnel_key = tunnel_key_by_id.get(tunnel_id)
+        if tunnel_key is None:
+            if tunnel_id and route.get("network"):
+                warnings.append({
+                    "tunnel_id": tunnel_id,
+                    "route": route.get("network"),
+                    "warning": "Tunnel route references a tunnel absent from inventory",
+                })
+            continue
+        network = route.get("network")
+        if not network:
+            continue
+        route_map[tunnel_key].append(compact_value({
+            "network": network,
+            "comment": route.get("comment"),
+            "virtual_network_id": route.get("virtual_network_id"),
+        }))
+
+    tunnel_routes_tf = {
+        tunnel_key: {
+            "routes": sorted(routes, key=lambda route: route["network"]),
+        }
+        for tunnel_key, routes in sorted(route_map.items())
+        if routes
+    }
+
+    payload = {
+        key: value
+        for key, value in {
+            "tunnels": tunnels_tf,
+            "tunnel_configs": tunnel_configs_tf,
+            "tunnel_routes": tunnel_routes_tf,
+        }.items()
+        if value not in ({}, [], None)
+    }
+    return payload, warnings
+
+
 def build_certificate_pack_key(pack, used_keys):
     hosts = sorted(try_get_list(pack.get("hosts")))
     host_label = slugify("-".join(hosts) if hosts else "certificate-pack")
@@ -768,7 +1047,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Export Cloudflare resources into repo-managed tfvars.")
     parser.add_argument(
         "--only",
-        choices=("all", "access"),
+        choices=("all", "access", "tunnels"),
         default="all",
         help="Limit export to a single surface. Defaults to exporting all supported Cloudflare resources.",
     )
@@ -878,6 +1157,17 @@ def build_access_tfvars(access_inventory):
         key: value
         for key, value in payload.items()
         if value not in ({}, [], None)
+    }
+
+
+def summarize_tunnel_tfvars(tunnel_tf):
+    return {
+        "tunnels": len(tunnel_tf.get("tunnels", {})),
+        "tunnel_configs": len(tunnel_tf.get("tunnel_configs", {})),
+        "tunnel_routes": sum(
+            len(route_group.get("routes", []))
+            for route_group in tunnel_tf.get("tunnel_routes", {}).values()
+        ),
     }
 
 
@@ -1008,6 +1298,24 @@ def main():
         }, indent=2))
         return
 
+    if args.only == "tunnels":
+        tunnel_inventory = fetch_tunnel_inventory()
+        tunnel_tf, tunnel_warnings = build_tunnel_tfvars(tunnel_inventory)
+        written_files = []
+        tunnels_age_path = write_secret_tfvars(
+            category_path("tunnels", "account.tfvars"),
+            tunnel_tf,
+        )
+        if tunnels_age_path is not None:
+            written_files.append(str(tunnels_age_path))
+        print(json.dumps({
+            "mode": "tunnels",
+            "generated_tfvars": written_files,
+            **summarize_tunnel_tfvars(tunnel_tf),
+            "warnings": tunnel_warnings[:20],
+        }, indent=2))
+        return
+
     log("[init] loading existing secret zones")
     zone_groups = load_existing_zone_groups()
     log("[api] listing zones")
@@ -1023,6 +1331,7 @@ def main():
         f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/email/routing/addresses"
     )
     access_inventory = fetch_access_inventory()
+    tunnel_inventory = fetch_tunnel_inventory()
     log("[api] listing workers domains")
     workers_domains = cf_paginate(f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/workers/domains")
 
@@ -1038,6 +1347,8 @@ def main():
         email_routing_addresses_payload = []
     if not isinstance(workers_domains, list):
         workers_domains = []
+
+    tunnel_tf, tunnel_warnings = build_tunnel_tfvars(tunnel_inventory)
 
     zone_name_by_id = {zone["id"]: zone["name"] for zone in zones}
     zone_data = {}
@@ -1500,6 +1811,13 @@ def main():
     if access_age_path is not None:
         written_files.append(str(access_age_path))
 
+    tunnels_age_path = write_secret_tfvars(
+        category_path("tunnels", "account.tfvars"),
+        tunnel_tf,
+    )
+    if tunnels_age_path is not None:
+        written_files.append(str(tunnels_age_path))
+
     zone_dnssec_grouped, zone_dnssec_ungrouped = split_zone_map_by_group(zone_dnssec, zone_groups)
     zone_settings_grouped, zone_settings_ungrouped = split_zone_map_by_group(zone_settings, zone_groups)
     zone_security_grouped, zone_security_ungrouped = split_zone_map_by_group(zone_security_settings, zone_groups)
@@ -1583,6 +1901,12 @@ def main():
         "access_groups": len(access_tf.get("access_groups", {})),
         "access_policies": len(access_tf.get("access_policies", {})),
         "access_applications": len(access_tf.get("access_applications", {})),
+        "tunnels": len(tunnel_tf.get("tunnels", {})),
+        "tunnel_configs": len(tunnel_tf.get("tunnel_configs", {})),
+        "tunnel_routes": sum(
+            len(route_group.get("routes", []))
+            for route_group in tunnel_tf.get("tunnel_routes", {}).values()
+        ),
         "rulesets": len(rulesets),
         "page_rules": len(page_rules),
         "zone_settings": len(zone_settings),
@@ -1593,7 +1917,7 @@ def main():
         "zone_authenticated_origin_pulls_settings": len(zone_authenticated_origin_pulls_settings),
         "email_routing_addresses": len(email_routing_addresses),
         "email_routing_zones": len(email_routing),
-        "warnings": warnings[:20],
+        "warnings": (warnings + tunnel_warnings)[:20],
     }
     print(json.dumps(summary, indent=2))
 

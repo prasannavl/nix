@@ -86,8 +86,9 @@ surfaces, export/input strategy, and source-of-truth rules.
   configuration.
 - Existing dashboard-managed Workers, routes, and custom domains must be
   imported before first apply.
-- `llmug-hello` is intentionally treated as a repo-managed local Worker instead
-  of trying to model Cloudflare Workers Builds as the source of truth.
+- The primary repo-managed Worker is intentionally treated as a local
+  repo-owned Worker instead of trying to model Cloudflare Workers Builds as the
+  source of truth.
 
 ## Operational rules
 
