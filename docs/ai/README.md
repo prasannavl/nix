@@ -4,6 +4,12 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ## Notes
 
+### Codebase
+
+- `docs/ai/notes/codebase-overview-2026-03.md`: High-level map of every major
+  directory, host, module, package, script, and deployment phase in the repo.
+  Good starting point for agent orientation.
+
 ### Apps
 
 - `docs/ai/notes/apps/root-flake-app-exports-and-git-source-2026-03.md`: Root
