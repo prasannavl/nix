@@ -7,12 +7,13 @@
   imports = [
     (modulesPath + "/virtualisation/lxc-container.nix")
     (modulesPath + "/virtualisation/lxc-image-metadata.nix")
+    ../openssh.nix
     ../options.nix
     ../nix.nix
     ../systemd.nix
     ../security.nix
     ../sudo.nix
-    ../nixbot.nix
+    ../nixbot
     ../nix-ld.nix
     ../users.nix
   ];
@@ -59,7 +60,6 @@
     enable = true;
   };
 
-  services.openssh.enable = true;
   services.tailscale.enable = true;
   services.fail2ban.enable = true;
 

@@ -18,7 +18,7 @@
     };
 
     ollama = {
-      image = "docker.io/ollama/ollama:latest";
+      image = "docker.io/ollama/ollama:rocm";
       autoStart = true;
       podman.user = "llmug";
       ports = ["0.0.0.0:11434:11434"];
@@ -26,7 +26,9 @@
         "/var/lib/llmug/ollama.pod:/root/.ollama"
       ];
       extraOptions = [
-        "--device=nvidia.com/gpu=all"
+        "--group-add=video"
+        "--device=/dev/dri:/dev/dri"
+        "--device=/dev/kfd:/dev/kfd"
       ];
     };
 

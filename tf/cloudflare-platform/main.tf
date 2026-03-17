@@ -1,0 +1,31 @@
+module "cloudflare_platform" {
+  source = "../modules/cloudflare"
+
+  zones                                    = {}
+  cloudflare_account_id                    = var.cloudflare_account_id
+  access_identity_providers                = var.access_identity_providers
+  access_groups                            = var.access_groups
+  access_policies                          = var.access_policies
+  access_applications                      = var.access_applications
+  workers_kv_namespaces                    = var.workers_kv_namespaces
+  tunnels                                  = var.tunnels
+  tunnel_configs                           = var.tunnel_configs
+  tunnel_routes                            = var.tunnel_routes
+  r2_buckets                               = var.r2_buckets
+  zone_dnssec                              = var.zone_dnssec
+  zone_settings                            = var.zone_settings
+  zone_security_settings                   = var.zone_security_settings
+  zone_certificate_packs                   = var.zone_certificate_packs
+  zone_universal_ssl_settings              = var.zone_universal_ssl_settings
+  zone_total_tls                           = var.zone_total_tls
+  zone_authenticated_origin_pulls_settings = var.zone_authenticated_origin_pulls_settings
+  rulesets                                 = var.rulesets
+  page_rules                               = var.page_rules
+  tiered_cache                             = var.tiered_cache
+  regional_tiered_cache                    = var.regional_tiered_cache
+  zone_cache_reserve                       = var.zone_cache_reserve
+  zone_cache_variants                      = var.zone_cache_variants
+  email_routing_addresses                  = var.email_routing_addresses
+  email_routing                            = var.email_routing
+  secrets                                  = var.secrets
+}

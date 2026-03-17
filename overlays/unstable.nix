@@ -6,12 +6,30 @@
 in {
   unstable = unstable;
 
-  vscode = unstable.vscode;
+  # infra
+  tailscale = unstable.tailscale;
+
+  # containers
   crun = unstable.crun;
   incus = unstable.incus;
   incus-lts = unstable.incus-lts;
   lxc = unstable.lxc;
   lxcfs = unstable.lxcfs;
+
+  # sway
+  sway = unstable.sway;
+  swayidle = unstable.swayidle;
+  swaylock = unstable.swaylock;
+  wlroots = unstable.wlroots;
+  xdg-desktop-portal-wlr = unstable.xdg-desktop-portal-wlr;
+
+  # ai tools
+  codex = unstable.codex;
+  gemini-cli = unstable.gemini-cli;
+  claude-code = unstable.claude-code;
+  github-copilot-cli = unstable.github-copilot-cli; 
   jan = unstable.jan;
-  tailscale = unstable.tailscale;
+
+  # apps
+  vscode = unstable.vscode;
 }

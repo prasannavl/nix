@@ -1,0 +1,12 @@
+services:
+  vaultwarden:
+    image: docker.io/vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      DOMAIN: "https://vault.p7log.com"
+    user: 0:0
+    volumes:
+      - ./data/:/data/
+    ports:
+      - "${VAULTWARDEN_HTTP_PORT}:80"

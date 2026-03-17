@@ -1,0 +1,194 @@
+* {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+html {
+	font-size: 16px;
+}
+
+html,
+body {
+	height: 100%;
+}
+
+body {
+	font-family:
+		-apple-system,
+		BlinkMacSystemFont,
+		Segoe UI,
+		Roboto,
+		Oxygen,
+		Ubuntu,
+		Cantarell,
+		Open Sans,
+		Helvetica Neue,
+		sans-serif;
+	color: #4a4a4a;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.dim {
+	color: #828b84;
+}
+
+.accent {
+	color: #a8d5ba;
+}
+
+.warm {
+	color: #c85c35;
+}
+
+strong {
+	font-weight: 500;
+}
+
+i {
+	font-style: italic;
+}
+
+#center-block {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	line-height: 1.5;
+}
+
+#center-block.js-wait {
+	visibility: hidden;
+}
+
+.logo {
+	width: min(21.25rem, 60vw);
+	height: auto;
+	display: block;
+	margin-top: -8vh;
+	animation: scale-in 800ms ease-out;
+	user-select: none;
+}
+
+@keyframes scale-in {
+	from {
+		transform: scale(0.8);
+		opacity: 0;
+	}
+
+	to {
+		transform: scale(1);
+		opacity: 1;
+	}
+}
+
+@keyframes scale-pulse {
+	0%,
+	100% {
+		opacity: 0.9;
+		transform: scale(1);
+	}
+
+	50% {
+		transform: scale(1.05);
+		opacity: 1;
+	}
+}
+
+@keyframes flip-out {
+	from {
+		transform: rotateY(0deg);
+		opacity: 1;
+	}
+	to {
+		transform: rotateY(90deg);
+		opacity: 0;
+	}
+}
+
+@keyframes flip-in {
+	from {
+		transform: rotateY(-90deg);
+		opacity: 0;
+	}
+	to {
+		transform: rotateY(0deg);
+		opacity: 1;
+	}
+}
+
+.logo-subtitle {
+	font-size: 2rem;
+	font-weight: 100;
+	margin: 3.125rem;
+	margin-top: 1.25rem;
+	text-align: center;
+	/* letter-spacing: 0.04em; */
+}
+
+.logo-footer {
+	margin: 1.25rem;
+	text-align: center;
+}
+
+.actor {
+	flex-grow: 1;
+}
+
+@keyframes blink {
+	from {
+		opacity: 0;
+	}
+
+	to {
+		opacity: 1;
+	}
+}
+
+.actor--typing::after {
+	content: "|";
+	animation: blink 0.75s infinite;
+	margin-left: 0.125rem;
+}
+
+/* Mobile breakpoint - reduce base font size */
+@media (max-width: 768px) {
+	html {
+		font-size: 14px;
+	}
+
+	.logo {
+		margin-top: -6vh;
+	}
+
+	.logo-subtitle {
+		margin: 2rem;
+		margin-top: 1rem;
+	}
+
+	.logo-footer {
+		margin: 1rem;
+	}
+}
+
+/* Small mobile breakpoint - further reduce base font size */
+@media (max-width: 480px) {
+	html {
+		font-size: 12px;
+	}
+
+	.logo {
+		margin-top: -4vh;
+	}
+
+	.logo-subtitle {
+		margin: 1.5rem;
+		margin-top: 0.75rem;
+	}
+
+	.logo-footer {
+		margin: 0.75rem;
+	}
+}

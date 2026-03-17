@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+RUNTIME_SHELL_FLAG="${UPDATE_GNOME_EXT_IN_NIX_SHELL:-0}"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Default list of extensions to update
 default_files=(
-  "$repo_root/pkgs/p7-borders.nix"
-  "$repo_root/pkgs/p7-cmds.nix"
+  "$repo_root/pkgs/ext/p7-borders.nix"
+  "$repo_root/pkgs/ext/p7-cmds.nix"
 )
 
 usage() {
@@ -17,8 +18,8 @@ By default, updates all known extensions. Optionally specify a single file to up
 
 Examples:
   update-gnome-ext.sh                               # Update all extensions
-  update-gnome-ext.sh --file pkgs/p7-borders.nix   # Update only p7-borders
-  update-gnome-ext.sh --file pkgs/p7-cmds.nix --version 30
+  update-gnome-ext.sh --file pkgs/ext/p7-borders.nix    # Update only p7-borders
+  update-gnome-ext.sh --file pkgs/ext/p7-cmds.nix --version 30
 EOF
 }
 
@@ -119,7 +120,31 @@ update_extension() {
   print_summary
 }
 
+ensure_runtime_shell() {
+  local script_path
+  local flake_path
+  local -a runtime_packages=(
+    nixpkgs#coreutils
+    nixpkgs#curl
+    nixpkgs#gnused
+    nixpkgs#jq
+  )
+
+  if [ "${RUNTIME_SHELL_FLAG}" = "1" ]; then
+    return
+  fi
+
+  if ! command -v nix >/dev/null 2>&1; then
+    die "Required command not found: nix"
+  fi
+
+  script_path="${BASH_SOURCE[0]:-$0}"
+  flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
+  exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_GNOME_EXT_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+}
+
 main() {
+  ensure_runtime_shell "$@"
   parse_args "$@"
 
   if [[ -n "$target_file" ]]; then
@@ -135,4 +160,3 @@ main() {
 }
 
 main "$@"
-

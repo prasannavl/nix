@@ -1,4 +1,8 @@
 {hostName, ...}: {
+  imports = [
+    ./openssh.nix
+  ];
+
   networking.hostName = hostName;
 
   networking.networkmanager.enable = true;
@@ -12,7 +16,6 @@
     enable = true;
   };
 
-  services.openssh.enable = true;
   services.tailscale.enable = true;
   services.fail2ban.enable = true;
 }

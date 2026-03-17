@@ -14,10 +14,15 @@
           ms-vscode.hexeditor
           ms-vscode.cpptools-extension-pack
 
-          vscodevim.vim
+          # vscodevim.vim
           yzhang.markdown-all-in-one
+          redhat.vscode-yaml
           jnoortheen.nix-ide
           arrterian.nix-env-selector
+          rust-lang.rust-analyzer
+          fill-labs.dependi
+          hashicorp.terraform
+          ms-python.python
 
           github.copilot-chat
           pkgs.vscode-marketplace.openai.chatgpt

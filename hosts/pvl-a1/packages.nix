@@ -58,9 +58,10 @@
     dev = with pkgs; [
       python3
       gnumake
-      rustup
+      # rustup
       cargo
       rustc
+      rustPlatform.rustLibSrc
       rustfmt
       rust-analyzer
       zed-wrapped
@@ -115,7 +116,6 @@
       git-secrets
       git-crypt
       git-credential-manager
-      sops
       age
       sbctl
       ente-auth
@@ -124,7 +124,11 @@
     ai = with pkgs; [
       jan
       antigravity-pkgs.default
-      codex-pkgs.default
+      # codex-pkgs.default
+      codex
+      gemini-cli
+      claude-code
+      github-copilot-cli
     ];
 
     misc = with pkgs; [
@@ -141,6 +145,7 @@
       ffmpeg
       patchelf
       opencode
+      shellcheck
     ];
 
     fonts = with pkgs; [
@@ -167,6 +172,10 @@ in {
     ++ packages.security
     ++ packages.ai
     ++ packages.misc;
+
+  environment.sessionVariables = {
+    RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+  };
 
   fonts = {
     enableDefaultPackages = true;

@@ -9,6 +9,10 @@
       url = "github:nix-community/home-manager/release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    agenix = {
+      url = "github:ryantm/agenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixos-hardware.url = "github:nixos/nixos-hardware";
     vscode-ext = {
       url = "github:nix-community/nix-vscode-extensions";
@@ -24,7 +28,7 @@
       inputs.flake-utils.follows = "flake-utils";
     };
     codex = {
-      url = "github:openai/codex/4210fb9e6cb3f50bb93d8fdfcb4494af27a36352";
+      url = "github:openai/codex/b9904c0ae4ecb773549efd6ea3fb05229402fdb9";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     p7-borders = {
@@ -45,22 +49,45 @@
     nixpkgs,
     flake-utils,
     home-manager,
+    agenix,
     ...
   }: let
+    packageOutputsFor = import ./pkgs {
+      inherit nixpkgs flake-utils;
+    };
+    packageTreeFor = system: (packageOutputsFor.outputsForSystem system).packageTree.pkgs;
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
+      agenix.nixosModules.default
       {nixpkgs.overlays = overlays;}
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
+    formatterPkgsFor = pkgs:
+      with pkgs; [
+        treefmt
+        alejandra
+        deno
+        opentofu
+      ];
   in
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
+      formatterPkgs = formatterPkgsFor pkgs;
     in {
-      formatter = pkgs.alejandra;
+      formatter = pkgs.writeShellApplication {
+        name = "treefmt";
+        runtimeInputs = formatterPkgs;
+        text = "treefmt";
+      };
     })
     // {
+      pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems packageTreeFor;
+      overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
+        inherit inputs commonModules;
+      };
+      nixosImages = import ./lib/images {
         inherit inputs commonModules;
       };
     };

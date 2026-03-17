@@ -1,0 +1,24 @@
+# Nix
+result/
+
+# Secrets
+data/secrets/**
+!data/secrets/**/
+!data/secrets/**/*.age
+!data/secrets/**/default.nix
+!data/secrets/**/*.pub
+
+# Terraform state
+**/.terraform/
+*.tfstate
+*.tfstate.*
+
+# Common build and dep dirs
+/tmp/
+**/target/
+**/npm_modules/
+**/dist/
+
+# Misc
+crash.log
+**/__pycache__/

@@ -44,6 +44,13 @@
       pciutils
       dmidecode
       tpm2-tools
+      ddcutil
+      powertop
+      brightnessctl
+      smartmontools
+      nvme-cli
+      e2fsprogs
+      lm_sensors
     ];
 
     security = with pkgs; [

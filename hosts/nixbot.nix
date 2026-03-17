@@ -2,21 +2,27 @@
   hosts = {
     pvl-a1 = {
       target = "pvl-a1";
-      knownHosts = ''
-        pvl-a1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDc4CcOlqS1B6mdvktzOdLjbfrCqi8xIFTW2QV+r69Jz
-      '';
+      ageIdentityKey = "data/secrets/machine/pvl-a1.key.age";
+      deps = [];
     };
     pvl-x2 = {
       target = "pvl-x2";
+      ageIdentityKey = "data/secrets/machine/pvl-x2.key.age";
+      deps = [];
     };
     llmug-rivendell = {
-      target = "llmug-rivendell";
+      target = "10.10.20.10";
+      ageIdentityKey = "data/secrets/machine/llmug-rivendell.key.age";
+      deps = ["pvl-x2"];
     };
   };
 
   defaults = {
     user = "nixbot";
-    key = "data/secrets/nixbot.key";
+    key = "data/secrets/nixbot/nixbot.key.age";
+    bootstrapKey = "data/secrets/nixbot/nixbot.key.age";
+    bootstrapUser = "pvl";
     knownHosts = null;
+    ageIdentityKey = "";
   };
 }

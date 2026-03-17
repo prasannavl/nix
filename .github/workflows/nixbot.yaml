@@ -6,26 +6,58 @@ on:
       - master
   workflow_dispatch:
     inputs:
+      action:
+        description: all, build, deploy, or tf
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - deploy
+          - build
+          - tf
       hosts:
         description: Comma/space-separated hosts, or all
         required: true
         default: all
         type: string
-      deploy:
-        description: Run deploy (otherwise build only)
+      dry:
+        description: Run TF plan / deploy dry-run when supported by the action
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
   contents: read
+  id-token: write
+
+concurrency:
+  group: nixbot-master
+  cancel-in-progress: false
 
 jobs:
   run:
     if: github.ref == 'refs/heads/master'
-    name: Run nixbot deploy script
+    name: nixbot
     runs-on: ubuntu-latest
+    environment: prod
     steps:
+      - name: Build Tailscale hostname
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "TS_HOSTNAME=gh-nixbot-${GITHUB_RUN_NUMBER}ts" >> "$GITHUB_ENV"
+
+      - name: Connect to Tailscale
+        id: tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TAILSCALE_OIDC_AUDIENCE }}
+          tags: tag:ci
+          hostname: ${{ env.TS_HOSTNAME }}
+          version: latest
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -35,35 +67,54 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v3
+      - name: Cache Nix runtime
+        uses: DeterminateSystems/magic-nix-cache-action@main
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          use-flakehub: false
+          use-gha-cache: true
 
-      - name: Execute nixbot deploy script
+      - name: Warm nixbot runtime shell
         shell: bash
-        env:
-          SOPS_AGE_KEY: ${{ secrets.GH_AGE_KEY }}
-          INPUT_HOSTS: ${{ github.event.inputs.hosts }}
-          INPUT_DEPLOY: ${{ github.event.inputs.deploy }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
-          hosts="all"
-          action="build"
+          # Warm the nixbot runtime closure before the real deploy so the
+          # initial fetch/install noise stays out of the Remote action logs.
+          ./scripts/nixbot-deploy.sh --ensure-deps >/dev/null
 
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            hosts="${INPUT_HOSTS:-all}"
-            if [ "${INPUT_DEPLOY:-true}" = "true" ]; then
-              action="deploy"
-            fi
+      - name: Remote action
+        shell: bash
+        env:
+          DEPLOY_BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
+          DEPLOY_BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
+          GITHUB_INPUT_ACTION: ${{ github.event.inputs.action || '' }}
+          GITHUB_INPUT_HOSTS: ${{ github.event.inputs.hosts || '' }}
+          GITHUB_INPUT_DRY: ${{ github.event.inputs.dry || '' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DEPLOY_BASTION_SSH_KEY:-}" ]; then
+            echo "Missing required secret: NIXBOT_BASTION_SSH_KEY" >&2
+            exit 1
           fi
 
-          nix shell nixpkgs#sops nixpkgs#jq -c scripts/nixbot-deploy.sh \
+          input_action="${GITHUB_INPUT_ACTION:-}"
+          input_hosts="${GITHUB_INPUT_HOSTS:-all}"
+          input_dry="${GITHUB_INPUT_DRY:-false}"
+          hosts="${input_hosts:-all}"
+          action="${input_action:-}"
+          extra_args=()
+          if [ -z "${action}" ]; then
+            action="all"
+          fi
+          if [ "${input_dry}" = "true" ]; then
+            extra_args+=(--dry)
+          fi
+
+          ./scripts/nixbot-deploy.sh \
+            --bastion-trigger \
+            --bastion-first \
             --hosts "${hosts}" \
             --action "${action}" \
-            --goal switch \
-            --config hosts/nixbot.nix
+            "${extra_args[@]}" \
+            --sha "${GITHUB_SHA}"

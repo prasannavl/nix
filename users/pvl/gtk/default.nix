@@ -5,6 +5,7 @@
     config,
     lib,
     osConfig,
+    pkgs,
     ...
   }: let
     homeDir = config.home.homeDirectory;
@@ -12,10 +13,30 @@
     onHosts = hosts: entry: lib.optional (lib.elem hostName hosts) entry;
     notHosts = hosts: entry: lib.optional (!(lib.elem hostName hosts)) entry;
   in {
+    imports = [
+      ./apps.nix
+    ];
+
     gtk = {
       enable = true;
       gtk3 = {
         enable = true;
+
+        iconTheme = {
+          name = "Adwaita";
+          package = pkgs.adwaita-icon-theme;
+        };
+
+        theme = {
+          name = "Adwaita";
+          package = pkgs.gnome-themes-extra;
+        };
+
+        cursorTheme = {
+          name = "Adwaita";
+          package = pkgs.adwaita-icon-theme;
+        };
+
         bookmarks = lib.flatten [
           "file:/// /"
           "file:///${homeDir}/Documents"
