@@ -116,9 +116,3 @@ variable "secret_zones_inactive" {
     error_message = "Each inactive secret DNS record must include `name`, `type`, and either `content` or `data`."
   }
 }
-
-variable "secrets" {
-  description = "Reusable encrypted values loaded from the secret tfvars file for use across Terraform resources."
-  type        = map(string)
-  default     = {}
-}

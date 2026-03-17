@@ -1,121 +1,42 @@
-# OpenTofu Cloudflare DNS
+# Terraform
 
-This directory is the source of truth for Cloudflare-managed DNS.
+`tf/` contains provider-specific OpenTofu projects plus reusable modules.
 
-## Scope
+## Projects
 
-This stack manages the Cloudflare DNS zones declared in `zones.auto.tfvars` and,
-when needed, the encrypted `data/secrets/tf/` secret tfvars tree. Keep
-concrete domain names in config and secrets, not in documentation.
+- `cloudflare-dns/`: pre-deploy Cloudflare DNS phase
+- `cloudflare-platform/`: Cloudflare platform phase for non-app resources
+- `cloudflare-apps/`: post-build Cloudflare Workers/apps phase
 
-## Layout
+Runnable projects follow the naming convention `tf/<provider>-<phase>/`.
+`scripts/nixbot-deploy.sh` discovers projects by suffix, so:
 
-- `versions.tf`: OpenTofu and provider constraints.
-- `backend.tf`: remote state backend declaration.
-- `providers.tf`: Cloudflare provider configuration.
-- `main.tf`: zone lookups and DNS record resources.
-- `zones.auto.tfvars`: authoritative public-safe record definitions.
-- `data/secrets/tf/**/*.tfvars.age`: authoritative encrypted Terraform variable
-  files loaded only for `scripts/nixbot-deploy.sh --action tf`.
-- `data/secrets/tf/cloudflare/{main,stage,archive,inactive}.tfvars.age`:
-  grouped encrypted Cloudflare DNS inputs mapped to the corresponding
-  `secret_zones_*` Terraform variables.
+- `--action tf-dns` runs every `tf/*-dns` project
+- `--action tf-platform` runs every `tf/*-platform` project
+- `--action tf-apps` runs every `tf/*-apps` project
 
-## Auth
+## Modules
 
-Set the Cloudflare API token in the environment:
+- `modules/cloudflare/`: shared Cloudflare implementation module used by all
+  three Cloudflare projects
 
-```bash
-export CLOUDFLARE_API_TOKEN=...
-```
+Use:
 
-The token should have DNS edit access for the managed zones.
+- `./scripts/nixbot-deploy.sh --action tf`
+- `./scripts/nixbot-deploy.sh --action tf-dns`
+- `./scripts/nixbot-deploy.sh --action tf-platform`
+- `./scripts/nixbot-deploy.sh --action tf-apps`
+- `./scripts/nixbot-deploy.sh --action all`
 
-On the bastion host, `scripts/nixbot-deploy.sh --action tf` can load the
-required Cloudflare, R2, and sensitive DNS values from repo-managed age secret
-files instead of exported shell variables:
+Phase order for `--action tf`:
 
-- `data/secrets/cloudflare/api-token.key.age`
-- `data/secrets/cloudflare/r2-account-id.key.age`
-- `data/secrets/cloudflare/r2-state-bucket.key.age`
-- `data/secrets/cloudflare/r2-access-key-id.key.age`
-- `data/secrets/cloudflare/r2-secret-access-key.key.age`
-- any `data/secrets/tf/**/*.tfvars.age` files
+1. `tf/cloudflare-dns/`
+2. `tf/cloudflare-platform/`
+3. `tf/cloudflare-apps/`
 
-Those secrets stay in the repo and are decrypted on demand by
-`scripts/nixbot-deploy.sh` using the bastion's existing age identity.
+Phase order for `--action all`:
 
-## Remote State
-
-The configuration uses Cloudflare R2 for remote state via the `s3` backend. R2
-is S3-compatible, so OpenTofu can talk to it through normal backend config.
-
-Example init:
-
-```bash
-tofu -chdir=tf init \
-  -backend-config='bucket=REPLACE_ME' \
-  -backend-config='key=cloudflare-dns/terraform.tfstate' \
-  -backend-config='region=auto' \
-  -backend-config='endpoint=https://ACCOUNT_ID.r2.cloudflarestorage.com' \
-  -backend-config='access_key=REPLACE_ME' \
-  -backend-config='secret_key=REPLACE_ME' \
-  -backend-config='skip_credentials_validation=true' \
-  -backend-config='skip_region_validation=true' \
-  -backend-config='skip_requesting_account_id=true' \
-  -backend-config='use_path_style=true'
-```
-
-## Workflow
-
-1. Populate `zones.auto.tfvars` with public-safe records only.
-2. Put any origin-bearing or otherwise sensitive Cloudflare records in the
-   grouped `data/secrets/tf/cloudflare/` files using the matching top-level
-   Terraform variables: `secret_zones_main`, `secret_zones_stage`,
-   `secret_zones_archive`, and `secret_zones_inactive`.
-3. Put reusable encrypted values in a `data/secrets/tf/*.tfvars.age` file, for
-   example `data/secrets/tf/secrets.tfvars.age`, under `secrets = {}` and
-   reference them from Terraform as `var.secrets["name"]`.
-4. Import existing Cloudflare DNS records into state before the first apply if
-   those zones already contain records you want OpenTofu to own.
-5. Run `tofu -chdir=tf plan`.
-6. Run `tofu -chdir=tf apply`.
-
-Without importing pre-existing records, OpenTofu will only manage the resources
-declared here and will not automatically adopt or delete unrelated existing
-records in Cloudflare.
-
-## Execution
-
-Run locally:
-
-```bash
-CLOUDFLARE_API_TOKEN=... \
-R2_ACCOUNT_ID=... \
-R2_STATE_BUCKET=... \
-R2_ACCESS_KEY_ID=... \
-R2_SECRET_ACCESS_KEY=... \
-./scripts/nixbot-deploy.sh --action tf
-```
-
-The deploy script always enters a `nix shell` runtime using this repo's flake
-inputs, so `tofu` does not need to be preinstalled separately on the machine
-running it. When encrypted secret tfvars files exist under `data/secrets/tf/`,
-the script decrypts each `*.tfvars.age` file in the tree into temp files and
-passes them via `-var-file` for that run only, in sorted path order.
-
-Dry-run:
-
-```bash
-CLOUDFLARE_API_TOKEN=... \
-R2_ACCOUNT_ID=... \
-R2_STATE_BUCKET=... \
-R2_ACCESS_KEY_ID=... \
-R2_SECRET_ACCESS_KEY=... \
-./scripts/nixbot-deploy.sh --action tf --dry
-```
-
-From GitHub Actions, use the existing `nixbot` workflow with `workflow_dispatch`
-and select `action=tf`. That executes through the bastion trigger path, so the
-required Cloudflare and R2 credentials must either be present in the bastion
-environment or committed as the encrypted repo secret files above.
+1. `tf/cloudflare-dns/`
+2. `tf/cloudflare-platform/`
+3. host build/deploy
+4. `tf/cloudflare-apps/`

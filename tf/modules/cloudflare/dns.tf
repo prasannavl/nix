@@ -16,9 +16,23 @@ locals {
     var.secret_zones_inactive,
   ]
 
+  worker_custom_domain_zone_names = toset(flatten([
+    for worker_name, worker in var.workers : [
+      for domain in try(worker.custom_domains, []) : domain.zone_name
+    ]
+  ]))
+
+  worker_route_zone_names = toset(flatten([
+    for worker_name, worker in var.workers : [
+      for route in try(worker.routes, []) : route.zone_name
+    ]
+  ]))
+
   zone_names = toset(flatten(concat(
     [keys(var.zones)],
-    [for group in local.secret_zone_groups : keys(group)]
+    [for group in local.secret_zone_groups : keys(group)],
+    [tolist(local.worker_custom_domain_zone_names)],
+    [tolist(local.worker_route_zone_names)]
   )))
 
   merged_zones = {
