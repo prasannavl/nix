@@ -587,10 +587,7 @@ parse_args() {
 }
 
 cleanup() {
-  if [ "${GITHUB_ACTIONS:-false}" = "true" ] && [ "${_NIXBOT_LOG_GROUP_OPEN:-0}" -eq 1 ]; then
-    printf '::endgroup::\n' >&2
-    _NIXBOT_LOG_GROUP_OPEN=0
-  fi
+  close_log_group
   if [ -n "${DEPLOY_TMP_DIR}" ] && [ -d "${DEPLOY_TMP_DIR}" ]; then
     rm -rf "${DEPLOY_TMP_DIR}"
   fi
@@ -684,6 +681,8 @@ run_bastion_trigger() {
     remote_command="${remote_command} --force"
     echo "Force: true" >&2
   fi
+
+  close_log_group
   ssh "${BASTION_TRIGGER_SSH_OPTS[@]}" -- "${BASTION_TRIGGER_USER}@${BASTION_TRIGGER_HOST}" \
     "${remote_command}"
 }
@@ -3173,14 +3172,19 @@ log_section() {
   local border='=========='
 
   if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
-    if [ "${_NIXBOT_LOG_GROUP_OPEN:-0}" -eq 1 ]; then
-      printf '::endgroup::\n' >&2
-    fi
+    close_log_group
     printf '::group::%s\n' "${title}" >&2
     _NIXBOT_LOG_GROUP_OPEN=1
   fi
 
   printf '\n%s %s %s\n' "${border}" "${title}" "${border}" >&2
+}
+
+close_log_group() {
+  if [ "${GITHUB_ACTIONS:-false}" = "true" ] && [ "${_NIXBOT_LOG_GROUP_OPEN:-0}" -eq 1 ]; then
+    printf '::endgroup::\n' >&2
+    _NIXBOT_LOG_GROUP_OPEN=0
+  fi
 }
 
 log_subsection() {
