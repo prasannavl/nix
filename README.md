@@ -6,6 +6,9 @@ modules and composed via `flake.nix`.
 ## Layout
 
 - `flake.nix`: flake inputs and system definition.
+- `apps/`: repo-local runnable source trees (including background/runtime apps
+  like Cloudflare Workers); each app owns its own flake and is aggregated into
+  the root flake plus overlay.
 - `hosts/<host>/default.nix`: host-specific system definition and module
   imports.
 - `users/pvl/default.nix`: Base user + Home Manager module builder for `pvl`.
@@ -58,18 +61,31 @@ Primary files for deployment are:
 
 Infrastructure managed outside NixOS modules lives in `tf/`.
 
-- `tf/`: OpenTofu configuration, currently used for Cloudflare DNS.
-- `tf/README.md`: documents the Cloudflare R2-backed OpenTofu state setup.
-- `scripts/nixbot-deploy.sh --action tf`: runs the OpenTofu stack locally or
-  through the bastion-trigger path used by `nixbot`.
-- `.github/workflows/nixbot.yaml`: can dispatch `action=tf` through the same
-  bastion-based workflow path used for build/deploy.
+- `tf/`: Terraform/OpenTofu project container.
+- `tf/cloudflare-dns/`: pre-deploy Cloudflare DNS OpenTofu project.
+- `tf/cloudflare-platform/`: Cloudflare platform OpenTofu project for non-app
+  resources.
+- `tf/cloudflare-apps/`: post-build Cloudflare Workers/apps OpenTofu project.
+- `tf/modules/cloudflare/`: Cloudflare module implementation shared by the
+  phase-specific projects.
+- `tf/README.md`: Terraform project layout docs.
+- `scripts/nixbot-deploy.sh --action tf-dns|tf-platform|tf-apps`: runs the
+  phase-specific OpenTofu projects locally or through the bastion-trigger path
+  used by `nixbot`. Project discovery is suffix-based, so future
+  `tf/<provider>-dns`, `tf/<provider>-platform`, and `tf/<provider>-apps`
+  projects participate automatically.
+- `.github/workflows/nixbot.yaml`: can dispatch the same bastion-based
+  build/deploy and phase-specific OpenTofu actions.
 - Terraform credentials can be stored as repo-managed age secrets under
-  `data/secrets/cloudflare/*.key.age`; `--action tf` decrypts them on demand
-  using the existing bastion age key.
+  `data/secrets/cloudflare/*.key.age`; the phase-specific OpenTofu actions
+  decrypt them on demand using the existing bastion age key.
 
 Deploy ordering notes:
 
+- `scripts/nixbot-deploy.sh --action all` runs Cloudflare in four phases:
+  `tf-dns`, `tf-platform`, host build/deploy, then `tf-apps`.
+- `scripts/nixbot-deploy.sh --action tf` runs the Terraform phases only:
+  `tf-dns`, `tf-platform`, then `tf-apps`.
 - `hosts/nixbot.nix` may declare per-host `deps = [ ... ];` for build/deploy
   ordering.
 - `scripts/nixbot-deploy.sh` still builds all selected hosts before starting

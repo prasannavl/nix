@@ -52,6 +52,9 @@
     agenix,
     ...
   }: let
+    appOutputsFor = import ./apps {
+      inherit nixpkgs flake-utils;
+    };
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
@@ -64,19 +67,24 @@
         treefmt
         alejandra
         deno
+        opentofu
       ];
   in
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
       formatterPkgs = formatterPkgsFor pkgs;
+      appOutputs = appOutputsFor.outputsForSystem system;
     in {
       formatter = pkgs.writeShellApplication {
         name = "treefmt";
         runtimeInputs = formatterPkgs;
         text = "treefmt";
       };
+      packages = appOutputs.packages;
+      apps = appOutputs.apps;
     })
     // {
+      overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;
       };

@@ -6,3 +6,8 @@ includes = ["**/*.nix"]
 command = "deno"
 options = ["fmt"]
 includes = ["*.js", "**/*.js", "*.md", "**/*.md"]
+
+[formatter.tofu]
+command = "tofu"
+options = ["fmt"]
+includes = ["*.tf", "**/*.tf", "*.tfvars", "**/*.tfvars"]

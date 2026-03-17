@@ -3,6 +3,7 @@
   (import ./unstable.nix {inherit inputs;})
   inputs.vscode-ext.overlays.default
   (import ./pvl.nix {inherit inputs;})
+  (import ./apps.nix {inherit inputs;})
   (
     final: prev: {
       handbrake-wrapped = final.callPackage ../pkgs/handbrake.nix {};
