@@ -2674,14 +2674,6 @@ run_hosts() {
     rollback_log_dir \
     rollback_status_dir
 
-  log_section "nixbot"
-  echo "Action: ${ACTION}" >&2
-  print_host_block "Hosts" "${selected_hosts[@]}"
-  if is_deploy_style_action; then
-    echo "Goal: ${GOAL}" >&2
-    echo "Build host: ${BUILD_HOST}" >&2
-  fi
-
   if ! run_build_phase \
     "${BUILD_JOBS}" \
     "${build_parallel}" \
@@ -3103,8 +3095,9 @@ run_tf_only_action() {
 }
 
 run_all_action() {
+  local selected_json="$1"
   run_tf_phases dns platform
-  run_host_action
+  run_host_action "${selected_json}"
   run_tf_phases apps
 }
 
@@ -3118,8 +3111,10 @@ resolve_selected_hosts_json() {
   order_selected_hosts_json "${selected_json}" "${all_hosts_json}"
 }
 
-run_host_action() {
-  local config_json="" all_hosts_json="" selected_json=""
+prepare_run_context() {
+  local -n selected_json_out="$1"
+  local config_json="" all_hosts_json=""
+  local -a log_hosts=()
 
   if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
     config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
@@ -3127,8 +3122,21 @@ run_host_action() {
   fi
 
   all_hosts_json="$(load_all_hosts_json)"
-  selected_json="$(resolve_selected_hosts_json "${all_hosts_json}")"
+  selected_json_out="$(resolve_selected_hosts_json "${all_hosts_json}")"
 
+  mapfile -t log_hosts < <(jq -r '.[]' <<<"${selected_json_out}")
+
+  log_section "nixbot"
+  echo "Action: ${ACTION}" >&2
+  print_host_block "Hosts" "${log_hosts[@]}"
+  if is_deploy_style_action; then
+    echo "Goal: ${GOAL}" >&2
+    echo "Build host: ${BUILD_HOST}" >&2
+  fi
+}
+
+run_host_action() {
+  local selected_json="$1"
   run_hosts "${selected_json}"
 }
 
@@ -3447,8 +3455,11 @@ is_tofu_wrapper_request() {
 }
 
 run_requested_action() {
+  local selected_json=""
+  prepare_run_context selected_json
+
   if [ "${ACTION}" = "all" ]; then
-    run_all_action
+    run_all_action "${selected_json}"
     return
   fi
 
@@ -3457,7 +3468,7 @@ run_requested_action() {
     return
   fi
 
-  run_host_action
+  run_host_action "${selected_json}"
 }
 
 main() {
