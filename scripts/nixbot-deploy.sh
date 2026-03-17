@@ -183,7 +183,7 @@ init_vars() {
   TF_WORK_DIR="${DEPLOY_TF_DIR:-}"
   TF_CHANGE_BASE_REF=""
   _NIXBOT_LOG_GROUP_OPEN=0
-  _NIXBOT_HOST_STAGE_GROUP_PHASE=""
+  _NIXBOT_LOG_GROUP_SCOPE=""
 
   clear_run_summary_state
 
@@ -353,31 +353,28 @@ tf_state_key_for_project() {
   printf '%s/terraform.tfstate\n' "${project_name}"
 }
 
-_emit_tf_var_file() { [ -f "$1" ] && printf '%s\n' "$1"; true; }
-_emit_tf_var_dir()  { [ -d "$1" ] && find "$1" -type f -name '*.tfvars.age' | sort; true; }
-
 emit_tf_secret_paths_for_project() {
   local project_name="$1"
   local cf="${TF_SECRETS_DIR}/cloudflare"
   local dir
 
-  _emit_tf_var_file "${TF_SECRETS_DIR}/${project_name}.tfvars.age"
-  _emit_tf_var_dir "${TF_SECRETS_DIR}/${project_name}"
+  [ -f "${TF_SECRETS_DIR}/${project_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${project_name}.tfvars.age"
+  [ -d "${TF_SECRETS_DIR}/${project_name}" ] && find "${TF_SECRETS_DIR}/${project_name}" -type f -name '*.tfvars.age' | sort
 
   case "${project_name}" in
     cloudflare-dns)
-      _emit_tf_var_dir "${cf}/dns"
+      [ -d "${cf}/dns" ] && find "${cf}/dns" -type f -name '*.tfvars.age' | sort
       ;;
     cloudflare-platform)
-      _emit_tf_var_file "${cf}/secrets.tfvars.age"
+      [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
       for dir in account access r2 zone-dnssec zone-settings zone-security rulesets page-rules email-routing; do
-        _emit_tf_var_dir "${cf}/${dir}"
+        [ -d "${cf}/${dir}" ] && find "${cf}/${dir}" -type f -name '*.tfvars.age' | sort
       done
       ;;
     cloudflare-apps)
-      _emit_tf_var_file "${cf}/secrets.tfvars.age"
-      _emit_tf_var_dir "${cf}/account"
-      _emit_tf_var_dir "${cf}/workers"
+      [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
+      [ -d "${cf}/account" ] && find "${cf}/account" -type f -name '*.tfvars.age' | sort
+      [ -d "${cf}/workers" ] && find "${cf}/workers" -type f -name '*.tfvars.age' | sort
       ;;
   esac
 }
@@ -1679,25 +1676,6 @@ clear_prepared_deploy_context() {
   PREP_DEPLOY_SSH_OPTS=()
 }
 
-use_prepared_deploy_context() {
-  local -n ssh_target_out="$1"
-  local -n nix_sshopts_out="$2"
-  local -n using_bootstrap_fallback_out="$3"
-  local -n age_identity_key_out="$4"
-  local -n ssh_opts_out="$5"
-
-  # shellcheck disable=SC2034
-  ssh_target_out="${PREP_DEPLOY_SSH_TARGET}"
-  # shellcheck disable=SC2034
-  nix_sshopts_out="${PREP_DEPLOY_NIX_SSHOPTS}"
-  # shellcheck disable=SC2034
-  using_bootstrap_fallback_out="${PREP_USING_BOOTSTRAP_FALLBACK}"
-  # shellcheck disable=SC2034
-  age_identity_key_out="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
-  # shellcheck disable=SC2034
-  ssh_opts_out=("${PREP_DEPLOY_SSH_OPTS[@]}")
-}
-
 init_known_hosts_ssh_context() {
   local batch_mode="$1"
   local known_hosts_file="$2"
@@ -1726,31 +1704,6 @@ apply_identity_to_ssh_context() {
   else
     nix_sshopts_out="-i ${key_file} -o IdentitiesOnly=yes"
   fi
-}
-
-use_prepared_ssh_context() {
-  local -n ssh_target_out="$1"
-  # shellcheck disable=SC2178
-  local -n ssh_opts_out="$2"
-
-  # shellcheck disable=SC2034
-  ssh_target_out="${PREP_DEPLOY_SSH_TARGET}"
-  # shellcheck disable=SC2034
-  ssh_opts_out=("${PREP_DEPLOY_SSH_OPTS[@]}")
-}
-
-use_prepared_ssh_sudo_context() {
-  local -n ssh_target_out="$1"
-  local -n using_bootstrap_fallback_out="$2"
-  # shellcheck disable=SC2178
-  local -n ssh_opts_out="$3"
-
-  # shellcheck disable=SC2034
-  ssh_target_out="${PREP_DEPLOY_SSH_TARGET}"
-  # shellcheck disable=SC2034
-  using_bootstrap_fallback_out="${PREP_USING_BOOTSTRAP_FALLBACK}"
-  # shellcheck disable=SC2034
-  ssh_opts_out=("${PREP_DEPLOY_SSH_OPTS[@]}")
 }
 
 ensure_bootstrap_key_ready() {
@@ -1968,7 +1921,8 @@ snapshot_host_generation() {
 
   log_host_stage "snapshot" "${node}"
   prepare_deploy_context "${node}" || return 1
-  use_prepared_ssh_context ssh_target ssh_opts
+  ssh_target="${PREP_DEPLOY_SSH_TARGET}"
+  ssh_opts=("${PREP_DEPLOY_SSH_OPTS[@]}")
   # shellcheck disable=SC2029
   if ! remote_current_path="$(ssh "${ssh_opts[@]}" "${ssh_target}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true")"; then
     remote_current_path=""
@@ -2287,7 +2241,9 @@ rollback_host_to_snapshot() {
 
   log_host_stage "rollback" "${node}"
   prepare_deploy_context "${node}" || return 1
-  use_prepared_ssh_sudo_context ssh_target using_bootstrap_fallback ssh_opts
+  ssh_target="${PREP_DEPLOY_SSH_TARGET}"
+  using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  ssh_opts=("${PREP_DEPLOY_SSH_OPTS[@]}")
   deploy_user="${ssh_target%%@*}"
 
   # shellcheck disable=SC2016
@@ -2351,7 +2307,11 @@ deploy_host() {
 
   log_host_stage "deploy" "${node}" "${GOAL}"
   prepare_deploy_context "${node}" || return 1
-  use_prepared_deploy_context ssh_target nix_sshopts using_bootstrap_fallback age_identity_key ssh_opts
+  ssh_target="${PREP_DEPLOY_SSH_TARGET}"
+  nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
+  using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+  ssh_opts=("${PREP_DEPLOY_SSH_OPTS[@]}")
   inject_host_age_identity_key "${node}" "${ssh_target}" "${age_identity_key}" "${ssh_opts[@]}" || return 1
 
   deploy_user="${ssh_target%%@*}"
@@ -2518,11 +2478,9 @@ run_build_phase() {
 
   if [ "${build_parallel}" -eq 0 ] && [ "${#build_hosts_ref[@]}" -gt 1 ]; then
     host_grouping=1
-    log_group_host_stage_start "build"
-    log_section "Phase: Build" none
+    log_grouped_phase_section "Phase: Build" "build" 1
   else
-    log_group_host_stage_end
-    log_section "Phase: Build"
+    log_grouped_phase_section "Phase: Build" "build" 0
   fi
 
   if [ "${build_parallel}" -eq 1 ] && [ "${prioritize_bastion}" -eq 1 ] \
@@ -2572,11 +2530,11 @@ run_build_phase() {
 
   if [ "${#failed_hosts_ref[@]}" -gt 0 ]; then
     print_host_failures "Build phase failed" build "${build_log_dir}" "${build_status_dir}" "${failed_hosts_ref[@]}"
-    log_group_host_stage_end
+    log_group_scope_end
     return 1
   fi
 
-  log_group_host_stage_end
+  log_group_scope_end
   return 0
 }
 
@@ -2612,11 +2570,9 @@ run_deploy_phase() {
 
   if [ "${deploy_parallel}" -eq 0 ] && [ "${total_deploy_hosts}" -gt 1 ]; then
     host_grouping=1
-    log_group_host_stage_start "deploy"
-    log_section "Phase: Deploy" none
+    log_grouped_phase_section "Phase: Deploy" "deploy" 1
   else
-    log_group_host_stage_end
-    log_section "Phase: Deploy"
+    log_grouped_phase_section "Phase: Deploy" "deploy" 0
   fi
 
   for level_group in "${level_groups_ref[@]}"; do
@@ -2630,15 +2586,11 @@ run_deploy_phase() {
       record_snapshot_failures_for_wave "${snapshot_dir}" snapshot_failed_hosts_ref deploy_failed_hosts_ref "${level_hosts[@]}"
       print_host_failures "Deploy phase failed" snapshot "" "${deploy_failed_hosts_ref[@]}"
       maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts_ref[@]}"
-      log_group_host_stage_end
+      log_group_scope_end
       return 1
     fi
     if [ "${snapshot_retry_logged}" -eq 1 ]; then
-      if [ "${host_grouping}" -eq 1 ]; then
-        log_section "Phase: Deploy" none
-      else
-        log_section "Phase: Deploy"
-      fi
+      log_grouped_phase_section "Phase: Deploy" "deploy" "${host_grouping}"
     fi
 
     log_subsection "Deploy Wave: $(join_by_comma "${level_hosts[@]}")"
@@ -2685,14 +2637,14 @@ run_deploy_phase() {
         print_host_failures "Deploy phase failed" plain "" "${deploy_failed_hosts_ref[@]}"
       fi
       maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts_ref[@]}"
-      log_group_host_stage_end
+      log_group_scope_end
       return 1
     fi
 
     level_index=$((level_index + 1))
   done
 
-  log_group_host_stage_end
+  log_group_scope_end
   return 0
 }
 
@@ -3123,22 +3075,32 @@ run_requested_tf_phase() {
   local project_dir=""
   local found=0
   local project_name=""
+  local project_rc=0
+
+  log_section "Phase: Terraform (${phase})" none
 
   while IFS= read -r project_dir; do
     [ -n "${project_dir}" ] || continue
     found=1
     project_name="$(tf_project_name_from_dir "${project_dir}")"
-    log_section "Phase: Terraform (${phase}/${project_name})"
+    log_grouped_item_start "$(log_group_tf_project_title "${phase}" "${project_name}")"
+    log_subsection "Terraform Project: ${project_name}"
+    project_rc=0
 
     if should_run_tf_project_action "${phase}" "${project_name}"; then
       if run_tf_action "${phase}" "${project_dir}"; then
         record_tf_run_summary "${phase}" "${project_name}" "ok"
       else
         record_tf_run_summary "${phase}" "${project_name}" "fail"
-        return 1
+        project_rc=1
       fi
     else
       record_tf_run_summary "${phase}" "${project_name}" "skip"
+    fi
+
+    log_grouped_item_end
+    if [ "${project_rc}" -ne 0 ]; then
+      return 1
     fi
   done < <(tf_project_dirs_for_phase "${phase}")
 
@@ -3245,19 +3207,35 @@ host_phase_border() {
   esac
 }
 
+log_heading() {
+  local level="$1"
+  local title="$2"
+  local group_mode="${3:-auto}"
+
+  case "${level}" in
+    section)
+      if is_github_actions_log_mode; then
+        log_group_end
+        if log_group_should_section "${title}" "${group_mode}"; then
+          log_group_start "${title}"
+        fi
+      fi
+      printf '\n========== %s ==========\n' "${title}" >&2
+      ;;
+    subsection)
+      printf -- '--- %s ---\n' "${title}" >&2
+      ;;
+    *)
+      die "Unsupported log heading level: ${level}"
+      ;;
+  esac
+}
+
 log_section() {
   local title="$1"
   local group_mode="${2:-auto}"
-  local border='=========='
 
-  if is_github_actions_log_mode; then
-    log_group_end
-    if log_group_should_section "${title}" "${group_mode}"; then
-      log_group_start "${title}"
-    fi
-  fi
-
-  printf '\n%s %s %s\n' "${border}" "${title}" "${border}" >&2
+  log_heading section "${title}" "${group_mode}"
 }
 
 log_group_start() {
@@ -3302,7 +3280,30 @@ log_group_should_section() {
 
 log_subsection() {
   local title="$1"
-  printf -- '--- %s ---\n' "${title}" >&2
+
+  log_heading subsection "${title}"
+}
+
+log_grouped_item_start() {
+  local group_title="$1"
+
+  if is_github_actions_log_mode; then
+    log_group_end
+    log_group_start "${group_title}"
+  fi
+}
+
+log_grouped_item_end() {
+  if is_github_actions_log_mode; then
+    log_group_end
+  fi
+}
+
+log_group_tf_project_title() {
+  local phase="$1"
+  local project_name="$2"
+
+  printf 'Phase: Terraform (%s) / %s\n' "${phase}" "${project_name}"
 }
 
 log_host_stage() {
@@ -3311,9 +3312,8 @@ log_host_stage() {
   local extra="${3:-}"
   local border
 
-  if log_group_should_host_stage "${phase}"; then
-    log_group_end
-    log_group_start "$(log_group_host_stage_title "${phase}" "${node}")"
+  if log_group_scope_matches "${phase}"; then
+    log_grouped_item_start "$(log_group_host_stage_title "${phase}" "${node}")"
   fi
 
   border="$(host_phase_border "${phase}")"
@@ -3326,27 +3326,41 @@ log_host_stage() {
   fi
 }
 
-log_group_host_stage_start() {
-  _NIXBOT_HOST_STAGE_GROUP_PHASE="$1"
+log_group_scope_start() {
+  _NIXBOT_LOG_GROUP_SCOPE="$1"
 }
 
-log_group_host_stage_end() {
-  _NIXBOT_HOST_STAGE_GROUP_PHASE=""
+log_group_scope_end() {
+  _NIXBOT_LOG_GROUP_SCOPE=""
 }
 
-log_group_should_host_stage() {
-  local phase="$1"
+log_grouped_phase_section() {
+  local title="$1"
+  local scope="$2"
+  local grouped="$3"
+
+  if [ "${grouped}" -eq 1 ]; then
+    log_group_scope_start "${scope}"
+    log_section "${title}" none
+  else
+    log_group_scope_end
+    log_section "${title}"
+  fi
+}
+
+log_group_scope_matches() {
+  local scope="$1"
 
   is_github_actions_log_mode || return 1
-  [ -n "${_NIXBOT_HOST_STAGE_GROUP_PHASE:-}" ] || return 1
-  [ "${_NIXBOT_HOST_STAGE_GROUP_PHASE}" = "${phase}" ]
+  [ -n "${_NIXBOT_LOG_GROUP_SCOPE:-}" ] || return 1
+  [ "${_NIXBOT_LOG_GROUP_SCOPE}" = "${scope}" ]
 }
 
 log_group_end_host_stage() {
   local phase="$1"
 
-  if log_group_should_host_stage "${phase}"; then
-    log_group_end
+  if log_group_scope_matches "${phase}"; then
+    log_grouped_item_end
   fi
 }
 
