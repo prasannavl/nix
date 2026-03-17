@@ -4,8 +4,12 @@
   home = {pkgs, ...}: {
     programs.vscode = {
       enable = true;
-      profiles.default = {
-        extensions = with pkgs.vscode-extensions; [
+      profiles.default = let
+        v = pkgs.vscode.version;
+        e = pkgs.nix-vscode-extensions.forVSCodeVersion v;
+        r = e.vscode-marketplace-release;
+      in {
+        extensions = with r; [
           ms-vscode-remote.remote-ssh
           ms-vscode-remote.remote-ssh-edit
           ms-vscode-remote.remote-containers
@@ -25,8 +29,10 @@
           ms-python.python
 
           github.copilot-chat
-          pkgs.vscode-marketplace.openai.chatgpt
-          pkgs.vscode-marketplace.continue.continue
+          openai.chatgpt
+          continue.continue
+          google.gemini-cli-vscode-ide-companion
+          # google.geminicodeassist
         ];
 
         keybindings = [
