@@ -7,8 +7,8 @@ Restored the `.github/workflows/nixbot.yaml` workflow after
 
 ## What Changed
 
-- Added an explicit Nix installation step to the `nixbot` GitHub workflow
-  before the `Remote action` step.
+- Added an explicit Nix installation step to the `nixbot` GitHub workflow before
+  the `Remote action` step.
 - Enabled `nix-command` and `flakes` in that workflow bootstrap step so the
   script's `nix shell --inputs-from <repo-root> ...` call works on the runner.
 
@@ -16,6 +16,5 @@ Restored the `.github/workflows/nixbot.yaml` workflow after
 
 - GitHub-hosted `ubuntu-latest` runners do not provide `nix` by default, so the
   workflow must bootstrap it before invoking `scripts/nixbot-deploy.sh`.
-- The failure signature for this mismatch is:
-  `Required command not found: nix`.
+- The failure signature for this mismatch is: `Required command not found: nix`.
 - No secret file contents were read during this task.

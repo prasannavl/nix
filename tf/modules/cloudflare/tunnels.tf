@@ -3,10 +3,10 @@ locals {
     for route in flatten([
       for tunnel_key, route_group in var.tunnel_routes : [
         for route in try(route_group.routes, []) : {
-          key           = format("%s/%s", tunnel_key, route.network)
-          tunnel_key    = tunnel_key
-          network       = route.network
-          comment       = try(route.comment, null)
+          key                = format("%s/%s", tunnel_key, route.network)
+          tunnel_key         = tunnel_key
+          network            = route.network
+          comment            = try(route.comment, null)
           virtual_network_id = try(route.virtual_network_id, null)
         }
       ]

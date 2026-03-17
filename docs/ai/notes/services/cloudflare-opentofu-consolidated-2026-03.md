@@ -2,8 +2,8 @@
 
 ## Scope
 
-Canonical March 2026 summary for this repo's Cloudflare OpenTofu layout,
-modeled surfaces, export/input strategy, and source-of-truth rules.
+Canonical March 2026 summary for this repo's Cloudflare OpenTofu layout, modeled
+surfaces, export/input strategy, and source-of-truth rules.
 
 ## Runnable layout
 
@@ -34,7 +34,8 @@ modeled surfaces, export/input strategy, and source-of-truth rules.
 ## Input and secret model
 
 - Public-safe inputs stay in project-local `*.auto.tfvars` files.
-- Sensitive inputs stay encrypted under `data/secrets/tf/cloudflare/**.tfvars.age`.
+- Sensitive inputs stay encrypted under
+  `data/secrets/tf/cloudflare/**.tfvars.age`.
 - `scripts/nixbot-deploy.sh` auto-discovers encrypted tfvars, decrypts them into
   its temp workspace, and passes them to OpenTofu in sorted path order.
 - The Cloudflare runtime secret path is repo-managed and covers the API token,

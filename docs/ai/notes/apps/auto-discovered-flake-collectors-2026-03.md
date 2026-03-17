@@ -9,8 +9,8 @@ The root collector used to repeat the same manual steps for each child flake:
 
 - import the child `flake.nix`
 - evaluate `packages` and `apps` for one system
-- re-export nested namespaced leaves
-That made every new package require boilerplate edits in the parent collector.
+- re-export nested namespaced leaves That made every new package require
+  boilerplate edits in the parent collector.
 
 ## Decision
 

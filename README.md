@@ -6,12 +6,12 @@ modules and composed via `flake.nix`.
 ## Layout
 
 - `flake.nix`: flake inputs and system definition.
-- `pkgs/`: repo-local runnable source trees; each package owns its own flake
-  and is aggregated into a custom top-level flake attr such as
+- `pkgs/`: repo-local runnable source trees; each package owns its own flake and
+  is aggregated into a custom top-level flake attr such as
   `.#pkgs.<system>.hello-rust` and
   `.#pkgs.<system>.cloudflare-workers.llmug-hello.deploy`.
-- `pkgs/ext/`: standalone derivation definitions consumed by overlays and
-  helper scripts.
+- `pkgs/ext/`: standalone derivation definitions consumed by overlays and helper
+  scripts.
 - `hosts/<host>/default.nix`: host-specific system definition and module
   imports.
 - `users/pvl/default.nix`: Base user + Home Manager module builder for `pvl`.

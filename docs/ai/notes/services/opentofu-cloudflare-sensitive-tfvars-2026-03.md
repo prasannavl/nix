@@ -12,9 +12,9 @@ only be decrypted at `--action tf` runtime.
   `tf/variables.tf`.
 - Added `variable "secrets"` for reusable encrypted values loaded from a secret
   tfvars file.
-- Updated `tf/main.tf` to merge `zones` and all `secret_zones_*` groups per
-  zone by concatenating their `records` lists before creating
-  `cloudflare_dns_record` resources.
+- Updated `tf/main.tf` to merge `zones` and all `secret_zones_*` groups per zone
+  by concatenating their `records` lists before creating `cloudflare_dns_record`
+  resources.
 - Updated `tf/main.tf` so Cloudflare zone lookup covers the union of `zones` and
   all `secret_zones_*` groups, including zones that only exist in the encrypted
   layer.
@@ -43,14 +43,11 @@ only be decrypted at `--action tf` runtime.
 - Public-safe records still live in `tf/zones.auto.tfvars` under `zones = {}`.
 - Sensitive Cloudflare records belong in grouped files under
   `data/secrets/tf/cloudflare/`, using `secret_zones_main`,
-  `secret_zones_stage`, `secret_zones_archive`, and
-  `secret_zones_inactive`.
-- Current assignment is:
-  `secret_zones_main` contains the primary active zones,
-  `secret_zones_stage` contains staging-oriented zones,
-  `secret_zones_archive` contains archived zones, and
-  `secret_zones_inactive` contains inactive or placeholder zones whose
-  `records = []`.
+  `secret_zones_stage`, `secret_zones_archive`, and `secret_zones_inactive`.
+- Current assignment is: `secret_zones_main` contains the primary active zones,
+  `secret_zones_stage` contains staging-oriented zones, `secret_zones_archive`
+  contains archived zones, and `secret_zones_inactive` contains inactive or
+  placeholder zones whose `records = []`.
 - All four `secret_zones_*` groups are explicit top-level maps so zones can be
   reclassified without changing the deploy runtime behavior.
 - Reusable encrypted values belong in `data/secrets/tf/secrets.tfvars.age` under

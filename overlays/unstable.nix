@@ -27,7 +27,7 @@ in {
   codex = unstable.codex;
   gemini-cli = unstable.gemini-cli;
   claude-code = unstable.claude-code;
-  github-copilot-cli = unstable.github-copilot-cli; 
+  github-copilot-cli = unstable.github-copilot-cli;
   jan = unstable.jan;
 
   # apps

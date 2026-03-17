@@ -28,6 +28,13 @@
     release.
   - After another agent releases a lock, treat local context as stale and
     re-evaluate before continuing.
+- If you have to use tmp files, use `tmp/` dir at the root of our repo and then
+  clean up at the end of the session if everything is successful. Otherwise, ask
+  user if we should keep them for debugging.
+  - We do this for 2 reasons:
+    - 1 easier for user to debug if need to.
+    - 2 we can easily have the agent have read / write permissions to this
+      folder without worrying about external permissions.
 
 ## Secrets
 

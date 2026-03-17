@@ -2016,22 +2016,22 @@ run_build_job() {
 record_phase_status() {
   local node="$1"
   local status_file="$2"
-  local -n success_hosts_ref="$3"
-  local -n failed_hosts_ref="$4"
+  local -n success_hosts_out_ref="$3"
+  local -n failed_hosts_out_ref="$4"
   local rc
 
   if [ ! -s "${status_file}" ]; then
-    failed_hosts_ref+=("${node}")
+    failed_hosts_out_ref+=("${node}")
     return 1
   fi
 
   rc="$(cat "${status_file}")"
   if [ "${rc}" != "0" ]; then
-    failed_hosts_ref+=("${node}")
+    failed_hosts_out_ref+=("${node}")
     return 1
   fi
 
-  success_hosts_ref+=("${node}")
+  success_hosts_out_ref+=("${node}")
   return 0
 }
 
@@ -2177,17 +2177,17 @@ maybe_rollback_successful_hosts() {
 
 record_snapshot_failures_for_wave() {
   local snapshot_dir="$1"
-  local -n snapshot_failed_hosts_ref="$2"
+  local -n snapshot_failed_hosts_out_ref="$2"
   # shellcheck disable=SC2178
-  local -n deploy_failed_hosts_ref="$3"
+  local -n deploy_failed_hosts_out_ref="$3"
   shift 3
 
   local node
   for node in "$@"; do
     [ -n "${node}" ] || continue
     if ! snapshot_exists "${snapshot_dir}/${node}.path"; then
-      snapshot_failed_hosts_ref+=("${node}")
-      deploy_failed_hosts_ref+=("${node}")
+      snapshot_failed_hosts_out_ref+=("${node}")
+      deploy_failed_hosts_out_ref+=("${node}")
     fi
   done
 }

@@ -22,8 +22,8 @@ Run this playbook when one or more of these are true:
 ## Core rules
 
 1. Keep `docs/ai/playbooks/` for reusable, execution-oriented procedures.
-2. Keep `docs/ai/notes/` for durable task memory, design decisions, lessons,
-   and final state.
+2. Keep `docs/ai/notes/` for durable task memory, design decisions, lessons, and
+   final state.
 3. Treat `docs/ai/runs/` as temporary staging or short-lived execution history.
    Once the outcome is durable and settled, fold the important content back into
    notes and remove the run artifacts.
@@ -52,8 +52,8 @@ For each topic cluster:
 
 1. Choose the one note that should remain canonical, or create a new
    consolidated note if none of the existing ones is a clean landing page.
-2. Prefer broad, stable filenames that describe the topic rather than one
-   narrow sub-step.
+2. Prefer broad, stable filenames that describe the topic rather than one narrow
+   sub-step.
 3. Keep the surviving note focused on durable information:
    - current shape
    - durable decisions

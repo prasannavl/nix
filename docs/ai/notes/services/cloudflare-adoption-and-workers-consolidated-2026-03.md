@@ -76,8 +76,8 @@ Imported platform backlog that mattered:
 
 Completed on 2026-03-16:
 
-- `llmug-hello` Worker resources were imported into `tf/cloudflare-apps`
-  remote state.
+- `llmug-hello` Worker resources were imported into `tf/cloudflare-apps` remote
+  state.
 
 Imported Worker resources:
 
@@ -109,7 +109,8 @@ Current steady-state decision:
 ## Execution findings worth keeping
 
 - R2 bucket import IDs use `<account_id>/<bucket_name>/<jurisdiction>`.
-- The live R2 buckets in this adoption pass both used `jurisdiction = "default"`.
+- The live R2 buckets in this adoption pass both used
+  `jurisdiction = "default"`.
 - `cloudflare_r2_managed_domain` did not support provider import in the pinned
   provider version, so the already-enabled managed domain was adopted through a
   targeted apply after the bucket import.

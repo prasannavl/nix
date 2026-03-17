@@ -24,12 +24,12 @@ output ran into two Nix constraints:
 
 ## Decision
 
-Expose the repo-local tree through a custom top-level `pkgs.<system>.*`
-output and stop relying on `nix flake show` for deployment host discovery:
+Expose the repo-local tree through a custom top-level `pkgs.<system>.*` output
+and stop relying on `nix flake show` for deployment host discovery:
 
 - `pkgs.<system>.*` contains derivations for `nix build` and `nix run`.
-- runnable aliases such as `deploy` must also be exported under `packages.*`
-  in each child flake so the collector can attach them to the custom leaf.
+- runnable aliases such as `deploy` must also be exported under `packages.*` in
+  each child flake so the collector can attach them to the custom leaf.
 - The overlay publishes host-installable packages directly as `pkgs.<name>`
   rather than `pkgs.apps.<name>`.
 - Deploy host discovery now uses

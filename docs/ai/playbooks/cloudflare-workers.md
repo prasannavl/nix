@@ -55,8 +55,7 @@ For `llmug-hello`, there is also a Nix-backed path:
    normal Cloudflare OpenTofu deploy flow.
 3. The root flake exposes the build as
    `.#pkgs.x86_64-linux.cloudflare-workers.llmug-hello` and the deploy
-   installable as
-   `.#pkgs.x86_64-linux.cloudflare-workers.llmug-hello.deploy`.
+   installable as `.#pkgs.x86_64-linux.cloudflare-workers.llmug-hello.deploy`.
 
 ## Adopt An Existing Dashboard Worker
 

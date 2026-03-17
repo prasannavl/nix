@@ -57,9 +57,12 @@ tunnel_routes = {
 
 Import existing resources:
 
-- Tunnel: `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared.tunnel["edge"]' '<account_id>/<tunnel_id>'`
-- Config: `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_config.config["edge"]' '<account_id>/<tunnel_id>'`
-- Route: `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_route.route["edge/10.10.0.0/16"]' '<account_id>/<route_id>'`
+- Tunnel:
+  `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared.tunnel["edge"]' '<account_id>/<tunnel_id>'`
+- Config:
+  `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_config.config["edge"]' '<account_id>/<tunnel_id>'`
+- Route:
+  `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_route.route["edge/10.10.0.0/16"]' '<account_id>/<route_id>'`
 
 Runtime:
 
