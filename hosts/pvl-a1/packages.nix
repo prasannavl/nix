@@ -124,7 +124,11 @@
     ai = with pkgs; [
       jan
       antigravity-pkgs.default
-      codex-pkgs.default
+      # codex-pkgs.default
+      codex
+      gemini-cli
+      claude-code
+      github-copilot-cli
     ];
 
     misc = with pkgs; [

@@ -6,9 +6,12 @@ modules and composed via `flake.nix`.
 ## Layout
 
 - `flake.nix`: flake inputs and system definition.
-- `apps/`: repo-local runnable source trees (including background/runtime apps
-  like Cloudflare Workers); each app owns its own flake and is aggregated into
-  the root flake plus overlay.
+- `pkgs/`: repo-local runnable source trees; each package owns its own flake
+  and is aggregated into a custom top-level flake attr such as
+  `.#pkgs.<system>.hello-rust` and
+  `.#pkgs.<system>.cloudflare-workers.llmug-hello.deploy`.
+- `pkgs/ext/`: standalone derivation definitions consumed by overlays and
+  helper scripts.
 - `hosts/<host>/default.nix`: host-specific system definition and module
   imports.
 - `users/pvl/default.nix`: Base user + Home Manager module builder for `pvl`.
@@ -65,7 +68,7 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - `tf/cloudflare-dns/`: pre-deploy Cloudflare DNS OpenTofu project.
 - `tf/cloudflare-platform/`: Cloudflare platform OpenTofu project for non-app
   resources.
-- `tf/cloudflare-apps/`: post-build Cloudflare Workers/apps OpenTofu project.
+- `tf/cloudflare-apps/`: post-build Cloudflare Workers/package OpenTofu project.
 - `tf/modules/cloudflare/`: Cloudflare module implementation shared by the
   phase-specific projects.
 - `tf/README.md`: Terraform project layout docs.

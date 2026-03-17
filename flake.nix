@@ -52,9 +52,10 @@
     agenix,
     ...
   }: let
-    appOutputsFor = import ./apps {
+    packageOutputsFor = import ./pkgs {
       inherit nixpkgs flake-utils;
     };
+    packageTreeFor = system: (packageOutputsFor.outputsForSystem system).packageTree.pkgs;
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
@@ -73,17 +74,15 @@
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
       formatterPkgs = formatterPkgsFor pkgs;
-      appOutputs = appOutputsFor.outputsForSystem system;
     in {
       formatter = pkgs.writeShellApplication {
         name = "treefmt";
         runtimeInputs = formatterPkgs;
         text = "treefmt";
       };
-      packages = appOutputs.packages;
-      apps = appOutputs.apps;
     })
     // {
+      pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems packageTreeFor;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;

@@ -36,51 +36,43 @@
   in {
     inherit (entry) path segments;
     inherit apps packages;
-    leafName = lib.last entry.segments;
   };
 
   requireDefault = kind: entry: attrs:
-    if attrs == {}
-    then null
-    else if attrs ? default
+    if attrs ? default
     then attrs.default
     else throw "Expected `${kind}.default` in ${toString entry.path}/flake.nix for root `${namespace}` export";
 
-  nestedLeafTree = kind: entry: attrs: let
-    defaultValue = requireDefault kind entry attrs;
+  removeDefault = attrs: lib.filterAttrs (name: _value: name != "default") attrs;
+
+  attachAliases = entry: defaultPackage: packageAliases: let
+    passthruAliases = packageAliases;
   in
-    if defaultValue == null
-    then {}
-    else lib.setAttrByPath ([namespace] ++ entry.segments) (defaultValue // attrs);
+    if passthruAliases == {}
+    then defaultPackage
+    else if !lib.isDerivation defaultPackage
+    then throw "Expected `packages.default` to be a derivation in ${toString entry.path}/flake.nix for root `${namespace}` export"
+    else
+      defaultPackage.overrideAttrs (old: {
+        passthru = (old.passthru or {}) // passthruAliases;
+      });
 
-  flatAliases = entry: attrs:
-    lib.foldl'
-    (acc: aliasName: let
-      flatName = "${entry.leafName}-${aliasName}";
-    in
-      if builtins.hasAttr flatName acc
-      then throw "Duplicate flat alias `${flatName}` while collecting ${namespace} flakes"
-      else acc // {"${flatName}" = attrs.${aliasName};})
-    {}
-    (builtins.filter (name: name != "default") (lib.attrNames attrs));
+  installableLeaf = entry: let
+    defaultPackage = requireDefault "packages" entry entry.packages;
+  in
+    attachAliases entry defaultPackage (removeDefault entry.packages);
 
-  buildTree = kind: getAttrs: system: let
+  buildPackageTree = system: let
     entries = map (outputsForEntry system) flakeEntries;
-    nested =
-      lib.foldl'
-      (acc: entry: lib.recursiveUpdate acc (nestedLeafTree kind entry (getAttrs entry)))
-      {}
-      entries;
-    aliases =
-      lib.foldl'
-      (acc: entry: lib.recursiveUpdate acc (flatAliases entry (getAttrs entry)))
-      {}
-      entries;
   in
-    lib.recursiveUpdate nested aliases;
+    lib.setAttrByPath [namespace] (
+      lib.foldl'
+      (acc: entry: lib.recursiveUpdate acc (lib.setAttrByPath entry.segments (installableLeaf entry)))
+      {}
+      entries
+    );
 in {
   outputsForSystem = system: {
-    packages = buildTree "packages" (entry: entry.packages) system;
-    apps = buildTree "apps" (entry: entry.apps) system;
+    packageTree = buildPackageTree system;
   };
 }

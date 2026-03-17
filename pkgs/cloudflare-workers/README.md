@@ -8,9 +8,9 @@ files under `data/secrets/tf/cloudflare/workers/`.
 
 Recommended layout:
 
-- `apps/cloudflare-workers/<worker>/src/index.js`
-- `apps/cloudflare-workers/<worker>/public/` for optional static assets
-- `apps/cloudflare-workers/<worker>/assets/` for assets-only Workers managed
+- `pkgs/cloudflare-workers/<worker>/src/index.js`
+- `pkgs/cloudflare-workers/<worker>/public/` for optional static assets
+- `pkgs/cloudflare-workers/<worker>/assets/` for assets-only Workers managed
   through Cloudflare Static Assets
 
 Minimal `tf/cloudflare-apps/workers.auto.tfvars` example:
@@ -24,7 +24,7 @@ workers = {
     modules = [
       {
         name         = "src/index.js"
-        content_file = "../apps/cloudflare-workers/example-worker/src/index.js"
+        content_file = "../pkgs/cloudflare-workers/example-worker/src/index.js"
         content_type = "application/javascript+module"
       }
     ]
@@ -71,7 +71,7 @@ workers = {
   static-site = {
     compatibility_date = "2026-03-15"
     assets = {
-      directory = "../apps/cloudflare-workers/static-site/assets"
+      directory = "../pkgs/cloudflare-workers/static-site/assets"
       config = {
         run_worker_first = false
       }

@@ -31,7 +31,7 @@ main() {
 
   ensure_runtime_shell "$@"
 
-  for file in "$(dirname "$0")"/../pkgs/*.nix; do
+  for file in "$(dirname "$0")"/../pkgs/ext/*.nix; do
     abs_file=$(realpath "$file")
     url=$(FILE_PATH="$abs_file" nix eval --raw --impure --expr '
       let

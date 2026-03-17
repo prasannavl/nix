@@ -23,7 +23,7 @@ modeled surfaces, export/input strategy, and source-of-truth rules.
   `data/secrets/tf/cloudflare/dns/` and the phase-local auto-tfvars files.
 - Platform resources live in `tf/cloudflare-platform/` and the matching
   encrypted/public inputs under `data/secrets/tf/cloudflare/`.
-- Workers source lives in `apps/cloudflare-workers/<worker>/`.
+- Workers source lives in `pkgs/cloudflare-workers/<worker>/`.
 - Workers/platform Terraform inputs live in:
   - `tf/cloudflare-platform/*.auto.tfvars`
   - `tf/cloudflare-apps/*.auto.tfvars`
@@ -79,7 +79,7 @@ modeled surfaces, export/input strategy, and source-of-truth rules.
 
 - Durable Worker infrastructure ownership belongs in the repo, not the
   dashboard.
-- Worker source should live under `apps/cloudflare-workers/<worker>/` and be
+- Worker source should live under `pkgs/cloudflare-workers/<worker>/` and be
   deployed through the same Nix/OpenTofu flow as the rest of the stack.
 - Sensitive Worker bindings belong in encrypted tfvars, not dashboard-only
   configuration.

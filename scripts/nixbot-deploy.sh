@@ -1232,7 +1232,7 @@ build_host() {
 
   log_host_stage "build" "${node}"
   echo "Starting local build" >&2
-  if ! out_path="$(nix build --print-out-paths ".#nixosConfigurations.${node}.config.system.build.toplevel")"; then
+  if ! out_path="$(nix build --print-out-paths "path:.#nixosConfigurations.${node}.config.system.build.toplevel")"; then
     echo "Build failed for ${node}" >&2
     return 1
   fi
@@ -1257,7 +1257,7 @@ eval_host_out_path() {
 
   log_host_stage "build" "${node}" "remote build"
   echo "Evaluating output path" >&2
-  if ! out_path="$(nix eval --raw ".#nixosConfigurations.${node}.config.system.build.toplevel.outPath")"; then
+  if ! out_path="$(nix eval --raw "path:.#nixosConfigurations.${node}.config.system.build.toplevel.outPath")"; then
     echo "Evaluation failed for ${node}" >&2
     return 1
   fi
@@ -2355,7 +2355,7 @@ deploy_host() {
 
   rebuild_cmd=(
     nixos-rebuild
-    --flake ".#${node}"
+    --flake "path:.#${node}"
     --target-host "${ssh_target}"
     --sudo
   )

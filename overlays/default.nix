@@ -3,13 +3,13 @@
   (import ./unstable.nix {inherit inputs;})
   inputs.vscode-ext.overlays.default
   (import ./pvl.nix {inherit inputs;})
-  (import ./apps.nix {inherit inputs;})
+  (import ./pkgs.nix {inherit inputs;})
   (
     final: prev: {
-      handbrake-wrapped = final.callPackage ../pkgs/handbrake.nix {};
-      zed-wrapped = final.callPackage ../pkgs/zed.nix {};
+      handbrake-wrapped = final.callPackage ../pkgs/ext/handbrake.nix {};
+      zed-wrapped = final.callPackage ../pkgs/ext/zed.nix {};
       nvidiaCustomForKernel = kernelPackages:
-        final.callPackage ../pkgs/nvidia-driver.nix {inherit kernelPackages;};
+        final.callPackage ../pkgs/ext/nvidia-driver.nix {inherit kernelPackages;};
       nvidia-custom = final.nvidiaCustomForKernel final.linuxPackages;
     }
   )

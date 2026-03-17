@@ -4,6 +4,14 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ## Notes
 
+### Apps
+
+- `docs/ai/notes/apps/root-flake-app-exports-and-git-source-2026-03.md`:
+  Root flake nested `pkgs.*` export shape, installable naming, and Git snapshot
+  behavior.
+- `docs/ai/notes/apps/auto-discovered-flake-collectors-2026-03.md`:
+  Shared collector behavior for nested `pkgs/` child flakes.
+
 ### Deployment
 
 - `docs/ai/notes/deployment/deployment-fixes-consolidated-2026-03.md`:

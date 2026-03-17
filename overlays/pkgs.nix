@@ -1,11 +1,11 @@
 {inputs}: final: prev: let
-  appDefinitions = import ../apps {
+  packageDefinitions = import ../pkgs {
     nixpkgs = inputs.nixpkgs;
     flake-utils = inputs.flake-utils;
   };
   system = final.stdenv.hostPlatform.system;
-  appPackages = (appDefinitions.outputsForSystem system).packages.apps;
-  hostInstallableApps = let
+  packageTree = (packageDefinitions.outputsForSystem system).packageTree.pkgs;
+  hostInstallablePackages = let
     projectPackage = value:
       if prev.lib.isDerivation value
       then
@@ -16,7 +16,6 @@
       then prev.lib.mapAttrs (_name: child: projectPackage child) value
       else value;
   in
-    prev.lib.mapAttrs (_name: value: projectPackage value) appPackages;
-in {
-  apps = (prev.apps or {}) // hostInstallableApps;
-}
+    prev.lib.mapAttrs (_name: value: projectPackage value) packageTree;
+in
+  hostInstallablePackages

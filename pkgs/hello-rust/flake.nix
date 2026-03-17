@@ -27,6 +27,7 @@
       packages = {
         default = build;
         build = build;
+        run = build;
       };
       apps = {
         default = run;

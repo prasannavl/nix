@@ -12,7 +12,7 @@ Usage: update-nvidia.sh [--version VERSION] [--file PATH]
 Examples:
   update-nvidia.sh
   update-nvidia.sh --version 580.126.09
-  update-nvidia.sh --file pkgs/nvidia-driver.nix
+  update-nvidia.sh --file pkgs/ext/nvidia-driver.nix
 EOF
 }
 
@@ -22,7 +22,7 @@ die() {
 }
 
 parse_args() {
-  target_file="$repo_root/pkgs/nvidia-driver.nix"
+  target_file="$repo_root/pkgs/ext/nvidia-driver.nix"
   requested_version=""
 
   while [[ $# -gt 0 ]]; do

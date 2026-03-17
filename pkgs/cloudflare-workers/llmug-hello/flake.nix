@@ -31,7 +31,7 @@
 
           out_path="$1"
           repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)"
-          target_dir="$repo_root/apps/cloudflare-workers/llmug-hello/dist"
+          target_dir="$repo_root/pkgs/cloudflare-workers/llmug-hello/dist"
 
           mkdir -p "$target_dir"
           rsync -a --delete "$out_path"/ "$target_dir"/
@@ -44,7 +44,7 @@
           set -euo pipefail
 
           repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)"
-          out_path="$(nix build --print-out-paths "path:$repo_root/apps/cloudflare-workers/llmug-hello#build")"
+          out_path="$(nix build --print-out-paths "path:$repo_root/pkgs/cloudflare-workers/llmug-hello#build")"
           "${sync}/bin/llmug-hello-sync" "$out_path"
 
           exec "$repo_root/scripts/nixbot-deploy.sh" --action tf-apps "$@"
@@ -54,6 +54,7 @@
       packages = {
         default = build;
         build = build;
+        deploy = deploy;
       };
       apps = {
         default = {

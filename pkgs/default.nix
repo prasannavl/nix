@@ -5,5 +5,5 @@
 import ../lib/flakelib.nix {
   inherit nixpkgs flake-utils;
   rootDir = ./.;
-  namespace = "apps";
+  namespace = "pkgs";
 }

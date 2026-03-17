@@ -31,10 +31,10 @@ so future changes come from the repo instead of the dashboard.
   - 2 R2 buckets
 - The exporter writes encrypted Terraform inputs under
   `data/secrets/tf/cloudflare/<category>/` and repo-managed Worker trees under
-  `apps/cloudflare-workers/`.
+  `pkgs/cloudflare-workers/`.
 - `llmug-hello` briefly used a mirrored assets fallback while investigating the
   live deployment, but the actual local source tree was later copied into
-  `apps/cloudflare-workers/llmug-hello/` and became the canonical repo source.
+  `pkgs/cloudflare-workers/llmug-hello/` and became the canonical repo source.
 - Workers Builds API probing stayed blocked by Cloudflare-side token/API
   behavior, so the durable repo decision was to keep `llmug-hello` locally
   repo-managed here instead of modeling an external Builds integration.

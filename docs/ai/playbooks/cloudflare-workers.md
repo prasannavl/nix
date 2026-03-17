@@ -7,7 +7,7 @@ existing Nix and OpenTofu flow.
 
 ## Source Of Truth
 
-- Worker source: `apps/cloudflare-workers/<worker>/`
+- Worker source: `pkgs/cloudflare-workers/<worker>/`
 - Worker Terraform inputs:
   `data/secrets/tf/cloudflare/workers/<group>.tfvars.age` or
   `tf/cloudflare-apps/workers.auto.tfvars`
@@ -15,13 +15,13 @@ existing Nix and OpenTofu flow.
 
 ## Create A New Worker
 
-1. Create the source tree under `apps/cloudflare-workers/<worker>/`.
+1. Create the source tree under `pkgs/cloudflare-workers/<worker>/`.
 2. For a module Worker, add the entrypoint file, then reference it from
    `main_module` and `modules`.
-3. For an assets-only Worker, create `apps/cloudflare-workers/<worker>/assets/`
+3. For an assets-only Worker, create `pkgs/cloudflare-workers/<worker>/assets/`
    and use
    `assets = { directory =
-   "../../apps/cloudflare-workers/<worker>/assets" }`.
+   "../../pkgs/cloudflare-workers/<worker>/assets" }`.
 4. Put public-safe definitions in `tf/cloudflare-apps/workers.auto.tfvars` or
    sensitive ones in the right encrypted file under
    `data/secrets/tf/cloudflare/workers/`.
@@ -48,16 +48,15 @@ existing Nix and OpenTofu flow.
 
 For `llmug-hello`, there is also a Nix-backed path:
 
-1. In `apps/cloudflare-workers/llmug-hello/`, run `nix build` once the worker
+1. In `pkgs/cloudflare-workers/llmug-hello/`, run `nix build` once the worker
    directory is tracked by Git. Before that, use `nix build path:.`.
-2. In `apps/cloudflare-workers/llmug-hello/`, run
+2. In `pkgs/cloudflare-workers/llmug-hello/`, run
    `nix run path:.#deploy -- --dry` to sync and immediately hand off to the
    normal Cloudflare OpenTofu deploy flow.
-3. The root flake re-exports these as
-   `path:.#apps.cloudflare-workers.llmug-hello.build` and
-   `path:.#apps.cloudflare-workers.llmug-hello.deploy`.
-4. Legacy flat aliases `path:.#llmug-hello-build` and
-   `path:.#llmug-hello-deploy` remain available for compatibility.
+3. The root flake exposes the build as
+   `.#pkgs.x86_64-linux.cloudflare-workers.llmug-hello` and the deploy
+   installable as
+   `.#pkgs.x86_64-linux.cloudflare-workers.llmug-hello.deploy`.
 
 ## Adopt An Existing Dashboard Worker
 
@@ -65,7 +64,7 @@ For `llmug-hello`, there is also a Nix-backed path:
    source and tfvars from the live account.
 2. Review the generated Worker file under `data/secrets/tf/cloudflare/workers/`.
 3. Normalize the Worker into the repo-local source layout under
-   `apps/cloudflare-workers/<worker>/` so Terraform can deploy it directly from
+   `pkgs/cloudflare-workers/<worker>/` so Terraform can deploy it directly from
    this repository.
 4. Review any related zone SSL resources under
    `data/secrets/tf/cloudflare/zone-security/`.
