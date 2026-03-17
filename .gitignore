@@ -20,3 +20,4 @@ data/secrets/**
 
 # Misc
 crash.log
+**/__pycache__/
