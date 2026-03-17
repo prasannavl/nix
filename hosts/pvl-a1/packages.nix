@@ -146,6 +146,7 @@
       patchelf
       opencode
       shellcheck
+      vim.xxd
     ];
 
     fonts = with pkgs; [
