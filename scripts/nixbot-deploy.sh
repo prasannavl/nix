@@ -28,7 +28,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
   scripts/nixbot-deploy.sh tofu <tofu-args...>
 
 Core Workflow Options:
@@ -55,6 +55,7 @@ Behavior Options:
   --dry            Print deploy command instead of executing deploy step
   --no-rollback    Disable rollback of successful hosts when any deploy fails
   --prefix-host-logs Always prefix host log lines, even for single-job phases
+  --log-format     auto|gh|plain (default: auto)
 
 Bootstrap/Forced-Command Options:
   --bootstrap      Always use bootstrap user/key path for deploy/snapshot/rollback SSH target selection
@@ -96,6 +97,7 @@ Environment (Behavior):
   DEPLOY_DRY                  Same as --dry (bool)
   DEPLOY_NO_ROLLBACK          Same as --no-rollback (bool)
   DEPLOY_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
+  DEPLOY_LOG_FORMAT           Same as --log-format
 
 Environment (Bootstrap/Forced-Command):
   DEPLOY_BOOTSTRAP            Same as --bootstrap (bool)
@@ -113,9 +115,9 @@ Environment (Repo):
   DEPLOY_REPO_PATH            Same as --repo-path
   DEPLOY_USE_REPO_SCRIPT      Same as --use-repo-script (bool)
 
-Environment (OpenTofu actions):
+Environment (Terraform actions):
   R2_ACCOUNT_ID               Cloudflare account ID used for the shared R2 backend endpoint
-  R2_STATE_BUCKET             R2 bucket name for OpenTofu state
+  R2_STATE_BUCKET             R2 bucket name for Terraform state
   R2_ACCESS_KEY_ID            R2 access key ID
   R2_SECRET_ACCESS_KEY        R2 secret access key
   R2_STATE_KEY                Optional state object key override
@@ -127,7 +129,7 @@ Runtime:
   toolchain: age, git, jq, nixos-rebuild, openssh, and opentofu.
 
 Local tofu wrapper:
-  `scripts/nixbot-deploy.sh tofu ...` runs OpenTofu locally in the same runtime shell.
+  `scripts/nixbot-deploy.sh tofu ...` runs Terraform locally via OpenTofu in the same runtime shell.
   For recognized tf/<provider>-<phase> projects (via -chdir or current directory),
   it auto-loads backend/provider runtime secrets and may append decrypted
   `-var-file` inputs for variable-aware commands (plan/apply/destroy/import/console)
@@ -167,6 +169,7 @@ init_vars() {
   ROLLBACK_ON_FAILURE=1
   FORCE_PREFIX_HOST_LOGS=0
   PREFIX_HOST_LOGS_EXPLICIT=0
+  LOG_FORMAT="${DEPLOY_LOG_FORMAT:-${NIXBOT_LOG_FORMAT:-auto}}"
   DEPLOY_CONFIG_PATH="${DEPLOY_CONFIG:-hosts/nixbot.nix}"
   SHA="${DEPLOY_SHA:-}"
   BASTION_TRIGGER=0
@@ -476,6 +479,35 @@ set_prefix_host_logs_mode() {
   FORCE_PREFIX_HOST_LOGS="${enabled}"
 }
 
+set_log_format_mode() {
+  case "$1" in
+    github-actions)
+      LOG_FORMAT="gh"
+      ;;
+    *)
+      LOG_FORMAT="$1"
+      ;;
+  esac
+}
+
+is_github_actions_log_mode() {
+  case "${LOG_FORMAT}" in
+    gh|github-actions)
+      return 0
+      ;;
+    auto)
+      [ "${GITHUB_ACTIONS:-false}" = "true" ]
+      return
+      ;;
+    plain)
+      return 1
+      ;;
+    *)
+      die "Unsupported --log-format: ${LOG_FORMAT}"
+      ;;
+  esac
+}
+
 normalize_host_action() {
   case "${ACTION}" in
     all)
@@ -526,6 +558,8 @@ parse_args() {
       --dry)                enable_dry_run_mode; shift ;;
       --no-rollback)        ROLLBACK_ON_FAILURE=0; shift ;;
       --prefix-host-logs)   set_prefix_host_logs_mode 1; shift ;;
+      --log-format|--log-format=*)
+        take_optval "$@"; set_log_format_mode "${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --user|--user=*)      take_optval "$@"; DEPLOY_USER_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --ssh-key|--ssh-key=*)
         take_optval "$@"; DEPLOY_KEY_PATH_OVERRIDE="${OPTVAL}"; DEPLOY_KEY_OVERRIDE_EXPLICIT=1; shift "${OPTSHIFT}" ;;
@@ -576,6 +610,10 @@ parse_args() {
 
   [[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --build-jobs: ${BUILD_JOBS} (must be a positive integer)"
   [[ "${DEPLOY_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${DEPLOY_PARALLEL_JOBS} (must be a positive integer)"
+  case "${LOG_FORMAT}" in
+    auto|gh|github-actions|plain) ;;
+    *) die "Unsupported --log-format: ${LOG_FORMAT}" ;;
+  esac
   if [ "${PREFIX_HOST_LOGS_EXPLICIT}" -eq 0 ] && { [ "${BUILD_JOBS}" -gt 1 ] || [ "${DEPLOY_PARALLEL_JOBS}" -gt 1 ]; }; then
     FORCE_PREFIX_HOST_LOGS=1
   fi
@@ -676,6 +714,11 @@ run_bastion_trigger() {
   # expected to use its repo-local defaults/config for everything else so local
   # operator overrides do not silently reshape bastion execution.
   remote_command="--sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
+  if [ "${LOG_FORMAT}" != "auto" ]; then
+    remote_command="${remote_command} --log-format ${LOG_FORMAT}"
+  elif is_github_actions_log_mode; then
+    remote_command="${remote_command} --log-format gh"
+  fi
   if [ "${DRY_RUN}" -eq 1 ]; then
     remote_command="${remote_command} --dry"
     echo "Dry run: true" >&2
@@ -729,31 +772,31 @@ should_run_tf_project_action() {
   local status_path=""
 
   if [ "${TF_IF_CHANGED}" -eq 0 ]; then
-    echo "OpenTofu change detection bypassed by --force" >&2
+    echo "Terraform change detection bypassed by --force" >&2
     return 0
   fi
 
   target_ref="${SHA:-HEAD}"
   if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
-    echo "OpenTofu change detection unavailable for ${target_ref}; running TF ${phase}" >&2
+    echo "Terraform change detection unavailable for ${target_ref}; running TF ${phase}" >&2
     return 0
   fi
 
   if ! base_ref="$(resolve_tf_change_base_ref "${target_ref}")"; then
-    echo "OpenTofu change base unavailable for ${target_ref}; running TF ${phase}" >&2
+    echo "Terraform change base unavailable for ${target_ref}; running TF ${phase}" >&2
     return 0
   fi
 
   diff_output="$(git diff --name-only "${base_ref}" "${target_ref}" -- 2>/dev/null)" || diff_status=$?
   if [ "${diff_status}" -ne 0 ]; then
-    echo "OpenTofu change detection failed for ${base_ref}..${target_ref}; running TF ${phase}" >&2
+    echo "Terraform change detection failed for ${base_ref}..${target_ref}; running TF ${phase}" >&2
     return 0
   fi
 
   while IFS= read -r path; do
     [ -n "${path}" ] || continue
     if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${path}"; then
-      echo "OpenTofu ${project_name} change detected: ${path}" >&2
+      echo "Terraform ${project_name} change detected: ${path}" >&2
       return 0
     fi
   done <<< "${diff_output}"
@@ -764,12 +807,12 @@ should_run_tf_project_action() {
     status_path="${status_path#?? }"
     status_path="${status_path##* -> }"
     if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${status_path}"; then
-      echo "OpenTofu ${project_name} working tree change detected: ${status_path}" >&2
+      echo "Terraform ${project_name} working tree change detected: ${status_path}" >&2
       return 0
     fi
   done <<< "${status_output}"
 
-  echo "OpenTofu ${project_name} unchanged; skipping TF action" >&2
+  echo "Terraform ${project_name} unchanged; skipping TF action" >&2
   return 1
 }
 
@@ -2783,7 +2826,7 @@ resolve_tf_project_dir() {
     project_dir="$(pwd -P)/${project_dir}"
   fi
 
-  [ -d "${project_dir}" ] || die "OpenTofu directory not found: ${project_dir}"
+  [ -d "${project_dir}" ] || die "Terraform directory not found: ${project_dir}"
   printf '%s\n' "${project_dir}"
 }
 
@@ -2966,7 +3009,7 @@ _exec_tofu_cmd() {
     append_tf_var_files_to_cmd cmd "${tf_var_files[@]}"
 
     if [ "${#tf_var_files[@]}" -gt 0 ]; then
-      echo "OpenTofu ${project_name}: appended ${#tf_var_files[@]} decrypted var-file(s) for ${subcommand}" >&2
+      echo "Terraform ${project_name}: appended ${#tf_var_files[@]} decrypted var-file(s) for ${subcommand}" >&2
     fi
   fi
 
@@ -3069,7 +3112,7 @@ run_tofu_wrapper() {
 
   if resolve_tofu_wrapper_context project_dir project_name provider_name "${tofu_args[@]}" && [ -n "${project_name}" ]; then
     prepare_tf_project_runtime "${project_name}"
-    echo "OpenTofu wrapper project: ${project_name} (${provider_name})" >&2
+    echo "Terraform wrapper project: ${project_name} (${provider_name})" >&2
   fi
 
   _exec_tofu_cmd "${project_name}" "${tofu_args[@]}"
@@ -3085,7 +3128,7 @@ run_requested_tf_phase() {
     [ -n "${project_dir}" ] || continue
     found=1
     project_name="$(tf_project_name_from_dir "${project_dir}")"
-    log_section "Phase: OpenTofu (${phase}/${project_name})"
+    log_section "Phase: Terraform (${phase}/${project_name})"
 
     if should_run_tf_project_action "${phase}" "${project_name}"; then
       if run_tf_action "${phase}" "${project_dir}"; then
@@ -3100,7 +3143,7 @@ run_requested_tf_phase() {
   done < <(tf_project_dirs_for_phase "${phase}")
 
   if [ "${found}" -eq 0 ]; then
-    echo "No OpenTofu ${phase} projects found; skipping" >&2
+    echo "No Terraform ${phase} projects found; skipping" >&2
   fi
 }
 
@@ -3119,7 +3162,7 @@ run_tf_only_action() {
       run_tf_phases apps
       ;;
     *)
-      die "Unsupported OpenTofu-only action: ${ACTION}"
+      die "Unsupported Terraform-only action: ${ACTION}"
       ;;
   esac
 }
@@ -3207,7 +3250,7 @@ log_section() {
   local group_mode="${2:-auto}"
   local border='=========='
 
-  if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+  if is_github_actions_log_mode; then
     log_group_end
     if log_group_should_section "${title}" "${group_mode}"; then
       log_group_start "${title}"
@@ -3225,7 +3268,7 @@ log_group_start() {
 }
 
 log_group_end() {
-  if [ "${GITHUB_ACTIONS:-false}" = "true" ] && [ "${_NIXBOT_LOG_GROUP_OPEN:-0}" -eq 1 ]; then
+  if is_github_actions_log_mode && [ "${_NIXBOT_LOG_GROUP_OPEN:-0}" -eq 1 ]; then
     printf '::endgroup::\n' >&2
     _NIXBOT_LOG_GROUP_OPEN=0
   fi
@@ -3248,7 +3291,7 @@ log_group_should_section() {
     "Phase: Build"|"Phase: Snapshot"|"Phase: Deploy"|"Phase: Rollback"|"Phase: Bootstrap Key Check")
       return 0
       ;;
-    "Phase: OpenTofu ("*)
+    "Phase: Terraform ("*)
       return 0
       ;;
     *)
@@ -3294,7 +3337,7 @@ log_group_host_stage_end() {
 log_group_should_host_stage() {
   local phase="$1"
 
-  [ "${GITHUB_ACTIONS:-false}" = "true" ] || return 1
+  is_github_actions_log_mode || return 1
   [ -n "${_NIXBOT_HOST_STAGE_GROUP_PHASE:-}" ] || return 1
   [ "${_NIXBOT_HOST_STAGE_GROUP_PHASE}" = "${phase}" ]
 }
@@ -3483,7 +3526,7 @@ print_run_summary() {
       failed_summary_hosts+=("${node}: ${status}")
     fi
   done
-  echo "OpenTofu:" >&2
+  echo "Terraform:" >&2
   if [ "${#RUN_SUMMARY_TF_LABELS[@]}" -eq 0 ]; then
     echo "  - (none)" >&2
   fi
