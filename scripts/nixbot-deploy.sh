@@ -28,10 +28,11 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh tofu <tofu-args...>
 
 Core Workflow Options:
-  --action         all|build|deploy|tf|check-bootstrap (default: all)
+  --action         all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap (default: all)
   --hosts          Comma/space-separated host list, or `all` (default: all)
   --goal           switch|boot|test|dry-activate (default: switch, deploy only)
   --build-jobs     Number of hosts to build in parallel (default: 1)
@@ -112,18 +113,26 @@ Environment (Repo):
   DEPLOY_REPO_PATH            Same as --repo-path
   DEPLOY_USE_REPO_SCRIPT      Same as --use-repo-script (bool)
 
-Environment (OpenTofu `--action tf`):
-  CLOUDFLARE_API_TOKEN        Cloudflare API token for DNS changes
-  R2_ACCOUNT_ID               Cloudflare account ID used for the R2 endpoint
+Environment (OpenTofu actions):
+  R2_ACCOUNT_ID               Cloudflare account ID used for the shared R2 backend endpoint
   R2_STATE_BUCKET             R2 bucket name for OpenTofu state
   R2_ACCESS_KEY_ID            R2 access key ID
   R2_SECRET_ACCESS_KEY        R2 secret access key
-  R2_STATE_KEY                Optional state object key
-  DEPLOY_TF_DIR               Optional OpenTofu working dir (default: tf)
+  R2_STATE_KEY                Optional state object key override
+  DEPLOY_TF_DIR               Optional single-project override; must match the requested phase suffix
+  CLOUDFLARE_API_TOKEN        Provider-specific Cloudflare API token, required by Cloudflare projects
 
 Runtime:
   The script always re-execs inside `nix shell` to provide a consistent
   toolchain: age, git, jq, nixos-rebuild, openssh, and opentofu.
+
+Local tofu wrapper:
+  `scripts/nixbot-deploy.sh tofu ...` runs OpenTofu locally in the same runtime shell.
+  For recognized tf/<provider>-<phase> projects (via -chdir or current directory),
+  it auto-loads backend/provider runtime secrets and may append decrypted
+  `-var-file` inputs for variable-aware commands (plan/apply/destroy/import/console)
+  when no explicit `-var`/`-var-file` flags are provided.
+  This wrapper mode is intentionally local-only and is not supported via bastion trigger.
 USAGE
 }
 
@@ -168,8 +177,9 @@ init_vars() {
   BASTION_TRIGGER_SSH_OPTS=()
   AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
   REEXEC_FROM_REPO=0
-  TF_WORK_DIR="${DEPLOY_TF_DIR:-tf}"
+  TF_WORK_DIR="${DEPLOY_TF_DIR:-}"
   TF_CHANGE_BASE_REF=""
+  _NIXBOT_LOG_GROUP_OPEN=0
 
   DEPLOY_USER_OVERRIDE="${DEPLOY_USER:-}"
   DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY:-}"
@@ -258,20 +268,6 @@ init_vars() {
   normalize_host_action
 }
 
-is_tf_candidate_path() {
-  local path="$1"
-  case "${path}" in
-    tf|tf/*) return 0 ;;
-    data/secrets/cloudflare/api-token.key.age) return 0 ;;
-    data/secrets/cloudflare/r2-access-key-id.key.age) return 0 ;;
-    data/secrets/cloudflare/r2-account-id.key.age) return 0 ;;
-    data/secrets/cloudflare/r2-secret-access-key.key.age) return 0 ;;
-    data/secrets/cloudflare/r2-state-bucket.key.age) return 0 ;;
-    data/secrets/tf|data/secrets/tf/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 set_env_from_file_if_unset() {
   local var_name="$1"
   local file_path="$2"
@@ -290,29 +286,150 @@ set_env_from_file_if_unset() {
   export "${var_name?}"
 }
 
-load_tf_runtime_secrets() {
+load_tf_backend_runtime_secrets() {
+  local var_name secret_path decrypted_file
+  local -A _tf_backend_secrets=(
+    [R2_ACCOUNT_ID]="${TF_R2_ACCOUNT_ID_PATH}"
+    [R2_STATE_BUCKET]="${TF_R2_STATE_BUCKET_PATH}"
+    [R2_ACCESS_KEY_ID]="${TF_R2_ACCESS_KEY_ID_PATH}"
+    [R2_SECRET_ACCESS_KEY]="${TF_R2_SECRET_ACCESS_KEY_PATH}"
+  )
+
+  for var_name in "${!_tf_backend_secrets[@]}"; do
+    if [ -z "${!var_name:-}" ]; then
+      decrypted_file="$(resolve_runtime_key_file "${_tf_backend_secrets[${var_name}]}" 1)"
+      set_env_from_file_if_unset "${var_name}" "${decrypted_file}"
+    fi
+  done
+}
+
+load_cloudflare_tf_runtime_secrets() {
   local decrypted_file=""
 
   if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
     decrypted_file="$(resolve_runtime_key_file "${TF_CLOUDFLARE_API_TOKEN_PATH}" 1)"
     set_env_from_file_if_unset "CLOUDFLARE_API_TOKEN" "${decrypted_file}"
   fi
-  if [ -z "${R2_ACCOUNT_ID:-}" ]; then
-    decrypted_file="$(resolve_runtime_key_file "${TF_R2_ACCOUNT_ID_PATH}" 1)"
-    set_env_from_file_if_unset "R2_ACCOUNT_ID" "${decrypted_file}"
+}
+
+tf_project_name_from_dir() {
+  basename "$1"
+}
+
+tf_project_provider_from_name() {
+  local project_name="$1"
+  printf '%s\n' "${project_name%-*}"
+}
+
+tf_project_dirs_for_phase() {
+  local phase="$1"
+  local project_name=""
+
+  if [ -n "${TF_WORK_DIR}" ]; then
+    project_name="$(tf_project_name_from_dir "${TF_WORK_DIR}")"
+    if [[ "${project_name}" == *-"${phase}" ]]; then
+      printf '%s\n' "${TF_WORK_DIR}"
+    fi
+    return 0
   fi
-  if [ -z "${R2_STATE_BUCKET:-}" ]; then
-    decrypted_file="$(resolve_runtime_key_file "${TF_R2_STATE_BUCKET_PATH}" 1)"
-    set_env_from_file_if_unset "R2_STATE_BUCKET" "${decrypted_file}"
+
+  find tf -mindepth 1 -maxdepth 1 -type d -name "*-${phase}" | sort
+}
+
+tf_state_key_for_project() {
+  local project_name="$1"
+
+  if [ -n "${R2_STATE_KEY:-}" ]; then
+    printf '%s\n' "${R2_STATE_KEY}"
+    return 0
   fi
-  if [ -z "${R2_ACCESS_KEY_ID:-}" ]; then
-    decrypted_file="$(resolve_runtime_key_file "${TF_R2_ACCESS_KEY_ID_PATH}" 1)"
-    set_env_from_file_if_unset "R2_ACCESS_KEY_ID" "${decrypted_file}"
+
+  printf '%s/terraform.tfstate\n' "${project_name}"
+}
+
+_emit_tf_var_file() { [ -f "$1" ] && printf '%s\n' "$1"; true; }
+_emit_tf_var_dir()  { [ -d "$1" ] && find "$1" -type f -name '*.tfvars.age' | sort; true; }
+
+emit_tf_secret_paths_for_project() {
+  local project_name="$1"
+  local cf="${TF_SECRETS_DIR}/cloudflare"
+  local dir
+
+  _emit_tf_var_file "${TF_SECRETS_DIR}/${project_name}.tfvars.age"
+  _emit_tf_var_dir "${TF_SECRETS_DIR}/${project_name}"
+
+  case "${project_name}" in
+    cloudflare-dns)
+      _emit_tf_var_dir "${cf}/dns"
+      ;;
+    cloudflare-platform)
+      _emit_tf_var_file "${cf}/secrets.tfvars.age"
+      for dir in account access r2 zone-dnssec zone-settings zone-security rulesets page-rules email-routing; do
+        _emit_tf_var_dir "${cf}/${dir}"
+      done
+      ;;
+    cloudflare-apps)
+      _emit_tf_var_file "${cf}/secrets.tfvars.age"
+      _emit_tf_var_dir "${cf}/account"
+      _emit_tf_var_dir "${cf}/workers"
+      ;;
+  esac
+}
+
+load_tf_runtime_secrets_for_project() {
+  local project_name="$1"
+  local provider_name
+
+  load_tf_backend_runtime_secrets
+
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
+  case "${provider_name}" in
+    cloudflare)
+      load_cloudflare_tf_runtime_secrets
+      ;;
+  esac
+}
+
+require_tf_runtime_env_for_project() {
+  local project_name="$1"
+  local provider_name
+
+  [ -n "${R2_ACCOUNT_ID:-}" ] || die "Missing required environment variable: R2_ACCOUNT_ID"
+  [ -n "${R2_STATE_BUCKET:-}" ] || die "Missing required environment variable: R2_STATE_BUCKET"
+  [ -n "${R2_ACCESS_KEY_ID:-}" ] || die "Missing required environment variable: R2_ACCESS_KEY_ID"
+  [ -n "${R2_SECRET_ACCESS_KEY:-}" ] || die "Missing required environment variable: R2_SECRET_ACCESS_KEY"
+
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
+  case "${provider_name}" in
+    cloudflare)
+      [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "Missing required environment variable: CLOUDFLARE_API_TOKEN"
+      ;;
+  esac
+}
+
+is_tf_candidate_path_for_project() {
+  local phase="$1"
+  local project_name="$2"
+  local path="$3"
+  local provider_name
+
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
+
+  case "${path}" in
+    "tf/${project_name}"|"tf/${project_name}/"*) return 0 ;;
+    "tf/modules/${provider_name}"|"tf/modules/${provider_name}/"*) return 0 ;;
+    "data/secrets/${provider_name}"|"data/secrets/${provider_name}/"*) return 0 ;;
+    "data/secrets/tf/${provider_name}"|"data/secrets/tf/${provider_name}/"*) return 0 ;;
+    "data/secrets/cloudflare/r2-account-id.key.age"|"data/secrets/cloudflare/r2-state-bucket.key.age"|"data/secrets/cloudflare/r2-access-key-id.key.age"|"data/secrets/cloudflare/r2-secret-access-key.key.age") return 0 ;;
+  esac
+
+  if [ "${phase}" = "apps" ]; then
+    case "${path}" in
+      services|services/*) return 0 ;;
+    esac
   fi
-  if [ -z "${R2_SECRET_ACCESS_KEY:-}" ]; then
-    decrypted_file="$(resolve_runtime_key_file "${TF_R2_SECRET_ACCESS_KEY_PATH}" 1)"
-    set_env_from_file_if_unset "R2_SECRET_ACCESS_KEY" "${decrypted_file}"
-  fi
+
+  return 1
 }
 
 parse_bool_env() {
@@ -321,6 +438,21 @@ parse_bool_env() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     ""|0|false|FALSE|no|NO|off|OFF) return 1 ;;
     *) die "Unsupported boolean value: ${raw}" ;;
+  esac
+}
+
+# Sets OPTVAL and OPTSHIFT for --flag/--flag=value argument pairs.
+take_optval() {
+  case "$1" in
+    *=*)
+      OPTVAL="${1#*=}"
+      OPTSHIFT=1
+      ;;
+    *)
+      [ "$#" -ge 2 ] || die "Missing value for $1"
+      OPTVAL="$2"
+      OPTSHIFT=2
+      ;;
   esac
 }
 
@@ -352,246 +484,78 @@ normalize_host_action() {
   esac
 }
 
+emit_normalized_hosts() {
+  local raw="$1"
+
+  printf '%s' "${raw}" \
+    | tr ', ' '\n' \
+    | sed '/^$/d' \
+    | awk '!seen[$0]++'
+}
+
 normalize_hosts_input() {
   local raw="$1"
   if [ "${raw}" = "all" ]; then
     printf 'all\n'
     return
   fi
-  printf '%s' "${raw}" \
-    | tr ', ' '\n' \
-    | sed '/^$/d' \
-    | awk '!seen[$0]++' \
-    | paste -sd, -
+
+  emit_normalized_hosts "${raw}" | paste -sd, -
 }
 
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --ensure-deps)
-        ENSURE_DEPS_ONLY=1
-        shift
-        ;;
-      --sha)
-        [ "$#" -ge 2 ] || die "Missing value for --sha"
-        SHA="${2:-}"
-        shift 2
-        ;;
-      --sha=*)
-        SHA="${1#--sha=}"
-        shift
-        ;;
-      --hosts)
-        [ "$#" -ge 2 ] || die "Missing value for --hosts"
-        HOSTS_RAW="${2:-}"
-        shift 2
-        ;;
-      --hosts=*)
-        HOSTS_RAW="${1#--hosts=}"
-        shift
-        ;;
-      --action)
-        [ "$#" -ge 2 ] || die "Missing value for --action"
-        ACTION="${2:-}"
-        shift 2
-        ;;
-      --action=*)
-        ACTION="${1#--action=}"
-        shift
-        ;;
-      --goal)
-        [ "$#" -ge 2 ] || die "Missing value for --goal"
-        GOAL="${2:-}"
-        shift 2
-        ;;
-      --goal=*)
-        GOAL="${1#--goal=}"
-        shift
-        ;;
-      --build-host)
-        [ "$#" -ge 2 ] || die "Missing value for --build-host"
-        BUILD_HOST="${2:-}"
-        shift 2
-        ;;
-      --build-host=*)
-        BUILD_HOST="${1#--build-host=}"
-        shift
-        ;;
-      --build-jobs)
-        [ "$#" -ge 2 ] || die "Missing value for --build-jobs"
-        BUILD_JOBS="${2:-}"
-        shift 2
-        ;;
-      --build-jobs=*)
-        BUILD_JOBS="${1#--build-jobs=}"
-        shift
-        ;;
-      --deploy-jobs)
-        [ "$#" -ge 2 ] || die "Missing value for --deploy-jobs"
-        DEPLOY_PARALLEL_JOBS="${2:-}"
-        shift 2
-        ;;
-      --deploy-jobs=*)
-        DEPLOY_PARALLEL_JOBS="${1#--deploy-jobs=}"
-        shift
-        ;;
-      --force)
-        enable_force_mode
-        shift
-        ;;
-      --bootstrap)
-        FORCE_BOOTSTRAP_PATH=1
-        shift
-        ;;
-      --bastion-first)
-        PRIORITIZE_BASTION_FIRST=1
-        shift
-        ;;
-      --dry)
-        enable_dry_run_mode
-        shift
-        ;;
-      --no-rollback)
-        ROLLBACK_ON_FAILURE=0
-        shift
-        ;;
-      --prefix-host-logs)
-        set_prefix_host_logs_mode 1
-        shift
-        ;;
-      --user)
-        [ "$#" -ge 2 ] || die "Missing value for --user"
-        DEPLOY_USER_OVERRIDE="${2:-}"
-        shift 2
-        ;;
-      --user=*)
-        DEPLOY_USER_OVERRIDE="${1#--user=}"
-        shift
-        ;;
-      --ssh-key)
-        [ "$#" -ge 2 ] || die "Missing value for --ssh-key"
-        DEPLOY_KEY_PATH_OVERRIDE="${2:-}"
-        DEPLOY_KEY_OVERRIDE_EXPLICIT=1
-        shift 2
-        ;;
-      --ssh-key=*)
-        DEPLOY_KEY_PATH_OVERRIDE="${1#--ssh-key=}"
-        DEPLOY_KEY_OVERRIDE_EXPLICIT=1
-        shift
-        ;;
-      --known-hosts)
-        [ "$#" -ge 2 ] || die "Missing value for --known-hosts"
-        DEPLOY_KNOWN_HOSTS_OVERRIDE="${2:-}"
-        shift 2
-        ;;
-      --known-hosts=*)
-        DEPLOY_KNOWN_HOSTS_OVERRIDE="${1#--known-hosts=}"
-        shift
-        ;;
-      --config)
-        [ "$#" -ge 2 ] || die "Missing value for --config"
-        DEPLOY_CONFIG_PATH="${2:-}"
-        shift 2
-        ;;
-      --config=*)
-        DEPLOY_CONFIG_PATH="${1#--config=}"
-        shift
-        ;;
-      --age-key-file)
-        [ "$#" -ge 2 ] || die "Missing value for --age-key-file"
-        AGE_DECRYPT_IDENTITY_FILE="${2:-}"
-        shift 2
-        ;;
-      --age-key-file=*)
-        AGE_DECRYPT_IDENTITY_FILE="${1#--age-key-file=}"
-        shift
-        ;;
-      --repo-url)
-        [ "$#" -ge 2 ] || die "Missing value for --repo-url"
-        REPO_URL="${2:-}"
-        shift 2
-        ;;
-      --repo-url=*)
-        REPO_URL="${1#--repo-url=}"
-        shift
-        ;;
-      --repo-path)
-        [ "$#" -ge 2 ] || die "Missing value for --repo-path"
-        REPO_PATH="${2:-}"
-        shift 2
-        ;;
-      --repo-path=*)
-        REPO_PATH="${1#--repo-path=}"
-        shift
-        ;;
-      --use-repo-script)
-        REEXEC_FROM_REPO=1
-        shift
-        ;;
-      --bastion-check-ssh-key-path)
-        [ "$#" -ge 2 ] || die "Missing value for --bastion-check-ssh-key-path"
-        DEPLOY_BASTION_KEY_PATH_OVERRIDE="${2:-}"
-        shift 2
-        ;;
-      --bastion-check-ssh-key-path=*)
-        DEPLOY_BASTION_KEY_PATH_OVERRIDE="${1#--bastion-check-ssh-key-path=}"
-        shift
-        ;;
-      --bastion-trigger)
-        BASTION_TRIGGER=1
-        shift
-        ;;
-      --bastion-host)
-        [ "$#" -ge 2 ] || die "Missing value for --bastion-host"
-        BASTION_TRIGGER_HOST="${2:-}"
-        shift 2
-        ;;
-      --bastion-host=*)
-        BASTION_TRIGGER_HOST="${1#--bastion-host=}"
-        shift
-        ;;
-      --bastion-user)
-        [ "$#" -ge 2 ] || die "Missing value for --bastion-user"
-        BASTION_TRIGGER_USER="${2:-}"
-        shift 2
-        ;;
-      --bastion-user=*)
-        BASTION_TRIGGER_USER="${1#--bastion-user=}"
-        shift
-        ;;
-      --bastion-ssh-key)
-        [ "$#" -ge 2 ] || die "Missing value for --bastion-ssh-key"
-        BASTION_TRIGGER_SSH_KEY="${2:-}"
-        shift 2
-        ;;
-      --bastion-ssh-key=*)
-        BASTION_TRIGGER_SSH_KEY="${1#--bastion-ssh-key=}"
-        shift
-        ;;
-      --bastion-known-hosts)
-        [ "$#" -ge 2 ] || die "Missing value for --bastion-known-hosts"
-        BASTION_TRIGGER_KNOWN_HOSTS="${2:-}"
-        shift 2
-        ;;
-      --bastion-known-hosts=*)
-        BASTION_TRIGGER_KNOWN_HOSTS="${1#--bastion-known-hosts=}"
-        shift
-        ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        usage
-        die "Unknown argument: $1"
-        ;;
+      --ensure-deps)        ENSURE_DEPS_ONLY=1; shift ;;
+      --sha|--sha=*)        take_optval "$@"; SHA="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --hosts|--hosts=*)    take_optval "$@"; HOSTS_RAW="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --action|--action=*)  take_optval "$@"; ACTION="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --goal|--goal=*)      take_optval "$@"; GOAL="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --build-host|--build-host=*)
+        take_optval "$@"; BUILD_HOST="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --build-jobs|--build-jobs=*)
+        take_optval "$@"; BUILD_JOBS="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --deploy-jobs|--deploy-jobs=*)
+        take_optval "$@"; DEPLOY_PARALLEL_JOBS="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --force)              enable_force_mode; shift ;;
+      --bootstrap)          FORCE_BOOTSTRAP_PATH=1; shift ;;
+      --bastion-first)      PRIORITIZE_BASTION_FIRST=1; shift ;;
+      --dry)                enable_dry_run_mode; shift ;;
+      --no-rollback)        ROLLBACK_ON_FAILURE=0; shift ;;
+      --prefix-host-logs)   set_prefix_host_logs_mode 1; shift ;;
+      --user|--user=*)      take_optval "$@"; DEPLOY_USER_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --ssh-key|--ssh-key=*)
+        take_optval "$@"; DEPLOY_KEY_PATH_OVERRIDE="${OPTVAL}"; DEPLOY_KEY_OVERRIDE_EXPLICIT=1; shift "${OPTSHIFT}" ;;
+      --known-hosts|--known-hosts=*)
+        take_optval "$@"; DEPLOY_KNOWN_HOSTS_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --config|--config=*)  take_optval "$@"; DEPLOY_CONFIG_PATH="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --age-key-file|--age-key-file=*)
+        take_optval "$@"; AGE_DECRYPT_IDENTITY_FILE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --repo-url|--repo-url=*)
+        take_optval "$@"; REPO_URL="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --repo-path|--repo-path=*)
+        take_optval "$@"; REPO_PATH="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --use-repo-script)    REEXEC_FROM_REPO=1; shift ;;
+      --bastion-check-ssh-key-path|--bastion-check-ssh-key-path=*)
+        take_optval "$@"; DEPLOY_BASTION_KEY_PATH_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --bastion-trigger)    BASTION_TRIGGER=1; shift ;;
+      --bastion-host|--bastion-host=*)
+        take_optval "$@"; BASTION_TRIGGER_HOST="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --bastion-user|--bastion-user=*)
+        take_optval "$@"; BASTION_TRIGGER_USER="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --bastion-ssh-key|--bastion-ssh-key=*)
+        take_optval "$@"; BASTION_TRIGGER_SSH_KEY="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --bastion-known-hosts|--bastion-known-hosts=*)
+        take_optval "$@"; BASTION_TRIGGER_KNOWN_HOSTS="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      -h|--help)            usage; exit 0 ;;
+      *)                    usage; die "Unknown argument: $1" ;;
     esac
   done
 
   [ -n "${HOSTS_RAW}" ] || die "--hosts cannot be empty"
 
   case "${ACTION}" in
-    all|build|deploy|tf|check-bootstrap) ;;
+    all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap) ;;
     *) die "Unsupported --action: ${ACTION}" ;;
   esac
   normalize_host_action
@@ -623,6 +587,10 @@ parse_args() {
 }
 
 cleanup() {
+  if [ "${GITHUB_ACTIONS:-false}" = "true" ] && [ "${_NIXBOT_LOG_GROUP_OPEN:-0}" -eq 1 ]; then
+    printf '::endgroup::\n' >&2
+    _NIXBOT_LOG_GROUP_OPEN=0
+  fi
   if [ -n "${DEPLOY_TMP_DIR}" ] && [ -d "${DEPLOY_TMP_DIR}" ]; then
     rm -rf "${DEPLOY_TMP_DIR}"
   fi
@@ -690,7 +658,7 @@ run_bastion_trigger() {
   [[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
 
   case "${ACTION}" in
-    all|build|deploy|tf|check-bootstrap) ;;
+    all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap) ;;
     *) die "Unsupported --action for --bastion-trigger: ${ACTION}" ;;
   esac
 
@@ -743,8 +711,64 @@ is_bootstrap_check_action() {
   [ "${ACTION}" = "check-bootstrap" ]
 }
 
-action_includes_tf_phase() {
-  [ "${ACTION}" = "all" ] || [ "${ACTION}" = "tf" ]
+is_tf_only_action() {
+  case "${ACTION}" in
+    tf|tf-dns|tf-platform|tf-apps) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+should_run_tf_project_action() {
+  local phase="$1"
+  local project_name="$2"
+  local target_ref base_ref diff_output diff_status=0
+  local path=""
+  local status_output=""
+  local status_path=""
+
+  if [ "${TF_IF_CHANGED}" -eq 0 ]; then
+    echo "OpenTofu change detection bypassed by --force" >&2
+    return 0
+  fi
+
+  target_ref="${SHA:-HEAD}"
+  if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
+    echo "OpenTofu change detection unavailable for ${target_ref}; running TF ${phase}" >&2
+    return 0
+  fi
+
+  if ! base_ref="$(resolve_tf_change_base_ref "${target_ref}")"; then
+    echo "OpenTofu change base unavailable for ${target_ref}; running TF ${phase}" >&2
+    return 0
+  fi
+
+  diff_output="$(git diff --name-only "${base_ref}" "${target_ref}" -- 2>/dev/null)" || diff_status=$?
+  if [ "${diff_status}" -ne 0 ]; then
+    echo "OpenTofu change detection failed for ${base_ref}..${target_ref}; running TF ${phase}" >&2
+    return 0
+  fi
+
+  while IFS= read -r path; do
+    [ -n "${path}" ] || continue
+    if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${path}"; then
+      echo "OpenTofu ${project_name} change detected: ${path}" >&2
+      return 0
+    fi
+  done <<< "${diff_output}"
+
+  status_output="$(git status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+  while IFS= read -r status_path; do
+    [ -n "${status_path}" ] || continue
+    status_path="${status_path#?? }"
+    status_path="${status_path##* -> }"
+    if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${status_path}"; then
+      echo "OpenTofu ${project_name} working tree change detected: ${status_path}" >&2
+      return 0
+    fi
+  done <<< "${status_output}"
+
+  echo "OpenTofu ${project_name} unchanged; skipping TF action" >&2
+  return 1
 }
 
 resolve_tf_change_base_ref() {
@@ -761,44 +785,6 @@ resolve_tf_change_base_ref() {
     printf '%s^1\n' "${target_ref}"
     return 0
   fi
-  return 1
-}
-
-should_run_tf_action() {
-  local target_ref base_ref diff_output diff_status
-  local path=""
-
-  if [ "${TF_IF_CHANGED}" -eq 0 ]; then
-    echo "OpenTofu change detection bypassed by --force" >&2
-    return 0
-  fi
-
-  target_ref="${SHA:-HEAD}"
-  if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
-    echo "OpenTofu change detection unavailable for ${target_ref}; running TF" >&2
-    return 0
-  fi
-
-  if ! base_ref="$(resolve_tf_change_base_ref "${target_ref}")"; then
-    echo "OpenTofu change base unavailable for ${target_ref}; running TF" >&2
-    return 0
-  fi
-
-  diff_output="$(git diff --name-only "${base_ref}" "${target_ref}" -- 2>/dev/null)" || diff_status=$?
-  if [ "${diff_status:-0}" -ne 0 ]; then
-    echo "OpenTofu change detection failed for ${base_ref}..${target_ref}; running TF" >&2
-    return 0
-  fi
-
-  while IFS= read -r path; do
-    [ -n "${path}" ] || continue
-    if is_tf_candidate_path "${path}"; then
-      echo "OpenTofu change detected: ${path}" >&2
-      return 0
-    fi
-  done <<< "${diff_output}"
-
-  echo "OpenTofu unchanged; skipping TF action" >&2
   return 1
 }
 
@@ -982,12 +968,15 @@ select_hosts_json() {
     return
   fi
 
-  printf '%s' "${HOSTS_RAW}" \
-    | tr ', ' '\n' \
-    | sed '/^$/d' \
-    | awk '!seen[$0]++' \
+  emit_normalized_hosts "${HOSTS_RAW}" \
     | jq -R . \
     | jq -s .
+}
+
+host_dependencies_for() {
+  local node="$1"
+
+  jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}"
 }
 
 expand_selected_hosts_json() {
@@ -1027,7 +1016,7 @@ expand_selected_hosts_json() {
       if [ -z "${seen_host_set["${dep}"]+x}" ]; then
         queue+=("${dep}")
       fi
-    done < <(jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}")
+    done < <(host_dependencies_for "${node}")
   done
 
   jq -cn '$ARGS.positional' --args "${expanded_hosts[@]}"
@@ -1062,7 +1051,7 @@ order_selected_hosts_json() {
 
   for node in "${selected_hosts[@]}"; do
     [ -n "${node}" ] || continue
-    mapfile -t deps < <(jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}")
+    mapfile -t deps < <(host_dependencies_for "${node}")
     for dep in "${deps[@]}"; do
       [ -n "${dep}" ] || continue
       if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
@@ -1155,7 +1144,7 @@ selected_host_levels_json() {
           node_level=$((dep_level + 1))
         fi
       fi
-    done < <(jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}")
+    done < <(host_dependencies_for "${node}")
 
     if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${bastion_host}"]+x}" ] && [ "${node_level}" -lt 1 ]; then
       node_level=1
@@ -2024,10 +2013,10 @@ run_build_job() {
   )
 }
 
-record_build_status() {
+record_phase_status() {
   local node="$1"
   local status_file="$2"
-  local -n built_hosts_target="$3"
+  local -n success_hosts_target="$3"
   local -n failed_hosts_target="$4"
   local rc
 
@@ -2042,8 +2031,17 @@ record_build_status() {
     return 1
   fi
 
-  built_hosts_target+=("${node}")
+  success_hosts_target+=("${node}")
   return 0
+}
+
+record_build_status() {
+  local node="$1"
+  local status_file="$2"
+  local -n built_hosts_target="$3"
+  local -n failed_hosts_target="$4"
+
+  record_phase_status "${node}" "${status_file}" built_hosts_target failed_hosts_target
 }
 
 print_build_failures() {
@@ -2137,21 +2135,8 @@ record_deploy_status() {
   local status_file="$2"
   local -n successful_hosts_target="$3"
   local -n deploy_failed_hosts_target="$4"
-  local rc
 
-  if [ ! -s "${status_file}" ]; then
-    deploy_failed_hosts_target+=("${node}")
-    return 1
-  fi
-
-  rc="$(cat "${status_file}")"
-  if [ "${rc}" != "0" ]; then
-    deploy_failed_hosts_target+=("${node}")
-    return 1
-  fi
-
-  successful_hosts_target+=("${node}")
-  return 0
+  record_phase_status "${node}" "${status_file}" successful_hosts_target deploy_failed_hosts_target
 }
 
 print_host_failures() {
@@ -2778,105 +2763,359 @@ run_hosts() {
   return "${final_rc}"
 }
 
-run_tf_action() {
-  local tf_dir
-  local state_key
-  local endpoint
-  local plan_file
+resolve_tf_project_dir() {
+  local project_dir="$1"
+
+  if [[ "${project_dir}" != /* ]]; then
+    project_dir="$(pwd -P)/${project_dir}"
+  fi
+
+  [ -d "${project_dir}" ] || die "OpenTofu directory not found: ${project_dir}"
+  printf '%s\n' "${project_dir}"
+}
+
+resolve_tf_project_context() {
+  local input_dir="$1"
+  local require_repo_project="${2:-1}"
+  local -n project_dir_out="$3"
+  local -n project_name_out="$4"
+  local -n provider_name_out="$5"
+  local _pname=""
+
+  project_dir_out="$(resolve_tf_project_dir "${input_dir}")"
+  project_name_out=""
+  provider_name_out=""
+
+  _pname="$(tf_project_name_from_dir "${project_dir_out}")"
+  if [[ "${_pname}" != *-* ]] || [ "$(basename "$(dirname "${project_dir_out}")")" != "tf" ]; then
+    [ "${require_repo_project}" -eq 1 ] && return 1
+    return 0
+  fi
+
+  project_name_out="${_pname}"
+  provider_name_out="$(tf_project_provider_from_name "${_pname}")"
+}
+
+prepare_tf_project_runtime() {
+  local project_name="$1"
+
+  load_tf_runtime_secrets_for_project "${project_name}"
+  require_tf_runtime_env_for_project "${project_name}"
+}
+
+collect_tf_var_files_for_project() {
+  local project_name="$1"
+  local -n tf_var_files_out="$2"
+  local -n discovered_tf_var_files_out="$3"
+  local log_discovered_paths="${4:-0}"
+  local tf_var_path=""
+  local resolved_tf_var_file=""
+
+  tf_var_files_out=()
+  discovered_tf_var_files_out=0
+
+  while IFS= read -r tf_var_path; do
+    discovered_tf_var_files_out=$((discovered_tf_var_files_out + 1))
+    if [ "${log_discovered_paths}" -eq 1 ]; then
+      echo "Sensitive tfvars: ${tf_var_path}" >&2
+    fi
+    resolved_tf_var_file="$(resolve_runtime_key_file "${tf_var_path}")"
+    if [ -f "${resolved_tf_var_file}" ]; then
+      tf_var_files_out+=("${resolved_tf_var_file}")
+    elif [ "${log_discovered_paths}" -eq 1 ]; then
+      echo "Sensitive tfvars: ${tf_var_path} not present" >&2
+    fi
+  done < <(emit_tf_secret_paths_for_project "${project_name}" | sort -u)
+}
+
+append_tf_var_files_to_cmd() {
+  local -n cmd_out="$1"
+  shift
+  local tf_var_file=""
+
+  for tf_var_file in "$@"; do
+    cmd_out+=("-var-file=${tf_var_file}")
+  done
+}
+
+tf_backend_endpoint() {
+  printf 'https://%s.r2.cloudflarestorage.com\n' "${R2_ACCOUNT_ID}"
+}
+
+run_tf_phases() {
+  local phase=""
+
+  for phase in "$@"; do
+    [ -n "${phase}" ] || continue
+    run_requested_tf_phase "${phase}"
+  done
+}
+
+tofu_args_extract_subcommand() {
+  local -a args=("$@")
+  local i arg
+
+  for ((i=0; i<${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "${arg}" in
+      -chdir)
+        i=$((i + 1))
+        ;;
+      -chdir=*|-help|--help|-version|--version)
+        ;;
+      -*)
+        ;;
+      *)
+        printf '%s\n' "${arg}"
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+tofu_args_have_explicit_vars() {
+  local -a args=("$@")
+  local arg
+
+  for arg in "${args[@]}"; do
+    case "${arg}" in
+      -var|-var=*|-var-file|-var-file=*)
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+tofu_subcommand_supports_var_files() {
+  local subcommand="${1:-}"
+
+  case "${subcommand}" in
+    plan|apply|destroy|import|console)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+resolve_tofu_auto_var_file_subcommand() {
+  local -n subcommand_out="$1"
+  shift
+  local subcommand=""
+
+  subcommand_out=""
+
+  if ! subcommand="$(tofu_args_extract_subcommand "$@")"; then
+    return 1
+  fi
+
+  if ! tofu_subcommand_supports_var_files "${subcommand}"; then
+    return 1
+  fi
+
+  if tofu_args_have_explicit_vars "$@"; then
+    return 1
+  fi
+
+  subcommand_out="${subcommand}"
+}
+
+# Low-level: run a single tofu command with optional project-aware var-file
+# injection. Pass project_name="" to skip auto var-file injection (e.g. init,
+# apply with saved plan file).
+_exec_tofu_cmd() {
+  local project_name="${1:-}"
+  shift
+  local subcommand=""
   local discovered_tf_var_files=0
-  local resolved_tf_var_file
-  local -a init_cmd=()
-  local -a plan_cmd=()
-  local -a apply_cmd=()
+  local -a cmd=()
   local -a tf_var_files=()
 
-  tf_dir="${TF_WORK_DIR}"
-  if [[ "${tf_dir}" != /* ]]; then
-    tf_dir="$(pwd -P)/${tf_dir}"
+  cmd=(tofu "$@")
+
+  if [ -n "${project_name}" ] && resolve_tofu_auto_var_file_subcommand subcommand "$@"; then
+    collect_tf_var_files_for_project "${project_name}" tf_var_files discovered_tf_var_files 1
+
+    if [ "${discovered_tf_var_files}" -eq 0 ]; then
+      echo "Sensitive tfvars: no *.tfvars.age files found under ${TF_SECRETS_DIR}" >&2
+    fi
+
+    append_tf_var_files_to_cmd cmd "${tf_var_files[@]}"
+
+    if [ "${#tf_var_files[@]}" -gt 0 ]; then
+      echo "OpenTofu ${project_name}: appended ${#tf_var_files[@]} decrypted var-file(s) for ${subcommand}" >&2
+    fi
   fi
-  [ -d "${tf_dir}" ] || die "OpenTofu directory not found: ${tf_dir}"
 
-  load_tf_runtime_secrets
+  "${cmd[@]}"
+}
 
-  [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "Missing required environment variable: CLOUDFLARE_API_TOKEN"
-  [ -n "${R2_ACCOUNT_ID:-}" ] || die "Missing required environment variable: R2_ACCOUNT_ID"
-  [ -n "${R2_STATE_BUCKET:-}" ] || die "Missing required environment variable: R2_STATE_BUCKET"
-  [ -n "${R2_ACCESS_KEY_ID:-}" ] || die "Missing required environment variable: R2_ACCESS_KEY_ID"
-  [ -n "${R2_SECRET_ACCESS_KEY:-}" ] || die "Missing required environment variable: R2_SECRET_ACCESS_KEY"
+log_tf_action_context() {
+  local phase="$1"
+  local project_name="$2"
+  local tf_dir="$3"
+  local state_key="$4"
+  local endpoint="$5"
 
-  state_key="${R2_STATE_KEY:-cloudflare-dns/terraform.tfstate}"
-  endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-
-  log_section "Phase: OpenTofu"
   echo "Working dir: ${tf_dir}" >&2
   echo "State bucket: ${R2_STATE_BUCKET}" >&2
   echo "State key: ${state_key}" >&2
   echo "Endpoint: ${endpoint}" >&2
+}
 
-  init_cmd=(
-    tofu -chdir="${tf_dir}" init
-    -backend-config="bucket=${R2_STATE_BUCKET}"
-    -backend-config="key=${state_key}"
-    -backend-config="region=auto"
-    -backend-config="endpoint=${endpoint}"
-    -backend-config="access_key=${R2_ACCESS_KEY_ID}"
-    -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}"
-    -backend-config="skip_credentials_validation=true"
-    -backend-config="skip_region_validation=true"
-    -backend-config="skip_requesting_account_id=true"
+run_tf_action() {
+  local phase="$1"
+  local project_dir="$2"
+  local project_name="" provider_name="" tf_dir=""
+  local state_key="" endpoint="" plan_file
+
+  resolve_tf_project_context "${project_dir}" 1 tf_dir project_name provider_name
+  prepare_tf_project_runtime "${project_name}"
+
+  state_key="$(tf_state_key_for_project "${project_name}")"
+  endpoint="$(tf_backend_endpoint)"
+  log_tf_action_context "${phase}" "${project_name}" "${tf_dir}" "${state_key}" "${endpoint}"
+
+  # Init (no var-file injection needed)
+  _exec_tofu_cmd "" -chdir="${tf_dir}" init \
+    -backend-config="bucket=${R2_STATE_BUCKET}" \
+    -backend-config="key=${state_key}" \
+    -backend-config="region=auto" \
+    -backend-config="endpoint=${endpoint}" \
+    -backend-config="access_key=${R2_ACCESS_KEY_ID}" \
+    -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}" \
+    -backend-config="skip_credentials_validation=true" \
+    -backend-config="skip_region_validation=true" \
+    -backend-config="skip_requesting_account_id=true" \
     -backend-config="use_path_style=true"
-  )
-
-  while IFS= read -r tf_var_path; do
-    discovered_tf_var_files=$((discovered_tf_var_files + 1))
-    resolved_tf_var_file="$(resolve_runtime_key_file "${tf_var_path}")"
-    if [ -f "${resolved_tf_var_file}" ]; then
-      echo "Sensitive tfvars: ${tf_var_path}" >&2
-      tf_var_files+=("${resolved_tf_var_file}")
-    else
-      echo "Sensitive tfvars: ${tf_var_path} not present" >&2
-    fi
-  done < <(find "${TF_SECRETS_DIR}" -type f -name '*.tfvars.age' | sort)
-
-  if [ "${discovered_tf_var_files}" -eq 0 ]; then
-    echo "Sensitive tfvars: no *.tfvars.age files found under ${TF_SECRETS_DIR}" >&2
-  fi
 
   if [ "${DRY_RUN}" -eq 1 ]; then
-    plan_cmd=(tofu -chdir="${tf_dir}" plan -input=false)
-    for tf_var_file in "${tf_var_files[@]}"; do
-      plan_cmd+=(-var-file="${tf_var_file}")
-    done
-    "${init_cmd[@]}"
-    "${plan_cmd[@]}"
+    _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false
     return
   fi
 
   ensure_tmp_dir
   plan_file="$(mktemp "${DEPLOY_TMP_DIR}/tfplan.XXXXXX")"
-
-  plan_cmd=(tofu -chdir="${tf_dir}" plan -input=false -out="${plan_file}")
-  for tf_var_file in "${tf_var_files[@]}"; do
-    plan_cmd+=(-var-file="${tf_var_file}")
-  done
-  apply_cmd=(tofu -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}")
-
-  "${init_cmd[@]}"
-  "${plan_cmd[@]}"
-  "${apply_cmd[@]}"
+  _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false -out="${plan_file}"
+  # Apply saved plan (no var-file injection)
+  _exec_tofu_cmd "" -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}"
 }
 
-run_tf_phase_if_requested() {
-  if action_includes_tf_phase; then
-    if should_run_tf_action; then
-      run_tf_action
-    fi
-    if [ "${ACTION}" = "tf" ]; then
-      return 1
-    fi
+tofu_wrapper_extract_chdir() {
+  local -a args=("$@")
+  local i arg
+
+  for ((i=0; i<${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "${arg}" in
+      -chdir=*)
+        printf '%s\n' "${arg#-chdir=}"
+        return 0
+        ;;
+      -chdir)
+        if [ $((i + 1)) -lt ${#args[@]} ]; then
+          printf '%s\n' "${args[$((i + 1))]}"
+          return 0
+        fi
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+resolve_tofu_wrapper_context() {
+  local project_dir_name="$1"
+  local project_name_name="$2"
+  local provider_name_name="$3"
+  shift 3
+  local -n project_dir_out="${project_dir_name}"
+  local -n project_name_out="${project_name_name}"
+  local -n provider_name_out="${provider_name_name}"
+  local chdir_arg=""
+  local input_dir=""
+
+  chdir_arg="$(tofu_wrapper_extract_chdir "$@" || true)"
+  input_dir="${chdir_arg:-$(pwd -P)}"
+  resolve_tf_project_context "${input_dir}" 0 "${project_dir_name}" "${project_name_name}" "${provider_name_name}"
+}
+
+run_tofu_wrapper() {
+  local -a tofu_args=("$@")
+  local project_dir="" project_name="" provider_name=""
+
+  [ "${#tofu_args[@]}" -gt 0 ] || die "Usage: scripts/nixbot-deploy.sh tofu <tofu-args...>"
+  [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot-deploy tofu wrapper is local-only and cannot run via SSH forced-command/bastion trigger."
+
+  if resolve_tofu_wrapper_context project_dir project_name provider_name "${tofu_args[@]}" && [ -n "${project_name}" ]; then
+    prepare_tf_project_runtime "${project_name}"
+    echo "OpenTofu wrapper project: ${project_name} (${provider_name})" >&2
   fi
 
-  return 0
+  _exec_tofu_cmd "${project_name}" "${tofu_args[@]}"
+}
+
+run_requested_tf_phase() {
+  local phase="$1"
+  local project_dir=""
+  local found=0
+  local project_name=""
+
+  while IFS= read -r project_dir; do
+    [ -n "${project_dir}" ] || continue
+    found=1
+    project_name="$(tf_project_name_from_dir "${project_dir}")"
+    log_section "Phase: OpenTofu (${phase}/${project_name})"
+    
+    if should_run_tf_project_action "${phase}" "${project_name}"; then
+      run_tf_action "${phase}" "${project_dir}"
+    fi
+  done < <(tf_project_dirs_for_phase "${phase}")
+
+  if [ "${found}" -eq 0 ]; then
+    echo "No OpenTofu ${phase} projects found; skipping" >&2
+  fi
+}
+
+run_tf_only_action() {
+  case "${ACTION}" in
+    tf)
+      run_tf_phases dns platform apps
+      ;;
+    tf-dns)
+      run_tf_phases dns
+      ;;
+    tf-platform)
+      run_tf_phases platform
+      ;;
+    tf-apps)
+      run_tf_phases apps
+      ;;
+    *)
+      die "Unsupported OpenTofu-only action: ${ACTION}"
+      ;;
+  esac
+}
+
+run_all_action() {
+  run_tf_phases dns platform
+  run_host_action
+  run_tf_phases apps
+}
+
+resolve_selected_hosts_json() {
+  local all_hosts_json="$1"
+  local selected_json=""
+
+  selected_json="$(select_hosts_json "${all_hosts_json}")"
+  validate_selected_hosts "${selected_json}" "${all_hosts_json}"
+  selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
+  order_selected_hosts_json "${selected_json}" "${all_hosts_json}"
 }
 
 run_host_action() {
@@ -2888,10 +3127,7 @@ run_host_action() {
   fi
 
   all_hosts_json="$(load_all_hosts_json)"
-  selected_json="$(select_hosts_json "${all_hosts_json}")"
-  validate_selected_hosts "${selected_json}" "${all_hosts_json}"
-  selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
-  selected_json="$(order_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
+  selected_json="$(resolve_selected_hosts_json "${all_hosts_json}")"
 
   run_hosts "${selected_json}"
 }
@@ -2931,6 +3167,14 @@ host_phase_border() {
 log_section() {
   local title="$1"
   local border='=========='
+
+  if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+    if [ "${_NIXBOT_LOG_GROUP_OPEN:-0}" -eq 1 ]; then
+      printf '::endgroup::\n' >&2
+    fi
+    printf '::group::%s\n' "${title}" >&2
+    _NIXBOT_LOG_GROUP_OPEN=1
+  fi
 
   printf '\n%s %s %s\n' "${border}" "${title}" "${border}" >&2
 }
@@ -3174,6 +3418,48 @@ ensure_runtime_tools() {
   require_cmds "${NIXBOT_RUNTIME_COMMANDS[@]}"
 }
 
+hydrate_request_args_from_ssh_command() {
+  local -n request_args_out="$1"
+
+  if [ "${#request_args_out[@]}" -ne 0 ] || [ -z "${SSH_ORIGINAL_COMMAND:-}" ]; then
+    return
+  fi
+
+  echo "Received SSH_ORIGINAL_COMMAND:"
+  echo "${SSH_ORIGINAL_COMMAND}"
+  read -r -a request_args_out <<<"${SSH_ORIGINAL_COMMAND}"
+  if [ "${#request_args_out[@]}" -gt 0 ] && [ "${request_args_out[0]}" = "--" ]; then
+    request_args_out=("${request_args_out[@]:1}")
+  fi
+  if [ "${#request_args_out[@]}" -gt 0 ]; then
+    case "${request_args_out[0]}" in
+      nixbot-deploy.sh|*/nixbot-deploy.sh)
+        request_args_out=("${request_args_out[@]:1}")
+        ;;
+    esac
+  fi
+}
+
+is_tofu_wrapper_request() {
+  local -a request_args=("$@")
+
+  [ "${#request_args[@]}" -gt 0 ] && [ "${request_args[0]}" = "tofu" ]
+}
+
+run_requested_action() {
+  if [ "${ACTION}" = "all" ]; then
+    run_all_action
+    return
+  fi
+
+  if is_tf_only_action; then
+    run_tf_only_action
+    return
+  fi
+
+  run_host_action
+}
+
 main() {
   local -a request_args=("$@")
 
@@ -3181,20 +3467,12 @@ main() {
   init_vars
   trap cleanup EXIT
 
-  if [ "${#request_args[@]}" -eq 0 ] && [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
-    echo "Received SSH_ORIGINAL_COMMAND:"
-    echo "${SSH_ORIGINAL_COMMAND}"
-    read -r -a request_args <<<"${SSH_ORIGINAL_COMMAND}"
-    if [ "${#request_args[@]}" -gt 0 ] && [ "${request_args[0]}" = "--" ]; then
-      request_args=("${request_args[@]:1}")
-    fi
-    if [ "${#request_args[@]}" -gt 0 ]; then
-      case "${request_args[0]}" in
-        nixbot-deploy.sh|*/nixbot-deploy.sh)
-          request_args=("${request_args[@]:1}")
-          ;;
-      esac
-    fi
+  hydrate_request_args_from_ssh_command request_args
+
+  if is_tofu_wrapper_request "${request_args[@]}"; then
+    ensure_runtime_tools
+    run_tofu_wrapper "${request_args[@]:1}"
+    return
   fi
 
   parse_args "${request_args[@]}"
@@ -3211,11 +3489,7 @@ main() {
   ensure_repo_for_sha
   reexec_repo_script_if_needed "${request_args[@]}"
 
-  if ! run_tf_phase_if_requested; then
-    return
-  fi
-
-  run_host_action
+  run_requested_action
 }
 
 main "$@"
