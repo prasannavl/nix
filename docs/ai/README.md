@@ -4,6 +4,12 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ## Notes
 
+### Summary
+
+- `docs/ai/notes/repo-summary-2026-03.md`: High-level overview of the entire
+  repo — hosts, flake structure, deployment, secrets, services, Cloudflare, and
+  open work.
+
 ### Apps
 
 - `docs/ai/notes/apps/root-flake-app-exports-and-git-source-2026-03.md`: Root
