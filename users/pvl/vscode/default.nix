@@ -22,6 +22,7 @@
           rust-lang.rust-analyzer
           fill-labs.dependi
           hashicorp.terraform
+          ms-python.python
 
           github.copilot-chat
           pkgs.vscode-marketplace.openai.chatgpt
