@@ -22,6 +22,18 @@ output "managed_email_routing_addresses" {
   value = module.cloudflare_platform.managed_email_routing_addresses
 }
 
+output "managed_tunnels" {
+  value = module.cloudflare_platform.managed_tunnels
+}
+
+output "managed_tunnel_configs" {
+  value = module.cloudflare_platform.managed_tunnel_configs
+}
+
+output "managed_tunnel_routes" {
+  value = module.cloudflare_platform.managed_tunnel_routes
+}
+
 output "managed_r2_buckets" {
   value = module.cloudflare_platform.managed_r2_buckets
 }

@@ -8,6 +8,9 @@ module "cloudflare_platform" {
   access_policies                          = var.access_policies
   access_applications                      = var.access_applications
   workers_kv_namespaces                    = var.workers_kv_namespaces
+  tunnels                                  = var.tunnels
+  tunnel_configs                           = var.tunnel_configs
+  tunnel_routes                            = var.tunnel_routes
   r2_buckets                               = var.r2_buckets
   zone_dnssec                              = var.zone_dnssec
   zone_settings                            = var.zone_settings

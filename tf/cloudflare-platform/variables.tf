@@ -35,6 +35,24 @@ variable "workers_kv_namespaces" {
   default     = {}
 }
 
+variable "tunnels" {
+  description = "Cloudflare Zero Trust cloudflared tunnels keyed by a stable Terraform key."
+  type        = any
+  default     = {}
+}
+
+variable "tunnel_configs" {
+  description = "Cloudflare Zero Trust cloudflared tunnel configurations keyed by tunnel key."
+  type        = any
+  default     = {}
+}
+
+variable "tunnel_routes" {
+  description = "Cloudflare Zero Trust private network routes keyed by tunnel key, each containing a list of CIDR routes."
+  type        = any
+  default     = {}
+}
+
 variable "r2_buckets" {
   description = "Cloudflare R2 buckets and related bucket-level configuration."
   type        = any
