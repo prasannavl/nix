@@ -2016,32 +2016,30 @@ run_build_job() {
 record_phase_status() {
   local node="$1"
   local status_file="$2"
-  local -n success_hosts_target="$3"
-  local -n failed_hosts_target="$4"
+  local -n success_hosts_ref="$3"
+  local -n failed_hosts_ref="$4"
   local rc
 
   if [ ! -s "${status_file}" ]; then
-    failed_hosts_target+=("${node}")
+    failed_hosts_ref+=("${node}")
     return 1
   fi
 
   rc="$(cat "${status_file}")"
   if [ "${rc}" != "0" ]; then
-    failed_hosts_target+=("${node}")
+    failed_hosts_ref+=("${node}")
     return 1
   fi
 
-  success_hosts_target+=("${node}")
+  success_hosts_ref+=("${node}")
   return 0
 }
 
 record_build_status() {
   local node="$1"
   local status_file="$2"
-  local -n built_hosts_target="$3"
-  local -n failed_hosts_target="$4"
 
-  record_phase_status "${node}" "${status_file}" built_hosts_target failed_hosts_target
+  record_phase_status "${node}" "${status_file}" "$3" "$4"
 }
 
 print_build_failures() {
@@ -2133,10 +2131,8 @@ run_deploy_job() {
 record_deploy_status() {
   local node="$1"
   local status_file="$2"
-  local -n successful_hosts_target="$3"
-  local -n deploy_failed_hosts_target="$4"
 
-  record_phase_status "${node}" "${status_file}" successful_hosts_target deploy_failed_hosts_target
+  record_phase_status "${node}" "${status_file}" "$3" "$4"
 }
 
 print_host_failures() {
@@ -2181,17 +2177,17 @@ maybe_rollback_successful_hosts() {
 
 record_snapshot_failures_for_wave() {
   local snapshot_dir="$1"
-  local -n snapshot_failed_hosts_target="$2"
+  local -n snapshot_failed_hosts_ref="$2"
   # shellcheck disable=SC2178
-  local -n deploy_failed_hosts_target="$3"
+  local -n deploy_failed_hosts_ref="$3"
   shift 3
 
   local node
   for node in "$@"; do
     [ -n "${node}" ] || continue
     if ! snapshot_exists "${snapshot_dir}/${node}.path"; then
-      snapshot_failed_hosts_target+=("${node}")
-      deploy_failed_hosts_target+=("${node}")
+      snapshot_failed_hosts_ref+=("${node}")
+      deploy_failed_hosts_ref+=("${node}")
     fi
   done
 }
