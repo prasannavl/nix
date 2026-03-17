@@ -1,99 +1,71 @@
 # AI Docs Index
 
-- `docs/ai/playbooks/nixbot-deploy.md`: Reconstruction spec for nixbot
-  deployment architecture and bootstrap behavior.
-- `docs/ai/playbooks/nixbot-key-rotation-execution.md`: Agent-executable phased
-  key-rotation playbook with mandatory confirmation gates.
-- `docs/ai/playbooks/nixbot-key-rotation-keygen.md`: Agent-executable
-  key-generation and secret-packaging playbook for rotation prep.
-- `docs/ai/notes/deployment/deployment-fixes-consolidated-2026-03.md`: Small
-  deployment unblockers, currently the `incus` `checkPhase` SIGBUS mitigation.
-- `docs/ai/notes/hosts/incus-guest-ollama-amd-gpu-2026-03.md`: Reconfigured an
-  Incus guest's Ollama GPU access from NVIDIA CDI assumptions to AMD passthrough
-  (`/dev/dri` + `/dev/kfd`) on its parent host.
-- `docs/ai/notes/hosts/incus-bootstrap-deploy-flow-2026-03.md`: Replaced a
-  host-specific Incus image with a reusable generic bootstrap image under
-  `lib/images` and taught `nixbot` to auto-include dependency hosts for deploys.
-- `docs/ai/notes/hosts/incus-machine-tailscale-block-refactor-2026-03.md`:
-  Grouped the reusable guest Tailscale secret discovery and module settings in
-  `lib/incus-machine.nix` into one isolated Tailscale block without changing
-  behavior.
-- `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
-  reusable Incus guest template and secret model for future guests.
-- `docs/ai/notes/hosts/incus-guest-tailscale-login-2026-03.md`: Added reusable
-  guest Tailscale autologin wiring via an agenix-managed secret in the standard
-  `data/secrets/tailscale/<host>.key.age` location.
-- `docs/ai/notes/hosts/cloudflare-tunnel-hosts-2026-03.md`: Added reusable
-  Cloudflare Tunnel host wiring using direct native
-  `services.cloudflared.tunnels` declarations with agenix-managed credentials
-  files.
+Use this index as the canonical map for `docs/ai/**`.
+
+## Notes
+
+### Deployment
+
+- `docs/ai/notes/deployment/deployment-fixes-consolidated-2026-03.md`:
+  Small deployment unblockers with lasting operational value.
+
+### Hosts
+
+- `docs/ai/notes/hosts/cloudflare-tunnel-hosts-2026-03.md`:
+  Reusable Cloudflare Tunnel host wiring.
 - `docs/ai/notes/hosts/desktop-investigations-consolidated-2026-03.md`:
-  Consolidated a desktop host investigation covering suspend watchdogs, GNOME
-  idle inhibition, and `amdxdna` mismatch handling.
-- `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Consolidated
-  `nixbot` deploy architecture, bastion/bootstrap trust boundaries,
-  dependency-wave orchestration, snapshot semantics, status/logging rules, and
-  GitHub Actions connectivity state.
-- `docs/ai/notes/nixbot/log-stream-ordering-2026-03.md`: Normalized deploy and
-  rollback log capture so child processes emit a single ordered output stream,
-  avoiding stdout/stderr reordering artifacts in status lines.
-- `docs/ai/notes/nixbot/github-actions-nix-bootstrap-2026-03.md`: Bootstrapped
-  Nix in the GitHub `nixbot` workflow so CI runners satisfy the deploy script's
-  `nix shell` runtime requirement.
-- `docs/ai/notes/nixbot/github-actions-runtime-warmup-and-cache-2026-03.md`:
-  Added a dedicated runtime warm-up step and GitHub-side Nix cache so `Remote
-  action` logs no longer absorb the initial `nix shell` closure fetch.
-- `docs/ai/notes/nixbot/runtime-toolchain-unification-2026-03.md`: Unified the
-  deploy script's runtime installable list and required-command verification so
-  `nix shell`, `--ensure-deps`, and normal execution share one toolchain
-  contract.
-- `docs/ai/notes/nixbot/nixbot-home-dir-perms-2026-03.md`: Ensured
-  `/var/lib/nixbot` is created as a usable `nixbot` home directory on all hosts
-  so remote snapshot/deploy probes do not emit home-directory permission errors.
-- `docs/ai/notes/nixbot/deploy-noninteractive-tty-fallback-2026-03.md`: Fixed
-  `nixbot` deploy's `/dev/tty` probe so host age identity injection works in
-  non-interactive service/wrapper runs.
+  Consolidated desktop investigations and durable findings.
+- `docs/ai/notes/hosts/incus-guest-ollama-amd-gpu-2026-03.md`:
+  AMD GPU passthrough model for an Incus Ollama guest.
+- `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`:
+  Canonical reusable Incus guest template and secret model.
+
+### Nixbot
+
+- `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`:
+  Canonical `nixbot` deploy architecture and orchestration behavior.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
-  Consolidated `nixbot` rotation model, legacy-host recovery lessons, operator
-  guardrails, and the playbook relationship.
-- `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
-  Consolidated `services.podmanCompose` and `systemd-user-manager` platform
-  model, including file materialization, `envSecrets`, and unit lifecycle.
-- `docs/ai/notes/services/opentofu-cloudflare-dns-2026-03.md`: Replaced the
-  experimental Nix-based Cloudflare DNS approach with a root `tf/` OpenTofu
-  stack using the official Cloudflare provider, executed through
-  `scripts/nixbot-deploy.sh --action tf` locally, via bastion, or from the
-  existing `nixbot` GitHub workflow.
-- `docs/ai/notes/services/public-dns-test-a-record-2026-03.md`: Added a test
-  apex `A` record to the public-safe OpenTofu Cloudflare DNS tfvars.
-- `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Removed
-  concrete domains and a personal repository SSH URL from documentation so those
-  values remain in config and operational state instead of docs.
-- `docs/ai/notes/services/openssh-module-centralization-2026-03.md`: Extracted
-  shared OpenSSH enablement into `lib/openssh.nix` so daemon settings can be
-  centralized without changing existing profile inclusion points.
-- `docs/ai/notes/services/opentofu-cloudflare-tf-secrets-2026-03.md`: Added
-  repo-managed Cloudflare and R2 runtime secrets for `--action tf`, decrypted on
-  demand by `scripts/nixbot-deploy.sh` from `data/secrets/cloudflare/*.key.age`
-  when environment variables are absent.
-- `docs/ai/notes/services/opentofu-cloudflare-sensitive-tfvars-2026-03.md`:
-  Canonical sensitive-input note for the OpenTofu Cloudflare stack, including
-  public/secret tfvars split, directory autoloading, mixed-record type
-  relaxation, and imported secret zone data.
-- `docs/ai/notes/nixbot/runtime-shell-consolidation-2026-03.md`: Standardized
-  `scripts/nixbot-deploy.sh` to re-exec inside a single `nix shell` runtime so
-  deploy, bastion-trigger, and Terraform paths use the same packaged command set
-  instead of mixing host-installed tools with ad hoc `nix shell` calls.
-- `docs/ai/notes/secrets/age-secrets-clean-flag-2026-03.md`: Added
-  `scripts/age-secrets.sh clean` / `-c` to remove decrypted plaintext siblings
-  of managed `*.age` secrets without touching unmanaged files.
+  Canonical `nixbot` rotation model, lessons, and operator guardrails.
+
+### Secrets
+
+- `docs/ai/notes/secrets/age-secrets-clean-flag-2026-03.md`:
+  Managed secret cleanup behavior for `scripts/age-secrets.sh`.
 - `docs/ai/notes/secrets/secrets-infra-bootstrap-and-topology-2026-03.md`:
-  Canonical secret-topology note covering per-machine age identities, bastion
-  ingress and deploy identities, service secret delivery, and clean-room
-  bootstrap order.
-- `docs/ai/notes/services/bastion-compose-config-centralization-2026-03.md`:
-  Centralized bastion-host compose port metadata in per-instance Nix definitions
-  and reused it for compose generation and firewall rules.
+  Canonical secret topology, trust domains, and bootstrap order.
+
+### Services
+
 - `docs/ai/notes/services/bastion-service-migration-consolidated-2026-03.md`:
-  Consolidated bastion-host service adoption into repo-managed compose stacks
-  and the aligned service-secret migration.
+  Bastion-host service adoption and service-secret migration.
+- `docs/ai/notes/services/cloudflare-adoption-and-workers-consolidated-2026-03.md`:
+  Canonical Cloudflare adoption status, imported resource summary, and Workers
+  convergence decision.
+- `docs/ai/notes/services/cloudflare-opentofu-consolidated-2026-03.md`:
+  Canonical Cloudflare OpenTofu layout, input model, and source-of-truth rules.
+- `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`:
+  Documentation cleanup rules for sensitive operational details.
+- `docs/ai/notes/services/openssh-module-centralization-2026-03.md`:
+  Shared OpenSSH enablement centralization.
+- `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
+  Canonical `services.podmanCompose` and `systemd-user-manager` platform model.
+- `docs/ai/notes/services/public-dns-test-a-record-2026-03.md`:
+  Test public DNS record addition in the Cloudflare DNS stack.
+
+## Playbooks
+
+- `docs/ai/playbooks/ai-docs-reconsolidation.md`:
+  Periodic cleanup workflow for reconsolidating `docs/ai/notes`, folding
+  completed `runs` back into notes, and refreshing the index.
+- `docs/ai/playbooks/cloudflare-email-routing.md`:
+  Declarative Cloudflare Email Routing execution workflow.
+- `docs/ai/playbooks/cloudflare-state-adoption.md`:
+  Non-DNS Cloudflare state-adoption procedure for platform and apps phases.
+- `docs/ai/playbooks/cloudflare-workers.md`:
+  Create, deploy, and adopt repo-managed Cloudflare Workers.
+- `docs/ai/playbooks/nixbot-deploy.md`:
+  Reconstruction spec for `nixbot` deployment architecture and bootstrap.
+- `docs/ai/playbooks/nixbot-key-rotation-execution.md`:
+  Phased `nixbot` key-rotation execution workflow.
+- `docs/ai/playbooks/nixbot-key-rotation-keygen.md`:
+  `nixbot` key-generation and secret-packaging preparation workflow.
