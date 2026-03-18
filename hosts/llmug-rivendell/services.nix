@@ -37,6 +37,8 @@
           ollama:
             image: docker.io/ollama/ollama:latest
             restart: unless-stopped
+            environment:
+              - OLLAMA_VULKAN=1
             ports:
               - "0.0.0.0:21434:11434"
             volumes:

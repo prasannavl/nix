@@ -20,6 +20,9 @@
       image = "docker.io/ollama/ollama:latest";
       autoStart = true;
       ports = ["0.0.0.0:11434:11434"];
+      environment = {
+        OLLAMA_VULKAN = 1;
+      };
       volumes = [
         "/srv/ollama:/root/.ollama"
       ];

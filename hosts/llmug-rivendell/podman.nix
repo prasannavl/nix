@@ -22,6 +22,9 @@
       autoStart = true;
       podman.user = "llmug";
       ports = ["0.0.0.0:11434:11434"];
+      environment = {
+        OLLAMA_VULKAN = 1;
+      };
       volumes = [
         "/var/lib/llmug/ollama.pod:/root/.ollama"
       ];
