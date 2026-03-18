@@ -22,6 +22,7 @@
       nvtopPackages.full
       sshfs
       nixos-container
+      lsof
     ];
 
     gnome = with pkgs; [
