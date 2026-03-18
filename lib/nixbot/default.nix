@@ -58,11 +58,11 @@ in {
   '';
 
   system.activationScripts.nixbotAgenixIdentityDir = ''
-    install -d -m 0700 -o root -g root /var/lib/nixbot/.age
+    install -d -m 0710 -o root -g nixbot /var/lib/nixbot/.age
   '';
 
   systemd.tmpfiles.rules = [
     "d /var/lib/nixbot 0755 nixbot nixbot -"
-    "d /var/lib/nixbot/.age 0700 root root -"
+    "d /var/lib/nixbot/.age 0710 root nixbot -"
   ];
 }

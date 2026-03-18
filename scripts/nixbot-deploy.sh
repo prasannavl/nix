@@ -1890,10 +1890,10 @@ inject_host_age_identity_key() {
     "${remote_tmp}" \
     "${remote_dest}" \
     "${REMOTE_NIXBOT_AGE_DIR}" \
-    "0700" \
-    "0400" \
+    "0710" \
+    "0440" \
     "" \
-    'sudo chown root:root "${remote_dest}"')"
+    'sudo chown root:nixbot "${REMOTE_NIXBOT_AGE_DIR}" "${remote_dest}"')"
 
   echo "==> Injecting host age identity for ${node}"
   if ! run_remote_install_with_tty "${ssh_target}" "${remote_install_cmd}" "${ssh_opts[@]}"; then
