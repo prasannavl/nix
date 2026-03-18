@@ -28,7 +28,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
   scripts/nixbot-deploy.sh tofu <tofu-args...>
 
 Core Workflow Options:
@@ -46,6 +46,9 @@ Deploy Target/Auth Options:
   --build-host     local|target|<ssh-host> (default: local)
   --config         Nix deploy config path (default: hosts/nixbot.nix)
   --age-key-file   Age/SSH identity file used for decrypting *.age secrets
+  --discover-keys  Discover fallback decrypt identities (auto|on|off; default:
+                   auto, which disables discovery when --age-key-file/AGE_KEY_FILE
+                   is set explicitly)
 
 Behavior Options:
   --ensure-deps    Re-exec into the runtime shell, verify required tools exist,
@@ -98,6 +101,7 @@ Environment (Behavior):
   DEPLOY_NO_ROLLBACK          Same as --no-rollback (bool)
   DEPLOY_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
   DEPLOY_LOG_FORMAT           Same as --log-format
+  DEPLOY_DISCOVER_KEYS        Same as --discover-keys (auto|on|off)
 
 Environment (Bootstrap/Forced-Command):
   DEPLOY_BOOTSTRAP            Same as --bootstrap (bool)
@@ -179,6 +183,9 @@ init_vars() {
   BASTION_TRIGGER_KNOWN_HOSTS="${DEPLOY_BASTION_KNOWN_HOSTS:-}"
   BASTION_TRIGGER_SSH_OPTS=()
   AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
+  AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=0
+  [ -n "${AGE_KEY_FILE:-}" ] && AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=1
+  DISCOVER_DECRYPT_KEYS_MODE="${DEPLOY_DISCOVER_KEYS:-auto}"
   REEXEC_FROM_REPO=0
   TF_WORK_DIR="${DEPLOY_TF_DIR:-}"
   TF_CHANGE_BASE_REF=""
@@ -192,6 +199,8 @@ init_vars() {
   DEPLOY_KNOWN_HOSTS_OVERRIDE="${DEPLOY_SSH_KNOWN_HOSTS:-}"
   DEPLOY_BASTION_KEY_PATH_OVERRIDE="${DEPLOY_BASTION_SSH_KEY_PATH:-}"
   DEPLOY_KEY_OVERRIDE_EXPLICIT=0
+
+  set_discover_keys_mode "${DISCOVER_DECRYPT_KEYS_MODE}"
 
   if [ -n "${DEPLOY_SSH_KEY:-}" ]; then
     DEPLOY_KEY_OVERRIDE_EXPLICIT=1
@@ -524,6 +533,45 @@ is_github_actions_log_mode() {
   esac
 }
 
+set_discover_keys_mode() {
+  case "$1" in
+    auto|on|off)
+      DISCOVER_DECRYPT_KEYS_MODE="$1"
+      ;;
+    *)
+      die "Unsupported --discover-keys: $1"
+      ;;
+  esac
+}
+
+should_discover_decrypt_keys() {
+  case "${DISCOVER_DECRYPT_KEYS_MODE}" in
+    on)
+      return 0
+      ;;
+    off)
+      return 1
+      ;;
+    auto)
+      [ "${AGE_DECRYPT_IDENTITY_FILE_EXPLICIT}" -eq 0 ]
+      return
+      ;;
+    *)
+      die "Unsupported discover-keys mode: ${DISCOVER_DECRYPT_KEYS_MODE}"
+      ;;
+  esac
+}
+
+emit_age_decrypt_identity_candidates() {
+  {
+    printf '%s\n' "${AGE_DECRYPT_IDENTITY_FILE}"
+    if should_discover_decrypt_keys; then
+      printf '%s\n' "${REMOTE_NIXBOT_PRIMARY_KEY}"
+      printf '%s\n' "${REMOTE_NIXBOT_AGE_IDENTITY}"
+    fi
+  } | awk 'NF && !seen[$0]++'
+}
+
 normalize_host_action() {
   case "${ACTION}" in
     all)
@@ -583,7 +631,11 @@ parse_args() {
         take_optval "$@"; DEPLOY_KNOWN_HOSTS_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --config|--config=*)  take_optval "$@"; DEPLOY_CONFIG_PATH="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --age-key-file|--age-key-file=*)
-        take_optval "$@"; AGE_DECRYPT_IDENTITY_FILE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+        take_optval "$@"; AGE_DECRYPT_IDENTITY_FILE="${OPTVAL}"; AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=1; shift "${OPTSHIFT}" ;;
+      --discover-keys)      set_discover_keys_mode on; shift ;;
+      --no-discover-keys)   set_discover_keys_mode off; shift ;;
+      --discover-keys=*)
+        take_optval "$@"; set_discover_keys_mode "${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --repo-url|--repo-url=*)
         take_optval "$@"; REPO_URL="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --repo-path|--repo-path=*)
@@ -670,13 +722,10 @@ configure_bastion_trigger_ssh_opts() {
 
   if [ -z "${BASTION_TRIGGER_SSH_KEY}" ]; then
     default_bastion_key_path="${BASTION_TRIGGER_KEY_PATH}"
-    if key_file="$(resolve_key_source_path "${default_bastion_key_path}")" && [ -f "${key_file}" ] && [ -f "${AGE_DECRYPT_IDENTITY_FILE}" ]; then
-      require_cmds age
-      if BASTION_TRIGGER_SSH_KEY="$(age --decrypt -i "${AGE_DECRYPT_IDENTITY_FILE}" "${key_file}" 2>/dev/null)"; then
-        :
-      else
-        BASTION_TRIGGER_SSH_KEY=""
-      fi
+    if key_file="$(resolve_runtime_key_file "${default_bastion_key_path}" 1)" && [ -f "${key_file}" ]; then
+      BASTION_TRIGGER_SSH_KEY="$(<"${key_file}")"
+    else
+      BASTION_TRIGGER_SSH_KEY=""
     fi
   fi
 
@@ -992,7 +1041,9 @@ resolve_key_source_path() {
 resolve_runtime_key_file() {
   local key_path="$1"
   local require_age="${2:-0}"
-  local src_path out_file
+  local src_path out_file decrypt_identity
+  local candidate_count=0
+  local readable_candidate_count=0
 
   src_path="$(resolve_key_source_path "${key_path}")"
   if [ ! -f "${src_path}" ]; then
@@ -1006,20 +1057,36 @@ resolve_runtime_key_file() {
   fi
 
   if [[ "${src_path}" = *.age ]]; then
-    echo "Using decrypt identity: ${AGE_DECRYPT_IDENTITY_FILE} for ${src_path}" >&2
-    if [ ! -f "${AGE_DECRYPT_IDENTITY_FILE}" ]; then
-      echo "Decrypt identity file not found: ${AGE_DECRYPT_IDENTITY_FILE}" >&2
-      return 1
-    fi
+    require_cmds age
     ensure_tmp_dir
     out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
-    if ! age --decrypt -i "${AGE_DECRYPT_IDENTITY_FILE}" -o "${out_file}" "${src_path}"; then
+    while IFS= read -r decrypt_identity; do
+      [ -n "${decrypt_identity}" ] || continue
+      candidate_count=$((candidate_count + 1))
+      if [ ! -f "${decrypt_identity}" ]; then
+        echo "Skipping missing decrypt identity: ${decrypt_identity} for ${src_path}" >&2
+        continue
+      fi
+      readable_candidate_count=$((readable_candidate_count + 1))
+      echo "Trying decrypt identity: ${decrypt_identity} for ${src_path}" >&2
+      if age --decrypt -i "${decrypt_identity}" -o "${out_file}" "${src_path}"; then
+        chmod 600 "${out_file}"
+        echo "Using decrypt identity: ${decrypt_identity} for ${src_path}" >&2
+        printf '%s\n' "${out_file}"
+        return
+      fi
       rm -f "${out_file}"
-      return 1
+      out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
+    done < <(emit_age_decrypt_identity_candidates)
+    if [ "${candidate_count}" -eq 0 ]; then
+      echo "No decrypt identity candidates configured for ${src_path}" >&2
+    elif [ "${readable_candidate_count}" -eq 0 ]; then
+      echo "No decrypt identity files found for ${src_path}" >&2
+    else
+      echo "Unable to decrypt ${src_path} with the available identities" >&2
     fi
-    chmod 600 "${out_file}"
-    printf '%s\n' "${out_file}"
-    return
+    [ ! -f "${out_file}" ] || rm -f "${out_file}"
+    return 1
   fi
 
   printf '%s\n' "${src_path}"

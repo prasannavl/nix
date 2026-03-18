@@ -85,8 +85,11 @@ security model.
 
 - Each host has a machine-scoped age private key installed at:
   - `/var/lib/nixbot/.age/identity`
-- Hosts use this path in:
-  - `age.identityPaths = [ "/var/lib/nixbot/.age/identity" ]`
+- Hosts try decrypt identities in this order:
+  - `/var/lib/nixbot/.ssh/id_ed25519`
+  - `/var/lib/nixbot/.age/identity`
+- This is wired as:
+  - `age.identityPaths = [ "/var/lib/nixbot/.ssh/id_ed25519" "/var/lib/nixbot/.age/identity" ]`
 - `scripts/nixbot-deploy.sh` injects that key pre-activation from per-host
   encrypted files:
   - `data/secrets/machine/<host>.key.age`
@@ -249,11 +252,18 @@ shell access for `nixos-rebuild --target-host`.
 2. Bastion uses `nixbot` deploy key (`/var/lib/nixbot/.ssh/id_ed25519`) to SSH
    to target hosts and to decrypt repo-side `nixbot`-recipient `.age` files used
    by deploy tooling.
+
+- When `--discover-keys` is enabled, the deploy script falls back from the
+  primary decrypt identity to `/var/lib/nixbot/.ssh/id_ed25519` and then
+  `/var/lib/nixbot/.age/identity`.
+
 3. Before each target activation, `scripts/nixbot-deploy.sh` injects
    host-specific machine age private key to:
    - `/var/lib/nixbot/.age/identity`
 4. Target activation runs agenix with:
-   - `age.identityPaths = [ "/var/lib/nixbot/.age/identity" ]`
+
+- `age.identityPaths = [ "/var/lib/nixbot/.ssh/id_ed25519" "/var/lib/nixbot/.age/identity" ]`
+
 5. Secrets are materialized on target and access to plaintext is constrained
    with Unix ownership/mode via `age.secrets.<name>.owner/group/mode`.
 
@@ -439,6 +449,13 @@ Use this order for a clean-room rebuild of the current model.
 
 - `--action check-bootstrap` validates bootstrap key availability/decryption
   without build/deploy.
+- `--discover-keys` controls whether the deploy script falls back from the
+  primary decrypt identity to local nixbot and machine identity paths.
+  - default `auto`: enabled only when `--age-key-file` / `AGE_KEY_FILE` was not
+    set explicitly
+  - `--discover-keys` or `--discover-keys=on`: always enable fallback
+  - `--discover-keys=off` / `--no-discover-keys`: force strict single-identity
+    behavior
 - `--bootstrap` forces bootstrap path usage even when primary `user@host` is
   reachable.
 - `--dry` prints deploy commands; it does not perform remote activation.
@@ -516,6 +533,6 @@ Optional overlap (only for unusual partial/out-of-band flows):
 
 1. Keep previous key as `/var/lib/nixbot/.age/identity_legacy`.
 2. Temporarily set
-   `age.identityPaths = [ "/var/lib/nixbot/.age/identity" "/var/lib/nixbot/.age/identity_legacy" ]`.
+   `age.identityPaths = [ "/var/lib/nixbot/.ssh/id_ed25519" "/var/lib/nixbot/.age/identity" "/var/lib/nixbot/.age/identity_legacy" ]`.
 3. Encrypt host secrets to both old and new machine recipients.
 4. After successful migration, remove legacy recipient and legacy file/path.

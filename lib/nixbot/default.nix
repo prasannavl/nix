@@ -46,8 +46,12 @@ in {
 
   nix.settings.trusted-users = lib.mkAfter ["nixbot"];
 
-  # Machine-scoped agenix identity used for activation-time decrypts.
-  age.identityPaths = ["/var/lib/nixbot/.age/identity"];
+  # Try the shared nixbot SSH key first, then the machine-scoped agenix
+  # identity used for activation-time decrypts.
+  age.identityPaths = [
+    "/var/lib/nixbot/.ssh/id_ed25519"
+    "/var/lib/nixbot/.age/identity"
+  ];
 
   system.activationScripts.nixbotHomeDir = ''
     install -d -m 0755 -o nixbot -g nixbot /var/lib/nixbot
