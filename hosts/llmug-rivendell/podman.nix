@@ -27,10 +27,11 @@
       };
       volumes = [
         "/var/lib/llmug/ollama.pod:/root/.ollama"
+        "/dev/dri:/dev/dri"
       ];
       extraOptions = [
         "--group-add=video"
-        "--device=/dev/dri:/dev/dri"
+        "--group-add=render"
         "--device=/dev/kfd:/dev/kfd"
       ];
     };
