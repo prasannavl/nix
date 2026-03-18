@@ -3301,9 +3301,21 @@ run_tf_only_action() {
 
 run_all_action() {
   local selected_json="$1"
-  run_tf_phases dns platform
-  run_host_action "${selected_json}"
-  run_tf_phases apps
+  local action_rc=0
+
+  if ! run_tf_phases dns platform; then
+    action_rc=1
+  fi
+
+  if ! run_host_action "${selected_json}"; then
+    action_rc=1
+  fi
+
+  if ! run_tf_phases apps; then
+    action_rc=1
+  fi
+
+  return "${action_rc}"
 }
 
 resolve_selected_hosts_json() {
@@ -3701,6 +3713,25 @@ tf_summary_display_status() {
   esac
 }
 
+run_summary_has_failures() {
+  local tf_status
+
+  if [ "${#RUN_SUMMARY_BUILD_FAILED_HOSTS[@]}" -gt 0 ] \
+    || [ "${#RUN_SUMMARY_SNAPSHOT_FAILED_HOSTS[@]}" -gt 0 ] \
+    || [ "${#RUN_SUMMARY_DEPLOY_FAILED_HOSTS[@]}" -gt 0 ] \
+    || [ "${#RUN_SUMMARY_ROLLBACK_FAILED_HOSTS[@]}" -gt 0 ]; then
+    return 0
+  fi
+
+  for tf_status in "${RUN_SUMMARY_TF_STATUSES[@]}"; do
+    if [ "${tf_status}" = "fail" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 print_run_summary() {
   local final_rc="$1"
   local node status
@@ -3901,6 +3932,10 @@ run_requested_action() {
     else
       action_rc="$?"
     fi
+  fi
+
+  if run_summary_has_failures; then
+    action_rc=1
   fi
 
   print_run_summary "${action_rc}"
