@@ -47,13 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - name: Build tailscale hostname
+      - name: tailscale/setup
         shell: bash
         run: |
           set -euo pipefail
           echo "TS_HOSTNAME=gh-nixbot-${GITHUB_RUN_NUMBER}ts" >> "$GITHUB_ENV"
 
-      - name: Connect tailscale
+      - name: tailscale/connect
         id: tailscale
         uses: tailscale/github-action@v4
         with:
@@ -63,22 +63,22 @@ jobs:
           hostname: ${{ env.TS_HOSTNAME }}
           version: latest
 
-      - name: Checkout
+      - name: git/checkout
         uses: actions/checkout@v4
 
-      - name: Install nix
+      - name: nix/install
         uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Nix cache
+      - name: nix/cache
         uses: DeterminateSystems/magic-nix-cache-action@main
         with:
           use-flakehub: false
           use-gha-cache: true
 
-      - name: Ensure nixbot deps
+      - name: nixbot/ensure-deps
         shell: bash
         run: |
           set -euo pipefail
@@ -87,7 +87,7 @@ jobs:
           # initial fetch/install noise stays out of the Remote action logs.
           ./scripts/nixbot-deploy.sh --ensure-deps >/dev/null
 
-      - name: Remote action
+      - name: nixbot/run
         shell: bash
         env:
           DEPLOY_BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
