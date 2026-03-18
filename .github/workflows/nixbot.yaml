@@ -22,7 +22,12 @@ on:
         default: all
         type: string
       dry:
-        description: Run TF plan / deploy dry-run when supported by the action
+        description: Dry run (tf if changed, build, deploy sanity checks only)
+        required: true
+        default: false
+        type: boolean
+      force:
+        description: Force deploy and Terraform actions even when change detection says skip
         required: true
         default: false
         type: boolean
@@ -90,6 +95,7 @@ jobs:
           GITHUB_INPUT_ACTION: ${{ github.event.inputs.action || '' }}
           GITHUB_INPUT_HOSTS: ${{ github.event.inputs.hosts || '' }}
           GITHUB_INPUT_DRY: ${{ github.event.inputs.dry || '' }}
+          GITHUB_INPUT_FORCE: ${{ github.event.inputs.force || '' }}
         run: |
           set -euo pipefail
 
@@ -101,6 +107,7 @@ jobs:
           input_action="${GITHUB_INPUT_ACTION:-}"
           input_hosts="${GITHUB_INPUT_HOSTS:-all}"
           input_dry="${GITHUB_INPUT_DRY:-false}"
+          input_force="${GITHUB_INPUT_FORCE:-false}"
           hosts="${input_hosts:-all}"
           action="${input_action:-}"
           extra_args=()
@@ -109,6 +116,9 @@ jobs:
           fi
           if [ "${input_dry}" = "true" ]; then
             extra_args+=(--dry)
+          fi
+          if [ "${input_force}" = "true" ]; then
+            extra_args+=(--force)
           fi
 
           ./scripts/nixbot-deploy.sh \
