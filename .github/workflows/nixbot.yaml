@@ -22,12 +22,12 @@ on:
         default: all
         type: string
       dry:
-        description: Dry run (tf if changed, build, deploy sanity checks only)
+        description: Dry run (tf plan, build and sanity checks only)
         required: true
         default: false
         type: boolean
       force:
-        description: Force deploy and Terraform actions even when change detection says skip
+        description: Force (tf apply, deploy always)
         required: true
         default: false
         type: boolean
