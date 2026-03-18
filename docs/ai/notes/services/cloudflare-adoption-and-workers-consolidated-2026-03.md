@@ -22,7 +22,8 @@ so future changes come from the repo instead of the dashboard.
 
 ## Live export outcome
 
-- The repo has a repeatable export path at `scripts/cloudflare-export.py`.
+- The repo has a repeatable export path at
+  `scripts/archive/cloudflare-export.py`.
 - March 2026 live export captured the current Cloudflare account into
   repo-managed tfvars plus Worker source/assets.
 - Durable exported inventory at that point was:
@@ -76,8 +77,8 @@ Imported platform backlog that mattered:
 
 Completed on 2026-03-16:
 
-- One repo-managed Worker's resources were imported into
-  `tf/cloudflare-apps` remote state.
+- One repo-managed Worker's resources were imported into `tf/cloudflare-apps`
+  remote state.
 
 Imported Worker resources:
 

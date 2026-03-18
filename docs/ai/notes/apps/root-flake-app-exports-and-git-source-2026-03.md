@@ -39,6 +39,5 @@ and stop relying on `nix flake show` for deployment host discovery:
 
 - `nix build path:.#pkgs.x86_64-linux.hello-rust` works.
 - `nix run path:.#pkgs.x86_64-linux.hello-rust` works.
-- `nix run path:.#pkgs.x86_64-linux.cloudflare-workers.<worker>.deploy`
-  works.
+- `nix run path:.#pkgs.x86_64-linux.cloudflare-workers.<worker>.deploy` works.
 - Deploy host discovery no longer depends on `nix flake show` succeeding.

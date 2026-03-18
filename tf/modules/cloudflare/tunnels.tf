@@ -17,10 +17,10 @@ locals {
 resource "cloudflare_zero_trust_tunnel_cloudflared" "tunnel" {
   for_each = var.tunnels
 
-  account_id = var.cloudflare_account_id
-  name       = try(each.value.name, each.key)
+  account_id    = var.cloudflare_account_id
+  name          = try(each.value.name, each.key)
   tunnel_secret = try(each.value.tunnel_secret, try(each.value.secret, null))
-  config_src = try(each.value.config_src, "cloudflare")
+  config_src    = try(each.value.config_src, "cloudflare")
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "config" {

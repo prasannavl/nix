@@ -33,8 +33,8 @@ Run this playbook when one or more of these are true:
    copies of the same story.
 6. Sanitize durable docs so concrete hostnames, domains, bucket names, Worker
    names, and similar operational identifiers are replaced with generic,
-   role-based placeholders unless the literal name is required to explain a
-   repo path or interface.
+   role-based placeholders unless the literal name is required to explain a repo
+   path or interface.
 
 ## Preparation
 
@@ -89,7 +89,8 @@ Before finalizing any surviving note or playbook:
 3. Leave real values in runtime/configuration files alone; this sanitization is
    for documentation, notes, and playbooks.
 4. If a literal repo path must stay because it is the real interface, explain it
-   in generic terms around the path rather than duplicating extra concrete prose.
+   in generic terms around the path rather than duplicating extra concrete
+   prose.
 
 ### 3. Reclassify playbooks vs notes
 

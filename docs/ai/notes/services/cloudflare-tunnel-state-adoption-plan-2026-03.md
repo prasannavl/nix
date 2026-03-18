@@ -18,7 +18,7 @@ forward.
 - There are currently no tunnel tfvars in:
   - `tf/cloudflare-platform/*.auto.tfvars`
   - `data/secrets/tf/cloudflare/**`
-- `scripts/cloudflare-export.py` does not currently export tunnel data.
+- `scripts/archive/cloudflare-export.py` does not currently export tunnel data.
 - Host runtime secret paths are already reserved in `data/secrets/default.nix`
   for:
   - `data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age`
@@ -39,8 +39,8 @@ Choose the ownership boundary for tunnel configuration:
      import `tunnel_configs` unless there is a real Cloudflare-managed config to
      preserve.
 2. **Cloudflare-managed tunnel config**
-   - Terraform imports and owns both the tunnel object and the
-     Cloudflare-side tunnel config.
+   - Terraform imports and owns both the tunnel object and the Cloudflare-side
+     tunnel config.
    - Host config should be reduced to credentials/runtime only and should stop
      being the authoring location for ingress rules.
    - This matches the module default of `config_src = "cloudflare"`.
@@ -162,7 +162,8 @@ accepted drift.
 After state adoption is stable:
 
 1. Replace placeholder tunnel UUIDs in host Nix config with real imported UUIDs.
-2. Stage the real encrypted credential JSONs in `data/secrets/cloudflare/tunnels/`.
+2. Stage the real encrypted credential JSONs in
+   `data/secrets/cloudflare/tunnels/`.
 3. If Cloudflare-managed config was chosen, simplify the host-side tunnel config
    so the host only supplies credentials/runtime behavior.
 4. If host-managed config was chosen, keep ingress/default rules in host Nix and

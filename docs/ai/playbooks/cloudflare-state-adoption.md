@@ -10,7 +10,8 @@ of the dashboard.
 
 - `tf/cloudflare-platform/`
   - Zero Trust Access identity providers, groups, policies, applications
-  - Zero Trust cloudflared tunnels, remote tunnel configs, and private network routes
+  - Zero Trust cloudflared tunnels, remote tunnel configs, and private network
+    routes
   - Workers KV namespaces
   - Email Routing destination addresses
   - R2 buckets and bucket-side features
@@ -49,7 +50,7 @@ of the dashboard.
 - Encrypted inputs:
   - `data/secrets/tf/cloudflare/`
 - Export refresh:
-  - `scripts/cloudflare-export.py`
+  - `scripts/archive/cloudflare-export.py`
   - tunnel export writes `data/secrets/tf/cloudflare/tunnels/account.tfvars.age`
     and intentionally omits unrecoverable runtime tunnel credentials/secrets
 
@@ -58,9 +59,9 @@ of the dashboard.
 1. Refresh the repo-side Cloudflare inputs from live before importing:
    - full export if multiple surfaces changed
    - targeted export if only one surface changed, for example
-     `python scripts/cloudflare-export.py --only access`
+     `python scripts/archive/cloudflare-export.py --only access`
    - tunnel-only refresh is available via
-     `python scripts/cloudflare-export.py --only tunnels`
+     `python scripts/archive/cloudflare-export.py --only tunnels`
 2. Review the generated tfvars and normalize names/keys before import.
 3. Run:
    - `nix shell nixpkgs#opentofu -c tofu -chdir=tf/cloudflare-platform init`

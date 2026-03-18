@@ -21,7 +21,7 @@ from pathlib import Path
 import tomllib
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 IDENTITY = Path(os.environ.get("AGE_KEY_FILE", str(Path.home() / ".ssh" / "id_ed25519")))
 TF_CLOUDFLARE_ROOT = REPO_ROOT / "data/secrets/tf/cloudflare"
 API_TOKEN_CANDIDATES = [

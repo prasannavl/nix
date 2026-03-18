@@ -66,7 +66,7 @@ surfaces, export/input strategy, and source-of-truth rules.
 
 ## Export and normalization rules
 
-- `scripts/cloudflare-export.py` is the durable export entrypoint.
+- `scripts/archive/cloudflare-export.py` is the durable export entrypoint.
 - Exported input maps prefer logical keys over Cloudflare-assigned IDs when
   those IDs are not required as authoring handles.
 - Access exports now use logical keys and rewrite their internal references to
@@ -86,9 +86,9 @@ surfaces, export/input strategy, and source-of-truth rules.
   configuration.
 - Existing dashboard-managed Workers, routes, and custom domains must be
   imported before first apply.
-- The primary repo-managed Worker is intentionally treated as a local
-  repo-owned Worker instead of trying to model Cloudflare Workers Builds as the
-  source of truth.
+- The primary repo-managed Worker is intentionally treated as a local repo-owned
+  Worker instead of trying to model Cloudflare Workers Builds as the source of
+  truth.
 
 ## Operational rules
 

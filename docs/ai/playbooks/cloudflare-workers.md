@@ -50,17 +50,17 @@ For an existing repo-local Worker, there is also a Nix-backed path:
 
 1. In `pkgs/cloudflare-workers/<worker>/`, run `nix build` once the worker
    directory is tracked by Git. Before that, use `nix build path:.`.
-2. In `pkgs/cloudflare-workers/<worker>/`, run
-   `nix run path:.#deploy -- --dry` to sync and immediately hand off to the
-   normal Cloudflare OpenTofu deploy flow.
+2. In `pkgs/cloudflare-workers/<worker>/`, run `nix run path:.#deploy -- --dry`
+   to sync and immediately hand off to the normal Cloudflare OpenTofu deploy
+   flow.
 3. The root flake exposes the build as
    `.#pkgs.x86_64-linux.cloudflare-workers.<worker>` and the deploy installable
    as `.#pkgs.x86_64-linux.cloudflare-workers.<worker>.deploy`.
 
 ## Adopt An Existing Dashboard Worker
 
-1. Run `python scripts/cloudflare-export.py` to refresh the repo-side Worker
-   source and tfvars from the live account.
+1. Run `python scripts/archive/cloudflare-export.py` to refresh the repo-side
+   Worker source and tfvars from the live account.
 2. Review the generated Worker file under `data/secrets/tf/cloudflare/workers/`.
 3. Normalize the Worker into the repo-local source layout under
    `pkgs/cloudflare-workers/<worker>/` so Terraform can deploy it directly from
