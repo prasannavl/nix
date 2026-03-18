@@ -15,26 +15,14 @@ forward.
   - `cloudflare_zero_trust_tunnel_cloudflared`
   - `cloudflare_zero_trust_tunnel_cloudflared_config`
   - `cloudflare_zero_trust_tunnel_cloudflared_route`
-- Public-safe tunnel inputs now live in:
-  - `tf/cloudflare-platform/tunnels.auto.tfvars`
-- Encrypted tunnel exporter output now lives in:
-  - `data/secrets/tf/cloudflare/tunnels/account.tfvars.age`
-- `scripts/cloudflare-export.py` currently:
-  - resolves credentials from `data/secrets/cloudflare/api-token-readall.key.age`
-    first, then falls back to `api-token.key.age`
-  - resolves the Cloudflare account ID from
-    `data/secrets/cloudflare/r2-account-id.key.age`
-  - supports `--only all`, `--only access`, and `--only tunnels`
-  - exports Access, zones, Workers, R2, KV, email routing, and related
-    platform/app inputs into `data/secrets/tf/cloudflare/**`
-  - now fetches and normalizes tunnel inventory, remote tunnel config, and
-    private network routes into tunnel tfvars
-  - still does **not** export unrecoverable host credential JSONs or preserved
-    tunnel secrets
+- There are currently no tunnel tfvars in:
+  - `tf/cloudflare-platform/*.auto.tfvars`
+  - `data/secrets/tf/cloudflare/**`
+- `scripts/cloudflare-export.py` does not currently export tunnel data.
 - Host runtime secret paths are already reserved in `data/secrets/default.nix`
   for:
-  - `data/secrets/cloudflare/tunnels/<bastion-host>-main.credentials.json.age`
-  - `data/secrets/cloudflare/tunnels/<service-host>-main.credentials.json.age`
+  - `data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age`
+  - `data/secrets/cloudflare/tunnels/llmug-rivendell-main.credentials.json.age`
 - The host Cloudflare tunnel Nix files currently use placeholder UUIDs and
   example ingress hostnames, so they should not be treated as live source of
   truth yet.
@@ -61,32 +49,6 @@ Given the current repo shape, the safer first adoption path is to import the
 **tunnel objects first**, then import Cloudflare-managed config only if we
 explicitly decide to centralize ingress in Terraform.
 
-## Export-script implications
-
-The export workflow is now part of the repeatable tunnel adoption path.
-
-What the exporter can help with today:
-
-- confirming the Cloudflare account ID and token wiring used by repo automation
-- refreshing surrounding Access / zone / app state so tunnel adoption does not
-  happen against stale adjacent data
-- preserving the repo's established encrypted tfvars write pattern under
-  `data/secrets/tf/cloudflare/**`
-- generating tunnel inventory, remote-config input shape, and private-route
-  input shape for the modeled tunnel surface
-
-What it cannot help with today:
-
-- discovering or packaging host credential JSONs
-- exporting unrecoverable preserved tunnel secrets
-
-Operational consequence:
-
-- the exporter removes most of the manual inventory work for future tunnel
-  adoption waves
-- host credential staging and any final import manifest still need a small,
-  explicit run-local execution record
-
 ## Recommended target layout
 
 ### Public-safe Terraform inputs
@@ -98,8 +60,7 @@ Create a new tracked file:
 Suggested contents:
 
 - `tunnels`
-  - stable Terraform keys such as `<bastion-host>-main` or
-    `<service-host>-main`
+  - stable Terraform keys such as `pvl-x2-main` or `llmug-rivendell-main`
   - `name`
   - optional `config_src`
 - `tunnel_configs`
@@ -122,15 +83,15 @@ to be duplicated into Terraform unless there is a specific reason.
 
 Populate the already-declared agenix files with the real live credential JSONs:
 
-- `data/secrets/cloudflare/tunnels/<bastion-host>-main.credentials.json.age`
-- `data/secrets/cloudflare/tunnels/<service-host>-main.credentials.json.age`
+- `data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age`
+- `data/secrets/cloudflare/tunnels/llmug-rivendell-main.credentials.json.age`
 
 ## Proposed execution sequence
 
 ### Phase 0: Inventory live Cloudflare tunnel state
 
-Refresh exporter output, then record a small manual manifest for the current
-tunnel adoption wave.
+Collect a manual manifest for the current tunnel adoption wave because there is
+no exporter support yet.
 
 For each live tunnel, capture:
 
@@ -142,12 +103,6 @@ For each live tunnel, capture:
 - any private routes and their route IDs
 - runtime credentials JSON file destination
 - host(s) that should run the connector
-
-Suggested session artifacts under `docs/ai/runs/<session>/`:
-
-- `cloudflare-platform.tfstate.before-tunnels.json`
-- `cloudflare-tunnels-manifest.json`
-- `cloudflare-tunnels-notes.md`
 
 Important: if there is currently **one** live tunnel but the desired steady
 state is **multiple per-host tunnels**, do not import it under a temporary key
@@ -162,8 +117,6 @@ and split it later by accident. Decide the desired tunnel topology first.
    `config_src = "local"`.
 4. If Cloudflare-managed config is the choice, mirror the live ingress config
    into `tunnel_configs` before importing that resource.
-5. Do **not** wait on `scripts/cloudflare-export.py` changes before doing the
-  first tunnel adoption pass.
 
 ## Phase 2: Initialize and snapshot state
 
@@ -192,15 +145,6 @@ Import order:
      `module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_route.route["<key>/<cidr>"]`
    - import ID: `<account_id>/<route_id>`
 
-Recommended first-pass boundary:
-
-1. import tunnel objects first
-2. stop and run `plan`
-3. only import configs if we explicitly want Cloudflare-managed ingress to be
-  the source of truth
-4. only import routes if live private routes actually exist and are intended to
-  remain repo-managed
-
 ## Phase 4: Verify before wider use
 
 After each import wave:
@@ -225,69 +169,23 @@ After state adoption is stable:
    avoid importing Cloudflare-side config unless that live config must be
    preserved temporarily.
 
-## March 17 execution outcome
+## Open questions
 
-Completed on 2026-03-17:
-
-- One modeled tunnel object and its Cloudflare-managed config were imported into
-  `tf/cloudflare-platform` state under the final repo key for the bastion-host
-  tunnel.
-- The tunnel exporter generated
-  `data/secrets/tf/cloudflare/tunnels/account.tfvars.age` for the adopted
-  tunnel surface.
-- No private tunnel routes were present in the live account during this import
-  wave.
-- The targeted tunnel plan returned to no-op after exporter normalization kept
-  provider-style empty `origin_request` blocks where needed.
-- The temporary run manifest and pre-import state snapshot for this wave were
-  folded back into this note and cleaned out of `docs/ai/runs/`.
-
-## Remaining questions
-
-- Should future tunnels keep ingress host-managed in NixOS, or should they move
-  to Cloudflare-managed tunnel config in Terraform by default?
-- Are there any additional live private network routes that still need
-  adoption?
-- Do any future tunnel waves need a preserved tunnel secret in Terraform state,
-  or is the agenix-managed credentials JSON sufficient for runtime?
+- Is the live tunnel topology one shared tunnel or one tunnel per host?
+- Should ingress remain host-managed in NixOS, or move to Cloudflare-managed
+  tunnel config in Terraform?
+- Are there any live private network routes that also need adoption?
+- Do we need to preserve an existing tunnel secret in Terraform state, or is the
+  agenix-managed credentials JSON sufficient for runtime?
 
 ## Recommended next move
 
-Use the current imported tunnel as the reference pattern for any follow-up wave:
+Answer the ownership-boundary question first:
 
-1. refresh tunnel exporter output
-2. stage host credential JSONs in agenix
-3. record a short run-local manifest under `docs/ai/runs/<session>/`
-4. import tunnel objects serially, then configs/routes only where they are
-   truly intended to be repo-managed
-5. fold the durable outcome back into this note and delete the temporary run
-   artifacts
+- **If we want the least disruptive adoption:** import only the tunnel object(s)
+  first and keep config host-managed.
+- **If we want full Cloudflare control-plane ownership:** import tunnel objects,
+  configs, and routes together, then reduce host configs accordingly.
 
-## Practical state-transition plan
-
-### If the goal is to adopt another tunnel now
-
-1. create `tf/cloudflare-platform/tunnels.auto.tfvars` with final logical keys
-  and tunnel names
-2. choose `config_src = "local"` for any tunnel whose ingress still lives in
-  host NixOS
-3. record the live tunnel UUIDs and any route IDs in a session manifest
-4. snapshot `tf/cloudflare-platform` remote state
-5. import tunnel objects serially
-6. run:
-  - `tofu -chdir=tf/cloudflare-platform state list`
-  - `tofu -chdir=tf/cloudflare-platform plan -refresh-only`
-  - `tofu -chdir=tf/cloudflare-platform plan`
-7. only proceed to config/route imports if the object-only plan is stable and
-  ownership boundaries are still clear
-
-### If the goal is to improve repeatability after adoption
-
-Do as a separate follow-up task:
-
-1. extend `scripts/cloudflare-export.py` with a tunnel surface
-2. add tunnel-specific output paths under `data/secrets/tf/cloudflare/tunnels/`
-3. update `docs/ai/playbooks/cloudflare-state-adoption.md` so tunnels are no
-  longer treated as out of scope
-4. replace placeholder host tunnel UUIDs with the imported real UUIDs once the
-  platform state is settled
+Once that choice is made, the actual import pass is straightforward and can be
+executed with a short session manifest under `docs/ai/runs/<session>/`.

@@ -71,3 +71,8 @@ Runtime:
 
 Inputs live in this directory's `*.auto.tfvars` files plus encrypted inputs
 under `data/secrets/tf/cloudflare/`.
+
+When tunnel details should remain private, keep
+`tf/cloudflare-platform/tunnels.auto.tfvars` empty and supply `tunnels`,
+`tunnel_configs`, and `tunnel_routes` from the encrypted tunnel tfvars under
+`data/secrets/tf/cloudflare/tunnels/`.
