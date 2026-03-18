@@ -43,6 +43,13 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   `hosts.<name>.ageIdentityKey = "data/secrets/machine/<host>.key.age"`.
 - Deploy injects that identity to `/var/lib/nixbot/.age/identity` before
   activation.
+- Because `scripts/nixbot-deploy.sh` may also use that path as a local fallback
+  decrypt identity (for example during bastion-side Terraform runtime secret
+  loading), the runtime path must be readable by the `nixbot` user, not just by
+  root.
+- Keep `/var/lib/nixbot/.age` traversable by `nixbot` and the identity file
+  group-readable by `nixbot` while preserving root ownership. The current model
+  is directory `0710 root:nixbot` and file `0440 root:nixbot`.
 - Bastion deploy keys remain normal `age.secrets.*` material under
   `/var/lib/nixbot/.ssh`.
 - If bootstrap replaces `/var/lib/nixbot/.ssh/id_ed25519`, the old key is kept

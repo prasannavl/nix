@@ -25,6 +25,10 @@ Documents the repo's current secret topology from four angles:
 - Host activation decrypt does not use the deploy SSH key.
 - Each host has a machine-scoped age identity injected to
   `/var/lib/nixbot/.age/identity` before activation.
+- That runtime identity path is not only for root-driven agenix activation: the
+  `nixbot` deploy user may also need to read it for bastion-local secret
+  decryption fallbacks. Keep the directory traversable and the file readable by
+  group `nixbot` while leaving ownership rooted.
 - Bastion is the configured bastion host.
 - `nixbot` is the shared deploy user on every managed node.
 - Bastion has two separate SSH trust domains:
@@ -129,6 +133,9 @@ Documents the repo's current secret topology from four angles:
   - `scripts/nixbot-deploy.sh` `inject_host_age_identity_key()` copies the
     host-specific age identity to `/var/lib/nixbot/.age/identity` before
     activation
+  - the installed runtime permissions must allow `nixbot` to read that path as
+    well as root; otherwise bastion-side fallback decrypts can report the
+    identity as effectively missing even when the file exists
 
 ## Important operator rule
 
