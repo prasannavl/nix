@@ -47,13 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - name: Build Tailscale hostname
+      - name: Build tailscale hostname
         shell: bash
         run: |
           set -euo pipefail
           echo "TS_HOSTNAME=gh-nixbot-${GITHUB_RUN_NUMBER}ts" >> "$GITHUB_ENV"
 
-      - name: Connect to Tailscale
+      - name: Connect tailscale
         id: tailscale
         uses: tailscale/github-action@v4
         with:
@@ -66,19 +66,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
+      - name: Install nix
         uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Cache Nix runtime
+      - name: Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
         with:
           use-flakehub: false
           use-gha-cache: true
 
-      - name: Warm nixbot runtime shell
+      - name: Ensure nixbot deps
         shell: bash
         run: |
           set -euo pipefail
