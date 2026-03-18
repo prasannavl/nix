@@ -1,0 +1,12 @@
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    user: 0:0
+    ports:
+      - "${OPEN_WEBUI_PORT}:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://127.0.0.1:${OLLAMA_API_PORT}
+    volumes:
+      - ./open-webui_data:/app/backend/data
+    restart: unless-stopped

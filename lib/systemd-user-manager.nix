@@ -159,21 +159,27 @@
     stopScript = pkgs.writeShellScript "systemd-user-manager-${bridgeName}-stop" ''
       set -eu
       ${mkMachineUserctlRetryLib escapedMachine}
-      was_active=0
-      if userctl --quiet is-active ${escapedUnit}; then
-        was_active=1
+      restart_worthy=0
+      if active_state="$(userctl show --property=ActiveState --value ${escapedUnit})"; then
+        case "$active_state" in
+          inactive)
+            restart_worthy=0
+            ;;
+          active|reloading|activating|deactivating|failed)
+            restart_worthy=1
+            ;;
+          *)
+            # Unknown states are treated conservatively to preserve restart intent.
+            restart_worthy=1
+            ;;
+        esac
       else
-        rc=$?
-        if [ "$rc" -eq 3 ]; then
-          was_active=0
-        else
-          # Query failures are treated conservatively to preserve restart intent.
-          was_active=1
-        fi
+        # Query failures are treated conservatively to preserve restart intent.
+        restart_worthy=1
       fi
       ${pkgs.coreutils}/bin/install -d -m 0755 /run/nixos/systemd-user-manager
       ${pkgs.coreutils}/bin/touch ${escapedStopSeenFile}
-      if [ "$was_active" -eq 1 ]; then
+      if [ "$restart_worthy" -eq 1 ]; then
         ${pkgs.coreutils}/bin/touch ${escapedStateFile}
       else
         ${pkgs.coreutils}/bin/rm -f ${escapedStateFile}

@@ -40,8 +40,8 @@ injection, unit lifecycle, and related platform fixes.
   `nixos-rebuild switch` and `test`.
 - Bridge state lives under `/run/nixos/systemd-user-manager/` and is gated on
   user-manager availability.
-- Changed active units restart, changed inactive units stay inactive, and newly
-  bridged units start once on first activation.
+- Changed active and failed units restart, changed inactive units stay inactive,
+  and newly bridged units start once on first activation.
 - Emit one reload unit per user manager so `systemctl --user daemon-reload` only
   runs once per user.
 
@@ -50,6 +50,8 @@ injection, unit lifecycle, and related platform fixes.
 - Inline multiline `bash -c` payloads in generated user units were replaced with
   store scripts to avoid `Unbalanced quoting` parse failures.
 - Optional `WorkingDirectory = "-<path>"` avoids first-start `CHDIR` failures.
+- Bridge stop-state detection now keys off `ActiveState`, so failed user units
+  are retried on rebuild while intentionally inactive units remain inactive.
 - Stack-level tmpfiles provisioning creates roots user services cannot create
   themselves under `/var/lib`.
 

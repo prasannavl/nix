@@ -4,7 +4,7 @@
     stackDir = "/var/lib/pvl/compose";
     servicePrefix = "pvl-";
 
-    instances = {
+    instances = rec {
       beszel = {podmanSocket, ...}: rec {
         exposedPorts.http = {
           port = 8090;
@@ -139,16 +139,30 @@
       };
 
       ollama = rec {
-        exposedPorts = {
-          api.port = 11434;
-          web.port = 4000;
+        exposedPorts.main = {
+          port = 11434;
+          openFirewall = true;
         };
 
         source = ./compose/ollama/docker-compose.yml;
 
         files.".env" = ''
-          OLLAMA_API_PORT=${toString exposedPorts.api.port}
-          OPEN_WEBUI_PORT=${toString exposedPorts.web.port}
+          OLLAMA_API_PORT=${toString exposedPorts.main.port}
+        '';
+      };
+
+      openwebui = rec {
+        exposedPorts.http = {
+          port = 4000;
+          openFirewall = true;
+        };
+
+        source = ./compose/openwebui/docker-compose.yml;
+        dependsOn = ["ollama"];
+
+        files.".env" = ''
+          OLLAMA_API_PORT=${toString ollama.exposedPorts.main.port}
+          OPEN_WEBUI_PORT=${toString exposedPorts.http.port}
         '';
       };
 
