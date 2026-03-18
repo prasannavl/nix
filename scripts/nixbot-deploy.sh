@@ -815,14 +815,22 @@ should_run_tf_project_action() {
 
 resolve_tf_change_base_ref() {
   local target_ref="${1:-HEAD}"
+  local target_commit=""
+  local base_commit=""
 
-  if [ -n "${TF_CHANGE_BASE_REF}" ] && git rev-parse --verify "${TF_CHANGE_BASE_REF}" >/dev/null 2>&1; then
-    printf '%s\n' "${TF_CHANGE_BASE_REF}"
-    return 0
-  fi
   if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
     return 1
   fi
+  target_commit="$(git rev-parse --verify "${target_ref}" 2>/dev/null || true)"
+
+  if [ -n "${TF_CHANGE_BASE_REF}" ] && git rev-parse --verify "${TF_CHANGE_BASE_REF}" >/dev/null 2>&1; then
+    base_commit="$(git rev-parse --verify "${TF_CHANGE_BASE_REF}" 2>/dev/null || true)"
+    if [ -n "${base_commit}" ] && [ "${base_commit}" != "${target_commit}" ]; then
+      printf '%s\n' "${TF_CHANGE_BASE_REF}"
+      return 0
+    fi
+  fi
+
   if git rev-parse --verify "${target_ref}^1" >/dev/null 2>&1; then
     printf '%s^1\n' "${target_ref}"
     return 0

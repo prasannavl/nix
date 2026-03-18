@@ -128,7 +128,6 @@
       codex
       gemini-cli
       claude-code
-      github-copilot-cli
     ];
 
     misc = with pkgs; [
