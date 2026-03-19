@@ -3015,8 +3015,8 @@ prepare_tf_apps_project_runtime() {
     return 0
   fi
 
-  echo "Preparing Terraform apps package runtime: ${project_name}" >&2
-  nix run "path:${project_pkg_dir}#stage"
+  echo "Preparing Terraform apps package build: ${project_name}" >&2
+  nix build "path:${project_pkg_dir}#build" --no-link
 }
 collect_tf_var_files_for_project() {
   local project_name="$1"

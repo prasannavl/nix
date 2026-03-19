@@ -2,14 +2,14 @@
 
 ## Goal
 
-Create, update, build, stage, and deploy repo-managed Cloudflare apps through a
+Create, update, build, and deploy repo-managed Cloudflare apps through a
 single package + OpenTofu workflow.
 
 ## Source Of Truth
 
 - Aggregate app package: `pkgs/cloudflare-apps/flake.nix`
 - Per-app source: `pkgs/cloudflare-apps/<app>/`
-- Optional per-app build/stage helper: `pkgs/cloudflare-apps/<app>/flake.nix`
+- Optional per-app build helper: `pkgs/cloudflare-apps/<app>/flake.nix`
 - Terraform inputs:
   `data/secrets/tf/cloudflare/workers/<group>.tfvars.age` or
   `tf/cloudflare-apps/workers.auto.tfvars`
@@ -19,11 +19,11 @@ single package + OpenTofu workflow.
 
 1. `tf/cloudflare-apps` is the infrastructure phase.
 2. `pkgs/cloudflare-apps/flake.nix` is the aggregate package for that phase.
-3. If an app needs generated local assets, its child flake exposes `build` and
-   `stage`.
-4. `scripts/nixbot-deploy.sh --action tf-apps` runs the aggregate `stage` step
-   before OpenTofu.
-5. The aggregate `stage` step calls each child app's `#stage` helper.
+3. If an app needs generated local assets, its child flake exposes `build`.
+4. `scripts/nixbot-deploy.sh --action tf-apps` warms the aggregate `#build`
+   derivation before OpenTofu.
+5. Terraform resolves app directories to their real `#build` outputs during
+   plan/apply.
 6. Child apps may expose app-local helpers such as `wrangler-deploy`, but the
    Terraform deploy path stays aggregate at the project level.
 
@@ -32,9 +32,8 @@ single package + OpenTofu workflow.
 1. Create the source tree under `pkgs/cloudflare-apps/<app>/`.
 2. If the app is source-only, stop there and reference those files directly from
    Terraform.
-3. If the app needs generated local output such as a `result` symlink, add
-   `pkgs/cloudflare-apps/<app>/flake.nix` with at least `packages.build` and
-   `packages.stage`.
+3. If the app needs generated local output, add
+   `pkgs/cloudflare-apps/<app>/flake.nix` with at least `packages.build`.
 4. Add public-safe definitions in `tf/cloudflare-apps/workers.auto.tfvars` or
    sensitive ones in `data/secrets/tf/cloudflare/workers/`.
 5. Set `compatibility_date` explicitly.
@@ -45,8 +44,8 @@ single package + OpenTofu workflow.
 
 Aggregate Terraform flow:
 
-1. Run `nix run .#pkgs.x86_64-linux.cloudflare-apps.stage` if you want to stage
-   assets explicitly.
+1. Run `nix build .#pkgs.x86_64-linux.cloudflare-apps --no-link` if you want to
+   warm the app builds explicitly.
 2. Run `./scripts/nixbot-deploy.sh --action tf-apps --dry`.
 3. Review the Worker service, version, deployment, route, and custom-domain
    changes.
@@ -59,7 +58,6 @@ Per-app direct Wrangler flow:
 There is also a single aggregate entrypoint:
 
 - `nix build .#pkgs.x86_64-linux.cloudflare-apps`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.stage`
 - `nix run .#pkgs.x86_64-linux.cloudflare-apps.deploy -- --dry`
 
 ## Adopt An Existing Dashboard Worker
@@ -78,5 +76,5 @@ There is also a single aggregate entrypoint:
   cannot be read back from Cloudflare.
 - Assets-only Workers are valid even when they have no modules or
   `main_module`.
-- Keep the per-project build/stage logic in `pkgs/<project>/flake.nix`, not in
+- Keep the per-project build logic in `pkgs/<project>/flake.nix`, not in
   one-off branches inside the deploy script.

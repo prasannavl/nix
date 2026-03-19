@@ -24,10 +24,8 @@ expose them as derivation aliases under `packages` too, for example
 - `nix build .#pkgs.x86_64-linux.hello-rust`
 - `nix run .#pkgs.x86_64-linux.hello-rust`
 - `nix build .#pkgs.x86_64-linux.cloudflare-apps`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.stage`
 - `nix run .#pkgs.x86_64-linux.cloudflare-apps.deploy -- --dry`
 - `nix build .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.stage`
 - `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.wrangler-deploy`
 
 Inside a child directory, `path:.` still uses the working tree directly while

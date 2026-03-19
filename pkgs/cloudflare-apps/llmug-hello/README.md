@@ -8,28 +8,25 @@ Layout:
 - source files at repo root: `index.html`, `favicon.ico`, `css/`, `js/`,
   `icons/`
 - Cloudflare config: `wrangler.jsonc`
-- local staged build output: `result -> /nix/store/...`
 - flake entrypoint: `pkgs/cloudflare-apps/llmug-hello/flake.nix`
 
 ## Flake Commands
 
 - `nix build path:.#build`: build the static output in the Nix store
-- `nix run path:.#stage`: stage `result` via `nix build --out-link`
-- `nix run path:.#wrangler-deploy`: stage `result` and deploy directly with
-  Wrangler
+- `nix run path:.#wrangler-deploy`: build the store output and deploy directly
+  with Wrangler
 - `nix run path:.#lint`: run `biome check .`
 - `nix run path:.#fix`: run `biome check --write .`
 
 ## Root Flake Commands
 
 - `nix build .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.stage`
 - `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.wrangler-deploy`
 
 ## Deploy Modes
 
-- aggregate Terraform deploy: stage all apps through
-  `pkgs/cloudflare-apps#stage`, then run the repo's Terraform reconciliation via
+- aggregate Terraform deploy: build apps via
+  `pkgs/cloudflare-apps#build`, then run the repo's Terraform reconciliation via
   `scripts/nixbot-deploy.sh --action tf-apps`
 - app `wrangler-deploy`: a direct Wrangler deploy path for this app only;
   useful for ad-hoc iteration when you explicitly want to bypass the Terraform

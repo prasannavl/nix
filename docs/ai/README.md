@@ -33,6 +33,11 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/cloudflare-apps-worker-build-and-age-fallback-2026-03.md`:
   Cloudflare apps pre-Terraform worker asset build/stage behavior and age
   identity ordering for bastion-side runtime secrets.
+- `docs/ai/notes/nixbot/cloudflare-apps-stage-cleanup-2026-03.md`: Removal of
+  the old Cloudflare apps `stage` layer in favor of direct `#build` usage.
+- `docs/ai/notes/nixbot/cloudflare-apps-store-path-resolution-2026-03.md`:
+  Runtime resolution of Cloudflare app asset directories to real Nix store
+  outputs for Terraform.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Canonical `nixbot` rotation model, lessons, and operator guardrails.
 

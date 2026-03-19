@@ -29,6 +29,35 @@ locals {
   worker_custom_domains = {
     for domain in local.worker_custom_domains_flat : domain.tf_key => domain
   }
+
+  worker_asset_directories = {
+    for worker_name, worker in var.workers : worker_name => try(
+      data.external.worker_assets_directory[worker_name].result.directory,
+      abspath(
+        startswith(worker.assets.directory, "/")
+        ? worker.assets.directory
+        : "${path.root}/${worker.assets.directory}"
+      )
+    )
+    if try(worker.assets.directory, null) != null
+  }
+}
+
+data "external" "worker_assets_directory" {
+  for_each = {
+    for worker_name, worker in var.workers : worker_name => abspath(
+      startswith(worker.assets.directory, "/")
+      ? worker.assets.directory
+      : "${path.root}/${worker.assets.directory}"
+    )
+    if try(worker.assets.directory, null) != null
+  }
+
+  program = ["${path.module}/scripts/worker-dir-nix-resolver.sh"]
+
+  query = {
+    directory = each.value
+  }
 }
 
 resource "cloudflare_worker" "worker" {
@@ -69,15 +98,7 @@ resource "cloudflare_worker_version" "version" {
     try(each.value.assets, null) == null
     ? null
     : merge(each.value.assets, {
-      directory = (
-        try(each.value.assets.directory, null) == null
-        ? null
-        : abspath(
-          startswith(each.value.assets.directory, "/")
-          ? each.value.assets.directory
-          : "${path.root}/${each.value.assets.directory}"
-        )
-      )
+      directory = try(local.worker_asset_directories[each.key], null)
     })
   )
 

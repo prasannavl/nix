@@ -13,7 +13,6 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      stageName = "llmug-hello-stage";
       build = pkgs.runCommand "llmug-hello-dist" {} ''
         src="${./.}"
 
@@ -21,30 +20,18 @@
         cp "$src/index.html" "$src/favicon.ico" "$out/"
         cp -r "$src/css" "$src/js" "$src/icons" "$out/"
       '';
-      stage = pkgs.writeShellApplication {
-        name = stageName;
-        runtimeInputs = with pkgs; [git nix];
-        text = ''
-          set -euo pipefail
-
-          repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)"
-          app_dir="$repo_root/pkgs/cloudflare-apps/llmug-hello"
-
-          nix build "path:$app_dir#build" --out-link "$app_dir/result"
-        '';
-      };
       deployWrangler = pkgs.writeShellApplication {
         name = "llmug-hello-wrangler-deploy";
-        runtimeInputs = with pkgs; [git wrangler];
+        runtimeInputs = with pkgs; [git nix wrangler];
         text = ''
           set -euo pipefail
 
           repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)"
           app_dir="$repo_root/pkgs/cloudflare-apps/llmug-hello"
+          assets_dir="$(nix build --no-link --print-out-paths "path:$app_dir#build" | tail -n1)"
 
-          "${stage}/bin/${stageName}"
           cd "$app_dir"
-          exec wrangler deploy --assets result "$@"
+          exec wrangler deploy --assets "$assets_dir" "$@"
         '';
       };
       lint = pkgs.writeShellApplication {
@@ -73,20 +60,11 @@
       packages = {
         default = build;
         build = build;
-        stage = stage;
         wrangler-deploy = deployWrangler;
         lint = lint;
         fix = fix;
       };
       apps = {
-        default = {
-          type = "app";
-          program = "${stage}/bin/${stageName}";
-        };
-        stage = {
-          type = "app";
-          program = "${stage}/bin/${stageName}";
-        };
         wrangler-deploy = {
           type = "app";
           program = "${deployWrangler}/bin/llmug-hello-wrangler-deploy";

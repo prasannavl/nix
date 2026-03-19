@@ -45,32 +45,13 @@
           name = "cloudflare-apps-build";
           paths = buildPaths;
         };
-      childNamesArgs = lib.concatStringsSep " " (map lib.escapeShellArg childNames);
-      stage = pkgs.writeShellApplication {
-        name = "cloudflare-apps-stage";
-        runtimeInputs = with pkgs; [git nix];
-        text = ''
-          set -euo pipefail
-
-          repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)"
-          child_names=(${childNamesArgs})
-
-          for child_name in "''${child_names[@]}"; do
-            child_dir="$repo_root/pkgs/cloudflare-apps/$child_name"
-            [ -f "$child_dir/flake.nix" ] || continue
-            echo "Staging Cloudflare app: $child_name" >&2
-            nix run "path:$child_dir#stage"
-          done
-        '';
-      };
       deploy = pkgs.writeShellApplication {
         name = "cloudflare-apps-deploy";
-        runtimeInputs = with pkgs; [git nix];
+        runtimeInputs = with pkgs; [git];
         text = ''
           set -euo pipefail
 
           repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)"
-          "${stage}/bin/cloudflare-apps-stage"
           exec "$repo_root/scripts/nixbot-deploy.sh" --action tf-apps "$@"
         '';
       };
@@ -78,21 +59,12 @@
       packages = {
         default = aggregateBuild;
         build = aggregateBuild;
-        stage = stage;
         deploy = deploy;
       };
       apps = {
-        default = {
-          type = "app";
-          program = "${stage}/bin/cloudflare-apps-stage";
-        };
         deploy = {
           type = "app";
           program = "${deploy}/bin/cloudflare-apps-deploy";
-        };
-        stage = {
-          type = "app";
-          program = "${stage}/bin/cloudflare-apps-stage";
         };
       };
     });

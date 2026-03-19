@@ -19,7 +19,7 @@ Runnable projects follow the naming convention `tf/<provider>-<phase>/`.
 
 Apps phases may also have a matching package namespace at `pkgs/<project>/`.
 When `pkgs/<project>/flake.nix` exists, `scripts/nixbot-deploy.sh` prepares that
-project by running `nix run path:pkgs/<project>#stage` before OpenTofu. This
+project by running `nix build path:pkgs/<project>#build --no-link` before OpenTofu. This
 keeps build/stage logic grouped with the app sources instead of hardcoding
 one-off behavior in the deploy script.
 

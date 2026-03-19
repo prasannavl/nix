@@ -5,6 +5,10 @@
 Durable notes for the March 2026 refactor of the `nixbot` Terraform apps phase
 and its bastion-side age decrypt behavior.
 
+Historical note: the `stage` model described below was later replaced by the
+build-only flow documented in
+`docs/ai/notes/nixbot/cloudflare-apps-stage-cleanup-2026-03.md`.
+
 ## Context
 
 - `tf/*-apps` phases can depend on repo-local generated assets that are not

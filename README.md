@@ -9,7 +9,7 @@ modules and composed via `flake.nix`.
 - `pkgs/`: repo-local runnable source trees; each package owns its own flake and
   is aggregated into a custom top-level flake attr such as
   `.#pkgs.<system>.hello-rust`,
-  `.#pkgs.<system>.cloudflare-apps.stage`,
+  `.#pkgs.<system>.cloudflare-apps`,
   `.#pkgs.<system>.cloudflare-apps.deploy`, or
   `.#pkgs.<system>.cloudflare-apps.llmug-hello.wrangler-deploy`.
 - `pkgs/ext/`: standalone derivation definitions consumed by overlays and helper
