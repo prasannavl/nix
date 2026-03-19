@@ -1,6 +1,6 @@
 services:
   ollama:
-    image: ollama/ollama:rocm
+    image: ollama/ollama:latest
     container_name: ollama
     user: 0:0
     ports:
