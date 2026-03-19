@@ -23,15 +23,13 @@ Use this index as the canonical map for `docs/ai/**`.
   Tunnel host wiring.
 - `docs/ai/notes/hosts/desktop-investigations-consolidated-2026-03.md`:
   Consolidated desktop investigations and durable findings.
-- `docs/ai/notes/hosts/incus-guest-ollama-amd-gpu-2026-03.md`: AMD GPU
-  passthrough model for an Incus Ollama guest.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
-  reusable Incus guest template and secret model.
+  reusable Incus guest template, bootstrap flow, and secret model.
 
 ### Nixbot
 
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Canonical
-  `nixbot` deploy architecture and orchestration behavior.
+  `nixbot` deploy architecture, runtime contract, and orchestration behavior.
 - `docs/ai/notes/nixbot/cloudflare-apps-worker-build-and-age-fallback-2026-03.md`:
   Cloudflare apps pre-Terraform worker asset build/stage behavior and age
   identity ordering for bastion-side runtime secrets.
@@ -47,13 +45,16 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Services
 
+- `docs/ai/notes/services/bastion-compose-config-centralization-2026-03.md`:
+  Bastion compose port and generated-config ownership boundaries.
 - `docs/ai/notes/services/bastion-service-migration-consolidated-2026-03.md`:
   Bastion-host service adoption and service-secret migration.
 - `docs/ai/notes/services/cloudflare-adoption-and-workers-consolidated-2026-03.md`:
   Canonical Cloudflare adoption status, imported resource summary, and Workers
   convergence decision.
 - `docs/ai/notes/services/cloudflare-opentofu-consolidated-2026-03.md`:
-  Canonical Cloudflare OpenTofu layout, input model, and source-of-truth rules.
+  Canonical Cloudflare OpenTofu layout, input model, import rules, and
+  source-of-truth boundaries.
 - `docs/ai/notes/services/cloudflare-tunnel-state-adoption-plan-2026-03.md`:
   Tunnel state-adoption plan, ownership-boundary decision, and execution steps.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Documentation
@@ -62,8 +63,6 @@ Use this index as the canonical map for `docs/ai/**`.
   OpenSSH enablement centralization.
 - `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
   Canonical `services.podmanCompose` and `systemd-user-manager` platform model.
-- `docs/ai/notes/services/public-dns-test-a-record-2026-03.md`: Test public DNS
-  record addition in the Cloudflare DNS stack.
 
 ## Playbooks
 

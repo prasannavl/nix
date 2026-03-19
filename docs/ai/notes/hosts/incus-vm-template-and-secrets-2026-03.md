@@ -11,6 +11,9 @@ and the steps for adding another guest by copying an existing guest pattern.
 - Guests start from the reusable `lib/images/incus-bootstrap.nix` image.
 - Guest-specific real configuration still lives under `hosts/<name>/`.
 - `nixbot` deploy then switches the guest to that real configuration.
+- Requested guest deploys should expand to include their declared parent-host
+  dependency first, so selecting a guest also brings in the host that creates
+  and starts it.
 
 ## Secret model
 
@@ -20,6 +23,15 @@ and the steps for adding another guest by copying an existing guest pattern.
 - Optional shared guest helper secret:
   - `data/secrets/tailscale/<host>.key.age`
   - consumed by `lib/incus-machine.nix` when present
+- Tailscale auth wiring lives in the shared `lib/incus-machine.nix` module, not
+  in ad hoc per-guest host code.
+- The stored secret is an OAuth client secret used to mint fresh tagged login
+  keys at `tailscale up` time, not a pre-minted reusable auth key.
+- The shared module should keep the Tailscale block self-contained: discover
+  the encrypted secret path locally, gate it with `builtins.pathExists`, and
+  only wire `services.tailscale` when the encrypted file exists.
+- Persistent server semantics should keep `ephemeral = false`,
+  `preauthorized = true`, and explicit advertised tags such as `tag:vm`.
 - Persistent SSH host keys live at `/var/lib/machine/*`, but those are generated
   runtime state, not repo-managed agenix secrets.
 
@@ -36,6 +48,21 @@ and the steps for adding another guest by copying an existing guest pattern.
 8. Deploy the parent host so the guest is created and started.
 9. Deploy the guest itself so it transitions from bootstrap image to real host
    config.
+
+## Workload-specific overrides
+
+- Guest workloads must match the parent host's actual hardware model rather than
+  inheriting unrelated defaults from other hosts.
+- For the AMD-backed Ollama guest, the durable model is `/dev/dri` and
+  `/dev/kfd` passthrough plus `video` and `render` group access; NVIDIA-specific
+  runtime assumptions do not belong in that guest.
+
+## Superseded notes
+
+- `docs/ai/notes/hosts/incus-bootstrap-deploy-flow-2026-03.md`
+- `docs/ai/notes/hosts/incus-guest-tailscale-login-2026-03.md`
+- `docs/ai/notes/hosts/incus-machine-tailscale-block-refactor-2026-03.md`
+- `docs/ai/notes/hosts/incus-guest-ollama-amd-gpu-2026-03.md`
 
 ## Source of truth files
 

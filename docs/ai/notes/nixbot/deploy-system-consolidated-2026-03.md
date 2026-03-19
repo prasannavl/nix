@@ -36,6 +36,10 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - `--bastion-trigger` must forward explicit behavior overrides that affect
   deploy gating, including `--force`, so the bastion-side run preserves the
   caller's changed-only vs force semantics.
+- Deploys that use `ssh -tt` for remote `sudo` must resolve the stdin source at
+  the point of use: use `/dev/tty` only when any attached standard stream is a
+  terminal, otherwise fall back to `/dev/null`. Non-interactive bastion-side
+  runs must not probe `/dev/tty` eagerly.
 
 ## Identity, keys, and host verification
 
@@ -50,6 +54,10 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Keep `/var/lib/nixbot/.age` traversable by `nixbot` and the identity file
   group-readable by `nixbot` while preserving root ownership. The current model
   is directory `0710 root:nixbot` and file `0440 root:nixbot`.
+- `/var/lib/nixbot` itself is part of the shared deploy contract on every host,
+  not just bastion hosts. The home directory must exist as
+  `0755 nixbot:nixbot` before any shell startup, snapshot probe, or deploy
+  probe connects as `nixbot`.
 - Bastion deploy keys remain normal `age.secrets.*` material under
   `/var/lib/nixbot/.ssh`.
 - If bootstrap replaces `/var/lib/nixbot/.ssh/id_ed25519`, the old key is kept
@@ -158,11 +166,26 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 
 - `.github/workflows/nixbot.yaml` uses Tailscale OAuth/OIDC instead of the old
   auth-key flow.
+- `scripts/nixbot-deploy.sh` always re-execs into one pinned `nix shell`
+  runtime. Normal repo-root runs use `--inputs-from <repo-root>`; SSH
+  forced-command ingress skips `--inputs-from` and falls back to
+  `nixpkgs#...` installables so the bastion wrapper does not depend on flake
+  root discovery.
+- The runtime toolchain contract is declared once and reused for shell entry,
+  `--ensure-deps`, and normal runtime verification. The shared toolset is:
+  `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, and `opentofu`.
 - Required workflow traits are:
   - `tailscale/github-action@v4`
   - `permissions.id-token: write`
   - `oauth-client-id`, `audience`, and `tags: tag:ci`
   - generated per-run `TS_HOSTNAME`
+- GitHub-hosted runners must install Nix before invoking
+  `scripts/nixbot-deploy.sh`; otherwise the runtime shell bootstrap fails with
+  `Required command not found: nix`.
+- The workflow should warm the shared runtime closure before the main deploy
+  step by calling `./scripts/nixbot-deploy.sh --ensure-deps >/dev/null`, and it
+  should reuse the GitHub Actions cache backend rather than relying on
+  FlakeHub-specific cache login.
 - Manual dispatch should stay aligned with the script surface:
   `action = all|build|deploy|tf`, plus `dry` and `force`.
 - The separate TF-only workflow was removed; the main `nixbot` workflow
@@ -184,11 +207,15 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - `docs/ai/notes/nixbot/bastion-reexec-checked-out-script-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-flow-consolidation-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-log-formatting-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-noninteractive-tty-fallback-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-order-deps-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-snapshot-fallback-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-snapshot-retry-phase-logging-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-summary-built-status-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-summary-snapshot-status-2026-03.md`
+- `docs/ai/notes/nixbot/github-actions-nix-bootstrap-2026-03.md`
+- `docs/ai/notes/nixbot/github-actions-runtime-warmup-and-cache-2026-03.md`
+- `docs/ai/notes/nixbot/log-stream-ordering-2026-03.md`
 - `docs/ai/notes/nixbot-bastion-key-model.md`
 - `docs/ai/notes/nixbot-bastion-legacy-identity-retention.md`
 - `docs/ai/notes/nixbot-bastion-manual-key-decrypt-activation.md`
@@ -198,5 +225,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - `docs/ai/notes/nixbot-github-actions-bastion-known-hosts-fallback-2026-03-09.md`
 - `docs/ai/notes/nixbot-github-actions-tailscale-oauth-migration.md`
 - `docs/ai/notes/nixbot-machine-age-identity-model.md`
+- `docs/ai/notes/nixbot/nixbot-home-dir-perms-2026-03.md`
 - `docs/ai/notes/nixbot-remote-build-known-hosts-2026-03-09.md`
+- `docs/ai/notes/nixbot/runtime-shell-consolidation-2026-03.md`
+- `docs/ai/notes/nixbot/runtime-toolchain-unification-2026-03.md`
 - `docs/ai/notes/services/nixbot-all-tf-gating-2026-03.md`

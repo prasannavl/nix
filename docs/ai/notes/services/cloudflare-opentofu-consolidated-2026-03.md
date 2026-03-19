@@ -34,10 +34,21 @@ surfaces, export/input strategy, and source-of-truth rules.
 ## Input and secret model
 
 - Public-safe inputs stay in project-local `*.auto.tfvars` files.
+- DNS zone declarations use a plaintext `zones` map for public-safe records and
+  explicit encrypted top-level zone groups for sensitive records, so active,
+  staged, archived, and inactive zone sets can be reclassified without changing
+  runtime loading behavior.
 - Sensitive inputs stay encrypted under
   `data/secrets/tf/cloudflare/**.tfvars.age`.
 - `scripts/nixbot-deploy.sh` auto-discovers encrypted tfvars, decrypts them into
   its temp workspace, and passes them to OpenTofu in sorted path order.
+- The encrypted tfvars loader is generic: all matching
+  `data/secrets/tf/**/*.tfvars.age` files are eligible input, and missing
+  sensitive Cloudflare tfvars should degrade to a public-only run rather than
+  aborting the Terraform phase.
+- Reusable encrypted scalar values belong in
+  `data/secrets/tf/secrets.tfvars.age` under `secrets = {}` so Terraform input
+  files can reference them without duplicating plaintext values.
 - The Cloudflare runtime secret path is repo-managed and covers the API token,
   R2 account information, and state-bucket credentials.
 - Explicit environment variables still override secret-file loading.
@@ -63,6 +74,10 @@ surfaces, export/input strategy, and source-of-truth rules.
   - Worker versions and deployments
   - Workers.dev subdomains
   - routes, cron triggers, and custom domains
+- Tunnel adoption should land in `tf/cloudflare-platform/` with stable
+  Terraform keys chosen before import. The safest initial ownership boundary is
+  tunnel-object adoption first, keeping ingress config host-managed unless there
+  is an explicit decision to move that config into Terraform.
 
 ## Export and normalization rules
 
@@ -98,6 +113,8 @@ surfaces, export/input strategy, and source-of-truth rules.
 - Workers version/deployment resources are expected to differ from old
   wrangler-managed metadata until a one-time repo-managed convergence apply is
   accepted.
+- One-off verification records or other narrow test declarations do not need
+  standalone durable notes unless they establish a reusable modeling rule.
 
 ## Related playbooks
 
@@ -113,6 +130,7 @@ surfaces, export/input strategy, and source-of-truth rules.
 - `docs/ai/notes/services/opentofu-cloudflare-module-relocation-2026-03.md`
 - `docs/ai/notes/services/opentofu-cloudflare-tf-secrets-2026-03.md`
 - `docs/ai/notes/services/opentofu-cloudflare-sensitive-tfvars-2026-03.md`
+- `docs/ai/notes/services/public-dns-test-a-record-2026-03.md`
 - `docs/ai/notes/services/cloudflare-access-platform-export-2026-03.md`
 - `docs/ai/notes/services/cloudflare-logical-tfvar-keys-2026-03.md`
 - `docs/ai/notes/services/cloudflare-ssl-and-https-surface-2026-03.md`

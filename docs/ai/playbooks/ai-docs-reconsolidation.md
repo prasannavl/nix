@@ -50,6 +50,10 @@ Run this playbook when one or more of these are true:
 
 ## Reconsolidation workflow
 
+This workflow is not complete after an index-only pass. A successful run must
+review note content for overlapping topic clusters and either merge, reclassify,
+or explicitly retain those docs as distinct canonical survivors.
+
 ### 1. Find canonical survivors
 
 For each topic cluster:
@@ -63,6 +67,9 @@ For each topic cluster:
    - durable decisions
    - final outcomes
    - lessons worth reusing
+4. Do not stop after checking filenames or index coverage; read the overlapping
+   notes in each cluster and decide whether the extra files still need to exist
+   as separate canonical docs.
 
 ### 2. Merge note content
 
