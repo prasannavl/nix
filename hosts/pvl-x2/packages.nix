@@ -12,6 +12,7 @@
       ripgrep
       ranger
       tree
+      nvtopPackages.full
     ];
 
     gnome = with pkgs; [
