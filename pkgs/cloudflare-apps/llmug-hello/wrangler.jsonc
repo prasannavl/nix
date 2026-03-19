@@ -2,6 +2,6 @@
 	"name": "llmug-hello",
 	"compatibility_date": "2025-11-19",
 	"assets": {
-		"directory": "dist"
+		"directory": "result"
 	}
 }

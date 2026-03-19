@@ -32,6 +32,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Canonical
   `nixbot` deploy architecture and orchestration behavior.
+- `docs/ai/notes/nixbot/cloudflare-apps-worker-build-and-age-fallback-2026-03.md`:
+  Cloudflare apps pre-Terraform worker asset build/stage behavior and age
+  identity ordering for bastion-side runtime secrets.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Canonical `nixbot` rotation model, lessons, and operator guardrails.
 
@@ -71,8 +74,8 @@ Use this index as the canonical map for `docs/ai/**`.
   Routing execution workflow.
 - `docs/ai/playbooks/cloudflare-state-adoption.md`: Non-DNS Cloudflare
   state-adoption procedure for platform and apps phases.
-- `docs/ai/playbooks/cloudflare-workers.md`: Create, deploy, and adopt
-  repo-managed Cloudflare Workers.
+- `docs/ai/playbooks/cloudflare-apps.md`: Create, build, stage, deploy, and adopt
+  repo-managed Cloudflare apps.
 - `docs/ai/playbooks/nixbot-deploy.md`: Reconstruction spec for `nixbot`
   deployment architecture and bootstrap.
 - `docs/ai/playbooks/nixbot-key-rotation-execution.md`: Phased `nixbot`

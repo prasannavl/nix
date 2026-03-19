@@ -235,6 +235,7 @@ init_vars() {
     REEXEC_FROM_REPO=1
   fi
 
+
   DEPLOY_DEFAULT_USER="root"
   DEPLOY_DEFAULT_KEY_PATH=""
   DEPLOY_DEFAULT_KNOWN_HOSTS=""
@@ -571,6 +572,7 @@ emit_age_decrypt_identity_candidates() {
     fi
   } | awk 'NF && !seen[$0]++'
 }
+
 
 normalize_host_action() {
   case "${ACTION}" in
@@ -1041,7 +1043,7 @@ resolve_key_source_path() {
 resolve_runtime_key_file() {
   local key_path="$1"
   local require_age="${2:-0}"
-  local src_path out_file decrypt_identity
+  local src_path out_file decrypt_identity age_stderr_file decrypt_errors_file
   local candidate_count=0
   local readable_candidate_count=0
 
@@ -1060,6 +1062,7 @@ resolve_runtime_key_file() {
     require_cmds age
     ensure_tmp_dir
     out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
+    decrypt_errors_file="$(mktemp "${DEPLOY_TMP_DIR}/age-errors.XXXXXX")"
     while IFS= read -r decrypt_identity; do
       [ -n "${decrypt_identity}" ] || continue
       candidate_count=$((candidate_count + 1))
@@ -1068,14 +1071,20 @@ resolve_runtime_key_file() {
         continue
       fi
       readable_candidate_count=$((readable_candidate_count + 1))
+      age_stderr_file="$(mktemp "${DEPLOY_TMP_DIR}/age-stderr.XXXXXX")"
       echo "Trying decrypt identity: ${decrypt_identity} for ${src_path}" >&2
-      if age --decrypt -i "${decrypt_identity}" -o "${out_file}" "${src_path}"; then
+      if age --decrypt -i "${decrypt_identity}" -o "${out_file}" "${src_path}" 2>"${age_stderr_file}"; then
         chmod 600 "${out_file}"
         echo "Using decrypt identity: ${decrypt_identity} for ${src_path}" >&2
+        rm -f "${age_stderr_file}" "${decrypt_errors_file}"
         printf '%s\n' "${out_file}"
         return
       fi
-      rm -f "${out_file}"
+      {
+        printf 'Failed decrypt identity: %s for %s\n' "${decrypt_identity}" "${src_path}"
+        cat "${age_stderr_file}"
+      } >>"${decrypt_errors_file}"
+      rm -f "${age_stderr_file}" "${out_file}"
       out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
     done < <(emit_age_decrypt_identity_candidates)
     if [ "${candidate_count}" -eq 0 ]; then
@@ -1084,8 +1093,12 @@ resolve_runtime_key_file() {
       echo "No decrypt identity files found for ${src_path}" >&2
     else
       echo "Unable to decrypt ${src_path} with the available identities" >&2
+      if [ -s "${decrypt_errors_file}" ]; then
+        cat "${decrypt_errors_file}" >&2
+      fi
     fi
     [ ! -f "${out_file}" ] || rm -f "${out_file}"
+    [ ! -f "${decrypt_errors_file}" ] || rm -f "${decrypt_errors_file}"
     return 1
   fi
 
@@ -2979,10 +2992,32 @@ resolve_tf_project_context() {
 prepare_tf_project_runtime() {
   local project_name="$1"
 
+  prepare_tf_apps_project_runtime "${project_name}"
   load_tf_runtime_secrets_for_project "${project_name}"
   require_tf_runtime_env_for_project "${project_name}"
 }
 
+tf_project_apps_package_dir() {
+  local project_name="$1"
+  local project_pkg_dir="pkgs/${project_name}"
+
+  [[ "${project_name}" == *-apps ]] || return 1
+  [ -f "${project_pkg_dir}/flake.nix" ] || return 1
+
+  printf '%s\n' "${project_pkg_dir}"
+}
+
+prepare_tf_apps_project_runtime() {
+  local project_name="$1"
+  local project_pkg_dir=""
+
+  if ! project_pkg_dir="$(tf_project_apps_package_dir "${project_name}")"; then
+    return 0
+  fi
+
+  echo "Preparing Terraform apps package runtime: ${project_name}" >&2
+  nix run "path:${project_pkg_dir}#stage"
+}
 collect_tf_var_files_for_project() {
   local project_name="$1"
   local -n tf_var_files_out="$2"

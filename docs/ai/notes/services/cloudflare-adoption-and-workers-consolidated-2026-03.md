@@ -32,10 +32,10 @@ so future changes come from the repo instead of the dashboard.
   - 2 R2 buckets
 - The exporter writes encrypted Terraform inputs under
   `data/secrets/tf/cloudflare/<category>/` and repo-managed Worker trees under
-  `pkgs/cloudflare-workers/`.
+  `pkgs/cloudflare-apps/`.
 - One Worker briefly used a mirrored assets fallback while investigating the
   live deployment, but the actual local source tree was later copied into
-  `pkgs/cloudflare-workers/<worker>/` and became the canonical repo source.
+  `pkgs/cloudflare-apps/<app>/` and became the canonical repo source.
 - Workers Builds API probing stayed blocked by Cloudflare-side token/API
   behavior, so the durable repo decision was to keep that Worker locally
   repo-managed here instead of modeling an external Builds integration.
@@ -125,7 +125,7 @@ Current steady-state decision:
 ## Durable procedure links
 
 - `docs/ai/playbooks/cloudflare-state-adoption.md`
-- `docs/ai/playbooks/cloudflare-workers.md`
+- `docs/ai/playbooks/cloudflare-apps.md`
 
 The run manifests and temporary state snapshots from the March 16 adoption work
 have been folded back into this note and cleaned out of `docs/ai/runs/`.

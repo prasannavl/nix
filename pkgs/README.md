@@ -10,21 +10,25 @@ child flakes and aggregates them into the root flake's custom nested
 To add a new package, create `pkgs/<name>/flake.nix` with `packages.default`. If
 you want extra root-flake entrypoints such as `nix run .#pkgs.<name>.deploy`,
 expose them as derivation aliases under `packages` too, for example
-`packages.deploy = deploy;`. Child-local `apps.*` can still exist when they are
-useful inside the child flake itself.
+`packages.deploy = deploy;`.
 
-Current examples:
+## Current Examples
 
 - `pkgs/hello-rust/`: minimal Rust hello-world application
-- `pkgs/cloudflare-workers/<worker>/`: repo-managed Cloudflare Worker source
-  trees used by `tf/cloudflare-apps`
+- `pkgs/cloudflare-apps/`: aggregate package namespace for the
+  `tf/cloudflare-apps` phase
+- `pkgs/cloudflare-apps/<app>/`: repo-managed Cloudflare app source trees
 
-Root flake examples:
+## Root Flake Examples
 
 - `nix build .#pkgs.x86_64-linux.hello-rust`
 - `nix run .#pkgs.x86_64-linux.hello-rust`
-- `nix build .#pkgs.x86_64-linux.cloudflare-workers.llmug-hello`
-- `nix run .#pkgs.x86_64-linux.cloudflare-workers.llmug-hello.deploy -- --dry`
+- `nix build .#pkgs.x86_64-linux.cloudflare-apps`
+- `nix run .#pkgs.x86_64-linux.cloudflare-apps.stage`
+- `nix run .#pkgs.x86_64-linux.cloudflare-apps.deploy -- --dry`
+- `nix build .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello`
+- `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.stage`
+- `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.wrangler-deploy`
 
 Inside a child directory, `path:.` still uses the working tree directly while
 plain `.` uses the Git snapshot.

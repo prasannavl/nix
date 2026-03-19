@@ -29,7 +29,7 @@ API_TOKEN_CANDIDATES = [
     REPO_ROOT / "data/secrets/cloudflare/api-token.key.age",
 ]
 ACCOUNT_ID_PATH = REPO_ROOT / "data/secrets/cloudflare/r2-account-id.key.age"
-WORKERS_ROOT = REPO_ROOT / "pkgs/cloudflare-workers"
+CLOUDFLARE_APPS_ROOT = REPO_ROOT / "pkgs/cloudflare-apps"
 TMP_DIR = Path(tempfile.mkdtemp(prefix="cf-export."))
 ZONE_GROUPS = ("main", "stage", "archive", "inactive")
 LEGACY_GENERATED_DIR = TF_CLOUDFLARE_ROOT / "generated"
@@ -363,7 +363,7 @@ def fetch_worker_latest_version(script_name: str):
 
 
 def mirror_worker_assets(script_name: str, hostname: str):
-    assets_dir = WORKERS_ROOT / script_name / "assets"
+    assets_dir = CLOUDFLARE_APPS_ROOT / script_name / "assets"
     shutil.rmtree(assets_dir, ignore_errors=True)
     assets_dir.mkdir(parents=True, exist_ok=True)
     log(f"[worker] {script_name}: mirroring assets from https://{hostname}/")
@@ -1392,7 +1392,7 @@ def main():
             "hostname": domain.get("hostname"),
         })
 
-    WORKERS_ROOT.mkdir(parents=True, exist_ok=True)
+    CLOUDFLARE_APPS_ROOT.mkdir(parents=True, exist_ok=True)
     workers_tf = {}
     warnings = []
 
@@ -1403,7 +1403,7 @@ def main():
         if "error" in package:
             warnings.append({"worker": name, "package_error": package["error"]})
             continue
-        worker_dir = WORKERS_ROOT / name
+        worker_dir = CLOUDFLARE_APPS_ROOT / name
         worker_dir.mkdir(parents=True, exist_ok=True)
         parts = package["parts"]
         wrangler = {}
@@ -1425,7 +1425,7 @@ def main():
                 continue
             modules.append({
                 "name": part_name,
-                "content_file": f"../../pkgs/cloudflare-workers/{name}/{part_name}",
+                "content_file": f"../../pkgs/cloudflare-apps/{name}/{part_name}",
                 "content_type": guess_content_type(part_name),
             })
         worker_cfg = {
@@ -1464,7 +1464,7 @@ def main():
                 _, asset_files = mirror_worker_assets(name, primary_hostname)
                 if asset_files:
                     assets_cfg = {
-                        "directory": f"../../pkgs/cloudflare-workers/{name}/assets",
+                        "directory": f"../../pkgs/cloudflare-apps/{name}/assets",
                     }
                     if assets_runtime:
                         assets_config = {}
