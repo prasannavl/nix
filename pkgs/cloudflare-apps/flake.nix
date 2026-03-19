@@ -17,34 +17,45 @@
       childNames = let
         entries = builtins.readDir ./.;
         childDirs = lib.filterAttrs (name: type:
-          type == "directory" && builtins.pathExists (./. + "/${name}/flake.nix")) entries;
+          type == "directory" && builtins.pathExists (./. + "/${name}/flake.nix"))
+        entries;
       in
         builtins.sort builtins.lessThan (lib.attrNames childDirs);
-      childPackages = map (name: let
-        childFlake = import (./. + "/${name}/flake.nix");
-        childOutputs = childFlake.outputs {
-          inherit nixpkgs flake-utils;
-          self = null;
-        };
-      in {
-        inherit name;
-        packages =
-          if childOutputs ? packages && builtins.hasAttr system childOutputs.packages
-          then childOutputs.packages.${system}
-          else {};
-      }) childNames;
-      buildPaths = lib.filter (drv: drv != null) (map (child:
-        if child.packages ? build then child.packages.build else if child.packages ? default then child.packages.default else null
-      ) childPackages);
+      childPackages =
+        map (name: let
+          childFlake = import (./. + "/${name}/flake.nix");
+          childOutputs = childFlake.outputs {
+            inherit nixpkgs flake-utils;
+            self = null;
+          };
+        in {
+          inherit name;
+          packages =
+            if childOutputs ? packages && builtins.hasAttr system childOutputs.packages
+            then childOutputs.packages.${system}
+            else {};
+        })
+        childNames;
+      buildPaths = lib.filter (drv: drv != null) (map (
+          child:
+            if child.packages ? build
+            then child.packages.build
+            else if child.packages ? default
+            then child.packages.default
+            else null
+        )
+        childPackages);
       aggregateBuild =
         if buildPaths == []
-        then pkgs.runCommand "cloudflare-apps-empty" {} ''
-          mkdir -p "$out"
-        ''
-        else pkgs.symlinkJoin {
-          name = "cloudflare-apps-build";
-          paths = buildPaths;
-        };
+        then
+          pkgs.runCommand "cloudflare-apps-empty" {} ''
+            mkdir -p "$out"
+          ''
+        else
+          pkgs.symlinkJoin {
+            name = "cloudflare-apps-build";
+            paths = buildPaths;
+          };
       deploy = pkgs.writeShellApplication {
         name = "cloudflare-apps-deploy";
         runtimeInputs = with pkgs; [git];

@@ -2,16 +2,15 @@
 
 ## Goal
 
-Create, update, build, and deploy repo-managed Cloudflare apps through a
-single package + OpenTofu workflow.
+Create, update, build, and deploy repo-managed Cloudflare apps through a single
+package + OpenTofu workflow.
 
 ## Source Of Truth
 
 - Aggregate app package: `pkgs/cloudflare-apps/flake.nix`
 - Per-app source: `pkgs/cloudflare-apps/<app>/`
 - Optional per-app build helper: `pkgs/cloudflare-apps/<app>/flake.nix`
-- Terraform inputs:
-  `data/secrets/tf/cloudflare/workers/<group>.tfvars.age` or
+- Terraform inputs: `data/secrets/tf/cloudflare/workers/<group>.tfvars.age` or
   `tf/cloudflare-apps/workers.auto.tfvars`
 - Terraform resources: `tf/modules/cloudflare/workers.tf`
 
@@ -74,7 +73,6 @@ There is also a single aggregate entrypoint:
 
 - Worker `secret_text` bindings must be supplied from encrypted tfvars; they
   cannot be read back from Cloudflare.
-- Assets-only Workers are valid even when they have no modules or
-  `main_module`.
-- Keep the per-project build logic in `pkgs/<project>/flake.nix`, not in
-  one-off branches inside the deploy script.
+- Assets-only Workers are valid even when they have no modules or `main_module`.
+- Keep the per-project build logic in `pkgs/<project>/flake.nix`, not in one-off
+  branches inside the deploy script.

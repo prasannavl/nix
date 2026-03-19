@@ -3,8 +3,7 @@
 ## Scope
 
 Durable note for resolving Cloudflare Worker asset directories from repo-local
-child flakes to their real Nix store build outputs at Terraform plan/apply
-time.
+child flakes to their real Nix store build outputs at Terraform plan/apply time.
 
 ## Decision
 

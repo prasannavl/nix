@@ -27,9 +27,9 @@ and the steps for adding another guest by copying an existing guest pattern.
   in ad hoc per-guest host code.
 - The stored secret is an OAuth client secret used to mint fresh tagged login
   keys at `tailscale up` time, not a pre-minted reusable auth key.
-- The shared module should keep the Tailscale block self-contained: discover
-  the encrypted secret path locally, gate it with `builtins.pathExists`, and
-  only wire `services.tailscale` when the encrypted file exists.
+- The shared module should keep the Tailscale block self-contained: discover the
+  encrypted secret path locally, gate it with `builtins.pathExists`, and only
+  wire `services.tailscale` when the encrypted file exists.
 - Persistent server semantics should keep `ephemeral = false`,
   `preauthorized = true`, and explicit advertised tags such as `tag:vm`.
 - Persistent SSH host keys live at `/var/lib/machine/*`, but those are generated

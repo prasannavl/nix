@@ -15,15 +15,15 @@ build-only flow documented in
   checked into Git.
 - The original fix for `tf/cloudflare-apps` staged `llmug-hello/result` as a
   symlink to the store, but that needed to be generalized beyond a one-off path.
-- Bastion-side Terraform runtime secrets under `data/secrets/cloudflare/*.key.age`
-  are encrypted for the machine age identity at `/var/lib/nixbot/.age/identity`,
-  while many Cloudflare `*.tfvars.age` files are also decryptable with the
-  deploy SSH key.
+- Bastion-side Terraform runtime secrets under
+  `data/secrets/cloudflare/*.key.age` are encrypted for the machine age identity
+  at `/var/lib/nixbot/.age/identity`, while many Cloudflare `*.tfvars.age` files
+  are also decryptable with the deploy SSH key.
 
 ## Decision
 
-- `scripts/nixbot-deploy.sh` now treats apps runtime preparation generically:
-  if `pkgs/<project>/flake.nix` exists for a `tf/*-apps` project, it runs
+- `scripts/nixbot-deploy.sh` now treats apps runtime preparation generically: if
+  `pkgs/<project>/flake.nix` exists for a `tf/*-apps` project, it runs
   `nix run path:pkgs/<project>#stage` before OpenTofu.
 - `pkgs/cloudflare-apps/flake.nix` is now the aggregate package entrypoint for
   `tf/cloudflare-apps` and orchestrates child app flakes such as
@@ -33,8 +33,8 @@ build-only flow documented in
   aggregate at the project level.
 - Runtime decrypt identity selection now uses the shared candidate list for all
   `*.age` files.
-- Per-identity decrypt failures are buffered and only printed if every
-  candidate identity fails, which keeps successful fallback decrypts quiet.
+- Per-identity decrypt failures are buffered and only printed if every candidate
+  identity fails, which keeps successful fallback decrypts quiet.
 
 ## Result
 
@@ -43,5 +43,5 @@ build-only flow documented in
 - `pkgs/cloudflare-workers` is retained only as a compatibility symlink; the
   primary namespace is now `pkgs/cloudflare-apps`.
 - Bastion logs should stop showing repeated `age: error: no identity matched`
-  lines for successful decrypt fallbacks, because per-identity `age` stderr is now
-  buffered and only emitted if every candidate identity fails.
+  lines for successful decrypt fallbacks, because per-identity `age` stderr is
+  now buffered and only emitted if every candidate identity fails.

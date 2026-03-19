@@ -9,7 +9,8 @@ outputs.
 ## Decision
 
 - `scripts/nixbot-deploy.sh` now warms `tf/*-apps` projects with
-  `nix build path:pkgs/<project>#build --no-link` instead of `nix run ...#stage`.
+  `nix build path:pkgs/<project>#build --no-link` instead of
+  `nix run ...#stage`.
 - `pkgs/cloudflare-apps/flake.nix` no longer exposes aggregate `stage` helpers.
 - `pkgs/cloudflare-apps/llmug-hello/flake.nix` no longer creates a repo-local
   `result` symlink for Terraform or Wrangler deploy.

@@ -55,9 +55,9 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   group-readable by `nixbot` while preserving root ownership. The current model
   is directory `0710 root:nixbot` and file `0440 root:nixbot`.
 - `/var/lib/nixbot` itself is part of the shared deploy contract on every host,
-  not just bastion hosts. The home directory must exist as
-  `0755 nixbot:nixbot` before any shell startup, snapshot probe, or deploy
-  probe connects as `nixbot`.
+  not just bastion hosts. The home directory must exist as `0755 nixbot:nixbot`
+  before any shell startup, snapshot probe, or deploy probe connects as
+  `nixbot`.
 - Bastion deploy keys remain normal `age.secrets.*` material under
   `/var/lib/nixbot/.ssh`.
 - If bootstrap replaces `/var/lib/nixbot/.ssh/id_ed25519`, the old key is kept
@@ -168,9 +168,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   auth-key flow.
 - `scripts/nixbot-deploy.sh` always re-execs into one pinned `nix shell`
   runtime. Normal repo-root runs use `--inputs-from <repo-root>`; SSH
-  forced-command ingress skips `--inputs-from` and falls back to
-  `nixpkgs#...` installables so the bastion wrapper does not depend on flake
-  root discovery.
+  forced-command ingress skips `--inputs-from` and falls back to `nixpkgs#...`
+  installables so the bastion wrapper does not depend on flake root discovery.
 - The runtime toolchain contract is declared once and reused for shell entry,
   `--ensure-deps`, and normal runtime verification. The shared toolset is:
   `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, and `opentofu`.

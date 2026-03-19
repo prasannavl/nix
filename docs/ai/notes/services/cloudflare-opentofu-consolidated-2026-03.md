@@ -74,8 +74,8 @@ surfaces, export/input strategy, and source-of-truth rules.
   - Worker versions and deployments
   - Workers.dev subdomains
   - routes, cron triggers, and custom domains
-- Tunnel adoption should land in `tf/cloudflare-platform/` with stable
-  Terraform keys chosen before import. The safest initial ownership boundary is
+- Tunnel adoption should land in `tf/cloudflare-platform/` with stable Terraform
+  keys chosen before import. The safest initial ownership boundary is
   tunnel-object adoption first, keeping ingress config host-managed unless there
   is an explicit decision to move that config into Terraform.
 

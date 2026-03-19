@@ -20,9 +20,10 @@ Build model:
   `pkgs/<project>/flake.nix`.
 - Before OpenTofu plan/apply, `scripts/nixbot-deploy.sh` runs the aggregate
   `pkgs/<project>#build` derivation with `nix build --no-link`.
-- For this project, `pkgs/cloudflare-apps/flake.nix` is the aggregate entrypoint.
-- Child app directories are resolved to their `#build` outputs by the
-  Cloudflare module's worker asset resolver during plan/apply.
+- For this project, `pkgs/cloudflare-apps/flake.nix` is the aggregate
+  entrypoint.
+- Child app directories are resolved to their `#build` outputs by the Cloudflare
+  module's worker asset resolver during plan/apply.
 
 Inputs live in `workers.auto.tfvars` plus encrypted account/worker inputs under
 `data/secrets/tf/cloudflare/`.
