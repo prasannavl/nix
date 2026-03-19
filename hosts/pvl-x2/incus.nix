@@ -23,6 +23,7 @@
       stateDirMode = "0750";
       extraCreateCommands = [
         "${incus} config device add llmug-rivendell gpu gpu"
+        "${incus} config device add llmug-rivendell kfd unix-char source=/dev/kfd path=/dev/kfd"
       ];
     };
   };

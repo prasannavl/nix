@@ -43,11 +43,11 @@
               - "0.0.0.0:21434:11434"
             volumes:
               - /var/lib/llmug/ollama:/root/.ollama:Z
+              - /dev/dri:/dev/dri
             group_add:
               - video
               - render
             devices:
-              - /dev/dri:/dev/dri
               - /dev/kfd:/dev/kfd
       '';
 
