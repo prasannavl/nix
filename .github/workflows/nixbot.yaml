@@ -65,6 +65,8 @@ jobs:
 
       - name: git/checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: nix/install
         uses: cachix/install-nix-action@v31
@@ -77,6 +79,12 @@ jobs:
         with:
           use-flakehub: false
           use-gha-cache: true
+
+      - name: repo/lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix run path:.#lint
 
       - name: nixbot/ensure-deps
         shell: bash

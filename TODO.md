@@ -1,8 +1,9 @@
 # TODO
 
 - Make nixbot-deploy run --dry in parallel.
-  - The nixbot owned repo clone in fresh dir, so we can eval in parallel. This
-    is needed for PR dry runs, instead of just master.
+  - The nixbot owned repo clone in a fresh dir or or better yet a work-tree, so
+    we can eval in parallel. This is needed for PR dry runs, instead of just
+    master.
   - GH workflow, allow on PRs while maintaining review security
   - Separate staging keys with read only tf state and platform keys
   - Needs: Multiple env secrets support

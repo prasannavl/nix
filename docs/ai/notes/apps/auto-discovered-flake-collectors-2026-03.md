@@ -14,7 +14,7 @@ The root collector used to repeat the same manual steps for each child flake:
 
 ## Decision
 
-Add a shared collector at `lib/flakelib.nix` that:
+Add a shared flake tree helper at `lib/internal/flake-tree.nix` that:
 
 - recursively discovers child directories containing `flake.nix`
 - uses the child flake's own `packages.default` as the primary custom root

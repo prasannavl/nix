@@ -18,8 +18,11 @@ data/secrets/**
 **/target/
 **/npm_modules/
 **/dist/
+.venv
 
 # Misc
 crash.log
 **/__pycache__/
-/.continue
+/.continue/
+/.kilocode/
+/.vscode/

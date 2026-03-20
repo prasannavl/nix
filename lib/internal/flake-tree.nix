@@ -4,7 +4,7 @@
   rootDir,
   namespace,
 }: let
-  lib = nixpkgs.lib;
+  inherit (nixpkgs) lib;
 
   collectFlakeDirs = dir: segments: let
     entries = builtins.readDir dir;
@@ -39,9 +39,7 @@
   };
 
   requireDefault = kind: entry: attrs:
-    if attrs ? default
-    then attrs.default
-    else throw "Expected `${kind}.default` in ${toString entry.path}/flake.nix for root `${namespace}` export";
+    attrs.default or (throw "Expected `${kind}.default` in ${toString entry.path}/flake.nix for root `${namespace}` export");
 
   removeDefault = attrs: lib.filterAttrs (name: _value: name != "default") attrs;
 

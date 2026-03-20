@@ -14,9 +14,11 @@
     };
     agenix = {
       url = "github:ryantm/agenix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.home-manager.follows = "home-manager";
-      inputs.systems.follows = "systems";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        home-manager.follows = "home-manager";
+        systems.follows = "systems";
+      };
     };
     nixos-hardware.url = "github:nixos/nixos-hardware";
     vscode-ext = {
@@ -25,9 +27,11 @@
     };
     llm-agents = {
       url = "github:numtide/llm-agents.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.systems.follows = "systems";
-      inputs.treefmt-nix.follows = "treefmt-nix";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        systems.follows = "systems";
+        treefmt-nix.follows = "treefmt-nix";
+      };
     };
     antigravity = {
       url = "github:jacopone/antigravity-nix";
@@ -48,10 +52,16 @@
     };
     noctalia = {
       url = "github:noctalia-dev/noctalia-shell";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.noctalia-qs.inputs.systems.follows = "systems";
-      inputs.noctalia-qs.inputs.treefmt-nix.follows = "treefmt-nix";
-      inputs.noctalia-qs.inputs.treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        noctalia-qs.inputs = {
+          systems.follows = "systems";
+          treefmt-nix = {
+            follows = "treefmt-nix";
+            inputs.nixpkgs.follows = "nixpkgs";
+          };
+        };
+      };
     };
     nix-alien = {
       url = "github:thiagokokada/nix-alien";
@@ -72,6 +82,7 @@
     agenix,
     ...
   }: let
+    internalLib = import ./lib/internal;
     packageOutputsFor = import ./pkgs {
       inherit nixpkgs flake-utils;
     };
@@ -83,23 +94,16 @@
       {nixpkgs.overlays = overlays;}
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
-    formatterPkgsFor = pkgs:
-      with pkgs; [
-        treefmt
-        alejandra
-        deno
-        opentofu
-      ];
   in
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      formatterPkgs = formatterPkgsFor pkgs;
+      internalLint = internalLib.lint {inherit pkgs;};
     in {
-      formatter = pkgs.writeShellApplication {
-        name = "treefmt";
-        runtimeInputs = formatterPkgs;
-        text = "treefmt";
+      apps.lint = {
+        inherit (internalLint.app) type program;
       };
+      inherit (internalLint) formatter;
+      packages.lint = internalLint.lintApp;
     })
     // {
       pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems packageTreeFor;

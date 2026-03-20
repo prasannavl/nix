@@ -1,5 +1,5 @@
 {
-  nixos = {...}: {};
+  nixos = _: {};
 
   home = {pkgs, ...}: {
     programs.vscode = {
@@ -32,8 +32,8 @@
           openai.chatgpt
           google.gemini-cli-vscode-ide-companion
           continue.continue
-          anthropic.claude-code
-          kilocode.kilo-code
+          # kilocode.kilo-code
+          # anthropic.claude-code
           # google.geminicodeassist
         ];
 

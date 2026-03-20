@@ -17,6 +17,8 @@ modules and composed via `flake.nix`.
   imports.
 - `users/pvl/default.nix`: Base user + Home Manager module builder for `pvl`.
 - `lib/*.nix`: single-topic NixOS modules imported directly by hosts.
+- `lib/internal/`: internal flake/tooling helpers such as linting and the custom
+  flake tree helper.
 - `overlays/`: custom overlays used by the system.
 - `hosts/nixbot.nix`: deploy mapping (plain Nix attrset).
 - `data/secrets/default.nix`: agenix recipients map for `*.age` files.
@@ -58,9 +60,9 @@ Primary files for deployment are:
 - `scripts/nixbot-deploy.sh` (build/deploy orchestration)
 - `lib/nixbot/bastion.nix` (bastion-side nixbot setup)
 - `lib/nixbot/default.nix` (nixbot user module with sudo/identity)
-- `scripts/nixbot-deploy.sh` runs in a cached `nix shell` toolchain with
-  pinned commands (`nix`, `age`, `git`, `jq`, `nixos-rebuild`, `openssh`,
-  `opentofu`) so deploy runs use consistent command sets everywhere.
+- `scripts/nixbot-deploy.sh` runs in a cached `nix shell` toolchain with pinned
+  commands (`nix`, `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, `opentofu`)
+  so deploy runs use consistent command sets everywhere.
 
 ## Deploy Actions
 
@@ -99,8 +101,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 
 ## Deploy Ordering
 
-- `scripts/nixbot-deploy.sh --action all` runs Cloudflare in phases:
-  `tf-dns`, `tf-platform`, host build/deploy, then `tf-apps`.
+- `scripts/nixbot-deploy.sh --action all` runs Cloudflare in phases: `tf-dns`,
+  `tf-platform`, host build/deploy, then `tf-apps`.
 - `scripts/nixbot-deploy.sh --action tf` runs the Terraform phases only:
   `tf-dns`, `tf-platform`, then `tf-apps`.
 - `hosts/nixbot.nix` may declare per-host `deps = [ ... ];` for build/deploy
@@ -111,3 +113,16 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - `DEPLOY_BASTION_FIRST` / `--bastion-first` prioritizes the bastion host first
   for both build ordering and deploy waves when selected.
 - Deploy derives dependency waves from `deps`.
+
+## Linting
+
+- `nix fmt` applies the repo formatter configured in `treefmt.toml`.
+- `nix run path:.#lint` runs the shared lint suite.
+- Repo-wide gates today: `treefmt --ci`, `actionlint`, and `tflint` for `tf/*-*`
+  projects.
+- Incremental gates today: `statix`, `deadnix`, `shellcheck`, and
+  `markdownlint-cli2` run only on changed files so the hook protects new edits
+  without requiring a full repo debt cleanup first.
+- `./scripts/git-install-hooks.sh` configures Git to use `.githooks/`; the repo
+  pre-commit hook runs the same `nix run path:.#lint` command before allowing a
+  commit.

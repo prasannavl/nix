@@ -2,7 +2,7 @@
   nixpkgs,
   flake-utils,
 }:
-import ../lib/flakelib.nix {
+import (import ../lib/internal).flakeTree {
   inherit nixpkgs flake-utils;
   rootDir = ./.;
   namespace = "pkgs";
