@@ -30,11 +30,11 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Canonical
   `nixbot` deploy architecture, runtime contract, and orchestration behavior.
+- `docs/ai/notes/nixbot/nixbot-deploy-cleanup-2026-03.md`: March 2026 cleanup
+  refactor notes for shared SSH context setup and action dispatch in
+  `scripts/nixbot-deploy.sh`.
 - `docs/ai/notes/nixbot/lint-gating-and-precommit-2026-03.md`: Shared lint
   entrypoint, CI gate, and pre-commit hook decisions.
-- `docs/ai/notes/nixbot/cloudflare-apps-worker-build-and-age-fallback-2026-03.md`:
-  Cloudflare apps pre-Terraform worker asset build/stage behavior and age
-  identity ordering for bastion-side runtime secrets.
 - `docs/ai/notes/nixbot/cloudflare-apps-stage-cleanup-2026-03.md`: Removal of
   the old Cloudflare apps `stage` layer in favor of direct `#build` usage.
 - `docs/ai/notes/nixbot/cloudflare-apps-store-path-resolution-2026-03.md`:

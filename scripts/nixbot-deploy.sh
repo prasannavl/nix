@@ -1813,6 +1813,66 @@ apply_identity_to_ssh_context() {
   fi
 }
 
+resolve_ssh_identity_file() {
+  local key_path="$1"
+  local label="$2"
+  local require_age="${3:-0}"
+  local -n key_file_out="$4"
+
+  key_file_out=""
+  [ -n "${key_path}" ] || return 0
+
+  if ! key_file_out="$(resolve_runtime_key_file "${key_path}" "${require_age}")"; then
+    return 1
+  fi
+  if [ ! -f "${key_file_out}" ]; then
+    echo "${label} file not found: ${key_path} (resolved: ${key_file_out})" >&2
+    return 1
+  fi
+}
+
+prepare_host_ssh_contexts() {
+  local node="$1"
+  local host="$2"
+  local known_hosts="$3"
+  # shellcheck disable=SC2178
+  local -n ssh_opts_out="$4"
+  # shellcheck disable=SC2178
+  local -n nix_sshopts_out="$5"
+  # shellcheck disable=SC2178,SC2034
+  local -n bootstrap_ssh_opts_out="$6"
+  # shellcheck disable=SC2178,SC2034
+  local -n bootstrap_nix_sshopts_out="$7"
+  local known_hosts_file build_host_host=""
+
+  ssh_opts_out=()
+  nix_sshopts_out=""
+  # shellcheck disable=SC2034
+  bootstrap_ssh_opts_out=()
+  # shellcheck disable=SC2034
+  bootstrap_nix_sshopts_out=""
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    return 0
+  fi
+
+  known_hosts_file="$(ensure_known_hosts_file "${node}" "${known_hosts}")"
+  ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
+  case "${BUILD_HOST}" in
+    local|target)
+      ;;
+    *)
+      build_host_host="$(ssh_host_from_target "${BUILD_HOST}")"
+      if [ -n "${build_host_host}" ] && [ "${build_host_host}" != "${host}" ]; then
+        ensure_known_host "${build_host_host}" "${known_hosts}" "${known_hosts_file}"
+      fi
+      ;;
+  esac
+
+  init_known_hosts_ssh_context 1 "${known_hosts_file}" ssh_opts_out nix_sshopts_out
+  init_known_hosts_ssh_context 0 "${known_hosts_file}" bootstrap_ssh_opts_out bootstrap_nix_sshopts_out
+}
+
 ensure_bootstrap_key_ready() {
   local node="$1"
   local bootstrap_ssh_target="$2"
@@ -1918,7 +1978,7 @@ inject_host_age_identity_key() {
 prepare_deploy_context() {
   local node="$1"
   local target_info user host key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path age_identity_key
-  local known_hosts_file key_file bootstrap_key_file build_host_host=""
+  local key_file bootstrap_key_file
   local ssh_target bootstrap_ssh_target
   local -a ssh_opts=()
   local -a bootstrap_ssh_opts=()
@@ -1940,44 +2000,26 @@ prepare_deploy_context() {
   ssh_target="${user}@${host}"
   bootstrap_ssh_target="${bootstrap_user}@${host}"
 
-  if [ "${DRY_RUN}" -eq 0 ]; then
-    known_hosts_file="$(ensure_known_hosts_file "${node}" "${known_hosts}")"
-    ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
-    case "${BUILD_HOST}" in
-      local|target)
-        ;;
-      *)
-        build_host_host="$(ssh_host_from_target "${BUILD_HOST}")"
-        if [ -n "${build_host_host}" ] && [ "${build_host_host}" != "${host}" ]; then
-          ensure_known_host "${build_host_host}" "${known_hosts}" "${known_hosts_file}"
-        fi
-        ;;
-    esac
-
-    init_known_hosts_ssh_context 1 "${known_hosts_file}" ssh_opts nix_sshopts
-    init_known_hosts_ssh_context 0 "${known_hosts_file}" bootstrap_ssh_opts bootstrap_nix_sshopts
-  fi
+  prepare_host_ssh_contexts \
+    "${node}" \
+    "${host}" \
+    "${known_hosts}" \
+    ssh_opts \
+    nix_sshopts \
+    bootstrap_ssh_opts \
+    bootstrap_nix_sshopts || return 1
 
   if [ -n "${key_path}" ]; then
-    if ! key_file="$(resolve_runtime_key_file "${key_path}" "${DEPLOY_KEY_OVERRIDE_EXPLICIT}")"; then
-      return 1
-    fi
-    if [ ! -f "${key_file}" ]; then
-      echo "Deploy SSH key file not found: ${key_path} (resolved: ${key_file})" >&2
+    if ! resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${DEPLOY_KEY_OVERRIDE_EXPLICIT}" key_file; then
       return 1
     fi
     apply_identity_to_ssh_context "${key_file}" ssh_opts nix_sshopts
   fi
 
   if [ -n "${bootstrap_key_path}" ]; then
-    if ! bootstrap_key_file="$(resolve_runtime_key_file "${bootstrap_key_path}")"; then
+    if ! resolve_ssh_identity_file "${bootstrap_key_path}" "Bootstrap SSH key" 0 bootstrap_key_file; then
       return 1
     fi
-    if [ ! -f "${bootstrap_key_file}" ]; then
-      echo "Bootstrap SSH key file not found: ${bootstrap_key_path} (resolved: ${bootstrap_key_file})" >&2
-      return 1
-    fi
-
     apply_identity_to_ssh_context "${bootstrap_key_file}" bootstrap_ssh_opts bootstrap_nix_sshopts
   fi
 
@@ -3068,6 +3110,22 @@ run_tf_phases() {
   done
 }
 
+run_deploy_request_action() {
+  local selected_json="$1"
+
+  case "${ACTION}" in
+    all)
+      run_all_action "${selected_json}"
+      ;;
+    tf|tf-dns|tf-platform|tf-apps)
+      run_tf_only_action
+      ;;
+    *)
+      run_host_action "${selected_json}"
+      ;;
+  esac
+}
+
 tofu_args_extract_subcommand() {
   local -a args=("$@")
   local i arg
@@ -3224,6 +3282,28 @@ run_tf_action() {
   _exec_tofu_cmd "" -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}"
 }
 
+log_tf_project_status() {
+  local project_name="$1"
+  local status="$2"
+
+  echo "Terraform ${project_name}: ${status}" >&2
+}
+
+run_tf_project_action() {
+  local phase="$1"
+  local project_name="$2"
+  local project_dir="$3"
+
+  log_grouped_nested_item_start "$(log_group_tf_project_title "${phase}" "${project_name}")"
+  log_subsection "Terraform Project: ${project_name}"
+  if run_tf_action "${phase}" "${project_dir}"; then
+    log_grouped_item_end
+    return 0
+  fi
+  log_grouped_item_end
+  return 1
+}
+
 tofu_wrapper_extract_chdir() {
   local -a args=("$@")
   local i arg
@@ -3288,22 +3368,22 @@ run_requested_tf_phase() {
     [ -n "${project_dir}" ] || continue
     found=1
     project_name="$(tf_project_name_from_dir "${project_dir}")"
-    log_grouped_nested_item_start "$(log_group_tf_project_title "${phase}" "${project_name}")"
-    log_subsection "Terraform Project: ${project_name}"
     project_rc=0
 
     if should_run_tf_project_action "${phase}" "${project_name}"; then
-      if run_tf_action "${phase}" "${project_dir}"; then
+      if run_tf_project_action "${phase}" "${project_name}" "${project_dir}"; then
+        log_tf_project_status "${project_name}" "ok"
         record_tf_run_summary "${phase}" "${project_name}" "ok"
       else
+        log_tf_project_status "${project_name}" "fail"
         record_tf_run_summary "${phase}" "${project_name}" "fail"
         project_rc=1
       fi
     else
+      log_tf_project_status "${project_name}" "skip"
       record_tf_run_summary "${phase}" "${project_name}" "skip"
     fi
 
-    log_grouped_item_end
     if [ "${project_rc}" -ne 0 ]; then
       return 1
     fi
@@ -3960,24 +4040,10 @@ run_requested_action() {
 
   prepare_run_context selected_json
 
-  if [ "${ACTION}" = "all" ]; then
-    if run_all_action "${selected_json}"; then
-      :
-    else
-      action_rc="$?"
-    fi
-  elif is_tf_only_action; then
-    if run_tf_only_action; then
-      :
-    else
-      action_rc="$?"
-    fi
+  if run_deploy_request_action "${selected_json}"; then
+    :
   else
-    if run_host_action "${selected_json}"; then
-      :
-    else
-      action_rc="$?"
-    fi
+    action_rc="$?"
   fi
 
   if run_summary_has_failures; then

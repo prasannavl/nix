@@ -51,6 +51,11 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   decrypt identity (for example during bastion-side Terraform runtime secret
   loading), the runtime path must be readable by the `nixbot` user, not just by
   root.
+- Runtime secret decryption should use the shared candidate identity list for
+  all `*.age` files, not a Cloudflare-specific special case.
+- Per-identity `age` stderr should stay buffered unless every candidate identity
+  fails, so successful fallback decrypts do not flood bastion logs with repeated
+  `no identity matched` noise.
 - Keep `/var/lib/nixbot/.age` traversable by `nixbot` and the identity file
   group-readable by `nixbot` while preserving root ownership. The current model
   is directory `0710 root:nixbot` and file `0440 root:nixbot`.
@@ -148,6 +153,11 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   - per-host stage banners
   - deploy/snapshot wave boundaries
   - host-prefixed streamed output when jobs run in parallel
+- In GitHub Actions log mode, Terraform phase sections should remain grouped at
+  the phase level, with per-project groups nested inside them rather than
+  replacing the phase group.
+- In GitHub Actions log mode, Terraform should stream normally inside those
+  phase/project groups rather than using a separate buffered log path.
 - Keep `Phase` and `Wave` headings directly adjacent with no extra blank
   separator, but preserve a blank line before each host-stage banner (for
   example between `--- ... Wave ... ---` and
@@ -183,8 +193,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   `Required command not found: nix`.
 - The workflow should warm the shared runtime closure before the main deploy
   step by calling `./scripts/nixbot-deploy.sh --ensure-deps >/dev/null`, and it
-  should reuse the GitHub Actions cache backend rather than relying on
-  FlakeHub-specific cache login.
+  should continue reusing the GitHub Actions cache backend rather than relying
+  on FlakeHub-specific cache login.
 - Manual dispatch should stay aligned with the script surface:
   `action = all|build|deploy|tf`, plus `dry` and `force`.
 - The separate TF-only workflow was removed; the main `nixbot` workflow
@@ -213,6 +223,7 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - `docs/ai/notes/nixbot/deploy-summary-built-status-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-summary-snapshot-status-2026-03.md`
 - `docs/ai/notes/nixbot/github-actions-nix-bootstrap-2026-03.md`
+- `docs/ai/notes/nixbot/cloudflare-apps-worker-build-and-age-fallback-2026-03.md`
 - `docs/ai/notes/nixbot/github-actions-runtime-warmup-and-cache-2026-03.md`
 - `docs/ai/notes/nixbot/log-stream-ordering-2026-03.md`
 - `docs/ai/notes/nixbot-bastion-key-model.md`

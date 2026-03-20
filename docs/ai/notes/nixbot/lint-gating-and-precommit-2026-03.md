@@ -12,5 +12,8 @@
 - GitHub Actions `nixbot` workflow now runs lint before warming the deploy
   runtime or triggering bastion execution, so formatting failures stop the run
   early.
+- The lint toolchain is exported separately as flake package `.#lint-deps` so CI
+  can warm it in a dedicated step with `nix build path:.#lint-deps >/dev/null`
+  and keep the actual `nix run path:.#lint` logs focused on lint output.
 - Git pre-commit is wired through `.githooks/pre-commit` and calls the same
   `nix run path:.#lint` command to keep local and CI behavior aligned.
