@@ -189,7 +189,7 @@ init_vars() {
   REEXEC_FROM_REPO=0
   TF_WORK_DIR="${DEPLOY_TF_DIR:-}"
   TF_CHANGE_BASE_REF=""
-  _NIXBOT_LOG_GROUP_OPEN=0
+  _NIXBOT_LOG_GROUP_DEPTH=0
   _NIXBOT_LOG_GROUP_SCOPE=""
 
   clear_run_summary_state
@@ -698,7 +698,7 @@ parse_args() {
 }
 
 cleanup() {
-  log_group_end
+  log_group_end_all
   if [ -n "${DEPLOY_TMP_DIR}" ] && [ -d "${DEPLOY_TMP_DIR}" ]; then
     rm -rf "${DEPLOY_TMP_DIR}"
   fi
@@ -3282,13 +3282,13 @@ run_requested_tf_phase() {
   local project_name=""
   local project_rc=0
 
-  log_section "Phase: Terraform (${phase})" none
+  log_section "Phase: Terraform (${phase})"
 
   while IFS= read -r project_dir; do
     [ -n "${project_dir}" ] || continue
     found=1
     project_name="$(tf_project_name_from_dir "${project_dir}")"
-    log_grouped_item_start "$(log_group_tf_project_title "${phase}" "${project_name}")"
+    log_grouped_nested_item_start "$(log_group_tf_project_title "${phase}" "${project_name}")"
     log_subsection "Terraform Project: ${project_name}"
     project_rc=0
 
@@ -3459,14 +3459,20 @@ log_group_start() {
   local title="$1"
 
   printf '::group::%s\n' "${title}" >&2
-  _NIXBOT_LOG_GROUP_OPEN=1
+  _NIXBOT_LOG_GROUP_DEPTH=$((_NIXBOT_LOG_GROUP_DEPTH + 1))
 }
 
 log_group_end() {
-  if is_github_actions_log_mode && [ "${_NIXBOT_LOG_GROUP_OPEN:-0}" -eq 1 ]; then
+  if is_github_actions_log_mode && [ "${_NIXBOT_LOG_GROUP_DEPTH:-0}" -gt 0 ]; then
     printf '::endgroup::\n' >&2
-    _NIXBOT_LOG_GROUP_OPEN=0
+    _NIXBOT_LOG_GROUP_DEPTH=$((_NIXBOT_LOG_GROUP_DEPTH - 1))
   fi
+}
+
+log_group_end_all() {
+  while is_github_actions_log_mode && [ "${_NIXBOT_LOG_GROUP_DEPTH:-0}" -gt 0 ]; do
+    log_group_end
+  done
 }
 
 log_group_should_section() {
@@ -3476,9 +3482,6 @@ log_group_should_section() {
   case "${group_mode}" in
     none)
       return 1
-      ;;
-    force)
-      return 0
       ;;
   esac
 
@@ -3506,6 +3509,14 @@ log_grouped_item_start() {
 
   if is_github_actions_log_mode; then
     log_group_end
+    log_group_start "${group_title}"
+  fi
+}
+
+log_grouped_nested_item_start() {
+  local group_title="$1"
+
+  if is_github_actions_log_mode; then
     log_group_start "${group_title}"
   fi
 }

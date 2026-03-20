@@ -103,6 +103,7 @@
         inherit (internalLint.app) type program;
       };
       inherit (internalLint) formatter;
+      packages.lint-deps = internalLint.lintDeps;
       packages.lint = internalLint.lintApp;
     })
     // {

@@ -80,20 +80,21 @@ jobs:
           use-flakehub: false
           use-gha-cache: true
 
-      - name: repo/lint
+      - name: nix/deps
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Warm the lint closures so the logs stay clean.
+          # in the actual runs and avoids noise.
+          nix build path:.#lint-deps >/dev/null
+          ./scripts/nixbot-deploy.sh --ensure-deps >/dev/null
+
+      - name: nix/lint
         shell: bash
         run: |
           set -euo pipefail
           nix run path:.#lint
-
-      - name: nixbot/ensure-deps
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Warm the nixbot runtime closure before the real deploy so the
-          # initial fetch/install noise stays out of the Remote action logs.
-          ./scripts/nixbot-deploy.sh --ensure-deps >/dev/null
 
       - name: nixbot/run
         shell: bash

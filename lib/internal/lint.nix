@@ -103,8 +103,12 @@
       fi
     '';
   };
+  lintDeps = pkgs.buildEnv {
+    name = "lint-deps";
+    paths = lintPkgs;
+  };
 in {
-  inherit formatterPkgs lintApp lintPkgs;
+  inherit formatterPkgs lintApp lintDeps lintPkgs;
 
   formatter = pkgs.writeShellApplication {
     name = "treefmt";
