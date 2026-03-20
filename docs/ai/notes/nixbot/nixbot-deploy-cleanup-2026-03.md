@@ -8,5 +8,8 @@
 - Collapsed top-level action dispatch into `run_deploy_request_action` so
   `run_requested_action` stays focused on run setup, summary handling, and exit
   status.
+- Terraform/OpenTofu execution now runs through `run_with_combined_output` so
+  GitHub Actions group markers and Terraform output share one stream and
+  project-level groups do not leak stdout outside the group.
 - Intended scope was cleanup only: no deploy ordering, bastion-trigger, or
   bootstrap semantics were changed.

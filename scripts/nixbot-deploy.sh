@@ -3228,7 +3228,7 @@ _exec_tofu_cmd() {
     fi
   fi
 
-  "${cmd[@]}"
+  run_with_combined_output "${cmd[@]}"
 }
 
 log_tf_action_context() {
