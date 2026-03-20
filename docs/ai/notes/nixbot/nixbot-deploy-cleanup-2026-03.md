@@ -11,5 +11,9 @@
 - Terraform/OpenTofu execution now runs through `run_with_combined_output` so
   GitHub Actions group markers and Terraform output share one stream and
   project-level groups do not leak stdout outside the group.
+- `prepare_host_ssh_contexts` must use internal nameref variable names that do
+  not match the callee argument names passed to `init_known_hosts_ssh_context`;
+  reusing `ssh_opts_out`/`nix_sshopts_out` caused Bash circular-name-reference
+  warnings during deploy-time snapshot/bootstrap preparation.
 - Intended scope was cleanup only: no deploy ordering, bastion-trigger, or
   bootstrap semantics were changed.

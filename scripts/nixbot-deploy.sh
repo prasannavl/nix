@@ -1836,21 +1836,23 @@ prepare_host_ssh_contexts() {
   local host="$2"
   local known_hosts="$3"
   # shellcheck disable=SC2178
-  local -n ssh_opts_out="$4"
+  local -n host_ssh_opts_ref="$4"
   # shellcheck disable=SC2178
-  local -n nix_sshopts_out="$5"
+  local -n host_nix_sshopts_ref="$5"
   # shellcheck disable=SC2178,SC2034
-  local -n bootstrap_ssh_opts_out="$6"
+  local -n bootstrap_ssh_opts_ref="$6"
   # shellcheck disable=SC2178,SC2034
-  local -n bootstrap_nix_sshopts_out="$7"
+  local -n bootstrap_nix_sshopts_ref="$7"
   local known_hosts_file build_host_host=""
 
-  ssh_opts_out=()
-  nix_sshopts_out=""
   # shellcheck disable=SC2034
-  bootstrap_ssh_opts_out=()
+  host_ssh_opts_ref=()
   # shellcheck disable=SC2034
-  bootstrap_nix_sshopts_out=""
+  host_nix_sshopts_ref=""
+  # shellcheck disable=SC2034
+  bootstrap_ssh_opts_ref=()
+  # shellcheck disable=SC2034
+  bootstrap_nix_sshopts_ref=""
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     return 0
@@ -1869,8 +1871,8 @@ prepare_host_ssh_contexts() {
       ;;
   esac
 
-  init_known_hosts_ssh_context 1 "${known_hosts_file}" ssh_opts_out nix_sshopts_out
-  init_known_hosts_ssh_context 0 "${known_hosts_file}" bootstrap_ssh_opts_out bootstrap_nix_sshopts_out
+  init_known_hosts_ssh_context 1 "${known_hosts_file}" host_ssh_opts_ref host_nix_sshopts_ref
+  init_known_hosts_ssh_context 0 "${known_hosts_file}" bootstrap_ssh_opts_ref bootstrap_nix_sshopts_ref
 }
 
 ensure_bootstrap_key_ready() {
