@@ -15,5 +15,9 @@
   not match the callee argument names passed to `init_known_hosts_ssh_context`;
   reusing `ssh_opts_out`/`nix_sshopts_out` caused Bash circular-name-reference
   warnings during deploy-time snapshot/bootstrap preparation.
+- The lower-level nameref helpers (`init_known_hosts_ssh_context`,
+  `apply_identity_to_ssh_context`, and `resolve_ssh_identity_file`) must also
+  avoid generic internal names so caller variable names cannot accidentally
+  recreate the same circular-reference failure class later.
 - Intended scope was cleanup only: no deploy ordering, bastion-trigger, or
   bootstrap semantics were changed.

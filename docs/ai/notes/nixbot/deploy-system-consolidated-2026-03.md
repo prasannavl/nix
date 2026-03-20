@@ -183,6 +183,9 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - The runtime toolchain contract is declared once and reused for shell entry,
   `--ensure-deps`, and normal runtime verification. The shared toolset is:
   `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, and `opentofu`.
+- Bastion-side Terraform automation must run `tofu init` with
+  `-lockfile=readonly` so provider lock normalization does not dirty the shared
+  persistent repo checkout between PR-triggered deploy runs.
 - Required workflow traits are:
   - `tailscale/github-action@v4`
   - `permissions.id-token: write`

@@ -17,3 +17,7 @@
   and keep the actual `nix run path:.#lint` logs focused on lint output.
 - Git pre-commit is wired through `.githooks/pre-commit` and calls the same
   `nix run path:.#lint` command to keep local and CI behavior aligned.
+- The lint wrapper now tracks the active step and emits a final
+  `[lint] FAILED at <step>: <description>` summary on non-zero exit so Git UIs
+  such as VS Code surface the failing linter more clearly than the earlier
+  progress banner.

@@ -25,8 +25,34 @@
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
       cd "''${repo_root}"
 
+      current_step=""
+      current_step_description=""
+
+      report_exit() {
+        local exit_code="$1"
+
+        if [ "''${exit_code}" -ne 0 ]; then
+          if [ -n "''${current_step}" ]; then
+            printf '\n[lint] FAILED at %s: %s\n' "''${current_step}" "''${current_step_description}" >&2
+          else
+            printf '\n[lint] FAILED before a lint step completed\n' >&2
+          fi
+        fi
+      }
+
+      trap 'report_exit "$?"' EXIT
+
       log_step() {
         printf '\n[%s] %s\n' "$1" "$2" >&2
+      }
+
+      run_step() {
+        current_step="$1"
+        current_step_description="$2"
+        shift 2
+
+        log_step "''${current_step}" "''${current_step_description}"
+        "$@"
       }
 
       collect_changed_files() {
@@ -61,19 +87,22 @@
       mapfile -d $'\0' -t changed_markdown_files < <(collect_changed_files '*.md')
       mapfile -d $'\0' -t tf_project_dirs < <(find tf -mindepth 1 -maxdepth 1 -type d -name '*-*' -print0 | sort -z)
 
-      log_step treefmt 'Checking formatting drift'
-      treefmt --ci "$@"
+      run_step treefmt 'Checking formatting drift' treefmt --ci "$@"
 
       if [ "''${#changed_nix_files[@]}" -gt 0 ]; then
         changed_nix_file=
 
-        log_step statix 'Linting changed Nix files'
+        current_step=statix
+        current_step_description='Linting changed Nix files'
+        log_step "''${current_step}" "''${current_step_description}"
         for changed_nix_file in "''${changed_nix_files[@]}"; do
           printf '  - %s\n' "''${changed_nix_file}" >&2
           statix check -- "''${changed_nix_file}"
         done
 
-        log_step deadnix 'Checking changed Nix files for unused bindings'
+        current_step=deadnix
+        current_step_description='Checking changed Nix files for unused bindings'
+        log_step "''${current_step}" "''${current_step_description}"
         for changed_nix_file in "''${changed_nix_files[@]}"; do
           printf '  - %s\n' "''${changed_nix_file}" >&2
           deadnix -- "''${changed_nix_file}"
@@ -81,21 +110,20 @@
       fi
 
       if [ "''${#changed_shell_files[@]}" -gt 0 ]; then
-        log_step shellcheck 'Linting changed shell files'
-        shellcheck --external-sources --shell=bash "''${changed_shell_files[@]}"
+        run_step shellcheck 'Linting changed shell files' shellcheck --external-sources --shell=bash "''${changed_shell_files[@]}"
       fi
 
-      log_step actionlint 'Linting GitHub Actions workflows'
-      actionlint
+      run_step actionlint 'Linting GitHub Actions workflows' actionlint
 
       if [ "''${#changed_markdown_files[@]}" -gt 0 ]; then
-        log_step markdownlint 'Linting changed Markdown files'
-        markdownlint-cli2 "''${changed_markdown_files[@]}"
+        run_step markdownlint 'Linting changed Markdown files' markdownlint-cli2 "''${changed_markdown_files[@]}"
       fi
 
       if [ "''${#tf_project_dirs[@]}" -gt 0 ]; then
         local_tf_dir=
-        log_step tflint 'Linting Terraform/OpenTofu projects'
+        current_step=tflint
+        current_step_description='Linting Terraform/OpenTofu projects'
+        log_step "''${current_step}" "''${current_step_description}"
         for local_tf_dir in "''${tf_project_dirs[@]}"; do
           printf '  - %s\n' "''${local_tf_dir}" >&2
           tflint --chdir "''${local_tf_dir}"
