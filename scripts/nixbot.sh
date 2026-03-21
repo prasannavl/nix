@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
-repo_root="$(cd "${script_dir}/.." && pwd -P)"
+init_vars() {
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+  REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+  TARGET_SCRIPT="${REPO_ROOT}/pkgs/nixbot/nixbot.sh"
+}
 
-exec "${repo_root}/pkgs/nixbot/nixbot.sh" "$@"
+main() {
+  init_vars
+  exec "${TARGET_SCRIPT}" "$@"
+}
+
+main "$@"

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-RUNTIME_SHELL_FLAG="${AGE_SECRETS_IN_NIX_SHELL:-0}"
-
 usage() {
   cat <<'EOF'
 Usage:
@@ -13,13 +11,11 @@ Usage:
   scripts/age-secrets.sh [-v] -d [path]
   scripts/age-secrets.sh [-v] -c [path]
   scripts/age-secrets.sh [-v] [path]
-
 Behavior:
   encrypt   Encrypts managed plaintext files to managed *.age files.
   decrypt   Decrypts managed *.age files to plaintext alongside them (drops .age suffix).
   clean     Deletes managed plaintext files that correspond to managed *.age files.
   (no mode) Auto-toggle: encrypt if any managed plaintext exists, otherwise decrypt.
-
 Notes:
   - Default scope is all files listed in data/secrets/default.nix.
   - Pass [path] to limit the run to one managed subtree or one managed file.
@@ -364,6 +360,7 @@ run_mode() {
 }
 
 ensure_runtime_shell() {
+  local runtime_shell_flag="${AGE_SECRETS_IN_NIX_SHELL:-0}"
   local script_path
   local flake_path
   local -a runtime_packages=(
@@ -373,7 +370,7 @@ ensure_runtime_shell() {
     nixpkgs#jq
   )
 
-  if [ "${RUNTIME_SHELL_FLAG}" = "1" ]; then
+  if [ "$runtime_shell_flag" = "1" ]; then
     return
   fi
 
@@ -400,6 +397,7 @@ main() {
   local plaintext_count=0
 
   ensure_runtime_shell "$@"
+  init_vars
   parse_args mode target_path verbose "$@"
   requested_mode="$mode"
 
@@ -408,7 +406,6 @@ main() {
   require_cmd mktemp
   require_cmd nix
   require_cmd realpath
-  init_vars
   VERBOSE="$verbose"
   target_path="$(resolve_target_path "$target_path")"
 

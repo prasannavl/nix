@@ -7,6 +7,12 @@
   - Keep it updated whenever files are added, removed, renamed, or moved under
     `docs/ai`.
   - Agents should consult this index first to decide what to load into context.
+- Use `docs/ai/lang-patterns/` for language-specific coding rules and
+  conventions.
+  - When working in a language, agents should scan the matching
+    `docs/ai/lang-patterns/<language>.md` files before editing.
+  - If a relevant language-pattern file does not exist yet and the user defines
+    durable rules for that language, create it and update the index.
 - Use `docs/ai/playbooks` for user-defined, reusable processes.
   - When a user asks to "record a process" (or equivalent), create/update a
     playbook here.

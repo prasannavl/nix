@@ -1,24 +1,13 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-RUNTIME_SHELL_FLAG="${UPDATE_GNOME_EXT_IN_NIX_SHELL:-0}"
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-
-# Default list of extensions to update
-default_files=(
-  "$repo_root/pkgs/ext/p7-borders.nix"
-  "$repo_root/pkgs/ext/p7-cmds.nix"
-)
+set -Eeuo pipefail
 
 usage() {
   cat <<EOF
 Usage: update-gnome-ext.sh [--file PATH] [--version VERSION]
-
 By default, updates all known extensions. Optionally specify a single file to update.
-
 Examples:
-  update-gnome-ext.sh                               # Update all extensions
-  update-gnome-ext.sh --file pkgs/ext/p7-borders.nix    # Update only p7-borders
+  update-gnome-ext.sh
+  update-gnome-ext.sh --file pkgs/ext/p7-borders.nix
   update-gnome-ext.sh --file pkgs/ext/p7-cmds.nix --version 30
 EOF
 }
@@ -28,20 +17,33 @@ die() {
   exit 1
 }
 
-parse_args() {
-  target_file=""
-  requested_version=""
+init_vars() {
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
+  DEFAULT_FILES=(
+    "${REPO_ROOT}/pkgs/ext/p7-borders.nix"
+    "${REPO_ROOT}/pkgs/ext/p7-cmds.nix"
+  )
+  TARGET_FILE=""
+  REQUESTED_VERSION=""
+  RESOLVED_TARGET_FILE=""
+  UUID=""
+  SELECTED_VERSION=""
+  EXTENSION_DATA_UUID=""
+  ARCHIVE_URL=""
+  SHA256=""
+}
 
+parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --file|-f)
         [[ $# -ge 2 ]] || die "Missing value for $1"
-        target_file="$2"
+        TARGET_FILE="$2"
         shift 2
         ;;
       --version|-v)
         [[ $# -ge 2 ]] || die "Missing value for $1"
-        requested_version="$2"
+        REQUESTED_VERSION="$2"
         shift 2
         ;;
       --help|-h)
@@ -50,63 +52,63 @@ parse_args() {
         ;;
       *)
         die "Unknown argument: $1"
-        ;;
+      ;;
     esac
   done
 }
 
 resolve_target_file() {
-  if [[ "$target_file" = /* ]]; then
-    resolved_target_file="$target_file"
+  if [[ "$TARGET_FILE" = /* ]]; then
+    RESOLVED_TARGET_FILE="$TARGET_FILE"
   else
-    resolved_target_file="$repo_root/$target_file"
+    RESOLVED_TARGET_FILE="${REPO_ROOT}/$TARGET_FILE"
   fi
-
-  [[ -f "$resolved_target_file" ]] || die "Target file not found: $resolved_target_file"
+  [[ -f "$RESOLVED_TARGET_FILE" ]] || die "Target file not found: $RESOLVED_TARGET_FILE"
 }
 
 extract_uuid() {
-  uuid="$(sed -nE 's/^[[:space:]]*uuid = "([^"]+)";/\1/p' "$resolved_target_file" | head -n1)"
-  [[ -n "$uuid" ]] || die "Could not find uuid in $resolved_target_file"
+  UUID="$(sed -nE 's/^[[:space:]]*uuid = "([^"]+)";/\1/p' "$RESOLVED_TARGET_FILE" | head -n1)"
+  [[ -n "$UUID" ]] || die "Could not find uuid in $RESOLVED_TARGET_FILE"
 }
 
 resolve_version() {
-  if [[ -n "$requested_version" ]]; then
-    selected_version="$requested_version"
+  local info
+
+  if [[ -n "$REQUESTED_VERSION" ]]; then
+    SELECTED_VERSION="$REQUESTED_VERSION"
     return
   fi
 
-  local info
-  info="$(curl -fsSL "https://extensions.gnome.org/extension-info/?uuid=$uuid")"
-  selected_version="$(jq -er '.shell_version_map | to_entries | map(.value.version) | max' <<<"$info")"
-  [[ -n "$selected_version" ]] || die "Could not determine latest version for $uuid"
+  info="$(curl -fsSL "https://extensions.gnome.org/extension-info/?uuid=$UUID")"
+  SELECTED_VERSION="$(jq -er '.shell_version_map | to_entries | map(.value.version) | max' <<<"$info")"
+  [[ -n "$SELECTED_VERSION" ]] || die "Could not determine latest version for $UUID"
 }
 
 build_url() {
-  extension_data_uuid="${uuid//@/}"
-  archive_url="https://extensions.gnome.org/extension-data/${extension_data_uuid}.v${selected_version}.shell-extension.zip"
+  EXTENSION_DATA_UUID="${UUID//@/}"
+  ARCHIVE_URL="https://extensions.gnome.org/extension-data/${EXTENSION_DATA_UUID}.v${SELECTED_VERSION}.shell-extension.zip"
 }
 
 validate_url() {
-  curl -fsI "$archive_url" >/dev/null || die "Extension archive not found: $archive_url"
+  curl -fsI "$ARCHIVE_URL" >/dev/null || die "Extension archive not found: $ARCHIVE_URL"
 }
 
 compute_hash() {
-  sha256="$(nix store prefetch-file --json --hash-type sha256 --unpack "$archive_url" | jq -r .hash)"
+  SHA256="$(nix store prefetch-file --json --hash-type sha256 --unpack "$ARCHIVE_URL" | jq -r .hash)"
 }
 
 update_file() {
   sed -E -i \
-    -e "s#(^[[:space:]]*version = \")([0-9]+)(\";)#\\1${selected_version}\\3#" \
-    -e "s#(^[[:space:]]*sha256 = \").*(\";)#\\1${sha256}\\2#" \
-    "$resolved_target_file"
+    -e "s#(^[[:space:]]*version = \")([0-9]+)(\";)#\\1${SELECTED_VERSION}\\3#" \
+    -e "s#(^[[:space:]]*sha256 = \").*(\";)#\\1${SHA256}\\2#" \
+    "$RESOLVED_TARGET_FILE"
 }
 
 print_summary() {
-  echo "Updated $(basename "$resolved_target_file")"
-  echo "  uuid=$uuid"
-  echo "  version=$selected_version"
-  echo "  sha256=$sha256"
+  echo "Updated $(basename "$RESOLVED_TARGET_FILE")"
+  echo "  uuid=$UUID"
+  echo "  version=$SELECTED_VERSION"
+  echo "  sha256=$SHA256"
 }
 
 update_extension() {
@@ -121,6 +123,7 @@ update_extension() {
 }
 
 ensure_runtime_shell() {
+  local runtime_shell_flag="${UPDATE_GNOME_EXT_IN_NIX_SHELL:-0}"
   local script_path
   local flake_path
   local -a runtime_packages=(
@@ -130,7 +133,7 @@ ensure_runtime_shell() {
     nixpkgs#jq
   )
 
-  if [ "${RUNTIME_SHELL_FLAG}" = "1" ]; then
+  if [ "$runtime_shell_flag" = "1" ]; then
     return
   fi
 
@@ -144,19 +147,21 @@ ensure_runtime_shell() {
 }
 
 main() {
+  local file
+
   ensure_runtime_shell "$@"
+  init_vars
   parse_args "$@"
 
-  if [[ -n "$target_file" ]]; then
-    # Single file mode
+  if [[ -n "$TARGET_FILE" ]]; then
     update_extension
-  else
-    # Default: update all known extensions
-    for file in "${default_files[@]}"; do
-      target_file="$file"
-      update_extension
-    done
+    return
   fi
+
+  for file in "${DEFAULT_FILES[@]}"; do
+    TARGET_FILE="$file"
+    update_extension
+  done
 }
 
 main "$@"
