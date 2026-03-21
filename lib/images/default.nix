@@ -3,18 +3,18 @@
   commonModules,
   ...
 }: let
-  nixpkgs = inputs.nixpkgs;
+  inherit (inputs) nixpkgs;
 in {
-  incus-bootstrap = nixpkgs.lib.nixosSystem {
+  incus-base = nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     specialArgs = {
       inherit inputs;
-      hostName = "incus-bootstrap";
+      hostName = "incus-base";
     };
     modules =
       commonModules
       ++ [
-        ./incus-bootstrap.nix
+        ./incus-base.nix
       ];
   };
 }

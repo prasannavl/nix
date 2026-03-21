@@ -1,7 +1,7 @@
 {hostName, ...}: {
   imports = [
     ../../lib/profiles/systemd-container.nix
-    (import ../../lib/incus-machine.nix {inherit hostName;})
+    (import ../../lib/incus-vm.nix {inherit hostName;})
     ../../lib/podman.nix
     ../../lib/virtualization.nix
     ./cloudflare.nix

@@ -5,16 +5,16 @@
   ...
 }: let
   incus = "${config.virtualisation.incus.package.client}/bin/incus";
-  bootstrapImage = inputs.self.nixosImages.incus-bootstrap;
-  bootstrapAlias = "nixos-incus-bootstrap";
-  bootstrapLabel = bootstrapImage.config.system.nixos.label;
-  bootstrapSystem = bootstrapImage.pkgs.stdenv.hostPlatform.system;
-  bootstrapImageFile = "nixos-image-${bootstrapLabel}-${bootstrapSystem}.tar.xz";
-  bootstrapMetadata = bootstrapImage.config.system.build.metadata;
-  bootstrapRootfs = bootstrapImage.config.system.build.tarball;
-  bootstrapMetadataFile = "${bootstrapMetadata}/tarball/${bootstrapImageFile}";
-  bootstrapRootfsFile = "${bootstrapRootfs}/tarball/${bootstrapImageFile}";
-  bootstrapImageSource = "${bootstrapMetadataFile}|${bootstrapRootfsFile}";
+  baseImage = inputs.self.nixosImages.incus-base;
+  baseAlias = "nixos-incus-base";
+  baseLabel = baseImage.config.system.nixos.label;
+  baseSystem = baseImage.pkgs.stdenv.hostPlatform.system;
+  baseImageFile = "nixos-image-${baseLabel}-${baseSystem}.tar.xz";
+  baseMetadata = baseImage.config.system.build.metadata;
+  baseRootfs = baseImage.config.system.build.tarball;
+  baseMetadataFile = "${baseMetadata}/tarball/${baseImageFile}";
+  baseRootfsFile = "${baseRootfs}/tarball/${baseImageFile}";
+  baseImageSource = "${baseMetadataFile}|${baseRootfsFile}";
 
   incusMachines = {
     llmug-rivendell = {
@@ -37,12 +37,12 @@
       after = [
         "incus-preseed.service"
         "network-online.target"
-        "incus-image-bootstrap.service"
+        "incus-image-base.service"
       ];
       wants = [
         "incus-preseed.service"
         "network-online.target"
-        "incus-image-bootstrap.service"
+        "incus-image-base.service"
       ];
       serviceConfig = {
         Type = "oneshot";
@@ -55,7 +55,7 @@
 
         created=0
         if ! ${incus} info ${name} >/dev/null 2>&1; then
-          ${incus} create local:${bootstrapAlias} ${name}
+          ${incus} create local:${baseAlias} ${name}
           created=1
         fi
 
@@ -141,8 +141,8 @@ in {
 
   systemd.services =
     {
-      incus-image-bootstrap = {
-        description = "Import/update generic bootstrap NixOS image into Incus";
+      incus-image-base = {
+        description = "Import/update generic base NixOS image into Incus";
         wantedBy = ["multi-user.target"];
         after = ["incus-preseed.service"];
         wants = ["incus-preseed.service"];
@@ -154,24 +154,24 @@ in {
         script = ''
           set -euo pipefail
 
-          if [ ! -f ${bootstrapMetadataFile} ] || [ ! -f ${bootstrapRootfsFile} ]; then
-            echo "Missing bootstrap image tarballs:" >&2
-            echo "  ${bootstrapMetadataFile}" >&2
-            echo "  ${bootstrapRootfsFile}" >&2
+          if [ ! -f ${baseMetadataFile} ] || [ ! -f ${baseRootfsFile} ]; then
+            echo "Missing base image tarballs:" >&2
+            echo "  ${baseMetadataFile}" >&2
+            echo "  ${baseRootfsFile}" >&2
             exit 1
           fi
 
-          current_source="$(${incus} image get-property local:${bootstrapAlias} user.bootstrap-image-id 2>/dev/null || true)"
-          if [ "$current_source" = "${bootstrapImageSource}" ] && ${incus} image info local:${bootstrapAlias} >/dev/null 2>&1; then
+          current_source="$(${incus} image get-property local:${baseAlias} user.base-image-id 2>/dev/null || true)"
+          if [ "$current_source" = "${baseImageSource}" ] && ${incus} image info local:${baseAlias} >/dev/null 2>&1; then
             exit 0
           fi
 
-          if ${incus} image info local:${bootstrapAlias} >/dev/null 2>&1; then
-            ${incus} image delete local:${bootstrapAlias}
+          if ${incus} image info local:${baseAlias} >/dev/null 2>&1; then
+            ${incus} image delete local:${baseAlias}
           fi
 
-          ${incus} image import ${bootstrapMetadataFile} ${bootstrapRootfsFile} --alias ${bootstrapAlias}
-          ${incus} image set-property local:${bootstrapAlias} user.bootstrap-image-id "${bootstrapImageSource}"
+          ${incus} image import ${baseMetadataFile} ${baseRootfsFile} --alias ${baseAlias}
+          ${incus} image set-property local:${baseAlias} user.base-image-id "${baseImageSource}"
         '';
       };
     }

@@ -8,7 +8,7 @@ and the steps for adding another guest by copying an existing guest pattern.
 ## Durable model
 
 - The parent host owns Incus guest creation and startup.
-- Guests start from the reusable `lib/images/incus-bootstrap.nix` image.
+- Guests start from the reusable `lib/images/incus-base.nix` image.
 - Guest-specific real configuration still lives under `hosts/<name>/`.
 - `nixbot` deploy then switches the guest to that real configuration.
 - Requested guest deploys should expand to include their declared parent-host
@@ -22,9 +22,9 @@ and the steps for adding another guest by copying an existing guest pattern.
   - `data/secrets/machine/<host>.key.age`
 - Optional shared guest helper secret:
   - `data/secrets/tailscale/<host>.key.age`
-  - consumed by `lib/incus-machine.nix` when present
-- Tailscale auth wiring lives in the shared `lib/incus-machine.nix` module, not
-  in ad hoc per-guest host code.
+  - consumed by `lib/incus-vm.nix` when present
+- Tailscale auth wiring lives in the shared `lib/incus-vm.nix` module, not in ad
+  hoc per-guest host code.
 - The stored secret is an OAuth client secret used to mint fresh tagged login
   keys at `tailscale up` time, not a pre-minted reusable auth key.
 - The shared module should keep the Tailscale block self-contained: discover the
@@ -38,7 +38,7 @@ and the steps for adding another guest by copying an existing guest pattern.
 ## Template steps for a new guest
 
 1. Add `hosts/<name>/default.nix` with `systemd-container` and
-   `lib/incus-machine.nix`.
+   `lib/incus-vm.nix`.
 2. Register `<name>` in `hosts/default.nix`.
 3. Add an entry for `<name>` in `hosts/<parent-host>/incus.nix`.
 4. Add a deploy target entry in `hosts/nixbot.nix`.
@@ -69,6 +69,6 @@ and the steps for adding another guest by copying an existing guest pattern.
 - `hosts/<parent-host>/incus.nix`
 - `hosts/<guest>/default.nix`
 - `hosts/nixbot.nix`
-- `lib/incus-machine.nix`
-- `lib/images/incus-bootstrap.nix`
+- `lib/incus-vm.nix`
+- `lib/images/incus-base.nix`
 - `docs/incus-vms.md`

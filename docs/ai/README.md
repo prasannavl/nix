@@ -23,6 +23,10 @@ Use this index as the canonical map for `docs/ai/**`.
   Tunnel host wiring.
 - `docs/ai/notes/hosts/desktop-investigations-consolidated-2026-03.md`:
   Consolidated desktop investigations and durable findings.
+- `docs/ai/notes/hosts/incus-base-image-rename-2026-03.md`: Reusable Incus image
+  rename from `incus-bootstrap` to `incus-base`.
+- `docs/ai/notes/hosts/incus-vm-module-rename-2026-03.md`: Shared Incus guest
+  module rename from `incus-machine` to `incus-vm`.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
   reusable Incus guest template, bootstrap flow, and secret model.
 

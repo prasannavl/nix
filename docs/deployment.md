@@ -298,7 +298,7 @@ shell access for `nixos-rebuild --target-host`.
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
   - host also consumes `data/secrets/tailscale/<incus-guest>.key.age` directly
-    through `lib/incus-machine.nix`
+    through `lib/incus-vm.nix`
 
 ### Bastion identities and secrets
 
@@ -345,7 +345,7 @@ shell access for `nixos-rebuild --target-host`.
 - Incus-guest Tailscale auth:
   - source file: `data/secrets/tailscale/<incus-guest>.key.age`
   - recipients: admins + `<incus-guest>`
-  - `lib/incus-machine.nix` exposes it as `services.tailscale.authKeyFile`
+  - `lib/incus-vm.nix` exposes it as `services.tailscale.authKeyFile`
 
 ### Incus guest secret notes
 
@@ -353,8 +353,7 @@ shell access for `nixos-rebuild --target-host`.
 - They use the same host secret model as any other managed node:
   - machine age identity in `data/secrets/machine/<host>.key.age`
   - optional service secrets encrypted to that guest's machine recipient
-- The one shared guest-specific convenience path today is in
-  `lib/incus-machine.nix`:
+- The one shared guest-specific convenience path today is in `lib/incus-vm.nix`:
   - optional Tailscale auth secret at `data/secrets/tailscale/<host>.key.age`
   - wired to `services.tailscale.authKeyFile` only if the encrypted file exists
 - Incus guest SSH host keys are persisted under `/var/lib/machine/*`, but those

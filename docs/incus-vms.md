@@ -7,15 +7,15 @@ guest as the template for future guests.
 
 - Parent host: the bastion/virtualization host
 - Parent-host Incus orchestration: `hosts/<parent-host>/incus.nix`
-- Reusable bootstrap image: `lib/images/incus-bootstrap.nix`
-- Shared guest bootstrap module: `lib/incus-machine.nix`
+- Reusable base image: `lib/images/incus-base.nix`
+- Shared guest bootstrap module: `lib/incus-vm.nix`
 - Guest host definition example: `hosts/<guest>/default.nix`
 - Deploy mapping: `hosts/nixbot.nix`
 
 ## What Is Reusable
 
-- The bootstrap image is generic. It is not specific to any one guest.
-- `lib/incus-machine.nix` handles the shared guest mechanics:
+- The base image is generic. It is not specific to any one guest.
+- `lib/incus-vm.nix` handles the shared guest mechanics:
   - persistent SSH host keys under `/var/lib/machine`
   - optional Tailscale auth wiring from `data/secrets/tailscale/<host>.key.age`
 - The guest's real config still lives under `hosts/<name>/`.
@@ -43,7 +43,7 @@ A representative guest is defined across four layers:
 2. Guest OS composition
    - `hosts/<guest>/default.nix` imports:
      - `lib/profiles/systemd-container.nix`
-     - `lib/incus-machine.nix`
+     - `lib/incus-vm.nix`
      - host-local modules for packages, firewall, podman, services, users
 3. Parent-host creation/start
    - `hosts/<parent-host>/incus.nix` creates and starts the Incus guest from the
@@ -59,7 +59,7 @@ Use an existing guest as the template.
 1. Add the new host configuration.
    - Create `hosts/<name>/default.nix`
    - Import `../../lib/profiles/systemd-container.nix`
-   - Import `(import ../../lib/incus-machine.nix { inherit hostName; })`
+   - Import `(import ../../lib/incus-vm.nix { inherit hostName; })`
    - Add host-local modules as needed
 2. Register the host in `hosts/default.nix`.
    - Add a new `nixosSystem` entry for `<name>`

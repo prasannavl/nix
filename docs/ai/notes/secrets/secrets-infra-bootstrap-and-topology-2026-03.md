@@ -16,7 +16,7 @@ Documents the repo's current secret topology from four angles:
 - `lib/nixbot/default.nix`
 - `lib/nixbot/bastion.nix`
 - `hosts/<bastion-host>/services.nix`
-- `lib/incus-machine.nix`
+- `lib/incus-vm.nix`
 - `scripts/nixbot-deploy.sh`
 - `docs/deployment.md`
 
