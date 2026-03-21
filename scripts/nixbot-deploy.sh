@@ -9,7 +9,7 @@ readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
   nixpkgs#age
   nixpkgs#git
   nixpkgs#jq
-  nixpkgs#nixos-rebuild
+  nixpkgs#nixos-rebuild-ng
   nixpkgs#openssh
   nixpkgs#opentofu
 )
