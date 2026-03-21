@@ -36,23 +36,35 @@ main() {
   local abs_file
   local url
   local hash
+  local eval_result
 
   ensure_runtime_shell "$@"
   init_vars
 
   for file in ${TARGET_GLOB}; do
     abs_file="$(realpath "$file")"
-    url="$(FILE_PATH="$abs_file" nix eval --raw --impure --expr '
+    eval_result="$(FILE_PATH="$abs_file" nix eval --raw --impure --expr '
       let
         f = import (builtins.toPath (builtins.getEnv "FILE_PATH"));
-        args = builtins.mapAttrs (name: _:
-          if name == "stdenv" then { mkDerivation = x: x; }
-          else if name == "fetchzip" then (x: x)
-          else null
-        ) (builtins.functionArgs f);
-        pkg = f args;
-      in pkg.src.url
+        functionArgs = builtins.functionArgs f;
+      in
+        if !(builtins.hasAttr "fetchzip" functionArgs) then
+          "__SKIP__"
+        else
+          let
+            args = builtins.mapAttrs (name: _:
+              if name == "stdenv" then { mkDerivation = x: x; }
+              else if name == "fetchzip" then (x: x)
+              else {}
+            ) functionArgs;
+            pkg = f args;
+          in
+            if pkg ? src && pkg.src ? url then pkg.src.url else "__SKIP__"
     ')"
+    if [ "$eval_result" = "__SKIP__" ]; then
+      continue
+    fi
+    url="$eval_result"
     hash="$(nix store prefetch-file --json --hash-type sha256 --unpack "$url" | jq -r .hash)"
     sed -E -i "s#(sha256 = \").*(\";)#\1$hash\2#" "$abs_file"
     echo "$(basename "$abs_file"): $hash"
