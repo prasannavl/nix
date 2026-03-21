@@ -11,7 +11,7 @@ Scope:
 
 Runtime:
 
-- `./scripts/nixbot.sh --action tf-apps`
+- `./scripts/nixbot.sh run --action tf-apps`
 - default state key: `cloudflare-apps/terraform.tfstate`
 
 Build model:

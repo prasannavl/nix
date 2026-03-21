@@ -341,7 +341,7 @@ shell access for `nixos-rebuild --target-host`.
   - recipients are admins + the bastion host
   - `lib/nixbot/bastion.nix` decrypts them to
     `/var/lib/nixbot/secrets/cloudflare-tf/*`
-  - `scripts/nixbot.sh --action tf` auto-loads them into the OpenTofu
+  - `scripts/nixbot.sh run --action tf` auto-loads them into the OpenTofu
     environment when shell variables are absent
 - Incus-guest Tailscale auth:
   - source file: `data/secrets/tailscale/<incus-guest>.key.age`

@@ -73,15 +73,15 @@ Primary files for deployment are:
 
 ## Deploy Actions
 
-`scripts/nixbot.sh` supports multiple actions:
+`scripts/nixbot.sh run` supports multiple actions:
 
-- `--action all` (default): full build/deploy flow with optional TF phases
-- `--action deploy`: host build and deploy only
-- `--action build`: host build only
-- `--action tf`: all Terraform phases (tf-dns, tf-platform, tf-apps)
-- `--action tf-dns`: Cloudflare DNS only
-- `--action tf-platform`: Cloudflare platform resources only
-- `--action tf-apps`: Cloudflare Workers/package deployments only
+- `run --action all` (default): full build/deploy flow with optional TF phases
+- `run --action deploy`: host build and deploy only
+- `run --action build`: host build only
+- `run --action tf`: all Terraform phases (tf-dns, tf-platform, tf-apps)
+- `run --action tf-dns`: Cloudflare DNS only
+- `run --action tf-platform`: Cloudflare platform resources only
+- `run --action tf-apps`: Cloudflare Workers/package deployments only
 
 ## OpenTofu
 
@@ -95,7 +95,7 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - `tf/modules/cloudflare/`: Cloudflare module implementation shared by the
   phase-specific projects.
 - `tf/README.md`: Terraform project layout docs.
-- `scripts/nixbot.sh --action tf-dns|tf-platform|tf-apps`: runs the
+- `scripts/nixbot.sh run --action tf-dns|tf-platform|tf-apps`: runs the
   phase-specific OpenTofu projects locally or through the bastion-trigger path
   used by `nixbot`. Project discovery is suffix-based, so future
   `tf/<provider>-dns`, `tf/<provider>-platform`, and `tf/<provider>-apps`
@@ -109,9 +109,9 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 
 ## Deploy Ordering
 
-- `scripts/nixbot.sh --action all` runs Cloudflare in phases: `tf-dns`,
+- `scripts/nixbot.sh run --action all` runs Cloudflare in phases: `tf-dns`,
   `tf-platform`, host build/deploy, then `tf-apps`.
-- `scripts/nixbot.sh --action tf` runs the Terraform phases only: `tf-dns`,
+- `scripts/nixbot.sh run --action tf` runs the Terraform phases only: `tf-dns`,
   `tf-platform`, then `tf-apps`.
 - `hosts/nixbot.nix` may declare per-host `deps = [ ... ];` for build/deploy
   ordering.

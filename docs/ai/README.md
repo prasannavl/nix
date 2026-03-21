@@ -58,6 +58,9 @@ Use this index as the canonical map for `docs/ai/**`.
   orchestration entrypoint from `nixbot-deploy.sh` to `nixbot.sh`.
 - `docs/ai/notes/nixbot/runtime-temp-suffix-alignment-2026-03.md`: Consolidated
   per-run workspace root for deploy artifacts and detached repo worktrees.
+- `docs/ai/notes/nixbot/run-subcommand-default-usage-2026-03.md`: Bare `nixbot`
+  now prints usage and exits; deploy/Terraform execution moved behind the
+  explicit `run` subcommand.
 - `docs/ai/notes/nixbot/terraform-init-failure-propagation-2026-03.md`:
   Terraform init/plan/apply failures must be checked explicitly because
   `run_tf_action` executes under an `if` context where `set -e` does not abort.

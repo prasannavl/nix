@@ -28,8 +28,14 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 usage() {
   cat <<'USAGE'
 Usage:
-  nixbot [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  nixbot
+  nixbot run [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
+
+Modes:
+  run             Execute the deploy/Terraform workflow. This is the previous
+                  default nixbot behavior.
+  tofu            Run local OpenTofu commands in the nixbot runtime shell.
 
 Core Workflow Options:
   --action         all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap (default: all)
@@ -891,7 +897,7 @@ run_bastion_trigger() {
   # Intentionally forward only the bastion-safe subset here. The remote side is
   # expected to use its repo-local defaults/config for everything else so local
   # operator overrides do not silently reshape bastion execution.
-  remote_command="--sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
+  remote_command="run --sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
   if [ "${LOG_FORMAT}" != "auto" ]; then
     remote_command="${remote_command} --log-format ${LOG_FORMAT}"
   elif is_github_actions_log_mode; then
@@ -1656,9 +1662,9 @@ check_bootstrap_via_forced_command() {
     remote_config_path="$(repo_worktree_file_path "${NIXBOT_CONFIG_PATH}")"
   fi
 
-  check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
+  check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" run --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
   if [ -n "${check_sha}" ]; then
-    check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" --sha "${check_sha}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
+    check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" run --sha "${check_sha}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
   fi
 
   # shellcheck disable=SC2029
@@ -4930,12 +4936,6 @@ hydrate_request_args_from_ssh_command() {
   fi
 }
 
-is_tofu_wrapper_request() {
-  local -a request_args=("$@")
-
-  [ "${#request_args[@]}" -gt 0 ] && [ "${request_args[0]}" = "tofu" ]
-}
-
 run_deploy_request_action() {
   local selected_json="$1"
 
@@ -4998,11 +4998,29 @@ main() {
 
   hydrate_request_args_from_ssh_command request_args
 
-  if is_tofu_wrapper_request "${request_args[@]}"; then
-    ensure_runtime_tools
-    run_tofu_wrapper "${request_args[@]:1}"
-    return
+  if [ "${#request_args[@]}" -eq 0 ]; then
+    usage
+    return 0
   fi
+
+  case "${request_args[0]}" in
+    run)
+      request_args=("${request_args[@]:1}")
+      ;;
+    tofu)
+      ensure_runtime_tools
+      run_tofu_wrapper "${request_args[@]:1}"
+      return
+      ;;
+    help|-h|--help)
+      usage
+      return 0
+      ;;
+    *)
+      usage
+      die "Unknown subcommand: ${request_args[0]}"
+      ;;
+  esac
 
   parse_args "${request_args[@]}"
   ensure_runtime_tools

@@ -15,7 +15,7 @@ Current scope:
 
 Runtime:
 
-- `./scripts/nixbot.sh --action tf-platform`
+- `./scripts/nixbot.sh run --action tf-platform`
 - or local wrapper: `./scripts/nixbot.sh tofu -chdir=tf/gcp-platform plan`
 
 Backend:

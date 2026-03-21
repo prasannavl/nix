@@ -237,8 +237,8 @@ This keeps the import pass auditable and makes retries deterministic.
   consciously accepted computed drift.
 - Gate 2: `tf/cloudflare-apps` plan becomes no-op or contains only consciously
   accepted computed drift.
-- Gate 3: `./scripts/nixbot.sh --action tf-platform --dry` stays clean.
-- Gate 4: `./scripts/nixbot.sh --action tf-apps --dry` stays clean.
+- Gate 3: `./scripts/nixbot.sh run --action tf-platform --dry` stays clean.
+- Gate 4: `./scripts/nixbot.sh run --action tf-apps --dry` stays clean.
 
 ## Notes
 

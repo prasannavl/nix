@@ -20,7 +20,7 @@
     text = ''
       set -euo pipefail
 
-      exec ${nixbot}/bin/nixbot --action tf-apps "$@"
+      exec ${nixbot}/bin/nixbot run --action tf-apps "$@"
     '';
   };
 in

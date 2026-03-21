@@ -58,11 +58,11 @@ hardcoding one-off behavior in the deploy script.
 Use:
 
 - `cd tf/gcp-bootstrap && tofu init && tofu apply`
-- `./scripts/nixbot.sh --action tf`
-- `./scripts/nixbot.sh --action tf-dns`
-- `./scripts/nixbot.sh --action tf-platform`
-- `./scripts/nixbot.sh --action tf-apps`
-- `./scripts/nixbot.sh --action all`
+- `./scripts/nixbot.sh run --action tf`
+- `./scripts/nixbot.sh run --action tf-dns`
+- `./scripts/nixbot.sh run --action tf-platform`
+- `./scripts/nixbot.sh run --action tf-apps`
+- `./scripts/nixbot.sh run --action all`
 
 Phase order for `--action tf`:
 
