@@ -28,7 +28,7 @@ setup_ps1() {
     local error ps1_main_line ps1_exit_line
 
     # shellcheck disable=SC2016
-    error="${b}${fred}"'\$(e="$?"; [ "$e" = "0" ] || printf "[exit: %s]\n\n" "$e")'
+    error="${b}${fred}"'$(e="$?"; [ "$e" = "0" ] || printf "[exit: %s]\n\n" "$e")'
 
     ps1_main_line="${error}${r}${fgray}[\t|${b}${fgreen}\u${r}${fgreen}@\h\
 ${r}${fgray}:${r}${fblue}\w${r}${fgray}]"
