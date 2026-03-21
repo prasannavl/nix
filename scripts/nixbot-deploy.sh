@@ -1775,29 +1775,29 @@ init_known_hosts_ssh_context() {
   local batch_mode="$1"
   local known_hosts_file="$2"
   # shellcheck disable=SC2178
-  local -n ssh_opts_out_ref="$3"
-  local -n nix_sshopts_out_ref="$4"
+  local -n ssh_opts_out_ref_local="$3"
+  local -n nix_sshopts_out_ref_local="$4"
 
-  ssh_opts_out_ref=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
-  nix_sshopts_out_ref="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
+  ssh_opts_out_ref_local=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
+  nix_sshopts_out_ref_local="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
 
   if [ "${batch_mode}" -eq 1 ]; then
-    ssh_opts_out_ref=(-o BatchMode=yes "${ssh_opts_out_ref[@]}")
-    nix_sshopts_out_ref="-o BatchMode=yes ${nix_sshopts_out_ref}"
+    ssh_opts_out_ref_local=(-o BatchMode=yes "${ssh_opts_out_ref_local[@]}")
+    nix_sshopts_out_ref_local="-o BatchMode=yes ${nix_sshopts_out_ref_local}"
   fi
 }
 
 apply_identity_to_ssh_context() {
   local key_file="$1"
   # shellcheck disable=SC2178
-  local -n ssh_opts_inout_ref="$2"
-  local -n nix_sshopts_inout_ref="$3"
+  local -n ssh_opts_inout_ref_local="$2"
+  local -n nix_sshopts_inout_ref_local="$3"
 
-  ssh_opts_inout_ref=(-i "${key_file}" -o IdentitiesOnly=yes "${ssh_opts_inout_ref[@]}")
-  if [ -n "${nix_sshopts_inout_ref}" ]; then
-    nix_sshopts_inout_ref="-i ${key_file} -o IdentitiesOnly=yes ${nix_sshopts_inout_ref}"
+  ssh_opts_inout_ref_local=(-i "${key_file}" -o IdentitiesOnly=yes "${ssh_opts_inout_ref_local[@]}")
+  if [ -n "${nix_sshopts_inout_ref_local}" ]; then
+    nix_sshopts_inout_ref_local="-i ${key_file} -o IdentitiesOnly=yes ${nix_sshopts_inout_ref_local}"
   else
-    nix_sshopts_inout_ref="-i ${key_file} -o IdentitiesOnly=yes"
+    nix_sshopts_inout_ref_local="-i ${key_file} -o IdentitiesOnly=yes"
   fi
 }
 
@@ -1805,16 +1805,16 @@ resolve_ssh_identity_file() {
   local key_path="$1"
   local label="$2"
   local require_age="${3:-0}"
-  local -n resolved_key_file_out_ref="$4"
+  local -n resolved_key_file_out_ref_local="$4"
 
-  resolved_key_file_out_ref=""
+  resolved_key_file_out_ref_local=""
   [ -n "${key_path}" ] || return 0
 
-  if ! resolved_key_file_out_ref="$(resolve_runtime_key_file "${key_path}" "${require_age}")"; then
+  if ! resolved_key_file_out_ref_local="$(resolve_runtime_key_file "${key_path}" "${require_age}")"; then
     return 1
   fi
-  if [ ! -f "${resolved_key_file_out_ref}" ]; then
-    echo "${label} file not found: ${key_path} (resolved: ${resolved_key_file_out_ref})" >&2
+  if [ ! -f "${resolved_key_file_out_ref_local}" ]; then
+    echo "${label} file not found: ${key_path} (resolved: ${resolved_key_file_out_ref_local})" >&2
     return 1
   fi
 }
@@ -2184,23 +2184,23 @@ run_build_job() {
 record_phase_status() {
   local node="$1"
   local status_file="$2"
-  local -n success_hosts_out_ref="$3"
-  local -n failed_hosts_out_ref="$4"
+  local -n success_hosts_out_ref_local="$3"
+  local -n failed_hosts_out_ref_local="$4"
   local rc
 
   if ! rc="$(read_status_file "${status_file}")"; then
-    failed_hosts_out_ref+=("${node}")
+    failed_hosts_out_ref_local+=("${node}")
     return 1
   fi
   if [ "${rc}" != "0" ]; then
-    failed_hosts_out_ref+=("${node}")
+    failed_hosts_out_ref_local+=("${node}")
     if is_signal_exit_status "${rc}"; then
       return "${rc}"
     fi
     return 1
   fi
 
-  success_hosts_out_ref+=("${node}")
+  success_hosts_out_ref_local+=("${node}")
   return 0
 }
 
@@ -2208,27 +2208,27 @@ record_deploy_phase_status() {
   local node="$1"
   local status_file="$2"
   # shellcheck disable=SC2178
-  local -n success_hosts_out_ref="$3"
-  local -n skipped_hosts_out_ref="$4"
+  local -n success_hosts_out_ref_local="$3"
+  local -n skipped_hosts_out_ref_local="$4"
   # shellcheck disable=SC2178
-  local -n failed_hosts_out_ref="$5"
+  local -n failed_hosts_out_ref_local="$5"
   local status
 
   if ! status="$(read_status_file "${status_file}")"; then
-    failed_hosts_out_ref+=("${node}")
+    failed_hosts_out_ref_local+=("${node}")
     return 1
   fi
   case "${status}" in
     0)
-      success_hosts_out_ref+=("${node}")
+      success_hosts_out_ref_local+=("${node}")
       return 0
       ;;
     skip)
-      skipped_hosts_out_ref+=("${node}")
+      skipped_hosts_out_ref_local+=("${node}")
       return 0
       ;;
     *)
-      failed_hosts_out_ref+=("${node}")
+      failed_hosts_out_ref_local+=("${node}")
       if is_signal_exit_status "${status}"; then
         return "${status}"
       fi
@@ -2238,20 +2238,20 @@ record_deploy_phase_status() {
 }
 
 append_unique_array_item() {
-  local -n array_out_ref="$1"
+  local -n array_out_ref_local="$1"
   local item="$2"
 
-  array_contains "${item}" "${array_out_ref[@]}" || array_out_ref+=("${item}")
+  array_contains "${item}" "${array_out_ref_local[@]}" || array_out_ref_local+=("${item}")
 }
 
 collect_completed_deploy_wave_statuses() {
   local deploy_status_dir="$1"
   # shellcheck disable=SC2178
-  local -n success_hosts_out_ref="$2"
+  local -n success_hosts_out_ref_local="$2"
   # shellcheck disable=SC2178
-  local -n skipped_hosts_out_ref="$3"
+  local -n skipped_hosts_out_ref_local="$3"
   # shellcheck disable=SC2178
-  local -n failed_hosts_out_ref="$4"
+  local -n failed_hosts_out_ref_local="$4"
   shift 4
 
   local node status_file status=""
@@ -2264,13 +2264,13 @@ collect_completed_deploy_wave_statuses() {
     fi
     case "${status}" in
       0)
-        append_unique_array_item success_hosts_out_ref "${node}"
+        append_unique_array_item success_hosts_out_ref_local "${node}"
         ;;
       skip)
-        append_unique_array_item skipped_hosts_out_ref "${node}"
+        append_unique_array_item skipped_hosts_out_ref_local "${node}"
         ;;
       *)
-        append_unique_array_item failed_hosts_out_ref "${node}"
+        append_unique_array_item failed_hosts_out_ref_local "${node}"
         ;;
     esac
   done
@@ -2283,21 +2283,21 @@ handle_deploy_interrupt() {
   local rollback_log_dir="$4"
   local rollback_status_dir="$5"
   # shellcheck disable=SC2178
-  local -n success_hosts_out_ref="$6"
+  local -n success_hosts_out_ref_local="$6"
   # shellcheck disable=SC2178
-  local -n skipped_hosts_out_ref="$7"
+  local -n skipped_hosts_out_ref_local="$7"
   # shellcheck disable=SC2178
-  local -n failed_hosts_out_ref="$8"
+  local -n failed_hosts_out_ref_local="$8"
   shift 8
 
   terminate_background_jobs
   collect_completed_deploy_wave_statuses \
     "${deploy_status_dir}" \
-    success_hosts_out_ref \
-    skipped_hosts_out_ref \
-    failed_hosts_out_ref \
+    success_hosts_out_ref_local \
+    skipped_hosts_out_ref_local \
+    failed_hosts_out_ref_local \
     "$@"
-  maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${success_hosts_out_ref[@]}"
+  maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${success_hosts_out_ref_local[@]}"
   return "${interrupt_rc}"
 }
 
@@ -2308,11 +2308,11 @@ abort_deploy_on_signal() {
   local rollback_log_dir="$4"
   local rollback_status_dir="$5"
   # shellcheck disable=SC2178
-  local -n success_hosts_out_ref="$6"
+  local -n success_hosts_out_ref_local="$6"
   # shellcheck disable=SC2178
-  local -n skipped_hosts_out_ref="$7"
+  local -n skipped_hosts_out_ref_local="$7"
   # shellcheck disable=SC2178
-  local -n failed_hosts_out_ref="$8"
+  local -n failed_hosts_out_ref_local="$8"
   shift 8
 
   if ! is_signal_exit_status "${phase_rc}"; then
@@ -2325,9 +2325,9 @@ abort_deploy_on_signal() {
     "${deploy_status_dir}" \
     "${rollback_log_dir}" \
     "${rollback_status_dir}" \
-    success_hosts_out_ref \
-    skipped_hosts_out_ref \
-    failed_hosts_out_ref \
+    success_hosts_out_ref_local \
+    skipped_hosts_out_ref_local \
+    failed_hosts_out_ref_local \
     "$@"
 }
 
@@ -2445,17 +2445,17 @@ maybe_rollback_successful_hosts() {
 
 record_snapshot_failures_for_wave() {
   local snapshot_dir="$1"
-  local -n snapshot_failed_hosts_out_ref="$2"
+  local -n snapshot_failed_hosts_out_ref_local="$2"
   # shellcheck disable=SC2178
-  local -n deploy_failed_hosts_out_ref="$3"
+  local -n deploy_failed_hosts_out_ref_local="$3"
   shift 3
 
   local node
   for node in "$@"; do
     [ -n "${node}" ] || continue
     if ! snapshot_exists "${snapshot_dir}/${node}.path"; then
-      snapshot_failed_hosts_out_ref+=("${node}")
-      deploy_failed_hosts_out_ref+=("${node}")
+      snapshot_failed_hosts_out_ref_local+=("${node}")
+      deploy_failed_hosts_out_ref_local+=("${node}")
     fi
   done
 }
@@ -2928,11 +2928,11 @@ run_build_phase() {
   local build_log_dir="$5"
   local build_status_dir="$6"
   local build_out_dir="$7"
-  local -n build_hosts_in_ref="$8"
+  local -n build_hosts_in_ref_local="$8"
   # shellcheck disable=SC2034
-  local -n built_hosts_out_ref="$9"
+  local -n built_hosts_out_ref_local="$9"
   # shellcheck disable=SC2178
-  local -n failed_hosts_out_ref="${10}"
+  local -n failed_hosts_out_ref_local="${10}"
 
   local node active_jobs=0
   local status_file out_file log_file
@@ -2940,7 +2940,7 @@ run_build_phase() {
   local host_grouping=0
   local phase_rc=0
 
-  if [ "${build_parallel}" -eq 0 ] && [ "${#build_hosts_in_ref[@]}" -gt 1 ]; then
+  if [ "${build_parallel}" -eq 0 ] && [ "${#build_hosts_in_ref_local[@]}" -gt 1 ]; then
     host_grouping=1
     log_grouped_phase_section "Phase: Build" "build" 1
   else
@@ -2948,13 +2948,13 @@ run_build_phase() {
   fi
 
   if [ "${build_parallel}" -eq 1 ] && [ "${prioritize_bastion}" -eq 1 ] \
-    && [ "${#build_hosts_in_ref[@]}" -gt 0 ] && [ "${build_hosts_in_ref[0]}" = "${bastion_host}" ]; then
+    && [ "${#build_hosts_in_ref_local[@]}" -gt 0 ] && [ "${build_hosts_in_ref_local[0]}" = "${bastion_host}" ]; then
     build_sync_leading_bastion=1
     node="${bastion_host}"
     status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
     out_file="${build_out_dir}/${node}.path"
     run_build_job "${node}" "${out_file}" "${status_file}"
-    if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref failed_hosts_out_ref; then
+    if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref_local failed_hosts_out_ref_local; then
       phase_rc="$?"
       if is_signal_exit_status "${phase_rc}"; then
         log_group_scope_end
@@ -2963,7 +2963,7 @@ run_build_phase() {
     fi
   fi
 
-  for node in "${build_hosts_in_ref[@]}"; do
+  for node in "${build_hosts_in_ref_local[@]}"; do
     [ -n "${node}" ] || continue
     if [ "${build_sync_leading_bastion}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
       continue
@@ -2985,7 +2985,7 @@ run_build_phase() {
     fi
 
     run_build_job "${node}" "${out_file}" "${status_file}"
-    if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref failed_hosts_out_ref; then
+    if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref_local failed_hosts_out_ref_local; then
       phase_rc="$?"
       if is_signal_exit_status "${phase_rc}"; then
         log_group_scope_end
@@ -3001,13 +3001,13 @@ run_build_phase() {
       log_group_scope_end
       return "${phase_rc}"
     fi
-    for node in "${build_hosts_in_ref[@]}"; do
+    for node in "${build_hosts_in_ref_local[@]}"; do
       [ -n "${node}" ] || continue
       status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
       if [ "${build_sync_leading_bastion}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
         continue
       fi
-      if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref failed_hosts_out_ref; then
+      if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref_local failed_hosts_out_ref_local; then
         phase_rc="$?"
         if is_signal_exit_status "${phase_rc}"; then
           log_group_scope_end
@@ -3017,8 +3017,8 @@ run_build_phase() {
     done
   fi
 
-  if [ "${#failed_hosts_out_ref[@]}" -gt 0 ]; then
-    print_host_failures "Build phase failed" build "${build_log_dir}" "${build_status_dir}" "${failed_hosts_out_ref[@]}"
+  if [ "${#failed_hosts_out_ref_local[@]}" -gt 0 ]; then
+    print_host_failures "Build phase failed" build "${build_log_dir}" "${build_status_dir}" "${failed_hosts_out_ref_local[@]}"
     log_group_scope_end
     return 1
   fi
@@ -3038,14 +3038,14 @@ run_deploy_phase() {
   local build_out_dir="$6"
   local rollback_log_dir="$7"
   local rollback_status_dir="$8"
-  local -n level_groups_in_ref="$9"
-  local -n successful_hosts_out_ref="${10}"
+  local -n level_groups_in_ref_local="$9"
+  local -n successful_hosts_out_ref_local="${10}"
   # shellcheck disable=SC2034
-  local -n deploy_skipped_hosts_out_ref="${11}"
+  local -n deploy_skipped_hosts_out_ref_local="${11}"
   # shellcheck disable=SC2034,SC2178
-  local -n snapshot_failed_hosts_out_ref="${12}"
+  local -n snapshot_failed_hosts_out_ref_local="${12}"
   # shellcheck disable=SC2178
-  local -n deploy_failed_hosts_out_ref="${13}"
+  local -n deploy_failed_hosts_out_ref_local="${13}"
 
   local level_group node active_jobs level_index=0
   local -a level_hosts=()
@@ -3057,7 +3057,7 @@ run_deploy_phase() {
   local host_grouping=0
   local phase_rc=0
 
-  for level_group in "${level_groups_in_ref[@]}"; do
+  for level_group in "${level_groups_in_ref_local[@]}"; do
     [ -n "${level_group}" ] || continue
     level_group_size="$(jq 'length' <<<"${level_group}")"
     total_deploy_hosts=$((total_deploy_hosts + level_group_size))
@@ -3070,16 +3070,16 @@ run_deploy_phase() {
     log_grouped_phase_section "Phase: Deploy" "deploy" 0
   fi
 
-  for level_group in "${level_groups_in_ref[@]}"; do
+  for level_group in "${level_groups_in_ref_local[@]}"; do
     mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
     snapshot_retry_logged=0
     if log_snapshot_retry_transition "${snapshot_dir}" "${level_index}" "${level_hosts[@]}"; then
       snapshot_retry_logged=1
     fi
     if ! ensure_wave_snapshots "${snapshot_dir}" "${level_hosts[@]}"; then
-      record_snapshot_failures_for_wave "${snapshot_dir}" snapshot_failed_hosts_out_ref deploy_failed_hosts_out_ref "${level_hosts[@]}"
-      print_host_failures "Deploy phase failed" snapshot "" "${deploy_failed_hosts_out_ref[@]}"
-      maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts_out_ref[@]}"
+      record_snapshot_failures_for_wave "${snapshot_dir}" snapshot_failed_hosts_out_ref_local deploy_failed_hosts_out_ref_local "${level_hosts[@]}"
+      print_host_failures "Deploy phase failed" snapshot "" "${deploy_failed_hosts_out_ref_local[@]}"
+      maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts_out_ref_local[@]}"
       log_group_scope_end
       return 1
     fi
@@ -3109,9 +3109,9 @@ run_deploy_phase() {
             "${deploy_status_dir}" \
             "${rollback_log_dir}" \
             "${rollback_status_dir}" \
-            successful_hosts_out_ref \
-            deploy_skipped_hosts_out_ref \
-            deploy_failed_hosts_out_ref \
+            successful_hosts_out_ref_local \
+            deploy_skipped_hosts_out_ref_local \
+            deploy_failed_hosts_out_ref_local \
             "${level_hosts[@]}"
           phase_rc="$?"
           log_group_scope_end
@@ -3121,7 +3121,7 @@ run_deploy_phase() {
       fi
 
       run_deploy_job "${node}" "${out_file}" "${status_file}"
-      if ! record_deploy_phase_status "${node}" "${status_file}" successful_hosts_out_ref deploy_skipped_hosts_out_ref deploy_failed_hosts_out_ref; then
+      if ! record_deploy_phase_status "${node}" "${status_file}" successful_hosts_out_ref_local deploy_skipped_hosts_out_ref_local deploy_failed_hosts_out_ref_local; then
         phase_rc="$?"
         abort_deploy_on_signal \
           "${phase_rc}" \
@@ -3129,9 +3129,9 @@ run_deploy_phase() {
           "${deploy_status_dir}" \
           "${rollback_log_dir}" \
           "${rollback_status_dir}" \
-          successful_hosts_out_ref \
-          deploy_skipped_hosts_out_ref \
-          deploy_failed_hosts_out_ref \
+          successful_hosts_out_ref_local \
+          deploy_skipped_hosts_out_ref_local \
+          deploy_failed_hosts_out_ref_local \
           "${level_hosts[@]}"
         phase_rc="$?"
         if is_signal_exit_status "${phase_rc}"; then
@@ -3152,9 +3152,9 @@ run_deploy_phase() {
           "${deploy_status_dir}" \
           "${rollback_log_dir}" \
           "${rollback_status_dir}" \
-          successful_hosts_out_ref \
-          deploy_skipped_hosts_out_ref \
-          deploy_failed_hosts_out_ref \
+          successful_hosts_out_ref_local \
+          deploy_skipped_hosts_out_ref_local \
+          deploy_failed_hosts_out_ref_local \
           "${level_hosts[@]}"
         phase_rc="$?"
         log_group_scope_end
@@ -3163,7 +3163,7 @@ run_deploy_phase() {
       for node in "${level_hosts[@]}"; do
         [ -n "${node}" ] || continue
         status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
-        if ! record_deploy_phase_status "${node}" "${status_file}" successful_hosts_out_ref deploy_skipped_hosts_out_ref deploy_failed_hosts_out_ref; then
+        if ! record_deploy_phase_status "${node}" "${status_file}" successful_hosts_out_ref_local deploy_skipped_hosts_out_ref_local deploy_failed_hosts_out_ref_local; then
           phase_rc="$?"
           abort_deploy_on_signal \
             "${phase_rc}" \
@@ -3171,9 +3171,9 @@ run_deploy_phase() {
             "${deploy_status_dir}" \
             "${rollback_log_dir}" \
             "${rollback_status_dir}" \
-            successful_hosts_out_ref \
-            deploy_skipped_hosts_out_ref \
-            deploy_failed_hosts_out_ref \
+            successful_hosts_out_ref_local \
+            deploy_skipped_hosts_out_ref_local \
+            deploy_failed_hosts_out_ref_local \
             "${level_hosts[@]}"
           phase_rc="$?"
           if is_signal_exit_status "${phase_rc}"; then
@@ -3182,18 +3182,18 @@ run_deploy_phase() {
           fi
         fi
       done
-      if [ "${#deploy_failed_hosts_out_ref[@]}" -gt 0 ]; then
+      if [ "${#deploy_failed_hosts_out_ref_local[@]}" -gt 0 ]; then
         deploy_wave_failed=1
       fi
     fi
 
     if [ "${deploy_wave_failed}" -eq 1 ]; then
       if [ "${deploy_parallel}" -eq 1 ]; then
-        print_host_failures "Deploy phase failed" deploy "${deploy_log_dir}" "${deploy_failed_hosts_out_ref[@]}"
+        print_host_failures "Deploy phase failed" deploy "${deploy_log_dir}" "${deploy_failed_hosts_out_ref_local[@]}"
       else
-        print_host_failures "Deploy phase failed" plain "" "${deploy_failed_hosts_out_ref[@]}"
+        print_host_failures "Deploy phase failed" plain "" "${deploy_failed_hosts_out_ref_local[@]}"
       fi
-      maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts_out_ref[@]}"
+      maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts_out_ref_local[@]}"
       log_group_scope_end
       return 1
     fi
@@ -3508,25 +3508,25 @@ resolve_tf_project_dir() {
 resolve_tf_project_context() {
   local input_dir="$1"
   local require_repo_project="${2:-1}"
-  local -n project_dir_out_ref="$3"
-  local -n project_name_out_ref="$4"
-  local -n provider_name_out_ref="$5"
+  local -n project_dir_out_ref_local="$3"
+  local -n project_name_out_ref_local="$4"
+  local -n provider_name_out_ref_local="$5"
   local _pname=""
 
-  project_dir_out_ref="$(resolve_tf_project_dir "${input_dir}")"
-  project_name_out_ref=""
-  provider_name_out_ref=""
+  project_dir_out_ref_local="$(resolve_tf_project_dir "${input_dir}")"
+  project_name_out_ref_local=""
+  provider_name_out_ref_local=""
 
-  _pname="$(tf_project_name_from_dir "${project_dir_out_ref}")"
-  if [[ "${_pname}" != *-* ]] || [ "$(basename "$(dirname "${project_dir_out_ref}")")" != "tf" ]; then
+  _pname="$(tf_project_name_from_dir "${project_dir_out_ref_local}")"
+  if [[ "${_pname}" != *-* ]] || [ "$(basename "$(dirname "${project_dir_out_ref_local}")")" != "tf" ]; then
     [ "${require_repo_project}" -eq 1 ] && return 1
     return 0
   fi
 
   # shellcheck disable=SC2034
-  project_name_out_ref="${_pname}"
+  project_name_out_ref_local="${_pname}"
   # shellcheck disable=SC2034
-  provider_name_out_ref="$(tf_project_provider_from_name "${_pname}")"
+  provider_name_out_ref_local="$(tf_project_provider_from_name "${_pname}")"
 }
 
 prepare_tf_project_runtime() {
@@ -3560,23 +3560,23 @@ prepare_tf_apps_project_runtime() {
 }
 collect_tf_var_files_for_project() {
   local project_name="$1"
-  local -n tf_var_files_out_ref="$2"
-  local -n discovered_tf_var_files_out_ref="$3"
+  local -n tf_var_files_out_ref_local="$2"
+  local -n discovered_tf_var_files_out_ref_local="$3"
   local log_discovered_paths="${4:-0}"
   local tf_var_path=""
   local resolved_tf_var_file=""
 
-  tf_var_files_out_ref=()
-  discovered_tf_var_files_out_ref=0
+  tf_var_files_out_ref_local=()
+  discovered_tf_var_files_out_ref_local=0
 
   while IFS= read -r tf_var_path; do
-    discovered_tf_var_files_out_ref=$((discovered_tf_var_files_out_ref + 1))
+    discovered_tf_var_files_out_ref_local=$((discovered_tf_var_files_out_ref_local + 1))
     if [ "${log_discovered_paths}" -eq 1 ]; then
       echo "Sensitive tfvars: ${tf_var_path}" >&2
     fi
     resolved_tf_var_file="$(resolve_runtime_key_file "${tf_var_path}")"
     if [ -f "${resolved_tf_var_file}" ]; then
-      tf_var_files_out_ref+=("${resolved_tf_var_file}")
+      tf_var_files_out_ref_local+=("${resolved_tf_var_file}")
     elif [ "${log_discovered_paths}" -eq 1 ]; then
       echo "Sensitive tfvars: ${tf_var_path} not present" >&2
     fi
@@ -3739,11 +3739,11 @@ tofu_subcommand_supports_var_files() {
 }
 
 resolve_tofu_auto_var_file_subcommand() {
-  local -n subcommand_out_ref="$1"
+  local -n subcommand_out_ref_local="$1"
   shift
   local subcommand=""
 
-  subcommand_out_ref=""
+  subcommand_out_ref_local=""
 
   if ! subcommand="$(tofu_args_extract_subcommand "$@")"; then
     return 1
@@ -3758,7 +3758,7 @@ resolve_tofu_auto_var_file_subcommand() {
   fi
 
   # shellcheck disable=SC2034
-  subcommand_out_ref="${subcommand}"
+  subcommand_out_ref_local="${subcommand}"
 }
 
 _exec_tofu_cmd() {
@@ -4288,24 +4288,24 @@ host_final_status() {
   local deploy_failed_hosts_name="$8"
   local rollback_ok_hosts_name="$9"
   local rollback_failed_hosts_name="${10}"
-  local -n build_ok_hosts_in_ref="${build_ok_hosts_name}"
-  local -n build_failed_hosts_in_ref="${build_failed_hosts_name}"
+  local -n build_ok_hosts_in_ref_local="${build_ok_hosts_name}"
+  local -n build_failed_hosts_in_ref_local="${build_failed_hosts_name}"
   # shellcheck disable=SC2178
-  local -n snapshot_failed_hosts_in_ref="${snapshot_failed_hosts_name}"
-  local -n deploy_ok_hosts_in_ref="${deploy_ok_hosts_name}"
-  local -n deploy_skipped_hosts_in_ref="${deploy_skipped_hosts_name}"
+  local -n snapshot_failed_hosts_in_ref_local="${snapshot_failed_hosts_name}"
+  local -n deploy_ok_hosts_in_ref_local="${deploy_ok_hosts_name}"
+  local -n deploy_skipped_hosts_in_ref_local="${deploy_skipped_hosts_name}"
   # shellcheck disable=SC2178
-  local -n deploy_failed_hosts_in_ref="${deploy_failed_hosts_name}"
-  local -n rollback_ok_hosts_in_ref="${rollback_ok_hosts_name}"
-  local -n rollback_failed_hosts_in_ref="${rollback_failed_hosts_name}"
+  local -n deploy_failed_hosts_in_ref_local="${deploy_failed_hosts_name}"
+  local -n rollback_ok_hosts_in_ref_local="${rollback_ok_hosts_name}"
+  local -n rollback_failed_hosts_in_ref_local="${rollback_failed_hosts_name}"
 
-  if array_contains "${node}" "${build_failed_hosts_in_ref[@]}"; then
+  if array_contains "${node}" "${build_failed_hosts_in_ref_local[@]}"; then
     printf '%s' 'FAIL (build)'
     return
   fi
 
   if [ "${action}" = "build" ] || [ "${action}" = "check-bootstrap" ]; then
-    if array_contains "${node}" "${build_ok_hosts_in_ref[@]}"; then
+    if array_contains "${node}" "${build_ok_hosts_in_ref_local[@]}"; then
       printf '%s' 'ok'
     else
       printf '%s' 'FAIL'
@@ -4313,19 +4313,19 @@ host_final_status() {
     return
   fi
 
-  if array_contains "${node}" "${rollback_failed_hosts_in_ref[@]}"; then
+  if array_contains "${node}" "${rollback_failed_hosts_in_ref_local[@]}"; then
     printf '%s' 'FAIL (rollback)'
-  elif array_contains "${node}" "${snapshot_failed_hosts_in_ref[@]}"; then
+  elif array_contains "${node}" "${snapshot_failed_hosts_in_ref_local[@]}"; then
     printf '%s' 'FAIL (snapshot)'
-  elif array_contains "${node}" "${deploy_failed_hosts_in_ref[@]}"; then
+  elif array_contains "${node}" "${deploy_failed_hosts_in_ref_local[@]}"; then
     printf '%s' 'FAIL (deploy)'
-  elif array_contains "${node}" "${rollback_ok_hosts_in_ref[@]}"; then
+  elif array_contains "${node}" "${rollback_ok_hosts_in_ref_local[@]}"; then
     printf '%s' 'rolled back'
-  elif array_contains "${node}" "${deploy_skipped_hosts_in_ref[@]}"; then
+  elif array_contains "${node}" "${deploy_skipped_hosts_in_ref_local[@]}"; then
     printf '%s' 'ok (skip)'
-  elif array_contains "${node}" "${deploy_ok_hosts_in_ref[@]}"; then
+  elif array_contains "${node}" "${deploy_ok_hosts_in_ref_local[@]}"; then
     printf '%s' 'ok'
-  elif array_contains "${node}" "${build_ok_hosts_in_ref[@]}"; then
+  elif array_contains "${node}" "${build_ok_hosts_in_ref_local[@]}"; then
     printf '%s' 'built'
   else
     printf '%s' 'FAIL'
@@ -4454,30 +4454,30 @@ set_run_summary_host_state() {
   local deploy_failed_hosts_name="$8"
   local rollback_ok_hosts_name="$9"
   local rollback_failed_hosts_name="${10}"
-  local -n selected_hosts_in_ref="${selected_hosts_name}"
-  local -n build_ok_hosts_in_ref="${build_ok_hosts_name}"
-  local -n build_failed_hosts_in_ref="${build_failed_hosts_name}"
+  local -n selected_hosts_in_ref_local="${selected_hosts_name}"
+  local -n build_ok_hosts_in_ref_local="${build_ok_hosts_name}"
+  local -n build_failed_hosts_in_ref_local="${build_failed_hosts_name}"
   # shellcheck disable=SC2178
-  local -n snapshot_failed_hosts_in_ref="${snapshot_failed_hosts_name}"
-  local -n deploy_ok_hosts_in_ref="${deploy_ok_hosts_name}"
-  local -n deploy_skipped_hosts_in_ref="${deploy_skipped_hosts_name}"
+  local -n snapshot_failed_hosts_in_ref_local="${snapshot_failed_hosts_name}"
+  local -n deploy_ok_hosts_in_ref_local="${deploy_ok_hosts_name}"
+  local -n deploy_skipped_hosts_in_ref_local="${deploy_skipped_hosts_name}"
   # shellcheck disable=SC2178
-  local -n deploy_failed_hosts_in_ref="${deploy_failed_hosts_name}"
-  local -n rollback_ok_hosts_in_ref="${rollback_ok_hosts_name}"
-  local -n rollback_failed_hosts_in_ref="${rollback_failed_hosts_name}"
+  local -n deploy_failed_hosts_in_ref_local="${deploy_failed_hosts_name}"
+  local -n rollback_ok_hosts_in_ref_local="${rollback_ok_hosts_name}"
+  local -n rollback_failed_hosts_in_ref_local="${rollback_failed_hosts_name}"
 
   # shellcheck disable=SC2034
   {
     RUN_SUMMARY_ACTION="${action}"
-    RUN_SUMMARY_SELECTED_HOSTS=("${selected_hosts_in_ref[@]}")
-    RUN_SUMMARY_BUILD_OK_HOSTS=("${build_ok_hosts_in_ref[@]}")
-    RUN_SUMMARY_BUILD_FAILED_HOSTS=("${build_failed_hosts_in_ref[@]}")
-    RUN_SUMMARY_SNAPSHOT_FAILED_HOSTS=("${snapshot_failed_hosts_in_ref[@]}")
-    RUN_SUMMARY_DEPLOY_OK_HOSTS=("${deploy_ok_hosts_in_ref[@]}")
-    RUN_SUMMARY_DEPLOY_SKIPPED_HOSTS=("${deploy_skipped_hosts_in_ref[@]}")
-    RUN_SUMMARY_DEPLOY_FAILED_HOSTS=("${deploy_failed_hosts_in_ref[@]}")
-    RUN_SUMMARY_ROLLBACK_OK_HOSTS=("${rollback_ok_hosts_in_ref[@]}")
-    RUN_SUMMARY_ROLLBACK_FAILED_HOSTS=("${rollback_failed_hosts_in_ref[@]}")
+    RUN_SUMMARY_SELECTED_HOSTS=("${selected_hosts_in_ref_local[@]}")
+    RUN_SUMMARY_BUILD_OK_HOSTS=("${build_ok_hosts_in_ref_local[@]}")
+    RUN_SUMMARY_BUILD_FAILED_HOSTS=("${build_failed_hosts_in_ref_local[@]}")
+    RUN_SUMMARY_SNAPSHOT_FAILED_HOSTS=("${snapshot_failed_hosts_in_ref_local[@]}")
+    RUN_SUMMARY_DEPLOY_OK_HOSTS=("${deploy_ok_hosts_in_ref_local[@]}")
+    RUN_SUMMARY_DEPLOY_SKIPPED_HOSTS=("${deploy_skipped_hosts_in_ref_local[@]}")
+    RUN_SUMMARY_DEPLOY_FAILED_HOSTS=("${deploy_failed_hosts_in_ref_local[@]}")
+    RUN_SUMMARY_ROLLBACK_OK_HOSTS=("${rollback_ok_hosts_in_ref_local[@]}")
+    RUN_SUMMARY_ROLLBACK_FAILED_HOSTS=("${rollback_failed_hosts_in_ref_local[@]}")
   }
 }
 
@@ -4521,22 +4521,22 @@ ensure_runtime_tools() {
 }
 
 hydrate_request_args_from_ssh_command() {
-  local -n request_args_out_ref="$1"
+  local -n request_args_out_ref_local="$1"
 
-  if [ "${#request_args_out_ref[@]}" -ne 0 ] || [ -z "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  if [ "${#request_args_out_ref_local[@]}" -ne 0 ] || [ -z "${SSH_ORIGINAL_COMMAND:-}" ]; then
     return
   fi
 
   echo "Received SSH_ORIGINAL_COMMAND:"
   echo "${SSH_ORIGINAL_COMMAND}"
-  read -r -a request_args_out_ref <<<"${SSH_ORIGINAL_COMMAND}"
-  if [ "${#request_args_out_ref[@]}" -gt 0 ] && [ "${request_args_out_ref[0]}" = "--" ]; then
-    request_args_out_ref=("${request_args_out_ref[@]:1}")
+  read -r -a request_args_out_ref_local <<<"${SSH_ORIGINAL_COMMAND}"
+  if [ "${#request_args_out_ref_local[@]}" -gt 0 ] && [ "${request_args_out_ref_local[0]}" = "--" ]; then
+    request_args_out_ref_local=("${request_args_out_ref_local[@]:1}")
   fi
-  if [ "${#request_args_out_ref[@]}" -gt 0 ]; then
-    case "${request_args_out_ref[0]}" in
+  if [ "${#request_args_out_ref_local[@]}" -gt 0 ]; then
+    case "${request_args_out_ref_local[0]}" in
       nixbot-deploy.sh|*/nixbot-deploy.sh)
-        request_args_out_ref=("${request_args_out_ref[@]:1}")
+        request_args_out_ref_local=("${request_args_out_ref_local[@]:1}")
         ;;
     esac
   fi

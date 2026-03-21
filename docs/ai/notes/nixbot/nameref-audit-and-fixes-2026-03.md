@@ -8,11 +8,14 @@
   with the same names. In bash this creates a self-referential nameref and
   triggers warnings or misbehavior.
 - Convention adopted for future refactors: caller-side nameref target variables
-  may use `*_ref`, but helper-local nameref aliases must use explicit direction,
-  using `*_out_ref`, `*_in_ref`, or `*_inout_ref`.
-- Fix applied: renamed helper-local nameref bindings to that private-directional
-  convention (for example `failed_hosts_out_ref`, `build_hosts_in_ref`,
-  `request_args_out_ref`) throughout the script while preserving the public call
-  contract.
+  may use `*_ref`, but helper-local nameref aliases must not reuse the same
+  caller-facing names. Use a distinct helper-local suffix plus explicit
+  direction, such as `*_out_ref_local`, `*_in_ref_local`, or
+  `*_inout_ref_local`.
+- Fix applied: renamed helper-local nameref bindings to that
+  helper-local-directional convention (for example
+  `failed_hosts_out_ref_local`, `build_hosts_in_ref_local`,
+  `request_args_out_ref_local`) throughout the script while preserving the
+  public call contract.
 - Validation performed: `bash -n scripts/nixbot-deploy.sh` and
   `shellcheck scripts/nixbot-deploy.sh`.
