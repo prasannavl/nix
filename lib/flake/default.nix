@@ -1,4 +1,7 @@
-let
+{
+  nixpkgs,
+  flake-utils,
+}: let
   appsFn = import ./apps.nix;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
@@ -20,4 +23,17 @@ in rec {
     inherit apps lint packages;
     inherit (lint) formatter;
   };
+
+  withPkgsFor = systems:
+    nixpkgs.lib.genAttrs systems (system: withPkgs nixpkgs.legacyPackages.${system});
+
+  standardOutputsFor = systems:
+    flake-utils.lib.eachSystem systems (system: let
+      outputs = withPkgs nixpkgs.legacyPackages.${system};
+    in {
+      inherit (outputs) apps formatter packages;
+    });
+
+  packagesFor = systems:
+    nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) (withPkgsFor systems);
 }

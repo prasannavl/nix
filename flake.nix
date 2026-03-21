@@ -82,7 +82,10 @@
     agenix,
     ...
   }: let
-    flakeLib = import ./lib/flake;
+    allSystems = flake-utils.lib.defaultSystems;
+    flakeLib = import ./lib/flake {
+      inherit flake-utils nixpkgs;
+    };
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
@@ -91,15 +94,9 @@
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
   in
-    flake-utils.lib.eachDefaultSystem (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-      flakeLibForSystem = flakeLib.withPkgs pkgs;
-    in {
-      inherit (flakeLibForSystem) apps formatter packages;
-    })
+    flakeLib.standardOutputsFor allSystems
     // {
-      pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems (system:
-        (flakeLib.withPkgs nixpkgs.legacyPackages.${system}).packages);
+      pkgs = flakeLib.packagesFor allSystems;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;

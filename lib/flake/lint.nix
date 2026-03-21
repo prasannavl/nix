@@ -194,8 +194,8 @@ in {
   };
 
   packages = {
-    "lint-deps" = lintDeps;
     lint = lintApp;
+    "lint-deps" = lintDeps;
     "lint-diff" = lintDiffApp;
   };
 }
