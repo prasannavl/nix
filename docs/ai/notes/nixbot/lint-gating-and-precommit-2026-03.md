@@ -21,3 +21,9 @@
   `[lint] FAILED at <step>: <description>` summary on non-zero exit so Git UIs
   such as VS Code surface the failing linter more clearly than the earlier
   progress banner.
+- The pre-commit hook and lint entrypoint now emit an initial top-level banner
+  before step logs so Git clients do not reduce hook failures to the first
+  `treefmt` progress line when a later linter fails.
+- Markdown lint is configured through `.markdownlint-cli2.jsonc` to disable
+  `MD013` line-length checks, matching the repo choice to let `deno fmt` own
+  Markdown wrapping while still keeping structural Markdown rules enforced.

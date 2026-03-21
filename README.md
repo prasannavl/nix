@@ -53,6 +53,7 @@ Deployment-specific architecture, key model, bootstrap flow, rotation procedure,
 and operational notes are documented in:
 
 - `docs/deployment.md`
+- `docs/nixbot-security-trust-model.md`
 
 Primary files for deployment are:
 

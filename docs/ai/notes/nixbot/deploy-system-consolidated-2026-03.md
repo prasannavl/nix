@@ -28,7 +28,9 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - When deploy and bootstrap users match, bootstrap-key installation is cached
   per host for the duration of one run.
 - Bastion-triggered runs stay pinned to the installed bastion wrapper by
-  default. Re-exec into the checked-out repo script is opt-in only
+  default. The wrapper syncs a persistent repo root, creates a detached per-run
+  worktree, and runs the deploy from that worktree without re-exec.
+- Re-exec into the worktree copy of the script stays opt-in only
   (`--use-repo-script` / `DEPLOY_USE_REPO_SCRIPT=1`) and guarded against loops.
 - Keep repo-script re-exec disabled in CI and routine forced-command use: it
   bypasses the normal "deploy bastion logic first, then rely on it later" trust
@@ -75,6 +77,9 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   fatal.
 - If `DEPLOY_BUILD_HOST` differs from the target, that host must also be added
   to temporary `known_hosts` so remote copy/build hops succeed.
+- Deploys use committed Git state only. The shared repo root must stay clean,
+  and every run executes from a detached worktree rather than from the shared
+  mirror itself.
 
 ## Orchestration rules
 
@@ -133,10 +138,28 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Keep `main` phase-oriented: argument parsing, optional bastion-trigger hop,
   optional TF phase, then host orchestration should remain split across small
   top-level helpers rather than one large control-flow block.
+- Keep the file organized in broad in-file sectors rather than many tiny
+  scattershot helper regions. The current stable split is:
+  - core helpers
+  - repo workspace
+  - config and secrets
+  - host selection
+  - deploy target and SSH context
+  - host phases and host phase artifacts
+  - build and deploy phases
+  - Terraform
+  - logging
+  - dispatch and main
+- Small repeated Bash/JSON conversion patterns should stay centralized in helper
+  functions so host selection, bootstrap checks, and run-context setup do not
+  each open-code `jq` plus `mapfile` list materialization.
 - Nested Bash nameref helpers must not reuse the caller's local variable names
   (for example `foo_ref` passed to a helper that also declares
   `local -n foo_ref=...`), or Bash 5.3 emits circular-name-reference warnings
   and the helper may not update the intended array.
+- Shared SSH-context assembly should stay centralized in
+  `prepare_host_ssh_contexts`, and repeated SSH key resolve-and-validate logic
+  should stay centralized in `resolve_ssh_identity_file`.
 - Keep `PREP_*` as the shared deploy-context store, but only read it through
   small materialization helpers (`use_prepared_*`) so per-host phases take the
   minimum context they need instead of reaching into globals directly.
@@ -184,8 +207,12 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   `--ensure-deps`, and normal runtime verification. The shared toolset is:
   `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, and `opentofu`.
 - Bastion-side Terraform automation must run `tofu init` with
-  `-lockfile=readonly` so provider lock normalization does not dirty the shared
-  persistent repo checkout between PR-triggered deploy runs.
+  `-lockfile=readonly` so provider lock normalization does not dirty a repo
+  worktree during PR-triggered deploy runs.
+- The persistent bastion repo root may be synced to `origin/master` only during
+  the short locked setup window before a worktree is created. The source mirror
+  must never be the active execution tree for a run, including `master` deploys,
+  so later syncs cannot perturb in-flight runs.
 - Required workflow traits are:
   - `tailscale/github-action@v4`
   - `permissions.id-token: write`
@@ -242,4 +269,5 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - `docs/ai/notes/nixbot-remote-build-known-hosts-2026-03-09.md`
 - `docs/ai/notes/nixbot/runtime-shell-consolidation-2026-03.md`
 - `docs/ai/notes/nixbot/runtime-toolchain-unification-2026-03.md`
+- `docs/ai/notes/nixbot/nixbot-deploy-cleanup-2026-03.md`
 - `docs/ai/notes/services/nixbot-all-tf-gating-2026-03.md`

@@ -4,4 +4,5 @@ set -Eeuo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "${repo_root}"
 
+printf '[pre-commit] Running repo lint hook\n' >&2
 exec nix run path:.#lint

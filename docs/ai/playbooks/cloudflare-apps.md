@@ -19,11 +19,14 @@ package + OpenTofu workflow.
 1. `tf/cloudflare-apps` is the infrastructure phase.
 2. `pkgs/cloudflare-apps/flake.nix` is the aggregate package for that phase.
 3. If an app needs generated local assets, its child flake exposes `build`.
-4. `scripts/nixbot-deploy.sh --action tf-apps` warms the aggregate `#build`
-   derivation before OpenTofu.
+4. `scripts/nixbot-deploy.sh --action tf-apps` warms app build outputs through
+   `nix build path:pkgs/<project>#build --no-link`; the old repo-local `stage`
+   flow is gone.
 5. Terraform resolves app directories to their real `#build` outputs during
-   plan/apply.
-6. Child apps may expose app-local helpers such as `wrangler-deploy`, but the
+   plan/apply rather than depending on repo-local `result` symlinks.
+6. Legacy `.../result` paths are normalized to the same `#build` output when
+   their parent app directory contains `flake.nix`.
+7. Child apps may expose app-local helpers such as `wrangler-deploy`, but the
    Terraform deploy path stays aggregate at the project level.
 
 ## Create A New App
@@ -76,3 +79,5 @@ There is also a single aggregate entrypoint:
 - Assets-only Workers are valid even when they have no modules or `main_module`.
 - Keep the per-project build logic in `pkgs/<project>/flake.nix`, not in one-off
   branches inside the deploy script.
+- Direct Wrangler deploys should also target the resolved `#build` output via
+  `--assets <store-path>`, not a repo-local staged tree.

@@ -87,6 +87,7 @@
       mapfile -d $'\0' -t changed_markdown_files < <(collect_changed_files '*.md')
       mapfile -d $'\0' -t tf_project_dirs < <(find tf -mindepth 1 -maxdepth 1 -type d -name '*-*' -print0 | sort -z)
 
+      printf '[lint] Running shared lint suite\n' >&2
       run_step treefmt 'Checking formatting drift' treefmt --ci "$@"
 
       if [ "''${#changed_nix_files[@]}" -gt 0 ]; then

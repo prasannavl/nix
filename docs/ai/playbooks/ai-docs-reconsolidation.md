@@ -151,6 +151,9 @@ For each completed run folder:
    reintroducing placeholder clutter.
 6. Confirm the surviving docs use generic role-based placeholders instead of
    live hostnames, domains, or other operational names where possible.
+7. Run the repo lint entrypoint before finishing so Markdown and any touched
+   hook/config files are checked the same way CI and pre-commit will check them:
+   - `nix run path:.#lint`
 
 ## Output expectations
 

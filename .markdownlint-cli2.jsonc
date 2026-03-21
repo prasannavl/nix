@@ -1,0 +1,9 @@
+{
+  // Deno owns Markdown formatting in this repo via treefmt. Disable line-length
+  // linting so markdownlint enforces structure/content rules without fighting
+  // the formatter over prose wrapping.
+  "config": {
+    "default": true,
+    "MD013": false
+  }
+}

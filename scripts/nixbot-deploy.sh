@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+##### Nixbot Deploy #####
+
 RUNTIME_SHELL_FLAG="${NIXBOT_DEPLOY_IN_NIX_SHELL:-0}"
 
-# Keep the runtime shell installables and expected commands aligned so re-exec,
-# warm-up, and normal execution all share one toolchain contract.
 readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
   nixpkgs#age
   nixpkgs#git
@@ -72,11 +72,11 @@ Remote Trigger Options:
   --bastion-known-hosts Optional known_hosts content used by --bastion-trigger
 
 Repo Options:
-  --repo-url       Repo URL used when --sha requires cloning missing checkout
-  --repo-path      Repo checkout path used for --sha workflow
-  --use-repo-script Re-exec from checked-out repo script after --sha checkout;
-                    keep disabled in CI for security and prefer a two-phase
-                    bastion rollout
+  --repo-url       Repo URL used when a managed repo root must be cloned
+  --repo-path      Persistent repo root used to sync origin/master and create per-run worktrees
+  --use-repo-script Re-exec from the worktree copy of this script after worktree
+                    setup; remains opt-in for intentionally executing fetched
+                    script code
 
 Environment (Core):
   DEPLOY_ACTION               Same as --action
@@ -147,6 +147,8 @@ die() {
   exit 1
 }
 
+##### Init Vars #####
+
 resolve_ssh_tty_stdin_path() {
   if [ -t 0 ] || [ -t 1 ] || [ -t 2 ]; then
     printf '/dev/tty\n'
@@ -187,6 +189,7 @@ init_vars() {
   [ -n "${AGE_KEY_FILE:-}" ] && AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=1
   DISCOVER_DECRYPT_KEYS_MODE="${DEPLOY_DISCOVER_KEYS:-auto}"
   REEXEC_FROM_REPO=0
+  REPO_PATH_EXPLICIT=0
   TF_WORK_DIR="${DEPLOY_TF_DIR:-}"
   TF_CHANGE_BASE_REF=""
   _NIXBOT_LOG_GROUP_DEPTH=0
@@ -263,6 +266,9 @@ init_vars() {
   DEPLOY_TMP_DIR_PREFIX="/dev/shm/nixbot-deploy."
   BASTION_KNOWN_HOSTS_PREFIX="bastion-known-hosts"
   NODE_KNOWN_HOSTS_PREFIX="known_hosts"
+  TMP_SECRETS_DIR=""
+  TMP_SSH_DIR=""
+  TMP_TF_ARTIFACT_DIR=""
   REPO_DEPLOY_SCRIPT_REL="scripts/nixbot-deploy.sh"
   REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="/tmp/nixbot-bootstrap-key."
   REMOTE_AGE_IDENTITY_TMP_PREFIX="/tmp/nixbot-age-identity."
@@ -273,8 +279,13 @@ init_vars() {
   TF_R2_SECRET_ACCESS_KEY_PATH="data/secrets/cloudflare/r2-secret-access-key.key.age"
   TF_SECRETS_DIR="data/secrets/tf"
 
+  # `REPO_ROOT` is the long-lived source mirror. Runs never execute from it
+  # directly; they materialize `REPO_WORKTREE_ROOT` and switch into that tree.
   REPO_BASE="${REMOTE_NIXBOT_BASE}"
-  REPO_PATH="${DEPLOY_REPO_PATH:-${REPO_BASE}/nix}"
+  REPO_ROOT="${NIXBOT_REPO_ROOT:-${DEPLOY_REPO_PATH:-${REPO_BASE}/nix}}"
+  REPO_WORKTREE_ROOT="${NIXBOT_REPO_WORKTREE_ROOT:-}"
+  REPO_ROOT_LOCK_DIR=""
+  REPO_ROOT_MANAGED=1
   REPO_URL="${DEPLOY_REPO_URL:-ssh://git@github.com/prasannavl/nix.git}"
   REPO_SSH_KEY_PATH="${REMOTE_NIXBOT_PRIMARY_KEY}"
   REPO_GIT_SSH_COMMAND="ssh -i ${REPO_SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
@@ -283,6 +294,8 @@ init_vars() {
 
   normalize_host_action
 }
+
+##### Core Helpers #####
 
 set_env_from_file_if_unset() {
   local var_name="$1"
@@ -302,149 +315,6 @@ set_env_from_file_if_unset() {
   export "${var_name?}"
 }
 
-load_tf_backend_runtime_secrets() {
-  local var_name decrypted_file
-  local -A _tf_backend_secrets=(
-    [R2_ACCOUNT_ID]="${TF_R2_ACCOUNT_ID_PATH}"
-    [R2_STATE_BUCKET]="${TF_R2_STATE_BUCKET_PATH}"
-    [R2_ACCESS_KEY_ID]="${TF_R2_ACCESS_KEY_ID_PATH}"
-    [R2_SECRET_ACCESS_KEY]="${TF_R2_SECRET_ACCESS_KEY_PATH}"
-  )
-
-  for var_name in "${!_tf_backend_secrets[@]}"; do
-    if [ -z "${!var_name:-}" ]; then
-      decrypted_file="$(resolve_runtime_key_file "${_tf_backend_secrets[${var_name}]}" 1)"
-      set_env_from_file_if_unset "${var_name}" "${decrypted_file}"
-    fi
-  done
-}
-
-load_cloudflare_tf_runtime_secrets() {
-  local decrypted_file=""
-
-  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-    decrypted_file="$(resolve_runtime_key_file "${TF_CLOUDFLARE_API_TOKEN_PATH}" 1)"
-    set_env_from_file_if_unset "CLOUDFLARE_API_TOKEN" "${decrypted_file}"
-  fi
-}
-
-tf_project_name_from_dir() {
-  basename "$1"
-}
-
-tf_project_provider_from_name() {
-  local project_name="$1"
-  printf '%s\n' "${project_name%-*}"
-}
-
-tf_project_dirs_for_phase() {
-  local phase="$1"
-  local project_name=""
-
-  if [ -n "${TF_WORK_DIR}" ]; then
-    project_name="$(tf_project_name_from_dir "${TF_WORK_DIR}")"
-    if [[ "${project_name}" == *-"${phase}" ]]; then
-      printf '%s\n' "${TF_WORK_DIR}"
-    fi
-    return 0
-  fi
-
-  find tf -mindepth 1 -maxdepth 1 -type d -name "*-${phase}" | sort
-}
-
-tf_state_key_for_project() {
-  local project_name="$1"
-
-  if [ -n "${R2_STATE_KEY:-}" ]; then
-    printf '%s\n' "${R2_STATE_KEY}"
-    return 0
-  fi
-
-  printf '%s/terraform.tfstate\n' "${project_name}"
-}
-
-emit_tf_secret_paths_for_project() {
-  local project_name="$1"
-  local cf="${TF_SECRETS_DIR}/cloudflare"
-  local dir
-
-  [ -f "${TF_SECRETS_DIR}/${project_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${project_name}.tfvars.age"
-  [ -d "${TF_SECRETS_DIR}/${project_name}" ] && find "${TF_SECRETS_DIR}/${project_name}" -type f -name '*.tfvars.age' | sort
-
-  case "${project_name}" in
-    cloudflare-dns)
-      [ -d "${cf}/dns" ] && find "${cf}/dns" -type f -name '*.tfvars.age' | sort
-      ;;
-    cloudflare-platform)
-      [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
-      for dir in account access tunnels r2 zone-dnssec zone-settings zone-security rulesets page-rules email-routing; do
-        [ -d "${cf}/${dir}" ] && find "${cf}/${dir}" -type f -name '*.tfvars.age' | sort
-      done
-      ;;
-    cloudflare-apps)
-      [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
-      [ -d "${cf}/account" ] && find "${cf}/account" -type f -name '*.tfvars.age' | sort
-      [ -d "${cf}/workers" ] && find "${cf}/workers" -type f -name '*.tfvars.age' | sort
-      ;;
-  esac
-}
-
-load_tf_runtime_secrets_for_project() {
-  local project_name="$1"
-  local provider_name
-
-  load_tf_backend_runtime_secrets
-
-  provider_name="$(tf_project_provider_from_name "${project_name}")"
-  case "${provider_name}" in
-    cloudflare)
-      load_cloudflare_tf_runtime_secrets
-      ;;
-  esac
-}
-
-require_tf_runtime_env_for_project() {
-  local project_name="$1"
-  local provider_name
-
-  [ -n "${R2_ACCOUNT_ID:-}" ] || die "Missing required environment variable: R2_ACCOUNT_ID"
-  [ -n "${R2_STATE_BUCKET:-}" ] || die "Missing required environment variable: R2_STATE_BUCKET"
-  [ -n "${R2_ACCESS_KEY_ID:-}" ] || die "Missing required environment variable: R2_ACCESS_KEY_ID"
-  [ -n "${R2_SECRET_ACCESS_KEY:-}" ] || die "Missing required environment variable: R2_SECRET_ACCESS_KEY"
-
-  provider_name="$(tf_project_provider_from_name "${project_name}")"
-  case "${provider_name}" in
-    cloudflare)
-      [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "Missing required environment variable: CLOUDFLARE_API_TOKEN"
-      ;;
-  esac
-}
-
-is_tf_candidate_path_for_project() {
-  local phase="$1"
-  local project_name="$2"
-  local path="$3"
-  local provider_name
-
-  provider_name="$(tf_project_provider_from_name "${project_name}")"
-
-  case "${path}" in
-    "tf/${project_name}"|"tf/${project_name}/"*) return 0 ;;
-    "tf/modules/${provider_name}"|"tf/modules/${provider_name}/"*) return 0 ;;
-    "data/secrets/${provider_name}"|"data/secrets/${provider_name}/"*) return 0 ;;
-    "data/secrets/tf/${provider_name}"|"data/secrets/tf/${provider_name}/"*) return 0 ;;
-    "data/secrets/cloudflare/r2-account-id.key.age"|"data/secrets/cloudflare/r2-state-bucket.key.age"|"data/secrets/cloudflare/r2-access-key-id.key.age"|"data/secrets/cloudflare/r2-secret-access-key.key.age") return 0 ;;
-  esac
-
-  if [ "${phase}" = "apps" ]; then
-    case "${path}" in
-      services|services/*) return 0 ;;
-    esac
-  fi
-
-  return 1
-}
-
 parse_bool_env() {
   local raw="${1:-}"
   case "${raw}" in
@@ -452,25 +322,6 @@ parse_bool_env() {
     ""|0|false|FALSE|no|NO|off|OFF) return 1 ;;
     *) die "Unsupported boolean value: ${raw}" ;;
   esac
-}
-
-apply_bool_env_callback() {
-  local raw="${1:-0}"
-  local callback="$2"
-
-  if parse_bool_env "${raw}"; then
-    "${callback}"
-  fi
-}
-
-apply_bool_env_flag() {
-  local raw="${1:-0}"
-  local var_name="$2"
-  local true_value="${3:-1}"
-
-  if parse_bool_env "${raw}"; then
-    printf -v "${var_name}" '%s' "${true_value}"
-  fi
 }
 
 # Sets OPTVAL and OPTSHIFT for --flag/--flag=value argument pairs.
@@ -575,13 +426,27 @@ emit_age_decrypt_identity_candidates() {
 
 
 normalize_host_action() {
-  case "${ACTION}" in
-    all)
-      HOST_ACTION="deploy"
-      ;;
-    *)
-      HOST_ACTION="${ACTION}"
-      ;;
+  HOST_ACTION="$(resolved_host_action "${ACTION}")"
+}
+
+action_is_supported() {
+  case "${1:-}" in
+    all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+action_is_tf_only() {
+  case "${1:-}" in
+    tf|tf-dns|tf-platform|tf-apps) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+resolved_host_action() {
+  case "${1:-}" in
+    all) printf 'deploy\n' ;;
+    *) printf '%s\n' "${1:-}" ;;
   esac
 }
 
@@ -603,6 +468,28 @@ normalize_hosts_input() {
 
   emit_normalized_hosts "${raw}" | paste -sd, -
 }
+
+json_array_to_bash_array() {
+  local json="$1"
+  local -n out_ref="$2"
+
+  mapfile -t out_ref < <(jq -r '.[]' <<<"${json}")
+}
+
+json_array_to_bash_set() {
+  local json="$1"
+  # shellcheck disable=SC2178
+  local -n out_ref="$2"
+  local item=""
+
+  # shellcheck disable=SC2034
+  while IFS= read -r item; do
+    [ -n "${item}" ] || continue
+    out_ref["${item}"]=1
+  done < <(jq -r '.[]' <<<"${json}")
+}
+
+##### Argument Parsing #####
 
 parse_args() {
   while [ "$#" -gt 0 ]; do
@@ -641,7 +528,7 @@ parse_args() {
       --repo-url|--repo-url=*)
         take_optval "$@"; REPO_URL="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --repo-path|--repo-path=*)
-        take_optval "$@"; REPO_PATH="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+        take_optval "$@"; REPO_ROOT="${OPTVAL}"; REPO_PATH_EXPLICIT=1; shift "${OPTSHIFT}" ;;
       --use-repo-script)    REEXEC_FROM_REPO=1; shift ;;
       --bastion-check-ssh-key-path|--bastion-check-ssh-key-path=*)
         take_optval "$@"; DEPLOY_BASTION_KEY_PATH_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
@@ -661,10 +548,7 @@ parse_args() {
 
   [ -n "${HOSTS_RAW}" ] || die "--hosts cannot be empty"
 
-  case "${ACTION}" in
-    all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap) ;;
-    *) die "Unsupported --action: ${ACTION}" ;;
-  esac
+  action_is_supported "${ACTION}" || die "Unsupported --action: ${ACTION}"
   normalize_host_action
 
   case "${GOAL}" in
@@ -699,6 +583,10 @@ parse_args() {
 
 cleanup() {
   log_group_end_all
+  cleanup_repo_worktree
+  if [ -n "${REPO_ROOT_LOCK_DIR}" ]; then
+    release_repo_root_lock
+  fi
   if [ -n "${DEPLOY_TMP_DIR}" ] && [ -d "${DEPLOY_TMP_DIR}" ]; then
     rm -rf "${DEPLOY_TMP_DIR}"
   fi
@@ -713,6 +601,90 @@ ensure_tmp_dir() {
   else
     DEPLOY_TMP_DIR="$(mktemp -d)"
   fi
+
+  # Keep sensitive temp material grouped by purpose so cleanup, debugging, and
+  # future retention policies can treat secrets, SSH state, and TF artifacts
+  # consistently.
+  TMP_SECRETS_DIR="${DEPLOY_TMP_DIR}/secrets"
+  TMP_SSH_DIR="${DEPLOY_TMP_DIR}/ssh"
+  TMP_TF_ARTIFACT_DIR="$(phase_artifact_dir_path "${DEPLOY_TMP_DIR}" "tf")"
+  mkdir -p "${TMP_SECRETS_DIR}" "${TMP_SSH_DIR}"
+  ensure_phase_runtime_dirs "${DEPLOY_TMP_DIR}" tf
+}
+
+tmp_runtime_dir_path() {
+  local area="$1"
+
+  ensure_tmp_dir
+  case "${area}" in
+    secrets) printf '%s\n' "${TMP_SECRETS_DIR}" ;;
+    ssh) printf '%s\n' "${TMP_SSH_DIR}" ;;
+    tf) printf '%s\n' "${TMP_TF_ARTIFACT_DIR}" ;;
+    *)
+      die "Unsupported temp runtime area: ${area}"
+      ;;
+  esac
+}
+
+tmp_runtime_mktemp() {
+  local area="$1"
+  local pattern="$2"
+
+  mktemp "$(tmp_runtime_dir_path "${area}")/${pattern}"
+}
+
+mktemp_repo_worktree_parent_dir() {
+  if [ -d "/dev/shm" ] && [ -w "/dev/shm" ]; then
+    mktemp -d "/dev/shm/nixbot-worktree.XXXXXX"
+  else
+    mktemp -d
+  fi
+}
+
+cleanup_stale_runtime_dirs() {
+  local path=""
+
+  [ -d "/dev/shm" ] || return 0
+
+  while IFS= read -r path; do
+    [ -n "${path}" ] || continue
+    rm -rf "${path}" || true
+  done < <(
+    find /dev/shm -maxdepth 1 -mindepth 1 -type d \
+      \( -name 'nixbot-deploy.*' -o -name 'nixbot-worktree.*' \) \
+      -mtime +3 -print 2>/dev/null
+  )
+}
+
+##### Repo Workspace #####
+
+repo_worktree_file_path() {
+  local relative_path="$1"
+
+  printf '%s/%s\n' "${REPO_WORKTREE_ROOT%/}" "${relative_path}"
+}
+
+repo_worktree_script_path() {
+  repo_worktree_file_path "${REPO_DEPLOY_SCRIPT_REL}"
+}
+
+cleanup_repo_worktree() {
+  if [ -z "${REPO_WORKTREE_ROOT}" ] || [ -z "${REPO_ROOT}" ]; then
+    return 0
+  fi
+
+  acquire_repo_root_lock
+  if [ -d "${REPO_WORKTREE_ROOT}" ]; then
+    case "$(pwd -P 2>/dev/null || true)" in
+      "${REPO_WORKTREE_ROOT}"|"${REPO_WORKTREE_ROOT}/"*)
+        cd /
+        ;;
+    esac
+    git -C "${REPO_ROOT}" worktree remove --force "${REPO_WORKTREE_ROOT}" >/dev/null 2>&1 || rm -rf "${REPO_WORKTREE_ROOT}"
+    rmdir "$(dirname "${REPO_WORKTREE_ROOT}")" >/dev/null 2>&1 || true
+    git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
+  fi
+  release_repo_root_lock
 }
 
 configure_bastion_trigger_ssh_opts() {
@@ -732,7 +704,7 @@ configure_bastion_trigger_ssh_opts() {
   fi
 
   if [ -n "${BASTION_TRIGGER_SSH_KEY}" ]; then
-    key_file="$(mktemp "${DEPLOY_TMP_DIR}/bastion-key.XXXXXX")"
+    key_file="$(tmp_runtime_mktemp ssh "bastion-key.XXXXXX")"
     printf '%s\n' "${BASTION_TRIGGER_SSH_KEY}" > "${key_file}"
     chmod 600 "${key_file}"
     BASTION_TRIGGER_SSH_OPTS+=(-i "${key_file}" -o IdentitiesOnly=yes)
@@ -745,7 +717,7 @@ configure_bastion_trigger_ssh_opts() {
     [ -n "${scanned_known_hosts}" ] || die "Could not determine bastion host key for ${BASTION_TRIGGER_HOST}. Pass --bastion-known-hosts/DEPLOY_BASTION_KNOWN_HOSTS or ensure ssh-keyscan can reach the bastion."
   fi
 
-  known_hosts_file="$(mktemp "${DEPLOY_TMP_DIR}/${BASTION_KNOWN_HOSTS_PREFIX}.XXXXXX")"
+  known_hosts_file="$(tmp_runtime_mktemp ssh "${BASTION_KNOWN_HOSTS_PREFIX}.XXXXXX")"
   printf '%s\n' "${scanned_known_hosts}" > "${known_hosts_file}"
   chmod 600 "${known_hosts_file}"
   BASTION_TRIGGER_SSH_OPTS+=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile="${known_hosts_file}")
@@ -762,10 +734,7 @@ run_bastion_trigger() {
   [ -n "${trigger_sha}" ] || die "Could not resolve local HEAD; pass --sha/DEPLOY_SHA explicitly"
   [[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
 
-  case "${ACTION}" in
-    all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap) ;;
-    *) die "Unsupported --action for --bastion-trigger: ${ACTION}" ;;
-  esac
+  action_is_supported "${ACTION}" || die "Unsupported --action for --bastion-trigger: ${ACTION}"
 
   trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
   [ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
@@ -823,140 +792,162 @@ is_bootstrap_check_action() {
   [ "${ACTION}" = "check-bootstrap" ]
 }
 
-is_tf_only_action() {
-  case "${ACTION}" in
-    tf|tf-dns|tf-platform|tf-apps) return 0 ;;
-    *) return 1 ;;
-  esac
-}
+# Resolve the source repo root exactly once. Local clean repo runs reuse the
+# current checkout as the mirror; bastion/explicit `--repo-path` runs use the
+# managed mirror path instead.
+resolve_repo_root() {
+  local current_repo_root=""
 
-should_run_tf_project_action() {
-  local phase="$1"
-  local project_name="$2"
-  local target_ref base_ref diff_output diff_status=0
-  local path=""
-  local status_output=""
-  local status_path=""
-
-  if [ "${TF_IF_CHANGED}" -eq 0 ]; then
-    echo "Terraform change detection bypassed by --force" >&2
-    return 0
+  if [ -n "${NIXBOT_REPO_WORKTREE_ROOT:-}" ]; then
+    REPO_WORKTREE_ROOT="${NIXBOT_REPO_WORKTREE_ROOT}"
   fi
 
-  target_ref="${SHA:-HEAD}"
-  if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
-    echo "Terraform change detection unavailable for ${target_ref}; running TF ${phase}" >&2
-    return 0
-  fi
-
-  if ! base_ref="$(resolve_tf_change_base_ref "${target_ref}")"; then
-    echo "Terraform change base unavailable for ${target_ref}; running TF ${phase}" >&2
-    return 0
-  fi
-
-  diff_output="$(git diff --name-only "${base_ref}" "${target_ref}" -- 2>/dev/null)" || diff_status=$?
-  if [ "${diff_status}" -ne 0 ]; then
-    echo "Terraform change detection failed for ${base_ref}..${target_ref}; running TF ${phase}" >&2
-    return 0
-  fi
-
-  while IFS= read -r path; do
-    [ -n "${path}" ] || continue
-    if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${path}"; then
-      echo "Terraform ${project_name} change detected: ${path}" >&2
-      return 0
-    fi
-  done <<< "${diff_output}"
-
-  status_output="$(git status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
-  while IFS= read -r status_path; do
-    [ -n "${status_path}" ] || continue
-    status_path="${status_path#?? }"
-    status_path="${status_path##* -> }"
-    if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${status_path}"; then
-      echo "Terraform ${project_name} working tree change detected: ${status_path}" >&2
-      return 0
-    fi
-  done <<< "${status_output}"
-
-  echo "Terraform ${project_name} unchanged; skipping TF action" >&2
-  return 1
-}
-
-resolve_tf_change_base_ref() {
-  local target_ref="${1:-HEAD}"
-  local target_commit=""
-  local base_commit=""
-
-  if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
-    return 1
-  fi
-  target_commit="$(git rev-parse --verify "${target_ref}" 2>/dev/null || true)"
-
-  if [ -n "${TF_CHANGE_BASE_REF}" ] && git rev-parse --verify "${TF_CHANGE_BASE_REF}" >/dev/null 2>&1; then
-    base_commit="$(git rev-parse --verify "${TF_CHANGE_BASE_REF}" 2>/dev/null || true)"
-    if [ -n "${base_commit}" ] && [ "${base_commit}" != "${target_commit}" ]; then
-      printf '%s\n' "${TF_CHANGE_BASE_REF}"
-      return 0
-    fi
-  fi
-
-  if git rev-parse --verify "${target_ref}^1" >/dev/null 2>&1; then
-    printf '%s^1\n' "${target_ref}"
-    return 0
-  fi
-  return 1
-}
-
-ensure_repo_for_sha() {
-  local remote_default_ref=""
-
-  if [ -z "${SHA}" ]; then
+  if [ -n "${REPO_WORKTREE_ROOT}" ] || [ "${REPO_PATH_EXPLICIT}" -eq 1 ] || [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
     return
   fi
 
-  if [ -d ".git" ]; then
-    REPO_PATH="$(pwd -P)"
+  current_repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "${current_repo_root}" ]; then
+    REPO_ROOT="${current_repo_root}"
+    REPO_ROOT_MANAGED=0
+  fi
+}
+
+# The source mirror is shared across runs, so only fetch/reset/worktree metadata
+# updates happen under this short lock. The actual deploy work happens after the
+# worktree is created and the lock is released.
+acquire_repo_root_lock() {
+  local git_dir="" lock_root=""
+
+  [ -n "${REPO_ROOT}" ] || return 0
+  if [ -n "${REPO_ROOT_LOCK_DIR}" ] && [ -d "${REPO_ROOT_LOCK_DIR}" ]; then
+    return 0
   fi
 
-  mkdir -p "$(dirname "${REPO_PATH}")"
+  git_dir="$(git -C "${REPO_ROOT}" rev-parse --git-common-dir 2>/dev/null || true)"
+  [ -n "${git_dir}" ] || return 0
+  if [[ "${git_dir}" != /* ]]; then
+    git_dir="${REPO_ROOT%/}/${git_dir}"
+  fi
+  lock_root="${git_dir%/}/nixbot-worktree.lock"
 
-  if [ ! -d "${REPO_PATH}/.git" ]; then
-    if [ -f "${REPO_SSH_KEY_PATH}" ]; then
-      GIT_SSH_COMMAND="${REPO_GIT_SSH_COMMAND}" git clone "${REPO_URL}" "${REPO_PATH}"
-    else
-      git clone "${REPO_URL}" "${REPO_PATH}"
-    fi
+  while ! mkdir "${lock_root}" 2>/dev/null; do
+    sleep 0.2
+  done
+
+  printf '%s\n' "$$" > "${lock_root}/pid"
+  REPO_ROOT_LOCK_DIR="${lock_root}"
+}
+
+release_repo_root_lock() {
+  if [ -n "${REPO_ROOT_LOCK_DIR}" ] && [ -d "${REPO_ROOT_LOCK_DIR}" ]; then
+    rm -rf "${REPO_ROOT_LOCK_DIR}"
+  fi
+  REPO_ROOT_LOCK_DIR=""
+}
+
+ensure_repo_root_exists() {
+  mkdir -p "$(dirname "${REPO_ROOT}")"
+
+  if [ -d "${REPO_ROOT}/.git" ]; then
+    return
   fi
 
-  [ -f "${REPO_PATH}/${REPO_DEPLOY_SCRIPT_REL}" ] || die "deploy script missing in repo checkout: ${REPO_PATH}/${REPO_DEPLOY_SCRIPT_REL}"
-
-  cd "${REPO_PATH}"
   if [ -f "${REPO_SSH_KEY_PATH}" ]; then
-    GIT_SSH_COMMAND="${REPO_GIT_SSH_COMMAND}" git fetch --prune origin
+    GIT_SSH_COMMAND="${REPO_GIT_SSH_COMMAND}" git clone "${REPO_URL}" "${REPO_ROOT}"
   else
-    git fetch --prune origin
+    git clone "${REPO_URL}" "${REPO_ROOT}"
   fi
-  remote_default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [ -n "${remote_default_ref}" ]; then
-    TF_CHANGE_BASE_REF="$(git rev-parse --verify "${remote_default_ref}" 2>/dev/null || true)"
+}
+
+ensure_clean_repo_root() {
+  local status_output=""
+
+  status_output="$(git -C "${REPO_ROOT}" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+  [ -z "${status_output}" ] || die "Repo root is dirty; nixbot deploys committed state only: ${REPO_ROOT}"
+}
+
+fetch_repo_root_origin() {
+  if [ -f "${REPO_SSH_KEY_PATH}" ]; then
+    GIT_SSH_COMMAND="${REPO_GIT_SSH_COMMAND}" git -C "${REPO_ROOT}" fetch --prune origin
+  else
+    git -C "${REPO_ROOT}" fetch --prune origin
   fi
+}
+
+sync_managed_repo_root() {
+  local remote_default_ref=""
+
+  fetch_repo_root_origin
+
+  remote_default_ref="$(git -C "${REPO_ROOT}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -z "${remote_default_ref}" ]; then
+    remote_default_ref="origin/master"
+  fi
+
+  git -C "${REPO_ROOT}" checkout -B master "${remote_default_ref}" >/dev/null 2>&1
+
+  TF_CHANGE_BASE_REF="$(git -C "${REPO_ROOT}" rev-parse --verify "refs/remotes/${remote_default_ref}" 2>/dev/null || true)"
   if [ -z "${TF_CHANGE_BASE_REF}" ]; then
-    TF_CHANGE_BASE_REF="$(git rev-parse --verify refs/remotes/origin/master 2>/dev/null || true)"
+    TF_CHANGE_BASE_REF="$(git -C "${REPO_ROOT}" rev-parse --verify refs/remotes/origin/master 2>/dev/null || true)"
   fi
-  git checkout --detach "${SHA}"
+}
+
+resolve_repo_worktree_target_ref() {
+  if [ -n "${SHA}" ]; then
+    printf '%s\n' "${SHA}"
+    return 0
+  fi
+
+  if [ "${REPO_ROOT_MANAGED}" -eq 1 ]; then
+    printf 'master\n'
+    return 0
+  fi
+
+  git -C "${REPO_ROOT}" rev-parse --verify HEAD
+}
+
+# Prepare an isolated execution tree for this run. This is what allows
+# concurrent PR dry-runs without mutating the shared source mirror.
+prepare_repo_worktree() {
+  local worktree_parent="" target_ref=""
+
+  resolve_repo_root
+  [ -n "${REPO_WORKTREE_ROOT}" ] && return 0
+
+  acquire_repo_root_lock
+  ensure_repo_root_exists
+  ensure_clean_repo_root
+
+  if [ "${REPO_ROOT_MANAGED}" -eq 1 ]; then
+    sync_managed_repo_root
+  else
+    fetch_repo_root_origin >/dev/null 2>&1 || true
+    TF_CHANGE_BASE_REF="$(git -C "${REPO_ROOT}" rev-parse --verify refs/remotes/origin/master 2>/dev/null || true)"
+  fi
+
+  target_ref="$(resolve_repo_worktree_target_ref)"
+  git -C "${REPO_ROOT}" rev-parse --verify "${target_ref}^{commit}" >/dev/null 2>&1 || die "Requested repo target not available: ${target_ref}"
+
+  worktree_parent="$(mktemp_repo_worktree_parent_dir)"
+  REPO_WORKTREE_ROOT="${worktree_parent}/repo"
+  git -C "${REPO_ROOT}" worktree add --detach "${REPO_WORKTREE_ROOT}" "${target_ref}" >/dev/null
+  git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
+  release_repo_root_lock
+
+  [ -f "$(repo_worktree_script_path)" ] || die "deploy script missing in repo worktree: $(repo_worktree_script_path)"
+  cd "${REPO_WORKTREE_ROOT}"
 }
 
 reexec_repo_script_if_needed() {
   local current_script repo_script current_resolved repo_resolved
   local -a request_args=("$@")
 
-  [ -n "${SHA}" ] || return 0
   [ "${REEXEC_FROM_REPO}" -eq 1 ] || return 0
   [ "${NIXBOT_REEXECED_FROM_REPO:-0}" != "1" ] || return 0
 
   current_script="${BASH_SOURCE[0]:-$0}"
-  repo_script="${REPO_PATH%/}/${REPO_DEPLOY_SCRIPT_REL}"
+  repo_script="$(repo_worktree_script_path)"
 
   [ -f "${repo_script}" ] || die "Repo deploy script missing after checkout: ${repo_script}"
 
@@ -968,10 +959,12 @@ reexec_repo_script_if_needed() {
   fi
 
   log_section "Phase: Repo Re-exec"
-  echo "Re-executing deploy from checked-out repo script:" >&2
+  echo "Re-executing deploy from worktree repo script:" >&2
   echo "${repo_script}" >&2
-  exec env NIXBOT_REEXECED_FROM_REPO=1 bash "${repo_script}" "${request_args[@]}"
+  exec env NIXBOT_REEXECED_FROM_REPO=1 NIXBOT_REPO_ROOT="${REPO_ROOT}" NIXBOT_REPO_WORKTREE_ROOT="${REPO_WORKTREE_ROOT}" bash "${repo_script}" "${request_args[@]}"
 }
+
+##### Config / Secrets #####
 
 load_deploy_config_json() {
   local path="$1"
@@ -1061,8 +1054,8 @@ resolve_runtime_key_file() {
   if [[ "${src_path}" = *.age ]]; then
     require_cmds age
     ensure_tmp_dir
-    out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
-    decrypt_errors_file="$(mktemp "${DEPLOY_TMP_DIR}/age-errors.XXXXXX")"
+    out_file="$(tmp_runtime_mktemp secrets "key.XXXXXX")"
+    decrypt_errors_file="$(tmp_runtime_mktemp secrets "age-errors.XXXXXX")"
     while IFS= read -r decrypt_identity; do
       [ -n "${decrypt_identity}" ] || continue
       candidate_count=$((candidate_count + 1))
@@ -1071,7 +1064,7 @@ resolve_runtime_key_file() {
         continue
       fi
       readable_candidate_count=$((readable_candidate_count + 1))
-      age_stderr_file="$(mktemp "${DEPLOY_TMP_DIR}/age-stderr.XXXXXX")"
+      age_stderr_file="$(tmp_runtime_mktemp secrets "age-stderr.XXXXXX")"
       echo "Trying decrypt identity: ${decrypt_identity} for ${src_path}" >&2
       if age --decrypt -i "${decrypt_identity}" -o "${out_file}" "${src_path}" 2>"${age_stderr_file}"; then
         chmod 600 "${out_file}"
@@ -1085,7 +1078,7 @@ resolve_runtime_key_file() {
         cat "${age_stderr_file}"
       } >>"${decrypt_errors_file}"
       rm -f "${age_stderr_file}" "${out_file}"
-      out_file="$(mktemp "${DEPLOY_TMP_DIR}/key.XXXXXX")"
+      out_file="$(tmp_runtime_mktemp secrets "key.XXXXXX")"
     done < <(emit_age_decrypt_identity_candidates)
     if [ "${candidate_count}" -eq 0 ]; then
       echo "No decrypt identity candidates configured for ${src_path}" >&2
@@ -1108,6 +1101,8 @@ resolve_runtime_key_file() {
 load_all_hosts_json() {
   nix flake show --json --no-write-lock-file 2>/dev/null | jq -c '.nixosConfigurations | keys'
 }
+
+##### Host Selection #####
 
 select_hosts_json() {
   local all_hosts_json="$1"
@@ -1137,12 +1132,8 @@ expand_selected_hosts_json() {
   declare -A all_host_set=()
   declare -A seen_host_set=()
 
-  for node in $(jq -r '.[]' <<<"${all_hosts_json}"); do
-    [ -n "${node}" ] || continue
-    all_host_set["${node}"]=1
-  done
-
-  mapfile -t queue < <(jq -r '.[]' <<<"${selected_json}")
+  json_array_to_bash_set "${all_hosts_json}" all_host_set
+  json_array_to_bash_array "${selected_json}" queue
 
   while [ "${#queue[@]}" -gt 0 ]; do
     node="${queue[0]}"
@@ -1185,12 +1176,8 @@ order_selected_hosts_json() {
   declare -A indegree=()
   declare -A dependents=()
 
-  mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
-
-  for node in $(jq -r '.[]' <<<"${all_hosts_json}"); do
-    [ -n "${node}" ] || continue
-    all_host_set["${node}"]=1
-  done
+  json_array_to_bash_array "${selected_json}" selected_hosts
+  json_array_to_bash_set "${all_hosts_json}" all_host_set
 
   for node in "${selected_hosts[@]}"; do
     [ -n "${node}" ] || continue
@@ -1269,12 +1256,8 @@ selected_host_levels_json() {
   declare -A selected_host_set=()
   declare -A host_level=()
 
-  mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
-
-  for node in "${selected_hosts[@]}"; do
-    [ -n "${node}" ] || continue
-    selected_host_set["${node}"]=1
-  done
+  json_array_to_bash_array "${selected_json}" selected_hosts
+  json_array_to_bash_set "${selected_json}" selected_host_set
 
   max_level=0
   for node in "${selected_hosts[@]}"; do
@@ -1339,6 +1322,42 @@ validate_selected_hosts() {
   [ "$(jq 'length' <<<"${selected_json}")" -gt 0 ] || die "No hosts selected"
 }
 
+resolve_selected_hosts_json() {
+  local all_hosts_json="$1"
+  local selected_json=""
+
+  selected_json="$(select_hosts_json "${all_hosts_json}")"
+  validate_selected_hosts "${selected_json}" "${all_hosts_json}"
+  selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
+  order_selected_hosts_json "${selected_json}" "${all_hosts_json}"
+}
+
+prepare_run_context() {
+  local -n selected_json_ref="$1"
+  local config_json="" all_hosts_json=""
+  local -a log_hosts=()
+
+  if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
+    config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
+    init_deploy_settings "${config_json}"
+  fi
+
+  all_hosts_json="$(load_all_hosts_json)"
+  selected_json_ref="$(resolve_selected_hosts_json "${all_hosts_json}")"
+
+  json_array_to_bash_array "${selected_json_ref}" log_hosts
+
+  log_section "nixbot"
+  echo "Action: ${ACTION}" >&2
+  print_host_block "Hosts" "${log_hosts[@]}"
+  if is_deploy_style_action; then
+    echo "Goal: ${GOAL}" >&2
+    echo "Build host: ${BUILD_HOST}" >&2
+  fi
+}
+
+##### Deploy Target / SSH Context #####
+
 resolve_deploy_target() {
   local node="$1"
   local host_cfg user target key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path age_identity_key
@@ -1375,61 +1394,6 @@ resolve_deploy_target() {
     '{user: $user, target: $target, keyPath: $keyPath, knownHosts: $knownHosts, bootstrapKey: $bootstrapKey, bootstrapUser: $bootstrapUser, bootstrapKeyPath: $bootstrapKeyPath, ageIdentityKey: $ageIdentityKey}'
 }
 
-build_host() {
-  local node="$1"
-  local out_path
-
-  log_host_stage "build" "${node}"
-  echo "Starting local build" >&2
-  if ! out_path="$(nix build --print-out-paths "path:.#nixosConfigurations.${node}.config.system.build.toplevel")"; then
-    echo "Build failed for ${node}" >&2
-    return 1
-  fi
-
-  [ -n "${out_path}" ] || {
-    echo "Build produced no output path for ${node}" >&2
-    return 1
-  }
-
-  echo "Built out path: ${out_path}" >&2
-  if ! nix path-info --closure-size --human-readable "${out_path}" >&2; then
-    echo "Unable to resolve closure size for ${node}: ${out_path}" >&2
-    return 1
-  fi
-
-  printf '%s\n' "${out_path}"
-}
-
-eval_host_out_path() {
-  local node="$1"
-  local out_path
-
-  log_host_stage "build" "${node}" "remote build"
-  echo "Evaluating output path" >&2
-  if ! out_path="$(nix eval --raw "path:.#nixosConfigurations.${node}.config.system.build.toplevel.outPath")"; then
-    echo "Evaluation failed for ${node}" >&2
-    return 1
-  fi
-
-  [ -n "${out_path}" ] || {
-    echo "Evaluation produced no output path for ${node}" >&2
-    return 1
-  }
-
-  echo "Planned out path: ${out_path}" >&2
-  printf '%s\n' "${out_path}"
-}
-
-resolve_build_out_path() {
-  local node="$1"
-
-  if is_deploy_style_action && [ "${BUILD_HOST}" != "local" ]; then
-    eval_host_out_path "${node}"
-  else
-    build_host "${node}"
-  fi
-}
-
 ensure_known_hosts_file() {
   local node="$1"
   local known_hosts="$2"
@@ -1437,7 +1401,7 @@ ensure_known_hosts_file() {
 
   ensure_tmp_dir
   safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
-  known_hosts_file="${DEPLOY_TMP_DIR}/${NODE_KNOWN_HOSTS_PREFIX}.${safe_node}"
+  known_hosts_file="${TMP_SSH_DIR}/${NODE_KNOWN_HOSTS_PREFIX}.${safe_node}"
 
   if [ -n "${known_hosts}" ]; then
     printf '%s\n' "${known_hosts}" > "${known_hosts_file}"
@@ -1547,7 +1511,7 @@ check_bootstrap_via_forced_command() {
   if [[ "${DEPLOY_CONFIG_PATH}" = /* ]]; then
     remote_config_path="${DEPLOY_CONFIG_PATH}"
   else
-    remote_config_path="${REPO_PATH%/}/${DEPLOY_CONFIG_PATH}"
+    remote_config_path="$(repo_worktree_file_path "${DEPLOY_CONFIG_PATH}")"
   fi
 
   check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
@@ -2065,16 +2029,7 @@ prepare_deploy_context() {
   fi
 }
 
-should_ask_sudo_password() {
-  local deploy_user="$1"
-  local using_bootstrap_fallback="$2"
-
-  if [ "${using_bootstrap_fallback}" -eq 1 ] || { [ "${deploy_user}" != "root" ] && [ "${deploy_user}" != "nixbot" ]; }; then
-    return 0
-  fi
-
-  return 1
-}
+##### Host Phases #####
 
 snapshot_host_generation() {
   local node="$1"
@@ -2144,13 +2099,6 @@ drain_job_slots() {
   done
 }
 
-write_status_file() {
-  local status_file="$1"
-  local rc="$2"
-
-  printf '%s\n' "${rc}" > "${status_file}"
-}
-
 run_streamed_host_command() {
   local node="$1"
   local log_file="${2:-}"
@@ -2204,12 +2152,10 @@ record_phase_status() {
   local -n failed_hosts_ref="$4"
   local rc
 
-  if [ ! -s "${status_file}" ]; then
+  if ! rc="$(read_status_file "${status_file}")"; then
     failed_hosts_ref+=("${node}")
     return 1
   fi
-
-  rc="$(cat "${status_file}")"
   if [ "${rc}" != "0" ]; then
     failed_hosts_ref+=("${node}")
     return 1
@@ -2229,12 +2175,10 @@ record_deploy_phase_status() {
   local -n failed_hosts_ref="$5"
   local status
 
-  if [ ! -s "${status_file}" ]; then
+  if ! status="$(read_status_file "${status_file}")"; then
     failed_hosts_ref+=("${node}")
     return 1
   fi
-
-  status="$(cat "${status_file}")"
   case "${status}" in
     0)
       success_hosts_ref+=("${node}")
@@ -2324,11 +2268,11 @@ print_host_failures() {
   for node in "${failed_hosts[@]}"; do
     case "${mode}" in
       build)
-        status_file="${status_dir}/${node}.rc"
-        log_file="${log_dir}/${node}.log"
+        status_file="$(phase_dir_item_status_file "${status_dir}" "${node}")"
+        log_file="$(phase_dir_item_log_file "${log_dir}" "${node}")"
         rc="unknown"
-        if [ -s "${status_file}" ]; then
-          rc="$(cat "${status_file}")"
+        if rc="$(read_status_file "${status_file}")"; then
+          :
         fi
 
         if [ -f "${log_file}" ]; then
@@ -2338,7 +2282,7 @@ print_host_failures() {
         fi
         ;;
       deploy)
-        echo "  - ${node} (log=${log_dir}/${node}.log)" >&2
+        echo "  - ${node} (log=$(phase_dir_item_log_file "${log_dir}" "${node}"))" >&2
         ;;
       snapshot)
         echo "  - ${node} (exit=snapshot)" >&2
@@ -2478,8 +2422,8 @@ rollback_successful_hosts() {
   echo "Rolling back ${#successful_hosts[@]} successful host(s) to pre-deploy generations" >&2
 
   for node in "${successful_hosts[@]}"; do
-    status_file="${rollback_status_dir}/${node}.rc"
-    log_file="${rollback_log_dir}/${node}.log"
+    status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
+    log_file="$(phase_dir_item_log_file "${rollback_log_dir}" "${node}")"
 
     if run_streamed_host_command "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "$(cat "${snapshot_dir}/${node}.path")"; then
       write_status_file "${status_file}" 0
@@ -2497,6 +2441,17 @@ rollback_successful_hosts() {
   fi
 
   return "${rollback_rc}"
+}
+
+should_ask_sudo_password() {
+  local deploy_user="$1"
+  local using_bootstrap_fallback="$2"
+
+  if [ "${using_bootstrap_fallback}" -eq 1 ] || { [ "${deploy_user}" != "root" ] && [ "${deploy_user}" != "nixbot" ]; }; then
+    return 0
+  fi
+
+  return 1
 }
 
 deploy_host() {
@@ -2591,7 +2546,7 @@ run_bootstrap_key_checks() {
   bootstrap_ok_hosts_ref=()
   bootstrap_failed_hosts_ref=()
 
-  mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
+  json_array_to_bash_array "${selected_json}" selected_hosts
 
   log_section "Phase: Bootstrap Key Check"
   for node in "${selected_hosts[@]}"; do
@@ -2633,6 +2588,8 @@ run_bootstrap_key_checks() {
   return "${rc}"
 }
 
+##### Host Phase Artifacts #####
+
 init_run_dirs() {
   local base_dir="$1"
   local -n build_log_dir_ref="$2"
@@ -2644,24 +2601,187 @@ init_run_dirs() {
   local -n rollback_log_dir_ref="$8"
   local -n rollback_status_dir_ref="$9"
 
-  build_log_dir_ref="${base_dir}/logs.build"
-  build_status_dir_ref="${base_dir}/status.build"
-  deploy_log_dir_ref="${base_dir}/logs.deploy"
-  deploy_status_dir_ref="${base_dir}/status.deploy"
-  build_out_dir_ref="${base_dir}/build-outs"
-  snapshot_dir_ref="${base_dir}/snapshots"
-  rollback_log_dir_ref="${base_dir}/logs.rollback"
-  rollback_status_dir_ref="${base_dir}/status.rollback"
+  # shellcheck disable=SC2034
+  {
+    build_log_dir_ref="$(phase_log_dir_path "${base_dir}" "build")"
+    build_status_dir_ref="$(phase_status_dir_path "${base_dir}" "build")"
+    deploy_log_dir_ref="$(phase_log_dir_path "${base_dir}" "deploy")"
+    deploy_status_dir_ref="$(phase_status_dir_path "${base_dir}" "deploy")"
+    build_out_dir_ref="${base_dir}/build-outs"
+    snapshot_dir_ref="${base_dir}/snapshots"
+    rollback_log_dir_ref="$(phase_log_dir_path "${base_dir}" "rollback")"
+    rollback_status_dir_ref="$(phase_status_dir_path "${base_dir}" "rollback")"
+  }
 
-  mkdir -p \
-    "${build_log_dir_ref}" \
-    "${build_status_dir_ref}" \
-    "${deploy_log_dir_ref}" \
-    "${deploy_status_dir_ref}" \
-    "${build_out_dir_ref}" \
-    "${snapshot_dir_ref}" \
-    "${rollback_log_dir_ref}" \
-    "${rollback_status_dir_ref}"
+  ensure_phase_runtime_dirs "${base_dir}" build deploy rollback
+  mkdir -p "${build_out_dir_ref}" "${snapshot_dir_ref}"
+}
+
+phase_dir_path() {
+  local base_dir="$1"
+  local kind="$2"
+  local phase="$3"
+
+  printf '%s/%s.%s\n' "${base_dir}" "${kind}" "${phase}"
+}
+
+phase_log_dir_path() {
+  phase_dir_path "$1" "logs" "$2"
+}
+
+phase_status_dir_path() {
+  phase_dir_path "$1" "status" "$2"
+}
+
+phase_item_name() {
+  local phase="$1"
+  local item="$2"
+  local subitem="${3:-}"
+
+  case "${phase}" in
+    tf)
+      [ -n "${subitem}" ] || die "Missing Terraform subitem for phase item name: ${item}"
+      printf '%s.%s\n' "${item}" "${subitem}"
+      ;;
+    *)
+      printf '%s\n' "${item}"
+      ;;
+  esac
+}
+
+phase_item_log_file() {
+  local base_dir="$1"
+  local phase="$2"
+  local item="$3"
+  local subitem="${4:-}"
+
+  printf '%s/%s.log\n' "$(phase_log_dir_path "${base_dir}" "${phase}")" "$(phase_item_name "${phase}" "${item}" "${subitem}")"
+}
+
+phase_item_status_file() {
+  local base_dir="$1"
+  local phase="$2"
+  local item="$3"
+  local subitem="${4:-}"
+
+  printf '%s/%s.rc\n' "$(phase_status_dir_path "${base_dir}" "${phase}")" "$(phase_item_name "${phase}" "${item}" "${subitem}")"
+}
+
+phase_dir_item_log_file() {
+  local log_dir="$1"
+  local item="$2"
+
+  printf '%s/%s.log\n' "${log_dir}" "${item}"
+}
+
+phase_dir_item_status_file() {
+  local status_dir="$1"
+  local item="$2"
+
+  printf '%s/%s.rc\n' "${status_dir}" "${item}"
+}
+
+write_status_file() {
+  local status_file="$1"
+  local rc="$2"
+
+  printf '%s\n' "${rc}" > "${status_file}"
+}
+
+read_status_file() {
+  local status_file="$1"
+
+  [ -s "${status_file}" ] || return 1
+  cat "${status_file}"
+}
+
+ensure_phase_artifact_dirs() {
+  local base_dir="$1"
+  shift
+  local phase=""
+
+  for phase in "$@"; do
+    [ -n "${phase}" ] || continue
+    mkdir -p \
+      "$(phase_log_dir_path "${base_dir}" "${phase}")" \
+      "$(phase_status_dir_path "${base_dir}" "${phase}")"
+  done
+}
+
+phase_artifact_dir_path() {
+  local base_dir="$1"
+  local phase="$2"
+
+  printf '%s/artifacts.%s\n' "${base_dir}" "${phase}"
+}
+
+ensure_phase_runtime_dirs() {
+  local base_dir="$1"
+  shift
+  local phase=""
+
+  ensure_phase_artifact_dirs "${base_dir}" "$@"
+  for phase in "$@"; do
+    [ -n "${phase}" ] || continue
+    mkdir -p "$(phase_artifact_dir_path "${base_dir}" "${phase}")"
+  done
+}
+
+##### Build Phase #####
+
+build_host() {
+  local node="$1"
+  local out_path
+
+  log_host_stage "build" "${node}"
+  echo "Starting local build" >&2
+  if ! out_path="$(nix build --print-out-paths "path:.#nixosConfigurations.${node}.config.system.build.toplevel")"; then
+    echo "Build failed for ${node}" >&2
+    return 1
+  fi
+
+  [ -n "${out_path}" ] || {
+    echo "Build produced no output path for ${node}" >&2
+    return 1
+  }
+
+  echo "Built out path: ${out_path}" >&2
+  if ! nix path-info --closure-size --human-readable "${out_path}" >&2; then
+    echo "Unable to resolve closure size for ${node}: ${out_path}" >&2
+    return 1
+  fi
+
+  printf '%s\n' "${out_path}"
+}
+
+eval_host_out_path() {
+  local node="$1"
+  local out_path
+
+  log_host_stage "build" "${node}" "remote build"
+  echo "Evaluating output path" >&2
+  if ! out_path="$(nix eval --raw "path:.#nixosConfigurations.${node}.config.system.build.toplevel.outPath")"; then
+    echo "Evaluation failed for ${node}" >&2
+    return 1
+  fi
+
+  [ -n "${out_path}" ] || {
+    echo "Evaluation produced no output path for ${node}" >&2
+    return 1
+  }
+
+  echo "Planned out path: ${out_path}" >&2
+  printf '%s\n' "${out_path}"
+}
+
+resolve_build_out_path() {
+  local node="$1"
+
+  if is_deploy_style_action && [ "${BUILD_HOST}" != "local" ]; then
+    eval_host_out_path "${node}"
+  else
+    build_host "${node}"
+  fi
 }
 
 run_build_phase() {
@@ -2694,7 +2814,7 @@ run_build_phase() {
     && [ "${#build_hosts_ref[@]}" -gt 0 ] && [ "${build_hosts_ref[0]}" = "${bastion_host}" ]; then
     build_sync_leading_bastion=1
     node="${bastion_host}"
-    status_file="${build_status_dir}/${node}.rc"
+    status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
     out_file="${build_out_dir}/${node}.path"
     run_build_job "${node}" "${out_file}" "${status_file}"
     record_phase_status "${node}" "${status_file}" built_hosts_ref failed_hosts_ref || true
@@ -2706,11 +2826,11 @@ run_build_phase() {
       continue
     fi
 
-    status_file="${build_status_dir}/${node}.rc"
+    status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
     out_file="${build_out_dir}/${node}.path"
     log_file=""
     if [ "${build_parallel}" -eq 1 ]; then
-      log_file="${build_log_dir}/${node}.log"
+      log_file="$(phase_dir_item_log_file "${build_log_dir}" "${node}")"
       run_build_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
       active_jobs=$((active_jobs + 1))
       wait_for_job_slot active_jobs "${build_jobs}"
@@ -2727,7 +2847,7 @@ run_build_phase() {
     drain_job_slots active_jobs
     for node in "${build_hosts_ref[@]}"; do
       [ -n "${node}" ] || continue
-      status_file="${build_status_dir}/${node}.rc"
+      status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
       if [ "${build_sync_leading_bastion}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
         continue
       fi
@@ -2744,6 +2864,8 @@ run_build_phase() {
   log_group_scope_end
   return 0
 }
+
+##### Deploy Phase #####
 
 run_deploy_phase() {
   local deploy_parallel="$1"
@@ -2808,11 +2930,11 @@ run_deploy_phase() {
     for node in "${level_hosts[@]}"; do
       [ -n "${node}" ] || continue
 
-      status_file="${deploy_status_dir}/${node}.rc"
+      status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
       out_file="${build_out_dir}/${node}.path"
       log_file=""
       if [ "${deploy_parallel}" -eq 1 ]; then
-        log_file="${deploy_log_dir}/${node}.log"
+        log_file="$(phase_dir_item_log_file "${deploy_log_dir}" "${node}")"
         run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
         active_jobs=$((active_jobs + 1))
         wait_for_job_slot active_jobs "${deploy_parallel_jobs}"
@@ -2830,7 +2952,7 @@ run_deploy_phase() {
       drain_job_slots active_jobs
       for node in "${level_hosts[@]}"; do
         [ -n "${node}" ] || continue
-        status_file="${deploy_status_dir}/${node}.rc"
+        status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
         record_deploy_phase_status "${node}" "${status_file}" successful_hosts_ref deploy_skipped_hosts_ref deploy_failed_hosts_ref || true
       done
       if [ "${#deploy_failed_hosts_ref[@]}" -gt 0 ]; then
@@ -2893,7 +3015,7 @@ run_hosts() {
   local deploy_parallel=0
 
   if is_bootstrap_check_action; then
-    mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
+    json_array_to_bash_array "${selected_json}" selected_hosts
     if ! run_bootstrap_key_checks "${selected_json}" bootstrap_ok_hosts bootstrap_failed_hosts; then
       final_rc=1
     fi
@@ -2909,7 +3031,7 @@ run_hosts() {
     return "${final_rc}"
   fi
 
-  mapfile -t selected_hosts < <(jq -r '.[]' <<<"${selected_json}")
+  json_array_to_bash_array "${selected_json}" selected_hosts
   levels_json="$(selected_host_levels_json "${selected_json}")"
   mapfile -t level_groups < <(jq -c '.[]' <<<"${levels_json}")
   # shellcheck disable=SC2034
@@ -2998,6 +3120,151 @@ run_hosts() {
     deploy_skipped_hosts \
     deploy_failed_hosts
   return "${final_rc}"
+}
+
+##### Terraform #####
+
+load_tf_backend_runtime_secrets() {
+  local var_name decrypted_file
+  local -A _tf_backend_secrets=(
+    [R2_ACCOUNT_ID]="${TF_R2_ACCOUNT_ID_PATH}"
+    [R2_STATE_BUCKET]="${TF_R2_STATE_BUCKET_PATH}"
+    [R2_ACCESS_KEY_ID]="${TF_R2_ACCESS_KEY_ID_PATH}"
+    [R2_SECRET_ACCESS_KEY]="${TF_R2_SECRET_ACCESS_KEY_PATH}"
+  )
+
+  for var_name in "${!_tf_backend_secrets[@]}"; do
+    if [ -z "${!var_name:-}" ]; then
+      decrypted_file="$(resolve_runtime_key_file "${_tf_backend_secrets[${var_name}]}" 1)"
+      set_env_from_file_if_unset "${var_name}" "${decrypted_file}"
+    fi
+  done
+}
+
+load_cloudflare_tf_runtime_secrets() {
+  local decrypted_file=""
+
+  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    decrypted_file="$(resolve_runtime_key_file "${TF_CLOUDFLARE_API_TOKEN_PATH}" 1)"
+    set_env_from_file_if_unset "CLOUDFLARE_API_TOKEN" "${decrypted_file}"
+  fi
+}
+
+tf_project_name_from_dir() {
+  basename "$1"
+}
+
+tf_project_provider_from_name() {
+  local project_name="$1"
+  printf '%s\n' "${project_name%-*}"
+}
+
+tf_project_dirs_for_phase() {
+  local phase="$1"
+  local project_name=""
+
+  if [ -n "${TF_WORK_DIR}" ]; then
+    project_name="$(tf_project_name_from_dir "${TF_WORK_DIR}")"
+    if [[ "${project_name}" == *-"${phase}" ]]; then
+      printf '%s\n' "${TF_WORK_DIR}"
+    fi
+    return 0
+  fi
+
+  find tf -mindepth 1 -maxdepth 1 -type d -name "*-${phase}" | sort
+}
+
+tf_state_key_for_project() {
+  local project_name="$1"
+
+  if [ -n "${R2_STATE_KEY:-}" ]; then
+    printf '%s\n' "${R2_STATE_KEY}"
+    return 0
+  fi
+
+  printf '%s/terraform.tfstate\n' "${project_name}"
+}
+
+emit_tf_secret_paths_for_project() {
+  local project_name="$1"
+  local cf="${TF_SECRETS_DIR}/cloudflare"
+  local dir
+
+  [ -f "${TF_SECRETS_DIR}/${project_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${project_name}.tfvars.age"
+  [ -d "${TF_SECRETS_DIR}/${project_name}" ] && find "${TF_SECRETS_DIR}/${project_name}" -type f -name '*.tfvars.age' | sort
+
+  case "${project_name}" in
+    cloudflare-dns)
+      [ -d "${cf}/dns" ] && find "${cf}/dns" -type f -name '*.tfvars.age' | sort
+      ;;
+    cloudflare-platform)
+      [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
+      for dir in account access tunnels r2 zone-dnssec zone-settings zone-security rulesets page-rules email-routing; do
+        [ -d "${cf}/${dir}" ] && find "${cf}/${dir}" -type f -name '*.tfvars.age' | sort
+      done
+      ;;
+    cloudflare-apps)
+      [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
+      [ -d "${cf}/account" ] && find "${cf}/account" -type f -name '*.tfvars.age' | sort
+      [ -d "${cf}/workers" ] && find "${cf}/workers" -type f -name '*.tfvars.age' | sort
+      ;;
+  esac
+}
+
+load_tf_runtime_secrets_for_project() {
+  local project_name="$1"
+  local provider_name
+
+  load_tf_backend_runtime_secrets
+
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
+  case "${provider_name}" in
+    cloudflare)
+      load_cloudflare_tf_runtime_secrets
+      ;;
+  esac
+}
+
+require_tf_runtime_env_for_project() {
+  local project_name="$1"
+  local provider_name
+
+  [ -n "${R2_ACCOUNT_ID:-}" ] || die "Missing required environment variable: R2_ACCOUNT_ID"
+  [ -n "${R2_STATE_BUCKET:-}" ] || die "Missing required environment variable: R2_STATE_BUCKET"
+  [ -n "${R2_ACCESS_KEY_ID:-}" ] || die "Missing required environment variable: R2_ACCESS_KEY_ID"
+  [ -n "${R2_SECRET_ACCESS_KEY:-}" ] || die "Missing required environment variable: R2_SECRET_ACCESS_KEY"
+
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
+  case "${provider_name}" in
+    cloudflare)
+      [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "Missing required environment variable: CLOUDFLARE_API_TOKEN"
+      ;;
+  esac
+}
+
+is_tf_candidate_path_for_project() {
+  local phase="$1"
+  local project_name="$2"
+  local path="$3"
+  local provider_name
+
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
+
+  case "${path}" in
+    "tf/${project_name}"|"tf/${project_name}/"*) return 0 ;;
+    "tf/modules/${provider_name}"|"tf/modules/${provider_name}/"*) return 0 ;;
+    "data/secrets/${provider_name}"|"data/secrets/${provider_name}/"*) return 0 ;;
+    "data/secrets/tf/${provider_name}"|"data/secrets/tf/${provider_name}/"*) return 0 ;;
+    "data/secrets/cloudflare/r2-account-id.key.age"|"data/secrets/cloudflare/r2-state-bucket.key.age"|"data/secrets/cloudflare/r2-access-key-id.key.age"|"data/secrets/cloudflare/r2-secret-access-key.key.age") return 0 ;;
+  esac
+
+  if [ "${phase}" = "apps" ]; then
+    case "${path}" in
+      services|services/*) return 0 ;;
+    esac
+  fi
+
+  return 1
 }
 
 resolve_tf_project_dir() {
@@ -3103,6 +3370,84 @@ tf_backend_endpoint() {
   printf 'https://%s.r2.cloudflarestorage.com\n' "${R2_ACCOUNT_ID}"
 }
 
+should_run_tf_project_action() {
+  local phase="$1"
+  local project_name="$2"
+  local target_ref base_ref diff_output diff_status=0
+  local path=""
+  local status_output=""
+  local status_path=""
+
+  if [ "${TF_IF_CHANGED}" -eq 0 ]; then
+    echo "Terraform change detection bypassed by --force" >&2
+    return 0
+  fi
+
+  target_ref="${SHA:-HEAD}"
+  if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
+    echo "Terraform change detection unavailable for ${target_ref}; running TF ${phase}" >&2
+    return 0
+  fi
+
+  if ! base_ref="$(resolve_tf_change_base_ref "${target_ref}")"; then
+    echo "Terraform change base unavailable for ${target_ref}; running TF ${phase}" >&2
+    return 0
+  fi
+
+  diff_output="$(git diff --name-only "${base_ref}" "${target_ref}" -- 2>/dev/null)" || diff_status=$?
+  if [ "${diff_status}" -ne 0 ]; then
+    echo "Terraform change detection failed for ${base_ref}..${target_ref}; running TF ${phase}" >&2
+    return 0
+  fi
+
+  while IFS= read -r path; do
+    [ -n "${path}" ] || continue
+    if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${path}"; then
+      echo "Terraform ${project_name} change detected: ${path}" >&2
+      return 0
+    fi
+  done <<< "${diff_output}"
+
+  status_output="$(git status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+  while IFS= read -r status_path; do
+    [ -n "${status_path}" ] || continue
+    status_path="${status_path#?? }"
+    status_path="${status_path##* -> }"
+    if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${status_path}"; then
+      echo "Terraform ${project_name} working tree change detected: ${status_path}" >&2
+      return 0
+    fi
+  done <<< "${status_output}"
+
+  echo "Terraform ${project_name} unchanged; skipping TF action" >&2
+  return 1
+}
+
+resolve_tf_change_base_ref() {
+  local target_ref="${1:-HEAD}"
+  local target_commit=""
+  local base_commit=""
+
+  if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
+    return 1
+  fi
+  target_commit="$(git rev-parse --verify "${target_ref}" 2>/dev/null || true)"
+
+  if [ -n "${TF_CHANGE_BASE_REF}" ] && git rev-parse --verify "${TF_CHANGE_BASE_REF}" >/dev/null 2>&1; then
+    base_commit="$(git rev-parse --verify "${TF_CHANGE_BASE_REF}" 2>/dev/null || true)"
+    if [ -n "${base_commit}" ] && [ "${base_commit}" != "${target_commit}" ]; then
+      printf '%s\n' "${TF_CHANGE_BASE_REF}"
+      return 0
+    fi
+  fi
+
+  if git rev-parse --verify "${target_ref}^1" >/dev/null 2>&1; then
+    printf '%s^1\n' "${target_ref}"
+    return 0
+  fi
+  return 1
+}
+
 run_tf_phases() {
   local phase=""
 
@@ -3112,22 +3457,6 @@ run_tf_phases() {
       return 1
     fi
   done
-}
-
-run_deploy_request_action() {
-  local selected_json="$1"
-
-  case "${ACTION}" in
-    all)
-      run_all_action "${selected_json}"
-      ;;
-    tf|tf-dns|tf-platform|tf-apps)
-      run_tf_only_action
-      ;;
-    *)
-      run_host_action "${selected_json}"
-      ;;
-  esac
 }
 
 tofu_args_extract_subcommand() {
@@ -3205,9 +3534,6 @@ resolve_tofu_auto_var_file_subcommand() {
   subcommand_ref="${subcommand}"
 }
 
-# Low-level: run a single tofu command with optional project-aware var-file
-# injection. Pass project_name="" to skip auto var-file injection (e.g. init,
-# apply with saved plan file).
 _exec_tofu_cmd() {
   local project_name="${1:-}"
   shift
@@ -3281,7 +3607,7 @@ run_tf_action() {
   fi
 
   ensure_tmp_dir
-  plan_file="$(mktemp "${DEPLOY_TMP_DIR}/tfplan.XXXXXX")"
+  plan_file="$(tmp_runtime_mktemp tf "tfplan.XXXXXX")"
   _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false -out="${plan_file}"
   # Apply saved plan (no var-file injection)
   _exec_tofu_cmd "" -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}"
@@ -3298,15 +3624,21 @@ run_tf_project_action() {
   local phase="$1"
   local project_name="$2"
   local project_dir="$3"
+  local log_file="" status_file="" rc=0
 
   log_grouped_nested_item_start "$(log_group_tf_project_title "${phase}" "${project_name}")"
   log_subsection "Terraform Project: ${project_name}"
-  if run_tf_action "${phase}" "${project_dir}"; then
-    log_grouped_item_end
-    return 0
+  ensure_tmp_dir
+  log_file="$(phase_item_log_file "${DEPLOY_TMP_DIR}" "tf" "${phase}" "${project_name}")"
+  status_file="$(phase_item_status_file "${DEPLOY_TMP_DIR}" "tf" "${phase}" "${project_name}")"
+  if run_tf_action "${phase}" "${project_dir}" > >(tee -a "${log_file}") 2>&1; then
+    write_status_file "${status_file}" 0
+  else
+    rc="$?"
+    write_status_file "${status_file}" "${rc}"
   fi
   log_grouped_item_end
-  return 1
+  [ "${rc}" -eq 0 ]
 }
 
 tofu_wrapper_extract_chdir() {
@@ -3419,65 +3751,8 @@ run_tf_only_action() {
   esac
 }
 
-run_all_action() {
-  local selected_json="$1"
-  local action_rc=0
+##### Logging #####
 
-  if ! run_tf_phases dns platform; then
-    action_rc=1
-  fi
-
-  if ! run_host_action "${selected_json}"; then
-    action_rc=1
-  fi
-
-  if ! run_tf_phases apps; then
-    action_rc=1
-  fi
-
-  return "${action_rc}"
-}
-
-resolve_selected_hosts_json() {
-  local all_hosts_json="$1"
-  local selected_json=""
-
-  selected_json="$(select_hosts_json "${all_hosts_json}")"
-  validate_selected_hosts "${selected_json}" "${all_hosts_json}"
-  selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
-  order_selected_hosts_json "${selected_json}" "${all_hosts_json}"
-}
-
-prepare_run_context() {
-  local -n selected_json_ref="$1"
-  local config_json="" all_hosts_json=""
-  local -a log_hosts=()
-
-  if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
-    config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
-    init_deploy_settings "${config_json}"
-  fi
-
-  all_hosts_json="$(load_all_hosts_json)"
-  selected_json_ref="$(resolve_selected_hosts_json "${all_hosts_json}")"
-
-  mapfile -t log_hosts < <(jq -r '.[]' <<<"${selected_json_ref}")
-
-  log_section "nixbot"
-  echo "Action: ${ACTION}" >&2
-  print_host_block "Hosts" "${log_hosts[@]}"
-  if is_deploy_style_action; then
-    echo "Goal: ${GOAL}" >&2
-    echo "Build host: ${BUILD_HOST}" >&2
-  fi
-}
-
-run_host_action() {
-  local selected_json="$1"
-  run_hosts "${selected_json}"
-}
-
-# Logging helpers.
 host_phase_border() {
   local phase="$1"
 
@@ -3987,7 +4262,10 @@ record_tf_run_summary() {
   RUN_SUMMARY_TF_LABELS+=("${phase}/${project_name}")
   RUN_SUMMARY_TF_STATUSES+=("${status}")
 }
+
 # End logging helpers.
+
+##### Dispatch #####
 
 ensure_runtime_shell() {
   local script_path
@@ -4043,6 +4321,37 @@ is_tofu_wrapper_request() {
   [ "${#request_args[@]}" -gt 0 ] && [ "${request_args[0]}" = "tofu" ]
 }
 
+run_deploy_request_action() {
+  local selected_json="$1"
+
+  if [ "${ACTION}" = "all" ]; then
+    run_all_action "${selected_json}"
+  elif action_is_tf_only "${ACTION}"; then
+    run_tf_only_action
+  else
+    run_hosts "${selected_json}"
+  fi
+}
+
+run_all_action() {
+  local selected_json="$1"
+  local action_rc=0
+
+  if ! run_tf_phases dns platform; then
+    action_rc=1
+  fi
+
+  if ! run_hosts "${selected_json}"; then
+    action_rc=1
+  fi
+
+  if ! run_tf_phases apps; then
+    action_rc=1
+  fi
+
+  return "${action_rc}"
+}
+
 run_requested_action() {
   local selected_json=""
   local action_rc=0
@@ -4063,12 +4372,15 @@ run_requested_action() {
   return "${action_rc}"
 }
 
+##### Main #####
+
 main() {
   local -a request_args=("$@")
 
   ensure_runtime_shell "$@"
   init_vars
   trap cleanup EXIT
+  cleanup_stale_runtime_dirs
 
   hydrate_request_args_from_ssh_command request_args
 
@@ -4089,7 +4401,7 @@ main() {
     return
   fi
 
-  ensure_repo_for_sha
+  prepare_repo_worktree
   reexec_repo_script_if_needed "${request_args[@]}"
 
   run_requested_action

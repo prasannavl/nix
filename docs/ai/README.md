@@ -30,18 +30,13 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Canonical
   `nixbot` deploy architecture, runtime contract, and orchestration behavior.
-- `docs/ai/notes/nixbot/nixbot-deploy-cleanup-2026-03.md`: March 2026 cleanup
-  refactor notes for shared SSH context setup and action dispatch in
-  `scripts/nixbot-deploy.sh`.
 - `docs/ai/notes/nixbot/lint-gating-and-precommit-2026-03.md`: Shared lint
   entrypoint, CI gate, and pre-commit hook decisions.
-- `docs/ai/notes/nixbot/cloudflare-apps-stage-cleanup-2026-03.md`: Removal of
-  the old Cloudflare apps `stage` layer in favor of direct `#build` usage.
-- `docs/ai/notes/nixbot/cloudflare-apps-store-path-resolution-2026-03.md`:
-  Runtime resolution of Cloudflare app asset directories to real Nix store
-  outputs for Terraform.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Canonical `nixbot` rotation model, lessons, and operator guardrails.
+- `docs/ai/notes/nixbot/security-trust-model-2026-03.md`: Bastion-trigger
+  operator trust boundary, arbitrary-SHA policy, and relationship between
+  worktree isolation and secret access.
 
 ### Secrets
 
