@@ -34,9 +34,15 @@ Use this index as the canonical map for `docs/ai/**`.
   entrypoint, CI gate, and pre-commit hook decisions.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Canonical `nixbot` rotation model, lessons, and operator guardrails.
+- `docs/ai/notes/nixbot/nameref-audit-and-fixes-2026-03.md`: Bash nameref
+  circular-reference audit and helper-local binding rename strategy for
+  `nixbot-deploy.sh`.
 - `docs/ai/notes/nixbot/security-trust-model-2026-03.md`: Bastion-trigger
   operator trust boundary, arbitrary-SHA policy, and relationship between
   worktree isolation and secret access.
+- `docs/ai/notes/nixbot/worktree-terraform-lockfile-2026-03.md`: Terraform
+  lockfile regression exposed by fresh deploy worktrees and the normalization
+  rule for Cloudflare provider locks.
 
 ### Secrets
 
