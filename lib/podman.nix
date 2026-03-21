@@ -6,7 +6,7 @@
 }: let
   cfg = config.services.podmanCompose;
 
-  serviceType = lib.types.submodule ({...}: {
+  serviceType = lib.types.submodule (_: {
     options = {
       source = lib.mkOption {
         type = lib.types.nullOr (lib.types.oneOf [lib.types.lines lib.types.attrs lib.types.path]);
@@ -99,7 +99,7 @@
       };
 
       exposedPorts = lib.mkOption {
-        type = lib.types.attrsOf (lib.types.submodule ({...}: {
+        type = lib.types.attrsOf (lib.types.submodule (_: {
           options = {
             port = lib.mkOption {
               type = lib.types.port;
@@ -314,8 +314,8 @@
     systemdService = mergedSystemdService;
     restartStamp = builtins.hashString "sha256" (builtins.toJSON {
       unit = mergedSystemdService;
-      sourcePaths = service.sourcePaths;
-      runtimePaths = service.runtimePaths;
+      inherit (service) sourcePaths;
+      inherit (service) runtimePaths;
     });
   };
 
@@ -431,7 +431,7 @@ in {
                     user = resolvedUser;
                     uid = userUid;
                     workDir = "${stack.stackDir}/${serviceName}";
-                    stackDir = stack.stackDir;
+                    inherit (stack) stackDir;
                     inherit podmanSocket;
                   }
                 else serviceOrFn)

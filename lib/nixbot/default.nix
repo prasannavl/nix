@@ -5,16 +5,14 @@
 }: let
   userdata = (import ../../users/userdata.nix).nixbot;
   sshKeys =
-    if userdata ? sshKeys
-    then userdata.sshKeys
-    else [userdata.sshKey];
+    userdata.sshKeys or [userdata.sshKey];
 in {
   users.groups.nixbot = {
     gid = userdata.uid;
   };
 
   users.users.nixbot = {
-    uid = userdata.uid;
+    inherit (userdata) uid;
     group = "nixbot";
     isSystemUser = true;
     description = "nixbot - automation bot for nix deployments";

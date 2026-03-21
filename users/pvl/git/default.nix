@@ -1,5 +1,5 @@
 {
-  nixos = {...}: {
+  nixos = _: {
     programs.git.enable = true;
   };
 
@@ -12,8 +12,8 @@
       enable = true;
       settings = {
         user = {
-          name = userdata.name;
-          email = userdata.email;
+          inherit (userdata) name;
+          inherit (userdata) email;
           signingKey = userdata.sshKey;
         };
         commit.gpgSign = true;

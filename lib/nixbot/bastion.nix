@@ -5,9 +5,7 @@
 }: let
   userdata = (import ../../users/userdata.nix).nixbot;
   bastionSshKeys =
-    if userdata ? bastionSshKeys
-    then userdata.bastionSshKeys
-    else [userdata.bastionSshKey];
+    userdata.bastionSshKeys or [userdata.bastionSshKey];
   forcedCommandKey = key: ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="/var/lib/nixbot/nixbot-deploy.sh" ${key}'';
   legacyKeyAgePath = ../../data/secrets/nixbot/nixbot-legacy.key.age;
   hasLegacyKeyAge = builtins.pathExists legacyKeyAgePath;

@@ -24,26 +24,33 @@
   # Image-specific trim for container builds.
   documentation.enable = false;
   boot.enableContainers = false;
-  services.getty.autologinUser = null;
-
-  networking.hostName = hostName;
+  networking = {
+    inherit hostName;
+    useNetworkd = true;
+    useHostResolvConf = false;
+    networkmanager.enable = false;
+    useDHCP = false;
+    firewall = {
+      enable = true;
+      allowedTCPPorts = [];
+      allowedUDPPorts = [];
+    };
+    nftables.enable = true;
+  };
   time.timeZone = "Asia/Singapore";
   i18n.defaultLocale = "en_US.UTF-8";
 
-  programs.bash = {
-    enable = true;
-    completion.enable = true;
+  programs = {
+    bash = {
+      enable = true;
+      completion.enable = true;
+    };
+    htop.enable = true;
+    mtr.enable = true;
+    git.enable = true;
+    tmux.enable = true;
   };
-  programs.htop.enable = true;
-  programs.mtr.enable = true;
-  programs.git.enable = true;
-  programs.tmux.enable = true;
-
-  networking.useNetworkd = true;
   systemd.network.enable = true;
-  networking.useHostResolvConf = false;
-  networking.networkmanager.enable = false;
-  networking.useDHCP = false;
 
   systemd.network.networks."10-eth0" = {
     matchConfig.Name = "eth0";
@@ -51,17 +58,12 @@
     networkConfig.IPv6AcceptRA = true;
   };
 
-  networking.firewall.enable = true;
-  networking.nftables.enable = true;
-  networking.firewall.allowedTCPPorts = [];
-  networking.firewall.allowedUDPPorts = [];
-
-  services.resolved = {
-    enable = true;
+  services = {
+    getty.autologinUser = null;
+    resolved.enable = true;
+    tailscale.enable = true;
+    fail2ban.enable = true;
   };
-
-  services.tailscale.enable = true;
-  services.fail2ban.enable = true;
 
   security.sudo.wheelNeedsPassword = false;
 

@@ -59,10 +59,10 @@
     in {
       packages = {
         default = build;
-        build = build;
+        inherit build;
         wrangler-deploy = deployWrangler;
-        lint = lint;
-        fix = fix;
+        inherit lint;
+        inherit fix;
       };
       apps = {
         wrangler-deploy = {

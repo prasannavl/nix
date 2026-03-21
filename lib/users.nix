@@ -1,13 +1,15 @@
-{...}: {
-  users.mutableUsers = false;
-
-  users.users.root = {
-    hashedPassword = "!"; # Disable
+_: {
+  users = {
+    mutableUsers = false;
+    users.root = {
+      hashedPassword = "!"; # Disable
+    };
+    groups = {
+      i2c = {};
+      # Fix missing groups referenced by dbus
+      netdev = {};
+    };
   };
-
-  users.groups.i2c = {};
-  # Fix missing groups referenced by dbus
-  users.groups.netdev = {};
 
   home-manager.useGlobalPkgs = true;
   home-manager.useUserPackages = true;

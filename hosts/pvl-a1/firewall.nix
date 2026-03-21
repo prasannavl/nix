@@ -1,4 +1,4 @@
-{lib, ...}: {
+_: {
   networking.firewall = {
     trustedInterfaces = ["incusbr0"];
   };

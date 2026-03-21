@@ -5,7 +5,7 @@
   (import ./pvl.nix {inherit inputs;})
   (import ./pkgs.nix {inherit inputs;})
   (
-    final: prev: {
+    final: _: {
       handbrake-wrapped = final.callPackage ../pkgs/ext/handbrake.nix {};
       zed-wrapped = final.callPackage ../pkgs/ext/zed.nix {};
       nvidiaCustomForKernel = kernelPackages:

@@ -26,12 +26,12 @@
     in {
       packages = {
         default = build;
-        build = build;
+        inherit build;
         run = build;
       };
       apps = {
         default = run;
-        run = run;
+        inherit run;
       };
     });
 }

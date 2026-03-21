@@ -1,8 +1,4 @@
-{
-  config,
-  pkgs,
-  ...
-}: let
+{pkgs, ...}: let
   # Keep groups isolated so they can be lifted into lib/profiles later.
   packages = {
     core = with pkgs; [

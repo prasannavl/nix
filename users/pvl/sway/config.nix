@@ -5,7 +5,7 @@
   osConfig,
   ...
 }: let
-  hostName = osConfig.networking.hostName;
+  inherit (osConfig.networking) hostName;
   wlrByHost = {
     pvl-a1 = {
       renderDevice = "/dev/dri/zrender-amd";
@@ -48,8 +48,8 @@ in {
     '';
     config = {
       modifier = mod;
-      terminal = terminal;
-      menu = menu;
+      inherit terminal;
+      inherit menu;
 
       bars = [
         {

@@ -1,8 +1,4 @@
-{
-  config,
-  pkgs,
-  ...
-}: {
+{config, ...}: {
   config = {
     systemd.settings.Manager = {
       # Notify pre-timeout

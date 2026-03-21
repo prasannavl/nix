@@ -1,5 +1,5 @@
 {
-  nixos = {...}: {};
+  nixos = _: {};
 
   home = {
     config,

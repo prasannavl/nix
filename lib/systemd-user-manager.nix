@@ -7,11 +7,7 @@
   cfg = config.services.systemdUserManager;
   bridges = lib.attrValues cfg.bridges;
 
-  unitType = lib.types.submodule ({
-    name,
-    config,
-    ...
-  }: {
+  unitType = lib.types.submodule ({name, ...}: {
     options = {
       user = lib.mkOption {
         type = lib.types.str;
@@ -45,7 +41,7 @@
 
   reloadServiceNameForUser = user: "systemd-user-manager-reload-${sanitizeUserKey user}";
   userUidFor = user: let
-    users = config.users.users;
+    inherit (config.users) users;
   in
     if builtins.hasAttr user users && users.${user}.uid != null
     then users.${user}.uid
@@ -113,7 +109,7 @@
         "multi-user.target"
         userAtService
       ];
-      restartTriggers = restartTriggers;
+      inherit restartTriggers;
       restartIfChanged = true;
       stopIfChanged = true;
       unitConfig.ConditionPathExists = userManagerStatePath;
@@ -201,7 +197,7 @@
         "multi-user.target"
         userAtService
       ];
-      restartTriggers = bridge.restartTriggers;
+      inherit (bridge) restartTriggers;
       restartIfChanged = true;
       stopIfChanged = true;
       unitConfig.ConditionPathExists = userManagerStatePath;

@@ -12,7 +12,7 @@
     ...
   }:
     flake-utils.lib.eachDefaultSystem (system: let
-      lib = nixpkgs.lib;
+      inherit (nixpkgs) lib;
       pkgs = nixpkgs.legacyPackages.${system};
       childNames = let
         entries = builtins.readDir ./.;
@@ -38,11 +38,7 @@
         childNames;
       buildPaths = lib.filter (drv: drv != null) (map (
           child:
-            if child.packages ? build
-            then child.packages.build
-            else if child.packages ? default
-            then child.packages.default
-            else null
+            child.packages.build or (child.packages.default or null)
         )
         childPackages);
       aggregateBuild =
@@ -70,7 +66,7 @@
       packages = {
         default = aggregateBuild;
         build = aggregateBuild;
-        deploy = deploy;
+        inherit deploy;
       };
       apps = {
         deploy = {

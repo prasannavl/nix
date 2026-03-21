@@ -1,5 +1,5 @@
 {
-  nixos = {...}: {};
+  nixos = _: {};
 
   home = {
     config,
@@ -9,7 +9,7 @@
     ...
   }: let
     homeDir = config.home.homeDirectory;
-    hostName = osConfig.networking.hostName;
+    inherit (osConfig.networking) hostName;
     onHosts = hosts: entry: lib.optional (lib.elem hostName hosts) entry;
     notHosts = hosts: entry: lib.optional (!(lib.elem hostName hosts)) entry;
   in {

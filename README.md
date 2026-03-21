@@ -118,14 +118,17 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 ## Linting
 
 - `nix fmt` applies the repo formatter configured in `treefmt.toml`.
-- `nix run path:.#lint` runs the shared lint suite.
+- `nix run path:.#lint` runs the shared lint suite across the whole repo.
+- `nix run path:.#lint-diff` runs the diff-scoped lint suite used for local
+  incremental checks.
 - Repo-wide gates today: `treefmt --ci`, `actionlint`, and `tflint` for `tf/*-*`
-  projects.
-- Incremental gates today: `statix`, `deadnix`, `shellcheck`, and
+  projects, plus full-repo `statix`, `deadnix`, `shellcheck`, and
+  `markdownlint-cli2` under `.#lint`.
+- Diff-scoped gates in `.#lint-diff`: `statix`, `deadnix`, `shellcheck`, and
   `markdownlint-cli2` run only on changed files so the hook protects new edits
-  without requiring a full repo debt cleanup first.
+  with faster local feedback.
 - Flake package `.#lint-deps` warms the full runnable `.#lint` closure so CI can
-  realize wrapper and tool dependencies ahead of the actual lint step.
+  realize the shared lint wrappers and tool dependencies ahead of the actual
+  lint step.
 - `./scripts/git-install-hooks.sh` configures Git to use `.githooks/`; the repo
-  pre-commit hook runs the same `nix run path:.#lint` command before allowing a
-  commit.
+  pre-commit hook runs `nix run path:.#lint-diff` before allowing a commit.

@@ -1,8 +1,4 @@
-{
-  lib,
-  pkgs,
-  ...
-}: {
+{...}: {
   imports = [
     ../hardware/mesa.nix
     ../hardware/amdgpu-strix.nix

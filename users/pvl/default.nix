@@ -1,7 +1,7 @@
 let
   userdata = (import ../userdata.nix).pvl;
-  mkModule = modules: {...}: let
-    selectedModules = map (path: import path) modules;
+  mkModule = modules: _: let
+    selectedModules = map import modules;
   in {
     imports =
       map (x: x.nixos) selectedModules

@@ -1,18 +1,15 @@
-{
-  config,
-  lib,
-  ...
-}: {
-  security.rtkit.enable = true;
-  security.polkit.enable = true;
+{config, ...}: {
+  security = {
+    rtkit.enable = true;
+    polkit.enable = true;
 
-  # Only needed in hardened setups
-  # security.unprivilegedUsernsClone = true;
-
-  security.pam.loginLimits = map (domain: {
-    inherit domain;
-    type = "-";
-    item = "nofile";
-    value = toString config.x.fdlimit;
-  }) ["*" "root"];
+    # Only needed in hardened setups
+    # unprivilegedUsernsClone = true;
+    pam.loginLimits = map (domain: {
+      inherit domain;
+      type = "-";
+      item = "nofile";
+      value = toString config.x.fdlimit;
+    }) ["*" "root"];
+  };
 }

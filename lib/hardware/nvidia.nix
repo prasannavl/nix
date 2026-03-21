@@ -10,32 +10,37 @@
     options nvidia NVreg_TemporaryFilePath=/var/tmp
   '';
 
-  hardware.graphics.extraPackages = with pkgs; [
-    nvidia-vaapi-driver
-  ];
-  hardware.graphics.extraPackages32 = with pkgs.pkgsi686Linux; [
-    nvidia-vaapi-driver
-  ];
-
-  # NVIDIA hardware settings
-  hardware.nvidia = {
-    modesetting.enable = true;
-    powerManagement.enable = lib.mkDefault true;
-    powerManagement.finegrained = lib.mkDefault true;
-    open = lib.mkDefault true;
-    nvidiaSettings = lib.mkDefault true;
-    dynamicBoost.enable = lib.mkDefault true;
-    nvidiaPersistenced = lib.mkDefault false;
-    # forceFullCompositionPipeline = true;
-    prime = rec {
-      offload.enable = true;
-      offload.enableOffloadCmd = offload.enable;
-      # For nvidia main GPU as  main renderer.
-      # sync.enable = true;
+  hardware = {
+    graphics = {
+      extraPackages = with pkgs; [
+        nvidia-vaapi-driver
+      ];
+      extraPackages32 = with pkgs.pkgsi686Linux; [
+        nvidia-vaapi-driver
+      ];
     };
-    package = pkgs.nvidiaCustomForKernel config.boot.kernelPackages;
+
+    # NVIDIA hardware settings
+    nvidia = {
+      modesetting.enable = true;
+      powerManagement.enable = lib.mkDefault true;
+      powerManagement.finegrained = lib.mkDefault true;
+      open = lib.mkDefault true;
+      nvidiaSettings = lib.mkDefault true;
+      dynamicBoost.enable = lib.mkDefault true;
+      nvidiaPersistenced = lib.mkDefault false;
+      # forceFullCompositionPipeline = true;
+      prime = rec {
+        offload.enable = true;
+        offload.enableOffloadCmd = offload.enable;
+        # For nvidia main GPU as  main renderer.
+        # sync.enable = true;
+      };
+      package = pkgs.nvidiaCustomForKernel config.boot.kernelPackages;
+    };
+
+    nvidia-container-toolkit.enable = true;
   };
-  hardware.nvidia-container-toolkit.enable = true;
 
   # X server configuration
   services.xserver.videoDrivers = ["nvidia"];

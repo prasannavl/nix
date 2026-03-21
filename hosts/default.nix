@@ -3,7 +3,7 @@
   commonModules,
   ...
 }: let
-  nixpkgs = inputs.nixpkgs;
+  inherit (inputs) nixpkgs;
 in {
   pvl-a1 = nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";

@@ -1,5 +1,5 @@
 {lib, ...}: let
-  gvariant = lib.gvariant;
+  inherit (lib) gvariant;
 in {
   dconf = {
     enable = true;

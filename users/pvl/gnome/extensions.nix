@@ -58,7 +58,7 @@
       extension = pkgs.gnomeExtensions.dash-to-panel;
       enable = true;
       dconf = let
-        gvariant = lib.gvariant;
+        inherit (lib) gvariant;
         mkDict = entries: let
           names = builtins.attrNames entries;
         in

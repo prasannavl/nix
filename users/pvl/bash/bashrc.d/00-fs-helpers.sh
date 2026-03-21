@@ -1,6 +1,7 @@
 __source_file_if_exists() {
 	local file="${1?-file required}"
 	if [[ -f "$file" ]]; then
+		# shellcheck source=/dev/null
 		. "$file"
 	fi
 }
@@ -76,4 +77,3 @@ mvx_sudo() {
     local cmd_prefix="sudo"
     mvx "$@"
 }
-

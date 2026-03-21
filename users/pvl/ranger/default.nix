@@ -1,7 +1,7 @@
 {
-  nixos = {...}: {};
+  nixos = _: {};
 
-  home = {...}: {
+  home = _: {
     programs.ranger = {
       enable = true;
       extraConfig = ''

@@ -1,4 +1,4 @@
-{...}: {
+_: {
   systemd.tmpfiles.rules = [
     "d /var/lib/llmug 0755 llmug llmug -"
     "d /var/lib/llmug/nginx.pod 0750 llmug llmug -"

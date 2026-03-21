@@ -3,19 +3,20 @@
     ./openssh.nix
   ];
 
-  networking.hostName = hostName;
-
-  networking.networkmanager.enable = true;
-  networking.nftables.enable = true;
-
-  networking.firewall.enable = true;
-  networking.firewall.allowedTCPPorts = [];
-  networking.firewall.allowedUDPPorts = [];
-
-  services.resolved = {
-    enable = true;
+  networking = {
+    inherit hostName;
+    networkmanager.enable = true;
+    nftables.enable = true;
+    firewall = {
+      enable = true;
+      allowedTCPPorts = [];
+      allowedUDPPorts = [];
+    };
   };
 
-  services.tailscale.enable = true;
-  services.fail2ban.enable = true;
+  services = {
+    resolved.enable = true;
+    tailscale.enable = true;
+    fail2ban.enable = true;
+  };
 }

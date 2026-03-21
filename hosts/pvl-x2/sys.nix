@@ -4,7 +4,6 @@
 {
   config,
   lib,
-  pkgs,
   modulesPath,
   ...
 }: {
@@ -12,33 +11,39 @@
     (modulesPath + "/installer/scan/not-detected.nix")
   ];
 
-  # boot.initrd.availableKernelModules = [ "nvme" "xhci_pci" "thunderbolt" "usbhid" "usb_storage" "sd_mod" "sdhci_pci" ];
-  boot.initrd.availableKernelModules = ["nvme" "xhci_pci" "usbhid" "usb_storage" "sd_mod" "sdhci_pci"];
-  boot.initrd.kernelModules = [];
-  boot.kernelModules = ["kvm-amd"];
-  boot.extraModulePackages = [];
+  boot = {
+    initrd = {
+      # boot.initrd.availableKernelModules = [ "nvme" "xhci_pci" "thunderbolt" "usbhid" "usb_storage" "sd_mod" "sdhci_pci" ];
+      availableKernelModules = ["nvme" "xhci_pci" "usbhid" "usb_storage" "sd_mod" "sdhci_pci"];
+      kernelModules = [];
+      luks.devices."luks-365dc847-d908-41e8-a4aa-66e187960ed6" = {
+        device = "/dev/disk/by-uuid/365dc847-d908-41e8-a4aa-66e187960ed6";
+        allowDiscards = true;
+      };
+    };
 
-  boot.initrd.luks.devices."luks-365dc847-d908-41e8-a4aa-66e187960ed6" = {
-    device = "/dev/disk/by-uuid/365dc847-d908-41e8-a4aa-66e187960ed6";
-    allowDiscards = true;
+    kernelModules = ["kvm-amd"];
+    extraModulePackages = [];
   };
 
-  fileSystems."/" = {
-    device = "/dev/mapper/luks-365dc847-d908-41e8-a4aa-66e187960ed6";
-    fsType = "btrfs";
-    options = ["subvol=@" "compress=zstd"];
-  };
+  fileSystems = {
+    "/" = {
+      device = "/dev/mapper/luks-365dc847-d908-41e8-a4aa-66e187960ed6";
+      fsType = "btrfs";
+      options = ["subvol=@" "compress=zstd"];
+    };
 
-  fileSystems."/home" = {
-    device = "/dev/mapper/luks-365dc847-d908-41e8-a4aa-66e187960ed6";
-    fsType = "btrfs";
-    options = ["subvol=@home" "compress=zstd"];
-  };
+    "/home" = {
+      device = "/dev/mapper/luks-365dc847-d908-41e8-a4aa-66e187960ed6";
+      fsType = "btrfs";
+      options = ["subvol=@home" "compress=zstd"];
+    };
 
-  fileSystems."/boot" = {
-    device = "/dev/disk/by-uuid/34D8-0610";
-    fsType = "vfat";
-    options = ["fmask=0077" "dmask=0077"];
+    "/boot" = {
+      device = "/dev/disk/by-uuid/34D8-0610";
+      fsType = "vfat";
+      options = ["fmask=0077" "dmask=0077"];
+    };
   };
 
   swapDevices = [];

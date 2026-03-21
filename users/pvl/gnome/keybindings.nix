@@ -1,4 +1,4 @@
-{...}: {
+_: {
   dconf.settings = {
     "org/gnome/shell/keybindings" = {
       screenshot = ["<Shift>Print" "<Shift><Super>c"];

@@ -22,14 +22,16 @@
     ../neovim.nix
   ];
 
-  programs.bash = {
-    enable = true;
-    completion.enable = true;
+  programs = {
+    bash = {
+      enable = true;
+      completion.enable = true;
+    };
+    htop.enable = true;
+    mtr.enable = true;
+    git.enable = true;
+    tmux.enable = true;
   };
-  programs.htop.enable = true;
-  programs.mtr.enable = true;
-  programs.git.enable = true;
-  programs.tmux.enable = true;
 
   environment.systemPackages = with pkgs; [
     ssh-import-id

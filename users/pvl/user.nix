@@ -14,12 +14,12 @@
   users.users.pvl = {
     isNormalUser = true;
     description = userdata.name;
-    uid = userdata.uid;
+    inherit (userdata) uid;
     # Note: Without a dedicated group, podman and OCI containers
     # runtimes with keep-id will not work and will cause misleading
     # permission errors.
     group = userdata.username;
-    hashedPassword = userdata.hashedPassword;
+    inherit (userdata) hashedPassword;
     linger = true;
     extraGroups =
       [

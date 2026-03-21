@@ -1,4 +1,4 @@
-{...}: {
+_: {
   networking.firewall = {
     logRefusedConnections = false;
     trustedInterfaces = ["incusbr0"];

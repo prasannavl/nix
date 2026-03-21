@@ -102,9 +102,15 @@
       apps.lint = {
         inherit (internalLint.app) type program;
       };
+      apps.lint-diff = {
+        inherit (internalLint.diffApp) type program;
+      };
       inherit (internalLint) formatter;
-      packages.lint-deps = internalLint.lintDeps;
-      packages.lint = internalLint.lintApp;
+      packages = {
+        lint-deps = internalLint.lintDeps;
+        lint = internalLint.lintApp;
+        lint-diff = internalLint.lintDiffApp;
+      };
     })
     // {
       pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems packageTreeFor;

@@ -1,8 +1,4 @@
-{
-  config,
-  pkgs,
-  ...
-}: {
+_: {
   systemd.targets.machines.enable = true;
   virtualisation.containers.enable = true;
   virtualisation.podman = {

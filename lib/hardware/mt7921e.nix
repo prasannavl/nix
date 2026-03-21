@@ -1,4 +1,4 @@
-{...}: {
+_: {
   # MT7921e WiFi
   boot.extraModprobeConfig = ''
     # mt7921e WiFi

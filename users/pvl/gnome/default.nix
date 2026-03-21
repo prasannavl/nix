@@ -1,11 +1,7 @@
 {
-  nixos = {...}: {};
+  nixos = _: {};
 
-  home = {
-    config,
-    pkgs,
-    ...
-  }: {
+  home = {pkgs, ...}: {
     imports = [
       ./extensions.nix
       ./dconf.nix
