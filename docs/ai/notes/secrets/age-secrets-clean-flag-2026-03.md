@@ -53,6 +53,9 @@
   per-file decrypt failure logs and the configured decrypt identity line.
 - Replaced the temporary decrypt stderr files with in-memory stderr capture so
   verbose failure details no longer require on-disk `*.err.*` scratch files.
+- Folded the runtime nix-shell recursion guard into `ensure_runtime_shell`
+  itself so the script no longer carries a top-level `RUNTIME_SHELL_FLAG` global
+  that is only consumed in one place.
 
 ## Result
 

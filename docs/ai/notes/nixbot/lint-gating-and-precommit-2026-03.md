@@ -1,31 +1,39 @@
 # Lint gating and pre-commit - 2026-03
 
-- Added flake app/package entrypoints so `nix run path:.#lint` is the canonical
-  whole-repo lint command and `nix run path:.#lint-diff` preserves the earlier
-  diff-scoped local workflow.
-- The lint implementation lives in `lib/flake/lint.nix` so the root `flake.nix`
-  stays lean and only wires the per-system outputs.
+- Added a shared flake app/package entrypoint so `nix run path:.#lint` is the
+  canonical lint command. Scope and autofix behavior are now selected with
+  runtime args: `nix run path:.#lint -- deps`, `nix run path:.#lint`,
+  `nix run path:.#lint -- --diff`, `nix run path:.#lint -- fix`, and
+  `nix run path:.#lint -- fix --diff`.
+- The canonical lint implementation now lives in `scripts/lint.sh`, while
+  `lib/flake/lint.nix` stays lean and only packages that script into the flake
+  app/output wiring.
 - Current repo-wide lint scope is the shared formatter and linter suite across
   the full repo, including `treefmt --ci`, `statix`, `deadnix`, `shellcheck`,
   `actionlint`, `markdownlint-cli2`, and `tflint` over the tracked
   Terraform/OpenTofu project directories.
-- `lint-diff` keeps the incremental mode for `statix`, `deadnix`, `shellcheck`,
-  and `markdownlint-cli2`, which avoids blocking local commits on unrelated
-  repository-wide lint debt while still preventing new drift in touched files.
+- `lint fix` runs the fix-capable tools (`treefmt`, `statix fix`,
+  `markdownlint-cli2 --fix`, and `tflint --fix`) and then re-runs the regular
+  lint suite so any remaining `deadnix`, `shellcheck`, `actionlint`, or
+  non-fixable diagnostics still fail visibly.
+- `lint --diff` keeps the incremental mode for `statix`, `deadnix`,
+  `shellcheck`, and `markdownlint-cli2`, which avoids blocking local commits on
+  unrelated repository-wide lint debt while still preventing new drift in
+  touched files.
+- `lint fix --diff` is the diff-scoped autofix companion for changed-file
+  cleanup before re-running the incremental lint gates.
+- The lint script now follows the same action-dispatch style as `nixbot`, with
+  `deps` and `check-deps` actions instead of a separate `.#lint-deps` package.
 - GitHub Actions `nixbot` workflow now runs lint before warming the deploy
   runtime or triggering bastion execution, so formatting failures stop the run
   early.
-- The lint toolchain is exported separately as flake package `.#lint-deps` so CI
-  can warm it in a dedicated step with `nix build path:.#lint-deps >/dev/null`
-  and keep the actual `nix run path:.#lint` logs focused on lint output while
-  also prebuilding `.#lint-diff`.
-- `.#lint-deps` now includes the runnable `writeShellApplication` wrapper
-  closures for both `.#lint` and `.#lint-diff`, not only the top-level lint
-  binaries, because warming just the tool packages still left the wrappers to
-  realize their derivations and fetch builder-time dependencies such as
-  `makeWrapper`.
+- On CI, bare `nix run path:.#lint` defaults to diff scope unless an explicit
+  scope flag such as `--full` is passed.
+- CI now warms lint via `nix run path:.#lint -- deps >/dev/null`, which realizes
+  the runnable wrapper and verifies the runtime commands before the actual lint
+  step.
 - Git pre-commit is wired through `.githooks/pre-commit` and now calls
-  `nix run path:.#lint-diff`, while CI stays on `nix run path:.#lint`.
+  `nix run path:.#lint -- --diff`, while CI stays on `nix run path:.#lint`.
 - The lint wrapper now tracks the active step and emits a final
   `[lint] FAILED at <step>: <description>` summary on non-zero exit so Git UIs
   such as VS Code surface the failing linter more clearly than the earlier

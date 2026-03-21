@@ -129,17 +129,30 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 ## Linting
 
 - `nix fmt` applies the repo formatter configured in `treefmt.toml`.
+- `nix run path:.#lint -- deps` verifies the runnable lint wrapper and its
+  runtime commands, matching the action-style entrypoints used by `nixbot`.
 - `nix run path:.#lint` runs the shared lint suite across the whole repo.
-- `nix run path:.#lint-diff` runs the diff-scoped lint suite used for local
-  incremental checks.
+- `nix run path:.#lint -- fix` applies best-effort auto-fixes, then re-runs the
+  lint suite to show anything still requiring manual changes.
+- `nix run path:.#lint -- --diff` restricts file-scoped checks to changed files.
+- `nix run path:.#lint -- fix --diff` applies the same best-effort auto-fixes,
+  but only to changed files before re-running the diff-scoped lint checks.
 - Repo-wide gates today: `treefmt --ci`, `actionlint`, and `tflint` for `tf/*-*`
   projects, plus full-repo `statix`, `deadnix`, `shellcheck`, and
   `markdownlint-cli2` under `.#lint`.
-- Diff-scoped gates in `.#lint-diff`: `statix`, `deadnix`, `shellcheck`, and
-  `markdownlint-cli2` run only on changed files so the hook protects new edits
-  with faster local feedback.
-- Flake package `.#lint-deps` warms the full runnable `.#lint` closure so CI can
-  realize the shared lint wrappers and tool dependencies ahead of the actual
-  lint step.
+- `lint fix` currently auto-runs `treefmt`, `statix fix`,
+  `markdownlint-cli2 --fix`, and `tflint --fix`; `deadnix`, `shellcheck`, and
+  `actionlint` remain report-only.
+- `lint --diff` keeps the incremental mode for `statix`, `deadnix`,
+  `shellcheck`, and `markdownlint-cli2`, which protects new edits with faster
+  local feedback.
+- `lint fix --diff` uses the same diff file selection as `lint --diff` for
+  fix-capable tools, while `tflint --fix` still runs per tracked `tf/*-*`
+  project directory.
+- CI now warms lint through `nix run path:.#lint -- deps`, which follows the
+  same action-command pattern as `nixbot` instead of using a separate
+  `.#lint-deps` package.
+- When `CI` is set, `nix run path:.#lint` defaults to `--diff` unless you pass
+  an explicit scope such as `--full`.
 - `./scripts/git-install-hooks.sh` configures Git to use `.githooks/`; the repo
-  pre-commit hook runs `nix run path:.#lint-diff` before allowing a commit.
+  pre-commit hook runs `nix run path:.#lint -- --diff` before allowing a commit.

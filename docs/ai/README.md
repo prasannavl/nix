@@ -2,6 +2,11 @@
 
 Use this index as the canonical map for `docs/ai/**`.
 
+## Lang Patterns
+
+- `docs/ai/lang-patterns/bash.md`: Bash entrypoint structure, initialization,
+  and `nix shell` runtime dependency rules for repo scripts.
+
 ## Notes
 
 ### Apps
@@ -33,6 +38,9 @@ Use this index as the canonical map for `docs/ai/**`.
   module rename from `incus-machine` to `incus-vm`.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
   reusable Incus guest template, bootstrap flow, and secret model.
+- `docs/ai/notes/hosts/llmug-rivendell-ollama-drm-device-path-2026-03.md`:
+  Replace broad `/dev/dri` passthrough with explicit ROCm device nodes for the
+  Ollama guest container.
 - `docs/ai/notes/hosts/pvl-bash-prompt-exit-status-fix-2026-03.md`: Prompt
   exit-status command substitution was escaped as `\$(...)` during lint cleanup,
   causing the literal text to render in interactive shells.
@@ -50,10 +58,15 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/nameref-audit-and-fixes-2026-03.md`: Bash nameref
   circular-reference audit and helper-local binding rename strategy for
   `nixbot`.
+- `docs/ai/notes/nixbot/nixbot-wrapper-runtime-shell-exception-2026-03.md`:
+  Thin `scripts/nixbot.sh` wrapper intentionally skips `ensure_runtime_shell`
+  because the delegated nixbot entrypoint already owns runtime setup.
 - `docs/ai/notes/nixbot/package-flake-wrapper-2026-03.md`: Package `nixbot` as a
   repo-local flake app while preserving the stable bastion forced-command path.
 - `docs/ai/notes/nixbot/deploy-env-prefix-rename-2026-03.md`: Rename
   deploy-script-owned `DEPLOY_*` variables and env knobs to `NIXBOT_*`.
+- `docs/ai/notes/nixbot/dirty-flag-bypass-2026-03.md`: Explicit `--dirty` /
+  `NIXBOT_DIRTY` opt-in for bypassing the repo-root cleanliness gate.
 - `docs/ai/notes/nixbot/script-entrypoint-rename-2026-03.md`: Rename the nixbot
   orchestration entrypoint from `nixbot-deploy.sh` to `nixbot`.
 - `docs/ai/notes/nixbot/runtime-temp-suffix-alignment-2026-03.md`: Consolidated
@@ -121,6 +134,17 @@ Use this index as the canonical map for `docs/ai/**`.
   OpenSSH enablement centralization.
 - `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
   Canonical `services.podmanCompose` and `systemd-user-manager` platform model.
+
+### Tooling
+
+- `docs/ai/notes/tooling/bash-script-ai-rules-2026-03.md`: Repo-level Bash agent
+  rules for compact function-based scripts, centralized `init_vars`, and
+  `ensure_runtime_shell` runtime dependency handling.
+- `docs/ai/notes/tooling/git-install-hooks-runtime-shell-exception-2026-03.md`:
+  `scripts/git-install-hooks.sh` intentionally skips `ensure_runtime_shell`
+  because Git is already required by the calling context.
+- `docs/ai/notes/tooling/runtime-shell-guard-cleanup-2026-03.md`: Shared cleanup
+  of redundant top-level runtime nix-shell guard globals across helper scripts.
 
 ## Playbooks
 
