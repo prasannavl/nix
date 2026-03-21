@@ -596,22 +596,22 @@ normalize_hosts_input() {
 json_array_to_bash_array() {
   local json="$1"
   # shellcheck disable=SC2034
-  local -n out_array_ref="$2"
+  local -n array_out_ref_local="$2"
 
   # shellcheck disable=SC2034
-  mapfile -t out_array_ref < <(jq -r '.[]' <<<"${json}")
+  mapfile -t array_out_ref_local < <(jq -r '.[]' <<<"${json}")
 }
 
 json_array_to_bash_set() {
   local json="$1"
   # shellcheck disable=SC2178
-  local -n out_set_ref="$2"
+  local -n set_out_ref_local="$2"
   local item=""
 
   # shellcheck disable=SC2034
   while IFS= read -r item; do
     [ -n "${item}" ] || continue
-    out_set_ref["${item}"]=1
+    set_out_ref_local["${item}"]=1
   done < <(jq -r '.[]' <<<"${json}")
 }
 
@@ -1470,7 +1470,7 @@ resolve_selected_hosts_json() {
 }
 
 prepare_run_context() {
-  local -n selected_json_out_ref="$1"
+  local -n selected_json_out_ref_local="$1"
   local config_json="" all_hosts_json=""
   local -a log_hosts=()
 
@@ -1480,9 +1480,9 @@ prepare_run_context() {
   fi
 
   all_hosts_json="$(load_all_hosts_json)"
-  selected_json_out_ref="$(resolve_selected_hosts_json "${all_hosts_json}")"
+  selected_json_out_ref_local="$(resolve_selected_hosts_json "${all_hosts_json}")"
 
-  json_array_to_bash_array "${selected_json_out_ref}" log_hosts
+  json_array_to_bash_array "${selected_json_out_ref_local}" log_hosts
 
   log_section "nixbot"
   echo "Action: ${ACTION}" >&2
@@ -1937,23 +1937,23 @@ prepare_host_ssh_contexts() {
   local host="$2"
   local known_hosts="$3"
   # shellcheck disable=SC2178
-  local -n host_ssh_opts_out_ref="$4"
+  local -n host_ssh_opts_out_ref_local="$4"
   # shellcheck disable=SC2178
-  local -n host_nix_sshopts_out_ref="$5"
+  local -n host_nix_sshopts_out_ref_local="$5"
   # shellcheck disable=SC2178,SC2034
-  local -n bootstrap_ssh_opts_out_ref="$6"
+  local -n bootstrap_ssh_opts_out_ref_local="$6"
   # shellcheck disable=SC2178,SC2034
-  local -n bootstrap_nix_sshopts_out_ref="$7"
+  local -n bootstrap_nix_sshopts_out_ref_local="$7"
   local known_hosts_file build_host_host=""
 
   # shellcheck disable=SC2034
-  host_ssh_opts_out_ref=()
+  host_ssh_opts_out_ref_local=()
   # shellcheck disable=SC2034
-  host_nix_sshopts_out_ref=""
+  host_nix_sshopts_out_ref_local=""
   # shellcheck disable=SC2034
-  bootstrap_ssh_opts_out_ref=()
+  bootstrap_ssh_opts_out_ref_local=()
   # shellcheck disable=SC2034
-  bootstrap_nix_sshopts_out_ref=""
+  bootstrap_nix_sshopts_out_ref_local=""
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     return 0
@@ -1972,8 +1972,8 @@ prepare_host_ssh_contexts() {
       ;;
   esac
 
-  init_known_hosts_ssh_context 1 "${known_hosts_file}" host_ssh_opts_out_ref host_nix_sshopts_out_ref
-  init_known_hosts_ssh_context 0 "${known_hosts_file}" bootstrap_ssh_opts_out_ref bootstrap_nix_sshopts_out_ref
+  init_known_hosts_ssh_context 1 "${known_hosts_file}" host_ssh_opts_out_ref_local host_nix_sshopts_out_ref_local
+  init_known_hosts_ssh_context 0 "${known_hosts_file}" bootstrap_ssh_opts_out_ref_local bootstrap_nix_sshopts_out_ref_local
 }
 
 ensure_bootstrap_key_ready() {
@@ -2218,33 +2218,33 @@ wave_needs_snapshot_retry() {
 }
 
 wait_for_job_slot() {
-  local -n active_jobs_inout_ref="$1"
+  local -n active_jobs_inout_ref_local="$1"
   local max_jobs="$2"
   local wait_rc=0
 
-  if [ "${active_jobs_inout_ref}" -ge "${max_jobs}" ]; then
+  if [ "${active_jobs_inout_ref_local}" -ge "${max_jobs}" ]; then
     if ! wait -n; then
       wait_rc="$?"
       if is_signal_exit_status "${wait_rc}"; then
         return "${wait_rc}"
       fi
     fi
-    active_jobs_inout_ref=$((active_jobs_inout_ref - 1))
+    active_jobs_inout_ref_local=$((active_jobs_inout_ref_local - 1))
   fi
 }
 
 drain_job_slots() {
-  local -n active_jobs_inout_ref="$1"
+  local -n active_jobs_inout_ref_local="$1"
   local wait_rc=0
 
-  while [ "${active_jobs_inout_ref}" -gt 0 ]; do
+  while [ "${active_jobs_inout_ref_local}" -gt 0 ]; do
     if ! wait -n; then
       wait_rc="$?"
       if is_signal_exit_status "${wait_rc}"; then
         return "${wait_rc}"
       fi
     fi
-    active_jobs_inout_ref=$((active_jobs_inout_ref - 1))
+    active_jobs_inout_ref_local=$((active_jobs_inout_ref_local - 1))
   done
 }
 
@@ -2351,6 +2351,7 @@ record_deploy_phase_status() {
 }
 
 append_unique_array_item() {
+  # shellcheck disable=SC2178
   local -n array_out_ref_local="$1"
   local item="$2"
 
@@ -2785,15 +2786,15 @@ deploy_host() {
 
 run_bootstrap_key_checks() {
   local selected_json="$1"
-  local -n bootstrap_ok_hosts_out_ref="$2"
-  local -n bootstrap_failed_hosts_out_ref="$3"
+  local -n bootstrap_ok_hosts_out_ref_local="$2"
+  local -n bootstrap_failed_hosts_out_ref_local="$3"
   local node target_info bootstrap_key bootstrap_key_file
   local fpr=""
   local rc=0
   local -a selected_hosts=()
 
-  bootstrap_ok_hosts_out_ref=()
-  bootstrap_failed_hosts_out_ref=()
+  bootstrap_ok_hosts_out_ref_local=()
+  bootstrap_failed_hosts_out_ref_local=()
 
   json_array_to_bash_array "${selected_json}" selected_hosts
 
@@ -2806,19 +2807,19 @@ run_bootstrap_key_checks() {
 
     if [ -z "${bootstrap_key}" ]; then
       echo "==> ${node}: no bootstrapKey configured"
-      bootstrap_ok_hosts_out_ref+=("${node}")
+      bootstrap_ok_hosts_out_ref_local+=("${node}")
       continue
     fi
 
     if ! bootstrap_key_file="$(resolve_runtime_key_file "${bootstrap_key}")"; then
       rc=1
-      bootstrap_failed_hosts_out_ref+=("${node}")
+      bootstrap_failed_hosts_out_ref_local+=("${node}")
       continue
     fi
     if [ ! -f "${bootstrap_key_file}" ]; then
       echo "==> ${node}: bootstrap key missing: ${bootstrap_key} (resolved: ${bootstrap_key_file})" >&2
       rc=1
-      bootstrap_failed_hosts_out_ref+=("${node}")
+      bootstrap_failed_hosts_out_ref_local+=("${node}")
       continue
     fi
 
@@ -2826,12 +2827,12 @@ run_bootstrap_key_checks() {
     if [ -z "${fpr}" ]; then
       echo "==> ${node}: bootstrap key unreadable: ${bootstrap_key} (resolved: ${bootstrap_key_file})" >&2
       rc=1
-      bootstrap_failed_hosts_out_ref+=("${node}")
+      bootstrap_failed_hosts_out_ref_local+=("${node}")
       continue
     fi
 
     echo "==> ${node}: bootstrap key OK (${fpr})"
-    bootstrap_ok_hosts_out_ref+=("${node}")
+    bootstrap_ok_hosts_out_ref_local+=("${node}")
   done
 
   return "${rc}"
@@ -2841,29 +2842,29 @@ run_bootstrap_key_checks() {
 
 init_run_dirs() {
   local base_dir="$1"
-  local -n build_log_dir_out_ref="$2"
-  local -n build_status_dir_out_ref="$3"
-  local -n deploy_log_dir_out_ref="$4"
-  local -n deploy_status_dir_out_ref="$5"
-  local -n build_out_dir_out_ref="$6"
-  local -n snapshot_dir_out_ref="$7"
-  local -n rollback_log_dir_out_ref="$8"
-  local -n rollback_status_dir_out_ref="$9"
+  local -n build_log_dir_out_ref_local="$2"
+  local -n build_status_dir_out_ref_local="$3"
+  local -n deploy_log_dir_out_ref_local="$4"
+  local -n deploy_status_dir_out_ref_local="$5"
+  local -n build_out_dir_out_ref_local="$6"
+  local -n snapshot_dir_out_ref_local="$7"
+  local -n rollback_log_dir_out_ref_local="$8"
+  local -n rollback_status_dir_out_ref_local="$9"
 
   # shellcheck disable=SC2034
   {
-    build_log_dir_out_ref="$(phase_log_dir_path "${base_dir}" "build")"
-    build_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "build")"
-    deploy_log_dir_out_ref="$(phase_log_dir_path "${base_dir}" "deploy")"
-    deploy_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "deploy")"
-    build_out_dir_out_ref="${base_dir}/build-outs"
-    snapshot_dir_out_ref="${base_dir}/snapshots"
-    rollback_log_dir_out_ref="$(phase_log_dir_path "${base_dir}" "rollback")"
-    rollback_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "rollback")"
+    build_log_dir_out_ref_local="$(phase_log_dir_path "${base_dir}" "build")"
+    build_status_dir_out_ref_local="$(phase_status_dir_path "${base_dir}" "build")"
+    deploy_log_dir_out_ref_local="$(phase_log_dir_path "${base_dir}" "deploy")"
+    deploy_status_dir_out_ref_local="$(phase_status_dir_path "${base_dir}" "deploy")"
+    build_out_dir_out_ref_local="${base_dir}/build-outs"
+    snapshot_dir_out_ref_local="${base_dir}/snapshots"
+    rollback_log_dir_out_ref_local="$(phase_log_dir_path "${base_dir}" "rollback")"
+    rollback_status_dir_out_ref_local="$(phase_status_dir_path "${base_dir}" "rollback")"
   }
 
   ensure_phase_runtime_dirs "${base_dir}" build deploy rollback
-  mkdir -p "${build_out_dir_out_ref}" "${snapshot_dir_out_ref}"
+  mkdir -p "${build_out_dir_out_ref_local}" "${snapshot_dir_out_ref_local}"
 }
 
 phase_dir_path() {
@@ -3599,17 +3600,17 @@ resolve_tf_backend_context_for_project() {
   local -n backend_kind_out_ref_local="$3"
   local -n backend_detail_1_out_ref_local="$4"
   local -n backend_detail_2_out_ref_local="$5"
-  local backend_kind=""
+  local resolved_backend_kind_local=""
 
-  backend_kind="$(tf_backend_kind_for_project "${project_name}" "${provider_name}")"
+  resolved_backend_kind_local="$(tf_backend_kind_for_project "${project_name}" "${provider_name}")"
   # shellcheck disable=SC2034
-  backend_kind_out_ref_local="${backend_kind}"
+  backend_kind_out_ref_local="${resolved_backend_kind_local}"
   # shellcheck disable=SC2034
   backend_detail_1_out_ref_local=""
   # shellcheck disable=SC2034
   backend_detail_2_out_ref_local=""
 
-  case "${backend_kind}" in
+  case "${resolved_backend_kind_local}" in
     r2)
       # shellcheck disable=SC2034
       backend_detail_1_out_ref_local="$(tf_state_key_for_project "${project_name}")"
@@ -3900,12 +3901,13 @@ collect_tf_var_files_for_project() {
 }
 
 append_tf_var_files_to_cmd() {
-  local -n cmd_inout_ref="$1"
+  # shellcheck disable=SC2178
+  local -n cmd_inout_ref_local="$1"
   shift
   local tf_var_file=""
 
   for tf_var_file in "$@"; do
-    cmd_inout_ref+=("-var-file=${tf_var_file}")
+    cmd_inout_ref_local+=("-var-file=${tf_var_file}")
   done
 }
 
@@ -4072,15 +4074,15 @@ tofu_subcommand_supports_var_files() {
 resolve_tofu_auto_var_file_subcommand() {
   local -n subcommand_out_ref_local="$1"
   shift
-  local subcommand=""
+  local resolved_subcommand_local=""
 
   subcommand_out_ref_local=""
 
-  if ! subcommand="$(tofu_args_extract_subcommand "$@")"; then
+  if ! resolved_subcommand_local="$(tofu_args_extract_subcommand "$@")"; then
     return 1
   fi
 
-  if ! tofu_subcommand_supports_var_files "${subcommand}"; then
+  if ! tofu_subcommand_supports_var_files "${resolved_subcommand_local}"; then
     return 1
   fi
 
@@ -4089,7 +4091,7 @@ resolve_tofu_auto_var_file_subcommand() {
   fi
 
   # shellcheck disable=SC2034
-  subcommand_out_ref_local="${subcommand}"
+  subcommand_out_ref_local="${resolved_subcommand_local}"
 }
 
 _exec_tofu_cmd() {
