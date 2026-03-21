@@ -65,6 +65,8 @@ in
     "data/secrets/tf/cloudflare/zone-security/stage.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/cloudflare/zone-security/archive.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/cloudflare/zone-security/inactive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/gcp-bootstrap/globals.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/gcp-platform/globals.tfvars.age".publicKeys = adminsWithNixbot;
 
     # Cloudflare tunnels
     "data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age".publicKeys = admins ++ pvl-x2;

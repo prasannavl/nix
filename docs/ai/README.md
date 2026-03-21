@@ -77,6 +77,9 @@ Use this index as the canonical map for `docs/ai/**`.
   Tunnel state-adoption plan, ownership-boundary decision, and execution steps.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Documentation
   cleanup rules for sensitive operational details.
+- `docs/ai/notes/services/gcp-terraform-adoption-2026-03.md`: GCP bootstrap and
+  platform Terraform adoption from the non-legacy legacy-repo sources into this
+  repo's phase-based `tf/` layout.
 - `docs/ai/notes/services/openssh-module-centralization-2026-03.md`: Shared
   OpenSSH enablement centralization.
 - `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
