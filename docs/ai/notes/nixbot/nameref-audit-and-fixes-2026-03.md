@@ -13,9 +13,8 @@
   direction, such as `*_out_ref_local`, `*_in_ref_local`, or
   `*_inout_ref_local`.
 - Fix applied: renamed helper-local nameref bindings to that
-  helper-local-directional convention (for example
-  `failed_hosts_out_ref_local`, `build_hosts_in_ref_local`,
-  `request_args_out_ref_local`) throughout the script while preserving the
-  public call contract.
+  helper-local-directional convention (for example `failed_hosts_out_ref_local`,
+  `build_hosts_in_ref_local`, `request_args_out_ref_local`) throughout the
+  script while preserving the public call contract.
 - Validation performed: `bash -n scripts/nixbot-deploy.sh` and
   `shellcheck scripts/nixbot-deploy.sh`.

@@ -62,3 +62,22 @@ Why:
       minimum access it needs and blast radius is reduced. Depends on:
   - environment-scoped secrets support
   - PR dry-run credential model, if dry runs should use reduced-trust keys
+
+## Nixbot Runtime Rewrite
+
+Why:
+
+- `scripts/nixbot-deploy.sh` now owns enough orchestration, state handling, and
+  safety-sensitive branching that continuing to scale it in bash is becoming
+  harder to reason about.
+- The deploy specs and runtime behavior are now documented well enough that we
+  can treat them as the contract for a more maintainable implementation.
+- A packaged Rust implementation would also simplify bootstrap because bastion
+  would no longer need a copied script wrapper and could instead receive normal
+  package deployment updates.
+
+- [ ] Replace `scripts/nixbot-deploy.sh` with a Rust-based program that
+      preserves the current deploy contract while making the orchestration model
+      easier to extend and validate. Depends on:
+  - current nixbot deploy/runtime spec staying up to date
+  - critical nixbot behaviors and invariants being covered by tests/fixtures
