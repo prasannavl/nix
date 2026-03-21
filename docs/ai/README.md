@@ -6,6 +6,8 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/lang-patterns/bash.md`: Bash entrypoint structure, initialization,
   and `nix shell` runtime dependency rules for repo scripts.
+- `docs/ai/lang-patterns/markdown.md`: Markdown formatting authority, lint
+  interaction, and `docs/ai` writing conventions for repo-generated docs.
 
 ## Notes
 
@@ -85,6 +87,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/github-actions-custom-action-input-2026-03.md`: GitHub
   Actions `nixbot` workflow is intentionally limited to the standard deploy and
   Terraform phase actions, not per-project `tf/<project>` runs.
+- `docs/ai/notes/nixbot/github-actions-runtime-warmup-without-cache-2026-03.md`:
+  GitHub Actions warms local `lint` and `nixbot` runtime closures but does not
+  use a runner-side Nix cache layer.
 - `docs/ai/notes/nixbot/full-script-nameref-review-2026-03.md`: Full `nixbot`
   nameref audit, remaining helper-local naming cleanup, and source-level
   validation of the shadowing fixes.

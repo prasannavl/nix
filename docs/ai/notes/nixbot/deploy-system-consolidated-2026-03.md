@@ -251,8 +251,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   entrypoint.
 - The workflow should warm the shared runtime closure before the main deploy
   step by calling `nix run path:.#pkgs.$system.nixbot -- --ensure-deps
-  > /dev/null`, and it should continue reusing the GitHub Actions cache backend
-  > rather than relying on FlakeHub-specific cache login.
+  > /dev/null`; treat that warmup as runner-local priming rather than as a
+  > GitHub Actions cache-backed artifact distribution layer.
 - Manual dispatch should stay aligned with the script surface:
   `action = all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>`, plus
   `dry` and `force`.

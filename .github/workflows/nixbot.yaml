@@ -77,12 +77,6 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: nix/cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          use-flakehub: false
-          use-gha-cache: true
-
       - name: nix/deps
         shell: bash
         run: |
