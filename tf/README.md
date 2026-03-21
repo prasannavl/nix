@@ -2,6 +2,13 @@
 
 `tf/` contains provider-specific OpenTofu projects plus reusable modules.
 
+Terraform secret tfvars are discovered by convention:
+
+- provider-wide secrets: `data/secrets/tf/<provider>/`
+- project/root-specific secrets: `data/secrets/tf/<project>/`
+
+Project secrets load after provider secrets, so project-specific values win.
+
 ## Projects
 
 ### Active
@@ -13,7 +20,8 @@
 ### Inactive
 
 - `gcp-bootstrap/`: manual Google Cloud bootstrap phase for the control folder,
-  project, service account, and state bucket
+  project, service account, and state bucket; state stored in the shared R2
+  backend
 - `gcp-platform/`: Google Cloud platform phase for managed projects and their
   current in-project resources
 

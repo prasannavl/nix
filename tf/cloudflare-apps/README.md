@@ -25,5 +25,6 @@ Build model:
 - Child app directories are resolved to their `#build` outputs by the Cloudflare
   module's worker asset resolver during plan/apply.
 
-Inputs live in `workers.auto.tfvars` plus encrypted account/worker inputs under
-`data/secrets/tf/cloudflare/`.
+Inputs live in `workers.auto.tfvars` plus encrypted provider-level inputs under
+`data/secrets/tf/cloudflare/` and project-level worker inputs under
+`data/secrets/tf/cloudflare-apps/`.

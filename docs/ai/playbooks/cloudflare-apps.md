@@ -10,7 +10,8 @@ package + OpenTofu workflow.
 - Aggregate app package: `pkgs/cloudflare-apps/flake.nix`
 - Per-app source: `pkgs/cloudflare-apps/<app>/`
 - Optional per-app build helper: `pkgs/cloudflare-apps/<app>/flake.nix`
-- Terraform inputs: `data/secrets/tf/cloudflare/workers/<group>.tfvars.age` or
+- Terraform inputs: `data/secrets/tf/cloudflare/*.tfvars.age`,
+  `data/secrets/tf/cloudflare-apps/project-<group>.tfvars.age`, or
   `tf/cloudflare-apps/workers.auto.tfvars`
 - Terraform resources: `tf/modules/cloudflare/workers.tf`
 
@@ -37,7 +38,7 @@ package + OpenTofu workflow.
 3. If the app needs generated local output, add
    `pkgs/cloudflare-apps/<app>/flake.nix` with at least `packages.build`.
 4. Add public-safe definitions in `tf/cloudflare-apps/workers.auto.tfvars` or
-   sensitive ones in `data/secrets/tf/cloudflare/workers/`.
+   sensitive ones in `data/secrets/tf/cloudflare-apps/`.
 5. Set `compatibility_date` explicitly.
 6. Add bindings, routes, `script_subdomain`, cron triggers, or custom domains as
    needed.

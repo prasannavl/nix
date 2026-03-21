@@ -14,10 +14,7 @@ let
     recipient = builtins.replaceStrings ["\n"] [""] (builtins.readFile keyPath);
   in [recipient])
   machineKeyFiles;
-  nixbotKeys =
-    if userdata.nixbot ? sshKeys
-    then userdata.nixbot.sshKeys
-    else [userdata.nixbot.sshKey];
+  nixbotKeys = userdata.nixbot.sshKeys or [userdata.nixbot.sshKey];
 in
   with machines; {
     # Nixbot
@@ -41,32 +38,32 @@ in
     "data/secrets/cloudflare/r2-secret-access-key.key.age".publicKeys = admins ++ pvl-x2;
 
     # Terraform Secrets
-    "data/secrets/tf/cloudflare/secrets.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/account/account.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/access/account.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/tunnels/account.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/dns/main.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/dns/stage.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/dns/archive.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/dns/inactive.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/email-routing/main.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/email-routing/archive.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/r2/main.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/workers/main.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/workers/stage.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/workers/archive.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-dnssec/main.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-dnssec/stage.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-dnssec/archive.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-dnssec/inactive.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-settings/main.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-settings/archive.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-security/main.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-security/stage.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-security/archive.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/cloudflare/zone-security/inactive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare/globals.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare/account.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-dns/project-main.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-dns/project-stage.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-dns/project-archive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-dns/project-inactive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/access-account.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/tunnels-account.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/email-routing-main.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/email-routing-archive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/r2-main.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-dnssec-main.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-dnssec-stage.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-dnssec-archive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-dnssec-inactive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-settings-main.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-settings-archive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-security-main.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-security-stage.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-security-archive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-platform/zone-security-inactive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-apps/project-main.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-apps/project-stage.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/cloudflare-apps/project-archive.tfvars.age".publicKeys = adminsWithNixbot;
+    "data/secrets/tf/gcp/globals.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/gcp-bootstrap/globals.tfvars.age".publicKeys = adminsWithNixbot;
-    "data/secrets/tf/gcp-platform/globals.tfvars.age".publicKeys = adminsWithNixbot;
 
     # Cloudflare tunnels
     "data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age".publicKeys = admins ++ pvl-x2;

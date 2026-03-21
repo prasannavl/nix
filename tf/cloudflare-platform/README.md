@@ -70,9 +70,9 @@ Runtime:
 - default state key: `cloudflare-platform/terraform.tfstate`
 
 Inputs live in this directory's `*.auto.tfvars` files plus encrypted inputs
-under `data/secrets/tf/cloudflare/`.
+under `data/secrets/tf/cloudflare/` and `data/secrets/tf/cloudflare-platform/`.
 
 When tunnel details should remain private, keep
 `tf/cloudflare-platform/tunnels.auto.tfvars` empty and supply `tunnels`,
 `tunnel_configs`, and `tunnel_routes` from the encrypted tunnel tfvars under
-`data/secrets/tf/cloudflare/tunnels/`.
+`data/secrets/tf/cloudflare-platform/`.

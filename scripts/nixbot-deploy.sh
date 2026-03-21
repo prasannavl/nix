@@ -3428,33 +3428,25 @@ gcp_state_prefix_for_project() {
 
 emit_tf_secret_paths_for_project() {
   local project_name="$1"
-  local cf="${TF_SECRETS_DIR}/cloudflare"
-  local dir
+  local provider_name
+
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
+
+  [ -f "${TF_SECRETS_DIR}/${provider_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${provider_name}.tfvars.age"
+  [ -d "${TF_SECRETS_DIR}/${provider_name}" ] && find "${TF_SECRETS_DIR}/${provider_name}" -type f -name '*.tfvars.age' | sort
 
   [ -f "${TF_SECRETS_DIR}/${project_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${project_name}.tfvars.age"
   [ -d "${TF_SECRETS_DIR}/${project_name}" ] && find "${TF_SECRETS_DIR}/${project_name}" -type f -name '*.tfvars.age' | sort
-
-  case "${project_name}" in
-    cloudflare-dns)
-      [ -d "${cf}/dns" ] && find "${cf}/dns" -type f -name '*.tfvars.age' | sort
-      ;;
-    cloudflare-platform)
-      [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
-      for dir in account access tunnels r2 zone-dnssec zone-settings zone-security rulesets page-rules email-routing; do
-        [ -d "${cf}/${dir}" ] && find "${cf}/${dir}" -type f -name '*.tfvars.age' | sort
-      done
-      ;;
-    cloudflare-apps)
-      [ -f "${cf}/secrets.tfvars.age" ] && printf '%s\n' "${cf}/secrets.tfvars.age"
-      [ -d "${cf}/account" ] && find "${cf}/account" -type f -name '*.tfvars.age' | sort
-      [ -d "${cf}/workers" ] && find "${cf}/workers" -type f -name '*.tfvars.age' | sort
-      ;;
-  esac
 }
 
 load_tf_runtime_secrets_for_project() {
   local project_name="$1"
   local provider_name
+
+  if [ "${project_name}" = "gcp-bootstrap" ]; then
+    load_cloudflare_tf_backend_runtime_secrets
+    return 0
+  fi
 
   provider_name="$(tf_project_provider_from_name "${project_name}")"
   case "${provider_name}" in
@@ -3468,6 +3460,14 @@ load_tf_runtime_secrets_for_project() {
 require_tf_runtime_env_for_project() {
   local project_name="$1"
   local provider_name
+
+  if [ "${project_name}" = "gcp-bootstrap" ]; then
+    [ -n "${R2_ACCOUNT_ID:-}" ] || die "Missing required environment variable: R2_ACCOUNT_ID"
+    [ -n "${R2_STATE_BUCKET:-}" ] || die "Missing required environment variable: R2_STATE_BUCKET"
+    [ -n "${R2_ACCESS_KEY_ID:-}" ] || die "Missing required environment variable: R2_ACCESS_KEY_ID"
+    [ -n "${R2_SECRET_ACCESS_KEY:-}" ] || die "Missing required environment variable: R2_SECRET_ACCESS_KEY"
+    return 0
+  fi
 
   provider_name="$(tf_project_provider_from_name "${project_name}")"
   case "${provider_name}" in
@@ -3740,6 +3740,21 @@ tofu_args_have_explicit_vars() {
   return 1
 }
 
+tofu_args_have_explicit_backend_config() {
+  local -a args=("$@")
+  local arg
+
+  for arg in "${args[@]}"; do
+    case "${arg}" in
+      -backend-config|-backend-config=*)
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
 tofu_subcommand_supports_var_files() {
   local subcommand="${1:-}"
 
@@ -3812,6 +3827,13 @@ log_tf_action_context() {
   local provider_name="$6"
 
   echo "Working dir: ${tf_dir}" >&2
+  if [ "${project_name}" = "gcp-bootstrap" ]; then
+    echo "State bucket: ${R2_STATE_BUCKET}" >&2
+    echo "State key: ${backend_detail_1}" >&2
+    echo "Endpoint: ${backend_detail_2}" >&2
+    return 0
+  fi
+
   case "${provider_name}" in
     cloudflare)
       echo "State bucket: ${R2_STATE_BUCKET}" >&2
@@ -3836,6 +3858,36 @@ run_tf_action() {
 
   resolve_tf_project_context "${project_dir}" 1 tf_dir project_name provider_name
   prepare_tf_project_runtime "${project_name}"
+
+  if [ "${project_name}" = "gcp-bootstrap" ]; then
+    state_key="$(tf_state_key_for_project "${project_name}")"
+    endpoint="$(tf_backend_endpoint)"
+    log_tf_action_context "${phase}" "${project_name}" "${tf_dir}" "${state_key}" "${endpoint}" "${provider_name}"
+
+    _exec_tofu_cmd "" -chdir="${tf_dir}" init \
+      -lockfile=readonly \
+      -backend-config="bucket=${R2_STATE_BUCKET}" \
+      -backend-config="key=${state_key}" \
+      -backend-config="region=auto" \
+      -backend-config="endpoint=${endpoint}" \
+      -backend-config="access_key=${R2_ACCESS_KEY_ID}" \
+      -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}" \
+      -backend-config="skip_credentials_validation=true" \
+      -backend-config="skip_region_validation=true" \
+      -backend-config="skip_requesting_account_id=true" \
+      -backend-config="use_path_style=true"
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+      _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false
+      return
+    fi
+
+    ensure_tmp_dir
+    plan_file="$(tmp_runtime_mktemp tf "tfplan.XXXXXX")"
+    _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false -out="${plan_file}"
+    _exec_tofu_cmd "" -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}"
+    return
+  fi
 
   case "${provider_name}" in
     cloudflare)
@@ -3958,6 +4010,9 @@ resolve_tofu_wrapper_context() {
 run_tofu_wrapper() {
   local -a tofu_args=("$@")
   local project_dir="" project_name="" provider_name=""
+  local subcommand=""
+  local state_key="" endpoint="" gcp_state_prefix="" gcp_backend_impersonate=""
+  local -a cmd=()
 
   [ "${#tofu_args[@]}" -gt 0 ] || die "Usage: scripts/nixbot-deploy.sh tofu <tofu-args...>"
   [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot-deploy tofu wrapper is local-only and cannot run via SSH forced-command/bastion trigger."
@@ -3965,6 +4020,64 @@ run_tofu_wrapper() {
   if resolve_tofu_wrapper_context project_dir project_name provider_name "${tofu_args[@]}" && [ -n "${project_name}" ]; then
     prepare_tf_project_runtime "${project_name}"
     echo "Terraform wrapper project: ${project_name} (${provider_name})" >&2
+  fi
+
+  subcommand="$(tofu_args_extract_subcommand "${tofu_args[@]}" || true)"
+  if [ -n "${project_name}" ] && [ "${subcommand}" = "init" ] && ! tofu_args_have_explicit_backend_config "${tofu_args[@]}"; then
+    cmd=(tofu "${tofu_args[@]}")
+
+    if [ "${project_name}" = "gcp-bootstrap" ]; then
+      state_key="$(tf_state_key_for_project "${project_name}")"
+      endpoint="$(tf_backend_endpoint)"
+      cmd+=(
+        -backend-config="bucket=${R2_STATE_BUCKET}"
+        -backend-config="key=${state_key}"
+        -backend-config="region=auto"
+        -backend-config="endpoint=${endpoint}"
+        -backend-config="access_key=${R2_ACCESS_KEY_ID}"
+        -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}"
+        -backend-config="skip_credentials_validation=true"
+        -backend-config="skip_region_validation=true"
+        -backend-config="skip_requesting_account_id=true"
+        -backend-config="use_path_style=true"
+      )
+      run_with_combined_output "${cmd[@]}"
+      return
+    fi
+
+    case "${provider_name}" in
+      cloudflare)
+        state_key="$(tf_state_key_for_project "${project_name}")"
+        endpoint="$(tf_backend_endpoint)"
+        cmd+=(
+          -backend-config="bucket=${R2_STATE_BUCKET}"
+          -backend-config="key=${state_key}"
+          -backend-config="region=auto"
+          -backend-config="endpoint=${endpoint}"
+          -backend-config="access_key=${R2_ACCESS_KEY_ID}"
+          -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}"
+          -backend-config="skip_credentials_validation=true"
+          -backend-config="skip_region_validation=true"
+          -backend-config="skip_requesting_account_id=true"
+          -backend-config="use_path_style=true"
+        )
+        run_with_combined_output "${cmd[@]}"
+        return
+        ;;
+      gcp)
+        gcp_state_prefix="$(gcp_state_prefix_for_project "${project_name}")"
+        gcp_backend_impersonate="${GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT:-}"
+        cmd+=(
+          -backend-config="bucket=${GCP_STATE_BUCKET}"
+          -backend-config="prefix=${gcp_state_prefix}"
+        )
+        if [ -n "${gcp_backend_impersonate}" ]; then
+          cmd+=(-backend-config="impersonate_service_account=${gcp_backend_impersonate}")
+        fi
+        run_with_combined_output "${cmd[@]}"
+        return
+        ;;
+    esac
   fi
 
   _exec_tofu_cmd "${project_name}" "${tofu_args[@]}"

@@ -1,6 +1,8 @@
 module "cloudflare_dns" {
   source = "../modules/cloudflare"
 
+  cloudflare_account_id = var.cloudflare_account_id
+  secrets               = var.secrets
   zones                 = var.zones
   secret_zones_main     = var.secret_zones_main
   secret_zones_stage    = var.secret_zones_stage

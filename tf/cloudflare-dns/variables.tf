@@ -1,3 +1,16 @@
+variable "cloudflare_account_id" {
+  description = "Optional account ID accepted so provider-level Cloudflare tfvars can be shared across all Cloudflare projects."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "secrets" {
+  description = "Optional shared encrypted values accepted so provider-level Cloudflare tfvars can be shared across all Cloudflare projects."
+  type        = map(string)
+  default     = {}
+}
+
 variable "zones" {
   description = "Cloudflare zones and their authoritative public-safe DNS records."
   type        = any

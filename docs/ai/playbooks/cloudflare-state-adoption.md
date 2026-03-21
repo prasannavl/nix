@@ -49,10 +49,13 @@ of the dashboard.
   - `tf/modules/cloudflare/`
 - Encrypted inputs:
   - `data/secrets/tf/cloudflare/`
+  - `data/secrets/tf/cloudflare-platform/`
+  - `data/secrets/tf/cloudflare-apps/`
 - Export refresh:
   - `scripts/archive/cloudflare-export.py`
-  - tunnel export writes `data/secrets/tf/cloudflare/tunnels/account.tfvars.age`
-    and intentionally omits unrecoverable runtime tunnel credentials/secrets
+  - tunnel export writes
+    `data/secrets/tf/cloudflare-platform/tunnels-account.tfvars.age` and
+    intentionally omits unrecoverable runtime tunnel credentials/secrets
 
 ## Preconditions
 
