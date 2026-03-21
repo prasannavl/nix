@@ -324,6 +324,17 @@ parse_bool_env() {
   esac
 }
 
+is_signal_exit_status() {
+  case "${1:-}" in
+    130|143)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 # Sets OPTVAL and OPTSHIFT for --flag/--flag=value argument pairs.
 take_optval() {
   case "$1" in
@@ -584,6 +595,7 @@ parse_args() {
 }
 
 cleanup() {
+  terminate_background_jobs
   log_group_end_all
   cleanup_repo_worktree
   if [ -n "${REPO_ROOT_LOCK_DIR}" ]; then
@@ -592,6 +604,16 @@ cleanup() {
   if [ -n "${DEPLOY_TMP_DIR}" ] && [ -d "${DEPLOY_TMP_DIR}" ]; then
     rm -rf "${DEPLOY_TMP_DIR}"
   fi
+}
+
+terminate_background_jobs() {
+  local -a job_pids=()
+
+  mapfile -t job_pids < <(jobs -pr 2>/dev/null || true)
+  [ "${#job_pids[@]}" -gt 0 ] || return 0
+
+  kill "${job_pids[@]}" >/dev/null 2>&1 || true
+  wait "${job_pids[@]}" >/dev/null 2>&1 || true
 }
 
 ensure_tmp_dir() {
@@ -2085,18 +2107,30 @@ wave_needs_snapshot_retry() {
 wait_for_job_slot() {
   local -n active_jobs_inout_ref="$1"
   local max_jobs="$2"
+  local wait_rc=0
 
   if [ "${active_jobs_inout_ref}" -ge "${max_jobs}" ]; then
-    wait -n || true
+    if ! wait -n; then
+      wait_rc="$?"
+      if is_signal_exit_status "${wait_rc}"; then
+        return "${wait_rc}"
+      fi
+    fi
     active_jobs_inout_ref=$((active_jobs_inout_ref - 1))
   fi
 }
 
 drain_job_slots() {
   local -n active_jobs_inout_ref="$1"
+  local wait_rc=0
 
   while [ "${active_jobs_inout_ref}" -gt 0 ]; do
-    wait -n || true
+    if ! wait -n; then
+      wait_rc="$?"
+      if is_signal_exit_status "${wait_rc}"; then
+        return "${wait_rc}"
+      fi
+    fi
     active_jobs_inout_ref=$((active_jobs_inout_ref - 1))
   done
 }
@@ -2160,6 +2194,9 @@ record_phase_status() {
   fi
   if [ "${rc}" != "0" ]; then
     failed_hosts_out_ref+=("${node}")
+    if is_signal_exit_status "${rc}"; then
+      return "${rc}"
+    fi
     return 1
   fi
 
@@ -2192,9 +2229,106 @@ record_deploy_phase_status() {
       ;;
     *)
       failed_hosts_out_ref+=("${node}")
+      if is_signal_exit_status "${status}"; then
+        return "${status}"
+      fi
       return 1
       ;;
   esac
+}
+
+append_unique_array_item() {
+  local -n array_out_ref="$1"
+  local item="$2"
+
+  array_contains "${item}" "${array_out_ref[@]}" || array_out_ref+=("${item}")
+}
+
+collect_completed_deploy_wave_statuses() {
+  local deploy_status_dir="$1"
+  # shellcheck disable=SC2178
+  local -n success_hosts_out_ref="$2"
+  # shellcheck disable=SC2178
+  local -n skipped_hosts_out_ref="$3"
+  # shellcheck disable=SC2178
+  local -n failed_hosts_out_ref="$4"
+  shift 4
+
+  local node status_file status=""
+
+  for node in "$@"; do
+    [ -n "${node}" ] || continue
+    status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
+    if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
+      continue
+    fi
+    case "${status}" in
+      0)
+        append_unique_array_item success_hosts_out_ref "${node}"
+        ;;
+      skip)
+        append_unique_array_item skipped_hosts_out_ref "${node}"
+        ;;
+      *)
+        append_unique_array_item failed_hosts_out_ref "${node}"
+        ;;
+    esac
+  done
+}
+
+handle_deploy_interrupt() {
+  local interrupt_rc="$1"
+  local snapshot_dir="$2"
+  local deploy_status_dir="$3"
+  local rollback_log_dir="$4"
+  local rollback_status_dir="$5"
+  # shellcheck disable=SC2178
+  local -n success_hosts_out_ref="$6"
+  # shellcheck disable=SC2178
+  local -n skipped_hosts_out_ref="$7"
+  # shellcheck disable=SC2178
+  local -n failed_hosts_out_ref="$8"
+  shift 8
+
+  terminate_background_jobs
+  collect_completed_deploy_wave_statuses \
+    "${deploy_status_dir}" \
+    success_hosts_out_ref \
+    skipped_hosts_out_ref \
+    failed_hosts_out_ref \
+    "$@"
+  maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${success_hosts_out_ref[@]}"
+  return "${interrupt_rc}"
+}
+
+abort_deploy_on_signal() {
+  local phase_rc="$1"
+  local snapshot_dir="$2"
+  local deploy_status_dir="$3"
+  local rollback_log_dir="$4"
+  local rollback_status_dir="$5"
+  # shellcheck disable=SC2178
+  local -n success_hosts_out_ref="$6"
+  # shellcheck disable=SC2178
+  local -n skipped_hosts_out_ref="$7"
+  # shellcheck disable=SC2178
+  local -n failed_hosts_out_ref="$8"
+  shift 8
+
+  if ! is_signal_exit_status "${phase_rc}"; then
+    return 1
+  fi
+
+  handle_deploy_interrupt \
+    "${phase_rc}" \
+    "${snapshot_dir}" \
+    "${deploy_status_dir}" \
+    "${rollback_log_dir}" \
+    "${rollback_status_dir}" \
+    success_hosts_out_ref \
+    skipped_hosts_out_ref \
+    failed_hosts_out_ref \
+    "$@"
 }
 
 log_snapshot_retry_transition() {
@@ -2804,6 +2938,7 @@ run_build_phase() {
   local status_file out_file log_file
   local build_sync_leading_bastion=0
   local host_grouping=0
+  local phase_rc=0
 
   if [ "${build_parallel}" -eq 0 ] && [ "${#build_hosts_in_ref[@]}" -gt 1 ]; then
     host_grouping=1
@@ -2819,7 +2954,13 @@ run_build_phase() {
     status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
     out_file="${build_out_dir}/${node}.path"
     run_build_job "${node}" "${out_file}" "${status_file}"
-    record_phase_status "${node}" "${status_file}" built_hosts_out_ref failed_hosts_out_ref || true
+    if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref failed_hosts_out_ref; then
+      phase_rc="$?"
+      if is_signal_exit_status "${phase_rc}"; then
+        log_group_scope_end
+        return "${phase_rc}"
+      fi
+    fi
   fi
 
   for node in "${build_hosts_in_ref[@]}"; do
@@ -2835,25 +2976,44 @@ run_build_phase() {
       log_file="$(phase_dir_item_log_file "${build_log_dir}" "${node}")"
       run_build_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
       active_jobs=$((active_jobs + 1))
-      wait_for_job_slot active_jobs "${build_jobs}"
+      if ! wait_for_job_slot active_jobs "${build_jobs}"; then
+        phase_rc="$?"
+        log_group_scope_end
+        return "${phase_rc}"
+      fi
       continue
     fi
 
     run_build_job "${node}" "${out_file}" "${status_file}"
     if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref failed_hosts_out_ref; then
+      phase_rc="$?"
+      if is_signal_exit_status "${phase_rc}"; then
+        log_group_scope_end
+        return "${phase_rc}"
+      fi
       break
     fi
   done
 
   if [ "${build_parallel}" -eq 1 ]; then
-    drain_job_slots active_jobs
+    if ! drain_job_slots active_jobs; then
+      phase_rc="$?"
+      log_group_scope_end
+      return "${phase_rc}"
+    fi
     for node in "${build_hosts_in_ref[@]}"; do
       [ -n "${node}" ] || continue
       status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
       if [ "${build_sync_leading_bastion}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
         continue
       fi
-      record_phase_status "${node}" "${status_file}" built_hosts_out_ref failed_hosts_out_ref || true
+      if ! record_phase_status "${node}" "${status_file}" built_hosts_out_ref failed_hosts_out_ref; then
+        phase_rc="$?"
+        if is_signal_exit_status "${phase_rc}"; then
+          log_group_scope_end
+          return "${phase_rc}"
+        fi
+      fi
     done
   fi
 
@@ -2895,6 +3055,7 @@ run_deploy_phase() {
   local total_deploy_hosts=0
   local level_group_size=0
   local host_grouping=0
+  local phase_rc=0
 
   for level_group in "${level_groups_in_ref[@]}"; do
     [ -n "${level_group}" ] || continue
@@ -2940,23 +3101,86 @@ run_deploy_phase() {
         log_file="$(phase_dir_item_log_file "${deploy_log_dir}" "${node}")"
         run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
         active_jobs=$((active_jobs + 1))
-        wait_for_job_slot active_jobs "${deploy_parallel_jobs}"
+        if ! wait_for_job_slot active_jobs "${deploy_parallel_jobs}"; then
+          phase_rc="$?"
+          abort_deploy_on_signal \
+            "${phase_rc}" \
+            "${snapshot_dir}" \
+            "${deploy_status_dir}" \
+            "${rollback_log_dir}" \
+            "${rollback_status_dir}" \
+            successful_hosts_out_ref \
+            deploy_skipped_hosts_out_ref \
+            deploy_failed_hosts_out_ref \
+            "${level_hosts[@]}"
+          phase_rc="$?"
+          log_group_scope_end
+          return "${phase_rc}"
+        fi
         continue
       fi
 
       run_deploy_job "${node}" "${out_file}" "${status_file}"
       if ! record_deploy_phase_status "${node}" "${status_file}" successful_hosts_out_ref deploy_skipped_hosts_out_ref deploy_failed_hosts_out_ref; then
+        phase_rc="$?"
+        abort_deploy_on_signal \
+          "${phase_rc}" \
+          "${snapshot_dir}" \
+          "${deploy_status_dir}" \
+          "${rollback_log_dir}" \
+          "${rollback_status_dir}" \
+          successful_hosts_out_ref \
+          deploy_skipped_hosts_out_ref \
+          deploy_failed_hosts_out_ref \
+          "${level_hosts[@]}"
+        phase_rc="$?"
+        if is_signal_exit_status "${phase_rc}"; then
+          log_group_scope_end
+          return "${phase_rc}"
+        fi
         deploy_wave_failed=1
         break
       fi
     done
 
     if [ "${deploy_parallel}" -eq 1 ]; then
-      drain_job_slots active_jobs
+      if ! drain_job_slots active_jobs; then
+        phase_rc="$?"
+        abort_deploy_on_signal \
+          "${phase_rc}" \
+          "${snapshot_dir}" \
+          "${deploy_status_dir}" \
+          "${rollback_log_dir}" \
+          "${rollback_status_dir}" \
+          successful_hosts_out_ref \
+          deploy_skipped_hosts_out_ref \
+          deploy_failed_hosts_out_ref \
+          "${level_hosts[@]}"
+        phase_rc="$?"
+        log_group_scope_end
+        return "${phase_rc}"
+      fi
       for node in "${level_hosts[@]}"; do
         [ -n "${node}" ] || continue
         status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
-        record_deploy_phase_status "${node}" "${status_file}" successful_hosts_out_ref deploy_skipped_hosts_out_ref deploy_failed_hosts_out_ref || true
+        if ! record_deploy_phase_status "${node}" "${status_file}" successful_hosts_out_ref deploy_skipped_hosts_out_ref deploy_failed_hosts_out_ref; then
+          phase_rc="$?"
+          abort_deploy_on_signal \
+            "${phase_rc}" \
+            "${snapshot_dir}" \
+            "${deploy_status_dir}" \
+            "${rollback_log_dir}" \
+            "${rollback_status_dir}" \
+            successful_hosts_out_ref \
+            deploy_skipped_hosts_out_ref \
+            deploy_failed_hosts_out_ref \
+            "${level_hosts[@]}"
+          phase_rc="$?"
+          if is_signal_exit_status "${phase_rc}"; then
+            log_group_scope_end
+            return "${phase_rc}"
+          fi
+        fi
       done
       if [ "${#deploy_failed_hosts_out_ref[@]}" -gt 0 ]; then
         deploy_wave_failed=1
@@ -4338,21 +4562,20 @@ run_deploy_request_action() {
 
 run_all_action() {
   local selected_json="$1"
-  local action_rc=0
 
   if ! run_tf_phases dns platform; then
-    action_rc=1
+    return "$?"
   fi
 
   if ! run_hosts "${selected_json}"; then
-    action_rc=1
+    return "$?"
   fi
 
   if ! run_tf_phases apps; then
-    action_rc=1
+    return "$?"
   fi
 
-  return "${action_rc}"
+  return 0
 }
 
 run_requested_action() {
@@ -4367,7 +4590,7 @@ run_requested_action() {
     action_rc="$?"
   fi
 
-  if run_summary_has_failures; then
+  if [ "${action_rc}" -eq 0 ] && run_summary_has_failures; then
     action_rc=1
   fi
 

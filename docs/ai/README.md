@@ -30,6 +30,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Canonical
   `nixbot` deploy architecture, runtime contract, and orchestration behavior.
+- `docs/ai/notes/nixbot/interrupt-and-phase-short-circuit-2026-03.md`: `Ctrl+C`
+  propagation and `--action all` stop-on-first-failure behavior for
+  `nixbot-deploy.sh`.
 - `docs/ai/notes/nixbot/lint-gating-and-precommit-2026-03.md`: Shared lint
   entrypoint, CI gate, and pre-commit hook decisions.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
