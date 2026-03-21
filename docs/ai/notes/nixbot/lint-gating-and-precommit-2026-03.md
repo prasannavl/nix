@@ -15,6 +15,10 @@
 - The lint toolchain is exported separately as flake package `.#lint-deps` so CI
   can warm it in a dedicated step with `nix build path:.#lint-deps >/dev/null`
   and keep the actual `nix run path:.#lint` logs focused on lint output.
+- `.#lint-deps` now includes the runnable `writeShellApplication` wrapper
+  closure for `.#lint`, not only the top-level lint binaries, because warming
+  just the tool packages still left `nix/lint` to realize `lint.drv` and fetch
+  builder-time dependencies such as `makeWrapper`.
 - Git pre-commit is wired through `.githooks/pre-commit` and calls the same
   `nix run path:.#lint` command to keep local and CI behavior aligned.
 - The lint wrapper now tracks the active step and emits a final

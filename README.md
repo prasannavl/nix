@@ -124,6 +124,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - Incremental gates today: `statix`, `deadnix`, `shellcheck`, and
   `markdownlint-cli2` run only on changed files so the hook protects new edits
   without requiring a full repo debt cleanup first.
+- Flake package `.#lint-deps` warms the full runnable `.#lint` closure so CI can
+  realize wrapper and tool dependencies ahead of the actual lint step.
 - `./scripts/git-install-hooks.sh` configures Git to use `.githooks/`; the repo
   pre-commit hook runs the same `nix run path:.#lint` command before allowing a
   commit.

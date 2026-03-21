@@ -85,8 +85,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Warm the lint closures so the logs stay clean.
-          # in the actual runs and avoids noise.
+          # Warm the full lint closure, including the runnable wrapper
+          # derivation, so the lint step only executes the suite and does not
+          # realize extra build-time dependencies.
           nix build path:.#lint-deps >/dev/null
           ./scripts/nixbot-deploy.sh --ensure-deps >/dev/null
 

@@ -134,7 +134,7 @@
   };
   lintDeps = pkgs.buildEnv {
     name = "lint-deps";
-    paths = lintPkgs;
+    paths = [lintApp];
   };
 in {
   inherit formatterPkgs lintApp lintDeps lintPkgs;
