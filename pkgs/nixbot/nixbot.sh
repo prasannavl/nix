@@ -30,83 +30,74 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps>
-  nixbot <run|deploy|build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
-  deps            Re-exec into the nixbot runtime shell, verify the full
-                  required toolchain, and exit.
-  check-deps      Verify the required commands exist in the current
-                  environment and exit.
+  deps            Enter the nixbot runtime shell, verify tools, and exit.
+  check-deps      Verify required commands in the current environment.
 
 Workflow Actions:
-  run             Execute the full workflow. This is the previous default
-                  nixbot behavior.
-  deploy          Run host build+deploy only.
+  run             Run the full workflow.
+  deploy          Run host build and deploy.
   build           Run host build only.
   tf              Run all Terraform phases.
   tf-dns          Run the DNS Terraform phase.
   tf-platform     Run the platform Terraform phase.
   tf-apps         Run the apps Terraform phase.
   tf/<project>    Run one configured Terraform project.
-  check-bootstrap Run forced-command bootstrap checks for the selected hosts.
+  check-bootstrap Run forced-command bootstrap checks.
 
 Local Wrapper Action:
-  tofu            Run local OpenTofu commands in the nixbot runtime shell.
+  tofu            Run local OpenTofu in the nixbot runtime shell.
 
 Workflow Selection Options:
-  --hosts          Workflow actions: selected hosts/context
-                   (comma/space-separated, or `all`; default: all)
-  --sha            Workflow actions: optional commit to check out before running
+  --hosts          Hosts/context to target (comma/space-separated or `all`; default: all)
+  --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
   --build-host     local|target|<ssh-host> (default: local)
-  --build-jobs     Number of hosts to build in parallel (default: 1)
+  --build-jobs     Parallel host builds (default: 1)
 
 Deploy Action Options (`run`, `deploy`):
   --goal           switch|boot|test|dry-activate (default: switch)
-  --deploy-jobs    Number of hosts to deploy in parallel within a dependency wave (default: 1)
-  --bootstrap      Always use bootstrap user/key path for deploy/snapshot/rollback SSH target selection
-  --no-rollback    Disable rollback of successful hosts when any deploy fails
-  --prefix-host-logs Always prefix host log lines, even for single-job phases
+  --deploy-jobs    Parallel deploys within a dependency wave (default: 1)
+  --bootstrap      Always use bootstrap SSH user/key selection
+  --no-rollback    Disable rollback if any deploy fails
+  --prefix-host-logs Always prefix host log lines
 
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
   --bastion-first  Prioritize bastion host first when bastion is selected
 
 Workflow Behavior Options:
-  --dry            `run`, `deploy`, `tf`, `tf-dns`, `tf-platform`,
-                   `tf-apps`, `tf/<project>`: print commands instead of
-                   applying deploy/Terraform changes
-  --force          `run`, `deploy`, `tf`, `tf-dns`, `tf-platform`,
-                   `tf-apps`, `tf/<project>`: bypass change-detection gates
-  --log-format     Workflow actions: auto|gh|plain (default: auto)
+  --dry            Print commands without applying changes
+  --force          Bypass change-detection gates
+  --dirty          Allow running from a dirty repo root
+  --log-format     auto|gh|plain (default: auto)
 
 Auth / Config Options:
   --user           Default deploy user override
-  --ssh-key        SSH key path for deploy target auth (must be .age when explicitly set)
+  --ssh-key        SSH key path for deploy target auth (must be .age when set)
   --known-hosts    known_hosts override for all hosts
   --config         Nix deploy config path (default: hosts/nixbot.nix)
-  --age-key-file   Age/SSH identity file used for decrypting *.age secrets
-  --discover-keys  Discover fallback decrypt identities (auto|on|off; default:
-                   auto, which disables discovery when --age-key-file/AGE_KEY_FILE
-                   is set explicitly)
+  --age-key-file   Age/SSH identity used to decrypt `*.age` secrets
+  --discover-keys  Fallback decrypt identity discovery (auto|on|off; default: auto)
 
 Bootstrap/Forced-Command Options:
-  --bastion-check-ssh-key-path .age key path override for forced-command bootstrap checks
+  --bastion-check-ssh-key-path .age key override for bootstrap checks
 
 Remote Trigger Options:
-  --bastion-trigger Trigger this script remotely on bastion via SSH and exit
-  --bastion-host   Bastion hostname/IP used by --bastion-trigger (default: pvl-x2)
-  --bastion-user   Bastion user used by --bastion-trigger (default: nixbot)
-  --bastion-ssh-key Optional SSH private key content used by --bastion-trigger
-  --bastion-known-hosts Optional known_hosts content used by --bastion-trigger
+  --bastion-trigger Run remotely on bastion via SSH and exit
+  --bastion-host   Bastion hostname/IP (default: pvl-x2)
+  --bastion-user   Bastion user (default: nixbot)
+  --bastion-ssh-key Optional SSH private key content for bastion trigger
+  --bastion-known-hosts Optional known_hosts content for bastion trigger
 
 Repo Options:
-  --repo-url       Repo URL used when a managed repo root must be cloned
-  --repo-path      Persistent repo root used to sync origin/master and create per-run worktrees
-  --use-repo-script Re-exec from the worktree copy of this script after worktree
-                    setup; remains opt-in for intentionally executing fetched
-                    script code
+  --repo-url       Repo URL for cloning a managed repo root
+  --repo-path      Persistent repo root for sync and per-run worktrees
+  --use-repo-script Re-exec from the worktree copy of this script; disabled by
+                    default for security
 
 Environment (Workflow Selection):
   NIXBOT_HOSTS                Same as --hosts
@@ -127,6 +118,7 @@ Environment (Host Workflow Ordering):
 
 Environment (Workflow Behavior):
   NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
+  NIXBOT_DIRTY                Same as --dirty (bool: 1/0, true/false, yes/no)
   NIXBOT_DRY                  Same as --dry (bool)
   NIXBOT_LOG_FORMAT           Same as --log-format
 
@@ -170,19 +162,17 @@ Environment (Terraform actions):
 Runtime:
   Workflow actions and `tofu` always re-exec inside `nix shell` to provide a
   consistent toolchain: age, git, jq, nixos-rebuild-ng, openssh, and opentofu.
-  `deps` performs that re-exec and exits after verification.
-  `check-deps` only checks the current environment and does not re-exec.
+  `deps` re-execs and exits after verification.
+  `check-deps` only checks the current environment.
 
 Local tofu wrapper:
-  `nixbot tofu ...` runs Terraform locally via OpenTofu in the same runtime shell.
-  For recognized tf/<provider>-<phase> projects (via -chdir or current directory),
-  it auto-loads backend/provider runtime secrets and may append decrypted
-  `-var-file` inputs for variable-aware commands (plan/apply/destroy/import/console)
-  when no explicit `-var`/`-var-file` flags are provided.
-  GCP projects can auto-load `GOOGLE_APPLICATION_CREDENTIALS`,
+  `nixbot tofu ...` runs OpenTofu locally in the same runtime shell.
+  For recognized `tf/<provider>-<phase>` projects, it can auto-load backend
+  and provider secrets plus decrypted `-var-file` inputs when none are set.
+  GCP projects can also auto-load `GOOGLE_APPLICATION_CREDENTIALS`,
   `GCP_STATE_BUCKET`, and `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` from
   encrypted files under `data/secrets/gcp/`.
-  This wrapper mode is intentionally local-only and is not supported via bastion trigger.
+  This mode is local-only and not supported via bastion trigger.
 USAGE
 }
 
@@ -212,6 +202,7 @@ init_vars() {
   NIXBOT_IF_CHANGED=1
   TF_IF_CHANGED=1
   FORCE_REQUESTED=0
+  ALLOW_DIRTY_REPO=0
   FORCE_BOOTSTRAP_PATH=0
   PRIORITIZE_BASTION_FIRST=0
   DRY_RUN=0
@@ -254,6 +245,9 @@ init_vars() {
 
   if parse_bool_env "${NIXBOT_FORCE:-0}"; then
     enable_force_mode
+  fi
+  if parse_bool_env "${NIXBOT_DIRTY:-0}"; then
+    ALLOW_DIRTY_REPO=1
   fi
   if parse_bool_env "${NIXBOT_BASTION_FIRST:-0}"; then
     PRIORITIZE_BASTION_FIRST=1
@@ -668,6 +662,7 @@ parse_args() {
       --deploy-jobs|--deploy-jobs=*)
         take_optval "$@"; NIXBOT_PARALLEL_JOBS="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --force)              enable_force_mode; shift ;;
+      --dirty)              ALLOW_DIRTY_REPO=1; shift ;;
       --bootstrap)          FORCE_BOOTSTRAP_PATH=1; shift ;;
       --bastion-first)      PRIORITIZE_BASTION_FIRST=1; shift ;;
       --dry)                enable_dry_run_mode; shift ;;
@@ -939,6 +934,10 @@ run_bastion_trigger() {
     remote_command="${remote_command} --force"
     echo "Force: true" >&2
   fi
+  if [ "${ALLOW_DIRTY_REPO}" -eq 1 ]; then
+    remote_command="${remote_command} --dirty"
+    echo "Dirty repo allowed: true" >&2
+  fi
 
   log_group_end
   ssh "${BASTION_TRIGGER_SSH_OPTS[@]}" -- "${BASTION_TRIGGER_USER}@${BASTION_TRIGGER_HOST}" \
@@ -1038,6 +1037,11 @@ ensure_repo_root_exists() {
 
 ensure_clean_repo_root() {
   local status_output=""
+
+  if [ "${ALLOW_DIRTY_REPO}" -eq 1 ]; then
+    echo "Repo root dirty check bypassed by --dirty" >&2
+    return 0
+  fi
 
   status_output="$(git -C "${REPO_ROOT}" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
   [ -z "${status_output}" ] || die "Repo root is dirty; nixbot deploys committed state only: ${REPO_ROOT}"
