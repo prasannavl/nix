@@ -1,7 +1,7 @@
 # Nameref audit and fixes - 2026-03
 
-- Audited `scripts/nixbot-deploy.sh` for every bash nameref (`local -n`) helper
-  after the deploy refactor surfaced runtime warnings such as
+- Audited `scripts/nixbot.sh` for every bash nameref (`local -n`) helper after
+  the deploy refactor surfaced runtime warnings such as
   `circular name reference`.
 - Root cause: several helpers used local nameref identifiers like
   `failed_hosts_ref` and `success_hosts_ref`, and some callers passed variables
@@ -16,5 +16,5 @@
   helper-local-directional convention (for example `failed_hosts_out_ref_local`,
   `build_hosts_in_ref_local`, `request_args_out_ref_local`) throughout the
   script while preserving the public call contract.
-- Validation performed: `bash -n scripts/nixbot-deploy.sh` and
-  `shellcheck scripts/nixbot-deploy.sh`.
+- Validation performed: `bash -n scripts/nixbot.sh` and
+  `shellcheck scripts/nixbot.sh`.

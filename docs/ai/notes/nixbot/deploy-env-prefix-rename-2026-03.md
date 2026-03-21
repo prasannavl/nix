@@ -2,12 +2,12 @@
 
 ## Scope
 
-Rename deploy-script variables and documented operator environment variables from
-the legacy `DEPLOY_` prefix to `NIXBOT_`.
+Rename deploy-script variables and documented operator environment variables
+from the legacy `DEPLOY_` prefix to `NIXBOT_`.
 
 ## Decision
 
-- `scripts/nixbot-deploy.sh` now uses `NIXBOT_` for its deploy-scoped runtime
+- `scripts/nixbot.sh` now uses `NIXBOT_` for its deploy-scoped runtime
   variables, config defaults, and operator environment overrides.
 - GitHub Actions wiring and nixbot-specific docs/playbooks should reference the
   new `NIXBOT_*` environment names.

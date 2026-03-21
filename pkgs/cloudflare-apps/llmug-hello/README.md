@@ -27,7 +27,7 @@ Layout:
 
 - aggregate Terraform deploy: build apps via `pkgs/cloudflare-apps#build`, then
   run the repo's Terraform reconciliation via
-  `scripts/nixbot-deploy.sh --action tf-apps`
+  `scripts/nixbot.sh --action tf-apps`
 - app `wrangler-deploy`: a direct Wrangler deploy path for this app only; useful
   for ad-hoc iteration when you explicitly want to bypass the Terraform flow
 

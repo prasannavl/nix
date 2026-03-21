@@ -2,7 +2,7 @@
 
 Date: 2026-03-21
 
-- `scripts/nixbot-deploy.sh` runs `run_tf_action` from an `if` condition via
+- `scripts/nixbot.sh` runs `run_tf_action` from an `if` condition via
   `run_tf_project_action`.
 - In Bash, `set -e` does not abort on failing commands inside a function when
   that function itself is being evaluated by `if`.

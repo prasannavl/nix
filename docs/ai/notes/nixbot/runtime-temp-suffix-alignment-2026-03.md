@@ -2,9 +2,8 @@
 
 ## Scope
 
-Consolidate `scripts/nixbot-deploy.sh` runtime temp allocation into one per-run
-workspace root that holds both the detached repo worktree and runtime
-artifacts.
+Consolidate `scripts/nixbot.sh` runtime temp allocation into one per-run
+workspace root that holds both the detached repo worktree and runtime artifacts.
 
 ## Decision
 

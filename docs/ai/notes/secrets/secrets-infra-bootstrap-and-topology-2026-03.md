@@ -17,7 +17,7 @@ Documents the repo's current secret topology from four angles:
 - `lib/nixbot/bastion.nix`
 - `hosts/<bastion-host>/services.nix`
 - `lib/incus-vm.nix`
-- `scripts/nixbot-deploy.sh`
+- `scripts/nixbot.sh`
 - `docs/deployment.md`
 
 ## Durable model
@@ -61,7 +61,7 @@ Documents the repo's current secret topology from four angles:
   - `bootstrapUser`
   - `bootstrapKeyPath`
   - `bootstrapKey`
-- `scripts/nixbot-deploy.sh` uses that path to:
+- `scripts/nixbot.sh` uses that path to:
   - fall back to an existing admin account
   - install the shared `nixbot` deploy key when needed
   - install the machine age identity before activation
@@ -121,16 +121,16 @@ Documents the repo's current secret topology from four angles:
   - `lib/nixbot/bastion.nix` installs forced-command ingress public keys on
     bastion
 - Bootstrap path selection:
-  - `scripts/nixbot-deploy.sh` first tries steady-state `nixbot@host`
+  - `scripts/nixbot.sh` first tries steady-state `nixbot@host`
   - if that fails, it may validate forced-command bootstrap reachability with
     `check_bootstrap_via_forced_command()`
   - if that is still not enough, it falls back to `${bootstrapUser}@host`
 - Runtime deploy-key exchange:
-  - `scripts/nixbot-deploy.sh` `inject_bootstrap_nixbot_key()` copies the shared
+  - `scripts/nixbot.sh` `inject_bootstrap_nixbot_key()` copies the shared
     `nixbot` private key to `/var/lib/nixbot/.ssh/id_ed25519` on the target when
     bootstrap is needed
 - Runtime machine-identity exchange:
-  - `scripts/nixbot-deploy.sh` `inject_host_age_identity_key()` copies the
+  - `scripts/nixbot.sh` `inject_host_age_identity_key()` copies the
     host-specific age identity to `/var/lib/nixbot/.age/identity` before
     activation
   - the installed runtime permissions must allow `nixbot` to read that path as
@@ -140,6 +140,6 @@ Documents the repo's current secret topology from four angles:
 ## Important operator rule
 
 - For a brand-new host, the first real deploy should go through
-  `scripts/nixbot-deploy.sh` or an equivalent manual copy of the machine age
-  identity to `/var/lib/nixbot/.age/identity`. Otherwise agenix decrypt will
-  fail during activation.
+  `scripts/nixbot.sh` or an equivalent manual copy of the machine age identity
+  to `/var/lib/nixbot/.age/identity`. Otherwise agenix decrypt will fail during
+  activation.

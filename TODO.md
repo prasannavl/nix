@@ -67,7 +67,7 @@ Why:
 
 Why:
 
-- `scripts/nixbot-deploy.sh` now owns enough orchestration, state handling, and
+- `scripts/nixbot.sh` now owns enough orchestration, state handling, and
   safety-sensitive branching that continuing to scale it in bash is becoming
   harder to reason about.
 - The deploy specs and runtime behavior are now documented well enough that we
@@ -76,8 +76,8 @@ Why:
   would no longer need a copied script wrapper and could instead receive normal
   package deployment updates.
 
-- [ ] Replace `scripts/nixbot-deploy.sh` with a Rust-based program that
-      preserves the current deploy contract while making the orchestration model
-      easier to extend and validate. Depends on:
+- [ ] Replace `scripts/nixbot.sh` with a Rust-based program that preserves the
+      current deploy contract while making the orchestration model easier to
+      extend and validate. Depends on:
   - current nixbot deploy/runtime spec staying up to date
   - critical nixbot behaviors and invariants being covered by tests/fixtures

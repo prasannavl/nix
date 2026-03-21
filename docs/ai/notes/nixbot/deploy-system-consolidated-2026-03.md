@@ -8,8 +8,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 
 ## Core architecture
 
-- `scripts/nixbot-deploy.sh` is the only supported orchestration entrypoint for
-  local runs and bastion-triggered runs.
+- `scripts/nixbot.sh` is the only supported orchestration entrypoint for local
+  runs and bastion-triggered runs.
 - Bastion ingress uses forced-command keys only; the normal `nixbot` SSH key
   remains a standard deploy/shell key from `lib/nixbot/default.nix`.
 - Activation-time secret decrypt uses the host machine age identity at
@@ -22,9 +22,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Normal targeting prefers `nixbot@host`; bootstrap is fallback, not the
   default. `--bootstrap` forces the bootstrap path even if the primary path is
   healthy.
-- Forced-command bootstrap probes must execute
-  `/var/lib/nixbot/nixbot-deploy.sh ...` explicitly so SSH does not pass
-  option-like arguments to `bash`.
+- Forced-command bootstrap probes must execute `/var/lib/nixbot/nixbot.sh ...`
+  explicitly so SSH does not pass option-like arguments to `bash`.
 - When deploy and bootstrap users match, bootstrap-key installation is cached
   per host for the duration of one run.
 - Bastion-triggered runs stay pinned to the installed bastion wrapper by
@@ -49,10 +48,9 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   `hosts.<name>.ageIdentityKey = "data/secrets/machine/<host>.key.age"`.
 - Deploy injects that identity to `/var/lib/nixbot/.age/identity` before
   activation.
-- Because `scripts/nixbot-deploy.sh` may also use that path as a local fallback
-  decrypt identity (for example during bastion-side Terraform runtime secret
-  loading), the runtime path must be readable by the `nixbot` user, not just by
-  root.
+- Because `scripts/nixbot.sh` may also use that path as a local fallback decrypt
+  identity (for example during bastion-side Terraform runtime secret loading),
+  the runtime path must be readable by the `nixbot` user, not just by root.
 - Runtime secret decryption should use the shared candidate identity list for
   all `*.age` files, not a Cloudflare-specific special case.
 - Per-identity `age` stderr should stay buffered unless every candidate identity
@@ -105,15 +103,14 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
     overrides the skip
   - then continue with the normal host build + deploy flow
 - Terraform phase membership should come from explicit per-phase project lists
-  in `scripts/nixbot-deploy.sh`, not from filesystem discovery. The runnable set
-  should live in one canonical project list, with per-phase membership derived
-  from the `tf/<provider>-<phase>` name suffix. Commenting a project in or out
-  of that canonical list is the supported enable/disable switch.
+  in `scripts/nixbot.sh`, not from filesystem discovery. The runnable set should
+  live in one canonical project list, with per-phase membership derived from the
+  `tf/<provider>-<phase>` name suffix. Commenting a project in or out of that
+  canonical list is the supported enable/disable switch.
 - `--action tf/<project>` should run exactly one configured Terraform project
   through the same change-detection, logging, summary, and bastion-trigger flow
   as the phase-wide Terraform actions.
-- TF change detection lives only in `scripts/nixbot-deploy.sh` and currently
-  covers:
+- TF change detection lives only in `scripts/nixbot.sh` and currently covers:
   - `tf/**`
   - `data/secrets/cloudflare/*.age`
   - `data/secrets/tf/**`
@@ -215,10 +212,10 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 
 - `.github/workflows/nixbot.yaml` uses Tailscale OAuth/OIDC instead of the old
   auth-key flow.
-- `scripts/nixbot-deploy.sh` always re-execs into one pinned `nix shell`
-  runtime. Normal repo-root runs use `--inputs-from <repo-root>`; SSH
-  forced-command ingress skips `--inputs-from` and falls back to `nixpkgs#...`
-  installables so the bastion wrapper does not depend on flake root discovery.
+- `scripts/nixbot.sh` always re-execs into one pinned `nix shell` runtime.
+  Normal repo-root runs use `--inputs-from <repo-root>`; SSH forced-command
+  ingress skips `--inputs-from` and falls back to `nixpkgs#...` installables so
+  the bastion wrapper does not depend on flake root discovery.
 - The runtime toolchain contract is declared once and reused for shell entry,
   `--ensure-deps`, and normal runtime verification. The shared toolset is:
   `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, and `opentofu`.
@@ -239,18 +236,18 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   - `permissions.id-token: write`
   - `oauth-client-id`, `audience`, and `tags: tag:ci`
   - generated per-run `TS_HOSTNAME`
-- GitHub-hosted runners must install Nix before invoking
-  `scripts/nixbot-deploy.sh`; otherwise the runtime shell bootstrap fails with
+- GitHub-hosted runners must install Nix before invoking `scripts/nixbot.sh`;
+  otherwise the runtime shell bootstrap fails with
   `Required command not found: nix`.
 - The workflow should warm the shared runtime closure before the main deploy
-  step by calling `./scripts/nixbot-deploy.sh --ensure-deps >/dev/null`, and it
-  should continue reusing the GitHub Actions cache backend rather than relying
-  on FlakeHub-specific cache login.
+  step by calling `./scripts/nixbot.sh --ensure-deps >/dev/null`, and it should
+  continue reusing the GitHub Actions cache backend rather than relying on
+  FlakeHub-specific cache login.
 - Manual dispatch should stay aligned with the script surface:
   `action = all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>`, plus
   `dry` and `force`.
 - The separate TF-only workflow was removed; the main `nixbot` workflow
-  delegates TF gating decisions to `scripts/nixbot-deploy.sh`.
+  delegates TF gating decisions to `scripts/nixbot.sh`.
 
 ## Maintenance guidance
 

@@ -28,8 +28,8 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
-  scripts/nixbot-deploy.sh tofu <tofu-args...>
+  scripts/nixbot.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot.sh tofu <tofu-args...>
 
 Core Workflow Options:
   --action         all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap (default: all)
@@ -137,7 +137,7 @@ Runtime:
   toolchain: age, git, jq, nixos-rebuild-ng, openssh, and opentofu.
 
 Local tofu wrapper:
-  `scripts/nixbot-deploy.sh tofu ...` runs Terraform locally via OpenTofu in the same runtime shell.
+  `scripts/nixbot.sh tofu ...` runs Terraform locally via OpenTofu in the same runtime shell.
   For recognized tf/<provider>-<phase> projects (via -chdir or current directory),
   it auto-loads backend/provider runtime secrets and may append decrypted
   `-var-file` inputs for variable-aware commands (plan/apply/destroy/import/console)
@@ -265,7 +265,7 @@ init_vars() {
   REMOTE_NIXBOT_BASE="/var/lib/nixbot"
   REMOTE_NIXBOT_SSH_DIR="${REMOTE_NIXBOT_BASE}/.ssh"
   REMOTE_NIXBOT_AGE_DIR="${REMOTE_NIXBOT_BASE}/.age"
-  REMOTE_NIXBOT_DEPLOY_SCRIPT="${REMOTE_NIXBOT_BASE}/nixbot-deploy.sh"
+  REMOTE_NIXBOT_DEPLOY_SCRIPT="${REMOTE_NIXBOT_BASE}/nixbot.sh"
   REMOTE_NIXBOT_PRIMARY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519"
   REMOTE_NIXBOT_LEGACY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519_legacy"
   REMOTE_NIXBOT_AGE_IDENTITY="${REMOTE_NIXBOT_AGE_DIR}/identity"
@@ -277,7 +277,7 @@ init_vars() {
   TMP_SECRETS_DIR=""
   TMP_SSH_DIR=""
   TMP_TF_ARTIFACT_DIR=""
-  REPO_DEPLOY_SCRIPT_REL="scripts/nixbot-deploy.sh"
+  REPO_DEPLOY_SCRIPT_REL="scripts/nixbot.sh"
   REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="/tmp/nixbot-bootstrap-key."
   REMOTE_AGE_IDENTITY_TMP_PREFIX="/tmp/nixbot-age-identity."
   TF_CLOUDFLARE_API_TOKEN_PATH="data/secrets/cloudflare/api-token.key.age"
@@ -4283,8 +4283,8 @@ run_tofu_wrapper() {
   local subcommand=""
   local -a cmd=()
 
-  [ "${#tofu_args[@]}" -gt 0 ] || die "Usage: scripts/nixbot-deploy.sh tofu <tofu-args...>"
-  [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot-deploy tofu wrapper is local-only and cannot run via SSH forced-command/bastion trigger."
+  [ "${#tofu_args[@]}" -gt 0 ] || die "Usage: scripts/nixbot.sh tofu <tofu-args...>"
+  [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot.sh tofu wrapper is local-only and cannot run via SSH forced-command/bastion trigger."
 
   if resolve_tofu_wrapper_context project_dir project_name provider_name "${tofu_args[@]}" && [ -n "${project_name}" ]; then
     prepare_tf_project_runtime "${project_name}"
@@ -4924,7 +4924,7 @@ hydrate_request_args_from_ssh_command() {
   fi
   if [ "${#request_args_out_ref_local[@]}" -gt 0 ]; then
     case "${request_args_out_ref_local[0]}" in
-      nixbot-deploy.sh|*/nixbot-deploy.sh)
+      nixbot.sh|*/nixbot.sh)
         request_args_out_ref_local=("${request_args_out_ref_local[@]:1}")
         ;;
     esac

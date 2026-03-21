@@ -59,7 +59,7 @@
           set -euo pipefail
 
           repo_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)"
-          exec "$repo_root/scripts/nixbot-deploy.sh" --action tf-apps "$@"
+          exec "$repo_root/scripts/nixbot.sh" --action tf-apps "$@"
         '';
       };
     in {

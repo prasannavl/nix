@@ -15,7 +15,7 @@ This directory holds repo-managed Cloudflare application source trees used by
 
 - `tf/*-apps` projects may have a matching package namespace at
   `pkgs/<project>/flake.nix`.
-- `scripts/nixbot-deploy.sh` prepares those projects generically by running
+- `scripts/nixbot.sh` prepares those projects generically by running
   `nix build path:pkgs/<project>#build --no-link` before OpenTofu plan/apply.
 - For `tf/cloudflare-apps`, that means `pkgs/cloudflare-apps/flake.nix` is the
   single aggregate entrypoint.

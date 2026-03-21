@@ -52,7 +52,7 @@ Completed on 2026-03-16:
 - One already-enabled R2 managed domain was safely adopted through targeted
   apply because provider import support was not available.
 - The remaining nine modeled platform resources were imported serially.
-- `./scripts/nixbot-deploy.sh --action tf-platform --dry` is now no-op.
+- `./scripts/nixbot.sh --action tf-platform --dry` is now no-op.
 
 Imported platform backlog that mattered:
 

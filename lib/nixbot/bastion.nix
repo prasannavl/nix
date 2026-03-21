@@ -6,7 +6,7 @@
   userdata = (import ../../users/userdata.nix).nixbot;
   bastionSshKeys =
     userdata.bastionSshKeys or [userdata.bastionSshKey];
-  forcedCommandKey = key: ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="/var/lib/nixbot/nixbot-deploy.sh" ${key}'';
+  forcedCommandKey = key: ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="/var/lib/nixbot/nixbot.sh" ${key}'';
   legacyKeyAgePath = ../../data/secrets/nixbot/nixbot-legacy.key.age;
   hasLegacyKeyAge = builtins.pathExists legacyKeyAgePath;
 in {
@@ -14,7 +14,7 @@ in {
 
   system.activationScripts.nixbotDeploy = ''
         install -d -m 0755 -o nixbot -g nixbot /var/lib/nixbot
-        install -m 0755 ${../../scripts/nixbot-deploy.sh} /var/lib/nixbot/nixbot-deploy.sh
+        install -m 0755 ${../../scripts/nixbot.sh} /var/lib/nixbot/nixbot.sh
         install -d -m 0700 -o nixbot -g nixbot /var/lib/nixbot/.ssh
         cat > /var/lib/nixbot/.ssh/config <<'EOF'
     Host *

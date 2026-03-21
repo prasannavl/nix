@@ -16,7 +16,7 @@ forced-command key, while regular `nixbot` SSH key behavior remains normal.
 - CI should have only:
   - Tailscale auth credential scoped to bastion reachability.
   - bastion ingress SSH key (forced-command only).
-- Bastion ingress key must only run `/var/lib/nixbot/nixbot-deploy.sh`.
+- Bastion ingress key must only run `/var/lib/nixbot/nixbot.sh`.
 - Regular `nixbot` SSH key remains a normal key (defined in
   `lib/nixbot/default.nix`).
 - Bastion stores private deploy key at `/var/lib/nixbot/.ssh/id_ed25519` (from
@@ -35,7 +35,7 @@ If bootstrap fails, fallback uses configured bootstrap user/key path.
 
 ## Source Of Truth Files
 
-- `scripts/nixbot-deploy.sh`
+- `scripts/nixbot.sh`
 - `hosts/nixbot.nix`
 - `lib/nixbot/default.nix`
 - `lib/nixbot/bastion.nix`
@@ -46,7 +46,7 @@ If bootstrap fails, fallback uses configured bootstrap user/key path.
 - Add forced-command authorized key for `userdata.bastionSshKey`.
 - Do not replace the normal `nixbot` key from `lib/nixbot/default.nix`.
 - Install script to stable path:
-  - `install -m 0755 ${../../scripts/nixbot-deploy.sh} /var/lib/nixbot/nixbot-deploy.sh`
+  - `install -m 0755 ${../../scripts/nixbot.sh} /var/lib/nixbot/nixbot.sh`
 - Ensure dependencies exist on bastion:
   - `age`, `jq`
 - Ensure runtime SSH dir/permissions exist.
@@ -131,7 +131,7 @@ Defaults may also include:
 - Bootstrap check:
   - `ssh -i <bastion-key> nixbot@<bastion> -- --hosts <host> --action check-bootstrap --sha <commit> --config /var/lib/nixbot/nix/hosts/nixbot.nix`
 - Local orchestrator:
-  - `NIXBOT_BASTION_SSH_KEY_PATH=<...> ./scripts/nixbot-deploy.sh --hosts=<host> --force`
+  - `NIXBOT_BASTION_SSH_KEY_PATH=<...> ./scripts/nixbot.sh --hosts=<host> --force`
 
 ## Known Failure Signatures
 

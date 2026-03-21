@@ -26,8 +26,7 @@ Project secrets load after provider secrets, so project-specific values win.
   current in-project resources
 
 Runnable projects follow the naming convention `tf/<provider>-<phase>/`.
-`scripts/nixbot-deploy.sh` keeps explicit per-phase project lists in the script,
-so:
+`scripts/nixbot.sh` keeps explicit per-phase project lists in the script, so:
 
 - `--action tf-dns` runs the projects listed under the `dns` phase
 - `--action tf-platform` runs the projects listed under the `platform` phase
@@ -37,14 +36,14 @@ so:
 Normal editing flow:
 
 - comment or uncomment a project name in the single `TF_PROJECT_NAMES` array in
-  `scripts/nixbot-deploy.sh`
+  `scripts/nixbot.sh`
 - keep the directory name in `tf/<provider>-<phase>/` form so provider/phase
   conventions still work
 
 ## Package Convention
 
 Apps phases may also have a matching package namespace at `pkgs/<project>/`.
-When `pkgs/<project>/flake.nix` exists, `scripts/nixbot-deploy.sh` prepares that
+When `pkgs/<project>/flake.nix` exists, `scripts/nixbot.sh` prepares that
 project by running `nix build path:pkgs/<project>#build --no-link` before
 OpenTofu. This keeps build/stage logic grouped with the app sources instead of
 hardcoding one-off behavior in the deploy script.
@@ -59,11 +58,11 @@ hardcoding one-off behavior in the deploy script.
 Use:
 
 - `cd tf/gcp-bootstrap && tofu init && tofu apply`
-- `./scripts/nixbot-deploy.sh --action tf`
-- `./scripts/nixbot-deploy.sh --action tf-dns`
-- `./scripts/nixbot-deploy.sh --action tf-platform`
-- `./scripts/nixbot-deploy.sh --action tf-apps`
-- `./scripts/nixbot-deploy.sh --action all`
+- `./scripts/nixbot.sh --action tf`
+- `./scripts/nixbot.sh --action tf-dns`
+- `./scripts/nixbot.sh --action tf-platform`
+- `./scripts/nixbot.sh --action tf-apps`
+- `./scripts/nixbot.sh --action all`
 
 Phase order for `--action tf`:
 

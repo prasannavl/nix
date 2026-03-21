@@ -66,7 +66,7 @@ Import existing resources:
 
 Runtime:
 
-- `./scripts/nixbot-deploy.sh --action tf-platform`
+- `./scripts/nixbot.sh --action tf-platform`
 - default state key: `cloudflare-platform/terraform.tfstate`
 
 Inputs live in this directory's `*.auto.tfvars` files plus encrypted inputs

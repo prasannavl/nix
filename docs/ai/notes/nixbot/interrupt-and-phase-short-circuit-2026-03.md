@@ -2,8 +2,8 @@
 
 ## Scope
 
-Document the `scripts/nixbot-deploy.sh` control-flow correction for user
-interrupts and `--action all` phase gating.
+Document the `scripts/nixbot.sh` control-flow correction for user interrupts and
+`--action all` phase gating.
 
 ## Findings
 

@@ -11,14 +11,14 @@ Scope:
 
 Runtime:
 
-- `./scripts/nixbot-deploy.sh --action tf-apps`
+- `./scripts/nixbot.sh --action tf-apps`
 - default state key: `cloudflare-apps/terraform.tfstate`
 
 Build model:
 
 - `tf/*-apps` projects may declare a matching aggregate package at
   `pkgs/<project>/flake.nix`.
-- Before OpenTofu plan/apply, `scripts/nixbot-deploy.sh` runs the aggregate
+- Before OpenTofu plan/apply, `scripts/nixbot.sh` runs the aggregate
   `pkgs/<project>#build` derivation with `nix build --no-link`.
 - For this project, `pkgs/cloudflare-apps/flake.nix` is the aggregate
   entrypoint.

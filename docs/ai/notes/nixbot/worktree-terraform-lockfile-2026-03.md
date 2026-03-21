@@ -7,8 +7,8 @@ per-run detached Git worktrees.
 
 ## Findings
 
-- `scripts/nixbot-deploy.sh` correctly runs `tofu init -lockfile=readonly` in
-  each project so deploy runs do not mutate committed lockfiles.
+- `scripts/nixbot.sh` correctly runs `tofu init -lockfile=readonly` in each
+  project so deploy runs do not mutate committed lockfiles.
 - The three committed Cloudflare OpenTofu lockfiles under `tf/` contained both
   the current provider address `registry.opentofu.org/cloudflare/cloudflare` and
   a stale legacy address `registry.opentofu.org/hashicorp/cloudflare`.

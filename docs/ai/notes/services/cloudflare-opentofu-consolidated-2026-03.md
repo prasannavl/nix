@@ -12,7 +12,7 @@ surfaces, export/input strategy, and source-of-truth rules.
   - `tf/cloudflare-platform/`
   - `tf/cloudflare-apps/`
 - Shared implementation lives in `tf/modules/cloudflare/`.
-- `scripts/nixbot-deploy.sh` is the supported execution path for local,
+- `scripts/nixbot.sh` is the supported execution path for local,
   bastion-triggered, and CI-driven Cloudflare OpenTofu runs.
 - Aggregate `--action tf` remains the Terraform-only sequence: DNS, platform,
   then apps.
@@ -49,8 +49,8 @@ surfaces, export/input strategy, and source-of-truth rules.
   `data/secrets/tf/cloudflare-dns/**.tfvars.age`,
   `data/secrets/tf/cloudflare-platform/**.tfvars.age`, and
   `data/secrets/tf/cloudflare-apps/**.tfvars.age`.
-- `scripts/nixbot-deploy.sh` auto-discovers encrypted tfvars, decrypts them into
-  its temp workspace, and passes them to OpenTofu in sorted path order.
+- `scripts/nixbot.sh` auto-discovers encrypted tfvars, decrypts them into its
+  temp workspace, and passes them to OpenTofu in sorted path order.
 - The encrypted tfvars loader is generic: all matching
   `data/secrets/tf/**/*.tfvars.age` files are eligible input, and missing
   sensitive Cloudflare tfvars should degrade to a public-only run rather than

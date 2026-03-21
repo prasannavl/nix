@@ -2,9 +2,8 @@
 
 Date: 2026-03-21
 
-- `scripts/nixbot-deploy.sh` regressed in
-  `resolve_tf_backend_context_for_project` after the multi-provider Terraform
-  refactor.
+- `scripts/nixbot.sh` regressed in `resolve_tf_backend_context_for_project`
+  after the multi-provider Terraform refactor.
 - The helper exposes output parameters via bash namerefs, and callers commonly
   pass variables named `backend_kind`, `backend_detail_1`, and
   `backend_detail_2`.

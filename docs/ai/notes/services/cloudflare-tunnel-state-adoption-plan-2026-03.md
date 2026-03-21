@@ -152,7 +152,7 @@ After each import wave:
 1. `tofu -chdir=tf/cloudflare-platform state list`
 2. `tofu -chdir=tf/cloudflare-platform plan -refresh-only`
 3. `tofu -chdir=tf/cloudflare-platform plan`
-4. `./scripts/nixbot-deploy.sh --action tf-platform --dry`
+4. `./scripts/nixbot.sh --action tf-platform --dry`
 
 Do not apply until the tunnel slice is either no-op or only shows deliberately
 accepted drift.

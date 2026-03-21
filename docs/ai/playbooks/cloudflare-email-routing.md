@@ -22,12 +22,12 @@ step for destination addresses.
 
 1. Decrypt or edit `data/secrets/tf/cloudflare/account.tfvars.age`.
 2. Add the email address to `email_routing_addresses`.
-3. Run `./scripts/nixbot-deploy.sh --action tf-platform --dry`.
-4. Run `./scripts/nixbot-deploy.sh --action tf-platform`.
+3. Run `./scripts/nixbot.sh --action tf-platform --dry`.
+4. Run `./scripts/nixbot.sh --action tf-platform`.
 5. Wait for Cloudflare to send the verification email.
 6. Open the verification email and complete the confirmation link.
-7. Run `./scripts/nixbot-deploy.sh --action tf-platform --dry` again to confirm
-   the address now shows as verified.
+7. Run `./scripts/nixbot.sh --action tf-platform --dry` again to confirm the
+   address now shows as verified.
 
 ## Enable Email Routing For A Zone
 
@@ -40,8 +40,8 @@ step for destination addresses.
 5. Add any explicit routing rules under `rules`.
 6. Add a `catch_all` block only when the catch-all behavior is intentionally
    different from Cloudflare's default drop rule.
-7. Run `./scripts/nixbot-deploy.sh --action tf-platform --dry`.
-8. Run `./scripts/nixbot-deploy.sh --action tf-platform`.
+7. Run `./scripts/nixbot.sh --action tf-platform --dry`.
+8. Run `./scripts/nixbot.sh --action tf-platform`.
 
 ## Add Or Change A Forwarding Rule
 
@@ -78,8 +78,8 @@ email_routing = {
 }
 ```
 
-1. Run `./scripts/nixbot-deploy.sh --action tf-platform --dry`.
-2. Run `./scripts/nixbot-deploy.sh --action tf-platform`.
+1. Run `./scripts/nixbot.sh --action tf-platform --dry`.
+2. Run `./scripts/nixbot.sh --action tf-platform`.
 
 ## Verification Notes
 

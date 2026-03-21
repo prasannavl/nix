@@ -45,12 +45,12 @@
   provider/project secret convention.
 - Switched `gcp-bootstrap` from local state to the shared R2 backend so
   bootstrap does not depend on GCP state storage already existing.
-- Extended `scripts/nixbot-deploy.sh` so GCP Terraform uses a GCS backend via
+- Extended `scripts/nixbot.sh` so GCP Terraform uses a GCS backend via
   `GCP_STATE_BUCKET` and optional `GCP_STATE_PREFIX` /
   `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT`, while Cloudflare keeps the R2
   backend path.
 - Wired GCP runtime auth into the same repo-managed secret model used for
-  Cloudflare: `scripts/nixbot-deploy.sh` now decrypts
+  Cloudflare: `scripts/nixbot.sh` now decrypts
   `data/secrets/gcp/application-default-credentials.json.age` and exports
   `GOOGLE_APPLICATION_CREDENTIALS` automatically, and it can also auto-load
   `GCP_STATE_BUCKET` plus `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` from
