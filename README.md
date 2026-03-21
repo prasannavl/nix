@@ -17,8 +17,8 @@ modules and composed via `flake.nix`.
   imports.
 - `users/pvl/default.nix`: Base user + Home Manager module builder for `pvl`.
 - `lib/*.nix`: single-topic NixOS modules imported directly by hosts.
-- `lib/internal/`: internal flake/tooling helpers such as linting and the custom
-  flake tree helper.
+- `lib/flake/`: flake support helpers such as linting and the custom flake tree
+  helper.
 - `overlays/`: custom overlays used by the system.
 - `hosts/nixbot.nix`: deploy mapping (plain Nix attrset).
 - `data/secrets/default.nix`: agenix recipients map for `*.age` files.

@@ -11,6 +11,8 @@ Use this index as the canonical map for `docs/ai/**`.
   behavior.
 - `docs/ai/notes/apps/auto-discovered-flake-collectors-2026-03.md`: Shared
   collector behavior for nested `pkgs/` child flakes.
+- `docs/ai/notes/apps/lib-flake-rename-2026-03.md`: Rename of flake helper
+  directory from `lib/internal` to `lib/flake`.
 
 ### Deployment
 

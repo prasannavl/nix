@@ -3,8 +3,8 @@
 - Added flake app/package entrypoints so `nix run path:.#lint` is the canonical
   whole-repo lint command and `nix run path:.#lint-diff` preserves the earlier
   diff-scoped local workflow.
-- The lint implementation lives in `lib/internal/lint.nix` so the root
-  `flake.nix` stays lean and only wires the per-system outputs.
+- The lint implementation lives in `lib/flake/lint.nix` so the root `flake.nix`
+  stays lean and only wires the per-system outputs.
 - Current repo-wide lint scope is the shared formatter and linter suite across
   the full repo, including `treefmt --ci`, `statix`, `deadnix`, `shellcheck`,
   `actionlint`, `markdownlint-cli2`, and `tflint` over the tracked

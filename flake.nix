@@ -82,7 +82,7 @@
     agenix,
     ...
   }: let
-    internalLib = import ./lib/internal;
+    flakeLib = import ./lib/flake;
     packageOutputsFor = import ./pkgs {
       inherit nixpkgs flake-utils;
     };
@@ -97,7 +97,7 @@
   in
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      internalLint = internalLib.lint {inherit pkgs;};
+      internalLint = flakeLib.lint {inherit pkgs;};
     in {
       apps.lint = {
         inherit (internalLint.app) type program;
