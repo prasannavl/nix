@@ -1,7 +1,7 @@
 {...}: {
   imports = [
     ../../lib/nixbot/bastion.nix
-    ../../lib/flake/podman.nix
+    ../../lib/podman.nix
     ../../lib/devices/gmtek-evo-x2.nix
     ../../lib/swap-auto.nix
     ../../lib/profiles/all.nix

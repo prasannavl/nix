@@ -91,8 +91,8 @@ Use this index as the canonical map for `docs/ai/**`.
 ### Services
 
 - `docs/ai/notes/services/lib-flake-published-podman-systemd-modules-2026-03.md`:
-  Move `podman` and `systemd-user-manager` modules under `lib/flake` and export
-  them as reusable flake `nixosModules`.
+  Revert `podman` and `systemd-user-manager` to `lib/` and drop the unused
+  published flake-module export.
 - `docs/ai/notes/services/bastion-compose-config-centralization-2026-03.md`:
   Bastion compose port and generated-config ownership boundaries.
 - `docs/ai/notes/services/bastion-service-migration-consolidated-2026-03.md`:

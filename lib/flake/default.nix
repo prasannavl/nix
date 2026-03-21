@@ -20,9 +20,4 @@ in rec {
     inherit apps lint packages;
     inherit (lint) formatter;
   };
-
-  nixosModules = {
-    podmanCompose = import ./podman.nix;
-    systemdUserManager = import ./systemd-user-manager.nix;
-  };
 }

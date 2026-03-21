@@ -100,7 +100,6 @@
     // {
       pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems (system:
         (flakeLib.withPkgs nixpkgs.legacyPackages.${system}).packages);
-      inherit (flakeLib) nixosModules;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;
