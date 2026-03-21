@@ -19,9 +19,9 @@
     ]);
   lintApp = pkgs.writeShellApplication {
     name = "lint";
-    runtimeInputs = [];
+    runtimeInputs = lintPkgs;
     text = ''
-      exec ${repoRoot}/scripts/lint.sh "$@"
+      exec env LINT_IN_NIX_SHELL=1 ${repoRoot}/scripts/lint.sh "$@"
     '';
   };
 in {

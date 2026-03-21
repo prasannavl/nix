@@ -9,8 +9,7 @@
 
 ## Decision
 
-- Removed the redundant `ensure_runtime_shell` wrapper from
-  `scripts/nixbot.sh`.
+- Removed the redundant `ensure_runtime_shell` wrapper from `scripts/nixbot.sh`.
 - Kept `scripts/nixbot.sh` as a minimal handoff that resolves the target path
   and `exec`s into the real entrypoint.
 - Added a Bash-pattern exception allowing thin wrapper scripts to skip

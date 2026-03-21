@@ -137,9 +137,10 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - `nix run path:.#lint -- --diff` restricts file-scoped checks to changed files.
 - `nix run path:.#lint -- fix --diff` applies the same best-effort auto-fixes,
   but only to changed files before re-running the diff-scoped lint checks.
-- Repo-wide gates today: `treefmt --ci`, `actionlint`, and `tflint` for `tf/*-*`
-  projects, plus full-repo `statix`, `deadnix`, `shellcheck`, and
-  `markdownlint-cli2` under `.#lint`.
+- Repo-wide gates today: read-only formatter checks (`alejandra --check`,
+  `deno fmt --check`, and `tofu fmt -check -write=false`) plus `actionlint` and
+  `tflint` for `tf/*-*` projects, alongside full-repo `statix`, `deadnix`,
+  `shellcheck`, and `markdownlint-cli2` under `.#lint`.
 - `lint fix` currently auto-runs `treefmt`, `statix fix`,
   `markdownlint-cli2 --fix`, and `tflint --fix`; `deadnix`, `shellcheck`, and
   `actionlint` remain report-only.

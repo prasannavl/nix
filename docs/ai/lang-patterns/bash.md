@@ -26,8 +26,8 @@
 
 - If a script depends on runtime tools, provide an `ensure_runtime_shell`
   helper.
-- `ensure_runtime_shell` should re-exec through
-  `nix shell --inputs-from ...` with the required packages.
+- `ensure_runtime_shell` should re-exec through `nix shell --inputs-from ...`
+  with the required packages.
 - Keep recursion-guard env vars local to `ensure_runtime_shell` instead of
   storing them as top-level globals.
 - Exception: wrapper scripts do not need their own `ensure_runtime_shell` when

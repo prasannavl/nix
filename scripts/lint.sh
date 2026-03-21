@@ -221,6 +221,7 @@ collect_files() {
 
 run_lint_action() {
   local nix_file=""
+  local -a deno_files=()
   local local_tf_dir=""
 
   cd "${REPO_ROOT}"
@@ -228,6 +229,7 @@ run_lint_action() {
 
   mapfile -d $'\0' -t nix_files < <(collect_files '*.nix')
   mapfile -d $'\0' -t shell_files < <(collect_files '*.sh' '.githooks/*')
+  mapfile -d $'\0' -t deno_files < <(collect_files '*.js' '*.md')
   mapfile -d $'\0' -t markdown_files < <(collect_files '*.md')
   mapfile -d $'\0' -t tf_project_dirs < <(find tf -mindepth 1 -maxdepth 1 -type d -name '*-*' -print0 | sort -z)
 
@@ -237,7 +239,13 @@ run_lint_action() {
     run_step treefmt-fix 'Formatting files with treefmt' treefmt
 
     if [ "${#nix_files[@]}" -gt 0 ]; then
-      run_step statix-fix "Fixing ${LINT_SCOPE} Nix files" statix fix -- "${nix_files[@]}"
+      CURRENT_STEP=statix-fix
+      CURRENT_STEP_DESCRIPTION="Fixing ${LINT_SCOPE} Nix files"
+      log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+      for nix_file in "${nix_files[@]}"; do
+        printf '  - %s\n' "${nix_file}" >&2
+        statix fix -- "${nix_file}"
+      done
     fi
 
     if [ "${#markdown_files[@]}" -gt 0 ]; then
@@ -259,7 +267,24 @@ run_lint_action() {
   fi
 
   printf '[lint] Running shared lint suite (%s)\n' "${LINT_SCOPE}" >&2
-  run_step treefmt 'Checking formatting drift' treefmt --ci
+
+  if [ "${#nix_files[@]}" -gt 0 ]; then
+    run_step alejandra-check 'Checking Nix formatting drift' alejandra --check "${nix_files[@]}"
+  fi
+
+  if [ "${#deno_files[@]}" -gt 0 ]; then
+    run_step deno-fmt-check 'Checking JS/Markdown formatting drift' deno fmt --check "${deno_files[@]}"
+  fi
+
+  if [ "${#tf_project_dirs[@]}" -gt 0 ]; then
+    CURRENT_STEP=tofu-fmt-check
+    CURRENT_STEP_DESCRIPTION='Checking Terraform/OpenTofu formatting drift'
+    log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+    for local_tf_dir in "${tf_project_dirs[@]}"; do
+      printf '  - %s\n' "${local_tf_dir}" >&2
+      tofu fmt -check -write=false -diff -recursive "${local_tf_dir}"
+    done
+  fi
 
   if [ "${#nix_files[@]}" -gt 0 ]; then
     CURRENT_STEP=statix

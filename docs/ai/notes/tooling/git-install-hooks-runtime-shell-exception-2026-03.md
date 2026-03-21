@@ -4,9 +4,8 @@
 
 - `scripts/git-install-hooks.sh` only configures `core.hooksPath` in an already
   cloned Git repository.
-- The script is expected to run in an environment where `git` is already
-  present because Git was required to clone or operate on the repo in the first
-  place.
+- The script is expected to run in an environment where `git` is already present
+  because Git was required to clone or operate on the repo in the first place.
 
 ## Decision
 

@@ -58,9 +58,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/nameref-audit-and-fixes-2026-03.md`: Bash nameref
   circular-reference audit and helper-local binding rename strategy for
   `nixbot`.
-- `docs/ai/notes/nixbot/nixbot-wrapper-runtime-shell-exception-2026-03.md`:
-  Thin `scripts/nixbot.sh` wrapper intentionally skips `ensure_runtime_shell`
-  because the delegated nixbot entrypoint already owns runtime setup.
+- `docs/ai/notes/nixbot/nixbot-wrapper-runtime-shell-exception-2026-03.md`: Thin
+  `scripts/nixbot.sh` wrapper intentionally skips `ensure_runtime_shell` because
+  the delegated nixbot entrypoint already owns runtime setup.
 - `docs/ai/notes/nixbot/package-flake-wrapper-2026-03.md`: Package `nixbot` as a
   repo-local flake app while preserving the stable bastion forced-command path.
 - `docs/ai/notes/nixbot/deploy-env-prefix-rename-2026-03.md`: Rename
@@ -143,6 +143,12 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/git-install-hooks-runtime-shell-exception-2026-03.md`:
   `scripts/git-install-hooks.sh` intentionally skips `ensure_runtime_shell`
   because Git is already required by the calling context.
+- `docs/ai/notes/tooling/lint-statix-fix-cli-2026-03.md`: `scripts/lint.sh` must
+  invoke `statix fix` once per selected file because the current CLI accepts
+  only a single positional target.
+- `docs/ai/notes/tooling/lint-readonly-format-checks-2026-03.md`: Plain `.#lint`
+  must use formatter-native check flags instead of `treefmt --ci` so formatting
+  validation never rewrites files.
 - `docs/ai/notes/tooling/runtime-shell-guard-cleanup-2026-03.md`: Shared cleanup
   of redundant top-level runtime nix-shell guard globals across helper scripts.
 
