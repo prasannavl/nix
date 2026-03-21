@@ -70,6 +70,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/cloudflare-opentofu-consolidated-2026-03.md`:
   Canonical Cloudflare OpenTofu layout, input model, import rules, and
   source-of-truth boundaries.
+- `docs/ai/notes/services/cloudflare-workers-archive-path-fix-2026-03.md`:
+  `tf-apps` deploy failure caused by stale `pkgs/cloudflare-workers` paths in
+  archive worker tfvars after the repo moved to `pkgs/cloudflare-apps`.
 - `docs/ai/notes/services/cloudflare-tunnel-state-adoption-plan-2026-03.md`:
   Tunnel state-adoption plan, ownership-boundary decision, and execution steps.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Documentation
