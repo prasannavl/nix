@@ -170,6 +170,16 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   (for example `foo_ref` passed to a helper that also declares
   `local -n foo_ref=...`), or Bash 5.3 emits circular-name-reference warnings
   and the helper may not update the intended array.
+- Stronger nested-helper rule: when a nameref helper calls another nameref
+  helper, do not forward the helper-local alias name as a bare argument. Pass
+  the original target-name parameters instead, and prefer short
+  function-specific nameref aliases such as `rdp_*`/`rps_*` over generic names
+  like `failed_hosts_out_ref`. With function-prefixed nameref aliases, `_local`
+  should be added only when the shorter alias would collide with another name
+  already used in scope or elsewhere in the script.
+- If the helper shifts positional parameters, capture those target-name
+  parameters into ordinary locals before `shift`; otherwise the forwarded names
+  no longer refer to the intended caller arrays.
 - Shared SSH-context assembly should stay centralized in
   `prepare_host_ssh_contexts`, and repeated SSH key resolve-and-validate logic
   should stay centralized in `resolve_ssh_identity_file`.
