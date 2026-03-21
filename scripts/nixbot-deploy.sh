@@ -18,7 +18,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
   age
   git
   jq
-  nixos-rebuild
+  nixos-rebuild-ng
   ssh
   scp
   ssh-keygen
@@ -130,7 +130,7 @@ Environment (Terraform actions):
 
 Runtime:
   The script always re-execs inside `nix shell` to provide a consistent
-  toolchain: age, git, jq, nixos-rebuild, openssh, and opentofu.
+  toolchain: age, git, jq, nixos-rebuild-ng, openssh, and opentofu.
 
 Local tofu wrapper:
   `scripts/nixbot-deploy.sh tofu ...` runs Terraform locally via OpenTofu in the same runtime shell.
@@ -2638,7 +2638,7 @@ deploy_host() {
   esac
 
   rebuild_cmd=(
-    nixos-rebuild
+    nixos-rebuild-ng
     --flake "path:.#${node}"
     --target-host "${ssh_target}"
     --sudo
