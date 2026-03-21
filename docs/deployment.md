@@ -10,7 +10,8 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 
 - Bastion host: the configured bastion (`hosts/<bastion>/default.nix`, imports
   `lib/nixbot/bastion.nix`)
-- Deploy orchestration script: `scripts/nixbot.sh`
+- Deploy orchestration package + canonical script source: `pkgs/nixbot`
+  (`pkgs/nixbot/nixbot.sh`)
 - Deploy mapping/config: `hosts/nixbot.nix`
 - Secrets storage: `data/secrets/*.age` (age/agenix)
 
@@ -20,14 +21,14 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 
 - CI uses a dedicated bastion ingress key (`nixbot-bastion-ssh`).
 - That key is forced-command-only on bastion:
-  - command: `/var/lib/nixbot/nixbot.sh`
+  - command: `${pkgs.nixbot}/bin/nixbot`
   - no shell / no forwarding flags.
 - CI/local trigger does not SCP/upload deploy scripts to bastion at runtime. It
   must invoke the pre-installed forced-command script path above. This prevents
   turning deploy ingress into arbitrary remote code execution.
 - Bastion keeps a persistent repo root only as a synced source mirror. Normal
   deploy runs create a per-run detached worktree and keep executing the
-  installed `/var/lib/nixbot/nixbot.sh` wrapper.
+  installed packaged `nixbot` entrypoint.
 - `--use-repo-script` / `NIXBOT_USE_REPO_SCRIPT=1` remains opt-in only. It
   explicitly allows the wrapper to re-exec from the fetched worktree copy of the
   script and should stay disabled in CI/routine forced-command use.
@@ -56,7 +57,7 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 - The normal steady-state deploy path is:
   1. CI/operator reaches bastion as `nixbot@<bastion>` via the forced-command
      ingress key.
-  2. Bastion runs `/var/lib/nixbot/nixbot.sh`.
+  2. Bastion runs the packaged `nixbot` forced command from the Nix store.
   3. That script syncs the persistent repo root to `origin/master`, creates a
      detached per-run worktree for the requested commit, and runs the deploy
      from that worktree while keeping the installed wrapper process.
@@ -106,8 +107,8 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 In `lib/nixbot/bastion.nix`:
 
 - Add forced-command authorized key entry for `bastionSshKey`.
-- Install current script to stable path:
-  - `install -m 0755 ${../../scripts/nixbot.sh} /var/lib/nixbot/nixbot.sh`
+- Point the forced command directly at the packaged binary:
+  - `command="${pkgs.nixbot}/bin/nixbot"`
 - Ensure runtime prerequisites:
   - `/var/lib/nixbot/.ssh` exists, mode `0700`, owner `nixbot`
   - `environment.systemPackages` includes `age` and `jq`
@@ -215,7 +216,7 @@ shell access for `nixos-rebuild --target-host`.
   `nixbot` authorized keys.
 - `lib/nixbot/bastion.nix` separately installs `nixbot.bastionSshKeys` onto the
   bastion's `nixbot` account, but wrapped in a forced command:
-  - only `/var/lib/nixbot/nixbot.sh` may run
+  - only the packaged `nixbot` command may run
   - no shell, PTY, forwarding, or user rc files
 - This means there are two SSH trust exchanges:
   - all managed nodes learn the normal deploy public keys at activation time
@@ -305,7 +306,7 @@ shell access for `nixos-rebuild --target-host`.
 - Bastion host is the configured bastion target.
 - Bastion ingress identity is the SSH key whose public half is loaded from
   `users/userdata.nix` (`nixbot.bastionSshKeys` / `nixbot.bastionSshKey`) and
-  forced into `/var/lib/nixbot/nixbot.sh` by `lib/nixbot/bastion.nix`.
+  forced into the packaged `nixbot` binary by `lib/nixbot/bastion.nix`.
 - The private half of that ingress key is stored as
   `data/secrets/bastion/nixbot-bastion-ssh.key.age`.
   - recipients: admins only
@@ -417,7 +418,7 @@ Use this order for a clean-room rebuild of the current model.
    - this is the step that creates the CI/operator -> bastion -> fleet trust
      chain; before it, only the bootstrap/admin path exists
 8. Validate bastion ingress after the bastion host is up.
-   - the forced-command key should be able to run `/var/lib/nixbot/nixbot.sh`
+   - the forced-command key should be able to run the packaged `nixbot` command
    - the bastion should hold `/var/lib/nixbot/.ssh/id_ed25519`
 9. Deploy the remaining hosts through `scripts/nixbot.sh`.
    - first managed deploy to each host injects `/var/lib/nixbot/.age/identity`

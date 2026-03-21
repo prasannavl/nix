@@ -16,7 +16,8 @@ forced-command key, while regular `nixbot` SSH key behavior remains normal.
 - CI should have only:
   - Tailscale auth credential scoped to bastion reachability.
   - bastion ingress SSH key (forced-command only).
-- Bastion ingress key must only run `/var/lib/nixbot/nixbot.sh`.
+- Bastion ingress key must only run the packaged `nixbot` command from
+  `pkgs/nixbot`.
 - Regular `nixbot` SSH key remains a normal key (defined in
   `lib/nixbot/default.nix`).
 - Bastion stores private deploy key at `/var/lib/nixbot/.ssh/id_ed25519` (from
@@ -45,8 +46,8 @@ If bootstrap fails, fallback uses configured bootstrap user/key path.
 
 - Add forced-command authorized key for `userdata.bastionSshKey`.
 - Do not replace the normal `nixbot` key from `lib/nixbot/default.nix`.
-- Install script to stable path:
-  - `install -m 0755 ${../../scripts/nixbot.sh} /var/lib/nixbot/nixbot.sh`
+- Point the forced command directly at the packaged binary:
+  - `command="${pkgs.nixbot}/bin/nixbot"`
 - Ensure dependencies exist on bastion:
   - `age`, `jq`
 - Ensure runtime SSH dir/permissions exist.

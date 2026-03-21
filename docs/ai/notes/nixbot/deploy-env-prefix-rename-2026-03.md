@@ -16,6 +16,5 @@ from the legacy `DEPLOY_` prefix to `NIXBOT_`.
 
 - The rename is intentionally mechanical for deploy-script-owned variables:
   `DEPLOY_*` became `NIXBOT_*`.
-- Existing non-`DEPLOY_` names such as `AGE_KEY_FILE`,
-  `NIXBOT_DEPLOY_IN_NIX_SHELL`, and Terraform provider variables remain
-  unchanged.
+- Existing non-`DEPLOY_` names such as `AGE_KEY_FILE`, `NIXBOT_IN_NIX_SHELL`,
+  and Terraform provider variables remain unchanged.

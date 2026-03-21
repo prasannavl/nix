@@ -13,6 +13,8 @@ Use this index as the canonical map for `docs/ai/**`.
   collector behavior for nested `pkgs/` child flakes.
 - `docs/ai/notes/apps/lib-flake-rename-2026-03.md`: Rename of flake helper
   directory from `lib/internal` to `lib/flake`.
+- `docs/ai/notes/apps/pkgs-hybrid-package-set-and-wrapper-flakes-2026-03.md`:
+  Canonical packages in `default.nix` plus child flake wrappers for local UX.
 
 ### Deployment
 
@@ -31,6 +33,9 @@ Use this index as the canonical map for `docs/ai/**`.
   module rename from `incus-machine` to `incus-vm`.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
   reusable Incus guest template, bootstrap flow, and secret model.
+- `docs/ai/notes/hosts/pvl-bash-prompt-exit-status-fix-2026-03.md`: Prompt
+  exit-status command substitution was escaped as `\$(...)` during lint cleanup,
+  causing the literal text to render in interactive shells.
 
 ### Nixbot
 
@@ -45,6 +50,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/nameref-audit-and-fixes-2026-03.md`: Bash nameref
   circular-reference audit and helper-local binding rename strategy for
   `nixbot.sh`.
+- `docs/ai/notes/nixbot/package-flake-wrapper-2026-03.md`: Package `nixbot` as a
+  repo-local flake app while preserving the stable bastion forced-command path.
 - `docs/ai/notes/nixbot/deploy-env-prefix-rename-2026-03.md`: Rename
   deploy-script-owned `DEPLOY_*` variables and env knobs to `NIXBOT_*`.
 - `docs/ai/notes/nixbot/script-entrypoint-rename-2026-03.md`: Rename the nixbot

@@ -1,10 +1,5 @@
-{inputs}: final: prev: let
-  packageDefinitions = import ../pkgs {
-    inherit (inputs) nixpkgs;
-    inherit (inputs) flake-utils;
-  };
-  inherit (final.stdenv.hostPlatform) system;
-  packageTree = (packageDefinitions.outputsForSystem system).packageTree.pkgs;
+_: final: prev: let
+  packageTree = import ../lib/flake/packages.nix {pkgs = final;};
   hostInstallablePackages = let
     projectPackage = value:
       if prev.lib.isDerivation value

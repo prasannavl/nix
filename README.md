@@ -31,11 +31,11 @@ Workflow: `.github/workflows/nixbot.yaml`.
 - Manual (`workflow_dispatch`): set `hosts` and optionally deploy.
 
 The workflow is intentionally thin: it only SSHes into the configured bastion
-host via `scripts/nixbot.sh --bastion-trigger`.
+host via the packaged `nixbot` entrypoint with `--bastion-trigger`.
 
 Security note: deploy does **not** SCP/upload a script to bastion at runtime.
-The bastion forced-command key is restricted to the pre-installed
-`/var/lib/nixbot/nixbot.sh` path, so CI/local trigger only invokes that allowed
+The bastion forced-command key is restricted directly to the packaged `nixbot`
+command from `pkgs/nixbot`, so CI/local trigger only invokes that allowed
 command.
 
 ## Deployment
@@ -44,7 +44,8 @@ High-level architecture:
 
 - GitHub Actions connects to the configured bastion host using a restricted
   ingress key and forced command (`ssh-gate`).
-- Bastion runs `scripts/nixbot.sh` to build/deploy selected NixOS hosts.
+- Bastion runs the packaged `nixbot` command directly from the Nix store to
+  build/deploy selected NixOS hosts.
 - Deploy SSH key material is stored as age-encrypted secrets in
   `data/secrets/*.age`, with bootstrap and rotation rules documented in
   deployment docs.
@@ -58,12 +59,17 @@ and operational notes are documented in:
 Primary files for deployment are:
 
 - `hosts/nixbot.nix` (deploy target mapping/defaults)
-- `scripts/nixbot.sh` (build/deploy orchestration)
+- `pkgs/nixbot/nixbot.sh` (canonical repo script source for nixbot)
+- `scripts/nixbot.sh` (compatibility wrapper to the package-owned script)
+- `pkgs/nixbot/flake.nix` (packaged nixbot application wrapper)
 - `lib/nixbot/bastion.nix` (bastion-side nixbot setup)
 - `lib/nixbot/default.nix` (nixbot user module with sudo/identity)
-- `scripts/nixbot.sh` runs in a cached `nix shell` toolchain with pinned
+- `pkgs/nixbot/nixbot.sh` runs in a cached `nix shell` toolchain with pinned
   commands (`nix`, `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, `opentofu`)
   so deploy runs use consistent command sets everywhere.
+- The packaged `nixbot` wrapper ships that same runtime toolchain directly and
+  executes `pkgs/nixbot/nixbot.sh` without depending on repo-relative flake
+  discovery.
 
 ## Deploy Actions
 

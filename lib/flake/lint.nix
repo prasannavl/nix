@@ -181,4 +181,21 @@ in {
     type = "app";
     program = "${lintDiffApp}/bin/lint-diff";
   };
+
+  apps = {
+    lint = {
+      type = "app";
+      program = "${lintApp}/bin/lint";
+    };
+    "lint-diff" = {
+      type = "app";
+      program = "${lintDiffApp}/bin/lint-diff";
+    };
+  };
+
+  packages = {
+    "lint-deps" = lintDeps;
+    lint = lintApp;
+    "lint-diff" = lintDiffApp;
+  };
 }

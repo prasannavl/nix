@@ -92,7 +92,7 @@ jobs:
           # derivation, so the lint step only executes the suite and does not
           # realize extra build-time dependencies.
           nix build path:.#lint-deps >/dev/null
-          ./scripts/nixbot.sh --ensure-deps >/dev/null
+          nix run path:.#pkgs.x86_64-linux.nixbot -- --ensure-deps >/dev/null
 
       - name: nix/lint
         shell: bash
@@ -134,7 +134,7 @@ jobs:
             extra_args+=(--force)
           fi
 
-          ./scripts/nixbot.sh \
+          nix run path:.#pkgs.x86_64-linux.nixbot -- \
             --bastion-trigger \
             --bastion-first \
             --hosts "${hosts}" \

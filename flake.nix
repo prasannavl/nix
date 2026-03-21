@@ -83,10 +83,6 @@
     ...
   }: let
     flakeLib = import ./lib/flake;
-    packageOutputsFor = import ./pkgs {
-      inherit nixpkgs flake-utils;
-    };
-    packageTreeFor = system: (packageOutputsFor.outputsForSystem system).packageTree.pkgs;
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
@@ -97,23 +93,13 @@
   in
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      internalLint = flakeLib.lint {inherit pkgs;};
+      flakeLibForSystem = flakeLib.withPkgs pkgs;
     in {
-      apps.lint = {
-        inherit (internalLint.app) type program;
-      };
-      apps.lint-diff = {
-        inherit (internalLint.diffApp) type program;
-      };
-      inherit (internalLint) formatter;
-      packages = {
-        lint-deps = internalLint.lintDeps;
-        lint = internalLint.lintApp;
-        lint-diff = internalLint.lintDiffApp;
-      };
+      inherit (flakeLibForSystem) apps formatter packages;
     })
     // {
-      pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems packageTreeFor;
+      pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems (system:
+        (flakeLib.withPkgs nixpkgs.legacyPackages.${system}).packages);
       inherit (flakeLib) nixosModules;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {

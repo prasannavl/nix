@@ -35,7 +35,7 @@ holders of bastion-trigger credentials.
 The installed bastion wrapper still provides meaningful protection:
 
 - CI/operators cannot SCP an arbitrary shell script to bastion and execute it
-- normal runs stay pinned to the installed `/var/lib/nixbot/nixbot.sh` wrapper
+- normal runs stay pinned to the installed packaged `nixbot` entrypoint
 - per-run repo worktrees isolate execution state from the persistent repo root
 - `--use-repo-script` remains opt-in for intentionally executing fetched script
   code
@@ -81,4 +81,4 @@ Therefore:
 ## Related Docs
 
 - `docs/deployment.md`
-- `scripts/nixbot.sh`
+- `pkgs/nixbot/nixbot.sh`

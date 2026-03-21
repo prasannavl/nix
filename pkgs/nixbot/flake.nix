@@ -1,5 +1,5 @@
 {
-  description = "hello-rust sample app";
+  description = "nixbot deploy wrapper package";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
@@ -13,20 +13,22 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      build = pkgs.callPackage ./default.nix {};
-      run = {
-        type = "app";
-        program = "${build}/bin/hello-rust";
-      };
+      run = pkgs.callPackage ./default.nix {};
     in {
       packages = {
-        default = build;
-        inherit build;
-        run = build;
+        inherit run;
+        default = run;
+        build = run;
       };
       apps = {
-        default = run;
-        inherit run;
+        default = {
+          type = "app";
+          program = "${run}/bin/nixbot";
+        };
+        run = {
+          type = "app";
+          program = "${run}/bin/nixbot";
+        };
       };
     });
 }

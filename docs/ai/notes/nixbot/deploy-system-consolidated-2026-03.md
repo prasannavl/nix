@@ -22,8 +22,9 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Normal targeting prefers `nixbot@host`; bootstrap is fallback, not the
   default. `--bootstrap` forces the bootstrap path even if the primary path is
   healthy.
-- Forced-command bootstrap probes must execute `/var/lib/nixbot/nixbot.sh ...`
-  explicitly so SSH does not pass option-like arguments to `bash`.
+- Forced-command bootstrap probes should execute `nixbot ...` explicitly so SSH
+  does not pass option-like arguments directly and the remote side can strip the
+  leading command token independent of the bastion store path.
 - When deploy and bootstrap users match, bootstrap-key installation is cached
   per host for the duration of one run.
 - Bastion-triggered runs stay pinned to the installed bastion wrapper by
@@ -246,13 +247,12 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   - `permissions.id-token: write`
   - `oauth-client-id`, `audience`, and `tags: tag:ci`
   - generated per-run `TS_HOSTNAME`
-- GitHub-hosted runners must install Nix before invoking `scripts/nixbot.sh`;
-  otherwise the runtime shell bootstrap fails with
-  `Required command not found: nix`.
+- GitHub-hosted runners must install Nix before invoking the packaged `nixbot`
+  entrypoint.
 - The workflow should warm the shared runtime closure before the main deploy
-  step by calling `./scripts/nixbot.sh --ensure-deps >/dev/null`, and it should
-  continue reusing the GitHub Actions cache backend rather than relying on
-  FlakeHub-specific cache login.
+  step by calling `nix run path:.#pkgs.$system.nixbot -- --ensure-deps
+  > /dev/null`, and it should continue reusing the GitHub Actions cache backend
+  > rather than relying on FlakeHub-specific cache login.
 - Manual dispatch should stay aligned with the script surface:
   `action = all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>`, plus
   `dry` and `force`.
