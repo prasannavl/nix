@@ -131,7 +131,7 @@ Defaults may also include:
 - Bootstrap check:
   - `ssh -i <bastion-key> nixbot@<bastion> -- --hosts <host> --action check-bootstrap --sha <commit> --config /var/lib/nixbot/nix/hosts/nixbot.nix`
 - Local orchestrator:
-  - `DEPLOY_BASTION_SSH_KEY_PATH=<...> ./scripts/nixbot-deploy.sh --hosts=<host> --force`
+  - `NIXBOT_BASTION_SSH_KEY_PATH=<...> ./scripts/nixbot-deploy.sh --hosts=<host> --force`
 
 ## Known Failure Signatures
 

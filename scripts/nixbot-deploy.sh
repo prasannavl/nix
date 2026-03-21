@@ -79,45 +79,45 @@ Repo Options:
                     script code
 
 Environment (Core):
-  DEPLOY_ACTION               Same as --action
-  DEPLOY_HOSTS                Same as --hosts
-  DEPLOY_GOAL                 Same as --goal
-  DEPLOY_BUILD_JOBS           Same as --build-jobs
-  DEPLOY_JOBS                 Same as --deploy-jobs
-  DEPLOY_SHA                  Same as --sha
+  NIXBOT_ACTION               Same as --action
+  NIXBOT_HOSTS                Same as --hosts
+  NIXBOT_GOAL                 Same as --goal
+  NIXBOT_BUILD_JOBS           Same as --build-jobs
+  NIXBOT_JOBS                 Same as --deploy-jobs
+  NIXBOT_SHA                  Same as --sha
 
 Environment (Deploy Target/Auth):
-  DEPLOY_USER                 Same as --user
-  DEPLOY_SSH_KEY              Same as --ssh-key
-  DEPLOY_SSH_KNOWN_HOSTS      Same as --known-hosts
-  DEPLOY_BUILD_HOST           Same as --build-host
-  DEPLOY_CONFIG               Same as --config
+  NIXBOT_USER                 Same as --user
+  NIXBOT_SSH_KEY              Same as --ssh-key
+  NIXBOT_SSH_KNOWN_HOSTS      Same as --known-hosts
+  NIXBOT_BUILD_HOST           Same as --build-host
+  NIXBOT_CONFIG               Same as --config
   AGE_KEY_FILE                Same as --age-key-file
 
 Environment (Behavior):
-  DEPLOY_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
-  DEPLOY_BASTION_FIRST        Same as --bastion-first (bool)
-  DEPLOY_DRY                  Same as --dry (bool)
-  DEPLOY_NO_ROLLBACK          Same as --no-rollback (bool)
-  DEPLOY_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
-  DEPLOY_LOG_FORMAT           Same as --log-format
-  DEPLOY_DISCOVER_KEYS        Same as --discover-keys (auto|on|off)
+  NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
+  NIXBOT_BASTION_FIRST        Same as --bastion-first (bool)
+  NIXBOT_DRY                  Same as --dry (bool)
+  NIXBOT_NO_ROLLBACK          Same as --no-rollback (bool)
+  NIXBOT_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
+  NIXBOT_LOG_FORMAT           Same as --log-format
+  NIXBOT_DISCOVER_KEYS        Same as --discover-keys (auto|on|off)
 
 Environment (Bootstrap/Forced-Command):
-  DEPLOY_BOOTSTRAP            Same as --bootstrap (bool)
-  DEPLOY_BASTION_SSH_KEY_PATH Same as --bastion-check-ssh-key-path
+  NIXBOT_BOOTSTRAP            Same as --bootstrap (bool)
+  NIXBOT_BASTION_SSH_KEY_PATH Same as --bastion-check-ssh-key-path
 
 Environment (Remote Trigger):
-  DEPLOY_BASTION_TRIGGER      Same as --bastion-trigger (bool)
-  DEPLOY_BASTION_HOST         Same as --bastion-host
-  DEPLOY_BASTION_USER         Same as --bastion-user
-  DEPLOY_BASTION_SSH_KEY      Same as --bastion-ssh-key
-  DEPLOY_BASTION_KNOWN_HOSTS  Same as --bastion-known-hosts
+  NIXBOT_BASTION_TRIGGER      Same as --bastion-trigger (bool)
+  NIXBOT_BASTION_HOST         Same as --bastion-host
+  NIXBOT_BASTION_USER         Same as --bastion-user
+  NIXBOT_BASTION_SSH_KEY      Same as --bastion-ssh-key
+  NIXBOT_BASTION_KNOWN_HOSTS  Same as --bastion-known-hosts
 
 Environment (Repo):
-  DEPLOY_REPO_URL             Same as --repo-url
-  DEPLOY_REPO_PATH            Same as --repo-path
-  DEPLOY_USE_REPO_SCRIPT      Same as --use-repo-script (bool)
+  NIXBOT_REPO_URL             Same as --repo-url
+  NIXBOT_REPO_PATH            Same as --repo-path
+  NIXBOT_USE_REPO_SCRIPT      Same as --use-repo-script (bool)
 
 Environment (Terraform actions):
   R2_ACCOUNT_ID               Cloudflare account ID used for the shared R2 backend endpoint
@@ -129,7 +129,7 @@ Environment (Terraform actions):
   GCP_STATE_PREFIX            Optional GCP state object prefix override
   GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT Optional service account email for GCS backend access
   GOOGLE_APPLICATION_CREDENTIALS Path to the Google service-account JSON used for provider auth
-  DEPLOY_TF_DIR               Optional single-project override; must match the requested phase suffix
+  NIXBOT_TF_DIR               Optional single-project override; must match the requested phase suffix
   CLOUDFLARE_API_TOKEN        Provider-specific Cloudflare API token, required by Cloudflare projects
 
 Runtime:
@@ -165,15 +165,15 @@ resolve_ssh_tty_stdin_path() {
 }
 
 init_vars() {
-  HOSTS_RAW="${DEPLOY_HOSTS:-all}"
-  ACTION="${DEPLOY_ACTION:-all}"
+  HOSTS_RAW="${NIXBOT_HOSTS:-all}"
+  ACTION="${NIXBOT_ACTION:-all}"
   ENSURE_DEPS_ONLY=0
   HOST_ACTION=""
-  GOAL="${DEPLOY_GOAL:-switch}"
-  BUILD_HOST="${DEPLOY_BUILD_HOST:-local}"
-  BUILD_JOBS="${DEPLOY_BUILD_JOBS:-1}"
-  DEPLOY_PARALLEL_JOBS="${DEPLOY_JOBS:-1}"
-  DEPLOY_IF_CHANGED=1
+  GOAL="${NIXBOT_GOAL:-switch}"
+  BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"
+  BUILD_JOBS="${NIXBOT_BUILD_JOBS:-1}"
+  NIXBOT_PARALLEL_JOBS="${NIXBOT_JOBS:-1}"
+  NIXBOT_IF_CHANGED=1
   TF_IF_CHANGED=1
   FORCE_REQUESTED=0
   FORCE_BOOTSTRAP_PATH=0
@@ -182,81 +182,81 @@ init_vars() {
   ROLLBACK_ON_FAILURE=1
   FORCE_PREFIX_HOST_LOGS=0
   PREFIX_HOST_LOGS_EXPLICIT=0
-  LOG_FORMAT="${DEPLOY_LOG_FORMAT:-${NIXBOT_LOG_FORMAT:-auto}}"
-  DEPLOY_CONFIG_PATH="${DEPLOY_CONFIG:-hosts/nixbot.nix}"
-  SHA="${DEPLOY_SHA:-}"
+  LOG_FORMAT="${NIXBOT_LOG_FORMAT:-auto}"
+  NIXBOT_CONFIG_PATH="${NIXBOT_CONFIG:-hosts/nixbot.nix}"
+  SHA="${NIXBOT_SHA:-}"
   BASTION_TRIGGER=0
-  BASTION_TRIGGER_HOST="${DEPLOY_BASTION_HOST:-pvl-x2}"
-  BASTION_TRIGGER_USER="${DEPLOY_BASTION_USER:-nixbot}"
-  BASTION_TRIGGER_SSH_KEY="${DEPLOY_BASTION_SSH_KEY:-}"
-  BASTION_TRIGGER_KNOWN_HOSTS="${DEPLOY_BASTION_KNOWN_HOSTS:-}"
+  BASTION_TRIGGER_HOST="${NIXBOT_BASTION_HOST:-pvl-x2}"
+  BASTION_TRIGGER_USER="${NIXBOT_BASTION_USER:-nixbot}"
+  BASTION_TRIGGER_SSH_KEY="${NIXBOT_BASTION_SSH_KEY:-}"
+  BASTION_TRIGGER_KNOWN_HOSTS="${NIXBOT_BASTION_KNOWN_HOSTS:-}"
   BASTION_TRIGGER_SSH_OPTS=()
   AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
   AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=0
   [ -n "${AGE_KEY_FILE:-}" ] && AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=1
-  DISCOVER_DECRYPT_KEYS_MODE="${DEPLOY_DISCOVER_KEYS:-auto}"
+  DISCOVER_DECRYPT_KEYS_MODE="${NIXBOT_DISCOVER_KEYS:-auto}"
   REEXEC_FROM_REPO=0
   REPO_PATH_EXPLICIT=0
-  TF_WORK_DIR="${DEPLOY_TF_DIR:-}"
+  TF_WORK_DIR="${NIXBOT_TF_DIR:-}"
   TF_CHANGE_BASE_REF=""
   _NIXBOT_LOG_GROUP_DEPTH=0
   _NIXBOT_LOG_GROUP_SCOPE=""
 
   clear_run_summary_state
 
-  DEPLOY_USER_OVERRIDE="${DEPLOY_USER:-}"
-  DEPLOY_KEY_PATH_OVERRIDE="${DEPLOY_SSH_KEY:-}"
-  DEPLOY_KNOWN_HOSTS_OVERRIDE="${DEPLOY_SSH_KNOWN_HOSTS:-}"
-  DEPLOY_BASTION_KEY_PATH_OVERRIDE="${DEPLOY_BASTION_SSH_KEY_PATH:-}"
-  DEPLOY_KEY_OVERRIDE_EXPLICIT=0
+  NIXBOT_USER_OVERRIDE="${NIXBOT_USER:-}"
+  NIXBOT_KEY_PATH_OVERRIDE="${NIXBOT_SSH_KEY:-}"
+  NIXBOT_KNOWN_HOSTS_OVERRIDE="${NIXBOT_SSH_KNOWN_HOSTS:-}"
+  NIXBOT_BASTION_KEY_PATH_OVERRIDE="${NIXBOT_BASTION_SSH_KEY_PATH:-}"
+  NIXBOT_KEY_OVERRIDE_EXPLICIT=0
 
   set_discover_keys_mode "${DISCOVER_DECRYPT_KEYS_MODE}"
 
-  if [ -n "${DEPLOY_SSH_KEY:-}" ]; then
-    DEPLOY_KEY_OVERRIDE_EXPLICIT=1
+  if [ -n "${NIXBOT_SSH_KEY:-}" ]; then
+    NIXBOT_KEY_OVERRIDE_EXPLICIT=1
   fi
 
-  if parse_bool_env "${DEPLOY_FORCE:-0}"; then
+  if parse_bool_env "${NIXBOT_FORCE:-0}"; then
     enable_force_mode
   fi
-  if parse_bool_env "${DEPLOY_BASTION_FIRST:-0}"; then
+  if parse_bool_env "${NIXBOT_BASTION_FIRST:-0}"; then
     PRIORITIZE_BASTION_FIRST=1
   fi
-  if parse_bool_env "${DEPLOY_BOOTSTRAP:-0}"; then
+  if parse_bool_env "${NIXBOT_BOOTSTRAP:-0}"; then
     FORCE_BOOTSTRAP_PATH=1
   fi
-  if parse_bool_env "${DEPLOY_DRY:-0}"; then
+  if parse_bool_env "${NIXBOT_DRY:-0}"; then
     enable_dry_run_mode
   fi
-  if parse_bool_env "${DEPLOY_NO_ROLLBACK:-0}"; then
+  if parse_bool_env "${NIXBOT_NO_ROLLBACK:-0}"; then
     ROLLBACK_ON_FAILURE=0
   fi
-  if [ -n "${DEPLOY_PREFIX_HOST_LOGS:-}" ]; then
-    if parse_bool_env "${DEPLOY_PREFIX_HOST_LOGS}"; then
+  if [ -n "${NIXBOT_PREFIX_HOST_LOGS:-}" ]; then
+    if parse_bool_env "${NIXBOT_PREFIX_HOST_LOGS}"; then
       set_prefix_host_logs_mode 1
     else
       set_prefix_host_logs_mode 0
     fi
   fi
-  if parse_bool_env "${DEPLOY_BASTION_TRIGGER:-0}"; then
+  if parse_bool_env "${NIXBOT_BASTION_TRIGGER:-0}"; then
     BASTION_TRIGGER=1
   fi
-  if parse_bool_env "${DEPLOY_USE_REPO_SCRIPT:-0}"; then
+  if parse_bool_env "${NIXBOT_USE_REPO_SCRIPT:-0}"; then
     REEXEC_FROM_REPO=1
   fi
 
 
-  DEPLOY_DEFAULT_USER="root"
-  DEPLOY_DEFAULT_KEY_PATH=""
-  DEPLOY_DEFAULT_KNOWN_HOSTS=""
-  DEPLOY_DEFAULT_BOOTSTRAP_KEY=""
-  DEPLOY_DEFAULT_BOOTSTRAP_USER="root"
-  DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH=""
-  DEPLOY_DEFAULT_AGE_IDENTITY_KEY=""
-  DEPLOY_HOSTS_JSON='{}'
+  NIXBOT_DEFAULT_USER="root"
+  NIXBOT_DEFAULT_KEY_PATH=""
+  NIXBOT_DEFAULT_KNOWN_HOSTS=""
+  NIXBOT_DEFAULT_BOOTSTRAP_KEY=""
+  NIXBOT_DEFAULT_BOOTSTRAP_USER="root"
+  NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH=""
+  NIXBOT_DEFAULT_AGE_IDENTITY_KEY=""
+  NIXBOT_HOSTS_JSON='{}'
 
-  DEPLOY_TMP_DIR=""
-  DEPLOY_CONFIG_DIR=""
+  NIXBOT_TMP_DIR=""
+  NIXBOT_CONFIG_DIR=""
   BOOTSTRAP_READY_NODES=""
   ROLLBACK_OK_HOSTS=()
   ROLLBACK_FAILED_HOSTS=()
@@ -270,7 +270,8 @@ init_vars() {
   REMOTE_NIXBOT_LEGACY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519_legacy"
   REMOTE_NIXBOT_AGE_IDENTITY="${REMOTE_NIXBOT_AGE_DIR}/identity"
   REMOTE_CURRENT_SYSTEM_PATH="/run/current-system"
-  DEPLOY_TMP_DIR_PREFIX="/dev/shm/nixbot-deploy."
+  RUNTIME_WORK_DIR_PREFIX="/dev/shm/nixbot-run."
+  RUNTIME_WORK_DIR_FALLBACK_PREFIX="${TMPDIR:-/tmp}/nixbot-run."
   BASTION_KNOWN_HOSTS_PREFIX="bastion-known-hosts"
   NODE_KNOWN_HOSTS_PREFIX="known_hosts"
   TMP_SECRETS_DIR=""
@@ -291,20 +292,21 @@ init_vars() {
   TF_PROJECT_NAMES=(
     cloudflare-dns
     cloudflare-platform
-    gcp-platform
+    # gcp-platform
     cloudflare-apps
   )
 
   # `REPO_ROOT` is the long-lived source mirror. Runs never execute from it
   # directly; they materialize `REPO_WORKTREE_ROOT` and switch into that tree.
   REPO_BASE="${REMOTE_NIXBOT_BASE}"
-  REPO_ROOT="${NIXBOT_REPO_ROOT:-${DEPLOY_REPO_PATH:-${REPO_BASE}/nix}}"
+  REPO_ROOT="${NIXBOT_REPO_ROOT:-${NIXBOT_REPO_PATH:-${REPO_BASE}/nix}}"
   REPO_WORKTREE_ROOT="${NIXBOT_REPO_WORKTREE_ROOT:-}"
   REPO_ROOT_LOCK_DIR=""
   REPO_ROOT_MANAGED=1
-  REPO_URL="${DEPLOY_REPO_URL:-ssh://git@github.com/prasannavl/nix.git}"
+  REPO_URL="${NIXBOT_REPO_URL:-ssh://git@github.com/prasannavl/nix.git}"
   REPO_SSH_KEY_PATH="${REMOTE_NIXBOT_PRIMARY_KEY}"
   REPO_GIT_SSH_COMMAND="ssh -i ${REPO_SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+  RUNTIME_WORK_DIR="${NIXBOT_RUNTIME_WORK_DIR:-}"
 
   clear_prepared_deploy_context
 
@@ -411,14 +413,14 @@ take_optval() {
 }
 
 enable_force_mode() {
-  DEPLOY_IF_CHANGED=0
+  NIXBOT_IF_CHANGED=0
   TF_IF_CHANGED=0
   FORCE_REQUESTED=1
 }
 
 enable_dry_run_mode() {
   DRY_RUN=1
-  DEPLOY_IF_CHANGED=0
+  NIXBOT_IF_CHANGED=0
 }
 
 set_prefix_host_logs_mode() {
@@ -630,7 +632,7 @@ parse_args() {
       --build-jobs|--build-jobs=*)
         take_optval "$@"; BUILD_JOBS="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --deploy-jobs|--deploy-jobs=*)
-        take_optval "$@"; DEPLOY_PARALLEL_JOBS="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+        take_optval "$@"; NIXBOT_PARALLEL_JOBS="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --force)              enable_force_mode; shift ;;
       --bootstrap)          FORCE_BOOTSTRAP_PATH=1; shift ;;
       --bastion-first)      PRIORITIZE_BASTION_FIRST=1; shift ;;
@@ -639,12 +641,12 @@ parse_args() {
       --prefix-host-logs)   set_prefix_host_logs_mode 1; shift ;;
       --log-format|--log-format=*)
         take_optval "$@"; set_log_format_mode "${OPTVAL}"; shift "${OPTSHIFT}" ;;
-      --user|--user=*)      take_optval "$@"; DEPLOY_USER_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --user|--user=*)      take_optval "$@"; NIXBOT_USER_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --ssh-key|--ssh-key=*)
-        take_optval "$@"; DEPLOY_KEY_PATH_OVERRIDE="${OPTVAL}"; DEPLOY_KEY_OVERRIDE_EXPLICIT=1; shift "${OPTSHIFT}" ;;
+        take_optval "$@"; NIXBOT_KEY_PATH_OVERRIDE="${OPTVAL}"; NIXBOT_KEY_OVERRIDE_EXPLICIT=1; shift "${OPTSHIFT}" ;;
       --known-hosts|--known-hosts=*)
-        take_optval "$@"; DEPLOY_KNOWN_HOSTS_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
-      --config|--config=*)  take_optval "$@"; DEPLOY_CONFIG_PATH="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+        take_optval "$@"; NIXBOT_KNOWN_HOSTS_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+      --config|--config=*)  take_optval "$@"; NIXBOT_CONFIG_PATH="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --age-key-file|--age-key-file=*)
         take_optval "$@"; AGE_DECRYPT_IDENTITY_FILE="${OPTVAL}"; AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=1; shift "${OPTSHIFT}" ;;
       --discover-keys)      set_discover_keys_mode on; shift ;;
@@ -657,7 +659,7 @@ parse_args() {
         take_optval "$@"; REPO_ROOT="${OPTVAL}"; REPO_PATH_EXPLICIT=1; shift "${OPTSHIFT}" ;;
       --use-repo-script)    REEXEC_FROM_REPO=1; shift ;;
       --bastion-check-ssh-key-path|--bastion-check-ssh-key-path=*)
-        take_optval "$@"; DEPLOY_BASTION_KEY_PATH_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
+        take_optval "$@"; NIXBOT_BASTION_KEY_PATH_OVERRIDE="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --bastion-trigger)    BASTION_TRIGGER=1; shift ;;
       --bastion-host|--bastion-host=*)
         take_optval "$@"; BASTION_TRIGGER_HOST="${OPTVAL}"; shift "${OPTSHIFT}" ;;
@@ -689,12 +691,12 @@ parse_args() {
   esac
 
   [[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --build-jobs: ${BUILD_JOBS} (must be a positive integer)"
-  [[ "${DEPLOY_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${DEPLOY_PARALLEL_JOBS} (must be a positive integer)"
+  [[ "${NIXBOT_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${NIXBOT_PARALLEL_JOBS} (must be a positive integer)"
   case "${LOG_FORMAT}" in
     auto|gh|github-actions|plain) ;;
     *) die "Unsupported --log-format: ${LOG_FORMAT}" ;;
   esac
-  if [ "${PREFIX_HOST_LOGS_EXPLICIT}" -eq 0 ] && { [ "${BUILD_JOBS}" -gt 1 ] || [ "${DEPLOY_PARALLEL_JOBS}" -gt 1 ]; }; then
+  if [ "${PREFIX_HOST_LOGS_EXPLICIT}" -eq 0 ] && { [ "${BUILD_JOBS}" -gt 1 ] || [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ]; }; then
     FORCE_PREFIX_HOST_LOGS=1
   fi
   if [ -n "${SHA}" ] && ! [[ "${SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
@@ -714,8 +716,8 @@ cleanup() {
   if [ -n "${REPO_ROOT_LOCK_DIR}" ]; then
     release_repo_root_lock
   fi
-  if [ -n "${DEPLOY_TMP_DIR}" ] && [ -d "${DEPLOY_TMP_DIR}" ]; then
-    rm -rf "${DEPLOY_TMP_DIR}"
+  if [ -n "${RUNTIME_WORK_DIR}" ] && [ -d "${RUNTIME_WORK_DIR}" ]; then
+    rm -rf "${RUNTIME_WORK_DIR}"
   fi
 }
 
@@ -730,23 +732,20 @@ terminate_background_jobs() {
 }
 
 ensure_tmp_dir() {
-  if [ -n "${DEPLOY_TMP_DIR}" ]; then
+  if [ -n "${NIXBOT_TMP_DIR}" ]; then
     return
   fi
-  if [ -d "/dev/shm" ] && [ -w "/dev/shm" ]; then
-    DEPLOY_TMP_DIR="$(mktemp -d "${DEPLOY_TMP_DIR_PREFIX}XXXXXX")"
-  else
-    DEPLOY_TMP_DIR="$(mktemp -d)"
-  fi
+  ensure_runtime_work_dir
+  NIXBOT_TMP_DIR="${RUNTIME_WORK_DIR}"
 
   # Keep sensitive temp material grouped by purpose so cleanup, debugging, and
   # future retention policies can treat secrets, SSH state, and TF artifacts
   # consistently.
-  TMP_SECRETS_DIR="${DEPLOY_TMP_DIR}/secrets"
-  TMP_SSH_DIR="${DEPLOY_TMP_DIR}/ssh"
-  TMP_TF_ARTIFACT_DIR="$(phase_artifact_dir_path "${DEPLOY_TMP_DIR}" "tf")"
+  TMP_SECRETS_DIR="${NIXBOT_TMP_DIR}/secrets"
+  TMP_SSH_DIR="${NIXBOT_TMP_DIR}/ssh"
+  TMP_TF_ARTIFACT_DIR="$(phase_artifact_dir_path "${NIXBOT_TMP_DIR}" "tf")"
   mkdir -p "${TMP_SECRETS_DIR}" "${TMP_SSH_DIR}"
-  ensure_phase_runtime_dirs "${DEPLOY_TMP_DIR}" tf
+  ensure_phase_runtime_dirs "${NIXBOT_TMP_DIR}" tf
 }
 
 tmp_runtime_dir_path() {
@@ -770,27 +769,34 @@ tmp_runtime_mktemp() {
   mktemp "$(tmp_runtime_dir_path "${area}")/${pattern}"
 }
 
-mktemp_repo_worktree_parent_dir() {
+runtime_work_dir_prefix() {
   if [ -d "/dev/shm" ] && [ -w "/dev/shm" ]; then
-    mktemp -d "/dev/shm/nixbot-worktree.XXXXXX"
+    printf '%s\n' "${RUNTIME_WORK_DIR_PREFIX}"
   else
-    mktemp -d
+    printf '%s\n' "${RUNTIME_WORK_DIR_FALLBACK_PREFIX}"
   fi
 }
 
+ensure_runtime_work_dir() {
+  [ -n "${RUNTIME_WORK_DIR}" ] && return 0
+  RUNTIME_WORK_DIR="$(mktemp -d "$(runtime_work_dir_prefix)XXXXXX")"
+}
+
 cleanup_stale_runtime_dirs() {
-  local path=""
+  local scan_root="" path=""
 
-  [ -d "/dev/shm" ] || return 0
+  for scan_root in "/dev/shm" "${TMPDIR:-/tmp}"; do
+    [ -d "${scan_root}" ] || continue
 
-  while IFS= read -r path; do
-    [ -n "${path}" ] || continue
-    rm -rf "${path}" || true
-  done < <(
-    find /dev/shm -maxdepth 1 -mindepth 1 -type d \
-      \( -name 'nixbot-deploy.*' -o -name 'nixbot-worktree.*' \) \
-      -mtime +3 -print 2>/dev/null
-  )
+    while IFS= read -r path; do
+      [ -n "${path}" ] || continue
+      rm -rf "${path}" || true
+    done < <(
+      find "${scan_root}" -maxdepth 1 -mindepth 1 -type d \
+        -name 'nixbot-run.*' \
+        -mtime +3 -print 2>/dev/null
+    )
+  done
 }
 
 ##### Repo Workspace #####
@@ -818,7 +824,6 @@ cleanup_repo_worktree() {
         ;;
     esac
     git -C "${REPO_ROOT}" worktree remove --force "${REPO_WORKTREE_ROOT}" >/dev/null 2>&1 || rm -rf "${REPO_WORKTREE_ROOT}"
-    rmdir "$(dirname "${REPO_WORKTREE_ROOT}")" >/dev/null 2>&1 || true
     git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
   fi
   release_repo_root_lock
@@ -851,7 +856,7 @@ configure_bastion_trigger_ssh_opts() {
     scanned_known_hosts="${BASTION_TRIGGER_KNOWN_HOSTS}"
   else
     scanned_known_hosts="$(ssh-keyscan -H "${BASTION_TRIGGER_HOST}" 2>/dev/null || true)"
-    [ -n "${scanned_known_hosts}" ] || die "Could not determine bastion host key for ${BASTION_TRIGGER_HOST}. Pass --bastion-known-hosts/DEPLOY_BASTION_KNOWN_HOSTS or ensure ssh-keyscan can reach the bastion."
+    [ -n "${scanned_known_hosts}" ] || die "Could not determine bastion host key for ${BASTION_TRIGGER_HOST}. Pass --bastion-known-hosts/NIXBOT_BASTION_KNOWN_HOSTS or ensure ssh-keyscan can reach the bastion."
   fi
 
   known_hosts_file="$(tmp_runtime_mktemp ssh "${BASTION_KNOWN_HOSTS_PREFIX}.XXXXXX")"
@@ -868,7 +873,7 @@ run_bastion_trigger() {
   if [ -z "${trigger_sha}" ]; then
     trigger_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   fi
-  [ -n "${trigger_sha}" ] || die "Could not resolve local HEAD; pass --sha/DEPLOY_SHA explicitly"
+  [ -n "${trigger_sha}" ] || die "Could not resolve local HEAD; pass --sha/NIXBOT_SHA explicitly"
   [[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
 
   action_is_supported "${ACTION}" || die "Unsupported --action for --bastion-trigger: ${ACTION}"
@@ -1047,10 +1052,11 @@ resolve_repo_worktree_target_ref() {
 # Prepare an isolated execution tree for this run. This is what allows
 # concurrent PR dry-runs without mutating the shared source mirror.
 prepare_repo_worktree() {
-  local worktree_parent="" target_ref=""
+  local target_ref=""
 
   resolve_repo_root
   [ -n "${REPO_WORKTREE_ROOT}" ] && return 0
+  ensure_runtime_work_dir
 
   acquire_repo_root_lock
   ensure_repo_root_exists
@@ -1066,8 +1072,7 @@ prepare_repo_worktree() {
   target_ref="$(resolve_repo_worktree_target_ref)"
   git -C "${REPO_ROOT}" rev-parse --verify "${target_ref}^{commit}" >/dev/null 2>&1 || die "Requested repo target not available: ${target_ref}"
 
-  worktree_parent="$(mktemp_repo_worktree_parent_dir)"
-  REPO_WORKTREE_ROOT="${worktree_parent}/repo"
+  REPO_WORKTREE_ROOT="${RUNTIME_WORK_DIR}/repo"
   git -C "${REPO_ROOT}" worktree add --detach "${REPO_WORKTREE_ROOT}" "${target_ref}" >/dev/null
   git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
   release_repo_root_lock
@@ -1098,7 +1103,7 @@ reexec_repo_script_if_needed() {
   log_section "Phase: Repo Re-exec"
   echo "Re-executing deploy from worktree repo script:" >&2
   echo "${repo_script}" >&2
-  exec env NIXBOT_REEXECED_FROM_REPO=1 NIXBOT_REPO_ROOT="${REPO_ROOT}" NIXBOT_REPO_WORKTREE_ROOT="${REPO_WORKTREE_ROOT}" bash "${repo_script}" "${request_args[@]}"
+  exec env NIXBOT_REEXECED_FROM_REPO=1 NIXBOT_REPO_ROOT="${REPO_ROOT}" NIXBOT_REPO_WORKTREE_ROOT="${REPO_WORKTREE_ROOT}" NIXBOT_RUNTIME_WORK_DIR="${RUNTIME_WORK_DIR}" bash "${repo_script}" "${request_args[@]}"
 }
 
 ##### Config / Secrets #####
@@ -1112,30 +1117,30 @@ load_deploy_config_json() {
 init_deploy_settings() {
   local config_json="$1"
 
-  DEPLOY_CONFIG_DIR="$(cd "$(dirname "${DEPLOY_CONFIG_PATH}")" && pwd -P)"
+  NIXBOT_CONFIG_DIR="$(cd "$(dirname "${NIXBOT_CONFIG_PATH}")" && pwd -P)"
 
-  DEPLOY_DEFAULT_USER="$(jq -r '.defaults.user // "root"' <<<"${config_json}")"
-  DEPLOY_DEFAULT_KEY_PATH="$(jq -r '.defaults.key // ""' <<<"${config_json}")"
-  DEPLOY_DEFAULT_KNOWN_HOSTS="$(jq -r '.defaults.knownHosts // ""' <<<"${config_json}")"
-  DEPLOY_DEFAULT_BOOTSTRAP_KEY="$(jq -r '.defaults.bootstrapKey // ""' <<<"${config_json}")"
-  DEPLOY_DEFAULT_BOOTSTRAP_USER="$(jq -r '.defaults.bootstrapUser // "root"' <<<"${config_json}")"
-  DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH="$(jq -r '.defaults.bootstrapKeyPath // ""' <<<"${config_json}")"
-  DEPLOY_DEFAULT_AGE_IDENTITY_KEY="$(jq -r '.defaults.ageIdentityKey // ""' <<<"${config_json}")"
-  DEPLOY_HOSTS_JSON="$(jq -c '.hosts // {}' <<<"${config_json}")"
+  NIXBOT_DEFAULT_USER="$(jq -r '.defaults.user // "root"' <<<"${config_json}")"
+  NIXBOT_DEFAULT_KEY_PATH="$(jq -r '.defaults.key // ""' <<<"${config_json}")"
+  NIXBOT_DEFAULT_KNOWN_HOSTS="$(jq -r '.defaults.knownHosts // ""' <<<"${config_json}")"
+  NIXBOT_DEFAULT_BOOTSTRAP_KEY="$(jq -r '.defaults.bootstrapKey // ""' <<<"${config_json}")"
+  NIXBOT_DEFAULT_BOOTSTRAP_USER="$(jq -r '.defaults.bootstrapUser // "root"' <<<"${config_json}")"
+  NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH="$(jq -r '.defaults.bootstrapKeyPath // ""' <<<"${config_json}")"
+  NIXBOT_DEFAULT_AGE_IDENTITY_KEY="$(jq -r '.defaults.ageIdentityKey // ""' <<<"${config_json}")"
+  NIXBOT_HOSTS_JSON="$(jq -c '.hosts // {}' <<<"${config_json}")"
 
-  if [ -n "${DEPLOY_USER_OVERRIDE}" ]; then
-    DEPLOY_DEFAULT_USER="${DEPLOY_USER_OVERRIDE}"
+  if [ -n "${NIXBOT_USER_OVERRIDE}" ]; then
+    NIXBOT_DEFAULT_USER="${NIXBOT_USER_OVERRIDE}"
   fi
 
-  if [ -n "${DEPLOY_KEY_PATH_OVERRIDE}" ]; then
-    DEPLOY_DEFAULT_KEY_PATH="${DEPLOY_KEY_PATH_OVERRIDE}"
-  elif [ -n "${DEPLOY_USER_OVERRIDE}" ]; then
+  if [ -n "${NIXBOT_KEY_PATH_OVERRIDE}" ]; then
+    NIXBOT_DEFAULT_KEY_PATH="${NIXBOT_KEY_PATH_OVERRIDE}"
+  elif [ -n "${NIXBOT_USER_OVERRIDE}" ]; then
     # If user override is set but key override is not, avoid forcing default key.
-    DEPLOY_DEFAULT_KEY_PATH=""
+    NIXBOT_DEFAULT_KEY_PATH=""
   fi
 
-  if [ -n "${DEPLOY_KNOWN_HOSTS_OVERRIDE}" ]; then
-    DEPLOY_DEFAULT_KNOWN_HOSTS="${DEPLOY_KNOWN_HOSTS_OVERRIDE}"
+  if [ -n "${NIXBOT_KNOWN_HOSTS_OVERRIDE}" ]; then
+    NIXBOT_DEFAULT_KNOWN_HOSTS="${NIXBOT_KNOWN_HOSTS_OVERRIDE}"
   fi
 }
 
@@ -1157,17 +1162,17 @@ resolve_key_source_path() {
     return
   fi
 
-  if [ -f "${DEPLOY_CONFIG_DIR}/${key_path}" ]; then
-    printf '%s/%s\n' "${DEPLOY_CONFIG_DIR}" "${key_path}"
+  if [ -f "${NIXBOT_CONFIG_DIR}/${key_path}" ]; then
+    printf '%s/%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
     return
   fi
 
-  if [ -f "${DEPLOY_CONFIG_DIR}/../${key_path}" ]; then
-    printf '%s/../%s\n' "${DEPLOY_CONFIG_DIR}" "${key_path}"
+  if [ -f "${NIXBOT_CONFIG_DIR}/../${key_path}" ]; then
+    printf '%s/../%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
     return
   fi
 
-  printf '%s/%s\n' "${DEPLOY_CONFIG_DIR}" "${key_path}"
+  printf '%s/%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
 }
 
 resolve_runtime_key_file() {
@@ -1257,7 +1262,7 @@ select_hosts_json() {
 host_dependencies_for() {
   local node="$1"
 
-  jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${DEPLOY_HOSTS_JSON}"
+  jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
 expand_selected_hosts_json() {
@@ -1474,8 +1479,8 @@ prepare_run_context() {
   local config_json="" all_hosts_json=""
   local -a log_hosts=()
 
-  if [ -f "${DEPLOY_CONFIG_PATH}" ]; then
-    config_json="$(load_deploy_config_json "${DEPLOY_CONFIG_PATH}")"
+  if [ -f "${NIXBOT_CONFIG_PATH}" ]; then
+    config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}")"
     init_deploy_settings "${config_json}"
   fi
 
@@ -1499,7 +1504,7 @@ resolve_deploy_target() {
   local node="$1"
   local host_cfg user target key_path known_hosts bootstrap_key bootstrap_user bootstrap_key_path age_identity_key
 
-  host_cfg="$(jq -c --arg h "${node}" '.[$h] // {}' <<<"${DEPLOY_HOSTS_JSON}")"
+  host_cfg="$(jq -c --arg h "${node}" '.[$h] // {}' <<<"${NIXBOT_HOSTS_JSON}")"
 
   user="$(jq -r '.user // empty' <<<"${host_cfg}")"
   target="$(jq -r '.target // empty' <<<"${host_cfg}")"
@@ -1510,14 +1515,14 @@ resolve_deploy_target() {
   bootstrap_key_path="$(jq -r '.bootstrapKeyPath // empty' <<<"${host_cfg}")"
   age_identity_key="$(jq -r '.ageIdentityKey // empty' <<<"${host_cfg}")"
 
-  [ -n "${user}" ] || user="${DEPLOY_DEFAULT_USER}"
+  [ -n "${user}" ] || user="${NIXBOT_DEFAULT_USER}"
   [ -n "${target}" ] || target="${node}"
-  [ -n "${key_path}" ] || key_path="${DEPLOY_DEFAULT_KEY_PATH}"
-  [ -n "${known_hosts}" ] || known_hosts="${DEPLOY_DEFAULT_KNOWN_HOSTS}"
-  [ -n "${bootstrap_key}" ] || bootstrap_key="${DEPLOY_DEFAULT_BOOTSTRAP_KEY}"
-  [ -n "${bootstrap_user}" ] || bootstrap_user="${DEPLOY_DEFAULT_BOOTSTRAP_USER}"
-  [ -n "${bootstrap_key_path}" ] || bootstrap_key_path="${DEPLOY_DEFAULT_BOOTSTRAP_KEY_PATH}"
-  [ -n "${age_identity_key}" ] || age_identity_key="${DEPLOY_DEFAULT_AGE_IDENTITY_KEY}"
+  [ -n "${key_path}" ] || key_path="${NIXBOT_DEFAULT_KEY_PATH}"
+  [ -n "${known_hosts}" ] || known_hosts="${NIXBOT_DEFAULT_KNOWN_HOSTS}"
+  [ -n "${bootstrap_key}" ] || bootstrap_key="${NIXBOT_DEFAULT_BOOTSTRAP_KEY}"
+  [ -n "${bootstrap_user}" ] || bootstrap_user="${NIXBOT_DEFAULT_BOOTSTRAP_USER}"
+  [ -n "${bootstrap_key_path}" ] || bootstrap_key_path="${NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH}"
+  [ -n "${age_identity_key}" ] || age_identity_key="${NIXBOT_DEFAULT_AGE_IDENTITY_KEY}"
 
   jq -cn \
     --arg user "${user}" \
@@ -1633,22 +1638,22 @@ check_bootstrap_via_forced_command() {
     esac
   done
 
-  if [ -n "${DEPLOY_BASTION_KEY_PATH_OVERRIDE}" ]; then
-    if ! check_key_file="$(resolve_runtime_key_file "${DEPLOY_BASTION_KEY_PATH_OVERRIDE}" 1)"; then
+  if [ -n "${NIXBOT_BASTION_KEY_PATH_OVERRIDE}" ]; then
+    if ! check_key_file="$(resolve_runtime_key_file "${NIXBOT_BASTION_KEY_PATH_OVERRIDE}" 1)"; then
       return 1
     fi
     if [ ! -f "${check_key_file}" ]; then
-      echo "Forced-command key file not found: ${DEPLOY_BASTION_KEY_PATH_OVERRIDE} (resolved: ${check_key_file})" >&2
+      echo "Forced-command key file not found: ${NIXBOT_BASTION_KEY_PATH_OVERRIDE} (resolved: ${check_key_file})" >&2
       return 1
     fi
     check_ssh_opts=(-i "${check_key_file}" -o IdentitiesOnly=yes "${check_ssh_opts[@]}")
   fi
 
   check_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
-  if [[ "${DEPLOY_CONFIG_PATH}" = /* ]]; then
-    remote_config_path="${DEPLOY_CONFIG_PATH}"
+  if [[ "${NIXBOT_CONFIG_PATH}" = /* ]]; then
+    remote_config_path="${NIXBOT_CONFIG_PATH}"
   else
-    remote_config_path="$(repo_worktree_file_path "${DEPLOY_CONFIG_PATH}")"
+    remote_config_path="$(repo_worktree_file_path "${NIXBOT_CONFIG_PATH}")"
   fi
 
   check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
@@ -2113,7 +2118,7 @@ prepare_deploy_context() {
     bootstrap_nix_sshopts || return 1
 
   if [ -n "${key_path}" ]; then
-    if ! resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${DEPLOY_KEY_OVERRIDE_EXPLICIT}" key_file; then
+    if ! resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${NIXBOT_KEY_OVERRIDE_EXPLICIT}" key_file; then
       return 1
     fi
     apply_identity_to_ssh_context "${key_file}" ssh_opts nix_sshopts
@@ -2724,7 +2729,7 @@ deploy_host() {
 
   deploy_user="${ssh_target%%@*}"
 
-  if [ "${DEPLOY_IF_CHANGED}" -eq 1 ]; then
+  if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
     # shellcheck disable=SC2029
     remote_current_path="$(ssh "${ssh_opts[@]}" "${ssh_target}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true")"
     if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${built_out_path}" ]; then
@@ -2739,7 +2744,7 @@ deploy_host() {
 
   case "${BUILD_HOST}" in
     local)
-      if [ "${using_bootstrap_fallback}" -eq 1 ] || { [ -n "${DEPLOY_USER_OVERRIDE}" ] && [ "${ssh_target%%@*}" != "root" ]; }; then
+      if [ "${using_bootstrap_fallback}" -eq 1 ] || { [ -n "${NIXBOT_USER_OVERRIDE}" ] && [ "${ssh_target%%@*}" != "root" ]; }; then
         build_host="${ssh_target}"
       fi
       ;;
@@ -3380,13 +3385,13 @@ run_hosts() {
   if [ "${BUILD_JOBS}" -gt 1 ]; then
     build_parallel=1
   fi
-  if [ "${DEPLOY_PARALLEL_JOBS}" -gt 1 ]; then
+  if [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ]; then
     deploy_parallel=1
   fi
 
   ensure_tmp_dir
   init_run_dirs \
-    "${DEPLOY_TMP_DIR}" \
+    "${NIXBOT_TMP_DIR}" \
     build_log_dir \
     build_status_dir \
     deploy_log_dir \
@@ -3436,7 +3441,7 @@ run_hosts() {
 
   if ! run_deploy_phase \
     "${deploy_parallel}" \
-    "${DEPLOY_PARALLEL_JOBS}" \
+    "${NIXBOT_PARALLEL_JOBS}" \
     "${snapshot_dir}" \
     "${deploy_log_dir}" \
     "${deploy_status_dir}" \
@@ -4203,8 +4208,8 @@ run_tf_project_action() {
   log_grouped_nested_item_start "$(log_group_tf_project_title "${phase}" "${project_name}")"
   log_subsection "Terraform Project: ${project_name}"
   ensure_tmp_dir
-  log_file="$(phase_item_log_file "${DEPLOY_TMP_DIR}" "tf" "${phase}" "${project_name}")"
-  status_file="$(phase_item_status_file "${DEPLOY_TMP_DIR}" "tf" "${phase}" "${project_name}")"
+  log_file="$(phase_item_log_file "${NIXBOT_TMP_DIR}" "tf" "${phase}" "${project_name}")"
+  status_file="$(phase_item_status_file "${NIXBOT_TMP_DIR}" "tf" "${phase}" "${project_name}")"
   if run_tf_action "${phase}" "${project_dir}" > >(tee -a "${log_file}") 2>&1; then
     write_status_file "${status_file}" 0
   else

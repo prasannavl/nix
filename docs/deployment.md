@@ -28,7 +28,7 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 - Bastion keeps a persistent repo root only as a synced source mirror. Normal
   deploy runs create a per-run detached worktree and keep executing the
   installed `/var/lib/nixbot/nixbot-deploy.sh` wrapper.
-- `--use-repo-script` / `DEPLOY_USE_REPO_SCRIPT=1` remains opt-in only. It
+- `--use-repo-script` / `NIXBOT_USE_REPO_SCRIPT=1` remains opt-in only. It
   explicitly allows the wrapper to re-exec from the fetched worktree copy of the
   script and should stay disabled in CI/routine forced-command use.
 - Source of key material:
@@ -488,7 +488,7 @@ Use this order for a clean-room rebuild of the current model.
 4. Deploy bastion first, then the rest of hosts.
 5. Update CI secret `NIXBOT_BASTION_SSH_KEY` to the new bastion private key.
 6. If you run `scripts/nixbot-deploy.sh` from outside bastion, also rotate
-   `DEPLOY_BASTION_SSH_KEY_PATH` (forced-command bootstrap check key) to the new
+   `NIXBOT_BASTION_SSH_KEY_PATH` (forced-command bootstrap check key) to the new
    bastion ingress key file.
 7. Validate forced-command access and one full deploy run.
 8. Remove old public keys from both lists, re-encrypt again, and deploy.
@@ -510,7 +510,7 @@ only trust the old `nixbot` key.
 5. For nodes that still require old bootstrap injection material, also set:
    - `hosts.<old-node>.bootstrapKey = "data/secrets/nixbot/nixbot-legacy.key.age";`
 6. Deploy bastion and switch CI ingress key to the new bastion key.
-7. If applicable, switch `DEPLOY_BASTION_SSH_KEY_PATH` for local orchestrator
+7. If applicable, switch `NIXBOT_BASTION_SSH_KEY_PATH` for local orchestrator
    runs to the new bastion ingress key.
 8. Run deploys in phase 2 to migrate old nodes onto new public key trust.
 9. Remove per-host legacy `key` and `bootstrapKey` overrides, remove legacy

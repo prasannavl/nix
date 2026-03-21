@@ -111,7 +111,7 @@ Actions:
 - update GitHub secret used for repo SSH deploy-key auth (nixbot deploy key;
   name per your repo settings) to `NEW_NIXBOT_KEY_PRIVATE`.
 - update GitHub secret `NIXBOT_BASTION_SSH_KEY` to new private key.
-- if running local orchestrator checks, set `DEPLOY_BASTION_SSH_KEY_PATH` to new
+- if running local orchestrator checks, set `NIXBOT_BASTION_SSH_KEY_PATH` to new
   bastion key age file/path.
 - do not print private key material during this step.
 
@@ -198,7 +198,7 @@ Then rotate:
 - GitHub secret used for repo SSH deploy-key auth (nixbot deploy key; name per
   your repo settings) to new private key.
 - GitHub `NIXBOT_BASTION_SSH_KEY` to new private key.
-- local `DEPLOY_BASTION_SSH_KEY_PATH` to new key path (if used).
+- local `NIXBOT_BASTION_SSH_KEY_PATH` to new key path (if used).
 
 Expected outcome:
 

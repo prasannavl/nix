@@ -103,8 +103,8 @@ jobs:
       - name: nixbot/run
         shell: bash
         env:
-          DEPLOY_BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
-          DEPLOY_BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
+          NIXBOT_BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
+          NIXBOT_BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
           GITHUB_INPUT_ACTION: ${{ github.event.inputs.action || '' }}
           GITHUB_INPUT_HOSTS: ${{ github.event.inputs.hosts || '' }}
           GITHUB_INPUT_DRY: ${{ github.event.inputs.dry || '' }}
@@ -112,7 +112,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${DEPLOY_BASTION_SSH_KEY:-}" ]; then
+          if [ -z "${NIXBOT_BASTION_SSH_KEY:-}" ]; then
             echo "Missing required secret: NIXBOT_BASTION_SSH_KEY" >&2
             exit 1
           fi

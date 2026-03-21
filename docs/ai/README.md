@@ -46,6 +46,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/nameref-audit-and-fixes-2026-03.md`: Bash nameref
   circular-reference audit and helper-local binding rename strategy for
   `nixbot-deploy.sh`.
+- `docs/ai/notes/nixbot/deploy-env-prefix-rename-2026-03.md`: Rename
+  deploy-script-owned `DEPLOY_*` variables and env knobs to `NIXBOT_*`.
+- `docs/ai/notes/nixbot/runtime-temp-suffix-alignment-2026-03.md`: Consolidated
+  per-run workspace root for deploy artifacts and detached repo worktrees.
 - `docs/ai/notes/nixbot/terraform-init-failure-propagation-2026-03.md`:
   Terraform init/plan/apply failures must be checked explicitly because
   `run_tf_action` executes under an `if` context where `set -e` does not abort.
@@ -59,6 +63,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/full-script-nameref-review-2026-03.md`: Full
   `nixbot-deploy.sh` nameref audit, remaining helper-local naming cleanup, and
   source-level validation of the shadowing fixes.
+- `docs/ai/notes/nixbot/gcp-platform-phase-disabled-2026-03.md`: Default
+  `all`/`tf-platform` deploy phases no longer include `gcp-platform`; run it
+  only via explicit `tf/gcp-platform`.
 - `docs/ai/notes/nixbot/security-trust-model-2026-03.md`: Bastion-trigger
   operator trust boundary, arbitrary-SHA policy, and relationship between
   worktree isolation and secret access.

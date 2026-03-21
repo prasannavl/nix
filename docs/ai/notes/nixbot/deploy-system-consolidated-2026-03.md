@@ -31,7 +31,7 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   default. The wrapper syncs a persistent repo root, creates a detached per-run
   worktree, and runs the deploy from that worktree without re-exec.
 - Re-exec into the worktree copy of the script stays opt-in only
-  (`--use-repo-script` / `DEPLOY_USE_REPO_SCRIPT=1`) and guarded against loops.
+  (`--use-repo-script` / `NIXBOT_USE_REPO_SCRIPT=1`) and guarded against loops.
 - Keep repo-script re-exec disabled in CI and routine forced-command use: it
   bypasses the normal "deploy bastion logic first, then rely on it later" trust
   boundary.
@@ -75,7 +75,7 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - `--bastion-trigger` prefers provided bastion host keys and only falls back to
   `ssh-keyscan -H <bastion-host>` when needed; absence of host-key material is
   fatal.
-- If `DEPLOY_BUILD_HOST` differs from the target, that host must also be added
+- If `NIXBOT_BUILD_HOST` differs from the target, that host must also be added
   to temporary `known_hosts` so remote copy/build hops succeed.
 - Deploys use committed Git state only. The shared repo root must stay clean,
   and every run executes from a detached worktree rather than from the shared
@@ -89,13 +89,13 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Explicit `--hosts a,b,c` order remains the stable tie-breaker when multiple
   hosts are ready at once.
 - Build and deploy are separate concurrency domains:
-  - build: `DEPLOY_BUILD_JOBS` / `--build-jobs`
-  - deploy: `DEPLOY_JOBS` / `--deploy-jobs`
+  - build: `NIXBOT_BUILD_JOBS` / `--build-jobs`
+  - deploy: `NIXBOT_JOBS` / `--deploy-jobs`
 - Build can run across all selected hosts in parallel and still completes before
   deploy starts.
 - Deploy is wave-based: a host only enters a wave after its selected
   dependencies have succeeded.
-- `DEPLOY_BASTION_FIRST` / `--bastion-first` is a narrow override: if bastion is
+- `NIXBOT_BASTION_FIRST` / `--bastion-first` is a narrow override: if bastion is
   selected, it can be forced to the front of build order and wave 1 even if its
   own `deps` would place it later.
 - Unknown selected hosts, unknown dependencies among selected hosts, or cycles

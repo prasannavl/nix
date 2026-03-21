@@ -110,9 +110,9 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - `hosts/nixbot.nix` may declare per-host `deps = [ ... ];` for build/deploy
   ordering.
 - All selected hosts are built before deploy starts.
-- Build parallelism: `DEPLOY_BUILD_JOBS` / `--build-jobs`.
-- Deploy parallelism: `DEPLOY_JOBS` / `--deploy-jobs`.
-- `DEPLOY_BASTION_FIRST` / `--bastion-first` prioritizes the bastion host first
+- Build parallelism: `NIXBOT_BUILD_JOBS` / `--build-jobs`.
+- Deploy parallelism: `NIXBOT_JOBS` / `--deploy-jobs`.
+- `NIXBOT_BASTION_FIRST` / `--bastion-first` prioritizes the bastion host first
   for both build ordering and deploy waves when selected.
 - Deploy derives dependency waves from `deps`.
 
