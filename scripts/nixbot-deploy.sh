@@ -291,7 +291,7 @@ init_vars() {
   TF_PROJECT_NAMES=(
     cloudflare-dns
     cloudflare-platform
-    # gcp-platform
+    gcp-platform
     cloudflare-apps
   )
 
@@ -4163,18 +4163,26 @@ run_tf_action() {
   log_tf_action_context "${tf_dir}" "${backend_kind}" "${backend_detail_1}" "${backend_detail_2}"
   init_cmd=(tofu -chdir="${tf_dir}" init -lockfile=readonly)
   append_tf_backend_config_args_for_project init_cmd "${project_name}" "${provider_name}"
-  run_with_combined_output "${init_cmd[@]}"
+  if ! run_with_combined_output "${init_cmd[@]}"; then
+    return 1
+  fi
 
   if [ "${DRY_RUN}" -eq 1 ]; then
-    _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false
+    if ! _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false; then
+      return 1
+    fi
     return
   fi
 
   ensure_tmp_dir
   plan_file="$(tmp_runtime_mktemp tf "tfplan.XXXXXX")"
-  _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false -out="${plan_file}"
+  if ! _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false -out="${plan_file}"; then
+    return 1
+  fi
   # Apply saved plan (no var-file injection)
-  _exec_tofu_cmd "" -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}"
+  if ! _exec_tofu_cmd "" -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}"; then
+    return 1
+  fi
 }
 
 log_tf_project_status() {

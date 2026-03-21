@@ -95,7 +95,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   `tf/<provider>-dns`, `tf/<provider>-platform`, and `tf/<provider>-apps`
   projects participate automatically.
 - `.github/workflows/nixbot.yaml`: can dispatch the same bastion-based
-  build/deploy and phase-specific OpenTofu actions.
+  build/deploy flow and the standard Terraform phase actions only; it does not
+  expose per-project `tf/<project>` actions.
 - Terraform credentials can be stored as repo-managed age secrets under
   `data/secrets/cloudflare/*.key.age`; the phase-specific OpenTofu actions
   decrypt them on demand using the existing bastion age key.

@@ -19,10 +19,6 @@ on:
           - tf-dns
           - tf-platform
           - tf-apps
-          - tf/cloudflare-dns
-          - tf/cloudflare-platform
-          # - tf/gcp-platform
-          - tf/cloudflare-apps
       hosts:
         description: Comma/space-separated hosts, or all
         required: true
