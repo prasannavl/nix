@@ -26,27 +26,27 @@ Project secrets load after provider secrets, so project-specific values win.
   current in-project resources
 
 Runnable projects follow the naming convention `tf/<provider>-<phase>/`.
-`scripts/nixbot.sh` keeps explicit per-phase project lists in the script, so:
+`nixbot` keeps explicit per-phase project lists in the packaged action, so:
 
-- `--action tf-dns` runs the projects listed under the `dns` phase
-- `--action tf-platform` runs the projects listed under the `platform` phase
-- `--action tf-apps` runs the projects listed under the `apps` phase
-- `--action tf/<project>` runs just that configured project
+- `nixbot tf-dns` runs the projects listed under the `dns` phase
+- `nixbot tf-platform` runs the projects listed under the `platform` phase
+- `nixbot tf-apps` runs the projects listed under the `apps` phase
+- `nixbot tf/<project>` runs just that configured project
 
 Normal editing flow:
 
 - comment or uncomment a project name in the single `TF_PROJECT_NAMES` array in
-  `scripts/nixbot.sh`
+  the packaged nixbot source
 - keep the directory name in `tf/<provider>-<phase>/` form so provider/phase
   conventions still work
 
 ## Package Convention
 
 Apps phases may also have a matching package namespace at `pkgs/<project>/`.
-When `pkgs/<project>/flake.nix` exists, `scripts/nixbot.sh` prepares that
-project by running `nix build path:pkgs/<project>#build --no-link` before
-OpenTofu. This keeps build/stage logic grouped with the app sources instead of
-hardcoding one-off behavior in the deploy script.
+When `pkgs/<project>/flake.nix` exists, `nixbot` prepares that project by
+running `nix build path:pkgs/<project>#build --no-link` before OpenTofu. This
+keeps build/stage logic grouped with the app sources instead of hardcoding
+one-off behavior in the deploy script.
 
 ## Modules
 
@@ -58,20 +58,20 @@ hardcoding one-off behavior in the deploy script.
 Use:
 
 - `cd tf/gcp-bootstrap && tofu init && tofu apply`
-- `./scripts/nixbot.sh run --action tf`
-- `./scripts/nixbot.sh run --action tf-dns`
-- `./scripts/nixbot.sh run --action tf-platform`
-- `./scripts/nixbot.sh run --action tf-apps`
-- `./scripts/nixbot.sh run --action all`
+- `nixbot tf`
+- `nixbot tf-dns`
+- `nixbot tf-platform`
+- `nixbot tf-apps`
+- `nixbot run`
 
-Phase order for `--action tf`:
+Phase order for `tf`:
 
 1. `tf/cloudflare-dns/`
 2. `tf/cloudflare-platform/`
 3. `tf/gcp-platform/`
 4. `tf/cloudflare-apps/`
 
-Phase order for `--action all`:
+Phase order for `run`:
 
 1. `tf/cloudflare-dns/`
 2. `tf/cloudflare-platform/`

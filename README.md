@@ -59,29 +59,33 @@ and operational notes are documented in:
 Primary files for deployment are:
 
 - `hosts/nixbot.nix` (deploy target mapping/defaults)
-- `pkgs/nixbot/nixbot.sh` (canonical repo script source for nixbot)
-- `scripts/nixbot.sh` (compatibility wrapper to the package-owned script)
+- `pkgs/nixbot/` (canonical packaged nixbot source)
+- `nixbot` (packaged deployment entrypoint)
 - `pkgs/nixbot/flake.nix` (packaged nixbot application wrapper)
 - `lib/nixbot/bastion.nix` (bastion-side nixbot setup)
 - `lib/nixbot/default.nix` (nixbot user module with sudo/identity)
-- `pkgs/nixbot/nixbot.sh` runs in a cached `nix shell` toolchain with pinned
-  commands (`nix`, `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, `opentofu`)
-  so deploy runs use consistent command sets everywhere.
+- `nixbot` runs in a cached `nix shell` toolchain with pinned commands (`nix`,
+  `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, `opentofu`) so deploy runs use
+  consistent command sets everywhere.
 - The packaged `nixbot` wrapper ships that same runtime toolchain directly and
-  executes `pkgs/nixbot/nixbot.sh` without depending on repo-relative flake
-  discovery.
+  executes the packaged nixbot entrypoint without depending on repo-relative
+  flake discovery.
 
 ## Deploy Actions
 
-`scripts/nixbot.sh run` supports multiple actions:
+`nixbot` supports multiple top-level actions:
 
-- `run --action all` (default): full build/deploy flow with optional TF phases
-- `run --action deploy`: host build and deploy only
-- `run --action build`: host build only
-- `run --action tf`: all Terraform phases (tf-dns, tf-platform, tf-apps)
-- `run --action tf-dns`: Cloudflare DNS only
-- `run --action tf-platform`: Cloudflare platform resources only
-- `run --action tf-apps`: Cloudflare Workers/package deployments only
+- `deps`: enter the pinned nixbot runtime shell, verify the required toolchain,
+  and exit
+- `check-deps`: verify the required toolchain is already available in the
+  current environment and exit
+- `run` (default full workflow): build/deploy flow with optional TF phases
+- `deploy`: host build and deploy only
+- `build`: host build only
+- `tf`: all Terraform phases (tf-dns, tf-platform, tf-apps)
+- `tf-dns`: Cloudflare DNS only
+- `tf-platform`: Cloudflare platform resources only
+- `tf-apps`: Cloudflare Workers/package deployments only
 
 ## OpenTofu
 
@@ -95,11 +99,11 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - `tf/modules/cloudflare/`: Cloudflare module implementation shared by the
   phase-specific projects.
 - `tf/README.md`: Terraform project layout docs.
-- `scripts/nixbot.sh run --action tf-dns|tf-platform|tf-apps`: runs the
-  phase-specific OpenTofu projects locally or through the bastion-trigger path
-  used by `nixbot`. Project discovery is suffix-based, so future
-  `tf/<provider>-dns`, `tf/<provider>-platform`, and `tf/<provider>-apps`
-  projects participate automatically.
+- `nixbot tf-dns|tf-platform|tf-apps`: runs the phase-specific OpenTofu projects
+  locally or through the bastion-trigger path used by `nixbot`. Project
+  discovery is suffix-based, so future `tf/<provider>-dns`,
+  `tf/<provider>-platform`, and `tf/<provider>-apps` projects participate
+  automatically.
 - `.github/workflows/nixbot.yaml`: can dispatch the same bastion-based
   build/deploy flow and the standard Terraform phase actions only; it does not
   expose per-project `tf/<project>` actions.
@@ -109,10 +113,10 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 
 ## Deploy Ordering
 
-- `scripts/nixbot.sh run --action all` runs Cloudflare in phases: `tf-dns`,
-  `tf-platform`, host build/deploy, then `tf-apps`.
-- `scripts/nixbot.sh run --action tf` runs the Terraform phases only: `tf-dns`,
-  `tf-platform`, then `tf-apps`.
+- `nixbot run` runs Cloudflare in phases: `tf-dns`, `tf-platform`, host
+  build/deploy, then `tf-apps`.
+- `nixbot tf` runs the Terraform phases only: `tf-dns`, `tf-platform`, then
+  `tf-apps`.
 - `hosts/nixbot.nix` may declare per-host `deps = [ ... ];` for build/deploy
   ordering.
 - All selected hosts are built before deploy starts.

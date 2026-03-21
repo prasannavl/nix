@@ -97,7 +97,7 @@ Expected outcome:
 Run:
 
 ```bash
-./scripts/nixbot.sh run --hosts <bastion-host> --action deploy --force
+nixbot deploy --hosts <bastion-host> --force
 ```
 
 Expected outcome:
@@ -126,8 +126,8 @@ Expected outcome:
 Run:
 
 ```bash
-./scripts/nixbot.sh run --hosts <bastion-host> --action check-bootstrap --force
-./scripts/nixbot.sh run --hosts all --action deploy --force
+nixbot check-bootstrap --hosts <bastion-host> --force
+nixbot deploy --hosts all --force
 ```
 
 Expected outcome:
@@ -146,7 +146,7 @@ Then run:
 
 ```bash
 scripts/age-secrets.sh encrypt data/secrets
-./scripts/nixbot.sh run --hosts all --action deploy --force
+nixbot deploy --hosts all --force
 ```
 
 Expected outcome:
@@ -190,7 +190,7 @@ Expected outcome:
 Run:
 
 ```bash
-./scripts/nixbot.sh run --hosts <bastion-host> --action deploy --force
+nixbot deploy --hosts <bastion-host> --force
 ```
 
 Then rotate:
@@ -213,8 +213,8 @@ Expected outcome:
 Run deploy for legacy nodes first, then all:
 
 ```bash
-./scripts/nixbot.sh run --hosts "<legacy1,legacy2>" --action deploy --force
-./scripts/nixbot.sh run --hosts all --action deploy --force
+nixbot deploy --hosts "<legacy1,legacy2>" --force
+nixbot deploy --hosts all --force
 ```
 
 Expected outcome:
@@ -231,7 +231,7 @@ Expected outcome:
 
 ```bash
 scripts/age-secrets.sh encrypt data/secrets
-./scripts/nixbot.sh run --hosts all --action deploy --force
+nixbot deploy --hosts all --force
 ```
 
 Expected outcome:

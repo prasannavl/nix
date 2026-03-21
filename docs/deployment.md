@@ -10,8 +10,8 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 
 - Bastion host: the configured bastion (`hosts/<bastion>/default.nix`, imports
   `lib/nixbot/bastion.nix`)
-- Deploy orchestration package + canonical script source: `pkgs/nixbot`
-  (`pkgs/nixbot/nixbot.sh`)
+- Deploy orchestration package and canonical entrypoint: `pkgs/nixbot`
+  (`nixbot`)
 - Deploy mapping/config: `hosts/nixbot.nix`
 - Secrets storage: `data/secrets/*.age` (age/agenix)
 
@@ -96,8 +96,7 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 - This is wired as:
   - `age.identityPaths = [ "/var/lib/nixbot/.ssh/id_ed25519"
     "/var/lib/nixbot/.age/identity" ]`
-- `scripts/nixbot.sh` injects that key pre-activation from per-host encrypted
-  files:
+- `nixbot` injects that key pre-activation from per-host encrypted files:
   - `data/secrets/machine/<host>.key.age`
 - This avoids identity bootstrap loops (identity is no longer under
   `/run/agenix` outputs).
@@ -138,8 +137,7 @@ trust anchor for the whole fleet:
 - bastion is where the shared `nixbot` deploy private key is decrypted to
   `/var/lib/nixbot/.ssh/id_ed25519`
 - bastion is the host that later SSHes to the rest of the fleet as `nixbot`
-- bastion also holds the OpenTofu/Cloudflare runtime secrets used by
-  `--action tf`
+- bastion also holds the OpenTofu/Cloudflare runtime secrets used by `tf`
 
 Until bastion itself is bootstrapped, the normal CI -> bastion -> node deploy
 chain does not exist yet.
@@ -164,7 +162,7 @@ During deploy, script behavior is:
 1. Build host system closure.
 2. Attempt primary target (`nixbot@host`) shell reachability.
 3. If primary shell access fails, run forced-command bootstrap check
-   (`--action check-bootstrap`) via bastion key.
+   (`check-bootstrap`) via bastion key.
 4. If bootstrap check still fails, inject bootstrap key using bootstrap user
    path.
 5. Continue deployment (currently via `nixos-rebuild --target-host`).
@@ -176,7 +174,7 @@ shell access for `nixos-rebuild --target-host`.
 
 ### What "bootstrap check" means
 
-- `--action check-bootstrap` does not deploy anything.
+- `check-bootstrap` does not deploy anything.
 - It validates whether the configured bootstrap material can be resolved and, in
   the forced-command case, whether the remote bastion-side wrapper can accept
   the request.
@@ -228,8 +226,8 @@ shell access for `nixos-rebuild --target-host`.
   `data/secrets/nixbot/nixbot.key.age`.
 - On bastion, `lib/nixbot/bastion.nix` decrypts that file to:
   - `/var/lib/nixbot/.ssh/id_ed25519`
-- During bootstrap of another node, `scripts/nixbot.sh` may also copy that same
-  private key onto the target if `nixbot@target` is not usable yet.
+- During bootstrap of another node, `nixbot` may also copy that same private key
+  onto the target if `nixbot@target` is not usable yet.
 - The exchange happens in `inject_bootstrap_nixbot_key()`:
   - the key is decrypted locally by the deploy script from the configured
     `bootstrapKey`
@@ -243,7 +241,7 @@ shell access for `nixos-rebuild --target-host`.
 
 - Machine age identities are not kept in the image or bootstrap account by
   default.
-- Instead, `scripts/nixbot.sh` injects them just before activation in
+- Instead, `nixbot` injects them just before activation in
   `inject_host_age_identity_key()`.
 - The exchange happens as:
   1. decrypt configured `hosts.<node>.ageIdentityKey`
@@ -265,8 +263,8 @@ shell access for `nixos-rebuild --target-host`.
      primary decrypt identity to `/var/lib/nixbot/.ssh/id_ed25519` and then
      `/var/lib/nixbot/.age/identity`.
 
-3. Before each target activation, `scripts/nixbot.sh` injects host-specific
-   machine age private key to:
+3. Before each target activation, `nixbot` injects host-specific machine age
+   private key to:
    - `/var/lib/nixbot/.age/identity`
 4. Target activation runs agenix with:
 
@@ -341,8 +339,8 @@ shell access for `nixos-rebuild --target-host`.
   - recipients are admins + the bastion host
   - `lib/nixbot/bastion.nix` decrypts them to
     `/var/lib/nixbot/secrets/cloudflare-tf/*`
-  - `scripts/nixbot.sh run --action tf` auto-loads them into the OpenTofu
-    environment when shell variables are absent
+  - `nixbot tf` auto-loads them into the OpenTofu environment when shell
+    variables are absent
 - Incus-guest Tailscale auth:
   - source file: `data/secrets/tailscale/<incus-guest>.key.age`
   - recipients: admins + `<incus-guest>`
@@ -420,7 +418,7 @@ Use this order for a clean-room rebuild of the current model.
 8. Validate bastion ingress after the bastion host is up.
    - the forced-command key should be able to run the packaged `nixbot` command
    - the bastion should hold `/var/lib/nixbot/.ssh/id_ed25519`
-9. Deploy the remaining hosts through `scripts/nixbot.sh`.
+9. Deploy the remaining hosts through `nixbot`.
    - first managed deploy to each host injects `/var/lib/nixbot/.age/identity`
    - after that, agenix can decrypt host-local secrets during activation
 10. Only after bastion and machine identities are working, add higher-level
@@ -454,8 +452,8 @@ Use this order for a clean-room rebuild of the current model.
 
 ## Operational Notes
 
-- `--action check-bootstrap` validates bootstrap key availability/decryption
-  without build/deploy.
+- `check-bootstrap` validates bootstrap key availability/decryption without
+  build/deploy.
 - `--discover-keys` controls whether the deploy script falls back from the
   primary decrypt identity to local nixbot and machine identity paths.
   - default `auto`: enabled only when `--age-key-file` / `AGE_KEY_FILE` was not
@@ -487,7 +485,7 @@ Use this order for a clean-room rebuild of the current model.
    - `data/secrets/bastion/nixbot-bastion-ssh.key.age`
 4. Deploy bastion first, then the rest of hosts.
 5. Update CI secret `NIXBOT_BASTION_SSH_KEY` to the new bastion private key.
-6. If you run `scripts/nixbot.sh` from outside bastion, also rotate
+6. If you run `nixbot` from outside bastion, also rotate
    `NIXBOT_BASTION_SSH_KEY_PATH` (forced-command bootstrap check key) to the new
    bastion ingress key file.
 7. Validate forced-command access and one full deploy run.

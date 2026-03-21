@@ -36,7 +36,7 @@ If bootstrap fails, fallback uses configured bootstrap user/key path.
 
 ## Source Of Truth Files
 
-- `scripts/nixbot.sh`
+- `nixbot`
 - `hosts/nixbot.nix`
 - `lib/nixbot/default.nix`
 - `lib/nixbot/bastion.nix`
@@ -130,9 +130,9 @@ Defaults may also include:
 - Forced-command help:
   - `ssh -i <bastion-key> nixbot@<bastion> -- --hosts <host> --help`
 - Bootstrap check:
-  - `ssh -i <bastion-key> nixbot@<bastion> -- --hosts <host> --action check-bootstrap --sha <commit> --config /var/lib/nixbot/nix/hosts/nixbot.nix`
+  - `ssh -i <bastion-key> nixbot@<bastion> -- check-bootstrap --hosts <host> --sha <commit> --config /var/lib/nixbot/nix/hosts/nixbot.nix`
 - Local orchestrator:
-  - `NIXBOT_BASTION_SSH_KEY_PATH=<...> ./scripts/nixbot.sh run --hosts=<host> --force`
+  - `NIXBOT_BASTION_SSH_KEY_PATH=<...> nixbot deploy --hosts=<host> --force`
 
 ## Known Failure Signatures
 

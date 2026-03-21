@@ -81,4 +81,4 @@ Therefore:
 ## Related Docs
 
 - `docs/deployment.md`
-- `pkgs/nixbot/nixbot.sh`
+- `nixbot`

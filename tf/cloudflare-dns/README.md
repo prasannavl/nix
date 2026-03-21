@@ -11,7 +11,7 @@ Scope:
 
 Runtime:
 
-- `./scripts/nixbot.sh run --action tf-dns`
+- `nixbot tf-dns`
 - default state key: `cloudflare-dns/terraform.tfstate`
 
 This project reuses `tf/modules/cloudflare/` and preserves the existing DNS

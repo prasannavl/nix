@@ -29,45 +29,69 @@ usage() {
   cat <<'USAGE'
 Usage:
   nixbot
-  nixbot run [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  nixbot <deps|check-deps>
+  nixbot <run|deploy|build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
-Modes:
-  run             Execute the deploy/Terraform workflow. This is the previous
-                  default nixbot behavior.
+Dependency Actions:
+  deps            Re-exec into the nixbot runtime shell, verify the full
+                  required toolchain, and exit.
+  check-deps      Verify the required commands exist in the current
+                  environment and exit.
+
+Workflow Actions:
+  run             Execute the full workflow. This is the previous default
+                  nixbot behavior.
+  deploy          Run host build+deploy only.
+  build           Run host build only.
+  tf              Run all Terraform phases.
+  tf-dns          Run the DNS Terraform phase.
+  tf-platform     Run the platform Terraform phase.
+  tf-apps         Run the apps Terraform phase.
+  tf/<project>    Run one configured Terraform project.
+  check-bootstrap Run forced-command bootstrap checks for the selected hosts.
+
+Local Wrapper Action:
   tofu            Run local OpenTofu commands in the nixbot runtime shell.
 
-Core Workflow Options:
-  --action         all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap (default: all)
-  --hosts          Comma/space-separated host list, or `all` (default: all)
-  --goal           switch|boot|test|dry-activate (default: switch, deploy only)
-  --build-jobs     Number of hosts to build in parallel (default: 1)
-  --deploy-jobs    Number of hosts to deploy in parallel within a dependency wave (default: 1)
-  --sha            Optional commit to checkout before running deploy workflow
+Workflow Selection Options:
+  --hosts          Workflow actions: selected hosts/context
+                   (comma/space-separated, or `all`; default: all)
+  --sha            Workflow actions: optional commit to check out before running
 
-Deploy Target/Auth Options:
+Build Action Options (`run`, `deploy`, `build`):
+  --build-host     local|target|<ssh-host> (default: local)
+  --build-jobs     Number of hosts to build in parallel (default: 1)
+
+Deploy Action Options (`run`, `deploy`):
+  --goal           switch|boot|test|dry-activate (default: switch)
+  --deploy-jobs    Number of hosts to deploy in parallel within a dependency wave (default: 1)
+  --bootstrap      Always use bootstrap user/key path for deploy/snapshot/rollback SSH target selection
+  --no-rollback    Disable rollback of successful hosts when any deploy fails
+  --prefix-host-logs Always prefix host log lines, even for single-job phases
+
+Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
+  --bastion-first  Prioritize bastion host first when bastion is selected
+
+Workflow Behavior Options:
+  --dry            `run`, `deploy`, `tf`, `tf-dns`, `tf-platform`,
+                   `tf-apps`, `tf/<project>`: print commands instead of
+                   applying deploy/Terraform changes
+  --force          `run`, `deploy`, `tf`, `tf-dns`, `tf-platform`,
+                   `tf-apps`, `tf/<project>`: bypass change-detection gates
+  --log-format     Workflow actions: auto|gh|plain (default: auto)
+
+Auth / Config Options:
   --user           Default deploy user override
   --ssh-key        SSH key path for deploy target auth (must be .age when explicitly set)
   --known-hosts    known_hosts override for all hosts
-  --build-host     local|target|<ssh-host> (default: local)
   --config         Nix deploy config path (default: hosts/nixbot.nix)
   --age-key-file   Age/SSH identity file used for decrypting *.age secrets
   --discover-keys  Discover fallback decrypt identities (auto|on|off; default:
                    auto, which disables discovery when --age-key-file/AGE_KEY_FILE
                    is set explicitly)
 
-Behavior Options:
-  --ensure-deps    Re-exec into the runtime shell, verify required tools exist,
-                   and exit without performing deploy work
-  --force          Deploy even when built path matches remote /run/current-system
-  --bastion-first  Prioritize bastion host first for build and deploy when selected
-  --dry            Print deploy command instead of executing deploy step
-  --no-rollback    Disable rollback of successful hosts when any deploy fails
-  --prefix-host-logs Always prefix host log lines, even for single-job phases
-  --log-format     auto|gh|plain (default: auto)
-
 Bootstrap/Forced-Command Options:
-  --bootstrap      Always use bootstrap user/key path for deploy/snapshot/rollback SSH target selection
   --bastion-check-ssh-key-path .age key path override for forced-command bootstrap checks
 
 Remote Trigger Options:
@@ -84,32 +108,37 @@ Repo Options:
                     setup; remains opt-in for intentionally executing fetched
                     script code
 
-Environment (Core):
-  NIXBOT_ACTION               Same as --action
+Environment (Workflow Selection):
   NIXBOT_HOSTS                Same as --hosts
-  NIXBOT_GOAL                 Same as --goal
-  NIXBOT_BUILD_JOBS           Same as --build-jobs
-  NIXBOT_JOBS                 Same as --deploy-jobs
   NIXBOT_SHA                  Same as --sha
 
-Environment (Deploy Target/Auth):
+Environment (Build Actions):
+  NIXBOT_BUILD_HOST           Same as --build-host
+  NIXBOT_BUILD_JOBS           Same as --build-jobs
+
+Environment (Deploy Actions):
+  NIXBOT_GOAL                 Same as --goal
+  NIXBOT_JOBS                 Same as --deploy-jobs
+  NIXBOT_NO_ROLLBACK          Same as --no-rollback (bool)
+  NIXBOT_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
+
+Environment (Host Workflow Ordering):
+  NIXBOT_BASTION_FIRST        Same as --bastion-first (bool)
+
+Environment (Workflow Behavior):
+  NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
+  NIXBOT_DRY                  Same as --dry (bool)
+  NIXBOT_LOG_FORMAT           Same as --log-format
+
+Environment (Auth / Config):
   NIXBOT_USER                 Same as --user
   NIXBOT_SSH_KEY              Same as --ssh-key
   NIXBOT_SSH_KNOWN_HOSTS      Same as --known-hosts
-  NIXBOT_BUILD_HOST           Same as --build-host
   NIXBOT_CONFIG               Same as --config
   AGE_KEY_FILE                Same as --age-key-file
-
-Environment (Behavior):
-  NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
-  NIXBOT_BASTION_FIRST        Same as --bastion-first (bool)
-  NIXBOT_DRY                  Same as --dry (bool)
-  NIXBOT_NO_ROLLBACK          Same as --no-rollback (bool)
-  NIXBOT_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
-  NIXBOT_LOG_FORMAT           Same as --log-format
   NIXBOT_DISCOVER_KEYS        Same as --discover-keys (auto|on|off)
 
-Environment (Bootstrap/Forced-Command):
+Environment (Bootstrap / Forced-Command):
   NIXBOT_BOOTSTRAP            Same as --bootstrap (bool)
   NIXBOT_BASTION_SSH_KEY_PATH Same as --bastion-check-ssh-key-path
 
@@ -139,8 +168,10 @@ Environment (Terraform actions):
   CLOUDFLARE_API_TOKEN        Provider-specific Cloudflare API token, required by Cloudflare projects
 
 Runtime:
-  The script always re-execs inside `nix shell` to provide a consistent
-  toolchain: age, git, jq, nixos-rebuild-ng, openssh, and opentofu.
+  Workflow actions and `tofu` always re-exec inside `nix shell` to provide a
+  consistent toolchain: age, git, jq, nixos-rebuild-ng, openssh, and opentofu.
+  `deps` performs that re-exec and exits after verification.
+  `check-deps` only checks the current environment and does not re-exec.
 
 Local tofu wrapper:
   `nixbot tofu ...` runs Terraform locally via OpenTofu in the same runtime shell.
@@ -172,8 +203,7 @@ resolve_ssh_tty_stdin_path() {
 
 init_vars() {
   HOSTS_RAW="${NIXBOT_HOSTS:-all}"
-  ACTION="${NIXBOT_ACTION:-all}"
-  ENSURE_DEPS_ONLY=0
+  ACTION=""
   HOST_ACTION=""
   GOAL="${NIXBOT_GOAL:-switch}"
   BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"
@@ -555,7 +585,7 @@ tf_project_name_is_configured() {
 
 action_is_supported() {
   case "${1:-}" in
-    all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap) return 0 ;;
+    run|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap) return 0 ;;
     *)
       if action_is_tf_project_only "${1:-}"; then
         tf_project_name_is_configured "$(tf_action_project_name "${1:-}")"
@@ -577,7 +607,7 @@ action_is_tf_only() {
 
 resolved_host_action() {
   case "${1:-}" in
-    all) printf 'deploy\n' ;;
+    run) printf 'deploy\n' ;;
     *) printf '%s\n' "${1:-}" ;;
   esac
 }
@@ -628,10 +658,8 @@ json_array_to_bash_set() {
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --ensure-deps)        ENSURE_DEPS_ONLY=1; shift ;;
       --sha|--sha=*)        take_optval "$@"; SHA="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --hosts|--hosts=*)    take_optval "$@"; HOSTS_RAW="${OPTVAL}"; shift "${OPTSHIFT}" ;;
-      --action|--action=*)  take_optval "$@"; ACTION="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --goal|--goal=*)      take_optval "$@"; GOAL="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --build-host|--build-host=*)
         take_optval "$@"; BUILD_HOST="${OPTVAL}"; shift "${OPTSHIFT}" ;;
@@ -682,7 +710,7 @@ parse_args() {
 
   [ -n "${HOSTS_RAW}" ] || die "--hosts cannot be empty"
 
-  action_is_supported "${ACTION}" || die "Unsupported --action: ${ACTION}"
+  action_is_supported "${ACTION}" || die "Unsupported action: ${ACTION}"
   normalize_host_action
 
   case "${GOAL}" in
@@ -882,7 +910,7 @@ run_bastion_trigger() {
   [ -n "${trigger_sha}" ] || die "Could not resolve local HEAD; pass --sha/NIXBOT_SHA explicitly"
   [[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
 
-  action_is_supported "${ACTION}" || die "Unsupported --action for --bastion-trigger: ${ACTION}"
+  action_is_supported "${ACTION}" || die "Unsupported action for --bastion-trigger: ${ACTION}"
 
   trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
   [ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
@@ -897,7 +925,7 @@ run_bastion_trigger() {
   # Intentionally forward only the bastion-safe subset here. The remote side is
   # expected to use its repo-local defaults/config for everything else so local
   # operator overrides do not silently reshape bastion execution.
-  remote_command="run --sha ${trigger_sha} --hosts ${trigger_hosts} --action ${ACTION}"
+  remote_command="${ACTION} --sha ${trigger_sha} --hosts ${trigger_hosts}"
   if [ "${LOG_FORMAT}" != "auto" ]; then
     remote_command="${remote_command} --log-format ${LOG_FORMAT}"
   elif is_github_actions_log_mode; then
@@ -1662,9 +1690,9 @@ check_bootstrap_via_forced_command() {
     remote_config_path="$(repo_worktree_file_path "${NIXBOT_CONFIG_PATH}")"
   fi
 
-  check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" run --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
+  check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" check-bootstrap --hosts "${node}" --config "${remote_config_path}")
   if [ -n "${check_sha}" ]; then
-    check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" run --sha "${check_sha}" --hosts "${node}" --action check-bootstrap --config "${remote_config_path}")
+    check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" check-bootstrap --sha "${check_sha}" --hosts "${node}" --config "${remote_config_path}")
   fi
 
   # shellcheck disable=SC2029
@@ -1678,7 +1706,7 @@ check_bootstrap_via_forced_command() {
     return 0
   fi
 
-  if [[ "${check_output}" == *"Unsupported --action: check-bootstrap"* ]] || [[ "${check_output}" == *"invalid --action"* ]]; then
+  if [[ "${check_output}" == *"Unsupported action: check-bootstrap"* ]] || [[ "${check_output}" == *"invalid action"* ]]; then
     echo "==> Remote forced command is on an older revision (no check-bootstrap action); treating auth as valid for ${node}"
     return 0
   fi
@@ -4284,7 +4312,7 @@ run_tofu_wrapper() {
   local -a cmd=()
 
   [ "${#tofu_args[@]}" -gt 0 ] || die "Usage: nixbot tofu <tofu-args...>"
-  [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot.sh tofu wrapper is local-only and cannot run via SSH forced-command/bastion trigger."
+  [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot tofu wrapper is local-only and cannot run via SSH forced-command/bastion trigger."
 
   if resolve_tofu_wrapper_context project_dir project_name provider_name "${tofu_args[@]}" && [ -n "${project_name}" ]; then
     prepare_tf_project_runtime "${project_name}"
@@ -4914,6 +4942,32 @@ ensure_runtime_tools() {
   require_cmds "${NIXBOT_RUNTIME_COMMANDS[@]}"
 }
 
+ensure_runtime_ready() {
+  ensure_runtime_shell "$@"
+  ensure_runtime_tools
+}
+
+run_deps_action() {
+  ensure_runtime_ready "$@"
+}
+
+run_check_deps_action() {
+  ensure_runtime_tools
+}
+
+deps_action_help_requested() {
+  local -a args=("$@")
+
+  [ "${#args[@]}" -gt 0 ] && { [ "${args[0]}" = "-h" ] || [ "${args[0]}" = "--help" ]; }
+}
+
+require_no_extra_action_args() {
+  local action_name="$1"
+  shift
+
+  [ "$#" -eq 0 ] || die "${action_name} does not accept additional arguments"
+}
+
 hydrate_request_args_from_ssh_command() {
   local -n hrafsc_request_args_out_ref="$1"
 
@@ -4939,7 +4993,7 @@ hydrate_request_args_from_ssh_command() {
 run_deploy_request_action() {
   local selected_json="$1"
 
-  if [ "${ACTION}" = "all" ]; then
+  if [ "${ACTION}" = "run" ]; then
     run_all_action "${selected_json}"
   elif action_is_tf_only "${ACTION}"; then
     run_tf_only_action
@@ -4991,7 +5045,6 @@ run_requested_action() {
 main() {
   local -a request_args=("$@")
 
-  ensure_runtime_shell "$@"
   init_vars
   trap cleanup EXIT
   cleanup_stale_runtime_dirs
@@ -5004,11 +5057,30 @@ main() {
   fi
 
   case "${request_args[0]}" in
-    run)
+    deps)
+      if deps_action_help_requested "${request_args[@]:1}"; then
+        usage
+        return 0
+      fi
+      require_no_extra_action_args "deps" "${request_args[@]:1}"
+      run_deps_action "$@"
+      return
+      ;;
+    check-deps)
+      if deps_action_help_requested "${request_args[@]:1}"; then
+        usage
+        return 0
+      fi
+      require_no_extra_action_args "check-deps" "${request_args[@]:1}"
+      run_check_deps_action
+      return
+      ;;
+    run|deploy|build|tf|tf-dns|tf-platform|tf-apps|check-bootstrap|tf/*)
+      ACTION="${request_args[0]}"
       request_args=("${request_args[@]:1}")
       ;;
     tofu)
-      ensure_runtime_tools
+      ensure_runtime_ready "$@"
       run_tofu_wrapper "${request_args[@]:1}"
       return
       ;;
@@ -5022,12 +5094,8 @@ main() {
       ;;
   esac
 
+  ensure_runtime_ready "$@"
   parse_args "${request_args[@]}"
-  ensure_runtime_tools
-  if [ "${ENSURE_DEPS_ONLY}" -eq 1 ]; then
-    return
-  fi
-
   if [ "${BASTION_TRIGGER}" -eq 1 ]; then
     run_bastion_trigger
     return
