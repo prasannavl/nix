@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: all, build, deploy, or tf
+        description: deploy action
         required: true
         default: all
         type: choice
@@ -16,6 +16,13 @@ on:
           - deploy
           - build
           - tf
+          - tf-dns
+          - tf-platform
+          - tf-apps
+          - tf/cloudflare-dns
+          - tf/cloudflare-platform
+          # - tf/gcp-platform
+          - tf/cloudflare-apps
       hosts:
         description: Comma/space-separated hosts, or all
         required: true

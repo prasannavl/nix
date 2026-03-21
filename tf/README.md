@@ -26,11 +26,20 @@ Project secrets load after provider secrets, so project-specific values win.
   current in-project resources
 
 Runnable projects follow the naming convention `tf/<provider>-<phase>/`.
-`scripts/nixbot-deploy.sh` discovers projects by suffix, so:
+`scripts/nixbot-deploy.sh` keeps explicit per-phase project lists in the script,
+so:
 
-- `--action tf-dns` runs every `tf/*-dns` project
-- `--action tf-platform` runs every `tf/*-platform` project
-- `--action tf-apps` runs every `tf/*-apps` project
+- `--action tf-dns` runs the projects listed under the `dns` phase
+- `--action tf-platform` runs the projects listed under the `platform` phase
+- `--action tf-apps` runs the projects listed under the `apps` phase
+- `--action tf/<project>` runs just that configured project
+
+Normal editing flow:
+
+- comment or uncomment a project name in the single `TF_PROJECT_NAMES` array in
+  `scripts/nixbot-deploy.sh`
+- keep the directory name in `tf/<provider>-<phase>/` form so provider/phase
+  conventions still work
 
 ## Package Convention
 

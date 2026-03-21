@@ -22,15 +22,24 @@ Runtime:
 Backend:
 
 - this project uses GCS state
-- set `GCP_STATE_BUCKET` before running automated `tf-platform`
+- `scripts/nixbot-deploy.sh` auto-loads `GCP_STATE_BUCKET` from
+  `data/secrets/gcp/state-bucket.key.age` when present
 - optionally set `GCP_STATE_PREFIX` to override the default
   `gcp-platform/terraform.tfstate`
-- optionally set `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` for backend access
+- `scripts/nixbot-deploy.sh` auto-loads
+  `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` from
+  `data/secrets/gcp/backend-impersonate-service-account.key.age` when present
 
 Authentication:
 
-- provider auth relies on normal Google ADC credentials, or on the checked-in
-  `impersonate_service_account` variable in `globals.auto.tfvars`
+- provider auth is expected to come from the repo-managed encrypted Google
+  service-account JSON at
+  `data/secrets/gcp/application-default-credentials.json.age`
+- `scripts/nixbot-deploy.sh` decrypts that file at runtime and exports
+  `GOOGLE_APPLICATION_CREDENTIALS` automatically
+- the Google provider then uses that credential as the base identity and may
+  still impersonate the checked-in `impersonate_service_account` value from
+  `globals.auto.tfvars`
 
 Inputs:
 

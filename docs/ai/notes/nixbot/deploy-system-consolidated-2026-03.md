@@ -104,11 +104,27 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   - run the TF phase first only when TF-relevant paths changed, unless `--force`
     overrides the skip
   - then continue with the normal host build + deploy flow
+- Terraform phase membership should come from explicit per-phase project lists
+  in `scripts/nixbot-deploy.sh`, not from filesystem discovery. The runnable set
+  should live in one canonical project list, with per-phase membership derived
+  from the `tf/<provider>-<phase>` name suffix. Commenting a project in or out
+  of that canonical list is the supported enable/disable switch.
+- `--action tf/<project>` should run exactly one configured Terraform project
+  through the same change-detection, logging, summary, and bastion-trigger flow
+  as the phase-wide Terraform actions.
 - TF change detection lives only in `scripts/nixbot-deploy.sh` and currently
   covers:
   - `tf/**`
   - `data/secrets/cloudflare/*.age`
   - `data/secrets/tf/**`
+- Terraform secret tfvars should load by convention from
+  `data/secrets/tf/<provider>/` first and `data/secrets/tf/<project>/` second,
+  so provider-wide defaults stay centralized while project-specific overrides
+  follow the runnable `tf/<project>` roots.
+- Terraform change detection should treat both of those secret scopes as inputs
+  to the matching runnable project, including direct
+  `data/secrets/tf/<provider>.tfvars.age` and
+  `data/secrets/tf/<project>.tfvars.age` files when present.
 - `--dry` stays a flag, not a separate action:
   - `all --dry` means TF plan-only when needed, then build/deploy dry-run
   - `deploy --dry` keeps the host deploy dry-run behavior
@@ -209,6 +225,11 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 - Bastion-side Terraform automation must run `tofu init` with
   `-lockfile=readonly` so provider lock normalization does not dirty a repo
   worktree during PR-triggered deploy runs.
+- Terraform backend selection should stay centralized by runnable project:
+  Cloudflare roots and `gcp-bootstrap` use the shared R2 backend, while
+  `gcp-platform` uses GCS. Runtime secret loading, required env validation, and
+  wrapper/backend-config injection should all reuse that same backend convention
+  helper instead of open-coding per-project branches.
 - The persistent bastion repo root may be synced to `origin/master` only during
   the short locked setup window before a worktree is created. The source mirror
   must never be the active execution tree for a run, including `master` deploys,
@@ -226,7 +247,8 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   should continue reusing the GitHub Actions cache backend rather than relying
   on FlakeHub-specific cache login.
 - Manual dispatch should stay aligned with the script surface:
-  `action = all|build|deploy|tf`, plus `dry` and `force`.
+  `action = all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>`, plus
+  `dry` and `force`.
 - The separate TF-only workflow was removed; the main `nixbot` workflow
   delegates TF gating decisions to `scripts/nixbot-deploy.sh`.
 

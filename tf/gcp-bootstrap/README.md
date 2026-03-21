@@ -12,8 +12,10 @@ Scope:
 - create the shared `pvl-control-state` GCS bucket
 
 This project is intentionally separate from the automated `*-platform` phase.
-Run it once with user credentials that can create folders, projects, IAM
-bindings, and buckets at the organization level.
+Run it once with credentials that can create folders, projects, IAM bindings,
+and buckets at the organization level. In this repo, those credentials are now
+expected to come from the encrypted Google service-account JSON loaded by
+`scripts/nixbot-deploy.sh`.
 
 Usage:
 
@@ -33,3 +35,10 @@ Notes:
 - The checked-in `bootstrap.auto.tfvars` carries only non-secret naming and
   bucket-location values. Sensitive IDs now live under `data/secrets/tf/gcp/`
   and `data/secrets/tf/gcp-bootstrap/`.
+- Provider auth is expected to come from the repo-managed encrypted Google
+  service-account JSON at
+  `data/secrets/gcp/application-default-credentials.json.age`.
+- `scripts/nixbot-deploy.sh` decrypts that file at runtime and exports
+  `GOOGLE_APPLICATION_CREDENTIALS` automatically for bootstrap runs too.
+- That credential still needs organization-level permissions sufficient for the
+  bootstrap scope above.

@@ -49,6 +49,12 @@
   `GCP_STATE_BUCKET` and optional `GCP_STATE_PREFIX` /
   `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT`, while Cloudflare keeps the R2
   backend path.
+- Wired GCP runtime auth into the same repo-managed secret model used for
+  Cloudflare: `scripts/nixbot-deploy.sh` now decrypts
+  `data/secrets/gcp/application-default-credentials.json.age` and exports
+  `GOOGLE_APPLICATION_CREDENTIALS` automatically, and it can also auto-load
+  `GCP_STATE_BUCKET` plus `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` from
+  encrypted files under `data/secrets/gcp/`.
 
 ## Validation Notes
 
@@ -56,3 +62,8 @@
   source tree.
 - Real plan/apply for GCP still depends on valid Google credentials or
   impersonation access at runtime.
+- With the repo-managed JSON auth flow, `gcp-bootstrap` no longer assumes an
+  interactive `gcloud auth application-default login`; instead it assumes the
+  encrypted credential in
+  `data/secrets/gcp/application-default-credentials.json.age` has the required
+  org-level permissions.

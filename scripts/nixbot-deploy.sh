@@ -28,11 +28,11 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  scripts/nixbot-deploy.sh [--ensure-deps] [--sha <commit>] [--hosts "host1,host2|all"] [--action all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
   scripts/nixbot-deploy.sh tofu <tofu-args...>
 
 Core Workflow Options:
-  --action         all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap (default: all)
+  --action         all|build|deploy|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap (default: all)
   --hosts          Comma/space-separated host list, or `all` (default: all)
   --goal           switch|boot|test|dry-activate (default: switch, deploy only)
   --build-jobs     Number of hosts to build in parallel (default: 1)
@@ -128,6 +128,7 @@ Environment (Terraform actions):
   GCP_STATE_BUCKET            GCS bucket name for GCP Terraform state
   GCP_STATE_PREFIX            Optional GCP state object prefix override
   GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT Optional service account email for GCS backend access
+  GOOGLE_APPLICATION_CREDENTIALS Path to the Google service-account JSON used for provider auth
   DEPLOY_TF_DIR               Optional single-project override; must match the requested phase suffix
   CLOUDFLARE_API_TOKEN        Provider-specific Cloudflare API token, required by Cloudflare projects
 
@@ -141,6 +142,9 @@ Local tofu wrapper:
   it auto-loads backend/provider runtime secrets and may append decrypted
   `-var-file` inputs for variable-aware commands (plan/apply/destroy/import/console)
   when no explicit `-var`/`-var-file` flags are provided.
+  GCP projects can auto-load `GOOGLE_APPLICATION_CREDENTIALS`,
+  `GCP_STATE_BUCKET`, and `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` from
+  encrypted files under `data/secrets/gcp/`.
   This wrapper mode is intentionally local-only and is not supported via bastion trigger.
 USAGE
 }
@@ -280,7 +284,16 @@ init_vars() {
   TF_R2_STATE_BUCKET_PATH="data/secrets/cloudflare/r2-state-bucket.key.age"
   TF_R2_ACCESS_KEY_ID_PATH="data/secrets/cloudflare/r2-access-key-id.key.age"
   TF_R2_SECRET_ACCESS_KEY_PATH="data/secrets/cloudflare/r2-secret-access-key.key.age"
+  TF_GCP_APPLICATION_CREDENTIALS_PATH="data/secrets/gcp/application-default-credentials.json.age"
+  TF_GCP_STATE_BUCKET_PATH="data/secrets/gcp/state-bucket.key.age"
+  TF_GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT_PATH="data/secrets/gcp/backend-impersonate-service-account.key.age"
   TF_SECRETS_DIR="data/secrets/tf"
+  TF_PROJECT_NAMES=(
+    cloudflare-dns
+    cloudflare-platform
+    # gcp-platform
+    cloudflare-apps
+  )
 
   # `REPO_ROOT` is the long-lived source mirror. Runs never execute from it
   # directly; they materialize `REPO_WORKTREE_ROOT` and switch into that tree.
@@ -316,6 +329,50 @@ set_env_from_file_if_unset() {
 
   printf -v "${var_name}" '%s' "${value}"
   export "${var_name?}"
+}
+
+set_env_path_from_file_if_unset() {
+  local var_name="$1"
+  local file_path="$2"
+
+  if [ -n "${!var_name:-}" ] || [ ! -f "${file_path}" ]; then
+    return
+  fi
+
+  printf -v "${var_name}" '%s' "${file_path}"
+  export "${var_name?}"
+}
+
+load_env_value_from_secret_file_if_unset() {
+  local var_name="$1"
+  local secret_path="$2"
+  local decrypted_file=""
+
+  [ -z "${!var_name:-}" ] || return 0
+  decrypted_file="$(resolve_runtime_key_file "${secret_path}" 1)"
+  set_env_from_file_if_unset "${var_name}" "${decrypted_file}"
+}
+
+load_env_path_from_secret_file_if_unset() {
+  local var_name="$1"
+  local secret_path="$2"
+  local decrypted_file=""
+
+  [ -z "${!var_name:-}" ] || return 0
+  decrypted_file="$(resolve_runtime_key_file "${secret_path}" 1)"
+  set_env_path_from_file_if_unset "${var_name}" "${decrypted_file}"
+}
+
+require_nonempty_env_var() {
+  local var_name="$1"
+  [ -n "${!var_name:-}" ] || die "Missing required environment variable: ${var_name}"
+}
+
+require_existing_file_env_var() {
+  local var_name="$1"
+
+  require_nonempty_env_var "${var_name}"
+  [ -f "${!var_name}" ] || die "Environment variable ${var_name} must point to an existing file: ${!var_name}"
 }
 
 parse_bool_env() {
@@ -443,17 +500,70 @@ normalize_host_action() {
   HOST_ACTION="$(resolved_host_action "${ACTION}")"
 }
 
+action_is_tf_project_only() {
+  case "${1:-}" in
+    tf/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+tf_action_project_name() {
+  local action="${1:-}"
+
+  case "${action}" in
+    tf/*)
+      printf '%s\n' "${action#tf/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+tf_project_phase_from_name() {
+  local project_name="$1"
+  local phase="${project_name##*-}"
+
+  case "${phase}" in
+    dns|platform|apps)
+      printf '%s\n' "${phase}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+tf_project_name_is_configured() {
+  local project_name="$1"
+  local configured_project_name=""
+
+  for configured_project_name in "${TF_PROJECT_NAMES[@]}"; do
+    [ "${configured_project_name}" = "${project_name}" ] && return 0
+  done
+
+  return 1
+}
+
 action_is_supported() {
   case "${1:-}" in
     all|build|deploy|tf|tf-dns|tf-platform|tf-apps|check-bootstrap) return 0 ;;
-    *) return 1 ;;
+    *)
+      if action_is_tf_project_only "${1:-}"; then
+        tf_project_name_is_configured "$(tf_action_project_name "${1:-}")"
+        return
+      fi
+      return 1
+      ;;
   esac
 }
 
 action_is_tf_only() {
   case "${1:-}" in
     tf|tf-dns|tf-platform|tf-apps) return 0 ;;
-    *) return 1 ;;
+    *)
+      action_is_tf_project_only "${1:-}"
+      ;;
   esac
 }
 
@@ -3372,12 +3482,190 @@ load_cloudflare_tf_backend_runtime_secrets() {
 }
 
 load_cloudflare_tf_runtime_secrets() {
-  local decrypted_file=""
+  load_env_value_from_secret_file_if_unset "CLOUDFLARE_API_TOKEN" "${TF_CLOUDFLARE_API_TOKEN_PATH}"
+}
 
-  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-    decrypted_file="$(resolve_runtime_key_file "${TF_CLOUDFLARE_API_TOKEN_PATH}" 1)"
-    set_env_from_file_if_unset "CLOUDFLARE_API_TOKEN" "${decrypted_file}"
+load_gcp_tf_backend_runtime_secrets() {
+  local var_name
+  local -A _gcp_backend_secrets=(
+    [GCP_STATE_BUCKET]="${TF_GCP_STATE_BUCKET_PATH}"
+    [GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT]="${TF_GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT_PATH}"
+  )
+
+  for var_name in "${!_gcp_backend_secrets[@]}"; do
+    load_env_value_from_secret_file_if_unset "${var_name}" "${_gcp_backend_secrets[${var_name}]}"
+  done
+}
+
+load_gcp_tf_runtime_secrets() {
+  load_env_path_from_secret_file_if_unset "GOOGLE_APPLICATION_CREDENTIALS" "${TF_GCP_APPLICATION_CREDENTIALS_PATH}"
+}
+
+tf_backend_kind_for_project() {
+  local project_name="$1"
+  local provider_name="${2:-}"
+
+  if [ -z "${provider_name}" ]; then
+    provider_name="$(tf_project_provider_from_name "${project_name}")"
   fi
+
+  case "${project_name}" in
+    gcp-bootstrap)
+      printf 'r2\n'
+      return 0
+      ;;
+  esac
+
+  case "${provider_name}" in
+    cloudflare)
+      printf 'r2\n'
+      ;;
+    gcp)
+      printf 'gcs\n'
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+load_tf_backend_runtime_secrets_for_kind() {
+  local backend_kind="${1:-}"
+
+  case "${backend_kind}" in
+    r2)
+      load_cloudflare_tf_backend_runtime_secrets
+      ;;
+    gcs)
+      load_gcp_tf_backend_runtime_secrets
+      ;;
+  esac
+}
+
+load_tf_provider_runtime_secrets() {
+  local provider_name="${1:-}"
+
+  case "${provider_name}" in
+    cloudflare)
+      load_cloudflare_tf_runtime_secrets
+      ;;
+    gcp)
+      load_gcp_tf_runtime_secrets
+      ;;
+  esac
+}
+
+require_tf_backend_runtime_env_for_kind() {
+  local backend_kind="${1:-}"
+
+  case "${backend_kind}" in
+    r2)
+      require_nonempty_env_var "R2_ACCOUNT_ID"
+      require_nonempty_env_var "R2_STATE_BUCKET"
+      require_nonempty_env_var "R2_ACCESS_KEY_ID"
+      require_nonempty_env_var "R2_SECRET_ACCESS_KEY"
+      ;;
+    gcs)
+      require_nonempty_env_var "GCP_STATE_BUCKET"
+      ;;
+  esac
+}
+
+require_tf_provider_runtime_env() {
+  local provider_name="${1:-}"
+
+  case "${provider_name}" in
+    cloudflare)
+      require_nonempty_env_var "CLOUDFLARE_API_TOKEN"
+      ;;
+    gcp)
+      require_existing_file_env_var "GOOGLE_APPLICATION_CREDENTIALS"
+      ;;
+  esac
+}
+
+require_supported_tf_backend_for_project() {
+  local project_name="$1"
+  local provider_name="${2:-}"
+  local backend_kind=""
+
+  backend_kind="$(tf_backend_kind_for_project "${project_name}" "${provider_name}")"
+  [ -n "${backend_kind}" ] || die "Unsupported Terraform backend for project: ${project_name}"
+}
+
+resolve_tf_backend_context_for_project() {
+  local project_name="$1"
+  local provider_name="$2"
+  local -n backend_kind_out_ref_local="$3"
+  local -n backend_detail_1_out_ref_local="$4"
+  local -n backend_detail_2_out_ref_local="$5"
+  local backend_kind=""
+
+  backend_kind="$(tf_backend_kind_for_project "${project_name}" "${provider_name}")"
+  # shellcheck disable=SC2034
+  backend_kind_out_ref_local="${backend_kind}"
+  # shellcheck disable=SC2034
+  backend_detail_1_out_ref_local=""
+  # shellcheck disable=SC2034
+  backend_detail_2_out_ref_local=""
+
+  case "${backend_kind}" in
+    r2)
+      # shellcheck disable=SC2034
+      backend_detail_1_out_ref_local="$(tf_state_key_for_project "${project_name}")"
+      # shellcheck disable=SC2034
+      backend_detail_2_out_ref_local="$(tf_backend_endpoint)"
+      ;;
+    gcs)
+      # shellcheck disable=SC2034
+      backend_detail_1_out_ref_local="$(gcp_state_prefix_for_project "${project_name}")"
+      # shellcheck disable=SC2034
+      backend_detail_2_out_ref_local="${GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT:-}"
+      ;;
+  esac
+}
+
+append_tf_backend_config_args_for_project() {
+  local -n cmd_inout_ref_local="$1"
+  local project_name="$2"
+  local provider_name="$3"
+  local backend_kind="" backend_detail_1="" backend_detail_2=""
+
+  resolve_tf_backend_context_for_project \
+    "${project_name}" \
+    "${provider_name}" \
+    backend_kind \
+    backend_detail_1 \
+    backend_detail_2
+
+  case "${backend_kind}" in
+    r2)
+      cmd_inout_ref_local+=(
+        -backend-config="bucket=${R2_STATE_BUCKET}"
+        -backend-config="key=${backend_detail_1}"
+        -backend-config="region=auto"
+        -backend-config="endpoint=${backend_detail_2}"
+        -backend-config="access_key=${R2_ACCESS_KEY_ID}"
+        -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}"
+        -backend-config="skip_credentials_validation=true"
+        -backend-config="skip_region_validation=true"
+        -backend-config="skip_requesting_account_id=true"
+        -backend-config="use_path_style=true"
+      )
+      ;;
+    gcs)
+      cmd_inout_ref_local+=(
+        -backend-config="bucket=${GCP_STATE_BUCKET}"
+        -backend-config="prefix=${backend_detail_1}"
+      )
+      if [ -n "${backend_detail_2}" ]; then
+        cmd_inout_ref_local+=(-backend-config="impersonate_service_account=${backend_detail_2}")
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 tf_project_name_from_dir() {
@@ -3389,19 +3677,48 @@ tf_project_provider_from_name() {
   printf '%s\n' "${project_name%-*}"
 }
 
-tf_project_dirs_for_phase() {
+tf_project_names_for_phase() {
   local phase="$1"
   local project_name=""
 
   if [ -n "${TF_WORK_DIR}" ]; then
     project_name="$(tf_project_name_from_dir "${TF_WORK_DIR}")"
     if [[ "${project_name}" == *-"${phase}" ]]; then
-      printf '%s\n' "${TF_WORK_DIR}"
+      printf '%s\n' "${project_name}"
     fi
     return 0
   fi
 
-  find tf -mindepth 1 -maxdepth 1 -type d -name "*-${phase}" | sort
+  for project_name in "${TF_PROJECT_NAMES[@]}"; do
+    [ "$(tf_project_phase_from_name "${project_name}")" = "${phase}" ] || continue
+    printf '%s\n' "${project_name}"
+  done
+}
+
+tf_project_dir_from_name() {
+  local project_name="$1"
+  printf 'tf/%s\n' "${project_name}"
+}
+
+tf_project_dir_from_action() {
+  local action="$1"
+  local project_name=""
+
+  project_name="$(tf_action_project_name "${action}")" || return 1
+  tf_project_dir_from_name "${project_name}"
+}
+
+tf_project_dirs_for_phase() {
+  local phase="$1"
+  local project_name=""
+  local project_dir=""
+
+  while IFS= read -r project_name; do
+    [ -n "${project_name}" ] || continue
+    project_dir="$(tf_project_dir_from_name "${project_name}")"
+    [ -d "${project_dir}" ] || die "Configured Terraform project directory not found: ${project_dir}"
+    printf '%s\n' "${project_dir}"
+  done < <(tf_project_names_for_phase "${phase}")
 }
 
 tf_state_key_for_project() {
@@ -3442,46 +3759,23 @@ emit_tf_secret_paths_for_project() {
 load_tf_runtime_secrets_for_project() {
   local project_name="$1"
   local provider_name
-
-  if [ "${project_name}" = "gcp-bootstrap" ]; then
-    load_cloudflare_tf_backend_runtime_secrets
-    return 0
-  fi
+  local backend_kind=""
 
   provider_name="$(tf_project_provider_from_name "${project_name}")"
-  case "${provider_name}" in
-    cloudflare)
-      load_cloudflare_tf_backend_runtime_secrets
-      load_cloudflare_tf_runtime_secrets
-      ;;
-  esac
+  backend_kind="$(tf_backend_kind_for_project "${project_name}" "${provider_name}")"
+  load_tf_backend_runtime_secrets_for_kind "${backend_kind}"
+  load_tf_provider_runtime_secrets "${provider_name}"
 }
 
 require_tf_runtime_env_for_project() {
   local project_name="$1"
   local provider_name
-
-  if [ "${project_name}" = "gcp-bootstrap" ]; then
-    [ -n "${R2_ACCOUNT_ID:-}" ] || die "Missing required environment variable: R2_ACCOUNT_ID"
-    [ -n "${R2_STATE_BUCKET:-}" ] || die "Missing required environment variable: R2_STATE_BUCKET"
-    [ -n "${R2_ACCESS_KEY_ID:-}" ] || die "Missing required environment variable: R2_ACCESS_KEY_ID"
-    [ -n "${R2_SECRET_ACCESS_KEY:-}" ] || die "Missing required environment variable: R2_SECRET_ACCESS_KEY"
-    return 0
-  fi
+  local backend_kind=""
 
   provider_name="$(tf_project_provider_from_name "${project_name}")"
-  case "${provider_name}" in
-    cloudflare)
-      [ -n "${R2_ACCOUNT_ID:-}" ] || die "Missing required environment variable: R2_ACCOUNT_ID"
-      [ -n "${R2_STATE_BUCKET:-}" ] || die "Missing required environment variable: R2_STATE_BUCKET"
-      [ -n "${R2_ACCESS_KEY_ID:-}" ] || die "Missing required environment variable: R2_ACCESS_KEY_ID"
-      [ -n "${R2_SECRET_ACCESS_KEY:-}" ] || die "Missing required environment variable: R2_SECRET_ACCESS_KEY"
-      [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "Missing required environment variable: CLOUDFLARE_API_TOKEN"
-      ;;
-    gcp)
-      [ -n "${GCP_STATE_BUCKET:-}" ] || die "Missing required environment variable: GCP_STATE_BUCKET"
-      ;;
-  esac
+  backend_kind="$(tf_backend_kind_for_project "${project_name}" "${provider_name}")"
+  require_tf_backend_runtime_env_for_kind "${backend_kind}"
+  require_tf_provider_runtime_env "${provider_name}"
 }
 
 is_tf_candidate_path_for_project() {
@@ -3496,7 +3790,10 @@ is_tf_candidate_path_for_project() {
     "tf/${project_name}"|"tf/${project_name}/"*) return 0 ;;
     "tf/modules/${provider_name}"|"tf/modules/${provider_name}/"*) return 0 ;;
     "data/secrets/${provider_name}"|"data/secrets/${provider_name}/"*) return 0 ;;
+    "data/secrets/tf/${provider_name}.tfvars.age") return 0 ;;
     "data/secrets/tf/${provider_name}"|"data/secrets/tf/${provider_name}/"*) return 0 ;;
+    "data/secrets/tf/${project_name}.tfvars.age") return 0 ;;
+    "data/secrets/tf/${project_name}"|"data/secrets/tf/${project_name}/"*) return 0 ;;
     "data/secrets/cloudflare/r2-account-id.key.age"|"data/secrets/cloudflare/r2-state-bucket.key.age"|"data/secrets/cloudflare/r2-access-key-id.key.age"|"data/secrets/cloudflare/r2-secret-access-key.key.age") return 0 ;;
   esac
 
@@ -3546,8 +3843,12 @@ resolve_tf_project_context() {
 
 prepare_tf_project_runtime() {
   local project_name="$1"
+  local provider_name=""
+
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
 
   prepare_tf_apps_project_runtime "${project_name}"
+  require_supported_tf_backend_for_project "${project_name}" "${provider_name}"
   load_tf_runtime_secrets_for_project "${project_name}"
   require_tf_runtime_env_for_project "${project_name}"
 }
@@ -3819,28 +4120,20 @@ _exec_tofu_cmd() {
 }
 
 log_tf_action_context() {
-  local phase="$1"
-  local project_name="$2"
-  local tf_dir="$3"
-  local backend_detail_1="$4"
-  local backend_detail_2="$5"
-  local provider_name="$6"
+  local tf_dir="$1"
+  local backend_kind="$2"
+  local backend_detail_1="$3"
+  local backend_detail_2="$4"
 
   echo "Working dir: ${tf_dir}" >&2
-  if [ "${project_name}" = "gcp-bootstrap" ]; then
-    echo "State bucket: ${R2_STATE_BUCKET}" >&2
-    echo "State key: ${backend_detail_1}" >&2
-    echo "Endpoint: ${backend_detail_2}" >&2
-    return 0
-  fi
 
-  case "${provider_name}" in
-    cloudflare)
+  case "${backend_kind}" in
+    r2)
       echo "State bucket: ${R2_STATE_BUCKET}" >&2
       echo "State key: ${backend_detail_1}" >&2
       echo "Endpoint: ${backend_detail_2}" >&2
       ;;
-    gcp)
+    gcs)
       echo "State bucket: ${GCP_STATE_BUCKET}" >&2
       echo "State prefix: ${backend_detail_1}" >&2
       if [ -n "${backend_detail_2}" ]; then
@@ -3854,82 +4147,23 @@ run_tf_action() {
   local phase="$1"
   local project_dir="$2"
   local project_name="" provider_name="" tf_dir=""
-  local state_key="" endpoint="" plan_file gcp_state_prefix="" gcp_backend_impersonate=""
+  local plan_file backend_kind="" backend_detail_1="" backend_detail_2=""
+  local -a init_cmd=()
 
   resolve_tf_project_context "${project_dir}" 1 tf_dir project_name provider_name
   prepare_tf_project_runtime "${project_name}"
 
-  if [ "${project_name}" = "gcp-bootstrap" ]; then
-    state_key="$(tf_state_key_for_project "${project_name}")"
-    endpoint="$(tf_backend_endpoint)"
-    log_tf_action_context "${phase}" "${project_name}" "${tf_dir}" "${state_key}" "${endpoint}" "${provider_name}"
+  resolve_tf_backend_context_for_project \
+    "${project_name}" \
+    "${provider_name}" \
+    backend_kind \
+    backend_detail_1 \
+    backend_detail_2
 
-    _exec_tofu_cmd "" -chdir="${tf_dir}" init \
-      -lockfile=readonly \
-      -backend-config="bucket=${R2_STATE_BUCKET}" \
-      -backend-config="key=${state_key}" \
-      -backend-config="region=auto" \
-      -backend-config="endpoint=${endpoint}" \
-      -backend-config="access_key=${R2_ACCESS_KEY_ID}" \
-      -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}" \
-      -backend-config="skip_credentials_validation=true" \
-      -backend-config="skip_region_validation=true" \
-      -backend-config="skip_requesting_account_id=true" \
-      -backend-config="use_path_style=true"
-
-    if [ "${DRY_RUN}" -eq 1 ]; then
-      _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false
-      return
-    fi
-
-    ensure_tmp_dir
-    plan_file="$(tmp_runtime_mktemp tf "tfplan.XXXXXX")"
-    _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false -out="${plan_file}"
-    _exec_tofu_cmd "" -chdir="${tf_dir}" apply -input=false -auto-approve "${plan_file}"
-    return
-  fi
-
-  case "${provider_name}" in
-    cloudflare)
-      state_key="$(tf_state_key_for_project "${project_name}")"
-      endpoint="$(tf_backend_endpoint)"
-      log_tf_action_context "${phase}" "${project_name}" "${tf_dir}" "${state_key}" "${endpoint}" "${provider_name}"
-
-      _exec_tofu_cmd "" -chdir="${tf_dir}" init \
-        -lockfile=readonly \
-        -backend-config="bucket=${R2_STATE_BUCKET}" \
-        -backend-config="key=${state_key}" \
-        -backend-config="region=auto" \
-        -backend-config="endpoint=${endpoint}" \
-        -backend-config="access_key=${R2_ACCESS_KEY_ID}" \
-        -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}" \
-        -backend-config="skip_credentials_validation=true" \
-        -backend-config="skip_region_validation=true" \
-        -backend-config="skip_requesting_account_id=true" \
-        -backend-config="use_path_style=true"
-      ;;
-    gcp)
-      gcp_state_prefix="$(gcp_state_prefix_for_project "${project_name}")"
-      gcp_backend_impersonate="${GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT:-}"
-      log_tf_action_context "${phase}" "${project_name}" "${tf_dir}" "${gcp_state_prefix}" "${gcp_backend_impersonate}" "${provider_name}"
-
-      if [ -n "${gcp_backend_impersonate}" ]; then
-        _exec_tofu_cmd "" -chdir="${tf_dir}" init \
-          -lockfile=readonly \
-          -backend-config="bucket=${GCP_STATE_BUCKET}" \
-          -backend-config="prefix=${gcp_state_prefix}" \
-          -backend-config="impersonate_service_account=${gcp_backend_impersonate}"
-      else
-        _exec_tofu_cmd "" -chdir="${tf_dir}" init \
-          -lockfile=readonly \
-          -backend-config="bucket=${GCP_STATE_BUCKET}" \
-          -backend-config="prefix=${gcp_state_prefix}"
-      fi
-      ;;
-    *)
-      die "Unsupported Terraform provider for automated run: ${provider_name}"
-      ;;
-  esac
+  log_tf_action_context "${tf_dir}" "${backend_kind}" "${backend_detail_1}" "${backend_detail_2}"
+  init_cmd=(tofu -chdir="${tf_dir}" init -lockfile=readonly)
+  append_tf_backend_config_args_for_project init_cmd "${project_name}" "${provider_name}"
+  run_with_combined_output "${init_cmd[@]}"
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     _exec_tofu_cmd "${project_name}" -chdir="${tf_dir}" plan -input=false
@@ -3969,6 +4203,27 @@ run_tf_project_action() {
   fi
   log_grouped_item_end
   [ "${rc}" -eq 0 ]
+}
+
+run_requested_tf_project_by_name() {
+  local phase="$1"
+  local project_name="$2"
+  local project_dir="$3"
+
+  if should_run_tf_project_action "${phase}" "${project_name}"; then
+    if run_tf_project_action "${phase}" "${project_name}" "${project_dir}"; then
+      log_tf_project_status "${project_name}" "ok"
+      record_tf_run_summary "${phase}" "${project_name}" "ok"
+      return 0
+    fi
+
+    log_tf_project_status "${project_name}" "fail"
+    record_tf_run_summary "${phase}" "${project_name}" "fail"
+    return 1
+  fi
+
+  log_tf_project_status "${project_name}" "skip"
+  record_tf_run_summary "${phase}" "${project_name}" "skip"
 }
 
 tofu_wrapper_extract_chdir() {
@@ -4011,7 +4266,6 @@ run_tofu_wrapper() {
   local -a tofu_args=("$@")
   local project_dir="" project_name="" provider_name=""
   local subcommand=""
-  local state_key="" endpoint="" gcp_state_prefix="" gcp_backend_impersonate=""
   local -a cmd=()
 
   [ "${#tofu_args[@]}" -gt 0 ] || die "Usage: scripts/nixbot-deploy.sh tofu <tofu-args...>"
@@ -4025,59 +4279,10 @@ run_tofu_wrapper() {
   subcommand="$(tofu_args_extract_subcommand "${tofu_args[@]}" || true)"
   if [ -n "${project_name}" ] && [ "${subcommand}" = "init" ] && ! tofu_args_have_explicit_backend_config "${tofu_args[@]}"; then
     cmd=(tofu "${tofu_args[@]}")
-
-    if [ "${project_name}" = "gcp-bootstrap" ]; then
-      state_key="$(tf_state_key_for_project "${project_name}")"
-      endpoint="$(tf_backend_endpoint)"
-      cmd+=(
-        -backend-config="bucket=${R2_STATE_BUCKET}"
-        -backend-config="key=${state_key}"
-        -backend-config="region=auto"
-        -backend-config="endpoint=${endpoint}"
-        -backend-config="access_key=${R2_ACCESS_KEY_ID}"
-        -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}"
-        -backend-config="skip_credentials_validation=true"
-        -backend-config="skip_region_validation=true"
-        -backend-config="skip_requesting_account_id=true"
-        -backend-config="use_path_style=true"
-      )
-      run_with_combined_output "${cmd[@]}"
-      return
-    fi
-
-    case "${provider_name}" in
-      cloudflare)
-        state_key="$(tf_state_key_for_project "${project_name}")"
-        endpoint="$(tf_backend_endpoint)"
-        cmd+=(
-          -backend-config="bucket=${R2_STATE_BUCKET}"
-          -backend-config="key=${state_key}"
-          -backend-config="region=auto"
-          -backend-config="endpoint=${endpoint}"
-          -backend-config="access_key=${R2_ACCESS_KEY_ID}"
-          -backend-config="secret_key=${R2_SECRET_ACCESS_KEY}"
-          -backend-config="skip_credentials_validation=true"
-          -backend-config="skip_region_validation=true"
-          -backend-config="skip_requesting_account_id=true"
-          -backend-config="use_path_style=true"
-        )
-        run_with_combined_output "${cmd[@]}"
-        return
-        ;;
-      gcp)
-        gcp_state_prefix="$(gcp_state_prefix_for_project "${project_name}")"
-        gcp_backend_impersonate="${GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT:-}"
-        cmd+=(
-          -backend-config="bucket=${GCP_STATE_BUCKET}"
-          -backend-config="prefix=${gcp_state_prefix}"
-        )
-        if [ -n "${gcp_backend_impersonate}" ]; then
-          cmd+=(-backend-config="impersonate_service_account=${gcp_backend_impersonate}")
-        fi
-        run_with_combined_output "${cmd[@]}"
-        return
-        ;;
-    esac
+    append_tf_backend_config_args_for_project cmd "${project_name}" "${provider_name}" \
+      || die "Unsupported Terraform backend for wrapper init: ${project_name}"
+    run_with_combined_output "${cmd[@]}"
+    return
   fi
 
   _exec_tofu_cmd "${project_name}" "${tofu_args[@]}"
@@ -4098,19 +4303,7 @@ run_requested_tf_phase() {
     project_name="$(tf_project_name_from_dir "${project_dir}")"
     project_rc=0
 
-    if should_run_tf_project_action "${phase}" "${project_name}"; then
-      if run_tf_project_action "${phase}" "${project_name}" "${project_dir}"; then
-        log_tf_project_status "${project_name}" "ok"
-        record_tf_run_summary "${phase}" "${project_name}" "ok"
-      else
-        log_tf_project_status "${project_name}" "fail"
-        record_tf_run_summary "${phase}" "${project_name}" "fail"
-        project_rc=1
-      fi
-    else
-      log_tf_project_status "${project_name}" "skip"
-      record_tf_run_summary "${phase}" "${project_name}" "skip"
-    fi
+    run_requested_tf_project_by_name "${phase}" "${project_name}" "${project_dir}" || project_rc=1
 
     if [ "${project_rc}" -ne 0 ]; then
       return 1
@@ -4120,6 +4313,20 @@ run_requested_tf_phase() {
   if [ "${found}" -eq 0 ]; then
     echo "No Terraform ${phase} projects found; skipping" >&2
   fi
+}
+
+run_requested_tf_project() {
+  local action="$1"
+  local project_name="" phase="" project_dir=""
+
+  project_name="$(tf_action_project_name "${action}")" || die "Unsupported Terraform project action: ${action}"
+  tf_project_name_is_configured "${project_name}" || die "Unsupported Terraform project action: ${action}"
+  phase="$(tf_project_phase_from_name "${project_name}")" || die "Unable to determine Terraform phase for project: ${project_name}"
+  project_dir="$(tf_project_dir_from_name "${project_name}")"
+  [ -d "${project_dir}" ] || die "Configured Terraform project directory not found: ${project_dir}"
+
+  log_section "Phase: Terraform (${phase})"
+  run_requested_tf_project_by_name "${phase}" "${project_name}" "${project_dir}"
 }
 
 run_tf_only_action() {
@@ -4135,6 +4342,9 @@ run_tf_only_action() {
       ;;
     tf-apps)
       run_tf_phases apps
+      ;;
+    tf/*)
+      run_requested_tf_project "${ACTION}"
       ;;
     *)
       die "Unsupported Terraform-only action: ${ACTION}"

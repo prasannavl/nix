@@ -37,6 +37,11 @@ in
     "data/secrets/cloudflare/r2-access-key-id.key.age".publicKeys = admins ++ pvl-x2;
     "data/secrets/cloudflare/r2-secret-access-key.key.age".publicKeys = admins ++ pvl-x2;
 
+    # GCP runtime auth
+    "data/secrets/gcp/application-default-credentials.json.age".publicKeys = adminsWithNixbot;
+    "data/secrets/gcp/state-bucket.key.age".publicKeys = adminsWithNixbot;
+    "data/secrets/gcp/backend-impersonate-service-account.key.age".publicKeys = adminsWithNixbot;
+
     # Terraform Secrets
     "data/secrets/tf/cloudflare/globals.tfvars.age".publicKeys = adminsWithNixbot;
     "data/secrets/tf/cloudflare/account.tfvars.age".publicKeys = adminsWithNixbot;
