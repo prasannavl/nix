@@ -114,6 +114,7 @@
     })
     // {
       pkgs = nixpkgs.lib.genAttrs flake-utils.lib.defaultSystems packageTreeFor;
+      inherit (flakeLib) nixosModules;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;

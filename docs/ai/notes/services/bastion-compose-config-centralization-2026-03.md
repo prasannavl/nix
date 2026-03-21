@@ -8,7 +8,7 @@
 - Live compose stacks remain file-backed under
   `hosts/<bastion-host>/compose/**`, while generated `.env` files still derive
   runtime values from `exposedPorts` and other instance metadata.
-- `lib/podman.nix` opens compose-managed firewall ports from `exposedPorts`;
-  `hosts/<bastion-host>/firewall.nix` should only keep non-compose and
-  host-specific rules.
+- `lib/flake/podman.nix` opens compose-managed firewall ports from
+  `exposedPorts`; `hosts/<bastion-host>/firewall.nix` should only keep
+  non-compose and host-specific rules.
 - Secret values stay on the existing `age.secrets` plus `envSecrets` path.
