@@ -56,6 +56,9 @@
     dev = with pkgs; [
       python3
       gnumake
+      go
+      gopls
+      delve
       # rustup
       cargo
       rustc

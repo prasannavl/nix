@@ -151,6 +151,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/vscode-external-package-2026-03.md`: Repo-local stable
   `pkgs.vscode-upstream` package sourced from Microsoft's official update feed
   and exported via `pkgs/ext`.
+- `docs/ai/notes/tooling/vscode-go-binaries-pvl-a1-2026-03.md`: `pvl-a1`
+  installs `go`/`gopls`/`dlv` and wires VS Code Go tools to fixed Nix store
+  paths.
 
 ## Playbooks
 
