@@ -7,6 +7,7 @@
   (
     final: _: {
       handbrake-wrapped = final.callPackage ../pkgs/ext/handbrake.nix {};
+      vscode-upstream = final.callPackage ../pkgs/ext/vscode-upstream.nix {};
       zed-wrapped = final.callPackage ../pkgs/ext/zed.nix {};
       nvidiaCustomForKernel = kernelPackages:
         final.callPackage ../pkgs/ext/nvidia-driver.nix {inherit kernelPackages;};

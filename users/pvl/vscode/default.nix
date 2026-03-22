@@ -4,8 +4,10 @@
   home = {pkgs, ...}: {
     programs.vscode = {
       enable = true;
+      package = pkgs.vscode-upstream;
       profiles.default = let
-        v = pkgs.vscode.version;
+        # Keep extensions aligned to the stable release train that nix-vscode-extensions publishes.
+        v = pkgs.vscode-upstream.version;
         e = pkgs.nix-vscode-extensions.forVSCodeVersion v;
         r = e.vscode-marketplace-release;
       in {
@@ -35,6 +37,8 @@
           # kilocode.kilo-code
           # anthropic.claude-code
           # google.geminicodeassist
+
+          golang.go
         ];
 
         keybindings = [
