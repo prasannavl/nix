@@ -1,3 +1,6 @@
+# Git
+/worktree/
+
 # Nix
 result/
 /result-*
