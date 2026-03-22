@@ -67,6 +67,8 @@ Use this index as the canonical map for `docs/ai/**`.
   repo-local flake app while preserving the stable bastion forced-command path.
 - `docs/ai/notes/nixbot/deploy-env-prefix-rename-2026-03.md`: Rename
   deploy-script-owned `DEPLOY_*` variables and env knobs to `NIXBOT_*`.
+- `docs/ai/notes/nixbot/after-ordering-host-edges-2026-03.md`: Add ordering-only
+  `after` host edges that affect deploy order without expanding host selection.
 - `docs/ai/notes/nixbot/dirty-flag-bypass-2026-03.md`: Explicit `--dirty` /
   `NIXBOT_DIRTY` opt-in for bypassing the repo-root cleanliness gate.
 - `docs/ai/notes/nixbot/script-entrypoint-rename-2026-03.md`: Rename the nixbot

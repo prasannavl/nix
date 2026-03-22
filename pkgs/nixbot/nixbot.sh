@@ -1303,6 +1303,12 @@ host_dependencies_for() {
   jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
+host_ordering_after_for() {
+  local node="$1"
+
+  jq -r --arg h "${node}" '.[$h].after // [] | .[]' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
 expand_selected_hosts_json() {
   local selected_json="$1"
   local all_hosts_json="$2"
@@ -1350,6 +1356,7 @@ order_selected_hosts_json() {
   local -a selected_hosts=()
   local -a ordered_hosts=()
   local -a deps=()
+  local -a after_hosts=()
   declare -A all_host_set=()
   declare -A selected_host_set=()
   declare -A emitted_host_set=()
@@ -1375,6 +1382,21 @@ order_selected_hosts_json() {
       fi
       if [ -z "${all_host_set["${dep}"]+x}" ]; then
         die "Unknown dependency declared for ${node}: ${dep}"
+      fi
+      if [ -n "${selected_host_set["${dep}"]+x}" ]; then
+        indegree["${node}"]=$((indegree["${node}"] + 1))
+        dependents["${dep}"]+="${node}"$'\n'
+      fi
+    done
+
+    mapfile -t after_hosts < <(host_ordering_after_for "${node}")
+    for dep in "${after_hosts[@]}"; do
+      [ -n "${dep}" ] || continue
+      if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+        continue
+      fi
+      if [ -z "${all_host_set["${dep}"]+x}" ]; then
+        die "Unknown ordering host declared for ${node}: ${dep}"
       fi
       if [ -n "${selected_host_set["${dep}"]+x}" ]; then
         indegree["${node}"]=$((indegree["${node}"] + 1))
@@ -1433,6 +1455,7 @@ selected_host_levels_json() {
   local node dep dep_level node_level max_level level
   local bastion_host="${BASTION_TRIGGER_HOST}"
   local -a selected_hosts=()
+  local -a after_hosts=()
   declare -A selected_host_set=()
   declare -A host_level=()
 
@@ -1457,6 +1480,18 @@ selected_host_levels_json() {
         fi
       fi
     done < <(host_dependencies_for "${node}")
+
+    mapfile -t after_hosts < <(host_ordering_after_for "${node}")
+    for dep in "${after_hosts[@]}"; do
+      [ -n "${dep}" ] || continue
+      if [ -n "${selected_host_set["${dep}"]+x}" ]; then
+        dep_level="${host_level["${dep}"]:-}"
+        [ -n "${dep_level}" ] || die "Ordering level missing for ${node}: ${dep}"
+        if [ $((dep_level + 1)) -gt "${node_level}" ]; then
+          node_level=$((dep_level + 1))
+        fi
+      fi
+    done
 
     if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${bastion_host}"]+x}" ] && [ "${node_level}" -lt 1 ]; then
       node_level=1

@@ -3,17 +3,17 @@
     pvl-a1 = {
       target = "pvl-a1";
       ageIdentityKey = "data/secrets/machine/pvl-a1.key.age";
-      deps = [];
     };
     pvl-x2 = {
       target = "pvl-x2";
       ageIdentityKey = "data/secrets/machine/pvl-x2.key.age";
       deps = [];
+      after = [];
     };
     llmug-rivendell = {
       target = "10.10.20.10";
       ageIdentityKey = "data/secrets/machine/llmug-rivendell.key.age";
-      deps = ["pvl-x2"];
+      after = ["pvl-x2"];
     };
   };
 

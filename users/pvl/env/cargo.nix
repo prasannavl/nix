@@ -1,7 +1,7 @@
 {
   nixos = _: {};
 
-  home = {...}: {
+  home = _: {
     home.sessionPath = [
       "$HOME/.cargo/bin"
     ];
