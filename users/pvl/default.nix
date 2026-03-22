@@ -46,6 +46,8 @@ in rec {
       ./vscode
       ./dotfiles-link-bin
       ./xdg-user-dirs
+      ./env/cargo.nix
+      ./env/go.nix
     ];
   desktop-gnome = mkModule desktop-gnome-modules;
 
