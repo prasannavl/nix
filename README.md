@@ -1,7 +1,7 @@
 # Nix
 
-This is the nix driven monorepo, organized as small
-modules and composed via `flake.nix`.
+This is the nix driven monorepo, organized as small modules and composed via
+`flake.nix`.
 
 ## Layout
 
