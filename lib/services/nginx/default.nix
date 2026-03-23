@@ -1,9 +1,8 @@
 {lib}: let
-  proxyVhostType = lib.types.submodule ({name, ...}: {
+  proxyVhostType = lib.types.submodule (_: {
     options = {
       service = lib.mkOption {
         type = lib.types.str;
-        default = name;
         description = "Compose service name nginx should depend on for this vhost.";
       };
 
@@ -14,10 +13,21 @@
 
       port = lib.mkOption {
         type = lib.types.port;
-        description = "Local backend port nginx and Cloudflare tunnel should forward to.";
+        description = "Local backend port nginx should forward to.";
       };
     };
   });
+
+  mkProxyVhost = serviceName: portName: portCfg: let
+    nginxHostNames = portCfg.nginxHostNames or [];
+  in
+    lib.optionalAttrs (nginxHostNames != []) {
+      "${serviceName}-${portName}" = {
+        service = serviceName;
+        inherit (portCfg) port;
+        serverNames = nginxHostNames;
+      };
+    };
 
   mkProxyServer = name: proxy: ''
     # ${name}
@@ -33,11 +43,7 @@
     }
   '';
 in {
-  proxyVhostsOption = lib.mkOption {
-    type = lib.types.attrsOf proxyVhostType;
-    default = {};
-    description = "Shared reverse-proxy vhost declarations used by nginx and tunnel ingress.";
-  };
+  inherit proxyVhostType;
 
   composeSource = ./compose/compose.yaml;
 
@@ -45,6 +51,14 @@ in {
     "nginx.conf" = ./compose/nginx.conf;
     "conf.d" = ./compose/conf.d;
   };
+
+  proxyVhostsFromInstances = instances:
+    lib.concatMapAttrs
+    (serviceName: service:
+      lib.concatMapAttrs
+      (portName: portCfg: mkProxyVhost serviceName portName portCfg)
+      service.exposedPorts)
+    instances;
 
   dependencyServices = proxyVhosts:
     lib.unique (map (proxy: proxy.service) (builtins.attrValues proxyVhosts));

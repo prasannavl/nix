@@ -3,28 +3,10 @@
   lib,
   ...
 }: let
-  nginxLib = import ../../lib/nginx {inherit lib;};
-  proxyVhosts = config.x.nginxProxyVhosts;
+  nginxLib = import ../../lib/services/nginx {inherit lib;};
+  proxyVhosts = config.services.podmanCompose.pvl.nginxProxyVhosts;
 in {
   config = {
-    x.nginxProxyVhosts = {
-      docmost = {
-        service = "docmost";
-        serverNames = ["docmost.example.com"];
-        port = 3000;
-      };
-      memos = {
-        service = "memos";
-        serverNames = ["memos.example.com"];
-        port = 5230;
-      };
-      vaultwarden = {
-        service = "vaultwarden";
-        serverNames = ["vaultwarden.example.com"];
-        port = 2000;
-      };
-    };
-
     services.podmanCompose.pvl = {
       user = "pvl";
       stackDir = "/var/lib/pvl/compose";
@@ -159,8 +141,10 @@ in {
 
         memos = rec {
           exposedPorts.http = {
-            port = proxyVhosts.memos.port;
+            port = 5230;
             openFirewall = true;
+            nginxHostNames = ["memos.example.com"];
+            cfTunnelNames = ["memos.example.com"];
           };
 
           source = ./compose/memos/docker-compose.yaml;
@@ -200,8 +184,10 @@ in {
 
         docmost = rec {
           exposedPorts.http = {
-            port = proxyVhosts.docmost.port;
+            port = 3000;
             openFirewall = true;
+            nginxHostNames = ["docmost.example.com"];
+            cfTunnelNames = ["docmost.example.com"];
           };
 
           source = ./compose/docmost/docker-compose.yml;
@@ -221,8 +207,10 @@ in {
 
         vaultwarden = rec {
           exposedPorts.http = {
-            port = proxyVhosts.vaultwarden.port;
+            port = 2000;
             openFirewall = true;
+            nginxHostNames = ["vaultwarden.example.com"];
+            cfTunnelNames = ["vaultwarden.example.com"];
           };
 
           source = ./compose/vaultwarden/docker-compose.yml;

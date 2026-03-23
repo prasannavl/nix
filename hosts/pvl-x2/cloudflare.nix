@@ -3,7 +3,6 @@
   lib,
   ...
 }: let
-  tunnelsLib = import ../../lib/tunnels {inherit lib;};
   s = ../../data/secrets + "/cloudflare/tunnels/pvl-x2-main.credentials.json.age";
   c =
     if builtins.pathExists s
@@ -13,7 +12,7 @@
         name = "pvl-x2-main.credentials.json.age";
       }
     else null;
-  tunnelIngress = tunnelsLib.ingressFromProxyVhosts config.x.nginxProxyVhosts;
+  tunnelIngress = config.services.podmanCompose.pvl.cloudflareTunnelIngress;
 in {
   age.secrets = lib.optionalAttrs (c != null) {
     cloudflare-tunnel-main-credentials = {

@@ -9,6 +9,8 @@ Behavior:
   defines one or more `services.cloudflared.tunnels."<uuid>"` entries.
 - This uses the stock NixOS module directly, so multi-tunnel support comes from
   upstream behavior rather than custom glue.
+- Hosts may derive the `ingress` attrset from local service metadata, but the
+  final Cloudflare configuration still uses the native upstream NixOS module.
 
 Example shape:
 

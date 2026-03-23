@@ -107,6 +107,12 @@ Use this index as the canonical map for `docs/ai/**`.
   cleanup rules for sensitive operational details.
 - `docs/ai/notes/services/gcp-terraform-adoption-2026-03.md`: GCP bootstrap and
   platform Terraform adoption into this repo's phase-based `tf/` layout.
+- `docs/ai/notes/services/automatic-ingress-metadata-2026-03.md`: Optional
+  `exposedPorts` metadata that auto-derives nginx reverse-proxy and Cloudflare
+  Tunnel wiring.
+- `docs/ai/notes/services/lib-service-module-relocation-2026-03.md`: User-led
+  relocation of service-specific helper modules from `lib/` into
+  `lib/services/`.
 - `docs/ai/notes/services/lib-flake-published-podman-systemd-modules-2026-03.md`:
   Revert `podman` and `systemd-user-manager` to `lib/` and drop the unused
   published flake-module export.

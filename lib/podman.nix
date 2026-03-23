@@ -5,6 +5,8 @@
   ...
 }: let
   cfg = config.services.podmanCompose;
+  nginxLib = import ./services/nginx {inherit lib;};
+  tunnelsLib = import ./services/tunnels {inherit lib;};
 
   serviceType = lib.types.submodule (_: {
     options = {
@@ -117,6 +119,18 @@
               default = false;
               description = "Whether this port should be included when deriving firewall rules from services.podmanCompose.";
             };
+
+            nginxHostNames = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+              description = "Optional hostnames to serve through the repo-managed nginx reverse proxy for this port.";
+            };
+
+            cfTunnelNames = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+              description = "Optional Cloudflare Tunnel hostnames to route to the repo-managed nginx reverse proxy for this port.";
+            };
           };
         }));
         default = {};
@@ -159,6 +173,20 @@
         type = lib.types.attrsOf (lib.types.oneOf [instanceFnType serviceType]);
         default = {};
         description = "Compose instances in this stack keyed by instance name. Each value can be an instance attrset or a function receiving { stackName, instanceName, user, uid, workDir, stackDir, podmanSocket } and returning an instance attrset. podmanSocket resolves to /run/podman/podman.sock for root stacks, otherwise /run/user/<uid>/podman/podman.sock.";
+      };
+
+      nginxProxyVhosts = lib.mkOption {
+        type = lib.types.attrsOf nginxLib.proxyVhostType;
+        default = {};
+        readOnly = true;
+        description = "Derived nginx reverse-proxy vhosts built from instance exposedPorts metadata.";
+      };
+
+      cloudflareTunnelIngress = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        readOnly = true;
+        description = "Derived Cloudflare Tunnel ingress built from instance exposedPorts metadata.";
       };
     };
   });
@@ -406,37 +434,37 @@ in {
           else {"${dstPrefix}" = value;};
       in
         stack
-        // {
-          instances = let
-            instancesWithContext =
-              lib.mapAttrs
-              (serviceName: serviceOrFn:
-                if builtins.isFunction serviceOrFn
-                then let
-                  resolvedUser = stack.user;
-                  userUid =
-                    if resolvedUser == "root"
-                    then "0"
-                    else if builtins.hasAttr resolvedUser config.users.users && config.users.users.${resolvedUser}.uid != null
-                    then toString config.users.users.${resolvedUser}.uid
-                    else throw "services.podmanCompose.${stackName}: stack user '${resolvedUser}' must exist in config.users.users with a non-null uid when using function-valued instances.";
-                  podmanSocket =
-                    if resolvedUser == "root"
-                    then "/run/podman/podman.sock"
-                    else "/run/user/${userUid}/podman/podman.sock";
-                in
-                  serviceOrFn {
-                    inherit stackName serviceName;
-                    instanceName = serviceName;
-                    user = resolvedUser;
-                    uid = userUid;
-                    workDir = "${stack.stackDir}/${serviceName}";
-                    inherit (stack) stackDir;
-                    inherit podmanSocket;
-                  }
-                else serviceOrFn)
-              stack.instances;
-          in
+        // (let
+          instancesWithContext =
+            lib.mapAttrs
+            (serviceName: serviceOrFn:
+              if builtins.isFunction serviceOrFn
+              then let
+                resolvedUser = stack.user;
+                userUid =
+                  if resolvedUser == "root"
+                  then "0"
+                  else if builtins.hasAttr resolvedUser config.users.users && config.users.users.${resolvedUser}.uid != null
+                  then toString config.users.users.${resolvedUser}.uid
+                  else throw "services.podmanCompose.${stackName}: stack user '${resolvedUser}' must exist in config.users.users with a non-null uid when using function-valued instances.";
+                podmanSocket =
+                  if resolvedUser == "root"
+                  then "/run/podman/podman.sock"
+                  else "/run/user/${userUid}/podman/podman.sock";
+              in
+                serviceOrFn {
+                  inherit stackName serviceName;
+                  instanceName = serviceName;
+                  user = resolvedUser;
+                  uid = userUid;
+                  workDir = "${stack.stackDir}/${serviceName}";
+                  inherit (stack) stackDir;
+                  inherit podmanSocket;
+                }
+              else serviceOrFn)
+            stack.instances;
+
+          resolvedInstances =
             lib.mapAttrs
             (serviceName: service: let
               normalizedService =
@@ -487,7 +515,8 @@ in {
                 if envSecretsOverride == {}
                 then normalizedService.entryFile
                 else baseEntryFiles ++ [envSecretsOverrideFileName];
-              filesExpanded = lib.concatMapAttrs (dstPath: value: expandFileValue dstPath value) normalizedService.files;
+              filesExpanded =
+                lib.concatMapAttrs (dstPath: value: expandFileValue dstPath value) normalizedService.files;
               effectiveFilesRaw =
                 (lib.optionalAttrs useSource {"compose.yml" = sourceCompose;})
                 // filesExpanded
@@ -509,7 +538,11 @@ in {
                 entryFile = normalizedEntryFile;
               })
             instancesWithContext;
-        })
+        in {
+          instances = resolvedInstances;
+          nginxProxyVhosts = nginxLib.proxyVhostsFromInstances resolvedInstances;
+          cloudflareTunnelIngress = tunnelsLib.ingressFromInstances resolvedInstances;
+        }))
       stacks;
   };
 
