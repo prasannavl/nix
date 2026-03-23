@@ -48,9 +48,9 @@
           "file:///${homeDir}/.local .local"
           (onHosts ["pvl-a1"] "file:///${homeDir}/src src")
           (onHosts ["pvl-a1"] "file:///${homeDir}/tmp tmp")
-          (onHosts ["pvl-a1"] "file:///${homeDir}/spaces/llmug spaces:lab")
+          (onHosts ["pvl-a1"] "file:///${homeDir}/spaces/lab spaces:lab")
           (onHosts ["pvl-a1"] "file:///${homeDir}/spaces/llmug spaces:llmug")
-          (onHosts ["pvl-a1"] "file:///${homeDir}/spaces/llmug spaces:gap3")
+          (onHosts ["pvl-a1"] "file:///${homeDir}/spaces/gap3 spaces:gap3")
           (notHosts ["pvl-x2"] "sftp://pvl-x2/home/pvl ssh:pvl-x2/pvl")
         ];
       };
