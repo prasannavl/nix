@@ -54,7 +54,7 @@
     ];
 
     dev = with pkgs; [
-      python3
+      python3Full
       gnumake
       go
       gopls
@@ -65,6 +65,9 @@
       rustPlatform.rustLibSrc
       rustfmt
       rust-analyzer
+      nodejs
+      nodePackages.npm
+      yarn
       zed-wrapped
       nixd
       alejandra

@@ -16,6 +16,14 @@
   `main "$@"` call.
 - Do not leave stray top-level executable lines outside functions.
 
+## Variable declarations
+
+- Prefer collapsing related `local` declarations into a single statement when it
+  stays readable.
+- Split locals across multiple lines when different attributes (`-a`, `-n`,
+  etc.), inline comments, or control-flow-adjacent setup make the combined form
+  harder to scan.
+
 ## Initialization
 
 - If a script needs shared/default variables, gather them in one `init_vars`

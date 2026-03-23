@@ -15,6 +15,17 @@ and the steps for adding another guest by copying an existing guest pattern.
   dependency first, so selecting a guest also brings in the host that creates
   and starts it.
 
+## Naming conventions
+
+- **Shared guest module**: `lib/incus-vm.nix` -- uses `vm` to match guest
+  terminology across documentation and imports. Previously named
+  `lib/incus-machine.nix`; all in-repo imports and doc references were updated
+  in the same rename change.
+- **Reusable base image**: `lib/images/incus-base.nix` -- uses `base`
+  consistently for the module, exported image key, and local Incus image alias.
+  Previously named with a `bootstrap` prefix; the rename only affected the
+  reusable starting image, not guest-specific configuration terminology.
+
 ## Secret model
 
 - No separate Incus-only secret system currently exists.
@@ -53,9 +64,9 @@ and the steps for adding another guest by copying an existing guest pattern.
 
 - Guest workloads must match the parent host's actual hardware model rather than
   inheriting unrelated defaults from other hosts.
-- For the AMD-backed Ollama guest, the durable model is `/dev/dri` and
-  `/dev/kfd` passthrough plus `video` and `render` group access; NVIDIA-specific
-  runtime assumptions do not belong in that guest.
+- For an AMD-backed GPU guest, the durable model is `/dev/dri` and `/dev/kfd`
+  passthrough plus `video` and `render` group access; NVIDIA-specific runtime
+  assumptions do not belong in that guest.
 
 ## Superseded notes
 
@@ -63,6 +74,8 @@ and the steps for adding another guest by copying an existing guest pattern.
 - `docs/ai/notes/hosts/incus-guest-tailscale-login-2026-03.md`
 - `docs/ai/notes/hosts/incus-machine-tailscale-block-refactor-2026-03.md`
 - `docs/ai/notes/hosts/incus-guest-ollama-amd-gpu-2026-03.md`
+- `docs/ai/notes/hosts/incus-base-image-rename-2026-03.md`
+- `docs/ai/notes/hosts/incus-vm-module-rename-2026-03.md`
 
 ## Source of truth files
 
@@ -71,4 +84,6 @@ and the steps for adding another guest by copying an existing guest pattern.
 - `hosts/nixbot.nix`
 - `lib/incus-vm.nix`
 - `lib/images/incus-base.nix`
+- `lib/images/default.nix`
 - `docs/incus-vms.md`
+- `docs/deployment.md`

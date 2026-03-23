@@ -3,8 +3,9 @@
 ## Scope
 
 Canonical durable state for the March 2026 `nixbot` deploy system: bastion
-ingress, bootstrap and identity handling, dependency-aware orchestration,
-snapshot/rollback rules, logging semantics, and CI connectivity.
+ingress, bootstrap and identity handling, dependency-aware orchestration, host
+deploy policy, ordering edges, snapshot/rollback rules, logging semantics,
+result processing architecture, and CI connectivity.
 
 ## Core architecture
 
@@ -80,6 +81,36 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   and every run executes from a detached worktree rather than from the shared
   mirror itself.
 
+## Deploy policy modes
+
+- Each host declares `hosts.<name>.deploy` in `hosts/nixbot.nix`, defaulting to
+  `"strict"`. Supported values:
+  - `"strict"` -- existing fatal deploy semantics; snapshot failure is fatal,
+    deploy failure is fatal, successful strict hosts may be rolled back on later
+    fatal failure.
+  - `"optional"` -- snapshot failure skips deploy for that host; deploy failure
+    attempts host-local rollback and then continues the run.
+  - `"skip"` -- skip that host's deploy stage entirely while still allowing the
+    build phase.
+- `hosts.<name>.skip = true` removes the host from both build and deploy
+  execution for the run while keeping it visible in the final summary as `skip`.
+- Build behavior is unchanged for runnable hosts: any build failure still fails
+  the run regardless of deploy policy.
+- Hard `deps` may only point to runnable hosts with `deploy = "strict"`.
+- Ordering-only `after` edges may reference `deploy = "optional"` or
+  `deploy = "skip"` hosts.
+
+### Policy-specific summary states
+
+These states appear in the final summary but do not flip the overall run to
+failure by themselves:
+
+- `optional (snapshot skipped)`
+- `optional (rolled back)`
+- `optional (rollback failed)`
+- `ok (skip)` -- for deploy-stage skips (`deploy = "skip"`)
+- `skip` -- for fully skipped hosts (`skip = true`)
+
 ## Orchestration rules
 
 - Host metadata may declare `hosts.<name>.deps = [ ... ]` in `hosts/nixbot.nix`.
@@ -87,6 +118,26 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   topologically ordered.
 - Explicit `--hosts a,b,c` order remains the stable tie-breaker when multiple
   hosts are ready at once.
+
+### Host ordering edges
+
+- `hosts.<name>.deps` remains the hard dependency edge:
+  - selected hosts expand to include their `deps`
+  - deploy ordering respects `deps`
+- `hosts.<name>.after` is an ordering-only edge:
+  - it does not expand host selection
+  - it only affects ordering when both the source and target hosts are selected
+- The effective ordering graph is `deps + after`.
+- Unknown `after` targets are fatal.
+- Cycles across the combined `deps + after` graph are fatal.
+- `after` does not introduce optional or soft-failure behavior; existing build
+  and deploy failure semantics remain unchanged.
+- Selection expansion still reads only `deps`.
+- Topological ordering and deploy-wave level assignment read both `deps` and
+  `after`.
+
+### Concurrency and waves
+
 - Build and deploy are separate concurrency domains:
   - build: `NIXBOT_BUILD_JOBS` / `--build-jobs`
   - deploy: `NIXBOT_JOBS` / `--deploy-jobs`
@@ -96,9 +147,13 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   dependencies have succeeded.
 - `NIXBOT_BASTION_FIRST` / `--bastion-first` is a narrow override: if bastion is
   selected, it can be forced to the front of build order and wave 1 even if its
-  own `deps` would place it later.
+  own `deps` would place it later. `--bastion-first` keeps its current
+  precedence over normal ordering edges including `after`.
 - Unknown selected hosts, unknown dependencies among selected hosts, or cycles
   in the selected dependency graph must fail the run before build/deploy starts.
+
+### Actions and Terraform
+
 - `--action all` is the default public mode:
   - run the TF phase first only when TF-relevant paths changed, unless `--force`
     overrides the skip
@@ -141,6 +196,16 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   - snapshot-blocked hosts: `FAIL (snapshot)`
   - built-but-never-deployed hosts after a global failure: `built`
   - deployed-then-reverted hosts after another host fails: `rolled back`
+
+## Result processing architecture
+
+- Helpers named like `resolve_*_result` should classify state only; they must
+  remain side-effect free.
+- Optional-host rollback is deploy-wave orchestration, not result parsing.
+- Use an explicitly named completion/orchestration helper when a step may mutate
+  rollback state or trigger rollback work.
+- Keep result classification separate from deploy-wave orchestration so
+  status-reading helpers stay testable and predictable.
 
 ## Flow and logging lessons
 
@@ -234,10 +299,11 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
   `-lockfile=readonly` so provider lock normalization does not dirty a repo
   worktree during PR-triggered deploy runs.
 - Terraform backend selection should stay centralized by runnable project:
-  Cloudflare roots and `gcp-bootstrap` use the shared R2 backend, while
-  `gcp-platform` uses GCS. Runtime secret loading, required env validation, and
-  wrapper/backend-config injection should all reuse that same backend convention
-  helper instead of open-coding per-project branches.
+  Cloudflare roots and the GCP bootstrap project use the shared object-storage
+  backend, while the GCP platform project uses GCS. Runtime secret loading,
+  required env validation, and wrapper/backend-config injection should all reuse
+  that same backend convention helper instead of open-coding per-project
+  branches.
 - The persistent bastion repo root may be synced to `origin/master` only during
   the short locked setup window before a worktree is created. The source mirror
   must never be the active execution tree for a run, including `master` deploys,
@@ -272,11 +338,14 @@ snapshot/rollback rules, logging semantics, and CI connectivity.
 
 ## Superseded notes
 
+- `docs/ai/notes/nixbot/after-ordering-host-edges-2026-03.md`
 - `docs/ai/notes/nixbot/bastion-reexec-checked-out-script-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-flow-consolidation-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-log-formatting-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-noninteractive-tty-fallback-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-order-deps-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-policy-and-skip-hosts-2026-03.md`
+- `docs/ai/notes/nixbot/deploy-result-processing-cleanup-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-snapshot-fallback-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-snapshot-retry-phase-logging-2026-03.md`
 - `docs/ai/notes/nixbot/deploy-summary-built-status-2026-03.md`

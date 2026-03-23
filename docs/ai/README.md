@@ -13,15 +13,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Apps
 
-- `docs/ai/notes/apps/root-flake-app-exports-and-git-source-2026-03.md`: Root
-  flake nested `pkgs.*` export shape, installable naming, and Git snapshot
-  behavior.
-- `docs/ai/notes/apps/auto-discovered-flake-collectors-2026-03.md`: Shared
-  collector behavior for nested `pkgs/` child flakes.
-- `docs/ai/notes/apps/lib-flake-rename-2026-03.md`: Rename of flake helper
-  directory from `lib/internal` to `lib/flake`.
-- `docs/ai/notes/apps/pkgs-hybrid-package-set-and-wrapper-flakes-2026-03.md`:
-  Canonical packages in `default.nix` plus child flake wrappers for local UX.
+- `docs/ai/notes/apps/flake-architecture-consolidated-2026-03.md`: Canonical
+  flake output model, auto-discovery collector, `lib/flake` helpers, hybrid
+  package set architecture, and wrapper flakes.
 
 ### Deployment
 
@@ -34,70 +28,49 @@ Use this index as the canonical map for `docs/ai/**`.
   Tunnel host wiring.
 - `docs/ai/notes/hosts/desktop-investigations-consolidated-2026-03.md`:
   Consolidated desktop investigations and durable findings.
-- `docs/ai/notes/hosts/incus-base-image-rename-2026-03.md`: Reusable Incus image
-  rename from `incus-bootstrap` to `incus-base`.
-- `docs/ai/notes/hosts/incus-vm-module-rename-2026-03.md`: Shared Incus guest
-  module rename from `incus-machine` to `incus-vm`.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
-  reusable Incus guest template, bootstrap flow, and secret model.
-- `docs/ai/notes/hosts/llmug-rivendell-ollama-drm-device-path-2026-03.md`:
-  Replace broad `/dev/dri` passthrough with explicit ROCm device nodes for the
-  Ollama guest container.
+  reusable Incus guest template, bootstrap flow, naming conventions, and secret
+  model.
 - `docs/ai/notes/hosts/pvl-bash-prompt-exit-status-fix-2026-03.md`: Prompt
   exit-status command substitution was escaped as `\$(...)` during lint cleanup,
   causing the literal text to render in interactive shells.
 
 ### Nixbot
 
-- `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Canonical
-  `nixbot` deploy architecture, runtime contract, and orchestration behavior.
-- `docs/ai/notes/nixbot/interrupt-and-phase-short-circuit-2026-03.md`: `Ctrl+C`
-  propagation and full-workflow stop-on-first-failure behavior for `nixbot`.
-- `docs/ai/notes/nixbot/lint-gating-and-precommit-2026-03.md`: Shared lint
-  entrypoint, CI gate, and pre-commit hook decisions.
-- `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
-  Canonical `nixbot` rotation model, lessons, and operator guardrails.
-- `docs/ai/notes/nixbot/nameref-audit-and-fixes-2026-03.md`: Bash nameref
-  circular-reference audit and helper-local binding rename strategy for
-  `nixbot`.
-- `docs/ai/notes/nixbot/nixbot-wrapper-runtime-shell-exception-2026-03.md`: Thin
-  `scripts/nixbot.sh` wrapper intentionally skips `ensure_runtime_shell` because
-  the delegated nixbot entrypoint already owns runtime setup.
-- `docs/ai/notes/nixbot/package-flake-wrapper-2026-03.md`: Package `nixbot` as a
-  repo-local flake app while preserving the stable bastion forced-command path.
+- `docs/ai/notes/nixbot/code-review-and-cleanup-2026-03.md`: Consolidated code
+  review, subprocess reduction, dedup, and simplification pass.
+- `docs/ai/notes/nixbot/context-and-classifier-cleanups-2026-03.md`: Naming
+  rules for helpers: `prepare_*` for state setup, `resolve_*`/`evaluate_*` for
+  classification, and separation of discovery from materialization.
 - `docs/ai/notes/nixbot/deploy-env-prefix-rename-2026-03.md`: Rename
   deploy-script-owned `DEPLOY_*` variables and env knobs to `NIXBOT_*`.
-- `docs/ai/notes/nixbot/after-ordering-host-edges-2026-03.md`: Add ordering-only
-  `after` host edges that affect deploy order without expanding host selection.
+- `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Canonical
+  `nixbot` deploy architecture, runtime contract, orchestration behavior, deploy
+  policy modes, host ordering edges, and result processing architecture.
 - `docs/ai/notes/nixbot/dirty-flag-bypass-2026-03.md`: Explicit `--dirty` /
   `NIXBOT_DIRTY` opt-in for bypassing the repo-root cleanliness gate.
-- `docs/ai/notes/nixbot/script-entrypoint-rename-2026-03.md`: Rename the nixbot
-  orchestration entrypoint from `nixbot-deploy.sh` to `nixbot`.
-- `docs/ai/notes/nixbot/runtime-temp-suffix-alignment-2026-03.md`: Consolidated
-  per-run workspace root for deploy artifacts and detached repo worktrees.
-- `docs/ai/notes/nixbot/run-subcommand-default-usage-2026-03.md`: Bare `nixbot`
-  now prints usage and exits; deploy/Terraform modes are top-level actions,
-  `run` is the explicit full-workflow entrypoint, and dependency setup uses the
-  explicit `deps` / `check-deps` commands.
-- `docs/ai/notes/nixbot/terraform-init-failure-propagation-2026-03.md`:
-  Terraform init/plan/apply failures must be checked explicitly because
-  `run_tf_action` executes under an `if` context where `set -e` does not abort.
-- `docs/ai/notes/nixbot/terraform-backend-context-nameref-fix-2026-03.md`: Bash
-  nameref shadowing in Terraform backend context resolution dropped backend
-  config flags and caused interactive `bucket` prompts during `tofu
-  init`.
-- `docs/ai/notes/nixbot/github-actions-custom-action-input-2026-03.md`: GitHub
-  Actions `nixbot` workflow is intentionally limited to the standard deploy and
-  Terraform phase actions, not per-project `tf/<project>` runs.
-- `docs/ai/notes/nixbot/github-actions-runtime-warmup-without-cache-2026-03.md`:
-  GitHub Actions warms local `lint` and `nixbot` runtime closures but does not
-  use a runner-side Nix cache layer.
-- `docs/ai/notes/nixbot/full-script-nameref-review-2026-03.md`: Full `nixbot`
-  nameref audit, remaining helper-local naming cleanup, and source-level
-  validation of the shadowing fixes.
+- `docs/ai/notes/nixbot/entrypoint-and-packaging-2026-03.md`: Canonical
+  entrypoint layout, CLI design, flake packaging model, and wrapper exception.
+- `docs/ai/notes/nixbot/error-handling-and-control-flow-2026-03.md`: Exit status
+  preservation, signal handling, phase gating, and Terraform failure
+  propagation.
 - `docs/ai/notes/nixbot/gcp-platform-phase-disabled-2026-03.md`: Default
   `all`/`tf-platform` deploy phases no longer include `gcp-platform`; run it
   only via explicit `tf/gcp-platform`.
+- `docs/ai/notes/nixbot/github-actions-workflow-design-2026-03.md`: GitHub
+  Actions workflow design: action input scope, runtime warmup strategy, and thin
+  launcher role.
+- `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
+  Canonical `nixbot` rotation model, lessons, and operator guardrails.
+- `docs/ai/notes/nixbot/lint-gating-and-precommit-2026-03.md`: Shared lint
+  entrypoint, CI gate, and pre-commit hook decisions.
+- `docs/ai/notes/nixbot/local-declaration-collapse-style-2026-03.md`: User-led
+  Bash local-declaration style update to allow grouped `local` statements.
+- `docs/ai/notes/nixbot/nameref-shadowing-audit-and-fixes-2026-03.md`:
+  Consolidated bash nameref shadowing audit, function-specific alias
+  conventions, and all nameref collision fixes.
+- `docs/ai/notes/nixbot/runtime-temp-suffix-alignment-2026-03.md`: Consolidated
+  per-run workspace root for deploy artifacts and detached repo worktrees.
 - `docs/ai/notes/nixbot/security-trust-model-2026-03.md`: Bastion-trigger
   operator trust boundary, arbitrary-SHA policy, and relationship between
   worktree isolation and secret access.
@@ -114,33 +87,21 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Services
 
-- `docs/ai/notes/services/lib-flake-published-podman-systemd-modules-2026-03.md`:
-  Revert `podman` and `systemd-user-manager` to `lib/` and drop the unused
-  published flake-module export.
-- `docs/ai/notes/services/bastion-compose-config-centralization-2026-03.md`:
-  Bastion compose port and generated-config ownership boundaries.
-- `docs/ai/notes/services/bastion-service-migration-consolidated-2026-03.md`:
-  Bastion-host service adoption and service-secret migration.
-- `docs/ai/notes/services/cloudflare-adoption-and-workers-consolidated-2026-03.md`:
-  Canonical Cloudflare adoption status, imported resource summary, and Workers
-  convergence decision.
-- `docs/ai/notes/services/cloudflare-opentofu-consolidated-2026-03.md`:
-  Canonical Cloudflare OpenTofu layout, input model, import rules, and
-  source-of-truth boundaries.
-- `docs/ai/notes/services/cloudflare-workers-archive-path-fix-2026-03.md`:
-  `tf-apps` deploy failure caused by stale `pkgs/cloudflare-workers` paths in
-  archive worker tfvars after the repo moved to `pkgs/cloudflare-apps`.
-- `docs/ai/notes/services/cloudflare-tunnel-state-adoption-plan-2026-03.md`:
-  Tunnel state-adoption plan, ownership-boundary decision, and execution steps.
+- `docs/ai/notes/services/bastion-and-podman-consolidated-2026-03.md`: Canonical
+  podman compose platform model, bastion service migration, config
+  centralization, secret injection, and systemd lifecycle.
+- `docs/ai/notes/services/cloudflare-consolidated-2026-03.md`: Canonical
+  Cloudflare OpenTofu architecture, adoption status, source-of-truth rules,
+  tunnel adoption plan, and operational procedures.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Documentation
   cleanup rules for sensitive operational details.
 - `docs/ai/notes/services/gcp-terraform-adoption-2026-03.md`: GCP bootstrap and
-  platform Terraform adoption from the non-legacy legacy-repo sources into this
-  repo's phase-based `tf/` layout.
+  platform Terraform adoption into this repo's phase-based `tf/` layout.
+- `docs/ai/notes/services/lib-flake-published-podman-systemd-modules-2026-03.md`:
+  Revert `podman` and `systemd-user-manager` to `lib/` and drop the unused
+  published flake-module export.
 - `docs/ai/notes/services/openssh-module-centralization-2026-03.md`: Shared
   OpenSSH enablement centralization.
-- `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`:
-  Canonical `services.podmanCompose` and `systemd-user-manager` platform model.
 
 ### Tooling
 
@@ -150,24 +111,20 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/lint-workflow-consolidated-2026-03.md`: Canonical lint
   contract for read-only validation and the `statix fix` per-target CLI
   constraint.
-- `docs/ai/notes/tooling/vscode-external-package-2026-03.md`: Repo-local stable
-  `pkgs.vscode-upstream` package sourced from Microsoft's official update feed
-  and exported via `pkgs/ext`.
-- `docs/ai/notes/tooling/vscode-go-binaries-pvl-a1-2026-03.md`: `pvl-a1`
-  installs `go`/`gopls`/`dlv` and wires VS Code Go tools to fixed Nix store
-  paths.
+- `docs/ai/notes/tooling/vscode-configuration-2026-03.md`: Consolidated VS Code
+  upstream package model, pinned hash strategy, and Go toolchain provisioning.
 
 ## Playbooks
 
 - `docs/ai/playbooks/ai-docs-reconsolidation.md`: Periodic cleanup workflow for
   reconsolidating `docs/ai/notes`, folding completed `runs` back into notes,
   sanitizing durable identifiers, and refreshing the index.
+- `docs/ai/playbooks/cloudflare-apps.md`: Create, build, stage, deploy, and
+  adopt repo-managed Cloudflare apps.
 - `docs/ai/playbooks/cloudflare-email-routing.md`: Declarative Cloudflare Email
   Routing execution workflow.
 - `docs/ai/playbooks/cloudflare-state-adoption.md`: Non-DNS Cloudflare
   state-adoption procedure for platform and apps phases.
-- `docs/ai/playbooks/cloudflare-apps.md`: Create, build, stage, deploy, and
-  adopt repo-managed Cloudflare apps.
 - `docs/ai/playbooks/nixbot-deploy.md`: Reconstruction spec for `nixbot`
   deployment architecture and bootstrap.
 - `docs/ai/playbooks/nixbot-key-rotation-execution.md`: Phased `nixbot`
