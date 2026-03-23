@@ -90,7 +90,7 @@
         };
       in {
         default = helloRustModule;
-        "hello-rust" = helloRustModule;
+        hello-rust = helloRustModule;
       };
     };
 }
