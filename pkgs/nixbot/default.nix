@@ -1,4 +1,4 @@
-{pkgs}:
+{pkgs ? import <nixpkgs> {}}:
 pkgs.writeShellApplication {
   name = "nixbot";
   runtimeInputs = with pkgs; [

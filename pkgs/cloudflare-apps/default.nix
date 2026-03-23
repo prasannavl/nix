@@ -1,7 +1,7 @@
 {
-  pkgs,
-  nixbot,
-  llmugHello,
+  pkgs ? import <nixpkgs> {},
+  nixbot ? pkgs.callPackage ../nixbot/default.nix {},
+  llmugHello ? pkgs.callPackage ./llmug-hello/default.nix {},
 }: let
   buildPaths = [llmugHello];
   aggregateBuild =

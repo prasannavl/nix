@@ -1,4 +1,4 @@
-{pkgs}: let
+{pkgs ? import <nixpkgs> {}}: let
   build = pkgs.runCommand "llmug-hello-dist" {} ''
     src="${./.}"
 

@@ -17,6 +17,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Apps
 
+- `docs/ai/notes/apps/default-nix-nix-build-compat-2026-03.md`: Keep package
+  `default.nix` files as the canonical definitions and add legacy-compatible
+  defaults so they work with both `callPackage` and `nix-build`.
 - `docs/ai/notes/apps/flake-architecture-consolidated-2026-03.md`: Canonical
   flake output model, auto-discovery collector, `lib/flake` helpers, hybrid
   package set architecture, and wrapper flakes.

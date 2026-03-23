@@ -1,4 +1,4 @@
-{pkgs}:
+{pkgs ? import <nixpkgs> {}}:
 pkgs.rustPlatform.buildRustPackage {
   pname = "hello-rust";
   version = "0.1.0";
