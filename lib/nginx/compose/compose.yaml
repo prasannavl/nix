@@ -5,3 +5,6 @@ services:
     restart: unless-stopped
     ports:
       - "${NGINX_HTTP_PORT}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro,Z
+      - ./conf.d:/etc/nginx/conf.d:ro,Z

@@ -112,6 +112,9 @@ Use this index as the canonical map for `docs/ai/**`.
   published flake-module export.
 - `docs/ai/notes/services/openssh-module-centralization-2026-03.md`: Shared
   OpenSSH enablement centralization.
+- `docs/ai/notes/services/pvl-x2-nginx-config-bind-mounts-2026-03.md`: `pvl-x2`
+  nginx compose config migration from `/home/pvl/tmp/nginx` into repo-managed
+  bind-mounted files.
 
 ### Tooling
 
