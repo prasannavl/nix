@@ -3,6 +3,7 @@
     pvl-a1 = {
       target = "pvl-a1";
       ageIdentityKey = "data/secrets/machine/pvl-a1.key.age";
+      deploy = "optional";
     };
     pvl-x2 = {
       target = "pvl-x2";
