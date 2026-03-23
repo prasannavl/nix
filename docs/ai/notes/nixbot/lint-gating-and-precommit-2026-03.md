@@ -33,8 +33,9 @@
 - CI now warms lint via `nix run path:.#lint -- deps >/dev/null`, which realizes
   the runnable wrapper and verifies the runtime commands before the actual lint
   step.
-- Git pre-commit is wired through `.githooks/pre-commit` and now calls
-  `nix run path:.#lint -- --diff`, while CI stays on `nix run path:.#lint`.
+- Git pre-commit hook was replaced by a pre-push hook that lints each commit
+  individually as a diff. See
+  `docs/ai/notes/tooling/pre-push-per-commit-lint-2026-03.md` for details.
 - The flake-packaged `lint` wrapper must provide the lint runtime itself and
   `exec` the packaged `scripts/lint.sh` with `LINT_IN_NIX_SHELL=1`. Re-entering
   `ensure_runtime_shell` from the store snapshot makes the script derive

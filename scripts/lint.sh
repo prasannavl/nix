@@ -6,8 +6,8 @@ usage() {
 Usage:
   lint deps
   lint check-deps
-  lint [--diff] [--full]
-  lint fix [--diff] [--full]
+  lint [--diff] [--full] [--base <ref>]
+  lint fix [--diff] [--full] [--base <ref>]
 
 Actions:
   deps        Verify the lint runtime is available.
@@ -17,6 +17,7 @@ Actions:
 Options:
   --diff      Restrict file-scoped checks and fixes to changed files.
   --full      Force full-repo scope, including on CI.
+  --base REF  With --diff, compare against REF instead of default heuristics.
   -h, --help
 
 Notes:
@@ -34,6 +35,7 @@ init_vars() {
   LINT_SCOPE='full'
   LINT_FIX='0'
   LINT_SCOPE_EXPLICIT='0'
+  LINT_DIFF_BASE=''
   CURRENT_STEP=""
   CURRENT_STEP_DESCRIPTION=""
   readonly -a LINT_RUNTIME_COMMANDS=(
@@ -154,6 +156,11 @@ parse_lint_args() {
         LINT_SCOPE='diff'
         LINT_SCOPE_EXPLICIT='1'
         ;;
+      --base)
+        shift
+        [ "$#" -gt 0 ] || die "lint: --base requires an argument"
+        LINT_DIFF_BASE="$1"
+        ;;
       --full)
         LINT_SCOPE='full'
         LINT_SCOPE_EXPLICIT='1'
@@ -195,6 +202,11 @@ collect_diff_files() {
   local -a patterns=("$@")
   local -A seen=()
 
+  if [ -n "${LINT_DIFF_BASE}" ]; then
+    emit_unique_existing_from seen git diff --name-only -z --diff-filter=ACMR "${LINT_DIFF_BASE}" HEAD -- "${patterns[@]}"
+    return
+  fi
+
   emit_unique_existing_from seen git diff --name-only -z --cached --diff-filter=ACMR -- "${patterns[@]}"
   emit_unique_existing_from seen git diff --name-only -z --diff-filter=ACMR -- "${patterns[@]}"
   emit_unique_existing_from seen git ls-files -z --others --exclude-standard -- "${patterns[@]}"
@@ -217,6 +229,23 @@ collect_files() {
   else
     collect_repo_files "$@"
   fi
+}
+
+collect_changed_flake_dirs() {
+  local -a all_changed=()
+  local flake_dir changed
+
+  mapfile -d $'\0' -t all_changed < <(collect_files '*')
+
+  while IFS= read -r -d '' flake_dir; do
+    flake_dir="$(dirname "${flake_dir}")"
+    for changed in "${all_changed[@]}"; do
+      if [[ "${changed}" = "${flake_dir}/"* ]]; then
+        printf '%s\0' "${flake_dir}"
+        break
+      fi
+    done
+  done < <(find pkgs -maxdepth 2 -name flake.nix -print0 | sort -z)
 }
 
 run_lint_action() {
@@ -321,6 +350,20 @@ run_lint_action() {
     for local_tf_dir in "${tf_project_dirs[@]}"; do
       printf '  - %s\n' "${local_tf_dir}" >&2
       tflint --chdir "${local_tf_dir}"
+    done
+  fi
+
+  local -a flake_check_dirs=()
+  mapfile -d $'\0' -t flake_check_dirs < <(collect_changed_flake_dirs)
+
+  if [ "${#flake_check_dirs[@]}" -gt 0 ]; then
+    CURRENT_STEP=flake-check
+    CURRENT_STEP_DESCRIPTION="Running flake checks for changed subprojects"
+    log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+    local flake_dir
+    for flake_dir in "${flake_check_dirs[@]}"; do
+      printf '  - %s\n' "${flake_dir}" >&2
+      nix flake check "path:./${flake_dir}"
     done
   fi
 }

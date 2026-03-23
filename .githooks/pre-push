@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ZERO="0000000000000000000000000000000000000000"
+
+resolve_range_start() {
+  local remote_sha="$1" local_sha="$2" local_ref="$3"
+  local default_branch base
+
+  if [ "${remote_sha}" = "${ZERO}" ]; then
+    default_branch="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null \
+      | sed 's|^origin/||')"
+    : "${default_branch:=master}"
+    base="$(git merge-base "origin/${default_branch}" "${local_sha}" 2>/dev/null || true)"
+    if [ -z "${base}" ]; then
+      printf '[pre-push] Cannot determine merge base for new branch %s, skipping\n' \
+        "${local_ref}" >&2
+      return 1
+    fi
+    printf '%s' "${base}"
+  else
+    printf '%s' "${remote_sha}"
+  fi
+}
+
+main() {
+  local repo_root
+  local local_ref local_sha remote_ref remote_sha
+  local range_start commit_count
+
+  printf '[pre-push] Run lints..\n' >&2
+
+  repo_root="$(git rev-parse --show-toplevel)"
+  cd "${repo_root}"
+
+  while read -r local_ref local_sha remote_ref remote_sha; do
+    if [ "${local_sha}" = "${ZERO}" ]; then
+      continue
+    fi
+
+    if ! range_start="$(resolve_range_start "${remote_sha}" "${local_sha}" "${local_ref}")"; then
+      continue
+    fi
+
+    commit_count="$(git rev-list --count "${range_start}..${local_sha}")"
+    if [ "${commit_count}" -eq 0 ]; then
+      continue
+    fi
+
+    printf '[pre-push] Linting files changed across %d commit(s) on %s\n' \
+      "${commit_count}" "${local_ref}" >&2
+
+    nix run path:.#lint -- --diff --base "${range_start}"
+  done
+}
+
+main "$@"

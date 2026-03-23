@@ -138,6 +138,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/lint-workflow-consolidated-2026-03.md`: Canonical lint
   contract for read-only validation and the `statix fix` per-target CLI
   constraint.
+- `docs/ai/notes/tooling/pre-push-per-commit-lint-2026-03.md`: Pre-push hook
+  replaces pre-commit; lints each commit individually via `--diff --base`.
 - `docs/ai/notes/tooling/vscode-configuration-2026-03.md`: Consolidated VS Code
   upstream package model, pinned hash strategy, and Go toolchain provisioning.
 
