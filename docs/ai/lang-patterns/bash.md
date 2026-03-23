@@ -24,6 +24,30 @@
   etc.), inline comments, or control-flow-adjacent setup make the combined form
   harder to scan.
 
+## Namerefs
+
+- Avoid `local -n` by default.
+- Prefer plain values and explicit returns:
+  - for one scalar value, print it and capture with `var="$(helper ...)"`.
+  - for a few scalar values, print one per line and read them with a grouped
+    `read`.
+  - for tightly coupled helper state, prefer an explicit shared context object
+    or script-global staging variables over scalar by-reference plumbing.
+- Use `local -n` only when by-reference mutation is materially simpler than the
+  alternatives, such as:
+  - mutating arrays in place
+  - updating counters or accumulators in tight helper loops
+  - narrow, well-contained summary aggregation where copying would be awkward
+- Even when `local -n` is justified:
+  - keep the scope tight
+  - use function-specific alias names
+  - do not forward helper-local alias names to nested helpers; forward the
+    original target-name strings instead
+  - do not declare scratch locals that reuse likely caller output names
+    (`ssh_target`, `status`, `result_kind`, etc.)
+- If a helper only returns scalar values and does not need in-place mutation,
+  `local -n` is usually the wrong tool.
+
 ## Initialization
 
 - If a script needs shared/default variables, gather them in one `init_vars`

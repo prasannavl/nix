@@ -5,7 +5,8 @@ Use this index as the canonical map for `docs/ai/**`.
 ## Lang Patterns
 
 - `docs/ai/lang-patterns/bash.md`: Bash entrypoint structure, initialization,
-  and `nix shell` runtime dependency rules for repo scripts.
+  `nameref` minimization, and `nix shell` runtime dependency rules for repo
+  scripts.
 - `docs/ai/lang-patterns/markdown.md`: Markdown formatting authority, lint
   interaction, and `docs/ai` writing conventions for repo-generated docs.
 
@@ -69,6 +70,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/nameref-shadowing-audit-and-fixes-2026-03.md`:
   Consolidated bash nameref shadowing audit, function-specific alias
   conventions, and all nameref collision fixes.
+- `docs/ai/notes/nixbot/nameref-output-shadowing-regression-2026-03.md`:
+  Snapshot regression root cause after the deploy-context nameref refactor and
+  the durable guardrail for helper output names versus scratch locals.
 - `docs/ai/notes/nixbot/runtime-temp-suffix-alignment-2026-03.md`: Consolidated
   per-run workspace root for deploy artifacts and detached repo worktrees.
 - `docs/ai/notes/nixbot/security-trust-model-2026-03.md`: Bastion-trigger

@@ -288,6 +288,11 @@ init_vars() {
   NIXBOT_TMP_DIR=""
   NIXBOT_CONFIG_DIR=""
   BOOTSTRAP_READY_NODES=""
+  PREP_DEPLOY_SSH_TARGET=""
+  PREP_DEPLOY_NIX_SSHOPTS=""
+  PREP_USING_BOOTSTRAP_FALLBACK=0
+  PREP_DEPLOY_AGE_IDENTITY_KEY=""
+  PREP_DEPLOY_SSH_OPTS=()
   ROLLBACK_OK_HOSTS=()
   ROLLBACK_FAILED_HOSTS=()
   FULLY_SKIPPED_HOSTS=()
@@ -1590,7 +1595,6 @@ resolve_selected_hosts_json() {
 }
 
 prepare_run_context() {
-  local -n prc_selected_json_out_ref="$1"
   local config_json="" all_hosts_json=""
 
   if [ -f "${NIXBOT_CONFIG_PATH}" ]; then
@@ -1599,8 +1603,7 @@ prepare_run_context() {
   fi
 
   all_hosts_json="$(load_all_hosts_json)"
-  # shellcheck disable=SC2034
-  prc_selected_json_out_ref="$(resolve_selected_hosts_json "${all_hosts_json}")"
+  resolve_selected_hosts_json "${all_hosts_json}"
 }
 
 log_run_context() {
@@ -1972,18 +1975,19 @@ apply_identity_to_ssh_context() {
 
 resolve_ssh_identity_file() {
   local key_path="$1" label="$2" require_age="${3:-0}"
-  local -n rsif_resolved_key_file_out_ref="$4"
+  local resolved_key_file=""
 
-  rsif_resolved_key_file_out_ref=""
   [ -n "${key_path}" ] || return 0
 
-  if ! rsif_resolved_key_file_out_ref="$(resolve_runtime_key_file "${key_path}" "${require_age}")"; then
+  if ! resolved_key_file="$(resolve_runtime_key_file "${key_path}" "${require_age}")"; then
     return 1
   fi
-  if [ ! -f "${rsif_resolved_key_file_out_ref}" ]; then
-    echo "${label} file not found: ${key_path} (resolved: ${rsif_resolved_key_file_out_ref})" >&2
+  if [ ! -f "${resolved_key_file}" ]; then
+    echo "${label} file not found: ${key_path} (resolved: ${resolved_key_file})" >&2
     return 1
   fi
+
+  printf '%s\n' "${resolved_key_file}"
 }
 
 prepare_host_ssh_contexts() {
@@ -2044,26 +2048,39 @@ ensure_bootstrap_key_ready() {
   mark_bootstrap_ready "${node}"
 }
 
+set_prepared_deploy_context() {
+  local ssh_target="$1" nix_sshopts="$2" using_bootstrap_fallback="$3" age_identity_key="$4"
+  shift 4
+  local -a ssh_opts=("$@")
+
+  PREP_DEPLOY_SSH_TARGET="${ssh_target}"
+  PREP_DEPLOY_NIX_SSHOPTS="${nix_sshopts}"
+  PREP_USING_BOOTSTRAP_FALLBACK="${using_bootstrap_fallback}"
+  PREP_DEPLOY_AGE_IDENTITY_KEY="${age_identity_key}"
+  PREP_DEPLOY_SSH_OPTS=("${ssh_opts[@]}")
+}
+
+clear_prepared_deploy_context() {
+  PREP_DEPLOY_SSH_TARGET=""
+  PREP_DEPLOY_NIX_SSHOPTS=""
+  PREP_USING_BOOTSTRAP_FALLBACK=0
+  PREP_DEPLOY_AGE_IDENTITY_KEY=""
+  PREP_DEPLOY_SSH_OPTS=()
+}
+
 prepare_bootstrap_deploy_context() {
-  local node="$1" bootstrap_ssh_target="$2" bootstrap_nix_sshopts="$3" age_identity_key="$4" bootstrap_key="$5"
-  local -n pbdc_ssh_target_out_ref="$6" pbdc_nix_sshopts_out_ref="$7"
-  local -n pbdc_using_bootstrap_fallback_out_ref="$8" pbdc_age_identity_key_out_ref="$9"
-  # shellcheck disable=SC2178
-  local -n pbdc_ssh_opts_out_ref="${10}"
-  shift 10
+  local node="$1" bootstrap_ssh_target="$2" bootstrap_nix_sshopts="$3"
+  local age_identity_key="$4" bootstrap_key="$5"
+  shift 5
   local -a bootstrap_ssh_opts=("$@")
 
   ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
-  # shellcheck disable=SC2034
-  pbdc_ssh_target_out_ref="${bootstrap_ssh_target}"
-  # shellcheck disable=SC2034
-  pbdc_nix_sshopts_out_ref="${bootstrap_nix_sshopts}"
-  # shellcheck disable=SC2034
-  pbdc_using_bootstrap_fallback_out_ref=1
-  # shellcheck disable=SC2034
-  pbdc_age_identity_key_out_ref="${age_identity_key}"
-  # shellcheck disable=SC2034
-  pbdc_ssh_opts_out_ref=("${bootstrap_ssh_opts[@]}")
+  set_prepared_deploy_context \
+    "${bootstrap_ssh_target}" \
+    "${bootstrap_nix_sshopts}" \
+    1 \
+    "${age_identity_key}" \
+    "${bootstrap_ssh_opts[@]}"
 }
 
 inject_host_age_identity_key() {
@@ -2136,27 +2153,14 @@ inject_host_age_identity_key() {
 
 prepare_deploy_context() {
   local node="$1"
-  local -n pdc_ssh_target_out_ref="$2" pdc_nix_sshopts_out_ref="$3"
-  local -n pdc_using_bootstrap_fallback_out_ref="$4" pdc_age_identity_key_out_ref="$5"
-  # shellcheck disable=SC2178
-  local -n pdc_ssh_opts_out_ref="$6"
   local target_info="" user="" host="" key_path="" known_hosts=""
   local bootstrap_key="" bootstrap_user="" bootstrap_key_path=""
-  local age_identity_key="" key_file="" bootstrap_key_file=""
+  local age_identity_key="" deploy_key_file="" bootstrap_key_file=""
   local ssh_target="" bootstrap_ssh_target=""
   local -a ssh_opts=() bootstrap_ssh_opts=()
   local nix_sshopts="" bootstrap_nix_sshopts=""
 
-  # shellcheck disable=SC2034
-  pdc_ssh_target_out_ref=""
-  # shellcheck disable=SC2034
-  pdc_nix_sshopts_out_ref=""
-  # shellcheck disable=SC2034
-  pdc_using_bootstrap_fallback_out_ref=0
-  # shellcheck disable=SC2034
-  pdc_age_identity_key_out_ref=""
-  # shellcheck disable=SC2034
-  pdc_ssh_opts_out_ref=()
+  clear_prepared_deploy_context
 
   target_info="$(resolve_deploy_target "${node}")"
 
@@ -2184,29 +2188,25 @@ prepare_deploy_context() {
     bootstrap_nix_sshopts || return 1
 
   if [ -n "${key_path}" ]; then
-    if ! resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${NIXBOT_KEY_OVERRIDE_EXPLICIT}" key_file; then
+    if ! deploy_key_file="$(resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${NIXBOT_KEY_OVERRIDE_EXPLICIT}")"; then
       return 1
     fi
-    apply_identity_to_ssh_context "${key_file}" ssh_opts nix_sshopts
+    apply_identity_to_ssh_context "${deploy_key_file}" ssh_opts nix_sshopts
   fi
 
   if [ -n "${bootstrap_key_path}" ]; then
-    if ! resolve_ssh_identity_file "${bootstrap_key_path}" "Bootstrap SSH key" 0 bootstrap_key_file; then
+    if ! bootstrap_key_file="$(resolve_ssh_identity_file "${bootstrap_key_path}" "Bootstrap SSH key" 0)"; then
       return 1
     fi
     apply_identity_to_ssh_context "${bootstrap_key_file}" bootstrap_ssh_opts bootstrap_nix_sshopts
   fi
 
-  # shellcheck disable=SC2034
-  pdc_ssh_target_out_ref="${ssh_target}"
-  # shellcheck disable=SC2034
-  pdc_nix_sshopts_out_ref="${nix_sshopts}"
-  # shellcheck disable=SC2034
-  pdc_using_bootstrap_fallback_out_ref=0
-  # shellcheck disable=SC2034
-  pdc_age_identity_key_out_ref="${age_identity_key}"
-  # shellcheck disable=SC2034
-  pdc_ssh_opts_out_ref=("${ssh_opts[@]}")
+  set_prepared_deploy_context \
+    "${ssh_target}" \
+    "${nix_sshopts}" \
+    0 \
+    "${age_identity_key}" \
+    "${ssh_opts[@]}"
 
   if [ "${FORCE_BOOTSTRAP_PATH}" -eq 1 ]; then
     echo "==> Forcing bootstrap path for ${node}: ${bootstrap_ssh_target}"
@@ -2216,11 +2216,6 @@ prepare_deploy_context() {
       "${bootstrap_nix_sshopts}" \
       "${age_identity_key}" \
       "${bootstrap_key}" \
-      pdc_ssh_target_out_ref \
-      pdc_nix_sshopts_out_ref \
-      pdc_using_bootstrap_fallback_out_ref \
-      pdc_age_identity_key_out_ref \
-      pdc_ssh_opts_out_ref \
       "${bootstrap_ssh_opts[@]}" || return 1
     return
   fi
@@ -2252,11 +2247,6 @@ prepare_deploy_context() {
           "${bootstrap_nix_sshopts}" \
           "${age_identity_key}" \
           "${bootstrap_key}" \
-          pdc_ssh_target_out_ref \
-          pdc_nix_sshopts_out_ref \
-          pdc_using_bootstrap_fallback_out_ref \
-          pdc_age_identity_key_out_ref \
-          pdc_ssh_opts_out_ref \
           "${bootstrap_ssh_opts[@]}" || return 1
         return
       fi
@@ -2276,7 +2266,12 @@ snapshot_host_generation() {
   local -a ssh_opts=()
 
   log_host_stage "snapshot" "${node}"
-  prepare_deploy_context "${node}" ssh_target _snapshot_nix_sshopts _snapshot_using_bootstrap_fallback _snapshot_age_identity_key ssh_opts || return 1
+  prepare_deploy_context "${node}" || return 1
+  ssh_target="${PREP_DEPLOY_SSH_TARGET}"
+  _snapshot_nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
+  _snapshot_using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  _snapshot_age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+  ssh_opts=("${PREP_DEPLOY_SSH_OPTS[@]}")
   # shellcheck disable=SC2029
   if ! remote_current_path="$(ssh "${ssh_opts[@]}" "${ssh_target}" "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true")"; then
     remote_current_path=""
@@ -2414,42 +2409,36 @@ record_phase_status() {
 
 resolve_deploy_phase_result() {
   local node="$1" status_file="$2"
-  local -n rdpr_result_kind_out_ref="$3" rdpr_status_out_ref="$4"
+  local result_kind="" status=""
 
-  # shellcheck disable=SC2034
-  rdpr_result_kind_out_ref=""
-  # shellcheck disable=SC2034
-  rdpr_status_out_ref=""
+  result_kind=""
+  status=""
 
-  if ! rdpr_status_out_ref="$(read_status_file "${status_file}")"; then
-    rdpr_result_kind_out_ref="fail"
+  if ! status="$(read_status_file "${status_file}")"; then
+    result_kind="fail"
+    printf '%s\n%s\n' "${result_kind}" "${status}"
     return 0
   fi
 
-  case "${rdpr_status_out_ref}" in
+  case "${status}" in
     0)
-      rdpr_result_kind_out_ref="success"
-      return 0
+      result_kind="success"
       ;;
     skip)
-      rdpr_result_kind_out_ref="skip"
-      return 0
+      result_kind="skip"
       ;;
     *)
-      if is_signal_exit_status "${rdpr_status_out_ref}"; then
-        rdpr_result_kind_out_ref="signal"
-        return 0
-      fi
-      if host_optional_deploy_enabled "${node}"; then
-        # shellcheck disable=SC2034
-        rdpr_result_kind_out_ref="optional-fail"
+      if is_signal_exit_status "${status}"; then
+        result_kind="signal"
+      elif host_optional_deploy_enabled "${node}"; then
+        result_kind="optional-fail"
       else
-        # shellcheck disable=SC2034
-        rdpr_result_kind_out_ref="fail"
+        result_kind="fail"
       fi
-      return 0
       ;;
   esac
+
+  printf '%s\n%s\n' "${result_kind}" "${status}"
 }
 
 process_completed_deploy_job() {
@@ -2460,7 +2449,10 @@ process_completed_deploy_job() {
   local -n pcdj_failed_hosts_out_ref="$8"
   local result_kind="" status=""
 
-  resolve_deploy_phase_result "${node}" "${status_file}" result_kind status
+  {
+    read -r result_kind
+    read -r status
+  } < <(resolve_deploy_phase_result "${node}" "${status_file}")
 
   case "${result_kind}" in
     success)
@@ -2674,21 +2666,17 @@ maybe_rollback_successful_hosts() {
 
 resolve_snapshot_wave_host_result() {
   local snapshot_dir="$1" node="$2"
-  local -n rswhr_result_kind_out_ref="$3"
+  local result_kind="ok"
 
-  # shellcheck disable=SC2034
-  rswhr_result_kind_out_ref="ok"
-
-  if snapshot_exists "${snapshot_dir}/${node}.path"; then
-    return 0
+  if ! snapshot_exists "${snapshot_dir}/${node}.path"; then
+    if host_optional_deploy_enabled "${node}"; then
+      result_kind="optional-missing"
+    else
+      result_kind="fatal-missing"
+    fi
   fi
 
-  if host_optional_deploy_enabled "${node}"; then
-    rswhr_result_kind_out_ref="optional-missing"
-  else
-    # shellcheck disable=SC2034
-    rswhr_result_kind_out_ref="fatal-missing"
-  fi
+  printf '%s\n' "${result_kind}"
 }
 
 process_snapshot_wave_results() {
@@ -2704,7 +2692,7 @@ process_snapshot_wave_results() {
 
   for node in "$@"; do
     [ -n "${node}" ] || continue
-    resolve_snapshot_wave_host_result "${snapshot_dir}" "${node}" result_kind
+    result_kind="$(resolve_snapshot_wave_host_result "${snapshot_dir}" "${node}")"
     case "${result_kind}" in
       ok)
         ;;
@@ -2787,7 +2775,12 @@ rollback_host_to_snapshot() {
   }
 
   log_host_stage "rollback" "${node}"
-  prepare_deploy_context "${node}" ssh_target _rollback_nix_sshopts using_bootstrap_fallback _rollback_age_identity_key ssh_opts || return 1
+  prepare_deploy_context "${node}" || return 1
+  ssh_target="${PREP_DEPLOY_SSH_TARGET}"
+  _rollback_nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
+  using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  _rollback_age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+  ssh_opts=("${PREP_DEPLOY_SSH_OPTS[@]}")
   deploy_user="${ssh_target%%@*}"
 
   # shellcheck disable=SC2016
@@ -2879,7 +2872,12 @@ deploy_host() {
   local -a rebuild_cmd=() ssh_opts=()
 
   log_host_stage "deploy" "${node}" "${GOAL}"
-  prepare_deploy_context "${node}" ssh_target nix_sshopts using_bootstrap_fallback age_identity_key ssh_opts || return 1
+  prepare_deploy_context "${node}" || return 1
+  ssh_target="${PREP_DEPLOY_SSH_TARGET}"
+  nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
+  using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+  ssh_opts=("${PREP_DEPLOY_SSH_OPTS[@]}")
   inject_host_age_identity_key "${node}" "${ssh_target}" "${age_identity_key}" "${ssh_opts[@]}" || return 1
 
   deploy_user="${ssh_target%%@*}"
@@ -3708,43 +3706,33 @@ require_supported_tf_backend_for_project() {
 
 resolve_tf_backend_context_for_project() {
   local project_name="$1" provider_name="$2"
-  local -n rtfbcfp_backend_kind_out_ref="$3" rtfbcfp_backend_detail_1_out_ref="$4" rtfbcfp_backend_detail_2_out_ref="$5"
-  local resolved_backend_kind_local=""
+  local backend_kind="" backend_detail_1="" backend_detail_2=""
 
-  resolved_backend_kind_local="$(tf_backend_kind_for_project "${project_name}" "${provider_name}")"
-  # shellcheck disable=SC2034
-  rtfbcfp_backend_kind_out_ref="${resolved_backend_kind_local}"
-  # shellcheck disable=SC2034
-  rtfbcfp_backend_detail_1_out_ref=""
-  # shellcheck disable=SC2034
-  rtfbcfp_backend_detail_2_out_ref=""
+  backend_kind="$(tf_backend_kind_for_project "${project_name}" "${provider_name}")"
 
-  case "${resolved_backend_kind_local}" in
+  case "${backend_kind}" in
     r2)
-      # shellcheck disable=SC2034
-      rtfbcfp_backend_detail_1_out_ref="$(tf_state_key_for_project "${project_name}")"
-      # shellcheck disable=SC2034
-      rtfbcfp_backend_detail_2_out_ref="$(tf_backend_endpoint)"
+      backend_detail_1="$(tf_state_key_for_project "${project_name}")"
+      backend_detail_2="$(tf_backend_endpoint)"
       ;;
     gcs)
-      # shellcheck disable=SC2034
-      rtfbcfp_backend_detail_1_out_ref="$(gcp_state_prefix_for_project "${project_name}")"
-      # shellcheck disable=SC2034
-      rtfbcfp_backend_detail_2_out_ref="${GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT:-}"
+      backend_detail_1="$(gcp_state_prefix_for_project "${project_name}")"
+      backend_detail_2="${GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT:-}"
       ;;
   esac
+
+  printf '%s\n%s\n%s\n' "${backend_kind}" "${backend_detail_1}" "${backend_detail_2}"
 }
 
 append_tf_backend_config_args_for_project() {
   local -n atbcapfp_cmd_inout_ref="$1"
   local project_name="$2" provider_name="$3" backend_kind="" backend_detail_1="" backend_detail_2=""
 
-  resolve_tf_backend_context_for_project \
-    "${project_name}" \
-    "${provider_name}" \
-    backend_kind \
-    backend_detail_1 \
-    backend_detail_2
+  {
+    read -r backend_kind
+    read -r backend_detail_1
+    read -r backend_detail_2
+  } < <(resolve_tf_backend_context_for_project "${project_name}" "${provider_name}")
 
   case "${backend_kind}" in
     r2)
@@ -3915,23 +3903,19 @@ resolve_tf_project_dir() {
 
 resolve_tf_project_context() {
   local input_dir="$1" require_repo_project="${2:-1}"
-  local -n rtpc_project_dir_out_ref="$3" rtpc_project_name_out_ref="$4" rtpc_provider_name_out_ref="$5"
-  local _pname=""
+  local project_dir="" project_name="" provider_name=""
 
-  rtpc_project_dir_out_ref="$(resolve_tf_project_dir "${input_dir}")"
-  rtpc_project_name_out_ref=""
-  rtpc_provider_name_out_ref=""
+  project_dir="$(resolve_tf_project_dir "${input_dir}")"
 
-  _pname="$(tf_project_name_from_dir "${rtpc_project_dir_out_ref}")"
-  if [[ "${_pname}" != *-* ]] || [ "$(basename "$(dirname "${rtpc_project_dir_out_ref}")")" != "tf" ]; then
+  project_name="$(tf_project_name_from_dir "${project_dir}")"
+  if [[ "${project_name}" != *-* ]] || [ "$(basename "$(dirname "${project_dir}")")" != "tf" ]; then
     [ "${require_repo_project}" -eq 1 ] && return 1
+    printf '%s\n%s\n%s\n' "${project_dir}" "" ""
     return 0
   fi
 
-  # shellcheck disable=SC2034
-  rtpc_project_name_out_ref="${_pname}"
-  # shellcheck disable=SC2034
-  rtpc_provider_name_out_ref="$(tf_project_provider_from_name "${_pname}")"
+  provider_name="$(tf_project_provider_from_name "${project_name}")"
+  printf '%s\n%s\n%s\n' "${project_dir}" "${project_name}" "${provider_name}"
 }
 
 prepare_tf_project_runtime() {
@@ -4013,44 +3997,43 @@ tf_backend_endpoint() {
 
 evaluate_tf_project_action_need() {
   local phase="$1" project_name="$2"
-  local -n ettpan_decision_out_ref="$3" ettpan_detail_out_ref="$4"
-  local target_ref="" base_ref="" diff_output="" diff_status=0 path="" status_output="" status_path=""
-
-  # shellcheck disable=SC2034
-  ettpan_decision_out_ref=""
-  # shellcheck disable=SC2034
-  ettpan_detail_out_ref=""
+  local decision="" detail="" target_ref="" base_ref="" diff_output="" diff_status=0 path="" status_output="" status_path=""
 
   if [ "${TF_IF_CHANGED}" -eq 0 ]; then
-    ettpan_decision_out_ref="run-force"
+    decision="run-force"
+    printf '%s\n%s\n' "${decision}" "${detail}"
     return 0
   fi
 
   target_ref="${SHA:-HEAD}"
   if ! git rev-parse --verify "${target_ref}" >/dev/null 2>&1; then
-    ettpan_decision_out_ref="run-target-unavailable"
-    ettpan_detail_out_ref="${target_ref}"
+    decision="run-target-unavailable"
+    detail="${target_ref}"
+    printf '%s\n%s\n' "${decision}" "${detail}"
     return 0
   fi
 
   if ! base_ref="$(resolve_tf_change_base_ref "${target_ref}")"; then
-    ettpan_decision_out_ref="run-base-unavailable"
-    ettpan_detail_out_ref="${target_ref}"
+    decision="run-base-unavailable"
+    detail="${target_ref}"
+    printf '%s\n%s\n' "${decision}" "${detail}"
     return 0
   fi
 
   diff_output="$(git diff --name-only "${base_ref}" "${target_ref}" -- 2>/dev/null)" || diff_status=$?
   if [ "${diff_status}" -ne 0 ]; then
-    ettpan_decision_out_ref="run-diff-failed"
-    ettpan_detail_out_ref="${base_ref}..${target_ref}"
+    decision="run-diff-failed"
+    detail="${base_ref}..${target_ref}"
+    printf '%s\n%s\n' "${decision}" "${detail}"
     return 0
   fi
 
   while IFS= read -r path; do
     [ -n "${path}" ] || continue
     if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${path}"; then
-      ettpan_decision_out_ref="run-diff-changed"
-      ettpan_detail_out_ref="${path}"
+      decision="run-diff-changed"
+      detail="${path}"
+      printf '%s\n%s\n' "${decision}" "${detail}"
       return 0
     fi
   done <<< "${diff_output}"
@@ -4061,16 +4044,15 @@ evaluate_tf_project_action_need() {
     status_path="${status_path#?? }"
     status_path="${status_path##* -> }"
     if is_tf_candidate_path_for_project "${phase}" "${project_name}" "${status_path}"; then
-      ettpan_decision_out_ref="run-worktree-changed"
-      # shellcheck disable=SC2034
-      ettpan_detail_out_ref="${status_path}"
+      decision="run-worktree-changed"
+      detail="${status_path}"
+      printf '%s\n%s\n' "${decision}" "${detail}"
       return 0
     fi
   done <<< "${status_output}"
 
-  # shellcheck disable=SC2034
-  ettpan_decision_out_ref="skip-unchanged"
-  return 0
+  decision="skip-unchanged"
+  printf '%s\n%s\n' "${decision}" "${detail}"
 }
 
 resolve_tf_change_base_ref() {
@@ -4169,17 +4151,13 @@ tofu_subcommand_supports_var_files() {
 }
 
 resolve_tofu_auto_var_file_subcommand() {
-  local -n rtavfs_subcommand_out_ref="$1"
-  shift
-  local resolved_subcommand_local=""
+  local subcommand=""
 
-  rtavfs_subcommand_out_ref=""
-
-  if ! resolved_subcommand_local="$(tofu_args_extract_subcommand "$@")"; then
+  if ! subcommand="$(tofu_args_extract_subcommand "$@")"; then
     return 1
   fi
 
-  if ! tofu_subcommand_supports_var_files "${resolved_subcommand_local}"; then
+  if ! tofu_subcommand_supports_var_files "${subcommand}"; then
     return 1
   fi
 
@@ -4187,8 +4165,7 @@ resolve_tofu_auto_var_file_subcommand() {
     return 1
   fi
 
-  # shellcheck disable=SC2034
-  rtavfs_subcommand_out_ref="${resolved_subcommand_local}"
+  printf '%s\n' "${subcommand}"
 }
 
 _exec_tofu_cmd() {
@@ -4199,7 +4176,7 @@ _exec_tofu_cmd() {
 
   cmd=(tofu "$@")
 
-  if [ -n "${project_name}" ] && resolve_tofu_auto_var_file_subcommand subcommand "$@"; then
+  if [ -n "${project_name}" ] && subcommand="$(resolve_tofu_auto_var_file_subcommand "$@")"; then
     materialize_tf_var_files_for_project "${project_name}" tf_var_files discovered_tf_var_files 1
 
     if [ "${discovered_tf_var_files}" -eq 0 ]; then
@@ -4238,19 +4215,26 @@ log_tf_action_context() {
 }
 
 run_tf_action() {
-  local phase="$1" project_dir="$2" project_name="" provider_name=""
+  local project_dir="$1" project_name="" provider_name=""
   local tf_dir="" plan_file="" backend_kind="" backend_detail_1="" backend_detail_2=""
   local -a init_cmd=()
 
-  resolve_tf_project_context "${project_dir}" 1 tf_dir project_name provider_name
+  if ! {
+    read -r tf_dir
+    read -r project_name
+    read -r provider_name
+  } < <(resolve_tf_project_context "${project_dir}" 1); then
+    return 1
+  fi
   prepare_tf_project_runtime "${project_name}"
 
-  resolve_tf_backend_context_for_project \
-    "${project_name}" \
-    "${provider_name}" \
-    backend_kind \
-    backend_detail_1 \
-    backend_detail_2
+  if ! {
+    read -r backend_kind
+    read -r backend_detail_1
+    read -r backend_detail_2
+  } < <(resolve_tf_backend_context_for_project "${project_name}" "${provider_name}"); then
+    return 1
+  fi
 
   log_tf_action_context "${tf_dir}" "${backend_kind}" "${backend_detail_1}" "${backend_detail_2}"
   init_cmd=(tofu -chdir="${tf_dir}" init -lockfile=readonly)
@@ -4291,7 +4275,7 @@ run_tf_project_action() {
   ensure_tmp_dir
   log_file="$(phase_item_log_file "${NIXBOT_TMP_DIR}" "tf" "${phase}" "${project_name}")"
   status_file="$(phase_item_status_file "${NIXBOT_TMP_DIR}" "tf" "${phase}" "${project_name}")"
-  if run_tf_action "${phase}" "${project_dir}" > >(tee -a "${log_file}") 2>&1; then
+  if run_tf_action "${project_dir}" > >(tee -a "${log_file}") 2>&1; then
     write_status_file "${status_file}" 0
   else
     rc="$?"
@@ -4304,7 +4288,12 @@ run_tf_project_action() {
 run_requested_tf_project_by_name() {
   local phase="$1" project_name="$2" project_dir="$3" action_need="" action_detail=""
 
-  evaluate_tf_project_action_need "${phase}" "${project_name}" action_need action_detail
+  if ! {
+    read -r action_need
+    read -r action_detail
+  } < <(evaluate_tf_project_action_need "${phase}" "${project_name}"); then
+    return 1
+  fi
 
   case "${action_need}" in
     run-force)
@@ -4371,13 +4360,11 @@ tofu_wrapper_extract_chdir() {
 }
 
 resolve_tofu_wrapper_context() {
-  local project_dir_name="$1" project_name_name="$2" provider_name_name="$3"
-  shift 3
   local chdir_arg="" input_dir=""
 
   chdir_arg="$(tofu_wrapper_extract_chdir "$@" || true)"
   input_dir="${chdir_arg:-$(pwd -P)}"
-  resolve_tf_project_context "${input_dir}" 0 "${project_dir_name}" "${project_name_name}" "${provider_name_name}"
+  resolve_tf_project_context "${input_dir}" 0
 }
 
 run_tofu_wrapper() {
@@ -4388,7 +4375,11 @@ run_tofu_wrapper() {
   [ "${#tofu_args[@]}" -gt 0 ] || die "Usage: nixbot tofu <tofu-args...>"
   [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot tofu wrapper is local-only and cannot run via SSH forced-command/bastion trigger."
 
-  if resolve_tofu_wrapper_context project_dir project_name provider_name "${tofu_args[@]}" && [ -n "${project_name}" ]; then
+  if {
+    read -r project_dir
+    read -r project_name
+    read -r provider_name
+  } < <(resolve_tofu_wrapper_context "${tofu_args[@]}") && [ -n "${project_name}" ]; then
     prepare_tf_project_runtime "${project_name}"
     echo "Terraform wrapper project: ${project_name} (${provider_name})" >&2
   fi
@@ -5083,7 +5074,9 @@ run_all_action() {
 run_requested_action() {
   local selected_json="" action_rc=0
 
-  prepare_run_context selected_json
+  if ! selected_json="$(prepare_run_context)"; then
+    return 1
+  fi
   log_run_context "${selected_json}"
 
   run_deploy_request_action "${selected_json}" || action_rc="$?"
