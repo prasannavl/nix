@@ -10,9 +10,9 @@ make them directly evaluatable by legacy `nix-build`.
 
 ## Rule
 
-- Package `default.nix` files should accept `pkgs ? import <nixpkgs> {}` so
-  they can build standalone via `nix-build` while still allowing flake wrappers
-  to inject a pinned `pkgs` with `callPackage`.
+- Package `default.nix` files should accept `pkgs ? import <nixpkgs> {}` so they
+  can build standalone via `nix-build` while still allowing flake wrappers to
+  inject a pinned `pkgs` with `callPackage`.
 - Repo-local package dependencies in `default.nix` should also provide legacy
   defaults via `pkgs.callPackage ../path/to/default.nix {}` when they need to be
   buildable outside the flake wrapper.

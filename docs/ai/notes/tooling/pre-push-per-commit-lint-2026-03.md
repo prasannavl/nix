@@ -10,9 +10,9 @@ changed across the pushed commit range in a single invocation. Also added
 
 - **Developer experience** — pre-commit hooks penalize every commit, adding
   friction during exploratory work. Developers typically work on PR branches
-  with several commits, iterating freely before pushing. Moving lint to
-  pre-push lets them commit without interruption while still catching issues
-  before code leaves their machine.
+  with several commits, iterating freely before pushing. Moving lint to pre-push
+  lets them commit without interruption while still catching issues before code
+  leaves their machine.
 - **CI is the real gate** — PRs run the full lint and check suite anyway, so
   everything that lands on master is clean regardless. The pre-push hook is a
   convenience safety net, not the source of truth for correctness.
