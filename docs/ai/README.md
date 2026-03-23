@@ -17,6 +17,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Apps
 
+- `docs/ai/notes/apps/cloudflare-apps-gap3-ai-hello-2026-03.md`: Add the
+  `gap3-ai` Cloudflare app with a minimal hello page and Terraform-managed
+  `gap3.ai` custom domain.
 - `docs/ai/notes/apps/flake-architecture-consolidated-2026-03.md`: Canonical
   flake output model, auto-discovery collector, `lib/flake` helpers, hybrid
   package set architecture, and wrapper flakes.
