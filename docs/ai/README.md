@@ -4,6 +4,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ## Lang Patterns
 
+- `docs/ai/lang-patterns/common.md`: Cross-language code-practice defaults,
+  including the common line-width recommendation: `100` for code, `80` for
+  comments, and `120` as the hard maximum.
 - `docs/ai/lang-patterns/bash.md`: Bash entrypoint structure, initialization,
   `nameref` minimization, and `nix shell` runtime dependency rules for repo
   scripts.
@@ -109,6 +112,8 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Tooling
 
+- `docs/ai/notes/tooling/code-practices-line-width-2026-03.md`: Evidence-based
+  supporting analysis and references for the common line-width recommendation.
 - `docs/ai/notes/tooling/bash-entrypoint-and-runtime-shell-conventions-consolidated-2026-03.md`:
   Canonical Bash entrypoint structure, runtime-shell re-exec rules, and thin
   wrapper exceptions.
