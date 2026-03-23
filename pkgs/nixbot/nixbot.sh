@@ -383,6 +383,7 @@ load_env_value_from_secret_file_if_unset() {
   local var_name="$1" secret_path="$2" decrypted_file=""
 
   [ -z "${!var_name:-}" ] || return 0
+  ensure_tmp_dir
   decrypted_file="$(resolve_runtime_key_file "${secret_path}" 1)"
   set_env_from_file_if_unset "${var_name}" "${decrypted_file}"
 }
@@ -391,6 +392,7 @@ load_env_path_from_secret_file_if_unset() {
   local var_name="$1" secret_path="$2" decrypted_file=""
 
   [ -z "${!var_name:-}" ] || return 0
+  ensure_tmp_dir
   decrypted_file="$(resolve_runtime_key_file "${secret_path}" 1)"
   set_env_path_from_file_if_unset "${var_name}" "${decrypted_file}"
 }
@@ -1595,6 +1597,7 @@ resolve_selected_hosts_json() {
 }
 
 prepare_run_context() {
+  local -n prc_selected_json_out_ref="$1"
   local config_json="" all_hosts_json=""
 
   if [ -f "${NIXBOT_CONFIG_PATH}" ]; then
@@ -1603,7 +1606,10 @@ prepare_run_context() {
   fi
 
   all_hosts_json="$(load_all_hosts_json)"
-  resolve_selected_hosts_json "${all_hosts_json}"
+  # Keep this as an in-process write: init_deploy_settings mutates global
+  # deploy defaults/host metadata that must survive after this helper returns.
+  # shellcheck disable=SC2034
+  prc_selected_json_out_ref="$(resolve_selected_hosts_json "${all_hosts_json}")"
 }
 
 log_run_context() {
@@ -1741,6 +1747,7 @@ check_bootstrap_via_forced_command() {
   done
 
   if [ -n "${NIXBOT_BASTION_KEY_PATH_OVERRIDE}" ]; then
+    ensure_tmp_dir
     if ! check_key_file="$(resolve_runtime_key_file "${NIXBOT_BASTION_KEY_PATH_OVERRIDE}" 1)"; then
       return 1
     fi
@@ -1791,6 +1798,7 @@ inject_bootstrap_nixbot_key() {
     return
   fi
 
+  ensure_tmp_dir
   if ! bootstrap_key_file="$(resolve_runtime_key_file "${bootstrap_nixbot_key_path}")"; then
     return 1
   fi
@@ -1979,6 +1987,7 @@ resolve_ssh_identity_file() {
 
   [ -n "${key_path}" ] || return 0
 
+  ensure_tmp_dir
   if ! resolved_key_file="$(resolve_runtime_key_file "${key_path}" "${require_age}")"; then
     return 1
   fi
@@ -2015,6 +2024,7 @@ prepare_host_ssh_contexts() {
     return 0
   fi
 
+  ensure_tmp_dir
   known_hosts_file="$(ensure_known_hosts_file "${node}" "${known_hosts}")"
   ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
   case "${BUILD_HOST}" in
@@ -2093,6 +2103,7 @@ inject_host_age_identity_key() {
     return
   fi
 
+  ensure_tmp_dir
   if ! age_identity_key_file="$(resolve_runtime_key_file "${age_identity_key_path}")"; then
     return 1
   fi
@@ -2954,6 +2965,7 @@ run_bootstrap_key_checks() {
   json_array_to_bash_array "${selected_json}" selected_hosts
 
   log_section "Phase: Bootstrap Key Check"
+  ensure_tmp_dir
   for node in "${selected_hosts[@]}"; do
     [ -n "${node}" ] || continue
 
@@ -3969,6 +3981,7 @@ materialize_tf_var_files_for_project() {
   mtvffp_tf_var_files_out_ref=()
   mtvffp_discovered_tf_var_files_out_ref=0
 
+  ensure_tmp_dir
   while IFS= read -r tf_var_path; do
     mtvffp_discovered_tf_var_files_out_ref=$((mtvffp_discovered_tf_var_files_out_ref + 1))
     resolved_tf_var_file="$(resolve_runtime_key_file "${tf_var_path}")"
@@ -5074,9 +5087,7 @@ run_all_action() {
 run_requested_action() {
   local selected_json="" action_rc=0
 
-  if ! selected_json="$(prepare_run_context)"; then
-    return 1
-  fi
+  prepare_run_context selected_json
   log_run_context "${selected_json}"
 
   run_deploy_request_action "${selected_json}" || action_rc="$?"
