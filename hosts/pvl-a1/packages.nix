@@ -54,7 +54,7 @@
     ];
 
     dev = with pkgs; [
-      python3Full
+      (python3.withPackages (ps: with ps; [pip setuptools virtualenv numpy]))
       gnumake
       go
       gopls

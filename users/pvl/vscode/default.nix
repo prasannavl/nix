@@ -35,7 +35,7 @@
           google.gemini-cli-vscode-ide-companion
           continue.continue
           # kilocode.kilo-code
-          # anthropic.claude-code
+          anthropic.claude-code
           # google.geminicodeassist
 
           golang.go
