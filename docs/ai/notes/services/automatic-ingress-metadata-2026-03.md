@@ -2,6 +2,9 @@
 
 - Add optional `nginxHostNames` and `cfTunnelNames` metadata to
   `services.podmanCompose.<stack>.instances.<service>.exposedPorts.<name>`.
+- Allow `cfTunnelPort` to override the tunnel target port so a hostname can be
+  declared on one exposed service port but forwarded through another local port
+  such as a shared nginx reverse proxy.
 - Derive nginx reverse-proxy vhosts and Cloudflare Tunnel ingress separately
   from the resolved podman instance graph instead of maintaining a separate
   manual `x.nginxProxyVhosts` map.

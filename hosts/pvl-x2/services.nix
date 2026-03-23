@@ -89,7 +89,7 @@ in {
               ".env" = ''
                 NGINX_HTTP_PORT=${toString exposedPorts.http.port}
               '';
-              "conf.d/srv-http-ports.conf" = nginxLib.renderProxyServers proxyVhosts;
+              "conf.d/srv-http-default.conf" = nginxLib.renderProxyServers proxyVhosts;
             };
         };
 
@@ -145,6 +145,7 @@ in {
             openFirewall = true;
             nginxHostNames = ["memos.example.com"];
             cfTunnelNames = ["memos.example.com"];
+            cfTunnelPort = nginx.exposedPorts.http.port;
           };
 
           source = ./compose/memos/docker-compose.yaml;
@@ -188,6 +189,7 @@ in {
             openFirewall = true;
             nginxHostNames = ["docmost.example.com"];
             cfTunnelNames = ["docmost.example.com"];
+            cfTunnelPort = nginx.exposedPorts.http.port;
           };
 
           source = ./compose/docmost/docker-compose.yml;
@@ -211,6 +213,7 @@ in {
             openFirewall = true;
             nginxHostNames = ["vaultwarden.example.com"];
             cfTunnelNames = ["vaultwarden.example.com"];
+            cfTunnelPort = nginx.exposedPorts.http.port;
           };
 
           source = ./compose/vaultwarden/docker-compose.yml;

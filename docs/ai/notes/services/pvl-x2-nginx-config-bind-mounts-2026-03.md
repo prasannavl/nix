@@ -19,7 +19,8 @@ through the existing `services.podmanCompose.pvl.instances.nginx` flow.
 - Proxy virtual hosts are now generated in Nix from
   `services.podmanCompose.pvl.instances.<service>.exposedPorts.<name>`, where
   `nginxHostNames` and `cfTunnelNames` opt a port into nginx and Cloudflare
-  wiring.
+  wiring, and `cfTunnelPort` can redirect tunnel traffic through nginx's host
+  port instead of the backend port.
 - `hosts/pvl-x2/cloudflare.nix` now derives tunnel ingress from
   `services.podmanCompose.pvl.cloudflareTunnelIngress`, while nginx consumes
   `services.podmanCompose.pvl.nginxProxyVhosts`.
@@ -39,5 +40,6 @@ through the existing `services.podmanCompose.pvl.instances.nginx` flow.
   `memos.example.com`, and `vaultwarden.example.com` and makes nginx depend on
   those backend compose services.
 - The backend service ports for `docmost`, `memos`, and `vaultwarden` are also
-  the source of truth for the generated nginx vhosts and Cloudflare tunnel
-  ingress, reducing drift between compose, nginx, and Cloudflare tunnel ingress.
+  the source of truth for the generated nginx vhosts, while Cloudflare can
+  explicitly target nginx's shared host port through `cfTunnelPort`, reducing
+  drift between compose, nginx, and Cloudflare tunnel ingress.

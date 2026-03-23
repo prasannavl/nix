@@ -131,6 +131,12 @@
               default = [];
               description = "Optional Cloudflare Tunnel hostnames to route to the repo-managed nginx reverse proxy for this port.";
             };
+
+            cfTunnelPort = lib.mkOption {
+              type = lib.types.nullOr lib.types.port;
+              default = null;
+              description = "Optional host port Cloudflare Tunnel should target for these hostnames. Defaults to this exposed port when unset.";
+            };
           };
         }));
         default = {};
@@ -259,7 +265,11 @@
         dstDir = lib.escapeShellArg (builtins.dirOf service.runtimePaths.${fileName});
       in ''
         ${pkgs.coreutils}/bin/install -d -m 0750 ${dstDir}
-        ${pkgs.coreutils}/bin/ln -sfn ${src} ${dst}
+        # Write to a temp path first so bind-mounted consumers never see a
+        # partially copied file.
+        tmp_file="${service.runtimePaths.${fileName}}.tmp"
+        ${pkgs.coreutils}/bin/cp -f ${src} "$tmp_file"
+        ${pkgs.coreutils}/bin/mv -f "$tmp_file" ${dst}
         ${pkgs.coreutils}/bin/printf '%s\n' ${dst} >> "$tmp_manifest"
       '')
       (builtins.attrNames service.sourcePaths)
@@ -311,6 +321,13 @@
     '';
     linkScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-link-files" linkCmdsBody;
     cleanupScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-cleanup-files" cleanupCmdBody;
+    reloadScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-reload" ''
+      set -eu
+      ${podmanComposeCmd} down
+      ${cleanupScript}
+      ${linkScript}
+      ${podmanComposeCmd} up -d --remove-orphans
+    '';
 
     baseSystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName}";
@@ -328,7 +345,7 @@
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${podmanComposeCmd} up -d --remove-orphans";
         ExecStop = "${podmanComposeCmd} down";
-        ExecReload = "${podmanComposeCmd} up -d --remove-orphans";
+        ExecReload = "${reloadScript}";
         ExecStartPre = "${linkScript}";
         ExecStopPost = "${cleanupScript}";
         TimeoutStartSec = 900;

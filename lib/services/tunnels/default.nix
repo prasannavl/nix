@@ -1,8 +1,13 @@
 {lib}: let
+  tunnelPortFor = portCfg:
+    if portCfg.cfTunnelPort != null
+    then portCfg.cfTunnelPort
+    else portCfg.port;
+
   ingressFromPortCfg = portCfg:
     lib.foldl' lib.recursiveUpdate {} (
       map
-      (hostName: {"${hostName}" = "http://127.0.0.1:${toString portCfg.port}";})
+      (hostName: {"${hostName}" = "http://127.0.0.1:${toString (tunnelPortFor portCfg)}";})
       (portCfg.cfTunnelNames or [])
     );
 in {
