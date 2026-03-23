@@ -51,6 +51,10 @@ Task-specific note for the March 23, 2026 snapshot regression after commit
   classification, Terraform backend/project context resolution, Terraform
   action-need evaluation, tofu var-file subcommand detection, SSH identity-file
   resolution, and run-context selection.
+- Exception: do not switch a helper to command substitution if it also mutates
+  process-global state that must survive after the helper returns. In `nixbot`,
+  this bit once for deploy config initialization (`prepare_run_context`) and
+  again for temp/runtime-path setup around decrypted secrets and SSH state.
 
 ## Audit result
 
@@ -59,6 +63,9 @@ Task-specific note for the March 23, 2026 snapshot regression after commit
   the nested-helper rule and avoid future alias-forwarding surprises.
 - A second audit removed the remaining obvious scalar nameref helpers in the
   deploy and Terraform paths.
+- A later audit also fixed the adjacent subshell-state-loss pattern: callers now
+  establish shared temp/runtime directories in the parent shell before captured
+  helpers that decrypt secrets or allocate SSH temp files.
 - The remaining `local -n` usage in `pkgs/nixbot/nixbot.sh` is now primarily for
   arrays, counters, and summary aggregation where by-reference mutation is still
   the least awkward Bash option.

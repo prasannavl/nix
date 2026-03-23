@@ -33,11 +33,18 @@
     `read`.
   - for tightly coupled helper state, prefer an explicit shared context object
     or script-global staging variables over scalar by-reference plumbing.
+- Before converting a helper to stdout/capture, check whether it also mutates
+  process-global state. Command substitution runs in a subshell, so config
+  initialization, temp-dir setup, cached state, and staged context do not
+  survive in the caller unless that state is established first in the parent
+  shell.
 - Use `local -n` only when by-reference mutation is materially simpler than the
   alternatives, such as:
   - mutating arrays in place
   - updating counters or accumulators in tight helper loops
   - narrow, well-contained summary aggregation where copying would be awkward
+- Also allow `local -n` or another in-process return pattern when the helper
+  must both return a value and preserve caller-visible global mutations.
 - Even when `local -n` is justified:
   - keep the scope tight
   - use function-specific alias names
