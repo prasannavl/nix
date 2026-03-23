@@ -18,6 +18,14 @@
         type = "app";
         program = "${build}/bin/hello-rust";
       };
+      check = args:
+        build.overrideAttrs (old: {
+          pname = "${old.pname}-${args.name}";
+          nativeBuildInputs = (old.nativeBuildInputs or []) ++ (args.nativeBuildInputs or []);
+          buildPhase = args.buildPhase;
+          installPhase = "touch $out";
+          dontInstall = false;
+        });
     in {
       packages = {
         default = build;
@@ -27,6 +35,23 @@
       apps = {
         default = run;
         inherit run;
+      };
+      checks = {
+        inherit build;
+        clippy = check {
+          name = "clippy";
+          nativeBuildInputs = [pkgs.clippy];
+          buildPhase = "cargo clippy -- -D warnings";
+        };
+        fmt = check {
+          name = "fmt";
+          nativeBuildInputs = [pkgs.rustfmt];
+          buildPhase = "cargo fmt --check";
+        };
+        test = check {
+          name = "test";
+          buildPhase = "cargo test";
+        };
       };
     });
 }
