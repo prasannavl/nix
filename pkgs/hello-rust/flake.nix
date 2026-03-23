@@ -22,7 +22,7 @@
         build.overrideAttrs (old: {
           pname = "${old.pname}-${args.name}";
           nativeBuildInputs = (old.nativeBuildInputs or []) ++ (args.nativeBuildInputs or []);
-          buildPhase = args.buildPhase;
+          inherit (args) buildPhase;
           installPhase = "touch $out";
           dontInstall = false;
         });

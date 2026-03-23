@@ -25,15 +25,15 @@ resolve_range_start() {
 
 main() {
   local repo_root
-  local local_ref local_sha remote_ref remote_sha
+  local local_ref local_sha _remote_ref remote_sha
   local range_start commit_count
 
-  printf '[pre-push] Run lints..\n' >&2
+  printf '[pre-push] Linting changes..\n' >&2
 
   repo_root="$(git rev-parse --show-toplevel)"
   cd "${repo_root}"
 
-  while read -r local_ref local_sha remote_ref remote_sha; do
+  while read -r local_ref local_sha _remote_ref remote_sha; do
     if [ "${local_sha}" = "${ZERO}" ]; then
       continue
     fi
