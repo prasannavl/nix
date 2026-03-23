@@ -70,7 +70,7 @@
 
             package = lib.mkOption {
               type = lib.types.package;
-              default = self.packages.${pkgs.system}.default;
+              inherit (self.packages.${pkgs.system}) default;
               defaultText = lib.literalExpression "self.packages.\${pkgs.system}.default";
               description = "The hello-rust package to run as a service.";
             };
