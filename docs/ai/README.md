@@ -20,6 +20,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/apps/flake-architecture-consolidated-2026-03.md`: Canonical
   flake output model, auto-discovery collector, `lib/flake` helpers, hybrid
   package set architecture, and wrapper flakes.
+- `docs/ai/notes/apps/cloudflare-apps-remove-openseal-priyasuyash-2026-03.md`:
+  Remove the `openseal` and `priyasuyash` Cloudflare apps and clear their
+  archive-worker Terraform config.
 
 ### Deployment
 
