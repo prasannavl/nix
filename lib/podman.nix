@@ -175,10 +175,16 @@
         description = "Prefix for generated systemd user service names in this stack.";
       };
 
+      nginxDefaultHost = lib.mkOption {
+        type = lib.types.str;
+        default = "host.containers.internal";
+        description = "Default upstream host for nginx proxy vhosts derived from this stack's instances.";
+      };
+
       instances = lib.mkOption {
         type = lib.types.attrsOf (lib.types.oneOf [instanceFnType serviceType]);
         default = {};
-        description = "Compose instances in this stack keyed by instance name. Each value can be an instance attrset or a function receiving { stackName, instanceName, user, uid, workDir, stackDir, podmanSocket } and returning an instance attrset. podmanSocket resolves to /run/podman/podman.sock for root stacks, otherwise /run/user/<uid>/podman/podman.sock.";
+        description = "Compose instances in this stack keyed by instance name. Each value can be an instance attrset or a function receiving { stackName; instanceName; user; uid; workDir; stackDir; podmanSocket } and returning an instance attrset. podmanSocket resolves to /run/podman/podman.sock for root stacks, otherwise /run/user/<uid>/podman/podman.sock.";
       };
 
       nginxProxyVhosts = lib.mkOption {
@@ -557,7 +563,7 @@ in {
             instancesWithContext;
         in {
           instances = resolvedInstances;
-          nginxProxyVhosts = nginxLib.proxyVhostsFromInstances resolvedInstances;
+          nginxProxyVhosts = nginxLib.proxyVhostsFromInstances {defaultHost = stack.nginxDefaultHost;} resolvedInstances;
           cloudflareTunnelIngress = tunnelsLib.ingressFromInstances resolvedInstances;
         }))
       stacks;

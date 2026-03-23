@@ -1,8 +1,9 @@
 {lib}: let
-  proxyVhostType = lib.types.submodule (_: {
+  proxyVhostType = lib.types.submodule {
     options = {
       service = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.nullOr lib.types.str;
+        default = null;
         description = "Compose service name nginx should depend on for this vhost.";
       };
 
@@ -15,10 +16,15 @@
         type = lib.types.port;
         description = "Local backend port nginx should forward to.";
       };
-    };
-  });
 
-  mkProxyVhost = serviceName: portName: portCfg: let
+      upstreams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Backend server addresses (host:port).";
+      };
+    };
+  };
+
+  mkProxyVhost = {defaultHost ? "localhost"}: serviceName: portName: portCfg: let
     nginxHostNames = portCfg.nginxHostNames or [];
   in
     lib.optionalAttrs (nginxHostNames != []) {
@@ -26,10 +32,18 @@
         service = serviceName;
         inherit (portCfg) port;
         serverNames = nginxHostNames;
+        upstreams = ["${defaultHost}:${toString portCfg.port}"];
       };
     };
 
+  mkUpstreamBlock = name: upstreams: ''
+    upstream ${name} {
+        ${lib.concatMapStringsSep "\n        " (s: "server ${s};") upstreams}
+    }
+  '';
+
   mkProxyServer = name: proxy: ''
+    ${mkUpstreamBlock name proxy.upstreams}
     # ${name}
     server {
         listen 80;
@@ -38,7 +52,7 @@
         include /etc/nginx/conf.d/lib/http-security.conf;
 
         location / {
-            proxy_pass http://127.0.0.1:${toString proxy.port};
+            proxy_pass http://${name};
         }
     }
   '';
@@ -52,16 +66,16 @@ in {
     "conf.d" = ./compose/conf.d;
   };
 
-  proxyVhostsFromInstances = instances:
+  proxyVhostsFromInstances = {defaultHost ? "localhost"}: instances:
     lib.concatMapAttrs
     (serviceName: service:
       lib.concatMapAttrs
-      (portName: portCfg: mkProxyVhost serviceName portName portCfg)
+      (portName: portCfg: mkProxyVhost {inherit defaultHost;} serviceName portName portCfg)
       service.exposedPorts)
     instances;
 
   dependencyServices = proxyVhosts:
-    lib.unique (map (proxy: proxy.service) (builtins.attrValues proxyVhosts));
+    lib.unique (lib.filter (s: s != null) (map (proxy: proxy.service) (builtins.attrValues proxyVhosts)));
 
   renderProxyServers = proxyVhosts:
     lib.concatStringsSep "\n" (lib.mapAttrsToList mkProxyServer proxyVhosts);

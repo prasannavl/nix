@@ -112,7 +112,8 @@ Use this index as the canonical map for `docs/ai/**`.
   platform Terraform adoption into this repo's phase-based `tf/` layout.
 - `docs/ai/notes/services/automatic-ingress-metadata-2026-03.md`: Optional
   `exposedPorts` metadata that auto-derives nginx reverse-proxy and Cloudflare
-  Tunnel wiring.
+  Tunnel wiring. Includes nginx proxy abstraction supporting multiple upstreams
+  and non-podman vhosts via a unified `proxyVhostType`.
 - `docs/ai/notes/services/lib-service-module-relocation-2026-03.md`: User-led
   relocation of service-specific helper modules from `lib/` into
   `lib/services/`.
