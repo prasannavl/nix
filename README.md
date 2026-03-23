@@ -1,6 +1,6 @@
-# NixOS Config
+# Nix
 
-This repo contains my NixOS and Home Manager configuration, organized as small
+This is the nix driven monorepo, organized as small
 modules and composed via `flake.nix`.
 
 ## Layout
