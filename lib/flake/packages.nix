@@ -6,11 +6,9 @@
     hello-rust = pkgs.callPackage ../../pkgs/hello-rust/default.nix {};
     nixbot = pkgs.callPackage ../../pkgs/nixbot/default.nix {};
     cloudflare-apps = let
-      gap3Ai = pkgs.callPackage ../../pkgs/cloudflare-apps/gap3-ai/default.nix {};
       llmugHello = pkgs.callPackage ../../pkgs/cloudflare-apps/llmug-hello/default.nix {};
     in
       pkgs.callPackage ../../pkgs/cloudflare-apps/default.nix {
-        inherit gap3Ai;
         inherit nixbot llmugHello;
       };
   };

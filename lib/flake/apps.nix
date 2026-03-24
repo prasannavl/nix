@@ -18,11 +18,6 @@
       program = "${packageSet.cloudflare-apps.deploy}/bin/cloudflare-apps-deploy";
     };
 
-    "gap3-ai-wrangler-deploy" = {
-      type = "app";
-      program = "${packageSet.cloudflare-apps.gap3-ai.wrangler-deploy}/bin/gap3-ai-wrangler-deploy";
-    };
-
     "llmug-hello-wrangler-deploy" = {
       type = "app";
       program = "${packageSet.cloudflare-apps.llmug-hello.wrangler-deploy}/bin/llmug-hello-wrangler-deploy";

@@ -1,13 +1,9 @@
 {
   pkgs,
   nixbot,
-  gap3Ai,
   llmugHello,
 }: let
-  buildPaths = [
-    gap3Ai
-    llmugHello
-  ];
+  buildPaths = [llmugHello];
   aggregateBuild =
     if buildPaths == []
     then
@@ -34,7 +30,6 @@ in
       // {
         build = aggregateBuild;
         inherit deploy;
-        gap3-ai = gap3Ai;
         llmug-hello = llmugHello;
       };
   })

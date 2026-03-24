@@ -19,11 +19,9 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      gap3Ai = pkgs.callPackage ./gap3-ai/default.nix {};
       llmugHello = pkgs.callPackage ./llmug-hello/default.nix {};
       cloudflareApps = pkgs.callPackage ./default.nix {
         nixbot = nixbot.packages.${system}.default;
-        inherit gap3Ai;
         inherit llmugHello;
       };
     in {
