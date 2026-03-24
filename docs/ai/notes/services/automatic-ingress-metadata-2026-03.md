@@ -29,7 +29,7 @@
     and direct `proxyVhostType` usage).
 - `mkProxyVhost` accepts `{ defaultHost }` and explicitly sets `upstreams` in
   the produced attrset to avoid submodule default evaluation-order issues.
-- `service` is `nullOr str` (default `null`) so non-podman vhosts don't need
-  to declare a compose dependency. `dependencyServices` filters out nulls.
+- `service` is `nullOr str` (default `null`) so non-podman vhosts don't need to
+  declare a compose dependency. `dependencyServices` filters out nulls.
 - Non-podman vhosts can be defined directly as `proxyVhostType` attrsets and
   merged into the vhost map passed to `renderProxyServers`.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+trap 'printf "worker-dir-nix-resolver: failed @ line: %s\n" "${LINENO}" >&2' ERR
+
 runtime_shell_flag() {
   printf '%s\n' "${CLOUDFLARE_WORKER_ASSETS_DIRECTORY_IN_NIX_SHELL:-0}"
 }
@@ -9,7 +11,7 @@ require_cmd() {
   local cmd="$1"
 
   if ! command -v "${cmd}" >/dev/null 2>&1; then
-    printf '{"error":%s}\n' "$(printf '%s is required' "${cmd}" | jq -Rsa .)"
+    printf '%s is required\n' "${cmd}" >&2
     exit 1
   fi
 }
@@ -40,11 +42,14 @@ ensure_runtime_shell() {
   fi
 
   if ! command -v nix >/dev/null 2>&1; then
-    printf '%s\n' "Required command not found: nix" >&2
+    printf 'worker-dir-nix-resolver: required command not found: nix\n' >&2
     exit 1
   fi
 
-  root="$(repo_root)"
+  root="$(repo_root)" || {
+    printf 'worker-dir-nix-resolver: failed to resolve repo root\n' >&2
+    exit 1
+  }
   script="$(script_path)"
 
   exec nix shell --inputs-from "${root}" "${runtime_packages[@]}" -c \
@@ -59,7 +64,7 @@ read_directory_from_stdin() {
 print_error_and_exit() {
   local message="$1"
 
-  printf '{"error":%s}\n' "$(printf '%s' "${message}" | jq -Rsa .)"
+  printf '%s\n' "${message}" >&2
   exit 1
 }
 
@@ -84,7 +89,12 @@ resolve_directory() {
   local build_root=""
 
   if build_root="$(resolve_build_root "${directory}")"; then
-    nix build --no-link --print-out-paths "path:${build_root}#build" | tail -n1
+    local build_output=""
+    if ! build_output="$(nix build --no-link --print-out-paths "path:${build_root}#build")"; then
+      printf 'worker-dir-nix-resolver: nix build failed for %s\n' "${build_root}" >&2
+      exit 1
+    fi
+    printf '%s\n' "${build_output}" | tail -n1
     return 0
   fi
 

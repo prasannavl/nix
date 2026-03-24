@@ -363,7 +363,7 @@ run_lint_action() {
     local flake_dir
     for flake_dir in "${flake_check_dirs[@]}"; do
       printf '  - %s\n' "${flake_dir}" >&2
-      nix flake check "path:./${flake_dir}"
+      (cd "${flake_dir}" && nix flake check)
     done
   fi
 }
