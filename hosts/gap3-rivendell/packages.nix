@@ -13,12 +13,6 @@
       nvtopPackages.full
     ];
 
-    network = with pkgs; [
-      iperf3
-      cloudflared
-      tailscale
-    ];
-
     graphics = with pkgs; [
       mesa-demos
       libva-utils
@@ -33,7 +27,6 @@
 in {
   environment.systemPackages =
     packages.core
-    ++ packages.network
     ++ packages.graphics
     ++ packages.misc;
 }

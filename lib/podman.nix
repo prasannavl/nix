@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.services.podmanCompose;
+  hasStacks = cfg != {};
   nginxLib = import ./services/nginx {inherit lib;};
   tunnelsLib = import ./services/tunnels {inherit lib;};
 
@@ -569,7 +570,18 @@ in {
       stacks;
   };
 
-  config = {
+  config = lib.mkIf hasStacks {
+    virtualisation.podman = {
+      enable = lib.mkDefault true;
+      dockerCompat = lib.mkDefault true;
+      defaultNetwork.settings.dns_enabled = lib.mkDefault true;
+    };
+
+    environment.systemPackages = with pkgs; [
+      podman
+      podman-compose
+    ];
+
     networking.firewall.allowedTCPPorts = firewallPortsForProtocol "tcp";
     networking.firewall.allowedUDPPorts = firewallPortsForProtocol "udp";
 

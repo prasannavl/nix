@@ -35,7 +35,6 @@
     ];
 
     containers = with pkgs; [
-      podman-compose
     ];
 
     hardware = with pkgs; [

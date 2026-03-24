@@ -41,6 +41,14 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
   reusable Incus guest template, bootstrap flow, naming conventions, and secret
   model.
+- `docs/ai/notes/hosts/incus-machines-module-2026-03.md`: Reusable
+  `lib/incus.nix` NixOS module for declarative incus container
+  lifecycle: device sync, config-hash recreate, bootTag/recreateTag, GC, and
+  per-device removal policies.
+- `docs/ai/notes/hosts/gap3-gondor-incus-bastion-2026-03.md`: Incus-inside-incus
+  bastion guest `gap3-gondor` on pvl-x2 with GPU passthrough, podman services
+  (nginx, ollama, open-webui), inner guest `gap3-rivendell`, and dir storage
+  driver to avoid btrfs-on-btrfs.
 - `docs/ai/notes/hosts/pvl-bash-prompt-exit-status-fix-2026-03.md`: Prompt
   exit-status command substitution was escaped as `\$(...)` during lint cleanup,
   causing the literal text to render in interactive shells.

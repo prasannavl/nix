@@ -9,6 +9,8 @@ let
     pvl-a1 = ./machine/pvl-a1.key.pub;
     pvl-x2 = ./machine/pvl-x2.key.pub;
     llmug-rivendell = ./machine/llmug-rivendell.key.pub;
+    gap3-gondor = ./machine/gap3-gondor.key.pub;
+    gap3-rivendell = ./machine/gap3-rivendell.key.pub;
   };
   machines = builtins.mapAttrs (_: keyPath: let
     recipient = builtins.replaceStrings ["\n"] [""] (builtins.readFile keyPath);
@@ -28,6 +30,8 @@ in
     "data/secrets/machine/pvl-a1.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/pvl-x2.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/llmug-rivendell.key.age".publicKeys = adminsWithNixbot;
+    "data/secrets/machine/gap3-gondor.key.age".publicKeys = adminsWithNixbot;
+    "data/secrets/machine/gap3-rivendell.key.age".publicKeys = adminsWithNixbot;
 
     # Cloudflare DNS
     "data/secrets/cloudflare/api-token.key.age".publicKeys = admins ++ pvl-x2;
