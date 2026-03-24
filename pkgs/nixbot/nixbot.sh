@@ -72,7 +72,8 @@ Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
 Workflow Behavior Options:
   --dry            Print commands without applying changes
   --force          Bypass change-detection gates
-  --dirty          Allow running from a dirty repo root
+  --dirty          Allow running from a dirty repo root (worktree = HEAD)
+  --dirty-staged   Like --dirty, but overlay staged changes into the worktree
   --log-format     auto|gh|plain (default: auto)
 
 Auth / Config Options:
@@ -119,6 +120,7 @@ Environment (Host Workflow Ordering):
 Environment (Workflow Behavior):
   NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
   NIXBOT_DIRTY                Same as --dirty (bool: 1/0, true/false, yes/no)
+  NIXBOT_DIRTY_STAGED          Same as --dirty-staged (bool: 1/0, true/false, yes/no)
   NIXBOT_DRY                  Same as --dry (bool)
   NIXBOT_LOG_FORMAT           Same as --log-format
 
@@ -203,6 +205,7 @@ init_vars() {
   TF_IF_CHANGED=1
   FORCE_REQUESTED=0
   ALLOW_DIRTY_REPO=0
+  OVERLAY_STAGED=0
   FORCE_BOOTSTRAP_PATH=0
   PRIORITIZE_BASTION_FIRST=0
   DRY_RUN=0
@@ -247,6 +250,10 @@ init_vars() {
     enable_force_mode
   fi
   if parse_bool_env "${NIXBOT_DIRTY:-0}"; then
+    ALLOW_DIRTY_REPO=1
+  fi
+  if parse_bool_env "${NIXBOT_DIRTY_STAGED:-0}"; then
+    OVERLAY_STAGED=1
     ALLOW_DIRTY_REPO=1
   fi
   if parse_bool_env "${NIXBOT_BASTION_FIRST:-0}"; then
@@ -663,6 +670,7 @@ parse_args() {
         take_optval "$@"; NIXBOT_PARALLEL_JOBS="${OPTVAL}"; shift "${OPTSHIFT}" ;;
       --force)              enable_force_mode; shift ;;
       --dirty)              ALLOW_DIRTY_REPO=1; shift ;;
+      --dirty-staged)       OVERLAY_STAGED=1; ALLOW_DIRTY_REPO=1; shift ;;
       --bootstrap)          FORCE_BOOTSTRAP_PATH=1; shift ;;
       --bastion-first)      PRIORITIZE_BASTION_FIRST=1; shift ;;
       --dry)                enable_dry_run_mode; shift ;;
@@ -1110,6 +1118,20 @@ prepare_repo_worktree() {
   git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
   release_repo_root_lock
 
+  # When --staged is set on a local repo, overlay staged changes and new
+  # staged files into the worktree so the deploy includes them.
+  if [ "${OVERLAY_STAGED}" -eq 1 ] && [ "${REPO_ROOT_MANAGED}" -eq 0 ]; then
+    echo "Overlaying staged changes into worktree..." >&2
+    git -C "${REPO_ROOT}" diff --cached --binary | git -C "${REPO_WORKTREE_ROOT}" apply --allow-empty 2>/dev/null || true
+    # Also copy untracked files that have been staged.
+    git -C "${REPO_ROOT}" diff --cached --name-only --diff-filter=A -z |
+      while IFS= read -r -d '' f; do
+        [ -n "$f" ] || continue
+        mkdir -p "${REPO_WORKTREE_ROOT}/$(dirname "$f")"
+        git -C "${REPO_ROOT}" show ":${f}" > "${REPO_WORKTREE_ROOT}/${f}"
+      done
+  fi
+
   [ -f "$(repo_worktree_script_path)" ] || die "deploy script missing in repo worktree: $(repo_worktree_script_path)"
   cd "${REPO_WORKTREE_ROOT}"
 }
@@ -1346,6 +1368,11 @@ host_optional_deploy_enabled() {
 
 host_deploy_stage_skipped() {
   [ "$(host_deploy_mode "$1")" = "skip" ]
+}
+
+host_wait_seconds() {
+  local node="$1"
+  jq -r --arg h "${node}" '.[$h].wait // 0' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
 expand_selected_hosts_json() {
@@ -1613,14 +1640,32 @@ prepare_run_context() {
 }
 
 log_run_context() {
-  local selected_json="$1"
-  local -a log_hosts=()
+  local selected_json="$1" node="" mode="" wait_secs="" annotation=""
+  local -a log_hosts=() annotated_hosts=()
 
   json_array_to_bash_array "${selected_json}" log_hosts
 
+  for node in "${log_hosts[@]}"; do
+    [ -n "${node}" ] || continue
+    annotation=""
+    mode="$(host_deploy_mode "${node}")"
+    if [ "${mode}" != "strict" ]; then
+      annotation="deploy: ${mode}"
+    fi
+    wait_secs="$(host_wait_seconds "${node}")"
+    if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
+      annotation="${annotation:+${annotation}, }wait: ${wait_secs}s"
+    fi
+    if [ -n "${annotation}" ]; then
+      annotated_hosts+=("${node} (${annotation})")
+    else
+      annotated_hosts+=("${node}")
+    fi
+  done
+
   log_section "nixbot"
   echo "Action: ${ACTION}" >&2
-  print_host_block "Hosts" "${log_hosts[@]}"
+  print_host_block "Hosts" "${annotated_hosts[@]}"
   if is_deploy_style_action; then
     echo "Goal: ${GOAL}" >&2
     echo "Build host: ${BUILD_HOST}" >&2
@@ -1651,7 +1696,8 @@ resolve_deploy_target() {
       bootstrapKey: fb($cfg.bootstrapKey; $defBKey),
       bootstrapUser: fb($cfg.bootstrapUser; $defBUser),
       bootstrapKeyPath: fb($cfg.bootstrapKeyPath; $defBKeyPath),
-      ageIdentityKey: fb($cfg.ageIdentityKey; $defAgeKey)
+      ageIdentityKey: fb($cfg.ageIdentityKey; $defAgeKey),
+      proxyJump: ($cfg.proxyJump // "")
     }' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
@@ -2009,6 +2055,7 @@ prepare_host_ssh_contexts() {
   local -n phsc_bootstrap_ssh_opts_out_ref="$6"
   # shellcheck disable=SC2178,SC2034
   local -n phsc_bootstrap_nix_sshopts_out_ref="$7"
+  local proxy_jump="${8:-}"
   local known_hosts_file="" build_host_host=""
 
   # shellcheck disable=SC2034
@@ -2027,6 +2074,9 @@ prepare_host_ssh_contexts() {
   ensure_tmp_dir
   known_hosts_file="$(ensure_known_hosts_file "${node}" "${known_hosts}")"
   ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
+  if [ -n "${proxy_jump}" ]; then
+    ensure_known_host "${proxy_jump}" "${known_hosts}" "${known_hosts_file}"
+  fi
   case "${BUILD_HOST}" in
     local|target)
       ;;
@@ -2166,7 +2216,7 @@ prepare_deploy_context() {
   local node="$1"
   local target_info="" user="" host="" key_path="" known_hosts=""
   local bootstrap_key="" bootstrap_user="" bootstrap_key_path=""
-  local age_identity_key="" deploy_key_file="" bootstrap_key_file=""
+  local age_identity_key="" proxy_jump="" deploy_key_file="" bootstrap_key_file=""
   local ssh_target="" bootstrap_ssh_target=""
   local -a ssh_opts=() bootstrap_ssh_opts=()
   local nix_sshopts="" bootstrap_nix_sshopts=""
@@ -2184,7 +2234,8 @@ prepare_deploy_context() {
     read -r bootstrap_user
     read -r bootstrap_key_path
     read -r age_identity_key
-  } < <(jq -r '[.user, .target, (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapKeyPath // ""), (.ageIdentityKey // "")] | .[]' <<<"${target_info}")
+    read -r proxy_jump
+  } < <(jq -r '[.user, .target, (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // "")] | .[]' <<<"${target_info}")
 
   ssh_target="${user}@${host}"
   bootstrap_ssh_target="${bootstrap_user}@${host}"
@@ -2196,7 +2247,25 @@ prepare_deploy_context() {
     ssh_opts \
     nix_sshopts \
     bootstrap_ssh_opts \
-    bootstrap_nix_sshopts || return 1
+    bootstrap_nix_sshopts \
+    "${proxy_jump}" || return 1
+
+  if [ -n "${proxy_jump}" ]; then
+    # ProxyJump spawns a separate SSH process that does NOT inherit our custom
+    # UserKnownHostsFile, so it falls back to ~/.ssh/known_hosts and can fail
+    # with "REMOTE HOST IDENTIFICATION HAS CHANGED" on fresh/reinstalled hosts.
+    # Use ProxyCommand instead so we can pass the known_hosts file through.
+    # The proxy host key was already scanned into the node's known_hosts file
+    # by prepare_host_ssh_contexts above.
+    local safe_node=""
+    safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
+    local proxy_known_hosts_file="${TMP_SSH_DIR}/${NODE_KNOWN_HOSTS_PREFIX}.${safe_node}"
+    local proxy_cmd="ssh -W %h:%p -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${proxy_known_hosts_file} ${proxy_jump}"
+    ssh_opts+=(-o "ProxyCommand=${proxy_cmd}")
+    nix_sshopts="${nix_sshopts:+${nix_sshopts} }-o ProxyCommand=${proxy_cmd}"
+    bootstrap_ssh_opts+=(-o "ProxyCommand=${proxy_cmd}")
+    bootstrap_nix_sshopts="${bootstrap_nix_sshopts:+${bootstrap_nix_sshopts} }-o ProxyCommand=${proxy_cmd}"
+  fi
 
   if [ -n "${key_path}" ]; then
     if ! deploy_key_file="$(resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${NIXBOT_KEY_OVERRIDE_EXPLICIT}")"; then
@@ -2592,6 +2661,13 @@ log_snapshot_retry_transition() {
 
 run_deploy_job() {
   local node="$1" out_file="$2" status_file="$3" log_file="${4:-}" built_out_path="" rc="" skip_marker=""
+  local wait_secs=""
+
+  wait_secs="$(host_wait_seconds "${node}")"
+  if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
+    echo "[${node}] deploy | waiting ${wait_secs}s before deploy" >&2
+    sleep "${wait_secs}"
+  fi
 
   (
     set +e
