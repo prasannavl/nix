@@ -79,7 +79,10 @@ in {
         };
 
         nginx = rec {
-          exposedPorts.http.port = 10800;
+          exposedPorts.http = { 
+            port = 10800;
+            openFirewall = true;
+          };
           dependsOn = nginxLib.dependencyServices proxyVhosts;
 
           source = nginxLib.composeSource;
