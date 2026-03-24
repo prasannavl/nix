@@ -2,8 +2,8 @@
 
 ## Root flake check
 
-`nix flake check --no-build` now runs on the root flake in every lint mode.
-This validates that all flake outputs evaluate without errors.
+`nix flake check --no-build` now runs on the root flake in every lint mode. This
+validates that all flake outputs evaluate without errors.
 
 ## Lint modes
 
@@ -24,8 +24,8 @@ Four clean modes replacing the old `--diff`/`--full`/`--ci` flags:
 
 - Full lints on all files
 - Flake checks on all sub-projects, but skip `test` and `test-*` checks
-- Good for CI on PRs: catches build/lint regressions everywhere without
-  running expensive test suites on untouched code
+- Good for CI on PRs: catches build/lint regressions everywhere without running
+  expensive test suites on untouched code
 
 ### --full
 
@@ -51,9 +51,9 @@ Sub-flakes should name their test checks `test` or `test-*` so the
 
 ## Mode matrix
 
-| Mode             | Lint scope      | Root check | Sub-flake checks             |
-| ---------------- | --------------- | ---------- | ---------------------------- |
-| auto             | diff to master  | yes        | changed only, full           |
-| `--diff`         | diff to REF     | yes        | changed only, full           |
-| `--full-no-test` | all files       | yes        | all sub-projects, skip test  |
-| `--full`         | all files       | yes        | all sub-projects, full       |
+| Mode             | Lint scope     | Root check | Sub-flake checks            |
+| ---------------- | -------------- | ---------- | --------------------------- |
+| auto             | diff to master | yes        | changed only, full          |
+| `--diff`         | diff to REF    | yes        | changed only, full          |
+| `--full-no-test` | all files      | yes        | all sub-projects, skip test |
+| `--full`         | all files      | yes        | all sub-projects, full      |
