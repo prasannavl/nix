@@ -16,11 +16,13 @@ A minimal, composable protocol for secure agent-to-agent communication that:
 ## Existing Protocols
 
 ### MCP — Model Context Protocol
+
 - LLM ↔ tools/resources interface
 - JSON-RPC (tools/call, resources/read)
 - Focus: execution
 
 Missing:
+
 - identity
 - auth
 - delegation
@@ -29,19 +31,23 @@ Missing:
 ---
 
 ### A2A — Agent-to-Agent
+
 - Task coordination semantics
 - Planner/worker patterns
 
 Missing:
+
 - security model
 - auth semantics
 
 ---
 
 ### ACP — Communication Layer
+
 - Transport, routing, delivery
 
 Missing:
+
 - user-level authorization
 - delegation model
 
@@ -56,11 +62,13 @@ Missing:
 ## Design Direction
 
 We reuse:
+
 - MCP for execution
 - A2A for coordination
 - ACP for transport
 
 Add:
+
 - identity
 - impersonation
 - authorization
@@ -70,36 +78,41 @@ Add:
 ## Why Not Full IAM
 
 Full IAM is:
+
 - complex
 - hard to audit
 - overkill
 
-We use:
-User + Service Account + Scoped Impersonation
+We use: User + Service Account + Scoped Impersonation
 
 ---
 
 # 1. Core Concepts
 
 User (Principal):
-user:pvl
+
+> user:pvl
 
 Service Account (Actor):
-sa:planner
-sa:worker
+
+> sa:planner sa:worker
 
 Impersonation:
-sa:worker → user:pvl
+
+> sa:worker → user:pvl
 
 Authorization:
 
+```
 effective_permissions =
   user_permissions ∩ service_permissions ∩ token_scopes ∩ tool_policy
+```
 
 ---
 
 # 2. Structure
 
+```
 {
   "envelope": {...},
   "auth": {...},
@@ -109,11 +122,13 @@ effective_permissions =
   },
   "sig": "..."
 }
+```
 
 ---
 
 # 3. Message Example
 
+```
 {
   "envelope": {
     "id": "msg-123",
@@ -135,22 +150,26 @@ effective_permissions =
   },
   "sig": "..."
 }
+```
 
 ---
 
 # 4. Forwardability
 
 Allowed:
+
 - protocols.mcp → MCP server
 - protocols.a2a → other agent
 
 Not allowed:
+
 - modifying protocol payloads
 
 ---
 
 # 5. Token
 
+```
 {
   "sub": "user:pvl",
   "azp": "sa:planner",
@@ -159,6 +178,7 @@ Not allowed:
   "resources": ["/docs/*"],
   "exp": 1770000000
 }
+```
 
 ---
 
@@ -185,6 +205,7 @@ Not allowed:
 
 # 8. Architecture
 
+```
 ACP (transport)
  ↓
 Envelope
@@ -194,9 +215,11 @@ Auth
 A2A
  ↓
 MCP
+```
 
 ---
 
 # Summary
 
-A simple, secure wrapper around MCP and A2A adding identity and authorization while preserving protocol purity.
+A simple, secure wrapper around MCP and A2A adding identity and authorization
+while preserving protocol purity.

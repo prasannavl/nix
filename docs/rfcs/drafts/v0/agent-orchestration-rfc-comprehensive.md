@@ -1,12 +1,15 @@
 # RFC 0001 — Agent Orchestration Platform (Comprehensive)
 
 ## Status
+
 Draft
 
 ## Authors
+
 Prasanna Loganathar (pvl)
 
 ## Date
+
 2026-03-23
 
 ---
@@ -42,7 +45,8 @@ do not answer:
 
 > “Who is acting, on whose behalf, and is it allowed?”
 
-This RFC defines a system that solves orchestration *and* secure delegation together.
+This RFC defines a system that solves orchestration _and_ secure delegation
+together.
 
 ---
 
@@ -330,11 +334,11 @@ Layered security:
 
 ## 17. Alternatives Considered
 
-| System | Reason |
-|------|-------|
-| Kafka | Not embeddable |
-| Redis | Weaker routing |
-| gRPC mesh | Too rigid |
+| System    | Reason         |
+| --------- | -------------- |
+| Kafka     | Not embeddable |
+| Redis     | Weaker routing |
+| gRPC mesh | Too rigid      |
 
 ---
 
@@ -368,4 +372,5 @@ This system combines:
 - Agents → execution units
 - Data → memory
 
-It provides a **complete, secure, and scalable foundation** for agent orchestration.
+It provides a **complete, secure, and scalable foundation** for agent
+orchestration.

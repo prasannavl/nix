@@ -1,22 +1,27 @@
 # RFC-0001: Agent Protocol (Simple IAM Model)
 
 ## Status
+
 Draft
 
 ## Version
+
 v0.1
 
 ## Authors
+
 Prasanna Loganathar (pvl) and collaborators
 
 ## Date
+
 2026-03-23
 
 ---
 
 # 1. Abstract
 
-This document specifies a minimal, composable protocol for secure agent-to-agent communication.  
+This document specifies a minimal, composable protocol for secure agent-to-agent
+communication.\
 It introduces a **simple IAM-like model** based on:
 
 - user principals
@@ -85,24 +90,31 @@ This RFC introduces a minimal solution.
 # 5. Terminology
 
 ## 5.1 User (Principal)
+
 Human or originating authority.
 
 Example:
+
 - user:pvl
 
 ## 5.2 Service Account (Actor)
+
 Runtime identity executing operations.
 
 Example:
+
 - sa:worker
 
 ## 5.3 Subject
+
 The user on whose behalf an action is executed.
 
 ## 5.4 Issuer
+
 Service account sending the message.
 
 ## 5.5 Target
+
 Intended recipient.
 
 ---
@@ -215,12 +227,15 @@ All must pass.
 # 13. Protocol Interoperability
 
 ## MCP
+
 Used unchanged for tool execution.
 
 ## A2A
+
 Used unchanged for task semantics.
 
 ## ACP
+
 Used for transport and routing.
 
 ---
@@ -230,6 +245,7 @@ Used for transport and routing.
 Subprotocol payloads MUST remain unchanged.
 
 Example:
+
 - Extract `protocols.mcp` and forward directly
 - Extract `protocols.a2a` and forward directly
 
@@ -294,6 +310,7 @@ This protocol provides:
 # 20. Appendix
 
 Future work:
+
 - binary encoding
 - NATS mapping
 - Rust reference implementation

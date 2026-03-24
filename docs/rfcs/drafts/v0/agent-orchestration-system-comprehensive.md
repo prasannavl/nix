@@ -5,12 +5,20 @@
 This system is a **cross-platform agent orchestration platform** designed to:
 
 - Run and coordinate **AI agents locally and in the cloud**
-- Provide a unified **CLI-first experience**, with a **Tauri-based GUI companion**
-- Support **multi-agent workflows**, including hierarchical and parallel execution
-- Enable **data-aware agents** with persistent memory and domain-specific intelligence
+- Provide a unified **CLI-first experience**, with a **Tauri-based GUI
+  companion**
+- Support **multi-agent workflows**, including hierarchical and parallel
+  execution
+- Enable **data-aware agents** with persistent memory and domain-specific
+  intelligence
 - Allow users to deploy **entire agent ecosystems ("economies")**
 
-This document defines the architecture that can run agents locally, in the cloud, and across hybrid environments. The platform is **CLI-first**, uses a **Tauri-based app as a visual control plane**, treats **NATS as the central nervous system**, and integrates a **secure agent protocol layer** wherever agent-to-agent or agent-to-tool communication requires identity, authorization, delegation, and auditability.
+This document defines the architecture that can run agents locally, in the
+cloud, and across hybrid environments. The platform is **CLI-first**, uses a
+**Tauri-based app as a visual control plane**, treats **NATS as the central
+nervous system**, and integrates a **secure agent protocol layer** wherever
+agent-to-agent or agent-to-tool communication requires identity, authorization,
+delegation, and auditability.
 
 ---
 
@@ -29,7 +37,12 @@ The platform is intended to support:
 - domain-specific intelligence and data planes
 - secure, auditable delegation between users, orchestrators, agents, and tools
 
-The core orchestration goals and layering described here come from the system design document. The protocol and authorization model integrated below come from the agent protocol design, which adds a thin identity and authorization layer while reusing MCP, A2A, and ACP-style transport patterns. This is the missing piece that answers: **who is doing what, on whose behalf, and whether it is allowed**. fileciteturn1file0L1-L18 fileciteturn1file1L1-L18
+The core orchestration goals and layering described here come from the system
+design document. The protocol and authorization model integrated below come from
+the agent protocol design, which adds a thin identity and authorization layer
+while reusing MCP, A2A, and ACP-style transport patterns. This is the missing
+piece that answers: **who is doing what, on whose behalf, and whether it is
+allowed**. fileciteturn1file0L1-L18 fileciteturn1file1L1-L18
 
 ---
 
@@ -38,14 +51,20 @@ The core orchestration goals and layering described here come from the system de
 - **CLI is the source of truth**
 - **GUI is a monitor and control plane, not the primary execution authority**
 - **NixOS is the reproducible substrate across runtimes**
-- **NATS is the central nervous system across local, cloud, and hybrid execution**
+- **NATS is the central nervous system across local, cloud, and hybrid
+  execution**
 - **Agents are provider-agnostic, composable, stateful, and collaborative**
 - **Security is layered in explicitly, not implied**
 - **Protocol payloads should remain clean and forwardable**
 - **Identity, authorization, and impersonation must be auditable**
 - **Data and memory are first-class system components, not afterthoughts**
 
-The orchestration design already defined the platform as model-agnostic and layered across interface, orchestration, execution, intelligence, data, and communication. The protocol design adds that the system should reuse existing agent/tool standards where possible, and add only a minimal auth layer rather than a heavyweight IAM system. fileciteturn1file0L20-L56 fileciteturn1file1L20-L48
+The orchestration design already defined the platform as model-agnostic and
+layered across interface, orchestration, execution, intelligence, data, and
+communication. The protocol design adds that the system should reuse existing
+agent/tool standards where possible, and add only a minimal auth layer rather
+than a heavyweight IAM system. fileciteturn1file0L20-L56
+fileciteturn1file1L20-L48
 
 ---
 
@@ -101,7 +120,11 @@ At a high level, the platform has seven major planes:
    - signed messages
    - authorization intersection checks
 
-The original system design defines the first six of these explicitly. The protocol design fills in the seventh plane and clarifies that secure communication should be a wrapper on top of transport and coordination rather than a replacement for MCP or A2A. fileciteturn1file0L24-L72 fileciteturn1file1L50-L96
+The original system design defines the first six of these explicitly. The
+protocol design fills in the seventh plane and clarifies that secure
+communication should be a wrapper on top of transport and coordination rather
+than a replacement for MCP or A2A. fileciteturn1file0L24-L72
+fileciteturn1file1L50-L96
 
 ---
 
@@ -182,7 +205,8 @@ The CLI remains the platform’s primary authority. It should:
 - dispatch workflows
 - be the authoritative bridge between user intent and the orchestration system
 
-The system design explicitly treats the CLI as the source of truth and the Tauri app as the visual orchestrator and monitor. fileciteturn1file0L11-L18 fileciteturn1file0L106-L140
+The system design explicitly treats the CLI as the source of truth and the Tauri
+app as the visual orchestrator and monitor.
 
 ---
 
@@ -190,11 +214,13 @@ The system design explicitly treats the CLI as the source of truth and the Tauri
 
 ### 7.1 CLI Core
 
-The CLI core parses commands, resolves configuration, selects runtime targets, and dispatches workflow executions.
+The CLI core parses commands, resolves configuration, selects runtime targets,
+and dispatches workflow executions.
 
 ### 7.2 Workflow Planner
 
-The workflow planner converts high-level intent into executable plans. It should support:
+The workflow planner converts high-level intent into executable plans. It should
+support:
 
 - sequential workflows
 - parallel branches
@@ -214,7 +240,8 @@ The runtime manager chooses where work runs:
 - cloud VM
 - distributed multi-node placement
 
-It is responsible for startup, teardown, health checking, placement, and recovery.
+It is responsible for startup, teardown, health checking, placement, and
+recovery.
 
 ### 7.4 Config Manager
 
@@ -253,7 +280,9 @@ The lifecycle supervisor tracks:
 
 It should restart, repair, or tear down resources based on policy.
 
-The original orchestration design already defined planner, runtime manager, config manager, task scheduler, and lifecycle supervisor as distinct orchestration responsibilities. fileciteturn1file0L142-L177
+The original orchestration design already defined planner, runtime manager,
+config manager, task scheduler, and lifecycle supervisor as distinct
+orchestration responsibilities. fileciteturn1file0L142-L177
 
 ---
 
@@ -290,7 +319,10 @@ Distributed execution allows:
 
 ### 8.4 Reproducible Substrate
 
-NixOS is the common operating substrate. The system design specifically calls for NixOS-based images and a convergent operating model across local and cloud containers and VMs. fileciteturn1file0L179-L199 fileciteturn1file0L360-L367
+NixOS is the common operating substrate. The system design specifically calls
+for NixOS-based images and a convergent operating model across local and cloud
+containers and VMs. fileciteturn1file0L179-L199
+fileciteturn1file0L360-L367
 
 ---
 
@@ -306,7 +338,8 @@ The system should normalize:
 - Ollama-backed local models
 - future providers
 
-This preserves provider-agnostic orchestration and lets execution policies stay independent of any single vendor.
+This preserves provider-agnostic orchestration and lets execution policies stay
+independent of any single vendor.
 
 ### 9.2 Prompt and Instruction Systems
 
@@ -338,9 +371,12 @@ The context engine assembles:
 - policy context
 - runtime context
 
-This allows each task to get dynamically assembled, task-appropriate context instead of one static prompt.
+This allows each task to get dynamically assembled, task-appropriate context
+instead of one static prompt.
 
-The system design explicitly calls out provider adapters, prompt/instruction templating, sub-agent orchestration, and context injection/memory retrieval as first-class concerns. fileciteturn1file0L201-L218
+The system design explicitly calls out provider adapters, prompt/instruction
+templating, sub-agent orchestration, and context injection/memory retrieval as
+first-class concerns. fileciteturn1file0L201-L218
 
 ---
 
@@ -360,7 +396,8 @@ Execution memory stores:
 
 ### 10.2 Task Memory
 
-Task memory stores historical task knowledge that can be reused across repeated task categories or workflow templates.
+Task memory stores historical task knowledge that can be reused across repeated
+task categories or workflow templates.
 
 ### 10.3 Artifacts
 
@@ -385,7 +422,8 @@ Each domain can have its own schema or its own database. Examples include:
 - DevOps / telemetry
 - research corpora
 
-These are not just passive databases; each can expose active intelligence via specialized data agents.
+These are not just passive databases; each can expose active intelligence via
+specialized data agents.
 
 ### 10.5 Storage Strategy
 
@@ -393,7 +431,9 @@ These are not just passive databases; each can expose active intelligence via sp
 - Postgres for cloud/shared workloads
 - specialized stores later for vector, timeseries, or search-heavy use cases
 
-The system design already establishes execution memory, task memory, artifacts, vertical stores, and a SQLite/Postgres split. fileciteturn1file0L220-L244 fileciteturn1file0L398-L434
+The system design already establishes execution memory, task memory, artifacts,
+vertical stores, and a SQLite/Postgres split. fileciteturn1file0L220-L244
+fileciteturn1file0L398-L434
 
 ---
 
@@ -423,7 +463,8 @@ It is the unified platform bus for:
 
 - **Pub/Sub** for event broadcasting
 - **Request/Reply** for direct commands and synchronous interactions
-- **JetStream / streaming** for persistence, replay, durable workflows, scheduler state, and long-running propagation
+- **JetStream / streaming** for persistence, replay, durable workflows,
+  scheduler state, and long-running propagation
 
 ### 11.2 Namespacing
 
@@ -452,7 +493,9 @@ The communication plane should provide:
 - subject-based observability
 - reusable control-plane semantics
 
-The system design strongly defines NATS as the CNS everywhere, with request/reply, pub/sub, JetStream, and user-scoped namespaces. fileciteturn1file0L251-L324
+The system design strongly defines NATS as the CNS everywhere, with
+request/reply, pub/sub, JetStream, and user-scoped namespaces.
+fileciteturn1file0L251-L324
 
 ---
 
@@ -460,7 +503,10 @@ The system design strongly defines NATS as the CNS everywhere, with request/repl
 
 This is where the two documents most importantly join.
 
-The agent protocol is **not** a replacement for the orchestration system and not a separate product. It is the **security, identity, and forwarding layer used wherever the orchestration system needs protocol-safe delegation and execution**.
+The agent protocol is **not** a replacement for the orchestration system and not
+a separate product. It is the **security, identity, and forwarding layer used
+wherever the orchestration system needs protocol-safe delegation and
+execution**.
 
 The protocol design says the system should:
 
@@ -472,7 +518,8 @@ The protocol design says the system should:
   - impersonation
   - authorization
 
-This is the missing protocol support that the orchestration document needed. fileciteturn1file1L1-L37
+This is the missing protocol support that the orchestration document needed.
+fileciteturn1file1L1-L37
 
 ### 12.1 Core Security Model
 
@@ -481,7 +528,8 @@ The protocol introduces:
 - **User (principal)** — the source of authority
 - **Service account (actor)** — the runtime identity performing work
 - **Scoped impersonation** — a service account acts on behalf of a user
-- **Authorization intersection** — permissions are granted only if all required layers allow it
+- **Authorization intersection** — permissions are granted only if all required
+  layers allow it
 
 Example conceptually:
 
@@ -489,7 +537,8 @@ Example conceptually:
 - service accounts: `sa:planner`, `sa:worker`
 - impersonation relation: `sa:worker -> user:pvl`
 
-This model is intentionally smaller and easier to audit than full IAM. fileciteturn1file1L39-L74
+This model is intentionally smaller and easier to audit than full IAM.
+fileciteturn1file1L39-L74
 
 ### 12.2 Effective Permissions Model
 
@@ -512,7 +561,8 @@ All relevant policy layers must agree. fileciteturn1file1L50-L74
 
 ### 12.3 Message Envelope
 
-Whenever protocol-secure delegation is needed, the platform should wrap messages in an envelope with:
+Whenever protocol-secure delegation is needed, the platform should wrap messages
+in an envelope with:
 
 - `envelope`
 - `auth`
@@ -533,7 +583,9 @@ Conceptually:
 }
 ```
 
-This should be the basis for secure routing through the orchestration system wherever agent coordination or tool execution crosses trust boundaries. fileciteturn1file1L76-L118
+This should be the basis for secure routing through the orchestration system
+wherever agent coordination or tool execution crosses trust boundaries.
+fileciteturn1file1L76-L118
 
 ### 12.4 Forwarding Rule
 
@@ -544,7 +596,9 @@ A critical design constraint from the protocol doc is:
 - `protocols.a2a` can be forwarded directly to another agent
 - wrappers should not mutate protocol payloads
 
-This is extremely useful architecturally because it means the orchestration system can add security, routing, and observability without corrupting protocol purity. fileciteturn1file1L120-L152
+This is extremely useful architecturally because it means the orchestration
+system can add security, routing, and observability without corrupting protocol
+purity. fileciteturn1file1L120-L152
 
 ### 12.5 Token Model
 
@@ -557,7 +611,8 @@ Tokens should carry at least:
 - resource scopes
 - expiry
 
-The protocol design gives a representative example with `sub`, `azp`, `aud`, `tools`, `resources`, and `exp`. fileciteturn1file1L154-L164
+The protocol design gives a representative example with `sub`, `azp`, `aud`,
+`tools`, `resources`, and `exp`. fileciteturn1file1L154-L164
 
 ### 12.6 Authorization Flow
 
@@ -570,11 +625,13 @@ Authorization should follow a layered sequence:
 5. check tool policy
 6. intersect all permissions
 
-This is the right place to integrate policy engines, approval flows, or higher-risk tool gating later. fileciteturn1file1L166-L176
+This is the right place to integrate policy engines, approval flows, or
+higher-risk tool gating later. fileciteturn1file1L166-L176
 
 ### 12.7 Security Rules
 
-The protocol document also provides non-negotiable rules that should be adopted platform-wide:
+The protocol document also provides non-negotiable rules that should be adopted
+platform-wide:
 
 - signed messages
 - short-lived tokens
@@ -582,7 +639,8 @@ The protocol document also provides non-negotiable rules that should be adopted 
 - both user and service must allow
 - the LLM is not trusted for auth decisions
 
-These are extremely important for keeping the platform safe once workflows become autonomous and long-running. fileciteturn1file1L178-L188
+These are extremely important for keeping the platform safe once workflows
+become autonomous and long-running. fileciteturn1file1L178-L188
 
 ---
 
@@ -590,11 +648,14 @@ These are extremely important for keeping the platform safe once workflows becom
 
 ### 13.1 Inside One Trust Boundary
 
-Within a tightly controlled internal component boundary, not every internal event needs the full auth envelope. Some internal NATS events may remain lightweight.
+Within a tightly controlled internal component boundary, not every internal
+event needs the full auth envelope. Some internal NATS events may remain
+lightweight.
 
 ### 13.2 Across Trust Boundaries
 
-Whenever communication crosses one of these boundaries, the protocol envelope should be used:
+Whenever communication crosses one of these boundaries, the protocol envelope
+should be used:
 
 - user → orchestrator
 - orchestrator → agent runtime
@@ -611,11 +672,14 @@ Whenever communication crosses one of these boundaries, the protocol envelope sh
 The clean mental model is:
 
 - **NATS** provides transport, routing, delivery, request/reply, and streams
-- **Agent Protocol** provides identity, delegation, authorization, and forwarding semantics
+- **Agent Protocol** provides identity, delegation, authorization, and
+  forwarding semantics
 - **A2A** provides coordination semantics
 - **MCP** provides execution semantics
 
-This is directly aligned with the protocol design’s own stated architecture of ACP-style transport under an envelope/auth layer above A2A and MCP. fileciteturn1file1L190-L201
+This is directly aligned with the protocol design’s own stated architecture of
+ACP-style transport under an envelope/auth layer above A2A and MCP.
+fileciteturn1file1L190-L201
 
 ---
 
@@ -653,7 +717,8 @@ A typical execution path:
 3. workflow planner breaks intent into stages
 4. runtime manager places agents
 5. NATS subjects route work and events
-6. agent protocol envelope is used where trust boundaries require identity and auth
+6. agent protocol envelope is used where trust boundaries require identity and
+   auth
 7. results, artifacts, and logs flow into the data plane
 8. lifecycle supervisor monitors progress and recovery
 
@@ -666,9 +731,11 @@ Workflows may call vertical data agents for:
 - infrastructure telemetry
 - research context
 
-This lets workflows become domain-aware without hard-coding each domain into the core orchestrator.
+This lets workflows become domain-aware without hard-coding each domain into the
+core orchestrator.
 
-The system design explicitly calls out sequential, parallel, and DAG workflows, plus hierarchical spawning patterns. fileciteturn1file0L371-L393
+The system design explicitly calls out sequential, parallel, and DAG workflows,
+plus hierarchical spawning patterns.
 
 ---
 
@@ -696,7 +763,8 @@ These systems may include:
 - supervisory agents
 - approval and policy layers
 
-The system design already frames this as “agent economies” with teams and organizational analogies. fileciteturn1file0L457-L474
+The system design already frames this as “agent economies” with teams and
+organizational analogies. fileciteturn1file0L457-L474
 
 ---
 
@@ -716,7 +784,9 @@ The platform should expose:
 - token / signature validation failures
 - artifact lineage
 
-The system design already lists observability as a core cross-cutting concern. The protocol integration adds auth, signature, and delegation observability as equally important categories. fileciteturn1file0L472-L488
+The system design already lists observability as a core cross-cutting concern.
+The protocol integration adds auth, signature, and delegation observability as
+equally important categories.
 
 ---
 
@@ -734,7 +804,10 @@ The platform should support:
 - signature / token failure isolation
 - runtime restart without losing control-plane integrity
 
-The system design explicitly calls out retry/backoff, durable streams, checkpoints, and restartable long-running workflows, while the protocol design adds the need for signed messages, short-lived tokens, and layered error handling around authentication and authorization. fileciteturn1file0L490-L507 fileciteturn1file1L178-L188
+The system design explicitly calls out retry/backoff, durable streams,
+checkpoints, and restartable long-running workflows, while the protocol design
+adds the need for signed messages, short-lived tokens, and layered error
+handling around authentication and authorization.
 
 ---
 
@@ -743,55 +816,66 @@ The system design explicitly calls out retry/backoff, durable streams, checkpoin
 Security is not one feature; it is layered across the whole platform:
 
 ### 18.1 Infrastructure Isolation
+
 - container / VM boundaries
 - project boundaries
 - tenant boundaries
 - local vs cloud policy boundaries
 
 ### 18.2 NATS-Level Security
+
 - subject namespaces
 - subject ACLs
 - service communication boundaries
 
 ### 18.3 Protocol-Level Security
+
 - signed messages
 - scoped tokens
 - no transitive impersonation
 - exact forwarding of protocol payloads
 
 ### 18.4 Execution-Level Security
+
 - tool policy checks
 - resource scoping
 - runtime policy overlays
 - side-effect approvals for high-risk actions
 
 ### 18.5 Data-Level Security
+
 - per-user and per-project memory boundaries
 - artifact permissions
 - domain-data access policies
 
-The system design emphasizes user-scoped namespaces, explicit communication paths, workload isolation, and role/subject-based policies; the protocol design supplies the exact delegation and authorization logic to make that enforceable. fileciteturn1file0L246-L251 fileciteturn1file1L166-L188
+The system design emphasizes user-scoped namespaces, explicit communication
+paths, workload isolation, and role/subject-based policies; the protocol design
+supplies the exact delegation and authorization logic to make that enforceable.
 
 ---
 
 ## 19. Portability and Modes
 
 ### 19.1 Managed Mode
+
 - cloud-hosted execution path
 - mobile-first interaction
 - managed infrastructure
 
 ### 19.2 Unmanaged Mode
+
 - local-first execution
 - user control
 - self-hosted infrastructure
 
 ### 19.3 Hybrid Mode
+
 - local execution with cloud augmentation
 - shared CNS
 - unified orchestration
 
-The system design defines managed, unmanaged, and hybrid as explicit platform modes. fileciteturn1file0L476-L495
+The system design defines managed, unmanaged, and hybrid as explicit platform
+modes.
 
 ---
 
@@ -808,7 +892,8 @@ A useful platform metaphor is:
 - **workflows = behavior**
 - **vertical modules = specialized knowledge centers**
 
-This extends the original design’s mental model by giving the protocol a precise role rather than leaving security abstract. fileciteturn1file0L503-L516
+This extends the original design’s mental model by giving the protocol a precise
+role rather than leaving security abstract.
 
 ---
 
@@ -816,15 +901,20 @@ This extends the original design’s mental model by giving the protocol a preci
 
 To make the design implementable, the system should adopt these practical rules:
 
-1. **Use raw NATS events for low-risk internal control-plane chatter within the same trusted subsystem.**
-2. **Use the agent protocol envelope whenever an action crosses a trust or privilege boundary.**
+1. **Use raw NATS events for low-risk internal control-plane chatter within the
+   same trusted subsystem.**
+2. **Use the agent protocol envelope whenever an action crosses a trust or
+   privilege boundary.**
 3. **Preserve A2A and MCP payloads exactly when forwarding.**
-4. **Require explicit intersection authorization for all tool use and delegated actions.**
-5. **Treat the user as the authority source and service accounts as runtime actors.**
+4. **Require explicit intersection authorization for all tool use and delegated
+   actions.**
+5. **Treat the user as the authority source and service accounts as runtime
+   actors.**
 6. **Do not allow transitive impersonation in v1.**
 7. **Keep the protocol thin; do not reinvent MCP or A2A.**
 
-These rules are direct consequences of the protocol design and are what let the orchestration system stay both powerful and simple. fileciteturn1file1L39-L74 fileciteturn1file1L120-L152
+These rules are direct consequences of the protocol design and are what let the
+orchestration system stay both powerful and simple.
 
 ---
 
@@ -844,7 +934,8 @@ Potential next layers include:
 - formal NATS subject schema
 - binary encoding for selected protocol paths
 
-The base system design and the protocol design both point naturally toward these areas. fileciteturn1file0L518-L526 fileciteturn1file1L203-L211
+The base system design and the protocol design both point naturally toward these
+areas.
 
 ---
 
@@ -859,7 +950,9 @@ The full orchestration system should be understood as:
 - **NATS as the single communication backbone**
 - **provider-agnostic agents**
 - **persistent memory and vertical intelligence**
-- and a **thin but rigorous protocol layer** for identity, impersonation, authorization, and forwarding semantics
+- and a **thin but rigorous protocol layer** for identity, impersonation,
+  authorization, and forwarding semantics
 
-That combination gives you a platform that is not only capable of orchestrating agents, but capable of doing so **safely, audibly, portably, and at system scale**.
-
+That combination gives you a platform that is not only capable of orchestrating
+agents, but capable of doing so **safely, audibly, portably, and at system
+scale**.
