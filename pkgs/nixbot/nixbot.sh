@@ -1701,6 +1701,27 @@ resolve_deploy_target() {
     }' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
+# Resolve a proxy-jump chain for a host.
+# Input: a host name whose proxyJump field names another host (not an IP).
+# Output: one line per hop, outermost first, each line is "target" (the SSH address).
+# Example: gap3-rivendell → proxyJump=gap3-gondor → proxyJump=pvl-x2 → (none)
+#   outputs: pvl-x2\n10.10.20.11   (two hops)
+resolve_proxy_chain() {
+  local start_host="$1"
+  jq -r --arg start "${start_host}" '
+    def resolve_chain($h; $visited):
+      if $h == "" then []
+      elif ($visited | index($h)) then
+        error("proxyJump cycle detected: \($visited + [$h] | join(" -> "))")
+      else
+        ((.[$h] // {}) | .target // $h) as $target |
+        ((.[$h] // {}) | .proxyJump // "") as $next |
+        resolve_chain($next; $visited + [$h]) + [$target]
+      end;
+    resolve_chain($start; []) | .[]
+  ' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
 ensure_known_hosts_file() {
   local node="$1" known_hosts="$2" safe_node="" known_hosts_file=""
 
@@ -2004,9 +2025,10 @@ init_known_hosts_ssh_context() {
   local batch_mode="$1" known_hosts_file="$2"
   # shellcheck disable=SC2178
   local -n ikhsc_ssh_opts_out_ref="$3" ikhsc_nix_sshopts_out_ref="$4"
+  local host_key_check="${5:-yes}"
 
-  ikhsc_ssh_opts_out_ref=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o StrictHostKeyChecking=yes)
-  ikhsc_nix_sshopts_out_ref="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=yes"
+  ikhsc_ssh_opts_out_ref=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o "StrictHostKeyChecking=${host_key_check}")
+  ikhsc_nix_sshopts_out_ref="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
 
   if [ "${batch_mode}" -eq 1 ]; then
     ikhsc_ssh_opts_out_ref=(-o BatchMode=yes "${ikhsc_ssh_opts_out_ref[@]}")
@@ -2073,9 +2095,25 @@ prepare_host_ssh_contexts() {
 
   ensure_tmp_dir
   known_hosts_file="$(ensure_known_hosts_file "${node}" "${known_hosts}")"
-  ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
+  # When there is a proxy chain, the target host is not directly reachable
+  # from here — its host key will be scanned later through the proxy in
+  # prepare_deploy_context.  Scan it now only when there is no proxy.
+  if [ -z "${proxy_jump}" ]; then
+    ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
+  fi
+  # Scan all directly-reachable intermediate hops.
   if [ -n "${proxy_jump}" ]; then
-    ensure_known_host "${proxy_jump}" "${known_hosts}" "${known_hosts_file}"
+    local -a _chain_hops=()
+    local hop=""
+    while IFS= read -r hop; do
+      [ -n "${hop}" ] || continue
+      _chain_hops+=("${hop}")
+    done < <(resolve_proxy_chain "${proxy_jump}")
+    # The first hop is directly reachable; subsequent hops are behind proxies
+    # and will be scanned through the proxy scripts built in prepare_deploy_context.
+    if [ "${#_chain_hops[@]}" -gt 0 ]; then
+      ensure_known_host "${_chain_hops[0]}" "${known_hosts}" "${known_hosts_file}"
+    fi
   fi
   case "${BUILD_HOST}" in
     local|target)
@@ -2088,8 +2126,16 @@ prepare_host_ssh_contexts() {
       ;;
   esac
 
-  init_known_hosts_ssh_context 1 "${known_hosts_file}" phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref
-  init_known_hosts_ssh_context 0 "${known_hosts_file}" phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref
+  # When the target is behind a proxy, ssh-keyscan cannot reach it
+  # (it has no ProxyCommand support).  Use accept-new so the host key
+  # is recorded on first contact — same trust model as the proxy scripts.
+  # accept-new still rejects CHANGED keys (MITM protection).
+  local host_key_check="yes"
+  if [ -n "${proxy_jump}" ]; then
+    host_key_check="accept-new"
+  fi
+  init_known_hosts_ssh_context 1 "${known_hosts_file}" phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref "${host_key_check}"
+  init_known_hosts_ssh_context 0 "${known_hosts_file}" phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref "${host_key_check}"
 }
 
 ensure_bootstrap_key_ready() {
@@ -2257,10 +2303,58 @@ prepare_deploy_context() {
     # Use ProxyCommand instead so we can pass the known_hosts file through.
     # The proxy host key was already scanned into the node's known_hosts file
     # by prepare_host_ssh_contexts above.
+    #
+    # For multi-hop chains (e.g. pvl-a1 → pvl-x2 → gap3-gondor → gap3-rivendell)
+    # we nest ProxyCommands via wrapper scripts to avoid shell quoting issues.
     local safe_node=""
     safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
     local proxy_known_hosts_file="${TMP_SSH_DIR}/${NODE_KNOWN_HOSTS_PREFIX}.${safe_node}"
-    local proxy_cmd="ssh -W %h:%p -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${proxy_known_hosts_file} ${proxy_jump}"
+    local ssh_base="ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${proxy_known_hosts_file}"
+
+    local -a chain_hops=()
+    local hop=""
+    while IFS= read -r hop; do
+      [ -n "${hop}" ] || continue
+      chain_hops+=("${hop}")
+    done < <(resolve_proxy_chain "${proxy_jump}")
+
+    # Build nested ProxyCommand from outermost hop inward.
+    # chain_hops[0] is the outermost (directly reachable) hop.
+    # Each hop gets a wrapper script so nested ProxyCommands don't need
+    # shell-quoting gymnastics.
+    #
+    # Each script hardcodes the next hop's address so the outermost
+    # ProxyCommand is just a bare script path — no %h/%p args that would
+    # break when NIX_SSHOPTS is word-split by nix tooling.
+    # The innermost script tunnels to the final target (${host}:22).
+    local prev_script="" proxy_script="" proxy_cmd=""
+    local i=0
+    for (( i=0; i<${#chain_hops[@]}; i++ )); do
+      proxy_script="${TMP_SSH_DIR}/proxy-${safe_node}-${i}.sh"
+      # Each script needs to forward to the *next* thing in the chain.
+      # For the last script (i == len-1), the next thing is the final target.
+      local fwd_host fwd_port=22
+      if [ "${i}" -lt "$(( ${#chain_hops[@]} - 1 ))" ]; then
+        fwd_host="${chain_hops[i+1]}"
+      else
+        fwd_host="${host}"
+      fi
+      if [ "${i}" -eq 0 ]; then
+        cat > "${proxy_script}" <<PROXYEOF
+#!/bin/sh
+exec ${ssh_base} -W ${fwd_host}:${fwd_port} ${chain_hops[i]}
+PROXYEOF
+      else
+        cat > "${proxy_script}" <<PROXYEOF
+#!/bin/sh
+exec ${ssh_base} -W ${fwd_host}:${fwd_port} -o "ProxyCommand=${prev_script}" ${chain_hops[i]}
+PROXYEOF
+      fi
+      chmod +x "${proxy_script}"
+      prev_script="${proxy_script}"
+    done
+
+    proxy_cmd="${prev_script}"
     ssh_opts+=(-o "ProxyCommand=${proxy_cmd}")
     nix_sshopts="${nix_sshopts:+${nix_sshopts} }-o ProxyCommand=${proxy_cmd}"
     bootstrap_ssh_opts+=(-o "ProxyCommand=${proxy_cmd}")
