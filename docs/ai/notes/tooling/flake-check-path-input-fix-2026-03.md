@@ -35,10 +35,10 @@ the full repo tree, making sibling `path:` inputs resolvable.
 ## Scope
 
 - `scripts/lint.sh`: lint invocation change
-- `pkgs/cloudflare-apps/default.nix`: restored `nixbot` default for
-  `nix-build` compatibility
-- `pkgs/cloudflare-apps/flake.nix`: kept `nixbot` as `path:` input with
-  `deploy` output
+- `pkgs/cloudflare-apps/default.nix`: restored `nixbot` default for `nix-build`
+  compatibility
+- `pkgs/cloudflare-apps/flake.nix`: kept `nixbot` as `path:` input with `deploy`
+  output
 - `tf/modules/cloudflare/scripts/worker-dir-nix-resolver.sh`: improved error
   propagation (stderr instead of stdout JSON, ERR trap, explicit nix build
   failure messages)

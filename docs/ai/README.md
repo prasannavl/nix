@@ -140,8 +140,11 @@ Use this index as the canonical map for `docs/ai/**`.
   contract for read-only validation and the `statix fix` per-target CLI
   constraint.
 - `docs/ai/notes/tooling/flake-check-path-input-fix-2026-03.md`: Lint
-  `nix flake check` must `cd` into the sub-flake directory (not use `path:`
-  URI) so sibling `path:` inputs resolve via the parent git tree.
+  `nix flake check` must `cd` into the sub-flake directory (not use `path:` URI)
+  so sibling `path:` inputs resolve via the parent git tree.
+- `docs/ai/notes/tooling/lint-ci-mode-and-root-check-2026-03.md`: Lint modes
+  cleanup (auto/diff/full-no-test/full), root flake check in every mode, and
+  sub-flake test filtering convention.
 - `docs/ai/notes/tooling/pre-push-per-commit-lint-2026-03.md`: Pre-push hook
   replaces pre-commit; lints each commit individually via `--diff --base`.
 - `docs/ai/notes/tooling/update-flakes-script-2026-03.md`:

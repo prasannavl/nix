@@ -10,6 +10,7 @@
     formatterPkgs
     ++ (with pkgs; [
       git
+      jq
       statix
       deadnix
       shellcheck

@@ -6,22 +6,26 @@ usage() {
 Usage:
   lint deps
   lint check-deps
-  lint [--diff] [--full] [--base <ref>]
-  lint fix [--diff] [--full] [--base <ref>]
+  lint [MODE] [fix] [--base <ref>]
 
 Actions:
   deps        Verify the lint runtime is available.
   check-deps  Verify the lint runtime commands are available on PATH.
   fix         Apply best-effort auto-fixes, then re-run lint.
 
-Options:
-  --diff      Restrict file-scoped checks and fixes to changed files.
-  --full      Force full-repo scope, including on CI.
-  --base REF  With --diff, compare against REF instead of default heuristics.
-  -h, --help
+Modes:
+  (default)       Auto: diff lints against origin/master, full flake checks
+                  on changed sub-projects only.
+  --diff          Diff against --base REF (required with --diff).
+  --full-no-test  Full lints on all files, flake checks on all sub-projects
+                  but skip test checks.
+  --full          Full lints on all files, full flake checks on all
+                  sub-projects including tests.
 
-Notes:
-  On CI, lint defaults to --diff unless you pass an explicit scope.
+Options:
+  --base REF  Compare against REF (required with --diff, optional with auto
+              to override origin/master).
+  -h, --help
 EOF
 }
 
@@ -32,14 +36,15 @@ die() {
 
 init_vars() {
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
-  LINT_SCOPE='full'
+  LINT_MODE='auto'
   LINT_FIX='0'
-  LINT_SCOPE_EXPLICIT='0'
   LINT_DIFF_BASE=''
   CURRENT_STEP=""
   CURRENT_STEP_DESCRIPTION=""
   readonly -a LINT_RUNTIME_COMMANDS=(
     git
+    nix
+    jq
     treefmt
     statix
     deadnix
@@ -68,6 +73,7 @@ ensure_runtime_shell() {
     nixpkgs#actionlint
     nixpkgs#markdownlint-cli2
     nixpkgs#tflint
+    nixpkgs#jq
     nixpkgs#findutils
     nixpkgs#coreutils
   )
@@ -153,17 +159,18 @@ parse_lint_args() {
         LINT_FIX='1'
         ;;
       --diff)
-        LINT_SCOPE='diff'
-        LINT_SCOPE_EXPLICIT='1'
+        LINT_MODE='diff'
+        ;;
+      --full-no-test)
+        LINT_MODE='full-no-test'
+        ;;
+      --full)
+        LINT_MODE='full'
         ;;
       --base)
         shift
         [ "$#" -gt 0 ] || die "lint: --base requires an argument"
         LINT_DIFF_BASE="$1"
-        ;;
-      --full)
-        LINT_SCOPE='full'
-        LINT_SCOPE_EXPLICIT='1'
         ;;
       -h|--help)
         usage
@@ -177,8 +184,12 @@ parse_lint_args() {
     shift
   done
 
-  if [ "${LINT_SCOPE_EXPLICIT}" = 0 ] && [ -n "${CI:-}" ]; then
-    LINT_SCOPE='diff'
+  if [ "${LINT_MODE}" = diff ] && [ -z "${LINT_DIFF_BASE}" ]; then
+    die "lint: --diff requires --base <ref>"
+  fi
+
+  if [ "${LINT_MODE}" = auto ] && [ -z "${LINT_DIFF_BASE}" ]; then
+    LINT_DIFF_BASE='origin/master'
   fi
 }
 
@@ -223,8 +234,15 @@ collect_repo_files() {
   emit_unique_existing_from seen git ls-files -z --cached --others --exclude-standard -- "${patterns[@]}"
 }
 
+lint_scope() {
+  case "${LINT_MODE}" in
+    auto|diff) echo diff ;;
+    *) echo full ;;
+  esac
+}
+
 collect_files() {
-  if [ "${LINT_SCOPE}" = diff ]; then
+  if [ "$(lint_scope)" = diff ]; then
     collect_diff_files "$@"
   else
     collect_repo_files "$@"
@@ -248,13 +266,48 @@ collect_changed_flake_dirs() {
   done < <(find pkgs -maxdepth 2 -name flake.nix -print0 | sort -z)
 }
 
+collect_all_flake_dirs() {
+  find pkgs -maxdepth 2 -name flake.nix -print0 | sort -z |
+    while IFS= read -r -d '' flake_nix; do
+      printf '%s\0' "$(dirname "${flake_nix}")"
+    done
+}
+
+detect_nix_system() {
+  nix eval --raw --impure --expr 'builtins.currentSystem'
+}
+
+run_flake_checks_skip_test() {
+  local flake_dir="$1"
+  local nix_system="$2"
+  local -a checks=()
+
+  mapfile -t checks < <(
+    nix flake show --json "./${flake_dir}" 2>/dev/null |
+      jq -r ".checks.\"${nix_system}\" // {} | keys[] | select(. != \"test\" and (startswith(\"test-\") | not))"
+  )
+
+  if [ "${#checks[@]}" -eq 0 ]; then
+    return
+  fi
+
+  local check
+  for check in "${checks[@]}"; do
+    printf '    check: %s\n' "${check}" >&2
+    nix build "./${flake_dir}#checks.${nix_system}.${check}" --no-link
+  done
+}
+
 run_lint_action() {
   local nix_file=""
   local -a deno_files=()
   local local_tf_dir=""
 
+  local scope
+
   cd "${REPO_ROOT}"
   ensure_runtime_tools
+  scope="$(lint_scope)"
 
   mapfile -d $'\0' -t nix_files < <(collect_files '*.nix')
   mapfile -d $'\0' -t shell_files < <(collect_files '*.sh' '.githooks/*')
@@ -263,13 +316,13 @@ run_lint_action() {
   mapfile -d $'\0' -t tf_project_dirs < <(find tf -mindepth 1 -maxdepth 1 -type d -name '*-*' -print0 | sort -z)
 
   if [ "${LINT_FIX}" = 1 ]; then
-    printf '[lint-fix] Applying automatic fixes (%s)\n' "${LINT_SCOPE}" >&2
+    printf '[lint-fix] Applying automatic fixes (%s)\n' "${scope}" >&2
 
     run_step treefmt-fix 'Formatting files with treefmt' treefmt
 
     if [ "${#nix_files[@]}" -gt 0 ]; then
       CURRENT_STEP=statix-fix
-      CURRENT_STEP_DESCRIPTION="Fixing ${LINT_SCOPE} Nix files"
+      CURRENT_STEP_DESCRIPTION="Fixing ${scope} Nix files"
       log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
       for nix_file in "${nix_files[@]}"; do
         printf '  - %s\n' "${nix_file}" >&2
@@ -278,7 +331,7 @@ run_lint_action() {
     fi
 
     if [ "${#markdown_files[@]}" -gt 0 ]; then
-      run_step markdownlint-fix "Fixing ${LINT_SCOPE} Markdown files" markdownlint-cli2 --fix "${markdown_files[@]}"
+      run_step markdownlint-fix "Fixing ${scope} Markdown files" markdownlint-cli2 --fix "${markdown_files[@]}"
     fi
 
     if [ "${#tf_project_dirs[@]}" -gt 0 ]; then
@@ -295,7 +348,7 @@ run_lint_action() {
     printf '\n[lint-fix] Re-running lint to report remaining issues\n' >&2
   fi
 
-  printf '[lint] Running shared lint suite (%s)\n' "${LINT_SCOPE}" >&2
+  printf '[lint] Running shared lint suite (%s)\n' "${scope}" >&2
 
   if [ "${#nix_files[@]}" -gt 0 ]; then
     run_step alejandra-check 'Checking Nix formatting drift' alejandra --check "${nix_files[@]}"
@@ -317,7 +370,7 @@ run_lint_action() {
 
   if [ "${#nix_files[@]}" -gt 0 ]; then
     CURRENT_STEP=statix
-    CURRENT_STEP_DESCRIPTION="Linting ${LINT_SCOPE} Nix files"
+    CURRENT_STEP_DESCRIPTION="Linting ${scope} Nix files"
     log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
     for nix_file in "${nix_files[@]}"; do
       printf '  - %s\n' "${nix_file}" >&2
@@ -325,7 +378,7 @@ run_lint_action() {
     done
 
     CURRENT_STEP=deadnix
-    CURRENT_STEP_DESCRIPTION="Checking ${LINT_SCOPE} Nix files for unused bindings"
+    CURRENT_STEP_DESCRIPTION="Checking ${scope} Nix files for unused bindings"
     log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
     for nix_file in "${nix_files[@]}"; do
       printf '  - %s\n' "${nix_file}" >&2
@@ -334,13 +387,13 @@ run_lint_action() {
   fi
 
   if [ "${#shell_files[@]}" -gt 0 ]; then
-    run_step shellcheck "Linting ${LINT_SCOPE} shell files" shellcheck --external-sources --shell=bash "${shell_files[@]}"
+    run_step shellcheck "Linting ${scope} shell files" shellcheck --external-sources --shell=bash "${shell_files[@]}"
   fi
 
   run_step actionlint 'Linting GitHub Actions workflows' actionlint
 
   if [ "${#markdown_files[@]}" -gt 0 ]; then
-    run_step markdownlint "Linting ${LINT_SCOPE} Markdown files" markdownlint-cli2 "${markdown_files[@]}"
+    run_step markdownlint "Linting ${scope} Markdown files" markdownlint-cli2 "${markdown_files[@]}"
   fi
 
   if [ "${#tf_project_dirs[@]}" -gt 0 ]; then
@@ -353,17 +406,43 @@ run_lint_action() {
     done
   fi
 
-  local -a flake_check_dirs=()
-  mapfile -d $'\0' -t flake_check_dirs < <(collect_changed_flake_dirs)
+  run_step root-flake-check 'Checking root flake evaluates cleanly' nix flake check --no-build
 
-  if [ "${#flake_check_dirs[@]}" -gt 0 ]; then
+  local -a full_check_dirs=()
+  local -a notest_check_dirs=()
+  local flake_dir
+
+  case "${LINT_MODE}" in
+    auto|diff)
+      mapfile -d $'\0' -t full_check_dirs < <(collect_changed_flake_dirs)
+      ;;
+    full-no-test)
+      mapfile -d $'\0' -t notest_check_dirs < <(collect_all_flake_dirs)
+      ;;
+    full)
+      mapfile -d $'\0' -t full_check_dirs < <(collect_all_flake_dirs)
+      ;;
+  esac
+
+  if [ "${#full_check_dirs[@]}" -gt 0 ]; then
     CURRENT_STEP=flake-check
-    CURRENT_STEP_DESCRIPTION="Running flake checks for changed subprojects"
+    CURRENT_STEP_DESCRIPTION="Running full flake checks for sub-projects"
     log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-    local flake_dir
-    for flake_dir in "${flake_check_dirs[@]}"; do
+    for flake_dir in "${full_check_dirs[@]}"; do
       printf '  - %s\n' "${flake_dir}" >&2
       (cd "${flake_dir}" && nix flake check)
+    done
+  fi
+
+  if [ "${#notest_check_dirs[@]}" -gt 0 ]; then
+    local nix_system
+    nix_system="$(detect_nix_system)"
+    CURRENT_STEP=flake-check-notest
+    CURRENT_STEP_DESCRIPTION="Running non-test flake checks for sub-projects"
+    log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+    for flake_dir in "${notest_check_dirs[@]}"; do
+      printf '  - %s (skip test)\n' "${flake_dir}" >&2
+      run_flake_checks_skip_test "${flake_dir}" "${nix_system}"
     done
   fi
 }
