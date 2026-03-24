@@ -9,6 +9,7 @@
       ranger
       tree
       nvtopPackages.full
+      socat
     ];
 
     gnome = with pkgs; [

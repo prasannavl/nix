@@ -79,7 +79,7 @@ in {
         };
 
         nginx = rec {
-          exposedPorts.http = { 
+          exposedPorts.http = {
             port = 10800;
             openFirewall = true;
           };

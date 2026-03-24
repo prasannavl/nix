@@ -20,6 +20,7 @@
       sshfs
       nixos-container
       lsof
+      socat
     ];
 
     gnome = with pkgs; [

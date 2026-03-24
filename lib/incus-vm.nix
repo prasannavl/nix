@@ -8,6 +8,10 @@
 }:
 {
   systemd.tmpfiles.rules = [
+    # The state disk is mounted from the host at 0750 for security; fix
+    # the in-container /var/lib to the standard 0755 so non-root services
+    # (e.g. nixbot) can traverse it.
+    "d /var/lib 0755 root root -"
     "d /var/lib/machine 0700 root root -"
   ];
 
