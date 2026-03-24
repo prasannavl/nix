@@ -2987,6 +2987,15 @@ rollback_successful_hosts() {
 
   [ "${#successful_hosts[@]}" -gt 0 ] || return 0
 
+  # Reverse the host order so rollback undoes deploys in the opposite sequence.
+  # This ensures containers are rolled back before the hosts they run on.
+  local -a reversed_hosts=()
+  local i
+  for (( i=${#successful_hosts[@]}-1; i>=0; i-- )); do
+    reversed_hosts+=("${successful_hosts[i]}")
+  done
+  successful_hosts=("${reversed_hosts[@]}")
+
   log_section "Phase: Rollback"
   echo "Rolling back ${#successful_hosts[@]} successful host(s) to pre-deploy generations" >&2
 
