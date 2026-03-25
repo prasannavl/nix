@@ -1,0 +1,65 @@
+# Nixbot Bastion Self Target And Proxy Flattening (2026-03)
+
+## Context
+
+GitHub Actions enters the deploy flow through bastion forced-command ingress on
+`pvl-x2`. Once the run is already executing on that bastion host, treating
+`pvl-x2` as a normal remote SSH target is unnecessary and can fail during
+post-switch reconnects and rollback.
+
+The same issue applies to downstream guests that declare `proxyJump = "pvl-x2"`:
+when the deploy process is already running on `pvl-x2`, keeping that leading hop
+forces SSH back through bastion ingress instead of connecting directly to the
+guest.
+
+The CI failure signature that motivated this note included:
+
+- forced-command bootstrap check failed
+- failed to allocate remote temporary file for bootstrap key
+- rollback on `pvl-x2` after a successful switch
+- `Connection closed by 127.0.0.2 port 22` while reaching a guest through
+  `proxyJump = "pvl-x2"` from a bastion-triggered run already executing on
+  `pvl-x2`
+
+## Decision
+
+- Detect the current host at runtime from local hostname aliases.
+- Match current-host identity by both names and resolved/local addresses so the
+  rule still works when deploy targets or proxy hops are expressed as IPs or
+  alternate DNS names.
+- If the selected deploy target is the current host during a bastion-side
+  forced-command run, use a local execution path for snapshot, age-identity
+  injection, deploy, and rollback instead of self-SSH.
+- When building a proxy chain, drop any leading `proxyJump` hops that resolve to
+  the current host before assembling SSH proxy wrappers.
+- Keep managed-file injection on one shared target-transport path instead of
+  separate local and remote implementations.
+
+## Implementation
+
+- `pkgs/nixbot/nixbot.sh` now tracks `PREP_DEPLOY_LOCAL_EXEC` in the prepared
+  deploy context.
+- `prepare_deploy_context()`:
+  - recognizes bastion-side self-target deploys
+  - returns a local execution context for them
+  - normalizes `proxyJump` through `resolve_effective_proxy_chain()`
+- Current-host matching resolves and compares both aliases and addresses.
+- Self-target local execution is gated to forced-command ingress so normal
+  operator-initiated local runs still use the configured deploy SSH user/key.
+- The SSH-context setup and ProxyCommand builder both consume the trimmed
+  effective proxy chain directly, so removed leading local hops cannot be
+  reintroduced while rebuilding wrappers.
+- Managed file installs now flow through shared transport helpers for local
+  execution and SSH execution.
+- Host phases (`snapshot`, `deploy`, `rollback`) branch on the prepared local
+  execution flag instead of assuming every target is remote.
+
+## Operational Effect
+
+- Bastion-triggered runs no longer depend on fresh SSH connectivity back into
+  the bastion host after switching that same host.
+- Guests behind the bastion can be reached directly from the bastion during the
+  same run, instead of proxying back through the bastion's own ingress path.
+- This only applies to runs started after the patched `nixbot` is installed on
+  the bastion. A currently running bastion-triggered process stays pinned to the
+  already-installed wrapper for the duration of that run.

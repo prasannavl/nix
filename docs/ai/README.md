@@ -68,6 +68,10 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/nixbot/code-review-and-cleanup-2026-03.md`: Consolidated code
   review, subprocess reduction, dedup, and simplification pass.
+- `docs/ai/notes/nixbot/bastion-self-target-and-proxy-flattening-2026-03.md`:
+  Bastion-triggered runs should execute the bastion host locally instead of
+  self-SSH, and should drop leading `proxyJump` hops that resolve to the current
+  host.
 - `docs/ai/notes/nixbot/context-and-classifier-cleanups-2026-03.md`: Naming
   rules for helpers: `prepare_*` for state setup, `resolve_*`/`evaluate_*` for
   classification, and separation of discovery from materialization.
