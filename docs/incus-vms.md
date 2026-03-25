@@ -308,8 +308,8 @@ you want parent activation to be blocked on guest convergence, set
 `services.incusMachines.reconcileOnActivation = "strict"`. You can also disable
 activation-time guest reconcile entirely with `"off"`.
 
-If you need to force a recreate even when the guest still exists and is
-running, bump `recreateTag` to a new value.
+If you need to force a recreate even when the guest still exists and is running,
+bump `recreateTag` to a new value.
 
 ### Does `recreateTag` rebuild the base image too?
 

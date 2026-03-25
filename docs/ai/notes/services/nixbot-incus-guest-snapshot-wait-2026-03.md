@@ -3,8 +3,8 @@
 ## Status
 
 Historical. This guardrail was later removed after activation-time Incus guest
-reconcile was changed to a best-effort default and the guest-specific waits
-were dropped from `hosts/nixbot.nix`.
+reconcile was changed to a best-effort default and the guest-specific waits were
+dropped from `hosts/nixbot.nix`.
 
 ## Context
 

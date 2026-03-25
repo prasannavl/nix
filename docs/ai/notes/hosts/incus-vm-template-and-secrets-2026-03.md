@@ -41,6 +41,9 @@ and the steps for adding another guest by copying an existing guest pattern.
 - The shared module should keep the Tailscale block self-contained: discover the
   encrypted secret path locally, gate it with `builtins.pathExists`, and only
   wire `services.tailscale` when the encrypted file exists.
+- The reusable `lib/profiles/systemd-container.nix` base profile should not
+  enable Tailscale unconditionally; optional guest Tailscale belongs entirely to
+  `lib/incus-vm.nix`.
 - Persistent server semantics should keep `ephemeral = false`,
   `preauthorized = true`, and explicit advertised tags such as `tag:vm`.
 - Persistent SSH host keys live at `/var/lib/machine/*`, but those are generated

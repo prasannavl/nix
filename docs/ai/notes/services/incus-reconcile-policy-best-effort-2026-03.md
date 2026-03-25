@@ -29,8 +29,7 @@ guests to soften later-wave snapshot retries in `nixbot`.
 
 ## Implementation
 
-- `lib/incus.nix` now defines
-  `services.incusMachines.reconcileOnActivation`.
+- `lib/incus.nix` now defines `services.incusMachines.reconcileOnActivation`.
 - Default is `"best-effort"`.
 - In `best-effort` mode, activation logs guest reconcile failures and continues.
 - In `strict` mode, activation aborts on guest reconcile failure.
@@ -42,8 +41,8 @@ guests to soften later-wave snapshot retries in `nixbot`.
 
 ## Operational Effect
 
-- Manually deleted or stopped guests are still retried automatically on the
-  next parent-host activation.
+- Manually deleted or stopped guests are still retried automatically on the next
+  parent-host activation.
 - Parent-host activation is less brittle by default.
 - Deploy sequencing still relies on the existing host dependency ordering, but
   no longer carries the Incus guest-specific retry delays.

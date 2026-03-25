@@ -55,6 +55,12 @@ Use this index as the canonical map for `docs/ai/**`.
   exit-status command substitution was escaped as `\$(...)` during lint cleanup,
   causing the literal text to render in interactive shells.
 
+### Lib
+
+- `docs/ai/notes/lib/lib-broader-review-fixes-2026-03.md`: Broader `lib/`
+  review fixes for the NetworkManager resume hook, optional guest Tailscale
+  ownership, and Flatpak bootstrap runtime dependencies.
+
 ### Nixbot
 
 - `docs/ai/notes/nixbot/code-review-and-cleanup-2026-03.md`: Consolidated code

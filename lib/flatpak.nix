@@ -7,7 +7,10 @@
     after = ["network-online.target"];
     wants = ["network-online.target"];
 
-    path = [pkgs.flatpak];
+    path = [
+      pkgs.flatpak
+      pkgs.gnugrep
+    ];
 
     serviceConfig = {
       Type = "oneshot";

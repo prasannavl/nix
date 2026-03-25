@@ -26,22 +26,8 @@
     };
   };
 
-  # Restart after suspend to clear stale driver state for buggy firmware
-  systemd.services.networkmanager-restart-on-suspend = {
-    description = "Restart NetworkManager after suspend for buggy network cards";
-    wantedBy = [
-      "suspend.target"
-      "hibernate.target"
-      "hybrid-sleep.target"
-    ];
-    after = [
-      "suspend.target"
-      "hibernate.target"
-      "hybrid-sleep.target"
-    ];
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${pkgs.systemd}/bin/systemctl restart NetworkManager.service";
-    };
-  };
+  # Restart after resume to clear stale driver state for buggy firmware.
+  powerManagement.resumeCommands = ''
+    ${pkgs.systemd}/bin/systemctl restart NetworkManager.service
+  '';
 }

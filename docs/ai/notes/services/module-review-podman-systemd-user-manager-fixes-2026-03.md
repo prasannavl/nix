@@ -15,8 +15,7 @@ The user asked to fix the first three issues now and defer the fourth.
 
 ## Decision
 
-- Add hard assertions for generated service-name uniqueness in
-  `lib/podman.nix`.
+- Add hard assertions for generated service-name uniqueness in `lib/podman.nix`.
 - Add hard assertions for generated service-name uniqueness in
   `lib/systemd-user-manager.nix`.
 - Serialize Podman lifecycle action units relative to the main compose unit and
