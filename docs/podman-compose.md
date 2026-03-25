@@ -4,6 +4,28 @@ This document describes the current Podman compose model in this repo, the
 shared module, and the operational rules for creating, rebuilding, and debugging
 compose-managed services.
 
+## Why This Module Exists
+
+Running container workloads with Podman compose on NixOS is straightforward in
+isolation, but scaling it across hosts introduces repetitive plumbing:
+
+- Every compose stack needs its YAML staged into a working directory, a systemd
+  user service to run `podman compose up/down`, and restart logic when the
+  definition changes.
+- Secrets must be injected as file-backed environment variables without baking
+  them into images.
+- Firewall ports, nginx reverse-proxy entries, and Cloudflare Tunnel ingress
+  rules must stay in sync with the ports each stack actually exposes.
+- Deploy-time behavior must distinguish between active and inactive stacks so
+  that a config change restarts running services without waking up intentionally
+  stopped ones.
+
+Without a shared module, each host would duplicate all of that wiring
+independently and the definitions would drift. `lib/podman.nix` exists to own
+that lifecycle once so hosts only declare what is specific to them: which stacks
+to run, what images to use, and which secrets to inject. The module then
+generates the systemd units, firewall rules, and ingress metadata automatically.
+
 ## Current Model
 
 - `lib/podman.nix` owns declarative compose lifecycle:

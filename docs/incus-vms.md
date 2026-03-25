@@ -4,6 +4,30 @@ This document describes the current Incus guest model, the shared lifecycle
 module, and the operational rules for creating, rebuilding, and debugging
 guests.
 
+## Why This Module Exists
+
+Incus provides the runtime for creating and managing VM and container guests,
+but it has no built-in concept of declarative, NixOS-managed guest lifecycle.
+Without a shared module, every parent host would need its own imperative scripts
+to:
+
+- Import and version a shared base image.
+- Create guests from that image with the right config, devices, and network
+  settings.
+- Detect when guest configuration has drifted from the declared state and
+  recreate the guest.
+- Reconcile disk devices in place while forcing recreate for create-only devices
+  like GPUs.
+- Garbage-collect guests that are no longer declared.
+- Provide manual lifecycle knobs (stop/start, delete/recreate, image refresh)
+  that integrate with the deploy flow rather than requiring out-of-band
+  intervention.
+
+`lib/incus.nix` exists to own that lifecycle declaratively so parent hosts only
+describe the desired guest set — IPs, config, devices — and the module handles
+image import, create/start, config-hash tracking, device sync, GC, and lifecycle
+tags as ordinary systemd services that run during deploy.
+
 ## Current Model
 
 - Parent host orchestration lives in `hosts/<parent-host>/incus.nix`.

@@ -3,6 +3,34 @@
 This document describes the shared `systemd-user-manager` bridge module and how
 it is used to apply deploy-time behavior to systemd user services.
 
+## Why This Module Exists
+
+NixOS system services get deploy-time restart and reload behavior for free
+through the built-in `switch-to-configuration` machinery. Systemd user services
+do not. When `nixos-rebuild switch` runs, it knows which system units changed
+and restarts them, but it has no equivalent awareness of units running inside
+lingering user managers.
+
+That creates a real problem for rootless workloads like Podman compose stacks.
+Without intervention, a deploy that changes a compose definition would update
+the unit files on disk but leave the old user service running until someone
+manually restarts it or the machine reboots.
+
+The bridge module solves this by creating system-side services that:
+
+- Observe whether a user unit was active before the switch.
+- Record that state so the new generation can decide what to do.
+- Replay the appropriate action (restart, reload, or start) against the correct
+  user unit after the switch.
+- Coordinate a single `daemon-reload` per user manager even when multiple
+  bridged units change in the same deploy.
+- Restart the user manager itself when group membership changes, so rootless
+  services immediately see new supplementary groups.
+
+This gives user services the same deploy-time lifecycle awareness that system
+services get natively, without requiring the workloads themselves to know
+anything about NixOS generations.
+
 ## Current Model
 
 - Shared bridge logic lives in `lib/systemd-user-manager.nix`.

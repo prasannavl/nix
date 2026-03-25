@@ -12,6 +12,8 @@ Use this index as the canonical map for `docs/ai/**`.
   scripts.
 - `docs/ai/lang-patterns/markdown.md`: Markdown formatting authority, lint
   interaction, and `docs/ai` writing conventions for repo-generated docs.
+- `docs/ai/lang-patterns/nix.md`: Nix formatting, `inherit` conventions, module
+  patterns, attrset style, flake conventions, and common pitfalls.
 
 ## Notes
 
