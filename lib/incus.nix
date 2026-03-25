@@ -360,6 +360,17 @@ in {
       description = "Bump to force re-import of the shared Incus base image on next rebuild.";
     };
 
+    reconcileOnActivation = lib.mkOption {
+      type = lib.types.enum ["off" "best-effort" "strict"];
+      default = "best-effort";
+      description = ''
+        Whether parent-host activation should reconcile declared Incus guests.
+        `off` disables activation-time reconcile, `best-effort` retries missing
+        or stopped guests without failing the parent activation, and `strict`
+        makes guest reconcile failures abort activation.
+      '';
+    };
+
     machines = lib.mkOption {
       type = lib.types.attrsOf machineType;
       default = {};
@@ -374,31 +385,39 @@ in {
       ui.enable = lib.mkDefault true;
     };
 
-    system.activationScripts.incusMachinesReconcile = lib.stringAfter ["etc"] ''
-      set -eu
+    system.activationScripts.incusMachinesReconcile = lib.mkIf (cfg.reconcileOnActivation != "off") (
+      lib.stringAfter ["etc"] ''
+        set -eu
 
-      if ! ${incus} info >/dev/null 2>&1; then
-        exit 0
-      fi
-
-      declared_machines='${declaredMachinesJson}'
-
-      echo "$declared_machines" | ${pkgs.jq}/bin/jq -r '.[]' | while IFS= read -r name; do
-        [ -n "$name" ] || continue
-
-        status="$(
-          ${incus} list "$name" --format json 2>/dev/null \
-            | ${pkgs.jq}/bin/jq -r 'if length == 0 then "missing" else .[0].status // "unknown" end' \
-            2>/dev/null \
-            || printf 'missing\n'
-        )"
-
-        if [ "$status" != "Running" ]; then
-          echo "Reconciling Incus guest $name (status: $status)"
-          ${pkgs.systemd}/bin/systemctl restart "incus-$name.service"
+        if ! ${incus} info >/dev/null 2>&1; then
+          exit 0
         fi
-      done
-    '';
+
+        declared_machines='${declaredMachinesJson}'
+        reconcile_mode=${lib.escapeShellArg cfg.reconcileOnActivation}
+
+        echo "$declared_machines" | ${pkgs.jq}/bin/jq -r '.[]' | while IFS= read -r name; do
+          [ -n "$name" ] || continue
+
+          status="$(
+            ${incus} list "$name" --format json 2>/dev/null \
+              | ${pkgs.jq}/bin/jq -r 'if length == 0 then "missing" else .[0].status // "unknown" end' \
+              2>/dev/null \
+              || printf 'missing\n'
+          )"
+
+          if [ "$status" != "Running" ]; then
+            echo "Reconciling Incus guest $name (status: $status)"
+            if ! ${pkgs.systemd}/bin/systemctl restart "incus-$name.service"; then
+              if [ "$reconcile_mode" = "strict" ]; then
+                exit 1
+              fi
+              echo "Best-effort guest reconcile failed for $name; continuing parent activation" >&2
+            fi
+          fi
+        done
+      ''
+    );
 
     systemd.tmpfiles.rules =
       lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.machines);

@@ -127,17 +127,27 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/incus-guest-reconcile-on-activation-2026-03.md`:
   Parent-host activation now reconciles declared Incus guests and restarts
   `incus-<guest>` lifecycle services when a guest is missing or stopped.
+- `docs/ai/notes/services/incus-reconcile-policy-best-effort-2026-03.md`:
+  Activation-time Incus guest reconcile now defaults to `best-effort`, with
+  explicit `off|best-effort|strict` policy modes, and the guest-specific
+  `nixbot` waits were removed from `hosts/nixbot.nix`.
 - `docs/ai/notes/services/lib-service-module-relocation-2026-03.md`: User-led
   relocation of service-specific helper modules from `lib/` into
   `lib/services/`.
 - `docs/ai/notes/services/lib-flake-published-podman-systemd-modules-2026-03.md`:
   Revert `podman` and `systemd-user-manager` to `lib/` and drop the unused
   published flake-module export.
+- `docs/ai/notes/services/module-review-podman-systemd-user-manager-fixes-2026-03.md`:
+  Review-driven fixes for generated service-name collisions in `podman` and
+  `systemd-user-manager`, plus serialized Podman lifecycle-tag action units.
 - `docs/ai/notes/services/openssh-module-centralization-2026-03.md`: Shared
   OpenSSH enablement centralization.
 - `docs/ai/notes/services/podman-compose-reload-staging-2026-03.md`: Podman
   compose runtime files are copied into working directories and reload now
   performs cleanup plus restaging before `up -d`.
+- `docs/ai/notes/services/shared-collections-helper-2026-03.md`: Shared
+  `lib/flake/utils` helper for reusable pure-Nix collection utilities such as
+  duplicate-value detection.
 - `docs/ai/notes/services/systemd-user-manager-bridge-lifecycle-2026-03.md`:
   Canonical `lib/systemd-user-manager.nix` bridge model, reload orchestration,
   old-stop/new-start semantics, identity refresh behavior, and Podman usage

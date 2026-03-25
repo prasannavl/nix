@@ -302,6 +302,12 @@ Yes, on the next parent-host activation. The shared module now reconciles
 declared guests during activation and restarts the `incus-<guest>` lifecycle
 service when a guest is missing or stopped.
 
+By default this reconcile is **best-effort**: it attempts to recover the guest
+but does not fail the parent-host activation if guest recovery still fails. If
+you want parent activation to be blocked on guest convergence, set
+`services.incusMachines.reconcileOnActivation = "strict"`. You can also disable
+activation-time guest reconcile entirely with `"off"`.
+
 If you need to force a recreate even when the guest still exists and is
 running, bump `recreateTag` to a new value.
 

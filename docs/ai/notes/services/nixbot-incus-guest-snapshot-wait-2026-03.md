@@ -1,5 +1,11 @@
 # Nixbot Incus Guest Snapshot Wait
 
+## Status
+
+Historical. This guardrail was later removed after activation-time Incus guest
+reconcile was changed to a best-effort default and the guest-specific waits
+were dropped from `hosts/nixbot.nix`.
+
 ## Context
 
 Incus guests such as `llmug-rivendell`, `gap3-gondor`, and `gap3-rivendell` can

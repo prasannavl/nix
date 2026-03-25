@@ -6,6 +6,7 @@
 }: let
   cfg = config.services.podmanCompose;
   hasStacks = cfg != {};
+  collectionsLib = import ./flake/utils {inherit lib;};
   nginxLib = import ./services/nginx {inherit lib;};
   tunnelsLib = import ./services/tunnels {inherit lib;};
 
@@ -379,11 +380,17 @@
       execScript,
     }: let
       lifecycleServiceName = "${resolvedSystemdServiceName}-${suffix}";
+      orderingUnits =
+        [
+          "${resolvedSystemdServiceName}.service"
+        ]
+        ++ lib.optional (suffix == "recreate-tag" || suffix == "boot-tag") "${resolvedSystemdServiceName}-image-tag.service"
+        ++ lib.optional (suffix == "boot-tag") "${resolvedSystemdServiceName}-recreate-tag.service";
     in {
       name = lifecycleServiceName;
       value = {
         description = description;
-        after = lib.unique (networkOnlineUnits ++ dependsOnUnits ++ wantsUnits);
+        after = lib.unique (networkOnlineUnits ++ dependsOnUnits ++ wantsUnits ++ orderingUnits);
         wants = lib.unique (networkOnlineUnits ++ wantsUnits);
         unitConfig.ConditionUser = resolvedUser;
         serviceConfig = {
@@ -481,6 +488,28 @@
         builtins.filter (portCfg: builtins.elem protocol (portCfg.protocols or ["tcp"])) firewallExposedPorts
       )
     );
+
+  generatedSystemdUserServiceNames =
+    lib.concatMap
+    (service:
+      [service.systemdServiceName]
+      ++ map (actionService: actionService.name) service.lifecycleActionServices)
+    resolvedServices;
+
+  generatedBridgeServiceNames =
+    lib.concatMap
+    (service: [
+      "systemd-user-manager-podman-${service.systemdServiceName}"
+      "systemd-user-manager-podman-${service.systemdServiceName}-image-tag"
+      "systemd-user-manager-podman-${service.systemdServiceName}-recreate-tag"
+      "systemd-user-manager-podman-${service.systemdServiceName}-boot-tag"
+    ])
+    resolvedServices;
+
+  duplicateSystemdUserServiceNames =
+    collectionsLib.duplicateValues generatedSystemdUserServiceNames;
+  duplicateBridgeServiceNames =
+    collectionsLib.duplicateValues generatedBridgeServiceNames;
 in {
   imports = [
     ./systemd-user-manager.nix
@@ -677,7 +706,17 @@ in {
     );
 
     assertions =
-      lib.concatLists (
+      [
+        {
+          assertion = duplicateSystemdUserServiceNames == [];
+          message = "services.podmanCompose: duplicate generated systemd.user service names: ${lib.concatStringsSep ", " duplicateSystemdUserServiceNames}";
+        }
+        {
+          assertion = duplicateBridgeServiceNames == [];
+          message = "services.podmanCompose: duplicate generated systemd-user-manager bridge service names: ${lib.concatStringsSep ", " duplicateBridgeServiceNames}";
+        }
+      ]
+      ++ lib.concatLists (
         lib.mapAttrsToList
         (stackName: stack:
           lib.mapAttrsToList

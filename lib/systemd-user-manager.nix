@@ -6,6 +6,7 @@
 }: let
   cfg = config.services.systemdUserManager;
   bridges = lib.attrValues cfg.bridges;
+  collectionsLib = import ./flake/utils {inherit lib;};
 
   unitType = lib.types.submodule ({name, ...}: {
     options = {
@@ -89,6 +90,13 @@
       })
     {}
     bridges;
+
+  generatedSystemdServiceNames =
+    (map reloadServiceNameForUser (builtins.attrNames bridgesByUser))
+    ++ (map (bridge: bridge.serviceName) bridges);
+
+  duplicateBridgeServiceNames =
+    collectionsLib.duplicateValues generatedSystemdServiceNames;
 
   userIdentityStampFor = user: let
     userCfg = config.users.users.${user};
@@ -313,7 +321,13 @@ in {
     );
 
     assertions =
-      lib.concatMap (
+      [
+        {
+          assertion = duplicateBridgeServiceNames == [];
+          message = "services.systemdUserManager.bridges: duplicate generated systemd service names: ${lib.concatStringsSep ", " duplicateBridgeServiceNames}";
+        }
+      ]
+      ++ lib.concatMap (
         bridge: [
           {
             assertion = builtins.hasAttr bridge.user config.users.users;
