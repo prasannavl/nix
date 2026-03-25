@@ -298,9 +298,12 @@ declared value changes relative to the stored value.
 
 ### If I manually delete a guest in Incus, will the next deploy recreate it automatically?
 
-Not just because the runtime object is missing. The guest lifecycle is driven by
-the `incus-<guest>` systemd oneshot service. If you want to guarantee recreate
-on the next deploy, bump `recreateTag` to a new value or restart that service.
+Yes, on the next parent-host activation. The shared module now reconciles
+declared guests during activation and restarts the `incus-<guest>` lifecycle
+service when a guest is missing or stopped.
+
+If you need to force a recreate even when the guest still exists and is
+running, bump `recreateTag` to a new value.
 
 ### Does `recreateTag` rebuild the base image too?
 

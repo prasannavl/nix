@@ -374,6 +374,32 @@ in {
       ui.enable = lib.mkDefault true;
     };
 
+    system.activationScripts.incusMachinesReconcile = lib.stringAfter ["etc"] ''
+      set -eu
+
+      if ! ${incus} info >/dev/null 2>&1; then
+        exit 0
+      fi
+
+      declared_machines='${declaredMachinesJson}'
+
+      echo "$declared_machines" | ${pkgs.jq}/bin/jq -r '.[]' | while IFS= read -r name; do
+        [ -n "$name" ] || continue
+
+        status="$(
+          ${incus} list "$name" --format json 2>/dev/null \
+            | ${pkgs.jq}/bin/jq -r 'if length == 0 then "missing" else .[0].status // "unknown" end' \
+            2>/dev/null \
+            || printf 'missing\n'
+        )"
+
+        if [ "$status" != "Running" ]; then
+          echo "Reconciling Incus guest $name (status: $status)"
+          ${pkgs.systemd}/bin/systemctl restart "incus-$name.service"
+        fi
+      done
+    '';
+
     systemd.tmpfiles.rules =
       lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.machines);
 

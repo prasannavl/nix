@@ -124,6 +124,9 @@ Use this index as the canonical map for `docs/ai/**`.
   `exposedPorts` metadata that auto-derives nginx reverse-proxy and Cloudflare
   Tunnel wiring. Includes nginx proxy abstraction supporting multiple upstreams
   and non-podman vhosts via a unified `proxyVhostType`.
+- `docs/ai/notes/services/incus-guest-reconcile-on-activation-2026-03.md`:
+  Parent-host activation now reconciles declared Incus guests and restarts
+  `incus-<guest>` lifecycle services when a guest is missing or stopped.
 - `docs/ai/notes/services/lib-service-module-relocation-2026-03.md`: User-led
   relocation of service-specific helper modules from `lib/` into
   `lib/services/`.
