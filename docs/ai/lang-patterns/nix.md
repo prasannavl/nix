@@ -43,6 +43,10 @@
 
 - Use `{ arg1, arg2, ... }:` destructuring for module and function arguments.
 - Include `...` in module arguments to allow future extension without breakage.
+- Do **not** use `_:` for NixOS module signatures. Use `{...}:` instead, even
+  when the module does not reference any arguments. The linter (`statix`) has
+  `empty_pattern` (W10) disabled to allow this. Reserve `_:` for lambda
+  arguments that are genuinely unused, like `lib.mapAttrsToList (_: v: ...)`.
 - Do not use `@` pattern binds (`args@{ ... }:`) unless you genuinely need the
   whole attrset. Prefer naming specific arguments.
 

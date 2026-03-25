@@ -123,7 +123,7 @@ Adopt **NATS as the unified communication backbone across all environments**.
 
 ### 5.4 Namespacing
 
-```
+```text
 user.{user_id}.*
 ```
 
@@ -139,7 +139,7 @@ user.{user_id}.*
 - Config resolution
 - Lifecycle management
 
-### Components
+### Orchestration Components
 
 - CLI Core
 - Workflow Planner
@@ -174,7 +174,7 @@ user.{user_id}.*
 
 ## 8. Intelligence Layer
 
-### Components
+### Intelligence Components
 
 - Provider adapters
 - Prompt templates
@@ -191,7 +191,7 @@ user.{user_id}.*
 
 ## 9. Data Layer
 
-### Components
+### Data Components
 
 - Task memory
 - Execution logs
@@ -234,13 +234,13 @@ Introduce a **minimal IAM-like protocol layer**.
 
 Example:
 
-```
+```text
 sa:worker → user:pvl
 ```
 
 ### 11.3 Authorization
 
-```
+```text
 effective_permissions =
   user ∩ service ∩ token ∩ tool policy
 ```

@@ -1,1 +1,1 @@
-disabled = ["manual_inherit"]
+disabled = ["manual_inherit", "empty_pattern"]

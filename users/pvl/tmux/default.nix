@@ -1,5 +1,5 @@
 {
-  nixos = _: {
+  nixos = {...}: {
     programs.tmux.enable = true;
   };
 

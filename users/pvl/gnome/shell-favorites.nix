@@ -1,4 +1,4 @@
-_: {
+{...}: {
   dconf.settings."org/gnome/shell".favorite-apps = [
     "google-chrome.desktop"
     # "org.gnome.Terminal.desktop"

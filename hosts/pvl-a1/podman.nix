@@ -1,4 +1,4 @@
-_: {
+{...}: {
   systemd.tmpfiles.rules = [
     "d /srv 0755 root root -"
     "d /srv/nginx 0755 root root -"

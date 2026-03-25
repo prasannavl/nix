@@ -1,5 +1,5 @@
 {
-  nixos = _: {};
+  nixos = {...}: {};
 
   home = {pkgs, ...}: {
     programs.vscode = {

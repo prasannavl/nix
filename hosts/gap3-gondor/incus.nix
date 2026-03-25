@@ -1,4 +1,4 @@
-_: {
+{...}: {
   services.incusMachines.machines = {
     gap3-rivendell = {
       recreateTag = "2";

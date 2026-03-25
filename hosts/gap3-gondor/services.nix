@@ -1,4 +1,4 @@
-_: {
+{...}: {
   systemd.tmpfiles.rules = [
     "d /var/lib/gap3 0755 gap3 gap3 -"
     "d /var/lib/gap3/compose 0750 gap3 gap3 -"

@@ -1,9 +1,9 @@
 {
-  nixos = _: {
+  nixos = {...}: {
     programs.firefox.enable = true;
   };
 
-  home = _: {
+  home = {...}: {
     programs.firefox = {
       enable = true;
       profiles = {

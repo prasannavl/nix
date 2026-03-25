@@ -18,7 +18,7 @@ Prasanna Loganathar (pvl) and collaborators
 
 ---
 
-# 1. Abstract
+## 1. Abstract
 
 This document specifies a minimal, composable protocol for secure agent-to-agent
 communication.\
@@ -43,7 +43,7 @@ while adding a missing layer for:
 
 ---
 
-# 2. Motivation
+## 2. Motivation
 
 Modern agent systems rely on three emerging layers:
 
@@ -66,7 +66,7 @@ This RFC introduces a minimal solution.
 
 ---
 
-# 3. Design Goals
+## 3. Design Goals
 
 - Simplicity over completeness
 - Strong default security posture
@@ -77,7 +77,7 @@ This RFC introduces a minimal solution.
 
 ---
 
-# 4. Non-Goals
+## 4. Non-Goals
 
 - Full IAM system replacement
 - Complex delegation graphs
@@ -87,7 +87,7 @@ This RFC introduces a minimal solution.
 
 ---
 
-# 5. Terminology
+## 5. Terminology
 
 ## 5.1 User (Principal)
 
@@ -119,9 +119,9 @@ Intended recipient.
 
 ---
 
-# 6. Architecture Overview
+## 6. Architecture Overview
 
-```
+```text
 Transport Layer (ACP-style)
         ↓
 Message Envelope
@@ -135,7 +135,7 @@ Protocol Payloads
 
 ---
 
-# 7. Message Format
+## 7. Message Format
 
 ```json
 {
@@ -159,11 +159,11 @@ Protocol Payloads
 
 ---
 
-# 8. Impersonation Model
+## 8. Impersonation Model
 
 A service account may act on behalf of a user:
 
-```
+```text
 sa:worker → user:pvl
 ```
 
@@ -171,9 +171,9 @@ This is the only delegation mechanism.
 
 ---
 
-# 9. Authorization Model
+## 9. Authorization Model
 
-```
+```text
 effective_permissions =
   user_permissions
   ∩ service_permissions
@@ -185,7 +185,7 @@ All must pass.
 
 ---
 
-# 10. Token Format
+## 10. Token Format
 
 ```json
 {
@@ -202,7 +202,7 @@ All must pass.
 
 ---
 
-# 11. Authorization Algorithm
+## 11. Authorization Algorithm
 
 1. Verify signature
 2. Validate token
@@ -213,7 +213,7 @@ All must pass.
 
 ---
 
-# 12. Security Considerations
+## 12. Security Considerations
 
 - No implicit transitive impersonation
 - All messages signed
@@ -224,7 +224,7 @@ All must pass.
 
 ---
 
-# 13. Protocol Interoperability
+## 13. Protocol Interoperability
 
 ## MCP
 
@@ -240,7 +240,7 @@ Used for transport and routing.
 
 ---
 
-# 14. Forwarding Semantics
+## 14. Forwarding Semantics
 
 Subprotocol payloads MUST remain unchanged.
 
@@ -251,7 +251,7 @@ Example:
 
 ---
 
-# 15. Error Model (High-Level)
+## 15. Error Model (High-Level)
 
 Errors should be layered:
 
@@ -263,7 +263,7 @@ Errors should be layered:
 
 ---
 
-# 16. Extensibility
+## 16. Extensibility
 
 Future versions may include:
 
@@ -274,9 +274,9 @@ Future versions may include:
 
 ---
 
-# 17. Example Flow
+## 17. Example Flow
 
-```
+```text
 Planner → Worker
   task.request + mcp tool.call
 
@@ -288,7 +288,7 @@ Worker:
 
 ---
 
-# 18. Conclusion
+## 18. Conclusion
 
 This protocol provides:
 
@@ -299,7 +299,7 @@ This protocol provides:
 
 ---
 
-# 19. References
+## 19. References
 
 - MCP (Anthropic)
 - A2A patterns (LangGraph, CrewAI)
@@ -307,7 +307,7 @@ This protocol provides:
 
 ---
 
-# 20. Appendix
+## 20. Appendix
 
 Future work:
 

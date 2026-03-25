@@ -1,7 +1,7 @@
 {
-  nixos = _: {};
+  nixos = {...}: {};
 
-  home = _: {
+  home = {...}: {
     xdg.userDirs = {
       enable = true;
       createDirectories = true;

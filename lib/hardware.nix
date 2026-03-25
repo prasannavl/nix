@@ -1,4 +1,4 @@
-_: {
+{...}: {
   # Enable all firmware
   hardware = {
     enableAllFirmware = true;

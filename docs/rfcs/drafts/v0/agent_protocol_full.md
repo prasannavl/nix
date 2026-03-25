@@ -11,7 +11,7 @@ A minimal, composable protocol for secure agent-to-agent communication that:
 
 ---
 
-# 0. Background & Motivation
+## 0. Background & Motivation
 
 ## Existing Protocols
 
@@ -87,7 +87,7 @@ We use: User + Service Account + Scoped Impersonation
 
 ---
 
-# 1. Core Concepts
+## 1. Core Concepts
 
 User (Principal):
 
@@ -103,16 +103,16 @@ Impersonation:
 
 Authorization:
 
-```
+```text
 effective_permissions =
   user_permissions ∩ service_permissions ∩ token_scopes ∩ tool_policy
 ```
 
 ---
 
-# 2. Structure
+## 2. Structure
 
-```
+```json
 {
   "envelope": {...},
   "auth": {...},
@@ -126,9 +126,9 @@ effective_permissions =
 
 ---
 
-# 3. Message Example
+## 3. Message Example
 
-```
+```json
 {
   "envelope": {
     "id": "msg-123",
@@ -154,7 +154,7 @@ effective_permissions =
 
 ---
 
-# 4. Forwardability
+## 4. Forwardability
 
 Allowed:
 
@@ -167,9 +167,9 @@ Not allowed:
 
 ---
 
-# 5. Token
+## 5. Token
 
-```
+```json
 {
   "sub": "user:pvl",
   "azp": "sa:planner",
@@ -182,7 +182,7 @@ Not allowed:
 
 ---
 
-# 6. Authorization Flow
+## 6. Authorization Flow
 
 1. Verify signature
 2. Validate token
@@ -193,7 +193,7 @@ Not allowed:
 
 ---
 
-# 7. Security Rules
+## 7. Security Rules
 
 - signed messages
 - short-lived tokens
@@ -203,9 +203,9 @@ Not allowed:
 
 ---
 
-# 8. Architecture
+## 8. Architecture
 
-```
+```text
 ACP (transport)
  ↓
 Envelope
@@ -219,7 +219,7 @@ MCP
 
 ---
 
-# Summary
+## Summary
 
 A simple, secure wrapper around MCP and A2A adding identity and authorization
 while preserving protocol purity.

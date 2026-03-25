@@ -1,7 +1,7 @@
 {
-  nixos = _: {};
+  nixos = {...}: {};
 
-  home = _: {
+  home = {...}: {
     programs.fzf.enable = true;
   };
 }

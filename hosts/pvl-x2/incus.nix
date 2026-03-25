@@ -1,4 +1,4 @@
-_: {
+{...}: {
   services.incusMachines.machines = {
     llmug-rivendell = {
       ipv4Address = "10.10.20.10";

@@ -1,4 +1,4 @@
-_: {
+{...}: {
   boot.initrd.systemd.tpm2.enable = true;
 
   # Ref: https://github.com/NixOS/nixpkgs/blob/release-25.11/nixos/modules/security/tpm2.md
