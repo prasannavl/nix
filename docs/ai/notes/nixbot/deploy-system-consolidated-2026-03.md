@@ -39,10 +39,18 @@ result processing architecture, and CI connectivity.
 - `--bastion-trigger` must forward explicit behavior overrides that affect
   deploy gating, including `--force`, so the bastion-side run preserves the
   caller's changed-only vs force semantics.
+- Bastion-trigger argument forwarding should use an encoded argv payload instead
+  of raw shell-like command reconstruction through `SSH_ORIGINAL_COMMAND`.
+  Legacy forced-command parsing remains only for simple unquoted argv forms and
+  should not log the raw command string. The transport prefix is protocol state,
+  not mutable runtime state.
 - Deploys that use `ssh -tt` for remote `sudo` must resolve the stdin source at
   the point of use: use `/dev/tty` only when any attached standard stream is a
   terminal, otherwise fall back to `/dev/null`. Non-interactive bastion-side
-  runs must not probe `/dev/tty` eagerly.
+  runs must not probe `/dev/tty` eagerly. Password prompting and SSH TTY
+  allocation are separate policy decisions, and both privileged validation
+  probes and privileged install commands must consume the same target sudo
+  policy, including whether remote validation should use `sudo -n` or prompt.
 
 ## Identity, keys, and host verification
 

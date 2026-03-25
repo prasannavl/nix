@@ -24,6 +24,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
   ssh-keygen
   tofu
 )
+readonly NIXBOT_SSH_ARGV_PREFIX="__nixbot_argv64"
 
 usage() {
   cat <<'USAGE'
@@ -691,6 +692,16 @@ json_array_to_bash_set() {
   done < <(jq -r '.[]' <<<"${json}")
 }
 
+encode_ssh_command_args() {
+  printf '%s\0' "$@" | base64 | tr -d '\n'
+}
+
+decode_ssh_command_args() {
+  local encoded_args="$1"
+
+  printf '%s' "${encoded_args}" | base64 -d
+}
+
 ##### Argument Parsing #####
 
 parse_args() {
@@ -938,7 +949,8 @@ configure_bastion_trigger_ssh_opts() {
 }
 
 run_bastion_trigger() {
-  local trigger_sha="${SHA}" trigger_hosts="" remote_command=""
+  local trigger_sha="${SHA}" trigger_hosts="" encoded_request=""
+  local -a remote_args=()
   if [ -z "${trigger_sha}" ]; then
     trigger_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   fi
@@ -960,28 +972,29 @@ run_bastion_trigger() {
   # Intentionally forward only the bastion-safe subset here. The remote side is
   # expected to use its repo-local defaults/config for everything else so local
   # operator overrides do not silently reshape bastion execution.
-  remote_command="${ACTION} --sha ${trigger_sha} --hosts ${trigger_hosts}"
+  remote_args=("${ACTION}" --sha "${trigger_sha}" --hosts "${trigger_hosts}")
   if [ "${LOG_FORMAT}" != "auto" ]; then
-    remote_command="${remote_command} --log-format ${LOG_FORMAT}"
+    remote_args+=(--log-format "${LOG_FORMAT}")
   elif is_github_actions_log_mode; then
-    remote_command="${remote_command} --log-format gh"
+    remote_args+=(--log-format gh)
   fi
   if [ "${DRY_RUN}" -eq 1 ]; then
-    remote_command="${remote_command} --dry"
+    remote_args+=(--dry)
     echo "Dry run: true" >&2
   fi
   if [ "${FORCE_REQUESTED}" -eq 1 ]; then
-    remote_command="${remote_command} --force"
+    remote_args+=(--force)
     echo "Force: true" >&2
   fi
   if [ "${ALLOW_DIRTY_REPO}" -eq 1 ]; then
-    remote_command="${remote_command} --dirty"
+    remote_args+=(--dirty)
     echo "Dirty repo allowed: true" >&2
   fi
 
+  encoded_request="$(encode_ssh_command_args "${remote_args[@]}")"
   log_group_end
   ssh "${BASTION_TRIGGER_SSH_OPTS[@]}" -- "${BASTION_TRIGGER_USER}@${BASTION_TRIGGER_HOST}" \
-    "${remote_command}"
+    "${NIXBOT_SSH_ARGV_PREFIX} ${encoded_request}"
 }
 
 require_cmds() {
@@ -1748,74 +1761,37 @@ resolve_deploy_target() {
     }' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
-# Resolve a proxy-jump chain for a host.
-# Input: a host name whose proxyJump field names another host (not an IP).
-# Output: one line per hop, outermost first, each line is "target" (the SSH address).
-# Example: gap3-rivendell → proxyJump=gap3-gondor → proxyJump=pvl-x2 → (none)
-#   outputs: pvl-x2\n10.10.20.11   (two hops)
-resolve_proxy_chain() {
-  local start_host="$1"
-  jq -r --arg start "${start_host}" '
-    def resolve_chain($h; $visited):
-      if $h == "" then []
-      elif ($visited | index($h)) then
-        error("proxyJump cycle detected: \($visited + [$h] | join(" -> "))")
-      else
-        ((.[$h] // {}) | .target // $h) as $target |
-        ((.[$h] // {}) | .proxyJump // "") as $next |
-        resolve_chain($next; $visited + [$h]) + [$target]
-      end;
-    resolve_chain($start; []) | .[]
-  ' <<<"${NIXBOT_HOSTS_JSON}"
-}
-
-resolve_proxy_name_chain() {
-  local start_host="$1"
-
-  jq -r --arg start "${start_host}" '
-    def resolve_names($h; $visited):
-      if $h == "" then []
-      elif ($visited | index($h)) then
-        error("proxyJump cycle detected: \($visited + [$h] | join(" -> "))")
-      else
-        ((.[$h] // {}) | .proxyJump // "") as $next |
-        resolve_names($next; $visited + [$h]) + [$h]
-      end;
-    resolve_names($start; []) | .[]
-  ' <<<"${NIXBOT_HOSTS_JSON}"
-}
-
-resolve_proxy_target() {
-  local host_name="$1"
-
-  jq -r --arg h "${host_name}" '(.[$h] // {}) | .target // $h' <<<"${NIXBOT_HOSTS_JSON}"
-}
-
 resolve_effective_proxy_chain() {
-  local proxy_jump="$1" hop="" proxy_name="" proxy_target=""
-  local -a proxy_names=()
+  local proxy_jump="$1" proxy_name="" proxy_target=""
+  local trim_local_hops=1
 
   [ -n "${proxy_jump}" ] || return 0
 
-  while IFS= read -r hop; do
-    [ -n "${hop}" ] || continue
-    proxy_names+=("${hop}")
-  done < <(resolve_proxy_name_chain "${proxy_jump}")
+  while IFS=$'\t' read -r proxy_name proxy_target; do
+    [ -n "${proxy_name}" ] || continue
+    [ -n "${proxy_target}" ] || proxy_target="${proxy_name}"
 
-  while [ "${#proxy_names[@]}" -gt 0 ]; do
-    proxy_name="${proxy_names[0]}"
-    proxy_target="$(resolve_proxy_target "${proxy_name}")"
-    if local_host_matches_identifier "${proxy_name}" || local_host_matches_identifier "${proxy_target}"; then
-      proxy_names=("${proxy_names[@]:1}")
+    if [ "${trim_local_hops}" -eq 1 ] && local_host_matches_identifier "${proxy_target}"; then
       continue
     fi
-    break
-  done
 
-  for proxy_name in "${proxy_names[@]}"; do
-    [ -n "${proxy_name}" ] || continue
-    resolve_proxy_target "${proxy_name}"
-  done
+    trim_local_hops=0
+    printf '%s\n' "${proxy_target}"
+  done < <(
+    jq -r --arg start "${proxy_jump}" '
+      def resolve_chain($h; $visited):
+        if $h == "" then []
+        elif ($visited | index($h)) then
+          error("proxyJump cycle detected: \($visited + [$h] | join(" -> "))")
+        else
+          (.[$h] // {}) as $cfg |
+          ($cfg.target // $h) as $target |
+          ($cfg.proxyJump // "") as $next |
+          resolve_chain($next; $visited + [$h]) + [{name: $h, target: $target}]
+        end;
+      resolve_chain($start; [])[] | [.name, .target] | @tsv
+    ' <<<"${NIXBOT_HOSTS_JSON}"
+  )
 }
 
 ensure_known_hosts_file() {
@@ -2012,7 +1988,6 @@ inject_bootstrap_nixbot_key() {
   local node="$1" bootstrap_ssh_target="$2" bootstrap_nixbot_key_path="$3"
   local -a bootstrap_ssh_opts=("${@:4}")
   local bootstrap_key_file="" remote_tmp="" expected_bootstrap_fpr=""
-  local remote_has_key_cmd=""
   local bootstrap_dest="${REMOTE_NIXBOT_PRIMARY_KEY}" bootstrap_legacy_dest="${REMOTE_NIXBOT_LEGACY_KEY}"
 
   if [ -z "${bootstrap_nixbot_key_path}" ]; then
@@ -2039,9 +2014,15 @@ inject_bootstrap_nixbot_key() {
     return 1
   fi
 
-  remote_has_key_cmd="$(build_remote_has_bootstrap_key_cmd "${bootstrap_dest}" "${expected_bootstrap_fpr}")"
-  # shellcheck disable=SC2029
-  if ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" "${remote_has_key_cmd}" >/dev/null 2>&1; then
+  # shellcheck disable=SC2016
+  if target_file_matches_expected_value \
+    0 \
+    "${bootstrap_ssh_target}" \
+    "${bootstrap_dest}" \
+    "${expected_bootstrap_fpr}" \
+    'ssh-keygen -lf "$DEST" | tr -s " " | cut -d " " -f2' \
+    0 \
+    "${bootstrap_ssh_opts[@]}" >/dev/null 2>&1; then
     echo "==> Skipping bootstrap nixbot key for ${node}; matching key already present on target"
     return
   fi
@@ -2062,6 +2043,7 @@ inject_bootstrap_nixbot_key() {
     'if sudo test -f "${remote_dest}"; then sudo install -m 0400 "${remote_dest}" "${bootstrap_legacy_dest}"; fi' \
     'if sudo id -u nixbot >/dev/null 2>&1; then sudo chown -R nixbot:nixbot '"${REMOTE_NIXBOT_SSH_DIR}"'; fi' \
     "bootstrap_legacy_dest='${bootstrap_legacy_dest}'" \
+    0 \
     "${bootstrap_ssh_opts[@]}"; then
     return 1
   fi
@@ -2099,7 +2081,12 @@ EOF
 }
 
 build_remote_file_value_check_cmd() {
-  local remote_dest="$1" expected_value="$2" read_cmd="$3"
+  local remote_dest="$1" expected_value="$2" read_cmd="$3" ask_sudo_password="${4:-0}"
+  local sudo_cmd="sudo -n"
+
+  if [ "${ask_sudo_password}" -eq 1 ]; then
+    sudo_cmd="sudo"
+  fi
 
   cat <<EOF
 dest='${remote_dest}'
@@ -2108,19 +2095,9 @@ if ! command -v sudo >/dev/null 2>&1; then
   echo "sudo is required to validate \${dest}" >&2
   exit 1
 fi
-current="\$(DEST="\${dest}" sudo -n env DEST="\${dest}" sh -c '${read_cmd}' 2>/dev/null || true)"
+current="\$(DEST="\${dest}" ${sudo_cmd} env DEST="\${dest}" sh -c '${read_cmd}' 2>/dev/null || true)"
 [ "\${current}" = "\${want}" ]
 EOF
-}
-
-build_remote_has_bootstrap_key_cmd() {
-  local bootstrap_dest="$1" expected_bootstrap_fpr="$2"
-
-  # shellcheck disable=SC2016
-  build_remote_file_value_check_cmd \
-    "${bootstrap_dest}" \
-    "${expected_bootstrap_fpr}" \
-    'ssh-keygen -lf "$DEST" | tr -s " " | cut -d " " -f2'
 }
 
 run_target_command() {
@@ -2136,6 +2113,44 @@ run_target_command() {
     # shellcheck disable=SC2029
     ssh "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}"
   fi
+}
+
+resolve_target_command_user() {
+  local local_exec="$1" ssh_target="$2"
+
+  if [ "${local_exec}" -eq 1 ]; then
+    id -un
+  else
+    printf '%s\n' "${ssh_target%%@*}"
+  fi
+}
+
+should_ask_sudo_password() {
+  local deploy_user="$1" using_bootstrap_fallback="$2"
+
+  [ "${using_bootstrap_fallback}" -eq 1 ] || { [ "${deploy_user}" != "root" ] && [ "${deploy_user}" != "nixbot" ]; }
+}
+
+resolve_target_sudo_policy() {
+  local local_exec="$1" ssh_target="$2" using_bootstrap_fallback="$3"
+  local deploy_user="" ask_sudo_password=0 sudo_tty_mode=0
+
+  deploy_user="$(resolve_target_command_user "${local_exec}" "${ssh_target}")"
+  if should_ask_sudo_password "${deploy_user}" "${using_bootstrap_fallback}"; then
+    ask_sudo_password=1
+  fi
+
+  # Remote commands that invoke sudo should always allocate a TTY. Password
+  # prompting is a separate concern from satisfying remote sudo/requiretty
+  # policy.
+  if [ "${local_exec}" -eq 0 ]; then
+    sudo_tty_mode=1
+  fi
+
+  printf '%s\n%s\n%s\n' \
+    "${deploy_user}" \
+    "${ask_sudo_password}" \
+    "${sudo_tty_mode}"
 }
 
 create_target_tmp_file() {
@@ -2178,13 +2193,16 @@ copy_local_file_to_target_tmp() {
 
 target_file_matches_expected_value() {
   local local_exec="$1" ssh_target="$2" remote_dest="$3"
-  local expected_value="$4" read_cmd="$5"
-  shift 5
-  local -a ssh_opts=("$@")
-  local check_cmd=""
+  local expected_value="$4" read_cmd="$5" using_bootstrap_fallback="${6:-0}"
+  shift 6
+  local -a ssh_opts=("$@") sudo_policy=()
+  local check_cmd="" ask_sudo_password=0 tty_mode=0
 
-  check_cmd="$(build_remote_file_value_check_cmd "${remote_dest}" "${expected_value}" "${read_cmd}")"
-  run_target_command "${local_exec}" "${ssh_target}" 0 "${check_cmd}" "${ssh_opts[@]}"
+  mapfile -t sudo_policy < <(resolve_target_sudo_policy "${local_exec}" "${ssh_target}" "${using_bootstrap_fallback}")
+  ask_sudo_password="${sudo_policy[1]:-0}"
+  tty_mode="${sudo_policy[2]:-0}"
+  check_cmd="$(build_remote_file_value_check_cmd "${remote_dest}" "${expected_value}" "${read_cmd}" "${ask_sudo_password}")"
+  run_target_command "${local_exec}" "${ssh_target}" "${tty_mode}" "${check_cmd}" "${ssh_opts[@]}"
 }
 
 install_local_file_via_target() {
@@ -2192,9 +2210,10 @@ install_local_file_via_target() {
   local local_file="$5" tmp_prefix="$6" remote_dest="$7" remote_dir="$8"
   local remote_dir_mode="$9" remote_file_mode="${10}"
   local before_install_cmd="${11:-}" after_install_cmd="${12:-}" extra_vars="${13:-}"
-  shift 13
-  local -a ssh_opts=("$@")
-  local target_tmp="" install_cmd=""
+  local using_bootstrap_fallback="${14:-0}"
+  shift 14
+  local -a ssh_opts=("$@") sudo_policy=()
+  local target_tmp="" install_cmd="" tty_mode=0
 
   if ! target_tmp="$(create_target_tmp_file "${local_exec}" "${ssh_target}" "${tmp_prefix}" "${ssh_opts[@]}")"; then
     target_tmp=""
@@ -2219,7 +2238,9 @@ install_local_file_via_target() {
     "${after_install_cmd}" \
     "${extra_vars}")"
 
-  if ! run_target_command "${local_exec}" "${ssh_target}" 1 "${install_cmd}" "${ssh_opts[@]}"; then
+  mapfile -t sudo_policy < <(resolve_target_sudo_policy "${local_exec}" "${ssh_target}" "${using_bootstrap_fallback}")
+  tty_mode="${sudo_policy[2]:-0}"
+  if ! run_target_command "${local_exec}" "${ssh_target}" "${tty_mode}" "${install_cmd}" "${ssh_opts[@]}"; then
     cleanup_target_tmp_file "${local_exec}" "${ssh_target}" "${target_tmp}" "${ssh_opts[@]}"
     return 1
   fi
@@ -2399,7 +2420,8 @@ prepare_bootstrap_deploy_context() {
 
 inject_host_age_identity_key() {
   local node="$1" local_exec="$2" ssh_target="$3" age_identity_key_path="$4"
-  shift 4
+  local using_bootstrap_fallback="${5:-0}"
+  shift 5
   local -a ssh_opts=("$@")
   local age_identity_key_file="" expected_sha=""
   local remote_dest="${REMOTE_NIXBOT_AGE_IDENTITY}"
@@ -2439,6 +2461,7 @@ inject_host_age_identity_key() {
     "${remote_dest}" \
     "${expected_sha}" \
     'set -- $(sha256sum "$DEST"); printf "%s\n" "$1"' \
+    "${using_bootstrap_fallback}" \
     "${ssh_opts[@]}" >/dev/null 2>&1; then
     echo "==> Skipping host age identity for ${node}; matching key already present on target"
     return
@@ -2460,6 +2483,7 @@ inject_host_age_identity_key() {
     "" \
     'sudo chown root:nixbot "${remote_dir}" "${remote_dest}"' \
     "" \
+    "${using_bootstrap_fallback}" \
     "${ssh_opts[@]}"; then
     return 1
   fi
@@ -2676,14 +2700,6 @@ read_prepared_current_system_path() {
   run_prepared_deploy_command 0 "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
 }
 
-resolve_prepared_deploy_user() {
-  if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
-    id -un
-  else
-    printf '%s\n' "${PREP_DEPLOY_SSH_TARGET%%@*}"
-  fi
-}
-
 inject_prepared_host_age_identity_key() {
   local node="$1" age_identity_key_path="$2"
 
@@ -2692,6 +2708,7 @@ inject_prepared_host_age_identity_key() {
     "${PREP_DEPLOY_LOCAL_EXEC}" \
     "${PREP_DEPLOY_SSH_TARGET}" \
     "${age_identity_key_path}" \
+    "${PREP_USING_BOOTSTRAP_FALLBACK}" \
     "${PREP_DEPLOY_SSH_OPTS[@]}"
 }
 
@@ -3199,7 +3216,8 @@ ensure_wave_snapshots() {
 
 rollback_host_to_snapshot() {
   local node="$1" snapshot_path="$2" rollback_cmd="" deploy_user=""
-  local using_bootstrap_fallback=""
+  local using_bootstrap_fallback="" sudo_tty_mode=0
+  local -a sudo_policy=()
 
   [ -n "${snapshot_path}" ] || {
     echo "Rollback snapshot is empty for ${node}" >&2
@@ -3209,17 +3227,21 @@ rollback_host_to_snapshot() {
   log_host_stage "rollback" "${node}"
   prepare_deploy_context "${node}" || return 1
   using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
-  deploy_user="$(resolve_prepared_deploy_user)"
+  mapfile -t sudo_policy < <(
+    resolve_target_sudo_policy \
+      "${PREP_DEPLOY_LOCAL_EXEC}" \
+      "${PREP_DEPLOY_SSH_TARGET}" \
+      "${using_bootstrap_fallback}"
+  )
+  deploy_user="${sudo_policy[0]:-}"
+  sudo_tty_mode="${sudo_policy[2]:-0}"
 
   # shellcheck disable=SC2016
   rollback_cmd='set -euo pipefail; snap="'"${snapshot_path}"'"; if [ ! -x "${snap}/bin/switch-to-configuration" ]; then echo "snapshot is not activatable: ${snap}" >&2; exit 1; fi; if [ "$(id -u)" -eq 0 ]; then "${snap}/bin/switch-to-configuration" switch; elif command -v sudo >/dev/null 2>&1; then sudo "${snap}/bin/switch-to-configuration" switch; else echo "sudo is required for rollback as non-root user" >&2; exit 1; fi'
 
   echo "${snapshot_path}" >&2
-  if should_ask_sudo_password "${deploy_user}" "${using_bootstrap_fallback}"; then
-    run_prepared_deploy_command 1 "${rollback_cmd}"
-  else
-    run_prepared_deploy_command 0 "${rollback_cmd}"
-  fi
+  [ -n "${deploy_user}" ] || die "Unable to resolve deploy user for rollback target ${node}"
+  run_prepared_deploy_command "${sudo_tty_mode}" "${rollback_cmd}"
 }
 
 rollback_successful_hosts() {
@@ -3295,25 +3317,18 @@ rollback_optional_deploy_host() {
   return 0
 }
 
-should_ask_sudo_password() {
-  local deploy_user="$1" using_bootstrap_fallback="$2"
-
-  [ "${using_bootstrap_fallback}" -eq 1 ] || { [ "${deploy_user}" != "root" ] && [ "${deploy_user}" != "nixbot" ]; }
-}
-
 deploy_host() {
   local node="$1" built_out_path="$2" skip_marker="${3:-}"
   local remote_current_path="" nix_sshopts=""
-  local using_bootstrap_fallback="" age_identity_key="" deploy_user="" build_host=""
-  local -a rebuild_cmd=()
+  local using_bootstrap_fallback="" age_identity_key="" build_host=""
+  local ask_sudo_password=0
+  local -a rebuild_cmd=() sudo_policy=()
 
   log_host_stage "deploy" "${node}" "${GOAL}"
   prepare_deploy_context "${node}" || return 1
   nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
   using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
   age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
-  inject_prepared_host_age_identity_key "${node}" "${age_identity_key}" || return 1
-  deploy_user="$(resolve_prepared_deploy_user)"
 
   if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
     remote_current_path="$(read_prepared_current_system_path)"
@@ -3326,6 +3341,15 @@ deploy_host() {
       return 0
     fi
   fi
+
+  inject_prepared_host_age_identity_key "${node}" "${age_identity_key}" || return 1
+  mapfile -t sudo_policy < <(
+    resolve_target_sudo_policy \
+      "${PREP_DEPLOY_LOCAL_EXEC}" \
+      "${PREP_DEPLOY_SSH_TARGET}" \
+      "${using_bootstrap_fallback}"
+  )
+  ask_sudo_password="${sudo_policy[1]:-0}"
 
   case "${BUILD_HOST}" in
     local)
@@ -3353,7 +3377,7 @@ deploy_host() {
     rebuild_cmd+=(--target-host "${PREP_DEPLOY_SSH_TARGET}")
   fi
 
-  if should_ask_sudo_password "${deploy_user}" "${using_bootstrap_fallback}"; then
+  if [ "${ask_sudo_password}" -eq 1 ]; then
     rebuild_cmd+=(--ask-sudo-password)
   fi
 
@@ -5470,13 +5494,27 @@ require_no_extra_action_args() {
 
 hydrate_request_args_from_ssh_command() {
   local -n hrafsc_request_args_out_ref="$1"
+  local encoded_prefix="${NIXBOT_SSH_ARGV_PREFIX} "
+  local encoded_args=""
 
   if [ "${#hrafsc_request_args_out_ref[@]}" -ne 0 ] || [ -z "${SSH_ORIGINAL_COMMAND:-}" ]; then
     return
   fi
 
-  echo "Received SSH_ORIGINAL_COMMAND:"
-  echo "${SSH_ORIGINAL_COMMAND}"
+  if [[ "${SSH_ORIGINAL_COMMAND}" == "${encoded_prefix}"* ]]; then
+    encoded_args="${SSH_ORIGINAL_COMMAND#"${encoded_prefix}"}"
+    [ -n "${encoded_args}" ] || die "Empty forced-command argv payload"
+    mapfile -d '' -t hrafsc_request_args_out_ref < <(decode_ssh_command_args "${encoded_args}") \
+      || die "Failed to decode forced-command argv payload"
+    return
+  fi
+
+  case "${SSH_ORIGINAL_COMMAND}" in
+    *[\`\$\(\)\{\}\;\&\|\<\>\\\'\"]*)
+      die "Unsupported SSH forced-command syntax. Use nixbot --bastion-trigger or an unquoted simple argv form."
+      ;;
+  esac
+
   read -r -a hrafsc_request_args_out_ref <<<"${SSH_ORIGINAL_COMMAND}"
   if [ "${#hrafsc_request_args_out_ref[@]}" -gt 0 ] && [ "${hrafsc_request_args_out_ref[0]}" = "--" ]; then
     hrafsc_request_args_out_ref=("${hrafsc_request_args_out_ref[@]:1}")

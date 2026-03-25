@@ -46,11 +46,15 @@ The CI failure signature that motivated this note included:
 - Current-host matching resolves and compares both aliases and addresses.
 - Self-target local execution is gated to forced-command ingress so normal
   operator-initiated local runs still use the configured deploy SSH user/key.
+- `resolve_effective_proxy_chain()` is the single canonical proxy-hop resolver:
+  it walks the configured hop list once, trims leading local/self hops, and
+  emits the exact remaining target addresses for downstream SSH setup.
 - The SSH-context setup and ProxyCommand builder both consume the trimmed
   effective proxy chain directly, so removed leading local hops cannot be
   reintroduced while rebuilding wrappers.
-- Managed file installs now flow through shared transport helpers for local
-  execution and SSH execution.
+- Managed file installs, rollback, and `nixos-rebuild-ng` now all consume one
+  shared target sudo policy. That policy distinguishes password prompting from
+  SSH TTY allocation instead of treating them as the same decision.
 - Host phases (`snapshot`, `deploy`, `rollback`) branch on the prepared local
   execution flag instead of assuming every target is remote.
 
