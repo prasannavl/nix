@@ -895,6 +895,30 @@ repo_worktree_script_path() {
   repo_worktree_file_path "${REPO_DEPLOY_SCRIPT_REL}"
 }
 
+repo_relative_path() {
+  local path="$1" root="$2" resolved_path="" resolved_root=""
+
+  [ -n "${path}" ] || return 1
+  [ -n "${root}" ] || return 1
+  resolved_path="$(readlink -f "${path}" 2>/dev/null || true)"
+  resolved_root="$(readlink -f "${root}" 2>/dev/null || true)"
+  [ -n "${resolved_path}" ] || resolved_path="${path}"
+  [ -n "${resolved_root}" ] || resolved_root="${root}"
+
+  if [ "${resolved_path}" = "${resolved_root}" ]; then
+    printf '.\n'
+    return 0
+  fi
+  case "${resolved_path}" in
+    "${resolved_root}/"*)
+      printf '%s\n' "${resolved_path#"${resolved_root}/"}"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 cleanup_repo_worktree() {
   if [ -z "${REPO_WORKTREE_ROOT}" ] || [ -z "${REPO_ROOT}" ]; then
     return 0
@@ -969,9 +993,12 @@ run_bastion_trigger() {
   echo "Action: ${ACTION}" >&2
   echo "Hosts: ${trigger_hosts}" >&2
   echo "SHA: ${trigger_sha}" >&2
-  # Intentionally forward only the bastion-safe subset here. The remote side is
-  # expected to use its repo-local defaults/config for everything else so local
-  # operator overrides do not silently reshape bastion execution.
+  # Intentionally forward only the bastion-safe subset here. This restriction is
+  # deliberate: the remote side is expected to use its repo-local defaults and
+  # checked-in config for deploy-shaping settings such as goal, build host, job
+  # counts, rollback policy, and similar local overrides. Bastion-trigger runs
+  # are therefore reproducible from committed state instead of inheriting
+  # arbitrary local operator flags.
   remote_args=("${ACTION}" --sha "${trigger_sha}" --hosts "${trigger_hosts}")
   if [ "${LOG_FORMAT}" != "auto" ]; then
     remote_args+=(--log-format "${LOG_FORMAT}")
@@ -1053,11 +1080,15 @@ acquire_repo_root_lock() {
   fi
 
   git_dir="$(git -C "${REPO_ROOT}" rev-parse --git-common-dir 2>/dev/null || true)"
-  [ -n "${git_dir}" ] || return 0
-  if [[ "${git_dir}" != /* ]]; then
-    git_dir="${REPO_ROOT%/}/${git_dir}"
+  if [ -n "${git_dir}" ]; then
+    if [[ "${git_dir}" != /* ]]; then
+      git_dir="${REPO_ROOT%/}/${git_dir}"
+    fi
+    lock_root="${git_dir%/}/nixbot-worktree.lock"
+  else
+    mkdir -p "$(dirname "${REPO_ROOT}")"
+    lock_root="${REPO_ROOT%/}.nixbot-worktree.lock"
   fi
-  lock_root="${git_dir%/}/nixbot-worktree.lock"
 
   while ! mkdir "${lock_root}" 2>/dev/null; do
     sleep 0.2
@@ -1168,18 +1199,21 @@ prepare_repo_worktree() {
   git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
   release_repo_root_lock
 
-  # When --staged is set on a local repo, overlay staged changes and new
+  # When --dirty-staged is set on a local repo, overlay staged changes and new
   # staged files into the worktree so the deploy includes them.
   if [ "${OVERLAY_STAGED}" -eq 1 ] && [ "${REPO_ROOT_MANAGED}" -eq 0 ]; then
     echo "Overlaying staged changes into worktree..." >&2
-    git -C "${REPO_ROOT}" diff --cached --binary | git -C "${REPO_WORKTREE_ROOT}" apply --allow-empty 2>/dev/null || true
+    if ! git -C "${REPO_ROOT}" diff --cached --binary | git -C "${REPO_WORKTREE_ROOT}" apply --allow-empty; then
+      die "Failed to overlay staged changes into repo worktree"
+    fi
     # Also copy untracked files that have been staged.
-    git -C "${REPO_ROOT}" diff --cached --name-only --diff-filter=A -z |
-      while IFS= read -r -d '' f; do
-        [ -n "$f" ] || continue
-        mkdir -p "${REPO_WORKTREE_ROOT}/$(dirname "$f")"
-        git -C "${REPO_ROOT}" show ":${f}" > "${REPO_WORKTREE_ROOT}/${f}"
-      done
+    while IFS= read -r -d '' f; do
+      [ -n "${f}" ] || continue
+      mkdir -p "${REPO_WORKTREE_ROOT}/$(dirname "${f}")"
+      if ! git -C "${REPO_ROOT}" show ":${f}" > "${REPO_WORKTREE_ROOT}/${f}"; then
+        die "Failed to materialize staged file in repo worktree: ${f}"
+      fi
+    done < <(git -C "${REPO_ROOT}" diff --cached --name-only --diff-filter=A -z)
   fi
 
   [ -f "$(repo_worktree_script_path)" ] || die "deploy script missing in repo worktree: $(repo_worktree_script_path)"
@@ -1687,7 +1721,7 @@ prepare_run_context() {
   local -n prc_selected_json_out_ref="$1"
   local config_json="" all_hosts_json=""
 
-  if [ -f "${NIXBOT_CONFIG_PATH}" ]; then
+  if [ -n "${NIXBOT_CONFIG_PATH}" ]; then
     config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}")"
     init_deploy_settings "${config_json}"
   fi
@@ -1761,37 +1795,54 @@ resolve_deploy_target() {
     }' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
+resolve_proxy_chain() {
+  local start_host="$1"
+
+  [ -n "${start_host}" ] || return 0
+
+  jq -c \
+    --arg start "${start_host}" \
+    --arg defUser "${NIXBOT_DEFAULT_USER}" \
+    --arg defKey "${NIXBOT_DEFAULT_KEY_PATH}" '
+    def fb($v; $d): ($v // "") | if . == "" then $d else . end;
+    def resolve_chain($h; $visited):
+      if $h == "" then []
+      elif ($visited | index($h)) then
+        error("proxyJump cycle detected: \($visited + [$h] | join(" -> "))")
+      else
+        (.[$h] // {}) as $cfg |
+        ($cfg.target // $h) as $target |
+        (fb($cfg.user; $defUser)) as $user |
+        (fb($cfg.key; $defKey)) as $keyPath |
+        ($cfg.proxyJump // "") as $next |
+        resolve_chain($next; $visited + [$h]) + [{
+          node: $h,
+          target: $target,
+          connectTarget: (if $user == "" then $target else "\($user)@\($target)" end),
+          keyPath: $keyPath
+        }]
+      end;
+    resolve_chain($start; [])[]
+  ' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
 resolve_effective_proxy_chain() {
-  local proxy_jump="$1" proxy_name="" proxy_target=""
+  local proxy_jump="$1" hop_json="" proxy_target=""
   local trim_local_hops=1
 
   [ -n "${proxy_jump}" ] || return 0
 
-  while IFS=$'\t' read -r proxy_name proxy_target; do
-    [ -n "${proxy_name}" ] || continue
-    [ -n "${proxy_target}" ] || proxy_target="${proxy_name}"
-
+  while IFS= read -r hop_json; do
+    [ -n "${hop_json}" ] || continue
+    proxy_target="$(jq -r '.target' <<<"${hop_json}")"
+    [ -n "${proxy_target}" ] || continue
     if [ "${trim_local_hops}" -eq 1 ] && local_host_matches_identifier "${proxy_target}"; then
       continue
     fi
 
     trim_local_hops=0
-    printf '%s\n' "${proxy_target}"
-  done < <(
-    jq -r --arg start "${proxy_jump}" '
-      def resolve_chain($h; $visited):
-        if $h == "" then []
-        elif ($visited | index($h)) then
-          error("proxyJump cycle detected: \($visited + [$h] | join(" -> "))")
-        else
-          (.[$h] // {}) as $cfg |
-          ($cfg.target // $h) as $target |
-          ($cfg.proxyJump // "") as $next |
-          resolve_chain($next; $visited + [$h]) + [{name: $h, target: $target}]
-        end;
-      resolve_chain($start; [])[] | [.name, .target] | @tsv
-    ' <<<"${NIXBOT_HOSTS_JSON}"
-  )
+    printf '%s\n' "${hop_json}"
+  done < <(resolve_proxy_chain "${proxy_jump}")
 }
 
 ensure_known_hosts_file() {
@@ -1830,6 +1881,26 @@ ssh_host_from_target() {
   target="${target#\[}"
   target="${target%\]}"
   printf '%s\n' "${target}"
+}
+
+format_ssh_connect_target() {
+  local target="$1" user_prefix="" host_only=""
+
+  if [[ "${target}" == *@* ]]; then
+    user_prefix="${target%@*}@"
+  fi
+  host_only="$(ssh_host_from_target "${target}")"
+  printf '%s%s\n' "${user_prefix}" "${host_only}"
+}
+
+format_ssh_forward_target() {
+  local target="$1" port="${2:-22}" host_only=""
+
+  host_only="$(ssh_host_from_target "${target}")"
+  if [[ "${host_only}" == *:* ]]; then
+    host_only="[${host_only}]"
+  fi
+  printf '%s:%s\n' "${host_only}" "${port}"
 }
 
 is_ip_address() {
@@ -1909,7 +1980,7 @@ is_bootstrap_ready() {
 check_bootstrap_via_forced_command() {
   local node="$1" ssh_target="$2"
   local -a ssh_opts=("${@:3}") check_ssh_opts=() check_remote_cmd=()
-  local check_output="" check_sha="" check_key_file="" remote_config_path="" i="" opt="" skip_next=0
+  local check_output="" check_key_file="" remote_config_path="" i="" opt="" skip_next=0
 
   # Forced-command ingress may require a key different from the deploy key.
   for ((i=0; i<${#ssh_opts[@]}; i++)); do
@@ -1955,18 +2026,24 @@ check_bootstrap_via_forced_command() {
     check_ssh_opts=(-i "${check_key_file}" -o IdentitiesOnly=yes "${check_ssh_opts[@]}")
   fi
 
-  check_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
-  if [[ "${NIXBOT_CONFIG_PATH}" = /* ]]; then
-    remote_config_path="${NIXBOT_CONFIG_PATH}"
-  else
-    remote_config_path="$(repo_worktree_file_path "${NIXBOT_CONFIG_PATH}")"
-  fi
-
   check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" check-bootstrap)
-  if [ -n "${check_sha}" ]; then
-    check_remote_cmd+=(--sha "${check_sha}")
+  if [ -n "${SHA}" ]; then
+    check_remote_cmd+=(--sha "${SHA}")
   fi
-  check_remote_cmd+=(--hosts "${node}" --config "${remote_config_path}")
+  check_remote_cmd+=(--hosts "${node}")
+  if [ -n "${NIXBOT_CONFIG_PATH}" ]; then
+    if [[ "${NIXBOT_CONFIG_PATH}" != /* ]]; then
+      remote_config_path="${NIXBOT_CONFIG_PATH}"
+    elif remote_config_path="$(repo_relative_path "${NIXBOT_CONFIG_PATH}" "${REPO_WORKTREE_ROOT}")"; then
+      :
+    elif remote_config_path="$(repo_relative_path "${NIXBOT_CONFIG_PATH}" "${REPO_ROOT}")"; then
+      :
+    else
+      echo "Cannot forward absolute config path for forced-command bootstrap check: ${NIXBOT_CONFIG_PATH}" >&2
+      return 1
+    fi
+    check_remote_cmd+=(--config "${remote_config_path}")
+  fi
 
   # shellcheck disable=SC2029
   if check_output="$(ssh "${check_ssh_opts[@]}" "${ssh_target}" "${check_remote_cmd[@]}" 2>&1)"; then
@@ -2329,15 +2406,16 @@ prepare_host_ssh_contexts() {
   # Scan all directly-reachable intermediate hops.
   if [ -n "${proxy_chain}" ]; then
     local -a _chain_hops=()
-    local hop=""
-    while IFS= read -r hop; do
-      [ -n "${hop}" ] || continue
-      _chain_hops+=("${hop}")
+    local hop_json="" hop_target=""
+    while IFS= read -r hop_json; do
+      [ -n "${hop_json}" ] || continue
+      _chain_hops+=("${hop_json}")
     done <<<"${proxy_chain}"
     # The first hop is directly reachable; subsequent hops are behind proxies
     # and will be scanned through the proxy scripts built in prepare_deploy_context.
     if [ "${#_chain_hops[@]}" -gt 0 ]; then
-      ensure_known_host "${_chain_hops[0]}" "${known_hosts}" "${known_hosts_file}"
+      hop_target="$(jq -r '.target' <<<"${_chain_hops[0]}")"
+      ensure_known_host "${hop_target}" "${known_hosts}" "${known_hosts_file}"
     fi
   fi
   case "${BUILD_HOST}" in
@@ -2361,6 +2439,144 @@ prepare_host_ssh_contexts() {
   fi
   init_known_hosts_ssh_context 1 "${known_hosts_file}" phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref "${host_key_check}"
   init_known_hosts_ssh_context 0 "${known_hosts_file}" phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref "${host_key_check}"
+}
+
+write_proxy_command_script() {
+  local script_path="$1" known_hosts_file="$2" forward_target="$3" connect_target="$4"
+  local previous_proxy_script="$5" identity_file="${6:-}"
+
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'set -Eeuo pipefail'
+    printf 'known_hosts_file=%q\n' "${known_hosts_file}"
+    printf 'forward_target=%q\n' "${forward_target}"
+    printf 'connect_target=%q\n' "${connect_target}"
+    printf 'previous_proxy_script=%q\n' "${previous_proxy_script}"
+    printf 'identity_file=%q\n' "${identity_file}"
+    cat <<'EOF'
+cmd=(ssh -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
+if [ -n "${identity_file}" ]; then
+  cmd+=(-i "${identity_file}" -o IdentitiesOnly=yes)
+fi
+if [ -n "${previous_proxy_script}" ]; then
+  cmd+=(-o "ProxyCommand=${previous_proxy_script}")
+fi
+cmd+=(-W "${forward_target}" "${connect_target}")
+exec "${cmd[@]}"
+EOF
+  } > "${script_path}"
+  chmod +x "${script_path}"
+}
+
+apply_proxy_chain_to_ssh_contexts() {
+  local node="$1" host="$2" proxy_chain="$3"
+  # shellcheck disable=SC2178
+  local -n apctsc_host_ssh_opts_out_ref="$4" apctsc_host_nix_sshopts_out_ref="$5"
+  # shellcheck disable=SC2178,SC2034
+  local -n apctsc_bootstrap_ssh_opts_out_ref="$6" apctsc_bootstrap_nix_sshopts_out_ref="$7"
+  local safe_node="" proxy_known_hosts_file=""
+  local -a chain_hops=()
+  local hop_json="" prev_script="" proxy_script="" proxy_cmd=""
+  local i=0 fwd_host="" fwd_port=22
+  local hop_target="" hop_connect_target="" hop_key_path="" hop_key_file=""
+
+  [ -n "${proxy_chain}" ] || return 0
+
+  ensure_tmp_dir
+
+  # ProxyJump spawns a separate SSH process that does NOT inherit our custom
+  # UserKnownHostsFile, so it falls back to ~/.ssh/known_hosts and can fail
+  # with "REMOTE HOST IDENTIFICATION HAS CHANGED" on fresh/reinstalled hosts.
+  # Use ProxyCommand instead so we can pass the known_hosts file through.
+  # The proxy host key was already scanned into the node's known_hosts file
+  # by prepare_host_ssh_contexts above.
+  safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
+  proxy_known_hosts_file="${TMP_SSH_DIR}/${NODE_KNOWN_HOSTS_PREFIX}.${safe_node}"
+
+  while IFS= read -r hop_json; do
+    [ -n "${hop_json}" ] || continue
+    chain_hops+=("${hop_json}")
+  done <<<"${proxy_chain}"
+
+  for (( i=0; i<${#chain_hops[@]}; i++ )); do
+    hop_json="${chain_hops[i]}"
+    proxy_script="${TMP_SSH_DIR}/proxy-${safe_node}-${i}.sh"
+    {
+      read -r hop_target
+      read -r hop_connect_target
+      read -r hop_key_path
+    } < <(jq -r '[.target, .connectTarget, (.keyPath // "")] | .[]' <<<"${hop_json}")
+    if [ "${i}" -lt "$(( ${#chain_hops[@]} - 1 ))" ]; then
+      fwd_host="$(jq -r '.target' <<<"${chain_hops[i+1]}")"
+    else
+      fwd_host="${host}"
+    fi
+
+    hop_key_file=""
+    if [ -n "${hop_key_path}" ]; then
+      if ! hop_key_file="$(resolve_ssh_identity_file "${hop_key_path}" "Proxy hop SSH key (${hop_target})" 0)"; then
+        return 1
+      fi
+    fi
+
+    write_proxy_command_script \
+      "${proxy_script}" \
+      "${proxy_known_hosts_file}" \
+      "$(format_ssh_forward_target "${fwd_host}" "${fwd_port}")" \
+      "$(format_ssh_connect_target "${hop_connect_target}")" \
+      "${prev_script}" \
+      "${hop_key_file}"
+    prev_script="${proxy_script}"
+  done
+
+  proxy_cmd="${prev_script}"
+  apctsc_host_ssh_opts_out_ref+=(-o "ProxyCommand=${proxy_cmd}")
+  apctsc_host_nix_sshopts_out_ref="${apctsc_host_nix_sshopts_out_ref:+${apctsc_host_nix_sshopts_out_ref} }-o ProxyCommand=${proxy_cmd}"
+  apctsc_bootstrap_ssh_opts_out_ref+=(-o "ProxyCommand=${proxy_cmd}")
+  apctsc_bootstrap_nix_sshopts_out_ref="${apctsc_bootstrap_nix_sshopts_out_ref:+${apctsc_bootstrap_nix_sshopts_out_ref} }-o ProxyCommand=${proxy_cmd}"
+}
+
+build_deploy_ssh_contexts() {
+  local node="$1" host="$2" known_hosts="$3" proxy_chain="$4"
+  local key_path="$5" bootstrap_key_path="$6"
+  # shellcheck disable=SC2178,SC2034
+  local -n bdsc_host_ssh_opts_out_ref="$7" bdsc_host_nix_sshopts_out_ref="$8"
+  # shellcheck disable=SC2178,SC2034
+  local -n bdsc_bootstrap_ssh_opts_out_ref="$9" bdsc_bootstrap_nix_sshopts_out_ref="${10}"
+  local deploy_key_file="" bootstrap_key_file=""
+
+  prepare_host_ssh_contexts \
+    "${node}" \
+    "${host}" \
+    "${known_hosts}" \
+    bdsc_host_ssh_opts_out_ref \
+    bdsc_host_nix_sshopts_out_ref \
+    bdsc_bootstrap_ssh_opts_out_ref \
+    bdsc_bootstrap_nix_sshopts_out_ref \
+    "${proxy_chain}" || return 1
+
+  apply_proxy_chain_to_ssh_contexts \
+    "${node}" \
+    "${host}" \
+    "${proxy_chain}" \
+    bdsc_host_ssh_opts_out_ref \
+    bdsc_host_nix_sshopts_out_ref \
+    bdsc_bootstrap_ssh_opts_out_ref \
+    bdsc_bootstrap_nix_sshopts_out_ref || return 1
+
+  if [ -n "${key_path}" ]; then
+    if ! deploy_key_file="$(resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${NIXBOT_KEY_OVERRIDE_EXPLICIT}")"; then
+      return 1
+    fi
+    apply_identity_to_ssh_context "${deploy_key_file}" bdsc_host_ssh_opts_out_ref bdsc_host_nix_sshopts_out_ref
+  fi
+
+  if [ -n "${bootstrap_key_path}" ]; then
+    if ! bootstrap_key_file="$(resolve_ssh_identity_file "${bootstrap_key_path}" "Bootstrap SSH key" 0)"; then
+      return 1
+    fi
+    apply_identity_to_ssh_context "${bootstrap_key_file}" bdsc_bootstrap_ssh_opts_out_ref bdsc_bootstrap_nix_sshopts_out_ref
+  fi
 }
 
 ensure_bootstrap_key_ready() {
@@ -2393,6 +2609,20 @@ set_prepared_deploy_context() {
   PREP_DEPLOY_SSH_OPTS=("${ssh_opts[@]}")
 }
 
+set_prepared_remote_deploy_context() {
+  local ssh_target="$1" nix_sshopts="$2" age_identity_key="$3"
+  shift 3
+  local -a ssh_opts=("$@")
+
+  set_prepared_deploy_context \
+    "${ssh_target}" \
+    "${nix_sshopts}" \
+    0 \
+    "${age_identity_key}" \
+    0 \
+    "${ssh_opts[@]}"
+}
+
 clear_prepared_deploy_context() {
   PREP_DEPLOY_SSH_TARGET=""
   PREP_DEPLOY_NIX_SSHOPTS=""
@@ -2400,6 +2630,53 @@ clear_prepared_deploy_context() {
   PREP_DEPLOY_AGE_IDENTITY_KEY=""
   PREP_DEPLOY_LOCAL_EXEC=0
   PREP_DEPLOY_SSH_OPTS=()
+}
+
+probe_primary_deploy_target() {
+  local ssh_target="$1"
+  shift
+  local -a ssh_opts=("$@")
+
+  ssh "${ssh_opts[@]}" "${ssh_target}" "true" >/dev/null 2>&1
+}
+
+ensure_primary_deploy_connectivity() {
+  local node="$1" host="$2" known_hosts="$3" ssh_target="$4"
+  local full_proxy_chain="$5" effective_proxy_chain="$6"
+  local key_path="$7" bootstrap_key_path="$8" age_identity_key="$9"
+  # shellcheck disable=SC2178,SC2034
+  local -n epdc_ssh_opts_inout_ref="${10}" epdc_bootstrap_ssh_opts_inout_ref="${12}"
+  # shellcheck disable=SC2178,SC2034
+  local -n epdc_nix_sshopts_inout_ref="${11}" epdc_bootstrap_nix_sshopts_inout_ref="${13}"
+
+  if probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
+    return 0
+  fi
+
+  if [ -z "${full_proxy_chain}" ] || [ "${full_proxy_chain}" = "${effective_proxy_chain}" ]; then
+    return 1
+  fi
+
+  echo "==> Direct path to ${ssh_target} is unavailable; retrying with configured proxy chain"
+  build_deploy_ssh_contexts \
+    "${node}" \
+    "${host}" \
+    "${known_hosts}" \
+    "${full_proxy_chain}" \
+    "${key_path}" \
+    "${bootstrap_key_path}" \
+    epdc_ssh_opts_inout_ref \
+    epdc_nix_sshopts_inout_ref \
+    epdc_bootstrap_ssh_opts_inout_ref \
+    epdc_bootstrap_nix_sshopts_inout_ref || return 1
+
+  set_prepared_remote_deploy_context \
+    "${ssh_target}" \
+    "${epdc_nix_sshopts_inout_ref}" \
+    "${age_identity_key}" \
+    "${epdc_ssh_opts_inout_ref[@]}"
+
+  probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"
 }
 
 prepare_bootstrap_deploy_context() {
@@ -2493,10 +2770,9 @@ prepare_deploy_context() {
   local node="$1"
   local target_info="" user="" host="" key_path="" known_hosts=""
   local bootstrap_key="" bootstrap_user="" bootstrap_key_path=""
-  local age_identity_key="" proxy_jump="" effective_proxy_chain=""
-  local deploy_key_file="" bootstrap_key_file=""
+  local age_identity_key="" proxy_jump="" full_proxy_chain="" effective_proxy_chain=""
   local ssh_target="" bootstrap_ssh_target=""
-  local local_exec=0
+  local local_exec=0 primary_target_ready=1
   local -a ssh_opts=() bootstrap_ssh_opts=()
   local nix_sshopts="" bootstrap_nix_sshopts=""
 
@@ -2523,8 +2799,8 @@ prepare_deploy_context() {
     && { local_host_matches_identifier "${node}" || local_host_matches_identifier "${host}"; }; then
     local_exec=1
   fi
-  effective_proxy_chain="${proxy_jump}"
   if [ -n "${proxy_jump}" ]; then
+    full_proxy_chain="$(resolve_proxy_chain "${proxy_jump}")"
     effective_proxy_chain="$(resolve_effective_proxy_chain "${proxy_jump}")"
   fi
 
@@ -2538,101 +2814,22 @@ prepare_deploy_context() {
     return 0
   fi
 
-  prepare_host_ssh_contexts \
+  build_deploy_ssh_contexts \
     "${node}" \
     "${host}" \
     "${known_hosts}" \
+    "${effective_proxy_chain}" \
+    "${key_path}" \
+    "${bootstrap_key_path}" \
     ssh_opts \
     nix_sshopts \
     bootstrap_ssh_opts \
-    bootstrap_nix_sshopts \
-    "${effective_proxy_chain}" || return 1
+    bootstrap_nix_sshopts || return 1
 
-  if [ -n "${effective_proxy_chain}" ]; then
-    # ProxyJump spawns a separate SSH process that does NOT inherit our custom
-    # UserKnownHostsFile, so it falls back to ~/.ssh/known_hosts and can fail
-    # with "REMOTE HOST IDENTIFICATION HAS CHANGED" on fresh/reinstalled hosts.
-    # Use ProxyCommand instead so we can pass the known_hosts file through.
-    # The proxy host key was already scanned into the node's known_hosts file
-    # by prepare_host_ssh_contexts above.
-    #
-    # For multi-hop chains (e.g. pvl-a1 → pvl-x2 → gap3-gondor → gap3-rivendell)
-    # we nest ProxyCommands via wrapper scripts to avoid shell quoting issues.
-    local safe_node=""
-    safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
-    local proxy_known_hosts_file="${TMP_SSH_DIR}/${NODE_KNOWN_HOSTS_PREFIX}.${safe_node}"
-    local ssh_base="ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${proxy_known_hosts_file}"
-
-    local -a chain_hops=()
-    local hop=""
-    while IFS= read -r hop; do
-      [ -n "${hop}" ] || continue
-      chain_hops+=("${hop}")
-    done <<<"${effective_proxy_chain}"
-
-    # Build nested ProxyCommand from outermost hop inward.
-    # chain_hops[0] is the outermost (directly reachable) hop.
-    # Each hop gets a wrapper script so nested ProxyCommands don't need
-    # shell-quoting gymnastics.
-    #
-    # Each script hardcodes the next hop's address so the outermost
-    # ProxyCommand is just a bare script path — no %h/%p args that would
-    # break when NIX_SSHOPTS is word-split by nix tooling.
-    # The innermost script tunnels to the final target (${host}:22).
-    local prev_script="" proxy_script="" proxy_cmd=""
-    local i=0
-    for (( i=0; i<${#chain_hops[@]}; i++ )); do
-      proxy_script="${TMP_SSH_DIR}/proxy-${safe_node}-${i}.sh"
-      # Each script needs to forward to the *next* thing in the chain.
-      # For the last script (i == len-1), the next thing is the final target.
-      local fwd_host fwd_port=22
-      if [ "${i}" -lt "$(( ${#chain_hops[@]} - 1 ))" ]; then
-        fwd_host="${chain_hops[i+1]}"
-      else
-        fwd_host="${host}"
-      fi
-      if [ "${i}" -eq 0 ]; then
-        cat > "${proxy_script}" <<PROXYEOF
-#!/bin/sh
-exec ${ssh_base} -W ${fwd_host}:${fwd_port} ${chain_hops[i]}
-PROXYEOF
-      else
-        cat > "${proxy_script}" <<PROXYEOF
-#!/bin/sh
-exec ${ssh_base} -W ${fwd_host}:${fwd_port} -o "ProxyCommand=${prev_script}" ${chain_hops[i]}
-PROXYEOF
-      fi
-      chmod +x "${proxy_script}"
-      prev_script="${proxy_script}"
-    done
-
-    proxy_cmd="${prev_script}"
-    ssh_opts+=(-o "ProxyCommand=${proxy_cmd}")
-    nix_sshopts="${nix_sshopts:+${nix_sshopts} }-o ProxyCommand=${proxy_cmd}"
-    bootstrap_ssh_opts+=(-o "ProxyCommand=${proxy_cmd}")
-    bootstrap_nix_sshopts="${bootstrap_nix_sshopts:+${bootstrap_nix_sshopts} }-o ProxyCommand=${proxy_cmd}"
-  fi
-
-  if [ -n "${key_path}" ]; then
-    if ! deploy_key_file="$(resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${NIXBOT_KEY_OVERRIDE_EXPLICIT}")"; then
-      return 1
-    fi
-    apply_identity_to_ssh_context "${deploy_key_file}" ssh_opts nix_sshopts
-  fi
-
-  if [ -n "${bootstrap_key_path}" ]; then
-    if ! bootstrap_key_file="$(resolve_ssh_identity_file "${bootstrap_key_path}" "Bootstrap SSH key" 0)"; then
-      return 1
-    fi
-    apply_identity_to_ssh_context "${bootstrap_key_file}" bootstrap_ssh_opts bootstrap_nix_sshopts
-  fi
-
-  set_prepared_deploy_context \
+  set_prepared_remote_deploy_context \
     "${ssh_target}" \
     "${nix_sshopts}" \
-    0 \
     "${age_identity_key}" \
-    0 \
     "${ssh_opts[@]}"
 
   if [ "${FORCE_BOOTSTRAP_PATH}" -eq 1 ]; then
@@ -2648,8 +2845,25 @@ PROXYEOF
   fi
 
   if [ "${DRY_RUN}" -eq 0 ]; then
+    if ! ensure_primary_deploy_connectivity \
+      "${node}" \
+      "${host}" \
+      "${known_hosts}" \
+      "${ssh_target}" \
+      "${full_proxy_chain}" \
+      "${effective_proxy_chain}" \
+      "${key_path}" \
+      "${bootstrap_key_path}" \
+      "${age_identity_key}" \
+      ssh_opts \
+      nix_sshopts \
+      bootstrap_ssh_opts \
+      bootstrap_nix_sshopts; then
+      primary_target_ready=0
+    fi
+
     if [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
-      if ! ssh "${ssh_opts[@]}" "${ssh_target}" "true" >/dev/null 2>&1; then
+      if [ "${primary_target_ready}" -eq 0 ]; then
         local validated_via_forced_command=0
 
         if is_bootstrap_ready "${node}"; then
@@ -4411,6 +4625,7 @@ prepare_tf_apps_project_runtime() {
   echo "Preparing Terraform apps package build: ${project_name}" >&2
   nix build "path:${project_pkg_dir}#build" --no-link
 }
+
 emit_tf_var_secret_paths_for_project() {
   local project_name="$1" log_discovered_paths="${2:-0}" tf_var_path=""
 
@@ -5551,8 +5766,13 @@ run_all_action() {
 run_requested_action() {
   local selected_json="" action_rc=0
 
-  prepare_run_context selected_json
-  log_run_context "${selected_json}"
+  if action_is_tf_only "${ACTION}"; then
+    log_section "nixbot"
+    echo "Action: ${ACTION}" >&2
+  else
+    prepare_run_context selected_json
+    log_run_context "${selected_json}"
+  fi
 
   run_deploy_request_action "${selected_json}" || action_rc="$?"
 
@@ -5626,7 +5846,7 @@ main() {
   fi
 
   prepare_repo_worktree
-  reexec_repo_script_if_needed "${request_args[@]}"
+  reexec_repo_script_if_needed "${ACTION}" "${request_args[@]}"
 
   run_requested_action
 }

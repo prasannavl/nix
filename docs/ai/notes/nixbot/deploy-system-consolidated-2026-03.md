@@ -23,6 +23,13 @@ result processing architecture, and CI connectivity.
 - Normal targeting prefers `nixbot@host`; bootstrap is fallback, not the
   default. `--bootstrap` forces the bootstrap path even if the primary path is
   healthy.
+- Bastion-side runs may flatten leading self-targeting proxy hops, but that is
+  only a preference optimization. If the resulting direct probe to the primary
+  deploy target fails, `nixbot` must rebuild SSH state with the full configured
+  proxy chain and retry before it considers bootstrap fallback. That primary
+  path selection must not depend on whether bootstrap and deploy users differ.
+- Generated proxy wrapper scripts must emit IPv6-safe `-W [host]:port`
+  destinations when a hop or final target resolves to an IPv6 address.
 - Forced-command bootstrap probes should execute `nixbot ...` explicitly so SSH
   does not pass option-like arguments directly and the remote side can strip the
   leading command token independent of the bastion store path.

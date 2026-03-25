@@ -105,6 +105,12 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/nameref-output-shadowing-regression-2026-03.md`:
   Snapshot regression root cause after the deploy-context nameref refactor and
   the durable guardrail for helper output names versus scratch locals.
+- `docs/ai/notes/nixbot/proxy-hop-auth-and-staged-overlay-2026-03.md`:
+  Intentional bastion-trigger forwarding restriction, proxy-hop user/key
+  preservation in SSH wrappers, and fail-closed staged overlay behavior.
+- `docs/ai/notes/nixbot/review-fixes-2026-03.md`: Review-driven fixes for
+  forced-command bootstrap validation, Terraform-only dispatch, and managed
+  repo-root locking.
 - `docs/ai/notes/nixbot/runtime-temp-suffix-alignment-2026-03.md`: Consolidated
   per-run workspace root for deploy artifacts and detached repo worktrees.
 - `docs/ai/notes/nixbot/security-trust-model-2026-03.md`: Bastion-trigger
