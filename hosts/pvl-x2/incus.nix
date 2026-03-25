@@ -1,50 +1,54 @@
 {...}: {
-  services.incusMachines.machines = {
-    llmug-rivendell = {
-      ipv4Address = "10.10.20.10";
-      removalPolicy = "delete-all";
-      recreateTag = "2";
-      bootTag = "1";
+  services.incusMachines = {
+    imageTag = "1";
 
-      config = {
-        "security.privileged" = "true";
-        "security.nesting" = "true";
-      };
-      devices = {
-        state = {
-          source = "llmug-rivendell";
-          path = "/var/lib";
-          removalPolicy = "delete";
-        };
-        gpu = {type = "gpu";};
-        kfd = {
-          type = "unix-char";
-          source = "/dev/kfd";
-          path = "/dev/kfd";
-        };
-      };
-    };
-    gap3-gondor = {
-      ipv4Address = "10.10.20.11";
-      removalPolicy = "delete-all";
-      recreateTag = "2";
-      bootTag = "1";
+    machines = {
+      llmug-rivendell = {
+        ipv4Address = "10.10.20.10";
+        removalPolicy = "delete-all";
+        recreateTag = "2";
+        bootTag = "1";
 
-      config = {
-        "security.nesting" = "true";
-        "security.privileged" = "true";
-      };
-      devices = {
-        state = {
-          source = "gap3-gondor";
-          path = "/var/lib";
-          removalPolicy = "delete";
+        config = {
+          "security.privileged" = "true";
+          "security.nesting" = "true";
         };
-        gpu = {type = "gpu";};
-        kfd = {
-          type = "unix-char";
-          source = "/dev/kfd";
-          path = "/dev/kfd";
+        devices = {
+          state = {
+            source = "llmug-rivendell";
+            path = "/var/lib";
+            removalPolicy = "delete";
+          };
+          gpu = {type = "gpu";};
+          kfd = {
+            type = "unix-char";
+            source = "/dev/kfd";
+            path = "/dev/kfd";
+          };
+        };
+      };
+      gap3-gondor = {
+        ipv4Address = "10.10.20.11";
+        removalPolicy = "delete-all";
+        recreateTag = "3";
+        bootTag = "1";
+
+        config = {
+          "security.nesting" = "true";
+          "security.privileged" = "true";
+        };
+        devices = {
+          state = {
+            source = "gap3-gondor";
+            path = "/var/lib";
+            removalPolicy = "delete";
+          };
+          gpu = {type = "gpu";};
+          kfd = {
+            type = "unix-char";
+            source = "/dev/kfd";
+            path = "/dev/kfd";
+          };
         };
       };
     };

@@ -49,9 +49,9 @@ tags as ordinary systemd services that run during deploy.
 - `lib/incus-vm.nix` owns guest bootstrap conveniences:
   - persistent SSH host keys under `/var/lib/machine`
   - optional Tailscale auth wiring from `data/secrets/tailscale/<host>.key.age`
-- `lib/profiles/systemd-container.nix` enables the NixOS LXC hostname templates
-  so `/etc/hostname` is stamped from `{{ container.name }}` when Incus creates a
-  guest from the shared image.
+- `lib/incus-vm.nix` also owns runtime hostname convergence with a dedicated
+  oneshot service that uses `hostname(1)` instead of writing
+  `/proc/sys/kernel/hostname` directly.
 - The base image is generic and reused across guests.
 - Guests become normal `nixbot` deploy targets after bootstrap.
 
@@ -235,6 +235,7 @@ Typical devices:
   - `data/secrets/machine/<host>.key.age`
 - Optional:
   - `data/secrets/tailscale/<host>.key.age`
+  - when present, `lib/incus-vm.nix` both wires and enables `services.tailscale`
 - Not repo-managed:
   - `/var/lib/machine/ssh_host_ed25519_key`
   - `/var/lib/machine/ssh_host_rsa_key`
@@ -305,9 +306,9 @@ Yes, on the next parent-host activation. The shared module now reconciles
 declared guests during activation and restarts the `incus-<guest>` lifecycle
 service when a guest is missing or stopped.
 
-By default this reconcile is **best-effort**: it attempts to recover the guest
-but does not fail the parent-host activation if guest recovery still fails. If
-you want parent activation to be blocked on guest convergence, set
+By default this reconcile is **best-effort** on non-container parent hosts and
+`"off"` on containerized Incus hosts such as nested guests. If you want parent
+activation to be blocked on guest convergence, set
 `services.incusMachines.reconcileOnActivation = "strict"`. You can also disable
 activation-time guest reconcile entirely with `"off"`.
 

@@ -14,13 +14,34 @@ and the steps for adding another guest by copying an existing guest pattern.
 - Requested guest deploys should expand to include their declared parent-host
   dependency first, so selecting a guest also brings in the host that creates
   and starts it.
-- The shared `systemd-container` image profile must enable the NixOS
-  `virtualisation.lxc.templates` hostname templates so newly created Incus
-  guests stamp `/etc/hostname` from `{{ container.name }}` at creation time
-  instead of inheriting the reusable image build hostname (`nixos`).
-- The guest-local runtime hostname activation in `lib/incus-vm.nix` is only a
-  post-switch correction for already-running guests; it does not replace the
-  create-time image template.
+- The shared base image necessarily boots once with its baked
+  `networking.hostName`; NixOS rewrites `/etc/hostname` and the transient kernel
+  hostname from that built system during first boot.
+- Because of that, Incus image hostname templates and guest-local attempts to
+  write `/proc/sys/kernel/hostname` are the wrong layer for final convergence in
+  this model. The templates may render `/etc/nixos/hostname.nix`, but the
+  already-built bootstrap system does not re-evaluate itself from that file at
+  boot, and later in-place hostname writes can fail inside the running guest.
+- The real convergence point is the first guest-side `nixos-rebuild switch` away
+  from the bootstrap image. At that point the guest has the correct static
+  hostname in `/etc/hostname`, but the running kernel hostname may still be the
+  bootstrap hostname and `/run/current-system` may still reflect the bootstrap
+  boot.
+- Containerized Incus hosts must not reconcile their own child guests during
+  that first guest-side activation. Doing so adds nested Incus lifecycle work to
+  the middle of the host's own `switch`, which can leave the guest half-switched
+  even when `switch-to-configuration` reports success.
+- Do not reboot from guest activation to repair hostname drift. In this setup
+  that can interrupt nested guest chains and leave `switch` partially applied.
+- The durable fix in `lib/incus-vm.nix` is a dedicated systemd oneshot that runs
+  at boot and during `sysinit-reactivation`. It uses the `hostname(1)` syscall
+  path to update the transient kernel hostname in place.
+- The `hostname(1)` path is more reliable for Incus guests than shell
+  redirection to `/proc/sys/kernel/hostname`, which can fail with
+  `Read-only file system` even when the `hostname` command itself succeeds.
+- The durable fix in `lib/incus.nix` is policy: activation-time guest reconcile
+  defaults to `best-effort` only on non-container parent hosts, and defaults to
+  `"off"` on containerized Incus hosts.
 
 ## Naming conventions
 
@@ -47,11 +68,11 @@ and the steps for adding another guest by copying an existing guest pattern.
   keys at `tailscale up` time, not a pre-minted reusable auth key.
 - The shared module should keep the Tailscale block self-contained: discover the
   encrypted secret path locally, gate it with `builtins.pathExists`, and only
-  wire `services.tailscale` when the encrypted file exists.
+  wire and enable `services.tailscale` when the encrypted file exists.
 - When merging that optional Tailscale block with the base `lib/incus-vm.nix`
-  guest config, use plain attrset gating such as `lib.optionalAttrs` rather
-  than a top-level `lib.mkIf`; otherwise the module system can suppress the
-  shared non-optional guest settings when the secret is absent.
+  guest config, use plain attrset gating such as `lib.optionalAttrs` rather than
+  a top-level `lib.mkIf`; otherwise the module system can suppress the shared
+  non-optional guest settings when the secret is absent.
 - The reusable `lib/profiles/systemd-container.nix` base profile should not
   enable Tailscale unconditionally; optional guest Tailscale belongs entirely to
   `lib/incus-vm.nix`.

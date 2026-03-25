@@ -396,6 +396,12 @@ in {
   };
 
   config = lib.mkIf hasMachines {
+    services.incusMachines.reconcileOnActivation = lib.mkDefault (
+      if config.boot.isContainer
+      then "off"
+      else "best-effort"
+    );
+
     virtualisation.incus = {
       enable = lib.mkDefault true;
       package = lib.mkDefault pkgs.incus;

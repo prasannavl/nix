@@ -16,6 +16,8 @@
     "d /var/lib/machine 0700 root root -"
   ];
 
+  x.sshDefault = true;
+
   services.openssh.hostKeys = [
     {
       path = "/var/lib/machine/ssh_host_ed25519_key";
@@ -28,14 +30,25 @@
     }
   ];
 
-  system.activationScripts.incusVmRuntimeHostname = lib.stringAfter ["etc"] ''
-    desired_hostname=${lib.escapeShellArg config.networking.hostName}
-    current_hostname="$(${pkgs.coreutils}/bin/cat /proc/sys/kernel/hostname 2>/dev/null || true)"
+  systemd.services.incus-vm-runtime-hostname = {
+    description = "Converge Incus guest runtime hostname";
+    wantedBy = [
+      "multi-user.target"
+      "sysinit-reactivation.target"
+    ];
+    before = ["tailscaled.service"];
+    serviceConfig.Type = "oneshot";
+    script = ''
+      set -euo pipefail
 
-    if [ -n "$desired_hostname" ] && [ "$current_hostname" != "$desired_hostname" ]; then
-      ${pkgs.coreutils}/bin/printf '%s\n' "$desired_hostname" > /proc/sys/kernel/hostname || true
-    fi
-  '';
+      desired_hostname=${lib.escapeShellArg config.networking.hostName}
+      current_hostname="$(${pkgs.hostname-debian}/bin/hostname 2>/dev/null || true)"
+
+      if [ -n "$desired_hostname" ] && [ "$current_hostname" != "$desired_hostname" ]; then
+        ${pkgs.hostname-debian}/bin/hostname "$desired_hostname" || true
+      fi
+    '';
+  };
 }
 // (
   let
@@ -53,6 +66,7 @@
       };
 
       services.tailscale = {
+        enable = true;
         authKeyFile = config.age.secrets.tailscale-auth-key.path;
         authKeyParameters = {
           ephemeral = false;
