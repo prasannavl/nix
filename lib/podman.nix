@@ -448,9 +448,7 @@
       inherit (service) sourcePaths;
       inherit (service) runtimePaths;
     });
-    imageTag = service.imageTag;
-    recreateTag = service.recreateTag;
-    bootTag = service.bootTag;
+    inherit (service) imageTag recreateTag bootTag;
   };
 
   resolvedServices = lib.concatLists (
