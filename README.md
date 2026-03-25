@@ -82,6 +82,24 @@ Prefer the native operating model of each tool — systemd for services, Podman
 for container workloads, Incus for guests — and define consistent patterns and
 naming conventions on top rather than inventing repo-specific abstractions.
 
+## Hosts (`docs/hosts.md`)
+
+This repo manages NixOS hosts **agnostic of where they run**. A host can be a
+physical machine, a VM on any hosted provider (GCP, AWS, Hetzner, etc), an Incus
+container on a local server, laptop, edge device or anything that boots NixOS.
+The repo does not encode provider-specific logic at the host level — all hosts
+are first-class citizens regardless of their backing infrastructure.
+
+- Each host is a directory under `hosts/<host-name>/` with a `default.nix` entry
+  point that imports the appropriate profile and host-specific modules.
+- Profiles under `lib/profiles/` provide layered baselines (`core.nix` for
+  headless, `all.nix` for desktop, `systemd-container.nix` for Incus guests).
+- Device modules under `lib/devices/` encode physical hardware quirks.
+- `hosts/default.nix` registers every host into `nixosConfigurations`.
+- `hosts/nixbot.nix` maps deploy targets, SSH routing, and ordering.
+- The same deploy flow, secret model, and module composition apply whether the
+  target is a laptop, a cloud VM, or a nested Incus container.
+
 ## GitHub Actions Deploy
 
 Workflow: `.github/workflows/nixbot.yaml`.
