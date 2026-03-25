@@ -110,6 +110,13 @@ Use this index as the canonical map for `docs/ai/**`.
   lockfile regression exposed by fresh deploy worktrees and the normalization
   rule for Cloudflare provider locks.
 
+### Plans
+
+- `docs/ai/notes/plans/incus-nested-reconcile-and-deploy-readiness-2026-03.md`:
+  Full context and follow-up plan for nested Incus reconcile, stale
+  `/run/current-system`, Tailscale regression, and the proposed post-switch
+  reconcile plus `nixbot` readiness-barrier design.
+
 ### Secrets
 
 - `docs/ai/notes/secrets/age-secrets-clean-flag-2026-03.md`: Managed secret
