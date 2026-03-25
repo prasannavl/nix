@@ -23,7 +23,7 @@
   };
 
   mkOllamaInstance = name: instance: {
-    inherit recreateTag;
+    recreateTag = recreateTag;
     source = ''
       services:
         ${name}:
@@ -78,7 +78,7 @@ in {
       lib.mapAttrs mkOllamaInstance ollamaInstances
       // {
         open-webui = {
-          inherit recreateTag;
+          recreateTag = recreateTag;
           source = ''
             services:
               open-webui:

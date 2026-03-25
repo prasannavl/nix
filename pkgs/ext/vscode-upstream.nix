@@ -78,7 +78,7 @@ in
       old.passthru
       // {
         vscodeVersion = version;
-        inherit vscodeServers;
+        vscodeServers = vscodeServers;
       };
     src = pkgs.fetchurl {
       name = srcName;

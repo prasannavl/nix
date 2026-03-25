@@ -30,15 +30,15 @@
     in {
       packages = {
         default = build;
-        inherit build;
+        build = build;
         run = build;
       };
       apps = {
         default = run;
-        inherit run;
+        run = run;
       };
       checks = {
-        inherit build;
+        build = build;
         clippy = check {
           name = "clippy";
           nativeBuildInputs = [pkgs.clippy];

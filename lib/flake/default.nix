@@ -17,7 +17,7 @@ in rec {
     };
     apps = appsFn {
       packageSet = packages;
-      inherit lint;
+      lint = lint;
     };
   in {
     inherit apps lint packages;

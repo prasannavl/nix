@@ -8,7 +8,7 @@ in {
   pvl-a1 = nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     specialArgs = {
-      inherit inputs;
+      inputs = inputs;
       hostName = "pvl-a1";
     };
     modules = commonModules ++ [./pvl-a1];
@@ -17,7 +17,7 @@ in {
   pvl-x2 = nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     specialArgs = {
-      inherit inputs;
+      inputs = inputs;
       hostName = "pvl-x2";
     };
     modules = commonModules ++ [./pvl-x2];
@@ -26,7 +26,7 @@ in {
   llmug-rivendell = nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     specialArgs = {
-      inherit inputs;
+      inputs = inputs;
       hostName = "llmug-rivendell";
     };
     modules = commonModules ++ [./llmug-rivendell];
@@ -35,7 +35,7 @@ in {
   gap3-gondor = nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     specialArgs = {
-      inherit inputs;
+      inputs = inputs;
       hostName = "gap3-gondor";
     };
     modules = commonModules ++ [./gap3-gondor];
@@ -44,7 +44,7 @@ in {
   gap3-rivendell = nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     specialArgs = {
-      inherit inputs;
+      inputs = inputs;
       hostName = "gap3-rivendell";
     };
     modules = commonModules ++ [./gap3-rivendell];

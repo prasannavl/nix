@@ -57,7 +57,7 @@
     }
   '';
 in {
-  inherit proxyVhostType;
+  proxyVhostType = proxyVhostType;
 
   composeSource = ./compose/compose.yaml;
 

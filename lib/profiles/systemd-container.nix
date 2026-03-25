@@ -25,7 +25,7 @@
   documentation.enable = false;
   boot.enableContainers = false;
   networking = {
-    inherit hostName;
+    hostName = hostName;
     useNetworkd = true;
     useHostResolvConf = false;
     networkmanager.enable = false;

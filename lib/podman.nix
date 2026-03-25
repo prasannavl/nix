@@ -382,7 +382,7 @@
     in {
       name = lifecycleServiceName;
       value = {
-        inherit description;
+        description = description;
         after = lib.unique (networkOnlineUnits ++ dependsOnUnits ++ wantsUnits);
         wants = lib.unique (networkOnlineUnits ++ wantsUnits);
         unitConfig.ConditionUser = resolvedUser;
@@ -565,7 +565,7 @@ in {
                   uid = userUid;
                   workDir = "${stack.stackDir}/${serviceName}";
                   inherit (stack) stackDir;
-                  inherit podmanSocket;
+                  podmanSocket = podmanSocket;
                 }
               else serviceOrFn)
             stack.instances;
@@ -641,7 +641,7 @@ in {
             in
               normalizedService
               // {
-                inherit envSecretRuntimePaths;
+                envSecretRuntimePaths = envSecretRuntimePaths;
                 sourcePaths = lib.mapAttrs (fileName: value: renderValue serviceName fileName value) effectiveFilesRaw;
                 runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveFilesRaw;
                 entryFile = normalizedEntryFile;

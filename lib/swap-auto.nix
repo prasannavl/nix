@@ -12,7 +12,7 @@
       name = "ensure-swapfile-" + sanitizeUnitName swapFile;
       swapUnit = sanitizeUnitName swapFile + ".swap";
     in {
-      inherit name;
+      name = name;
       value = {
         wantedBy = [swapUnit];
         before = [swapUnit];

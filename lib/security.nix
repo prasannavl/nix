@@ -6,7 +6,7 @@
     # Only needed in hardened setups
     # unprivilegedUsernsClone = true;
     pam.loginLimits = map (domain: {
-      inherit domain;
+      domain = domain;
       type = "-";
       item = "nofile";
       value = toString config.x.fdlimit;

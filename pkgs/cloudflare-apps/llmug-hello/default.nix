@@ -46,7 +46,7 @@ in
     passthru =
       (old.passthru or {})
       // {
-        inherit build;
+        build = build;
         wrangler-deploy = deployWrangler;
         inherit lint fix;
       };

@@ -29,7 +29,7 @@ in
       (old.passthru or {})
       // {
         build = aggregateBuild;
-        inherit deploy;
+        deploy = deploy;
         llmug-hello = llmugHello;
       };
   })

@@ -48,8 +48,7 @@ in {
     '';
     config = {
       modifier = mod;
-      inherit terminal;
-      inherit menu;
+      inherit terminal menu;
 
       bars = [
         {

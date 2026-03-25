@@ -22,7 +22,7 @@
       llmugHello = pkgs.callPackage ./llmug-hello/default.nix {};
       cloudflareApps = pkgs.callPackage ./default.nix {
         nixbot = nixbot.packages.${system}.default;
-        inherit llmugHello;
+        llmugHello = llmugHello;
       };
     in {
       packages = {

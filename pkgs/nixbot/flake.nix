@@ -16,7 +16,7 @@
       run = pkgs.callPackage ./default.nix {};
     in {
       packages = {
-        inherit run;
+        run = run;
         default = run;
         build = run;
       };

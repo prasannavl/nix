@@ -100,7 +100,7 @@
   in
     builtins.hashString "sha256" (builtins.toJSON {
       user = userCfg;
-      inherit groups;
+      groups = groups;
     });
 
   mkMachineUserctlRetryLib = escapedMachine: ''
@@ -152,7 +152,7 @@
         "multi-user.target"
         userAtService
       ];
-      inherit restartTriggers;
+      restartTriggers = restartTriggers;
       restartIfChanged = true;
       stopIfChanged = true;
       unitConfig.ConditionPathExists = userManagerStatePath;

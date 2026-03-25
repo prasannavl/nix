@@ -4,7 +4,7 @@
     inherit (prev) config;
   };
 in {
-  inherit unstable;
+  unstable = unstable;
 
   # infra
   inherit (unstable) tailscale;

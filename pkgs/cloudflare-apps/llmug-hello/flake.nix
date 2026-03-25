@@ -19,10 +19,9 @@
     in {
       packages = {
         default = build;
-        inherit build;
+        build = build;
         wrangler-deploy = deployWrangler;
-        inherit lint;
-        inherit fix;
+        inherit lint fix;
       };
       apps = {
         wrangler-deploy = {

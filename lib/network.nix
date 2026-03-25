@@ -4,7 +4,7 @@
   ];
 
   networking = {
-    inherit hostName;
+    hostName = hostName;
     networkmanager.enable = true;
     nftables.enable = true;
     firewall = {
