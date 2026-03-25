@@ -9,7 +9,7 @@ in {
     system = "x86_64-linux";
     specialArgs = {
       inputs = inputs;
-      hostName = "incus-base";
+      hostName = "nixos";
     };
     modules =
       commonModules

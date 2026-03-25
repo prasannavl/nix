@@ -21,6 +21,31 @@
   # This host is designed to run as a container image (shared kernel).
   boot.isContainer = true;
 
+  virtualisation.lxc.templates = {
+    hostname = {
+      enable = true;
+      target = "/etc/hostname";
+      template = builtins.toFile "hostname.tpl" "{{ container.name }}";
+      when = ["create"];
+    };
+    hostname-nix = {
+      enable = true;
+      target = "/etc/nixos/hostname.nix";
+      template =
+        builtins.toFile
+        "hostname-nix.tpl"
+        ''
+          { ... }: {
+            networking.hostName = "{{ container.name }}";
+          }
+        '';
+      when = [
+        "create"
+        "copy"
+      ];
+    };
+  };
+
   # Image-specific trim for container builds.
   documentation.enable = false;
   boot.enableContainers = false;

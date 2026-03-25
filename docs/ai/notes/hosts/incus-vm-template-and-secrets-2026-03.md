@@ -14,6 +14,13 @@ and the steps for adding another guest by copying an existing guest pattern.
 - Requested guest deploys should expand to include their declared parent-host
   dependency first, so selecting a guest also brings in the host that creates
   and starts it.
+- The shared `systemd-container` image profile must enable the NixOS
+  `virtualisation.lxc.templates` hostname templates so newly created Incus
+  guests stamp `/etc/hostname` from `{{ container.name }}` at creation time
+  instead of inheriting the reusable image build hostname (`nixos`).
+- The guest-local runtime hostname activation in `lib/incus-vm.nix` is only a
+  post-switch correction for already-running guests; it does not replace the
+  create-time image template.
 
 ## Naming conventions
 
@@ -41,6 +48,10 @@ and the steps for adding another guest by copying an existing guest pattern.
 - The shared module should keep the Tailscale block self-contained: discover the
   encrypted secret path locally, gate it with `builtins.pathExists`, and only
   wire `services.tailscale` when the encrypted file exists.
+- When merging that optional Tailscale block with the base `lib/incus-vm.nix`
+  guest config, use plain attrset gating such as `lib.optionalAttrs` rather
+  than a top-level `lib.mkIf`; otherwise the module system can suppress the
+  shared non-optional guest settings when the secret is absent.
 - The reusable `lib/profiles/systemd-container.nix` base profile should not
   enable Tailscale unconditionally; optional guest Tailscale belongs entirely to
   `lib/incus-vm.nix`.

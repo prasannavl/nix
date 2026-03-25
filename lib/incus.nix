@@ -110,11 +110,6 @@
   in
     base // withSource // withPath // withShift // withPool // dev.extraProperties;
 
-  # Build the incus device add command arguments from resolved properties.
-  mkDeviceAddArgs = devName: props: let
-    kvPairs = lib.mapAttrsToList (k: v: "${k}=${v}") (lib.filterAttrs (k: _: k != "type") props);
-  in "${devName} ${props.type} ${lib.concatStringsSep " " kvPairs}";
-
   # Partition devices: disk devices are synced in-place, all others are
   # create-only (added at creation, changes trigger recreate).
   createOnlyDevices = machine:
@@ -139,7 +134,7 @@
     builtins.toJSON (lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine));
 
   # Collect user.* metadata to store on the container at creation time.
-  mkUserMetadata = name: machine:
+  mkUserMetadata = _name: machine:
     {
       "user.managed-by" = "nixos";
       "user.config-hash" = configHash machine;
@@ -198,6 +193,32 @@
       script = ''
         set -euo pipefail
 
+        json_keys() {
+          local json="$1"
+          printf '%s' "$json" | jq -r 'keys[]'
+        }
+
+        json_property_keys() {
+          local json="$1"
+          printf '%s' "$json" | jq -r 'keys[] | select(. != "type")'
+        }
+
+        add_device_from_props() {
+          local instance_name="$1" device_name="$2" props_json="$3"
+          local device_type assignment=""
+          local -a add_args=()
+
+          device_type="$(printf '%s' "$props_json" | jq -r '.type')"
+          while IFS= read -r assignment; do
+            add_args+=("$assignment")
+          done < <(
+            printf '%s' "$props_json" \
+              | jq -r 'to_entries[] | select(.key != "type") | "\(.key)=\(.value)"'
+          )
+
+          ${incus} config device add "$instance_name" "$device_name" "$device_type" "''${add_args[@]}"
+        }
+
         desired_config_hash=${lib.escapeShellArg hash}
         desired_boot_tag=${lib.escapeShellArg machine.bootTag}
         desired_recreate_tag=${lib.escapeShellArg machine.recreateTag}
@@ -249,16 +270,11 @@
           # Add create-only devices (gpu, unix-char, etc.) — only at creation.
           echo "Adding create-only devices for ${name}..."
           create_only_devices='${createOnlyDevSpec}'
-          for dev in $(echo "$create_only_devices" | jq -r 'keys[]'); do
-            props="$(echo "$create_only_devices" | jq -c --arg d "$dev" '.[$d]')"
-            dev_type="$(echo "$props" | jq -r '.type')"
-            add_args=""
-            for key in $(echo "$props" | jq -r 'keys[] | select(. != "type")'); do
-              val="$(echo "$props" | jq -r --arg k "$key" '.[$k]')"
-              add_args="$add_args $key=$val"
-            done
-            echo "  Adding device $dev ($dev_type)"
-            ${incus} config device add ${name} "$dev" "$dev_type" $add_args
+          mapfile -t create_only_device_names < <(json_keys "$create_only_devices")
+          for dev in "''${create_only_device_names[@]}"; do
+            props="$(printf '%s' "$create_only_devices" | jq -c --arg d "$dev" '.[$d]')"
+            echo "  Adding device $dev ($(printf '%s' "$props" | jq -r '.type'))"
+            add_device_from_props ${name} "$dev" "$props"
           done
         fi
 
@@ -268,21 +284,25 @@
         # Sync disk devices in-place.
         echo "Syncing disk devices for ${name}..."
         desired_disks='${diskDevSpec}'
-        current_disk_names="$(echo "$current_devices" | \
-          jq -r 'to_entries[] | select(.value.type == "disk") | .key' 2>/dev/null || true)"
+        mapfile -t current_disk_names < <(
+          printf '%s' "$current_devices" \
+            | jq -r 'to_entries[] | select(.value.type == "disk") | .key' 2>/dev/null \
+            || true
+        )
 
         # Remove disk devices not in desired set.
-        for dev in $current_disk_names; do
-          if ! echo "$desired_disks" | jq -e --arg d "$dev" 'has($d)' >/dev/null 2>&1; then
+        for dev in "''${current_disk_names[@]}"; do
+          if ! printf '%s' "$desired_disks" | jq -e --arg d "$dev" 'has($d)' >/dev/null 2>&1; then
             echo "  Removing disk device $dev"
             ${incus} config device remove ${name} "$dev" 2>/dev/null || true
           fi
         done
 
         # Add or update disk devices.
-        for dev in $(echo "$desired_disks" | jq -r 'keys[]'); do
-          desired_props="$(echo "$desired_disks" | jq -c --arg d "$dev" '.[$d]')"
-          current_props="$(echo "$current_devices" | jq -c --arg d "$dev" '.[$d] // null')"
+        mapfile -t desired_disk_names < <(json_keys "$desired_disks")
+        for dev in "''${desired_disk_names[@]}"; do
+          desired_props="$(printf '%s' "$desired_disks" | jq -c --arg d "$dev" '.[$d]')"
+          current_props="$(printf '%s' "$current_devices" | jq -c --arg d "$dev" '.[$d] // null')"
           dev_exists=0
           if [ "$current_props" != "null" ]; then
             dev_exists=1
@@ -300,23 +320,20 @@
 
           if [ "$dev_exists" -eq 0 ]; then
             echo "  Adding disk device $dev"
-            add_args=""
-            for key in $(echo "$desired_props" | jq -r 'keys[] | select(. != "type")'); do
-              val="$(echo "$desired_props" | jq -r --arg k "$key" '.[$k]')"
-              add_args="$add_args $key=$val"
-            done
-            ${incus} config device add ${name} "$dev" disk $add_args
+            add_device_from_props ${name} "$dev" "$desired_props"
           else
             # Remove stale properties first so disk devices stay declarative.
-            for key in $(echo "$current_props" | jq -r 'keys[] | select(. != "type")'); do
-              if ! echo "$desired_props" | jq -e --arg k "$key" 'has($k)' >/dev/null 2>&1; then
+            mapfile -t current_prop_keys < <(json_property_keys "$current_props")
+            for key in "''${current_prop_keys[@]}"; do
+              if ! printf '%s' "$desired_props" | jq -e --arg k "$key" 'has($k)' >/dev/null 2>&1; then
                 ${incus} config device unset ${name} "$dev" "$key"
               fi
             done
 
             # Device exists, update changed properties.
-            for key in $(echo "$desired_props" | jq -r 'keys[] | select(. != "type")'); do
-              desired_val="$(echo "$desired_props" | jq -r --arg k "$key" '.[$k]')"
+            mapfile -t desired_prop_keys < <(json_property_keys "$desired_props")
+            for key in "''${desired_prop_keys[@]}"; do
+              desired_val="$(printf '%s' "$desired_props" | jq -r --arg k "$key" '.[$k]')"
               ${incus} config device set ${name} "$dev" "$key" "$desired_val"
             done
           fi
@@ -343,7 +360,7 @@
     };
 
   # Tmpfiles for host-path disk devices that start with /.
-  mkDeviceTmpfiles = name: machine:
+  mkDeviceTmpfiles = _name: machine:
     lib.concatLists (
       lib.mapAttrsToList (
         _devName: dev:

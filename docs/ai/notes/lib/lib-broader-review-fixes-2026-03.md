@@ -11,8 +11,8 @@ A broader review of `lib/` found three actionable issues outside the earlier
 2. `lib/profiles/systemd-container.nix` enabled Tailscale unconditionally,
    weakening the intended optional-guest-Tailscale model owned by
    `lib/incus-vm.nix`.
-3. `lib/flatpak.nix` used `grep` in a service script without declaring it in
-   the service runtime path.
+3. `lib/flatpak.nix` used `grep` in a service script without declaring it in the
+   service runtime path.
 
 The timezone choice in `lib/profiles/systemd-container.nix` was intentionally
 left unchanged for now.

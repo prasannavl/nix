@@ -57,9 +57,12 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Lib
 
-- `docs/ai/notes/lib/lib-broader-review-fixes-2026-03.md`: Broader `lib/`
-  review fixes for the NetworkManager resume hook, optional guest Tailscale
-  ownership, and Flatpak bootstrap runtime dependencies.
+- `docs/ai/notes/lib/lib-broader-review-fixes-2026-03.md`: Broader `lib/` review
+  fixes for the NetworkManager resume hook, optional guest Tailscale ownership,
+  and Flatpak bootstrap runtime dependencies.
+- `docs/ai/notes/lib/incus-device-arg-safety-2026-03.md`: `lib/incus.nix`
+  device-add shell-argument safety fix, JSON-loop hardening, and cleanup of the
+  dead helper plus unused lambda bindings.
 
 ### Nixbot
 

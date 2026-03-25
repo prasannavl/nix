@@ -44,7 +44,7 @@
       then null
       else ../data/secrets + "/tailscale/${tailscaleKey}.key.age";
   in
-    lib.mkIf (k != null && builtins.pathExists k) {
+    lib.optionalAttrs (k != null && builtins.pathExists k) {
       age.secrets.tailscale-auth-key = {
         file = builtins.path {
           path = k;

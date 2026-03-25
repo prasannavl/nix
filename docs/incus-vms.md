@@ -49,6 +49,9 @@ tags as ordinary systemd services that run during deploy.
 - `lib/incus-vm.nix` owns guest bootstrap conveniences:
   - persistent SSH host keys under `/var/lib/machine`
   - optional Tailscale auth wiring from `data/secrets/tailscale/<host>.key.age`
+- `lib/profiles/systemd-container.nix` enables the NixOS LXC hostname templates
+  so `/etc/hostname` is stamped from `{{ container.name }}` when Incus creates a
+  guest from the shared image.
 - The base image is generic and reused across guests.
 - Guests become normal `nixbot` deploy targets after bootstrap.
 
