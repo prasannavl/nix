@@ -1,4 +1,5 @@
 _: {
-  # Keep network policy at the podman host boundary by default.
-  # networking.firewall.enable = false;
+  # Allow parent-host management over the Incus bridge while keeping
+  # service exposure explicit at the guest boundary.
+  networking.firewall.trustedInterfaces = ["incusbr0"];
 }

@@ -16,11 +16,11 @@ open-webui) with GPU passthrough for local LLM inference. Manages inner guest
   outer `10.10.20.0/24` bridge on pvl-x2.
 - **GPU passthrough**: AMD GPU and `/dev/kfd` forwarded from pvl-x2 through to
   the guest (same pattern as llmug-rivendell). Ollama uses Vulkan for inference.
-  The outer host can use an Incus `gpu` device, but the inner nested Incus
-  guest cannot. The nested pattern here is to bind-mount `/dev/dri` into the
-  inner guest and forward `/dev/kfd` separately. The shared Incus machines
-  module treats `/dev` host-path disk devices as existing device trees rather
-  than persistent state directories, so it does not tmpfiles-create or GC-delete
+  The outer host can use an Incus `gpu` device, but the inner nested Incus guest
+  cannot. The nested pattern here is to bind-mount `/dev/dri` into the inner
+  guest and forward `/dev/kfd` separately. The shared Incus machines module
+  treats `/dev` host-path disk devices as existing device trees rather than
+  persistent state directories, so it does not tmpfiles-create or GC-delete
   them.
 - **Podman services**: nginx (port 18080), multiple Ollama instances (ports
   21434-21436), and open-webui (port 13000) run as podman compose stacks under

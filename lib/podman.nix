@@ -77,6 +77,24 @@
         description = "Extra attributes merged into generated systemd.user.services.<name>.";
       };
 
+      recreateTag = lib.mkOption {
+        type = lib.types.str;
+        default = "0";
+        description = "Declarative knob to force recreation of this compose instance on the next service start.";
+      };
+
+      bootTag = lib.mkOption {
+        type = lib.types.str;
+        default = "0";
+        description = "Declarative knob to force a restart of this compose instance on the next service start.";
+      };
+
+      imageTag = lib.mkOption {
+        type = lib.types.str;
+        default = "0";
+        description = "Declarative knob to force a compose image refresh on the next service start.";
+      };
+
       dependsOn = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [];
@@ -254,6 +272,8 @@
 
     composeFileArgs = lib.concatMapStringsSep "" (composeFile: " -f ${lib.escapeShellArg composeFile}") resolvedComposeFiles;
     podmanComposeCmd = "${pkgs.podman}/bin/podman compose${composeFileArgs}";
+    podmanComposeUpCmd = "${podmanComposeCmd} up -d --remove-orphans";
+    podmanComposeForceRecreateCmd = "${podmanComposeUpCmd} --force-recreate";
     manifestPath = "$runtime_dir/podman-compose/${resolvedSystemdServiceName}.manifest";
     linkCmdsBody = lib.concatStringsSep "\n" (
       [
@@ -333,8 +353,66 @@
       ${podmanComposeCmd} down
       ${cleanupScript}
       ${linkScript}
-      ${podmanComposeCmd} up -d --remove-orphans
+      ${podmanComposeUpCmd}
     '';
+    imageTagScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-image-tag" ''
+      set -eu
+      ${linkScript}
+      ${podmanComposeCmd} pull
+    '';
+    recreateTagScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-recreate-tag" ''
+      set -eu
+      ${linkScript}
+      ${podmanComposeForceRecreateCmd}
+    '';
+    bootTagScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-boot-tag" ''
+      set -eu
+      ${linkScript}
+      if ! ${podmanComposeCmd} restart; then
+        ${podmanComposeUpCmd}
+      fi
+    '';
+
+    mkLifecycleActionService = {
+      suffix,
+      description,
+      execScript,
+    }: let
+      lifecycleServiceName = "${resolvedSystemdServiceName}-${suffix}";
+    in {
+      name = lifecycleServiceName;
+      value = {
+        inherit description;
+        after = lib.unique (networkOnlineUnits ++ dependsOnUnits ++ wantsUnits);
+        wants = lib.unique (networkOnlineUnits ++ wantsUnits);
+        unitConfig.ConditionUser = resolvedUser;
+        serviceConfig = {
+          Type = "oneshot";
+          Environment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin";
+          WorkingDirectory = "-${resolvedWorkingDir}";
+          ExecStart = "${execScript}";
+          TimeoutStartSec = 900;
+        };
+      };
+    };
+
+    lifecycleActionServices = [
+      (mkLifecycleActionService {
+        suffix = "image-tag";
+        description = "podman: ${resolvedUser}: ${serviceName} image refresh";
+        execScript = imageTagScript;
+      })
+      (mkLifecycleActionService {
+        suffix = "recreate-tag";
+        description = "podman: ${resolvedUser}: ${serviceName} recreate";
+        execScript = recreateTagScript;
+      })
+      (mkLifecycleActionService {
+        suffix = "boot-tag";
+        description = "podman: ${resolvedUser}: ${serviceName} restart";
+        execScript = bootTagScript;
+      })
+    ];
 
     baseSystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName}";
@@ -350,7 +428,7 @@
         # Allow first start when the compose working directory doesn't exist yet.
         # ExecStartPre creates it before ExecStart runs.
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${podmanComposeCmd} up -d --remove-orphans";
+        ExecStart = "${podmanComposeUpCmd}";
         ExecStop = "${podmanComposeCmd} down";
         ExecReload = "${reloadScript}";
         ExecStartPre = "${linkScript}";
@@ -364,11 +442,15 @@
     systemdServiceName = resolvedSystemdServiceName;
     systemdUser = resolvedUser;
     systemdService = mergedSystemdService;
+    lifecycleActionServices = lifecycleActionServices;
     restartStamp = builtins.hashString "sha256" (builtins.toJSON {
       unit = mergedSystemdService;
       inherit (service) sourcePaths;
       inherit (service) runtimePaths;
     });
+    imageTag = service.imageTag;
+    recreateTag = service.recreateTag;
+    bootTag = service.bootTag;
   };
 
   resolvedServices = lib.concatLists (
@@ -500,6 +582,9 @@ in {
                   workingDir = null;
                   serviceName = null;
                   serviceOverrides = {};
+                  bootTag = "0";
+                  recreateTag = "0";
+                  imageTag = "0";
                   dependsOn = [];
                   wants = [];
                   waitForNetwork = true;
@@ -650,18 +735,22 @@ in {
       );
 
     systemd.user.services = lib.listToAttrs (
-      map (
-        s: {
-          name = s.systemdServiceName;
-          value = s.systemdService;
-        }
-      )
+      lib.concatMap
+      (s:
+        [
+          {
+            name = s.systemdServiceName;
+            value = s.systemdService;
+          }
+        ]
+        ++ s.lifecycleActionServices)
       resolvedServices
     );
 
     services.systemdUserManager.bridges = lib.listToAttrs (
-      map (
-        s: {
+      lib.concatMap
+      (s: [
+        {
           name = s.systemdServiceName;
           value = {
             user = s.systemdUser;
@@ -670,7 +759,46 @@ in {
             serviceName = "systemd-user-manager-podman-${s.systemdServiceName}";
           };
         }
-      )
+        {
+          name = "${s.systemdServiceName}-image-tag";
+          value = {
+            user = s.systemdUser;
+            unit = "${s.systemdServiceName}-image-tag.service";
+            observeUnit = "${s.systemdServiceName}.service";
+            onChangeAction = "start";
+            restartTriggers = [s.imageTag];
+            serviceName = "systemd-user-manager-podman-${s.systemdServiceName}-image-tag";
+            startOnInitial = false;
+            stopUnitOnStop = false;
+          };
+        }
+        {
+          name = "${s.systemdServiceName}-recreate-tag";
+          value = {
+            user = s.systemdUser;
+            unit = "${s.systemdServiceName}-recreate-tag.service";
+            observeUnit = "${s.systemdServiceName}.service";
+            onChangeAction = "start";
+            restartTriggers = [s.recreateTag];
+            serviceName = "systemd-user-manager-podman-${s.systemdServiceName}-recreate-tag";
+            startOnInitial = false;
+            stopUnitOnStop = false;
+          };
+        }
+        {
+          name = "${s.systemdServiceName}-boot-tag";
+          value = {
+            user = s.systemdUser;
+            unit = "${s.systemdServiceName}-boot-tag.service";
+            observeUnit = "${s.systemdServiceName}.service";
+            onChangeAction = "start";
+            restartTriggers = [s.bootTag];
+            serviceName = "systemd-user-manager-podman-${s.systemdServiceName}-boot-tag";
+            startOnInitial = false;
+            stopUnitOnStop = false;
+          };
+        }
+      ])
       resolvedServices
     );
   };

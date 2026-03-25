@@ -1,4 +1,12 @@
-{lib, ...}: let
+{
+  config,
+  lib,
+  ...
+}: let
+  videoGid = toString config.users.groups.video.gid;
+  renderGid = toString config.users.groups.render.gid;
+  recreateTag = "1";
+
   ollamaInstances = {
     ollama = {
       port = 21434;
@@ -15,6 +23,7 @@
   };
 
   mkOllamaInstance = name: instance: {
+    inherit recreateTag;
     source = ''
       services:
         ${name}:
@@ -28,8 +37,8 @@
             - ${instance.dataDir}:/root/.ollama:Z
             - /dev/dri:/dev/dri
           group_add:
-            - video
-            - render
+            - ${videoGid}
+            - ${renderGid}
           devices:
             - /dev/kfd:/dev/kfd
     '';
@@ -47,12 +56,16 @@
     ollamaInstances
   );
 in {
-  systemd.tmpfiles.rules = [
-    "d /var/lib/gap3 0755 gap3 gap3 -"
-    "d /var/lib/gap3/compose 0750 gap3 gap3 -"
-    "d /var/lib/gap3/compose/open-webui 0750 gap3 gap3 -"
-    "d /var/lib/gap3/open-webui 0750 gap3 gap3 -"
-  ] ++ ollamaTmpfiles;
+  networking.firewall.trustedInterfaces = ["incusbr0"];
+
+  systemd.tmpfiles.rules =
+    [
+      "d /var/lib/gap3 0755 gap3 gap3 -"
+      "d /var/lib/gap3/compose 0750 gap3 gap3 -"
+      "d /var/lib/gap3/compose/open-webui 0750 gap3 gap3 -"
+      "d /var/lib/gap3/open-webui 0750 gap3 gap3 -"
+    ]
+    ++ ollamaTmpfiles;
 
   networking.firewall.allowedTCPPorts = ollamaPorts ++ [13000];
 
@@ -65,6 +78,7 @@ in {
       lib.mapAttrs mkOllamaInstance ollamaInstances
       // {
         open-webui = {
+          inherit recreateTag;
           source = ''
             services:
               open-webui:

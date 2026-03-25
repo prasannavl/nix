@@ -543,3 +543,12 @@ Optional overlap (only for unusual partial/out-of-band flows):
    "/var/lib/nixbot/.age/identity_legacy" ]`.
 3. Encrypt host secrets to both old and new machine recipients.
 4. After successful migration, remove legacy recipient and legacy file/path.
+
+## Related Docs
+
+- `docs/nixbot-security-trust-model.md`: Operator trust boundary and arbitrary
+  SHA policy.
+- `docs/services.md`: Native service pattern.
+- `docs/podman-compose.md`: Podman compose container workloads.
+- `docs/incus-vms.md`: Incus guest lifecycle.
+- `docs/systemd-user-manager.md`: Deploy-time user-service bridge module.

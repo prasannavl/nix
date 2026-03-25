@@ -1,4 +1,7 @@
-_: {
+{config, ...}: let
+  videoGid = toString config.users.groups.video.gid;
+  renderGid = toString config.users.groups.render.gid;
+in {
   systemd.tmpfiles.rules = [
     "d /var/lib/llmug 0755 llmug llmug -"
     "d /var/lib/llmug/compose 0750 llmug llmug -"
@@ -45,8 +48,8 @@ _: {
               - /var/lib/llmug/ollama:/root/.ollama:Z
               - /dev/dri:/dev/dri
             group_add:
-              - video
-              - render
+              - ${videoGid}
+              - ${renderGid}
             devices:
               - /dev/kfd:/dev/kfd
       '';

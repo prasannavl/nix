@@ -80,5 +80,6 @@ Therefore:
 
 ## Related Docs
 
-- `docs/deployment.md`
-- `nixbot`
+- `docs/deployment.md`: Deploy architecture, bootstrap, key exchange, and
+  rotation runbooks.
+- `pkgs/nixbot/`: Packaged nixbot source and entrypoint.

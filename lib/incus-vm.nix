@@ -4,6 +4,7 @@
 }: {
   config,
   lib,
+  pkgs,
   ...
 }:
 {
@@ -26,6 +27,15 @@
       bits = 4096;
     }
   ];
+
+  system.activationScripts.incusVmRuntimeHostname = lib.stringAfter ["etc"] ''
+    desired_hostname=${lib.escapeShellArg config.networking.hostName}
+    current_hostname="$(${pkgs.coreutils}/bin/cat /proc/sys/kernel/hostname 2>/dev/null || true)"
+
+    if [ -n "$desired_hostname" ] && [ "$current_hostname" != "$desired_hostname" ]; then
+      ${pkgs.coreutils}/bin/printf '%s\n' "$desired_hostname" > /proc/sys/kernel/hostname || true
+    fi
+  '';
 }
 // (
   let

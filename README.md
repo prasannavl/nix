@@ -23,6 +23,65 @@ This is the nix driven monorepo, organized as small modules and composed via
 - `hosts/nixbot.nix`: deploy mapping (plain Nix attrset).
 - `data/secrets/default.nix`: agenix recipients map for `*.age` files.
 
+## Services
+
+The repo has three service models, each documented in detail under `docs/`.
+
+### Native Services (`docs/services.md`)
+
+The default model for turning repo packages into system services. Stick to the
+simplest native Linux patterns:
+
+- Package lives in `pkgs/<name>/default.nix`.
+- Package-local `flake.nix` exports a `nixosModules` entry.
+- Host enables the service with `services.<name>.enable = true`.
+- The module defines plain `systemd.services` and, when scheduled,
+  `systemd.timers`.
+- No repo-specific service abstraction — NixOS modules plus systemd units are
+  the framework.
+
+Reference example: `pkgs/hello-rust/flake.nix`.
+
+### Podman Compose (`docs/podman-compose.md`)
+
+Container workloads run as rootless Podman compose stacks managed by a shared
+NixOS module:
+
+- Shared lifecycle logic lives in `lib/podman.nix`.
+- Deploy-time user-manager orchestration lives in `lib/systemd-user-manager.nix`
+  (documented in `docs/systemd-user-manager.md`).
+- Hosts declare stacks under `services.podmanCompose.<stack>` in
+  `hosts/<host>/services.nix`.
+- Compose content can be a Nix attrset, inline YAML, a file path, or a staged
+  directory tree.
+- Lifecycle tags (`bootTag`, `recreateTag`, `imageTag`) drive deploy-time
+  actions such as restart, force-recreate, and image pull.
+- `exposedPorts` metadata auto-derives firewall rules, nginx reverse-proxy
+  config, and Cloudflare Tunnel ingress.
+- Secrets are injected via file-backed `envSecrets`.
+
+### Incus Guests (`docs/incus-vms.md`)
+
+VM and container guests run under Incus with a shared declarative lifecycle
+module:
+
+- Parent host orchestration lives in `hosts/<parent-host>/incus.nix`.
+- Shared lifecycle logic lives in `lib/incus.nix`.
+- Reusable guest bootstrap lives in `lib/incus-vm.nix`.
+- Base image build lives in `lib/images/incus-base.nix`.
+- Guests are declared under `services.incusMachines.machines.<name>`.
+- Lifecycle tags (`bootTag`, `recreateTag`, `imageTag`) control guest
+  stop/start, delete/recreate, and base image re-import.
+- Config-hash changes and non-disk device changes trigger automatic guest
+  recreate; disk devices sync in place.
+- After bootstrap, guests become normal `nixbot` deploy targets.
+
+### Guiding Principle
+
+Prefer the native operating model of each tool — systemd for services, Podman
+for container workloads, Incus for guests — and define consistent patterns and
+naming conventions on top rather than inventing repo-specific abstractions.
+
 ## GitHub Actions Deploy
 
 Workflow: `.github/workflows/nixbot.yaml`.

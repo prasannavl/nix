@@ -1375,6 +1375,16 @@ host_wait_seconds() {
   jq -r --arg h "${node}" '.[$h].wait // 0' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
+wait_before_host_phase() {
+  local node="$1" phase="$2" wait_secs=""
+
+  wait_secs="$(host_wait_seconds "${node}")"
+  if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
+    echo "[${node}] ${phase} | waiting ${wait_secs}s before ${phase}" >&2
+    sleep "${wait_secs}"
+  fi
+}
+
 expand_selected_hosts_json() {
   local selected_json="$1" all_hosts_json="$2" node="" dep=""
   local -a queue=() expanded_hosts=()
@@ -2755,13 +2765,8 @@ log_snapshot_retry_transition() {
 
 run_deploy_job() {
   local node="$1" out_file="$2" status_file="$3" log_file="${4:-}" built_out_path="" rc="" skip_marker=""
-  local wait_secs=""
 
-  wait_secs="$(host_wait_seconds "${node}")"
-  if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
-    echo "[${node}] deploy | waiting ${wait_secs}s before deploy" >&2
-    sleep "${wait_secs}"
-  fi
+  wait_before_host_phase "${node}" "deploy"
 
   (
     set +e
@@ -2935,6 +2940,8 @@ ensure_wave_snapshots() {
     if snapshot_exists "${snapshot_file}"; then
       continue
     fi
+
+    wait_before_host_phase "${node}" "snapshot"
 
     if ! snapshot_host_generation "${node}" "${snapshot_file}"; then
       echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2

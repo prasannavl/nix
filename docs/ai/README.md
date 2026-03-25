@@ -42,9 +42,9 @@ Use this index as the canonical map for `docs/ai/**`.
   reusable Incus guest template, bootstrap flow, naming conventions, and secret
   model.
 - `docs/ai/notes/hosts/incus-machines-module-2026-03.md`: Reusable
-  `lib/incus.nix` NixOS module for declarative incus container
-  lifecycle: device sync, config-hash recreate, bootTag/recreateTag, GC, and
-  per-device removal policies.
+  `lib/incus.nix` NixOS module for declarative incus container lifecycle: device
+  sync, config-hash recreate, bootTag/recreateTag, GC, and per-device removal
+  policies.
 - `docs/ai/notes/hosts/gap3-gondor-incus-bastion-2026-03.md`: Incus-inside-incus
   bastion guest `gap3-gondor` on pvl-x2 with GPU passthrough, podman services
   (nginx, ollama, open-webui), inner guest `gap3-rivendell`, and dir storage
@@ -133,6 +133,13 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/podman-compose-reload-staging-2026-03.md`: Podman
   compose runtime files are copied into working directories and reload now
   performs cleanup plus restaging before `up -d`.
+- `docs/ai/notes/services/systemd-user-manager-bridge-lifecycle-2026-03.md`:
+  Canonical `lib/systemd-user-manager.nix` bridge model, reload orchestration,
+  old-stop/new-start semantics, identity refresh behavior, and Podman usage
+  pattern.
+- `docs/ai/notes/services/nixbot-incus-guest-snapshot-wait-2026-03.md`: `nixbot`
+  now reuses host `wait` values before retrying rollback snapshots for newly
+  recreated Incus guest targets.
 - `docs/ai/notes/services/pvl-x2-nginx-config-bind-mounts-2026-03.md`: `pvl-x2`
   nginx compose config migration from `/home/pvl/tmp/nginx` into repo-managed
   bind-mounted files.

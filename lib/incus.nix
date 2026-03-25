@@ -84,12 +84,12 @@
       };
       bootTag = lib.mkOption {
         type = lib.types.str;
-        default = "1";
+        default = "0";
         description = "Bump to force a restart (stop+start) on next rebuild.";
       };
       recreateTag = lib.mkOption {
         type = lib.types.str;
-        default = "1";
+        default = "0";
         description = "Bump to force a full recreate (stop+delete+create) on next rebuild.";
       };
     };
@@ -113,8 +113,7 @@
   # Build the incus device add command arguments from resolved properties.
   mkDeviceAddArgs = devName: props: let
     kvPairs = lib.mapAttrsToList (k: v: "${k}=${v}") (lib.filterAttrs (k: _: k != "type") props);
-  in
-    "${devName} ${props.type} ${lib.concatStringsSep " " kvPairs}";
+  in "${devName} ${props.type} ${lib.concatStringsSep " " kvPairs}";
 
   # Partition devices: disk devices are synced in-place, all others are
   # create-only (added at creation, changes trigger recreate).
@@ -140,19 +139,24 @@
     builtins.toJSON (lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine));
 
   # Collect user.* metadata to store on the container at creation time.
-  mkUserMetadata = name: machine: {
-    "user.managed-by" = "nixos";
-    "user.config-hash" = configHash machine;
-    "user.boot-tag" = machine.bootTag;
-    "user.recreate-tag" = machine.recreateTag;
-    "user.removal-policy" = machine.removalPolicy;
-  } // lib.concatMapAttrs (devName: dev:
-    lib.optionalAttrs (dev.type == "disk") {
-      "user.device.${devName}.removal-policy" = dev.removalPolicy;
-    } // lib.optionalAttrs (isManagedHostDir dev) {
-      "user.device.${devName}.source" = dev.source;
+  mkUserMetadata = name: machine:
+    {
+      "user.managed-by" = "nixos";
+      "user.config-hash" = configHash machine;
+      "user.boot-tag" = machine.bootTag;
+      "user.recreate-tag" = machine.recreateTag;
+      "user.removal-policy" = machine.removalPolicy;
     }
-  ) machine.devices;
+    // lib.concatMapAttrs (
+      devName: dev:
+        lib.optionalAttrs (dev.type == "disk") {
+          "user.device.${devName}.removal-policy" = dev.removalPolicy;
+        }
+        // lib.optionalAttrs (isManagedHostDir dev) {
+          "user.device.${devName}.source" = dev.source;
+        }
+    )
+    machine.devices;
 
   # JSON list of declared machine names for the GC script.
   declaredMachinesJson = builtins.toJSON (builtins.attrNames cfg.machines);
@@ -341,13 +345,21 @@
   # Tmpfiles for host-path disk devices that start with /.
   mkDeviceTmpfiles = name: machine:
     lib.concatLists (
-      lib.mapAttrsToList (_devName: dev:
-        lib.optional (isManagedHostDir dev)
+      lib.mapAttrsToList (
+        _devName: dev:
+          lib.optional (isManagedHostDir dev)
           "d ${dev.source} 0755 root root -"
-      ) machine.devices
+      )
+      machine.devices
     );
 in {
   options.services.incusMachines = {
+    imageTag = lib.mkOption {
+      type = lib.types.str;
+      default = "0";
+      description = "Bump to force re-import of the shared Incus base image on next rebuild.";
+    };
+
     machines = lib.mkOption {
       type = lib.types.attrsOf machineType;
       default = {};
@@ -388,7 +400,12 @@ in {
             fi
 
             current_source="$(${incus} image get-property local:${baseAlias} user.base-image-id 2>/dev/null || true)"
-            if [ "$current_source" = "${baseImageSource}" ] && ${incus} image info local:${baseAlias} >/dev/null 2>&1; then
+            current_rebuild_tag="$(${incus} image get-property local:${baseAlias} user.base-image-rebuild-tag 2>/dev/null || true)"
+            desired_rebuild_tag=${lib.escapeShellArg cfg.imageTag}
+
+            if [ "$current_source" = "${baseImageSource}" ] && \
+               [ "$current_rebuild_tag" = "$desired_rebuild_tag" ] && \
+               ${incus} image info local:${baseAlias} >/dev/null 2>&1; then
               exit 0
             fi
 
@@ -398,6 +415,7 @@ in {
 
             ${incus} image import ${baseMetadataFile} ${baseRootfsFile} --alias ${baseAlias}
             ${incus} image set-property local:${baseAlias} user.base-image-id "${baseImageSource}"
+            ${incus} image set-property local:${baseAlias} user.base-image-rebuild-tag "$desired_rebuild_tag"
           '';
         };
 

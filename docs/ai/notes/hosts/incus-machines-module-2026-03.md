@@ -26,6 +26,9 @@ reusable NixOS module at `lib/incus.nix`.
   are part of the recreate hash and change via stop+delete+create.
 - **bootTag / recreateTag**: declarative knobs to force restart or recreate on
   next rebuild by bumping a string value.
+- **imageTag**: top-level declarative knob to force re-import of the shared
+  `local:nixos-incus-base` alias even when the underlying image build output
+  path has not changed.
 - **GC service**: `incus-machines-gc` removes containers tagged
   `user.managed-by=nixos` that are no longer declared. Respects per-container
   `removalPolicy` (stop-only, delete-container, delete-all) and per-device

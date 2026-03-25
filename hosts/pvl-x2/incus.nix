@@ -1,8 +1,10 @@
-{...}: {
+_: {
   services.incusMachines.machines = {
     llmug-rivendell = {
       ipv4Address = "10.10.20.10";
       removalPolicy = "delete-all";
+      recreateTag = "2";
+      bootTag = "1";
 
       config = {
         "security.privileged" = "true";
@@ -25,7 +27,9 @@
     gap3-gondor = {
       ipv4Address = "10.10.20.11";
       removalPolicy = "delete-all";
-      
+      recreateTag = "2";
+      bootTag = "1";
+
       config = {
         "security.nesting" = "true";
         "security.privileged" = "true";

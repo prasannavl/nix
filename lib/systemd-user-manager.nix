@@ -20,6 +20,36 @@
         description = "User unit name to manage (include suffix).";
       };
 
+      observeUnit = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "User unit whose active state determines whether a changed bridge should take action. Defaults to unit.";
+      };
+
+      changeUnit = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "User unit to operate on when the bridge changes. Defaults to unit.";
+      };
+
+      onChangeAction = lib.mkOption {
+        type = lib.types.enum ["restart" "reload" "start"];
+        default = "restart";
+        description = "User-manager action to run for previously active units when the bridge changes.";
+      };
+
+      startOnInitial = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether a brand-new bridge should start its unit on first activation.";
+      };
+
+      stopUnitOnStop = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether bridge stop should stop the managed unit.";
+      };
+
       restartTriggers = lib.mkOption {
         type = lib.types.listOf lib.types.unspecified;
         default = [];
@@ -59,6 +89,19 @@
       })
     {}
     bridges;
+
+  userIdentityStampFor = user: let
+    userCfg = config.users.users.${user};
+    groupNames = lib.unique ([userCfg.group] ++ userCfg.extraGroups);
+    groups =
+      lib.genAttrs
+      (builtins.filter (group: builtins.hasAttr group config.users.groups) groupNames)
+      (group: config.users.groups.${group});
+  in
+    builtins.hashString "sha256" (builtins.toJSON {
+      user = userCfg;
+      inherit groups;
+    });
 
   mkMachineUserctlRetryLib = escapedMachine: ''
     is_transient_userctl_error() {
@@ -124,6 +167,16 @@
 
   mkBridgeService = bridgeName: bridge: let
     escapedUnit = lib.escapeShellArg bridge.unit;
+    observeUnit =
+      if bridge.observeUnit != null
+      then bridge.observeUnit
+      else bridge.unit;
+    escapedObserveUnit = lib.escapeShellArg observeUnit;
+    changeUnit =
+      if bridge.changeUnit != null
+      then bridge.changeUnit
+      else bridge.unit;
+    escapedChangeUnit = lib.escapeShellArg changeUnit;
     stateFile = "/run/nixos/systemd-user-manager/${bridge.serviceName}.was-active";
     escapedStateFile = lib.escapeShellArg stateFile;
     stopSeenFile = "/run/nixos/systemd-user-manager/${bridge.serviceName}.stop-seen";
@@ -140,7 +193,7 @@
       ${mkMachineUserctlRetryLib escapedMachine}
       if [ -f ${escapedStateFile} ]; then
         # Replay prior-active state as restart intent.
-        userctl --no-block restart ${escapedUnit}
+        userctl --no-block ${bridge.onChangeAction} ${escapedChangeUnit}
         ${pkgs.coreutils}/bin/rm -f ${escapedStateFile} ${escapedStopSeenFile}
         exit 0
       fi
@@ -148,15 +201,21 @@
         ${pkgs.coreutils}/bin/rm -f ${escapedStopSeenFile}
         exit 0
       fi
-      # No old-generation stop record: treat as new bridge/service and start it.
-      userctl --no-block start ${escapedUnit}
+      if [ "${
+        if bridge.startOnInitial
+        then "1"
+        else "0"
+      }" = 1 ]; then
+        # No old-generation stop record: treat as new bridge/service and start it.
+        userctl --no-block start ${escapedUnit}
+      fi
     '';
 
     stopScript = pkgs.writeShellScript "systemd-user-manager-${bridgeName}-stop" ''
       set -eu
       ${mkMachineUserctlRetryLib escapedMachine}
       restart_worthy=0
-      if active_state="$(userctl show --property=ActiveState --value ${escapedUnit})"; then
+      if active_state="$(userctl show --property=ActiveState --value ${escapedObserveUnit})"; then
         case "$active_state" in
           inactive)
             restart_worthy=0
@@ -180,9 +239,15 @@
       else
         ${pkgs.coreutils}/bin/rm -f ${escapedStateFile}
       fi
-      # Always attempt stop on bridge stop so old-generation teardown is not
-      # skipped by pre-check races.
-      userctl stop ${escapedUnit}
+      if [ "${
+        if bridge.stopUnitOnStop
+        then "1"
+        else "0"
+      }" = 1 ]; then
+        # Always attempt stop on bridge stop so old-generation teardown is not
+        # skipped by pre-check races.
+        userctl stop ${escapedUnit}
+      fi
     '';
   in {
     name = bridge.serviceName;
@@ -221,6 +286,32 @@ in {
   };
 
   config = {
+    system.activationScripts.systemdUserManagerIdentity = lib.stringAfter ["users"] (
+      let
+        stateDir = "/run/nixos/systemd-user-manager";
+      in
+        ''
+          set -eu
+          ${pkgs.coreutils}/bin/install -d -m 0755 ${stateDir}
+        ''
+        + lib.concatStringsSep "\n"
+        (lib.mapAttrsToList
+          (user: _: let
+            uid = toString (userUidFor user);
+            stamp = userIdentityStampFor user;
+            stampFile = "${stateDir}/identity-${sanitizeUserKey user}.stamp";
+          in ''
+            current_stamp="$(${pkgs.coreutils}/bin/cat ${lib.escapeShellArg stampFile} 2>/dev/null || true)"
+            if [ "$current_stamp" != "${stamp}" ]; then
+              if ${pkgs.systemd}/bin/systemctl is-active --quiet user@${uid}.service; then
+                ${pkgs.systemd}/bin/systemctl restart user@${uid}.service
+              fi
+              ${pkgs.coreutils}/bin/printf '%s\n' "${stamp}" > ${lib.escapeShellArg stampFile}
+            fi
+          '')
+          bridgesByUser)
+    );
+
     assertions =
       lib.concatMap (
         bridge: [
