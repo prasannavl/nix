@@ -1,4 +1,7 @@
-{...}: {
+{config, ...}: let
+  videoGid = toString config.users.groups.video.gid;
+  renderGid = toString config.users.groups.render.gid;
+in {
   systemd.tmpfiles.rules = [
     "d /var/lib/llmug 0755 llmug llmug -"
     "d /var/lib/llmug/nginx.pod 0750 llmug llmug -"
@@ -30,8 +33,8 @@
         "/dev/dri:/dev/dri"
       ];
       extraOptions = [
-        "--group-add=video"
-        "--group-add=render"
+        "--group-add=${videoGid}"
+        "--group-add=${renderGid}"
         "--device=/dev/kfd:/dev/kfd"
       ];
     };
