@@ -51,6 +51,9 @@ Use this index as the canonical map for `docs/ai/**`.
   `lib/incus.nix` NixOS module for declarative incus container lifecycle: device
   sync, config-hash recreate, bootTag/recreateTag, GC, and per-device removal
   policies.
+- `docs/ai/notes/hosts/incus-machine-images-2026-03.md`: Per-machine Incus base
+  image selection, global multi-image `imageTag` refresh, and guest recreate
+  behavior for image changes.
 - `docs/ai/notes/hosts/gap3-gondor-incus-bastion-2026-03.md`: Incus-inside-incus
   bastion guest `gap3-gondor` on pvl-x2 with GPU passthrough, podman services
   (nginx, ollama, open-webui), inner guest `gap3-rivendell`, and dir storage

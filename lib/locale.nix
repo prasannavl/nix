@@ -4,8 +4,7 @@
   # https://github.com/nixos/nixpkgs/issues/499098
   # https://issues.chromium.org/issues/40069710
   # Bug affects Chrome, Electron, etc
-  time.timeZone = lib.mkForce "Asia/Singapore";
-
+  time.timeZone = "Asia/Singapore";
   i18n.defaultLocale = "en_US.UTF-8";
 
   # i18n.extraLocaleSettings = {
@@ -36,5 +35,5 @@
   # Not as accurate as automatic-timezoned above
   # but reliable fallback if needed.
   # tzlogic: https://github.com/cdown/tzupdate/blob/437b3f0cef1ac85a97f8ba3dab97bd7090deb2bb/src/http.rs#L15-L44
-  services.tzupdate.enable = true;
+  # services.tzupdate.enable = true;
 }
