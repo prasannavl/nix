@@ -11,7 +11,8 @@ but it has no built-in concept of declarative, NixOS-managed guest lifecycle.
 Without a shared module, every parent host would need its own imperative scripts
 to:
 
-- Import and version a shared base image.
+- Import and version declared local images, or mirror remote Incus images into
+  stable local aliases.
 - Create guests from that image with the right config, devices, and network
   settings.
 - Detect when guest configuration has drifted from the declared state and
@@ -40,7 +41,7 @@ tags as ordinary systemd services that run during deploy.
 ## What Is Reusable
 
 - `lib/incus.nix` owns declarative guest lifecycle:
-  - base image import
+  - declared image import
   - create/start
   - config-hash driven recreate
   - disk-device sync
@@ -52,7 +53,9 @@ tags as ordinary systemd services that run during deploy.
 - `lib/incus-vm.nix` also owns runtime hostname convergence with a dedicated
   oneshot service that uses `hostname(1)` instead of writing
   `/proc/sys/kernel/hostname` directly.
-- The base image is generic and reused across guests.
+- The default base image is generic and reused across guests.
+- Each guest can optionally point at a different image source, including remote
+  Incus images such as `debian` or `images:ubuntu/24.04`.
 - Guests become normal `nixbot` deploy targets after bootstrap.
 
 ## Shared Lifecycle Model
@@ -61,9 +64,13 @@ Parent hosts declare guests under:
 
 ```nix
 services.incusMachines = {
+  defaultImage = inputs.self.nixosImages.incus-base;
+  defaultImageAlias = "nixos-incus-base";
   imageTag = "0";
 
   machines.<name> = {
+    image = null; # NixOS image attrset or a string like "debian"
+    imageAlias = null; # the stable local Incus alias used for `incus create`
     ipv4Address = "10.10.20.10";
     bootTag = "0";
     recreateTag = "0";
@@ -85,6 +92,24 @@ services.incusMachines = {
 When `services.incusMachines.machines` is non-empty, the shared module also
 enables Incus and provides the default package/UI settings automatically.
 
+Terminology:
+
+- `image`: the image source for the guest
+  - a non-string value is treated as a local NixOS image build to import
+  - a string is treated as an Incus image reference, such as `debian` or
+    `images:debian/12`
+- `imageAlias`: the stable Incus-local name for that imported image, for example
+  `nixos-incus-base`, which is then used as `local:<alias>` during guest create
+- `imageTag`: a manual redeploy knob that forces declared image aliases to be
+  refreshed
+
+For string images:
+
+- `debian` is resolved as `images:debian`
+- `images:debian/12` is used as-is
+- the module copies the remote image into local Incus under the resolved
+  `imageAlias`, then creates the guest from `local:<alias>`
+
 ## Tags
 
 - `bootTag`:
@@ -94,11 +119,11 @@ enables Incus and provides the default package/UI settings automatically.
 - `recreateTag`:
   - default is `"0"`
   - when the stored value differs from the declared value, the guest is deleted
-    and recreated from the current base image alias
+    and recreated from the current resolved image alias
 - `imageTag`:
   - default is `"0"`
-  - when the stored value on the shared base image alias differs from the
-    declared value, the base image alias is deleted and re-imported
+  - when the stored value on any declared image alias differs from the declared
+    value, that image alias is refreshed
 
 Operationally, the intended manual toggles are between `"0"` and `"1"`, though
 any new string value works.
@@ -111,11 +136,18 @@ any new string value works.
   - no base image re-import
 - `recreateTag` change:
   - stop + delete + create + start of the guest
-  - recreated from the current `local:nixos-incus-base` alias
-  - does not by itself re-import the base image alias
+  - recreated from the guest's resolved Incus image alias
+  - does not by itself re-import any image alias
 - `imageTag` change:
-  - delete + re-import of the shared base image alias
+  - refresh of all declared image aliases
   - no guest recreate by itself
+- guest `image` source change:
+  - triggers guest recreate
+  - the guest image source is part of the recreate-tracked config hash
+- guest `imageAlias` resolution change:
+  - triggers guest recreate
+  - changing the image slot a guest is created from is treated as a recreate
+    input
 - guest `config` attr change:
   - triggers guest recreate
   - implemented through the stored `user.config-hash`
@@ -183,7 +215,7 @@ What makes them special:
 On parent-host deploy, the shared lifecycle model runs in this order:
 
 1. `incus-preseed.service`
-2. `incus-image-base.service`
+2. `incus-images.service`
 3. `incus-machines-gc.service`
 4. `incus-<guest>.service`
 
@@ -191,7 +223,7 @@ That means:
 
 - `imageTag` is evaluated before any guest recreate runs
 - if the same deploy bumps both `imageTag` and a guest `recreateTag`, the guest
-  recreate uses the newly re-imported base image alias
+  recreate uses the newly refreshed image alias
 
 ## What A Parent Host Must Provide
 
@@ -263,12 +295,30 @@ For nested Incus specifically:
 ### What happens when I bump `recreateTag`?
 
 The guest is deleted and recreated from the current `local:nixos-incus-base`
-alias the next time the per-guest lifecycle service runs.
+alias, or from that guest's configured `imageAlias`, the next time the
+per-guest lifecycle service runs.
 
 ### What happens when I bump `imageTag`?
 
-The shared `local:nixos-incus-base` alias is deleted and re-imported. Existing
-guests are not recreated automatically just because the image alias changed.
+Every declared image alias is checked, and any alias whose stored source or
+stored rebuild tag differs is refreshed. For local NixOS images that means
+re-import; for remote string images that means copying the remote image into the
+managed local alias again. Existing guests are not recreated automatically just
+because an image alias was refreshed.
+
+### What happens when I point a guest at a different image?
+
+Changing the guest's declared `image` source is recreate-tracked, so the guest
+is recreated on the next run of its lifecycle service. Re-importing or
+refreshing the content behind the same declared image source does not by itself
+recreate already-running guests.
+
+### What happens when I change `image` but keep the same `imageAlias`?
+
+That still triggers guest recreate, because the declared image source is part of
+the recreate-tracked config hash. The stable `imageAlias` controls the local
+Incus handle used for create, not whether a source change is considered a new
+guest image input.
 
 ### What happens when I change guest `config`?
 
@@ -318,12 +368,14 @@ bump `recreateTag` to a new value.
 ### Does `recreateTag` rebuild the base image too?
 
 No. `recreateTag` only recreates the guest instance. `imageTag` is the manual
-knob for forcing base image alias re-import.
+knob for forcing declared image alias refresh.
 
 ### Does `imageTag` also recreate running guests?
 
-No. It only refreshes the shared base image alias. Existing guests keep their
-current root filesystem until recreated.
+No. It only refreshes declared image aliases. Existing guests keep their
+current root filesystem until recreated by `recreateTag`, by a recreate-tracked
+config change such as changing `image`, or by deleting the guest and letting
+the lifecycle service recreate it.
 
 ## Related Docs
 

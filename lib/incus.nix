@@ -8,18 +8,28 @@
   cfg = config.services.incusMachines;
   incus = "${config.virtualisation.incus.package.client}/bin/incus";
 
-  baseImage = inputs.self.nixosImages.incus-base;
-  baseAlias = "nixos-incus-base";
-  baseLabel = baseImage.config.system.nixos.label;
-  baseSystem = baseImage.pkgs.stdenv.hostPlatform.system;
-  baseImageFile = "nixos-image-${baseLabel}-${baseSystem}.tar.xz";
-  baseMetadata = baseImage.config.system.build.metadata;
-  baseRootfs = baseImage.config.system.build.tarball;
-  baseMetadataFile = "${baseMetadata}/tarball/${baseImageFile}";
-  baseRootfsFile = "${baseRootfs}/tarball/${baseImageFile}";
-  baseImageSource = "${baseMetadataFile}|${baseRootfsFile}";
+  defaultBaseImage = inputs.self.nixosImages.incus-base;
+  defaultBaseAlias = "nixos-incus-base";
 
   hasMachines = cfg.machines != {};
+
+  sanitizeImageAlias = value:
+    builtins.replaceStrings
+    [
+      ":"
+      "/"
+      " "
+      "."
+      "_"
+    ]
+    [
+      "-"
+      "-"
+      "-"
+      "-"
+      "-"
+    ]
+    value;
 
   deviceType = lib.types.submodule (_: {
     options = {
@@ -63,6 +73,27 @@
 
   machineType = lib.types.submodule (_: {
     options = {
+      image = lib.mkOption {
+        type = lib.types.nullOr lib.types.raw;
+        default = null;
+        description = ''
+          Optional image source for this machine. A string is treated as an
+          Incus image reference such as `debian` or `images:debian/12`; a
+          non-string value is treated as a NixOS image derivation/system attrset
+          to import into local Incus. Defaults to
+          `services.incusMachines.defaultImage`.
+        '';
+      };
+      imageAlias = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Optional stable Incus alias for this machine's image. Defaults to the
+          shared default alias when `image` is unset, otherwise
+          `nixos-incus-<machine-name>` for local NixOS images and a sanitized
+          alias derived from the remote image reference for string images.
+        '';
+      };
       ipv4Address = lib.mkOption {
         type = lib.types.str;
         description = "Static IPv4 address (outside the bridge DHCP range).";
@@ -117,11 +148,17 @@
   syncableDevices = machine:
     lib.filterAttrs (_: dev: dev.type == "disk") machine.devices;
 
-  # Config hash includes container config AND create-only devices so that
-  # changes to either trigger a full recreate.
-  configHash = machine:
+  # Config hash includes container config, the resolved base-image alias, and
+  # create-only devices so that changes to those inputs trigger a full
+  # recreate.
+  configHash = name: machine:
     builtins.hashString "sha256" (builtins.toJSON {
       inherit (machine) config;
+      image = let
+        resolvedImage = resolveMachineImage name machine;
+      in {
+        inherit (resolvedImage) alias createRef imageIdentity;
+      };
       createOnlyDevices = lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine);
     });
 
@@ -134,10 +171,10 @@
     builtins.toJSON (lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine));
 
   # Collect user.* metadata to store on the container at creation time.
-  mkUserMetadata = _name: machine:
+  mkUserMetadata = name: machine:
     {
       "user.managed-by" = "nixos";
-      "user.config-hash" = configHash machine;
+      "user.config-hash" = configHash name machine;
       "user.boot-tag" = machine.bootTag;
       "user.recreate-tag" = machine.recreateTag;
       "user.removal-policy" = machine.removalPolicy;
@@ -153,12 +190,97 @@
     )
     machine.devices;
 
+  resolveMachineImage = name: machine: let
+    image =
+      if machine.image != null
+      then machine.image
+      else cfg.defaultImage;
+    isRemote = builtins.isString image;
+    remoteRef =
+      if isRemote
+      then
+        if lib.hasInfix ":" image
+        then image
+        else "images:${image}"
+      else null;
+    alias =
+      if machine.imageAlias != null
+      then machine.imageAlias
+      else if machine.image != null
+      then
+        if isRemote
+        then "incus-${sanitizeImageAlias remoteRef}"
+        else "nixos-incus-${name}"
+      else cfg.defaultImageAlias;
+  in
+    if isRemote
+    then {
+      kind = "remote";
+      inherit alias remoteRef;
+      createRef = "local:${alias}";
+      imageIdentity = "remote:${remoteRef}";
+    }
+    else let
+      imageLabel = image.config.system.nixos.label;
+      imageSystem = image.pkgs.stdenv.hostPlatform.system;
+      imageFile = "nixos-image-${imageLabel}-${imageSystem}.tar.xz";
+      metadata = image.config.system.build.metadata;
+      rootfs = image.config.system.build.tarball;
+      metadataFile = "${metadata}/tarball/${imageFile}";
+      rootfsFile = "${rootfs}/tarball/${imageFile}";
+      imageSource = "${metadataFile}|${rootfsFile}";
+    in {
+      kind = "local";
+      inherit alias imageSource metadataFile rootfsFile;
+      createRef = "local:${alias}";
+      imageIdentity = "local:${imageSource}";
+    };
+
+  machineImages = lib.mapAttrs resolveMachineImage cfg.machines;
+
+  declaredImages =
+    builtins.attrValues
+    (lib.mapAttrs'
+      (_name: image:
+        lib.nameValuePair image.alias image)
+      machineImages);
+
+  aliasToMachineNames =
+    lib.foldl'
+    (acc: name: let
+      alias = machineImages.${name}.alias;
+    in
+      acc
+      // {
+        ${alias} = (acc.${alias} or []) ++ [name];
+      })
+    {}
+    (builtins.attrNames machineImages);
+
+  duplicateImageAliases =
+    lib.attrNames
+    (lib.filterAttrs (_alias: machineNames: builtins.length machineNames > 1) aliasToMachineNames);
+
+  imageAliasConflicts =
+    lib.filter (
+      alias: let
+        sources =
+          lib.unique
+          (map (name: machineImages.${name}.imageIdentity) aliasToMachineNames.${alias});
+      in
+        builtins.length sources > 1
+    )
+    duplicateImageAliases;
+
+  declaredImagesJson = builtins.toJSON declaredImages;
+
   # JSON list of declared machine names for the GC script.
   declaredMachinesJson = builtins.toJSON (builtins.attrNames cfg.machines);
 
   # Per-machine systemd service.
   mkMachineService = name: machine: let
-    hash = configHash machine;
+    machineImage = machineImages.${name};
+    hash = configHash name machine;
     diskDevSpec = diskDeviceSpecJson machine;
     createOnlyDevSpec = createOnlyDeviceSpecJson machine;
     userMeta = mkUserMetadata name machine;
@@ -175,13 +297,13 @@
       after = [
         "incus-preseed.service"
         "network-online.target"
-        "incus-image-base.service"
+        "incus-images.service"
         "incus-machines-gc.service"
       ];
       wants = [
         "incus-preseed.service"
         "network-online.target"
-        "incus-image-base.service"
+        "incus-images.service"
         "incus-machines-gc.service"
       ];
       serviceConfig = {
@@ -255,8 +377,8 @@
 
         # Create from base image.
         if [ "$needs_create" -eq 1 ]; then
-          echo "Creating ${name} from base image..."
-          ${incus} create local:${baseAlias} ${name}
+          echo "Creating ${name} from image ${machineImage.createRef}..."
+          ${incus} create ${lib.escapeShellArg machineImage.createRef} ${lib.escapeShellArg name}
 
           # Apply container config.
         ${setConfigCmds}
@@ -371,10 +493,31 @@
     );
 in {
   options.services.incusMachines = {
+    defaultImage = lib.mkOption {
+      type = lib.types.raw;
+      default = defaultBaseImage;
+      description = ''
+        Default image source used for Incus machines when a machine does not
+        set `image`. A string is treated as an Incus image reference; a
+        non-string value is treated as a local NixOS image build.
+      '';
+    };
+
+    defaultImageAlias = lib.mkOption {
+      type = lib.types.str;
+      default = defaultBaseAlias;
+      description = ''
+        Shared Incus alias used for `defaultImage`. Machines that set a custom
+        `image` default to `nixos-incus-<machine-name>` for local NixOS images
+        and a sanitized alias derived from the remote image reference for string
+        images unless they also set `imageAlias`.
+      '';
+    };
+
     imageTag = lib.mkOption {
       type = lib.types.str;
       default = "0";
-      description = "Bump to force re-import of the shared Incus base image on next rebuild.";
+      description = "Bump to force refresh of all declared Incus images on next rebuild.";
     };
 
     reconcileOnActivation = lib.mkOption {
@@ -396,6 +539,15 @@ in {
   };
 
   config = lib.mkIf hasMachines {
+    assertions = [
+      {
+        assertion = imageAliasConflicts == [];
+        message =
+          "services.incusMachines has conflicting image aliases with different image sources: "
+          + lib.concatStringsSep ", " imageAliasConflicts;
+      }
+    ];
+
     services.incusMachines.reconcileOnActivation = lib.mkDefault (
       if config.boot.isContainer
       then "off"
@@ -450,8 +602,8 @@ in {
 
     systemd.services =
       {
-        incus-image-base = {
-          description = "Import/update generic base NixOS image into Incus";
+        incus-images = {
+          description = "Import/update declared Incus images";
           wantedBy = ["multi-user.target"];
           after = ["incus-preseed.service"];
           wants = ["incus-preseed.service"];
@@ -459,34 +611,69 @@ in {
             Type = "oneshot";
             RemainAfterExit = true;
           };
-          path = [config.virtualisation.incus.package.client];
+          path = [config.virtualisation.incus.package.client pkgs.coreutils];
           script = ''
             set -euo pipefail
 
-            if [ ! -f ${baseMetadataFile} ] || [ ! -f ${baseRootfsFile} ]; then
-              echo "Missing base image tarballs:" >&2
-              echo "  ${baseMetadataFile}" >&2
-              echo "  ${baseRootfsFile}" >&2
-              exit 1
-            fi
-
-            current_source="$(${incus} image get-property local:${baseAlias} user.base-image-id 2>/dev/null || true)"
-            current_rebuild_tag="$(${incus} image get-property local:${baseAlias} user.base-image-rebuild-tag 2>/dev/null || true)"
             desired_rebuild_tag=${lib.escapeShellArg cfg.imageTag}
+            declared_images='${declaredImagesJson}'
 
-            if [ "$current_source" = "${baseImageSource}" ] && \
-               [ "$current_rebuild_tag" = "$desired_rebuild_tag" ] && \
-               ${incus} image info local:${baseAlias} >/dev/null 2>&1; then
-              exit 0
-            fi
+            echo "$declared_images" | ${pkgs.jq}/bin/jq -c '.[]' | while IFS= read -r image; do
+              alias="$(printf '%s' "$image" | ${pkgs.jq}/bin/jq -r '.alias')"
+              image_kind="$(printf '%s' "$image" | ${pkgs.jq}/bin/jq -r '.kind')"
+              image_identity="$(printf '%s' "$image" | ${pkgs.jq}/bin/jq -r '.imageIdentity')"
 
-            if ${incus} image info local:${baseAlias} >/dev/null 2>&1; then
-              ${incus} image delete local:${baseAlias}
-            fi
+              current_source="$(${incus} image get-property "local:$alias" user.base-image-id 2>/dev/null || true)"
+              current_rebuild_tag="$(${incus} image get-property "local:$alias" user.base-image-rebuild-tag 2>/dev/null || true)"
 
-            ${incus} image import ${baseMetadataFile} ${baseRootfsFile} --alias ${baseAlias}
-            ${incus} image set-property local:${baseAlias} user.base-image-id "${baseImageSource}"
-            ${incus} image set-property local:${baseAlias} user.base-image-rebuild-tag "$desired_rebuild_tag"
+              if [ "$current_source" = "$image_identity" ] && \
+                 [ "$current_rebuild_tag" = "$desired_rebuild_tag" ] && \
+                 ${incus} image info "local:$alias" >/dev/null 2>&1; then
+                continue
+              fi
+
+              if ${incus} image info "local:$alias" >/dev/null 2>&1; then
+                ${incus} image delete "local:$alias"
+              fi
+
+              case "$image_kind" in
+                local)
+                  metadata_file="$(printf '%s' "$image" | ${pkgs.jq}/bin/jq -r '.metadataFile')"
+                  rootfs_file="$(printf '%s' "$image" | ${pkgs.jq}/bin/jq -r '.rootfsFile')"
+
+                  if [ ! -f "$metadata_file" ] || [ ! -f "$rootfs_file" ]; then
+                    echo "Missing base image tarballs for $alias:" >&2
+                    echo "  $metadata_file" >&2
+                    echo "  $rootfs_file" >&2
+                    exit 1
+                  fi
+
+                  # Incus identifies split images by the SHA-256 of the
+                  # metadata/rootfs file concatenation. If the exact same image
+                  # already exists under another alias, reuse that fingerprint
+                  # instead of failing the import with "same fingerprint already
+                  # exists".
+                  image_fingerprint="$(${pkgs.coreutils}/bin/cat "$metadata_file" "$rootfs_file" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.gawk}/bin/awk '{print $1}')"
+
+                  if ${incus} image info "local:$image_fingerprint" >/dev/null 2>&1; then
+                    ${incus} image alias create "local:$alias" "$image_fingerprint"
+                  else
+                    ${incus} image import "$metadata_file" "$rootfs_file" --alias "$alias"
+                  fi
+                  ;;
+                remote)
+                  remote_ref="$(printf '%s' "$image" | ${pkgs.jq}/bin/jq -r '.remoteRef')"
+                  ${incus} image copy "$remote_ref" local: --alias "$alias"
+                  ;;
+                *)
+                  echo "Unknown image kind for $alias: $image_kind" >&2
+                  exit 1
+                  ;;
+              esac
+
+              ${incus} image set-property "local:$alias" user.base-image-id "$image_identity"
+              ${incus} image set-property "local:$alias" user.base-image-rebuild-tag "$desired_rebuild_tag"
+            done
           '';
         };
 
@@ -495,11 +682,11 @@ in {
           wantedBy = ["multi-user.target"];
           after = [
             "incus-preseed.service"
-            "incus-image-base.service"
+            "incus-images.service"
           ];
           wants = [
             "incus-preseed.service"
-            "incus-image-base.service"
+            "incus-images.service"
           ];
           serviceConfig = {
             Type = "oneshot";

@@ -70,8 +70,10 @@ module:
 - Reusable guest bootstrap lives in `lib/incus-vm.nix`.
 - Base image build lives in `lib/images/incus-base.nix`.
 - Guests are declared under `services.incusMachines.machines.<name>`.
+- Machines can use the shared default image or point at per-machine image
+  overrides.
 - Lifecycle tags (`bootTag`, `recreateTag`, `imageTag`) control guest
-  stop/start, delete/recreate, and base image re-import.
+  stop/start, delete/recreate, and declared image re-import.
 - Config-hash changes and non-disk device changes trigger automatic guest
   recreate; disk devices sync in place.
 - After bootstrap, guests become normal `nixbot` deploy targets.
