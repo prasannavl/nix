@@ -370,7 +370,7 @@ def write_import_header(lines: list[str], repo_root: Path) -> None:
             "# It imports the selected addresses and skips anything already present in that backend.",
             "",
             "mkdir -p tmp",
-            'TF_MIGRATE_VAR_TMP="$(mktemp -d "tmp/tf-migrate-cloudflare-state.XXXXXX")"',
+            'TF_MIGRATE_VAR_TMP="$(mktemp -d "${PWD}/tmp/tf-migrate-cloudflare-state.XXXXXX")"',
             'cleanup() { rm -rf "${TF_MIGRATE_VAR_TMP}"; }',
             "trap cleanup EXIT",
             "",

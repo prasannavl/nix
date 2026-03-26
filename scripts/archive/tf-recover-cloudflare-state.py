@@ -896,7 +896,7 @@ def write_import_script_header(lines: list[str]) -> None:
     lines.extend(
         [
             "mkdir -p tmp",
-            'TF_RECOVER_VAR_TMP="$(mktemp -d "tmp/tf-recover-cloudflare-state.XXXXXX")"',
+            'TF_RECOVER_VAR_TMP="$(mktemp -d "${PWD}/tmp/tf-recover-cloudflare-state.XXXXXX")"',
             'cleanup() { rm -rf "${TF_RECOVER_VAR_TMP}"; }',
             "trap cleanup EXIT",
             "",

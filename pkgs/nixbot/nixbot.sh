@@ -1108,7 +1108,7 @@ release_repo_root_lock() {
 ensure_repo_root_exists() {
   mkdir -p "$(dirname "${REPO_ROOT}")"
 
-  if [ -d "${REPO_ROOT}/.git" ]; then
+  if [ -d "${REPO_ROOT}/.git" ] || [ -f "${REPO_ROOT}/.git" ]; then
     return
   fi
 
