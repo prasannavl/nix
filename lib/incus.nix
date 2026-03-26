@@ -399,7 +399,10 @@ in {
     services.incusMachines.reconcileOnActivation = lib.mkDefault (
       if config.boot.isContainer
       then "off"
-      else "best-effort"
+      # Temporarily switch this off since this can 
+      # brick physical machines from booting and not going beyond initrd
+      # if there's failure on activation requiring manual rescue.
+      else "off"
     );
 
     virtualisation.incus = {
