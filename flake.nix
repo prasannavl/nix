@@ -96,11 +96,15 @@
   in
     flakeLib.standardOutputsFor allSystems
     // {
+      # This is intentional, as std packages attr doesn't
+      # allow arbitrary nested shape and we expose those
+      # in pkgs.
       pkgs = flakeLib.packagesFor allSystems;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;
       };
+      # Intentional non-standard addition.
       nixosImages = import ./lib/images {
         inherit inputs commonModules;
       };
