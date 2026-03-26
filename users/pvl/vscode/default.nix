@@ -33,8 +33,8 @@
           github.copilot-chat
           openai.chatgpt
           google.gemini-cli-vscode-ide-companion
-          continue.continue
-          # kilocode.kilo-code
+          # continue.continue
+          kilocode.kilo-code
           anthropic.claude-code
           # google.geminicodeassist
 

@@ -205,6 +205,10 @@ Use this index as the canonical map for `docs/ai/**`.
   replaces pre-commit; lints each commit individually via `--diff --base`.
 - `docs/ai/notes/tooling/update-flakes-script-2026-03.md`:
   `scripts/update-flakes.sh` for recursively updating all flake lock files.
+- `docs/ai/notes/tooling/tf-selective-cloudflare-state-migration-2026-03.md`:
+  Selective two-phase Cloudflare state transfer planning with separate
+  import-into-target and remove-from-source command files, including selectors
+  for zones, workers, tunnels, and R2 buckets.
 - `docs/ai/notes/tooling/vscode-configuration-2026-03.md`: Consolidated VS Code
   upstream package model, pinned hash strategy, and Go toolchain provisioning.
 
