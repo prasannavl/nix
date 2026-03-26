@@ -7,7 +7,7 @@
     ./cloudflare.nix
     ./packages.nix
     ./firewall.nix
-    ./podman.nix
+    # ./podman.nix
     ./services.nix
     ./users.nix
   ];
