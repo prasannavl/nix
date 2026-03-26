@@ -1,6 +1,10 @@
 {lib, ...}: {
-  # We automatically set this below.  #
-  # time.timeZone = "Asia/Singapore";
+  # We automatically set this below.
+  # But we set it anyway due to:
+  # https://github.com/nixos/nixpkgs/issues/499098
+  # https://issues.chromium.org/issues/40069710
+  # Bug affects Chrome, Electron, etc
+  time.timeZone = lib.mkForce "Asia/Singapore";
 
   i18n.defaultLocale = "en_US.UTF-8";
 
