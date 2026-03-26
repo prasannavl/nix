@@ -22,7 +22,10 @@
 
   # Note: Issue: https://github.com/NixOS/nixpkgs/issues/68489
 
-  services.automatic-timezoned.enable = true;
+  # Disabled as it's exclusive to setting manually above that
+  # we do for bugfix.
+  # services.automatic-timezoned.enable = true;
+  
   services.geoclue2 = {
     # see: https://github.com/NixOS/nixpkgs/issues/68489#issuecomment-1484030107
     enableDemoAgent = lib.mkForce true;
@@ -33,5 +36,5 @@
   # Not as accurate as automatic-timezoned above
   # but reliable fallback if needed.
   # tzlogic: https://github.com/cdown/tzupdate/blob/437b3f0cef1ac85a97f8ba3dab97bd7090deb2bb/src/http.rs#L15-L44
-  # services.tzupdate.enable = true;
+  services.tzupdate.enable = true;
 }
