@@ -107,6 +107,39 @@
 - `with pkgs;` pollutes the scope and makes it hard to tell where a name comes
   from. Prefer explicit `pkgs.foo` or `let inherit (pkgs) foo bar; in ...`.
 
+## Packaging conventions
+
+- Every package `default.nix` is the canonical build definition. It must work
+  with both `callPackage` (root flake) and `nix-build` (standalone).
+- Set `meta.description` and `meta.mainProgram` on every package that produces a
+  binary. `meta.mainProgram` is the standard Nix way to declare which binary a
+  package provides — `lib.getExe` uses it.
+- Sub-flake `flake.nix` files use `lib.getExe` (or `pkgs.lib.getExe`) to build
+  app entries from the package, keeping the binary name in one place:
+
+  ```nix
+  # in the sub-flake
+  apps.default = {
+    type = "app";
+    program = pkgs.lib.getExe build;
+  };
+  ```
+
+- The root flake's `lib/flake/apps.nix` uses a `mkApp` helper that reads
+  `meta.mainProgram` and `meta` from the package:
+
+  ```nix
+  mkApp = pkg: {
+    type = "app";
+    program = "${pkg}/bin/${pkg.meta.mainProgram}";
+    inherit (pkg) meta;
+  };
+  ```
+
+- Do **not** duplicate binary paths or descriptions across layers. The
+  `default.nix` package is the single source of truth — sub-flakes and root
+  apps derive from it.
+
 ## Flake conventions
 
 - The repo uses a single root `flake.nix` with sub-flakes under `pkgs/`.

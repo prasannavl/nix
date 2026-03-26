@@ -401,7 +401,8 @@ run_lint_action() {
     done
   fi
 
-  run_step root-flake-check 'Checking root flake evaluates cleanly' nix flake check --no-build
+  run_step root-flake-check 'Checking root flake evaluates cleanly' \
+    nix flake check --no-build 2> >(grep -v "^warning: unknown flake output\|^warning: The check omitted these incompatible systems" >&2)
 
   local -a full_check_dirs=()
   local -a notest_check_dirs=()

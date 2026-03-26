@@ -15,10 +15,6 @@
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
       build = pkgs.callPackage ./default.nix {};
-      run = {
-        type = "app";
-        program = "${build}/bin/hello-rust";
-      };
       check = args:
         build.overrideAttrs (old: {
           pname = "${old.pname}-${args.name}";
@@ -33,7 +29,12 @@
         build = build;
         run = build;
       };
-      apps = {
+      apps = let
+        run = {
+          type = "app";
+          program = pkgs.lib.getExe build;
+        };
+      in {
         default = run;
         run = run;
       };

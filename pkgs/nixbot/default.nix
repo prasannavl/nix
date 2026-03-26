@@ -1,6 +1,10 @@
 {pkgs ? import <nixpkgs> {}}:
 pkgs.writeShellApplication {
   name = "nixbot";
+  meta = {
+    description = "NixOS management bot";
+    mainProgram = "nixbot";
+  };
   runtimeInputs = with pkgs; [
     age
     git

@@ -17,6 +17,10 @@
       };
   deploy = pkgs.writeShellApplication {
     name = "cloudflare-apps-deploy";
+    meta = {
+      description = "Deploy Cloudflare apps";
+      mainProgram = "cloudflare-apps-deploy";
+    };
     text = ''
       set -euo pipefail
 

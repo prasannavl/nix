@@ -8,6 +8,10 @@
   '';
   deployWrangler = pkgs.writeShellApplication {
     name = "llmug-hello-wrangler-deploy";
+    meta = {
+      description = "Deploy llmug-hello Wrangler worker";
+      mainProgram = "llmug-hello-wrangler-deploy";
+    };
     runtimeInputs = with pkgs; [
       nix
       wrangler

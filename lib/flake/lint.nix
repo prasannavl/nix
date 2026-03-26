@@ -20,6 +20,10 @@
     ]);
   lintApp = pkgs.writeShellApplication {
     name = "lint";
+    meta = {
+      description = "Run linters on the repository";
+      mainProgram = "lint";
+    };
     runtimeInputs = lintPkgs;
     text = ''
       exec env LINT_IN_NIX_SHELL=1 ${repoRoot}/scripts/lint.sh "$@"
@@ -34,15 +38,11 @@ in {
     text = "treefmt";
   };
 
-  app = {
-    type = "app";
-    program = "${lintApp}/bin/lint";
-  };
-
   apps = {
     lint = {
       type = "app";
-      program = "${lintApp}/bin/lint";
+      program = "${lintApp}/bin/${lintApp.meta.mainProgram}";
+      inherit (lintApp) meta;
     };
   };
 

@@ -2,26 +2,15 @@
   packageSet,
   lint ? null,
 }: let
+  mkApp = pkg: {
+    type = "app";
+    program = "${pkg}/bin/${pkg.meta.mainProgram}";
+    inherit (pkg) meta;
+  };
   baseApps = {
-    "hello-rust" = {
-      type = "app";
-      program = "${packageSet.hello-rust}/bin/hello-rust";
-    };
-
-    nixbot = {
-      type = "app";
-      program = "${packageSet.nixbot}/bin/nixbot";
-    };
-
-    "cloudflare-apps-deploy" = {
-      type = "app";
-      program = "${packageSet.cloudflare-apps.deploy}/bin/cloudflare-apps-deploy";
-    };
-
-    "llmug-hello-wrangler-deploy" = {
-      type = "app";
-      program = "${packageSet.cloudflare-apps.llmug-hello.wrangler-deploy}/bin/llmug-hello-wrangler-deploy";
-    };
+    "hello-rust" = mkApp packageSet.hello-rust;
+    nixbot = mkApp packageSet.nixbot;
+    "cloudflare-apps-deploy" = mkApp packageSet.cloudflare-apps.deploy;
   };
 in
   baseApps

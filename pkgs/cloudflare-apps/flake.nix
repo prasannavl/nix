@@ -32,7 +32,7 @@
       apps = {
         deploy = {
           type = "app";
-          program = "${cloudflareApps.deploy}/bin/cloudflare-apps-deploy";
+          program = pkgs.lib.getExe cloudflareApps.deploy;
         };
       };
     });

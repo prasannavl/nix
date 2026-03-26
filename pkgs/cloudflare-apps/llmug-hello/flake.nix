@@ -26,15 +26,15 @@
       apps = {
         wrangler-deploy = {
           type = "app";
-          program = "${deployWrangler}/bin/llmug-hello-wrangler-deploy";
+          program = pkgs.lib.getExe deployWrangler;
         };
         lint = {
           type = "app";
-          program = "${lint}/bin/llmug-hello-lint";
+          program = pkgs.lib.getExe lint;
         };
         fix = {
           type = "app";
-          program = "${fix}/bin/llmug-hello-fix";
+          program = pkgs.lib.getExe fix;
         };
       };
       devShells = {

@@ -20,15 +20,14 @@
         default = run;
         build = run;
       };
-      apps = {
-        default = {
+      apps = let
+        app = {
           type = "app";
-          program = "${run}/bin/nixbot";
+          program = pkgs.lib.getExe run;
         };
-        run = {
-          type = "app";
-          program = "${run}/bin/nixbot";
-        };
+      in {
+        default = app;
+        run = app;
       };
     });
 }
