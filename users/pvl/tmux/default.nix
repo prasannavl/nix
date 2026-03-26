@@ -12,7 +12,7 @@
         # set prefix: Alt + e
         set -g prefix M-e
         # Let's bind this too, so that repeated presses work, esp. when nesting.
-        bind -n M-e send-prefix
+        bind M-e send-prefix
 
         set -asg terminal-features ",alacritty*:256:RGB:mouse:cstyle"
 
