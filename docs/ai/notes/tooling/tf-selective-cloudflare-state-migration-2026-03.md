@@ -40,7 +40,7 @@ another without mutating either backend by default.
 - Planning mode only writes under `docs/ai/runs/`.
 - It snapshots the current backend state for the selected projects but does not
   mutate state by itself.
-- The generated import script is idempotent against the target backend: it
-  skips addresses already present in state.
+- The generated import script is idempotent against the target backend: it skips
+  addresses already present in state.
 - The generated remove script is intentionally separate and should only run
   after target-side verification.
