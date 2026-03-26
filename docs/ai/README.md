@@ -13,7 +13,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/lang-patterns/markdown.md`: Markdown formatting authority, lint
   interaction, and `docs/ai` writing conventions for repo-generated docs.
 - `docs/ai/lang-patterns/nix.md`: Nix formatting, `inherit` conventions, module
-  patterns, attrset style, flake conventions, and common pitfalls.
+  patterns, attrset style, packaging conventions, flake conventions, and common
+  pitfalls.
 
 ## Notes
 
@@ -25,6 +26,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/apps/flake-architecture-consolidated-2026-03.md`: Canonical
   flake output model, auto-discovery collector, `lib/flake` helpers, hybrid
   package set architecture, and wrapper flakes.
+- `docs/ai/notes/apps/flake-app-meta-simplification-2026-03.md`:
+  `meta.mainProgram` as single source of truth for app binaries, flake warning
+  cleanup, and lint stderr filtering.
 - `docs/ai/notes/apps/cloudflare-apps-remove-openseal-priyasuyash-2026-03.md`:
   Remove the `openseal` and `priyasuyash` Cloudflare apps and clear their
   archive-worker Terraform config.
