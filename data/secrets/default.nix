@@ -80,6 +80,7 @@ in
 
     # Tailscale
     "data/secrets/tailscale/llmug-rivendell.key.age".publicKeys = admins ++ llmug-rivendell;
+    "data/secrets/tailscale/gap3-gondor.key.age".publicKeys = admins ++ gap3-gondor;
 
     # Services
     "data/secrets/services/beszel/key.key.age".publicKeys = admins ++ pvl-x2;
