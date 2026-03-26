@@ -4,6 +4,9 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
+readonly NIXBOT_VERSION="2026.03.27.10"
+readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconcile{resourceArgs}"
+readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settle --timeout {timeout}{resourceArgs}"
 
 readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
   nixpkgs#age
@@ -30,13 +33,14 @@ usage() {
   cat <<'USAGE'
 Usage:
   nixbot
-  nixbot <deps|check-deps>
+  nixbot <deps|check-deps|version>
   nixbot <run|deploy|build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
   deps            Enter the nixbot runtime shell, verify tools, and exit.
   check-deps      Verify required commands in the current environment.
+  version         Print the nixbot script version and exit.
 
 Workflow Actions:
   run             Run the full workflow.
@@ -117,6 +121,8 @@ Environment (Deploy Actions):
 
 Environment (Host Workflow Ordering):
   NIXBOT_BASTION_FIRST        Same as --bastion-first (bool)
+  NIXBOT_LOCAL_SELF_TARGET    Self-target transport policy: auto|on|off
+                              (default: auto)
 
 Environment (Workflow Behavior):
   NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
@@ -214,6 +220,19 @@ init_vars() {
   FORCE_PREFIX_HOST_LOGS=0
   PREFIX_HOST_LOGS_EXPLICIT=0
   LOG_FORMAT="${NIXBOT_LOG_FORMAT:-auto}"
+  NIXBOT_LOCAL_SELF_TARGET_MODE="${NIXBOT_LOCAL_SELF_TARGET:-auto}"
+  NIXBOT_PARENT_SETTLE_TIMEOUT="${NIXBOT_PARENT_SETTLE_TIMEOUT:-180}"
+  NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT:-45}"
+  NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS:-5}"
+  NIXBOT_CONTROL_PERSIST_SECS="${NIXBOT_CONTROL_PERSIST_SECS:-120}"
+  NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE="${NIXBOT_PARENT_RECONCILE_TEMPLATE:-}"
+  NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE="${NIXBOT_PARENT_SETTLE_TEMPLATE:-}"
+  if [ -z "${NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE}" ]; then
+    NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE="${NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK}"
+  fi
+  if [ -z "${NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE}" ]; then
+    NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE="${NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK}"
+  fi
   NIXBOT_CONFIG_PATH="${NIXBOT_CONFIG:-hosts/nixbot.nix}"
   SHA="${NIXBOT_SHA:-}"
   BASTION_TRIGGER=0
@@ -228,6 +247,9 @@ init_vars() {
   DISCOVER_DECRYPT_KEYS_MODE="${NIXBOT_DISCOVER_KEYS:-auto}"
   REEXEC_FROM_REPO=0
   REPO_PATH_EXPLICIT=0
+  NIXBOT_REPO_ROOT_LOCK_TIMEOUT="${NIXBOT_REPO_ROOT_LOCK_TIMEOUT:-60}"
+  NIXBOT_TRANSPORT_RETRY_ATTEMPTS="${NIXBOT_TRANSPORT_RETRY_ATTEMPTS:-3}"
+  NIXBOT_TRANSPORT_RETRY_DELAY_SECS="${NIXBOT_TRANSPORT_RETRY_DELAY_SECS:-2}"
   TF_WORK_DIR="${NIXBOT_TF_DIR:-}"
   TF_CHANGE_BASE_REF=""
   _NIXBOT_LOG_GROUP_DEPTH=0
@@ -285,10 +307,12 @@ init_vars() {
 
 
   NIXBOT_DEFAULT_USER="root"
+  NIXBOT_DEFAULT_PORT="22"
   NIXBOT_DEFAULT_KEY_PATH=""
   NIXBOT_DEFAULT_KNOWN_HOSTS=""
   NIXBOT_DEFAULT_BOOTSTRAP_KEY=""
   NIXBOT_DEFAULT_BOOTSTRAP_USER="root"
+  NIXBOT_DEFAULT_BOOTSTRAP_PORT="${NIXBOT_DEFAULT_PORT}"
   NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH=""
   NIXBOT_DEFAULT_AGE_IDENTITY_KEY=""
   NIXBOT_HOSTS_JSON='{}'
@@ -296,6 +320,8 @@ init_vars() {
   NIXBOT_TMP_DIR=""
   NIXBOT_CONFIG_DIR=""
   BOOTSTRAP_READY_NODES=""
+  PRIMARY_READY_NODES=""
+  PREP_DEPLOY_NODE=""
   PREP_DEPLOY_SSH_TARGET=""
   PREP_DEPLOY_NIX_SSHOPTS=""
   PREP_USING_BOOTSTRAP_FALLBACK=0
@@ -1072,7 +1098,7 @@ resolve_repo_root() {
 # updates happen under this short lock. The actual deploy work happens after the
 # worktree is created and the lock is released.
 acquire_repo_root_lock() {
-  local git_dir="" lock_root=""
+  local git_dir="" lock_root="" lock_pid="" lock_deadline=0
 
   [ -n "${REPO_ROOT}" ] || return 0
   if [ -n "${REPO_ROOT_LOCK_DIR}" ] && [ -d "${REPO_ROOT_LOCK_DIR}" ]; then
@@ -1090,7 +1116,24 @@ acquire_repo_root_lock() {
     lock_root="${REPO_ROOT%/}.nixbot-worktree.lock"
   fi
 
+  lock_deadline=$((SECONDS + NIXBOT_REPO_ROOT_LOCK_TIMEOUT))
   while ! mkdir "${lock_root}" 2>/dev/null; do
+    if [ "${SECONDS}" -ge "${lock_deadline}" ]; then
+      lock_pid=""
+      if [ -f "${lock_root}/pid" ]; then
+        lock_pid="$(<"${lock_root}/pid")"
+      fi
+
+      if [ -n "${lock_pid}" ] && kill -0 "${lock_pid}" 2>/dev/null; then
+        die "Timed out waiting for repo root lock ${lock_root} held by pid ${lock_pid}"
+      fi
+
+      echo "Removing stale repo root lock: ${lock_root}" >&2
+      rm -rf "${lock_root}" 2>/dev/null || true
+      lock_deadline=$((SECONDS + NIXBOT_REPO_ROOT_LOCK_TIMEOUT))
+      continue
+    fi
+
     sleep 0.2
   done
 
@@ -1398,21 +1441,24 @@ select_hosts_json() {
 
 host_dependencies_for() {
   local node="$1"
-
-  jq -r --arg h "${node}" '.[$h].deps // [] | .[]' <<<"${NIXBOT_HOSTS_JSON}"
-}
-
-host_ordering_after_for() {
-  local node="$1"
-
-  jq -r --arg h "${node}" '.[$h].after // [] | .[]' <<<"${NIXBOT_HOSTS_JSON}"
+  host_predecessors_for "${node}" dependency
 }
 
 # Emit all ordering predecessors (deps + after) for a host.
 host_predecessors_for() {
-  local node="$1"
+  local node="$1" mode="${2:-all}"
+  local parent=""
 
-  jq -r --arg h "${node}" '(.[$h].deps // []) + (.[$h].after // []) | .[]' <<<"${NIXBOT_HOSTS_JSON}"
+  parent="$(host_parent_for "${node}")"
+  jq -r --arg h "${node}" --arg parent "${parent}" --arg mode "${mode}" '
+    (
+      (.[$h].deps // [])
+      + (if $mode == "all" then (.[$h].after // []) else [] end)
+      + (if $parent == "" then [] else [$parent] end)
+    )
+    | unique
+    | .[]
+  ' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
 host_skip_enabled() {
@@ -1457,6 +1503,28 @@ host_deploy_stage_skipped() {
 host_wait_seconds() {
   local node="$1"
   jq -r --arg h "${node}" '.[$h].wait // 0' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
+host_parent_for() {
+  local node="$1"
+  jq -r --arg h "${node}" '.[$h].parent // ""' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
+host_parent_resource_for() {
+  local node="$1"
+  jq -r --arg h "${node}" '.[$h].parentResource // $h' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
+host_parent_reconcile_template_for() {
+  local node="$1"
+  jq -r --arg h "${node}" --arg default "${NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE}" \
+    '.[$h].parentReconcileCommand // $default' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
+host_parent_settle_template_for() {
+  local node="$1"
+  jq -r --arg h "${node}" --arg default "${NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE}" \
+    '.[$h].parentSettleCommand // $default' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
 wait_before_host_phase() {
@@ -1734,7 +1802,7 @@ prepare_run_context() {
 }
 
 log_run_context() {
-  local selected_json="$1" node="" mode="" wait_secs="" annotation=""
+  local selected_json="$1" node="" mode="" wait_secs="" parent_host="" annotation=""
   local -a log_hosts=() annotated_hosts=()
 
   json_array_to_bash_array "${selected_json}" log_hosts
@@ -1750,6 +1818,10 @@ log_run_context() {
     if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
       annotation="${annotation:+${annotation}, }wait: ${wait_secs}s"
     fi
+    parent_host="$(host_parent_for "${node}")"
+    if [ -n "${parent_host}" ]; then
+      annotation="${annotation:+${annotation}, }parent: ${parent_host}"
+    fi
     if [ -n "${annotation}" ]; then
       annotated_hosts+=("${node} (${annotation})")
     else
@@ -1758,6 +1830,7 @@ log_run_context() {
   done
 
   log_section "nixbot"
+  echo "Version: ${NIXBOT_VERSION}" >&2
   echo "Action: ${ACTION}" >&2
   print_host_block "Hosts" "${annotated_hosts[@]}"
   if is_deploy_style_action; then
@@ -1774,21 +1847,26 @@ resolve_deploy_target() {
   jq -c --arg h "${node}" \
     --arg defUser "${NIXBOT_DEFAULT_USER}" \
     --arg defTarget "${node}" \
+    --arg defPort "${NIXBOT_DEFAULT_PORT}" \
     --arg defKey "${NIXBOT_DEFAULT_KEY_PATH}" \
     --arg defKnown "${NIXBOT_DEFAULT_KNOWN_HOSTS}" \
     --arg defBKey "${NIXBOT_DEFAULT_BOOTSTRAP_KEY}" \
     --arg defBUser "${NIXBOT_DEFAULT_BOOTSTRAP_USER}" \
+    --arg defBPort "${NIXBOT_DEFAULT_BOOTSTRAP_PORT}" \
     --arg defBKeyPath "${NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH}" \
     --arg defAgeKey "${NIXBOT_DEFAULT_AGE_IDENTITY_KEY}" \
     '(.[$h] // {}) as $cfg |
     def fb($v; $d): ($v // "") | if . == "" then $d else . end;
+    def portfb($v; $d): if ($v == null or $v == "") then $d else ($v | tostring) end;
     {
       user: fb($cfg.user; $defUser),
       target: fb($cfg.target; $defTarget),
+      port: portfb($cfg.port; $defPort),
       keyPath: fb($cfg.key; $defKey),
       knownHosts: fb($cfg.knownHosts; $defKnown),
       bootstrapKey: fb($cfg.bootstrapKey; $defBKey),
       bootstrapUser: fb($cfg.bootstrapUser; $defBUser),
+      bootstrapPort: portfb($cfg.bootstrapPort; portfb($cfg.port; $defBPort)),
       bootstrapKeyPath: fb($cfg.bootstrapKeyPath; $defBKeyPath),
       ageIdentityKey: fb($cfg.ageIdentityKey; $defAgeKey),
       proxyJump: ($cfg.proxyJump // "")
@@ -1803,8 +1881,10 @@ resolve_proxy_chain() {
   jq -c \
     --arg start "${start_host}" \
     --arg defUser "${NIXBOT_DEFAULT_USER}" \
+    --arg defPort "${NIXBOT_DEFAULT_PORT}" \
     --arg defKey "${NIXBOT_DEFAULT_KEY_PATH}" '
     def fb($v; $d): ($v // "") | if . == "" then $d else . end;
+    def portfb($v; $d): if ($v == null or $v == "") then $d else ($v | tostring) end;
     def resolve_chain($h; $visited):
       if $h == "" then []
       elif ($visited | index($h)) then
@@ -1813,12 +1893,15 @@ resolve_proxy_chain() {
         (.[$h] // {}) as $cfg |
         ($cfg.target // $h) as $target |
         (fb($cfg.user; $defUser)) as $user |
+        (portfb($cfg.port; $defPort)) as $port |
         (fb($cfg.key; $defKey)) as $keyPath |
         ($cfg.proxyJump // "") as $next |
         resolve_chain($next; $visited + [$h]) + [{
           node: $h,
           target: $target,
+          port: $port,
           connectTarget: (if $user == "" then $target else "\($user)@\($target)" end),
+          connectPort: $port,
           keyPath: $keyPath
         }]
       end;
@@ -1958,23 +2041,86 @@ local_host_matches_identifier() {
 }
 
 should_use_local_self_target() {
-  [ -n "${SSH_ORIGINAL_COMMAND:-}" ]
+  case "${NIXBOT_LOCAL_SELF_TARGET_MODE}" in
+    on|true|1|yes)
+      return 0
+      ;;
+    off|false|0|no)
+      return 1
+      ;;
+    auto)
+      return 0
+      ;;
+    *)
+      die "Unsupported NIXBOT_LOCAL_SELF_TARGET value: ${NIXBOT_LOCAL_SELF_TARGET_MODE}"
+      ;;
+  esac
 }
 
 mark_bootstrap_ready() {
   local node="$1"
+  local state_file=""
+
+  ensure_tmp_dir
+  state_file="${NIXBOT_TMP_DIR}/bootstrap-ready.nodes"
   case " ${BOOTSTRAP_READY_NODES} " in
-    *" ${node} "*) ;;
+    *" ${node} "*) return 0 ;;
     *) BOOTSTRAP_READY_NODES="${BOOTSTRAP_READY_NODES} ${node}" ;;
   esac
+  if ! { [ -f "${state_file}" ] && grep -Fxq "${node}" "${state_file}"; }; then
+    printf '%s\n' "${node}" >> "${state_file}"
+  fi
 }
 
 is_bootstrap_ready() {
   local node="$1"
+  local state_file=""
+
   case " ${BOOTSTRAP_READY_NODES} " in
     *" ${node} "*) return 0 ;;
-    *) return 1 ;;
   esac
+
+  ensure_tmp_dir
+  state_file="${NIXBOT_TMP_DIR}/bootstrap-ready.nodes"
+  if [ -f "${state_file}" ] && grep -Fxq "${node}" "${state_file}"; then
+    BOOTSTRAP_READY_NODES="${BOOTSTRAP_READY_NODES} ${node}"
+    return 0
+  fi
+
+  return 1
+}
+
+mark_primary_ready() {
+  local node="$1"
+  local state_file=""
+
+  ensure_tmp_dir
+  state_file="${NIXBOT_TMP_DIR}/primary-ready.nodes"
+  case " ${PRIMARY_READY_NODES} " in
+    *" ${node} "*) return 0 ;;
+    *) PRIMARY_READY_NODES="${PRIMARY_READY_NODES} ${node}" ;;
+  esac
+  if ! { [ -f "${state_file}" ] && grep -Fxq "${node}" "${state_file}"; }; then
+    printf '%s\n' "${node}" >> "${state_file}"
+  fi
+}
+
+is_primary_ready() {
+  local node="$1"
+  local state_file=""
+
+  case " ${PRIMARY_READY_NODES} " in
+    *" ${node} "*) return 0 ;;
+  esac
+
+  ensure_tmp_dir
+  state_file="${NIXBOT_TMP_DIR}/primary-ready.nodes"
+  if [ -f "${state_file}" ] && grep -Fxq "${node}" "${state_file}"; then
+    PRIMARY_READY_NODES="${PRIMARY_READY_NODES} ${node}"
+    return 0
+  fi
+
+  return 1
 }
 
 check_bootstrap_via_forced_command() {
@@ -2045,8 +2191,14 @@ check_bootstrap_via_forced_command() {
     check_remote_cmd+=(--config "${remote_config_path}")
   fi
 
-  # shellcheck disable=SC2029
-  if check_output="$(ssh "${check_ssh_opts[@]}" "${ssh_target}" "${check_remote_cmd[@]}" 2>&1)"; then
+  if retry_transport_capture \
+    check_output \
+    "Forced-command bootstrap check for ${node}" \
+    "" \
+    ssh \
+    "${check_ssh_opts[@]}" \
+    "${ssh_target}" \
+    "${check_remote_cmd[@]}"; then
     echo "==> Bootstrap key validated via forced command for ${node}"
     return 0
   fi
@@ -2064,7 +2216,7 @@ check_bootstrap_via_forced_command() {
 inject_bootstrap_nixbot_key() {
   local node="$1" bootstrap_ssh_target="$2" bootstrap_nixbot_key_path="$3"
   local -a bootstrap_ssh_opts=("${@:4}")
-  local bootstrap_key_file="" remote_tmp="" expected_bootstrap_fpr=""
+  local bootstrap_key_file="" remote_tmp="" expected_bootstrap_fpr="" remote_check_rc=0
   local bootstrap_dest="${REMOTE_NIXBOT_PRIMARY_KEY}" bootstrap_legacy_dest="${REMOTE_NIXBOT_LEGACY_KEY}"
 
   if [ -z "${bootstrap_nixbot_key_path}" ]; then
@@ -2102,6 +2254,12 @@ inject_bootstrap_nixbot_key() {
     "${bootstrap_ssh_opts[@]}" >/dev/null 2>&1; then
     echo "==> Skipping bootstrap nixbot key for ${node}; matching key already present on target"
     return
+  else
+    remote_check_rc="$?"
+    if [ "${remote_check_rc}" -eq 255 ]; then
+      echo "Unable to verify bootstrap key for ${node}; bootstrap target ${bootstrap_ssh_target} is unreachable" >&2
+      return 1
+    fi
   fi
 
   echo "==> Injecting bootstrap nixbot key for ${node}"
@@ -2192,6 +2350,68 @@ run_target_command() {
   fi
 }
 
+transport_retry_backoff_seconds() {
+  local attempt="$1"
+
+  printf '%s\n' "$((NIXBOT_TRANSPORT_RETRY_DELAY_SECS * (attempt - 1)))"
+}
+
+retry_transport_command() {
+  local retry_label="$1" retry_hook="${2:-}"
+  shift 2
+  local attempt=1 rc=0 retry_sleep_secs=0
+
+  while :; do
+    if "$@"; then
+      return 0
+    fi
+    rc="$?"
+
+    if [ "${rc}" -ne 255 ] || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+      return "${rc}"
+    fi
+
+    attempt=$((attempt + 1))
+    retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+    echo "${retry_label} transport closed; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+    sleep "${retry_sleep_secs}"
+    if [ -n "${retry_hook}" ]; then
+      "${retry_hook}" || return "$?"
+    fi
+  done
+}
+
+retry_transport_capture() {
+  # shellcheck disable=SC2034
+  local -n rtc_output_out_ref="$1"
+  local retry_label="$2" retry_hook="${3:-}"
+  shift 3
+  local attempt=1 rc=0 retry_sleep_secs=0 captured=""
+
+  while :; do
+    if captured="$("$@" 2>&1)"; then
+      # shellcheck disable=SC2034
+      rtc_output_out_ref="${captured}"
+      return 0
+    fi
+    rc="$?"
+    # shellcheck disable=SC2034
+    rtc_output_out_ref="${captured}"
+
+    if [ "${rc}" -ne 255 ] || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+      return "${rc}"
+    fi
+
+    attempt=$((attempt + 1))
+    retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+    echo "${retry_label} transport closed; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+    sleep "${retry_sleep_secs}"
+    if [ -n "${retry_hook}" ]; then
+      "${retry_hook}" || return "$?"
+    fi
+  done
+}
+
 resolve_target_command_user() {
   local local_exec="$1" ssh_target="$2"
 
@@ -2273,13 +2493,25 @@ target_file_matches_expected_value() {
   local expected_value="$4" read_cmd="$5" using_bootstrap_fallback="${6:-0}"
   shift 6
   local -a ssh_opts=("$@") sudo_policy=()
-  local check_cmd="" ask_sudo_password=0 tty_mode=0
+  local check_cmd="" ask_sudo_password=0 tty_mode=0 rc=0
 
   mapfile -t sudo_policy < <(resolve_target_sudo_policy "${local_exec}" "${ssh_target}" "${using_bootstrap_fallback}")
   ask_sudo_password="${sudo_policy[1]:-0}"
   tty_mode="${sudo_policy[2]:-0}"
   check_cmd="$(build_remote_file_value_check_cmd "${remote_dest}" "${expected_value}" "${read_cmd}" "${ask_sudo_password}")"
-  run_target_command "${local_exec}" "${ssh_target}" "${tty_mode}" "${check_cmd}" "${ssh_opts[@]}"
+  if retry_transport_command \
+    "Remote file validation on ${ssh_target}" \
+    "" \
+    run_target_command \
+    "${local_exec}" \
+    "${ssh_target}" \
+    "${tty_mode}" \
+    "${check_cmd}" \
+    "${ssh_opts[@]}"; then
+    return 0
+  fi
+  rc="$?"
+  return "${rc}"
 }
 
 install_local_file_via_target() {
@@ -2292,7 +2524,15 @@ install_local_file_via_target() {
   local -a ssh_opts=("$@") sudo_policy=()
   local target_tmp="" install_cmd="" tty_mode=0
 
-  if ! target_tmp="$(create_target_tmp_file "${local_exec}" "${ssh_target}" "${tmp_prefix}" "${ssh_opts[@]}")"; then
+  if ! retry_transport_capture \
+    target_tmp \
+    "Remote temp allocation for ${install_label} on ${ssh_target}" \
+    "" \
+    create_target_tmp_file \
+    "${local_exec}" \
+    "${ssh_target}" \
+    "${tmp_prefix}" \
+    "${ssh_opts[@]}"; then
     target_tmp=""
   fi
   if [ -z "${target_tmp}" ]; then
@@ -2300,7 +2540,15 @@ install_local_file_via_target() {
     return 1
   fi
 
-  if ! copy_local_file_to_target_tmp "${local_exec}" "${local_file}" "${ssh_target}" "${target_tmp}" "${ssh_opts[@]}"; then
+  if ! retry_transport_command \
+    "Copying ${install_label} to ${ssh_target}" \
+    "" \
+    copy_local_file_to_target_tmp \
+    "${local_exec}" \
+    "${local_file}" \
+    "${ssh_target}" \
+    "${target_tmp}" \
+    "${ssh_opts[@]}"; then
     cleanup_target_tmp_file "${local_exec}" "${ssh_target}" "${target_tmp}" "${ssh_opts[@]}"
     return 1
   fi
@@ -2317,7 +2565,15 @@ install_local_file_via_target() {
 
   mapfile -t sudo_policy < <(resolve_target_sudo_policy "${local_exec}" "${ssh_target}" "${using_bootstrap_fallback}")
   tty_mode="${sudo_policy[2]:-0}"
-  if ! run_target_command "${local_exec}" "${ssh_target}" "${tty_mode}" "${install_cmd}" "${ssh_opts[@]}"; then
+  if ! retry_transport_command \
+    "Installing ${install_label} on ${ssh_target}" \
+    "" \
+    run_target_command \
+    "${local_exec}" \
+    "${ssh_target}" \
+    "${tty_mode}" \
+    "${install_cmd}" \
+    "${ssh_opts[@]}"; then
     cleanup_target_tmp_file "${local_exec}" "${ssh_target}" "${target_tmp}" "${ssh_opts[@]}"
     return 1
   fi
@@ -2335,6 +2591,39 @@ init_known_hosts_ssh_context() {
   if [ "${batch_mode}" -eq 1 ]; then
     ikhsc_ssh_opts_out_ref=(-o BatchMode=yes "${ikhsc_ssh_opts_out_ref[@]}")
     ikhsc_nix_sshopts_out_ref="-o BatchMode=yes ${ikhsc_nix_sshopts_out_ref}"
+  fi
+}
+
+apply_control_master_to_ssh_context() {
+  local node="$1" role="$2"
+  # shellcheck disable=SC2178
+  local -n acmtsc_ssh_opts_inout_ref="$3" acmtsc_nix_sshopts_inout_ref="$4"
+  local safe_node="" control_path=""
+
+  ensure_tmp_dir
+  safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}-${role}")"
+  control_path="${TMP_SSH_DIR}/cm-${safe_node}"
+
+  acmtsc_ssh_opts_inout_ref+=(
+    -o ControlMaster=auto
+    -o "ControlPath=${control_path}"
+    -o "ControlPersist=${NIXBOT_CONTROL_PERSIST_SECS}"
+  )
+  acmtsc_nix_sshopts_inout_ref="${acmtsc_nix_sshopts_inout_ref:+${acmtsc_nix_sshopts_inout_ref} }-o ControlMaster=auto -o ControlPath=${control_path} -o ControlPersist=${NIXBOT_CONTROL_PERSIST_SECS}"
+}
+
+apply_port_to_ssh_context() {
+  local port="$1"
+  # shellcheck disable=SC2178
+  local -n aptsc_ssh_opts_inout_ref="$2" aptsc_nix_sshopts_inout_ref="$3"
+
+  [ -n "${port}" ] || return 0
+
+  aptsc_ssh_opts_inout_ref=(-o "Port=${port}" "${aptsc_ssh_opts_inout_ref[@]}")
+  if [ -n "${aptsc_nix_sshopts_inout_ref}" ]; then
+    aptsc_nix_sshopts_inout_ref="-o Port=${port} ${aptsc_nix_sshopts_inout_ref}"
+  else
+    aptsc_nix_sshopts_inout_ref="-o Port=${port}"
   fi
 }
 
@@ -2439,11 +2728,15 @@ prepare_host_ssh_contexts() {
   fi
   init_known_hosts_ssh_context 1 "${known_hosts_file}" phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref "${host_key_check}"
   init_known_hosts_ssh_context 0 "${known_hosts_file}" phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref "${host_key_check}"
+  if [ -z "${proxy_chain}" ]; then
+    apply_control_master_to_ssh_context "${node}" primary phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref
+    apply_control_master_to_ssh_context "${node}" bootstrap phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref
+  fi
 }
 
 write_proxy_command_script() {
   local script_path="$1" known_hosts_file="$2" forward_target="$3" connect_target="$4"
-  local previous_proxy_script="$5" identity_file="${6:-}"
+  local connect_port="$5" previous_proxy_script="$6" identity_file="${7:-}"
 
   {
     printf '%s\n' '#!/usr/bin/env bash'
@@ -2451,6 +2744,7 @@ write_proxy_command_script() {
     printf 'known_hosts_file=%q\n' "${known_hosts_file}"
     printf 'forward_target=%q\n' "${forward_target}"
     printf 'connect_target=%q\n' "${connect_target}"
+    printf 'connect_port=%q\n' "${connect_port}"
     printf 'previous_proxy_script=%q\n' "${previous_proxy_script}"
     printf 'identity_file=%q\n' "${identity_file}"
     cat <<'EOF'
@@ -2461,6 +2755,9 @@ fi
 if [ -n "${previous_proxy_script}" ]; then
   cmd+=(-o "ProxyCommand=${previous_proxy_script}")
 fi
+if [ -n "${connect_port}" ]; then
+  cmd+=(-o "Port=${connect_port}")
+fi
 cmd+=(-W "${forward_target}" "${connect_target}")
 exec "${cmd[@]}"
 EOF
@@ -2469,16 +2766,16 @@ EOF
 }
 
 apply_proxy_chain_to_ssh_contexts() {
-  local node="$1" host="$2" proxy_chain="$3"
+  local node="$1" host="$2" target_port="$3" proxy_chain="$4"
   # shellcheck disable=SC2178
-  local -n apctsc_host_ssh_opts_out_ref="$4" apctsc_host_nix_sshopts_out_ref="$5"
+  local -n apctsc_host_ssh_opts_out_ref="$5" apctsc_host_nix_sshopts_out_ref="$6"
   # shellcheck disable=SC2178,SC2034
-  local -n apctsc_bootstrap_ssh_opts_out_ref="$6" apctsc_bootstrap_nix_sshopts_out_ref="$7"
+  local -n apctsc_bootstrap_ssh_opts_out_ref="$7" apctsc_bootstrap_nix_sshopts_out_ref="$8"
   local safe_node="" proxy_known_hosts_file=""
   local -a chain_hops=()
   local hop_json="" prev_script="" proxy_script="" proxy_cmd=""
   local i=0 fwd_host="" fwd_port=22
-  local hop_target="" hop_connect_target="" hop_key_path="" hop_key_file=""
+  local hop_target="" _hop_port="" hop_connect_target="" hop_connect_port="" hop_key_path="" hop_key_file=""
 
   [ -n "${proxy_chain}" ] || return 0
 
@@ -2503,13 +2800,17 @@ apply_proxy_chain_to_ssh_contexts() {
     proxy_script="${TMP_SSH_DIR}/proxy-${safe_node}-${i}.sh"
     {
       read -r hop_target
+      read -r _hop_port
       read -r hop_connect_target
+      read -r hop_connect_port
       read -r hop_key_path
-    } < <(jq -r '[.target, .connectTarget, (.keyPath // "")] | .[]' <<<"${hop_json}")
+    } < <(jq -r '[.target, (.port // "22"), .connectTarget, (.connectPort // .port // "22"), (.keyPath // "")] | .[]' <<<"${hop_json}")
     if [ "${i}" -lt "$(( ${#chain_hops[@]} - 1 ))" ]; then
       fwd_host="$(jq -r '.target' <<<"${chain_hops[i+1]}")"
+      fwd_port="$(jq -r '(.port // "22")' <<<"${chain_hops[i+1]}")"
     else
       fwd_host="${host}"
+      fwd_port="${target_port}"
     fi
 
     hop_key_file=""
@@ -2524,6 +2825,7 @@ apply_proxy_chain_to_ssh_contexts() {
       "${proxy_known_hosts_file}" \
       "$(format_ssh_forward_target "${fwd_host}" "${fwd_port}")" \
       "$(format_ssh_connect_target "${hop_connect_target}")" \
+      "${hop_connect_port}" \
       "${prev_script}" \
       "${hop_key_file}"
     prev_script="${proxy_script}"
@@ -2537,12 +2839,12 @@ apply_proxy_chain_to_ssh_contexts() {
 }
 
 build_deploy_ssh_contexts() {
-  local node="$1" host="$2" known_hosts="$3" proxy_chain="$4"
-  local key_path="$5" bootstrap_key_path="$6"
+  local node="$1" host="$2" port="$3" bootstrap_port="$4" known_hosts="$5" proxy_chain="$6"
+  local key_path="$7" bootstrap_key_path="$8"
   # shellcheck disable=SC2178,SC2034
-  local -n bdsc_host_ssh_opts_out_ref="$7" bdsc_host_nix_sshopts_out_ref="$8"
+  local -n bdsc_host_ssh_opts_out_ref="$9" bdsc_host_nix_sshopts_out_ref="${10}"
   # shellcheck disable=SC2178,SC2034
-  local -n bdsc_bootstrap_ssh_opts_out_ref="$9" bdsc_bootstrap_nix_sshopts_out_ref="${10}"
+  local -n bdsc_bootstrap_ssh_opts_out_ref="${11}" bdsc_bootstrap_nix_sshopts_out_ref="${12}"
   local deploy_key_file="" bootstrap_key_file=""
 
   prepare_host_ssh_contexts \
@@ -2555,9 +2857,13 @@ build_deploy_ssh_contexts() {
     bdsc_bootstrap_nix_sshopts_out_ref \
     "${proxy_chain}" || return 1
 
+  apply_port_to_ssh_context "${port}" bdsc_host_ssh_opts_out_ref bdsc_host_nix_sshopts_out_ref
+  apply_port_to_ssh_context "${bootstrap_port}" bdsc_bootstrap_ssh_opts_out_ref bdsc_bootstrap_nix_sshopts_out_ref
+
   apply_proxy_chain_to_ssh_contexts \
     "${node}" \
     "${host}" \
+    "${port}" \
     "${proxy_chain}" \
     bdsc_host_ssh_opts_out_ref \
     bdsc_host_nix_sshopts_out_ref \
@@ -2596,11 +2902,12 @@ ensure_bootstrap_key_ready() {
 }
 
 set_prepared_deploy_context() {
-  local ssh_target="$1" nix_sshopts="$2" using_bootstrap_fallback="$3"
-  local age_identity_key="$4" local_exec="$5"
-  shift 5
+  local node="$1" ssh_target="$2" nix_sshopts="$3" using_bootstrap_fallback="$4"
+  local age_identity_key="$5" local_exec="$6"
+  shift 6
   local -a ssh_opts=("$@")
 
+  PREP_DEPLOY_NODE="${node}"
   PREP_DEPLOY_SSH_TARGET="${ssh_target}"
   PREP_DEPLOY_NIX_SSHOPTS="${nix_sshopts}"
   PREP_USING_BOOTSTRAP_FALLBACK="${using_bootstrap_fallback}"
@@ -2610,11 +2917,12 @@ set_prepared_deploy_context() {
 }
 
 set_prepared_remote_deploy_context() {
-  local ssh_target="$1" nix_sshopts="$2" age_identity_key="$3"
-  shift 3
+  local node="$1" ssh_target="$2" nix_sshopts="$3" age_identity_key="$4"
+  shift 4
   local -a ssh_opts=("$@")
 
   set_prepared_deploy_context \
+    "${node}" \
     "${ssh_target}" \
     "${nix_sshopts}" \
     0 \
@@ -2624,6 +2932,7 @@ set_prepared_remote_deploy_context() {
 }
 
 clear_prepared_deploy_context() {
+  PREP_DEPLOY_NODE=""
   PREP_DEPLOY_SSH_TARGET=""
   PREP_DEPLOY_NIX_SSHOPTS=""
   PREP_USING_BOOTSTRAP_FALLBACK=0
@@ -2636,20 +2945,30 @@ probe_primary_deploy_target() {
   local ssh_target="$1"
   shift
   local -a ssh_opts=("$@")
+  # shellcheck disable=SC2034
+  local probe_output=""
 
-  ssh "${ssh_opts[@]}" "${ssh_target}" "true" >/dev/null 2>&1
+  retry_transport_capture \
+    probe_output \
+    "Primary connectivity probe for ${ssh_target}" \
+    "" \
+    ssh \
+    "${ssh_opts[@]}" \
+    "${ssh_target}" \
+    true
 }
 
 ensure_primary_deploy_connectivity() {
-  local node="$1" host="$2" known_hosts="$3" ssh_target="$4"
-  local full_proxy_chain="$5" effective_proxy_chain="$6"
-  local key_path="$7" bootstrap_key_path="$8" age_identity_key="$9"
+  local node="$1" host="$2" port="$3" bootstrap_port="$4" known_hosts="$5" ssh_target="$6"
+  local full_proxy_chain="$7" effective_proxy_chain="$8"
+  local key_path="$9" bootstrap_key_path="${10}" age_identity_key="${11}"
   # shellcheck disable=SC2178,SC2034
-  local -n epdc_ssh_opts_inout_ref="${10}" epdc_bootstrap_ssh_opts_inout_ref="${12}"
+  local -n epdc_ssh_opts_inout_ref="${12}" epdc_bootstrap_ssh_opts_inout_ref="${14}"
   # shellcheck disable=SC2178,SC2034
-  local -n epdc_nix_sshopts_inout_ref="${11}" epdc_bootstrap_nix_sshopts_inout_ref="${13}"
+  local -n epdc_nix_sshopts_inout_ref="${13}" epdc_bootstrap_nix_sshopts_inout_ref="${15}"
 
   if probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
+    mark_primary_ready "${node}"
     return 0
   fi
 
@@ -2661,6 +2980,8 @@ ensure_primary_deploy_connectivity() {
   build_deploy_ssh_contexts \
     "${node}" \
     "${host}" \
+    "${port}" \
+    "${bootstrap_port}" \
     "${known_hosts}" \
     "${full_proxy_chain}" \
     "${key_path}" \
@@ -2671,12 +2992,18 @@ ensure_primary_deploy_connectivity() {
     epdc_bootstrap_nix_sshopts_inout_ref || return 1
 
   set_prepared_remote_deploy_context \
+    "${node}" \
     "${ssh_target}" \
     "${epdc_nix_sshopts_inout_ref}" \
     "${age_identity_key}" \
     "${epdc_ssh_opts_inout_ref[@]}"
 
-  probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"
+  if probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
+    mark_primary_ready "${node}"
+    return 0
+  fi
+
+  return 1
 }
 
 prepare_bootstrap_deploy_context() {
@@ -2687,6 +3014,7 @@ prepare_bootstrap_deploy_context() {
 
   ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
   set_prepared_deploy_context \
+    "${node}" \
     "${bootstrap_ssh_target}" \
     "${bootstrap_nix_sshopts}" \
     1 \
@@ -2698,7 +3026,8 @@ prepare_bootstrap_deploy_context() {
 inject_host_age_identity_key() {
   local node="$1" local_exec="$2" ssh_target="$3" age_identity_key_path="$4"
   local using_bootstrap_fallback="${5:-0}"
-  shift 5
+  local force_reinstall="${6:-0}"
+  shift 6
   local -a ssh_opts=("$@")
   local age_identity_key_file="" expected_sha=""
   local remote_dest="${REMOTE_NIXBOT_AGE_IDENTITY}"
@@ -2707,16 +3036,10 @@ inject_host_age_identity_key() {
     return
   fi
 
-  ensure_tmp_dir
-  if ! age_identity_key_file="$(resolve_runtime_key_file "${age_identity_key_path}")"; then
-    return 1
-  fi
-  if [ ! -f "${age_identity_key_file}" ]; then
-    echo "Host age identity key not found for ${node}: ${age_identity_key_path} (resolved: ${age_identity_key_file})" >&2
-    return 1
-  fi
-
   if [ "${DRY_RUN}" -eq 1 ]; then
+    if ! read -r age_identity_key_file; then
+      return 1
+    fi < <(resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key_path}")
     if [ "${local_exec}" -eq 1 ]; then
       echo "DRY: would inject host age identity ${age_identity_key_file} -> ${remote_dest}"
     else
@@ -2725,23 +3048,24 @@ inject_host_age_identity_key() {
     return
   fi
 
-  expected_sha="$(sha256sum "${age_identity_key_file}" | awk '{print $1}')"
-  if [ -z "${expected_sha}" ]; then
-    echo "Unable to compute host age identity checksum for ${node}" >&2
-    return 1
-  fi
+  {
+    read -r age_identity_key_file
+    read -r expected_sha
+  } < <(resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key_path}") || return 1
 
-  # shellcheck disable=SC2016
-  if target_file_matches_expected_value \
-    "${local_exec}" \
-    "${ssh_target}" \
-    "${remote_dest}" \
-    "${expected_sha}" \
-    'set -- $(sha256sum "$DEST"); printf "%s\n" "$1"' \
-    "${using_bootstrap_fallback}" \
-    "${ssh_opts[@]}" >/dev/null 2>&1; then
-    echo "==> Skipping host age identity for ${node}; matching key already present on target"
-    return
+  if [ "${force_reinstall}" -ne 1 ]; then
+    # shellcheck disable=SC2016
+    if target_file_matches_expected_value \
+      "${local_exec}" \
+      "${ssh_target}" \
+      "${remote_dest}" \
+      "${expected_sha}" \
+      'set -- $(sha256sum "$DEST"); printf "%s\n" "$1"' \
+      "${using_bootstrap_fallback}" \
+      "${ssh_opts[@]}"; then
+      echo "==> Skipping host age identity for ${node}; matching key already present on target"
+      return
+    fi
   fi
 
   echo "==> Injecting host age identity for ${node}"
@@ -2766,10 +3090,32 @@ inject_host_age_identity_key() {
   fi
 }
 
+resolve_host_age_identity_key_file_and_sha() {
+  local node="$1" age_identity_key_path="$2"
+  local age_identity_key_file="" expected_sha=""
+
+  ensure_tmp_dir
+  if ! age_identity_key_file="$(resolve_runtime_key_file "${age_identity_key_path}")"; then
+    return 1
+  fi
+  if [ ! -f "${age_identity_key_file}" ]; then
+    echo "Host age identity key not found for ${node}: ${age_identity_key_path} (resolved: ${age_identity_key_file})" >&2
+    return 1
+  fi
+
+  expected_sha="$(sha256sum "${age_identity_key_file}" | awk '{print $1}')"
+  if [ -z "${expected_sha}" ]; then
+    echo "Unable to compute host age identity checksum for ${node}" >&2
+    return 1
+  fi
+
+  printf '%s\n%s\n' "${age_identity_key_file}" "${expected_sha}"
+}
+
 prepare_deploy_context() {
-  local node="$1"
-  local target_info="" user="" host="" key_path="" known_hosts=""
-  local bootstrap_key="" bootstrap_user="" bootstrap_key_path=""
+  local node="$1" mode="${2:-normal}"
+  local target_info="" user="" host="" port="" key_path="" known_hosts=""
+  local bootstrap_key="" bootstrap_user="" bootstrap_port="" bootstrap_key_path=""
   local age_identity_key="" proxy_jump="" full_proxy_chain="" effective_proxy_chain=""
   local ssh_target="" bootstrap_ssh_target=""
   local local_exec=0 primary_target_ready=1
@@ -2783,14 +3129,16 @@ prepare_deploy_context() {
   {
     read -r user
     read -r host
+    read -r port
     read -r key_path
     read -r known_hosts
     read -r bootstrap_key
     read -r bootstrap_user
+    read -r bootstrap_port
     read -r bootstrap_key_path
     read -r age_identity_key
     read -r proxy_jump
-  } < <(jq -r '[.user, .target, (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // "")] | .[]' <<<"${target_info}")
+  } < <(jq -r '[.user, .target, (.port // "22"), (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapPort // .port // "22"), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // "")] | .[]' <<<"${target_info}")
 
   ssh_target="${user}@${host}"
   bootstrap_ssh_target="${bootstrap_user}@${host}"
@@ -2806,6 +3154,7 @@ prepare_deploy_context() {
 
   if [ "${local_exec}" -eq 1 ]; then
     set_prepared_deploy_context \
+      "${node}" \
       "" \
       "" \
       0 \
@@ -2817,6 +3166,8 @@ prepare_deploy_context() {
   build_deploy_ssh_contexts \
     "${node}" \
     "${host}" \
+    "${port}" \
+    "${bootstrap_port}" \
     "${known_hosts}" \
     "${effective_proxy_chain}" \
     "${key_path}" \
@@ -2827,12 +3178,19 @@ prepare_deploy_context() {
     bootstrap_nix_sshopts || return 1
 
   set_prepared_remote_deploy_context \
+    "${node}" \
     "${ssh_target}" \
     "${nix_sshopts}" \
     "${age_identity_key}" \
     "${ssh_opts[@]}"
 
-  if [ "${FORCE_BOOTSTRAP_PATH}" -eq 1 ]; then
+  if [ "${DRY_RUN}" -eq 0 ] && is_primary_ready "${node}"; then
+    return 0
+  fi
+
+  if [ "${mode}" = "primary-only" ]; then
+    :
+  elif [ "${FORCE_BOOTSTRAP_PATH}" -eq 1 ]; then
     echo "==> Forcing bootstrap path for ${node}: ${bootstrap_ssh_target}"
     prepare_bootstrap_deploy_context \
       "${node}" \
@@ -2848,6 +3206,8 @@ prepare_deploy_context() {
     if ! ensure_primary_deploy_connectivity \
       "${node}" \
       "${host}" \
+      "${port}" \
+      "${bootstrap_port}" \
       "${known_hosts}" \
       "${ssh_target}" \
       "${full_proxy_chain}" \
@@ -2862,7 +3222,9 @@ prepare_deploy_context() {
       primary_target_ready=0
     fi
 
-    if [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
+    if [ "${mode}" = "primary-only" ]; then
+      [ "${primary_target_ready}" -eq 1 ] || return 1
+    elif [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
       if [ "${primary_target_ready}" -eq 0 ]; then
         local validated_via_forced_command=0
 
@@ -2902,28 +3264,331 @@ prepare_deploy_context() {
 run_prepared_deploy_command() {
   local tty_mode="$1" target_cmd="$2"
 
-  run_target_command \
+  if run_target_command \
     "${PREP_DEPLOY_LOCAL_EXEC}" \
     "${PREP_DEPLOY_SSH_TARGET}" \
     "${tty_mode}" \
     "${target_cmd}" \
-    "${PREP_DEPLOY_SSH_OPTS[@]}"
+    "${PREP_DEPLOY_SSH_OPTS[@]}"; then
+    if [ -n "${PREP_DEPLOY_NODE}" ] && [ "${PREP_USING_BOOTSTRAP_FALLBACK}" -eq 0 ]; then
+      mark_primary_ready "${PREP_DEPLOY_NODE}"
+    fi
+    return 0
+  fi
+
+  return 1
+}
+
+refresh_prepared_primary_target() {
+  [ -n "${PREP_DEPLOY_NODE}" ] || return 0
+  [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] || return 0
+
+  prepare_deploy_context "${PREP_DEPLOY_NODE}" primary-only
+}
+
+run_prepared_deploy_command_with_retry() {
+  local tty_mode="$1" retry_label="$2" target_cmd="$3"
+
+  retry_transport_command \
+    "${retry_label}" \
+    refresh_prepared_primary_target \
+    run_prepared_deploy_command \
+    "${tty_mode}" \
+    "${target_cmd}"
+}
+
+build_remote_activation_context_file_value_check_cmd() {
+  local remote_dest="$1" expected_value="$2" read_cmd="$3" ask_sudo_password="${4:-0}"
+  local sudo_cmd="sudo -n"
+
+  if [ "${ask_sudo_password}" -eq 1 ]; then
+    sudo_cmd="sudo"
+  fi
+
+  cat <<EOF
+dest='${remote_dest}'
+want='${expected_value}'
+if ! command -v sudo >/dev/null 2>&1; then
+  echo "sudo is required to validate \${dest}" >&2
+  exit 1
+fi
+current="\$(DEST="\${dest}" ${sudo_cmd} env DEST="\${dest}" sh -c 'systemd-run --wait --pipe --quiet --service-type=exec env DEST="\$DEST" sh -c '"'"'${read_cmd}'"'"' 2>/dev/null' 2>/dev/null || true)"
+[ "\${current}" = "\${want}" ]
+EOF
+}
+
+wait_for_prepared_host_age_identity_activation_visibility() {
+  local node="$1" age_identity_key_path="$2"
+  local age_identity_key_file="" expected_sha="" check_cmd="" ask_sudo_password=0 tty_mode=0
+  local -a sudo_policy=()
+  local attempt=1 max_attempts=10
+
+  [ "${DRY_RUN}" -eq 0 ] || return 0
+
+  [ -n "${age_identity_key_path}" ] || return 0
+
+  {
+    read -r age_identity_key_file
+    read -r expected_sha
+  } < <(resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key_path}") || return 1
+
+  mapfile -t sudo_policy < <(resolve_target_sudo_policy "${PREP_DEPLOY_LOCAL_EXEC}" "${PREP_DEPLOY_SSH_TARGET}" "${PREP_USING_BOOTSTRAP_FALLBACK}")
+  ask_sudo_password="${sudo_policy[1]:-0}"
+  tty_mode="${sudo_policy[2]:-0}"
+  check_cmd="$(build_remote_activation_context_file_value_check_cmd \
+    "${REMOTE_NIXBOT_AGE_IDENTITY}" \
+    "${expected_sha}" \
+    'set -- $(sha256sum "$DEST"); printf "%s\n" "$1"' \
+    "${ask_sudo_password}")"
+
+  while [ "${attempt}" -le "${max_attempts}" ]; do
+    if run_prepared_deploy_command_with_retry \
+      "${tty_mode}" \
+      "Activation-context host age identity validation on ${PREP_DEPLOY_SSH_TARGET}" \
+      "${check_cmd}"; then
+      return 0
+    fi
+
+    if [ "${attempt}" -ge "${max_attempts}" ]; then
+      echo "Activation context never saw host age identity for ${node} after ${max_attempts} attempts" >&2
+      return 1
+    fi
+
+    echo "==> Waiting for activation context to see host age identity for ${node} (${attempt}/${max_attempts})" >&2
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+}
+
+build_wrapped_root_command() {
+  local target_cmd="$1" deploy_user="$2" ask_sudo_password="$3"
+  local shell_cmd="" sudo_prefix=""
+
+  printf -v shell_cmd 'bash -lc %q' "${target_cmd}"
+  if [ "${deploy_user}" = "root" ]; then
+    printf '%s\n' "${shell_cmd}"
+    return
+  fi
+
+  sudo_prefix="sudo -n"
+  if [ "${ask_sudo_password}" -eq 1 ]; then
+    sudo_prefix="sudo"
+  fi
+
+  printf '%s %s\n' "${sudo_prefix}" "${shell_cmd}"
+}
+
+run_host_root_command() {
+  local node="$1" target_cmd="$2"
+  local using_bootstrap_fallback="" deploy_user="" ask_sudo_password=0 tty_mode=0
+  local wrapped_cmd=""
+  local -a sudo_policy=()
+
+  prepare_deploy_context "${node}" || return 1
+  using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  mapfile -t sudo_policy < <(
+    resolve_target_sudo_policy \
+      "${PREP_DEPLOY_LOCAL_EXEC}" \
+      "${PREP_DEPLOY_SSH_TARGET}" \
+      "${using_bootstrap_fallback}"
+  )
+  deploy_user="${sudo_policy[0]:-}"
+  ask_sudo_password="${sudo_policy[1]:-0}"
+  tty_mode="${sudo_policy[2]:-0}"
+
+  wrapped_cmd="$(build_wrapped_root_command "${target_cmd}" "${deploy_user}" "${ask_sudo_password}")"
+  run_prepared_deploy_command "${tty_mode}" "${wrapped_cmd}"
+}
+
+run_prepared_root_command() {
+  local target_cmd="$1"
+  local using_bootstrap_fallback="" deploy_user="" ask_sudo_password=0 tty_mode=0
+  local wrapped_cmd=""
+  local -a sudo_policy=()
+
+  using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  mapfile -t sudo_policy < <(
+    resolve_target_sudo_policy \
+      "${PREP_DEPLOY_LOCAL_EXEC}" \
+      "${PREP_DEPLOY_SSH_TARGET}" \
+      "${using_bootstrap_fallback}"
+  )
+  deploy_user="${sudo_policy[0]:-}"
+  ask_sudo_password="${sudo_policy[1]:-0}"
+  tty_mode="${sudo_policy[2]:-0}"
+
+  wrapped_cmd="$(build_wrapped_root_command "${target_cmd}" "${deploy_user}" "${ask_sudo_password}")"
+  run_prepared_deploy_command "${tty_mode}" "${wrapped_cmd}"
+}
+
+run_named_prepared_root_command() {
+  local phase_name="$1" parent="$2" resources="$3" target_cmd="$4"
+  local rc=0
+
+  if retry_transport_command \
+    "Parent readiness ${phase_name} on ${parent}" \
+    refresh_prepared_primary_target \
+    run_prepared_root_command \
+    "${target_cmd}"; then
+    return 0
+  fi
+  rc="$?"
+
+  echo "Parent readiness ${phase_name} failed on ${parent} for ${resources}" >&2
+  return "${rc}"
+}
+
+build_parent_resource_args() {
+  local resource="" resource_args=""
+
+  for resource in "$@"; do
+    [ -n "${resource}" ] || continue
+    printf -v resource_args '%s --machine %q' "${resource_args}" "${resource}"
+  done
+
+  printf '%s\n' "${resource_args}"
+}
+
+render_parent_command_template() {
+  local template="$1" resource_args="$2" resource_label="${3:-}"
+  local rendered="" resource_quoted=""
+
+  printf -v resource_quoted '%q' "${resource_label}"
+  rendered="${template//\{resource\}/${resource_quoted}}"
+  rendered="${rendered//\{resourceArgs\}/${resource_args}}"
+  rendered="${rendered//\{timeout\}/${NIXBOT_PARENT_SETTLE_TIMEOUT}}"
+  printf '%s\n' "${rendered}"
+}
+
+validate_rendered_parent_command() {
+  local rendered="$1"
+
+  case "${rendered}" in
+    *"{resource}"*|*"{resourceArgs}"*|*"{timeout}"*)
+      echo "Parent readiness command still contains unresolved placeholders: ${rendered}" >&2
+      return 1
+      ;;
+  esac
+}
+
+parent_template_supports_batching() {
+  local template="$1"
+
+  [[ "${template}" == *"{resourceArgs}"* ]] && [[ "${template}" != *"{resource}"* ]]
+}
+
+ensure_deploy_wave_parent_readiness() {
+  local node="" parent="" resource="" reconcile_template="" settle_template=""
+  local group_key="" reconcile_cmd="" settle_cmd="" rendered_resource_args="" resource_args=""
+  local -a group_order=() resources=()
+  declare -A grouped_resources=() grouped_parents=() grouped_reconcile_templates=() grouped_settle_templates=()
+
+  [ "$#" -gt 0 ] || return 0
+
+  for node in "$@"; do
+    [ -n "${node}" ] || continue
+    parent="$(host_parent_for "${node}")"
+    [ -n "${parent}" ] || continue
+    resource="$(host_parent_resource_for "${node}")"
+    [ -n "${resource}" ] || continue
+    reconcile_template="$(host_parent_reconcile_template_for "${node}")"
+    settle_template="$(host_parent_settle_template_for "${node}")"
+    group_key="${parent}"$'\t'"${reconcile_template}"$'\t'"${settle_template}"
+
+    if [ -z "${grouped_resources["${group_key}"]+x}" ]; then
+      group_order+=("${group_key}")
+      grouped_resources["${group_key}"]=""
+      grouped_parents["${group_key}"]="${parent}"
+      grouped_reconcile_templates["${group_key}"]="${reconcile_template}"
+      grouped_settle_templates["${group_key}"]="${settle_template}"
+    fi
+
+    case " ${grouped_resources["${group_key}"]} " in
+      *" ${resource} "*) ;;
+      *)
+        grouped_resources["${group_key}"]+="${grouped_resources["${group_key}"]:+ }${resource}"
+        ;;
+    esac
+  done
+
+  for group_key in "${group_order[@]}"; do
+    IFS=' ' read -r -a resources <<<"${grouped_resources["${group_key}"]}"
+    [ "${#resources[@]}" -gt 0 ] || continue
+
+    rendered_resource_args=""
+    for resource in "${resources[@]}"; do
+      [ -n "${resource}" ] || continue
+      rendered_resource_args+="${rendered_resource_args:+, }${resource}"
+    done
+
+    log_subsection "Parent Readiness: ${grouped_parents["${group_key}"]} -> ${rendered_resource_args}"
+    prepare_deploy_context "${grouped_parents["${group_key}"]}" || return 1
+    if parent_template_supports_batching "${grouped_reconcile_templates["${group_key}"]}" \
+      && parent_template_supports_batching "${grouped_settle_templates["${group_key}"]}"; then
+      resource_args="$(build_parent_resource_args "${resources[@]}")"
+      reconcile_cmd="$(
+        render_parent_command_template \
+          "${grouped_reconcile_templates["${group_key}"]}" \
+          "${resource_args}" \
+          "${resources[0]}"
+      )"
+      validate_rendered_parent_command "${reconcile_cmd}" || return 1
+      settle_cmd="$(
+        render_parent_command_template \
+          "${grouped_settle_templates["${group_key}"]}" \
+        "${resource_args}" \
+        "${resources[0]}"
+      )"
+      validate_rendered_parent_command "${settle_cmd}" || return 1
+      run_named_prepared_root_command \
+        "reconcile" \
+        "${grouped_parents["${group_key}"]}" \
+        "${rendered_resource_args}" \
+        "${reconcile_cmd}" || return 1
+      run_named_prepared_root_command \
+        "settle" \
+        "${grouped_parents["${group_key}"]}" \
+        "${rendered_resource_args}" \
+        "${settle_cmd}" || return 1
+      continue
+    fi
+
+    for resource in "${resources[@]}"; do
+      [ -n "${resource}" ] || continue
+      resource_args="$(build_parent_resource_args "${resource}")"
+      reconcile_cmd="$(
+        render_parent_command_template \
+          "${grouped_reconcile_templates["${group_key}"]}" \
+          "${resource_args}" \
+          "${resource}"
+      )"
+      validate_rendered_parent_command "${reconcile_cmd}" || return 1
+      settle_cmd="$(
+        render_parent_command_template \
+          "${grouped_settle_templates["${group_key}"]}" \
+          "${resource_args}" \
+          "${resource}"
+      )"
+      validate_rendered_parent_command "${settle_cmd}" || return 1
+      run_named_prepared_root_command \
+        "reconcile" \
+        "${grouped_parents["${group_key}"]}" \
+        "${resource}" \
+        "${reconcile_cmd}" || return 1
+      run_named_prepared_root_command \
+        "settle" \
+        "${grouped_parents["${group_key}"]}" \
+        "${resource}" \
+        "${settle_cmd}" || return 1
+    done
+  done
 }
 
 read_prepared_current_system_path() {
-  run_prepared_deploy_command 0 "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
-}
-
-inject_prepared_host_age_identity_key() {
-  local node="$1" age_identity_key_path="$2"
-
-  inject_host_age_identity_key \
-    "${node}" \
-    "${PREP_DEPLOY_LOCAL_EXEC}" \
-    "${PREP_DEPLOY_SSH_TARGET}" \
-    "${age_identity_key_path}" \
-    "${PREP_USING_BOOTSTRAP_FALLBACK}" \
-    "${PREP_DEPLOY_SSH_OPTS[@]}"
+  run_prepared_deploy_command_with_retry \
+    0 \
+    "Current system read for ${PREP_DEPLOY_NODE:-target}" \
+    "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
 }
 
 ##### Host Phases #####
@@ -3404,7 +4069,8 @@ ensure_wave_snapshots() {
   local snapshot_dir="$1"
   shift
 
-  local node="" snapshot_file="" rc=0
+  local node="" snapshot_file="" rc=0 parent_host="" ready_timeout=0
+  local ready_interval_secs=0 max_attempts=0 attempt=0
 
   [ "${DRY_RUN}" -eq 0 ] || return 0
   [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] || return 0
@@ -3418,11 +4084,34 @@ ensure_wave_snapshots() {
     fi
 
     wait_before_host_phase "${node}" "snapshot"
-
-    if ! snapshot_host_generation "${node}" "${snapshot_file}"; then
-      echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
-      rc=1
+    parent_host="$(host_parent_for "${node}")"
+    if [ -z "${parent_host}" ]; then
+      if ! snapshot_host_generation "${node}" "${snapshot_file}"; then
+        echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
+        rc=1
+      fi
+      continue
     fi
+
+    ready_timeout="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT}"
+    ready_interval_secs="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS}"
+    if [ "${ready_interval_secs}" -lt 1 ]; then
+      ready_interval_secs=1
+    fi
+    max_attempts=$((((ready_timeout - 1) / ready_interval_secs) + 1))
+    attempt=1
+
+    while ! snapshot_host_generation "${node}" "${snapshot_file}"; do
+      if [ "${attempt}" -ge "${max_attempts}" ]; then
+        echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
+        rc=1
+        break
+      fi
+
+      echo "[${node}] snapshot | attempt ${attempt}/${max_attempts} failed after parent barrier (${parent_host}); retrying in ${ready_interval_secs}s" >&2
+      sleep "${ready_interval_secs}"
+      attempt=$((attempt + 1))
+    done
   done
 
   return "${rc}"
@@ -3431,6 +4120,7 @@ ensure_wave_snapshots() {
 rollback_host_to_snapshot() {
   local node="$1" snapshot_path="$2" rollback_cmd="" deploy_user=""
   local using_bootstrap_fallback="" sudo_tty_mode=0
+  local rollback_rc=0
   local -a sudo_policy=()
 
   [ -n "${snapshot_path}" ] || {
@@ -3455,7 +4145,37 @@ rollback_host_to_snapshot() {
 
   echo "${snapshot_path}" >&2
   [ -n "${deploy_user}" ] || die "Unable to resolve deploy user for rollback target ${node}"
-  run_prepared_deploy_command "${sudo_tty_mode}" "${rollback_cmd}"
+  if run_prepared_deploy_command "${sudo_tty_mode}" "${rollback_cmd}"; then
+    return 0
+  fi
+  rollback_rc="$?"
+
+  echo "==> Rollback transport closed or failed for ${node}; verifying target state" >&2
+  if verify_rollback_target_state "${node}" "${snapshot_path}"; then
+    echo "==> Rollback for ${node} completed despite transport disconnect" >&2
+    return 0
+  fi
+
+  return "${rollback_rc}"
+}
+
+verify_rollback_target_state() {
+  local node="$1" snapshot_path="$2" remote_current_path="" attempt="" max_attempts=15
+
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
+    sleep 2
+
+    if ! prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
+      continue
+    fi
+
+    remote_current_path="$(read_prepared_current_system_path 2>/dev/null || true)"
+    if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${snapshot_path}" ]; then
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 rollback_successful_hosts() {
@@ -3536,13 +4256,22 @@ deploy_host() {
   local remote_current_path="" nix_sshopts=""
   local using_bootstrap_fallback="" age_identity_key="" build_host=""
   local ask_sudo_password=0
-  local -a rebuild_cmd=() sudo_policy=()
+  local -a rebuild_cmd=() sudo_policy=() age_identity_inject_args=()
 
   log_host_stage "deploy" "${node}" "${GOAL}"
   prepare_deploy_context "${node}" || return 1
   nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
   using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
   age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+  age_identity_inject_args=(
+    "${node}"
+    "${PREP_DEPLOY_LOCAL_EXEC}"
+    "${PREP_DEPLOY_SSH_TARGET}"
+    "${age_identity_key}"
+    "${PREP_USING_BOOTSTRAP_FALLBACK}"
+    0
+    "${PREP_DEPLOY_SSH_OPTS[@]}"
+  )
 
   if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
     remote_current_path="$(read_prepared_current_system_path)"
@@ -3556,7 +4285,8 @@ deploy_host() {
     fi
   fi
 
-  inject_prepared_host_age_identity_key "${node}" "${age_identity_key}" || return 1
+  inject_host_age_identity_key \
+    "${age_identity_inject_args[@]}" || return 1
   mapfile -t sudo_policy < <(
     resolve_target_sudo_policy \
       "${PREP_DEPLOY_LOCAL_EXEC}" \
@@ -3608,6 +4338,20 @@ deploy_host() {
   if [ -n "${nix_sshopts}" ]; then
     rebuild_cmd=(env "NIX_SSHOPTS=${nix_sshopts}" "${rebuild_cmd[@]}")
   fi
+
+  # The first injection happens before deploy setup so bootstrap state exists
+  # for any intermediate target operations. Re-check immediately before
+  # activation because first-switch Incus guests can lose /var/lib/nixbot/.age
+  # state between the initial probe and agenix decrypt.
+  inject_host_age_identity_key \
+    "${node}" \
+    "${PREP_DEPLOY_LOCAL_EXEC}" \
+    "${PREP_DEPLOY_SSH_TARGET}" \
+    "${age_identity_key}" \
+    "${PREP_USING_BOOTSTRAP_FALLBACK}" \
+    1 \
+    "${PREP_DEPLOY_SSH_OPTS[@]}" || return 1
+  wait_for_prepared_host_age_identity_activation_visibility "${node}" "${age_identity_key}" || return 1
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     printf '%q ' "${rebuild_cmd[@]}"
@@ -4012,6 +4756,15 @@ run_deploy_phase() {
     snapshot_retry_logged=0
     if log_snapshot_retry_transition "${snapshot_dir}" "${level_index}" "${deploy_level_hosts[@]}"; then
       snapshot_retry_logged=1
+    fi
+    if ! ensure_deploy_wave_parent_readiness "${deploy_level_hosts[@]}"; then
+      for node in "${deploy_level_hosts[@]}"; do
+        append_unique_array_item "${_failed_hosts_out_name}" "${node}"
+      done
+      echo "Deploy phase failed while waiting on parent readiness barriers" >&2
+      maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${rdp_successful_hosts_out_ref[@]}"
+      log_group_scope_end
+      return 1
     fi
     if ! ensure_wave_snapshots "${snapshot_dir}" "${deploy_level_hosts[@]}"; then
       if ! process_snapshot_wave_results "${snapshot_dir}" "${snapshot_failed_hosts_out_name}" "${_failed_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${deploy_level_hosts[@]}"; then
@@ -5696,6 +6449,10 @@ run_check_deps_action() {
   ensure_runtime_tools
 }
 
+run_version_action() {
+  printf '%s\n' "${NIXBOT_VERSION}"
+}
+
 deps_action_help_requested() {
   [ "$#" -gt 0 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }
 }
@@ -5768,6 +6525,7 @@ run_requested_action() {
 
   if action_is_tf_only "${ACTION}"; then
     log_section "nixbot"
+    echo "Version: ${NIXBOT_VERSION}" >&2
     echo "Action: ${ACTION}" >&2
   else
     prepare_run_context selected_json
@@ -5817,6 +6575,15 @@ main() {
       fi
       require_no_extra_action_args "check-deps" "${request_args[@]:1}"
       run_check_deps_action
+      return
+      ;;
+    version)
+      if deps_action_help_requested "${request_args[@]:1}"; then
+        usage
+        return 0
+      fi
+      require_no_extra_action_args "version" "${request_args[@]:1}"
+      run_version_action
       return
       ;;
     run|deploy|build|tf|tf-dns|tf-platform|tf-apps|check-bootstrap|tf/*)

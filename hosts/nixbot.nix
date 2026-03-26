@@ -8,26 +8,24 @@
     pvl-x2 = {
       target = "pvl-x2";
       ageIdentityKey = "data/secrets/machine/pvl-x2.key.age";
-      deps = [];
-      after = [];
     };
     llmug-rivendell = {
       target = "10.10.20.10";
       ageIdentityKey = "data/secrets/machine/llmug-rivendell.key.age";
       proxyJump = "pvl-x2";
-      after = ["pvl-x2"];
+      parent = "pvl-x2";
     };
     gap3-gondor = {
       target = "10.10.20.11";
       ageIdentityKey = "data/secrets/machine/gap3-gondor.key.age";
       proxyJump = "pvl-x2";
-      after = ["pvl-x2"];
+      parent = "pvl-x2";
     };
     gap3-rivendell = {
       target = "10.10.30.10";
       ageIdentityKey = "data/secrets/machine/gap3-rivendell.key.age";
       proxyJump = "gap3-gondor";
-      after = ["gap3-gondor"];
+      parent = "gap3-gondor";
     };
   };
 

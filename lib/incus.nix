@@ -98,6 +98,20 @@
         type = lib.types.str;
         description = "Static IPv4 address (outside the bridge DHCP range).";
       };
+      sshPort = lib.mkOption {
+        type = lib.types.port;
+        default = 22;
+        description = "SSH port used by readiness settle checks for this guest.";
+      };
+      waitForSsh = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Whether settle should wait for TCP reachability on `sshPort` for this
+          guest. Disable this for containers that are intentionally not managed
+          over SSH.
+        '';
+      };
       devices = lib.mkOption {
         type = lib.types.attrsOf deviceType;
         default = {};
@@ -276,6 +290,266 @@
 
   # JSON list of declared machine names for the GC script.
   declaredMachinesJson = builtins.toJSON (builtins.attrNames cfg.machines);
+
+  machineIpv4AddressesJson = builtins.toJSON (
+    lib.mapAttrs (_name: machine: machine.ipv4Address) cfg.machines
+  );
+
+  machineSshPortsJson = builtins.toJSON (
+    lib.mapAttrs (_name: machine: machine.sshPort) cfg.machines
+  );
+
+  machineWaitForSshJson = builtins.toJSON (
+    lib.mapAttrs (_name: machine: machine.waitForSsh) cfg.machines
+  );
+
+  reconcileHelper = pkgs.writeShellApplication {
+    name = "incus-machines-reconcile";
+    runtimeInputs = [
+      config.virtualisation.incus.package.client
+      pkgs.jq
+      pkgs.systemd
+    ];
+    text = ''
+      set -euo pipefail
+
+      reconcile_mode=${lib.escapeShellArg cfg.reconcilePolicy}
+      declared_machines='${declaredMachinesJson}'
+      selected_json='[]'
+
+      append_machine() {
+        local name="$1"
+        selected_json="$(
+          printf '%s' "$selected_json" \
+            | jq -c --arg name "$name" '. + [$name]'
+        )"
+      }
+
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --all)
+            selected_json="$declared_machines"
+            shift
+            ;;
+          --machine)
+            [ "$#" -ge 2 ] || {
+              echo "Missing value for --machine" >&2
+              exit 1
+            }
+            append_machine "$2"
+            shift 2
+            ;;
+          *)
+            echo "Unknown argument: $1" >&2
+            exit 1
+            ;;
+        esac
+      done
+
+      if [ "$selected_json" = "[]" ]; then
+        selected_json="$declared_machines"
+      fi
+
+      if ! incus info >/dev/null 2>&1; then
+        if [ "$reconcile_mode" = "strict" ]; then
+          echo "Incus daemon is unavailable; reconcile cannot continue" >&2
+          exit 1
+        fi
+        echo "Incus daemon is unavailable; skipping best-effort reconcile" >&2
+        exit 0
+      fi
+
+      instance_status() {
+        local name="$1"
+
+        incus query "/1.0/instances/$name" --raw 2>/dev/null \
+          | jq -r '.metadata.status // "unknown"' 2>/dev/null \
+          || printf 'missing\n'
+      }
+
+      echo "$selected_json" | jq -r '.[]' | while IFS= read -r name; do
+        [ -n "$name" ] || continue
+
+        if ! printf '%s' "$declared_machines" | jq -e --arg name "$name" 'index($name) != null' >/dev/null; then
+          echo "Skipping undeclared Incus guest: $name" >&2
+          continue
+        fi
+
+        status="$(instance_status "$name")"
+
+        if [ "$status" = "Running" ]; then
+          continue
+        fi
+
+        echo "Reconciling Incus guest $name (status: $status)"
+        if ! systemctl restart "incus-$name.service"; then
+          if [ "$reconcile_mode" = "strict" ]; then
+            exit 1
+          fi
+          echo "Best-effort guest reconcile failed for $name; continuing" >&2
+        fi
+      done
+    '';
+  };
+
+  settleHelper = pkgs.writeShellApplication {
+    name = "incus-machines-settle";
+    runtimeInputs = [
+      config.virtualisation.incus.package.client
+      pkgs.coreutils
+      pkgs.jq
+    ];
+    text = ''
+      set -euo pipefail
+
+      declared_machines='${declaredMachinesJson}'
+      machine_ipv4_addresses='${machineIpv4AddressesJson}'
+      machine_ssh_ports='${machineSshPortsJson}'
+      machine_wait_for_ssh='${machineWaitForSshJson}'
+      timeout_secs=180
+      interval_secs=2
+      selected_json='[]'
+
+      append_machine() {
+        local name="$1"
+        selected_json="$(
+          printf '%s' "$selected_json" \
+            | jq -c --arg name "$name" '. + [$name]'
+        )"
+      }
+
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --all)
+            selected_json="$declared_machines"
+            shift
+            ;;
+          --machine)
+            [ "$#" -ge 2 ] || {
+              echo "Missing value for --machine" >&2
+              exit 1
+            }
+            append_machine "$2"
+            shift 2
+            ;;
+          --timeout)
+            [ "$#" -ge 2 ] || {
+              echo "Missing value for --timeout" >&2
+              exit 1
+            }
+            timeout_secs="$2"
+            shift 2
+            ;;
+          --interval)
+            [ "$#" -ge 2 ] || {
+              echo "Missing value for --interval" >&2
+              exit 1
+            }
+            interval_secs="$2"
+            shift 2
+            ;;
+          *)
+            echo "Unknown argument: $1" >&2
+            exit 1
+            ;;
+        esac
+      done
+
+      if [ "$selected_json" = "[]" ]; then
+        selected_json="$declared_machines"
+      fi
+
+      if ! incus info >/dev/null 2>&1; then
+        echo "Incus daemon is unavailable; settle cannot continue" >&2
+        exit 1
+      fi
+
+      instance_metadata_json() {
+        local name="$1"
+
+        incus query "/1.0/instances/$name" --raw 2>/dev/null \
+          | jq -c '.metadata // {}' 2>/dev/null \
+          || echo '{}'
+      }
+
+      deadline="$(( $(date +%s) + timeout_secs ))"
+      while :; do
+        pending=0
+
+        while IFS= read -r name; do
+          [ -n "$name" ] || continue
+
+          if ! printf '%s' "$declared_machines" | jq -e --arg name "$name" 'index($name) != null' >/dev/null; then
+            echo "Skipping undeclared Incus guest: $name" >&2
+            continue
+          fi
+
+          expected_ip="$(
+            printf '%s' "$machine_ipv4_addresses" | jq -r --arg name "$name" '.[$name] // ""'
+          )"
+          expected_ssh_port="$(
+            printf '%s' "$machine_ssh_ports" | jq -r --arg name "$name" '.[$name] // 22'
+          )"
+          wait_for_ssh="$(
+            printf '%s' "$machine_wait_for_ssh" | jq -r --arg name "$name" '.[$name] // true'
+          )"
+          instance_json="$(instance_metadata_json "$name")"
+          status="$(printf '%s' "$instance_json" | jq -r 'if . == {} then "missing" else .status // "unknown" end')"
+          instance_state_json='{}'
+
+          if [ "$status" != "Running" ]; then
+            pending=1
+            echo "Waiting for Incus guest $name to reach Running (current: $status)" >&2
+            continue
+          fi
+
+          instance_state_json="$(
+            incus query "/1.0/instances/$name/state" --raw 2>/dev/null \
+              | jq -c '.metadata // {}' 2>/dev/null \
+              || echo '{}'
+          )"
+
+          if ! timeout 10 incus exec "$name" -- true >/dev/null 2>&1; then
+            pending=1
+            echo "Waiting for Incus guest $name to accept incus exec" >&2
+            continue
+          fi
+
+          if [ -n "$expected_ip" ] && ! printf '%s' "$instance_state_json" \
+            | jq -e --arg ip "$expected_ip" '
+              .network // {}
+              | to_entries[]
+              | select(.key != "lo")
+              | .value.addresses[]?
+              | select(.family == "inet" and .address == $ip)
+            ' >/dev/null 2>&1; then
+            pending=1
+            echo "Waiting for Incus guest $name to report expected IPv4 ''${expected_ip}" >&2
+            continue
+          fi
+
+          if [ "$wait_for_ssh" = "true" ] && [ -n "$expected_ip" ] && ! timeout 5 \
+            bash -c "exec 3<>\"/dev/tcp/\$1/\$2\"" _ "$expected_ip" "$expected_ssh_port" \
+            >/dev/null 2>&1; then
+            pending=1
+            echo "Waiting for Incus guest $name SSH on ''${expected_ip}:''${expected_ssh_port}" >&2
+            continue
+          fi
+        done < <(echo "$selected_json" | jq -r '.[]')
+
+        if [ "$pending" -eq 0 ]; then
+          exit 0
+        fi
+
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+          echo "Timed out waiting for Incus guest readiness" >&2
+          exit 1
+        fi
+
+        sleep "$interval_secs"
+      done
+    '';
+  };
 
   # Per-machine systemd service.
   mkMachineService = name: machine: let
@@ -520,14 +794,24 @@ in {
       description = "Bump to force refresh of all declared Incus images on next rebuild.";
     };
 
-    reconcileOnActivation = lib.mkOption {
+    reconcilePolicy = lib.mkOption {
       type = lib.types.enum ["off" "best-effort" "strict"];
       default = "best-effort";
       description = ''
-        Whether parent-host activation should reconcile declared Incus guests.
-        `off` disables activation-time reconcile, `best-effort` retries missing
-        or stopped guests without failing the parent activation, and `strict`
-        makes guest reconcile failures abort activation.
+        Reconcile policy for declared Incus guests. `off` disables guest
+        reconcile helpers, `best-effort` retries missing or stopped guests
+        without failing the caller, and `strict` makes guest reconcile failures
+        abort the caller.
+      '';
+    };
+
+    autoReconcile = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether to run guest reconcile automatically at boot via
+        `incus-machines-reconcile.service`. This is disabled by default so host
+        activation and boot do not depend on child guest lifecycle convergence.
       '';
     };
 
@@ -548,60 +832,45 @@ in {
       }
     ];
 
-    services.incusMachines.reconcileOnActivation = lib.mkDefault (
-      if config.boot.isContainer
-      then "off"
-      # Temporarily switch this off since this can
-      # brick physical machines from booting and not going beyond initrd
-      # if there's failure on activation requiring manual rescue.
-      else "off"
-    );
-
     virtualisation.incus = {
       enable = lib.mkDefault true;
       package = lib.mkDefault pkgs.incus;
       ui.enable = lib.mkDefault true;
     };
 
-    system.activationScripts.incusMachinesReconcile = lib.mkIf (cfg.reconcileOnActivation != "off") (
-      lib.stringAfter ["etc"] ''
-        set -eu
-
-        if ! ${incus} info >/dev/null 2>&1; then
-          exit 0
-        fi
-
-        declared_machines='${declaredMachinesJson}'
-        reconcile_mode=${lib.escapeShellArg cfg.reconcileOnActivation}
-
-        echo "$declared_machines" | ${pkgs.jq}/bin/jq -r '.[]' | while IFS= read -r name; do
-          [ -n "$name" ] || continue
-
-          status="$(
-            ${incus} list "$name" --format json 2>/dev/null \
-              | ${pkgs.jq}/bin/jq -r 'if length == 0 then "missing" else .[0].status // "unknown" end' \
-              2>/dev/null \
-              || printf 'missing\n'
-          )"
-
-          if [ "$status" != "Running" ]; then
-            echo "Reconciling Incus guest $name (status: $status)"
-            if ! ${pkgs.systemd}/bin/systemctl restart "incus-$name.service"; then
-              if [ "$reconcile_mode" = "strict" ]; then
-                exit 1
-              fi
-              echo "Best-effort guest reconcile failed for $name; continuing parent activation" >&2
-            fi
-          fi
-        done
-      ''
-    );
-
     systemd.tmpfiles.rules =
       lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.machines);
 
+    environment.systemPackages = [
+      reconcileHelper
+      settleHelper
+    ];
+
     systemd.services =
       {
+        incus-machines-reconcile = lib.mkIf (cfg.reconcilePolicy != "off") {
+          description = "Reconcile declared Incus guests";
+          wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
+          after = [
+            "incus-preseed.service"
+            "network-online.target"
+            "incus-images.service"
+            "incus-machines-gc.service"
+          ];
+          wants = [
+            "incus-preseed.service"
+            "network-online.target"
+            "incus-images.service"
+            "incus-machines-gc.service"
+          ];
+          serviceConfig = {
+            Type = "oneshot";
+          };
+          script = ''
+            exec ${reconcileHelper}/bin/incus-machines-reconcile --all
+          '';
+        };
+
         incus-images = {
           description = "Import/update declared Incus images";
           wantedBy = ["multi-user.target"];

@@ -379,6 +379,8 @@ the lifecycle service recreate it.
 
 ## Related Docs
 
+- `docs/incus-readiness.md`: Readiness checks and deploy barriers for Incus
+  guests.
 - `docs/services.md`: Native service pattern for non-container workloads.
 - `docs/podman-compose.md`: Podman compose container workloads (uses the same
   lifecycle tag conventions).

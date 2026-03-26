@@ -7,6 +7,8 @@ pkgs.writeShellApplication {
   };
   runtimeInputs = with pkgs; [
     age
+    coreutils
+    findutils
     git
     jq
     nix
