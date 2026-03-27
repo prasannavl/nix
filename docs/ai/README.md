@@ -70,6 +70,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/lib/incus-device-arg-safety-2026-03.md`: `lib/incus.nix`
   device-add shell-argument safety fix, JSON-loop hardening, and cleanup of the
   dead helper plus unused lambda bindings.
+- `docs/ai/notes/lib/incus-ip-conflict-assert-and-gc-fail-closed-2026-03.md`:
+  Add duplicate guest IPv4 assertions and make Incus GC fail closed when
+  container listing fails.
 
 ### Nixbot
 
@@ -118,14 +121,38 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/review-fixes-2026-03.md`: Review-driven fixes for
   forced-command bootstrap validation, Terraform-only dispatch, and managed
   repo-root locking.
+- `docs/ai/notes/nixbot/nixbot-incus-fresh-review-2026-03.md`: Fresh review of
+  `pkgs/nixbot` and `lib/incus` covering parent-readiness error propagation,
+  Incus exact-instance lookup safety, and nixbot package runtime tool closure.
+- `docs/ai/notes/nixbot/parented-snapshot-readiness-loop-2026-03.md`:
+  Replace the failed guest-specific `wait` workaround with a bounded readiness
+  loop that waits for actual snapshot-path SSH success on parented hosts.
+- `docs/ai/notes/nixbot/remote-file-install-transport-retries-2026-03.md`:
+  Make remote temp-file allocation, file copy, and install steps retry on
+  transport resets instead of failing fresh guest deploys immediately.
+- `docs/ai/notes/nixbot/preactivate-age-identity-force-reinstall-2026-03.md`:
+  Force the final pre-activation machine age identity injection instead of
+  trusting a stale "already present" check on fresh Incus guests.
+- `docs/ai/notes/nixbot/preactivate-age-identity-recheck-2026-03.md`:
+  Deploy-time second check that reinstalls `/var/lib/nixbot/.age/identity`
+  immediately before activation when the target copy vanished or changed.
 - `docs/ai/notes/nixbot/runtime-temp-suffix-alignment-2026-03.md`: Consolidated
   per-run workspace root for deploy artifacts and detached repo worktrees.
 - `docs/ai/notes/nixbot/security-trust-model-2026-03.md`: Bastion-trigger
   operator trust boundary, arbitrary-SHA policy, and relationship between
   worktree isolation and secret access.
+- `docs/ai/notes/nixbot/snapshot-wave-parallelism-2026-03.md`: Snapshot work
+  now uses the deploy parallelism budget so hosts in the same dependency wave
+  snapshot concurrently.
 - `docs/ai/notes/nixbot/worktree-terraform-lockfile-2026-03.md`: Terraform
   lockfile regression exposed by fresh deploy worktrees and the normalization
   rule for Cloudflare provider locks.
+
+### Reviews
+
+- `docs/ai/notes/reviews/nixbot-and-incus-architecture-review-2026-03.md`:
+  Architecture, correctness, and refactoring review of `pkgs/nixbot/nixbot.sh`
+  and `lib/incus.nix`.
 
 ### Plans
 
@@ -160,6 +187,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/incus-guest-reconcile-on-activation-2026-03.md`:
   Parent-host activation now reconciles declared Incus guests and restarts
   `incus-<guest>` lifecycle services when a guest is missing or stopped.
+- `docs/ai/notes/services/incus-post-activation-reconcile-and-nixbot-settle-2026-03.md`:
+  Replace activation-time Incus guest reconcile with explicit host-side
+  reconcile/settle helpers plus `nixbot` wave readiness barriers.
 - `docs/ai/notes/services/incus-reconcile-policy-best-effort-2026-03.md`:
   Activation-time Incus guest reconcile now defaults to `best-effort`, with
   explicit `off|best-effort|strict` policy modes, and the guest-specific
