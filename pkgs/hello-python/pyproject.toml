@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hello-python"
+version = "0.1.0"
+description = "Hello world Python example"
+requires-python = ">=3.11"
+
+[project.scripts]
+hello-python = "hello_python:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hello_python"]

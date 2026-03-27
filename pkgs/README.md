@@ -24,7 +24,17 @@ To add a new package:
 
 ## Current Examples
 
+- `pkgs/hello-python/`: minimal Python hello-world package built from a
+  `pyproject.toml` with a local wrapper flake and dev shell
+- `pkgs/hello-go/`: minimal Go hello-world package built with `buildGoModule`
+  plus a local wrapper flake and dev shell
+- `pkgs/hello-node/`: minimal Node.js hello-world package built with
+  `buildNpmPackage` plus a local wrapper flake and dev shell
 - `pkgs/hello-rust/`: minimal Rust hello-world package with local wrapper flake
+- `pkgs/hello-web-static/`: static web asset package for host or service reuse
+  with a local wrapper flake and dev shell
+- `pkgs/hello-web-served/`: runnable web-server package that serves the static
+  example assets, with a local wrapper flake, dev shell, and NixOS module
 - `pkgs/nixbot/`: deploy package and local wrapper flake
 - `pkgs/cloudflare-apps/`: aggregate package namespace for the
   `tf/cloudflare-apps` phase
@@ -32,8 +42,16 @@ To add a new package:
 
 ## Root Flake Examples
 
+- `nix build .#pkgs.x86_64-linux.hello-python`
+- `nix run .#pkgs.x86_64-linux.hello-python`
+- `nix build .#pkgs.x86_64-linux.hello-go`
+- `nix run .#pkgs.x86_64-linux.hello-go`
+- `nix build .#pkgs.x86_64-linux.hello-node`
+- `nix run .#pkgs.x86_64-linux.hello-node`
 - `nix build .#pkgs.x86_64-linux.hello-rust`
 - `nix run .#pkgs.x86_64-linux.hello-rust`
+- `nix build .#pkgs.x86_64-linux.hello-web-static`
+- `nix run .#pkgs.x86_64-linux.hello-web-served`
 - `nix run .#pkgs.x86_64-linux.nixbot -- --help`
 - `nix build .#pkgs.x86_64-linux.cloudflare-apps`
 - `nix run .#pkgs.x86_64-linux.cloudflare-apps.deploy -- --dry`

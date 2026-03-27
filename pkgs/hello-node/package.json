@@ -1,0 +1,15 @@
+{
+  "name": "hello-node",
+  "version": "0.1.0",
+  "description": "Hello world Node.js example",
+  "type": "commonjs",
+  "bin": {
+    "hello-node": "./index.js"
+  },
+  "dependencies": {
+    "picocolors": "1.1.1"
+  },
+  "scripts": {
+    "start": "node ./index.js"
+  }
+}
