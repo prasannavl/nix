@@ -13,8 +13,12 @@
 ## `inherit` conventions
 
 - Do **not** use simple `inherit x;` for a single binding. Write `x = x;`
-  instead. The linter (`statix`) has `manual_inherit` (W03) disabled to enforce
-  this.
+  instead. This repo prefers the more explicit and developer-intuitive form for
+  single bindings, so `statix` `manual_inherit` (W03) is disabled.
+- `inherit (source) x;` is also optional rather than required. This repo
+  disables `assign_inherit` (W04) because we prefer whichever form is more
+  intuitive in context: use `inherit (source) ...;` when it improves
+  readability, and use `x = source.x;` when that is clearer.
 - When two or more adjacent bindings are all self-assignments, combine them into
   a single `inherit`:
 
@@ -137,8 +141,8 @@
   ```
 
 - Do **not** duplicate binary paths or descriptions across layers. The
-  `default.nix` package is the single source of truth — sub-flakes and root
-  apps derive from it.
+  `default.nix` package is the single source of truth — sub-flakes and root apps
+  derive from it.
 
 ## Flake conventions
 

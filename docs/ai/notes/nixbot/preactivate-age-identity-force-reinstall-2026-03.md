@@ -8,10 +8,10 @@ decrypt on `gap3-gondor`.
 
 Observed behavior:
 
-- deploy logged `Skipping host age identity for gap3-gondor; matching key
+- deploy logged
+  `Skipping host age identity for gap3-gondor; matching key
   already present on target`
-- agenix then reported `/var/lib/nixbot/.age/identity` missing during the
-  switch
+- agenix then reported `/var/lib/nixbot/.age/identity` missing during the switch
 - the host-side filesystem after the failed deploy showed
   `/var/lib/nixbot/.age/identity` absent
 

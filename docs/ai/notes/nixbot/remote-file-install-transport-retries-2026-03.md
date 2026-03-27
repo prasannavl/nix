@@ -8,8 +8,8 @@ already succeeded.
 Observed failure pattern:
 
 - snapshot eventually succeeded after the parented snapshot readiness loop
-- deploy then failed during host age identity installation with transport
-  errors such as `Connection reset by 100.100.1.1 port 22`
+- deploy then failed during host age identity installation with transport errors
+  such as `Connection reset by 100.100.1.1 port 22`
 - `install_local_file_via_target` treated those transport resets as hard
   failures when allocating the remote temp file, copying the file, or running
   the remote install command

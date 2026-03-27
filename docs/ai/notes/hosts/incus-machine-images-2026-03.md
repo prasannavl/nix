@@ -4,9 +4,8 @@
 
 ## Summary
 
-Extended `lib/incus.nix` so each declared Incus machine can choose its own
-image source while keeping the existing shared `incus-base` image as the
-default.
+Extended `lib/incus.nix` so each declared Incus machine can choose its own image
+source while keeping the existing shared `incus-base` image as the default.
 
 ## Key Decisions
 
@@ -20,12 +19,12 @@ default.
   - strings are treated as remote Incus image references
   - non-string values are treated as local NixOS image builds
 - Custom machine images default to alias `nixos-incus-<machine-name>` unless an
-  explicit `imageAlias` is provided; custom string images default to a
-  sanitized alias derived from the remote reference.
+  explicit `imageAlias` is provided; custom string images default to a sanitized
+  alias derived from the remote reference.
 - Terminology:
   - `image` is the declared image source
-  - `imageAlias` is the stable Incus-local alias used to create guests from
-    that imported image
+  - `imageAlias` is the stable Incus-local alias used to create guests from that
+    imported image
 - `imageTag` now refreshes every declared image alias, not only the default
   `nixos-incus-base` alias.
 - Guest recreate behavior remains explicit:

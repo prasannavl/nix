@@ -8,9 +8,9 @@ the time agenix decrypted secrets during activation.
 
 ## Decision
 
-- `pkgs/nixbot/nixbot.sh` now performs a second
-  `inject_host_age_identity_key()` call with the prepared deploy context
-  immediately before invoking `nixos-rebuild-ng`.
+- `pkgs/nixbot/nixbot.sh` now performs a second `inject_host_age_identity_key()`
+  call with the prepared deploy context immediately before invoking
+  `nixos-rebuild-ng`.
 - Immediately after that reinjection point, nixbot now waits until
   `/var/lib/nixbot/.age/identity` is visible from a `systemd-run --pipe`
   execution context, which matches the remote activation path used by
@@ -32,8 +32,8 @@ the time agenix decrypted secrets during activation.
 - A late recheck is low-risk because the helper already avoids rewriting the
   file when the target copy still matches.
 - An activation-context wait is the more accurate guard because it validates
-  visibility from the same transient-unit execution model that actually runs
-  the switch.
+  visibility from the same transient-unit execution model that actually runs the
+  switch.
 
 ## Source Of Truth Files
 

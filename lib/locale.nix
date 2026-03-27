@@ -24,7 +24,7 @@
   # Disabled as it's exclusive to setting manually above that
   # we do for bugfix.
   # services.automatic-timezoned.enable = true;
-  
+
   services.geoclue2 = {
     # see: https://github.com/NixOS/nixpkgs/issues/68489#issuecomment-1484030107
     enableDemoAgent = lib.mkForce true;

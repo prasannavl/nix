@@ -127,8 +127,8 @@ The function `ensure_deploy_wave_parent_readiness` in `nixbot.sh`:
    reconcile/settle command templates are batched together so the parent is only
    contacted once per group.
 
-2. **Runs reconcile on the parent** -- SSHes to the parent host and executes
-   the reconcile command template. The default template is:
+2. **Runs reconcile on the parent** -- SSHes to the parent host and executes the
+   reconcile command template. The default template is:
 
    ```
    /run/current-system/sw/bin/incus-machines-reconcile --machine <name> [--machine <name2> ...]
@@ -172,10 +172,10 @@ If parent readiness fails for any group in a wave:
 2. Any hosts that were successfully deployed earlier in the run are rolled back.
 3. The deploy phase returns a failure exit status.
 
-This means a container that refuses to start or settle will block its own
-deploy and trigger rollback of previously deployed hosts in the same run, but
-will not prevent unrelated hosts (those without a parent, or with a different
-parent) from being deployed.
+This means a container that refuses to start or settle will block its own deploy
+and trigger rollback of previously deployed hosts in the same run, but will not
+prevent unrelated hosts (those without a parent, or with a different parent)
+from being deployed.
 
 ## Nixbot SSH Readiness Cache
 
@@ -183,8 +183,8 @@ Separately from the Incus container readiness checks, `nixbot` caches SSH
 connectivity state per node within a single deploy run:
 
 - **Bootstrap readiness** (`bootstrap-ready.nodes`) -- records nodes where the
-  bootstrap SSH path has been validated. Prevents redundant bootstrap key
-  checks across the snapshot and deploy phases.
+  bootstrap SSH path has been validated. Prevents redundant bootstrap key checks
+  across the snapshot and deploy phases.
 - **Primary readiness** (`primary-ready.nodes`) -- records nodes where the
   primary `nixbot@<host>` SSH path is confirmed working. Prevents redundant
   connectivity probing when the same host is touched multiple times in a run.
@@ -194,8 +194,8 @@ between runs.
 
 ## Optional Boot-Time Reconcile
 
-Parent hosts can optionally run `incus-machines-reconcile --all` at boot via
-the `incus-machines-reconcile.service` systemd unit:
+Parent hosts can optionally run `incus-machines-reconcile --all` at boot via the
+`incus-machines-reconcile.service` systemd unit:
 
 ```nix
 services.incusMachines.autoReconcile = true;
@@ -206,8 +206,8 @@ convergence. When enabled, it runs after `incus-preseed.service`,
 `incus-images.service`, and `incus-machines-gc.service`.
 
 Even without `autoReconcile`, each declared guest has its own
-`incus-<name>.service` that runs at boot. The reconcile service is an
-additional catch-all that restarts any guest that failed to start or was stopped
+`incus-<name>.service` that runs at boot. The reconcile service is an additional
+catch-all that restarts any guest that failed to start or was stopped
 externally.
 
 ## Lifecycle Summary

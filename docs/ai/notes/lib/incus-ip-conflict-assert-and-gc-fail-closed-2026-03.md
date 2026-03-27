@@ -13,8 +13,8 @@ A fresh review of `lib/incus.nix` found two correctness issues:
 
 Fix both in `lib/incus.nix`:
 
-- add an assertion that fails evaluation when multiple machines declare the
-  same `ipv4Address`
+- add an assertion that fails evaluation when multiple machines declare the same
+  `ipv4Address`
 - make the Incus GC unit fail closed when `incus list --format json` fails
 
 ## Operational Effect

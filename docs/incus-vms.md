@@ -295,8 +295,8 @@ For nested Incus specifically:
 ### What happens when I bump `recreateTag`?
 
 The guest is deleted and recreated from the current `local:nixos-incus-base`
-alias, or from that guest's configured `imageAlias`, the next time the
-per-guest lifecycle service runs.
+alias, or from that guest's configured `imageAlias`, the next time the per-guest
+lifecycle service runs.
 
 ### What happens when I bump `imageTag`?
 
@@ -372,10 +372,10 @@ knob for forcing declared image alias refresh.
 
 ### Does `imageTag` also recreate running guests?
 
-No. It only refreshes declared image aliases. Existing guests keep their
-current root filesystem until recreated by `recreateTag`, by a recreate-tracked
-config change such as changing `image`, or by deleting the guest and letting
-the lifecycle service recreate it.
+No. It only refreshes declared image aliases. Existing guests keep their current
+root filesystem until recreated by `recreateTag`, by a recreate-tracked config
+change such as changing `image`, or by deleting the guest and letting the
+lifecycle service recreate it.
 
 ## Related Docs
 
