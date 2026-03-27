@@ -29,9 +29,6 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/apps/flake-app-meta-simplification-2026-03.md`:
   `meta.mainProgram` as single source of truth for app binaries, flake warning
   cleanup, and lint stderr filtering.
-- `docs/ai/notes/apps/cloudflare-apps-remove-openseal-priyasuyash-2026-03.md`:
-  Remove the `openseal` and `priyasuyash` Cloudflare apps and clear their
-  archive-worker Terraform config.
 
 ### Deployment
 
@@ -54,11 +51,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/incus-machine-images-2026-03.md`: Per-machine Incus base
   image selection, global multi-image `imageTag` refresh, and guest recreate
   behavior for image changes.
-- `docs/ai/notes/hosts/gap3-gondor-incus-bastion-2026-03.md`: Incus-inside-incus
-  bastion guest `gap3-gondor` on pvl-x2 with GPU passthrough, podman services
-  (nginx, ollama, open-webui), inner guest `gap3-rivendell`, and dir storage
-  driver to avoid btrfs-on-btrfs.
-- `docs/ai/notes/hosts/pvl-bash-prompt-exit-status-fix-2026-03.md`: Prompt
+- `docs/ai/notes/hosts/nested-incus-bastion-pattern-2026-03.md`: Nested Incus
+  bastion-host pattern with GPU passthrough, Podman services, an inner guest,
+  and `dir` storage to avoid btrfs-on-btrfs.
+- `docs/ai/notes/hosts/bash-prompt-exit-status-fix-2026-03.md`: Prompt
   exit-status command substitution was escaped as `\$(...)` during lint cleanup,
   causing the literal text to render in interactive shells.
 
@@ -154,13 +150,6 @@ Use this index as the canonical map for `docs/ai/**`.
   Architecture, correctness, and refactoring review of `pkgs/nixbot/nixbot.sh`
   and `lib/incus.nix`.
 
-### Plans
-
-- `docs/ai/notes/plans/incus-nested-reconcile-and-deploy-readiness-2026-03.md`:
-  Full context and follow-up plan for nested Incus reconcile, stale
-  `/run/current-system`, Tailscale regression, and the proposed post-switch
-  reconcile plus `nixbot` readiness-barrier design.
-
 ### Secrets
 
 - `docs/ai/notes/secrets/age-secrets-clean-flag-2026-03.md`: Managed secret
@@ -184,16 +173,10 @@ Use this index as the canonical map for `docs/ai/**`.
   `exposedPorts` metadata that auto-derives nginx reverse-proxy and Cloudflare
   Tunnel wiring. Includes nginx proxy abstraction supporting multiple upstreams
   and non-podman vhosts via a unified `proxyVhostType`.
-- `docs/ai/notes/services/incus-guest-reconcile-on-activation-2026-03.md`:
-  Parent-host activation now reconciles declared Incus guests and restarts
-  `incus-<guest>` lifecycle services when a guest is missing or stopped.
 - `docs/ai/notes/services/incus-post-activation-reconcile-and-nixbot-settle-2026-03.md`:
-  Replace activation-time Incus guest reconcile with explicit host-side
-  reconcile/settle helpers plus `nixbot` wave readiness barriers.
-- `docs/ai/notes/services/incus-reconcile-policy-best-effort-2026-03.md`:
-  Activation-time Incus guest reconcile now defaults to `best-effort`, with
-  explicit `off|best-effort|strict` policy modes, and the guest-specific
-  `nixbot` waits were removed from `hosts/nixbot.nix`.
+  Canonical Incus parent/child orchestration model: host-side reconcile and
+  settle helpers, safe policy defaults, nested-host failure lessons, and
+  `nixbot` readiness barriers.
 - `docs/ai/notes/services/lib-service-module-relocation-2026-03.md`: User-led
   relocation of service-specific helper modules from `lib/` into
   `lib/services/`.
@@ -218,8 +201,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/nixbot-incus-guest-snapshot-wait-2026-03.md`: `nixbot`
   now reuses host `wait` values before retrying rollback snapshots for newly
   recreated Incus guest targets.
-- `docs/ai/notes/services/pvl-x2-nginx-config-bind-mounts-2026-03.md`: `pvl-x2`
-  nginx compose config migration from `/home/pvl/tmp/nginx` into repo-managed
+- `docs/ai/notes/services/nginx-compose-config-bind-mounts-2026-03.md`: Nginx
+  compose config migration from a legacy local tree into repo-managed
   bind-mounted files.
 
 ### Tooling
