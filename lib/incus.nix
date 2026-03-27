@@ -286,6 +286,27 @@
     )
     duplicateImageAliases;
 
+  ipv4ToMachineNames =
+    lib.foldl'
+    (acc: name: let
+      ipv4Address = cfg.machines.${name}.ipv4Address;
+    in
+      acc
+      // {
+        ${ipv4Address} = (acc.${ipv4Address} or []) ++ [name];
+      })
+    {}
+    (builtins.attrNames cfg.machines);
+
+  duplicateIpv4Addresses =
+    lib.attrNames
+    (lib.filterAttrs (_ipv4Address: machineNames: builtins.length machineNames > 1) ipv4ToMachineNames);
+
+  ipv4AddressConflicts =
+    map
+    (ipv4Address: "${ipv4Address} -> ${lib.concatStringsSep ", " ipv4ToMachineNames.${ipv4Address}}")
+    duplicateIpv4Addresses;
+
   declaredImagesJson = builtins.toJSON declaredImages;
 
   # JSON list of declared machine names for the GC script.
@@ -830,6 +851,12 @@ in {
           "services.incusMachines has conflicting image aliases with different image sources: "
           + lib.concatStringsSep ", " imageAliasConflicts;
       }
+      {
+        assertion = ipv4AddressConflicts == [];
+        message =
+          "services.incusMachines has duplicate ipv4Address assignments: "
+          + lib.concatStringsSep "; " ipv4AddressConflicts;
+      }
     ];
 
     virtualisation.incus = {
@@ -968,7 +995,10 @@ in {
             declared_machines='${declaredMachinesJson}'
 
             # List all containers managed by us.
-            all_containers="$(${incus} list --format json 2>/dev/null || echo '[]')"
+            if ! all_containers="$(${incus} list --format json 2>/dev/null)"; then
+              echo "Failed to list Incus containers for garbage collection" >&2
+              exit 1
+            fi
 
             echo "$all_containers" | jq -c '.[]' | while IFS= read -r row; do
               cname="$(echo "$row" | jq -r '.name')"
