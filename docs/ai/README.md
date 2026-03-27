@@ -124,12 +124,12 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/nixbot-incus-fresh-review-2026-03.md`: Fresh review of
   `pkgs/nixbot` and `lib/incus` covering parent-readiness error propagation,
   Incus exact-instance lookup safety, and nixbot package runtime tool closure.
-- `docs/ai/notes/nixbot/parented-snapshot-readiness-loop-2026-03.md`:
-  Replace the failed guest-specific `wait` workaround with a bounded readiness
-  loop that waits for actual snapshot-path SSH success on parented hosts.
-- `docs/ai/notes/nixbot/remote-file-install-transport-retries-2026-03.md`:
-  Make remote temp-file allocation, file copy, and install steps retry on
-  transport resets instead of failing fresh guest deploys immediately.
+- `docs/ai/notes/nixbot/parented-snapshot-readiness-loop-2026-03.md`: Replace
+  the failed guest-specific `wait` workaround with a bounded readiness loop that
+  waits for actual snapshot-path SSH success on parented hosts.
+- `docs/ai/notes/nixbot/remote-file-install-transport-retries-2026-03.md`: Make
+  remote temp-file allocation, file copy, and install steps retry on transport
+  resets instead of failing fresh guest deploys immediately.
 - `docs/ai/notes/nixbot/preactivate-age-identity-force-reinstall-2026-03.md`:
   Force the final pre-activation machine age identity injection instead of
   trusting a stale "already present" check on fresh Incus guests.
@@ -141,8 +141,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/security-trust-model-2026-03.md`: Bastion-trigger
   operator trust boundary, arbitrary-SHA policy, and relationship between
   worktree isolation and secret access.
-- `docs/ai/notes/nixbot/snapshot-wave-parallelism-2026-03.md`: Snapshot work
-  now uses the deploy parallelism budget so hosts in the same dependency wave
+- `docs/ai/notes/nixbot/snapshot-wave-parallelism-2026-03.md`: Snapshot work now
+  uses the deploy parallelism budget so hosts in the same dependency wave
   snapshot concurrently.
 - `docs/ai/notes/nixbot/worktree-terraform-lockfile-2026-03.md`: Terraform
   lockfile regression exposed by fresh deploy worktrees and the normalization
