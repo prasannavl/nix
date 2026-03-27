@@ -4042,10 +4042,73 @@ process_snapshot_wave_results() {
   [ "${fatal_failure}" -eq 0 ]
 }
 
+snapshot_host_with_retry() {
+  local node="$1" snapshot_file="$2"
+  local parent_host="" ready_timeout=0 ready_interval_secs=0 max_attempts=0 attempt=0
+
+  [ "${DRY_RUN}" -eq 0 ] || return 0
+  [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] || return 0
+
+  if snapshot_exists "${snapshot_file}"; then
+    return 0
+  fi
+
+  wait_before_host_phase "${node}" "snapshot"
+  parent_host="$(host_parent_for "${node}")"
+  if [ -z "${parent_host}" ]; then
+    snapshot_host_generation "${node}" "${snapshot_file}"
+    return "$?"
+  fi
+
+  ready_timeout="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT}"
+  ready_interval_secs="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS}"
+  if [ "${ready_interval_secs}" -lt 1 ]; then
+    ready_interval_secs=1
+  fi
+  max_attempts=$((((ready_timeout - 1) / ready_interval_secs) + 1))
+  attempt=1
+
+  while ! snapshot_host_generation "${node}" "${snapshot_file}"; do
+    if [ "${attempt}" -ge "${max_attempts}" ]; then
+      return 1
+    fi
+
+    echo "[${node}] snapshot | attempt ${attempt}/${max_attempts} failed after parent barrier (${parent_host}); retrying in ${ready_interval_secs}s" >&2
+    sleep "${ready_interval_secs}"
+    attempt=$((attempt + 1))
+  done
+
+  return 0
+}
+
+run_snapshot_job() {
+  local node="$1" snapshot_file="$2" status_file="${3:-}" log_file="${4:-}" rc=0
+
+  (
+    set +e
+    if [ -n "${status_file}" ]; then
+      rm -f "${status_file}"
+    fi
+    if [ -n "${log_file}" ]; then
+      run_streamed_host_command "${node}" "${log_file}" snapshot_host_with_retry "${node}" "${snapshot_file}"
+      rc="$?"
+    else
+      snapshot_host_with_retry "${node}" "${snapshot_file}"
+      rc="$?"
+    fi
+    log_group_end_host_stage "snapshot"
+    if [ -n "${status_file}" ]; then
+      write_status_file "${status_file}" "${rc}"
+    fi
+    exit "${rc}"
+  )
+}
+
 run_initial_snapshot_wave() {
-  local level_group="$1" snapshot_dir="$2"
+  local level_group="$1" snapshot_dir="$2" snapshot_log_dir="$3" snapshot_status_dir="$4"
+  local snapshot_parallel="${5:-0}" snapshot_parallel_jobs="${6:-1}"
   local -a level_hosts=()
-  local node=""
+  local node="" active_jobs=0 status_file="" log_file="" status=""
 
   [ -n "${level_group}" ] || return 0
 
@@ -4053,24 +4116,42 @@ run_initial_snapshot_wave() {
   log_subsection "Snapshot Wave 0: $(join_by_comma "${level_hosts[@]}")"
   for node in "${level_hosts[@]}"; do
     [ -n "${node}" ] || continue
-    if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-      snapshot_host_generation "${node}" "${snapshot_dir}/${node}.path" \
-        > >(host_log_filter "${node}") \
-        2> >(host_log_filter "${node}" >&2) || {
-        echo "Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
-      }
-    elif ! snapshot_host_generation "${node}" "${snapshot_dir}/${node}.path"; then
+    if [ "${snapshot_parallel}" -eq 1 ]; then
+      status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
+      log_file="$(phase_dir_item_log_file "${snapshot_log_dir}" "${node}")"
+      run_snapshot_job "${node}" "${snapshot_dir}/${node}.path" "${status_file}" "${log_file}" &
+      active_jobs=$((active_jobs + 1))
+      wait_for_job_slot active_jobs "${snapshot_parallel_jobs}" || return "$?"
+      continue
+    fi
+
+    if ! run_snapshot_job "${node}" "${snapshot_dir}/${node}.path"; then
       echo "Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
     fi
   done
+
+  if [ "${snapshot_parallel}" -eq 1 ]; then
+    drain_job_slots active_jobs || return "$?"
+    for node in "${level_hosts[@]}"; do
+      [ -n "${node}" ] || continue
+      status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
+      if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
+        echo "Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
+        continue
+      fi
+      if [ "${status}" != "0" ]; then
+        echo "Initial snapshot for ${node} failed; will retry when its deploy wave is reached" >&2
+      fi
+    done
+  fi
 }
 
 ensure_wave_snapshots() {
-  local snapshot_dir="$1"
-  shift
+  local snapshot_dir="$1" snapshot_log_dir="$2" snapshot_status_dir="$3"
+  local snapshot_parallel="${4:-0}" snapshot_parallel_jobs="${5:-1}"
+  shift 5
 
-  local node="" snapshot_file="" rc=0 parent_host="" ready_timeout=0
-  local ready_interval_secs=0 max_attempts=0 attempt=0
+  local node="" snapshot_file="" rc=0 active_jobs=0 status_file="" log_file="" status=""
 
   [ "${DRY_RUN}" -eq 0 ] || return 0
   [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] || return 0
@@ -4083,36 +4164,41 @@ ensure_wave_snapshots() {
       continue
     fi
 
-    wait_before_host_phase "${node}" "snapshot"
-    parent_host="$(host_parent_for "${node}")"
-    if [ -z "${parent_host}" ]; then
-      if ! snapshot_host_generation "${node}" "${snapshot_file}"; then
-        echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
-        rc=1
-      fi
+    if [ "${snapshot_parallel}" -eq 1 ]; then
+      status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
+      log_file="$(phase_dir_item_log_file "${snapshot_log_dir}" "${node}")"
+      run_snapshot_job "${node}" "${snapshot_file}" "${status_file}" "${log_file}" &
+      active_jobs=$((active_jobs + 1))
+      wait_for_job_slot active_jobs "${snapshot_parallel_jobs}" || return "$?"
       continue
     fi
 
-    ready_timeout="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT}"
-    ready_interval_secs="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS}"
-    if [ "${ready_interval_secs}" -lt 1 ]; then
-      ready_interval_secs=1
+    if ! run_snapshot_job "${node}" "${snapshot_file}"; then
+      echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
+      rc=1
     fi
-    max_attempts=$((((ready_timeout - 1) / ready_interval_secs) + 1))
-    attempt=1
+  done
 
-    while ! snapshot_host_generation "${node}" "${snapshot_file}"; do
-      if [ "${attempt}" -ge "${max_attempts}" ]; then
+  if [ "${snapshot_parallel}" -eq 1 ]; then
+    drain_job_slots active_jobs || return "$?"
+    for node in "$@"; do
+      [ -n "${node}" ] || continue
+      snapshot_file="${snapshot_dir}/${node}.path"
+      if snapshot_exists "${snapshot_file}"; then
+        continue
+      fi
+      status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
+      if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
         echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
         rc=1
-        break
+        continue
       fi
-
-      echo "[${node}] snapshot | attempt ${attempt}/${max_attempts} failed after parent barrier (${parent_host}); retrying in ${ready_interval_secs}s" >&2
-      sleep "${ready_interval_secs}"
-      attempt=$((attempt + 1))
+      if [ "${status}" != "0" ]; then
+        echo "Unable to record pre-deploy generation for ${node}; refusing deploy without rollback snapshot" >&2
+        rc=1
+      fi
     done
-  done
+  fi
 
   return "${rc}"
 }
@@ -4418,14 +4504,17 @@ run_bootstrap_key_checks() {
 init_run_dirs() {
   local base_dir="$1"
   local -n ird_build_log_dir_out_ref="$2" ird_build_status_dir_out_ref="$3"
-  local -n ird_deploy_log_dir_out_ref="$4" ird_deploy_status_dir_out_ref="$5"
-  local -n ird_build_out_dir_out_ref="$6" ird_snapshot_dir_out_ref="$7"
-  local -n ird_rollback_log_dir_out_ref="$8" ird_rollback_status_dir_out_ref="$9"
+  local -n ird_snapshot_log_dir_out_ref="$4" ird_snapshot_status_dir_out_ref="$5"
+  local -n ird_deploy_log_dir_out_ref="$6" ird_deploy_status_dir_out_ref="$7"
+  local -n ird_build_out_dir_out_ref="$8" ird_snapshot_dir_out_ref="$9"
+  local -n ird_rollback_log_dir_out_ref="${10}" ird_rollback_status_dir_out_ref="${11}"
 
   # shellcheck disable=SC2034
   {
     ird_build_log_dir_out_ref="$(phase_log_dir_path "${base_dir}" "build")"
     ird_build_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "build")"
+    ird_snapshot_log_dir_out_ref="$(phase_log_dir_path "${base_dir}" "snapshot")"
+    ird_snapshot_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "snapshot")"
     ird_deploy_log_dir_out_ref="$(phase_log_dir_path "${base_dir}" "deploy")"
     ird_deploy_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "deploy")"
     ird_build_out_dir_out_ref="${base_dir}/build-outs"
@@ -4434,7 +4523,7 @@ init_run_dirs() {
     ird_rollback_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "rollback")"
   }
 
-  ensure_phase_runtime_dirs "${base_dir}" build deploy rollback
+  ensure_phase_runtime_dirs "${base_dir}" build snapshot deploy rollback
   mkdir -p "${ird_build_out_dir_out_ref}" "${ird_snapshot_dir_out_ref}"
 }
 
@@ -4700,19 +4789,22 @@ run_build_phase() {
 
 run_deploy_phase() {
   local deploy_parallel="$1" deploy_parallel_jobs="$2" snapshot_dir="$3"
-  local deploy_log_dir="$4" deploy_status_dir="$5" build_out_dir="$6"
-  local rollback_log_dir="$7" rollback_status_dir="$8"
-  local deploy_skipped_hosts_out_name="${11}" snapshot_failed_hosts_out_name="${12}"
-  local -n rdp_level_groups_in_ref="$9" rdp_successful_hosts_out_ref="${10}"
+  local snapshot_log_dir="$4" snapshot_status_dir="$5"
+  local deploy_log_dir="$6" deploy_status_dir="$7" build_out_dir="$8"
+  local rollback_log_dir="$9" rollback_status_dir="${10}"
+  local deploy_skipped_hosts_out_name="${13}" snapshot_failed_hosts_out_name="${14}"
+  local -n rdp_level_groups_in_ref="${11}" rdp_successful_hosts_out_ref="${12}"
   # shellcheck disable=SC2178
-  local -n rdp_deploy_failed_hosts_out_ref="${13}"
+  local -n rdp_deploy_failed_hosts_out_ref="${15}"
 
   local level_group="" node="" active_jobs="" level_index=0
   local -a level_hosts=() deploy_level_hosts=()
   local status_file="" out_file="" log_file="" snapshot_retry_logged=0
   local deploy_wave_failed=0 total_deploy_hosts=0 level_group_size=0 host_grouping=0 phase_rc=0
+  local wave_deploy_parallel=0 shared_parent=""
+  declare -A wave_parent_seen=()
 
-  local _success_hosts_out_name="${10}" _failed_hosts_out_name="${13}"
+  local _success_hosts_out_name="${12}" _failed_hosts_out_name="${15}"
 
   # Invoke abort_deploy_on_signal with the fixed context for this deploy phase.
   _try_abort_wave() {
@@ -4753,6 +4845,20 @@ run_deploy_phase() {
       fi
       deploy_level_hosts+=("${node}")
     done
+    wave_deploy_parallel="${deploy_parallel}"
+    if [ "${wave_deploy_parallel}" -eq 1 ] && [ "${#deploy_level_hosts[@]}" -gt 1 ]; then
+      wave_parent_seen=()
+      for node in "${deploy_level_hosts[@]}"; do
+        [ -n "${node}" ] || continue
+        shared_parent="$(host_parent_for "${node}")"
+        [ -n "${shared_parent}" ] || continue
+        if [ -n "${wave_parent_seen["${shared_parent}"]+x}" ]; then
+          wave_deploy_parallel=0
+          break
+        fi
+        wave_parent_seen["${shared_parent}"]=1
+      done
+    fi
     snapshot_retry_logged=0
     if log_snapshot_retry_transition "${snapshot_dir}" "${level_index}" "${deploy_level_hosts[@]}"; then
       snapshot_retry_logged=1
@@ -4766,7 +4872,13 @@ run_deploy_phase() {
       log_group_scope_end
       return 1
     fi
-    if ! ensure_wave_snapshots "${snapshot_dir}" "${deploy_level_hosts[@]}"; then
+    if ! ensure_wave_snapshots \
+      "${snapshot_dir}" \
+      "${snapshot_log_dir}" \
+      "${snapshot_status_dir}" \
+      "${deploy_parallel}" \
+      "${deploy_parallel_jobs}" \
+      "${deploy_level_hosts[@]}"; then
       if ! process_snapshot_wave_results "${snapshot_dir}" "${snapshot_failed_hosts_out_name}" "${_failed_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${deploy_level_hosts[@]}"; then
         print_host_failures "Deploy phase failed" snapshot "" "${rdp_deploy_failed_hosts_out_ref[@]}"
         maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${rdp_successful_hosts_out_ref[@]}"
@@ -4791,7 +4903,7 @@ run_deploy_phase() {
       status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
       out_file="${build_out_dir}/${node}.path"
       log_file=""
-      if [ "${deploy_parallel}" -eq 1 ]; then
+      if [ "${wave_deploy_parallel}" -eq 1 ]; then
         log_file="$(phase_dir_item_log_file "${deploy_log_dir}" "${node}")"
         run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
         active_jobs=$((active_jobs + 1))
@@ -4821,7 +4933,7 @@ run_deploy_phase() {
       fi
     done
 
-    if [ "${deploy_parallel}" -eq 1 ]; then
+    if [ "${wave_deploy_parallel}" -eq 1 ]; then
       if drain_job_slots active_jobs; then
         :
       else
@@ -4853,7 +4965,7 @@ run_deploy_phase() {
     fi
 
     if [ "${deploy_wave_failed}" -eq 1 ]; then
-      if [ "${deploy_parallel}" -eq 1 ]; then
+      if [ "${wave_deploy_parallel}" -eq 1 ]; then
         print_host_failures "Deploy phase failed" deploy "${deploy_log_dir}" "${rdp_deploy_failed_hosts_out_ref[@]}"
       else
         print_host_failures "Deploy phase failed" plain "" "${rdp_deploy_failed_hosts_out_ref[@]}"
@@ -4901,9 +5013,10 @@ run_hosts() {
   # shellcheck disable=SC2034
   local -a build_hosts=() level_groups=() bootstrap_ok_hosts=() bootstrap_failed_hosts=()
 
-  local build_log_dir="" build_status_dir="" deploy_log_dir="" deploy_status_dir=""
-  local build_out_dir="" snapshot_dir="" rollback_log_dir="" rollback_status_dir=""
-  local levels_json="" final_rc=0 build_parallel=0 deploy_parallel=0
+  local build_log_dir="" build_status_dir="" snapshot_log_dir="" snapshot_status_dir=""
+  local deploy_log_dir="" deploy_status_dir="" build_out_dir="" snapshot_dir=""
+  local rollback_log_dir="" rollback_status_dir=""
+  local levels_json="" final_rc=0 build_parallel=0 deploy_parallel=0 snapshot_parallel=0
 
   FULLY_SKIPPED_HOSTS=()
   # shellcheck disable=SC2034
@@ -4941,6 +5054,7 @@ run_hosts() {
   fi
   if [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ]; then
     deploy_parallel=1
+    snapshot_parallel=1
   fi
 
   ensure_tmp_dir
@@ -4948,6 +5062,8 @@ run_hosts() {
     "${NIXBOT_TMP_DIR}" \
     build_log_dir \
     build_status_dir \
+    snapshot_log_dir \
+    snapshot_status_dir \
     deploy_log_dir \
     deploy_status_dir \
     build_out_dir \
@@ -4986,7 +5102,13 @@ run_hosts() {
   if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
     log_section "Phase: Snapshot"
     if [ "${#level_groups[@]}" -gt 0 ]; then
-      run_initial_snapshot_wave "${level_groups[0]}" "${snapshot_dir}"
+      run_initial_snapshot_wave \
+        "${level_groups[0]}" \
+        "${snapshot_dir}" \
+        "${snapshot_log_dir}" \
+        "${snapshot_status_dir}" \
+        "${snapshot_parallel}" \
+        "${NIXBOT_PARALLEL_JOBS}"
     fi
   fi
 
@@ -4997,6 +5119,8 @@ run_hosts() {
     "${deploy_parallel}" \
     "${NIXBOT_PARALLEL_JOBS}" \
     "${snapshot_dir}" \
+    "${snapshot_log_dir}" \
+    "${snapshot_status_dir}" \
     "${deploy_log_dir}" \
     "${deploy_status_dir}" \
     "${build_out_dir}" \
