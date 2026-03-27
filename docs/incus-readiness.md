@@ -51,7 +51,7 @@ Behavior is governed by `services.incusMachines.reconcilePolicy`:
 
 Usage:
 
-```
+```bash
 incus-machines-reconcile --all
 incus-machines-reconcile --machine llmug-rivendell --machine gap3-gondor
 ```
@@ -76,7 +76,7 @@ settle succeed.
 
 Usage:
 
-```
+```bash
 incus-machines-settle --all
 incus-machines-settle --machine llmug-rivendell --timeout 120
 ```
@@ -130,7 +130,7 @@ The function `ensure_deploy_wave_parent_readiness` in `nixbot.sh`:
 2. **Runs reconcile on the parent** -- SSHes to the parent host and executes the
    reconcile command template. The default template is:
 
-   ```
+   ```bash
    /run/current-system/sw/bin/incus-machines-reconcile --machine <name> [--machine <name2> ...]
    ```
 
@@ -139,7 +139,7 @@ The function `ensure_deploy_wave_parent_readiness` in `nixbot.sh`:
 3. **Runs settle on the parent** -- SSHes to the parent host and executes the
    settle command template. The default template is:
 
-   ```
+   ```bash
    /run/current-system/sw/bin/incus-machines-settle --timeout <timeout> --machine <name> [--machine <name2> ...]
    ```
 
@@ -212,7 +212,7 @@ externally.
 
 ## Lifecycle Summary
 
-```
+```text
 Parent host activation (NixOS rebuild):
   incus-preseed.service
   incus-images.service        (import/refresh declared images)

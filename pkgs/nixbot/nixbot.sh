@@ -3335,6 +3335,7 @@ wait_for_prepared_host_age_identity_activation_visibility() {
   mapfile -t sudo_policy < <(resolve_target_sudo_policy "${PREP_DEPLOY_LOCAL_EXEC}" "${PREP_DEPLOY_SSH_TARGET}" "${PREP_USING_BOOTSTRAP_FALLBACK}")
   ask_sudo_password="${sudo_policy[1]:-0}"
   tty_mode="${sudo_policy[2]:-0}"
+  # shellcheck disable=SC2016
   check_cmd="$(build_remote_activation_context_file_value_check_cmd \
     "${REMOTE_NIXBOT_AGE_IDENTITY}" \
     "${expected_sha}" \

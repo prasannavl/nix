@@ -16,7 +16,7 @@
   instead. This repo prefers the more explicit and developer-intuitive form for
   single bindings, so `statix` `manual_inherit` (W03) is disabled.
 - `inherit (source) x;` is also optional rather than required. This repo
-  disables `assign_inherit` (W04) because we prefer whichever form is more
+  disables `manual_inherit_from` (W04) because we prefer whichever form is more
   intuitive in context: use `inherit (source) ...;` when it improves
   readability, and use `x = source.x;` when that is clearer.
 - When two or more adjacent bindings are all self-assignments, combine them into
