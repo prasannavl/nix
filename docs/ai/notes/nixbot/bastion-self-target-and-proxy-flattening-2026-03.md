@@ -3,23 +3,23 @@
 ## Context
 
 GitHub Actions enters the deploy flow through bastion forced-command ingress on
-`pvl-x2`. Once the run is already executing on that bastion host, treating
-`pvl-x2` as a normal remote SSH target is unnecessary and can fail during
-post-switch reconnects and rollback.
+`<bastion-host>`. Once the run is already executing on that bastion host,
+treating `<bastion-host>` as a normal remote SSH target is unnecessary and can
+fail during post-switch reconnects and rollback.
 
-The same issue applies to downstream guests that declare `proxyJump = "pvl-x2"`:
-when the deploy process is already running on `pvl-x2`, keeping that leading hop
-forces SSH back through bastion ingress instead of connecting directly to the
-guest.
+The same issue applies to downstream guests that declare
+`proxyJump = "<bastion-host>"`: when the deploy process is already running on
+`<bastion-host>`, keeping that leading hop forces SSH back through bastion
+ingress instead of connecting directly to the guest.
 
 The CI failure signature that motivated this note included:
 
 - forced-command bootstrap check failed
 - failed to allocate remote temporary file for bootstrap key
-- rollback on `pvl-x2` after a successful switch
+- rollback on `<bastion-host>` after a successful switch
 - `Connection closed by 127.0.0.2 port 22` while reaching a guest through
-  `proxyJump = "pvl-x2"` from a bastion-triggered run already executing on
-  `pvl-x2`
+  `proxyJump = "<bastion-host>"` from a bastion-triggered run already executing
+  on `<bastion-host>`
 
 ## Decision
 

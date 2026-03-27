@@ -1,4 +1,4 @@
-# pvl Bash Prompt Exit Status Fix
+# Bash Prompt Exit Status Fix
 
 - Date: 2026-03-21
 - Scope: `users/pvl/bash/bashrc.d/101-bash-prompt.sh`

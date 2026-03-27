@@ -39,5 +39,7 @@ reusable NixOS module at `lib/incus.nix`.
 ## Source of Truth
 
 - `lib/incus.nix` — module definition
-- `hosts/pvl-x2/incus.nix` — pvl-x2 machine declarations + preseed
-- `hosts/gap3-gondor/incus.nix` — gap3-gondor machine declarations + preseed
+- `hosts/<parent-incus-host>/incus.nix` — parent-host machine declarations +
+  preseed
+- `hosts/<nested-incus-host>/incus.nix` — nested-host machine declarations +
+  preseed

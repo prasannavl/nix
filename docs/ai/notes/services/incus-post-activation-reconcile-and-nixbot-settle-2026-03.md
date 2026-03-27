@@ -2,16 +2,32 @@
 
 ## Context
 
-Activation-time Incus guest reconcile in `lib/incus.nix` proved unsafe on real
-hosts. A failed or badly timed reconcile could interfere with host convergence
-and leave the machine unbootable or require manual rescue.
+`lib/incus.nix` first gained activation-time guest reconcile so a parent Incus
+host could recreate declared child guests that had been manually deleted or
+stopped.
 
-`pvl-x2` hit the more severe version of that operational failure, so the
-activation hook was disabled entirely.
+That initial model later gained `off|best-effort|strict` policy control so
+parent-host activation did not have to fail just because one child guest was in
+bad shape.
+
+The model still proved unsafe once nested Incus hosts entered the graph. A
+containerized Incus parent could complete `switch-to-configuration` while still
+finishing in a partially converged runtime state if it reconciled its own child
+guests during activation. The concrete failure mode was stale
+`/run/current-system` after a successful switch, which made the activated host
+look like it was still on the bootstrap image PATH.
+
+The same investigation also confirmed a separate guest-side regression: optional
+Tailscale configuration in `lib/incus-vm.nix` no longer enabled
+`services.tailscale`, so guests with an auth secret evaluated Tailscale config
+without starting the service.
 
 ## Decision
 
 - Remove guest reconcile from `system.activationScripts`.
+- Keep the final safe default as:
+  - non-container Incus parents default to `best-effort`
+  - containerized Incus parents default to `off`
 - Add explicit host-side helper commands:
   - `incus-machines-reconcile`
   - `incus-machines-settle`
@@ -30,6 +46,7 @@ activation hook was disabled entirely.
 - `services.incusMachines.reconcilePolicy` is the reconcile control.
 - `services.incusMachines.autoReconcile` controls whether
   `incus-machines-reconcile.service` is wanted by `multi-user.target`.
+- Activation-time reconcile is no longer used as the steady-state model.
 - The host installs:
   - `incus-machines-reconcile`
   - `incus-machines-settle`
@@ -65,6 +82,13 @@ activation hook was disabled entirely.
 - `after` remains available for non-parent ordering edges that do not imply the
   parent readiness contract.
 
+### `lib/incus-vm.nix`
+
+- Optional Tailscale guest configuration now also sets
+  `services.tailscale.enable = true`.
+- Runtime hostname convergence stays in a dedicated `hostname(1)` oneshot rather
+  than mixed into the guest bootstrap workaround path.
+
 ## Operational Effect
 
 - Host activation no longer performs child guest lifecycle mutation.
@@ -74,3 +98,9 @@ activation hook was disabled entirely.
 - `nixbot` ordering edges now gain a concrete readiness barrier for Incus
   parent/child relationships.
 - Nested Incus hosts avoid mutating children during their own activation.
+
+## Superseded notes
+
+- `docs/ai/notes/services/incus-guest-reconcile-on-activation-2026-03.md`
+- `docs/ai/notes/services/incus-reconcile-policy-best-effort-2026-03.md`
+- `docs/ai/notes/plans/incus-nested-reconcile-and-deploy-readiness-2026-03.md`

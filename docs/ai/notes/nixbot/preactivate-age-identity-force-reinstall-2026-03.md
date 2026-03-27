@@ -3,13 +3,13 @@
 ## Context
 
 After reintroducing the Incus guest snapshot wait, `nixbot` progressed past the
-`gap3-gondor` snapshot race but then failed during activation-time agenix
-decrypt on `gap3-gondor`.
+nested-host snapshot race but then failed during activation-time agenix decrypt
+on that same nested host.
 
 Observed behavior:
 
 - deploy logged
-  `Skipping host age identity for gap3-gondor; matching key
+  `Skipping host age identity for <nested-incus-host>; matching key
   already present on target`
 - agenix then reported `/var/lib/nixbot/.age/identity` missing during the switch
 - the host-side filesystem after the failed deploy showed

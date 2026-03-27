@@ -13,11 +13,10 @@ another without mutating either backend by default.
 ## Workflow
 
 1. Generate a migration run with selectors such as:
-   - `--zone gap3.ai`
-   - `--zone llmug.com`
-   - `--worker llmug-hello`
-   - `--tunnel pvl-x2`
-   - `--r2-bucket priyasuyash`
+   - `--zone <zone>`
+   - `--worker <worker>`
+   - `--tunnel <tunnel>`
+   - `--r2-bucket <bucket>`
 2. Review `docs/ai/runs/<session>/selected-manifest.json`.
 3. Run `import-into-target.sh` against the target backend credentials/env.
 4. Verify the target backend state and plans.

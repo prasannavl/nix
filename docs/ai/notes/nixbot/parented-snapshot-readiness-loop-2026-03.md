@@ -5,10 +5,8 @@
 The earlier conclusion that a short per-host `wait = 3` solved the Incus guest
 snapshot race was not durable.
 
-Repeated repros still failed for parented guests such as:
-
-- `llmug-rivendell`
-- `gap3-gondor`
+Repeated repros still failed for parented Incus guests behind a reconciled
+parent host.
 
 Observed failure pattern:
 

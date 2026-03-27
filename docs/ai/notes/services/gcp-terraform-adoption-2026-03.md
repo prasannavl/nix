@@ -2,9 +2,8 @@
 
 ## Summary
 
-- Adopted the non-legacy GCP Terraform from
-  `/home/pvl/spaces/defich/infra-legacy/tf` into this repo's phase-based `tf/`
-  layout.
+- Adopted the non-legacy GCP Terraform from a legacy infrastructure repo into
+  this repo's phase-based `tf/` layout.
 - Ignored `/legacy/**` from the source repo as requested.
 - Split the adopted layout into:
   - `tf/gcp-bootstrap`: manual one-time control-plane bootstrap.
@@ -14,12 +13,12 @@
 ## Adopted Resources
 
 - Bootstrap:
-  - org folder `pvl`
-  - control project `pvl-control`
-  - control service account `tf-control-sa`
-  - shared state bucket `pvl-control-state`
+  - org folder `<org-folder>`
+  - control project `<control-project>`
+  - control service account `<control-service-account>`
+  - shared state bucket `<shared-state-bucket>`
 - Platform:
-  - project `pvl-dev-tf1`
+  - project `<dev-project>`
   - enabled project APIs
   - project metadata including SSH key injection
   - VPC `main`

@@ -8,10 +8,9 @@ dropped from `hosts/nixbot.nix`.
 
 ## Context
 
-Incus guests such as `llmug-rivendell`, `gap3-gondor`, and `gap3-rivendell` can
-be recreated during deployment of their parent host. `nixbot` records a rollback
-snapshot for each target before deploy, and for dependent hosts it retries that
-snapshot when their deploy wave is reached.
+Incus child guests can be recreated during deployment of their parent host.
+`nixbot` records a rollback snapshot for each target before deploy, and for
+dependent hosts it retries that snapshot when their deploy wave is reached.
 
 After a parent host recreates a guest, the guest may exist but still not be
 reachable over SSH when the retry snapshot runs. A small retry delay is useful
@@ -31,21 +30,17 @@ of inventing a separate snapshot-only delay. Keep the configured waits short;
 this is only a guardrail, not the primary fix for host-specific SSH/bootstrap
 problems.
 
-The later diagnosis for `llmug-rivendell` was guest firewall policy: SSH from
+The later diagnosis for one affected guest was guest firewall policy: SSH from
 the parent host over `incusbr0` must be allowed for `nixbot` snapshot/deploy
-access. `gap3-gondor` already had this; `llmug-rivendell` and `gap3-rivendell`
-were brought into line with
-`networking.firewall.trustedInterfaces = [ "incusbr0" ]`.
+access. The nested host already had this; the other parented guests were brought
+into line with `networking.firewall.trustedInterfaces = [ "incusbr0" ]`.
 
 ## Implementation
 
 - `pkgs/nixbot/nixbot.sh` now has `wait_before_host_phase`, used by both:
   - `run_deploy_job`
   - `ensure_wave_snapshots`
-- `hosts/nixbot.nix` sets short waits for Incus guests:
-  - `llmug-rivendell = 3`
-  - `gap3-gondor = 3`
-  - `gap3-rivendell = 3`
+- `hosts/nixbot.nix` sets short waits for representative Incus child guests.
 
 ## Operational Effect
 
