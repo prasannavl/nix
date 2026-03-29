@@ -47,7 +47,8 @@ Reference example: `pkgs/hello-rust/flake.nix`.
 Container workloads run as rootless Podman compose stacks managed by a shared
 NixOS module:
 
-- Shared lifecycle logic lives in `lib/podman.nix`.
+- Shared Podman base config lives in `lib/podman.nix`.
+- Shared compose lifecycle logic lives in `lib/podman-compose.nix`.
 - Deploy-time user-manager orchestration lives in `lib/systemd-user-manager.nix`
   (documented in `docs/systemd-user-manager.md`).
 - Hosts declare stacks under `services.podmanCompose.<stack>` in

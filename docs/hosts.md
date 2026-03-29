@@ -61,8 +61,7 @@ Profiles under `lib/profiles/` provide layered baseline configuration. A host's
   physical hardware assumptions.
 - `desktop-core.nix` — desktop foundations (imports `core.nix`).
 - `desktop-gnome.nix` / `desktop-gnome-minimal.nix` — GNOME desktop variants.
-- `all.nix` — full desktop + virtualization (imports `desktop-gnome.nix` +
-  `virtualization.nix`).
+- `all.nix` — full desktop profile (imports `desktop-gnome.nix`).
 
 Physical machines typically use `all.nix`. Incus VM guests use
 `systemd-container.nix` plus `lib/incus-vm.nix`.
@@ -103,6 +102,7 @@ For an Incus VM guest:
     ../../lib/profiles/systemd-container.nix
     (import ../../lib/incus-vm.nix {inherit hostName;})
     ../../lib/podman.nix
+    ../../lib/podman-compose.nix
     ./packages.nix
     ./services.nix
     ./users.nix
@@ -177,13 +177,13 @@ Host-specific modules import shared functionality from `lib/`:
 
 | Module                     | Purpose                                     |
 | -------------------------- | ------------------------------------------- |
-| `lib/podman.nix`           | Podman compose platform                     |
+| `lib/podman.nix`           | Shared Podman enablement and config         |
+| `lib/podman-compose.nix`   | Podman compose platform                     |
 | `lib/incus.nix`            | Declarative Incus guest lifecycle           |
 | `lib/incus-vm.nix`         | Incus VM guest hardware config              |
 | `lib/swap-auto.nix`        | Automatic swap configuration                |
 | `lib/nixbot/`              | Deploy agent integration                    |
 | `lib/nixbot/bastion.nix`   | Bastion host role for deploy relay          |
-| `lib/virtualization.nix`   | libvirt/QEMU/virt-manager                   |
 | `lib/devices/<device>.nix` | Hardware-specific kernel modules and quirks |
 
 ## Host Types

@@ -21,14 +21,15 @@ isolation, but scaling it across hosts introduces repetitive plumbing:
   stopped ones.
 
 Without a shared module, each host would duplicate all of that wiring
-independently and the definitions would drift. `lib/podman.nix` exists to own
-that lifecycle once so hosts only declare what is specific to them: which stacks
-to run, what images to use, and which secrets to inject. The module then
+independently and the definitions would drift. `lib/podman-compose.nix` exists
+to own that lifecycle once so hosts only declare what is specific to them: which
+stacks to run, what images to use, and which secrets to inject. The module then
 generates the systemd units, firewall rules, and ingress metadata automatically.
 
 ## Current Model
 
-- `lib/podman.nix` owns declarative compose lifecycle:
+- `lib/podman.nix` owns shared Podman enablement and `containers.conf` defaults.
+- `lib/podman-compose.nix` owns declarative compose lifecycle:
   - working-directory staging
   - generated systemd user units
   - restart behavior on config changes
@@ -220,7 +221,6 @@ For each compose instance, the module generates a systemd user service that:
 The main generated service is intentionally stateless:
 
 - no lifecycle tag state is stored on disk
-- no lifecycle tag action is replayed just because the machine rebooted
 - boot-time startup is gated behind `systemd-user-manager-ready.target`, so the
   main compose services do not start until the per-user reconciler has run once
 
@@ -235,13 +235,15 @@ The main generated service is intentionally stateless:
   - default is `"0"`
   - when the declared value changes, the main generated compose unit is treated
     as changed
-  - a transient pre-action marks the next managed start/restart to use
-    `podman compose up --force-recreate`
+  - it does not change steady-state `ExecStart` behavior
+  - instead it forces the normal managed stop/start switch path for active
+    stacks
 - `imageTag`:
   - default is `"0"`
-  - when the declared value changes, a transient pre-action runs
-    `podman compose pull`
-  - the main compose unit also restarts if the stack was active
+  - generates a separate oneshot image-pull user unit
+  - the main compose unit starts after that pull unit when image refresh is
+    enabled
+  - changing `imageTag` alone does not restart the main compose unit
 
 Operationally, the intended manual toggles are between `"0"` and `"1"`, though
 any new string value works.
@@ -254,23 +256,22 @@ any new string value works.
   - active stacks restart through the normal managed-unit path
 - `recreateTag` change:
   - changes the main generated user unit restart stamp
-  - runs a transient pre-action attached to the main managed unit
-  - only the declared `recreateTag` value participates in that action stamp
-  - marks the next managed start/restart to use
-    `podman compose up --force-recreate`
+  - causes a managed stop/start cycle for active stacks during deploy
+  - does not remain sticky after that generation switch
 - `imageTag` change:
-  - runs a transient pre-action attached to the main managed unit
-  - only the declared `imageTag` value participates in that action stamp
-  - uses `podman compose pull`
-  - active stacks then continue through the normal managed-unit restart path
+  - changes the separate generated image-pull user unit
+  - does not by itself restart the main compose unit
+  - any future start or restart of the main compose unit runs the pull unit
+    first
 - compose `source`, `files`, `entryFile`, `envSecrets`, or generated unit
   change:
   - changes the main generated user service and restart stamp
   - active stacks restart on deploy
   - inactive stacks are started during reconcile unless disabled or masked
 - plain reboot:
-  - starts the main compose user service only
-  - does not replay lifecycle tags
+  - starts the main compose user service
+  - runs the image-pull helper first when image refresh is enabled
+  - does not replay `recreateTag`
 
 ## Derived Metadata
 
@@ -301,23 +302,19 @@ On host deploy:
 1. systemd reloads the affected user manager once
 2. changed bridge units stop
 3. changed bridge units start in the new generation
-4. active stacks either restart normally or run lifecycle tag actions, depending
-   on what changed
+4. the reconciler starts inactive managed units in the new generation
 
 That means:
 
-- lifecycle tags are deploy-time actions, not boot-time actions
 - Podman stacks must never make boot activation fail; boot-time ordering is
   handled after activation through `systemd-user-manager`'s normal boot unit and
   `systemd-user-manager-ready.target`
 - boot-time service startup waits for `systemd-user-manager-ready.target`, which
   the reconciler starts after a successful per-user apply
-- `dry-activate` logs the Podman pulls, restarts, and starts that would happen,
-  but does not actually mutate the running user services
-- `imageTag` runs before the managed-unit restart for active stacks
-- `recreateTag` runs before the managed-unit restart and causes that next
-  managed start/restart to use `--force-recreate`
-- `bootTag` is not a separate action unit
+- `dry-activate` logs the starts it would perform, but does not actually mutate
+  the running user services
+- `imageTag` is implemented as a normal helper unit, not a reconciler action
+- `bootTag` and `recreateTag` are expressed as changes to the main unit itself
 
 ## What A Host Must Provide
 
@@ -351,11 +348,10 @@ bridge restarts it. If it was inactive but still startable, reconcile starts it.
 
 ### What happens when I bump `recreateTag`?
 
-The reconciler runs a transient pre-action that marks the next managed
-start/restart to use `podman compose up --force-recreate`, then the normal
-managed-unit reconciliation path restarts or starts the main compose unit. This
-is keyed to the declared `recreateTag` value itself, not helper script path or
-other generated unit churn.
+The main generated unit changes, so active stacks restart through the normal
+managed-unit path. `recreateTag` is now a switch-time trigger only: it changes
+the managed-unit stamp so the active stack is stopped and started in the new
+generation, but it does not stay encoded in steady-state `ExecStart` behavior.
 
 ### What happens when I bump `bootTag`?
 
@@ -366,14 +362,9 @@ generated unit churn.
 
 ### What happens when I bump `imageTag`?
 
-The reconciler runs a transient pre-action that executes `podman compose pull`
-before the main managed-unit restart path. This is keyed to the declared
-`imageTag` value itself, not helper script path or other generated unit churn.
-
-### Do lifecycle tags replay on reboot?
-
-No. Lifecycle tags are stateless deploy-time actions. Reboot only starts the
-main compose service.
+The separate image-pull unit changes. That does not by itself restart the main
+compose service. The next time the main service starts or restarts, systemd runs
+the image-pull unit first.
 
 ### Does boot gating behind `systemd-user-manager-ready.target` create a deadlock?
 
@@ -384,18 +375,13 @@ apply, then starts `systemd-user-manager-ready.target` after a successful run.
 ### What does `dry-activate` show for Podman stacks?
 
 It runs the `systemd-user-manager` preview path. That means you get log lines
-for the Podman actions that would happen, such as `image-tag` pulls, managed
-unit restarts, or drift-healing starts, but no actual compose action is run.
+for the managed unit starts it would perform, but no actual compose action is
+run.
 
 ### If a stack is intentionally inactive, do tag bumps wake it up?
 
-No. Lifecycle tag actions only fire for stacks whose main user unit was active
-in the previous generation.
-
-### Do new non-default tags fire immediately the first time the tag unit exists?
-
-No. A newly introduced non-default tag does not retroactively fire just because
-the tag bridge appeared for the first time. It fires on subsequent tag changes.
+Yes. The simplified model treats the generated main unit as desired state. If it
+is managed and startable, reconcile starts it.
 
 ### Does `imageTag` rebuild build-only services?
 
@@ -406,7 +392,7 @@ need an explicit build flow if image refresh semantics need to cover them too.
 
 - `docs/services.md`: Native service pattern for non-container workloads.
 - `docs/systemd-user-manager.md`: Deploy-time user-service bridge module used by
-  `lib/podman.nix`.
+  `lib/podman-compose.nix`.
 - `docs/incus-vms.md`: Incus guest lifecycle (uses the same lifecycle tag
   conventions).
 - `docs/deployment.md`: Deploy architecture and secret model.
@@ -414,6 +400,7 @@ need an explicit build flow if image refresh semantics need to cover them too.
 ## Source Of Truth Files
 
 - `lib/podman.nix`
+- `lib/podman-compose.nix`
 - `lib/systemd-user-manager.nix`
 - `hosts/<host>/services.nix`
 - `hosts/nixbot.nix`

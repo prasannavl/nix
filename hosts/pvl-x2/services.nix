@@ -109,6 +109,7 @@ in {
           source = ./compose/shadowsocks/docker-compose.yml;
 
           files.".env" = ''
+            X = YZ
             SHADOWSOCKS_PORT=${toString exposedPorts.main.port}
           '';
 

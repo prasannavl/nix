@@ -342,14 +342,14 @@
             selected_json="$declared_instances"
             shift
             ;;
-          --instance)
-            [ "$#" -ge 2 ] || {
-              echo "Missing value for --instance" >&2
-              exit 1
-            }
-            append_instance "$2"
-            shift 2
-            ;;
+      --instance|--machine)
+        [ "$#" -ge 2 ] || {
+          echo "Missing value for $1" >&2
+          exit 1
+        }
+        append_instance "$2"
+        shift 2
+        ;;
           *)
             echo "Unknown argument: $1" >&2
             exit 1
@@ -440,7 +440,7 @@
 
       while [ "$#" -gt 0 ]; do
         case "$1" in
-          --all|--instance)
+          --all|--instance|--machine)
             break
             ;;
           --timeout)

@@ -140,6 +140,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/snapshot-wave-parallelism-2026-03.md`: Snapshot work now
   uses the deploy parallelism budget so hosts in the same dependency wave
   snapshot concurrently.
+- `docs/ai/notes/nixbot/systemd-user-manager-deploy-summary-2026-03.md`:
+  `nixbot` now prints `systemd-user-manager` dispatcher results inline after a
+  successful host deploy or host rollback, only when a dispatcher ran during
+  that window, using the dispatcher's latest invocation logs for that run.
 - `docs/ai/notes/nixbot/worktree-terraform-lockfile-2026-03.md`: Terraform
   lockfile regression exposed by fresh deploy worktrees and the normalization
   rule for Cloudflare provider locks.
@@ -234,6 +238,16 @@ Use this index as the canonical map for `docs/ai/**`.
   system-side per-user dispatcher, user-side reconciler owning all user-unit
   mutation, stateless dispatch, full postmortem of the boot activation and PAM
   storm regressions, and phased implementation guidance.
+- `docs/ai/notes/services/systemd-user-manager-stateless-simplified-switching-2026-03.md`:
+  Final implemented architecture: stateless per-user dispatcher/reconciler
+  switching, immutable store metadata, old-dispatcher `ExecStop` old-world
+  diffing, simplified desired-running reconcile semantics, and Podman lifecycle
+  behavior expressed as normal units and dependencies.
+- `docs/ai/notes/services/systemd-user-manager-stateless-manifest-plan-2026-03.md`:
+  Full handoff plan to remove `/var/lib/systemd-user-manager`, replace mutable
+  per-user stamp state with immutable old/new generation manifests, and use a
+  small transient `/run/nixos` handoff similar to native
+  `switch-to-configuration`.
 - `docs/ai/notes/services/systemd-user-manager-dry-activate-preview-2026-03.md`:
   `dry-activate` now logs the per-user reconcile actions it would take without
   mutating user services or persisted stamp state.

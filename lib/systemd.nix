@@ -23,5 +23,8 @@
     systemd.user.extraConfig = ''
       DefaultLimitNOFILE=${toString config.x.fdlimit}
     '';
+
+    # Misc systemd
+    systemd.targets.machines.enable = true;
   };
 }

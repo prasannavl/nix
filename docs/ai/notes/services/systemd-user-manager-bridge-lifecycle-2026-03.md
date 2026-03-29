@@ -1,19 +1,19 @@
-# systemd-user-manager Bridge Lifecycle (2026-03)
+# systemd-user-manager Dispatcher/Reconciler Lifecycle (2026-03)
 
 ## Scope
 
-Canonical summary of `lib/systemd-user-manager.nix`, including the per-user
-reconciler model, reload orchestration, and deploy-time change semantics used by
-`lib/podman.nix` and other user-service modules.
+Canonical summary of `lib/systemd-user-manager.nix`, including the
+dispatcher/reconciler split, reload orchestration, and deploy-time change
+semantics used by `lib/podman.nix` and other user-service modules.
 
 ## Module model
 
 - `services.systemdUserManager.instances.<name>` declares a managed user unit.
-- Each bridge targets a `users.users.<name>` entry with a non-null `uid`.
-- One serialized reconciler service is generated per user manager.
-- The reconciler runs as root and calls `systemctl --user --machine=<user>@ ...`
-  so deploy-time orchestration can manage lingering user managers from the
-  system side.
+- Each managed entry targets a `users.users.<name>` entry with a non-null `uid`.
+- One system dispatcher service is generated per managed user.
+- One user reconciler service is generated per managed user.
+- The dispatcher uses direct user-bus access via `setpriv`.
+- The reconciler runs inside the user manager and uses plain `systemctl --user`.
 
 ## Bridge options
 
@@ -29,17 +29,19 @@ reconciler model, reload orchestration, and deploy-time change semantics used by
   apply pass when there is no old-generation stop record.
 - `stopOnRemoval`: whether removing the managed entry should stop the managed
   user unit.
-- `restartTriggers`: values baked into the bridge unit so generation changes
-  cause old-stop/new-start switch behavior.
+- `restartTriggers`: values baked into the managed-unit stamp so generation
+  changes cause old-stop/new-start switch behavior.
 - `preActions` / `postActions`: ordered transient actions attached to the
   managed entry.
 
 ## Switch behavior
 
-- The per-user apply service is `Type=oneshot` with `RemainAfterExit=true`.
+- The user reconciler service is `Type=oneshot` with `RemainAfterExit=true`.
 - On each deploy:
-  - the reconciler waits for the user manager bus
-  - runs one `daemon-reload`
+  - the dispatcher ensures `user@<uid>.service`
+  - the dispatcher waits for the user manager bus
+  - the dispatcher reloads the user units and starts the reconciler
+  - the reconciler runs one user-side `daemon-reload`
   - loads persisted per-unit state from its `StateDirectory`
   - reconciles unit changes and ordered actions serially
   - writes the new state back atomically
@@ -50,10 +52,13 @@ reconciler model, reload orchestration, and deploy-time change semantics used by
 - Inactive but startable units are treated as drift and started during reconcile
   unless the unit file is disabled or masked.
 
-## Reload orchestration
+## Reload orchestration and dispatch
 
-- The per-user reconciler runs `systemctl --user daemon-reload` once before it
-  reconciles any managed entries for that user.
+- The system dispatcher is the only system-side unit that talks to the user
+  manager for normal reconcile.
+- It does not inspect per-unit drift or run per-unit lifecycle actions.
+- The reconciler runs `systemctl --user daemon-reload` once before it reconciles
+  managed entries for that user.
 
 ## User identity refresh
 
@@ -66,13 +71,13 @@ reconciler model, reload orchestration, and deploy-time change semantics used by
 
 ## Podman usage pattern
 
-`lib/podman.nix` uses the bridge module in two ways:
+`lib/podman.nix` uses the module in two ways:
 
 - main compose units use the default bridge behavior so changed active stacks
   restart and inactive-but-startable stacks are started during reconcile
-- `imageTag` is modeled as a transient pre-action with
+- `imageTag` is modeled as a pre-action with
   `observeUnitInactiveAction = "run-action"`
-- `recreateTag` is modeled as a transient pre-action with
+- `recreateTag` is modeled as a pre-action with
   `observeUnitInactiveAction = "run-action"` that arms the next managed
   start/restart to use `podman compose up --force-recreate`
 - `bootTag` remains folded into the main managed-unit restart trigger instead of

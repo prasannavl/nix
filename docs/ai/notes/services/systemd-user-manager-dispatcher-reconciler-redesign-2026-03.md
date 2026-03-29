@@ -38,6 +38,13 @@ The new target design is:
 This redesign intentionally moves the system/user boundary earlier and makes the
 system side much thinner.
 
+Implementation follow-up:
+
+- `switch`/`test` now use a two-phase model
+- old-world stop runs in activation from persisted `.state` files
+- new-world reconcile/start runs from the dispatcher system service after the
+  new unit graph is loaded
+
 ## Why We Are Doing This
 
 ### Problem 1: Boot activation was broken by activation-script control flow
@@ -415,6 +422,27 @@ The goal is to shrink activation to the smallest safe surface.
 
 These are the main decisions the implementing model still needs to settle while
 preserving the high-level architecture.
+
+## Implementation Decisions
+
+The implementation in `lib/systemd-user-manager.nix` settled the remaining
+practical choices as follows:
+
+- both generated unit names encode the username:
+  - system: `systemd-user-manager-dispatcher-<user>.service`
+  - user: `systemd-user-manager-reconciler-<user>.service`
+- the user reconciler still persists state under
+  `/var/lib/systemd-user-manager/<user>`, but the directory is now created as a
+  user-owned path via `systemd.tmpfiles`
+- lifecycle actions now execute directly in the reconciler process instead of
+  via root-launched transient user units
+- managed-unit convergence is bounded to `30s` per unit before that unit fails
+  and the reconciler continues with the remaining units
+- user-side actions default to a `30s` timeout; pull-style actions can opt into
+  a longer timeout, with Podman `imageTag` using `300s`
+- `systemdUserManagerIdentity` and the cross-user `systemdUserManagerPrune`
+  activation path remain in place for now; normal reconcile work moved out of
+  activation and into the dispatcher/reconciler split
 
 ### 1. User unit naming
 
