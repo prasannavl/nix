@@ -99,6 +99,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/github-actions-workflow-design-2026-03.md`: GitHub
   Actions workflow design: action input scope, runtime warmup strategy, and thin
   launcher role.
+- `docs/ai/notes/nixbot/host-banner-format-simplification-2026-03.md`: Simplify
+  host-stage output to one dashed banner format for all per-host phases because
+  the phase label already identifies the work.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Canonical `nixbot` rotation model, lessons, and operator guardrails.
 - `docs/ai/notes/nixbot/lint-gating-and-precommit-2026-03.md`: Shared lint
@@ -123,6 +126,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/parented-snapshot-readiness-loop-2026-03.md`: Replace
   the failed guest-specific `wait` workaround with a bounded readiness loop that
   waits for actual snapshot-path SSH success on parented hosts.
+- `docs/ai/notes/nixbot/primary-probe-failure-logging-2026-03.md`: Print the
+  exact primary SSH probe failure before bootstrap fallback or proxy-chain retry
+  so deploy-user fallback reasons stay visible.
 - `docs/ai/notes/nixbot/remote-file-install-transport-retries-2026-03.md`: Make
   remote temp-file allocation, file copy, and install steps retry on transport
   resets instead of failing fresh guest deploys immediately.
@@ -144,6 +150,12 @@ Use this index as the canonical map for `docs/ai/**`.
   `nixbot` now prints `systemd-user-manager` dispatcher results inline after a
   successful host deploy or host rollback, only when a dispatcher ran during
   that window, using the dispatcher's latest invocation logs for that run.
+- `docs/ai/notes/nixbot/systemd-user-manager-deploy-summary-header-cleanup-2026-03.md`:
+  Remove the redundant `[systemd-user-manager]` header line from the inline
+  deploy summary because the dispatcher status line already anchors the block.
+- `docs/ai/notes/nixbot/systemd-user-manager-deploy-summary-streaming-2026-03.md`:
+  Stream `systemd-user-manager` deploy summary logs live instead of buffering
+  the whole remote report until dispatcher completion.
 - `docs/ai/notes/nixbot/worktree-terraform-lockfile-2026-03.md`: Terraform
   lockfile regression exposed by fresh deploy worktrees and the normalization
   rule for Cloudflare provider locks.
@@ -177,6 +189,14 @@ Use this index as the canonical map for `docs/ai/**`.
   Dispatcher wait-path fix to dump the full reconciler invocation journal after
   completion, remove the fragile `RETURN`-trap `log_pid` cleanup bug, and make
   `nixbot` wait for dispatcher terminal state before printing deploy summaries.
+- `docs/ai/notes/services/systemd-user-manager-dispatcher-log-noise-cleanup-2026-03.md`:
+  Remove the extra dispatcher line that repeats the reconciler service name and
+  shorten the terminal dispatcher line to `dispatcher finished`.
+- `docs/ai/notes/services/systemd-user-manager-shell-helper-extraction-2026-03.md`:
+  Move the module to `lib/systemd-user-manager/default.nix`, extract the shared
+  dispatcher/reconciler/activation shell into
+  `lib/systemd-user-manager/helper.sh`, and pass per-user/generation inputs via
+  environment instead of long inline shell strings.
 - `docs/ai/notes/services/automatic-ingress-metadata-2026-03.md`: Optional
   `exposedPorts` metadata that auto-derives nginx reverse-proxy and Cloudflare
   Tunnel wiring. Includes nginx proxy abstraction supporting multiple upstreams
@@ -204,6 +224,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/podman-compose-reload-staging-2026-03.md`: Podman
   compose runtime files are copied into working directories and reload now
   performs cleanup plus restaging before `up -d`.
+- `docs/ai/notes/services/podman-compose-shell-helper-extraction-2026-03.md`:
+  Move the module to `lib/podman-compose/default.nix`, extract shared runtime
+  shell into `lib/podman-compose/helper.sh`, and pass per-instance data through
+  a generated metadata JSON plus explicit environment variables.
 - `docs/ai/notes/services/podman-compose-start-state-verification-2026-03.md`:
   Generated podman compose units now fail fast when `up -d` leaves any container
   stuck in `Created` or another bad non-running state.

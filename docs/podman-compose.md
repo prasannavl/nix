@@ -21,15 +21,18 @@ isolation, but scaling it across hosts introduces repetitive plumbing:
   stopped ones.
 
 Without a shared module, each host would duplicate all of that wiring
-independently and the definitions would drift. `lib/podman-compose.nix` exists
-to own that lifecycle once so hosts only declare what is specific to them: which
-stacks to run, what images to use, and which secrets to inject. The module then
-generates the systemd units, firewall rules, and ingress metadata automatically.
+independently and the definitions would drift. `lib/podman-compose/default.nix`
+exists to own that lifecycle once so hosts only declare what is specific to
+them: which stacks to run, what images to use, and which secrets to inject. The
+module then generates the systemd units, firewall rules, and ingress metadata
+automatically.
 
 ## Current Model
 
 - `lib/podman.nix` owns shared Podman enablement and `containers.conf` defaults.
-- `lib/podman-compose.nix` owns declarative compose lifecycle:
+- `lib/podman-compose/default.nix` owns declarative compose lifecycle and passes
+  per-instance metadata to `lib/podman-compose/helper.sh`, which owns the
+  runtime shell flow:
   - working-directory staging
   - generated systemd user units
   - restart behavior on config changes
@@ -37,8 +40,8 @@ generates the systemd units, firewall rules, and ingress metadata automatically.
   - firewall derivation from exposed ports
   - nginx and Cloudflare Tunnel metadata derivation
   - lifecycle tags
-- `lib/systemd-user-manager.nix` owns deploy-time old-stop/new-start behavior
-  for selected systemd user units.
+- `lib/systemd-user-manager/default.nix` owns deploy-time old-stop/new-start
+  behavior for selected systemd user units.
 - Host-specific stack declarations live under `hosts/<host>/services.nix`.
 - Deploy targeting lives in `hosts/nixbot.nix`.
 
@@ -273,6 +276,23 @@ any new string value works.
   - runs the image-pull helper first when image refresh is enabled
   - does not replay `recreateTag`
 
+## Restart Trigger Coverage
+
+- `source` content is covered. When the compose source changes, the rendered
+  store path changes, and that path is part of the main restart stamp.
+- `files` content is covered for the same reason. Rendered or copied store paths
+  for staged files participate in the restart stamp.
+- `entryFile` selection is covered because it changes the generated user unit.
+- Generated unit configuration is covered. Changes to service environment,
+  dependencies, or other generated unit wiring change the restart stamp through
+  the rendered systemd unit.
+- `envSecrets` mapping structure is covered. Adding, removing, or changing
+  `envSecrets.<composeService>.<ENV_VAR> = /path/to/secret` changes the restart
+  stamp.
+- `envSecrets` decrypted content at the same configured path is not covered. If
+  the secret payload changes but the configured path stays the same, the restart
+  stamp does not change, so reconcile may legitimately noop.
+
 ## Derived Metadata
 
 `services.podmanCompose.<stack>.instances.<name>.exposedPorts` is the source of
@@ -294,6 +314,15 @@ envSecrets.<composeService>.<ENV_VAR> = /path/to/secret;
 
 The module generates an override file that adds `env_file` wiring, so secrets
 can be injected without replacing the image entrypoint or command.
+
+Secret rotation caveat:
+
+- `envSecrets` files are restaged on `start`, `reload`, and `image-pull`
+- rotating a secret's contents at the same path does not by itself force a
+  restart or restage
+- if you need deploy-time reconcile to pick that up, bump `bootTag`
+- bump `recreateTag` only if you also want the next start to use
+  `podman compose up --force-recreate`
 
 ## Deployment And Sequencing
 
@@ -366,6 +395,13 @@ The separate image-pull unit changes. That does not by itself restart the main
 compose service. The next time the main service starts or restarts, systemd runs
 the image-pull unit first.
 
+### Why didn't an `envSecrets` secret rotation restart my service?
+
+Because the restart stamp tracks the configured `envSecrets` mapping and target
+paths, not the decrypted contents of a secret file when that file remains at the
+same path. If the payload rotates at the same path, bump `bootTag` to force the
+normal reconcile restart path.
+
 ### Does boot gating behind `systemd-user-manager-ready.target` create a deadlock?
 
 No. That target only gates automatic boot startup. The reconciler still talks to
@@ -392,7 +428,7 @@ need an explicit build flow if image refresh semantics need to cover them too.
 
 - `docs/services.md`: Native service pattern for non-container workloads.
 - `docs/systemd-user-manager.md`: Deploy-time user-service bridge module used by
-  `lib/podman-compose.nix`.
+  `lib/podman-compose/default.nix`.
 - `docs/incus-vms.md`: Incus guest lifecycle (uses the same lifecycle tag
   conventions).
 - `docs/deployment.md`: Deploy architecture and secret model.
@@ -400,7 +436,8 @@ need an explicit build flow if image refresh semantics need to cover them too.
 ## Source Of Truth Files
 
 - `lib/podman.nix`
-- `lib/podman-compose.nix`
-- `lib/systemd-user-manager.nix`
+- `lib/podman-compose/default.nix`
+- `lib/podman-compose/helper.sh`
+- `lib/systemd-user-manager/default.nix`
 - `hosts/<host>/services.nix`
 - `hosts/nixbot.nix`

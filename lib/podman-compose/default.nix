@@ -6,9 +6,9 @@
 }: let
   cfg = config.services.podmanCompose;
   hasStacks = cfg != {};
-  collectionsLib = import ./flake/utils {inherit lib;};
-  nginxLib = import ./services/nginx {inherit lib;};
-  tunnelsLib = import ./services/tunnels {inherit lib;};
+  collectionsLib = import ../flake/utils {inherit lib;};
+  nginxLib = import ../services/nginx {inherit lib;};
+  tunnelsLib = import ../services/tunnels {inherit lib;};
   defaultService = {
     source = null;
     files = {};
@@ -27,6 +27,22 @@
     exposedPorts = {};
   };
   bootReadyTargetName = "systemd-user-manager-ready.target";
+
+  helperPackage = pkgs.writeShellApplication {
+    name = "podman-compose-helper";
+    excludeShellChecks = ["SC1091"];
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.jq
+      pkgs.podman
+      pkgs.systemd
+    ];
+    text = ''
+      source ${./helper.sh}
+      main "$@"
+    '';
+  };
+  helperScript = "${helperPackage}/bin/podman-compose-helper";
 
   serviceType = lib.types.submodule (_: {
     options = {
@@ -286,204 +302,35 @@
     wantsUnits = lib.unique (map resolveDependencyUnit service.wants);
     networkOnlineUnits = lib.optional service.waitForNetwork "network-online.target";
 
-    composeFileArgs = lib.concatMapStringsSep "" (composeFile: " -f ${lib.escapeShellArg composeFile}") resolvedComposeFiles;
-    podmanComposeCmd = "${pkgs.podman}/bin/podman compose${composeFileArgs}";
-    podmanComposePsJsonCmd = "${podmanComposeCmd} ps --format json";
-    podmanComposeUpCmd = "${podmanComposeCmd} up -d --remove-orphans";
-    systemdNotifyCmd = "${pkgs.systemd}/bin/systemd-notify";
     imagePullServiceName = "${resolvedSystemdServiceName}-image-pull";
     imagePullUnit = "${imagePullServiceName}.service";
     hasImagePullUnit = service.imageTag != "0";
-    manifestPath = "$runtime_dir/podman-compose/${resolvedSystemdServiceName}.manifest";
-    linkCmdsBody = lib.concatStringsSep "\n" (
-      [
-        "set -eu"
-        "runtime_dir=\"$XDG_RUNTIME_DIR\""
-        "[ -n \"$runtime_dir\" ]"
-        "${pkgs.coreutils}/bin/install -d -m 0750 ${resolvedWorkingDir}"
-        "${pkgs.coreutils}/bin/install -d -m 0700 \"$runtime_dir/podman-compose\""
-        ''
-          remove_path_if_exists() {
-            local path
-            path="$1"
-            if [ -e "$path" ] || [ -L "$path" ]; then
-              ${pkgs.coreutils}/bin/rm -rf -- "$path"
-            fi
-          }
-        ''
-        ''
-          stage_runtime_file() {
-            local src dst dst_dir tmp_file
-            src="$1"
-            dst="$2"
-            dst_dir="$3"
-            tmp_file="''${dst}.tmp"
-            ${pkgs.coreutils}/bin/install -d -m 0750 "$dst_dir"
-            remove_path_if_exists "$dst"
-            remove_path_if_exists "$tmp_file"
-            # Write to a temp path first so bind-mounted consumers never see a
-            # partially copied file.
-            ${pkgs.coreutils}/bin/cp -f -- "$src" "$tmp_file"
-            ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$dst"
-            ${pkgs.coreutils}/bin/printf '%s\n' "$dst" >> "$tmp_manifest"
-          }
-        ''
-        "tmp_manifest=\"${manifestPath}.tmp\""
-        "remove_path_if_exists \"$tmp_manifest\""
-        ": > \"$tmp_manifest\""
-      ]
-      ++ map
-      (fileName: let
-        src = lib.escapeShellArg service.sourcePaths.${fileName};
-        dst = lib.escapeShellArg service.runtimePaths.${fileName};
-        dstDir = lib.escapeShellArg (builtins.dirOf service.runtimePaths.${fileName});
-      in ''
-        stage_runtime_file ${src} ${dst} ${dstDir}
-      '')
-      (builtins.attrNames service.sourcePaths)
-      ++ lib.concatMap
-      (composeServiceName: let
-        dst = lib.escapeShellArg service.envSecretRuntimePaths.${composeServiceName};
-        dstDir = lib.escapeShellArg (builtins.dirOf service.envSecretRuntimePaths.${composeServiceName});
-      in
-        [
-          ''
-            ${pkgs.coreutils}/bin/install -d -m 0700 ${dstDir}
-            tmp_secret_env="${service.envSecretRuntimePaths.${composeServiceName}}.tmp"
-            remove_path_if_exists ${dst}
-            remove_path_if_exists "$tmp_secret_env"
-            : > "$tmp_secret_env"
-          ''
-        ]
-        ++ map
-        (envName: let
-          src = lib.escapeShellArg service.envSecrets.${composeServiceName}.${envName};
-        in ''
-          ${pkgs.coreutils}/bin/printf '%s=' ${lib.escapeShellArg envName} >> "$tmp_secret_env"
-          ${pkgs.coreutils}/bin/tr -d '\n' < ${src} >> "$tmp_secret_env"
-          ${pkgs.coreutils}/bin/printf '\n' >> "$tmp_secret_env"
-        '')
-        (builtins.attrNames service.envSecrets.${composeServiceName})
-        ++ [
-          ''
-            ${pkgs.coreutils}/bin/chmod 0400 "$tmp_secret_env"
-            ${pkgs.coreutils}/bin/mv -f "$tmp_secret_env" ${dst}
-            ${pkgs.coreutils}/bin/printf '%s\n' ${dst} >> "$tmp_manifest"
-          ''
-        ])
-      (builtins.attrNames service.envSecrets)
-      ++ [
-        "${pkgs.coreutils}/bin/mv -f \"$tmp_manifest\" ${manifestPath}"
-      ]
+    helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
+      builtins.toJSON {
+        version = 1;
+        serviceName = resolvedSystemdServiceName;
+        workingDir = resolvedWorkingDir;
+        composeFiles = resolvedComposeFiles;
+        stagedFiles = map (fileName: {
+          src = service.sourcePaths.${fileName};
+          dst = service.runtimePaths.${fileName};
+          dstDir = builtins.dirOf service.runtimePaths.${fileName};
+        }) (builtins.attrNames service.sourcePaths);
+        envSecretFiles = map (composeServiceName: {
+          dst = service.envSecretRuntimePaths.${composeServiceName};
+          dstDir = builtins.dirOf service.envSecretRuntimePaths.${composeServiceName};
+          entries = map (envName: {
+            name = envName;
+            src = service.envSecrets.${composeServiceName}.${envName};
+          }) (builtins.attrNames service.envSecrets.${composeServiceName});
+        }) (builtins.attrNames service.envSecrets);
+      }
     );
-    cleanupCmdBody = ''
-      set -eu
-      runtime_dir="$XDG_RUNTIME_DIR"
-      [ -n "$runtime_dir" ]
-      if [ -f ${manifestPath} ]; then
-        while IFS= read -r path; do
-          if [ -e "$path" ] || [ -L "$path" ]; then
-            ${pkgs.coreutils}/bin/rm -rf -- "$path"
-          fi
-        done < ${manifestPath}
-        ${pkgs.coreutils}/bin/rm -f ${manifestPath}
-      fi
-    '';
-    linkScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-link-files" linkCmdsBody;
-    cleanupScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-cleanup-files" cleanupCmdBody;
-    failingStatesReportJq = ''
-      map(
-        select(
-          (.State // "") as $state
-          | ($state != "running")
-          and (($state == "exited" and ((.ExitCode // 1) == 0)) | not)
-        )
-      )
-      | .[]
-      | "\((.Names // ["<unknown>"])[0]): state=\(.State // "unknown") exit=\(.ExitCode // "n/a") status=\(.Status // "")"
-    '';
-    verifyScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-verify" ''
-      set -eu
-      cd ${lib.escapeShellArg resolvedWorkingDir}
-
-      state_json="$(${podmanComposePsJsonCmd})"
-      failing_states="$(
-        printf '%s' "$state_json" | ${pkgs.jq}/bin/jq -r ${lib.escapeShellArg failingStatesReportJq}
-      )"
-
-      if [ -n "$failing_states" ]; then
-        printf '%s\n' "podman compose left containers in a non-running state:" >&2
-        printf '%s\n' "$failing_states" >&2
-        exit 1
-      fi
-    '';
-    monitorScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-monitor" ''
-      set -eu
-      cd ${lib.escapeShellArg resolvedWorkingDir}
-
-      while true; do
-        state_json="$(${podmanComposePsJsonCmd})"
-        failing_states="$(
-          printf '%s' "$state_json" | ${pkgs.jq}/bin/jq -r ${lib.escapeShellArg failingStatesReportJq}
-        )"
-
-        if [ -n "$failing_states" ]; then
-          printf '%s\n' "podman compose monitor detected a non-running container state:" >&2
-          printf '%s\n' "$failing_states" >&2
-          exit 1
-        fi
-
-        state_counts="$(
-          printf '%s' "$state_json" | ${pkgs.jq}/bin/jq -r '[length, (map(select((.State // "") == "running")) | length)] | @tsv'
-        )"
-        total_count="$(${pkgs.coreutils}/bin/cut -f1 <<<"$state_counts")"
-        running_count="$(${pkgs.coreutils}/bin/cut -f2 <<<"$state_counts")"
-
-        if [ "$total_count" -eq 0 ]; then
-          printf '%s\n' "podman compose monitor found no managed containers" >&2
-          exit 1
-        fi
-
-        if [ "$running_count" -eq 0 ]; then
-          exit 0
-        fi
-
-        ${pkgs.coreutils}/bin/sleep 5
-      done
-    '';
-    reloadScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-reload" ''
-      set -eu
-      cd ${lib.escapeShellArg resolvedWorkingDir}
-      ${podmanComposeCmd} down
-      ${cleanupScript}
-      ${linkScript}
-      cd ${lib.escapeShellArg resolvedWorkingDir}
-      ${podmanComposeUpCmd}
-      ${verifyScript}
-    '';
-    startScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-start" ''
-      set -eu
-      runtime_dir="$XDG_RUNTIME_DIR"
-      [ -n "$runtime_dir" ]
-      ${linkScript}
-      cd ${lib.escapeShellArg resolvedWorkingDir}
-      ${podmanComposeUpCmd}
-      ${verifyScript}
-      exec ${systemdNotifyCmd} --ready --status="podman compose running" --exec ';' -- ${monitorScript}
-    '';
-    stopScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-stop" ''
-      set -eu
-      if [ -d ${lib.escapeShellArg resolvedWorkingDir} ]; then
-        cd ${lib.escapeShellArg resolvedWorkingDir}
-      fi
-      ${podmanComposeCmd} down
-    '';
-    imagePullScript = pkgs.writeShellScript "podman-compose-${resolvedSystemdServiceName}-image-pull" ''
-      set -eu
-      ${linkScript}
-      cd ${lib.escapeShellArg resolvedWorkingDir}
-      ${podmanComposeCmd} pull
-    '';
+    helperEnvironment = [
+      "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+      "PODMAN_COMPOSE_METADATA=${helperMetadata}"
+      "PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
+    ];
     baseSystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName}";
       after = lib.unique (
@@ -499,14 +346,14 @@
       serviceConfig = {
         Type = "notify";
         NotifyAccess = "all";
-        Environment = "PATH=/run/wrappers/bin:/run/current-system/sw/bin";
+        Environment = helperEnvironment;
         # Allow first start when the compose working directory doesn't exist yet.
         # ExecStart creates it before invoking podman compose.
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${startScript}";
-        ExecStop = "${stopScript}";
-        ExecReload = "${reloadScript}";
-        ExecStopPost = "${cleanupScript}";
+        ExecStart = "${helperScript} start";
+        ExecStop = "${helperScript} stop";
+        ExecReload = "${helperScript} reload";
+        ExecStopPost = "${helperScript} cleanup-files";
         KillMode = "process";
         Delegate = true;
         Restart = "on-failure";
@@ -523,12 +370,13 @@
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = false;
-        Environment = [
-          "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
-          "PODMAN_COMPOSE_IMAGE_TAG=${service.imageTag}"
-        ];
+        Environment =
+          helperEnvironment
+          ++ [
+            "PODMAN_COMPOSE_IMAGE_TAG=${service.imageTag}"
+          ];
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${imagePullScript}";
+        ExecStart = "${helperScript} image-pull";
         TimeoutStartSec = 900;
       };
     };
@@ -543,10 +391,10 @@
     };
     restartStamp = builtins.hashString "sha256" (builtins.toJSON {
       unit = mergedSystemdService;
-      inherit (service) sourcePaths;
-      inherit (service) runtimePaths;
-      inherit (service) envSecrets;
-      inherit (service) envSecretRuntimePaths;
+      sourcePaths = service.sourcePaths;
+      runtimePaths = service.runtimePaths;
+      envSecrets = service.envSecrets;
+      envSecretRuntimePaths = service.envSecretRuntimePaths;
     });
     inherit (service) imageTag recreateTag bootTag;
   };
@@ -590,7 +438,7 @@
   duplicateSystemdUserServiceNames = collectionsLib.duplicateValues generatedSystemdUserServiceNames;
 in {
   imports = [
-    ./systemd-user-manager.nix
+    ../systemd-user-manager
   ];
 
   options.services.podmanCompose = lib.mkOption {
@@ -669,7 +517,7 @@ in {
                   user = resolvedUser;
                   uid = userUid;
                   workDir = "${stack.stackDir}/${serviceName}";
-                  inherit (stack) stackDir;
+                  stackDir = stack.stackDir;
                   podmanSocket = podmanSocket;
                 }
               else serviceOrFn)

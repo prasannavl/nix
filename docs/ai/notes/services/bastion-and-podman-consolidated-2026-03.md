@@ -128,6 +128,32 @@ lifecycle work completed in March 2026.
   - does not replay lifecycle tags
   - only the main compose user unit starts
 
+## Restart Trigger Coverage
+
+- `source` content is covered by the main restart stamp because the rendered
+  store path for `compose.yml` changes when the source content changes.
+- `files` content is covered for the same reason: rendered or copied store paths
+  change when file-backed inputs change, and those paths are part of the restart
+  stamp.
+- Generated systemd unit structure is covered because the merged user unit
+  definition is part of the restart stamp. That includes service environment,
+  dependencies, and other unit-level wiring produced by the module.
+- `envSecrets` mapping structure is covered. Adding, removing, or changing
+  `envSecrets.<composeService>.<ENV_VAR> = /path/to/secret` changes the restart
+  stamp.
+- `envSecrets` decrypted contents at a stable runtime path are not covered. If
+  the secret file content rotates but the configured path stays the same, the
+  restart stamp does not change, so reconcile can legitimately noop.
+
+## Secret Rotation Caveat
+
+- `envSecrets` files are restaged during `start`, `reload`, and `image-pull`.
+- A pure secret-content rotation at the same path does not by itself force a
+  managed-unit restart or restage.
+- To force reconcile for that case, bump `bootTag` on the affected compose
+  instance. Bumping `recreateTag` also changes the managed-unit stamp, but it
+  additionally arms the next start to use `--force-recreate`.
+
 ## Constraints
 
 - Lifecycle tag actions only fire for stacks whose main user unit was active in

@@ -102,7 +102,7 @@ For an Incus VM guest:
     ../../lib/profiles/systemd-container.nix
     (import ../../lib/incus-vm.nix {inherit hostName;})
     ../../lib/podman.nix
-    ../../lib/podman-compose.nix
+    ../../lib/podman-compose
     ./packages.nix
     ./services.nix
     ./users.nix
@@ -178,7 +178,7 @@ Host-specific modules import shared functionality from `lib/`:
 | Module                     | Purpose                                     |
 | -------------------------- | ------------------------------------------- |
 | `lib/podman.nix`           | Shared Podman enablement and config         |
-| `lib/podman-compose.nix`   | Podman compose platform                     |
+| `lib/podman-compose/`      | Podman compose platform module and helper   |
 | `lib/incus.nix`            | Declarative Incus guest lifecycle           |
 | `lib/incus-vm.nix`         | Incus VM guest hardware config              |
 | `lib/swap-auto.nix`        | Automatic swap configuration                |

@@ -27,9 +27,9 @@ The CI failure signature that motivated this note included:
 - Match current-host identity by both names and resolved/local addresses so the
   rule still works when deploy targets or proxy hops are expressed as IPs or
   alternate DNS names.
-- If the selected deploy target is the current host, prefer a local execution
-  path for snapshot, age-identity injection, deploy, and rollback instead of
-  self-SSH.
+- If the selected deploy target is the current host, still prefer the normal
+  primary deploy route first (`nixbot@host` with the configured key/material).
+  Fall back to local execution only if that primary path is unavailable.
 - When building a proxy chain, drop any leading `proxyJump` hops that resolve to
   the current host before assembling SSH proxy wrappers, but keep the full
   configured chain available as a retry path when the flattened direct route is
@@ -43,7 +43,8 @@ The CI failure signature that motivated this note included:
   deploy context.
 - `prepare_deploy_context()`:
   - recognizes bastion-side self-target deploys
-  - returns a local execution context for them
+  - still probes the primary deploy target first for them
+  - only falls back to a local execution context when that primary path fails
   - normalizes `proxyJump` through `resolve_effective_proxy_chain()`
   - retries with the full configured proxy chain when a flattened direct probe
     to the primary deploy target fails, independent of whether bootstrap and
@@ -74,8 +75,9 @@ The CI failure signature that motivated this note included:
 
 - Bastion-triggered runs no longer depend on fresh SSH connectivity back into
   the bastion host after switching that same host.
-- Local runs started on a managed host no longer need to SSH back into that same
-  host just to perform snapshot/deploy/rollback against themselves.
+- Local runs started on a managed host now still prefer the normal `nixbot`
+  route when it is healthy, but keep a local execution fallback when self-SSH is
+  actually unavailable.
 - Guests behind the bastion can be reached directly from the bastion during the
   same run, instead of proxying back through the bastion's own ingress path,
   when that direct path is actually routable from the active runtime context.

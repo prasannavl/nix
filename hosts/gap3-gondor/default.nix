@@ -4,7 +4,7 @@
     (import ../../lib/incus-vm.nix {inherit hostName;})
     ../../lib/incus.nix
     ../../lib/podman.nix
-    ../../lib/podman-compose.nix
+    ../../lib/podman-compose
     ./incus.nix
     ./packages.nix
     ./firewall.nix

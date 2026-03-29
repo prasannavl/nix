@@ -54,9 +54,9 @@ reading dispatcher state immediately after `switch` returned, which could catch
 `systemd-user-manager-dispatcher-*.service` in `activating/start` and print only
 the first journal lines before reconcile completed.
 
-The remote report helper now waits for any dispatcher unit with journal
-activity in the current deploy window to reach a terminal state before it reads
-that unit's status.
+The remote report helper now waits for any dispatcher unit with journal activity
+in the current deploy window to reach a terminal state before it reads that
+unit's status.
 
 The report now prefers the matching
 `systemd-user-manager-reconciler-<user>.service` invocation journal as the log

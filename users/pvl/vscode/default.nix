@@ -29,16 +29,15 @@
           fill-labs.dependi
           hashicorp.terraform
           ms-python.python
+          golang.go
 
           github.copilot-chat
           openai.chatgpt
-          google.gemini-cli-vscode-ide-companion
-          # continue.continue
-          kilocode.kilo-code
           anthropic.claude-code
+          kilocode.kilo-code
+          # google.gemini-cli-vscode-ide-companion
           # google.geminicodeassist
-
-          golang.go
+          # continue.continue
         ];
 
         keybindings = [

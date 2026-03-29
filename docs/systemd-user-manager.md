@@ -41,7 +41,9 @@ Supported options:
 - `user`: owning account for the user manager
 - `unit`: user unit to keep started
 - `stopOnRemoval`: whether removing the managed entry stops the old unit
-- `restartTriggers`: semantic triggers that mark the managed unit changed
+- `restartTriggers`: semantic triggers that mark the managed unit changed; these
+  are module-defined inputs such as generated config stamps or tag values, not
+  arbitrary runtime file-content watches
 - `stampPayload`: optional explicit payload hashed into the managed-unit stamp
 
 ## Stateless Switch Model
@@ -103,7 +105,7 @@ After successful convergence it starts `systemd-user-manager-ready.target`.
 
 ## Podman Usage Pattern
 
-`lib/podman-compose.nix` is the primary consumer.
+`lib/podman-compose/default.nix` is the primary consumer.
 
 - the main compose unit is managed by `systemd-user-manager`
 - `bootTag` changes only the main managed-unit stamp
@@ -140,5 +142,7 @@ as the managed user and logs what it would start.
 
 ## Source Of Truth Files
 
-- `lib/systemd-user-manager.nix`
-- `lib/podman-compose.nix`
+- `lib/systemd-user-manager/default.nix`
+- `lib/systemd-user-manager/helper.sh`
+- `lib/podman-compose/default.nix`
+- `lib/podman-compose/helper.sh`

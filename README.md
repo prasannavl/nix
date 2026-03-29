@@ -48,9 +48,12 @@ Container workloads run as rootless Podman compose stacks managed by a shared
 NixOS module:
 
 - Shared Podman base config lives in `lib/podman.nix`.
-- Shared compose lifecycle logic lives in `lib/podman-compose.nix`.
-- Deploy-time user-manager orchestration lives in `lib/systemd-user-manager.nix`
-  (documented in `docs/systemd-user-manager.md`).
+- Shared compose lifecycle logic lives in `lib/podman-compose/default.nix` with
+  shared shell logic in `lib/podman-compose/helper.sh`.
+- Deploy-time user-manager orchestration lives in
+  `lib/systemd-user-manager/default.nix` with shared shell logic in
+  `lib/systemd-user-manager/helper.sh` (documented in
+  `docs/systemd-user-manager.md`).
 - Hosts declare stacks under `services.podmanCompose.<stack>` in
   `hosts/<host>/services.nix`.
 - Compose content can be a Nix attrset, inline YAML, a file path, or a staged

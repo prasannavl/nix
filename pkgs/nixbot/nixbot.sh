@@ -328,6 +328,7 @@ init_vars() {
   PREP_DEPLOY_AGE_IDENTITY_KEY=""
   PREP_DEPLOY_LOCAL_EXEC=0
   PREP_DEPLOY_SSH_OPTS=()
+  PRIMARY_PROBE_LAST_OUTPUT=""
   CURRENT_HOST_ALIASES=()
   CURRENT_HOST_ADDRESSES=()
   ROLLBACK_OK_HOSTS=()
@@ -2996,16 +2997,35 @@ probe_primary_deploy_target() {
   shift
   local -a ssh_opts=("$@")
   # shellcheck disable=SC2034
-  local probe_output=""
+  local probe_output="" rc=0
 
-  retry_transport_capture \
+  if retry_transport_capture \
     probe_output \
     "Primary connectivity probe for ${ssh_target}" \
     "" \
     ssh \
     "${ssh_opts[@]}" \
     "${ssh_target}" \
-    true
+    true; then
+    PRIMARY_PROBE_LAST_OUTPUT=""
+    return 0
+  fi
+  rc="$?"
+
+  PRIMARY_PROBE_LAST_OUTPUT="${probe_output}"
+  return "${rc}"
+}
+
+log_primary_probe_failure() {
+  local label="$1" probe_output="$2"
+
+  echo "==> ${label} failed" >&2
+  [ -n "${probe_output}" ] || return 0
+
+  while IFS= read -r line; do
+    [ -n "${line}" ] || continue
+    echo "    ${line}" >&2
+  done <<<"${probe_output}"
 }
 
 ensure_primary_deploy_connectivity() {
@@ -3016,16 +3036,20 @@ ensure_primary_deploy_connectivity() {
   local -n epdc_ssh_opts_inout_ref="${12}" epdc_bootstrap_ssh_opts_inout_ref="${14}"
   # shellcheck disable=SC2178,SC2034
   local -n epdc_nix_sshopts_inout_ref="${13}" epdc_bootstrap_nix_sshopts_inout_ref="${15}"
+  local direct_probe_output="" proxied_probe_output=""
 
   if probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
     mark_primary_ready "${node}"
     return 0
   fi
+  direct_probe_output="${PRIMARY_PROBE_LAST_OUTPUT}"
 
   if [ -z "${full_proxy_chain}" ] || [ "${full_proxy_chain}" = "${effective_proxy_chain}" ]; then
+    log_primary_probe_failure "Primary deploy target ${ssh_target}" "${direct_probe_output}"
     return 1
   fi
 
+  log_primary_probe_failure "Direct path to ${ssh_target}" "${direct_probe_output}"
   echo "==> Direct path to ${ssh_target} is unavailable; retrying with configured proxy chain"
   build_deploy_ssh_contexts \
     "${node}" \
@@ -3052,6 +3076,10 @@ ensure_primary_deploy_connectivity() {
     mark_primary_ready "${node}"
     return 0
   fi
+  proxied_probe_output="${PRIMARY_PROBE_LAST_OUTPUT}"
+  log_primary_probe_failure \
+    "Primary deploy target ${ssh_target} via configured proxy chain" \
+    "${proxied_probe_output}"
 
   return 1
 }
@@ -3168,7 +3196,7 @@ prepare_deploy_context() {
   local bootstrap_key="" bootstrap_user="" bootstrap_port="" bootstrap_key_path=""
   local age_identity_key="" proxy_jump="" full_proxy_chain="" effective_proxy_chain=""
   local ssh_target="" bootstrap_ssh_target=""
-  local local_exec=0 primary_target_ready=1
+  local local_exec=0 primary_target_ready=1 self_target_match=0
   local -a ssh_opts=() bootstrap_ssh_opts=()
   local nix_sshopts="" bootstrap_nix_sshopts=""
 
@@ -3195,22 +3223,11 @@ prepare_deploy_context() {
 
   if should_use_local_self_target \
     && { local_host_matches_identifier "${node}" || local_host_matches_identifier "${host}"; }; then
-    local_exec=1
+    self_target_match=1
   fi
   if [ -n "${proxy_jump}" ]; then
     full_proxy_chain="$(resolve_proxy_chain "${proxy_jump}")"
     effective_proxy_chain="$(resolve_effective_proxy_chain "${proxy_jump}")"
-  fi
-
-  if [ "${local_exec}" -eq 1 ]; then
-    set_prepared_deploy_context \
-      "${node}" \
-      "" \
-      "" \
-      0 \
-      "${age_identity_key}" \
-      1
-    return 0
   fi
 
   build_deploy_ssh_contexts \
@@ -3274,6 +3291,17 @@ prepare_deploy_context() {
 
     if [ "${mode}" = "primary-only" ]; then
       [ "${primary_target_ready}" -eq 1 ] || return 1
+    elif [ "${self_target_match}" -eq 1 ] && [ "${primary_target_ready}" -eq 0 ]; then
+      echo "==> Primary deploy target ${ssh_target} is unavailable on self-target run; falling back to local execution as $(id -un)" >&2
+      local_exec=1
+      set_prepared_deploy_context \
+        "${node}" \
+        "" \
+        "" \
+        0 \
+        "${age_identity_key}" \
+        1
+      return 0
     elif [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
       if [ "${primary_target_ready}" -eq 0 ]; then
         local validated_via_forced_command=0
@@ -4655,15 +4683,156 @@ phase_dir_item_status_file() {
   printf '%s/%s.rc\n' "${status_dir}" "${item}"
 }
 
-_remote_systemd_user_manager_report() {
-  local since="$1" units="" found=0 unit="" recent="" invocation_id=""
+_remote_systemd_user_manager_unit_is_terminal() {
+  local unit="$1" active_state="" sub_state="" result=""
+
+  active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
+  sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
+  result="$(systemctl show --property=Result --value "${unit}" 2>/dev/null || true)"
+  case "${active_state}:${sub_state}:${result}" in
+    active:exited:success|inactive:dead:success|failed:failed:*|inactive:dead:failed)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_remote_systemd_user_manager_emit_new_journal() {
+  local cursor_file="$1"
+  shift
+  local tmp_file="" last_line="" cursor=""
+
+  tmp_file="$(mktemp)"
+  if [ -s "${cursor_file}" ]; then
+    journalctl \
+      --after-cursor "$(cat "${cursor_file}")" \
+      --show-cursor \
+      --no-pager \
+      -o cat \
+      "$@" > "${tmp_file}" 2>/dev/null || true
+  else
+    journalctl \
+      --show-cursor \
+      --no-pager \
+      -o cat \
+      "$@" > "${tmp_file}" 2>/dev/null || true
+  fi
+
+  if [ ! -s "${tmp_file}" ]; then
+    rm -f "${tmp_file}"
+    return 1
+  fi
+
+  last_line="$(tail -n 1 "${tmp_file}")"
+  if [[ "${last_line}" == --\ cursor:\ * ]]; then
+    cursor="${last_line#-- cursor: }"
+    printf '%s\n' "${cursor}" > "${cursor_file}"
+    sed '$d' "${tmp_file}"
+    rm -f "${tmp_file}"
+    return 0
+  fi
+
+  cat "${tmp_file}"
+  rm -f "${tmp_file}"
+  return 0
+}
+
+_remote_systemd_user_manager_stream_unit() {
+  local unit="$1"
   local active_state="" sub_state="" result="" exec_main_status="" summary=""
-  local waited=0 max_wait=1800
-  local reconciler_unit="" reconciler_invocation_id=""
+  local dispatcher_invocation_id="" dispatcher_cursor_file=""
+  local reconciler_unit="" reconciler_invocation_id="" current_reconciler_invocation_id=""
+  local reconciler_cursor_file=""
+
+  reconciler_unit="${unit/systemd-user-manager-dispatcher-/systemd-user-manager-reconciler-}"
+  dispatcher_invocation_id="$(systemctl show --property=InvocationID --value "${unit}" 2>/dev/null || true)"
+  reconciler_invocation_id=""
+  dispatcher_cursor_file="$(mktemp)"
+  reconciler_cursor_file="$(mktemp)"
+
+  while :; do
+    if [ -n "${dispatcher_invocation_id}" ]; then
+      current_reconciler_invocation_id="$(systemctl show --property=InvocationID --value "${reconciler_unit}" 2>/dev/null || true)"
+      if [ -n "${current_reconciler_invocation_id}" ] && [ "${current_reconciler_invocation_id}" != "${reconciler_invocation_id}" ]; then
+        reconciler_invocation_id="${current_reconciler_invocation_id}"
+        rm -f "${reconciler_cursor_file}"
+        reconciler_cursor_file="$(mktemp)"
+      fi
+
+      if [ -n "${reconciler_invocation_id}" ]; then
+        _remote_systemd_user_manager_emit_new_journal \
+          "${dispatcher_cursor_file}" \
+          _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
+          | grep 'dispatcher ' \
+          | sed 's/^/  /' \
+          || true
+      else
+        _remote_systemd_user_manager_emit_new_journal \
+          "${dispatcher_cursor_file}" \
+          _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
+          | sed 's/^/  /' \
+          || true
+      fi
+    fi
+
+    if [ -n "${reconciler_invocation_id}" ]; then
+      _remote_systemd_user_manager_emit_new_journal \
+        "${reconciler_cursor_file}" \
+        _SYSTEMD_INVOCATION_ID="${reconciler_invocation_id}" \
+        | sed 's/^/  /' \
+        || true
+    fi
+
+    if _remote_systemd_user_manager_unit_is_terminal "${unit}"; then
+      break
+    fi
+
+    sleep 0.5
+  done
+
+  if [ -n "${dispatcher_invocation_id}" ]; then
+    if [ -n "${reconciler_invocation_id}" ]; then
+      _remote_systemd_user_manager_emit_new_journal \
+        "${dispatcher_cursor_file}" \
+        _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
+        | grep 'dispatcher ' \
+        | sed 's/^/  /' \
+        || true
+    else
+      _remote_systemd_user_manager_emit_new_journal \
+        "${dispatcher_cursor_file}" \
+        _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
+        | sed 's/^/  /' \
+        || true
+    fi
+  fi
+  if [ -n "${reconciler_invocation_id}" ]; then
+    _remote_systemd_user_manager_emit_new_journal \
+      "${reconciler_cursor_file}" \
+      _SYSTEMD_INVOCATION_ID="${reconciler_invocation_id}" \
+      | sed 's/^/  /' \
+      || true
+  fi
+
+  active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
+  sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
+  result="$(systemctl show --property=Result --value "${unit}" 2>/dev/null || true)"
+  exec_main_status="$(systemctl show --property=ExecMainStatus --value "${unit}" 2>/dev/null || true)"
+  if [ "${result}" = "success" ] || [ -z "${result}" ]; then
+    summary='ok'
+  else
+    summary='FAIL'
+  fi
+  printf '%s\n' "${unit}: ${summary} (${active_state}/${sub_state}, result=${result:-unknown}, exec=${exec_main_status:-unknown})"
+
+  rm -f "${dispatcher_cursor_file}" "${reconciler_cursor_file}"
+}
+
+_remote_systemd_user_manager_report() {
+  local since="$1" units="" found=0 unit="" recent=""
 
   units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
   if [ -z "${units}" ]; then
-    printf '%s\n' 'none'
     return 0
   fi
 
@@ -4672,82 +4841,42 @@ _remote_systemd_user_manager_report() {
     recent="$(journalctl -u "${unit}" --since "${since}" --no-pager -n 1 -o cat 2>/dev/null || true)"
     [ -n "${recent}" ] || continue
     found=1
-    waited=0
-    while :; do
-      active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
-      sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
-      result="$(systemctl show --property=Result --value "${unit}" 2>/dev/null || true)"
-      case "${active_state}:${sub_state}:${result}" in
-        active:exited:success|inactive:dead:success|failed:failed:*|inactive:dead:failed)
-          break
-          ;;
-      esac
-      if [ "${waited}" -ge "${max_wait}" ]; then
-        break
-      fi
-      sleep 0.5
-      waited=$((waited + 1))
-    done
-    invocation_id="$(systemctl show --property=InvocationID --value "${unit}" 2>/dev/null || true)"
-    active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
-    sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
-    result="$(systemctl show --property=Result --value "${unit}" 2>/dev/null || true)"
-    exec_main_status="$(systemctl show --property=ExecMainStatus --value "${unit}" 2>/dev/null || true)"
-    if [ "${result}" = "success" ] || [ -z "${result}" ]; then
-      summary='ok'
-    else
-      summary='FAIL'
-    fi
-    printf '%s\n' "${unit}: ${summary} (${active_state}/${sub_state}, result=${result:-unknown}, exec=${exec_main_status:-unknown})"
-    reconciler_unit="${unit/systemd-user-manager-dispatcher-/systemd-user-manager-reconciler-}"
-    reconciler_invocation_id="$(systemctl show --property=InvocationID --value "${reconciler_unit}" 2>/dev/null || true)"
-    if [ -n "${reconciler_invocation_id}" ]; then
-      journalctl _SYSTEMD_INVOCATION_ID="${reconciler_invocation_id}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
-    elif [ -n "${invocation_id}" ]; then
-      journalctl _SYSTEMD_INVOCATION_ID="${invocation_id}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
-    else
-      journalctl -u "${reconciler_unit}" --since "${since}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
-    fi
+    _remote_systemd_user_manager_stream_unit "${unit}"
   done <<EOF_UNITS
 ${units}
 EOF_UNITS
-
-  if [ "${found}" -eq 0 ]; then
-    printf '%s\n' 'none'
-  fi
 }
 
 build_systemd_user_manager_report_cmd() {
   local since_epoch="$1"
 
-  printf '%s\n%s\n' \
+  printf '%s\n%s\n%s\n%s\n%s\n' \
+    "$(declare -f _remote_systemd_user_manager_unit_is_terminal)" \
+    "$(declare -f _remote_systemd_user_manager_emit_new_journal)" \
+    "$(declare -f _remote_systemd_user_manager_stream_unit)" \
     "$(declare -f _remote_systemd_user_manager_report)" \
     "_remote_systemd_user_manager_report '@${since_epoch}'"
 }
 
 print_deploy_systemd_user_manager_report() {
   local node="$1" since_epoch="$2" log_file="${3:-}"
-  local report_cmd="" report_output="" first_line="" rc=0
+  local report_cmd="" rc=0
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     return 0
   fi
 
   report_cmd="$(build_systemd_user_manager_report_cmd "${since_epoch}")"
-  if prepare_deploy_context "${node}" && report_output="$(run_prepared_root_command "${report_cmd}")"; then
-    first_line="$(printf '%s\n' "${report_output}" | sed -n '/./{s/[[:space:]]*$//;p;q;}')"
-    case "${first_line}" in
-      ""|none)
-        return 0
-        ;;
-    esac
-    report_output="$(printf '%s\n%s\n' '[systemd-user-manager]' "${report_output}")"
+  if prepare_deploy_context "${node}"; then
     if [ -n "${log_file}" ]; then
-      printf '%s\n' "${report_output}" | prefix_host_logs "${node}" >&2
+      if run_prepared_root_command "${report_cmd}" | prefix_host_logs "${node}" >&2; then
+        return 0
+      fi
     else
-      printf '%s\n' "${report_output}" >&2
+      if run_prepared_root_command "${report_cmd}" >&2; then
+        return 0
+      fi
     fi
-    return 0
   fi
 
   rc="$?"
@@ -6188,37 +6317,6 @@ run_tf_only_action() {
 
 ##### Logging #####
 
-host_phase_border() {
-  local phase="$1"
-
-  case "${phase}" in
-    build)
-      printf '%s' '>>>>>>>>>>'
-      ;;
-    snapshot)
-      printf '%s' '----------'
-      ;;
-    deploy)
-      printf '%s' '++++++++++'
-      ;;
-    rollback)
-      printf '%s' '!!!!!!!!!!'
-      ;;
-    remote-trigger)
-      printf '%s' '^^^^^^^^^^'
-      ;;
-    repo-reexec)
-      printf '%s' '##########'
-      ;;
-    bootstrap-check)
-      printf '%s' '??????????'
-      ;;
-    *)
-      printf '%s' '=========='
-      ;;
-  esac
-}
-
 log_heading() {
   local level="$1" title="$2" group_mode="${3:-auto}"
 
@@ -6325,15 +6423,13 @@ log_group_tf_project_title() {
 }
 
 log_host_stage() {
-  local phase="$1" node="$2" extra="${3:-}" border=""
+  local phase="$1" node="$2" extra="${3:-}"
 
   if log_group_scope_matches "${phase}"; then
     log_grouped_item_start "$(log_group_host_stage_title "${phase}" "${node}")"
   fi
 
-  border="$(host_phase_border "${phase}")"
-
-  printf '\n%s %s | %s %s\n' "${border}" "${node}" "${phase}" "${border}" >&2
+  printf '\n-------- %s | %s --------\n' "${node}" "${phase}" >&2
   if [ -n "${extra}" ]; then
     printf '[%s] %s | %s\n' "${node}" "${phase}" "${extra}" >&2
   else
