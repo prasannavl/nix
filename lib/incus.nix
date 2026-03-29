@@ -342,14 +342,14 @@
             selected_json="$declared_instances"
             shift
             ;;
-      --instance|--machine)
-        [ "$#" -ge 2 ] || {
-          echo "Missing value for $1" >&2
-          exit 1
-        }
-        append_instance "$2"
-        shift 2
-        ;;
+          --instance|--machine)
+            [ "$#" -ge 2 ] || {
+              echo "Missing value for $1" >&2
+              exit 1
+            }
+            append_instance "$2"
+            shift 2
+            ;;
           *)
             echo "Unknown argument: $1" >&2
             exit 1
@@ -360,6 +360,14 @@
       if [ "$selected_json" = "[]" ]; then
         selected_json="$declared_instances"
       fi
+    }
+  '';
+
+  instanceQueryPathLib = ''
+    instance_query_path() {
+      local name="$1" encoded_name
+      encoded_name="$(jq -nr --arg value "$name" '$value | @uri')"
+      printf '%s\n' "/1.0/instances/$encoded_name"
     }
   '';
 
@@ -376,6 +384,7 @@
       reconcile_mode=${lib.escapeShellArg cfg.reconcilePolicy}
       declared_instances='${declaredInstancesJson}'
       ${machineSelectionArgParser}
+      ${instanceQueryPathLib}
       parse_machine_selection_args "$@"
 
       if ! incus info >/dev/null 2>&1; then
@@ -390,7 +399,7 @@
       instance_status() {
         local name="$1"
 
-        incus query "/1.0/instances/$name" --raw 2>/dev/null \
+        incus query "$(instance_query_path "$name")" --raw 2>/dev/null \
           | jq -r '.metadata.status // "unknown"' 2>/dev/null \
           || printf 'missing\n'
       }
@@ -437,6 +446,7 @@
       timeout_secs=180
       interval_secs=2
       ${machineSelectionArgParser}
+      ${instanceQueryPathLib}
 
       while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -476,7 +486,7 @@
       instance_metadata_json() {
         local name="$1"
 
-        incus query "/1.0/instances/$name" --raw 2>/dev/null \
+        incus query "$(instance_query_path "$name")" --raw 2>/dev/null \
           | jq -c '.metadata // {}' 2>/dev/null \
           || echo '{}'
       }
@@ -513,7 +523,7 @@
           fi
 
           instance_state_json="$(
-            incus query "/1.0/instances/$name/state" --raw 2>/dev/null \
+            incus query "$(instance_query_path "$name")/state" --raw 2>/dev/null \
               | jq -c '.metadata // {}' 2>/dev/null \
               || echo '{}'
           )"
@@ -567,32 +577,29 @@
     diskDevSpec = diskDeviceSpecJson machine;
     createOnlyDevSpec = createOnlyDeviceSpecJson machine;
     userMeta = mkUserMetadata name machine;
+    escapedName = lib.escapeShellArg name;
+    serviceDeps = [
+      "incus-preseed.service"
+      "network-online.target"
+      "incus-images.service"
+      "incus-machines-gc.service"
+    ];
     setMetaCmds = lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (k: v: "  ${incus} config set ${name} ${k}=${lib.escapeShellArg v}") userMeta
+      lib.mapAttrsToList (k: v: "  ${incus} config set ${escapedName} ${k}=${lib.escapeShellArg v}") userMeta
     );
     setConfigCmds = lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (k: v: "  ${incus} config set ${name} ${k}=${lib.escapeShellArg v}") machine.config
+      lib.mapAttrsToList (k: v: "  ${incus} config set ${escapedName} ${k}=${lib.escapeShellArg v}") machine.config
     );
   in
     lib.nameValuePair "incus-${name}" {
       description = "Incus container lifecycle for ${name}";
       wantedBy = ["multi-user.target"];
-      after = [
-        "incus-preseed.service"
-        "network-online.target"
-        "incus-images.service"
-        "incus-machines-gc.service"
-      ];
-      wants = [
-        "incus-preseed.service"
-        "network-online.target"
-        "incus-images.service"
-        "incus-machines-gc.service"
-      ];
+      after = serviceDeps;
+      wants = serviceDeps;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStop = "-${incus} stop ${name}";
+        ExecStop = "-${incus} stop ${escapedName}";
       };
       path = [config.virtualisation.incus.package.client pkgs.jq];
       script = ''
@@ -627,17 +634,18 @@
         desired_config_hash=${lib.escapeShellArg hash}
         desired_boot_tag=${lib.escapeShellArg machine.bootTag}
         desired_recreate_tag=${lib.escapeShellArg machine.recreateTag}
+        query_name="$(${pkgs.jq}/bin/jq -nr --arg value ${lib.escapeShellArg name} '$value | @uri')"
 
         needs_create=0
         needs_recreate=0
         needs_restart=0
 
-        if ! ${incus} info ${name} >/dev/null 2>&1; then
+        if ! ${incus} info ${escapedName} >/dev/null 2>&1; then
           needs_create=1
         else
-          current_config_hash="$(${incus} config get ${name} user.config-hash 2>/dev/null || true)"
-          current_recreate_tag="$(${incus} config get ${name} user.recreate-tag 2>/dev/null || true)"
-          current_boot_tag="$(${incus} config get ${name} user.boot-tag 2>/dev/null || true)"
+          current_config_hash="$(${incus} config get ${escapedName} user.config-hash 2>/dev/null || true)"
+          current_recreate_tag="$(${incus} config get ${escapedName} user.recreate-tag 2>/dev/null || true)"
+          current_boot_tag="$(${incus} config get ${escapedName} user.boot-tag 2>/dev/null || true)"
 
           # recreateTag: always compare — an explicit bump (even from empty) is intentional.
           # config-hash: only compare if previously set — empty means legacy container, adopt it.
@@ -653,8 +661,8 @@
         # Recreate: stop + delete + create fresh.
         if [ "$needs_recreate" -eq 1 ]; then
           echo "Recreating ${name} (config hash or recreate tag changed)..."
-          ${incus} stop ${name} --force 2>/dev/null || true
-          ${incus} delete ${name} --force 2>/dev/null || true
+          ${incus} stop ${escapedName} --force 2>/dev/null || true
+          ${incus} delete ${escapedName} --force 2>/dev/null || true
           needs_create=1
         fi
 
@@ -670,20 +678,22 @@
         ${setMetaCmds}
 
           # Override eth0 IP.
-          ${incus} config device override ${name} eth0 ipv4.address=${machine.ipv4Address}
+          ${incus} config device override ${escapedName} eth0 ipv4.address=${machine.ipv4Address}
 
           # Add create-only devices (gpu, unix-char, etc.) — only at creation.
           echo "Adding create-only devices for ${name}..."
           create_only_devices='${createOnlyDevSpec}'
           mapfile -t create_only_device_names < <(json_keys "$create_only_devices")
-          for dev in "''${create_only_device_names[@]}"; do
-            props="$(printf '%s' "$create_only_devices" | jq -c --arg d "$dev" '.[$d]')"
-            echo "  Adding device $dev ($(printf '%s' "$props" | jq -r '.type'))"
-            add_device_from_props ${name} "$dev" "$props"
-          done
+          if [ "''${#create_only_device_names[@]}" -gt 0 ]; then
+            for dev in "''${create_only_device_names[@]}"; do
+              props="$(printf '%s' "$create_only_devices" | jq -c --arg d "$dev" '.[$d]')"
+              echo "  Adding device $dev ($(printf '%s' "$props" | jq -r '.type'))"
+              add_device_from_props ${escapedName} "$dev" "$props"
+            done
+          fi
         fi
 
-        current_devices="$(${incus} query /1.0/instances/${name} --raw 2>/dev/null | \
+        current_devices="$(${incus} query "/1.0/instances/$query_name" --raw 2>/dev/null | \
           jq -c '.metadata.devices // {}' 2>/dev/null || echo '{}')"
 
         # Sync disk devices in-place.
@@ -696,76 +706,84 @@
         )
 
         # Remove disk devices not in desired set.
-        for dev in "''${current_disk_names[@]}"; do
-          if ! printf '%s' "$desired_disks" | jq -e --arg d "$dev" 'has($d)' >/dev/null 2>&1; then
-            echo "  Removing disk device $dev"
-            ${incus} config device remove ${name} "$dev" 2>/dev/null || true
-          fi
-        done
+        if [ "''${#current_disk_names[@]}" -gt 0 ]; then
+          for dev in "''${current_disk_names[@]}"; do
+            if ! printf '%s' "$desired_disks" | jq -e --arg d "$dev" 'has($d)' >/dev/null 2>&1; then
+              echo "  Removing disk device $dev"
+              ${incus} config device remove ${escapedName} "$dev" 2>/dev/null || true
+            fi
+          done
+        fi
 
         # Add or update disk devices.
         mapfile -t desired_disk_names < <(json_keys "$desired_disks")
-        for dev in "''${desired_disk_names[@]}"; do
-          desired_props="$(printf '%s' "$desired_disks" | jq -c --arg d "$dev" '.[$d]')"
-          current_props="$(printf '%s' "$current_devices" | jq -c --arg d "$dev" '.[$d] // null')"
-          dev_exists=0
-          if [ "$current_props" != "null" ]; then
-            dev_exists=1
-          fi
-
-          # Auto-create storage volume if this is a volume-backed disk.
-          dev_source="$(echo "$desired_props" | jq -r '.source // ""')"
-          dev_pool="$(echo "$desired_props" | jq -r '.pool // ""')"
-          if [ -n "$dev_source" ] && [ -n "$dev_pool" ]; then
-            if ! ${incus} storage volume show "$dev_pool" "$dev_source" >/dev/null 2>&1; then
-              echo "  Creating storage volume $dev_pool/$dev_source"
-              ${incus} storage volume create "$dev_pool" "$dev_source"
+        if [ "''${#desired_disk_names[@]}" -gt 0 ]; then
+          for dev in "''${desired_disk_names[@]}"; do
+            desired_props="$(printf '%s' "$desired_disks" | jq -c --arg d "$dev" '.[$d]')"
+            current_props="$(printf '%s' "$current_devices" | jq -c --arg d "$dev" '.[$d] // null')"
+            dev_exists=0
+            if [ "$current_props" != "null" ]; then
+              dev_exists=1
             fi
-          fi
 
-          if [ "$dev_exists" -eq 0 ]; then
-            echo "  Adding disk device $dev"
-            add_device_from_props ${name} "$dev" "$desired_props"
-          else
-            # Remove stale properties first so disk devices stay declarative.
-            mapfile -t current_prop_keys < <(json_property_keys "$current_props")
-            for key in "''${current_prop_keys[@]}"; do
-              if ! printf '%s' "$desired_props" | jq -e --arg k "$key" 'has($k)' >/dev/null 2>&1; then
-                ${incus} config device unset ${name} "$dev" "$key"
+            # Auto-create storage volume if this is a volume-backed disk.
+            dev_source="$(echo "$desired_props" | jq -r '.source // ""')"
+            dev_pool="$(echo "$desired_props" | jq -r '.pool // ""')"
+            if [ -n "$dev_source" ] && [ -n "$dev_pool" ]; then
+              if ! ${incus} storage volume show "$dev_pool" "$dev_source" >/dev/null 2>&1; then
+                echo "  Creating storage volume $dev_pool/$dev_source"
+                ${incus} storage volume create "$dev_pool" "$dev_source"
               fi
-            done
+            fi
 
-            # Device exists, update changed properties.
-            mapfile -t desired_prop_keys < <(json_property_keys "$desired_props")
-            for key in "''${desired_prop_keys[@]}"; do
-              desired_val="$(printf '%s' "$desired_props" | jq -r --arg k "$key" '.[$k]')"
-              ${incus} config device set ${name} "$dev" "$key" "$desired_val"
-            done
-          fi
-        done
+            if [ "$dev_exists" -eq 0 ]; then
+              echo "  Adding disk device $dev"
+              add_device_from_props ${escapedName} "$dev" "$desired_props"
+            else
+              # Remove stale properties first so disk devices stay declarative.
+              mapfile -t current_prop_keys < <(json_property_keys "$current_props")
+              if [ "''${#current_prop_keys[@]}" -gt 0 ]; then
+                for key in "''${current_prop_keys[@]}"; do
+                  if ! printf '%s' "$desired_props" | jq -e --arg k "$key" 'has($k)' >/dev/null 2>&1; then
+                    ${incus} config device unset ${escapedName} "$dev" "$key"
+                  fi
+                done
+              fi
+
+              # Device exists, update changed properties.
+              mapfile -t desired_prop_keys < <(json_property_keys "$desired_props")
+              if [ "''${#desired_prop_keys[@]}" -gt 0 ]; then
+                for key in "''${desired_prop_keys[@]}"; do
+                  desired_val="$(printf '%s' "$desired_props" | jq -r --arg k "$key" '.[$k]')"
+                  ${incus} config device set ${escapedName} "$dev" "$key" "$desired_val"
+                done
+              fi
+            fi
+          done
+        fi
 
         # Update IP address (always sync).
-        ${incus} config device set ${name} eth0 ipv4.address=${machine.ipv4Address} 2>/dev/null || \
-          ${incus} config device override ${name} eth0 ipv4.address=${machine.ipv4Address} 2>/dev/null || true
+        ${incus} config device set ${escapedName} eth0 ipv4.address=${machine.ipv4Address} 2>/dev/null || \
+          ${incus} config device override ${escapedName} eth0 ipv4.address=${machine.ipv4Address} 2>/dev/null || true
 
         # Update metadata.
-        ${incus} config set ${name} user.config-hash=${lib.escapeShellArg hash}
-        ${incus} config set ${name} user.boot-tag=${lib.escapeShellArg machine.bootTag}
-        ${incus} config set ${name} user.recreate-tag=${lib.escapeShellArg machine.recreateTag}
+        ${incus} config set ${escapedName} user.config-hash=${lib.escapeShellArg hash}
+        ${incus} config set ${escapedName} user.boot-tag=${lib.escapeShellArg machine.bootTag}
+        ${incus} config set ${escapedName} user.recreate-tag=${lib.escapeShellArg machine.recreateTag}
 
         # Restart if boot tag changed (and we didn't already recreate).
         if [ "$needs_restart" -eq 1 ]; then
           echo "Restarting ${name} (boot tag changed)..."
-          ${incus} stop ${name} --force 2>/dev/null || true
+          ${incus} stop ${escapedName} --force 2>/dev/null || true
         fi
 
-        current_status="$(${incus} query /1.0/instances/${name} --raw 2>/dev/null | \
+        current_status="$(${incus} query "/1.0/instances/$query_name" --raw 2>/dev/null | \
           jq -r '.metadata.status // "unknown"' 2>/dev/null || printf 'missing\n')"
 
         # Start the container when it is not already running. Real start
         # failures must fail the unit instead of being masked as success.
         if [ "$current_status" != "Running" ]; then
-          ${incus} start ${name}
+          ${incus} start ${escapedName}
         fi
       '';
     };
@@ -868,23 +886,24 @@ in {
       settlementHelper
     ];
 
-    systemd.services =
+    systemd.services = let
+      incusLifecycleDeps = [
+        "incus-preseed.service"
+        "network-online.target"
+        "incus-images.service"
+        "incus-machines-gc.service"
+      ];
+      incusGcDeps = [
+        "incus-preseed.service"
+        "incus-images.service"
+      ];
+    in
       {
         incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
           description = "Reconciler for declared Incus guests";
           wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
-          after = [
-            "incus-preseed.service"
-            "network-online.target"
-            "incus-images.service"
-            "incus-machines-gc.service"
-          ];
-          wants = [
-            "incus-preseed.service"
-            "network-online.target"
-            "incus-images.service"
-            "incus-machines-gc.service"
-          ];
+          after = incusLifecycleDeps;
+          wants = incusLifecycleDeps;
           serviceConfig = {
             Type = "oneshot";
           };
@@ -971,14 +990,8 @@ in {
         incus-machines-gc = {
           description = "Garbage-collect Incus containers no longer declared in NixOS config";
           wantedBy = ["multi-user.target"];
-          after = [
-            "incus-preseed.service"
-            "incus-images.service"
-          ];
-          wants = [
-            "incus-preseed.service"
-            "incus-images.service"
-          ];
+          after = incusGcDeps;
+          wants = incusGcDeps;
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
@@ -1022,6 +1035,7 @@ in {
                   mapfile -t dirs_to_remove < <(
                     echo "$row" | jq -r '
                       .config as $cfg
+                      | $cfg
                       | to_entries[]
                       | select(.key | test("^user\\.device\\..+\\.removal-policy$"))
                       | select(.value == "delete")
@@ -1032,11 +1046,13 @@ in {
 
                   ${incus} delete "$cname" --force 2>/dev/null || true
 
-                  for dir in "''${dirs_to_remove[@]}"; do
-                    [ -d "$dir" ] || continue
-                    echo "  Removing source dir: $dir"
-                    rm -rf "$dir"
-                  done
+                  if [ "''${#dirs_to_remove[@]}" -gt 0 ]; then
+                    for dir in "''${dirs_to_remove[@]}"; do
+                      [ -d "$dir" ] || continue
+                      echo "  Removing source dir: $dir"
+                      rm -rf "$dir"
+                    done
+                  fi
                   ;;
               esac
             done

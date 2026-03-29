@@ -57,6 +57,7 @@
 
   bootReadyTargetName = "systemd-user-manager-ready.target";
   managedUserActionPath = "/run/wrappers/bin:/run/current-system/sw/bin";
+  dispatcherMetadataPointerRelDir = "systemd-user-manager/dispatchers";
 
   userUidFor = user: let
     users = config.users.users;
@@ -145,35 +146,17 @@
     })
     managedUnitsByUser;
 
-  mkRootUserctlLib = {
-    user,
-    userUid,
-  }: let
-    escapedUser = lib.escapeShellArg user;
-    escapedUserUid = lib.escapeShellArg (toString userUid);
-  in ''
+  mkUserctlCommonLib = {
+    userctlCommand,
+    listUnitsCommand,
+    retryContextExpr,
+  }: ''
     log_progress() {
       printf '%s\n' "[systemd-user-manager] $*" >&2
     }
     is_transient_userctl_error() {
       printf '%s' "$1" | ${pkgs.gnugrep}/bin/grep -Eq \
         'Transport endpoint is not connected|Failed to connect to bus|Connection refused|No such file or directory'
-    }
-    managed_user_uid=${escapedUserUid}
-    managed_user_name=${escapedUser}
-    managed_user_runtime_dir="/run/user/$managed_user_uid"
-    managed_user_bus="unix:path=$managed_user_runtime_dir/bus"
-    run_as_managed_user() {
-      local managed_user_gid
-      managed_user_gid="$(${pkgs.coreutils}/bin/id -g "$managed_user_name")"
-      ${pkgs.util-linux}/bin/setpriv \
-        --reuid="$managed_user_name" \
-        --regid="$managed_user_gid" \
-        --init-groups \
-        ${pkgs.coreutils}/bin/env \
-        XDG_RUNTIME_DIR="$managed_user_runtime_dir" \
-        DBUS_SESSION_BUS_ADDRESS="$managed_user_bus" \
-        "$@"
     }
     userctl() {
       local out err rc i stdout_file stderr_file wait_logged
@@ -182,7 +165,7 @@
       while [ "$i" -lt 60 ]; do
         stdout_file="$(${pkgs.coreutils}/bin/mktemp)"
         stderr_file="$(${pkgs.coreutils}/bin/mktemp)"
-        if run_as_managed_user ${pkgs.systemd}/bin/systemctl --user "$@" >"$stdout_file" 2>"$stderr_file"; then
+        if ${userctlCommand} "$@" >"$stdout_file" 2>"$stderr_file"; then
           out="$(${pkgs.coreutils}/bin/cat "$stdout_file")"
           err="$(${pkgs.coreutils}/bin/cat "$stderr_file")"
           ${pkgs.coreutils}/bin/rm -f "$stdout_file" "$stderr_file"
@@ -195,7 +178,7 @@
         ${pkgs.coreutils}/bin/rm -f "$stdout_file" "$stderr_file"
         if is_transient_userctl_error "$out"; then
           if [ "$wait_logged" -eq 0 ]; then
-            log_progress "waiting for transient user-manager command retry: args=$*"
+            log_progress "waiting for transient user-manager command retry: ${retryContextExpr}"
             wait_logged=1
           fi
           i=$((i + 1))
@@ -213,7 +196,7 @@
       i=0
       wait_logged=0
       while [ "$i" -lt 60 ]; do
-        out="$(run_as_managed_user ${pkgs.systemd}/bin/systemctl --user list-units --type=service --all --no-legend 2>&1 >/dev/null)" && return 0
+        out="$(${listUnitsCommand} 2>&1 >/dev/null)" && return 0
         rc=$?
         if is_transient_userctl_error "$out"; then
           if [ "$wait_logged" -eq 0 ]; then
@@ -232,6 +215,107 @@
     }
   '';
 
+  mkRootUserctlLib = {
+    user,
+    userUid,
+  }: let
+    escapedUser = lib.escapeShellArg user;
+    escapedUserUid = lib.escapeShellArg (toString userUid);
+  in ''
+    managed_user_uid=${escapedUserUid}
+    managed_user_name=${escapedUser}
+    managed_user_runtime_dir="/run/user/$managed_user_uid"
+    managed_user_bus="unix:path=$managed_user_runtime_dir/bus"
+    run_as_managed_user() {
+      local managed_user_gid
+      managed_user_gid="$(${pkgs.coreutils}/bin/id -g "$managed_user_name")"
+      ${pkgs.util-linux}/bin/setpriv \
+        --reuid="$managed_user_name" \
+        --regid="$managed_user_gid" \
+        --init-groups \
+        ${pkgs.coreutils}/bin/env \
+        XDG_RUNTIME_DIR="$managed_user_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="$managed_user_bus" \
+        "$@"
+    }
+    ${
+      mkUserctlCommonLib {
+        userctlCommand = "run_as_managed_user ${pkgs.systemd}/bin/systemctl --user";
+        listUnitsCommand = "run_as_managed_user ${pkgs.systemd}/bin/systemctl --user list-units --type=service --all --no-legend";
+        retryContextExpr = "args=$*";
+      }
+    }
+  '';
+
+  mkDynamicRootUserctlLib = ''
+    init_managed_user() {
+      managed_user_name="$1"
+      managed_user_uid="$(${pkgs.coreutils}/bin/id -u "$managed_user_name")"
+      managed_user_gid="$(${pkgs.coreutils}/bin/id -g "$managed_user_name")"
+      managed_user_runtime_dir="/run/user/$managed_user_uid"
+      managed_user_bus="unix:path=$managed_user_runtime_dir/bus"
+    }
+    run_as_managed_user() {
+      ${pkgs.util-linux}/bin/setpriv \
+        --reuid="$managed_user_name" \
+        --regid="$managed_user_gid" \
+        --init-groups \
+        ${pkgs.coreutils}/bin/env \
+        XDG_RUNTIME_DIR="$managed_user_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="$managed_user_bus" \
+        "$@"
+    }
+    ${
+      mkUserctlCommonLib {
+        userctlCommand = "run_as_managed_user ${pkgs.systemd}/bin/systemctl --user";
+        listUnitsCommand = "run_as_managed_user ${pkgs.systemd}/bin/systemctl --user list-units --type=service --all --no-legend";
+        retryContextExpr = "user=$managed_user_name args=$*";
+      }
+    }
+    userctl_load_state() {
+      local unit out rc stdout_file stderr_file
+      unit="$1"
+      stdout_file="$(${pkgs.coreutils}/bin/mktemp)"
+      stderr_file="$(${pkgs.coreutils}/bin/mktemp)"
+      if userctl show --property=LoadState --value "$unit" >"$stdout_file" 2>"$stderr_file"; then
+        out="$(${pkgs.coreutils}/bin/cat "$stdout_file")"
+        ${pkgs.coreutils}/bin/rm -f "$stdout_file" "$stderr_file"
+        printf '%s\n' "$out"
+        return 0
+      fi
+      rc=$?
+      out="$(${pkgs.coreutils}/bin/cat "$stderr_file")"
+      ${pkgs.coreutils}/bin/rm -f "$stdout_file" "$stderr_file"
+      case "$out" in
+        *"not found"*|*"not be found"*|*"not loaded"*)
+          printf '%s\n' "not-found"
+          return 0
+          ;;
+      esac
+      return "$rc"
+    }
+    stop_managed_unit() {
+      local managed_unit load_state
+      managed_unit="$1"
+      if ! ${pkgs.systemd}/bin/systemctl is-active --quiet "user@''${managed_user_uid}.service"; then
+        return 0
+      fi
+      if userctl stop "$managed_unit" >/dev/null 2>&1; then
+        return 0
+      fi
+      load_state="$(userctl_load_state "$managed_unit")"
+      [ "$load_state" = not-found ]
+    }
+    metadata_path_from_pointer_file() {
+      local pointer_file metadata_path
+      pointer_file="$1"
+      [ -f "$pointer_file" ] || return 1
+      metadata_path="$(${pkgs.coreutils}/bin/tr -d '\n' < "$pointer_file")"
+      [ -n "$metadata_path" ] || return 1
+      printf '%s\n' "$metadata_path"
+    }
+  '';
+
   mkUserctlLib = ''
     now_epoch() {
       ${pkgs.coreutils}/bin/date +%s
@@ -242,67 +326,12 @@
       now="$(now_epoch)"
       printf '%ss' "$((now - start))"
     }
-    log_progress() {
-      printf '%s\n' "[systemd-user-manager] $*" >&2
-    }
-    is_transient_userctl_error() {
-      printf '%s' "$1" | ${pkgs.gnugrep}/bin/grep -Eq \
-        'Transport endpoint is not connected|Failed to connect to bus|Connection refused|No such file or directory'
-    }
-    userctl() {
-      local out err rc i stdout_file stderr_file wait_logged
-      i=0
-      wait_logged=0
-      while [ "$i" -lt 60 ]; do
-        stdout_file="$(${pkgs.coreutils}/bin/mktemp)"
-        stderr_file="$(${pkgs.coreutils}/bin/mktemp)"
-        if ${pkgs.systemd}/bin/systemctl --user "$@" >"$stdout_file" 2>"$stderr_file"; then
-          out="$(${pkgs.coreutils}/bin/cat "$stdout_file")"
-          err="$(${pkgs.coreutils}/bin/cat "$stderr_file")"
-          ${pkgs.coreutils}/bin/rm -f "$stdout_file" "$stderr_file"
-          [ -n "$err" ] && printf '%s\n' "$err" >&2
-          [ -n "$out" ] && printf '%s\n' "$out"
-          return 0
-        fi
-        rc=$?
-        out="$(${pkgs.coreutils}/bin/cat "$stderr_file")"
-        ${pkgs.coreutils}/bin/rm -f "$stdout_file" "$stderr_file"
-        if is_transient_userctl_error "$out"; then
-          if [ "$wait_logged" -eq 0 ]; then
-            log_progress "waiting for transient user-manager command retry: args=$*"
-            wait_logged=1
-          fi
-          i=$((i + 1))
-          ${pkgs.coreutils}/bin/sleep 0.5
-          continue
-        fi
-        [ -n "$out" ] && printf '%s\n' "$out" >&2
-        return "$rc"
-      done
-      [ -n "$out" ] && printf '%s\n' "$out" >&2
-      return "$rc"
-    }
-    wait_for_user_manager() {
-      local out rc i wait_logged
-      i=0
-      wait_logged=0
-      while [ "$i" -lt 60 ]; do
-        out="$(${pkgs.systemd}/bin/systemctl --user list-units --type=service --all --no-legend 2>&1 >/dev/null)" && return 0
-        rc=$?
-        if is_transient_userctl_error "$out"; then
-          if [ "$wait_logged" -eq 0 ]; then
-            log_progress "waiting for user manager bus to become reachable"
-            wait_logged=1
-          fi
-          i=$((i + 1))
-          ${pkgs.coreutils}/bin/sleep 0.5
-          continue
-        fi
-        [ -n "$out" ] && printf '%s\n' "$out" >&2
-        return "$rc"
-      done
-      [ -n "$out" ] && printf '%s\n' "$out" >&2
-      return "$rc"
+    ${
+      mkUserctlCommonLib {
+        userctlCommand = "${pkgs.systemd}/bin/systemctl --user";
+        listUnitsCommand = "${pkgs.systemd}/bin/systemctl --user list-units --type=service --all --no-legend";
+        retryContextExpr = "args=$*";
+      }
     }
     stable_state_backoff_seconds() {
       local elapsed_seconds
@@ -358,12 +387,17 @@
       userctl show --property=UnitFileState --value "$unit"
     }
     start_managed_unit() {
-      local managed_name managed_unit active_state unit_file_state
+      local managed_name managed_unit active_state unit_file_state managed_started_at
       managed_name="$1"
       managed_unit="$2"
-      managed_unit_had_work=0
+      managed_unit_outcome="noop"
+      managed_unit_start_pid=""
+      managed_unit_start_started_at=""
+      managed_started_at="$(now_epoch)"
 
       if ! active_state="$(unit_stable_state "$managed_unit")"; then
+        log_progress "$managed_name: failed elapsed=$(elapsed_since "$managed_started_at")"
+        managed_unit_outcome="fail"
         return 1
       fi
 
@@ -375,16 +409,21 @@
           unit_file_state="$(userctl_unit_file_state "$managed_unit")"
           case "$unit_file_state" in
             disabled|masked|masked-runtime)
-              log_progress "$managed_name: skipped because $managed_unit is $unit_file_state"
+              log_progress "$managed_name: skipped $managed_unit state=$unit_file_state elapsed=$(elapsed_since "$managed_started_at")"
+              managed_unit_outcome="skip"
               return 0
               ;;
           esac
-          managed_unit_had_work=1
+          managed_unit_outcome="start"
           if [ "''${dry_run-0}" = 1 ]; then
-            log_progress "$managed_name: dry-activate would start $managed_unit"
+            log_progress "$managed_name: dry-activate would start $managed_unit elapsed=$(elapsed_since "$managed_started_at")"
           else
-            log_progress "$managed_name: starting $managed_unit"
-            userctl --no-block start "$managed_unit"
+            log_progress "$managed_name: starting $managed_unit elapsed=$(elapsed_since "$managed_started_at")"
+            (
+              userctl start "$managed_unit"
+            ) &
+            managed_unit_start_pid=$!
+            managed_unit_start_started_at="$managed_started_at"
           fi
           return 0
           ;;
@@ -396,7 +435,7 @@
     }
   '';
 
-  mkUserReconciler = user: userUnits: let
+  mkUserReconciler = user: _: let
     metadata = userMetadataByUser.${user};
     serviceName = reconcilerServiceNameForUser user;
     applyScript = pkgs.writeShellScript "systemd-user-manager-${serviceName}-apply" ''
@@ -404,8 +443,13 @@
       dry_run="''${DRY_RUN-0}"
       metadata_file="''${SYSTEMD_USER_MANAGER_METADATA-${metadata.file}}"
       failed_units=""
+      started_unit_names=()
+      started_unit_units=()
+      started_unit_pids=()
+      started_unit_started_ats=()
+      total_units=0
       work_units=0
-      noop_units=0
+      skipped_units=0
       ${mkUserctlLib}
       apply_started_at="$(now_epoch)"
 
@@ -421,18 +465,36 @@
         userctl daemon-reload
       fi
 
+      log_progress "apply start: user=${user} elapsed=$(elapsed_since "$apply_started_at")"
       while IFS=$'\t' read -r managed_name managed_unit; do
+        total_units=$((total_units + 1))
         if ! start_managed_unit "$managed_name" "$managed_unit"; then
-          log_progress "$managed_name: failed"
           failed_units="''${failed_units} $managed_name"
-        elif [ "$managed_unit_had_work" -eq 1 ]; then
+        elif [ "$managed_unit_outcome" = "start" ]; then
           work_units=$((work_units + 1))
-        else
-          noop_units=$((noop_units + 1))
+          if [ -n "$managed_unit_start_pid" ]; then
+            started_unit_names+=("$managed_name")
+            started_unit_units+=("$managed_unit")
+            started_unit_pids+=("$managed_unit_start_pid")
+            started_unit_started_ats+=("$managed_unit_start_started_at")
+          fi
+        elif [ "$managed_unit_outcome" = "skip" ]; then
+          skipped_units=$((skipped_units + 1))
         fi
       done < <(
         ${pkgs.jq}/bin/jq -r '.managedUnits | sort_by(.name)[] | [.name, .unit] | @tsv' "$metadata_file"
       )
+
+      if [ "$dry_run" != 1 ] && [ "''${#started_unit_pids[@]}" -gt 0 ]; then
+        for i in "''${!started_unit_pids[@]}"; do
+          if wait "''${started_unit_pids[$i]}"; then
+            log_progress "''${started_unit_names[$i]}: started ''${started_unit_units[$i]} elapsed=$(elapsed_since "''${started_unit_started_ats[$i]}")"
+          else
+            log_progress "''${started_unit_names[$i]}: failed to start ''${started_unit_units[$i]} elapsed=$(elapsed_since "''${started_unit_started_ats[$i]}")"
+            failed_units="''${failed_units} ''${started_unit_names[$i]}"
+          fi
+        done
+      fi
 
       if [ -n "$failed_units" ]; then
         if [ "$dry_run" = 1 ]; then
@@ -446,16 +508,20 @@
 
       if [ "$dry_run" != 1 ]; then
         userctl start ${lib.escapeShellArg bootReadyTargetName}
-      else
+      elif [ "$work_units" -gt 0 ] || [ "$skipped_units" -gt 0 ]; then
         log_progress "dry-activate: would start ${bootReadyTargetName}"
       fi
 
-      if [ "$work_units" -gt 0 ] || [ "$dry_run" = 1 ]; then
+      if [ "$work_units" -gt 0 ] || [ "$skipped_units" -gt 0 ]; then
         if [ "$dry_run" = 1 ]; then
-          log_progress "dry-activate preview: user=${user} elapsed=$(elapsed_since "$apply_started_at") would_start=$work_units noops=$noop_units"
+          log_progress "dry-activate preview: user=${user} elapsed=$(elapsed_since "$apply_started_at") would_start=$work_units skipped=$skipped_units"
         else
-          log_progress "apply completed: user=${user} elapsed=$(elapsed_since "$apply_started_at") started=$work_units noops=$noop_units"
+          log_progress "apply completed: user=${user} elapsed=$(elapsed_since "$apply_started_at") started=$work_units skipped=$skipped_units"
         fi
+      elif [ "$dry_run" = 1 ]; then
+        log_progress "dry-activate preview noop: user=${user} elapsed=$(elapsed_since "$apply_started_at") managed=$total_units"
+      else
+        log_progress "apply noop: user=${user} elapsed=$(elapsed_since "$apply_started_at") managed=$total_units"
       fi
     '';
   in {
@@ -483,7 +549,7 @@
 
   userReconcilersByUser = lib.mapAttrs mkUserReconciler managedUnitsByUser;
 
-  mkDispatcherService = user: userUnits: let
+  mkDispatcherService = user: _: let
     userUid = userUidFor user;
     userAtService = "user@${toString userUid}.service";
     reconciler = userReconcilersByUser.${user};
@@ -491,113 +557,13 @@
     serviceName = dispatcherServiceNameForUser user;
     dispatcherScript = pkgs.writeShellScript "systemd-user-manager-${serviceName}-dispatch" ''
       set -eu
-      mode="$1"
-      metadata_file="''${SYSTEMD_USER_MANAGER_METADATA-${metadata.file}}"
       ${mkRootUserctlLib {
         user = user;
         userUid = userUid;
       }}
 
-      metadata_path_from_unit_file() {
-        local unit_file metadata_path
-        unit_file="$1"
-        [ -f "$unit_file" ] || return 1
-        metadata_path="$(${pkgs.gnugrep}/bin/grep -Eo 'SYSTEMD_USER_MANAGER_METADATA=[^" ]+' "$unit_file" \
-          | ${pkgs.coreutils}/bin/head -n1 \
-          | ${pkgs.coreutils}/bin/cut -d= -f2-)"
-        [ -n "$metadata_path" ] || return 1
-        printf '%s\n' "$metadata_path"
-      }
-
-      userctl_load_state() {
-        local unit out rc stdout_file stderr_file
-        unit="$1"
-        stdout_file="$(${pkgs.coreutils}/bin/mktemp)"
-        stderr_file="$(${pkgs.coreutils}/bin/mktemp)"
-        if userctl show --property=LoadState --value "$unit" >"$stdout_file" 2>"$stderr_file"; then
-          out="$(${pkgs.coreutils}/bin/cat "$stdout_file")"
-          ${pkgs.coreutils}/bin/rm -f "$stdout_file" "$stderr_file"
-          printf '%s\n' "$out"
-          return 0
-        fi
-        rc=$?
-        out="$(${pkgs.coreutils}/bin/cat "$stderr_file")"
-        ${pkgs.coreutils}/bin/rm -f "$stdout_file" "$stderr_file"
-        case "$out" in
-          *"not found"*|*"not be found"*|*"not loaded"*)
-            printf '%s\n' "not-found"
-            return 0
-            ;;
-        esac
-        return "$rc"
-      }
-
-      stop_old_unit() {
-        local managed_unit load_state
-        managed_unit="$1"
-        if ! ${pkgs.systemd}/bin/systemctl is-active --quiet ${lib.escapeShellArg userAtService}; then
-          return 0
-        fi
-        if userctl stop "$managed_unit" >/dev/null 2>&1; then
-          return 0
-        fi
-        load_state="$(userctl_load_state "$managed_unit")"
-        [ "$load_state" = not-found ]
-      }
-
-      old_world_stop() {
-        local new_metadata_file old_identity new_identity stop_failed
-        new_metadata_file=""
-        if new_metadata_file="$(metadata_path_from_unit_file /etc/systemd/system/${serviceName}.service 2>/dev/null)"; then
-          :
-        else
-          new_metadata_file=""
-        fi
-
-        stop_failed=0
-        while IFS=$'\t' read -r managed_name managed_unit stop_on_removal old_stamp; do
-          new_stamp="$(${pkgs.jq}/bin/jq -r --arg name "$managed_name" '
-            (.managedUnits // [])
-            | map(select(.name == $name))
-            | .[0].stamp // ""
-          ' "$new_metadata_file" 2>/dev/null || true)"
-
-          if [ -z "$new_stamp" ]; then
-            if [ "$stop_on_removal" = 1 ]; then
-              log_progress "stop-old: stopping removed managed unit $managed_unit for ${user}"
-              if ! stop_old_unit "$managed_unit"; then
-                stop_failed=1
-              fi
-            fi
-            continue
-          fi
-
-          if [ "$old_stamp" != "$new_stamp" ]; then
-            log_progress "stop-old: stopping changed managed unit $managed_unit for ${user}"
-            if ! stop_old_unit "$managed_unit"; then
-              stop_failed=1
-            fi
-          fi
-        done < <(
-          ${pkgs.jq}/bin/jq -r '.managedUnits[] | [.name, .unit, (if .stopOnRemoval then "1" else "0" end), .stamp] | @tsv' "$metadata_file"
-        )
-
-        if [ -n "$new_metadata_file" ] && [ -f "$new_metadata_file" ]; then
-          old_identity="$(${pkgs.jq}/bin/jq -r '.identityStamp // ""' "$metadata_file")"
-          new_identity="$(${pkgs.jq}/bin/jq -r '.identityStamp // ""' "$new_metadata_file")"
-          if [ "$old_identity" != "$new_identity" ] && ${pkgs.systemd}/bin/systemctl is-active --quiet ${lib.escapeShellArg userAtService}; then
-            log_progress "identity changed: restarting ${userAtService}"
-            ${pkgs.systemd}/bin/systemctl restart ${lib.escapeShellArg userAtService}
-          fi
-        fi
-
-        if [ "$stop_failed" -ne 0 ]; then
-          return 1
-        fi
-      }
-
       wait_for_reconciler() {
-        local unit previous_invocation current_invocation active_state sub_state result i log_pid
+        local unit previous_invocation current_invocation active_state sub_state result i
         unit="$1"
         previous_invocation="$(userctl show --property=InvocationID --value "$unit" 2>/dev/null || true)"
         userctl restart --no-block "$unit"
@@ -617,10 +583,6 @@
           return 1
         fi
 
-        ${pkgs.systemd}/bin/journalctl _SYSTEMD_INVOCATION_ID="$current_invocation" --no-pager -o cat --follow \
-          | ${pkgs.gnugrep}/bin/grep --line-buffered -vE '^(Starting |Started |Finished |Stopped |systemd-user-manager-(dispatcher|reconciler)-.*: Deactivated successfully\.)' &
-        log_pid=$!
-
         i=0
         while [ "$i" -lt 1800 ]; do
           active_state="$(userctl show --property=ActiveState --value "$unit" 2>/dev/null || true)"
@@ -628,18 +590,25 @@
           result="$(userctl show --property=Result --value "$unit" 2>/dev/null || true)"
           case "$active_state:$sub_state:$result" in
             active:exited:success|inactive:dead:success)
-              ${pkgs.coreutils}/bin/kill "$log_pid" 2>/dev/null || true
-              return 0
+              break
               ;;
             failed:failed:*|inactive:dead:failed)
-              ${pkgs.coreutils}/bin/kill "$log_pid" 2>/dev/null || true
-              return 1
+              break
               ;;
           esac
           ${pkgs.coreutils}/bin/sleep 0.5
           i=$((i + 1))
         done
-        ${pkgs.coreutils}/bin/kill "$log_pid" 2>/dev/null || true
+        ${pkgs.systemd}/bin/journalctl _SYSTEMD_INVOCATION_ID="$current_invocation" --no-pager -o cat \
+          | ${pkgs.gnugrep}/bin/grep -vE '^(Starting |Started |Finished |Stopped |systemd-user-manager-(dispatcher|reconciler)-.*: Deactivated successfully\.)'
+        case "$active_state:$sub_state:$result" in
+          active:exited:success|inactive:dead:success)
+            return 0
+            ;;
+          failed:failed:*|inactive:dead:failed)
+            return 1
+            ;;
+        esac
         printf '%s\n' "[systemd-user-manager] timed out waiting for $unit" >&2
         return 1
       }
@@ -654,21 +623,12 @@
         log_progress "dispatcher finished ${reconciler.serviceName}.service"
       }
 
-      case "$mode" in
-        start)
-          start_new_world
-          ;;
-        stop)
-          old_world_stop
-          ;;
-        *)
-          printf '%s\n' "unknown dispatcher mode: $mode" >&2
-          exit 1
-          ;;
-      esac
+      start_new_world
     '';
   in {
     name = serviceName;
+    metadataFile = metadata.file;
+    metadataPointerEtcPath = "${dispatcherMetadataPointerRelDir}/${serviceName}.metadata";
     value = {
       description = "Dispatch managed systemd --user reconciliation for ${user}";
       after = [
@@ -693,8 +653,7 @@
         ];
         TimeoutStartSec = 900;
         TimeoutStopSec = 900;
-        ExecStart = "${dispatcherScript} start";
-        ExecStop = "${dispatcherScript} stop";
+        ExecStart = "${dispatcherScript}";
       };
     };
   };
@@ -715,62 +674,152 @@ in {
   config = {
     system.activationScripts.systemdUserManagerDispatcherRun = let
       managedUsers = builtins.attrNames dispatcherServicesByUser;
-    in
-      ''
-        set -eu
-        systemd_user_manager_dispatcher_run() {
-          run_preview_as_user() {
-            local managed_user managed_uid managed_gid managed_runtime_dir managed_bus script metadata_file
-            managed_user="$1"
-            managed_uid="$2"
-            script="$3"
-            metadata_file="$4"
-            managed_gid="$(${pkgs.coreutils}/bin/id -g "$managed_user")"
-            managed_runtime_dir="/run/user/$managed_uid"
-            managed_bus="unix:path=$managed_runtime_dir/bus"
-            ${pkgs.util-linux}/bin/setpriv \
-              --reuid="$managed_user" \
-              --regid="$managed_gid" \
-              --init-groups \
-              ${pkgs.coreutils}/bin/env \
-                XDG_RUNTIME_DIR="$managed_runtime_dir" \
-                DBUS_SESSION_BUS_ADDRESS="$managed_bus" \
+      scriptText =
+        ''
+          set -eu
+          systemd_user_manager_dispatcher_run() {
+            ${mkDynamicRootUserctlLib}
+
+            run_stop_phase() {
+              local phase_mode old_units_dir old_pointer_dir old_unit_file old_service_name old_pointer_file new_pointer_file old_metadata_file new_metadata_file old_user old_identity new_identity stop_failed
+              phase_mode="$1"
+              old_units_dir="/run/current-system/etc/systemd/system"
+              old_pointer_dir="/run/current-system/etc/${dispatcherMetadataPointerRelDir}"
+              [ -d "$old_units_dir" ] || return 0
+
+              for old_unit_file in "$old_units_dir"/systemd-user-manager-dispatcher-*.service; do
+                [ -e "$old_unit_file" ] || continue
+                old_service_name="$(${pkgs.coreutils}/bin/basename "$old_unit_file" .service)"
+                old_pointer_file="$old_pointer_dir/$old_service_name.metadata"
+                new_pointer_file="$systemConfig/etc/${dispatcherMetadataPointerRelDir}/$old_service_name.metadata"
+                old_metadata_file="$(metadata_path_from_pointer_file "$old_pointer_file" 2>/dev/null || true)"
+                [ -n "$old_metadata_file" ] || continue
+                new_metadata_file="$(metadata_path_from_pointer_file "$new_pointer_file" 2>/dev/null || true)"
+                old_user="$(${pkgs.jq}/bin/jq -r '.user // ""' "$old_metadata_file")"
+                [ -n "$old_user" ] || continue
+
+                if [ "$phase_mode" = apply ]; then
+                  if ! init_managed_user "$old_user"; then
+                    log_progress "activation stop skipped for user=$old_user because the account is unavailable"
+                    continue
+                  fi
+                fi
+
+                stop_failed=0
+                while IFS=$'\t' read -r managed_name managed_unit stop_on_removal old_stamp; do
+                  new_stamp=""
+                  if [ -n "$new_metadata_file" ] && [ -f "$new_metadata_file" ]; then
+                    new_stamp="$(${pkgs.jq}/bin/jq -r --arg name "$managed_name" '
+                      (.managedUnits // [])
+                      | map(select(.name == $name))
+                      | .[0].stamp // ""
+                    ' "$new_metadata_file" 2>/dev/null || true)"
+                  fi
+
+                  if [ -z "$new_stamp" ]; then
+                    if [ "$stop_on_removal" = 1 ]; then
+                      if [ "$phase_mode" = preview ]; then
+                        printf '%s\n' "[systemd-user-manager] dry-activate: would stop removed managed unit $managed_unit for $old_user"
+                      else
+                        log_progress "activation stop: stopping removed managed unit $managed_unit for $old_user"
+                        if ! stop_managed_unit "$managed_unit"; then
+                          stop_failed=1
+                        fi
+                      fi
+                    fi
+                    continue
+                  fi
+
+                  if [ "$old_stamp" != "$new_stamp" ]; then
+                    if [ "$phase_mode" = preview ]; then
+                      printf '%s\n' "[systemd-user-manager] dry-activate: would stop changed managed unit $managed_unit for $old_user"
+                    else
+                      log_progress "activation stop: stopping changed managed unit $managed_unit for $old_user"
+                      if ! stop_managed_unit "$managed_unit"; then
+                        stop_failed=1
+                      fi
+                    fi
+                  fi
+                done < <(
+                  ${pkgs.jq}/bin/jq -r '.managedUnits[] | [.name, .unit, (if .stopOnRemoval then "1" else "0" end), .stamp] | @tsv' "$old_metadata_file"
+                )
+
+                if [ "$phase_mode" = apply ] && [ "$stop_failed" -ne 0 ]; then
+                  return 1
+                fi
+
+                if [ -n "$new_metadata_file" ] && [ -f "$new_metadata_file" ]; then
+                  old_identity="$(${pkgs.jq}/bin/jq -r '.identityStamp // ""' "$old_metadata_file")"
+                  new_identity="$(${pkgs.jq}/bin/jq -r '.identityStamp // ""' "$new_metadata_file")"
+                  if [ "$old_identity" != "$new_identity" ]; then
+                    if [ "$phase_mode" = preview ]; then
+                      printf '%s\n' "[systemd-user-manager] dry-activate: would restart user manager for $old_user"
+                    elif ${pkgs.systemd}/bin/systemctl is-active --quiet "user@$managed_user_uid.service"; then
+                      log_progress "activation stop: restarting user@$managed_user_uid.service for $old_user because identity changed"
+                      ${pkgs.systemd}/bin/systemctl restart "user@$managed_user_uid.service"
+                    fi
+                  fi
+                fi
+              done
+            }
+
+            preview_stop_phase() {
+              run_stop_phase preview
+            }
+
+            stop_phase() {
+              run_stop_phase apply
+            }
+
+            run_preview_as_user() {
+              local managed_user script metadata_file
+              managed_user="$1"
+              script="$2"
+              metadata_file="$3"
+              init_managed_user "$managed_user"
+              run_as_managed_user \
+                ${pkgs.coreutils}/bin/env \
                 PATH=${lib.escapeShellArg managedUserActionPath} \
                 SYSTEMD_USER_MANAGER_METADATA="$metadata_file" \
                 DRY_RUN=1 \
                 "$script"
-          }
+            }
 
-          case "''${NIXOS_ACTION-}" in
-            switch|test)
-              printf '%s\n' "[systemd-user-manager] activation hook skipped for action=''${NIXOS_ACTION-} (systemd handles dispatcher stop/start)"
-              ;;
-            dry-activate)
-              printf '%s\n' "[systemd-user-manager] dry-activate preview start"
-      ''
-      + lib.concatStringsSep "\n"
-      (map
-        (user: let
-          reconciler = userReconcilersByUser.${user};
-        in ''
-          printf '%s\n' "[systemd-user-manager] dry-activate preview ${reconciler.serviceName}.service"
-          run_preview_as_user \
-            ${lib.escapeShellArg user} \
-            ${lib.escapeShellArg (toString (userUidFor user))} \
-            ${lib.escapeShellArg reconciler.applyScript} \
-            ${lib.escapeShellArg reconciler.metadataFile}
-        '')
-        managedUsers)
-      + ''
-              printf '%s\n' "[systemd-user-manager] dry-activate preview complete"
-              ;;
-            *)
-              printf '%s\n' "[systemd-user-manager] activation hook skipped for action=''${NIXOS_ACTION-unknown}"
-              ;;
-          esac
-        }
-        systemd_user_manager_dispatcher_run
-      '';
+            case "''${NIXOS_ACTION-}" in
+              switch|test)
+                stop_phase
+                ;;
+              dry-activate)
+                printf '%s\n' "[systemd-user-manager] dry-activate preview start"
+                preview_stop_phase
+        ''
+        + lib.concatStringsSep "\n"
+        (map
+          (user: let
+            reconciler = userReconcilersByUser.${user};
+          in ''
+            printf '%s\n' "[systemd-user-manager] dry-activate preview ${reconciler.serviceName}.service"
+            run_preview_as_user \
+              ${lib.escapeShellArg user} \
+              ${lib.escapeShellArg reconciler.applyScript} \
+              ${lib.escapeShellArg reconciler.metadataFile}
+          '')
+          managedUsers)
+        + ''
+                printf '%s\n' "[systemd-user-manager] dry-activate preview complete"
+                ;;
+              *)
+                printf '%s\n' "[systemd-user-manager] activation hook skipped for action=''${NIXOS_ACTION-unknown}"
+                ;;
+            esac
+          }
+          systemd_user_manager_dispatcher_run
+        '';
+    in {
+      deps = ["users"];
+      supportsDryActivation = true;
+      text = scriptText;
+    };
 
     assertions =
       [
@@ -792,26 +841,30 @@ in {
       ])
       instances;
 
-    systemd.services = lib.listToAttrs (
-      map
-      (artifacts: {
-        name = artifacts.name;
-        value = artifacts.value;
-      })
-      (builtins.attrValues dispatcherServicesByUser)
-    );
+    systemd = {
+      services =
+        lib.mapAttrs'
+        (_: artifacts:
+          lib.nameValuePair artifacts.name artifacts.value)
+        dispatcherServicesByUser;
 
-    systemd.user.services = lib.listToAttrs (
-      map
-      (artifacts: {
-        name = artifacts.name;
-        value = artifacts.value;
-      })
-      (builtins.attrValues userReconcilersByUser)
-    );
+      user.services =
+        lib.mapAttrs'
+        (_: artifacts:
+          lib.nameValuePair artifacts.name artifacts.value)
+        userReconcilersByUser;
 
-    systemd.user.targets.${lib.removeSuffix ".target" bootReadyTargetName} = {
-      description = "Managed user units ready target";
+      user.targets.${lib.removeSuffix ".target" bootReadyTargetName} = {
+        description = "Managed user units ready target";
+      };
     };
+
+    environment.etc =
+      lib.mapAttrs'
+      (_: artifacts:
+        lib.nameValuePair artifacts.metadataPointerEtcPath {
+          text = "${artifacts.metadataFile}\n";
+        })
+      dispatcherServicesByUser;
   };
 }

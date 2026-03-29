@@ -57,23 +57,27 @@ That metadata contains:
 
 The split is now:
 
-- old-world stop in the old dispatcher unit's `ExecStop`
-- new-world start in the new dispatcher unit's `ExecStart`
+- old-world stop in activation, diffing old `/run/current-system` unit metadata
+  against new `$systemConfig` unit metadata
+- new-world start in the dispatcher unit's `ExecStart`
 
 ### Old-world stop
 
-The old dispatcher:
+The activation hook:
 
-- reads its own store metadata
-- reads the new dispatcher metadata path from the new generated unit file in
-  `/etc/systemd/system`
+- reads old dispatcher metadata from
+  `/run/current-system/etc/systemd/system/systemd-user-manager-dispatcher-*.service`
+- reads new dispatcher metadata from
+  `$systemConfig/etc/systemd/system/systemd-user-manager-dispatcher-*.service`
 - stops removed managed units when `stopOnRemoval = true`
 - stops changed managed units when the semantic unit stamp changed
 - restarts `user@<uid>.service` when the identity stamp changed, but only after
   old-world stop completes
 
-This keeps old/new diff logic in the system-side switching phase and avoids any
-extra handoff file.
+This follows native NixOS switching semantics more closely than the earlier
+attempt to do old/new diffing inside dispatcher `ExecStop`, because activation
+still has a stable old-generation view in `/run/current-system` while the new
+generation is available through `$systemConfig`.
 
 ### New-world reconcile
 

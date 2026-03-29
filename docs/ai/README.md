@@ -173,6 +173,10 @@ Use this index as the canonical map for `docs/ai/**`.
   cleanup rules for sensitive operational details.
 - `docs/ai/notes/services/gcp-terraform-adoption-2026-03.md`: GCP bootstrap and
   platform Terraform adoption into this repo's phase-based `tf/` layout.
+- `docs/ai/notes/services/systemd-user-manager-dispatcher-journal-drain-and-trap-fix-2026-03.md`:
+  Dispatcher wait-path fix to dump the full reconciler invocation journal after
+  completion, remove the fragile `RETURN`-trap `log_pid` cleanup bug, and make
+  `nixbot` wait for dispatcher terminal state before printing deploy summaries.
 - `docs/ai/notes/services/automatic-ingress-metadata-2026-03.md`: Optional
   `exposedPorts` metadata that auto-derives nginx reverse-proxy and Cloudflare
   Tunnel wiring. Includes nginx proxy abstraction supporting multiple upstreams
@@ -240,9 +244,10 @@ Use this index as the canonical map for `docs/ai/**`.
   storm regressions, and phased implementation guidance.
 - `docs/ai/notes/services/systemd-user-manager-stateless-simplified-switching-2026-03.md`:
   Final implemented architecture: stateless per-user dispatcher/reconciler
-  switching, immutable store metadata, old-dispatcher `ExecStop` old-world
-  diffing, simplified desired-running reconcile semantics, and Podman lifecycle
-  behavior expressed as normal units and dependencies.
+  switching, immutable store metadata, activation-time old/new diffing via
+  `/run/current-system` versus `$systemConfig`, simplified desired-running
+  reconcile semantics, and Podman lifecycle behavior expressed as normal units
+  and dependencies.
 - `docs/ai/notes/services/systemd-user-manager-stateless-manifest-plan-2026-03.md`:
   Full handoff plan to remove `/var/lib/systemd-user-manager`, replace mutable
   per-user stamp state with immutable old/new generation manifests, and use a

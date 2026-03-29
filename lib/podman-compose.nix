@@ -251,10 +251,7 @@
       then service.user
       else stack.user;
 
-    resolvedWorkingDir =
-      if service.workingDir != null
-      then service.workingDir
-      else "${stack.stackDir}/${serviceName}";
+    resolvedWorkingDir = service.resolvedWorkingDir;
 
     resolvedComposeFiles =
       if service.entryFile != null
@@ -571,12 +568,12 @@
   allExposedPorts = lib.concatLists (
     lib.mapAttrsToList (
       _: stack:
-        lib.mapAttrsToList (_: service: lib.attrValues service.exposedPorts) stack.instances
+        lib.concatMap (service: lib.attrValues service.exposedPorts) (builtins.attrValues stack.instances)
     )
     cfg
   );
 
-  firewallExposedPorts = builtins.filter (portCfg: portCfg.openFirewall or false) (lib.concatLists allExposedPorts);
+  firewallExposedPorts = builtins.filter (portCfg: portCfg.openFirewall or false) allExposedPorts;
 
   firewallPortsForProtocol = protocol:
     lib.unique (
@@ -731,6 +728,7 @@ in {
             in
               normalizedService
               // {
+                resolvedWorkingDir = resolvedWorkingDir;
                 envSecretRuntimePaths = envSecretRuntimePaths;
                 sourcePaths = lib.mapAttrs (fileName: value: renderValue serviceName fileName value) effectiveFilesRaw;
                 runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveFilesRaw;

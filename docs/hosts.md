@@ -29,7 +29,7 @@ other side of the world.
 
 ## Directory Layout
 
-```
+```text
 hosts/
   default.nix                # registry — all nixosConfigurations
   nixbot.nix                 # deploy target mapping
