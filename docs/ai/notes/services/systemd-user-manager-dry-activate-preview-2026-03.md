@@ -6,8 +6,8 @@
 `dry-activate`. That kept dry activation non-mutating, but it also hid the
 user-service actions that a real `switch` or `test` would perform.
 
-For Podman stacks and other managed user services, that made `dry-activate`
-less useful as an operator preview tool.
+For Podman stacks and other managed user services, that made `dry-activate` less
+useful as an operator preview tool.
 
 ## Decision
 

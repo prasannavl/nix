@@ -16,8 +16,8 @@ investigation:
 
 ## Code Changes
 
-- `lib/podman.nix`: `recreateTag` now arms the next managed start/restart to
-  use `podman compose up --force-recreate`, while normal starts stay on the
+- `lib/podman.nix`: `recreateTag` now arms the next managed start/restart to use
+  `podman compose up --force-recreate`, while normal starts stay on the
   non-force path.
 - `lib/podman.nix`: fixed the `systemd-notify --exec` separator in the managed
   start wrapper.
@@ -73,14 +73,14 @@ root got stuck” symptom.
 The later `systemd-user-manager` and Podman regressions are still real but
 secondary:
 
-- the new boot-time reconciler and `--machine=pvl@` fanout cause post-switch-root
-  PAM/session failures
+- the new boot-time reconciler and `--machine=pvl@` fanout cause
+  post-switch-root PAM/session failures
 - the generated Podman start wrapper also had a malformed
   `systemd-notify --exec` handoff
 
-But those happen later. The bug that directly broke boot activation in
-`307016b` is the use of top-level `exit 0` in activation snippets that were
-supposed to be “skipped”.
+But those happen later. The bug that directly broke boot activation in `307016b`
+is the use of top-level `exit 0` in activation snippets that were supposed to be
+“skipped”.
 
 ## Why It Looked Confusing
 
@@ -89,8 +89,8 @@ supposed to be “skipped”.
 - But the activation-script `exit 0` bug happens before the later service-level
   failures, so the host can look like it died very early in boot.
 - The same rewrite also introduced post-switch-root user-manager / Podman
-  regressions, which added noise and made the diagnosis look more ambiguous
-  than it really was.
+  regressions, which added noise and made the diagnosis look more ambiguous than
+  it really was.
 
 ## Evidence
 
@@ -100,9 +100,9 @@ supposed to be “skipped”.
   `/nix/store/iqhvpy03a21s0r1wc01g9h0amsg3qqk7-nixos-system-pvl-x2-25.11.20260323.4590696`
 - Generated failing activation script in `system-439`:
   `/nix/store/iqhvpy03a21s0r1wc01g9h0amsg3qqk7-nixos-system-pvl-x2-25.11.20260323.4590696/activate`
-- In that script, `systemdUserManagerIdentity` contains a top-level `exit 0`
-  at lines 545-552, before the rest of the activation script and before the
-  final `/run/current-system` update.
+- In that script, `systemdUserManagerIdentity` contains a top-level `exit 0` at
+  lines 545-552, before the rest of the activation script and before the final
+  `/run/current-system` update.
 - `307016b` source in `lib/systemd-user-manager.nix` contains the same pattern
   at the activation snippets around lines 937-959, 1054-1064, and 1108-1118 in
   the committed file.

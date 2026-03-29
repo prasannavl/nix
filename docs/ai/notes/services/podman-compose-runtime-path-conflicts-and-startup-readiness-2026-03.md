@@ -14,9 +14,9 @@
 - Generated compose services now use `Type=notify` and call
   `systemd-notify --ready` only after `podman compose up -d` and the compose
   state verification both succeed.
-- This closes the misleading deploy-time green case where
-  `systemd-user-manager` logged a compose unit restart as completed even though
-  the stack failed moments later during startup verification.
+- This closes the misleading deploy-time green case where `systemd-user-manager`
+  logged a compose unit restart as completed even though the stack failed
+  moments later during startup verification.
 - Runtime supervision no longer relies on `podman compose wait`.
 - On `pvl-x2`, Podman's external `podman-compose` provider returned
   `status=3/NOTIMPLEMENTED` for `wait`, which put every running compose unit

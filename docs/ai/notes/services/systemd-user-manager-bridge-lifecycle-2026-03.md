@@ -3,17 +3,17 @@
 ## Scope
 
 Canonical summary of `lib/systemd-user-manager.nix`, including the per-user
-reconciler model, reload orchestration, and deploy-time change semantics used
-by `lib/podman.nix` and other user-service modules.
+reconciler model, reload orchestration, and deploy-time change semantics used by
+`lib/podman.nix` and other user-service modules.
 
 ## Module model
 
 - `services.systemdUserManager.instances.<name>` declares a managed user unit.
 - Each bridge targets a `users.users.<name>` entry with a non-null `uid`.
 - One serialized reconciler service is generated per user manager.
-- The reconciler runs as root and calls
-  `systemctl --user --machine=<user>@ ...` so deploy-time orchestration can
-  manage lingering user managers from the system side.
+- The reconciler runs as root and calls `systemctl --user --machine=<user>@ ...`
+  so deploy-time orchestration can manage lingering user managers from the
+  system side.
 
 ## Bridge options
 
@@ -25,10 +25,10 @@ by `lib/podman.nix` and other user-service modules.
   Defaults to `unit`.
 - `onChangeAction`: action for previously active changed bridges. Supported
   values: `restart`, `reload`, `start`.
-- `startOnFirstRun`: whether the bridge should start its target on its
-  first apply pass when there is no old-generation stop record.
-- `stopOnRemoval`: whether removing the managed entry should stop the
-  managed user unit.
+- `startOnFirstRun`: whether the bridge should start its target on its first
+  apply pass when there is no old-generation stop record.
+- `stopOnRemoval`: whether removing the managed entry should stop the managed
+  user unit.
 - `restartTriggers`: values baked into the bridge unit so generation changes
   cause old-stop/new-start switch behavior.
 - `preActions` / `postActions`: ordered transient actions attached to the
@@ -47,8 +47,8 @@ by `lib/podman.nix` and other user-service modules.
   `onChangeAction` against `changeUnit`.
 - If a unit is unchanged but drifted inactive, the reconciler starts it again
   unless the unit file is disabled or masked.
-- Inactive but startable units are treated as drift and started during
-  reconcile unless the unit file is disabled or masked.
+- Inactive but startable units are treated as drift and started during reconcile
+  unless the unit file is disabled or masked.
 
 ## Reload orchestration
 
@@ -75,8 +75,8 @@ by `lib/podman.nix` and other user-service modules.
 - `recreateTag` is modeled as a transient pre-action with
   `observeUnitInactiveAction = "run-action"` that arms the next managed
   start/restart to use `podman compose up --force-recreate`
-- `bootTag` remains folded into the main managed-unit restart trigger instead
-  of a separate user unit
+- `bootTag` remains folded into the main managed-unit restart trigger instead of
+  a separate user unit
 
 That keeps Podman lifecycle tags stateless: actions fire only on deploy-time
 generation changes, not on normal boot.

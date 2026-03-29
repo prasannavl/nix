@@ -1,7 +1,7 @@
 # Systemd User Manager Units
 
-This document describes the shared `systemd-user-manager` unit-reconciler module and how
-it is used to apply deploy-time behavior to systemd user services.
+This document describes the shared `systemd-user-manager` unit-reconciler module
+and how it is used to apply deploy-time behavior to systemd user services.
 
 ## Why This Module Exists
 
@@ -37,8 +37,8 @@ anything about NixOS generations.
 - One serialized reconciler service is generated per user manager.
 - Managed units are reconciled by that service through
   `systemctl --user --machine=<user>@ ...`.
-- The main current consumer is `lib/podman.nix`, but the module is
-  generic and can be reused by other user-service modules.
+- The main current consumer is `lib/podman.nix`, but the module is generic and
+  can be reused by other user-service modules.
 
 ## Boot Activation Invariant
 
@@ -137,8 +137,7 @@ still healing unexpected drift.
     - `run-action`: run the action without requiring the observed unit to be
       active
     - `start-change-unit`: start `changeUnit` first, then run the action
-- `preActions.<name>.execOnFirstRun` /
-  `postActions.<name>.execOnFirstRun`:
+- `preActions.<name>.execOnFirstRun` / `postActions.<name>.execOnFirstRun`:
   - default is `false`
   - whether a brand-new action runs on its first apply pass
 
@@ -151,12 +150,12 @@ For each user:
 - user-manager reload therefore happens once per switch, not once per bridged
   unit
 - stable-state polling uses a bounded progressive backoff instead of a fixed
-  tight loop, which reduces deploy-time churn while still surfacing real
-  startup stalls
+  tight loop, which reduces deploy-time churn while still surfacing real startup
+  stalls
 - all `system.activationScripts` entry points owned by this module are gated by
   `NIXOS_ACTION`
-- synchronous reconcile from `system.activationScripts` only runs for
-  activation actions like `switch` and `test`
+- synchronous reconcile from `system.activationScripts` only runs for activation
+  actions like `switch` and `test`
 - `dry-activate` runs a non-mutating preview through the same reconciler logic
   and logs the actions it would take without touching user units or stamp state
 - boot activation skips all mutating `systemd-user-manager` activation-script
@@ -167,8 +166,8 @@ For each user:
 - on successful reconcile, the module starts a user target,
   `systemd-user-manager-ready.target`
 - boot-gated consumers can bind their user services to that target instead of
-  `default.target` so those units do not start until the reconciler has run
-  once in the current user-manager lifetime
+  `default.target` so those units do not start until the reconciler has run once
+  in the current user-manager lifetime
 
 The module also includes an activation script that hashes each bridged user’s:
 
@@ -197,8 +196,8 @@ deploy.
 - modules may override stamp hashing with `stampPayload` so semantic triggers
   stay stable even when generated helper script paths change
 - observed unit inactive before switch:
-  - changed managed unit does not wake it up unless
-    `startOnFirstRun` applies to a brand-new unit or an action explicitly uses
+  - changed managed unit does not wake it up unless `startOnFirstRun` applies to
+    a brand-new unit or an action explicitly uses
     `observeUnitInactiveAction = "start-change-unit"`
 - user identity hash change:
   - activation script restarts `user@<uid>.service`
@@ -220,16 +219,16 @@ That keeps Podman lifecycle behavior attached to the main service lifecycle
 instead of separate persistent action units. `imageTag` is modeled as a
 transient pre-action that pulls images, `recreateTag` is modeled as a transient
 pre-action that arms the next managed start/restart to use
-`podman compose up --force-recreate`, and `bootTag` remains folded into the
-main managed-unit restart trigger.
+`podman compose up --force-recreate`, and `bootTag` remains folded into the main
+managed-unit restart trigger.
 
 ## FAQ
 
 ### Why not manage user units directly from `systemd.user.services` alone?
 
-Because deploy-time switching happens from the system side. The module
-lets system services coordinate lingering user managers and preserve
-old-generation active state.
+Because deploy-time switching happens from the system side. The module lets
+system services coordinate lingering user managers and preserve old-generation
+active state.
 
 ### What does “old-stop/new-start” mean here?
 
@@ -251,14 +250,14 @@ managed units changed in the same deploy.
 
 Not through this module anymore. On boot, all of its activation-script entry
 points skip mutating work, including reconcile, prune, and identity-refresh
-restarts. Boot instead lets the reconciler run later as a normal boot unit
-after the user manager is up. Deploy-time `switch` and `test` still wait
-synchronously and fail the activation if reconciliation fails.
+restarts. Boot instead lets the reconciler run later as a normal boot unit after
+the user manager is up. Deploy-time `switch` and `test` still wait synchronously
+and fail the activation if reconciliation fails.
 
 ### What happens on `dry-activate`?
 
-The module does not run the real reconciler service. Instead it invokes the
-same generated apply logic in preview mode and logs the actions it would take:
+The module does not run the real reconciler service. Instead it invokes the same
+generated apply logic in preview mode and logs the actions it would take:
 pre-actions, managed-unit start/restart/reload decisions, post-actions, and
 starting `systemd-user-manager-ready.target`. Preview mode does not mutate
 user-unit state, reload the user manager, prune managed state, restart the user
@@ -268,8 +267,8 @@ manager for identity changes, or write new persisted stamps.
 
 Consumers can install their user services under
 `systemd-user-manager-ready.target` instead of `default.target`. The reconciler
-starts that target only after a successful apply, so those services do not
-start before reconcile has run once.
+starts that target only after a successful apply, so those services do not start
+before reconcile has run once.
 
 ### Does that create a deadlock?
 

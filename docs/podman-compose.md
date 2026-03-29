@@ -308,8 +308,8 @@ That means:
 
 - lifecycle tags are deploy-time actions, not boot-time actions
 - Podman stacks must never make boot activation fail; boot-time ordering is
-  handled after activation through `systemd-user-manager`'s normal boot unit
-  and `systemd-user-manager-ready.target`
+  handled after activation through `systemd-user-manager`'s normal boot unit and
+  `systemd-user-manager-ready.target`
 - boot-time service startup waits for `systemd-user-manager-ready.target`, which
   the reconciler starts after a successful per-user apply
 - `dry-activate` logs the Podman pulls, restarts, and starts that would happen,
@@ -347,8 +347,7 @@ For each stack in `hosts/<host>/services.nix`:
 ### What happens when I change compose source?
 
 The main generated user unit changes. If the stack was active, the deploy-time
-bridge restarts it. If it was inactive but still startable, reconcile starts
-it.
+bridge restarts it. If it was inactive but still startable, reconcile starts it.
 
 ### What happens when I bump `recreateTag`?
 
@@ -361,9 +360,9 @@ other generated unit churn.
 ### What happens when I bump `bootTag`?
 
 The managed unit stamp changes. If the stack was active, the normal
-systemd-user-manager reconciliation path restarts the main compose unit. This
-is keyed to the declared `bootTag` value itself, not helper script path or
-other generated unit churn.
+systemd-user-manager reconciliation path restarts the main compose unit. This is
+keyed to the declared `bootTag` value itself, not helper script path or other
+generated unit churn.
 
 ### What happens when I bump `imageTag`?
 
@@ -378,8 +377,8 @@ main compose service.
 
 ### Does boot gating behind `systemd-user-manager-ready.target` create a deadlock?
 
-No. That target only gates automatic boot startup. The reconciler still talks
-to the Podman unit directly with `systemctl --user start` or `restart` during
+No. That target only gates automatic boot startup. The reconciler still talks to
+the Podman unit directly with `systemctl --user start` or `restart` during
 apply, then starts `systemd-user-manager-ready.target` after a successful run.
 
 ### What does `dry-activate` show for Podman stacks?

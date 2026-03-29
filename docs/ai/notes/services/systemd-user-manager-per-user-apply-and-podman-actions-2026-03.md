@@ -66,7 +66,8 @@ user unit and per Podman lifecycle tag.
   into the main managed-unit restart trigger so the normal service stop/start
   path performs the restart when its tag changes.
 - This removes the broken pattern where a separate `recreate-tag` action could
-  tear down a running stack after the main service restart had already succeeded.
+  tear down a running stack after the main service restart had already
+  succeeded.
 
 ## Why
 

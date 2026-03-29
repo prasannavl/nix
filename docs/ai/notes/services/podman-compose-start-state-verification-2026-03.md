@@ -4,14 +4,13 @@
 
 `lib/podman.nix` already kept generated compose units alive with
 `podman compose wait`, but that still allowed a partial-start failure mode:
-`podman compose up -d` could leave one or more containers in `Created` while
-the user service stayed green because `wait` only attached to the containers
-that were actually running.
+`podman compose up -d` could leave one or more containers in `Created` while the
+user service stayed green because `wait` only attached to the containers that
+were actually running.
 
 The concrete trigger was `immich` on `pvl-x2`: the deploy completed cleanly,
-`pvl-immich.service` stayed active, but `immich_server` and `immich_redis`
-were left in `Created` after a transient runtime failure during container
-startup.
+`pvl-immich.service` stayed active, but `immich_server` and `immich_redis` were
+left in `Created` after a transient runtime failure during container startup.
 
 ## Decision
 
@@ -36,5 +35,5 @@ startup.
 
 - Partial-start failures now fail the generated user service instead of being
   hidden behind a still-running `podman compose wait` process.
-- Deploy-time reconciler runs and plain user-service restarts surface the
-  broken container names and states directly in the journal.
+- Deploy-time reconciler runs and plain user-service restarts surface the broken
+  container names and states directly in the journal.

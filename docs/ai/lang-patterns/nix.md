@@ -75,9 +75,9 @@
   snippets are inlined into the top-level `/activate` shell script, so `exit 0`
   terminates the entire activation run, not just the current snippet. To skip a
   snippet, gate the snippet body with `case` / `if` and fall through normally.
-- Use `exit 1` from activation snippets only when you intentionally want to
-  fail the full activation. For local helper control flow inside a snippet, use
-  shell conditionals or helper functions with `return`, not top-level `exit`.
+- Use `exit 1` from activation snippets only when you intentionally want to fail
+  the full activation. For local helper control flow inside a snippet, use shell
+  conditionals or helper functions with `return`, not top-level `exit`.
 - Prefer structuring non-trivial activation snippets as a shell function plus a
   single top-level call. That keeps control flow local, makes `return` usable,
   and avoids accidental termination of the full `/activate` script.

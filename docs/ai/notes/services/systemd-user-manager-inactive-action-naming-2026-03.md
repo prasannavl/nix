@@ -28,5 +28,5 @@ values:
 
 - action configuration reads directly from the bridge model
 - the option now says which inactive state matters: `observeUnit`
-- the enum values now say whether the action runs anyway or starts
-  `changeUnit` first
+- the enum values now say whether the action runs anyway or starts `changeUnit`
+  first

@@ -100,12 +100,12 @@ lifecycle work completed in March 2026.
   once per user.
 - Each compose instance has three lifecycle tags with default `"0"`:
   - `bootTag`: marks the main compose unit changed so active stacks restart
-  - `recreateTag`: marks the main compose unit changed and arms the next
-    managed start/restart to use `podman compose up --force-recreate`
+  - `recreateTag`: marks the main compose unit changed and arms the next managed
+    start/restart to use `podman compose up --force-recreate`
   - `imageTag`: runs `podman compose pull` as a transient pre-action
 - Tag actions are stateless. They do not use stored tag files.
-- `imageTag` and `recreateTag` are separate transient pre-actions; `bootTag`
-  is folded into the main managed-unit restart trigger.
+- `imageTag` and `recreateTag` are separate transient pre-actions; `bootTag` is
+  folded into the main managed-unit restart trigger.
 
 ## What changes do
 

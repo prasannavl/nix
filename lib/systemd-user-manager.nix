@@ -1019,34 +1019,34 @@ in {
           (user: let
             serviceName = applyServicesByUser.${user}.serviceName;
           in ''
-                if ${pkgs.systemd}/bin/systemctl list-unit-files --type=service --no-legend | ${pkgs.gnugrep}/bin/grep -Fq "${serviceName}.service"; then
-                  printf '%s\n' "[systemd-user-manager] starting ${serviceName}.service"
-                  if ! wait_for_reconciler ${serviceName}.service; then
-                    invocation_id="$reconciler_invocation_id"
-                    if [ -n "$invocation_id" ]; then
-                      ${pkgs.systemd}/bin/journalctl _SYSTEMD_INVOCATION_ID="$invocation_id" --no-pager -o cat \
-                        | ${pkgs.gnugrep}/bin/grep -vE '^(Starting |Started |Finished |Stopped |systemd-user-manager-reconciler-.*: Deactivated successfully\\.)' || true
-                    fi
-                    printf '%s\n' "[systemd-user-manager] ${serviceName}.service failed"
-                    return 1
-                  fi
-                  printf '%s\n' "[systemd-user-manager] finished ${serviceName}.service"
+            if ${pkgs.systemd}/bin/systemctl list-unit-files --type=service --no-legend | ${pkgs.gnugrep}/bin/grep -Fq "${serviceName}.service"; then
+              printf '%s\n' "[systemd-user-manager] starting ${serviceName}.service"
+              if ! wait_for_reconciler ${serviceName}.service; then
+                invocation_id="$reconciler_invocation_id"
+                if [ -n "$invocation_id" ]; then
+                  ${pkgs.systemd}/bin/journalctl _SYSTEMD_INVOCATION_ID="$invocation_id" --no-pager -o cat \
+                    | ${pkgs.gnugrep}/bin/grep -vE '^(Starting |Started |Finished |Stopped |systemd-user-manager-reconciler-.*: Deactivated successfully\\.)' || true
                 fi
+                printf '%s\n' "[systemd-user-manager] ${serviceName}.service failed"
+                return 1
+              fi
+              printf '%s\n' "[systemd-user-manager] finished ${serviceName}.service"
+            fi
           '')
           reconcilerUsers)
         + ''
-                printf '%s\n' "[systemd-user-manager] activation hook complete"
-                ;;
-              dry-activate)
-                printf '%s\n' "[systemd-user-manager] dry-activate preview start"
+            printf '%s\n' "[systemd-user-manager] activation hook complete"
+            ;;
+          dry-activate)
+            printf '%s\n' "[systemd-user-manager] dry-activate preview start"
         ''
         + lib.concatStringsSep "\n"
         (map
           (user: let
             artifacts = applyServicesByUser.${user};
           in ''
-                printf '%s\n' "[systemd-user-manager] dry-activate preview ${artifacts.serviceName}.service"
-                STATE_DIRECTORY=${lib.escapeShellArg artifacts.stateDirectoryPath} DRY_RUN=1 ${artifacts.applyScript}
+            printf '%s\n' "[systemd-user-manager] dry-activate preview ${artifacts.serviceName}.service"
+            STATE_DIRECTORY=${lib.escapeShellArg artifacts.stateDirectoryPath} DRY_RUN=1 ${artifacts.applyScript}
           '')
           reconcilerUsers)
         + ''
