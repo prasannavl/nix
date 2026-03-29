@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
-readonly NIXBOT_VERSION="2026.03.27.10"
+readonly NIXBOT_VERSION="2026.03.29.1"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 
@@ -598,6 +598,27 @@ emit_age_decrypt_identity_candidates() {
       printf '%s\n' "${REMOTE_NIXBOT_AGE_IDENTITY}"
     fi
   } | awk 'NF && !seen[$0]++'
+}
+
+announce_age_decrypt_identity_candidates() {
+  local candidate="" rendered="" first=1
+
+  while IFS= read -r candidate; do
+    [ -n "${candidate}" ] || continue
+    [ -f "${candidate}" ] || continue
+    if [ "${first}" -eq 1 ]; then
+      rendered="${candidate}"
+      first=0
+    else
+      rendered="${rendered}, ${candidate}"
+    fi
+  done < <(emit_age_decrypt_identity_candidates)
+
+  if [ "${first}" -eq 1 ]; then
+    echo "(none found)"
+  else
+    echo "${rendered}"
+  fi
 }
 
 
@@ -1359,35 +1380,10 @@ resolve_key_source_path() {
   printf '%s/%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
 }
 
-age_decrypt_success_log_file() {
-  ensure_tmp_dir
-  printf '%s/age-decrypt-success.log\n' "${NIXBOT_TMP_DIR}"
-}
-
-age_decrypt_success_was_logged() {
-  local src_path="$1"
-  local log_file=""
-
-  log_file="$(age_decrypt_success_log_file)"
-  [ -f "${log_file}" ] || return 1
-  grep -Fqx -- "${src_path}" "${log_file}"
-}
-
-mark_age_decrypt_success_logged() {
-  local src_path="$1"
-  local log_file=""
-
-  log_file="$(age_decrypt_success_log_file)"
-  if ! age_decrypt_success_was_logged "${src_path}"; then
-    printf '%s\n' "${src_path}" >> "${log_file}"
-  fi
-}
-
 resolve_runtime_key_file() {
   local key_path="$1" require_age="${2:-0}"
   local src_path="" out_file="" decrypt_identity="" age_stderr_file=""
   local decrypt_errors_file="" candidate_count=0 readable_candidate_count=0
-  local log_success_announcement=0
 
   src_path="$(resolve_key_source_path "${key_path}")"
   if [ ! -f "${src_path}" ]; then
@@ -1403,9 +1399,6 @@ resolve_runtime_key_file() {
   if [[ "${src_path}" = *.age ]]; then
     require_cmds age
     ensure_tmp_dir
-    if ! age_decrypt_success_was_logged "${src_path}"; then
-      log_success_announcement=1
-    fi
     out_file="$(tmp_runtime_mktemp secrets "key.XXXXXX")"
     decrypt_errors_file="$(tmp_runtime_mktemp secrets "age-errors.XXXXXX")"
     while IFS= read -r decrypt_identity; do
@@ -1417,15 +1410,8 @@ resolve_runtime_key_file() {
       fi
       readable_candidate_count=$((readable_candidate_count + 1))
       age_stderr_file="$(tmp_runtime_mktemp secrets "age-stderr.XXXXXX")"
-      if [ "${log_success_announcement}" -eq 1 ]; then
-        echo "Trying decrypt identity: ${decrypt_identity} for ${src_path}" >&2
-      fi
       if age --decrypt -i "${decrypt_identity}" -o "${out_file}" "${src_path}" 2>"${age_stderr_file}"; then
         chmod 600 "${out_file}"
-        if [ "${log_success_announcement}" -eq 1 ]; then
-          echo "Using decrypt identity: ${decrypt_identity} for ${src_path}" >&2
-          mark_age_decrypt_success_logged "${src_path}"
-        fi
         rm -f "${age_stderr_file}" "${decrypt_errors_file}"
         printf '%s\n' "${out_file}"
         return
@@ -1870,6 +1856,7 @@ log_run_context() {
     echo "Goal: ${GOAL}" >&2
     echo "Build host: ${BUILD_HOST}" >&2
   fi
+  echo "Decrypt identities: $(announce_age_decrypt_identity_candidates)" >&2
 }
 
 ##### Deploy Target / SSH Context #####
@@ -4671,6 +4658,8 @@ phase_dir_item_status_file() {
 _remote_systemd_user_manager_report() {
   local since="$1" units="" found=0 unit="" recent="" invocation_id=""
   local active_state="" sub_state="" result="" exec_main_status="" summary=""
+  local waited=0 max_wait=1800
+  local reconciler_unit="" reconciler_invocation_id=""
 
   units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
   if [ -z "${units}" ]; then
@@ -4683,6 +4672,22 @@ _remote_systemd_user_manager_report() {
     recent="$(journalctl -u "${unit}" --since "${since}" --no-pager -n 1 -o cat 2>/dev/null || true)"
     [ -n "${recent}" ] || continue
     found=1
+    waited=0
+    while :; do
+      active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
+      sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
+      result="$(systemctl show --property=Result --value "${unit}" 2>/dev/null || true)"
+      case "${active_state}:${sub_state}:${result}" in
+        active:exited:success|inactive:dead:success|failed:failed:*|inactive:dead:failed)
+          break
+          ;;
+      esac
+      if [ "${waited}" -ge "${max_wait}" ]; then
+        break
+      fi
+      sleep 0.5
+      waited=$((waited + 1))
+    done
     invocation_id="$(systemctl show --property=InvocationID --value "${unit}" 2>/dev/null || true)"
     active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
     sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
@@ -4694,10 +4699,14 @@ _remote_systemd_user_manager_report() {
       summary='FAIL'
     fi
     printf '%s\n' "${unit}: ${summary} (${active_state}/${sub_state}, result=${result:-unknown}, exec=${exec_main_status:-unknown})"
-    if [ -n "${invocation_id}" ]; then
+    reconciler_unit="${unit/systemd-user-manager-dispatcher-/systemd-user-manager-reconciler-}"
+    reconciler_invocation_id="$(systemctl show --property=InvocationID --value "${reconciler_unit}" 2>/dev/null || true)"
+    if [ -n "${reconciler_invocation_id}" ]; then
+      journalctl _SYSTEMD_INVOCATION_ID="${reconciler_invocation_id}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
+    elif [ -n "${invocation_id}" ]; then
       journalctl _SYSTEMD_INVOCATION_ID="${invocation_id}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
     else
-      journalctl -u "${unit}" --since "${since}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
+      journalctl -u "${reconciler_unit}" --since "${since}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
     fi
   done <<EOF_UNITS
 ${units}
@@ -6818,6 +6827,7 @@ run_requested_action() {
     log_section "nixbot"
     echo "Version: ${NIXBOT_VERSION}" >&2
     echo "Action: ${ACTION}" >&2
+    echo "Decrypt identities: $(announce_age_decrypt_identity_candidates)" >&2
   else
     prepare_run_context selected_json
     log_run_context "${selected_json}"
