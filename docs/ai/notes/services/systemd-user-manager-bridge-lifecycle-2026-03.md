@@ -2,19 +2,18 @@
 
 ## Scope
 
-Canonical summary of `lib/systemd-user-manager.nix`, including the bridge model,
-reload orchestration, and deploy-time change semantics used by `lib/podman.nix`
-and other user-service modules.
+Canonical summary of `lib/systemd-user-manager.nix`, including the per-user
+reconciler model, reload orchestration, and deploy-time change semantics used
+by `lib/podman.nix` and other user-service modules.
 
 ## Module model
 
-- `services.systemdUserManager.bridges.<name>` declares a system-managed bridge
-  for a user unit.
+- `services.systemdUserManager.instances.<name>` declares a managed user unit.
 - Each bridge targets a `users.users.<name>` entry with a non-null `uid`.
-- Bridge services run as root and call `systemctl --user --machine=<user>@ ...`
-  so deploy-time orchestration can manage lingering user managers from the
-  system side.
-- One reload service is generated per user manager, not per bridged unit.
+- One serialized reconciler service is generated per user manager.
+- The reconciler runs as root and calls
+  `systemctl --user --machine=<user>@ ...` so deploy-time orchestration can
+  manage lingering user managers from the system side.
 
 ## Bridge options
 
@@ -26,37 +25,35 @@ and other user-service modules.
   Defaults to `unit`.
 - `onChangeAction`: action for previously active changed bridges. Supported
   values: `restart`, `reload`, `start`.
-- `startOnInitial`: whether the bridge should start its target on first
-  activation when there is no old-generation stop record.
-- `stopUnitOnStop`: whether bridge stop should stop the managed user unit.
+- `startOnFirstRun`: whether the bridge should start its target on its
+  first apply pass when there is no old-generation stop record.
+- `stopOnRemoval`: whether removing the managed entry should stop the
+  managed user unit.
 - `restartTriggers`: values baked into the bridge unit so generation changes
   cause old-stop/new-start switch behavior.
-- `serviceName`: name of the generated system service implementing the bridge.
+- `preActions` / `postActions`: ordered transient actions attached to the
+  managed entry.
 
 ## Switch behavior
 
-- Bridge services are `Type=oneshot` with `RemainAfterExit=true`.
-- On old-generation stop:
-  - the bridge queries `observeUnit`
-  - active, failed, and transitional states are treated as restart-worthy
-  - a stamp file under `/run/nixos/systemd-user-manager/` records whether the
-    new generation should perform its change action
-- On new-generation start:
-  - if the prior bridge recorded an active state, the new bridge runs
-    `onChangeAction` against `changeUnit`
-  - if there is no prior stop record, the bridge optionally starts `unit`
-    depending on `startOnInitial`
-  - intentionally inactive units remain inactive across rebuilds
-
-This gives deploy-time old-stop/new-start semantics without forcing every
-bridged user unit to restart on every boot.
+- The per-user apply service is `Type=oneshot` with `RemainAfterExit=true`.
+- On each deploy:
+  - the reconciler waits for the user manager bus
+  - runs one `daemon-reload`
+  - loads persisted per-unit state from its `StateDirectory`
+  - reconciles unit changes and ordered actions serially
+  - writes the new state back atomically
+- If the observed unit was previously active, the reconciler runs
+  `onChangeAction` against `changeUnit`.
+- If a unit is unchanged but drifted inactive, the reconciler starts it again
+  unless the unit file is disabled or masked.
+- Inactive but startable units are treated as drift and started during
+  reconcile unless the unit file is disabled or masked.
 
 ## Reload orchestration
 
-- A per-user reload service runs `systemctl --user daemon-reload`.
-- Bridge units require and start after that reload service.
-- All bridges for the same user share the same reload unit, so user-manager
-  reload happens once per switch even when many user units changed.
+- The per-user reconciler runs `systemctl --user daemon-reload` once before it
+  reconciles any managed entries for that user.
 
 ## User identity refresh
 
@@ -72,13 +69,14 @@ bridged user unit to restart on every boot.
 `lib/podman.nix` uses the bridge module in two ways:
 
 - main compose units use the default bridge behavior so changed active stacks
-  restart and changed inactive stacks stay inactive
-- lifecycle tag actions (`bootTag`, `recreateTag`, `imageTag`) are modeled as
-  separate user oneshot services with bridges configured as:
-  - `observeUnit = "<main>.service"`
-  - `onChangeAction = "start"`
-  - `startOnInitial = false`
-  - `stopUnitOnStop = false`
+  restart and inactive-but-startable stacks are started during reconcile
+- `imageTag` is modeled as a transient pre-action with
+  `observeUnitInactiveAction = "run-action"`
+- `recreateTag` is modeled as a transient pre-action with
+  `observeUnitInactiveAction = "run-action"` that arms the next managed
+  start/restart to use `podman compose up --force-recreate`
+- `bootTag` remains folded into the main managed-unit restart trigger instead
+  of a separate user unit
 
-That keeps Podman lifecycle tags stateless: actions fire only when tag values
-change across generations for already active stacks, not on normal boot.
+That keeps Podman lifecycle tags stateless: actions fire only on deploy-time
+generation changes, not on normal boot.

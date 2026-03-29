@@ -26,8 +26,9 @@ lifecycle work completed in March 2026.
 
 - Each instance renders store-backed source files, then stages them into its
   working directory at service start.
-- The main generated user unit is a stateless oneshot service:
-  - `ExecStart`: `podman compose up -d --remove-orphans`
+- The main generated user unit is a stateless long-running service:
+  - `ExecStart`: `podman compose up -d --remove-orphans`, then
+    `podman compose wait`
   - `ExecStop`: `podman compose down`
   - `ExecReload`: `down`, cleanup, restage files, then `up -d`
 - Runtime manifests under `$XDG_RUNTIME_DIR/podman-compose/` track staged files
@@ -88,43 +89,41 @@ lifecycle work completed in March 2026.
 
 ## Systemd lifecycle
 
-- Generated Podman user units are managed through `lib/systemd-user-manager.nix`
-  bridge units so changes participate in old-stop/new-start behavior during
-  `nixos-rebuild switch` and `test`.
-- Bridge state lives under `/run/nixos/systemd-user-manager/` and is gated on
-  user-manager availability.
-- Changed active and failed units restart; changed inactive units stay inactive;
-  newly bridged units start once on first activation.
+- Generated Podman user units are managed through the per-user reconciler in
+  `lib/systemd-user-manager.nix` so changes participate in deploy-time
+  user-manager reconciliation during `nixos-rebuild switch` and `test`.
+- Reconciler state lives in the reconciler `StateDirectory`; user-identity
+  restart stamps remain under `/run/nixos/systemd-user-manager/`.
+- Changed active and failed units restart; inactive-but-startable units are
+  started during reconcile; newly bridged units start once on first activation.
 - One reload unit per user manager so `systemctl --user daemon-reload` runs only
   once per user.
 - Each compose instance has three lifecycle tags with default `"0"`:
-  - `bootTag`: forces `podman compose restart`
-  - `recreateTag`: forces `podman compose up --force-recreate`
-  - `imageTag`: forces `podman compose pull`
-- Tag actions are stateless. They do not use stored tag files; instead they are
-  modeled as separate user action units triggered through
-  `lib/systemd-user-manager.nix` only when the corresponding tag value changes
-  across generations for an already active compose service.
-- If `imageTag` and `recreateTag` both change in one deploy, both action bridges
-  fire; image refresh and recreate are separate actions attached to the same
-  active compose service.
+  - `bootTag`: marks the main compose unit changed so active stacks restart
+  - `recreateTag`: marks the main compose unit changed and arms the next
+    managed start/restart to use `podman compose up --force-recreate`
+  - `imageTag`: runs `podman compose pull` as a transient pre-action
+- Tag actions are stateless. They do not use stored tag files.
+- `imageTag` and `recreateTag` are separate transient pre-actions; `bootTag`
+  is folded into the main managed-unit restart trigger.
 
 ## What changes do
 
 - Compose source/file/env-secret changes:
   - change the main generated user unit and restart stamp
   - active stacks restart through the standard bridge path
-  - inactive stacks stay inactive
+  - inactive-but-startable stacks are started during reconcile
 - `bootTag` change:
-  - runs the generated `*-boot-tag.service`
-  - attempts `podman compose restart`
-  - falls back to `up -d --remove-orphans` if the stack has not been created yet
+  - changes the main generated user unit restart stamp
+  - active stacks restart through the standard managed-unit path
 - `recreateTag` change:
-  - runs the generated `*-recreate-tag.service`
-  - uses `podman compose up --force-recreate`
+  - changes the main generated user unit restart stamp
+  - runs a pre-action that arms the next managed start/restart to use
+    `podman compose up --force-recreate`
 - `imageTag` change:
-  - runs the generated `*-image-tag.service`
+  - runs a transient pre-action attached to the main managed unit
   - uses `podman compose pull`
+  - active stacks then continue through the standard managed-unit path
 - Plain reboot:
   - does not replay lifecycle tags
   - only the main compose user unit starts

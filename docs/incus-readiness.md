@@ -29,10 +29,10 @@ hosts are marked as failed.
 ## Host-Side Helpers
 
 Both helpers are installed on every parent host that declares
-`services.incusMachines.machines` in its NixOS configuration. They live in
+`services.incusMachines.instances` in its NixOS configuration. They live in
 `lib/incus.nix` and are available as executables on the parent's `$PATH`.
 
-### `incus-machines-reconcile`
+### `incus-machines-reconciler`
 
 Ensures declared containers are running. For each selected machine:
 
@@ -52,11 +52,11 @@ Behavior is governed by `services.incusMachines.reconcilePolicy`:
 Usage:
 
 ```bash
-incus-machines-reconcile --all
-incus-machines-reconcile --machine llmug-rivendell --machine gap3-gondor
+incus-machines-reconciler --all
+incus-machines-reconciler --machine llmug-rivendell --machine gap3-gondor
 ```
 
-### `incus-machines-settle`
+### `incus-machines-settlement`
 
 Polls until all selected containers pass four readiness checks, or until a
 timeout is reached (default 180 seconds, polling every 2 seconds):
@@ -77,8 +77,8 @@ settle succeed.
 Usage:
 
 ```bash
-incus-machines-settle --all
-incus-machines-settle --machine llmug-rivendell --timeout 120
+incus-machines-settlement --all
+incus-machines-settlement --machine llmug-rivendell --timeout 120
 ```
 
 Per-machine options that affect settle behavior:
@@ -131,7 +131,7 @@ The function `ensure_deploy_wave_parent_readiness` in `nixbot.sh`:
    reconcile command template. The default template is:
 
    ```bash
-   /run/current-system/sw/bin/incus-machines-reconcile --machine <name> [--machine <name2> ...]
+   /run/current-system/sw/bin/incus-machines-reconciler --machine <name> [--machine <name2> ...]
    ```
 
    This ensures any stopped or missing containers are restarted before settle.
@@ -140,7 +140,7 @@ The function `ensure_deploy_wave_parent_readiness` in `nixbot.sh`:
    settle command template. The default template is:
 
    ```bash
-   /run/current-system/sw/bin/incus-machines-settle --timeout <timeout> --machine <name> [--machine <name2> ...]
+   /run/current-system/sw/bin/incus-machines-settlement --timeout <timeout> --machine <name> [--machine <name2> ...]
    ```
 
    This blocks until all containers in the group pass the four readiness checks
@@ -194,8 +194,8 @@ between runs.
 
 ## Optional Boot-Time Reconcile
 
-Parent hosts can optionally run `incus-machines-reconcile --all` at boot via the
-`incus-machines-reconcile.service` systemd unit:
+Parent hosts can optionally run `incus-machines-reconciler --all` at boot via
+the `incus-machines-reconciler.service` systemd unit:
 
 ```nix
 services.incusMachines.autoReconcile = true;
@@ -218,12 +218,12 @@ Parent host activation (NixOS rebuild):
   incus-images.service        (import/refresh declared images)
   incus-machines-gc.service   (remove undeclared containers)
   incus-<name>.service        (create/start each declared container)
-  incus-machines-reconcile    (optional: restart any that aren't Running)
+  incus-machines-reconciler   (optional: restart any that aren't Running)
 
 nixbot deploy wave for child hosts:
   ensure_deploy_wave_parent_readiness:
-    SSH to parent -> incus-machines-reconcile --machine <children>
-    SSH to parent -> incus-machines-settle --timeout T --machine <children>
+    SSH to parent -> incus-machines-reconciler --machine <children>
+    SSH to parent -> incus-machines-settlement --timeout T --machine <children>
       polls until:
         container status == Running
         incus exec succeeds
@@ -235,7 +235,7 @@ nixbot deploy wave for child hosts:
 
 ## Source Of Truth Files
 
-- `lib/incus.nix` -- reconcile helper, settle helper, per-machine service,
+- `lib/incus.nix` -- reconciler helper, settle helper, per-machine service,
   machine type options (`sshPort`, `waitForSsh`, `ipv4Address`)
 - `pkgs/nixbot/nixbot.sh` -- `ensure_deploy_wave_parent_readiness`,
   `run_named_prepared_root_command`, command template rendering

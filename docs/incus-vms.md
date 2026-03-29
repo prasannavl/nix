@@ -68,7 +68,7 @@ services.incusMachines = {
   defaultImageAlias = "nixos-incus-base";
   imageTag = "0";
 
-  machines.<name> = {
+  instances.<name> = {
     image = null; # NixOS image attrset or a string like "debian"
     imageAlias = null; # the stable local Incus alias used for `incus create`
     ipv4Address = "10.10.20.10";
@@ -89,7 +89,7 @@ services.incusMachines = {
 };
 ```
 
-When `services.incusMachines.machines` is non-empty, the shared module also
+When `services.incusMachines.instances` is non-empty, the shared module also
 enables Incus and provides the default package/UI settings automatically.
 
 Terminology:

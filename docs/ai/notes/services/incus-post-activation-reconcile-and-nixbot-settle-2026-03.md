@@ -29,9 +29,9 @@ without starting the service.
   - non-container Incus parents default to `best-effort`
   - containerized Incus parents default to `off`
 - Add explicit host-side helper commands:
-  - `incus-machines-reconcile`
-  - `incus-machines-settle`
-- Add a reusable `incus-machines-reconcile.service` oneshot for host-side
+  - `incus-machines-reconciler`
+  - `incus-machines-settlement`
+- Add a reusable `incus-machines-reconciler.service` oneshot for host-side
   reconcile outside activation.
 - Keep boot-time auto-reconcile opt-in via
   `services.incusMachines.autoReconcile` instead of coupling it to activation or
@@ -45,12 +45,12 @@ without starting the service.
 
 - `services.incusMachines.reconcilePolicy` is the reconcile control.
 - `services.incusMachines.autoReconcile` controls whether
-  `incus-machines-reconcile.service` is wanted by `multi-user.target`.
+  `incus-machines-reconciler.service` is wanted by `multi-user.target`.
 - Activation-time reconcile is no longer used as the steady-state model.
 - The host installs:
-  - `incus-machines-reconcile`
-  - `incus-machines-settle`
-- `incus-machines-settle` waits for:
+  - `incus-machines-reconciler`
+  - `incus-machines-settlement`
+- `incus-machines-settlement` waits for:
   - instance exists
   - status is `Running`
   - `incus exec <name> -- true` works
@@ -68,8 +68,8 @@ without starting the service.
 - Before each deploy wave snapshot, `nixbot` applies generic parent readiness
   barriers for selected child hosts.
 - The current default parent barrier templates call:
-  - `/run/current-system/sw/bin/incus-machines-reconcile`
-  - `/run/current-system/sw/bin/incus-machines-settle`
+  - `/run/current-system/sw/bin/incus-machines-reconciler`
+  - `/run/current-system/sw/bin/incus-machines-settlement`
 - Those command templates live in host metadata/defaults rather than being
   hard-coded into `nixbot` terminology, so the orchestration model stays generic
   even though the current implementation is Incus-backed.
@@ -93,7 +93,7 @@ without starting the service.
 
 - Host activation no longer performs child guest lifecycle mutation.
 - Child guest auto-heal remains available through explicit host-side reconcile.
-- `incus-machines-reconcile.service` is re-runnable with a plain
+- `incus-machines-reconciler.service` is re-runnable with a plain
   `systemctl start`, instead of staying active after the first successful run.
 - `nixbot` ordering edges now gain a concrete readiness barrier for Incus
   parent/child relationships.

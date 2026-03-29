@@ -18,7 +18,7 @@ services:
     depends_on:
       - redis
       - database
-    restart: always
+    restart: unless-stopped
     healthcheck:
       disable: false
 
@@ -30,7 +30,7 @@ services:
       - model-cache:/cache
     env_file:
       - .env
-    restart: always
+    restart: unless-stopped
     healthcheck:
       disable: false
 
@@ -40,7 +40,7 @@ services:
     user: 0:0
     healthcheck:
       test: redis-cli ping || exit 1
-    restart: always
+    restart: unless-stopped
 
   database:
     container_name: immich_postgres
@@ -53,7 +53,7 @@ services:
     volumes:
       - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
     shm_size: 128mb
-    restart: always
+    restart: unless-stopped
     healthcheck:
       disable: false
 

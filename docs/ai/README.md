@@ -183,6 +183,11 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/lib-flake-published-podman-systemd-modules-2026-03.md`:
   Revert `podman` and `systemd-user-manager` to `lib/` and drop the unused
   published flake-module export.
+- `docs/ai/notes/services/lib-review-followup-2026-03.md`: Follow-up review
+  decisions for `lib/incus.nix`, `lib/podman.nix`, and
+  `lib/systemd-user-manager.nix`, including the user correction on
+  inactive-unit semantics, the Podman `recreateTag` fix, the Incus start
+  failure fix, and the `pvl-x2` boot activation root cause.
 - `docs/ai/notes/services/module-review-podman-systemd-user-manager-fixes-2026-03.md`:
   Review-driven fixes for generated service-name collisions in `podman` and
   `systemd-user-manager`, plus serialized Podman lifecycle-tag action units.
@@ -191,6 +196,19 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/podman-compose-reload-staging-2026-03.md`: Podman
   compose runtime files are copied into working directories and reload now
   performs cleanup plus restaging before `up -d`.
+- `docs/ai/notes/services/podman-compose-start-state-verification-2026-03.md`:
+  Generated podman compose units now fail fast when `up -d` leaves any
+  container stuck in `Created` or another bad non-running state.
+- `docs/ai/notes/services/podman-compose-runtime-path-conflicts-and-startup-readiness-2026-03.md`:
+  Generated podman compose staging now removes file-versus-directory conflicts
+  cleanly, and compose units only report startup success after verification
+  completes.
+- `docs/ai/notes/services/podman-compose-wait-supervision-2026-03.md`: Main
+  generated podman compose units use a long-running monitored service model so
+  systemd can observe runtime failure and restart stacks on failure.
+- `docs/ai/notes/services/podman-lifecycle-tag-semantic-stamps-2026-03.md`:
+  Podman lifecycle tags now use explicit semantic stamp payloads so `imageTag`,
+  `bootTag`, and `recreateTag` only react to declared tag-value changes.
 - `docs/ai/notes/services/shared-collections-helper-2026-03.md`: Shared
   `lib/flake/utils` helper for reusable pure-Nix collection utilities such as
   duplicate-value detection.
@@ -198,6 +216,28 @@ Use this index as the canonical map for `docs/ai/**`.
   Canonical `lib/systemd-user-manager.nix` bridge model, reload orchestration,
   old-stop/new-start semantics, identity refresh behavior, and Podman usage
   pattern.
+- `docs/ai/notes/services/systemd-user-manager-first-run-naming-2026-03.md`:
+  Final first-run naming for `systemd-user-manager`: `startOnFirstRun` for
+  units, `stopOnRemoval` for removal behavior, and `execOnFirstRun` for
+  actions.
+- `docs/ai/notes/services/systemd-user-manager-inactive-action-naming-2026-03.md`:
+  Clearer action naming for inactive observed-unit behavior:
+  `observeUnitInactiveAction`, `run-action`, and `start-change-unit`.
+- `docs/ai/notes/services/systemd-user-manager-stable-state-backoff-2026-03.md`:
+  Progressive stable-state polling backoff and clearer timeout handling for
+  user-unit reconcile waits.
+- `docs/ai/notes/services/systemd-user-manager-boot-deferral-2026-03.md`:
+  Boot activation now skips all mutating `systemd-user-manager`
+  activation-script work; the reconciler runs later as a normal boot unit, and
+  boot-gated user services wait on a ready target it starts after a successful
+  apply.
+- `docs/ai/notes/services/systemd-user-manager-dry-activate-preview-2026-03.md`:
+  `dry-activate` now logs the per-user reconcile actions it would take without
+  mutating user services or persisted stamp state.
+- `docs/ai/notes/services/systemd-user-manager-per-user-apply-and-podman-actions-2026-03.md`:
+  Refactor `lib/systemd-user-manager.nix` to one serialized apply service per
+  user and move Podman lifecycle tags to transient user-manager actions instead
+  of persistent bridged user units.
 - `docs/ai/notes/services/nixbot-incus-guest-snapshot-wait-2026-03.md`: `nixbot`
   now reuses host `wait` values before retrying rollback snapshots for newly
   recreated Incus guest targets.

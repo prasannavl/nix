@@ -63,6 +63,24 @@
 - Gate all side effects behind `lib.mkIf cfg.enable`.
 - Prefer `lib.mkDefault` for defaults that hosts should be able to override
   without `lib.mkForce`.
+- Boot activation must never be blocked by repo-owned module logic.
+- Do not put network pulls, long waits, reconciliation loops, cleanup that can
+  fail, or service-manager restarts on the boot activation path.
+- If a module needs boot-time reconciliation or healing, run it later as a
+  normal systemd unit after the machine reaches its normal userspace targets,
+  not from `system.activationScripts` during `NIXOS_ACTION=boot`.
+- `dry-activate` must stay non-mutating. If preview is useful, log what would
+  happen without changing live service state or persistent stamps.
+- Never use `exit` to “skip” a `system.activationScripts` snippet. Activation
+  snippets are inlined into the top-level `/activate` shell script, so `exit 0`
+  terminates the entire activation run, not just the current snippet. To skip a
+  snippet, gate the snippet body with `case` / `if` and fall through normally.
+- Use `exit 1` from activation snippets only when you intentionally want to
+  fail the full activation. For local helper control flow inside a snippet, use
+  shell conditionals or helper functions with `return`, not top-level `exit`.
+- Prefer structuring non-trivial activation snippets as a shell function plus a
+  single top-level call. That keeps control flow local, makes `return` usable,
+  and avoids accidental termination of the full `/activate` script.
 
 ## Attrset style
 

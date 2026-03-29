@@ -50,7 +50,7 @@ not actually self-contained under a minimal or sanitized PATH.
 ## Cleanup Opportunities
 
 - `lib/incus.nix`: factor the repeated `--machine` selection parsing shared by
-  `incus-machines-reconcile` and `incus-machines-settle`.
+  `incus-machines-reconciler` and `incus-machines-settlement`.
 - `pkgs/nixbot/flake.nix`: collapse the repeated `run/default/build` and
   `default/run` alias boilerplate with `inherit`.
 

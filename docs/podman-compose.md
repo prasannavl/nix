@@ -205,7 +205,15 @@ Nix.
 For each compose instance, the module generates a systemd user service that:
 
 - stages rendered compose files into the working directory
+- removes manifest-managed file-versus-directory conflicts before restaging, so
+  bind-mounted runtime paths can safely change shape across deploys
 - runs `podman compose up -d --remove-orphans`
+- verifies that compose did not leave any container stuck in `Created` or
+  another non-running state
+- only reports systemd startup success after that verification passes
+- stays attached with a provider-agnostic monitor loop so systemd can observe
+  runtime failure even when the external compose provider does not implement
+  `wait`
 - runs `podman compose down` on stop
 - restages files and re-runs `up -d` on reload
 
@@ -213,21 +221,27 @@ The main generated service is intentionally stateless:
 
 - no lifecycle tag state is stored on disk
 - no lifecycle tag action is replayed just because the machine rebooted
+- boot-time startup is gated behind `systemd-user-manager-ready.target`, so the
+  main compose services do not start until the per-user reconciler has run once
 
 ## Tags
 
 - `bootTag`:
   - default is `"0"`
-  - when the declared value changes, deploy-time bridge logic runs
-    `podman compose restart`
+  - when the declared value changes, the main generated compose unit is treated
+    as changed
+  - active stacks restart through the normal managed-unit path
 - `recreateTag`:
   - default is `"0"`
-  - when the declared value changes, deploy-time bridge logic runs
+  - when the declared value changes, the main generated compose unit is treated
+    as changed
+  - a transient pre-action marks the next managed start/restart to use
     `podman compose up --force-recreate`
 - `imageTag`:
   - default is `"0"`
-  - when the declared value changes, deploy-time bridge logic runs
+  - when the declared value changes, a transient pre-action runs
     `podman compose pull`
+  - the main compose unit also restarts if the stack was active
 
 Operationally, the intended manual toggles are between `"0"` and `"1"`, though
 any new string value works.
@@ -235,20 +249,25 @@ any new string value works.
 ## What Changes Trigger
 
 - `bootTag` change:
-  - runs the generated `*-boot-tag.service`
-  - attempts `podman compose restart`
-  - falls back to `up -d --remove-orphans` if the stack does not exist yet
+  - changes the main generated user unit restart stamp
+  - only the declared `bootTag` value participates in that tag-specific stamp
+  - active stacks restart through the normal managed-unit path
 - `recreateTag` change:
-  - runs the generated `*-recreate-tag.service`
-  - uses `podman compose up --force-recreate`
+  - changes the main generated user unit restart stamp
+  - runs a transient pre-action attached to the main managed unit
+  - only the declared `recreateTag` value participates in that action stamp
+  - marks the next managed start/restart to use
+    `podman compose up --force-recreate`
 - `imageTag` change:
-  - runs the generated `*-image-tag.service`
+  - runs a transient pre-action attached to the main managed unit
+  - only the declared `imageTag` value participates in that action stamp
   - uses `podman compose pull`
+  - active stacks then continue through the normal managed-unit restart path
 - compose `source`, `files`, `entryFile`, `envSecrets`, or generated unit
   change:
   - changes the main generated user service and restart stamp
   - active stacks restart on deploy
-  - inactive stacks stay inactive
+  - inactive stacks are started during reconcile unless disabled or masked
 - plain reboot:
   - starts the main compose user service only
   - does not replay lifecycle tags
@@ -288,8 +307,17 @@ On host deploy:
 That means:
 
 - lifecycle tags are deploy-time actions, not boot-time actions
-- if the same deploy changes both `imageTag` and `recreateTag`, both generated
-  action units fire for the active stack
+- Podman stacks must never make boot activation fail; boot-time ordering is
+  handled after activation through `systemd-user-manager`'s normal boot unit
+  and `systemd-user-manager-ready.target`
+- boot-time service startup waits for `systemd-user-manager-ready.target`, which
+  the reconciler starts after a successful per-user apply
+- `dry-activate` logs the Podman pulls, restarts, and starts that would happen,
+  but does not actually mutate the running user services
+- `imageTag` runs before the managed-unit restart for active stacks
+- `recreateTag` runs before the managed-unit restart and causes that next
+  managed start/restart to use `--force-recreate`
+- `bootTag` is not a separate action unit
 
 ## What A Host Must Provide
 
@@ -319,27 +347,46 @@ For each stack in `hosts/<host>/services.nix`:
 ### What happens when I change compose source?
 
 The main generated user unit changes. If the stack was active, the deploy-time
-bridge restarts it. If it was inactive, it stays inactive.
+bridge restarts it. If it was inactive but still startable, reconcile starts
+it.
 
 ### What happens when I bump `recreateTag`?
 
-The deploy-time bridge starts the generated `*-recreate-tag.service`, which runs
-`podman compose up --force-recreate`.
+The reconciler runs a transient pre-action that marks the next managed
+start/restart to use `podman compose up --force-recreate`, then the normal
+managed-unit reconciliation path restarts or starts the main compose unit. This
+is keyed to the declared `recreateTag` value itself, not helper script path or
+other generated unit churn.
 
 ### What happens when I bump `bootTag`?
 
-The deploy-time bridge starts the generated `*-boot-tag.service`, which runs
-`podman compose restart`.
+The managed unit stamp changes. If the stack was active, the normal
+systemd-user-manager reconciliation path restarts the main compose unit. This
+is keyed to the declared `bootTag` value itself, not helper script path or
+other generated unit churn.
 
 ### What happens when I bump `imageTag`?
 
-The deploy-time bridge starts the generated `*-image-tag.service`, which runs
-`podman compose pull`.
+The reconciler runs a transient pre-action that executes `podman compose pull`
+before the main managed-unit restart path. This is keyed to the declared
+`imageTag` value itself, not helper script path or other generated unit churn.
 
 ### Do lifecycle tags replay on reboot?
 
 No. Lifecycle tags are stateless deploy-time actions. Reboot only starts the
 main compose service.
+
+### Does boot gating behind `systemd-user-manager-ready.target` create a deadlock?
+
+No. That target only gates automatic boot startup. The reconciler still talks
+to the Podman unit directly with `systemctl --user start` or `restart` during
+apply, then starts `systemd-user-manager-ready.target` after a successful run.
+
+### What does `dry-activate` show for Podman stacks?
+
+It runs the `systemd-user-manager` preview path. That means you get log lines
+for the Podman actions that would happen, such as `image-tag` pulls, managed
+unit restarts, or drift-healing starts, but no actual compose action is run.
 
 ### If a stack is intentionally inactive, do tag bumps wake it up?
 

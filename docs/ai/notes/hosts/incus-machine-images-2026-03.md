@@ -13,8 +13,8 @@ source while keeping the existing shared `incus-base` image as the default.
   - `services.incusMachines.defaultImage`
   - `services.incusMachines.defaultImageAlias`
 - Added per-machine overrides:
-  - `services.incusMachines.machines.<name>.image`
-  - `services.incusMachines.machines.<name>.imageAlias`
+  - `services.incusMachines.instances.<name>.image`
+  - `services.incusMachines.instances.<name>.imageAlias`
 - `image` is overloaded by type:
   - strings are treated as remote Incus image references
   - non-string values are treated as local NixOS image builds

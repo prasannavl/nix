@@ -1,5 +1,5 @@
 {...}: {
-  services.incusMachines.machines = {
+  services.incusMachines.instances = {
     gap3-rivendell = {
       recreateTag = "2";
       ipv4Address = "10.10.30.10";

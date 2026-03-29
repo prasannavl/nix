@@ -2,7 +2,7 @@
   services.incusMachines = {
     imageTag = "1";
 
-    machines = {
+    instances = {
       llmug-rivendell = {
         ipv4Address = "10.10.20.10";
         removalPolicy = "delete-all";

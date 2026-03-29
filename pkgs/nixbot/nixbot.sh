@@ -5,8 +5,8 @@ set -Eeuo pipefail
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
 readonly NIXBOT_VERSION="2026.03.27.10"
-readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconcile{resourceArgs}"
-readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settle --timeout {timeout}{resourceArgs}"
+readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
+readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 
 readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
   nixpkgs#age
