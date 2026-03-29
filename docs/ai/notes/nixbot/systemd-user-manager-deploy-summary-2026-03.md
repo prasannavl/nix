@@ -16,10 +16,9 @@ when the dispatcher actually ran in that window.
 - Collect the report through the normal prepared deploy/root command path so SSH
   target selection, proxying, sudo policy, and bootstrap fallback stay
   consistent with the rest of `nixbot`.
-- Report on system dispatcher units
-  `systemd-user-manager-dispatcher-*.service`, because the dispatcher already
-  waits for the reconciler and streams reconciler logs into its own journal
-  output.
+- Report on system dispatcher units `systemd-user-manager-dispatcher-*.service`,
+  because the dispatcher already waits for the reconciler and streams reconciler
+  logs into its own journal output.
 - When a dispatcher ran during the deploy window, print the full journal for its
   latest invocation, not an arbitrary line tail.
 

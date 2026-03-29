@@ -1359,10 +1359,35 @@ resolve_key_source_path() {
   printf '%s/%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
 }
 
+age_decrypt_success_log_file() {
+  ensure_tmp_dir
+  printf '%s/age-decrypt-success.log\n' "${NIXBOT_TMP_DIR}"
+}
+
+age_decrypt_success_was_logged() {
+  local src_path="$1"
+  local log_file=""
+
+  log_file="$(age_decrypt_success_log_file)"
+  [ -f "${log_file}" ] || return 1
+  grep -Fqx -- "${src_path}" "${log_file}"
+}
+
+mark_age_decrypt_success_logged() {
+  local src_path="$1"
+  local log_file=""
+
+  log_file="$(age_decrypt_success_log_file)"
+  if ! age_decrypt_success_was_logged "${src_path}"; then
+    printf '%s\n' "${src_path}" >> "${log_file}"
+  fi
+}
+
 resolve_runtime_key_file() {
   local key_path="$1" require_age="${2:-0}"
   local src_path="" out_file="" decrypt_identity="" age_stderr_file=""
   local decrypt_errors_file="" candidate_count=0 readable_candidate_count=0
+  local log_success_announcement=0
 
   src_path="$(resolve_key_source_path "${key_path}")"
   if [ ! -f "${src_path}" ]; then
@@ -1378,6 +1403,9 @@ resolve_runtime_key_file() {
   if [[ "${src_path}" = *.age ]]; then
     require_cmds age
     ensure_tmp_dir
+    if ! age_decrypt_success_was_logged "${src_path}"; then
+      log_success_announcement=1
+    fi
     out_file="$(tmp_runtime_mktemp secrets "key.XXXXXX")"
     decrypt_errors_file="$(tmp_runtime_mktemp secrets "age-errors.XXXXXX")"
     while IFS= read -r decrypt_identity; do
@@ -1389,10 +1417,15 @@ resolve_runtime_key_file() {
       fi
       readable_candidate_count=$((readable_candidate_count + 1))
       age_stderr_file="$(tmp_runtime_mktemp secrets "age-stderr.XXXXXX")"
-      echo "Trying decrypt identity: ${decrypt_identity} for ${src_path}" >&2
+      if [ "${log_success_announcement}" -eq 1 ]; then
+        echo "Trying decrypt identity: ${decrypt_identity} for ${src_path}" >&2
+      fi
       if age --decrypt -i "${decrypt_identity}" -o "${out_file}" "${src_path}" 2>"${age_stderr_file}"; then
         chmod 600 "${out_file}"
-        echo "Using decrypt identity: ${decrypt_identity} for ${src_path}" >&2
+        if [ "${log_success_announcement}" -eq 1 ]; then
+          echo "Using decrypt identity: ${decrypt_identity} for ${src_path}" >&2
+          mark_age_decrypt_success_logged "${src_path}"
+        fi
         rm -f "${age_stderr_file}" "${decrypt_errors_file}"
         printf '%s\n' "${out_file}"
         return
@@ -2284,55 +2317,85 @@ inject_bootstrap_nixbot_key() {
   fi
 }
 
+_remote_install_managed_file() {
+  local remote_base="$1" remote_tmp="$2" remote_dest="$3" remote_dir="$4"
+  local remote_dir_mode="$5" remote_file_mode="$6"
+  local before_install_cmd="${7:-}" after_install_cmd="${8:-}" extra_vars="${9:-}"
+
+  if [ -n "${extra_vars}" ]; then
+    eval "${extra_vars}"
+  fi
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required to install ${remote_dest}" >&2
+    return 1
+  fi
+
+  sudo install -d -m 0755 "${remote_base}"
+  sudo install -d -m "${remote_dir_mode}" "${remote_dir}"
+  if [ -n "${before_install_cmd}" ]; then
+    eval "${before_install_cmd}"
+  fi
+  sudo install -m "${remote_file_mode}" "${remote_tmp}" "${remote_dest}"
+  rm -f "${remote_tmp}"
+  if [ -n "${after_install_cmd}" ]; then
+    eval "${after_install_cmd}"
+  fi
+  return 0
+}
+
 build_remote_install_file_cmd() {
   local remote_tmp="$1" remote_dest="$2" remote_dir="$3"
   local remote_dir_mode="$4" remote_file_mode="$5"
   local before_install_cmd="${6:-}" after_install_cmd="${7:-}" extra_vars="${8:-}"
+  local invoke_cmd=""
 
-  cat <<EOF
-install_managed_file() {
-  remote_tmp='${remote_tmp}'
-  remote_dest='${remote_dest}'
-  remote_dir='${remote_dir}'
-  remote_dir_mode='${remote_dir_mode}'
-  remote_file_mode='${remote_file_mode}'
-  ${extra_vars}
+  printf -v invoke_cmd '_remote_install_managed_file %q %q %q %q %q %q %q %q %q' \
+    "${REMOTE_NIXBOT_BASE}" \
+    "${remote_tmp}" \
+    "${remote_dest}" \
+    "${remote_dir}" \
+    "${remote_dir_mode}" \
+    "${remote_file_mode}" \
+    "${before_install_cmd}" \
+    "${after_install_cmd}" \
+    "${extra_vars}"
+
+  printf '%s\n%s\n' \
+    "$(declare -f _remote_install_managed_file)" \
+    "${invoke_cmd}"
+}
+
+_remote_check_file_value() {
+  local remote_dest="$1" expected_value="$2" read_cmd="$3" sudo_cmd="$4"
+  local current=""
 
   if ! command -v sudo >/dev/null 2>&1; then
-    echo "sudo is required to install \${remote_dest}" >&2
+    echo "sudo is required to validate ${remote_dest}" >&2
     return 1
   fi
 
-  sudo install -d -m 0755 ${REMOTE_NIXBOT_BASE}
-  sudo install -d -m "\${remote_dir_mode}" "\${remote_dir}"
-  ${before_install_cmd}
-  sudo install -m "\${remote_file_mode}" "\${remote_tmp}" "\${remote_dest}"
-  rm -f "\${remote_tmp}"
-  ${after_install_cmd}
-  return 0
-}
-install_managed_file
-EOF
+  current="$(DEST="${remote_dest}" ${sudo_cmd} env DEST="${remote_dest}" sh -c "${read_cmd}" 2>/dev/null || true)"
+  [ "${current}" = "${expected_value}" ]
 }
 
 build_remote_file_value_check_cmd() {
   local remote_dest="$1" expected_value="$2" read_cmd="$3" ask_sudo_password="${4:-0}"
-  local sudo_cmd="sudo -n"
+  local sudo_cmd="sudo -n" invoke_cmd=""
 
   if [ "${ask_sudo_password}" -eq 1 ]; then
     sudo_cmd="sudo"
   fi
 
-  cat <<EOF
-dest='${remote_dest}'
-want='${expected_value}'
-if ! command -v sudo >/dev/null 2>&1; then
-  echo "sudo is required to validate \${dest}" >&2
-  exit 1
-fi
-current="\$(DEST="\${dest}" ${sudo_cmd} env DEST="\${dest}" sh -c '${read_cmd}' 2>/dev/null || true)"
-[ "\${current}" = "\${want}" ]
-EOF
+  printf -v invoke_cmd '_remote_check_file_value %q %q %q %q' \
+    "${remote_dest}" \
+    "${expected_value}" \
+    "${read_cmd}" \
+    "${sudo_cmd}"
+
+  printf '%s\n%s\n' \
+    "$(declare -f _remote_check_file_value)" \
+    "${invoke_cmd}"
 }
 
 run_target_command() {
@@ -3297,24 +3360,41 @@ run_prepared_deploy_command_with_retry() {
     "${target_cmd}"
 }
 
+_remote_check_activation_context_file_value() {
+  local remote_dest="$1" expected_value="$2" read_cmd="$3" sudo_cmd="$4"
+  local current=""
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required to validate ${remote_dest}" >&2
+    return 1
+  fi
+
+  current="$(
+    DEST="${remote_dest}" \
+      ${sudo_cmd} env DEST="${remote_dest}" sh -c \
+      "systemd-run --wait --pipe --quiet --service-type=exec env DEST=\"\$DEST\" sh -c $(printf '%q' "${read_cmd}") 2>/dev/null" \
+      2>/dev/null || true
+  )"
+  [ "${current}" = "${expected_value}" ]
+}
+
 build_remote_activation_context_file_value_check_cmd() {
   local remote_dest="$1" expected_value="$2" read_cmd="$3" ask_sudo_password="${4:-0}"
-  local sudo_cmd="sudo -n"
+  local sudo_cmd="sudo -n" invoke_cmd=""
 
   if [ "${ask_sudo_password}" -eq 1 ]; then
     sudo_cmd="sudo"
   fi
 
-  cat <<EOF
-dest='${remote_dest}'
-want='${expected_value}'
-if ! command -v sudo >/dev/null 2>&1; then
-  echo "sudo is required to validate \${dest}" >&2
-  exit 1
-fi
-current="\$(DEST="\${dest}" ${sudo_cmd} env DEST="\${dest}" sh -c 'systemd-run --wait --pipe --quiet --service-type=exec env DEST="\$DEST" sh -c '"'"'${read_cmd}'"'"' 2>/dev/null' 2>/dev/null || true)"
-[ "\${current}" = "\${want}" ]
-EOF
+  printf -v invoke_cmd '_remote_check_activation_context_file_value %q %q %q %q' \
+    "${remote_dest}" \
+    "${expected_value}" \
+    "${read_cmd}" \
+    "${sudo_cmd}"
+
+  printf '%s\n%s\n' \
+    "$(declare -f _remote_check_activation_context_file_value)" \
+    "${invoke_cmd}"
 }
 
 wait_for_prepared_host_age_identity_activation_visibility() {
@@ -3906,7 +3986,8 @@ log_snapshot_retry_transition() {
 }
 
 run_deploy_job() {
-  local node="$1" out_file="$2" status_file="$3" log_file="${4:-}" built_out_path="" rc="" skip_marker=""
+  local node="$1" out_file="$2" status_file="$3" log_file="${4:-}"
+  local built_out_path="" rc="" skip_marker="" deploy_start_epoch=""
 
   wait_before_host_phase "${node}" "deploy"
 
@@ -3914,6 +3995,7 @@ run_deploy_job() {
     set +e
     skip_marker="${status_file}.skip"
     rm -f "${skip_marker}"
+    deploy_start_epoch="$(date +%s)"
     if [ ! -s "${out_file}" ]; then
       echo "Missing built output path for ${node}: ${out_file}" >&2
       rc=1
@@ -3930,6 +4012,9 @@ run_deploy_job() {
       write_status_file "${status_file}" "skip"
     else
       write_status_file "${status_file}" "${rc}"
+    fi
+    if [ "${rc}" = "0" ] && [ ! -e "${skip_marker}" ]; then
+      print_deploy_systemd_user_manager_report "${node}" "${deploy_start_epoch}" "${log_file}" || true
     fi
     rm -f "${skip_marker}"
     exit "${rc}"
@@ -4207,7 +4292,7 @@ ensure_wave_snapshots() {
 rollback_host_to_snapshot() {
   local node="$1" snapshot_path="$2" rollback_cmd="" deploy_user=""
   local using_bootstrap_fallback="" sudo_tty_mode=0
-  local rollback_rc=0
+  local rollback_rc=0 rollback_start_epoch=""
   local -a sudo_policy=()
 
   [ -n "${snapshot_path}" ] || {
@@ -4232,7 +4317,9 @@ rollback_host_to_snapshot() {
 
   echo "${snapshot_path}" >&2
   [ -n "${deploy_user}" ] || die "Unable to resolve deploy user for rollback target ${node}"
+  rollback_start_epoch="$(date +%s)"
   if run_prepared_deploy_command "${sudo_tty_mode}" "${rollback_cmd}"; then
+    print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
     return 0
   fi
   rollback_rc="$?"
@@ -4240,6 +4327,7 @@ rollback_host_to_snapshot() {
   echo "==> Rollback transport closed or failed for ${node}; verifying target state" >&2
   if verify_rollback_target_state "${node}" "${snapshot_path}"; then
     echo "==> Rollback for ${node} completed despite transport disconnect" >&2
+    print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
     return 0
   fi
 
@@ -4578,6 +4666,84 @@ phase_dir_item_status_file() {
   local status_dir="$1" item="$2"
 
   printf '%s/%s.rc\n' "${status_dir}" "${item}"
+}
+
+_remote_systemd_user_manager_report() {
+  local since="$1" units="" found=0 unit="" recent="" invocation_id=""
+  local active_state="" sub_state="" result="" exec_main_status="" summary=""
+
+  units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
+  if [ -z "${units}" ]; then
+    printf '%s\n' 'none'
+    return 0
+  fi
+
+  while IFS= read -r unit; do
+    [ -n "${unit}" ] || continue
+    recent="$(journalctl -u "${unit}" --since "${since}" --no-pager -n 1 -o cat 2>/dev/null || true)"
+    [ -n "${recent}" ] || continue
+    found=1
+    invocation_id="$(systemctl show --property=InvocationID --value "${unit}" 2>/dev/null || true)"
+    active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
+    sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
+    result="$(systemctl show --property=Result --value "${unit}" 2>/dev/null || true)"
+    exec_main_status="$(systemctl show --property=ExecMainStatus --value "${unit}" 2>/dev/null || true)"
+    if [ "${result}" = "success" ] || [ -z "${result}" ]; then
+      summary='ok'
+    else
+      summary='FAIL'
+    fi
+    printf '%s\n' "${unit}: ${summary} (${active_state}/${sub_state}, result=${result:-unknown}, exec=${exec_main_status:-unknown})"
+    if [ -n "${invocation_id}" ]; then
+      journalctl _SYSTEMD_INVOCATION_ID="${invocation_id}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
+    else
+      journalctl -u "${unit}" --since "${since}" --no-pager -o cat 2>/dev/null | sed 's/^/  /'
+    fi
+  done <<EOF_UNITS
+${units}
+EOF_UNITS
+
+  if [ "${found}" -eq 0 ]; then
+    printf '%s\n' 'none'
+  fi
+}
+
+build_systemd_user_manager_report_cmd() {
+  local since_epoch="$1"
+
+  printf '%s\n%s\n' \
+    "$(declare -f _remote_systemd_user_manager_report)" \
+    "_remote_systemd_user_manager_report '@${since_epoch}'"
+}
+
+print_deploy_systemd_user_manager_report() {
+  local node="$1" since_epoch="$2" log_file="${3:-}"
+  local report_cmd="" report_output="" first_line="" rc=0
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    return 0
+  fi
+
+  report_cmd="$(build_systemd_user_manager_report_cmd "${since_epoch}")"
+  if prepare_deploy_context "${node}" && report_output="$(run_prepared_root_command "${report_cmd}")"; then
+    first_line="$(printf '%s\n' "${report_output}" | sed -n '/./{s/[[:space:]]*$//;p;q;}')"
+    case "${first_line}" in
+      ""|none)
+        return 0
+        ;;
+    esac
+    report_output="$(printf '%s\n%s\n' '[systemd-user-manager]' "${report_output}")"
+    if [ -n "${log_file}" ]; then
+      printf '%s\n' "${report_output}" | prefix_host_logs "${node}" >&2
+    else
+      printf '%s\n' "${report_output}" >&2
+    fi
+    return 0
+  fi
+
+  rc="$?"
+  : "${rc}"
+  return 0
 }
 
 write_status_file() {
