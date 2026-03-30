@@ -8,9 +8,8 @@ let
   machineKeyFiles = {
     pvl-a1 = ./machine/pvl-a1.key.pub;
     pvl-x2 = ./machine/pvl-x2.key.pub;
-    llmug-rivendell = ./machine/llmug-rivendell.key.pub;
+    pvl-vlab = ./machine/pvl-vlab.key.pub;
     gap3-gondor = ./machine/gap3-gondor.key.pub;
-    gap3-rivendell = ./machine/gap3-rivendell.key.pub;
   };
   machines = builtins.mapAttrs (_: keyPath: let
     recipient = builtins.replaceStrings ["\n"] [""] (builtins.readFile keyPath);
@@ -29,9 +28,8 @@ in
     # Machines
     "data/secrets/machine/pvl-a1.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/pvl-x2.key.age".publicKeys = adminsWithNixbot;
-    "data/secrets/machine/llmug-rivendell.key.age".publicKeys = adminsWithNixbot;
+    "data/secrets/machine/pvl-vlab.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/gap3-gondor.key.age".publicKeys = adminsWithNixbot;
-    "data/secrets/machine/gap3-rivendell.key.age".publicKeys = adminsWithNixbot;
 
     # Cloudflare DNS
     "data/secrets/cloudflare/api-token.key.age".publicKeys = admins ++ pvl-x2;
@@ -76,10 +74,10 @@ in
 
     # Cloudflare tunnels
     "data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age".publicKeys = admins ++ pvl-x2;
-    "data/secrets/cloudflare/tunnels/llmug-rivendell-main.credentials.json.age".publicKeys = admins ++ llmug-rivendell;
+    "data/secrets/cloudflare/tunnels/pvl-vlab-main.credentials.json.age".publicKeys = admins ++ pvl-vlab;
 
     # Tailscale
-    "data/secrets/tailscale/llmug-rivendell.key.age".publicKeys = admins ++ llmug-rivendell;
+    "data/secrets/tailscale/pvl-vlab.key.age".publicKeys = admins ++ pvl-vlab;
     "data/secrets/tailscale/gap3-gondor.key.age".publicKeys = admins ++ gap3-gondor;
 
     # Services

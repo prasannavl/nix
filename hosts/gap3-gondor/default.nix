@@ -1,14 +1,40 @@
-{hostName, ...}: {
+{
+  hostName,
+  pkgs,
+  ...
+}: let
+  packages = {
+    core = with pkgs; [
+      wget
+      curl
+      fd
+      ripgrep
+      jq
+      tree
+      tmux
+      git
+      htop
+    ];
+
+    network = with pkgs; [
+      iperf3
+      tailscale
+    ];
+
+    misc = with pkgs; [
+      pciutils
+      usbutils
+    ];
+  };
+in {
   imports = [
     ../../lib/profiles/systemd-container.nix
     (import ../../lib/incus-vm.nix {inherit hostName;})
-    ../../lib/incus.nix
-    ../../lib/podman.nix
-    ../../lib/podman-compose
-    ./incus.nix
-    ./packages.nix
-    ./firewall.nix
-    ./services.nix
-    ./users.nix
+    (import ../../users/pvl).systemd-container
   ];
+
+  environment.systemPackages =
+    packages.core
+    ++ packages.network
+    ++ packages.misc;
 }

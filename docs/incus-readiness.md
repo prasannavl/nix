@@ -53,7 +53,7 @@ Usage:
 
 ```bash
 incus-machines-reconciler --all
-incus-machines-reconciler --machine llmug-rivendell --machine gap3-gondor
+incus-machines-reconciler --machine pvl-vlab --machine gap3-gondor
 ```
 
 ### `incus-machines-settlement`
@@ -78,7 +78,7 @@ Usage:
 
 ```bash
 incus-machines-settlement --all
-incus-machines-settlement --machine llmug-rivendell --timeout 120
+incus-machines-settlement --machine pvl-vlab --timeout 120
 ```
 
 Per-machine options that affect settle behavior:
@@ -103,21 +103,21 @@ For example, given:
 {
   hosts = {
     pvl-x2 = { target = "pvl-x2"; };
-    llmug-rivendell = {
+    pvl-vlab = {
       target = "10.10.20.10";
       parent = "pvl-x2";
     };
     gap3-gondor = {
       target = "10.10.20.11";
       parent = "pvl-x2";
-      after = ["llmug-rivendell"];
+      after = ["pvl-vlab"];
     };
   };
 }
 ```
 
-When deploying `llmug-rivendell`, `nixbot` SSHes to `pvl-x2` and runs
-reconcile + settle for `llmug-rivendell` before deploying into it.
+When deploying `pvl-vlab`, `nixbot` SSHes to `pvl-x2` and runs reconcile +
+settle for `pvl-vlab` before deploying into it.
 
 ### What it does
 

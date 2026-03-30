@@ -3,33 +3,33 @@
   renderGid = toString config.users.groups.render.gid;
 in {
   systemd.tmpfiles.rules = [
-    "d /var/lib/llmug 0755 llmug llmug -"
-    "d /var/lib/llmug/nginx.pod 0750 llmug llmug -"
-    "d /var/lib/llmug/open-webui.pod 0750 llmug llmug -"
-    "d /var/lib/llmug/ollama.pod 0750 llmug llmug -"
+    "d /var/lib/pvl 0755 pvl pvl -"
+    "d /var/lib/pvl/nginx.pod 0750 pvl pvl -"
+    "d /var/lib/pvl/open-webui.pod 0750 pvl pvl -"
+    "d /var/lib/pvl/ollama.pod 0750 pvl pvl -"
   ];
 
   virtualisation.oci-containers.containers = {
     nginx-container = {
       image = "docker.io/library/nginx:latest";
       autoStart = true;
-      podman.user = "llmug";
+      podman.user = "pvl";
       ports = ["0.0.0.0:8080:80"];
       volumes = [
-        "/var/lib/llmug/nginx.pod:/usr/share/nginx/html"
+        "/var/lib/pvl/nginx.pod:/usr/share/nginx/html"
       ];
     };
 
     ollama = {
       image = "docker.io/ollama/ollama:rocm";
       autoStart = true;
-      podman.user = "llmug";
+      podman.user = "pvl";
       ports = ["0.0.0.0:11434:11434"];
       environment = {
         OLLAMA_VULKAN = "1";
       };
       volumes = [
-        "/var/lib/llmug/ollama.pod:/root/.ollama"
+        "/var/lib/pvl/ollama.pod:/root/.ollama"
         "/dev/dri:/dev/dri"
       ];
       extraOptions = [
@@ -42,13 +42,13 @@ in {
     open-webui = {
       image = "ghcr.io/open-webui/open-webui:main";
       autoStart = true;
-      podman.user = "llmug";
+      podman.user = "pvl";
       ports = ["0.0.0.0:3000:8080"];
       environment = {
         OLLAMA_BASE_URL = "http://host.containers.internal:11434";
       };
       volumes = [
-        "/var/lib/llmug/open-webui.pod:/app/backend/data"
+        "/var/lib/pvl/open-webui.pod:/app/backend/data"
       ];
       dependsOn = ["ollama"];
     };

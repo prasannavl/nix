@@ -10,15 +10,15 @@
   ollamaInstances = {
     ollama = {
       port = 21434;
-      dataDir = "/var/lib/gap3/ollama";
+      dataDir = "/var/lib/pvl/ollama";
     };
     ollama-b = {
       port = 21435;
-      dataDir = "/var/lib/gap3/ollama-b";
+      dataDir = "/var/lib/pvl/ollama-b";
     };
     ollama-c = {
       port = 21436;
-      dataDir = "/var/lib/gap3/ollama-c";
+      dataDir = "/var/lib/pvl/ollama-c";
     };
   };
 
@@ -42,15 +42,14 @@
           devices:
             - /dev/kfd:/dev/kfd
     '';
-    serviceOverrides.serviceConfig.Delegate = true;
   };
 
   ollamaPorts = lib.mapAttrsToList (_: instance: instance.port) ollamaInstances;
   ollamaTmpfiles = lib.concatLists (
     lib.mapAttrsToList (
       name: instance: [
-        "d /var/lib/gap3/compose/${name} 0750 gap3 gap3 -"
-        "d ${instance.dataDir} 0750 gap3 gap3 -"
+        "d /var/lib/pvl/compose/${name} 0750 pvl pvl -"
+        "d ${instance.dataDir} 0750 pvl pvl -"
       ]
     )
     ollamaInstances
@@ -60,19 +59,19 @@ in {
 
   systemd.tmpfiles.rules =
     [
-      "d /var/lib/gap3 0755 gap3 gap3 -"
-      "d /var/lib/gap3/compose 0750 gap3 gap3 -"
-      "d /var/lib/gap3/compose/open-webui 0750 gap3 gap3 -"
-      "d /var/lib/gap3/open-webui 0750 gap3 gap3 -"
+      "d /var/lib/pvl 0755 pvl pvl -"
+      "d /var/lib/pvl/compose 0750 pvl pvl -"
+      "d /var/lib/pvl/compose/open-webui 0750 pvl pvl -"
+      "d /var/lib/pvl/open-webui 0750 pvl pvl -"
     ]
     ++ ollamaTmpfiles;
 
   networking.firewall.allowedTCPPorts = ollamaPorts ++ [13000];
 
-  services.podmanCompose.gap3 = {
-    user = "gap3";
-    stackDir = "/var/lib/gap3/compose";
-    servicePrefix = "gap3-";
+  services.podmanCompose.pvl = {
+    user = "pvl";
+    stackDir = "/var/lib/pvl/compose";
+    servicePrefix = "pvl-";
 
     instances =
       lib.mapAttrs mkOllamaInstance ollamaInstances
@@ -89,10 +88,9 @@ in {
                 environment:
                   OLLAMA_BASE_URL: "http://host.containers.internal:21434"
                 volumes:
-                  - /var/lib/gap3/open-webui:/app/backend/data:Z
+                  - /var/lib/pvl/open-webui:/app/backend/data:Z
           '';
           dependsOn = ["ollama"];
-          serviceOverrides.serviceConfig.Delegate = true;
         };
       };
   };

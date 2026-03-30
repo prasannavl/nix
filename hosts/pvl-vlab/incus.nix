@@ -1,33 +1,33 @@
 {...}: {
-  services.incusMachines.instances = {
-    gap3-rivendell = {
-      recreateTag = "2";
-      ipv4Address = "10.10.30.10";
-      config = {
-        "security.privileged" = "false";
-        "security.nesting" = "true";
-        "security.syscalls.intercept.mount" = "true";
-        "security.syscalls.intercept.mount.shift" = "true";
-      };
-      devices = {
-        state = {
-          source = "gap3-rivendell";
-          path = "/var/lib";
-          removalPolicy = "delete";
+  services.incusMachines = {
+    instances = {
+      pvl-vkamino = {
+        ipv4Address = "10.10.30.10";
+        config = {
+          "security.privileged" = "false";
+          "security.nesting" = "true";
+          "security.syscalls.intercept.mount" = "true";
+          "security.syscalls.intercept.mount.shift" = "true";
         };
-        dev-dri = {
-          source = "/dev/dri";
-          path = "/dev/dri";
-        };
-        kfd = {
-          type = "unix-char";
-          source = "/dev/kfd";
-          path = "/dev/kfd";
+        devices = {
+          state = {
+            source = "pvl-vkamino";
+            path = "/var/lib";
+            removalPolicy = "delete";
+          };
+          dev-dri = {
+            source = "/dev/dri";
+            path = "/dev/dri";
+          };
+          kfd = {
+            type = "unix-char";
+            source = "/dev/kfd";
+            path = "/dev/kfd";
+          };
         };
       };
     };
   };
-
   virtualisation.incus = {
     enable = true;
     preseed = {
@@ -90,6 +90,4 @@
       cluster = null;
     };
   };
-
-  networking.firewall.trustedInterfaces = ["incusbr0"];
 }

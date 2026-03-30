@@ -122,7 +122,7 @@ services.podmanCompose.gap3 = {
 };
 ```
 
-This is the pattern used in `hosts/gap3-rivendell/services.nix`.
+This is the pattern used in `hosts/pvl-vlab/services.nix`.
 
 ### 3. Point `source` at a compose file in the repo
 

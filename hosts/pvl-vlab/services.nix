@@ -3,14 +3,14 @@
   renderGid = toString config.users.groups.render.gid;
 in {
   systemd.tmpfiles.rules = [
-    "d /var/lib/llmug 0755 llmug llmug -"
-    "d /var/lib/llmug/compose 0750 llmug llmug -"
-    "d /var/lib/llmug/compose/nginx 0750 llmug llmug -"
-    "d /var/lib/llmug/compose/ollama 0750 llmug llmug -"
-    "d /var/lib/llmug/compose/open-webui 0750 llmug llmug -"
-    "d /var/lib/llmug/nginx 0750 llmug llmug -"
-    "d /var/lib/llmug/open-webui 0750 llmug llmug -"
-    "d /var/lib/llmug/ollama 0750 llmug llmug -"
+    "d /var/lib/pvl 0755 pvl pvl -"
+    "d /var/lib/pvl/compose 0750 pvl pvl -"
+    "d /var/lib/pvl/compose/nginx 0750 pvl pvl -"
+    "d /var/lib/pvl/compose/ollama 0750 pvl pvl -"
+    "d /var/lib/pvl/compose/open-webui 0750 pvl pvl -"
+    "d /var/lib/pvl/nginx 0750 pvl pvl -"
+    "d /var/lib/pvl/open-webui 0750 pvl pvl -"
+    "d /var/lib/pvl/ollama 0750 pvl pvl -"
   ];
   networking.firewall.allowedTCPPorts = [
     18080
@@ -18,10 +18,10 @@ in {
     13000
   ];
 
-  services.podmanCompose.llmug = {
-    user = "llmug";
-    stackDir = "/var/lib/llmug/compose";
-    servicePrefix = "llmug-";
+  services.podmanCompose.pvl = {
+    user = "pvl";
+    stackDir = "/var/lib/pvl/compose";
+    servicePrefix = "pvl-";
 
     instances = {
       nginx.source = ''
@@ -32,7 +32,7 @@ in {
             ports:
               - "0.0.0.0:18080:80"
             volumes:
-              - /var/lib/llmug/nginx:/usr/share/nginx/html:Z
+              - /var/lib/pvl/nginx:/usr/share/nginx/html:Z
       '';
 
       ollama.source = ''
@@ -45,7 +45,7 @@ in {
             ports:
               - "0.0.0.0:21434:11434"
             volumes:
-              - /var/lib/llmug/ollama:/root/.ollama:Z
+              - /var/lib/pvl/ollama:/root/.ollama:Z
               - /dev/dri:/dev/dri
             group_add:
               - ${videoGid}
@@ -65,7 +65,7 @@ in {
               environment:
                 OLLAMA_BASE_URL: "http://host.containers.internal:21434"
               volumes:
-                - /var/lib/llmug/open-webui:/app/backend/data:Z
+                - /var/lib/pvl/open-webui:/app/backend/data:Z
         '';
         dependsOn = ["ollama"];
       };

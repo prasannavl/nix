@@ -48,9 +48,40 @@ Use this index as the canonical map for `docs/ai/**`.
   `lib/incus.nix` NixOS module for declarative incus container lifecycle: device
   sync, config-hash recreate, bootTag/recreateTag, GC, and per-device removal
   policies.
+- `docs/ai/notes/hosts/incus-removal-policy-metadata-sync-2026-03.md`: Sync
+  machine and disk-device GC removal-policy metadata during normal reconcile so
+  policy changes apply immediately without waiting for a recreate.
 - `docs/ai/notes/hosts/incus-machine-images-2026-03.md`: Per-machine Incus base
   image selection, global multi-image `imageTag` refresh, and guest recreate
   behavior for image changes.
+- `docs/ai/notes/hosts/incus-preseed-tag-2026-03.md`: Add a manual `preseedTag`
+  knob so disruptive parent Incus preseed changes can be folded into guest
+  recreate behavior explicitly.
+- `docs/ai/notes/hosts/incus-module-helper-split-2026-03.md`: Split the Incus
+  module into `lib/incus/default.nix` and `lib/incus/helper.sh`, keeping a
+  compatibility shim at `lib/incus.nix`.
+- `docs/ai/notes/hosts/incus-helper-followup-hardening-2026-03.md`: Follow-up
+  hardening after the helper split: dedupe shared deps, switch from sourced
+  shell snippets to JSON-driven config application, clarify helper control flow,
+  and fail closed on unsafe GC cleanup paths.
+- `docs/ai/notes/hosts/incus-image-gc-rerunnable-oneshots-2026-03.md`: Remove
+  sticky active-state memoization from Incus image import and GC oneshots so
+  deploys rerun the helpers against real Incus state.
+- `docs/ai/notes/hosts/incus-gc-switch-trigger-and-decoupling-2026-03.md`: Run
+  Incus GC once for Incus-related switch changes while removing it from the
+  per-guest lifecycle dependency chain.
+- `docs/ai/notes/hosts/incus-image-alias-recovery-and-hard-prereq-2026-03.md`:
+  Recover missing managed image aliases from existing local image objects and
+  make guest lifecycle depend on successful image refresh.
+- `docs/ai/notes/hosts/incus-machine-create-image-preflight-2026-03.md`: Add a
+  just-in-time per-guest image preflight so `incus create` verifies or restores
+  its exact declared image alias before create/recreate.
+- `docs/ai/notes/hosts/incus-broken-instance-start-recovery-2026-03.md`: Detect
+  broken partial Incus instances whose metadata exists but whose rootfs/storage
+  is missing, and recover them with one forced recreate attempt.
+- `docs/ai/notes/hosts/incus-systemd-environment-json-quoting-2026-03.md`: Quote
+  Incus helper `Environment=` assignments so JSON survives systemd parsing and
+  helper reconciliation receives valid structured input.
 - `docs/ai/notes/hosts/nested-incus-bastion-pattern-2026-03.md`: Nested Incus
   bastion-host pattern with GPU passthrough, Podman services, an inner guest,
   and `dir` storage to avoid btrfs-on-btrfs.
@@ -90,6 +121,10 @@ Use this index as the canonical map for `docs/ai/**`.
   `NIXBOT_DIRTY` opt-in for bypassing the repo-root cleanliness gate.
 - `docs/ai/notes/nixbot/entrypoint-and-packaging-2026-03.md`: Canonical
   entrypoint layout, CLI design, flake packaging model, and wrapper exception.
+- `docs/ai/notes/nixbot/activation-context-probe-runtime-path-2026-03.md`: Fix
+  the pre-activation machine-age-identity visibility probe to use explicit
+  `/run/current-system/sw/bin` runtime paths inside `systemd-run` transient
+  units.
 - `docs/ai/notes/nixbot/error-handling-and-control-flow-2026-03.md`: Exit status
   preservation, signal handling, phase gating, and Terraform failure
   propagation.
@@ -99,6 +134,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/github-actions-workflow-design-2026-03.md`: GitHub
   Actions workflow design: action input scope, runtime warmup strategy, and thin
   launcher role.
+- `docs/ai/notes/nixbot/if-compound-exit-status-swallow-2026-03.md`: Bash
+  `if cmd; then ...; fi; rc="$?"` bug in `nixbot` swallowed real failures in
+  transport retry, parent readiness, rollback, and report helpers; capture
+  failure status in the `else` branch instead.
 - `docs/ai/notes/nixbot/host-banner-format-simplification-2026-03.md`: Simplify
   host-stage output to one dashed banner format for all per-host phases because
   the phase label already identifies the work.
@@ -126,9 +165,28 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/parented-snapshot-readiness-loop-2026-03.md`: Replace
   the failed guest-specific `wait` workaround with a bounded readiness loop that
   waits for actual snapshot-path SSH success on parented hosts.
+- `docs/ai/notes/nixbot/parented-deploy-preflight-retry-model-2026-03.md`: Apply
+  the same whole-operation bounded retry model used by parented snapshot capture
+  to deploy preflight host age identity preparation.
+- `docs/ai/notes/nixbot/parented-primary-ready-cache-invalidation-2026-03.md`:
+  Do not reuse snapshot-era `primary-ready` state for parented deploy preflight;
+  re-probe child connectivity at deploy time and before each parented
+  whole-operation retry.
+- `docs/ai/notes/nixbot/proxied-stdout-capture-and-proxyjump-limit-2026-03.md`:
+  Keep stderr out of machine-readable proxied SSH captures, suppress
+  first-contact host-key chatter in structured paths, and treat raw `ProxyJump`
+  as a separate config-driven refactor rather than a direct `ProxyCommand`
+  replacement.
+- `docs/ai/notes/nixbot/proxied-control-master-enable-2026-03.md`: Re-enable SSH
+  control-master reuse for proxied hosts with the current proxy wrapper and
+  clear proxied control sockets whenever parented readiness is invalidated.
 - `docs/ai/notes/nixbot/primary-probe-failure-logging-2026-03.md`: Print the
   exact primary SSH probe failure before bootstrap fallback or proxy-chain retry
   so deploy-user fallback reasons stay visible.
+- `docs/ai/notes/nixbot/remote-runtime-path-hardening-2026-03.md`: Treat
+  `/run/current-system/sw/bin` as the explicit target-side runtime for critical
+  remote nixbot helpers instead of relying on ambient PATH in SSH, sudo, or
+  transient execution contexts.
 - `docs/ai/notes/nixbot/remote-file-install-transport-retries-2026-03.md`: Make
   remote temp-file allocation, file copy, and install steps retry on transport
   resets instead of failing fresh guest deploys immediately.
@@ -280,6 +338,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/systemd-user-manager-dry-activate-preview-2026-03.md`:
   `dry-activate` now logs the per-user reconcile actions it would take without
   mutating user services or persisted stamp state.
+- `docs/ai/notes/services/systemd-user-manager-removed-user-stop-ordering-2026-03.md`:
+  Split the old-generation stop path into a real pre-`users` activation phase so
+  removed accounts are cleaned up before deletion.
 - `docs/ai/notes/services/systemd-user-manager-per-user-apply-and-podman-actions-2026-03.md`:
   Refactor `lib/systemd-user-manager.nix` to one serialized apply service per
   user and move Podman lifecycle tags to transient user-manager actions instead

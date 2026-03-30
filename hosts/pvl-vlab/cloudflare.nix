@@ -3,13 +3,13 @@
   lib,
   ...
 }: let
-  s = ../../data/secrets + "/cloudflare/tunnels/llmug-rivendell-main.credentials.json.age";
+  s = ../../data/secrets + "/cloudflare/tunnels/pvl-vlab-main.credentials.json.age";
   c =
     if builtins.pathExists s
     then
       builtins.path {
         path = s;
-        name = "llmug-rivendell-main.credentials.json.age";
+        name = "pvl-vlab-main.credentials.json.age";
       }
     else null;
 in {

@@ -1,9 +1,7 @@
 {inputs, ...}: {
   services.incusMachines = {
-    imageTag = "1";
-
     instances = {
-      llmug-rivendell = {
+      pvl-vlab = {
         ipv4Address = "10.10.20.10";
         removalPolicy = "delete-all";
         recreateTag = "2";
@@ -15,9 +13,9 @@
         };
         devices = {
           state = {
-            source = "llmug-rivendell";
+            source = "pvl-vlab";
             path = "/var/lib";
-            removalPolicy = "delete";
+            removalPolicy = "keep";
           };
           gpu = {type = "gpu";};
           kfd = {
@@ -42,7 +40,7 @@
           state = {
             source = "gap3-gondor";
             path = "/var/lib";
-            removalPolicy = "delete";
+            removalPolicy = "keep";
           };
           gpu = {type = "gpu";};
           kfd = {

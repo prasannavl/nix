@@ -67,6 +67,7 @@ services.incusMachines = {
   defaultImage = inputs.self.nixosImages.incus-base;
   defaultImageAlias = "nixos-incus-base";
   imageTag = "0";
+  preseedTag = "0";
 
   instances.<name> = {
     image = null; # NixOS image attrset or a string like "debian"
@@ -102,6 +103,8 @@ Terminology:
   `nixos-incus-base`, which is then used as `local:<alias>` during guest create
 - `imageTag`: a manual redeploy knob that forces declared image aliases to be
   refreshed
+- `preseedTag`: a manual redeploy knob that folds parent-host Incus preseed
+  epoch changes into every guest's recreate hash
 
 For string images:
 
@@ -124,6 +127,15 @@ For string images:
   - default is `"0"`
   - when the stored value on any declared image alias differs from the declared
     value, that image alias is refreshed
+- `preseedTag`:
+  - default is `"0"`
+  - when the declared value changes, every declared guest on that parent host is
+    recreate-tracked against the new parent Incus fabric epoch
+- `incus-machines-gc.service`:
+  - host-wide cleanup for undeclared managed guests
+  - reruns during `switch` through `sysinit-reactivation.target` when
+    Incus-related declaration state changes
+  - is not a per-guest lifecycle prerequisite
 
 Operationally, the intended manual toggles are between `"0"` and `"1"`, though
 any new string value works.
@@ -141,6 +153,10 @@ any new string value works.
 - `imageTag` change:
   - refresh of all declared image aliases
   - no guest recreate by itself
+- `preseedTag` change:
+  - triggers guest recreate
+  - intended for disruptive parent Incus preseed changes such as bridge/profile
+    migrations
 - guest `image` source change:
   - triggers guest recreate
   - the guest image source is part of the recreate-tracked config hash
@@ -222,8 +238,19 @@ On parent-host deploy, the shared lifecycle model runs in this order:
 That means:
 
 - `imageTag` is evaluated before any guest recreate runs
+- `preseedTag` is a manual parent-fabric coordination knob; bump it when a
+  parent Incus preseed change should force guest recreate
 - if the same deploy bumps both `imageTag` and a guest `recreateTag`, the guest
   recreate uses the newly refreshed image alias
+- `incus-images.service` and `incus-machines-gc.service` are rerunnable
+  oneshots, so later deploys do not reuse stale `active (exited)` state when
+  Incus runtime state drifted out of band
+- guest lifecycle units require successful `incus-images.service` completion, so
+  image refresh failures surface on the image unit instead of cascading into a
+  later guest-create `Image "<alias>" not found` error
+- guest create/recreate also performs a just-in-time image preflight for its
+  exact declared image, so the create path verifies the alias exists at the
+  moment it is needed
 
 ## What A Parent Host Must Provide
 
@@ -305,6 +332,12 @@ stored rebuild tag differs is refreshed. For local NixOS images that means
 re-import; for remote string images that means copying the remote image into the
 managed local alias again. Existing guests are not recreated automatically just
 because an image alias was refreshed.
+
+### What happens when I bump `preseedTag`?
+
+Every declared guest on that parent host is recreate-tracked against the new tag
+value, so the next lifecycle run recreates the guests even if their own
+guest-local `config`, `image`, and devices did not change.
 
 ### What happens when I point a guest at a different image?
 
