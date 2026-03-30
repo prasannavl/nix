@@ -607,31 +607,28 @@ run_preview_as_user() {
     "$0" reconciler-apply
 }
 
-run_activation_run() {
+run_activation_stop_old() {
+  require_env SYSTEMD_USER_MANAGER_OLD_SYSTEM
+  require_env SYSTEMD_USER_MANAGER_NEW_SYSTEM
+
+  run_stop_phase apply
+}
+
+run_activation_dry_preview() {
   local preview_user preview_metadata preview_reconciler_service
 
   require_env SYSTEMD_USER_MANAGER_OLD_SYSTEM
   require_env SYSTEMD_USER_MANAGER_NEW_SYSTEM
   require_env SYSTEMD_USER_MANAGER_PREVIEW_MANIFEST
 
-  case "${NIXOS_ACTION-}" in
-    switch | test)
-      run_stop_phase apply
-      ;;
-    dry-activate)
-      printf '%s\n' "[systemd-user-manager] dry-activate preview start"
-      run_stop_phase preview
-      while IFS=$'\t' read -r preview_user preview_metadata preview_reconciler_service; do
-        run_preview_as_user "$preview_user" "$preview_metadata" "$preview_reconciler_service"
-      done < <(
-        jq -r '.[] | [.user, .metadataFile, .reconcilerService] | @tsv' "$systemd_user_manager_preview_manifest"
-      )
-      printf '%s\n' "[systemd-user-manager] dry-activate preview complete"
-      ;;
-    *)
-      printf '%s\n' "[systemd-user-manager] activation hook skipped for action=${NIXOS_ACTION-unknown}"
-      ;;
-  esac
+  printf '%s\n' "[systemd-user-manager] dry-activate preview start"
+  run_stop_phase preview
+  while IFS=$'\t' read -r preview_user preview_metadata preview_reconciler_service; do
+    run_preview_as_user "$preview_user" "$preview_metadata" "$preview_reconciler_service"
+  done < <(
+    jq -r '.[] | [.user, .metadataFile, .reconcilerService] | @tsv' "$systemd_user_manager_preview_manifest"
+  )
+  printf '%s\n' "[systemd-user-manager] dry-activate preview complete"
 }
 
 main() {
@@ -646,11 +643,14 @@ main() {
     dispatcher-start)
       run_dispatcher_start
       ;;
-    activation-run)
-      run_activation_run
+    activation-stop-old)
+      run_activation_stop_old
+      ;;
+    activation-dry-preview)
+      run_activation_dry_preview
       ;;
     *)
-      printf '%s\n' "usage: $0 {reconciler-apply|dispatcher-start|activation-run}" >&2
+      printf '%s\n' "usage: $0 {reconciler-apply|dispatcher-start|activation-stop-old|activation-dry-preview}" >&2
       exit 1
       ;;
   esac

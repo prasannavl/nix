@@ -347,6 +347,11 @@ init_vars() {
   REMOTE_NIXBOT_LEGACY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519_legacy"
   REMOTE_NIXBOT_AGE_IDENTITY="${REMOTE_NIXBOT_AGE_DIR}/identity"
   REMOTE_CURRENT_SYSTEM_PATH="/run/current-system"
+  REMOTE_WRAPPER_BIN_DIR="/run/wrappers/bin"
+  REMOTE_SYSTEM_BIN_DIR="/run/current-system/sw/bin"
+  REMOTE_RUNTIME_PATH="${REMOTE_WRAPPER_BIN_DIR}:${REMOTE_SYSTEM_BIN_DIR}"
+  REMOTE_SYSTEM_SH="${REMOTE_SYSTEM_BIN_DIR}/sh"
+  REMOTE_SYSTEM_BASH="${REMOTE_SYSTEM_BIN_DIR}/bash"
   RUNTIME_WORK_DIR_PREFIX="/dev/shm/nixbot-run."
   RUNTIME_WORK_DIR_FALLBACK_PREFIX="${TMPDIR:-/tmp}/nixbot-run."
   BASTION_KNOWN_HOSTS_PREFIX="bastion-known-hosts"
@@ -2126,6 +2131,34 @@ mark_primary_ready() {
   fi
 }
 
+clear_primary_ready() {
+  local node="$1" state_file="" tmp_file="" ready_node="" rebuilt_nodes=""
+
+  [ -n "${node}" ] || return 0
+
+  clear_control_master_socket "${node}" primary
+  clear_control_master_socket "${node}" bootstrap
+
+  for ready_node in ${PRIMARY_READY_NODES}; do
+    [ "${ready_node}" = "${node}" ] && continue
+    rebuilt_nodes="${rebuilt_nodes}${rebuilt_nodes:+ }${ready_node}"
+  done
+  PRIMARY_READY_NODES="${rebuilt_nodes}"
+
+  ensure_tmp_dir
+  state_file="${NIXBOT_TMP_DIR}/primary-ready.nodes"
+  [ -f "${state_file}" ] || return 0
+
+  tmp_file="${state_file}.tmp.$$"
+  : > "${tmp_file}"
+  while IFS= read -r ready_node; do
+    [ -n "${ready_node}" ] || continue
+    [ "${ready_node}" = "${node}" ] && continue
+    printf '%s\n' "${ready_node}" >> "${tmp_file}"
+  done < "${state_file}"
+  mv "${tmp_file}" "${state_file}"
+}
+
 is_primary_ready() {
   local node="$1"
   local state_file=""
@@ -2309,11 +2342,13 @@ _remote_install_managed_file() {
   local remote_base="$1" remote_tmp="$2" remote_dest="$3" remote_dir="$4"
   local remote_dir_mode="$5" remote_file_mode="$6"
   local before_install_cmd="${7:-}" after_install_cmd="${8:-}" extra_vars="${9:-}"
+  local remote_runtime_path="/run/wrappers/bin:/run/current-system/sw/bin"
 
   if [ -n "${extra_vars}" ]; then
     eval "${extra_vars}"
   fi
 
+  export PATH="${remote_runtime_path}${PATH:+:${PATH}}"
   if ! command -v sudo >/dev/null 2>&1; then
     echo "sudo is required to install ${remote_dest}" >&2
     return 1
@@ -2357,13 +2392,21 @@ build_remote_install_file_cmd() {
 _remote_check_file_value() {
   local remote_dest="$1" expected_value="$2" read_cmd="$3" sudo_cmd="$4"
   local current=""
+  local remote_runtime_path="/run/wrappers/bin:/run/current-system/sw/bin"
+  local remote_bin_dir="/run/current-system/sw/bin"
+  local remote_sh="${remote_bin_dir}/sh"
 
+  export PATH="${remote_runtime_path}${PATH:+:${PATH}}"
   if ! command -v sudo >/dev/null 2>&1; then
     echo "sudo is required to validate ${remote_dest}" >&2
     return 1
   fi
 
-  current="$(DEST="${remote_dest}" ${sudo_cmd} env DEST="${remote_dest}" sh -c "${read_cmd}" 2>/dev/null || true)"
+  current="$(
+    DEST="${remote_dest}" \
+      ${sudo_cmd} env PATH="${remote_runtime_path}" DEST="${remote_dest}" "${remote_sh}" -c "${read_cmd}" \
+      2>/dev/null || true
+  )"
   [ "${current}" = "${expected_value}" ]
 }
 
@@ -2415,8 +2458,9 @@ retry_transport_command() {
   while :; do
     if "$@"; then
       return 0
+    else
+      rc="$?"
     fi
-    rc="$?"
 
     if [ "${rc}" -ne 255 ] || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
       return "${rc}"
@@ -2444,10 +2488,43 @@ retry_transport_capture() {
       # shellcheck disable=SC2034
       rtc_output_out_ref="${captured}"
       return 0
+    else
+      rc="$?"
     fi
-    rc="$?"
     # shellcheck disable=SC2034
     rtc_output_out_ref="${captured}"
+
+    if [ "${rc}" -ne 255 ] || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+      return "${rc}"
+    fi
+
+    attempt=$((attempt + 1))
+    retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+    echo "${retry_label} transport closed; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+    sleep "${retry_sleep_secs}"
+    if [ -n "${retry_hook}" ]; then
+      "${retry_hook}" || return "$?"
+    fi
+  done
+}
+
+retry_transport_stdout_capture() {
+  # shellcheck disable=SC2034
+  local -n rtsc_output_out_ref="$1"
+  local retry_label="$2" retry_hook="${3:-}"
+  shift 3
+  local attempt=1 rc=0 retry_sleep_secs=0 captured=""
+
+  while :; do
+    if captured="$("$@" 2> >(cat >&2))"; then
+      # shellcheck disable=SC2034
+      rtsc_output_out_ref="${captured}"
+      return 0
+    else
+      rc="$?"
+    fi
+    # shellcheck disable=SC2034
+    rtsc_output_out_ref="${captured}"
 
     if [ "${rc}" -ne 255 ] || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
       return "${rc}"
@@ -2510,7 +2587,12 @@ create_target_tmp_file() {
     umask 077
     mktemp "${tmp_prefix}XXXXXX"
   else
-    run_target_command "${local_exec}" "${ssh_target}" 0 "umask 077; mktemp ${tmp_prefix}XXXXXX" "${ssh_opts[@]}"
+    run_target_command \
+      "${local_exec}" \
+      "${ssh_target}" \
+      0 \
+      "umask 077; ${REMOTE_SYSTEM_BIN_DIR}/mktemp ${tmp_prefix}XXXXXX" \
+      "${ssh_opts[@]}"
   fi
 }
 
@@ -2523,7 +2605,12 @@ cleanup_target_tmp_file() {
   if [ "${local_exec}" -eq 1 ]; then
     rm -f "${target_tmp}" || true
   else
-    run_target_command "${local_exec}" "${ssh_target}" 0 "rm -f '${target_tmp}'" "${ssh_opts[@]}" >/dev/null 2>&1 || true
+    run_target_command \
+      "${local_exec}" \
+      "${ssh_target}" \
+      0 \
+      "${REMOTE_SYSTEM_BIN_DIR}/rm -f '${target_tmp}'" \
+      "${ssh_opts[@]}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -2551,8 +2638,8 @@ target_file_matches_expected_value() {
   tty_mode="${sudo_policy[2]:-0}"
   check_cmd="$(build_remote_file_value_check_cmd "${remote_dest}" "${expected_value}" "${read_cmd}" "${ask_sudo_password}")"
   if retry_transport_command \
-    "Remote file validation on ${ssh_target}" \
-    "" \
+    "Remote file validation for ${remote_dest} on ${ssh_target}" \
+    refresh_prepared_primary_target \
     run_target_command \
     "${local_exec}" \
     "${ssh_target}" \
@@ -2575,10 +2662,10 @@ install_local_file_via_target() {
   local -a ssh_opts=("$@") sudo_policy=()
   local target_tmp="" install_cmd="" tty_mode=0
 
-  if ! retry_transport_capture \
+  if ! retry_transport_stdout_capture \
     target_tmp \
-    "Remote temp allocation for ${install_label} on ${ssh_target}" \
-    "" \
+    "Remote temp allocation for ${install_label} on ${node} (${ssh_target})" \
+    refresh_prepared_primary_target \
     create_target_tmp_file \
     "${local_exec}" \
     "${ssh_target}" \
@@ -2587,13 +2674,13 @@ install_local_file_via_target() {
     target_tmp=""
   fi
   if [ -z "${target_tmp}" ]; then
-    echo "Failed to allocate remote temporary file for ${install_label} on ${node}" >&2
+    echo "Failed to allocate remote temporary file for ${install_label} on ${node} (${ssh_target})" >&2
     return 1
   fi
 
   if ! retry_transport_command \
-    "Copying ${install_label} to ${ssh_target}" \
-    "" \
+    "Copying ${install_label} to ${node} (${ssh_target})" \
+    refresh_prepared_primary_target \
     copy_local_file_to_target_tmp \
     "${local_exec}" \
     "${local_file}" \
@@ -2617,8 +2704,8 @@ install_local_file_via_target() {
   mapfile -t sudo_policy < <(resolve_target_sudo_policy "${local_exec}" "${ssh_target}" "${using_bootstrap_fallback}")
   tty_mode="${sudo_policy[2]:-0}"
   if ! retry_transport_command \
-    "Installing ${install_label} on ${ssh_target}" \
-    "" \
+    "Installing ${install_label} on ${node} (${ssh_target})" \
+    refresh_prepared_primary_target \
     run_target_command \
     "${local_exec}" \
     "${ssh_target}" \
@@ -2636,8 +2723,8 @@ init_known_hosts_ssh_context() {
   local -n ikhsc_ssh_opts_out_ref="$3" ikhsc_nix_sshopts_out_ref="$4"
   local host_key_check="${5:-yes}"
 
-  ikhsc_ssh_opts_out_ref=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o "UserKnownHostsFile=${known_hosts_file}" -o "StrictHostKeyChecking=${host_key_check}")
-  ikhsc_nix_sshopts_out_ref="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
+  ikhsc_ssh_opts_out_ref=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o LogLevel=ERROR -o "UserKnownHostsFile=${known_hosts_file}" -o "StrictHostKeyChecking=${host_key_check}")
+  ikhsc_nix_sshopts_out_ref="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o LogLevel=ERROR -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
 
   if [ "${batch_mode}" -eq 1 ]; then
     ikhsc_ssh_opts_out_ref=(-o BatchMode=yes "${ikhsc_ssh_opts_out_ref[@]}")
@@ -2645,15 +2732,33 @@ init_known_hosts_ssh_context() {
   fi
 }
 
+control_master_socket_path() {
+  local node="$1" role="$2" safe_node=""
+
+  safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}-${role}")"
+  printf '%s/cm-%s\n' "${TMP_SSH_DIR}" "${safe_node}"
+}
+
+clear_control_master_socket() {
+  local node="$1" role="$2" control_path=""
+
+  [ -n "${node}" ] || return 0
+  [ -n "${role}" ] || return 0
+  [ -n "${TMP_SSH_DIR:-}" ] || return 0
+  [ -d "${TMP_SSH_DIR}" ] || return 0
+
+  control_path="$(control_master_socket_path "${node}" "${role}")"
+  rm -f "${control_path}" || true
+}
+
 apply_control_master_to_ssh_context() {
   local node="$1" role="$2"
   # shellcheck disable=SC2178
   local -n acmtsc_ssh_opts_inout_ref="$3" acmtsc_nix_sshopts_inout_ref="$4"
-  local safe_node="" control_path=""
+  local control_path=""
 
   ensure_tmp_dir
-  safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}-${role}")"
-  control_path="${TMP_SSH_DIR}/cm-${safe_node}"
+  control_path="$(control_master_socket_path "${node}" "${role}")"
 
   acmtsc_ssh_opts_inout_ref+=(
     -o ControlMaster=auto
@@ -2779,10 +2884,8 @@ prepare_host_ssh_contexts() {
   fi
   init_known_hosts_ssh_context 1 "${known_hosts_file}" phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref "${host_key_check}"
   init_known_hosts_ssh_context 0 "${known_hosts_file}" phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref "${host_key_check}"
-  if [ -z "${proxy_chain}" ]; then
-    apply_control_master_to_ssh_context "${node}" primary phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref
-    apply_control_master_to_ssh_context "${node}" bootstrap phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref
-  fi
+  apply_control_master_to_ssh_context "${node}" primary phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref
+  apply_control_master_to_ssh_context "${node}" bootstrap phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref
 }
 
 write_proxy_command_script() {
@@ -2799,7 +2902,7 @@ write_proxy_command_script() {
     printf 'previous_proxy_script=%q\n' "${previous_proxy_script}"
     printf 'identity_file=%q\n' "${identity_file}"
     cat <<'EOF'
-cmd=(ssh -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
+cmd=(ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
 if [ -n "${identity_file}" ]; then
   cmd+=(-i "${identity_file}" -o IdentitiesOnly=yes)
 fi
@@ -3378,7 +3481,11 @@ run_prepared_deploy_command_with_retry() {
 _remote_check_activation_context_file_value() {
   local remote_dest="$1" expected_value="$2" read_cmd="$3" sudo_cmd="$4"
   local current=""
+  local activation_runtime_path="/run/wrappers/bin:/run/current-system/sw/bin"
+  local activation_shell="/run/current-system/sw/bin/sh"
+  local activation_path="/run/current-system/sw/bin"
 
+  export PATH="${activation_runtime_path}${PATH:+:${PATH}}"
   if ! command -v sudo >/dev/null 2>&1; then
     echo "sudo is required to validate ${remote_dest}" >&2
     return 1
@@ -3387,7 +3494,7 @@ _remote_check_activation_context_file_value() {
   current="$(
     DEST="${remote_dest}" \
       ${sudo_cmd} env DEST="${remote_dest}" sh -c \
-      "systemd-run --wait --pipe --quiet --service-type=exec env DEST=\"\$DEST\" sh -c $(printf '%q' "${read_cmd}") 2>/dev/null" \
+      "systemd-run --wait --pipe --quiet --service-type=exec env PATH=\"${activation_runtime_path}\" DEST=\"\$DEST\" \"${activation_shell}\" -c $(printf '%q' "${read_cmd}") 2>/dev/null" \
       2>/dev/null || true
   )"
   [ "${current}" = "${expected_value}" ]
@@ -3460,7 +3567,10 @@ build_wrapped_root_command() {
   local target_cmd="$1" deploy_user="$2" ask_sudo_password="$3"
   local shell_cmd="" sudo_prefix=""
 
-  printf -v shell_cmd 'bash -lc %q' "${target_cmd}"
+  printf -v shell_cmd 'env PATH=%q %q -lc %q' \
+    "${REMOTE_RUNTIME_PATH}" \
+    "${REMOTE_SYSTEM_BASH}" \
+    "${target_cmd}"
   if [ "${deploy_user}" = "root" ]; then
     printf '%s\n' "${shell_cmd}"
     return
@@ -3527,11 +3637,52 @@ run_named_prepared_root_command() {
     run_prepared_root_command \
     "${target_cmd}"; then
     return 0
+  else
+    rc="$?"
   fi
-  rc="$?"
 
   echo "Parent readiness ${phase_name} failed on ${parent} for ${resources}" >&2
   return "${rc}"
+}
+
+run_parented_host_operation_with_retry() {
+  local node="$1" operation_label="$2"
+  shift 2
+
+  local parent_host="" ready_timeout=0 ready_interval_secs=0 max_attempts=0 attempt=1 rc=0
+
+  [ "${DRY_RUN}" -eq 0 ] || {
+    "$@"
+    return "$?"
+  }
+
+  parent_host="$(host_parent_for "${node}")"
+  if [ -z "${parent_host}" ]; then
+    "$@"
+    return "$?"
+  fi
+
+  ready_timeout="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT}"
+  ready_interval_secs="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS}"
+  if [ "${ready_interval_secs}" -lt 1 ]; then
+    ready_interval_secs=1
+  fi
+  max_attempts=$((((ready_timeout - 1) / ready_interval_secs) + 1))
+
+  while :; do
+    clear_primary_ready "${node}"
+    if "$@"; then
+      return 0
+    fi
+    rc="$?"
+    if [ "${attempt}" -ge "${max_attempts}" ]; then
+      return "${rc}"
+    fi
+
+    echo "[${node}] deploy | ${operation_label} attempt ${attempt}/${max_attempts} failed after parent barrier (${parent_host}); retrying in ${ready_interval_secs}s" >&2
+    sleep "${ready_interval_secs}"
+    attempt=$((attempt + 1))
+  done
 }
 
 build_parent_resource_args() {
@@ -3684,7 +3835,28 @@ read_prepared_current_system_path() {
   run_prepared_deploy_command_with_retry \
     0 \
     "Current system read for ${PREP_DEPLOY_NODE:-target}" \
-    "readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
+    "${REMOTE_SYSTEM_BIN_DIR}/readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
+}
+
+prepare_host_age_identity_for_deploy() {
+  local node="$1" force_reinstall="${2:-0}" require_activation_visibility="${3:-0}"
+  local age_identity_key=""
+
+  prepare_deploy_context "${node}" || return 1
+  age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+
+  inject_host_age_identity_key \
+    "${node}" \
+    "${PREP_DEPLOY_LOCAL_EXEC}" \
+    "${PREP_DEPLOY_SSH_TARGET}" \
+    "${age_identity_key}" \
+    "${PREP_USING_BOOTSTRAP_FALLBACK}" \
+    "${force_reinstall}" \
+    "${PREP_DEPLOY_SSH_OPTS[@]}" || return 1
+
+  if [ "${require_activation_visibility}" -eq 1 ]; then
+    wait_for_prepared_host_age_identity_activation_visibility "${node}" "${age_identity_key}" || return 1
+  fi
 }
 
 ##### Host Phases #####
@@ -4336,8 +4508,9 @@ rollback_host_to_snapshot() {
   if run_prepared_deploy_command "${sudo_tty_mode}" "${rollback_cmd}"; then
     print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
     return 0
+  else
+    rollback_rc="$?"
   fi
-  rollback_rc="$?"
 
   echo "==> Rollback transport closed or failed for ${node}; verifying target state" >&2
   if verify_rollback_target_state "${node}" "${snapshot_path}"; then
@@ -4446,22 +4619,16 @@ deploy_host() {
   local remote_current_path="" nix_sshopts=""
   local using_bootstrap_fallback="" age_identity_key="" build_host=""
   local ask_sudo_password=0
-  local -a rebuild_cmd=() sudo_policy=() age_identity_inject_args=()
+  local -a rebuild_cmd=() sudo_policy=()
 
   log_host_stage "deploy" "${node}" "${GOAL}"
+  if [ -n "$(host_parent_for "${node}")" ]; then
+    clear_primary_ready "${node}"
+  fi
   prepare_deploy_context "${node}" || return 1
   nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
   using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
   age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
-  age_identity_inject_args=(
-    "${node}"
-    "${PREP_DEPLOY_LOCAL_EXEC}"
-    "${PREP_DEPLOY_SSH_TARGET}"
-    "${age_identity_key}"
-    "${PREP_USING_BOOTSTRAP_FALLBACK}"
-    0
-    "${PREP_DEPLOY_SSH_OPTS[@]}"
-  )
 
   if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
     remote_current_path="$(read_prepared_current_system_path)"
@@ -4475,8 +4642,26 @@ deploy_host() {
     fi
   fi
 
-  inject_host_age_identity_key \
-    "${age_identity_inject_args[@]}" || return 1
+  run_parented_host_operation_with_retry \
+    "${node}" \
+    "initial age identity preparation" \
+    prepare_host_age_identity_for_deploy \
+    "${node}" \
+    0 \
+    0 || return 1
+
+  run_parented_host_operation_with_retry \
+    "${node}" \
+    "activation-context age identity preparation" \
+    prepare_host_age_identity_for_deploy \
+    "${node}" \
+    1 \
+    1 || return 1
+
+  nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
+  using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+  age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+
   mapfile -t sudo_policy < <(
     resolve_target_sudo_policy \
       "${PREP_DEPLOY_LOCAL_EXEC}" \
@@ -4528,20 +4713,6 @@ deploy_host() {
   if [ -n "${nix_sshopts}" ]; then
     rebuild_cmd=(env "NIX_SSHOPTS=${nix_sshopts}" "${rebuild_cmd[@]}")
   fi
-
-  # The first injection happens before deploy setup so bootstrap state exists
-  # for any intermediate target operations. Re-check immediately before
-  # activation because first-switch Incus guests can lose /var/lib/nixbot/.age
-  # state between the initial probe and agenix decrypt.
-  inject_host_age_identity_key \
-    "${node}" \
-    "${PREP_DEPLOY_LOCAL_EXEC}" \
-    "${PREP_DEPLOY_SSH_TARGET}" \
-    "${age_identity_key}" \
-    "${PREP_USING_BOOTSTRAP_FALLBACK}" \
-    1 \
-    "${PREP_DEPLOY_SSH_OPTS[@]}" || return 1
-  wait_for_prepared_host_age_identity_activation_visibility "${node}" "${age_identity_key}" || return 1
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     printf '%q ' "${rebuild_cmd[@]}"
@@ -4871,15 +5042,17 @@ print_deploy_systemd_user_manager_report() {
     if [ -n "${log_file}" ]; then
       if run_prepared_root_command "${report_cmd}" | prefix_host_logs "${node}" >&2; then
         return 0
+      else
+        rc="$?"
       fi
     else
       if run_prepared_root_command "${report_cmd}" >&2; then
         return 0
+      else
+        rc="$?"
       fi
     fi
   fi
-
-  rc="$?"
   : "${rc}"
   return 0
 }

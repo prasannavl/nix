@@ -271,19 +271,39 @@ in {
         })
       dispatcherServicesByUser;
 
-    system.activationScripts.systemdUserManagerDispatcherRun = {
+    system.activationScripts.systemdUserManagerStopOld = {
+      supportsDryActivation = false;
+      text = ''
+        set -eu
+        case "''${NIXOS_ACTION-}" in
+          switch|test)
+            old_system="$(readlink -f /run/current-system 2>/dev/null || true)"
+            if [ -z "$old_system" ]; then
+              old_system=/run/current-system
+            fi
+            SYSTEMD_USER_MANAGER_OLD_SYSTEM="$old_system" \
+            SYSTEMD_USER_MANAGER_NEW_SYSTEM="$systemConfig" \
+            ${lib.escapeShellArg helperScript} activation-stop-old
+            ;;
+        esac
+      '';
+    };
+
+    system.activationScripts.systemdUserManagerDryActivatePreview = {
       deps = ["users"];
       supportsDryActivation = true;
       text = ''
         set -eu
-        old_system="$(readlink -f /run/current-system 2>/dev/null || true)"
-        if [ -z "$old_system" ]; then
-          old_system=/run/current-system
+        if [ "''${NIXOS_ACTION-}" = dry-activate ]; then
+          old_system="$(readlink -f /run/current-system 2>/dev/null || true)"
+          if [ -z "$old_system" ]; then
+            old_system=/run/current-system
+          fi
+          SYSTEMD_USER_MANAGER_OLD_SYSTEM="$old_system" \
+          SYSTEMD_USER_MANAGER_NEW_SYSTEM="$systemConfig" \
+          SYSTEMD_USER_MANAGER_PREVIEW_MANIFEST=${lib.escapeShellArg previewManifest} \
+          ${lib.escapeShellArg helperScript} activation-dry-preview
         fi
-        SYSTEMD_USER_MANAGER_OLD_SYSTEM="$old_system" \
-        SYSTEMD_USER_MANAGER_NEW_SYSTEM="$systemConfig" \
-        SYSTEMD_USER_MANAGER_PREVIEW_MANIFEST=${lib.escapeShellArg previewManifest} \
-        ${lib.escapeShellArg helperScript} activation-run
       '';
     };
 
