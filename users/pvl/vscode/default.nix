@@ -38,6 +38,8 @@
           # google.gemini-cli-vscode-ide-companion
           # google.geminicodeassist
           # continue.continue
+
+          johnpapa.vscode-peacock
         ];
 
         keybindings = [

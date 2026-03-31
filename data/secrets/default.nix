@@ -9,6 +9,7 @@ let
     pvl-a1 = ./machine/pvl-a1.key.pub;
     pvl-x2 = ./machine/pvl-x2.key.pub;
     pvl-vlab = ./machine/pvl-vlab.key.pub;
+    pvl-vkamino = ./machine/pvl-vkamino.key.pub;
     gap3-gondor = ./machine/gap3-gondor.key.pub;
   };
   machines = builtins.mapAttrs (_: keyPath: let
@@ -29,6 +30,7 @@ in
     "data/secrets/machine/pvl-a1.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/pvl-x2.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/pvl-vlab.key.age".publicKeys = adminsWithNixbot;
+    "data/secrets/machine/pvl-vkamino.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/gap3-gondor.key.age".publicKeys = adminsWithNixbot;
 
     # Cloudflare DNS

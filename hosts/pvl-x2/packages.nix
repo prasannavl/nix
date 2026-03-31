@@ -60,6 +60,11 @@
     ];
 
     misc = with pkgs; [
+      vim.xxd
+      gdb
+      dig
+      nethogs
+      sysstat
     ];
   };
 in {

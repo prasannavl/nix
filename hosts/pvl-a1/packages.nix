@@ -151,6 +151,7 @@
       opencode
       shellcheck
       vim.xxd
+      gdb
     ];
 
     fonts = with pkgs; [
