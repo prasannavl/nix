@@ -13,10 +13,9 @@ With `BUILD_HOST=local`, that made `nixos-rebuild-ng` copy the already-built
 closure to `ssh://bootstrapUser@host`, which fails because the bootstrap user is
 not a trusted Nix store importer.
 
-Separately, the bootstrap probe stripped the prepared `-i` /
-`IdentitiesOnly` arguments even when no dedicated forced-command key override
-was configured, so the probe could fail only because it had lost the correct
-identity.
+Separately, the bootstrap probe stripped the prepared `-i` / `IdentitiesOnly`
+arguments even when no dedicated forced-command key override was configured, so
+the probe could fail only because it had lost the correct identity.
 
 ## Root Cause
 
@@ -29,16 +28,16 @@ identity.
 
 ## Decision
 
-- Bootstrap checks must preserve the prepared deploy identity by
-  default and only replace it when an explicit override key is configured.
+- Bootstrap checks must preserve the prepared deploy identity by default and
+  only replace it when an explicit override key is configured.
 - After cached or fresh bootstrap key preparation, `prepare_deploy_context()`
-  must clear the primary control socket, re-probe the primary deploy target,
-  and promote back to `nixbot@host` when that route is restored.
-- Bootstrap probes should also clear the failed primary control
-  socket first so the check does not inherit a broken SSH master session.
-- If a local-build deploy still ends up on a non-`root`, non-`nixbot`
-  bootstrap user, fail early with an explicit error instead of letting
-  `nix-copy-closure` fail with a remote trust error.
+  must clear the primary control socket, re-probe the primary deploy target, and
+  promote back to `nixbot@host` when that route is restored.
+- Bootstrap probes should also clear the failed primary control socket first so
+  the check does not inherit a broken SSH master session.
+- If a local-build deploy still ends up on a non-`root`, non-`nixbot` bootstrap
+  user, fail early with an explicit error instead of letting `nix-copy-closure`
+  fail with a remote trust error.
 
 ## Operational Effect
 
@@ -46,5 +45,5 @@ identity.
   run
 - local-build deploys no longer silently continue on `pvl@host` after bootstrap
   injection
-- bootstrap probes no longer fail just because the correct SSH
-  identity was discarded
+- bootstrap probes no longer fail just because the correct SSH identity was
+  discarded

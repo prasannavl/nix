@@ -33,9 +33,9 @@ The CI failure signature that motivated this note included:
   back through `nixbot@host`.
 - If the selected deploy target is the current host but the current process is
   running as a different local user (for example `pvl` running `nixbot`
-  locally), preserve the normal `nixbot@host` SSH path for privilege
-  boundaries, but bypass `nixos-rebuild-ng`'s remote self-copy step during the
-  final activation handoff.
+  locally), preserve the normal `nixbot@host` SSH path for privilege boundaries,
+  but bypass `nixos-rebuild-ng`'s remote self-copy step during the final
+  activation handoff.
 - When building a proxy chain, drop any leading `proxyJump` hops that resolve to
   the current host before assembling SSH proxy wrappers, but keep the full
   configured chain available as a retry path when the flattened direct route is
@@ -79,8 +79,8 @@ The CI failure signature that motivated this note included:
 - Host phases (`snapshot`, `deploy`, `rollback`) branch on the prepared local
   execution flag instead of assuming every target is remote.
 - Remote self-target deploys now activate the already-built local closure via
-  the existing `nixbot@host` SSH/sudo path instead of asking
-  `nixos-rebuild-ng` to `nix-copy-closure` the machine back onto itself.
+  the existing `nixbot@host` SSH/sudo path instead of asking `nixos-rebuild-ng`
+  to `nix-copy-closure` the machine back onto itself.
 
 ## Operational Effect
 

@@ -30,6 +30,10 @@ result processing architecture, and CI connectivity.
   path selection must not depend on whether bootstrap and deploy users differ.
 - Generated proxy wrapper scripts must emit IPv6-safe `-W [host]:port`
   destinations when a hop or final target resolves to an IPv6 address.
+- When the direct primary deploy probe fails, `nixbot` must print the captured
+  failure before retrying the full configured proxy chain or falling back to
+  bootstrap, so operators can distinguish host-key, transport, and auth
+  failures.
 - Forced-command bootstrap probes should execute `nixbot ...` explicitly so SSH
   does not pass option-like arguments directly and the remote side can strip the
   leading command token independent of the bastion store path.
@@ -63,6 +67,10 @@ result processing architecture, and CI connectivity.
   helpers, while stderr remains operator-visible.
 - Generated SSH contexts for structured capture paths should suppress
   first-contact chatter with `LogLevel=ERROR`.
+- Treat `/run/current-system/sw/bin` as the explicit target-side runtime
+  contract for critical remote helpers. Critical shell entrypoints, helper PATH
+  setup, and direct calls to tools such as `readlink`, `mktemp`, and `rm` should
+  not depend on ambient PATH in SSH, `sudo`, or transient unit contexts.
 - Proxied primary and bootstrap contexts may reuse SSH control-master sockets.
   When parented readiness is invalidated, clear the matching control sockets so
   retries do not reuse stale post-switch transports.
@@ -286,7 +294,7 @@ failure by themselves:
   should be added only when the shorter alias would collide with another name
   already used in scope or elsewhere in the script.
 
-## Superseded notes
+## Additional superseded notes
 
 - `docs/ai/notes/nixbot/parented-deploy-preflight-retry-model-2026-03.md`
 - `docs/ai/notes/nixbot/parented-primary-ready-cache-invalidation-2026-03.md`
@@ -317,6 +325,9 @@ failure by themselves:
   - per-host stage banners
   - deploy/snapshot wave boundaries
   - host-prefixed streamed output when jobs run in parallel
+- Host-stage banners should use one dashed format for all per-host phases. The
+  phase label already identifies the work, so phase-specific border characters
+  add noise without extra meaning.
 - In GitHub Actions log mode, Terraform phase sections should remain grouped at
   the phase level, with per-project groups nested inside them rather than
   replacing the phase group.
@@ -326,6 +337,20 @@ failure by themselves:
   separator, but preserve a blank line before each host-stage banner (for
   example between `--- ... Wave ... ---` and
   `---------- host | snapshot ----------`).
+- After a successful host deploy or successful host rollback, `nixbot` should
+  print an inline `systemd-user-manager` dispatcher report only when a
+  dispatcher ran during that window. Collect that report through the normal
+  prepared deploy/root command path and combined host logging path so target
+  selection, sudo policy, prefixed logs, and per-host log files stay aligned
+  with the rest of the run.
+- The post-deploy `systemd-user-manager` report should stream dispatcher and
+  reconciler output live while the dispatcher is still running, start directly
+  with the dispatcher status block, and finish by printing the full latest
+  dispatcher invocation journal once the unit reaches terminal state.
+- If report collection fails after a successful deploy or rollback, `nixbot`
+  should surface explicit `report unavailable` diagnostics and return the
+  underlying failure status instead of silently treating the case like "no
+  dispatcher ran".
 - When deploy temporarily re-enters snapshot retry work, logs must print
   `Phase: Snapshot` before the retry and `Phase: Deploy` when returning, so the
   phase transition is explicit.
@@ -406,6 +431,7 @@ failure by themselves:
 - `docs/ai/notes/nixbot/cloudflare-apps-worker-build-and-age-fallback-2026-03.md`
 - `docs/ai/notes/nixbot/github-actions-runtime-warmup-and-cache-2026-03.md`
 - `docs/ai/notes/nixbot/log-stream-ordering-2026-03.md`
+- `docs/ai/notes/nixbot/host-banner-format-simplification-2026-03.md`
 - `docs/ai/notes/nixbot-bastion-key-model.md`
 - `docs/ai/notes/nixbot-bastion-legacy-identity-retention.md`
 - `docs/ai/notes/nixbot-bastion-manual-key-decrypt-activation.md`
@@ -416,7 +442,10 @@ failure by themselves:
 - `docs/ai/notes/nixbot-github-actions-tailscale-oauth-migration.md`
 - `docs/ai/notes/nixbot-machine-age-identity-model.md`
 - `docs/ai/notes/nixbot/nixbot-home-dir-perms-2026-03.md`
+- `docs/ai/notes/nixbot/primary-probe-failure-logging-2026-03.md`
+- `docs/ai/notes/nixbot/remote-runtime-path-hardening-2026-03.md`
 - `docs/ai/notes/nixbot-remote-build-known-hosts-2026-03-09.md`
+- `docs/ai/notes/nixbot/systemd-user-manager-deploy-summary-2026-03.md`
 - `docs/ai/notes/nixbot/runtime-shell-consolidation-2026-03.md`
 - `docs/ai/notes/nixbot/runtime-toolchain-unification-2026-03.md`
 - `docs/ai/notes/nixbot/nixbot-deploy-cleanup-2026-03.md`

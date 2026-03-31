@@ -75,8 +75,8 @@ Defaults may also include:
 ## Runtime Behavior Notes
 
 - Bootstrap-check success does not guarantee generic shell access.
-- If bootstrap key preparation restores normal `nixbot@host` access, deploy
-  must promote back to the primary route before `nixos-rebuild`.
+- If bootstrap key preparation restores normal `nixbot@host` access, deploy must
+  promote back to the primary route before `nixos-rebuild`.
 - Only a genuine bootstrap-check success without normal shell access should keep
   `nixos-rebuild` on the bootstrap user route.
 - Script caches bootstrap readiness within one run.

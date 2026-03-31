@@ -166,9 +166,15 @@ restart". That is an intentional simplification.
   polling loop.
 - Dispatcher logs should be thin orchestration logs: start, reconciler output,
   and finish, without redundant reconciler-name chatter.
-- After waiting for a reconciler invocation to finish, the dispatcher should
-  replay the full invocation journal so deploy summaries do not lose late log
-  lines.
+- Dispatcher journal handling should stream newly appended reconciler lines
+  incrementally while the reconciler is still running, then replay the full
+  latest invocation once terminal state is reached so downstream deploy
+  summaries keep both live progress and final completeness.
+- Journal filtering should remove only known systemd boilerplate noise. Do not
+  collapse the stream through a broad `grep 'dispatcher '` filter that can hide
+  dispatcher-side timeout or retry diagnostics.
+- Managed-unit `started in ...` / `failed to start ...` lines should be emitted
+  in actual completion order rather than submission order.
 
 ## Behavioral Contract
 
@@ -213,3 +219,4 @@ The current intended contract is:
 - `docs/ai/notes/services/systemd-user-manager-shell-helper-extraction-2026-03.md`
 - `docs/ai/notes/services/systemd-user-manager-stable-state-backoff-2026-03.md`
 - `docs/ai/notes/services/systemd-user-manager-stateless-manifest-plan-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-dispatcher-live-log-streaming-2026-04.md`

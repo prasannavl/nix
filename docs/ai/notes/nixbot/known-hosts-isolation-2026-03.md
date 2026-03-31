@@ -2,13 +2,13 @@
 
 ## Context
 
-`nixbot` was still vulnerable to operator-machine `known_hosts` drift even
-after per-host deploy SSH contexts started using temp `UserKnownHostsFile`
-files. Two gaps remained:
+`nixbot` was still vulnerable to operator-machine `known_hosts` drift even after
+per-host deploy SSH contexts started using temp `UserKnownHostsFile` files. Two
+gaps remained:
 
 - some SSH wrappers did not force `GlobalKnownHostsFile=/dev/null`
-- managed repo `git clone` / `git fetch` still used ambient SSH defaults for
-  SSH remotes
+- managed repo `git clone` / `git fetch` still used ambient SSH defaults for SSH
+  remotes
 
 This showed up when nested guests were recreated and the operator's personal
 `~/.ssh/known_hosts` no longer matched the new host keys.
@@ -22,9 +22,8 @@ Treat `nixbot` as fully self-contained for SSH host-key trust:
   - `UserKnownHostsFile=<nixbot temp file>`
 - proxy-command wrappers must carry the same isolation
 - bastion-trigger SSH must carry the same isolation
-- managed repo `git clone` / `git fetch` for SSH remotes must build a
-  temp scanned known-hosts file from the remote URL and pass it via
-  `GIT_SSH_COMMAND`
+- managed repo `git clone` / `git fetch` for SSH remotes must build a temp
+  scanned known-hosts file from the remote URL and pass it via `GIT_SSH_COMMAND`
 
 ## Implementation
 

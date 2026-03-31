@@ -63,6 +63,13 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/nixbot/code-review-and-cleanup-2026-03.md`: Consolidated code
   review, subprocess reduction, dedup, and simplification pass.
+- `docs/ai/notes/nixbot/bootstrap-fallback-refresh-and-logging-2026-03.md`:
+  Bootstrap-fallback transport retries must not re-probe the primary path, and
+  cached bootstrap reuse must not be logged as a fresh forced-command result.
+- `docs/ai/notes/nixbot/bootstrap-promotion-and-forced-command-identity-2026-03.md`:
+  Preserve the prepared SSH identity for bootstrap probes, and after bootstrap
+  key preparation promote back to the primary deploy route before local-build
+  `nixos-rebuild` runs.
 - `docs/ai/notes/nixbot/bastion-self-target-and-proxy-flattening-2026-03.md`:
   Bastion-triggered runs should execute the bastion host locally instead of
   self-SSH, and should drop leading `proxyJump` hops that resolve to the current
@@ -74,7 +81,8 @@ Use this index as the canonical map for `docs/ai/**`.
   deploy-script-owned `DEPLOY_*` variables and env knobs to `NIXBOT_*`.
 - `docs/ai/notes/nixbot/deploy-system-consolidated-2026-03.md`: Canonical
   `nixbot` deploy architecture, runtime contract, orchestration behavior, deploy
-  policy modes, host ordering edges, and result processing architecture.
+  policy modes, host ordering edges, SSH/runtime guardrails, inline
+  `systemd-user-manager` deploy reporting, and result processing architecture.
 - `docs/ai/notes/nixbot/dirty-flag-bypass-2026-03.md`: Explicit `--dirty` /
   `NIXBOT_DIRTY` opt-in for bypassing the repo-root cleanliness gate.
 - `docs/ai/notes/nixbot/entrypoint-and-packaging-2026-03.md`: Canonical
@@ -96,11 +104,12 @@ Use this index as the canonical map for `docs/ai/**`.
   `if cmd; then ...; fi; rc="$?"` bug in `nixbot` swallowed real failures in
   transport retry, parent readiness, rollback, and report helpers; capture
   failure status in the `else` branch instead.
-- `docs/ai/notes/nixbot/host-banner-format-simplification-2026-03.md`: Simplify
-  host-stage output to one dashed banner format for all per-host phases because
-  the phase label already identifies the work.
 - `docs/ai/notes/nixbot/key-rotation-and-playbooks-consolidated-2026-03.md`:
   Canonical `nixbot` rotation model, lessons, and operator guardrails.
+- `docs/ai/notes/nixbot/known-hosts-isolation-2026-03.md`: Isolate all `nixbot`
+  SSH traffic from ambient machine `known_hosts` state by forcing nixbot-managed
+  known-hosts files for deploy, proxy, bastion-trigger, and repo-refresh SSH
+  paths.
 - `docs/ai/notes/nixbot/lint-gating-and-precommit-2026-03.md`: Shared lint
   entrypoint, CI gate, and pre-commit hook decisions.
 - `docs/ai/notes/nixbot/local-declaration-collapse-style-2026-03.md`: User-led
@@ -120,13 +129,6 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/nixbot-incus-fresh-review-2026-03.md`: Fresh review of
   `pkgs/nixbot` and `lib/incus` covering parent-readiness error propagation,
   Incus exact-instance lookup safety, and nixbot package runtime tool closure.
-- `docs/ai/notes/nixbot/primary-probe-failure-logging-2026-03.md`: Print the
-  exact primary SSH probe failure before bootstrap fallback or proxy-chain retry
-  so deploy-user fallback reasons stay visible.
-- `docs/ai/notes/nixbot/remote-runtime-path-hardening-2026-03.md`: Treat
-  `/run/current-system/sw/bin` as the explicit target-side runtime for critical
-  remote nixbot helpers instead of relying on ambient PATH in SSH, sudo, or
-  transient execution contexts.
 - `docs/ai/notes/nixbot/remote-file-install-transport-retries-2026-03.md`: Make
   remote temp-file allocation, file copy, and install steps retry on transport
   resets instead of failing fresh guest deploys immediately.
@@ -138,11 +140,6 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/snapshot-wave-parallelism-2026-03.md`: Snapshot work now
   uses the deploy parallelism budget so hosts in the same dependency wave
   snapshot concurrently.
-- `docs/ai/notes/nixbot/systemd-user-manager-deploy-summary-2026-03.md`:
-  `nixbot` now prints `systemd-user-manager` dispatcher results inline after a
-  successful host deploy or host rollback, only when a dispatcher ran during
-  that window, streaming logs live and starting directly with the dispatcher
-  status block.
 - `docs/ai/notes/nixbot/worktree-terraform-lockfile-2026-03.md`: Terraform
   lockfile regression exposed by fresh deploy worktrees and the normalization
   rule for Cloudflare provider locks.
@@ -152,6 +149,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/reviews/nixbot-and-incus-architecture-review-2026-03.md`:
   Architecture, correctness, and refactoring review of `pkgs/nixbot/nixbot.sh`
   and `lib/incus/default.nix`.
+- `docs/ai/notes/reviews/systemd-user-manager-and-nixbot-review-fixes-2026-04.md`:
+  Follow-up fixes for review findings in `lib/systemd-user-manager/helper.sh`
+  and `pkgs/nixbot/nixbot.sh`, including fatal metadata parse handling,
+  Terraform phase failure propagation, and dispatcher report logging cleanup.
 
 ### Secrets
 
