@@ -3477,6 +3477,23 @@ run_prepared_deploy_command_with_retry() {
     "${target_cmd}"
 }
 
+prepared_target_has_passwordless_sudo() {
+  local deploy_user=""
+
+  [ -n "${PREP_DEPLOY_SSH_TARGET}" ] || return 1
+
+  deploy_user="$(resolve_target_command_user "${PREP_DEPLOY_LOCAL_EXEC}" "${PREP_DEPLOY_SSH_TARGET}")"
+  if [ "${deploy_user}" = "root" ]; then
+    return 0
+  fi
+
+  if run_prepared_deploy_command 0 "sudo -n true" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
+}
+
 _remote_check_activation_context_file_value() {
   local remote_dest="$1" expected_value="$2" read_cmd="$3" sudo_cmd="$4"
   local current=""
@@ -4615,6 +4632,7 @@ deploy_host() {
   local node="$1" built_out_path="$2" skip_marker="${3:-}"
   local remote_current_path="" nix_sshopts=""
   local using_bootstrap_fallback="" age_identity_key="" build_host=""
+  local rebuild_nix_sshopts=""
   local ask_sudo_password=0
   local -a rebuild_cmd=() sudo_policy=()
 
@@ -4666,12 +4684,16 @@ deploy_host() {
       "${using_bootstrap_fallback}"
   )
   ask_sudo_password="${sudo_policy[1]:-0}"
+  if [ "${ask_sudo_password}" -eq 1 ] && prepared_target_has_passwordless_sudo; then
+    ask_sudo_password=0
+  fi
 
   case "${BUILD_HOST}" in
     local)
-      if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] && { [ "${using_bootstrap_fallback}" -eq 1 ] || { [ -n "${NIXBOT_USER_OVERRIDE}" ] && [ "${PREP_DEPLOY_SSH_TARGET%%@*}" != "root" ]; }; }; then
-        build_host="${PREP_DEPLOY_SSH_TARGET}"
-      fi
+      # Keep deploys on the already-built local closure. Even with a non-root
+      # target user override, forcing --build-host back onto the target makes
+      # nixos-rebuild-ng launch a second remote nix build that can wedge after
+      # nixbot has already completed the real local build phase.
       ;;
     target)
       if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ]; then
@@ -4708,7 +4730,11 @@ deploy_host() {
   fi
 
   if [ -n "${nix_sshopts}" ]; then
-    rebuild_cmd=(env "NIX_SSHOPTS=${nix_sshopts}" "${rebuild_cmd[@]}")
+    rebuild_nix_sshopts="-S none -o ControlMaster=no ${nix_sshopts}"
+    # nixos-rebuild-ng appends its own ControlPath. OpenSSH keeps the first
+    # Control* settings, so nixbot's long-lived master would otherwise win and
+    # large nix-copy-closure streams can wedge on that reused TCP session.
+    rebuild_cmd=(env "NIX_SSHOPTS=${rebuild_nix_sshopts}" "${rebuild_cmd[@]}")
   fi
 
   if [ "${DRY_RUN}" -eq 1 ]; then
