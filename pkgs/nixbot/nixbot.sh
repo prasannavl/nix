@@ -4837,10 +4837,12 @@ deploy_prepared_remote_self_target() {
   local activate_cmd="" profile_path="${REMOTE_SYSTEM_PROFILE_PATH}" deploy_rc=0
 
   if [ "${GOAL}" = "test" ]; then
+    # shellcheck disable=SC2016
     printf -v activate_cmd 'set -euo pipefail; built=%q; if [ ! -x "$built/bin/switch-to-configuration" ]; then echo "built closure is not activatable: $built" >&2; exit 1; fi; "$built/bin/switch-to-configuration" %q' \
       "${built_out_path}" \
       "${GOAL}"
   else
+    # shellcheck disable=SC2016
     printf -v activate_cmd 'set -euo pipefail; built=%q; profile=%q; if [ ! -x "$built/bin/switch-to-configuration" ]; then echo "built closure is not activatable: $built" >&2; exit 1; fi; %q -p "$profile" --set "$built"; "$profile/bin/switch-to-configuration" %q' \
       "${built_out_path}" \
       "${profile_path}" \
@@ -5358,38 +5360,53 @@ build_systemd_user_manager_report_cmd() {
     "_remote_systemd_user_manager_report '@${since_epoch}'"
 }
 
+run_deploy_systemd_user_manager_report_command() {
+  local node="$1" report_cmd="$2" report_rc=0
+
+  if prepare_deploy_context "${node}"; then
+    :
+  else
+    report_rc="$?"
+    echo "systemd-user-manager report unavailable for ${node}: failed to prepare deploy context" >&2
+    return "${report_rc}"
+  fi
+
+  if run_prepared_root_command "${report_cmd}"; then
+    return 0
+  else
+    report_rc="$?"
+  fi
+
+  echo "systemd-user-manager report unavailable for ${node}: remote report collection failed (exit=${report_rc})" >&2
+  return "${report_rc}"
+}
+
 print_deploy_systemd_user_manager_report() {
   local node="$1" since_epoch="$2" log_file="${3:-}"
-  local report_cmd="" rc=0
+  local report_cmd=""
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     return 0
   fi
 
   report_cmd="$(build_systemd_user_manager_report_cmd "${since_epoch}")"
-  if prepare_deploy_context "${node}"; then
-    if [ -n "${log_file}" ]; then
-      if run_with_combined_output run_prepared_root_command "${report_cmd}" > >(host_log_filter "${node}" | tee -a "${log_file}" >&2); then
-        return 0
-      else
-        rc="$?"
-      fi
-    elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-      if run_with_combined_output run_prepared_root_command "${report_cmd}" > >(host_log_filter "${node}" >&2); then
-        return 0
-      else
-        rc="$?"
-      fi
-    else
-      if run_with_combined_output run_prepared_root_command "${report_cmd}" >&2; then
-        return 0
-      else
-        rc="$?"
-      fi
-    fi
+
+  if [ -n "${log_file}" ]; then
+    run_with_combined_output \
+      run_deploy_systemd_user_manager_report_command \
+      "${node}" \
+      "${report_cmd}" > >(host_log_filter "${node}" | tee -a "${log_file}" >&2)
+  elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+    run_with_combined_output \
+      run_deploy_systemd_user_manager_report_command \
+      "${node}" \
+      "${report_cmd}" > >(host_log_filter "${node}" >&2)
+  else
+    run_with_combined_output \
+      run_deploy_systemd_user_manager_report_command \
+      "${node}" \
+      "${report_cmd}" >&2
   fi
-  : "${rc}"
-  return 0
 }
 
 write_status_file() {
