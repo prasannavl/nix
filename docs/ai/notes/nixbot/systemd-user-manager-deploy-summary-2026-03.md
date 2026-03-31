@@ -26,6 +26,8 @@ when the dispatcher actually ran in that window.
 
 - `pkgs/nixbot/nixbot.sh` now prints a `systemd-user-manager` block directly at
   the end of a successful host deploy job and successful host rollback.
+- The post-deploy report streams remote stdout directly instead of buffering the
+  entire report in a local shell variable before printing.
 - Serialized target-side helpers in `nixbot` now follow a `_remote_*` naming
   convention and are defined as normal local Bash functions, then shipped with
   `declare -f` for readability and syntax highlighting.
@@ -33,7 +35,15 @@ when the dispatcher actually ran in that window.
   - lists dispatcher units
   - filters to units with journal activity since the deploy start timestamp
   - prints each unit's active/sub state, result, and exec status
-  - prints the full journal for the unit's last invocation
+  - streams new dispatcher and reconciler invocation logs while the dispatcher
+    is still running
+  - filters dispatcher lines to dispatcher-only messages so the final
+    dispatcher-side journal replay does not duplicate directly streamed
+    reconciler output
+  - prints the full journal for the unit's last invocation once the unit reaches
+    terminal state
+- The printed block starts directly with the dispatcher status line rather than
+  a redundant standalone `[systemd-user-manager]` header.
 - Failed deploys and failed rollbacks do not print any dispatcher report.
 - Successful runs where no dispatcher ran in that window are silent.
 
@@ -42,3 +52,8 @@ when the dispatcher actually ran in that window.
 - This does not change deploy success/failure evaluation.
 - This does not attempt to reconstruct reconciler state when the host is
   unreachable after deploy; those cases are reported as unavailable.
+
+## Superseded Notes
+
+- `docs/ai/notes/nixbot/systemd-user-manager-deploy-summary-streaming-2026-03.md`
+- `docs/ai/notes/nixbot/systemd-user-manager-deploy-summary-header-cleanup-2026-03.md`

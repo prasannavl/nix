@@ -30,7 +30,8 @@ hosts are marked as failed.
 
 Both helpers are installed on every parent host that declares
 `services.incusMachines.instances` in its NixOS configuration. They live in
-`lib/incus.nix` and are available as executables on the parent's `$PATH`.
+`lib/incus/default.nix` and are available as executables on the parent's
+`$PATH`.
 
 ### `incus-machines-reconciler`
 
@@ -235,8 +236,8 @@ nixbot deploy wave for child hosts:
 
 ## Source Of Truth Files
 
-- `lib/incus.nix` -- reconciler helper, settle helper, per-machine service,
-  machine type options (`sshPort`, `waitForSsh`, `ipv4Address`)
+- `lib/incus/default.nix` -- reconciler helper, settle helper, per-machine
+  service, machine type options (`sshPort`, `waitForSsh`, `ipv4Address`)
 - `pkgs/nixbot/nixbot.sh` -- `ensure_deploy_wave_parent_readiness`,
   `run_named_prepared_root_command`, command template rendering
 - `hosts/nixbot.nix` -- `parent`, `after`, and deploy target definitions

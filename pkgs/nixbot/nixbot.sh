@@ -350,7 +350,6 @@ init_vars() {
   REMOTE_WRAPPER_BIN_DIR="/run/wrappers/bin"
   REMOTE_SYSTEM_BIN_DIR="/run/current-system/sw/bin"
   REMOTE_RUNTIME_PATH="${REMOTE_WRAPPER_BIN_DIR}:${REMOTE_SYSTEM_BIN_DIR}"
-  REMOTE_SYSTEM_SH="${REMOTE_SYSTEM_BIN_DIR}/sh"
   REMOTE_SYSTEM_BASH="${REMOTE_SYSTEM_BIN_DIR}/bash"
   RUNTIME_WORK_DIR_PREFIX="/dev/shm/nixbot-run."
   RUNTIME_WORK_DIR_FALLBACK_PREFIX="${TMPDIR:-/tmp}/nixbot-run."
@@ -3483,8 +3482,6 @@ _remote_check_activation_context_file_value() {
   local current=""
   local activation_runtime_path="/run/wrappers/bin:/run/current-system/sw/bin"
   local activation_shell="/run/current-system/sw/bin/sh"
-  local activation_path="/run/current-system/sw/bin"
-
   export PATH="${activation_runtime_path}${PATH:+:${PATH}}"
   if ! command -v sudo >/dev/null 2>&1; then
     echo "sudo is required to validate ${remote_dest}" >&2

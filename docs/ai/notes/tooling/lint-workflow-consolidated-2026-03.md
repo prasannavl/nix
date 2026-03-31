@@ -41,7 +41,27 @@ validation behavior and the `statix fix` invocation constraint.
 - When wrapping lint tools with path selection, respect each tool's real CLI
   contract instead of assuming batch positional arguments are supported.
 
+## Modes and baseline checks
+
+- Every lint mode should include `nix flake check --no-build` on the root flake.
+- The durable mode split is:
+  - `auto`: diff to the default base, changed sub-flakes only
+  - `--diff --base <ref>`: diff to the explicit base, changed sub-flakes only
+  - `--full-no-test`: full lint plus all sub-flakes except `test` / `test-*`
+    checks
+  - `--full`: full lint plus full sub-flake checks
+- Sub-flakes should name expensive checks `test` or `test-*` so mode-based
+  filtering stays mechanical.
+
+## Recent cleanup pattern
+
+- Notes that only say "the current lint failures were cleared" are transient by
+  nature. Keep the durable lint contract here rather than preserving one file
+  per cleanup pass.
+
 ## Superseded notes
 
 - `docs/ai/notes/tooling/lint-readonly-format-checks-2026-03.md`
 - `docs/ai/notes/tooling/lint-statix-fix-cli-2026-03.md`
+- `docs/ai/notes/tooling/lint-ci-mode-and-root-check-2026-03.md`
+- `docs/ai/notes/tooling/lint-fixes-2026-03.md`

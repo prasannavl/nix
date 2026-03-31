@@ -3,7 +3,8 @@
 ## Purpose
 
 This note records the final simplified architecture now implemented in
-`lib/systemd-user-manager.nix` and `lib/podman-compose.nix`.
+`lib/systemd-user-manager/default.nix`, `lib/systemd-user-manager/helper.sh`,
+and `lib/podman-compose.nix`.
 
 It supersedes the earlier direction that used:
 
@@ -34,6 +35,13 @@ It no longer owns:
 - generic `preActions` / `postActions`
 - root-owned per-unit stamp files
 - module-specific lifecycle semantics such as Podman image pulls
+
+The canonical code layout is:
+
+- Nix wiring and metadata generation in `lib/systemd-user-manager/default.nix`
+- shared shell control flow in `lib/systemd-user-manager/helper.sh`
+- generated dispatcher and reconciler services passing explicit environment
+  metadata into that helper
 
 ## Statelessness Model
 
@@ -78,6 +86,9 @@ This follows native NixOS switching semantics more closely than the earlier
 attempt to do old/new diffing inside dispatcher `ExecStop`, because activation
 still has a stable old-generation view in `/run/current-system` while the new
 generation is available through `$systemConfig`.
+
+Removed users must be stopped before the `users` activation phase removes the
+account, so the old-world stop path is a real pre-`users` activation step.
 
 ### New-world reconcile
 
@@ -135,6 +146,30 @@ So the intended semantics are:
 `imageTag` no longer means "pull immediately on deploy even without a start or
 restart". That is an intentional simplification.
 
+## Boot And Preview Rules
+
+- `switch` and `test` keep synchronous old-world stop plus dispatcher-driven new
+  reconcile.
+- `boot` must not be blocked by repo-owned mutable service logic. Boot skips
+  mutating activation-time user-manager work and relies on normal dispatcher
+  units later in the target graph.
+- `dry-activate` stays non-mutating, but it uses the same generated helper in a
+  preview mode so operators can see reconcile actions without performing them.
+
+## Operational Refinements
+
+- First-run and removal behavior use the explicit names `startOnFirstRun` and
+  `stopOnRemoval`.
+- Inactive-unit action policy uses the clearer
+  `observeUnitInactiveAction = fail | run-action | start-change-unit`.
+- Stable-state waits use bounded progressive backoff instead of a fixed noisy
+  polling loop.
+- Dispatcher logs should be thin orchestration logs: start, reconciler output,
+  and finish, without redundant reconciler-name chatter.
+- After waiting for a reconciler invocation to finish, the dispatcher should
+  replay the full invocation journal so deploy summaries do not lose late log
+  lines.
+
 ## Behavioral Contract
 
 The current intended contract is:
@@ -157,7 +192,24 @@ The current intended contract is:
 
 ## Source Of Truth
 
-- `lib/systemd-user-manager.nix`
+- `lib/systemd-user-manager/default.nix`
+- `lib/systemd-user-manager/helper.sh`
 - `lib/podman-compose.nix`
 - `docs/systemd-user-manager.md`
 - `docs/podman-compose.md`
+
+## Superseded notes
+
+- `docs/ai/notes/services/systemd-user-manager-bridge-lifecycle-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-boot-deferral-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-dispatcher-journal-drain-and-trap-fix-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-dispatcher-log-noise-cleanup-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-dispatcher-reconciler-redesign-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-dry-activate-preview-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-first-run-naming-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-inactive-action-naming-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-per-user-apply-and-podman-actions-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-removed-user-stop-ordering-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-shell-helper-extraction-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-stable-state-backoff-2026-03.md`
+- `docs/ai/notes/services/systemd-user-manager-stateless-manifest-plan-2026-03.md`

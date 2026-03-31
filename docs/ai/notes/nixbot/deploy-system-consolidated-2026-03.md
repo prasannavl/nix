@@ -58,6 +58,16 @@ result processing architecture, and CI connectivity.
   allocation are separate policy decisions, and both privileged validation
   probes and privileged install commands must consume the same target sudo
   policy, including whether remote validation should use `sudo -n` or prompt.
+- For machine-readable remote captures, keep stdout and stderr separate.
+  Structured values such as remote temp paths must come from stdout-only
+  helpers, while stderr remains operator-visible.
+- Generated SSH contexts for structured capture paths should suppress
+  first-contact chatter with `LogLevel=ERROR`.
+- Proxied primary and bootstrap contexts may reuse SSH control-master sockets.
+  When parented readiness is invalidated, clear the matching control sockets so
+  retries do not reuse stale post-switch transports.
+- A future `ProxyJump` migration must use generated per-hop SSH config; it is
+  not a safe text substitution for the current proxy wrapper model.
 
 ## Identity, keys, and host verification
 
@@ -207,10 +217,27 @@ failure by themselves:
 - Initial snapshot failures for later-wave hosts are deferred, not fatal.
 - A host whose rollback snapshot still cannot be captured when its wave is
   reached must not deploy.
+- For parented hosts, readiness is the real operation that must succeed next,
+  not a proxy signal from the parent. Snapshot capture uses a bounded retry loop
+  around the actual snapshot-path SSH operation.
+- Deploy preflight for parented hosts uses the same whole-operation bounded
+  retry model as snapshot capture.
+- Snapshot-era `primary-ready` success is not a durable deploy-ready lease for
+  parented hosts. Invalidate it before deploy and before each retry so deploy
+  re-proves fresh connectivity.
 - Final summary semantics should preserve the true terminal state:
   - snapshot-blocked hosts: `FAIL (snapshot)`
   - built-but-never-deployed hosts after a global failure: `built`
   - deployed-then-reverted hosts after another host fails: `rolled back`
+
+## Activation-time identity guardrails
+
+- The final pre-activation age identity injection path must not trust a stale
+  earlier "already present" result on fresh or parented hosts.
+- Immediately before invoking `nixos-rebuild-ng`, `nixbot` should reinject the
+  host age identity through the prepared deploy context and then prove that
+  `/var/lib/nixbot/.age/identity` is visible from the same transient
+  `systemd-run --pipe` execution model used by activation.
 
 ## Result processing architecture
 
@@ -258,6 +285,16 @@ failure by themselves:
   like `failed_hosts_out_ref`. With function-prefixed nameref aliases, `_local`
   should be added only when the shorter alias would collide with another name
   already used in scope or elsewhere in the script.
+
+## Superseded notes
+
+- `docs/ai/notes/nixbot/parented-deploy-preflight-retry-model-2026-03.md`
+- `docs/ai/notes/nixbot/parented-primary-ready-cache-invalidation-2026-03.md`
+- `docs/ai/notes/nixbot/parented-snapshot-readiness-loop-2026-03.md`
+- `docs/ai/notes/nixbot/preactivate-age-identity-force-reinstall-2026-03.md`
+- `docs/ai/notes/nixbot/preactivate-age-identity-recheck-2026-03.md`
+- `docs/ai/notes/nixbot/proxied-control-master-enable-2026-03.md`
+- `docs/ai/notes/nixbot/proxied-stdout-capture-and-proxyjump-limit-2026-03.md`
 - If the helper shifts positional parameters, capture those target-name
   parameters into ordinary locals before `shift`; otherwise the forwarded names
   no longer refer to the intended caller arrays.

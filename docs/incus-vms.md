@@ -24,15 +24,15 @@ to:
   that integrate with the deploy flow rather than requiring out-of-band
   intervention.
 
-`lib/incus.nix` exists to own that lifecycle declaratively so parent hosts only
-describe the desired guest set — IPs, config, devices — and the module handles
-image import, create/start, config-hash tracking, device sync, GC, and lifecycle
-tags as ordinary systemd services that run during deploy.
+`lib/incus/default.nix` exists to own that lifecycle declaratively so parent
+hosts only describe the desired guest set — IPs, config, devices — and the
+module handles image import, create/start, config-hash tracking, device sync,
+GC, and lifecycle tags as ordinary systemd services that run during deploy.
 
 ## Current Model
 
 - Parent host orchestration lives in `hosts/<parent-host>/incus.nix`.
-- Shared Incus lifecycle logic lives in `lib/incus.nix`.
+- Shared Incus lifecycle logic lives in `lib/incus/default.nix`.
 - Reusable guest bootstrap logic lives in `lib/incus-vm.nix`.
 - Reusable base image build lives in `lib/images/incus-base.nix`.
 - Guest-specific real configuration still lives under `hosts/<guest>/`.
@@ -40,7 +40,7 @@ tags as ordinary systemd services that run during deploy.
 
 ## What Is Reusable
 
-- `lib/incus.nix` owns declarative guest lifecycle:
+- `lib/incus/default.nix` owns declarative guest lifecycle:
   - declared image import
   - create/start
   - config-hash driven recreate
@@ -314,8 +314,8 @@ For nested Incus specifically:
 
 - the outer guest can use a normal Incus `gpu` device
 - the inner nested guest should use `/dev/dri` passthrough plus `/dev/kfd`
-- `/dev` host-path disk mounts are treated by `lib/incus.nix` as existing device
-  trees, not persistent state directories
+- `/dev` host-path disk mounts are treated by `lib/incus/default.nix` as
+  existing device trees, not persistent state directories
 
 ## FAQ
 
@@ -421,7 +421,7 @@ lifecycle service recreate it.
 
 ## Source Of Truth Files
 
-- `lib/incus.nix`
+- `lib/incus/default.nix`
 - `lib/incus-vm.nix`
 - `lib/images/incus-base.nix`
 - `lib/images/default.nix`

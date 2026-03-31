@@ -26,6 +26,9 @@ lifecycle work completed in March 2026.
 
 - Each instance renders store-backed source files, then stages them into its
   working directory at service start.
+- Shared runtime shell lives in `lib/podman-compose/helper.sh`, while the Nix
+  module in `lib/podman-compose/default.nix` owns metadata generation and unit
+  wiring.
 - The main generated user unit is a stateless long-running service:
   - `ExecStart`: `podman compose up -d --remove-orphans`, then
     `podman compose wait`
@@ -128,6 +131,18 @@ lifecycle work completed in March 2026.
   - does not replay lifecycle tags
   - only the main compose user unit starts
 
+## Runtime safety rules
+
+- Reload performs cleanup plus restaging before `up -d`, so file-backed runtime
+  trees are refreshed coherently instead of assuming old staged files are still
+  valid.
+- Staging must handle file-versus-directory conflicts cleanly when source shape
+  changes across generations.
+- Startup success is not "the compose command returned". The generated unit must
+  fail fast when containers remain in bad non-running states such as `Created`.
+- The long-running service model with `podman compose wait` is intentional so
+  systemd can observe runtime failure and restart stacks on real failures.
+
 ## Restart Trigger Coverage
 
 - `source` content is covered by the main restart stamp because the rendered
@@ -181,3 +196,8 @@ lifecycle work completed in March 2026.
 - `docs/ai/notes/services/bastion-compose-config-centralization-2026-03.md`
 - `docs/ai/notes/services/bastion-service-migration-consolidated-2026-03.md`
 - `docs/ai/notes/services/podman-compose-platform-consolidated-2026-03.md`
+- `docs/ai/notes/services/podman-compose-reload-staging-2026-03.md`
+- `docs/ai/notes/services/podman-compose-runtime-path-conflicts-and-startup-readiness-2026-03.md`
+- `docs/ai/notes/services/podman-compose-shell-helper-extraction-2026-03.md`
+- `docs/ai/notes/services/podman-compose-start-state-verification-2026-03.md`
+- `docs/ai/notes/services/podman-compose-wait-supervision-2026-03.md`

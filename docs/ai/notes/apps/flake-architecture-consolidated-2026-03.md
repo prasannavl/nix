@@ -64,6 +64,16 @@ canonical path.
   keeping one source of truth for builds without sacrificing local per-project
   flake ergonomics.
 
+## App metadata contract
+
+- Package `meta.mainProgram` is the single source of truth for runnable app
+  binaries.
+- Root app generation should derive app entries from package metadata rather
+  than from package-local self-referential app passthru wiring.
+- Non-standard root flake outputs such as `pkgs` and `nixosImages` are
+  intentional. Lint may filter those warnings rather than treating them as
+  architectural mistakes.
+
 ## Superseded notes
 
 The following files are superseded by this consolidated document:
@@ -72,3 +82,4 @@ The following files are superseded by this consolidated document:
 - `auto-discovered-flake-collectors-2026-03.md`
 - `lib-flake-rename-2026-03.md`
 - `pkgs-hybrid-package-set-and-wrapper-flakes-2026-03.md`
+- `docs/ai/notes/apps/flake-app-meta-simplification-2026-03.md`

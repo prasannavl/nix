@@ -70,7 +70,7 @@ VM and container guests run under Incus with a shared declarative lifecycle
 module:
 
 - Parent host orchestration lives in `hosts/<parent-host>/incus.nix`.
-- Shared lifecycle logic lives in `lib/incus.nix`.
+- Shared lifecycle logic lives in `lib/incus/default.nix`.
 - Reusable guest bootstrap lives in `lib/incus-vm.nix`.
 - Base image build lives in `lib/images/incus-base.nix`.
 - Guests are declared under `services.incusMachines.instances.<name>`.

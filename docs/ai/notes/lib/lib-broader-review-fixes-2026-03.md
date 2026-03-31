@@ -23,6 +23,13 @@ left unchanged for now.
 - Remove unconditional Tailscale enablement from the reusable systemd-container
   profile.
 - Declare `pkgs.gnugrep` in the Flatpak bootstrap service path.
+- For `lib/incus/default.nix`, treat shell argument handling and failure modes
+  conservatively:
+  - build `incus config device add` arguments with Bash arrays, not unquoted
+    scalar expansion
+  - prefer `mapfile`/structured JSON iteration over `for x in $(...)`
+  - fail evaluation on duplicate declared guest `ipv4Address` values
+  - make Incus GC fail closed when `incus list --format json` fails
 
 ## Implementation
 
@@ -44,3 +51,11 @@ left unchanged for now.
 - Incus and other systemd-container guests only enable Tailscale when their
   guest-specific secret wiring is present.
 - The Flathub bootstrap service no longer depends on ambient PATH for `grep`.
+- Incus device properties survive shell-sensitive values, duplicate static guest
+  IPv4 declarations fail early, and GC no longer treats Incus query failure as a
+  successful no-op.
+
+## Superseded notes
+
+- `docs/ai/notes/lib/incus-device-arg-safety-2026-03.md`
+- `docs/ai/notes/lib/incus-ip-conflict-assert-and-gc-fail-closed-2026-03.md`
