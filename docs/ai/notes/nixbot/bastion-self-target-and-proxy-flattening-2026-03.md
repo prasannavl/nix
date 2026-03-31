@@ -27,9 +27,15 @@ The CI failure signature that motivated this note included:
 - Match current-host identity by both names and resolved/local addresses so the
   rule still works when deploy targets or proxy hops are expressed as IPs or
   alternate DNS names.
-- If the selected deploy target is the current host, still prefer the normal
-  primary deploy route first (`nixbot@host` with the configured key/material).
-  Fall back to local execution only if that primary path is unavailable.
+- If the selected deploy target is the current host and the running process is
+  already executing as the deploy principal (for example `nixbot` on a bastion
+  forced-command run), use local execution immediately instead of self-SSHing
+  back through `nixbot@host`.
+- If the selected deploy target is the current host but the current process is
+  running as a different local user (for example `pvl` running `nixbot`
+  locally), preserve the normal `nixbot@host` SSH path for privilege
+  boundaries, but bypass `nixos-rebuild-ng`'s remote self-copy step during the
+  final activation handoff.
 - When building a proxy chain, drop any leading `proxyJump` hops that resolve to
   the current host before assembling SSH proxy wrappers, but keep the full
   configured chain available as a retry path when the flattened direct route is
@@ -43,8 +49,10 @@ The CI failure signature that motivated this note included:
   deploy context.
 - `prepare_deploy_context()`:
   - recognizes bastion-side self-target deploys
-  - still probes the primary deploy target first for them
-  - only falls back to a local execution context when that primary path fails
+  - switches them to a local execution context only when the current runtime
+    user already matches the deploy user
+  - otherwise keeps the normal remote `nixbot@host` path so local operators do
+    not silently fall back to `sudo` as themselves
   - normalizes `proxyJump` through `resolve_effective_proxy_chain()`
   - retries with the full configured proxy chain when a flattened direct probe
     to the primary deploy target fails, independent of whether bootstrap and
@@ -70,14 +78,17 @@ The CI failure signature that motivated this note included:
   SSH TTY allocation instead of treating them as the same decision.
 - Host phases (`snapshot`, `deploy`, `rollback`) branch on the prepared local
   execution flag instead of assuming every target is remote.
+- Remote self-target deploys now activate the already-built local closure via
+  the existing `nixbot@host` SSH/sudo path instead of asking
+  `nixos-rebuild-ng` to `nix-copy-closure` the machine back onto itself.
 
 ## Operational Effect
 
 - Bastion-triggered runs no longer depend on fresh SSH connectivity back into
   the bastion host after switching that same host.
-- Local runs started on a managed host now still prefer the normal `nixbot`
-  route when it is healthy, but keep a local execution fallback when self-SSH is
-  actually unavailable.
+- Local runs started on a managed host only execute fully locally when the run
+  is already operating as the deploy user. Operator-started runs from a normal
+  account keep the `nixbot` SSH trust path and avoid passworded local `sudo`.
 - Guests behind the bastion can be reached directly from the bastion during the
   same run, instead of proxying back through the bastion's own ingress path,
   when that direct path is actually routable from the active runtime context.

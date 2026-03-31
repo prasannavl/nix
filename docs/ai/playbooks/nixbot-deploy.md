@@ -74,9 +74,11 @@ Defaults may also include:
 
 ## Runtime Behavior Notes
 
-- Forced-command bootstrap success does not guarantee generic shell access.
-- Script may still fallback to bootstrap user for `nixos-rebuild --target-host`
-  flow.
+- Bootstrap-check success does not guarantee generic shell access.
+- If bootstrap key preparation restores normal `nixbot@host` access, deploy
+  must promote back to the primary route before `nixos-rebuild`.
+- Only a genuine bootstrap-check success without normal shell access should keep
+  `nixos-rebuild` on the bootstrap user route.
 - Script caches bootstrap readiness within one run.
 - Script keeps per-host prepared deploy state in `PREP_*`, but host phases
   should materialize that state through the helper readers instead of accessing

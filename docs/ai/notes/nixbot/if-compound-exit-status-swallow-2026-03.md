@@ -21,12 +21,22 @@ status is lost.
 - `retry_transport_command()` could turn non-`255` command failures into
   success, defeating fail-fast behavior.
 - `retry_transport_capture()` could do the same for captured-output probes.
+- `target_file_matches_expected_value()` could misreport remote-file validation
+  failures as success.
+- `probe_primary_deploy_target()` could print transport retries but still report
+  the primary path as healthy afterward.
 - Parent readiness barriers could print a failure and still return success.
 - Rollback and best-effort reporting helpers could misclassify failed commands
   after the same pattern.
 
 This explains deploy-wave continuation after readiness failures that should have
 aborted the wave.
+
+The lingering March 2026 cases that reproduced this were:
+
+- `target_file_matches_expected_value()`
+- `probe_primary_deploy_target()`
+- `run_parented_host_operation_with_retry()`
 
 ## Rule
 

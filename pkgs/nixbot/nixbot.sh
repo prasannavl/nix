@@ -51,7 +51,7 @@ Workflow Actions:
   tf-platform     Run the platform Terraform phase.
   tf-apps         Run the apps Terraform phase.
   tf/<project>    Run one configured Terraform project.
-  check-bootstrap Run forced-command bootstrap checks.
+  check-bootstrap Run bootstrap checks.
 
 Local Wrapper Action:
   tofu            Run local OpenTofu in the nixbot runtime shell.
@@ -331,6 +331,7 @@ init_vars() {
   PRIMARY_PROBE_LAST_OUTPUT=""
   CURRENT_HOST_ALIASES=()
   CURRENT_HOST_ADDRESSES=()
+  SELF_TARGET_NOTICE_KEYS=""
   ROLLBACK_OK_HOSTS=()
   ROLLBACK_FAILED_HOSTS=()
   FULLY_SKIPPED_HOSTS=()
@@ -347,14 +348,17 @@ init_vars() {
   REMOTE_NIXBOT_LEGACY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519_legacy"
   REMOTE_NIXBOT_AGE_IDENTITY="${REMOTE_NIXBOT_AGE_DIR}/identity"
   REMOTE_CURRENT_SYSTEM_PATH="/run/current-system"
+  REMOTE_SYSTEM_PROFILE_PATH="/nix/var/nix/profiles/system"
   REMOTE_WRAPPER_BIN_DIR="/run/wrappers/bin"
   REMOTE_SYSTEM_BIN_DIR="/run/current-system/sw/bin"
   REMOTE_RUNTIME_PATH="${REMOTE_WRAPPER_BIN_DIR}:${REMOTE_SYSTEM_BIN_DIR}"
   REMOTE_SYSTEM_BASH="${REMOTE_SYSTEM_BIN_DIR}/bash"
+  SSH_NULL_KNOWN_HOSTS_FILE="/dev/null"
   RUNTIME_WORK_DIR_PREFIX="/dev/shm/nixbot-run."
   RUNTIME_WORK_DIR_FALLBACK_PREFIX="${TMPDIR:-/tmp}/nixbot-run."
   BASTION_KNOWN_HOSTS_PREFIX="bastion-known-hosts"
   NODE_KNOWN_HOSTS_PREFIX="known_hosts"
+  REPO_KNOWN_HOSTS_PREFIX="repo-known-hosts"
   TMP_SECRETS_DIR=""
   TMP_SSH_DIR=""
   TMP_TF_ARTIFACT_DIR=""
@@ -386,7 +390,6 @@ init_vars() {
   REPO_ROOT_MANAGED=1
   REPO_URL="${NIXBOT_REPO_URL:-ssh://git@github.com/prasannavl/nix.git}"
   REPO_SSH_KEY_PATH="${REMOTE_NIXBOT_PRIMARY_KEY}"
-  REPO_GIT_SSH_COMMAND="ssh -i ${REPO_SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
   RUNTIME_WORK_DIR="${NIXBOT_RUNTIME_WORK_DIR:-}"
 
   init_current_host_aliases
@@ -1021,7 +1024,11 @@ configure_bastion_trigger_ssh_opts() {
   known_hosts_file="$(tmp_runtime_mktemp ssh "${BASTION_KNOWN_HOSTS_PREFIX}.XXXXXX")"
   printf '%s\n' "${scanned_known_hosts}" > "${known_hosts_file}"
   chmod 600 "${known_hosts_file}"
-  BASTION_TRIGGER_SSH_OPTS+=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile="${known_hosts_file}")
+  BASTION_TRIGGER_SSH_OPTS+=(
+    -o "GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE}"
+    -o StrictHostKeyChecking=yes
+    -o "UserKnownHostsFile=${known_hosts_file}"
+  )
 }
 
 run_bastion_trigger() {
@@ -1175,14 +1182,17 @@ release_repo_root_lock() {
 }
 
 ensure_repo_root_exists() {
+  local repo_git_ssh_command=""
+
   mkdir -p "$(dirname "${REPO_ROOT}")"
 
   if [ -d "${REPO_ROOT}/.git" ] || [ -f "${REPO_ROOT}/.git" ]; then
     return
   fi
 
-  if [ -f "${REPO_SSH_KEY_PATH}" ]; then
-    GIT_SSH_COMMAND="${REPO_GIT_SSH_COMMAND}" git clone "${REPO_URL}" "${REPO_ROOT}"
+  if extract_ssh_endpoint_from_repo_url "${REPO_URL}" >/dev/null; then
+    repo_git_ssh_command="$(build_repo_git_ssh_command_for_url "${REPO_URL}")" || return 1
+    GIT_SSH_COMMAND="${repo_git_ssh_command}" git clone "${REPO_URL}" "${REPO_ROOT}"
   else
     git clone "${REPO_URL}" "${REPO_ROOT}"
   fi
@@ -1201,8 +1211,16 @@ ensure_clean_repo_root() {
 }
 
 fetch_repo_root_origin() {
-  if [ -f "${REPO_SSH_KEY_PATH}" ]; then
-    GIT_SSH_COMMAND="${REPO_GIT_SSH_COMMAND}" git -C "${REPO_ROOT}" fetch --prune origin
+  local origin_url="" repo_git_ssh_command=""
+
+  origin_url="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
+  if [ -z "${origin_url}" ]; then
+    origin_url="${REPO_URL}"
+  fi
+
+  if extract_ssh_endpoint_from_repo_url "${origin_url}" >/dev/null; then
+    repo_git_ssh_command="$(build_repo_git_ssh_command_for_url "${origin_url}")" || return 1
+    GIT_SSH_COMMAND="${repo_git_ssh_command}" git -C "${REPO_ROOT}" fetch --prune origin
   else
     git -C "${REPO_ROOT}" fetch --prune origin
   fi
@@ -1982,6 +2000,89 @@ ensure_known_host() {
   fi
 }
 
+extract_ssh_endpoint_from_repo_url() {
+  local repo_url="$1" host_part="" repo_host="" repo_port="22"
+
+  case "${repo_url}" in
+    ssh://*)
+      host_part="${repo_url#ssh://}"
+      host_part="${host_part#*@}"
+      host_part="${host_part%%/*}"
+      if [[ "${host_part}" == \[*\]:* ]]; then
+        repo_host="${host_part#\[}"
+        repo_host="${repo_host%%]*}"
+        repo_port="${host_part##*:}"
+      elif [[ "${host_part}" == \[*\] ]]; then
+        repo_host="${host_part#\[}"
+        repo_host="${repo_host%\]}"
+      else
+        repo_host="${host_part%%:*}"
+        if [[ "${host_part}" == *:* ]]; then
+          repo_port="${host_part##*:}"
+        fi
+      fi
+      ;;
+    *@*:* )
+      repo_host="${repo_url#*@}"
+      repo_host="${repo_host%%:*}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  [ -n "${repo_host}" ] || return 1
+  printf '%s\n%s\n' "${repo_host}" "${repo_port}"
+}
+
+ensure_repo_known_hosts_file_for_url() {
+  local repo_url="$1" repo_host="" repo_port="" safe_host="" known_hosts_file=""
+  local scanned_known_hosts=""
+
+  {
+    read -r repo_host
+    read -r repo_port
+  } < <(extract_ssh_endpoint_from_repo_url "${repo_url}") || return 1
+
+  ensure_tmp_dir
+  safe_host="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${repo_host}")"
+  known_hosts_file="${TMP_SSH_DIR}/${REPO_KNOWN_HOSTS_PREFIX}.${safe_host}"
+
+  if [ ! -s "${known_hosts_file}" ]; then
+    if [ -n "${repo_port}" ] && [ "${repo_port}" != "22" ]; then
+      scanned_known_hosts="$(ssh-keyscan -H -p "${repo_port}" "${repo_host}" 2>/dev/null || true)"
+    else
+      scanned_known_hosts="$(ssh-keyscan -H "${repo_host}" 2>/dev/null || true)"
+    fi
+    [ -n "${scanned_known_hosts}" ] || {
+      echo "Could not determine repo host key for ${repo_host} from ${repo_url}" >&2
+      return 1
+    }
+    printf '%s\n' "${scanned_known_hosts}" > "${known_hosts_file}"
+    chmod 600 "${known_hosts_file}"
+  fi
+
+  printf '%s\n' "${known_hosts_file}"
+}
+
+build_repo_git_ssh_command_for_url() {
+  local repo_url="$1" known_hosts_file="" git_ssh_command=""
+
+  known_hosts_file="$(ensure_repo_known_hosts_file_for_url "${repo_url}")" || return 1
+
+  printf -v git_ssh_command \
+    'ssh -o GlobalKnownHostsFile=%q -o UserKnownHostsFile=%q -o StrictHostKeyChecking=yes' \
+    "${SSH_NULL_KNOWN_HOSTS_FILE}" \
+    "${known_hosts_file}"
+  if [ -f "${REPO_SSH_KEY_PATH}" ]; then
+    printf -v git_ssh_command '%s -i %q -o IdentitiesOnly=yes' \
+      "${git_ssh_command}" \
+      "${REPO_SSH_KEY_PATH}"
+  fi
+
+  printf '%s\n' "${git_ssh_command}"
+}
+
 ssh_host_from_target() {
   local target="$1"
 
@@ -2082,6 +2183,57 @@ should_use_local_self_target() {
   esac
 }
 
+can_execute_self_target_locally_as_deploy_user() {
+  local deploy_user="$1"
+
+  [ -n "${deploy_user}" ] || return 1
+  [ "$(id -u)" -eq 0 ] || [ "$(id -un)" = "${deploy_user}" ]
+}
+
+self_target_notice_emitted() {
+  local notice_key="$1"
+  local state_file=""
+
+  case " ${SELF_TARGET_NOTICE_KEYS} " in
+    *" ${notice_key} "*) return 0 ;;
+  esac
+
+  ensure_tmp_dir
+  state_file="${NIXBOT_TMP_DIR}/self-target-notices.keys"
+  if [ -f "${state_file}" ] && grep -Fxq "${notice_key}" "${state_file}"; then
+    SELF_TARGET_NOTICE_KEYS="${SELF_TARGET_NOTICE_KEYS} ${notice_key}"
+    return 0
+  fi
+
+  return 1
+}
+
+mark_self_target_notice_emitted() {
+  local notice_key="$1"
+  local state_file=""
+
+  ensure_tmp_dir
+  state_file="${NIXBOT_TMP_DIR}/self-target-notices.keys"
+  case " ${SELF_TARGET_NOTICE_KEYS} " in
+    *" ${notice_key} "*) return 0 ;;
+    *) SELF_TARGET_NOTICE_KEYS="${SELF_TARGET_NOTICE_KEYS} ${notice_key}" ;;
+  esac
+  if ! { [ -f "${state_file}" ] && grep -Fxq "${notice_key}" "${state_file}"; }; then
+    printf '%s\n' "${notice_key}" >> "${state_file}"
+  fi
+}
+
+emit_self_target_notice_once() {
+  local notice_key="$1" notice_message="$2"
+
+  if self_target_notice_emitted "${notice_key}"; then
+    return 0
+  fi
+
+  echo "${notice_message}" >&2
+  mark_self_target_notice_emitted "${notice_key}"
+}
+
 mark_bootstrap_ready() {
   local node="$1"
   local state_file=""
@@ -2179,40 +2331,10 @@ is_primary_ready() {
 check_bootstrap_via_forced_command() {
   local node="$1" ssh_target="$2"
   local -a ssh_opts=("${@:3}") check_ssh_opts=() check_remote_cmd=()
-  local check_output="" check_key_file="" remote_config_path="" i="" opt="" skip_next=0
+  local check_output="" check_key_file="" remote_config_path=""
+  local i="" opt="" skip_next=0 use_override_key=0
 
   # Forced-command ingress may require a key different from the deploy key.
-  for ((i=0; i<${#ssh_opts[@]}; i++)); do
-    if [ "${skip_next}" -eq 1 ]; then
-      skip_next=0
-      continue
-    fi
-    opt="${ssh_opts[$i]}"
-    case "${opt}" in
-      -i)
-        skip_next=1
-        continue
-        ;;
-      -o)
-        if [ $((i + 1)) -lt ${#ssh_opts[@]} ] && [[ "${ssh_opts[$((i + 1))]}" = IdentitiesOnly=* ]]; then
-          skip_next=1
-          continue
-        fi
-        check_ssh_opts+=("${opt}")
-        if [ $((i + 1)) -lt ${#ssh_opts[@]} ]; then
-          check_ssh_opts+=("${ssh_opts[$((i + 1))]}")
-          skip_next=1
-        fi
-        ;;
-      -oIdentitiesOnly=*|IdentitiesOnly=*)
-        continue
-        ;;
-      *)
-        check_ssh_opts+=("${opt}")
-        ;;
-    esac
-  done
-
   if [ -n "${NIXBOT_BASTION_KEY_PATH_OVERRIDE}" ]; then
     ensure_tmp_dir
     if ! check_key_file="$(resolve_runtime_key_file "${NIXBOT_BASTION_KEY_PATH_OVERRIDE}" 1)"; then
@@ -2222,7 +2344,43 @@ check_bootstrap_via_forced_command() {
       echo "Forced-command key file not found: ${NIXBOT_BASTION_KEY_PATH_OVERRIDE} (resolved: ${check_key_file})" >&2
       return 1
     fi
+    use_override_key=1
+  fi
+
+  if [ "${use_override_key}" -eq 1 ]; then
+    for ((i=0; i<${#ssh_opts[@]}; i++)); do
+      if [ "${skip_next}" -eq 1 ]; then
+        skip_next=0
+        continue
+      fi
+      opt="${ssh_opts[$i]}"
+      case "${opt}" in
+        -i)
+          skip_next=1
+          continue
+          ;;
+        -o)
+          if [ $((i + 1)) -lt ${#ssh_opts[@]} ] && [[ "${ssh_opts[$((i + 1))]}" = IdentitiesOnly=* ]]; then
+            skip_next=1
+            continue
+          fi
+          check_ssh_opts+=("${opt}")
+          if [ $((i + 1)) -lt ${#ssh_opts[@]} ]; then
+            check_ssh_opts+=("${ssh_opts[$((i + 1))]}")
+            skip_next=1
+          fi
+          ;;
+        -oIdentitiesOnly=*|IdentitiesOnly=*)
+          continue
+          ;;
+        *)
+          check_ssh_opts+=("${opt}")
+          ;;
+      esac
+    done
     check_ssh_opts=(-i "${check_key_file}" -o IdentitiesOnly=yes "${check_ssh_opts[@]}")
+  else
+    check_ssh_opts=("${ssh_opts[@]}")
   fi
 
   check_remote_cmd=("${REMOTE_NIXBOT_DEPLOY_SCRIPT}" check-bootstrap)
@@ -2238,7 +2396,7 @@ check_bootstrap_via_forced_command() {
     elif remote_config_path="$(repo_relative_path "${NIXBOT_CONFIG_PATH}" "${REPO_ROOT}")"; then
       :
     else
-      echo "Cannot forward absolute config path for forced-command bootstrap check: ${NIXBOT_CONFIG_PATH}" >&2
+      echo "Cannot forward absolute config path for bootstrap check: ${NIXBOT_CONFIG_PATH}" >&2
       return 1
     fi
     check_remote_cmd+=(--config "${remote_config_path}")
@@ -2246,22 +2404,22 @@ check_bootstrap_via_forced_command() {
 
   if retry_transport_capture \
     check_output \
-    "Forced-command bootstrap check for ${node}" \
+    "Bootstrap check for ${node}" \
     "" \
     ssh \
     "${check_ssh_opts[@]}" \
     "${ssh_target}" \
     "${check_remote_cmd[@]}"; then
-    echo "==> Bootstrap key validated via forced command for ${node}"
+    echo "==> Bootstrap check validated remote nixbot access for ${node}"
     return 0
   fi
 
   if [[ "${check_output}" == *"Unsupported action: check-bootstrap"* ]] || [[ "${check_output}" == *"invalid action"* ]]; then
-    echo "==> Remote forced command is on an older revision (no check-bootstrap action); treating auth as valid for ${node}"
+    echo "==> Remote bootstrap check entrypoint is on an older revision (no check-bootstrap action); treating auth as valid for ${node}"
     return 0
   fi
 
-  echo "==> Forced-command bootstrap check failed for ${node}; continuing with bootstrap injection fallback" >&2
+  echo "==> Bootstrap check failed for ${node}; continuing with bootstrap injection fallback" >&2
   printf '%s\n' "${check_output}" >&2
   return 1
 }
@@ -2646,8 +2804,9 @@ target_file_matches_expected_value() {
     "${check_cmd}" \
     "${ssh_opts[@]}"; then
     return 0
+  else
+    rc="$?"
   fi
-  rc="$?"
   return "${rc}"
 }
 
@@ -2722,8 +2881,15 @@ init_known_hosts_ssh_context() {
   local -n ikhsc_ssh_opts_out_ref="$3" ikhsc_nix_sshopts_out_ref="$4"
   local host_key_check="${5:-yes}"
 
-  ikhsc_ssh_opts_out_ref=(-o ConnectTimeout=10 -o ConnectionAttempts=1 -o LogLevel=ERROR -o "UserKnownHostsFile=${known_hosts_file}" -o "StrictHostKeyChecking=${host_key_check}")
-  ikhsc_nix_sshopts_out_ref="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o LogLevel=ERROR -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
+  ikhsc_ssh_opts_out_ref=(
+    -o ConnectTimeout=10
+    -o ConnectionAttempts=1
+    -o LogLevel=ERROR
+    -o "GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE}"
+    -o "UserKnownHostsFile=${known_hosts_file}"
+    -o "StrictHostKeyChecking=${host_key_check}"
+  )
+  ikhsc_nix_sshopts_out_ref="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o LogLevel=ERROR -o GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE} -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
 
   if [ "${batch_mode}" -eq 1 ]; then
     ikhsc_ssh_opts_out_ref=(-o BatchMode=yes "${ikhsc_ssh_opts_out_ref[@]}")
@@ -2901,7 +3067,7 @@ write_proxy_command_script() {
     printf 'previous_proxy_script=%q\n' "${previous_proxy_script}"
     printf 'identity_file=%q\n' "${identity_file}"
     cat <<'EOF'
-cmd=(ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
+cmd=(ssh -o LogLevel=ERROR -o "GlobalKnownHostsFile=/dev/null" -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
 if [ -n "${identity_file}" ]; then
   cmd+=(-i "${identity_file}" -o IdentitiesOnly=yes)
 fi
@@ -2935,8 +3101,9 @@ apply_proxy_chain_to_ssh_contexts() {
   ensure_tmp_dir
 
   # ProxyJump spawns a separate SSH process that does NOT inherit our custom
-  # UserKnownHostsFile, so it falls back to ~/.ssh/known_hosts and can fail
-  # with "REMOTE HOST IDENTIFICATION HAS CHANGED" on fresh/reinstalled hosts.
+  # known-hosts isolation, so it can fall back to the ambient machine-level SSH
+  # trust store and fail with "REMOTE HOST IDENTIFICATION HAS CHANGED" on
+  # fresh/reinstalled hosts.
   # Use ProxyCommand instead so we can pass the known_hosts file through.
   # The proxy host key was already scanned into the node's known_hosts file
   # by prepare_host_ssh_contexts above.
@@ -3111,8 +3278,9 @@ probe_primary_deploy_target() {
     true; then
     PRIMARY_PROBE_LAST_OUTPUT=""
     return 0
+  else
+    rc="$?"
   fi
-  rc="$?"
 
   PRIMARY_PROBE_LAST_OUTPUT="${probe_output}"
   return "${rc}"
@@ -3327,6 +3495,24 @@ prepare_deploy_context() {
     && { local_host_matches_identifier "${node}" || local_host_matches_identifier "${host}"; }; then
     self_target_match=1
   fi
+  if [ "${self_target_match}" -eq 1 ] \
+    && can_execute_self_target_locally_as_deploy_user "${user}"; then
+    emit_self_target_notice_once \
+      "${node}:local-exec" \
+      "==> Deploy target ${ssh_target} matches current host; using local execution as $(id -un)"
+    set_prepared_deploy_context \
+      "${node}" \
+      "" \
+      "" \
+      0 \
+      "${age_identity_key}" \
+      1
+    return 0
+  elif [ "${self_target_match}" -eq 1 ] && [ "${mode}" != "primary-only" ]; then
+    emit_self_target_notice_once \
+      "${node}:preserve-ssh" \
+      "==> Deploy target ${ssh_target} matches current host, but current user $(id -un) is not deploy user ${user}; preserving ${user} SSH route"
+  fi
   if [ -n "${proxy_jump}" ]; then
     full_proxy_chain="$(resolve_proxy_chain "${proxy_jump}")"
     effective_proxy_chain="$(resolve_effective_proxy_chain "${proxy_jump}")"
@@ -3393,7 +3579,9 @@ prepare_deploy_context() {
 
     if [ "${mode}" = "primary-only" ]; then
       [ "${primary_target_ready}" -eq 1 ] || return 1
-    elif [ "${self_target_match}" -eq 1 ] && [ "${primary_target_ready}" -eq 0 ]; then
+    elif [ "${self_target_match}" -eq 1 ] \
+      && can_execute_self_target_locally_as_deploy_user "${user}" \
+      && [ "${primary_target_ready}" -eq 0 ]; then
       echo "==> Primary deploy target ${ssh_target} is unavailable on self-target run; falling back to local execution as $(id -un)" >&2
       local_exec=1
       set_prepared_deploy_context \
@@ -3406,23 +3594,59 @@ prepare_deploy_context() {
       return 0
     elif [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
       if [ "${primary_target_ready}" -eq 0 ]; then
-        local validated_via_forced_command=0
+        local bootstrap_readiness_source=""
 
         if is_bootstrap_ready "${node}"; then
           echo "==> Reusing bootstrap readiness for ${node} from earlier step"
-          validated_via_forced_command=1
-        elif [ -n "${bootstrap_key}" ] && check_bootstrap_via_forced_command "${node}" "${ssh_target}" "${ssh_opts[@]}"; then
-          validated_via_forced_command=1
-          mark_bootstrap_ready "${node}"
+          bootstrap_readiness_source="cached"
+        elif [ -n "${bootstrap_key}" ]; then
+          clear_control_master_socket "${node}" primary
+          if check_bootstrap_via_forced_command "${node}" "${ssh_target}" "${ssh_opts[@]}"; then
+            bootstrap_readiness_source="forced-command"
+            mark_bootstrap_ready "${node}"
+          else
+            ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
+            bootstrap_readiness_source="injected"
+          fi
         else
           ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
+          bootstrap_readiness_source="injected"
         fi
 
-        if [ "${validated_via_forced_command}" -eq 1 ]; then
-          echo "==> Primary deploy target ${ssh_target} is forced-command-only for ingress checks; using bootstrap target ${bootstrap_ssh_target} for nixos-rebuild"
-        else
-          echo "==> Primary deploy target ${ssh_target} is unavailable; falling back to bootstrap target ${bootstrap_ssh_target} for this run"
+        if [ "${bootstrap_readiness_source}" != "forced-command" ]; then
+          clear_control_master_socket "${node}" primary
+          if ensure_primary_deploy_connectivity \
+            "${node}" \
+            "${host}" \
+            "${port}" \
+            "${bootstrap_port}" \
+            "${known_hosts}" \
+            "${ssh_target}" \
+            "${full_proxy_chain}" \
+            "${effective_proxy_chain}" \
+            "${key_path}" \
+            "${bootstrap_key_path}" \
+            "${age_identity_key}" \
+            ssh_opts \
+            nix_sshopts \
+            bootstrap_ssh_opts \
+            bootstrap_nix_sshopts; then
+            echo "==> Bootstrap preparation restored primary deploy target ${ssh_target}"
+            return 0
+          fi
         fi
+
+        case "${bootstrap_readiness_source}" in
+          forced-command)
+            echo "==> Bootstrap check passed for ${ssh_target}, but primary shell access is still unavailable; using bootstrap target ${bootstrap_ssh_target} for nixos-rebuild"
+            ;;
+          cached)
+            echo "==> Primary deploy target ${ssh_target} is still unavailable; reusing cached bootstrap path ${bootstrap_ssh_target}"
+            ;;
+          *)
+            echo "==> Primary deploy target ${ssh_target} is unavailable; falling back to bootstrap target ${bootstrap_ssh_target} for this run"
+            ;;
+        esac
 
         prepare_bootstrap_deploy_context \
           "${node}" \
@@ -3462,6 +3686,10 @@ run_prepared_deploy_command() {
 refresh_prepared_primary_target() {
   [ -n "${PREP_DEPLOY_NODE}" ] || return 0
   [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] || return 0
+  # Bootstrap-fallback retries are already operating on the prepared bootstrap
+  # transport. Re-probing the primary path here only adds misleading fallback
+  # noise and does not affect the in-flight retry arguments.
+  [ "${PREP_USING_BOOTSTRAP_FALLBACK}" -eq 0 ] || return 0
 
   prepare_deploy_context "${PREP_DEPLOY_NODE}" primary-only
 }
@@ -3687,8 +3915,9 @@ run_parented_host_operation_with_retry() {
     clear_primary_ready "${node}"
     if "$@"; then
       return 0
+    else
+      rc="$?"
     fi
-    rc="$?"
     if [ "${attempt}" -ge "${max_attempts}" ]; then
       return "${rc}"
     fi
@@ -3850,6 +4079,13 @@ read_prepared_current_system_path() {
     0 \
     "Current system read for ${PREP_DEPLOY_NODE:-target}" \
     "${REMOTE_SYSTEM_BIN_DIR}/readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
+}
+
+read_prepared_system_profile_path() {
+  run_prepared_deploy_command_with_retry \
+    0 \
+    "System profile read for ${PREP_DEPLOY_NODE:-target}" \
+    "${REMOTE_SYSTEM_BIN_DIR}/readlink -f ${REMOTE_SYSTEM_PROFILE_PATH} 2>/dev/null || true"
 }
 
 prepare_host_age_identity_for_deploy() {
@@ -4555,6 +4791,78 @@ verify_rollback_target_state() {
   return 1
 }
 
+prepared_deploy_is_remote_self_target() {
+  local host=""
+
+  [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] || return 1
+  [ -n "${PREP_DEPLOY_SSH_TARGET}" ] || return 1
+
+  host="$(ssh_host_from_target "${PREP_DEPLOY_SSH_TARGET}")"
+  local_host_matches_identifier "${PREP_DEPLOY_NODE}" \
+    || local_host_matches_identifier "${host}"
+}
+
+verify_deploy_target_state() {
+  local node="$1" built_out_path="$2" observed_path="" attempt="" max_attempts=15
+
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
+    sleep 2
+
+    if ! prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
+      continue
+    fi
+
+    case "${GOAL}" in
+      boot)
+        observed_path="$(read_prepared_system_profile_path 2>/dev/null || true)"
+        ;;
+      switch|test)
+        observed_path="$(read_prepared_current_system_path 2>/dev/null || true)"
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+
+    if [ -n "${observed_path}" ] && [ "${observed_path}" = "${built_out_path}" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+deploy_prepared_remote_self_target() {
+  local node="$1" built_out_path="$2"
+  local activate_cmd="" profile_path="${REMOTE_SYSTEM_PROFILE_PATH}" deploy_rc=0
+
+  if [ "${GOAL}" = "test" ]; then
+    printf -v activate_cmd 'set -euo pipefail; built=%q; if [ ! -x "$built/bin/switch-to-configuration" ]; then echo "built closure is not activatable: $built" >&2; exit 1; fi; "$built/bin/switch-to-configuration" %q' \
+      "${built_out_path}" \
+      "${GOAL}"
+  else
+    printf -v activate_cmd 'set -euo pipefail; built=%q; profile=%q; if [ ! -x "$built/bin/switch-to-configuration" ]; then echo "built closure is not activatable: $built" >&2; exit 1; fi; %q -p "$profile" --set "$built"; "$profile/bin/switch-to-configuration" %q' \
+      "${built_out_path}" \
+      "${profile_path}" \
+      "${REMOTE_SYSTEM_BIN_DIR}/nix-env" \
+      "${GOAL}"
+  fi
+
+  if run_prepared_root_command "${activate_cmd}"; then
+    return 0
+  else
+    deploy_rc="$?"
+  fi
+
+  echo "==> Self-target deploy transport closed or failed for ${node}; verifying target state" >&2
+  if verify_deploy_target_state "${node}" "${built_out_path}"; then
+    echo "==> Self-target deploy for ${node} completed despite transport disconnect" >&2
+    return 0
+  fi
+
+  return "${deploy_rc}"
+}
+
 rollback_successful_hosts() {
   local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
   shift 3
@@ -4645,6 +4953,13 @@ deploy_host() {
   using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
   age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
 
+  # Missing local age-identity material is a hard precondition failure, not a
+  # parent-settle race. Resolve it once up front so deploy does not spend a full
+  # retry window repeating the same missing-file error.
+  if [ -n "${age_identity_key}" ]; then
+    resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key}" >/dev/null || return 1
+  fi
+
   if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
     remote_current_path="$(read_prepared_current_system_path)"
     if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${built_out_path}" ]; then
@@ -4686,6 +5001,21 @@ deploy_host() {
   ask_sudo_password="${sudo_policy[1]:-0}"
   if [ "${ask_sudo_password}" -eq 1 ] && prepared_target_has_passwordless_sudo; then
     ask_sudo_password=0
+  fi
+
+  if prepared_deploy_is_remote_self_target; then
+    deploy_prepared_remote_self_target "${node}" "${built_out_path}"
+    return "$?"
+  fi
+
+  if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] \
+    && [ "${using_bootstrap_fallback}" -eq 1 ] \
+    && [ "${BUILD_HOST}" = "local" ]; then
+    local prepared_user="${PREP_DEPLOY_SSH_TARGET%%@*}"
+    if [ "${prepared_user}" != "root" ] && [ "${prepared_user}" != "nixbot" ]; then
+      echo "Bootstrap fallback left ${node} on ${PREP_DEPLOY_SSH_TARGET}, but local-build deploys require the primary deploy user before nixos-rebuild to avoid untrusted remote store imports" >&2
+      return 1
+    fi
   fi
 
   case "${BUILD_HOST}" in
