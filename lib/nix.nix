@@ -1,4 +1,4 @@
-{...}: {
+{pkgs, ...}: {
   nix.settings = {
     experimental-features = [
       "nix-command"
@@ -19,6 +19,7 @@
       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
     ];
   };
+  nix.package = pkgs.nixVersions.nix_2_33;
 
   nix.gc = {
     automatic = true;
