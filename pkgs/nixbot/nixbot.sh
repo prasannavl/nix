@@ -5221,10 +5221,30 @@ _remote_systemd_user_manager_unit_is_terminal() {
   return 1
 }
 
+_remote_systemd_user_manager_journal_line_is_noise() {
+  local line="$1"
+  local journal_noise_re='^(Starting |Started |Finished |Stopped |systemd-user-manager-(dispatcher|reconciler)-.*: Deactivated successfully\.)'
+
+  [[ "${line}" =~ ${journal_noise_re} ]]
+}
+
+_remote_systemd_user_manager_emit_journal_file_lines() {
+  local journal_file="$1" line=""
+
+  [ -s "${journal_file}" ] || return 0
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    if _remote_systemd_user_manager_journal_line_is_noise "${line}"; then
+      continue
+    fi
+    printf '  %s\n' "${line}"
+  done < "${journal_file}"
+}
+
 _remote_systemd_user_manager_emit_new_journal() {
   local cursor_file="$1"
   shift
-  local tmp_file="" last_line="" cursor=""
+  local tmp_file="" content_file="" last_line="" cursor=""
 
   tmp_file="$(mktemp)"
   if [ -s "${cursor_file}" ]; then
@@ -5247,17 +5267,18 @@ _remote_systemd_user_manager_emit_new_journal() {
     return 1
   fi
 
+  content_file="${tmp_file}"
   last_line="$(tail -n 1 "${tmp_file}")"
   if [[ "${last_line}" == --\ cursor:\ * ]]; then
     cursor="${last_line#-- cursor: }"
     printf '%s\n' "${cursor}" > "${cursor_file}"
-    sed '$d' "${tmp_file}"
+    content_file="$(mktemp)"
+    sed '$d' "${tmp_file}" > "${content_file}"
     rm -f "${tmp_file}"
-    return 0
   fi
 
-  cat "${tmp_file}"
-  rm -f "${tmp_file}"
+  _remote_systemd_user_manager_emit_journal_file_lines "${content_file}"
+  rm -f "${content_file}"
   return 0
 }
 
@@ -5265,45 +5286,15 @@ _remote_systemd_user_manager_stream_unit() {
   local unit="$1"
   local active_state="" sub_state="" result="" exec_main_status="" summary=""
   local dispatcher_invocation_id="" dispatcher_cursor_file=""
-  local reconciler_unit="" reconciler_invocation_id="" current_reconciler_invocation_id=""
-  local reconciler_cursor_file=""
 
-  reconciler_unit="${unit/systemd-user-manager-dispatcher-/systemd-user-manager-reconciler-}"
   dispatcher_invocation_id="$(systemctl show --property=InvocationID --value "${unit}" 2>/dev/null || true)"
-  reconciler_invocation_id=""
   dispatcher_cursor_file="$(mktemp)"
-  reconciler_cursor_file="$(mktemp)"
 
   while :; do
     if [ -n "${dispatcher_invocation_id}" ]; then
-      current_reconciler_invocation_id="$(systemctl show --property=InvocationID --value "${reconciler_unit}" 2>/dev/null || true)"
-      if [ -n "${current_reconciler_invocation_id}" ] && [ "${current_reconciler_invocation_id}" != "${reconciler_invocation_id}" ]; then
-        reconciler_invocation_id="${current_reconciler_invocation_id}"
-        rm -f "${reconciler_cursor_file}"
-        reconciler_cursor_file="$(mktemp)"
-      fi
-
-      if [ -n "${reconciler_invocation_id}" ]; then
-        _remote_systemd_user_manager_emit_new_journal \
-          "${dispatcher_cursor_file}" \
-          _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
-          | grep 'dispatcher ' \
-          | sed 's/^/  /' \
-          || true
-      else
-        _remote_systemd_user_manager_emit_new_journal \
-          "${dispatcher_cursor_file}" \
-          _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
-          | sed 's/^/  /' \
-          || true
-      fi
-    fi
-
-    if [ -n "${reconciler_invocation_id}" ]; then
       _remote_systemd_user_manager_emit_new_journal \
-        "${reconciler_cursor_file}" \
-        _SYSTEMD_INVOCATION_ID="${reconciler_invocation_id}" \
-        | sed 's/^/  /' \
+        "${dispatcher_cursor_file}" \
+        _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
         || true
     fi
 
@@ -5315,26 +5306,9 @@ _remote_systemd_user_manager_stream_unit() {
   done
 
   if [ -n "${dispatcher_invocation_id}" ]; then
-    if [ -n "${reconciler_invocation_id}" ]; then
-      _remote_systemd_user_manager_emit_new_journal \
-        "${dispatcher_cursor_file}" \
-        _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
-        | grep 'dispatcher ' \
-        | sed 's/^/  /' \
-        || true
-    else
-      _remote_systemd_user_manager_emit_new_journal \
-        "${dispatcher_cursor_file}" \
-        _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
-        | sed 's/^/  /' \
-        || true
-    fi
-  fi
-  if [ -n "${reconciler_invocation_id}" ]; then
     _remote_systemd_user_manager_emit_new_journal \
-      "${reconciler_cursor_file}" \
-      _SYSTEMD_INVOCATION_ID="${reconciler_invocation_id}" \
-      | sed 's/^/  /' \
+      "${dispatcher_cursor_file}" \
+      _SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" \
       || true
   fi
 
@@ -5349,7 +5323,7 @@ _remote_systemd_user_manager_stream_unit() {
   fi
   printf '%s\n' "${unit}: ${summary} (${active_state}/${sub_state}, result=${result:-unknown}, exec=${exec_main_status:-unknown})"
 
-  rm -f "${dispatcher_cursor_file}" "${reconciler_cursor_file}"
+  rm -f "${dispatcher_cursor_file}"
 }
 
 _remote_systemd_user_manager_report() {
@@ -5374,8 +5348,10 @@ EOF_UNITS
 build_systemd_user_manager_report_cmd() {
   local since_epoch="$1"
 
-  printf '%s\n%s\n%s\n%s\n%s\n' \
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
     "$(declare -f _remote_systemd_user_manager_unit_is_terminal)" \
+    "$(declare -f _remote_systemd_user_manager_journal_line_is_noise)" \
+    "$(declare -f _remote_systemd_user_manager_emit_journal_file_lines)" \
     "$(declare -f _remote_systemd_user_manager_emit_new_journal)" \
     "$(declare -f _remote_systemd_user_manager_stream_unit)" \
     "$(declare -f _remote_systemd_user_manager_report)" \
@@ -5393,13 +5369,19 @@ print_deploy_systemd_user_manager_report() {
   report_cmd="$(build_systemd_user_manager_report_cmd "${since_epoch}")"
   if prepare_deploy_context "${node}"; then
     if [ -n "${log_file}" ]; then
-      if run_prepared_root_command "${report_cmd}" | prefix_host_logs "${node}" >&2; then
+      if run_with_combined_output run_prepared_root_command "${report_cmd}" > >(host_log_filter "${node}" | tee -a "${log_file}" >&2); then
+        return 0
+      else
+        rc="$?"
+      fi
+    elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+      if run_with_combined_output run_prepared_root_command "${report_cmd}" > >(host_log_filter "${node}" >&2); then
         return 0
       else
         rc="$?"
       fi
     else
-      if run_prepared_root_command "${report_cmd}" >&2; then
+      if run_with_combined_output run_prepared_root_command "${report_cmd}" >&2; then
         return 0
       else
         rc="$?"
@@ -6783,22 +6765,28 @@ run_tofu_wrapper() {
 }
 
 run_requested_tf_phase() {
-  local phase="$1" project_dir="" found=0 project_name="" project_rc=0
+  local phase="$1" project_dir="" found=0 project_name="" project_rc=0 phase_project_dirs=""
 
   log_section "Phase: Terraform (${phase})"
 
-  while IFS= read -r project_dir; do
-    [ -n "${project_dir}" ] || continue
-    found=1
-    project_name="$(tf_project_name_from_dir "${project_dir}")"
-    project_rc=0
+  if ! phase_project_dirs="$(tf_project_dirs_for_phase "${phase}")"; then
+    return 1
+  fi
 
-    run_requested_tf_project_by_name "${phase}" "${project_name}" "${project_dir}" || project_rc=1
+  if [ -n "${phase_project_dirs}" ]; then
+    while IFS= read -r project_dir; do
+      [ -n "${project_dir}" ] || continue
+      found=1
+      project_name="$(tf_project_name_from_dir "${project_dir}")"
+      project_rc=0
 
-    if [ "${project_rc}" -ne 0 ]; then
-      return 1
-    fi
-  done < <(tf_project_dirs_for_phase "${phase}")
+      run_requested_tf_project_by_name "${phase}" "${project_name}" "${project_dir}" || project_rc=1
+
+      if [ "${project_rc}" -ne 0 ]; then
+        return 1
+      fi
+    done <<< "${phase_project_dirs}"
+  fi
 
   if [ "${found}" -eq 0 ]; then
     echo "No Terraform ${phase} projects found; skipping" >&2

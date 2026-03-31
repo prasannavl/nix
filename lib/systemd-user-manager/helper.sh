@@ -292,6 +292,67 @@ userctl_unit_file_state() {
   userctl show --property=UnitFileState --value "$unit"
 }
 
+journal_replay_line_is_noise() {
+  local line="$1"
+  local journal_noise_re='^(Starting |Started |Finished |Stopped |systemd-user-manager-(dispatcher|reconciler)-.*: Deactivated successfully\.)'
+
+  [[ "$line" =~ $journal_noise_re ]]
+}
+
+emit_journal_file_lines() {
+  local journal_file="$1" line=""
+
+  [ -s "$journal_file" ] || return 0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    if journal_replay_line_is_noise "$line"; then
+      continue
+    fi
+    printf '%s\n' "$line"
+  done < "$journal_file"
+}
+
+emit_new_journal() {
+  local cursor_file="$1"
+  shift
+  local tmp_file="" content_file="" last_line="" cursor=""
+
+  tmp_file="$(mktemp)"
+  if [ -s "$cursor_file" ]; then
+    journalctl \
+      --after-cursor "$(cat "$cursor_file")" \
+      --show-cursor \
+      --no-pager \
+      -o cat \
+      "$@" >"$tmp_file" 2>/dev/null || true
+  else
+    journalctl \
+      --show-cursor \
+      --no-pager \
+      -o cat \
+      "$@" >"$tmp_file" 2>/dev/null || true
+  fi
+
+  if [ ! -s "$tmp_file" ]; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+
+  content_file="$tmp_file"
+  last_line="$(tail -n 1 "$tmp_file")"
+  if [[ "$last_line" == --\ cursor:\ * ]]; then
+    cursor="${last_line#-- cursor: }"
+    printf '%s\n' "$cursor" >"$cursor_file"
+    content_file="$(mktemp)"
+    sed '$d' "$tmp_file" >"$content_file"
+    rm -f "$tmp_file"
+  fi
+
+  emit_journal_file_lines "$content_file"
+  rm -f "$content_file"
+  return 0
+}
+
 start_managed_unit() {
   local managed_name managed_unit active_state unit_file_state managed_started_at
   managed_name="$1"
@@ -342,6 +403,7 @@ start_managed_unit() {
 
 wait_for_reconciler() {
   local unit previous_invocation current_invocation active_state sub_state result i
+  local journal_cursor_file=""
   unit="$1"
   previous_invocation="$(userctl show --property=InvocationID --value "$unit" 2>/dev/null || true)"
   userctl restart --no-block "$unit"
@@ -361,8 +423,10 @@ wait_for_reconciler() {
     return 1
   fi
 
+  journal_cursor_file="$(mktemp)"
   i=0
   while [ "$i" -lt 1800 ]; do
+    emit_new_journal "$journal_cursor_file" _SYSTEMD_INVOCATION_ID="$current_invocation" || true
     active_state="$(userctl show --property=ActiveState --value "$unit" 2>/dev/null || true)"
     sub_state="$(userctl show --property=SubState --value "$unit" 2>/dev/null || true)"
     result="$(userctl show --property=Result --value "$unit" 2>/dev/null || true)"
@@ -378,9 +442,8 @@ wait_for_reconciler() {
     i=$((i + 1))
   done
 
-  journalctl _SYSTEMD_INVOCATION_ID="$current_invocation" --no-pager -o cat \
-    | grep -vE '^(Starting |Started |Finished |Stopped |systemd-user-manager-(dispatcher|reconciler)-.*: Deactivated successfully\.)' \
-    || true
+  emit_new_journal "$journal_cursor_file" _SYSTEMD_INVOCATION_ID="$current_invocation" || true
+  rm -f "$journal_cursor_file"
 
   case "$active_state:$sub_state:$result" in
     active:exited:success | inactive:dead:success)
@@ -397,7 +460,11 @@ wait_for_reconciler() {
 
 run_reconciler_apply() {
   local failed_units apply_started_at total_units work_units skipped_units
-  local -a started_unit_names started_unit_units started_unit_pids started_unit_started_ats
+  local i finished_pid="" managed_name="" managed_started_at="" managed_pid=""
+  local managed_units_tsv=""
+  local -a started_unit_names started_unit_pids started_unit_started_ats
+  local -a pending_unit_start_pids next_pending_unit_start_pids
+  local -A started_unit_names_by_pid started_unit_started_ats_by_pid
 
   require_env SYSTEMD_USER_MANAGER_USER
   require_env SYSTEMD_USER_MANAGER_METADATA
@@ -408,7 +475,6 @@ run_reconciler_apply() {
   work_units=0
   skipped_units=0
   started_unit_names=()
-  started_unit_units=()
   started_unit_pids=()
   started_unit_started_ats=()
   apply_started_at="$(now_epoch)"
@@ -426,34 +492,62 @@ run_reconciler_apply() {
   fi
 
   log_user_progress "$systemd_user_manager_user" "reconcile starting"
-  while IFS=$'\t' read -r managed_name managed_unit; do
-    total_units=$((total_units + 1))
-    if ! start_managed_unit "$managed_name" "$managed_unit"; then
-      failed_units="${failed_units} ${managed_name}"
-    elif [ "$managed_unit_outcome" = "start" ]; then
-      work_units=$((work_units + 1))
-      if [ -n "$managed_unit_start_pid" ]; then
-        started_unit_names+=("$managed_name")
-        started_unit_units+=("$managed_unit")
-        started_unit_pids+=("$managed_unit_start_pid")
-        started_unit_started_ats+=("$managed_unit_start_started_at")
+  if ! managed_units_tsv="$(jq -r '.managedUnits | sort_by(.name)[] | [.name, .unit] | @tsv' "$systemd_user_manager_metadata")"; then
+    printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $systemd_user_manager_metadata" >&2
+    exit 1
+  fi
+  if [ -n "$managed_units_tsv" ]; then
+    while IFS=$'\t' read -r managed_name managed_unit; do
+      total_units=$((total_units + 1))
+      if ! start_managed_unit "$managed_name" "$managed_unit"; then
+        failed_units="${failed_units} ${managed_name}"
+      elif [ "$managed_unit_outcome" = "start" ]; then
+        work_units=$((work_units + 1))
+        if [ -n "$managed_unit_start_pid" ]; then
+          started_unit_names+=("$managed_name")
+          started_unit_pids+=("$managed_unit_start_pid")
+          started_unit_started_ats+=("$managed_unit_start_started_at")
+        fi
+      elif [ "$managed_unit_outcome" = "skip" ]; then
+        skipped_units=$((skipped_units + 1))
       fi
-    elif [ "$managed_unit_outcome" = "skip" ]; then
-      skipped_units=$((skipped_units + 1))
-    fi
-  done < <(
-    jq -r '.managedUnits | sort_by(.name)[] | [.name, .unit] | @tsv' "$systemd_user_manager_metadata"
-  )
+    done <<< "$managed_units_tsv"
+  fi
 
   if [ "$dry_run" != 1 ] && [ "${#started_unit_pids[@]}" -gt 0 ]; then
-    local i
     for i in "${!started_unit_pids[@]}"; do
-      if wait "${started_unit_pids[$i]}"; then
-        log_managed_unit "$systemd_user_manager_user" "${started_unit_names[$i]}" "started in $(elapsed_since "${started_unit_started_ats[$i]}")"
+      started_unit_names_by_pid["${started_unit_pids[$i]}"]="${started_unit_names[$i]}"
+      started_unit_started_ats_by_pid["${started_unit_pids[$i]}"]="${started_unit_started_ats[$i]}"
+    done
+    pending_unit_start_pids=("${started_unit_pids[@]}")
+    while [ "${#pending_unit_start_pids[@]}" -gt 0 ]; do
+      finished_pid=""
+      if wait -n -p finished_pid "${pending_unit_start_pids[@]}"; then
+        managed_name="${started_unit_names_by_pid[$finished_pid]-}"
+        managed_started_at="${started_unit_started_ats_by_pid[$finished_pid]-}"
+        if [ -z "$managed_name" ] || [ -z "$managed_started_at" ]; then
+          printf '%s\n' "[systemd-user-manager] unexpected wait result for managed unit start pid=${finished_pid:-unknown}" >&2
+          exit 1
+        fi
+        log_managed_unit "$systemd_user_manager_user" "$managed_name" "started in $(elapsed_since "$managed_started_at")"
       else
-        log_managed_unit "$systemd_user_manager_user" "${started_unit_names[$i]}" "failed to start after $(elapsed_since "${started_unit_started_ats[$i]}")"
-        failed_units="${failed_units} ${started_unit_names[$i]}"
+        managed_name="${started_unit_names_by_pid[$finished_pid]-}"
+        managed_started_at="${started_unit_started_ats_by_pid[$finished_pid]-}"
+        if [ -z "$managed_name" ] || [ -z "$managed_started_at" ]; then
+          printf '%s\n' "[systemd-user-manager] unexpected failed wait result for managed unit start pid=${finished_pid:-unknown}" >&2
+          exit 1
+        fi
+        log_managed_unit "$systemd_user_manager_user" "$managed_name" "failed to start after $(elapsed_since "$managed_started_at")"
+        failed_units="${failed_units} ${managed_name}"
       fi
+
+      next_pending_unit_start_pids=()
+      for managed_pid in "${pending_unit_start_pids[@]}"; do
+        [ "$managed_pid" = "$finished_pid" ] && continue
+        next_pending_unit_start_pids+=("$managed_pid")
+      done
+      pending_unit_start_pids=("${next_pending_unit_start_pids[@]}")
+      unset "started_unit_names_by_pid[$finished_pid]" "started_unit_started_ats_by_pid[$finished_pid]"
     done
   fi
 
@@ -503,7 +597,7 @@ run_dispatcher_start() {
 run_stop_phase() {
   local phase_mode old_units_dir old_pointer_dir old_unit_file old_service_name old_pointer_file
   local new_pointer_file old_metadata_file new_metadata_file old_user old_identity new_identity
-  local stop_failed new_stamp
+  local stop_failed new_stamp managed_units_tsv=""
 
   phase_mode="$1"
   old_units_dir="${systemd_user_manager_old_system}/etc/systemd/system"
@@ -529,20 +623,39 @@ run_stop_phase() {
     fi
 
     stop_failed=0
-    while IFS=$'\t' read -r managed_name managed_unit stop_on_removal old_stamp; do
-      new_stamp=""
-      if [ -n "$new_metadata_file" ] && [ -f "$new_metadata_file" ]; then
-        new_stamp="$(
-          jq -r --arg name "$managed_name" '
-            (.managedUnits // [])
-            | map(select(.name == $name))
-            | .[0].stamp // ""
-          ' "$new_metadata_file" 2>/dev/null || true
-        )"
-      fi
+    if ! managed_units_tsv="$(jq -r '.managedUnits[] | [.name, .unit, (if .stopOnRemoval then "1" else "0" end), .stamp] | @tsv' "$old_metadata_file")"; then
+      printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $old_metadata_file" >&2
+      return 1
+    fi
+    if [ -n "$managed_units_tsv" ]; then
+      while IFS=$'\t' read -r managed_name managed_unit stop_on_removal old_stamp; do
+        new_stamp=""
+        if [ -n "$new_metadata_file" ] && [ -f "$new_metadata_file" ]; then
+          new_stamp="$(
+            jq -r --arg name "$managed_name" '
+              (.managedUnits // [])
+              | map(select(.name == $name))
+              | .[0].stamp // ""
+            ' "$new_metadata_file" 2>/dev/null || true
+          )"
+        fi
 
-      if [ -z "$new_stamp" ]; then
-        if [ "$stop_on_removal" = 1 ]; then
+        if [ -z "$new_stamp" ]; then
+          if [ "$stop_on_removal" = 1 ]; then
+            if [ "$phase_mode" = preview ]; then
+              log_managed_unit "$old_user" "$managed_name" "would stop"
+            else
+              userctl_mode=root
+              log_managed_unit "$old_user" "$managed_name" "stopping"
+              if ! stop_managed_unit "$managed_unit"; then
+                stop_failed=1
+              fi
+            fi
+          fi
+          continue
+        fi
+
+        if [ "$old_stamp" != "$new_stamp" ]; then
           if [ "$phase_mode" = preview ]; then
             log_managed_unit "$old_user" "$managed_name" "would stop"
           else
@@ -553,23 +666,8 @@ run_stop_phase() {
             fi
           fi
         fi
-        continue
-      fi
-
-      if [ "$old_stamp" != "$new_stamp" ]; then
-        if [ "$phase_mode" = preview ]; then
-          log_managed_unit "$old_user" "$managed_name" "would stop"
-        else
-          userctl_mode=root
-          log_managed_unit "$old_user" "$managed_name" "stopping"
-          if ! stop_managed_unit "$managed_unit"; then
-            stop_failed=1
-          fi
-        fi
-      fi
-    done < <(
-      jq -r '.managedUnits[] | [.name, .unit, (if .stopOnRemoval then "1" else "0" end), .stamp] | @tsv' "$old_metadata_file"
-    )
+      done <<< "$managed_units_tsv"
+    fi
 
     if [ "$phase_mode" = apply ] && [ "$stop_failed" -ne 0 ]; then
       return 1
@@ -616,6 +714,7 @@ run_activation_stop_old() {
 
 run_activation_dry_preview() {
   local preview_user preview_metadata preview_reconciler_service
+  local preview_manifest_tsv=""
 
   require_env SYSTEMD_USER_MANAGER_OLD_SYSTEM
   require_env SYSTEMD_USER_MANAGER_NEW_SYSTEM
@@ -623,11 +722,15 @@ run_activation_dry_preview() {
 
   printf '%s\n' "[systemd-user-manager] dry-activate preview start"
   run_stop_phase preview
-  while IFS=$'\t' read -r preview_user preview_metadata preview_reconciler_service; do
-    run_preview_as_user "$preview_user" "$preview_metadata" "$preview_reconciler_service"
-  done < <(
-    jq -r '.[] | [.user, .metadataFile, .reconcilerService] | @tsv' "$systemd_user_manager_preview_manifest"
-  )
+  if ! preview_manifest_tsv="$(jq -r '.[] | [.user, .metadataFile, .reconcilerService] | @tsv' "$systemd_user_manager_preview_manifest")"; then
+    printf '%s\n' "[systemd-user-manager] failed to read preview manifest: $systemd_user_manager_preview_manifest" >&2
+    exit 1
+  fi
+  if [ -n "$preview_manifest_tsv" ]; then
+    while IFS=$'\t' read -r preview_user preview_metadata preview_reconciler_service; do
+      run_preview_as_user "$preview_user" "$preview_metadata" "$preview_reconciler_service"
+    done <<< "$preview_manifest_tsv"
+  fi
   printf '%s\n' "[systemd-user-manager] dry-activate preview complete"
 }
 
