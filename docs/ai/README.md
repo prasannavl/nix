@@ -100,6 +100,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/github-actions-workflow-design-2026-03.md`: GitHub
   Actions workflow design: action input scope, runtime warmup strategy, and thin
   launcher role.
+- `docs/ai/notes/nixbot/host-age-identity-single-prep-pass-2026-04.md`:
+  Collapse host age identity deploy prep to one activation-context pass that
+  injects only when missing or mismatched, and remove the forced reinstall
+  path.
 - `docs/ai/notes/nixbot/if-compound-exit-status-swallow-2026-03.md`: Bash
   `if cmd; then ...; fi; rc="$?"` bug in `nixbot` swallowed real failures in
   transport retry, parent readiness, rollback, and report helpers; capture
@@ -149,6 +153,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/reviews/nixbot-and-incus-architecture-review-2026-03.md`:
   Architecture, correctness, and refactoring review of `pkgs/nixbot/nixbot.sh`
   and `lib/incus/default.nix`.
+- `docs/ai/notes/reviews/systemd-user-manager-and-nixbot-cleanup-pass-2026-04.md`:
+  Cleanup pass for `systemd-user-manager` and matching `nixbot` report logic,
+  including deferred identity restarts, bounded journal polling, and stop-path
+  deduplication.
 - `docs/ai/notes/reviews/systemd-user-manager-and-nixbot-review-fixes-2026-04.md`:
   Follow-up fixes for review findings in `lib/systemd-user-manager/helper.sh`
   and `pkgs/nixbot/nixbot.sh`, including fatal metadata parse handling,
@@ -171,6 +179,13 @@ Use this index as the canonical map for `docs/ai/**`.
   tunnel adoption plan, and operational procedures.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Documentation
   cleanup rules for sensitive operational details.
+- `docs/ai/notes/services/systemd-user-manager-deferred-identity-restart-2026-04.md`:
+  Defer identity-driven `user@<uid>.service` restarts out of activation and
+  hand them off to the post-switch dispatcher through ephemeral `/run` markers.
+- `docs/ai/notes/services/systemd-user-manager-bounded-live-journal-and-heartbeats-2026-04.md`:
+  Keep live reconciler progress, but bound and rate-limit journal polling and
+  add explicit dispatcher heartbeats so slow or quiet journal paths do not look
+  like a hung switch.
 - `docs/ai/notes/services/gcp-terraform-adoption-2026-03.md`: GCP bootstrap and
   platform Terraform adoption into this repo's phase-based `tf/` layout.
 - `docs/ai/notes/services/automatic-ingress-metadata-2026-03.md`: Optional

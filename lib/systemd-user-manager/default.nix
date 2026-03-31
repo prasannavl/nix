@@ -57,6 +57,7 @@
   bootReadyTargetName = "systemd-user-manager-ready.target";
   managedUserActionPath = "/run/wrappers/bin:/run/current-system/sw/bin";
   dispatcherMetadataPointerRelDir = "systemd-user-manager/dispatchers";
+  deferredRestartRequestDir = "/run/systemd-user-manager/restart-requests";
 
   helperPackage = pkgs.writeShellApplication {
     name = "systemd-user-manager-helper";
@@ -71,6 +72,7 @@
     runtimeEnv = {
       SYSTEMD_USER_MANAGER_BOOT_READY_TARGET = bootReadyTargetName;
       SYSTEMD_USER_MANAGER_DISPATCHER_METADATA_POINTER_REL_DIR = dispatcherMetadataPointerRelDir;
+      SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR = deferredRestartRequestDir;
       SYSTEMD_USER_MANAGER_MANAGED_USER_ACTION_PATH = managedUserActionPath;
     };
     text = ''
@@ -119,11 +121,13 @@
     {}
     instances;
 
+  managedUsers = builtins.attrNames managedUnitsByUser;
+
   generatedDispatcherServiceNames =
-    map dispatcherServiceNameForUser (builtins.attrNames managedUnitsByUser);
+    map dispatcherServiceNameForUser managedUsers;
 
   generatedReconcilerServiceNames =
-    map reconcilerServiceNameForUser (builtins.attrNames managedUnitsByUser);
+    map reconcilerServiceNameForUser managedUsers;
 
   duplicateGeneratedSystemdServiceNames =
     collectionsLib.duplicateValues (generatedDispatcherServiceNames ++ generatedReconcilerServiceNames);
@@ -166,6 +170,11 @@
       file = pkgs.writeText "systemd-user-manager-${sanitizeUserKey user}.json" rendered;
     })
     managedUnitsByUser;
+
+  artifactValuesByName =
+    lib.mapAttrs'
+    (_: artifacts:
+      lib.nameValuePair artifacts.name artifacts.value);
 
   mkUserReconciler = user: _: let
     metadata = userMetadataByUser.${user};
@@ -247,7 +256,7 @@
         metadataFile = userReconcilersByUser.${user}.metadataFile;
         reconcilerService = "${userReconcilersByUser.${user}.serviceName}.service";
       })
-      (builtins.attrNames userReconcilersByUser)
+      managedUsers
     )
   );
 in {
@@ -329,16 +338,10 @@ in {
 
     systemd = {
       services =
-        lib.mapAttrs'
-        (_: artifacts:
-          lib.nameValuePair artifacts.name artifacts.value)
-        dispatcherServicesByUser;
+        artifactValuesByName dispatcherServicesByUser;
 
       user.services =
-        lib.mapAttrs'
-        (_: artifacts:
-          lib.nameValuePair artifacts.name artifacts.value)
-        userReconcilersByUser;
+        artifactValuesByName userReconcilersByUser;
 
       user.targets.${lib.removeSuffix ".target" bootReadyTargetName} = {
         description = "Managed user units ready target";

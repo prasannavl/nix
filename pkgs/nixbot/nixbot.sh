@@ -326,6 +326,8 @@ init_vars() {
   PREP_DEPLOY_NIX_SSHOPTS=""
   PREP_USING_BOOTSTRAP_FALLBACK=0
   PREP_DEPLOY_AGE_IDENTITY_KEY=""
+  PREP_DEPLOY_AGE_IDENTITY_FILE=""
+  PREP_DEPLOY_AGE_IDENTITY_SHA=""
   PREP_DEPLOY_LOCAL_EXEC=0
   PREP_DEPLOY_SSH_OPTS=()
   PRIMARY_PROBE_LAST_OUTPUT=""
@@ -3232,6 +3234,8 @@ set_prepared_deploy_context() {
   PREP_DEPLOY_NIX_SSHOPTS="${nix_sshopts}"
   PREP_USING_BOOTSTRAP_FALLBACK="${using_bootstrap_fallback}"
   PREP_DEPLOY_AGE_IDENTITY_KEY="${age_identity_key}"
+  PREP_DEPLOY_AGE_IDENTITY_FILE=""
+  PREP_DEPLOY_AGE_IDENTITY_SHA=""
   PREP_DEPLOY_LOCAL_EXEC="${local_exec}"
   PREP_DEPLOY_SSH_OPTS=("${ssh_opts[@]}")
 }
@@ -3257,6 +3261,8 @@ clear_prepared_deploy_context() {
   PREP_DEPLOY_NIX_SSHOPTS=""
   PREP_USING_BOOTSTRAP_FALLBACK=0
   PREP_DEPLOY_AGE_IDENTITY_KEY=""
+  PREP_DEPLOY_AGE_IDENTITY_FILE=""
+  PREP_DEPLOY_AGE_IDENTITY_SHA=""
   PREP_DEPLOY_LOCAL_EXEC=0
   PREP_DEPLOY_SSH_OPTS=()
 }
@@ -3372,22 +3378,17 @@ prepare_bootstrap_deploy_context() {
 }
 
 inject_host_age_identity_key() {
-  local node="$1" local_exec="$2" ssh_target="$3" age_identity_key_path="$4"
-  local using_bootstrap_fallback="${5:-0}"
-  local force_reinstall="${6:-0}"
+  local node="$1" local_exec="$2" ssh_target="$3" age_identity_key_file="$4"
+  local expected_sha="$5" using_bootstrap_fallback="${6:-0}"
   shift 6
   local -a ssh_opts=("$@")
-  local age_identity_key_file="" expected_sha=""
   local remote_dest="${REMOTE_NIXBOT_AGE_IDENTITY}"
 
-  if [ -z "${age_identity_key_path}" ]; then
+  if [ -z "${age_identity_key_file}" ] || [ -z "${expected_sha}" ]; then
     return
   fi
 
   if [ "${DRY_RUN}" -eq 1 ]; then
-    if ! read -r age_identity_key_file; then
-      return 1
-    fi < <(resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key_path}")
     if [ "${local_exec}" -eq 1 ]; then
       echo "DRY: would inject host age identity ${age_identity_key_file} -> ${remote_dest}"
     else
@@ -3396,24 +3397,17 @@ inject_host_age_identity_key() {
     return
   fi
 
-  {
-    read -r age_identity_key_file
-    read -r expected_sha
-  } < <(resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key_path}") || return 1
-
-  if [ "${force_reinstall}" -ne 1 ]; then
-    # shellcheck disable=SC2016
-    if target_file_matches_expected_value \
-      "${local_exec}" \
-      "${ssh_target}" \
-      "${remote_dest}" \
-      "${expected_sha}" \
-      'set -- $(sha256sum "$DEST"); printf "%s\n" "$1"' \
-      "${using_bootstrap_fallback}" \
-      "${ssh_opts[@]}"; then
-      echo "==> Skipping host age identity for ${node}; matching key already present on target"
-      return
-    fi
+  # shellcheck disable=SC2016
+  if target_file_matches_expected_value \
+    "${local_exec}" \
+    "${ssh_target}" \
+    "${remote_dest}" \
+    "${expected_sha}" \
+    'set -- $(sha256sum "$DEST"); printf "%s\n" "$1"' \
+    "${using_bootstrap_fallback}" \
+    "${ssh_opts[@]}"; then
+    echo "==> Skipping host age identity for ${node}; matching key already present on target"
+    return
   fi
 
   echo "==> Injecting host age identity for ${node}"
@@ -3458,6 +3452,31 @@ resolve_host_age_identity_key_file_and_sha() {
   fi
 
   printf '%s\n%s\n' "${age_identity_key_file}" "${expected_sha}"
+}
+
+ensure_prepared_host_age_identity_material() {
+  local node="${1:-${PREP_DEPLOY_NODE}}"
+  local age_identity_key_path="${2:-${PREP_DEPLOY_AGE_IDENTITY_KEY}}"
+
+  if [ -z "${age_identity_key_path}" ]; then
+    PREP_DEPLOY_AGE_IDENTITY_FILE=""
+    PREP_DEPLOY_AGE_IDENTITY_SHA=""
+    return 0
+  fi
+
+  if [ -n "${PREP_DEPLOY_AGE_IDENTITY_FILE}" ] && [ -n "${PREP_DEPLOY_AGE_IDENTITY_SHA}" ]; then
+    return 0
+  fi
+
+  if [ -z "${node}" ]; then
+    echo "Missing deploy node for prepared host age identity resolution" >&2
+    return 1
+  fi
+
+  {
+    read -r PREP_DEPLOY_AGE_IDENTITY_FILE
+    read -r PREP_DEPLOY_AGE_IDENTITY_SHA
+  } < <(resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key_path}") || return 1
 }
 
 prepare_deploy_context() {
@@ -3511,7 +3530,7 @@ prepare_deploy_context() {
   elif [ "${self_target_match}" -eq 1 ] && [ "${mode}" != "primary-only" ]; then
     emit_self_target_notice_once \
       "${node}:preserve-ssh" \
-      "==> Deploy target ${ssh_target} matches current host, but current user $(id -un) is not deploy user ${user}; preserving ${user} SSH route"
+      "==> Self-target ${ssh_target}; current user $(id -un) != ${user}, keeping SSH route"
   fi
   if [ -n "${proxy_jump}" ]; then
     full_proxy_chain="$(resolve_proxy_chain "${proxy_jump}")"
@@ -3762,19 +3781,14 @@ build_remote_activation_context_file_value_check_cmd() {
 }
 
 wait_for_prepared_host_age_identity_activation_visibility() {
-  local node="$1" age_identity_key_path="$2"
-  local age_identity_key_file="" expected_sha="" check_cmd="" ask_sudo_password=0 tty_mode=0
+  local node="$1" expected_sha="$2"
+  local check_cmd="" ask_sudo_password=0 tty_mode=0
   local -a sudo_policy=()
   local attempt=1 max_attempts=10
 
   [ "${DRY_RUN}" -eq 0 ] || return 0
 
-  [ -n "${age_identity_key_path}" ] || return 0
-
-  {
-    read -r age_identity_key_file
-    read -r expected_sha
-  } < <(resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key_path}") || return 1
+  [ -n "${expected_sha}" ] || return 0
 
   mapfile -t sudo_policy < <(resolve_target_sudo_policy "${PREP_DEPLOY_LOCAL_EXEC}" "${PREP_DEPLOY_SSH_TARGET}" "${PREP_USING_BOOTSTRAP_FALLBACK}")
   ask_sudo_password="${sudo_policy[1]:-0}"
@@ -4089,23 +4103,26 @@ read_prepared_system_profile_path() {
 }
 
 prepare_host_age_identity_for_deploy() {
-  local node="$1" force_reinstall="${2:-0}" require_activation_visibility="${3:-0}"
+  local node="$1" require_activation_visibility="${2:-0}"
   local age_identity_key=""
 
   prepare_deploy_context "${node}" || return 1
   age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+  ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
 
   inject_host_age_identity_key \
     "${node}" \
     "${PREP_DEPLOY_LOCAL_EXEC}" \
     "${PREP_DEPLOY_SSH_TARGET}" \
-    "${age_identity_key}" \
+    "${PREP_DEPLOY_AGE_IDENTITY_FILE}" \
+    "${PREP_DEPLOY_AGE_IDENTITY_SHA}" \
     "${PREP_USING_BOOTSTRAP_FALLBACK}" \
-    "${force_reinstall}" \
     "${PREP_DEPLOY_SSH_OPTS[@]}" || return 1
 
   if [ "${require_activation_visibility}" -eq 1 ]; then
-    wait_for_prepared_host_age_identity_activation_visibility "${node}" "${age_identity_key}" || return 1
+    wait_for_prepared_host_age_identity_activation_visibility \
+      "${node}" \
+      "${PREP_DEPLOY_AGE_IDENTITY_SHA}" || return 1
   fi
 }
 
@@ -4959,7 +4976,7 @@ deploy_host() {
   # parent-settle race. Resolve it once up front so deploy does not spend a full
   # retry window repeating the same missing-file error.
   if [ -n "${age_identity_key}" ]; then
-    resolve_host_age_identity_key_file_and_sha "${node}" "${age_identity_key}" >/dev/null || return 1
+    ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
   fi
 
   if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
@@ -4976,18 +4993,9 @@ deploy_host() {
 
   run_parented_host_operation_with_retry \
     "${node}" \
-    "initial age identity preparation" \
+    "age identity preparation" \
     prepare_host_age_identity_for_deploy \
     "${node}" \
-    0 \
-    0 || return 1
-
-  run_parented_host_operation_with_retry \
-    "${node}" \
-    "activation-context age identity preparation" \
-    prepare_host_age_identity_for_deploy \
-    "${node}" \
-    1 \
     1 || return 1
 
   nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
@@ -5246,22 +5254,37 @@ _remote_systemd_user_manager_emit_journal_file_lines() {
 _remote_systemd_user_manager_emit_new_journal() {
   local cursor_file="$1"
   shift
-  local tmp_file="" content_file="" last_line="" cursor=""
+  local tmp_file="" content_file="" last_line="" cursor="" journalctl_rc=0
 
   tmp_file="$(mktemp)"
   if [ -s "${cursor_file}" ]; then
-    journalctl \
-      --after-cursor "$(cat "${cursor_file}")" \
-      --show-cursor \
-      --no-pager \
-      -o cat \
-      "$@" > "${tmp_file}" 2>/dev/null || true
+    if timeout 1s \
+      journalctl \
+        --after-cursor "$(cat "${cursor_file}")" \
+        --show-cursor \
+        --no-pager \
+        -o cat \
+        "$@" > "${tmp_file}" 2>/dev/null; then
+      :
+    else
+      journalctl_rc=$?
+    fi
   else
-    journalctl \
-      --show-cursor \
-      --no-pager \
-      -o cat \
-      "$@" > "${tmp_file}" 2>/dev/null || true
+    if timeout 1s \
+      journalctl \
+        --show-cursor \
+        --no-pager \
+        -o cat \
+        "$@" > "${tmp_file}" 2>/dev/null; then
+      :
+    else
+      journalctl_rc=$?
+    fi
+  fi
+
+  if [ "${journalctl_rc}" -eq 124 ]; then
+    rm -f "${tmp_file}"
+    return 124
   fi
 
   if [ ! -s "${tmp_file}" ]; then
@@ -5329,7 +5352,7 @@ _remote_systemd_user_manager_stream_unit() {
 }
 
 _remote_systemd_user_manager_report() {
-  local since="$1" units="" found=0 unit="" recent=""
+  local since="$1" units="" unit="" recent=""
 
   units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
   if [ -z "${units}" ]; then
@@ -5340,7 +5363,6 @@ _remote_systemd_user_manager_report() {
     [ -n "${unit}" ] || continue
     recent="$(journalctl -u "${unit}" --since "${since}" --no-pager -n 1 -o cat 2>/dev/null || true)"
     [ -n "${recent}" ] || continue
-    found=1
     _remote_systemd_user_manager_stream_unit "${unit}"
   done <<EOF_UNITS
 ${units}

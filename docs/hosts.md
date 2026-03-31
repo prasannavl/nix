@@ -71,12 +71,16 @@ Physical machines typically use `all.nix`. Incus VM guests use
 ### 1. Choose a hostname
 
 No strict naming scheme is enforced, but existing hosts use lowercase with
-hyphens. Nested guests typically include the parent host's prefix.
+hyphens.
 
 ### 2. Create the host directory
 
 Create `hosts/<host-name>/default.nix` as the entry point. This file imports the
 appropriate profile and any host-specific modules.
+
+Copying a nearby host with the same shape is normal. Remove imports for files
+the new host does not need instead of creating empty stubs just to match another
+host.
 
 For a physical machine:
 
@@ -104,11 +108,13 @@ For an Incus VM guest:
     ../../lib/podman.nix
     ../../lib/podman-compose
     ./packages.nix
-    ./services.nix
     ./users.nix
   ];
 }
 ```
+
+Add `./services.nix`, `./firewall.nix`, `./cloudflare.nix`, or other host-local
+modules only when the guest actually needs them.
 
 ### 3. Add hardware config (physical machines only)
 
@@ -134,7 +140,29 @@ Add the host to `hosts/default.nix`:
 };
 ```
 
-### 5. Add deploy configuration
+### 5. Declare the guest on its parent host (Incus guests only)
+
+If the new host runs inside Incus, add it to `hosts/<parent-host>/incus.nix`. At
+minimum, give it a stable bridge IP and a persistent `/var/lib` disk. Add
+workload-specific devices, such as GPU passthrough, only when the guest actually
+needs them.
+
+Example shape:
+
+```nix
+services.incusMachines.instances.<host-name> = {
+  ipv4Address = "10.10.30.11";
+  devices.state = {
+    source = "<host-name>";
+    path = "/var/lib";
+    removalPolicy = "delete";
+  };
+};
+```
+
+See `docs/incus-vms.md` for the full guest lifecycle and device model.
+
+### 6. Add deploy configuration
 
 Add an entry in `hosts/nixbot.nix`:
 
@@ -148,10 +176,27 @@ Add an entry in `hosts/nixbot.nix`:
 Common optional fields:
 
 - `proxyJump = "<bastion-host>";` — when the host is not directly reachable.
-- `after = ["<dependency-host>"];` — deploy ordering.
+- `parent = "<parent-host>";` — parent-readiness and deploy ordering for nested
+  guests. When `parent` is set, do not also add `after = ["<parent-host>"]` just
+  to get the parent deployed first.
+- `deps = ["<dependency-host>"];` — hard dependency that expands selection and
+  ordering.
+- `after = ["<dependency-host>"];` — ordering-only edge for hosts that do not
+  need the `parent` readiness contract.
 - `deploy = "optional";` — when deploy failures are non-blocking.
 
-### 6. Provision secrets
+For an Incus guest, the usual shape is:
+
+```nix
+<host-name> = {
+  target = "<guest-ip>";
+  ageIdentityKey = "data/secrets/machine/<host-name>.key.age";
+  proxyJump = "<parent-host>";
+  parent = "<parent-host>";
+};
+```
+
+### 7. Provision secrets
 
 Each deployed host needs a machine age key pair:
 
@@ -159,14 +204,43 @@ Each deployed host needs a machine age key pair:
 - `data/secrets/machine/<host-name>.key.pub`
 - `data/secrets/machine/<host-name>.key.age`
 
+Current repo workflow:
+
+1. Generate the machine identity:
+
+   ```bash
+   age-keygen -o data/secrets/machine/<host-name>.key
+   ```
+
+2. Save the printed `Public key: ...` value to
+   `data/secrets/machine/<host-name>.key.pub`.
+3. Add the new public key file to `machineKeyFiles` in
+   `data/secrets/default.nix`.
+4. Add the managed `data/secrets/machine/<host-name>.key.age` recipient entry to
+   `data/secrets/default.nix`.
+5. Encrypt the managed secret:
+
+   ```bash
+   ./scripts/age-secrets.sh encrypt data/secrets/machine/<host-name>.key
+   ```
+
+6. Remove the plaintext private key after encryption succeeds:
+
+   ```bash
+   ./scripts/age-secrets.sh clean data/secrets/machine/<host-name>.key
+   ```
+
+Optional guest-local Tailscale auth uses the same pattern at
+`data/secrets/tailscale/<host-name>.key.age`.
+
 See `docs/deployment.md` for the full bootstrap and re-encryption procedure.
 
-### 7. Add host-specific modules
+### 8. Add host-specific modules
 
 Split configuration into concern-specific files as needed. Only create files for
 concerns the host actually has.
 
-### 8. Deploy
+### 9. Deploy
 
 Deploy the host through `nixbot`. For Incus guests, deploy the parent host first
 so the guest is created, then deploy the guest itself.

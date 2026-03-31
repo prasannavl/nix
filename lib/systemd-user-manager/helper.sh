@@ -22,6 +22,7 @@ init_vars() {
   managed_user_action_path="${SYSTEMD_USER_MANAGER_MANAGED_USER_ACTION_PATH-}"
   boot_ready_target_name="${SYSTEMD_USER_MANAGER_BOOT_READY_TARGET-}"
   dispatcher_metadata_pointer_rel_dir="${SYSTEMD_USER_MANAGER_DISPATCHER_METADATA_POINTER_REL_DIR-}"
+  deferred_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR-}"
 }
 
 require_env() {
@@ -51,6 +52,34 @@ log_managed_unit() {
   managed_name="$2"
   message="$3"
   printf '[systemd-user-manager/%s] %s: %s\n' "$user" "$managed_name" "$message" >&2
+}
+
+restart_request_marker_path() {
+  local user sanitized_user
+  user="$1"
+  sanitized_user="${user//\//-}"
+  printf '%s/%s' "$deferred_restart_request_dir" "$sanitized_user"
+}
+
+mark_deferred_user_manager_restart() {
+  local user marker_path
+  user="$1"
+  require_env SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR
+  marker_path="$(restart_request_marker_path "$user")"
+  mkdir -p "$deferred_restart_request_dir"
+  printf '%s\n' "$user" >"$marker_path"
+}
+
+consume_deferred_user_manager_restart() {
+  local user marker_path
+  user="$1"
+  require_env SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR
+  marker_path="$(restart_request_marker_path "$user")"
+  if [ -f "$marker_path" ]; then
+    rm -f "$marker_path"
+    return 0
+  fi
+  return 1
 }
 
 now_epoch() {
@@ -219,6 +248,23 @@ stop_managed_unit() {
   [ "$load_state" = not-found ]
 }
 
+apply_stop_phase_action() {
+  local phase_mode user managed_name managed_unit
+  phase_mode="$1"
+  user="$2"
+  managed_name="$3"
+  managed_unit="$4"
+
+  if [ "$phase_mode" = preview ]; then
+    log_managed_unit "$user" "$managed_name" "would stop"
+    return 0
+  fi
+
+  userctl_mode=root
+  log_managed_unit "$user" "$managed_name" "stopping"
+  stop_managed_unit "$managed_unit"
+}
+
 metadata_path_from_pointer_file() {
   local pointer_file metadata_path
   pointer_file="$1"
@@ -226,6 +272,24 @@ metadata_path_from_pointer_file() {
   metadata_path="$(tr -d '\n' < "$pointer_file")"
   [ -n "$metadata_path" ] || return 1
   printf '%s\n' "$metadata_path"
+}
+
+read_metadata_user_and_identity() {
+  local metadata_file="$1"
+
+  jq -r '[.user // "", .identityStamp // ""] | .[]' "$metadata_file"
+}
+
+read_metadata_unit_stamps_tsv() {
+  local metadata_file="$1"
+
+  jq -r '.managedUnits[]? | [.name, (.stamp // "")] | @tsv' "$metadata_file"
+}
+
+read_stop_phase_units_tsv() {
+  local metadata_file="$1"
+
+  jq -r '.managedUnits[]? | [.name, .unit, (if .stopOnRemoval then "1" else "0" end), (.stamp // "")] | @tsv' "$metadata_file"
 }
 
 stable_state_backoff_seconds() {
@@ -315,22 +379,37 @@ emit_journal_file_lines() {
 emit_new_journal() {
   local cursor_file="$1"
   shift
-  local tmp_file="" content_file="" last_line="" cursor=""
+  local tmp_file="" content_file="" last_line="" cursor="" journalctl_rc=0
 
   tmp_file="$(mktemp)"
   if [ -s "$cursor_file" ]; then
-    journalctl \
-      --after-cursor "$(cat "$cursor_file")" \
-      --show-cursor \
-      --no-pager \
-      -o cat \
-      "$@" >"$tmp_file" 2>/dev/null || true
+    if timeout 1s \
+      journalctl \
+        --after-cursor "$(cat "$cursor_file")" \
+        --show-cursor \
+        --no-pager \
+        -o cat \
+        "$@" >"$tmp_file" 2>/dev/null; then
+      :
+    else
+      journalctl_rc=$?
+    fi
   else
-    journalctl \
-      --show-cursor \
-      --no-pager \
-      -o cat \
-      "$@" >"$tmp_file" 2>/dev/null || true
+    if timeout 1s \
+      journalctl \
+        --show-cursor \
+        --no-pager \
+        -o cat \
+        "$@" >"$tmp_file" 2>/dev/null; then
+      :
+    else
+      journalctl_rc=$?
+    fi
+  fi
+
+  if [ "$journalctl_rc" -eq 124 ]; then
+    rm -f "$tmp_file"
+    return 124
   fi
 
   if [ ! -s "$tmp_file" ]; then
@@ -403,7 +482,7 @@ start_managed_unit() {
 
 wait_for_reconciler() {
   local unit previous_invocation current_invocation active_state sub_state result i
-  local journal_cursor_file=""
+  local journal_cursor_file="" wait_started_at=""
   unit="$1"
   previous_invocation="$(userctl show --property=InvocationID --value "$unit" 2>/dev/null || true)"
   userctl restart --no-block "$unit"
@@ -423,10 +502,14 @@ wait_for_reconciler() {
     return 1
   fi
 
+  wait_started_at="$(now_epoch)"
   journal_cursor_file="$(mktemp)"
   i=0
   while [ "$i" -lt 1800 ]; do
-    emit_new_journal "$journal_cursor_file" _SYSTEMD_INVOCATION_ID="$current_invocation" || true
+    if [ $((i % 4)) -eq 0 ]; then
+      emit_new_journal "$journal_cursor_file" "_SYSTEMD_INVOCATION_ID=$current_invocation" || true
+    fi
+
     active_state="$(userctl show --property=ActiveState --value "$unit" 2>/dev/null || true)"
     sub_state="$(userctl show --property=SubState --value "$unit" 2>/dev/null || true)"
     result="$(userctl show --property=Result --value "$unit" 2>/dev/null || true)"
@@ -438,11 +521,14 @@ wait_for_reconciler() {
         break
         ;;
     esac
+    if [ $((i % 30)) -eq 0 ] && [ "$i" -gt 0 ]; then
+      log_user_progress "$systemd_user_manager_user" "still waiting; elapsed=$(elapsed_since "$wait_started_at")"
+    fi
     sleep 0.5
     i=$((i + 1))
   done
 
-  emit_new_journal "$journal_cursor_file" _SYSTEMD_INVOCATION_ID="$current_invocation" || true
+  emit_new_journal "$journal_cursor_file" "_SYSTEMD_INVOCATION_ID=$current_invocation" || true
   rm -f "$journal_cursor_file"
 
   case "$active_state:$sub_state:$result" in
@@ -587,7 +673,12 @@ run_dispatcher_start() {
   userctl_mode=root
 
   log_user_progress "$systemd_user_manager_user" "dispatcher starting"
-  systemctl start "user@${managed_user_uid}.service"
+  if consume_deferred_user_manager_restart "$systemd_user_manager_user"; then
+    log_user_progress "$systemd_user_manager_user" "restarting user manager"
+    systemctl restart "user@${managed_user_uid}.service"
+  else
+    systemctl start "user@${managed_user_uid}.service"
+  fi
   wait_for_user_manager
   userctl daemon-reload
   wait_for_reconciler "$systemd_user_manager_reconciler_service"
@@ -597,7 +688,9 @@ run_dispatcher_start() {
 run_stop_phase() {
   local phase_mode old_units_dir old_pointer_dir old_unit_file old_service_name old_pointer_file
   local new_pointer_file old_metadata_file new_metadata_file old_user old_identity new_identity
-  local stop_failed new_stamp managed_units_tsv=""
+  local stop_failed new_stamp managed_units_tsv="" metadata_summary="" new_unit_stamps_tsv=""
+  local new_name="" new_metadata_present=0
+  local -A new_stamps_by_name=()
 
   phase_mode="$1"
   old_units_dir="${systemd_user_manager_old_system}/etc/systemd/system"
@@ -612,7 +705,14 @@ run_stop_phase() {
     old_metadata_file="$(metadata_path_from_pointer_file "$old_pointer_file" 2>/dev/null || true)"
     [ -n "$old_metadata_file" ] || continue
     new_metadata_file="$(metadata_path_from_pointer_file "$new_pointer_file" 2>/dev/null || true)"
-    old_user="$(jq -r '.user // ""' "$old_metadata_file")"
+    if ! metadata_summary="$(read_metadata_user_and_identity "$old_metadata_file")"; then
+      printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $old_metadata_file" >&2
+      return 1
+    fi
+    {
+      read -r old_user
+      read -r old_identity
+    } <<< "$metadata_summary"
     [ -n "$old_user" ] || continue
 
     if [ "$phase_mode" = apply ]; then
@@ -623,47 +723,50 @@ run_stop_phase() {
     fi
 
     stop_failed=0
-    if ! managed_units_tsv="$(jq -r '.managedUnits[] | [.name, .unit, (if .stopOnRemoval then "1" else "0" end), .stamp] | @tsv' "$old_metadata_file")"; then
+    if ! managed_units_tsv="$(read_stop_phase_units_tsv "$old_metadata_file")"; then
       printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $old_metadata_file" >&2
       return 1
     fi
+    new_identity=""
+    new_metadata_present=0
+    new_stamps_by_name=()
+    if [ -n "$new_metadata_file" ] && [ -f "$new_metadata_file" ]; then
+      new_metadata_present=1
+      if ! metadata_summary="$(read_metadata_user_and_identity "$new_metadata_file")"; then
+        printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $new_metadata_file" >&2
+        return 1
+      fi
+      {
+        read -r _
+        read -r new_identity
+      } <<< "$metadata_summary"
+      if ! new_unit_stamps_tsv="$(read_metadata_unit_stamps_tsv "$new_metadata_file")"; then
+        printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $new_metadata_file" >&2
+        return 1
+      fi
+      if [ -n "$new_unit_stamps_tsv" ]; then
+        while IFS=$'\t' read -r new_name new_stamp; do
+          [ -n "$new_name" ] || continue
+          new_stamps_by_name["$new_name"]="$new_stamp"
+        done <<< "$new_unit_stamps_tsv"
+      fi
+    fi
     if [ -n "$managed_units_tsv" ]; then
       while IFS=$'\t' read -r managed_name managed_unit stop_on_removal old_stamp; do
-        new_stamp=""
-        if [ -n "$new_metadata_file" ] && [ -f "$new_metadata_file" ]; then
-          new_stamp="$(
-            jq -r --arg name "$managed_name" '
-              (.managedUnits // [])
-              | map(select(.name == $name))
-              | .[0].stamp // ""
-            ' "$new_metadata_file" 2>/dev/null || true
-          )"
-        fi
+        new_stamp="${new_stamps_by_name["$managed_name"]-}"
 
         if [ -z "$new_stamp" ]; then
           if [ "$stop_on_removal" = 1 ]; then
-            if [ "$phase_mode" = preview ]; then
-              log_managed_unit "$old_user" "$managed_name" "would stop"
-            else
-              userctl_mode=root
-              log_managed_unit "$old_user" "$managed_name" "stopping"
-              if ! stop_managed_unit "$managed_unit"; then
-                stop_failed=1
-              fi
+            if ! apply_stop_phase_action "$phase_mode" "$old_user" "$managed_name" "$managed_unit"; then
+              stop_failed=1
             fi
           fi
           continue
         fi
 
         if [ "$old_stamp" != "$new_stamp" ]; then
-          if [ "$phase_mode" = preview ]; then
-            log_managed_unit "$old_user" "$managed_name" "would stop"
-          else
-            userctl_mode=root
-            log_managed_unit "$old_user" "$managed_name" "stopping"
-            if ! stop_managed_unit "$managed_unit"; then
-              stop_failed=1
-            fi
+          if ! apply_stop_phase_action "$phase_mode" "$old_user" "$managed_name" "$managed_unit"; then
+            stop_failed=1
           fi
         fi
       done <<< "$managed_units_tsv"
@@ -673,16 +776,12 @@ run_stop_phase() {
       return 1
     fi
 
-    if [ -n "$new_metadata_file" ] && [ -f "$new_metadata_file" ]; then
-      old_identity="$(jq -r '.identityStamp // ""' "$old_metadata_file")"
-      new_identity="$(jq -r '.identityStamp // ""' "$new_metadata_file")"
-      if [ "$old_identity" != "$new_identity" ]; then
-        if [ "$phase_mode" = preview ]; then
-          log_user_progress "$old_user" "would restart user manager"
-        elif systemctl is-active --quiet "user@${managed_user_uid}.service"; then
-          log_user_progress "$old_user" "restarting user manager"
-          systemctl restart "user@${managed_user_uid}.service"
-        fi
+    if [ "${new_metadata_present}" -eq 1 ] && [ "$old_identity" != "$new_identity" ]; then
+      if [ "$phase_mode" = preview ]; then
+        log_user_progress "$old_user" "would restart user manager"
+      else
+        log_user_progress "$old_user" "deferring user manager restart to dispatcher"
+        mark_deferred_user_manager_restart "$old_user"
       fi
     fi
   done
