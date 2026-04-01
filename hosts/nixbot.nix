@@ -15,9 +15,9 @@
       proxyJump = "pvl-x2";
       parent = "pvl-x2";
     };
-    pvl-vkamino = {
+    pvl-vk = {
       target = "10.10.30.10";
-      ageIdentityKey = "data/secrets/machine/pvl-vkamino.key.age";
+      ageIdentityKey = "data/secrets/machine/pvl-vk.key.age";
       proxyJump = "pvl-vlab";
       parent = "pvl-vlab";
     };

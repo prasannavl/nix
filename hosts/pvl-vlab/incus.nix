@@ -1,7 +1,7 @@
 {...}: {
   services.incusMachines = {
     instances = {
-      pvl-vkamino = {
+      pvl-vk = {
         ipv4Address = "10.10.30.10";
         config = {
           "security.privileged" = "false";
@@ -11,7 +11,7 @@
         };
         devices = {
           state = {
-            source = "pvl-vkamino";
+            source = "pvl-vk";
             path = "/var/lib";
             removalPolicy = "delete";
           };

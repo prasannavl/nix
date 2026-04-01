@@ -25,8 +25,8 @@ point.
 ## Implementation
 
 - Removed the initial pre-check prep call.
-- Removed the `force_reinstall` plumbing from
-  `inject_host_age_identity_key()` and `prepare_host_age_identity_for_deploy()`.
+- Removed the `force_reinstall` plumbing from `inject_host_age_identity_key()`
+  and `prepare_host_age_identity_for_deploy()`.
 - The remaining prep pass still checks the current target file hash and injects
   only when the target is missing or mismatched.
 - Activation-context visibility validation still runs immediately after that

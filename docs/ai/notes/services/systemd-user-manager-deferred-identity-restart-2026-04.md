@@ -9,8 +9,8 @@ This note records the switch-time regression fix in:
 
 ## Problem
 
-The old-world stop activation helper compared old and new `identityStamp`
-values and directly ran:
+The old-world stop activation helper compared old and new `identityStamp` values
+and directly ran:
 
 - `systemctl restart user@<uid>.service`
 
@@ -32,9 +32,8 @@ restarts until the post-switch dispatcher phase.
 ## Implementation
 
 - Activation old-stop still detects `identityStamp` changes.
-- Instead of restarting `user@<uid>.service` immediately, it writes an
-  ephemeral restart request marker under
-  `/run/systemd-user-manager/restart-requests/`.
+- Instead of restarting `user@<uid>.service` immediately, it writes an ephemeral
+  restart request marker under `/run/systemd-user-manager/restart-requests/`.
 - `dispatcher-start` consumes that marker and performs the actual
   `systemctl restart user@<uid>.service` after the switch has reached the normal
   service start phase.
@@ -53,5 +52,5 @@ restarts until the post-switch dispatcher phase.
 ## Validation
 
 - `bash -n lib/systemd-user-manager/helper.sh`
-- `nix-instantiate --eval -E 'let pkgs = import <nixpkgs> {}; in 1'`
-  was not used; validation stayed repo-local.
+- `nix-instantiate --eval -E 'let pkgs = import <nixpkgs> {}; in 1'` was not
+  used; validation stayed repo-local.

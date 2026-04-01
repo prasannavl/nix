@@ -23,7 +23,7 @@ Focused cleanup and simplification in:
 ## Rationale
 
 - The switch path should block on unit state, not on unbounded journal queries.
-- Old/new stop logic should stay easy to reason about and not duplicate the
-  same stop action in multiple branches.
+- Old/new stop logic should stay easy to reason about and not duplicate the same
+  stop action in multiple branches.
 - The local helper and remote report path should follow the same operational
   model where practical.

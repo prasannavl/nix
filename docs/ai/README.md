@@ -39,6 +39,11 @@ Use this index as the canonical map for `docs/ai/**`.
   Tunnel host wiring.
 - `docs/ai/notes/hosts/desktop-investigations-consolidated-2026-03.md`:
   Consolidated desktop investigations and durable findings.
+- `docs/ai/notes/hosts/human-host-docs-add-host-flow-2026-04.md`: Updated
+  `docs/hosts.md` so the human add-host flow matches the current Incus parent
+  and managed-secret workflow.
+- `docs/ai/notes/hosts/pvl-vk-short-host-2026-04.md`: Added `pvl-vk` as a
+  shorter nested `pvl-v*` guest alongside `pvl-vkamino`.
 - `docs/ai/notes/hosts/incus-vm-template-and-secrets-2026-03.md`: Canonical
   reusable Incus guest template, bootstrap flow, naming conventions, and secret
   model.
@@ -100,10 +105,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/nixbot/github-actions-workflow-design-2026-03.md`: GitHub
   Actions workflow design: action input scope, runtime warmup strategy, and thin
   launcher role.
-- `docs/ai/notes/nixbot/host-age-identity-single-prep-pass-2026-04.md`:
-  Collapse host age identity deploy prep to one activation-context pass that
-  injects only when missing or mismatched, and remove the forced reinstall
-  path.
+- `docs/ai/notes/nixbot/host-age-identity-single-prep-pass-2026-04.md`: Collapse
+  host age identity deploy prep to one activation-context pass that injects only
+  when missing or mismatched, and remove the forced reinstall path.
 - `docs/ai/notes/nixbot/if-compound-exit-status-swallow-2026-03.md`: Bash
   `if cmd; then ...; fi; rc="$?"` bug in `nixbot` swallowed real failures in
   transport retry, parent readiness, rollback, and report helpers; capture
@@ -161,6 +165,10 @@ Use this index as the canonical map for `docs/ai/**`.
   Follow-up fixes for review findings in `lib/systemd-user-manager/helper.sh`
   and `pkgs/nixbot/nixbot.sh`, including fatal metadata parse handling,
   Terraform phase failure propagation, and dispatcher report logging cleanup.
+- `docs/ai/notes/reviews/nixbot-and-systemd-user-manager-refactor-pass-2026-04.md`:
+  Refactor pass covering prepared age-identity caching in `nixbot`, stop-phase
+  metadata simplification in `systemd-user-manager`, and small Nix dedup
+  cleanups.
 
 ### Secrets
 
@@ -180,8 +188,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/docs-sensitive-info-cleanup-2026-03.md`: Documentation
   cleanup rules for sensitive operational details.
 - `docs/ai/notes/services/systemd-user-manager-deferred-identity-restart-2026-04.md`:
-  Defer identity-driven `user@<uid>.service` restarts out of activation and
-  hand them off to the post-switch dispatcher through ephemeral `/run` markers.
+  Defer identity-driven `user@<uid>.service` restarts out of activation and hand
+  them off to the post-switch dispatcher through ephemeral `/run` markers.
 - `docs/ai/notes/services/systemd-user-manager-bounded-live-journal-and-heartbeats-2026-04.md`:
   Keep live reconciler progress, but bound and rate-limit journal polling and
   add explicit dispatcher heartbeats so slow or quiet journal paths do not look

@@ -32,13 +32,13 @@ in {
     modules = commonModules ++ [./pvl-vlab];
   };
 
-  pvl-vkamino = nixpkgs.lib.nixosSystem {
+  pvl-vk = nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     specialArgs = {
       inputs = inputs;
-      hostName = "pvl-vkamino";
+      hostName = "pvl-vk";
     };
-    modules = commonModules ++ [./pvl-vkamino];
+    modules = commonModules ++ [./pvl-vk];
   };
 
   gap3-gondor = nixpkgs.lib.nixosSystem {
