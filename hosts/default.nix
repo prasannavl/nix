@@ -41,6 +41,9 @@ in {
     modules = commonModules ++ [./pvl-vk];
   };
 
+  # This host is taken over by gap3 repo. This configuration is kept here
+  # purely only for ref and backup.
+  # 
   # gap3-gondor = nixpkgs.lib.nixosSystem {
   #   system = "x86_64-linux";
   #   specialArgs = {
