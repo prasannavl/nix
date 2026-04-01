@@ -336,6 +336,8 @@ init_vars() {
   SELF_TARGET_NOTICE_KEYS=""
   ROLLBACK_OK_HOSTS=()
   ROLLBACK_FAILED_HOSTS=()
+  DEPLOY_FAILED_ROLLBACK_OK_HOSTS=()
+  DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=()
   FULLY_SKIPPED_HOSTS=()
   OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS=()
   OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS=()
@@ -4332,6 +4334,9 @@ process_completed_deploy_job() {
       ;;
     fail)
       pcdj_failed_hosts_out_ref+=("${node}")
+      if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
+        rollback_failed_deploy_host "${node}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}"
+      fi
       return 1
       ;;
     *)
@@ -4950,6 +4955,34 @@ rollback_optional_deploy_host() {
     rc="$?"
     write_status_file "${status_file}" "${rc}"
     append_unique_array_item OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS "${node}"
+  fi
+
+  return 0
+}
+
+rollback_failed_deploy_host() {
+  local node="$1" snapshot_dir="$2" rollback_log_dir="$3" rollback_status_dir="$4"
+  local status_file="" log_file="" snapshot_path="" rc=""
+
+  status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
+  log_file="$(phase_dir_item_log_file "${rollback_log_dir}" "${node}")"
+  snapshot_path="${snapshot_dir}/${node}.path"
+
+  echo "Deploy failed for ${node}; attempting host-local rollback" >&2
+  if ! snapshot_exists "${snapshot_path}"; then
+    echo "Deploy rollback unavailable for ${node}: no rollback snapshot recorded" >&2
+    write_status_file "${status_file}" "snapshot-missing"
+    append_unique_array_item DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS "${node}"
+    return 0
+  fi
+
+  if run_streamed_host_command "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "$(cat "${snapshot_path}")"; then
+    write_status_file "${status_file}" 0
+    append_unique_array_item DEPLOY_FAILED_ROLLBACK_OK_HOSTS "${node}"
+  else
+    rc="$?"
+    write_status_file "${status_file}" "${rc}"
+    append_unique_array_item DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS "${node}"
   fi
 
   return 0
@@ -5853,7 +5886,9 @@ capture_current_run_summary_state() {
     OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS \
     OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS \
     ROLLBACK_OK_HOSTS \
-    ROLLBACK_FAILED_HOSTS
+    ROLLBACK_FAILED_HOSTS \
+    DEPLOY_FAILED_ROLLBACK_OK_HOSTS \
+    DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS
 }
 
 run_hosts() {
@@ -5877,6 +5912,8 @@ run_hosts() {
   OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS=()
   # shellcheck disable=SC2034
   OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=()
+  DEPLOY_FAILED_ROLLBACK_OK_HOSTS=()
+  DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=()
   runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
 
   if is_bootstrap_check_action; then
@@ -7130,6 +7167,8 @@ host_final_status() {
   local optional_snapshot_skipped_hosts_name="${10}" optional_rollback_ok_hosts_name="${11}"
   local optional_rollback_failed_hosts_name="${12}"
   local rollback_ok_hosts_name="${13}" rollback_failed_hosts_name="${14}"
+  local deploy_failed_rollback_ok_hosts_name="${15}"
+  local deploy_failed_rollback_failed_hosts_name="${16}"
   local -n hfs_fully_skipped_hosts_in_ref="${fully_skipped_hosts_name}"
   local -n hfs_build_ok_hosts_in_ref="${build_ok_hosts_name}"
   local -n hfs_build_failed_hosts_in_ref="${build_failed_hosts_name}"
@@ -7144,6 +7183,8 @@ host_final_status() {
   local -n hfs_optional_rollback_failed_hosts_in_ref="${optional_rollback_failed_hosts_name}"
   local -n hfs_rollback_ok_hosts_in_ref="${rollback_ok_hosts_name}"
   local -n hfs_rollback_failed_hosts_in_ref="${rollback_failed_hosts_name}"
+  local -n hfs_deploy_failed_rollback_ok_hosts_in_ref="${deploy_failed_rollback_ok_hosts_name}"
+  local -n hfs_deploy_failed_rollback_failed_hosts_in_ref="${deploy_failed_rollback_failed_hosts_name}"
 
   if array_contains "${node}" "${hfs_build_failed_hosts_in_ref[@]}"; then
     printf '%s' 'FAIL (build)'
@@ -7172,8 +7213,12 @@ host_final_status() {
     printf '%s' 'optional (rolled back)'
   elif array_contains "${node}" "${hfs_rollback_failed_hosts_in_ref[@]}"; then
     printf '%s' 'FAIL (rollback)'
+  elif array_contains "${node}" "${hfs_deploy_failed_rollback_failed_hosts_in_ref[@]}"; then
+    printf '%s' 'FAIL (deploy; rollback failed)'
   elif array_contains "${node}" "${hfs_snapshot_failed_hosts_in_ref[@]}"; then
     printf '%s' 'FAIL (snapshot)'
+  elif array_contains "${node}" "${hfs_deploy_failed_rollback_ok_hosts_in_ref[@]}"; then
+    printf '%s' 'FAIL (deploy; rolled back)'
   elif array_contains "${node}" "${hfs_deploy_failed_hosts_in_ref[@]}"; then
     printf '%s' 'FAIL (deploy)'
   elif array_contains "${node}" "${hfs_rollback_ok_hosts_in_ref[@]}"; then
@@ -7251,7 +7296,9 @@ print_run_summary() {
       RUN_SUMMARY_OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS \
       RUN_SUMMARY_OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS \
       RUN_SUMMARY_ROLLBACK_OK_HOSTS \
-      RUN_SUMMARY_ROLLBACK_FAILED_HOSTS)"
+      RUN_SUMMARY_ROLLBACK_FAILED_HOSTS \
+      RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_OK_HOSTS \
+      RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS)"
 
     echo "  - ${node}: ${status}" >&2
     if [[ "${status}" == FAIL* ]]; then
@@ -7298,6 +7345,8 @@ clear_run_summary_state() {
   RUN_SUMMARY_OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=()
   RUN_SUMMARY_ROLLBACK_OK_HOSTS=()
   RUN_SUMMARY_ROLLBACK_FAILED_HOSTS=()
+  RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_OK_HOSTS=()
+  RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=()
   RUN_SUMMARY_TF_LABELS=()
   RUN_SUMMARY_TF_STATUSES=()
 }
@@ -7310,6 +7359,8 @@ set_run_summary_host_state() {
   local optional_snapshot_skipped_hosts_name="${10}" optional_rollback_ok_hosts_name="${11}"
   local optional_rollback_failed_hosts_name="${12}"
   local rollback_ok_hosts_name="${13}" rollback_failed_hosts_name="${14}"
+  local deploy_failed_rollback_ok_hosts_name="${15}"
+  local deploy_failed_rollback_failed_hosts_name="${16}"
   local -n srshs_selected_hosts_in_ref="${selected_hosts_name}"
   local -n srshs_fully_skipped_hosts_in_ref="${fully_skipped_hosts_name}"
   local -n srshs_build_ok_hosts_in_ref="${build_ok_hosts_name}"
@@ -7325,6 +7376,8 @@ set_run_summary_host_state() {
   local -n srshs_optional_rollback_failed_hosts_in_ref="${optional_rollback_failed_hosts_name}"
   local -n srshs_rollback_ok_hosts_in_ref="${rollback_ok_hosts_name}"
   local -n srshs_rollback_failed_hosts_in_ref="${rollback_failed_hosts_name}"
+  local -n srshs_deploy_failed_rollback_ok_hosts_in_ref="${deploy_failed_rollback_ok_hosts_name}"
+  local -n srshs_deploy_failed_rollback_failed_hosts_in_ref="${deploy_failed_rollback_failed_hosts_name}"
 
   # shellcheck disable=SC2034
   {
@@ -7342,6 +7395,8 @@ set_run_summary_host_state() {
     RUN_SUMMARY_OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=("${srshs_optional_rollback_failed_hosts_in_ref[@]}")
     RUN_SUMMARY_ROLLBACK_OK_HOSTS=("${srshs_rollback_ok_hosts_in_ref[@]}")
     RUN_SUMMARY_ROLLBACK_FAILED_HOSTS=("${srshs_rollback_failed_hosts_in_ref[@]}")
+    RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_OK_HOSTS=("${srshs_deploy_failed_rollback_ok_hosts_in_ref[@]}")
+    RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=("${srshs_deploy_failed_rollback_failed_hosts_in_ref[@]}")
   }
 }
 

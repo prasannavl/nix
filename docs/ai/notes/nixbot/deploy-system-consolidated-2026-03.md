@@ -225,16 +225,18 @@ failure by themselves:
 - Initial snapshot failures for later-wave hosts are deferred, not fatal.
 - A host whose rollback snapshot still cannot be captured when its wave is
   reached must not deploy.
-- For parented hosts, readiness is the real operation that must succeed next,
-  not a proxy signal from the parent. Snapshot capture uses a bounded retry loop
-  around the actual snapshot-path SSH operation.
-- Deploy preflight for parented hosts uses the same whole-operation bounded
-  retry model as snapshot capture.
-- Snapshot-era `primary-ready` success is not a durable deploy-ready lease for
-  parented hosts. Invalidate it before deploy and before each retry so deploy
-  re-proves fresh connectivity.
-- Final summary semantics should preserve the true terminal state:
+- If a host's own deploy fails after activation has started, `nixbot` now
+  attempts an immediate host-local rollback to that host's recorded pre-deploy
+  snapshot before failing the overall run.
+- Deploy-time age-identity installation rechecks late visibility in the host's
+  activation context so newly recreated guests do not rely on stale earlier
+  checksum matches.
+- Final summary semantics preserve the real terminal state:
   - snapshot-blocked hosts: `FAIL (snapshot)`
+  - deploy-failed hosts that rolled back successfully:
+    `FAIL (deploy; rolled back)`
+  - deploy-failed hosts whose rollback also failed:
+    `FAIL (deploy; rollback failed)`
   - built-but-never-deployed hosts after a global failure: `built`
   - deployed-then-reverted hosts after another host fails: `rolled back`
 
