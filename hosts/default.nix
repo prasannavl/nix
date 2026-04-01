@@ -41,12 +41,12 @@ in {
     modules = commonModules ++ [./pvl-vk];
   };
 
-  gap3-gondor = nixpkgs.lib.nixosSystem {
-    system = "x86_64-linux";
-    specialArgs = {
-      inputs = inputs;
-      hostName = "gap3-gondor";
-    };
-    modules = commonModules ++ [./gap3-gondor];
-  };
+  # gap3-gondor = nixpkgs.lib.nixosSystem {
+  #   system = "x86_64-linux";
+  #   specialArgs = {
+  #     inputs = inputs;
+  #     hostName = "gap3-gondor";
+  #   };
+  #   modules = commonModules ++ [./gap3-gondor];
+  # };
 }
