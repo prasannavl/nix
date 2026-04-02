@@ -28,9 +28,11 @@ in {
     tunnels."f052edf6-4bc4-41a5-bf0c-be7a7dd05f03" = {
       credentialsFile = config.age.secrets.p7log-main-credentials.path;
       default = "http_status:404";
-      ingress = tunnelIngress // {
-        "x.p7log.com" = "ssh://localhost:22";
-      };
+      ingress =
+        tunnelIngress
+        // {
+          "x.p7log.com" = "ssh://localhost:22";
+        };
     };
   };
 }

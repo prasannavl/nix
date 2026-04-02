@@ -5912,7 +5912,9 @@ run_hosts() {
   OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS=()
   # shellcheck disable=SC2034
   OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=()
+  # shellcheck disable=SC2034
   DEPLOY_FAILED_ROLLBACK_OK_HOSTS=()
+  # shellcheck disable=SC2034
   DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=()
   runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
 

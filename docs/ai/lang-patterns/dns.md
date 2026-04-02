@@ -11,10 +11,10 @@
   insert in the middle or reorder existing entries.
   - **Why:** The Terraform module builds `for_each` keys using the array index
     (e.g., `zone/TYPE/name/index`). Inserting or reordering shifts every
-    subsequent index, causing Terraform to destroy and recreate all those records
-    rather than just adding the new one. This creates unnecessary churn, risks
-    brief DNS outages from delete-before-create race conditions, and can trigger
-    Cloudflare API conflicts.
+    subsequent index, causing Terraform to destroy and recreate all those
+    records rather than just adding the new one. This creates unnecessary churn,
+    risks brief DNS outages from delete-before-create race conditions, and can
+    trigger Cloudflare API conflicts.
 - When removing a record, comment it out or replace its content with an
   equivalent no-op if index preservation matters. Prefer a `state rm` +
   list-edit over a bare list removal when many records follow.
@@ -119,10 +119,11 @@ Point a hostname at a tunnel by creating a proxied CNAME whose content is
 
 ## Where records live
 
-- DNS records are defined in secret tfvars files consumed by the `cloudflare-dns`
-  Terraform project.
-- Records are split across project files by lifecycle tier (main, stage, archive,
-  inactive). Each file defines a map of zone names to `{ records = [...] }`.
+- DNS records are defined in secret tfvars files consumed by the
+  `cloudflare-dns` Terraform project.
+- Records are split across project files by lifecycle tier (main, stage,
+  archive, inactive). Each file defines a map of zone names to
+  `{ records = [...] }`.
 - Public (non-secret) records can go in the corresponding `.auto.tfvars` files
   under the Terraform project directory.
 - DNS records are **only** managed through the DNS Terraform project. Do not
@@ -144,7 +145,7 @@ a zone that spans multiple sources, be aware of the combined index space.
 
 ## Applying DNS changes
 
-- DNS changes are applied via the `dns` Terraform phase (`nixbot tf/cloudflare-dns`
-  or as part of `nixbot run`/`nixbot tf`).
+- DNS changes are applied via the `dns` Terraform phase
+  (`nixbot tf/cloudflare-dns` or as part of `nixbot run`/`nixbot tf`).
 - Always review the plan before applying -- watch for unexpected
   destroy/recreate pairs, which signal an index shift.
