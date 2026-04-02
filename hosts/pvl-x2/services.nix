@@ -146,8 +146,8 @@ in {
           exposedPorts.http = {
             port = 5230;
             openFirewall = true;
-            nginxHostNames = ["memos.example.com"];
-            cfTunnelNames = ["memos.example.com"];
+            nginxHostNames = ["memos-x.p7log.com"];
+            cfTunnelNames = ["memos-x.p7log.com"];
             cfTunnelPort = nginx.exposedPorts.http.port;
           };
 
@@ -190,8 +190,8 @@ in {
           exposedPorts.http = {
             port = 3000;
             openFirewall = true;
-            nginxHostNames = ["docmost.example.com"];
-            cfTunnelNames = ["docmost.example.com"];
+            nginxHostNames = ["docmost-x.p7log.com"];
+            cfTunnelNames = ["docmost-x.p7log.com"];
             cfTunnelPort = nginx.exposedPorts.http.port;
           };
 
@@ -214,8 +214,8 @@ in {
           exposedPorts.http = {
             port = 2000;
             openFirewall = true;
-            nginxHostNames = ["vaultwarden.example.com"];
-            cfTunnelNames = ["vaultwarden.example.com"];
+            nginxHostNames = ["vaultwarden-x.p7log.com"];
+            cfTunnelNames = ["vaultwarden-x.p7log.com"];
             cfTunnelPort = nginx.exposedPorts.http.port;
           };
 

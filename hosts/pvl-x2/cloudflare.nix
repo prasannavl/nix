@@ -3,19 +3,19 @@
   lib,
   ...
 }: let
-  s = ../../data/secrets + "/cloudflare/tunnels/pvl-x2-main.credentials.json.age";
+  s = ../../data/secrets + "/cloudflare/tunnels/p7log-main.json.age";
   c =
     if builtins.pathExists s
     then
       builtins.path {
         path = s;
-        name = "pvl-x2-main.credentials.json.age";
+        name = "p7log-main.json.age";
       }
     else null;
   tunnelIngress = config.services.podmanCompose.pvl.cloudflareTunnelIngress;
 in {
   age.secrets = lib.optionalAttrs (c != null) {
-    cloudflare-tunnel-main-credentials = {
+    p7log-main-credentials = {
       file = c;
       owner = "root";
       group = "root";
@@ -25,10 +25,12 @@ in {
 
   services.cloudflared = lib.mkIf (c != null) {
     enable = true;
-    tunnels."11111111-1111-1111-1111-111111111111" = {
-      credentialsFile = config.age.secrets.cloudflare-tunnel-main-credentials.path;
+    tunnels."f052edf6-4bc4-41a5-bf0c-be7a7dd05f03" = {
+      credentialsFile = config.age.secrets.p7log-main-credentials.path;
       default = "http_status:404";
-      ingress = tunnelIngress;
+      ingress = tunnelIngress // {
+        "x.p7log.com" = "ssh://localhost:22";
+      };
     };
   };
 }

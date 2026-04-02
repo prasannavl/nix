@@ -75,8 +75,10 @@ in
     "data/secrets/tf/gcp-bootstrap/globals.tfvars.age".publicKeys = adminsWithNixbot;
 
     # Cloudflare tunnels
-    "data/secrets/cloudflare/tunnels/pvl-x2-main.credentials.json.age".publicKeys = admins ++ pvl-x2;
-    "data/secrets/cloudflare/tunnels/pvl-vlab-main.credentials.json.age".publicKeys = admins ++ pvl-vlab;
+    "data/secrets/cloudflare/tunnels/cert-p7log.com.pem.age".publicKeys = admins;
+    "data/secrets/cloudflare/tunnels/cert-prasannavl.com.pem.age".publicKeys = admins;
+    "data/secrets/cloudflare/tunnels/p7log-main.json.age".publicKeys = admins ++ pvl-x2;
+    "data/secrets/cloudflare/tunnels/prasannavl-main.json.age".publicKeys = admins ++ pvl-x2;
 
     # Tailscale
     "data/secrets/tailscale/pvl-vlab.key.age".publicKeys = admins ++ pvl-vlab;

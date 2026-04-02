@@ -3,18 +3,19 @@
   lib,
   ...
 }: let
-  s = ../../data/secrets + "/cloudflare/tunnels/pvl-vlab-main.credentials.json.age";
+  s = ../../data/secrets + "/cloudflare/tunnels/prasannavl-main.json.age";
   c =
     if builtins.pathExists s
     then
       builtins.path {
         path = s;
-        name = "pvl-vlab-main.credentials.json.age";
+        name = "prasannavl-main.json.age";
       }
     else null;
+  tunnelIngress = config.services.podmanCompose.pvl.cloudflareTunnelIngress;
 in {
   age.secrets = lib.optionalAttrs (c != null) {
-    cloudflare-tunnel-main-credentials = {
+    prasannavl-main-credentials = {
       file = c;
       owner = "root";
       group = "root";
@@ -24,12 +25,10 @@ in {
 
   services.cloudflared = lib.mkIf (c != null) {
     enable = true;
-    tunnels."22222222-2222-2222-2222-222222222222" = {
-      credentialsFile = config.age.secrets.cloudflare-tunnel-main-credentials.path;
+    tunnels."00bbdab6-1509-479f-83cd-24375fc70835" = {
+      credentialsFile = config.age.secrets.prasannavl-main-credentials.path;
       default = "http_status:404";
-      ingress = {
-        "openwebui.example.com" = "http://127.0.0.1:13000";
-      };
+      ingress = tunnelIngress;
     };
   };
 }

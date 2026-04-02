@@ -12,6 +12,9 @@ Use this index as the canonical map for `docs/ai/**`.
   scripts.
 - `docs/ai/lang-patterns/markdown.md`: Markdown formatting authority, lint
   interaction, and `docs/ai` writing conventions for repo-generated docs.
+- `docs/ai/lang-patterns/dns.md`: DNS record list ordering (append-only), record
+  structure, wiring patterns (tunnel CNAME, external CNAME, A, MX, TXT), merge
+  order, and index-shift avoidance rules.
 - `docs/ai/lang-patterns/nix.md`: Nix formatting, `inherit` conventions, module
   patterns, attrset style, packaging conventions, flake conventions, and common
   pitfalls.
