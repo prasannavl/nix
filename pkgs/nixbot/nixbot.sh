@@ -6616,9 +6616,8 @@ _exec_tofu_cmd() {
   local project_name="${1:-}"
   shift
   local subcommand="" discovered_tf_var_files=0
-  local -a cmd=() tf_var_files=()
-
-  cmd=(tofu "$@")
+  local -a cmd=() tf_var_files=() pre_sub=() post_sub=()
+  local found_sub=0 i="" arg=""
 
   if [ -n "${project_name}" ] && subcommand="$(resolve_tofu_auto_var_file_subcommand "$@")"; then
     materialize_tf_var_files_for_project "${project_name}" tf_var_files discovered_tf_var_files 1
@@ -6627,11 +6626,27 @@ _exec_tofu_cmd() {
       echo "Sensitive tfvars: no *.tfvars.age files found under ${TF_SECRETS_DIR}" >&2
     fi
 
+    # Insert var-file flags right after the subcommand so they precede any
+    # positional args (tofu's Go flag parser stops at the first non-flag arg).
+    for arg in "$@"; do
+      if [ "${found_sub}" -eq 0 ] && [ "${arg}" = "${subcommand}" ]; then
+        pre_sub+=("${arg}")
+        found_sub=1
+      elif [ "${found_sub}" -eq 0 ]; then
+        pre_sub+=("${arg}")
+      else
+        post_sub+=("${arg}")
+      fi
+    done
+    cmd=(tofu "${pre_sub[@]}")
     append_tf_var_files_to_cmd cmd "${tf_var_files[@]}"
+    cmd+=("${post_sub[@]}")
 
     if [ "${#tf_var_files[@]}" -gt 0 ]; then
       echo "Terraform ${project_name}: appended ${#tf_var_files[@]} decrypted var-file(s) for ${subcommand}" >&2
     fi
+  else
+    cmd=(tofu "$@")
   fi
 
   run_with_combined_output "${cmd[@]}"
