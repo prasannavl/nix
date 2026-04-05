@@ -47,8 +47,16 @@
 ## Static Origin Materialization
 
 - Prefer the shared helpers in `lib/services/nginx/default.nix` for static
-  domain wiring so server blocks, staged site trees, and container mounts stay
-  in one declarative model.
+  domain wiring so server blocks, staged site trees, container mounts, listener
+  policy, and tunnel/firewall exposure stay in one declarative model.
+- Static sites are nginx vhosts only. Keep the public listener, firewall
+  exposure, tunnel hostnames, and shared static-site rate limit on the nginx
+  service's `exposedPorts`.
+- Use one nginx listener to serve multiple static sites when they share the same
+  ingress policy. This keeps static-site declarations focused on hostnames and
+  content roots instead of duplicating listener metadata.
+- Keep per-service rate limits on dynamic/API services through their own
+  `exposedPorts`, so derived proxy vhosts can still vary limits independently.
 - `services.podmanCompose.<stack>.instances.<name>.files` distinguishes between
   text/attrs values and real Nix paths.
 - Directory expansion only happens when the value is an actual Nix path

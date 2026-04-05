@@ -7,6 +7,7 @@
   cfg = config.services.podmanCompose;
   hasStacks = cfg != {};
   collectionsLib = import ../flake/utils {inherit lib;};
+  exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
   cloudflareTunnelsLib = import ../services/tunnels/cloudflare.nix {inherit lib;};
   defaultService = {
@@ -181,15 +182,15 @@
             };
 
             rateLimit = lib.mkOption {
-              type = lib.types.nullOr nginxLib.rateLimitType;
-              default = nginxLib.defaultRateLimit;
-              description = "Optional nginx request rate-limiting policy for derived proxy vhosts. Set to null to disable.";
+              type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
+              default = null;
+              description = "Ingress rate-limit policy for this exposed port. When unset, the shared nginx default rate-limit profile is used.";
             };
 
             cfTunnelNames = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [];
-              description = "Optional Cloudflare Tunnel hostnames to route to the repo-managed nginx reverse proxy for this port.";
+              description = "Optional Cloudflare Tunnel hostnames to route to this exposed port.";
             };
 
             cfTunnelPort = lib.mkOption {
@@ -591,7 +592,11 @@ in {
             instancesWithContext;
         in {
           instances = resolvedInstances;
-          nginxProxyVhosts = nginxLib.proxyVhostsFromInstances {defaultHost = stack.nginxDefaultHost;} resolvedInstances;
+          nginxProxyVhosts =
+            nginxLib.proxyVhostsFromInstances {
+              defaultHost = stack.nginxDefaultHost;
+            }
+            resolvedInstances;
           cloudflareTunnelIngress = cloudflareTunnelsLib.ingressFromInstances resolvedInstances;
         }))
       stacks;
