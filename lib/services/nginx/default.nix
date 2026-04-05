@@ -24,6 +24,37 @@
     };
   };
 
+  staticSiteType = lib.types.submodule {
+    options = {
+      serverNames = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Hostname(s) served by this static site.";
+      };
+
+      rootPath = lib.mkOption {
+        type = lib.types.path;
+        description = "Directory path to mount into the nginx container.";
+      };
+
+      mountPath = lib.mkOption {
+        type = lib.types.str;
+        description = "Container path nginx should use as the document root.";
+      };
+
+      index = lib.mkOption {
+        type = lib.types.str;
+        default = "index.html";
+        description = "Index file served by nginx for this site.";
+      };
+
+      spa = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether requests should fall back to /index.html.";
+      };
+    };
+  };
+
   mkProxyVhost = {defaultHost ? "localhost"}: serviceName: portName: portCfg: let
     nginxHostNames = portCfg.nginxHostNames or [];
   in
@@ -56,8 +87,28 @@
         }
     }
   '';
+
+  staticSiteLocation = site:
+    if site.spa
+    then "location / {\n            try_files $uri $uri/ /${site.index};\n        }"
+    else "location / {\n            try_files $uri $uri/ =404;\n        }";
+
+  mkStaticServer = _: site: ''
+    server {
+        listen 80;
+        server_name ${lib.concatStringsSep " " site.serverNames};
+
+        include /etc/nginx/conf.d/lib/http-security.conf;
+
+        root ${site.mountPath};
+        index ${site.index};
+
+        ${staticSiteLocation site}
+    }
+  '';
 in {
   proxyVhostType = proxyVhostType;
+  staticSiteType = staticSiteType;
 
   composeSource = ./compose/compose.yaml;
 
@@ -79,4 +130,31 @@ in {
 
   renderProxyServers = proxyVhosts:
     lib.concatStringsSep "\n" (lib.mapAttrsToList mkProxyServer proxyVhosts);
+
+  mkStaticSite = {
+    name,
+    serverNames,
+    rootPath,
+    mountPath ? "/srv/${name}",
+    index ? "index.html",
+    spa ? false,
+  }: {
+    inherit serverNames rootPath mountPath index spa;
+  };
+
+  renderStaticServers = staticSites:
+    lib.concatStringsSep "\n" (lib.mapAttrsToList mkStaticServer staticSites);
+
+  staticSiteFiles = staticSites:
+    lib.concatMapAttrs (name: site: {"site/${name}" = site.rootPath;}) staticSites;
+
+  staticSiteComposeOverride = staticSites:
+    lib.generators.toYAML {} {
+      services.nginx.volumes =
+        map
+        (name: let
+          site = staticSites.${name};
+        in "./site/${name}:${site.mountPath}:ro")
+        (builtins.attrNames staticSites);
+    };
 }

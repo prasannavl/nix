@@ -8,7 +8,7 @@
   hasStacks = cfg != {};
   collectionsLib = import ../flake/utils {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
-  tunnelsLib = import ../services/tunnels {inherit lib;};
+  cloudflareTunnelsLib = import ../services/tunnels/cloudflare.nix {inherit lib;};
   defaultService = {
     source = null;
     files = {};
@@ -586,7 +586,7 @@ in {
         in {
           instances = resolvedInstances;
           nginxProxyVhosts = nginxLib.proxyVhostsFromInstances {defaultHost = stack.nginxDefaultHost;} resolvedInstances;
-          cloudflareTunnelIngress = tunnelsLib.ingressFromInstances resolvedInstances;
+          cloudflareTunnelIngress = cloudflareTunnelsLib.ingressFromInstances resolvedInstances;
         }))
       stacks;
   };

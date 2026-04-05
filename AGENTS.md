@@ -13,6 +13,8 @@
     `docs/ai/lang-patterns/<language>.md` files before editing.
   - If a relevant language-pattern file does not exist yet and the user defines
     durable rules for that language, create it and update the index.
+- Look at `docs/ai/design-patterns/` for system design and architectural rules
+  and conventions relevant to the task.
 - Use `docs/ai/playbooks` for user-defined, reusable processes.
   - When a user asks to "record a process" (or equivalent), create/update a
     playbook here.

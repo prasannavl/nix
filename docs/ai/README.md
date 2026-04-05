@@ -19,6 +19,15 @@ Use this index as the canonical map for `docs/ai/**`.
   patterns, attrset style, packaging conventions, flake conventions, and common
   pitfalls.
 
+## Design Patterns
+
+- `docs/ai/design-patterns/dns.md`: Durable DNS design and change-management
+  rules for the repo's Cloudflare/OpenTofu stack, including stable record keys,
+  phased add/remove sequencing, and recovery guidance after partial applies.
+- `docs/ai/design-patterns/tunnels-and-static-origins.md`: Host-level Cloudflare
+  Tunnel edge-IP policy, rollout sequencing, and Podman static-site
+  materialization rules for directory-backed origins.
+
 ## Notes
 
 ### Apps
