@@ -304,6 +304,35 @@ It drives:
 - derived nginx reverse-proxy metadata
 - derived Cloudflare Tunnel ingress metadata
 
+For ports exposed through the shared nginx reverse proxy, the same metadata also
+owns the proxy rate-limit policy. The default is a per-client limit keyed by
+`$binary_remote_addr` with:
+
+- `rate = "10r/s"`
+- `burst = 20`
+- `nodelay = true`
+- `statusCode = 429`
+
+Override or disable it per exposed port:
+
+```nix
+exposedPorts.http = {
+  port = 12000;
+  nginxHostNames = ["app.example.com"];
+
+  rateLimit = {
+    rate = "30r/s";
+    burst = 60;
+  };
+};
+
+exposedPorts.metrics = {
+  port = 19090;
+  nginxHostNames = ["metrics.example.com"];
+  rateLimit = null;
+};
+```
+
 ## Secrets
 
 The supported secret model is file-backed `envSecrets`:

@@ -180,6 +180,12 @@
               description = "Optional hostnames to serve through the repo-managed nginx reverse proxy for this port.";
             };
 
+            rateLimit = lib.mkOption {
+              type = lib.types.nullOr nginxLib.rateLimitType;
+              default = nginxLib.defaultRateLimit;
+              description = "Optional nginx request rate-limiting policy for derived proxy vhosts. Set to null to disable.";
+            };
+
             cfTunnelNames = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [];
