@@ -310,16 +310,13 @@ in {
     lib.optionalString (rateLimitZones != "") "${rateLimitZones}\n${servers}"
     + lib.optionalString (rateLimitZones == "") servers;
 
-  staticSiteFiles = staticSites:
-    lib.concatMapAttrs (name: site: {"site/${name}" = site.rootPath;}) staticSites;
-
   staticSiteComposeOverride = staticSites:
     lib.generators.toYAML {} {
       services.nginx.volumes =
         map
         (name: let
           site = staticSites.${name};
-        in "./site/${name}:${staticSiteMountPath name site}:ro")
+        in "${toString site.rootPath}:${staticSiteMountPath name site}:ro")
         (builtins.attrNames staticSites);
     };
 }
