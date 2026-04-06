@@ -132,7 +132,7 @@
       # codex-pkgs.default
       codex
       gemini-cli
-      claude-code
+      # claude-code
     ];
 
     misc = with pkgs; [

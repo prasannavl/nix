@@ -26,7 +26,7 @@
       ageIdentityKey = "data/secrets/machine/gap3-gondor.key.age";
       proxyJump = "pvl-x2";
       parent = "pvl-x2";
-      # deploy = "skip";
+      deploy = "skip";
     };
   };
 

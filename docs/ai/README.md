@@ -51,6 +51,10 @@ Use this index as the canonical map for `docs/ai/**`.
   Tunnel host wiring.
 - `docs/ai/notes/hosts/desktop-investigations-consolidated-2026-03.md`:
   Consolidated desktop investigations and durable findings.
+- `docs/ai/notes/hosts/gap3-gondor-base-image-recreation-investigation-2026-04.md`:
+  Root-cause investigation for `pvl-x2` recreating `gap3-gondor` from the
+  minimal `gap3-base` image after a flake update, leaving nested `rivendell`
+  data intact under `/var/lib` but dropping the takeover runtime.
 - `docs/ai/notes/hosts/human-host-docs-add-host-flow-2026-04.md`: Updated
   `docs/hosts.md` so the human add-host flow matches the current Incus parent
   and managed-secret workflow.
