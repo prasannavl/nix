@@ -380,6 +380,105 @@ Reusable base images (e.g. for Incus templates) live in `lib/images/` and use
 the same `commonModules` mechanism. They are not registered in
 `hosts/default.nix` because they are not deploy targets.
 
+## Operator SSH Access
+
+Operator SSH access is managed declaratively. To grant a person SSH access to
+the fleet, wire their key and user module into the repo, then deploy the
+relevant hosts.
+
+### 1. Add the user's public key to `users/userdata.nix`
+
+Add a new entry with the username, uid, display metadata, and SSH public key:
+
+```nix
+<user> = {
+  username = "<user>";
+  uid = <uid>;
+  name = "<Full Name>";
+  email = "<user>@example.com";
+  sshKey = "ssh-ed25519 AAAA...";
+};
+```
+
+This is the source of truth for the user's authorized key.
+
+### 2. Create a user module under `users/<user>/`
+
+Follow the existing pattern used by `users/pvl/` or `users/bush/`. The user
+module is what actually creates `users.users.<user>` and installs
+`openssh.authorizedKeys.keys = [userdata.sshKey];`.
+
+### 3. Import that user on every host they need to reach
+
+Add the user import to the host-local `users.nix` for each target host.
+
+For example:
+
+```nix
+{
+  imports = [
+    (import ../../users/<user>).systemd-container
+  ];
+}
+```
+
+If the user needs to SSH through the bastion, make sure the bastion deployment
+imports them too. In the current repo, `gap3-gondor` is the bastion host and
+serves `z.gap3.ai` through Cloudflare Tunnel, so the bastion must include the
+user before the jump-host flow will work.
+
+### 4. Deploy bastion first, then downstream hosts
+
+If bastion access changed, deploy the bastion before testing the jump path. If
+the user also needs access to private downstream machines, deploy those hosts
+after the bastion is updated.
+
+### 5. Test raw SSH access
+
+Direct bastion access through Cloudflare Access:
+
+```bash
+ssh -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@z.gap3.ai
+```
+
+Jump through bastion to a private host:
+
+```bash
+ssh -J z.gap3.ai -o HostKeyAlias=gap3-rivendell 10.10.30.10
+```
+
+### 6. Add SSH config entries
+
+Minimal bastion entry:
+
+```sshconfig
+Host z.gap3.ai
+  User pvl
+  ProxyCommand cloudflared access ssh --hostname %h
+```
+
+Full example with bastion alias and private hosts. Replace `User pvl` with the
+actual operator username where needed:
+
+```sshconfig
+Host z.gap3.ai
+  User pvl
+  ProxyCommand cloudflared access ssh --hostname %h
+
+Host gap3-gondor
+  HostName z.gap3.ai
+  User pvl
+  ProxyCommand cloudflared access ssh --hostname %h
+
+Host gap3-rivendell
+  HostName 10.10.30.10
+  ProxyJump z.gap3.ai
+
+Host llmug-rivendell
+  HostName 10.10.30.11
+  ProxyJump z.gap3.ai
+```
+
 ## FAQ
 
 ### Does a host need to be a physical machine?
