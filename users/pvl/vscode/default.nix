@@ -39,6 +39,8 @@
           # google.geminicodeassist
           # continue.continue
 
+          ms-ossdata.vscode-pgsql
+          alexcvzz.vscode-sqlite
           johnpapa.vscode-peacock
         ];
 

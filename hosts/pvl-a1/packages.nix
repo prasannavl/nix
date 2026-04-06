@@ -152,6 +152,12 @@
       shellcheck
       vim.xxd
       gdb
+      sqlitestudio
+      sqlitestudio-plugins
+      sqlitebrowser
+      sqlite
+      pgsql-tools
+      pgadmin4-desktopmode
     ];
 
     fonts = with pkgs; [

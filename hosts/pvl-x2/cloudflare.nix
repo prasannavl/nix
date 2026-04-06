@@ -10,9 +10,11 @@ in
   tunnelsLib.mkHostManagedTunnel {
     inherit config tunnelId;
     credentialsStoreName = "p7log-main.json.age";
-    ingress = tunnelIngress // {
-      "x.p7log.com" = "ssh://localhost:22";
-    };
+    ingress =
+      tunnelIngress
+      // {
+        "x.p7log.com" = "ssh://localhost:22";
+      };
     # Rivendell should not force IPv4-only Cloudflare edge connectivity.
     edgeIPVersion = "auto";
   }
