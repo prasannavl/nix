@@ -295,7 +295,7 @@ in {
     resolvedRateLimit = resolveRateLimit rateLimit;
     staticVhosts =
       lib.mapAttrs
-      (name: site: {
+      (_name: _site: {
         rateLimit = resolvedRateLimit;
       })
       staticSites;

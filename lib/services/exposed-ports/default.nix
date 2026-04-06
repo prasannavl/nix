@@ -200,68 +200,6 @@
       };
     };
   };
-
-  overrideOrNull = overrides: name:
-    if builtins.hasAttr name overrides
-    then overrides.${name}
-    else null;
-
-  mergeBypass = profileBypass: overrideBypass:
-    profileBypass
-    // lib.optionalAttrs (overrideOrNull overrideBypass "cidrs" != null) {
-      cidrs = overrideOrNull overrideBypass "cidrs";
-    }
-    // lib.optionalAttrs (overrideOrNull overrideBypass "lan" != null) {
-      lan = overrideOrNull overrideBypass "lan";
-    }
-    // lib.optionalAttrs (overrideOrNull overrideBypass "cloudflareTunnel" != null) {
-      cloudflareTunnel = overrideOrNull overrideBypass "cloudflareTunnel";
-    };
-
-  applyOverride = profile: overrides: let
-    bypassOverrides = overrideOrNull overrides "bypass";
-  in
-    profile
-    // lib.optionalAttrs (overrideOrNull overrides "enable" != null) {
-      enable = overrideOrNull overrides "enable";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "requestsPerSecond" != null) {
-      requestsPerSecond = overrideOrNull overrides "requestsPerSecond";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "requestsPerMinute" != null) {
-      requestsPerMinute = overrideOrNull overrides "requestsPerMinute";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "requestsPerQuarterHour" != null) {
-      requestsPerQuarterHour = overrideOrNull overrides "requestsPerQuarterHour";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "requestsPerHour" != null) {
-      requestsPerHour = overrideOrNull overrides "requestsPerHour";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "requestsPerSecondBurst" != null) {
-      requestsPerSecondBurst = overrideOrNull overrides "requestsPerSecondBurst";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "requestsPerMinuteBurst" != null) {
-      requestsPerMinuteBurst = overrideOrNull overrides "requestsPerMinuteBurst";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "requestsPerQuarterHourBurst" != null) {
-      requestsPerQuarterHourBurst = overrideOrNull overrides "requestsPerQuarterHourBurst";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "requestsPerHourBurst" != null) {
-      requestsPerHourBurst = overrideOrNull overrides "requestsPerHourBurst";
-    }
-    // lib.optionalAttrs (overrideOrNull overrides "statusCode" != null) {
-      statusCode = overrideOrNull overrides "statusCode";
-    }
-    // {
-      bypass =
-        mergeBypass
-        profile.bypass
-        (
-          if bypassOverrides != null
-          then bypassOverrides
-          else {}
-        );
-    };
 in {
   inherit defaultRateLimitProfile rateLimitProfileType rateLimitOverrideType;
 
