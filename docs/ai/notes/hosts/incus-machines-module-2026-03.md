@@ -30,6 +30,10 @@ and recovery rules for managed guests declared under `services.incusMachines`.
 - **imageTag**: top-level declarative knob to force re-import of the shared
   `local:nixos-incus-base` alias even when the underlying image build output
   path has not changed.
+- **Image refresh versus recreate**: rebuilt local image store paths must not by
+  themselves trigger guest recreate; image refresh is governed by `imageTag`,
+  while full guest recreate remains gated by explicit config changes or
+  `recreateTag`.
 - **GC service**: `incus-machines-gc` removes containers tagged
   `user.managed-by=nixos` that are no longer declared. Respects per-container
   `removalPolicy` (stop-only, delete-container, delete-all) and per-device

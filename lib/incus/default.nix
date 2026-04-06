@@ -197,7 +197,7 @@
       image = let
         resolvedImage = resolveMachineImage name machine;
       in {
-        inherit (resolvedImage) alias createRef imageIdentity;
+        inherit (resolvedImage) alias createRef;
       };
       createOnlyDevices = lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine);
     });

@@ -158,8 +158,9 @@ any new string value works.
   - intended for disruptive parent Incus preseed changes such as bridge/profile
     migrations
 - guest `image` source change:
-  - triggers guest recreate
-  - the guest image source is part of the recreate-tracked config hash
+  - refreshes the declared image alias on the next `imageTag`-driven image
+    update
+  - does not by itself recreate already-running guests
 - guest `imageAlias` resolution change:
   - triggers guest recreate
   - changing the image slot a guest is created from is treated as a recreate
@@ -341,17 +342,17 @@ guest-local `config`, `image`, and devices did not change.
 
 ### What happens when I point a guest at a different image?
 
-Changing the guest's declared `image` source is recreate-tracked, so the guest
-is recreated on the next run of its lifecycle service. Re-importing or
-refreshing the content behind the same declared image source does not by itself
-recreate already-running guests.
+Changing the guest's declared `image` source updates which image content the
+declared local alias should point at. That change does not by itself recreate
+already-running guests. To roll an existing guest onto the refreshed image, also
+bump `recreateTag` or otherwise make a recreate-tracked change.
 
 ### What happens when I change `image` but keep the same `imageAlias`?
 
-That still triggers guest recreate, because the declared image source is part of
-the recreate-tracked config hash. The stable `imageAlias` controls the local
-Incus handle used for create, not whether a source change is considered a new
-guest image input.
+That no longer triggers guest recreate by itself. The stable `imageAlias`
+controls the local Incus handle used for guest create, while alias refresh is
+handled separately through `imageTag`. Existing guests keep their current root
+filesystem until a later recreate event.
 
 ### What happens when I change guest `config`?
 
@@ -385,15 +386,15 @@ declared value changes relative to the stored value.
 
 ### If I manually delete a guest in Incus, will the next deploy recreate it automatically?
 
-Yes, on the next parent-host activation. The shared module now reconciles
-declared guests during activation and restarts the `incus-<guest>` lifecycle
-service when a guest is missing or stopped.
+Not during activation anymore. Activation no longer reconciles child guests. The
+steady-state model is host-side reconcile outside activation via the declared
+`incus-<guest>` lifecycle services, the `incus-machines-reconciler.service`
+oneshot, or `nixbot`'s parent readiness barriers.
 
-By default this reconcile is **best-effort** on non-container parent hosts and
-`"off"` on containerized Incus hosts such as nested guests. If you want parent
-activation to be blocked on guest convergence, set
-`services.incusMachines.reconcileOnActivation = "strict"`. You can also disable
-activation-time guest reconcile entirely with `"off"`.
+The reconcile policy is controlled by `services.incusMachines.reconcilePolicy`.
+The default is **best-effort** on non-container parent hosts and `"off"` on
+containerized Incus hosts such as nested guests. Boot-time auto-reconcile is
+opt-in through `services.incusMachines.autoReconcile = true;`.
 
 If you need to force a recreate even when the guest still exists and is running,
 bump `recreateTag` to a new value.
@@ -406,9 +407,9 @@ knob for forcing declared image alias refresh.
 ### Does `imageTag` also recreate running guests?
 
 No. It only refreshes declared image aliases. Existing guests keep their current
-root filesystem until recreated by `recreateTag`, by a recreate-tracked config
-change such as changing `image`, or by deleting the guest and letting the
-lifecycle service recreate it.
+root filesystem until recreated by `recreateTag`, by another recreate-tracked
+config change, or by deleting the guest and letting the lifecycle service
+recreate it.
 
 ## Related Docs
 
