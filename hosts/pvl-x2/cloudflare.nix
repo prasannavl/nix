@@ -15,6 +15,6 @@ in
       // {
         "x.p7log.com" = "ssh://localhost:22";
       };
-    # Rivendell should not force IPv4-only Cloudflare edge connectivity.
+    # Allow both IPv4 and IPv6
     edgeIPVersion = "auto";
   }
