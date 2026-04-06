@@ -15,14 +15,6 @@
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
       build = pkgs.callPackage ./default.nix {};
-      check = args:
-        build.overrideAttrs (old: {
-          pname = "${old.pname}-${args.name}";
-          nativeBuildInputs = (old.nativeBuildInputs or []) ++ (args.nativeBuildInputs or []);
-          inherit (args) buildPhase;
-          installPhase = "touch $out";
-          dontInstall = false;
-        });
     in {
       packages = {
         default = build;
@@ -38,23 +30,7 @@
         default = run;
         run = run;
       };
-      checks = {
-        build = build;
-        clippy = check {
-          name = "clippy";
-          nativeBuildInputs = [pkgs.clippy];
-          buildPhase = "cargo clippy -- -D warnings";
-        };
-        fmt = check {
-          name = "fmt";
-          nativeBuildInputs = [pkgs.rustfmt];
-          buildPhase = "cargo fmt --check";
-        };
-        test = check {
-          name = "test";
-          buildPhase = "cargo test";
-        };
-      };
+      checks = build.checks;
     })
     // {
       nixosModules = let

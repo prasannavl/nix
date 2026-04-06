@@ -279,6 +279,9 @@ Use this index as the canonical map for `docs/ai/**`.
   Selective two-phase Cloudflare state transfer planning with separate
   import-into-target and remove-from-source command files, including selectors
   for zones, workers, tunnels, and R2 buckets.
+- `docs/ai/notes/tooling/rustfmt-treefmt-pkgs-discovery-2026-04.md`: Make
+  `nix fmt` run `cargo fmt` generically for tracked Rust crates under `pkgs/`
+  through a repo formatter wrapper script.
 - `docs/ai/notes/tooling/vscode-configuration-2026-03.md`: Consolidated VS Code
   upstream package model, pinned hash strategy, and Go toolchain provisioning.
 

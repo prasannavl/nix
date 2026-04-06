@@ -11,3 +11,7 @@ includes = ["*.js", "**/*.js", "*.md", "**/*.md"]
 command = "tofu"
 options = ["fmt"]
 includes = ["*.tf", "**/*.tf", "*.tfvars", "**/*.tfvars"]
+
+[formatter.rust]
+command = "./scripts/rust-fmt.sh"
+includes = ["pkgs/**/*.rs"]

@@ -42,8 +42,10 @@ init_vars() {
   CURRENT_STEP=""
   CURRENT_STEP_DESCRIPTION=""
   readonly -a LINT_RUNTIME_COMMANDS=(
+    cargo
     git
     nix
+    rustfmt
     jq
     treefmt
     statix
@@ -62,11 +64,13 @@ ensure_runtime_shell() {
   local script_path
   local flake_path
   local -a runtime_packages=(
+    nixpkgs#cargo
     nixpkgs#git
     nixpkgs#treefmt
     nixpkgs#alejandra
     nixpkgs#deno
     nixpkgs#opentofu
+    nixpkgs#rustfmt
     nixpkgs#statix
     nixpkgs#deadnix
     nixpkgs#shellcheck

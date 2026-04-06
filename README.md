@@ -211,7 +211,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 
 ## Linting
 
-- `nix fmt` applies the repo formatter configured in `treefmt.toml`.
+- `nix fmt` applies the repo formatter configured in `treefmt.toml`, including
+  generic Rust formatting for tracked Cargo crates under `pkgs/`.
 - `nix run path:.#lint -- deps` verifies the runnable lint wrapper and its
   runtime commands, matching the action-style entrypoints used by `nixbot`.
 - `nix run path:.#lint` runs the shared lint suite across the whole repo.

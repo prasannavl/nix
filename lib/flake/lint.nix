@@ -3,8 +3,10 @@
   formatterPkgs = with pkgs; [
     treefmt
     alejandra
+    cargo
     deno
     opentofu
+    rustfmt
   ];
   lintPkgs =
     formatterPkgs
