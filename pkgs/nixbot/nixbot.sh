@@ -358,6 +358,7 @@ init_vars() {
   REMOTE_RUNTIME_PATH="${REMOTE_WRAPPER_BIN_DIR}:${REMOTE_SYSTEM_BIN_DIR}"
   REMOTE_SYSTEM_BASH="${REMOTE_SYSTEM_BIN_DIR}/bash"
   SSH_NULL_KNOWN_HOSTS_FILE="/dev/null"
+  SSH_NULL_CONFIG_FILE="/dev/null"
   RUNTIME_WORK_DIR_PREFIX="/dev/shm/nixbot-run."
   RUNTIME_WORK_DIR_FALLBACK_PREFIX="${TMPDIR:-/tmp}/nixbot-run."
   BASTION_KNOWN_HOSTS_PREFIX="bastion-known-hosts"
@@ -1029,6 +1030,7 @@ configure_bastion_trigger_ssh_opts() {
   printf '%s\n' "${scanned_known_hosts}" > "${known_hosts_file}"
   chmod 600 "${known_hosts_file}"
   BASTION_TRIGGER_SSH_OPTS+=(
+    -F "${SSH_NULL_CONFIG_FILE}"
     -o "GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE}"
     -o StrictHostKeyChecking=yes
     -o "UserKnownHostsFile=${known_hosts_file}"
@@ -2075,7 +2077,8 @@ build_repo_git_ssh_command_for_url() {
   known_hosts_file="$(ensure_repo_known_hosts_file_for_url "${repo_url}")" || return 1
 
   printf -v git_ssh_command \
-    'ssh -o GlobalKnownHostsFile=%q -o UserKnownHostsFile=%q -o StrictHostKeyChecking=yes' \
+    'ssh -F %q -o GlobalKnownHostsFile=%q -o UserKnownHostsFile=%q -o StrictHostKeyChecking=yes' \
+    "${SSH_NULL_CONFIG_FILE}" \
     "${SSH_NULL_KNOWN_HOSTS_FILE}" \
     "${known_hosts_file}"
   if [ -f "${REPO_SSH_KEY_PATH}" ]; then
@@ -2886,6 +2889,7 @@ init_known_hosts_ssh_context() {
   local host_key_check="${5:-yes}"
 
   ikhsc_ssh_opts_out_ref=(
+    -F "${SSH_NULL_CONFIG_FILE}"
     -o ConnectTimeout=10
     -o ConnectionAttempts=1
     -o LogLevel=ERROR
@@ -2893,7 +2897,7 @@ init_known_hosts_ssh_context() {
     -o "UserKnownHostsFile=${known_hosts_file}"
     -o "StrictHostKeyChecking=${host_key_check}"
   )
-  ikhsc_nix_sshopts_out_ref="-o ConnectTimeout=10 -o ConnectionAttempts=1 -o LogLevel=ERROR -o GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE} -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
+  ikhsc_nix_sshopts_out_ref="-F ${SSH_NULL_CONFIG_FILE} -o ConnectTimeout=10 -o ConnectionAttempts=1 -o LogLevel=ERROR -o GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE} -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
 
   if [ "${batch_mode}" -eq 1 ]; then
     ikhsc_ssh_opts_out_ref=(-o BatchMode=yes "${ikhsc_ssh_opts_out_ref[@]}")
@@ -3071,7 +3075,7 @@ write_proxy_command_script() {
     printf 'previous_proxy_script=%q\n' "${previous_proxy_script}"
     printf 'identity_file=%q\n' "${identity_file}"
     cat <<'EOF'
-cmd=(ssh -o LogLevel=ERROR -o "GlobalKnownHostsFile=/dev/null" -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
+cmd=(ssh -F /dev/null -o LogLevel=ERROR -o "GlobalKnownHostsFile=/dev/null" -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
 if [ -n "${identity_file}" ]; then
   cmd+=(-i "${identity_file}" -o IdentitiesOnly=yes)
 fi
