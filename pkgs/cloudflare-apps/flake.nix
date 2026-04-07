@@ -25,7 +25,7 @@
       };
     in
       pkgHelper.mkStdFlakeOutputs {
-        pkgs = pkgs;
+        inherit pkgs;
         build = drv;
       });
 }

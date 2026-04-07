@@ -27,6 +27,12 @@ repo_root() {
 	cd "${script_dir}/../../../.." && pwd -P
 }
 
+build_default_file() {
+	local default_file="$1"
+
+	nix build --no-link --print-out-paths --file "${default_file}"
+}
+
 ensure_runtime_shell() {
 	local root=""
 	local script=""
@@ -76,12 +82,7 @@ resolve_build_root() {
 		return 0
 	fi
 
-	if [ -f "${directory}/flake.nix" ]; then
-		printf '%s\n' "${directory}"
-		return 0
-	fi
-
-	if [ "$(basename "${directory}")" = "result" ] && [ -f "$(dirname "${directory}")/flake.nix" ]; then
+	if [ "$(basename "${directory}")" = "result" ] && [ -f "$(dirname "${directory}")/default.nix" ]; then
 		printf '%s\n' "$(dirname "${directory}")"
 		return 0
 	fi
@@ -96,18 +97,10 @@ resolve_directory() {
 	if build_root="$(resolve_build_root "${directory}")"; then
 		local build_output=""
 		local build_target_desc=""
-		if [ -f "${build_root}/default.nix" ]; then
-			build_target_desc="${build_root}/default.nix"
-			if ! build_output="$(nix build --no-link --print-out-paths --file "${build_root}/default.nix")"; then
-				printf 'worker-dir-nix-resolver: nix build failed for %s\n' "${build_target_desc}" >&2
-				exit 1
-			fi
-		else
-			build_target_desc="path:${build_root}#build"
-			if ! build_output="$(nix build --no-link --print-out-paths "${build_target_desc}")"; then
-				printf 'worker-dir-nix-resolver: nix build failed for %s\n' "${build_target_desc}" >&2
-				exit 1
-			fi
+		build_target_desc="${build_root}/default.nix"
+		if ! build_output="$(build_default_file "${build_target_desc}")"; then
+			printf 'worker-dir-nix-resolver: nix build failed for %s\n' "${build_target_desc}" >&2
+			exit 1
 		fi
 		printf '%s\n' "${build_output}" | tail -n1
 		return 0

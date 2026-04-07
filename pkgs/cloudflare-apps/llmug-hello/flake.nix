@@ -17,9 +17,9 @@
       drv = pkgs.callPackage ./default.nix {};
     in
       pkgHelper.mkStdFlakeOutputs {
-        pkgs = pkgs;
+        inherit pkgs;
         build = drv;
-        devShell = drv.devShell;
+        inherit (drv) devShell;
         extraPackages = {
           "wrangler-deploy" = drv.wrangler-deploy;
         };

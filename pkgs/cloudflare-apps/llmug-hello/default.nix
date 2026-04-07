@@ -59,12 +59,13 @@
       set -euo pipefail
 
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+      assets_build_file="${./default.nix}"
 
       if [ -n "$repo_root" ] && [ -f "$repo_root/pkgs/cloudflare-apps/llmug-hello/default.nix" ]; then
-        assets_dir="$(nix build --no-link --print-out-paths --file "$repo_root/pkgs/cloudflare-apps/llmug-hello/default.nix" | tail -n1)"
-      else
-        assets_dir="$(nix build --no-link --print-out-paths "path:${./.}#build" | tail -n1)"
+        assets_build_file="$repo_root/pkgs/cloudflare-apps/llmug-hello/default.nix"
       fi
+
+      assets_dir="$(nix build --no-link --print-out-paths --file "$assets_build_file" | tail -n1)"
 
       cd ${./.}
       exec wrangler deploy --assets "$assets_dir" "$@"

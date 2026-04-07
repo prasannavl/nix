@@ -6493,7 +6493,7 @@ tf_project_apps_package_dir() {
 	local project_pkg_dir="pkgs/${project_name}"
 
 	[[ "${project_name}" == *-apps ]] || return 1
-	[ -f "${project_pkg_dir}/flake.nix" ] || return 1
+	[ -f "${project_pkg_dir}/default.nix" ] || return 1
 
 	printf '%s\n' "${project_pkg_dir}"
 }
@@ -6506,7 +6506,7 @@ prepare_tf_apps_project_runtime() {
 	fi
 
 	echo "Preparing Terraform apps package build: ${project_name}" >&2
-	nix build "path:${project_pkg_dir}#build" --no-link
+	nix build --file "${project_pkg_dir}/default.nix" --no-link
 }
 
 emit_tf_var_secret_paths_for_project() {
