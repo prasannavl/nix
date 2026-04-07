@@ -25,6 +25,7 @@
         run = {
           type = "app";
           program = pkgs.lib.getExe build;
+          inherit (build) meta;
         };
       in {
         default = run;

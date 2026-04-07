@@ -9,14 +9,8 @@
       description = "Hello world Rust example";
       mainProgram = "hello-rust";
     };
-    passthru.checks = flakeChecks.mkChecks build {
-      build = {};
-      clippy = {
-        nativeBuildInputs = [pkgs.clippy];
-        buildPhase = "cargo clippy -- -D warnings";
-      };
-      fmt.buildPhase = "cargo fmt --check";
-      test.buildPhase = "cargo test";
+    passthru.checks = flakeChecks.mkRustChecks {
+      inherit build pkgs;
     };
   };
 in

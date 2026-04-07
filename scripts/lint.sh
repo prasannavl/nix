@@ -43,6 +43,7 @@ init_vars() {
   CURRENT_STEP_DESCRIPTION=""
   readonly -a LINT_RUNTIME_COMMANDS=(
     cargo
+    cargo-clippy
     git
     nix
     rustfmt
@@ -65,6 +66,7 @@ ensure_runtime_shell() {
   local flake_path
   local -a runtime_packages=(
     nixpkgs#cargo
+    nixpkgs#clippy
     nixpkgs#git
     nixpkgs#treefmt
     nixpkgs#alejandra
@@ -277,6 +279,28 @@ collect_all_flake_dirs() {
     done
 }
 
+collect_changed_cargo_manifests() {
+  local -a all_changed=()
+  local manifest changed
+
+  mapfile -d $'\0' -t all_changed < <(collect_files '*')
+
+  while IFS= read -r -d '' manifest; do
+    local crate_dir
+    crate_dir="$(dirname "${manifest}")"
+    for changed in "${all_changed[@]}"; do
+      if [[ "${changed}" = "${crate_dir}/"* ]] || [ "${changed}" = "${manifest}" ]; then
+        printf '%s\0' "${manifest}"
+        break
+      fi
+    done
+  done < <(find pkgs -name Cargo.toml -print0 | sort -z)
+}
+
+collect_all_cargo_manifests() {
+  find pkgs -name Cargo.toml -print0 | sort -z
+}
+
 detect_nix_system() {
   nix eval --raw --impure --expr 'builtins.currentSystem'
 }
@@ -305,6 +329,7 @@ run_flake_checks_skip_test() {
 run_lint_action() {
   local nix_file=""
   local -a deno_files=()
+  local -a cargo_manifests=()
   local local_tf_dir=""
 
   local scope
@@ -320,10 +345,35 @@ run_lint_action() {
   mapfile -d $'\0' -t tf_files < <(collect_files '*.tf' '*.tfvars')
   mapfile -d $'\0' -t tf_project_dirs < <(find tf -mindepth 1 -maxdepth 1 -type d -name '*-*' -print0 | sort -z)
 
+  if [ "$(lint_scope)" = diff ]; then
+    mapfile -d $'\0' -t cargo_manifests < <(collect_changed_cargo_manifests)
+  else
+    mapfile -d $'\0' -t cargo_manifests < <(collect_all_cargo_manifests)
+  fi
+
   if [ "${LINT_FIX}" = 1 ]; then
     printf '[lint-fix] Applying automatic fixes (%s)\n' "${scope}" >&2
 
     run_step treefmt-fix 'Formatting files with treefmt' treefmt
+
+    if [ "${#cargo_manifests[@]}" -gt 0 ]; then
+      CURRENT_STEP=clippy-fix
+      CURRENT_STEP_DESCRIPTION="Applying Rust clippy fixes"
+      log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+      local cargo_manifest=""
+      for cargo_manifest in "${cargo_manifests[@]}"; do
+        printf '  - %s\n' "${cargo_manifest}" >&2
+        cargo clippy \
+          --manifest-path "${cargo_manifest}" \
+          --fix \
+          --allow-dirty \
+          --allow-staged \
+          --all-targets \
+          --locked \
+          -- \
+          -D warnings
+      done
+    fi
 
     if [ "${#nix_files[@]}" -gt 0 ]; then
       CURRENT_STEP=statix-fix

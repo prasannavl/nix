@@ -4,6 +4,7 @@
     treefmt
     alejandra
     cargo
+    clippy
     deno
     opentofu
     rustfmt

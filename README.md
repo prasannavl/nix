@@ -225,9 +225,9 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   `deno fmt --check`, and `tofu fmt -check -write=false`) plus `actionlint` and
   `tflint` for `tf/*-*` projects, alongside full-repo `statix`, `deadnix`,
   `shellcheck`, and `markdownlint-cli2` under `.#lint`.
-- `lint fix` currently auto-runs `treefmt`, `statix fix`,
-  `markdownlint-cli2 --fix`, and `tflint --fix`; `deadnix`, `shellcheck`, and
-  `actionlint` remain report-only.
+- `lint fix` currently auto-runs `treefmt`, `statix fix`, `cargo clippy --fix`
+  for repo Rust crates, `markdownlint-cli2 --fix`, and `tflint --fix`;
+  `deadnix`, `shellcheck`, and `actionlint` remain report-only.
 - `lint --diff` keeps the incremental mode for `statix`, `deadnix`,
   `shellcheck`, and `markdownlint-cli2`, which protects new edits with faster
   local feedback.

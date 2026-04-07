@@ -282,6 +282,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/rustfmt-treefmt-pkgs-discovery-2026-04.md`: Make
   `nix fmt` run `cargo fmt` generically for tracked Rust crates under `pkgs/`
   through a repo formatter wrapper script.
+- `docs/ai/notes/tooling/rust-check-convention-and-clippy-fix-2026-04.md`: Use
+  shared Rust child-flake `checks` helpers and keep mutating `clippy --fix`
+  behavior in the root `lint -- fix` workflow.
 - `docs/ai/notes/tooling/vscode-configuration-2026-03.md`: Consolidated VS Code
   upstream package model, pinned hash strategy, and Go toolchain provisioning.
 
