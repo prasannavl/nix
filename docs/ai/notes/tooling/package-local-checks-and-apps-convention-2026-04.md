@@ -24,8 +24,8 @@ aggregates package-local checks and apps for everything inside `pkgs/`.
 - Package-owned verification keeps language behavior close to the package and
   lets root tooling stay an orchestrator instead of embedding per-language
   package rules.
-- The same package contract works across Rust, Go, Node, Python, Cloudflare,
-  and static site child flakes.
+- The same package contract works across Rust, Go, Node, Python, Cloudflare, and
+  static site child flakes.
 - Root-only rules still need one home for files that are not owned by child
   flakes, such as top-level Nix, shell, Markdown, and Terraform files.
 
@@ -39,25 +39,24 @@ aggregates package-local checks and apps for everything inside `pkgs/`.
 - `nix run path:.#lint -- fix` runs the root formatter, then each selected child
   flake's `apps.lint-fix` and `apps.fmt`, then applies root-only fix-capable
   tools outside `pkgs/`, and finally re-runs lint.
-- `--project <name>` scopes root `fmt` and `lint` to one or more child flakes
-  by directory name under `pkgs/`, including nested child flakes.
-- Shared package-helper builders in `lib/flake/pkg-helper.nix` own the common package app
-  and check mechanics so child flakes only declare runtime inputs,
-  environment, optional overrides, and package-specific commands. Child
-  flakes should not open-code repo-root discovery, treefmt wiring, or
-  `runCommand` boilerplate per project.
-- Root-owned filetype policy outside `pkgs/` is:
-  Markdown/JSON/JSONC with `deno fmt`, Nix with `alejandra`,
-  Terraform/OpenTofu with `tofu fmt`, and shell with `shfmt`.
+- `--project <name>` scopes root `fmt` and `lint` to one or more child flakes by
+  directory name under `pkgs/`, including nested child flakes.
+- Shared package-helper builders in `lib/flake/pkg-helper.nix` own the common
+  package app and check mechanics so child flakes only declare runtime inputs,
+  environment, optional overrides, and package-specific commands. Child flakes
+  should not open-code repo-root discovery, treefmt wiring, or `runCommand`
+  boilerplate per project.
+- Root-owned filetype policy outside `pkgs/` is: Markdown/JSON/JSONC with
+  `deno fmt`, Nix with `alejandra`, Terraform/OpenTofu with `tofu fmt`, and
+  shell with `shfmt`.
 - Package-owned language policy under `pkgs/` is defined in shared flake
-  helpers:
-  Rust uses `rustfmt` and `clippy`, Python uses `ruff`, Go uses `gofmt`,
-  `go vet`, and `go test`, Node/web assets use `biome`, and Deno projects use
-  `deno fmt`.
+  helpers: Rust uses `rustfmt` and `clippy`, Python uses `ruff`, Go uses
+  `gofmt`, `go vet`, and `go test`, Node/web assets use `biome`, and Deno
+  projects use `deno fmt`.
 - Shared helper defaults should derive package metadata from `src = ./.` when
-  possible, including the project path used by package apps and the default
-  Rust package name used in generated app names. Explicit overrides remain
-  available for unusual layouts.
+  possible, including the project path used by package apps and the default Rust
+  package name used in generated app names. Explicit overrides remain available
+  for unusual layouts.
 - Shared helper defaults should treat a project's own `flake.nix` or
   `default.nix` as the working-directory marker for package apps, rather than
   requiring per-project marker file lists.

@@ -1,5 +1,5 @@
 # Bash Colors
-# 
+#
 # Text Format           Foreground (text) color         Background color
 # 0: normal text        30: Black                       40: Black
 # 1: bold	            31: Red	                        41: Red
@@ -9,37 +9,37 @@
 #                       35: Purple                      45: Purple
 #                       36: Cyan                        46: Cyan
 #                       37: White                       47: White
-# 
+#
 # ESC sequence: \033 or \e
-# Color sequence: \[ESC[fg;format;bgm\] or \[$(tput setaf/ab color0-7)\] 
+# Color sequence: \[ESC[fg;format;bgm\] or \[$(tput setaf/ab color0-7)\]
 # tput => terminfo, ncurses
 
 setup_ps1() {
-    # reset
-    local r b
-    r="\[$(tput sgr0)\]"
-    b="\[$(tput bold)\]"
+	# reset
+	local r b
+	r="\[$(tput sgr0)\]"
+	b="\[$(tput bold)\]"
 
-    local fgray="\[\033[38;5;7m\]"
-    local fgreen="\[\033[38;5;2m\]"
-    local fblue="\[\033[38;5;33m\]"
-    local fred="\[\033[38;5;196m\]"
-    local fpink="\[\033[38;5;13m\]"
-    local error ps1_main_line ps1_exit_line
+	local fgray="\[\033[38;5;7m\]"
+	local fgreen="\[\033[38;5;2m\]"
+	local fblue="\[\033[38;5;33m\]"
+	local fred="\[\033[38;5;196m\]"
+	local fpink="\[\033[38;5;13m\]"
+	local error ps1_main_line ps1_exit_line
 
-    # shellcheck disable=SC2016
-    error="${b}${fred}"'$(e="$?"; [ "$e" = "0" ] || printf "[exit: %s]\n\n" "$e")'
+	# shellcheck disable=SC2016
+	error="${b}${fred}"'$(e="$?"; [ "$e" = "0" ] || printf "[exit: %s]\n\n" "$e")'
 
-    ps1_main_line="${error}${r}${fgray}[\t|${b}${fgreen}\u${r}${fgreen}@\h\
+	ps1_main_line="${error}${r}${fgray}[\t|${b}${fgreen}\u${r}${fgreen}@\h\
 ${r}${fgray}:${r}${fblue}\w${r}${fgray}]"
 
-    ps1_exit_line="${r}\\n\$ "
+	ps1_exit_line="${r}\\n\$ "
 
-    if command -v git >/dev/null 2>&1; then
-        ps1_main_line="${ps1_main_line} ${fpink}\$(__parse_git_branch_info)"
-    fi
+	if command -v git >/dev/null 2>&1; then
+		ps1_main_line="${ps1_main_line} ${fpink}\$(__parse_git_branch_info)"
+	fi
 
-    export PS1="${ps1_main_line}${ps1_exit_line}"
+	export PS1="${ps1_main_line}${ps1_exit_line}"
 }
 
 # get current branch in git repo
@@ -47,9 +47,8 @@ __parse_git_branch_info() {
 	local branch
 	local status
 
-	branch=$(git branch 2> /dev/null | sed -e '/^[^*]/d' -e 's/* \(.*\)/\1/')
-	if [ ! "${branch}" == "" ]
-	then
+	branch=$(git branch 2>/dev/null | sed -e '/^[^*]/d' -e 's/* \(.*\)/\1/')
+	if [ ! "${branch}" == "" ]; then
 		status="$(__parse_git_branch_status)"
 		echo "(${branch}${status})"
 	else

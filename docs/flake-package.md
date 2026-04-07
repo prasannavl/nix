@@ -1,8 +1,8 @@
 # Flake Package Helper
 
-This repo uses one standard child-flake contract for packages under `pkgs/`.
-The shared helper in [`lib/flake/pkg-helper.nix`](../lib/flake/pkg-helper.nix)
-owns that contract so package `default.nix` and `flake.nix` files stay short.
+This repo uses one standard child-flake contract for packages under `pkgs/`. The
+shared helper in [`lib/flake/pkg-helper.nix`](../lib/flake/pkg-helper.nix) owns
+that contract so package `default.nix` and `flake.nix` files stay short.
 
 ## Standard Contract
 
@@ -61,8 +61,8 @@ Root tooling is an orchestrator, not the owner of package language rules:
 - `nix run path:.#lint` runs root-owned lint checks, then delegates to each
   selected child flake's `checks.*`.
 - `nix run path:.#lint -- fix` runs root formatting and root fixers, then
-  delegates to each selected child flake's `apps.fmt` and `apps.lint-fix`,
-  then re-runs lint.
+  delegates to each selected child flake's `apps.fmt` and `apps.lint-fix`, then
+  re-runs lint.
 
 Root-owned file type policy is:
 
@@ -146,21 +146,20 @@ standard `packages.*`, `apps.*`, `checks.*`, and `devShells.default` exports.
 These are the main package entrypoints:
 
 - `mkRustDerivation`: Rust package conventions. Adds `checks.fmt`,
-  `checks.lint`, `checks.test`, `apps.fmt`, and `apps.lint-fix` using
-  `rustfmt`, `clippy`, and `cargo test`.
-- `mkGoDerivation`: Go package conventions. Adds `checks.fmt`,
-  `checks.lint`, and `checks.test` using `gofmt`, `go vet`, and `go test`.
+  `checks.lint`, `checks.test`, `apps.fmt`, and `apps.lint-fix` using `rustfmt`,
+  `clippy`, and `cargo test`.
+- `mkGoDerivation`: Go package conventions. Adds `checks.fmt`, `checks.lint`,
+  and `checks.test` using `gofmt`, `go vet`, and `go test`.
 - `mkPythonDerivation`: Python package conventions. Adds `checks.fmt`,
   `checks.lint`, and `apps.lint-fix` using `ruff`.
 - `mkWebDerivation`: Web project conventions for JS, TS, CSS, and HTML style
-  trees. Adds `checks.fmt`, `checks.lint`, `apps.fmt`, and `apps.lint-fix`
-  using `biome`, and includes `biome`, `nodejs`, and `deno` in the default dev
-  shell.
+  trees. Adds `checks.fmt`, `checks.lint`, `apps.fmt`, and `apps.lint-fix` using
+  `biome`, and includes `biome`, `nodejs`, and `deno` in the default dev shell.
 - `mkStaticWebDerivation`: `mkWebDerivation` plus a simple `apps.dev` static
   server and `python3` in the default dev shell.
 - `mkShellScriptDerivation`: Shell-script project conventions. Adds root-style
-  formatting and `shellcheck`-based linting automatically, with `shellcheck`
-  and `shfmt` in the default dev shell.
+  formatting and `shellcheck`-based linting automatically, with `shellcheck` and
+  `shfmt` in the default dev shell.
 
 ## Wiring Helpers
 
@@ -203,9 +202,9 @@ Helper defaults are intentionally automatic:
 
 - `src = ./.` is normally enough. Project name and project path are derived from
   it by default.
-- Package app wrappers treat a package-local `flake.nix` or `default.nix` as
-  the working-directory marker; per-project marker files are not part of the
-  normal API.
+- Package app wrappers treat a package-local `flake.nix` or `default.nix` as the
+  working-directory marker; per-project marker files are not part of the normal
+  API.
 - Automatic file discovery is by file type and respects `.gitignore` when the
   package runs inside a Git worktree.
 - Root-owned formatting inside package trees is delegated by file type to the

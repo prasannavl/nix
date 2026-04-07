@@ -31,9 +31,9 @@ contract:
   `mkRustChecks` instead of open-coded `fmt`/`lint`/`test` check attrsets.
 - `gap3-ai-web` passes `--locked` through the shared helper for `lint` and
   `test` while `fmt` remains plain `cargo fmt --check`.
-- Rust child flakes now expose package-local `apps.fmt` and `apps.lint-fix`
-  from the shared helper, so root lint and root fmt can delegate to them like
-  any other package.
+- Rust child flakes now expose package-local `apps.fmt` and `apps.lint-fix` from
+  the shared helper, so root lint and root fmt can delegate to them like any
+  other package.
 
 ## Convention
 

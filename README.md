@@ -211,31 +211,29 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 
 ## Linting
 
-- Package-local flakes under `pkgs/` conventionally expose:
-  `checks.lint`, `checks.fmt`, `checks.test`, `apps.lint-fix`, `apps.fmt`, and
-  `apps.dev` when the package has a runnable dev workflow.
+- Package-local flakes under `pkgs/` conventionally expose: `checks.lint`,
+  `checks.fmt`, `checks.test`, `apps.lint-fix`, `apps.fmt`, and `apps.dev` when
+  the package has a runnable dev workflow.
 - `checks.*` are read-only verification outputs; mutating actions belong in
   `apps.*`.
-- Standard package actions are:
-  `run` to execute the package, `dev` for interactive developer workflows,
-  `fmt` to mutate package-owned formatting, `lint-fix` to apply safe
-  package-owned auto-fixes, and `checks.fmt` / `checks.lint` / `checks.test`
-  for read-only verification.
+- Standard package actions are: `run` to execute the package, `dev` for
+  interactive developer workflows, `fmt` to mutate package-owned formatting,
+  `lint-fix` to apply safe package-owned auto-fixes, and `checks.fmt` /
+  `checks.lint` / `checks.test` for read-only verification.
 - `nix fmt` formats root-managed files outside `pkgs/` through the root
   `treefmt` configuration, then delegates package-managed formatting to each
   selected child flake's `apps.fmt`.
-- `nix run path:.#lint` lints root-managed files outside `pkgs/`, then
-  delegates package verification to each selected child flake's
-  `checks.fmt`, `checks.lint`, and `checks.test`.
+- `nix run path:.#lint` lints root-managed files outside `pkgs/`, then delegates
+  package verification to each selected child flake's `checks.fmt`,
+  `checks.lint`, and `checks.test`.
 - `nix run path:.#lint -- fix` applies root-owned formatting and fix-capable
-  linting outside `pkgs/`, runs package-local `apps.fmt` and
-  `apps.lint-fix`, then re-runs lint to show anything still requiring manual
-  changes.
+  linting outside `pkgs/`, runs package-local `apps.fmt` and `apps.lint-fix`,
+  then re-runs lint to show anything still requiring manual changes.
 - `nix run path:.#lint -- --project <name>` and
   `nix run path:.#fmt -- --project <name>` restrict package work to one or more
   selected child flakes by directory name under `pkgs/`.
-- Common package commands are:
-  `nix build ./pkgs/<name>`, `nix run ./pkgs/<name>`, `nix run ./pkgs/<name>#dev`,
+- Common package commands are: `nix build ./pkgs/<name>`,
+  `nix run ./pkgs/<name>`, `nix run ./pkgs/<name>#dev`,
   `nix run ./pkgs/<name>#fmt`, `nix run ./pkgs/<name>#lint-fix`,
   `nix build ./pkgs/<name>#checks.fmt`, `nix build ./pkgs/<name>#checks.lint`,
   `nix build ./pkgs/<name>#checks.test`, and `nix flake check ./pkgs/<name>`.
@@ -243,13 +241,12 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   Markdown/JSON/JSONC via `deno fmt`, Nix via `alejandra`, Terraform/OpenTofu
   via `tofu fmt`, and shell via `shfmt`.
 - Package-local language policy is defined in shared flake helpers rather than
-  per-project shell snippets: Rust uses `rustfmt`/`clippy`/`cargo test`,
-  Python uses `ruff`, Go uses `gofmt`/`go vet`/`go test`, and web projects use
-  `biome`.
+  per-project shell snippets: Rust uses `rustfmt`/`clippy`/`cargo test`, Python
+  uses `ruff`, Go uses `gofmt`/`go vet`/`go test`, and web projects use `biome`.
 - Repo-wide root lint gates include read-only formatter checks
-  (`alejandra --check`, `deno fmt --check`, `tofu fmt -check -write=false`,
-  and `shfmt -d`), plus `statix`, `deadnix`, `shellcheck`,
-  `markdownlint-cli2`, `actionlint`, and `tflint`.
+  (`alejandra --check`, `deno fmt --check`, `tofu fmt -check -write=false`, and
+  `shfmt -d`), plus `statix`, `deadnix`, `shellcheck`, `markdownlint-cli2`,
+  `actionlint`, and `tflint`.
 - `nix run path:.#lint -- deps` verifies the runnable lint wrapper and its
   runtime commands, matching the action-style entrypoints used by `nixbot`.
 - `nix run path:.#lint -- --diff` restricts file-scoped root checks to changed

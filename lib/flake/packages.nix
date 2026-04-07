@@ -7,7 +7,6 @@
     hello-node = pkgs.callPackage ../../pkgs/hello-node/default.nix {};
     hello-python = pkgs.callPackage ../../pkgs/hello-python/default.nix {};
     hello-rust = pkgs.callPackage ../../pkgs/hello-rust/default.nix {};
-    hello-web-served = pkgs.callPackage ../../pkgs/hello-web-served/default.nix {};
     hello-web-static = pkgs.callPackage ../../pkgs/hello-web-static/default.nix {};
     nixbot = pkgs.callPackage ../../pkgs/nixbot/default.nix {};
     cloudflare-apps = let

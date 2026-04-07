@@ -2,14 +2,14 @@
 set -Eeuo pipefail
 
 init_vars() {
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
-  REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-  TARGET_SCRIPT="${REPO_ROOT}/pkgs/nixbot/nixbot.sh"
+	SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+	REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+	TARGET_SCRIPT="${REPO_ROOT}/pkgs/nixbot/nixbot.sh"
 }
 
 main() {
-  init_vars
-  exec "${TARGET_SCRIPT}" "$@"
+	init_vars
+	exec "${TARGET_SCRIPT}" "$@"
 }
 
 main "$@"

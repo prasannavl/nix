@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 usage() {
-  cat <<'EOF'
+	cat <<'EOF'
 Usage:
   scripts/archive/tf-recover-cloudflare-state.sh [options]
 
@@ -32,47 +32,47 @@ EOF
 }
 
 die() {
-  printf '%s\n' "$*" >&2
-  exit 1
+	printf '%s\n' "$*" >&2
+	exit 1
 }
 
 init_vars() {
-  SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
-  SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd -P)"
-  REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
-  HELPER_PATH="${SCRIPT_DIR}/tf-recover-cloudflare-state.py"
+	SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+	SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd -P)"
+	REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
+	HELPER_PATH="${SCRIPT_DIR}/tf-recover-cloudflare-state.py"
 }
 
 ensure_runtime_shell() {
-  local runtime_shell_flag="${TF_RECOVER_IN_NIX_SHELL:-0}"
-  local -a runtime_packages=(
-    nixpkgs#age
-    nixpkgs#git
-    nixpkgs#jq
-    nixpkgs#opentofu
-    nixpkgs#python3
-    nixpkgs#rsync
-  )
+	local runtime_shell_flag="${TF_RECOVER_IN_NIX_SHELL:-0}"
+	local -a runtime_packages=(
+		nixpkgs#age
+		nixpkgs#git
+		nixpkgs#jq
+		nixpkgs#opentofu
+		nixpkgs#python3
+		nixpkgs#rsync
+	)
 
-  if [ "${runtime_shell_flag}" = "1" ]; then
-    return
-  fi
+	if [ "${runtime_shell_flag}" = "1" ]; then
+		return
+	fi
 
-  command -v nix >/dev/null 2>&1 || die "Required command not found: nix"
+	command -v nix >/dev/null 2>&1 || die "Required command not found: nix"
 
-  exec nix shell --inputs-from "${REPO_ROOT}" "${runtime_packages[@]}" -c \
-    env TF_RECOVER_IN_NIX_SHELL=1 bash "${SCRIPT_PATH}" "$@"
+	exec nix shell --inputs-from "${REPO_ROOT}" "${runtime_packages[@]}" -c \
+		env TF_RECOVER_IN_NIX_SHELL=1 bash "${SCRIPT_PATH}" "$@"
 }
 
 main() {
-  init_vars
-  if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-    usage
-    return 0
-  fi
-  ensure_runtime_shell "$@"
-  [ -f "${HELPER_PATH}" ] || die "Helper script not found: ${HELPER_PATH}"
-  exec python3 "${HELPER_PATH}" --repo-root "${REPO_ROOT}" "$@"
+	init_vars
+	if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+		usage
+		return 0
+	fi
+	ensure_runtime_shell "$@"
+	[ -f "${HELPER_PATH}" ] || die "Helper script not found: ${HELPER_PATH}"
+	exec python3 "${HELPER_PATH}" --repo-root "${REPO_ROOT}" "$@"
 }
 
 main "$@"
