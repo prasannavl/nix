@@ -21,9 +21,9 @@ in rec {
       packageSet = basePackages.stdPackages;
       pkgHelper = pkgHelperFn;
     };
-    packages = (builtins.removeAttrs basePackages ["stdPackages"]) // lint.packages;
+    packages = (builtins.removeAttrs basePackages ["stdPackages" "rootApps"]) // lint.packages;
     apps = appsFn {
-      packageSet = packages;
+      rootApps = basePackages.rootApps;
       lint = lint;
     };
   in {

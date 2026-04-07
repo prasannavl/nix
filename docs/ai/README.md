@@ -282,6 +282,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/rust-check-convention-and-clippy-fix-2026-04.md`: Use
   shared Rust child-flake helpers to expose the conventional package-local
   `checks.*` and mutating `apps.*` outputs.
+- `docs/ai/notes/tooling/helper-src-inference-2026-04.md`: Let common
+  `pkg-helper` derivation wrappers infer `src` from `build.src` so package
+  definitions do not repeat the same repo path in both the helper call and the
+  inner build derivation.
 - `docs/ai/notes/tooling/package-local-checks-and-apps-convention-2026-04.md`:
   Canonical child-flake contract under `pkgs/`, with root lint/fmt owning only
   files outside `pkgs/` and aggregating package-local checks/apps inside it.

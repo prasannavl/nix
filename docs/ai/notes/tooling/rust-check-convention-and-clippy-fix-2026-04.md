@@ -27,8 +27,9 @@ contract:
 
 - `lib/flake/pkg-helper.nix` now exports `rustFmt`, `rustClippy`, `rustTest`,
   `mkRustChecks`, `mkRustDerivation`, `rustFmtApp`, and `rustLintFixApp`.
-- `pkgs/hello-rust`, `pkgs/edi-ast-parser-rs`, and `pkgs/gap3-ai-web` now use
-  `mkRustChecks` instead of open-coded `fmt`/`lint`/`test` check attrsets.
+- `pkgs/examples/hello-rust`, `pkgs/examples/edi-ast-parser-rs`, and
+  `pkgs/gap3-ai-web` now use `mkRustChecks` instead of open-coded
+  `fmt`/`lint`/`test` check attrsets.
 - `gap3-ai-web` passes `--locked` through the shared helper for `lint` and
   `test` while `fmt` remains plain `cargo fmt --check`.
 - Rust child flakes now expose package-local `apps.fmt` and `apps.lint-fix` from

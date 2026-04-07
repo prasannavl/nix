@@ -1269,19 +1269,36 @@ in rec {
       passthru = (old.passthru or {}) // extra;
     });
 
-  mkGoDerivation = args @ {build, ...}:
-    wirePassthru build (mkGoParts (builtins.removeAttrs args ["build"]));
+  inferBuildSrc = build:
+    if builtins.hasAttr "src" build
+    then build.src
+    else throw "pkg-helper: build derivation must expose `src` or the helper call must pass `src` explicitly";
 
-  mkPythonDerivation = args @ {build, ...}:
-    wirePassthru build (mkPythonParts (builtins.removeAttrs args ["build"]));
+  mkGoDerivation = args @ {
+    build,
+    src ? inferBuildSrc build,
+    ...
+  }:
+    wirePassthru build (mkGoParts ((builtins.removeAttrs args ["build"]) // {inherit src;}));
 
-  mkWebDerivation = args @ {build, ...}:
-    wirePassthru build (mkWebParts (builtins.removeAttrs args ["build"]));
+  mkPythonDerivation = args @ {
+    build,
+    src ? inferBuildSrc build,
+    ...
+  }:
+    wirePassthru build (mkPythonParts ((builtins.removeAttrs args ["build"]) // {inherit src;}));
+
+  mkWebDerivation = args @ {
+    build,
+    src ? inferBuildSrc build,
+    ...
+  }:
+    wirePassthru build (mkWebParts ((builtins.removeAttrs args ["build"]) // {inherit src;}));
 
   mkStaticWebDerivation = {
     pkgs,
-    src,
     build,
+    src ? inferBuildSrc build,
     pname ? deriveProjectName src,
     devRoot ? "site",
     devPort ? "8080",
@@ -1475,7 +1492,7 @@ in rec {
   mkRustDerivation = {
     build,
     pkgs,
-    src,
+    src ? inferBuildSrc build,
     pname ? deriveProjectName src,
     fmtCargoArgs ? [],
     lintFixCargoArgs ? [],

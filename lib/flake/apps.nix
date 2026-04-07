@@ -1,5 +1,5 @@
 {
-  packageSet,
+  rootApps,
   lint ? null,
 }: let
   mkApp = pkg: {
@@ -7,14 +7,7 @@
     program = "${pkg}/bin/${pkg.meta.mainProgram}";
     inherit (pkg) meta;
   };
-  baseApps = {
-    "hello-go" = mkApp packageSet.hello-go;
-    "hello-node" = mkApp packageSet.hello-node;
-    "hello-python" = mkApp packageSet.hello-python;
-    "hello-rust" = mkApp packageSet.hello-rust;
-    nixbot = mkApp packageSet.nixbot;
-    "cloudflare-apps-deploy" = mkApp packageSet.cloudflare-apps.deploy;
-  };
+  baseApps = builtins.mapAttrs (_: mkApp) rootApps;
 in
   baseApps
   // (

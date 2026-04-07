@@ -1,10 +1,9 @@
 {
   pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../lib/flake/pkg-helper.nix,
+  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
   drv = pkgHelper.mkWebDerivation {
     inherit pkgs;
-    src = ./.;
     build = pkgs.buildNpmPackage {
       pname = "hello-node";
       version = "0.1.0";

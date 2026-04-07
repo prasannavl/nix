@@ -14,7 +14,7 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      pkgHelper = import ../../lib/flake/pkg-helper.nix;
+      pkgHelper = import ../../../lib/flake/pkg-helper.nix;
       drv = pkgs.callPackage ./default.nix {};
     in
       pkgHelper.mkStdFlakeOutputs {

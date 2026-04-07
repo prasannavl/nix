@@ -1,7 +1,7 @@
 # Rust fmt checks and app meta
 
 - Date: 2026-04-07
-- Scope: `pkgs/edi-ast-parser-rs/{default.nix,flake.nix}`,
+- Scope: `pkgs/examples/edi-ast-parser-rs/{default.nix,flake.nix}`,
   `pkgs/gap3-ai-web/default.nix`
 
 ## Decision
@@ -22,9 +22,9 @@ to `edi-ast-parser-rs` app outputs.
 
 ## Applied shape
 
-- `pkgs/edi-ast-parser-rs/default.nix` now defines `checks.fmt` with
+- `pkgs/examples/edi-ast-parser-rs/default.nix` now defines `checks.fmt` with
   `nativeBuildInputs = [ pkgs.rustfmt ]`.
 - `pkgs/gap3-ai-web/default.nix` now defines `checks.fmt` with the same
   sandboxed `rustfmt` input.
-- `pkgs/edi-ast-parser-rs/flake.nix` app definitions now inherit package `meta`,
-  removing flake-check warnings for missing app metadata.
+- `pkgs/examples/edi-ast-parser-rs/flake.nix` app definitions now inherit
+  package `meta`, removing flake-check warnings for missing app metadata.

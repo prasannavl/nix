@@ -8,9 +8,11 @@ This is the nix driven monorepo, organized as small modules and composed via
 - `flake.nix`: flake inputs and system definition.
 - `pkgs/`: repo-local runnable source trees; each package owns its own flake and
   is aggregated into a custom top-level flake attr such as
-  `.#pkgs.<system>.hello-rust`, `.#pkgs.<system>.cloudflare-apps`,
+  `.#pkgs.<system>.example-hello-rust`, `.#pkgs.<system>.cloudflare-apps`,
   `.#pkgs.<system>.cloudflare-apps.deploy`, or
   `.#pkgs.<system>.cloudflare-apps.llmug-hello.wrangler-deploy`.
+- `pkgs/examples/`: example packages used as reference implementations and test
+  beds for package patterns.
 - `pkgs/ext/`: standalone derivation definitions consumed by overlays and helper
   scripts.
 - `hosts/<host>/default.nix`: host-specific system definition and module
@@ -32,7 +34,7 @@ The repo has three service models, each documented in detail under `docs/`.
 The default model for turning repo packages into system services. Stick to the
 simplest native Linux patterns:
 
-- Package lives in `pkgs/<name>/default.nix`.
+- Package lives in a package-local `default.nix` under `pkgs/`.
 - Package-local `flake.nix` exports a `nixosModules` entry.
 - Host enables the service with `services.<name>.enable = true`.
 - The module defines plain `systemd.services` and, when scheduled,
@@ -40,7 +42,7 @@ simplest native Linux patterns:
 - No repo-specific service abstraction — NixOS modules plus systemd units are
   the framework.
 
-Reference example: `pkgs/hello-rust/flake.nix`.
+Reference example: `pkgs/examples/hello-rust/flake.nix`.
 
 ### Podman Compose (`docs/podman-compose.md`)
 
@@ -221,8 +223,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   `lint-fix` to apply safe package-owned auto-fixes, and `checks.fmt` /
   `checks.lint` / `checks.test` for read-only verification.
 - `nix fmt` formats root-managed files outside `pkgs/` through the root
-  `treefmt` configuration, then runs package-managed formatting through the
-  root aggregate package-ops manifest.
+  `treefmt` configuration, then runs package-managed formatting through the root
+  aggregate package-ops manifest.
 - `nix run path:.#lint` lints root-managed files outside `pkgs/`, then runs
   package verification through the root aggregate package-ops manifest for
   `checks.fmt`, `checks.lint`, and `checks.test`.

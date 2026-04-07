@@ -116,7 +116,7 @@ The normal package shape is:
 ```nix
 # default.nix
 let
-  pkgHelper = import ../../lib/flake/pkg-helper.nix;
+  pkgHelper = import <repo-relative-path>/lib/flake/pkg-helper.nix;
   build = ...;
   drv = pkgHelper.mkGoDerivation {
     inherit pkgs build;

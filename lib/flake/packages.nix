@@ -1,31 +1,72 @@
 {pkgs}: let
-  canonical = rec {
-    hello-go = pkgs.callPackage ../../pkgs/hello-go/default.nix {};
-    hello-node = pkgs.callPackage ../../pkgs/hello-node/default.nix {};
-    hello-python = pkgs.callPackage ../../pkgs/hello-python/default.nix {};
-    hello-rust = pkgs.callPackage ../../pkgs/hello-rust/default.nix {};
-    hello-web-static = pkgs.callPackage ../../pkgs/hello-web-static/default.nix {};
-    nixbot = pkgs.callPackage ../../pkgs/nixbot/default.nix {};
-    cloudflare-apps = let
-      llmugHello = pkgs.callPackage ../../pkgs/cloudflare-apps/llmug-hello/default.nix {};
-    in
-      pkgs.callPackage ../../pkgs/cloudflare-apps/default.nix {
-        inherit nixbot llmugHello;
-      };
-    stdPackages = {
-      inherit
-        edi-ast-parser-rs
-        gap3-ai-web
-        hello-go
-        hello-node
-        hello-python
-        hello-rust
-        hello-web-static
-        nixbot
-        cloudflare-apps
-        ;
-      "cloudflare-apps/llmug-hello" = cloudflare-apps.llmug-hello;
-    };
-  };
+  manifest = import ../../pkgs/manifest.nix {inherit pkgs;};
+  inherit (manifest) packageEntries;
+  buildEntry = packages: entry:
+    if entry ? build
+    then entry.build packages
+    else pkgs.callPackage entry.path {};
+  packageAttrs = builtins.listToAttrs (
+    map (entry: {
+      name = entry.id;
+      value = buildEntry packageAttrs entry;
+    })
+    packageEntries
+  );
+  stdPackageEntries = builtins.listToAttrs (
+    builtins.concatMap (
+      entry:
+        if entry ? stdPackage && entry.stdPackage == false
+        then []
+        else [
+          {
+            name = entry.id;
+            value = packageAttrs.${entry.id};
+          }
+        ]
+    )
+    packageEntries
+  );
+  extraStdPackages = builtins.foldl' (
+    acc: entry:
+      acc
+      // (
+        if entry ? extraStdPackages
+        then entry.extraStdPackages packageAttrs
+        else {}
+      )
+  ) {} packageEntries;
+  rootAppEntries =
+    builtins.concatMap (
+      entry:
+        (
+          if entry ? rootApp && entry.rootApp == false
+          then []
+          else [
+            {
+              name =
+                if entry ? appName
+                then entry.appName
+                else entry.id;
+              package = packageAttrs.${entry.id};
+            }
+          ]
+        )
+        ++ (
+          if entry ? extraRootApps
+          then entry.extraRootApps packageAttrs
+          else []
+        )
+    )
+    packageEntries;
 in
-  canonical
+  packageAttrs
+  // {
+  stdPackages = stdPackageEntries // extraStdPackages;
+  rootApps = builtins.listToAttrs (
+    map (entry: {
+      name = entry.name;
+      value = entry.package;
+    })
+    rootAppEntries
+  );
+}

@@ -1,16 +1,13 @@
 {
   pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../lib/flake/pkg-helper.nix,
+  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
   drv = pkgHelper.mkStaticWebDerivation {
     inherit pkgs;
-    src = ./.;
-    pname = "hello-web-static";
     devRoot = "site";
     build = pkgs.stdenvNoCC.mkDerivation {
       pname = "hello-web-static";
       version = "0.1.0";
-
       src = ./.;
 
       installPhase = ''

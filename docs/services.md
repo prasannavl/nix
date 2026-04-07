@@ -9,8 +9,8 @@ an extra service framework on top. If something is a long-running process, use
 
 ## Current Model
 
-- Packages live under `pkgs/<name>/`.
-- The canonical package definition lives in `pkgs/<name>/default.nix`.
+- Packages live under `pkgs/`.
+- The canonical package definition lives in a package-local `default.nix`.
 - The package-local `flake.nix` can export a `nixosModules` entry alongside the
   package.
 - Hosts enable the service with `services.<name>.enable = true`.
@@ -43,7 +43,7 @@ No repo-specific service abstraction is needed for ordinary system services.
 
 ## Package To Service Pattern
 
-The reference example is `pkgs/hello-rust/flake.nix`.
+The reference example is `pkgs/examples/hello-rust/flake.nix`.
 
 It does three things:
 
@@ -157,9 +157,9 @@ layer.
 
 ## What To Put Where
 
-- `pkgs/<name>/default.nix`:
+- package-local `default.nix`:
   - canonical package build
-- `pkgs/<name>/flake.nix`:
+- package-local `flake.nix`:
   - package-local wrapper flake
   - optional `apps`
   - optional `checks`
@@ -171,10 +171,10 @@ layer.
 
 ## How To Add A New Service
 
-1. Create `pkgs/<name>/default.nix`.
+1. Create the package-local `default.nix` under `pkgs/`.
 2. Add the package to `lib/flake/packages.nix` if it should be exported from the
    root flake package set.
-3. Add or update `pkgs/<name>/flake.nix`.
+3. Add or update the package-local `flake.nix`.
 4. Export a `nixosModules.default` module.
 5. Add `options.services.<name>.enable = lib.mkEnableOption ...`.
 6. Under `config = lib.mkIf cfg.enable`, define native
@@ -193,12 +193,13 @@ tool we are using.
 
 ### Where should the package live?
 
-In `pkgs/<name>/default.nix`. That remains the canonical package definition.
+In the package-local `default.nix`. That remains the canonical package
+definition.
 
 ### Where should the service module live?
 
-For package-owned services, the preferred place is the package-local
-`pkgs/<name>/flake.nix`, exported through `nixosModules`.
+For package-owned services, the preferred place is the package-local the
+package-local `flake.nix`, exported through `nixosModules`.
 
 ### Should timers use a custom helper?
 
@@ -218,6 +219,6 @@ With the native NixOS option exposed by the module:
 
 ## Source Of Truth Files
 
-- `pkgs/hello-rust/default.nix`
-- `pkgs/hello-rust/flake.nix`
+- `pkgs/examples/hello-rust/default.nix`
+- `pkgs/examples/hello-rust/flake.nix`
 - `lib/flake/packages.nix`

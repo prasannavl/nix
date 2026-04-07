@@ -31,6 +31,6 @@ Child wrapper flakes now just re-export `checks = build.checks;`.
 
 ## Current adopters
 
-- `pkgs/hello-rust/flake.nix`
-- `pkgs/edi-ast-parser-rs/flake.nix`
+- `pkgs/examples/hello-rust/flake.nix`
+- `pkgs/examples/edi-ast-parser-rs/flake.nix`
 - `pkgs/gap3-ai-web/flake.nix`

@@ -1,10 +1,9 @@
 {
   pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../lib/flake/pkg-helper.nix,
+  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
   drv = pkgHelper.mkPythonDerivation {
     inherit pkgs;
-    src = ./.;
     build = pkgs.python3Packages.buildPythonApplication {
       pname = "hello-python";
       version = "0.1.0";

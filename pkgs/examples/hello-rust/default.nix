@@ -1,10 +1,9 @@
 {
   pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../lib/flake/pkg-helper.nix,
+  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
   drv = pkgHelper.mkRustDerivation {
     inherit pkgs;
-    src = ./.;
     build = pkgs.rustPlatform.buildRustPackage {
       pname = "hello-rust";
       version = "0.1.0";

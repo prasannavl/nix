@@ -19,7 +19,7 @@ make them directly evaluatable by legacy `nix-build`.
 
 ## Applied Here
 
-- `pkgs/hello-rust/default.nix`
+- `pkgs/examples/hello-rust/default.nix`
 - `pkgs/nixbot/default.nix`
 - `pkgs/cloudflare-apps/llmug-hello/default.nix`
 - `pkgs/cloudflare-apps/default.nix`
