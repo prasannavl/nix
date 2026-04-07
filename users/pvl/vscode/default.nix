@@ -42,6 +42,7 @@
           ms-ossdata.vscode-pgsql
           alexcvzz.vscode-sqlite
           johnpapa.vscode-peacock
+          bierner.markdown-mermaid
         ];
 
         keybindings = [

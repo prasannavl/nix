@@ -158,6 +158,7 @@
       sqlite
       pgsql-tools
       pgadmin4-desktopmode
+      postgresql_18
     ];
 
     fonts = with pkgs; [

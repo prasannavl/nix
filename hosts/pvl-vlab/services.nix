@@ -4,10 +4,6 @@
 in {
   systemd.tmpfiles.rules = [
     "d /var/lib/pvl 0755 pvl pvl -"
-    "d /var/lib/pvl/compose 0750 pvl pvl -"
-    "d /var/lib/pvl/compose/nginx 0750 pvl pvl -"
-    "d /var/lib/pvl/compose/ollama 0750 pvl pvl -"
-    "d /var/lib/pvl/compose/open-webui 0750 pvl pvl -"
     "d /var/lib/pvl/nginx 0750 pvl pvl -"
     "d /var/lib/pvl/open-webui 0750 pvl pvl -"
     "d /var/lib/pvl/ollama 0750 pvl pvl -"

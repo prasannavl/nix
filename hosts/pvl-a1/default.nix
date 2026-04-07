@@ -6,7 +6,6 @@
     ./sys.nix
     ./packages.nix
     ./firewall.nix
-    ./podman.nix
     ./users.nix
   ];
 
