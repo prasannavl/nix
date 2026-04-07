@@ -1,5 +1,7 @@
-{pkgs ? import <nixpkgs> {}}: let
-  pkgHelper = import ../../../lib/flake/pkg-helper.nix;
+{
+  pkgs ? import <nixpkgs> {},
+  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+}: let
   build = pkgs.runCommand "llmug-hello-dist" {} ''
     src="${./.}"
 
@@ -14,13 +16,20 @@
       mainProgram = "llmug-hello-wrangler-deploy";
     };
     runtimeInputs = with pkgs; [
+      git
       nix
       wrangler
     ];
     text = ''
       set -euo pipefail
 
-      assets_dir="$(nix build --no-link --print-out-paths "path:${./.}#build" | tail -n1)"
+      repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+      if [ -n "$repo_root" ] && [ -f "$repo_root/pkgs/cloudflare-apps/llmug-hello/default.nix" ]; then
+        assets_dir="$(nix build --no-link --print-out-paths --file "$repo_root/pkgs/cloudflare-apps/llmug-hello/default.nix" | tail -n1)"
+      else
+        assets_dir="$(nix build --no-link --print-out-paths "path:${./.}#build" | tail -n1)"
+      fi
 
       cd ${./.}
       exec wrangler deploy --assets "$assets_dir" "$@"

@@ -280,7 +280,7 @@ collect_root_files() {
 }
 
 matches_selected_project() {
-	local flake_dir="$1"
+	local project_path="$1"
 	local project_name
 
 	if [ "${#PROJECT_NAMES[@]}" -eq 0 ]; then
@@ -288,7 +288,7 @@ matches_selected_project() {
 	fi
 
 	for project_name in "${PROJECT_NAMES[@]}"; do
-		if [ "$(basename "${flake_dir}")" = "${project_name}" ]; then
+		if [ "$(basename "${project_path}")" = "${project_name}" ]; then
 			return 0
 		fi
 	done
@@ -296,39 +296,58 @@ matches_selected_project() {
 	return 1
 }
 
-collect_changed_flake_dirs() {
+manifest_package_records() {
+	[ -n "${PKG_OPS_MANIFEST:-}" ] || return 0
+	[ -f "${PKG_OPS_MANIFEST}" ] || return 0
+	jq -c '.packages[]' "${PKG_OPS_MANIFEST}"
+}
+
+run_manifest_command() {
+	local project_path="$1"
+	local env_script="$2"
+	local command="$3"
+
+	(
+		cd "${REPO_ROOT}/${project_path}"
+		export repo_root="${REPO_ROOT}"
+		if [ -z "${TMPDIR:-}" ]; then
+			TMPDIR="$(mktemp -d)"
+			export TMPDIR
+			trap 'rm -rf "$TMPDIR"' EXIT
+		fi
+		set --
+		if [ -n "${env_script}" ]; then
+			eval "${env_script}"
+		fi
+		eval "${command}"
+	)
+}
+
+collect_changed_package_paths() {
 	local -a all_changed=()
-	local flake_dir changed
+	local project_path changed
 
 	mapfile -d $'\0' -t all_changed < <(collect_files '*')
 
-	while IFS= read -r -d '' flake_dir; do
-		flake_dir="$(dirname "${flake_dir}")"
-		if ! matches_selected_project "${flake_dir}"; then
+	while IFS= read -r project_path; do
+		if ! matches_selected_project "${project_path}"; then
 			continue
 		fi
 		for changed in "${all_changed[@]}"; do
-			if [[ "${changed}" = "${flake_dir}/"* ]]; then
-				printf '%s\0' "${flake_dir}"
+			if [[ "${changed}" = "${project_path}/"* ]]; then
+				printf '%s\0' "${project_path}"
 				break
 			fi
 		done
-	done < <(find pkgs -name flake.nix -print0 | sort -z)
+	done < <(manifest_package_records | jq -r '.path')
 }
 
-collect_all_flake_dirs() {
-	find pkgs -name flake.nix -print0 | sort -z |
-		while IFS= read -r -d '' flake_nix; do
-			local flake_dir
-			flake_dir="$(dirname "${flake_nix}")"
-			if matches_selected_project "${flake_dir}"; then
-				printf '%s\0' "${flake_dir}"
-			fi
-		done
-}
-
-detect_nix_system() {
-	nix eval --raw --impure --expr 'builtins.currentSystem'
+collect_all_package_paths() {
+	while IFS= read -r project_path; do
+		if matches_selected_project "${project_path}"; then
+			printf '%s\0' "${project_path}"
+		fi
+	done < <(manifest_package_records | jq -r '.path')
 }
 
 project_arg_list() {
@@ -340,78 +359,66 @@ project_arg_list() {
 	done
 }
 
-run_conventional_flake_checks() {
-	local flake_dir="$1"
-	local nix_system="$2"
-	local include_test="$3"
-	local -a checks=()
+run_conventional_package_checks() {
+	local project_path="$1"
+	local include_test="$2"
+	local check
+	local -a checks=(fmt lint)
+	local record=""
+	local command=""
+	local env_script=""
 
-	mapfile -t checks < <(
-		nix eval --json "./${flake_dir}#checks.${nix_system}" 2>/dev/null |
-			jq -r --argjson include_test "${include_test}" '
-				keys[]
-				| select(. == "fmt" or . == "lint" or (. == "test" and $include_test))
-			'
-	)
-
-	if [ "${#checks[@]}" -eq 0 ]; then
-		return
+	if [ "${include_test}" = 'true' ]; then
+		checks+=(test)
 	fi
 
-	local check
+	record="$(jq -c --arg path "${project_path}" '.packages[] | select(.path == $path)' "${PKG_OPS_MANIFEST}")"
+
 	for check in "${checks[@]}"; do
+		command="$(jq -r --arg check "${check}" '.checks[$check].command // empty' <<<"${record}")"
+		if [ -z "${command}" ]; then
+			continue
+		fi
 		printf '    check: %s\n' "${check}" >&2
-		nix build "./${flake_dir}#checks.${nix_system}.${check}" --no-link
+		env_script="$(jq -r --arg check "${check}" '.checks[$check].envScript // ""' <<<"${record}")"
+		run_manifest_command "${project_path}" "${env_script}" "${command}"
 	done
 }
 
-run_conventional_flake_apps() {
-	local flake_dir="$1"
-	local nix_system="$2"
-	shift
+run_conventional_package_apps() {
+	local project_path="$1"
 	shift
 	local app=""
 	local -a app_names=("$@")
-	local output=""
-	local status=0
+	local record=""
+	local command=""
+	local env_script=""
+
+	record="$(jq -c --arg path "${project_path}" '.packages[] | select(.path == $path)' "${PKG_OPS_MANIFEST}")"
 
 	for app in "${app_names[@]}"; do
-		if output="$(nix run "./${flake_dir}#${app}" 2>&1)"; then
-			printf '    app: %s\n' "${app}" >&2
-			if [ -n "${output}" ]; then
-				printf '%s\n' "${output}" >&2
-			fi
+		command="$(jq -r --arg app "${app}" '.apps[$app].command // empty' <<<"${record}")"
+		if [ -z "${command}" ]; then
 			continue
 		fi
-		status=$?
-
-		if printf '%s\n' "${output}" | grep -Eq \
-			'does not provide attribute|attribute .* missing|flake .* does not provide'; then
-			continue
-		fi
-
 		printf '    app: %s\n' "${app}" >&2
-		if [ -n "${output}" ]; then
-			printf '%s\n' "${output}" >&2
-		fi
-		return "${status}"
+		env_script="$(jq -r --arg app "${app}" '.apps[$app].envScript // ""' <<<"${record}")"
+		run_manifest_command "${project_path}" "${env_script}" "${command}"
 	done
 }
 
 run_lint_action() {
 	local nix_file=""
 	local -a deno_files=()
-	local -a flake_dirs=()
+	local -a package_paths=()
 	local -a tf_project_dirs=()
 	local local_tf_dir=""
-	local nix_system=""
 
 	local scope
 
 	cd "${REPO_ROOT}"
 	ensure_runtime_tools
 	scope="$(lint_scope)"
-	nix_system="$(detect_nix_system)"
 
 	mapfile -d $'\0' -t nix_files < <(collect_root_files '*.nix')
 	mapfile -d $'\0' -t shell_files < <(collect_root_files '*.sh' '.githooks/*')
@@ -424,11 +431,11 @@ run_lint_action() {
 	fi
 
 	if [ "${#PROJECT_NAMES[@]}" -gt 0 ]; then
-		mapfile -d $'\0' -t flake_dirs < <(collect_all_flake_dirs)
+		mapfile -d $'\0' -t package_paths < <(collect_all_package_paths)
 	elif [ "$(lint_scope)" = diff ]; then
-		mapfile -d $'\0' -t flake_dirs < <(collect_changed_flake_dirs)
+		mapfile -d $'\0' -t package_paths < <(collect_changed_package_paths)
 	else
-		mapfile -d $'\0' -t flake_dirs < <(collect_all_flake_dirs)
+		mapfile -d $'\0' -t package_paths < <(collect_all_package_paths)
 	fi
 
 	if [ "${LINT_FIX}" = 1 ]; then
@@ -439,14 +446,14 @@ run_lint_action() {
 
 		run_step fmt-fix 'Formatting root-managed files and package formatters' bash "${REPO_ROOT}/scripts/fmt.sh" "${fmt_args[@]}"
 
-		if [ "${#flake_dirs[@]}" -gt 0 ]; then
+		if [ "${#package_paths[@]}" -gt 0 ]; then
 			CURRENT_STEP=package-lint-fix
 			CURRENT_STEP_DESCRIPTION="Applying package-local lint fixes"
 			log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-			local flake_dir=""
-			for flake_dir in "${flake_dirs[@]}"; do
-				printf '  - %s\n' "${flake_dir}" >&2
-				run_conventional_flake_apps "${flake_dir}" "${nix_system}" "lint-fix" fmt
+			local project_path=""
+			for project_path in "${package_paths[@]}"; do
+				printf '  - %s\n' "${project_path}" >&2
+				run_conventional_package_apps "${project_path}" "lint-fix" fmt
 			done
 		fi
 
@@ -541,7 +548,7 @@ run_lint_action() {
 			nix flake check --no-build 2> >(grep -v "^warning: unknown flake output\|^warning: The check omitted these incompatible systems" >&2)
 	fi
 
-	if [ "${#flake_dirs[@]}" -gt 0 ]; then
+	if [ "${#package_paths[@]}" -gt 0 ]; then
 		local include_test='true'
 
 		if [ "${LINT_MODE}" = 'full-no-test' ]; then
@@ -551,10 +558,10 @@ run_lint_action() {
 		CURRENT_STEP=flake-check
 		CURRENT_STEP_DESCRIPTION="Running conventional package checks for sub-projects"
 		log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-		local flake_dir
-		for flake_dir in "${flake_dirs[@]}"; do
-			printf '  - %s\n' "${flake_dir}" >&2
-			run_conventional_flake_checks "${flake_dir}" "${nix_system}" "${include_test}"
+		local project_path
+		for project_path in "${package_paths[@]}"; do
+			printf '  - %s\n' "${project_path}" >&2
+			run_conventional_package_checks "${project_path}" "${include_test}"
 		done
 	fi
 }

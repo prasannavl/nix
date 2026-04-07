@@ -1,18 +1,26 @@
-{pkgs}: let
+{
+  pkgs,
+  packageSet,
+  pkgHelper,
+}: let
   repoRoot = ../..;
-  formatterPkgs = with pkgs; [
-    treefmt
-    alejandra
-    bash
-    deno
-    findutils
-    opentofu
-    shfmt
-    git
-    nix
-    jq
-  ];
-  lintPkgs =
+  packageRuntimeInputs = pkgs.lib.unique (pkgHelper.pkgOpsRuntimeInputs packageSet);
+  pkgOpsManifestFile = pkgs.writeText "pkg-ops-manifest.json" (builtins.toJSON (pkgHelper.pkgOpsManifest packageSet));
+  formatterPkgs =
+    (with pkgs; [
+      treefmt
+      alejandra
+      bash
+      deno
+      findutils
+      opentofu
+      shfmt
+      git
+      nix
+      jq
+    ])
+    ++ packageRuntimeInputs;
+  lintPkgs = pkgs.lib.unique (
     formatterPkgs
     ++ (with pkgs; [
       statix
@@ -21,7 +29,8 @@
       actionlint
       markdownlint-cli2
       tflint
-    ]);
+    ])
+  );
   lintApp = pkgs.writeShellApplication {
     name = "lint";
     meta = {
@@ -30,6 +39,7 @@
     };
     runtimeInputs = lintPkgs;
     text = ''
+      export PKG_OPS_MANIFEST=${pkgOpsManifestFile}
       exec env LINT_IN_NIX_SHELL=1 ${repoRoot}/scripts/lint.sh "$@"
     '';
   };
@@ -41,6 +51,7 @@
     };
     runtimeInputs = formatterPkgs;
     text = ''
+      export PKG_OPS_MANIFEST=${pkgOpsManifestFile}
       exec env FMT_IN_NIX_SHELL=1 bash ${repoRoot}/scripts/fmt.sh "$@"
     '';
   };

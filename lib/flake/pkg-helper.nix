@@ -127,7 +127,7 @@ let
       dontInstall = false;
     });
 in rec {
-  emptyProjectParts = {
+  emptyParts = {
     inputs = [];
     env = {};
     repoFmtPaths = [];
@@ -135,7 +135,7 @@ in rec {
     writableCopy = false;
   };
 
-  mergeProjectParts = parts:
+  mergeParts = parts:
     builtins.foldl'
     (acc: part: {
       inputs = acc.inputs ++ (part.inputs or []);
@@ -146,7 +146,7 @@ in rec {
       commands = acc.commands ++ (part.commands or []);
       writableCopy = acc.writableCopy || (part.writableCopy or false);
     })
-    emptyProjectParts
+    emptyParts
     parts;
 
   mkCheck = mkCheckFn;
@@ -454,7 +454,7 @@ in rec {
     ];
   };
 
-  mkConventionalProjectApp = pkgs: {
+  mkStdApp = pkgs: {
     kind,
     src,
     pname ? deriveProjectName src,
@@ -483,7 +483,7 @@ in rec {
       commands = commands;
     };
 
-  mkConventionalProjectCheck = pkgs: {
+  mkStdCheck = pkgs: {
     kind,
     src,
     pname ? deriveProjectName src,
@@ -503,7 +503,196 @@ in rec {
       commands = commands;
     };
 
-  mkGoConventionParts = {
+  mkProjectAppOp = pkgs: {
+    src ? null,
+    projectPath ?
+      if src != null
+      then deriveProjectPath src
+      else throw "mkProjectAppOp requires projectPath or src",
+    parts ? [],
+    runtimeInputs ? [],
+    env ? {},
+    repoFmtPaths ? [],
+    commands ? [],
+  }: let
+    mergedParts = mergeParts (
+      parts
+      ++ [
+        {
+          inputs = runtimeInputs;
+          inherit env repoFmtPaths commands;
+        }
+      ]
+    );
+    command = joinLines (
+      (
+        if mergedParts.repoFmtPaths == []
+        then []
+        else [
+          (repoFmtAppCommand {
+            paths = mergedParts.repoFmtPaths;
+          })
+        ]
+      )
+      ++ mergedParts.commands
+    );
+  in {
+    path = projectPath;
+    runtimeInputs =
+      mergedParts.inputs
+      ++ (
+        if mergedParts.repoFmtPaths == []
+        then []
+        else repoFmtRuntimeInputs pkgs
+      );
+    envScript = exportEnv mergedParts.env;
+    inherit command;
+  };
+
+  mkProjectCheckOp = pkgs: {
+    src,
+    projectPath ? deriveProjectPath src,
+    parts ? [],
+    nativeBuildInputs ? [],
+    env ? {},
+    repoFmtPaths ? [],
+    commands ? [],
+  }: let
+    mergedParts = mergeParts (
+      parts
+      ++ [
+        {
+          inputs = nativeBuildInputs;
+          inherit env repoFmtPaths commands;
+        }
+      ]
+    );
+    effectiveEnv =
+      if mergedParts.repoFmtPaths == []
+      then mergedParts.env
+      else repoFmtCheckEnv mergedParts.env;
+    command = joinLines (
+      (
+        if mergedParts.repoFmtPaths == []
+        then []
+        else [
+          ''mkdir -p "$HOME" "$XDG_CACHE_HOME"''
+          (repoFmtCheckCommand {
+            paths = mergedParts.repoFmtPaths;
+          })
+        ]
+      )
+      ++ mergedParts.commands
+    );
+  in {
+    path = projectPath;
+    runtimeInputs =
+      mergedParts.inputs
+      ++ (
+        if mergedParts.repoFmtPaths == []
+        then []
+        else repoFmtRuntimeInputs pkgs
+      );
+    envScript = exportEnv effectiveEnv;
+    inherit command;
+  };
+
+  mkStdAppOp = pkgs: {
+    src,
+    parts ? [],
+    runtimeInputs ? [],
+    env ? {},
+    repoFmtPaths ? [],
+    commands ? [],
+    ...
+  }:
+    mkProjectAppOp pkgs {
+      inherit src parts runtimeInputs env repoFmtPaths commands;
+    };
+
+  mkStdCheckOp = pkgs: {
+    src,
+    parts ? [],
+    nativeBuildInputs ? [],
+    env ? {},
+    repoFmtPaths ? [],
+    commands ? [],
+    ...
+  }:
+    mkProjectCheckOp pkgs {
+      inherit src parts nativeBuildInputs env repoFmtPaths commands;
+    };
+
+  stripPkgOp = spec:
+    if spec == null
+    then null
+    else builtins.removeAttrs spec ["runtimeInputs"];
+
+  collectPkgOpInputs = pkgOps: let
+    appInputs = builtins.concatLists (
+      map (
+        name: let
+          spec = (pkgOps.apps or {}).${name};
+        in
+          if spec == null
+          then []
+          else spec.runtimeInputs
+      ) (builtins.attrNames (pkgOps.apps or {}))
+    );
+    checkInputs = builtins.concatLists (
+      map (
+        name: let
+          spec = (pkgOps.checks or {}).${name};
+        in
+          if spec == null
+          then []
+          else spec.runtimeInputs
+      ) (builtins.attrNames (pkgOps.checks or {}))
+    );
+  in
+    appInputs ++ checkInputs;
+
+  pkgOpsManifest = packageSet: {
+    packages = builtins.filter (entry: entry != null) (
+      map (
+        name: let
+          drv = packageSet.${name};
+          pkgOps =
+            if builtins.isAttrs drv && builtins.hasAttr "passthru" drv
+            then (drv.passthru.pkgOps or null)
+            else null;
+        in
+          if pkgOps == null
+          then null
+          else {
+            inherit name;
+            path = pkgOps.path;
+            apps = builtins.mapAttrs (_: stripPkgOp) (pkgOps.apps or {});
+            checks = builtins.mapAttrs (_: stripPkgOp) (pkgOps.checks or {});
+          }
+      ) (builtins.attrNames packageSet)
+    );
+  };
+
+  pkgOpsRuntimeInputs = packageSet:
+    builtins.concatLists (
+      builtins.filter (item: item != null) (
+        map (
+          name: let
+            drv = packageSet.${name};
+            pkgOps =
+              if builtins.isAttrs drv && builtins.hasAttr "passthru" drv
+              then (drv.passthru.pkgOps or null)
+              else null;
+          in
+            if pkgOps == null
+            then null
+            else collectPkgOpInputs pkgOps
+        ) (builtins.attrNames packageSet)
+      )
+    );
+
+  mkGoParts = {
     pkgs,
     src,
     pname ? deriveProjectName src,
@@ -538,27 +727,28 @@ in rec {
     ],
   }: let
     checkEnvCommands = checkSetupCommands;
+    path = deriveProjectPath src;
   in {
-    fmt = mkConventionalProjectApp pkgs {
+    fmt = mkStdApp pkgs {
       kind = "fmt";
       inherit src pname;
       parts = fmtParts;
     };
     checks = {
-      fmt = mkConventionalProjectCheck pkgs {
+      fmt = mkStdCheck pkgs {
         kind = "fmt";
         inherit src pname;
         parts = fmtCheckParts;
         commands = fmtCommands;
       };
-      lint = mkConventionalProjectCheck pkgs {
+      lint = mkStdCheck pkgs {
         kind = "lint";
         inherit src pname;
         parts = lintParts;
         env = checkEnv;
         commands = checkEnvCommands ++ lintCommands;
       };
-      test = mkConventionalProjectCheck pkgs {
+      test = mkStdCheck pkgs {
         kind = "test";
         inherit src pname;
         parts = testParts;
@@ -569,9 +759,40 @@ in rec {
     devShell = pkgs.mkShell {
       packages = devShellPackages;
     };
+    pkgOps = {
+      inherit path;
+      apps = {
+        fmt = mkStdAppOp pkgs {
+          kind = "fmt";
+          inherit src fmtParts;
+        };
+      };
+      checks = {
+        fmt = mkStdCheckOp pkgs {
+          kind = "fmt";
+          inherit src;
+          parts = fmtCheckParts;
+          commands = fmtCommands;
+        };
+        lint = mkStdCheckOp pkgs {
+          kind = "lint";
+          inherit src;
+          parts = lintParts;
+          env = checkEnv;
+          commands = checkEnvCommands ++ lintCommands;
+        };
+        test = mkStdCheckOp pkgs {
+          kind = "test";
+          inherit src;
+          parts = testParts;
+          env = checkEnv;
+          commands = checkEnvCommands ++ testCommands;
+        };
+      };
+    };
   };
 
-  mkPythonConventionParts = {
+  mkPythonParts = {
     pkgs,
     src,
     pname ? deriveProjectName src,
@@ -607,27 +828,28 @@ in rec {
     ],
   }: let
     checkEnvCommands = checkSetupCommands;
+    path = deriveProjectPath src;
   in {
-    fmt = mkConventionalProjectApp pkgs {
+    fmt = mkStdApp pkgs {
       kind = "fmt";
       inherit src pname;
       parts = fmtParts;
     };
-    "lint-fix" = mkConventionalProjectApp pkgs {
+    "lint-fix" = mkStdApp pkgs {
       kind = "lint-fix";
       inherit src pname;
       parts = lintFixParts;
       commands = lintFixCommands;
     };
     checks = {
-      fmt = mkConventionalProjectCheck pkgs {
+      fmt = mkStdCheck pkgs {
         kind = "fmt";
         inherit src pname;
         parts = fmtCheckParts;
         env = checkEnv;
         commands = checkEnvCommands ++ fmtCommands;
       };
-      lint = mkConventionalProjectCheck pkgs {
+      lint = mkStdCheck pkgs {
         kind = "lint";
         inherit src pname;
         parts = lintParts;
@@ -638,9 +860,41 @@ in rec {
     devShell = pkgs.mkShell {
       packages = devShellPackages;
     };
+    pkgOps = {
+      inherit path;
+      apps = {
+        fmt = mkStdAppOp pkgs {
+          kind = "fmt";
+          inherit src;
+          parts = fmtParts;
+        };
+        "lint-fix" = mkStdAppOp pkgs {
+          kind = "lint-fix";
+          inherit src;
+          parts = lintFixParts;
+          commands = lintFixCommands;
+        };
+      };
+      checks = {
+        fmt = mkStdCheckOp pkgs {
+          kind = "fmt";
+          inherit src;
+          parts = fmtCheckParts;
+          env = checkEnv;
+          commands = checkEnvCommands ++ fmtCommands;
+        };
+        lint = mkStdCheckOp pkgs {
+          kind = "lint";
+          inherit src;
+          parts = lintParts;
+          env = checkEnv;
+          commands = checkEnvCommands ++ lintCommands;
+        };
+      };
+    };
   };
 
-  mkWebConventionParts = {
+  mkWebParts = {
     pkgs,
     src,
     pname ? deriveProjectName src,
@@ -668,16 +922,18 @@ in rec {
       pkgs.deno
     ],
     extraDevShellPackages ? [],
-  }:
+  }: let
+    path = deriveProjectPath src;
+  in
     {
-      fmt = mkConventionalProjectApp pkgs {
+      fmt = mkStdApp pkgs {
         kind = "fmt";
         inherit src pname;
         parts = fmtParts;
       };
       checks =
         {
-          fmt = mkConventionalProjectCheck pkgs {
+          fmt = mkStdCheck pkgs {
             kind = "fmt";
             inherit src pname;
             parts = fmtCheckParts;
@@ -686,7 +942,7 @@ in rec {
         // (
           if enableLint
           then {
-            lint = mkConventionalProjectCheck pkgs {
+            lint = mkStdCheck pkgs {
               kind = "lint";
               inherit src pname;
               parts = lintParts;
@@ -698,11 +954,54 @@ in rec {
       devShell = pkgs.mkShell {
         packages = devShellPackages ++ extraDevShellPackages;
       };
+      pkgOps = {
+        inherit path;
+        apps =
+          {
+            fmt = mkStdAppOp pkgs {
+              kind = "fmt";
+              inherit src;
+              parts = fmtParts;
+            };
+          }
+          // (
+            if enableLintFix
+            then {
+              "lint-fix" = mkStdAppOp pkgs {
+                kind = "lint-fix";
+                inherit src;
+                parts = lintFixParts;
+                commands = lintFixCommands;
+              };
+            }
+            else {}
+          );
+        checks =
+          {
+            fmt = mkStdCheckOp pkgs {
+              kind = "fmt";
+              inherit src;
+              parts = fmtCheckParts;
+            };
+          }
+          // (
+            if enableLint
+            then {
+              lint = mkStdCheckOp pkgs {
+                kind = "lint";
+                inherit src;
+                parts = lintParts;
+                commands = lintCommands;
+              };
+            }
+            else {}
+          );
+      };
     }
     // (
       if enableLintFix
       then {
-        "lint-fix" = mkConventionalProjectApp pkgs {
+        "lint-fix" = mkStdApp pkgs {
           kind = "lint-fix";
           inherit src pname;
           parts = lintFixParts;
@@ -762,7 +1061,7 @@ in rec {
     repoFmtPaths ? [],
     commands,
   }: let
-    mergedParts = mergeProjectParts (
+    mergedParts = mergeParts (
       parts
       ++ [
         {
@@ -822,7 +1121,7 @@ in rec {
     repoFmtPaths ? [],
     commands,
   }: let
-    mergedParts = mergeProjectParts (
+    mergedParts = mergeParts (
       parts
       ++ [
         {
@@ -971,13 +1270,13 @@ in rec {
     });
 
   mkGoDerivation = args @ {build, ...}:
-    wirePassthru build (mkGoConventionParts (builtins.removeAttrs args ["build"]));
+    wirePassthru build (mkGoParts (builtins.removeAttrs args ["build"]));
 
   mkPythonDerivation = args @ {build, ...}:
-    wirePassthru build (mkPythonConventionParts (builtins.removeAttrs args ["build"]));
+    wirePassthru build (mkPythonParts (builtins.removeAttrs args ["build"]));
 
   mkWebDerivation = args @ {build, ...}:
-    wirePassthru build (mkWebConventionParts (builtins.removeAttrs args ["build"]));
+    wirePassthru build (mkWebParts (builtins.removeAttrs args ["build"]));
 
   mkStaticWebDerivation = {
     pkgs,
@@ -1038,18 +1337,18 @@ in rec {
     ],
     extraPassthru ? {},
   }: let
-    fmt = mkConventionalProjectApp pkgs {
+    fmt = mkStdApp pkgs {
       kind = "fmt";
       inherit src pname;
       parts = fmtParts;
     };
-    fmtCheck = mkConventionalProjectCheck pkgs {
+    fmtCheck = mkStdCheck pkgs {
       kind = "fmt";
       inherit src pname;
       parts = fmtParts;
     };
     lintCheck = {
-      lint = mkConventionalProjectCheck pkgs {
+      lint = mkStdCheck pkgs {
         kind = "lint";
         inherit src pname;
         parts = lintParts;
@@ -1063,6 +1362,36 @@ in rec {
         pkgs.mkShell {
           packages = devShellPackages;
         };
+    pkgOps = {
+      path = deriveProjectPath src;
+      apps = {
+        fmt = mkStdAppOp pkgs {
+          kind = "fmt";
+          inherit src;
+          parts = fmtParts;
+        };
+      };
+      checks =
+        {
+          fmt = mkStdCheckOp pkgs {
+            kind = "fmt";
+            inherit src;
+            parts = fmtParts;
+          };
+        }
+        // (
+          if lintParts == []
+          then {}
+          else {
+            lint = mkStdCheckOp pkgs {
+              kind = "lint";
+              inherit src;
+              parts = lintParts;
+              commands = lintCommands;
+            };
+          }
+        );
+    };
   in
     wirePassthru build ({
         fmt = fmt;
@@ -1071,12 +1400,76 @@ in rec {
             fmt = fmtCheck;
           }
           // lintCheck;
+        inherit pkgOps;
       }
       // (
         if devShell == null
         then {}
         else {devShell = devShell;}
       )
+      // extraPassthru);
+
+  mkAggregateDerivation = {
+    pkgs,
+    src,
+    pname ? deriveProjectName src,
+    buildPaths ? [],
+    emptyName ? "${pname}-empty",
+    fmtParts ? [
+      (projectFmtGlobal {})
+    ],
+    extraPassthru ? {},
+    extraPackages ? {},
+    extraApps ? {},
+  }: let
+    build =
+      if buildPaths == []
+      then
+        pkgs.runCommand emptyName {} ''
+          mkdir -p "$out"
+        ''
+      else
+        pkgs.symlinkJoin {
+          name = "${pname}-build";
+          paths = buildPaths;
+        };
+    fmt = mkStdApp pkgs {
+      kind = "fmt";
+      inherit src pname;
+      parts = fmtParts;
+    };
+    fmtCheck = mkStdCheck pkgs {
+      kind = "fmt";
+      inherit src pname;
+      parts = fmtParts;
+    };
+    pkgOps = {
+      path = deriveProjectPath src;
+      apps = {
+        fmt = mkStdAppOp pkgs {
+          kind = "fmt";
+          inherit src;
+          parts = fmtParts;
+        };
+      };
+      checks = {
+        fmt = mkStdCheckOp pkgs {
+          kind = "fmt";
+          inherit src;
+          parts = fmtParts;
+        };
+      };
+    };
+  in
+    wirePassthru build ({
+        build = build;
+        inherit fmt pkgOps;
+        checks = {
+          fmt = fmtCheck;
+        };
+        flakeExtraPackages = extraPackages;
+        flakeExtraApps = extraApps;
+      }
       // extraPassthru);
 
   mkRustDerivation = {
@@ -1109,6 +1502,60 @@ in rec {
           fmtCargoArgs = fmtCargoArgs;
           testCargoArgs = testCargoArgs;
         };
+        pkgOps = {
+          path = deriveProjectPath src;
+          apps = {
+            fmt = mkProjectAppOp pkgs {
+              inherit src;
+              parts = [
+                (projectFmtRust pkgs {cargoArgs = fmtCargoArgs;})
+              ];
+              commands = ["exec cargo fmt ${joinWords fmtCargoArgs} \"$@\""];
+            };
+            "lint-fix" = mkProjectAppOp pkgs {
+              inherit src;
+              parts = [
+                (projectLintFixRust pkgs {
+                  cargoArgs = lintFixCargoArgs;
+                  lintArgs = lintFixLintArgs;
+                })
+              ];
+              commands = [
+                "exec cargo clippy ${joinWords lintFixCargoArgs} --fix --allow-dirty --allow-staged --all-targets ${joinWords lintFixLintArgs}"
+              ];
+            };
+          };
+          checks = {
+            fmt = {
+              path = deriveProjectPath src;
+              runtimeInputs = [
+                pkgs.cargo
+                pkgs.rustfmt
+              ];
+              envScript = "";
+              command = joinWords (["cargo" "fmt"] ++ fmtCargoArgs ++ ["--check"]);
+            };
+            lint = {
+              path = deriveProjectPath src;
+              runtimeInputs = [
+                pkgs.cargo
+                pkgs.clippy
+                pkgs.rustc
+              ];
+              envScript = "";
+              command = joinWords (["cargo" "clippy"] ++ checkCargoArgs ++ checkLintArgs);
+            };
+            test = {
+              path = deriveProjectPath src;
+              runtimeInputs = [
+                pkgs.cargo
+                pkgs.rustc
+              ];
+              envScript = "";
+              command = joinWords (["cargo" "test"] ++ testCargoArgs);
+            };
+          };
+        };
       }
       // extraPassthru);
 
@@ -1134,6 +1581,14 @@ in rec {
     extraApps ? {},
     extraChecks ? {},
   }: let
+    passthruExtraPackages =
+      if builtins.hasAttr "passthru" build && builtins.hasAttr "flakeExtraPackages" build.passthru
+      then build.passthru.flakeExtraPackages
+      else {};
+    passthruExtraApps =
+      if builtins.hasAttr "passthru" build && builtins.hasAttr "flakeExtraApps" build.passthru
+      then build.passthru.flakeExtraApps
+      else {};
     hasMainProgram = pkg:
       builtins.hasAttr "meta" pkg
       && builtins.isAttrs pkg.meta
@@ -1159,6 +1614,7 @@ in rec {
       // (attrIf (builtins.hasAttr "dev" build) "dev" build.dev)
       // (attrIf (builtins.hasAttr "fmt" build) "fmt" build.fmt)
       // (attrIf (builtins.hasAttr "lint-fix" build) "lint-fix" build."lint-fix")
+      // passthruExtraPackages
       // extraPackages;
     appAttrs = mergeAttrs (
       (
@@ -1199,6 +1655,7 @@ in rec {
         then [{"lint-fix" = mkPackageApp pkgs build."lint-fix";}]
         else []
       )
+      ++ [passthruExtraApps]
       ++ [extraApps]
     );
     devShellAttrs =

@@ -13,10 +13,15 @@ in rec {
   packages = packagesFn;
 
   withPkgs = pkgs: let
-    lint = lintFn {inherit pkgs;};
-    packages = packagesFn {
-      inherit pkgs lint;
+    basePackages = packagesFn {
+      inherit pkgs;
     };
+    lint = lintFn {
+      inherit pkgs;
+      packageSet = basePackages.stdPackages;
+      pkgHelper = pkgHelperFn;
+    };
+    packages = (builtins.removeAttrs basePackages ["stdPackages"]) // lint.packages;
     apps = appsFn {
       packageSet = packages;
       lint = lint;

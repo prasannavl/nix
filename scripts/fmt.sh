@@ -70,7 +70,7 @@ parse_args() {
 }
 
 matches_selected_project() {
-	local flake_dir="$1"
+	local project_path="$1"
 	local project_name
 
 	if [ "${#PROJECT_NAMES[@]}" -eq 0 ]; then
@@ -78,36 +78,12 @@ matches_selected_project() {
 	fi
 
 	for project_name in "${PROJECT_NAMES[@]}"; do
-		if [ "$(basename "${flake_dir}")" = "${project_name}" ]; then
+		if [ "$(basename "${project_path}")" = "${project_name}" ]; then
 			return 0
 		fi
 	done
 
 	return 1
-}
-
-run_optional_flake_app() {
-	local installable="$1"
-	local output=""
-	local status=0
-
-	if output="$(nix run "${installable}" 2>&1)"; then
-		if [ -n "${output}" ]; then
-			printf '%s\n' "${output}" >&2
-		fi
-		return 0
-	fi
-	status=$?
-
-	if printf '%s\n' "${output}" | grep -Eq \
-		'does not provide attribute|attribute .* missing|flake .* does not provide'; then
-		return 0
-	fi
-
-	if [ -n "${output}" ]; then
-		printf '%s\n' "${output}" >&2
-	fi
-	return "${status}"
 }
 
 emit_unique_existing_from() {
@@ -144,16 +120,26 @@ collect_root_files() {
 	done < <(emit_unique_existing_from seen git ls-files -z --cached --others --exclude-standard -- "${patterns[@]}")
 }
 
-collect_selected_flake_dirs() {
-	local flake_nix=""
-	local flake_dir=""
+manifest_package_records() {
+	[ -n "${PKG_OPS_MANIFEST:-}" ] || return 0
+	[ -f "${PKG_OPS_MANIFEST}" ] || return 0
+	jq -c '.packages[]' "${PKG_OPS_MANIFEST}"
+}
 
-	while IFS= read -r -d '' flake_nix; do
-		flake_dir="$(dirname "${flake_nix}")"
-		if matches_selected_project "${flake_dir}"; then
-			printf '%s\0' "${flake_dir}"
+run_manifest_command() {
+	local project_path="$1"
+	local env_script="$2"
+	local command="$3"
+
+	(
+		cd "${REPO_ROOT}/${project_path}"
+		export repo_root="${REPO_ROOT}"
+		set --
+		if [ -n "${env_script}" ]; then
+			eval "${env_script}"
 		fi
-	done < <(find pkgs -name flake.nix -print0 | sort -z)
+		eval "${command}"
+	)
 }
 
 run_root_treefmt() {
@@ -184,19 +170,31 @@ run_root_treefmt() {
 }
 
 run_child_fmts() {
-	local -a flake_dirs=()
-	local flake_dir=""
+	local -a package_records=()
+	local record=""
+	local project_path=""
+	local env_script=""
+	local command=""
 
-	mapfile -d $'\0' -t flake_dirs < <(collect_selected_flake_dirs)
+	mapfile -t package_records < <(manifest_package_records)
 
-	if [ "${#flake_dirs[@]}" -eq 0 ]; then
+	if [ "${#package_records[@]}" -eq 0 ]; then
 		return
 	fi
 
 	printf '[fmt] Formatting package-managed files\n' >&2
-	for flake_dir in "${flake_dirs[@]}"; do
-		printf '  - %s\n' "${flake_dir}" >&2
-		run_optional_flake_app "./${flake_dir}#fmt"
+	for record in "${package_records[@]}"; do
+		project_path="$(jq -r '.path' <<<"${record}")"
+		if ! matches_selected_project "${project_path}"; then
+			continue
+		fi
+		command="$(jq -r '.apps.fmt.command // empty' <<<"${record}")"
+		if [ -z "${command}" ]; then
+			continue
+		fi
+		env_script="$(jq -r '.apps.fmt.envScript // ""' <<<"${record}")"
+		printf '  - %s\n' "${project_path}" >&2
+		run_manifest_command "${project_path}" "${env_script}" "${command}"
 	done
 }
 

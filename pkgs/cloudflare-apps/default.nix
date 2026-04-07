@@ -1,20 +1,9 @@
 {
   pkgs ? import <nixpkgs> {},
-  nixbot ? pkgs.callPackage ../nixbot/default.nix {},
-  llmugHello ? pkgs.callPackage ./llmug-hello/default.nix {},
+  pkgHelper ? import ../../lib/flake/pkg-helper.nix,
+  nixbot ? pkgs.callPackage ../nixbot/default.nix {inherit pkgHelper;},
+  llmugHello ? pkgs.callPackage ./llmug-hello/default.nix {inherit pkgHelper;},
 }: let
-  buildPaths = [llmugHello];
-  aggregateBuild =
-    if buildPaths == []
-    then
-      pkgs.runCommand "cloudflare-apps-empty" {} ''
-        mkdir -p "$out"
-      ''
-    else
-      pkgs.symlinkJoin {
-        name = "cloudflare-apps-build";
-        paths = buildPaths;
-      };
   deploy = pkgs.writeShellApplication {
     name = "cloudflare-apps-deploy";
     meta = {
@@ -28,12 +17,19 @@
     '';
   };
 in
-  aggregateBuild.overrideAttrs (old: {
-    passthru =
-      (old.passthru or {})
-      // {
-        build = aggregateBuild;
-        deploy = deploy;
-        llmug-hello = llmugHello;
-      };
-  })
+  pkgHelper.mkAggregateDerivation {
+    inherit pkgs;
+    src = ./.;
+    pname = "cloudflare-apps";
+    buildPaths = [llmugHello];
+    extraPassthru = {
+      deploy = deploy;
+      llmug-hello = llmugHello;
+    };
+    extraPackages = {
+      deploy = deploy;
+    };
+    extraApps = {
+      deploy = pkgHelper.mkPackageApp pkgs deploy;
+    };
+  }

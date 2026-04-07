@@ -1,5 +1,7 @@
-{pkgs ? import <nixpkgs> {}}: let
-  pkgHelper = import ../../lib/flake/pkg-helper.nix;
+{
+  pkgs ? import <nixpkgs> {},
+  pkgHelper ? import ../../lib/flake/pkg-helper.nix,
+}: let
   drv = pkgHelper.mkGoDerivation {
     inherit pkgs;
     src = ./.;

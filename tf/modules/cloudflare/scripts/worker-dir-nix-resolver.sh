@@ -71,6 +71,11 @@ print_error_and_exit() {
 resolve_build_root() {
 	local directory="$1"
 
+	if [ -f "${directory}/default.nix" ]; then
+		printf '%s\n' "${directory}"
+		return 0
+	fi
+
 	if [ -f "${directory}/flake.nix" ]; then
 		printf '%s\n' "${directory}"
 		return 0
@@ -90,9 +95,19 @@ resolve_directory() {
 
 	if build_root="$(resolve_build_root "${directory}")"; then
 		local build_output=""
-		if ! build_output="$(nix build --no-link --print-out-paths "path:${build_root}#build")"; then
-			printf 'worker-dir-nix-resolver: nix build failed for %s\n' "${build_root}" >&2
-			exit 1
+		local build_target_desc=""
+		if [ -f "${build_root}/default.nix" ]; then
+			build_target_desc="${build_root}/default.nix"
+			if ! build_output="$(nix build --no-link --print-out-paths --file "${build_root}/default.nix")"; then
+				printf 'worker-dir-nix-resolver: nix build failed for %s\n' "${build_target_desc}" >&2
+				exit 1
+			fi
+		else
+			build_target_desc="path:${build_root}#build"
+			if ! build_output="$(nix build --no-link --print-out-paths "${build_target_desc}")"; then
+				printf 'worker-dir-nix-resolver: nix build failed for %s\n' "${build_target_desc}" >&2
+				exit 1
+			fi
 		fi
 		printf '%s\n' "${build_output}" | tail -n1
 		return 0

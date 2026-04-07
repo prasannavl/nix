@@ -56,13 +56,13 @@ Package-owned tooling handles files inside each child package:
 
 Root tooling is an orchestrator, not the owner of package language rules:
 
-- `nix fmt` runs the root formatter for root-owned files, then delegates to each
-  selected child flake's `apps.fmt`.
-- `nix run path:.#lint` runs root-owned lint checks, then delegates to each
-  selected child flake's `checks.*`.
-- `nix run path:.#lint -- fix` runs root formatting and root fixers, then
-  delegates to each selected child flake's `apps.fmt` and `apps.lint-fix`, then
-  re-runs lint.
+- `nix fmt` runs the root formatter for root-owned files, then runs package
+  `fmt` actions through one root aggregate package-ops manifest.
+- `nix run path:.#lint` runs root-owned lint checks, then runs package
+  `checks.*` through the root aggregate package-ops manifest.
+- `nix run path:.#lint -- fix` runs root formatting and root fixers, then runs
+  package `fmt` and `lint-fix` actions through the same root aggregate
+  package-ops manifest, then re-runs lint.
 
 Root-owned file type policy is:
 
@@ -160,6 +160,9 @@ These are the main package entrypoints:
 - `mkShellScriptDerivation`: Shell-script project conventions. Adds root-style
   formatting and `shellcheck`-based linting automatically, with `shellcheck` and
   `shfmt` in the default dev shell.
+- `mkAggregateDerivation`: Aggregate namespace package conventions. Builds an
+  aggregate package from child derivations, adds aggregate `fmt` / `checks.fmt`,
+  and wires aggregate `pkgOps` for root `nix fmt` and `nix run path:.#lint`.
 
 ## Wiring Helpers
 
@@ -169,6 +172,8 @@ The main shared wiring helpers are:
 - `wirePassthru`: extend a derivation's `passthru` without repeating
   `overrideAttrs` boilerplate. Use this for extra package-local commands such as
   a custom `dev` app or deployment helper.
+- `mkStdFlakeOutputs` also re-exports helper-provided passthru extras such as
+  aggregate `extraPackages` and `extraApps` when a derivation carries them.
 
 ## Lower-Level Helpers
 
@@ -186,6 +191,11 @@ exports lower-level project combinators:
 - `mkProjectApp`, `mkProjectCommandsApp`, `mkProjectCheck`,
   `mkProjectCommandsCheck`: lower-level building blocks for unusual package
   layouts.
+- `mkStdApp`, `mkStdCheck`: standard package-local app and check wrappers.
+- `mkProjectAppOp`, `mkProjectCheckOp`: root aggregate operation records for
+  package apps and checks.
+- `mkStdAppOp`, `mkStdCheckOp`: standard package operation wrappers used by the
+  high-level derivation helpers.
 - `mkCheck`, `mkChecks`, `mkRustChecks`: shared read-only check wrappers when a
   package needs direct control over its `checks.*` set.
 

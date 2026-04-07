@@ -1,7 +1,4 @@
-{
-  pkgs,
-  lint ? null,
-}: let
+{pkgs}: let
   canonical = rec {
     hello-go = pkgs.callPackage ../../pkgs/hello-go/default.nix {};
     hello-node = pkgs.callPackage ../../pkgs/hello-node/default.nix {};
@@ -15,11 +12,20 @@
       pkgs.callPackage ../../pkgs/cloudflare-apps/default.nix {
         inherit nixbot llmugHello;
       };
+    stdPackages = {
+      inherit
+        edi-ast-parser-rs
+        gap3-ai-web
+        hello-go
+        hello-node
+        hello-python
+        hello-rust
+        hello-web-static
+        nixbot
+        cloudflare-apps
+        ;
+      "cloudflare-apps/llmug-hello" = cloudflare-apps.llmug-hello;
+    };
   };
 in
   canonical
-  // (
-    if lint == null
-    then {}
-    else lint.packages
-  )

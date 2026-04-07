@@ -221,14 +221,15 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   `lint-fix` to apply safe package-owned auto-fixes, and `checks.fmt` /
   `checks.lint` / `checks.test` for read-only verification.
 - `nix fmt` formats root-managed files outside `pkgs/` through the root
-  `treefmt` configuration, then delegates package-managed formatting to each
-  selected child flake's `apps.fmt`.
-- `nix run path:.#lint` lints root-managed files outside `pkgs/`, then delegates
-  package verification to each selected child flake's `checks.fmt`,
-  `checks.lint`, and `checks.test`.
+  `treefmt` configuration, then runs package-managed formatting through the
+  root aggregate package-ops manifest.
+- `nix run path:.#lint` lints root-managed files outside `pkgs/`, then runs
+  package verification through the root aggregate package-ops manifest for
+  `checks.fmt`, `checks.lint`, and `checks.test`.
 - `nix run path:.#lint -- fix` applies root-owned formatting and fix-capable
-  linting outside `pkgs/`, runs package-local `apps.fmt` and `apps.lint-fix`,
-  then re-runs lint to show anything still requiring manual changes.
+  linting outside `pkgs/`, runs package-local `fmt` and `lint-fix` actions
+  through the root aggregate package-ops manifest, then re-runs lint to show
+  anything still requiring manual changes.
 - `nix run path:.#lint -- --project <name>` and
   `nix run path:.#fmt -- --project <name>` restrict package work to one or more
   selected child flakes by directory name under `pkgs/`.

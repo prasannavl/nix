@@ -32,13 +32,15 @@ aggregates package-local checks and apps for everything inside `pkgs/`.
 ## Applied shape
 
 - `nix fmt` at the repo root formats root-managed files outside `pkgs/` through
-  `treefmt`, then runs each selected child flake's `apps.fmt`.
+  `treefmt`, then runs package `fmt` actions through one aggregate package-ops
+  manifest.
 - `nix run path:.#lint` runs root-only read-only checks outside `pkgs/`, then
-  builds each selected child flake's `checks.fmt`, `checks.lint`, and
-  `checks.test` when present.
-- `nix run path:.#lint -- fix` runs the root formatter, then each selected child
-  flake's `apps.lint-fix` and `apps.fmt`, then applies root-only fix-capable
-  tools outside `pkgs/`, and finally re-runs lint.
+  runs package `checks.fmt`, `checks.lint`, and `checks.test` through the same
+  aggregate package-ops manifest when present.
+- `nix run path:.#lint -- fix` runs the root formatter, then package
+  `apps.lint-fix` and `apps.fmt` through the aggregate package-ops manifest,
+  then applies root-only fix-capable tools outside `pkgs/`, and finally
+  re-runs lint.
 - `--project <name>` scopes root `fmt` and `lint` to one or more child flakes by
   directory name under `pkgs/`, including nested child flakes.
 - Shared package-helper builders in `lib/flake/pkg-helper.nix` own the common
@@ -85,6 +87,7 @@ The high-level derivation builders are:
 - `mkWebDerivation`
 - `mkStaticWebDerivation`
 - `mkShellScriptDerivation`
+- `mkAggregateDerivation`
 
 The standard flake wiring helpers are:
 
@@ -92,6 +95,8 @@ The standard flake wiring helpers are:
   `devShells.default` from the derivation and its `passthru`.
 - `wirePassthru`: adds shared or package-specific passthru outputs without
   repeating `overrideAttrs` plumbing.
+- `mkStdFlakeOutputs` also re-exports helper-provided passthru extras such as
+  aggregate `extraPackages` and `extraApps`.
 
 The lower-level package parts remain available for unusual projects:
 
@@ -111,6 +116,12 @@ The lower-level package parts remain available for unusual projects:
 - `mkProjectCommandsApp`
 - `mkProjectCheck`
 - `mkProjectCommandsCheck`
+- `mkStdApp`
+- `mkStdCheck`
+- `mkProjectAppOp`
+- `mkProjectCheckOp`
+- `mkStdAppOp`
+- `mkStdCheckOp`
 - `mkCheck`
 - `mkChecks`
 - `mkRustChecks`
