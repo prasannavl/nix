@@ -1,42 +1,44 @@
-# Rust check convention and clippy fix
+# Rust package convention under package-local checks and apps
 
 - Date: 2026-04-07
-- Scope: Rust child flakes under `pkgs/`, `lib/flake/checks.nix`,
+- Scope: Rust child flakes under `pkgs/`, `lib/flake/pkg-helper.nix`,
   `lib/flake/lint.nix`, `scripts/lint.sh`
 
 ## Decision
 
-Use one shared Rust check helper for child flakes and keep mutating Rust lint
-fixes in the root lint workflow.
+Use one shared Rust helper that makes Rust child flakes conform to the package
+contract:
+
+- `checks.fmt`
+- `checks.lint`
+- `checks.test`
+- `apps.fmt`
+- `apps.lint-fix`
 
 ## Why
 
 - `checks.*` should stay read-only and CI-safe; `cargo clippy --fix` mutates the
-  worktree and does not belong in child-flake `checks`.
-- The repo already treats formatting as a root policy through `treefmt`, so Rust
-  packages should opt into verification checks rather than redefining formatter
-  behavior package by package.
+  worktree and belongs in a child-flake app, not in `checks`.
+- Rust packages should behave the same way as other child flakes in `pkgs/`.
 - A shared helper keeps Rust child flakes consistent while preserving package
   control over cargo flags such as `--locked`.
 
 ## Applied shape
 
-- `lib/flake/checks.nix` now exports `rustFmt`, `rustClippy`, `rustTest`, and
-  `mkRustChecks`.
+- `lib/flake/pkg-helper.nix` now exports `rustFmt`, `rustClippy`, `rustTest`,
+  `mkRustChecks`, `mkRustDerivation`, `rustFmtApp`, and `rustLintFixApp`.
 - `pkgs/hello-rust`, `pkgs/edi-ast-parser-rs`, and `pkgs/gap3-ai-web` now use
-  `mkRustChecks` instead of open-coded `fmt`/`clippy`/`test` check attrsets.
-- `gap3-ai-web` passes `--locked` through the shared helper for `clippy` and
+  `mkRustChecks` instead of open-coded `fmt`/`lint`/`test` check attrsets.
+- `gap3-ai-web` passes `--locked` through the shared helper for `lint` and
   `test` while `fmt` remains plain `cargo fmt --check`.
-- The root lint runtime now includes `clippy`, and `nix run path:.#lint -- fix`
-  applies
-  `cargo clippy --fix --allow-dirty --allow-staged --all-targets
-  --locked -- -D warnings`
-  to the selected Rust crates before the final formatter pass.
+- Rust child flakes now expose package-local `apps.fmt` and `apps.lint-fix`
+  from the shared helper, so root lint and root fmt can delegate to them like
+  any other package.
 
 ## Convention
 
 - Root `nix fmt` remains the canonical formatter entrypoint.
-- Child flakes expose read-only Rust verification as `checks.fmt`,
-  `checks.clippy`, and `checks.test`.
-- Mutating Rust fixes run only through the root lint fix path, not through
-  child-flake `checks`.
+- Rust child flakes expose read-only verification as `checks.fmt`,
+  `checks.lint`, and `checks.test`.
+- Mutating Rust fixes run through child-flake apps such as `apps.lint-fix`, not
+  through child-flake `checks`.

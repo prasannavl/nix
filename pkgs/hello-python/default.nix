@@ -1,17 +1,24 @@
-{pkgs ? import <nixpkgs> {}}:
-pkgs.python3Packages.buildPythonApplication {
-  pname = "hello-python";
-  version = "0.1.0";
-  pyproject = true;
+{pkgs ? import <nixpkgs> {}}: let
+  pkgHelper = import ../../lib/flake/pkg-helper.nix;
+  drv = pkgHelper.mkPythonDerivation {
+    inherit pkgs;
+    src = ./.;
+    build = pkgs.python3Packages.buildPythonApplication {
+      pname = "hello-python";
+      version = "0.1.0";
+      pyproject = true;
 
-  src = ./.;
+      src = ./.;
 
-  build-system = [
-    pkgs.python3Packages.hatchling
-  ];
+      build-system = [
+        pkgs.python3Packages.hatchling
+      ];
 
-  meta = {
-    description = "Hello world Python example built from a pyproject package";
-    mainProgram = "hello-python";
+      meta = {
+        description = "Hello world Python example built from a pyproject package";
+        mainProgram = "hello-python";
+      };
+    };
   };
-}
+in
+  drv

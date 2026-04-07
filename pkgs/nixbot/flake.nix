@@ -13,21 +13,11 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      run = pkgs.callPackage ./default.nix {};
-    in {
-      packages = {
-        run = run;
-        default = run;
-        build = run;
-      };
-      apps = let
-        app = {
-          type = "app";
-          program = pkgs.lib.getExe run;
-        };
-      in {
-        default = app;
-        run = app;
-      };
-    });
+      pkgHelper = import ../../lib/flake/pkg-helper.nix;
+      drv = pkgs.callPackage ./default.nix {};
+    in
+      pkgHelper.mkStdFlakeOutputs {
+        pkgs = pkgs;
+        build = drv;
+      });
 }

@@ -19,21 +19,43 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
+      pkgHelper = import ../../lib/flake/pkg-helper.nix;
       llmugHello = pkgs.callPackage ./llmug-hello/default.nix {};
-      cloudflareApps = pkgs.callPackage ./default.nix {
+      baseBuild = pkgs.callPackage ./default.nix {
         nixbot = nixbot.packages.${system}.default;
         llmugHello = llmugHello;
       };
-    in {
-      packages = {
-        default = cloudflareApps;
-        inherit (cloudflareApps) build deploy;
+      fmtParts = [
+        (pkgHelper.projectFmtGlobal {})
+      ];
+      fmt = pkgHelper.mkProjectCommandsApp pkgs {
+        name = "cloudflare-apps-fmt";
+        description = "Format cloudflare-apps";
+        src = ./.;
+        parts = fmtParts;
+        commands = [];
       };
-      apps = {
-        deploy = {
-          type = "app";
-          program = pkgs.lib.getExe cloudflareApps.deploy;
+      fmtCheck = pkgHelper.mkProjectCommandsCheck pkgs {
+        name = "cloudflare-apps-fmt-check";
+        src = ./.;
+        parts = fmtParts;
+        commands = [];
+      };
+      drv = pkgHelper.wirePassthru baseBuild.build {
+        fmt = fmt;
+        checks = {
+          fmt = fmtCheck;
         };
       };
-    });
+    in
+      pkgHelper.mkStdFlakeOutputs {
+        pkgs = pkgs;
+        build = drv;
+        extraPackages = {
+          deploy = baseBuild.deploy;
+        };
+        extraApps = {
+          deploy = pkgHelper.mkPackageApp pkgs baseBuild.deploy;
+        };
+      });
 }

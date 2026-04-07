@@ -3,17 +3,18 @@
   formatterPkgs = with pkgs; [
     treefmt
     alejandra
-    cargo
-    clippy
+    bash
     deno
+    findutils
     opentofu
-    rustfmt
+    shfmt
+    git
+    nix
+    jq
   ];
   lintPkgs =
     formatterPkgs
     ++ (with pkgs; [
-      git
-      jq
       statix
       deadnix
       shellcheck
@@ -32,14 +33,21 @@
       exec env LINT_IN_NIX_SHELL=1 ${repoRoot}/scripts/lint.sh "$@"
     '';
   };
+  formatterApp = pkgs.writeShellApplication {
+    name = "fmt";
+    meta = {
+      description = "Format root-managed files and delegate package formatting to child flakes";
+      mainProgram = "fmt";
+    };
+    runtimeInputs = formatterPkgs;
+    text = ''
+      exec env FMT_IN_NIX_SHELL=1 bash ${repoRoot}/scripts/fmt.sh "$@"
+    '';
+  };
 in {
   inherit formatterPkgs lintApp lintPkgs;
 
-  formatter = pkgs.writeShellApplication {
-    name = "treefmt";
-    runtimeInputs = formatterPkgs;
-    text = "treefmt";
-  };
+  formatter = formatterApp;
 
   apps = {
     lint = {
@@ -47,9 +55,15 @@ in {
       program = "${lintApp}/bin/${lintApp.meta.mainProgram}";
       inherit (lintApp) meta;
     };
+    fmt = {
+      type = "app";
+      program = "${formatterApp}/bin/${formatterApp.meta.mainProgram}";
+      inherit (formatterApp) meta;
+    };
   };
 
   packages = {
     lint = lintApp;
+    fmt = formatterApp;
   };
 }

@@ -12,7 +12,7 @@ The repeated child-flake pattern:
 
 is now centralized in two layers:
 
-- `lib/flake/checks.nix` provides `mkCheck` and `mkChecks`
+- `lib/flake/pkg-helper.nix` provides `mkCheck` and `mkChecks`
 - each package `default.nix` defines its own `passthru.checks`
 
 Child wrapper flakes now just re-export `checks = build.checks;`.

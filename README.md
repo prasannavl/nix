@@ -211,29 +211,51 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 
 ## Linting
 
-- `nix fmt` applies the repo formatter configured in `treefmt.toml`, including
-  generic Rust formatting for tracked Cargo crates under `pkgs/`.
+- Package-local flakes under `pkgs/` conventionally expose:
+  `checks.lint`, `checks.fmt`, `checks.test`, `apps.lint-fix`, `apps.fmt`, and
+  `apps.dev` when the package has a runnable dev workflow.
+- `checks.*` are read-only verification outputs; mutating actions belong in
+  `apps.*`.
+- Standard package actions are:
+  `run` to execute the package, `dev` for interactive developer workflows,
+  `fmt` to mutate package-owned formatting, `lint-fix` to apply safe
+  package-owned auto-fixes, and `checks.fmt` / `checks.lint` / `checks.test`
+  for read-only verification.
+- `nix fmt` formats root-managed files outside `pkgs/` through the root
+  `treefmt` configuration, then delegates package-managed formatting to each
+  selected child flake's `apps.fmt`.
+- `nix run path:.#lint` lints root-managed files outside `pkgs/`, then
+  delegates package verification to each selected child flake's
+  `checks.fmt`, `checks.lint`, and `checks.test`.
+- `nix run path:.#lint -- fix` applies root-owned formatting and fix-capable
+  linting outside `pkgs/`, runs package-local `apps.fmt` and
+  `apps.lint-fix`, then re-runs lint to show anything still requiring manual
+  changes.
+- `nix run path:.#lint -- --project <name>` and
+  `nix run path:.#fmt -- --project <name>` restrict package work to one or more
+  selected child flakes by directory name under `pkgs/`.
+- Common package commands are:
+  `nix build ./pkgs/<name>`, `nix run ./pkgs/<name>`, `nix run ./pkgs/<name>#dev`,
+  `nix run ./pkgs/<name>#fmt`, `nix run ./pkgs/<name>#lint-fix`,
+  `nix build ./pkgs/<name>#checks.fmt`, `nix build ./pkgs/<name>#checks.lint`,
+  `nix build ./pkgs/<name>#checks.test`, and `nix flake check ./pkgs/<name>`.
+- Root-owned formatter policy outside `pkgs/` is intentionally narrow:
+  Markdown/JSON/JSONC via `deno fmt`, Nix via `alejandra`, Terraform/OpenTofu
+  via `tofu fmt`, and shell via `shfmt`.
+- Package-local language policy is defined in shared flake helpers rather than
+  per-project shell snippets: Rust uses `rustfmt`/`clippy`/`cargo test`,
+  Python uses `ruff`, Go uses `gofmt`/`go vet`/`go test`, and web projects use
+  `biome`.
+- Repo-wide root lint gates include read-only formatter checks
+  (`alejandra --check`, `deno fmt --check`, `tofu fmt -check -write=false`,
+  and `shfmt -d`), plus `statix`, `deadnix`, `shellcheck`,
+  `markdownlint-cli2`, `actionlint`, and `tflint`.
 - `nix run path:.#lint -- deps` verifies the runnable lint wrapper and its
   runtime commands, matching the action-style entrypoints used by `nixbot`.
-- `nix run path:.#lint` runs the shared lint suite across the whole repo.
-- `nix run path:.#lint -- fix` applies best-effort auto-fixes, then re-runs the
-  lint suite to show anything still requiring manual changes.
-- `nix run path:.#lint -- --diff` restricts file-scoped checks to changed files.
+- `nix run path:.#lint -- --diff` restricts file-scoped root checks to changed
+  files and only runs full child-flake checks on changed packages.
 - `nix run path:.#lint -- fix --diff` applies the same best-effort auto-fixes,
   but only to changed files before re-running the diff-scoped lint checks.
-- Repo-wide gates today: read-only formatter checks (`alejandra --check`,
-  `deno fmt --check`, and `tofu fmt -check -write=false`) plus `actionlint` and
-  `tflint` for `tf/*-*` projects, alongside full-repo `statix`, `deadnix`,
-  `shellcheck`, and `markdownlint-cli2` under `.#lint`.
-- `lint fix` currently auto-runs `treefmt`, `statix fix`, `cargo clippy --fix`
-  for repo Rust crates, `markdownlint-cli2 --fix`, and `tflint --fix`;
-  `deadnix`, `shellcheck`, and `actionlint` remain report-only.
-- `lint --diff` keeps the incremental mode for `statix`, `deadnix`,
-  `shellcheck`, and `markdownlint-cli2`, which protects new edits with faster
-  local feedback.
-- `lint fix --diff` uses the same diff file selection as `lint --diff` for
-  fix-capable tools, while `tflint --fix` still runs per tracked `tf/*-*`
-  project directory.
 - CI now warms lint through `nix run path:.#lint -- deps`, which follows the
   same action-command pattern as `nixbot` instead of using a separate
   `.#lint-deps` package.
@@ -241,3 +263,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   an explicit scope such as `--full`.
 - `./scripts/git-install-hooks.sh` configures Git to use `.githooks/`; the repo
   pre-commit hook runs `nix run path:.#lint -- --diff` before allowing a commit.
+
+## Package Helper
+
+The child-flake helper contract is documented in
+[`docs/flake-package.md`](./docs/flake-package.md).

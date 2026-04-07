@@ -5,13 +5,21 @@ includes = ["**/*.nix"]
 [formatter.deno]
 command = "deno"
 options = ["fmt"]
-includes = ["*.js", "**/*.js", "*.md", "**/*.md"]
+includes = [
+  "*.md",
+  "**/*.md",
+  "*.json",
+  "**/*.json",
+  "*.jsonc",
+  "**/*.jsonc",
+]
 
-[formatter.tofu]
+[formatter.tofufmt]
 command = "tofu"
 options = ["fmt"]
 includes = ["*.tf", "**/*.tf", "*.tfvars", "**/*.tfvars"]
 
-[formatter.rust]
-command = "./scripts/rust-fmt.sh"
-includes = ["pkgs/**/*.rs"]
+[formatter.shfmt]
+command = "shfmt"
+options = ["-w"]
+includes = ["*.sh", "**/*.sh", ".githooks/*"]

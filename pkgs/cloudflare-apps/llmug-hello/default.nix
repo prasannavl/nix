@@ -1,4 +1,5 @@
 {pkgs ? import <nixpkgs> {}}: let
+  pkgHelper = import ../../../lib/flake/pkg-helper.nix;
   build = pkgs.runCommand "llmug-hello-dist" {} ''
     src="${./.}"
 
@@ -25,33 +26,16 @@
       exec wrangler deploy --assets "$assets_dir" "$@"
     '';
   };
-  lint = pkgs.writeShellApplication {
-    name = "llmug-hello-lint";
-    runtimeInputs = with pkgs; [biome];
-    text = ''
-      set -euo pipefail
-
-      cd ${./.}
-      exec biome check .
-    '';
-  };
-  fix = pkgs.writeShellApplication {
-    name = "llmug-hello-fix";
-    runtimeInputs = with pkgs; [biome];
-    text = ''
-      set -euo pipefail
-
-      cd ${./.}
-      exec biome check --write .
-    '';
+  drv = pkgHelper.mkWebDerivation {
+    inherit pkgs;
+    src = ./.;
+    build = build;
+    extraDevShellPackages = with pkgs; [
+      nix
+      wrangler
+    ];
   };
 in
-  build.overrideAttrs (old: {
-    passthru =
-      (old.passthru or {})
-      // {
-        build = build;
-        wrangler-deploy = deployWrangler;
-        inherit lint fix;
-      };
-  })
+  pkgHelper.wirePassthru drv {
+    wrangler-deploy = deployWrangler;
+  }

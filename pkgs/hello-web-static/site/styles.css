@@ -1,45 +1,45 @@
 :root {
-  color-scheme: light;
-  font-family: "Iosevka Aile", "IBM Plex Sans", sans-serif;
-  background:
-    radial-gradient(circle at top, rgb(255 218 185 / 0.9), transparent 45%),
-    linear-gradient(135deg, #fdf2e2, #f7fafc 60%, #eef6ff);
-  color: #1b2838;
+	color-scheme: light;
+	font-family: "Iosevka Aile", "IBM Plex Sans", sans-serif;
+	background:
+		radial-gradient(circle at top, rgb(255 218 185 / 0.9), transparent 45%),
+		linear-gradient(135deg, #fdf2e2, #f7fafc 60%, #eef6ff);
+	color: #1b2838;
 }
 
 * {
-  box-sizing: border-box;
+	box-sizing: border-box;
 }
 
 body {
-  margin: 0;
-  min-height: 100vh;
+	margin: 0;
+	min-height: 100vh;
 }
 
 .page {
-  max-width: 42rem;
-  margin: 0 auto;
-  padding: 6rem 1.5rem;
+	max-width: 42rem;
+	margin: 0 auto;
+	padding: 6rem 1.5rem;
 }
 
 .eyebrow {
-  margin: 0;
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #9b4d14;
+	margin: 0;
+	font-size: 0.8rem;
+	font-weight: 700;
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: #9b4d14;
 }
 
 h1 {
-  margin: 0.75rem 0 1rem;
-  font-family: "IBM Plex Serif", serif;
-  font-size: clamp(2.5rem, 7vw, 4.5rem);
-  line-height: 0.95;
+	margin: 0.75rem 0 1rem;
+	font-family: "IBM Plex Serif", serif;
+	font-size: clamp(2.5rem, 7vw, 4.5rem);
+	line-height: 0.95;
 }
 
 .copy {
-  max-width: 32rem;
-  font-size: 1.1rem;
-  line-height: 1.7;
+	max-width: 32rem;
+	font-size: 1.1rem;
+	line-height: 1.7;
 }

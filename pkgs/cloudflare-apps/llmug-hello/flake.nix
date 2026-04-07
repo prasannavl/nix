@@ -13,38 +13,18 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      build = pkgs.callPackage ./default.nix {};
-      deployWrangler = build.wrangler-deploy;
-      inherit (build) lint fix;
-    in {
-      packages = {
-        default = build;
-        build = build;
-        wrangler-deploy = deployWrangler;
-        inherit lint fix;
-      };
-      apps = {
-        wrangler-deploy = {
-          type = "app";
-          program = pkgs.lib.getExe deployWrangler;
+      pkgHelper = import ../../../lib/flake/pkg-helper.nix;
+      drv = pkgs.callPackage ./default.nix {};
+    in
+      pkgHelper.mkStdFlakeOutputs {
+        pkgs = pkgs;
+        build = drv;
+        devShell = drv.devShell;
+        extraPackages = {
+          "wrangler-deploy" = drv.wrangler-deploy;
         };
-        lint = {
-          type = "app";
-          program = pkgs.lib.getExe lint;
+        extraApps = {
+          "wrangler-deploy" = pkgHelper.mkPackageApp pkgs drv.wrangler-deploy;
         };
-        fix = {
-          type = "app";
-          program = pkgs.lib.getExe fix;
-        };
-      };
-      devShells = {
-        default = pkgs.mkShell {
-          packages = with pkgs; [
-            biome
-            nix
-            wrangler
-          ];
-        };
-      };
-    });
+      });
 }

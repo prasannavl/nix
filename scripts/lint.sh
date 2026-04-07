@@ -6,7 +6,7 @@ usage() {
 Usage:
   lint deps
   lint check-deps
-  lint [MODE] [fix] [--base <ref>]
+  lint [MODE] [fix] [--base <ref>] [--project <name>]
 
 Actions:
   deps        Verify the lint runtime is available.
@@ -25,6 +25,7 @@ Modes:
 Options:
   --base REF  Compare against REF (required with --diff, optional with auto
               to override origin/master).
+  --project NAME
   -h, --help
 EOF
 }
@@ -39,16 +40,18 @@ init_vars() {
   LINT_MODE='auto'
   LINT_FIX='0'
   LINT_DIFF_BASE=''
+  PROJECT_NAMES=()
   CURRENT_STEP=""
   CURRENT_STEP_DESCRIPTION=""
   readonly -a LINT_RUNTIME_COMMANDS=(
-    cargo
-    cargo-clippy
     git
-    nix
-    rustfmt
     jq
+    nix
     treefmt
+    alejandra
+    deno
+    tofu
+    shfmt
     statix
     deadnix
     shellcheck
@@ -65,21 +68,20 @@ ensure_runtime_shell() {
   local script_path
   local flake_path
   local -a runtime_packages=(
-    nixpkgs#cargo
-    nixpkgs#clippy
     nixpkgs#git
+    nixpkgs#jq
+    nixpkgs#nix
     nixpkgs#treefmt
     nixpkgs#alejandra
     nixpkgs#deno
     nixpkgs#opentofu
-    nixpkgs#rustfmt
+    nixpkgs#shfmt
     nixpkgs#statix
     nixpkgs#deadnix
     nixpkgs#shellcheck
     nixpkgs#actionlint
     nixpkgs#markdownlint-cli2
     nixpkgs#tflint
-    nixpkgs#jq
     nixpkgs#findutils
     nixpkgs#coreutils
   )
@@ -178,6 +180,11 @@ parse_lint_args() {
         [ "$#" -gt 0 ] || die "lint: --base requires an argument"
         LINT_DIFF_BASE="$1"
         ;;
+      --project)
+        shift
+        [ "$#" -gt 0 ] || die "lint: --project requires an argument"
+        PROJECT_NAMES+=("$1")
+        ;;
       -h|--help)
         usage
         exit 0
@@ -240,6 +247,19 @@ collect_repo_files() {
   emit_unique_existing_from seen git ls-files -z --cached --others --exclude-standard -- "${patterns[@]}"
 }
 
+collect_root_only_files_from() {
+  local path=""
+
+  while IFS= read -r -d $'\0' path; do
+    case "${path}" in
+      pkgs/*) ;;
+      *)
+        printf '%s\0' "${path}"
+        ;;
+    esac
+  done
+}
+
 lint_scope() {
   case "${LINT_MODE}" in
     auto|diff) echo diff ;;
@@ -255,6 +275,27 @@ collect_files() {
   fi
 }
 
+collect_root_files() {
+  collect_files "$@" | collect_root_only_files_from
+}
+
+matches_selected_project() {
+  local flake_dir="$1"
+  local project_name
+
+  if [ "${#PROJECT_NAMES[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  for project_name in "${PROJECT_NAMES[@]}"; do
+    if [ "$(basename "${flake_dir}")" = "${project_name}" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 collect_changed_flake_dirs() {
   local -a all_changed=()
   local flake_dir changed
@@ -263,56 +304,51 @@ collect_changed_flake_dirs() {
 
   while IFS= read -r -d '' flake_dir; do
     flake_dir="$(dirname "${flake_dir}")"
+    if ! matches_selected_project "${flake_dir}"; then
+      continue
+    fi
     for changed in "${all_changed[@]}"; do
       if [[ "${changed}" = "${flake_dir}/"* ]]; then
         printf '%s\0' "${flake_dir}"
         break
       fi
     done
-  done < <(find pkgs -maxdepth 2 -name flake.nix -print0 | sort -z)
+  done < <(find pkgs -name flake.nix -print0 | sort -z)
 }
 
 collect_all_flake_dirs() {
-  find pkgs -maxdepth 2 -name flake.nix -print0 | sort -z |
+  find pkgs -name flake.nix -print0 | sort -z |
     while IFS= read -r -d '' flake_nix; do
-      printf '%s\0' "$(dirname "${flake_nix}")"
-    done
-}
-
-collect_changed_cargo_manifests() {
-  local -a all_changed=()
-  local manifest changed
-
-  mapfile -d $'\0' -t all_changed < <(collect_files '*')
-
-  while IFS= read -r -d '' manifest; do
-    local crate_dir
-    crate_dir="$(dirname "${manifest}")"
-    for changed in "${all_changed[@]}"; do
-      if [[ "${changed}" = "${crate_dir}/"* ]] || [ "${changed}" = "${manifest}" ]; then
-        printf '%s\0' "${manifest}"
-        break
+      local flake_dir
+      flake_dir="$(dirname "${flake_nix}")"
+      if matches_selected_project "${flake_dir}"; then
+        printf '%s\0' "${flake_dir}"
       fi
     done
-  done < <(find pkgs -name Cargo.toml -print0 | sort -z)
-}
-
-collect_all_cargo_manifests() {
-  find pkgs -name Cargo.toml -print0 | sort -z
 }
 
 detect_nix_system() {
   nix eval --raw --impure --expr 'builtins.currentSystem'
 }
 
-run_flake_checks_skip_test() {
+project_arg_list() {
+  local project_name=""
+
+  for project_name in "${PROJECT_NAMES[@]}"; do
+    printf '%s\0' "--project"
+    printf '%s\0' "${project_name}"
+  done
+}
+
+run_conventional_flake_checks() {
   local flake_dir="$1"
   local nix_system="$2"
+  local include_test="$3"
   local -a checks=()
 
   mapfile -t checks < <(
     nix flake show --json "./${flake_dir}" 2>/dev/null |
-      jq -r ".checks.\"${nix_system}\" // {} | keys[] | select(. != \"test\" and (startswith(\"test-\") | not))"
+      jq -r ".checks.\"${nix_system}\" // {} | keys[] | select(. == \"fmt\" or . == \"lint\" or (. == \"test\" and ${include_test}))"
   )
 
   if [ "${#checks[@]}" -eq 0 ]; then
@@ -326,173 +362,179 @@ run_flake_checks_skip_test() {
   done
 }
 
+run_conventional_flake_apps() {
+  local flake_dir="$1"
+  local nix_system="$2"
+  shift
+  shift
+  local app=""
+  local -a app_names=("$@")
+
+  for app in "${app_names[@]}"; do
+    if nix flake show --json "./${flake_dir}" 2>/dev/null | jq -e ".apps.\"${nix_system}\".\"${app}\"" >/dev/null 2>&1; then
+      printf '    app: %s\n' "${app}" >&2
+      nix run "./${flake_dir}#${app}"
+    fi
+  done
+}
+
 run_lint_action() {
   local nix_file=""
   local -a deno_files=()
-  local -a cargo_manifests=()
+  local -a flake_dirs=()
+  local -a tf_project_dirs=()
   local local_tf_dir=""
+  local nix_system=""
 
   local scope
 
   cd "${REPO_ROOT}"
   ensure_runtime_tools
   scope="$(lint_scope)"
+  nix_system="$(detect_nix_system)"
 
-  mapfile -d $'\0' -t nix_files < <(collect_files '*.nix')
-  mapfile -d $'\0' -t shell_files < <(collect_files '*.sh' '.githooks/*')
-  mapfile -d $'\0' -t deno_files < <(collect_files '*.js' '*.md')
-  mapfile -d $'\0' -t markdown_files < <(collect_files '*.md')
-  mapfile -d $'\0' -t tf_files < <(collect_files '*.tf' '*.tfvars')
-  mapfile -d $'\0' -t tf_project_dirs < <(find tf -mindepth 1 -maxdepth 1 -type d -name '*-*' -print0 | sort -z)
+  mapfile -d $'\0' -t nix_files < <(collect_root_files '*.nix')
+  mapfile -d $'\0' -t shell_files < <(collect_root_files '*.sh' '.githooks/*')
+  mapfile -d $'\0' -t deno_files < <(collect_root_files '*.md' '*.json' '*.jsonc')
+  mapfile -d $'\0' -t markdown_files < <(collect_root_files '*.md')
+  mapfile -d $'\0' -t tf_files < <(collect_root_files '*.tf' '*.tfvars')
 
-  if [ "$(lint_scope)" = diff ]; then
-    mapfile -d $'\0' -t cargo_manifests < <(collect_changed_cargo_manifests)
+  if [ "${#PROJECT_NAMES[@]}" -eq 0 ]; then
+    mapfile -d $'\0' -t tf_project_dirs < <(find tf -mindepth 1 -maxdepth 1 -type d -name '*-*' -print0 | sort -z)
+  fi
+
+  if [ "${#PROJECT_NAMES[@]}" -gt 0 ]; then
+    mapfile -d $'\0' -t flake_dirs < <(collect_all_flake_dirs)
+  elif [ "$(lint_scope)" = diff ]; then
+    mapfile -d $'\0' -t flake_dirs < <(collect_changed_flake_dirs)
   else
-    mapfile -d $'\0' -t cargo_manifests < <(collect_all_cargo_manifests)
+    mapfile -d $'\0' -t flake_dirs < <(collect_all_flake_dirs)
   fi
 
   if [ "${LINT_FIX}" = 1 ]; then
     printf '[lint-fix] Applying automatic fixes (%s)\n' "${scope}" >&2
 
-    run_step treefmt-fix 'Formatting files with treefmt' treefmt
+    local -a fmt_args=()
+    mapfile -d $'\0' -t fmt_args < <(project_arg_list)
 
-    if [ "${#cargo_manifests[@]}" -gt 0 ]; then
-      CURRENT_STEP=clippy-fix
-      CURRENT_STEP_DESCRIPTION="Applying Rust clippy fixes"
+    run_step fmt-fix 'Formatting root-managed files and package formatters' bash "${REPO_ROOT}/scripts/fmt.sh" "${fmt_args[@]}"
+
+    if [ "${#flake_dirs[@]}" -gt 0 ]; then
+      CURRENT_STEP=package-lint-fix
+      CURRENT_STEP_DESCRIPTION="Applying package-local lint fixes"
       log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-      local cargo_manifest=""
-      for cargo_manifest in "${cargo_manifests[@]}"; do
-        printf '  - %s\n' "${cargo_manifest}" >&2
-        cargo clippy \
-          --manifest-path "${cargo_manifest}" \
-          --fix \
-          --allow-dirty \
-          --allow-staged \
-          --all-targets \
-          --locked \
-          -- \
-          -D warnings
+      local flake_dir=""
+      for flake_dir in "${flake_dirs[@]}"; do
+        printf '  - %s\n' "${flake_dir}" >&2
+        run_conventional_flake_apps "${flake_dir}" "${nix_system}" "lint-fix" fmt
       done
     fi
 
-    if [ "${#nix_files[@]}" -gt 0 ]; then
-      CURRENT_STEP=statix-fix
-      CURRENT_STEP_DESCRIPTION="Fixing ${scope} Nix files"
-      log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-      for nix_file in "${nix_files[@]}"; do
-        printf '  - %s\n' "${nix_file}" >&2
-        statix fix -- "${nix_file}"
-      done
+    if [ "${#PROJECT_NAMES[@]}" -eq 0 ]; then
+      if [ "${#nix_files[@]}" -gt 0 ]; then
+        CURRENT_STEP=statix-fix
+        CURRENT_STEP_DESCRIPTION="Fixing ${scope} Nix files"
+        log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+        for nix_file in "${nix_files[@]}"; do
+          printf '  - %s\n' "${nix_file}" >&2
+          statix fix -- "${nix_file}"
+        done
+      fi
+
+      if [ "${#markdown_files[@]}" -gt 0 ]; then
+        run_step markdownlint-fix "Fixing ${scope} Markdown files" markdownlint-cli2 --fix "${markdown_files[@]}"
+      fi
+
+      if [ "${#tf_project_dirs[@]}" -gt 0 ]; then
+        CURRENT_STEP=tflint-fix
+        CURRENT_STEP_DESCRIPTION='Fixing Terraform/OpenTofu projects'
+        log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+        for local_tf_dir in "${tf_project_dirs[@]}"; do
+          printf '  - %s\n' "${local_tf_dir}" >&2
+          tflint --fix --chdir "${local_tf_dir}"
+        done
+      fi
     fi
 
-    if [ "${#markdown_files[@]}" -gt 0 ]; then
-      run_step markdownlint-fix "Fixing ${scope} Markdown files" markdownlint-cli2 --fix "${markdown_files[@]}"
-    fi
-
-    if [ "${#tf_project_dirs[@]}" -gt 0 ]; then
-      CURRENT_STEP=tflint-fix
-      CURRENT_STEP_DESCRIPTION='Fixing Terraform/OpenTofu projects'
-      log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-      for local_tf_dir in "${tf_project_dirs[@]}"; do
-        printf '  - %s\n' "${local_tf_dir}" >&2
-        tflint --fix --chdir "${local_tf_dir}"
-      done
-    fi
-
-    run_step treefmt-fix-final 'Re-formatting files after auto-fixes' treefmt
+    run_step fmt-fix-final 'Re-formatting root-managed files and package formatters' bash "${REPO_ROOT}/scripts/fmt.sh" "${fmt_args[@]}"
     printf '\n[lint-fix] Re-running lint to report remaining issues\n' >&2
   fi
 
-  printf '[lint] Running shared lint suite (%s)\n' "${scope}" >&2
+  if [ "${#PROJECT_NAMES[@]}" -eq 0 ]; then
+    printf '[lint] Running shared lint suite (%s)\n' "${scope}" >&2
 
-  if [ "${#nix_files[@]}" -gt 0 ]; then
-    run_step alejandra-check 'Checking Nix formatting drift' alejandra --check "${nix_files[@]}"
+    if [ "${#nix_files[@]}" -gt 0 ]; then
+      run_step alejandra-check 'Checking Nix formatting drift' alejandra --check "${nix_files[@]}"
+    fi
+
+    if [ "${#deno_files[@]}" -gt 0 ]; then
+      run_step deno-fmt-check 'Checking Markdown/JSON formatting drift' deno fmt --check "${deno_files[@]}"
+    fi
+
+    if [ "${#tf_files[@]}" -gt 0 ]; then
+      run_step tofu-fmt-check 'Checking Terraform/OpenTofu formatting drift' tofu fmt -check -write=false -diff "${tf_files[@]}"
+    fi
+
+    if [ "${#shell_files[@]}" -gt 0 ]; then
+      run_step shfmt-check 'Checking shell formatting drift' shfmt -d "${shell_files[@]}"
+    fi
+
+    if [ "${#nix_files[@]}" -gt 0 ]; then
+      CURRENT_STEP=statix
+      CURRENT_STEP_DESCRIPTION="Linting ${scope} Nix files"
+      log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+      for nix_file in "${nix_files[@]}"; do
+        printf '  - %s\n' "${nix_file}" >&2
+        statix check -- "${nix_file}"
+      done
+
+      CURRENT_STEP=deadnix
+      CURRENT_STEP_DESCRIPTION="Checking ${scope} Nix files for unused bindings"
+      log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+      for nix_file in "${nix_files[@]}"; do
+        printf '  - %s\n' "${nix_file}" >&2
+        deadnix -- "${nix_file}"
+      done
+    fi
+
+    if [ "${#shell_files[@]}" -gt 0 ]; then
+      run_step shellcheck "Linting ${scope} shell files" shellcheck --external-sources --shell=bash "${shell_files[@]}"
+    fi
+
+    run_step actionlint 'Linting GitHub Actions workflows' actionlint
+
+    if [ "${#markdown_files[@]}" -gt 0 ]; then
+      run_step markdownlint "Linting ${scope} Markdown files" markdownlint-cli2 "${markdown_files[@]}"
+    fi
+
+    if [ "${#tf_project_dirs[@]}" -gt 0 ]; then
+      CURRENT_STEP=tflint
+      CURRENT_STEP_DESCRIPTION='Linting Terraform/OpenTofu projects'
+      log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
+      for local_tf_dir in "${tf_project_dirs[@]}"; do
+        printf '  - %s\n' "${local_tf_dir}" >&2
+        tflint --chdir "${local_tf_dir}"
+      done
+    fi
+
+    run_step root-flake-check 'Checking root flake evaluates cleanly' \
+      nix flake check --no-build 2> >(grep -v "^warning: unknown flake output\|^warning: The check omitted these incompatible systems" >&2)
   fi
 
-  if [ "${#deno_files[@]}" -gt 0 ]; then
-    run_step deno-fmt-check 'Checking JS/Markdown formatting drift' deno fmt --check "${deno_files[@]}"
-  fi
+  if [ "${#flake_dirs[@]}" -gt 0 ]; then
+    local include_test='true'
 
-  if [ "${#tf_files[@]}" -gt 0 ]; then
-    run_step tofu-fmt-check 'Checking Terraform/OpenTofu formatting drift' tofu fmt -check -write=false -diff "${tf_files[@]}"
-  fi
+    if [ "${LINT_MODE}" = 'full-no-test' ]; then
+      include_test='false'
+    fi
 
-  if [ "${#nix_files[@]}" -gt 0 ]; then
-    CURRENT_STEP=statix
-    CURRENT_STEP_DESCRIPTION="Linting ${scope} Nix files"
-    log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-    for nix_file in "${nix_files[@]}"; do
-      printf '  - %s\n' "${nix_file}" >&2
-      statix check -- "${nix_file}"
-    done
-
-    CURRENT_STEP=deadnix
-    CURRENT_STEP_DESCRIPTION="Checking ${scope} Nix files for unused bindings"
-    log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-    for nix_file in "${nix_files[@]}"; do
-      printf '  - %s\n' "${nix_file}" >&2
-      deadnix -- "${nix_file}"
-    done
-  fi
-
-  if [ "${#shell_files[@]}" -gt 0 ]; then
-    run_step shellcheck "Linting ${scope} shell files" shellcheck --external-sources --shell=bash "${shell_files[@]}"
-  fi
-
-  run_step actionlint 'Linting GitHub Actions workflows' actionlint
-
-  if [ "${#markdown_files[@]}" -gt 0 ]; then
-    run_step markdownlint "Linting ${scope} Markdown files" markdownlint-cli2 "${markdown_files[@]}"
-  fi
-
-  if [ "${#tf_project_dirs[@]}" -gt 0 ]; then
-    CURRENT_STEP=tflint
-    CURRENT_STEP_DESCRIPTION='Linting Terraform/OpenTofu projects'
-    log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-    for local_tf_dir in "${tf_project_dirs[@]}"; do
-      printf '  - %s\n' "${local_tf_dir}" >&2
-      tflint --chdir "${local_tf_dir}"
-    done
-  fi
-
-  run_step root-flake-check 'Checking root flake evaluates cleanly' \
-    nix flake check --no-build 2> >(grep -v "^warning: unknown flake output\|^warning: The check omitted these incompatible systems" >&2)
-
-  local -a full_check_dirs=()
-  local -a notest_check_dirs=()
-  local flake_dir
-
-  case "${LINT_MODE}" in
-    auto|diff)
-      mapfile -d $'\0' -t full_check_dirs < <(collect_changed_flake_dirs)
-      ;;
-    full-no-test)
-      mapfile -d $'\0' -t notest_check_dirs < <(collect_all_flake_dirs)
-      ;;
-    full)
-      mapfile -d $'\0' -t full_check_dirs < <(collect_all_flake_dirs)
-      ;;
-  esac
-
-  if [ "${#full_check_dirs[@]}" -gt 0 ]; then
     CURRENT_STEP=flake-check
-    CURRENT_STEP_DESCRIPTION="Running full flake checks for sub-projects"
+    CURRENT_STEP_DESCRIPTION="Running conventional package checks for sub-projects"
     log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-    for flake_dir in "${full_check_dirs[@]}"; do
+    local flake_dir
+    for flake_dir in "${flake_dirs[@]}"; do
       printf '  - %s\n' "${flake_dir}" >&2
-      (cd "${flake_dir}" && nix flake check)
-    done
-  fi
-
-  if [ "${#notest_check_dirs[@]}" -gt 0 ]; then
-    local nix_system
-    nix_system="$(detect_nix_system)"
-    CURRENT_STEP=flake-check-notest
-    CURRENT_STEP_DESCRIPTION="Running non-test flake checks for sub-projects"
-    log_step "${CURRENT_STEP}" "${CURRENT_STEP_DESCRIPTION}"
-    for flake_dir in "${notest_check_dirs[@]}"; do
-      printf '  - %s (skip test)\n' "${flake_dir}" >&2
-      run_flake_checks_skip_test "${flake_dir}" "${nix_system}"
+      run_conventional_flake_checks "${flake_dir}" "${nix_system}" "${include_test}"
     done
   fi
 }

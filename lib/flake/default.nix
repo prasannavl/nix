@@ -3,12 +3,12 @@
   flake-utils,
 }: let
   appsFn = import ./apps.nix;
-  checksFn = import ./checks.nix;
+  pkgHelperFn = import ./pkg-helper.nix;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
 in rec {
   apps = appsFn;
-  checks = checksFn;
+  checks = pkgHelperFn;
   lint = lintFn;
   packages = packagesFn;
 

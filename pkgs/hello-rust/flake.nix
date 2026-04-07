@@ -14,25 +14,13 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      build = pkgs.callPackage ./default.nix {};
-    in {
-      packages = {
-        default = build;
-        build = build;
-        run = build;
-      };
-      apps = let
-        run = {
-          type = "app";
-          program = pkgs.lib.getExe build;
-          inherit (build) meta;
-        };
-      in {
-        default = run;
-        run = run;
-      };
-      checks = build.checks;
-    })
+      pkgHelper = import ../../lib/flake/pkg-helper.nix;
+      drv = pkgs.callPackage ./default.nix {};
+    in
+      pkgHelper.mkStdFlakeOutputs {
+        pkgs = pkgs;
+        build = drv;
+      })
     // {
       nixosModules = let
         helloRustModule = {
