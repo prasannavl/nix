@@ -3,6 +3,7 @@
     ../../lib/devices/asus-fa401wv.nix
     ../../lib/swap-auto.nix
     ../../lib/profiles/all.nix
+    ../../lib/podman.nix
     ./sys.nix
     ./packages.nix
     ./firewall.nix
