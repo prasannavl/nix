@@ -6,11 +6,11 @@
   (import ./pkgs.nix {inherit inputs;})
   (
     final: _: {
-      handbrake-wrapped = final.callPackage ../pkgs/ext/handbrake.nix {};
-      vscode-upstream = final.callPackage ../pkgs/ext/vscode-upstream.nix {};
-      zed-wrapped = final.callPackage ../pkgs/ext/zed.nix {};
+      handbrake-wrapped = final.callPackage ../lib/ext/handbrake.nix {};
+      vscode-upstream = final.callPackage ../lib/ext/vscode-upstream.nix {};
+      zed-wrapped = final.callPackage ../lib/ext/zed.nix {};
       nvidiaCustomForKernel = kernelPackages:
-        final.callPackage ../pkgs/ext/nvidia-driver.nix {inherit kernelPackages;};
+        final.callPackage ../lib/ext/nvidia-driver.nix {inherit kernelPackages;};
       nvidia-custom = final.nvidiaCustomForKernel final.linuxPackages;
     }
   )

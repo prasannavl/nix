@@ -366,7 +366,7 @@ init_vars() {
 	TMP_SECRETS_DIR=""
 	TMP_SSH_DIR=""
 	TMP_TF_ARTIFACT_DIR=""
-	REPO_DEPLOY_SCRIPT_REL="pkgs/nixbot/nixbot.sh"
+	REPO_DEPLOY_SCRIPT_REL="pkgs/tools/nixbot/nixbot.sh"
 	REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="/tmp/nixbot-bootstrap-key."
 	REMOTE_AGE_IDENTITY_TMP_PREFIX="/tmp/nixbot-age-identity."
 	TF_CLOUDFLARE_API_TOKEN_PATH="data/secrets/cloudflare/api-token.key.age"
@@ -1416,6 +1416,11 @@ prepare_repo_worktree() {
 				die "Failed to materialize staged file in repo worktree: ${f}"
 			fi
 		done < <(git -C "${REPO_ROOT}" diff --cached --name-only --diff-filter=A -z)
+		# Make staged-only paths visible to Nix by staging the overlaid index
+		# state inside the temporary worktree as well.
+		if ! git -C "${REPO_ROOT}" diff --cached --name-only -z | xargs -0r git -C "${REPO_WORKTREE_ROOT}" add --; then
+			die "Failed to stage overlaid changes in repo worktree"
+		fi
 	fi
 
 	[ -f "$(repo_worktree_script_path)" ] || die "deploy script missing in repo worktree: $(repo_worktree_script_path)"

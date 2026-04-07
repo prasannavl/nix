@@ -7,7 +7,7 @@ Usage: update-vscode.sh [--version VERSION] [--file PATH]
 Examples:
   update-vscode.sh
   update-vscode.sh --version 1.112.0
-  update-vscode.sh --file pkgs/ext/vscode-upstream.nix
+  update-vscode.sh --file lib/ext/vscode-upstream.nix
 EOF
 }
 
@@ -18,7 +18,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
-	TARGET_FILE="${REPO_ROOT}/pkgs/ext/vscode-upstream.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/vscode-upstream.nix"
 	REQUESTED_VERSION=""
 	RESOLVED_TARGET_FILE=""
 	RESOLVED_VERSION=""

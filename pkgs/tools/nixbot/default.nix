@@ -1,6 +1,6 @@
 {
   pkgs ? import <nixpkgs> {},
-  pkgHelper ? import ../../lib/flake/pkg-helper.nix,
+  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
   drv = pkgHelper.mkShellScriptDerivation {
     inherit pkgs;

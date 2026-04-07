@@ -1,13 +1,34 @@
 {pkgs}: {
   packageEntries = [
     {
-      id = "example-edi-ast-parser-rs";
-      path = ./examples/edi-ast-parser-rs/default.nix;
+      id = "web-gap3-hello";
+      path = ./web/gap3-hello/default.nix;
+      rootApp = false;
     }
     {
-      id = "gap3-ai-web";
-      path = ./gap3-ai-web/default.nix;
+      id = "srv-ingest";
+      path = ./srv/ingest/default.nix;
+    }
+    {
+      id = "nixbot";
+      path = ./tools/nixbot/default.nix;
+    }
+    {
+      id = "cloudflare-apps";
       rootApp = false;
+      build = packages:
+        pkgs.callPackage ./cloudflare-apps/default.nix {
+          nixbot = packages.nixbot;
+        };
+      extraStdPackages = packages: {
+        "cloudflare-apps/llmug-hello" = packages.cloudflare-apps.llmug-hello;
+      };
+      extraRootApps = packages: [
+        {
+          name = "cloudflare-apps-deploy";
+          package = packages.cloudflare-apps.deploy;
+        }
+      ];
     }
     {
       id = "example-hello-go";
@@ -31,25 +52,8 @@
       rootApp = false;
     }
     {
-      id = "nixbot";
-      path = ./nixbot/default.nix;
-    }
-    {
-      id = "cloudflare-apps";
-      rootApp = false;
-      build = packages:
-        pkgs.callPackage ./cloudflare-apps/default.nix {
-          nixbot = packages.nixbot;
-        };
-      extraStdPackages = packages: {
-        "cloudflare-apps/llmug-hello" = packages.cloudflare-apps.llmug-hello;
-      };
-      extraRootApps = packages: [
-        {
-          name = "cloudflare-apps-deploy";
-          package = packages.cloudflare-apps.deploy;
-        }
-      ];
+      id = "example-edi-ast-parser-rs";
+      path = ./examples/edi-ast-parser-rs/default.nix;
     }
   ];
 }

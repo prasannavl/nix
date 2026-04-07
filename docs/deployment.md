@@ -10,7 +10,7 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 
 - Bastion host: the configured bastion (`hosts/<bastion>/default.nix`, imports
   `lib/nixbot/bastion.nix`)
-- Deploy orchestration package and canonical entrypoint: `pkgs/nixbot`
+- Deploy orchestration package and canonical entrypoint: `pkgs/tools/nixbot`
   (`nixbot`)
 - Deploy mapping/config: `hosts/nixbot.nix`
 - Secrets storage: `data/secrets/*.age` (age/agenix)

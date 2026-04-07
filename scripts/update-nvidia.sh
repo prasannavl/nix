@@ -7,7 +7,7 @@ Usage: update-nvidia.sh [--version VERSION] [--file PATH]
 Examples:
   update-nvidia.sh
   update-nvidia.sh --version 580.126.09
-  update-nvidia.sh --file pkgs/ext/nvidia-driver.nix
+  update-nvidia.sh --file lib/ext/nvidia-driver.nix
 EOF
 }
 
@@ -19,7 +19,7 @@ die() {
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
 	BASE_INDEX_URL="https://download.nvidia.com/XFree86/Linux-x86_64/"
-	TARGET_FILE="${REPO_ROOT}/pkgs/ext/nvidia-driver.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia-driver.nix"
 	REQUESTED_VERSION=""
 	RUNFILE_URL=""
 	OPEN_URL=""

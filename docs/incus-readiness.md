@@ -238,7 +238,7 @@ nixbot deploy wave for child hosts:
 
 - `lib/incus/default.nix` -- reconciler helper, settle helper, per-machine
   service, machine type options (`sshPort`, `waitForSsh`, `ipv4Address`)
-- `pkgs/nixbot/nixbot.sh` -- `ensure_deploy_wave_parent_readiness`,
+- `pkgs/tools/nixbot/nixbot.sh` -- `ensure_deploy_wave_parent_readiness`,
   `run_named_prepared_root_command`, command template rendering
 - `hosts/nixbot.nix` -- `parent`, `after`, and deploy target definitions
 

@@ -38,7 +38,7 @@ prefixed with `example-`.
   wrapper flake
 - `pkgs/examples/hello-web-static/`: static web asset package for host or
   service reuse with a local wrapper flake and dev shell
-- `pkgs/nixbot/`: deploy package and local wrapper flake
+- `pkgs/tools/nixbot/`: deploy package and local wrapper flake
 - `pkgs/cloudflare-apps/`: aggregate package namespace for the
   `tf/cloudflare-apps` phase
 - `pkgs/cloudflare-apps/<app>/`: repo-managed Cloudflare app source trees

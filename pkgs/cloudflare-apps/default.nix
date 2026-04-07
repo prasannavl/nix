@@ -1,7 +1,7 @@
 {
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../lib/flake/pkg-helper.nix,
-  nixbot ? pkgs.callPackage ../nixbot/default.nix {inherit pkgHelper;},
+  nixbot ? pkgs.callPackage ../tools/nixbot/default.nix {inherit pkgHelper;},
   llmugHello ? pkgs.callPackage ./llmug-hello/default.nix {inherit pkgHelper;},
 }: let
   deploy = pkgs.writeShellApplication {

@@ -13,7 +13,7 @@ This is the nix driven monorepo, organized as small modules and composed via
   `.#pkgs.<system>.cloudflare-apps.llmug-hello.wrangler-deploy`.
 - `pkgs/examples/`: example packages used as reference implementations and test
   beds for package patterns.
-- `pkgs/ext/`: standalone derivation definitions consumed by overlays and helper
+- `lib/ext/`: standalone derivation definitions consumed by overlays and helper
   scripts.
 - `hosts/<host>/default.nix`: host-specific system definition and module
   imports.
@@ -120,7 +120,7 @@ host via the packaged `nixbot` entrypoint with `--bastion-trigger`.
 
 Security note: deploy does **not** SCP/upload a script to bastion at runtime.
 The bastion forced-command key is restricted directly to the packaged `nixbot`
-command from `pkgs/nixbot`, so CI/local trigger only invokes that allowed
+command from `pkgs/tools/nixbot`, so CI/local trigger only invokes that allowed
 command.
 
 ## Deployment
@@ -144,9 +144,9 @@ and operational notes are documented in:
 Primary files for deployment are:
 
 - `hosts/nixbot.nix` (deploy target mapping/defaults)
-- `pkgs/nixbot/` (canonical packaged nixbot source)
+- `pkgs/tools/nixbot/` (canonical packaged nixbot source)
 - `nixbot` (packaged deployment entrypoint)
-- `pkgs/nixbot/flake.nix` (packaged nixbot application wrapper)
+- `pkgs/tools/nixbot/flake.nix` (packaged nixbot application wrapper)
 - `lib/nixbot/bastion.nix` (bastion-side nixbot setup)
 - `lib/nixbot/default.nix` (nixbot user module with sudo/identity)
 - `nixbot` runs in a cached `nix shell` toolchain with pinned commands (`nix`,

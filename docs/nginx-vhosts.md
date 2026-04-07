@@ -80,7 +80,7 @@ let
     gap3-ai-web = nginxLib.mkStaticSite {
       serverNames = ["gap3.ai"];
       rootPath = builtins.path {
-        path = (pkgs.callPackage ../../pkgs/gap3-ai-web/default.nix {}) + "/share/gap3-ai-web";
+        path = (pkgs.callPackage ../../pkgs/web/gap3-hello/default.nix {}) + "/share/gap3-hello";
         name = "gap3-ai-web-site";
       };
       singlePageApp = true;

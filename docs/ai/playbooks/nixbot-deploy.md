@@ -17,7 +17,7 @@ forced-command key, while regular `nixbot` SSH key behavior remains normal.
   - Tailscale auth credential scoped to bastion reachability.
   - bastion ingress SSH key (forced-command only).
 - Bastion ingress key must only run the packaged `nixbot` command from
-  `pkgs/nixbot`.
+  `pkgs/tools/nixbot`.
 - Regular `nixbot` SSH key remains a normal key (defined in
   `lib/nixbot/default.nix`).
 - Bastion stores private deploy key at `/var/lib/nixbot/.ssh/id_ed25519` (from

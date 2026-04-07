@@ -82,4 +82,4 @@ Therefore:
 
 - `docs/deployment.md`: Deploy architecture, bootstrap, key exchange, and
   rotation runbooks.
-- `pkgs/nixbot/`: Packaged nixbot source and entrypoint.
+- `pkgs/tools/nixbot/`: Packaged nixbot source and entrypoint.
