@@ -8,6 +8,6 @@ _: final: prev: let
       then prev.lib.mapAttrs (_name: projectPackage) value
       else value;
   in
-    prev.lib.mapAttrs (_name: projectPackage) packageTree;
+    prev.lib.mapAttrs (_name: projectPackage) packageTree.packages;
 in
   hostInstallablePackages

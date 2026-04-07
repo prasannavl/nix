@@ -37,8 +37,12 @@ let
       ]
     else {};
 
-  mergeAttrs = attrs:
-    builtins.foldl' (acc: item: acc // item) {} attrs;
+  shellArrayRef = varName:
+    builtins.concatStringsSep "" [
+      "\"''\${"
+      varName
+      "[@]}\""
+    ];
 
   commonAutoExcludes = [
     "./.git"
@@ -52,6 +56,22 @@ let
     "./target"
     "./.venv"
     "./venv"
+  ];
+
+  biomeExtensions = [
+    "*.js"
+    "*.jsx"
+    "*.mjs"
+    "*.cjs"
+    "*.ts"
+    "*.tsx"
+    "*.css"
+    "*.html"
+  ];
+
+  biomeInputs = pkgs: [
+    pkgs.biome
+    pkgs.findutils
   ];
 
   buildFindSnippet = {
@@ -206,132 +226,83 @@ in rec {
     writableCopy = true;
   };
 
+  mkAutoFilesPart = {
+    inputs,
+    varName,
+    extensions,
+    commandBuilder,
+    roots ? ["."],
+    excludes ? commonAutoExcludes,
+    writableCopy ? false,
+  }: let
+    part = {
+      inherit inputs;
+      commands = [
+        (buildAutoFilesSnippet {
+          inherit varName roots excludes extensions;
+        })
+        ''
+          if [ "''${#${varName}[@]}" -gt 0 ]; then
+            ${commandBuilder (shellArrayRef varName)}
+          fi
+        ''
+      ];
+    };
+  in
+    if writableCopy
+    then part // {writableCopy = true;}
+    else part;
+
   projectFmtBiome = pkgs: {
     roots ? ["."],
     excludes ? commonAutoExcludes,
-  }: {
-    inputs = [
-      pkgs.biome
-      pkgs.findutils
-    ];
-    commands = [
-      (buildAutoFilesSnippet {
-        varName = "biome_files";
-        inherit roots excludes;
-        extensions = [
-          "*.js"
-          "*.jsx"
-          "*.mjs"
-          "*.cjs"
-          "*.ts"
-          "*.tsx"
-          "*.css"
-          "*.html"
-        ];
-      })
-      ''
-        if [ "''${#biome_files[@]}" -gt 0 ]; then
-          biome format --write "''${biome_files[@]}"
-        fi
-      ''
-    ];
-    writableCopy = true;
-  };
+  }:
+    mkAutoFilesPart {
+      inputs = biomeInputs pkgs;
+      varName = "biome_files";
+      inherit roots excludes;
+      extensions = biomeExtensions;
+      commandBuilder = files: "biome format --write ${files}";
+      writableCopy = true;
+    };
 
   projectLintBiome = pkgs: {
     roots ? ["."],
     excludes ? commonAutoExcludes,
-  }: {
-    inputs = [
-      pkgs.biome
-      pkgs.findutils
-    ];
-    commands = [
-      (buildAutoFilesSnippet {
-        varName = "biome_lint_files";
-        inherit roots excludes;
-        extensions = [
-          "*.js"
-          "*.jsx"
-          "*.mjs"
-          "*.cjs"
-          "*.ts"
-          "*.tsx"
-          "*.css"
-          "*.html"
-        ];
-      })
-      ''
-        if [ "''${#biome_lint_files[@]}" -gt 0 ]; then
-          biome check "''${biome_lint_files[@]}"
-        fi
-      ''
-    ];
-    writableCopy = true;
-  };
+  }:
+    mkAutoFilesPart {
+      inputs = biomeInputs pkgs;
+      varName = "biome_lint_files";
+      inherit roots excludes;
+      extensions = biomeExtensions;
+      commandBuilder = files: "biome check ${files}";
+      writableCopy = true;
+    };
 
   projectCheckFmtBiome = pkgs: {
     roots ? ["."],
     excludes ? commonAutoExcludes,
-  }: {
-    inputs = [
-      pkgs.biome
-      pkgs.findutils
-    ];
-    commands = [
-      (buildAutoFilesSnippet {
-        varName = "biome_fmt_check_files";
-        inherit roots excludes;
-        extensions = [
-          "*.js"
-          "*.jsx"
-          "*.mjs"
-          "*.cjs"
-          "*.ts"
-          "*.tsx"
-          "*.css"
-          "*.html"
-        ];
-      })
-      ''
-        if [ "''${#biome_fmt_check_files[@]}" -gt 0 ]; then
-          biome check --formatter-enabled=true --linter-enabled=false "''${biome_fmt_check_files[@]}"
-        fi
-      ''
-    ];
-  };
+  }:
+    mkAutoFilesPart {
+      inputs = biomeInputs pkgs;
+      varName = "biome_fmt_check_files";
+      inherit roots excludes;
+      extensions = biomeExtensions;
+      commandBuilder = files: "biome check --formatter-enabled=true --linter-enabled=false ${files}";
+    };
 
   projectLintFixBiome = pkgs: {
     roots ? ["."],
     excludes ? commonAutoExcludes,
-  }: {
-    inputs = [
-      pkgs.biome
-      pkgs.findutils
-    ];
-    commands = [
-      (buildAutoFilesSnippet {
-        varName = "biome_fix_files";
-        inherit roots excludes;
-        extensions = [
-          "*.js"
-          "*.jsx"
-          "*.mjs"
-          "*.cjs"
-          "*.ts"
-          "*.tsx"
-          "*.css"
-          "*.html"
-        ];
-      })
-      ''
-        if [ "''${#biome_fix_files[@]}" -gt 0 ]; then
-          biome check --write "''${biome_fix_files[@]}"
-        fi
-      ''
-    ];
-    writableCopy = true;
-  };
+  }:
+    mkAutoFilesPart {
+      inputs = biomeInputs pkgs;
+      varName = "biome_fix_files";
+      inherit roots excludes;
+      extensions = biomeExtensions;
+      commandBuilder = files: "biome check --write ${files}";
+      writableCopy = true;
+    };
 
   projectFmtRuff = pkgs: {paths ? ["."]}: {
     inputs = [pkgs.ruff];
@@ -356,47 +327,33 @@ in rec {
   projectFmtGo = pkgs: {
     roots ? ["."],
     excludes ? (commonAutoExcludes ++ ["./vendor"]),
-  }: {
-    inputs = [
-      pkgs.go
-      pkgs.findutils
-    ];
-    commands = [
-      (buildAutoFilesSnippet {
-        varName = "go_fmt_files";
-        inherit roots excludes;
-        extensions = ["*.go"];
-      })
-      ''
-        if [ "''${#go_fmt_files[@]}" -gt 0 ]; then
-          gofmt -w "''${go_fmt_files[@]}"
-        fi
-      ''
-    ];
-    writableCopy = true;
-  };
+  }:
+    mkAutoFilesPart {
+      inputs = [
+        pkgs.go
+        pkgs.findutils
+      ];
+      varName = "go_fmt_files";
+      inherit roots excludes;
+      extensions = ["*.go"];
+      commandBuilder = files: "gofmt -w ${files}";
+      writableCopy = true;
+    };
 
   projectCheckFmtGo = pkgs: {
     roots ? ["."],
     excludes ? (commonAutoExcludes ++ ["./vendor"]),
-  }: {
-    inputs = [
-      pkgs.go
-      pkgs.findutils
-    ];
-    commands = [
-      (buildAutoFilesSnippet {
-        varName = "go_check_files";
-        inherit roots excludes;
-        extensions = ["*.go"];
-      })
-      ''
-        if [ "''${#go_check_files[@]}" -gt 0 ]; then
-          test -z "$(gofmt -d "''${go_check_files[@]}")"
-        fi
-      ''
-    ];
-  };
+  }:
+    mkAutoFilesPart {
+      inputs = [
+        pkgs.go
+        pkgs.findutils
+      ];
+      varName = "go_check_files";
+      inherit roots excludes;
+      extensions = ["*.go"];
+      commandBuilder = files: ''test -z "$(gofmt -d ${files})"'';
+    };
 
   projectLintGo = pkgs: {paths ? ["./..."]}: {
     inputs = [pkgs.go];
@@ -413,31 +370,24 @@ in rec {
     excludes ? commonAutoExcludes,
     shell ? "bash",
     extraArgs ? ["--external-sources"],
-  }: {
-    inputs = [
-      pkgs.findutils
-      pkgs.shellcheck
-    ];
-    commands = [
-      (buildAutoFilesSnippet {
-        varName = "shell_lint_files";
-        inherit roots excludes;
-        extensions = ["*.sh"];
-      })
-      ''
-        if [ "''${#shell_lint_files[@]}" -gt 0 ]; then
-          shellcheck ${joinWords extraArgs} --shell=${shell} "''${shell_lint_files[@]}"
-        fi
-      ''
-    ];
-  };
+  }:
+    mkAutoFilesPart {
+      inputs = [
+        pkgs.findutils
+        pkgs.shellcheck
+      ];
+      varName = "shell_lint_files";
+      inherit roots excludes;
+      extensions = ["*.sh"];
+      commandBuilder = files: "shellcheck ${joinWords extraArgs} --shell=${shell} ${files}";
+    };
 
   projectFmtRust = pkgs: {cargoArgs ? []}: {
     inputs = [
       pkgs.cargo
       pkgs.rustfmt
     ];
-    commands = ["cargo fmt ${joinWords cargoArgs}"];
+    commands = [(rustFmtCommand cargoArgs)];
   };
 
   projectLintFixRust = pkgs: {
@@ -449,9 +399,7 @@ in rec {
       pkgs.clippy
       pkgs.rustc
     ];
-    commands = [
-      "cargo clippy ${joinWords cargoArgs} --fix --allow-dirty --allow-staged --all-targets ${joinWords lintArgs}"
-    ];
+    commands = [(rustClippyFixCommand cargoArgs lintArgs)];
   };
 
   mkStdApp = pkgs: {
@@ -503,6 +451,56 @@ in rec {
       commands = commands;
     };
 
+  resolveProjectOp = pkgs: {
+    parts ? [],
+    extraInputs ? [],
+    env ? {},
+    repoFmtPaths ? [],
+    commands ? [],
+    forCheck ? false,
+  }: let
+    mergedParts = mergeParts (
+      parts
+      ++ [
+        {
+          inputs = extraInputs;
+          inherit env repoFmtPaths commands;
+        }
+      ]
+    );
+    needsRepoFmt = mergedParts.repoFmtPaths != [];
+    effectiveEnv =
+      if forCheck && needsRepoFmt
+      then repoFmtCheckEnv mergedParts.env
+      else mergedParts.env;
+    commandPrefix =
+      if !needsRepoFmt
+      then []
+      else if forCheck
+      then [
+        ''mkdir -p "$HOME" "$XDG_CACHE_HOME"''
+        (repoFmtCheckCommand {
+          paths = mergedParts.repoFmtPaths;
+        })
+      ]
+      else [
+        (repoFmtAppCommand {
+          paths = mergedParts.repoFmtPaths;
+        })
+      ];
+  in {
+    runtimeInputs =
+      mergedParts.inputs
+      ++ (
+        if needsRepoFmt
+        then repoFmtRuntimeInputs pkgs
+        else []
+      );
+    envScript = exportEnv effectiveEnv;
+    command = joinLines (commandPrefix ++ mergedParts.commands);
+    writableCopy = mergedParts.writableCopy;
+  };
+
   mkProjectAppOp = pkgs: {
     src ? null,
     projectPath ?
@@ -515,38 +513,13 @@ in rec {
     repoFmtPaths ? [],
     commands ? [],
   }: let
-    mergedParts = mergeParts (
-      parts
-      ++ [
-        {
-          inputs = runtimeInputs;
-          inherit env repoFmtPaths commands;
-        }
-      ]
-    );
-    command = joinLines (
-      (
-        if mergedParts.repoFmtPaths == []
-        then []
-        else [
-          (repoFmtAppCommand {
-            paths = mergedParts.repoFmtPaths;
-          })
-        ]
-      )
-      ++ mergedParts.commands
-    );
+    resolved = resolveProjectOp pkgs {
+      inherit parts env repoFmtPaths commands;
+      extraInputs = runtimeInputs;
+    };
   in {
     path = projectPath;
-    runtimeInputs =
-      mergedParts.inputs
-      ++ (
-        if mergedParts.repoFmtPaths == []
-        then []
-        else repoFmtRuntimeInputs pkgs
-      );
-    envScript = exportEnv mergedParts.env;
-    inherit command;
+    inherit (resolved) runtimeInputs envScript command;
   };
 
   mkProjectCheckOp = pkgs: {
@@ -558,43 +531,14 @@ in rec {
     repoFmtPaths ? [],
     commands ? [],
   }: let
-    mergedParts = mergeParts (
-      parts
-      ++ [
-        {
-          inputs = nativeBuildInputs;
-          inherit env repoFmtPaths commands;
-        }
-      ]
-    );
-    effectiveEnv =
-      if mergedParts.repoFmtPaths == []
-      then mergedParts.env
-      else repoFmtCheckEnv mergedParts.env;
-    command = joinLines (
-      (
-        if mergedParts.repoFmtPaths == []
-        then []
-        else [
-          ''mkdir -p "$HOME" "$XDG_CACHE_HOME"''
-          (repoFmtCheckCommand {
-            paths = mergedParts.repoFmtPaths;
-          })
-        ]
-      )
-      ++ mergedParts.commands
-    );
+    resolved = resolveProjectOp pkgs {
+      inherit parts env repoFmtPaths commands;
+      extraInputs = nativeBuildInputs;
+      forCheck = true;
+    };
   in {
     path = projectPath;
-    runtimeInputs =
-      mergedParts.inputs
-      ++ (
-        if mergedParts.repoFmtPaths == []
-        then []
-        else repoFmtRuntimeInputs pkgs
-      );
-    envScript = exportEnv effectiveEnv;
-    inherit command;
+    inherit (resolved) runtimeInputs envScript command;
   };
 
   mkStdAppOp = pkgs: {
@@ -692,6 +636,59 @@ in rec {
       )
     );
 
+  mkPackageOpsBundle = {
+    pkgs,
+    src,
+    pname ? deriveProjectName src,
+    apps ? {},
+    checks ? {},
+    devShellPackages ? null,
+  }: let
+    path = deriveProjectPath src;
+    appDrvs = builtins.mapAttrs (kind: spec:
+      mkStdApp pkgs ({
+          inherit kind src pname;
+        }
+        // spec))
+    apps;
+    checkDrvs = builtins.mapAttrs (kind: spec:
+      mkStdCheck pkgs ({
+          inherit kind src pname;
+        }
+        // spec))
+    checks;
+    pkgAppOps = builtins.mapAttrs (kind: spec:
+      mkStdAppOp pkgs ({
+          inherit kind src;
+        }
+        // spec))
+    apps;
+    pkgCheckOps = builtins.mapAttrs (kind: spec:
+      mkStdCheckOp pkgs ({
+          inherit kind src;
+        }
+        // spec))
+    checks;
+  in
+    appDrvs
+    // {
+      checks = checkDrvs;
+      pkgOps = {
+        inherit path;
+        apps = pkgAppOps;
+        checks = pkgCheckOps;
+      };
+    }
+    // (
+      if devShellPackages == null
+      then {}
+      else {
+        devShell = pkgs.mkShell {
+          packages = devShellPackages;
+        };
+      }
+    );
+
   mkGoParts = {
     pkgs,
     src,
@@ -727,70 +724,31 @@ in rec {
     ],
   }: let
     checkEnvCommands = checkSetupCommands;
-    path = deriveProjectPath src;
-  in {
-    fmt = mkStdApp pkgs {
-      kind = "fmt";
-      inherit src pname;
-      parts = fmtParts;
-    };
-    checks = {
-      fmt = mkStdCheck pkgs {
-        kind = "fmt";
-        inherit src pname;
-        parts = fmtCheckParts;
-        commands = fmtCommands;
-      };
-      lint = mkStdCheck pkgs {
-        kind = "lint";
-        inherit src pname;
-        parts = lintParts;
-        env = checkEnv;
-        commands = checkEnvCommands ++ lintCommands;
-      };
-      test = mkStdCheck pkgs {
-        kind = "test";
-        inherit src pname;
-        parts = testParts;
-        env = checkEnv;
-        commands = checkEnvCommands ++ testCommands;
-      };
-    };
-    devShell = pkgs.mkShell {
-      packages = devShellPackages;
-    };
-    pkgOps = {
-      inherit path;
+  in
+    mkPackageOpsBundle {
+      inherit pkgs src pname devShellPackages;
       apps = {
-        fmt = mkStdAppOp pkgs {
-          kind = "fmt";
-          inherit src fmtParts;
+        fmt = {
+          parts = fmtParts;
         };
       };
       checks = {
-        fmt = mkStdCheckOp pkgs {
-          kind = "fmt";
-          inherit src;
+        fmt = {
           parts = fmtCheckParts;
           commands = fmtCommands;
         };
-        lint = mkStdCheckOp pkgs {
-          kind = "lint";
-          inherit src;
+        lint = {
           parts = lintParts;
           env = checkEnv;
           commands = checkEnvCommands ++ lintCommands;
         };
-        test = mkStdCheckOp pkgs {
-          kind = "test";
-          inherit src;
+        test = {
           parts = testParts;
           env = checkEnv;
           commands = checkEnvCommands ++ testCommands;
         };
       };
     };
-  };
 
   mkPythonParts = {
     pkgs,
@@ -828,71 +786,31 @@ in rec {
     ],
   }: let
     checkEnvCommands = checkSetupCommands;
-    path = deriveProjectPath src;
-  in {
-    fmt = mkStdApp pkgs {
-      kind = "fmt";
-      inherit src pname;
-      parts = fmtParts;
-    };
-    "lint-fix" = mkStdApp pkgs {
-      kind = "lint-fix";
-      inherit src pname;
-      parts = lintFixParts;
-      commands = lintFixCommands;
-    };
-    checks = {
-      fmt = mkStdCheck pkgs {
-        kind = "fmt";
-        inherit src pname;
-        parts = fmtCheckParts;
-        env = checkEnv;
-        commands = checkEnvCommands ++ fmtCommands;
-      };
-      lint = mkStdCheck pkgs {
-        kind = "lint";
-        inherit src pname;
-        parts = lintParts;
-        env = checkEnv;
-        commands = checkEnvCommands ++ lintCommands;
-      };
-    };
-    devShell = pkgs.mkShell {
-      packages = devShellPackages;
-    };
-    pkgOps = {
-      inherit path;
+  in
+    mkPackageOpsBundle {
+      inherit pkgs src pname devShellPackages;
       apps = {
-        fmt = mkStdAppOp pkgs {
-          kind = "fmt";
-          inherit src;
+        fmt = {
           parts = fmtParts;
         };
-        "lint-fix" = mkStdAppOp pkgs {
-          kind = "lint-fix";
-          inherit src;
+        "lint-fix" = {
           parts = lintFixParts;
           commands = lintFixCommands;
         };
       };
       checks = {
-        fmt = mkStdCheckOp pkgs {
-          kind = "fmt";
-          inherit src;
+        fmt = {
           parts = fmtCheckParts;
           env = checkEnv;
           commands = checkEnvCommands ++ fmtCommands;
         };
-        lint = mkStdCheckOp pkgs {
-          kind = "lint";
-          inherit src;
+        lint = {
           parts = lintParts;
           env = checkEnv;
           commands = checkEnvCommands ++ lintCommands;
         };
       };
     };
-  };
 
   mkWebParts = {
     pkgs,
@@ -922,94 +840,43 @@ in rec {
       pkgs.deno
     ],
     extraDevShellPackages ? [],
-  }: let
-    path = deriveProjectPath src;
-  in
-    {
-      fmt = mkStdApp pkgs {
-        kind = "fmt";
-        inherit src pname;
-        parts = fmtParts;
-      };
+  }:
+    mkPackageOpsBundle {
+      inherit pkgs src pname;
+      devShellPackages = devShellPackages ++ extraDevShellPackages;
+      apps =
+        {
+          fmt = {
+            parts = fmtParts;
+          };
+        }
+        // (
+          if enableLintFix
+          then {
+            "lint-fix" = {
+              parts = lintFixParts;
+              commands = lintFixCommands;
+            };
+          }
+          else {}
+        );
       checks =
         {
-          fmt = mkStdCheck pkgs {
-            kind = "fmt";
-            inherit src pname;
+          fmt = {
             parts = fmtCheckParts;
           };
         }
         // (
           if enableLint
           then {
-            lint = mkStdCheck pkgs {
-              kind = "lint";
-              inherit src pname;
+            lint = {
               parts = lintParts;
               commands = lintCommands;
             };
           }
           else {}
         );
-      devShell = pkgs.mkShell {
-        packages = devShellPackages ++ extraDevShellPackages;
-      };
-      pkgOps = {
-        inherit path;
-        apps =
-          {
-            fmt = mkStdAppOp pkgs {
-              kind = "fmt";
-              inherit src;
-              parts = fmtParts;
-            };
-          }
-          // (
-            if enableLintFix
-            then {
-              "lint-fix" = mkStdAppOp pkgs {
-                kind = "lint-fix";
-                inherit src;
-                parts = lintFixParts;
-                commands = lintFixCommands;
-              };
-            }
-            else {}
-          );
-        checks =
-          {
-            fmt = mkStdCheckOp pkgs {
-              kind = "fmt";
-              inherit src;
-              parts = fmtCheckParts;
-            };
-          }
-          // (
-            if enableLint
-            then {
-              lint = mkStdCheckOp pkgs {
-                kind = "lint";
-                inherit src;
-                parts = lintParts;
-                commands = lintCommands;
-              };
-            }
-            else {}
-          );
-      };
-    }
-    // (
-      if enableLintFix
-      then {
-        "lint-fix" = mkStdApp pkgs {
-          kind = "lint-fix";
-          inherit src pname;
-          parts = lintFixParts;
-          commands = lintFixCommands;
-        };
-      }
-      else {}
-    );
+    };
 
   mkProjectApp = pkgs: {
     name,
@@ -1061,45 +928,21 @@ in rec {
     repoFmtPaths ? [],
     commands,
   }: let
-    mergedParts = mergeParts (
-      parts
-      ++ [
-        {
-          inputs = runtimeInputs;
-          inherit env repoFmtPaths commands;
-        }
-      ]
-    );
+    resolved = resolveProjectOp pkgs {
+      inherit parts env repoFmtPaths commands;
+      extraInputs = runtimeInputs;
+    };
   in
     mkProjectApp pkgs {
       inherit name description src projectPath;
-      runtimeInputs =
-        mergedParts.inputs
-        ++ (
-          if mergedParts.repoFmtPaths == []
-          then []
-          else repoFmtRuntimeInputs pkgs
-        );
-      text = joinLines (
-        [(exportEnv mergedParts.env)]
-        ++ (
-          if mergedParts.repoFmtPaths == []
-          then []
-          else [
-            (repoFmtAppCommand {
-              paths = mergedParts.repoFmtPaths;
-            })
-          ]
-        )
-        ++ mergedParts.commands
-      );
+      runtimeInputs = resolved.runtimeInputs;
+      text = joinLines [resolved.envScript resolved.command];
     };
 
   mkProjectCheck = pkgs: {
     name,
     src,
     nativeBuildInputs ? [],
-    env ? {},
     text,
   }:
     pkgs.runCommand name {
@@ -1107,7 +950,6 @@ in rec {
     } ''
       set -euo pipefail
       cd ${src}
-      ${exportEnv env}
       ${text}
       touch "$out"
     '';
@@ -1121,59 +963,40 @@ in rec {
     repoFmtPaths ? [],
     commands,
   }: let
-    mergedParts = mergeParts (
-      parts
-      ++ [
-        {
-          inputs = nativeBuildInputs;
-          inherit env repoFmtPaths commands;
-        }
-      ]
-    );
+    resolved = resolveProjectOp pkgs {
+      inherit parts env repoFmtPaths commands;
+      extraInputs = nativeBuildInputs;
+      forCheck = true;
+    };
   in
     mkProjectCheck pkgs {
       inherit name src;
-      env =
-        if mergedParts.repoFmtPaths == []
-        then mergedParts.env
-        else repoFmtCheckEnv mergedParts.env;
-      nativeBuildInputs =
-        mergedParts.inputs
-        ++ (
-          if mergedParts.repoFmtPaths == []
-          then []
-          else repoFmtRuntimeInputs pkgs
-        );
-      text = let
-        commandBlock = joinLines (
-          (
-            if mergedParts.repoFmtPaths == []
-            then []
-            else [
-              ''mkdir -p "$HOME" "$XDG_CACHE_HOME"''
-              (repoFmtCheckCommand {
-                paths = mergedParts.repoFmtPaths;
-              })
-            ]
-          )
-          ++ mergedParts.commands
-        );
-      in
-        if mergedParts.writableCopy
+      nativeBuildInputs = resolved.runtimeInputs;
+      text =
+        if resolved.writableCopy
         then ''
           tmp_tree="$TMPDIR/project-check"
           cp -r . "$tmp_tree"
           chmod -R u+w "$tmp_tree"
           cd "$tmp_tree"
-          ${commandBlock}
+          ${resolved.envScript}
+          ${resolved.command}
         ''
-        else commandBlock;
+        else joinLines [resolved.envScript resolved.command];
     };
 
   rustFmt = pkgs: {cargoArgs ? []}: {
     nativeBuildInputs = [pkgs.rustfmt];
-    buildPhase = joinWords (["cargo" "fmt"] ++ cargoArgs ++ ["--check"]);
+    buildPhase = rustFmtCheckCommand cargoArgs;
   };
+
+  rustFmtCommand = cargoArgs: "cargo fmt ${joinWords cargoArgs}";
+  rustFmtCheckCommand = cargoArgs: joinWords (["cargo" "fmt"] ++ cargoArgs ++ ["--check"]);
+  rustClippyFixCommand = cargoArgs: lintArgs: "cargo clippy ${joinWords cargoArgs} --fix --allow-dirty --allow-staged --all-targets ${joinWords lintArgs}";
+  rustClippyCheckCommand = cargoArgs: lintArgs:
+    joinWords (["cargo" "clippy"] ++ cargoArgs ++ lintArgs);
+  rustTestCommand = cargoArgs:
+    joinWords (["cargo" "test"] ++ cargoArgs);
 
   rustClippy = pkgs: {
     cargoArgs ? [],
@@ -1181,7 +1004,7 @@ in rec {
     nativeBuildInputs ? [],
   }: {
     nativeBuildInputs = [pkgs.clippy] ++ nativeBuildInputs;
-    buildPhase = joinWords (["cargo" "clippy"] ++ cargoArgs ++ lintArgs);
+    buildPhase = rustClippyCheckCommand cargoArgs lintArgs;
   };
 
   rustTest = _pkgs: {
@@ -1189,7 +1012,7 @@ in rec {
     nativeBuildInputs ? [],
   }: {
     inherit nativeBuildInputs;
-    buildPhase = joinWords (["cargo" "test"] ++ cargoArgs);
+    buildPhase = rustTestCommand cargoArgs;
   };
 
   rustFmtApp = pkgs: {
@@ -1211,7 +1034,7 @@ in rec {
       parts = [
         (projectFmtRust pkgs {inherit cargoArgs;})
       ];
-      commands = ["exec cargo fmt ${joinWords cargoArgs} \"$@\""];
+      commands = ["exec ${rustFmtCommand cargoArgs} \"$@\""];
     };
 
   rustLintFixApp = pkgs: {
@@ -1237,32 +1060,28 @@ in rec {
         })
       ];
       commands = [
-        "exec cargo clippy ${joinWords cargoArgs} --fix --allow-dirty --allow-staged --all-targets ${joinWords lintArgs}"
+        "exec ${rustClippyFixCommand cargoArgs lintArgs}"
       ];
     };
 
-  mkRustChecks = {
-    build,
+  mkRustCheckSpecs = {
     pkgs,
     clippyCargoArgs ? [],
     clippyLintArgs ? ["--" "-D" "warnings"],
     fmtCargoArgs ? [],
     testCargoArgs ? [],
     extraChecks ? {},
-  }: (builtins.mapAttrs (name: args:
-      if name == "build"
-      then build
-      else mkCheckFn build ({name = name;} // args))
-    ({
-        build = {};
-        fmt = rustFmt pkgs {cargoArgs = fmtCargoArgs;};
-        lint = rustClippy pkgs {
-          cargoArgs = clippyCargoArgs;
-          lintArgs = clippyLintArgs;
-        };
-        test = rustTest pkgs {cargoArgs = testCargoArgs;};
-      }
-      // extraChecks));
+  }:
+    {
+      build = {};
+      fmt = rustFmt pkgs {cargoArgs = fmtCargoArgs;};
+      lint = rustClippy pkgs {
+        cargoArgs = clippyCargoArgs;
+        lintArgs = clippyLintArgs;
+      };
+      test = rustTest pkgs {cargoArgs = testCargoArgs;};
+    }
+    // extraChecks;
 
   wirePassthru = drv: extra:
     drv.overrideAttrs (old: {
@@ -1305,6 +1124,8 @@ in rec {
     devBind ? "127.0.0.1",
     extraDevShellPackages ? [pkgs.python3],
     extraPassthru ? {},
+    enableLint ? true,
+    enableLintFix ? true,
     ...
   } @ args: let
     dev = mkProjectApp pkgs {
@@ -1328,9 +1149,18 @@ in rec {
     };
     drv =
       mkWebDerivation
-      ((builtins.removeAttrs args ["extraDevShellPackages" "extraPassthru" "devBind" "devPort" "devRoot" "pname"])
+      ((builtins.removeAttrs args [
+          "extraDevShellPackages"
+          "extraPassthru"
+          "devBind"
+          "devPort"
+          "devRoot"
+          "pname"
+          "enableLint"
+          "enableLintFix"
+        ])
         // {
-          inherit build pkgs src pname;
+          inherit build pkgs src pname enableLint enableLintFix;
           extraDevShellPackages = extraDevShellPackages;
         });
   in
@@ -1354,45 +1184,20 @@ in rec {
     ],
     extraPassthru ? {},
   }: let
-    fmt = mkStdApp pkgs {
-      kind = "fmt";
-      inherit src pname;
-      parts = fmtParts;
-    };
-    fmtCheck = mkStdCheck pkgs {
-      kind = "fmt";
-      inherit src pname;
-      parts = fmtParts;
-    };
-    lintCheck = {
-      lint = mkStdCheck pkgs {
-        kind = "lint";
-        inherit src pname;
-        parts = lintParts;
-        commands = lintCommands;
-      };
-    };
-    devShell =
-      if devShellPackages == []
-      then null
-      else
-        pkgs.mkShell {
-          packages = devShellPackages;
-        };
-    pkgOps = {
-      path = deriveProjectPath src;
+    bundle = mkPackageOpsBundle {
+      inherit pkgs src pname;
+      devShellPackages =
+        if devShellPackages == []
+        then null
+        else devShellPackages;
       apps = {
-        fmt = mkStdAppOp pkgs {
-          kind = "fmt";
-          inherit src;
+        fmt = {
           parts = fmtParts;
         };
       };
       checks =
         {
-          fmt = mkStdCheckOp pkgs {
-            kind = "fmt";
-            inherit src;
+          fmt = {
             parts = fmtParts;
           };
         }
@@ -1400,9 +1205,7 @@ in rec {
           if lintParts == []
           then {}
           else {
-            lint = mkStdCheckOp pkgs {
-              kind = "lint";
-              inherit src;
+            lint = {
               parts = lintParts;
               commands = lintCommands;
             };
@@ -1411,18 +1214,12 @@ in rec {
     };
   in
     wirePassthru build ({
-        fmt = fmt;
-        checks =
-          {
-            fmt = fmtCheck;
-          }
-          // lintCheck;
-        inherit pkgOps;
+        inherit (bundle) fmt pkgOps checks;
       }
       // (
-        if devShell == null
-        then {}
-        else {devShell = devShell;}
+        if builtins.hasAttr "devShell" bundle
+        then {inherit (bundle) devShell;}
+        else {}
       )
       // extraPassthru);
 
@@ -1450,40 +1247,24 @@ in rec {
           name = "${pname}-build";
           paths = buildPaths;
         };
-    fmt = mkStdApp pkgs {
-      kind = "fmt";
-      inherit src pname;
-      parts = fmtParts;
-    };
-    fmtCheck = mkStdCheck pkgs {
-      kind = "fmt";
-      inherit src pname;
-      parts = fmtParts;
-    };
-    pkgOps = {
-      path = deriveProjectPath src;
+    bundle = mkPackageOpsBundle {
+      inherit pkgs src pname;
       apps = {
-        fmt = mkStdAppOp pkgs {
-          kind = "fmt";
-          inherit src;
+        fmt = {
           parts = fmtParts;
         };
       };
       checks = {
-        fmt = mkStdCheckOp pkgs {
-          kind = "fmt";
-          inherit src;
+        fmt = {
           parts = fmtParts;
         };
       };
+      devShellPackages = null;
     };
   in
     wirePassthru build ({
         build = build;
-        inherit fmt pkgOps;
-        checks = {
-          fmt = fmtCheck;
-        };
+        inherit (bundle) fmt pkgOps checks;
         flakeExtraPackages = extraPackages;
         flakeExtraApps = extraApps;
       }
@@ -1501,78 +1282,78 @@ in rec {
     checkLintArgs ? ["--" "-D" "warnings"],
     testCargoArgs ? [],
     extraPassthru ? {},
-  }:
-    wirePassthru build ({
-        fmt = rustFmtApp pkgs {
-          inherit src pname;
-          cargoArgs = fmtCargoArgs;
+  }: let
+    bundle = mkPackageOpsBundle {
+      inherit pkgs src pname;
+      apps = {
+        fmt = {
+          parts = [
+            (projectFmtRust pkgs {cargoArgs = fmtCargoArgs;})
+          ];
+          commands = ["exec ${rustFmtCommand fmtCargoArgs} \"$@\""];
         };
-        "lint-fix" = rustLintFixApp pkgs {
-          inherit src pname;
-          cargoArgs = lintFixCargoArgs;
-          lintArgs = lintFixLintArgs;
+        "lint-fix" = {
+          parts = [
+            (projectLintFixRust pkgs {
+              cargoArgs = lintFixCargoArgs;
+              lintArgs = lintFixLintArgs;
+            })
+          ];
+          commands = [
+            "exec ${rustClippyFixCommand lintFixCargoArgs lintFixLintArgs}"
+          ];
         };
-        checks = mkRustChecks {
-          inherit build pkgs;
-          clippyCargoArgs = checkCargoArgs;
-          clippyLintArgs = checkLintArgs;
-          fmtCargoArgs = fmtCargoArgs;
-          testCargoArgs = testCargoArgs;
-        };
-        pkgOps = {
-          path = deriveProjectPath src;
-          apps = {
-            fmt = mkProjectAppOp pkgs {
-              inherit src;
-              parts = [
-                (projectFmtRust pkgs {cargoArgs = fmtCargoArgs;})
-              ];
-              commands = ["exec cargo fmt ${joinWords fmtCargoArgs} \"$@\""];
-            };
-            "lint-fix" = mkProjectAppOp pkgs {
-              inherit src;
-              parts = [
-                (projectLintFixRust pkgs {
-                  cargoArgs = lintFixCargoArgs;
-                  lintArgs = lintFixLintArgs;
-                })
-              ];
-              commands = [
-                "exec cargo clippy ${joinWords lintFixCargoArgs} --fix --allow-dirty --allow-staged --all-targets ${joinWords lintFixLintArgs}"
-              ];
-            };
-          };
-          checks = {
-            fmt = {
-              path = deriveProjectPath src;
-              runtimeInputs = [
+      };
+      checks = {
+        fmt = {
+          parts = [
+            {
+              inputs = [
                 pkgs.cargo
                 pkgs.rustfmt
               ];
-              envScript = "";
-              command = joinWords (["cargo" "fmt"] ++ fmtCargoArgs ++ ["--check"]);
-            };
-            lint = {
-              path = deriveProjectPath src;
-              runtimeInputs = [
+            }
+          ];
+          commands = [(rustFmtCheckCommand fmtCargoArgs)];
+        };
+        lint = {
+          parts = [
+            {
+              inputs = [
                 pkgs.cargo
                 pkgs.clippy
                 pkgs.rustc
               ];
-              envScript = "";
-              command = joinWords (["cargo" "clippy"] ++ checkCargoArgs ++ checkLintArgs);
-            };
-            test = {
-              path = deriveProjectPath src;
-              runtimeInputs = [
+            }
+          ];
+          commands = [(rustClippyCheckCommand checkCargoArgs checkLintArgs)];
+        };
+        test = {
+          parts = [
+            {
+              inputs = [
                 pkgs.cargo
                 pkgs.rustc
               ];
-              envScript = "";
-              command = joinWords (["cargo" "test"] ++ testCargoArgs);
-            };
-          };
+            }
+          ];
+          commands = [(rustTestCommand testCargoArgs)];
         };
+      };
+      devShellPackages = null;
+    };
+  in
+    wirePassthru build ({
+        inherit (bundle) fmt;
+        "lint-fix" = bundle."lint-fix";
+        checks = mkChecks build (mkRustCheckSpecs {
+          inherit pkgs;
+          clippyCargoArgs = checkCargoArgs;
+          clippyLintArgs = checkLintArgs;
+          fmtCargoArgs = fmtCargoArgs;
+          testCargoArgs = testCargoArgs;
+        });
+        inherit (bundle) pkgOps;
       }
       // extraPassthru);
 
@@ -1598,14 +1379,9 @@ in rec {
     extraApps ? {},
     extraChecks ? {},
   }: let
-    passthruExtraPackages =
-      if builtins.hasAttr "passthru" build && builtins.hasAttr "flakeExtraPackages" build.passthru
-      then build.passthru.flakeExtraPackages
-      else {};
-    passthruExtraApps =
-      if builtins.hasAttr "passthru" build && builtins.hasAttr "flakeExtraApps" build.passthru
-      then build.passthru.flakeExtraApps
-      else {};
+    passthru = build.passthru or {};
+    passthruExtraPackages = passthru.flakeExtraPackages or {};
+    passthruExtraApps = passthru.flakeExtraApps or {};
     hasMainProgram = pkg:
       builtins.hasAttr "meta" pkg
       && builtins.isAttrs pkg.meta
@@ -1633,48 +1409,20 @@ in rec {
       // (attrIf (builtins.hasAttr "lint-fix" build) "lint-fix" build."lint-fix")
       // passthruExtraPackages
       // extraPackages;
-    appAttrs = mergeAttrs (
-      (
-        if effectiveDefaultApp == null
-        then []
-        else [
-          (builtins.listToAttrs [
-            {
-              name = "default";
-              value =
-                mkPackageApp pkgs
-                (
-                  if effectiveDefaultApp == "run"
-                  then runPkg
-                  else build.${effectiveDefaultApp}
-                );
-            }
-          ])
-        ]
-      )
-      ++ (
-        if hasMainProgram runPkg
-        then [{run = mkPackageApp pkgs runPkg;}]
-        else []
-      )
-      ++ (
-        if builtins.hasAttr "dev" build
-        then [{dev = mkPackageApp pkgs build.dev;}]
-        else []
-      )
-      ++ (
-        if builtins.hasAttr "fmt" build
-        then [{fmt = mkPackageApp pkgs build.fmt;}]
-        else []
-      )
-      ++ (
-        if builtins.hasAttr "lint-fix" build
-        then [{"lint-fix" = mkPackageApp pkgs build."lint-fix";}]
-        else []
-      )
-      ++ [passthruExtraApps]
-      ++ [extraApps]
-    );
+    appAttrs =
+      (attrIf (effectiveDefaultApp != null) "default" (
+        mkPackageApp pkgs (
+          if effectiveDefaultApp == "run"
+          then runPkg
+          else build.${effectiveDefaultApp}
+        )
+      ))
+      // (attrIf (hasMainProgram runPkg) "run" (mkPackageApp pkgs runPkg))
+      // (attrIf (builtins.hasAttr "dev" build) "dev" (mkPackageApp pkgs build.dev))
+      // (attrIf (builtins.hasAttr "fmt" build) "fmt" (mkPackageApp pkgs build.fmt))
+      // (attrIf (builtins.hasAttr "lint-fix" build) "lint-fix" (mkPackageApp pkgs build."lint-fix"))
+      // passthruExtraApps
+      // extraApps;
     devShellAttrs =
       if devShell == null
       then {}

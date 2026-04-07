@@ -7,14 +7,10 @@
   packageRuntimeInputs = pkgs.lib.unique (pkgHelper.pkgOpsRuntimeInputs packageSet);
   pkgOpsManifestFile = pkgs.writeText "pkg-ops-manifest.json" (builtins.toJSON (pkgHelper.pkgOpsManifest packageSet));
   formatterPkgs =
-    (with pkgs; [
-      treefmt
-      alejandra
+    (pkgHelper.repoFmtRuntimeInputs pkgs)
+    ++ (with pkgs; [
       bash
-      deno
       findutils
-      opentofu
-      shfmt
       git
       nix
       jq

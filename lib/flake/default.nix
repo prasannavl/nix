@@ -3,27 +3,23 @@
   flake-utils,
 }: let
   appsFn = import ./apps.nix;
-  pkgHelperFn = import ./pkg-helper.nix;
+  pkgHelper = import ./pkg-helper.nix;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
 in rec {
-  apps = appsFn;
-  checks = pkgHelperFn;
-  lint = lintFn;
-  packages = packagesFn;
-
+  inherit pkgHelper;
   withPkgs = pkgs: let
-    basePackages = packagesFn {
+    baseOutputs = packagesFn {
       inherit pkgs;
     };
     lint = lintFn {
       inherit pkgs;
-      packageSet = basePackages.stdPackages;
-      pkgHelper = pkgHelperFn;
+      packageSet = baseOutputs.stdPackages;
+      inherit pkgHelper;
     };
-    packages = (builtins.removeAttrs basePackages ["stdPackages" "rootApps"]) // lint.packages;
+    packages = baseOutputs.packages // lint.packages;
     apps = appsFn {
-      rootApps = basePackages.rootApps;
+      rootApps = baseOutputs.rootApps;
       lint = lint;
     };
   in {
@@ -31,16 +27,19 @@ in rec {
     inherit (lint) formatter;
   };
 
-  withPkgsFor = systems:
+  outputsFor = systems:
     nixpkgs.lib.genAttrs systems (system: withPkgs nixpkgs.legacyPackages.${system});
 
-  standardOutputsFor = systems:
+  standardOutputsFrom = systems: outputsBySystem:
     flake-utils.lib.eachSystem systems (system: let
-      outputs = withPkgs nixpkgs.legacyPackages.${system};
+      outputs = outputsBySystem.${system};
     in {
       inherit (outputs) apps formatter packages;
     });
 
+  standardOutputsFor = systems:
+    standardOutputsFrom systems (outputsFor systems);
+
   packagesFor = systems:
-    nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) (withPkgsFor systems);
+    nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) (outputsFor systems);
 }

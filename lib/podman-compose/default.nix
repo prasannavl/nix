@@ -6,7 +6,7 @@
 }: let
   cfg = config.services.podmanCompose;
   hasStacks = cfg != {};
-  collectionsLib = import ../flake/utils {inherit lib;};
+  collectionsLib = import ../flake/collections {lib = lib;};
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
   cloudflareTunnelsLib = import ../services/tunnels/cloudflare.nix {inherit lib;};

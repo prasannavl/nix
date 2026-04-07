@@ -82,6 +82,7 @@
     flakeLib = import ./lib/flake {
       inherit flake-utils nixpkgs;
     };
+    allOutputs = flakeLib.outputsFor allSystems;
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
@@ -90,12 +91,12 @@
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
   in
-    flakeLib.standardOutputsFor allSystems
+    flakeLib.standardOutputsFrom allSystems allOutputs
     // {
       # This is intentional, as std packages attr doesn't
       # allow arbitrary nested shape and we expose those
       # in pkgs.
-      pkgs = flakeLib.packagesFor allSystems;
+      pkgs = nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) allOutputs;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;

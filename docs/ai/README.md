@@ -76,6 +76,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Lib
 
+- `docs/ai/notes/lib/flake-collections-lib-location-2026-04.md`: Move the
+  shared collections helper to `lib/flake/collections` and update in-repo
+  imports to use the new path.
 - `docs/ai/notes/lib/lib-broader-review-fixes-2026-03.md`: Broader `lib/` review
   fixes for resume hooks, optional guest Tailscale ownership, Flatpak runtime
   dependencies, and Incus shell-safety and fail-closed guardrails.

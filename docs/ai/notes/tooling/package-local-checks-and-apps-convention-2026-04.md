@@ -39,8 +39,8 @@ aggregates package-local checks and apps for everything inside `pkgs/`.
   aggregate package-ops manifest when present.
 - `nix run path:.#lint -- fix` runs the root formatter, then package
   `apps.lint-fix` and `apps.fmt` through the aggregate package-ops manifest,
-  then applies root-only fix-capable tools outside `pkgs/`, and finally
-  re-runs lint.
+  then applies root-only fix-capable tools outside `pkgs/`, and finally re-runs
+  lint.
 - `--project <name>` scopes root `fmt` and `lint` to one or more child flakes by
   directory name under `pkgs/`, including nested child flakes.
 - Shared package-helper builders in `lib/flake/pkg-helper.nix` own the common

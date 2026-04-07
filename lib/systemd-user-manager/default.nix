@@ -5,7 +5,7 @@
   ...
 }: let
   cfg = config.services.systemdUserManager;
-  collectionsLib = import ../flake/utils {inherit lib;};
+  collectionsLib = import ../flake/collections {lib = lib;};
 
   unitType = lib.types.submodule ({name, ...}: {
     options = {

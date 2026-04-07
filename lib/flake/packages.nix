@@ -15,7 +15,7 @@
   stdPackageEntries = builtins.listToAttrs (
     builtins.concatMap (
       entry:
-        if entry ? stdPackage && entry.stdPackage == false
+        if entry ? stdPackage && !entry.stdPackage
         then []
         else [
           {
@@ -26,27 +26,26 @@
     )
     packageEntries
   );
-  extraStdPackages = builtins.foldl' (
-    acc: entry:
-      acc
-      // (
-        if entry ? extraStdPackages
-        then entry.extraStdPackages packageAttrs
-        else {}
-      )
-  ) {} packageEntries;
+  extraStdPackages =
+    builtins.foldl' (
+      acc: entry:
+        acc
+        // (
+          if entry ? extraStdPackages
+          then entry.extraStdPackages packageAttrs
+          else {}
+        )
+    ) {}
+    packageEntries;
   rootAppEntries =
     builtins.concatMap (
       entry:
         (
-          if entry ? rootApp && entry.rootApp == false
+          if entry ? rootApp && !entry.rootApp
           then []
           else [
             {
-              name =
-                if entry ? appName
-                then entry.appName
-                else entry.id;
+              name = entry.appName or entry.id;
               package = packageAttrs.${entry.id};
             }
           ]
@@ -58,9 +57,8 @@
         )
     )
     packageEntries;
-in
-  packageAttrs
-  // {
+in {
+  packages = packageAttrs;
   stdPackages = stdPackageEntries // extraStdPackages;
   rootApps = builtins.listToAttrs (
     map (entry: {
