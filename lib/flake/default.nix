@@ -4,10 +4,12 @@
 }: let
   appsFn = import ./apps.nix;
   pkgHelper = import ./pkg-helper.nix;
+  serviceModule = import ./service-module.nix;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
 in rec {
   inherit pkgHelper;
+  inherit serviceModule;
   withPkgs = pkgs: let
     baseOutputs = packagesFn {
       inherit pkgs;
