@@ -543,43 +543,31 @@
         site.serverNames))
     staticSites;
 
-  rootHostnameClaims = {
+  rootHostnames = {
     staticSites,
     proxyVhosts,
   }:
     (lib.flatten
       (lib.mapAttrsToList
-        (siteName: site:
-          map
-          (serverName: {
-            inherit serverName;
-            source = "static site ${siteName}";
-          })
-          site.serverNames)
+        (_: site: site.serverNames)
         staticSites))
     ++ (lib.flatten
       (lib.mapAttrsToList
-        (proxyName: proxy:
-          map
-          (serverName: {
-            inherit serverName;
-            source = "proxy vhost ${proxyName}";
-          })
-          proxy.serverNames)
+        (_: proxy: proxy.serverNames)
         proxyVhosts));
 
-  duplicateRootHostnames = claims:
+  duplicateRootHostnames = serverNames:
     builtins.attrNames
     (lib.filterAttrs
       (_: count: count > 1)
       (lib.foldl'
-        (acc: claim:
+        (acc: serverName:
           acc
           // {
-            ${claim.serverName} = (acc.${claim.serverName} or 0) + 1;
+            ${serverName} = (acc.${serverName} or 0) + 1;
           })
         {}
-        claims));
+        serverNames));
 
   mkMergedServer = {
     serverName,
@@ -668,39 +656,10 @@ in rec {
   dependencyServices = proxyVhosts:
     lib.unique (lib.filter (s: s != null) (map (proxy: proxy.service) (builtins.attrValues proxyVhosts)));
 
-  renderProxyServers = proxyVhosts: let
-    rateLimitZones = renderRateLimitZones proxyVhosts;
-    namedProxyVhosts = lib.mapAttrs (name: proxy: proxy // {name = name;}) proxyVhosts;
-    duplicateHostnames = duplicateRootHostnames (rootHostnameClaims {
-      staticSites = {};
-      proxyVhosts = namedProxyVhosts;
-    });
-    upstreamBlocks =
-      lib.concatStringsSep "\n"
-      (lib.mapAttrsToList (name: proxy: mkUpstreamBlock name proxy.upstreams) namedProxyVhosts);
-    servers =
-      lib.concatStringsSep "\n"
-      (lib.mapAttrsToList
-        (_: proxy:
-          lib.concatStringsSep "\n"
-          (map
-            (serverName:
-              mkMergedServer {
-                inherit serverName;
-                rootProxy = proxy;
-                staticRateLimit = null;
-              })
-            proxy.serverNames))
-        namedProxyVhosts);
-    duplicateHostnamesError =
-      "Duplicate nginx root hostnames are not supported: "
-      + lib.concatStringsSep ", " duplicateHostnames;
-  in
-    if duplicateHostnames != []
-    then throw duplicateHostnamesError
-    else
-      lib.optionalString (rateLimitZones != "") "${rateLimitZones}\n${upstreamBlocks}\n${servers}"
-      + lib.optionalString (rateLimitZones == "") "${upstreamBlocks}\n${servers}";
+  renderProxyServers = proxyVhosts:
+    renderServers {
+      inherit proxyVhosts;
+    };
 
   mkStaticSite = {
     serverNames ? [],
@@ -745,7 +704,7 @@ in rec {
       (lib.filterAttrs (_: site: site.serverNames != []) namedStaticSites);
     rootProxyVhostsByServerName = proxyRootsByServerName proxyVhosts;
     rootStaticSitesByServerName = staticRootsByServerName namedStaticSites;
-    duplicateHostnames = duplicateRootHostnames (rootHostnameClaims {
+    duplicateHostnames = duplicateRootHostnames (rootHostnames {
       staticSites = namedStaticSites;
       proxyVhosts = proxyVhosts;
     });

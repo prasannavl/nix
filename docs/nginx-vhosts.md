@@ -107,8 +107,8 @@ in {
 Key points:
 
 - `mkStaticSite` describes hostnames and content roots
-- `mkStaticSite.routes = [{ serverName; path; }]` mounts that static app under
-  a path on another hostname
+- `mkStaticSite.routes = [{ serverName; path; }]` mounts that static app under a
+  path on another hostname
 - nginx `exposedPorts.http` describes the listener and public ingress policy
 - static sites on the same nginx listener share the same rate limit
 - `singlePageApp = true` enables `try_files ... /index.html`
@@ -414,8 +414,8 @@ That helper handles:
 3. Keep `path` non-root, starting with `/`.
 4. Use `stripPath = true` when the backend should behave as if it were mounted
    at `/`.
-5. Pass derived `nginxRoutes` and `nginxProxyVhosts` into `renderServers` on
-   the nginx service; static-site routes are picked up automatically from
+5. Pass derived `nginxRoutes` and `nginxProxyVhosts` into `renderServers` on the
+   nginx service; static-site routes are picked up automatically from
    `mkStaticSite`.
 
 ## Current Repo Example

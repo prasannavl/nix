@@ -18,10 +18,15 @@
 - `path` must be a non-root prefix that starts with `/`; whole-host routing
   remains on `nginxHostNames`.
 - The shared podman-compose module derives
-  `services.podmanCompose.<stack>.nginxRoutes` from those per-port
-  route declarations.
-- Shared nginx static-site rendering derives route blocks from
-  `mkStaticSite.routes` automatically and also accepts dynamic `nginxRoutes`.
+  `services.podmanCompose.<stack>.nginxRoutes` from those per-port route
+  declarations.
+- Shared nginx rendering derives route blocks from `mkStaticSite.routes`
+  automatically, accepts dynamic `nginxRoutes`, and merges them with whole-host
+  proxy vhosts into a single `server` block per hostname.
+- A hostname may simultaneously have a root backend from `nginxHostNames` and
+  additional prefixed routes; nginx must render the root `location /` and the
+  prefixed locations inside one server definition rather than emitting multiple
+  competing `server_name` blocks.
 - `stripPath = true` means requests mounted at `/hello` are proxied to the
   backend without the `/hello` prefix, so `GET /hello/world` becomes
   `GET /world` upstream.
@@ -39,7 +44,7 @@
 - Hostname-only reverse proxying was insufficient for mounting multiple apps
   under one public hostname.
 - Path routes belong inside the existing hostname's `server` block, so the
-  feature belongs in the shared renderer rather than as another standalone
-  vhost generator.
+  feature belongs in the shared renderer rather than as another standalone vhost
+  generator.
 - Static and dynamic path routes should share one nginx routing model so root
   path assumptions are handled consistently.
