@@ -96,7 +96,10 @@ in {
     };
 
     files."conf.d/srv-http-default.conf" =
-      nginxLib.renderStaticServers {rateLimit = exposedPorts.http.rateLimit or null;} staticSites;
+      nginxLib.renderServers {
+        rateLimit = exposedPorts.http.rateLimit or null;
+        staticSites = staticSites;
+      };
   };
 }
 ```
@@ -104,6 +107,8 @@ in {
 Key points:
 
 - `mkStaticSite` describes hostnames and content roots
+- `mkStaticSite.routes = [{ serverName; path; }]` mounts that static app under
+  a path on another hostname
 - nginx `exposedPorts.http` describes the listener and public ingress policy
 - static sites on the same nginx listener share the same rate limit
 - `singlePageApp = true` enables `try_files ... /index.html`
@@ -111,6 +116,53 @@ Key points:
 For static content, always pass a real Nix path for the mounted site tree. Do
 not pass a stringified store path like `"${drv}/share/site"`, because that gets
 staged as file content instead of a directory tree.
+
+### Static Site Under A Path Prefix
+
+If the content is already a static bundle, keep it defined once with
+`mkStaticSite`, and add one or more `routes`:
+
+```nix
+let
+  gap3HelloSite = builtins.path {
+    path = (pkgs.callPackage ../../pkgs/web/gap3-hello/default.nix {}) + "/share/gap3-hello";
+    name = "gap3-ai-web-site";
+  };
+
+  staticSites = {
+    gap3-ai-web = nginxLib.mkStaticSite {
+      serverNames = ["gap3.ai"];
+      rootPath = gap3HelloSite;
+      singlePageApp = true;
+    };
+
+    llmug-hello = nginxLib.mkStaticSite {
+      rootPath = llmugHelloSite;
+      singlePageApp = true;
+      routes = [
+        {
+          serverName = "gap3.ai";
+          path = "/hello";
+        }
+      ];
+    };
+  };
+in {
+  services.podmanCompose.gap3.instances.nginx.files."conf.d/srv-http-default.conf" =
+    nginxLib.renderServers {
+      rateLimit = exposedPorts.http.rateLimit or null;
+      staticSites = staticSites;
+    };
+}
+```
+
+That shape gives you:
+
+- `https://gap3.ai/` from the root static site
+- `https://gap3.ai/hello/` from a root-assuming static app mounted under
+  `/hello`
+- one merged nginx `server_name gap3.ai` block rather than a second conflicting
+  server definition
 
 ## Proxied API And App Services
 
@@ -153,6 +205,57 @@ From that one `exposedPorts.http` entry, the shared modules derive:
 
 This is the right pattern for APIs and web apps that should keep different rate
 limits from the static sites served by nginx itself.
+
+## Path-Based Routes On An Existing Hostname
+
+When a backend should live under an existing nginx-served hostname, use
+`nginxRoutes` on the backend's exposed port instead of `nginxHostNames`.
+
+Example:
+
+```nix
+instances.gap3-hello-alt = rec {
+  exposedPorts.http = {
+    port = 12100;
+    openFirewall = true;
+    nginxRoutes = [
+      {
+        serverName = "gap3.ai";
+        path = "/hello";
+        stripPath = true;
+      }
+    ];
+  };
+
+  source = ''
+    services:
+      gap3-hello:
+        image: docker.io/example/gap3-hello:latest
+        restart: unless-stopped
+        ports:
+          - "0.0.0.0:${toString exposedPorts.http.port}:3000"
+  '';
+};
+```
+
+This mounts the backend at `https://gap3.ai/hello/`.
+
+With `stripPath = true`:
+
+- `GET /hello` redirects to `/hello/`
+- `GET /hello/` proxies upstream as `/`
+- `GET /hello/world` proxies upstream as `/world`
+- query strings are preserved on the `/hello` -> `/hello/` redirect
+
+With `stripPath = false`, nginx keeps the original URI and the backend sees
+`/hello` and `/hello/world` unchanged.
+
+Nginx also rewrites root-relative HTML asset references like `href="/..."` and
+`src="/..."` to the mounted prefix for these routes, so root-assuming web apps
+have a reasonable default under a subpath.
+
+`nginxRoutes` is for non-root prefixes only. Keep whole-host routing on
+`nginxHostNames = [...]`.
 
 ## Rate Limits
 
@@ -292,7 +395,7 @@ That helper handles:
 1. Build a site package or otherwise produce a real directory path.
 2. Declare a static site with `mkStaticSite`.
 3. Put listener policy on the nginx service's `exposedPorts.http`.
-4. Render the static nginx config with `renderStaticServers`.
+4. Render the nginx config with `renderServers`.
 5. Let `cfTunnelNames` on nginx drive tunnel ingress if needed.
 
 ### Dynamic API/app flow
@@ -302,6 +405,18 @@ That helper handles:
 3. Add `cfTunnelNames` if the service should be reached through Tunnel.
 4. Set `rateLimit` on that same exposed port if it needs custom behavior.
 5. Let the shared module derive the nginx vhost and tunnel ingress.
+
+### Path route flow
+
+1. For static apps, add `routes = [{ serverName; path; }]` on `mkStaticSite`.
+2. For dynamic backends, add `nginxRoutes = [{ serverName; path; stripPath; }]`
+   on `exposedPorts.<name>`.
+3. Keep `path` non-root, starting with `/`.
+4. Use `stripPath = true` when the backend should behave as if it were mounted
+   at `/`.
+5. Pass derived `nginxRoutes` and `nginxProxyVhosts` into `renderServers` on
+   the nginx service; static-site routes are picked up automatically from
+   `mkStaticSite`.
 
 ## Current Repo Example
 
@@ -314,6 +429,7 @@ On `gap3-rivendell` today:
 - static nginx traffic uses the shared default rate limit unless explicitly
   overridden
 - proxied services can still define their own `rateLimit` values per port
+- path-routed services can mount under an existing hostname like `gap3.ai/hello`
 
 See:
 

@@ -34,6 +34,76 @@
     };
   };
 
+  routeType = lib.types.submodule {
+    options = {
+      service = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Compose service name nginx should depend on for this route.";
+      };
+
+      mode = lib.mkOption {
+        type = lib.types.enum [
+          "static"
+          "upstream"
+        ];
+        description = "Whether this route proxies to an upstream backend or a static site tree.";
+      };
+
+      serverName = lib.mkOption {
+        type = lib.types.str;
+        description = "Hostname served by this nginx route.";
+      };
+
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = "Path prefix on the host vhost that nginx should mount.";
+      };
+
+      port = lib.mkOption {
+        type = lib.types.nullOr lib.types.port;
+        default = null;
+        description = "Optional local backend port nginx should forward to.";
+      };
+
+      upstreams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Backend server addresses (host:port).";
+      };
+
+      stripPath = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether nginx should strip the configured path prefix before proxying to the backend.";
+      };
+
+      siteMountPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Mounted static-site directory for static routes.";
+      };
+
+      siteIndex = lib.mkOption {
+        type = lib.types.str;
+        default = "index.html";
+        description = "Index file name for static routes.";
+      };
+
+      siteSinglePageApp = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether static routes should fall back to their index file for unknown paths.";
+      };
+
+      rateLimit = lib.mkOption {
+        type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
+        default = null;
+        description = "Optional resolved ingress rate-limiting policy for this route.";
+      };
+    };
+  };
+
   mkProxyVhost = {defaultHost ? "localhost"}: serviceName: portName: portCfg: let
     nginxHostNames = portCfg.nginxHostNames or [];
   in
@@ -46,6 +116,52 @@
         rateLimit = resolveRateLimit (portCfg.rateLimit or null);
       };
     };
+
+  sanitizeName = value:
+    builtins.replaceStrings
+    [
+      "."
+      "/"
+      "*"
+      ":"
+      " "
+    ]
+    [
+      "_"
+      "_"
+      "_"
+      "_"
+      "_"
+    ]
+    value;
+
+  normalizeRoutePath = path:
+    if path == "/"
+    then "/"
+    else lib.removeSuffix "/" path;
+
+  mkDynamicRoutes = {defaultHost ? "localhost"}: serviceName: portName: portCfg:
+    lib.listToAttrs
+    (map
+      (route: let
+        normalizedPath = normalizeRoutePath route.path;
+        routeName = "${serviceName}-${portName}-${sanitizeName route.serverName}-${sanitizeName normalizedPath}";
+      in
+        assert lib.hasPrefix "/" normalizedPath;
+        assert normalizedPath != "/"; {
+          name = routeName;
+          value = {
+            service = serviceName;
+            mode = "upstream";
+            serverName = route.serverName;
+            path = normalizedPath;
+            inherit (portCfg) port;
+            upstreams = ["${defaultHost}:${toString portCfg.port}"];
+            stripPath = route.stripPath;
+            rateLimit = resolveRateLimit (portCfg.rateLimit or null);
+          };
+        })
+      (portCfg.nginxRoutes or []));
 
   mkUpstreamBlock = name: upstreams:
     lib.concatStrings
@@ -183,6 +299,12 @@
       "    limit_req_status ${toString rateLimit.statusCode};\n"
     ];
 
+  locationRateLimitDirectives = name: rateLimit:
+    lib.concatStrings
+    (map
+      (line: "        ${line}\n")
+      (lib.filter (line: line != "") (lib.splitString "\n" (mkRateLimitDirectives name rateLimit))));
+
   renderRateLimitZones = vhosts:
     lib.concatStringsSep "\n"
     (lib.mapAttrsToList
@@ -192,35 +314,171 @@
         else "")
       vhosts);
 
-  mkProxyServer = name: proxy: let
-    rateLimitEnabled = proxy.rateLimit != null && proxy.rateLimit.enable;
-  in
-    lib.concatStrings
-    [
-      (mkUpstreamBlock name proxy.upstreams)
-      "\n"
-      "# ${name}\n"
-      "server {\n"
-      "    listen 80;\n"
-      "    server_name ${lib.concatStringsSep " " proxy.serverNames};\n\n"
-      "    include /etc/nginx/conf.d/lib/http-security.conf;\n"
-      (lib.optionalString rateLimitEnabled (mkRateLimitDirectives name proxy.rateLimit))
-      "\n"
-      "    location / {\n"
-      "        proxy_pass http://${name};\n"
-      "    }\n"
-      "}\n"
-    ];
+  locationProxyPassDirectives = name: route: let
+    rateLimitEnabled = route.rateLimit != null && route.rateLimit.enable;
+    rateLimitDirectives =
+      lib.optionalString rateLimitEnabled (locationRateLimitDirectives name route.rateLimit);
+    basePath = normalizeRoutePath route.path;
+    prefixPath =
+      if basePath == "/"
+      then "/"
+      else "${basePath}/";
+    redirectTarget =
+      if basePath == "/"
+      then "/$1"
+      else "${basePath}$1";
+    stripRewrite =
+      lib.optionalString route.stripPath
+      "        rewrite ^${routeRegexEscape prefixPath}(.*)$ /$1 break;\n";
+    htmlRewriteDirectives =
+      lib.optionalString (basePath != "/") (routeHtmlRewriteDirectives route);
+  in ''
+        ${rateLimitDirectives}        proxy_set_header Accept-Encoding "";
+                proxy_cookie_path / ${prefixPath};
+                proxy_redirect ~^(/.*)$ ${redirectTarget};
+                ${htmlRewriteDirectives}
+    ${stripRewrite}        proxy_pass http://${name};
+  '';
 
-  staticSiteLocation = site:
+  mkProxyRootLocation = name: proxy: let
+    rootRoute = {
+      path = "/";
+      stripPath = false;
+      rateLimit = proxy.rateLimit;
+    };
+  in ''
+            location / {
+    ${locationProxyPassDirectives name rootRoute}        }
+  '';
+
+  routeRegexEscape = value:
+    builtins.replaceStrings
+    [
+      "\\"
+      "."
+      "+"
+      "*"
+      "?"
+      "^"
+      "$"
+      "("
+      ")"
+      "["
+      "]"
+      "{"
+      "}"
+      "|"
+    ]
+    [
+      "\\\\"
+      "\\."
+      "\\+"
+      "\\*"
+      "\\?"
+      "\\^"
+      "\\$"
+      "\\("
+      "\\)"
+      "\\["
+      "\\]"
+      "\\{"
+      "\\}"
+      "\\|"
+    ]
+    value;
+
+  routePrefixPath = route: "${route.path}/";
+
+  routeHtmlRewriteDirectives = route: ''
+    sub_filter_once off;
+    sub_filter_types text/html;
+    sub_filter 'href="/' 'href="${routePrefixPath route}';
+    sub_filter 'src="/' 'src="${routePrefixPath route}';
+    sub_filter 'action="/' 'action="${routePrefixPath route}';
+    sub_filter 'content="/' 'content="${routePrefixPath route}';
+    sub_filter 'url(/' 'url(${routePrefixPath route}';
+  '';
+
+  mkProxyRouteLocation = name: route: let
+    basePath = normalizeRoutePath route.path;
+    prefixPath =
+      if basePath == "/"
+      then "/"
+      else "${basePath}/";
+    exactLocation =
+      if basePath == "/"
+      then ""
+      else if route.stripPath
+      then ''
+        location = ${basePath} {
+            return 307 ${prefixPath}$is_args$args;
+        }
+      ''
+      else ''
+                    location = ${basePath} {
+        ${locationProxyPassDirectives name route}            }
+      '';
+    prefixLocation =
+      if basePath == "/"
+      then ''
+                    location / {
+        ${locationProxyPassDirectives name route}            }
+      ''
+      else ''
+                    location ^~ ${prefixPath} {
+        ${locationProxyPassDirectives name route}            }
+      '';
+  in
+    exactLocation + prefixLocation;
+
+  staticSiteLocation = name: site: rateLimit: let
+    rateLimitDirectives =
+      lib.optionalString (rateLimit != null) (locationRateLimitDirectives name rateLimit);
+  in
     if site.singlePageApp
-    then "location / {\n            try_files $uri $uri/ /${site.index};\n        }"
-    else "location / {\n            try_files $uri $uri/ =404;\n        }";
+    then ''
+            location / {
+      ${rateLimitDirectives}                try_files $uri $uri/ /${site.index};
+            }
+    ''
+    else ''
+            location / {
+      ${rateLimitDirectives}                try_files $uri $uri/ =404;
+            }
+    '';
 
   staticSiteMountPath = name: site:
     if site.mountPath != null
     then site.mountPath
     else "/srv/${name}";
+
+  staticRouteName = siteName: route: "${siteName}-${sanitizeName route.serverName}-${sanitizeName route.path}";
+
+  staticRoutesFromSites = staticSites:
+    lib.concatMapAttrs
+    (siteName: site:
+      lib.listToAttrs
+      (map
+        (route: let
+          normalizedPath = normalizeRoutePath route.path;
+          routeName = staticRouteName siteName route;
+        in
+          assert lib.hasPrefix "/" normalizedPath;
+          assert normalizedPath != "/"; {
+            name = routeName;
+            value = {
+              service = null;
+              mode = "static";
+              serverName = route.serverName;
+              path = normalizedPath;
+              siteMountPath = staticSiteMountPath siteName site;
+              siteIndex = site.index;
+              siteSinglePageApp = site.singlePageApp;
+              rateLimit = null;
+            };
+          })
+        site.routes))
+    staticSites;
 
   resolveRateLimit = rateLimit:
     exposedPortsLib.resolveRateLimit {
@@ -228,25 +486,145 @@
       rateLimit = rateLimit;
     };
 
-  mkStaticServer = rateLimit: name: site: let
-    mountPath = staticSiteMountPath name site;
+  routeTryFilesTarget = route:
+    if route.siteSinglePageApp
+    then "${route.path}/${route.siteIndex}"
+    else "=404";
+
+  mkStaticRouteLocation = name: route: let
+    basePath = normalizeRoutePath route.path;
+    rateLimitEnabled = route.rateLimit != null && route.rateLimit.enable;
+    rateLimitDirectives =
+      lib.optionalString rateLimitEnabled (locationRateLimitDirectives name route.rateLimit);
+    prefixPath = "${basePath}/";
   in ''
-        server {
-            listen 80;
-            server_name ${lib.concatStringsSep " " site.serverNames};
+        location = ${basePath} {
+            return 307 ${prefixPath}$is_args$args;
+        }
 
-            include /etc/nginx/conf.d/lib/http-security.conf;
-    ${lib.optionalString (rateLimit != null) (mkRateLimitDirectives name rateLimit)}
-
-            root ${mountPath};
-            index ${site.index};
-
-            ${staticSiteLocation site}
+        location ^~ ${prefixPath} {
+    ${rateLimitDirectives}        alias ${route.siteMountPath}/;
+            index ${route.siteIndex};
+            ${routeHtmlRewriteDirectives route}
+            try_files $uri $uri/ ${routeTryFilesTarget route};
         }
   '';
-in {
+
+  routesForServer = serverName: routes:
+    lib.filterAttrs (_: route: route.serverName == serverName) routes;
+
+  defaultServerBlock = ''
+    location / {
+        return 404;
+    }
+  '';
+
+  proxyRootsByServerName = proxyVhosts:
+    lib.concatMapAttrs
+    (proxyName: proxy:
+      lib.listToAttrs
+      (map
+        (serverName: {
+          name = serverName;
+          value = proxy // {name = proxyName;};
+        })
+        proxy.serverNames))
+    proxyVhosts;
+
+  staticRootsByServerName = staticSites:
+    lib.concatMapAttrs
+    (siteName: site:
+      lib.listToAttrs
+      (map
+        (serverName: {
+          name = serverName;
+          value = site // {name = siteName;};
+        })
+        site.serverNames))
+    staticSites;
+
+  rootHostnameClaims = {
+    staticSites,
+    proxyVhosts,
+  }:
+    (lib.flatten
+      (lib.mapAttrsToList
+        (siteName: site:
+          map
+          (serverName: {
+            inherit serverName;
+            source = "static site ${siteName}";
+          })
+          site.serverNames)
+        staticSites))
+    ++ (lib.flatten
+      (lib.mapAttrsToList
+        (proxyName: proxy:
+          map
+          (serverName: {
+            inherit serverName;
+            source = "proxy vhost ${proxyName}";
+          })
+          proxy.serverNames)
+        proxyVhosts));
+
+  duplicateRootHostnames = claims:
+    builtins.attrNames
+    (lib.filterAttrs
+      (_: count: count > 1)
+      (lib.foldl'
+        (acc: claim:
+          acc
+          // {
+            ${claim.serverName} = (acc.${claim.serverName} or 0) + 1;
+          })
+        {}
+        claims));
+
+  mkMergedServer = {
+    serverName,
+    rootStaticSite ? null,
+    rootProxy ? null,
+    routes ? {},
+    staticRateLimit,
+  }: let
+    routeBlocks =
+      lib.concatStringsSep "\n"
+      (lib.mapAttrsToList
+        (name: route:
+          if route.mode == "static"
+          then mkStaticRouteLocation name route
+          else mkProxyRouteLocation name route)
+        routes);
+    rootBlock =
+      if rootStaticSite != null
+      then let
+        mountPath = staticSiteMountPath rootStaticSite.name rootStaticSite;
+      in ''
+        root ${mountPath};
+        index ${rootStaticSite.index};
+
+        ${staticSiteLocation rootStaticSite.name rootStaticSite staticRateLimit}
+      ''
+      else if rootProxy != null
+      then mkProxyRootLocation rootProxy.name rootProxy
+      else defaultServerBlock;
+  in
+    assert rootStaticSite != null || rootProxy != null || routes != {}; ''
+            server {
+              listen 80;
+              server_name ${serverName};
+
+              include /etc/nginx/conf.d/lib/http-security.conf;
+
+      ${lib.optionalString (routeBlocks != "") routeBlocks}
+      ${rootBlock}
+            }
+    '';
+in rec {
   inherit rateLimitProfiles;
   proxyVhostType = proxyVhostType;
+  routeType = routeType;
 
   composeSource = ./compose/compose.yaml;
 
@@ -271,44 +649,150 @@ in {
       service.exposedPorts)
     instances;
 
+  routesFromInstances = {defaultHost ? "localhost"}: instances:
+    lib.concatMapAttrs
+    (serviceName: service:
+      lib.concatMapAttrs
+      (
+        portName: portCfg:
+          mkDynamicRoutes {
+            defaultHost = defaultHost;
+          }
+          serviceName
+          portName
+          portCfg
+      )
+      service.exposedPorts)
+    instances;
+
   dependencyServices = proxyVhosts:
     lib.unique (lib.filter (s: s != null) (map (proxy: proxy.service) (builtins.attrValues proxyVhosts)));
 
   renderProxyServers = proxyVhosts: let
     rateLimitZones = renderRateLimitZones proxyVhosts;
-    servers = lib.concatStringsSep "\n" (lib.mapAttrsToList mkProxyServer proxyVhosts);
+    namedProxyVhosts = lib.mapAttrs (name: proxy: proxy // {name = name;}) proxyVhosts;
+    duplicateHostnames = duplicateRootHostnames (rootHostnameClaims {
+      staticSites = {};
+      proxyVhosts = namedProxyVhosts;
+    });
+    upstreamBlocks =
+      lib.concatStringsSep "\n"
+      (lib.mapAttrsToList (name: proxy: mkUpstreamBlock name proxy.upstreams) namedProxyVhosts);
+    servers =
+      lib.concatStringsSep "\n"
+      (lib.mapAttrsToList
+        (_: proxy:
+          lib.concatStringsSep "\n"
+          (map
+            (serverName:
+              mkMergedServer {
+                inherit serverName;
+                rootProxy = proxy;
+                staticRateLimit = null;
+              })
+            proxy.serverNames))
+        namedProxyVhosts);
+    duplicateHostnamesError =
+      "Duplicate nginx root hostnames are not supported: "
+      + lib.concatStringsSep ", " duplicateHostnames;
   in
-    lib.optionalString (rateLimitZones != "") "${rateLimitZones}\n${servers}"
-    + lib.optionalString (rateLimitZones == "") servers;
+    if duplicateHostnames != []
+    then throw duplicateHostnamesError
+    else
+      lib.optionalString (rateLimitZones != "") "${rateLimitZones}\n${upstreamBlocks}\n${servers}"
+      + lib.optionalString (rateLimitZones == "") "${upstreamBlocks}\n${servers}";
 
   mkStaticSite = {
-    serverNames,
+    serverNames ? [],
     rootPath,
     mountPath ? null,
     index ? "index.html",
     singlePageApp ? false,
+    routes ? [],
   }: {
-    inherit serverNames rootPath mountPath index singlePageApp;
+    inherit serverNames rootPath mountPath index singlePageApp routes;
   };
 
-  renderStaticServers = {rateLimit ? null}: staticSites: let
+  renderStaticServers = {
+    rateLimit ? null,
+    nginxRoutes ? {},
+  }: staticSites:
+    renderServers {
+      inherit rateLimit nginxRoutes staticSites;
+      proxyVhosts = {};
+    };
+
+  renderServers = {
+    rateLimit ? null,
+    nginxRoutes ? {},
+    proxyVhosts ? {},
+    staticSites ? {},
+  }: let
     resolvedRateLimit = resolveRateLimit rateLimit;
+    namedStaticSites =
+      lib.mapAttrs
+      (name: site: site // {name = name;})
+      staticSites;
+    staticRoutes =
+      lib.mapAttrs
+      (_: route: route // {rateLimit = resolvedRateLimit;})
+      (staticRoutesFromSites namedStaticSites);
     staticVhosts =
       lib.mapAttrs
       (_name: _site: {
         rateLimit = resolvedRateLimit;
       })
-      staticSites;
+      (lib.filterAttrs (_: site: site.serverNames != []) namedStaticSites);
+    rootProxyVhostsByServerName = proxyRootsByServerName proxyVhosts;
+    rootStaticSitesByServerName = staticRootsByServerName namedStaticSites;
+    duplicateHostnames = duplicateRootHostnames (rootHostnameClaims {
+      staticSites = namedStaticSites;
+      proxyVhosts = proxyVhosts;
+    });
+    duplicateHostnamesError =
+      "Duplicate nginx root hostnames are not supported: "
+      + lib.concatStringsSep ", " duplicateHostnames;
     rateLimitZones =
-      if resolvedRateLimit == null
-      then ""
-      else renderRateLimitZones staticVhosts;
+      renderRateLimitZones (staticVhosts // staticRoutes // nginxRoutes // proxyVhosts);
+    proxyUpstreamBlocks =
+      lib.concatStringsSep "\n"
+      (lib.mapAttrsToList (name: proxy: mkUpstreamBlock name proxy.upstreams) proxyVhosts);
+    routeUpstreamBlocks =
+      lib.concatStringsSep "\n"
+      (lib.mapAttrsToList
+        (name: route:
+          if route.mode == "upstream"
+          then mkUpstreamBlock name route.upstreams
+          else "")
+        nginxRoutes);
+    serverNames = lib.unique (
+      builtins.attrNames rootStaticSitesByServerName
+      ++ builtins.attrNames rootProxyVhostsByServerName
+      ++ map (route: route.serverName) (builtins.attrValues (staticRoutes // nginxRoutes))
+    );
     servers =
       lib.concatStringsSep "\n"
-      (lib.mapAttrsToList (mkStaticServer resolvedRateLimit) staticSites);
+      (map
+        (serverName:
+          assert !(builtins.hasAttr serverName rootStaticSitesByServerName && builtins.hasAttr serverName rootProxyVhostsByServerName);
+            mkMergedServer {
+              inherit serverName;
+              rootStaticSite = rootStaticSitesByServerName.${serverName} or null;
+              rootProxy = rootProxyVhostsByServerName.${serverName} or null;
+              routes = routesForServer serverName (staticRoutes // nginxRoutes);
+              staticRateLimit = resolvedRateLimit;
+            })
+        serverNames);
   in
-    lib.optionalString (rateLimitZones != "") "${rateLimitZones}\n${servers}"
-    + lib.optionalString (rateLimitZones == "") servers;
+    if duplicateHostnames != []
+    then throw duplicateHostnamesError
+    else
+      lib.optionalString
+      (rateLimitZones != "")
+      "${rateLimitZones}\n${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}"
+      + lib.optionalString
+      (rateLimitZones == "")
+      "${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}";
 
   staticSiteComposeOverride = staticSites:
     lib.generators.toYAML {} {

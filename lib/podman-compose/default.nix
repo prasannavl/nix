@@ -181,6 +181,30 @@
               description = "Optional hostnames to serve through the repo-managed nginx reverse proxy for this port.";
             };
 
+            nginxRoutes = lib.mkOption {
+              type = lib.types.listOf (lib.types.submodule {
+                options = {
+                  serverName = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Hostname on the shared nginx listener that should mount this route.";
+                  };
+
+                  path = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Path prefix on that hostname that should mount this exposed port.";
+                  };
+
+                  stripPath = lib.mkOption {
+                    type = lib.types.bool;
+                    default = false;
+                    description = "Whether nginx should strip the configured path prefix before proxying.";
+                  };
+                };
+              });
+              default = [];
+              description = "Optional nginx routes that mount this exposed port under a path on an existing shared hostname.";
+            };
+
             rateLimit = lib.mkOption {
               type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
               default = null;
@@ -253,6 +277,13 @@
         default = {};
         readOnly = true;
         description = "Derived nginx reverse-proxy vhosts built from instance exposedPorts metadata.";
+      };
+
+      nginxRoutes = lib.mkOption {
+        type = lib.types.attrsOf nginxLib.routeType;
+        default = {};
+        readOnly = true;
+        description = "Derived nginx routes built from instance exposedPorts metadata.";
       };
 
       cloudflareTunnelIngress = lib.mkOption {
@@ -594,6 +625,11 @@ in {
           instances = resolvedInstances;
           nginxProxyVhosts =
             nginxLib.proxyVhostsFromInstances {
+              defaultHost = stack.nginxDefaultHost;
+            }
+            resolvedInstances;
+          nginxRoutes =
+            nginxLib.routesFromInstances {
               defaultHost = stack.nginxDefaultHost;
             }
             resolvedInstances;
