@@ -1,13 +1,75 @@
 # Terraform
 
-`tf/` contains provider-specific OpenTofu projects plus reusable modules.
+`tf/` contains the repo's OpenTofu projects and shared Terraform modules.
+
+## Active Projects
+
+- `cloudflare-dns/`
+- `cloudflare-platform/`
+- `cloudflare-apps/`
+
+## Inactive Projects
+
+- `gcp-bootstrap/`
+- `gcp-platform/`
+
+## Main Commands
+
+- `nixbot tf`
+- `nixbot tf-dns`
+- `nixbot tf-platform`
+- `nixbot tf-apps`
+- `nixbot tf/<project>`
+
+## Secret Loading
 
 Terraform secret tfvars are discovered by convention:
 
 - provider-wide secrets: `data/secrets/tf/<provider>/`
-- project/root-specific secrets: `data/secrets/tf/<project>/`
+- project-specific secrets: `data/secrets/tf/<project>/`
 
-Project secrets load after provider secrets, so project-specific values win.
+Project-specific values override provider-wide values.
+
+## Package Build Convention
+
+Apps phases may also have a matching package namespace at `pkgs/<project>/`.
+
+When `pkgs/<project>/flake.nix` exists, `nixbot` prepares that project with:
+
+```sh
+nix build ./pkgs/<project>#build --no-link
+```
+
+This keeps app build logic next to the app sources instead of encoding it in the
+deploy script.
+
+## Phase Order
+
+`nixbot tf`:
+
+1. `tf/cloudflare-dns/`
+2. `tf/cloudflare-platform/`
+3. `tf/gcp-platform/`
+4. `tf/cloudflare-apps/`
+
+`nixbot run`:
+
+1. `tf/cloudflare-dns/`
+2. `tf/cloudflare-platform/`
+3. `tf/gcp-platform/`
+4. host build and deploy
+5. `tf/cloudflare-apps/`
+
+## Shared Modules
+
+- `modules/cloudflare/`
+- `modules/gcp/bootstrap/`
+- `modules/gcp/project-dev/`
+
+## Detailed Reference
+
+The sections below cover project conventions and lower-frequency operational
+detail.
 
 ## Projects
 
@@ -40,41 +102,9 @@ Normal editing flow:
 - keep the directory name in `tf/<provider>-<phase>/` form so provider/phase
   conventions still work
 
-## Package Convention
-
-Apps phases may also have a matching package namespace at `pkgs/<project>/`.
-When `pkgs/<project>/flake.nix` exists, `nixbot` prepares that project by
-running `nix build path:pkgs/<project>#build --no-link` before OpenTofu. This
-keeps build/stage logic grouped with the app sources instead of hardcoding
-one-off behavior in the deploy script.
-
 ## Modules
 
 - `modules/cloudflare/`: shared Cloudflare implementation module used by all
   three Cloudflare projects
 - `modules/gcp/bootstrap/`: shared GCP bootstrap implementation
-- `modules/gcp/project-dev/`: explicit dev project layout split by concern
-
-Use:
-
-- `cd tf/gcp-bootstrap && tofu init && tofu apply`
-- `nixbot tf`
-- `nixbot tf-dns`
-- `nixbot tf-platform`
-- `nixbot tf-apps`
-- `nixbot run`
-
-Phase order for `tf`:
-
-1. `tf/cloudflare-dns/`
-2. `tf/cloudflare-platform/`
-3. `tf/gcp-platform/`
-4. `tf/cloudflare-apps/`
-
-Phase order for `run`:
-
-1. `tf/cloudflare-dns/`
-2. `tf/cloudflare-platform/`
-3. `tf/gcp-platform/`
-4. host build/deploy
-5. `tf/cloudflare-apps/`
+  - `modules/gcp/project-dev/`: explicit dev project layout split by concern

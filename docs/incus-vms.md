@@ -1,66 +1,29 @@
 # Incus Guests
 
-This document describes the current Incus guest model, the shared lifecycle
-module, and the operational rules for creating, rebuilding, and debugging
-guests.
+Use this model for declarative Incus guest lifecycle on parent hosts.
 
-## Why This Module Exists
+## What It Owns
 
-Incus provides the runtime for creating and managing VM and container guests,
-but it has no built-in concept of declarative, NixOS-managed guest lifecycle.
-Without a shared module, every parent host would need its own imperative scripts
-to:
+- image import and alias management
+- guest create and start
+- config-hash driven recreate behavior
+- in-place disk-device sync
+- cleanup of undeclared guests
+- manual lifecycle tags
 
-- Import and version declared local images, or mirror remote Incus images into
-  stable local aliases.
-- Create guests from that image with the right config, devices, and network
-  settings.
-- Detect when guest configuration has drifted from the declared state and
-  recreate the guest.
-- Reconcile disk devices in place while forcing recreate for create-only devices
-  like GPUs.
-- Garbage-collect guests that are no longer declared.
-- Provide manual lifecycle knobs (stop/start, delete/recreate, image refresh)
-  that integrate with the deploy flow rather than requiring out-of-band
-  intervention.
+Shared logic lives in `lib/incus.nix`. Guest bootstrap conveniences live in
+`lib/incus-vm.nix`.
 
-`lib/incus/default.nix` exists to own that lifecycle declaratively so parent
-hosts only describe the desired guest set — IPs, config, devices — and the
-module handles image import, create/start, config-hash tracking, device sync,
-GC, and lifecycle tags as ordinary systemd services that run during deploy.
+## Source Of Truth
 
-## Current Model
+- parent host declarations: `hosts/<parent>/incus.nix`
+- shared lifecycle logic: `lib/incus.nix`
+- guest bootstrap logic: `lib/incus-vm.nix`
+- base image build: `lib/images/incus-base.nix`
+- guest config: `hosts/<guest>/`
+- deploy metadata: `hosts/nixbot.nix`
 
-- Parent host orchestration lives in `hosts/<parent-host>/incus.nix`.
-- Shared Incus lifecycle logic lives in `lib/incus/default.nix`.
-- Reusable guest bootstrap logic lives in `lib/incus-vm.nix`.
-- Reusable base image build lives in `lib/images/incus-base.nix`.
-- Guest-specific real configuration still lives under `hosts/<guest>/`.
-- Deploy targeting still lives in `hosts/nixbot.nix`.
-
-## What Is Reusable
-
-- `lib/incus/default.nix` owns declarative guest lifecycle:
-  - declared image import
-  - create/start
-  - config-hash driven recreate
-  - disk-device sync
-  - guest removal GC
-  - lifecycle tags
-- `lib/incus-vm.nix` owns guest bootstrap conveniences:
-  - persistent SSH host keys under `/var/lib/machine`
-  - optional Tailscale auth wiring from `data/secrets/tailscale/<host>.key.age`
-- `lib/incus-vm.nix` also owns runtime hostname convergence with a dedicated
-  oneshot service that uses `hostname(1)` instead of writing
-  `/proc/sys/kernel/hostname` directly.
-- The default base image is generic and reused across guests.
-- Each guest can optionally point at a different image source, including remote
-  Incus images such as `debian` or `images:ubuntu/24.04`.
-- Guests become normal `nixbot` deploy targets after bootstrap.
-
-## Shared Lifecycle Model
-
-Parent hosts declare guests under:
+## Declaration Shape
 
 ```nix
 services.incusMachines = {
@@ -70,8 +33,6 @@ services.incusMachines = {
   preseedTag = "0";
 
   instances.<name> = {
-    image = null; # NixOS image attrset or a string like "debian"
-    imageAlias = null; # the stable local Incus alias used for `incus create`
     ipv4Address = "10.10.20.10";
     bootTag = "0";
     recreateTag = "0";
@@ -80,100 +41,93 @@ services.incusMachines = {
       "security.nesting" = "true";
     };
 
-    devices = {
-      state = {
-        source = "<name>";
-        path = "/var/lib";
-      };
+    devices.state = {
+      source = "<name>";
+      path = "/var/lib";
     };
   };
 };
 ```
 
-When `services.incusMachines.instances` is non-empty, the shared module also
-enables Incus and provides the default package/UI settings automatically.
+## Images
 
-Terminology:
+- non-string `image`: import a local NixOS image build
+- string `image`: use an Incus image reference such as `debian` or
+  `images:debian/12`
+- `imageAlias`: stable local alias used for `incus create`
 
-- `image`: the image source for the guest
-  - a non-string value is treated as a local NixOS image build to import
-  - a string is treated as an Incus image reference, such as `debian` or
-    `images:debian/12`
-- `imageAlias`: the stable Incus-local name for that imported image, for example
-  `nixos-incus-base`, which is then used as `local:<alias>` during guest create
-- `imageTag`: a manual redeploy knob that forces declared image aliases to be
-  refreshed
-- `preseedTag`: a manual redeploy knob that folds parent-host Incus preseed
-  epoch changes into every guest's recreate hash
+## Lifecycle Tags
 
-For string images:
+- `bootTag`: stop and start the guest
+- `recreateTag`: delete and recreate the guest
+- `imageTag`: refresh declared images
+- `preseedTag`: force guest recreate after parent Incus fabric changes
 
-- `debian` is resolved as `images:debian`
-- `images:debian/12` is used as-is
-- the module copies the remote image into local Incus under the resolved
-  `imageAlias`, then creates the guest from `local:<alias>`
+Toggle the value when you want the behavior.
 
-## Tags
+## What Triggers Recreate
 
-- `bootTag`:
-  - default is `"0"`
-  - when the stored value differs from the declared value, the guest is stopped
-    and started again
-- `recreateTag`:
-  - default is `"0"`
-  - when the stored value differs from the declared value, the guest is deleted
-    and recreated from the current resolved image alias
-- `imageTag`:
-  - default is `"0"`
-  - when the stored value on any declared image alias differs from the declared
-    value, that image alias is refreshed
-- `preseedTag`:
-  - default is `"0"`
-  - when the declared value changes, every declared guest on that parent host is
-    recreate-tracked against the new parent Incus fabric epoch
-- `incus-machines-gc.service`:
-  - host-wide cleanup for undeclared managed guests
-  - reruns during `switch` through `sysinit-reactivation.target` when
-    Incus-related declaration state changes
-  - is not a per-guest lifecycle prerequisite
+- `recreateTag` changes
+- `preseedTag` changes
+- guest `config` changes
+- `imageAlias` changes
+- non-disk device changes
 
-Operationally, the intended manual toggles are between `"0"` and `"1"`, though
-any new string value works.
+## What Does Not Recreate By Itself
 
-## What Changes Trigger
+- `bootTag` changes: only stop and start
+- `imageTag` changes: image refresh only
+- disk device changes: synced in place
 
-- `bootTag` change:
-  - stop + start of the guest
-  - no delete
-  - no base image re-import
-- `recreateTag` change:
-  - stop + delete + create + start of the guest
-  - recreated from the guest's resolved Incus image alias
-  - does not by itself re-import any image alias
-- `imageTag` change:
-  - refresh of all declared image aliases
-  - no guest recreate by itself
-- `preseedTag` change:
-  - triggers guest recreate
-  - intended for disruptive parent Incus preseed changes such as bridge/profile
-    migrations
-- guest `image` source change:
-  - refreshes the declared image alias on the next `imageTag`-driven image
-    update
-  - does not by itself recreate already-running guests
-- guest `imageAlias` resolution change:
-  - triggers guest recreate
-  - changing the image slot a guest is created from is treated as a recreate
-    input
-- guest `config` attr change:
-  - triggers guest recreate
-  - implemented through the stored `user.config-hash`
-- disk device change:
-  - synced in place
-  - no guest recreate by itself
-- non-disk device change:
-  - triggers guest recreate
-  - includes devices such as `gpu`, `unix-char`, and similar create-only types
+## Devices
+
+Disk devices:
+
+- synced in place
+- used for persistent `/var/lib`, bind mounts, and similar state paths
+
+Non-disk devices:
+
+- treated as create-only
+- changing them forces recreate
+
+## Deploy Order
+
+Parent-host lifecycle runs in this order:
+
+1. Incus preseed
+2. image reconciliation
+3. guest GC
+4. per-guest lifecycle service
+
+Deploy-time readiness is handled separately by
+[`docs/incus-readiness.md`](./incus-readiness.md).
+
+## Related Docs
+
+- [`docs/incus-readiness.md`](./incus-readiness.md)
+- [`docs/deployment.md`](./deployment.md)
+- [`docs/hosts.md`](./hosts.md)
+
+## Detailed Reference
+
+The sections below cover rationale, lifecycle details, edge cases, and
+operator-facing procedures.
+
+## Why This Module Exists
+
+Incus provides runtime guest management, but not this repo's declarative guest
+lifecycle model. `lib/incus.nix` exists to make image import, create/start,
+recreate triggers, in-place disk sync, guest GC, and manual lifecycle tags part
+of ordinary deploy-time reconciliation instead of ad hoc host-local scripts.
+
+## Current Model
+
+- parent hosts declare guests in `hosts/<parent>/incus.nix`
+- shared lifecycle logic lives in `lib/incus.nix`
+- guest bootstrap conveniences live in `lib/incus-vm.nix`
+- guests become normal `nixbot` deploy targets after bootstrap
+- images, tags, and devices are declarative inputs to the parent-host lifecycle
 
 ## Device Change Behavior
 

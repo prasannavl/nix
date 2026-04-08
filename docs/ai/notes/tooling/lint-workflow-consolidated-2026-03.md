@@ -7,10 +7,10 @@ validation behavior and the `statix fix` invocation constraint.
 
 ## Durable lint contract
 
-- `nix run path:.#lint` is the canonical lint entrypoint.
+- `nix run .#lint` is the canonical lint entrypoint.
 - The non-fix lint path must be read-only: validating formatting must not
   rewrite files as a side effect.
-- `nix run path:.#lint -- fix` remains the explicit mutation path for
+- `nix run .#lint -- fix` remains the explicit mutation path for
   formatter/autofix tooling.
 
 ## Read-only formatting rule

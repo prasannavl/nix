@@ -2,7 +2,7 @@
 
 Manual bootstrap for the shared GCP control plane.
 
-Scope:
+## Scope
 
 - create the `pvl` root folder under the organization
 - create the `pvl-control` project
@@ -11,13 +11,9 @@ Scope:
   IAM
 - create the shared `pvl-control-state` GCS bucket
 
-This project is intentionally separate from the automated `*-platform` phase.
-Run it once with credentials that can create folders, projects, IAM bindings,
-and buckets at the organization level. In this repo, those credentials are now
-expected to come from the encrypted Google service-account JSON loaded by
-`nixbot`.
+Run this once with organization-level credentials.
 
-Usage:
+## Usage
 
 - `cd tf/gcp-bootstrap`
 - `tofu init` with the same R2 backend settings used by the other Terraform
@@ -27,7 +23,7 @@ Usage:
 - or use the wrapper so encrypted tfvars are auto-loaded:
   `nixbot tofu -chdir=tf/gcp-bootstrap plan`
 
-Notes:
+## Notes
 
 - State uses the shared R2 Terraform backend with the default key
   `gcp-bootstrap/terraform.tfstate`.

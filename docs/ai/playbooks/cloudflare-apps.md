@@ -21,8 +21,8 @@ package + OpenTofu workflow.
 2. `pkgs/cloudflare-apps/flake.nix` is the aggregate package for that phase.
 3. If an app needs generated local assets, its child flake exposes `build`.
 4. `nixbot tf-apps` warms app build outputs through
-   `nix build path:pkgs/<project>#build --no-link`; the old repo-local `stage`
-   flow is gone.
+   `nix build ./pkgs/<project>#build --no-link`; the old repo-local `stage` flow
+   is gone.
 5. Terraform resolves app directories to their real `#build` outputs during
    plan/apply rather than depending on repo-local `result` symlinks.
 6. Legacy `.../result` paths are normalized to the same `#build` output when
@@ -47,8 +47,8 @@ package + OpenTofu workflow.
 
 Aggregate Terraform flow:
 
-1. Run `nix build .#pkgs.x86_64-linux.cloudflare-apps --no-link` if you want to
-   warm the app builds explicitly.
+1. Run `nix build .#cloudflare-apps --no-link` if you want to warm the app
+   builds explicitly.
 2. Run `nixbot tf-apps --dry`.
 3. Review the Worker service, version, deployment, route, and custom-domain
    changes.
@@ -56,12 +56,12 @@ Aggregate Terraform flow:
 
 Per-app direct Wrangler flow:
 
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.<name>.wrangler-deploy`
+- `nix run ./pkgs/cloudflare-apps/<name>#wrangler-deploy`
 
 There is also a single aggregate entrypoint:
 
-- `nix build .#pkgs.x86_64-linux.cloudflare-apps`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.deploy -- --dry`
+- `nix build .#cloudflare-apps`
+- `nix run .#cloudflare-apps-deploy -- --dry`
 
 ## Adopt An Existing Dashboard Worker
 

@@ -1,105 +1,92 @@
-# Deployment Decisions
+# Deployment
 
-This document describes the current `nixbot` deployment architecture and
-security model.
+This document describes the deploy path used by `nixbot`.
 
 For the operator trust boundary around bastion-trigger access and arbitrary
-`--sha` execution, see `docs/nixbot-security-trust-model.md`.
+`--sha` execution, see
+[`docs/nixbot-security-trust-model.md`](./nixbot-security-trust-model.md).
 
-## Current Model
+## Deployment Path
 
-- Bastion host: the configured bastion (`hosts/<bastion>/default.nix`, imports
-  `lib/nixbot/bastion.nix`)
-- Deploy orchestration package and canonical entrypoint: `pkgs/tools/nixbot`
-  (`nixbot`)
-- Deploy mapping/config: `hosts/nixbot.nix`
-- Secrets storage: `data/secrets/*.age` (age/agenix)
+1. CI or an operator reaches the bastion as `nixbot@<bastion>`.
+2. Bastion runs the packaged `nixbot` binary from the Nix store.
+3. `nixbot` updates the bastion source mirror, creates a detached worktree for
+   the requested commit, and runs from there.
+4. Bastion SSHes to target hosts as `nixbot`.
+5. `nixos-rebuild --target-host` performs the switch.
 
-## Key Roles
+## Source Of Truth
 
-### 1) CI -> Bastion (`nixbot@<bastion>`)
+- deploy package: `pkgs/tools/nixbot`
+- deploy target mapping: `hosts/nixbot.nix`
+- bastion module: `lib/nixbot/bastion.nix`
+- base nixbot user module: `lib/nixbot/default.nix`
+- repo secrets: `data/secrets/*.age`
 
-- CI uses a dedicated bastion ingress key (`nixbot-bastion-ssh`).
-- That key is forced-command-only on bastion:
-  - command: `${pkgs.nixbot}/bin/nixbot`
-  - no shell / no forwarding flags.
-- CI/local trigger does not SCP/upload deploy scripts to bastion at runtime. It
-  must invoke the pre-installed forced-command script path above. This prevents
-  turning deploy ingress into arbitrary remote code execution.
-- Bastion keeps a persistent repo root only as a synced source mirror. Normal
-  deploy runs create a per-run detached worktree and keep executing the
-  installed packaged `nixbot` entrypoint.
-- `--use-repo-script` / `NIXBOT_USE_REPO_SCRIPT=1` remains opt-in only. It
-  explicitly allows the wrapper to re-exec from the fetched worktree copy of the
-  script and should stay disabled in CI/routine forced-command use.
-- Source of key material:
-  - `users/userdata.nix` (`nixbot.bastionSshKeys`, fallback
-    `nixbot.bastionSshKey`)
-  - wired by `lib/nixbot/bastion.nix`
+## Keys And Identities
 
-### 2) Regular `nixbot` SSH Key
+There are three separate credential classes:
 
-- `nixbot.sshKeys` are regular SSH keys for non-forced-command access.
-- The singular `nixbot.sshKey` is retained as a backward-compatible alias.
-- It is defined by the base nixbot user module (`lib/nixbot/default.nix`).
-- Bastion module does not override/remove it.
+1. Bastion ingress key
+   - used by CI or operators to reach the bastion
+   - forced-command only
+2. Deploy SSH key
+   - used by bastion to SSH to managed hosts as `nixbot`
+   - installed at `/var/lib/nixbot/.ssh/id_ed25519`
+3. Machine age identity
+   - used on each host for activation-time secret decryption
+   - installed at `/var/lib/nixbot/.age/identity`
 
-### 2a) What `nixbot` Is And How It Deploys
+## Bastion Rules
 
-- `nixbot` is the dedicated system user used for NixOS deploy orchestration on
-  every managed host.
-- `lib/nixbot/default.nix` creates the `nixbot` user/group, gives it
-  passwordless sudo, and marks it as a trusted Nix user.
-- `hosts/nixbot.nix` declares that `nixbot` is the default deploy user for all
-  managed nodes:
-  - `defaults.user = "nixbot"`
-  - `defaults.key = "data/secrets/nixbot/nixbot.key.age"`
-- The normal steady-state deploy path is:
-  1. CI/operator reaches bastion as `nixbot@<bastion>` via the forced-command
-     ingress key.
-  2. Bastion runs the packaged `nixbot` forced command from the Nix store.
-  3. That script syncs the persistent repo root to `origin/master`, creates a
-     detached per-run worktree for the requested commit, and runs the deploy
-     from that worktree while keeping the installed wrapper process.
-  4. The wrapper uses the bastion's local `nixbot` private key at
-     `/var/lib/nixbot/.ssh/id_ed25519` to SSH to `nixbot@<target>`.
-  5. `nixos-rebuild --target-host` then switches the target, using `nixbot`'s
-     sudo privileges on that host.
-- Bastion can access other nodes through `nixbot` because those nodes trust the
-  public keys listed in `users/userdata.nix` under `nixbot.sshKeys`, which are
-  installed as `users.users.nixbot.openssh.authorizedKeys.keys` by
-  `lib/nixbot/default.nix`.
-- In short:
-  - ingress to bastion uses `nixbot.bastionSshKeys`
-  - bastion to other hosts uses `nixbot.sshKeys`
-  - activation-time secret decrypt uses the machine age identity, not either SSH
-    key class
+- The bastion ingress key is high-privilege.
+- The forced command must point directly at the packaged `nixbot` binary.
+- CI and operators must not upload ad hoc deploy scripts at runtime.
+- The persistent repo root on bastion is a source mirror, not the execution tree
+  for a deploy run.
 
-### 3) Bastion Runtime Private Key + Secrets
+## Bootstrap
 
-- Bastion stores deploy private key at:
-  - `/var/lib/nixbot/.ssh/id_ed25519`
-- During overlap rotation, bastion may also retain legacy deploy key at:
-  - `/var/lib/nixbot/.ssh/id_ed25519_legacy`
-- Installed from:
-  - `data/secrets/nixbot/nixbot.key.age`
-- Legacy optional install source:
-  - `data/secrets/nixbot/nixbot-legacy.key.age`
+Bootstrap exists for hosts that do not yet support the normal `nixbot` path.
 
-### 4) Machine Runtime Age Identity (Activation-Time Decrypt)
+Use it when the target does not yet have:
 
-- Each host has a machine-scoped age private key installed at:
-  - `/var/lib/nixbot/.age/identity`
-- Hosts try decrypt identities in this order:
-  - `/var/lib/nixbot/.ssh/id_ed25519`
-  - `/var/lib/nixbot/.age/identity`
-- This is wired as:
-  - `age.identityPaths = [ "/var/lib/nixbot/.ssh/id_ed25519"
-    "/var/lib/nixbot/.age/identity" ]`
-- `nixbot` injects that key pre-activation from per-host encrypted files:
-  - `data/secrets/machine/<host>.key.age`
-- This avoids identity bootstrap loops (identity is no longer under
-  `/run/agenix` outputs).
+- working `nixbot` SSH access
+- the shared deploy key installed
+- the machine age identity installed
+- the repo's normal `nixbot` and agenix model applied
+
+`hosts/nixbot.nix` supports bootstrap-specific fields such as:
+
+- `bootstrapUser`
+- `bootstrapKey`
+- `bootstrapKeyPath`
+
+The steady-state goal is always the same: later deploys should use normal
+`nixbot@host` access, not the bootstrap path.
+
+## Secret Model
+
+- deploy keys and machine identities are stored as age-encrypted repo secrets
+- bastion decrypts and uses the deploy key for host access
+- each host decrypts secrets using its machine age identity
+
+## Operational Notes
+
+- treat bastion-trigger access as privileged production deploy access
+- use worktrees for isolation and concurrency, not as a trust boundary
+- keep bastion ingress keys tightly scoped
+
+## Related Docs
+
+- [`docs/nixbot-security-trust-model.md`](./nixbot-security-trust-model.md)
+- [`docs/incus-readiness.md`](./incus-readiness.md)
+- [`docs/hosts.md`](./hosts.md)
+
+## Detailed Reference
+
+The sections below cover bootstrap mechanics, key exchange, and deploy
+internals.
 
 ## Bastion Wiring Requirements
 

@@ -1,93 +1,100 @@
-# Incus Guest Readiness And Deploy Barriers
+# Incus Readiness
 
-This document describes the readiness lifecycle that bridges Incus guest
-container management on parent hosts with `nixbot` deploy orchestration. It
-explains what each readiness check does, when it runs, and what happens on
-failure.
+This document covers the deploy-time readiness barrier for Incus guests.
 
-For the Incus guest lifecycle model (images, tags, devices, GC), see
-`docs/incus-vms.md`. For the `nixbot` deploy architecture and bootstrap flow,
-see `docs/deployment.md`.
+## Goal
 
-## Overview
+Before `nixbot` deploys into an Incus guest, the parent host must confirm that
+the guest is:
 
-When `nixbot` deploys a child host that runs inside an Incus container on a
-parent host, it cannot just SSH in and run `nixos-rebuild`. The container must
-be running, its network must be up, and its SSH daemon must be accepting
-connections. Two host-side helpers and a `nixbot` orchestration barrier ensure
-this.
+- running
+- reachable through `incus exec`
+- on the expected IPv4 address
+- accepting SSH when SSH is expected
 
-The flow for each deploy wave is:
+## Parent-Host Helpers
 
-1. **Reconcile** -- ensure the container is running on the parent.
-2. **Settle** -- wait until the container is fully reachable.
-3. **Deploy** -- SSH into the container and switch its NixOS configuration.
+Installed on parent hosts that declare `services.incusMachines.instances`:
 
-If either reconcile or settle fails, the entire wave is aborted and affected
-hosts are marked as failed.
+- `incus-machines-reconciler`
+- `incus-machines-settlement`
 
-## Host-Side Helpers
+## `incus-machines-reconciler`
 
-Both helpers are installed on every parent host that declares
-`services.incusMachines.instances` in its NixOS configuration. They live in
-`lib/incus/default.nix` and are available as executables on the parent's
-`$PATH`.
+Ensures declared guests are running.
 
-### `incus-machines-reconciler`
+Typical usage:
 
-Ensures declared containers are running. For each selected machine:
-
-1. Queries `/1.0/instances/<name>` to get the container status.
-2. If the container is already `Running`, skips it.
-3. If the container is stopped, missing, or in any other state, runs
-   `systemctl restart incus-<name>.service` to bring it back through the full
-   per-machine lifecycle service (create from image if missing, start if
-   stopped).
-
-Behavior is governed by `services.incusMachines.reconcilePolicy`:
-
-- `off` -- reconcile helpers are not installed.
-- `best-effort` (default) -- log failures and continue to the next machine.
-- `strict` -- fail immediately on any machine that cannot be reconciled.
-
-Usage:
-
-```bash
+```sh
 incus-machines-reconciler --all
 incus-machines-reconciler --machine pvl-vlab --machine gap3-gondor
 ```
 
-### `incus-machines-settlement`
+Policy is controlled by `services.incusMachines.reconcilePolicy`:
 
-Polls until all selected containers pass four readiness checks, or until a
-timeout is reached (default 180 seconds, polling every 2 seconds):
+- `off`
+- `best-effort`
+- `strict`
 
-1. **Container status is `Running`** -- queries the Incus instance API.
-2. **`incus exec` works** -- runs `incus exec <name> -- true` with a 10-second
-   timeout to verify the container agent is responsive.
-3. **Expected IPv4 is present** -- queries the instance state API and checks
-   that the declared `ipv4Address` appears on a non-loopback interface inside
-   the container.
-4. **SSH is reachable** (if `waitForSsh = true`) -- opens a TCP connection to
-   `<ipv4Address>:<sshPort>` with a 5-second timeout.
+## `incus-machines-settlement`
 
-Each check must pass for a machine to be considered settled. The poll loop runs
-all machines on each iteration; only when every machine passes all checks does
-settle succeed.
+Waits until selected guests pass readiness checks:
 
-Usage:
+1. instance status is `Running`
+2. `incus exec <name> -- true` works
+3. the expected IPv4 address is present
+4. SSH is reachable when `waitForSsh = true`
 
-```bash
+Typical usage:
+
+```sh
 incus-machines-settlement --all
 incus-machines-settlement --machine pvl-vlab --timeout 120
 ```
 
-Per-machine options that affect settle behavior:
+Per-guest settings that affect settlement:
 
-- `sshPort` (default `22`) -- the TCP port checked for SSH reachability.
-- `waitForSsh` (default `true`) -- set to `false` for containers that
-  intentionally do not run SSH.
-- `ipv4Address` -- the expected address checked in the instance state.
+- `ipv4Address`
+- `sshPort`
+- `waitForSsh`
+
+## `nixbot` Deploy Barrier
+
+Before each deploy wave, `nixbot` checks hosts that declare a `parent` in
+`hosts/nixbot.nix`.
+
+For each parent group it:
+
+1. runs reconcile on the parent
+2. runs settle on the parent
+3. deploys only if both succeed
+
+If either step fails, the deploy wave fails.
+
+## Failure Behavior
+
+If parent readiness fails:
+
+- hosts in that deploy wave are marked failed
+- earlier successfully deployed hosts in the run are rolled back
+- unrelated hosts outside that readiness group are unaffected
+
+## Related Docs
+
+- [`docs/incus-vms.md`](./incus-vms.md)
+- [`docs/deployment.md`](./deployment.md)
+
+## Detailed Reference
+
+The sections below cover orchestration details, batching behavior, and related
+runtime mechanics.
+
+## Overview
+
+This readiness layer exists because a declared Incus guest may still be
+undeployed, starting, or not yet reachable when `nixbot` reaches its deploy
+wave. The parent-host reconcile and settle steps close that gap before the child
+host switch begins.
 
 ## Nixbot Deploy-Time Readiness Barrier
 
@@ -120,36 +127,6 @@ For example, given:
 When deploying `pvl-vlab`, `nixbot` SSHes to `pvl-x2` and runs reconcile +
 settle for `pvl-vlab` before deploying into it.
 
-### What it does
-
-The function `ensure_deploy_wave_parent_readiness` in `nixbot.sh`:
-
-1. **Groups hosts by parent** -- hosts sharing the same parent and the same
-   reconcile/settle command templates are batched together so the parent is only
-   contacted once per group.
-
-2. **Runs reconcile on the parent** -- SSHes to the parent host and executes the
-   reconcile command template. The default template is:
-
-   ```bash
-   /run/current-system/sw/bin/incus-machines-reconciler --machine <name> [--machine <name2> ...]
-   ```
-
-   This ensures any stopped or missing containers are restarted before settle.
-
-3. **Runs settle on the parent** -- SSHes to the parent host and executes the
-   settle command template. The default template is:
-
-   ```bash
-   /run/current-system/sw/bin/incus-machines-settlement --timeout <timeout> --machine <name> [--machine <name2> ...]
-   ```
-
-   This blocks until all containers in the group pass the four readiness checks
-   (status, exec, IP, SSH).
-
-4. **Reports success or failure** -- if either phase fails, the entire deploy
-   wave is aborted and all hosts in the wave are marked as failed.
-
 ### Command templates
 
 The reconcile and settle commands are rendered from templates that support these
@@ -164,19 +141,6 @@ placeholders:
 Templates that contain `{resourceArgs}` (and not `{resource}`) support batching
 multiple machines into a single command. Otherwise, machines are handled one at
 a time.
-
-### Failure behavior
-
-If parent readiness fails for any group in a wave:
-
-1. All hosts in the wave are marked as failed.
-2. Any hosts that were successfully deployed earlier in the run are rolled back.
-3. The deploy phase returns a failure exit status.
-
-This means a container that refuses to start or settle will block its own deploy
-and trigger rollback of previously deployed hosts in the same run, but will not
-prevent unrelated hosts (those without a parent, or with a different parent)
-from being deployed.
 
 ## Nixbot SSH Readiness Cache
 

@@ -1,121 +1,98 @@
-# Systemd User Manager Units
+# Systemd User Manager
 
-This document describes the shared `systemd-user-manager` module and the
-simplified stateless model it now uses.
+This module bridges deploy-time switching for user services. It exists for
+workloads such as rootless Podman stacks that live under `systemd --user`.
 
-## Why This Module Exists
-
-NixOS system services get deploy-time switching through
-`switch-to-configuration`. Systemd user services do not. A deploy can update
-user unit files on disk while leaving the old lingering user-manager process
-tree running until something explicitly reloads and reconciles it.
-
-This module provides that missing bridge for user managers, especially for
-rootless workloads such as Podman compose stacks.
-
-## Current Model
+## What It Does
 
 For each managed user, the module generates:
 
-- one system dispatcher service:
-  `systemd-user-manager-dispatcher-<user>.service`
-- one user reconciler service: `systemd-user-manager-reconciler-<user>.service`
+- `systemd-user-manager-dispatcher-<user>.service`
+- `systemd-user-manager-reconciler-<user>.service`
 
-The dispatcher is the system-side entrypoint. The reconciler runs inside the
-user manager and uses plain `systemctl --user`.
+The dispatcher runs from the system side. The reconciler runs inside the user's
+manager and uses `systemctl --user`.
 
-## Shared Unit Model
-
-Modules declare managed user units under:
+## Declaration
 
 ```nix
 services.systemdUserManager.instances.<name> = {
   user = "app";
   unit = "app.service";
-  restartTriggers = ["<generation-specific-value>"];
+  restartTriggers = ["<stamp>"];
 };
 ```
 
-Supported options:
+Important options:
 
-- `user`: owning account for the user manager
-- `unit`: user unit to keep started
-- `stopOnRemoval`: whether removing the managed entry stops the old unit
-- `restartTriggers`: semantic triggers that mark the managed unit changed; these
-  are module-defined inputs such as generated config stamps or tag values, not
-  arbitrary runtime file-content watches
-- `stampPayload`: optional explicit payload hashed into the managed-unit stamp
+- `user`
+- `unit`
+- `stopOnRemoval`
+- `restartTriggers`
+- `stampPayload`
 
-## Stateless Switch Model
+## Switch Behavior
 
-The module no longer uses `/var/lib/systemd-user-manager` state files and no
-longer keeps a root-owned mutable desired-state cache.
+Old generation:
 
-Instead, each dispatcher unit carries a generation-local metadata file in the
-store. That metadata includes:
+- stops removed units when `stopOnRemoval = true`
+- stops changed units
+- restarts `user@<uid>.service` if the managed user identity changed
 
-- the managed unit set for the user
-- each managed unit’s semantic stamp
-- the managed user identity stamp
+New generation:
 
-Switch behavior is split like this:
-
-- old-world stop happens in the old dispatcher’s `ExecStop`
-- new-world start happens in the new dispatcher’s `ExecStart`
-
-During old-world stop, the old dispatcher compares its own metadata with the new
-dispatcher metadata already loaded into `/etc/systemd/system`:
-
-- removed managed units are stopped when `stopOnRemoval = true`
-- changed managed units are stopped
-- if the managed user identity stamp changed, `user@<uid>.service` is restarted
-  after the old units are stopped
-
-During new-world start, the dispatcher:
-
-- ensures `user@<uid>.service` is active
+- ensures `user@<uid>.service` is running
 - waits for the user bus
-- runs one user-side `daemon-reload`
-- restarts the single user reconciler
-- waits for the reconciler to finish successfully
+- runs `daemon-reload`
+- restarts the reconciler
+- waits for successful convergence
 
-## Reconciler Model
+## Reconciler Behavior
 
-The reconciler is intentionally narrow. It does not run a generic action graph
-and it does not persist per-unit stamps.
+The reconciler is intentionally narrow:
 
-It only needs:
-
-- the new generation metadata
-- live `systemctl --user` state
-
-For each managed unit, it:
-
-- checks the unit’s stable `ActiveState`
+- reads generation metadata
+- checks live `systemctl --user` state
 - leaves active units alone
-- starts inactive or failed units unless the unit is disabled or masked
+- starts inactive or failed managed units
 
-After successful convergence it starts `systemd-user-manager-ready.target`.
+After success it starts `systemd-user-manager-ready.target`.
 
 ## Boot And Dry Activate
 
-- boot does not depend on activation-time mutable work
-- normal boot/startup happens later through the dispatcher system services
-- `dry-activate` runs the reconciler script in preview mode as the managed user
+- Boot does not depend on mutable activation-time state.
+- The real work happens through ordinary systemd units after switch.
+- `dry-activate` runs the reconciler in preview mode.
 
-## Podman Usage Pattern
+## Podman Integration
 
-`lib/podman-compose/default.nix` is the primary consumer.
+`lib/podman-compose/default.nix` is the main consumer.
 
-- the main compose unit is managed by `systemd-user-manager`
-- `bootTag` changes only the main managed-unit stamp
-- `recreateTag` changes the main unit and makes its own `ExecStart` use
-  `podman compose up --force-recreate`
-- `imageTag` is a separate user oneshot pull unit wired as a dependency of the
-  main compose service start path
+- the main compose unit is managed here
+- `bootTag` changes the managed-unit stamp
+- `recreateTag` changes the compose unit and forces recreate behavior
+- `imageTag` is handled by a separate pull unit wired into the start path
 
-That keeps `systemd-user-manager` generic: it only switches units. Module-level
-behavior is compiled into ordinary unit content and dependencies.
+This keeps `systemd-user-manager` generic. It switches units. Module-specific
+behavior stays in the unit definitions.
+
+## Source Files
+
+- `lib/systemd-user-manager/default.nix`
+- `lib/systemd-user-manager/helper.sh`
+- `lib/podman-compose/default.nix`
+- `lib/podman-compose/helper.sh`
+
+## Detailed Reference
+
+The sections below cover rationale, FAQs, and source files.
+
+## Why This Module Exists
+
+NixOS handles system-service switching during deploys, but `systemd --user`
+services need an explicit bridge from the system side. This module exists to
+make lingering user managers converge during deploys without pushing Podman- or
+service-specific behavior into activation scripts.
 
 ## FAQ
 

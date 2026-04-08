@@ -1,51 +1,18 @@
-# Nginx Vhosts, Static Sites, Exposed Ports, And Tunnels
+# Nginx Vhosts
 
-This document explains the current repo pattern for exposing web traffic through
-the shared nginx service, including:
+This repo uses one shared nginx ingress model for static sites, reverse proxies,
+rate limits, and Cloudflare Tunnel wiring.
 
-- static sites
-- proxied API or app services
-- `exposedPorts`
-- rate limits
-- Cloudflare Tunnel wiring
+## Quick Rules
 
-The goal is to make the mental model obvious before looking at the Nix code.
-
-## Mental Model
-
-There are two different kinds of nginx-served traffic in this repo:
-
-1. Static sites that nginx serves directly from files.
-2. Dynamic services that nginx proxies to another local port.
-
-Both use nginx vhosts, but they are configured differently:
-
-- static sites are declared with `nginxLib.mkStaticSite`
-- proxied services are derived automatically from
-  `exposedPorts.<name>.nginxHostNames`
-
-The nginx service itself owns the public listener and ingress policy:
-
-- which host port nginx listens on
-- whether the firewall is opened
-- which hostnames should route through Cloudflare Tunnel
-- the shared rate limit for static sites on that listener
-
-Dynamic proxied services keep their own per-service policy through their own
-`exposedPorts`.
+- Static content is declared explicitly with `nginxLib.mkStaticSite`.
+- Dynamic backends usually expose `exposedPorts.<name>.nginxHostNames`.
+- Cloudflare Tunnel hostnames come from `cfTunnelNames`.
+- Rate limits live on the exposed port or nginx listener metadata.
 
 ## `exposedPorts`
 
-`exposedPorts` is the common ingress metadata surface for a service. It is used
-for more than container port publishing.
-
-An `exposedPorts.<name>` entry can drive:
-
-- compose port mappings
-- firewall openings
-- nginx reverse-proxy vhost generation
-- Cloudflare Tunnel ingress generation
-- request rate limiting
+`exposedPorts` is the common ingress metadata surface for a service.
 
 Typical shape:
 
@@ -59,63 +26,76 @@ exposedPorts.http = {
 };
 ```
 
-Important fields:
+It can drive:
 
-- `port`: the host port
-- `openFirewall`: whether to open that port on the host firewall
-- `nginxHostNames`: hostnames nginx should proxy to this port
-- `cfTunnelNames`: hostnames Cloudflare Tunnel should route to this port
-- `rateLimit`: ingress rate-limit policy for that port
+- port publishing
+- firewall openings
+- nginx reverse-proxy vhosts
+- Cloudflare Tunnel ingress
+- rate limiting
 
 ## Static Sites
 
-Static sites are nginx vhosts only. They do not define their own listener ports.
-The nginx service owns that.
-
-Current pattern:
+Static sites are served directly by nginx. They do not define their own listener
+ports.
 
 ```nix
-let
-  staticSites = {
-    gap3-ai-web = nginxLib.mkStaticSite {
-      serverNames = ["gap3.ai"];
-      rootPath = builtins.path {
-        path = (pkgs.callPackage ../../pkgs/web/gap3-hello/default.nix {}) + "/share/gap3-hello";
-        name = "gap3-ai-web-site";
-      };
-      singlePageApp = true;
-    };
-  };
-in {
-  services.podmanCompose.gap3.instances.nginx = rec {
-    exposedPorts.http = {
-      port = 10800;
-      openFirewall = true;
-      cfTunnelNames = ["gap3.ai"];
-      rateLimit = null;
-    };
-
-    files."conf.d/srv-http-default.conf" =
-      nginxLib.renderServers {
-        rateLimit = exposedPorts.http.rateLimit or null;
-        staticSites = staticSites;
-      };
-  };
-}
+staticSites.my-site = nginxLib.mkStaticSite {
+  serverNames = ["app.example.com"];
+  rootPath = mySitePath;
+  singlePageApp = true;
+};
 ```
 
-Key points:
+Use a real Nix path for `rootPath`. Do not pass a stringified store path.
 
-- `mkStaticSite` describes hostnames and content roots
-- `mkStaticSite.routes = [{ serverName; path; }]` mounts that static app under a
-  path on another hostname
-- nginx `exposedPorts.http` describes the listener and public ingress policy
-- static sites on the same nginx listener share the same rate limit
-- `singlePageApp = true` enables `try_files ... /index.html`
+If the app should be mounted under a path prefix on an existing hostname, use
+`routes`.
 
-For static content, always pass a real Nix path for the mounted site tree. Do
-not pass a stringified store path like `"${drv}/share/site"`, because that gets
-staged as file content instead of a directory tree.
+## Proxied Backends
+
+Dynamic services usually do not need manual nginx config. Set
+`nginxHostNames = [ ... ]` on the exposed port and let the shared modules derive
+the reverse-proxy vhost.
+
+This is the standard pattern for APIs and web apps.
+
+## Path-Based Backend Routes
+
+When a backend should live under an existing hostname, use path routing on the
+backend's exposed port instead of a standalone hostname.
+
+Use this for shapes like:
+
+- `https://app.example.com/api`
+- `https://app.example.com/hello`
+
+## Tunnel Wiring
+
+Use `cfTunnelNames` to route a hostname through Cloudflare Tunnel to the local
+listener or backend.
+
+The same exposed-port metadata is used to derive tunnel ingress config.
+
+## Related Docs
+
+- [`docs/podman-compose.md`](./podman-compose.md)
+- [`docs/services.md`](./services.md)
+
+## Detailed Reference
+
+The sections below cover mental model, examples, and edge-case behavior.
+
+## Mental Model
+
+There are two main ingress shapes in this repo:
+
+1. static sites served directly by nginx
+2. dynamic services proxied by nginx to a local port
+
+The shared nginx layer owns the public listener and ingress policy. Static sites
+declare content roots. Dynamic services usually declare ingress through
+`exposedPorts`.
 
 ### Static Site Under A Path Prefix
 

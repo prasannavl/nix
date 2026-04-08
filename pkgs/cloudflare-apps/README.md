@@ -16,7 +16,7 @@ This directory holds repo-managed Cloudflare application source trees used by
 - `tf/*-apps` projects may have a matching package namespace at
   `pkgs/<project>/flake.nix`.
 - `nixbot` prepares those projects generically by running
-  `nix build path:pkgs/<project>#build --no-link` before OpenTofu plan/apply.
+  `nix build ./pkgs/<project>#build --no-link` before OpenTofu plan/apply.
 - For `tf/cloudflare-apps`, that means `pkgs/cloudflare-apps/flake.nix` is the
   single aggregate entrypoint.
 - Source-only apps can live under `pkgs/cloudflare-apps/<app>/` without a child
@@ -28,10 +28,10 @@ This directory holds repo-managed Cloudflare application source trees used by
 
 ## Examples
 
-- `nix build .#pkgs.x86_64-linux.cloudflare-apps`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.deploy -- --dry`
-- `nix build .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.wrangler-deploy`
+- `nix build .#cloudflare-apps`
+- `nix run .#cloudflare-apps-deploy -- --dry`
+- `nix build ./pkgs/cloudflare-apps/llmug-hello#build`
+- `nix run ./pkgs/cloudflare-apps/llmug-hello#wrangler-deploy`
 
 ## Terraform inputs
 

@@ -1,85 +1,54 @@
 # Nixbot Security Trust Model
 
-This document defines the trust boundary for `nixbot` deploy access, especially
-for bastion-triggered runs and arbitrary `--sha` execution.
+`nixbot` bastion-trigger access is a trusted deploy-operator boundary.
 
-## Core Assumption
+## Core Rule
 
-Possession of a bastion `nixbot` ingress key means the holder is a trusted
+Anyone holding a bastion `nixbot` ingress key must be treated as a trusted
 deploy operator.
 
 That trust includes the ability to:
 
-- trigger deploy flows on bastion
-- select arbitrary reachable Git SHAs for execution
-- cause bastion to evaluate/build repo content at those SHAs
+- trigger deploys on bastion
+- select arbitrary reachable Git SHAs
+- cause bastion to evaluate and build repo content at those SHAs
 - use deploy paths that rely on bastion-resident secrets and keys
 
-This is an administrative trust boundary, not a review boundary.
+This is an administrative trust boundary, not a code-review boundary.
 
-## What Bastion-Trigger Access Means
+## What The Wrapper Protects
 
-`--bastion-trigger` access is intentionally high privilege.
+The installed wrapper still provides useful guardrails:
 
-A trusted operator with bastion-trigger access may:
+- CI and operators do not upload arbitrary shell scripts to bastion
+- normal runs stay pinned to the packaged `nixbot` entrypoint
+- detached worktrees isolate run state from the persistent mirror
+- `--use-repo-script` remains opt-in
 
-- run reviewed `master`
-- run an unreviewed branch commit by SHA
-- run dry-runs or real deploy flows, subject to workflow policy
-
-The current model does not treat Git review alone as a hard security barrier for
-holders of bastion-trigger credentials.
-
-## What The Installed Wrapper Protects
-
-The installed bastion wrapper still provides meaningful protection:
-
-- CI/operators cannot SCP an arbitrary shell script to bastion and execute it
-- normal runs stay pinned to the installed packaged `nixbot` entrypoint
-- per-run repo worktrees isolate execution state from the persistent repo root
-- `--use-repo-script` remains opt-in for intentionally executing fetched script
-  code
-
-These protections reduce accidental and opportunistic abuse, but they do not
-turn bastion-trigger operators into low-trust users.
+These are containment and hygiene controls. They do not make bastion-trigger
+users low-trust.
 
 ## Arbitrary SHA Policy
 
-Arbitrary SHA execution is allowed because bastion-trigger key holders are
-already trusted as deploy admins.
+Arbitrary SHA execution is allowed because bastion-trigger users are already in
+the trusted deploy-operator class.
 
-That implies:
+If that assumption changes, `nixbot` should restrict `--sha` to commits
+reachable from explicitly trusted refs.
 
-- a private branch pushed to origin may be run by SHA on bastion
-- review requirements are workflow/process controls for trusted operators
-- review is not the final cryptographic or runtime enforcement point for this
-  operator class
-
-If that assumption changes in the future, `nixbot` should restrict `--sha` to
-commits reachable from `origin/master` or another explicitly trusted ref set.
-
-## Secrets And Key Exposure
+## Secret Exposure
 
 Bastion-trigger operators must be treated as capable of causing privileged repo
 evaluation in a context where deploy secrets and keys exist.
 
-Therefore:
+Operational consequences:
 
-- bastion ingress keys are highly sensitive credentials
-- anyone holding them must be trusted not to intentionally exfiltrate secrets
-- branch isolation or PR review alone is not sufficient mitigation against a
-  malicious bastion-trigger operator
-
-## Practical Consequences
-
-- Do not distribute bastion `nixbot` ingress keys broadly.
-- Treat bastion-trigger access like privileged production deploy access.
-- Use workflow policy to limit who may run non-dry deploys on `master`.
-- Use worktrees for concurrency/isolation, not as a substitute for operator
-  trust reduction.
+- keep bastion ingress keys tightly scoped
+- treat bastion-trigger access like privileged production deploy access
+- do not rely on branch isolation or PR review as protection against a malicious
+  bastion-trigger operator
 
 ## Related Docs
 
-- `docs/deployment.md`: Deploy architecture, bootstrap, key exchange, and
-  rotation runbooks.
-- `pkgs/tools/nixbot/`: Packaged nixbot source and entrypoint.
+- [`docs/deployment.md`](./deployment.md)
+- `pkgs/tools/nixbot/`

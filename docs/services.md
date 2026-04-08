@@ -1,70 +1,36 @@
 # Native Services
 
-This document describes the repo pattern for turning local packages into
-services and timers.
+Use native NixOS modules and native systemd units for ordinary services.
 
-The rule is simple: stick to the simplest native Linux patterns. We do not add
-an extra service framework on top. If something is a long-running process, use
-`systemd.services`. If something is scheduled, use `systemd.timers`.
+## Rules
 
-## Current Model
+- Keep the canonical package build in `pkgs/<name>/default.nix`.
+- Use a package-local `flake.nix` for local UX and optional `nixosModules`.
+- Expose a NixOS module under `nixosModules`.
+- Enable the service from the host with `services.<name>.enable = true`.
+- Define plain `systemd.services` and `systemd.timers`.
 
-- Packages live under `pkgs/`.
-- The canonical package definition lives in a package-local `default.nix`.
-- The package-local `flake.nix` can export a `nixosModules` entry alongside the
-  package.
-- Hosts enable the service with `services.<name>.enable = true`.
-- The module then writes normal `systemd.services.<name>` and, when needed,
-  normal `systemd.timers.<name>`.
+Do not add a repo-specific service abstraction on top of NixOS modules and
+systemd.
 
-## Guiding Principle
-
-Prefer the most native NixOS shape:
-
-- package definition in `default.nix`
-- optional wrapper flake for local UX
-- NixOS module under `nixosModules`
-- host-side enablement through `services.<name>.enable`
-- plain systemd service and timer definitions in the module
-
-The repo goal is not to invent its own service model. The repo only establishes
-patterns and naming conventions on top of the standard Linux model so services
-are defined consistently.
-
-That means:
-
-- prefer standard module options over custom wrappers
-- prefer plain `systemd.services` and `systemd.timers` over helper DSLs
-- prefer the native operating model of each tool, for example systemd for
-  services, Incus for containers, and Podman for container workloads
-- prefer small, obvious conventions over new abstractions
-
-No repo-specific service abstraction is needed for ordinary system services.
-
-## Package To Service Pattern
+## Standard Pattern
 
 The reference example is `pkgs/examples/hello-rust/flake.nix`.
 
-It does three things:
-
-1. builds the package
-2. exports the package and app from the flake
-3. exports a NixOS module that adds `services.hello-rust.enable`
-
-The service module shape is:
+Typical service module shape:
 
 ```nix
 nixosModules = let
-  helloRustModule = {
+  myModule = {
     config,
     lib,
     pkgs,
     ...
   }: let
-    cfg = config.services.hello-rust;
+    cfg = config.services.my-service;
   in {
-    options.services.hello-rust = {
-      enable = lib.mkEnableOption "hello-rust service";
+    options.services.my-service = {
+      enable = lib.mkEnableOption "my service";
 
       package = lib.mkOption {
         type = lib.types.package;
@@ -75,67 +41,39 @@ nixosModules = let
     };
 
     config = lib.mkIf cfg.enable {
-      systemd.services.hello-rust = {
-        description = "hello-rust";
+      systemd.services.my-service = {
         wantedBy = ["multi-user.target"];
         after = ["network.target"];
-        serviceConfig = {
-          ExecStart = "${cfg.package}/bin/hello-rust";
-          Restart = "on-failure";
-        };
+        serviceConfig.ExecStart = "${cfg.package}/bin/my-service";
       };
     };
   };
 in {
-  default = helloRustModule;
-  hello-rust = helloRustModule;
+  default = myModule;
 };
 ```
 
-This is the canonical package-to-service pattern in this repo.
-
-## Host Enablement Pattern
-
-Once a package flake exports a NixOS module, a host can import or consume that
-module and then enable the service normally:
+## Host Usage
 
 ```nix
 {
   imports = [
-    inputs.hello-rust.nixosModules.default
+    inputs.my-service.nixosModules.default
   ];
 
-  services.hello-rust.enable = true;
+  services.my-service.enable = true;
 }
 ```
 
-If the module exposes a `package` option, the host can also override which build
-is run:
-
-```nix
-{
-  services.hello-rust = {
-    enable = true;
-    package = inputs.hello-rust.packages.${pkgs.system}.default;
-  };
-}
-```
+If the module exposes a `package` option, the host can override the package.
 
 ## Timers
 
-Timers should also stay native.
-
-If a package needs scheduled execution, define:
-
-- `systemd.services.<name>`
-- `systemd.timers.<name>`
-
-Example pattern:
+If the service is scheduled, define native timer units:
 
 ```nix
 config = lib.mkIf cfg.enable {
   systemd.services.my-job = {
-    description = "my-job";
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${cfg.package}/bin/my-job";
@@ -152,8 +90,33 @@ config = lib.mkIf cfg.enable {
 };
 ```
 
-That is the preferred shape instead of inventing a repo-specific scheduling
-layer.
+## Add A Service
+
+1. Create `pkgs/<name>/default.nix`.
+2. Add the package to the root export set if needed.
+3. Add or update `pkgs/<name>/flake.nix`.
+4. Export `nixosModules.default`.
+5. Add `services.<name>.enable`.
+6. Define native `systemd.services.<name>`.
+7. Add `systemd.timers.<name>` if scheduled.
+8. Import and enable the module from the target host.
+
+## Related Docs
+
+- [`docs/podman-compose.md`](./podman-compose.md)
+- [`docs/incus-vms.md`](./incus-vms.md)
+- [`docs/systemd-user-manager.md`](./systemd-user-manager.md)
+
+## Detailed Reference
+
+The sections below cover philosophy, placement rules, and FAQs.
+
+## Guiding Principle
+
+Use the native NixOS model: package in `default.nix`, optional package-local
+`flake.nix`, NixOS module under `nixosModules`, and plain
+`systemd.services`/`systemd.timers`. This repo standardizes naming and layout.
+It does not add a separate service framework for ordinary system services.
 
 ## What To Put Where
 

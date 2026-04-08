@@ -1,77 +1,80 @@
 # Flake Package Helper
 
-This repo uses one standard child-flake contract for packages under `pkgs/`. The
-shared helper in [`lib/flake/pkg-helper.nix`](../lib/flake/pkg-helper.nix) owns
-that contract so package `default.nix` and `flake.nix` files stay short.
+This repo uses one shared child-flake contract for packages under `pkgs/`.
 
-## Standard Contract
+The helper lives in [`lib/flake/pkg-helper.nix`](../lib/flake/pkg-helper.nix).
 
-Packages under `pkgs/` should expose these conventional outputs:
+## What Packages Should Expose
 
-- `packages.build`: the actual package derivation.
-- `packages.default`: same as `packages.build`.
-- `packages.run`: the runnable package when the build has a `mainProgram`.
-- `packages.dev`: optional developer entrypoint package.
-- `packages.fmt`: optional package-local formatter app package.
-- `packages.lint-fix`: optional package-local mutating lint-fix app package.
-- `checks.build`: the package build itself.
-- `checks.fmt`: read-only formatting verification.
-- `checks.lint`: read-only lint verification.
-- `checks.test`: read-only test verification.
-- `apps.run`: runnable app wrapper for `packages.run` when present.
-- `apps.dev`: optional developer app such as a dev server.
-- `apps.fmt`: optional mutating formatter entrypoint for that package.
-- `apps.lint-fix`: optional mutating lint-fix entrypoint for that package.
-- `devShells.default`: optional package-local development shell.
+Standard package outputs:
 
-The intended semantics are:
+- `packages.build`
+- `packages.default`
+- `packages.run`
+- `packages.dev`
+- `packages.fmt`
+- `packages.lint-fix`
 
-- `run`: execute the package normally.
-- `dev`: start an interactive developer workflow such as a local dev server.
-- `fmt`: mutate the package tree to format owned files.
-- `lint-fix`: mutate the package tree to apply safe auto-fixes.
-- `checks.fmt`: verify that formatting is already correct.
-- `checks.lint`: verify that lint rules already pass.
-- `checks.test`: verify package tests.
+Standard checks:
 
-`checks.*` are always read-only and CI-safe. Mutating actions belong in
-`apps.*`, not in `checks.*`.
+- `checks.build`
+- `checks.fmt`
+- `checks.lint`
+- `checks.test`
 
-## Root Versus Package Ownership
+Standard apps:
 
-The repo splits formatting and linting into two layers.
+- `apps.run`
+- `apps.dev`
+- `apps.fmt`
+- `apps.lint-fix`
 
-Root-owned tooling handles files outside `pkgs/`:
+Optional shell:
 
-- `nix fmt` formats root-managed files outside `pkgs/`.
-- `nix run path:.#lint` lints root-managed files outside `pkgs/`.
-- `nix run path:.#lint -- fix` applies fix-capable root-owned tooling outside
-  `pkgs/`.
+- `devShells.default`
 
-Package-owned tooling handles files inside each child package:
+`checks.*` are read-only. Mutating behavior belongs in apps such as `fmt` and
+`lint-fix`.
 
-- `apps.fmt` formats package-owned files.
-- `apps.lint-fix` applies package-owned auto-fixes.
-- `checks.fmt`, `checks.lint`, and `checks.test` verify the package.
+## Main Commands
 
-Root tooling is an orchestrator, not the owner of package language rules:
+Package-local:
 
-- `nix fmt` runs the root formatter for root-owned files, then runs package
-  `fmt` actions through one root aggregate package-ops manifest.
-- `nix run path:.#lint` runs root-owned lint checks, then runs package
-  `checks.*` through the root aggregate package-ops manifest.
-- `nix run path:.#lint -- fix` runs root formatting and root fixers, then runs
-  package `fmt` and `lint-fix` actions through the same root aggregate
-  package-ops manifest, then re-runs lint.
+- `nix build ./pkgs/<name>`
+- `nix run ./pkgs/<name>`
+- `nix run ./pkgs/<name>#dev`
+- `nix run ./pkgs/<name>#fmt`
+- `nix run ./pkgs/<name>#lint-fix`
+- `nix build ./pkgs/<name>#checks.fmt`
+- `nix build ./pkgs/<name>#checks.lint`
+- `nix build ./pkgs/<name>#checks.test`
+- `nix flake check ./pkgs/<name>`
 
-Root-owned file type policy is:
+Root orchestration:
 
-- Markdown, JSON, JSONC: `deno fmt`
-- Nix: `alejandra`
-- Terraform and OpenTofu: `tofu fmt`
-- Shell: `shfmt` for formatting and `shellcheck` for linting
+- `nix fmt`
+- `nix run .#fmt -- --project <name>`
+- `nix run .#lint`
+- `nix run .#lint -- fix`
+- `nix run .#lint -- --project <name>`
 
-Package-owned language policy is defined by the shared helper:
+## Ownership Split
+
+Root tooling owns files outside `pkgs/`:
+
+- `nix fmt`
+- `nix run .#lint`
+- `nix run .#lint -- fix`
+
+Package tooling owns language-specific behavior inside child flakes:
+
+- `apps.fmt`
+- `apps.lint-fix`
+- `checks.fmt`
+- `checks.lint`
+- `checks.test`
+
+## Default Language Policy
 
 - Rust: `rustfmt`, `clippy`, `cargo test`
 - Python: `ruff`
@@ -79,57 +82,26 @@ Package-owned language policy is defined by the shared helper:
 - Web projects: `biome`
 - Deno-capable web dev shells: `deno`
 
-## Common Commands
-
-Build and run one package:
-
-- `nix build ./pkgs/<name>`: build that child flake's default package.
-- `nix run ./pkgs/<name>`: run its default app.
-- `nix run ./pkgs/<name>#run`: run its explicit `run` app.
-- `nix run ./pkgs/<name>#dev`: run its explicit `dev` app when present.
-- `nix develop ./pkgs/<name>`: enter the package dev shell.
-
-Run package-local format, lint-fix, and checks:
-
-- `nix run ./pkgs/<name>#fmt`: format package-owned files.
-- `nix run ./pkgs/<name>#lint-fix`: apply package-owned auto-fixes.
-- `nix build ./pkgs/<name>#checks.fmt`: verify formatting.
-- `nix build ./pkgs/<name>#checks.lint`: verify lint rules.
-- `nix build ./pkgs/<name>#checks.test`: run package tests.
-- `nix flake check ./pkgs/<name>`: run all package checks.
-
-Run root orchestration:
-
-- `nix fmt`: format root-owned files and then package-owned files.
-- `nix run path:.#fmt -- --project <name>`: run formatting only for selected
-  child packages.
-- `nix run path:.#lint`: lint root-owned files and package checks.
-- `nix run path:.#lint -- fix`: apply root and package auto-fixes, then rerun
-  lint.
-- `nix run path:.#lint -- --project <name>`: lint only selected child packages
-  plus any root-owned scope that still applies.
-
 ## Standard Shape
 
-The normal package shape is:
+`default.nix` should define the build and apply one helper:
 
 ```nix
-# default.nix
 let
   pkgHelper = import <repo-relative-path>/lib/flake/pkg-helper.nix;
-  build = ...;
   drv = pkgHelper.mkGoDerivation {
-    inherit pkgs build;
+    inherit pkgs;
+    build = ...;
     src = ./.;
   };
 in
   drv
 ```
 
+`flake.nix` should usually just re-export the derivation:
+
 ```nix
-# flake.nix
 let
-  pkgHelper = flake.lib.flake.checks;
   drv = pkgs.callPackage ./default.nix {};
 in
   pkgHelper.mkStdFlakeOutputs {
@@ -138,31 +110,29 @@ in
   }
 ```
 
-`mkStdFlakeOutputs` reads the derivation and its `passthru` and wires the
-standard `packages.*`, `apps.*`, `checks.*`, and `devShells.default` exports.
+## Main Helpers
 
-## High-Level Builders
+High-level derivation builders:
 
-These are the main package entrypoints:
+- `mkRustDerivation`
+- `mkGoDerivation`
+- `mkPythonDerivation`
+- `mkWebDerivation`
+- `mkStaticWebDerivation`
+- `mkShellScriptDerivation`
+- `mkAggregateDerivation`
 
-- `mkRustDerivation`: Rust package conventions. Adds `checks.fmt`,
-  `checks.lint`, `checks.test`, `apps.fmt`, and `apps.lint-fix` using `rustfmt`,
-  `clippy`, and `cargo test`.
-- `mkGoDerivation`: Go package conventions. Adds `checks.fmt`, `checks.lint`,
-  and `checks.test` using `gofmt`, `go vet`, and `go test`.
-- `mkPythonDerivation`: Python package conventions. Adds `checks.fmt`,
-  `checks.lint`, and `apps.lint-fix` using `ruff`.
-- `mkWebDerivation`: Web project conventions for JS, TS, CSS, and HTML style
-  trees. Adds `checks.fmt`, `checks.lint`, `apps.fmt`, and `apps.lint-fix` using
-  `biome`, and includes `biome`, `nodejs`, and `deno` in the default dev shell.
-- `mkStaticWebDerivation`: `mkWebDerivation` plus a simple `apps.dev` static
-  server and `python3` in the default dev shell.
-- `mkShellScriptDerivation`: Shell-script project conventions. Adds root-style
-  formatting and `shellcheck`-based linting automatically, with `shellcheck` and
-  `shfmt` in the default dev shell.
-- `mkAggregateDerivation`: Aggregate namespace package conventions. Builds an
-  aggregate package from child derivations, adds aggregate `fmt` / `checks.fmt`,
-  and wires aggregate `pkgOps` for root `nix fmt` and `nix run path:.#lint`.
+Wiring helpers:
+
+- `mkStdFlakeOutputs`
+- `wirePassthru`
+
+Lower-level helpers remain available for unusual package layouts, but most
+packages should not need them directly.
+
+## Detailed Reference
+
+The sections below cover conventions, rationale, and extended examples.
 
 ## Wiring Helpers
 

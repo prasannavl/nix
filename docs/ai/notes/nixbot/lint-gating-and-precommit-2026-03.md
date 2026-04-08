@@ -1,10 +1,10 @@
 # Lint gating and pre-commit - 2026-03
 
-- Added a shared flake app/package entrypoint so `nix run path:.#lint` is the
+- Added a shared flake app/package entrypoint so `nix run .#lint` is the
   canonical lint command. Scope and autofix behavior are now selected with
-  runtime args: `nix run path:.#lint -- deps`, `nix run path:.#lint`,
-  `nix run path:.#lint -- --diff`, `nix run path:.#lint -- fix`, and
-  `nix run path:.#lint -- fix --diff`.
+  runtime args: `nix run .#lint -- deps`, `nix run .#lint`,
+  `nix run .#lint -- --diff`, `nix run .#lint -- fix`, and
+  `nix run .#lint -- fix --diff`.
 - The canonical lint implementation now lives in `scripts/lint.sh`, while
   `lib/flake/lint.nix` stays lean and only packages that script into the flake
   app/output wiring.
@@ -28,10 +28,10 @@
 - GitHub Actions `nixbot` workflow now runs lint before warming the deploy
   runtime or triggering bastion execution, so formatting failures stop the run
   early.
-- On CI, bare `nix run path:.#lint` defaults to diff scope unless an explicit
-  scope flag such as `--full` is passed.
-- CI now warms lint via `nix run path:.#lint -- deps >/dev/null`, which realizes
-  the runnable wrapper and verifies the runtime commands before the actual lint
+- On CI, bare `nix run .#lint` defaults to diff scope unless an explicit scope
+  flag such as `--full` is passed.
+- CI now warms lint via `nix run .#lint -- deps >/dev/null`, which realizes the
+  runnable wrapper and verifies the runtime commands before the actual lint
   step.
 - Git pre-commit hook was replaced by a pre-push hook that lints each commit
   individually as a diff. See
@@ -40,7 +40,7 @@
   `exec` the packaged `scripts/lint.sh` with `LINT_IN_NIX_SHELL=1`. Re-entering
   `ensure_runtime_shell` from the store snapshot makes the script derive
   `--inputs-from` from `/nix/store/...-source`, which Git rejects as
-  foreign-owned during local `nix run path:.#lint` and pre-commit invocations.
+  foreign-owned during local `nix run .#lint` and pre-push invocations.
 - The lint wrapper now tracks the active step and emits a final
   `[lint] FAILED at <step>: <description>` summary on non-zero exit so Git UIs
   such as VS Code surface the failing linter more clearly than the earlier

@@ -279,6 +279,13 @@ Use this index as the canonical map for `docs/ai/**`.
   so sibling `path:` inputs resolve via the parent git tree.
 - `docs/ai/notes/tooling/pre-push-per-commit-lint-2026-03.md`: Pre-push hook
   replaces pre-commit; lints each commit individually via `--diff --base`.
+- `docs/ai/notes/tooling/docs-command-shortening-and-readme-contributing-2026-04.md`:
+  Shorten documented root flake commands to exported installables, drop `path:`
+  prefixes in docs, and add README contributing guidance for hooks and pre-push
+  linting.
+- `docs/ai/notes/tooling/human-docs-quick-reference-reorg-2026-04.md`:
+  Reorganize human-facing docs around quick-reference-first structure, concise
+  developer wording, and a separate detailed linting doc.
 - `docs/ai/notes/tooling/update-flakes-script-2026-03.md`:
   `scripts/update-flakes.sh` for recursively updating all flake lock files.
 - `docs/ai/notes/tooling/tf-selective-cloudflare-state-migration-2026-03.md`:

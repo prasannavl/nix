@@ -153,7 +153,7 @@ For each completed run folder:
    live hostnames, domains, or other operational names where possible.
 7. Run the full repo lint entrypoint before finishing so Markdown and any
    touched hook/config files are checked the same way CI will check them:
-   - `nix run path:.#lint`
+   - `nix run .#lint`
 
 ## Output expectations
 

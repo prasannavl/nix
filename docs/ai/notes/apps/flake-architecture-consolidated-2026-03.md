@@ -6,13 +6,14 @@
 
 ## Flake output model
 
-The root flake exposes repo-local packages through a custom `pkgs.<system>.*`
-output rather than cramming everything into the standard `packages`/`apps`
-outputs:
+The root flake exposes repo-local packages through standard `packages`/`apps`
+outputs, while still keeping a custom `pkgs.<system>.*` tree for non-standard
+nested package organization:
 
-- `pkgs.<system>.*` contains derivations usable with `nix build` and `nix run`.
-- Runnable sub-targets (e.g. `deploy`) are attached as nested attributes so
-  paths like `.#pkgs.x86_64-linux.<app-name>.<target>.deploy` work.
+- Root-exported installables use short commands such as `nix build .#<name>` and
+  `nix run .#<name>`.
+- `pkgs.<system>.*` still contains the full package tree for nested organization
+  where needed.
 - Deploy host discovery uses
   `nix eval --json path:.#nixosConfigurations --apply builtins.attrNames`
   instead of `nix flake show`.

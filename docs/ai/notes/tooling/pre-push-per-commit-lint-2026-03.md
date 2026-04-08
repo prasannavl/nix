@@ -23,7 +23,7 @@ changed across the pushed commit range in a single invocation. Also added
 
 - `.githooks/pre-push` reads stdin for pushed refs, computes the commit range
   via `git rev-list --count`, and runs
-  `nix run path:.#lint -- --diff --base <range_start>`.
+  `nix run .#lint -- --diff --base <range_start>`.
 - For new branches, merge-base is computed against `origin/HEAD` (falling back
   to `master`).
 - No checkout or stash needed — lint runs against the current working tree with

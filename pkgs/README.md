@@ -19,9 +19,8 @@ To add a new package:
 - add it to `lib/flake/packages.nix`
 - optionally add a package-local `flake.nix` as a wrapper flake for local UX and
   focused local commands
-- if you want extra root-flake entrypoints such as
-  `nix run .#pkgs.<name>.deploy`, expose them from the canonical package tree in
-  `lib/flake/packages.nix`
+- if you want extra root-flake entrypoints such as `nix run .#<name>`, expose
+  them from the canonical package tree in `lib/flake/packages.nix`
 
 Example projects live under `pkgs/examples/`. Their root flake package names are
 prefixed with `example-`.
@@ -45,23 +44,20 @@ prefixed with `example-`.
 
 ## Root Flake Examples
 
-- `nix build .#pkgs.x86_64-linux.example-hello-python`
-- `nix run .#pkgs.x86_64-linux.example-hello-python`
-- `nix build .#pkgs.x86_64-linux.example-hello-go`
-- `nix run .#pkgs.x86_64-linux.example-hello-go`
-- `nix build .#pkgs.x86_64-linux.example-hello-node`
-- `nix run .#pkgs.x86_64-linux.example-hello-node`
-- `nix build .#pkgs.x86_64-linux.example-hello-rust`
-- `nix run .#pkgs.x86_64-linux.example-hello-rust`
-- `nix build .#pkgs.x86_64-linux.example-hello-web-static`
-- `nix run .#pkgs.x86_64-linux.nixbot -- --help`
-- `nix build .#pkgs.x86_64-linux.cloudflare-apps`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.deploy -- --dry`
-- `nix build .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.wrangler-deploy`
+- `nix build .#example-hello-python`
+- `nix run .#example-hello-python`
+- `nix build .#example-hello-go`
+- `nix run .#example-hello-go`
+- `nix build .#example-hello-node`
+- `nix run .#example-hello-node`
+- `nix build .#example-hello-rust`
+- `nix run .#example-hello-rust`
+- `nix build .#example-hello-web-static`
+- `nix run .#nixbot -- --help`
+- `nix build .#cloudflare-apps`
+- `nix run .#cloudflare-apps-deploy -- --dry`
 
-Inside a child directory, `path:.` still uses the working tree directly while
-plain `.` uses the Git snapshot.
+Inside a child directory, plain `.` uses the child flake directly.
 
 Overlay package example:
 

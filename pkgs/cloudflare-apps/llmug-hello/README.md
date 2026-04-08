@@ -12,19 +12,18 @@ Layout:
 
 ## Flake Commands
 
-- `nix build path:.#build`: build the static output in the Nix store
-- `nix run path:.#dev`: serve the built static output locally on
-  `127.0.0.1:8080`
-- `nix run path:.#wrangler-deploy`: build the store output and deploy directly
-  with Wrangler
-- `nix run path:.#lint`: run `biome check .`
-- `nix run path:.#fix`: run `biome check --write .`
+- `nix build .#build`: build the static output in the Nix store
+- `nix run .#dev`: serve the built static output locally on `127.0.0.1:8080`
+- `nix run .#wrangler-deploy`: build the store output and deploy directly with
+  Wrangler
+- `nix run .#lint`: run `biome check .`
+- `nix run .#fix`: run `biome check --write .`
 
 ## Root Flake Commands
 
-- `nix build .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.dev`
-- `nix run .#pkgs.x86_64-linux.cloudflare-apps.llmug-hello.wrangler-deploy`
+- `nix build ./pkgs/cloudflare-apps/llmug-hello#build`
+- `nix run ./pkgs/cloudflare-apps/llmug-hello#dev`
+- `nix run ./pkgs/cloudflare-apps/llmug-hello#wrangler-deploy`
 
 ## Deploy Modes
 

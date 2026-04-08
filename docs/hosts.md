@@ -1,58 +1,41 @@
 # Hosts
 
-This document describes the host model, directory conventions, and the
-step-by-step process for adding a new host.
+This repo manages NixOS hosts under `hosts/` and deploys them through `nixbot`.
 
-## Philosophy
+## What Matters
 
-This repo manages NixOS hosts **agnostic of where they run**. A host can be a
-physical machine, a VM on any hosted provider (GCP, AWS, Hetzner, etc), an Incus
-container on a local server, laptop, edge device or anything that boots NixOS.
-The repo does not encode provider-specific logic at the host level — all hosts
-are first-class citizens regardless of their backing infrastructure.
+- Each host lives in `hosts/<host-name>/`.
+- `hosts/default.nix` registers hosts into `nixosConfigurations`.
+- `hosts/nixbot.nix` defines deploy targets and ordering.
+- Shared modules live in `lib/`.
+- Profiles live in `lib/profiles/`.
+- Device-specific hardware modules live in `lib/devices/`.
 
-The same `nixbot` deploy flow, the same secret model, and the same module
-composition apply whether the target is a laptop on the desk or a VM on the
-other side of the world.
+The repo does not encode provider-specific host models. Physical machines, cloud
+VMs, and Incus guests use the same host layout and deploy flow.
 
-## Current Model
-
-- Each host is a directory under `hosts/<host-name>/`.
-- `hosts/default.nix` is the registry that wires every host into
-  `nixosConfigurations`.
-- `hosts/nixbot.nix` is the deploy target mapping consumed by `nixbot`.
-- Shared NixOS modules live in `lib/`.
-- Profiles under `lib/profiles/` provide layered baseline configuration.
-- Device modules under `lib/devices/` encode hardware-specific quirks.
-- `commonModules` is assembled in `flake.nix` and includes `home-manager`,
-  `agenix`, overlays, and shared `home-manager` args.
-
-## Directory Layout
+## Common Host Layout
 
 ```text
 hosts/
-  default.nix                # registry — all nixosConfigurations
-  nixbot.nix                 # deploy target mapping
+  default.nix
+  nixbot.nix
   <host-name>/
-    default.nix              # entry point — imports and profile selection
-    sys.nix                  # hardware config (physical machines only)
-    packages.nix             # host-specific packages
-    firewall.nix             # host-specific firewall rules
-    users.nix                # host-specific user declarations
-    services.nix             # host-specific service configuration
-    podman.nix               # podman compose stacks
-    cloudflare.nix           # Cloudflare tunnel config
-    incus.nix                # Incus guest declarations (parent hosts)
-    compose/<stack>/...      # compose files for podman stacks
+    default.nix
+    sys.nix
+    packages.nix
+    firewall.nix
+    users.nix
+    services.nix
+    podman.nix
+    cloudflare.nix
+    incus.nix
+    compose/<stack>/...
 ```
 
-Not every host has every file. The split is by concern — only create a file when
-the host needs host-specific configuration for that concern.
+Only keep files that the host actually uses.
 
 ## Profiles
-
-Profiles under `lib/profiles/` provide layered baseline configuration. A host's
-`default.nix` imports the appropriate profile as its foundation.
 
 - `core.nix` — foundational system config: boot, networking, security, locale,
   users, nix settings, neovim, hardware, systemd, sysctl, and essential CLI
@@ -66,23 +49,20 @@ Profiles under `lib/profiles/` provide layered baseline configuration. A host's
 Physical machines typically use `all.nix`. Incus VM guests use
 `systemd-container.nix` plus `lib/incus-vm.nix`.
 
-## How To Add A New Host
+## Add A Host
 
-### 1. Choose a hostname
+1. Create `hosts/<host-name>/default.nix`.
+2. Import the right profile and only the host-local modules you need.
+3. Add `sys.nix` only for physical machines or other hosts with local hardware
+   config.
+4. Register the host in `hosts/default.nix`.
+5. Add deploy metadata to `hosts/nixbot.nix`.
+6. If the host is an Incus guest, also declare it on the parent host in
+   `hosts/<parent>/incus.nix`.
 
-No strict naming scheme is enforced, but existing hosts use lowercase with
-hyphens.
+## Minimal Host Shapes
 
-### 2. Create the host directory
-
-Create `hosts/<host-name>/default.nix` as the entry point. This file imports the
-appropriate profile and any host-specific modules.
-
-Copying a nearby host with the same shape is normal. Remove imports for files
-the new host does not need instead of creating empty stubs just to match another
-host.
-
-For a physical machine:
+Physical machine or VM:
 
 ```nix
 {...}: {
@@ -98,34 +78,20 @@ For a physical machine:
 }
 ```
 
-For an Incus VM guest:
+Incus guest:
 
 ```nix
 {hostName, ...}: {
   imports = [
     ../../lib/profiles/systemd-container.nix
     (import ../../lib/incus-vm.nix {inherit hostName;})
-    ../../lib/podman.nix
-    ../../lib/podman-compose
     ./packages.nix
     ./users.nix
   ];
 }
 ```
 
-Add `./services.nix`, `./firewall.nix`, `./cloudflare.nix`, or other host-local
-modules only when the guest actually needs them.
-
-### 3. Add hardware config (physical machines only)
-
-Generate with `nixos-generate-config` and move the hardware configuration into
-`sys.nix`. This contains boot configuration, filesystem declarations, kernel
-modules, and platform detection.
-
-Incus VM guests do not need `sys.nix` — `lib/incus-vm.nix` handles the virtual
-hardware.
-
-### 4. Register the host
+## Register A Host
 
 Add the host to `hosts/default.nix`:
 
@@ -140,61 +106,56 @@ Add the host to `hosts/default.nix`:
 };
 ```
 
-### 5. Declare the guest on its parent host (Incus guests only)
+## Deploy Metadata
 
-If the new host runs inside Incus, add it to `hosts/<parent-host>/incus.nix`. At
-minimum, give it a stable bridge IP and a persistent `/var/lib` disk. Add
-workload-specific devices, such as GPU passthrough, only when the guest actually
-needs them.
-
-Example shape:
-
-```nix
-services.incusMachines.instances.<host-name> = {
-  ipv4Address = "10.10.30.11";
-  devices.state = {
-    source = "<host-name>";
-    path = "/var/lib";
-    removalPolicy = "delete";
-  };
-};
-```
-
-See `docs/incus-vms.md` for the full guest lifecycle and device model.
-
-### 6. Add deploy configuration
-
-Add an entry in `hosts/nixbot.nix`:
+Add an entry to `hosts/nixbot.nix`:
 
 ```nix
 <host-name> = {
-  target = "<host-name-or-ip>";
+  target = "<host-or-ip>";
   ageIdentityKey = "data/secrets/machine/<host-name>.key.age";
 };
 ```
 
 Common optional fields:
 
-- `proxyJump = "<bastion-host>";` — when the host is not directly reachable.
-- `parent = "<parent-host>";` — parent-readiness and deploy ordering for nested
-  guests. When `parent` is set, do not also add `after = ["<parent-host>"]` just
-  to get the parent deployed first.
-- `deps = ["<dependency-host>"];` — hard dependency that expands selection and
-  ordering.
-- `after = ["<dependency-host>"];` — ordering-only edge for hosts that do not
-  need the `parent` readiness contract.
-- `deploy = "optional";` — when deploy failures are non-blocking.
+- `proxyJump = "<bastion-host>";`
+- `parent = "<parent-host>";`
+- `after = [ ... ];`
+- bootstrap fields for first-time access when needed
 
-For an Incus guest, the usual shape is:
+Use `parent` for nested guest relationships. Do not add redundant `after` edges
+just to get the parent deployed first.
 
-```nix
-<host-name> = {
-  target = "<guest-ip>";
-  ageIdentityKey = "data/secrets/machine/<host-name>.key.age";
-  proxyJump = "<parent-host>";
-  parent = "<parent-host>";
-};
-```
+## Physical Hosts
+
+- Generate hardware config with `nixos-generate-config`.
+- Move the hardware-specific output into `hosts/<host>/sys.nix`.
+- Keep `sys.nix` limited to hardware, filesystems, boot, and platform-specific
+  kernel settings.
+
+## Incus Guests
+
+- Declare the guest in the parent host's `incus.nix`.
+- Give it a stable `ipv4Address`.
+- Add a persistent `/var/lib` disk unless the guest is intentionally stateless.
+- Use extra devices only when required.
+
+See [`docs/incus-vms.md`](./incus-vms.md) for the guest lifecycle and
+[`docs/incus-readiness.md`](./incus-readiness.md) for deploy-time readiness.
+
+## Related Docs
+
+- [`docs/deployment.md`](./deployment.md)
+- [`docs/ssh-access.md`](./ssh-access.md)
+- [`docs/incus-vms.md`](./incus-vms.md)
+- [`docs/services.md`](./services.md)
+- [`docs/podman-compose.md`](./podman-compose.md)
+
+## Detailed Reference
+
+The sections below cover provisioning details, shared modules, and host-type
+notes.
 
 ### 7. Provision secrets
 
@@ -380,105 +341,6 @@ Reusable base images (e.g. for Incus templates) live in `lib/images/` and use
 the same `commonModules` mechanism. They are not registered in
 `hosts/default.nix` because they are not deploy targets.
 
-## Operator SSH Access
-
-Operator SSH access is managed declaratively. To grant a person SSH access to
-the fleet, wire their key and user module into the repo, then deploy the
-relevant hosts.
-
-### 1. Add the user's public key to `users/userdata.nix`
-
-Add a new entry with the username, uid, display metadata, and SSH public key:
-
-```nix
-<user> = {
-  username = "<user>";
-  uid = <uid>;
-  name = "<Full Name>";
-  email = "<user>@example.com";
-  sshKey = "ssh-ed25519 AAAA...";
-};
-```
-
-This is the source of truth for the user's authorized key.
-
-### 2. Create a user module under `users/<user>/`
-
-Follow the existing pattern used by `users/pvl/` or `users/bush/`. The user
-module is what actually creates `users.users.<user>` and installs
-`openssh.authorizedKeys.keys = [userdata.sshKey];`.
-
-### 3. Import that user on every host they need to reach
-
-Add the user import to the host-local `users.nix` for each target host.
-
-For example:
-
-```nix
-{
-  imports = [
-    (import ../../users/<user>).systemd-container
-  ];
-}
-```
-
-If the user needs to SSH through the bastion, make sure the bastion deployment
-imports them too. In the current repo, `gap3-gondor` is the bastion host and
-serves `z.gap3.ai` through Cloudflare Tunnel, so the bastion must include the
-user before the jump-host flow will work.
-
-### 4. Deploy bastion first, then downstream hosts
-
-If bastion access changed, deploy the bastion before testing the jump path. If
-the user also needs access to private downstream machines, deploy those hosts
-after the bastion is updated.
-
-### 5. Test raw SSH access
-
-Direct bastion access through Cloudflare Access:
-
-```bash
-ssh -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@z.gap3.ai
-```
-
-Jump through bastion to a private host:
-
-```bash
-ssh -J z.gap3.ai -o HostKeyAlias=gap3-rivendell 10.10.30.10
-```
-
-### 6. Add SSH config entries
-
-Minimal bastion entry:
-
-```sshconfig
-Host z.gap3.ai
-  User pvl
-  ProxyCommand cloudflared access ssh --hostname %h
-```
-
-Full example with bastion alias and private hosts. Replace `User pvl` with the
-actual operator username where needed:
-
-```sshconfig
-Host z.gap3.ai
-  User pvl
-  ProxyCommand cloudflared access ssh --hostname %h
-
-Host gap3-gondor
-  HostName z.gap3.ai
-  User pvl
-  ProxyCommand cloudflared access ssh --hostname %h
-
-Host gap3-rivendell
-  HostName 10.10.30.10
-  ProxyJump z.gap3.ai
-
-Host llmug-rivendell
-  HostName 10.10.30.11
-  ProxyJump z.gap3.ai
-```
-
 ## FAQ
 
 ### Does a host need to be a physical machine?
@@ -498,11 +360,6 @@ need `sys.nix` from `nixos-generate-config`.
 - Headless physical machines or cloud VMs: `core.nix`
 - Incus/container guests: `systemd-container.nix`
 
-### How does deploy reach hosts behind NAT or firewalls?
-
-Use `proxyJump` in `hosts/nixbot.nix` to route deploy SSH through a bastion
-host. Chain multiple hops with `after` for ordering.
-
 ### Can I deploy a single host?
 
 Yes. `nixbot deploy --hosts <host-name>` targets a single host.
@@ -513,6 +370,7 @@ Yes. `nixbot deploy --hosts <host-name>` targets a single host.
 - `docs/services.md`: Native service pattern.
 - `docs/podman-compose.md`: Podman compose container workloads.
 - `docs/deployment.md`: Deploy architecture, bootstrap flow, and secret model.
+- `docs/ssh-access.md`: Operator SSH access and deploy SSH routing.
 
 ## Source Of Truth Files
 

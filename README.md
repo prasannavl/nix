@@ -7,10 +7,9 @@ This is the nix driven monorepo, organized as small modules and composed via
 
 - `flake.nix`: flake inputs and system definition.
 - `pkgs/`: repo-local runnable source trees; each package owns its own flake and
-  is aggregated into a custom top-level flake attr such as
-  `.#pkgs.<system>.example-hello-rust`, `.#pkgs.<system>.cloudflare-apps`,
-  `.#pkgs.<system>.cloudflare-apps.deploy`, or
-  `.#pkgs.<system>.cloudflare-apps.llmug-hello.wrangler-deploy`.
+  is aggregated into top-level flake outputs such as `.#example-hello-rust`,
+  `.#cloudflare-apps`, `.#cloudflare-apps-deploy`, or package-local child-flake
+  entrypoints such as `./pkgs/cloudflare-apps/llmug-hello#wrangler-deploy`.
 - `pkgs/examples/`: example packages used as reference implementations and test
   beds for package patterns.
 - `lib/ext/`: standalone derivation definitions consumed by overlays and helper
@@ -211,60 +210,44 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   for both build ordering and deploy waves when selected.
 - Deploy derives dependency waves from `deps`.
 
+## Package Conventions
+
+Package and child-flake conventions are documented in
+[`docs/flake-package.md`](./docs/flake-package.md).
+
 ## Linting
 
-- Package-local flakes under `pkgs/` conventionally expose: `checks.lint`,
-  `checks.fmt`, `checks.test`, `apps.lint-fix`, `apps.fmt`, and `apps.dev` when
-  the package has a runnable dev workflow.
-- `checks.*` are read-only verification outputs; mutating actions belong in
-  `apps.*`.
-- Standard package actions are: `run` to execute the package, `dev` for
-  interactive developer workflows, `fmt` to mutate package-owned formatting,
-  `lint-fix` to apply safe package-owned auto-fixes, and `checks.fmt` /
-  `checks.lint` / `checks.test` for read-only verification.
-- `nix fmt` formats root-managed files outside `pkgs/` through the root
-  `treefmt` configuration, then runs package-managed formatting through the root
-  aggregate package-ops manifest.
-- `nix run path:.#lint` lints root-managed files outside `pkgs/`, then runs
-  package verification through the root aggregate package-ops manifest for
-  `checks.fmt`, `checks.lint`, and `checks.test`.
-- `nix run path:.#lint -- fix` applies root-owned formatting and fix-capable
-  linting outside `pkgs/`, runs package-local `fmt` and `lint-fix` actions
-  through the root aggregate package-ops manifest, then re-runs lint to show
-  anything still requiring manual changes.
-- `nix run path:.#lint -- --project <name>` and
-  `nix run path:.#fmt -- --project <name>` restrict package work to one or more
-  selected child flakes by directory name under `pkgs/`.
-- Common package commands are: `nix build ./pkgs/<name>`,
-  `nix run ./pkgs/<name>`, `nix run ./pkgs/<name>#dev`,
-  `nix run ./pkgs/<name>#fmt`, `nix run ./pkgs/<name>#lint-fix`,
-  `nix build ./pkgs/<name>#checks.fmt`, `nix build ./pkgs/<name>#checks.lint`,
-  `nix build ./pkgs/<name>#checks.test`, and `nix flake check ./pkgs/<name>`.
-- Root-owned formatter policy outside `pkgs/` is intentionally narrow:
-  Markdown/JSON/JSONC via `deno fmt`, Nix via `alejandra`, Terraform/OpenTofu
-  via `tofu fmt`, and shell via `shfmt`.
-- Package-local language policy is defined in shared flake helpers rather than
-  per-project shell snippets: Rust uses `rustfmt`/`clippy`/`cargo test`, Python
-  uses `ruff`, Go uses `gofmt`/`go vet`/`go test`, and web projects use `biome`.
-- Repo-wide root lint gates include read-only formatter checks
-  (`alejandra --check`, `deno fmt --check`, `tofu fmt -check -write=false`, and
-  `shfmt -d`), plus `statix`, `deadnix`, `shellcheck`, `markdownlint-cli2`,
-  `actionlint`, and `tflint`.
-- `nix run path:.#lint -- deps` verifies the runnable lint wrapper and its
-  runtime commands, matching the action-style entrypoints used by `nixbot`.
-- `nix run path:.#lint -- --diff` restricts file-scoped root checks to changed
-  files and only runs full child-flake checks on changed packages.
-- `nix run path:.#lint -- fix --diff` applies the same best-effort auto-fixes,
-  but only to changed files before re-running the diff-scoped lint checks.
-- CI now warms lint through `nix run path:.#lint -- deps`, which follows the
-  same action-command pattern as `nixbot` instead of using a separate
-  `.#lint-deps` package.
-- When `CI` is set, `nix run path:.#lint` defaults to `--diff` unless you pass
-  an explicit scope such as `--full`.
-- `./scripts/git-install-hooks.sh` configures Git to use `.githooks/`; the repo
-  pre-commit hook runs `nix run path:.#lint -- --diff` before allowing a commit.
+- `nix fmt`: format the repo.
+- `nix run .#lint`: run the standard lint and check flow.
+- `nix run .#lint -- fix`: apply safe auto-fixes, then re-run lint.
+- `./scripts/git-install-hooks.sh`: install the repo Git hooks.
+- The Git hook runs on `pre-push`, not `pre-commit`, and only lints the changed
+  scope.
+- Full lint workflow details live in [`docs/linting.md`](./docs/linting.md).
 
-## Package Helper
+## Contributing
 
-The child-flake helper contract is documented in
-[`docs/flake-package.md`](./docs/flake-package.md).
+Before pushing upstream, install the repo hooks once:
+
+```sh
+./scripts/git-install-hooks.sh
+```
+
+Use these checks locally before you push:
+
+```sh
+nix fmt
+nix run .#lint
+```
+
+The Git hook is intentionally on `pre-push`, not `pre-commit`. That keeps
+commit-time iteration fast and avoids running the full lint flow on every local
+commit.
+
+The `pre-push` hook is smart diff-based linting. It computes the push base and
+only runs the root diff checks and package checks for what changed, using the
+same `nix run .#lint -- --diff --base <base>` flow that CI and manual local
+usage rely on.
+
+Lint workflow details and package-level commands are documented in
+[`docs/linting.md`](./docs/linting.md).

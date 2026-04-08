@@ -1,29 +1,24 @@
 # OpenTofu Cloudflare Apps
 
-This project manages Cloudflare application-layer resources that run after host
-build/deploy work.
+Application-layer Cloudflare phase that runs after host build and deploy.
 
-Scope:
+## Scope
 
 - Workers
 - Worker routes
 - Worker custom domains
 
-Runtime:
+## Runtime
 
 - `nixbot tf-apps`
 - default state key: `cloudflare-apps/terraform.tfstate`
 
-Build model:
+## Build Model
 
-- `tf/*-apps` projects may declare a matching aggregate package at
-  `pkgs/<project>/flake.nix`.
-- Before OpenTofu plan/apply, `nixbot` runs the aggregate `pkgs/<project>#build`
-  derivation with `nix build --no-link`.
-- For this project, `pkgs/cloudflare-apps/flake.nix` is the aggregate
-  entrypoint.
-- Child app directories are resolved to their `#build` outputs by the Cloudflare
-  module's worker asset resolver during plan/apply.
+- app phases may declare an aggregate package at `pkgs/<project>/flake.nix`
+- `nixbot` prepares the phase with `nix build ./pkgs/<project>#build --no-link`
+- for this project, the aggregate entrypoint is `pkgs/cloudflare-apps/flake.nix`
+- child app directories are resolved to their `#build` outputs during plan/apply
 
 Inputs live in `workers.auto.tfvars` plus encrypted provider-level inputs under
 `data/secrets/tf/cloudflare/` and project-level worker inputs under

@@ -1,24 +1,23 @@
 # OpenTofu Cloudflare Platform
 
-This project manages non-app Cloudflare infrastructure that is safe to run
-outside the host build itself.
+Non-app Cloudflare infrastructure phase.
 
-Scope:
+## Scope
 
-- account metadata like KV namespaces, Email Routing destination addresses, and
-  Zero Trust Access
-- Zero Trust cloudflared tunnels, their configs, and private network routes
+- account metadata such as KV, Email Routing destinations, and Zero Trust Access
+- cloudflared tunnels, configs, and private network routes
 - R2 buckets
 - zone DNSSEC
 - zone settings, security, rules, cache, and Email Routing
 
-Tunnel inputs:
+## Runtime
 
-- `tunnels`: map of cloudflared tunnel definitions keyed by stable Terraform key
-- `tunnel_configs`: map keyed by tunnel key with a `config` object
-- `tunnel_routes`: map keyed by tunnel key with `routes = [{ network, ... }]`
+- `nixbot tf-platform`
+- default state key: `cloudflare-platform/terraform.tfstate`
 
-Example shape:
+Inputs live in this directory's `*.auto.tfvars` files.
+
+## Tunnel Input Shape
 
 ```hcl
 tunnels = {
@@ -55,7 +54,7 @@ tunnel_routes = {
 }
 ```
 
-Import existing resources:
+## Imports
 
 - Tunnel:
   `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared.tunnel["edge"]' '<account_id>/<tunnel_id>'`
@@ -63,6 +62,7 @@ Import existing resources:
   `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_config.config["edge"]' '<account_id>/<tunnel_id>'`
 - Route:
   `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_route.route["edge/10.10.0.0/16"]' '<account_id>/<route_id>'`
+
 
 Runtime:
 

@@ -34,13 +34,12 @@ aggregates package-local checks and apps for everything inside `pkgs/`.
 - `nix fmt` at the repo root formats root-managed files outside `pkgs/` through
   `treefmt`, then runs package `fmt` actions through one aggregate package-ops
   manifest.
-- `nix run path:.#lint` runs root-only read-only checks outside `pkgs/`, then
-  runs package `checks.fmt`, `checks.lint`, and `checks.test` through the same
+- `nix run .#lint` runs root-only read-only checks outside `pkgs/`, then runs
+  package `checks.fmt`, `checks.lint`, and `checks.test` through the same
   aggregate package-ops manifest when present.
-- `nix run path:.#lint -- fix` runs the root formatter, then package
-  `apps.lint-fix` and `apps.fmt` through the aggregate package-ops manifest,
-  then applies root-only fix-capable tools outside `pkgs/`, and finally re-runs
-  lint.
+- `nix run .#lint -- fix` runs the root formatter, then package `apps.lint-fix`
+  and `apps.fmt` through the aggregate package-ops manifest, then applies
+  root-only fix-capable tools outside `pkgs/`, and finally re-runs lint.
 - `--project <name>` scopes root `fmt` and `lint` to one or more child flakes by
   directory name under `pkgs/`, including nested child flakes.
 - Shared package-helper builders in `lib/flake/pkg-helper.nix` own the common

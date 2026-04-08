@@ -1,53 +1,21 @@
-# Podman Compose Services
+# Podman Compose
 
-This document describes the current Podman compose model in this repo, the
-shared module, and the operational rules for creating, rebuilding, and debugging
-compose-managed services.
+Use this model for container workloads that should run as rootless Podman stacks
+on a host.
 
-## Why This Module Exists
+## What It Provides
 
-Running container workloads with Podman compose on NixOS is straightforward in
-isolation, but scaling it across hosts introduces repetitive plumbing:
+- staging of compose files into a working directory
+- generated user services for stack lifecycle
+- env-secret injection
+- firewall derivation from exposed ports
+- nginx and Cloudflare Tunnel metadata derivation
+- deploy-time restart and recreate behavior
 
-- Every compose stack needs its YAML staged into a working directory, a systemd
-  user service to run `podman compose up/down`, and restart logic when the
-  definition changes.
-- Secrets must be injected as file-backed environment variables without baking
-  them into images.
-- Firewall ports, nginx reverse-proxy entries, and Cloudflare Tunnel ingress
-  rules must stay in sync with the ports each stack actually exposes.
-- Deploy-time behavior must distinguish between active and inactive stacks so
-  that a config change restarts running services without waking up intentionally
-  stopped ones.
+The shared logic lives in `lib/podman-compose/default.nix` and
+`lib/podman-compose/helper.sh`.
 
-Without a shared module, each host would duplicate all of that wiring
-independently and the definitions would drift. `lib/podman-compose/default.nix`
-exists to own that lifecycle once so hosts only declare what is specific to
-them: which stacks to run, what images to use, and which secrets to inject. The
-module then generates the systemd units, firewall rules, and ingress metadata
-automatically.
-
-## Current Model
-
-- `lib/podman.nix` owns shared Podman enablement and `containers.conf` defaults.
-- `lib/podman-compose/default.nix` owns declarative compose lifecycle and passes
-  per-instance metadata to `lib/podman-compose/helper.sh`, which owns the
-  runtime shell flow:
-  - working-directory staging
-  - generated systemd user units
-  - restart behavior on config changes
-  - env-secret injection
-  - firewall derivation from exposed ports
-  - nginx and Cloudflare Tunnel metadata derivation
-  - lifecycle tags
-- `lib/systemd-user-manager/default.nix` owns deploy-time old-stop/new-start
-  behavior for selected systemd user units.
-- Host-specific stack declarations live under `hosts/<host>/services.nix`.
-- Deploy targeting lives in `hosts/nixbot.nix`.
-
-## Shared Module Model
-
-Hosts declare compose stacks under:
+## Declaration Shape
 
 ```nix
 services.podmanCompose.<stack> = {
@@ -62,7 +30,7 @@ services.podmanCompose.<stack> = {
 
     source = ''
       services:
-        ${name}:
+        app:
           image: docker.io/library/nginx:latest
           restart: unless-stopped
     '';
@@ -70,12 +38,85 @@ services.podmanCompose.<stack> = {
 };
 ```
 
-When `services.podmanCompose` is non-empty, the shared module also:
+When at least one stack is declared, the module also enables Podman and the
+required runtime packages.
 
-- enables Podman
-- enables `dockerCompat`
-- enables DNS on the default Podman network
-- installs both `podman` and `podman-compose`
+## Source Patterns
+
+Use one of these shapes:
+
+- attrset `source`: when Nix should render the compose structure
+- inline YAML `source`: for small host-local stacks
+- file-backed `source`: when the main compose file should stay in the repo
+- directory-backed `files`: when the stack is a directory tree with multiple
+  compose fragments
+- inline `files` overrides: when the base compose file is stable but host-local
+  overlays or `.env` files are generated in Nix
+
+## Exposed Ports
+
+`exposedPorts` is the shared ingress metadata for a stack. It can drive:
+
+- Podman port publishing
+- firewall openings
+- nginx reverse-proxy vhosts
+- Cloudflare Tunnel ingress
+- rate limiting
+
+Typical shape:
+
+```nix
+exposedPorts.http = {
+  port = 12000;
+  openFirewall = true;
+  nginxHostNames = ["app.example.com"];
+  cfTunnelNames = ["app.example.com"];
+  rateLimit = null;
+};
+```
+
+## Lifecycle Tags
+
+- `bootTag`: stop and start the stack
+- `recreateTag`: force recreate on the next run
+- `imageTag`: force image refresh or image-pull path changes
+
+These are manual lifecycle knobs. Toggle the value when you want the behavior.
+
+## Runtime Model
+
+For each instance, the generated service:
+
+- stages managed files into the working directory
+- removes managed file-versus-directory conflicts before restaging
+- runs `podman compose up -d --remove-orphans`
+- verifies that containers reached a healthy running state
+- stays attached with a monitor loop so systemd can observe failure
+
+The user-service switching path is handled by
+[`docs/systemd-user-manager.md`](./systemd-user-manager.md).
+
+## Secrets
+
+Use file-backed environment secret injection. Do not bake secret values into
+images or repo-tracked compose files.
+
+## Where To Put Things
+
+- host declarations: `hosts/<host>/services.nix`
+- host-local compose trees: `hosts/<host>/compose/<stack>/`
+- shared module logic: `lib/podman-compose/`
+
+## Related Docs
+
+- [`docs/systemd-user-manager.md`](./systemd-user-manager.md)
+- [`docs/nginx-vhosts.md`](./nginx-vhosts.md)
+- [`docs/deployment.md`](./deployment.md)
+
+## Detailed Reference
+
+The sections below cover declaration patterns, examples, and operational edge
+cases.
 
 ## Declaration Patterns
 

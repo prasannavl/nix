@@ -167,7 +167,7 @@
 - The repo uses a single root `flake.nix` with sub-flakes under `pkgs/`.
 - Sub-flake `flake.nix` files can export `packages`, `apps`, `checks`, and
   `nixosModules`.
-- Use `path:.` for self-references in `nix` CLI commands (e.g.,
-  `nix run path:.#lint`).
+- Use `.` for root-flake `nix build` and `nix run` examples (e.g.,
+  `nix run .#lint`).
 - Lock files are committed. Run `nix flake update` or `scripts/update-flakes.sh`
   to refresh them.
