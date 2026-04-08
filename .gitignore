@@ -31,3 +31,4 @@ crash.log
 /.kilocode/
 /.vscode/
 /.claude/
+.codex
