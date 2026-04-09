@@ -3,107 +3,6 @@
   rateLimitProfiles = {
     default = exposedPortsLib.defaultRateLimitProfile;
   };
-  proxyVhostType = lib.types.submodule {
-    options = {
-      service = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Compose service name nginx should depend on for this vhost.";
-      };
-
-      serverNames = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        description = "Hostname(s) served by this nginx proxy vhost.";
-      };
-
-      port = lib.mkOption {
-        type = lib.types.port;
-        description = "Local backend port nginx should forward to.";
-      };
-
-      upstreams = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        description = "Backend server addresses (host:port).";
-      };
-
-      rateLimit = lib.mkOption {
-        type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
-        default = null;
-        description = "Optional resolved ingress rate-limiting policy for this proxy vhost.";
-      };
-    };
-  };
-
-  routeType = lib.types.submodule {
-    options = {
-      service = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Compose service name nginx should depend on for this route.";
-      };
-
-      mode = lib.mkOption {
-        type = lib.types.enum [
-          "static"
-          "upstream"
-        ];
-        description = "Whether this route proxies to an upstream backend or a static site tree.";
-      };
-
-      serverName = lib.mkOption {
-        type = lib.types.str;
-        description = "Hostname served by this nginx route.";
-      };
-
-      path = lib.mkOption {
-        type = lib.types.str;
-        description = "Path prefix on the host vhost that nginx should mount.";
-      };
-
-      port = lib.mkOption {
-        type = lib.types.nullOr lib.types.port;
-        default = null;
-        description = "Optional local backend port nginx should forward to.";
-      };
-
-      upstreams = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [];
-        description = "Backend server addresses (host:port).";
-      };
-
-      stripPath = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Whether nginx should strip the configured path prefix before proxying to the backend.";
-      };
-
-      siteMountPath = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Mounted static-site directory for static routes.";
-      };
-
-      siteIndex = lib.mkOption {
-        type = lib.types.str;
-        default = "index.html";
-        description = "Index file name for static routes.";
-      };
-
-      siteSinglePageApp = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Whether static routes should fall back to their index file for unknown paths.";
-      };
-
-      rateLimit = lib.mkOption {
-        type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
-        default = null;
-        description = "Optional resolved ingress rate-limiting policy for this route.";
-      };
-    };
-  };
-
   mkProxyVhost = {defaultHost ? "localhost"}: serviceName: portName: portCfg: let
     nginxHostNames = portCfg.nginxHostNames or [];
   in
@@ -611,8 +510,105 @@
     '';
 in rec {
   inherit rateLimitProfiles;
-  proxyVhostType = proxyVhostType;
-  routeType = routeType;
+  proxyVhostType = lib.types.submodule {
+    options = {
+      service = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Compose service name nginx should depend on for this vhost.";
+      };
+
+      serverNames = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Hostname(s) served by this nginx proxy vhost.";
+      };
+
+      port = lib.mkOption {
+        type = lib.types.port;
+        description = "Local backend port nginx should forward to.";
+      };
+
+      upstreams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Backend server addresses (host:port).";
+      };
+
+      rateLimit = lib.mkOption {
+        type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
+        default = null;
+        description = "Optional resolved ingress rate-limiting policy for this proxy vhost.";
+      };
+    };
+  };
+  routeType = lib.types.submodule {
+    options = {
+      service = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Compose service name nginx should depend on for this route.";
+      };
+
+      mode = lib.mkOption {
+        type = lib.types.enum [
+          "static"
+          "upstream"
+        ];
+        description = "Whether this route proxies to an upstream backend or a static site tree.";
+      };
+
+      serverName = lib.mkOption {
+        type = lib.types.str;
+        description = "Hostname served by this nginx route.";
+      };
+
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = "Path prefix on the host vhost that nginx should mount.";
+      };
+
+      port = lib.mkOption {
+        type = lib.types.nullOr lib.types.port;
+        default = null;
+        description = "Optional local backend port nginx should forward to.";
+      };
+
+      upstreams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Backend server addresses (host:port).";
+      };
+
+      stripPath = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether nginx should strip the configured path prefix before proxying to the backend.";
+      };
+
+      siteMountPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Mounted static-site directory for static routes.";
+      };
+
+      siteIndex = lib.mkOption {
+        type = lib.types.str;
+        default = "index.html";
+        description = "Index file name for static routes.";
+      };
+
+      siteSinglePageApp = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether static routes should fall back to their index file for unknown paths.";
+      };
+
+      rateLimit = lib.mkOption {
+        type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
+        default = null;
+        description = "Optional resolved ingress rate-limiting policy for this route.";
+      };
+    };
+  };
 
   composeSource = ./compose/compose.yaml;
 
