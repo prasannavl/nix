@@ -27,7 +27,7 @@ Typical usage:
 
 ```sh
 incus-machines-reconciler --all
-incus-machines-reconciler --machine pvl-vlab --machine gap3-gondor
+incus-machines-reconciler --machine pvl-vlab --machine pvl-x2
 ```
 
 Policy is controlled by `services.incusMachines.reconcilePolicy`:
@@ -115,7 +115,7 @@ For example, given:
       target = "10.10.20.10";
       parent = "pvl-x2";
     };
-    gap3-gondor = {
+    pvl-x2 = {
       target = "10.10.20.11";
       parent = "pvl-x2";
       after = ["pvl-vlab"];

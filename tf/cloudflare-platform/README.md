@@ -63,7 +63,6 @@ tunnel_routes = {
 - Route:
   `tofu import 'module.cloudflare_platform.cloudflare_zero_trust_tunnel_cloudflared_route.route["edge/10.10.0.0/16"]' '<account_id>/<route_id>'`
 
-
 Runtime:
 
 - `nixbot tf-platform`

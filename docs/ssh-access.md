@@ -28,8 +28,8 @@ Use this document for operator SSH access and deploy SSH routing.
 
 Current bastion pattern:
 
-- `gap3-gondor` is the bastion host
-- `z.gap3.ai` is exposed through Cloudflare Tunnel
+- `pvl-x2` is the bastion host
+- `z.bastion.com` is exposed through Cloudflare Tunnel
 
 ## Grant Operator Access
 
@@ -76,7 +76,7 @@ Example:
 ```
 
 If the user needs bastion-mediated access, import them on bastion too. In the
-current repo, `gap3-gondor` serves `z.gap3.ai`, so bastion must include the user
+current repo, `pvl-x2` serves `z.bastion.com`, so bastion must include the user
 before the jump-host flow works.
 
 ### 4. Deploy in the right order
@@ -89,47 +89,92 @@ before the jump-host flow works.
 
 ### Bastion via Cloudflare Access
 
+Here are the commands to test access, if these work, you can move to ssh config
+below to simply connect with just `ssh <host>`.
+
+- The explicit key versions are also provided below if you have multiple SSH
+  agents running that may stomp on each other and to test them agnostic of
+  agent.
+- The disadvantage of explicit key usage is that you may lose convenience of
+  automatic caching of passwords, etc that your ssh agents may provide if you
+  use the explicit key versions, so prefer the non-explicit versions if possible
+  by cleaning up your agents if you have issues with multiple agents.
+
 ```bash
-ssh -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@z.gap3.ai
+ssh -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@z.bastion.com
+```
+
+With explicit key:
+
+```bash
+ssh -i ~/.ssh/<your-key> -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@z.bastion.com
 ```
 
 ### Private host through bastion
 
+Private hosts needs a proxy jump.
+
 ```bash
-ssh -J z.gap3.ai -o HostKeyAlias=gap3-rivendell 10.10.30.10
+ssh \
+-o 'ProxyCommand=ssh -o "ProxyCommand=cloudflared access ssh --hostname z.bastion.com" <user>@z.bastion.com -W %h:%p' \
+<user>@10.10.30.10
 ```
+
+With explicit key:
+
+```bash
+ssh \
+-o 'ProxyCommand=ssh -i ~/.ssh/<your-key> -o IdentitiesOnly=yes -o "ProxyCommand=cloudflared access ssh --hostname z.bastion.com" <user>@z.bastion.com -W %h:%p' \
+-o IdentitiesOnly=yes \
+-i ~/.ssh/<your-key> \
+<user>@10.10.30.10
+```
+
+Both of the above are the conceptual equivalent of:
+
+```bash
+ssh -J z.bastion.com -o HostKeyAlias=gap3-rivendell 10.10.30.10
+```
+
+However, it needs ssh config for `z.bastion.com` to work, see config below.
 
 ## SSH Config
 
-### Minimal bastion entry
+### Minimal
 
 ```sshconfig
-Host z.gap3.ai
-  User pvl
+Host z.bastion.com
+  User <user>
   ProxyCommand cloudflared access ssh --hostname %h
 ```
 
-### Bastion plus private hosts
+### Full
 
-Replace `User pvl` with the actual operator username where needed.
+Replace `<user>` with your actual username.
 
 ```sshconfig
-Host z.gap3.ai
-  User pvl
+Host z.bastion.com gap3-* llmug-* 
+  User <user>
+  # Optional, uncomment if you have to use explicit keys
+  # IdentityFile ~/.ssh/<your-key>
+  # IdentitiesOnly yes
+
+Host z.bastion.com
   ProxyCommand cloudflared access ssh --hostname %h
 
-Host gap3-gondor
-  HostName z.gap3.ai
-  User pvl
-  ProxyCommand cloudflared access ssh --hostname %h
+Host gap3-* llmug-*
+  ProxyJump z.bastion.com
+
+Host pvl-x2
+  HostName z.bastion.com
 
 Host gap3-rivendell
   HostName 10.10.30.10
-  ProxyJump z.gap3.ai
+  HostKeyAlias gap3-rivendell
 
 Host llmug-rivendell
   HostName 10.10.30.11
-  ProxyJump z.gap3.ai
+  HostKeyAlias llmug-rivendell
 ```
 
 ## Deploy SSH Routing
