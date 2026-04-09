@@ -26,6 +26,7 @@
     wants = [];
     waitForNetwork = true;
     envSecrets = {};
+    fileSecrets = {};
     exposedPorts = {};
   };
   bootReadyTargetName = "systemd-user-manager-ready.target";
@@ -94,6 +95,14 @@
         description = "Staged host paths for generated env secret files by compose service.";
       };
 
+      fileSecretRuntimePaths = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        readOnly = true;
+        internal = true;
+        description = "Staged host paths for file-based secrets by secret name.";
+      };
+
       runtimePaths = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
         default = {};
@@ -118,6 +127,12 @@
         type = lib.types.listOf lib.types.str;
         default = [];
         description = "Additional arguments passed to every `podman compose` invocation for this instance, before compose-file flags and the subcommand.";
+      };
+
+      recreateOnSwitch = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether service starts triggered by switch/restart should force container recreation instead of reusing existing compose containers.";
       };
 
       recreateTag = lib.mkOption {
@@ -160,6 +175,12 @@
         type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
         default = {};
         description = "Per-compose-service file-backed environment secret injection. Maps compose service name to environment variable name to host secret file path. Generates an additional compose override file that adds a generated env_file so the image entrypoint/cmd remain unchanged.";
+      };
+
+      fileSecrets = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        description = "File-backed secret staging for bind-mounted runtime files. Maps a stable secret filename to a host secret file path; the helper copies each source to a stable path under the compose working directory before `podman compose up`.";
       };
 
       exposedPorts = lib.mkOption {
@@ -357,11 +378,18 @@
         workingDir = resolvedWorkingDir;
         composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
-        stagedFiles = map (fileName: {
-          src = service.sourcePaths.${fileName};
-          dst = service.runtimePaths.${fileName};
-          dstDir = builtins.dirOf service.runtimePaths.${fileName};
-        }) (builtins.attrNames service.sourcePaths);
+        stagedFiles =
+          map (fileName: {
+            src = service.sourcePaths.${fileName};
+            dst = service.runtimePaths.${fileName};
+            dstDir = builtins.dirOf service.runtimePaths.${fileName};
+          }) (builtins.attrNames service.sourcePaths)
+          ++ map (secretName: {
+            src = service.fileSecrets.${secretName};
+            dst = service.fileSecretRuntimePaths.${secretName};
+            dstDir = builtins.dirOf service.fileSecretRuntimePaths.${secretName};
+          }) (builtins.attrNames service.fileSecrets);
+        recreateOnSwitch = service.recreateOnSwitch;
         envSecretFiles = map (composeServiceName: {
           dst = service.envSecretRuntimePaths.${composeServiceName};
           dstDir = builtins.dirOf service.envSecretRuntimePaths.${composeServiceName};
@@ -439,6 +467,8 @@
       unit = mergedSystemdService;
       sourcePaths = service.sourcePaths;
       runtimePaths = service.runtimePaths;
+      fileSecrets = service.fileSecrets;
+      fileSecretRuntimePaths = service.fileSecretRuntimePaths;
       envSecrets = service.envSecrets;
       envSecretRuntimePaths = service.envSecretRuntimePaths;
     });
@@ -615,6 +645,10 @@ in {
                 if normalizedService.workingDir != null
                 then normalizedService.workingDir
                 else "${stack.stackDir}/${serviceName}";
+              fileSecretRuntimePaths =
+                lib.mapAttrs
+                (secretName: _: "${resolvedWorkingDir}/.podman-file-secrets/${secretName}")
+                normalizedService.fileSecrets;
               envSecretRuntimePaths =
                 lib.mapAttrs
                 (composeServiceName: _: "${resolvedWorkingDir}/.podman-env-secrets/${composeServiceName}.env")
@@ -623,6 +657,7 @@ in {
               normalizedService
               // {
                 resolvedWorkingDir = resolvedWorkingDir;
+                fileSecretRuntimePaths = fileSecretRuntimePaths;
                 envSecretRuntimePaths = envSecretRuntimePaths;
                 sourcePaths = lib.mapAttrs (fileName: value: renderValue serviceName fileName value) effectiveFilesRaw;
                 runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveFilesRaw;

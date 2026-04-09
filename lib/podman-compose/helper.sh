@@ -8,6 +8,7 @@ init_vars() {
 	runtime_dir="${XDG_RUNTIME_DIR-}"
 	manifest_path=""
 	working_dir=""
+	recreate_on_switch="false"
 
 	compose_args=()
 	compose_file_args=()
@@ -31,6 +32,7 @@ load_metadata() {
 
 	manifest_path="$runtime_dir/podman-compose/${podman_compose_service_name}.manifest"
 	working_dir="$(jq -r '.workingDir' "$podman_compose_metadata")"
+	recreate_on_switch="$(jq -r '.recreateOnSwitch // false' "$podman_compose_metadata")"
 
 	compose_args=()
 	while IFS= read -r compose_arg; do
@@ -164,6 +166,13 @@ compose_up() {
 	)
 }
 
+compose_up_force_recreate() {
+	(
+		cd "$working_dir"
+		podman compose "${compose_file_args[@]}" up -d --remove-orphans --force-recreate
+	)
+}
+
 compose_down() {
 	(
 		cd "$working_dir"
@@ -257,7 +266,11 @@ cmd_start() {
 	load_metadata
 	ensure_runtime_dirs
 	stage_runtime_files
-	compose_up
+	if [ "$recreate_on_switch" = "true" ]; then
+		compose_up_force_recreate
+	else
+		compose_up
+	fi
 	verify_compose_state
 	exec systemd-notify \
 		--ready \
