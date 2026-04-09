@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 init_vars() {
-  podman_compose_metadata="${NIX_PODMAN_COMPOSE_METADATA-}"
-  podman_compose_service_name="${NIX_PODMAN_COMPOSE_SERVICE_NAME-}"
+	podman_compose_metadata="${NIX_PODMAN_COMPOSE_METADATA-}"
+	podman_compose_service_name="${NIX_PODMAN_COMPOSE_SERVICE_NAME-}"
 
 	runtime_dir="${XDG_RUNTIME_DIR-}"
 	manifest_path=""
@@ -23,10 +23,10 @@ require_env() {
 }
 
 load_metadata() {
-  local compose_file
-  require_env NIX_PODMAN_COMPOSE_METADATA
-  require_env NIX_PODMAN_COMPOSE_SERVICE_NAME
-  require_env XDG_RUNTIME_DIR
+	local compose_file
+	require_env NIX_PODMAN_COMPOSE_METADATA
+	require_env NIX_PODMAN_COMPOSE_SERVICE_NAME
+	require_env XDG_RUNTIME_DIR
 
 	manifest_path="$runtime_dir/podman-compose/${podman_compose_service_name}.manifest"
 	working_dir="$(jq -r '.workingDir' "$podman_compose_metadata")"

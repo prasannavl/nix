@@ -1,15 +1,6 @@
 {pkgs}: {
   packageEntries = [
     {
-      id = "web-gap3-hello";
-      path = ./web/gap3-hello/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "srv-ingest";
-      path = ./srv/ingest/default.nix;
-    }
-    {
       id = "nixbot";
       path = ./tools/nixbot/default.nix;
     }
@@ -50,10 +41,6 @@
       id = "example-hello-web-static";
       path = ./examples/hello-web-static/default.nix;
       rootApp = false;
-    }
-    {
-      id = "example-edi-ast-parser-rs";
-      path = ./examples/edi-ast-parser-rs/default.nix;
     }
   ];
 }

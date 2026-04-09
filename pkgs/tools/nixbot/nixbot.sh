@@ -6405,10 +6405,10 @@ emit_tf_secret_paths_for_project() {
 	provider_name="$(tf_project_provider_from_name "${project_name}")"
 
 	[ -f "${TF_SECRETS_DIR}/${provider_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${provider_name}.tfvars.age"
-  [ -d "${TF_SECRETS_DIR}/${provider_name}" ] && find "${TF_SECRETS_DIR}/${provider_name}" -type f -name '*.tfvars.age' | sort
+	[ -d "${TF_SECRETS_DIR}/${provider_name}" ] && find "${TF_SECRETS_DIR}/${provider_name}" -type f -name '*.tfvars.age' | sort
 
 	[ -f "${TF_SECRETS_DIR}/${project_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${project_name}.tfvars.age"
-  [ -d "${TF_SECRETS_DIR}/${project_name}" ] && find "${TF_SECRETS_DIR}/${project_name}" -type f -name '*.tfvars.age' | sort
+	[ -d "${TF_SECRETS_DIR}/${project_name}" ] && find "${TF_SECRETS_DIR}/${project_name}" -type f -name '*.tfvars.age' | sort
 }
 
 load_tf_runtime_secrets_for_project() {
@@ -6439,9 +6439,9 @@ is_tf_candidate_path_for_project() {
 	"tf/modules/${provider_name}" | "tf/modules/${provider_name}/"*) return 0 ;;
 	"data/secrets/${provider_name}" | "data/secrets/${provider_name}/"*) return 0 ;;
 	"data/secrets/tf/${provider_name}.tfvars.age") return 0 ;;
-    "data/secrets/tf/${provider_name}"|"data/secrets/tf/${provider_name}/"*) return 0 ;;
-    "data/secrets/tf/${project_name}.tfvars.age") return 0 ;;
-	"data/secrets/tf/${project_name}"|"data/secrets/tf/${project_name}/"*) return 0 ;;
+	"data/secrets/tf/${provider_name}" | "data/secrets/tf/${provider_name}/"*) return 0 ;;
+	"data/secrets/tf/${project_name}.tfvars.age") return 0 ;;
+	"data/secrets/tf/${project_name}" | "data/secrets/tf/${project_name}/"*) return 0 ;;
 	"data/secrets/cloudflare/r2-account-id.key.age" | "data/secrets/cloudflare/r2-state-bucket.key.age" | "data/secrets/cloudflare/r2-access-key-id.key.age" | "data/secrets/cloudflare/r2-secret-access-key.key.age") return 0 ;;
 	esac
 
