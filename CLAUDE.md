@@ -1,3 +1,3 @@
-# MUST
+# Claude
 
 @AGENTS.md
