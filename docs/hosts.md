@@ -144,7 +144,7 @@ just to get the parent deployed first.
 See [`docs/incus-vms.md`](./incus-vms.md) for the guest lifecycle and
 [`docs/incus-readiness.md`](./incus-readiness.md) for deploy-time readiness.
 
-## Related Docs
+## Quick Links
 
 - [`docs/deployment.md`](./deployment.md)
 - [`docs/ssh-access.md`](./ssh-access.md)
@@ -274,7 +274,7 @@ can be overridden if the secret file uses a different name.
 ## Cloudflare Tunnels
 
 Hosts that need to expose services to the internet use Cloudflare Tunnels. This
-uses the stock NixOS `services.cloudflared` module directly — there is no
+uses the stock NixOS `services.cloudflared` module directly; there is no
 repo-specific wrapper.
 
 Each tunneled host has a `cloudflare.nix` file that:
@@ -326,8 +326,7 @@ written by hand.
 
 To add Cloudflare Tunnel support to a new host:
 
-1. Create the tunnel in Cloudflare (via Terraform in `tf/cloudflare-platform/`
-   or manually).
+1. Create the tunnel in Cloudflare via the normal platform workflow.
 2. Store the credentials JSON at
    `data/secrets/cloudflare/tunnels/<host>-main.credentials.json`.
 3. Encrypt it as `.age` and re-encrypt secrets.
@@ -364,7 +363,7 @@ need `sys.nix` from `nixos-generate-config`.
 
 Yes. `nixbot deploy --hosts <host-name>` targets a single host.
 
-## Related Docs
+## Further Reading
 
 - `docs/incus-vms.md`: Incus guest lifecycle, tags, and device model.
 - `docs/services.md`: Native service pattern.

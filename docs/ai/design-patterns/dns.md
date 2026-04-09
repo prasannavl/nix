@@ -49,7 +49,7 @@
 
 ## Recovery Lessons
 
-- On April 2, 2026, adding the `gap3.ai` tunnel CNAME at the top of
+- On April 2, 2026, adding a new tunnel CNAME at the top of
   `tf/cloudflare-dns/dns.auto.tfvars` shifted downstream MX and TXT indices.
 - That caused a partial apply:
   - some old records were deleted

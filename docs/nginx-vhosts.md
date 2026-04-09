@@ -77,7 +77,7 @@ listener or backend.
 
 The same exposed-port metadata is used to derive tunnel ingress config.
 
-## Related Docs
+## Quick Links
 
 - [`docs/podman-compose.md`](./podman-compose.md)
 - [`docs/services.md`](./services.md)
@@ -104,45 +104,46 @@ If the content is already a static bundle, keep it defined once with
 
 ```nix
 let
-  gap3HelloSite = builtins.path {
-    path = (pkgs.callPackage ../../pkgs/web/gap3-hello/default.nix {}) + "/share/gap3-hello";
-    name = "gap3-ai-web-site";
+  exampleRootSite = builtins.path {
+    path =
+      (pkgs.callPackage ../../pkgs/web/<root-site-package>/default.nix {})
+      + "/share/<root-site>";
+    name = "example-root-site";
   };
 
   staticSites = {
-    gap3-ai-web = nginxLib.mkStaticSite {
-      serverNames = ["gap3.ai"];
-      rootPath = gap3HelloSite;
+    example-root = nginxLib.mkStaticSite {
+      serverNames = ["app.example.com"];
+      rootPath = exampleRootSite;
       singlePageApp = true;
     };
 
-    llmug-hello = nginxLib.mkStaticSite {
-      rootPath = llmugHelloSite;
+    example-hello = nginxLib.mkStaticSite {
+      rootPath = exampleHelloSite;
       singlePageApp = true;
       routes = [
         {
-          serverName = "gap3.ai";
+          serverName = "app.example.com";
           path = "/hello";
         }
       ];
     };
   };
 in {
-  services.podmanCompose.gap3.instances.nginx.files."conf.d/srv-http-default.conf" =
-    nginxLib.renderServers {
-      rateLimit = exposedPorts.http.rateLimit or null;
-      staticSites = staticSites;
-    };
+  services.podmanCompose.<stack>.instances.nginx.files."conf.d/srv-http-default.conf" = nginxLib.renderServers {
+    rateLimit = exposedPorts.http.rateLimit or null;
+    staticSites = staticSites;
+  };
 }
 ```
 
 That shape gives you:
 
-- `https://gap3.ai/` from the root static site
-- `https://gap3.ai/hello/` from a root-assuming static app mounted under
+- `https://app.example.com/` from the root static site
+- `https://app.example.com/hello/` from a root-assuming static app mounted under
   `/hello`
-- one merged nginx `server_name gap3.ai` block rather than a second conflicting
-  server definition
+- one merged nginx `server_name app.example.com` block rather than a second
+  conflicting server definition
 
 ## Proxied API And App Services
 
@@ -153,22 +154,22 @@ standard proxy pattern. Instead, they expose a port and set
 Example:
 
 ```nix
-instances.open-webui = rec {
+instances.web = rec {
   exposedPorts.http = {
     port = 12000;
     openFirewall = true;
     nginxHostNames = ["chat.example.com"];
     cfTunnelNames = ["chat.example.com"];
-rateLimit = {
-  requestsPerSecond = 5;
-  requestsPerSecondBurst = 10;
-};
+    rateLimit = {
+      requestsPerSecond = 5;
+      requestsPerSecondBurst = 10;
+    };
   };
 
   source = ''
     services:
-      open-webui:
-        image: ghcr.io/open-webui/open-webui:main
+      web:
+        image: docker.io/example/web:latest
         restart: unless-stopped
         ports:
           - "0.0.0.0:${toString exposedPorts.http.port}:8080"
@@ -194,13 +195,13 @@ When a backend should live under an existing nginx-served hostname, use
 Example:
 
 ```nix
-instances.gap3-hello-alt = rec {
+instances.example-hello-alt = rec {
   exposedPorts.http = {
     port = 12100;
     openFirewall = true;
     nginxRoutes = [
       {
-        serverName = "gap3.ai";
+        serverName = "app.example.com";
         path = "/hello";
         stripPath = true;
       }
@@ -209,8 +210,8 @@ instances.gap3-hello-alt = rec {
 
   source = ''
     services:
-      gap3-hello:
-        image: docker.io/example/gap3-hello:latest
+      app:
+        image: docker.io/example/app:latest
         restart: unless-stopped
         ports:
           - "0.0.0.0:${toString exposedPorts.http.port}:3000"
@@ -218,7 +219,7 @@ instances.gap3-hello-alt = rec {
 };
 ```
 
-This mounts the backend at `https://gap3.ai/hello/`.
+This mounts the backend at `https://app.example.com/hello/`.
 
 With `stripPath = true`:
 
@@ -336,7 +337,7 @@ Cloudflare Tunnel ingress is derived from `exposedPorts`.
 If a service sets:
 
 ```nix
-cfTunnelNames = ["gap3.ai"];
+cfTunnelNames = ["app.example.com"];
 ```
 
 then the shared podman-compose module derives tunnel ingress that points to:
@@ -348,7 +349,7 @@ http://127.0.0.1:<port>
 For example, nginx on port `10800` becomes:
 
 ```text
-gap3.ai -> http://127.0.0.1:10800
+app.example.com -> http://127.0.0.1:10800
 ```
 
 This means:
@@ -400,20 +401,21 @@ That helper handles:
 
 ## Current Repo Example
 
-On `gap3-rivendell` today:
+On a representative ingress host:
 
 - nginx listens on `10800`
-- `gap3.ai` is a static site served directly by nginx
+- `app.example.com` is a static site served directly by nginx
 - the static site uses `singlePageApp = true`
-- Cloudflare Tunnel routes `gap3.ai` to nginx on `127.0.0.1:10800`
+- Cloudflare Tunnel routes `app.example.com` to nginx on `127.0.0.1:10800`
 - static nginx traffic uses the shared default rate limit unless explicitly
   overridden
 - proxied services can still define their own `rateLimit` values per port
-- path-routed services can mount under an existing hostname like `gap3.ai/hello`
+- path-routed services can mount under an existing hostname like
+  `app.example.com/hello`
 
 See:
 
-- `hosts/gap3-rivendell/services.nix`
+- `hosts/<ingress-host>/services.nix`
 - `lib/services/nginx/default.nix`
 - `lib/podman-compose/default.nix`
 - `lib/services/tunnels/cloudflare.nix`
@@ -441,9 +443,9 @@ Keep `rateLimit` on each backend service when:
 - APIs or dynamic apps need different limits
 - machine-to-machine traffic differs from browser traffic
 
-## Related Docs
+## Further Reading
 
 - `docs/podman-compose.md`
 - `docs/services.md`
 - `docs/ai/design-patterns/tunnels-and-static-origins.md`
-- `docs/ai/notes/services/nginx-proxy-rate-limits-2026-04.md`
+- `docs/ai/notes/services/user-services-platform.md`

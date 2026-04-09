@@ -96,7 +96,7 @@ For each instance, the generated service:
 The user-service switching path is handled by
 [`docs/systemd-user-manager.md`](./systemd-user-manager.md).
 
-## Secrets
+## Secret Model
 
 Use file-backed environment secret injection. Do not bake secret values into
 images or repo-tracked compose files.
@@ -107,7 +107,7 @@ images or repo-tracked compose files.
 - host-local compose trees: `hosts/<host>/compose/<stack>/`
 - shared module logic: `lib/podman-compose/`
 
-## Related Docs
+## Quick Links
 
 - [`docs/systemd-user-manager.md`](./systemd-user-manager.md)
 - [`docs/nginx-vhosts.md`](./nginx-vhosts.md)
@@ -128,33 +128,33 @@ This is useful when you want Nix expressions to build the compose structure
 directly:
 
 ```nix
-services.podmanCompose.pvl.instances.dockge = {
+services.podmanCompose.example.instances.control-panel = {
   source = {
-    services.dockge = {
-      image = "louislam/dockge:1";
+    services.control-panel = {
+      image = "docker.io/example/control-panel:latest";
       restart = "unless-stopped";
-      environment.DOCKGE_STACKS_DIR = "/var/lib/pvl/compose";
+      environment.APP_STACKS_DIR = "/var/lib/example/compose";
     };
   };
 };
 ```
 
-This is the pattern used by `dockge` on `pvl-x2`.
+This is the pattern for a small Nix-rendered admin service.
 
 ### 2. Inline YAML text in `source`
 
 This is the simplest pattern for small services and generated definitions:
 
 ```nix
-services.podmanCompose.gap3 = {
-  user = "gap3";
-  stackDir = "/var/lib/gap3/compose";
+services.podmanCompose.example = {
+  user = "app";
+  stackDir = "/var/lib/app/compose";
 
-  instances.open-webui = {
+  instances.web = {
     source = ''
       services:
-        open-webui:
-          image: ghcr.io/open-webui/open-webui:main
+        web:
+          image: docker.io/example/web:latest
           restart: unless-stopped
           ports:
             - "0.0.0.0:13000:8080"
@@ -163,7 +163,7 @@ services.podmanCompose.gap3 = {
 };
 ```
 
-This is the pattern used in `hosts/pvl-vlab/services.nix`.
+This is the pattern for a small host-local stack.
 
 ### 3. Point `source` at a compose file in the repo
 
@@ -171,8 +171,8 @@ This is the right pattern when the main compose YAML already lives as a normal
 file:
 
 ```nix
-services.podmanCompose.pvl.instances.beszel = {podmanSocket, ...}: {
-  source = ./compose/beszel/docker-compose.yml;
+services.podmanCompose.example.instances.service = {podmanSocket, ...}: {
+  source = ./compose/service/docker-compose.yml;
 
   files.".env" = ''
     PODMAN_SOCKET=${podmanSocket}
@@ -180,7 +180,8 @@ services.podmanCompose.pvl.instances.beszel = {podmanSocket, ...}: {
 };
 ```
 
-This is the most common pattern on `pvl-x2`.
+This is the most common pattern when the main compose YAML already lives in the
+repo.
 
 ### 4. Stage an entire compose directory with `files`
 
@@ -188,25 +189,25 @@ This is useful when a service is naturally a directory tree with multiple
 compose fragments, env files, or companion config files:
 
 ```nix
-services.podmanCompose.pvl.instances.opencloud = {
+services.podmanCompose.example.instances.suite = {
   entryFile = [
     "docker-compose.yml"
     "weboffice/collabora.yml"
-    "external-proxy/opencloud.yml"
+    "external-proxy/app.yml"
     "external-proxy/collabora.yml"
     "search/tika.yml"
   ];
 
   files = {
-    "" = ./compose/opencloud2;
+    "" = ./compose/suite;
   };
 };
 ```
 
 In this pattern:
 
-- `files."" = ./compose/opencloud2;` stages the whole directory tree into the
-  working directory
+- `files."" = ./compose/suite;` stages the whole directory tree into the working
+  directory
 - `entryFile` tells the module which staged compose files to pass to
   `podman compose -f ...`
 
@@ -216,16 +217,16 @@ You can also keep the main compose file as a repo path and override companion
 files inline:
 
 ```nix
-services.podmanCompose.pvl.instances.immich = {
-  source = ./compose/immich/docker-compose.yml;
+services.podmanCompose.example.instances.media = {
+  source = ./compose/media/docker-compose.yml;
 
   files = {
     ".env" = ''
-      IMMICH_HTTP_PORT=2283
+      APP_HTTP_PORT=2283
       DB_USERNAME=postgres
-      DB_DATABASE_NAME=immich
+      DB_DATABASE_NAME=app
     '';
-    "hwaccel.ml.yml" = ./compose/immich/hwaccel.ml.yml;
+    "hwaccel.ml.yml" = ./compose/media/hwaccel.ml.yml;
   };
 };
 ```
@@ -374,7 +375,7 @@ exposedPorts.metrics = {
 };
 ```
 
-## Secrets
+## Secret Injection
 
 The supported secret model is file-backed `envSecrets`:
 
@@ -494,7 +495,7 @@ is managed and startable, reconcile starts it.
 Not by itself. `imageTag` uses `podman compose pull`, so build-only services may
 need an explicit build flow if image refresh semantics need to cover them too.
 
-## Related Docs
+## Further Reading
 
 - `docs/services.md`: Native service pattern for non-container workloads.
 - `docs/systemd-user-manager.md`: Deploy-time user-service bridge module used by

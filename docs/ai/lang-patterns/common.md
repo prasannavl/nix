@@ -30,6 +30,5 @@
 
 ## Supporting analysis
 
-- For the evidence summary, studies, and style-guide references behind this
-  recommendation, see
-  `docs/ai/notes/tooling/code-practices-line-width-2026-03.md`.
+- For the durable repo tooling and formatting contract that applies this
+  recommendation, see `docs/ai/notes/tooling/repo-tooling.md`.

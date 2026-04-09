@@ -11,13 +11,13 @@ Use this model for declarative Incus guest lifecycle on parent hosts.
 - cleanup of undeclared guests
 - manual lifecycle tags
 
-Shared logic lives in `lib/incus.nix`. Guest bootstrap conveniences live in
-`lib/incus-vm.nix`.
+Shared logic lives in `lib/incus/default.nix`. Guest bootstrap conveniences live
+in `lib/incus-vm.nix`.
 
 ## Source Of Truth
 
 - parent host declarations: `hosts/<parent>/incus.nix`
-- shared lifecycle logic: `lib/incus.nix`
+- shared lifecycle logic: `lib/incus/default.nix`
 - guest bootstrap logic: `lib/incus-vm.nix`
 - base image build: `lib/images/incus-base.nix`
 - guest config: `hosts/<guest>/`
@@ -33,7 +33,7 @@ services.incusMachines = {
   preseedTag = "0";
 
   instances.<name> = {
-    ipv4Address = "10.10.20.10";
+    ipv4Address = "<guest-ipv4>";
     bootTag = "0";
     recreateTag = "0";
 
@@ -103,7 +103,7 @@ Parent-host lifecycle runs in this order:
 Deploy-time readiness is handled separately by
 [`docs/incus-readiness.md`](./incus-readiness.md).
 
-## Related Docs
+## Further Reading
 
 - [`docs/incus-readiness.md`](./incus-readiness.md)
 - [`docs/deployment.md`](./deployment.md)
@@ -117,14 +117,15 @@ operator-facing procedures.
 ## Why This Module Exists
 
 Incus provides runtime guest management, but not this repo's declarative guest
-lifecycle model. `lib/incus.nix` exists to make image import, create/start,
-recreate triggers, in-place disk sync, guest GC, and manual lifecycle tags part
-of ordinary deploy-time reconciliation instead of ad hoc host-local scripts.
+lifecycle model. `lib/incus/default.nix` exists to make image import,
+create/start, recreate triggers, in-place disk sync, guest GC, and manual
+lifecycle tags part of ordinary deploy-time reconciliation instead of ad hoc
+host-local scripts.
 
 ## Current Model
 
 - parent hosts declare guests in `hosts/<parent>/incus.nix`
-- shared lifecycle logic lives in `lib/incus.nix`
+- shared lifecycle logic lives in `lib/incus/default.nix`
 - guest bootstrap conveniences live in `lib/incus-vm.nix`
 - guests become normal `nixbot` deploy targets after bootstrap
 - images, tags, and devices are declarative inputs to the parent-host lifecycle

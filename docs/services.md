@@ -101,7 +101,7 @@ config = lib.mkIf cfg.enable {
 7. Add `systemd.timers.<name>` if scheduled.
 8. Import and enable the module from the target host.
 
-## Related Docs
+## Further Reading
 
 - [`docs/podman-compose.md`](./podman-compose.md)
 - [`docs/incus-vms.md`](./incus-vms.md)

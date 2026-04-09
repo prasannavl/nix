@@ -28,8 +28,8 @@ Use this document for operator SSH access and deploy SSH routing.
 
 Current bastion pattern:
 
-- `pvl-x2` is the bastion host
-- `z.bastion.com` is exposed through Cloudflare Tunnel
+- one designated bastion host handles operator ingress
+- one bastion hostname is exposed through Cloudflare Tunnel
 
 ## Grant Operator Access
 
@@ -51,8 +51,7 @@ This is the source of truth for the user's authorized key.
 
 ### 2. Create the user module
 
-Create `users/<user>/` following the existing pattern used by `users/pvl/` or
-`users/bush/`.
+Create `users/<user>/` following the existing in-repo user-module pattern.
 
 That module is responsible for creating `users.users.<user>` and installing:
 
@@ -75,9 +74,8 @@ Example:
 }
 ```
 
-If the user needs bastion-mediated access, import them on bastion too. In the
-current repo, `pvl-x2` serves `z.bastion.com`, so bastion must include the user
-before the jump-host flow works.
+If the user needs bastion-mediated access, import them on bastion too so the
+jump-host flow works.
 
 ### 4. Deploy in the right order
 
@@ -101,13 +99,13 @@ below to simply connect with just `ssh <host>`.
   by cleaning up your agents if you have issues with multiple agents.
 
 ```bash
-ssh -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@z.bastion.com
+ssh -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@<bastion-hostname>
 ```
 
 With explicit key:
 
 ```bash
-ssh -i ~/.ssh/<your-key> -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@z.bastion.com
+ssh -i ~/.ssh/<your-key> -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@<bastion-hostname>
 ```
 
 ### Private host through bastion
@@ -116,34 +114,34 @@ Private hosts needs a proxy jump.
 
 ```bash
 ssh \
--o 'ProxyCommand=ssh -o "ProxyCommand=cloudflared access ssh --hostname z.bastion.com" <user>@z.bastion.com -W %h:%p' \
-<user>@10.10.30.10
+-o 'ProxyCommand=ssh -o "ProxyCommand=cloudflared access ssh --hostname <bastion-hostname>" <user>@<bastion-hostname> -W %h:%p' \
+<user>@<private-host-ip>
 ```
 
 With explicit key:
 
 ```bash
 ssh \
--o 'ProxyCommand=ssh -i ~/.ssh/<your-key> -o IdentitiesOnly=yes -o "ProxyCommand=cloudflared access ssh --hostname z.bastion.com" <user>@z.bastion.com -W %h:%p' \
+-o 'ProxyCommand=ssh -i ~/.ssh/<your-key> -o IdentitiesOnly=yes -o "ProxyCommand=cloudflared access ssh --hostname <bastion-hostname>" <user>@<bastion-hostname> -W %h:%p' \
 -o IdentitiesOnly=yes \
 -i ~/.ssh/<your-key> \
-<user>@10.10.30.10
+<user>@<private-host-ip>
 ```
 
 Both of the above are the conceptual equivalent of:
 
 ```bash
-ssh -J z.bastion.com -o HostKeyAlias=gap3-rivendell 10.10.30.10
+ssh -J <bastion-hostname> -o HostKeyAlias=<private-host-alias> <private-host-ip>
 ```
 
-However, it needs ssh config for `z.bastion.com` to work, see config below.
+However, it needs ssh config for `<bastion-hostname>` to work, see config below.
 
 ## SSH Config
 
 ### Minimal
 
 ```sshconfig
-Host z.bastion.com
+Host <bastion-hostname>
   User <user>
   ProxyCommand cloudflared access ssh --hostname %h
 ```
@@ -153,28 +151,28 @@ Host z.bastion.com
 Replace `<user>` with your actual username.
 
 ```sshconfig
-Host z.bastion.com gap3-* llmug-* 
+Host <bastion-hostname> <private-host-pattern>
   User <user>
   # Optional, uncomment if you have to use explicit keys
   # IdentityFile ~/.ssh/<your-key>
   # IdentitiesOnly yes
 
-Host z.bastion.com
+Host <bastion-hostname>
   ProxyCommand cloudflared access ssh --hostname %h
 
-Host gap3-* llmug-*
-  ProxyJump z.bastion.com
+Host <private-host-pattern>
+  ProxyJump <bastion-hostname>
 
-Host pvl-x2
-  HostName z.bastion.com
+Host <bastion-host-alias>
+  HostName <bastion-hostname>
 
-Host gap3-rivendell
-  HostName 10.10.30.10
-  HostKeyAlias gap3-rivendell
+Host <private-host-1>
+  HostName <private-host-ip-1>
+  HostKeyAlias <private-host-1>
 
-Host llmug-rivendell
-  HostName 10.10.30.11
-  HostKeyAlias llmug-rivendell
+Host <private-host-2>
+  HostName <private-host-ip-2>
+  HostKeyAlias <private-host-2>
 ```
 
 ## Deploy SSH Routing
@@ -211,46 +209,46 @@ sudo journalctl -u incus-machines-reconciler.service -n 200
 sudo journalctl -u cloudflared.service -f
 ```
 
-### `gap3` User Services
+### User Services
 
-Many Podman compose workloads on these VMs run as the `gap3` user under
+Many Podman compose workloads on these VMs run as a dedicated service user under
 `systemd --user`.
 
 For tasks that need the user systemd bus, prefer:
 
 ```bash
-sudo machinectl shell gap3@
+sudo machinectl shell <service-user>@
 ```
 
 Prefer that over:
 
 ```bash
-sudo su - gap3
+sudo su - <service-user>
 ```
 
 Reason:
 
-- `machinectl shell gap3@` gives you a proper login session with the `gap3` user
-  manager and systemd bus available
-- `sudo su - gap3` on an SSH session does not reliably initialize the user
-  systemd bus
+- `machinectl shell <service-user>@` gives you a proper login session with the
+  user manager and systemd bus available
+- `sudo su - <service-user>` on an SSH session does not reliably initialize the
+  user systemd bus
 - commands such as `systemctl --user`, `journalctl --user`, and Podman user
   service inspection are more reliable from the `machinectl` session
 
-Examples from the `gap3` session:
+Examples from the service-user session:
 
 ```bash
-systemctl --user status gap3-open-webui.service
-journalctl --user -u gap3-open-webui.service -f
-systemctl --user status gap3-nginx.service
-journalctl --user -u gap3-nginx.service -n 200
+systemctl --user status <service-user>-web.service
+journalctl --user -u <service-user>-web.service -f
+systemctl --user status <service-user>-nginx.service
+journalctl --user -u <service-user>-nginx.service -n 200
 ```
 
 If you only need logs and know the exact user unit name, you can also query them
 directly from root:
 
 ```bash
-sudo journalctl --user -M gap3@ -u gap3-open-webui.service -f
+sudo journalctl --user -M <service-user>@ -u <service-user>-web.service -f
 ```
 
 ## FAQ

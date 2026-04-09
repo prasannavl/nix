@@ -71,13 +71,13 @@ The steady-state goal is always the same: later deploys should use normal
 - bastion decrypts and uses the deploy key for host access
 - each host decrypts secrets using its machine age identity
 
-## Operational Notes
+## Deploy Runtime Notes
 
 - treat bastion-trigger access as privileged production deploy access
 - use worktrees for isolation and concurrency, not as a trust boundary
 - keep bastion ingress keys tightly scoped
 
-## Related Docs
+## Further Reading
 
 - [`docs/nixbot-security-trust-model.md`](./nixbot-security-trust-model.md)
 - [`docs/incus-readiness.md`](./incus-readiness.md)

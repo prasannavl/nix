@@ -27,7 +27,7 @@ Typical usage:
 
 ```sh
 incus-machines-reconciler --all
-incus-machines-reconciler --machine pvl-vlab --machine pvl-x2
+incus-machines-reconciler --machine <guest-a> --machine <guest-b>
 ```
 
 Policy is controlled by `services.incusMachines.reconcilePolicy`:
@@ -49,7 +49,7 @@ Typical usage:
 
 ```sh
 incus-machines-settlement --all
-incus-machines-settlement --machine pvl-vlab --timeout 120
+incus-machines-settlement --machine <guest-a> --timeout 120
 ```
 
 Per-guest settings that affect settlement:
@@ -79,7 +79,7 @@ If parent readiness fails:
 - earlier successfully deployed hosts in the run are rolled back
 - unrelated hosts outside that readiness group are unaffected
 
-## Related Docs
+## Quick Links
 
 - [`docs/incus-vms.md`](./incus-vms.md)
 - [`docs/deployment.md`](./deployment.md)
@@ -110,22 +110,22 @@ For example, given:
 ```nix
 {
   hosts = {
-    pvl-x2 = { target = "pvl-x2"; };
-    pvl-vlab = {
-      target = "10.10.20.10";
-      parent = "pvl-x2";
+    <parent-host> = { target = "<parent-host>"; };
+    <guest-a> = {
+      target = "<guest-a-ip>";
+      parent = "<parent-host>";
     };
-    pvl-x2 = {
-      target = "10.10.20.11";
-      parent = "pvl-x2";
-      after = ["pvl-vlab"];
+    <guest-b> = {
+      target = "<guest-b-ip>";
+      parent = "<parent-host>";
+      after = ["<guest-a>"];
     };
   };
 }
 ```
 
-When deploying `pvl-vlab`, `nixbot` SSHes to `pvl-x2` and runs reconcile +
-settle for `pvl-vlab` before deploying into it.
+When deploying `<guest-a>`, `nixbot` SSHes to `<parent-host>` and runs
+reconcile + settle for `<guest-a>` before deploying into it.
 
 ### Command templates
 
@@ -206,7 +206,7 @@ nixbot deploy wave for child hosts:
   `run_named_prepared_root_command`, command template rendering
 - `hosts/nixbot.nix` -- `parent`, `after`, and deploy target definitions
 
-## Related Docs
+## Further Reading
 
 - `docs/incus-vms.md`: Incus guest lifecycle model (images, tags, devices, GC).
 - `docs/deployment.md`: Deploy architecture, bootstrap flow, and secret model.
