@@ -335,8 +335,8 @@
     );
     helperEnvironment = [
       "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
-      "PODMAN_COMPOSE_METADATA=${helperMetadata}"
-      "PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
+      "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
+      "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
     ];
     baseSystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName}";

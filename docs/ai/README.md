@@ -239,6 +239,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/podman-lifecycle-tag-semantic-stamps-2026-03.md`:
   Podman lifecycle tags now use explicit semantic stamp payloads so `imageTag`,
   `bootTag`, and `recreateTag` only react to declared tag-value changes.
+- `docs/ai/notes/services/podman-manager-env-prefix-rename-2026-04.md`:
+  Rename podman wrapper-private env vars from `PODMAN_COMPOSE_*` to
+  `NIX_PODMAN_COMPOSE_*` so `podman compose` does not treat them as
+  unsupported upstream config keys.
 - `docs/ai/notes/services/shared-collections-helper-2026-03.md`: Shared
   `lib/flake/utils` helper for reusable pure-Nix collection utilities such as
   duplicate-value detection.
