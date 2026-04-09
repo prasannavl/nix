@@ -1,5 +1,5 @@
 {pkgs, ...}: let
-  version = "1.112.0";
+  version = "1.115.0";
   inherit (pkgs.stdenv.hostPlatform) system;
   throwSystem = throw "Unsupported system for vscode-upstream: ${system}";
   plat =
@@ -15,22 +15,22 @@
     } or throwSystem;
   srcName =
     {
-      x86_64-linux = "code-stable-x64-1773778270.tar.gz";
+      x86_64-linux = "code-stable-x64-1775600256.tar.gz";
       x86_64-darwin = "VSCode-darwin.zip";
-      aarch64-linux = "code-stable-arm64-1773778229.tar.gz";
+      aarch64-linux = "code-stable-arm64-1775600239.tar.gz";
       aarch64-darwin = "VSCode-darwin-arm64.zip";
-      armv7l-linux = "code-stable-armhf-1773778223.tar.gz";
+      armv7l-linux = "code-stable-armhf-1775600246.tar.gz";
     }
     .${
       system
     } or throwSystem;
   srcHash =
     {
-      x86_64-linux = "sha256-VyjqPTyLn8eGh/XS3nn0PMqiAsrL91vDZD6Z9L2oh24=";
-      x86_64-darwin = "sha256-3ACtYUblaJs8I1BHHFOSFuAODP0dziXFvd0qdJ/izZ8=";
-      aarch64-linux = "sha256-wyiOvHNMuE6SbInYK9vlYVkbdxAlf9/xHa2nKWh8ecc=";
-      aarch64-darwin = "sha256-0sOKWswv7M3VCralFt1BAA45JrQyAX4Fr/5imNmcaHA=";
-      armv7l-linux = "sha256-hAAuYK7ZQGpAQLE9o8/GF+qHHj0OfT15IXY9cvaKBC0=";
+      x86_64-linux = "sha256-eDSGfF05h5HPTZNeV9l/SBV+9fIV9iVnommM5P/cGgA=";
+      x86_64-darwin = "sha256-gHNXSWjbS+xqxjNYaoE7WSeo1Vf2+au/x68RVObJtp0=";
+      aarch64-linux = "sha256-PkZiq6STbt1Rb/g9XKeE3tktcrSRyQn/ah1QQxrOITg=";
+      aarch64-darwin = "sha256-T7An1+qkBO2QncPvoyymjerwLwti2/MgwmOJJCb2Nhw=";
+      armv7l-linux = "sha256-+KfjkiqMBGg9x/Qnd4FHiW0kw0dIQ56DSGUm8SBTc8o=";
     }
     .${
       system
@@ -50,13 +50,13 @@
     armv7l-linux = "vscode-server-linux-armhf.tar.gz";
   };
   serverHash = {
-    x86_64-linux = "sha256-je83XIJD2Ayc4/j05BCUi/0dblVGlLQdDf+u7wfHZgA=";
-    x86_64-darwin = "sha256-h4BUINzNbHUyFtmaC/4SVS+JFpCCPCtRDEreovdpbFs=";
-    aarch64-linux = "sha256-49slKyZcNlwK2JZP/gR+bVCQzNpYCstOg3hh4tZEWWg=";
-    aarch64-darwin = "sha256-QjAFtTzEi0DjUQ1uMLUfLfkDkL9yj2gC8Dc5flPjAro=";
-    armv7l-linux = "sha256-xokp5gngfLYK/yBApsHJKjvyzrvIN2F6yPOhtMiHLkg=";
+    x86_64-linux = "sha256-2CQBU7TfYNO4m1Mf6Q0QXFt8C2txJgcN9kd7wX355J4=";
+    x86_64-darwin = "sha256-RWA5qJ3xB+V03IPfMBv9zau6Sk+q/fjjax0BETD0Xqs=";
+    aarch64-linux = "sha256-a5zx9lD7kgeqF3YdIhcHzQk3axKJpp9K1KYXzxlCLdQ=";
+    aarch64-darwin = "sha256-MQB3Yaie1QrTN94+vF62vmoo+YcV+V5DpF68JEb3FVk=";
+    armv7l-linux = "sha256-xTf6p/DkytcqvwGH+GtIBnuTIn/Uw8XdJPdwen+onog=";
   };
-  rev = "07ff9d6178ede9a1bd12ad3399074d726ebe6e43";
+  rev = "41dd792b5e652393e7787322889ed5fdc58bd75b";
 in
   pkgs.unstable.vscode.overrideAttrs (old: let
     vscodeServers =
@@ -78,7 +78,7 @@ in
       old.passthru
       // {
         vscodeVersion = version;
-        vscodeServers = vscodeServers;
+        inherit vscodeServers;
       };
     src = pkgs.fetchurl {
       name = srcName;

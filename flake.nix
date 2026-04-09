@@ -38,10 +38,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
-    codex = {
-      url = "github:openai/codex/b9904c0ae4ecb773549efd6ea3fb05229402fdb9";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     p7-borders = {
       url = "github:prasannavl/p7-borders-shell-extension";
       inputs.nixpkgs.follows = "nixpkgs";

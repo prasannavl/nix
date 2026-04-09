@@ -21,6 +21,7 @@
       nixos-container
       lsof
       socat
+      perf
     ];
 
     gnome = with pkgs; [
@@ -129,10 +130,9 @@
     ai = with pkgs; [
       jan
       antigravity-pkgs.default
-      # codex-pkgs.default
       codex
       gemini-cli
-      # claude-code
+      claude-code
     ];
 
     misc = with pkgs; [
@@ -152,6 +152,7 @@
       shellcheck
       vim.xxd
       gdb
+      openssl
       sqlitestudio
       sqlitestudio-plugins
       sqlitebrowser
@@ -161,6 +162,9 @@
       postgresql_18
       nats-server
       natscli
+      nkeys
+      nsc
+      # nats-top
     ];
 
     fonts = with pkgs; [
