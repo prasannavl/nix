@@ -248,8 +248,62 @@ stop_managed_unit() {
 	[ "$load_state" = not-found ]
 }
 
+wait_for_unit_stopped_state() {
+	local unit load_state active_state sub_state result started_at now elapsed_seconds sleep_seconds
+	unit="$1"
+	started_at="$(now_epoch)"
+	while true; do
+		load_state="$(userctl_load_state "$unit" 2>/dev/null || true)"
+		if [ "$load_state" = not-found ]; then
+			printf '%s\n' "not-found"
+			return 0
+		fi
+
+		active_state="$(userctl show --property=ActiveState --value "$unit")"
+		sub_state="$(userctl show --property=SubState --value "$unit")"
+		result="$(userctl show --property=Result --value "$unit")"
+
+		case "$active_state" in
+		inactive | failed)
+			printf '%s\n' "$active_state"
+			return 0
+			;;
+		deactivating | activating | reloading)
+			now="$(now_epoch)"
+			elapsed_seconds="$((now - started_at))"
+			if [ "$elapsed_seconds" -eq 0 ]; then
+				log_progress "waiting for stopped state: unit=$unit current=$active_state sub=$sub_state"
+			fi
+			if [ "$elapsed_seconds" -ge 30 ]; then
+				printf '%s\n' "timed out waiting 30s for stopped state for $unit (active=$active_state sub=$sub_state result=$result)" >&2
+				return 1
+			fi
+			sleep_seconds="$(stable_state_backoff_seconds "$elapsed_seconds")"
+			sleep "$sleep_seconds"
+			;;
+		active)
+			printf '%s\n' "unit $unit remained active after stop request (sub=$sub_state result=$result)" >&2
+			return 1
+			;;
+		*)
+			now="$(now_epoch)"
+			elapsed_seconds="$((now - started_at))"
+			if [ "$elapsed_seconds" -eq 0 ]; then
+				log_progress "waiting for stopped state: unit=$unit current=$active_state sub=$sub_state"
+			fi
+			if [ "$elapsed_seconds" -ge 30 ]; then
+				printf '%s\n' "timed out waiting 30s for stopped state for $unit (active=$active_state sub=$sub_state result=$result)" >&2
+				return 1
+			fi
+			sleep_seconds="$(stable_state_backoff_seconds "$elapsed_seconds")"
+			sleep "$sleep_seconds"
+			;;
+		esac
+	done
+}
+
 apply_stop_phase_action() {
-	local phase_mode user managed_name managed_unit
+	local phase_mode user managed_name managed_unit stopped_state managed_stopped_at
 	phase_mode="$1"
 	user="$2"
 	managed_name="$3"
@@ -262,7 +316,15 @@ apply_stop_phase_action() {
 
 	userctl_mode=root
 	log_managed_unit "$user" "$managed_name" "stopping"
-	stop_managed_unit "$managed_unit"
+	if ! stop_managed_unit "$managed_unit"; then
+		return 1
+	fi
+	managed_stopped_at="$(now_epoch)"
+	if ! stopped_state="$(wait_for_unit_stopped_state "$managed_unit")"; then
+		log_managed_unit "$user" "$managed_name" "failed to stop after $(elapsed_since "$managed_stopped_at")"
+		return 1
+	fi
+	log_managed_unit "$user" "$managed_name" "stopped in $(elapsed_since "$managed_stopped_at") ($stopped_state)"
 }
 
 metadata_path_from_pointer_file() {
