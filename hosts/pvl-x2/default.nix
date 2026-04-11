@@ -11,7 +11,7 @@
     ./sys.nix
     ./packages.nix
     ./firewall.nix
-    ./services.nix
+    ./services
     ./incus.nix
     ./users.nix
   ];

@@ -33,6 +33,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/incus-and-host-operations.md`: Canonical Incus guest
   model, host docs structure, tunnel host wiring, and durable host incident
   findings.
+- `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service
+  module split and aggregation layout.
 
 ### Lib
 
