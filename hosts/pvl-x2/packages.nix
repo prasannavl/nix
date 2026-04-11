@@ -65,6 +65,7 @@
       dig
       nethogs
       sysstat
+      postgresql_18
     ];
   };
 in {

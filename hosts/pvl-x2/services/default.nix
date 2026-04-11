@@ -11,6 +11,7 @@
     ./portainer
     ./shadowsocks
     ./vaultwarden
+    ./postgres.nix
   ];
 
   config.services.podmanCompose.pvl = {

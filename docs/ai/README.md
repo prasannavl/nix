@@ -62,6 +62,8 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/services/edge-and-platform-infra.md`: Canonical Cloudflare,
   GCP, ingress-metadata, import, and sanitization rules.
+- `docs/ai/notes/services/postgres-port-publishing.md`: Durable note for the
+  `pvl-x2` Postgres Podman Compose host-port publishing failure and workaround.
 - `docs/ai/notes/services/systemd-user-manager.md`: Canonical generation-driven
   `systemd-user-manager` model and dispatcher behavior.
 - `docs/ai/notes/services/user-services-platform.md`: Canonical Podman compose,
