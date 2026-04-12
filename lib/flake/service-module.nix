@@ -10,7 +10,7 @@ rec {
       (builtins.attrNames args);
   in
     if pos == null
-    then throw "service-module.mkModule: cannot infer source path from empty argument set"
+    then null
     else /. + pos.file;
 
   evalServicePart = field: fallback: service:
@@ -50,6 +50,37 @@ rec {
     );
 
   mkServicesModule = mkModule;
+
+  portCheckModule = {
+    config,
+    lib,
+    ...
+  }: let
+    registeredPorts = config._serviceModule.registeredPorts;
+    portGroups = builtins.groupBy (entry: toString entry.port) registeredPorts;
+    conflicts = lib.filterAttrs (_: entries: builtins.length entries > 1) portGroups;
+    conflictMessages =
+      lib.mapAttrsToList (
+        port: entries:
+          "Port ${port} is used by multiple enabled services: ${lib.concatMapStringsSep ", " (e: e.name) entries}. "
+          + "Assign distinct ports to avoid bind conflicts."
+      )
+      conflicts;
+  in {
+    options._serviceModule.registeredPorts = lib.mkOption {
+      type = lib.types.listOf lib.types.attrs;
+      default = [];
+      internal = true;
+      description = "Registry of TCP ports claimed by service modules for clash detection.";
+    };
+
+    config.assertions =
+      map (msg: {
+        assertion = false;
+        message = msg;
+      })
+      conflictMessages;
+  };
 
   mkNatsService = args @ {
     envPrefix ? null,
@@ -108,6 +139,7 @@ rec {
     defaultPort,
   }: {
     __sourcePath = inferSourcePath args;
+    __hasPort = true;
     extraOptions = _: lib: {
       listenAddress = lib.mkOption {
         type = lib.types.str;
@@ -143,80 +175,92 @@ rec {
     wantedBy ? ["multi-user.target"],
     after ? ["network.target"],
     restart ? "on-failure",
-  }: {
-    config,
-    lib,
-    pkgs,
-    ...
-  }: let
-    defaultPackage =
-      if package != null
-      then package
-      else pkgs.callPackage packagePath {};
-    resolvedName =
-      if name != null
-      then name
-      else defaultPackage.pname or (throw "service-module.mkModule: `name` is required when the package has no `pname`");
-    resolvedServiceDescription =
-      if serviceDescription != null
-      then serviceDescription
-      else resolvedName;
-    resolvedPackageDescription =
-      if packageDescription != null
-      then packageDescription
-      else "The ${resolvedName} package to run as a service.";
-    resolvedServiceName =
-      if serviceName != null
-      then serviceName
-      else resolvedName;
-    resolvedServices =
-      map (
-        service:
-          applyServiceDefaults {
-            __resolvedName = resolvedName;
-            inherit envPrefix;
-            serviceName = resolvedServiceName;
-          }
-          service
-      )
-      services;
-    composedServices = composeServices resolvedServices;
-    defaultPackageText =
-      if package != null
-      then lib.literalExpression "package"
-      else lib.literalExpression "pkgs.callPackage ${toString packagePath} {}";
-    cfg = config.services.${resolvedName};
-  in {
-    options.services.${resolvedName} =
+  }:
+    if package == null && name == null && sourcePath == null
+    then {...}: {}
+    else
       {
-        enable = lib.mkEnableOption "${resolvedName} service";
-
-        package = lib.mkOption {
-          type = lib.types.package;
-          default = defaultPackage;
-          defaultText = defaultPackageText;
-          description = resolvedPackageDescription;
-        };
-      }
-      // composedServices.extraOptions lib
-      // extraOptions lib;
-
-    config = lib.mkIf cfg.enable {
-      systemd.services.${resolvedName} = {
-        description = resolvedServiceDescription;
-        wantedBy = wantedBy;
-        after = after;
-        environment = composedServices.environment cfg // environment cfg;
-        serviceConfig =
+        config,
+        lib,
+        pkgs,
+        ...
+      }: let
+        defaultPackage =
+          if package != null
+          then package
+          else pkgs.callPackage packagePath {};
+        resolvedName =
+          if name != null
+          then name
+          else defaultPackage.pname or (throw "service-module.mkModule: `name` is required when the package has no `pname`");
+        resolvedServiceDescription =
+          if serviceDescription != null
+          then serviceDescription
+          else resolvedName;
+        resolvedPackageDescription =
+          if packageDescription != null
+          then packageDescription
+          else "The ${resolvedName} package to run as a service.";
+        resolvedServiceName =
+          if serviceName != null
+          then serviceName
+          else resolvedName;
+        resolvedServices =
+          map (
+            service:
+              applyServiceDefaults {
+                __resolvedName = resolvedName;
+                inherit envPrefix;
+                serviceName = resolvedServiceName;
+              }
+              service
+          )
+          services;
+        composedServices = composeServices resolvedServices;
+        resolvedExtraOptions = composedServices.extraOptions lib // extraOptions lib;
+        hasPort =
+          builtins.hasAttr "port" resolvedExtraOptions
+          || builtins.any (s: s.__hasPort or false) resolvedServices;
+        defaultPackageText =
+          if package != null
+          then lib.literalExpression "package"
+          else lib.literalExpression "pkgs.callPackage ${toString packagePath} {}";
+        cfg = config.services.${resolvedName};
+      in {
+        options.services.${resolvedName} =
           {
-            ExecStart = lib.getExe cfg.package;
-            Restart = restart;
+            enable = lib.mkEnableOption "${resolvedName} service";
+
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = defaultPackage;
+              defaultText = defaultPackageText;
+              description = resolvedPackageDescription;
+            };
           }
-          // composedServices.extraServiceConfig cfg
-          // extraServiceConfig cfg;
+          // composedServices.extraOptions lib
+          // extraOptions lib;
+
+        config = lib.mkIf cfg.enable {
+          systemd.services.${resolvedName} = {
+            description = resolvedServiceDescription;
+            wantedBy = wantedBy;
+            after = after;
+            environment = composedServices.environment cfg // environment cfg;
+            serviceConfig =
+              {
+                ExecStart = lib.getExe cfg.package;
+                Restart = restart;
+              }
+              // composedServices.extraServiceConfig cfg
+              // extraServiceConfig cfg;
+          };
+          _serviceModule.registeredPorts = lib.optional hasPort {
+            name = resolvedName;
+            port = cfg.port;
+          };
+        };
       };
-    };
-  };
 
   mkTcpServiceModule = {
     package ? null,

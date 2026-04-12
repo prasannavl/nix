@@ -89,6 +89,7 @@
     commonModules = [
       home-manager.nixosModules.home-manager
       agenix.nixosModules.default
+      flakeLib.serviceModule.portCheckModule
       {nixpkgs.overlays = overlays;}
       {imports = builtins.attrValues packageNixosModules;}
       {home-manager.extraSpecialArgs = {inherit inputs;};}
