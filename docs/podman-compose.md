@@ -32,7 +32,6 @@ services.podmanCompose.<stack> = {
       services:
         app:
           image: docker.io/library/nginx:latest
-          restart: unless-stopped
     '';
   };
 };
@@ -153,9 +152,8 @@ services.podmanCompose.example = {
   instances.web = {
     source = ''
       services:
-        web:
-          image: docker.io/example/web:latest
-          restart: unless-stopped
+        open-webui:
+          image: ghcr.io/open-webui/open-webui:main
           ports:
             - "0.0.0.0:13000:8080"
     '';
