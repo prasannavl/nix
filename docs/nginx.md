@@ -31,8 +31,8 @@ Use this model for these outcomes:
 
 There are three ingress declaration surfaces:
 
-- `exposedPorts.<name>` on a `services.podmanCompose.<stack>.instances.<service>`
-  entry
+- `exposedPorts.<name>` on a
+  `services.podmanCompose.<stack>.instances.<service>` entry
 - `proxyVhosts` passed to `nginxLib.renderServers`
 - `staticSites` passed to `nginxLib.renderServers`
 
