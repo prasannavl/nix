@@ -18,6 +18,7 @@
     workingDir = null;
     serviceName = null;
     serviceOverrides = {};
+    composeArgs = [];
     bootTag = "0";
     recreateTag = "0";
     imageTag = "0";
@@ -111,6 +112,12 @@
         type = lib.types.attrs;
         default = {};
         description = "Extra attributes merged into generated systemd.user.services.<name>.";
+      };
+
+      composeArgs = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Additional arguments passed to every `podman compose` invocation for this instance, before compose-file flags and the subcommand.";
       };
 
       recreateTag = lib.mkOption {
@@ -348,6 +355,7 @@
         version = 1;
         serviceName = resolvedSystemdServiceName;
         workingDir = resolvedWorkingDir;
+        composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
         stagedFiles = map (fileName: {
           src = service.sourcePaths.${fileName};

@@ -9,6 +9,7 @@ init_vars() {
 	manifest_path=""
 	working_dir=""
 
+	compose_args=()
 	compose_file_args=()
 }
 
@@ -30,6 +31,12 @@ load_metadata() {
 
 	manifest_path="$runtime_dir/podman-compose/${podman_compose_service_name}.manifest"
 	working_dir="$(jq -r '.workingDir' "$podman_compose_metadata")"
+
+	compose_args=()
+	while IFS= read -r compose_arg; do
+		[ -n "$compose_arg" ] || continue
+		compose_args+=("$compose_arg")
+	done < <(jq -r '.composeArgs[]?' "$podman_compose_metadata")
 
 	compose_file_args=()
 	while IFS= read -r compose_file; do
@@ -146,28 +153,28 @@ failing_states_report() {
 compose_state_json() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_file_args[@]}" ps --format json
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" ps --format json
 	)
 }
 
 compose_up() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_file_args[@]}" up -d --remove-orphans
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans
 	)
 }
 
 compose_down() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_file_args[@]}" down
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" down
 	)
 }
 
 compose_pull() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_file_args[@]}" pull
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" pull
 	)
 }
 
