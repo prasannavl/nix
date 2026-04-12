@@ -3,6 +3,149 @@
   rateLimitProfiles = {
     default = exposedPortsLib.defaultRateLimitProfile;
   };
+  proxyVhostTypeDef = lib.types.submodule {
+    options = {
+      service = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Compose service name nginx should depend on for this vhost.";
+      };
+
+      serverNames = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Hostname(s) served by this nginx proxy vhost.";
+      };
+
+      port = lib.mkOption {
+        type = lib.types.port;
+        description = "Local backend port nginx should forward to.";
+      };
+
+      upstreams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Backend server addresses (host:port).";
+      };
+
+      upstreamProtocol = lib.mkOption {
+        type = lib.types.enum [
+          "http"
+          "https"
+        ];
+        default = "http";
+        description = "Protocol nginx should use when proxying to this backend.";
+      };
+
+      upstreamHost = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional origin hostname for Host header and TLS SNI when proxying to this backend.";
+      };
+
+      prependPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional fixed path prefix to prepend when proxying to this backend.";
+      };
+
+      rateLimit = lib.mkOption {
+        type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
+        default = null;
+        description = "Optional resolved ingress rate-limiting policy for this proxy vhost.";
+      };
+    };
+  };
+
+  routeTypeDef = lib.types.submodule {
+    options = {
+      service = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Compose service name nginx should depend on for this route.";
+      };
+
+      mode = lib.mkOption {
+        type = lib.types.enum [
+          "static"
+          "upstream"
+        ];
+        description = "Whether this route proxies to an upstream backend or a static site tree.";
+      };
+
+      serverName = lib.mkOption {
+        type = lib.types.str;
+        description = "Hostname served by this nginx route.";
+      };
+
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = "Path prefix on the host vhost that nginx should mount.";
+      };
+
+      port = lib.mkOption {
+        type = lib.types.nullOr lib.types.port;
+        default = null;
+        description = "Optional local backend port nginx should forward to.";
+      };
+
+      upstreams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Backend server addresses (host:port).";
+      };
+
+      upstreamProtocol = lib.mkOption {
+        type = lib.types.enum [
+          "http"
+          "https"
+        ];
+        default = "http";
+        description = "Protocol nginx should use when proxying to this backend route.";
+      };
+
+      upstreamHost = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional origin hostname for Host header and TLS SNI when proxying to this backend route.";
+      };
+
+      prependPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional fixed path prefix to prepend when proxying to this backend route.";
+      };
+
+      stripPath = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether nginx should strip the configured path prefix before proxying to the backend.";
+      };
+
+      siteMountPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Mounted static-site directory for static routes.";
+      };
+
+      siteIndex = lib.mkOption {
+        type = lib.types.str;
+        default = "index.html";
+        description = "Index file name for static routes.";
+      };
+
+      siteSinglePageApp = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether static routes should fall back to their index file for unknown paths.";
+      };
+
+      rateLimit = lib.mkOption {
+        type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
+        default = null;
+        description = "Optional resolved ingress rate-limiting policy for this route.";
+      };
+    };
+  };
+
   mkProxyVhost = {defaultHost ? "localhost"}: serviceName: portName: portCfg: let
     nginxHostNames = portCfg.nginxHostNames or [];
   in
@@ -39,6 +182,26 @@
     then "/"
     else lib.removeSuffix "/" path;
 
+  validatePlainUpstreamValue = fieldName: value:
+    if lib.hasPrefix "http://" value || lib.hasPrefix "https://" value
+    then throw "${fieldName} must be a plain host or host:port value without http:// or https://: ${value}"
+    else if lib.hasInfix "/" value
+    then throw "${fieldName} must not include a path component: ${value}"
+    else value;
+
+  normalizeUpstreamPathPrefix = value:
+    if value == null
+    then null
+    else let
+      normalized =
+        if value == "/"
+        then null
+        else if lib.hasPrefix "/" value
+        then lib.removeSuffix "/" value
+        else lib.removeSuffix "/" "/${value}";
+    in
+      normalized;
+
   mkDynamicRoutes = {defaultHost ? "localhost"}: serviceName: portName: portCfg:
     lib.listToAttrs
     (map
@@ -56,6 +219,9 @@
             path = normalizedPath;
             inherit (portCfg) port;
             upstreams = ["${defaultHost}:${toString portCfg.port}"];
+            upstreamProtocol = "http";
+            upstreamHost = null;
+            prependPath = null;
             stripPath = route.stripPath;
             rateLimit = resolveRateLimit (portCfg.rateLimit or null);
           };
@@ -66,7 +232,7 @@
     lib.concatStrings
     [
       "upstream ${name} {\n"
-      "    ${lib.concatMapStringsSep "\n    " (s: "server ${s};") upstreams}\n"
+      "    ${lib.concatMapStringsSep "\n    " (s: "server ${validatePlainUpstreamValue "nginx upstream server" s};") upstreams}\n"
       "}\n"
     ];
 
@@ -226,23 +392,65 @@
       if basePath == "/"
       then "/$1"
       else "${basePath}$1";
-    stripRewrite =
-      lib.optionalString route.stripPath
-      "        rewrite ^${routeRegexEscape prefixPath}(.*)$ /$1 break;\n";
+    normalizedUpstreamHost =
+      if route.upstreamHost != null
+      then validatePlainUpstreamValue "upstreamHost" route.upstreamHost
+      else null;
+    effectiveUpstreamPathPrefix =
+      normalizeUpstreamPathPrefix
+      (route.prependPath or null);
+    prefixedBasePath =
+      if effectiveUpstreamPathPrefix == null
+      then basePath
+      else if basePath == "/"
+      then effectiveUpstreamPathPrefix
+      else "${effectiveUpstreamPathPrefix}${basePath}";
+    prependRedirectDirective =
+      lib.optionalString (effectiveUpstreamPathPrefix != null)
+      "            proxy_redirect ~^${routeRegexEscape effectiveUpstreamPathPrefix}(/.*)?$ ${redirectTarget};\n";
+    defaultRedirectDirective = "            proxy_redirect ~^(/.*)$ ${redirectTarget};\n";
+    exactRewriteDirective =
+      if basePath != "/" && !route.stripPath && effectiveUpstreamPathPrefix != null
+      then "        rewrite ^${routeRegexEscape basePath}$ ${prefixedBasePath} break;\n"
+      else "";
+    rewriteDirective =
+      if basePath == "/"
+      then lib.optionalString (effectiveUpstreamPathPrefix != null) "        rewrite ^/(.*)$ ${effectiveUpstreamPathPrefix}/$1 break;\n"
+      else if route.stripPath
+      then "        rewrite ^${routeRegexEscape prefixPath}(.*)$ ${
+        if effectiveUpstreamPathPrefix == null
+        then ""
+        else effectiveUpstreamPathPrefix
+      }/$1 break;\n"
+      else lib.optionalString (effectiveUpstreamPathPrefix != null) "        rewrite ^${routeRegexEscape prefixPath}(.*)$ ${prefixedBasePath}/$1 break;\n";
+    upstreamHostDirectives = lib.optionalString (normalizedUpstreamHost != null) ''
+      proxy_set_header Host ${normalizedUpstreamHost};
+    '';
+    upstreamTlsDirectives =
+      lib.optionalString (route.upstreamProtocol == "https") ''
+        proxy_ssl_server_name on;
+      ''
+      + lib.optionalString (normalizedUpstreamHost != null) ''
+        proxy_ssl_name ${normalizedUpstreamHost};
+      '';
     htmlRewriteDirectives =
-      lib.optionalString (basePath != "/") (routeHtmlRewriteDirectives route);
+      lib.optionalString (basePath != "/") (routeHtmlRewriteDirectives route effectiveUpstreamPathPrefix);
   in ''
         ${rateLimitDirectives}        proxy_set_header Accept-Encoding "";
+    ${upstreamHostDirectives}${upstreamTlsDirectives}            proxy_http_version 1.1;
                 proxy_cookie_path / ${prefixPath};
-                proxy_redirect ~^(/.*)$ ${redirectTarget};
+    ${prependRedirectDirective}${defaultRedirectDirective}            proxy_set_header X-Forwarded-Prefix ${prefixPath};
                 ${htmlRewriteDirectives}
-    ${stripRewrite}        proxy_pass http://${name};
+    ${exactRewriteDirective}${rewriteDirective}        proxy_pass ${route.upstreamProtocol}://${name};
   '';
 
   mkProxyRootLocation = name: proxy: let
     rootRoute = {
       path = "/";
       stripPath = false;
+      upstreamProtocol = proxy.upstreamProtocol;
+      upstreamHost = proxy.upstreamHost;
+      prependPath = proxy.prependPath or null;
       rateLimit = proxy.rateLimit;
     };
   in ''
@@ -286,16 +494,30 @@
     ]
     value;
 
-  routePrefixPath = route: "${route.path}/";
+  routePrefixPath = route: let
+    normalizedPath = normalizeRoutePath route.path;
+  in
+    if normalizedPath == "/"
+    then "/"
+    else "${normalizedPath}/";
 
-  routeHtmlRewriteDirectives = route: ''
+  routeHtmlRewriteDirectives = route: prependPathPrefix: let
+    prefixPath = routePrefixPath route;
+    prependRewriteDirectives = lib.optionalString (prependPathPrefix != null) ''
+      sub_filter 'href="${prependPathPrefix}/' 'href="${prefixPath}';
+      sub_filter 'src="${prependPathPrefix}/' 'src="${prefixPath}';
+      sub_filter 'action="${prependPathPrefix}/' 'action="${prefixPath}';
+      sub_filter 'content="${prependPathPrefix}/' 'content="${prefixPath}';
+      sub_filter 'url(${prependPathPrefix}/' 'url(${prefixPath}';
+    '';
+  in ''
     sub_filter_once off;
     sub_filter_types text/html;
-    sub_filter 'href="/' 'href="${routePrefixPath route}';
-    sub_filter 'src="/' 'src="${routePrefixPath route}';
-    sub_filter 'action="/' 'action="${routePrefixPath route}';
-    sub_filter 'content="/' 'content="${routePrefixPath route}';
-    sub_filter 'url(/' 'url(${routePrefixPath route}';
+    ${prependRewriteDirectives}sub_filter 'href="/' 'href="${prefixPath}';
+    sub_filter 'src="/' 'src="${prefixPath}';
+    sub_filter 'action="/' 'action="${prefixPath}';
+    sub_filter 'content="/' 'content="${prefixPath}';
+    sub_filter 'url(/' 'url(${prefixPath}';
   '';
 
   mkProxyRouteLocation = name: route: let
@@ -404,7 +626,7 @@
         location ^~ ${prefixPath} {
     ${rateLimitDirectives}        alias ${route.siteMountPath}/;
             index ${route.siteIndex};
-            ${routeHtmlRewriteDirectives route}
+            ${routeHtmlRewriteDirectives route null}
             try_files $uri $uri/ ${routeTryFilesTarget route};
         }
   '';

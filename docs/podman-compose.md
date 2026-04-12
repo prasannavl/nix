@@ -110,7 +110,7 @@ images or repo-tracked compose files.
 ## Quick Links
 
 - [`docs/systemd-user-manager.md`](./systemd-user-manager.md)
-- [`docs/nginx-vhosts.md`](./nginx-vhosts.md)
+- [`docs/nginx.md`](./nginx.md)
 - [`docs/deployment.md`](./deployment.md)
 
 ## Detailed Reference
