@@ -428,7 +428,7 @@
         ExecStop = "${helperScript} stop";
         ExecReload = "${helperScript} reload";
         ExecStopPost = "${helperScript} cleanup-files";
-        KillMode = "process";
+        KillMode = "mixed";
         Delegate = true;
         Restart = "on-failure";
         RestartSec = 10;
