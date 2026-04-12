@@ -49,8 +49,7 @@ rec {
       else {}
     );
 
-  mkServicesModule = args:
-    mkModule args;
+  mkServicesModule = mkModule;
 
   mkNatsService = args @ {
     envPrefix ? null,
