@@ -79,15 +79,18 @@
     ...
   }: let
     allSystems = flake-utils.lib.defaultSystems;
+    primarySystem = builtins.head allSystems;
     flakeLib = import ./lib/flake {
       inherit flake-utils nixpkgs;
     };
     allOutputs = flakeLib.outputsFor allSystems;
+    packageNixosModules = builtins.removeAttrs allOutputs.${primarySystem}.nixosModules ["default"];
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
       agenix.nixosModules.default
       {nixpkgs.overlays = overlays;}
+      {imports = builtins.attrValues packageNixosModules;}
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
   in
@@ -97,6 +100,7 @@
       # allow arbitrary nested shape and we expose those
       # in pkgs.
       pkgs = nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) allOutputs;
+      nixosModules = allOutputs.${primarySystem}.nixosModules;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit inputs commonModules;

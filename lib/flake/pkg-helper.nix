@@ -1363,6 +1363,17 @@ in rec {
     inherit (pkg) meta;
   };
 
+  mkNixosModuleAttrs = {
+    build,
+    extraModules ? {},
+  }: let
+    passthru = build.passthru or {};
+  in
+    (attrIf (builtins.hasAttr "nixosModule" passthru) "default" passthru.nixosModule)
+    // (attrIf (builtins.hasAttr "nixosModule" passthru) build.pname passthru.nixosModule)
+    // (passthru.flakeExtraNixosModules or {})
+    // extraModules;
+
   mkStdFlakeOutputs = {
     pkgs,
     build,
@@ -1378,10 +1389,15 @@ in rec {
     extraPackages ? {},
     extraApps ? {},
     extraChecks ? {},
+    extraNixosModules ? {},
   }: let
     passthru = build.passthru or {};
     passthruExtraPackages = passthru.flakeExtraPackages or {};
     passthruExtraApps = passthru.flakeExtraApps or {};
+    nixosModuleAttrs = mkNixosModuleAttrs {
+      inherit build;
+      extraModules = extraNixosModules;
+    };
     hasMainProgram = pkg:
       builtins.hasAttr "meta" pkg
       && builtins.isAttrs pkg.meta
@@ -1435,5 +1451,6 @@ in rec {
       apps = appAttrs;
       checks = {build = build;} // checks // extraChecks;
     }
+    // (attrIf (nixosModuleAttrs != {}) "nixosModules" nixosModuleAttrs)
     // devShellAttrs;
 }

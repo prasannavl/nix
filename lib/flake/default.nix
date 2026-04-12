@@ -24,8 +24,17 @@ in rec {
       rootApps = baseOutputs.rootApps;
       lint = lint;
     };
+    nixosModules = nixpkgs.lib.foldl' (
+      acc: pkg:
+        acc
+        // (
+          if builtins.isAttrs pkg && builtins.hasAttr "passthru" pkg
+          then pkgHelper.mkNixosModuleAttrs {build = pkg;}
+          else {}
+        )
+    ) {} (builtins.attrValues baseOutputs.packages);
   in {
-    inherit apps lint packages;
+    inherit apps lint nixosModules packages;
     inherit (lint) formatter;
   };
 
