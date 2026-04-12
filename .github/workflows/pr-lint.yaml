@@ -1,0 +1,46 @@
+name: pr/lint
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    if: github.head_ref != 'master'
+    name: pr/lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: git/checkout
+        uses: actions/checkout@v4
+
+      - name: nix/install
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: nix/deps
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Warm the runnable lint wrapper so the check step only executes the
+          # suite and does not realize extra build-time dependencies.
+          nix run .#lint -- deps >/dev/null
+
+      - name: nix/checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix run path:.#lint
