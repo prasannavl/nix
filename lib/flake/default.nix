@@ -4,12 +4,15 @@
 }: let
   appsFn = import ./apps.nix;
   pkgHelper = import ./pkg-helper.nix;
-  serviceModule = import ./service-module.nix;
+  serviceModuleFactory = import ./service-module.nix;
+  gap3 = import ./gap3.nix;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
 in rec {
   inherit pkgHelper;
-  inherit serviceModule;
+  inherit gap3;
+  inherit serviceModuleFactory;
+  serviceModule = gap3.srv;
   withPkgs = pkgs: let
     baseOutputs = packagesFn {
       inherit pkgs;
