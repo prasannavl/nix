@@ -12,7 +12,7 @@ The shared helper names were simplified to singular forms:
 
 - `mkModule`
 - `mkServicesModule`
-- `mkNatsService`
+- `mkNatsClientService`
 - `mkTcpServiceModule`
 - `nixosModule`
 

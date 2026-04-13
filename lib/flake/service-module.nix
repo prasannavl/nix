@@ -82,7 +82,56 @@ rec {
       conflictMessages;
   };
 
-  mkNatsService = args @ {
+  mkPostgresClientService = args @ {
+    envPrefix ? null,
+    serviceName ? null,
+    postgresUrlDescription ? "PostgreSQL connection URL.",
+    postgresCaCertPathDescription ? "CA certificate path for PostgreSQL TLS.",
+    postgresClientCertPathDescription ? "Client certificate path for PostgreSQL mTLS.",
+    postgresClientKeyPathDescription ? "Client key path for PostgreSQL mTLS.",
+  }: {
+    __sourcePath = inferSourcePath args;
+    __applyDefaults = resolved: {
+      serviceName =
+        if serviceName != null
+        then serviceName
+        else resolved.serviceName;
+    };
+    extraOptions = service: lib: {
+      postgresUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "postgresql://postgres@127.0.0.1:5432/gap3?sslmode=verify-full";
+        description = postgresUrlDescription;
+      };
+
+      postgresCaCertPath = lib.mkOption {
+        type = lib.types.str;
+        default = "/run/agenix/gap3-ca-cert";
+        description = postgresCaCertPathDescription;
+      };
+
+      postgresClientCertPath = lib.mkOption {
+        type = lib.types.str;
+        default = "/run/agenix/${service.serviceName}.srv.z.gap.ai.crt";
+        description = postgresClientCertPathDescription;
+      };
+
+      postgresClientKeyPath = lib.mkOption {
+        type = lib.types.str;
+        default = "/run/agenix/${service.serviceName}.srv.z.gap.ai.key";
+        description = postgresClientKeyPathDescription;
+      };
+    };
+
+    environment = service: cfg: {
+      "${service.envPrefix}_POSTGRES_URL" = cfg.postgresUrl;
+      "${service.envPrefix}_POSTGRES_CA_CERT_PATH" = cfg.postgresCaCertPath;
+      "${service.envPrefix}_POSTGRES_CLIENT_CERT_PATH" = cfg.postgresClientCertPath;
+      "${service.envPrefix}_POSTGRES_CLIENT_KEY_PATH" = cfg.postgresClientKeyPath;
+    };
+  };
+
+  mkNatsClientService = args @ {
     envPrefix ? null,
     serviceName ? null,
     natsUrlDescription ? "NATS URL.",
@@ -106,7 +155,7 @@ rec {
 
       natsCaCertPath = lib.mkOption {
         type = lib.types.str;
-        default = "/run/agenix/nats-ca-cert";
+        default = "/run/agenix/gap3-ca-cert";
         description = natsCaCertPathDescription;
       };
 
