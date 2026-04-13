@@ -32,15 +32,19 @@ The shared helper names were simplified to singular forms:
 - `lib/flake/pkg-helper.nix` auto-exports `passthru.nixosModule` as flake
   `nixosModules`.
 - `lib/flake/default.nix` aggregates package-owned `nixosModule` passthru values
-  into the root flake's `nixosModules` output.
+  into the root flake's standard `nixosModules` output.
 - `flake.nix` imports those package-owned modules into the shared
   `commonModules` stack so every NixOS host can use their options without
   per-host module import boilerplate.
 - Each `pkgs/srv/*/default.nix` that owns a service module attaches it directly
   to the package derivation.
+- `lib/flake/default.nix` also provides a small `mkNixosSystem` helper so host
+  and image declaration files can stay minimal while still injecting the
+  `inputs` and `system` special args needed by package-owned modules.
 
 ## Result
 
-Hosts can now import package-owned service modules from the root flake through
+Hosts can import package-owned service modules from the root flake through
 `inputs.self.nixosModules.<service-name>` without depending on child flake
-wrapper-local module definitions.
+wrapper-local module definitions, and the module resolves its package against
+the consuming host's system at evaluation time.

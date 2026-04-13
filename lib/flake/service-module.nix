@@ -125,9 +125,19 @@ rec {
           then {"${keyFileName}" = {file = keyFile;} // secretDefaults;}
           else {}
         );
-      nixosModule = {
-        age.secrets = ageSecrets;
-      };
+      nixosModule =
+        if drv == null
+        then {
+          age.secrets = ageSecrets;
+        }
+        else
+          {
+            config,
+            lib,
+            ...
+          }: {
+            age.secrets = lib.mkIf (builtins.elem drv config.environment.systemPackages) ageSecrets;
+          };
       flakeExtraNixosModules.clientIdentity = nixosModule;
     };
     mkClientIdentity = first:
@@ -380,6 +390,7 @@ rec {
 
     mkModule = args @ {
       package ? null,
+      sourcePath ? null,
       name ? null,
       envPrefix ? null,
       serviceName ? null,
@@ -395,7 +406,27 @@ rec {
     }:
       if package == null
       then {
-        __boundModuleFactory = package: mkModule (args // {package = package;});
+        __boundModuleFactory = build: let
+          resolvedSourcePath =
+            if sourcePath != null
+            then sourcePath
+            else if build ? src
+            then build.src + "/default.nix"
+            else throw "service-module.mkModule: `sourcePath` is required when `package` is omitted and the build has no `src`";
+        in
+          {
+            inputs,
+            system,
+            ...
+          } @ moduleArgs:
+            (mkModule (
+              args
+              // {
+                package = inputs.nixpkgs.legacyPackages.${system}.callPackage resolvedSourcePath {};
+                sourcePath = resolvedSourcePath;
+              }
+            ))
+            moduleArgs;
       }
       else
         {

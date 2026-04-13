@@ -1411,7 +1411,7 @@ in rec {
         if builtins.isAttrs passthru.nixosModule && builtins.hasAttr "__boundModuleFactory" passthru.nixosModule
         then passthru.nixosModule.__boundModuleFactory build
         else if builtins.isFunction passthru.nixosModule
-        then passthru.nixosModule build
+        then passthru.nixosModule
         else passthru.nixosModule
       else null,
   }: let

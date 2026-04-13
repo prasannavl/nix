@@ -79,21 +79,22 @@
     ...
   }: let
     allSystems = flake-utils.lib.defaultSystems;
-    primarySystem = builtins.head allSystems;
     flakeLib = import ./lib/flake {
       inherit flake-utils nixpkgs;
     };
     allOutputs = flakeLib.outputsFor allSystems;
-    packageNixosModules = builtins.removeAttrs allOutputs.${primarySystem}.nixosModules ["default"];
     overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
       agenix.nixosModules.default
       flakeLib.serviceModule.portCheckModule
       {nixpkgs.overlays = overlays;}
-      {imports = builtins.attrValues packageNixosModules;}
+      {imports = builtins.attrValues (builtins.removeAttrs flakeLib.nixosModules ["default"]);}
       {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
+    mkNixosSystem = flakeLib.mkNixosSystem {
+      inherit commonModules inputs;
+    };
   in
     flakeLib.standardOutputsFrom allSystems allOutputs
     // {
@@ -101,14 +102,14 @@
       # allow arbitrary nested shape and we expose those
       # in pkgs.
       pkgs = nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) allOutputs;
-      nixosModules = allOutputs.${primarySystem}.nixosModules;
+      inherit (flakeLib) nixosModules;
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
-        inherit inputs commonModules;
+        inherit mkNixosSystem;
       };
       # Intentional non-standard addition.
       nixosImages = import ./lib/images {
-        inherit inputs commonModules;
+        inherit mkNixosSystem;
       };
     };
 }

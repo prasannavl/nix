@@ -1,55 +1,34 @@
-{
-  inputs,
-  commonModules,
-  ...
-}: let
-  inherit (inputs) nixpkgs;
-in {
-  pvl-a1 = nixpkgs.lib.nixosSystem {
+{mkNixosSystem, ...}: {
+  pvl-a1 = mkNixosSystem {
     system = "x86_64-linux";
-    specialArgs = {
-      inputs = inputs;
-      hostName = "pvl-a1";
-    };
-    modules = commonModules ++ [./pvl-a1];
+    hostName = "pvl-a1";
+    modules = [./pvl-a1];
   };
 
-  pvl-x2 = nixpkgs.lib.nixosSystem {
+  pvl-x2 = mkNixosSystem {
     system = "x86_64-linux";
-    specialArgs = {
-      inputs = inputs;
-      hostName = "pvl-x2";
-    };
-    modules = commonModules ++ [./pvl-x2];
+    hostName = "pvl-x2";
+    modules = [./pvl-x2];
   };
 
-  pvl-vlab = nixpkgs.lib.nixosSystem {
+  pvl-vlab = mkNixosSystem {
     system = "x86_64-linux";
-    specialArgs = {
-      inputs = inputs;
-      hostName = "pvl-vlab";
-    };
-    modules = commonModules ++ [./pvl-vlab];
+    hostName = "pvl-vlab";
+    modules = [./pvl-vlab];
   };
 
-  pvl-vk = nixpkgs.lib.nixosSystem {
+  pvl-vk = mkNixosSystem {
     system = "x86_64-linux";
-    specialArgs = {
-      inputs = inputs;
-      hostName = "pvl-vk";
-    };
-    modules = commonModules ++ [./pvl-vk];
+    hostName = "pvl-vk";
+    modules = [./pvl-vk];
   };
 
   # This host is taken over by gap3 repo. This configuration is kept here
   # purely only for ref and backup.
   #
-  # gap3-gondor = nixpkgs.lib.nixosSystem {
+  # gap3-gondor = mkNixosSystem {
   #   system = "x86_64-linux";
-  #   specialArgs = {
-  #     inputs = inputs;
-  #     hostName = "gap3-gondor";
-  #   };
-  #   modules = commonModules ++ [./gap3-gondor];
+  #   hostName = "gap3-gondor";
+  #   modules = [./gap3-gondor];
   # };
 }

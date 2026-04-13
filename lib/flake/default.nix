@@ -54,6 +54,26 @@ in rec {
   standardOutputsFor = systems:
     standardOutputsFrom systems (outputsFor systems);
 
+  # Package-owned modules now resolve their package from the consuming host's
+  # `pkgs`, so any system's exported module set is equivalent.
+  nixosModules = (withPkgs nixpkgs.legacyPackages.${builtins.head flake-utils.lib.defaultSystems}).nixosModules;
+
+  mkNixosSystem = {
+    commonModules,
+    inputs,
+  }: {
+    hostName,
+    modules,
+    system,
+  }:
+    nixpkgs.lib.nixosSystem {
+      inherit system;
+      specialArgs = {
+        inherit hostName inputs system;
+      };
+      modules = commonModules ++ modules;
+    };
+
   packagesFor = systems:
     nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) (outputsFor systems);
 }
