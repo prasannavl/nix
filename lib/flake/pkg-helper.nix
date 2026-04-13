@@ -1083,9 +1083,48 @@ in rec {
     }
     // extraChecks;
 
-  wirePassthru = drv: extra:
-    drv.overrideAttrs (old: {
-      passthru = (old.passthru or {}) // extra;
+  collectNestedFlakeExtras = field: values:
+    builtins.foldl'
+    (acc: value:
+      if builtins.isAttrs value && builtins.hasAttr field value
+      then acc // (builtins.getAttr field value)
+      else acc)
+    {}
+    values;
+
+  wirePassthru = drv: extra: let
+    extraValues = builtins.attrValues extra;
+    nestedFlakeExtraPackages = collectNestedFlakeExtras "flakeExtraPackages" extraValues;
+    nestedFlakeExtraApps = collectNestedFlakeExtras "flakeExtraApps" extraValues;
+    nestedFlakeExtraChecks = collectNestedFlakeExtras "flakeExtraChecks" extraValues;
+    nestedFlakeExtraNixosModules = collectNestedFlakeExtras "flakeExtraNixosModules" extraValues;
+  in
+    drv.overrideAttrs (old: let
+      passthru = old.passthru or {};
+    in {
+      passthru =
+        passthru
+        // extra
+        // (attrIf (nestedFlakeExtraPackages != {} || passthru ? flakeExtraPackages || extra ? flakeExtraPackages) "flakeExtraPackages" (
+          (passthru.flakeExtraPackages or {})
+          // nestedFlakeExtraPackages
+          // (extra.flakeExtraPackages or {})
+        ))
+        // (attrIf (nestedFlakeExtraApps != {} || passthru ? flakeExtraApps || extra ? flakeExtraApps) "flakeExtraApps" (
+          (passthru.flakeExtraApps or {})
+          // nestedFlakeExtraApps
+          // (extra.flakeExtraApps or {})
+        ))
+        // (attrIf (nestedFlakeExtraChecks != {} || passthru ? flakeExtraChecks || extra ? flakeExtraChecks) "flakeExtraChecks" (
+          (passthru.flakeExtraChecks or {})
+          // nestedFlakeExtraChecks
+          // (extra.flakeExtraChecks or {})
+        ))
+        // (attrIf (nestedFlakeExtraNixosModules != {} || passthru ? flakeExtraNixosModules || extra ? flakeExtraNixosModules) "flakeExtraNixosModules" (
+          (passthru.flakeExtraNixosModules or {})
+          // nestedFlakeExtraNixosModules
+          // (extra.flakeExtraNixosModules or {})
+        ));
     });
 
   inferBuildSrc = build:
@@ -1366,11 +1405,21 @@ in rec {
   mkNixosModuleAttrs = {
     build,
     extraModules ? {},
+    resolveModule ? passthru:
+      if builtins.hasAttr "nixosModule" passthru
+      then
+        if builtins.isAttrs passthru.nixosModule && builtins.hasAttr "__boundModuleFactory" passthru.nixosModule
+        then passthru.nixosModule.__boundModuleFactory build
+        else if builtins.isFunction passthru.nixosModule
+        then passthru.nixosModule build
+        else passthru.nixosModule
+      else null,
   }: let
     passthru = build.passthru or {};
+    resolvedModule = resolveModule passthru;
   in
-    (attrIf (builtins.hasAttr "nixosModule" passthru) "default" passthru.nixosModule)
-    // (attrIf (builtins.hasAttr "nixosModule" passthru) build.pname passthru.nixosModule)
+    (attrIf (resolvedModule != null) "default" resolvedModule)
+    // (attrIf (resolvedModule != null) build.pname resolvedModule)
     // (passthru.flakeExtraNixosModules or {})
     // extraModules;
 

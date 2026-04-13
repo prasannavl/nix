@@ -54,7 +54,9 @@ rec {
       ),
       sourcePath ? inferSourcePath args,
       suffix ? defaultClientIdentitySuffix,
-      secretsBasePath ? defaultClientSecretsBasePath,
+      secretsBasePath ? null,
+      certSecretFileName ? "client.crt.age",
+      keySecretFileName ? "client.key.age",
       runtimeBasePath ? defaultClientRuntimeBasePath,
       secretOwner ? defaultClientSecretOwner,
       secretGroup ? defaultClientSecretGroup,
@@ -72,12 +74,14 @@ rec {
         if suffix != null
         then suffix
         else throw "service-module.mkClientIdentity: `suffix` is required when no defaultClientIdentitySuffix is configured";
+      resolvedSecretsBasePath =
+        if secretsBasePath != null
+        then secretsBasePath
+        else defaultClientSecretsBasePath + "/${resolvedName}";
       certFileName = mkIdentityCertFileName resolvedName resolvedSuffix;
       keyFileName = mkIdentityKeyFileName resolvedName resolvedSuffix;
-      certAgeFileName = "${certFileName}.age";
-      keyAgeFileName = "${keyFileName}.age";
-      certFile = trackedPath (secretsBasePath + "/${certAgeFileName}") (builtins.replaceStrings ["/"] ["-"] certAgeFileName);
-      keyFile = trackedPath (secretsBasePath + "/${keyAgeFileName}") (builtins.replaceStrings ["/"] ["-"] keyAgeFileName);
+      certFile = trackedPath (resolvedSecretsBasePath + "/${certSecretFileName}") "${resolvedName}-${certSecretFileName}";
+      keyFile = trackedPath (resolvedSecretsBasePath + "/${keySecretFileName}") "${resolvedName}-${keySecretFileName}";
       secretDefaults = {
         owner = secretOwner;
         group = secretGroup;
@@ -88,19 +92,19 @@ rec {
         resolvedName
         resolvedSuffix
         sourcePath
-        secretsBasePath
+        certSecretFileName
+        keySecretFileName
         runtimeBasePath
         secretOwner
         secretGroup
         secretMode
         certFileName
         keyFileName
-        certAgeFileName
-        keyAgeFileName
         certFile
         keyFile
         secretDefaults
         ;
+      secretsBasePath = resolvedSecretsBasePath;
       __functor = _: overrideArgs:
         mkClientIdentityCore ((builtins.removeAttrs args ["drv"]) // overrideArgs // {drv = drv;});
       name = resolvedName;
@@ -121,6 +125,10 @@ rec {
           then {"${keyFileName}" = {file = keyFile;} // secretDefaults;}
           else {}
         );
+      nixosModule = {
+        age.secrets = ageSecrets;
+      };
+      flakeExtraNixosModules.clientIdentity = nixosModule;
     };
     mkClientIdentity = first:
       if builtins.isAttrs first && (first.type or null) == "derivation"
@@ -276,7 +284,6 @@ rec {
     };
 
     mkPostgresClientService = args @ {
-      envPrefix ? null,
       serviceName ? null,
       postgresUrlDescription ? "PostgreSQL connection URL.",
       postgresCaCertPathDescription ? "CA certificate path for PostgreSQL TLS.",
@@ -311,7 +318,6 @@ rec {
     };
 
     mkNatsClientService = args @ {
-      envPrefix ? null,
       serviceName ? null,
       natsUrlDescription ? "NATS URL.",
       natsCaCertPathDescription ? "CA certificate path for NATS mTLS.",
@@ -346,7 +352,6 @@ rec {
     };
 
     mkHttpService = args @ {
-      envPrefix ? null,
       listenAddressDescription ? "IP address for the listener.",
       portDescription ? "TCP port for the listener.",
       defaultListenAddress ? "0.0.0.0",
@@ -375,8 +380,6 @@ rec {
 
     mkModule = args @ {
       package ? null,
-      sourcePath ? inferSourcePath args,
-      packagePath ? sourcePath,
       name ? null,
       envPrefix ? null,
       serviceName ? null,
@@ -390,19 +393,17 @@ rec {
       after ? ["network.target"],
       restart ? "on-failure",
     }:
-      if package == null && name == null && sourcePath == null
-      then {...}: {}
+      if package == null
+      then {
+        __boundModuleFactory = package: mkModule (args // {package = package;});
+      }
       else
         {
           config,
           lib,
-          pkgs,
           ...
         }: let
-          defaultPackage =
-            if package != null
-            then package
-            else pkgs.callPackage packagePath {};
+          defaultPackage = package;
           resolvedName =
             if name != null
             then name
@@ -435,10 +436,7 @@ rec {
           hasPort =
             builtins.hasAttr "port" resolvedExtraOptions
             || builtins.any (s: s.__hasPort or false) resolvedServices;
-          defaultPackageText =
-            if package != null
-            then lib.literalExpression "package"
-            else lib.literalExpression "pkgs.callPackage ${toString packagePath} {}";
+          defaultPackageText = lib.literalExpression "package";
           cfg = config.services.${resolvedName};
         in {
           options.services.${resolvedName} =
@@ -481,7 +479,6 @@ rec {
 
     mkTcpServiceModule = {
       package ? null,
-      packagePath ? null,
       name ? null,
       bindEnvVar,
       serviceDescription ? null,
@@ -500,7 +497,6 @@ rec {
       mkModule {
         inherit
           package
-          packagePath
           name
           serviceDescription
           packageDescription

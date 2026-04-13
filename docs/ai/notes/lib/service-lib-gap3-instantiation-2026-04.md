@@ -20,18 +20,19 @@ Split the service/client helper layer into:
   - identity defaults such as client runtime path, secrets base path, service
     identity suffix, and secret owner/group/mode
   - transport defaults such as PostgreSQL and NATS URLs and CA paths
-- `lib/flake/gap3.nix` instantiates that factory as `srv` with the
-  current `gap3` defaults:
+- `lib/flake/gap3.nix` instantiates that factory as `srv` with the current
+  `gap3` defaults:
   - service identity suffix `srv.gap3.ai`
   - non-service client identity suffix `gap3.ai`
   - shared agenix runtime path `/run/agenix`
-  - repo secrets under `data/secrets/nats/clients`
+  - repo client-identity secrets under `data/secrets/services/<name>/` using
+    `client.crt.age` and `client.key.age`
   - default non-service client secret ownership `gap3:gap3`
   - `gap3` PostgreSQL and NATS connection defaults
 - `srv.mkClientIdentity` now defaults suffix and secret ownership from the
   instantiated environment and accepts `pname` as the package-facing default
-  name input, so package call sites can normally use one local `pname` source
-  of truth instead of repeating identity suffix and owner/group details.
+  name input, so package call sites can normally use one local `pname` source of
+  truth instead of repeating identity suffix and owner/group details.
 - `srv.mkClientIdentity` now accepts either direct identity inputs
   (`srv.mkClientIdentity { ... }`) or a package derivation directly
   (`srv.mkClientIdentity build`). When called with a derivation, it derives the
@@ -40,14 +41,21 @@ Split the service/client helper layer into:
 - The derivation-returned identity is callable for overrides, so
   `srv.mkClientIdentity build { ... }` also works when a package needs small
   deviations from the instantiated defaults.
+- `srv.mkClientIdentity` now also exports a tiny `nixosModule` that materializes
+  its `age.secrets`, so package-owned client identity secret wiring can be
+  consumed as a package-provided module fragment instead of being re-declared in
+  transport-specific host modules.
+- The root flake now auto-materializes `age.secrets` for installed packages that
+  export `passthru.clientIdentity`, via a shared `clientIdentityModule`. That
+  keeps client identities aligned with the host's installed package set without
+  transport-specific or host-specific import lists.
 - `srv.mkClientIdentityFor drv { ... }` is kept as the explicit derivation-based
   alias when that spelling is clearer at the call site.
 - Package and host call sites should import `gap3.nix` and use `gap3.srv`, not
-  import `service-module.nix` directly for repo-local
-  work.
-- `gap3.nix` also re-exports the shared package helper as `gap3.pkg`, so
-  package definitions that already depend on `gap3` can use one repo-local
-  helper import and commonly alias:
+  import `service-module.nix` directly for repo-local work.
+- `gap3.nix` also re-exports the shared package helper as `gap3.pkg`, so package
+  definitions that already depend on `gap3` can use one repo-local helper import
+  and commonly alias:
   - `pkg = gap3.pkg`
   - `srv = gap3.srv`
 - `lib/flake/default.nix` re-exports both:
@@ -61,5 +69,5 @@ Split the service/client helper layer into:
 - The generic helper layer is now reusable outside `gap3`.
 - Repo-local defaults live in one obvious instantiation file instead of being
   embedded across helper internals.
-- Future environments can instantiate their own service/client libraries
-  without forking the shared helper implementation.
+- Future environments can instantiate their own service/client libraries without
+  forking the shared helper implementation.

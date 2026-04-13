@@ -4,7 +4,7 @@ let
 in rec {
   inherit pkg;
   srv = serviceModuleFactory.mkServiceLib {
-    defaultClientSecretsBasePath = ../../data/secrets/nats/clients;
+    defaultClientSecretsBasePath = ../../data/secrets/services;
     defaultClientIdentitySuffix = "gap3.ai";
     defaultClientSecretOwner = "gap3";
     defaultClientSecretGroup = "gap3";
