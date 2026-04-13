@@ -1,4 +1,76 @@
 rec {
+  trackedPath = path: name:
+    if builtins.pathExists path
+    then
+      builtins.path {
+        inherit path name;
+      }
+    else null;
+
+  defaultClientSecretsBasePath = ../../data/secrets/nats/clients;
+  defaultServiceIdentitySuffix = "srv.gap3.ai";
+  mkIdentityHost = name: suffix: "${name}.${suffix}";
+  mkIdentityUser = name: suffix: "${name}@${suffix}";
+  mkIdentityCertFileName = name: suffix: "${mkIdentityHost name suffix}.crt";
+  mkIdentityKeyFileName = name: suffix: "${mkIdentityHost name suffix}.key";
+  mkClientIdentity = {
+    name,
+    suffix,
+    secretsBasePath ? defaultClientSecretsBasePath,
+    runtimeBasePath ? "/run/agenix",
+    secretOwner ? "root",
+    secretGroup ? "root",
+    secretMode ? "0400",
+  }: let
+    certFileName = mkIdentityCertFileName name suffix;
+    keyFileName = mkIdentityKeyFileName name suffix;
+    certAgeFileName = "${certFileName}.age";
+    keyAgeFileName = "${keyFileName}.age";
+    certFile = trackedPath (secretsBasePath + "/${certAgeFileName}") (builtins.replaceStrings ["/"] ["-"] certAgeFileName);
+    keyFile = trackedPath (secretsBasePath + "/${keyAgeFileName}") (builtins.replaceStrings ["/"] ["-"] keyAgeFileName);
+    secretDefaults = {
+      owner = secretOwner;
+      group = secretGroup;
+      mode = secretMode;
+    };
+  in rec {
+    inherit
+      name
+      suffix
+      secretsBasePath
+      runtimeBasePath
+      secretOwner
+      secretGroup
+      secretMode
+      certFileName
+      keyFileName
+      certAgeFileName
+      keyAgeFileName
+      certFile
+      keyFile
+      secretDefaults
+      ;
+    host = mkIdentityHost name suffix;
+    user = mkIdentityUser name suffix;
+    certRuntimePath = "${runtimeBasePath}/${certFileName}";
+    keyRuntimePath = "${runtimeBasePath}/${keyFileName}";
+    ageSecrets =
+      (
+        if certFile != null
+        then {"${certFileName}" = {file = certFile;} // secretDefaults;}
+        else {}
+      )
+      // (
+        if keyFile != null
+        then {"${keyFileName}" = {file = keyFile;} // secretDefaults;}
+        else {}
+      );
+  };
+  mkServiceIdentityHost = serviceName: mkIdentityHost serviceName defaultServiceIdentitySuffix;
+  mkServiceIdentityUser = serviceName: mkIdentityUser serviceName defaultServiceIdentitySuffix;
+  mkServiceIdentityCertFileName = serviceName: mkIdentityCertFileName serviceName defaultServiceIdentitySuffix;
+  mkServiceIdentityKeyFileName = serviceName: mkIdentityKeyFileName serviceName defaultServiceIdentitySuffix;
+
   inferSourcePath = args: let
     pos =
       builtins.foldl'
@@ -25,6 +97,8 @@ rec {
       builtins.foldl' (acc: service: acc // (evalServicePart "environment" (_: {}) service cfg)) {} services;
     extraServiceConfig = cfg:
       builtins.foldl' (acc: service: acc // (evalServicePart "extraServiceConfig" (_: {}) service cfg)) {} services;
+    extraConfigs = cfg:
+      builtins.map (service: evalServicePart "extraConfig" (_: {}) service cfg) services;
     sourcePath =
       if services == []
       then null
@@ -82,13 +156,12 @@ rec {
       conflictMessages;
   };
 
-  mkPostgresClientService = args @ {
-    envPrefix ? null,
+  mkServiceIdentity = args @ {
     serviceName ? null,
-    postgresUrlDescription ? "PostgreSQL connection URL.",
-    postgresCaCertPathDescription ? "CA certificate path for PostgreSQL TLS.",
-    postgresClientCertPathDescription ? "Client certificate path for PostgreSQL mTLS.",
-    postgresClientKeyPathDescription ? "Client key path for PostgreSQL mTLS.",
+    secretsBasePath ? defaultClientSecretsBasePath,
+    secretOwner ? "root",
+    secretGroup ? "root",
+    secretMode ? "0400",
   }: {
     __sourcePath = inferSourcePath args;
     __applyDefaults = resolved: {
@@ -98,6 +171,56 @@ rec {
         else resolved.serviceName;
     };
     extraOptions = service: lib: {
+      serviceCertPath = lib.mkOption {
+        type = lib.types.str;
+        default =
+          (
+            mkClientIdentity {
+              name = service.serviceName;
+              suffix = defaultServiceIdentitySuffix;
+              inherit secretsBasePath secretOwner secretGroup secretMode;
+            }
+          ).certRuntimePath;
+        description = "Service mTLS client certificate path.";
+      };
+      serviceKeyPath = lib.mkOption {
+        type = lib.types.str;
+        default =
+          (
+            mkClientIdentity {
+              name = service.serviceName;
+              suffix = defaultServiceIdentitySuffix;
+              inherit secretsBasePath secretOwner secretGroup secretMode;
+            }
+          ).keyRuntimePath;
+        description = "Service mTLS client key path.";
+      };
+    };
+    extraConfig = service: _cfg: let
+      identity = mkClientIdentity {
+        name = service.serviceName;
+        suffix = defaultServiceIdentitySuffix;
+        inherit secretsBasePath secretOwner secretGroup secretMode;
+      };
+    in {
+      age.secrets = identity.ageSecrets;
+    };
+  };
+
+  mkPostgresClientService = args @ {
+    envPrefix ? null,
+    serviceName ? null,
+    postgresUrlDescription ? "PostgreSQL connection URL.",
+    postgresCaCertPathDescription ? "CA certificate path for PostgreSQL TLS.",
+  }: {
+    __sourcePath = inferSourcePath args;
+    __applyDefaults = resolved: {
+      serviceName =
+        if serviceName != null
+        then serviceName
+        else resolved.serviceName;
+    };
+    extraOptions = _service: lib: {
       postgresUrl = lib.mkOption {
         type = lib.types.str;
         default = "postgresql://postgres@127.0.0.1:5432/gap3?sslmode=verify-full";
@@ -109,25 +232,13 @@ rec {
         default = "/run/agenix/gap3-ca-cert";
         description = postgresCaCertPathDescription;
       };
-
-      postgresClientCertPath = lib.mkOption {
-        type = lib.types.str;
-        default = "/run/agenix/${service.serviceName}.srv.z.gap.ai.crt";
-        description = postgresClientCertPathDescription;
-      };
-
-      postgresClientKeyPath = lib.mkOption {
-        type = lib.types.str;
-        default = "/run/agenix/${service.serviceName}.srv.z.gap.ai.key";
-        description = postgresClientKeyPathDescription;
-      };
     };
 
     environment = service: cfg: {
       "${service.envPrefix}_POSTGRES_URL" = cfg.postgresUrl;
       "${service.envPrefix}_POSTGRES_CA_CERT_PATH" = cfg.postgresCaCertPath;
-      "${service.envPrefix}_POSTGRES_CLIENT_CERT_PATH" = cfg.postgresClientCertPath;
-      "${service.envPrefix}_POSTGRES_CLIENT_KEY_PATH" = cfg.postgresClientKeyPath;
+      "${service.envPrefix}_POSTGRES_CLIENT_CERT_PATH" = cfg.serviceCertPath;
+      "${service.envPrefix}_POSTGRES_CLIENT_KEY_PATH" = cfg.serviceKeyPath;
     };
   };
 
@@ -136,8 +247,6 @@ rec {
     serviceName ? null,
     natsUrlDescription ? "NATS URL.",
     natsCaCertPathDescription ? "CA certificate path for NATS mTLS.",
-    natsClientCertPathDescription ? "Client certificate path for NATS mTLS.",
-    natsClientKeyPathDescription ? "Client key path for NATS mTLS.",
   }: {
     __sourcePath = inferSourcePath args;
     __applyDefaults = resolved: {
@@ -146,7 +255,7 @@ rec {
         then serviceName
         else resolved.serviceName;
     };
-    extraOptions = service: lib: {
+    extraOptions = _service: lib: {
       natsUrl = lib.mkOption {
         type = lib.types.str;
         default = "tls://127.0.0.1:4222";
@@ -158,25 +267,13 @@ rec {
         default = "/run/agenix/gap3-ca-cert";
         description = natsCaCertPathDescription;
       };
-
-      natsClientCertPath = lib.mkOption {
-        type = lib.types.str;
-        default = "/run/agenix/${service.serviceName}.srv.z.gap.ai.crt";
-        description = natsClientCertPathDescription;
-      };
-
-      natsClientKeyPath = lib.mkOption {
-        type = lib.types.str;
-        default = "/run/agenix/${service.serviceName}.srv.z.gap.ai.key";
-        description = natsClientKeyPathDescription;
-      };
     };
 
     environment = service: cfg: {
       "${service.envPrefix}_NATS_URL" = cfg.natsUrl;
       "${service.envPrefix}_NATS_CA_CERT_PATH" = cfg.natsCaCertPath;
-      "${service.envPrefix}_NATS_CLIENT_CERT_PATH" = cfg.natsClientCertPath;
-      "${service.envPrefix}_NATS_CLIENT_KEY_PATH" = cfg.natsClientKeyPath;
+      "${service.envPrefix}_NATS_CLIENT_CERT_PATH" = cfg.serviceCertPath;
+      "${service.envPrefix}_NATS_CLIENT_KEY_PATH" = cfg.serviceKeyPath;
     };
   };
 
@@ -290,25 +387,28 @@ rec {
           // composedServices.extraOptions lib
           // extraOptions lib;
 
-        config = lib.mkIf cfg.enable {
-          systemd.services.${resolvedName} = {
-            description = resolvedServiceDescription;
-            wantedBy = wantedBy;
-            after = after;
-            environment = composedServices.environment cfg // environment cfg;
-            serviceConfig =
-              {
-                ExecStart = lib.getExe cfg.package;
-                Restart = restart;
-              }
-              // composedServices.extraServiceConfig cfg
-              // extraServiceConfig cfg;
-          };
-          _serviceModule.registeredPorts = lib.optional hasPort {
-            name = resolvedName;
-            port = cfg.port;
-          };
-        };
+        config = lib.mkIf cfg.enable (lib.mkMerge ([
+            {
+              systemd.services.${resolvedName} = {
+                description = resolvedServiceDescription;
+                wantedBy = wantedBy;
+                after = after;
+                environment = composedServices.environment cfg // environment cfg;
+                serviceConfig =
+                  {
+                    ExecStart = lib.getExe cfg.package;
+                    Restart = restart;
+                  }
+                  // composedServices.extraServiceConfig cfg
+                  // extraServiceConfig cfg;
+              };
+              _serviceModule.registeredPorts = lib.optional hasPort {
+                name = resolvedName;
+                port = cfg.port;
+              };
+            }
+          ]
+          ++ composedServices.extraConfigs cfg));
       };
 
   mkTcpServiceModule = {
