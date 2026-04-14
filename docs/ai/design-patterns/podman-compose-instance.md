@@ -1,8 +1,8 @@
 # Podman Compose Instance Attribute Ordering
 
 When defining a `services.podmanCompose.<stack>.instances.<name>` attribute set,
-follow this canonical ordering. Not every instance uses every attribute — include
-only what applies, but keep the relative order stable.
+follow this canonical ordering. Not every instance uses every attribute —
+include only what applies, but keep the relative order stable.
 
 ## Attribute Order
 
