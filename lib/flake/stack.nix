@@ -8,7 +8,7 @@ in rec {
     defaultClientIdentitySuffix = "gap3.ai";
     defaultClientSecretOwner = "gap3";
     defaultClientSecretGroup = "gap3";
-    defaultServiceIdentitySuffix = "srv.gap3.ai";
+    defaultServiceIdentitySuffix = "srv.z.gap3.ai";
     defaultServiceSecretOwner = "root";
     defaultServiceSecretGroup = "root";
     defaultPostgresUrl = "postgresql://postgres@127.0.0.1:5432/gap3?sslmode=verify-full";

@@ -1,9 +1,9 @@
 {
   pkgs ? import <nixpkgs> {},
-  gap3 ? import ../../../lib/flake/gap3.nix,
+  stack ? import ../../../lib/flake/stack.nix,
 }: let
-  pkg = gap3.pkg;
-  srv = gap3.srv;
+  pkg = stack.pkg;
+  srv = stack.srv;
   build = pkgs.python3Packages.buildPythonApplication {
     pname = "hello-python";
     version = "0.1.0";

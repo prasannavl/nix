@@ -2,7 +2,8 @@
 
 - Date: 2026-04-13
 - Scope: `lib/flake/service-module.nix`, `lib/flake/gap3.nix`,
-  `lib/flake/default.nix`, `pkgs/**/default.nix`,
+  `lib/flake/stack.nix`, `lib/flake/default.nix`,
+  `pkgs/**/default.nix`,
   `hosts/gap3-rivendell/services/nats.nix`
 
 ## Decision
@@ -10,7 +11,7 @@
 Split the service/client helper layer into:
 
 - a generic factory in `lib/flake/service-module.nix`
-- a repo-specific `gap3` instantiation in `lib/flake/gap3.nix`
+- a repo-specific stack instantiation in `lib/flake/stack.nix`
 
 ## Applied shape
 
@@ -20,9 +21,9 @@ Split the service/client helper layer into:
   - identity defaults such as client runtime path, secrets base path, service
     identity suffix, and secret owner/group/mode
   - transport defaults such as PostgreSQL and NATS URLs and CA paths
-- `lib/flake/gap3.nix` instantiates that factory as `srv` with the current
-  `gap3` defaults:
-  - service identity suffix `srv.gap3.ai`
+- `lib/flake/stack.nix` instantiates that factory as `srv` with the current
+  repo defaults:
+  - service identity suffix `srv.z.gap3.ai`
   - non-service client identity suffix `gap3.ai`
   - shared agenix runtime path `/run/agenix`
   - repo client-identity secrets under `data/secrets/services/<name>/` using
@@ -51,22 +52,21 @@ Split the service/client helper layer into:
   transport-specific or host-specific import lists.
 - `srv.mkClientIdentityFor drv { ... }` is kept as the explicit derivation-based
   alias when that spelling is clearer at the call site.
-- Package and host call sites should import `gap3.nix` and use `gap3.srv`, not
-  import `service-module.nix` directly for repo-local work.
-- `gap3.nix` also re-exports the shared package helper as `gap3.pkg`, so package
-  definitions that already depend on `gap3` can use one repo-local helper import
-  and commonly alias:
-  - `pkg = gap3.pkg`
-  - `srv = gap3.srv`
+- Package and host call sites should import `stack.nix` and use `stack.srv`,
+  not import `service-module.nix` directly for repo-local work.
+- `stack.nix` also re-exports the shared package helper as `stack.pkg`, so
+  package definitions can use one repo-local helper import and commonly alias:
+  - `pkg = stack.pkg`
+  - `srv = stack.srv`
 - `lib/flake/default.nix` re-exports both:
-  - `gap3`
+  - `stack`
   - `serviceModuleFactory`
-- `lib/flake/default.nix` also keeps `serviceModule = gap3.srv` as a
-  compatibility alias.
+- `lib/flake/default.nix` keeps `servicePlatform = stack`, `gap3 = stack`, and
+  `serviceModule = stack.srv` as compatibility aliases.
 
 ## Why
 
-- The generic helper layer is now reusable outside `gap3`.
+- The generic helper layer is reusable outside any one environment.
 - Repo-local defaults live in one obvious instantiation file instead of being
   embedded across helper internals.
 - Future environments can instantiate their own service/client libraries without
