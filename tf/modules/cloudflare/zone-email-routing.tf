@@ -1,9 +1,9 @@
 locals {
   email_routing_rule_flat = flatten([
     for zone_name, config in var.email_routing : [
-      for index, rule in try(config.rules, []) : merge(rule, {
+      for rule in try(config.rules, []) : merge(rule, {
         zone_name = zone_name
-        tf_key    = "${zone_name}/email-rule/${index}"
+        tf_key    = "${zone_name}/email-rule/${rule.key}"
       })
     ]
   ])

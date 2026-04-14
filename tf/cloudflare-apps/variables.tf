@@ -32,20 +32,22 @@ variable "workers" {
           )
           && alltrue([
             for route in try(worker.routes, []) : (
-              contains(keys(route), "pattern")
+              contains(keys(route), "key")
+              && contains(keys(route), "pattern")
               && contains(keys(route), "zone_name")
             )
           ])
           && alltrue([
             for domain in try(worker.custom_domains, []) : (
-              contains(keys(domain), "hostname")
+              contains(keys(domain), "key")
+              && contains(keys(domain), "hostname")
               && contains(keys(domain), "zone_name")
             )
           ])
         )
       ])
     )
-    error_message = "Each worker must either declare `main_module` plus a non-empty `modules` list with `name`, `content_file`, and `content_type`, or provide `assets` for an assets-only Worker. Any routes or custom domains must include `zone_name`."
+    error_message = "Each worker must either declare `main_module` plus a non-empty `modules` list with `name`, `content_file`, and `content_type`, or provide `assets` for an assets-only Worker. Any routes or custom domains must include stable `key` values plus `zone_name`."
   }
 }
 

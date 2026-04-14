@@ -56,20 +56,22 @@ variable "workers" {
           )
           && alltrue([
             for route in try(worker.routes, []) : (
-              contains(keys(route), "pattern")
+              contains(keys(route), "key")
+              && contains(keys(route), "pattern")
               && contains(keys(route), "zone_name")
             )
           ])
           && alltrue([
             for domain in try(worker.custom_domains, []) : (
-              contains(keys(domain), "hostname")
+              contains(keys(domain), "key")
+              && contains(keys(domain), "hostname")
               && contains(keys(domain), "zone_name")
             )
           ])
         )
       ])
     )
-    error_message = "Each worker must either declare `main_module` plus a non-empty `modules` list with `name`, `content_file`, and `content_type`, or provide `assets` for an assets-only Worker. Any routes or custom domains must include `zone_name`."
+    error_message = "Each worker must either declare `main_module` plus a non-empty `modules` list with `name`, `content_file`, and `content_type`, or provide `assets` for an assets-only Worker. Any routes or custom domains must include stable `key` values plus `zone_name`."
   }
 }
 
@@ -125,6 +127,31 @@ variable "r2_buckets" {
   description = "Cloudflare R2 buckets and related bucket-level configuration."
   type        = any
   default     = {}
+
+  validation {
+    condition = can(
+      alltrue([
+        for bucket_name, bucket in var.r2_buckets : (
+          alltrue([
+            for domain in try(bucket.custom_domains, []) : (
+              contains(keys(domain), "key")
+              && contains(keys(domain), "domain")
+              && contains(keys(domain), "zone_name")
+              && contains(keys(domain), "enabled")
+            )
+          ])
+          && alltrue([
+            for notification in try(bucket.event_notifications, []) : (
+              contains(keys(notification), "key")
+              && contains(keys(notification), "queue_id")
+              && contains(keys(notification), "rules")
+            )
+          ])
+        )
+      ])
+    )
+    error_message = "R2 custom domains and event notifications must include stable `key` values. Custom domains also require `domain`, `zone_name`, and `enabled`; event notifications require `queue_id` and `rules`."
+  }
 }
 
 variable "zone_dnssec" {
@@ -215,6 +242,21 @@ variable "email_routing" {
   description = "Cloudflare Email Routing zone configuration keyed by zone name."
   type        = any
   default     = {}
+
+  validation {
+    condition = can(
+      alltrue([
+        for zone_name, config in var.email_routing : alltrue([
+          for rule in try(config.rules, []) : (
+            contains(keys(rule), "key")
+            && contains(keys(rule), "matchers")
+            && contains(keys(rule), "actions")
+          )
+        ])
+      ])
+    )
+    error_message = "Email routing rules must include stable `key` values plus `matchers` and `actions`."
+  }
 }
 
 variable "secret_zones_main" {

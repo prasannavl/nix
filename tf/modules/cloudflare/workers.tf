@@ -6,9 +6,9 @@ locals {
 
   worker_routes_flat = flatten([
     for worker_name, worker in var.workers : [
-      for index, route in try(worker.routes, []) : merge(route, {
+      for route in try(worker.routes, []) : merge(route, {
         worker_name = worker_name
-        tf_key      = "${worker_name}/route/${index}"
+        tf_key      = "${worker_name}/route/${route.key}"
       })
     ]
   ])
@@ -19,9 +19,9 @@ locals {
 
   worker_custom_domains_flat = flatten([
     for worker_name, worker in var.workers : [
-      for index, domain in try(worker.custom_domains, []) : merge(domain, {
+      for domain in try(worker.custom_domains, []) : merge(domain, {
         worker_name = worker_name
-        tf_key      = "${worker_name}/domain/${index}"
+        tf_key      = "${worker_name}/domain/${domain.key}"
       })
     ]
   ])

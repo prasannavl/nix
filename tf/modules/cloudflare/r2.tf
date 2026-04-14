@@ -1,9 +1,9 @@
 locals {
   r2_bucket_custom_domains_flat = flatten([
     for bucket_name, bucket in var.r2_buckets : [
-      for index, domain in try(bucket.custom_domains, []) : merge(domain, {
+      for domain in try(bucket.custom_domains, []) : merge(domain, {
         bucket_name = bucket_name
-        tf_key      = "${bucket_name}/custom-domain/${index}"
+        tf_key      = "${bucket_name}/custom-domain/${domain.key}"
       })
     ]
   ])
@@ -14,9 +14,9 @@ locals {
 
   r2_bucket_event_notifications_flat = flatten([
     for bucket_name, bucket in var.r2_buckets : [
-      for index, notification in try(bucket.event_notifications, []) : merge(notification, {
+      for notification in try(bucket.event_notifications, []) : merge(notification, {
         bucket_name = bucket_name
-        tf_key      = "${bucket_name}/event-notification/${index}"
+        tf_key      = "${bucket_name}/event-notification/${notification.key}"
       })
     ]
   ])
