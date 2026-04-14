@@ -19,6 +19,7 @@
     serviceName = null;
     serviceOverrides = {};
     composeArgs = [];
+    recreateOnSwitch = false;
     bootTag = "0";
     recreateTag = "0";
     imageTag = "0";
