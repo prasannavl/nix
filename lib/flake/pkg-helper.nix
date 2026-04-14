@@ -39,7 +39,7 @@ let
 
   shellArrayRef = varName:
     builtins.concatStringsSep "" [
-      "\"''\${"
+      "\"\${"
       varName
       "[@]}\""
     ];

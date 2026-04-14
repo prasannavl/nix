@@ -5578,7 +5578,7 @@ build_post_switch_health_check_cmd() {
 }
 
 run_post_switch_health_check() {
-	local node="$1" log_file="${2:-}" health_check_cmd="" health_check_rc=0
+	local node="$1" log_file="${2:-}" health_check_cmd=""
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		return 0
