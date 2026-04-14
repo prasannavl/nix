@@ -431,9 +431,6 @@
         KillMode = "mixed";
         Delegate = true;
         Restart = "on-failure";
-        RestartSec = 10;
-        TimeoutStartSec = 900;
-        TimeoutStopSec = 300;
       };
     };
     imagePullSystemdService = lib.optionalAttrs hasImagePullUnit {

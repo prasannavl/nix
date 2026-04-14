@@ -9,6 +9,7 @@ init_vars() {
 	manifest_path=""
 	working_dir=""
 	recreate_on_switch="false"
+	monitor_interval=10
 
 	compose_args=()
 	compose_file_args=()
@@ -227,7 +228,7 @@ monitor_compose_state() {
 			exit 0
 		fi
 
-		sleep 5
+		sleep "$monitor_interval"
 	done
 }
 
