@@ -728,7 +728,7 @@ rec {
 
     mkServiceIdentity = args @ {
       serviceName ? null,
-      secretsBasePath ? defaultClientSecretsBasePath,
+      secretsBasePath ? null,
       secretOwner ? defaultServiceSecretOwner,
       secretGroup ? defaultServiceSecretGroup,
       secretMode ? defaultServiceSecretMode,
