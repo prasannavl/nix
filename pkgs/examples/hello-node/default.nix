@@ -1,9 +1,9 @@
 {
   pkgs ? import <nixpkgs> {},
-  stack ? import ../../../lib/flake/stack.nix,
+  s ? import ../../../lib/flake/stack.nix,
 }: let
-  pkg = stack.pkg;
-  srv = stack.srv;
+  pkg = s.pkg;
+  srv = s.srv;
   build = pkgs.buildNpmPackage {
     pname = "hello-node";
     version = "0.1.0";

@@ -2,8 +2,7 @@
 
 - Date: 2026-04-13
 - Scope: `lib/flake/service-module.nix`, `lib/flake/gap3.nix`,
-  `lib/flake/stack.nix`, `lib/flake/default.nix`,
-  `pkgs/**/default.nix`,
+  `lib/flake/stack.nix`, `lib/flake/default.nix`, `pkgs/**/default.nix`,
   `hosts/gap3-rivendell/services/nats.nix`
 
 ## Decision
@@ -21,8 +20,8 @@ Split the service/client helper layer into:
   - identity defaults such as client runtime path, secrets base path, service
     identity suffix, and secret owner/group/mode
   - transport defaults such as PostgreSQL and NATS URLs and CA paths
-- `lib/flake/stack.nix` instantiates that factory as `srv` with the current
-  repo defaults:
+- `lib/flake/stack.nix` instantiates that factory as `srv` with the current repo
+  defaults:
   - service identity suffix `srv.z.gap3.ai`
   - non-service client identity suffix `gap3.ai`
   - shared agenix runtime path `/run/agenix`
@@ -52,8 +51,8 @@ Split the service/client helper layer into:
   transport-specific or host-specific import lists.
 - `srv.mkClientIdentityFor drv { ... }` is kept as the explicit derivation-based
   alias when that spelling is clearer at the call site.
-- Package and host call sites should import `stack.nix` and use `stack.srv`,
-  not import `service-module.nix` directly for repo-local work.
+- Package and host call sites should import `stack.nix` and use `stack.srv`, not
+  import `service-module.nix` directly for repo-local work.
 - `stack.nix` also re-exports the shared package helper as `stack.pkg`, so
   package definitions can use one repo-local helper import and commonly alias:
   - `pkg = stack.pkg`

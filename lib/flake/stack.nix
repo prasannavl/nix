@@ -5,15 +5,15 @@ in rec {
   inherit pkg;
   srv = serviceModuleFactory.mkServiceLib {
     defaultClientSecretsBasePath = ../../data/secrets/services;
-    defaultClientIdentitySuffix = "gap3.ai";
-    defaultClientSecretOwner = "gap3";
-    defaultClientSecretGroup = "gap3";
-    defaultServiceIdentitySuffix = "srv.z.gap3.ai";
+    defaultClientIdentitySuffix = "p7log.com";
+    defaultClientSecretOwner = "pvl";
+    defaultClientSecretGroup = "pvl";
+    defaultServiceIdentitySuffix = "srv.z.p7log.com";
     defaultServiceSecretOwner = "root";
     defaultServiceSecretGroup = "root";
-    defaultPostgresUrl = "postgresql://postgres@127.0.0.1:5432/gap3?sslmode=verify-full";
-    defaultPostgresCaCertPath = "/run/agenix/gap3-ca-cert";
+    defaultPostgresUrl = "postgresql://postgres@127.0.0.1:5432/pvl?sslmode=verify-full";
+    defaultPostgresCaCertPath = "/run/agenix/pvl-ca-cert";
     defaultNatsUrl = "tls://127.0.0.1:4222";
-    defaultNatsCaCertPath = "/run/agenix/gap3-ca-cert";
+    defaultNatsCaCertPath = "/run/agenix/pvl-ca-cert";
   };
 }

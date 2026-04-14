@@ -1,9 +1,9 @@
 {
   pkgs ? import <nixpkgs> {},
-  stack ? import ../../../lib/flake/stack.nix,
+  s ? import ../../../lib/flake/stack.nix,
 }: let
-  pkg = stack.pkg;
-  srv = stack.srv;
+  pkg = s.pkg;
+  srv = s.srv;
   build = pkgs.rustPlatform.buildRustPackage {
     pname = "hello-rust";
     version = "0.1.0";

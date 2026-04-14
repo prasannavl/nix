@@ -1585,7 +1585,9 @@ resolve_runtime_key_file() {
 }
 
 load_all_hosts_json() {
-	nix flake show --json --no-write-lock-file 2>/dev/null | jq -c '.nixosConfigurations | keys'
+	# Query only nixosConfigurations. `nix flake show` walks unrelated outputs,
+	# so a broken package/app can block deploy host selection.
+	nix eval --json --no-write-lock-file .#nixosConfigurations --apply 'builtins.attrNames'
 }
 
 ##### Host Selection #####
