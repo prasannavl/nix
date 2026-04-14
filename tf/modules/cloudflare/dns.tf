@@ -46,9 +46,9 @@ locals {
 
   flattened_records = flatten([
     for zone_name, zone in local.merged_zones : [
-      for index, record in zone.records : merge(record, {
+      for record in zone.records : merge(record, {
         zone_name = zone_name
-        tf_key    = "${zone_name}/${upper(record.type)}/${record.name}/${index}"
+        tf_key    = "${zone_name}/${record.key}"
       })
     ]
   ])

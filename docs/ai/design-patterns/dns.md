@@ -12,9 +12,8 @@
   position.
 - Do not key Terraform/OpenTofu DNS resources by array index when multiple
   records can share the same `zone/type/name`.
-- The current `tf/modules/cloudflare/dns.tf` shape keys records as
-  `zone/type/name/index`. This is operationally unsafe for insertions,
-  deletions, and reordering.
+- DNS records should be keyed as `zone/key`, where `key` is an explicit durable
+  field authored in tfvars.
 - Prefer explicit durable record keys in tfvars, for example a user-chosen key
   or a normalized semantic key, instead of implicit position.
 - If duplicate records are valid at the provider level, the logical key still
@@ -41,8 +40,8 @@
 - Snapshot remote state before DNS migration or adoption waves.
 - If DNS record keys must change, prefer explicit state moves or imports over
   provider-side delete/recreate churn.
-- When a plan shows widespread `zone/type/name/index` churn after inserting one
-  record, stop and treat that as a state-model problem, not a routine plan.
+- When a plan shows widespread DNS address churn after inserting one record,
+  stop and treat that as a state-model problem, not a routine plan.
 - Partial DNS applies can leave live records and state addresses out of sync.
   Recovery should start with state inspection and live record inventory before
   another broad apply.
@@ -61,7 +60,7 @@
   - move state addresses to the records that already existed live
   - apply only the truly missing records
 - Record-address churn from positional keys is not acceptable as a normal DNS
-  workflow.
+  workflow. The durable fix is explicit `key` fields on every record.
 
 ## Creation Rules
 
@@ -98,7 +97,8 @@
 
 ## Preferred Direction
 
-- Refactor the DNS model away from positional keys.
-- Author DNS records with explicit stable keys in the repo, then map those keys
-  directly to Terraform/OpenTofu `for_each`.
-- Treat that as the long-term fix for safe DNS creation, deletion, and adoption.
+- Keep the DNS model on explicit stable keys.
+- Author DNS records with explicit stable `key` values in the repo, then map
+  those keys directly to Terraform/OpenTofu `for_each`.
+- Treat that as the durable default for safe DNS creation, deletion, and
+  adoption.

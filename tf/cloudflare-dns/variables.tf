@@ -20,7 +20,8 @@ variable "zones" {
       alltrue(flatten([
         for zone_name, zone in var.zones : [
           for record in try(zone.records, []) : (
-            contains(keys(record), "name")
+            contains(keys(record), "key")
+            && contains(keys(record), "name")
             && contains(keys(record), "type")
             && (
               contains(keys(record), "content")
@@ -30,7 +31,7 @@ variable "zones" {
         ]
       ]))
     )
-    error_message = "Each DNS record must include `name`, `type`, and either `content` or `data`."
+    error_message = "Each DNS record must include `key`, `name`, `type`, and either `content` or `data`."
   }
 }
 
@@ -44,7 +45,8 @@ variable "secret_zones_main" {
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_main : [
           for record in try(zone.records, []) : (
-            contains(keys(record), "name")
+            contains(keys(record), "key")
+            && contains(keys(record), "name")
             && contains(keys(record), "type")
             && (
               contains(keys(record), "content")
@@ -54,7 +56,7 @@ variable "secret_zones_main" {
         ]
       ]))
     )
-    error_message = "Each main secret DNS record must include `name`, `type`, and either `content` or `data`."
+    error_message = "Each main secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
   }
 }
 
@@ -68,7 +70,8 @@ variable "secret_zones_stage" {
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_stage : [
           for record in try(zone.records, []) : (
-            contains(keys(record), "name")
+            contains(keys(record), "key")
+            && contains(keys(record), "name")
             && contains(keys(record), "type")
             && (
               contains(keys(record), "content")
@@ -78,7 +81,7 @@ variable "secret_zones_stage" {
         ]
       ]))
     )
-    error_message = "Each staging secret DNS record must include `name`, `type`, and either `content` or `data`."
+    error_message = "Each staging secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
   }
 }
 
@@ -92,7 +95,8 @@ variable "secret_zones_archive" {
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_archive : [
           for record in try(zone.records, []) : (
-            contains(keys(record), "name")
+            contains(keys(record), "key")
+            && contains(keys(record), "name")
             && contains(keys(record), "type")
             && (
               contains(keys(record), "content")
@@ -102,7 +106,7 @@ variable "secret_zones_archive" {
         ]
       ]))
     )
-    error_message = "Each archived secret DNS record must include `name`, `type`, and either `content` or `data`."
+    error_message = "Each archived secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
   }
 }
 
@@ -116,7 +120,8 @@ variable "secret_zones_inactive" {
       alltrue(flatten([
         for zone_name, zone in var.secret_zones_inactive : [
           for record in try(zone.records, []) : (
-            contains(keys(record), "name")
+            contains(keys(record), "key")
+            && contains(keys(record), "name")
             && contains(keys(record), "type")
             && (
               contains(keys(record), "content")
@@ -126,6 +131,6 @@ variable "secret_zones_inactive" {
         ]
       ]))
     )
-    error_message = "Each inactive secret DNS record must include `name`, `type`, and either `content` or `data`."
+    error_message = "Each inactive secret DNS record must include `key`, `name`, `type`, and either `content` or `data`."
   }
 }

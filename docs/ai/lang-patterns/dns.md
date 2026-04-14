@@ -5,24 +5,29 @@
 - Apply these rules when editing `*.tfvars` or `*.tf` files that define DNS
   records, and when advising on DNS changes.
 
+## Record keys
+
+- Every DNS record object must include a stable `key`.
+- Terraform addressing for DNS records is `zone/key`, not array position.
+- Pick semantic keys that will stay valid through routine edits, for example
+  `www-cname`, `mx-mailgun-mxa`, or `spf-txt`.
+- Avoid content-derived keys for mutable records such as `A`, `AAAA`, `MX`, and
+  verification records. Prefer durable slot or purpose names such as `apex-a-1`,
+  `apex-mx-1`, `www-cname`, or `dmarc-txt`.
+- `key` must be unique within the zone across all merged DNS inputs.
+
 ## Record list ordering
 
-- **Always append new records at the end of a zone's `records` list.** Never
-  insert in the middle or reorder existing entries.
-  - **Why:** The Terraform module builds `for_each` keys using the array index
-    (e.g., `zone/TYPE/name/index`). Inserting or reordering shifts every
-    subsequent index, causing Terraform to destroy and recreate all those
-    records rather than just adding the new one. This creates unnecessary churn,
-    risks brief DNS outages from delete-before-create race conditions, and can
-    trigger Cloudflare API conflicts.
-- When removing a record, comment it out or replace its content with an
-  equivalent no-op if index preservation matters. Prefer a `state rm` +
-  list-edit over a bare list removal when many records follow.
+- Record order is no longer part of Terraform identity.
+- Keep lists readable, but do not rely on position for safety.
+- Reordering should still be intentional because it affects diff readability,
+  but it should not trigger resource replacement by itself.
 
 ## Record structure
 
 Each record in the `records` list is an HCL object. Required fields:
 
+- `key` -- stable Terraform identity within the zone
 - `name` -- subdomain label (e.g., `"docs"`, `"@"` for apex, `"sub.x"` for
   nested)
 - `type` -- DNS record type in upper case (`"CNAME"`, `"A"`, `"MX"`, `"TXT"`,
@@ -129,7 +134,7 @@ Point a hostname at a tunnel by creating a proxied CNAME whose content is
 - DNS records are **only** managed through the DNS Terraform project. Do not
   define DNS records in the platform or apps phases.
 
-## Merge order and index implications
+## Merge order and key implications
 
 The module merges records from multiple sources in a fixed order:
 
@@ -139,13 +144,13 @@ The module merges records from multiple sources in a fixed order:
 4. Secret zones archive
 5. Secret zones inactive
 
-Records from earlier sources get lower indices. Adding records to a source that
-precedes another will shift indices in the later sources. When adding records to
-a zone that spans multiple sources, be aware of the combined index space.
+Records from all sources share the same zone-level `key` namespace. Keep `key`
+values unique even when a zone spans multiple source files.
 
 ## Applying DNS changes
 
 - DNS changes are applied via the `dns` Terraform phase
   (`nixbot tf/cloudflare-dns` or as part of `nixbot run`/`nixbot tf`).
 - Always review the plan before applying -- watch for unexpected
-  destroy/recreate pairs, which signal an index shift.
+  destroy/recreate pairs, which signal a key collision or a real behavioral
+  change rather than harmless reordering.

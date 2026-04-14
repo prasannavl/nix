@@ -62,6 +62,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/services/edge-and-platform-infra.md`: Canonical Cloudflare,
   GCP, ingress-metadata, import, and sanitization rules.
+- `docs/ai/notes/services/cloudflare-dns-stable-record-keys-2026-04.md`: Records
+  the DNS migration from positional Terraform addresses to explicit stable
+  record keys, plus remaining positional Cloudflare list inputs.
 - `docs/ai/notes/services/postgres-port-publishing.md`: Durable note for the
   `pvl-x2` Postgres Podman Compose host-port publishing failure and workaround.
 - `docs/ai/notes/services/systemd-user-manager.md`: Canonical generation-driven
