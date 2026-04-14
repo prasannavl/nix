@@ -7,7 +7,6 @@ services:
       - "${OLLAMA_API_PORT}:11434"
     volumes:
       - ./ollama_data:/root/.ollama
-    restart: unless-stopped
     environment:
       - OLLAMA_VULKAN=1
       - AMD_VISIBLE_DEVICES=0

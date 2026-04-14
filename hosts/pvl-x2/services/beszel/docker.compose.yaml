@@ -3,7 +3,6 @@ services:
     image: henrygd/beszel:latest
     container_name: beszel
     user: 0:0
-    restart: unless-stopped
     ports:
       - "${BESZEL_HTTP_PORT}:8090"
     volumes:
@@ -13,7 +12,6 @@ services:
   beszel-agent:
     image: henrygd/beszel-agent:latest
     container_name: beszel-agent
-    restart: unless-stopped
     user: 0:0
     network_mode: host
     volumes:
