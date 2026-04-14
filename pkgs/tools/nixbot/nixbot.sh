@@ -5520,6 +5520,137 @@ ${units}
 EOF_UNITS
 }
 
+_remote_post_switch_user_health_check() {
+	local wait_seconds="$1"
+	local units="" unit="" user="" uid="" runtime_dir="" bus="" failed_output=""
+	local had_failures=0
+
+	units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
+	if [ -z "${units}" ]; then
+		return 0
+	fi
+
+	if [ "${wait_seconds}" -gt 0 ]; then
+		echo "[health-check] waiting ${wait_seconds}s for user services to stabilize" >&2
+		sleep "${wait_seconds}"
+	fi
+
+	while IFS= read -r unit; do
+		[ -n "${unit}" ] || continue
+		user="$(systemctl show --property=Environment --value "${unit}" 2>/dev/null | grep -oP 'SYSTEMD_USER_MANAGER_USER=\K[^ ]+' || true)"
+		[ -n "${user}" ] || continue
+		uid="$(id -u "${user}" 2>/dev/null || true)"
+		[ -n "${uid}" ] || continue
+		if ! systemctl is-active --quiet "user@${uid}.service" 2>/dev/null; then
+			continue
+		fi
+		runtime_dir="/run/user/${uid}"
+		bus="unix:path=${runtime_dir}/bus"
+		failed_output="$(
+			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+				env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+				systemctl --user list-units --failed --no-legend --plain 2>/dev/null || true
+		)"
+		if [ -n "${failed_output}" ]; then
+			had_failures=1
+			echo "[health-check] FAILED units for user ${user}:" >&2
+			echo "${failed_output}" >&2
+		fi
+	done <<EOF_HC_UNITS
+${units}
+EOF_HC_UNITS
+
+	if [ "${had_failures}" -eq 1 ]; then
+		echo "[health-check] FAILED — user service failures detected after deploy" >&2
+		return 1
+	fi
+
+	echo "[health-check] all user services healthy" >&2
+	return 0
+}
+
+build_post_switch_health_check_cmd() {
+	local wait_seconds="${1:-10}"
+
+	printf '%s\n%s\n' \
+		"$(declare -f _remote_post_switch_user_health_check)" \
+		"_remote_post_switch_user_health_check ${wait_seconds}"
+}
+
+run_post_switch_health_check() {
+	local node="$1" log_file="${2:-}" health_check_cmd="" health_check_rc=0
+
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		return 0
+	fi
+
+	health_check_cmd="$(build_post_switch_health_check_cmd 0)"
+
+	if ! prepare_deploy_context "${node}"; then
+		echo "[health-check] unavailable for ${node}: failed to prepare deploy context" >&2
+		return 1
+	fi
+
+	if [ -n "${log_file}" ]; then
+		run_with_combined_output \
+			run_prepared_root_command \
+			"${health_check_cmd}" > >(host_log_filter "${node}" | tee -a "${log_file}" >&2)
+	elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+		run_with_combined_output \
+			run_prepared_root_command \
+			"${health_check_cmd}" > >(host_log_filter "${node}" >&2)
+	else
+		run_with_combined_output \
+			run_prepared_root_command \
+			"${health_check_cmd}" >&2
+	fi
+}
+
+run_post_switch_health_check_phase() {
+	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
+	# shellcheck disable=SC2178
+	local -n hcp_successful_hosts_ref="$4" hcp_deploy_failed_hosts_ref="$5"
+	local node="" phase_rc=0
+	local -a health_check_failed_hosts=() remaining_successful=()
+
+	log_section "Phase: Health Check"
+	echo "Waiting 10s for user services to stabilize" >&2
+	sleep 10
+
+	for node in "${hcp_successful_hosts_ref[@]}"; do
+		[ -n "${node}" ] || continue
+		if run_post_switch_health_check "${node}"; then
+			remaining_successful+=("${node}")
+		else
+			echo "Health check failed for ${node}" >&2
+			health_check_failed_hosts+=("${node}")
+		fi
+	done
+
+	if [ "${#health_check_failed_hosts[@]}" -eq 0 ]; then
+		echo "All deployed hosts healthy" >&2
+		return 0
+	fi
+
+	phase_rc=1
+
+	for node in "${health_check_failed_hosts[@]}"; do
+		hcp_deploy_failed_hosts_ref+=("${node}")
+		if [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
+			rollback_failed_deploy_host "${node}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}"
+		fi
+	done
+
+	hcp_successful_hosts_ref=("${remaining_successful[@]}")
+
+	if [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#remaining_successful[@]}" -gt 0 ]; then
+		maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${remaining_successful[@]}"
+		hcp_successful_hosts_ref=()
+	fi
+
+	return "${phase_rc}"
+}
+
 build_systemd_user_manager_report_cmd() {
 	local since_epoch="$1"
 
@@ -6145,6 +6276,18 @@ run_hosts() {
 		snapshot_failed_hosts \
 		deploy_failed_hosts; then
 		final_rc=1
+	fi
+
+	# Health check phase: verify user services are healthy after deploy.
+	if [ "${DRY_RUN}" -eq 0 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
+		if ! run_post_switch_health_check_phase \
+			"${snapshot_dir}" \
+			"${rollback_log_dir}" \
+			"${rollback_status_dir}" \
+			successful_hosts \
+			deploy_failed_hosts; then
+			final_rc=1
+		fi
 	fi
 
 	capture_current_run_summary_state \
@@ -7102,7 +7245,7 @@ log_group_should_section() {
 	esac
 
 	case "${title}" in
-	"Phase: Build" | "Phase: Snapshot" | "Phase: Deploy" | "Phase: Rollback" | "Phase: Bootstrap Key Check")
+	"Phase: Build" | "Phase: Snapshot" | "Phase: Deploy" | "Phase: Health Check" | "Phase: Rollback" | "Phase: Bootstrap Key Check")
 		return 0
 		;;
 	"Phase: Terraform ("*)
