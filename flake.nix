@@ -87,6 +87,8 @@
     commonModules = [
       home-manager.nixosModules.home-manager
       agenix.nixosModules.default
+      ./lib/podman-compose
+      ./lib/systemd-user-manager
       flakeLib.serviceModule.portCheckModule
       {nixpkgs.overlays = overlays;}
       {imports = builtins.attrValues (builtins.removeAttrs flakeLib.nixosModules ["default"]);}

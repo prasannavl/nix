@@ -1,5 +1,6 @@
 rec {
   mkServiceLib = {
+    defaultUser ? "root",
     defaultClientRuntimeBasePath ? "/run/agenix",
     defaultClientSecretsBasePath,
     defaultClientIdentitySuffix ? null,
@@ -12,8 +13,10 @@ rec {
     defaultServiceSecretMode ? "0400",
     defaultPostgresUrl,
     defaultPostgresCaCertPath,
+    defaultPostgresAfter ? [],
     defaultNatsUrl,
     defaultNatsCaCertPath,
+    defaultNatsAfter ? [],
   }: let
     trackedPath = path: name:
       if builtins.pathExists path
@@ -24,6 +27,7 @@ rec {
       else null;
   in rec {
     inherit
+      defaultUser
       defaultClientRuntimeBasePath
       defaultClientSecretsBasePath
       defaultClientIdentitySuffix
@@ -36,14 +40,577 @@ rec {
       defaultServiceSecretMode
       defaultPostgresUrl
       defaultPostgresCaCertPath
+      defaultPostgresAfter
       defaultNatsUrl
       defaultNatsCaCertPath
+      defaultNatsAfter
       ;
+
+    ########################################
+    # Core Exported Module Entry Points
+    ########################################
+
+    mkServicesModule = args: let
+      resolvedUser =
+        if args ? user && args.user != null
+        then args.user
+        else defaultUser;
+    in
+      if resolvedUser == "root"
+      then mkModule (builtins.removeAttrs args ["user"])
+      else mkUserServicesModule (args // {user = resolvedUser;});
+
+    mkSystemServicesModule = mkModule;
+
+    mkModule = args @ {
+      package ? null,
+      sourcePath ? null,
+      name ? null,
+      envPrefix ? null,
+      serviceName ? null,
+      serviceDescription ? null,
+      packageDescription ? null,
+      extraOptions ? (_: {}),
+      environment ? (_: {}),
+      extraServiceConfig ? (_: {}),
+      services ? [],
+      wantedBy ? ["multi-user.target"],
+      after ? ["network.target"],
+      before ? [],
+      wants ? [],
+      requires ? [],
+      restart ? "on-failure",
+    }:
+      if package == null
+      then
+        mkBoundModuleFactory {
+          inherit args sourcePath;
+          moduleFn = mkModule;
+          constructor = "mkModule";
+        }
+      else
+        {
+          config,
+          lib,
+          ...
+        }: let
+          spec = mkResolvedServiceSpec {
+            inherit
+              envPrefix
+              extraOptions
+              lib
+              name
+              package
+              packageDescription
+              serviceDescription
+              serviceName
+              services
+              restart
+              ;
+            kindLabel = "service";
+            constructorName = "mkModule";
+          };
+          cfg = config.services.${spec.resolvedName};
+          partUnitConfig = spec.composedServices.unitConfig lib cfg;
+          resolvedAfter = lib.unique (after ++ cfg.after ++ partUnitConfig.after);
+          resolvedBefore = lib.unique (before ++ cfg.before ++ partUnitConfig.before);
+          resolvedWants = lib.unique (wants ++ cfg.wants ++ partUnitConfig.wants);
+          resolvedRequires = lib.unique (requires ++ cfg.requires ++ partUnitConfig.requires);
+          resolvedWantedBy = lib.unique (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy);
+        in {
+          options.services.${spec.resolvedName} =
+            {
+              enable = lib.mkEnableOption "${spec.resolvedName} service";
+
+              package = lib.mkOption {
+                type = lib.types.package;
+                default = spec.defaultPackage;
+                defaultText = spec.defaultPackageText;
+                description = spec.resolvedPackageDescription;
+              };
+            }
+            // (mkUnitWiringOptions {
+              inherit lib;
+              descriptionSuffix = "systemd units or targets";
+            })
+            // spec.composedServices.extraOptions lib
+            // extraOptions lib;
+
+          config = lib.mkIf cfg.enable (lib.mkMerge ([
+              {
+                systemd.services.${spec.resolvedName} = {
+                  description = spec.resolvedServiceDescription;
+                  wantedBy = resolvedWantedBy;
+                  after = resolvedAfter;
+                  before = resolvedBefore;
+                  wants = resolvedWants;
+                  unitConfig.Requires = resolvedRequires;
+                  environment = spec.composedServices.environment cfg // environment cfg;
+                  serviceConfig =
+                    {
+                      ExecStart = lib.getExe cfg.package;
+                      Restart = restart;
+                    }
+                    // spec.composedServices.extraServiceConfig cfg
+                    // extraServiceConfig cfg;
+                };
+                _serviceModule.registeredPorts = lib.optional spec.hasPort {
+                  name = spec.resolvedName;
+                  port = cfg.port;
+                };
+              }
+            ]
+            ++ spec.composedServices.extraConfigs cfg));
+        };
+
+    mkUserServicesModule = args @ {
+      package ? null,
+      sourcePath ? null,
+      user ? null,
+      name ? null,
+      envPrefix ? null,
+      serviceName ? null,
+      serviceDescription ? null,
+      packageDescription ? null,
+      extraOptions ? (_: {}),
+      environment ? (_: {}),
+      extraServiceConfig ? (_: {}),
+      services ? [],
+      wantedBy ? [],
+      after ? [],
+      before ? [],
+      wants ? [],
+      requires ? [],
+      restart ? "on-failure",
+    }:
+      if package == null
+      then
+        mkBoundModuleFactory {
+          inherit args sourcePath;
+          moduleFn = mkUserServicesModule;
+          constructor = "mkUserServicesModule";
+        }
+      else
+        {
+          config,
+          lib,
+          ...
+        }: let
+          resolvedUser =
+            if user != null
+            then user
+            else throw "service-module.mkUserServicesModule: `user` is required";
+          spec = mkResolvedServiceSpec {
+            inherit
+              envPrefix
+              extraOptions
+              lib
+              name
+              package
+              packageDescription
+              serviceDescription
+              serviceName
+              services
+              restart
+              ;
+            kindLabel = "user service";
+            constructorName = "mkUserServicesModule";
+          };
+          cfg = config.userServices.${resolvedUser}.${spec.resolvedName};
+          partUnitConfig = spec.composedServices.unitConfig lib cfg;
+          resolvedAfter = lib.unique (map resolveUnitReference (after ++ cfg.after ++ partUnitConfig.after));
+          resolvedBefore = lib.unique (map resolveUnitReference (before ++ cfg.before ++ partUnitConfig.before));
+          resolvedWants = lib.unique (map resolveUnitReference (wants ++ cfg.wants ++ partUnitConfig.wants));
+          resolvedRequires = lib.unique (map resolveUnitReference (requires ++ cfg.requires ++ partUnitConfig.requires));
+          resolvedWantedBy = lib.unique (map resolveUnitReference (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy));
+          unitLabel = cfg.unitName;
+          unitFile = "${unitLabel}.service";
+          instanceName = "${resolvedUser}-${spec.resolvedName}";
+          serviceEnvironment = spec.composedServices.environment cfg // environment cfg;
+          serviceConfig =
+            {
+              ExecStart = lib.getExe cfg.package;
+              Restart = restart;
+            }
+            // spec.composedServices.extraServiceConfig cfg
+            // extraServiceConfig cfg;
+          stampPayload = {
+            kind = "user-service";
+            user = resolvedUser;
+            serviceName = spec.resolvedName;
+            unitName = unitLabel;
+            package = cfg.package;
+            wants = resolvedWants;
+            requires = resolvedRequires;
+            after = resolvedAfter;
+            wantedBy = resolvedWantedBy;
+            environment = serviceEnvironment;
+            serviceConfig = serviceConfig;
+          };
+        in {
+          options.userServices.${resolvedUser}.${spec.resolvedName} =
+            {
+              enable = lib.mkEnableOption "${spec.resolvedName} user service";
+
+              package = lib.mkOption {
+                type = lib.types.package;
+                default = spec.defaultPackage;
+                defaultText = spec.defaultPackageText;
+                description = spec.resolvedPackageDescription;
+              };
+
+              unitName = lib.mkOption {
+                type = lib.types.str;
+                default = "${resolvedUser}-${spec.resolvedName}";
+                description = "Generated systemd --user unit name without the .service suffix.";
+              };
+            }
+            // (mkUnitWiringOptions {
+              inherit lib;
+              descriptionSuffix = "systemd --user units or targets";
+            })
+            // spec.composedServices.extraOptions lib
+            // extraOptions lib;
+
+          config = lib.mkIf cfg.enable (lib.mkMerge ([
+              {
+                systemd.user.services.${unitLabel} = {
+                  description = spec.resolvedServiceDescription;
+                  wants = resolvedWants;
+                  after = resolvedAfter;
+                  before = resolvedBefore;
+                  wantedBy = resolvedWantedBy;
+                  unitConfig = {
+                    ConditionUser = resolvedUser;
+                    Requires = resolvedRequires;
+                  };
+                  environment = serviceEnvironment;
+                  inherit serviceConfig;
+                };
+
+                services.systemdUserManager.instances.${instanceName} = {
+                  user = resolvedUser;
+                  unit = unitFile;
+                  restartTriggers = [
+                    cfg.package
+                  ];
+                  inherit stampPayload;
+                };
+
+                _serviceModule.registeredPorts = lib.optional spec.hasPort {
+                  name = "${resolvedUser}.${spec.resolvedName}";
+                  port = cfg.port;
+                };
+              }
+            ]
+            ++ spec.composedServices.extraConfigs cfg));
+        };
+
+    mkTcpServiceModule = {
+      package ? null,
+      user ? null,
+      name ? null,
+      bindEnvVar,
+      serviceDescription ? null,
+      packageDescription ? null,
+      listenAddressDescription ? null,
+      portDescription ? null,
+      defaultListenAddress ? "0.0.0.0",
+      defaultPort,
+      extraOptions ? (_: {}),
+      environment ? (_: {}),
+      extraServiceConfig ? (_: {}),
+      wantedBy ? ["multi-user.target"],
+      after ? ["network.target"],
+      before ? [],
+      wants ? [],
+      requires ? [],
+      restart ? "on-failure",
+    }:
+      mkServicesModule {
+        inherit
+          package
+          user
+          name
+          serviceDescription
+          packageDescription
+          extraServiceConfig
+          wantedBy
+          after
+          before
+          wants
+          requires
+          restart
+          ;
+        services = [
+          (mkHttpService {
+            inherit
+              bindEnvVar
+              defaultListenAddress
+              defaultPort
+              listenAddressDescription
+              portDescription
+              ;
+          })
+        ];
+        inherit
+          extraOptions
+          environment
+          ;
+      };
+
+    portCheckModule = {
+      config,
+      lib,
+      ...
+    }: let
+      registeredPorts = config._serviceModule.registeredPorts;
+      portGroups = builtins.groupBy (entry: toString entry.port) registeredPorts;
+      conflicts = lib.filterAttrs (_: entries: builtins.length entries > 1) portGroups;
+      conflictMessages =
+        lib.mapAttrsToList (
+          port: entries:
+            "Port ${port} is used by multiple enabled services: ${lib.concatMapStringsSep ", " (e: e.name) entries}. "
+            + "Assign distinct ports to avoid bind conflicts."
+        )
+        conflicts;
+    in {
+      options._serviceModule.registeredPorts = lib.mkOption {
+        type = lib.types.listOf lib.types.attrs;
+        default = [];
+        internal = true;
+        description = "Registry of TCP ports claimed by service modules for clash detection.";
+      };
+
+      config.assertions =
+        map (msg: {
+          assertion = false;
+          message = msg;
+        })
+        conflictMessages;
+    };
+
+    ########################################
+    # Common Helpers And Abstractions
+    ########################################
+
+    # This is only a convenience fallback for deriving a package-local source
+    # path from the call site. It relies on `unsafeGetAttrPos`, so callers can
+    # always pass `sourcePath` explicitly when they need stricter behavior.
+    inferSourcePath = args: let
+      pos =
+        builtins.foldl'
+        (acc: attrName:
+          if acc != null
+          then acc
+          else builtins.unsafeGetAttrPos attrName args)
+        null
+        (builtins.attrNames args);
+    in
+      if pos == null
+      then null
+      else /. + pos.file;
+
+    evalServicePart = field: fallback: service:
+      if builtins.hasAttr field service
+      then (builtins.getAttr field service) service
+      else fallback;
+
+    composeServices = services: {
+      defaults =
+        builtins.foldl' (acc: service: acc // (evalServicePart "defaults" (_: {}) service)) {} services;
+      extraOptions = lib:
+        builtins.foldl' (acc: service: acc // (evalServicePart "extraOptions" (_: {}) service lib)) {} services;
+      environment = cfg:
+        builtins.foldl' (acc: service: acc // (evalServicePart "environment" (_: {}) service cfg)) {} services;
+      unitConfig = lib: cfg:
+        builtins.foldl' (
+          acc: service: let
+            next = evalServicePart "unitConfig" (_: {}) service cfg;
+          in {
+            after = lib.unique (acc.after ++ (next.after or []));
+            before = lib.unique (acc.before ++ (next.before or []));
+            wants = lib.unique (acc.wants ++ (next.wants or []));
+            requires = lib.unique (acc.requires ++ (next.requires or []));
+            wantedBy = lib.unique (acc.wantedBy ++ (next.wantedBy or []));
+          }
+        ) {
+          after = [];
+          before = [];
+          wants = [];
+          requires = [];
+          wantedBy = [];
+        }
+        services;
+      extraServiceConfig = cfg:
+        builtins.foldl' (acc: service: acc // (evalServicePart "extraServiceConfig" (_: {}) service cfg)) {} services;
+      extraConfigs = cfg:
+        builtins.map (service: evalServicePart "extraConfig" (_: {}) service cfg) services;
+      sourcePath =
+        if services == []
+        then null
+        else (builtins.elemAt services 0).__sourcePath or null;
+    };
+
+    applyServiceDefaults = resolved: service:
+      service
+      // (
+        if !(service ? envPrefix) && resolved ? envPrefix && resolved.envPrefix != null
+        then {envPrefix = resolved.envPrefix;}
+        else {}
+      )
+      // (
+        if !(service ? serviceName) && resolved ? serviceName && resolved.serviceName != null
+        then {serviceName = resolved.serviceName;}
+        else {}
+      )
+      // (
+        if service ? __applyDefaults
+        then service.__applyDefaults resolved
+        else {}
+      );
+
+    resolveUnitReference = dep:
+      if builtins.match ".*\\.[A-Za-z0-9_-]+$" dep != null
+      then dep
+      else "${dep}.service";
+
+    mkBoundModuleFactory = {
+      args,
+      sourcePath,
+      moduleFn,
+      constructor,
+    }: {
+      __boundModuleFactory = build: let
+        resolvedSourcePath =
+          if sourcePath != null
+          then sourcePath
+          else if build ? src
+          then build.src + "/default.nix"
+          else throw "service-module.${constructor}: `sourcePath` is required when `package` is omitted and the build has no `src`";
+      in
+        {
+          inputs,
+          system,
+          ...
+        } @ moduleArgs:
+          (moduleFn (
+            args
+            // {
+              package = inputs.nixpkgs.legacyPackages.${system}.callPackage resolvedSourcePath {};
+              sourcePath = resolvedSourcePath;
+            }
+          ))
+          moduleArgs;
+    };
+
+    mkResolvedServiceSpec = {
+      lib,
+      package,
+      name,
+      envPrefix,
+      serviceName,
+      serviceDescription,
+      packageDescription,
+      extraOptions,
+      services,
+      restart,
+      kindLabel,
+      constructorName,
+    }: let
+      defaultPackage = package;
+      resolvedName =
+        if name != null
+        then name
+        else defaultPackage.pname or (throw "service-module.${constructorName}: `name` is required when the package has no `pname`");
+      resolvedServiceDescription =
+        if serviceDescription != null
+        then serviceDescription
+        else resolvedName;
+      resolvedPackageDescription =
+        if packageDescription != null
+        then packageDescription
+        else "The ${resolvedName} package to run as a ${kindLabel}.";
+      resolvedServiceName =
+        if serviceName != null
+        then serviceName
+        else resolvedName;
+      resolvedServices =
+        map (
+          service:
+            applyServiceDefaults {
+              __resolvedName = resolvedName;
+              inherit envPrefix;
+              serviceName = resolvedServiceName;
+            }
+            service
+        )
+        services;
+      composedServices = composeServices resolvedServices;
+      resolvedExtraOptions = composedServices.extraOptions lib // extraOptions lib;
+      hasPort =
+        builtins.hasAttr "port" resolvedExtraOptions
+        || builtins.any (s: s.__hasPort or false) resolvedServices;
+    in {
+      inherit
+        defaultPackage
+        resolvedName
+        resolvedServiceDescription
+        resolvedPackageDescription
+        resolvedServiceName
+        resolvedServices
+        composedServices
+        resolvedExtraOptions
+        hasPort
+        restart
+        ;
+      defaultPackageText = lib.literalExpression "package";
+    };
+
+    mkUnitWiringOptions = {
+      lib,
+      descriptionSuffix,
+    }: {
+      wants = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Additional ${descriptionSuffix} this service wants.";
+      };
+
+      requires = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Additional ${descriptionSuffix} this service requires.";
+      };
+
+      after = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Additional ${descriptionSuffix} this service should start after.";
+      };
+
+      before = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Additional ${descriptionSuffix} this service should start before.";
+      };
+
+      wantedBy = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Additional ${descriptionSuffix} that should want this service.";
+      };
+    };
+
+    ########################################
+    # Identity And Composable Service Parts
+    ########################################
 
     mkIdentityHost = name: suffix: "${name}.${suffix}";
     mkIdentityUser = name: suffix: "${name}@${suffix}";
     mkIdentityCertFileName = name: suffix: "${mkIdentityHost name suffix}.crt";
     mkIdentityKeyFileName = name: suffix: "${mkIdentityHost name suffix}.key";
+
     mkClientIdentityCore = args @ {
       drv ? null,
       name ? null,
@@ -140,6 +707,7 @@ rec {
           };
       flakeExtraNixosModules.clientIdentity = nixosModule;
     };
+
     mkClientIdentity = first:
       if builtins.isAttrs first && (first.type or null) == "derivation"
       then
@@ -147,100 +715,16 @@ rec {
           drv = first;
         }
       else mkClientIdentityCore first;
+
     mkClientIdentityFor = drv: args @ {pname ? drv.pname or null, ...}:
       if pname == null
       then throw "service-module.mkClientIdentityFor: derivation must expose `pname` or `pname` must be passed explicitly"
       else (mkClientIdentity drv) ((builtins.removeAttrs args ["pname"]) // {inherit pname;});
-    mkClientIdentityFrom = mkClientIdentityFor;
+
     mkServiceIdentityHost = serviceName: mkIdentityHost serviceName defaultServiceIdentitySuffix;
     mkServiceIdentityUser = serviceName: mkIdentityUser serviceName defaultServiceIdentitySuffix;
     mkServiceIdentityCertFileName = serviceName: mkIdentityCertFileName serviceName defaultServiceIdentitySuffix;
     mkServiceIdentityKeyFileName = serviceName: mkIdentityKeyFileName serviceName defaultServiceIdentitySuffix;
-
-    inferSourcePath = args: let
-      pos =
-        builtins.foldl'
-        (acc: attrName:
-          if acc != null
-          then acc
-          else builtins.unsafeGetAttrPos attrName args)
-        null
-        (builtins.attrNames args);
-    in
-      if pos == null
-      then null
-      else /. + pos.file;
-
-    evalServicePart = field: fallback: service:
-      if builtins.hasAttr field service
-      then (builtins.getAttr field service) service
-      else fallback;
-
-    composeServices = services: {
-      extraOptions = lib:
-        builtins.foldl' (acc: service: acc // (evalServicePart "extraOptions" (_: {}) service lib)) {} services;
-      environment = cfg:
-        builtins.foldl' (acc: service: acc // (evalServicePart "environment" (_: {}) service cfg)) {} services;
-      extraServiceConfig = cfg:
-        builtins.foldl' (acc: service: acc // (evalServicePart "extraServiceConfig" (_: {}) service cfg)) {} services;
-      extraConfigs = cfg:
-        builtins.map (service: evalServicePart "extraConfig" (_: {}) service cfg) services;
-      sourcePath =
-        if services == []
-        then null
-        else (builtins.elemAt services 0).__sourcePath or null;
-    };
-
-    applyServiceDefaults = resolved: service:
-      service
-      // (
-        if !(service ? envPrefix) && resolved ? envPrefix && resolved.envPrefix != null
-        then {envPrefix = resolved.envPrefix;}
-        else {}
-      )
-      // (
-        if !(service ? serviceName) && resolved ? serviceName && resolved.serviceName != null
-        then {serviceName = resolved.serviceName;}
-        else {}
-      )
-      // (
-        if service ? __applyDefaults
-        then service.__applyDefaults resolved
-        else {}
-      );
-
-    mkServicesModule = mkModule;
-
-    portCheckModule = {
-      config,
-      lib,
-      ...
-    }: let
-      registeredPorts = config._serviceModule.registeredPorts;
-      portGroups = builtins.groupBy (entry: toString entry.port) registeredPorts;
-      conflicts = lib.filterAttrs (_: entries: builtins.length entries > 1) portGroups;
-      conflictMessages =
-        lib.mapAttrsToList (
-          port: entries:
-            "Port ${port} is used by multiple enabled services: ${lib.concatMapStringsSep ", " (e: e.name) entries}. "
-            + "Assign distinct ports to avoid bind conflicts."
-        )
-        conflicts;
-    in {
-      options._serviceModule.registeredPorts = lib.mkOption {
-        type = lib.types.listOf lib.types.attrs;
-        default = [];
-        internal = true;
-        description = "Registry of TCP ports claimed by service modules for clash detection.";
-      };
-
-      config.assertions =
-        map (msg: {
-          assertion = false;
-          message = msg;
-        })
-        conflictMessages;
-    };
 
     mkServiceIdentity = args @ {
       serviceName ? null,
@@ -248,7 +732,14 @@ rec {
       secretOwner ? defaultServiceSecretOwner,
       secretGroup ? defaultServiceSecretGroup,
       secretMode ? defaultServiceSecretMode,
-    }: {
+    }: let
+      identityForServiceName = serviceName:
+        mkClientIdentity {
+          name = serviceName;
+          suffix = defaultServiceIdentitySuffix;
+          inherit secretsBasePath secretOwner secretGroup secretMode;
+        };
+    in {
       __sourcePath = inferSourcePath args;
       __applyDefaults = resolved: {
         serviceName =
@@ -256,38 +747,28 @@ rec {
           then serviceName
           else resolved.serviceName;
       };
-      extraOptions = service: lib: {
+      extraOptions = service: lib: let
+        identity = identityForServiceName service.serviceName;
+      in {
         serviceCertPath = lib.mkOption {
           type = lib.types.str;
-          default =
-            (
-              mkClientIdentity {
-                name = service.serviceName;
-                suffix = defaultServiceIdentitySuffix;
-                inherit secretsBasePath secretOwner secretGroup secretMode;
-              }
-            ).certRuntimePath;
+          default = identity.certRuntimePath;
           description = "Service mTLS client certificate path.";
         };
         serviceKeyPath = lib.mkOption {
           type = lib.types.str;
-          default =
-            (
-              mkClientIdentity {
-                name = service.serviceName;
-                suffix = defaultServiceIdentitySuffix;
-                inherit secretsBasePath secretOwner secretGroup secretMode;
-              }
-            ).keyRuntimePath;
+          default = identity.keyRuntimePath;
           description = "Service mTLS client key path.";
         };
       };
+      defaults = service: let
+        identity = identityForServiceName service.serviceName;
+      in {
+        serviceCertPath = identity.certRuntimePath;
+        serviceKeyPath = identity.keyRuntimePath;
+      };
       extraConfig = service: _cfg: let
-        identity = mkClientIdentity {
-          name = service.serviceName;
-          suffix = defaultServiceIdentitySuffix;
-          inherit secretsBasePath secretOwner secretGroup secretMode;
-        };
+        identity = identityForServiceName service.serviceName;
       in {
         age.secrets = identity.ageSecrets;
       };
@@ -297,6 +778,11 @@ rec {
       serviceName ? null,
       postgresUrlDescription ? "PostgreSQL connection URL.",
       postgresCaCertPathDescription ? "CA certificate path for PostgreSQL TLS.",
+      after ? defaultPostgresAfter,
+      before ? [],
+      wants ? [],
+      requires ? [],
+      wantedBy ? [],
     }: {
       __sourcePath = inferSourcePath args;
       __applyDefaults = resolved: {
@@ -318,6 +804,10 @@ rec {
           description = postgresCaCertPathDescription;
         };
       };
+      defaults = _service: {
+        postgresUrl = defaultPostgresUrl;
+        postgresCaCertPath = defaultPostgresCaCertPath;
+      };
 
       environment = service: cfg: {
         "${service.envPrefix}_POSTGRES_URL" = cfg.postgresUrl;
@@ -325,12 +815,27 @@ rec {
         "${service.envPrefix}_POSTGRES_CLIENT_CERT_PATH" = cfg.serviceCertPath;
         "${service.envPrefix}_POSTGRES_CLIENT_KEY_PATH" = cfg.serviceKeyPath;
       };
+
+      unitConfig = _service: _cfg: {
+        inherit
+          after
+          before
+          wants
+          requires
+          wantedBy
+          ;
+      };
     };
 
     mkNatsClientService = args @ {
       serviceName ? null,
       natsUrlDescription ? "NATS URL.",
       natsCaCertPathDescription ? "CA certificate path for NATS mTLS.",
+      after ? defaultNatsAfter,
+      before ? [],
+      wants ? [],
+      requires ? [],
+      wantedBy ? [],
     }: {
       __sourcePath = inferSourcePath args;
       __applyDefaults = resolved: {
@@ -352,6 +857,10 @@ rec {
           description = natsCaCertPathDescription;
         };
       };
+      defaults = _service: {
+        natsUrl = defaultNatsUrl;
+        natsCaCertPath = defaultNatsCaCertPath;
+      };
 
       environment = service: cfg: {
         "${service.envPrefix}_NATS_URL" = cfg.natsUrl;
@@ -359,9 +868,20 @@ rec {
         "${service.envPrefix}_NATS_CLIENT_CERT_PATH" = cfg.serviceCertPath;
         "${service.envPrefix}_NATS_CLIENT_KEY_PATH" = cfg.serviceKeyPath;
       };
+
+      unitConfig = _service: _cfg: {
+        inherit
+          after
+          before
+          wants
+          requires
+          wantedBy
+          ;
+      };
     };
 
     mkHttpService = args @ {
+      bindEnvVar ? null,
       listenAddressDescription ? "IP address for the listener.",
       portDescription ? "TCP port for the listener.",
       defaultListenAddress ? "0.0.0.0",
@@ -382,191 +902,18 @@ rec {
           description = portDescription;
         };
       };
+      defaults = _service: {
+        listenAddress = defaultListenAddress;
+        port = defaultPort;
+      };
 
       environment = service: cfg: {
-        "${service.envPrefix}_BIND_ADDR" = "${cfg.listenAddress}:${toString cfg.port}";
+        "${
+          if bindEnvVar != null
+          then bindEnvVar
+          else "${service.envPrefix}_BIND_ADDR"
+        }" = "${cfg.listenAddress}:${toString cfg.port}";
       };
     };
-
-    mkModule = args @ {
-      package ? null,
-      sourcePath ? null,
-      name ? null,
-      envPrefix ? null,
-      serviceName ? null,
-      serviceDescription ? null,
-      packageDescription ? null,
-      extraOptions ? (_: {}),
-      environment ? (_: {}),
-      extraServiceConfig ? (_: {}),
-      services ? [],
-      wantedBy ? ["multi-user.target"],
-      after ? ["network.target"],
-      restart ? "on-failure",
-    }:
-      if package == null
-      then {
-        __boundModuleFactory = build: let
-          resolvedSourcePath =
-            if sourcePath != null
-            then sourcePath
-            else if build ? src
-            then build.src + "/default.nix"
-            else throw "service-module.mkModule: `sourcePath` is required when `package` is omitted and the build has no `src`";
-        in
-          {
-            inputs,
-            system,
-            ...
-          } @ moduleArgs:
-            (mkModule (
-              args
-              // {
-                package = inputs.nixpkgs.legacyPackages.${system}.callPackage resolvedSourcePath {};
-                sourcePath = resolvedSourcePath;
-              }
-            ))
-            moduleArgs;
-      }
-      else
-        {
-          config,
-          lib,
-          ...
-        }: let
-          defaultPackage = package;
-          resolvedName =
-            if name != null
-            then name
-            else defaultPackage.pname or (throw "service-module.mkModule: `name` is required when the package has no `pname`");
-          resolvedServiceDescription =
-            if serviceDescription != null
-            then serviceDescription
-            else resolvedName;
-          resolvedPackageDescription =
-            if packageDescription != null
-            then packageDescription
-            else "The ${resolvedName} package to run as a service.";
-          resolvedServiceName =
-            if serviceName != null
-            then serviceName
-            else resolvedName;
-          resolvedServices =
-            map (
-              service:
-                applyServiceDefaults {
-                  __resolvedName = resolvedName;
-                  inherit envPrefix;
-                  serviceName = resolvedServiceName;
-                }
-                service
-            )
-            services;
-          composedServices = composeServices resolvedServices;
-          resolvedExtraOptions = composedServices.extraOptions lib // extraOptions lib;
-          hasPort =
-            builtins.hasAttr "port" resolvedExtraOptions
-            || builtins.any (s: s.__hasPort or false) resolvedServices;
-          defaultPackageText = lib.literalExpression "package";
-          cfg = config.services.${resolvedName};
-        in {
-          options.services.${resolvedName} =
-            {
-              enable = lib.mkEnableOption "${resolvedName} service";
-
-              package = lib.mkOption {
-                type = lib.types.package;
-                default = defaultPackage;
-                defaultText = defaultPackageText;
-                description = resolvedPackageDescription;
-              };
-            }
-            // composedServices.extraOptions lib
-            // extraOptions lib;
-
-          config = lib.mkIf cfg.enable (lib.mkMerge ([
-              {
-                systemd.services.${resolvedName} = {
-                  description = resolvedServiceDescription;
-                  wantedBy = wantedBy;
-                  after = after;
-                  environment = composedServices.environment cfg // environment cfg;
-                  serviceConfig =
-                    {
-                      ExecStart = lib.getExe cfg.package;
-                      Restart = restart;
-                    }
-                    // composedServices.extraServiceConfig cfg
-                    // extraServiceConfig cfg;
-                };
-                _serviceModule.registeredPorts = lib.optional hasPort {
-                  name = resolvedName;
-                  port = cfg.port;
-                };
-              }
-            ]
-            ++ composedServices.extraConfigs cfg));
-        };
-
-    mkTcpServiceModule = {
-      package ? null,
-      name ? null,
-      bindEnvVar,
-      serviceDescription ? null,
-      packageDescription ? null,
-      listenAddressDescription ? null,
-      portDescription ? null,
-      defaultListenAddress ? "0.0.0.0",
-      defaultPort,
-      extraOptions ? (_: {}),
-      environment ? (_: {}),
-      extraServiceConfig ? (_: {}),
-      wantedBy ? ["multi-user.target"],
-      after ? ["network.target"],
-      restart ? "on-failure",
-    }:
-      mkModule {
-        inherit
-          package
-          name
-          serviceDescription
-          packageDescription
-          extraServiceConfig
-          wantedBy
-          after
-          restart
-          ;
-        extraOptions = lib: let
-          resolvedName =
-            if name != null
-            then name
-            else "service";
-        in
-          {
-            listenAddress = lib.mkOption {
-              type = lib.types.str;
-              default = defaultListenAddress;
-              description =
-                if listenAddressDescription != null
-                then listenAddressDescription
-                else "IP address for the ${resolvedName} listener.";
-            };
-
-            port = lib.mkOption {
-              type = lib.types.port;
-              default = defaultPort;
-              description =
-                if portDescription != null
-                then portDescription
-                else "TCP port for the ${resolvedName} listener.";
-            };
-          }
-          // extraOptions lib;
-        environment = cfg:
-          {
-            "${bindEnvVar}" = "${cfg.listenAddress}:${toString cfg.port}";
-          }
-          // environment cfg;
-      };
   };
 }
