@@ -165,6 +165,11 @@
       nkeys
       nsc
       # nats-top
+      gtk4
+      shotcut
+      kdePackages.kdenlive
+      blender
+      obs-studio
     ];
 
     fonts = with pkgs; [

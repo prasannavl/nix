@@ -25,6 +25,7 @@
       enable = true;
       openFirewall = true;
     };
+    sysprof.enable = true;
   };
 
   # Disable other known agents if using gcr-ssh-agent.
