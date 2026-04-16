@@ -90,6 +90,6 @@
   environment.sessionVariables = {
     # GNOME on vulkan wakes up the dGPU momentarily that causes a 2-3s gap
     # when opening new apps.
-    GSK_RENDERER = "gl"; 
+    GSK_RENDERER = "gl";
   };
 }
