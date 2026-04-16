@@ -4,7 +4,6 @@
       alacritty
       foot
       ghostty
-      niri
       wl-clipboard
       xdg-utils
       xdg-user-dirs

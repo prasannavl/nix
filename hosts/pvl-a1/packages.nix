@@ -37,6 +37,7 @@
       alsa-utils
       cheese
       handbrake-wrapped
+      wayscriber
     ];
 
     productivity = with pkgs; [
