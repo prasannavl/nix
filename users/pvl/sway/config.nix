@@ -43,6 +43,7 @@ in {
       export XDG_CURRENT_DESKTOP="sway"
       export XDG_SESSION_DESKTOP="sway"
       export DESKTOP_SESSION="sway"
+      export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/gcr/ssh"
       export WLR_RENDER_DRM_DEVICE="${wlrCfg.renderDevice}"
       export WLR_DRM_DEVICES="${wlrCfg.drmDevices}"
     '';
@@ -177,6 +178,10 @@ in {
       };
 
       startup = [
+        {
+          always = true;
+          command = "${pkgs.systemd}/bin/systemctl --user import-environment SSH_AUTH_SOCK";
+        }
         {
           always = true;
           command = "${pkgs.systemd}/bin/systemctl --user restart sway-lxqt-policykit.service";

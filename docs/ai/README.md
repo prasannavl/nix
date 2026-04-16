@@ -27,12 +27,17 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/apps/package-architecture.md`: Canonical package, child-flake,
   manifest, helper, and package-owned service-module rules.
+- `docs/ai/notes/apps/vscode-libsecret-password-store-2026-04.md`: Records the
+  user VS Code wrapper choice that forces Code to use libsecret for password
+  storage.
 
 ### Hosts
 
 - `docs/ai/notes/hosts/incus-and-host-operations.md`: Canonical Incus guest
   model, host docs structure, tunnel host wiring, and durable host incident
   findings.
+- `docs/ai/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`: Records the `pvl-a1`
+  Sway SSH-agent choice and GPG-agent session socket wiring.
 - `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service
   module split and aggregation layout.
 
