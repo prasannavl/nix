@@ -1,13 +1,17 @@
 {
   nixos = {...}: {};
 
-  home = {pkgs, ...}: {
+  home = {pkgs, ...}: let
+    vscodePackage = pkgs.vscode-upstream.override {
+      commandLineArgs = "--password-store=gnome-libsecret";
+    };
+  in {
     programs.vscode = {
       enable = true;
-      package = pkgs.vscode-upstream;
+      package = vscodePackage;
       profiles.default = let
         # Keep extensions aligned to the stable release train that nix-vscode-extensions publishes.
-        v = pkgs.vscode-upstream.version;
+        v = vscodePackage.version;
         e = pkgs.nix-vscode-extensions.forVSCodeVersion v;
         r = e.vscode-marketplace-release;
       in {
