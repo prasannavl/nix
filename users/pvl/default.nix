@@ -26,6 +26,7 @@ in rec {
       ./firefox
       ./gtk
       ./sway
+      ./niri
     ];
   desktop-core = mkModule desktop-core-modules;
 

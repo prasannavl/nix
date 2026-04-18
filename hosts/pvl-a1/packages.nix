@@ -38,6 +38,9 @@
       cheese
       handbrake-wrapped
       wayscriber
+      wl-clipboard-x11
+      wl-mirror
+      wl-color-picker
     ];
 
     productivity = with pkgs; [

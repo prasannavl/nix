@@ -36,6 +36,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/incus-and-host-operations.md`: Canonical Incus guest
   model, host docs structure, tunnel host wiring, and durable host incident
   findings.
+- `docs/ai/notes/hosts/pvl-niri-desktop-2026-04.md`: Records the `pvl` Niri
+  desktop user-module shape, session services, cursor handling, SSH socket, and
+  portal choices.
 - `docs/ai/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`: Records the `pvl-a1`
   Sway SSH-agent choice and GPG-agent session socket wiring.
 - `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service
@@ -79,6 +82,8 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Tooling
 
+- `docs/ai/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
+  `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
 - `docs/ai/notes/tooling/repo-tooling.md`: Canonical Bash entrypoint, lint/fmt,
   package-local verification, and docs-maintenance rules.
 

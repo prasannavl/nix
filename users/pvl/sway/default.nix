@@ -23,6 +23,8 @@
       lxqt.lxqt-policykit
       pulseaudio
       shikane
+      gpu-screen-recorder
+      gpu-screen-recorder-gtk
     ];
   };
 
