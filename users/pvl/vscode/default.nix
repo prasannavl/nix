@@ -28,7 +28,7 @@
           yzhang.markdown-all-in-one
           redhat.vscode-yaml
           jnoortheen.nix-ide
-          arrterian.nix-env-selector
+          mkhl.direnv
           rust-lang.rust-analyzer
           fill-labs.dependi
           hashicorp.terraform
