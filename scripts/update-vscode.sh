@@ -127,7 +127,11 @@ compute_hashes() {
 
 render_file() {
 	cat <<EOF
-{pkgs, ...}: let
+{
+  pkgs,
+  commandLineArgs ? "",
+  ...
+}: let
   version = "${RESOLVED_VERSION}";
   inherit (pkgs.stdenv.hostPlatform) system;
   throwSystem = throw "Unsupported system for vscode-upstream: \${system}";
@@ -187,7 +191,10 @@ render_file() {
   };
   rev = "${RESOLVED_REV}";
 in
-  pkgs.unstable.vscode.overrideAttrs (old: let
+  (pkgs.unstable.vscode.override {
+    inherit commandLineArgs;
+  })
+  .overrideAttrs (old: let
     vscodeServers =
       pkgs.lib.mapAttrs
       (serverSystem: serverArchiveName:

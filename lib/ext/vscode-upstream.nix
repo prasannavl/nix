@@ -63,7 +63,7 @@
   rev = "560a9dba96f961efea7b1612916f89e5d5d4d679";
 in
   (pkgs.unstable.vscode.override {
-    commandLineArgs = commandLineArgs;
+    inherit commandLineArgs;
   })
   .overrideAttrs (old: let
     vscodeServers =
