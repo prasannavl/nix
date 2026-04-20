@@ -11,8 +11,10 @@ session environment.
 
 ## Decision
 
-Sway exports `SSH_AUTH_SOCK` to `$XDG_RUNTIME_DIR/gcr/ssh` and imports that
-value into the user systemd environment at Sway startup.
+The NixOS Sway wrapper exports `SSH_AUTH_SOCK` to `$XDG_RUNTIME_DIR/gcr/ssh`
+before the compositor starts. Home Manager's Sway systemd/DBus activation hook
+imports the live Sway process environment with `--all`, so the value reaches the
+user systemd and D-Bus activation environments.
 
 This uses the same GCR SSH agent service enabled by GNOME instead of enabling
 GPG agent SSH support for Sway.

@@ -39,6 +39,20 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/pvl-niri-desktop-2026-04.md`: Records the `pvl` Niri
   desktop user-module shape, session services, cursor handling, SSH socket, and
   portal choices.
+- `docs/ai/notes/hosts/pvl-wm-session-services-2026-04.md`: Records the shared
+  `pvl` tiling-WM session services used by both Sway and Niri.
+- `docs/ai/notes/hosts/pvl-a1-sway-gdm-session-2026-04.md`: Records the `pvl-a1`
+  Sway launch split between the GDM-owned system wrapper and the Home Manager
+  user config.
+- `docs/ai/notes/hosts/pvl-a1-sway-fractional-scale-blur-2026-04.md`: Records
+  the `pvl-a1` Sway fractional-scale blur root cause and the shared
+  output-default fix.
+- `docs/ai/notes/hosts/pvl-a1-sway-client-scaling-2026-04.md`: Records the
+  remaining `pvl-a1` Sway blur as a client-rendering-path issue and the
+  session-wide Wayland-backend preference fix.
+- `docs/ai/notes/hosts/pvl-a1-sway-xdpw-window-chooser-2026-04.md`: Records the
+  `pvl-a1` Sway xdg-desktop-portal-wlr window chooser failure, the effective
+  config ownership, and the durable JSON-parsing fix.
 - `docs/ai/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`: Records the `pvl-a1`
   Sway SSH-agent choice and GPG-agent session socket wiring.
 - `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service
@@ -84,6 +98,10 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
+- `docs/ai/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records the
+  move from `arrterian.nix-env-selector` to `mkhl.direnv` plus the root flake
+  `devShells.default`/`devShells.full` abstraction in
+  `lib/flake/dev-shells.nix`.
 - `docs/ai/notes/tooling/repo-tooling.md`: Canonical Bash entrypoint, lint/fmt,
   package-local verification, and docs-maintenance rules.
 
