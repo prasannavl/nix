@@ -97,8 +97,33 @@
     mkNixosSystem = flakeLib.mkNixosSystem {
       inherit commonModules inputs;
     };
+    devShellsLib = import ./lib/flake/dev-shells.nix {
+      inherit (nixpkgs) lib;
+    };
+    devShellsFor = system: let
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = overlays;
+      };
+      rootPackages = [
+        pkgs.alejandra
+        pkgs.git
+        pkgs.jq
+        pkgs.nix
+        pkgs.nix-output-monitor
+        pkgs.nvd
+        agenix.packages.${system}.default
+      ];
+      childPackages = allOutputs.${system}.packages;
+    in
+      devShellsLib.mkDevShells {
+        inherit pkgs rootPackages childPackages;
+      };
   in
     flakeLib.standardOutputsFrom allSystems allOutputs
+    // {
+      devShells = nixpkgs.lib.genAttrs allSystems devShellsFor;
+    }
     // {
       # This is intentional, as std packages attr doesn't
       # allow arbitrary nested shape and we expose those

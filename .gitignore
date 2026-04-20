@@ -4,6 +4,7 @@
 # Nix
 result/
 result-*
+.direnv/
 
 # Secrets
 data/secrets/**
