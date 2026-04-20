@@ -38,7 +38,7 @@
           github.copilot-chat
           openai.chatgpt
           anthropic.claude-code
-          kilocode.kilo-code
+          # kilocode.kilo-code
           # google.gemini-cli-vscode-ide-companion
           # google.geminicodeassist
           # continue.continue
@@ -46,6 +46,7 @@
           ms-ossdata.vscode-pgsql
           alexcvzz.vscode-sqlite
           johnpapa.vscode-peacock
+          kdl-org.kdl
           bierner.markdown-mermaid
         ];
 

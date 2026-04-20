@@ -1,4 +1,8 @@
-{pkgs, ...}: let
+{
+  pkgs,
+  commandLineArgs ? "",
+  ...
+}: let
   version = "1.116.0";
   inherit (pkgs.stdenv.hostPlatform) system;
   throwSystem = throw "Unsupported system for vscode-upstream: ${system}";
@@ -58,7 +62,10 @@
   };
   rev = "560a9dba96f961efea7b1612916f89e5d5d4d679";
 in
-  pkgs.unstable.vscode.overrideAttrs (old: let
+  (pkgs.unstable.vscode.override {
+    commandLineArgs = commandLineArgs;
+  })
+  .overrideAttrs (old: let
     vscodeServers =
       pkgs.lib.mapAttrs
       (serverSystem: serverArchiveName:
