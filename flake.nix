@@ -4,6 +4,22 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
     unstable.url = "github:nixos/nixpkgs/nixos-unstable";
+    sway-git = {
+      url = "github:swaywm/sway?ref=master";
+      flake = false;
+    };
+    wlroots-git = {
+      url = "git+https://gitlab.freedesktop.org/wlroots/wlroots?ref=master";
+      flake = false;
+    };
+    xdg-desktop-portal-wlr-git = {
+      url = "github:emersion/xdg-desktop-portal-wlr?ref=master";
+      flake = false;
+    };
+    xdg-desktop-portal-git = {
+      url = "github:flatpak/xdg-desktop-portal?ref=main";
+      flake = false;
+    };
     flake-utils = {
       url = "github:numtide/flake-utils";
       inputs.systems.follows = "systems";

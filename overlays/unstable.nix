@@ -17,11 +17,8 @@ in {
   inherit (unstable) lxcfs;
 
   # sway
-  inherit (unstable) sway;
   inherit (unstable) swayidle;
   inherit (unstable) swaylock;
-  inherit (unstable) wlroots;
-  inherit (unstable) xdg-desktop-portal-wlr;
 
   # ai tools
   inherit (unstable) codex;
