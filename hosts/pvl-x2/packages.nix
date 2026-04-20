@@ -10,13 +10,15 @@
       tree
       nvtopPackages.full
       socat
+      dig
+      sysstat
     ];
 
     gnome = with pkgs; [
       gnome-tweaks
     ];
 
-    audioVideo = with pkgs; [
+    media = with pkgs; [
       vlc
       pavucontrol
       alsa-utils
@@ -28,13 +30,26 @@
       vulkan-tools
     ];
 
+    dev = with pkgs; [
+      gdb
+      vim.xxd
+    ];
+
+    db = with pkgs; [
+      postgresql_18
+    ];
+
     network = with pkgs; [
       iperf3
       cloudflared
       tailscale
     ];
 
-    containers = with pkgs; [
+    monitoring = with pkgs; [
+      nethogs
+    ];
+
+    containers = [
     ];
 
     hardware = with pkgs; [
@@ -58,27 +73,20 @@
     nixTools = with pkgs; [
       nvd
     ];
-
-    misc = with pkgs; [
-      vim.xxd
-      gdb
-      dig
-      nethogs
-      sysstat
-      postgresql_18
-    ];
   };
 in {
   # Toggle whole groups by commenting out the line below.
   environment.systemPackages =
     packages.core
     ++ packages.gnome
-    ++ packages.audioVideo
+    ++ packages.media
     ++ packages.graphics
+    ++ packages.dev
+    ++ packages.db
     ++ packages.network
+    ++ packages.monitoring
     ++ packages.containers
     ++ packages.hardware
     ++ packages.security
-    ++ packages.nixTools
-    ++ packages.misc;
+    ++ packages.nixTools;
 }

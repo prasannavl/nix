@@ -18,10 +18,11 @@
       ranger
       nvtopPackages.full
       sshfs
-      nixos-container
       lsof
       socat
       perf
+      dig
+      sysstat
     ];
 
     gnome = with pkgs; [
@@ -31,16 +32,48 @@
       dconf-editor
     ];
 
-    audioVideo = with pkgs; [
+    wayland = with pkgs; [
+      wl-clipboard-x11
+      wl-mirror
+      wl-color-picker
+      wayscriber
+      unstable.wooz
+      unstable.chameleos
+      showmethekey
+      flameshot
+    ];
+
+    qtTheming = with pkgs; [
+      libsForQt5.qt5ct
+      kdePackages.qt6ct
+      kdePackages.plasma-integration
+    ];
+
+    media = with pkgs; [
       vlc
+      mpv
       pavucontrol
       alsa-utils
       cheese
       handbrake-wrapped
-      wayscriber
-      wl-clipboard-x11
-      wl-mirror
-      wl-color-picker
+      ffmpeg
+      catt
+      go-chromecast
+      gnome-network-displays
+      miraclecast
+      obs-studio
+      shotcut
+      kdePackages.kdenlive
+      blender
+    ];
+
+    terminalRec = with pkgs; [
+      asciinema
+      asciinema-agg
+      figlet
+      lolcat
+      ascii
+      asciigraph
     ];
 
     productivity = with pkgs; [
@@ -51,12 +84,14 @@
       inkscape
       gimp
       imagemagick
+      qbittorrent
     ];
 
     graphics = with pkgs; [
       mesa-demos
       libva-utils
       vulkan-tools
+      gtk4
     ];
 
     dev = with pkgs; [
@@ -77,6 +112,26 @@
       zed-wrapped
       nixd
       alejandra
+      shellcheck
+      patchelf
+      gdb
+      fzf
+      vim.xxd
+    ];
+
+    db = with pkgs; [
+      sqlite
+      sqlitebrowser
+      sqlitestudio
+      sqlitestudio-plugins
+      pgsql-tools
+      pgadmin4-desktopmode
+      postgresql_18
+      nats-server
+      natscli
+      nkeys
+      nsc
+      # nats-top
     ];
 
     nixTools = with pkgs; [
@@ -91,12 +146,21 @@
       distrobox
       crun
       runc
+      nixos-container
     ];
 
     network = with pkgs; [
       cloudflared
       tailscale
       iperf3
+      networkmanagerapplet
+      opensnitch
+      opensnitch-ui
+    ];
+
+    monitoring = with pkgs; [
+      nethogs
+      wavemon
     ];
 
     hardware = with pkgs; [
@@ -129,6 +193,7 @@
       age
       sbctl
       ente-auth
+      openssl
     ];
 
     ai = with pkgs; [
@@ -137,43 +202,7 @@
       codex
       gemini-cli
       claude-code
-    ];
-
-    misc = with pkgs; [
-      fzf
-      nethogs
-      sysstat
-      wavemon
-      networkmanagerapplet
-      dig
-      qbittorrent
-      mpv
-      catt
-      go-chromecast
-      ffmpeg
-      patchelf
       opencode
-      shellcheck
-      vim.xxd
-      gdb
-      openssl
-      sqlitestudio
-      sqlitestudio-plugins
-      sqlitebrowser
-      sqlite
-      pgsql-tools
-      pgadmin4-desktopmode
-      postgresql_18
-      nats-server
-      natscli
-      nkeys
-      nsc
-      # nats-top
-      gtk4
-      shotcut
-      kdePackages.kdenlive
-      blender
-      obs-studio
     ];
 
     fonts = with pkgs; [
@@ -188,18 +217,22 @@ in {
   environment.systemPackages =
     packages.core
     ++ packages.gnome
-    ++ packages.audioVideo
+    ++ packages.wayland
+    ++ packages.qtTheming
+    ++ packages.media
+    ++ packages.terminalRec
     ++ packages.productivity
     ++ packages.graphics
     ++ packages.dev
+    ++ packages.db
     ++ packages.nixTools
     ++ packages.containers
     ++ packages.network
+    ++ packages.monitoring
     ++ packages.hardware
     ++ packages.inputDebug
     ++ packages.security
-    ++ packages.ai
-    ++ packages.misc;
+    ++ packages.ai;
 
   environment.sessionVariables = {
     RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
