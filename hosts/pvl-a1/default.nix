@@ -5,6 +5,7 @@
     ../../lib/profiles/all.nix
     ../../lib/podman.nix
     ./sys.nix
+    ./nix-ld.nix
     ./packages.nix
     ./firewall.nix
     ./users.nix
