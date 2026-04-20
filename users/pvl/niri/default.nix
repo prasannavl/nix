@@ -1,23 +1,8 @@
 {
   nixos = {pkgs, ...}: {
     environment.systemPackages = with pkgs; [
-      alacritty
-      brightnessctl
-      fuzzel
-      lxqt.lxqt-policykit
       niri
-      playerctl
-      pulseaudio
-      shikane
-      swaybg
-      swaylock
-      wireplumber
-      wmenu
-      wl-clipboard
       xdg-desktop-portal-gnome
-      xdg-desktop-portal-gtk
-      xdg-utils
-      xdg-user-dirs
       xwayland-satellite
     ];
 
@@ -33,11 +18,7 @@
     programs.ssh.startAgent = false;
   };
 
-  home = {
-    config,
-    pkgs,
-    ...
-  }: {
+  home = {pkgs, ...}: {
     imports = [
       ./config.nix
     ];
@@ -53,57 +34,6 @@
         niri = {
           default = ["gnome" "gtk"];
         };
-      };
-    };
-
-    programs.noctalia-shell = {
-      enable = true;
-    };
-
-    systemd.user.services = {
-      niri-lxqt-policykit = {
-        Unit = {
-          Description = "LXQt PolicyKit Agent for Niri";
-          PartOf = ["graphical-session.target"];
-          After = ["graphical-session.target"];
-          Requisite = ["graphical-session.target"];
-        };
-        Service = {
-          ExecStart = "${pkgs.lxqt.lxqt-policykit}/bin/lxqt-policykit-agent";
-          Restart = "on-failure";
-          RestartSec = 1;
-        };
-        Install.WantedBy = ["niri.service"];
-      };
-
-      niri-shikane = {
-        Unit = {
-          Description = "Shikane Output Profile Daemon for Niri";
-          PartOf = ["graphical-session.target"];
-          After = ["graphical-session.target"];
-          Requisite = ["graphical-session.target"];
-        };
-        Service = {
-          ExecStart = "${pkgs.shikane}/bin/shikane";
-          Restart = "on-failure";
-          RestartSec = 1;
-        };
-        Install.WantedBy = ["niri.service"];
-      };
-
-      niri-noctalia-shell = {
-        Unit = {
-          Description = "Noctalia Shell for Niri";
-          PartOf = ["graphical-session.target"];
-          After = ["graphical-session.target"];
-          Requisite = ["graphical-session.target"];
-        };
-        Service = {
-          ExecStart = "${config.programs.noctalia-shell.package}/bin/noctalia-shell";
-          Restart = "on-failure";
-          RestartSec = 1;
-        };
-        Install.WantedBy = ["niri.service"];
       };
     };
   };

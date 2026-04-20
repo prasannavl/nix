@@ -25,6 +25,7 @@ in rec {
       ./fzf
       ./firefox
       ./gtk
+      ./wm
       ./sway
       ./niri
     ];
@@ -45,6 +46,7 @@ in rec {
       ./ranger
       ./neovim
       ./vscode
+      ./direnv
       ./dotfiles-link-bin
       ./xdg-user-dirs
       ./env/cargo.nix

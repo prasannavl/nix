@@ -3,7 +3,7 @@
     ./core.nix
     ../audio.nix
     ../desktop-base.nix
-    ../sway.nix
+    ../wm.nix
     ../gpg.nix
     ../mdns.nix
   ];

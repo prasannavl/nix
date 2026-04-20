@@ -1,22 +1,10 @@
 {
   config,
-  pkgs,
   lib,
   osConfig,
+  pkgs,
   ...
 }: let
-  inherit (osConfig.networking) hostName;
-  wlrByHost = {
-    pvl-a1 = {
-      renderDevice = "/dev/dri/zrender-amd";
-      drmDevices = "/dev/dri/zcard-amd:/dev/dri/zcard-nvidia";
-    };
-  };
-  wlrDefaults = {
-    renderDevice = "/dev/dri/renderD128";
-    drmDevices = "/dev/dri/card0";
-  };
-  wlrCfg = lib.attrByPath [hostName] wlrDefaults wlrByHost;
   mod = "Mod4";
   terminal = "${pkgs.alacritty}/bin/alacritty";
   menu = "${pkgs.wmenu}/bin/wmenu-run";
@@ -31,25 +19,26 @@
   pgrep = "${pkgs.procps}/bin/pgrep";
   sudo = "${pkgs.sudo}/bin/sudo";
   which = "${pkgs.which}/bin/which";
-  wallpaper = ../../../data/backgrounds/sw.png;
   cursorTheme = "Adwaita";
   cursorSize = 24;
+  outputs = import ../wm/outputs.nix;
+  renderOutput = output: ''
+    output "${output.name}" mode ${output.mode} scale ${output.scale} scale_filter ${output.scaleFilter} subpixel ${output.subpixel} transform ${output.transform}${lib.optionalString output.adaptiveSync " adaptive_sync on"}
+  '';
+  outputDefaults = lib.concatMapStringsSep "\n" renderOutput outputs.all;
 in {
   wayland.windowManager.sway = {
     enable = true;
-    wrapperFeatures.gtk = true;
-    extraOptions = ["--unsupported-gpu"];
-    extraSessionCommands = ''
-      export XDG_CURRENT_DESKTOP="sway"
-      export XDG_SESSION_DESKTOP="sway"
-      export DESKTOP_SESSION="sway"
-      export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/gcr/ssh"
-      export WLR_RENDER_DRM_DEVICE="${wlrCfg.renderDevice}"
-      export WLR_DRM_DEVICES="${wlrCfg.drmDevices}"
-    '';
+    package = osConfig.programs.sway.package;
+    # GDM launches the NixOS Sway wrapper, so wrapperFeatures, extraOptions, and
+    # extraSessionCommands must stay in the NixOS programs.sway config.
+    # Keep only config-emitted Home Manager options here; systemd.variables also
+    # renders into the generated Sway config rather than changing the wrapper.
+    systemd.variables = ["--all"];
     config = {
       modifier = mod;
       inherit terminal menu;
+      defaultWorkspace = "workspace number 1";
 
       bars = [
         {
@@ -66,12 +55,6 @@ in {
           tap = "enabled";
           tap_button_map = "lrm";
           natural_scroll = "enabled";
-        };
-      };
-
-      output = {
-        "*" = {
-          bg = "${wallpaper} fill";
         };
       };
 
@@ -177,25 +160,6 @@ in {
         };
       };
 
-      startup = [
-        {
-          always = true;
-          command = "${pkgs.systemd}/bin/systemctl --user import-environment SSH_AUTH_SOCK";
-        }
-        {
-          always = true;
-          command = "${pkgs.systemd}/bin/systemctl --user restart sway-lxqt-policykit.service";
-        }
-        {
-          always = true;
-          command = "${pkgs.systemd}/bin/systemctl --user restart sway-shikane.service";
-        }
-        {
-          always = true;
-          command = "${pkgs.systemd}/bin/systemctl --user restart sway-noctalia-shell.service";
-        }
-      ];
-
       window.commands = [
         {
           criteria = {
@@ -213,8 +177,14 @@ in {
     };
 
     extraConfig = ''
+      # Set output scale defaults before kanshi applies topology profiles so the
+      # compositor and early clients start on the intended fractional scale.
+      ${outputDefaults}
+
       smart_gaps on
       smart_borders on
+      hide_edge_borders smart
+
       floating_modifier ${mod} normal
       seat * xcursor_theme ${cursorTheme} ${toString cursorSize}
 

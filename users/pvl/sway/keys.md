@@ -45,7 +45,8 @@ Assumes the Sway config from `users/pvl/sway/config.nix`.
 ## Workspaces
 
 - `Mod+1` ... `Mod+9`, `Mod+0`: focus workspace 1 ... 10
-- `Mod+Shift+1` ... `Mod+Shift+9`, `Mod+Shift+0`: move container to workspace 1 ... 10
+- `Mod+Shift+1` ... `Mod+Shift+9`, `Mod+Shift+0`: move container to workspace 1
+  ... 10
 - `swipe:3:left`: next workspace
 - `swipe:3:right`: previous workspace
 
