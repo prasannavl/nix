@@ -7,7 +7,8 @@
   terminal = "${pkgs.alacritty}/bin/alacritty";
   runner = "${pkgs.fuzzel}/bin/fuzzel --list-executables-in-path";
   launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
-  lockCmd = "${pkgs.swaylock}/bin/swaylock";
+  lockCmd = "${pkgs.swaylock}/bin/swaylock -f -c 000000 --indicator-idle-visible";
+  grimshot = "${pkgs.sway-contrib.grimshot}/bin/grimshot";
   wpctl = "${pkgs.wireplumber}/bin/wpctl";
   playerctl = "${pkgs.playerctl}/bin/playerctl";
   brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";
@@ -302,13 +303,13 @@
         Print hotkey-overlay-title="Screenshot Selection" { screenshot; }
         Shift+Print hotkey-overlay-title="Screenshot Screen" { screenshot-screen; }
         Alt+Print hotkey-overlay-title="Screenshot Window" { screenshot-window; }
-        Ctrl+Print hotkey-overlay-title="Screenshot Selection to Clipboard" { screenshot write-to-disk=false; }
+        Ctrl+Print hotkey-overlay-title="Screenshot Selection to Clipboard" { spawn "${grimshot}" "copy" "area"; }
         Ctrl+Shift+Print hotkey-overlay-title="Screenshot Screen to Clipboard" { screenshot-screen write-to-disk=false; }
         Ctrl+Alt+Print hotkey-overlay-title="Screenshot Window to Clipboard" { screenshot-window write-to-disk=false; }
         Mod+X hotkey-overlay-title="Screenshot Selection" { screenshot; }
         Mod+Shift+X hotkey-overlay-title="Screenshot Screen" { screenshot-screen; }
         Mod+Alt+X hotkey-overlay-title="Screenshot Window" { screenshot-window; }
-        Mod+Ctrl+X hotkey-overlay-title="Screenshot Selection to Clipboard" { screenshot write-to-disk=false; }
+        Mod+Ctrl+X hotkey-overlay-title="Screenshot Selection to Clipboard" { spawn "${grimshot}" "copy" "area"; }
         Mod+Ctrl+Shift+X hotkey-overlay-title="Screenshot Screen to Clipboard" { screenshot-screen write-to-disk=false; }
         Mod+Ctrl+Alt+X hotkey-overlay-title="Screenshot Window to Clipboard" { screenshot-window write-to-disk=false; }
 
