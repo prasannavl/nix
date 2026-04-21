@@ -5106,6 +5106,19 @@ rollback_failed_deploy_host() {
 	return 0
 }
 
+_remote_pre_switch_system_failed_state_reset() {
+	local failed_output=""
+
+	failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
+	if [ -z "${failed_output}" ]; then
+		return 0
+	fi
+
+	echo "[pre-switch] resetting failed system units:" >&2
+	echo "${failed_output}" >&2
+	systemctl reset-failed
+}
+
 _remote_pre_switch_user_failed_state_reset() {
 	local units="" unit="" user="" uid="" runtime_dir="" bus="" failed_output=""
 
@@ -5147,8 +5160,10 @@ EOF_USER_RESET_UNITS
 }
 
 build_pre_switch_user_failed_state_reset_cmd() {
-	printf '%s\n%s\n' \
+	printf '%s\n%s\n%s\n%s\n' \
+		"$(declare -f _remote_pre_switch_system_failed_state_reset)" \
 		"$(declare -f _remote_pre_switch_user_failed_state_reset)" \
+		"_remote_pre_switch_system_failed_state_reset" \
 		"_remote_pre_switch_user_failed_state_reset"
 }
 
@@ -5581,17 +5596,29 @@ EOF_UNITS
 
 _remote_post_switch_user_health_check() {
 	local wait_seconds="$1"
-	local units="" unit="" user="" uid="" runtime_dir="" bus="" failed_output=""
+	local units="" unit="" user="" uid="" runtime_dir="" bus="" failed_output="" system_failed_output=""
 	local had_failures=0
+
+	if [ "${wait_seconds}" -gt 0 ]; then
+		echo "[health-check] waiting ${wait_seconds}s for services to stabilize" >&2
+		sleep "${wait_seconds}"
+	fi
+
+	system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
+	if [ -n "${system_failed_output}" ]; then
+		had_failures=1
+		echo "[health-check] FAILED system units:" >&2
+		echo "${system_failed_output}" >&2
+	fi
 
 	units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
 	if [ -z "${units}" ]; then
+		if [ "${had_failures}" -eq 1 ]; then
+			echo "[health-check] FAILED — service failures detected after deploy" >&2
+			return 1
+		fi
+		echo "[health-check] all services healthy" >&2
 		return 0
-	fi
-
-	if [ "${wait_seconds}" -gt 0 ]; then
-		echo "[health-check] waiting ${wait_seconds}s for user services to stabilize" >&2
-		sleep "${wait_seconds}"
 	fi
 
 	while IFS= read -r unit; do
@@ -5620,11 +5647,11 @@ ${units}
 EOF_HC_UNITS
 
 	if [ "${had_failures}" -eq 1 ]; then
-		echo "[health-check] FAILED — user service failures detected after deploy" >&2
+		echo "[health-check] FAILED — service failures detected after deploy" >&2
 		return 1
 	fi
 
-	echo "[health-check] all user services healthy" >&2
+	echo "[health-check] all services healthy" >&2
 	return 0
 }
 
@@ -5673,7 +5700,7 @@ run_post_switch_health_check_phase() {
 	local -a health_check_failed_hosts=() remaining_successful=()
 
 	log_section "Phase: Health Check"
-	echo "Waiting 10s for user services to stabilize" >&2
+	echo "Waiting 10s for services to stabilize" >&2
 	sleep 10
 
 	for node in "${hcp_successful_hosts_ref[@]}"; do
