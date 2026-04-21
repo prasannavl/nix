@@ -33,12 +33,11 @@
   '';
 
   services = {
-    # Additional stable paths
     udev.extraRules = ''
-      KERNEL=="card*", ATTRS{vendor}=="0x1002", SYMLINK+="dri/zcard-amd"
-      KERNEL=="card*", ATTRS{vendor}=="0x10de", SYMLINK+="dri/zcard-nvidia"
-      KERNEL=="renderD*", ATTRS{vendor}=="0x1002", SYMLINK+="dri/zrender-amd"
-      KERNEL=="renderD*", ATTRS{vendor}=="0x10de", SYMLINK+="dri/zrender-nvidia"
+      KERNEL=="card*", KERNELS=="0000:66:00.0", SYMLINK+="dri/zcard-amd", SYMLINK+="dri/zcard-default"
+      KERNEL=="renderD*", KERNELS=="0000:66:00.0", SYMLINK+="dri/zrender-amd", SYMLINK+="dri/zrender-default"
+      KERNEL=="card*", KERNELS=="0000:64:00.0", SYMLINK+="dri/zcard-nvidia"
+      KERNEL=="renderD*", KERNELS=="0000:64:00.0", SYMLINK+="dri/zrender-nvidia"
     '';
 
     # Adds the missing asus functionality to Linux.

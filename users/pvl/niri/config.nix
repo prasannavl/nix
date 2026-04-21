@@ -131,7 +131,7 @@
     // Nix-managed overlay.
 
     debug {
-        render-drm-device "/dev/dri/renderD128"
+        render-drm-device "/dev/dri/zrender-default"
         // Work around PipeWire screencast renegotiation issues seen with
         // GNOME Network Displays under Niri; see niri issue #2223 and
         // GNOME Network Displays work item #460.

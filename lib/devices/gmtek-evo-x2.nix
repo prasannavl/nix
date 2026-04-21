@@ -10,7 +10,7 @@
   hardware.cpu.amd.updateMicrocode = false;
 
   services.udev.extraRules = ''
-    KERNEL=="card*", ATTRS{vendor}=="0x1002", SYMLINK+="dri/zcard-amd"
-    KERNEL=="renderD*", ATTRS{vendor}=="0x1002", SYMLINK+="dri/zrender-amd"
+    KERNEL=="card*", KERNELS=="0000:c6:00.0", SYMLINK+="dri/zcard-amd", SYMLINK+="dri/zcard-default"
+    KERNEL=="renderD*", KERNELS=="0000:c6:00.0", SYMLINK+="dri/zrender-amd", SYMLINK+="dri/zrender-default"
   '';
 }

@@ -44,9 +44,9 @@ Use this index as the canonical map for `docs/ai/**`.
   split between `Super+X` on tiling WMs and `Super+C` on GNOME.
 - `docs/ai/notes/hosts/pvl-wm-session-services-2026-04.md`: Records the shared
   `pvl` tiling-WM session services used by both Sway and Niri.
-- `docs/ai/notes/hosts/pvl-x2-sway-drm-device-2026-04.md`: Records the stable
-  AMD DRM symlink choice for `pvl-x2` Sway startup instead of numeric
-  `/dev/dri/cardN` paths.
+- `docs/ai/notes/hosts/pvl-x2-sway-drm-device-2026-04.md`: Records the PCI
+  backed DRM alias choice for `pvl-x2` and `pvl-a1` compositor startup instead
+  of numeric `/dev/dri/cardN` paths or vendor-only aliases.
 - `docs/ai/notes/hosts/pvl-a1-sway-gdm-session-2026-04.md`: Records the `pvl-a1`
   Sway launch split between the GDM-owned system wrapper and the Home Manager
   user config.

@@ -4,21 +4,16 @@
   ...
 }: let
   inherit (config.networking) hostName;
+  wlrDefaults = {
+    renderDevice = "/dev/dri/zrender-default";
+    drmDevices = "/dev/dri/zcard-default";
+  };
   wlrByHost = {
     pvl-a1 = {
-      renderDevice = "/dev/dri/zrender-amd";
-      drmDevices = "/dev/dri/zcard-amd:/dev/dri/zcard-nvidia";
-    };
-    pvl-x2 = {
-      renderDevice = "/dev/dri/zrender-amd";
-      drmDevices = "/dev/dri/zcard-amd";
+      drmDevices = "/dev/dri/zcard-default:/dev/dri/zcard-nvidia";
     };
   };
-  wlrDefaults = {
-    renderDevice = "/dev/dri/renderD128";
-    drmDevices = "/dev/dri/card0";
-  };
-  wlrCfg = lib.attrByPath [hostName] wlrDefaults wlrByHost;
+  wlrCfg = wlrDefaults // lib.attrByPath [hostName] {} wlrByHost;
 in {
   programs.sway = {
     enable = true;
