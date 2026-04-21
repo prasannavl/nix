@@ -13,7 +13,6 @@
   lockCmd = "${pkgs.swaylock}/bin/swaylock -f -c 000000 --indicator-idle-visible";
   grimshot = "${pkgs.sway-contrib.grimshot}/bin/grimshot";
   systemctl = "${pkgs.systemd}/bin/systemctl";
-  swaymsg = "${pkgs.sway}/bin/swaymsg";
   pactl = "${pkgs.pulseaudio}/bin/pactl";
   brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";
   pgrep = "${pkgs.procps}/bin/pgrep";
@@ -21,6 +20,7 @@
   which = "${pkgs.which}/bin/which";
   cursorTheme = "Adwaita";
   cursorSize = 24;
+  wmServices = import ../wm/services.nix {};
   outputs = import ../wm/outputs.nix;
   renderOutput = output: ''
     output "${output.name}" mode ${output.mode} scale ${output.scale} scale_filter ${output.scaleFilter} subpixel ${output.subpixel} transform ${output.transform}${lib.optionalString output.vrr " adaptive_sync on"}
@@ -63,7 +63,7 @@ in {
         "${mod}+space" = "exec ${runner}";
         "${mod}+d" = "exec ${launcher} || ${runner}";
         "${mod}+Shift+d" = "exec ${menu}";
-        "${mod}+Shift+e" = "exec ${swaymsg} exit";
+        "${mod}+Shift+e" = "exit";
         "${mod}+Shift+c" = "reload";
 
         "${mod}+h" = "focus left";
@@ -209,6 +209,8 @@ in {
 
       bindsym --no-repeat --locked --inhibited ${mod}+Alt+g exec ${sudo} $(${which} reset-amdgpu.sh)
       bindsym --inhibited ${mod}+Shift+Escape shortcuts_inhibitor disable
+
+      exec ${systemctl} --user --no-block start ${wmServices.readyTargetUnits.sway}
     '';
   };
 }

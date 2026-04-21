@@ -5106,6 +5106,63 @@ rollback_failed_deploy_host() {
 	return 0
 }
 
+_remote_pre_switch_user_failed_state_reset() {
+	local units="" unit="" user="" uid="" runtime_dir="" bus="" failed_output=""
+
+	units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
+	if [ -z "${units}" ]; then
+		return 0
+	fi
+
+	while IFS= read -r unit; do
+		[ -n "${unit}" ] || continue
+		user="$(systemctl show --property=Environment --value "${unit}" 2>/dev/null | grep -oP 'SYSTEMD_USER_MANAGER_USER=\K[^ ]+' || true)"
+		[ -n "${user}" ] || continue
+		uid="$(id -u "${user}" 2>/dev/null || true)"
+		[ -n "${uid}" ] || continue
+		if ! systemctl is-active --quiet "user@${uid}.service" 2>/dev/null; then
+			continue
+		fi
+
+		runtime_dir="/run/user/${uid}"
+		bus="unix:path=${runtime_dir}/bus"
+		failed_output="$(
+			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+				env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+				systemctl --user list-units --failed --no-legend --plain 2>/dev/null || true
+		)"
+
+		if [ -z "${failed_output}" ]; then
+			continue
+		fi
+
+		echo "[pre-switch] resetting failed user units for ${user}:" >&2
+		echo "${failed_output}" >&2
+		setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+			env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+			systemctl --user reset-failed
+	done <<EOF_USER_RESET_UNITS
+${units}
+EOF_USER_RESET_UNITS
+}
+
+build_pre_switch_user_failed_state_reset_cmd() {
+	printf '%s\n%s\n' \
+		"$(declare -f _remote_pre_switch_user_failed_state_reset)" \
+		"_remote_pre_switch_user_failed_state_reset"
+}
+
+run_pre_switch_user_failed_state_reset() {
+	local reset_cmd=""
+
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		return 0
+	fi
+
+	reset_cmd="$(build_pre_switch_user_failed_state_reset_cmd)"
+	run_prepared_root_command "${reset_cmd}"
+}
+
 deploy_host() {
 	local node="$1" built_out_path="$2" skip_marker="${3:-}"
 	local remote_current_path="" nix_sshopts=""
@@ -5152,6 +5209,8 @@ deploy_host() {
 	nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
 	using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
 	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+
+	run_pre_switch_user_failed_state_reset || return 1
 
 	mapfile -t sudo_policy < <(
 		resolve_target_sudo_policy \

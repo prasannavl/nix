@@ -6,32 +6,90 @@
   services for the `pvl` desktop profile (Sway and Niri).
 - Sway and Niri remain separate WM modules for compositor packages, portals, and
   config, but shared session daemons should not be duplicated there.
-- `users/pvl/wm/services.nix` is the shared authority for WM session targets and
-  the reusable `mkWmPreService` / `mkWmPostService` helpers used by
-  WM-adjacent user modules.
+- `users/pvl/wm/services.nix` is the shared authority for WM session targets,
+  the WM display-readiness targets, shared WM helper scripts, and the reusable
+  `mkWmPostService` helper used by WM-adjacent user modules.
 - `users/pvl/kanshi/` owns the kanshi package, config, and user service because
   the topology profiles are host-specific even though output defaults are
   shared.
 
 ## Decisions
 
-- The common WM service set is `lxqt-policykit`, `noctalia-shell`, and `swaybg`.
-  `kanshi.service` is split into its own user module. A shared oneshot
-  `portal-cleanup` service also stops stale XDG desktop portal units before
-  every Sway or Niri session start so the new session can activate the correct
-  backend on demand.
+- The common WM service set is `lxqt-policykit`, `noctalia-shell`, `swaybg`,
+  and `portal-cleanup`. `kanshi.service` is split into its own user module.
+  `portal-cleanup.service` is a `RemainAfterExit` oneshot attached to the
+  compositor-specific WM ready targets: `ExecStart` stops/resets stale portal
+  units and primes the GTK backend before ready services start; `ExecStop`
+  stops/resets portal units when the active ready target is stopped by the
+  compositor session ending.
 - Shared Wayland desktop packages live in the common module when both Sway and
   Niri use the same tool, including terminal, launcher, lock, clipboard, XDG,
   audio, and backlight basics.
-- The shared services are installed for both `niri.service` and
-  `sway-session.target`, because the active WM is expected to be either Niri or
-  Sway. That target list plus the shared pre-session and post-session helper
-  shapes live in `users/pvl/wm/services.nix`.
+- Shared post-session services are installed under compositor-specific ready
+  targets (`wm-session-ready-niri.target` and `wm-session-ready-sway.target`).
+  The compositor signals display-readiness directly: Sway runs a
+  `systemctl --user --no-block start wm-session-ready-sway.target` via `exec`
+  in its generated config, and Niri runs the same command against its ready
+  target via `spawn-at-startup`. The ready target `BindsTo` and `After` its
+  matching session unit, so when the compositor fires the start, systemd
+  itself orders the activation: if the session unit is not yet active, it is
+  pulled in (BindsTo implies Requires) and the ready target waits via `After`.
+  This is what replaces the earlier shell polling helper — no `is-active`
+  probe, no bounded retry window, no races when Sway's wrapper
+  `systemctl start sway-session.target` and the compositor `exec` run in
+  parallel. `WantedBy = sessionUnit` is deliberately NOT used: the session
+  unit can become active before the compositor has actually rendered, so
+  auto-pulling the ready target off session activation would fire pre-display
+  services too early. Compositor-driven start is the correct signal; systemd
+  deps just remove the race. Each ready target must `BindsTo` only its own
+  compositor session unit. Do not share a single ready target across both WMs
+  with multi-unit `BindsTo`, because starting that target will pull in the
+  other compositor session target and cross-couple Niri and Sway session
+  state.
+- The GTK portal backend is primed before `wm-session-ready.target` because
+  `xdg-desktop-portal` can leave a stale D-Bus activation for
+  `org.freedesktop.impl.portal.desktop.gtk` during compositor logout. If the
+  next session lets `lxqt-policykit` trigger the portal core before the GTK
+  backend owns its D-Bus name, GNOME apps block behind the old activation
+  timeout.
+- `portal-cleanup.service` has `After = sessionTargets` so that reverse-stop
+  ordering runs its `ExecStop` BEFORE the compositor session unit shuts down
+  on externally-initiated logout (GDM → `systemctl stop
+  graphical-session.target`). This keeps the compositor alive long enough
+  for the cleanup to stop `xdg-desktop-portal.service` (core) first, before
+  any backend — so no client remains to trigger a dbus reactivation of the
+  gtk backend when wayland eventually closes. `After=` alone does NOT help
+  spontaneous compositor exits (crash, native quit bind), because by the
+  time systemd marks the session unit inactive the compositor process and
+  its wayland socket are already gone; any backend in-flight has already
+  broken-piped and been dbus-reactivated under a dead display.
+- The `portalCleanup` script used by `ExecStop` only runs `systemctl stop`
+  on portal units — it does NOT run `reset-failed`. Earlier versions did,
+  and that was the root cause of the post-sway/niri → GNOME hang: when
+  `xdg-desktop-portal-gtk` failed to restart with `cannot open display :0`
+  during compositor teardown, systemd marked the unit failed and would have
+  reported the failure back to dbus-broker to resolve the pending activation
+  slot. Our immediate `reset-failed` cleared the failed state before that
+  notification was processed, suppressing the failure path. Dbus then
+  waited the full 120s `service_start_timeout` on the stale activation
+  before giving up, blocking every subsequent portal-dependent call from
+  the GNOME session. Evidence in the journal: 17:16:17 broken-pipe +
+  reactivation fail → 17:18:17 `Failed to activate service
+  'org.freedesktop.impl.portal.desktop.gtk': timed out
+  (service_start_timeout=120000ms)` = exactly +120s. `reset-failed` is now
+  only run by `preparePortals` against `portalBackendUnits` right before
+  starting them, so every WM session starts from a fresh backend state
+  without interfering with dbus activation bookkeeping during teardown.
+- Compositor quit/exit actions should stay native. Do not override quit
+  keybindings to run cleanup wrappers; cleanup belongs to the compositor-ready
+  target lifecycle so it also runs for non-keybinding exits.
 - The common wallpaper service uses `swaybg` with `data/backgrounds/sw.png`.
   Niri should not start `swaybg` from `spawn-at-startup`, and Sway should not
   use compositor-native `output bg` for this wallpaper.
-- Shared Wayland services are owned only by the shared Wayland session units,
-  not by Sway startup commands. Sway reloads should not restart these daemons.
+- Shared Wayland services are owned by the compositor-ready targets, not
+  directly by Sway/Niri session units. Ordering after `niri.service` or
+  `sway-session.target` is not sufficient because those units can become active
+  before `WAYLAND_DISPLAY` is usable for clients.
 - Kanshi owns output profile switching. Global output defaults stay shared in
   `users/pvl/wm/outputs.nix`, and the kanshi module always installs the shared
   kanshi config and service when included.

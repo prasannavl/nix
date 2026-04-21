@@ -16,6 +16,7 @@
   cursorTheme = "Adwaita";
   cursorSize = 24;
 
+  wmServices = import ../wm/services.nix {};
   outputs = import ../wm/outputs.nix;
   renderOutputDefaults = output: ''
     output "${output.name}" {
@@ -149,6 +150,8 @@
     xwayland-satellite {
         path "${xwaylandSatellite}"
     }
+
+    spawn-at-startup "${pkgs.systemd}/bin/systemctl" "--user" "--no-block" "start" "${wmServices.readyTargetUnits.niri}"
 
     input {
         touchpad {

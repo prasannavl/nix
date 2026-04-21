@@ -9,6 +9,14 @@ in rec {
     inherit p7-borders p7-cmds;
   };
 
+  gdm = prev.gdm.overrideAttrs (old: {
+    patches =
+      (old.patches or [])
+      ++ [
+        ./patches/gdm-register-session-delay-3s.patch
+      ];
+  });
+
   gnomeExtensions =
     prev.gnomeExtensions
     // pvl.gnomeExtensions;

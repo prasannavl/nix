@@ -1,0 +1,13 @@
+diff --git a/common/gdm-common.h b/common/gdm-common.h
+index 95fe2a8..f0b408d 100644
+--- a/common/gdm-common.h
++++ b/common/gdm-common.h
+@@ -28,7 +28,7 @@
+ 
+ #include <errno.h>
+ 
+-#define REGISTER_SESSION_TIMEOUT 10
++#define REGISTER_SESSION_TIMEOUT 3
+ 
+ #define        VE_IGNORE_EINTR(expr) \
+         do {                         \
