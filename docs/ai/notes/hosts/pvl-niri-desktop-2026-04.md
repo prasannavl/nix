@@ -63,7 +63,7 @@
   targets. Upstream GDM launches non-self-registering Wayland sessions through
   `gdm-wayland-session --register-session`, but that helper delays
   `RegisterSession` by 10 seconds. If Niri exits before the timer fires, GDM
-  logs `Session never registered, failing` and can leave the next
-  `gdm-password` worker wedged. Keep the session-registration fix in GDM, not
-  in Niri quit hooks or compositor-ready targets; the local override shortens
-  the fallback timeout to 3 seconds instead of removing the delay entirely.
+  logs `Session never registered, failing` and can leave the next `gdm-password`
+  worker wedged. Keep the session-registration fix in GDM, not in Niri quit
+  hooks or compositor-ready targets; the local override shortens the fallback
+  timeout to 3 seconds instead of removing the delay entirely.

@@ -23,12 +23,12 @@
 - Active custom colorscheme payloads can be embedded directly in the Nix module
   and written via `xdg.configFile.<path>.text = builtins.toJSON ...;`, so the
   repo does not need separate vendored JSON files when only one scheme is kept.
-- `colors.json` is not stored in-repo. For predefined schemes like
-  `Monochrome`, Noctalia regenerates derived colors at runtime from the HM
-  `colorSchemes` settings.
+- `colors.json` is not stored in-repo. For predefined schemes like `Monochrome`,
+  Noctalia regenerates derived colors at runtime from the HM `colorSchemes`
+  settings.
 - Downloaded plugin payloads are not vendored. Declare plugin sources/states in
   Home Manager and let Noctalia fetch upstream plugin code; keep only explicit
   per-plugin settings in `pluginSettings`.
-- The Noctalia user service is owned by `users/pvl/noctalia/`, but it should
-  use the shared `users/pvl/wm/services.nix` helpers and compositor-ready
-  targets so Sway and Niri keep one WM session lifecycle model.
+- The Noctalia user service is owned by `users/pvl/noctalia/`, but it should use
+  the shared `users/pvl/wm/services.nix` helpers and compositor-ready targets so
+  Sway and Niri keep one WM session lifecycle model.

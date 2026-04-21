@@ -91,10 +91,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Before switching a host generation, deploy clears stale system-unit failed
   state and failed unit state for active managed user managers. The post-switch
   health check should fail the deploy on new system-unit failures, including
-  Home Manager activation units, so self-target transport recovery cannot turn
-  a partially failed switch into success just because `/run/current-system`
-  points at the new generation. User-service failures should still be scoped to
-  the deploy window, not stale display-session failures left behind by earlier
+  Home Manager activation units, so self-target transport recovery cannot turn a
+  partially failed switch into success just because `/run/current-system` points
+  at the new generation. User-service failures should still be scoped to the
+  deploy window, not stale display-session failures left behind by earlier
   compositor logout/login churn.
 - Parent-host readiness failures must propagate real command failures; do not
   swallow exit status through Bash `if` compound semantics.

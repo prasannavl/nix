@@ -8,9 +8,9 @@
 
 ## Findings
 
-- Live Niri session environment was correct:
-  `XDG_CURRENT_DESKTOP=niri`, `XDG_SESSION_DESKTOP=niri`,
-  `DESKTOP_SESSION=niri`, and `WAYLAND_DISPLAY=wayland-1`.
+- Live Niri session environment was correct: `XDG_CURRENT_DESKTOP=niri`,
+  `XDG_SESSION_DESKTOP=niri`, `DESKTOP_SESSION=niri`, and
+  `WAYLAND_DISPLAY=wayland-1`.
 - Niri itself could enumerate live outputs and windows with `niri msg --json`,
   so the compositor target state was not the failure.
 - The live portal core was
