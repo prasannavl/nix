@@ -6,7 +6,7 @@ let
     scaleFilter = "nearest";
     subpixel = "rgb";
     transform = "normal";
-    adaptiveSync = true;
+    vrr = true;
   };
 
   lg-uw3840 = {
@@ -16,7 +16,7 @@ let
     scaleFilter = "nearest";
     subpixel = "rgb";
     transform = "normal";
-    adaptiveSync = true;
+    vrr = true;
   };
 in {
   all = [

@@ -31,7 +31,13 @@
   `default-config.kdl`, generates `base-config.kdl` from that default with only
   the default `waybar` autostart disabled, and makes `config.kdl` include the
   base plus a small Nix-managed overlay. The overlay includes generated
-  `corner-rules.kdl` for per-app geometry radius rules.
+  `output-defaults.kdl` for shared startup output mode/scale/transform/VRR
+  defaults and `corner-rules.kdl` for per-app geometry radius rules.
+- Niri startup output defaults come from the shared `users/pvl/wm/outputs.nix`
+  data, matching the Sway pre-kanshi output-default behavior. Kanshi still owns
+  dynamic topology and output positioning; Niri only gets the early compositor
+  defaults so the session and early clients start with the intended scale and
+  mode before profile application.
 - Niri include merging is not universal. Use the overlay include only for
   merge-safe additions and key overrides; use explicit Nix-side base patches for
   non-merging sections such as full pointing-device blocks, struts, multipart

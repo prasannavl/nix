@@ -62,7 +62,7 @@
       Install.WantedBy = sessionTargets;
     };
     renderOutput = output: ''
-      output "${output.name}" mode ${output.mode} scale ${output.scale} scale_filter ${output.scaleFilter} subpixel ${output.subpixel} transform ${output.transform}${lib.optionalString output.adaptiveSync " adaptive_sync on"}
+      output "${output.name}" mode ${output.mode} scale ${output.scale} scale_filter ${output.scaleFilter} subpixel ${output.subpixel} transform ${output.transform}${lib.optionalString output.vrr " adaptive_sync on"}
     '';
   in {
     home.sessionVariables = {

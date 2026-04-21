@@ -17,6 +17,15 @@
   cursorSize = 24;
 
   outputs = import ../wm/outputs.nix;
+  renderOutputDefaults = output: ''
+    output "${output.name}" {
+        mode "${lib.removeSuffix "Hz" output.mode}"
+        scale ${output.scale}
+        transform "${output.transform}"
+        ${lib.optionalString output.vrr "variable-refresh-rate"}
+    }
+  '';
+  outputDefaults = lib.concatMapStringsSep "\n\n" renderOutputDefaults outputs.all;
 
   # Runtime reference: /run/current-system/sw/share/doc/niri/default-config.kdl
   defaultConfig = builtins.readFile "${pkgs.niri.doc}/share/doc/niri/default-config.kdl";
@@ -262,6 +271,7 @@
         default-floating-position x=0 y=0 relative-to="top-right"
     }
 
+    include "output-defaults.kdl"
     include "output-rules.kdl"
     include "window-rules-corners.kdl"
   '';
@@ -441,7 +451,8 @@
   configSeed = pkgs.writeText "niri-config.kdl" ''
     // Local Niri config. This file is intentionally not managed by Nix.
     // Comment either include when you want to opt out locally.
-    // nix-config.kdl includes binds.kdl, output-rules.kdl, and window-rules-corners.kdl.
+    // nix-config.kdl includes binds.kdl, output-defaults.kdl,
+    // output-rules.kdl, and window-rules-corners.kdl.
     // Runtime default reference: /run/current-system/sw/share/doc/niri/default-config.kdl
     include "base-config.kdl"
     include "nix-config.kdl"
@@ -460,6 +471,12 @@ in {
     "niri/base-config.kdl".text = baseConfig;
     "niri/nix-config.kdl".text = nixConfig;
     "niri/binds.kdl".text = binds;
+    "niri/output-defaults.kdl".text = ''
+      // Shared output defaults generated from users/pvl/wm/outputs.nix.
+      // This lets Niri start with the intended mode/scale/transform/VRR
+      // before kanshi applies the current topology profile and positions.
+      ${outputDefaults}
+    '';
     "niri/output-rules.kdl".text = outputRules;
     "niri/window-rules-corners.kdl".text = windowRulesCorners;
   };
