@@ -15,6 +15,8 @@
   cursorTheme = "Adwaita";
   cursorSize = 24;
 
+  outputs = import ../wm/outputs.nix;
+
   # Runtime reference: /run/current-system/sw/share/doc/niri/default-config.kdl
   defaultConfig = builtins.readFile "${pkgs.niri.doc}/share/doc/niri/default-config.kdl";
   baseConfig =
@@ -148,6 +150,13 @@
         XDG_SESSION_DESKTOP "niri"
         DESKTOP_SESSION "niri"
         ELECTRON_OZONE_PLATFORM_HINT "auto"
+        NIXOS_OZONE_WL "1"
+        MOZ_ENABLE_WAYLAND "1"
+        QT_QPA_PLATFORM "wayland;xcb"
+        SDL_VIDEODRIVER "wayland"
+        CLUTTER_BACKEND "wayland"
+        GDK_BACKEND "wayland,x11"
+        WINIT_UNIX_BACKEND "wayland"
     }
 
     animations {
@@ -159,7 +168,7 @@
     }
 
     overview {
-        zoom 0.4
+        zoom 0.25
         workspace-shadow {
             // off
         }
@@ -173,6 +182,7 @@
         gaps 0
         always-center-single-column
         background-color "transparent"
+        // center-focused-column "on-overflow"
         default-column-width {}
 
         border {
@@ -180,16 +190,18 @@
             width 2
             active-color "rgb(58, 101, 154)"
             inactive-color "rgb(62, 62, 62)"
-            urgent-color "#eec64f"
+            urgent-color "#d83d3a"
         }
 
         tab-indicator {
-            gap 0
-            width 4
-            position "top"
             hide-when-single-tab
             place-within-column
-            active-color "rgb(157, 179, 97)"
+            // corner-radius 10
+            position "left"
+            gap 0
+            width 8
+            length total-proportion=0.998
+            active-color "rgb(200, 200, 200)"
             inactive-color "#303030"
         }
 
@@ -198,6 +210,55 @@
         }
     }
 
+    include "binds.kdl"
+
+    // Top levels
+
+    // prefer-no-csd
+    screenshot-path "~/Pictures/Screenshots/%Y-%m-%d %H-%M-%S.png"
+
+    // General rules
+
+    layer-rule {
+        match namespace="^launcher$"
+    }
+
+    layer-rule {
+        match namespace="^wallpaper$"
+        // place-within-backdrop true
+    }
+
+    layer-rule {
+        match namespace="^notifications$"
+        block-out-from "screencast"
+    }
+
+    window-rule {
+        match is-window-cast-target=true
+
+        border {
+            active-color "#dcc156"
+            inactive-color "#b3ad65"
+        }
+
+        focus-ring {
+            active-color "#ccb766"
+            inactive-color "#b3ad65"
+        }
+    }
+
+    // Per app rules
+
+    window-rule {
+        match app-id="org.pulseaudio.pavucontrol"
+        open-floating true
+        default-floating-position x=0 y=0 relative-to="top-right"
+    }
+
+    include "output-rules.kdl"
+    include "window-rules-corners.kdl"
+  '';
+  binds = ''
     binds {
         XF86AudioRaiseVolume allow-when-locked=true { spawn "${wpctl}" "set-volume" "@DEFAULT_AUDIO_SINK@" "0.1+" "-l" "1.0"; }
         XF86AudioLowerVolume allow-when-locked=true { spawn "${wpctl}" "set-volume" "@DEFAULT_AUDIO_SINK@" "0.1-"; }
@@ -244,53 +305,40 @@
         Mod+Space hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn-sh "${launcher} || ${runner}"; }
 
         Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "${lockCmd}"; }
+
+        Mod+Z { spawn "systemctl" "--user" "restart" "kanshi" "noctalia-shell"; }
     }
-
-    // Top levels
-
-    // prefer-no-csd
-    screenshot-path "~/Pictures/Screenshots/%Y-%m-%d %H-%M-%S.png"
-
-    // General rules
-
-    layer-rule {
-        match namespace="^launcher$"
-    }
-
-    layer-rule {
-        match namespace="^wallpaper$"
-        // place-within-backdrop true
-    }
-
-    layer-rule {
-        match namespace="^notifications$"
-        block-out-from "screencast"
-    }
-
-    window-rule {
-        match is-window-cast-target=true
-
-        focus-ring {
-            active-color "#ccb766"
-            inactive-color "#b3ad65"
-        }
-
-        border {
-            active-color "#dcc156"
-            inactive-color "#b3ad65"
-        }
-    }
-
-    // Per app rules
-
-    window-rule {
-        match app-id="org.pulseaudio.pavucontrol"
-        open-floating true
-    }
-
-    include "corner-rules.kdl"
   '';
-  cornerRules = ''
+  outputRules = ''
+    // Per-output layout rules
+
+    output "${outputs.lg-uw3840.name}" {
+        focus-at-startup
+        layout {
+            always-center-single-column
+            // default-column-width { proportion 0.6; }
+            preset-column-widths {
+                proportion 0.25
+                proportion 0.5
+                proportion 0.6
+                proportion 0.75
+            }
+        }
+    }
+
+    output "${outputs.a1.name}" {
+        focus-at-startup
+        layout {
+            // default-column-width { proportion 0.8; }
+            preset-column-widths {
+                proportion 0.5
+                proportion 0.8
+                proportion 0.9
+            }
+        }
+    }
+  '';
+  windowRulesCorners = ''
     // Per-app corner radius rules
 
     window-rule {
@@ -377,7 +425,7 @@
   configSeed = pkgs.writeText "niri-config.kdl" ''
     // Local Niri config. This file is intentionally not managed by Nix.
     // Comment either include when you want to opt out locally.
-    // nix-config.kdl includes corner-rules.kdl.
+    // nix-config.kdl includes binds.kdl, output-rules.kdl, and window-rules-corners.kdl.
     // Runtime default reference: /run/current-system/sw/share/doc/niri/default-config.kdl
     include "base-config.kdl"
     include "nix-config.kdl"
@@ -395,6 +443,8 @@ in {
     "niri/default-config.kdl".text = defaultConfig;
     "niri/base-config.kdl".text = baseConfig;
     "niri/nix-config.kdl".text = nixConfig;
-    "niri/corner-rules.kdl".text = cornerRules;
+    "niri/binds.kdl".text = binds;
+    "niri/output-rules.kdl".text = outputRules;
+    "niri/window-rules-corners.kdl".text = windowRulesCorners;
   };
 }
