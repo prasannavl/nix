@@ -23,10 +23,13 @@
       targets.machines.enable = true;
     };
 
-    services.logind.settings.Login = {
-      HandleLidSwitch = "suspend";
-      HandleLidSwitchExternalPower = "ignore";
-      HandleLidSwitchDocked = "ignore";
+    services = {
+      dbus.implementation = "broker";
+      logind.settings.Login = {
+        HandleLidSwitch = "suspend";
+        HandleLidSwitchExternalPower = "ignore";
+        HandleLidSwitchDocked = "ignore";
+      };
     };
   };
 }
