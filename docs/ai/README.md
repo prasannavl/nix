@@ -39,6 +39,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/pvl-niri-desktop-2026-04.md`: Records the `pvl` Niri
   desktop user-module shape, session services, cursor handling, SSH socket, and
   portal choices.
+- `docs/ai/notes/hosts/pvl-noctalia-module-2026-04.md`: Records the dedicated
+  `users/pvl/noctalia/` module that keeps Noctalia runtime config in Home
+  Manager options, can embed custom colorscheme payloads directly in Nix, and
+  lets plugin payloads come from upstream sources.
 - `docs/ai/notes/hosts/pvl-shared-screenshot-keybindings-2026-04.md`: Records
   the screenshot keybinding layout across Sway, Niri, and GNOME plus the current
   split between `Super+X` on tiling WMs and `Super+C` on GNOME.
@@ -59,6 +63,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/pvl-a1-sway-xdpw-window-chooser-2026-04.md`: Records the
   `pvl-a1` Sway xdg-desktop-portal-wlr window chooser failure, the effective
   config ownership, and the durable JSON-parsing fix.
+- `docs/ai/notes/hosts/pvl-a1-niri-portal-screencast-2026-04.md`: Records the
+  `pvl-a1` Niri Chrome/Google Meet screen-share regression caused by globally
+  replacing the portal core with git `main` while using packaged GNOME portal
+  backends.
 - `docs/ai/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`: Records the `pvl-a1`
   Sway SSH-agent choice and GPG-agent session socket wiring.
 - `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service

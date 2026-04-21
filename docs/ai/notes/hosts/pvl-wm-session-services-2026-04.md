@@ -2,21 +2,26 @@
 
 ## Context
 
-- `users/pvl/wm/` owns shared tiling-WM session packages and Home Manager user
-  services for the `pvl` desktop profile (Sway and Niri).
+- `users/pvl/wm/` owns shared tiling-WM session packages and most Home Manager
+  user services for the `pvl` desktop profile (Sway and Niri).
 - Sway and Niri remain separate WM modules for compositor packages, portals, and
   config, but shared session daemons should not be duplicated there.
 - `users/pvl/wm/services.nix` is the shared authority for WM session targets,
   the WM display-readiness targets, shared WM helper scripts, and the reusable
   `mkWmPostService` helper used by WM-adjacent user modules.
+- `users/pvl/noctalia/` is WM-adjacent: it owns Noctalia settings and service,
+  but must attach that service through the shared WM helper instead of
+  re-declaring session-target wiring.
 - `users/pvl/kanshi/` owns the kanshi package, config, and user service because
   the topology profiles are host-specific even though output defaults are
   shared.
 
 ## Decisions
 
-- The common WM service set is `lxqt-policykit`, `noctalia-shell`, `swaybg`,
-  and `portal-cleanup`. `kanshi.service` is split into its own user module.
+- The common WM module owns `lxqt-policykit`, `swaybg`, and
+  `portal-cleanup`. `noctalia-shell` is installed by the dedicated
+  `users/pvl/noctalia/` module, while `kanshi.service` is split into its own
+  user module.
   `portal-cleanup.service` is a `RemainAfterExit` oneshot attached to the
   compositor-specific WM ready targets: `ExecStart` stops/resets stale portal
   units and primes the GTK backend before ready services start; `ExecStop`
@@ -63,6 +68,17 @@
   time systemd marks the session unit inactive the compositor process and
   its wayland socket are already gone; any backend in-flight has already
   broken-piped and been dbus-reactivated under a dead display.
+- System D-Bus uses `dbus-broker` (set via
+  `services.dbus.implementation = "broker"` in `lib/systemd.nix` so every
+  host gets it). The
+  reference `dbus-daemon` did not propagate systemd start-failure cleanly to
+  the pending activation slot for `org.freedesktop.impl.portal.desktop.gtk`
+  during compositor teardown, so clients in the next session blocked for the
+  full 120s `service_start_timeout` waiting on the stale slot. Evidence from
+  pvl-x2: 18:13:54 gtk broken-pipe → dbus reactivate → `cannot open display
+  :0` → exactly +120s later the "Failed to activate service 'gtk': timed out"
+  line appears, with no fresh "Activating via systemd" in between. Broker
+  resolves pending activation immediately on start-failure. Keep broker.
 - The `portalCleanup` script used by `ExecStop` only runs `systemctl stop`
   on portal units — it does NOT run `reset-failed`. Earlier versions did,
   and that was the root cause of the post-sway/niri → GNOME hang: when

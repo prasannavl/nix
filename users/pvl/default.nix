@@ -27,6 +27,7 @@ in rec {
       ./gtk
       ./kanshi
       ./wm
+      ./noctalia
       ./sway
       ./niri
     ];

@@ -35,21 +35,13 @@
     };
   };
 
-  home = {
-    config,
-    pkgs,
-    ...
-  }: let
+  home = {pkgs, ...}: let
     wallpaper = ../../../data/backgrounds/sw.png;
     wmServices = import ./services.nix {};
     wmScripts = wmServices.mkWmScripts pkgs;
   in {
     home.sessionVariables = {
       XDG_SCREENSHOTS_DIR = "$HOME/Pictures/Screenshots";
-    };
-
-    programs.noctalia-shell = {
-      enable = true;
     };
 
     systemd.user = {
@@ -88,11 +80,6 @@
           wmServices.mkWmPostService
           "LXQt PolicyKit Agent"
           "${pkgs.lxqt.lxqt-policykit}/bin/lxqt-policykit-agent";
-
-        noctalia-shell =
-          wmServices.mkWmPostService
-          "Noctalia Shell"
-          "${config.programs.noctalia-shell.package}/bin/noctalia-shell";
 
         swaybg =
           wmServices.mkWmPostService
