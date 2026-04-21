@@ -13,7 +13,6 @@
       pavucontrol
       playerctl
       wireplumber
-      kanshi
       wdisplays
       swaybg
       swaylock
@@ -38,32 +37,11 @@
 
   home = {
     config,
-    lib,
     pkgs,
     ...
   }: let
-    outputs = import ./outputs.nix;
     wallpaper = ../../../data/backgrounds/sw.png;
-    sessionTargets = [
-      "niri.service"
-      "sway-session.target"
-    ];
-    mkService = description: execStart: {
-      Unit = {
-        Description = description;
-        PartOf = sessionTargets;
-        After = sessionTargets;
-      };
-      Service = {
-        ExecStart = execStart;
-        Restart = "on-failure";
-        RestartSec = 1;
-      };
-      Install.WantedBy = sessionTargets;
-    };
-    renderOutput = output: ''
-      output "${output.name}" mode ${output.mode} scale ${output.scale} scale_filter ${output.scaleFilter} subpixel ${output.subpixel} transform ${output.transform}${lib.optionalString output.vrr " adaptive_sync on"}
-    '';
+    wmServices = import ./services.nix {};
   in {
     home.sessionVariables = {
       XDG_SCREENSHOTS_DIR = "$HOME/Pictures/Screenshots";
@@ -73,43 +51,19 @@
       enable = true;
     };
 
-    xdg.configFile."kanshi/config".text = ''
-      ${lib.concatMapStringsSep "\n" renderOutput outputs.all}
-
-      profile laptop {
-        output "${outputs.a1.name}" enable position 0,0
-      }
-
-      profile home-lg {
-        output "${outputs.a1.name}" enable position 0,320
-        output "${outputs.lg-uw3840.name}" enable position 2048,0
-      }
-
-      profile home-lg-extra {
-        output "${outputs.a1.name}" enable position 0,320
-        output "${outputs.lg-uw3840.name}" enable position 2048,0
-        output "*" enable
-      }
-    '';
-
     systemd.user.services = {
-      kanshi =
-        mkService
-        "Dynamic Output Configuration"
-        "${pkgs.kanshi}/bin/kanshi";
-
       lxqt-policykit =
-        mkService
+        wmServices.mkWmService
         "LXQt PolicyKit Agent"
         "${pkgs.lxqt.lxqt-policykit}/bin/lxqt-policykit-agent";
 
       noctalia-shell =
-        mkService
+        wmServices.mkWmService
         "Noctalia Shell"
         "${config.programs.noctalia-shell.package}/bin/noctalia-shell";
 
       swaybg =
-        mkService
+        wmServices.mkWmService
         "Swaybg Wallpaper"
         "${pkgs.swaybg}/bin/swaybg -m fill -i ${wallpaper}";
     };

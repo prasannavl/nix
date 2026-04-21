@@ -25,6 +25,7 @@ in rec {
       ./fzf
       ./firefox
       ./gtk
+      ./kanshi
       ./wm
       ./sway
       ./niri

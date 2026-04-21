@@ -4,8 +4,8 @@
 
 - `users/pvl/sway/config.nix` and `users/pvl/niri/config.nix` had diverged
   screenshot shortcuts.
-- First alignment attempt used `Super+C` everywhere, but Niri needed to keep
-  its default centering actions on `Mod+C` / `Mod+Ctrl+C`.
+- First alignment attempt used `Super+C` everywhere, but Niri needed to keep its
+  default centering actions on `Mod+C` / `Mod+Ctrl+C`.
 
 ## Decisions
 
