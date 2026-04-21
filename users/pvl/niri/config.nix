@@ -311,6 +311,11 @@
         Mod+Ctrl+Shift+F { toggle-windowed-fullscreen; }
         Mod+P repeat=false { spawn-sh "wl-mirror $(niri msg --json focused-output | jq -r .name)"; }
 
+        // Other navigation
+        
+        Mod+Ctrl+WheelScrollLeft  { move-column-left; }
+        Mod+Ctrl+WheelScrollRight { move-column-right; }
+
         // Screenshots
 
         Print hotkey-overlay-title="Screenshot Selection" { screenshot; }
