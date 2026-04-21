@@ -69,6 +69,9 @@ Use this index as the canonical map for `docs/ai/**`.
   backends.
 - `docs/ai/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`: Records the `pvl-a1`
   Sway SSH-agent choice and GPG-agent session socket wiring.
+- `docs/ai/notes/hosts/pvl-dbus-broker-policy-2026-04.md`: Records the DBus
+  broker policy cleanup for Debian-style `sudo` and `pulse` account references
+  exposed by the broker migration.
 - `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service
   module split and aggregation layout.
 
