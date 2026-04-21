@@ -46,7 +46,6 @@
   unstableWithGitSway =
     prev.unstable
     // {
-      xdg-desktop-portal = xdgDesktopPortalGit;
       sway = swayGit;
       wlroots = wlrootsGit;
       xdg-desktop-portal-wlr = xdgDesktopPortalWlrGit;
@@ -59,7 +58,6 @@ in {
   unstable = unstableWithGitSway;
 
   # sway
-  inherit (unstableWithGitSway) xdg-desktop-portal;
   inherit (unstableWithGitSway) sway;
   inherit (unstableWithGitSway) wlroots;
   inherit (unstableWithGitSway) xdg-desktop-portal-wlr;

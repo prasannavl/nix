@@ -1,5 +1,9 @@
 {
-  nixos = {pkgs, ...}: {
+  nixos = {
+    lib,
+    pkgs,
+    ...
+  }: {
     xdg.portal.wlr = let
       xdpwChooser = pkgs.writeShellApplication {
         name = "sway-xdpw-chooser";
@@ -110,6 +114,7 @@
           run_slurp_for_monitors() {
             local output_name
             output_name="$(slurp -f '%o' -or 2>/dev/null || true)"
+
             if [[ -z "$output_name" ]]; then
               return 0
             fi
@@ -157,29 +162,29 @@
       };
     };
 
-    environment.systemPackages = with pkgs; [
-      xdg-desktop-portal-wlr
-    ];
-  };
-
-  home = {pkgs, ...}: {
-    imports = [
-      ./config.nix
-    ];
-
     xdg.portal = {
       enable = true;
       extraPortals = [
         pkgs.xdg-desktop-portal-wlr
         pkgs.xdg-desktop-portal-gtk
       ];
-      config = {
-        common.default = "gtk";
-        sway = {
-          default = ["wlr" "gtk"];
-        };
+      config.sway = {
+        default = lib.mkForce ["wlr" "gtk"];
+        "org.freedesktop.impl.portal.Inhibit" = "none";
+        "org.freedesktop.impl.portal.ScreenCast" = "wlr";
+        "org.freedesktop.impl.portal.Screenshot" = "wlr";
       };
     };
+
+    environment.systemPackages = with pkgs; [
+      xdg-desktop-portal-wlr
+    ];
+  };
+
+  home = {...}: {
+    imports = [
+      ./config.nix
+    ];
 
     # Setting this causes gnome's
     # xwayland-native-scaling to not work well.
