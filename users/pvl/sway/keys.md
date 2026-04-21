@@ -12,6 +12,7 @@ Assumes the Sway config from `users/pvl/sway/config.nix`.
 - `Mod+Shift+Escape`: disable shortcut inhibitor
 - `Mod+Shift+C`: reload Sway
 - `Mod+Shift+E`: exit Sway
+- `Mod+Z`: restart `kanshi` and `noctalia-shell`
 - `Mod+Alt+G`: reset AMD GPU
 
 ## Directional Focus And Movement
@@ -68,6 +69,8 @@ Assumes the Sway config from `users/pvl/sway/config.nix`.
 - `Mod+R`: enter resize mode
 
 ## Screenshots
+
+Saved screenshots go to `~/Pictures/Screenshots`.
 
 - `Print`: save interactive screenshot
 - `Shift+Print`: save output screenshot

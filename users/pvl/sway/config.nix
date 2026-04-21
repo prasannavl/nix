@@ -12,6 +12,7 @@
   launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
   lockCmd = "${pkgs.swaylock}/bin/swaylock -f -c 000000 --indicator-idle-visible";
   grimshot = "${pkgs.sway-contrib.grimshot}/bin/grimshot";
+  systemctl = "${pkgs.systemd}/bin/systemctl";
   swaymsg = "${pkgs.sway}/bin/swaymsg";
   pactl = "${pkgs.pulseaudio}/bin/pactl";
   brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";
@@ -129,6 +130,7 @@ in {
         "${mod}+Ctrl+x" = "exec ${pgrep} -x ${grimshot} || ${grimshot} copy area";
         "${mod}+Ctrl+Shift+x" = "exec ${grimshot} copy output";
         "${mod}+Ctrl+Alt+x" = "exec ${grimshot} copy active";
+        "${mod}+z" = "exec ${systemctl} --user restart kanshi noctalia-shell";
 
         "${mod}+Alt+Left" = "resize shrink width 10 ppt";
         "${mod}+Alt+Right" = "resize grow width 10 ppt";

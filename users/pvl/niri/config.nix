@@ -338,7 +338,6 @@
                 proportion 0.25
                 proportion 0.5
                 proportion 0.6
-                proportion 0.75
             }
         }
     }
