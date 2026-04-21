@@ -11,7 +11,7 @@ in {
       port = 10800;
       openFirewall = true;
     };
-    dependsOn = nginxLib.dependencyServices proxyVhosts;
+    wants = nginxLib.dependencyServices proxyVhosts;
 
     source = nginxLib.composeSource;
     files =
