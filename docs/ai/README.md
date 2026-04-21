@@ -39,6 +39,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/pvl-niri-desktop-2026-04.md`: Records the `pvl` Niri
   desktop user-module shape, session services, cursor handling, SSH socket, and
   portal choices.
+- `docs/ai/notes/hosts/pvl-shared-screenshot-keybindings-2026-04.md`: Records
+  the screenshot keybinding layout across Sway, Niri, and GNOME plus the
+  current split between `Super+X` on tiling WMs and `Super+C` on GNOME.
 - `docs/ai/notes/hosts/pvl-wm-session-services-2026-04.md`: Records the shared
   `pvl` tiling-WM session services used by both Sway and Niri.
 - `docs/ai/notes/hosts/pvl-a1-sway-gdm-session-2026-04.md`: Records the `pvl-a1`

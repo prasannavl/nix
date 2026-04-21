@@ -149,8 +149,17 @@ Assumes local `config.kdl` includes `base-config.kdl` then `nix-config.kdl`;
 ## Screenshots
 
 - `Print`: interactive screenshot
-- `Ctrl+Print`: screenshot screen to clipboard only
-- `Alt+Print`: screenshot window to clipboard only
+- `Shift+Print`: screenshot screen
+- `Alt+Print`: screenshot window
+- `Ctrl+Print`: interactive screenshot to clipboard only
+- `Ctrl+Shift+Print`: screenshot screen to clipboard only
+- `Ctrl+Alt+Print`: screenshot window to clipboard only
+- `Mod+X`: interactive screenshot
+- `Mod+Shift+X`: screenshot screen
+- `Mod+Alt+X`: screenshot window
+- `Mod+Ctrl+X`: interactive screenshot to clipboard only
+- `Mod+Ctrl+Shift+X`: screenshot screen to clipboard only
+- `Mod+Ctrl+Alt+X`: screenshot window to clipboard only
 
 ## Audio, Media, Brightness
 
@@ -177,20 +186,20 @@ Legend:
 - `-`: unused with `Mod`
 
 ```text
-| Esc      |          | Print    | C+Prt    | A+Prt    |          | C+A+Del  | S+A+L    | S+A+S    
-  m                     shot       clip       clip                  quit       lock       orca
+| Esc      |          | Print    | S+Prt    | C+Prt    | C+S+Prt  | A+Prt    | C+A+Prt  | C+A+Del  | S+A+L    | S+A+S    
+  m                     shot       shot       clip       clip       shot       clip                 quit       lock       orca
 
 | `        | 1        | 2        | 3        | 4        | 5        | 6        | 7        | 8        | 9        | 0        | -        | =        | Backspace 
   -          m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        m,s        -          m,s        m,s        -
 
 | Tab  | Q        | W        | E        | R        | T        | Y        | U        | I        | O        | P        | [        | ]        | \        
-  -      m          m,s        s          m,c,s      m          -          m,c,s      m,c,s      m          s          m          m          -
+  -      m          m,s        s          m,c,s      m          m,c        m,c,s      m,c,s      m          s          m          m          -
 
 | Caps | A        | S        | D        | F        | G        | H        | J        | K        | L        | ;        | '        | Enter 
   -      -          -          m          m,c,s      -          m,c,s,cs,ca m,c,s,cs,ca m,c,s,cs,ca m,c,s,cs,ca -          -          -
 
 | Shift | Z        | X        | C        | V        | B        | N        | M        | ,        | .        | /        | Shift 
-  -       -          -          m,c,s      m,s        -          -          s          m          m          s          -
+  -       m          m,c,s,cs,ca -          m,s        -          -          s          m          m          s          -
 ```
 
 Navigation cluster:

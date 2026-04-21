@@ -6,7 +6,7 @@ Assumes the Sway config from `users/pvl/sway/config.nix`.
 
 - `Mod+Return`: open Alacritty
 - `Mod+Space`: open fuzzel executable runner
-- `Mod+D`, `Mod+X`: open Noctalia launcher, fallback fuzzel
+- `Mod+D`: open Noctalia launcher, fallback fuzzel
 - `Mod+Shift+D`: open wmenu
 - `Mod+Escape`: lock with swaylock
 - `Mod+Shift+Escape`: disable shortcut inhibitor
@@ -69,13 +69,18 @@ Assumes the Sway config from `users/pvl/sway/config.nix`.
 
 ## Screenshots
 
-- `Print`: run `grim`
-- `Mod+P`: save and copy output screenshot
-- `Mod+Ctrl+P`: copy output screenshot
-- `Mod+Shift+P`: save and copy active-window screenshot
-- `Mod+Ctrl+Shift+P`: copy active-window screenshot
-- `Mod+Z`: save and copy interactive screenshot
-- `Mod+Ctrl+Z`: copy interactive screenshot
+- `Print`: save interactive screenshot
+- `Shift+Print`: save output screenshot
+- `Alt+Print`: save active-window screenshot
+- `Ctrl+Print`: copy interactive screenshot
+- `Ctrl+Shift+Print`: copy output screenshot
+- `Ctrl+Alt+Print`: copy active-window screenshot
+- `Mod+X`: save interactive screenshot
+- `Mod+Shift+X`: save output screenshot
+- `Mod+Alt+X`: save active-window screenshot
+- `Mod+Ctrl+X`: copy interactive screenshot
+- `Mod+Ctrl+Shift+X`: copy output screenshot
+- `Mod+Ctrl+Alt+X`: copy active-window screenshot
 
 ## Resize Mode
 

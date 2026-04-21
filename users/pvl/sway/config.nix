@@ -12,7 +12,6 @@
   launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
   lockCmd = "${pkgs.swaylock}/bin/swaylock";
   grimshot = "${pkgs.sway-contrib.grimshot}/bin/grimshot";
-  grim = "${pkgs.grim}/bin/grim";
   swaymsg = "${pkgs.sway}/bin/swaymsg";
   pactl = "${pkgs.pulseaudio}/bin/pactl";
   brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";
@@ -62,7 +61,6 @@ in {
         "${mod}+Return" = "exec ${terminal}";
         "${mod}+space" = "exec ${runner}";
         "${mod}+d" = "exec ${launcher} || ${runner}";
-        "${mod}+x" = "exec ${launcher} || ${runner}";
         "${mod}+Shift+d" = "exec ${menu}";
         "${mod}+Shift+e" = "exec ${swaymsg} exit";
         "${mod}+Shift+c" = "reload";
@@ -125,12 +123,12 @@ in {
         "${mod}+minus" = "scratchpad show";
         "${mod}+r" = "mode resize";
 
-        "${mod}+p" = "exec ${grimshot} savecopy output";
-        "${mod}+Ctrl+p" = "exec ${grimshot} copy output";
-        "${mod}+Shift+p" = "exec ${grimshot} savecopy active";
-        "${mod}+Ctrl+Shift+p" = "exec ${grimshot} copy active";
-        "${mod}+z" = "exec ${pgrep} -x ${grimshot} || ${grimshot} savecopy anything";
-        "${mod}+Ctrl+z" = "exec ${pgrep} -x ${grimshot} || ${grimshot} copy anything";
+        "${mod}+x" = "exec ${pgrep} -x ${grimshot} || ${grimshot} save area";
+        "${mod}+Shift+x" = "exec ${grimshot} save output";
+        "${mod}+Alt+x" = "exec ${grimshot} save active";
+        "${mod}+Ctrl+x" = "exec ${pgrep} -x ${grimshot} || ${grimshot} copy area";
+        "${mod}+Ctrl+Shift+x" = "exec ${grimshot} copy output";
+        "${mod}+Ctrl+Alt+x" = "exec ${grimshot} copy active";
 
         "${mod}+Alt+Left" = "resize shrink width 10 ppt";
         "${mod}+Alt+Right" = "resize grow width 10 ppt";
@@ -200,7 +198,12 @@ in {
       bindsym --locked XF86AudioMicMute exec ${pactl} set-source-mute @DEFAULT_SOURCE@ toggle
       bindsym --locked XF86MonBrightnessDown exec ${brightnessctl} set 5%-
       bindsym --locked XF86MonBrightnessUp exec ${brightnessctl} set 5%+
-      bindsym Print exec ${grim}
+      bindsym Print exec ${pgrep} -x ${grimshot} || ${grimshot} save area
+      bindsym Shift+Print exec ${grimshot} save output
+      bindsym Alt+Print exec ${grimshot} save active
+      bindsym Ctrl+Print exec ${pgrep} -x ${grimshot} || ${grimshot} copy area
+      bindsym Ctrl+Shift+Print exec ${grimshot} copy output
+      bindsym Ctrl+Alt+Print exec ${grimshot} copy active
 
       bindsym --no-repeat --locked --inhibited ${mod}+Alt+g exec ${sudo} $(${which} reset-amdgpu.sh)
       bindsym --inhibited ${mod}+Shift+Escape shortcuts_inhibitor disable

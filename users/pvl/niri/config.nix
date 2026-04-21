@@ -64,6 +64,9 @@
       "Mod+Ctrl+7"
       "Mod+Ctrl+8"
       "Mod+Ctrl+9"
+      ''Print { screenshot; }''
+      ''Ctrl+Print { screenshot-screen; }''
+      ''Alt+Print { screenshot-window; }''
     ]
     [
       ""
@@ -108,6 +111,9 @@
       "Mod+Shift+7"
       "Mod+Shift+8"
       "Mod+Shift+9"
+      ""
+      ""
+      ""
     ]
     defaultConfig;
 
@@ -293,8 +299,18 @@
 
         // Screenshots
 
-        Ctrl+Print hotkey-overlay-title="Screenshot Screen to Clipboard" { screenshot-screen write-to-disk=false; }
-        Alt+Print hotkey-overlay-title="Screenshot Window to Clipboard" { screenshot-window write-to-disk=false; }
+        Print hotkey-overlay-title="Screenshot Selection" { screenshot; }
+        Shift+Print hotkey-overlay-title="Screenshot Screen" { screenshot-screen; }
+        Alt+Print hotkey-overlay-title="Screenshot Window" { screenshot-window; }
+        Ctrl+Print hotkey-overlay-title="Screenshot Selection to Clipboard" { screenshot write-to-disk=false; }
+        Ctrl+Shift+Print hotkey-overlay-title="Screenshot Screen to Clipboard" { screenshot-screen write-to-disk=false; }
+        Ctrl+Alt+Print hotkey-overlay-title="Screenshot Window to Clipboard" { screenshot-window write-to-disk=false; }
+        Mod+X hotkey-overlay-title="Screenshot Selection" { screenshot; }
+        Mod+Shift+X hotkey-overlay-title="Screenshot Screen" { screenshot-screen; }
+        Mod+Alt+X hotkey-overlay-title="Screenshot Window" { screenshot-window; }
+        Mod+Ctrl+X hotkey-overlay-title="Screenshot Selection to Clipboard" { screenshot write-to-disk=false; }
+        Mod+Ctrl+Shift+X hotkey-overlay-title="Screenshot Screen to Clipboard" { screenshot-screen write-to-disk=false; }
+        Mod+Ctrl+Alt+X hotkey-overlay-title="Screenshot Window to Clipboard" { screenshot-window write-to-disk=false; }
 
         // Common applications
 
