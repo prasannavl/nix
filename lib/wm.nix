@@ -9,6 +9,10 @@
       renderDevice = "/dev/dri/zrender-amd";
       drmDevices = "/dev/dri/zcard-amd:/dev/dri/zcard-nvidia";
     };
+    pvl-x2 = {
+      renderDevice = "/dev/dri/zrender-amd";
+      drmDevices = "/dev/dri/zcard-amd";
+    };
   };
   wlrDefaults = {
     renderDevice = "/dev/dri/renderD128";
