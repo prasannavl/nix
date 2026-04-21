@@ -3,7 +3,7 @@
     "niri.service"
     "sway-session.target"
   ];
-  mkWmService = description: execStart: {
+  mkWmPostService = description: execStart: {
     Unit = {
       Description = description;
       PartOf = sessionTargets;
@@ -16,6 +16,18 @@
     };
     Install.WantedBy = sessionTargets;
   };
+  mkWmPreService = description: execStart: {
+    Unit = {
+      Description = description;
+      Before = sessionTargets;
+      PartOf = sessionTargets;
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = execStart;
+    };
+    Install.WantedBy = sessionTargets;
+  };
 in {
-  inherit sessionTargets mkWmService;
+  inherit sessionTargets mkWmPostService mkWmPreService;
 }

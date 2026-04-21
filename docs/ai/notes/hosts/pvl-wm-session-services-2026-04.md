@@ -7,7 +7,8 @@
 - Sway and Niri remain separate WM modules for compositor packages, portals, and
   config, but shared session daemons should not be duplicated there.
 - `users/pvl/wm/services.nix` is the shared authority for WM session targets and
-  the reusable `mkWmService` helper used by WM-adjacent user modules.
+  the reusable `mkWmPreService` / `mkWmPostService` helpers used by
+  WM-adjacent user modules.
 - `users/pvl/kanshi/` owns the kanshi package, config, and user service because
   the topology profiles are host-specific even though output defaults are
   shared.
@@ -15,14 +16,17 @@
 ## Decisions
 
 - The common WM service set is `lxqt-policykit`, `noctalia-shell`, and `swaybg`.
-  `kanshi.service` is split into its own user module.
+  `kanshi.service` is split into its own user module. A shared oneshot
+  `portal-cleanup` service also stops stale XDG desktop portal units before
+  every Sway or Niri session start so the new session can activate the correct
+  backend on demand.
 - Shared Wayland desktop packages live in the common module when both Sway and
   Niri use the same tool, including terminal, launcher, lock, clipboard, XDG,
   audio, and backlight basics.
 - The shared services are installed for both `niri.service` and
   `sway-session.target`, because the active WM is expected to be either Niri or
-  Sway. That target list and the standard restart policy live in
-  `users/pvl/wm/services.nix`.
+  Sway. That target list plus the shared pre-session and post-session helper
+  shapes live in `users/pvl/wm/services.nix`.
 - The common wallpaper service uses `swaybg` with `data/backgrounds/sw.png`.
   Niri should not start `swaybg` from `spawn-at-startup`, and Sway should not
   use compositor-native `output bg` for this wallpaper.

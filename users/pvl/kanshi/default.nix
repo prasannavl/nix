@@ -30,7 +30,7 @@
     xdg.configFile."kanshi/config".text = configText;
 
     systemd.user.services.kanshi =
-      wmServices.mkWmService
+      wmServices.mkWmPostService
       "Dynamic Output Configuration"
       "${pkgs.kanshi}/bin/kanshi";
   };

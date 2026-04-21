@@ -53,19 +53,48 @@
 
     systemd.user.services = {
       lxqt-policykit =
-        wmServices.mkWmService
+        wmServices.mkWmPostService
         "LXQt PolicyKit Agent"
         "${pkgs.lxqt.lxqt-policykit}/bin/lxqt-policykit-agent";
 
       noctalia-shell =
-        wmServices.mkWmService
+        wmServices.mkWmPostService
         "Noctalia Shell"
         "${config.programs.noctalia-shell.package}/bin/noctalia-shell";
 
       swaybg =
-        wmServices.mkWmService
+        wmServices.mkWmPostService
         "Swaybg Wallpaper"
         "${pkgs.swaybg}/bin/swaybg -m fill -i ${wallpaper}";
+
+      # Stop stale portal backends from the previous WM before the new Sway or
+      # Niri session starts so portal activation picks the correct backend after
+      # compositor switches.
+      portal-cleanup = let
+        portalCleanupBin = pkgs.writeShellApplication {
+          name = "portal-cleanup";
+          runtimeInputs = [
+            pkgs.systemd
+          ];
+          text = ''
+            set -Eeuo pipefail
+
+            units=(
+              xdg-desktop-portal.service
+              xdg-desktop-portal-gtk.service
+              xdg-desktop-portal-gnome.service
+              xdg-desktop-portal-wlr.service
+            )
+
+            for unit in "''${units[@]}"; do
+              systemctl --user stop "$unit" 2>/dev/null || true
+            done
+          '';
+        };
+      in
+        wmServices.mkWmPreService
+        "Stop stale XDG Desktop Portal units"
+        "${portalCleanupBin}/bin/portal-cleanup";
     };
   };
 }

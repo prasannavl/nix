@@ -43,12 +43,6 @@
       flameshot
     ];
 
-    qtTheming = with pkgs; [
-      libsForQt5.qt5ct
-      kdePackages.qt6ct
-      kdePackages.plasma-integration
-    ];
-
     media = with pkgs; [
       vlc
       mpv
@@ -218,7 +212,6 @@ in {
     packages.core
     ++ packages.gnome
     ++ packages.wayland
-    ++ packages.qtTheming
     ++ packages.media
     ++ packages.terminalRec
     ++ packages.productivity
