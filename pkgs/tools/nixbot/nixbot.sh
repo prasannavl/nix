@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
-readonly NIXBOT_VERSION="2026.03.29.1"
+readonly NIXBOT_VERSION="2026.04.22.0"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 
@@ -1585,9 +1585,7 @@ resolve_runtime_key_file() {
 }
 
 load_all_hosts_json() {
-	# Query only nixosConfigurations. `nix flake show` walks unrelated outputs,
-	# so a broken package/app can block deploy host selection.
-	nix eval --json --no-write-lock-file .#nixosConfigurations --apply 'builtins.attrNames'
+	nix flake show --json --no-write-lock-file 2>/dev/null | jq -c '.nixosConfigurations | keys'
 }
 
 ##### Host Selection #####
