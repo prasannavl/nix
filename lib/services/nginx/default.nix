@@ -428,8 +428,19 @@
         else effectiveUpstreamPathPrefix
       }/$1 break;\n"
       else lib.optionalString (effectiveUpstreamPathPrefix != null) "        rewrite ^${routeRegexEscape prefixPath}(.*)$ ${prefixedBasePath}/$1 break;\n";
-    upstreamHostDirectives = lib.optionalString (normalizedUpstreamHost != null) ''
-      proxy_set_header Host ${normalizedUpstreamHost};
+    hostHeaderDirective =
+      if normalizedUpstreamHost != null
+      then "proxy_set_header Host ${normalizedUpstreamHost};"
+      else "proxy_set_header Host $host;";
+    forwardedHeaderDirectives = ''
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header X-Forwarded-Host $forwarded_host_effective;
+      proxy_set_header X-Forwarded-Proto $forwarded_proto_effective;
+      proxy_set_header X-Forwarded-Port $forwarded_port_effective;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header CF-Connecting-IP $remote_addr;
     '';
     upstreamTlsDirectives =
       lib.optionalString (routeUpstreamProtocol == "https") ''
@@ -442,7 +453,9 @@
       lib.optionalString (basePath != "/") (routeHtmlRewriteDirectives route effectiveUpstreamPathPrefix);
   in ''
         ${rateLimitDirectives}        proxy_set_header Accept-Encoding "";
-    ${upstreamHostDirectives}${upstreamTlsDirectives}            proxy_http_version 1.1;
+                ${hostHeaderDirective}
+                ${forwardedHeaderDirectives}
+    ${upstreamTlsDirectives}            proxy_http_version 1.1;
                 proxy_cookie_path / ${prefixPath};
     ${prependRedirectDirective}${defaultRedirectDirective}            proxy_set_header X-Forwarded-Prefix ${prefixPath};
                 ${htmlRewriteDirectives}
