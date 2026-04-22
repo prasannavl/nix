@@ -60,50 +60,135 @@ ensure_runtime_dirs() {
 	install -d -m 0700 "$runtime_dir/podman-compose"
 }
 
+# apply_perms <path> <mode|null|none> <user|null> <group|null> <scope>
+# Applies mode then chown. For scope=container, chown is wrapped in
+# `podman unshare` so numeric uid/gid translate through the rootless user
+# namespace (e.g. container 1000 -> host SUB+999).
+apply_perms() {
+	local path mode user group scope chown_spec
+	path="$1"
+	mode="$2"
+	user="$3"
+	group="$4"
+	scope="$5"
+
+	if [ -n "$mode" ] && [ "$mode" != "null" ] && [ "$mode" != "none" ]; then
+		chmod "$mode" "$path"
+	fi
+
+	if { [ -n "$user" ] && [ "$user" != "null" ]; } || { [ -n "$group" ] && [ "$group" != "null" ]; }; then
+		chown_spec=""
+		if [ -n "$user" ] && [ "$user" != "null" ]; then
+			chown_spec="$user"
+		fi
+		if [ -n "$group" ] && [ "$group" != "null" ]; then
+			chown_spec="${chown_spec}:${group}"
+		fi
+		if [ "$scope" = "container" ]; then
+			podman unshare chown "$chown_spec" "$path"
+		else
+			chown "$chown_spec" "$path"
+		fi
+	fi
+}
+
+prepare_staged_dir_for_write() {
+	local path scope
+	path="$1"
+	scope="$2"
+
+	if [ -e "$path" ] || [ -L "$path" ]; then
+		if [ ! -d "$path" ] || [ -L "$path" ]; then
+			remove_path_if_exists "$path"
+			install -d -m 0700 "$path"
+			return
+		fi
+
+		if [ "$scope" = "container" ]; then
+			# Container-scoped dirs are finalized to non-stack host ids. Reset to
+			# userns root first so this helper can restage files on the next run.
+			podman unshare chown 0:0 "$path"
+		fi
+		chmod u+rwx "$path"
+	else
+		install -d -m 0700 "$path"
+	fi
+}
+
+prepare_staged_dirs_for_write() {
+	local dst scope
+	while IFS=$'\t' read -r dst scope; do
+		[ -n "$dst" ] || continue
+		prepare_staged_dir_for_write "$dst" "$scope"
+	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length))[] | [.dst, (.scope // "host")] | @tsv' "$podman_compose_metadata")
+}
+
+finalize_staged_dirs() {
+	local dst mode user group scope
+	while IFS=$'\t' read -r dst mode user group scope; do
+		[ -n "$dst" ] || continue
+		install -d -m 0700 "$dst"
+		apply_perms "$dst" "$mode" "$user" "$group" "$scope"
+	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length) | reverse)[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host")] | @tsv' "$podman_compose_metadata")
+}
+
 stage_runtime_file() {
-	local src dst dst_dir tmp_file tmp_manifest
+	local src dst dst_dir dst_dir_mode mode user group scope tmp_file tmp_manifest
 	src="$1"
 	dst="$2"
 	dst_dir="$3"
-	tmp_manifest="$4"
+	dst_dir_mode="$4"
+	mode="$5"
+	user="$6"
+	group="$7"
+	scope="$8"
+	tmp_manifest="$9"
 	tmp_file="${dst}.tmp"
 
-	install -d -m 0750 "$dst_dir"
+	install -d -m "$dst_dir_mode" "$dst_dir"
 	remove_path_if_exists "$dst"
 	remove_path_if_exists "$tmp_file"
 	# Write to a temp path first so bind-mounted consumers never see a partially
 	# copied file.
-	cp -f -- "$src" "$tmp_file"
+	cp -f --preserve=mode -- "$src" "$tmp_file"
+	apply_perms "$tmp_file" "$mode" "$user" "$group" "$scope"
 	mv -f "$tmp_file" "$dst"
 	printf '%s\n' "$dst" >>"$tmp_manifest"
 }
 
 stage_runtime_files() {
-	local tmp_manifest line src dst dst_dir
+	local tmp_manifest line src dst dst_dir dst_dir_mode mode user group scope
 	tmp_manifest="${manifest_path}.tmp"
 
 	remove_path_if_exists "$tmp_manifest"
 	: >"$tmp_manifest"
 
-	while IFS=$'\t' read -r src dst dst_dir; do
+	prepare_staged_dirs_for_write
+
+	while IFS=$'\t' read -r src dst dst_dir dst_dir_mode mode user group scope; do
 		[ -n "$src" ] || continue
-		stage_runtime_file "$src" "$dst" "$dst_dir" "$tmp_manifest"
-	done < <(jq -r '.stagedFiles[]? | [.src, .dst, .dstDir] | @tsv' "$podman_compose_metadata")
+		stage_runtime_file "$src" "$dst" "$dst_dir" "$dst_dir_mode" "$mode" "$user" "$group" "$scope" "$tmp_manifest"
+	done < <(jq -r '.stagedFiles[]? | [.src, .dst, .dstDir, (.dstDirMode // "0750"), (if has("mode") then (.mode // "null") else "none" end), (.user // "null"), (.group // "null"), (.scope // "host")] | @tsv' "$podman_compose_metadata")
 
 	while IFS= read -r line; do
 		[ -n "$line" ] || continue
 		stage_secret_env_file "$line" "$tmp_manifest"
 	done < <(jq -c '.envSecretFiles[]?' "$podman_compose_metadata")
 
+	finalize_staged_dirs
 	mv -f "$tmp_manifest" "$manifest_path"
 }
 
 stage_secret_env_file() {
-	local secret_json tmp_manifest dst dst_dir tmp_secret_env entry_json env_name src
+	local secret_json tmp_manifest dst dst_dir mode user group scope tmp_secret_env entry_json env_name src
 	secret_json="$1"
 	tmp_manifest="$2"
 	dst="$(jq -r '.dst' <<<"$secret_json")"
 	dst_dir="$(jq -r '.dstDir' <<<"$secret_json")"
+	mode="$(jq -r 'if has("mode") then (.mode // "null") else "0400" end' <<<"$secret_json")"
+	user="$(jq -r '.user // "null"' <<<"$secret_json")"
+	group="$(jq -r '.group // "null"' <<<"$secret_json")"
+	scope="$(jq -r '.scope // "host"' <<<"$secret_json")"
 	tmp_secret_env="${dst}.tmp"
 
 	install -d -m 0700 "$dst_dir"
@@ -122,13 +207,14 @@ stage_secret_env_file() {
 		} >>"$tmp_secret_env"
 	done < <(jq -c '.entries[]?' <<<"$secret_json")
 
-	chmod 0400 "$tmp_secret_env"
+	apply_perms "$tmp_secret_env" "$mode" "$user" "$group" "$scope"
 	mv -f "$tmp_secret_env" "$dst"
 	printf '%s\n' "$dst" >>"$tmp_manifest"
 }
 
 cleanup_runtime_files() {
 	local path
+	prepare_staged_dirs_for_write
 	if [ -f "$manifest_path" ]; then
 		while IFS= read -r path; do
 			if [ -e "$path" ] || [ -L "$path" ]; then
@@ -170,7 +256,7 @@ compose_up() {
 compose_up_force_recreate() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_file_args[@]}" up -d --remove-orphans --force-recreate
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans --force-recreate
 	)
 }
 

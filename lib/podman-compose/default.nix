@@ -28,9 +28,148 @@
     waitForNetwork = true;
     envSecrets = {};
     fileSecrets = {};
+    dirs = {};
     exposedPorts = {};
   };
   bootReadyTargetName = "systemd-user-manager-ready.target";
+
+  ownerRefType = lib.types.either lib.types.str lib.types.int;
+  modeOptionType = lib.types.nullOr lib.types.str;
+  ownerScopeType = lib.types.enum ["host" "container"];
+
+  ownerOptions = {
+    modeDefault,
+    modeDescription,
+    userDescription ? "Owner for the staged file. Numeric uid or name. When null, unchanged.",
+    groupDescription ? "Group for the staged file. Numeric gid or name. When null, unchanged.",
+  }: {
+    mode = lib.mkOption {
+      type = modeOptionType;
+      default = modeDefault;
+      description = modeDescription;
+    };
+    user = lib.mkOption {
+      type = lib.types.nullOr ownerRefType;
+      default = null;
+      description = userDescription;
+    };
+    group = lib.mkOption {
+      type = lib.types.nullOr ownerRefType;
+      default = null;
+      description = groupDescription;
+    };
+    userScope = lib.mkOption {
+      type = ownerScopeType;
+      default = "host";
+      description = "Whether user/group refer to host identities or to identities inside the container user namespace. Container scope requires numeric user/group and chowns via `podman unshare`.";
+    };
+  };
+  dirEntryOptions = ownerOptions {
+    modeDefault = "0750";
+    modeDescription = "Octal mode string applied to the staged directory.";
+    userDescription = "Owner for the staged directory. Numeric uid or name. When null, unchanged.";
+    groupDescription = "Group for the staged directory. Numeric gid or name. When null, unchanged.";
+  };
+  dirEntryType = lib.types.submodule {options = dirEntryOptions;};
+
+  fileEntryOptions =
+    {
+      text = lib.mkOption {
+        type = lib.types.nullOr lib.types.lines;
+        default = null;
+        description = "Literal file contents. Mutually exclusive with source.";
+      };
+      source = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "Host path to copy contents from. Directories are expanded recursively under the destination path. Mutually exclusive with text.";
+      };
+    }
+    // (ownerOptions {
+      modeDefault = "none";
+      modeDescription = "Octal mode string like \"0644\" applied after staging, or \"none\" to preserve the copied source mode.";
+      userDescription = "Owner for the staged file. Numeric uid or name. When null, the stack user (ownership unchanged post-copy) is used.";
+    });
+  fileEntrySubmoduleType = lib.types.submodule {options = fileEntryOptions;};
+  fileEntryType =
+    lib.types.coercedTo
+    lib.types.path
+    (v: {source = v;})
+    (lib.types.coercedTo lib.types.lines (v: {text = v;}) fileEntrySubmoduleType);
+
+  fileSecretEntryOptions =
+    {
+      file = lib.mkOption {
+        type = lib.types.str;
+        description = "Host path to the source secret file (for example an age-decrypted drop under /run/agenix).";
+      };
+    }
+    // (ownerOptions {
+      modeDefault = "0400";
+      modeDescription = "Octal mode string applied to the staged secret file.";
+    })
+    // {
+      mount = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Auto-mount the staged secret into target compose services via a generated override. Disable to skip the override and mount explicitly from the main source.";
+      };
+      mountPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "In-container mount path. When null, defaults to `/run/secrets/<name>`.";
+      };
+      services = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        description = "Compose services that should receive the auto-mount. When null, resolves to every service declared in an attrs-shaped `source`, otherwise falls back to a single service named after the instance.";
+      };
+      readOnly = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether the auto-mount should be read-only (`:ro`). Only meaningful when `mount = true`.";
+      };
+    };
+  fileSecretEntrySubmoduleType = lib.types.submodule {options = fileSecretEntryOptions;};
+  fileSecretEntryType =
+    lib.types.coercedTo
+    lib.types.str
+    (v: {file = v;})
+    fileSecretEntrySubmoduleType;
+
+  envSecretEntryOptions =
+    {
+      entries = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        description = "Map of environment variable name to host secret file path. Values are inlined into a generated env_file at staging time.";
+      };
+    }
+    // (ownerOptions {
+      modeDefault = "0400";
+      modeDescription = "Octal mode string applied to the generated env secret file.";
+    });
+  envSecretEntrySubmoduleType = lib.types.submodule {options = envSecretEntryOptions;};
+  envSecretEntryType =
+    lib.types.coercedTo
+    (lib.types.attrsOf lib.types.str)
+    (v: {entries = v;})
+    envSecretEntrySubmoduleType;
+
+  ownerRefToString = v:
+    if v == null
+    then null
+    else if builtins.isInt v
+    then toString v
+    else v;
+  isOwnerNumeric = v:
+    v == null || builtins.isInt v || (builtins.match "[0-9]+" v != null);
+  isSkippedMode = mode: mode == null || mode == "none";
+  isOctalMode = mode: isSkippedMode mode || builtins.match "[0-7]?[0-7][0-7][0-7]" mode != null;
+  dirModeHasSearchBit = mode:
+    isSkippedMode mode
+    || builtins.match "[0-7]?([1357][0-7][0-7]|[0-7][1357][0-7]|[0-7][0-7][1357])" mode
+    != null;
 
   helperPackage = pkgs.writeShellApplication {
     name = "podman-compose-helper";
@@ -57,9 +196,28 @@
       };
 
       files = lib.mkOption {
-        type = lib.types.attrsOf (lib.types.oneOf [lib.types.lines lib.types.attrs lib.types.path]);
+        type = lib.types.attrsOf fileEntryType;
         default = {};
-        description = "Additional files keyed by destination path. Attrset values are rendered to YAML; string values are copied as-is; path values support both files and directories (directories are expanded recursively under the destination path). Can override compose.yml from source.";
+        description = ''
+          Additional files keyed by destination path. Each value is a file entry
+          submodule with text/source plus optional mode/user/group/userScope.
+          String and path shorthands coerce to `{ text = ...; }` or
+          `{ source = ...; }`. The default `mode = "none"` preserves the copied
+          source mode. Path sources that point to a directory expand recursively
+          under the destination path, with each expanded child inheriting the
+          parent's permission fields.
+        '';
+      };
+
+      dirs = lib.mkOption {
+        type = lib.types.attrsOf dirEntryType;
+        default = {};
+        description = ''
+          Managed staged directories keyed by destination path under the compose
+          working directory. Each entry carries mode/user/group/userScope, and
+          is finalized after file staging so directory bind mounts can avoid
+          world traversal bits.
+        '';
       };
 
       entryFile = lib.mkOption {
@@ -102,6 +260,14 @@
         readOnly = true;
         internal = true;
         description = "Staged host paths for file-based secrets by secret name.";
+      };
+
+      dirRuntimePaths = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        readOnly = true;
+        internal = true;
+        description = "Resolved runtime paths by managed directory.";
       };
 
       runtimePaths = lib.mkOption {
@@ -173,15 +339,31 @@
       };
 
       envSecrets = lib.mkOption {
-        type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
+        type = lib.types.attrsOf envSecretEntryType;
         default = {};
-        description = "Per-compose-service file-backed environment secret injection. Maps compose service name to environment variable name to host secret file path. Generates an additional compose override file that adds a generated env_file so the image entrypoint/cmd remain unchanged.";
+        description = ''
+          Per-compose-service file-backed environment secret injection. Maps
+          compose service name to an env-secret entry submodule carrying
+          `entries` (environment variable name to host secret path) plus
+          optional mode/user/group/userScope. A plain
+          `{ ENV_VAR = "/path"; ... }` coerces to the entry's `entries`. Generates
+          an additional compose override file that adds a generated env_file so
+          the image entrypoint/cmd remain unchanged.
+        '';
       };
 
       fileSecrets = lib.mkOption {
-        type = lib.types.attrsOf lib.types.str;
+        type = lib.types.attrsOf fileSecretEntryType;
         default = {};
-        description = "File-backed secret staging for bind-mounted runtime files. Maps a stable secret filename to a host secret file path; the helper copies each source to a stable path under the compose working directory before `podman compose up`.";
+        description = ''
+          File-backed secret staging for bind-mounted runtime files. Maps a
+          stable secret filename to a secret entry submodule (`file` plus
+          optional mode/user/group/userScope/mount/mountPath/services/readOnly).
+          A bare string coerces to `{ file = <str>; }`. The helper copies each
+          source to a stable path under the compose working directory before
+          `podman compose up`. By default, staged secrets are bind-mounted
+          read-only into `/run/secrets/<name>` in the target compose services.
+        '';
       };
 
       exposedPorts = lib.mkOption {
@@ -372,33 +554,60 @@
     imagePullServiceName = "${resolvedSystemdServiceName}-image-pull";
     imagePullUnit = "${imagePullServiceName}.service";
     hasImagePullUnit = service.imageTag != "0";
+    entryPermsJson = entry: {
+      mode = entry.mode;
+      user = ownerRefToString entry.user;
+      group = ownerRefToString entry.group;
+      scope = entry.userScope;
+    };
     helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
       builtins.toJSON {
-        version = 1;
+        version = 3;
         serviceName = resolvedSystemdServiceName;
         workingDir = resolvedWorkingDir;
         composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
+        stagedDirs = map (dirName: let
+          entry = service.dirs.${dirName};
+        in
+          {
+            dst = service.dirRuntimePaths.${dirName};
+          }
+          // entryPermsJson entry) (builtins.attrNames service.dirs);
         stagedFiles =
-          map (fileName: {
-            src = service.sourcePaths.${fileName};
-            dst = service.runtimePaths.${fileName};
-            dstDir = builtins.dirOf service.runtimePaths.${fileName};
-          }) (builtins.attrNames service.sourcePaths)
-          ++ map (secretName: {
-            src = service.fileSecrets.${secretName};
-            dst = service.fileSecretRuntimePaths.${secretName};
-            dstDir = builtins.dirOf service.fileSecretRuntimePaths.${secretName};
-          }) (builtins.attrNames service.fileSecrets);
+          map (fileName: let
+            entry = service.stagedEntries.${fileName};
+          in
+            {
+              src = service.sourcePaths.${fileName};
+              dst = service.runtimePaths.${fileName};
+              dstDir = builtins.dirOf service.runtimePaths.${fileName};
+              dstDirMode = "0750";
+            }
+            // entryPermsJson entry) (builtins.attrNames service.stagedEntries)
+          ++ map (secretName: let
+            entry = service.fileSecrets.${secretName};
+          in
+            {
+              src = entry.file;
+              dst = service.fileSecretRuntimePaths.${secretName};
+              dstDir = builtins.dirOf service.fileSecretRuntimePaths.${secretName};
+              dstDirMode = "0700";
+            }
+            // entryPermsJson entry) (builtins.attrNames service.fileSecrets);
         recreateOnSwitch = service.recreateOnSwitch;
-        envSecretFiles = map (composeServiceName: {
-          dst = service.envSecretRuntimePaths.${composeServiceName};
-          dstDir = builtins.dirOf service.envSecretRuntimePaths.${composeServiceName};
-          entries = map (envName: {
-            name = envName;
-            src = service.envSecrets.${composeServiceName}.${envName};
-          }) (builtins.attrNames service.envSecrets.${composeServiceName});
-        }) (builtins.attrNames service.envSecrets);
+        envSecretFiles = map (composeServiceName: let
+          entry = service.envSecrets.${composeServiceName};
+        in
+          {
+            dst = service.envSecretRuntimePaths.${composeServiceName};
+            dstDir = builtins.dirOf service.envSecretRuntimePaths.${composeServiceName};
+            entries = map (envName: {
+              name = envName;
+              src = entry.entries.${envName};
+            }) (builtins.attrNames entry.entries);
+          }
+          // entryPermsJson entry) (builtins.attrNames service.envSecrets);
       }
     );
     helperEnvironment = [
@@ -465,9 +674,27 @@
       unit = mergedSystemdService;
       sourcePaths = service.sourcePaths;
       runtimePaths = service.runtimePaths;
-      fileSecrets = service.fileSecrets;
+      dirs = lib.mapAttrs (_: entryPermsJson) service.dirs;
+      dirRuntimePaths = service.dirRuntimePaths;
+      stagedEntryPerms =
+        lib.mapAttrs (_: entryPermsJson) service.stagedEntries;
+      fileSecrets = lib.mapAttrs (_: entry:
+        {
+          inherit
+            (entry)
+            file
+            mount
+            mountPath
+            readOnly
+            services
+            ;
+        }
+        // entryPermsJson entry)
+      service.fileSecrets;
       fileSecretRuntimePaths = service.fileSecretRuntimePaths;
-      envSecrets = service.envSecrets;
+      envSecrets = lib.mapAttrs (_: entry:
+        {inherit (entry) entries;} // entryPermsJson entry)
+      service.envSecrets;
       envSecretRuntimePaths = service.envSecretRuntimePaths;
     });
     inherit (service) imageTag recreateTag bootTag;
@@ -522,49 +749,56 @@ in {
     apply = stacks:
       lib.mapAttrs
       (stackName: stack: let
-        renderValue = serviceName: fileName: value: let
+        renderEntry = serviceName: fileName: entry: let
           safeName = builtins.replaceStrings ["/" "."] ["__" "_"] fileName;
           outName = "podman-compose-${stackName}-${serviceName}-${safeName}";
         in
-          if builtins.isPath value
+          if entry.source != null
           then
             pkgs.runCommandLocal outName {} ''
               set -eu
-              src=${value}
+              src=${entry.source}
               ${pkgs.coreutils}/bin/cp -f "$src" "$out"
             ''
-          else
-            pkgs.writeText outName (
-              if builtins.isAttrs value
-              then lib.generators.toYAML {} value
-              else value
-            );
-        expandFileValue = dstPrefix: value:
-          if builtins.isPath value
+          else pkgs.writeText outName entry.text;
+        expandFileEntry = dstPrefix: entry:
+          if entry.source != null && builtins.isPath entry.source
           then let
-            pathString = toString value;
+            pathString = toString entry.source;
             pathName = builtins.baseNameOf pathString;
             pathParent = builtins.dirOf pathString;
-            pathKind = (builtins.readDir pathParent).${pathName};
+            pathKind = (builtins.readDir pathParent).${pathName} or null;
           in
             if pathKind == "directory"
             then
               lib.concatMapAttrs
               (name: kind: let
-                childSrc = value + "/${name}";
+                childSrc = entry.source + "/${name}";
                 childDst =
                   if dstPrefix == ""
                   then name
                   else "${dstPrefix}/${name}";
+                childEntry = entry // {source = childSrc;};
               in
                 if kind == "directory"
-                then expandFileValue childDst childSrc
+                then expandFileEntry childDst childEntry
                 else if kind == "regular" || kind == "symlink"
-                then {"${childDst}" = childSrc;}
+                then {"${childDst}" = childEntry;}
                 else {})
-              (builtins.readDir value)
-            else {"${dstPrefix}" = value;}
-          else {"${dstPrefix}" = value;};
+              (builtins.readDir entry.source)
+            else {"${dstPrefix}" = entry;}
+          else {"${dstPrefix}" = entry;};
+        mkGeneratedEntry = composeSource: {
+          text =
+            if builtins.isAttrs composeSource
+            then lib.generators.toYAML {} composeSource
+            else composeSource;
+          source = null;
+          mode = "none";
+          user = null;
+          group = null;
+          userScope = "host";
+        };
       in
         stack
         // (let
@@ -602,11 +836,20 @@ in {
             (serviceName: service: let
               normalizedService = defaultService // service;
               useSource = normalizedService.source != null;
+              hasComposeEntry = useSource || normalizedService.entryFile != null;
               sourceCompose =
                 if builtins.isPath normalizedService.source
                 then builtins.readFile normalizedService.source
                 else normalizedService.source;
               envSecretsOverrideFileName = "__podman-env-secrets.override.yml";
+              fileSecretsOverrideFileName = "__podman-file-secrets.override.yml";
+              sourceDeclaredComposeServices =
+                if
+                  builtins.isAttrs sourceCompose
+                  && builtins.hasAttr "services" sourceCompose
+                  && builtins.isAttrs sourceCompose.services
+                then builtins.attrNames sourceCompose.services
+                else [serviceName];
               envSecretsOverride =
                 if normalizedService.envSecrets == {}
                 then {}
@@ -619,6 +862,44 @@ in {
                     )
                     normalizedService.envSecrets;
                 };
+              mountedFileSecrets = lib.filterAttrs (_: entry: entry.mount) normalizedService.fileSecrets;
+              fileSecretMountPath = secretName: entry:
+                if entry.mountPath != null
+                then entry.mountPath
+                else "/run/secrets/${secretName}";
+              fileSecretMountServices = entry:
+                if entry.services != null
+                then entry.services
+                else sourceDeclaredComposeServices;
+              fileSecretTargetServices = lib.unique (
+                lib.concatMap (
+                  secretName:
+                    fileSecretMountServices mountedFileSecrets.${secretName}
+                ) (builtins.attrNames mountedFileSecrets)
+              );
+              fileSecretMountsForService = composeServiceName:
+                lib.concatMap (
+                  secretName: let
+                    entry = mountedFileSecrets.${secretName};
+                  in
+                    lib.optionals (builtins.elem composeServiceName (fileSecretMountServices entry)) [
+                      "${fileSecretRuntimePaths.${secretName}}:${fileSecretMountPath secretName entry}${lib.optionalString entry.readOnly ":ro"}"
+                    ]
+                ) (builtins.attrNames mountedFileSecrets);
+              fileSecretsOverride =
+                if fileSecretTargetServices == []
+                then {}
+                else {
+                  services = lib.listToAttrs (
+                    map (composeServiceName: {
+                      name = composeServiceName;
+                      value = {
+                        volumes = fileSecretMountsForService composeServiceName;
+                      };
+                    })
+                    fileSecretTargetServices
+                  );
+                };
               normalizedEntryFile = let
                 baseEntryFiles =
                   if normalizedService.entryFile != null
@@ -629,16 +910,20 @@ in {
                   else if useSource
                   then ["compose.yml"]
                   else [];
+                generatedOverrideFiles =
+                  lib.optionals (envSecretsOverride != {}) [envSecretsOverrideFileName]
+                  ++ lib.optionals (fileSecretsOverride != {}) [fileSecretsOverrideFileName];
               in
-                if envSecretsOverride == {}
+                if generatedOverrideFiles == []
                 then normalizedService.entryFile
-                else baseEntryFiles ++ [envSecretsOverrideFileName];
+                else baseEntryFiles ++ generatedOverrideFiles;
               filesExpanded =
-                lib.concatMapAttrs (dstPath: value: expandFileValue dstPath value) normalizedService.files;
-              effectiveFilesRaw =
-                (lib.optionalAttrs useSource {"compose.yml" = sourceCompose;})
+                lib.concatMapAttrs (dstPath: entry: expandFileEntry dstPath entry) normalizedService.files;
+              effectiveEntries =
+                (lib.optionalAttrs useSource {"compose.yml" = mkGeneratedEntry sourceCompose;})
                 // filesExpanded
-                // (lib.optionalAttrs (envSecretsOverride != {}) {"${envSecretsOverrideFileName}" = envSecretsOverride;});
+                // (lib.optionalAttrs (envSecretsOverride != {}) {"${envSecretsOverrideFileName}" = mkGeneratedEntry envSecretsOverride;})
+                // (lib.optionalAttrs (fileSecretsOverride != {}) {"${fileSecretsOverrideFileName}" = mkGeneratedEntry fileSecretsOverride;});
               resolvedWorkingDir =
                 if normalizedService.workingDir != null
                 then normalizedService.workingDir
@@ -647,6 +932,15 @@ in {
                 lib.mapAttrs
                 (secretName: _: "${resolvedWorkingDir}/.podman-file-secrets/${secretName}")
                 normalizedService.fileSecrets;
+              dirRuntimePaths =
+                lib.mapAttrs
+                (
+                  dirName: _:
+                    if dirName == ""
+                    then resolvedWorkingDir
+                    else "${resolvedWorkingDir}/${dirName}"
+                )
+                normalizedService.dirs;
               envSecretRuntimePaths =
                 lib.mapAttrs
                 (composeServiceName: _: "${resolvedWorkingDir}/.podman-env-secrets/${composeServiceName}.env")
@@ -655,10 +949,13 @@ in {
               normalizedService
               // {
                 resolvedWorkingDir = resolvedWorkingDir;
+                hasComposeEntry = hasComposeEntry;
                 fileSecretRuntimePaths = fileSecretRuntimePaths;
+                dirRuntimePaths = dirRuntimePaths;
                 envSecretRuntimePaths = envSecretRuntimePaths;
-                sourcePaths = lib.mapAttrs (fileName: value: renderValue serviceName fileName value) effectiveFilesRaw;
-                runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveFilesRaw;
+                stagedEntries = effectiveEntries;
+                sourcePaths = lib.mapAttrs (fileName: entry: renderEntry serviceName fileName entry) effectiveEntries;
+                runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveEntries;
                 entryFile = normalizedEntryFile;
               })
             instancesWithContext;
@@ -717,9 +1014,36 @@ in {
       ++ lib.concatLists (
         lib.mapAttrsToList
         (stackName: stack:
+          lib.concatMap
+          (serviceName:
+            lib.mapAttrsToList
+            (fileName: entry: {
+              assertion = (entry.text != null && entry.source == null) || (entry.text == null && entry.source != null);
+              message = "services.podmanCompose.${stackName}.instances.${serviceName}.files.${fileName}: set exactly one of text or source.";
+            })
+            stack.instances.${serviceName}.files)
+          (builtins.attrNames stack.instances))
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: let
+            mountedFileSecrets = lib.filterAttrs (_: entry: entry.mount) service.fileSecrets;
+          in {
+            assertion = mountedFileSecrets == {} || service.hasComposeEntry;
+            message = "services.podmanCompose.${stackName}.instances.${serviceName}: auto-mounted fileSecrets require source or entryFile so podman compose can include the generated override file.";
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
           lib.mapAttrsToList
           (serviceName: service: {
-            assertion = service.envSecrets == {} || service.source != null || service.entryFile != null;
+            assertion = service.envSecrets == {} || service.hasComposeEntry;
             message = "services.podmanCompose.${stackName}.instances.${serviceName}: envSecrets requires source or entryFile so podman compose can include the generated override file.";
           })
           stack.instances)
@@ -732,8 +1056,8 @@ in {
           (serviceName:
             lib.mapAttrsToList
             (composeServiceName: secretCfg: {
-              assertion = secretCfg != {};
-              message = "services.podmanCompose.${stackName}.instances.${serviceName}.envSecrets.${composeServiceName}: set at least one secret file.";
+              assertion = secretCfg.entries != {};
+              message = "services.podmanCompose.${stackName}.instances.${serviceName}.envSecrets.${composeServiceName}: set at least one secret file in entries.";
             })
             stack.instances.${serviceName}.envSecrets)
           (builtins.attrNames stack.instances))
@@ -755,6 +1079,40 @@ in {
             message = "services.podmanCompose.${stackName}.instances.${serviceName}: entryFile '${toString service.entryFile}' is not defined in source/files.";
           })
           stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.concatMap
+          (serviceName: let
+            instance = stack.instances.${serviceName};
+            checkEntry = kind: name: entry: let
+              ok = entry.userScope == "host" || (isOwnerNumeric entry.user && isOwnerNumeric entry.group);
+            in {
+              assertion = ok;
+              message = "services.podmanCompose.${stackName}.instances.${serviceName}.${kind}.${name}: userScope = \"container\" requires numeric user and group (userns has no name resolution).";
+            };
+          in
+            lib.mapAttrsToList (name: entry: checkEntry "dirs" name entry) instance.dirs
+            ++ lib.mapAttrsToList (name: entry: checkEntry "files" name entry) instance.stagedEntries
+            ++ lib.mapAttrsToList (name: entry: checkEntry "fileSecrets" name entry) instance.fileSecrets
+            ++ lib.mapAttrsToList (name: entry: checkEntry "envSecrets" name entry) instance.envSecrets)
+          (builtins.attrNames stack.instances))
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.concatMap
+          (serviceName:
+            lib.mapAttrsToList
+            (dirName: entry: {
+              assertion = isOctalMode entry.mode && dirModeHasSearchBit entry.mode;
+              message = "services.podmanCompose.${stackName}.instances.${serviceName}.dirs.${dirName}.mode must be an octal directory mode with at least one execute/search bit.";
+            })
+            stack.instances.${serviceName}.dirs)
+          (builtins.attrNames stack.instances))
         cfg
       );
 

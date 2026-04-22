@@ -327,11 +327,14 @@ any new string value works.
   dependencies, or other generated unit wiring change the restart stamp through
   the rendered systemd unit.
 - `envSecrets` mapping structure is covered. Adding, removing, or changing
-  `envSecrets.<composeService>.<ENV_VAR> = /path/to/secret` changes the restart
-  stamp.
+  `envSecrets.<composeService>.entries.<ENV_VAR>` (or the permission fields on
+  the entry) changes the restart stamp.
 - `envSecrets` decrypted content at the same configured path is not covered. If
   the secret payload changes but the configured path stays the same, the restart
   stamp does not change, so reconcile may legitimately noop.
+- `fileSecrets` mapping structure and per-entry permissions are covered by the
+  restart stamp, including generated mount wiring. Decrypted content at the same
+  host path is not.
 
 ## Derived Metadata
 
@@ -375,18 +378,108 @@ exposedPorts.metrics = {
 
 ## Secret Injection
 
-The supported secret model is file-backed `envSecrets`:
+Two secret models are supported.
+
+### envSecrets
+
+Per-compose-service env-file injection. Each compose service gets a generated
+env_file the image entrypoint picks up.
 
 ```nix
-envSecrets.<composeService>.<ENV_VAR> = /path/to/secret;
+envSecrets.<composeService> = {
+  entries = {
+    PG_PASSWORD = "/run/agenix/pg-password";
+    API_KEY     = "/run/agenix/api-key";
+  };
+  mode = "0400";      # default, applied to the generated env file
+  user = 1000;        # default null (no chown); numeric when userScope="container"
+  group = 1000;       # same
+  userScope = "container";  # default "host"
+};
 ```
+
+Shorthand `envSecrets.<composeService> = { FOO = "/path"; };` still works and
+coerces into `{ entries = { FOO = "/path"; }; }` with default permissions.
 
 The module generates an override file that adds `env_file` wiring, so secrets
 can be injected without replacing the image entrypoint or command.
 
+### fileSecrets
+
+File-backed secrets staged into `<workingDir>/.podman-file-secrets/<name>` and
+auto-mounted read-only into target compose services.
+
+```nix
+fileSecrets."server.key" = {
+  file  = "/run/agenix/my-server-key";
+  mode  = "0600";
+  user  = 1000;
+  group = 1000;
+  userScope = "container";
+
+  # Optional mount controls:
+  mount = true;                    # default
+  mountPath = "/run/secrets/key";  # default: /run/secrets/<name>
+  services = [ "postgres" ];       # default: source.services keys, else instance name
+  readOnly = true;                 # default
+};
+```
+
+Bare string shorthand `fileSecrets."X" = "/run/agenix/X";` coerces into
+`{ file = "/run/agenix/X"; }` with default permissions (mode 0400, owner
+unchanged, host scope) and mounts at `/run/secrets/X`.
+
+The module generates an additional compose override file for mounted
+`fileSecrets`. When `services = null`, attrset-shaped `source.services` keys are
+used as the target compose services. String/path compose sources fall back to
+the podman-compose instance name. Set `services = [ ... ]` when the compose
+service name differs, and set `mount = false` for stage-only secrets that are
+mounted manually from the main compose source.
+
+### dirs
+
+Managed staged directories for directory bind mounts or restrictive parent
+directories. `dirs` entries are keyed by destination path under the compose
+working directory:
+
+```nix
+dirs."conf.d" = {
+  mode = "0750";
+  user = 1000;
+  group = 1000;
+  userScope = "container";
+};
+```
+
+Directory modes must include an execute/search bit. For example, use `0750`
+for an owner-readable private config directory; `0640` is a file mode and makes
+the directory non-traversable.
+
+The helper temporarily resets managed dirs to stack-user-writable ownership
+before restaging or cleanup, then reapplies the declared mode/owner after file
+staging. This keeps restarts idempotent while allowing the final directory bind
+mount to avoid world traversal bits.
+
+### Ownership and permissions (applies to `dirs`, `files`, `fileSecrets`, `envSecrets`)
+
+Each staged entry accepts:
+
+- `mode` - octal mode string (e.g. `"0644"`) or `"none"` to preserve the copied
+  source mode; file default `"none"`, secret default 0400, directory default
+  0750
+- `user`, `group` - name or numeric id; null means "leave as stack user"
+- `userScope` - `"host"` (default) or `"container"`; with `"container"`, the
+  helper runs `chown` via `podman unshare` so numeric uid/gid translate through
+  the rootless user namespace (container 1000 -> host SUB+999)
+
+Container-scoped ownership requires numeric `user` and `group` because the
+rootless user namespace has no name resolution. This is enforced by assertion at
+evaluation time.
+
 Secret rotation caveat:
 
-- `envSecrets` files are restaged on `start`, `reload`, and `image-pull`
+- `envSecrets` and `fileSecrets` files are restaged on `start`, `reload`, and
+  `image-pull`
 - rotating a secret's contents at the same path does not by itself force a
   restart or restage
 - if you need deploy-time reconcile to pick that up, bump `bootTag`
