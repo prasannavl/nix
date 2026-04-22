@@ -12,7 +12,7 @@ in {
 
     source = ./docker.compose.yaml;
 
-    files.".env" = ''
+    files.".env".text = ''
       VAULTWARDEN_HTTP_PORT=${toString exposedPorts.http.port}
     '';
   };

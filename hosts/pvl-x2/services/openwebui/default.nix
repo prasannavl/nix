@@ -10,7 +10,7 @@ in {
     source = ./docker.compose.yaml;
     dependsOn = ["ollama"];
 
-    files.".env" = ''
+    files.".env".text = ''
       OLLAMA_API_PORT=${toString ollamaPort}
       OPEN_WEBUI_PORT=${toString exposedPorts.http.port}
     '';

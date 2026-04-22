@@ -17,10 +17,10 @@ in {
     files =
       nginxLib.baseFiles
       // {
-        ".env" = ''
+        ".env".text = ''
           NGINX_HTTP_PORT=${toString exposedPorts.http.port}
         '';
-        "conf.d/srv-http-default.conf" = nginxLib.renderProxyServers proxyVhosts;
+        "conf.d/srv-http-default.conf".text = nginxLib.renderProxyServers proxyVhosts;
       };
   };
 }

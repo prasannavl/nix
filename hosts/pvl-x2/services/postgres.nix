@@ -28,7 +28,7 @@ in {
             - ${postgresDataDir}:/home/postgres/pgdata/data
             - ./initdb/10-extensions.sql:/docker-entrypoint-initdb.d/10-extensions.sql:ro
     '';
-    files."initdb/10-extensions.sql" = ''
+    files."initdb/10-extensions.sql".text = ''
       CREATE EXTENSION IF NOT EXISTS timescaledb;
       CREATE EXTENSION IF NOT EXISTS postgis;
       CREATE EXTENSION IF NOT EXISTS vector;

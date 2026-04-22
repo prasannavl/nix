@@ -743,8 +743,8 @@ in rec {
   composeSource = ./compose/compose.yaml;
 
   baseFiles = {
-    "nginx.conf" = ./compose/nginx.conf;
-    "conf.d" = ./compose/conf.d;
+    "nginx.conf".source = ./compose/nginx.conf;
+    "conf.d".source = ./compose/conf.d;
   };
 
   proxyVhostsFromInstances = {defaultHost ? "localhost"}: instances:

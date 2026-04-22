@@ -14,7 +14,7 @@ in {
 
       source = ./docker.compose.yaml;
 
-      files.".env" = ''
+      files.".env".text = ''
         SHADOWSOCKS_PORT=${toString exposedPorts.main.port}
       '';
 

@@ -7,7 +7,7 @@
 
     source = ./docker.compose.yaml;
 
-    files.".env" = ''
+    files.".env".text = ''
       OLLAMA_API_PORT=${toString exposedPorts.main.port}
     '';
   };

@@ -8,7 +8,7 @@
 
       source = ./docker.compose.yaml;
 
-      files.".env" = ''
+      files.".env".text = ''
         BESZEL_HTTP_PORT=${toString exposedPorts.http.port}
         BESZEL_HUB_URL=http://localhost:${toString exposedPorts.http.port}
         PODMAN_SOCKET=${podmanSocket}

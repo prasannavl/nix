@@ -14,7 +14,7 @@ in {
 
       source = ./docker.compose.yaml;
 
-      files.".env" = ''
+      files.".env".text = ''
         DOCMOST_HTTP_PORT=${toString exposedPorts.http.port}
       '';
 

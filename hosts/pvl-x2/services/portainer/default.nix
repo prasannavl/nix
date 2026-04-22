@@ -10,7 +10,7 @@
 
     source = ./docker.compose.yaml;
 
-    files.".env" = ''
+    files.".env".text = ''
       PORTAINER_HTTP_PORT=${toString exposedPorts.http.port}
       PORTAINER_HTTPS_PORT=${toString exposedPorts.https.port}
       PODMAN_SOCKET=${podmanSocket}

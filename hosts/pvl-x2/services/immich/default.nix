@@ -11,7 +11,7 @@ in {
       source = ./docker.compose.yaml;
 
       files = {
-        ".env" = ''
+        ".env".text = ''
           UPLOAD_LOCATION=./data
           DB_DATA_LOCATION=./postgres
           IMMICH_VERSION=release
@@ -19,8 +19,8 @@ in {
           DB_USERNAME=postgres
           DB_DATABASE_NAME=immich
         '';
-        "hwaccel.ml.yml" = ./hwaccel.ml.yml;
-        "hwaccel.transcoding.yml" = ./hwaccel.transcoding.yml;
+        "hwaccel.ml.yml".source = ./hwaccel.ml.yml;
+        "hwaccel.transcoding.yml".source = ./hwaccel.transcoding.yml;
       };
 
       envSecrets = {
