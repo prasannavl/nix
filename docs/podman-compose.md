@@ -327,8 +327,7 @@ any new string value works.
   dependencies, or other generated unit wiring change the restart stamp through
   the rendered systemd unit.
 - `envSecrets` mapping structure is covered. Adding, removing, or changing
-  `envSecrets.<composeService>.entries.<ENV_VAR>` (or the permission fields on
-  the entry) changes the restart stamp.
+  `envSecrets.<composeService>.<ENV_VAR>` changes the restart stamp.
 - `envSecrets` decrypted content at the same configured path is not covered. If
   the secret payload changes but the configured path stays the same, the restart
   stamp does not change, so reconcile may legitimately noop.
@@ -387,19 +386,10 @@ env_file the image entrypoint picks up.
 
 ```nix
 envSecrets.<composeService> = {
-  entries = {
-    PG_PASSWORD = "/run/agenix/pg-password";
-    API_KEY     = "/run/agenix/api-key";
-  };
-  mode = "0400";      # default, applied to the generated env file
-  user = 1000;        # default null (no chown); numeric when userScope="container"
-  group = 1000;       # same
-  userScope = "container";  # default "host"
+  PG_PASSWORD = "/run/agenix/pg-password";
+  API_KEY     = "/run/agenix/api-key";
 };
 ```
-
-Shorthand `envSecrets.<composeService> = { FOO = "/path"; };` still works and
-coerces into `{ entries = { FOO = "/path"; }; }` with default permissions.
 
 The module generates an override file that adds `env_file` wiring, so secrets
 can be injected without replacing the image entrypoint or command.
@@ -460,7 +450,7 @@ before restaging or cleanup, then reapplies the declared mode/owner after file
 staging. This keeps restarts idempotent while allowing the final directory bind
 mount to avoid world traversal bits.
 
-### Ownership and permissions (applies to `dirs`, `files`, `fileSecrets`, `envSecrets`)
+### Ownership and permissions (applies to `dirs`, `files`, and `fileSecrets`)
 
 Each staged entry accepts:
 
