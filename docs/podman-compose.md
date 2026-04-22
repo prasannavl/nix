@@ -441,9 +441,9 @@ dirs."conf.d" = {
 };
 ```
 
-Directory modes must include an execute/search bit. For example, use `0750`
-for an owner-readable private config directory; `0640` is a file mode and makes
-the directory non-traversable.
+Directory modes must include an execute/search bit. For example, use `0750` for
+an owner-readable private config directory; `0640` is a file mode and makes the
+directory non-traversable.
 
 The helper temporarily resets managed dirs to stack-user-writable ownership
 before restaging or cleanup, then reapplies the declared mode/owner after file
