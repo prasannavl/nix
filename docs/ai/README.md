@@ -84,6 +84,10 @@ Use this index as the canonical map for `docs/ai/**`.
   exposed by the broker migration.
 - `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service
   module split and aggregation layout.
+- `docs/ai/notes/hosts/pvl-x2-incus-switch-image-restart-2026-04.md`: Records
+  the `pvl-x2` Incus deploy regression where local image store-path churn
+  restarted declared guest lifecycle units during normal `switch`, plus the
+  durable explicit-trigger fix.
 
 ### Lib
 

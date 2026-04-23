@@ -4,8 +4,6 @@
       pvl-vlab = {
         ipv4Address = "10.10.20.10";
         removalPolicy = "delete-all";
-        recreateTag = "2";
-        bootTag = "1";
 
         config = {
           "security.privileged" = "true";
@@ -30,8 +28,7 @@
         ipv4Address = "10.10.20.11";
         removalPolicy = "delete-all";
         recreateTag = "3";
-        bootTag = "1";
-
+        
         config = {
           "security.nesting" = "true";
           "security.privileged" = "true";

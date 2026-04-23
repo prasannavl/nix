@@ -29,6 +29,7 @@
     '';
   };
   helperScript = "${helperPackage}/bin/incus-machines-helper";
+  helperCommand = "/run/current-system/sw/bin/incus-machines-helper";
 
   reconcilerCommand = pkgs.writeShellScriptBin "incus-machines-reconciler" ''
     export INCUS_MACHINES_RECONCILE_MODE=${lib.escapeShellArg cfg.reconcilePolicy}
@@ -219,6 +220,47 @@
   createOnlyDeviceSpecJson = machine:
     builtins.toJSON (lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine));
 
+  machineRuntimeStateJson = name: machine: let
+    instanceImage = instanceImages.${name};
+    hash = configHash name machine;
+    diskDevSpec = diskDeviceSpecJson machine;
+    diskGcMetadata = diskGcMetadataJson machine;
+    createOnlyDevSpec = createOnlyDeviceSpecJson machine;
+    userMetaJson = builtins.toJSON (mkUserMetadata name machine);
+    configJson = builtins.toJSON machine.config;
+  in
+    builtins.toJSON {
+      name = name;
+      imageTag = cfg.imageTag;
+      instanceImage = instanceImage;
+      createRef = instanceImage.createRef;
+      ipv4Address = machine.ipv4Address;
+      configHash = hash;
+      bootTag = machine.bootTag;
+      recreateTag = machine.recreateTag;
+      removalPolicy = machine.removalPolicy;
+      desiredDisks = builtins.fromJSON diskDevSpec;
+      desiredDiskGcMetadata = builtins.fromJSON diskGcMetadata;
+      createOnlyDevices = builtins.fromJSON createOnlyDevSpec;
+      userMeta = builtins.fromJSON userMetaJson;
+      config = builtins.fromJSON configJson;
+    };
+
+  machineLifecycleStateJson = name: machine: let
+    hash = configHash name machine;
+    diskDevSpec = diskDeviceSpecJson machine;
+    diskGcMetadata = diskGcMetadataJson machine;
+  in
+    builtins.toJSON {
+      configHash = hash;
+      ipv4Address = machine.ipv4Address;
+      bootTag = machine.bootTag;
+      recreateTag = machine.recreateTag;
+      removalPolicy = machine.removalPolicy;
+      desiredDisks = diskDevSpec;
+      desiredDiskGcMetadata = diskGcMetadata;
+    };
+
   mkUserMetadata = name: machine:
     {
       "user.managed-by" = "nixos";
@@ -346,22 +388,12 @@
   instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) cfg.instances);
   instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) cfg.instances);
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) cfg.instances);
-  incusSwitchStateFile = pkgs.writeText "incus-machines-switch-state.json" (builtins.toJSON {
-    preseed = config.virtualisation.incus.preseed;
+  incusImagesStateFile = pkgs.writeText "incus-machines-images-state.json" (builtins.toJSON {
     imageTag = cfg.imageTag;
-    preseedTag = cfg.preseedTag;
-    instances =
-      lib.mapAttrs
-      (name: machine: {
-        configHash = configHash name machine;
-        bootTag = machine.bootTag;
-        recreateTag = machine.recreateTag;
-        removalPolicy = machine.removalPolicy;
-        image = instanceImages.${name};
-        desiredDisks = diskDeviceSpecJson machine;
-        desiredDiskGcMetadata = diskGcMetadataJson machine;
-      })
-      cfg.instances;
+    images = declaredImages;
+  });
+  incusGcStateFile = pkgs.writeText "incus-machines-gc-state.json" (builtins.toJSON {
+    instances = builtins.attrNames cfg.instances;
   });
   mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
   incusLifecycleDeps = [
@@ -371,13 +403,7 @@
   ];
 
   mkMachineService = name: machine: let
-    instanceImage = instanceImages.${name};
-    hash = configHash name machine;
-    diskDevSpec = diskDeviceSpecJson machine;
-    diskGcMetadata = diskGcMetadataJson machine;
-    createOnlyDevSpec = createOnlyDeviceSpecJson machine;
-    userMetaJson = builtins.toJSON (mkUserMetadata name machine);
-    configJson = builtins.toJSON machine.config;
+    lifecycleStateFile = pkgs.writeText "incus-machine-${name}-lifecycle-state.json" (machineLifecycleStateJson name machine);
   in
     lib.nameValuePair "incus-${name}" {
       description = "Incus container lifecycle for ${name}";
@@ -388,27 +414,15 @@
         "incus-preseed.service"
         "incus-images.service"
       ];
+      restartTriggers = [lifecycleStateFile];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStop = "-${config.virtualisation.incus.package.client}/bin/incus stop ${lib.escapeShellArg name}";
         Environment = [
-          (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" cfg.imageTag)
-          (mkEnvAssignment "INCUS_MACHINES_INSTANCE_NAME" name)
-          (mkEnvAssignment "INCUS_MACHINES_INSTANCE_IMAGE" (builtins.toJSON instanceImage))
-          (mkEnvAssignment "INCUS_MACHINES_CREATE_REF" instanceImage.createRef)
-          (mkEnvAssignment "INCUS_MACHINES_INSTANCE_IPV4_ADDRESS" machine.ipv4Address)
-          (mkEnvAssignment "INCUS_MACHINES_DESIRED_CONFIG_HASH" hash)
-          (mkEnvAssignment "INCUS_MACHINES_DESIRED_BOOT_TAG" machine.bootTag)
-          (mkEnvAssignment "INCUS_MACHINES_DESIRED_RECREATE_TAG" machine.recreateTag)
-          (mkEnvAssignment "INCUS_MACHINES_REMOVAL_POLICY" machine.removalPolicy)
-          (mkEnvAssignment "INCUS_MACHINES_DESIRED_DISKS" diskDevSpec)
-          (mkEnvAssignment "INCUS_MACHINES_DESIRED_DISK_GC_METADATA" diskGcMetadata)
-          (mkEnvAssignment "INCUS_MACHINES_CREATE_ONLY_DEVICES" createOnlyDevSpec)
-          (mkEnvAssignment "INCUS_MACHINES_USER_META" userMetaJson)
-          (mkEnvAssignment "INCUS_MACHINES_INSTANCE_CONFIG" configJson)
+          (mkEnvAssignment "INCUS_MACHINES_INSTANCE_STATE_FILE" "/etc/incus-machines/${name}.json")
         ];
-        ExecStart = "${helperScript} machine";
+        ExecStop = "-${helperCommand} stop-instance ${lib.escapeShellArg name}";
+        ExecStart = "${helperCommand} machine";
       };
     };
 
@@ -516,9 +530,18 @@ in {
       lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.instances);
 
     environment.systemPackages = [
+      helperPackage
       reconcilerCommand
       settlementCommand
     ];
+
+    environment.etc =
+      lib.mapAttrs'
+      (name: machine:
+        lib.nameValuePair "incus-machines/${name}.json" {
+          text = machineRuntimeStateJson name machine;
+        })
+      cfg.instances;
 
     systemd.services = let
       incusGcDeps = [
@@ -549,7 +572,7 @@ in {
           wants = ["incus-preseed.service"];
           restartTriggers = [
             helperScript
-            incusSwitchStateFile
+            incusImagesStateFile
           ];
           restartIfChanged = true;
           serviceConfig = {
@@ -569,7 +592,7 @@ in {
           wants = incusGcDeps;
           restartTriggers = [
             helperScript
-            incusSwitchStateFile
+            incusGcStateFile
           ];
           restartIfChanged = true;
           serviceConfig = {

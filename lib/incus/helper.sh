@@ -273,13 +273,13 @@ settlement_main() {
 			fi
 
 			expected_ip="$(
-				printf '%s' "${INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES-{}" | jq -r --arg name "$name" '.[$name] // ""'
+				printf '%s' "${INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES:-"{}"}" | jq -r --arg name "$name" '.[$name] // ""'
 			)"
 			expected_ssh_port="$(
-				printf '%s' "${INCUS_MACHINES_INSTANCE_SSH_PORTS-{}" | jq -r --arg name "$name" '.[$name] // 22'
+				printf '%s' "${INCUS_MACHINES_INSTANCE_SSH_PORTS:-"{}"}" | jq -r --arg name "$name" '.[$name] // 22'
 			)"
 			wait_for_ssh="$(
-				printf '%s' "${INCUS_MACHINES_INSTANCE_WAIT_FOR_SSH-{}" | jq -r --arg name "$name" '.[$name] // true'
+				printf '%s' "${INCUS_MACHINES_INSTANCE_WAIT_FOR_SSH:-"{}"}" | jq -r --arg name "$name" '.[$name] // true'
 			)"
 			instance_json="$(instance_metadata_json "$name")"
 			status="$(printf '%s' "$instance_json" | jq -r 'if . == {} then "missing" else .status // "unknown" end')"
@@ -339,22 +339,33 @@ settlement_main() {
 }
 
 machine_main() {
+	local state_file state_json
 	local name instance_name desired_config_hash desired_boot_tag desired_recreate_tag
 	local needs_create needs_recreate needs_restart current_config_hash current_recreate_tag current_boot_tag
 	local current_instance current_devices current_config current_status desired_disks desired_disk_gc_metadata
 	local desired_props current_props dev_exists dev_source dev_pool desired_val desired_source query_name image_tag
+	local instance_image create_ref create_only_devices user_meta_json config_json desired_ipv4 desired_removal_policy
 	local recovery_attempted start_output
 	local -a current_disk_names desired_disk_names current_prop_keys desired_prop_keys current_gc_device_names desired_gc_device_names
 
-	name="${INCUS_MACHINES_INSTANCE_NAME?missing INCUS_MACHINES_INSTANCE_NAME}"
+	state_file="${INCUS_MACHINES_INSTANCE_STATE_FILE?missing INCUS_MACHINES_INSTANCE_STATE_FILE}"
+	state_json="$(cat "$state_file")"
+	name="$(printf '%s' "$state_json" | jq -r '.name')"
 	instance_name="$name"
-	desired_config_hash="${INCUS_MACHINES_DESIRED_CONFIG_HASH?missing INCUS_MACHINES_DESIRED_CONFIG_HASH}"
-	desired_boot_tag="${INCUS_MACHINES_DESIRED_BOOT_TAG?missing INCUS_MACHINES_DESIRED_BOOT_TAG}"
-	desired_recreate_tag="${INCUS_MACHINES_DESIRED_RECREATE_TAG?missing INCUS_MACHINES_DESIRED_RECREATE_TAG}"
-	desired_disks="${INCUS_MACHINES_DESIRED_DISKS?missing INCUS_MACHINES_DESIRED_DISKS}"
-	desired_disk_gc_metadata="${INCUS_MACHINES_DESIRED_DISK_GC_METADATA?missing INCUS_MACHINES_DESIRED_DISK_GC_METADATA}"
+	image_tag="$(printf '%s' "$state_json" | jq -r '.imageTag')"
+	instance_image="$(printf '%s' "$state_json" | jq -c '.instanceImage')"
+	create_ref="$(printf '%s' "$state_json" | jq -r '.createRef')"
+	desired_config_hash="$(printf '%s' "$state_json" | jq -r '.configHash')"
+	desired_boot_tag="$(printf '%s' "$state_json" | jq -r '.bootTag')"
+	desired_recreate_tag="$(printf '%s' "$state_json" | jq -r '.recreateTag')"
+	desired_disks="$(printf '%s' "$state_json" | jq -c '.desiredDisks')"
+	desired_disk_gc_metadata="$(printf '%s' "$state_json" | jq -c '.desiredDiskGcMetadata')"
+	create_only_devices="$(printf '%s' "$state_json" | jq -c '.createOnlyDevices')"
+	user_meta_json="$(printf '%s' "$state_json" | jq -c '.userMeta')"
+	config_json="$(printf '%s' "$state_json" | jq -c '.config')"
+	desired_ipv4="$(printf '%s' "$state_json" | jq -r '.ipv4Address')"
+	desired_removal_policy="$(printf '%s' "$state_json" | jq -r '.removalPolicy')"
 	query_name="$(jq -nr --arg value "$name" '$value | @uri')"
-	image_tag="${INCUS_MACHINES_IMAGE_TAG-0}"
 	recovery_attempted=0
 
 	while :; do
@@ -385,25 +396,23 @@ machine_main() {
 		fi
 
 		if [ "$needs_create" -eq 1 ]; then
-			if [ -n "${INCUS_MACHINES_INSTANCE_IMAGE-}" ]; then
-				ensure_declared_image_present "${INCUS_MACHINES_INSTANCE_IMAGE}" "$image_tag"
+			if [ "$instance_image" != "null" ]; then
+				ensure_declared_image_present "$instance_image" "$image_tag"
 			fi
-			echo "Creating $name from image ${INCUS_MACHINES_CREATE_REF?missing INCUS_MACHINES_CREATE_REF}..."
-			incus create "${INCUS_MACHINES_CREATE_REF}" "$name"
+			echo "Creating $name from image $create_ref..."
+			incus create "$create_ref" "$name"
 
-			if [ -n "${INCUS_MACHINES_INSTANCE_CONFIG-}" ]; then
-				apply_instance_config_json "$instance_name" "${INCUS_MACHINES_INSTANCE_CONFIG}"
-			fi
-
-			if [ -n "${INCUS_MACHINES_USER_META-}" ]; then
-				apply_instance_config_json "$instance_name" "${INCUS_MACHINES_USER_META}"
+			if [ "$config_json" != "null" ]; then
+				apply_instance_config_json "$instance_name" "$config_json"
 			fi
 
-			incus config device override "$instance_name" eth0 \
-				"ipv4.address=${INCUS_MACHINES_INSTANCE_IPV4_ADDRESS?missing INCUS_MACHINES_INSTANCE_IPV4_ADDRESS}"
+			if [ "$user_meta_json" != "null" ]; then
+				apply_instance_config_json "$instance_name" "$user_meta_json"
+			fi
+
+			incus config device override "$instance_name" eth0 "ipv4.address=$desired_ipv4"
 
 			echo "Adding create-only devices for $name..."
-			create_only_devices="${INCUS_MACHINES_CREATE_ONLY_DEVICES?missing INCUS_MACHINES_CREATE_ONLY_DEVICES}"
 			mapfile -t create_only_device_names < <(json_keys "$create_only_devices")
 			if [ "${#create_only_device_names[@]}" -gt 0 ]; then
 				for dev in "${create_only_device_names[@]}"; do
@@ -477,13 +486,13 @@ machine_main() {
 			done
 		fi
 
-		incus config device set "$instance_name" eth0 "ipv4.address=${INCUS_MACHINES_INSTANCE_IPV4_ADDRESS}" 2>/dev/null ||
-			incus config device override "$instance_name" eth0 "ipv4.address=${INCUS_MACHINES_INSTANCE_IPV4_ADDRESS}" 2>/dev/null || true
+		incus config device set "$instance_name" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null ||
+			incus config device override "$instance_name" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null || true
 
 		incus config set "$instance_name" "user.config-hash=$desired_config_hash"
 		incus config set "$instance_name" "user.boot-tag=$desired_boot_tag"
 		incus config set "$instance_name" "user.recreate-tag=$desired_recreate_tag"
-		incus config set "$instance_name" "user.removal-policy=${INCUS_MACHINES_REMOVAL_POLICY?missing INCUS_MACHINES_REMOVAL_POLICY}"
+		incus config set "$instance_name" "user.removal-policy=$desired_removal_policy"
 
 		mapfile -t current_gc_device_names < <(
 			printf '%s' "$current_config" |
@@ -541,6 +550,12 @@ machine_main() {
 
 		break
 	done
+}
+
+stop_instance_main() {
+	local name
+	name="${1?missing instance name}"
+	incus stop "$name" 2>/dev/null || true
 }
 
 ensure_declared_image_present() {
@@ -696,6 +711,9 @@ main() {
 		;;
 	machine)
 		machine_main "$@"
+		;;
+	stop-instance)
+		stop_instance_main "$@"
 		;;
 	images)
 		images_main "$@"
