@@ -121,6 +121,7 @@ Use this index as the canonical map for `docs/ai/**`.
   `pvl-x2` Postgres Podman Compose host-port publishing failure and workaround.
 - `docs/ai/notes/services/systemd-user-manager.md`: Canonical generation-driven
   `systemd-user-manager` model and dispatcher behavior.
+- `docs/ai/notes/services/home-manager-systemd-user-manager-ordering-2026-04.md`: Records the false-positive lingering-user restart on `pvl-x2`, the Home Manager versus dispatcher race during dconf activation, and the durable identity-stamp plus unit-ordering fix.
 - `docs/ai/notes/services/user-services-platform.md`: Canonical Podman compose,
   nginx, and service-facing ingress policy.
 

@@ -134,14 +134,24 @@
 
   userIdentityStampFor = user: let
     userCfg = config.users.users.${user};
-    groupNames = lib.unique ([userCfg.group] ++ userCfg.extraGroups);
+    groupNames = lib.sort (a: b: a < b) (lib.unique ([userCfg.group] ++ userCfg.extraGroups));
     groups =
       lib.genAttrs
-      (builtins.filter (group: builtins.hasAttr group config.users.groups) groupNames)
-      (group: config.users.groups.${group});
+      groupNames
+      (group:
+        if builtins.hasAttr group config.users.groups
+        then {gid = config.users.groups.${group}.gid;}
+        else {gid = null;});
   in
+    # Only restart the lingering user manager when the user's effective
+    # credentials change. Hashing full user/group option attrsets causes false
+    # positives when unrelated group metadata or other members change.
     builtins.hashString "sha256" (builtins.toJSON {
-      user = userCfg;
+      user = {
+        uid = userCfg.uid;
+        group = userCfg.group;
+        extraGroups = lib.sort (a: b: a < b) userCfg.extraGroups;
+      };
       groups = groups;
     });
 
@@ -248,6 +258,22 @@
 
   dispatcherServicesByUser = lib.mapAttrs mkDispatcherService managedUnitsByUser;
 
+  homeManagerOrderingByUser = lib.listToAttrs (
+    lib.concatMap
+    (user: let
+      homeManagerUnit = "home-manager-${user}";
+      dispatcherUnit = "${dispatcherServiceNameForUser user}.service";
+    in
+      lib.optional ((config ? home-manager) && builtins.hasAttr user config.home-manager.users) {
+        name = homeManagerUnit;
+        value = {
+          after = [dispatcherUnit];
+          wants = [dispatcherUnit];
+        };
+      })
+    managedUsers
+  );
+
   previewManifest = pkgs.writeText "systemd-user-manager-preview-manifest.json" (
     builtins.toJSON (
       map
@@ -338,7 +364,8 @@ in {
 
     systemd = {
       services =
-        artifactValuesByName dispatcherServicesByUser;
+        artifactValuesByName dispatcherServicesByUser
+        // homeManagerOrderingByUser;
 
       user.services =
         artifactValuesByName userReconcilersByUser;
