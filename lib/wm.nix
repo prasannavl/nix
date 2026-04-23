@@ -26,14 +26,6 @@ in {
       export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/gcr/ssh"
       export WLR_RENDER_DRM_DEVICE="${wlrCfg.renderDevice}"
       export WLR_DRM_DEVICES="${wlrCfg.drmDevices}"
-      export ELECTRON_OZONE_PLATFORM_HINT="auto"
-      export NIXOS_OZONE_WL="1"
-      export MOZ_ENABLE_WAYLAND="1"
-      export QT_QPA_PLATFORM="wayland;xcb"
-      export SDL_VIDEODRIVER="wayland"
-      export CLUTTER_BACKEND="wayland"
-      export GDK_BACKEND="wayland,x11"
-      export WINIT_UNIX_BACKEND="wayland"
     '';
   };
   programs.niri.enable = true;

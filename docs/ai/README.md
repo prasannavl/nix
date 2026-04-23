@@ -46,8 +46,13 @@ Use this index as the canonical map for `docs/ai/**`.
   Manager options, can embed custom colorscheme payloads directly in Nix, and
   lets plugin payloads come from upstream sources.
 - `docs/ai/notes/hosts/pvl-noctalia-ipc-launcher-2026-04.md`: Records the
-  Noctalia launcher IPC lookup failure caused by quickshell display filtering
-  and the durable `ipc --any-display` fix for Sway and Niri keybindings.
+  Noctalia launcher IPC lookup failure caused by Qt platform selection during
+  quickshell display matching and the durable `QT_QPA_PLATFORM=wayland` fix for
+  Sway and Niri keybindings.
+- `docs/ai/notes/hosts/pvl-wm-wayland-env-policy-2026-04.md`: Records the move
+  away from session-wide Wayland-preference environment exports for Sway and
+  Niri, keeping per-app wrappers as the preferred fallback when specific apps
+  need backend coercion.
 - `docs/ai/notes/hosts/pvl-shared-screenshot-keybindings-2026-04.md`: Records
   the screenshot keybinding layout across Sway, Niri, and GNOME plus the current
   split between `Super+X` on tiling WMs and `Super+C` on GNOME.

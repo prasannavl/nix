@@ -168,14 +168,6 @@
         XDG_CURRENT_DESKTOP "niri"
         XDG_SESSION_DESKTOP "niri"
         DESKTOP_SESSION "niri"
-        ELECTRON_OZONE_PLATFORM_HINT "auto"
-        NIXOS_OZONE_WL "1"
-        MOZ_ENABLE_WAYLAND "1"
-        QT_QPA_PLATFORM "wayland;xcb"
-        SDL_VIDEODRIVER "wayland"
-        CLUTTER_BACKEND "wayland"
-        GDK_BACKEND "wayland,x11"
-        WINIT_UNIX_BACKEND "wayland"
     }
 
     animations {
