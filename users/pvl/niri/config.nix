@@ -327,7 +327,7 @@
 
         Mod+Return hotkey-overlay-title="Open a Terminal: alacritty" { spawn "${terminal}"; }
 
-        Mod+D hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn-sh "${launcher} || ${runner}"; }
+        Mod+D hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn-sh "${runner} || ${launcher}"; }
 
         Mod+Space hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn-sh "${launcher} || ${runner}"; }
 

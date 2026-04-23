@@ -60,8 +60,8 @@ in {
 
       keybindings = {
         "${mod}+Return" = "exec ${terminal}";
-        "${mod}+space" = "exec ${runner}";
-        "${mod}+d" = "exec ${launcher} || ${runner}";
+        "${mod}+space" = "exec ${launcher} || ${runner}";
+        "${mod}+d" = "exec ${runner} || ${launcher}";
         "${mod}+Shift+d" = "exec ${menu}";
         "${mod}+Shift+e" = "exit";
         "${mod}+Shift+c" = "reload";

@@ -240,11 +240,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1776784995,
-        "narHash": "sha256-ikxb8cZGWHuZMs3xS471GVrpGA0xW1YFcIVOPTVkhBo=",
+        "lastModified": 1776939211,
+        "narHash": "sha256-qKIQt25eKt51TJq8V/BlqJaBwUG5v3JU/WmmJw2YTEg=",
         "owner": "numtide",
         "repo": "llm-agents.nix",
-        "rev": "e3d40d2cd66a4f8052e4224ec027c6896a455847",
+        "rev": "c34d2134c626776efee4bf29c681203b9305c90c",
         "type": "github"
       },
       "original": {
@@ -298,11 +298,11 @@
     },
     "nixos-hardware": {
       "locked": {
-        "lastModified": 1775490113,
-        "narHash": "sha256-2ZBhDNZZwYkRmefK5XLOusCJHnoeKkoN95hoSGgMxWM=",
+        "lastModified": 1776830795,
+        "narHash": "sha256-PAfvLwuHc1VOvsLcpk6+HDKgMEibvZjCNvbM1BJOA7o=",
         "owner": "nixos",
         "repo": "nixos-hardware",
-        "rev": "c775c2772ba56e906cbeb4e0b2db19079ef11ff7",
+        "rev": "72674a6b5599e844c045ae7449ba91f803d44ebc",
         "type": "github"
       },
       "original": {
@@ -313,11 +313,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1776434932,
-        "narHash": "sha256-gyqXNMgk3sh+ogY5svd2eNLJ6oEwzbAeaoBrrxD0lKk=",
+        "lastModified": 1776734388,
+        "narHash": "sha256-vl3dkhlE5gzsItuHoEMVe+DlonsK+0836LIRDnm6MXQ=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "c7f47036d3df2add644c46d712d14262b7d86c0c",
+        "rev": "10e7ad5bbcb421fe07e3a4ad53a634b0cd57ffac",
         "type": "github"
       },
       "original": {
@@ -335,11 +335,11 @@
         "noctalia-qs": "noctalia-qs"
       },
       "locked": {
-        "lastModified": 1776774185,
-        "narHash": "sha256-riCnQWAxvltNd6KrkzQLdG2EMxODNxjQOB2Z67DA4KU=",
+        "lastModified": 1776888984,
+        "narHash": "sha256-Up2F/eoMuPUsZnPVYdH5TMHe1TBP2Ue1QuWd0vWZoxY=",
         "owner": "noctalia-dev",
         "repo": "noctalia-shell",
-        "rev": "d7b68652e79bce5813dc4fea7e51636a5da3e1b7",
+        "rev": "2c1808f9f8937fc0b82c54af513f7620fec56d71",
         "type": "github"
       },
       "original": {
@@ -441,11 +441,11 @@
     "sway-git": {
       "flake": false,
       "locked": {
-        "lastModified": 1776466491,
-        "narHash": "sha256-pRSV2Z40FPoo1MDWWGgM+rQXs9Q47Iz7rspyV9d1JjE=",
+        "lastModified": 1776889130,
+        "narHash": "sha256-+uKfWPifrjSE0RNbpAsmqgC924w8p/cSvJLqS93Hcyg=",
         "owner": "swaywm",
         "repo": "sway",
-        "rev": "9a5f09c867894dacf25f54929cfd808b301712b1",
+        "rev": "91c662fa59f49e5cb547ca83e5741a8bece3aaf9",
         "type": "github"
       },
       "original": {
@@ -513,11 +513,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1776742110,
-        "narHash": "sha256-SSpIUNaxkvuKHP5oPlqVcDgV1u3i2/eLUjByedOUI8U=",
+        "lastModified": 1776915085,
+        "narHash": "sha256-ll9Ei9IFfFD8IHzFNP53ltg0gEtnsUYqBEMp+uaZWFQ=",
         "owner": "nix-community",
         "repo": "nix-vscode-extensions",
-        "rev": "e8e73f0c7070b006d784fe692cfc1c72366c0f09",
+        "rev": "ad87461b50e73372b8ebcbf927ef1974c9651fdb",
         "type": "github"
       },
       "original": {
@@ -529,11 +529,11 @@
     "wlroots-git": {
       "flake": false,
       "locked": {
-        "lastModified": 1776610186,
-        "narHash": "sha256-WhmS4xJAj9+RY0FMujYqUyU3gJuJefysPLBaF8kJ2qs=",
+        "lastModified": 1776806839,
+        "narHash": "sha256-FfsjVP1ZhkXWKWUCO1nFXPsD7gKo10p/QwmY+h+Yro0=",
         "ref": "master",
-        "rev": "70d99eefef44f4c0db1923c5dd89cf7059f5e97a",
-        "revCount": 7807,
+        "rev": "f053f77dca515c005aabbf6ef4fe86bdb13d37d2",
+        "revCount": 7811,
         "type": "git",
         "url": "https://gitlab.freedesktop.org/wlroots/wlroots"
       },
@@ -546,11 +546,11 @@
     "xdg-desktop-portal-git": {
       "flake": false,
       "locked": {
-        "lastModified": 1776724987,
-        "narHash": "sha256-JRGVCLzgH+tYLaU/LHJmuct9o53LlYiJWhsi/gErEJk=",
+        "lastModified": 1776864891,
+        "narHash": "sha256-6c8zIfJRWio1xpbYSm4qB4Cq0yIucGXr6ZTi8WBuELo=",
         "owner": "flatpak",
         "repo": "xdg-desktop-portal",
-        "rev": "4918b257f05b31a01992d8bd18a04148e259c97a",
+        "rev": "5be2d11b1c4f74823fe9cb4d19945660b818563c",
         "type": "github"
       },
       "original": {
