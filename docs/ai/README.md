@@ -18,6 +18,8 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/design-patterns/dns.md`: Durable DNS change-management rules for the
   repo Cloudflare stack.
+- `docs/ai/design-patterns/podman-compose-instance.md`: Canonical attribute
+  ordering for `services.podmanCompose.<stack>.instances.<name>` declarations.
 - `docs/ai/design-patterns/tunnels-and-static-origins.md`: Tunnel edge-IP policy
   and static-origin rollout rules.
 
@@ -43,6 +45,9 @@ Use this index as the canonical map for `docs/ai/**`.
   `users/pvl/noctalia/` module that keeps Noctalia runtime config in Home
   Manager options, can embed custom colorscheme payloads directly in Nix, and
   lets plugin payloads come from upstream sources.
+- `docs/ai/notes/hosts/pvl-noctalia-ipc-launcher-2026-04.md`: Records the
+  Noctalia launcher IPC lookup failure caused by quickshell display filtering
+  and the durable `ipc --any-display` fix for Sway and Niri keybindings.
 - `docs/ai/notes/hosts/pvl-shared-screenshot-keybindings-2026-04.md`: Records
   the screenshot keybinding layout across Sway, Niri, and GNOME plus the current
   split between `Super+X` on tiling WMs and `Super+C` on GNOME.
@@ -104,6 +109,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/cloudflare-dns-stable-record-keys-2026-04.md`: Records
   the DNS migration from positional Terraform addresses to explicit stable
   record keys, plus remaining positional Cloudflare list inputs.
+- `docs/ai/notes/services/podman-data-dir-ownership-2026-04.md`: Records the
+  standard `dirs`/container-scope ownership model for service-local Podman data
+  directories plus the shared bootstrap helper pattern for external data roots.
 - `docs/ai/notes/services/postgres-port-publishing.md`: Durable note for the
   `pvl-x2` Postgres Podman Compose host-port publishing failure and workaround.
 - `docs/ai/notes/services/systemd-user-manager.md`: Canonical generation-driven

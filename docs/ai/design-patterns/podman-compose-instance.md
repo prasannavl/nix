@@ -12,8 +12,9 @@ include only what applies, but keep the relative order stable.
 4. **entryFile** (when a custom compose entry is needed)
 5. **dependsOn**
 6. **env** / **envSecrets**
-7. **fileSecrets** / **files**
-8. **serviceOverrides.preStart**
+7. **dirs**
+8. **fileSecrets** / **files**
+9. **serviceOverrides.preStart**
 
 ## Why
 
@@ -22,10 +23,13 @@ include only what applies, but keep the relative order stable.
 - `source` is the compose definition — the core of the instance — and sits right
   after ports.
 - `entryFile` directly qualifies `source`, so it stays adjacent.
-- Dependencies, environment, and file mounts are wiring concerns that support
-  the compose definition.
-- `preStart` runs before the container starts and often depends on file/secret
-  paths, so it comes last.
+- Dependencies and environment are wiring concerns that support the compose
+  definition.
+- `dirs`, `fileSecrets`, and `files` all stage the runtime tree. Keep `dirs`
+  first so bind-mounted directory ownership is declared before staged files that
+  may live under those directories.
+- `preStart` runs before the container starts and often depends on staged path
+  layout, so it comes last.
 
 ## Example
 

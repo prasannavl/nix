@@ -1,13 +1,10 @@
 {pkgs, ...}: let
+  podmanComposeLib = import ../../../lib/podman-compose/lib.nix {inherit pkgs;};
   postgresImage = "docker.io/timescale/timescaledb-ha:pg18";
   postgresDataDir = "/var/lib/pvl/postgres";
-  postgresUid = "1000";
-  postgresGid = "1000";
+  postgresUid = 1000;
+  postgresGid = 1000;
 in {
-  systemd.tmpfiles.rules = [
-    "d ${postgresDataDir} 0750 pvl pvl -"
-  ];
-
   services.podmanCompose.pvl.instances.postgres = rec {
     exposedPorts.main = {
       port = 5432;
@@ -34,10 +31,11 @@ in {
       CREATE EXTENSION IF NOT EXISTS vector;
       CREATE EXTENSION IF NOT EXISTS vectorscale CASCADE;
     '';
-    serviceOverrides.preStart = ''
-      ${pkgs.podman}/bin/podman unshare ${pkgs.coreutils}/bin/install -d -m 0700 -o ${postgresUid} -g ${postgresGid} ${postgresDataDir}
-      ${pkgs.podman}/bin/podman unshare ${pkgs.coreutils}/bin/chown -R ${postgresUid}:${postgresGid} ${postgresDataDir}
-      ${pkgs.podman}/bin/podman unshare ${pkgs.coreutils}/bin/chmod 0700 ${postgresDataDir}
-    '';
+    serviceOverrides.preStart = podmanComposeLib.dirBootstrapScript {
+      dir = postgresDataDir;
+      mode = "0700";
+      user = postgresUid;
+      group = postgresGid;
+    };
   };
 }

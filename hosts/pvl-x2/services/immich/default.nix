@@ -10,6 +10,11 @@ in {
 
       source = ./docker.compose.yaml;
 
+      envSecrets = {
+        immich-server.DB_PASSWORD = config.age.secrets.immich-db-password.path;
+        database.POSTGRES_PASSWORD = config.age.secrets.immich-db-password.path;
+      };
+
       files = {
         ".env".text = ''
           UPLOAD_LOCATION=./data
@@ -21,11 +26,6 @@ in {
         '';
         "hwaccel.ml.yml".source = ./hwaccel.ml.yml;
         "hwaccel.transcoding.yml".source = ./hwaccel.transcoding.yml;
-      };
-
-      envSecrets = {
-        immich-server.DB_PASSWORD = config.age.secrets.immich-db-password.path;
-        database.POSTGRES_PASSWORD = config.age.secrets.immich-db-password.path;
       };
     };
 

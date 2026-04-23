@@ -14,10 +14,6 @@ in {
 
       source = ./docker.compose.yaml;
 
-      files.".env".text = ''
-        DOCMOST_HTTP_PORT=${toString exposedPorts.http.port}
-      '';
-
       envSecrets = {
         docmost = {
           APP_SECRET = config.age.secrets.docmost-app-secret.path;
@@ -25,6 +21,10 @@ in {
         };
         db.POSTGRES_PASSWORD = config.age.secrets.docmost-postgres-password.path;
       };
+
+      files.".env".text = ''
+        DOCMOST_HTTP_PORT=${toString exposedPorts.http.port}
+      '';
     };
 
     age.secrets = {
