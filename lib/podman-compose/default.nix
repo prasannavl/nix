@@ -417,6 +417,24 @@
                     default = false;
                     description = "Whether nginx should strip the configured path prefix before proxying.";
                   };
+
+                  useUpstreamCsp = lib.mkOption {
+                    type = lib.types.bool;
+                    default = false;
+                    description = "If true, suppress nginx's global Content-Security-Policy for this route so the upstream's CSP (e.g. with per-request nonces) passes through. Other security headers remain applied.";
+                  };
+
+                  useUpstreamReferrer = lib.mkOption {
+                    type = lib.types.bool;
+                    default = false;
+                    description = "If true, suppress nginx's global Referrer-Policy for this route so the upstream's Referrer-Policy passes through. Other security headers remain applied.";
+                  };
+
+                  useUpstreamPermissionsPolicy = lib.mkOption {
+                    type = lib.types.bool;
+                    default = false;
+                    description = "If true, suppress nginx's global Permissions-Policy for this route so the upstream's Permissions-Policy passes through. Other security headers remain applied.";
+                  };
                 };
               });
               default = [];
@@ -427,6 +445,24 @@
               type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
               default = null;
               description = "Ingress rate-limit policy for this exposed port. When unset, the shared nginx default rate-limit profile is used.";
+            };
+
+            useUpstreamCsp = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "If true, suppress nginx's global Content-Security-Policy for the derived root vhost so the upstream's CSP (e.g. with per-request nonces) passes through. Other security headers remain applied.";
+            };
+
+            useUpstreamReferrer = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "If true, suppress nginx's global Referrer-Policy for the derived root vhost so the upstream's Referrer-Policy passes through. Other security headers remain applied.";
+            };
+
+            useUpstreamPermissionsPolicy = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "If true, suppress nginx's global Permissions-Policy for the derived root vhost so the upstream's Permissions-Policy passes through. Other security headers remain applied.";
             };
 
             cfTunnelNames = lib.mkOption {

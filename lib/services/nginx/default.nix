@@ -52,6 +52,24 @@
         default = null;
         description = "Optional resolved ingress rate-limiting policy for this proxy vhost.";
       };
+
+      useUpstreamCsp = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Content-Security-Policy for this vhost and let the upstream's CSP pass through. Other security headers remain applied.";
+      };
+
+      useUpstreamReferrer = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Referrer-Policy for this vhost and let the upstream's Referrer-Policy pass through. Other security headers remain applied.";
+      };
+
+      useUpstreamPermissionsPolicy = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Permissions-Policy for this vhost and let the upstream's Permissions-Policy pass through. Other security headers remain applied.";
+      };
     };
   };
 
@@ -143,20 +161,65 @@
         default = null;
         description = "Optional resolved ingress rate-limiting policy for this route.";
       };
+
+      useUpstreamCsp = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Content-Security-Policy for this route and let the upstream's CSP pass through. Other security headers remain applied.";
+      };
+
+      useUpstreamReferrer = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Referrer-Policy for this route and let the upstream's Referrer-Policy pass through. Other security headers remain applied.";
+      };
+
+      useUpstreamPermissionsPolicy = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Permissions-Policy for this route and let the upstream's Permissions-Policy pass through. Other security headers remain applied.";
+      };
     };
   };
+
+  upstreamHeaderFlags = src: {
+    useUpstreamCsp = src.useUpstreamCsp or false;
+    useUpstreamReferrer = src.useUpstreamReferrer or false;
+    useUpstreamPermissionsPolicy = src.useUpstreamPermissionsPolicy or false;
+  };
+
+  # When a location opts any security header out to the upstream, nginx's
+  # replace-not-merge add_header inheritance means we must re-declare every
+  # non-opted-out header at location scope. X-Content-Type-Options is always
+  # re-declared; the rest are included only when not opted out.
+  mkLocationSecurityHeaderIncludes = src: let
+    flags = upstreamHeaderFlags src;
+    anyOptOut =
+      flags.useUpstreamCsp
+      || flags.useUpstreamReferrer
+      || flags.useUpstreamPermissionsPolicy;
+    include = file: "        include /etc/nginx/conf.d/lib/${file};\n";
+  in
+    lib.optionalString anyOptOut (
+      include "http-security-xcto.conf"
+      + lib.optionalString (!flags.useUpstreamReferrer) (include "http-security-referrer.conf")
+      + lib.optionalString (!flags.useUpstreamPermissionsPolicy) (include "http-security-permissions.conf")
+      + lib.optionalString (!flags.useUpstreamCsp) (include "http-security-csp.conf")
+    );
 
   mkProxyVhost = {defaultHost ? "localhost"}: serviceName: portName: portCfg: let
     nginxHostNames = portCfg.nginxHostNames or [];
   in
     lib.optionalAttrs (nginxHostNames != []) {
-      "${serviceName}-${portName}" = {
-        service = serviceName;
-        inherit (portCfg) port;
-        serverNames = nginxHostNames;
-        upstreams = ["${defaultHost}:${toString portCfg.port}"];
-        rateLimit = resolveRateLimit (portCfg.rateLimit or null);
-      };
+      "${serviceName}-${portName}" =
+        {
+          service = serviceName;
+          inherit (portCfg) port;
+          serverNames = nginxHostNames;
+          upstreams = ["${defaultHost}:${toString portCfg.port}"];
+          rateLimit = resolveRateLimit (portCfg.rateLimit or null);
+        }
+        // upstreamHeaderFlags portCfg;
     };
 
   sanitizeName = value:
@@ -212,19 +275,21 @@
         assert lib.hasPrefix "/" normalizedPath;
         assert normalizedPath != "/"; {
           name = routeName;
-          value = {
-            service = serviceName;
-            mode = "upstream";
-            serverName = route.serverName;
-            path = normalizedPath;
-            inherit (portCfg) port;
-            upstreams = ["${defaultHost}:${toString portCfg.port}"];
-            upstreamProtocol = "http";
-            upstreamHost = null;
-            prependPath = null;
-            stripPath = route.stripPath;
-            rateLimit = resolveRateLimit (portCfg.rateLimit or null);
-          };
+          value =
+            {
+              service = serviceName;
+              mode = "upstream";
+              serverName = route.serverName;
+              path = normalizedPath;
+              inherit (portCfg) port;
+              upstreams = ["${defaultHost}:${toString portCfg.port}"];
+              upstreamProtocol = "http";
+              upstreamHost = null;
+              prependPath = null;
+              stripPath = route.stripPath;
+              rateLimit = resolveRateLimit (portCfg.rateLimit or null);
+            }
+            // upstreamHeaderFlags route;
         })
       (portCfg.nginxRoutes or []));
 
@@ -388,6 +453,7 @@
     rateLimitEnabled = routeRateLimit != null && routeRateLimit.enable;
     rateLimitDirectives =
       lib.optionalString rateLimitEnabled (locationRateLimitDirectives name routeRateLimit);
+    securityHeaderDirectives = mkLocationSecurityHeaderIncludes route;
     basePath = normalizeRoutePath route.path;
     prefixPath =
       if basePath == "/"
@@ -452,7 +518,7 @@
     htmlRewriteDirectives =
       lib.optionalString (basePath != "/") (routeHtmlRewriteDirectives route effectiveUpstreamPathPrefix);
   in ''
-        ${rateLimitDirectives}        proxy_set_header Accept-Encoding "";
+        ${rateLimitDirectives}${securityHeaderDirectives}        proxy_set_header Accept-Encoding "";
                 ${hostHeaderDirective}
                 ${forwardedHeaderDirectives}
     ${upstreamTlsDirectives}            proxy_http_version 1.1;
@@ -463,14 +529,16 @@
   '';
 
   mkProxyRootLocation = name: proxy: let
-    rootRoute = {
-      path = "/";
-      stripPath = false;
-      upstreamProtocol = proxy.upstreamProtocol or "http";
-      upstreamHost = proxy.upstreamHost or null;
-      prependPath = proxy.prependPath or null;
-      rateLimit = proxy.rateLimit or null;
-    };
+    rootRoute =
+      {
+        path = "/";
+        stripPath = false;
+        upstreamProtocol = proxy.upstreamProtocol or "http";
+        upstreamHost = proxy.upstreamHost or null;
+        prependPath = proxy.prependPath or null;
+        rateLimit = proxy.rateLimit or null;
+      }
+      // upstreamHeaderFlags proxy;
   in ''
             location / {
     ${locationProxyPassDirectives name rootRoute}        }

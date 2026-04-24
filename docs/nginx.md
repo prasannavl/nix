@@ -9,7 +9,10 @@ limits, forwarded-client headers, and Cloudflare Tunnel host routing.
 - NixOS option surface: `lib/services/nginx/module.nix`
 - Container runtime config: `lib/services/nginx/compose/nginx.conf`
 - Security headers include:
-  `lib/services/nginx/compose/conf.d/lib/http-security.conf`
+  `lib/services/nginx/compose/conf.d/lib/http-security.conf` (composed from
+  per-header sub-files: `http-security-xcto.conf`,
+  `http-security-referrer.conf`, `http-security-permissions.conf`,
+  `http-security-csp.conf`)
 - Host usage example: `hosts/gap3-rivendell/services/nginx.nix`
 - Derived compose metadata source: `lib/podman-compose/default.nix`
 
@@ -222,6 +225,45 @@ Additional behavior when `prependPath != null`:
   mount
 - nginx sends `X-Forwarded-Prefix`
 
+## Outcome: Let The Upstream Own A Security Header
+
+Some backends (Grafana, etc.) emit their own `Content-Security-Policy`,
+`Referrer-Policy`, or `Permissions-Policy`. The shared nginx listener declares
+defaults for these at server scope, so without an opt-out the client receives
+two copies and the browser intersects them, which typically breaks upstream
+nonce-based or feature-gated policies.
+
+Per-header opt-out flags, each default `false`:
+
+- `useUpstreamCsp` — suppress global `Content-Security-Policy`
+- `useUpstreamReferrer` — suppress global `Referrer-Policy`
+- `useUpstreamPermissionsPolicy` — suppress global `Permissions-Policy`
+
+Available on:
+
+- `exposedPorts.<name>.*` for the derived root proxy vhost
+- `exposedPorts.<name>.nginxRoutes[].*` for a subpath route
+- the same fields directly on a manual `proxyVhost` or `route` attrset
+
+Behavior at a location with any opt-out set:
+
+- the server-scope `http-security.conf` include is shadowed at that location
+  (nginx `add_header` inheritance is replace-not-merge)
+- the renderer re-includes only the sub-files that are not opted out:
+  `http-security-xcto.conf` is always re-included; the corresponding
+  `-referrer.conf`, `-permissions.conf`, `-csp.conf` is omitted for each header
+  the upstream owns
+- the upstream's response header passes through unfiltered
+
+Other locations on the same server block keep the global headers.
+
+The upstream remains responsible for emitting a secure header. For Grafana's
+CSP, set `GF_SECURITY_CONTENT_SECURITY_POLICY=true` so it emits its default
+nonce-based template (`$NONCE` placeholder in `script-src`). For Open WebUI, set
+`useUpstreamCsp = true` and provide a compatible `CONTENT_SECURITY_POLICY`
+environment variable from the app layer, because the frontend uses inline
+bootstrap code and blob workers.
+
 ## Outcome: Apply Rate Limits
 
 Rate limits can be applied at:
@@ -308,12 +350,23 @@ Common fields used by the nginx and tunnel model:
 - `cfTunnelNames`: hostnames published through derived Cloudflare Tunnel ingress
 - `cfTunnelPort`: optional port override for tunnel ingress
 - `rateLimit`: ingress rate-limit policy
+- `useUpstreamCsp`: suppress global CSP on the derived root vhost so the
+  upstream's CSP passes through
+- `useUpstreamReferrer`: suppress global `Referrer-Policy` on the derived root
+  vhost
+- `useUpstreamPermissionsPolicy`: suppress global `Permissions-Policy` on the
+  derived root vhost
 
 ### `exposedPorts.<name>.nginxRoutes[]`
 
 - `serverName`: public hostname
 - `path`: public mount prefix, must be non-root
 - `stripPath`: whether nginx removes the public prefix before proxying
+- `useUpstreamCsp`: suppress global CSP on this route so the upstream's CSP
+  passes through
+- `useUpstreamReferrer`: suppress global `Referrer-Policy` on this route
+- `useUpstreamPermissionsPolicy`: suppress global `Permissions-Policy` on this
+  route
 
 Derived defaults for these routes:
 
@@ -334,6 +387,9 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `upstreamHost`: optional host for `Host` and TLS SNI
 - `prependPath`: optional fixed upstream path prefix
 - `rateLimit`: resolved rate-limit profile or `null`
+- `useUpstreamCsp`: suppress global CSP so upstream CSP passes through
+- `useUpstreamReferrer`: suppress global `Referrer-Policy`
+- `useUpstreamPermissionsPolicy`: suppress global `Permissions-Policy`
 
 ### `route`
 
@@ -353,6 +409,9 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `siteIndex`: static route index file
 - `siteSinglePageApp`: static route SPA fallback mode
 - `rateLimit`: resolved rate-limit profile or `null`
+- `useUpstreamCsp`: suppress global CSP so upstream CSP passes through
+- `useUpstreamReferrer`: suppress global `Referrer-Policy`
+- `useUpstreamPermissionsPolicy`: suppress global `Permissions-Policy`
 
 ### `nginxLib.mkStaticSite`
 
