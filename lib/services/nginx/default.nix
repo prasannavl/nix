@@ -758,6 +758,24 @@ in rec {
   baseFiles = {
     "nginx.conf".source = ./compose/nginx.conf;
     "conf.d".source = ./compose/conf.d;
+    "conf.d/metrics-status.conf".text = ''
+      server {
+          listen 80 default_server;
+          server_name _;
+
+          location = /nginx_status {
+              stub_status;
+              access_log off;
+              allow 127.0.0.1;
+              allow ::1;
+              deny all;
+          }
+
+          location / {
+              return 404;
+          }
+      }
+    '';
   };
 
   proxyVhostsFromInstances = {defaultHost ? "localhost"}: instances:
@@ -901,4 +919,16 @@ in rec {
         in "${toString site.rootPath}:${staticSiteMountPath name site}:ro")
         (builtins.attrNames staticSites);
     };
+
+  nginxExporterPort = 9113;
+
+  nginxExporterConfig = {
+    httpPort,
+    enable ? true,
+    port ? nginxExporterPort,
+  }: {
+    inherit enable port;
+    listenAddress = "127.0.0.1";
+    scrapeUri = "http://127.0.0.1:${toString httpPort}/nginx_status";
+  };
 }
