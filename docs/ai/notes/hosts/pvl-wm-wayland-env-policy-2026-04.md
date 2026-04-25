@@ -2,11 +2,10 @@
 
 ## Context
 
-- Shared Sway and Niri config had session-wide environment overrides that
-  pushed many toolkit families toward Wayland:
-  `ELECTRON_OZONE_PLATFORM_HINT`, `NIXOS_OZONE_WL`, `MOZ_ENABLE_WAYLAND`,
-  `QT_QPA_PLATFORM`, `SDL_VIDEODRIVER`, `CLUTTER_BACKEND`, `GDK_BACKEND`, and
-  `WINIT_UNIX_BACKEND`.
+- Shared Sway and Niri config had session-wide environment overrides that pushed
+  many toolkit families toward Wayland: `ELECTRON_OZONE_PLATFORM_HINT`,
+  `NIXOS_OZONE_WL`, `MOZ_ENABLE_WAYLAND`, `QT_QPA_PLATFORM`, `SDL_VIDEODRIVER`,
+  `CLUTTER_BACKEND`, `GDK_BACKEND`, and `WINIT_UNIX_BACKEND`.
 - Those exports were originally added to improve backend selection consistency
   and reduce accidental XWayland fallback, especially in Sway.
 - A live Noctalia investigation on `pvl-a1` showed at least one concrete

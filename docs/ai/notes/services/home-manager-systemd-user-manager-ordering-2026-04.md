@@ -12,14 +12,13 @@
 
 ## Findings
 
-- `home-manager-pvl.service` and
-  `systemd-user-manager-dispatcher-pvl.service` were both plain
-  `multi-user.target` units with no ordering between them.
+- `home-manager-pvl.service` and `systemd-user-manager-dispatcher-pvl.service`
+  were both plain `multi-user.target` units with no ordering between them.
 - The dispatcher restarted `user@1000.service` because
   `services.systemdUserManager` thought the `pvl` identity changed.
-- That identity change was a false positive:
-  both generations referenced the same `users-groups.json`, so the effective
-  system user/group database did not change.
+- That identity change was a false positive: both generations referenced the
+  same `users-groups.json`, so the effective system user/group database did not
+  change.
 - The false positive came from hashing the full `config.users.users.<name>` and
   `config.users.groups.<group>` attrsets. That is too broad because unrelated
   option changes or group metadata changes can alter the hash without changing

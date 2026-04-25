@@ -34,8 +34,8 @@ changed when the local NixOS image store paths changed.
 
 - Keep `incus-<name>.service` as the only restart path.
 - Move volatile desired machine state, including local image tarball store
-  paths, out of the unit definition and into a stable `/etc/incus-machines`
-  JSON file that the helper reads at runtime.
+  paths, out of the unit definition and into a stable `/etc/incus-machines` JSON
+  file that the helper reads at runtime.
 - Keep the machine unit command lines stable by invoking the helper through
   `/run/current-system/sw/bin`, so helper/package store-path churn does not
   itself become another implicit restart trigger.

@@ -27,9 +27,9 @@
 
 ## Decision
 
-- Do not rely on `--any-display` as the durable fix, because it bypasses
-  display scoping instead of fixing why the client failed to identify the active
-  Wayland display.
+- Do not rely on `--any-display` as the durable fix, because it bypasses display
+  scoping instead of fixing why the client failed to identify the active Wayland
+  display.
 - After the later removal of session-wide Wayland-preference environment
   overrides from the shared WM config, the Noctalia launcher keybindings no
   longer need their temporary `QT_QPA_PLATFORM=wayland` wrapper and can use
