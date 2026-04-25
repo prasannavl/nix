@@ -89,6 +89,7 @@
     ];
 
     dev = with pkgs; [
+      fish
       (python3.withPackages (ps: with ps; [pip setuptools virtualenv numpy]))
       gnumake
       go

@@ -33,6 +33,7 @@
     dev = with pkgs; [
       gdb
       vim.xxd
+      fish
     ];
 
     db = with pkgs; [
