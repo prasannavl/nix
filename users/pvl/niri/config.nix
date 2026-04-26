@@ -79,6 +79,8 @@
       ''Print { screenshot; }''
       ''Ctrl+Print { screenshot-screen; }''
       ''Alt+Print { screenshot-window; }''
+      ''Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "swaylock"; }''
+      ''Mod+Escape allow-inhibiting=false { toggle-keyboard-shortcuts-inhibit; }''
     ]
     [
       ""
@@ -126,6 +128,8 @@
       ""
       ""
       ""
+      ""
+      ''Mod+Shift+Escape allow-inhibiting=false { toggle-keyboard-shortcuts-inhibit; }''
     ]
     defaultConfig;
 
@@ -332,7 +336,7 @@
 
         Mod+Space hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn-sh "${launcher} || ${runner}"; }
 
-        Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "${lockCmd}"; }
+        Mod+Escape hotkey-overlay-title="Lock the Screen: swaylock" { spawn "${lockCmd}"; }
 
         Mod+Z { spawn "systemctl" "--user" "restart" "kanshi" "noctalia-shell"; }
     }

@@ -28,5 +28,6 @@
   `niri msg action power-on-monitors` for Niri.
 - Power-source detection treats hosts without a battery as AC-powered so
   desktops follow the non-suspending policy by default.
-- Existing manual lock shortcuts stay unchanged:
-  `Mod+Escape` in Sway and `Super+Alt+L` in Niri.
+- Existing manual lock shortcuts are aligned across both compositors:
+  `Mod+Escape` locks and `Mod+Shift+Escape` toggles shortcut inhibition in
+  both Sway and Niri.

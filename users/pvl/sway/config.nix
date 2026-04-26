@@ -209,7 +209,7 @@ in {
       bindsym Ctrl+Alt+Print exec ${grimshot} copy active
 
       bindsym --no-repeat --locked --inhibited ${mod}+Alt+g exec ${sudo} $(${which} reset-amdgpu.sh)
-      bindsym --inhibited ${mod}+Shift+Escape shortcuts_inhibitor disable
+      bindsym --inhibited ${mod}+Shift+Escape shortcuts_inhibitor toggle
 
       exec ${systemctl} --user --no-block start ${wmServices.readyTargetUnits.sway}
     '';

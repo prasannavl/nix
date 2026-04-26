@@ -37,9 +37,9 @@ Assumes local `config.kdl` includes `base-config.kdl` then `nix-config.kdl`;
 - `Mod+Shift+Slash`: show hotkey overlay
 - `Mod+T`: open Alacritty
 - `Mod+D`: open Noctalia launcher, fallback fuzzel
-- `Super+Alt+L`: lock with swaylock
+- `Mod+Escape`: lock with swaylock
 - `Super+Alt+S`: toggle Orca
-- `Mod+Escape`: toggle shortcut inhibitor
+- `Mod+Shift+Escape`: toggle shortcut inhibitor
 - `Mod+Shift+E`: quit Niri
 - `Ctrl+Alt+Delete`: quit Niri
 - `Mod+Shift+P`: power off monitors

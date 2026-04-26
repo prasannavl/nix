@@ -9,7 +9,7 @@ Assumes the Sway config from `users/pvl/sway/config.nix`.
 - `Mod+D`: open Noctalia launcher, fallback fuzzel
 - `Mod+Shift+D`: open wmenu
 - `Mod+Escape`: lock with swaylock
-- `Mod+Shift+Escape`: disable shortcut inhibitor
+- `Mod+Shift+Escape`: toggle shortcut inhibitor
 - `Mod+Shift+C`: reload Sway
 - `Mod+Shift+E`: exit Sway
 - `Mod+Z`: restart `kanshi` and `noctalia-shell`
