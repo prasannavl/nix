@@ -112,6 +112,9 @@
       gdb
       fzf
       vim.xxd
+      zathura
+      imv
+      kitty
     ];
 
     db = with pkgs; [
