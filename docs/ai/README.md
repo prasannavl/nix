@@ -136,6 +136,13 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/services/openwebui-ollama-host-alias-firewall-2026-04.md`:
   Records the `pvl-a1` versus `pvl-x2` Open WebUI/Ollama difference as a host
   firewall policy issue on published port `11434`, not a compose-network issue.
+- `docs/ai/notes/services/ollama-context-length-128k-2026-04.md`: Records the
+  `pvl-a1` decision to set `OLLAMA_CONTEXT_LENGTH=131072` on both Ollama service
+  instances so Open WebUI prompts do not get truncated at the prior 4k effective
+  context limit.
+- `docs/ai/notes/services/ollama-shared-models-dir-pvl-a1-2026-04.md`: Records
+  the `pvl-a1` decision to share one staged Ollama models directory across the
+  ROCm and NVIDIA instances while keeping separate per-instance Ollama homes.
 - `docs/ai/notes/services/systemd-user-manager.md`: Canonical generation-driven
   `systemd-user-manager` model and dispatcher behavior.
 - `docs/ai/notes/services/home-manager-systemd-user-manager-ordering-2026-04.md`:
