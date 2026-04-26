@@ -29,4 +29,5 @@ in {
 
   # apps
   inherit (unstable) vscode;
+  inherit (unstable) keyd;
 }

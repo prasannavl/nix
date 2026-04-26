@@ -1,12 +1,14 @@
-{...}: {
-  services.keyd = {
-    enable = true;
-  };
+{
+  config,
+  lib,
+  ...
+}: {
+  config = lib.mkIf config.services.keyd.enable {
+    users.groups.keyd = {};
 
-  users.groups.keyd = {};
-
-  systemd.services.keyd.serviceConfig = {
-    CapabilityBoundingSet = ["CAP_SETGID"];
-    AmbientCapabilities = ["CAP_SETGID"];
+    systemd.services.keyd.serviceConfig = {
+      CapabilityBoundingSet = ["CAP_SETGID"];
+      AmbientCapabilities = ["CAP_SETGID"];
+    };
   };
 }
