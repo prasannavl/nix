@@ -38,7 +38,7 @@ in {
 
       gap3-gondor = {
         image = inputs.self.nixosImages.gap3-base;
-        ipv4Address = "10.10.20.11";
+        ipv4Address = "10.10.20.20";
         removalPolicy = "delete-all";
         recreateTag = "3";
 
