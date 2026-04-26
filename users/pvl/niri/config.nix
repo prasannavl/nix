@@ -29,13 +29,26 @@
   '';
   outputDefaults = lib.concatMapStringsSep "\n\n" renderOutputDefaults outputs.all;
 
-  # Runtime reference: /run/current-system/sw/share/doc/niri/default-config.kdl
-  defaultConfig = builtins.readFile (pkgs.niri.src + "/resources/default-config.kdl");
-  baseConfig =
-    builtins.replaceStrings
-    [''spawn-at-startup "waybar"'']
-    [""]
-    defaultConfig;
+  baseConfigPatch = builtins.toFile "niri-default-config.no-waybar.patch" ''
+    diff --git a/default-config.kdl b/default-config.kdl
+    index 8094086..58a6b98 100644
+    --- a/default-config.kdl
+    +++ b/default-config.kdl
+    @@ -267,7 +267,6 @@
+     // See the binds section below for more spawn examples.
+
+     // This line starts waybar, a commonly used bar for Wayland compositors.
+    -spawn-at-startup "waybar"
+
+     // To run a shell command (with variables, pipes, etc.), use spawn-sh-at-startup:
+     // spawn-sh-at-startup "qs -c ~/source/qs/MyAwesomeShell"
+  '';
+  defaultConfigFile = pkgs.niri.src + "/resources/default-config.kdl";
+  baseConfigFile = pkgs.applyPatches {
+    name = "niri-base-config.kdl";
+    src = defaultConfigFile;
+    patches = [baseConfigPatch];
+  };
 
   nixConfig = ''
     // Nix-managed overlay.
@@ -437,8 +450,8 @@ in {
   '';
 
   xdg.configFile = {
-    "niri/default-config.kdl".text = defaultConfig;
-    "niri/base-config.kdl".text = baseConfig;
+    "niri/default-config.kdl".source = defaultConfigFile;
+    "niri/base-config.kdl".source = baseConfigFile;
     "niri/nix-config.kdl".text = nixConfig;
   };
 
