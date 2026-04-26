@@ -44,11 +44,12 @@
      // spawn-sh-at-startup "qs -c ~/source/qs/MyAwesomeShell"
   '';
   defaultConfigFile = pkgs.niri.src + "/resources/default-config.kdl";
-  baseConfigFile = pkgs.applyPatches {
-    name = "niri-base-config.kdl";
-    src = defaultConfigFile;
+  baseConfigSrc = pkgs.applyPatches {
+    name = "niri-config-src-no-waybar";
+    src = pkgs.niri.src;
     patches = [baseConfigPatch];
   };
+  baseConfigFile = "${baseConfigSrc}/resources/default-config.kdl";
 
   nixConfig = ''
     // Nix-managed overlay.
