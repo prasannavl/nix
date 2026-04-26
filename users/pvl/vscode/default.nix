@@ -35,7 +35,7 @@
           ms-python.python
           golang.go
 
-          github.copilot-chat
+          # github.copilot-chat
           openai.chatgpt
           anthropic.claude-code
           kilocode.kilo-code
