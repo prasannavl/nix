@@ -2,7 +2,6 @@
   config.services.podmanCompose.pvl.instances.ollama = rec {
     exposedPorts.main = {
       port = 11434;
-      openFirewall = true;
     };
 
     source = ''
