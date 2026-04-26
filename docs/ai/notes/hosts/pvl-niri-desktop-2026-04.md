@@ -27,11 +27,11 @@
   focused window, focused monitor, and clear target.
 - `users/pvl/niri/keys.md` is a human-facing grouped key map for the effective
   default-plus-Nix bind set, with HJKL and arrow equivalents grouped together.
-- The Home Manager config keeps the full packaged Niri default config in
-  `default-config.kdl`, generates `base-config.kdl` from that default with only
-  the default `waybar` autostart disabled, and makes `config.kdl` include the
-  base plus a single Nix-managed overlay file. The overlay inlines the bind
-  overrides, shared startup output mode/scale/transform/VRR defaults, and
+- The Home Manager config keeps the upstream Niri defaults copied into the raw
+  `users/pvl/niri/pkg-default.kdl` file, removes the upstream `waybar` autostart
+  with a narrow `replaceStrings`, writes that to `base-config.kdl`, then layers
+  a separate Nix-managed `nix-config.kdl` on top. The overlay inlines the local
+  bind changes, shared startup output mode/scale/transform/VRR defaults, and
   per-app geometry corner-radius rules while keeping those sections split into
   separate Nix string bindings in the module source.
 - Niri startup output defaults come from the shared `users/pvl/wm/outputs.nix`
@@ -39,15 +39,13 @@
   dynamic topology and output positioning; Niri only gets the early compositor
   defaults so the session and early clients start with the intended scale and
   mode before profile application.
-- Niri include merging is not universal. Use the single overlay file only for
-  merge-safe additions and key overrides; use explicit Nix-side base patches for
-  non-merging sections such as full pointing-device blocks, struts, multipart
-  sections, or removal of default startup commands.
+- Niri include merging is not universal. Use the separate Nix-managed overlay
+  file for merge-safe additions and key overrides; keep copied upstream defaults
+  in `base-config.kdl`.
 - `config.kdl` itself is unmanaged local state. Home Manager activation creates
   a seed file only when it is absent; that seed includes `base-config.kdl` and
-  `nix-config.kdl`, and `nix-config.kdl` includes `corner-rules.kdl`. Users can
-  comment either seed include or add local overrides without Nix overwriting
-  them.
+  `nix-config.kdl`. Users can comment either include or add local overrides
+  without Nix overwriting them.
 - Niri cursor setup lives in `config.kdl` through the `cursor` block to avoid
   broad Home Manager cursor side effects on GNOME/Xwayland scaling.
 - Niri enables `services.gnome.gnome-keyring` and `services.gnome.gcr-ssh-agent`
