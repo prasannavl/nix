@@ -12,10 +12,15 @@ in {
         openFirewall = true;
       };
 
-      source = ./docker.compose.yaml;
-
-      files.".env".text = ''
-        SHADOWSOCKS_PORT=${toString exposedPorts.main.port}
+      source = ''
+        services:
+          shadowsocks:
+            image: shadowsocks/shadowsocks-libev
+            ports:
+              - "${toString exposedPorts.main.port}:8388/tcp"
+              - "${toString exposedPorts.main.port}:8388/udp"
+            environment:
+              - METHOD=aes-256-gcm
       '';
 
       envSecrets.shadowsocks.PASSWORD = config.age.secrets.shadowsocks-password.path;

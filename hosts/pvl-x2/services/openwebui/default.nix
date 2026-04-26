@@ -7,12 +7,19 @@ in {
       openFirewall = true;
     };
 
-    source = ./docker.compose.yaml;
-    dependsOn = ["ollama"];
-
-    files.".env".text = ''
-      OLLAMA_API_PORT=${toString ollamaPort}
-      OPEN_WEBUI_PORT=${toString exposedPorts.http.port}
+    source = ''
+      services:
+        open-webui:
+          image: ghcr.io/open-webui/open-webui:main
+          container_name: open-webui
+          user: 0:0
+          ports:
+            - "${toString exposedPorts.http.port}:8080"
+          environment:
+            - OLLAMA_BASE_URL=http://127.0.0.1:${toString ollamaPort}
+          volumes:
+            - ./open-webui_data:/app/backend/data
     '';
+    dependsOn = ["ollama"];
   };
 }

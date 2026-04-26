@@ -12,7 +12,39 @@ in {
         cfTunnelPort = nginxPort;
       };
 
-      source = ./docker.compose.yaml;
+      source = ''
+        version: "3"
+
+        services:
+          docmost:
+            image: docker.io/docmost/docmost:latest
+            user: 0:0
+            depends_on:
+              - db
+              - redis
+            environment:
+              APP_URL: "https://docs.p7log.com"
+              REDIS_URL: "redis://redis:6379"
+            ports:
+              - "${toString exposedPorts.http.port}:3000"
+            volumes:
+              - ./data:/app/data/storage
+
+          db:
+            image: docker.io/postgres:16-alpine
+            user: 0:0
+            environment:
+              POSTGRES_DB: docmost
+              POSTGRES_USER: docmost
+            volumes:
+              - ./db-data:/var/lib/postgresql/data
+
+          redis:
+            image: docker.io/redis:7.2-alpine
+            user: 0:0
+            volumes:
+              - ./cache:/data
+      '';
 
       envSecrets = {
         docmost = {
@@ -21,10 +53,6 @@ in {
         };
         db.POSTGRES_PASSWORD = config.age.secrets.docmost-postgres-password.path;
       };
-
-      files.".env".text = ''
-        DOCMOST_HTTP_PORT=${toString exposedPorts.http.port}
-      '';
     };
 
     age.secrets = {

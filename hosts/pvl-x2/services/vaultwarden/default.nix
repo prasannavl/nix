@@ -10,10 +10,18 @@ in {
       cfTunnelPort = nginxPort;
     };
 
-    source = ./docker.compose.yaml;
-
-    files.".env".text = ''
-      VAULTWARDEN_HTTP_PORT=${toString exposedPorts.http.port}
+    source = ''
+      services:
+        vaultwarden:
+          image: docker.io/vaultwarden/server:latest
+          container_name: vaultwarden
+          environment:
+            DOMAIN: "https://vault.p7log.com"
+          user: 0:0
+          volumes:
+            - ./data:/data/
+          ports:
+            - "${toString exposedPorts.http.port}:80"
     '';
   };
 }

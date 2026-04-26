@@ -8,12 +8,22 @@
       https.port = 9444;
     };
 
-    source = ./docker.compose.yaml;
+    source = ''
+      version: "3.8"
 
-    files.".env".text = ''
-      PORTAINER_HTTP_PORT=${toString exposedPorts.http.port}
-      PORTAINER_HTTPS_PORT=${toString exposedPorts.https.port}
-      PODMAN_SOCKET=${podmanSocket}
+      services:
+        portainer:
+          image: portainer/portainer-ce:lts
+          container_name: portainer
+          ports:
+            - "${toString exposedPorts.http.port}:8000"
+            - "${toString exposedPorts.https.port}:9443"
+          privileged: true
+          volumes:
+            - type: bind
+              source: ${podmanSocket}
+              target: /var/run/docker.sock
+            - ./data:/data
     '';
   };
 }

@@ -10,10 +10,16 @@ in {
       cfTunnelPort = nginxPort;
     };
 
-    source = ./docker.compose.yaml;
-
-    files.".env".text = ''
-      MEMOS_HTTP_PORT=${toString exposedPorts.http.port}
+    source = ''
+      services:
+        memos:
+          image: docker.io/neosmemo/memos:stable
+          container_name: memos
+          user: 0:0
+          volumes:
+            - ./data:/var/opt/memos
+          ports:
+            - "${toString exposedPorts.http.port}:5230"
     '';
   };
 }
