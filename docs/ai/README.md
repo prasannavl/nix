@@ -123,6 +123,9 @@ Use this index as the canonical map for `docs/ai/**`.
   directories plus the shared bootstrap helper pattern for external data roots.
 - `docs/ai/notes/services/postgres-port-publishing.md`: Durable note for the
   `pvl-x2` Postgres Podman Compose host-port publishing failure and workaround.
+- `docs/ai/notes/services/openwebui-ollama-host-alias-firewall-2026-04.md`:
+  Records the `pvl-a1` versus `pvl-x2` Open WebUI/Ollama difference as a host
+  firewall policy issue on published port `11434`, not a compose-network issue.
 - `docs/ai/notes/services/systemd-user-manager.md`: Canonical generation-driven
   `systemd-user-manager` model and dispatcher behavior.
 - `docs/ai/notes/services/home-manager-systemd-user-manager-ordering-2026-04.md`:
