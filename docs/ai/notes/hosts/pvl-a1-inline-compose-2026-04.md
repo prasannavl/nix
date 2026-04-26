@@ -6,8 +6,8 @@
 - Removed the standalone compose files after migration so the host service
   wiring stays in Nix.
 - Flattened the host service layout afterward so those two modules now live at
-  `hosts/pvl-a1/services/ollama.nix` and
-  `hosts/pvl-a1/services/openwebui.nix` instead of nested `default.nix` files.
+  `hosts/pvl-a1/services/ollama.nix` and `hosts/pvl-a1/services/openwebui.nix`
+  instead of nested `default.nix` files.
 - Embedded the remaining `ollama` and `openwebui` environment values directly
   into the inline compose sources and removed the now-redundant staged `.env`
   files.

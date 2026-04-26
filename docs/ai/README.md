@@ -39,8 +39,8 @@ Use this index as the canonical map for `docs/ai/**`.
   model, host docs structure, tunnel host wiring, and durable host incident
   findings.
 - `docs/ai/notes/hosts/incus-gpu-device-helpers-2026-04.md`: Records the shared
-  explicit DRM/KFD Incus device helper shape for reusable card/render-number
-  and group-aware passthrough declarations.
+  explicit DRM/KFD Incus device helper shape for reusable card/render-number and
+  group-aware passthrough declarations.
 - `docs/ai/notes/hosts/pvl-niri-desktop-2026-04.md`: Records the `pvl` Niri
   desktop user-module shape, session services, cursor handling, SSH socket, and
   portal choices.
@@ -82,18 +82,18 @@ Use this index as the canonical map for `docs/ai/**`.
   backends.
 - `docs/ai/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`: Records the `pvl-a1`
   Sway SSH-agent choice and GPG-agent session socket wiring.
-- `docs/ai/notes/hosts/pvl-a1-inline-compose-2026-04.md`: Records the
-  migration of the remaining `pvl-a1` service-local `docker.compose.yaml` files
-  into inline Nix compose sources while retaining staged `.env` files.
+- `docs/ai/notes/hosts/pvl-a1-inline-compose-2026-04.md`: Records the migration
+  of the remaining `pvl-a1` service-local `docker.compose.yaml` files into
+  inline Nix compose sources while retaining staged `.env` files.
 - `docs/ai/notes/hosts/pvl-dbus-broker-policy-2026-04.md`: Records the DBus
   broker policy cleanup for Debian-style `sudo` and `pulse` account references
   exposed by the broker migration.
 - `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service
   module split and aggregation layout.
-- `docs/ai/notes/hosts/pvl-x2-inline-compose-2026-04.md`: Records the
-  migration of `pvl-x2` service-local `docker.compose.yaml` files into inline
-  Nix compose sources, with Immich helper YAML retained and Zulip kept as a
-  disabled inline reference.
+- `docs/ai/notes/hosts/pvl-x2-inline-compose-2026-04.md`: Records the migration
+  of `pvl-x2` service-local `docker.compose.yaml` files into inline Nix compose
+  sources, with Immich helper YAML retained and Zulip kept as a disabled inline
+  reference.
 - `docs/ai/notes/hosts/pvl-x2-incus-switch-image-restart-2026-04.md`: Records
   the `pvl-x2` Incus deploy regression where local image store-path churn
   restarted declared guest lifecycle units during normal `switch`, plus the
