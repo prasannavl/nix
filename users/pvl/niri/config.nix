@@ -33,104 +33,8 @@
   defaultConfig = builtins.readFile "${pkgs.niri.doc}/share/doc/niri/default-config.kdl";
   baseConfig =
     builtins.replaceStrings
-    [
-      ''spawn-at-startup "waybar"''
-      "Mod+Ctrl+Left"
-      "Mod+Ctrl+Down"
-      "Mod+Ctrl+Up"
-      "Mod+Ctrl+Right"
-      "Mod+Ctrl+H"
-      "Mod+Ctrl+J"
-      "Mod+Ctrl+K"
-      "Mod+Ctrl+L"
-      "Mod+Shift+Left"
-      "Mod+Shift+Down"
-      "Mod+Shift+Up"
-      "Mod+Shift+Right"
-      "Mod+Shift+H"
-      "Mod+Shift+J"
-      "Mod+Shift+K"
-      "Mod+Shift+L"
-      "Mod+Ctrl+Home"
-      "Mod+Ctrl+End"
-      "Mod+Ctrl+Page_Down"
-      "Mod+Ctrl+Page_Up"
-      "Mod+Ctrl+U"
-      "Mod+Ctrl+I"
-      "Mod+Shift+Page_Down"
-      "Mod+Shift+Page_Up"
-      "Mod+Shift+U"
-      "Mod+Shift+I"
-      "Mod+Ctrl+WheelScrollDown"
-      "Mod+Ctrl+WheelScrollUp"
-      "Mod+Shift+WheelScrollDown"
-      "Mod+Shift+WheelScrollUp"
-      "Mod+Ctrl+WheelScrollRight"
-      "Mod+Ctrl+WheelScrollLeft"
-      "Mod+Ctrl+1"
-      "Mod+Ctrl+2"
-      "Mod+Ctrl+3"
-      "Mod+Ctrl+4"
-      "Mod+Ctrl+5"
-      "Mod+Ctrl+6"
-      "Mod+Ctrl+7"
-      "Mod+Ctrl+8"
-      "Mod+Ctrl+9"
-      ''Print { screenshot; }''
-      ''Ctrl+Print { screenshot-screen; }''
-      ''Alt+Print { screenshot-window; }''
-      ''Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "swaylock"; }''
-      ''Mod+Escape allow-inhibiting=false { toggle-keyboard-shortcuts-inhibit; }''
-    ]
-    [
-      ""
-      "Mod+Shift+Left"
-      "Mod+Shift+Down"
-      "Mod+Shift+Up"
-      "Mod+Shift+Right"
-      "Mod+Shift+H"
-      "Mod+Shift+J"
-      "Mod+Shift+K"
-      "Mod+Shift+L"
-      "Mod+Ctrl+Left"
-      "Mod+Ctrl+Down"
-      "Mod+Ctrl+Up"
-      "Mod+Ctrl+Right"
-      "Mod+Ctrl+H"
-      "Mod+Ctrl+J"
-      "Mod+Ctrl+K"
-      "Mod+Ctrl+L"
-      "Mod+Shift+Home"
-      "Mod+Shift+End"
-      "Mod+Shift+Page_Down"
-      "Mod+Shift+Page_Up"
-      "Mod+Shift+U"
-      "Mod+Shift+I"
-      "Mod+Ctrl+Page_Down"
-      "Mod+Ctrl+Page_Up"
-      "Mod+Ctrl+U"
-      "Mod+Ctrl+I"
-      "Mod+Shift+WheelScrollDown"
-      "Mod+Shift+WheelScrollUp"
-      "Mod+Ctrl+WheelScrollDown"
-      "Mod+Ctrl+WheelScrollUp"
-      "Mod+Shift+WheelScrollRight"
-      "Mod+Shift+WheelScrollLeft"
-      "Mod+Shift+1"
-      "Mod+Shift+2"
-      "Mod+Shift+3"
-      "Mod+Shift+4"
-      "Mod+Shift+5"
-      "Mod+Shift+6"
-      "Mod+Shift+7"
-      "Mod+Shift+8"
-      "Mod+Shift+9"
-      ""
-      ""
-      ""
-      ""
-      ''Mod+Shift+Escape allow-inhibiting=false { toggle-keyboard-shortcuts-inhibit; }''
-    ]
+    [''spawn-at-startup "waybar"'']
+    [""]
     defaultConfig;
 
   nixConfig = ''
@@ -155,8 +59,6 @@
     xwayland-satellite {
         path "${xwaylandSatellite}"
     }
-
-    spawn-at-startup "${pkgs.systemd}/bin/systemctl" "--user" "--no-block" "start" "${wmServices.readyTargetUnits.niri}"
 
     input {
         touchpad {
@@ -226,8 +128,6 @@
         }
     }
 
-    include "binds.kdl"
-
     // Top levels
 
     // prefer-no-csd
@@ -271,12 +171,76 @@
         default-floating-position x=0 y=0 relative-to="top-right"
     }
 
-    include "output-defaults.kdl"
-    include "output-rules.kdl"
-    include "window-rules-corners.kdl"
+    spawn-at-startup "${pkgs.systemd}/bin/systemctl" "--user" "--no-block" "start" "${wmServices.readyTargetUnits.niri}"
+
+    ${binds}
+
+    // Shared output defaults generated from users/pvl/wm/outputs.nix.
+    // This lets Niri start with the intended mode/scale/transform/VRR
+    // before kanshi applies the current topology profile and positions.
+    ${outputDefaults}
+
+    ${outputRules}
+    ${windowRulesCorners}
   '';
+
   binds = ''
     binds {
+        // Override upstream defaults in the overlay instead of patching the
+        // packaged default config. Niri resolves conflicts per hotkey.
+        //
+        // We flip the Ctrl and Shift modifiers to more sway-like
+        // As it's also more ergonomic to use shift with the more common
+        // action, which is windows, rather than monitor.
+        // Ctrl: means monitor now.
+        // Additional we adding wheel binds.
+
+        Mod+Ctrl+Left  { focus-monitor-left; }
+        Mod+Ctrl+Down  { focus-monitor-down; }
+        Mod+Ctrl+Up    { focus-monitor-up; }
+        Mod+Ctrl+Right { focus-monitor-right; }
+        Mod+Ctrl+H     { focus-monitor-left; }
+        Mod+Ctrl+J     { focus-monitor-down; }
+        Mod+Ctrl+K     { focus-monitor-up; }
+        Mod+Ctrl+L     { focus-monitor-right; }
+        Mod+Shift+Left  { move-column-left; }
+        Mod+Shift+Down  { move-window-down; }
+        Mod+Shift+Up    { move-window-up; }
+        Mod+Shift+Right { move-column-right; }
+        Mod+Shift+H     { move-column-left; }
+        Mod+Shift+J     { move-window-down; }
+        Mod+Shift+K     { move-window-up; }
+        Mod+Shift+L     { move-column-right; }
+        Mod+Shift+Home { move-column-to-first; }
+        Mod+Shift+End  { move-column-to-last; }
+        Mod+Shift+Page_Down { move-column-to-workspace-down; }
+        Mod+Shift+Page_Up   { move-column-to-workspace-up; }
+        Mod+Shift+U         { move-column-to-workspace-down; }
+        Mod+Shift+I         { move-column-to-workspace-up; }
+        Mod+Ctrl+Page_Down { move-workspace-down; }
+        Mod+Ctrl+Page_Up   { move-workspace-up; }
+        Mod+Ctrl+U         { move-workspace-down; }
+        Mod+Ctrl+I         { move-workspace-up; }
+
+        Mod+Shift+1 { move-column-to-workspace 1; }
+        Mod+Shift+2 { move-column-to-workspace 2; }
+        Mod+Shift+3 { move-column-to-workspace 3; }
+        Mod+Shift+4 { move-column-to-workspace 4; }
+        Mod+Shift+5 { move-column-to-workspace 5; }
+        Mod+Shift+6 { move-column-to-workspace 6; }
+        Mod+Shift+7 { move-column-to-workspace 7; }
+        Mod+Shift+8 { move-column-to-workspace 8; }
+        Mod+Shift+9 { move-column-to-workspace 9; }
+
+        Mod+Shift+WheelScrollDown { move-column-to-workspace-down; }
+        Mod+Shift+WheelScrollUp   { move-column-to-workspace-up; }
+        Mod+Ctrl+WheelScrollDown { focus-column-right; }
+        Mod+Ctrl+WheelScrollUp   { focus-column-left; }
+        Mod+Shift+WheelScrollRight { move-column-right; }
+        Mod+Shift+WheelScrollLeft  { move-column-left; }
+
+        // Media keys
+
         XF86AudioRaiseVolume allow-when-locked=true { spawn "${wpctl}" "set-volume" "@DEFAULT_AUDIO_SINK@" "0.1+" "-l" "1.0"; }
         XF86AudioLowerVolume allow-when-locked=true { spawn "${wpctl}" "set-volume" "@DEFAULT_AUDIO_SINK@" "0.1-"; }
         XF86AudioMute allow-when-locked=true { spawn "${wpctl}" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"; }
@@ -294,6 +258,7 @@
         Mod+Shift+C { clear-dynamic-cast-target; }
 
         // Move the current workspace across monitors.
+
         Mod+Ctrl+Alt+Left  { move-workspace-to-monitor-left; }
         Mod+Ctrl+Alt+Down  { move-workspace-to-monitor-down; }
         Mod+Ctrl+Alt+Up    { move-workspace-to-monitor-up; }
@@ -337,6 +302,7 @@
         Mod+Space hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn-sh "${launcher} || ${runner}"; }
 
         Mod+Escape hotkey-overlay-title="Lock the Screen: swaylock" { spawn "${lockCmd}"; }
+        Mod+Shift+Escape allow-inhibiting=false { toggle-keyboard-shortcuts-inhibit; }
 
         Mod+Z { spawn "systemctl" "--user" "restart" "kanshi" "noctalia-shell"; }
     }
@@ -350,9 +316,9 @@
             always-center-single-column
             // default-column-width { proportion 0.6; }
             preset-column-widths {
-                proportion 0.25
-                proportion 0.5
                 proportion 0.6
+                proportion 0.5
+                proportion 0.25
             }
         }
     }
@@ -362,9 +328,9 @@
         layout {
             // default-column-width { proportion 0.8; }
             preset-column-widths {
-                proportion 0.5
-                proportion 0.8
                 proportion 0.9
+                proportion 0.8
+                proportion 0.5
             }
         }
     }
@@ -456,9 +422,8 @@
   configSeed = pkgs.writeText "niri-config.kdl" ''
     // Local Niri config. This file is intentionally not managed by Nix.
     // Comment either include when you want to opt out locally.
-    // nix-config.kdl includes binds.kdl, output-defaults.kdl,
-    // output-rules.kdl, and window-rules-corners.kdl.
     // Runtime default reference: /run/current-system/sw/share/doc/niri/default-config.kdl
+
     include "base-config.kdl"
     include "nix-config.kdl"
   '';
@@ -475,15 +440,6 @@ in {
     "niri/default-config.kdl".text = defaultConfig;
     "niri/base-config.kdl".text = baseConfig;
     "niri/nix-config.kdl".text = nixConfig;
-    "niri/binds.kdl".text = binds;
-    "niri/output-defaults.kdl".text = ''
-      // Shared output defaults generated from users/pvl/wm/outputs.nix.
-      // This lets Niri start with the intended mode/scale/transform/VRR
-      // before kanshi applies the current topology profile and positions.
-      ${outputDefaults}
-    '';
-    "niri/output-rules.kdl".text = outputRules;
-    "niri/window-rules-corners.kdl".text = windowRulesCorners;
   };
 
   systemd.user.services.swayidle-niri = idle.mkIdleService {

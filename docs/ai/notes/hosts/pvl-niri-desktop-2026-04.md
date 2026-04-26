@@ -17,9 +17,9 @@
   differences are isolated at the bottom of the `binds` block under a
   `// Custom keybinds` comment.
 - Navigation-style keybindings flip the Niri default `Ctrl`/`Shift` convention
-  in generated `base-config.kdl`: `Shift` activates movement of the focused
-  column/window/workspace, while `Ctrl` is used mostly for monitor-oriented
-  focus or alternate navigation.
+  in the Nix-managed `binds.kdl` overlay: `Shift` activates movement of the
+  focused column/window/workspace, while `Ctrl` is used mostly for
+  monitor-oriented focus or alternate navigation.
 - Whole-workspace monitor movement is an overlay addition on
   `Mod+Ctrl+Alt+H/J/K/L` and matching arrows, keeping `Mod+Ctrl+Shift` for
   column-to-monitor movement.
@@ -30,15 +30,16 @@
 - The Home Manager config keeps the full packaged Niri default config in
   `default-config.kdl`, generates `base-config.kdl` from that default with only
   the default `waybar` autostart disabled, and makes `config.kdl` include the
-  base plus a small Nix-managed overlay. The overlay includes generated
-  `output-defaults.kdl` for shared startup output mode/scale/transform/VRR
-  defaults and `corner-rules.kdl` for per-app geometry radius rules.
+  base plus a single Nix-managed overlay file. The overlay inlines the bind
+  overrides, shared startup output mode/scale/transform/VRR defaults, and
+  per-app geometry corner-radius rules while keeping those sections split into
+  separate Nix string bindings in the module source.
 - Niri startup output defaults come from the shared `users/pvl/wm/outputs.nix`
   data, matching the Sway pre-kanshi output-default behavior. Kanshi still owns
   dynamic topology and output positioning; Niri only gets the early compositor
   defaults so the session and early clients start with the intended scale and
   mode before profile application.
-- Niri include merging is not universal. Use the overlay include only for
+- Niri include merging is not universal. Use the single overlay file only for
   merge-safe additions and key overrides; use explicit Nix-side base patches for
   non-merging sections such as full pointing-device blocks, struts, multipart
   sections, or removal of default startup commands.
