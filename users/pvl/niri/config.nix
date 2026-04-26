@@ -17,6 +17,7 @@
   cursorSize = 24;
 
   wmServices = import ../wm/services.nix {};
+  idle = import ../wm/idle.nix {inherit pkgs;};
   outputs = import ../wm/outputs.nix;
   renderOutputDefaults = output: ''
     output "${output.name}" {
@@ -479,5 +480,14 @@ in {
     '';
     "niri/output-rules.kdl".text = outputRules;
     "niri/window-rules-corners.kdl".text = windowRulesCorners;
+  };
+
+  systemd.user.services.swayidle-niri = idle.mkIdleService {
+    name = "wm-swayidle-niri";
+    description = "Idle manager for Niri";
+    readyTarget = wmServices.readyTargetUnits.niri;
+    sessionUnit = wmServices.sessionUnits.niri;
+    powerOffCommand = "${pkgs.niri}/bin/niri msg action power-off-monitors";
+    powerOnCommand = "${pkgs.niri}/bin/niri msg action power-on-monitors";
   };
 }

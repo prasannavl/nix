@@ -21,6 +21,7 @@
   cursorTheme = "Adwaita";
   cursorSize = 24;
   wmServices = import ../wm/services.nix {};
+  idle = import ../wm/idle.nix {inherit pkgs;};
   outputs = import ../wm/outputs.nix;
   renderOutput = output: ''
     output "${output.name}" mode ${output.mode} scale ${output.scale} scale_filter ${output.scaleFilter} subpixel ${output.subpixel} transform ${output.transform}${lib.optionalString output.vrr " adaptive_sync on"}
@@ -212,5 +213,14 @@ in {
 
       exec ${systemctl} --user --no-block start ${wmServices.readyTargetUnits.sway}
     '';
+  };
+
+  systemd.user.services.swayidle-sway = idle.mkIdleService {
+    name = "wm-swayidle-sway";
+    description = "Idle manager for Sway";
+    readyTarget = wmServices.readyTargetUnits.sway;
+    sessionUnit = wmServices.sessionUnits.sway;
+    powerOffCommand = "${osConfig.programs.sway.package}/bin/swaymsg \"output * power off\"";
+    powerOnCommand = "${osConfig.programs.sway.package}/bin/swaymsg \"output * power on\"";
   };
 }

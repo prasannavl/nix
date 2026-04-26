@@ -59,6 +59,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/pvl-shared-screenshot-keybindings-2026-04.md`: Records
   the screenshot keybinding layout across Sway, Niri, and GNOME plus the current
   split between `Super+X` on tiling WMs and `Super+C` on GNOME.
+- `docs/ai/notes/hosts/pvl-wm-idle-lock-2026-04.md`: Records the shared
+  `swayidle` battery and AC lock policy for Sway and Niri plus the existing
+  manual lock shortcuts.
 - `docs/ai/notes/hosts/pvl-wm-session-services-2026-04.md`: Records the shared
   `pvl` tiling-WM session services used by both Sway and Niri.
 - `docs/ai/notes/hosts/pvl-x2-sway-drm-device-2026-04.md`: Records the PCI
