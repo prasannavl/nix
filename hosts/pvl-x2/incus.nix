@@ -53,9 +53,13 @@ in {
               path = "/var/lib";
               removalPolicy = "keep";
             };
-            gpu = {type = "gpu";};
+            # We use our lib belows, so we can control the "video" group
+            # better. gpu applies render group to all incorrectly.
+            # gpu = {type = "gpu";};
           }
           // incusLib.mkGpuDevices {
+            card = 1;
+            render = 128;
             kfd = true;
           };
       };
