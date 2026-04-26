@@ -32,6 +32,12 @@
         description = "Triggers that mark this managed unit as changed.";
       };
 
+      autoStart = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether the reconciler should automatically start this managed unit when it is inactive or failed.";
+      };
+
       stampPayload = lib.mkOption {
         type = lib.types.nullOr lib.types.unspecified;
         default = null;
@@ -58,6 +64,7 @@
   managedUserActionPath = "/run/wrappers/bin:/run/current-system/sw/bin";
   dispatcherMetadataPointerRelDir = "systemd-user-manager/dispatchers";
   deferredRestartRequestDir = "/run/systemd-user-manager/restart-requests";
+  deferredUnitRestartRequestDir = "/run/systemd-user-manager/unit-restart-requests";
 
   helperPackage = pkgs.writeShellApplication {
     name = "systemd-user-manager-helper";
@@ -73,6 +80,7 @@
       SYSTEMD_USER_MANAGER_BOOT_READY_TARGET = bootReadyTargetName;
       SYSTEMD_USER_MANAGER_DISPATCHER_METADATA_POINTER_REL_DIR = dispatcherMetadataPointerRelDir;
       SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR = deferredRestartRequestDir;
+      SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR = deferredUnitRestartRequestDir;
       SYSTEMD_USER_MANAGER_MANAGED_USER_ACTION_PATH = managedUserActionPath;
     };
     text = ''
@@ -97,6 +105,7 @@
         kind = "unit";
         unit = managedUnit.unit;
         stopOnRemoval = managedUnit.stopOnRemoval;
+        autoStart = managedUnit.autoStart;
         restartTriggers = managedUnit.restartTriggers;
       };
     stamp = builtins.hashString "sha256" (builtins.toJSON stampPayload);
@@ -105,6 +114,7 @@
     name = managedUnit.unitName;
     unit = managedUnit.unit;
     stopOnRemoval = managedUnit.stopOnRemoval;
+    autoStart = managedUnit.autoStart;
     stamp = stamp;
   };
 
@@ -169,6 +179,7 @@
             name = managedUnit.name;
             unit = managedUnit.unit;
             stopOnRemoval = managedUnit.stopOnRemoval;
+            autoStart = managedUnit.autoStart;
             stamp = managedUnit.stamp;
           })
           sortedUnits;
@@ -227,7 +238,6 @@
     value = {
       description = "Dispatch managed systemd --user reconciliation for ${user}";
       after = [
-        "multi-user.target"
         userAtService
       ];
       wantedBy = ["multi-user.target"];

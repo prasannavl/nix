@@ -25,6 +25,9 @@ interaction with deploy-time service reconciliation.
   `systemctl --user` state.
 - Inactive or failed managed units are started unless they are disabled or
   masked.
+- Managed units may opt out of cold-start through `autoStart = false`; they
+  still remain under old-versus-new diff management, and units that were running
+  when old-world stop touched them are restarted during new-world reconcile.
 - Removed users must be handled before account removal.
 
 ## Dispatcher behavior
@@ -32,6 +35,10 @@ interaction with deploy-time service reconciliation.
 - Identity-driven `user@<uid>.service` restarts should be detected during old
   versus new comparison but executed later by the dispatcher through ephemeral
   `/run` markers.
+- Dispatcher system units must not add `After=` on the same target that pulls
+  them in via `WantedBy=`. In particular, `WantedBy=multi-user.target` must not
+  be paired with `After=multi-user.target`, or explicit deploy-time starts can
+  hit a systemd transaction ordering cycle.
 - Dispatcher progress should remain visible, but unit-state polling is the
   authoritative wait path.
 - Bound journal polling with `timeout`, rate-limit journal reads, and emit

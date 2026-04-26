@@ -19,6 +19,7 @@
     serviceName = null;
     serviceOverrides = {};
     composeArgs = [];
+    autoStart = true;
     recreateOnSwitch = false;
     bootTag = "0";
     recreateTag = "0";
@@ -297,6 +298,12 @@
         type = lib.types.listOf lib.types.str;
         default = [];
         description = "Additional arguments passed to every `podman compose` invocation for this instance, before compose-file flags and the subcommand.";
+      };
+
+      autoStart = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether this compose instance should be auto-started by the generated user-manager reconcile flow during deploy and boot-ready startup.";
       };
 
       recreateOnSwitch = lib.mkOption {
@@ -624,7 +631,7 @@
         ++ lib.optional hasImagePullUnit imagePullUnit
       );
       wants = lib.unique (networkOnlineUnits ++ wantsUnits ++ lib.optional hasImagePullUnit imagePullUnit);
-      wantedBy = [bootReadyTargetName];
+      wantedBy = lib.optional service.autoStart bootReadyTargetName;
       unitConfig.ConditionUser = resolvedUser;
       unitConfig.Requires = dependsOnUnits ++ lib.optional hasImagePullUnit imagePullUnit;
       serviceConfig = {
@@ -697,7 +704,7 @@
       service.envSecrets;
       envSecretRuntimePaths = service.envSecretRuntimePaths;
     });
-    inherit (service) imageTag recreateTag bootTag;
+    inherit (service) autoStart imageTag recreateTag bootTag;
   };
 
   resolvedServices = lib.concatLists (
@@ -1154,6 +1161,7 @@ in {
         value = {
           user = s.systemdUser;
           unit = "${s.systemdServiceName}.service";
+          autoStart = s.autoStart;
           restartTriggers = [
             s.restartStamp
             s.recreateTag

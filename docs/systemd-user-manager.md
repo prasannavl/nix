@@ -27,6 +27,7 @@ Important options:
 
 - `user`
 - `unit`
+- `autoStart`
 - `stopOnRemoval`
 - `restartTriggers`
 - `stampPayload`
@@ -47,6 +48,11 @@ New generation:
 - restarts the reconciler
 - waits for successful convergence
 
+`autoStart = false` suppresses cold-start for an inactive managed unit, but it
+does not remove that unit from old-versus-new diff management. If a deploy had
+to stop a changed unit that was already running, the reconciler starts it again
+in the new world.
+
 ## Reconciler Behavior
 
 The reconciler is intentionally narrow:
@@ -54,7 +60,7 @@ The reconciler is intentionally narrow:
 - reads generation metadata
 - checks live `systemctl --user` state
 - leaves active units alone
-- starts inactive or failed managed units
+- starts inactive or failed managed units unless `autoStart = false`
 
 After success it starts `systemd-user-manager-ready.target`.
 
