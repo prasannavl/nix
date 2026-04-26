@@ -82,6 +82,9 @@ Use this index as the canonical map for `docs/ai/**`.
   backends.
 - `docs/ai/notes/hosts/pvl-a1-sway-ssh-agent-2026-04.md`: Records the `pvl-a1`
   Sway SSH-agent choice and GPG-agent session socket wiring.
+- `docs/ai/notes/hosts/pvl-a1-inline-compose-2026-04.md`: Records the
+  migration of the remaining `pvl-a1` service-local `docker.compose.yaml` files
+  into inline Nix compose sources while retaining staged `.env` files.
 - `docs/ai/notes/hosts/pvl-dbus-broker-policy-2026-04.md`: Records the DBus
   broker policy cleanup for Debian-style `sudo` and `pulse` account references
   exposed by the broker migration.

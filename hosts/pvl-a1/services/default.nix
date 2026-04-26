@@ -1,7 +1,7 @@
 {...}: {
   imports = [
-    ./ollama
-    ./openwebui
+    ./ollama.nix
+    ./openwebui.nix
   ];
 
   config.services.podmanCompose.pvl = {

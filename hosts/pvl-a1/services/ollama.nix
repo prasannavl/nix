@@ -1,0 +1,31 @@
+{...}: {
+  config.services.podmanCompose.pvl.instances.ollama = rec {
+    exposedPorts.main = {
+      port = 11434;
+      openFirewall = true;
+    };
+
+    source = ''
+      services:
+        ollama:
+          image: ollama/ollama:rocm
+          container_name: ollama
+          ports:
+            - "${toString exposedPorts.main.port}:11434"
+          volumes:
+            - ./ollama_data:/root/.ollama
+          environment:
+            - OLLAMA_VULKAN=1
+            - OLLAMA_FLASH_ATTENTION=1
+            - OLLAMA_KV_CACHE_TYPE=q8_0
+            - OLLAMA_KEEP_ALIVE=2m
+          devices:
+            - "/dev/kfd:/dev/kfd"
+            - "/dev/dri:/dev/dri"
+          group_add:
+            # Numeric GID because this image lacks the `render` group name; 303 maps to host `render`.
+            - "303"
+            - video
+    '';
+  };
+}
