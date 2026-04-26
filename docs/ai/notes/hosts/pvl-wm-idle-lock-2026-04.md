@@ -17,17 +17,15 @@
   place without editing compositor-specific wiring.
 - Both services use the same lock command:
   `swaylock -f -c 000000 --indicator-idle-visible`.
-- Battery policy:
-  lock after 10 minutes idle, power off monitors after 10 minutes plus 1 second,
-  then suspend after 15 minutes idle.
-- AC policy:
-  lock after 15 minutes idle and power off monitors after 15 minutes plus
-  1 second, with no automatic suspend.
+- Battery policy: lock after 10 minutes idle, power off monitors after 10
+  minutes plus 1 second, then suspend after 15 minutes idle.
+- AC policy: lock after 15 minutes idle and power off monitors after 15 minutes
+  plus 1 second, with no automatic suspend.
 - Resume powers monitors back on through the compositor-specific control path:
-  `swaymsg "output * power on"` for Sway and
-  `niri msg action power-on-monitors` for Niri.
+  `swaymsg "output * power on"` for Sway and `niri msg action power-on-monitors`
+  for Niri.
 - Power-source detection treats hosts without a battery as AC-powered so
   desktops follow the non-suspending policy by default.
 - Existing manual lock shortcuts are aligned across both compositors:
-  `Mod+Escape` locks and `Mod+Shift+Escape` toggles shortcut inhibition in
-  both Sway and Niri.
+  `Mod+Escape` locks and `Mod+Shift+Escape` toggles shortcut inhibition in both
+  Sway and Niri.

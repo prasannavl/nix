@@ -46,10 +46,13 @@
 
 ## Git
 
-Without user explicit instruction or documented process in a playbook with user pre-approval: 
+Without user explicit instruction or documented process in a playbook with user
+pre-approval:
+
 - Do NOT run git reset --hard, delete branches or other destructive git cmds
 - Do NOT commit or push
-- Do NOT auto-stage files unless necessary to lint or build, and it doesn't overwrite user changes
+- Do NOT auto-stage files unless necessary to lint or build, and it doesn't
+  overwrite user changes
 - Do NOT remove unrelated user changes if code drifts midway
 
 ASK before proceeding with git ops that could lead to data loss or conflicts

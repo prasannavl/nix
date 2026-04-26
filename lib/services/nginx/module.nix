@@ -1,7 +1,4 @@
-{
-  lib,
-  ...
-}: let
+{lib, ...}: let
   nginxLib = import ./default.nix {inherit lib;};
 in {
   options.services.nginxProxyVhosts = lib.mkOption {
