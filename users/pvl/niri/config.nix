@@ -30,7 +30,7 @@
   outputDefaults = lib.concatMapStringsSep "\n\n" renderOutputDefaults outputs.all;
 
   # Runtime reference: /run/current-system/sw/share/doc/niri/default-config.kdl
-  defaultConfig = builtins.readFile "${pkgs.niri.doc}/share/doc/niri/default-config.kdl";
+  defaultConfig = builtins.readFile (pkgs.niri.src + "/resources/default-config.kdl");
   baseConfig =
     builtins.replaceStrings
     [''spawn-at-startup "waybar"'']
