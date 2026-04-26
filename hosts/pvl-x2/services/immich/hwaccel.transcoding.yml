@@ -30,6 +30,7 @@ services:
       - systempaths=unconfined
       - apparmor=unconfined
     group_add:
+      # Keep name-based lookup here; this maps to the image's `video` group.
       - video
     devices:
       - /dev/rga:/dev/rga

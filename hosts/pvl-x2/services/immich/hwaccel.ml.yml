@@ -35,6 +35,7 @@ services:
 
   rocm:
     group_add:
+      # Keep name-based lookup here; this maps to the image's `video` group.
       - video
     devices:
       - /dev/dri:/dev/dri
