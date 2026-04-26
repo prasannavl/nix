@@ -1,4 +1,12 @@
-{...}: {
+{
+  config,
+  lib,
+  ...
+}: let
+  incusLib = import ../../lib/incus/lib.nix {
+    inherit config lib;
+  };
+in {
   services.incusMachines = {
     instances = {
       pvl-vk = {
@@ -9,22 +17,19 @@
           "security.syscalls.intercept.mount" = "true";
           "security.syscalls.intercept.mount.shift" = "true";
         };
-        devices = {
-          state = {
-            source = "pvl-vk";
-            path = "/var/lib";
-            removalPolicy = "delete";
+        devices =
+          {
+            state = {
+              source = "pvl-vk";
+              path = "/var/lib";
+              removalPolicy = "delete";
+            };
+          }
+          // incusLib.mkGpuDevices {
+            card = 1;
+            render = 128;
+            kfd = true;
           };
-          dev-dri = {
-            source = "/dev/dri";
-            path = "/dev/dri";
-          };
-          kfd = {
-            type = "unix-char";
-            source = "/dev/kfd";
-            path = "/dev/kfd";
-          };
-        };
       };
     };
   };

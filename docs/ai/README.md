@@ -38,6 +38,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/incus-and-host-operations.md`: Canonical Incus guest
   model, host docs structure, tunnel host wiring, and durable host incident
   findings.
+- `docs/ai/notes/hosts/incus-gpu-device-helpers-2026-04.md`: Records the shared
+  explicit DRM/KFD Incus device helper shape for reusable card/render-number
+  and group-aware passthrough declarations.
 - `docs/ai/notes/hosts/pvl-niri-desktop-2026-04.md`: Records the `pvl` Niri
   desktop user-module shape, session services, cursor handling, SSH socket, and
   portal choices.

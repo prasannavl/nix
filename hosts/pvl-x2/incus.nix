@@ -1,4 +1,13 @@
-{inputs, ...}: {
+{
+  inputs,
+  config,
+  lib,
+  ...
+}: let
+  incusLib = import ../../lib/incus/lib.nix {
+    inherit config lib;
+  };
+in {
   services.incusMachines = {
     instances = {
       pvl-vlab = {
@@ -9,19 +18,22 @@
           "security.privileged" = "true";
           "security.nesting" = "true";
         };
-        devices = {
-          state = {
-            source = "pvl-vlab";
-            path = "/var/lib";
-            removalPolicy = "keep";
+        devices =
+          {
+            state = {
+              source = "pvl-vlab";
+              path = "/var/lib";
+              removalPolicy = "keep";
+            };
+            # We use our lib belows, so we can control the "video" group
+            # better. gpu applies render group to all incorrectly.
+            # gpu = {type = "gpu";};
+          }
+          // incusLib.mkGpuDevices {
+            card = 1;
+            render = 128;
+            kfd = true;
           };
-          gpu = {type = "gpu";};
-          kfd = {
-            type = "unix-char";
-            source = "/dev/kfd";
-            path = "/dev/kfd";
-          };
-        };
       };
 
       gap3-gondor = {
@@ -34,19 +46,18 @@
           "security.nesting" = "true";
           "security.privileged" = "true";
         };
-        devices = {
-          state = {
-            source = "gap3-gondor";
-            path = "/var/lib";
-            removalPolicy = "keep";
+        devices =
+          {
+            state = {
+              source = "gap3-gondor";
+              path = "/var/lib";
+              removalPolicy = "keep";
+            };
+            gpu = {type = "gpu";};
+          }
+          // incusLib.mkGpuDevices {
+            kfd = true;
           };
-          gpu = {type = "gpu";};
-          kfd = {
-            type = "unix-char";
-            source = "/dev/kfd";
-            path = "/dev/kfd";
-          };
-        };
       };
     };
   };
