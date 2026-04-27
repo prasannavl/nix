@@ -17,8 +17,18 @@
       if [ -f "$mark" ] && [ "$((now - $(stat -c %Y "$mark")))" -lt 1 ]; then
         exit 0
       fi
+      exec 9>"$lock"
+      if ! flock -n 9; then
+        exit 0
+      fi
+      # shellcheck disable=SC2329
+      cleanup() {
+        flock -u 9 || true
+        rm -f "$lock"
+      }
+      trap cleanup EXIT
       rc=0
-      flock -n "$lock" ${grimshotBin} "$@" || rc=$?
+      ${grimshotBin} "$@" || rc=$?
       touch "$mark"
       exit "$rc"
     '';
