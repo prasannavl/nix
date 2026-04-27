@@ -11,11 +11,11 @@
   runner = "${pkgs.fuzzel}/bin/fuzzel --list-executables-in-path";
   launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
   lockCmd = "${pkgs.swaylock}/bin/swaylock -f -c 000000 --indicator-idle-visible";
-  grimshot = "${pkgs.sway-contrib.grimshot}/bin/grimshot";
+  screenshot = import ../wm/screenshot.nix {inherit pkgs config;};
+  grimshot = screenshot.bin;
   systemctl = "${pkgs.systemd}/bin/systemctl";
   pactl = "${pkgs.pulseaudio}/bin/pactl";
   brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";
-  pgrep = "${pkgs.procps}/bin/pgrep";
   sudo = "${pkgs.sudo}/bin/sudo";
   which = "${pkgs.which}/bin/which";
   cursorTheme = "Adwaita";
@@ -125,10 +125,10 @@ in {
         "${mod}+minus" = "scratchpad show";
         "${mod}+r" = "mode resize";
 
-        "${mod}+x" = "exec ${pgrep} -x ${grimshot} || ${grimshot} save area";
+        "${mod}+x" = "exec ${grimshot} save area";
         "${mod}+Shift+x" = "exec ${grimshot} save output";
         "${mod}+Alt+x" = "exec ${grimshot} save active";
-        "${mod}+Ctrl+x" = "exec ${pgrep} -x ${grimshot} || ${grimshot} copy area";
+        "${mod}+Ctrl+x" = "exec ${grimshot} copy area";
         "${mod}+Ctrl+Shift+x" = "exec ${grimshot} copy output";
         "${mod}+Ctrl+Alt+x" = "exec ${grimshot} copy active";
         "${mod}+z" = "exec ${systemctl} --user restart kanshi noctalia-shell";
@@ -201,10 +201,10 @@ in {
       bindsym --locked XF86AudioMicMute exec ${pactl} set-source-mute @DEFAULT_SOURCE@ toggle
       bindsym --locked XF86MonBrightnessDown exec ${brightnessctl} set 5%-
       bindsym --locked XF86MonBrightnessUp exec ${brightnessctl} set 5%+
-      bindsym Print exec ${pgrep} -x ${grimshot} || ${grimshot} save area
+      bindsym Print exec ${grimshot} save area
       bindsym Shift+Print exec ${grimshot} save output
       bindsym Alt+Print exec ${grimshot} save active
-      bindsym Ctrl+Print exec ${pgrep} -x ${grimshot} || ${grimshot} copy area
+      bindsym Ctrl+Print exec ${grimshot} copy area
       bindsym Ctrl+Shift+Print exec ${grimshot} copy output
       bindsym Ctrl+Alt+Print exec ${grimshot} copy active
 

@@ -8,7 +8,8 @@
   runner = "${pkgs.fuzzel}/bin/fuzzel --list-executables-in-path";
   launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
   lockCmd = "${pkgs.swaylock}/bin/swaylock -f -c 000000 --indicator-idle-visible";
-  grimshot = "${pkgs.sway-contrib.grimshot}/bin/grimshot";
+  screenshot = import ../wm/screenshot.nix {inherit pkgs config;};
+  grimshot = screenshot.bin;
   wpctl = "${pkgs.wireplumber}/bin/wpctl";
   playerctl = "${pkgs.playerctl}/bin/playerctl";
   brightnessctl = "${pkgs.brightnessctl}/bin/brightnessctl";

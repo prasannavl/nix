@@ -40,10 +40,6 @@
     wmServices = import ./services.nix {};
     wmScripts = wmServices.mkWmScripts pkgs;
   in {
-    home.sessionVariables = {
-      XDG_SCREENSHOTS_DIR = "$HOME/Pictures/Screenshots";
-    };
-
     systemd.user = {
       targets."${wmServices.readyTargets.niri}".Unit = {
         Description = "WM session display-ready target";
