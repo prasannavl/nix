@@ -13,8 +13,8 @@
       runtime="''${XDG_RUNTIME_DIR:-/tmp}"
       lock="$runtime/grimshot.lock"
       mark="$runtime/grimshot.mark"
-      now=$(date +%s)
-      if [ -f "$mark" ] && [ "$((now - $(stat -c %Y "$mark")))" -lt 1 ]; then
+      now_ms=$(date +%s%3N)
+      if [ -f "$mark" ] && [ "$((now_ms - $(date -r "$mark" +%s%3N)))" -lt 250 ]; then
         exit 0
       fi
       exec 9>"$lock"
