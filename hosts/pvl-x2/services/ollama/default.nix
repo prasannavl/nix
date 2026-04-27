@@ -10,7 +10,6 @@
         ollama:
           image: ollama/ollama:rocm
           container_name: ollama
-          user: 0:0
           ports:
             - "${toString exposedPorts.main.port}:11434"
           volumes:
@@ -22,11 +21,12 @@
             - OLLAMA_KV_CACHE_TYPE=q8_0
             - OLLAMA_KEEP_ALIVE=12h
             - ROCR_VISIBLE_DEVICES=0
+            - OLLAMA_CONTEXT_LENGTH=262144
           devices:
             - "/dev/kfd:/dev/kfd"
             - "/dev/dri:/dev/dri"
           group_add:
-            - video
+            - keep-groups
     '';
   };
 }

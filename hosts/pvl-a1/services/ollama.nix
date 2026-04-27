@@ -34,9 +34,7 @@ in {
               - "/dev/kfd:/dev/kfd"
               - "/dev/dri:/dev/dri"
             group_add:
-              # Numeric GID because this image lacks the `render` group name; 303 maps to host `render`.
-              - "303"
-              - video
+              - keep-groups
       '';
     };
 
