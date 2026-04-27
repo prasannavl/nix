@@ -7,7 +7,7 @@
     pkgs,
     ...
   }: {
-    home.activation.linkEditableBin = lib.hm.dag.entryAfter ["cloneDotfiles"] ''
+    home.activation.linkEditableBin = lib.hm.dag.entryAfter ["writeBoundary"] ''
       hm_link_editable_bin() {
         local dotfiles_dir bin_link
         dotfiles_dir="${config.home.homeDirectory}/dotfiles"

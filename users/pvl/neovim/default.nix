@@ -22,7 +22,7 @@
       # ];
     };
 
-    home.activation.linkEditableNvim = lib.hm.dag.entryAfter ["cloneDotfiles"] ''
+    home.activation.linkEditableNvim = lib.hm.dag.entryAfter ["writeBoundary"] ''
       hm_link_editable_nvim() {
         local dotfiles_nvim nvim_link
         dotfiles_nvim="${config.home.homeDirectory}/dotfiles/nvim/.config/nvim"
