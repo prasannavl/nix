@@ -49,6 +49,7 @@
           johnpapa.vscode-peacock
           kdl-org.kdl
           bierner.markdown-mermaid
+          ms-azuretools.vscode-containers
         ];
 
         keybindings = [
