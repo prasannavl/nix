@@ -115,7 +115,7 @@
       zathura
       imv
       kitty
-      
+      deno
       google-cloud-sdk
       awscli2
       kubectl

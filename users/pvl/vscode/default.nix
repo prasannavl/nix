@@ -43,6 +43,7 @@
           # google.geminicodeassist
           # continue.continue
 
+          denoland.vscode-deno
           ms-ossdata.vscode-pgsql
           alexcvzz.vscode-sqlite
           johnpapa.vscode-peacock
