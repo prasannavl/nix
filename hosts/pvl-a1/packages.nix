@@ -115,6 +115,13 @@
       zathura
       imv
       kitty
+      
+      google-cloud-sdk
+      awscli2
+      kubectl
+      helm
+      opentofu
+      k9s
     ];
 
     db = with pkgs; [
