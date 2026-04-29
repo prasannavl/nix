@@ -5,6 +5,9 @@
 }: let
   inherit (pkgs.stdenv.hostPlatform) system;
   antigravity-pkgs = inputs.antigravity.packages.${system};
+  google-cloud-sdk-with-log-streaming = pkgs.google-cloud-sdk.withExtraComponents [
+    pkgs.google-cloud-sdk.components.log-streaming
+  ];
   # Keep groups isolated so they can be lifted into lib/profiles later.
   packages = {
     core = with pkgs; [
@@ -116,7 +119,7 @@
       imv
       kitty
       deno
-      google-cloud-sdk
+      google-cloud-sdk-with-log-streaming
       awscli2
       kubectl
       helm
