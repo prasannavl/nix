@@ -249,28 +249,28 @@ compose_state_json() {
 compose_up() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans 2>&1
 	)
 }
 
 compose_up_force_recreate() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans --force-recreate
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans --force-recreate 2>&1
 	)
 }
 
 compose_down() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" down
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" down 2>&1
 	)
 }
 
 compose_pull() {
 	(
 		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" pull
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" pull 2>&1
 	)
 }
 
