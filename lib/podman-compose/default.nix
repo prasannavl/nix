@@ -399,6 +399,52 @@
               description = "Optional hostnames to serve through the repo-managed nginx reverse proxy for this port.";
             };
 
+            upstreamProtocol = lib.mkOption {
+              type = lib.types.enum [
+                "http"
+                "https"
+              ];
+              default = "http";
+              description = "Protocol nginx should use when proxying to this exposed port.";
+            };
+
+            upstreamHost = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional origin host for the Host header when nginx proxies to this exposed port.";
+            };
+
+            upstreamTlsName = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = "auto";
+              description = "TLS SNI name for HTTPS nginx upstreams. \"auto\" derives it from upstreamHost when upstreamHost is host-only; null disables SNI.";
+            };
+
+            rootRedirect = lib.mkOption {
+              type = lib.types.nullOr (lib.types.submodule {
+                options = {
+                  path = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Path nginx should redirect exact root requests to.";
+                  };
+
+                  status = lib.mkOption {
+                    type = lib.types.enum [
+                      301
+                      302
+                      303
+                      307
+                      308
+                    ];
+                    default = 307;
+                    description = "HTTP redirect status for exact root requests.";
+                  };
+                };
+              });
+              default = null;
+              description = "Optional redirect nginx should apply to exact root requests before proxying other paths.";
+            };
+
             nginxRoutes = lib.mkOption {
               type = lib.types.listOf (lib.types.submodule {
                 options = {
@@ -434,6 +480,27 @@
                     type = lib.types.bool;
                     default = false;
                     description = "If true, suppress nginx's global Permissions-Policy for this route so the upstream's Permissions-Policy passes through. Other security headers remain applied.";
+                  };
+
+                  upstreamProtocol = lib.mkOption {
+                    type = lib.types.enum [
+                      "http"
+                      "https"
+                    ];
+                    default = "http";
+                    description = "Protocol nginx should use when proxying to this route.";
+                  };
+
+                  upstreamHost = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional origin host for the Host header when nginx proxies to this route.";
+                  };
+
+                  upstreamTlsName = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = "auto";
+                    description = "TLS SNI name for HTTPS nginx upstream routes. \"auto\" derives it from upstreamHost when upstreamHost is host-only; null disables SNI.";
                   };
                 };
               });

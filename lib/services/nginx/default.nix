@@ -3,6 +3,26 @@
   rateLimitProfiles = {
     default = exposedPortsLib.defaultRateLimitProfile;
   };
+  rootRedirectTypeDef = lib.types.submodule {
+    options = {
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = "Path to redirect exact root requests to.";
+      };
+
+      status = lib.mkOption {
+        type = lib.types.enum [
+          301
+          302
+          303
+          307
+          308
+        ];
+        default = 307;
+        description = "HTTP redirect status for exact root requests.";
+      };
+    };
+  };
   proxyVhostTypeDef = lib.types.submodule {
     options = {
       service = lib.mkOption {
@@ -38,7 +58,13 @@
       upstreamHost = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Optional origin hostname for Host header and TLS SNI when proxying to this backend.";
+        description = "Optional origin host for the Host header when proxying to this backend.";
+      };
+
+      upstreamTlsName = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = "auto";
+        description = "TLS SNI name for HTTPS upstreams. \"auto\" derives it from upstreamHost when upstreamHost is host-only; null disables SNI.";
       };
 
       prependPath = lib.mkOption {
@@ -51,6 +77,12 @@
         type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
         default = null;
         description = "Optional resolved ingress rate-limiting policy for this proxy vhost.";
+      };
+
+      rootRedirect = lib.mkOption {
+        type = lib.types.nullOr rootRedirectTypeDef;
+        default = null;
+        description = "Optional redirect for exact root requests before proxying other paths.";
       };
 
       useUpstreamCsp = lib.mkOption {
@@ -123,7 +155,13 @@
       upstreamHost = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Optional origin hostname for Host header and TLS SNI when proxying to this backend route.";
+        description = "Optional origin host for the Host header when proxying to this backend route.";
+      };
+
+      upstreamTlsName = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = "auto";
+        description = "TLS SNI name for HTTPS upstream routes. \"auto\" derives it from upstreamHost when upstreamHost is host-only; null disables SNI.";
       };
 
       prependPath = lib.mkOption {
@@ -217,6 +255,8 @@
           inherit (portCfg) port;
           serverNames = nginxHostNames;
           upstreams = ["${defaultHost}:${toString portCfg.port}"];
+          inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName;
+          rootRedirect = portCfg.rootRedirect or null;
           rateLimit = resolveRateLimit (portCfg.rateLimit or null);
         }
         // upstreamHeaderFlags portCfg;
@@ -252,6 +292,31 @@
     then throw "${fieldName} must not include a path component: ${value}"
     else value;
 
+  validateTlsNameValue = fieldName: value:
+    if value == ""
+    then throw "${fieldName} must not be an empty string; use \"auto\" or null."
+    else if lib.hasPrefix "http://" value || lib.hasPrefix "https://" value
+    then throw "${fieldName} must be a plain hostname without http:// or https://: ${value}"
+    else if lib.hasInfix "/" value
+    then throw "${fieldName} must not include a path component: ${value}"
+    else if lib.hasInfix ":" value
+    then throw "${fieldName} must be a hostname without a port: ${value}"
+    else value;
+
+  resolveUpstreamTlsName = {
+    upstreamProtocol,
+    upstreamHost,
+    upstreamTlsName,
+  }:
+    if upstreamProtocol != "https" || upstreamTlsName == null
+    then null
+    else if upstreamTlsName == "auto"
+    then
+      if upstreamHost == null
+      then null
+      else validateTlsNameValue "upstreamTlsName derived from upstreamHost" upstreamHost
+    else validateTlsNameValue "upstreamTlsName" upstreamTlsName;
+
   normalizeUpstreamPathPrefix = value:
     if value == null
     then null
@@ -283,8 +348,7 @@
               path = normalizedPath;
               inherit (portCfg) port;
               upstreams = ["${defaultHost}:${toString portCfg.port}"];
-              upstreamProtocol = "http";
-              upstreamHost = null;
+              inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName;
               prependPath = null;
               stripPath = route.stripPath;
               rateLimit = resolveRateLimit (portCfg.rateLimit or null);
@@ -448,6 +512,7 @@
     routeRateLimit = route.rateLimit or null;
     routeUpstreamHost = route.upstreamHost or null;
     routeUpstreamProtocol = route.upstreamProtocol or "http";
+    routeUpstreamTlsName = route.upstreamTlsName or "auto";
     routePrependPath = route.prependPath or null;
     routeStripPath = route.stripPath or false;
     rateLimitEnabled = routeRateLimit != null && routeRateLimit.enable;
@@ -467,6 +532,11 @@
       if routeUpstreamHost != null
       then validatePlainUpstreamValue "upstreamHost" routeUpstreamHost
       else null;
+    effectiveUpstreamTlsName = resolveUpstreamTlsName {
+      upstreamProtocol = routeUpstreamProtocol;
+      upstreamHost = normalizedUpstreamHost;
+      upstreamTlsName = routeUpstreamTlsName;
+    };
     effectiveUpstreamPathPrefix =
       normalizeUpstreamPathPrefix
       routePrependPath;
@@ -508,13 +578,10 @@
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header CF-Connecting-IP $remote_addr;
     '';
-    upstreamTlsDirectives =
-      lib.optionalString (routeUpstreamProtocol == "https") ''
-        proxy_ssl_server_name on;
-      ''
-      + lib.optionalString (normalizedUpstreamHost != null) ''
-        proxy_ssl_name ${normalizedUpstreamHost};
-      '';
+    upstreamTlsDirectives = lib.optionalString (effectiveUpstreamTlsName != null) ''
+      proxy_ssl_server_name on;
+      proxy_ssl_name ${effectiveUpstreamTlsName};
+    '';
     htmlRewriteDirectives =
       lib.optionalString (basePath != "/") (routeHtmlRewriteDirectives route effectiveUpstreamPathPrefix);
   in ''
@@ -535,11 +602,20 @@
         stripPath = false;
         upstreamProtocol = proxy.upstreamProtocol or "http";
         upstreamHost = proxy.upstreamHost or null;
+        upstreamTlsName = proxy.upstreamTlsName or "auto";
         prependPath = proxy.prependPath or null;
         rateLimit = proxy.rateLimit or null;
       }
       // upstreamHeaderFlags proxy;
+    rootRedirect = proxy.rootRedirect or null;
+    rootRedirectBlock = lib.optionalString (rootRedirect != null) ''
+      location = / {
+          return ${toString rootRedirect.status} ${rootRedirect.path}$is_args$args;
+      }
+
+    '';
   in ''
+    ${rootRedirectBlock}
             location / {
     ${locationProxyPassDirectives name rootRoute}        }
   '';

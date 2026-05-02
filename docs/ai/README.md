@@ -167,6 +167,9 @@ Use this index as the canonical map for `docs/ai/**`.
   move from `arrterian.nix-env-selector` to `mkhl.direnv` plus the root flake
   `devShells.default`/`devShells.full` abstraction in
   `lib/flake/dev-shells.nix`.
+- `docs/ai/notes/tooling/gap3-porting-phases-2026-05.md`: Tracks the staged port
+  of shared `gap3` changes into this repo, starting with `nixbot` flake refs and
+  Podman compose journal-noise cleanup.
 - `docs/ai/notes/tooling/repo-tooling.md`: Canonical Bash entrypoint, lint/fmt,
   package-local verification, and docs-maintenance rules.
 
