@@ -167,6 +167,7 @@ Use a manual route attrset when the origin is not a local compose service.
   upstreams = ["origin.example.com:443"];
   upstreamProtocol = "https";
   upstreamHost = "origin.example.com";
+  # upstreamTlsName defaults to "auto", deriving SNI from upstreamHost.
   stripPath = true;
   rateLimit = nginxLib.rateLimitProfiles.default;
 }
@@ -181,15 +182,19 @@ Use this for:
 Rules:
 
 - `upstreams` must be plain `host[:port]`
-- `upstreamHost` must be a plain hostname
+- `upstreamHost` must be a plain host or `host:port` value
 - `upstreamHost` must not include `http://`, `https://`, or `/`
+- `upstreamTlsName` must be `"auto"`, `null`, or a plain hostname without a port
 - `upstreamProtocol` selects `http` or `https` for `proxy_pass`
 
 Behavior:
 
 - nginx dials `upstreams`
 - nginx sends `Host: <upstreamHost>` when `upstreamHost != null`
-- nginx sets TLS SNI with `proxy_ssl_name <upstreamHost>` when using HTTPS
+- with HTTPS and `upstreamTlsName = "auto"`, nginx derives SNI from
+  `upstreamHost` when it is host-only
+- with HTTPS and `upstreamTlsName = "<host>"`, nginx sends that explicit SNI
+- with HTTPS and `upstreamTlsName = null`, nginx emits no SNI directives
 
 ## Outcome: Add A Fixed Upstream Path Prefix
 
@@ -202,6 +207,7 @@ Use `prependPath`.
   upstreams = ["origin.example.com:443"];
   upstreamProtocol = "https";
   upstreamHost = "origin.example.com";
+  upstreamTlsName = "origin.example.com";
   prependPath = "/api/v1";
   stripPath = true;
 }
@@ -347,6 +353,11 @@ Common fields used by the nginx and tunnel model:
 - `openFirewall`: whether host firewall opens the port
 - `nginxHostNames`: root proxy hostnames for this backend
 - `nginxRoutes`: subpath mounts for this backend
+- `upstreamProtocol`: `http` or `https` for nginx proxying
+- `upstreamHost`: optional `Host` header override for nginx proxying
+- `upstreamTlsName`: TLS SNI name for HTTPS nginx upstreams; `"auto"` derives
+  from `upstreamHost`, `null` disables SNI
+- `rootRedirect`: optional exact-root redirect on a derived root vhost
 - `cfTunnelNames`: hostnames published through derived Cloudflare Tunnel ingress
 - `cfTunnelPort`: optional port override for tunnel ingress
 - `rateLimit`: ingress rate-limit policy
@@ -371,8 +382,9 @@ Common fields used by the nginx and tunnel model:
 Derived defaults for these routes:
 
 - `upstreams = [ "<nginxDefaultHost>:<port>" ]`
-- `upstreamProtocol = "http"`
-- `upstreamHost = null`
+- `upstreamProtocol` inherits from the exposed port
+- `upstreamHost` inherits from the exposed port
+- `upstreamTlsName` inherits from the exposed port
 - `prependPath = null`
 
 ### `proxyVhost`
@@ -384,8 +396,11 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `port`: backend port
 - `upstreams`: backend addresses as `host[:port]`
 - `upstreamProtocol`: `http` or `https`
-- `upstreamHost`: optional host for `Host` and TLS SNI
+- `upstreamHost`: optional host for the `Host` header
+- `upstreamTlsName`: TLS SNI name for HTTPS upstreams; `"auto"` derives from
+  `upstreamHost`, `null` disables SNI
 - `prependPath`: optional fixed upstream path prefix
+- `rootRedirect`: optional exact-root redirect before the normal root proxy
 - `rateLimit`: resolved rate-limit profile or `null`
 - `useUpstreamCsp`: suppress global CSP so upstream CSP passes through
 - `useUpstreamReferrer`: suppress global `Referrer-Policy`
@@ -402,7 +417,9 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `port`: backend port or `null`
 - `upstreams`: backend addresses as `host[:port]`
 - `upstreamProtocol`: `http` or `https`
-- `upstreamHost`: optional host for `Host` and TLS SNI
+- `upstreamHost`: optional host for the `Host` header
+- `upstreamTlsName`: TLS SNI name for HTTPS upstream routes; `"auto"` derives
+  from `upstreamHost`, `null` disables SNI
 - `prependPath`: optional fixed upstream path prefix
 - `stripPath`: whether nginx removes the public mount prefix
 - `siteMountPath`: static route source directory
@@ -412,6 +429,29 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `useUpstreamCsp`: suppress global CSP so upstream CSP passes through
 - `useUpstreamReferrer`: suppress global `Referrer-Policy`
 - `useUpstreamPermissionsPolicy`: suppress global `Permissions-Policy`
+
+## Outcome: Redirect Exact Root Before Proxying
+
+Use `rootRedirect` on a root proxy vhost when `/` should bounce to a deeper app
+path before the normal catch-all proxy location runs.
+
+```nix
+instances.vmui = {
+  exposedPorts.http = {
+    port = 8428;
+    nginxHostNames = ["vmui.example.com"];
+    rootRedirect = {
+      path = "/vmui/";
+      status = 307;
+    };
+  };
+};
+```
+
+Result:
+
+- `GET /` returns the configured redirect
+- `GET /x` still follows the normal proxy location
 
 ### `nginxLib.mkStaticSite`
 
