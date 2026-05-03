@@ -25,6 +25,9 @@ init_vars() {
 	OPEN_URL=""
 	SETTINGS_URL=""
 	PERSISTENCED_URL=""
+	OPEN_RELEASE_NOTES_URL=""
+	SETTINGS_RELEASE_NOTES_URL=""
+	PERSISTENCED_RELEASE_NOTES_URL=""
 	SHA256_64BIT=""
 	OPEN_SHA256=""
 	SETTINGS_SHA256=""
@@ -77,6 +80,15 @@ build_urls() {
 	PERSISTENCED_URL="https://github.com/NVIDIA/nvidia-persistenced/archive/${version}.tar.gz"
 }
 
+set_optional_url() {
+	local target_var="$1"
+	local url="$2"
+
+	if curl -fsI "$url" >/dev/null 2>&1; then
+		printf -v "$target_var" '%s' "$url"
+	fi
+}
+
 assert_url_exists() {
 	local label="$1"
 	local url="$2"
@@ -93,6 +105,14 @@ validate_inputs() {
 	assert_url_exists "open-gpu-kernel-modules tag" "$OPEN_URL"
 	assert_url_exists "nvidia-settings tag" "$SETTINGS_URL"
 	assert_url_exists "nvidia-persistenced tag" "$PERSISTENCED_URL"
+}
+
+resolve_release_notes_urls() {
+	local version="$1"
+
+	set_optional_url OPEN_RELEASE_NOTES_URL "https://github.com/NVIDIA/open-gpu-kernel-modules/releases/tag/${version}"
+	set_optional_url SETTINGS_RELEASE_NOTES_URL "https://github.com/NVIDIA/nvidia-settings/releases/tag/${version}"
+	set_optional_url PERSISTENCED_RELEASE_NOTES_URL "https://github.com/NVIDIA/nvidia-persistenced/releases/tag/${version}"
 }
 
 prefetch_hash() {
@@ -129,6 +149,9 @@ print_summary() {
 	echo "  openSha256=$OPEN_SHA256"
 	echo "  settingsSha256=$SETTINGS_SHA256"
 	echo "  persistencedSha256=$PERSISTENCED_SHA256"
+	[[ -n "$OPEN_RELEASE_NOTES_URL" ]] && echo "  openReleaseNotesUrl=$OPEN_RELEASE_NOTES_URL"
+	[[ -n "$SETTINGS_RELEASE_NOTES_URL" ]] && echo "  settingsReleaseNotesUrl=$SETTINGS_RELEASE_NOTES_URL"
+	[[ -n "$PERSISTENCED_RELEASE_NOTES_URL" ]] && echo "  persistencedReleaseNotesUrl=$PERSISTENCED_RELEASE_NOTES_URL"
 }
 
 ensure_runtime_shell() {
@@ -165,6 +188,7 @@ main() {
 	selected_version="$(get_version)"
 	build_urls "$selected_version"
 	validate_inputs "$selected_version"
+	resolve_release_notes_urls "$selected_version"
 	compute_hashes
 	update_file "$selected_version"
 	print_summary "$selected_version"
