@@ -6,6 +6,9 @@ in rec {
   srv = serviceModuleFactory.mkServiceLib {
     defaultUser = "pvl";
     defaultClientSecretsBasePath = ../../data/secrets/services;
+    defaultNatsSecretsBasePath = ../../data/secrets/nats;
+    defaultPostgresSecretsBasePath = ../../data/secrets/postgres;
+    defaultVmstackSecretsBasePath = ../../data/secrets/vmstack;
     defaultClientIdentitySuffix = "p7log.com";
     defaultExtServiceIdentitySuffix = "p7log.com";
     defaultSecretOwner = "pvl";
