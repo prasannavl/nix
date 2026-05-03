@@ -46,3 +46,11 @@ each reviewable phase stays small and explicit.
   and the `prePatch` workspace-members rewrite.
 - Migrate the local `hello-rust` example to the workspace helper style so the
   upstream contract is exercised in-tree.
+
+## Phase 4 details
+
+- Harden `service-module` bound-module resolution to prefer
+  `build.passthru.sourcePath` before falling back to `build.src`.
+- Harden client-identity secret modules to resolve the package from
+  `sourcePath`, so age-secret wiring follows the configured package source
+  rather than brittle derivation-object equality.
