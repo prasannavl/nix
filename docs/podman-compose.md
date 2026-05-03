@@ -102,7 +102,8 @@ images or repo-tracked compose files.
 
 ## Where To Put Things
 
-- host declarations: `hosts/<host>/services.nix`
+- host declarations: the host's imported service module, commonly
+  `hosts/<host>/services.nix` or `hosts/<host>/services/default.nix`
 - host-local compose trees: `hosts/<host>/compose/<stack>/`
 - shared module logic: `lib/podman-compose/`
 
@@ -499,7 +500,7 @@ That means:
 
 ## What A Host Must Provide
 
-For each stack in `hosts/<host>/services.nix`:
+For each stack in the host's service module:
 
 - `user`
 - `stackDir`
@@ -513,7 +514,7 @@ For each stack in `hosts/<host>/services.nix`:
 
 ## How To Create A New Compose Service
 
-1. Add or update `hosts/<host>/services.nix`.
+1. Add or update the host's imported service module.
 2. Declare a stack under `services.podmanCompose.<stack>`.
 3. Add one or more instances.
 4. If the service needs ingress, define `exposedPorts`.
@@ -591,5 +592,5 @@ need an explicit build flow if image refresh semantics need to cover them too.
 - `lib/podman-compose/default.nix`
 - `lib/podman-compose/helper.sh`
 - `lib/systemd-user-manager/default.nix`
-- `hosts/<host>/services.nix`
+- the host service module that declares `services.podmanCompose.<stack>`
 - `hosts/nixbot.nix`

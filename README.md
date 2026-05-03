@@ -55,8 +55,9 @@ NixOS module:
   `lib/systemd-user-manager/default.nix` with shared shell logic in
   `lib/systemd-user-manager/helper.sh` (documented in
   `docs/systemd-user-manager.md`).
-- Hosts declare stacks under `services.podmanCompose.<stack>` in
-  `hosts/<host>/services.nix`.
+- Hosts declare stacks under `services.podmanCompose.<stack>` in a host service
+  module, commonly `hosts/<host>/services.nix` or
+  `hosts/<host>/services/default.nix`.
 - Compose content can be a Nix attrset, inline YAML, a file path, or a staged
   directory tree.
 - Lifecycle tags (`bootTag`, `recreateTag`, `imageTag`) drive deploy-time

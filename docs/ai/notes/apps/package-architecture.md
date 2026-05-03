@@ -3,7 +3,8 @@
 ## Scope
 
 Canonical package and child-flake rules for `pkgs/`, root flake exports, shared
-helpers under `lib/flake`, and package-owned service modules.
+helpers under `lib/flake`, package-owned NixOS modules, and repo-local service
+stack wiring.
 
 ## Durable rules
 
@@ -30,6 +31,11 @@ helpers under `lib/flake`, and package-owned service modules.
   package set.
 - `lib/flake/pkg-helper.nix` is the canonical helper surface for conventional
   package-local checks, apps, dev shells, and flake output wiring.
+- `lib/flake/service-module.nix` exposes the generic `mkServiceLib` factory for
+  service modules, transport helpers, and client-identity wiring.
+- `lib/flake/stack.nix` is the repo-local instantiation of that factory. It owns
+  repo defaults such as secret roots, identity suffixes, transport defaults, and
+  default user-service ownership.
 - Prefer the high-level helper entrypoints:
   - `mkRustDerivation`
   - `mkGoDerivation`
@@ -44,6 +50,9 @@ helpers under `lib/flake`, and package-owned service modules.
 - Shared check helpers own the repeated child-flake pattern. Package-local
   `default.nix` should define `passthru.checks`, and child flakes should mostly
   re-export them.
+- Repo-local package and host call sites should import the repo stack and use
+  `stack.pkg` or `stack.srv` rather than re-encoding repo defaults directly
+  against the generic factory.
 
 ## Package contract
 
@@ -74,18 +83,44 @@ helpers under `lib/flake`, and package-owned service modules.
 - Non-package helper derivations consumed directly by overlays or scripts belong
   outside `pkgs/`; see `lib/ext/` for that pattern.
 
-## Package-owned service modules
+## Package-owned modules
 
-- Services that ship as child flakes under `pkgs/srv/*` should export their
-  NixOS modules from the child flake.
+- Package-owned NixOS modules belong on the canonical package derivation as
+  `passthru.nixosModule`, not only in child-flake wrappers.
+- `pkgHelper.mkNixosModuleAttrs` is the canonical bridge from package passthru
+  to flake `nixosModules`, including any `passthru.flakeExtraNixosModules`.
+- The root flake imports package-owned modules into the shared NixOS module
+  stack for every host, so exported modules must stay safe to evaluate
+  everywhere.
+- Bound module factories must resolve their package from the consuming host's
+  `pkgs` and `system`, not from the flake-evaluation system that exported the
+  module.
+- `mkNixosSystem` in `lib/flake/default.nix` is the canonical place that passes
+  `inputs` and `system` special args needed by those package-owned modules.
+- Derivation-backed identity helpers that export `age.secrets` fragments must
+  gate those fragments on whether the owning package is present in
+  `config.environment.systemPackages`.
+
+## Service module helpers
+
 - Repeated service-module boilerplate belongs in `lib/flake/service-module.nix`.
-- `mkServiceModules` owns the standard service shape:
+- `mkServicesModule` owns the standard service split:
   - `services.<name>.enable`
   - `services.<name>.package`
-  - `systemd.services.<name>` with `ExecStart = lib.getExe cfg.package`
-  - standard `Restart`, `wantedBy`, and `after` defaults
-- `mkTcpServiceModules` extends that model with listener address and port
-  options when the binary consumes them via environment variables.
+  - `systemd.services.<name>` when the resolved user is `root`
+  - `userServices.<user>.<name>` plus `systemd-user-manager` registration when
+    the resolved user is non-root
+- Generated user-service modules should materialize both:
+  - `systemd.user.services.<unit>`
+  - `services.systemdUserManager.instances.<user>-<name>`
+- Prefer direct systemd wiring fields such as `after`, `before`, `wants`,
+  `requires`, and `wantedBy` instead of repo-specific dependency abstractions.
+- `mkTcpServiceModule` extends that model with listener address and port options
+  when the binary consumes them via environment variables.
+- Transport helpers such as `mkPostgresClientService` and `mkNatsClientService`
+  should provide environment wiring and default ordering hints only. Callers
+  should still tolerate missing or unhealthy upstreams at runtime rather than
+  encoding hard infra assumptions into the helper layer.
 
 ## Current application notes
 
@@ -103,10 +138,20 @@ helpers under `lib/flake`, and package-owned service modules.
 - `lib/flake/apps.nix`
 - `lib/flake/pkg-helper.nix`
 - `lib/flake/service-module.nix`
+- `lib/flake/stack.nix`
 - `pkgs/*/default.nix`
 - `pkgs/*/flake.nix`
 
+## Superseded notes
+
+- `docs/ai/notes/lib/service-lib-gap3-instantiation-2026-04.md`
+- `docs/ai/notes/lib/package-client-identity-installed-package-gating-2026-04.md`
+- `docs/ai/notes/lib/flake-system-specific-host-modules-2026-04.md`
+- `docs/ai/notes/services/package-owned-nixos-modules-passthru-2026-04.md`
+- `docs/ai/notes/services/package-user-services-gap3-2026-04.md`
+
 ## Provenance
 
-- This note replaces the earlier dated package-architecture and package-layout
-  notes from March and April 2026.
+- This note replaces the earlier dated package-architecture, package-layout,
+  package-owned-module, service-lib-instantiation, client-identity-gating, and
+  package-user-service notes from March and April 2026.

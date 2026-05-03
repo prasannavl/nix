@@ -36,6 +36,11 @@ Optional shell:
 `checks.*` are read-only. Mutating behavior belongs in apps such as `fmt` and
 `lint-fix`.
 
+Package-owned NixOS modules should live on the derivation as
+`passthru.nixosModule`. Child flakes should re-export them through
+`pkgHelper.mkNixosModuleAttrs` instead of open-coding a second module source of
+truth.
+
 ## Main Commands
 
 Package-local:
@@ -126,6 +131,11 @@ in
     inherit pkgs;
     build = drv;
   }
+  // {
+    nixosModules = pkgHelper.mkNixosModuleAttrs {
+      build = drv;
+    };
+  }
 ```
 
 ## Main Helpers
@@ -158,6 +168,8 @@ The sections below cover conventions, rationale, and extended examples.
 The main shared wiring helpers are:
 
 - `mkStdFlakeOutputs`: standard child-flake exports from one derivation.
+- `mkNixosModuleAttrs`: standard re-export of derivation-owned
+  `passthru.nixosModule` values.
 - `wirePassthru`: extend a derivation's `passthru` without repeating
   `overrideAttrs` boilerplate. Use this for extra package-local commands such as
   a custom `dev` app or deployment helper.
@@ -193,7 +205,9 @@ default path is:
 
 1. Define the package build in `default.nix`.
 2. Wrap it with one `pkgHelper.mk*Derivation`.
-3. Re-export it from `flake.nix` through `pkgHelper.mkStdFlakeOutputs`.
+3. Attach any package-owned module as `passthru.nixosModule`.
+4. Re-export it from `flake.nix` through `pkgHelper.mkStdFlakeOutputs` and
+   `pkgHelper.mkNixosModuleAttrs`.
 
 ## Defaults
 

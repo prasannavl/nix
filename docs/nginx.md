@@ -13,7 +13,7 @@ limits, forwarded-client headers, and Cloudflare Tunnel host routing.
   per-header sub-files: `http-security-xcto.conf`,
   `http-security-referrer.conf`, `http-security-permissions.conf`,
   `http-security-csp.conf`)
-- Host usage example: `hosts/gap3-rivendell/services/nginx.nix`
+- Host usage example: `hosts/pvl-x2/services/nginx.nix`
 - Derived compose metadata source: `lib/podman-compose/default.nix`
 
 ## Outcomes
@@ -84,7 +84,7 @@ staticSites.hello = nginxLib.mkStaticSite {
   singlePageApp = true;
   routes = [
     {
-      serverName = "gap3.ai";
+      serverName = "example.com";
       path = "/hello";
     }
   ];
@@ -326,8 +326,8 @@ exposedPorts.http = {
   port = 8000;
   openFirewall = true;
   cfTunnelNames = [
-    "gap3.ai"
-    "api.gap3.ai"
+    "example.com"
+    "api.example.com"
   ];
 };
 ```
@@ -528,13 +528,13 @@ Constraints:
 Typical host wiring:
 
 ```nix
-services.podmanCompose.gap3.instances.nginx = rec {
+services.podmanCompose.pvl.instances.nginx = rec {
   exposedPorts.http = {
     port = 8000;
     openFirewall = true;
     cfTunnelNames = [
-      "gap3.ai"
-      "api.gap3.ai"
+      "example.com"
+      "api.example.com"
     ];
   };
 

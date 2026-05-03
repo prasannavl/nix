@@ -6,7 +6,7 @@ include only what applies, but keep the relative order stable.
 
 ## Attribute Order
 
-1. **Config flags** — `imageTag`, `bootTag`, `recreateOnSwitch`
+1. **Config flags** — `imageTag`, `bootTag`, `recreateTag`, `recreateOnSwitch`
 2. **exposedPorts**
 3. **source** (inline compose YAML or a lib-provided value)
 4. **entryFile** (when a custom compose entry is needed)
@@ -34,8 +34,8 @@ include only what applies, but keep the relative order stable.
 ## Example
 
 ```nix
-services.podmanCompose.gap3.instances.example = rec {
-  recreateOnSwitch = true;
+services.podmanCompose.pvl.instances.example = rec {
+  recreateTag = "1";
 
   exposedPorts.http = {
     port = 8080;
@@ -48,14 +48,14 @@ services.podmanCompose.gap3.instances.example = rec {
         ports:
           - "127.0.0.1:${toString exposedPorts.http.port}:8080"
         volumes:
-          - /var/lib/gap3/example:/data
+          - /var/lib/example:/data
   '';
   dependsOn = ["postgres"];
   files."example/config.yml" = ''
     key: value
   '';
   serviceOverrides.preStart = ''
-    install -d -m 0750 /var/lib/gap3/example
+    install -d -m 0750 /var/lib/example
   '';
 };
 ```

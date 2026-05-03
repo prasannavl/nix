@@ -26,8 +26,6 @@ Typical pattern:
 - many public hostnames on that tunnel
 - nginx or the local listener routes by `Host` and path
 
-For `gap3-rivendell`, both `gap3.ai` and `api.gap3.ai` use the same tunnel.
-
 ## Outcome: Add A New Public Hostname To A Tunnel-Backed Host
 
 Required changes:
@@ -45,8 +43,8 @@ exposedPorts.http = {
   port = 8000;
   openFirewall = true;
   cfTunnelNames = [
-    "gap3.ai"
-    "api.gap3.ai"
+    "example.com"
+    "api.example.com"
   ];
 };
 ```
@@ -69,7 +67,7 @@ record nearby must not change the Terraform identity of existing records.
 
 Result:
 
-- Cloudflare resolves `api.gap3.ai` to the tunnel
+- Cloudflare resolves `api.example.com` to the tunnel
 - cloudflared receives the request for that hostname
 - the host listener selected by `cfTunnelNames` receives the request
 
@@ -117,8 +115,8 @@ Missing host ingress entry:
 
 ```hcl
 tunnels = {
-  "gap3-rivendell" = {
-    name       = "gap3-rivendell"
+  "edge" = {
+    name       = "edge"
     config_src = "local"
   }
 }
@@ -140,8 +138,8 @@ Common pattern:
 ```nix
 tunnelsLib.mkHostManagedTunnel {
   inherit config tunnelId;
-  credentialsStoreName = "gap3-rivendell.json.age";
-  ingress = config.services.podmanCompose.gap3.cloudflareTunnelIngress;
+  credentialsStoreName = "edge-main.json.age";
+  ingress = config.services.podmanCompose.pvl.cloudflareTunnelIngress;
   edgeIPVersion = "auto";
 }
 ```
@@ -162,9 +160,9 @@ domain.
 
 Example:
 
-- `gap3.ai -> 9b4d...cfargotunnel.com`
-- `api.gap3.ai -> 9b4d...cfargotunnel.com`
-- `z.gap3.ai -> 55eb...cfargotunnel.com`
+- `example.com -> 9b4d...cfargotunnel.com`
+- `api.example.com -> 9b4d...cfargotunnel.com`
+- `ssh.example.com -> 55eb...cfargotunnel.com`
 
 Different hostnames may point to different tunnels. Hostnames on the same host
 often point to the same tunnel.

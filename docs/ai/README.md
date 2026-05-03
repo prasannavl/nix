@@ -4,15 +4,13 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ## Lang Patterns
 
-- `docs/ai/lang-patterns/common.md`: Cross-language code-practice defaults,
-  including the repo line-width recommendation.
+- `docs/ai/lang-patterns/common.md`: Cross-language code-practice defaults.
 - `docs/ai/lang-patterns/bash.md`: Bash structure, shell-safety, and runtime
   shell rules.
-- `docs/ai/lang-patterns/markdown.md`: Markdown formatting authority and
-  `docs/ai` writing conventions.
+- `docs/ai/lang-patterns/markdown.md`: Markdown formatter and `docs/ai` writing
+  rules.
 - `docs/ai/lang-patterns/dns.md`: DNS record ordering and merge rules.
-- `docs/ai/lang-patterns/nix.md`: Nix formatting, module patterns, and flake
-  conventions.
+- `docs/ai/lang-patterns/nix.md`: Nix formatting, module, and flake conventions.
 
 ## Design Patterns
 
@@ -20,6 +18,8 @@ Use this index as the canonical map for `docs/ai/**`.
   repo Cloudflare stack.
 - `docs/ai/design-patterns/podman-compose-instance.md`: Canonical attribute
   ordering for `services.podmanCompose.<stack>.instances.<name>` declarations.
+- `docs/ai/design-patterns/prefer-defaults.md`: Prefer upstream defaults for
+  infra and runtime knobs unless there is a demonstrated reason to override.
 - `docs/ai/design-patterns/tunnels-and-static-origins.md`: Tunnel edge-IP policy
   and static-origin rollout rules.
 
@@ -28,7 +28,7 @@ Use this index as the canonical map for `docs/ai/**`.
 ### Apps
 
 - `docs/ai/notes/apps/package-architecture.md`: Canonical package, child-flake,
-  manifest, helper, and package-owned service-module rules.
+  package-owned module, service-module helper, and repo stack rules.
 - `docs/ai/notes/apps/vscode-libsecret-password-store-2026-04.md`: Records the
   user VS Code wrapper choice that forces Code to use libsecret for password
   storage.
@@ -157,7 +157,7 @@ Use this index as the canonical map for `docs/ai/**`.
   Manager versus dispatcher race during dconf activation, and the durable
   identity-stamp plus unit-ordering fix.
 - `docs/ai/notes/services/user-services-platform.md`: Canonical Podman compose,
-  nginx, and service-facing ingress policy.
+  nginx, ingress, and soft backend-dependency policy.
 
 ### Tooling
 
@@ -167,9 +167,6 @@ Use this index as the canonical map for `docs/ai/**`.
   move from `arrterian.nix-env-selector` to `mkhl.direnv` plus the root flake
   `devShells.default`/`devShells.full` abstraction in
   `lib/flake/dev-shells.nix`.
-- `docs/ai/notes/tooling/gap3-porting-phases-2026-05.md`: Tracks the staged port
-  of shared `gap3` changes into this repo, starting with `nixbot` flake refs and
-  Podman compose journal-noise cleanup.
 - `docs/ai/notes/tooling/repo-tooling.md`: Canonical Bash entrypoint, lint/fmt,
   package-local verification, and docs-maintenance rules.
 
