@@ -1207,10 +1207,14 @@ in rec {
           lintArgs = clippyLintArgs;
           nativeBuildInputs = lintNativeBuildInputs;
         }
-        // {removeNativeBuildInputs = nativeCheckInputs;};
+        // {removeNativeBuildInputs = nativeCheckInputs;}
+        // (attrIf (preBuildPhase != "") "preBuildPhase" preBuildPhase);
       test =
-        rustTest pkgs {cargoArgs = testCargoArgs;}
-        // {buildPhase = joinLines [preBuildPhase (rustTestCommand testCargoArgs)];};
+        rustTest pkgs {
+          cargoArgs = testCargoArgs;
+          nativeBuildInputs = nativeCheckInputs;
+        }
+        // (attrIf (preBuildPhase != "") "preBuildPhase" preBuildPhase);
     }
     // extraChecks;
 
@@ -1753,7 +1757,7 @@ in rec {
                 ++ resolvedFmtNativeBuildInputs;
             }
           ];
-          commands = [(rustFmtCheckCommand fmtCargoArgs)];
+          commands = [(rustFmtCheckCommand resolvedFmtCargoArgs)];
         };
         lint = {
           parts = [

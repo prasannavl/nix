@@ -63,3 +63,8 @@ each reviewable phase stays small and explicit.
   flows both exist in-tree.
 - Port `mkTrunkProject` and the shared WASM bootstrap hook so Rust/Trunk web
   packages can reuse the same CSP-safe build and dev-shell contract as `gap3`.
+- Finish the remaining helper parity sweep:
+  - add repo-default NATS, PostgreSQL, and vmstack secret-base paths in
+    `stack.nix`
+  - restore the upstream Rust check wiring for `preBuildPhase`,
+    `nativeCheckInputs`, and resolved fmt cargo args
