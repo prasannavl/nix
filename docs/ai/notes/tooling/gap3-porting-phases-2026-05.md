@@ -11,8 +11,8 @@ each reviewable phase stays small and explicit.
   reduction.
 - Phase 2: nginx shared proxy enhancements: `upstreamTlsName` and
   `rootRedirect`.
-- Phase 3: Rust package-helper hardening: filtered workspace source handling,
-  lockfile handling, and helper eval fixes.
+- Phase 3: Rust package-helper modernization: direct helper builds, helper
+  dev-shell wiring, and split Rust check inputs.
 - Phase 4: `service-module` follow-up hardening for package/source-path based
   identity wiring once the Rust helper shape is in place.
 
@@ -34,3 +34,15 @@ each reviewable phase stays small and explicit.
   upstream `Host` header.
 - Add `rootRedirect` so a derived root proxy vhost can redirect exact `/`
   requests before the normal catch-all proxy location.
+
+## Phase 3 details
+
+- Extend `mkRustDerivation` so Rust packages can build directly from helper
+  inputs instead of hand-building and wrapping a separate derivation.
+- Add helper-level `enableDevShell`, function-valued `extraPassthru`, and split
+  Rust check inputs for fmt, lint, and test flows.
+- Bring in the repo-root Cargo workspace shape: explicit root `members`, root
+  `Cargo.lock`, `projectDir`-driven helper builds, filtered workspace sources,
+  and the `prePatch` workspace-members rewrite.
+- Migrate the local `hello-rust` example to the workspace helper style so the
+  upstream contract is exercised in-tree.
