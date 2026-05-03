@@ -54,3 +54,12 @@ each reviewable phase stays small and explicit.
 - Harden client-identity secret modules to resolve the package from
   `sourcePath`, so age-secret wiring follows the configured package source
   rather than brittle derivation-object equality.
+
+## Phase 5 details
+
+- Port the broader `service-module` identity API: unified `mkIdentity*` helpers,
+  external-service identity support, and generic secret-owner defaults.
+- Add the isolated Rust example package so workspace and non-workspace Rust
+  flows both exist in-tree.
+- Port `mkTrunkProject` and the shared WASM bootstrap hook so Rust/Trunk web
+  packages can reuse the same CSP-safe build and dev-shell contract as `gap3`.

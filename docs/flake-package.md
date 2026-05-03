@@ -133,6 +133,7 @@ in
 High-level derivation builders:
 
 - `mkRustDerivation`
+- `mkTrunkProject`
 - `mkGoDerivation`
 - `mkPythonDerivation`
 - `mkWebDerivation`
@@ -206,6 +207,8 @@ Helper defaults are intentionally automatic:
 - `mkRustDerivation` can synthesize the Rust build directly from `projectDir`,
   `pname`, `version`, and the repo-root `Cargo.lock`; pass `build = ...` only
   when a package truly needs a custom Rust build.
+- Trunk/WASM packages can use `mkTrunkProject` to share the Trunk toolchain, dev
+  shell, workspace-aware source filtering, and CSP-safe WASM bootstrap rewrite.
 - Package app wrappers treat a package-local `flake.nix` or `default.nix` as the
   working-directory marker; per-project marker files are not part of the normal
   API.

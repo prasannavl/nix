@@ -7,11 +7,10 @@ in rec {
     defaultUser = "pvl";
     defaultClientSecretsBasePath = ../../data/secrets/services;
     defaultClientIdentitySuffix = "p7log.com";
-    defaultClientSecretOwner = "pvl";
-    defaultClientSecretGroup = "pvl";
+    defaultExtServiceIdentitySuffix = "p7log.com";
+    defaultSecretOwner = "pvl";
+    defaultSecretGroup = "pvl";
     defaultServiceIdentitySuffix = "srv.z.p7log.com";
-    defaultServiceSecretOwner = "pvl";
-    defaultServiceSecretGroup = "pvl";
     defaultPostgresUrl = "postgresql://postgres@127.0.0.1:5432/pvl?sslmode=verify-ca";
     defaultPostgresCaCertPath = "/run/agenix/pvl-ca-cert";
     defaultPostgresAfter = ["pvl-postgres.service"];

@@ -38,6 +38,10 @@
       path = ./examples/hello-rust/default.nix;
     }
     {
+      id = "example-hello-rust-isolated";
+      path = ./examples/hello-rust-isolated/default.nix;
+    }
+    {
       id = "example-hello-web-static";
       path = ./examples/hello-web-static/default.nix;
       rootApp = false;

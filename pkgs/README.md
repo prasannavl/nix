@@ -35,6 +35,8 @@ prefixed with `example-`.
   `buildNpmPackage` plus a local wrapper flake and dev shell
 - `pkgs/examples/hello-rust/`: minimal Rust hello-world package with local
   wrapper flake
+- `pkgs/examples/hello-rust-isolated/`: isolated Rust hello-world package with a
+  package-local workspace and local wrapper flake
 - `pkgs/examples/hello-web-static/`: static web asset package for host or
   service reuse with a local wrapper flake and dev shell
 - `pkgs/tools/nixbot/`: deploy package and local wrapper flake
@@ -52,6 +54,8 @@ prefixed with `example-`.
 - `nix run .#example-hello-node`
 - `nix build .#example-hello-rust`
 - `nix run .#example-hello-rust`
+- `nix build .#example-hello-rust-isolated`
+- `nix run .#example-hello-rust-isolated`
 - `nix build .#example-hello-web-static`
 - `nix run .#nixbot -- --help`
 - `nix build .#cloudflare-apps`
