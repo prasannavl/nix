@@ -17,7 +17,7 @@
     # "video=HDMI-A-1:3840x1600@60e"
   ];
 
-  # boot.kernelPackages = pkgs.linuxPackages_latest;
+  boot.kernelPackages = pkgs.linuxPackages_latest;
   # kernel 7.0: aes_generic built-in breaks initrd module-shrunk (nixpkgs not patched yet)
-  boot.kernelPackages = pkgs.linuxKernel.packages.linux_6_19;
+  # boot.kernelPackages = pkgs.linuxKernel.packages.linux_6_19;
 }

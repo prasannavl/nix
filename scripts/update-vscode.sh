@@ -23,6 +23,7 @@ init_vars() {
 	RESOLVED_TARGET_FILE=""
 	RESOLVED_VERSION=""
 	RESOLVED_REV=""
+	RELEASE_NOTES_URL=""
 	X64_SRC_NAME=""
 	X64_SRC_HASH=""
 	ARM64_SRC_NAME=""
@@ -85,8 +86,28 @@ get_release_metadata() {
 	metadata="$(curl -fsSL "https://update.code.visualstudio.com/api/update/linux-x64/stable/${release_key}")"
 	RESOLVED_VERSION="$(jq -er '.productVersion' <<<"$metadata")"
 	RESOLVED_REV="$(jq -er '.version' <<<"$metadata")"
+	RELEASE_NOTES_URL="$(jq -r '.releaseNotesUrl // empty' <<<"$metadata")"
 	[[ -n "$RESOLVED_VERSION" ]] || die "Could not resolve VS Code version"
 	[[ -n "$RESOLVED_REV" ]] || die "Could not resolve VS Code revision"
+}
+
+resolve_release_notes_url() {
+	local major
+	local minor
+	local candidate
+
+	if [[ -n "$RELEASE_NOTES_URL" ]]; then
+		return
+	fi
+
+	IFS=. read -r major minor _ <<<"$RESOLVED_VERSION"
+	[[ -n "$major" ]] || return
+	[[ -n "$minor" ]] || return
+
+	candidate="https://code.visualstudio.com/updates/v${major}_${minor}"
+	if curl -fsI "$candidate" >/dev/null 2>&1; then
+		RELEASE_NOTES_URL="$candidate"
+	fi
 }
 
 prefetch_artifact() {
@@ -240,6 +261,15 @@ print_summary() {
 Updated $(basename "$RESOLVED_TARGET_FILE")
   version=$RESOLVED_VERSION
   rev=$RESOLVED_REV
+EOF
+
+	if [[ -n "$RELEASE_NOTES_URL" ]]; then
+		cat <<EOF
+  releaseNotesUrl=$RELEASE_NOTES_URL
+EOF
+	fi
+
+	cat <<EOF
   x86_64-linux app name=$X64_SRC_NAME
   x86_64-linux app hash=$X64_SRC_HASH
   aarch64-linux app name=$ARM64_SRC_NAME
@@ -293,6 +323,7 @@ main() {
 	parse_args "$@"
 	resolve_target_file
 	get_release_metadata
+	resolve_release_notes_url
 	compute_hashes
 	update_file
 	print_summary
