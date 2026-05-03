@@ -3,14 +3,16 @@ rec {
     defaultUser ? "root",
     defaultClientRuntimeBasePath ? "/run/agenix",
     defaultClientSecretsBasePath,
+    defaultNatsSecretsBasePath ? null,
+    defaultPostgresSecretsBasePath ? null,
+    defaultVmstackSecretsBasePath ? null,
     defaultClientIdentitySuffix ? null,
+    defaultExtServiceRuntimeBasePath ? "/run/agenix",
+    defaultExtServiceIdentitySuffix ? null,
     defaultServiceIdentitySuffix,
-    defaultClientSecretOwner ? "root",
-    defaultClientSecretGroup ? "root",
-    defaultClientSecretMode ? "0400",
-    defaultServiceSecretOwner ? "root",
-    defaultServiceSecretGroup ? "root",
-    defaultServiceSecretMode ? "0400",
+    defaultSecretOwner ? "root",
+    defaultSecretGroup ? "root",
+    defaultSecretMode ? "0400",
     defaultPostgresUrl,
     defaultPostgresCaCertPath,
     defaultPostgresAfter ? [],
@@ -27,17 +29,20 @@ rec {
       else null;
   in rec {
     inherit
+      trackedPath
       defaultUser
       defaultClientRuntimeBasePath
       defaultClientSecretsBasePath
+      defaultNatsSecretsBasePath
+      defaultPostgresSecretsBasePath
+      defaultVmstackSecretsBasePath
       defaultClientIdentitySuffix
+      defaultExtServiceRuntimeBasePath
+      defaultExtServiceIdentitySuffix
       defaultServiceIdentitySuffix
-      defaultClientSecretOwner
-      defaultClientSecretGroup
-      defaultClientSecretMode
-      defaultServiceSecretOwner
-      defaultServiceSecretGroup
-      defaultServiceSecretMode
+      defaultSecretOwner
+      defaultSecretGroup
+      defaultSecretMode
       defaultPostgresUrl
       defaultPostgresCaCertPath
       defaultPostgresAfter
@@ -612,8 +617,9 @@ rec {
     mkIdentityUser = name: suffix: "${name}@${suffix}";
     mkIdentityCertFileName = name: suffix: "${mkIdentityHost name suffix}.crt";
     mkIdentityKeyFileName = name: suffix: "${mkIdentityHost name suffix}.key";
+    mkHostSuffixName = label: name: "${name}-${label}";
 
-    mkClientIdentityCore = args @ {
+    mkIdentityCore = args @ {
       drv ? null,
       name ? null,
       pname ? (
@@ -626,14 +632,16 @@ rec {
         then drv.passthru.sourcePath
         else inferSourcePath args
       ),
-      suffix ? defaultClientIdentitySuffix,
+      family ? null,
+      label ? null,
+      suffix ? null,
       secretsBasePath ? null,
-      certSecretFileName ? "client.crt.age",
-      keySecretFileName ? "client.key.age",
-      runtimeBasePath ? defaultClientRuntimeBasePath,
-      secretOwner ? defaultClientSecretOwner,
-      secretGroup ? defaultClientSecretGroup,
-      secretMode ? defaultClientSecretMode,
+      certSecretFileName ? null,
+      keySecretFileName ? null,
+      runtimeBasePath ? null,
+      secretOwner ? null,
+      secretGroup ? null,
+      secretMode ? null,
     }: let
       resolvedName =
         if name != null
@@ -642,35 +650,97 @@ rec {
         then pname
         else if sourcePath != null
         then builtins.baseNameOf sourcePath
-        else throw "service-module.mkClientIdentity: `name`, `pname`, or `sourcePath` is required";
+        else throw "service-module.mkIdentity: `name`, `pname`, or `sourcePath` is required";
+      resolvedFamily = family;
+      resolvedLabel = label;
+      isExtService = resolvedFamily != null;
       resolvedSuffix =
         if suffix != null
         then suffix
-        else throw "service-module.mkClientIdentity: `suffix` is required when no defaultClientIdentitySuffix is configured";
+        else if isExtService
+        then
+          if defaultExtServiceIdentitySuffix != null
+          then defaultExtServiceIdentitySuffix
+          else throw "service-module.mkIdentity: `suffix` is required when no defaultExtServiceIdentitySuffix is configured"
+        else if defaultClientIdentitySuffix != null
+        then defaultClientIdentitySuffix
+        else throw "service-module.mkIdentity: `suffix` is required when no defaultClientIdentitySuffix is configured";
+      resolvedFullName =
+        if resolvedLabel != null
+        then mkHostSuffixName resolvedLabel resolvedName
+        else resolvedName;
       resolvedSecretsBasePath =
         if secretsBasePath != null
         then secretsBasePath
-        else defaultClientSecretsBasePath + "/${resolvedName}";
-      certFileName = mkIdentityCertFileName resolvedName resolvedSuffix;
-      keyFileName = mkIdentityKeyFileName resolvedName resolvedSuffix;
-      certFile = trackedPath (resolvedSecretsBasePath + "/${certSecretFileName}") "${resolvedName}-${certSecretFileName}";
-      keyFile = trackedPath (resolvedSecretsBasePath + "/${keySecretFileName}") "${resolvedName}-${keySecretFileName}";
+        else if isExtService
+        then throw "service-module.mkIdentity: `secretsBasePath` is required when `family` is set"
+        else defaultClientSecretsBasePath + "/${resolvedFullName}";
+      resolvedCertSecretFileName =
+        if certSecretFileName != null
+        then certSecretFileName
+        else if isExtService
+        then
+          if resolvedLabel != null
+          then "${resolvedLabel}.crt.age"
+          else "${resolvedName}.crt.age"
+        else "crt.age";
+      resolvedKeySecretFileName =
+        if keySecretFileName != null
+        then keySecretFileName
+        else if isExtService
+        then
+          if resolvedLabel != null
+          then "${resolvedLabel}.key.age"
+          else "${resolvedName}.key.age"
+        else "key.age";
+      resolvedRuntimeBasePath =
+        if runtimeBasePath != null
+        then runtimeBasePath
+        else if isExtService
+        then defaultExtServiceRuntimeBasePath
+        else defaultClientRuntimeBasePath;
+      resolvedSecretOwner =
+        if secretOwner != null
+        then secretOwner
+        else defaultSecretOwner;
+      resolvedSecretGroup =
+        if secretGroup != null
+        then secretGroup
+        else defaultSecretGroup;
+      resolvedSecretMode =
+        if secretMode != null
+        then secretMode
+        else defaultSecretMode;
+      resolvedRuntimeName =
+        if isExtService
+        then resolvedFullName
+        else mkIdentityHost resolvedFullName resolvedSuffix;
+      certFileName =
+        if isExtService
+        then "${resolvedRuntimeName}.crt"
+        else mkIdentityCertFileName resolvedFullName resolvedSuffix;
+      keyFileName =
+        if isExtService
+        then "${resolvedRuntimeName}.key"
+        else mkIdentityKeyFileName resolvedFullName resolvedSuffix;
+      certFile = trackedPath (resolvedSecretsBasePath + "/${resolvedCertSecretFileName}") "${resolvedFullName}-${resolvedCertSecretFileName}";
+      keyFile = trackedPath (resolvedSecretsBasePath + "/${resolvedKeySecretFileName}") "${resolvedFullName}-${resolvedKeySecretFileName}";
       secretDefaults = {
-        owner = secretOwner;
-        group = secretGroup;
-        mode = secretMode;
+        owner = resolvedSecretOwner;
+        group = resolvedSecretGroup;
+        mode = resolvedSecretMode;
       };
     in rec {
       inherit
         resolvedName
+        resolvedFamily
+        resolvedLabel
         resolvedSuffix
         sourcePath
-        certSecretFileName
-        keySecretFileName
-        runtimeBasePath
-        secretOwner
-        secretGroup
-        secretMode
+        resolvedRuntimeBasePath
+        resolvedSecretOwner
+        resolvedSecretGroup
+        resolvedSecretMode
         certFileName
         keyFileName
         certFile
@@ -679,14 +749,23 @@ rec {
         ;
       secretsBasePath = resolvedSecretsBasePath;
       __functor = _: overrideArgs:
-        mkClientIdentityCore ((builtins.removeAttrs args ["drv"]) // overrideArgs // {drv = drv;});
+        mkIdentityCore ((builtins.removeAttrs args ["drv"]) // overrideArgs // {drv = drv;});
       name = resolvedName;
       pname = resolvedName;
+      family = resolvedFamily;
+      label = resolvedLabel;
       suffix = resolvedSuffix;
-      host = mkIdentityHost resolvedName resolvedSuffix;
-      user = mkIdentityUser resolvedName resolvedSuffix;
-      certRuntimePath = "${runtimeBasePath}/${certFileName}";
-      keyRuntimePath = "${runtimeBasePath}/${keyFileName}";
+      fullName = resolvedFullName;
+      certSecretFileName = resolvedCertSecretFileName;
+      keySecretFileName = resolvedKeySecretFileName;
+      runtimeBasePath = resolvedRuntimeBasePath;
+      secretOwner = resolvedSecretOwner;
+      secretGroup = resolvedSecretGroup;
+      secretMode = resolvedSecretMode;
+      host = mkIdentityHost resolvedFullName resolvedSuffix;
+      user = mkIdentityUser resolvedFullName resolvedSuffix;
+      certRuntimePath = "${resolvedRuntimeBasePath}/${certFileName}";
+      keyRuntimePath = "${resolvedRuntimeBasePath}/${keyFileName}";
       ageSecrets =
         (
           if certFile != null
@@ -720,18 +799,107 @@ rec {
       flakeExtraNixosModules.clientIdentity = nixosModule;
     };
 
-    mkClientIdentity = first:
+    mkIdentity = first:
       if builtins.isAttrs first && (first.type or null) == "derivation"
       then
-        mkClientIdentityCore {
+        mkIdentityCore {
           drv = first;
         }
-      else mkClientIdentityCore first;
+      else mkIdentityCore first;
 
-    mkClientIdentityFor = drv: args @ {pname ? drv.pname or null, ...}:
+    mkIdentityFor = drv: args @ {pname ? drv.pname or null, ...}:
       if pname == null
-      then throw "service-module.mkClientIdentityFor: derivation must expose `pname` or `pname` must be passed explicitly"
-      else (mkClientIdentity drv) ((builtins.removeAttrs args ["pname"]) // {inherit pname;});
+      then throw "service-module.mkIdentityFor: derivation must expose `pname` or `pname` must be passed explicitly"
+      else (mkIdentity drv) ((builtins.removeAttrs args ["pname"]) // {inherit pname;});
+
+    mkIdentityForVectorHub = args @ {secretsBasePath ? null, ...}: let
+      vectorSecretsBasePath =
+        if secretsBasePath != null
+        then secretsBasePath
+        else defaultClientSecretsBasePath + "/vector";
+    in
+      mkIdentity (
+        (builtins.removeAttrs args ["secretsBasePath"])
+        // {
+          name = "vector-hub";
+          certSecretFileName = "hub.crt.age";
+          keySecretFileName = "hub.key.age";
+          secretsBasePath = vectorSecretsBasePath;
+        }
+      );
+
+    mkIdentityForVectorAgent = args @ {
+      hostLabel ? null,
+      secretsBasePath ? null,
+      ...
+    }: let
+      resolvedHostLabel =
+        if hostLabel != null
+        then hostLabel
+        else throw "service-module.mkIdentityForVectorAgent: `hostLabel` is required";
+      vectorSecretsBasePath =
+        if secretsBasePath != null
+        then secretsBasePath
+        else defaultClientSecretsBasePath + "/vector";
+    in
+      mkIdentity (
+        (builtins.removeAttrs args ["hostLabel" "secretsBasePath"])
+        // {
+          name = "vector-agent-${resolvedHostLabel}";
+          certSecretFileName = "agent-${resolvedHostLabel}.crt.age";
+          keySecretFileName = "agent-${resolvedHostLabel}.key.age";
+          secretsBasePath = vectorSecretsBasePath;
+        }
+      );
+
+    mkIdentityForNats = args:
+      mkIdentity (
+        (builtins.removeAttrs args ["secretsBasePath"])
+        // {
+          family = "nats";
+          name = "nats";
+          secretsBasePath =
+            if args ? secretsBasePath && args.secretsBasePath != null
+            then args.secretsBasePath
+            else if defaultNatsSecretsBasePath != null
+            then defaultNatsSecretsBasePath
+            else throw "service-module.mkIdentityForNats: `secretsBasePath` is required when no defaultNatsSecretsBasePath is configured";
+        }
+      );
+
+    mkIdentityForPostgres = args:
+      mkIdentity (
+        (builtins.removeAttrs args ["secretsBasePath"])
+        // {
+          family = "postgres";
+          name = "postgres";
+          secretsBasePath =
+            if args ? secretsBasePath && args.secretsBasePath != null
+            then args.secretsBasePath
+            else if defaultPostgresSecretsBasePath != null
+            then defaultPostgresSecretsBasePath
+            else throw "service-module.mkIdentityForPostgres: `secretsBasePath` is required when no defaultPostgresSecretsBasePath is configured";
+        }
+      );
+
+    mkIdentityForVmstack = args:
+      mkIdentity (
+        (builtins.removeAttrs args ["secretsBasePath"])
+        // {
+          family = "vmstack";
+          name = "vmstack";
+          secretsBasePath =
+            if args ? secretsBasePath && args.secretsBasePath != null
+            then args.secretsBasePath
+            else if defaultVmstackSecretsBasePath != null
+            then defaultVmstackSecretsBasePath
+            else throw "service-module.mkIdentityForVmstack: `secretsBasePath` is required when no defaultVmstackSecretsBasePath is configured";
+        }
+      );
+
+    mkClientIdentityCore = mkIdentityCore;
+    mkClientIdentity = mkIdentity;
+    mkClientIdentityFor = mkIdentityFor;
 
     mkServiceIdentityHost = serviceName: mkIdentityHost serviceName defaultServiceIdentitySuffix;
     mkServiceIdentityUser = serviceName: mkIdentityUser serviceName defaultServiceIdentitySuffix;
@@ -741,12 +909,12 @@ rec {
     mkServiceIdentity = args @ {
       serviceName ? null,
       secretsBasePath ? null,
-      secretOwner ? defaultServiceSecretOwner,
-      secretGroup ? defaultServiceSecretGroup,
-      secretMode ? defaultServiceSecretMode,
+      secretOwner ? defaultSecretOwner,
+      secretGroup ? defaultSecretGroup,
+      secretMode ? defaultSecretMode,
     }: let
       identityForServiceName = serviceName:
-        mkClientIdentity {
+        mkIdentity {
           name = serviceName;
           suffix = defaultServiceIdentitySuffix;
           inherit secretsBasePath secretOwner secretGroup secretMode;

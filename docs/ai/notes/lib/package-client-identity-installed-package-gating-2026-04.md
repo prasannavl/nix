@@ -21,9 +21,10 @@ package is actually installed in `config.environment.systemPackages`.
 
 ## Applied shape
 
-- When `srv.mkClientIdentity` is created from a derivation, its exported
-  `nixosModule` now uses
-  `lib.mkIf (builtins.elem drv
+- When `srv.mkIdentity` or `srv.mkClientIdentity` is created from a derivation,
+  its exported `nixosModule` resolves the package from `sourcePath` when
+  available, then uses
+  `lib.mkIf (builtins.elem package
   config.environment.systemPackages)` before
   adding `age.secrets`.
 - Direct non-derivation identities still export unconditional `age.secrets`

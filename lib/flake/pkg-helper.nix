@@ -1440,6 +1440,155 @@ in rec {
       }
       // extraPassthru);
 
+  mkTrunkProject = {
+    pkgs,
+    src ?
+      if projectDir == null
+      then throw "pkg-helper.mkTrunkProject: pass `src` when `projectDir` is null"
+      else ../..,
+    pname ? deriveProjectName src,
+    version ? "0.1.0",
+    cargoLock ? null,
+    wasmBindgenCli ? pkgs.wasm-bindgen-cli_0_2_114,
+    wasmBindgenVersion ? "0.2.114",
+    trunk ? pkgs.trunk,
+    trunkBootstrapTarget ? pname,
+    devPort ? "4001",
+    installSubdir ? pname,
+    deps ? [],
+    projectPath ?
+      if projectDir == null
+      then deriveProjectPath src
+      else projectDir,
+    projectDir ? null,
+    description ? "${pname} web app",
+    meta ? {description = description;},
+    extraNativeBuildInputs ? [],
+    extraDevRuntimeInputs ? [],
+    extraDevShellPackages ? [pkgs.rust-analyzer],
+    buildAttrs ? {},
+    extraPassthru ? {},
+    fmtCargoArgs ? [],
+    lintFixCargoArgs ? ["--locked"],
+    checkCargoArgs ? ["--locked"],
+    testCargoArgs ? ["--locked"],
+  }: let
+    buildAttrsNoPrePatch = builtins.removeAttrs buildAttrs ["prePatch"];
+    buildPrePatch = composeCargoWorkspacePrePatch {
+      inherit projectDir deps;
+      prePatch = buildAttrs.prePatch or "";
+    };
+    shellInit = ''
+      unset NO_COLOR CLICOLOR CLICOLOR_FORCE
+      export CARGO_BUILD_TARGET=wasm32-unknown-unknown
+      export TRUNK_TOOLS_WASM_BINDGEN=${wasmBindgenVersion}
+      export TRUNK_WASM_BOOTSTRAP_HOOK=${./trunk/write-wasm-bootstrap.sh}
+      export TRUNK_WASM_BOOTSTRAP_TARGET=${trunkBootstrapTarget}
+    '';
+    buildToolchain =
+      [
+        pkgs.binaryen
+        pkgs.llvmPackages.lld
+        trunk
+        wasmBindgenCli
+      ]
+      ++ extraNativeBuildInputs;
+    devRuntimeInputs =
+      buildToolchain
+      ++ [
+        pkgs.cargo
+        pkgs.git
+        pkgs.rustc
+      ]
+      ++ extraDevRuntimeInputs;
+    devShell = pkgs.mkShell {
+      packages = devRuntimeInputs ++ extraDevShellPackages;
+      shellHook = shellInit;
+    };
+    dev = mkProjectApp pkgs {
+      name = "${pname}-dev";
+      description = "Run the ${pname} Trunk development server";
+      src = src;
+      inherit projectPath;
+      runtimeInputs = devRuntimeInputs;
+      text = ''
+        ${shellInit}
+
+        default_port=${devPort}
+
+        if [ "$#" -eq 0 ]; then
+          exec trunk serve --port "$default_port"
+        fi
+
+        exec trunk serve "$@"
+      '';
+    };
+    build =
+      pkgs.rustPlatform.buildRustPackage
+      (let
+        buildSrc =
+          if projectDir == null
+          then src
+          else
+            mkCargoWorkspaceSource pkgs {
+              inherit src projectDir deps;
+            };
+        resolvedCargoLock =
+          if cargoLock != null
+          then cargoLock
+          else {lockFileContents = builtins.readFile (src + "/Cargo.lock");};
+      in
+        {
+          inherit pname version meta;
+          cargoLock = resolvedCargoLock;
+          src = buildSrc;
+          prePatch = buildPrePatch;
+
+          nativeBuildInputs = buildToolchain;
+
+          buildPhase = ''
+            runHook preBuild
+
+            ${shellInit}
+            ${
+              if projectDir == null
+              then ""
+              else ''cd ${builtins.toJSON projectDir}''
+            }
+            export HOME="$TMPDIR/home"
+            export XDG_CACHE_HOME="$TMPDIR/.cache"
+            export TRUNK_OFFLINE=true
+            install -d "$HOME" "$XDG_CACHE_HOME"
+
+            trunk build --release --dist "$TMPDIR/dist"
+
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+
+            install -d "$out/share/${installSubdir}"
+            cp -r "$TMPDIR/dist"/. "$out/share/${installSubdir}/"
+
+            runHook postInstall
+          '';
+
+          doCheck = false;
+        }
+        // (attrIf (projectDir != null) "buildAndTestSubdir" projectDir)
+        // buildAttrsNoPrePatch);
+    drv = mkRustDerivation {
+      projectDir = projectPath;
+      inherit pkgs build src pname fmtCargoArgs lintFixCargoArgs checkCargoArgs testCargoArgs;
+    };
+  in
+    wirePassthru drv ({
+        dev = dev;
+        devShell = devShell;
+      }
+      // extraPassthru);
+
   mkRustDerivation = {
     pkgs,
     build ? null,
