@@ -50,7 +50,9 @@ main() {
 		printf '[pre-push] Linting files changed across %d commit(s) on %s\n' \
 			"${commit_count}" "${local_ref}" >&2
 
-		nix run path:.#lint -- --diff --base "${range_start}"
+		# Keep the outer lint entrypoint Git-backed; `path:.#lint` snapshots
+		# ignored build output like `target/` and `tmp/` into the store.
+		nix run .#lint -- --diff --base "${range_start}"
 	done
 }
 
