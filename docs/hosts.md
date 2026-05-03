@@ -27,13 +27,16 @@ hosts/
     firewall.nix
     users.nix
     services.nix
+    services/default.nix
     podman.nix
     cloudflare.nix
     incus.nix
     compose/<stack>/...
 ```
 
-Only keep files that the host actually uses.
+Only keep files that the host actually uses. Some hosts keep all service
+declarations in `services.nix`; others split them under `services/default.nix`
+plus service-local files.
 
 ## Profiles
 
@@ -96,13 +99,10 @@ Incus guest:
 Add the host to `hosts/default.nix`:
 
 ```nix
-<host-name> = nixpkgs.lib.nixosSystem {
+<host-name> = mkNixosSystem {
   system = "x86_64-linux";
-  specialArgs = {
-    inputs = inputs;
-    hostName = "<host-name>";
-  };
-  modules = commonModules ++ [./<host-name>];
+  hostName = "<host-name>";
+  modules = [./<host-name>];
 };
 ```
 

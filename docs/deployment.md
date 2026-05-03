@@ -318,7 +318,7 @@ shell access for `nixos-rebuild --target-host`.
 - Bastion-host compose services:
   - source files live under `data/secrets/services/<service>/*.key.age`
   - recipients are admins + the bastion machine age recipient
-  - `hosts/<bastion-host>/services.nix` maps them into `age.secrets.*`
+  - the bastion host's imported service module maps them into `age.secrets.*`
   - `services.podmanCompose.*.envSecrets` injects them into containers as
     file-backed environment values
 - Bastion OpenTofu/Cloudflare runtime:

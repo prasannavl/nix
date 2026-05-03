@@ -44,6 +44,10 @@ service-facing ingress policy.
   single `server` block.
 - `stripPath = true` means the backend sees the request without the public mount
   prefix.
+- Backend service dependencies discovered from route or vhost metadata should
+  stay soft `Wants`-style startup edges, not hard `Requires`.
+- Backend outages should degrade to route-level `502` or `504` responses, not
+  block nginx startup entirely.
 
 ## Rate limiting
 
@@ -64,10 +68,15 @@ service-facing ingress policy.
 - `lib/podman-compose/default.nix`
 - `lib/podman-compose/helper.sh`
 - `lib/services/nginx/default.nix`
-- `lib/services/tunnels/default.nix`
-- `hosts/<service-host>/services.nix`
+- `lib/services/tunnels/cloudflare.nix`
+- the host service module that declares `services.podmanCompose.<stack>`
+
+## Superseded notes
+
+- `docs/ai/notes/services/nginx-soft-backend-deps-2026-04.md`
 
 ## Provenance
 
 - This note replaces the earlier dated Podman, nginx, OpenSSH, and lifecycle-tag
-  notes for the shared user-services platform.
+  notes for the shared user-services platform, including the standalone nginx
+  backend-dependency note.

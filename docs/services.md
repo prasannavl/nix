@@ -5,8 +5,10 @@ Use native NixOS modules and native systemd units for ordinary services.
 ## Rules
 
 - Keep the canonical package build in `pkgs/<name>/default.nix`.
-- Use a package-local `flake.nix` for local UX and optional `nixosModules`.
-- Expose a NixOS module under `nixosModules`.
+- Keep package-owned NixOS modules on the canonical derivation as
+  `passthru.nixosModule`.
+- Use a package-local `flake.nix` for local UX and to re-export modules through
+  `pkgHelper.mkNixosModuleAttrs`.
 - Enable the service from the host with `services.<name>.enable = true`.
 - Define plain `systemd.services` and `systemd.timers`.
 
@@ -15,42 +17,37 @@ systemd.
 
 ## Standard Pattern
 
-The reference example is `pkgs/examples/hello-rust/flake.nix`.
+The reference example is `pkgs/examples/hello-rust/default.nix` plus its thin
+`flake.nix` wrapper.
 
 Typical service module shape:
 
 ```nix
-nixosModules = let
-  myModule = {
-    config,
-    lib,
-    pkgs,
-    ...
-  }: let
-    cfg = config.services.my-service;
-  in {
-    options.services.my-service = {
-      enable = lib.mkEnableOption "my service";
+pkg.mkRustDerivation {
+  pkgs = pkgs;
+  pname = "my-service";
+  version = "0.1.0";
+  projectDir = "pkgs/my-service";
+  extraPassthru.nixosModule = srv.mkModule {};
+}
+```
 
-      package = lib.mkOption {
-        type = lib.types.package;
-        inherit (self.packages.${pkgs.system}) default;
-        defaultText = lib.literalExpression
-          "self.packages.${pkgs.system}.default";
-      };
-    };
+Package-local `flake.nix` should usually just re-export the package and its
+module:
 
-    config = lib.mkIf cfg.enable {
-      systemd.services.my-service = {
-        wantedBy = ["multi-user.target"];
-        after = ["network.target"];
-        serviceConfig.ExecStart = "${cfg.package}/bin/my-service";
-      };
+```nix
+let
+  drv = pkgs.callPackage ./default.nix {};
+in
+  pkgHelper.mkStdFlakeOutputs {
+    inherit pkgs;
+    build = drv;
+  }
+  // {
+    nixosModules = pkgHelper.mkNixosModuleAttrs {
+      build = drv;
     };
-  };
-in {
-  default = myModule;
-};
+  }
 ```
 
 ## Host Usage
@@ -95,7 +92,8 @@ config = lib.mkIf cfg.enable {
 1. Create `pkgs/<name>/default.nix`.
 2. Add the package to the root export set if needed.
 3. Add or update `pkgs/<name>/flake.nix`.
-4. Export `nixosModules.default`.
+4. Attach `passthru.nixosModule` on the derivation and re-export it from the
+   child flake.
 5. Add `services.<name>.enable`.
 6. Define native `systemd.services.<name>`.
 7. Add `systemd.timers.<name>` if scheduled.
@@ -114,19 +112,21 @@ The sections below cover philosophy, placement rules, and FAQs.
 ## Guiding Principle
 
 Use the native NixOS model: package in `default.nix`, optional package-local
-`flake.nix`, NixOS module under `nixosModules`, and plain
-`systemd.services`/`systemd.timers`. This repo standardizes naming and layout.
-It does not add a separate service framework for ordinary system services.
+`flake.nix`, package-owned module on `passthru.nixosModule`, and plain
+`systemd.services`/`systemd.timers`. This repo standardizes naming and layout
+and may use shared helper builders, but it does not replace the native NixOS
+service model for ordinary system services.
 
 ## What To Put Where
 
 - package-local `default.nix`:
   - canonical package build
+  - package-owned `passthru.nixosModule` when the package exports a service
 - package-local `flake.nix`:
   - package-local wrapper flake
   - optional `apps`
   - optional `checks`
-  - optional `nixosModules`
+  - re-exported `nixosModules`
 - host module:
   - imports the exported module
   - sets `services.<name>.enable = true`
@@ -138,7 +138,8 @@ It does not add a separate service framework for ordinary system services.
 2. Add the package to `lib/flake/packages.nix` if it should be exported from the
    root flake package set.
 3. Add or update the package-local `flake.nix`.
-4. Export a `nixosModules.default` module.
+4. Attach `passthru.nixosModule` to the derivation and re-export it via
+   `pkgHelper.mkNixosModuleAttrs`.
 5. Add `options.services.<name>.enable = lib.mkEnableOption ...`.
 6. Under `config = lib.mkIf cfg.enable`, define native
    `systemd.services.<name>`.
@@ -161,8 +162,9 @@ definition.
 
 ### Where should the service module live?
 
-For package-owned services, the preferred place is the package-local the
-package-local `flake.nix`, exported through `nixosModules`.
+For package-owned services, the preferred place is the package derivation's
+`passthru.nixosModule`, with the child flake re-exporting it through
+`nixosModules`.
 
 ### Should timers use a custom helper?
 
