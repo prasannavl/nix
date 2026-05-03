@@ -485,6 +485,8 @@ rec {
         resolvedSourcePath =
           if sourcePath != null
           then sourcePath
+          else if build ? passthru && build.passthru ? sourcePath
+          then build.passthru.sourcePath
           else if build ? src
           then build.src + "/default.nix"
           else throw "service-module.${constructor}: `sourcePath` is required when `package` is omitted and the build has no `src`";
@@ -619,7 +621,11 @@ rec {
         then drv.pname or null
         else null
       ),
-      sourcePath ? inferSourcePath args,
+      sourcePath ? (
+        if drv != null && drv ? passthru && drv.passthru ? sourcePath
+        then drv.passthru.sourcePath
+        else inferSourcePath args
+      ),
       suffix ? defaultClientIdentitySuffix,
       secretsBasePath ? null,
       certSecretFileName ? "client.crt.age",
@@ -701,9 +707,15 @@ rec {
           {
             config,
             lib,
+            pkgs,
             ...
-          }: {
-            age.secrets = lib.mkIf (builtins.elem drv config.environment.systemPackages) ageSecrets;
+          }: let
+            package =
+              if sourcePath != null
+              then pkgs.callPackage sourcePath {}
+              else drv;
+          in {
+            age.secrets = lib.mkIf (builtins.elem package config.environment.systemPackages) ageSecrets;
           };
       flakeExtraNixosModules.clientIdentity = nixosModule;
     };
