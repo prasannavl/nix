@@ -4,24 +4,17 @@
 }: let
   pkg = s.pkg;
   srv = s.srv;
-  build = pkgs.rustPlatform.buildRustPackage {
+in
+  pkg.mkRustDerivation {
+    pkgs = pkgs;
     pname = "hello-rust";
     version = "0.1.0";
-    src = ./.;
-    cargoLock.lockFile = ./Cargo.lock;
+    projectDir = "pkgs/examples/hello-rust";
     meta = {
       description = "Hello world Rust example";
       mainProgram = "hello-rust";
     };
-  };
-  drv =
-    pkg.wirePassthru
-    (pkg.mkRustDerivation {
-      inherit pkgs;
-      build = build;
-    })
-    {
+    extraPassthru = {
       nixosModule = srv.mkModule {};
     };
-in
-  drv
+  }

@@ -26,6 +26,91 @@ let
   shellWords = parts:
     builtins.concatStringsSep " " (map builtins.toJSON parts);
 
+  binPath = inputs:
+    builtins.concatStringsSep ":" (map (input: "${input}/bin") inputs);
+
+  hasPrefix = prefix: str: let
+    prefixLen = builtins.stringLength prefix;
+  in
+    builtins.substring 0 prefixLen str == prefix;
+
+  mkCargoWorkspaceSource = pkgs: {
+    src,
+    projectDir,
+    deps ? [],
+  }: let
+    root = builtins.toString src;
+    selectedDirs = [projectDir] ++ deps;
+    isSelectedPath = rel:
+      builtins.any (dir: rel == dir || hasPrefix "${dir}/" rel) selectedDirs;
+    isParentOfSelectedPath = rel:
+      builtins.any (dir: hasPrefix "${rel}/" dir) selectedDirs;
+    gitignorePatterns =
+      [".git"]
+      ++ pkgs.lib.optional (builtins.pathExists (src + "/.gitignore")) (src + "/.gitignore");
+    gitignoreAllows = pkgs.nix-gitignore.gitignoreFilterPure (_: _: true) gitignorePatterns src;
+    filtered = builtins.path {
+      path = src;
+      name = "cargo-workspace-source";
+      filter = path: type: let
+        rel = stripPrefix "${root}/" (builtins.toString path);
+      in
+        gitignoreAllows path type
+        && (
+          rel
+          == "Cargo.toml"
+          || rel == "Cargo.lock"
+          || type == "directory" && isParentOfSelectedPath rel
+          || isSelectedPath rel
+        );
+    };
+  in
+    filtered;
+
+  cargoWorkspacePrePatch = {
+    projectDir,
+    deps ? [],
+  }: let
+    selectedDirs = [projectDir] ++ deps;
+    selectedMembersText =
+      builtins.concatStringsSep "\n"
+      (map (dir: "  ${builtins.toJSON dir},") selectedDirs);
+  in ''
+    awk '
+      /^members = \[/ {
+        print "members = ["
+        print ${builtins.toJSON selectedMembersText}
+        in_members = 1
+        next
+      }
+      in_members && /^\]/ {
+        print
+        in_members = 0
+        next
+      }
+      ! in_members { print }
+    ' Cargo.toml > Cargo.toml.tmp
+    mv Cargo.toml.tmp Cargo.toml
+  '';
+
+  composeCargoWorkspacePrePatch = {
+    projectDir,
+    deps ? [],
+    prePatch ? "",
+  }:
+    joinLines [
+      (
+        if projectDir == null
+        then ""
+        else
+          cargoWorkspacePrePatch {
+            projectDir = projectDir;
+            deps = deps;
+          }
+      )
+      prePatch
+    ];
+
   attrIf = condition: name: value:
     if condition
     then
@@ -137,13 +222,37 @@ let
   '';
 
   mkCheckFn = build: args:
-    build.overrideAttrs (old: {
+    build.overrideAttrs (old: let
+      extraNativeBuildInputs = args.nativeBuildInputs or [];
+    in {
       pname = "${old.pname}-${args.name}";
       nativeBuildInputs =
-        (old.nativeBuildInputs or [])
-        ++ (args.nativeBuildInputs or []);
-      inherit (args) buildPhase;
+        (builtins.filter
+          (input: !(builtins.elem input (args.removeNativeBuildInputs or [])))
+          (old.nativeBuildInputs or []))
+        ++ extraNativeBuildInputs;
+      nativeCheckInputs =
+        if builtins.hasAttr "nativeCheckInputs" args
+        then args.nativeCheckInputs
+        else if builtins.hasAttr "removeNativeBuildInputs" args
+        then []
+        else old.nativeCheckInputs or [];
+      buildPhase = joinLines [
+        (
+          if extraNativeBuildInputs == []
+          then ""
+          else "export PATH=${builtins.toJSON (binPath extraNativeBuildInputs)}:$PATH"
+        )
+        (args.preBuildPhase or "")
+        (
+          if old ? buildAndTestSubdir && old.buildAndTestSubdir != null
+          then "cd ${builtins.toJSON old.buildAndTestSubdir}"
+          else ""
+        )
+        args.buildPhase
+      ];
       installPhase = "touch $out";
+      doCheck = false;
       dontInstall = false;
     });
 in rec {
@@ -406,6 +515,7 @@ in rec {
     kind,
     src,
     pname ? deriveProjectName src,
+    projectPath ? deriveProjectPath src,
     description ?
       if kind == "fmt"
       then "Format ${pname}"
@@ -424,6 +534,7 @@ in rec {
       name = "${pname}-${kind}";
       description = description;
       src = src;
+      projectPath = projectPath;
       parts = parts;
       runtimeInputs = runtimeInputs;
       env = env;
@@ -543,6 +654,7 @@ in rec {
 
   mkStdAppOp = pkgs: {
     src,
+    projectPath ? deriveProjectPath src,
     parts ? [],
     runtimeInputs ? [],
     env ? {},
@@ -551,11 +663,12 @@ in rec {
     ...
   }:
     mkProjectAppOp pkgs {
-      inherit src parts runtimeInputs env repoFmtPaths commands;
+      inherit src projectPath parts runtimeInputs env repoFmtPaths commands;
     };
 
   mkStdCheckOp = pkgs: {
     src,
+    projectPath ? deriveProjectPath src,
     parts ? [],
     nativeBuildInputs ? [],
     env ? {},
@@ -564,7 +677,7 @@ in rec {
     ...
   }:
     mkProjectCheckOp pkgs {
-      inherit src parts nativeBuildInputs env repoFmtPaths commands;
+      inherit src projectPath parts nativeBuildInputs env repoFmtPaths commands;
     };
 
   stripPkgOp = spec:
@@ -640,14 +753,15 @@ in rec {
     pkgs,
     src,
     pname ? deriveProjectName src,
+    projectPath ? deriveProjectPath src,
     apps ? {},
     checks ? {},
     devShellPackages ? null,
   }: let
-    path = deriveProjectPath src;
+    path = projectPath;
     appDrvs = builtins.mapAttrs (kind: spec:
       mkStdApp pkgs ({
-          inherit kind src pname;
+          inherit kind src pname projectPath;
         }
         // spec))
     apps;
@@ -659,13 +773,13 @@ in rec {
     checks;
     pkgAppOps = builtins.mapAttrs (kind: spec:
       mkStdAppOp pkgs ({
-          inherit kind src;
+          inherit kind src projectPath;
         }
         // spec))
     apps;
     pkgCheckOps = builtins.mapAttrs (kind: spec:
       mkStdCheckOp pkgs ({
-          inherit kind src;
+          inherit kind src projectPath;
         }
         // spec))
     checks;
@@ -985,8 +1099,11 @@ in rec {
         else joinLines [resolved.envScript resolved.command];
     };
 
-  rustFmt = pkgs: {cargoArgs ? []}: {
-    nativeBuildInputs = [pkgs.rustfmt];
+  rustFmt = pkgs: {
+    cargoArgs ? [],
+    nativeBuildInputs ? [],
+  }: {
+    nativeBuildInputs = [pkgs.rustfmt] ++ nativeBuildInputs;
     buildPhase = rustFmtCheckCommand cargoArgs;
   };
 
@@ -1069,17 +1186,31 @@ in rec {
     clippyCargoArgs ? [],
     clippyLintArgs ? ["--" "-D" "warnings"],
     fmtCargoArgs ? [],
+    fmtNativeBuildInputs ? [],
+    lintNativeBuildInputs ? [],
+    nativeCheckInputs ? [],
+    preBuildPhase ? "",
     testCargoArgs ? [],
     extraChecks ? {},
   }:
     {
       build = {};
-      fmt = rustFmt pkgs {cargoArgs = fmtCargoArgs;};
-      lint = rustClippy pkgs {
-        cargoArgs = clippyCargoArgs;
-        lintArgs = clippyLintArgs;
-      };
-      test = rustTest pkgs {cargoArgs = testCargoArgs;};
+      fmt =
+        rustFmt pkgs {
+          cargoArgs = fmtCargoArgs;
+          nativeBuildInputs = fmtNativeBuildInputs;
+        }
+        // {removeNativeBuildInputs = nativeCheckInputs;};
+      lint =
+        rustClippy pkgs {
+          cargoArgs = clippyCargoArgs;
+          lintArgs = clippyLintArgs;
+          nativeBuildInputs = lintNativeBuildInputs;
+        }
+        // {removeNativeBuildInputs = nativeCheckInputs;};
+      test =
+        rustTest pkgs {cargoArgs = testCargoArgs;}
+        // {buildPhase = joinLines [preBuildPhase (rustTestCommand testCargoArgs)];};
     }
     // extraChecks;
 
@@ -1310,26 +1441,141 @@ in rec {
       // extraPassthru);
 
   mkRustDerivation = {
-    build,
     pkgs,
-    src ? inferBuildSrc build,
+    build ? null,
+    src ?
+      if build == null
+      then
+        if projectDir == null
+        then throw "pkg-helper.mkRustDerivation: pass `src` when `projectDir` is null"
+        else ../..
+      else inferBuildSrc build,
     pname ? deriveProjectName src,
+    version ? "0.1.0",
+    projectDir ? null,
+    deps ? [],
+    cargoLock ? null,
+    meta ? {},
+    nativeCheckInputs ? [],
+    fmtNativeBuildInputs ? [],
+    lintNativeBuildInputs ? [],
+    buildAttrs ? {},
+    prePatch ? "",
     fmtCargoArgs ? [],
-    lintFixCargoArgs ? [],
+    lintFixCargoArgs ? ["--locked" "-p" pname],
     lintFixLintArgs ? ["--" "-D" "warnings"],
-    checkCargoArgs ? [],
+    checkCargoArgs ? ["--locked" "-p" pname],
     checkLintArgs ? ["--" "-D" "warnings"],
-    testCargoArgs ? [],
+    testCargoArgs ? ["--locked" "-p" pname],
+    enableDevShell ? false,
+    devShellPackages ? [
+      pkgs.cargo
+      pkgs.rust-analyzer
+      pkgs.rustc
+    ],
+    extraDevShellPackages ? [],
     extraPassthru ? {},
-  }: let
+    ...
+  } @ args: let
+    resolvedFmtCargoArgs =
+      if builtins.hasAttr "fmtCargoArgs" args
+      then fmtCargoArgs
+      else ["-p" pname];
+    sourcePath =
+      if projectDir == null
+      then null
+      else src + "/${projectDir}/default.nix";
+    buildArgs = builtins.removeAttrs args [
+      "pkgs"
+      "build"
+      "src"
+      "pname"
+      "version"
+      "projectDir"
+      "deps"
+      "cargoLock"
+      "meta"
+      "nativeCheckInputs"
+      "fmtNativeBuildInputs"
+      "lintNativeBuildInputs"
+      "buildAttrs"
+      "prePatch"
+      "fmtCargoArgs"
+      "lintFixCargoArgs"
+      "lintFixLintArgs"
+      "checkCargoArgs"
+      "checkLintArgs"
+      "testCargoArgs"
+      "enableDevShell"
+      "devShellPackages"
+      "extraDevShellPackages"
+      "extraPassthru"
+    ];
+    resolvedNativeCheckInputs =
+      nativeCheckInputs
+      ++ (buildAttrs.nativeCheckInputs or []);
+    resolvedFmtNativeBuildInputs = fmtNativeBuildInputs;
+    resolvedLintNativeBuildInputs = lintNativeBuildInputs;
+    rustCheckPreBuildPhase =
+      if projectDir == null
+      then ""
+      else "cargo generate-lockfile --offline";
+    resolvedBuild =
+      if build != null
+      then build
+      else
+        pkgs.rustPlatform.buildRustPackage
+        (let
+          buildSrc =
+            if projectDir == null
+            then src
+            else
+              mkCargoWorkspaceSource pkgs {
+                src = src;
+                projectDir = projectDir;
+                deps = deps;
+              };
+          resolvedCargoLock =
+            if cargoLock != null
+            then cargoLock
+            else {lockFileContents = builtins.readFile (src + "/Cargo.lock");};
+          buildPrePatch = composeCargoWorkspacePrePatch {
+            projectDir = projectDir;
+            deps = deps;
+            prePatch = joinLines [
+              prePatch
+              (buildAttrs.prePatch or "")
+            ];
+          };
+          buildAttrsNoPrePatch = builtins.removeAttrs buildAttrs ["prePatch" "nativeCheckInputs"];
+        in
+          {
+            pname = pname;
+            version = version;
+            meta = meta;
+            src = buildSrc;
+            cargoLock = resolvedCargoLock;
+            prePatch = buildPrePatch;
+            nativeCheckInputs = resolvedNativeCheckInputs;
+          }
+          // buildArgs
+          // buildAttrsNoPrePatch
+          // (attrIf (projectDir != null) "buildAndTestSubdir" projectDir));
     bundle = mkPackageOpsBundle {
       inherit pkgs src pname;
+      projectPath =
+        if projectDir == null
+        then deriveProjectPath src
+        else projectDir;
       apps = {
         fmt = {
           parts = [
-            (projectFmtRust pkgs {cargoArgs = fmtCargoArgs;})
+            (projectFmtRust pkgs {cargoArgs = resolvedFmtCargoArgs;})
+            {
+              inputs = resolvedFmtNativeBuildInputs;
+            }
           ];
-          commands = ["exec ${rustFmtCommand fmtCargoArgs} \"$@\""];
+          commands = ["exec ${rustFmtCommand resolvedFmtCargoArgs} \"$@\""];
         };
         "lint-fix" = {
           parts = [
@@ -1337,6 +1583,9 @@ in rec {
               cargoArgs = lintFixCargoArgs;
               lintArgs = lintFixLintArgs;
             })
+            {
+              inputs = resolvedLintNativeBuildInputs;
+            }
           ];
           commands = [
             "exec ${rustClippyFixCommand lintFixCargoArgs lintFixLintArgs}"
@@ -1347,10 +1596,12 @@ in rec {
         fmt = {
           parts = [
             {
-              inputs = [
-                pkgs.cargo
-                pkgs.rustfmt
-              ];
+              inputs =
+                [
+                  pkgs.cargo
+                  pkgs.rustfmt
+                ]
+                ++ resolvedFmtNativeBuildInputs;
             }
           ];
           commands = [(rustFmtCheckCommand fmtCargoArgs)];
@@ -1358,11 +1609,13 @@ in rec {
         lint = {
           parts = [
             {
-              inputs = [
-                pkgs.cargo
-                pkgs.clippy
-                pkgs.rustc
-              ];
+              inputs =
+                [
+                  pkgs.cargo
+                  pkgs.clippy
+                  pkgs.rustc
+                ]
+                ++ resolvedLintNativeBuildInputs;
             }
           ];
           commands = [(rustClippyCheckCommand checkCargoArgs checkLintArgs)];
@@ -1370,10 +1623,12 @@ in rec {
         test = {
           parts = [
             {
-              inputs = [
-                pkgs.cargo
-                pkgs.rustc
-              ];
+              inputs =
+                [
+                  pkgs.cargo
+                  pkgs.rustc
+                ]
+                ++ resolvedNativeCheckInputs;
             }
           ];
           commands = [(rustTestCommand testCargoArgs)];
@@ -1381,20 +1636,46 @@ in rec {
       };
       devShellPackages = null;
     };
-  in
-    wirePassthru build ({
+    basePassthru =
+      (attrIf (sourcePath != null) "sourcePath" sourcePath)
+      // {
         inherit (bundle) fmt;
         "lint-fix" = bundle."lint-fix";
-        checks = mkChecks build (mkRustCheckSpecs {
+        checks = mkChecks resolvedBuild (mkRustCheckSpecs {
           inherit pkgs;
           clippyCargoArgs = checkCargoArgs;
           clippyLintArgs = checkLintArgs;
-          fmtCargoArgs = fmtCargoArgs;
+          fmtCargoArgs = resolvedFmtCargoArgs;
+          fmtNativeBuildInputs = resolvedFmtNativeBuildInputs;
+          lintNativeBuildInputs = resolvedLintNativeBuildInputs;
+          nativeCheckInputs = resolvedNativeCheckInputs;
+          preBuildPhase = rustCheckPreBuildPhase;
           testCargoArgs = testCargoArgs;
         });
         inherit (bundle) pkgOps;
-      }
-      // extraPassthru);
+      };
+    devShellPassthru = attrIf enableDevShell "devShell" (pkgs.mkShell {
+      packages = pkgs.lib.unique (
+        devShellPackages
+        ++ [
+          pkgs.clippy
+          pkgs.rustfmt
+        ]
+        ++ resolvedFmtNativeBuildInputs
+        ++ resolvedLintNativeBuildInputs
+        ++ resolvedNativeCheckInputs
+        ++ extraDevShellPackages
+      );
+    });
+    baseDrv = wirePassthru resolvedBuild (basePassthru // devShellPassthru);
+    resolvedExtraPassthru =
+      if builtins.isFunction extraPassthru
+      then extraPassthru baseDrv
+      else extraPassthru;
+  in
+    if resolvedExtraPassthru == {}
+    then baseDrv
+    else wirePassthru baseDrv resolvedExtraPassthru;
 
   mkPackageApp = pkgs: pkg: {
     type = "app";

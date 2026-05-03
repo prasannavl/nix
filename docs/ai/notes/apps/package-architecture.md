@@ -60,6 +60,10 @@ helpers under `lib/flake`, and package-owned service modules.
   re-encode language-specific package rules under the root flake.
 - Rust packages should use the shared Rust helper so `fmt`, `clippy`, and test
   behavior stays consistent and `rustfmt` is present inside sandboxed checks.
+- Repo-root Rust is workspace-oriented: keep the root `Cargo.toml` member list
+  explicit, keep the root `Cargo.lock` canonical, and have workspace packages
+  pass `projectDir` into `mkRustDerivation` instead of open-coding package-local
+  `src = ./.` builds.
 
 ## Package layout
 

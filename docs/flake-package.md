@@ -98,6 +98,24 @@ in
   drv
 ```
 
+Rust packages can also build directly through the helper without a separate
+`buildRustPackage` wrapper:
+
+```nix
+pkgHelper.mkRustDerivation {
+  inherit pkgs;
+  pname = "my-rust-app";
+  version = "0.1.0";
+  projectDir = "pkgs/my-rust-app";
+}
+```
+
+Workspace Rust builds use the repo-root Cargo workspace by default. The helper
+selects the target package through `projectDir`, reads the canonical root
+`Cargo.lock`, filters the build source down to the root workspace files plus the
+selected package and explicit local `deps`, and rewrites `workspace.members`
+during `prePatch` so Cargo only resolves the intended subset.
+
 `flake.nix` should usually just re-export the derivation:
 
 ```nix
@@ -182,6 +200,12 @@ Helper defaults are intentionally automatic:
 
 - `src = ./.` is normally enough. Project name and project path are derived from
   it by default.
+- Workspace Rust packages should usually pass `projectDir` and rely on the
+  helper default repo-root `src`; the root `Cargo.toml` member list and root
+  `Cargo.lock` are the canonical Cargo authority.
+- `mkRustDerivation` can synthesize the Rust build directly from `projectDir`,
+  `pname`, `version`, and the repo-root `Cargo.lock`; pass `build = ...` only
+  when a package truly needs a custom Rust build.
 - Package app wrappers treat a package-local `flake.nix` or `default.nix` as the
   working-directory marker; per-project marker files are not part of the normal
   API.
