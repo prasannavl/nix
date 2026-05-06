@@ -5003,6 +5003,21 @@ deploy_prepared_remote_self_target() {
 	return "${deploy_rc}"
 }
 
+verify_remote_deploy_after_transport_loss() {
+	local node="$1" built_out_path="$2" deploy_rc="$3"
+
+	[ "${deploy_rc}" -eq 255 ] || return 1
+	[ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] || return 1
+
+	echo "==> Deploy transport closed for ${node}; verifying target state" >&2
+	if verify_deploy_target_state "${node}" "${built_out_path}"; then
+		echo "==> Deploy for ${node} completed despite transport disconnect" >&2
+		return 0
+	fi
+
+	return 1
+}
+
 rollback_successful_hosts() {
 	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
 	shift 3
@@ -5181,7 +5196,7 @@ deploy_host() {
 	local remote_current_path="" nix_sshopts=""
 	local using_bootstrap_fallback="" age_identity_key="" build_host=""
 	local rebuild_nix_sshopts=""
-	local ask_sudo_password=0
+	local ask_sudo_password=0 deploy_rc=0
 	local -a rebuild_cmd=() sudo_policy=()
 
 	log_host_stage "deploy" "${node}" "${GOAL}"
@@ -5304,7 +5319,17 @@ deploy_host() {
 		printf '%q ' "${rebuild_cmd[@]}"
 		echo
 	else
-		"${rebuild_cmd[@]}"
+		if "${rebuild_cmd[@]}"; then
+			return 0
+		else
+			deploy_rc="$?"
+		fi
+
+		if verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${deploy_rc}"; then
+			return 0
+		fi
+
+		return "${deploy_rc}"
 	fi
 }
 
