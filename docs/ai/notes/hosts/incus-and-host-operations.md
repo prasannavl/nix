@@ -71,6 +71,15 @@ recent host incidents.
 
 - Bash prompt command substitution must stay as `'$(...)'` inside `PS1`; the
   escaped `'\$(...)'` form renders literally.
+- For Incus systemd containers using `lib/profiles/systemd-container.nix`, the
+  online contract is the underlay interface `eth0:routable`. Overlay interfaces
+  such as Tailscale should not decide `network-online.target` during activation.
+  Keep `systemd-networkd-wait-online` scoped to `--interface=eth0:routable`.
+- Systemd-container hostnames are declared through `networking.hostName`.
+  Networkd must not apply DHCP-provided hostnames on `eth0`; set DHCPv4 and
+  DHCPv6 `UseHostname=false` to avoid D-Bus activation of
+  `systemd-hostnamed.service` racing `systemd-hostnamed.socket` restarts during
+  flake-update switches.
 - Desktop suspend triage should start with watchdog behavior before broader GPU
   speculation.
 - GNOME auto-lock failures on the affected desktop were caused by active idle

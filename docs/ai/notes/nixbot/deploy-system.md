@@ -96,6 +96,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   at the new generation. User-service failures should still be scoped to the
   deploy window, not stale display-session failures left behind by earlier
   compositor logout/login churn.
+- Remote `nixos-rebuild-ng` deploys that lose SSH with exit `255` after a
+  network-disrupting switch verify the target system path before being treated
+  as failed. This mirrors the self-target deploy guard without masking ordinary
+  non-transport activation failures.
 - Parent-host readiness failures must propagate real command failures; do not
   swallow exit status through Bash `if` compound semantics.
 - Host selection and helper naming should keep classification side-effect free:

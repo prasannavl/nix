@@ -50,12 +50,21 @@
     git.enable = true;
     tmux.enable = true;
   };
-  systemd.network.enable = true;
-
-  systemd.network.networks."10-eth0" = {
-    matchConfig.Name = "eth0";
-    DHCP = "yes";
-    networkConfig.IPv6AcceptRA = true;
+  systemd.network = {
+    enable = true;
+    wait-online.extraArgs = [
+      "--interface=eth0:routable"
+    ];
+    networks."10-eth0" = {
+      matchConfig.Name = "eth0";
+      DHCP = "yes";
+      # Hostnames are declared through Nix; applying DHCP hostnames can
+      # D-Bus-activate hostnamed during switch and race its socket restart
+      # showing up as failed network online during systemd upgrade switch.
+      dhcpV4Config.UseHostname = false;
+      dhcpV6Config.UseHostname = false;
+      networkConfig.IPv6AcceptRA = true;
+    };
   };
 
   services = {

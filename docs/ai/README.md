@@ -36,8 +36,8 @@ Use this index as the canonical map for `docs/ai/**`.
 ### Hosts
 
 - `docs/ai/notes/hosts/incus-and-host-operations.md`: Canonical Incus guest
-  model, host docs structure, tunnel host wiring, and durable host incident
-  findings.
+  model, host docs structure, tunnel host wiring, systemd-container networking,
+  and durable host incident findings.
 - `docs/ai/notes/hosts/incus-gpu-device-helpers-2026-04.md`: Records the shared
   explicit DRM/KFD Incus device helper shape for reusable card/render-number and
   group-aware passthrough declarations.
