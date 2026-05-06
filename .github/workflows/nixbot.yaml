@@ -92,7 +92,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          nix run path:.#lint
+          nix run .#lint
 
       - name: nixbot/run
         shell: bash

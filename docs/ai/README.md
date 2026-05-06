@@ -161,6 +161,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Tooling
 
+- `docs/ai/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`: Records the
+  AI-agent validation rule to avoid explicit `path:` flake refs and prefer `.`,
+  absolute repo paths, or intentional `git+file:///...` refs.
 - `docs/ai/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
 - `docs/ai/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records the

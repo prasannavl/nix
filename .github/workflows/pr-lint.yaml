@@ -43,4 +43,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          nix run path:.#lint
+          nix run .#lint
