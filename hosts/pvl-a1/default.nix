@@ -10,6 +10,7 @@
     ./firewall.nix
     ./users.nix
     ./services
+    ./incus.nix
   ];
 
   # hw gets stuck on suspend, and triggers watchdog and reboots, even though

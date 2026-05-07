@@ -22,6 +22,8 @@
       vlc
       pavucontrol
       alsa-utils
+      restic
+      btrfs-assistant
     ];
 
     graphics = with pkgs; [

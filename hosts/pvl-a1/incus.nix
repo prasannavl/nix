@@ -1,40 +1,9 @@
-{
-  config,
-  lib,
-  ...
-}: let
-  incusLib = import ../../lib/incus/lib.nix {
-    inherit config lib;
-  };
-in {
-  services.incusMachines = {
-    instances = {
-      pvl-vk = {
-        ipv4Address = "10.10.30.10";
-        config = {
-          "security.privileged" = "false";
-          "security.nesting" = "true";
-          "security.syscalls.intercept.mount" = "true";
-          "security.syscalls.intercept.mount.shift" = "true";
-        };
-        devices =
-          {
-            state = {
-              source = "pvl-vk";
-              path = "/var/lib";
-              removalPolicy = "delete";
-            };
-          }
-          // incusLib.mkGpuDevices {
-            card = 1;
-            render = 128;
-            kfd = true;
-          };
-      };
-    };
-  };
+{pkgs, ...}: {
   virtualisation.incus = {
     enable = true;
+    package = pkgs.incus;
+    ui.enable = true;
+
     preseed = {
       config = {
         "core.https_address" = "[::]:8443";
@@ -43,8 +12,8 @@ in {
       networks = [
         {
           config = {
-            "ipv4.address" = "10.10.30.1/24";
-            "ipv4.dhcp.ranges" = "10.10.30.100-10.10.30.199";
+            "ipv4.address" = "10.10.20.1/24";
+            "ipv4.dhcp.ranges" = "10.10.20.100-10.10.20.199";
             "ipv4.nat" = "true";
             "ipv6.address" = "auto";
           };
@@ -55,7 +24,6 @@ in {
         }
       ];
 
-      # dir driver avoids btrfs-on-btrfs (outer pvl-x2 pool is btrfs).
       storage_pools = [
         {
           config = {
@@ -63,7 +31,7 @@ in {
           };
           description = "";
           name = "default";
-          driver = "dir";
+          driver = "btrfs";
         }
       ];
 
@@ -96,7 +64,8 @@ in {
     };
   };
 
-  # Allow parent-host management over the Incus bridge while keeping
-  # service exposure explicit at the guest boundary.
+  boot.kernel.sysctl = {
+    "net.ipv4.ip_forward" = 1;
+  };
   networking.firewall.trustedInterfaces = ["incusbr0"];
 }

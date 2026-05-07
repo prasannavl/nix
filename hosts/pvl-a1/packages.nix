@@ -82,6 +82,9 @@
       gimp
       imagemagick
       qbittorrent
+      backrest
+      restic
+      btrfs-assistant
     ];
 
     graphics = with pkgs; [
@@ -105,7 +108,6 @@
       rustfmt
       rust-analyzer
       nodejs
-      nodePackages.npm
       yarn
       zed-wrapped
       nixd
