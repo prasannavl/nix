@@ -21,6 +21,7 @@
         nixos-rebuild-ng
         openssh
         opentofu
+        procps
       ];
       text = ''
         export NIXBOT_IN_NIX_SHELL=1

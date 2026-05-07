@@ -107,6 +107,40 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Avoid scalar `local -n` output helpers when stdout capture or shared prepared
   context is simpler and safer.
 
+## Interrupt Handling
+
+- `SIGHUP` is an incidental caller disconnect. Local cleanup should run; this
+  cancels local deploy work that has not reached the switch submission yet, and
+  any activation that `nixos-rebuild-ng` has already submitted through
+  `systemd-run` should be left to complete.
+- Ctrl-C and `SIGTERM` are explicit cancellation requests. If no remote deploy
+  activation is active yet, nixbot should clean up local jobs and exit
+  immediately.
+- The first Ctrl-C or `SIGTERM` while remote deploy activation is active should
+  stop scheduling new deploy work, wait for already-started deploy jobs to
+  finish, then exit.
+- Three consecutive Ctrl-C or `SIGTERM` signals within 3 seconds should make a
+  best-effort attempt to stop `nixos-rebuild-ng`'s fixed
+  `nixos-rebuild-switch-to-configuration.service` only on hosts currently inside
+  the `nixos-rebuild-ng` deploy command or its transport-loss verification
+  window, wait for cancellation, then send `SIGKILL` after the remote
+  cancellation grace period.
+- Serial and parallel deploys should both run host deploy work through the same
+  supervised background-job path so cancellation behavior does not depend on
+  `--deploy-jobs`.
+- Self-target SSH deploys should use the same `nixos-rebuild-ng` path as other
+  remote deploys. `nixos-rebuild-ng` already wraps activation in `systemd-run`
+  on systemd hosts, so nixbot should not add a second activation unit layer
+  unless it needs per-run remote status ownership later.
+- Cancellation cleanup should terminate local host-job process trees, then
+  escalate to `SIGKILL` after a short grace window.
+- Active deploy tracking should be file-backed and keyed by a collision-resistant
+  digest of the host name, with the host name stored as file contents for remote
+  cancellation commands.
+- Cleanup should also terminate persistent SSH control-master processes rooted
+  in the run-local SSH directory, because those can outlive the shell job that
+  created them.
+
 ## Terraform dispatch
 
 - `tf`, `tf-dns`, `tf-platform`, `tf-apps`, and `tf/<project>` should bypass

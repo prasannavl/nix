@@ -15,6 +15,7 @@ readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
 	nixpkgs#nixos-rebuild-ng
 	nixpkgs#openssh
 	nixpkgs#opentofu
+	nixpkgs#procps
 )
 readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	nix
@@ -22,6 +23,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	git
 	jq
 	nixos-rebuild-ng
+	pgrep
 	ssh
 	scp
 	ssh-keygen
@@ -225,6 +227,16 @@ init_vars() {
 	NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT:-45}"
 	NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS:-5}"
 	NIXBOT_CONTROL_PERSIST_SECS="${NIXBOT_CONTROL_PERSIST_SECS:-120}"
+	NIXBOT_CANCEL_REQUESTED=0
+	NIXBOT_CANCEL_LAST_SIGNAL_EPOCH=0
+	NIXBOT_CANCEL_ACTIVE_DEPLOYS_SEEN=0
+	NIXBOT_CANCEL_REMOTE_WAIT_DONE=0
+	NIXBOT_CANCEL_EXIT_STATUS=130
+	NIXBOT_DEPLOY_STARTED=0
+	NIXBOT_FORCE_CANCEL_SIGNAL_COUNT="${NIXBOT_FORCE_CANCEL_SIGNAL_COUNT:-3}"
+	NIXBOT_FORCE_CANCEL_WINDOW_SECS="${NIXBOT_FORCE_CANCEL_WINDOW_SECS:-3}"
+	NIXBOT_CANCEL_TERM_GRACE_SECS="${NIXBOT_CANCEL_TERM_GRACE_SECS:-2}"
+	NIXBOT_REMOTE_CANCEL_GRACE_SECS="${NIXBOT_REMOTE_CANCEL_GRACE_SECS:-10}"
 	NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE="${NIXBOT_PARENT_RECONCILE_TEMPLATE:-}"
 	NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE="${NIXBOT_PARENT_SETTLE_TEMPLATE:-}"
 	if [ -z "${NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE}" ]; then
@@ -366,6 +378,7 @@ init_vars() {
 	TMP_SECRETS_DIR=""
 	TMP_SSH_DIR=""
 	TMP_TF_ARTIFACT_DIR=""
+	TMP_ACTIVE_DEPLOY_DIR=""
 	REPO_DEPLOY_SCRIPT_REL="pkgs/tools/nixbot/nixbot.sh"
 	REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="/tmp/nixbot-bootstrap-key."
 	REMOTE_AGE_IDENTITY_TMP_PREFIX="/tmp/nixbot-age-identity."
@@ -964,6 +977,7 @@ parse_args() {
 }
 
 cleanup() {
+	trap - HUP INT TERM EXIT
 	terminate_background_jobs
 	log_group_end_all
 	cleanup_repo_worktree
@@ -975,13 +989,259 @@ cleanup() {
 	fi
 }
 
+request_hangup() {
+	echo "nixbot: received SIGHUP; cleaning up local run" >&2
+	terminate_background_jobs
+	exit 129
+}
+
+request_cancel() {
+	local exit_status="$1" signal_name="$2"
+	local now_epoch=0 last_signal_epoch=0 remaining_signals=0
+
+	NIXBOT_CANCEL_EXIT_STATUS="${exit_status}"
+	now_epoch="$(date +%s)"
+	last_signal_epoch="${NIXBOT_CANCEL_LAST_SIGNAL_EPOCH:-0}"
+	if [ "${last_signal_epoch}" -gt 0 ] &&
+		[ $((now_epoch - last_signal_epoch)) -le "${NIXBOT_FORCE_CANCEL_WINDOW_SECS}" ]; then
+		NIXBOT_CANCEL_REQUESTED=$((NIXBOT_CANCEL_REQUESTED + 1))
+	else
+		NIXBOT_CANCEL_REQUESTED=1
+	fi
+	NIXBOT_CANCEL_LAST_SIGNAL_EPOCH="${now_epoch}"
+
+	if [ "${NIXBOT_CANCEL_REQUESTED}" -eq 1 ]; then
+		if active_deploy_jobs_running; then
+			NIXBOT_CANCEL_ACTIVE_DEPLOYS_SEEN=1
+			echo "nixbot: received ${signal_name}; waiting for active deploy jobs to finish" >&2
+			return 0
+		fi
+		if deploy_jobs_started; then
+			echo "nixbot: received ${signal_name}; no active remote deploy remains, canceling local jobs" >&2
+		else
+			echo "nixbot: received ${signal_name}; no deploy job has started, canceling local jobs" >&2
+		fi
+		terminate_background_jobs
+		exit "${exit_status}"
+	fi
+
+	if ! force_cancel_requested; then
+		remaining_signals=$((NIXBOT_FORCE_CANCEL_SIGNAL_COUNT - NIXBOT_CANCEL_REQUESTED))
+		echo "nixbot: received ${signal_name} again; press Ctrl-C ${remaining_signals} more time(s) within ${NIXBOT_FORCE_CANCEL_WINDOW_SECS}s to force remote cancellation" >&2
+		return 0
+	fi
+
+	echo "nixbot: received ${signal_name} ${NIXBOT_CANCEL_REQUESTED} times within ${NIXBOT_FORCE_CANCEL_WINDOW_SECS}s; best-effort canceling remote activation and forcing local jobs down" >&2
+	cancel_active_deploy_activation_units
+	terminate_background_jobs force
+	exit "${exit_status}"
+}
+
+cancel_requested() {
+	[ "${NIXBOT_CANCEL_REQUESTED:-0}" -gt 0 ]
+}
+
+force_cancel_requested() {
+	[ "${NIXBOT_CANCEL_REQUESTED:-0}" -ge "${NIXBOT_FORCE_CANCEL_SIGNAL_COUNT:-3}" ]
+}
+
+active_deploy_registry_file() {
+	local node="$1" node_hash=""
+
+	ensure_tmp_dir
+	node_hash="$(printf '%s' "${node}" | sha256sum | cut -d ' ' -f 1)"
+	printf '%s/%s.deploy\n' "${TMP_ACTIVE_DEPLOY_DIR}" "${node_hash}"
+}
+
+mark_deploy_job_started() {
+	NIXBOT_DEPLOY_STARTED=1
+}
+
+register_active_deploy() {
+	local node="$1" registry_file=""
+
+	registry_file="$(active_deploy_registry_file "${node}")"
+	printf '%s\n' "${node}" >"${registry_file}"
+}
+
+unregister_active_deploy() {
+	local node="$1" registry_file=""
+
+	registry_file="$(active_deploy_registry_file "${node}")"
+	rm -f "${registry_file}"
+}
+
+deploy_jobs_started() {
+	[ "${NIXBOT_DEPLOY_STARTED:-0}" -eq 1 ]
+}
+
+active_deploys_registered() {
+	[ -n "${TMP_ACTIVE_DEPLOY_DIR:-}" ] || return 1
+	[ -d "${TMP_ACTIVE_DEPLOY_DIR}" ] || return 1
+	find "${TMP_ACTIVE_DEPLOY_DIR}" -type f -name '*.deploy' -print -quit 2>/dev/null | grep -q .
+}
+
+active_deploy_jobs_running() {
+	active_deploys_registered || return 1
+	jobs -pr 2>/dev/null | grep -q .
+}
+
+active_deploy_files() {
+	[ -n "${TMP_ACTIVE_DEPLOY_DIR:-}" ] || return 0
+	[ -d "${TMP_ACTIVE_DEPLOY_DIR}" ] || return 0
+	find "${TMP_ACTIVE_DEPLOY_DIR}" -type f -name '*.deploy' -print 2>/dev/null | sort
+}
+
+wait_active_deploy_jobs_to_finish() {
+	local active_pids=""
+
+	[ "${NIXBOT_CANCEL_REMOTE_WAIT_DONE:-0}" -eq 0 ] || return 0
+	if active_deploys_registered; then
+		NIXBOT_CANCEL_ACTIVE_DEPLOYS_SEEN=1
+	fi
+	[ "${NIXBOT_CANCEL_ACTIVE_DEPLOYS_SEEN:-0}" -eq 1 ] || return 0
+	while active_pids="$(jobs -pr 2>/dev/null || true)" && [ -n "${active_pids}" ]; do
+		if force_cancel_requested; then
+			return 1
+		fi
+		wait -n || true
+	done
+
+	NIXBOT_CANCEL_REMOTE_WAIT_DONE=1
+	return 0
+}
+
+active_deploy_activation_units_running() {
+	local file="" node="" check_cmd="" state=""
+
+	while IFS= read -r file; do
+		[ -n "${file}" ] || continue
+		node="$(cat "${file}" 2>/dev/null || true)"
+		[ -n "${node}" ] || continue
+		check_cmd='systemctl show --property=ActiveState --value nixos-rebuild-switch-to-configuration.service 2>/dev/null || true'
+		if ! state="$(run_host_root_command "${node}" "${check_cmd}" 2>/dev/null)"; then
+			continue
+		fi
+		case "${state}" in
+		active | activating | reloading | deactivating)
+			return 0
+			;;
+		esac
+	done < <(active_deploy_files)
+
+	return 1
+}
+
+run_active_deploy_activation_unit_command() {
+	local action="$1" file="" node="" command=""
+
+	case "${action}" in
+	stop)
+		command='systemctl --no-block stop nixos-rebuild-switch-to-configuration.service'
+		;;
+	kill)
+		command='systemctl kill --kill-who=all --signal=KILL nixos-rebuild-switch-to-configuration.service'
+		;;
+	*)
+		die "Unsupported active deploy activation unit action: ${action}"
+		;;
+	esac
+
+	while IFS= read -r file; do
+		[ -n "${file}" ] || continue
+		node="$(cat "${file}" 2>/dev/null || true)"
+		[ -n "${node}" ] || continue
+		run_host_root_command "${node}" "${command}" >/dev/null 2>&1 || true
+	done < <(active_deploy_files)
+}
+
+cancel_active_deploy_activation_units() {
+	local start_epoch="" now_epoch=""
+
+	active_deploys_registered || return 0
+
+	run_active_deploy_activation_unit_command stop
+
+	start_epoch="$(date +%s)"
+	while active_deploy_activation_units_running; do
+		now_epoch="$(date +%s)"
+		if [ $((now_epoch - start_epoch)) -ge "${NIXBOT_REMOTE_CANCEL_GRACE_SECS}" ]; then
+			break
+		fi
+		sleep 1
+	done
+
+	if active_deploy_activation_units_running; then
+		run_active_deploy_activation_unit_command kill
+	fi
+}
+
+collect_descendant_pids() {
+	local pid="$1" child=""
+
+	[ -n "${pid}" ] || return 0
+	kill -0 "${pid}" 2>/dev/null || return 0
+	printf '%s\n' "${pid}"
+
+	while IFS= read -r child; do
+		[ -n "${child}" ] || continue
+		collect_descendant_pids "${child}"
+	done < <(pgrep -P "${pid}" 2>/dev/null || true)
+}
+
+terminate_pid_tree() {
+	local root_pid="$1" signal_name="$2" pid="" index=0
+	local -a pids=()
+
+	mapfile -t pids < <(collect_descendant_pids "${root_pid}" | awk '!seen[$0]++')
+	[ "${#pids[@]}" -gt 0 ] || return 0
+
+	for ((index = ${#pids[@]} - 1; index >= 0; index--)); do
+		pid="${pids[${index}]}"
+		kill "-${signal_name}" "${pid}" >/dev/null 2>&1 || true
+	done
+}
+
+terminate_ssh_control_masters() {
+	local signal_name="$1" pid=""
+	local -a control_master_pids=()
+
+	[ -n "${TMP_SSH_DIR:-}" ] || return 0
+	[ -d "${TMP_SSH_DIR}" ] || return 0
+
+	mapfile -t control_master_pids < <(pgrep -f -- "${TMP_SSH_DIR}/cm-" 2>/dev/null || true)
+	for pid in "${control_master_pids[@]}"; do
+		[ -n "${pid}" ] || continue
+		[ "${pid}" != "$$" ] || continue
+		terminate_pid_tree "${pid}" "${signal_name}"
+	done
+}
+
 terminate_background_jobs() {
+	local mode="${1:-term}" signal_name="TERM"
 	local -a job_pids=()
 
 	mapfile -t job_pids < <(jobs -pr 2>/dev/null || true)
+	if [ "${mode}" = "force" ]; then
+		signal_name="KILL"
+	fi
+
+	terminate_ssh_control_masters "${signal_name}"
 	[ "${#job_pids[@]}" -gt 0 ] || return 0
 
-	kill "${job_pids[@]}" >/dev/null 2>&1 || true
+	for pid in "${job_pids[@]}"; do
+		terminate_pid_tree "${pid}" "${signal_name}"
+	done
+
+	if [ "${signal_name}" != "KILL" ]; then
+		sleep "${NIXBOT_CANCEL_TERM_GRACE_SECS}"
+		terminate_ssh_control_masters KILL
+		for pid in "${job_pids[@]}"; do
+			kill -0 "${pid}" 2>/dev/null || continue
+			terminate_pid_tree "${pid}" KILL
+		done
+	fi
+
 	wait "${job_pids[@]}" >/dev/null 2>&1 || true
 }
 
@@ -998,7 +1258,8 @@ ensure_tmp_dir() {
 	TMP_SECRETS_DIR="${NIXBOT_TMP_DIR}/secrets"
 	TMP_SSH_DIR="${NIXBOT_TMP_DIR}/ssh"
 	TMP_TF_ARTIFACT_DIR="$(phase_artifact_dir_path "${NIXBOT_TMP_DIR}" "tf")"
-	mkdir -p "${TMP_SECRETS_DIR}" "${TMP_SSH_DIR}"
+	TMP_ACTIVE_DEPLOY_DIR="${NIXBOT_TMP_DIR}/active-deploys"
+	mkdir -p "${TMP_SECRETS_DIR}" "${TMP_SSH_DIR}" "${TMP_ACTIVE_DEPLOY_DIR}"
 	ensure_phase_runtime_dirs "${NIXBOT_TMP_DIR}" tf
 }
 
@@ -4294,11 +4555,20 @@ wait_for_job_slot() {
 	local -n wfjs_active_jobs_inout_ref="$1"
 	local max_jobs="$2" wait_rc=0
 
+	if cancel_requested; then
+		wait_active_deploy_jobs_to_finish || true
+		return "${NIXBOT_CANCEL_EXIT_STATUS}"
+	fi
+
 	if [ "${wfjs_active_jobs_inout_ref}" -ge "${max_jobs}" ]; then
 		if wait -n; then
 			:
 		else
 			wait_rc="$?"
+			if cancel_requested; then
+				wait_active_deploy_jobs_to_finish || true
+				return "${NIXBOT_CANCEL_EXIT_STATUS}"
+			fi
 			if is_signal_exit_status "${wait_rc}"; then
 				return "${wait_rc}"
 			fi
@@ -4312,10 +4582,18 @@ drain_job_slots() {
 	local wait_rc=0
 
 	while [ "${djs_active_jobs_inout_ref}" -gt 0 ]; do
+		if cancel_requested; then
+			wait_active_deploy_jobs_to_finish || true
+			return "${NIXBOT_CANCEL_EXIT_STATUS}"
+		fi
 		if wait -n; then
 			:
 		else
 			wait_rc="$?"
+			if cancel_requested; then
+				wait_active_deploy_jobs_to_finish || true
+				return "${NIXBOT_CANCEL_EXIT_STATUS}"
+			fi
 			if is_signal_exit_status "${wait_rc}"; then
 				return "${wait_rc}"
 			fi
@@ -4502,6 +4780,40 @@ collect_completed_deploy_wave_statuses() {
 	done
 }
 
+process_completed_deploy_wave_jobs() {
+	local deploy_status_dir="$1" snapshot_dir="$2" rollback_log_dir="$3" rollback_status_dir="$4"
+	local success_hosts_out_name="$5" skipped_hosts_out_name="$6" failed_hosts_out_name="$7"
+	shift 7
+
+	local node="" status_file="" rc=0 job_rc=0
+
+	for node in "$@"; do
+		[ -n "${node}" ] || continue
+		status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
+		[ -s "${status_file}" ] || continue
+		if process_completed_deploy_job \
+			"${node}" \
+			"${status_file}" \
+			"${snapshot_dir}" \
+			"${rollback_log_dir}" \
+			"${rollback_status_dir}" \
+			"${success_hosts_out_name}" \
+			"${skipped_hosts_out_name}" \
+			"${failed_hosts_out_name}"; then
+			:
+		else
+			job_rc="$?"
+			if is_signal_exit_status "${job_rc}"; then
+				rc="${job_rc}"
+			elif [ "${rc}" -eq 0 ]; then
+				rc=1
+			fi
+		fi
+	done
+
+	return "${rc}"
+}
+
 handle_deploy_interrupt() {
 	local interrupt_rc="$1" snapshot_dir="$2" deploy_status_dir="$3"
 	local rollback_log_dir="$4" rollback_status_dir="$5"
@@ -4510,6 +4822,24 @@ handle_deploy_interrupt() {
 	local -n hdi_success_hosts_out_ref="${success_hosts_out_name}"
 	shift 8
 
+	if active_deploys_registered && ! force_cancel_requested; then
+		wait_active_deploy_jobs_to_finish || true
+		if ! force_cancel_requested; then
+			process_completed_deploy_wave_jobs \
+				"${deploy_status_dir}" \
+				"${snapshot_dir}" \
+				"${rollback_log_dir}" \
+				"${rollback_status_dir}" \
+				"${success_hosts_out_name}" \
+				"${skipped_hosts_out_name}" \
+				"${failed_hosts_out_name}" \
+				"$@" || true
+			return "${interrupt_rc}"
+		fi
+	fi
+	if force_cancel_requested; then
+		cancel_active_deploy_activation_units
+	fi
 	terminate_background_jobs
 	# Forward the original target names, not this helper's local nameref aliases.
 	collect_completed_deploy_wave_statuses \
@@ -4929,17 +5259,6 @@ verify_rollback_target_state() {
 	return 1
 }
 
-prepared_deploy_is_remote_self_target() {
-	local host=""
-
-	[ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] || return 1
-	[ -n "${PREP_DEPLOY_SSH_TARGET}" ] || return 1
-
-	host="$(ssh_host_from_target "${PREP_DEPLOY_SSH_TARGET}")"
-	local_host_matches_identifier "${PREP_DEPLOY_NODE}" ||
-		local_host_matches_identifier "${host}"
-}
-
 verify_deploy_target_state() {
 	local node="$1" built_out_path="$2" observed_path="" attempt="" max_attempts=15
 
@@ -4968,39 +5287,6 @@ verify_deploy_target_state() {
 	done
 
 	return 1
-}
-
-deploy_prepared_remote_self_target() {
-	local node="$1" built_out_path="$2"
-	local activate_cmd="" profile_path="${REMOTE_SYSTEM_PROFILE_PATH}" deploy_rc=0
-
-	if [ "${GOAL}" = "test" ]; then
-		# shellcheck disable=SC2016
-		printf -v activate_cmd 'set -euo pipefail; built=%q; if [ ! -x "$built/bin/switch-to-configuration" ]; then echo "built closure is not activatable: $built" >&2; exit 1; fi; "$built/bin/switch-to-configuration" %q' \
-			"${built_out_path}" \
-			"${GOAL}"
-	else
-		# shellcheck disable=SC2016
-		printf -v activate_cmd 'set -euo pipefail; built=%q; profile=%q; if [ ! -x "$built/bin/switch-to-configuration" ]; then echo "built closure is not activatable: $built" >&2; exit 1; fi; %q -p "$profile" --set "$built"; "$profile/bin/switch-to-configuration" %q' \
-			"${built_out_path}" \
-			"${profile_path}" \
-			"${REMOTE_SYSTEM_BIN_DIR}/nix-env" \
-			"${GOAL}"
-	fi
-
-	if run_prepared_root_command "${activate_cmd}"; then
-		return 0
-	else
-		deploy_rc="$?"
-	fi
-
-	echo "==> Self-target deploy transport closed or failed for ${node}; verifying target state" >&2
-	if verify_deploy_target_state "${node}" "${built_out_path}"; then
-		echo "==> Self-target deploy for ${node} completed despite transport disconnect" >&2
-		return 0
-	fi
-
-	return "${deploy_rc}"
 }
 
 verify_remote_deploy_after_transport_loss() {
@@ -5251,11 +5537,6 @@ deploy_host() {
 		ask_sudo_password=0
 	fi
 
-	if prepared_deploy_is_remote_self_target; then
-		deploy_prepared_remote_self_target "${node}" "${built_out_path}"
-		return "$?"
-	fi
-
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] &&
 		[ "${using_bootstrap_fallback}" -eq 1 ] &&
 		[ "${BUILD_HOST}" = "local" ]; then
@@ -5319,16 +5600,18 @@ deploy_host() {
 		printf '%q ' "${rebuild_cmd[@]}"
 		echo
 	else
+		register_active_deploy "${node}"
 		if "${rebuild_cmd[@]}"; then
-			return 0
+			deploy_rc=0
 		else
 			deploy_rc="$?"
 		fi
 
-		if verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${deploy_rc}"; then
-			return 0
+		if [ "${deploy_rc}" -ne 0 ] && verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${deploy_rc}"; then
+			deploy_rc=0
 		fi
 
+		unregister_active_deploy "${node}"
 		return "${deploy_rc}"
 	fi
 }
@@ -6148,6 +6431,7 @@ run_deploy_phase() {
 			log_file=""
 			if [ "${wave_deploy_parallel}" -eq 1 ]; then
 				log_file="$(phase_dir_item_log_file "${deploy_log_dir}" "${node}")"
+				mark_deploy_job_started
 				run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
 				active_jobs=$((active_jobs + 1))
 				if wait_for_job_slot active_jobs "${deploy_parallel_jobs}"; then
@@ -6162,7 +6446,18 @@ run_deploy_phase() {
 				continue
 			fi
 
-			run_deploy_job "${node}" "${out_file}" "${status_file}"
+			mark_deploy_job_started
+			run_deploy_job "${node}" "${out_file}" "${status_file}" &
+			active_jobs=1
+			if drain_job_slots active_jobs; then
+				:
+			else
+				phase_rc="$?"
+				_try_abort_wave "${phase_rc}"
+				phase_rc="$?"
+				log_group_scope_end
+				return "${phase_rc}"
+			fi
 			if process_completed_deploy_job "${node}" "${status_file}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${_success_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${_failed_hosts_out_name}"; then
 				:
 			else
@@ -7943,6 +8238,9 @@ main() {
 
 	init_vars
 	trap cleanup EXIT
+	trap request_hangup HUP
+	trap 'request_cancel 130 INT' INT
+	trap 'request_cancel 143 TERM' TERM
 	cleanup_stale_runtime_dirs
 
 	hydrate_request_args_from_ssh_command request_args
