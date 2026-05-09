@@ -5,7 +5,7 @@
 }:
 stdenv.mkDerivation rec {
   pname = "gnome-shell-extension-p7-cmds";
-  version = "31";
+  version = "32";
 
   uuid = "p7-cmds@prasannavl.com";
   extensionDataUuid = builtins.replaceStrings ["@"] [""] uuid;
@@ -19,7 +19,7 @@ stdenv.mkDerivation rec {
 
   src = fetchzip {
     url = "https://extensions.gnome.org/extension-data/${extensionDataUuid}.v${version}.shell-extension.zip";
-    sha256 = "sha256-on7Mfk0E9w5yPzmU7mO62d8Fjl1WYC3SsTAjsDPUfDM=";
+    sha256 = "sha256-CTSf13AnWF6mLRAPEZ++oXrV8qRsEuNOuz5+NXyIdi8=";
     stripRoot = false;
   };
 

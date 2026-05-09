@@ -1,6 +1,6 @@
 {lib, ...}: {
   networking.firewall = {
-    trustedInterfaces = ["incusbr0" "p2p-*"];
+    trustedInterfaces = ["p2p-*"];
     extraInputRules = ''
       iifname "wlan0" ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport 32768-60999 accept comment "Dynamic user ports on private LANs for Casts, Network Displays, etc"
     '';

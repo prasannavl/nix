@@ -7,8 +7,8 @@ Usage: update-gnome-ext.sh [--file PATH] [--version VERSION]
 By default, updates all known extensions. Optionally specify a single file to update.
 Examples:
   update-gnome-ext.sh
-  update-gnome-ext.sh --file pkgs/ext/p7-borders.nix
-  update-gnome-ext.sh --file pkgs/ext/p7-cmds.nix --version 30
+  update-gnome-ext.sh --file lib/ext/p7-borders.nix
+  update-gnome-ext.sh --file lib/ext/p7-cmds.nix --version 30
 EOF
 }
 
@@ -20,8 +20,8 @@ die() {
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
 	DEFAULT_FILES=(
-		"${REPO_ROOT}/pkgs/ext/p7-borders.nix"
-		"${REPO_ROOT}/pkgs/ext/p7-cmds.nix"
+		"${REPO_ROOT}/lib/ext/p7-borders.nix"
+		"${REPO_ROOT}/lib/ext/p7-cmds.nix"
 	)
 	TARGET_FILE=""
 	REQUESTED_VERSION=""

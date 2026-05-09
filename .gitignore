@@ -12,6 +12,7 @@ data/secrets/**
 !data/secrets/**/*.age
 !data/secrets/**/default.nix
 !data/secrets/**/*.pub
+!data/secrets/**/*.crt
 
 # Terraform state
 **/.terraform/
