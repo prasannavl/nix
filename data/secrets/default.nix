@@ -33,6 +33,14 @@ in
     "data/secrets/machine/pvl-vk.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/gap3-gondor.key.age".publicKeys = adminsWithNixbot;
 
+    # Incus client identities
+    "data/secrets/incus/pvl.key.age".publicKeys = admins;
+    "data/secrets/incus/pvl.pfx.age".publicKeys = admins;
+    "data/secrets/incus/abird.key.age".publicKeys = admins;
+    "data/secrets/incus/abird.pfx.age".publicKeys = admins;
+    "data/secrets/incus/abird-dev.key.age".publicKeys = admins;
+    "data/secrets/incus/abird-dev.pfx.age".publicKeys = admins;
+
     # Cloudflare DNS
     "data/secrets/cloudflare/api-token.key.age".publicKeys = admins ++ pvl-x2;
 
