@@ -1,5 +1,6 @@
 {...}: {
   imports = [
+    ../../lib/incus
     ../../lib/devices/asus-fa401wv.nix
     ../../lib/swap-auto.nix
     ../../lib/profiles/all.nix

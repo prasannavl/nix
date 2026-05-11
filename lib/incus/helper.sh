@@ -4,6 +4,12 @@ set -Eeuo pipefail
 init_vars() {
 	incus_machines_reconcile_mode="${INCUS_MACHINES_RECONCILE_MODE-}"
 	declared_instances="${INCUS_MACHINES_DECLARED_INSTANCES-[]}"
+	host_suspend_state_dir="${INCUS_MACHINES_HOST_SUSPEND_STATE_DIR-/run/incus-machines-host-suspend}"
+	host_suspend_default_policy="${INCUS_MACHINES_HOST_SUSPEND_DEFAULT_POLICY-stop}"
+	host_suspend_include_vms="${INCUS_MACHINES_HOST_SUSPEND_INCLUDE_VMS-false}"
+	host_suspend_grace_timeout="${INCUS_MACHINES_HOST_SUSPEND_GRACE_TIMEOUT-20}"
+	host_suspend_force_timeout="${INCUS_MACHINES_HOST_SUSPEND_FORCE_TIMEOUT-10}"
+	host_suspend_restart="${INCUS_MACHINES_HOST_SUSPEND_RESTART-true}"
 	selected_json='[]'
 }
 
@@ -692,12 +698,135 @@ gc_main() {
 	done < <(echo "$all_containers" | jq -c '.[]')
 }
 
+host_suspend_state_file() {
+	printf '%s\n' "${host_suspend_state_dir%/}/stopped-instances.json"
+}
+
+host_suspend_list_candidates() {
+	incus list --all-projects --format json |
+		jq -c \
+			--arg default_policy "$host_suspend_default_policy" \
+			--arg include_vms "$host_suspend_include_vms" '
+        [
+          .[]
+          | select(.status == "Running")
+          | select(.type == "container" or ($include_vms == "true" and .type == "virtual-machine"))
+          | select((.config["user.host-suspend.policy"] // $default_policy) != "ignore")
+          | {
+              name,
+              project: (.project // "default"),
+              type,
+              policy: (.config["user.host-suspend.policy"] // $default_policy)
+            }
+        ]
+      '
+}
+
+host_suspend_pre_main() {
+	local state_file tmp_file candidates row name project failed
+
+	if ! incus info >/dev/null 2>&1; then
+		echo "Incus daemon is unavailable; skipping host-suspend pre hook" >&2
+		return 0
+	fi
+
+	mkdir -p "$host_suspend_state_dir"
+	state_file="$(host_suspend_state_file)"
+	tmp_file="$state_file.tmp"
+	candidates="$(host_suspend_list_candidates)"
+	printf '%s\n' "$candidates" >"$tmp_file"
+	mv "$tmp_file" "$state_file"
+
+	if [ "$(printf '%s' "$candidates" | jq 'length')" -eq 0 ]; then
+		echo "No running Incus instances need host-suspend handling"
+		return 0
+	fi
+
+	failed=0
+	while IFS= read -r row; do
+		[ -n "$row" ] || continue
+		name="$(printf '%s' "$row" | jq -r '.name')"
+		project="$(printf '%s' "$row" | jq -r '.project')"
+
+		echo "Stopping Incus instance $project/$name before host sleep"
+		if incus stop --project "$project" "$name" --timeout "$host_suspend_grace_timeout"; then
+			continue
+		fi
+
+		echo "Graceful stop timed out for $project/$name; forcing stop" >&2
+		if ! timeout "$host_suspend_force_timeout" incus stop --project "$project" "$name" --force; then
+			echo "Failed to force-stop Incus instance $project/$name" >&2
+			failed=1
+		fi
+	done < <(printf '%s' "$candidates" | jq -c '.[]')
+
+	return "$failed"
+}
+
+host_suspend_post_main() {
+	local state_file candidates row name project status failed
+
+	state_file="$(host_suspend_state_file)"
+	[ -f "$state_file" ] || return 0
+	candidates="$(cat "$state_file")"
+	rm -f "$state_file"
+
+	if [ "$host_suspend_restart" != "true" ]; then
+		return 0
+	fi
+
+	if ! incus info >/dev/null 2>&1; then
+		echo "Incus daemon is unavailable; skipping host-suspend post hook" >&2
+		return 0
+	fi
+
+	failed=0
+	while IFS= read -r row; do
+		[ -n "$row" ] || continue
+		name="$(printf '%s' "$row" | jq -r '.name')"
+		project="$(printf '%s' "$row" | jq -r '.project')"
+		status="$(
+			incus list --project "$project" "$name" --format json 2>/dev/null |
+				jq -r '.[0].status // "missing"' 2>/dev/null ||
+				printf 'missing\n'
+		)"
+
+		if [ "$status" = "Running" ]; then
+			continue
+		fi
+
+		echo "Restarting Incus instance $project/$name after host resume"
+		if ! incus start --project "$project" "$name"; then
+			failed=1
+		fi
+	done < <(printf '%s' "$candidates" | jq -c '.[]')
+
+	return "$failed"
+}
+
+host_suspend_main() {
+	local phase
+	phase="${1-}"
+	case "$phase" in
+	pre)
+		host_suspend_pre_main
+		;;
+	post)
+		host_suspend_post_main
+		;;
+	*)
+		echo "usage: incus-machines-helper host-suspend <pre|post>" >&2
+		exit 1
+		;;
+	esac
+}
+
 main() {
 	local command
 	init_vars
 	command="${1-}"
 	[ -n "$command" ] || {
-		echo "usage: incus-machines-helper <reconciler|settlement|machine|images|gc> [args...]" >&2
+		echo "usage: incus-machines-helper <reconciler|settlement|machine|images|gc|host-suspend> [args...]" >&2
 		exit 1
 	}
 	shift
@@ -720,6 +849,9 @@ main() {
 		;;
 	gc)
 		gc_main "$@"
+		;;
+	host-suspend)
+		host_suspend_main "$@"
 		;;
 	*)
 		echo "unknown incus-machines-helper command: $command" >&2

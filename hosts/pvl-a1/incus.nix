@@ -18,6 +18,12 @@
       };
   };
 in {
+  services.incusMachines.hostSuspend = {
+    enable = true;
+    defaultPolicy = "stop";
+    includeVirtualMachines = false;
+  };
+
   virtualisation.incus = {
     enable = true;
     package = pkgs.incus;

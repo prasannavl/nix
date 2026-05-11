@@ -21,6 +21,10 @@
 
       # Misc systemd
       targets.machines.enable = true;
+      services.systemd-suspend.unitConfig = {
+        StartLimitIntervalSec = "30min";
+        StartLimitBurst = 3;
+      };
     };
 
     services = {

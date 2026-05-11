@@ -11,6 +11,7 @@
   defaultBaseAlias = "nixos-incus-base";
 
   hasInstances = cfg.instances != {};
+  hasHostHooks = hasInstances || cfg.hostSuspend.enable;
 
   helperPackage = pkgs.writeShellApplication {
     name = "incus-machines-helper";
@@ -43,6 +44,16 @@
     export INCUS_MACHINES_INSTANCE_SSH_PORTS=${lib.escapeShellArg instanceSshPortsJson}
     export INCUS_MACHINES_INSTANCE_WAIT_FOR_SSH=${lib.escapeShellArg instanceWaitForSshJson}
     exec ${helperScript} settlement "$@"
+  '';
+
+  hostSuspendCommand = pkgs.writeShellScriptBin "incus-machines-host-suspend" ''
+    export INCUS_MACHINES_HOST_SUSPEND_STATE_DIR=${lib.escapeShellArg cfg.hostSuspend.stateDir}
+    export INCUS_MACHINES_HOST_SUSPEND_DEFAULT_POLICY=${lib.escapeShellArg cfg.hostSuspend.defaultPolicy}
+    export INCUS_MACHINES_HOST_SUSPEND_INCLUDE_VMS=${lib.boolToString cfg.hostSuspend.includeVirtualMachines}
+    export INCUS_MACHINES_HOST_SUSPEND_GRACE_TIMEOUT=${toString cfg.hostSuspend.graceTimeoutSec}
+    export INCUS_MACHINES_HOST_SUSPEND_FORCE_TIMEOUT=${toString cfg.hostSuspend.forceTimeoutSec}
+    export INCUS_MACHINES_HOST_SUSPEND_RESTART=${lib.boolToString cfg.hostSuspend.restart}
+    exec ${helperScript} host-suspend "$@"
   '';
 
   sanitizeImageAlias = value:
@@ -142,6 +153,15 @@
           Whether settle should wait for TCP reachability on `sshPort` for this
           guest. Disable this for containers that are intentionally not managed
           over SSH.
+        '';
+      };
+      hostSuspendPolicy = lib.mkOption {
+        type = lib.types.enum ["stop" "ignore"];
+        default = "stop";
+        description = ''
+          Host sleep policy for this guest. `stop` lets the parent host stop the
+          guest before suspend so guest userspace cannot block the host freezer;
+          `ignore` opts out for guests with a separately justified lifecycle.
         '';
       };
       devices = lib.mkOption {
@@ -268,6 +288,7 @@
       "user.boot-tag" = machine.bootTag;
       "user.recreate-tag" = machine.recreateTag;
       "user.removal-policy" = machine.removalPolicy;
+      "user.host-suspend.policy" = machine.hostSuspendPolicy;
     }
     // lib.concatMapAttrs (
       devName: dev:
@@ -502,9 +523,56 @@ in {
       default = {};
       description = "Declarative Incus containers with lifecycle management.";
     };
+
+    hostSuspend = {
+      enable = lib.mkEnableOption ''
+        stopping running Incus containers before host sleep so container tasks
+        cannot block the physical host suspend freezer
+      '';
+
+      defaultPolicy = lib.mkOption {
+        type = lib.types.enum ["stop" "ignore"];
+        default = "stop";
+        description = ''
+          Policy for running containers that do not set
+          `user.host-suspend.policy`. `stop` is the laptop-safe default; set an
+          instance config key to `ignore` for explicit opt-outs.
+        '';
+      };
+
+      includeVirtualMachines = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether to include Incus virtual machines in the host sleep stop/start cycle.";
+      };
+
+      graceTimeoutSec = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 20;
+        description = "Seconds to wait for a graceful Incus stop before forcing the instance off.";
+      };
+
+      forceTimeoutSec = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 10;
+        description = "Seconds to allow a forced Incus stop command before treating it as failed.";
+      };
+
+      restart = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Restart instances that were stopped by the pre-sleep hook after resume.";
+      };
+
+      stateDir = lib.mkOption {
+        type = lib.types.str;
+        default = "/run/incus-machines-host-suspend";
+        description = "Runtime directory used to remember which instances were stopped before sleep.";
+      };
+    };
   };
 
-  config = lib.mkIf hasInstances {
+  config = lib.mkIf hasHostHooks {
     assertions = [
       {
         assertion = imageAliasConflicts == [];
@@ -533,17 +601,28 @@ in {
       helperPackage
       reconcilerCommand
       settlementCommand
+      hostSuspendCommand
     ];
 
-    environment.etc =
+    powerManagement = lib.mkIf cfg.hostSuspend.enable {
+      powerDownCommands = ''
+        ${hostSuspendCommand}/bin/incus-machines-host-suspend pre
+      '';
+      resumeCommands = ''
+        ${hostSuspendCommand}/bin/incus-machines-host-suspend post
+      '';
+    };
+
+    environment.etc = lib.mkIf hasInstances (
       lib.mapAttrs'
       (name: machine:
         lib.nameValuePair "incus-machines/${name}.json" {
           text = machineRuntimeStateJson name machine;
         })
-      cfg.instances;
+      cfg.instances
+    );
 
-    systemd.services = let
+    systemd.services = lib.mkIf hasInstances (let
       incusGcDeps = [
         "incus-preseed.service"
         "incus-images.service"
@@ -604,6 +683,6 @@ in {
           };
         };
       }
-      // lib.mapAttrs' mkMachineService cfg.instances;
+      // lib.mapAttrs' mkMachineService cfg.instances);
   };
 }

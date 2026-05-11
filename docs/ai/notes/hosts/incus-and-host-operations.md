@@ -30,6 +30,10 @@ recent host incidents.
 - GC must fail closed on Incus query failure and respect explicit removal
   policy.
 - Duplicate guest `ipv4Address` declarations are an evaluation error.
+- Laptop parents should enable `services.incusMachines.hostSuspend` so running
+  Incus instances are stopped before host sleep and restarted after resume.
+  This is host policy, not guest cooperation: container userspace must not be
+  able to block the physical host freezer.
 
 ## Guest secret and bootstrap model
 
