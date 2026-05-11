@@ -8,7 +8,7 @@ die() {
 
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
-	TARGET_GLOB="${REPO_ROOT}/pkgs/ext/*.nix"
+	TARGET_DIR="${REPO_ROOT}/pkgs/ext"
 }
 
 ensure_runtime_shell() {
@@ -17,6 +17,7 @@ ensure_runtime_shell() {
 	local flake_path
 	local -a runtime_packages=(
 		nixpkgs#coreutils
+		nixpkgs#findutils
 		nixpkgs#gnused
 		nixpkgs#jq
 	)
@@ -33,17 +34,27 @@ ensure_runtime_shell() {
 
 main() {
 	local file
-	local abs_file
 	local url
 	local hash
 	local eval_result
+	local -a target_files=()
 
 	ensure_runtime_shell "$@"
 	init_vars
 
-	for file in ${TARGET_GLOB}; do
-		abs_file="$(realpath "$file")"
-		eval_result="$(FILE_PATH="$abs_file" nix eval --raw --impure --expr '
+	if [[ -d "$TARGET_DIR" ]]; then
+		while IFS= read -r -d '' file; do
+			target_files+=("$file")
+		done < <(find "$TARGET_DIR" -maxdepth 1 -type f -name '*.nix' -print0)
+	fi
+
+	if [[ "${#target_files[@]}" -eq 0 ]]; then
+		echo "No fetchzip package files found under ${TARGET_DIR#"$REPO_ROOT"/}"
+		return
+	fi
+
+	for file in "${target_files[@]}"; do
+		eval_result="$(FILE_PATH="$file" nix eval --raw --impure --expr '
       let
         f = import (builtins.toPath (builtins.getEnv "FILE_PATH"));
         functionArgs = builtins.functionArgs f;
@@ -66,8 +77,8 @@ main() {
 		fi
 		url="$eval_result"
 		hash="$(nix store prefetch-file --json --hash-type sha256 --unpack "$url" | jq -r .hash)"
-		sed -E -i "s#(sha256 = \").*(\";)#\1$hash\2#" "$abs_file"
-		echo "$(basename "$abs_file"): $hash"
+		sed -E -i "s#(sha256 = \").*(\";)#\1$hash\2#" "$file"
+		echo "$(basename "$file"): $hash"
 	done
 }
 
