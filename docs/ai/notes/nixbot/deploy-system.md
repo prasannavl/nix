@@ -134,9 +134,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   unless it needs per-run remote status ownership later.
 - Cancellation cleanup should terminate local host-job process trees, then
   escalate to `SIGKILL` after a short grace window.
-- Active deploy tracking should be file-backed and keyed by a collision-resistant
-  digest of the host name, with the host name stored as file contents for remote
-  cancellation commands.
+- Active deploy tracking should be file-backed and keyed by a
+  collision-resistant digest of the host name, with the host name stored as file
+  contents for remote cancellation commands.
 - Cleanup should also terminate persistent SSH control-master processes rooted
   in the run-local SSH directory, because those can outlive the shell job that
   created them.
