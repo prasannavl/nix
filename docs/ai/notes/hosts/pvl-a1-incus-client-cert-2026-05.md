@@ -1,8 +1,8 @@
 # pvl-a1 Incus Client Certificate 2026-05
 
 `pvl-a1` trusts a pinned Incus TLS client certificate through
-`virtualisation.incus.preseed.certificates`. The host firewall also allows TCP
-`8443`, matching the Incus HTTPS listener.
+`services.incusMachines.certificates`. The host firewall also allows TCP `8443`,
+matching the Incus HTTPS listener.
 
 It declares three operator projects through Incus preseed:
 
@@ -60,9 +60,22 @@ so keep only the `.pfx.age` files in the repo and create plaintext PFX files
 temporarily outside the repo when importing into a browser or OS certificate
 store.
 
-Do not put private keys in Nix store paths or Incus preseed. Incus preseed only
-needs the public certificate material so the server can deterministically trust
-the same client identities after activation.
+Do not put private keys in Nix store paths or Incus preseed. The
+`services.incusMachines.certificates` reconciler only needs the public
+certificate material so the server can deterministically trust the same client
+identities after activation.
+
+The shared Incus helper reconciles declared certificates after
+`incus-preseed.service` runs upstream `incus admin init --preseed`, so project
+restrictions can reference projects created by preseed. It removes trust-store
+entries that match a declared certificate name or fingerprint, plus entries from
+the previous successfully applied managed certificate state that are no longer
+declared. After certificates are added successfully, it records the current
+desired name/fingerprint set under `/var/lib/incus-machines/certificates.json`.
+This keeps certificate additions, renames, material changes, project/restriction
+changes, and removals declarative instead of failing with
+`Certificate already in trust store` or leaving previously managed certificates
+behind.
 
 Certificate access:
 

@@ -23,6 +23,32 @@ in {
     defaultPolicy = "stop";
     includeVirtualMachines = false;
   };
+  services.incusMachines.certificates = [
+    {
+      name = "pvl";
+      type = "client";
+      restricted = false;
+      projects = [];
+      certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
+    }
+    {
+      name = "abird";
+      type = "client";
+      restricted = true;
+      projects = [
+        "abird"
+        "abird-dev"
+      ];
+      certificate = builtins.readFile ../../data/secrets/incus/abird.crt;
+    }
+    {
+      name = "abird-dev";
+      type = "client";
+      restricted = true;
+      projects = ["abird-dev"];
+      certificate = builtins.readFile ../../data/secrets/incus/abird-dev.crt;
+    }
+  ];
 
   virtualisation.incus = {
     enable = true;
@@ -178,32 +204,7 @@ in {
         (mkRestrictedProject "abird" "iabirdbr0")
         (mkRestrictedProject "abird-dev" "iabirddevbr0")
       ];
-      certificates = [
-        {
-          name = "pvl";
-          type = "client";
-          restricted = false;
-          projects = [];
-          certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
-        }
-        {
-          name = "abird";
-          type = "client";
-          restricted = true;
-          projects = [
-            "abird"
-            "abird-dev"
-          ];
-          certificate = builtins.readFile ../../data/secrets/incus/abird.crt;
-        }
-        {
-          name = "abird-dev";
-          type = "client";
-          restricted = true;
-          projects = ["abird-dev"];
-          certificate = builtins.readFile ../../data/secrets/incus/abird-dev.crt;
-        }
-      ];
+      certificates = [];
       cluster = null;
     };
   };

@@ -22,6 +22,7 @@
       pkgs.coreutils
       pkgs.gawk
       pkgs.jq
+      pkgs.openssl
       pkgs.systemd
     ];
     text = ''
@@ -55,6 +56,20 @@
     export INCUS_MACHINES_HOST_SUSPEND_RESTART=${lib.boolToString cfg.hostSuspend.restart}
     exec ${helperScript} host-suspend "$@"
   '';
+
+  incusPreseed = config.virtualisation.incus.preseed;
+  preseedCertificates =
+    if incusPreseed == null
+    then []
+    else incusPreseed.certificates or [];
+  hasIncusPreseed = incusPreseed != null;
+  certificatesJson = builtins.toJSON cfg.certificates;
+  certificatesFile = pkgs.writeText "incus-machines-certificates.json" certificatesJson;
+  certificatesStateFile = "/var/lib/incus-machines/certificates.json";
+  legacyCertificatesStateFile = "/var/lib/incus-machines/preseed-certificates.json";
+  invalidRestrictedCertificates = map (cert: cert.name) (
+    lib.filter (cert: cert.restricted && cert.projects == []) cfg.certificates
+  );
 
   sanitizeImageAlias = value:
     builtins.replaceStrings
@@ -110,6 +125,38 @@
         type = lib.types.attrsOf lib.types.str;
         default = {};
         description = "Additional incus device properties not covered by top-level fields.";
+      };
+    };
+  });
+
+  certificateType = lib.types.submodule (_: {
+    options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        description = "Incus trust-store certificate name.";
+      };
+
+      type = lib.mkOption {
+        type = lib.types.enum ["client" "metrics"];
+        default = "client";
+        description = "Incus trusted certificate type.";
+      };
+
+      restricted = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether to restrict the trusted certificate to selected projects.";
+      };
+
+      projects = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Projects this trusted certificate can access when restricted.";
+      };
+
+      certificate = lib.mkOption {
+        type = lib.types.str;
+        description = "PEM encoded public certificate material.";
       };
     };
   });
@@ -496,6 +543,16 @@ in {
       '';
     };
 
+    certificates = lib.mkOption {
+      type = lib.types.listOf certificateType;
+      default = [];
+      description = ''
+        Declarative Incus trusted certificates reconciled by this module. The
+        upstream Incus preseed remains responsible for fabric objects such as
+        projects, networks, profiles, and storage pools.
+      '';
+    };
+
     reconcilePolicy = lib.mkOption {
       type = lib.types.enum ["off" "best-effort" "strict"];
       default = "best-effort";
@@ -586,6 +643,16 @@ in {
           "services.incusMachines has duplicate ipv4Address assignments: "
           + lib.concatStringsSep "; " ipv4AddressConflicts;
       }
+      {
+        assertion = preseedCertificates == [];
+        message = "Use services.incusMachines.certificates instead of virtualisation.incus.preseed.certificates.";
+      }
+      {
+        assertion = invalidRestrictedCertificates == [];
+        message =
+          "services.incusMachines.certificates restricted certificates must declare at least one project: "
+          + lib.concatStringsSep ", " invalidRestrictedCertificates;
+      }
     ];
 
     virtualisation.incus = {
@@ -622,67 +689,90 @@ in {
       cfg.instances
     );
 
-    systemd.services = lib.mkIf hasInstances (let
-      incusGcDeps = [
-        "incus-preseed.service"
-        "incus-images.service"
-      ];
-    in
+    systemd.services =
       {
-        incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
-          description = "Reconciler for declared Incus guests";
-          wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
-          after = incusLifecycleDeps;
-          wants = incusLifecycleDeps;
-          serviceConfig = {
-            Type = "oneshot";
-            Environment = [
-              (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" cfg.reconcilePolicy)
-              (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
-            ];
-            ExecStart = "${helperScript} reconciler --all";
-          };
-        };
-
-        incus-images = {
-          description = "Import/update declared Incus images";
+        incus-machines-certificates = {
+          description = "Reconcile declared Incus trusted certificates";
           wantedBy = ["sysinit-reactivation.target"];
-          after = ["incus-preseed.service"];
-          wants = ["incus-preseed.service"];
+          after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+          wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
           restartTriggers = [
             helperScript
-            incusImagesStateFile
+            certificatesFile
           ];
           restartIfChanged = true;
-          serviceConfig = {
-            Type = "oneshot";
-            Environment = [
-              (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" cfg.imageTag)
-              (mkEnvAssignment "INCUS_MACHINES_DECLARED_IMAGES" declaredImagesJson)
-            ];
-            ExecStart = "${helperScript} images";
-          };
-        };
-
-        incus-machines-gc = {
-          description = "Garbage-collect Incus containers no longer declared in NixOS config";
-          wantedBy = ["sysinit-reactivation.target"];
-          after = incusGcDeps;
-          wants = incusGcDeps;
-          restartTriggers = [
-            helperScript
-            incusGcStateFile
+          serviceConfig.Environment = [
+            (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_FILE" certificatesFile)
+            (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_STATE_FILE" certificatesStateFile)
+            (mkEnvAssignment "INCUS_MACHINES_LEGACY_CERTIFICATES_STATE_FILE" legacyCertificatesStateFile)
           ];
-          restartIfChanged = true;
-          serviceConfig = {
-            Type = "oneshot";
-            Environment = [
-              (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
-            ];
-            ExecStart = "${helperScript} gc";
-          };
+          serviceConfig.Type = "oneshot";
+          script = ''
+            ${helperScript} certificates
+          '';
         };
       }
-      // lib.mapAttrs' mkMachineService cfg.instances);
+      // lib.optionalAttrs hasInstances (let
+        incusGcDeps = [
+          "incus-preseed.service"
+          "incus-images.service"
+        ];
+      in
+        {
+          incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
+            description = "Reconciler for declared Incus guests";
+            wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
+            after = incusLifecycleDeps;
+            wants = incusLifecycleDeps;
+            serviceConfig = {
+              Type = "oneshot";
+              Environment = [
+                (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" cfg.reconcilePolicy)
+                (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+              ];
+              ExecStart = "${helperScript} reconciler --all";
+            };
+          };
+
+          incus-images = {
+            description = "Import/update declared Incus images";
+            wantedBy = ["sysinit-reactivation.target"];
+            after = ["incus-preseed.service"];
+            wants = ["incus-preseed.service"];
+            restartTriggers = [
+              helperScript
+              incusImagesStateFile
+            ];
+            restartIfChanged = true;
+            serviceConfig = {
+              Type = "oneshot";
+              Environment = [
+                (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" cfg.imageTag)
+                (mkEnvAssignment "INCUS_MACHINES_DECLARED_IMAGES" declaredImagesJson)
+              ];
+              ExecStart = "${helperScript} images";
+            };
+          };
+
+          incus-machines-gc = {
+            description = "Garbage-collect Incus containers no longer declared in NixOS config";
+            wantedBy = ["sysinit-reactivation.target"];
+            after = incusGcDeps;
+            wants = incusGcDeps;
+            restartTriggers = [
+              helperScript
+              incusGcStateFile
+            ];
+            restartIfChanged = true;
+            serviceConfig = {
+              Type = "oneshot";
+              Environment = [
+                (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+              ];
+              ExecStart = "${helperScript} gc";
+            };
+          };
+        }
+        // lib.mapAttrs' mkMachineService cfg.instances);
   };
 }

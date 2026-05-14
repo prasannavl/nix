@@ -10,6 +10,13 @@ init_vars() {
 	host_suspend_grace_timeout="${INCUS_MACHINES_HOST_SUSPEND_GRACE_TIMEOUT-20}"
 	host_suspend_force_timeout="${INCUS_MACHINES_HOST_SUSPEND_FORCE_TIMEOUT-10}"
 	host_suspend_restart="${INCUS_MACHINES_HOST_SUSPEND_RESTART-true}"
+	certificates="${INCUS_MACHINES_CERTIFICATES-[]}"
+	certificates_file="${INCUS_MACHINES_CERTIFICATES_FILE-}"
+	certificates_state_file="${INCUS_MACHINES_CERTIFICATES_STATE_FILE-/var/lib/incus-machines/certificates.json}"
+	legacy_certificates_state_file="${INCUS_MACHINES_LEGACY_CERTIFICATES_STATE_FILE-/var/lib/incus-machines/preseed-certificates.json}"
+	if [ -n "$certificates_file" ]; then
+		certificates="$(cat "$certificates_file")"
+	fi
 	selected_json='[]'
 }
 
@@ -186,6 +193,171 @@ delete_instance_with_recovery() {
 	echo "Removing broken Incus container dir $broken_dir"
 	rm -rf -- "$broken_dir"
 	incus delete "$instance_name" --force
+}
+
+certificate_fingerprint() {
+	local cert_file fingerprint
+	cert_file="$1"
+
+	fingerprint="$(
+		openssl x509 -in "$cert_file" -noout -fingerprint -sha256 |
+			sed 's/.*=//' |
+			tr '[:upper:]' '[:lower:]' |
+			tr -d ':'
+	)"
+	[ -n "$fingerprint" ] || {
+		echo "Unable to compute Incus certificate fingerprint" >&2
+		return 1
+	}
+	printf '%s\n' "$fingerprint"
+}
+
+desired_certificates_state() {
+	local cert_file cert_json fingerprint name tmpdir
+	local index=0
+
+	printf '%s' "$certificates" | jq -e 'type == "array"' >/dev/null
+
+	tmpdir="$(mktemp -d)"
+	certificates_tmpdir="$tmpdir"
+	trap 'rm -rf -- "${certificates_tmpdir-}"' EXIT
+
+	printf '['
+	while IFS= read -r cert_json; do
+		name="$(printf '%s' "$cert_json" | jq -r '.name // empty')"
+		[ -n "$name" ] || {
+			echo "Declared Incus certificate is missing name" >&2
+			exit 1
+		}
+
+		cert_file="$tmpdir/cert-${index}.pem"
+		printf '%s' "$cert_json" | jq -r '.certificate // empty' >"$cert_file"
+		[ -s "$cert_file" ] || {
+			echo "Declared Incus certificate $name is missing certificate material" >&2
+			exit 1
+		}
+
+		fingerprint="$(certificate_fingerprint "$cert_file")"
+		[ "$index" -eq 0 ] || printf ','
+		jq -cn --arg name "$name" --arg fingerprint "$fingerprint" \
+			'{name: $name, fingerprint: $fingerprint}'
+		index=$((index + 1))
+	done < <(printf '%s' "$certificates" | jq -c '.[]')
+	printf ']\n'
+
+	rm -rf -- "$tmpdir"
+	certificates_tmpdir=""
+	trap - EXIT
+}
+
+remove_trusted_certificates() {
+	local live_trust match matches removal_state_json
+	removal_state_json="$1"
+
+	live_trust="$(incus config trust list --format=json)"
+	matches="$(
+		jq -nr \
+			--argjson live "$live_trust" \
+			--argjson removal "$removal_state_json" '
+				[
+					$live[] as $entry |
+					select(
+						any($removal[]; .name == $entry.name or .fingerprint == $entry.fingerprint)
+					) |
+					$entry.fingerprint
+				] |
+				unique |
+				.[]?
+			'
+	)"
+
+	while IFS= read -r match; do
+		[ -n "$match" ] || continue
+		echo "Removing existing Incus trusted certificate $match before reconcile"
+		incus config trust remove "$match"
+	done <<<"$matches"
+}
+
+previous_certificates_state() {
+	if [ -s "$certificates_state_file" ]; then
+		jq -c '[.[] | {name, fingerprint}]' "$certificates_state_file"
+	elif [ -s "$legacy_certificates_state_file" ]; then
+		jq -c '[.[] | {name, fingerprint}]' "$legacy_certificates_state_file"
+	else
+		printf '[]\n'
+	fi
+}
+
+add_declared_certificates() {
+	local cert_file cert_json name projects restricted tmpdir type
+	local index=0
+
+	tmpdir="$(mktemp -d)"
+	certificates_tmpdir="$tmpdir"
+	trap 'rm -rf -- "${certificates_tmpdir-}"' EXIT
+
+	while IFS= read -r cert_json; do
+		name="$(printf '%s' "$cert_json" | jq -r '.name')"
+		type="$(printf '%s' "$cert_json" | jq -r '.type // "client"')"
+		restricted="$(printf '%s' "$cert_json" | jq -r '.restricted // false')"
+		projects="$(printf '%s' "$cert_json" | jq -r '(.projects // []) | join(",")')"
+		cert_file="$tmpdir/cert-${index}.pem"
+		printf '%s' "$cert_json" | jq -r '.certificate' >"$cert_file"
+
+		echo "Adding Incus trusted certificate $name"
+		if [ "$restricted" = "true" ]; then
+			incus config trust add-certificate "$cert_file" \
+				--name "$name" \
+				--type "$type" \
+				--restricted \
+				--projects "$projects"
+		else
+			incus config trust add-certificate "$cert_file" \
+				--name "$name" \
+				--type "$type"
+		fi
+		index=$((index + 1))
+	done < <(printf '%s' "$certificates" | jq -c '.[]')
+
+	rm -rf -- "$tmpdir"
+	certificates_tmpdir=""
+	trap - EXIT
+}
+
+commit_certificates_state() {
+	local desired_state state_dir tmp_file
+
+	desired_state="$1"
+	state_dir="$(dirname "$certificates_state_file")"
+	mkdir -p "$state_dir"
+	tmp_file="$(mktemp "${certificates_state_file}.tmp.XXXXXX")"
+	printf '%s\n' "$desired_state" >"$tmp_file"
+	chmod 0644 "$tmp_file"
+	mv -f "$tmp_file" "$certificates_state_file"
+}
+
+certificates_main() {
+	local desired_state previous_state removal_state
+
+	desired_state="$(desired_certificates_state)"
+	previous_state="$(previous_certificates_state)"
+
+	if ! incus info >/dev/null 2>&1; then
+		echo "Incus daemon is unavailable; certificate reconcile cannot continue" >&2
+		exit 1
+	fi
+
+	removal_state="$(
+		jq -cn \
+			--argjson previous "$previous_state" \
+			--argjson desired "$desired_state" '
+				($previous + $desired) |
+				unique_by([.name, .fingerprint])
+			'
+	)"
+	remove_trusted_certificates "$removal_state"
+	add_declared_certificates
+	commit_certificates_state "$desired_state"
 }
 
 reconciler_main() {
@@ -832,6 +1004,9 @@ main() {
 	shift
 
 	case "$command" in
+	certificates)
+		certificates_main "$@"
+		;;
 	reconciler)
 		reconciler_main "$@"
 		;;
