@@ -4,12 +4,14 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
-readonly NIXBOT_VERSION="2026.04.22.0"
+readonly NIXBOT_VERSION="2026.05.12.1"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 
 readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
 	nixpkgs#age
+	nixpkgs#cloudflared
+	nixpkgs#coreutils
 	nixpkgs#git
 	nixpkgs#jq
 	nixpkgs#nixos-rebuild-ng
@@ -27,6 +29,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	ssh
 	scp
 	ssh-keygen
+	stty
 	tofu
 )
 readonly NIXBOT_SSH_ARGV_PREFIX="__nixbot_argv64"
@@ -36,7 +39,7 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
-  nixbot <run|deploy|build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -48,6 +51,7 @@ Workflow Actions:
   run             Run the full workflow.
   deploy          Run host build and deploy.
   build           Run host build only.
+  dev-build       Build hosts into repo-local result-<host> GC-root links.
   tf              Run all Terraform phases.
   tf-dns          Run the DNS Terraform phase.
   tf-platform     Run the platform Terraform phase.
@@ -66,9 +70,14 @@ Build Action Options (`run`, `deploy`, `build`):
   --build-host     local|target|<ssh-host> (default: local)
   --build-jobs     Parallel host builds (default: 1)
 
+Dev Build Action Options (`dev-build`):
+  --hosts          Hosts to build into result-<host> links (default: all)
+  --build-jobs     Parallel host builds (default: 1)
+
 Deploy Action Options (`run`, `deploy`):
   --goal           switch|boot|test|dry-activate (default: switch)
-  --deploy-jobs    Parallel deploys within a dependency wave (default: 1)
+  --deploy-jobs    Parallel deploys within a dependency wave (default: 16)
+  --verify-jobs    Parallel rollback snapshot and health-check work (default: 16)
   --bootstrap      Always use bootstrap SSH user/key selection
   --no-rollback    Disable rollback if any deploy fails
   --prefix-host-logs Always prefix host log lines
@@ -88,6 +97,8 @@ Auth / Config Options:
   --ssh-key        SSH key path for deploy target auth (must be .age when set)
   --known-hosts    known_hosts override for all hosts
   --config         Nix deploy config path (default: hosts/nixbot.nix)
+                   Per-host config supports proxyCommand for explicit SSH
+                   transports such as Cloudflare Access.
   --age-key-file   Age/SSH identity used to decrypt `*.age` secrets
   --discover-keys  Fallback decrypt identity discovery (auto|on|off; default: auto)
 
@@ -118,6 +129,7 @@ Environment (Build Actions):
 Environment (Deploy Actions):
   NIXBOT_GOAL                 Same as --goal
   NIXBOT_JOBS                 Same as --deploy-jobs
+  NIXBOT_VERIFY_JOBS          Same as --verify-jobs
   NIXBOT_NO_ROLLBACK          Same as --no-rollback (bool)
   NIXBOT_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
 
@@ -202,6 +214,24 @@ resolve_ssh_tty_stdin_path() {
 	fi
 }
 
+capture_initial_tty_state() {
+	local tty_path="" tty_state=""
+
+	tty_path="$(resolve_ssh_tty_stdin_path)"
+	[ "${tty_path}" = "/dev/tty" ] || return 0
+	if tty_state="$(stty -g <"${tty_path}" 2>/dev/null)"; then
+		NIXBOT_TTY_STDIN_PATH="${tty_path}"
+		NIXBOT_TTY_STTY_STATE="${tty_state}"
+	fi
+}
+
+restore_initial_tty_state() {
+	[ -n "${NIXBOT_TTY_STDIN_PATH}" ] || return 0
+	[ -n "${NIXBOT_TTY_STTY_STATE}" ] || return 0
+
+	stty "${NIXBOT_TTY_STTY_STATE}" <"${NIXBOT_TTY_STDIN_PATH}" 2>/dev/null || true
+}
+
 init_vars() {
 	HOSTS_RAW="${NIXBOT_HOSTS:-all}"
 	ACTION=""
@@ -209,7 +239,9 @@ init_vars() {
 	GOAL="${NIXBOT_GOAL:-switch}"
 	BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"
 	BUILD_JOBS="${NIXBOT_BUILD_JOBS:-1}"
-	NIXBOT_PARALLEL_JOBS="${NIXBOT_JOBS:-1}"
+	NIXBOT_BUILD_NIX_ARGS=()
+	NIXBOT_PARALLEL_JOBS="${NIXBOT_JOBS:-16}"
+	NIXBOT_VERIFY_JOBS="${NIXBOT_VERIFY_JOBS:-16}"
 	NIXBOT_IF_CHANGED=1
 	TF_IF_CHANGED=1
 	FORCE_REQUESTED=0
@@ -329,6 +361,9 @@ init_vars() {
 	NIXBOT_HOSTS_JSON='{}'
 
 	NIXBOT_TMP_DIR=""
+	NIXBOT_TTY_LOCK_DIR=""
+	NIXBOT_TTY_STDIN_PATH=""
+	NIXBOT_TTY_STTY_STATE=""
 	NIXBOT_CONFIG_DIR=""
 	BOOTSTRAP_READY_NODES=""
 	PRIMARY_READY_NODES=""
@@ -349,6 +384,9 @@ init_vars() {
 	ROLLBACK_FAILED_HOSTS=()
 	DEPLOY_FAILED_ROLLBACK_OK_HOSTS=()
 	DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=()
+	HEALTH_FAILED_HOSTS=()
+	HEALTH_FAILED_ROLLBACK_OK_HOSTS=()
+	HEALTH_FAILED_ROLLBACK_FAILED_HOSTS=()
 	FULLY_SKIPPED_HOSTS=()
 	OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS=()
 	OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS=()
@@ -696,7 +734,7 @@ tf_project_name_is_configured() {
 
 action_is_supported() {
 	case "${1:-}" in
-	run | build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap) return 0 ;;
+	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap) return 0 ;;
 	*)
 		if action_is_tf_project_only "${1:-}"; then
 			tf_project_name_is_configured "$(tf_action_project_name "${1:-}")"
@@ -719,6 +757,7 @@ action_is_tf_only() {
 resolved_host_action() {
 	case "${1:-}" in
 	run) printf 'deploy\n' ;;
+	dev-build) printf 'build\n' ;;
 	*) printf '%s\n' "${1:-}" ;;
 	esac
 }
@@ -806,6 +845,11 @@ parse_args() {
 		--deploy-jobs | --deploy-jobs=*)
 			take_optval "$@"
 			NIXBOT_PARALLEL_JOBS="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
+		--verify-jobs | --verify-jobs=*)
+			take_optval "$@"
+			NIXBOT_VERIFY_JOBS="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
 		--force)
@@ -959,11 +1003,12 @@ parse_args() {
 
 	[[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --build-jobs: ${BUILD_JOBS} (must be a positive integer)"
 	[[ "${NIXBOT_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${NIXBOT_PARALLEL_JOBS} (must be a positive integer)"
+	[[ "${NIXBOT_VERIFY_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --verify-jobs: ${NIXBOT_VERIFY_JOBS} (must be a positive integer)"
 	case "${LOG_FORMAT}" in
 	auto | gh | github-actions | plain) ;;
 	*) die "Unsupported --log-format: ${LOG_FORMAT}" ;;
 	esac
-	if [ "${PREFIX_HOST_LOGS_EXPLICIT}" -eq 0 ] && { [ "${BUILD_JOBS}" -gt 1 ] || [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ]; }; then
+	if [ "${PREFIX_HOST_LOGS_EXPLICIT}" -eq 0 ] && { [ "${BUILD_JOBS}" -gt 1 ] || [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ] || [ "${NIXBOT_VERIFY_JOBS}" -gt 1 ]; }; then
 		FORCE_PREFIX_HOST_LOGS=1
 	fi
 	if [ -n "${SHA}" ] && ! [[ "${SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
@@ -974,11 +1019,15 @@ parse_args() {
 		[ -n "${BASTION_TRIGGER_HOST}" ] || die "--bastion-host value is required"
 		[ -n "${BASTION_TRIGGER_USER}" ] || die "--bastion-user value is required"
 	fi
+	if [ "${ACTION}" = "dev-build" ] && [ -n "${SHA}" ]; then
+		die "dev-build uses the current local checkout; --sha is unsupported"
+	fi
 }
 
 cleanup() {
 	trap - HUP INT TERM EXIT
 	terminate_background_jobs
+	restore_initial_tty_state
 	log_group_end_all
 	cleanup_repo_worktree
 	if [ -n "${REPO_ROOT_LOCK_DIR}" ]; then
@@ -987,6 +1036,7 @@ cleanup() {
 	if [ -n "${RUNTIME_WORK_DIR}" ] && [ -d "${RUNTIME_WORK_DIR}" ]; then
 		rm -rf "${RUNTIME_WORK_DIR}"
 	fi
+	restore_initial_tty_state
 }
 
 request_hangup() {
@@ -1259,6 +1309,7 @@ ensure_tmp_dir() {
 	TMP_SSH_DIR="${NIXBOT_TMP_DIR}/ssh"
 	TMP_TF_ARTIFACT_DIR="$(phase_artifact_dir_path "${NIXBOT_TMP_DIR}" "tf")"
 	TMP_ACTIVE_DEPLOY_DIR="${NIXBOT_TMP_DIR}/active-deploys"
+	NIXBOT_TTY_LOCK_DIR="${NIXBOT_TMP_DIR}/ssh-tty.lock"
 	mkdir -p "${TMP_SECRETS_DIR}" "${TMP_SSH_DIR}" "${TMP_ACTIVE_DEPLOY_DIR}"
 	ensure_phase_runtime_dirs "${NIXBOT_TMP_DIR}" tf
 }
@@ -1365,6 +1416,14 @@ cleanup_repo_worktree() {
 		git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
 	fi
 	release_repo_root_lock
+}
+
+prepare_dev_build_workspace() {
+	local current_repo_root=""
+
+	current_repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+	[ -n "${current_repo_root}" ] || die "dev-build must be run from inside a Git checkout"
+	cd "${current_repo_root}"
 }
 
 configure_bastion_trigger_ssh_opts() {
@@ -2293,7 +2352,8 @@ resolve_deploy_target() {
       bootstrapPort: portfb($cfg.bootstrapPort; portfb($cfg.port; $defBPort)),
       bootstrapKeyPath: fb($cfg.bootstrapKeyPath; $defBKeyPath),
       ageIdentityKey: fb($cfg.ageIdentityKey; $defAgeKey),
-      proxyJump: ($cfg.proxyJump // "")
+      proxyJump: ($cfg.proxyJump // ""),
+      proxyCommand: ($cfg.proxyCommand // "")
     }' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
@@ -2320,13 +2380,15 @@ resolve_proxy_chain() {
         (portfb($cfg.port; $defPort)) as $port |
         (fb($cfg.key; $defKey)) as $keyPath |
         ($cfg.proxyJump // "") as $next |
+        ($cfg.proxyCommand // "") as $proxyCommand |
         resolve_chain($next; $visited + [$h]) + [{
           node: $h,
           target: $target,
           port: $port,
           connectTarget: (if $user == "" then $target else "\($user)@\($target)" end),
           connectPort: $port,
-          keyPath: $keyPath
+          keyPath: $keyPath,
+          proxyCommand: $proxyCommand
         }]
       end;
     resolve_chain($start; [])[]
@@ -2976,11 +3038,48 @@ run_target_command() {
 	if [ "${local_exec}" -eq 1 ]; then
 		bash -c "${target_cmd}"
 	elif [ "${tty_mode}" -eq 1 ]; then
-		ssh -tt "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}" <"$(resolve_ssh_tty_stdin_path)"
+		run_tty_target_command "${ssh_target}" "${target_cmd}" "${ssh_opts[@]}"
 	else
 		# shellcheck disable=SC2029
 		ssh "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}"
 	fi
+}
+
+acquire_tty_ssh_lock() {
+	ensure_tmp_dir
+
+	while ! mkdir "${NIXBOT_TTY_LOCK_DIR}" 2>/dev/null; do
+		sleep 0.1
+	done
+}
+
+release_tty_ssh_lock() {
+	[ -n "${NIXBOT_TTY_LOCK_DIR}" ] || return 0
+	rm -rf "${NIXBOT_TTY_LOCK_DIR}" || true
+}
+
+run_tty_target_command() {
+	local ssh_target="$1" target_cmd="$2" tty_stdin_path="" rc=0
+	shift 2
+	local -a ssh_opts=("$@")
+
+	tty_stdin_path="$(resolve_ssh_tty_stdin_path)"
+	if [ "${tty_stdin_path}" = "/dev/tty" ]; then
+		acquire_tty_ssh_lock
+	fi
+
+	if ssh -tt "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}" <"${tty_stdin_path}"; then
+		rc=0
+	else
+		rc="$?"
+	fi
+
+	if [ "${tty_stdin_path}" = "/dev/tty" ]; then
+		release_tty_ssh_lock
+		restore_initial_tty_state
+	fi
+
+	return "${rc}"
 }
 
 transport_retry_backoff_seconds() {
@@ -3089,25 +3188,19 @@ resolve_target_command_user() {
 	fi
 }
 
-should_ask_sudo_password() {
-	local deploy_user="$1" using_bootstrap_fallback="$2"
-
-	[ "${using_bootstrap_fallback}" -eq 1 ] || { [ "${deploy_user}" != "root" ] && [ "${deploy_user}" != "nixbot" ]; }
-}
-
 resolve_target_sudo_policy() {
-	local local_exec="$1" ssh_target="$2" using_bootstrap_fallback="$3"
+	local local_exec="$1" ssh_target="$2"
 	local deploy_user="" ask_sudo_password=0 sudo_tty_mode=0
 
 	deploy_user="$(resolve_target_command_user "${local_exec}" "${ssh_target}")"
-	if should_ask_sudo_password "${deploy_user}" "${using_bootstrap_fallback}"; then
-		ask_sudo_password=1
-	fi
+	# nixbot deploys are noninteractive automation. Non-root users must have
+	# passwordless sudo or fail fast; otherwise bootstrap fallback users can hang
+	# the run at a remote sudo password prompt.
+	ask_sudo_password=0
 
-	# Remote commands that invoke sudo should always allocate a TTY. Password
-	# prompting is a separate concern from satisfying remote sudo/requiretty
-	# policy.
-	if [ "${local_exec}" -eq 0 ]; then
+	# The TTY path is intentionally unreachable unless a future explicit
+	# interactive mode enables sudo password prompting.
+	if [ "${local_exec}" -eq 0 ] && [ "${ask_sudo_password}" -eq 1 ]; then
 		sudo_tty_mode=1
 	fi
 
@@ -3372,7 +3465,7 @@ prepare_host_ssh_contexts() {
 	local -n phsc_bootstrap_ssh_opts_out_ref="$6"
 	# shellcheck disable=SC2178,SC2034
 	local -n phsc_bootstrap_nix_sshopts_out_ref="$7"
-	local proxy_chain="${8:-}"
+	local proxy_chain="${8:-}" proxy_command="${9:-}"
 	local known_hosts_file="" build_host_host=""
 
 	# shellcheck disable=SC2034
@@ -3393,13 +3486,13 @@ prepare_host_ssh_contexts() {
 	# When there is a proxy chain, the target host is not directly reachable
 	# from here — its host key will be scanned later through the proxy in
 	# prepare_deploy_context.  Scan it now only when there is no proxy.
-	if [ -z "${proxy_chain}" ]; then
+	if [ -z "${proxy_chain}" ] && [ -z "${proxy_command}" ]; then
 		ensure_known_host "${host}" "${known_hosts}" "${known_hosts_file}"
 	fi
 	# Scan all directly-reachable intermediate hops.
 	if [ -n "${proxy_chain}" ]; then
 		local -a _chain_hops=()
-		local hop_json="" hop_target=""
+		local hop_json="" hop_target="" hop_proxy_command=""
 		while IFS= read -r hop_json; do
 			[ -n "${hop_json}" ] || continue
 			_chain_hops+=("${hop_json}")
@@ -3407,8 +3500,13 @@ prepare_host_ssh_contexts() {
 		# The first hop is directly reachable; subsequent hops are behind proxies
 		# and will be scanned through the proxy scripts built in prepare_deploy_context.
 		if [ "${#_chain_hops[@]}" -gt 0 ]; then
-			hop_target="$(jq -r '.target' <<<"${_chain_hops[0]}")"
-			ensure_known_host "${hop_target}" "${known_hosts}" "${known_hosts_file}"
+			{
+				read -r hop_target
+				read -r hop_proxy_command
+			} < <(jq -r '[.target, (.proxyCommand // "")] | .[]' <<<"${_chain_hops[0]}")
+			if [ -z "${hop_proxy_command}" ]; then
+				ensure_known_host "${hop_target}" "${known_hosts}" "${known_hosts_file}"
+			fi
 		fi
 	fi
 	case "${BUILD_HOST}" in
@@ -3426,13 +3524,37 @@ prepare_host_ssh_contexts() {
 	# is recorded on first contact — same trust model as the proxy scripts.
 	# accept-new still rejects CHANGED keys (MITM protection).
 	local host_key_check="yes"
-	if [ -n "${proxy_chain}" ]; then
+	if [ -n "${proxy_chain}" ] || [ -n "${proxy_command}" ]; then
 		host_key_check="accept-new"
 	fi
 	init_known_hosts_ssh_context 1 "${known_hosts_file}" phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref "${host_key_check}"
 	init_known_hosts_ssh_context 0 "${known_hosts_file}" phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref "${host_key_check}"
 	apply_control_master_to_ssh_context "${node}" primary phsc_host_ssh_opts_out_ref phsc_host_nix_sshopts_out_ref
 	apply_control_master_to_ssh_context "${node}" bootstrap phsc_bootstrap_ssh_opts_out_ref phsc_bootstrap_nix_sshopts_out_ref
+}
+
+expand_proxy_command_template() {
+	local template="$1" host="$2" port="$3"
+	local expanded="${template}"
+	expanded="${expanded//%h/${host}}"
+	expanded="${expanded//%p/${port}}"
+	printf '%s\n' "${expanded}"
+}
+
+write_static_proxy_command_script() {
+	local script_path="$1" proxy_command="$2" host="$3" port="$4"
+	local expanded_proxy_command=""
+
+	expanded_proxy_command="$(expand_proxy_command_template "${proxy_command}" "${host}" "${port}")"
+	{
+		printf '%s\n' '#!/usr/bin/env bash'
+		printf '%s\n' 'set -Eeuo pipefail'
+		printf 'proxy_command=%q\n' "${expanded_proxy_command}"
+		cat <<'EOF'
+exec bash -c "${proxy_command}"
+EOF
+	} >"${script_path}"
+	chmod +x "${script_path}"
 }
 
 write_proxy_command_script() {
@@ -3477,6 +3599,7 @@ apply_proxy_chain_to_ssh_contexts() {
 	local hop_json="" prev_script="" proxy_script="" proxy_cmd=""
 	local i=0 fwd_host="" fwd_port=22
 	local hop_target="" _hop_port="" hop_connect_target="" hop_connect_port="" hop_key_path="" hop_key_file=""
+	local hop_proxy_command="" hop_direct_proxy_script="" hop_previous_proxy_script=""
 
 	[ -n "${proxy_chain}" ] || return 0
 
@@ -3506,7 +3629,8 @@ apply_proxy_chain_to_ssh_contexts() {
 			read -r hop_connect_target
 			read -r hop_connect_port
 			read -r hop_key_path
-		} < <(jq -r '[.target, (.port // "22"), .connectTarget, (.connectPort // .port // "22"), (.keyPath // "")] | .[]' <<<"${hop_json}")
+			read -r hop_proxy_command
+		} < <(jq -r '[.target, (.port // "22"), .connectTarget, (.connectPort // .port // "22"), (.keyPath // ""), (.proxyCommand // "")] | .[]' <<<"${hop_json}")
 		if [ "${i}" -lt "$((${#chain_hops[@]} - 1))" ]; then
 			fwd_host="$(jq -r '.target' <<<"${chain_hops[i + 1]}")"
 			fwd_port="$(jq -r '(.port // "22")' <<<"${chain_hops[i + 1]}")"
@@ -3522,13 +3646,24 @@ apply_proxy_chain_to_ssh_contexts() {
 			fi
 		fi
 
+		hop_previous_proxy_script="${prev_script}"
+		if [ -z "${hop_previous_proxy_script}" ] && [ -n "${hop_proxy_command}" ]; then
+			hop_direct_proxy_script="${TMP_SSH_DIR}/proxy-${safe_node}-${i}-direct.sh"
+			write_static_proxy_command_script \
+				"${hop_direct_proxy_script}" \
+				"${hop_proxy_command}" \
+				"$(ssh_host_from_target "${hop_connect_target}")" \
+				"${hop_connect_port}"
+			hop_previous_proxy_script="${hop_direct_proxy_script}"
+		fi
+
 		write_proxy_command_script \
 			"${proxy_script}" \
 			"${proxy_known_hosts_file}" \
 			"$(format_ssh_forward_target "${fwd_host}" "${fwd_port}")" \
 			"$(format_ssh_connect_target "${hop_connect_target}")" \
 			"${hop_connect_port}" \
-			"${prev_script}" \
+			"${hop_previous_proxy_script}" \
 			"${hop_key_file}"
 		prev_script="${proxy_script}"
 	done
@@ -3542,12 +3677,12 @@ apply_proxy_chain_to_ssh_contexts() {
 
 build_deploy_ssh_contexts() {
 	local node="$1" host="$2" port="$3" bootstrap_port="$4" known_hosts="$5" proxy_chain="$6"
-	local key_path="$7" bootstrap_key_path="$8"
+	local proxy_command="$7" key_path="$8" bootstrap_key_path="$9"
 	# shellcheck disable=SC2178,SC2034
-	local -n bdsc_host_ssh_opts_out_ref="$9" bdsc_host_nix_sshopts_out_ref="${10}"
+	local -n bdsc_host_ssh_opts_out_ref="${10}" bdsc_host_nix_sshopts_out_ref="${11}"
 	# shellcheck disable=SC2178,SC2034
-	local -n bdsc_bootstrap_ssh_opts_out_ref="${11}" bdsc_bootstrap_nix_sshopts_out_ref="${12}"
-	local deploy_key_file="" bootstrap_key_file=""
+	local -n bdsc_bootstrap_ssh_opts_out_ref="${12}" bdsc_bootstrap_nix_sshopts_out_ref="${13}"
+	local deploy_key_file="" bootstrap_key_file="" proxy_script=""
 
 	prepare_host_ssh_contexts \
 		"${node}" \
@@ -3557,10 +3692,20 @@ build_deploy_ssh_contexts() {
 		bdsc_host_nix_sshopts_out_ref \
 		bdsc_bootstrap_ssh_opts_out_ref \
 		bdsc_bootstrap_nix_sshopts_out_ref \
-		"${proxy_chain}" || return 1
+		"${proxy_chain}" \
+		"${proxy_command}" || return 1
 
 	apply_port_to_ssh_context "${port}" bdsc_host_ssh_opts_out_ref bdsc_host_nix_sshopts_out_ref
 	apply_port_to_ssh_context "${bootstrap_port}" bdsc_bootstrap_ssh_opts_out_ref bdsc_bootstrap_nix_sshopts_out_ref
+
+	if [ -n "${proxy_command}" ]; then
+		proxy_script="${TMP_SSH_DIR}/proxy-$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")-direct.sh"
+		write_static_proxy_command_script "${proxy_script}" "${proxy_command}" "${host}" "${port}"
+		bdsc_host_ssh_opts_out_ref+=(-o "ProxyCommand=${proxy_script}")
+		bdsc_host_nix_sshopts_out_ref="${bdsc_host_nix_sshopts_out_ref:+${bdsc_host_nix_sshopts_out_ref} }-o ProxyCommand=${proxy_script}"
+		bdsc_bootstrap_ssh_opts_out_ref+=(-o "ProxyCommand=${proxy_script}")
+		bdsc_bootstrap_nix_sshopts_out_ref="${bdsc_bootstrap_nix_sshopts_out_ref:+${bdsc_bootstrap_nix_sshopts_out_ref} }-o ProxyCommand=${proxy_script}"
+	fi
 
 	apply_proxy_chain_to_ssh_contexts \
 		"${node}" \
@@ -3686,12 +3831,12 @@ log_primary_probe_failure() {
 
 ensure_primary_deploy_connectivity() {
 	local node="$1" host="$2" port="$3" bootstrap_port="$4" known_hosts="$5" ssh_target="$6"
-	local full_proxy_chain="$7" effective_proxy_chain="$8"
-	local key_path="$9" bootstrap_key_path="${10}" age_identity_key="${11}"
+	local full_proxy_chain="$7" effective_proxy_chain="$8" proxy_command="$9"
+	local key_path="${10}" bootstrap_key_path="${11}" age_identity_key="${12}"
 	# shellcheck disable=SC2178,SC2034
-	local -n epdc_ssh_opts_inout_ref="${12}" epdc_bootstrap_ssh_opts_inout_ref="${14}"
+	local -n epdc_ssh_opts_inout_ref="${13}" epdc_bootstrap_ssh_opts_inout_ref="${15}"
 	# shellcheck disable=SC2178,SC2034
-	local -n epdc_nix_sshopts_inout_ref="${13}" epdc_bootstrap_nix_sshopts_inout_ref="${15}"
+	local -n epdc_nix_sshopts_inout_ref="${14}" epdc_bootstrap_nix_sshopts_inout_ref="${16}"
 	local direct_probe_output="" proxied_probe_output=""
 
 	if probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
@@ -3714,6 +3859,7 @@ ensure_primary_deploy_connectivity() {
 		"${bootstrap_port}" \
 		"${known_hosts}" \
 		"${full_proxy_chain}" \
+		"${proxy_command}" \
 		"${key_path}" \
 		"${bootstrap_key_path}" \
 		epdc_ssh_opts_inout_ref \
@@ -3863,7 +4009,7 @@ prepare_deploy_context() {
 	local node="$1" mode="${2:-normal}"
 	local target_info="" user="" host="" port="" key_path="" known_hosts=""
 	local bootstrap_key="" bootstrap_user="" bootstrap_port="" bootstrap_key_path=""
-	local age_identity_key="" proxy_jump="" full_proxy_chain="" effective_proxy_chain=""
+	local age_identity_key="" proxy_jump="" proxy_command="" full_proxy_chain="" effective_proxy_chain=""
 	local ssh_target="" bootstrap_ssh_target=""
 	local local_exec=0 primary_target_ready=1 self_target_match=0
 	local -a ssh_opts=() bootstrap_ssh_opts=()
@@ -3885,7 +4031,8 @@ prepare_deploy_context() {
 		read -r bootstrap_key_path
 		read -r age_identity_key
 		read -r proxy_jump
-	} < <(jq -r '[.user, .target, (.port // "22"), (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapPort // .port // "22"), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // "")] | .[]' <<<"${target_info}")
+		read -r proxy_command
+	} < <(jq -r '[.user, .target, (.port // "22"), (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapPort // .port // "22"), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // ""), (.proxyCommand // "")] | .[]' <<<"${target_info}")
 
 	ssh_target="${user}@${host}"
 	bootstrap_ssh_target="${bootstrap_user}@${host}"
@@ -3924,6 +4071,7 @@ prepare_deploy_context() {
 		"${bootstrap_port}" \
 		"${known_hosts}" \
 		"${effective_proxy_chain}" \
+		"${proxy_command}" \
 		"${key_path}" \
 		"${bootstrap_key_path}" \
 		ssh_opts \
@@ -3966,6 +4114,7 @@ prepare_deploy_context() {
 			"${ssh_target}" \
 			"${full_proxy_chain}" \
 			"${effective_proxy_chain}" \
+			"${proxy_command}" \
 			"${key_path}" \
 			"${bootstrap_key_path}" \
 			"${age_identity_key}" \
@@ -4023,6 +4172,7 @@ prepare_deploy_context() {
 						"${ssh_target}" \
 						"${full_proxy_chain}" \
 						"${effective_proxy_chain}" \
+						"${proxy_command}" \
 						"${key_path}" \
 						"${bootstrap_key_path}" \
 						"${age_identity_key}" \
@@ -5097,7 +5247,7 @@ run_snapshot_job() {
 
 run_initial_snapshot_wave() {
 	local level_group="$1" snapshot_dir="$2" snapshot_log_dir="$3" snapshot_status_dir="$4"
-	local snapshot_parallel="${5:-0}" snapshot_parallel_jobs="${6:-1}"
+	local verify_parallel="${5:-0}" verify_parallel_jobs="${6:-1}"
 	local -a level_hosts=()
 	local node="" active_jobs=0 status_file="" log_file="" status=""
 
@@ -5107,12 +5257,12 @@ run_initial_snapshot_wave() {
 	log_subsection "Snapshot Wave 0: $(join_by_comma "${level_hosts[@]}")"
 	for node in "${level_hosts[@]}"; do
 		[ -n "${node}" ] || continue
-		if [ "${snapshot_parallel}" -eq 1 ]; then
+		if [ "${verify_parallel}" -eq 1 ]; then
 			status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
 			log_file="$(phase_dir_item_log_file "${snapshot_log_dir}" "${node}")"
 			run_snapshot_job "${node}" "${snapshot_dir}/${node}.path" "${status_file}" "${log_file}" &
 			active_jobs=$((active_jobs + 1))
-			wait_for_job_slot active_jobs "${snapshot_parallel_jobs}" || return "$?"
+			wait_for_job_slot active_jobs "${verify_parallel_jobs}" || return "$?"
 			continue
 		fi
 
@@ -5121,7 +5271,7 @@ run_initial_snapshot_wave() {
 		fi
 	done
 
-	if [ "${snapshot_parallel}" -eq 1 ]; then
+	if [ "${verify_parallel}" -eq 1 ]; then
 		drain_job_slots active_jobs || return "$?"
 		for node in "${level_hosts[@]}"; do
 			[ -n "${node}" ] || continue
@@ -5139,7 +5289,7 @@ run_initial_snapshot_wave() {
 
 ensure_wave_snapshots() {
 	local snapshot_dir="$1" snapshot_log_dir="$2" snapshot_status_dir="$3"
-	local snapshot_parallel="${4:-0}" snapshot_parallel_jobs="${5:-1}"
+	local verify_parallel="${4:-0}" verify_parallel_jobs="${5:-1}"
 	shift 5
 
 	local node="" snapshot_file="" rc=0 active_jobs=0 status_file="" log_file="" status=""
@@ -5155,12 +5305,12 @@ ensure_wave_snapshots() {
 			continue
 		fi
 
-		if [ "${snapshot_parallel}" -eq 1 ]; then
+		if [ "${verify_parallel}" -eq 1 ]; then
 			status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
 			log_file="$(phase_dir_item_log_file "${snapshot_log_dir}" "${node}")"
 			run_snapshot_job "${node}" "${snapshot_file}" "${status_file}" "${log_file}" &
 			active_jobs=$((active_jobs + 1))
-			wait_for_job_slot active_jobs "${snapshot_parallel_jobs}" || return "$?"
+			wait_for_job_slot active_jobs "${verify_parallel_jobs}" || return "$?"
 			continue
 		fi
 
@@ -5170,7 +5320,7 @@ ensure_wave_snapshots() {
 		fi
 	done
 
-	if [ "${snapshot_parallel}" -eq 1 ]; then
+	if [ "${verify_parallel}" -eq 1 ]; then
 		drain_job_slots active_jobs || return "$?"
 		for node in "$@"; do
 			[ -n "${node}" ] || continue
@@ -5377,32 +5527,41 @@ rollback_optional_deploy_host() {
 	return 0
 }
 
-rollback_failed_deploy_host() {
+rollback_failed_host() {
 	local node="$1" snapshot_dir="$2" rollback_log_dir="$3" rollback_status_dir="$4"
+	local failure_label="$5" rollback_ok_hosts_name="$6" rollback_failed_hosts_name="$7"
 	local status_file="" log_file="" snapshot_path="" rc=""
 
 	status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
 	log_file="$(phase_dir_item_log_file "${rollback_log_dir}" "${node}")"
 	snapshot_path="${snapshot_dir}/${node}.path"
 
-	echo "Deploy failed for ${node}; attempting host-local rollback" >&2
+	echo "${failure_label} failed for ${node}; attempting host-local rollback" >&2
 	if ! snapshot_exists "${snapshot_path}"; then
-		echo "Deploy rollback unavailable for ${node}: no rollback snapshot recorded" >&2
+		echo "${failure_label} rollback unavailable for ${node}: no rollback snapshot recorded" >&2
 		write_status_file "${status_file}" "snapshot-missing"
-		append_unique_array_item DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS "${node}"
+		append_unique_array_item "${rollback_failed_hosts_name}" "${node}"
 		return 0
 	fi
 
 	if run_streamed_host_command "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "$(cat "${snapshot_path}")"; then
 		write_status_file "${status_file}" 0
-		append_unique_array_item DEPLOY_FAILED_ROLLBACK_OK_HOSTS "${node}"
+		append_unique_array_item "${rollback_ok_hosts_name}" "${node}"
 	else
 		rc="$?"
 		write_status_file "${status_file}" "${rc}"
-		append_unique_array_item DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS "${node}"
+		append_unique_array_item "${rollback_failed_hosts_name}" "${node}"
 	fi
 
 	return 0
+}
+
+rollback_failed_deploy_host() {
+	rollback_failed_host "$1" "$2" "$3" "$4" deploy DEPLOY_FAILED_ROLLBACK_OK_HOSTS DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS
+}
+
+rollback_failed_health_host() {
+	rollback_failed_host "$1" "$2" "$3" "$4" health HEALTH_FAILED_ROLLBACK_OK_HOSTS HEALTH_FAILED_ROLLBACK_FAILED_HOSTS
 }
 
 _remote_pre_switch_system_failed_state_reset() {
@@ -5677,6 +5836,7 @@ init_run_dirs() {
 	local -n ird_deploy_log_dir_out_ref="$6" ird_deploy_status_dir_out_ref="$7"
 	local -n ird_build_out_dir_out_ref="$8" ird_snapshot_dir_out_ref="$9"
 	local -n ird_rollback_log_dir_out_ref="${10}" ird_rollback_status_dir_out_ref="${11}"
+	local -n ird_health_log_dir_out_ref="${12}" ird_health_status_dir_out_ref="${13}"
 
 	# shellcheck disable=SC2034
 	{
@@ -5690,9 +5850,11 @@ init_run_dirs() {
 		ird_snapshot_dir_out_ref="${base_dir}/snapshots"
 		ird_rollback_log_dir_out_ref="$(phase_log_dir_path "${base_dir}" "rollback")"
 		ird_rollback_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "rollback")"
+		ird_health_log_dir_out_ref="$(phase_log_dir_path "${base_dir}" "health")"
+		ird_health_status_dir_out_ref="$(phase_status_dir_path "${base_dir}" "health")"
 	}
 
-	ensure_phase_runtime_dirs "${base_dir}" build snapshot deploy rollback
+	ensure_phase_runtime_dirs "${base_dir}" build snapshot deploy rollback health
 	mkdir -p "${ird_build_out_dir_out_ref}" "${ird_snapshot_dir_out_ref}"
 }
 
@@ -5902,7 +6064,10 @@ EOF_UNITS
 
 _remote_post_switch_user_health_check() {
 	local wait_seconds="$1"
-	local units="" unit="" user="" uid="" runtime_dir="" bus="" failed_output="" system_failed_output=""
+	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
+	local raw_failed_output="" failed_output="" ignored_failed_output=""
+	local raw_system_failed_output="" system_failed_output="" ignored_system_failed_output=""
+	local podman_nonhealthy_output="" system_podman_nonhealthy_output=""
 	local had_failures=0
 
 	if [ "${wait_seconds}" -gt 0 ]; then
@@ -5910,11 +6075,23 @@ _remote_post_switch_user_health_check() {
 		sleep "${wait_seconds}"
 	fi
 
-	system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
+	raw_system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
+	system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_filter_failed_units)"
+	ignored_system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_ignored_failed_units)"
+	if [ -n "${ignored_system_failed_output}" ]; then
+		echo "[health-check] transient system Podman healthcheck units observed; checking current container health:" >&2
+		echo "${ignored_system_failed_output}" >&2
+	fi
 	if [ -n "${system_failed_output}" ]; then
 		had_failures=1
 		echo "[health-check] FAILED system units:" >&2
 		echo "${system_failed_output}" >&2
+	fi
+	system_podman_nonhealthy_output="$(_remote_health_check_podman_nonhealthy_containers)"
+	if [ -n "${system_podman_nonhealthy_output}" ]; then
+		had_failures=1
+		echo "[health-check] NON-HEALTHY system Podman containers:" >&2
+		echo "${system_podman_nonhealthy_output}" >&2
 	fi
 
 	units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
@@ -5933,20 +6110,39 @@ _remote_post_switch_user_health_check() {
 		[ -n "${user}" ] || continue
 		uid="$(id -u "${user}" 2>/dev/null || true)"
 		[ -n "${uid}" ] || continue
+		home="$(getent passwd "${user}" | cut -d: -f6 || true)"
+		[ -n "${home}" ] || home="/"
 		if ! systemctl is-active --quiet "user@${uid}.service" 2>/dev/null; then
 			continue
 		fi
 		runtime_dir="/run/user/${uid}"
 		bus="unix:path=${runtime_dir}/bus"
-		failed_output="$(
+		raw_failed_output="$(
 			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
 				env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
 				systemctl --user list-units --failed --no-legend --plain 2>/dev/null || true
 		)"
+		failed_output="$(printf '%s\n' "${raw_failed_output}" | _remote_health_check_filter_failed_units)"
+		ignored_failed_output="$(printf '%s\n' "${raw_failed_output}" | _remote_health_check_ignored_failed_units)"
+		if [ -n "${ignored_failed_output}" ]; then
+			echo "[health-check] transient Podman healthcheck units observed for user ${user}; checking current container health:" >&2
+			echo "${ignored_failed_output}" >&2
+		fi
 		if [ -n "${failed_output}" ]; then
 			had_failures=1
 			echo "[health-check] FAILED units for user ${user}:" >&2
 			echo "${failed_output}" >&2
+		fi
+		podman_nonhealthy_output="$(
+			cd /
+			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+				env HOME="${home}" XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+				sh -c 'cd /; { podman ps --filter health=unhealthy --format "unhealthy {{.Names}} {{.Status}}" 2>/dev/null || true; podman ps --filter health=starting --format "starting {{.Names}} {{.Status}}" 2>/dev/null || true; } | sort -u'
+		)"
+		if [ -n "${podman_nonhealthy_output}" ]; then
+			had_failures=1
+			echo "[health-check] NON-HEALTHY Podman containers for user ${user}:" >&2
+			echo "${podman_nonhealthy_output}" >&2
 		fi
 	done <<EOF_HC_UNITS
 ${units}
@@ -5961,10 +6157,29 @@ EOF_HC_UNITS
 	return 0
 }
 
+_remote_health_check_filter_failed_units() {
+	awk '!($0 ~ /\[systemd-run\].*podman.*healthcheck run / || $0 ~ /\.podman-wrapped healthcheck run /)'
+}
+
+_remote_health_check_ignored_failed_units() {
+	awk '($0 ~ /\[systemd-run\].*podman.*healthcheck run / || $0 ~ /\.podman-wrapped healthcheck run /)'
+}
+
+_remote_health_check_podman_nonhealthy_containers() {
+	cd /
+	{
+		podman ps --filter health=unhealthy --format 'unhealthy {{.Names}} {{.Status}}' 2>/dev/null || true
+		podman ps --filter health=starting --format 'starting {{.Names}} {{.Status}}' 2>/dev/null || true
+	} | sort -u
+}
+
 build_post_switch_health_check_cmd() {
 	local wait_seconds="${1:-10}"
 
-	printf '%s\n%s\n' \
+	printf '%s\n%s\n%s\n%s\n%s\n' \
+		"$(declare -f _remote_health_check_filter_failed_units)" \
+		"$(declare -f _remote_health_check_ignored_failed_units)" \
+		"$(declare -f _remote_health_check_podman_nonhealthy_containers)" \
 		"$(declare -f _remote_post_switch_user_health_check)" \
 		"_remote_post_switch_user_health_check ${wait_seconds}"
 }
@@ -5979,30 +6194,47 @@ run_post_switch_health_check() {
 	health_check_cmd="$(build_post_switch_health_check_cmd 0)"
 
 	if ! prepare_deploy_context "${node}"; then
-		echo "[health-check] unavailable for ${node}: failed to prepare deploy context" >&2
+		if [ -n "${log_file}" ]; then
+			printf '%s\n' "[health-check] unavailable: failed to prepare deploy context" |
+				prefix_host_logs "${node}" |
+				tee -a "${log_file}" >&2
+		else
+			printf '%s\n' "[health-check] unavailable: failed to prepare deploy context" |
+				prefix_host_logs "${node}" >&2
+		fi
 		return 1
 	fi
 
 	if [ -n "${log_file}" ]; then
 		run_with_combined_output \
 			run_prepared_root_command \
-			"${health_check_cmd}" > >(host_log_filter "${node}" | tee -a "${log_file}" >&2)
-	elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-		run_with_combined_output \
-			run_prepared_root_command \
-			"${health_check_cmd}" > >(host_log_filter "${node}" >&2)
+			"${health_check_cmd}" > >(prefix_host_logs "${node}" | tee -a "${log_file}" >&2)
 	else
 		run_with_combined_output \
 			run_prepared_root_command \
-			"${health_check_cmd}" >&2
+			"${health_check_cmd}" > >(prefix_host_logs "${node}" >&2)
 	fi
+}
+
+run_post_switch_health_check_job() {
+	local node="$1" status_file="$2" log_file="$3" rc=0
+
+	(
+		set +e
+		rm -f "${status_file}"
+		run_post_switch_health_check "${node}" "${log_file}"
+		rc="$?"
+		write_status_file "${status_file}" "${rc}"
+		exit "${rc}"
+	)
 }
 
 run_post_switch_health_check_phase() {
 	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
+	local health_log_dir="$4" health_status_dir="$5" verify_parallel="$6" verify_parallel_jobs="$7"
 	# shellcheck disable=SC2178
-	local -n hcp_successful_hosts_ref="$4" hcp_deploy_failed_hosts_ref="$5"
-	local node="" phase_rc=0
+	local -n hcp_successful_hosts_ref="$8"
+	local node="" phase_rc=0 active_jobs=0 status_file="" log_file="" status=""
 	local -a health_check_failed_hosts=() remaining_successful=()
 
 	log_section "Phase: Health Check"
@@ -6011,13 +6243,40 @@ run_post_switch_health_check_phase() {
 
 	for node in "${hcp_successful_hosts_ref[@]}"; do
 		[ -n "${node}" ] || continue
-		if run_post_switch_health_check "${node}"; then
+		status_file="$(phase_dir_item_status_file "${health_status_dir}" "${node}")"
+		log_file="$(phase_dir_item_log_file "${health_log_dir}" "${node}")"
+		if [ "${verify_parallel}" -eq 1 ]; then
+			run_post_switch_health_check_job "${node}" "${status_file}" "${log_file}" &
+			active_jobs=$((active_jobs + 1))
+			wait_for_job_slot active_jobs "${verify_parallel_jobs}" || return "$?"
+			continue
+		fi
+		if run_post_switch_health_check "${node}" "${log_file}"; then
 			remaining_successful+=("${node}")
 		else
 			echo "Health check failed for ${node}" >&2
 			health_check_failed_hosts+=("${node}")
 		fi
 	done
+
+	if [ "${verify_parallel}" -eq 1 ]; then
+		drain_job_slots active_jobs || return "$?"
+		for node in "${hcp_successful_hosts_ref[@]}"; do
+			[ -n "${node}" ] || continue
+			status_file="$(phase_dir_item_status_file "${health_status_dir}" "${node}")"
+			if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
+				echo "Health check failed for ${node}" >&2
+				health_check_failed_hosts+=("${node}")
+				continue
+			fi
+			if [ "${status}" = "0" ]; then
+				remaining_successful+=("${node}")
+			else
+				echo "Health check failed for ${node}" >&2
+				health_check_failed_hosts+=("${node}")
+			fi
+		done
+	fi
 
 	if [ "${#health_check_failed_hosts[@]}" -eq 0 ]; then
 		echo "All deployed hosts healthy" >&2
@@ -6027,9 +6286,9 @@ run_post_switch_health_check_phase() {
 	phase_rc=1
 
 	for node in "${health_check_failed_hosts[@]}"; do
-		hcp_deploy_failed_hosts_ref+=("${node}")
+		append_unique_array_item HEALTH_FAILED_HOSTS "${node}"
 		if [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
-			rollback_failed_deploy_host "${node}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}"
+			rollback_failed_health_host "${node}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}"
 		fi
 	done
 
@@ -6156,7 +6415,7 @@ build_host() {
 
 	log_host_stage "build" "${node}"
 	echo "Starting local build" >&2
-	if ! out_path="$(nix build --print-out-paths ".#nixosConfigurations.${node}.config.system.build.toplevel")"; then
+	if ! out_path="$(nix build "${NIXBOT_BUILD_NIX_ARGS[@]}" --print-out-paths ".#nixosConfigurations.${node}.config.system.build.toplevel")"; then
 		echo "Build failed for ${node}" >&2
 		return 1
 	fi
@@ -6175,12 +6434,39 @@ build_host() {
 	printf '%s\n' "${out_path}"
 }
 
+dev_build_host() {
+	local node="$1" out_path="" result_link=""
+
+	result_link="result-${node}"
+
+	log_host_stage "build" "${node}" "dev build"
+	echo "Starting dev build: ${result_link}" >&2
+	if ! out_path="$(nix build "${NIXBOT_BUILD_NIX_ARGS[@]}" --print-out-paths -o "${result_link}" ".#nixosConfigurations.${node}.config.system.build.toplevel")"; then
+		echo "Dev build failed for ${node}" >&2
+		return 1
+	fi
+
+	[ -n "${out_path}" ] || {
+		echo "Dev build produced no output path for ${node}" >&2
+		return 1
+	}
+
+	echo "Built out path: ${out_path}" >&2
+	echo "Result link: ${result_link}" >&2
+	if ! nix path-info --closure-size --human-readable "${out_path}" >&2; then
+		echo "Unable to resolve closure size for ${node}: ${out_path}" >&2
+		return 1
+	fi
+
+	printf '%s\n' "${out_path}"
+}
+
 eval_host_out_path() {
 	local node="$1" out_path=""
 
 	log_host_stage "build" "${node}" "remote build"
 	echo "Evaluating output path" >&2
-	if ! out_path="$(nix eval --raw ".#nixosConfigurations.${node}.config.system.build.toplevel.outPath")"; then
+	if ! out_path="$(nix eval "${NIXBOT_BUILD_NIX_ARGS[@]}" --raw ".#nixosConfigurations.${node}.config.system.build.toplevel.outPath")"; then
 		echo "Evaluation failed for ${node}" >&2
 		return 1
 	fi
@@ -6197,7 +6483,9 @@ eval_host_out_path() {
 resolve_build_out_path() {
 	local node="$1"
 
-	if is_deploy_style_action && [ "${BUILD_HOST}" != "local" ]; then
+	if [ "${ACTION}" = "dev-build" ]; then
+		dev_build_host "${node}"
+	elif is_deploy_style_action && [ "${BUILD_HOST}" != "local" ]; then
 		eval_host_out_path "${node}"
 	else
 		build_host "${node}"
@@ -6314,23 +6602,22 @@ run_build_phase() {
 ##### Deploy Phase #####
 
 run_deploy_phase() {
-	local deploy_parallel="$1" deploy_parallel_jobs="$2" snapshot_dir="$3"
-	local snapshot_log_dir="$4" snapshot_status_dir="$5"
-	local deploy_log_dir="$6" deploy_status_dir="$7" build_out_dir="$8"
-	local rollback_log_dir="$9" rollback_status_dir="${10}"
-	local deploy_skipped_hosts_out_name="${13}" snapshot_failed_hosts_out_name="${14}"
-	local -n rdp_level_groups_in_ref="${11}" rdp_successful_hosts_out_ref="${12}"
+	local deploy_parallel="$1" deploy_parallel_jobs="$2"
+	local verify_parallel="$3" verify_parallel_jobs="$4" snapshot_dir="$5"
+	local snapshot_log_dir="$6" snapshot_status_dir="$7"
+	local deploy_log_dir="$8" deploy_status_dir="$9" build_out_dir="${10}"
+	local rollback_log_dir="${11}" rollback_status_dir="${12}"
+	local deploy_skipped_hosts_out_name="${15}" snapshot_failed_hosts_out_name="${16}"
+	local -n rdp_level_groups_in_ref="${13}" rdp_successful_hosts_out_ref="${14}"
 	# shellcheck disable=SC2178
-	local -n rdp_deploy_failed_hosts_out_ref="${15}"
+	local -n rdp_deploy_failed_hosts_out_ref="${17}"
 
 	local level_group="" node="" active_jobs="" level_index=0
 	local -a level_hosts=() deploy_level_hosts=()
 	local status_file="" out_file="" log_file="" snapshot_retry_logged=0
 	local deploy_wave_failed=0 total_deploy_hosts=0 level_group_size=0 host_grouping=0 phase_rc=0
-	local wave_deploy_parallel=0 shared_parent=""
-	declare -A wave_parent_seen=()
 
-	local _success_hosts_out_name="${12}" _failed_hosts_out_name="${15}"
+	local _success_hosts_out_name="${14}" _failed_hosts_out_name="${17}"
 
 	# Invoke abort_deploy_on_signal with the fixed context for this deploy phase.
 	_try_abort_wave() {
@@ -6371,20 +6658,6 @@ run_deploy_phase() {
 			fi
 			deploy_level_hosts+=("${node}")
 		done
-		wave_deploy_parallel="${deploy_parallel}"
-		if [ "${wave_deploy_parallel}" -eq 1 ] && [ "${#deploy_level_hosts[@]}" -gt 1 ]; then
-			wave_parent_seen=()
-			for node in "${deploy_level_hosts[@]}"; do
-				[ -n "${node}" ] || continue
-				shared_parent="$(host_parent_for "${node}")"
-				[ -n "${shared_parent}" ] || continue
-				if [ -n "${wave_parent_seen["${shared_parent}"]+x}" ]; then
-					wave_deploy_parallel=0
-					break
-				fi
-				wave_parent_seen["${shared_parent}"]=1
-			done
-		fi
 		snapshot_retry_logged=0
 		if log_snapshot_retry_transition "${snapshot_dir}" "${level_index}" "${deploy_level_hosts[@]}"; then
 			snapshot_retry_logged=1
@@ -6402,8 +6675,8 @@ run_deploy_phase() {
 			"${snapshot_dir}" \
 			"${snapshot_log_dir}" \
 			"${snapshot_status_dir}" \
-			"${deploy_parallel}" \
-			"${deploy_parallel_jobs}" \
+			"${verify_parallel}" \
+			"${verify_parallel_jobs}" \
 			"${deploy_level_hosts[@]}"; then
 			if ! process_snapshot_wave_results "${snapshot_dir}" "${snapshot_failed_hosts_out_name}" "${_failed_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${deploy_level_hosts[@]}"; then
 				print_host_failures "Deploy phase failed" snapshot "" "${rdp_deploy_failed_hosts_out_ref[@]}"
@@ -6429,7 +6702,7 @@ run_deploy_phase() {
 			status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
 			out_file="${build_out_dir}/${node}.path"
 			log_file=""
-			if [ "${wave_deploy_parallel}" -eq 1 ]; then
+			if [ "${deploy_parallel}" -eq 1 ]; then
 				log_file="$(phase_dir_item_log_file "${deploy_log_dir}" "${node}")"
 				mark_deploy_job_started
 				run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
@@ -6473,7 +6746,7 @@ run_deploy_phase() {
 			fi
 		done
 
-		if [ "${wave_deploy_parallel}" -eq 1 ]; then
+		if [ "${deploy_parallel}" -eq 1 ]; then
 			if drain_job_slots active_jobs; then
 				:
 			else
@@ -6507,7 +6780,7 @@ run_deploy_phase() {
 		fi
 
 		if [ "${deploy_wave_failed}" -eq 1 ]; then
-			if [ "${wave_deploy_parallel}" -eq 1 ]; then
+			if [ "${deploy_parallel}" -eq 1 ]; then
 				print_host_failures "Deploy phase failed" deploy "${deploy_log_dir}" "${rdp_deploy_failed_hosts_out_ref[@]}"
 			else
 				print_host_failures "Deploy phase failed" plain "" "${rdp_deploy_failed_hosts_out_ref[@]}"
@@ -6545,7 +6818,10 @@ capture_current_run_summary_state() {
 		ROLLBACK_OK_HOSTS \
 		ROLLBACK_FAILED_HOSTS \
 		DEPLOY_FAILED_ROLLBACK_OK_HOSTS \
-		DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS
+		DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS \
+		HEALTH_FAILED_HOSTS \
+		HEALTH_FAILED_ROLLBACK_OK_HOSTS \
+		HEALTH_FAILED_ROLLBACK_FAILED_HOSTS
 }
 
 run_hosts() {
@@ -6559,8 +6835,8 @@ run_hosts() {
 
 	local build_log_dir="" build_status_dir="" snapshot_log_dir="" snapshot_status_dir=""
 	local deploy_log_dir="" deploy_status_dir="" build_out_dir="" snapshot_dir=""
-	local rollback_log_dir="" rollback_status_dir=""
-	local levels_json="" final_rc=0 build_parallel=0 deploy_parallel=0 snapshot_parallel=0
+	local rollback_log_dir="" rollback_status_dir="" health_log_dir="" health_status_dir=""
+	local levels_json="" final_rc=0 build_parallel=0 deploy_parallel=0 verify_parallel=0
 
 	FULLY_SKIPPED_HOSTS=()
 	# shellcheck disable=SC2034
@@ -6573,6 +6849,12 @@ run_hosts() {
 	DEPLOY_FAILED_ROLLBACK_OK_HOSTS=()
 	# shellcheck disable=SC2034
 	DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=()
+	# shellcheck disable=SC2034
+	HEALTH_FAILED_HOSTS=()
+	# shellcheck disable=SC2034
+	HEALTH_FAILED_ROLLBACK_OK_HOSTS=()
+	# shellcheck disable=SC2034
+	HEALTH_FAILED_ROLLBACK_FAILED_HOSTS=()
 	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
 
 	if is_bootstrap_check_action; then
@@ -6599,10 +6881,13 @@ run_hosts() {
 	json_array_to_bash_array "${runnable_selected_json}" build_hosts
 	if [ "${BUILD_JOBS}" -gt 1 ]; then
 		build_parallel=1
+		NIXBOT_BUILD_NIX_ARGS=(--option eval-cache false)
 	fi
 	if [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ]; then
 		deploy_parallel=1
-		snapshot_parallel=1
+	fi
+	if [ "${NIXBOT_VERIFY_JOBS}" -gt 1 ]; then
+		verify_parallel=1
 	fi
 
 	ensure_tmp_dir
@@ -6617,9 +6902,11 @@ run_hosts() {
 		build_out_dir \
 		snapshot_dir \
 		rollback_log_dir \
-		rollback_status_dir
+		rollback_status_dir \
+		health_log_dir \
+		health_status_dir
 
-	if ! run_build_phase \
+	if run_build_phase \
 		"${BUILD_JOBS}" \
 		"${build_parallel}" \
 		"${PRIORITIZE_BASTION_FIRST}" \
@@ -6630,7 +6917,21 @@ run_hosts() {
 		build_hosts \
 		built_hosts \
 		failed_hosts; then
-		final_rc=1
+		:
+	else
+		final_rc="$?"
+		if is_signal_exit_status "${final_rc}"; then
+			capture_current_run_summary_state \
+				"${ACTION}" \
+				selected_hosts \
+				built_hosts \
+				failed_hosts \
+				snapshot_failed_hosts \
+				successful_hosts \
+				deploy_skipped_hosts \
+				deploy_failed_hosts
+			return "${final_rc}"
+		fi
 	fi
 
 	if is_host_build_only_action || [ "${final_rc}" -ne 0 ]; then
@@ -6655,17 +6956,19 @@ run_hosts() {
 				"${snapshot_dir}" \
 				"${snapshot_log_dir}" \
 				"${snapshot_status_dir}" \
-				"${snapshot_parallel}" \
-				"${NIXBOT_PARALLEL_JOBS}"
+				"${verify_parallel}" \
+				"${NIXBOT_VERIFY_JOBS}"
 		fi
 	fi
 
 	failed_hosts=()
 	successful_hosts=()
 
-	if ! run_deploy_phase \
+	if run_deploy_phase \
 		"${deploy_parallel}" \
 		"${NIXBOT_PARALLEL_JOBS}" \
+		"${verify_parallel}" \
+		"${NIXBOT_VERIFY_JOBS}" \
 		"${snapshot_dir}" \
 		"${snapshot_log_dir}" \
 		"${snapshot_status_dir}" \
@@ -6679,18 +6982,49 @@ run_hosts() {
 		deploy_skipped_hosts \
 		snapshot_failed_hosts \
 		deploy_failed_hosts; then
-		final_rc=1
+		:
+	else
+		final_rc="$?"
+		if is_signal_exit_status "${final_rc}"; then
+			capture_current_run_summary_state \
+				"${ACTION}" \
+				selected_hosts \
+				built_hosts \
+				failed_hosts \
+				snapshot_failed_hosts \
+				successful_hosts \
+				deploy_skipped_hosts \
+				deploy_failed_hosts
+			return "${final_rc}"
+		fi
 	fi
 
 	# Health check phase: verify user services are healthy after deploy.
 	if [ "${DRY_RUN}" -eq 0 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
-		if ! run_post_switch_health_check_phase \
+		if run_post_switch_health_check_phase \
 			"${snapshot_dir}" \
 			"${rollback_log_dir}" \
 			"${rollback_status_dir}" \
-			successful_hosts \
-			deploy_failed_hosts; then
-			final_rc=1
+			"${health_log_dir}" \
+			"${health_status_dir}" \
+			"${verify_parallel}" \
+			"${NIXBOT_VERIFY_JOBS}" \
+			successful_hosts; then
+			:
+		else
+			final_rc="$?"
+			if is_signal_exit_status "${final_rc}"; then
+				capture_current_run_summary_state \
+					"${ACTION}" \
+					selected_hosts \
+					built_hosts \
+					failed_hosts \
+					snapshot_failed_hosts \
+					successful_hosts \
+					deploy_skipped_hosts \
+					deploy_failed_hosts
+				return "${final_rc}"
+			fi
 		fi
 	fi
 
@@ -7853,6 +8187,8 @@ host_final_status() {
 	local rollback_ok_hosts_name="${13}" rollback_failed_hosts_name="${14}"
 	local deploy_failed_rollback_ok_hosts_name="${15}"
 	local deploy_failed_rollback_failed_hosts_name="${16}"
+	local health_failed_hosts_name="${17}" health_failed_rollback_ok_hosts_name="${18}"
+	local health_failed_rollback_failed_hosts_name="${19}"
 	local -n hfs_fully_skipped_hosts_in_ref="${fully_skipped_hosts_name}"
 	local -n hfs_build_ok_hosts_in_ref="${build_ok_hosts_name}"
 	local -n hfs_build_failed_hosts_in_ref="${build_failed_hosts_name}"
@@ -7869,6 +8205,9 @@ host_final_status() {
 	local -n hfs_rollback_failed_hosts_in_ref="${rollback_failed_hosts_name}"
 	local -n hfs_deploy_failed_rollback_ok_hosts_in_ref="${deploy_failed_rollback_ok_hosts_name}"
 	local -n hfs_deploy_failed_rollback_failed_hosts_in_ref="${deploy_failed_rollback_failed_hosts_name}"
+	local -n hfs_health_failed_hosts_in_ref="${health_failed_hosts_name}"
+	local -n hfs_health_failed_rollback_ok_hosts_in_ref="${health_failed_rollback_ok_hosts_name}"
+	local -n hfs_health_failed_rollback_failed_hosts_in_ref="${health_failed_rollback_failed_hosts_name}"
 
 	if array_contains "${node}" "${hfs_build_failed_hosts_in_ref[@]}"; then
 		printf '%s' 'FAIL (build)'
@@ -7897,6 +8236,12 @@ host_final_status() {
 		printf '%s' 'optional (rolled back)'
 	elif array_contains "${node}" "${hfs_rollback_failed_hosts_in_ref[@]}"; then
 		printf '%s' 'FAIL (rollback)'
+	elif array_contains "${node}" "${hfs_health_failed_rollback_failed_hosts_in_ref[@]}"; then
+		printf '%s' 'FAIL (health; rollback failed)'
+	elif array_contains "${node}" "${hfs_health_failed_rollback_ok_hosts_in_ref[@]}"; then
+		printf '%s' 'FAIL (health; rolled back)'
+	elif array_contains "${node}" "${hfs_health_failed_hosts_in_ref[@]}"; then
+		printf '%s' 'FAIL (health)'
 	elif array_contains "${node}" "${hfs_deploy_failed_rollback_failed_hosts_in_ref[@]}"; then
 		printf '%s' 'FAIL (deploy; rollback failed)'
 	elif array_contains "${node}" "${hfs_snapshot_failed_hosts_in_ref[@]}"; then
@@ -7940,6 +8285,7 @@ run_summary_has_failures() {
 	if [ "${#RUN_SUMMARY_BUILD_FAILED_HOSTS[@]}" -gt 0 ] ||
 		[ "${#RUN_SUMMARY_SNAPSHOT_FAILED_HOSTS[@]}" -gt 0 ] ||
 		[ "${#RUN_SUMMARY_DEPLOY_FAILED_HOSTS[@]}" -gt 0 ] ||
+		[ "${#RUN_SUMMARY_HEALTH_FAILED_HOSTS[@]}" -gt 0 ] ||
 		[ "${#RUN_SUMMARY_ROLLBACK_FAILED_HOSTS[@]}" -gt 0 ]; then
 		return 0
 	fi
@@ -7982,7 +8328,10 @@ print_run_summary() {
 			RUN_SUMMARY_ROLLBACK_OK_HOSTS \
 			RUN_SUMMARY_ROLLBACK_FAILED_HOSTS \
 			RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_OK_HOSTS \
-			RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS)"
+			RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS \
+			RUN_SUMMARY_HEALTH_FAILED_HOSTS \
+			RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_OK_HOSTS \
+			RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_FAILED_HOSTS)"
 
 		echo "  - ${node}: ${status}" >&2
 		if [[ "${status}" == FAIL* ]]; then
@@ -8031,6 +8380,9 @@ clear_run_summary_state() {
 	RUN_SUMMARY_ROLLBACK_FAILED_HOSTS=()
 	RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_OK_HOSTS=()
 	RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=()
+	RUN_SUMMARY_HEALTH_FAILED_HOSTS=()
+	RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_OK_HOSTS=()
+	RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_FAILED_HOSTS=()
 	RUN_SUMMARY_TF_LABELS=()
 	RUN_SUMMARY_TF_STATUSES=()
 }
@@ -8045,6 +8397,8 @@ set_run_summary_host_state() {
 	local rollback_ok_hosts_name="${13}" rollback_failed_hosts_name="${14}"
 	local deploy_failed_rollback_ok_hosts_name="${15}"
 	local deploy_failed_rollback_failed_hosts_name="${16}"
+	local health_failed_hosts_name="${17}" health_failed_rollback_ok_hosts_name="${18}"
+	local health_failed_rollback_failed_hosts_name="${19}"
 	local -n srshs_selected_hosts_in_ref="${selected_hosts_name}"
 	local -n srshs_fully_skipped_hosts_in_ref="${fully_skipped_hosts_name}"
 	local -n srshs_build_ok_hosts_in_ref="${build_ok_hosts_name}"
@@ -8062,6 +8416,9 @@ set_run_summary_host_state() {
 	local -n srshs_rollback_failed_hosts_in_ref="${rollback_failed_hosts_name}"
 	local -n srshs_deploy_failed_rollback_ok_hosts_in_ref="${deploy_failed_rollback_ok_hosts_name}"
 	local -n srshs_deploy_failed_rollback_failed_hosts_in_ref="${deploy_failed_rollback_failed_hosts_name}"
+	local -n srshs_health_failed_hosts_in_ref="${health_failed_hosts_name}"
+	local -n srshs_health_failed_rollback_ok_hosts_in_ref="${health_failed_rollback_ok_hosts_name}"
+	local -n srshs_health_failed_rollback_failed_hosts_in_ref="${health_failed_rollback_failed_hosts_name}"
 
 	# shellcheck disable=SC2034
 	{
@@ -8081,6 +8438,9 @@ set_run_summary_host_state() {
 		RUN_SUMMARY_ROLLBACK_FAILED_HOSTS=("${srshs_rollback_failed_hosts_in_ref[@]}")
 		RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_OK_HOSTS=("${srshs_deploy_failed_rollback_ok_hosts_in_ref[@]}")
 		RUN_SUMMARY_DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS=("${srshs_deploy_failed_rollback_failed_hosts_in_ref[@]}")
+		RUN_SUMMARY_HEALTH_FAILED_HOSTS=("${srshs_health_failed_hosts_in_ref[@]}")
+		RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_OK_HOSTS=("${srshs_health_failed_rollback_ok_hosts_in_ref[@]}")
+		RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_FAILED_HOSTS=("${srshs_health_failed_rollback_failed_hosts_in_ref[@]}")
 	}
 }
 
@@ -8237,6 +8597,7 @@ main() {
 	local -a request_args=("$@")
 
 	init_vars
+	capture_initial_tty_state
 	trap cleanup EXIT
 	trap request_hangup HUP
 	trap 'request_cancel 130 INT' INT
@@ -8278,7 +8639,7 @@ main() {
 		run_version_action
 		return
 		;;
-	run | deploy | build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | tf/*)
+	run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | tf/*)
 		ACTION="${request_args[0]}"
 		request_args=("${request_args[@]:1}")
 		;;
@@ -8300,12 +8661,17 @@ main() {
 	ensure_runtime_ready "$@"
 	parse_args "${request_args[@]}"
 	if [ "${BASTION_TRIGGER}" -eq 1 ]; then
+		[ "${ACTION}" != "dev-build" ] || die "dev-build is local-only and cannot run through --bastion-trigger"
 		run_bastion_trigger
 		return
 	fi
 
-	prepare_repo_worktree
-	reexec_repo_script_if_needed "${ACTION}" "${request_args[@]}"
+	if [ "${ACTION}" != "dev-build" ]; then
+		prepare_repo_worktree
+		reexec_repo_script_if_needed "${ACTION}" "${request_args[@]}"
+	else
+		prepare_dev_build_workspace
+	fi
 
 	run_requested_action
 }

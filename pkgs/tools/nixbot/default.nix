@@ -13,6 +13,7 @@
       };
       runtimeInputs = with pkgs; [
         age
+        cloudflared
         coreutils
         findutils
         git

@@ -14,8 +14,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Child-flake and package wiring should execute the packaged script with the
   full runtime toolchain already present and set `NIXBOT_IN_NIX_SHELL=1`.
 - `run` is the explicit full-workflow entrypoint. Other top-level actions stay
-  first-class modes: deploy, build, Terraform phases, dependency checks, and
-  bootstrap checks.
+  first-class modes: deploy, build, local dev-build, Terraform phases,
+  dependency checks, and bootstrap checks.
+- `dev-build` is local-only. It runs from the current checkout instead of the
+  managed repo worktree, rejects `--sha` and `--bastion-trigger`, and writes
+  `result-<host>` links in the repo root as temporary GC roots.
 
 ## Core architecture
 
@@ -39,6 +42,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   `nixbot` SSH trust boundary.
 - Generated proxy wrappers must preserve per-hop SSH users and identity files
   and emit IPv6-safe forwarding targets.
+- Host config may use `proxyCommand` for explicit transports such as Cloudflare
+  Access. Proxy command templates support `%h` and `%p`, compose with
+  `proxyJump`, and use generated wrapper scripts so nixbot can keep SSH config
+  and known-hosts isolation intact.
 - SSH control-master reuse is acceptable for direct primary and bootstrap
   contexts, but stale control sockets must be cleared when readiness or
   bootstrap state changes.
@@ -83,11 +90,18 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   steps should remain intentionally narrower to avoid duplicate side effects.
 - Remote file installation should retry transport failures for temp allocation,
   copy, and install execution.
+- Any future interactive remote sudo path must serialize TTY-owning SSH calls
+  and restore the operator TTY state after each call and at cleanup.
 
 ## Deploy orchestration
 
 - Snapshot work and deploy work both use the deploy parallelism budget within a
   dependency wave.
+- Deploy parallelism defaults to 16 jobs per dependency wave. Rollback-snapshot
+  and post-switch health-check work use a separate verify parallelism budget
+  controlled by `--verify-jobs` / `NIXBOT_VERIFY_JOBS`, also defaulting to 16.
+- Parallel host builds disable Nix's flake eval cache for per-host build and
+  output-path evaluation commands to avoid SQLite cache contention.
 - Before switching a host generation, deploy clears stale system-unit failed
   state and failed unit state for active managed user managers. The post-switch
   health check should fail the deploy on new system-unit failures, including
@@ -96,6 +110,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   at the new generation. User-service failures should still be scoped to the
   deploy window, not stale display-session failures left behind by earlier
   compositor logout/login churn.
+- Post-switch health checks ignore transient failed Podman healthcheck runner
+  units and instead query current Podman container health. Health-check failures
+  are tracked separately in the final summary and roll back using
+  health-specific rollback status buckets.
 - Remote `nixos-rebuild-ng` deploys that lose SSH with exit `255` after a
   network-disrupting switch verify the target system path before being treated
   as failed. This mirrors the self-target deploy guard without masking ordinary

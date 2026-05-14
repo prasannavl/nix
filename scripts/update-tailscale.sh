@@ -82,8 +82,8 @@ prefetch_source_hash() {
 
 	url="https://github.com/tailscale/tailscale/archive/refs/tags/v${RESOLVED_VERSION}.tar.gz"
 	SRC_HASH="$(
-		nix store prefetch-file --json --hash-type sha256 --unpack "$url" \
-			| jq -er .hash
+		nix store prefetch-file --json --hash-type sha256 --unpack "$url" |
+			jq -er .hash
 	)"
 }
 

@@ -149,9 +149,9 @@ Primary files for deployment are:
 - `pkgs/tools/nixbot/flake.nix` (packaged nixbot application wrapper)
 - `lib/nixbot/bastion.nix` (bastion-side nixbot setup)
 - `lib/nixbot/default.nix` (nixbot user module with sudo/identity)
-- `nixbot` runs in a cached `nix shell` toolchain with pinned commands (`nix`,
-  `age`, `git`, `jq`, `nixos-rebuild`, `openssh`, `opentofu`) so deploy runs use
-  consistent command sets everywhere.
+- `nixbot` runs in a cached `nix shell` toolchain with pinned tools (`nix`,
+  `age`, `cloudflared`, `coreutils`, `git`, `jq`, `nixos-rebuild-ng`, `openssh`,
+  `opentofu`, `procps`) so deploy runs use consistent command sets everywhere.
 - The packaged `nixbot` wrapper ships that same runtime toolchain directly and
   executes the packaged nixbot entrypoint without depending on repo-relative
   flake discovery.
@@ -167,6 +167,8 @@ Primary files for deployment are:
 - `run` (default full workflow): build/deploy flow with optional TF phases
 - `deploy`: host build and deploy only
 - `build`: host build only
+- `dev-build`: local host build only, writing `result-<host>` links into the
+  current repo checkout as temporary GC roots
 - `tf`: all Terraform phases (tf-dns, tf-platform, tf-apps)
 - `tf-dns`: Cloudflare DNS only
 - `tf-platform`: Cloudflare platform resources only
@@ -205,8 +207,12 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - `hosts/nixbot.nix` may declare per-host `deps = [ ... ];` for build/deploy
   ordering.
 - All selected hosts are built before deploy starts.
-- Build parallelism: `NIXBOT_BUILD_JOBS` / `--build-jobs`.
-- Deploy parallelism: `NIXBOT_JOBS` / `--deploy-jobs`.
+- Build parallelism: `NIXBOT_BUILD_JOBS` / `--build-jobs`. When build jobs is
+  greater than `1`, `nixbot` disables Nix's flake eval cache for per-host build
+  and output-path evaluation commands to avoid parallel SQLite cache contention.
+- Deploy parallelism: `NIXBOT_JOBS` / `--deploy-jobs` (default: `16`).
+- Verification parallelism: `NIXBOT_VERIFY_JOBS` / `--verify-jobs` (default:
+  `16`) for rollback snapshots and health checks.
 - `NIXBOT_BASTION_FIRST` / `--bastion-first` prioritizes the bastion host first
   for both build ordering and deploy waves when selected.
 - Deploy derives dependency waves from `deps`.
