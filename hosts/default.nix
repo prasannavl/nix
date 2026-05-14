@@ -17,10 +17,22 @@
     modules = [./pvl-vlab];
   };
 
+  pvl-vlab-1 = mkNixosSystem {
+    system = "x86_64-linux";
+    hostName = "pvl-vlab-1";
+    modules = [./pvl-vlab-1];
+  };
+
   pvl-vk = mkNixosSystem {
     system = "x86_64-linux";
     hostName = "pvl-vk";
     modules = [./pvl-vk];
+  };
+
+  pvl-vk-1 = mkNixosSystem {
+    system = "x86_64-linux";
+    hostName = "pvl-vk-1";
+    modules = [./pvl-vk-1];
   };
 
   # This host is taken over by gap3 repo. This configuration is kept here

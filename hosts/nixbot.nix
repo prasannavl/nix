@@ -15,11 +15,23 @@
       proxyJump = "pvl-x2";
       parent = "pvl-x2";
     };
+    pvl-vlab-1 = {
+      target = "10.10.20.30";
+      ageIdentityKey = "data/secrets/machine/pvl-vlab-1.key.age";
+      proxyJump = "pvl-x2";
+      parent = "pvl-x2";
+    };
     pvl-vk = {
       target = "10.10.30.10";
       ageIdentityKey = "data/secrets/machine/pvl-vk.key.age";
       proxyJump = "pvl-vlab";
       parent = "pvl-vlab";
+    };
+    pvl-vk-1 = {
+      target = "10.10.20.31";
+      ageIdentityKey = "data/secrets/machine/pvl-vk-1.key.age";
+      proxyJump = "pvl-x2";
+      parent = "pvl-vlab-1";
     };
     gap3-gondor = {
       target = "10.10.20.11";

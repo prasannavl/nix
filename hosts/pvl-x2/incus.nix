@@ -9,6 +9,16 @@
   };
 in {
   services.incusMachines = {
+    certificates = [
+      {
+        name = "pvl-vlab-1";
+        type = "client";
+        restricted = true;
+        projects = ["default"];
+        certificate = builtins.readFile ../../data/secrets/incus/pvl-vlab-1.crt;
+      }
+    ];
+
     instances = {
       pvl-vlab = {
         ipv4Address = "10.10.20.10";
@@ -28,6 +38,32 @@ in {
             # We use our lib belows, so we can control the "video" group
             # better. gpu applies render group to all incorrectly.
             # gpu = {type = "gpu";};
+          }
+          // incusLib.mkGpuDevices {
+            card = 1;
+            render = 128;
+            kfd = true;
+          };
+      };
+
+      pvl-vlab-1 = {
+        ipv4Address = "10.10.20.30";
+        removalPolicy = "delete-all";
+
+        config = {
+          "security.privileged" = "true";
+          "security.nesting" = "true";
+        };
+        devices =
+          {
+            state = {
+              source = "pvl-vlab-1";
+              path = "/var/lib";
+              removalPolicy = "keep";
+            };
+            pvl-x2-incus-api = incusLib.mkIncusProxy {
+              connectHost = "10.10.20.1";
+            };
           }
           // incusLib.mkGpuDevices {
             card = 1;

@@ -9,7 +9,9 @@ let
     pvl-a1 = ./machine/pvl-a1.key.pub;
     pvl-x2 = ./machine/pvl-x2.key.pub;
     pvl-vlab = ./machine/pvl-vlab.key.pub;
+    pvl-vlab-1 = ./machine/pvl-vlab-1.key.pub;
     pvl-vk = ./machine/pvl-vk.key.pub;
+    pvl-vk-1 = ./machine/pvl-vk-1.key.pub;
     gap3-gondor = ./machine/gap3-gondor.key.pub;
   };
   machines = builtins.mapAttrs (_: keyPath: let
@@ -30,7 +32,9 @@ in
     "data/secrets/machine/pvl-a1.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/pvl-x2.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/pvl-vlab.key.age".publicKeys = adminsWithNixbot;
+    "data/secrets/machine/pvl-vlab-1.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/pvl-vk.key.age".publicKeys = adminsWithNixbot;
+    "data/secrets/machine/pvl-vk-1.key.age".publicKeys = adminsWithNixbot;
     "data/secrets/machine/gap3-gondor.key.age".publicKeys = adminsWithNixbot;
 
     # Incus client identities
@@ -40,6 +44,7 @@ in
     "data/secrets/incus/abird.pfx.age".publicKeys = admins;
     "data/secrets/incus/abird-dev.key.age".publicKeys = admins;
     "data/secrets/incus/abird-dev.pfx.age".publicKeys = admins;
+    "data/secrets/incus/pvl-vlab-1.key.age".publicKeys = admins ++ pvl-vlab-1;
 
     # Cloudflare DNS
     "data/secrets/cloudflare/api-token.key.age".publicKeys = admins ++ pvl-x2;

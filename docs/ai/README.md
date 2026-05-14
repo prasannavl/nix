@@ -41,6 +41,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/incus-and-host-operations.md`: Canonical Incus guest
   model, host docs structure, tunnel host wiring, systemd-container networking,
   and durable host incident findings.
+- `docs/ai/notes/hosts/incus-remote-delegation-2026-05.md`: Records the remote
+  `services.incusMachines` target mode and the first `pvl-x2` delegation into
+  `pvl-vlab-1`, where lifecycle commands create instances on the parent daemon.
 - `docs/ai/notes/hosts/incus-gpu-device-helpers-2026-04.md`: Records the shared
   explicit DRM/KFD Incus device helper shape for reusable card/render-number and
   group-aware passthrough declarations.
