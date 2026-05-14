@@ -82,6 +82,13 @@ stack wiring.
   flat and explicit in the manifest.
 - Non-package helper derivations consumed directly by overlays or scripts belong
   outside `pkgs/`; see `lib/ext/` for that pattern.
+- For external package pins or upstream-version overrides, first check whether
+  nixpkgs stable or `inputs.unstable` already has a suitable package. Reuse the
+  nixpkgs package with `override`, `overrideAttrs`, or a narrow source/version
+  override when practical so local packaging keeps upstream wrapper, runtime,
+  completion, split-output, service-unit, and platform maintenance. Only write a
+  full local package when nixpkgs has no usable package shape or the required
+  divergence cannot be expressed as a small override.
 
 ## Package-owned modules
 

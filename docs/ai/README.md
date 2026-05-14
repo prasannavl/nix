@@ -29,6 +29,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/apps/package-architecture.md`: Canonical package, child-flake,
   package-owned module, service-module helper, and repo stack rules.
+- `docs/ai/notes/apps/tailscale-upstream-package-2026-05.md`: Records the
+  upstream Tailscale source-build override, overlay alias, and NixOS module
+  consumption contract.
 - `docs/ai/notes/apps/vscode-libsecret-password-store-2026-04.md`: Records the
   user VS Code wrapper choice that forces Code to use libsecret for password
   storage.

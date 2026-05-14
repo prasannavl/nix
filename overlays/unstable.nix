@@ -6,9 +6,6 @@
 in {
   unstable = unstable;
 
-  # infra
-  inherit (unstable) tailscale;
-
   # containers
   inherit (unstable) crun;
   inherit (unstable) incus;
