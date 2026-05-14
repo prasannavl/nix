@@ -10,6 +10,7 @@ Runs all repo maintenance update scripts:
   update-vscode.sh
   update-gnome-ext.sh
   update-nvidia.sh
+  update-tailscale.sh
   update-fetchzip-in-derv-hashes.sh
 EOF
 }
@@ -25,6 +26,7 @@ init_vars() {
 		"${REPO_ROOT}/scripts/update-vscode.sh"
 		"${REPO_ROOT}/scripts/update-gnome-ext.sh"
 		"${REPO_ROOT}/scripts/update-nvidia.sh"
+		"${REPO_ROOT}/scripts/update-tailscale.sh"
 		"${REPO_ROOT}/scripts/update-fetchzip-in-derv-hashes.sh"
 	)
 }

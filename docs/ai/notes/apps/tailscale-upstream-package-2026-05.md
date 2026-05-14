@@ -8,8 +8,10 @@ Tailscale package in `lib/ext/tailscale-upstream.nix` and selecting it as
 
 ## Package source
 
-- Current pinned version: `1.98.1`.
-- Source: Tailscale GitHub release tag `v1.98.1`.
+- Current pinned version: `1.96.4`.
+- Source: Tailscale GitHub release tag `v1.96.4`.
+- `scripts/update-tailscale.sh` treats GitHub Releases `latest` as the stable
+  Tailscale source of truth.
 - The package reuses the upstream nixpkgs Tailscale build, wrapper, completions,
   derper output, and systemd unit handling.
 - The override pins only the release `src`, `vendorHash`, `version`, and
