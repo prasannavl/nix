@@ -12,6 +12,31 @@
 
   hasInstances = cfg.instances != {};
   hasHostHooks = hasInstances || cfg.hostSuspend.enable;
+  mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
+  remoteValue = value:
+    if value == null
+    then ""
+    else value;
+  remoteEnvExports = lib.optionalString cfg.remote.enable ''
+    export INCUS_MACHINES_REMOTE_NAME=${lib.escapeShellArg cfg.remote.name}
+    export INCUS_MACHINES_REMOTE_ADDRESS=${lib.escapeShellArg (remoteValue cfg.remote.address)}
+    export INCUS_MACHINES_REMOTE_PROJECT=${lib.escapeShellArg cfg.remote.project}
+    export INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE=${lib.escapeShellArg (remoteValue cfg.remote.clientCertificateFile)}
+    export INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE=${lib.escapeShellArg (remoteValue cfg.remote.clientKeyFile)}
+    export INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE=${lib.boolToString cfg.remote.acceptCertificate}
+    ${lib.optionalString (cfg.remote.serverCertificateFile != null)
+      "export INCUS_MACHINES_REMOTE_SERVER_CERT_FILE=${lib.escapeShellArg cfg.remote.serverCertificateFile}"}
+  '';
+  remoteServiceEnvironment = lib.optionals cfg.remote.enable ([
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_NAME" cfg.remote.name)
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_ADDRESS" (remoteValue cfg.remote.address))
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_PROJECT" cfg.remote.project)
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" (remoteValue cfg.remote.clientCertificateFile))
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE" (remoteValue cfg.remote.clientKeyFile))
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE" (lib.boolToString cfg.remote.acceptCertificate))
+    ]
+    ++ lib.optional (cfg.remote.serverCertificateFile != null)
+    (mkEnvAssignment "INCUS_MACHINES_REMOTE_SERVER_CERT_FILE" cfg.remote.serverCertificateFile));
 
   helperPackage = pkgs.writeShellApplication {
     name = "incus-machines-helper";
@@ -34,12 +59,14 @@
   helperCommand = "/run/current-system/sw/bin/incus-machines-helper";
 
   reconcilerCommand = pkgs.writeShellScriptBin "incus-machines-reconciler" ''
+    ${remoteEnvExports}
     export INCUS_MACHINES_RECONCILE_MODE=${lib.escapeShellArg cfg.reconcilePolicy}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
     exec ${helperScript} reconciler "$@"
   '';
 
   settlementCommand = pkgs.writeShellScriptBin "incus-machines-settlement" ''
+    ${remoteEnvExports}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
     export INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES=${lib.escapeShellArg instanceIpv4AddressesJson}
     export INCUS_MACHINES_INSTANCE_SSH_PORTS=${lib.escapeShellArg instanceSshPortsJson}
@@ -48,6 +75,7 @@
   '';
 
   hostSuspendCommand = pkgs.writeShellScriptBin "incus-machines-host-suspend" ''
+    ${remoteEnvExports}
     export INCUS_MACHINES_HOST_SUSPEND_STATE_DIR=${lib.escapeShellArg cfg.hostSuspend.stateDir}
     export INCUS_MACHINES_HOST_SUSPEND_DEFAULT_POLICY=${lib.escapeShellArg cfg.hostSuspend.defaultPolicy}
     export INCUS_MACHINES_HOST_SUSPEND_INCLUDE_VMS=${lib.boolToString cfg.hostSuspend.includeVirtualMachines}
@@ -451,6 +479,67 @@
     (ipv4Address: "${ipv4Address} -> ${lib.concatStringsSep ", " ipv4ToMachineNames.${ipv4Address}}")
     duplicateIpv4Addresses;
 
+  pow2 = exponent:
+    if exponent == 0
+    then 1
+    else 2 * pow2 (exponent - 1);
+
+  parseIpv4 = value: let
+    parts = builtins.match "([0-9]+)\\.([0-9]+)\\.([0-9]+)\\.([0-9]+)" value;
+  in
+    if parts == null
+    then throw "Invalid IPv4 address for services.incusMachines: ${value}"
+    else let
+      octets = map lib.toInt parts;
+    in
+      if !lib.all (octet: octet >= 0 && octet <= 255) octets
+      then throw "Invalid IPv4 address for services.incusMachines: ${value}"
+      else octets;
+
+  ipv4ToInt = value: let
+    octets = parseIpv4 value;
+  in
+    (builtins.elemAt octets 0)
+    * 16777216
+    + (builtins.elemAt octets 1) * 65536
+    + (builtins.elemAt octets 2) * 256
+    + (builtins.elemAt octets 3);
+
+  parseCidr = subnet: let
+    parts = lib.splitString "/" subnet;
+  in
+    if builtins.length parts != 2
+    then throw "Invalid IPv4 CIDR for services.incusMachines.remote.allowedSubnets: ${subnet}"
+    else let
+      prefixLength = lib.toInt (builtins.elemAt parts 1);
+      size = pow2 (32 - prefixLength);
+      base = ipv4ToInt (builtins.elemAt parts 0);
+    in
+      if prefixLength < 0 || prefixLength > 32
+      then throw "Invalid IPv4 CIDR for services.incusMachines.remote.allowedSubnets: ${subnet}"
+      else {
+        start = (builtins.div base size) * size;
+        end = ((builtins.div base size) + 1) * size - 1;
+      };
+
+  ipv4InCidr = value: subnet: let
+    address = ipv4ToInt value;
+    cidr = parseCidr subnet;
+  in
+    address >= cidr.start && address <= cidr.end;
+
+  instancesOutsideAllowedSubnets =
+    lib.filter (
+      name:
+        !lib.any
+        (subnet: ipv4InCidr cfg.instances.${name}.ipv4Address subnet)
+        cfg.remote.allowedSubnets
+    )
+    (builtins.attrNames cfg.instances);
+
+  allowedSubnetViolations =
+    map (name: "${name} (${cfg.instances.${name}.ipv4Address})") instancesOutsideAllowedSubnets;
+
   declaredImagesJson = builtins.toJSON declaredImages;
   declaredInstancesJson = builtins.toJSON (builtins.attrNames cfg.instances);
   instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) cfg.instances);
@@ -463,12 +552,13 @@
   incusGcStateFile = pkgs.writeText "incus-machines-gc-state.json" (builtins.toJSON {
     instances = builtins.attrNames cfg.instances;
   });
-  mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
-  incusLifecycleDeps = [
-    "incus-preseed.service"
-    "network-online.target"
-    "incus-images.service"
-  ];
+  localIncusDeps = lib.optional (!cfg.remote.enable) "incus-preseed.service";
+  incusLifecycleDeps =
+    localIncusDeps
+    ++ [
+      "network-online.target"
+      "incus-images.service"
+    ];
 
   mkMachineService = name: machine: let
     lifecycleStateFile = pkgs.writeText "incus-machine-${name}-lifecycle-state.json" (machineLifecycleStateJson name machine);
@@ -478,17 +568,16 @@
       wantedBy = ["multi-user.target"];
       after = incusLifecycleDeps;
       wants = incusLifecycleDeps;
-      requires = [
-        "incus-preseed.service"
-        "incus-images.service"
-      ];
+      requires = localIncusDeps ++ ["incus-images.service"];
       restartTriggers = [lifecycleStateFile];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        Environment = [
-          (mkEnvAssignment "INCUS_MACHINES_INSTANCE_STATE_FILE" "/etc/incus-machines/${name}.json")
-        ];
+        Environment =
+          [
+            (mkEnvAssignment "INCUS_MACHINES_INSTANCE_STATE_FILE" "/etc/incus-machines/${name}.json")
+          ]
+          ++ remoteServiceEnvironment;
         ExecStop = "-${helperCommand} stop-instance ${lib.escapeShellArg name}";
         ExecStart = "${helperCommand} machine";
       };
@@ -551,6 +640,70 @@ in {
         upstream Incus preseed remains responsible for fabric objects such as
         projects, networks, profiles, and storage pools.
       '';
+    };
+
+    remote = {
+      enable = lib.mkEnableOption ''
+        managing a remote Incus daemon instead of the local host daemon
+      '';
+
+      name = lib.mkOption {
+        type = lib.types.str;
+        default = "local";
+        description = "Incus client remote name used by helper commands.";
+      };
+
+      address = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Remote Incus HTTPS API address.";
+      };
+
+      project = lib.mkOption {
+        type = lib.types.str;
+        default = "default";
+        description = "Default Incus project for the remote client.";
+      };
+
+      clientCertificateFile = lib.mkOption {
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        description = "Path to the public client certificate used for remote TLS auth.";
+      };
+
+      clientKeyFile = lib.mkOption {
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        description = "Path to the private client key used for remote TLS auth.";
+      };
+
+      serverCertificateFile = lib.mkOption {
+        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+        default = null;
+        description = "Optional pinned remote Incus server certificate.";
+      };
+
+      acceptCertificate = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Whether helpers may accept the server certificate when creating the
+          ephemeral Incus client config. Prefer `serverCertificateFile` when a
+          stable server certificate is available.
+        '';
+      };
+
+      allowedSubnets = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        example = ["10.10.20.0/24"];
+        description = ''
+          Optional IPv4 CIDR allowlist for declared instance addresses managed
+          through this remote. When non-empty, every
+          `services.incusMachines.instances.<name>.ipv4Address` must fall
+          inside at least one listed subnet.
+        '';
+      };
     };
 
     reconcilePolicy = lib.mkOption {
@@ -653,16 +806,49 @@ in {
           "services.incusMachines.certificates restricted certificates must declare at least one project: "
           + lib.concatStringsSep ", " invalidRestrictedCertificates;
       }
+      {
+        assertion = !cfg.remote.enable || cfg.remote.name != "local";
+        message = "services.incusMachines.remote.name must not be 'local' when remote mode is enabled.";
+      }
+      {
+        assertion = !cfg.remote.enable || cfg.remote.address != null;
+        message = "services.incusMachines.remote.address is required when remote mode is enabled.";
+      }
+      {
+        assertion = !cfg.remote.enable || cfg.remote.clientCertificateFile != null;
+        message = "services.incusMachines.remote.clientCertificateFile is required when remote mode is enabled.";
+      }
+      {
+        assertion = !cfg.remote.enable || cfg.remote.clientKeyFile != null;
+        message = "services.incusMachines.remote.clientKeyFile is required when remote mode is enabled.";
+      }
+      {
+        assertion = !cfg.remote.enable || cfg.remote.serverCertificateFile != null || cfg.remote.acceptCertificate;
+        message = "services.incusMachines.remote must set serverCertificateFile or acceptCertificate = true.";
+      }
+      {
+        assertion = !cfg.remote.enable || !cfg.hostSuspend.enable;
+        message = "services.incusMachines.hostSuspend is only supported for local Incus management.";
+      }
+      {
+        assertion = cfg.remote.allowedSubnets == [] || instancesOutsideAllowedSubnets == [];
+        message =
+          "services.incusMachines instances outside remote.allowedSubnets ("
+          + lib.concatStringsSep ", " cfg.remote.allowedSubnets
+          + "): "
+          + lib.concatStringsSep ", " allowedSubnetViolations;
+      }
     ];
 
     virtualisation.incus = {
-      enable = lib.mkDefault true;
+      enable = lib.mkDefault (!cfg.remote.enable);
       package = lib.mkDefault pkgs.incus;
-      ui.enable = lib.mkDefault true;
+      ui.enable = lib.mkDefault (!cfg.remote.enable);
     };
 
-    systemd.tmpfiles.rules =
-      lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.instances);
+    systemd.tmpfiles.rules = lib.mkIf (!cfg.remote.enable) (
+      lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.instances)
+    );
 
     environment.systemPackages = [
       helperPackage
@@ -691,7 +877,7 @@ in {
 
     systemd.services =
       {
-        incus-machines-certificates = {
+        incus-machines-certificates = lib.mkIf (!cfg.remote.enable) {
           description = "Reconcile declared Incus trusted certificates";
           wantedBy = ["sysinit-reactivation.target"];
           after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
@@ -713,10 +899,8 @@ in {
         };
       }
       // lib.optionalAttrs hasInstances (let
-        incusGcDeps = [
-          "incus-preseed.service"
-          "incus-images.service"
-        ];
+        incusGcDeps = localIncusDeps ++ ["incus-images.service"];
+        incusImagesDeps = localIncusDeps ++ ["network-online.target"];
       in
         {
           incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
@@ -726,10 +910,12 @@ in {
             wants = incusLifecycleDeps;
             serviceConfig = {
               Type = "oneshot";
-              Environment = [
-                (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" cfg.reconcilePolicy)
-                (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
-              ];
+              Environment =
+                [
+                  (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" cfg.reconcilePolicy)
+                  (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                ]
+                ++ remoteServiceEnvironment;
               ExecStart = "${helperScript} reconciler --all";
             };
           };
@@ -737,8 +923,8 @@ in {
           incus-images = {
             description = "Import/update declared Incus images";
             wantedBy = ["sysinit-reactivation.target"];
-            after = ["incus-preseed.service"];
-            wants = ["incus-preseed.service"];
+            after = incusImagesDeps;
+            wants = incusImagesDeps;
             restartTriggers = [
               helperScript
               incusImagesStateFile
@@ -746,16 +932,19 @@ in {
             restartIfChanged = true;
             serviceConfig = {
               Type = "oneshot";
-              Environment = [
-                (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" cfg.imageTag)
-                (mkEnvAssignment "INCUS_MACHINES_DECLARED_IMAGES" declaredImagesJson)
-              ];
+              Environment =
+                [
+                  (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" cfg.imageTag)
+                  (mkEnvAssignment "INCUS_MACHINES_DECLARED_IMAGES" declaredImagesJson)
+                ]
+                ++ remoteServiceEnvironment;
               ExecStart = "${helperScript} images";
             };
           };
 
           incus-machines-gc = {
             description = "Garbage-collect Incus containers no longer declared in NixOS config";
+            enable = !cfg.remote.enable;
             wantedBy = ["sysinit-reactivation.target"];
             after = incusGcDeps;
             wants = incusGcDeps;
@@ -766,9 +955,11 @@ in {
             restartIfChanged = true;
             serviceConfig = {
               Type = "oneshot";
-              Environment = [
-                (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
-              ];
+              Environment =
+                [
+                  (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                ]
+                ++ remoteServiceEnvironment;
               ExecStart = "${helperScript} gc";
             };
           };

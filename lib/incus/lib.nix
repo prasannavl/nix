@@ -61,6 +61,24 @@
         gid = renderGid;
       };
     };
+
+  mkIncusProxy = {
+    connectHost,
+    listenHost ? "127.0.0.1",
+    listenPort ? 8443,
+    connectPort ? listenPort,
+    bind ? "instance",
+    extraProperties ? {},
+  }: {
+    type = "proxy";
+    extraProperties =
+      {
+        inherit bind;
+        listen = "tcp:${listenHost}:${toString listenPort}";
+        connect = "tcp:${connectHost}:${toString connectPort}";
+      }
+      // extraProperties;
+  };
 in {
-  inherit mkGpuDevices;
+  inherit mkGpuDevices mkIncusProxy;
 }
