@@ -1,4 +1,5 @@
 {
+  lib,
   pkgs,
   modulesPath,
   hostName,
@@ -20,6 +21,20 @@
 
   # This host is designed to run as a container image (shared kernel).
   boot.isContainer = true;
+
+  # Incus/LXC owns these mounts for unprivileged guests. NixOS activation
+  # otherwise tries to remount them and fails with fsconfig(2) denied/missing.
+  boot.specialFileSystems =
+    lib.genAttrs [
+      "/dev"
+      "/dev/pts"
+      "/dev/shm"
+      "/proc"
+      "/run"
+      "/run/keys"
+    ] (_: {
+      enable = lib.mkForce false;
+    });
 
   # Image-specific trim for container builds.
   documentation.enable = false;
