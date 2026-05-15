@@ -125,10 +125,16 @@ query_ref() {
 	local path
 	path="$1"
 	if is_remote_target; then
-		printf '%s:%s\n' "$incus_remote_name" "$path"
-	else
-		printf '%s\n' "$path"
+		if [[ "$path" == *\?* ]]; then
+			printf '%s:%s&project=%s\n' "$incus_remote_name" "$path" "$incus_remote_project"
+			return
+		fi
+
+		printf '%s:%s?project=%s\n' "$incus_remote_name" "$path" "$incus_remote_project"
+		return
 	fi
+
+	printf '%s\n' "$path"
 }
 
 target_image_ref() {
@@ -239,6 +245,27 @@ add_device_from_props() {
 	)
 
 	incus config device add "$(instance_ref "$instance_name")" "$device_name" "$device_type" "${add_args[@]}"
+}
+
+add_device_from_props_idempotent() {
+	local instance_name device_name props_json output
+
+	instance_name="$1"
+	device_name="$2"
+	props_json="$3"
+
+	if output="$(add_device_from_props "$instance_name" "$device_name" "$props_json" 2>&1)"; then
+		[ -z "$output" ] || printf '%s\n' "$output"
+		return 0
+	fi
+
+	if printf '%s' "$output" | grep -qi 'device already exists'; then
+		echo "Device $device_name already exists on $instance_name; continuing"
+		return 0
+	fi
+
+	printf '%s\n' "$output" >&2
+	return 1
 }
 
 instance_status() {
@@ -815,8 +842,10 @@ machine_main() {
 
 				if [ "$dev_exists" -eq 0 ]; then
 					echo "  Adding disk device $dev"
-					add_device_from_props "$instance_name" "$dev" "$desired_props"
-				else
+					add_device_from_props_idempotent "$instance_name" "$dev" "$desired_props"
+				fi
+
+				if [ "$dev_exists" -ne 0 ]; then
 					mapfile -t current_prop_keys < <(json_property_keys "$current_props")
 					if [ "${#current_prop_keys[@]}" -gt 0 ]; then
 						for key in "${current_prop_keys[@]}"; do
@@ -887,6 +916,11 @@ machine_main() {
 		current_status="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null | jq -r '.metadata.status // "unknown"' 2>/dev/null || printf 'missing\n')"
 		if [ "$current_status" != "Running" ]; then
 			if ! start_output="$(incus start "$(instance_ref "$instance_name")" 2>&1)"; then
+				if printf '%s' "$start_output" | grep -qi 'instance is already running'; then
+					echo "$name is already running; continuing"
+					break
+				fi
+
 				printf '%s\n' "$start_output" >&2
 				if [ "$recovery_attempted" -eq 0 ] && is_recoverable_start_error "$start_output"; then
 					echo "Recreating broken $name after failed start..."

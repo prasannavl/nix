@@ -24,25 +24,42 @@ inside that guest using an Incus proxy device. The delegated host should not
 import parent-host-specific files; it only needs the remote API URL, project,
 certificate material, and the instance addresses it is allowed to declare.
 `pvl-x2` trusts the public `pvl-vlab-1` client certificate, restricted to the
-`default` project.
+`pvl` project. That project is restricted, uses the dedicated `ipvlbr0` bridge,
+allows only managed disk devices on the `default` storage pool, and explicitly
+allows nested containers for the delegated `pvl` machines. `pvl-vk-1` remains
+unprivileged; the NixOS Incus guest profile disables activation-time remounts of
+container-manager-owned special filesystems instead of widening the Incus
+project to allow privileged containers.
+
+`pvl-x2` mirrors the `pvl-a1` tenant project shape but uses subnets chosen to
+avoid likely home LAN overlap:
+
+- `abird`: `iabirdbr0` on `10.10.100.1/24`
+- `abird-dev`: `iabirddevbr0` on `10.10.200.1/24`
+- `pvl`: `ipvlbr0` on `10.10.50.1/24`
 
 `pvl-vlab-1` imports `../../lib/incus`, but its `services.incusMachines.remote`
 points at `https://127.0.0.1:8443` and uses the agenix-managed
 `data/secrets/incus/pvl-vlab-1.key.age` private key. Its
-`remote.allowedSubnets = [ "10.10.20.0/24" ]` setting is a local validation
+`remote.allowedSubnets = [ "10.10.50.0/24" ]` setting is a local validation
 guard: declared child instance addresses must remain inside the delegated
 subnet, but addresses are still written explicitly. It declares `pvl-vk-1` at
-`10.10.20.31`; that instance is created on the `pvl-x2` Incus daemon, not in a
+`10.10.50.31`; that instance is created on the `pvl-x2` Incus daemon, not in a
 nested Incus daemon inside `pvl-vlab-1`.
 
-`pvl-vk-1` is a direct child of `pvl-x2`, but it follows the unprivileged
-`pvl-vk` pattern from `pvl-vlab`: `security.nesting = true` plus Incus mount
-syscall interception and shifted mounts. The first unprivileged attempt failed
-NixOS activation while remounting special filesystems such as `/dev`, `/proc`,
-and `/run` with `fsconfig() failed: Function not implemented`; the next least
-privilege candidate is to keep it unprivileged and enable
-`security.syscalls.intercept.mount` plus
-`security.syscalls.intercept.mount.shift`.
+Raw `incus query` calls against a remote must include `?project=pvl`; relying
+only on the Incus remote config's project field caused readiness settlement to
+query `default` and report `pvl-vk-1` as missing even while it existed in the
+`pvl` project.
+
+`pvl-vk-1` is a direct child of `pvl-x2`. It uses `security.privileged = false`
+plus `security.nesting = true`. The first unprivileged attempts failed NixOS
+activation while remounting special filesystems such as `/dev`, `/proc`, `/run`,
+and `/run/keys` with `fsconfig() failed: Function not implemented`. Mount
+syscall interception, including the mount-shift variant, was not enough in this
+environment. The shared `lib/profiles/systemd-container.nix` profile now
+disables those activation remounts because Incus/LXC already owns those mounts
+for the guest.
 
 The first deploy attempt exposed the GC boundary: `pvl-vlab-1` connected to the
 parent daemon, saw `pvl-vlab`, `gap3-gondor`, and its own outer `pvl-vlab-1`
