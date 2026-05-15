@@ -61,6 +61,33 @@ environment. The shared `lib/profiles/systemd-container.nix` profile now
 disables those activation remounts because Incus/LXC already owns those mounts
 for the guest.
 
+Final delegated deploy fixes:
+
+- `pvl` project restrictions now explicitly block container syscall interception
+  and low-level container keys, and allow only unprivileged containers. Existing
+  stale `security.syscalls.intercept.*` instance keys are removed in
+  `incus-preseed` pre-start before tightening the project, otherwise Incus
+  rejects the project update.
+- The settlement helper no longer assumes `true` exists in `/bin`; it probes the
+  NixOS profile path first. It also makes one best-effort networkd
+  reconciliation attempt when an instance is running and accepts exec but has
+  not reported the expected IPv4 yet.
+- Fresh container boots need `/run/current-system` before the LXC distrobuilder
+  udev coldplug override runs. Tmpfiles creates that link too late, so
+  `systemd-container` now creates it with an early sysinit oneshot before
+  `systemd-udev-trigger` and `systemd-networkd`. Without this,
+  `systemd-udev-trigger` exits `203/EXEC`, networkd leaves `eth0` with
+  `Network File: n/a`, and the guest never reports `10.10.50.31`.
+
+Validation on 2026-05-15:
+`./scripts/nixbot.sh deploy --dirty-staged
+--hosts=pvl-vk-1` succeeded for
+`pvl-x2`, `pvl-vlab-1`, and `pvl-vk-1` with no rollback. Live checks after
+deploy showed `restricted.containers.interception =
+block`, no stale
+`security.syscalls.intercept.mount` key on `pvl-vk-1`, and `pvl-vk-1` running
+with `10.10.50.31` on `eth0`.
+
 The first deploy attempt exposed the GC boundary: `pvl-vlab-1` connected to the
 parent daemon, saw `pvl-vlab`, `gap3-gondor`, and its own outer `pvl-vlab-1`
 container as `user.managed-by=nixos` but not declared by the delegated host, and

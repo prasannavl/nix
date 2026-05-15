@@ -2,6 +2,7 @@
   inputs,
   config,
   lib,
+  pkgs,
   ...
 }: let
   incusLib = import ../../lib/incus/lib.nix {
@@ -21,6 +22,9 @@
       isolatedProjectConfig
       // {
         restricted = "true";
+        "restricted.containers.interception" = "block";
+        "restricted.containers.lowlevel" = "block";
+        "restricted.containers.privilege" = "unprivileged";
         "restricted.devices.disk" = "managed";
         "restricted.devices.nic" = "managed";
         "restricted.networks.access" = network;
@@ -306,4 +310,34 @@ in {
     "net.ipv4.ip_forward" = 1;
   };
   networking.firewall.trustedInterfaces = ["incusbr0" "ipvlbr0" "iabirdbr0" "iabirddevbr0"];
+
+  systemd.services.incus-preseed.preStart = let
+    incus = "${config.virtualisation.incus.package}/bin/incus";
+    jq = "${pkgs.jq}/bin/jq";
+  in ''
+    set -euo pipefail
+
+    # Tightening project restrictions fails if an existing instance still
+    # carries now-forbidden keys from an older generation. Remove only the
+    # stale syscall-interception settings before applying the declarative
+    # preseed.
+    for project in pvl abird abird-dev; do
+      if ! ${incus} project show "$project" >/dev/null 2>&1; then
+        continue
+      fi
+
+      ${incus} list --project "$project" --format=json |
+        ${jq} -r '.[].name' |
+        while IFS= read -r instance; do
+          [ -n "$instance" ] || continue
+
+          ${incus} query "/1.0/instances/$instance?project=$project" |
+            ${jq} -r '.config // {} | keys[] | select(startswith("security.syscalls.intercept."))' |
+            while IFS= read -r key; do
+              [ -n "$key" ] || continue
+              ${incus} config unset --project "$project" "$instance" "$key" || true
+            done
+        done
+    done
+  '';
 }

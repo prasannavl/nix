@@ -36,6 +36,33 @@
       enable = lib.mkForce false;
     });
 
+  # Container images boot from the system profile, but many generated units
+  # execute binaries through /run/current-system. Create that first-boot link
+  # before udev/networkd start so the container can coldplug devices and bring
+  # up networking before the first deploy switch.
+  systemd.tmpfiles.rules = [
+    "L+ /run/current-system - - - - /nix/var/nix/profiles/system"
+  ];
+
+  # The LXC image metadata injects a /run drop-in for udev coldplug that uses
+  # /run/current-system. Create that link before udev-trigger, because tmpfiles
+  # normally runs after the trigger and is too late for first-boot networking.
+  systemd.services.nixos-current-system-link = {
+    description = "Create /run/current-system for container first boot";
+    wantedBy = ["sysinit.target"];
+    before = [
+      "systemd-udev-trigger.service"
+      "systemd-networkd.service"
+      "systemd-tmpfiles-setup.service"
+    ];
+    unitConfig.DefaultDependencies = false;
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = "${pkgs.coreutils}/bin/ln -sfn /nix/var/nix/profiles/system /run/current-system";
+    };
+  };
+
   # Image-specific trim for container builds.
   documentation.enable = false;
   boot.enableContainers = false;

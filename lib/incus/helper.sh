@@ -286,6 +286,42 @@ instance_metadata_json() {
 		echo '{}'
 }
 
+instance_accepts_exec() {
+	local name cmd
+	name="$1"
+
+	for cmd in \
+		/nix/var/nix/profiles/system/sw/bin/true \
+		/run/current-system/sw/bin/true \
+		/usr/bin/true \
+		/bin/true; do
+		if timeout 10 incus exec "$(instance_ref "$name")" -- "$cmd" >/dev/null 2>&1; then
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+instance_reconcile_guest_network() {
+	local name bin attempted
+	name="$1"
+	attempted=1
+
+	for bin in /nix/var/nix/profiles/system/sw/bin /run/current-system/sw/bin; do
+		if timeout 10 incus exec "$(instance_ref "$name")" -- "$bin/networkctl" reload >/dev/null 2>&1; then
+			attempted=0
+			timeout 10 incus exec "$(instance_ref "$name")" -- "$bin/networkctl" reconfigure eth0 >/dev/null 2>&1 || true
+		fi
+
+		if timeout 10 incus exec "$(instance_ref "$name")" -- "$bin/systemctl" restart systemd-networkd.service >/dev/null 2>&1; then
+			attempted=0
+		fi
+	done
+
+	return "$attempted"
+}
+
 apply_instance_config_json() {
 	local instance_name config_json key value
 	instance_name="$1"
@@ -599,6 +635,7 @@ reconciler_main() {
 settlement_main() {
 	local timeout_secs interval_secs deadline pending name expected_ip expected_ssh_port wait_for_ssh
 	local instance_json status instance_state_json
+	declare -A network_reconcile_attempted=()
 
 	timeout_secs=180
 	interval_secs=2
@@ -675,7 +712,7 @@ settlement_main() {
 					echo '{}'
 			)"
 
-			if ! timeout 10 incus exec "$(instance_ref "$name")" -- true >/dev/null 2>&1; then
+			if ! instance_accepts_exec "$name"; then
 				pending=1
 				echo "Waiting for Incus instance $name to accept incus exec" >&2
 				continue
@@ -689,6 +726,11 @@ settlement_main() {
           | .value.addresses[]?
           | select(.family == "inet" and .address == $ip)
         ' >/dev/null 2>&1; then
+				if [ -z "${network_reconcile_attempted[$name]+x}" ]; then
+					network_reconcile_attempted[$name]=1
+					echo "Reconciling guest network for Incus instance $name" >&2
+					instance_reconcile_guest_network "$name" || true
+				fi
 				pending=1
 				echo "Waiting for Incus instance $name to report expected IPv4 ${expected_ip}" >&2
 				continue
