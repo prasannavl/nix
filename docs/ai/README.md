@@ -101,9 +101,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/pvl-a1-incus-client-cert-2026-05.md`: Records the
   `pvl-a1` pinned Incus client certificates and admin-only encrypted private
   keys used for deterministic TLS client login, the matching TCP `8443` firewall
-  opening, and the declared `pvl`, `abird`, and `abird-dev` Incus projects,
-  including isolated tenant images, profiles, and storage plus per-project
-  managed bridge subnet restrictions.
+  opening, and the current default-project-only Incus shape with just the
+  unrestricted `pvl` client certificate declared.
 - `docs/ai/notes/hosts/pvl-dbus-broker-policy-2026-04.md`: Records the DBus
   broker policy cleanup for Debian-style `sudo` and `pulse` account references
   exposed by the broker migration.
