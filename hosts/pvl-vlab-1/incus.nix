@@ -14,8 +14,8 @@ in {
       enable = true;
       name = "pvl-x2";
       address = "https://127.0.0.1:8443";
-      project = "default";
-      allowedSubnets = ["10.10.20.0/24"];
+      project = "pvl";
+      allowedSubnets = ["10.10.50.0/24"];
       clientCertificateFile = "${incusClientCert}";
       clientKeyFile = config.age.secrets.incus-pvl-vlab-1-key.path;
       acceptCertificate = true;
@@ -23,12 +23,10 @@ in {
 
     instances = {
       pvl-vk-1 = {
-        ipv4Address = "10.10.20.31";
+        ipv4Address = "10.10.50.31";
         config = {
           "security.privileged" = "false";
           "security.nesting" = "true";
-          "security.syscalls.intercept.mount" = "true";
-          "security.syscalls.intercept.mount.shift" = "true";
         };
         devices = {
           state = {

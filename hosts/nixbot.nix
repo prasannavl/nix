@@ -28,7 +28,7 @@
       parent = "pvl-vlab";
     };
     pvl-vk-1 = {
-      target = "10.10.20.31";
+      target = "10.10.50.31";
       ageIdentityKey = "data/secrets/machine/pvl-vk-1.key.age";
       proxyJump = "pvl-x2";
       parent = "pvl-vlab-1";

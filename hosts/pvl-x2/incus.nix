@@ -7,14 +7,59 @@
   incusLib = import ../../lib/incus/lib.nix {
     inherit config lib;
   };
+  isolatedProjectConfig = {
+    "features.images" = "true";
+    "features.networks" = "false";
+    "features.profiles" = "true";
+    "features.storage.buckets" = "true";
+    "features.storage.volumes" = "true";
+  };
+  mkRestrictedProject = name: network: extraConfig: {
+    inherit name;
+    description = "";
+    config =
+      isolatedProjectConfig
+      // {
+        restricted = "true";
+        "restricted.devices.disk" = "managed";
+        "restricted.devices.nic" = "managed";
+        "restricted.networks.access" = network;
+        "restricted.storage-pools.access" = "default";
+      }
+      // extraConfig;
+  };
 in {
   services.incusMachines = {
     certificates = [
       {
+        name = "pvl";
+        type = "client";
+        restricted = false;
+        projects = [];
+        certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
+      }
+      {
+        name = "abird";
+        type = "client";
+        restricted = true;
+        projects = [
+          "abird"
+          "abird-dev"
+        ];
+        certificate = builtins.readFile ../../data/secrets/incus/abird.crt;
+      }
+      {
+        name = "abird-dev";
+        type = "client";
+        restricted = true;
+        projects = ["abird-dev"];
+        certificate = builtins.readFile ../../data/secrets/incus/abird-dev.crt;
+      }
+      {
         name = "pvl-vlab-1";
         type = "client";
         restricted = true;
-        projects = ["default"];
+        projects = ["pvl"];
         certificate = builtins.readFile ../../data/secrets/incus/pvl-vlab-1.crt;
       }
     ];
@@ -117,7 +162,43 @@ in {
         };
         description = "";
         name = "incusbr0";
-        type = "";
+        type = "bridge";
+        project = "default";
+      }
+      {
+        config = {
+          "ipv4.address" = "10.10.50.1/24";
+          "ipv4.dhcp.ranges" = "10.10.50.100-10.10.50.199";
+          "ipv4.nat" = "true";
+          "ipv6.address" = "auto";
+        };
+        description = "";
+        name = "ipvlbr0";
+        type = "bridge";
+        project = "default";
+      }
+      {
+        config = {
+          "ipv4.address" = "10.10.100.1/24";
+          "ipv4.dhcp.ranges" = "10.10.100.100-10.10.100.199";
+          "ipv4.nat" = "true";
+          "ipv6.address" = "auto";
+        };
+        description = "";
+        name = "iabirdbr0";
+        type = "bridge";
+        project = "default";
+      }
+      {
+        config = {
+          "ipv4.address" = "10.10.200.1/24";
+          "ipv4.dhcp.ranges" = "10.10.200.100-10.10.200.199";
+          "ipv4.nat" = "true";
+          "ipv6.address" = "auto";
+        };
+        description = "";
+        name = "iabirddevbr0";
+        type = "bridge";
         project = "default";
       }
     ];
@@ -154,9 +235,69 @@ in {
         name = "default";
         project = "default";
       }
+      {
+        config = {};
+        description = "";
+        devices = {
+          eth0 = {
+            name = "eth0";
+            network = "ipvlbr0";
+            type = "nic";
+          };
+          root = {
+            path = "/";
+            pool = "default";
+            type = "disk";
+          };
+        };
+        name = "default";
+        project = "pvl";
+      }
+      {
+        config = {};
+        description = "";
+        devices = {
+          eth0 = {
+            name = "eth0";
+            network = "iabirdbr0";
+            type = "nic";
+          };
+          root = {
+            path = "/";
+            pool = "default";
+            type = "disk";
+          };
+        };
+        name = "default";
+        project = "abird";
+      }
+      {
+        config = {};
+        description = "";
+        devices = {
+          eth0 = {
+            name = "eth0";
+            network = "iabirddevbr0";
+            type = "nic";
+          };
+          root = {
+            path = "/";
+            pool = "default";
+            type = "disk";
+          };
+        };
+        name = "default";
+        project = "abird-dev";
+      }
     ];
 
-    projects = [];
+    projects = [
+      (mkRestrictedProject "pvl" "ipvlbr0" {
+        "restricted.containers.nesting" = "allow";
+      })
+      (mkRestrictedProject "abird" "iabirdbr0" {})
+      (mkRestrictedProject "abird-dev" "iabirddevbr0" {})
+    ];
     certificates = [];
     cluster = null;
   };
@@ -164,5 +305,5 @@ in {
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
   };
-  networking.firewall.trustedInterfaces = ["incusbr0"];
+  networking.firewall.trustedInterfaces = ["incusbr0" "ipvlbr0" "iabirdbr0" "iabirddevbr0"];
 }
