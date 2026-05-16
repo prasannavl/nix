@@ -65,9 +65,11 @@ Final delegated deploy fixes:
 
 - `pvl` project restrictions now explicitly block container syscall interception
   and low-level container keys, and allow only unprivileged containers. Existing
-  stale `security.syscalls.intercept.*` instance keys are removed in
-  `incus-preseed` pre-start before tightening the project, otherwise Incus
-  rejects the project update.
+  stale `security.syscalls.intercept.*` instance keys must be removed before
+  tightening the project, otherwise Incus rejects the project update. The shared
+  `services.incusMachines.preseedMigrations` hook now runs that cleanup before
+  `incus-preseed` for declared preseed projects, keeping the migration out of
+  host-local systemd overrides.
 - The settlement helper no longer assumes `true` exists in `/bin`; it probes the
   NixOS profile path first. It also makes one best-effort networkd
   reconciliation attempt when an instance is running and accepts exec but has
@@ -111,10 +113,10 @@ watches and reconciles each file through the named
 `incusLib.mkCertDelegation "<name>"` disk device only references and mounts that
 resource into the guest.
 
-The tenant file is JSON data, not Nix code. Parent validation requires
-a bounded certificate count, safe tenant-local names, and valid PEM certificate
-material. The target project comes only from the parent Nix config, not the
-tenant file. The parent always creates Incus trust entries as `type = client`,
+The tenant file is JSON data, not Nix code. Parent validation requires a bounded
+certificate count, safe tenant-local names, and valid PEM certificate material.
+The target project comes only from the parent Nix config, not the tenant file.
+The parent always creates Incus trust entries as `type = client`,
 `restricted = true`, and `projects = [ <delegation.project> ]`, with a forced
 delegation-specific name prefix. Removal only follows the parent-owned
 delegation state file, so the delegated path cannot remove parent-owned certs
@@ -139,8 +141,8 @@ delegation file does not block activation. This keeps the direct parent trust
 store limited to the unrestricted `pvl` cert while still letting `pvl-vlab-1`
 manage the parent `pvl` project declaratively.
 
-`abird-nest` is declared in the parent Incus `abird` project at
-`10.10.100.31`. Per-instance project placement is handled by
+`abird-nest` is declared in the parent Incus `abird` project at `10.10.100.31`.
+Per-instance project placement is handled by
 `services.incusMachines.instances.<name>.project`; lifecycle commands pass that
 project through to the Incus CLI/API. Because `abird-nest` needs the parent API
 proxy and host-path delegation mounts, the restricted `abird` project explicitly
@@ -151,8 +153,8 @@ Incus CLI `query` must not go through the project-wrapped command helper:
 `incus query` rejects the global `--project` flag. Project-aware queries should
 use plain `incus query` with `project=<name>` encoded in the query URL; mutating
 lifecycle/config/storage commands should keep using the project-wrapped helper.
-Timed Incus commands must not invoke shell functions directly through
-`timeout`; wrap the real `incus --project <project> ...` command instead.
+Timed Incus commands must not invoke shell functions directly through `timeout`;
+wrap the real `incus --project <project> ...` command instead.
 
 Removing the named `certificateDelegations.<name>` resource is the deletion
 boundary. The parent-side GC compares current delegations with the last applied
@@ -163,7 +165,15 @@ delegations, and removes the delegation directory when it is under
 Tenant JSON entries use `data` for the public PEM payload:
 
 ```json
-{"version":1,"certificates":[{"name":"alice-laptop","data":"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"}]}
+{
+  "version": 1,
+  "certificates": [
+    {
+      "name": "alice-laptop",
+      "data": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+    }
+  ]
+}
 ```
 
 Source of truth files:

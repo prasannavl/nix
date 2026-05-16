@@ -24,6 +24,8 @@ init_vars() {
 	certificate_delegations="{}"
 	certificate_delegations_file="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE-}"
 	certificate_delegations_state_file="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE-/var/lib/incus-machines/delegated-certificates/delegations.json}"
+	preseed_migrations="[]"
+	preseed_migrations_file="${INCUS_MACHINES_PRESEED_MIGRATIONS_FILE-}"
 	incus_remote_name="${INCUS_MACHINES_REMOTE_NAME-local}"
 	incus_remote_address="${INCUS_MACHINES_REMOTE_ADDRESS-}"
 	incus_remote_project="${INCUS_MACHINES_REMOTE_PROJECT-default}"
@@ -38,6 +40,9 @@ init_vars() {
 	fi
 	if [ -n "$certificate_delegations_file" ]; then
 		certificate_delegations="$(cat "$certificate_delegations_file")"
+	fi
+	if [ -n "$preseed_migrations_file" ]; then
+		preseed_migrations="$(cat "$preseed_migrations_file")"
 	fi
 	selected_json='[]'
 }
@@ -263,6 +268,58 @@ instance_query_path() {
 	name="$1"
 	encoded_name="$(jq -nr --arg value "$name" '$value | @uri')"
 	printf '%s\n' "/1.0/instances/$encoded_name"
+}
+
+preseed_migrations_main() {
+	local instance instance_config_json key keys_json migration prefixes_json project project_instances
+
+	printf '%s' "$preseed_migrations" |
+		jq -e '
+			type == "array"
+			and all(.[]; (
+				(.projects | type == "array")
+				and all(.projects[]; type == "string")
+				and (.unsetInstanceConfigKeyPrefixes | type == "array")
+				and all(.unsetInstanceConfigKeyPrefixes[]; type == "string")
+			))
+		' >/dev/null
+
+	while IFS= read -r migration; do
+		prefixes_json="$(printf '%s' "$migration" | jq -c '.unsetInstanceConfigKeyPrefixes')"
+		if [ "$prefixes_json" = "[]" ]; then
+			continue
+		fi
+
+		while IFS= read -r project; do
+			[ -n "$project" ] || continue
+			if ! incus project show "$project" >/dev/null 2>&1; then
+				continue
+			fi
+
+			current_project="$project"
+			project_instances="$(incus list --project "$project" --format=json)"
+			while IFS= read -r instance; do
+				[ -n "$instance" ] || continue
+				instance_config_json="$(incus query "$(query_ref "$(instance_query_path "$instance")")")"
+				keys_json="$(
+					printf '%s' "$instance_config_json" |
+						jq -c --argjson prefixes "$prefixes_json" '
+							[
+								.config // {}
+								| keys[] as $key
+								| select(any($prefixes[]; . as $prefix | $key | startswith($prefix)))
+								| $key
+							]
+						'
+				)"
+
+				while IFS= read -r key; do
+					[ -n "$key" ] || continue
+					incus config unset --project "$project" "$instance" "$key" || true
+				done < <(printf '%s' "$keys_json" | jq -r '.[]')
+			done < <(printf '%s' "$project_instances" | jq -r '.[].name')
+		done < <(printf '%s' "$migration" | jq -r '.projects[]')
+	done < <(printf '%s' "$preseed_migrations" | jq -c '.[]')
 }
 
 json_keys() {
@@ -1581,12 +1638,15 @@ main() {
 	setup_incus_client
 	command="${1-}"
 	[ -n "$command" ] || {
-		echo "usage: incus-machines-helper <reconciler|settlement|machine|images|gc|host-suspend> [args...]" >&2
+		echo "usage: incus-machines-helper <preseed-migrations|reconciler|settlement|machine|images|gc|host-suspend> [args...]" >&2
 		exit 1
 	}
 	shift
 
 	case "$command" in
+	preseed-migrations)
+		preseed_migrations_main "$@"
+		;;
 	certificates)
 		certificates_main "$@"
 		;;

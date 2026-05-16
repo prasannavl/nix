@@ -112,6 +112,23 @@
     then []
     else incusPreseed.certificates or [];
   hasIncusPreseed = incusPreseed != null;
+  preseedProjectNames =
+    if incusPreseed == null
+    then []
+    else map (project: project.name) (incusPreseed.projects or []);
+  resolvedPreseedMigrations =
+    lib.filter
+    (migration: migration.projects != [] && migration.unsetInstanceConfigKeyPrefixes != [])
+    (map (migration: {
+        projects =
+          if migration.projects == null
+          then preseedProjectNames
+          else migration.projects;
+        inherit (migration) unsetInstanceConfigKeyPrefixes;
+      })
+      cfg.preseedMigrations);
+  hasPreseedMigrations = !cfg.remote.enable && hasIncusPreseed && resolvedPreseedMigrations != [];
+  preseedMigrationsFile = pkgs.writeText "incus-machines-preseed-migrations.json" (builtins.toJSON resolvedPreseedMigrations);
   certificatesJson = builtins.toJSON cfg.certificates;
   certificatesFile = pkgs.writeText "incus-machines-certificates.json" certificatesJson;
   certificatesStateFile = "/var/lib/incus-machines/certificates.json";
@@ -262,6 +279,29 @@
         type = lib.types.ints.positive;
         default = 32;
         description = "Maximum number of delegated certificates accepted from the tenant state file.";
+      };
+    };
+  });
+
+  preseedMigrationType = lib.types.submodule (_: {
+    options = {
+      projects = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        description = ''
+          Incus projects to migrate before `incus-preseed.service` runs.
+          `null` means all projects declared by
+          `virtualisation.incus.preseed.projects`.
+        '';
+      };
+
+      unsetInstanceConfigKeyPrefixes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          Instance config key prefixes to remove before preseed. This is for
+          stale keys that would make a later project restriction update fail.
+        '';
       };
     };
   });
@@ -851,6 +891,20 @@ in {
       '';
     };
 
+    preseedMigrations = lib.mkOption {
+      type = lib.types.listOf preseedMigrationType;
+      default = [
+        {
+          unsetInstanceConfigKeyPrefixes = ["security.syscalls.intercept."];
+        }
+      ];
+      description = ''
+        Best-effort migrations run before upstream `incus-preseed.service`.
+        Entries are data-driven so one-time preseed compatibility cleanups can
+        live in the shared Incus module instead of host-local systemd overrides.
+      '';
+    };
+
     certificates = lib.mkOption {
       type = lib.types.listOf certificateType;
       default = [];
@@ -1192,6 +1246,12 @@ in {
 
     systemd.services =
       {
+        incus-preseed = lib.mkIf hasPreseedMigrations {
+          preStart = lib.mkBefore ''
+            export INCUS_MACHINES_PRESEED_MIGRATIONS_FILE=${lib.escapeShellArg (toString preseedMigrationsFile)}
+            ${helperScript} preseed-migrations
+          '';
+        };
         incus-machines-certificates = lib.mkIf (!cfg.remote.enable) {
           description = "Reconcile declared Incus trusted certificates";
           wantedBy = ["sysinit-reactivation.target"];
