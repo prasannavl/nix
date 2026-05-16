@@ -6067,94 +6067,127 @@ _remote_post_switch_user_health_check() {
 	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
 	local raw_failed_output="" failed_output="" ignored_failed_output=""
 	local raw_system_failed_output="" system_failed_output="" ignored_system_failed_output=""
-	local podman_nonhealthy_output="" system_podman_nonhealthy_output=""
-	local had_failures=0
+	local podman_unhealthy_output="" podman_starting_output=""
+	local system_podman_unhealthy_output="" system_podman_starting_output=""
+	local had_failures=0 had_starting=0
+	local starting_output="" start_epoch="" now_epoch=""
+	local starting_wait_seconds=120 poll_seconds=5
 
 	if [ "${wait_seconds}" -gt 0 ]; then
 		echo "[health-check] waiting ${wait_seconds}s for services to stabilize" >&2
 		sleep "${wait_seconds}"
 	fi
 
-	raw_system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
-	system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_filter_failed_units)"
-	ignored_system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_ignored_failed_units)"
-	if [ -n "${ignored_system_failed_output}" ]; then
-		echo "[health-check] transient system Podman healthcheck units observed; checking current container health:" >&2
-		echo "${ignored_system_failed_output}" >&2
-	fi
-	if [ -n "${system_failed_output}" ]; then
-		had_failures=1
-		echo "[health-check] FAILED system units:" >&2
-		echo "${system_failed_output}" >&2
-	fi
-	system_podman_nonhealthy_output="$(_remote_health_check_podman_nonhealthy_containers)"
-	if [ -n "${system_podman_nonhealthy_output}" ]; then
-		had_failures=1
-		echo "[health-check] NON-HEALTHY system Podman containers:" >&2
-		echo "${system_podman_nonhealthy_output}" >&2
-	fi
+	start_epoch="$(date +%s)"
+	while :; do
+		had_failures=0
+		had_starting=0
+		starting_output=""
 
-	units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
-	if [ -z "${units}" ]; then
+		raw_system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
+		system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_filter_failed_units)"
+		ignored_system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_ignored_failed_units)"
+		if [ -n "${ignored_system_failed_output}" ]; then
+			echo "[health-check] transient system Podman healthcheck units observed; checking current container health:" >&2
+			echo "${ignored_system_failed_output}" >&2
+		fi
+		if [ -n "${system_failed_output}" ]; then
+			had_failures=1
+			echo "[health-check] FAILED system units:" >&2
+			echo "${system_failed_output}" >&2
+		fi
+		system_podman_unhealthy_output="$(_remote_health_check_podman_unhealthy_containers)"
+		if [ -n "${system_podman_unhealthy_output}" ]; then
+			had_failures=1
+			echo "[health-check] UNHEALTHY system Podman containers:" >&2
+			echo "${system_podman_unhealthy_output}" >&2
+		fi
+		system_podman_starting_output="$(_remote_health_check_podman_starting_containers)"
+		if [ -n "${system_podman_starting_output}" ]; then
+			had_starting=1
+			starting_output="${starting_output}${starting_output:+
+}[system]
+${system_podman_starting_output}"
+		fi
+
+		units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
+		while IFS= read -r unit; do
+			[ -n "${unit}" ] || continue
+			user="$(systemctl show --property=Environment --value "${unit}" 2>/dev/null | grep -oP 'SYSTEMD_USER_MANAGER_USER=\K[^ ]+' || true)"
+			[ -n "${user}" ] || continue
+			uid="$(id -u "${user}" 2>/dev/null || true)"
+			[ -n "${uid}" ] || continue
+			home="$(getent passwd "${user}" | cut -d: -f6 || true)"
+			[ -n "${home}" ] || home="/"
+			if ! systemctl is-active --quiet "user@${uid}.service" 2>/dev/null; then
+				continue
+			fi
+			runtime_dir="/run/user/${uid}"
+			bus="unix:path=${runtime_dir}/bus"
+			raw_failed_output="$(
+				setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+					env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+					systemctl --user list-units --failed --no-legend --plain 2>/dev/null || true
+			)"
+			failed_output="$(printf '%s\n' "${raw_failed_output}" | _remote_health_check_filter_failed_units)"
+			ignored_failed_output="$(printf '%s\n' "${raw_failed_output}" | _remote_health_check_ignored_failed_units)"
+			if [ -n "${ignored_failed_output}" ]; then
+				echo "[health-check] transient Podman healthcheck units observed for user ${user}; checking current container health:" >&2
+				echo "${ignored_failed_output}" >&2
+			fi
+			if [ -n "${failed_output}" ]; then
+				had_failures=1
+				echo "[health-check] FAILED units for user ${user}:" >&2
+				echo "${failed_output}" >&2
+			fi
+			podman_unhealthy_output="$(
+				cd /
+				setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+					env HOME="${home}" XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+					sh -c 'cd /; podman ps --filter health=unhealthy --format "unhealthy {{.Names}} {{.Status}}" 2>/dev/null || true'
+			)"
+			if [ -n "${podman_unhealthy_output}" ]; then
+				had_failures=1
+				echo "[health-check] UNHEALTHY Podman containers for user ${user}:" >&2
+				echo "${podman_unhealthy_output}" >&2
+			fi
+			podman_starting_output="$(
+				cd /
+				setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+					env HOME="${home}" XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+					sh -c 'cd /; podman ps --filter health=starting --format "starting {{.Names}} {{.Status}}" 2>/dev/null || true'
+			)"
+			if [ -n "${podman_starting_output}" ]; then
+				had_starting=1
+				starting_output="${starting_output}${starting_output:+
+}[user ${user}]
+${podman_starting_output}"
+			fi
+		done <<EOF_HC_UNITS
+${units}
+EOF_HC_UNITS
+
 		if [ "${had_failures}" -eq 1 ]; then
 			echo "[health-check] FAILED — service failures detected after deploy" >&2
 			return 1
 		fi
-		echo "[health-check] all services healthy" >&2
-		return 0
-	fi
+		if [ "${had_starting}" -eq 0 ]; then
+			echo "[health-check] all services healthy" >&2
+			return 0
+		fi
 
-	while IFS= read -r unit; do
-		[ -n "${unit}" ] || continue
-		user="$(systemctl show --property=Environment --value "${unit}" 2>/dev/null | grep -oP 'SYSTEMD_USER_MANAGER_USER=\K[^ ]+' || true)"
-		[ -n "${user}" ] || continue
-		uid="$(id -u "${user}" 2>/dev/null || true)"
-		[ -n "${uid}" ] || continue
-		home="$(getent passwd "${user}" | cut -d: -f6 || true)"
-		[ -n "${home}" ] || home="/"
-		if ! systemctl is-active --quiet "user@${uid}.service" 2>/dev/null; then
-			continue
+		now_epoch="$(date +%s)"
+		if [ $((now_epoch - start_epoch)) -ge "${starting_wait_seconds}" ]; then
+			echo "[health-check] NON-HEALTHY Podman containers still starting after ${starting_wait_seconds}s:" >&2
+			echo "${starting_output}" >&2
+			echo "[health-check] FAILED — service failures detected after deploy" >&2
+			return 1
 		fi
-		runtime_dir="/run/user/${uid}"
-		bus="unix:path=${runtime_dir}/bus"
-		raw_failed_output="$(
-			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
-				env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
-				systemctl --user list-units --failed --no-legend --plain 2>/dev/null || true
-		)"
-		failed_output="$(printf '%s\n' "${raw_failed_output}" | _remote_health_check_filter_failed_units)"
-		ignored_failed_output="$(printf '%s\n' "${raw_failed_output}" | _remote_health_check_ignored_failed_units)"
-		if [ -n "${ignored_failed_output}" ]; then
-			echo "[health-check] transient Podman healthcheck units observed for user ${user}; checking current container health:" >&2
-			echo "${ignored_failed_output}" >&2
-		fi
-		if [ -n "${failed_output}" ]; then
-			had_failures=1
-			echo "[health-check] FAILED units for user ${user}:" >&2
-			echo "${failed_output}" >&2
-		fi
-		podman_nonhealthy_output="$(
-			cd /
-			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
-				env HOME="${home}" XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
-				sh -c 'cd /; { podman ps --filter health=unhealthy --format "unhealthy {{.Names}} {{.Status}}" 2>/dev/null || true; podman ps --filter health=starting --format "starting {{.Names}} {{.Status}}" 2>/dev/null || true; } | sort -u'
-		)"
-		if [ -n "${podman_nonhealthy_output}" ]; then
-			had_failures=1
-			echo "[health-check] NON-HEALTHY Podman containers for user ${user}:" >&2
-			echo "${podman_nonhealthy_output}" >&2
-		fi
-	done <<EOF_HC_UNITS
-${units}
-EOF_HC_UNITS
 
-	if [ "${had_failures}" -eq 1 ]; then
-		echo "[health-check] FAILED — service failures detected after deploy" >&2
-		return 1
-	fi
-
-	echo "[health-check] all services healthy" >&2
-	return 0
+		echo "[health-check] waiting for Podman containers still starting:" >&2
+		echo "${starting_output}" >&2
+		sleep "${poll_seconds}"
+	done
 }
 
 _remote_health_check_filter_failed_units() {
@@ -6165,21 +6198,24 @@ _remote_health_check_ignored_failed_units() {
 	awk '($0 ~ /\[systemd-run\].*podman.*healthcheck run / || $0 ~ /\.podman-wrapped healthcheck run /)'
 }
 
-_remote_health_check_podman_nonhealthy_containers() {
+_remote_health_check_podman_unhealthy_containers() {
 	cd /
-	{
-		podman ps --filter health=unhealthy --format 'unhealthy {{.Names}} {{.Status}}' 2>/dev/null || true
-		podman ps --filter health=starting --format 'starting {{.Names}} {{.Status}}' 2>/dev/null || true
-	} | sort -u
+	podman ps --filter health=unhealthy --format 'unhealthy {{.Names}} {{.Status}}' 2>/dev/null || true
+}
+
+_remote_health_check_podman_starting_containers() {
+	cd /
+	podman ps --filter health=starting --format 'starting {{.Names}} {{.Status}}' 2>/dev/null || true
 }
 
 build_post_switch_health_check_cmd() {
 	local wait_seconds="${1:-10}"
 
-	printf '%s\n%s\n%s\n%s\n%s\n' \
+	printf '%s\n' \
 		"$(declare -f _remote_health_check_filter_failed_units)" \
 		"$(declare -f _remote_health_check_ignored_failed_units)" \
-		"$(declare -f _remote_health_check_podman_nonhealthy_containers)" \
+		"$(declare -f _remote_health_check_podman_unhealthy_containers)" \
+		"$(declare -f _remote_health_check_podman_starting_containers)" \
 		"$(declare -f _remote_post_switch_user_health_check)" \
 		"_remote_post_switch_user_health_check ${wait_seconds}"
 }

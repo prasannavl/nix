@@ -16,6 +16,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - `run` is the explicit full-workflow entrypoint. Other top-level actions stay
   first-class modes: deploy, build, local dev-build, Terraform phases,
   dependency checks, and bootstrap checks.
+- `--hosts` accepts exact host names, comma/space-separated host lists, `all`,
+  and shell-style globs. Glob expansion happens against the NixOS configuration
+  names before normal dependency expansion and ordering.
 - `dev-build` is local-only. It runs from the current checkout instead of the
   managed repo worktree, rejects `--sha` and `--bastion-trigger`, and writes
   `result-<host>` links in the repo root as temporary GC roots.
@@ -111,9 +114,12 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   deploy window, not stale display-session failures left behind by earlier
   compositor logout/login churn.
 - Post-switch health checks ignore transient failed Podman healthcheck runner
-  units and instead query current Podman container health. Health-check failures
-  are tracked separately in the final summary and roll back using
-  health-specific rollback status buckets.
+  units and instead query current Podman container health. The health check
+  still fails immediately on ordinary failed system/user units and on Podman
+  containers whose current health is `unhealthy`; containers still in
+  `starting` are polled for a bounded window so healthcheck intervals do not
+  trigger premature rollback. Health-check failures are tracked separately in
+  the final summary and roll back using health-specific rollback status buckets.
 - Remote `nixos-rebuild-ng` deploys that lose SSH with exit `255` after a
   network-disrupting switch verify the target system path before being treated
   as failed. This mirrors the self-target deploy guard without masking ordinary
