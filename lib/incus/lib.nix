@@ -79,6 +79,11 @@
       }
       // extraProperties;
   };
+
+  mkCertDelegation = name: {
+    type = "disk";
+    certDelegation = name;
+  };
 in {
-  inherit mkGpuDevices mkIncusProxy;
+  inherit mkCertDelegation mkGpuDevices mkIncusProxy;
 }

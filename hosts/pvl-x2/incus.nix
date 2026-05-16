@@ -42,31 +42,19 @@ in {
         projects = [];
         certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
       }
-      {
-        name = "abird";
-        type = "client";
-        restricted = true;
-        projects = [
-          "abird"
-          "abird-dev"
-        ];
-        certificate = builtins.readFile ../../data/secrets/incus/abird.crt;
-      }
-      {
-        name = "abird-dev";
-        type = "client";
-        restricted = true;
-        projects = ["abird-dev"];
-        certificate = builtins.readFile ../../data/secrets/incus/abird-dev.crt;
-      }
-      {
-        name = "pvl-vlab-1";
-        type = "client";
-        restricted = true;
-        projects = ["pvl"];
-        certificate = builtins.readFile ../../data/secrets/incus/pvl-vlab-1.crt;
-      }
     ];
+
+    certificateDelegations = {
+      pvl = {
+        project = "pvl";
+      };
+      abird = {
+        project = "abird";
+      };
+      abird-dev = {
+        project = "abird-dev";
+      };
+    };
 
     instances = {
       pvl-vlab = {
@@ -110,9 +98,10 @@ in {
               path = "/var/lib";
               removalPolicy = "keep";
             };
-            pvl-x2-incus-api = incusLib.mkIncusProxy {
+            incus-api = incusLib.mkIncusProxy {
               connectHost = "10.10.20.1";
             };
+            delegated-certs = incusLib.mkCertDelegation "pvl";
           }
           // incusLib.mkGpuDevices {
             card = 1;
@@ -147,6 +136,30 @@ in {
             render = 128;
             kfd = true;
           };
+      };
+
+      abird-nest = {
+        project = "abird";
+        ipv4Address = "10.10.100.31";
+        removalPolicy = "delete-all";
+        recreateTag = "1";
+
+        config = {
+          "security.nesting" = "true";
+          "security.privileged" = "false";
+        };
+        devices = {
+          state = {
+            source = "abird-nest";
+            path = "/var/lib";
+            removalPolicy = "keep";
+          };
+          incus-api = incusLib.mkIncusProxy {
+            connectHost = "10.10.20.1";
+          };
+          delegated-certs = incusLib.mkCertDelegation "abird";
+          delegated-dev-certs = incusLib.mkCertDelegation "abird-dev";
+        };
       };
     };
   };
@@ -299,7 +312,12 @@ in {
       (mkRestrictedProject "pvl" "ipvlbr0" {
         "restricted.containers.nesting" = "allow";
       })
-      (mkRestrictedProject "abird" "iabirdbr0" {})
+      (mkRestrictedProject "abird" "iabirdbr0" {
+        "restricted.containers.nesting" = "allow";
+        "restricted.devices.disk" = "allow";
+        "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-dev";
+        "restricted.devices.proxy" = "allow";
+      })
       (mkRestrictedProject "abird-dev" "iabirddevbr0" {})
     ];
     certificates = [];

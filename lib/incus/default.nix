@@ -11,7 +11,11 @@
   defaultBaseAlias = "nixos-incus-base";
 
   hasInstances = cfg.instances != {};
-  hasHostHooks = hasInstances || cfg.hostSuspend.enable;
+  hasCertificates = cfg.certificates != [];
+  hasCertificateDelegations = cfg.certificateDelegations != {};
+  hasHostHooks = hasInstances || hasCertificates || hasCertificateDelegations || cfg.hostSuspend.enable;
+  hasRemoteCertificateDelegation =
+    cfg.remote.enable && cfg.remote.certificateDelegation.enable && hasInstances;
   mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
   remoteValue = value:
     if value == null
@@ -37,6 +41,21 @@
     ]
     ++ lib.optional (cfg.remote.serverCertificateFile != null)
     (mkEnvAssignment "INCUS_MACHINES_REMOTE_SERVER_CERT_FILE" cfg.remote.serverCertificateFile));
+  remoteCertificateDelegationName =
+    if cfg.remote.certificateDelegation.name != null
+    then cfg.remote.certificateDelegation.name
+    else cfg.remote.project;
+  remoteCertificateDelegationDirectory =
+    if cfg.remote.certificateDelegation.directory != null
+    then cfg.remote.certificateDelegation.directory
+    else "/var/lib/incus-delegation/${remoteCertificateDelegationName}";
+  remoteCertificateDelegationTarget = "${remoteCertificateDelegationDirectory}/${cfg.remote.certificateDelegation.fileName}";
+  remoteCertificateDelegationUnit = "incus-remote-certificate-delegation.service";
+  remoteCertificateDelegationDeps = lib.optional hasRemoteCertificateDelegation remoteCertificateDelegationUnit;
+  remoteCertificateDelegationTrustArgs =
+    if cfg.remote.serverCertificateFile != null
+    then "--cacert ${lib.escapeShellArg cfg.remote.serverCertificateFile}"
+    else lib.optionalString cfg.remote.acceptCertificate "--insecure";
 
   helperPackage = pkgs.writeShellApplication {
     name = "incus-machines-helper";
@@ -62,12 +81,14 @@
     ${remoteEnvExports}
     export INCUS_MACHINES_RECONCILE_MODE=${lib.escapeShellArg cfg.reconcilePolicy}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
+    export INCUS_MACHINES_INSTANCE_PROJECTS=${lib.escapeShellArg instanceProjectsJson}
     exec ${helperScript} reconciler "$@"
   '';
 
   settlementCommand = pkgs.writeShellScriptBin "incus-machines-settlement" ''
     ${remoteEnvExports}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
+    export INCUS_MACHINES_INSTANCE_PROJECTS=${lib.escapeShellArg instanceProjectsJson}
     export INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES=${lib.escapeShellArg instanceIpv4AddressesJson}
     export INCUS_MACHINES_INSTANCE_SSH_PORTS=${lib.escapeShellArg instanceSshPortsJson}
     export INCUS_MACHINES_INSTANCE_WAIT_FOR_SSH=${lib.escapeShellArg instanceWaitForSshJson}
@@ -154,6 +175,16 @@
         default = {};
         description = "Additional incus device properties not covered by top-level fields.";
       };
+
+      certDelegation = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Name of a parent-side certificate delegation to mount into this
+          instance. The named `services.incusMachines.certificateDelegations`
+          entry owns the host directory and project binding.
+        '';
+      };
     };
   });
 
@@ -189,6 +220,52 @@
     };
   });
 
+  certificateDelegationType = lib.types.submodule ({name, ...}: {
+    options = {
+      project = lib.mkOption {
+        type = lib.types.str;
+        default = name;
+        description = "Incus project that delegated certificates are restricted to.";
+      };
+
+      directory = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/incus-delegations/${name}";
+        description = "Host directory containing the tenant-owned delegated certificate state file.";
+      };
+
+      guestPath = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/incus-delegation/${name}";
+        description = "Guest mount path for the delegated certificate directory.";
+      };
+
+      fileName = lib.mkOption {
+        type = lib.types.str;
+        default = "certs.json";
+        description = "Tenant-owned JSON file name under the delegation directory.";
+      };
+
+      stateFile = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/incus-machines/delegated-certificates/${name}.json";
+        description = "Parent-owned state file tracking certificates managed by this delegation.";
+      };
+
+      namePrefix = lib.mkOption {
+        type = lib.types.str;
+        default = "${name}-delegated-";
+        description = "Prefix forced onto trusted certificate names created from this delegation.";
+      };
+
+      maxCertificates = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 32;
+        description = "Maximum number of delegated certificates accepted from the tenant state file.";
+      };
+    };
+  });
+
   machineType = lib.types.submodule (_: {
     options = {
       image = lib.mkOption {
@@ -215,6 +292,14 @@
       ipv4Address = lib.mkOption {
         type = lib.types.str;
         description = "Static IPv4 address (outside the bridge DHCP range).";
+      };
+      project = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Incus project for this instance. Defaults to the configured remote
+          project in remote mode and `default` for local Incus management.
+        '';
       };
       sshPort = lib.mkOption {
         type = lib.types.port;
@@ -267,19 +352,48 @@
     };
   });
 
+  resolveCertDelegationDevice = dev:
+    if dev.certDelegation == null
+    then dev
+    else let
+      delegation = cfg.certificateDelegations.${dev.certDelegation};
+    in
+      dev
+      // {
+        source = delegation.directory;
+        path = delegation.guestPath;
+      };
+
   isHostPath = source: source != null && lib.hasPrefix "/" source;
-  isHostPathDisk = dev: dev.type == "disk" && isHostPath dev.source;
-  isManagedHostDir = dev: isHostPathDisk dev && !lib.hasPrefix "/dev/" dev.source;
-  isVolumeBackedDisk = dev: dev.type == "disk" && dev.source != null && !isHostPath dev.source;
+  isHostPathDisk = dev: let
+    resolved = resolveCertDelegationDevice dev;
+  in
+    resolved.type == "disk" && isHostPath resolved.source;
+  isManagedHostDir = dev: let
+    resolved = resolveCertDelegationDevice dev;
+  in
+    isHostPathDisk resolved && !lib.hasPrefix "/dev/" resolved.source;
+  isVolumeBackedDisk = dev: let
+    resolved = resolveCertDelegationDevice dev;
+  in
+    resolved.type == "disk" && resolved.source != null && !isHostPath resolved.source;
 
   resolveDeviceProperties = _name: dev: let
-    base = {inherit (dev) type;};
-    withSource = lib.optionalAttrs (dev.source != null) {inherit (dev) source;};
-    withPath = lib.optionalAttrs (dev.path != null) {inherit (dev) path;};
-    withShift = lib.optionalAttrs (dev.type == "disk" && dev.shift) {shift = "true";};
-    withPool = lib.optionalAttrs (isVolumeBackedDisk dev) {inherit (dev) pool;};
+    resolved = resolveCertDelegationDevice dev;
+    base = {inherit (resolved) type;};
+    withSource = lib.optionalAttrs (resolved.source != null) {inherit (resolved) source;};
+    withPath = lib.optionalAttrs (resolved.path != null) {inherit (resolved) path;};
+    withShift = lib.optionalAttrs (resolved.type == "disk" && resolved.shift) {shift = "true";};
+    withPool = lib.optionalAttrs (isVolumeBackedDisk resolved) {inherit (resolved) pool;};
   in
-    base // withSource // withPath // withShift // withPool // dev.extraProperties;
+    base // withSource // withPath // withShift // withPool // resolved.extraProperties;
+
+  resolveMachineProject = machine:
+    if machine.project != null
+    then machine.project
+    else if cfg.remote.enable
+    then cfg.remote.project
+    else "default";
 
   createOnlyDevices = machine:
     lib.filterAttrs (_: dev: dev.type != "disk") machine.devices;
@@ -290,6 +404,7 @@
     builtins.hashString "sha256" (builtins.toJSON {
       preseedTag = cfg.preseedTag;
       inherit (machine) config;
+      project = resolveMachineProject machine;
       image = let
         resolvedImage = resolveMachineImage name machine;
       in {
@@ -304,11 +419,13 @@
   diskGcMetadataJson = machine:
     builtins.toJSON (
       lib.mapAttrs
-      (_: dev:
+      (_: dev: let
+        resolved = resolveCertDelegationDevice dev;
+      in
         {
-          inherit (dev) removalPolicy;
+          inherit (resolved) removalPolicy;
         }
-        // lib.optionalAttrs (isManagedHostDir dev) {inherit (dev) source;})
+        // lib.optionalAttrs (isManagedHostDir resolved) {inherit (resolved) source;})
       (syncableDevices machine)
     );
 
@@ -329,6 +446,7 @@
       imageTag = cfg.imageTag;
       instanceImage = instanceImage;
       createRef = instanceImage.createRef;
+      project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
       configHash = hash;
       bootTag = machine.bootTag;
@@ -348,6 +466,7 @@
   in
     builtins.toJSON {
       configHash = hash;
+      project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
       bootTag = machine.bootTag;
       recreateTag = machine.recreateTag;
@@ -366,12 +485,14 @@
       "user.host-suspend.policy" = machine.hostSuspendPolicy;
     }
     // lib.concatMapAttrs (
-      devName: dev:
-        lib.optionalAttrs (dev.type == "disk") {
-          "user.device.${devName}.removal-policy" = dev.removalPolicy;
+      devName: dev: let
+        resolved = resolveCertDelegationDevice dev;
+      in
+        lib.optionalAttrs (resolved.type == "disk") {
+          "user.device.${devName}.removal-policy" = resolved.removalPolicy;
         }
-        // lib.optionalAttrs (isManagedHostDir dev) {
-          "user.device.${devName}.source" = dev.source;
+        // lib.optionalAttrs (isManagedHostDir resolved) {
+          "user.device.${devName}.source" = resolved.source;
         }
     )
     machine.devices;
@@ -540,8 +661,61 @@
   allowedSubnetViolations =
     map (name: "${name} (${cfg.instances.${name}.ipv4Address})") instancesOutsideAllowedSubnets;
 
+  invalidCertificateDelegationNames =
+    lib.filter
+    (name: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" name == null)
+    (builtins.attrNames cfg.certificateDelegations);
+
+  invalidRemoteCertificateDelegationName =
+    cfg.remote.enable
+    && cfg.remote.certificateDelegation.enable
+    && builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" remoteCertificateDelegationName == null;
+
+  invalidCertificateDelegationReferences = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.concatLists (
+          lib.mapAttrsToList (
+            deviceName: dev:
+              lib.optional
+              (dev.certDelegation != null && !builtins.hasAttr dev.certDelegation cfg.certificateDelegations)
+              "${machineName}.${deviceName} -> ${dev.certDelegation}"
+          )
+          machine.devices
+        )
+    )
+    cfg.instances
+  );
+
+  invalidCertificateDelegationDevices = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.concatLists (
+          lib.mapAttrsToList (
+            deviceName: dev:
+              lib.optional
+              (dev.certDelegation != null && dev.type != "disk")
+              "${machineName}.${deviceName}"
+          )
+          machine.devices
+        )
+    )
+    cfg.instances
+  );
+
+  certificateDelegationsJson = builtins.toJSON (
+    lib.mapAttrs
+    (_: delegation: {
+      inherit (delegation) directory stateFile;
+    })
+    cfg.certificateDelegations
+  );
+  certificateDelegationsFile = pkgs.writeText "incus-machines-certificate-delegations.json" certificateDelegationsJson;
+  certificateDelegationsStateFile = "/var/lib/incus-machines/delegated-certificates/delegations.json";
+
   declaredImagesJson = builtins.toJSON declaredImages;
   declaredInstancesJson = builtins.toJSON (builtins.attrNames cfg.instances);
+  instanceProjectsJson = builtins.toJSON (lib.mapAttrs (_name: instance: resolveMachineProject instance) cfg.instances);
   instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) cfg.instances);
   instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) cfg.instances);
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) cfg.instances);
@@ -578,7 +752,7 @@
             (mkEnvAssignment "INCUS_MACHINES_INSTANCE_STATE_FILE" "/etc/incus-machines/${name}.json")
           ]
           ++ remoteServiceEnvironment;
-        ExecStop = "-${helperCommand} stop-instance ${lib.escapeShellArg name}";
+        ExecStop = "-${helperCommand} stop-instance ${lib.escapeShellArg name} ${lib.escapeShellArg (resolveMachineProject machine)}";
         ExecStart = "${helperCommand} machine";
       };
     };
@@ -586,12 +760,57 @@
   mkDeviceTmpfiles = _name: machine:
     lib.concatLists (
       lib.mapAttrsToList (
-        _devName: dev:
-          lib.optional (isManagedHostDir dev)
-          "d ${dev.source} 0755 root root -"
+        _devName: dev: let
+          resolved = resolveCertDelegationDevice dev;
+        in
+          lib.optional (isManagedHostDir resolved)
+          "d ${resolved.source} 0755 root root -"
       )
       machine.devices
     );
+
+  mkCertificateDelegationTmpfiles = _name: delegation: [
+    "d ${delegation.directory} 0755 root root -"
+    "f ${delegation.directory}/${delegation.fileName} 0644 root root -"
+  ];
+
+  mkCertificateDelegationService = name: delegation: let
+    sourceFile = "${delegation.directory}/${delegation.fileName}";
+  in
+    lib.nameValuePair "incus-cert-delegation-${name}" {
+      description = "Reconcile delegated Incus trusted certificates for ${delegation.project}";
+      wantedBy = ["sysinit-reactivation.target"];
+      after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+      wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+      restartTriggers = [
+        helperScript
+      ];
+      restartIfChanged = true;
+      serviceConfig = {
+        Type = "oneshot";
+        Environment = [
+          (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME" name)
+          (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_PROJECT" delegation.project)
+          (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_SOURCE_FILE" sourceFile)
+          (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_STATE_FILE" delegation.stateFile)
+          (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME_PREFIX" delegation.namePrefix)
+          (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_MAX_CERTIFICATES" delegation.maxCertificates)
+        ];
+        ExecStart = "${helperCommand} certificate-delegation";
+      };
+    };
+
+  mkCertificateDelegationPath = name: delegation: let
+    sourceFile = "${delegation.directory}/${delegation.fileName}";
+  in
+    lib.nameValuePair "incus-cert-delegation-${name}" {
+      description = "Watch delegated Incus certificate state for ${delegation.project}";
+      wantedBy = ["multi-user.target"];
+      pathConfig = {
+        PathChanged = sourceFile;
+        Unit = "incus-cert-delegation-${name}.service";
+      };
+    };
 in {
   options.services.incusMachines = {
     defaultImage = lib.mkOption {
@@ -639,6 +858,16 @@ in {
         Declarative Incus trusted certificates reconciled by this module. The
         upstream Incus preseed remains responsible for fabric objects such as
         projects, networks, profiles, and storage pools.
+      '';
+    };
+
+    certificateDelegations = lib.mkOption {
+      type = lib.types.attrsOf certificateDelegationType;
+      default = {};
+      description = ''
+        Parent-owned delegated certificate directories. Instances mount these
+        by name through `incusLib.mkCertDelegation`, while this module owns
+        validation, reconciliation, and cleanup of the host-side directory.
       '';
     };
 
@@ -703,6 +932,61 @@ in {
           `services.incusMachines.instances.<name>.ipv4Address` must fall
           inside at least one listed subnet.
         '';
+      };
+
+      certificateDelegation = {
+        enable = lib.mkEnableOption ''
+          publishing this remote client's public certificate through a mounted
+          parent certificate delegation before managing remote resources
+        '';
+
+        name = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = ''
+            Parent-side certificate delegation name. Defaults to the remote
+            project, matching the common one-delegation-per-project shape.
+          '';
+        };
+
+        directory = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = ''
+            Guest-visible directory where the parent delegation is mounted.
+            Defaults to `/var/lib/incus-delegation/<name>`.
+          '';
+        };
+
+        fileName = lib.mkOption {
+          type = lib.types.str;
+          default = "certs.json";
+          description = "Delegated certificate JSON file written under `directory`.";
+        };
+
+        certificateName = lib.mkOption {
+          type = lib.types.str;
+          default = config.networking.hostName;
+          description = ''
+            Tenant-local certificate name written to the delegated certificate
+            file. The parent still applies its configured delegation prefix.
+          '';
+        };
+
+        waitForTrust = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Wait for the remote Incus API to accept the delegated certificate
+            before importing images or reconciling instances.
+          '';
+        };
+
+        waitTimeoutSeconds = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 60;
+          description = "Seconds to wait for parent trust reconciliation.";
+        };
       };
     };
 
@@ -807,6 +1091,34 @@ in {
           + lib.concatStringsSep ", " invalidRestrictedCertificates;
       }
       {
+        assertion = invalidCertificateDelegationNames == [];
+        message =
+          "services.incusMachines.certificateDelegations names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          + lib.concatStringsSep ", " invalidCertificateDelegationNames;
+      }
+      {
+        assertion = invalidCertificateDelegationReferences == [];
+        message =
+          "services.incusMachines certDelegation devices reference missing certificateDelegations: "
+          + lib.concatStringsSep ", " invalidCertificateDelegationReferences;
+      }
+      {
+        assertion = invalidCertificateDelegationDevices == [];
+        message =
+          "services.incusMachines certDelegation devices must be disk devices: "
+          + lib.concatStringsSep ", " invalidCertificateDelegationDevices;
+      }
+      {
+        assertion = !invalidRemoteCertificateDelegationName;
+        message =
+          "services.incusMachines.remote.certificateDelegation.name must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          + remoteCertificateDelegationName;
+      }
+      {
+        assertion = !cfg.remote.enable || !hasCertificateDelegations;
+        message = "services.incusMachines.certificateDelegations is only supported for local Incus management.";
+      }
+      {
         assertion = !cfg.remote.enable || cfg.remote.name != "local";
         message = "services.incusMachines.remote.name must not be 'local' when remote mode is enabled.";
       }
@@ -847,7 +1159,10 @@ in {
     };
 
     systemd.tmpfiles.rules = lib.mkIf (!cfg.remote.enable) (
-      lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.instances)
+      lib.unique (
+        lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.instances)
+        ++ lib.concatLists (lib.mapAttrsToList mkCertificateDelegationTmpfiles cfg.certificateDelegations)
+      )
     );
 
     environment.systemPackages = [
@@ -897,12 +1212,85 @@ in {
             ${helperScript} certificates
           '';
         };
+        incus-cert-delegations-gc = lib.mkIf (!cfg.remote.enable) {
+          description = "Garbage-collect removed Incus certificate delegations";
+          wantedBy = ["sysinit-reactivation.target"];
+          after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+          wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+          restartTriggers = [
+            helperScript
+            certificateDelegationsFile
+          ];
+          restartIfChanged = true;
+          serviceConfig = {
+            Type = "oneshot";
+            Environment = [
+              (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE" certificateDelegationsFile)
+              (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE" certificateDelegationsStateFile)
+            ];
+            ExecStart = "${helperCommand} certificate-delegations-gc";
+          };
+        };
       }
+      // lib.mapAttrs' mkCertificateDelegationService cfg.certificateDelegations
       // lib.optionalAttrs hasInstances (let
         incusGcDeps = localIncusDeps ++ ["incus-images.service"];
         incusImagesDeps = localIncusDeps ++ ["network-online.target"];
       in
         {
+          incus-remote-certificate-delegation = lib.mkIf hasRemoteCertificateDelegation {
+            description = "Publish remote Incus client certificate to parent delegation";
+            before =
+              [
+                "incus-images.service"
+                "incus-machines-reconciler.service"
+              ]
+              ++ map (name: "incus-${name}.service") (builtins.attrNames cfg.instances);
+            after = ["network-online.target"];
+            wants = ["network-online.target"];
+            path = [
+              pkgs.coreutils
+              pkgs.curl
+              pkgs.jq
+            ];
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              Environment = remoteServiceEnvironment;
+            };
+            script = ''
+              target=${lib.escapeShellArg remoteCertificateDelegationTarget}
+              install -d -m 0755 "$(dirname "$target")"
+              tmp="$(mktemp "$target.tmp.XXXXXX")"
+              jq -n \
+                --arg name ${lib.escapeShellArg cfg.remote.certificateDelegation.certificateName} \
+                --rawfile data "$INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" \
+                '{version: 1, certificates: [{name: $name, data: $data}]}' \
+                >"$tmp"
+              chmod 0644 "$tmp"
+              mv -f "$tmp" "$target"
+
+              ${lib.optionalString cfg.remote.certificateDelegation.waitForTrust ''
+                api_url="''${INCUS_MACHINES_REMOTE_ADDRESS%/}/1.0"
+                for _attempt in $(seq 1 ${toString cfg.remote.certificateDelegation.waitTimeoutSeconds}); do
+                  if curl \
+                    --silent \
+                    --fail \
+                    ${remoteCertificateDelegationTrustArgs} \
+                    --cert "$INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" \
+                    --key "$INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE" \
+                    "$api_url" >/dev/null; then
+                    exit 0
+                  fi
+                  sleep 1
+                done
+
+                echo "Timed out waiting for parent Incus to trust delegated client certificate" >&2
+                exit 1
+              ''}
+            '';
+          };
+
           incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
             description = "Reconciler for declared Incus guests";
             wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
@@ -914,6 +1302,7 @@ in {
                 [
                   (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" cfg.reconcilePolicy)
                   (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                  (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
                 ]
                 ++ remoteServiceEnvironment;
               ExecStart = "${helperScript} reconciler --all";
@@ -923,8 +1312,9 @@ in {
           incus-images = {
             description = "Import/update declared Incus images";
             wantedBy = ["sysinit-reactivation.target"];
-            after = incusImagesDeps;
+            after = incusImagesDeps ++ remoteCertificateDelegationDeps;
             wants = incusImagesDeps;
+            requires = remoteCertificateDelegationDeps;
             restartTriggers = [
               helperScript
               incusImagesStateFile
@@ -958,6 +1348,7 @@ in {
               Environment =
                 [
                   (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                  (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
                 ]
                 ++ remoteServiceEnvironment;
               ExecStart = "${helperScript} gc";
@@ -965,5 +1356,7 @@ in {
           };
         }
         // lib.mapAttrs' mkMachineService cfg.instances);
+
+    systemd.paths = lib.mapAttrs' mkCertificateDelegationPath cfg.certificateDelegations;
   };
 }

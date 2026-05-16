@@ -19,6 +19,7 @@ in {
       clientCertificateFile = "${incusClientCert}";
       clientKeyFile = config.age.secrets.incus-pvl-vlab-1-key.path;
       acceptCertificate = true;
+      certificateDelegation.enable = true;
     };
 
     instances = {

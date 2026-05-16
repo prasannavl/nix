@@ -101,6 +101,71 @@ used for the first version because the parent Incus server certificate is not
 yet pinned in the repo; switch to `serverCertificateFile` when that certificate
 is made declarative.
 
+Tenant-managed access to parent projects uses parent-validated desired-state
+files instead of native Incus trust-store delegation. `pvl-x2` creates one
+`/var/lib/incus-delegations/<name>/certs.json` file per named delegation and
+bind-mounts selected delegation directories into tenant machines under
+`/var/lib/incus-delegation/<name>`. The guest owns the file content. The parent
+watches and reconciles each file through the named
+`services.incusMachines.certificateDelegations.<name>` resource; each
+`incusLib.mkCertDelegation "<name>"` disk device only references and mounts that
+resource into the guest.
+
+The tenant file is JSON data, not Nix code. Parent validation requires
+a bounded certificate count, safe tenant-local names, and valid PEM certificate
+material. The target project comes only from the parent Nix config, not the
+tenant file. The parent always creates Incus trust entries as `type = client`,
+`restricted = true`, and `projects = [ <delegation.project> ]`, with a forced
+delegation-specific name prefix. Removal only follows the parent-owned
+delegation state file, so the delegated path cannot remove parent-owned certs
+such as the unrestricted `pvl` cert.
+
+Current delegated resources:
+
+- `pvl`: mounted into `pvl-vlab-1` as `delegated-certs`
+- `abird`: mounted into `abird-nest` as `delegated-certs`
+- `abird-dev`: mounted into `abird-nest` as `delegated-dev-certs`
+
+`pvl-vlab-1` bootstraps its own parent access by declaring
+`services.incusMachines.remote.certificateDelegation.enable = true`. The shared
+Incus module derives the mounted tenant file from the remote project by default,
+writes the guest's public client certificate to
+`/var/lib/incus-delegation/pvl/certs.json`, waits until the parent Incus API
+accepts that delegated cert, and makes that step an explicit prerequisite of
+`incus-images.service`. The guest config only owns the remote endpoint and
+client certificate/key. If the guest declares no Incus resources, the module
+does not create the delegation writer service, so the absence of the mounted
+delegation file does not block activation. This keeps the direct parent trust
+store limited to the unrestricted `pvl` cert while still letting `pvl-vlab-1`
+manage the parent `pvl` project declaratively.
+
+`abird-nest` is declared in the parent Incus `abird` project at
+`10.10.100.31`. Per-instance project placement is handled by
+`services.incusMachines.instances.<name>.project`; lifecycle commands pass that
+project through to the Incus CLI/API. Because `abird-nest` needs the parent API
+proxy and host-path delegation mounts, the restricted `abird` project explicitly
+allows proxy devices and restricts host-path disk sources to the `abird` and
+`abird-dev` delegation directories.
+
+Incus CLI `query` must not go through the project-wrapped command helper:
+`incus query` rejects the global `--project` flag. Project-aware queries should
+use plain `incus query` with `project=<name>` encoded in the query URL; mutating
+lifecycle/config/storage commands should keep using the project-wrapped helper.
+Timed Incus commands must not invoke shell functions directly through
+`timeout`; wrap the real `incus --project <project> ...` command instead.
+
+Removing the named `certificateDelegations.<name>` resource is the deletion
+boundary. The parent-side GC compares current delegations with the last applied
+delegation state, removes previously managed trust entries for deleted
+delegations, and removes the delegation directory when it is under
+`/var/lib/incus-delegations/`.
+
+Tenant JSON entries use `data` for the public PEM payload:
+
+```json
+{"version":1,"certificates":[{"name":"alice-laptop","data":"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"}]}
+```
+
 Source of truth files:
 
 - `lib/incus/default.nix`

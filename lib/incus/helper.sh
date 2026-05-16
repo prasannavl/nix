@@ -4,6 +4,7 @@ set -Eeuo pipefail
 init_vars() {
 	incus_machines_reconcile_mode="${INCUS_MACHINES_RECONCILE_MODE-}"
 	declared_instances="${INCUS_MACHINES_DECLARED_INSTANCES-[]}"
+	instance_projects="${INCUS_MACHINES_INSTANCE_PROJECTS-{}}"
 	host_suspend_state_dir="${INCUS_MACHINES_HOST_SUSPEND_STATE_DIR-/run/incus-machines-host-suspend}"
 	host_suspend_default_policy="${INCUS_MACHINES_HOST_SUSPEND_DEFAULT_POLICY-stop}"
 	host_suspend_include_vms="${INCUS_MACHINES_HOST_SUSPEND_INCLUDE_VMS-false}"
@@ -14,9 +15,19 @@ init_vars() {
 	certificates_file="${INCUS_MACHINES_CERTIFICATES_FILE-}"
 	certificates_state_file="${INCUS_MACHINES_CERTIFICATES_STATE_FILE-/var/lib/incus-machines/certificates.json}"
 	legacy_certificates_state_file="${INCUS_MACHINES_LEGACY_CERTIFICATES_STATE_FILE-/var/lib/incus-machines/preseed-certificates.json}"
+	certificate_delegation_name="${INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME-}"
+	certificate_delegation_project="${INCUS_MACHINES_CERTIFICATE_DELEGATION_PROJECT-}"
+	certificate_delegation_source_file="${INCUS_MACHINES_CERTIFICATE_DELEGATION_SOURCE_FILE-}"
+	certificate_delegation_state_file="${INCUS_MACHINES_CERTIFICATE_DELEGATION_STATE_FILE-}"
+	certificate_delegation_name_prefix="${INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME_PREFIX-}"
+	certificate_delegation_max_certificates="${INCUS_MACHINES_CERTIFICATE_DELEGATION_MAX_CERTIFICATES-32}"
+	certificate_delegations="{}"
+	certificate_delegations_file="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE-}"
+	certificate_delegations_state_file="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE-/var/lib/incus-machines/delegated-certificates/delegations.json}"
 	incus_remote_name="${INCUS_MACHINES_REMOTE_NAME-local}"
 	incus_remote_address="${INCUS_MACHINES_REMOTE_ADDRESS-}"
 	incus_remote_project="${INCUS_MACHINES_REMOTE_PROJECT-default}"
+	current_project="$incus_remote_project"
 	incus_remote_client_cert_file="${INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE-}"
 	incus_remote_client_key_file="${INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE-}"
 	incus_remote_server_cert_file="${INCUS_MACHINES_REMOTE_SERVER_CERT_FILE-}"
@@ -24,6 +35,9 @@ init_vars() {
 	incus_remote_config_dir="${INCUS_MACHINES_REMOTE_CONFIG_DIR-}"
 	if [ -n "$certificates_file" ]; then
 		certificates="$(cat "$certificates_file")"
+	fi
+	if [ -n "$certificate_delegations_file" ]; then
+		certificate_delegations="$(cat "$certificate_delegations_file")"
 	fi
 	selected_json='[]'
 }
@@ -111,6 +125,36 @@ server_ref() {
 	fi
 }
 
+incus_project() {
+	incus --project "$current_project" "$@"
+}
+
+incus_project_timeout() {
+	local timeout_secs
+	timeout_secs="$1"
+	shift
+
+	timeout "$timeout_secs" incus --project "$current_project" "$@"
+}
+
+set_current_project_for_instance() {
+	local name project
+	name="$1"
+	project="$(
+		printf '%s' "$instance_projects" |
+			jq -r --arg name "$name" '.[$name] // empty' 2>/dev/null ||
+			true
+	)"
+
+	if [ -n "$project" ]; then
+		current_project="$project"
+	elif is_remote_target; then
+		current_project="$incus_remote_project"
+	else
+		current_project="default"
+	fi
+}
+
 instance_ref() {
 	local name
 	name="$1"
@@ -126,15 +170,20 @@ query_ref() {
 	path="$1"
 	if is_remote_target; then
 		if [[ "$path" == *\?* ]]; then
-			printf '%s:%s&project=%s\n' "$incus_remote_name" "$path" "$incus_remote_project"
+			printf '%s:%s&project=%s\n' "$incus_remote_name" "$path" "$current_project"
 			return
 		fi
 
-		printf '%s:%s?project=%s\n' "$incus_remote_name" "$path" "$incus_remote_project"
+		printf '%s:%s?project=%s\n' "$incus_remote_name" "$path" "$current_project"
 		return
 	fi
 
-	printf '%s\n' "$path"
+	if [[ "$path" == *\?* ]]; then
+		printf '%s&project=%s\n' "$path" "$current_project"
+		return
+	fi
+
+	printf '%s?project=%s\n' "$path" "$current_project"
 }
 
 target_image_ref() {
@@ -244,7 +293,7 @@ add_device_from_props() {
 			jq -r 'to_entries[] | select(.key != "type") | "\(.key)=\(.value)"'
 	)
 
-	incus config device add "$(instance_ref "$instance_name")" "$device_name" "$device_type" "${add_args[@]}"
+	incus_project config device add "$(instance_ref "$instance_name")" "$device_name" "$device_type" "${add_args[@]}"
 }
 
 add_device_from_props_idempotent() {
@@ -295,7 +344,7 @@ instance_accepts_exec() {
 		/run/current-system/sw/bin/true \
 		/usr/bin/true \
 		/bin/true; do
-		if timeout 10 incus exec "$(instance_ref "$name")" -- "$cmd" >/dev/null 2>&1; then
+		if incus_project_timeout 10 exec "$(instance_ref "$name")" -- "$cmd" >/dev/null 2>&1; then
 			return 0
 		fi
 	done
@@ -309,12 +358,12 @@ instance_reconcile_guest_network() {
 	attempted=1
 
 	for bin in /nix/var/nix/profiles/system/sw/bin /run/current-system/sw/bin; do
-		if timeout 10 incus exec "$(instance_ref "$name")" -- "$bin/networkctl" reload >/dev/null 2>&1; then
+		if incus_project_timeout 10 exec "$(instance_ref "$name")" -- "$bin/networkctl" reload >/dev/null 2>&1; then
 			attempted=0
-			timeout 10 incus exec "$(instance_ref "$name")" -- "$bin/networkctl" reconfigure eth0 >/dev/null 2>&1 || true
+			incus_project_timeout 10 exec "$(instance_ref "$name")" -- "$bin/networkctl" reconfigure eth0 >/dev/null 2>&1 || true
 		fi
 
-		if timeout 10 incus exec "$(instance_ref "$name")" -- "$bin/systemctl" restart systemd-networkd.service >/dev/null 2>&1; then
+		if incus_project_timeout 10 exec "$(instance_ref "$name")" -- "$bin/systemctl" restart systemd-networkd.service >/dev/null 2>&1; then
 			attempted=0
 		fi
 	done
@@ -329,7 +378,7 @@ apply_instance_config_json() {
 
 	while IFS= read -r key; do
 		value="$(printf '%s' "$config_json" | jq -r --arg key "$key" '.[$key]')"
-		incus config set "$(instance_ref "$instance_name")" "$key=$value"
+		incus_project config set "$(instance_ref "$instance_name")" "$key=$value"
 	done < <(printf '%s' "$config_json" | jq -r 'keys[]')
 }
 
@@ -386,7 +435,7 @@ delete_instance_with_recovery() {
 	local instance_name delete_output broken_dir
 	instance_name="$1"
 
-	if delete_output="$(incus delete "$(instance_ref "$instance_name")" --force 2>&1)"; then
+	if delete_output="$(incus_project delete "$(instance_ref "$instance_name")" --force 2>&1)"; then
 		return 0
 	fi
 	printf '%s\n' "$delete_output" >&2
@@ -406,7 +455,7 @@ delete_instance_with_recovery() {
 
 	echo "Removing broken Incus container dir $broken_dir"
 	rm -rf -- "$broken_dir"
-	incus delete "$instance_name" --force
+	incus_project delete "$instance_name" --force
 }
 
 certificate_fingerprint() {
@@ -596,6 +645,274 @@ certificates_main() {
 	commit_certificates_state "$desired_state"
 }
 
+read_certificate_delegation_payload() {
+	if [ ! -s "$certificate_delegation_source_file" ]; then
+		jq -cn '{version: 1, certificates: []}'
+		return
+	fi
+
+	if ! jq -e \
+		--argjson max "$certificate_delegation_max_certificates" '
+			type == "object"
+			and .version == 1
+			and (.certificates | type == "array")
+			and (.certificates | length <= $max)
+			and all(.certificates[]; (
+				type == "object"
+				and (.name | type == "string")
+				and (.data | type == "string")
+			))
+		' "$certificate_delegation_source_file" >/dev/null; then
+		echo "Delegated Incus certificate file $certificate_delegation_source_file is invalid" >&2
+		exit 1
+	fi
+
+	jq -c '{version, certificates}' "$certificate_delegation_source_file"
+}
+
+validate_certificate_delegation_name() {
+	local full_name tenant_name
+	tenant_name="$1"
+	full_name="${certificate_delegation_name_prefix}${tenant_name}"
+
+	if ! [[ "$tenant_name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]]; then
+		echo "Delegated Incus certificate name '$tenant_name' is invalid" >&2
+		exit 1
+	fi
+
+	if [ "${#full_name}" -gt 120 ]; then
+		echo "Delegated Incus certificate name '$full_name' is too long" >&2
+		exit 1
+	fi
+}
+
+desired_certificate_delegation_state() {
+	local cert_file cert_json data fingerprint full_name payload tenant_name tmpdir
+	local index=0
+	payload="$1"
+
+	tmpdir="$(mktemp -d)"
+	certificates_tmpdir="$tmpdir"
+	trap 'rm -rf -- "${certificates_tmpdir-}"' EXIT
+
+	printf '['
+	while IFS= read -r cert_json; do
+		tenant_name="$(printf '%s' "$cert_json" | jq -r '.name')"
+		validate_certificate_delegation_name "$tenant_name"
+		full_name="${certificate_delegation_name_prefix}${tenant_name}"
+		cert_file="$tmpdir/cert-${index}.pem"
+		data="$(printf '%s' "$cert_json" | jq -r '.data')"
+		printf '%s' "$data" >"$cert_file"
+
+		if ! openssl x509 -in "$cert_file" -noout >/dev/null 2>&1; then
+			echo "Delegated Incus certificate '$tenant_name' is not a valid PEM certificate" >&2
+			exit 1
+		fi
+
+		fingerprint="$(certificate_fingerprint "$cert_file")"
+		[ "$index" -eq 0 ] || printf ','
+		jq -cn \
+			--arg name "$full_name" \
+			--arg tenantName "$tenant_name" \
+			--arg fingerprint "$fingerprint" \
+			--arg data "$data" \
+			'{name: $name, tenantName: $tenantName, fingerprint: $fingerprint, data: $data}'
+		index=$((index + 1))
+	done < <(printf '%s' "$payload" | jq -c '.certificates[]')
+	printf ']\n'
+}
+
+validate_certificate_delegation_state() {
+	local desired_state
+	desired_state="$1"
+
+	if ! jq -e '
+		([.[].name] | length == (unique | length))
+		and ([.[].fingerprint] | length == (unique | length))
+	' <<<"$desired_state" >/dev/null; then
+		echo "Delegated Incus certificate file contains duplicate names or certificates" >&2
+		exit 1
+	fi
+}
+
+previous_certificate_delegation_state() {
+	if [ -s "$certificate_delegation_state_file" ]; then
+		jq -c '[.[] | {name, fingerprint}]' "$certificate_delegation_state_file"
+	else
+		printf '[]\n'
+	fi
+}
+
+add_delegated_certificates() {
+	local cert_file cert_json name tmpdir
+	local index=0
+
+	tmpdir="$(mktemp -d)"
+	certificates_tmpdir="$tmpdir"
+	trap 'rm -rf -- "${certificates_tmpdir-}"' EXIT
+
+	while IFS= read -r cert_json; do
+		name="$(printf '%s' "$cert_json" | jq -r '.name')"
+		cert_file="$tmpdir/cert-${index}.pem"
+		printf '%s' "$cert_json" | jq -r '.data' >"$cert_file"
+
+		echo "Adding delegated Incus trusted certificate $name for project $certificate_delegation_project"
+		incus config trust add-certificate "$cert_file" \
+			--name "$name" \
+			--type client \
+			--restricted \
+			--projects "$certificate_delegation_project"
+		index=$((index + 1))
+	done < <(printf '%s' "$1" | jq -c '.[]')
+
+	rm -rf -- "$tmpdir"
+	certificates_tmpdir=""
+	trap - EXIT
+}
+
+commit_certificate_delegation_state() {
+	local desired_public_state state_dir tmp_file
+	desired_public_state="$1"
+
+	state_dir="$(dirname "$certificate_delegation_state_file")"
+	mkdir -p "$state_dir"
+	tmp_file="$(mktemp "${certificate_delegation_state_file}.tmp.XXXXXX")"
+	printf '%s\n' "$desired_public_state" >"$tmp_file"
+	chmod 0644 "$tmp_file"
+	mv -f "$tmp_file" "$certificate_delegation_state_file"
+}
+
+certificate_delegation_main() {
+	local desired_public_state desired_state payload previous_state removal_state
+
+	[ -n "$certificate_delegation_name" ] || {
+		echo "Missing delegated Incus certificate delegation name" >&2
+		exit 1
+	}
+	[ -n "$certificate_delegation_project" ] || {
+		echo "Missing delegated Incus certificate project for $certificate_delegation_name" >&2
+		exit 1
+	}
+	[ -n "$certificate_delegation_source_file" ] || {
+		echo "Missing delegated Incus certificate source file for $certificate_delegation_name" >&2
+		exit 1
+	}
+	[ -n "$certificate_delegation_state_file" ] || {
+		echo "Missing delegated Incus certificate state file for $certificate_delegation_name" >&2
+		exit 1
+	}
+	[ -n "$certificate_delegation_name_prefix" ] || {
+		echo "Missing delegated Incus certificate name prefix for $certificate_delegation_name" >&2
+		exit 1
+	}
+	if ! [[ "$certificate_delegation_max_certificates" =~ ^[0-9]+$ ]]; then
+		echo "Invalid delegated Incus certificate maximum for $certificate_delegation_name" >&2
+		exit 1
+	fi
+
+	payload="$(read_certificate_delegation_payload)"
+	desired_state="$(desired_certificate_delegation_state "$payload")"
+	validate_certificate_delegation_state "$desired_state"
+	desired_public_state="$(printf '%s' "$desired_state" | jq -c '[.[] | {name, tenantName, fingerprint}]')"
+	previous_state="$(previous_certificate_delegation_state)"
+
+	if ! incus_server_info >/dev/null 2>&1; then
+		echo "Incus daemon is unavailable; delegated certificate reconcile cannot continue" >&2
+		exit 1
+	fi
+
+	removal_state="$(
+		jq -cn \
+			--argjson previous "$previous_state" \
+			--argjson desired "$desired_public_state" '
+				($previous + $desired) |
+				unique_by([.name, .fingerprint])
+			'
+	)"
+	remove_trusted_certificates "$removal_state"
+	add_delegated_certificates "$desired_state"
+	commit_certificate_delegation_state "$desired_public_state"
+
+	rm -rf -- "${certificates_tmpdir-}"
+	certificates_tmpdir=""
+	trap - EXIT
+}
+
+previous_certificate_delegations_state() {
+	if [ -s "$certificate_delegations_state_file" ]; then
+		jq -c 'if type == "object" then . else {} end' "$certificate_delegations_state_file"
+	else
+		printf '{}\n'
+	fi
+}
+
+is_safe_certificate_delegation_dir() {
+	local dir
+	dir="$1"
+
+	[ -n "$dir" ] || return 1
+	[[ "$dir" == /var/lib/incus-delegations/* ]] || return 1
+	[ "$dir" != "/var/lib/incus-delegations/" ] || return 1
+	[ "$dir" != "/var/lib/incus-delegations" ] || return 1
+}
+
+commit_certificate_delegations_state() {
+	local state_dir tmp_file
+
+	state_dir="$(dirname "$certificate_delegations_state_file")"
+	mkdir -p "$state_dir"
+	tmp_file="$(mktemp "${certificate_delegations_state_file}.tmp.XXXXXX")"
+	printf '%s\n' "$certificate_delegations" | jq -c . >"$tmp_file"
+	chmod 0644 "$tmp_file"
+	mv -f "$tmp_file" "$certificate_delegations_state_file"
+}
+
+certificate_delegations_gc_main() {
+	local delegation directory previous previous_entry removed_json state_file
+
+	printf '%s' "$certificate_delegations" | jq -e 'type == "object"' >/dev/null || {
+		echo "Declared Incus certificate delegations must be a JSON object" >&2
+		exit 1
+	}
+
+	if ! incus_server_info >/dev/null 2>&1; then
+		echo "Incus daemon is unavailable; delegated certificate GC cannot continue" >&2
+		exit 1
+	fi
+
+	previous="$(previous_certificate_delegations_state)"
+	removed_json="$(
+		jq -cn \
+			--argjson previous "$previous" \
+			--argjson desired "$certificate_delegations" '
+				$previous
+				| to_entries
+				| map(select(.key as $name | $desired[$name] == null))
+			'
+	)"
+
+	while IFS= read -r previous_entry; do
+		[ -n "$previous_entry" ] || continue
+
+		delegation="$(printf '%s' "$previous_entry" | jq -r '.key')"
+		directory="$(printf '%s' "$previous_entry" | jq -r '.value.directory // empty')"
+		state_file="$(printf '%s' "$previous_entry" | jq -r '.value.stateFile // empty')"
+
+		if [ -n "$state_file" ] && [ -s "$state_file" ]; then
+			echo "Removing delegated Incus trusted certificates for removed delegation $delegation"
+			remove_trusted_certificates "$(jq -c '[.[] | {name, fingerprint}]' "$state_file")"
+			rm -f -- "$state_file"
+		fi
+
+		if is_safe_certificate_delegation_dir "$directory" && [ -d "$directory" ]; then
+			echo "Removing delegated Incus certificate directory $directory"
+			rm -rf -- "$directory"
+		fi
+	done < <(printf '%s' "$removed_json" | jq -c '.[]')
+
+	commit_certificate_delegations_state
+}
+
 reconciler_main() {
 	parse_machine_selection_args "$@"
 
@@ -616,6 +933,7 @@ reconciler_main() {
 			continue
 		fi
 
+		set_current_project_for_instance "$name"
 		status="$(instance_status "$name")"
 
 		if [ "$status" = "Running" ]; then
@@ -687,6 +1005,7 @@ settlement_main() {
 				continue
 			fi
 
+			set_current_project_for_instance "$name"
 			expected_ip="$(
 				printf '%s' "${INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES:-"{}"}" | jq -r --arg name "$name" '.[$name] // ""'
 			)"
@@ -772,6 +1091,7 @@ machine_main() {
 	state_json="$(cat "$state_file")"
 	name="$(printf '%s' "$state_json" | jq -r '.name')"
 	instance_name="$name"
+	current_project="$(printf '%s' "$state_json" | jq -r '.project // "default"')"
 	image_tag="$(printf '%s' "$state_json" | jq -r '.imageTag')"
 	instance_image="$(printf '%s' "$state_json" | jq -c '.instanceImage')"
 	create_ref="$(printf '%s' "$state_json" | jq -r '.createRef')"
@@ -793,12 +1113,12 @@ machine_main() {
 		needs_recreate=0
 		needs_restart=0
 
-		if ! incus info "$(instance_ref "$instance_name")" >/dev/null 2>&1; then
+		if ! incus_project info "$(instance_ref "$instance_name")" >/dev/null 2>&1; then
 			needs_create=1
 		else
-			current_config_hash="$(incus config get "$(instance_ref "$instance_name")" user.config-hash 2>/dev/null || true)"
-			current_recreate_tag="$(incus config get "$(instance_ref "$instance_name")" user.recreate-tag 2>/dev/null || true)"
-			current_boot_tag="$(incus config get "$(instance_ref "$instance_name")" user.boot-tag 2>/dev/null || true)"
+			current_config_hash="$(incus_project config get "$(instance_ref "$instance_name")" user.config-hash 2>/dev/null || true)"
+			current_recreate_tag="$(incus_project config get "$(instance_ref "$instance_name")" user.recreate-tag 2>/dev/null || true)"
+			current_boot_tag="$(incus_project config get "$(instance_ref "$instance_name")" user.boot-tag 2>/dev/null || true)"
 
 			if [ "$current_recreate_tag" != "$desired_recreate_tag" ] ||
 				{ [ -n "$current_config_hash" ] && [ "$current_config_hash" != "$desired_config_hash" ]; }; then
@@ -810,7 +1130,7 @@ machine_main() {
 
 		if [ "$needs_recreate" -eq 1 ]; then
 			echo "Recreating $name (config hash or recreate tag changed)..."
-			incus stop "$(instance_ref "$instance_name")" --force 2>/dev/null || true
+			incus_project stop "$(instance_ref "$instance_name")" --force 2>/dev/null || true
 			delete_instance_with_recovery "$instance_name"
 			needs_create=1
 		fi
@@ -820,7 +1140,7 @@ machine_main() {
 				ensure_declared_image_present "$instance_image" "$image_tag"
 			fi
 			echo "Creating $name from image $(target_image_ref "${create_ref#local:}")..."
-			incus create "$(target_image_ref "${create_ref#local:}")" "$(instance_ref "$name")"
+			incus_project create "$(target_image_ref "${create_ref#local:}")" "$(instance_ref "$name")"
 
 			if [ "$config_json" != "null" ]; then
 				apply_instance_config_json "$instance_name" "$config_json"
@@ -830,7 +1150,7 @@ machine_main() {
 				apply_instance_config_json "$instance_name" "$user_meta_json"
 			fi
 
-			incus config device override "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4"
+			incus_project config device override "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4"
 
 			echo "Adding create-only devices for $name..."
 			mapfile -t create_only_device_names < <(json_keys "$create_only_devices")
@@ -858,7 +1178,7 @@ machine_main() {
 			for dev in "${current_disk_names[@]}"; do
 				if ! printf '%s' "$desired_disks" | jq -e --arg d "$dev" 'has($d)' >/dev/null 2>&1; then
 					echo "  Removing disk device $dev"
-					incus config device remove "$(instance_ref "$instance_name")" "$dev" 2>/dev/null || true
+					incus_project config device remove "$(instance_ref "$instance_name")" "$dev" 2>/dev/null || true
 				fi
 			done
 		fi
@@ -876,9 +1196,9 @@ machine_main() {
 				dev_source="$(printf '%s' "$desired_props" | jq -r '.source // ""')"
 				dev_pool="$(printf '%s' "$desired_props" | jq -r '.pool // ""')"
 				if [ -n "$dev_source" ] && [ -n "$dev_pool" ]; then
-					if ! incus storage volume show "$(storage_pool_ref "$dev_pool")" "$dev_source" >/dev/null 2>&1; then
+					if ! incus_project storage volume show "$(storage_pool_ref "$dev_pool")" "$dev_source" >/dev/null 2>&1; then
 						echo "  Creating storage volume $dev_pool/$dev_source"
-						incus storage volume create "$(storage_pool_ref "$dev_pool")" "$dev_source"
+						incus_project storage volume create "$(storage_pool_ref "$dev_pool")" "$dev_source"
 					fi
 				fi
 
@@ -892,7 +1212,7 @@ machine_main() {
 					if [ "${#current_prop_keys[@]}" -gt 0 ]; then
 						for key in "${current_prop_keys[@]}"; do
 							if ! printf '%s' "$desired_props" | jq -e --arg k "$key" 'has($k)' >/dev/null 2>&1; then
-								incus config device unset "$(instance_ref "$instance_name")" "$dev" "$key"
+								incus_project config device unset "$(instance_ref "$instance_name")" "$dev" "$key"
 							fi
 						done
 					fi
@@ -901,20 +1221,20 @@ machine_main() {
 					if [ "${#desired_prop_keys[@]}" -gt 0 ]; then
 						for key in "${desired_prop_keys[@]}"; do
 							desired_val="$(printf '%s' "$desired_props" | jq -r --arg k "$key" '.[$k]')"
-							incus config device set "$(instance_ref "$instance_name")" "$dev" "$key" "$desired_val"
+							incus_project config device set "$(instance_ref "$instance_name")" "$dev" "$key" "$desired_val"
 						done
 					fi
 				fi
 			done
 		fi
 
-		incus config device set "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null ||
-			incus config device override "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null || true
+		incus_project config device set "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null ||
+			incus_project config device override "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null || true
 
-		incus config set "$(instance_ref "$instance_name")" "user.config-hash=$desired_config_hash"
-		incus config set "$(instance_ref "$instance_name")" "user.boot-tag=$desired_boot_tag"
-		incus config set "$(instance_ref "$instance_name")" "user.recreate-tag=$desired_recreate_tag"
-		incus config set "$(instance_ref "$instance_name")" "user.removal-policy=$desired_removal_policy"
+		incus_project config set "$(instance_ref "$instance_name")" "user.config-hash=$desired_config_hash"
+		incus_project config set "$(instance_ref "$instance_name")" "user.boot-tag=$desired_boot_tag"
+		incus_project config set "$(instance_ref "$instance_name")" "user.recreate-tag=$desired_recreate_tag"
+		incus_project config set "$(instance_ref "$instance_name")" "user.removal-policy=$desired_removal_policy"
 
 		mapfile -t current_gc_device_names < <(
 			printf '%s' "$current_config" |
@@ -930,13 +1250,13 @@ machine_main() {
 		mapfile -t desired_gc_device_names < <(json_keys "$desired_disks")
 		if [ "${#desired_gc_device_names[@]}" -gt 0 ]; then
 			for dev in "${desired_gc_device_names[@]}"; do
-				incus config set "$(instance_ref "$instance_name")" "user.device.$dev.removal-policy=$(printf '%s' "$desired_disk_gc_metadata" | jq -r --arg d "$dev" '.[$d].removalPolicy // "keep"')"
+				incus_project config set "$(instance_ref "$instance_name")" "user.device.$dev.removal-policy=$(printf '%s' "$desired_disk_gc_metadata" | jq -r --arg d "$dev" '.[$d].removalPolicy // "keep"')"
 
 				desired_source="$(printf '%s' "$desired_disk_gc_metadata" | jq -r --arg d "$dev" '.[$d].source // ""')"
 				if [ -n "$desired_source" ]; then
-					incus config set "$(instance_ref "$instance_name")" "user.device.$dev.source=$desired_source"
+					incus_project config set "$(instance_ref "$instance_name")" "user.device.$dev.source=$desired_source"
 				else
-					incus config unset "$(instance_ref "$instance_name")" "user.device.$dev.source" 2>/dev/null || true
+					incus_project config unset "$(instance_ref "$instance_name")" "user.device.$dev.source" 2>/dev/null || true
 				fi
 			done
 		fi
@@ -944,20 +1264,20 @@ machine_main() {
 		if [ "${#current_gc_device_names[@]}" -gt 0 ]; then
 			for dev in "${current_gc_device_names[@]}"; do
 				if ! printf '%s' "$desired_disks" | jq -e --arg d "$dev" 'has($d)' >/dev/null 2>&1; then
-					incus config unset "$(instance_ref "$instance_name")" "user.device.$dev.removal-policy" 2>/dev/null || true
-					incus config unset "$(instance_ref "$instance_name")" "user.device.$dev.source" 2>/dev/null || true
+					incus_project config unset "$(instance_ref "$instance_name")" "user.device.$dev.removal-policy" 2>/dev/null || true
+					incus_project config unset "$(instance_ref "$instance_name")" "user.device.$dev.source" 2>/dev/null || true
 				fi
 			done
 		fi
 
 		if [ "$needs_restart" -eq 1 ]; then
 			echo "Restarting $name (boot tag changed)..."
-			incus stop "$(instance_ref "$instance_name")" --force 2>/dev/null || true
+			incus_project stop "$(instance_ref "$instance_name")" --force 2>/dev/null || true
 		fi
 
 		current_status="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null | jq -r '.metadata.status // "unknown"' 2>/dev/null || printf 'missing\n')"
 		if [ "$current_status" != "Running" ]; then
-			if ! start_output="$(incus start "$(instance_ref "$instance_name")" 2>&1)"; then
+			if ! start_output="$(incus_project start "$(instance_ref "$instance_name")" 2>&1)"; then
 				if printf '%s' "$start_output" | grep -qi 'instance is already running'; then
 					echo "$name is already running; continuing"
 					break
@@ -967,7 +1287,7 @@ machine_main() {
 				if [ "$recovery_attempted" -eq 0 ] && is_recoverable_start_error "$start_output"; then
 					echo "Recreating broken $name after failed start..."
 					recovery_attempted=1
-					incus stop "$(instance_ref "$instance_name")" --force 2>/dev/null || true
+					incus_project stop "$(instance_ref "$instance_name")" --force 2>/dev/null || true
 					delete_instance_with_recovery "$instance_name"
 					continue
 				fi
@@ -982,7 +1302,8 @@ machine_main() {
 stop_instance_main() {
 	local name
 	name="${1?missing instance name}"
-	incus stop "$(instance_ref "$name")" 2>/dev/null || true
+	current_project="${2:-$current_project}"
+	incus_project stop "$(instance_ref "$name")" 2>/dev/null || true
 }
 
 ensure_declared_image_present() {
@@ -995,17 +1316,17 @@ ensure_declared_image_present() {
 	image_kind="$(printf '%s' "$image" | jq -r '.kind')"
 	image_identity="$(printf '%s' "$image" | jq -r '.imageIdentity')"
 
-	current_source="$(incus image get-property "$(target_image_ref "$alias")" user.base-image-id 2>/dev/null || true)"
-	current_rebuild_tag="$(incus image get-property "$(target_image_ref "$alias")" user.base-image-rebuild-tag 2>/dev/null || true)"
+	current_source="$(incus_project image get-property "$(target_image_ref "$alias")" user.base-image-id 2>/dev/null || true)"
+	current_rebuild_tag="$(incus_project image get-property "$(target_image_ref "$alias")" user.base-image-rebuild-tag 2>/dev/null || true)"
 
 	if [ "$current_source" = "$image_identity" ] &&
 		[ "$current_rebuild_tag" = "$desired_rebuild_tag" ] &&
-		incus image info "$(target_image_ref "$alias")" >/dev/null 2>&1; then
+		incus_project image info "$(target_image_ref "$alias")" >/dev/null 2>&1; then
 		return 0
 	fi
 
-	if incus image info "$(target_image_ref "$alias")" >/dev/null 2>&1; then
-		incus image delete "$(target_image_ref "$alias")"
+	if incus_project image info "$(target_image_ref "$alias")" >/dev/null 2>&1; then
+		incus_project image delete "$(target_image_ref "$alias")"
 	fi
 
 	case "$image_kind" in
@@ -1021,7 +1342,7 @@ ensure_declared_image_present() {
 		fi
 
 		existing_fingerprint="$(
-			incus image list "$(target_remote_ref)" --format=json 2>/dev/null |
+			incus_project image list "$(target_remote_ref)" --format=json 2>/dev/null |
 				jq -r --arg image_identity "$image_identity" '
             map(select((.properties["user.base-image-id"] // "") == $image_identity))
             | first
@@ -1031,14 +1352,14 @@ ensure_declared_image_present() {
 		)"
 
 		if [ -n "$existing_fingerprint" ]; then
-			incus image alias create "$(target_image_ref "$alias")" "$existing_fingerprint"
+			incus_project image alias create "$(target_image_ref "$alias")" "$existing_fingerprint"
 		else
-			incus image import "$metadata_file" "$rootfs_file" "$(target_remote_ref)" --alias "$alias"
+			incus_project image import "$metadata_file" "$rootfs_file" "$(target_remote_ref)" --alias "$alias"
 		fi
 		;;
 	remote)
 		remote_ref="$(printf '%s' "$image" | jq -r '.remoteRef')"
-		incus image copy "$remote_ref" "$(target_remote_ref)" --alias "$alias"
+		incus_project image copy "$remote_ref" "$(target_remote_ref)" --alias "$alias"
 		;;
 	*)
 		echo "Unknown image kind for $alias: $image_kind" >&2
@@ -1046,8 +1367,8 @@ ensure_declared_image_present() {
 		;;
 	esac
 
-	incus image set-property "$(target_image_ref "$alias")" user.base-image-id "$image_identity"
-	incus image set-property "$(target_image_ref "$alias")" user.base-image-rebuild-tag "$desired_rebuild_tag"
+	incus_project image set-property "$(target_image_ref "$alias")" user.base-image-id "$image_identity"
+	incus_project image set-property "$(target_image_ref "$alias")" user.base-image-rebuild-tag "$desired_rebuild_tag"
 }
 
 images_main() {
@@ -1060,7 +1381,7 @@ images_main() {
 }
 
 gc_main() {
-	local all_containers cname managed removal_policy
+	local all_containers cname declared_project managed project removal_policy
 	local -a dirs_to_remove
 
 	if is_remote_target; then
@@ -1068,30 +1389,37 @@ gc_main() {
 			echo "Failed to list Incus containers for garbage collection" >&2
 			exit 1
 		}
-	elif ! all_containers="$(incus list --format json 2>/dev/null)"; then
+	elif ! all_containers="$(incus list --all-projects --format json 2>/dev/null)"; then
 		echo "Failed to list Incus containers for garbage collection" >&2
 		exit 1
 	fi
 
 	while IFS= read -r row; do
 		cname="$(echo "$row" | jq -r '.name')"
+		project="$(echo "$row" | jq -r '.project // "default"')"
+		current_project="$project"
 		managed="$(echo "$row" | jq -r '.config["user.managed-by"] // ""')"
 
 		[ "$managed" = "nixos" ] || continue
 
-		if echo "$declared_instances" | jq -e --arg n "$cname" 'index($n) != null' >/dev/null 2>&1; then
+		declared_project="$(
+			printf '%s' "$instance_projects" |
+				jq -r --arg name "$cname" '.[$name] // empty' 2>/dev/null ||
+				true
+		)"
+		if [ "$declared_project" = "$project" ]; then
 			continue
 		fi
 
 		removal_policy="$(echo "$row" | jq -r '.config["user.removal-policy"] // "delete-container"')"
-		echo "GC: container $cname (policy: $removal_policy)"
+		echo "GC: container $project/$cname (policy: $removal_policy)"
 
 		case "$removal_policy" in
 		stop-only)
-			incus stop "$(instance_ref "$cname")" --force 2>/dev/null || true
+			incus_project stop "$(instance_ref "$cname")" --force 2>/dev/null || true
 			;;
 		delete-container)
-			incus delete "$(instance_ref "$cname")" --force 2>/dev/null || true
+			incus_project delete "$(instance_ref "$cname")" --force 2>/dev/null || true
 			;;
 		delete-all)
 			mapfile -t dirs_to_remove < <(
@@ -1106,7 +1434,7 @@ gc_main() {
           '
 			)
 
-			incus delete "$(instance_ref "$cname")" --force 2>/dev/null || true
+			incus_project delete "$(instance_ref "$cname")" --force 2>/dev/null || true
 
 			if [ "${#dirs_to_remove[@]}" -gt 0 ]; then
 				for dir in "${dirs_to_remove[@]}"; do
@@ -1261,6 +1589,12 @@ main() {
 	case "$command" in
 	certificates)
 		certificates_main "$@"
+		;;
+	certificate-delegation)
+		certificate_delegation_main "$@"
+		;;
+	certificate-delegations-gc)
+		certificate_delegations_gc_main "$@"
 		;;
 	reconciler)
 		reconciler_main "$@"
