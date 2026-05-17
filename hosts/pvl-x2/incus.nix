@@ -31,6 +31,58 @@
       }
       // extraConfig;
   };
+  mkLxc = {
+    name,
+    ipv4Address,
+    project ? null,
+    image ? null,
+    removalPolicy ? "delete-all",
+    recreateTag ? null,
+    privileged ? false,
+    nestedContainers ? false,
+    extraConfig ? {},
+    extraDevices ? {},
+  }:
+    {
+      ipv4Address = ipv4Address;
+      removalPolicy = removalPolicy;
+      config =
+        {
+          "security.privileged" =
+            if privileged
+            then "true"
+            else "false";
+        }
+        // lib.optionalAttrs nestedContainers {
+          "security.nesting" = "true";
+          "security.syscalls.intercept.mount" = "true";
+          "security.syscalls.intercept.mount.shift" = "true";
+        }
+        // extraConfig;
+      devices =
+        {
+          state = {
+            source = name;
+            path = "/var/lib";
+            removalPolicy = "keep";
+          };
+        }
+        // extraDevices;
+    }
+    // lib.optionalAttrs (project != null) {
+      project = project;
+    }
+    // lib.optionalAttrs (image != null) {
+      image = image;
+    }
+    // lib.optionalAttrs (recreateTag != null) {
+      recreateTag = recreateTag;
+    };
+  amdGpuDevices = incusLib.mkGpuDevices {
+    card = 1;
+    render = 128;
+    kfd = true;
+  };
 in {
   services.incusMachines = {
     certificates = [
@@ -56,103 +108,46 @@ in {
     };
 
     instances = {
-      pvl-vlab = {
+      pvl-vlab = mkLxc {
+        name = "pvl-vlab";
         ipv4Address = "10.10.20.10";
-        removalPolicy = "delete-all";
-
-        config = {
-          "security.privileged" = "true";
-          "security.nesting" = "true";
-        };
-        devices =
-          {
-            state = {
-              source = "pvl-vlab";
-              path = "/var/lib";
-              removalPolicy = "keep";
-            };
-            # We use our lib belows, so we can control the "video" group
-            # better. gpu applies render group to all incorrectly.
-            # gpu = {type = "gpu";};
-          }
-          // incusLib.mkGpuDevices {
-            card = 1;
-            render = 128;
-            kfd = true;
-          };
+        privileged = true;
+        nestedContainers = true;
+        extraDevices = amdGpuDevices;
       };
 
-      pvl-vlab-1 = {
+      pvl-vlab-1 = mkLxc {
+        name = "pvl-vlab-1";
         ipv4Address = "10.10.20.30";
-        removalPolicy = "delete-all";
-
-        config = {
-          "security.privileged" = "true";
-          "security.nesting" = "true";
-        };
-        devices =
+        privileged = true;
+        nestedContainers = true;
+        extraDevices =
           {
-            state = {
-              source = "pvl-vlab-1";
-              path = "/var/lib";
-              removalPolicy = "keep";
-            };
             incus-api = incusLib.mkIncusProxy {
               connectHost = "10.10.20.1";
             };
             delegated-certs = incusLib.mkCertDelegation "pvl";
           }
-          // incusLib.mkGpuDevices {
-            card = 1;
-            render = 128;
-            kfd = true;
-          };
+          // amdGpuDevices;
       };
 
-      gap3-gondor = {
+      gap3-gondor = mkLxc {
+        name = "gap3-gondor";
         image = inputs.self.nixosImages.gap3-base;
         ipv4Address = "10.10.20.20";
-        removalPolicy = "delete-all";
         recreateTag = "3";
-
-        config = {
-          "security.nesting" = "true";
-          "security.privileged" = "true";
-        };
-        devices =
-          {
-            state = {
-              source = "gap3-gondor";
-              path = "/var/lib";
-              removalPolicy = "keep";
-            };
-            # We use our lib belows, so we can control the "video" group
-            # better. gpu applies render group to all incorrectly.
-            # gpu = {type = "gpu";};
-          }
-          // incusLib.mkGpuDevices {
-            card = 1;
-            render = 128;
-            kfd = true;
-          };
+        privileged = true;
+        nestedContainers = true;
+        extraDevices = amdGpuDevices;
       };
 
-      abird-nest = {
+      abird-nest = mkLxc {
+        name = "abird-nest";
         project = "abird";
         ipv4Address = "10.10.100.31";
-        removalPolicy = "delete-all";
         recreateTag = "1";
-
-        config = {
-          "security.nesting" = "true";
-          "security.privileged" = "false";
-        };
-        devices = {
-          state = {
-            source = "abird-nest";
-            path = "/var/lib";
-            removalPolicy = "keep";
-          };
+        nestedContainers = true;
+        extraDevices = {
           incus-api = incusLib.mkIncusProxy {
             connectHost = "10.10.20.1";
           };

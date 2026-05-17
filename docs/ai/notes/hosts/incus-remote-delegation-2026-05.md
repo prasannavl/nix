@@ -57,9 +57,8 @@ plus `security.nesting = true`. The first unprivileged attempts failed NixOS
 activation while remounting special filesystems such as `/dev`, `/proc`, `/run`,
 and `/run/keys` with `fsconfig() failed: Function not implemented`. Mount
 syscall interception, including the mount-shift variant, was not enough in this
-environment. The shared `lib/profiles/systemd-container.nix` profile now
-disables those activation remounts because Incus/LXC already owns those mounts
-for the guest.
+environment. The shared `lib/profiles/lxc.nix` profile now disables those
+activation remounts because Incus/LXC already owns those mounts for the guest.
 
 Final delegated deploy fixes:
 
@@ -75,13 +74,13 @@ Final delegated deploy fixes:
   reconciliation attempt when an instance is running and accepts exec but has
   not reported the expected IPv4 yet.
 - Fresh container boots need `/run/current-system` before the LXC distrobuilder
-  udev coldplug override runs. Tmpfiles creates that link too late, so
-  `systemd-container` now creates it with an early sysinit oneshot before
+  udev coldplug override runs. Tmpfiles creates that link too late, so the LXC
+  profile now creates it with an early sysinit oneshot before
   `systemd-udev-trigger` and `systemd-networkd`. Without this,
   `systemd-udev-trigger` exits `203/EXEC`, networkd leaves `eth0` with
   `Network File: n/a`, and the guest never reports `10.10.50.31`.
 - NixOS container images start systemd directly, bypassing the normal stage-2
-  activation path. `systemd-container` runs `/run/current-system/activate` once
+  activation path. The LXC profile runs `/run/current-system/activate` once
   during early sysinit with `NIXOS_ACTION=boot` after creating the
   `/run/current-system` link; this recreates runtime activation state such as
   `/run/agenix` after container restart or rollback before networked services

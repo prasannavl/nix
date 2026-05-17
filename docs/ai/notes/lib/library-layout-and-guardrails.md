@@ -28,7 +28,7 @@ Canonical placement rules and review guardrails for shared helpers under `lib/`.
 - Resume-time NetworkManager workarounds belong in
   `powerManagement.resumeCommands`, not in suspend-transaction systemd hacks.
 - Optional guest Tailscale stays owned by `lib/incus-vm.nix`, not by the shared
-  `systemd-container` base profile.
+  LXC base profile.
 - Service scripts must declare every runtime tool they invoke.
 - Incus-related shell assembly should use arrays and structured iteration, and
   dangerous cleanup paths should fail closed.
@@ -39,7 +39,7 @@ Canonical placement rules and review guardrails for shared helpers under `lib/`.
 - `lib/ext/**`
 - `lib/services/**`
 - `lib/network-wifi.nix`
-- `lib/profiles/systemd-container.nix`
+- `lib/profiles/lxc.nix`
 - `lib/flatpak.nix`
 
 ## Provenance

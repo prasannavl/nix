@@ -1,7 +1,7 @@
 {hostName, ...}: {
   imports = [
-    ../profiles/systemd-container.nix
+    ../profiles/lxc.nix
     (import ../incus-vm.nix {inherit hostName;})
-    (import ../../users/pvl).systemd-container
+    (import ../../users/pvl).lxc
   ];
 }

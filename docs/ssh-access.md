@@ -69,7 +69,7 @@ Example:
 ```nix
 {
   imports = [
-    (import ../../users/<user>).systemd-container
+    (import ../../users/<user>).lxc
   ];
 }
 ```

@@ -28,9 +28,9 @@
   };
 in {
   imports = [
-    ../../lib/profiles/systemd-container.nix
+    ../../lib/profiles/lxc.nix
     (import ../../lib/incus-vm.nix {inherit hostName;})
-    (import ../../users/pvl).systemd-container
+    (import ../../users/pvl).lxc
   ];
 
   environment.systemPackages =

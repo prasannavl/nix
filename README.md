@@ -101,7 +101,7 @@ are first-class citizens regardless of their backing infrastructure.
 - Each host is a directory under `hosts/<host-name>/` with a `default.nix` entry
   point that imports the appropriate profile and host-specific modules.
 - Profiles under `lib/profiles/` provide layered baselines (`core.nix` for
-  headless, `all.nix` for desktop, `systemd-container.nix` for Incus guests).
+  headless, `all.nix` for desktop, `lxc.nix` for Incus guests).
 - Device modules under `lib/devices/` encode physical hardware quirks.
 - `hosts/default.nix` registers every host into `nixosConfigurations`.
 - `hosts/nixbot.nix` maps deploy targets, SSH routing, and ordering.

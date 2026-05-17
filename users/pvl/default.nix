@@ -59,11 +59,11 @@ in rec {
   all-modules = desktop-gnome-modules;
   all = mkModule all-modules;
 
-  systemd-container-modules = [
+  lxc-modules = [
     ./bash
     ./inputrc
   ];
-  systemd-container = mkModule systemd-container-modules;
+  lxc = mkModule lxc-modules;
 
   default = all;
 }

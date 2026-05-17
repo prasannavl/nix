@@ -1,5 +1,5 @@
 {...}: {
   imports = [
-    (import ../../users/pvl).systemd-container
+    (import ../../users/pvl).lxc
   ];
 }

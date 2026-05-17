@@ -116,10 +116,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Post-switch health checks ignore transient failed Podman healthcheck runner
   units and instead query current Podman container health. The health check
   still fails immediately on ordinary failed system/user units and on Podman
-  containers whose current health is `unhealthy`; containers still in
-  `starting` are polled for a bounded window so healthcheck intervals do not
-  trigger premature rollback. Health-check failures are tracked separately in
-  the final summary and roll back using health-specific rollback status buckets.
+  containers whose current health is `unhealthy`; containers still in `starting`
+  are polled for a bounded window so healthcheck intervals do not trigger
+  premature rollback. Health-check failures are tracked separately in the final
+  summary and roll back using health-specific rollback status buckets.
 - Remote `nixos-rebuild-ng` deploys that lose SSH with exit `255` after a
   network-disrupting switch verify the target system path before being treated
   as failed. This mirrors the self-target deploy guard without masking ordinary

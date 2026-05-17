@@ -229,7 +229,7 @@ Typical devices:
 ## How To Create A New Guest
 
 1. Add `hosts/<name>/default.nix`.
-   - import `../../lib/profiles/systemd-container.nix`
+   - import `../../lib/profiles/lxc.nix`
    - import `(import ../../lib/incus-vm.nix { inherit hostName; })`
    - add host-local modules as needed
 2. Register the guest in `hosts/default.nix`.
