@@ -80,6 +80,17 @@ Final delegated deploy fixes:
   `systemd-udev-trigger` and `systemd-networkd`. Without this,
   `systemd-udev-trigger` exits `203/EXEC`, networkd leaves `eth0` with
   `Network File: n/a`, and the guest never reports `10.10.50.31`.
+- NixOS container images start systemd directly, bypassing the normal stage-2
+  activation path. `systemd-container` runs `/run/current-system/activate` once
+  during early sysinit with `NIXOS_ACTION=boot` after creating the
+  `/run/current-system` link; this recreates runtime activation state such as
+  `/run/agenix` after container restart or rollback before networked services
+  try to consume secrets.
+- Full delegated deploys can transiently report failed units while a parent
+  guest is still reconciling a child guest. `nixbot` now retries the post-switch
+  health gate for a bounded window before rolling the deployment back, while
+  still failing if the same system/user unit or Podman health checks keep
+  failing.
 
 Validation on 2026-05-15:
 `./scripts/nixbot.sh deploy --dirty-staged

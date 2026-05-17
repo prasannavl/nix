@@ -755,7 +755,7 @@
 
   declaredImagesJson = builtins.toJSON declaredImages;
   declaredInstancesJson = builtins.toJSON (builtins.attrNames cfg.instances);
-  instanceProjectsJson = builtins.toJSON (lib.mapAttrs (_name: instance: resolveMachineProject instance) cfg.instances);
+  instanceProjectsJson = builtins.toJSON (lib.mapAttrs (_name: resolveMachineProject) cfg.instances);
   instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) cfg.instances);
   instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) cfg.instances);
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) cfg.instances);
@@ -1212,13 +1212,6 @@ in {
       ui.enable = lib.mkDefault (!cfg.remote.enable);
     };
 
-    systemd.tmpfiles.rules = lib.mkIf (!cfg.remote.enable) (
-      lib.unique (
-        lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.instances)
-        ++ lib.concatLists (lib.mapAttrsToList mkCertificateDelegationTmpfiles cfg.certificateDelegations)
-      )
-    );
-
     environment.systemPackages = [
       helperPackage
       reconcilerCommand
@@ -1244,179 +1237,188 @@ in {
       cfg.instances
     );
 
-    systemd.services =
-      {
-        incus-preseed = lib.mkIf hasPreseedMigrations {
-          preStart = lib.mkBefore ''
-            export INCUS_MACHINES_PRESEED_MIGRATIONS_FILE=${lib.escapeShellArg (toString preseedMigrationsFile)}
-            ${helperScript} preseed-migrations
-          '';
-        };
-        incus-machines-certificates = lib.mkIf (!cfg.remote.enable) {
-          description = "Reconcile declared Incus trusted certificates";
-          wantedBy = ["sysinit-reactivation.target"];
-          after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
-          wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
-          restartTriggers = [
-            helperScript
-            certificatesFile
-          ];
-          restartIfChanged = true;
-          serviceConfig.Environment = [
-            (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_FILE" certificatesFile)
-            (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_STATE_FILE" certificatesStateFile)
-            (mkEnvAssignment "INCUS_MACHINES_LEGACY_CERTIFICATES_STATE_FILE" legacyCertificatesStateFile)
-          ];
-          serviceConfig.Type = "oneshot";
-          script = ''
-            ${helperScript} certificates
-          '';
-        };
-        incus-cert-delegations-gc = lib.mkIf (!cfg.remote.enable) {
-          description = "Garbage-collect removed Incus certificate delegations";
-          wantedBy = ["sysinit-reactivation.target"];
-          after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
-          wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
-          restartTriggers = [
-            helperScript
-            certificateDelegationsFile
-          ];
-          restartIfChanged = true;
-          serviceConfig = {
-            Type = "oneshot";
-            Environment = [
-              (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE" certificateDelegationsFile)
-              (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE" certificateDelegationsStateFile)
-            ];
-            ExecStart = "${helperCommand} certificate-delegations-gc";
-          };
-        };
-      }
-      // lib.mapAttrs' mkCertificateDelegationService cfg.certificateDelegations
-      // lib.optionalAttrs hasInstances (let
-        incusGcDeps = localIncusDeps ++ ["incus-images.service"];
-        incusImagesDeps = localIncusDeps ++ ["network-online.target"];
-      in
+    systemd = {
+      tmpfiles.rules = lib.mkIf (!cfg.remote.enable) (
+        lib.unique (
+          lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.instances)
+          ++ lib.concatLists (lib.mapAttrsToList mkCertificateDelegationTmpfiles cfg.certificateDelegations)
+        )
+      );
+
+      services =
         {
-          incus-remote-certificate-delegation = lib.mkIf hasRemoteCertificateDelegation {
-            description = "Publish remote Incus client certificate to parent delegation";
-            before =
-              [
-                "incus-images.service"
-                "incus-machines-reconciler.service"
-              ]
-              ++ map (name: "incus-${name}.service") (builtins.attrNames cfg.instances);
-            after = ["network-online.target"];
-            wants = ["network-online.target"];
-            path = [
-              pkgs.coreutils
-              pkgs.curl
-              pkgs.jq
-            ];
-            serviceConfig = {
-              Type = "oneshot";
-              RemainAfterExit = true;
-              Environment = remoteServiceEnvironment;
-            };
-            script = ''
-              target=${lib.escapeShellArg remoteCertificateDelegationTarget}
-              install -d -m 0755 "$(dirname "$target")"
-              tmp="$(mktemp "$target.tmp.XXXXXX")"
-              jq -n \
-                --arg name ${lib.escapeShellArg cfg.remote.certificateDelegation.certificateName} \
-                --rawfile data "$INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" \
-                '{version: 1, certificates: [{name: $name, data: $data}]}' \
-                >"$tmp"
-              chmod 0644 "$tmp"
-              mv -f "$tmp" "$target"
-
-              ${lib.optionalString cfg.remote.certificateDelegation.waitForTrust ''
-                api_url="''${INCUS_MACHINES_REMOTE_ADDRESS%/}/1.0"
-                for _attempt in $(seq 1 ${toString cfg.remote.certificateDelegation.waitTimeoutSeconds}); do
-                  if curl \
-                    --silent \
-                    --fail \
-                    ${remoteCertificateDelegationTrustArgs} \
-                    --cert "$INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" \
-                    --key "$INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE" \
-                    "$api_url" >/dev/null; then
-                    exit 0
-                  fi
-                  sleep 1
-                done
-
-                echo "Timed out waiting for parent Incus to trust delegated client certificate" >&2
-                exit 1
-              ''}
+          incus-preseed = lib.mkIf hasPreseedMigrations {
+            preStart = lib.mkBefore ''
+              export INCUS_MACHINES_PRESEED_MIGRATIONS_FILE=${lib.escapeShellArg (toString preseedMigrationsFile)}
+              ${helperScript} preseed-migrations
             '';
           };
-
-          incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
-            description = "Reconciler for declared Incus guests";
-            wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
-            after = incusLifecycleDeps;
-            wants = incusLifecycleDeps;
-            serviceConfig = {
-              Type = "oneshot";
-              Environment =
-                [
-                  (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" cfg.reconcilePolicy)
-                  (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
-                  (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
-                ]
-                ++ remoteServiceEnvironment;
-              ExecStart = "${helperScript} reconciler --all";
-            };
-          };
-
-          incus-images = {
-            description = "Import/update declared Incus images";
+          incus-machines-certificates = lib.mkIf (!cfg.remote.enable) {
+            description = "Reconcile declared Incus trusted certificates";
             wantedBy = ["sysinit-reactivation.target"];
-            after = incusImagesDeps ++ remoteCertificateDelegationDeps;
-            wants = incusImagesDeps;
-            requires = remoteCertificateDelegationDeps;
+            after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+            wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
             restartTriggers = [
               helperScript
-              incusImagesStateFile
+              certificatesFile
+            ];
+            restartIfChanged = true;
+            serviceConfig.Environment = [
+              (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_FILE" certificatesFile)
+              (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_STATE_FILE" certificatesStateFile)
+              (mkEnvAssignment "INCUS_MACHINES_LEGACY_CERTIFICATES_STATE_FILE" legacyCertificatesStateFile)
+            ];
+            serviceConfig.Type = "oneshot";
+            script = ''
+              ${helperScript} certificates
+            '';
+          };
+          incus-cert-delegations-gc = lib.mkIf (!cfg.remote.enable) {
+            description = "Garbage-collect removed Incus certificate delegations";
+            wantedBy = ["sysinit-reactivation.target"];
+            after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+            wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+            restartTriggers = [
+              helperScript
+              certificateDelegationsFile
             ];
             restartIfChanged = true;
             serviceConfig = {
               Type = "oneshot";
-              Environment =
-                [
-                  (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" cfg.imageTag)
-                  (mkEnvAssignment "INCUS_MACHINES_DECLARED_IMAGES" declaredImagesJson)
-                ]
-                ++ remoteServiceEnvironment;
-              ExecStart = "${helperScript} images";
-            };
-          };
-
-          incus-machines-gc = {
-            description = "Garbage-collect Incus containers no longer declared in NixOS config";
-            enable = !cfg.remote.enable;
-            wantedBy = ["sysinit-reactivation.target"];
-            after = incusGcDeps;
-            wants = incusGcDeps;
-            restartTriggers = [
-              helperScript
-              incusGcStateFile
-            ];
-            restartIfChanged = true;
-            serviceConfig = {
-              Type = "oneshot";
-              Environment =
-                [
-                  (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
-                  (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
-                ]
-                ++ remoteServiceEnvironment;
-              ExecStart = "${helperScript} gc";
+              Environment = [
+                (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE" certificateDelegationsFile)
+                (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE" certificateDelegationsStateFile)
+              ];
+              ExecStart = "${helperCommand} certificate-delegations-gc";
             };
           };
         }
-        // lib.mapAttrs' mkMachineService cfg.instances);
+        // lib.mapAttrs' mkCertificateDelegationService cfg.certificateDelegations
+        // lib.optionalAttrs hasInstances (let
+          incusGcDeps = localIncusDeps ++ ["incus-images.service"];
+          incusImagesDeps = localIncusDeps ++ ["network-online.target"];
+        in
+          {
+            incus-remote-certificate-delegation = lib.mkIf hasRemoteCertificateDelegation {
+              description = "Publish remote Incus client certificate to parent delegation";
+              before =
+                [
+                  "incus-images.service"
+                  "incus-machines-reconciler.service"
+                ]
+                ++ map (name: "incus-${name}.service") (builtins.attrNames cfg.instances);
+              after = ["network-online.target"];
+              wants = ["network-online.target"];
+              path = [
+                pkgs.coreutils
+                pkgs.curl
+                pkgs.jq
+              ];
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                Environment = remoteServiceEnvironment;
+              };
+              script = ''
+                target=${lib.escapeShellArg remoteCertificateDelegationTarget}
+                install -d -m 0755 "$(dirname "$target")"
+                tmp="$(mktemp "$target.tmp.XXXXXX")"
+                jq -n \
+                  --arg name ${lib.escapeShellArg cfg.remote.certificateDelegation.certificateName} \
+                  --rawfile data "$INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" \
+                  '{version: 1, certificates: [{name: $name, data: $data}]}' \
+                  >"$tmp"
+                chmod 0644 "$tmp"
+                mv -f "$tmp" "$target"
 
-    systemd.paths = lib.mapAttrs' mkCertificateDelegationPath cfg.certificateDelegations;
+                ${lib.optionalString cfg.remote.certificateDelegation.waitForTrust ''
+                  api_url="''${INCUS_MACHINES_REMOTE_ADDRESS%/}/1.0"
+                  for _attempt in $(seq 1 ${toString cfg.remote.certificateDelegation.waitTimeoutSeconds}); do
+                    if curl \
+                      --silent \
+                      --fail \
+                      ${remoteCertificateDelegationTrustArgs} \
+                      --cert "$INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" \
+                      --key "$INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE" \
+                      "$api_url" >/dev/null; then
+                      exit 0
+                    fi
+                    sleep 1
+                  done
+
+                  echo "Timed out waiting for parent Incus to trust delegated client certificate" >&2
+                  exit 1
+                ''}
+              '';
+            };
+
+            incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
+              description = "Reconciler for declared Incus guests";
+              wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
+              after = incusLifecycleDeps;
+              wants = incusLifecycleDeps;
+              serviceConfig = {
+                Type = "oneshot";
+                Environment =
+                  [
+                    (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" cfg.reconcilePolicy)
+                    (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
+                  ]
+                  ++ remoteServiceEnvironment;
+                ExecStart = "${helperScript} reconciler --all";
+              };
+            };
+
+            incus-images = {
+              description = "Import/update declared Incus images";
+              wantedBy = ["sysinit-reactivation.target"];
+              after = incusImagesDeps ++ remoteCertificateDelegationDeps;
+              wants = incusImagesDeps;
+              requires = remoteCertificateDelegationDeps;
+              restartTriggers = [
+                helperScript
+                incusImagesStateFile
+              ];
+              restartIfChanged = true;
+              serviceConfig = {
+                Type = "oneshot";
+                Environment =
+                  [
+                    (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" cfg.imageTag)
+                    (mkEnvAssignment "INCUS_MACHINES_DECLARED_IMAGES" declaredImagesJson)
+                  ]
+                  ++ remoteServiceEnvironment;
+                ExecStart = "${helperScript} images";
+              };
+            };
+
+            incus-machines-gc = {
+              description = "Garbage-collect Incus containers no longer declared in NixOS config";
+              enable = !cfg.remote.enable;
+              wantedBy = ["sysinit-reactivation.target"];
+              after = incusGcDeps;
+              wants = incusGcDeps;
+              restartTriggers = [
+                helperScript
+                incusGcStateFile
+              ];
+              restartIfChanged = true;
+              serviceConfig = {
+                Type = "oneshot";
+                Environment =
+                  [
+                    (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
+                  ]
+                  ++ remoteServiceEnvironment;
+                ExecStart = "${helperScript} gc";
+              };
+            };
+          }
+          // lib.mapAttrs' mkMachineService cfg.instances);
+
+      paths = lib.mapAttrs' mkCertificateDelegationPath cfg.certificateDelegations;
+    };
   };
 }
