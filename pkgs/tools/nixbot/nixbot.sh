@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
-readonly NIXBOT_VERSION="2026.05.12.1"
+readonly NIXBOT_VERSION="2026.05.17.1"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 
@@ -63,7 +63,7 @@ Local Wrapper Action:
   tofu            Run local OpenTofu in the nixbot runtime shell.
 
 Workflow Selection Options:
-  --hosts          Hosts/context to target (comma/space-separated or `all`; default: all)
+  --hosts          Hosts/context to target (comma/space-separated, globs, or `all`; default: all)
   --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
@@ -71,7 +71,7 @@ Build Action Options (`run`, `deploy`, `build`):
   --build-jobs     Parallel host builds (default: 1)
 
 Dev Build Action Options (`dev-build`):
-  --hosts          Hosts to build into result-<host> links (default: all)
+  --hosts          Hosts/globs to build into result-<host> links (default: all)
   --build-jobs     Parallel host builds (default: 1)
 
 Deploy Action Options (`run`, `deploy`):
@@ -768,6 +768,15 @@ emit_normalized_hosts() {
 	printf '%s' "${raw}" |
 		tr ', ' '\n' |
 		awk 'NF && !seen[$0]++'
+}
+
+host_token_is_glob() {
+	local token="$1"
+
+	case "${token}" in
+	*'*'* | *'?'* | *'['*) return 0 ;;
+	*) return 1 ;;
+	esac
 }
 
 normalize_hosts_input() {
@@ -1911,14 +1920,46 @@ load_all_hosts_json() {
 ##### Host Selection #####
 
 select_hosts_json() {
-	local all_hosts_json="$1"
+	local all_hosts_json="$1" token="" host="" matched=""
+	local -a all_hosts=() selected_hosts=()
+	declare -A selected_host_set=()
 
 	if [ "${HOSTS_RAW}" = "all" ]; then
 		printf '%s\n' "${all_hosts_json}"
 		return
 	fi
 
-	emit_normalized_hosts "${HOSTS_RAW}" | jq -Rn '[inputs | select(length > 0)]'
+	json_array_to_bash_array "${all_hosts_json}" all_hosts
+
+	while IFS= read -r token; do
+		[ -n "${token}" ] || continue
+
+		if host_token_is_glob "${token}"; then
+			matched=0
+			for host in "${all_hosts[@]}"; do
+				# shellcheck disable=SC2053
+				if [[ "${host}" == ${token} ]]; then
+					matched=1
+					if [ -z "${selected_host_set["${host}"]+x}" ]; then
+						selected_host_set["${host}"]=1
+						selected_hosts+=("${host}")
+					fi
+				fi
+			done
+			if [ "${matched}" -eq 0 ] && [ -z "${selected_host_set["${token}"]+x}" ]; then
+				selected_host_set["${token}"]=1
+				selected_hosts+=("${token}")
+			fi
+			continue
+		fi
+
+		if [ -z "${selected_host_set["${token}"]+x}" ]; then
+			selected_host_set["${token}"]=1
+			selected_hosts+=("${token}")
+		fi
+	done < <(emit_normalized_hosts "${HOSTS_RAW}")
+
+	jq -cn '$ARGS.positional' --args "${selected_hosts[@]}"
 }
 
 host_dependencies_for() {
