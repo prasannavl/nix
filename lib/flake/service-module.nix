@@ -1015,8 +1015,14 @@ rec {
       before ? [],
       wants ? [],
       requires ? [],
+      requireLocalNats ? false,
       wantedBy ? [],
-    }: {
+    }: let
+      localNatsUnits =
+        if requireLocalNats
+        then defaultNatsAfter
+        else [];
+    in {
       __sourcePath = inferSourcePath args;
       __applyDefaults = resolved: {
         serviceName =
@@ -1053,10 +1059,10 @@ rec {
         inherit
           after
           before
-          wants
-          requires
           wantedBy
           ;
+        wants = wants ++ localNatsUnits;
+        requires = requires ++ localNatsUnits;
       };
     };
 

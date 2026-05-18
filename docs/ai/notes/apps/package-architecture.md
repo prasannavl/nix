@@ -125,9 +125,10 @@ stack wiring.
 - `mkTcpServiceModule` extends that model with listener address and port options
   when the binary consumes them via environment variables.
 - Transport helpers such as `mkPostgresClientService` and `mkNatsClientService`
-  should provide environment wiring and default ordering hints only. Callers
-  should still tolerate missing or unhealthy upstreams at runtime rather than
-  encoding hard infra assumptions into the helper layer.
+  should provide environment wiring and default ordering hints by default.
+  Callers should still tolerate missing or unhealthy upstreams at runtime unless
+  they explicitly opt into a hard local dependency, such as
+  `mkNatsClientService { requireLocalNats = true; }`.
 
 ## Current application notes
 
