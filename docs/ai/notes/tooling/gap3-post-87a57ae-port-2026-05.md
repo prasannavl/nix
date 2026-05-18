@@ -65,34 +65,34 @@ needed to classify commits.
 | `49e4c884` | podman-compose: add ensure semantics to dirBootstrapScript | podman-compose | Applicable helper API refinement.                                              |
 | `dfb01b70` | service-module: add requireLocalNats                       | service-module | Ported locally as an opt-in hard dependency on `defaultNatsAfter`.             |
 | `7c2a1403` | nixbot: refine parallel state locks                        | nixbot         | Ported after deploy exposed a parallel `primary-ready.nodes` rewrite race.     |
-| `7e3c9193` | lxc: rootless base adaptations                             | lxc-incus      | Candidate LXC profile addition; adapt to local `lib/profiles/lxc.nix`.         |
-| `c492a5f7` | gcp-vms: nixify, add, delete                               | gcp-vms        | Applicable isolated tooling if added under `pkgs/ext/gcp-vms`.                 |
-| `cc05de94` | gcp-vms: cleanup                                           | gcp-vms        | Apply on top of the initial tooling port.                                      |
-| `5bfaec70` | gcp-vms: free tier guards                                  | gcp-vms        | Apply on top of the cleanup port.                                              |
+| `c492a5f7` | gcp-vms: nixify, add, delete                               | gcp-vms        | Ported as standalone tooling under `pkgs/ext/gcp-vms`.                         |
+| `cc05de94` | gcp-vms: cleanup                                           | gcp-vms        | Included in the final local script shape.                                      |
+| `5bfaec70` | gcp-vms: free tier guards                                  | gcp-vms        | Included with `--free-tier-max` defaults and validation guards.                |
 
 ### Already Or Equivalent
 
-| Commit     | Subject                                                         | Local State                                                                                    |
-| ---------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `91c3b4cd` | rule: disallow nix path: and prefer git+file for ai evals       | Already represented by local `c38c4c2b`, with repo-specific wording.                           |
-| `56079a69` | nixbot: post deploy health check refinements                    | Covered by local nixbot series; verify during nixbot parity pass.                              |
-| `11373c44` | nixbot: add parallel verify jobs                                | Covered by local `b9df518f`; verify during nixbot parity pass.                                 |
-| `311a252c` | nixbot: refine parallel eval behavior                           | Covered by local `b9df518f`; verify during nixbot parity pass.                                 |
-| `5e70052d` | nixbot: remove consevative parallel deploy guards               | Covered by local `b9df518f`; verify during nixbot parity pass.                                 |
-| `832bd018` | nixbot: capture restore tty state, use tty for non-nixbot users | Covered by local `b9df518f`; verify during nixbot parity pass.                                 |
-| `a1268a66` | nixbot: add dev-build                                           | Covered by local `b9df518f`; verify during nixbot parity pass.                                 |
-| `340f99d6` | nixbot: add proxy cmd support                                   | Covered by local `b9df518f`; verify during nixbot parity pass.                                 |
-| `2efb177c` | nixbot: better graceful cancellation                            | Covered by local `a15ae20b`/`b9df518f`; verify during nixbot parity pass.                      |
-| `ab1e6878` | nixbot: health check fixes                                      | Covered by local `4d7bbdb8`; verify during nixbot parity pass.                                 |
-| `b1f33479` | nixbot: add glob support                                        | Covered by local `86df29d7`; verify during nixbot parity pass.                                 |
-| `343728c4` | conv: systemd-container to lxc                                  | Already represented by local `fd9a2d66`.                                                       |
-| `530c6272` | incus: add cert reconciler                                      | Already represented by local `508c7ab6`; verify during Incus parity pass.                      |
-| `797891b5` | lxc: add intercept mounts                                       | Already represented by local `d3c111b1` for local host usage; verify during Incus parity pass. |
-| `0b503a88` | incus: remote delegation                                        | Already represented by local Incus remote delegation series; verify during Incus parity pass.  |
-| `2b716d22` | Fix lints                                                       | Only relevant if previous LXC/Incus hunks are ported.                                          |
-| `6024f598` | tailscale: add upstream stable pkg                              | Already represented by local Tailscale upstream package/update script work.                    |
-| `7e0102df` | scripts: add update all script                                  | Already represented by local `scripts/update.sh`.                                              |
-| `50adb47c` | ai: prioritize nix eval disallow path rule                      | Already effectively represented in current `AGENTS.md` and Nix lang pattern.                   |
+| Commit     | Subject                                                         | Local State                                                                                                          |
+| ---------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `91c3b4cd` | rule: disallow nix path: and prefer git+file for ai evals       | Already represented by local `c38c4c2b`, with repo-specific wording.                                                 |
+| `56079a69` | nixbot: post deploy health check refinements                    | Covered by local nixbot series; verify during nixbot parity pass.                                                    |
+| `11373c44` | nixbot: add parallel verify jobs                                | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
+| `311a252c` | nixbot: refine parallel eval behavior                           | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
+| `5e70052d` | nixbot: remove consevative parallel deploy guards               | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
+| `832bd018` | nixbot: capture restore tty state, use tty for non-nixbot users | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
+| `a1268a66` | nixbot: add dev-build                                           | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
+| `340f99d6` | nixbot: add proxy cmd support                                   | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
+| `2efb177c` | nixbot: better graceful cancellation                            | Covered by local `a15ae20b`/`b9df518f`; verify during nixbot parity pass.                                            |
+| `ab1e6878` | nixbot: health check fixes                                      | Covered by local `4d7bbdb8`; verify during nixbot parity pass.                                                       |
+| `b1f33479` | nixbot: add glob support                                        | Covered by local `86df29d7`; verify during nixbot parity pass.                                                       |
+| `343728c4` | conv: systemd-container to lxc                                  | Already represented by local `fd9a2d66`.                                                                             |
+| `530c6272` | incus: add cert reconciler                                      | Already represented by local `508c7ab6`; verify during Incus parity pass.                                            |
+| `797891b5` | lxc: add intercept mounts                                       | Already represented by local `d3c111b1` for local host usage; verify during Incus parity pass.                       |
+| `0b503a88` | incus: remote delegation                                        | Already represented by local Incus remote delegation series; verify during Incus parity pass.                        |
+| `7e3c9193` | lxc: rootless base adaptations                                  | Already represented in `lib/profiles/lxc.nix`: unprivileged mount disables, first-boot link, and activation service. |
+| `2b716d22` | Fix lints                                                       | Only relevant if previous LXC/Incus hunks are ported.                                                                |
+| `6024f598` | tailscale: add upstream stable pkg                              | Already represented by local Tailscale upstream package/update script work.                                          |
+| `7e0102df` | scripts: add update all script                                  | Already represented by local `scripts/update.sh`.                                                                    |
+| `50adb47c` | ai: prioritize nix eval disallow path rule                      | Already effectively represented in current `AGENTS.md` and Nix lang pattern.                                         |
 
 ### Skip: gap3-rivendell Service Configuration
 

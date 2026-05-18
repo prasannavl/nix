@@ -196,6 +196,9 @@ Use this index as the canonical map for `docs/ai/**`.
   routing workflow.
 - `docs/ai/playbooks/cloudflare-state-adoption.md`: Reusable Cloudflare import
   and adoption workflow.
+- `docs/ai/playbooks/gcp-ad-hoc-nixos-bootstrap.md`: Procedure for creating ad
+  hoc GCP bootstrap VMs and converting them to NixOS with repo or generic host
+  configs.
 - `docs/ai/playbooks/nixbot-deploy.md`: Reusable nixbot deploy workflow.
 - `docs/ai/playbooks/nixbot-key-rotation-execution.md`: Phased nixbot key
   rotation execution procedure.

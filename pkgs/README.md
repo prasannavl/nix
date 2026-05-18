@@ -25,6 +25,10 @@ To add a new package:
 Example projects live under `pkgs/examples/`. Their root flake package names are
 prefixed with `example-`.
 
+Standalone external tooling can live under `pkgs/ext/` when it is intentionally
+not exported as a root-flake package. Keep those trees documented by their own
+playbook or README.
+
 ## Current Examples
 
 - `pkgs/examples/hello-python/`: minimal Python hello-world package built from a
@@ -43,6 +47,8 @@ prefixed with `example-`.
 - `pkgs/cloudflare-apps/`: aggregate package namespace for the
   `tf/cloudflare-apps` phase
 - `pkgs/cloudflare-apps/<app>/`: repo-managed Cloudflare app source trees
+- `pkgs/ext/gcp-vms/`: standalone GCP VM bootstrap and NixOS takeover scripts;
+  see `docs/ai/playbooks/gcp-ad-hoc-nixos-bootstrap.md`
 
 ## Root Flake Examples
 
