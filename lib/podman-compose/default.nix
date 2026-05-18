@@ -1307,13 +1307,30 @@ in {
     networking.firewall.allowedTCPPorts = firewallPortsForProtocol "tcp";
     networking.firewall.allowedUDPPorts = firewallPortsForProtocol "udp";
 
-    systemd.tmpfiles.rules = lib.concatLists (
-      lib.mapAttrsToList
-      (_: stack: [
-        "d ${stack.stackDir} 0750 ${stack.user} ${stack.user} -"
-      ])
-      cfg
-    );
+    systemd = {
+      tmpfiles.rules = lib.concatLists (
+        lib.mapAttrsToList
+        (_: stack: [
+          "d ${stack.stackDir} 0750 ${stack.user} ${stack.user} -"
+        ])
+        cfg
+      );
+
+      user.services = lib.listToAttrs (
+        (map
+          (s: {
+            name = s.systemdServiceName;
+            value = s.systemdService;
+          })
+          resolvedServices)
+        ++ lib.concatMap (s: s.auxiliarySystemdUserServices) resolvedServices
+      );
+
+      services = lib.mkMerge [
+        (lib.listToAttrs (map mkRootlessIdmapMigrateService rootlessStackUsersWithConfig))
+        (lib.listToAttrs (map mkDispatcherRootlessIdmapDependency rootlessStackUsersWithConfig))
+      ];
+    };
 
     assertions =
       [
@@ -1452,16 +1469,6 @@ in {
         cfg
       );
 
-    systemd.user.services = lib.listToAttrs (
-      (map
-        (s: {
-          name = s.systemdServiceName;
-          value = s.systemdService;
-        })
-        resolvedServices)
-      ++ lib.concatMap (s: s.auxiliarySystemdUserServices) resolvedServices
-    );
-
     services.systemdUserManager.instances = lib.listToAttrs (map
       (s: {
         name = s.systemdServiceName;
@@ -1487,10 +1494,5 @@ in {
         };
       })
       resolvedServices);
-
-    systemd.services = lib.mkMerge [
-      (lib.listToAttrs (map mkRootlessIdmapMigrateService rootlessStackUsersWithConfig))
-      (lib.listToAttrs (map mkDispatcherRootlessIdmapDependency rootlessStackUsersWithConfig))
-    ];
   };
 }
