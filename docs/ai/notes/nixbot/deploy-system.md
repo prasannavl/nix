@@ -62,8 +62,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - After bootstrap key installation, immediately re-probe and promote back to the
   primary `nixbot@host` path when it becomes available.
 - If a local-build deploy would still target a non-`nixbot`, non-`root`
-  bootstrap user, fail early instead of letting remote closure import fail
-  later.
+  bootstrap user, retry primary-route promotion during parent-settle preparation
+  and still fail before `nixos-rebuild` instead of letting remote closure import
+  fail later.
 - Host age identity injection is a standard pre-activation step. The runtime
   path must be readable by `nixbot`, not only by root.
 - Prepare host age identity material once per host and reuse the resolved file
@@ -120,6 +121,14 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   are polled for a bounded window so healthcheck intervals do not trigger
   premature rollback. Health-check failures are tracked separately in the final
   summary and roll back using health-specific rollback status buckets.
+- Post-switch health checks require primary `nixbot@host` transport and use the
+  parent-settle transport-preparation retry plus bounded SSH transport retry, so
+  nested hosts that briefly close SSH during parent or guest reactivation do not
+  get marked unhealthy before the service checks actually run. Health checks
+  clear cached primary readiness for parented hosts before probing, because a
+  pre-switch primary-ready cache entry or ControlMaster can be stale after
+  parent and guest activation. Bootstrap fallback is for repair/deploy
+  preparation, not steady-state health verdicts.
 - Remote `nixos-rebuild-ng` deploys that lose SSH with exit `255` after a
   network-disrupting switch verify the target system path before being treated
   as failed. This mirrors the self-target deploy guard without masking ordinary

@@ -4828,6 +4828,31 @@ prepare_host_age_identity_for_deploy() {
 	fi
 }
 
+require_local_build_primary_deploy_context() {
+	local node="$1" prepared_user=""
+
+	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -ne 0 ] ||
+		[ "${PREP_USING_BOOTSTRAP_FALLBACK}" -ne 1 ] ||
+		[ "${BUILD_HOST}" != "local" ]; then
+		return 0
+	fi
+
+	prepared_user="${PREP_DEPLOY_SSH_TARGET%%@*}"
+	if [ "${prepared_user}" = "root" ] || [ "${prepared_user}" = "nixbot" ]; then
+		return 0
+	fi
+
+	echo "==> Local-build deploy for ${node} needs primary deploy user; rechecking primary target"
+	prepare_deploy_context "${node}" primary-only
+}
+
+prepare_host_transport_for_deploy() {
+	local node="$1" require_activation_visibility="${2:-0}"
+
+	prepare_host_age_identity_for_deploy "${node}" "${require_activation_visibility}" || return 1
+	require_local_build_primary_deploy_context "${node}"
+}
+
 ##### Host Phases #####
 
 snapshot_host_generation() {
@@ -5846,8 +5871,8 @@ deploy_host() {
 
 	run_parented_host_operation_with_retry \
 		"${node}" \
-		"age identity preparation" \
-		prepare_host_age_identity_for_deploy \
+		"deploy transport preparation" \
+		prepare_host_transport_for_deploy \
 		"${node}" \
 		1 || return 1
 
@@ -6394,14 +6419,43 @@ build_post_switch_health_check_cmd() {
 
 run_post_switch_health_check() {
 	local node="$1" log_file="${2:-}" health_check_cmd=""
+	local prep_rc=0
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		return 0
 	fi
 
 	health_check_cmd="$(build_post_switch_health_check_cmd 0)"
+	if [ -n "$(host_parent_for "${node}")" ]; then
+		clear_primary_ready "${node}"
+	fi
 
-	if ! prepare_deploy_context "${node}"; then
+	if [ -n "${log_file}" ]; then
+		if run_with_combined_output \
+			run_parented_host_operation_with_retry \
+			"${node}" \
+			"health-check transport preparation" \
+			prepare_deploy_context \
+			"${node}" \
+			primary-only > >(prefix_host_logs "${node}" | tee -a "${log_file}" >&2); then
+			:
+		else
+			prep_rc="$?"
+		fi
+	else
+		if run_with_combined_output \
+			run_parented_host_operation_with_retry \
+			"${node}" \
+			"health-check transport preparation" \
+			prepare_deploy_context \
+			"${node}" \
+			primary-only > >(prefix_host_logs "${node}" >&2); then
+			:
+		else
+			prep_rc="$?"
+		fi
+	fi
+	if [ "${prep_rc}" -ne 0 ]; then
 		if [ -n "${log_file}" ]; then
 			printf '%s\n' "[health-check] unavailable: failed to prepare deploy context" |
 				prefix_host_logs "${node}" |
@@ -6415,10 +6469,16 @@ run_post_switch_health_check() {
 
 	if [ -n "${log_file}" ]; then
 		run_with_combined_output \
+			retry_transport_command \
+			"Health check on ${node}" \
+			refresh_prepared_primary_target \
 			run_prepared_root_command \
 			"${health_check_cmd}" > >(prefix_host_logs "${node}" | tee -a "${log_file}" >&2)
 	else
 		run_with_combined_output \
+			retry_transport_command \
+			"Health check on ${node}" \
+			refresh_prepared_primary_target \
 			run_prepared_root_command \
 			"${health_check_cmd}" > >(prefix_host_logs "${node}" >&2)
 	fi
