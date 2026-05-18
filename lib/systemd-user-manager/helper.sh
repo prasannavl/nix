@@ -24,6 +24,7 @@ init_vars() {
 	dispatcher_metadata_pointer_rel_dir="${SYSTEMD_USER_MANAGER_DISPATCHER_METADATA_POINTER_REL_DIR-}"
 	deferred_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR-}"
 	deferred_unit_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR-}"
+	stable_state_timeout_seconds="${SYSTEMD_USER_MANAGER_STABLE_STATE_TIMEOUT_SECONDS:-120}"
 }
 
 require_env() {
@@ -428,8 +429,8 @@ unit_stable_state() {
 			if [ "$elapsed_seconds" -eq 0 ]; then
 				log_progress "waiting for stable state: unit=$unit current=$active_state sub=$sub_state"
 			fi
-			if [ "$elapsed_seconds" -ge 30 ]; then
-				printf '%s\n' "timed out waiting 30s for stable ActiveState for $unit (active=$active_state sub=$sub_state result=$result)" >&2
+			if [ "$elapsed_seconds" -ge "$stable_state_timeout_seconds" ]; then
+				printf '%s\n' "timed out waiting ${stable_state_timeout_seconds}s for stable ActiveState for $unit (active=$active_state sub=$sub_state result=$result)" >&2
 				return 1
 			fi
 			sleep_seconds="$(stable_state_backoff_seconds "$elapsed_seconds")"

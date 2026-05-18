@@ -63,6 +63,7 @@ needed to classify commits.
 | `fe443bd1` | podman-compose: clash resistant subnet support             | podman-compose | Applicable duplicate-subnet guard.                                             |
 | `3474015d` | podman-compose: refine network online ordering             | podman-compose | Applicable unit-ordering refinement.                                           |
 | `49e4c884` | podman-compose: add ensure semantics to dirBootstrapScript | podman-compose | Applicable helper API refinement.                                              |
+| `d205ad5a` | systemd-user-manager: stable state timeout var             | systemd        | Ported configurable stable-state timeout with default `120`s behavior.         |
 | `dfb01b70` | service-module: add requireLocalNats                       | service-module | Ported locally as an opt-in hard dependency on `defaultNatsAfter`.             |
 | `7c2a1403` | nixbot: refine parallel state locks                        | nixbot         | Ported after deploy exposed a parallel `primary-ready.nodes` rewrite race.     |
 | `c492a5f7` | gcp-vms: nixify, add, delete                               | gcp-vms        | Ported as standalone tooling under `pkgs/ext/gcp-vms`.                         |
