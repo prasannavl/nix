@@ -292,6 +292,7 @@ init_vars() {
 	REEXEC_FROM_REPO=0
 	REPO_PATH_EXPLICIT=0
 	NIXBOT_REPO_ROOT_LOCK_TIMEOUT="${NIXBOT_REPO_ROOT_LOCK_TIMEOUT:-60}"
+	NIXBOT_STATE_LOCK_TIMEOUT="${NIXBOT_STATE_LOCK_TIMEOUT:-30}"
 	NIXBOT_TRANSPORT_RETRY_ATTEMPTS="${NIXBOT_TRANSPORT_RETRY_ATTEMPTS:-3}"
 	NIXBOT_TRANSPORT_RETRY_DELAY_SECS="${NIXBOT_TRANSPORT_RETRY_DELAY_SECS:-2}"
 	TF_WORK_DIR="${NIXBOT_TF_DIR:-}"
@@ -365,7 +366,10 @@ init_vars() {
 	NIXBOT_TTY_STDIN_PATH=""
 	NIXBOT_TTY_STTY_STATE=""
 	NIXBOT_CONFIG_DIR=""
+	# These process-local caches are read and written through line_state_* namerefs.
+	# shellcheck disable=SC2034
 	BOOTSTRAP_READY_NODES=""
+	# shellcheck disable=SC2034
 	PRIMARY_READY_NODES=""
 	PREP_DEPLOY_NODE=""
 	PREP_DEPLOY_SSH_TARGET=""
@@ -379,6 +383,7 @@ init_vars() {
 	PRIMARY_PROBE_LAST_OUTPUT=""
 	CURRENT_HOST_ALIASES=()
 	CURRENT_HOST_ADDRESSES=()
+	# shellcheck disable=SC2034
 	SELF_TARGET_NOTICE_KEYS=""
 	ROLLBACK_OK_HOSTS=()
 	ROLLBACK_FAILED_HOSTS=()
@@ -417,6 +422,7 @@ init_vars() {
 	TMP_SSH_DIR=""
 	TMP_TF_ARTIFACT_DIR=""
 	TMP_ACTIVE_DEPLOY_DIR=""
+	TMP_STATE_LOCK_DIR=""
 	REPO_DEPLOY_SCRIPT_REL="pkgs/tools/nixbot/nixbot.sh"
 	REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="/tmp/nixbot-bootstrap-key."
 	REMOTE_AGE_IDENTITY_TMP_PREFIX="/tmp/nixbot-age-identity."
@@ -1318,8 +1324,9 @@ ensure_tmp_dir() {
 	TMP_SSH_DIR="${NIXBOT_TMP_DIR}/ssh"
 	TMP_TF_ARTIFACT_DIR="$(phase_artifact_dir_path "${NIXBOT_TMP_DIR}" "tf")"
 	TMP_ACTIVE_DEPLOY_DIR="${NIXBOT_TMP_DIR}/active-deploys"
+	TMP_STATE_LOCK_DIR="${NIXBOT_TMP_DIR}/state-locks"
 	NIXBOT_TTY_LOCK_DIR="${NIXBOT_TMP_DIR}/ssh-tty.lock"
-	mkdir -p "${TMP_SECRETS_DIR}" "${TMP_SSH_DIR}" "${TMP_ACTIVE_DEPLOY_DIR}"
+	mkdir -p "${TMP_SECRETS_DIR}" "${TMP_SSH_DIR}" "${TMP_ACTIVE_DEPLOY_DIR}" "${TMP_STATE_LOCK_DIR}"
 	ensure_phase_runtime_dirs "${NIXBOT_TMP_DIR}" tf
 }
 
@@ -1341,6 +1348,214 @@ tmp_runtime_mktemp() {
 	local area="$1" pattern="$2"
 
 	mktemp "$(tmp_runtime_dir_path "${area}")/${pattern}"
+}
+
+runtime_state_file() {
+	local state_name="$1"
+
+	ensure_tmp_dir
+	printf '%s/%s\n' "${NIXBOT_TMP_DIR}" "${state_name}"
+}
+
+runtime_state_lock_dir() {
+	local state_name="$1"
+
+	ensure_tmp_dir
+	printf '%s/%s.lock\n' "${TMP_STATE_LOCK_DIR}" "${state_name}"
+}
+
+acquire_runtime_state_lock() {
+	local state_name="$1" lock_dir="" lock_pid="" lock_deadline=0
+
+	lock_dir="$(runtime_state_lock_dir "${state_name}")"
+	lock_deadline=$((SECONDS + NIXBOT_STATE_LOCK_TIMEOUT))
+	while ! mkdir "${lock_dir}" 2>/dev/null; do
+		if [ "${SECONDS}" -ge "${lock_deadline}" ]; then
+			lock_pid=""
+			if [ -f "${lock_dir}/pid" ]; then
+				lock_pid="$(<"${lock_dir}/pid")"
+			fi
+
+			if [ -n "${lock_pid}" ] && kill -0 "${lock_pid}" 2>/dev/null; then
+				die "Timed out waiting for runtime state lock ${lock_dir} held by pid ${lock_pid}"
+			fi
+
+			echo "Removing stale runtime state lock: ${lock_dir}" >&2
+			rm -rf "${lock_dir}" 2>/dev/null || true
+			lock_deadline=$((SECONDS + NIXBOT_STATE_LOCK_TIMEOUT))
+			continue
+		fi
+
+		sleep 0.05
+	done
+
+	printf '%s\n' "${BASHPID}" >"${lock_dir}/pid"
+}
+
+release_runtime_state_lock() {
+	local state_name="$1" lock_dir=""
+
+	lock_dir="$(runtime_state_lock_dir "${state_name}")"
+	rm -rf "${lock_dir}" 2>/dev/null || true
+}
+
+with_runtime_state_lock() {
+	local state_name="$1" rc=0
+	shift
+
+	acquire_runtime_state_lock "${state_name}"
+	if "$@"; then
+		rc=0
+	else
+		rc="$?"
+	fi
+	release_runtime_state_lock "${state_name}"
+	return "${rc}"
+}
+
+line_state_cache_contains() {
+	local cache="$1" item="$2"
+
+	case " ${cache} " in
+	*" ${item} "*) return 0 ;;
+	esac
+	return 1
+}
+
+line_state_file_contains() {
+	local state_file="$1" item="$2"
+
+	[ -f "${state_file}" ] || return 1
+	grep -Fxq -- "${item}" "${state_file}"
+}
+
+line_state_contains_locked() {
+	local state_name="$1" item="$2" cache_name="$3" state_file=""
+	# shellcheck disable=SC2178
+	local -n cache_ref="${cache_name}"
+
+	if line_state_cache_contains "${cache_ref}" "${item}"; then
+		return 0
+	fi
+
+	state_file="$(runtime_state_file "${state_name}")"
+	if line_state_file_contains "${state_file}" "${item}"; then
+		cache_ref="${cache_ref}${cache_ref:+ }${item}"
+		return 0
+	fi
+
+	return 1
+}
+
+line_state_contains() {
+	local state_name="$1" item="$2" cache_name="$3"
+
+	with_runtime_state_lock \
+		"${state_name}" \
+		line_state_contains_locked \
+		"${state_name}" \
+		"${item}" \
+		"${cache_name}"
+}
+
+line_state_mark_locked() {
+	local state_name="$1" item="$2" cache_name="$3" state_file=""
+	# shellcheck disable=SC2178
+	local -n cache_ref="${cache_name}"
+
+	if ! line_state_cache_contains "${cache_ref}" "${item}"; then
+		cache_ref="${cache_ref}${cache_ref:+ }${item}"
+	fi
+
+	state_file="$(runtime_state_file "${state_name}")"
+	if ! line_state_file_contains "${state_file}" "${item}"; then
+		printf '%s\n' "${item}" >>"${state_file}" || return 1
+	fi
+}
+
+line_state_mark() {
+	local state_name="$1" item="$2" cache_name="$3"
+
+	with_runtime_state_lock \
+		"${state_name}" \
+		line_state_mark_locked \
+		"${state_name}" \
+		"${item}" \
+		"${cache_name}"
+}
+
+line_state_mark_new_locked() {
+	local state_name="$1" item="$2" cache_name="$3" state_file=""
+	# shellcheck disable=SC2178
+	local -n cache_ref="${cache_name}"
+
+	state_file="$(runtime_state_file "${state_name}")"
+	if line_state_cache_contains "${cache_ref}" "${item}"; then
+		return 1
+	fi
+
+	if line_state_file_contains "${state_file}" "${item}"; then
+		cache_ref="${cache_ref}${cache_ref:+ }${item}"
+		return 1
+	fi
+
+	cache_ref="${cache_ref}${cache_ref:+ }${item}"
+	printf '%s\n' "${item}" >>"${state_file}" || return 1
+	return 0
+}
+
+line_state_mark_new() {
+	local state_name="$1" item="$2" cache_name="$3"
+
+	with_runtime_state_lock \
+		"${state_name}" \
+		line_state_mark_new_locked \
+		"${state_name}" \
+		"${item}" \
+		"${cache_name}"
+}
+
+line_state_clear_locked() {
+	local state_name="$1" item="$2" cache_name="$3"
+	local state_file="" tmp_file="" line="" rebuilt_cache=""
+	# shellcheck disable=SC2178
+	local -n cache_ref="${cache_name}"
+
+	for line in ${cache_ref}; do
+		[ "${line}" = "${item}" ] && continue
+		rebuilt_cache="${rebuilt_cache}${rebuilt_cache:+ }${line}"
+	done
+	cache_ref="${rebuilt_cache}"
+
+	state_file="$(runtime_state_file "${state_name}")"
+	[ -f "${state_file}" ] || return 0
+
+	if ! tmp_file="$(mktemp "${state_file}.tmp.XXXXXX")"; then
+		return 1
+	fi
+	while IFS= read -r line; do
+		[ -n "${line}" ] || continue
+		[ "${line}" = "${item}" ] && continue
+		printf '%s\n' "${line}" >>"${tmp_file}" || {
+			rm -f "${tmp_file}"
+			return 1
+		}
+	done <"${state_file}"
+	mv "${tmp_file}" "${state_file}" || {
+		rm -f "${tmp_file}"
+		return 1
+	}
+}
+
+line_state_clear() {
+	local state_name="$1" item="$2" cache_name="$3"
+
+	with_runtime_state_lock \
+		"${state_name}" \
+		line_state_clear_locked \
+		"${state_name}" \
+		"${item}" \
+		"${cache_name}"
 }
 
 runtime_work_dir_prefix() {
@@ -2677,140 +2892,56 @@ can_execute_self_target_locally_as_deploy_user() {
 
 self_target_notice_emitted() {
 	local notice_key="$1"
-	local state_file=""
 
-	case " ${SELF_TARGET_NOTICE_KEYS} " in
-	*" ${notice_key} "*) return 0 ;;
-	esac
-
-	ensure_tmp_dir
-	state_file="${NIXBOT_TMP_DIR}/self-target-notices.keys"
-	if [ -f "${state_file}" ] && grep -Fxq "${notice_key}" "${state_file}"; then
-		SELF_TARGET_NOTICE_KEYS="${SELF_TARGET_NOTICE_KEYS} ${notice_key}"
-		return 0
-	fi
-
-	return 1
+	line_state_contains "self-target-notices.keys" "${notice_key}" SELF_TARGET_NOTICE_KEYS
 }
 
 mark_self_target_notice_emitted() {
 	local notice_key="$1"
-	local state_file=""
 
-	ensure_tmp_dir
-	state_file="${NIXBOT_TMP_DIR}/self-target-notices.keys"
-	case " ${SELF_TARGET_NOTICE_KEYS} " in
-	*" ${notice_key} "*) return 0 ;;
-	*) SELF_TARGET_NOTICE_KEYS="${SELF_TARGET_NOTICE_KEYS} ${notice_key}" ;;
-	esac
-	if ! { [ -f "${state_file}" ] && grep -Fxq "${notice_key}" "${state_file}"; }; then
-		printf '%s\n' "${notice_key}" >>"${state_file}"
-	fi
+	line_state_mark "self-target-notices.keys" "${notice_key}" SELF_TARGET_NOTICE_KEYS
 }
 
 emit_self_target_notice_once() {
 	local notice_key="$1" notice_message="$2"
 
-	if self_target_notice_emitted "${notice_key}"; then
-		return 0
+	if line_state_mark_new "self-target-notices.keys" "${notice_key}" SELF_TARGET_NOTICE_KEYS; then
+		echo "${notice_message}" >&2
 	fi
-
-	echo "${notice_message}" >&2
-	mark_self_target_notice_emitted "${notice_key}"
 }
 
 mark_bootstrap_ready() {
 	local node="$1"
-	local state_file=""
 
-	ensure_tmp_dir
-	state_file="${NIXBOT_TMP_DIR}/bootstrap-ready.nodes"
-	case " ${BOOTSTRAP_READY_NODES} " in
-	*" ${node} "*) return 0 ;;
-	*) BOOTSTRAP_READY_NODES="${BOOTSTRAP_READY_NODES} ${node}" ;;
-	esac
-	if ! { [ -f "${state_file}" ] && grep -Fxq "${node}" "${state_file}"; }; then
-		printf '%s\n' "${node}" >>"${state_file}"
-	fi
+	line_state_mark "bootstrap-ready.nodes" "${node}" BOOTSTRAP_READY_NODES
 }
 
 is_bootstrap_ready() {
 	local node="$1"
-	local state_file=""
 
-	case " ${BOOTSTRAP_READY_NODES} " in
-	*" ${node} "*) return 0 ;;
-	esac
-
-	ensure_tmp_dir
-	state_file="${NIXBOT_TMP_DIR}/bootstrap-ready.nodes"
-	if [ -f "${state_file}" ] && grep -Fxq "${node}" "${state_file}"; then
-		BOOTSTRAP_READY_NODES="${BOOTSTRAP_READY_NODES} ${node}"
-		return 0
-	fi
-
-	return 1
+	line_state_contains "bootstrap-ready.nodes" "${node}" BOOTSTRAP_READY_NODES
 }
 
 mark_primary_ready() {
 	local node="$1"
-	local state_file=""
 
-	ensure_tmp_dir
-	state_file="${NIXBOT_TMP_DIR}/primary-ready.nodes"
-	case " ${PRIMARY_READY_NODES} " in
-	*" ${node} "*) return 0 ;;
-	*) PRIMARY_READY_NODES="${PRIMARY_READY_NODES} ${node}" ;;
-	esac
-	if ! { [ -f "${state_file}" ] && grep -Fxq "${node}" "${state_file}"; }; then
-		printf '%s\n' "${node}" >>"${state_file}"
-	fi
+	line_state_mark "primary-ready.nodes" "${node}" PRIMARY_READY_NODES
 }
 
 clear_primary_ready() {
-	local node="$1" state_file="" tmp_file="" ready_node="" rebuilt_nodes=""
+	local node="$1"
 
 	[ -n "${node}" ] || return 0
 
 	clear_control_master_socket "${node}" primary
 	clear_control_master_socket "${node}" bootstrap
-
-	for ready_node in ${PRIMARY_READY_NODES}; do
-		[ "${ready_node}" = "${node}" ] && continue
-		rebuilt_nodes="${rebuilt_nodes}${rebuilt_nodes:+ }${ready_node}"
-	done
-	PRIMARY_READY_NODES="${rebuilt_nodes}"
-
-	ensure_tmp_dir
-	state_file="${NIXBOT_TMP_DIR}/primary-ready.nodes"
-	[ -f "${state_file}" ] || return 0
-
-	tmp_file="${state_file}.tmp.$$"
-	: >"${tmp_file}"
-	while IFS= read -r ready_node; do
-		[ -n "${ready_node}" ] || continue
-		[ "${ready_node}" = "${node}" ] && continue
-		printf '%s\n' "${ready_node}" >>"${tmp_file}"
-	done <"${state_file}"
-	mv "${tmp_file}" "${state_file}"
+	line_state_clear "primary-ready.nodes" "${node}" PRIMARY_READY_NODES
 }
 
 is_primary_ready() {
 	local node="$1"
-	local state_file=""
 
-	case " ${PRIMARY_READY_NODES} " in
-	*" ${node} "*) return 0 ;;
-	esac
-
-	ensure_tmp_dir
-	state_file="${NIXBOT_TMP_DIR}/primary-ready.nodes"
-	if [ -f "${state_file}" ] && grep -Fxq "${node}" "${state_file}"; then
-		PRIMARY_READY_NODES="${PRIMARY_READY_NODES} ${node}"
-		return 0
-	fi
-
-	return 1
+	line_state_contains "primary-ready.nodes" "${node}" PRIMARY_READY_NODES
 }
 
 check_bootstrap_via_forced_command() {
