@@ -8,6 +8,7 @@ in {
       nginxHostNames = ["memos-x.p7log.com"];
       cfTunnelNames = ["memos-x.p7log.com"];
       cfTunnelPort = nginxPort;
+      clientMaxBodySize = "100m";
     };
 
     source = ''

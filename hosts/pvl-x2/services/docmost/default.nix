@@ -10,6 +10,7 @@ in {
         nginxHostNames = ["docmost-x.p7log.com"];
         cfTunnelNames = ["docmost-x.p7log.com"];
         cfTunnelPort = nginxPort;
+        clientMaxBodySize = "250m";
       };
 
       source = ''

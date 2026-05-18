@@ -8,6 +8,7 @@ in {
       nginxHostNames = ["vaultwarden-x.p7log.com"];
       cfTunnelNames = ["vaultwarden-x.p7log.com"];
       cfTunnelPort = nginxPort;
+      clientMaxBodySize = "100m";
     };
 
     source = ''

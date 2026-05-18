@@ -23,6 +23,27 @@ needed to classify commits.
 5. LXC and Incus parity pass.
 6. GCP VM ad hoc tooling.
 
+## Usage Port Notes
+
+- `pvl-x2` nginx should render both derived root proxy vhosts and derived
+  `nginxRoutes`, matching the `gap3-rivendell` pattern. Without this, route
+  metadata declared on exposed ports is ignored.
+- Local upload-capable root vhosts should use the new `clientMaxBodySize` knob
+  rather than ad hoc nginx snippets:
+  - `docmost`: `250m`, analogous to the upstream docs/attachment route size.
+  - `memos`: `100m`, for resource uploads.
+  - `vaultwarden`: `100m`, for attachment/import uploads.
+- No local pvl-x2/pvl-a1 compose source currently declares
+  `networks.default.ipam.config`, so upstream per-stack `subnet` values remain
+  skipped as project-specific usage.
+- Do not port upstream `authRequest`, Kanidm logout redirect, abird CA TLS, or
+  oauth2-proxy route usages unless the matching local service stack exists.
+- The `7c2a1403` nixbot state-lock port fixed the observed `primary-ready.nodes`
+  rewrite race. A follow-up local health-check hardening now runs post-switch
+  health commands through the same prepared transport retry wrapper as
+  deploy-time remote commands, because `pvl-vlab-1` can deploy via cached
+  bootstrap transport while a one-shot health SSH command still fails.
+
 ## Commit Ledger
 
 ### Port
@@ -43,7 +64,7 @@ needed to classify commits.
 | `3474015d` | podman-compose: refine network online ordering             | podman-compose | Applicable unit-ordering refinement.                                           |
 | `49e4c884` | podman-compose: add ensure semantics to dirBootstrapScript | podman-compose | Applicable helper API refinement.                                              |
 | `dfb01b70` | service-module: add requireLocalNats                       | service-module | Small shared knob; port directly if current API still matches.                 |
-| `7c2a1403` | nixbot: refine parallel state locks                        | nixbot         | Candidate missing post-local-port refinement; compare before editing.          |
+| `7c2a1403` | nixbot: refine parallel state locks                        | nixbot         | Ported after deploy exposed a parallel `primary-ready.nodes` rewrite race.     |
 | `7e3c9193` | lxc: rootless base adaptations                             | lxc-incus      | Candidate LXC profile addition; adapt to local `lib/profiles/lxc.nix`.         |
 | `c492a5f7` | gcp-vms: nixify, add, delete                               | gcp-vms        | Applicable isolated tooling if added under `pkgs/ext/gcp-vms`.                 |
 | `cc05de94` | gcp-vms: cleanup                                           | gcp-vms        | Apply on top of the initial tooling port.                                      |
