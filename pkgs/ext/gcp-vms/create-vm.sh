@@ -22,6 +22,10 @@ init_vars() {
 	GCP_CREATED_INSTANCE_IP=""
 	GCP_NIXIFY_AFTER_CREATE="0"
 	GCP_NIXIFY_HOST=""
+	GCP_NIXIFY_GENERIC="0"
+	GCP_NIXIFY_BUILD_ON_SEEN="0"
+	GCP_NIXIFY_NO_DISKO_DEPS="0"
+	GCP_NIXIFY_NO_SUBSTITUTE_ON_DESTINATION="0"
 	GCP_NIXIFY_ARGS_SEEN="0"
 	GCP_NIXIFY_ARGS=()
 }
@@ -98,6 +102,9 @@ Options:
   --generic-nixpkgs-ref <ref>     Passed to nixify-vm.sh.
   --generic-disk-device <path>    Passed to nixify-vm.sh.
   --force                         Passed to nixify-vm.sh.
+  --no-disko-deps                 Passed to nixify-vm.sh.
+  --no-substitute-on-destination  Passed to nixify-vm.sh.
+  --no-use-machine-substituters   Passed to nixify-vm.sh.
   --print-build-logs              Passed to nixify-vm.sh.
   --debug                         Passed to nixify-vm.sh.
   --copy-host-keys                Passed to nixify-vm.sh.
@@ -138,11 +145,37 @@ parse_args() {
 			;;
 		--age-identity | --build-on | --post-install-timeout | --bootstrap-swap-gb | --bootstrap-swap-min-mib | --generic-nixpkgs-ref | --generic-disk-device)
 			gcp_need_value "$1" "${2:-}"
+			if [ "$1" = "--build-on" ]; then
+				GCP_NIXIFY_BUILD_ON_SEEN="1"
+			fi
 			GCP_NIXIFY_ARGS+=("$1" "$2")
 			GCP_NIXIFY_ARGS_SEEN="1"
 			shift 2
 			;;
-		--generic | --force | --print-build-logs | --debug | --copy-host-keys | --keep-tmp)
+		--generic)
+			GCP_NIXIFY_ARGS+=("$1")
+			GCP_NIXIFY_GENERIC="1"
+			GCP_NIXIFY_ARGS_SEEN="1"
+			shift
+			;;
+		--no-disko-deps)
+			GCP_NIXIFY_ARGS+=("$1")
+			GCP_NIXIFY_NO_DISKO_DEPS="1"
+			GCP_NIXIFY_ARGS_SEEN="1"
+			shift
+			;;
+		--no-substitute-on-destination)
+			GCP_NIXIFY_ARGS+=("$1")
+			GCP_NIXIFY_NO_SUBSTITUTE_ON_DESTINATION="1"
+			GCP_NIXIFY_ARGS_SEEN="1"
+			shift
+			;;
+		--no-use-machine-substituters)
+			GCP_NIXIFY_ARGS+=("$1")
+			GCP_NIXIFY_ARGS_SEEN="1"
+			shift
+			;;
+		--force | --print-build-logs | --debug | --copy-host-keys | --keep-tmp)
 			GCP_NIXIFY_ARGS+=("$1")
 			GCP_NIXIFY_ARGS_SEEN="1"
 			shift
@@ -334,6 +367,17 @@ nixify_instance() {
 	)
 	if [ -n "${GCP_NIXIFY_HOST}" ]; then
 		nixify_cmd+=(--host "${GCP_NIXIFY_HOST}")
+	fi
+	if [ "${GCP_FREE_TIER_MAX_MODE}" = "1" ] && [ "${GCP_NIXIFY_GENERIC}" = "1" ]; then
+		if [ "${GCP_NIXIFY_BUILD_ON_SEEN}" != "1" ]; then
+			nixify_cmd+=(--build-on local)
+		fi
+		if [ "${GCP_NIXIFY_NO_DISKO_DEPS}" != "1" ]; then
+			nixify_cmd+=(--no-disko-deps)
+		fi
+		if [ "${GCP_NIXIFY_NO_SUBSTITUTE_ON_DESTINATION}" != "1" ]; then
+			nixify_cmd+=(--no-substitute-on-destination)
+		fi
 	fi
 	nixify_cmd+=("${GCP_NIXIFY_ARGS[@]}")
 

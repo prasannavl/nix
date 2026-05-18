@@ -112,6 +112,14 @@ threshold is 4096 MiB. Auto mode sizes swap to bring RAM + swap up to that
 threshold, with a 2 GiB minimum. Use `--bootstrap-swap-gb 0` to disable, or a
 positive `--bootstrap-swap-gb <gb>` to force a specific size.
 
+The kexec installer on free-tier-sized VMs can also wedge while substituting the
+full disko dependency closure into the temporary installer store. When
+`create-vm.sh --free-tier-max --nix --generic` runs the generic handoff, it
+automatically passes `--build-on local`, `--no-disko-deps`, and
+`--no-substitute-on-destination` to `nixify-vm.sh`. This keeps dependency
+substitution out of the tiny installer environment and uploads only the disko
+script for partitioning.
+
 1. Or do the whole flow in one shot.
 
 ```bash
@@ -158,6 +166,8 @@ boot disk. Use `--keep-fw-rules` to preserve fw rules.
   - supports `--generic` for a generated minimal NixOS 25.11 install when no
     repo host exists yet
   - creates temporary bootstrap swap on low-memory hosts before kexec
+  - can pass `--no-disko-deps`, `--no-substitute-on-destination`, and
+    `--no-use-machine-substituters` through to `nixos-anywhere`
   - no-ops when steady-state SSH shows the target is already NixOS
   - reruns `nixos-anywhere` when `--force` is given
   - validates `.#nixosConfigurations.<host>`
@@ -218,6 +228,10 @@ The free-tier mode is guarded. Later or earlier explicit `--zone`,
 `--disk-type` arguments are accepted only if they remain inside the free-tier
 contract. Non-free zones, larger disks, non-standard disks, non-`e2-micro`
 machine types, or non-preset images fail before GCP mutation.
+
+For `--free-tier-max --nix --generic`, `create-vm.sh` also makes the
+`nixos-anywhere` handoff free-tier-safe by forcing local builds and disabling
+remote destination substitution for the installer copy.
 
 ## Failure Boundaries
 

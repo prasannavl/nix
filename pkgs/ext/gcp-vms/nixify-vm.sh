@@ -33,6 +33,9 @@ init_vars() {
 	COPY_HOST_KEYS="0"
 	KEEP_TMP="0"
 	FORCE_NIXIFY="0"
+	NO_DISKO_DEPS="0"
+	NO_SUBSTITUTE_ON_DESTINATION="0"
+	NO_USE_MACHINE_SUBSTITUTERS="0"
 	GENERIC_NIXOS_VERSION="${GCP_GENERIC_NIXOS_VERSION:-25.11}"
 	GENERIC_NIXPKGS_REF="${GCP_GENERIC_NIXPKGS_REF:-github:NixOS/nixpkgs/nixos-${GENERIC_NIXOS_VERSION}}"
 	GENERIC_SYSTEM="${GCP_GENERIC_NIXOS_SYSTEM:-x86_64-linux}"
@@ -92,6 +95,13 @@ Options:
                                   bootstrap VM's current root disk.
   --force                        Re-run nixos-anywhere even when the target
                                   already appears to be NixOS.
+  --no-disko-deps                Pass through to nixos-anywhere. Upload only
+                                  the disko script, not its full dependency
+                                  closure.
+  --no-substitute-on-destination Pass through to nixos-anywhere. Copy closures
+                                  from the local store instead of asking the
+                                  installer to substitute them.
+  --no-use-machine-substituters  Pass through to nixos-anywhere.
   --print-build-logs             Pass through to nixos-anywhere.
   --debug                        Pass through to nixos-anywhere.
   --copy-host-keys               Preserve the bootstrap VM's SSH host keys.
@@ -173,6 +183,18 @@ parse_args() {
 			;;
 		--force)
 			FORCE_NIXIFY="1"
+			shift
+			;;
+		--no-disko-deps)
+			NO_DISKO_DEPS="1"
+			shift
+			;;
+		--no-substitute-on-destination)
+			NO_SUBSTITUTE_ON_DESTINATION="1"
+			shift
+			;;
+		--no-use-machine-substituters)
+			NO_USE_MACHINE_SUBSTITUTERS="1"
 			shift
 			;;
 		--print-build-logs)
@@ -560,6 +582,15 @@ nixify_generic_host() {
 	if [ "${COPY_HOST_KEYS}" = "1" ]; then
 		nixos_anywhere_cmd+=(--copy-host-keys)
 	fi
+	if [ "${NO_DISKO_DEPS}" = "1" ]; then
+		nixos_anywhere_cmd+=(--no-disko-deps)
+	fi
+	if [ "${NO_SUBSTITUTE_ON_DESTINATION}" = "1" ]; then
+		nixos_anywhere_cmd+=(--no-substitute-on-destination)
+	fi
+	if [ "${NO_USE_MACHINE_SUBSTITUTERS}" = "1" ]; then
+		nixos_anywhere_cmd+=(--no-use-machine-substituters)
+	fi
 	if [ "${PRINT_BUILD_LOGS}" = "1" ]; then
 		nixos_anywhere_cmd+=(--print-build-logs)
 	fi
@@ -693,6 +724,15 @@ nixify_repo_host() {
 	)
 	if [ "${COPY_HOST_KEYS}" = "1" ]; then
 		nixos_anywhere_cmd+=(--copy-host-keys)
+	fi
+	if [ "${NO_DISKO_DEPS}" = "1" ]; then
+		nixos_anywhere_cmd+=(--no-disko-deps)
+	fi
+	if [ "${NO_SUBSTITUTE_ON_DESTINATION}" = "1" ]; then
+		nixos_anywhere_cmd+=(--no-substitute-on-destination)
+	fi
+	if [ "${NO_USE_MACHINE_SUBSTITUTERS}" = "1" ]; then
+		nixos_anywhere_cmd+=(--no-use-machine-substituters)
 	fi
 	if [ "${PRINT_BUILD_LOGS}" = "1" ]; then
 		nixos_anywhere_cmd+=(--print-build-logs)

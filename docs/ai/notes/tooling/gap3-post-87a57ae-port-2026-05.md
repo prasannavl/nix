@@ -4,15 +4,19 @@
 
 Selective port of `87a57ae..gap3/master` into this repo.
 
-Current range inventory from
+Current range inventory after the 2026-05-18 refetch from
 `git log --reverse --pretty='%h %s'
-87a57ae..gap3/master` has 114 commits. Do
+87a57ae..gap3/master` has 116 commits. Do
 not cherry-pick blindly. For each commit, decide whether the change is
 applicable here, already represented by a local equivalent, or project-specific
 to `gap3`/`abird` and therefore skipped.
 
 Do not read `.key` files under `data/secrets`. Listing paths is allowed when
 needed to classify commits.
+
+Closeout validation on 2026-05-18 rechecked the upstream range against this
+ledger: all 116 upstream commits are represented, with no missing hashes from
+`87a57ae..gap3/master`.
 
 ## Review Units
 
@@ -50,50 +54,58 @@ needed to classify commits.
 
 | Commit     | Subject                                                    | Unit           | Notes                                                                          |
 | ---------- | ---------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------ |
-| `f9a6a496` | nginx: fix proxy redirect extra /                          | nginx          | Applicable shared nginx route behavior.                                        |
-| `da56660f` | nginx: add proxy-buffer size support                       | nginx          | Applicable shared nginx and podman-compose option plumbing.                    |
-| `4939464b` | nginx: add proxyRedirects, proxyCookiePath                 | nginx          | Applicable shared nginx route behavior.                                        |
-| `38976888` | nginx: add authRequest support                             | nginx          | Applicable shared nginx auth subrequest support.                               |
-| `54863cab` | nginx: add resolver, proxy scheme support                  | nginx          | Applicable shared dynamic upstream support.                                    |
+| `f9a6a496` | nginx: fix proxy redirect extra /                          | nginx          | Ported shared nginx route behavior.                                            |
+| `da56660f` | nginx: add proxy-buffer size support                       | nginx          | Ported shared nginx and podman-compose option plumbing.                        |
+| `4939464b` | nginx: add proxyRedirects, proxyCookiePath                 | nginx          | Ported shared nginx route behavior.                                            |
+| `38976888` | nginx: add authRequest support                             | nginx          | Ported shared nginx auth subrequest support.                                   |
+| `54863cab` | nginx: add resolver, proxy scheme support                  | nginx          | Ported shared dynamic upstream support.                                        |
 | `6c627f7d` | oauth2-proxy: fix internal reachability                    | nginx          | Port only generic route resolver support; skip abird oauth2 service wiring.    |
 | `d2197265` | nginx: use abird ca tls                                    | nginx          | Port only generic renderServers listener/preamble hooks; skip abird CA wiring. |
-| `87a7b2c3` | nginx, podman-compose: add clientMaxBodySize               | nginx          | Applicable shared upload size option.                                          |
-| `070a4b79` | nginx: add clientMaxBodySize                               | nginx          | Later nginx-side refinement; compare with `87a7b2c3`.                          |
-| `8fc2652c` | podman-compose: add rootless user suid-gid auto migration  | podman-compose | Applicable rootless Podman hardening.                                          |
-| `fe443bd1` | podman-compose: clash resistant subnet support             | podman-compose | Applicable duplicate-subnet guard.                                             |
-| `3474015d` | podman-compose: refine network online ordering             | podman-compose | Applicable unit-ordering refinement.                                           |
-| `49e4c884` | podman-compose: add ensure semantics to dirBootstrapScript | podman-compose | Applicable helper API refinement.                                              |
+| `87a7b2c3` | nginx, podman-compose: add clientMaxBodySize               | nginx          | Ported shared upload size option.                                              |
+| `070a4b79` | nginx: add clientMaxBodySize                               | nginx          | Covered by the local shared `clientMaxBodySize` port.                          |
+| `8fc2652c` | podman-compose: add rootless user suid-gid auto migration  | podman-compose | Ported rootless Podman hardening.                                              |
+| `fe443bd1` | podman-compose: clash resistant subnet support             | podman-compose | Ported duplicate-subnet guard.                                                 |
+| `3474015d` | podman-compose: refine network online ordering             | podman-compose | Ported unit-ordering refinement.                                               |
+| `49e4c884` | podman-compose: add ensure semantics to dirBootstrapScript | podman-compose | Ported helper API refinement.                                                  |
 | `d205ad5a` | systemd-user-manager: stable state timeout var             | systemd        | Ported configurable stable-state timeout with default `120`s behavior.         |
 | `dfb01b70` | service-module: add requireLocalNats                       | service-module | Ported locally as an opt-in hard dependency on `defaultNatsAfter`.             |
 | `7c2a1403` | nixbot: refine parallel state locks                        | nixbot         | Ported after deploy exposed a parallel `primary-ready.nodes` rewrite race.     |
 | `c492a5f7` | gcp-vms: nixify, add, delete                               | gcp-vms        | Ported as standalone tooling under `pkgs/ext/gcp-vms`.                         |
 | `cc05de94` | gcp-vms: cleanup                                           | gcp-vms        | Included in the final local script shape.                                      |
 | `5bfaec70` | gcp-vms: free tier guards                                  | gcp-vms        | Included with `--free-tier-max` defaults and validation guards.                |
+| `7584cd5f` | nixify-vm: add build-on local, and subt control            | gcp-vms        | Ported nixos-anywhere substitution controls and free-tier generic defaults.    |
 
 ### Already Or Equivalent
 
 | Commit     | Subject                                                         | Local State                                                                                                          |
 | ---------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `91c3b4cd` | rule: disallow nix path: and prefer git+file for ai evals       | Already represented by local `c38c4c2b`, with repo-specific wording.                                                 |
-| `56079a69` | nixbot: post deploy health check refinements                    | Covered by local nixbot series; verify during nixbot parity pass.                                                    |
-| `11373c44` | nixbot: add parallel verify jobs                                | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
-| `311a252c` | nixbot: refine parallel eval behavior                           | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
-| `5e70052d` | nixbot: remove consevative parallel deploy guards               | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
-| `832bd018` | nixbot: capture restore tty state, use tty for non-nixbot users | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
-| `a1268a66` | nixbot: add dev-build                                           | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
-| `340f99d6` | nixbot: add proxy cmd support                                   | Covered by local `b9df518f`; verify during nixbot parity pass.                                                       |
-| `2efb177c` | nixbot: better graceful cancellation                            | Covered by local `a15ae20b`/`b9df518f`; verify during nixbot parity pass.                                            |
-| `ab1e6878` | nixbot: health check fixes                                      | Covered by local `4d7bbdb8`; verify during nixbot parity pass.                                                       |
-| `b1f33479` | nixbot: add glob support                                        | Covered by local `86df29d7`; verify during nixbot parity pass.                                                       |
+| `56079a69` | nixbot: post deploy health check refinements                    | Verified present in local nixbot health-check flow.                                                                  |
+| `11373c44` | nixbot: add parallel verify jobs                                | Verified present in local nixbot parallel verify support.                                                            |
+| `311a252c` | nixbot: refine parallel eval behavior                           | Verified present in local nixbot parallel build/eval flow.                                                           |
+| `5e70052d` | nixbot: remove consevative parallel deploy guards               | Verified represented by the local parallel deploy flow.                                                              |
+| `832bd018` | nixbot: capture restore tty state, use tty for non-nixbot users | Verified present in local nixbot TTY capture/restore and locking flow.                                               |
+| `a1268a66` | nixbot: add dev-build                                           | Verified present in local nixbot `dev-build` action.                                                                 |
+| `340f99d6` | nixbot: add proxy cmd support                                   | Verified present in local nixbot `proxyCommand` support.                                                             |
+| `2efb177c` | nixbot: better graceful cancellation                            | Verified present in local nixbot cancellation traps and remote activation cancel flow.                               |
+| `ab1e6878` | nixbot: health check fixes                                      | Verified present in local nixbot health-check filters and container health checks.                                   |
+| `b1f33479` | nixbot: add glob support                                        | Verified present in local nixbot host glob support.                                                                  |
 | `343728c4` | conv: systemd-container to lxc                                  | Already represented by local `fd9a2d66`.                                                                             |
-| `530c6272` | incus: add cert reconciler                                      | Already represented by local `508c7ab6`; verify during Incus parity pass.                                            |
-| `797891b5` | lxc: add intercept mounts                                       | Already represented by local `d3c111b1` for local host usage; verify during Incus parity pass.                       |
-| `0b503a88` | incus: remote delegation                                        | Already represented by local Incus remote delegation series; verify during Incus parity pass.                        |
+| `530c6272` | incus: add cert reconciler                                      | Verified present in local `services.incusMachines.certificates` and helper reconciliation flow.                      |
+| `797891b5` | lxc: add intercept mounts                                       | Verified present in local `hosts/pvl-x2/incus.nix` `interceptMounts` support.                                        |
+| `0b503a88` | incus: remote delegation                                        | Verified present in local Incus remote mode, certificate delegation, and project-aware query flow.                   |
 | `7e3c9193` | lxc: rootless base adaptations                                  | Already represented in `lib/profiles/lxc.nix`: unprivileged mount disables, first-boot link, and activation service. |
-| `2b716d22` | Fix lints                                                       | Only relevant if previous LXC/Incus hunks are ported.                                                                |
+| `e6e4ee74` | Fix lints                                                       | Podman-compose formatting already present locally; Abird-specific doc hunk is skipped.                               |
+| `2b716d22` | Fix lints                                                       | Covered by current local lint pass after equivalent LXC/Incus handling.                                              |
 | `6024f598` | tailscale: add upstream stable pkg                              | Already represented by local Tailscale upstream package/update script work.                                          |
 | `7e0102df` | scripts: add update all script                                  | Already represented by local `scripts/update.sh`.                                                                    |
 | `50adb47c` | ai: prioritize nix eval disallow path rule                      | Already effectively represented in current `AGENTS.md` and Nix lang pattern.                                         |
+
+### Skip: Refetched Abird Service Work
+
+| Commit     | Subject                        | Reason                                                                  |
+| ---------- | ------------------------------ | ----------------------------------------------------------------------- |
+| `3d1205e6` | add: mirofish, graphiti, neo4j | New Abird-specific services, DNS, app auth, host docs, and age secrets. |
 
 ### Skip: gap3-rivendell Service Configuration
 
