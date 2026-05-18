@@ -928,7 +928,7 @@
   duplicateSystemdUserServiceNames = collectionsLib.duplicateValues generatedSystemdUserServiceNames;
   rootlessStackUsers = lib.unique (
     builtins.filter (user: user != "root") (
-      lib.mapAttrsToList (_: stack: stack.user) cfg
+      map (service: service.systemdUser) resolvedServices
     )
   );
   rootlessStackUserHasConfig = user:
