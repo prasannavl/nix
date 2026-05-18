@@ -40,6 +40,7 @@
     recreateTag ? null,
     privileged ? false,
     nestedContainers ? false,
+    interceptMounts ? false,
     extraConfig ? {},
     extraDevices ? {},
   }:
@@ -55,6 +56,8 @@
         }
         // lib.optionalAttrs nestedContainers {
           "security.nesting" = "true";
+        }
+        // lib.optionalAttrs interceptMounts {
           "security.syscalls.intercept.mount" = "true";
           "security.syscalls.intercept.mount.shift" = "true";
         }
@@ -138,6 +141,7 @@ in {
         recreateTag = "3";
         privileged = true;
         nestedContainers = true;
+        interceptMounts = true;
         extraDevices = amdGpuDevices;
       };
 
@@ -305,6 +309,7 @@ in {
     projects = [
       (mkRestrictedProject "pvl" "ipvlbr0" {
         "restricted.containers.nesting" = "allow";
+        "restricted.devices.proxy" = "allow";
       })
       (mkRestrictedProject "abird" "iabirdbr0" {
         "restricted.containers.nesting" = "allow";
