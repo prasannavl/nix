@@ -195,6 +195,8 @@ Behavior:
   `upstreamHost` when it is host-only
 - with HTTPS and `upstreamTlsName = "<host>"`, nginx sends that explicit SNI
 - with HTTPS and `upstreamTlsName = null`, nginx emits no SNI directives
+- when `resolver` is set on a manual route, nginx resolves the single upstream
+  at request time and skips the static upstream block
 
 ## Outcome: Add A Fixed Upstream Path Prefix
 
@@ -230,6 +232,63 @@ Additional behavior when `prependPath != null`:
 - common root-relative HTML asset links are rewritten back onto the public path
   mount
 - nginx sends `X-Forwarded-Prefix`
+
+## Outcome: Handle Large Headers Or Uploads
+
+Set proxy buffer or request body size limits on root vhosts or routes.
+
+```nix
+{
+  serverNames = ["app.example.com"];
+  upstreams = ["127.0.0.1:3000"];
+  proxyBufferSize = "16k";
+  clientMaxBodySize = "128m";
+}
+```
+
+The same knobs are available on `exposedPorts.<name>` and
+`exposedPorts.<name>.nginxRoutes[]`; route values override exposed-port values.
+
+## Outcome: Add Auth Request
+
+Use `authRequest` on a manual root proxy vhost or route when nginx should guard
+the upstream through an `oauth2-proxy` forward-auth endpoint.
+
+```nix
+{
+  serverNames = ["app.example.com"];
+  upstreams = ["127.0.0.1:3000"];
+  authRequest = {
+    upstream = "oauth2-proxy:4180";
+    resolver = "127.0.0.11 valid=30s";
+    externalScheme = "https";
+    prefix = "/oauth2";
+  };
+}
+```
+
+The renderer emits the public auth callback/sign-in locations and an internal
+`/auth` subrequest location once per server block.
+
+## Outcome: Rewrite Upstream Redirects And Cookies
+
+`proxyCookiePath` replaces the default cookie path rewrite target.
+`proxyRedirects` adds explicit redirect rewrites before the default
+path-preserving rewrite.
+
+```nix
+{
+  path = "/app";
+  upstreams = ["127.0.0.1:3000"];
+  proxyCookiePath = "/app/";
+  proxyRedirects = [
+    {
+      from = "http://127.0.0.1:3000/";
+      to = "https://app.example.com/app/";
+    }
+  ];
+}
+```
 
 ## Outcome: Let The Upstream Own A Security Header
 
@@ -358,6 +417,11 @@ Common fields used by the nginx and tunnel model:
 - `upstreamTlsName`: TLS SNI name for HTTPS nginx upstreams; `"auto"` derives
   from `upstreamHost`, `null` disables SNI
 - `rootRedirect`: optional exact-root redirect on a derived root vhost
+- `proxyBufferSize`: optional `proxy_buffer_size` for large upstream response
+  headers
+- `clientMaxBodySize`: optional `client_max_body_size` for uploads
+- `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
+- `proxyRedirects`: additional `proxy_redirect` rewrites
 - `cfTunnelNames`: hostnames published through derived Cloudflare Tunnel ingress
 - `cfTunnelPort`: optional port override for tunnel ingress
 - `rateLimit`: ingress rate-limit policy
@@ -378,6 +442,11 @@ Common fields used by the nginx and tunnel model:
 - `useUpstreamReferrer`: suppress global `Referrer-Policy` on this route
 - `useUpstreamPermissionsPolicy`: suppress global `Permissions-Policy` on this
   route
+- `proxyBufferSize`: optional `proxy_buffer_size` for large upstream response
+  headers
+- `clientMaxBodySize`: optional `client_max_body_size` for uploads
+- `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
+- `proxyRedirects`: additional `proxy_redirect` rewrites
 
 Derived defaults for these routes:
 
@@ -386,6 +455,7 @@ Derived defaults for these routes:
 - `upstreamHost` inherits from the exposed port
 - `upstreamTlsName` inherits from the exposed port
 - `prependPath = null`
+- `proxyBufferSize` and `clientMaxBodySize` inherit from the exposed port
 
 ### `proxyVhost`
 
@@ -402,6 +472,12 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `prependPath`: optional fixed upstream path prefix
 - `rootRedirect`: optional exact-root redirect before the normal root proxy
 - `rateLimit`: resolved rate-limit profile or `null`
+- `proxyBufferSize`: optional `proxy_buffer_size` for large upstream response
+  headers
+- `clientMaxBodySize`: optional `client_max_body_size` for uploads
+- `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
+- `proxyRedirects`: additional `proxy_redirect` rewrites
+- `authRequest`: optional forward-auth integration
 - `useUpstreamCsp`: suppress global CSP so upstream CSP passes through
 - `useUpstreamReferrer`: suppress global `Referrer-Policy`
 - `useUpstreamPermissionsPolicy`: suppress global `Permissions-Policy`
@@ -416,6 +492,7 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `path`: public mount prefix
 - `port`: backend port or `null`
 - `upstreams`: backend addresses as `host[:port]`
+- `resolver`: optional nginx resolver for dynamic single-upstream routing
 - `upstreamProtocol`: `http` or `https`
 - `upstreamHost`: optional host for the `Host` header
 - `upstreamTlsName`: TLS SNI name for HTTPS upstream routes; `"auto"` derives
@@ -426,9 +503,27 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `siteIndex`: static route index file
 - `siteSinglePageApp`: static route SPA fallback mode
 - `rateLimit`: resolved rate-limit profile or `null`
+- `proxyBufferSize`: optional `proxy_buffer_size` for large upstream response
+  headers
+- `clientMaxBodySize`: optional `client_max_body_size` for uploads
+- `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
+- `proxyRedirects`: additional `proxy_redirect` rewrites
+- `authRequest`: optional forward-auth integration
 - `useUpstreamCsp`: suppress global CSP so upstream CSP passes through
 - `useUpstreamReferrer`: suppress global `Referrer-Policy`
 - `useUpstreamPermissionsPolicy`: suppress global `Permissions-Policy`
+
+### `authRequest`
+
+- `provider ? "oauth2-proxy"`: currently the only supported provider
+- `upstream ? "oauth2-proxy:4180"`: plain auth provider `host:port`
+- `resolver ? null`: optional nginx resolver for dynamic provider lookup
+- `externalScheme ? null`: externally visible scheme for redirects and forwarded
+  headers; defaults to `$scheme`
+- `prefix ? "/oauth2"`: public auth callback and sign-in prefix
+- `passHeaders ? true`: forward identity headers to the protected upstream
+- `clientMaxBodySize ? null`: optional body-size override for the internal auth
+  request location
 
 ## Outcome: Redirect Exact Root Before Proxying
 
@@ -476,6 +571,12 @@ Arguments:
 - `nginxRoutes ? {}`: dynamic and static route attrsets keyed by route name
 - `proxyVhosts ? {}`: root proxy vhosts keyed by vhost name
 - `staticSites ? {}`: static-site declarations keyed by site name
+- `includeHttpPreamble ? true`: include upstream blocks and rate-limit zones
+  before server blocks
+- `listenDirectives ? [ "listen 80;" ]`: listen directives for generated server
+  blocks
+- `serverExtraDirectives ? ""`: extra raw directives inserted after
+  `server_name`
 
 Outputs:
 

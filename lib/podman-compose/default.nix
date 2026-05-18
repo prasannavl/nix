@@ -502,6 +502,42 @@
                     default = "auto";
                     description = "TLS SNI name for HTTPS nginx upstream routes. \"auto\" derives it from upstreamHost when upstreamHost is host-only; null disables SNI.";
                   };
+
+                  proxyBufferSize = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional nginx proxy_buffer_size override for this route when upstream response headers are larger than nginx's default buffer.";
+                  };
+
+                  clientMaxBodySize = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional nginx client_max_body_size override for uploads to this route.";
+                  };
+
+                  proxyCookiePath = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional replacement path for nginx proxy_cookie_path. Defaults to the served route prefix.";
+                  };
+
+                  proxyRedirects = lib.mkOption {
+                    type = lib.types.listOf (lib.types.submodule {
+                      options = {
+                        from = lib.mkOption {
+                          type = lib.types.str;
+                          description = "Upstream Location value or nginx proxy_redirect pattern to rewrite.";
+                        };
+
+                        to = lib.mkOption {
+                          type = lib.types.str;
+                          description = "Replacement Location value for nginx proxy_redirect.";
+                        };
+                      };
+                    });
+                    default = [];
+                    description = "Additional nginx proxy_redirect rewrites to apply before the default path-preserving redirect rewrite.";
+                  };
                 };
               });
               default = [];
@@ -530,6 +566,42 @@
               type = lib.types.bool;
               default = false;
               description = "If true, suppress nginx's global Permissions-Policy for the derived root vhost so the upstream's Permissions-Policy passes through. Other security headers remain applied.";
+            };
+
+            proxyBufferSize = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional nginx proxy_buffer_size override for this exposed port when upstream response headers are larger than nginx's default buffer.";
+            };
+
+            clientMaxBodySize = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional nginx client_max_body_size override for uploads to this exposed port.";
+            };
+
+            proxyCookiePath = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional replacement path for nginx proxy_cookie_path. Defaults to the served route prefix.";
+            };
+
+            proxyRedirects = lib.mkOption {
+              type = lib.types.listOf (lib.types.submodule {
+                options = {
+                  from = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Upstream Location value or nginx proxy_redirect pattern to rewrite.";
+                  };
+
+                  to = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Replacement Location value for nginx proxy_redirect.";
+                  };
+                };
+              });
+              default = [];
+              description = "Additional nginx proxy_redirect rewrites to apply before the default path-preserving redirect rewrite.";
             };
 
             cfTunnelNames = lib.mkOption {

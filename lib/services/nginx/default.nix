@@ -85,6 +85,36 @@
         description = "Optional redirect for exact root requests before proxying other paths.";
       };
 
+      proxyBufferSize = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_buffer_size override for large upstream response headers.";
+      };
+
+      clientMaxBodySize = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx client_max_body_size override for uploads to this vhost.";
+      };
+
+      proxyCookiePath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional replacement path for nginx proxy_cookie_path. Defaults to the served route prefix.";
+      };
+
+      proxyRedirects = lib.mkOption {
+        type = lib.types.listOf proxyRedirectTypeDef;
+        default = [];
+        description = "Additional nginx proxy_redirect rewrites to apply before the default path-preserving redirect rewrite.";
+      };
+
+      authRequest = lib.mkOption {
+        type = lib.types.nullOr authRequestTypeDef;
+        default = null;
+        description = "Optional nginx auth_request integration for this proxy vhost.";
+      };
+
       useUpstreamCsp = lib.mkOption {
         type = lib.types.bool;
         default = false;
@@ -101,6 +131,66 @@
         type = lib.types.bool;
         default = false;
         description = "If true, suppress nginx's global Permissions-Policy for this vhost and let the upstream's Permissions-Policy pass through. Other security headers remain applied.";
+      };
+    };
+  };
+
+  authRequestTypeDef = lib.types.submodule {
+    options = {
+      provider = lib.mkOption {
+        type = lib.types.enum ["oauth2-proxy"];
+        default = "oauth2-proxy";
+        description = "Forward-auth provider implementation.";
+      };
+
+      upstream = lib.mkOption {
+        type = lib.types.str;
+        default = "oauth2-proxy:4180";
+        description = "Plain host:port for the auth provider nginx should proxy to.";
+      };
+
+      resolver = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx resolver directive value used to resolve the auth provider at request time.";
+      };
+
+      externalScheme = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional externally visible URL scheme for auth redirects and forwarded scheme headers.";
+      };
+
+      prefix = lib.mkOption {
+        type = lib.types.str;
+        default = "/oauth2";
+        description = "Path prefix mounted for the auth provider callbacks and sign-in flow.";
+      };
+
+      passHeaders = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether to forward authenticated identity headers to the upstream.";
+      };
+
+      clientMaxBodySize = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx client_max_body_size override for the internal auth request location.";
+      };
+    };
+  };
+
+  proxyRedirectTypeDef = lib.types.submodule {
+    options = {
+      from = lib.mkOption {
+        type = lib.types.str;
+        description = "Upstream Location value or nginx proxy_redirect pattern to rewrite.";
+      };
+
+      to = lib.mkOption {
+        type = lib.types.str;
+        description = "Replacement Location value for nginx proxy_redirect.";
       };
     };
   };
@@ -141,6 +231,12 @@
         type = lib.types.listOf lib.types.str;
         default = [];
         description = "Backend server addresses (host:port).";
+      };
+
+      resolver = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx resolver directive value used to resolve this route's single upstream at request time.";
       };
 
       upstreamProtocol = lib.mkOption {
@@ -217,6 +313,36 @@
         default = false;
         description = "If true, suppress nginx's global Permissions-Policy for this route and let the upstream's Permissions-Policy pass through. Other security headers remain applied.";
       };
+
+      proxyBufferSize = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_buffer_size override for large upstream response headers.";
+      };
+
+      clientMaxBodySize = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx client_max_body_size override for uploads to this route.";
+      };
+
+      proxyCookiePath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional replacement path for nginx proxy_cookie_path. Defaults to the served route prefix.";
+      };
+
+      proxyRedirects = lib.mkOption {
+        type = lib.types.listOf proxyRedirectTypeDef;
+        default = [];
+        description = "Additional nginx proxy_redirect rewrites to apply before the default path-preserving redirect rewrite.";
+      };
+
+      authRequest = lib.mkOption {
+        type = lib.types.nullOr authRequestTypeDef;
+        default = null;
+        description = "Optional nginx auth_request integration for this route.";
+      };
     };
   };
 
@@ -258,6 +384,11 @@
           inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName;
           rootRedirect = portCfg.rootRedirect or null;
           rateLimit = resolveRateLimit (portCfg.rateLimit or null);
+          proxyBufferSize = portCfg.proxyBufferSize or null;
+          clientMaxBodySize = portCfg.clientMaxBodySize or null;
+          proxyCookiePath = portCfg.proxyCookiePath or null;
+          proxyRedirects = portCfg.proxyRedirects or [];
+          authRequest = portCfg.authRequest or null;
         }
         // upstreamHeaderFlags portCfg;
     };
@@ -279,6 +410,9 @@
       "_"
     ]
     value;
+
+  sanitizeVariableName = value:
+    builtins.replaceStrings ["-"] ["_"] (sanitizeName value);
 
   normalizeRoutePath = path:
     if path == "/"
@@ -352,6 +486,11 @@
               prependPath = null;
               stripPath = route.stripPath;
               rateLimit = resolveRateLimit (portCfg.rateLimit or null);
+              proxyBufferSize = route.proxyBufferSize or (portCfg.proxyBufferSize or null);
+              clientMaxBodySize = route.clientMaxBodySize or (portCfg.clientMaxBodySize or null);
+              proxyCookiePath = route.proxyCookiePath or null;
+              proxyRedirects = route.proxyRedirects or [];
+              authRequest = route.authRequest or (portCfg.authRequest or null);
             }
             // upstreamHeaderFlags route;
         })
@@ -493,6 +632,78 @@
       "    limit_req_status ${toString rateLimit.statusCode};\n"
     ];
 
+  authPrefix = auth: normalizeRoutePath (auth.prefix or "/oauth2");
+
+  mkOauth2ProxyAuthLocations = auth: let
+    prefix = authPrefix auth;
+    requestScheme = auth.externalScheme or "$scheme";
+    upstream = validatePlainUpstreamValue "authRequest.upstream" auth.upstream;
+    dynamicUpstream = (auth.resolver or null) != null;
+    clientBodyDirectives =
+      lib.optionalString ((auth.clientMaxBodySize or null) != null)
+      "        client_max_body_size ${auth.clientMaxBodySize};\n";
+    resolverDirective = lib.optionalString dynamicUpstream ''
+      resolver ${auth.resolver};
+      set $auth_request_upstream ${upstream};
+    '';
+    proxyPassTarget =
+      if dynamicUpstream
+      then "$auth_request_upstream"
+      else upstream;
+  in ''
+        location ${prefix}/ {
+    ${resolverDirective}        proxy_pass http://${proxyPassTarget};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Scheme ${requestScheme};
+            proxy_set_header X-Forwarded-Host $host;
+            proxy_set_header X-Forwarded-Proto ${requestScheme};
+            proxy_set_header X-Forwarded-Uri $request_uri;
+            proxy_set_header X-Auth-Request-Redirect ${requestScheme}://$host$request_uri;
+        }
+
+        location = ${prefix}/auth {
+            internal;
+    ${clientBodyDirectives}
+    ${resolverDirective}        proxy_pass http://${proxyPassTarget};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-Host $host;
+            proxy_set_header X-Forwarded-Proto ${requestScheme};
+            proxy_set_header X-Forwarded-Uri $request_uri;
+            proxy_set_header Content-Length "";
+            proxy_pass_request_body off;
+        }
+
+  '';
+
+  mkAuthRequestDirectives = auth:
+    if auth == null
+    then ""
+    else let
+      prefix = authPrefix auth;
+      requestScheme = auth.externalScheme or "$scheme";
+      authHeaderDirectives = lib.optionalString (auth.passHeaders or true) ''
+        auth_request_set $auth_request_user $upstream_http_x_auth_request_user;
+        auth_request_set $auth_request_email $upstream_http_x_auth_request_email;
+        auth_request_set $auth_request_groups $upstream_http_x_auth_request_groups;
+        auth_request_set $auth_request_preferred_username $upstream_http_x_auth_request_preferred_username;
+        proxy_set_header X-Auth-Request-User $auth_request_user;
+        proxy_set_header X-Auth-Request-Email $auth_request_email;
+        proxy_set_header X-Auth-Request-Groups $auth_request_groups;
+        proxy_set_header X-Auth-Request-Preferred-Username $auth_request_preferred_username;
+        proxy_set_header X-Forwarded-User $auth_request_user;
+        proxy_set_header X-Forwarded-Email $auth_request_email;
+        proxy_set_header X-Forwarded-Groups $auth_request_groups;
+      '';
+    in ''
+                auth_request ${prefix}/auth;
+                error_page 401 = ${prefix}/sign_in?rd=${requestScheme}://$host$request_uri;
+                auth_request_set $auth_request_cookie $upstream_http_set_cookie;
+                add_header Set-Cookie $auth_request_cookie always;
+      ${authHeaderDirectives}
+    '';
+
   locationRateLimitDirectives = name: rateLimit:
     lib.concatStrings
     (map
@@ -513,20 +724,52 @@
     routeUpstreamHost = route.upstreamHost or null;
     routeUpstreamProtocol = route.upstreamProtocol or "http";
     routeUpstreamTlsName = route.upstreamTlsName or "auto";
+    routeResolver = route.resolver or null;
+    dynamicUpstream = routeResolver != null;
+    dynamicUpstreamValue =
+      if dynamicUpstream
+      then
+        if builtins.length route.upstreams != 1
+        then throw "nginx route ${name} with resolver must define exactly one upstream"
+        else validatePlainUpstreamValue "nginx route dynamic upstream" (builtins.head route.upstreams)
+      else null;
+    dynamicUpstreamVariable = "$route_upstream_${sanitizeVariableName name}";
+    resolverDirective = lib.optionalString dynamicUpstream ''
+      resolver ${routeResolver};
+      set ${dynamicUpstreamVariable} ${dynamicUpstreamValue};
+    '';
+    proxyPassTarget =
+      if dynamicUpstream
+      then dynamicUpstreamVariable
+      else name;
     routePrependPath = route.prependPath or null;
     routeStripPath = route.stripPath or false;
     rateLimitEnabled = routeRateLimit != null && routeRateLimit.enable;
     rateLimitDirectives =
       lib.optionalString rateLimitEnabled (locationRateLimitDirectives name routeRateLimit);
     securityHeaderDirectives = mkLocationSecurityHeaderIncludes route;
+    authRequestDirectives = mkAuthRequestDirectives (route.authRequest or null);
+    proxyBufferSize = route.proxyBufferSize or null;
+    proxyBufferDirectives =
+      lib.optionalString (proxyBufferSize != null)
+      "        proxy_buffer_size ${proxyBufferSize};\n";
+    clientMaxBodySize = route.clientMaxBodySize or null;
+    clientBodyDirectives =
+      lib.optionalString (clientMaxBodySize != null)
+      "        client_max_body_size ${clientMaxBodySize};\n";
     basePath = normalizeRoutePath route.path;
     prefixPath =
       if basePath == "/"
       then "/"
       else "${basePath}/";
+    proxyCookiePath = route.proxyCookiePath or null;
+    effectiveProxyCookiePath =
+      if proxyCookiePath == null
+      then prefixPath
+      else proxyCookiePath;
     redirectTarget =
       if basePath == "/"
-      then "/$1"
+      then "$1"
       else "${basePath}$1";
     normalizedUpstreamHost =
       if routeUpstreamHost != null
@@ -550,6 +793,9 @@
       lib.optionalString (effectiveUpstreamPathPrefix != null)
       "            proxy_redirect ~^${routeRegexEscape effectiveUpstreamPathPrefix}(/.*)?$ ${redirectTarget};\n";
     defaultRedirectDirective = "            proxy_redirect ~^(/.*)$ ${redirectTarget};\n";
+    proxyRedirectDirectives = lib.concatMapStringsSep "" (redirect: ''
+      proxy_redirect ${redirect.from} ${redirect.to};
+    '') (route.proxyRedirects or []);
     exactRewriteDirective =
       if basePath != "/" && !routeStripPath && effectiveUpstreamPathPrefix != null
       then "        rewrite ^${routeRegexEscape basePath}$ ${prefixedBasePath} break;\n"
@@ -584,15 +830,18 @@
     '';
     htmlRewriteDirectives =
       lib.optionalString (basePath != "/") (routeHtmlRewriteDirectives route effectiveUpstreamPathPrefix);
+    forwardedPrefixDirective =
+      lib.optionalString (basePath != "/")
+      "            proxy_set_header X-Forwarded-Prefix ${prefixPath};\n";
   in ''
-        ${rateLimitDirectives}${securityHeaderDirectives}        proxy_set_header Accept-Encoding "";
+        ${rateLimitDirectives}${securityHeaderDirectives}${proxyBufferDirectives}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
                 ${hostHeaderDirective}
                 ${forwardedHeaderDirectives}
     ${upstreamTlsDirectives}            proxy_http_version 1.1;
-                proxy_cookie_path / ${prefixPath};
-    ${prependRedirectDirective}${defaultRedirectDirective}            proxy_set_header X-Forwarded-Prefix ${prefixPath};
+                proxy_cookie_path / ${effectiveProxyCookiePath};
+    ${proxyRedirectDirectives}${prependRedirectDirective}${defaultRedirectDirective}${forwardedPrefixDirective}
                 ${htmlRewriteDirectives}
-    ${exactRewriteDirective}${rewriteDirective}        proxy_pass ${routeUpstreamProtocol}://${name};
+    ${resolverDirective}${exactRewriteDirective}${rewriteDirective}        proxy_pass ${routeUpstreamProtocol}://${proxyPassTarget};
   '';
 
   mkProxyRootLocation = name: proxy: let
@@ -605,6 +854,11 @@
         upstreamTlsName = proxy.upstreamTlsName or "auto";
         prependPath = proxy.prependPath or null;
         rateLimit = proxy.rateLimit or null;
+        proxyBufferSize = proxy.proxyBufferSize or null;
+        clientMaxBodySize = proxy.clientMaxBodySize or null;
+        proxyCookiePath = proxy.proxyCookiePath or null;
+        proxyRedirects = proxy.proxyRedirects or [];
+        authRequest = proxy.authRequest or null;
       }
       // upstreamHeaderFlags proxy;
     rootRedirect = proxy.rootRedirect or null;
@@ -858,7 +1112,23 @@
     rootProxy ? null,
     routes ? {},
     staticRateLimit,
+    listenDirectives,
+    serverExtraDirectives,
   }: let
+    authRequests =
+      lib.unique
+      (lib.filter
+        (auth: auth != null)
+        ((lib.optional (rootProxy != null) (rootProxy.authRequest or null))
+          ++ map (route: route.authRequest or null) (builtins.attrValues routes)));
+    authLocationBlocks =
+      lib.concatStringsSep "\n"
+      (map
+        (auth:
+          if (auth.provider or "oauth2-proxy") == "oauth2-proxy"
+          then mkOauth2ProxyAuthLocations auth
+          else throw "Unsupported auth_request provider: ${auth.provider}")
+        authRequests);
     routeBlocks =
       lib.concatStringsSep "\n"
       (lib.mapAttrsToList
@@ -883,11 +1153,13 @@
   in
     assert rootStaticSite != null || rootProxy != null || routes != {}; ''
             server {
-              listen 80;
+      ${lib.concatMapStringsSep "\n" (directive: "        ${directive}") listenDirectives}
               server_name ${serverName};
+      ${serverExtraDirectives}
 
               include /etc/nginx/conf.d/lib/http-security.conf;
 
+      ${authLocationBlocks}
       ${lib.optionalString (routeBlocks != "") routeBlocks}
       ${rootBlock}
             }
@@ -990,6 +1262,9 @@ in rec {
     nginxRoutes ? {},
     proxyVhosts ? {},
     staticSites ? {},
+    includeHttpPreamble ? true,
+    listenDirectives ? ["listen 80;"],
+    serverExtraDirectives ? "",
   }: let
     resolvedRateLimit = resolveRateLimit rateLimit;
     namedStaticSites =
@@ -1024,7 +1299,7 @@ in rec {
       lib.concatStringsSep "\n"
       (lib.mapAttrsToList
         (name: route:
-          if route.mode == "upstream"
+          if route.mode == "upstream" && (route.resolver or null) == null
           then mkUpstreamBlock name route.upstreams
           else "")
         nginxRoutes);
@@ -1044,18 +1319,21 @@ in rec {
               rootProxy = rootProxyVhostsByServerName.${serverName} or null;
               routes = routesForServer serverName (staticRoutes // nginxRoutes);
               staticRateLimit = resolvedRateLimit;
+              inherit listenDirectives serverExtraDirectives;
             })
         serverNames);
   in
     if duplicateHostnames != []
     then throw duplicateHostnamesError
-    else
+    else if includeHttpPreamble
+    then
       lib.optionalString
       (rateLimitZones != "")
       "${rateLimitZones}\n${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}"
       + lib.optionalString
       (rateLimitZones == "")
-      "${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}";
+      "${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}"
+    else servers;
 
   staticSiteComposeOverride = staticSites:
     lib.generators.toYAML {} {
