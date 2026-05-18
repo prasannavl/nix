@@ -8,18 +8,22 @@ include only what applies, but keep the relative order stable.
 
 1. **Config flags** — `imageTag`, `bootTag`, `recreateTag`, `recreateOnSwitch`
 2. **exposedPorts**
-3. **source** (inline compose YAML or a lib-provided value)
-4. **entryFile** (when a custom compose entry is needed)
-5. **dependsOn**
-6. **env** / **envSecrets**
-7. **dirs**
-8. **fileSecrets** / **files**
-9. **serviceOverrides.preStart**
+3. **network identity** — `subnet` when a stable compose default-network subnet
+   is declared
+4. **source** (inline compose YAML or a lib-provided value)
+5. **entryFile** (when a custom compose entry is needed)
+6. **dependsOn**
+7. **env** / **envSecrets**
+8. **dirs**
+9. **fileSecrets** / **files**
+10. **serviceOverrides.preStart**
 
 ## Why
 
 - Ports define the service's external contract and are referenced by `source`,
   so they come first.
+- `subnet` defines the instance's network identity and is checked for repo-wide
+  clashes, so keep it near the top before compose source details.
 - `source` is the compose definition — the core of the instance — and sits right
   after ports.
 - `entryFile` directly qualifies `source`, so it stays adjacent.
@@ -40,6 +44,8 @@ services.podmanCompose.pvl.instances.example = rec {
   exposedPorts.http = {
     port = 8080;
   };
+
+  subnet = "10.89.10.0/24";
 
   source = ''
     services:

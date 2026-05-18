@@ -15,5 +15,8 @@
   directory, use `lib/podman-compose/lib.nix` `dirBootstrapScript` to create the
   directory on first start instead of embedding raw `podman unshare` shell in
   `serviceOverrides.preStart`.
+- `dirBootstrapScript` is also an ensure helper: when a user or group is set, it
+  reapplies the requested ownership and mode even if the directory already
+  exists.
 - `hosts/pvl-x2/services/postgres.nix` is the canonical example of the external
   data-dir bootstrap pattern.

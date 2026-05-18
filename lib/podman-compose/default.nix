@@ -19,6 +19,7 @@
     serviceName = null;
     serviceOverrides = {};
     composeArgs = [];
+    subnet = null;
     autoStart = true;
     recreateOnSwitch = false;
     bootTag = "0";
@@ -292,6 +293,12 @@
         type = lib.types.attrs;
         default = {};
         description = "Extra attributes merged into generated systemd.user.services.<name>.";
+      };
+
+      subnet = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional default-network subnet used by this compose instance. The module asserts that declared subnets are unique across configured podmanCompose instances.";
       };
 
       composeArgs = lib.mkOption {
@@ -879,7 +886,7 @@
       service.envSecrets;
       envSecretRuntimePaths = service.envSecretRuntimePaths;
     });
-    inherit (service) autoStart imageTag recreateTag bootTag;
+    inherit (service) autoStart imageTag recreateTag bootTag waitForNetwork;
   };
 
   resolvedServices = lib.concatLists (
@@ -919,6 +926,117 @@
     (service: map (aux: aux.name) service.auxiliarySystemdUserServices)
     resolvedServices;
   duplicateSystemdUserServiceNames = collectionsLib.duplicateValues generatedSystemdUserServiceNames;
+  rootlessStackUsers = lib.unique (
+    builtins.filter (user: user != "root") (
+      lib.mapAttrsToList (_: stack: stack.user) cfg
+    )
+  );
+  rootlessStackUserHasConfig = user:
+    builtins.hasAttr user config.users.users
+    && config.users.users.${user}.uid != null
+    && config.users.users.${user}.home != null;
+  rootlessStackUsersWithConfig = builtins.filter rootlessStackUserHasConfig rootlessStackUsers;
+  rootlessStackUserNeedsNetworkOnline = user:
+    builtins.any (
+      service:
+        service.systemdUser
+        == user
+        && service.waitForNetwork
+    )
+    resolvedServices;
+  rootlessStackUserNetworkOnlineUnits = user:
+    lib.optional (rootlessStackUserNeedsNetworkOnline user) "network-online.target";
+  serviceNameUserKey = user: lib.strings.sanitizeDerivationName user;
+  rootlessIdmapMigrateServiceNameForUser = user: "podman-rootless-idmap-migrate-${serviceNameUserKey user}";
+  dispatcherServiceNameForUser = user: "systemd-user-manager-dispatcher-${serviceNameUserKey user}";
+  # Rootless Podman can keep a stale single-id namespace after subuid/subgid
+  # ranges appear; migrate before compose starts so container ids can map.
+  mkRootlessIdmapMigrateService = user: let
+    userCfg = config.users.users.${user};
+    uid = toString userCfg.uid;
+    home = userCfg.home;
+    serviceName = rootlessIdmapMigrateServiceNameForUser user;
+    dispatcherServiceName = dispatcherServiceNameForUser user;
+    networkOnlineUnits = rootlessStackUserNetworkOnlineUnits user;
+    script = pkgs.writeShellScript "${serviceName}-script" ''
+      set -eu
+
+      user=${lib.escapeShellArg user}
+
+      has_subid_range() {
+        ${pkgs.gawk}/bin/awk -F: -v user="$user" '
+          $1 == user && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $3 > 0 {
+            found = 1
+          }
+          END {
+            exit found ? 0 : 1
+          }
+        ' "$1"
+      }
+
+      if ! has_subid_range /etc/subuid || ! has_subid_range /etc/subgid; then
+        echo "podman rootless idmap: no subordinate uid/gid range for $user; skipping migration"
+        exit 0
+      fi
+
+      idmap_json="$(${pkgs.podman}/bin/podman info --format json)"
+      uidmap_count="$(printf '%s\n' "$idmap_json" | ${pkgs.jq}/bin/jq -r '(.host.idMappings.uidmap // []) | length')"
+      gidmap_count="$(printf '%s\n' "$idmap_json" | ${pkgs.jq}/bin/jq -r '(.host.idMappings.gidmap // []) | length')"
+
+      if [ "$uidmap_count" -le 1 ] || [ "$gidmap_count" -le 1 ]; then
+        echo "podman rootless idmap: stale single-id map for $user; running podman system migrate"
+        ${pkgs.podman}/bin/podman system migrate
+      else
+        echo "podman rootless idmap: subordinate uid/gid map already active for $user"
+      fi
+    '';
+  in {
+    name = serviceName;
+    value = {
+      description = "Reconcile rootless Podman uid/gid map for ${user}";
+      after = networkOnlineUnits ++ ["user@${uid}.service"];
+      before = ["${dispatcherServiceName}.service"];
+      wants = networkOnlineUnits ++ ["user@${uid}.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        User = user;
+        Environment = [
+          "HOME=${home}"
+          "XDG_RUNTIME_DIR=/run/user/${uid}"
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus"
+          "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+        ];
+        ExecStart = script;
+      };
+    };
+  };
+  mkDispatcherRootlessIdmapDependency = user: let
+    serviceName = rootlessIdmapMigrateServiceNameForUser user;
+    dispatcherServiceName = dispatcherServiceNameForUser user;
+    networkOnlineUnits = rootlessStackUserNetworkOnlineUnits user;
+  in {
+    name = dispatcherServiceName;
+    value = {
+      after = networkOnlineUnits ++ ["${serviceName}.service"];
+      wants = networkOnlineUnits;
+      requires = ["${serviceName}.service"];
+    };
+  };
+  declaredSubnets = lib.concatLists (
+    lib.mapAttrsToList
+    (stackName: stack:
+      lib.mapAttrsToList
+      (serviceName: service: {
+        inherit stackName serviceName;
+        subnet = service.subnet;
+      })
+      (lib.filterAttrs (_: service: service.subnet != null) stack.instances))
+    cfg
+  );
+  duplicatedSubnets = collectionsLib.duplicateValues (map (entry: entry.subnet) declaredSubnets);
+  describeSubnetEntry = entry: "${entry.stackName}.${entry.serviceName}=${entry.subnet}";
+  duplicatedSubnetEntries =
+    lib.filter (entry: builtins.elem entry.subnet duplicatedSubnets) declaredSubnets;
 in {
   imports = [
     ../systemd-user-manager
@@ -1203,6 +1321,10 @@ in {
           assertion = duplicateSystemdUserServiceNames == [];
           message = "services.podmanCompose: duplicate generated systemd.user service names: ${lib.concatStringsSep ", " duplicateSystemdUserServiceNames}";
         }
+        {
+          assertion = duplicatedSubnets == [];
+          message = "services.podmanCompose: duplicate declared subnet values: ${lib.concatStringsSep ", " (map describeSubnetEntry duplicatedSubnetEntries)}";
+        }
       ]
       ++ lib.concatLists (
         lib.mapAttrsToList
@@ -1215,6 +1337,16 @@ in {
           stack.instances)
         cfg
       )
+      ++ map (user: {
+        assertion = builtins.hasAttr user config.users.users && config.users.users.${user}.uid != null;
+        message = "services.podmanCompose: rootless stack user '${user}' must exist in users.users with a non-null uid.";
+      })
+      rootlessStackUsers
+      ++ map (user: {
+        assertion = builtins.hasAttr user config.users.users && config.users.users.${user}.home != null;
+        message = "services.podmanCompose: rootless stack user '${user}' must have users.users.${user}.home set.";
+      })
+      rootlessStackUsers
       ++ lib.concatLists (
         lib.mapAttrsToList
         (stackName: stack:
@@ -1342,14 +1474,23 @@ in {
             s.recreateTag
             s.bootTag
           ];
-          stampPayload = {
-            kind = "podman-managed-unit";
-            restartStamp = s.restartStamp;
-            recreateTag = s.recreateTag;
-            bootTag = s.bootTag;
-          };
+          stampPayload =
+            {
+              kind = "podman-managed-unit";
+              restartStamp = s.restartStamp;
+              recreateTag = s.recreateTag;
+              bootTag = s.bootTag;
+            }
+            // lib.optionalAttrs (s.systemdUser != "root" && s.waitForNetwork) {
+              rootlessNetworkReadiness = "network-online-before-rootless-netns-v1";
+            };
         };
       })
       resolvedServices);
+
+    systemd.services = lib.mkMerge [
+      (lib.listToAttrs (map mkRootlessIdmapMigrateService rootlessStackUsersWithConfig))
+      (lib.listToAttrs (map mkDispatcherRootlessIdmapDependency rootlessStackUsersWithConfig))
+    ];
   };
 }

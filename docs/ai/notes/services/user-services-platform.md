@@ -12,6 +12,8 @@ service-facing ingress policy.
 - `services.podmanCompose.<stack>.instances` is the canonical instance shape.
 - Generated runtime trees are store-backed, staged at service start, and cleaned
   through runtime manifests rather than handwritten ad hoc cleanup.
+- If a compose instance declares a stable default-network subnet, record it in
+  `subnet`; duplicate declared subnets are rejected at evaluation time.
 - The main generated service is a long-running unit that uses
   `podman compose up -d --remove-orphans` followed by `podman compose wait`.
 - Reload should restage files before bringing the stack back up.
@@ -32,6 +34,10 @@ service-facing ingress policy.
 - Tag semantics should depend only on the declared tag value, not on incidental
   generated helper path churn.
 - Boots do not replay lifecycle tags. Tags are deploy-time triggers.
+- Rootless stack users get a system-level Podman idmap migration check before
+  their user-manager dispatcher. It runs `podman system migrate` only when
+  subordinate uid/gid ranges exist and Podman's active map is still the stale
+  single-id form.
 
 ## Nginx model
 

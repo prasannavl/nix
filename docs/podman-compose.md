@@ -10,6 +10,7 @@ on a host.
 - env-secret injection
 - firewall derivation from exposed ports
 - nginx and Cloudflare Tunnel metadata derivation
+- optional duplicate-subnet detection for declared compose networks
 - deploy-time restart and recreate behavior
 
 The shared logic lives in `lib/podman-compose/default.nix` and
@@ -81,6 +82,31 @@ exposedPorts.http = {
 - `imageTag`: force image refresh or image-pull path changes
 
 These are manual lifecycle knobs. Toggle the value when you want the behavior.
+
+## Instance Subnets
+
+Set `subnet` when an instance declares a stable default-network subnet in its
+compose source.
+
+```nix
+services.podmanCompose.example.instances.app = {
+  subnet = "10.89.10.0/24";
+  source = ''
+    networks:
+      default:
+        ipam:
+          config:
+            - subnet: 10.89.10.0/24
+    services:
+      app:
+        image: docker.io/library/nginx:latest
+  '';
+};
+```
+
+The module asserts that declared `subnet` values are unique across all
+configured `services.podmanCompose` instances. It does not generate compose
+network YAML by itself; the option records the subnet for clash detection.
 
 ## Runtime Model
 
@@ -451,6 +477,11 @@ before restaging or cleanup, then reapplies the declared mode/owner after file
 staging. This keeps restarts idempotent while allowing the final directory bind
 mount to avoid world traversal bits.
 
+For external data directories created with `lib/podman-compose/lib.nix`
+`dirBootstrapScript`, the helper now reasserts the requested owner and mode even
+when the directory already exists. This keeps one-off bootstrap snippets
+idempotent after manual repair or drift.
+
 ### Ownership and permissions (applies to `dirs`, `files`, and `fileSecrets`)
 
 Each staged entry accepts:
@@ -497,6 +528,10 @@ That means:
   the running user services
 - `imageTag` is implemented as a normal helper unit, not a reconciler action
 - `bootTag` and `recreateTag` are expressed as changes to the main unit itself
+- rootless stack users get a system-level `podman-rootless-idmap-migrate-<user>`
+  one-shot before their systemd-user-manager dispatcher; it runs
+  `podman system migrate` only when `/etc/subuid` and `/etc/subgid` exist and
+  Podman's current id map is still a stale single-id map
 
 ## What A Host Must Provide
 
@@ -509,6 +544,8 @@ For each stack in the host's service module:
 - optional `bootTag`
 - optional `recreateTag`
 - optional `imageTag`
+- optional `subnet` when the compose source declares a stable default-network
+  subnet
 - optional `dependsOn`, `wants`, `envSecrets`, `exposedPorts`,
   `serviceOverrides`
 
