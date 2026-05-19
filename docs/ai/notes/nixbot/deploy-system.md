@@ -119,8 +119,13 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   still fails immediately on ordinary failed system/user units and on Podman
   containers whose current health is `unhealthy`; containers still in `starting`
   are polled for a bounded window so healthcheck intervals do not trigger
-  premature rollback. Health-check failures are tracked separately in the final
-  summary and roll back using health-specific rollback status buckets.
+  premature rollback. The wait budget comes from the maximum generated
+  `systemd-user-manager` `timeoutStableSeconds` metadata on the host, so service
+  modules own convergence policy instead of nixbot carrying a separate service
+  timeout. If starting containers are present but no service-owned timeout
+  metadata exists, the health check fails rather than inventing an unmanaged
+  wait budget. Health-check failures are tracked separately in the final summary
+  and roll back using health-specific rollback status buckets.
 - Post-switch health checks require primary `nixbot@host` transport and use the
   parent-settle transport-preparation retry plus bounded SSH transport retry, so
   nested hosts that briefly close SSH during parent or guest reactivation do not
