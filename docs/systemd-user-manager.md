@@ -29,12 +29,13 @@ Important options:
 - `unit`
 - `autoStart`
 - `stopOnRemoval`
+- `timeoutStableSeconds`
 - `restartTriggers`
 - `stampPayload`
 
 ## Switch Behavior
 
-Old generation:
+Applied old state:
 
 - stops removed units when `stopOnRemoval = true`
 - stops changed units
@@ -47,11 +48,21 @@ New generation:
 - runs `daemon-reload`
 - restarts the reconciler
 - waits for successful convergence
+- records the new metadata as applied only after successful reconciliation
+
+The applied-state copy lives under
+`/run/systemd-user-manager/applied-metadata/<user>.json`. It is runtime-only
+state and is used to compare the last converged user-unit set with the new
+generation when `/run/current-system` may already point at the new system.
 
 `autoStart = false` suppresses cold-start for an inactive managed unit, but it
 does not remove that unit from old-versus-new diff management. If a deploy had
 to stop a changed unit that was already running, the reconciler starts it again
 in the new world.
+
+`timeoutStableSeconds` defaults to 120 seconds and bounds waits for a managed
+unit to leave `activating`, `deactivating`, or `reloading` states during
+reconcile and stop handling.
 
 ## Reconciler Behavior
 
@@ -61,6 +72,7 @@ The reconciler is intentionally narrow:
 - checks live `systemctl --user` state
 - leaves active units alone
 - starts inactive or failed managed units unless `autoStart = false`
+- uses each managed unit's `timeoutStableSeconds` for stable-state waits
 
 After success it starts `systemd-user-manager-ready.target`.
 

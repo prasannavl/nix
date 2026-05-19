@@ -14,6 +14,9 @@ service-facing ingress policy.
   through runtime manifests rather than handwritten ad hoc cleanup.
 - If a compose instance declares a stable default-network subnet, record it in
   `subnet`; duplicate declared subnets are rejected at evaluation time.
+- `services.podmanCompose.<stack>.timeoutStableSeconds` is the stack default for
+  generated user-manager stable-state waits; instances may override it with
+  `services.podmanCompose.<stack>.instances.<name>.timeoutStableSeconds`.
 - The main generated service is a long-running unit that uses
   `podman compose up -d --remove-orphans` followed by `podman compose wait`.
 - Reload should restage files before bringing the stack back up.

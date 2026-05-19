@@ -83,6 +83,11 @@ exposedPorts.http = {
 
 These are manual lifecycle knobs. Toggle the value when you want the behavior.
 
+`timeoutStableSeconds` controls the generated user-manager wait for the compose
+unit to leave transitional states such as `activating`, `deactivating`, or
+`reloading`. It defaults to 120 seconds at the stack level and can be overridden
+per instance.
+
 ## Instance Subnets
 
 Set `subnet` when an instance declares a stable default-network subnet in its

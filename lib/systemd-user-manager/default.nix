@@ -6,6 +6,7 @@
 }: let
   cfg = config.services.systemdUserManager;
   collectionsLib = import ../flake/collections {lib = lib;};
+  metadataVersion = 2;
 
   unitType = lib.types.submodule ({name, ...}: {
     options = {
@@ -38,6 +39,12 @@
         description = "Whether the reconciler should automatically start this managed unit when it is inactive or failed.";
       };
 
+      timeoutStableSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 120;
+        description = "Seconds to wait for this managed unit to leave activating, deactivating, or reloading states during reconciliation.";
+      };
+
       stampPayload = lib.mkOption {
         type = lib.types.nullOr lib.types.unspecified;
         default = null;
@@ -63,6 +70,7 @@
   bootReadyTargetName = "systemd-user-manager-ready.target";
   managedUserActionPath = "/run/wrappers/bin:/run/current-system/sw/bin";
   dispatcherMetadataPointerRelDir = "systemd-user-manager/dispatchers";
+  appliedMetadataDir = "/run/systemd-user-manager/applied-metadata";
   deferredRestartRequestDir = "/run/systemd-user-manager/restart-requests";
   deferredUnitRestartRequestDir = "/run/systemd-user-manager/unit-restart-requests";
 
@@ -78,6 +86,7 @@
     ];
     runtimeEnv = {
       SYSTEMD_USER_MANAGER_BOOT_READY_TARGET = bootReadyTargetName;
+      SYSTEMD_USER_MANAGER_APPLIED_METADATA_DIR = appliedMetadataDir;
       SYSTEMD_USER_MANAGER_DISPATCHER_METADATA_POINTER_REL_DIR = dispatcherMetadataPointerRelDir;
       SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR = deferredRestartRequestDir;
       SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR = deferredUnitRestartRequestDir;
@@ -115,6 +124,7 @@
     unit = managedUnit.unit;
     stopOnRemoval = managedUnit.stopOnRemoval;
     autoStart = managedUnit.autoStart;
+    timeoutStableSeconds = managedUnit.timeoutStableSeconds;
     stamp = stamp;
   };
 
@@ -170,7 +180,7 @@
     (user: userUnits: let
       sortedUnits = lib.sort (a: b: a.name < b.name) userUnits;
       metadata = {
-        version = 1;
+        version = metadataVersion;
         user = user;
         identityStamp = userIdentityStampFor user;
         managedUnits =
@@ -180,6 +190,7 @@
             unit = managedUnit.unit;
             stopOnRemoval = managedUnit.stopOnRemoval;
             autoStart = managedUnit.autoStart;
+            timeoutStableSeconds = managedUnit.timeoutStableSeconds;
             stamp = managedUnit.stamp;
           })
           sortedUnits;
@@ -322,13 +333,8 @@ in {
         set -eu
         case "''${NIXOS_ACTION-}" in
           switch|test)
-            old_system="$(readlink -f /run/current-system 2>/dev/null || true)"
-            if [ -z "$old_system" ]; then
-              old_system=/run/current-system
-            fi
-            SYSTEMD_USER_MANAGER_OLD_SYSTEM="$old_system" \
             SYSTEMD_USER_MANAGER_NEW_SYSTEM="$systemConfig" \
-            ${lib.escapeShellArg helperScript} activation-stop-old
+            ${lib.escapeShellArg helperScript} activation-stop-applied
             ;;
         esac
       '';

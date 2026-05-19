@@ -14,13 +14,21 @@ interaction with deploy-time service reconciliation.
   - dry-activate preview
 - Desired state comes from generation-local immutable metadata in the store, not
   from mutable root-owned state under `/var/lib`.
+- The dispatcher records the last successfully reconciled metadata under
+  `/run/systemd-user-manager/applied-metadata/<user>.json`. This is runtime-only
+  applied state, not a desired-state database; it lets activation compare the
+  last converged user-unit set with the new generation even when
+  `/run/current-system` has already advanced.
 - Podman and other higher-level lifecycle semantics should be expressed through
   normal units and dependencies, not through a generic action graph inside the
   bridge.
 
 ## Switching rules
 
-- Activation-time old-world stop compares old and new generation metadata.
+- Activation-time old-world stop compares last-applied metadata with new
+  generation metadata.
+- Applied metadata is versioned. Version mismatch skips old-versus-new diffing
+  for that state and lets the dispatcher run a fresh reconcile path.
 - New-world reconcile uses only the new desired metadata plus live
   `systemctl --user` state.
 - Inactive or failed managed units are started unless they are disabled or
@@ -28,13 +36,20 @@ interaction with deploy-time service reconciliation.
 - Managed units may opt out of cold-start through `autoStart = false`; they
   still remain under old-versus-new diff management, and units that were running
   when old-world stop touched them are restarted during new-world reconcile.
+- Managed units carry `timeoutStableSeconds`, defaulting to 120 seconds. The
+  helper uses that per-unit timeout for stable-state and stopped-state waits so
+  slow services can extend their own convergence budget.
 - Removed users must be handled before account removal.
 
 ## Dispatcher behavior
 
-- Identity-driven `user@<uid>.service` restarts should be detected during old
-  versus new comparison but executed later by the dispatcher through ephemeral
+- Identity-driven `user@<uid>.service` restarts should be detected during
+  metadata comparison but executed later by the dispatcher through ephemeral
   `/run` markers.
+- The dispatcher rechecks applied metadata before running the reconciler.
+  Missing or version-mismatched applied metadata triggers a fresh reconcile path
+  that stops already-active managed units once before starting them from new
+  metadata, while normal fresh boots still start inactive units normally.
 - Dispatcher system units must not add `After=` on the same target that pulls
   them in via `WantedBy=`. In particular, `WantedBy=multi-user.target` must not
   be paired with `After=multi-user.target`, or explicit deploy-time starts can

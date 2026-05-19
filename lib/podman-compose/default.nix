@@ -21,6 +21,7 @@
     composeArgs = [];
     subnet = null;
     autoStart = true;
+    timeoutStableSeconds = 120;
     recreateOnSwitch = false;
     bootTag = "0";
     recreateTag = "0";
@@ -311,6 +312,12 @@
         type = lib.types.bool;
         default = true;
         description = "Whether this compose instance should be auto-started by the generated user-manager reconcile flow during deploy and boot-ready startup.";
+      };
+
+      timeoutStableSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 120;
+        description = "Seconds the generated user-manager reconciliation should wait for this compose unit to leave activating, deactivating, or reloading states.";
       };
 
       recreateOnSwitch = lib.mkOption {
@@ -666,6 +673,12 @@
         description = "Default upstream host for nginx proxy vhosts derived from this stack's instances.";
       };
 
+      timeoutStableSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = defaultService.timeoutStableSeconds;
+        description = "Default stable-state wait timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutStableSeconds.";
+      };
+
       instances = lib.mkOption {
         type = lib.types.attrsOf (lib.types.oneOf [instanceFnType serviceType]);
         default = {};
@@ -886,7 +899,7 @@
       service.envSecrets;
       envSecretRuntimePaths = service.envSecretRuntimePaths;
     });
-    inherit (service) autoStart imageTag recreateTag bootTag waitForNetwork;
+    inherit (service) autoStart timeoutStableSeconds imageTag recreateTag bootTag waitForNetwork;
   };
 
   resolvedServices = lib.concatLists (
@@ -1148,7 +1161,12 @@ in {
           resolvedInstances =
             lib.mapAttrs
             (serviceName: service: let
-              baseService = defaultService // service;
+              baseService =
+                defaultService
+                // {
+                  timeoutStableSeconds = stack.timeoutStableSeconds;
+                }
+                // service;
               normalizedService =
                 baseService
                 // {
@@ -1476,6 +1494,7 @@ in {
           user = s.systemdUser;
           unit = "${s.systemdServiceName}.service";
           autoStart = s.autoStart;
+          timeoutStableSeconds = s.timeoutStableSeconds;
           restartTriggers = [
             s.restartStamp
             s.recreateTag
