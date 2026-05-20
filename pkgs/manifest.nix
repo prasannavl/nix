@@ -1,6 +1,10 @@
 {pkgs}: {
   packageEntries = [
     {
+      id = "host-manager";
+      path = ./tools/host-manager/default.nix;
+    }
+    {
       id = "nixbot";
       path = ./tools/nixbot/default.nix;
     }
