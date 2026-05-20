@@ -253,7 +253,7 @@
       ];
       wantedBy = ["multi-user.target"];
       wants = [userAtService];
-      restartTriggers = [
+      restartTriggers = lib.unique [
         metadata.hash
         reconciler.metadataHash
         helperScript
@@ -319,6 +319,10 @@ in {
   };
 
   config = {
+    environment.systemPackages = [
+      helperPackage
+    ];
+
     environment.etc =
       lib.mapAttrs'
       (_: artifacts:
@@ -327,12 +331,17 @@ in {
         })
       dispatcherServicesByUser;
 
-    system.activationScripts.systemdUserManagerStopOld = {
+    system.activationScripts.systemdUserManagerStopApplied = {
       supportsDryActivation = false;
       text = ''
         set -eu
         case "''${NIXOS_ACTION-}" in
           switch|test)
+            old_system="$(readlink -f /run/current-system 2>/dev/null || true)"
+            if [ -z "$old_system" ]; then
+              old_system=/run/current-system
+            fi
+            SYSTEMD_USER_MANAGER_OLD_SYSTEM="$old_system" \
             SYSTEMD_USER_MANAGER_NEW_SYSTEM="$systemConfig" \
             ${lib.escapeShellArg helperScript} activation-stop-applied
             ;;
