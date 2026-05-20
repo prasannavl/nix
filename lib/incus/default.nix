@@ -10,6 +10,16 @@
   defaultBaseImage = inputs.self.nixosImages.incus-base;
   defaultBaseAlias = "nixos-incus-base";
 
+  incusMachinesStateDir = "/var/lib/incus-machines";
+  managedGcDirRoot = "${incusMachinesStateDir}/managed-dirs";
+  certificateDelegationsRoot = "/var/lib/incus-delegations";
+  certificateDelegationGuestRoot = "/var/lib/incus-delegation";
+  certificateDelegationStateDir = "${incusMachinesStateDir}/delegated-certificates";
+
+  certificatesStateFile = "${incusMachinesStateDir}/certificates.json";
+  legacyCertificatesStateFile = "${incusMachinesStateDir}/preseed-certificates.json";
+  certificateDelegationsStateFile = "${certificateDelegationStateDir}/delegations.json";
+
   hasInstances = cfg.instances != {};
   hasCertificates = cfg.certificates != [];
   hasCertificateDelegations = cfg.certificateDelegations != {};
@@ -48,7 +58,7 @@
   remoteCertificateDelegationDirectory =
     if cfg.remote.certificateDelegation.directory != null
     then cfg.remote.certificateDelegation.directory
-    else "/var/lib/incus-delegation/${remoteCertificateDelegationName}";
+    else "${certificateDelegationGuestRoot}/${remoteCertificateDelegationName}";
   remoteCertificateDelegationTarget = "${remoteCertificateDelegationDirectory}/${cfg.remote.certificateDelegation.fileName}";
   remoteCertificateDelegationUnit = "incus-remote-certificate-delegation.service";
   remoteCertificateDelegationDeps = lib.optional hasRemoteCertificateDelegation remoteCertificateDelegationUnit;
@@ -74,8 +84,9 @@
       main "$@"
     '';
   };
+  # Switch-time units must pair new state JSON with the same generation's
+  # helper; /run/current-system can still point at the old generation here.
   helperScript = "${helperPackage}/bin/incus-machines-helper";
-  helperCommand = "/run/current-system/sw/bin/incus-machines-helper";
 
   reconcilerCommand = pkgs.writeShellScriptBin "incus-machines-reconciler" ''
     ${remoteEnvExports}
@@ -131,8 +142,6 @@
   preseedMigrationsFile = pkgs.writeText "incus-machines-preseed-migrations.json" (builtins.toJSON resolvedPreseedMigrations);
   certificatesJson = builtins.toJSON cfg.certificates;
   certificatesFile = pkgs.writeText "incus-machines-certificates.json" certificatesJson;
-  certificatesStateFile = "/var/lib/incus-machines/certificates.json";
-  legacyCertificatesStateFile = "/var/lib/incus-machines/preseed-certificates.json";
   invalidRestrictedCertificates = map (cert: cert.name) (
     lib.filter (cert: cert.restricted && cert.projects == []) cfg.certificates
   );
@@ -247,13 +256,13 @@
 
       directory = lib.mkOption {
         type = lib.types.str;
-        default = "/var/lib/incus-delegations/${name}";
+        default = "${certificateDelegationsRoot}/${name}";
         description = "Host directory containing the tenant-owned delegated certificate state file.";
       };
 
       guestPath = lib.mkOption {
         type = lib.types.str;
-        default = "/var/lib/incus-delegation/${name}";
+        default = "${certificateDelegationGuestRoot}/${name}";
         description = "Guest mount path for the delegated certificate directory.";
       };
 
@@ -265,7 +274,7 @@
 
       stateFile = lib.mkOption {
         type = lib.types.str;
-        default = "/var/lib/incus-machines/delegated-certificates/${name}.json";
+        default = "${certificateDelegationStateDir}/${name}.json";
         description = "Parent-owned state file tracking certificates managed by this delegation.";
       };
 
@@ -379,6 +388,17 @@
         default = "delete-container";
         description = "What happens when this machine is removed from config.";
       };
+      adopt = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Adopt an existing Incus instance with the same name instead of
+          refusing to manage it when it lacks this module's ownership metadata.
+          Adoption applies declared config and module-owned `user.*` metadata,
+          including host-suspend policy. The first adoption pass does not remove
+          undeclared disk devices; later reconciles enforce the declared disk set.
+        '';
+      };
       bootTag = lib.mkOption {
         type = lib.types.str;
         default = "0";
@@ -405,18 +425,12 @@
       };
 
   isHostPath = source: source != null && lib.hasPrefix "/" source;
-  isHostPathDisk = dev: let
-    resolved = resolveCertDelegationDevice dev;
-  in
-    resolved.type == "disk" && isHostPath resolved.source;
-  isManagedHostDir = dev: let
-    resolved = resolveCertDelegationDevice dev;
-  in
-    isHostPathDisk resolved && !lib.hasPrefix "/dev/" resolved.source;
-  isVolumeBackedDisk = dev: let
-    resolved = resolveCertDelegationDevice dev;
-  in
-    resolved.type == "disk" && resolved.source != null && !isHostPath resolved.source;
+  isHostPathDiskResolved = dev:
+    dev.type == "disk" && isHostPath dev.source;
+  isManagedHostDirResolved = dev:
+    isHostPathDiskResolved dev && !lib.hasPrefix "/dev/" dev.source;
+  isVolumeBackedDiskResolved = dev:
+    dev.type == "disk" && dev.source != null && !isHostPath dev.source;
 
   resolveDeviceProperties = _name: dev: let
     resolved = resolveCertDelegationDevice dev;
@@ -424,7 +438,7 @@
     withSource = lib.optionalAttrs (resolved.source != null) {inherit (resolved) source;};
     withPath = lib.optionalAttrs (resolved.path != null) {inherit (resolved) path;};
     withShift = lib.optionalAttrs (resolved.type == "disk" && resolved.shift) {shift = "true";};
-    withPool = lib.optionalAttrs (isVolumeBackedDisk resolved) {inherit (resolved) pool;};
+    withPool = lib.optionalAttrs (isVolumeBackedDiskResolved resolved) {inherit (resolved) pool;};
   in
     base // withSource // withPath // withShift // withPool // resolved.extraProperties;
 
@@ -440,17 +454,49 @@
   syncableDevices = machine:
     lib.filterAttrs (_: dev: dev.type == "disk") machine.devices;
 
-  configHash = name: machine:
-    builtins.hashString "sha256" (builtins.toJSON {
-      preseedTag = cfg.preseedTag;
-      inherit (machine) config;
-      project = resolveMachineProject machine;
+  configHashPayload = name: machine: {
+    preseedTag = cfg.preseedTag;
+    inherit (machine) config;
+    project = resolveMachineProject machine;
+    image = let
+      resolvedImage = resolveMachineImage name machine;
+    in {
+      inherit (resolvedImage) alias;
+    };
+    createOnlyDevices = lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine);
+  };
+
+  # Transitional compatibility for generations that hashed the derived
+  # `local:<alias>` createRef. Remove after all active Incus parents have
+  # reconciled once with `acceptedConfigHashes` in their runtime state.
+  # TODO(2026-07-01): remove this legacy hash payload after deployed parents
+  # have had enough time to pass through one reconcile.
+  legacyConfigHashPayload = name: machine:
+    configHashPayload name machine
+    // {
       image = let
         resolvedImage = resolveMachineImage name machine;
       in {
-        inherit (resolvedImage) alias createRef;
+        inherit (resolvedImage) alias;
+        createRef = "local:${resolvedImage.alias}";
       };
-      createOnlyDevices = lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine);
+    };
+
+  configHash = name: machine:
+    builtins.hashString "sha256" (builtins.toJSON (configHashPayload name machine));
+
+  acceptedConfigHashes = name: machine: let
+    current = configHash name machine;
+    legacy = builtins.hashString "sha256" (builtins.toJSON (legacyConfigHashPayload name machine));
+  in
+    if current == legacy
+    then [current]
+    else [current legacy];
+
+  lifecycleConfigHash = name: machine:
+    builtins.hashString "sha256" (builtins.toJSON {
+      configHash = configHash name machine;
+      acceptedConfigHashes = acceptedConfigHashes name machine;
     });
 
   diskDeviceSpecJson = machine:
@@ -465,7 +511,7 @@
         {
           inherit (resolved) removalPolicy;
         }
-        // lib.optionalAttrs (isManagedHostDir resolved) {inherit (resolved) source;})
+        // lib.optionalAttrs (isManagedHostDirResolved resolved) {inherit (resolved) source;})
       (syncableDevices machine)
     );
 
@@ -485,13 +531,15 @@
       name = name;
       imageTag = cfg.imageTag;
       instanceImage = instanceImage;
-      createRef = instanceImage.createRef;
+      imageAlias = instanceImage.alias;
       project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
       configHash = hash;
+      acceptedConfigHashes = acceptedConfigHashes name machine;
       bootTag = machine.bootTag;
       recreateTag = machine.recreateTag;
       removalPolicy = machine.removalPolicy;
+      adopt = machine.adopt;
       desiredDisks = builtins.fromJSON diskDevSpec;
       desiredDiskGcMetadata = builtins.fromJSON diskGcMetadata;
       createOnlyDevices = builtins.fromJSON createOnlyDevSpec;
@@ -500,7 +548,7 @@
     };
 
   machineLifecycleStateJson = name: machine: let
-    hash = configHash name machine;
+    hash = lifecycleConfigHash name machine;
     diskDevSpec = diskDeviceSpecJson machine;
     diskGcMetadata = diskGcMetadataJson machine;
   in
@@ -511,8 +559,9 @@
       bootTag = machine.bootTag;
       recreateTag = machine.recreateTag;
       removalPolicy = machine.removalPolicy;
-      desiredDisks = diskDevSpec;
-      desiredDiskGcMetadata = diskGcMetadata;
+      adopt = machine.adopt;
+      desiredDisks = builtins.fromJSON diskDevSpec;
+      desiredDiskGcMetadata = builtins.fromJSON diskGcMetadata;
     };
 
   mkUserMetadata = name: machine:
@@ -531,7 +580,7 @@
         lib.optionalAttrs (resolved.type == "disk") {
           "user.device.${devName}.removal-policy" = resolved.removalPolicy;
         }
-        // lib.optionalAttrs (isManagedHostDir resolved) {
+        // lib.optionalAttrs (isManagedHostDirResolved resolved) {
           "user.device.${devName}.source" = resolved.source;
         }
     )
@@ -564,7 +613,6 @@
     then {
       kind = "remote";
       inherit alias remoteRef;
-      createRef = "local:${alias}";
       imageIdentity = "remote:${remoteRef}";
     }
     else let
@@ -579,7 +627,6 @@
     in {
       kind = "local";
       inherit alias imageSource metadataFile rootfsFile;
-      createRef = "local:${alias}";
       imageIdentity = "local:${imageSource}";
     };
 
@@ -706,6 +753,11 @@
     (name: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" name == null)
     (builtins.attrNames cfg.certificateDelegations);
 
+  invalidInstanceNames =
+    lib.filter
+    (name: builtins.match "[a-z]([a-z0-9-]{0,61}[a-z0-9])?" name == null)
+    (builtins.attrNames cfg.instances);
+
   invalidRemoteCertificateDelegationName =
     cfg.remote.enable
     && cfg.remote.certificateDelegation.enable
@@ -743,6 +795,41 @@
     cfg.instances
   );
 
+  hasParentPathSegment = source:
+    builtins.elem ".." (lib.splitString "/" source);
+  isManagedGcDir = source:
+    !hasParentPathSegment source && source != managedGcDirRoot && lib.hasPrefix "${managedGcDirRoot}/" source;
+
+  unsafeDeleteHostDirs = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.concatLists (
+          lib.mapAttrsToList (
+            deviceName: dev: let
+              resolved = resolveCertDelegationDevice dev;
+            in
+              lib.optional
+              (
+                isManagedHostDirResolved resolved
+                && resolved.removalPolicy == "delete"
+                && !isManagedGcDir resolved.source
+              )
+              "${machineName}.${deviceName} -> ${resolved.source}"
+          )
+          machine.devices
+        )
+    )
+    cfg.instances
+  );
+
+  invalidCertificateDelegationDirectories =
+    lib.filter
+    (name: let
+      directory = cfg.certificateDelegations.${name}.directory;
+    in
+      directory == certificateDelegationsRoot || directory == "${certificateDelegationsRoot}/" || !lib.hasPrefix "${certificateDelegationsRoot}/" directory)
+    (builtins.attrNames cfg.certificateDelegations);
+
   certificateDelegationsJson = builtins.toJSON (
     lib.mapAttrs
     (_: delegation: {
@@ -751,7 +838,6 @@
     cfg.certificateDelegations
   );
   certificateDelegationsFile = pkgs.writeText "incus-machines-certificate-delegations.json" certificateDelegationsJson;
-  certificateDelegationsStateFile = "/var/lib/incus-machines/delegated-certificates/delegations.json";
 
   declaredImagesJson = builtins.toJSON declaredImages;
   declaredInstancesJson = builtins.toJSON (builtins.attrNames cfg.instances);
@@ -792,8 +878,8 @@
             (mkEnvAssignment "INCUS_MACHINES_INSTANCE_STATE_FILE" "/etc/incus-machines/${name}.json")
           ]
           ++ remoteServiceEnvironment;
-        ExecStop = "-${helperCommand} stop-instance ${lib.escapeShellArg name} ${lib.escapeShellArg (resolveMachineProject machine)}";
-        ExecStart = "${helperCommand} machine";
+        ExecStop = "-${helperScript} stop-instance ${lib.escapeShellArg name} ${lib.escapeShellArg (resolveMachineProject machine)}";
+        ExecStart = "${helperScript} machine";
       };
     };
 
@@ -803,7 +889,7 @@
         _devName: dev: let
           resolved = resolveCertDelegationDevice dev;
         in
-          lib.optional (isManagedHostDir resolved)
+          lib.optional (isManagedHostDirResolved resolved)
           "d ${resolved.source} 0755 root root -"
       )
       machine.devices
@@ -822,9 +908,6 @@
       wantedBy = ["sysinit-reactivation.target"];
       after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
       wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
-      restartTriggers = [
-        helperScript
-      ];
       restartIfChanged = true;
       serviceConfig = {
         Type = "oneshot";
@@ -836,7 +919,7 @@
           (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME_PREFIX" delegation.namePrefix)
           (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_MAX_CERTIFICATES" delegation.maxCertificates)
         ];
-        ExecStart = "${helperCommand} certificate-delegation";
+        ExecStart = "${helperScript} certificate-delegation";
       };
     };
 
@@ -1008,7 +1091,7 @@ in {
           default = null;
           description = ''
             Guest-visible directory where the parent delegation is mounted.
-            Defaults to `/var/lib/incus-delegation/<name>`.
+            Defaults to `${certificateDelegationGuestRoot}/<name>`.
           '';
         };
 
@@ -1135,6 +1218,12 @@ in {
           + lib.concatStringsSep "; " ipv4AddressConflicts;
       }
       {
+        assertion = invalidInstanceNames == [];
+        message =
+          "services.incusMachines instance names must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
+          + lib.concatStringsSep ", " invalidInstanceNames;
+      }
+      {
         assertion = preseedCertificates == [];
         message = "Use services.incusMachines.certificates instead of virtualisation.incus.preseed.certificates.";
       }
@@ -1145,10 +1234,20 @@ in {
           + lib.concatStringsSep ", " invalidRestrictedCertificates;
       }
       {
+        assertion = !cfg.remote.enable || !hasCertificates;
+        message = "services.incusMachines.certificates is only supported for local Incus management; use parent-side certificateDelegations or remote.certificateDelegation for remote targets.";
+      }
+      {
         assertion = invalidCertificateDelegationNames == [];
         message =
           "services.incusMachines.certificateDelegations names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
           + lib.concatStringsSep ", " invalidCertificateDelegationNames;
+      }
+      {
+        assertion = invalidCertificateDelegationDirectories == [];
+        message =
+          "services.incusMachines.certificateDelegations directories must be under ${certificateDelegationsRoot}/: "
+          + lib.concatStringsSep ", " invalidCertificateDelegationDirectories;
       }
       {
         assertion = invalidCertificateDelegationReferences == [];
@@ -1161,6 +1260,14 @@ in {
         message =
           "services.incusMachines certDelegation devices must be disk devices: "
           + lib.concatStringsSep ", " invalidCertificateDelegationDevices;
+      }
+      {
+        assertion = unsafeDeleteHostDirs == [];
+        message =
+          "services.incusMachines disk devices with removalPolicy = \"delete\" must use host paths under "
+          + managedGcDirRoot
+          + "/: "
+          + lib.concatStringsSep ", " unsafeDeleteHostDirs;
       }
       {
         assertion = !invalidRemoteCertificateDelegationName;
@@ -1259,19 +1366,18 @@ in {
             after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
             wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
             restartTriggers = [
-              helperScript
               certificatesFile
             ];
             restartIfChanged = true;
-            serviceConfig.Environment = [
-              (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_FILE" certificatesFile)
-              (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_STATE_FILE" certificatesStateFile)
-              (mkEnvAssignment "INCUS_MACHINES_LEGACY_CERTIFICATES_STATE_FILE" legacyCertificatesStateFile)
-            ];
-            serviceConfig.Type = "oneshot";
-            script = ''
-              ${helperScript} certificates
-            '';
+            serviceConfig = {
+              Environment = [
+                (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_FILE" certificatesFile)
+                (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_STATE_FILE" certificatesStateFile)
+                (mkEnvAssignment "INCUS_MACHINES_LEGACY_CERTIFICATES_STATE_FILE" legacyCertificatesStateFile)
+              ];
+              Type = "oneshot";
+              ExecStart = "${helperScript} certificates";
+            };
           };
           incus-cert-delegations-gc = lib.mkIf (!cfg.remote.enable) {
             description = "Garbage-collect removed Incus certificate delegations";
@@ -1279,7 +1385,6 @@ in {
             after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
             wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
             restartTriggers = [
-              helperScript
               certificateDelegationsFile
             ];
             restartIfChanged = true;
@@ -1289,7 +1394,7 @@ in {
                 (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE" certificateDelegationsFile)
                 (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE" certificateDelegationsStateFile)
               ];
-              ExecStart = "${helperCommand} certificate-delegations-gc";
+              ExecStart = "${helperScript} certificate-delegations-gc";
             };
           };
         }
@@ -1377,7 +1482,6 @@ in {
               wants = incusImagesDeps;
               requires = remoteCertificateDelegationDeps;
               restartTriggers = [
-                helperScript
                 incusImagesStateFile
               ];
               restartIfChanged = true;
@@ -1400,7 +1504,6 @@ in {
               after = incusGcDeps;
               wants = incusGcDeps;
               restartTriggers = [
-                helperScript
                 incusGcStateFile
               ];
               restartIfChanged = true;
@@ -1410,6 +1513,7 @@ in {
                   [
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
+                    (mkEnvAssignment "INCUS_MACHINES_MANAGED_GC_DIR_ROOT" managedGcDirRoot)
                   ]
                   ++ remoteServiceEnvironment;
                 ExecStart = "${helperScript} gc";
