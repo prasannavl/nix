@@ -4,6 +4,7 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
+  scripts/host-manager.sh build --host HOST --store PATH
   scripts/host-manager.sh generate --host HOST [--system=none|live|incus] [options]
   scripts/host-manager.sh live-install --host HOST --wipe-disks [options]
   scripts/host-manager.sh delete --host HOST [--force|--yes]
@@ -13,7 +14,9 @@ Examples:
     --disk /dev/disk/by-id/nvme-Lexar_SSD_ARES_2TB_QEC053R000846P2222 \
     --swap-size-mib 65536
 
-  scripts/host-manager.sh live-install --host pvl-a1 --wipe-disks
+  scripts/host-manager.sh build --host pvl-a1 --store /media/live-usb/nix-cache
+
+  scripts/host-manager.sh live-install --host pvl-a1 --store /media/live-usb/nix-cache --wipe-disks
 
   scripts/host-manager.sh generate --host pvl-new --disk /dev/disk/by-id/nvme-...
 
@@ -21,6 +24,8 @@ Examples:
     --incus-ipv4 10.10.20.50
 
 Actions:
+  build                    Build a host system and copy the closure, flake
+                           inputs, and host-manager runtime deps to --store.
   generate                 Create or update repo host config.
   live-install             Run live disko and nixos-install for an existing host.
   delete                   Remove host config, nixbot entry, age machine keys,
@@ -40,7 +45,9 @@ Options:
   --target TARGET          Nixbot target. Defaults to HOST or --incus-ipv4.
   --proxy-jump HOST        Nixbot proxyJump. Defaults to --incus-host for Incus.
   --root PATH              Install root mountpoint. Default: /mnt
-  --boot-mode efi|bios     Physical boot layout. Default: efi
+  --store PATH             Local file binary cache for build/live-install.
+  --boot-mode efi|uefi|bios
+                           Physical boot layout. Default: efi
   --esp-size SIZE          EFI system partition size. Default: 1G
   --boot-size SIZE         BIOS /boot partition size. Default: 1G
   --swap-size-mib MIB      Add @swap and /swap/swap0 of this size. Default: 0
@@ -83,6 +90,7 @@ init_vars() {
 	NIXBOT_TARGET=""
 	PROXY_JUMP=""
 	ROOT_MOUNT="/mnt"
+	STORE_DIR=""
 	BOOT_MODE="efi"
 	ESP_SIZE="1G"
 	BOOT_SIZE="1G"
@@ -115,16 +123,8 @@ ensure_runtime_shell() {
 	local runtime_shell_flag="${HOST_MANAGER_IN_NIX_SHELL:-0}"
 	local script_path
 	local flake_path
-	local -a runtime_packages=(
-		nixpkgs#age
-		nixpkgs#alejandra
-		nixpkgs#coreutils
-		nixpkgs#disko
-		nixpkgs#gawk
-		nixpkgs#gnused
-		nixpkgs#jq
-		nixpkgs#nixos-install-tools
-	)
+	local store_dir
+	local -a runtime_pkgs
 
 	if [ "$runtime_shell_flag" = "1" ]; then
 		return
@@ -136,7 +136,64 @@ ensure_runtime_shell() {
 
 	script_path="${BASH_SOURCE[0]:-$0}"
 	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
-	exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env HOST_MANAGER_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	store_dir="$(preparse_store_arg "$flake_path" "$@")"
+	mapfile -t runtime_pkgs < <(runtime_packages)
+
+	if [[ -n "$store_dir" && -f "${store_dir}/nix-cache-info" ]]; then
+		exec nix shell \
+			--option substituters "$(store_url "$store_dir")" \
+			--option require-sigs false \
+			--inputs-from "${flake_path}" \
+			"${runtime_pkgs[@]}" \
+			-c env HOST_MANAGER_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	fi
+
+	exec nix shell --inputs-from "${flake_path}" "${runtime_pkgs[@]}" -c env HOST_MANAGER_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+}
+
+runtime_packages() {
+	printf '%s\n' \
+		nixpkgs#age \
+		nixpkgs#alejandra \
+		nixpkgs#coreutils \
+		nixpkgs#disko \
+		nixpkgs#gawk \
+		nixpkgs#gnused \
+		nixpkgs#jq \
+		nixpkgs#nixos-install-tools
+}
+
+preparse_store_arg() {
+	local root="$1"
+	shift
+	local arg
+
+	while [[ $# -gt 0 ]]; do
+		arg="$1"
+		case "$arg" in
+		--store)
+			[[ $# -ge 2 ]] || return 0
+			resolve_path_from "$root" "$2"
+			return
+			;;
+		--store=*)
+			resolve_path_from "$root" "${arg#--store=}"
+			return
+			;;
+		esac
+		shift
+	done
+}
+
+resolve_path_from() {
+	local root="$1"
+	local path="$2"
+
+	if [[ "$path" = /* ]]; then
+		printf '%s\n' "$path"
+	else
+		printf '%s/%s\n' "$root" "$path"
+	fi
 }
 
 resolve_path() {
@@ -149,6 +206,22 @@ resolve_path() {
 	fi
 }
 
+store_url() {
+	local store_dir="$1"
+
+	[[ "$store_dir" != *" "* ]] || die "--store path must not contain spaces: $store_dir"
+	printf 'file://%s\n' "$store_dir"
+}
+
+store_nix_config() {
+	local store_dir="$1"
+
+	cat <<EOF
+substituters = $(store_url "$store_dir")
+require-sigs = false
+EOF
+}
+
 parse_args() {
 	[[ $# -gt 0 ]] || {
 		usage
@@ -156,7 +229,7 @@ parse_args() {
 	}
 
 	case "$1" in
-	generate | live-install | delete)
+	build | generate | live-install | delete)
 		ACTION="$1"
 		shift
 		;;
@@ -262,6 +335,15 @@ parse_args() {
 			ROOT_MOUNT="${1#--root=}"
 			shift
 			;;
+		--store)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			STORE_DIR="$(resolve_path "$2")"
+			shift 2
+			;;
+		--store=*)
+			STORE_DIR="$(resolve_path "${1#--store=}")"
+			shift
+			;;
 		--boot-mode)
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			BOOT_MODE="$2"
@@ -337,17 +419,34 @@ validate_common() {
 	[[ -n "$HOST" ]] || die "Missing required --host."
 	[[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "--host must use letters, numbers, and hyphens."
 	[[ "$HOST_SYSTEM" == "none" || "$HOST_SYSTEM" == "live" || "$HOST_SYSTEM" == "incus" ]] || die "--system must be one of: none, live, incus."
-	[[ "$BOOT_MODE" == "efi" || "$BOOT_MODE" == "uefi" || "$BOOT_MODE" == "bios" ]] || die "--boot-mode must be efi or bios."
+	[[ "$BOOT_MODE" == "efi" || "$BOOT_MODE" == "uefi" || "$BOOT_MODE" == "bios" ]] || die "--boot-mode must be one of: efi, uefi, bios."
 	[[ "$SWAP_SIZE_MIB" =~ ^[0-9]+$ ]] || die "--swap-size-mib must be a non-negative integer."
+	[[ -z "$INCUS_IPV4" ]] || valid_ipv4 "$INCUS_IPV4" || die "--incus-ipv4 must be an IPv4 address."
 	[[ -z "$HARDWARE_CONFIG" || -f "$HARDWARE_CONFIG" ]] || die "Hardware config not found: $HARDWARE_CONFIG"
 	HOST_DIR="${REPO_ROOT}/hosts/${HOST}"
 	infer_disk_device
+}
+
+valid_ipv4() {
+	local ip="$1"
+	local octet
+	local -a octets
+
+	[[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+	IFS=. read -r -a octets <<<"$ip"
+	for octet in "${octets[@]}"; do
+		((10#$octet <= 255)) || return 1
+	done
 }
 
 validate_args() {
 	validate_common
 
 	case "$ACTION" in
+	build)
+		[[ -n "$STORE_DIR" ]] || die "build requires --store PATH."
+		host_registered || die "Host is not registered: ${HOST}."
+		;;
 	generate)
 		if [[ "$HOST_SYSTEM" == "incus" ]]; then
 			[[ -n "$INCUS_HOST" ]] || die "--system=incus requires --incus-host HOST."
@@ -358,6 +457,9 @@ validate_args() {
 		fi
 		;;
 	live-install)
+		if [[ -n "$STORE_DIR" && ! -f "${STORE_DIR}/nix-cache-info" ]]; then
+			die "--store does not look like a Nix file binary cache: ${STORE_DIR}"
+		fi
 		[[ "$DRY_RUN" == "1" || "$WIPE_DISKS" == "1" ]] || die "Install is destructive. Pass --wipe-disks."
 		host_registered || die "Host is not registered: ${HOST}. Run generate first."
 		[[ -f "${HOST_DIR}/sys.nix" ]] || die "Host has no sys.nix: ${HOST_DIR}/sys.nix"
@@ -386,6 +488,7 @@ infer_disk_device() {
 		return
 	fi
 
+	# Host sys.nix files currently carry one top-level diskDevice assignment.
 	inferred="$(sed -n -E 's/^[[:space:]]*diskDevice = "([^"]+)";[[:space:]]*$/\1/p' "$sys_file" | head -n 1)"
 	if [[ -n "$inferred" ]]; then
 		DISK_DEVICE="$inferred"
@@ -396,13 +499,14 @@ infer_disk_device() {
 confirm_or_die() {
 	local prompt="$1"
 	local flag_hint="$2"
+	local allow_force="${3:-0}"
 	local reply
 
 	if [[ "$YES" == "1" ]]; then
 		return
 	fi
 
-	if [[ "$FORCE" == "1" && "$flag_hint" == *"--force"* ]]; then
+	if [[ "$FORCE" == "1" && "$allow_force" == "1" ]]; then
 		return
 	fi
 
@@ -430,9 +534,15 @@ make_run_dir() {
 }
 
 cleanup_run_dir() {
+	local status=$?
+
+	if [[ "$status" -ne 0 && -n "$RUN_DIR" && "$KEEP_TMP" != "1" ]]; then
+		warn "Failure occurred with temporary files in ${RUN_DIR}; cleaning them up. Re-run with --keep-tmp to keep them."
+	fi
 	if [[ -n "$RUN_DIR" && "$KEEP_TMP" != "1" ]]; then
 		rm -rf "$RUN_DIR"
 	fi
+	return "$status"
 }
 
 root_cmd() {
@@ -447,7 +557,23 @@ root_cmd() {
 
 	command -v sudo >/dev/null 2>&1 || die "Required command not found: sudo"
 	cmd_path="$(command -v "$cmd")" || die "Required command not found: $cmd"
+	if [[ -n "$STORE_DIR" ]]; then
+		sudo env "NIX_CONFIG=$(store_nix_config "$STORE_DIR")" "$cmd_path" "$@"
+		return
+	fi
 	sudo "$cmd_path" "$@"
+}
+
+nix_cmd() {
+	if [[ -n "$STORE_DIR" ]]; then
+		nix \
+			--option substituters "$(store_url "$STORE_DIR")" \
+			--option require-sigs false \
+			"$@"
+		return
+	fi
+
+	nix "$@"
 }
 
 nix_escape() {
@@ -469,6 +595,7 @@ generate_ids() {
 	LUKS_NAME="luks-${LUKS_UUID}"
 }
 
+# These probes intentionally match the repo's alejandra-formatted Nix shape.
 host_registered() {
 	grep -Eq "^[[:space:]]*${HOST}[[:space:]]*=[[:space:]]*mkNixosSystem[[:space:]]*\\{" "$HOSTS_DEFAULT_FILE"
 }
@@ -495,7 +622,7 @@ ensure_host_absent_or_confirm() {
 	fi
 
 	if [[ "$YES_CREATE_HOST" != "1" ]]; then
-		confirm_or_die "Host ${HOST} does not exist. Create it?" "--yes-create-host or --force"
+		confirm_or_die "Host ${HOST} does not exist. Create it?" "--yes-create-host or --force" 1
 	fi
 }
 
@@ -618,9 +745,12 @@ ensure_machine_age_identity() {
 }
 
 register_machine_secret() {
-	local next_file="${RUN_DIR}/secrets-default.nix"
+	local source_file="$SECRETS_FILE"
+	local machine_key_file="${RUN_DIR}/secrets-default-machine-key.nix"
+	local machine_secret_file="${RUN_DIR}/secrets-default-machine-secret.nix"
+	local changed="0"
 
-	if ! grep -Eq "^[[:space:]]*${HOST}[[:space:]]*= ./machine/${HOST}\\.key\\.pub;" "$SECRETS_FILE"; then
+	if ! grep -Eq "^[[:space:]]*${HOST}[[:space:]]*= ./machine/${HOST}\\.key\\.pub;" "$source_file"; then
 		awk -v host="$HOST" '
 			{
 				if ($0 ~ /^  machineKeyFiles = \{/) {
@@ -628,24 +758,44 @@ register_machine_secret() {
 				}
 				if (in_keys && $0 ~ /^  \};/) {
 					printf "    %s = ./machine/%s.key.pub;\n", host, host
+					inserted = 1
 					in_keys = 0
 				}
 				print
 			}
-		' "$SECRETS_FILE" >"$next_file"
-		mv "$next_file" "$SECRETS_FILE"
+
+			END {
+				if (!inserted) {
+					exit 1
+				}
+			}
+		' "$source_file" >"$machine_key_file" || die "Could not register machine key file in ${SECRETS_FILE}."
+		source_file="$machine_key_file"
+		changed="1"
 	fi
 
-	if ! grep -Fq "\"data/secrets/machine/${HOST}.key.age\"" "$SECRETS_FILE"; then
+	if ! grep -Fq "\"data/secrets/machine/${HOST}.key.age\"" "$source_file"; then
 		awk -v host="$HOST" '
 			{
 				print
 				if ($0 ~ /^    # Machines$/) {
 					printf "    \"data/secrets/machine/%s.key.age\".publicKeys = adminsWithNixbot;\n", host
+					inserted = 1
 				}
 			}
-		' "$SECRETS_FILE" >"$next_file"
-		mv "$next_file" "$SECRETS_FILE"
+
+			END {
+				if (!inserted) {
+					exit 1
+				}
+			}
+		' "$source_file" >"$machine_secret_file" || die "Could not register machine secret in ${SECRETS_FILE}."
+		source_file="$machine_secret_file"
+		changed="1"
+	fi
+
+	if [[ "$changed" == "1" ]]; then
+		mv "$source_file" "$SECRETS_FILE"
 	fi
 
 	alejandra -q "$SECRETS_FILE"
@@ -702,6 +852,7 @@ insert_into_attrset() {
 	local start_pattern="$4"
 	local end_pattern="$5"
 
+	# Text insertion is scoped to the first matching formatted attrset anchor.
 	awk -v start="$start_pattern" -v end="$end_pattern" '
 		FNR == NR {
 			entry = entry $0 ORS
@@ -922,7 +1073,7 @@ install_sys_nix() {
 			info "Generated sys.nix matches existing file: $target_file"
 			return
 		fi
-		confirm_or_die "Generated sys.nix differs from existing ${target_file}. Overwrite it?" "--force"
+		confirm_or_die "Generated sys.nix differs from existing ${target_file}. Overwrite it?" "--force" 1
 	fi
 
 	cp "$GENERATED_SYS_FILE" "$target_file"
@@ -973,6 +1124,35 @@ EOF
 	info "Added Incus instance ${HOST} to hosts/${INCUS_HOST}/incus.nix"
 }
 
+run_build() {
+	local cache_url
+	local system_ref
+	local system_path
+	local -a runtime_installables=()
+	local -a runtime_paths=()
+
+	mkdir -p "$STORE_DIR"
+	cache_url="$(store_url "$STORE_DIR")"
+	system_ref="${REPO_ROOT}#nixosConfigurations.${HOST}.config.system.build.toplevel"
+
+	info "Archiving flake inputs to ${cache_url}"
+	nix flake archive --to "$cache_url" "$REPO_ROOT"
+
+	info "Building system closure for .#${HOST}"
+	system_path="$(nix build --no-link --print-out-paths "$system_ref")"
+
+	info "Building host-manager runtime dependency closures"
+	mapfile -t runtime_installables < <(runtime_packages)
+	mapfile -t runtime_paths < <(nix build --inputs-from "$REPO_ROOT" --no-link --print-out-paths "${runtime_installables[@]}")
+
+	info "Copying system and runtime closures to ${cache_url}"
+	nix copy --to "$cache_url" "$system_path" "${runtime_paths[@]}"
+
+	printf '%s\n' "$system_path" >"${STORE_DIR}/host-${HOST}.system-path"
+	info "Cached ${HOST} system closure in ${STORE_DIR}"
+	info "Recorded system path: ${STORE_DIR}/host-${HOST}.system-path"
+}
+
 run_generate() {
 	ensure_host_absent_or_confirm
 
@@ -1010,7 +1190,7 @@ run_install() {
 	fi
 
 	info "Checking disko target for .#${HOST}"
-	nix eval "${REPO_ROOT}#nixosConfigurations.${HOST}.config.disko.devices.disk.main.device" --raw >/dev/null
+	nix_cmd eval "${REPO_ROOT}#nixosConfigurations.${HOST}.config.disko.devices.disk.main.device" --raw >/dev/null
 
 	if [[ "$DRY_RUN" == "1" ]]; then
 		info "Dry run; would run:"
@@ -1018,16 +1198,35 @@ run_install() {
 		return
 	fi
 
+	# --wipe-disks allows entry; the two prompts still guard each destructive phase.
 	confirm_or_die "Run disko for ${HOST}? This will destroy, format, and mount the disks declared by the host disko config." "--yes"
 	info "Running disko for .#${HOST}; only disks declared by that host disko config are formatted."
 	root_cmd disko --mode destroy,format,mount --flake "${REPO_ROOT}#${HOST}" --root-mountpoint "$ROOT_MOUNT" --yes-wipe-all-disks
 
 	confirm_or_die "Run nixos-install for ${HOST} into ${ROOT_MOUNT}?" "--yes"
 	info "Running nixos-install for .#${HOST}"
+	if [[ -n "$STORE_DIR" ]]; then
+		root_cmd nixos-install \
+			--option substituters "$(store_url "$STORE_DIR")" \
+			--option require-sigs false \
+			--flake "${REPO_ROOT}#${HOST}" \
+			--root "$ROOT_MOUNT" \
+			--no-root-passwd
+		return
+	fi
+
 	root_cmd nixos-install --flake "${REPO_ROOT}#${HOST}" --root "$ROOT_MOUNT" --no-root-passwd
 }
 
 print_install_commands() {
+	if [[ -n "$STORE_DIR" ]]; then
+		cat <<EOF
+NIX_CONFIG=$(printf '%q' "$(store_nix_config "$STORE_DIR")") disko --mode destroy,format,mount --flake ${REPO_ROOT}#${HOST} --root-mountpoint ${ROOT_MOUNT} --yes-wipe-all-disks
+nixos-install --option substituters $(store_url "$STORE_DIR") --option require-sigs false --flake ${REPO_ROOT}#${HOST} --root ${ROOT_MOUNT} --no-root-passwd
+EOF
+		return
+	fi
+
 	cat <<EOF
 disko --mode destroy,format,mount --flake ${REPO_ROOT}#${HOST} --root-mountpoint ${ROOT_MOUNT} --yes-wipe-all-disks
 nixos-install --flake ${REPO_ROOT}#${HOST} --root ${ROOT_MOUNT} --no-root-passwd
@@ -1039,6 +1238,7 @@ remove_attr_block() {
 	local input_file="$2"
 	local output_file="$3"
 
+	# Text-based Nix removal: braces inside strings/comments still affect depth.
 	awk -v name="$attr_name" '
 		function delta(line, i, c, d) {
 			d = 0
@@ -1099,7 +1299,7 @@ delete_host() {
 	local incus_parent
 	local incus_file
 
-	confirm_or_die "Delete host ${HOST} from repo config and machine secrets?" "--force"
+	confirm_or_die "Delete host ${HOST} from repo config and machine secrets?" "--force" 1
 
 	if host_registered; then
 		next_file="${RUN_DIR}/hosts-default.nix"
@@ -1117,6 +1317,7 @@ delete_host() {
 
 	if has_machine_secret_registration; then
 		next_file="${RUN_DIR}/secrets-default.nix"
+		# Remove key-file and encrypted-secret registrations in separate passes.
 		remove_line_containing "$SECRETS_FILE" "$next_file" "${HOST} = ./machine/${HOST}.key.pub;"
 		mv "$next_file" "$SECRETS_FILE"
 		remove_line_containing "$SECRETS_FILE" "$next_file" "\"data/secrets/machine/${HOST}.key.age\""
@@ -1153,6 +1354,7 @@ main() {
 	validate_args
 
 	case "$ACTION" in
+	build) run_build ;;
 	generate) run_generate ;;
 	live-install) run_install ;;
 	delete) delete_host ;;
