@@ -4805,7 +4805,7 @@ read_prepared_system_profile_path() {
 }
 
 prepare_host_age_identity_for_deploy() {
-	local node="$1" require_activation_visibility="${2:-0}"
+	local node="$1" require_age_identity_activation_visibility="${2:-0}"
 	local age_identity_key=""
 
 	prepare_deploy_context "${node}" || return 1
@@ -4821,7 +4821,7 @@ prepare_host_age_identity_for_deploy() {
 		"${PREP_USING_BOOTSTRAP_FALLBACK}" \
 		"${PREP_DEPLOY_SSH_OPTS[@]}" || return 1
 
-	if [ "${require_activation_visibility}" -eq 1 ]; then
+	if [ "${require_age_identity_activation_visibility}" -eq 1 ]; then
 		wait_for_prepared_host_age_identity_activation_visibility \
 			"${node}" \
 			"${PREP_DEPLOY_AGE_IDENTITY_SHA}" || return 1
@@ -4847,9 +4847,9 @@ require_local_build_primary_deploy_context() {
 }
 
 prepare_host_transport_for_deploy() {
-	local node="$1" require_activation_visibility="${2:-0}"
+	local node="$1" require_age_identity_activation_visibility="${2:-0}"
 
-	prepare_host_age_identity_for_deploy "${node}" "${require_activation_visibility}" || return 1
+	prepare_host_age_identity_for_deploy "${node}" "${require_age_identity_activation_visibility}" || return 1
 	require_local_build_primary_deploy_context "${node}"
 }
 
@@ -6453,9 +6453,35 @@ build_post_switch_health_check_cmd() {
 		"_remote_post_switch_user_health_check"
 }
 
+prepare_post_switch_health_check_transport() {
+	local node="$1" log_file="${2:-}"
+
+	run_with_prefixed_combined_output \
+		"${node}" \
+		"${log_file}" \
+		run_parented_host_operation_with_retry \
+		"${node}" \
+		"health-check transport preparation" \
+		prepare_deploy_context \
+		"${node}" \
+		primary-only
+}
+
+run_post_switch_health_check_remote() {
+	local node="$1" log_file="$2" health_check_cmd="$3"
+
+	run_with_prefixed_combined_output \
+		"${node}" \
+		"${log_file}" \
+		retry_transport_command \
+		"Health check on ${node}" \
+		refresh_prepared_primary_target \
+		run_prepared_root_command \
+		"${health_check_cmd}"
+}
+
 run_post_switch_health_check() {
 	local node="$1" log_file="${2:-}" health_check_cmd=""
-	local prep_rc=0
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		return 0
@@ -6466,58 +6492,15 @@ run_post_switch_health_check() {
 		clear_primary_ready "${node}"
 	fi
 
-	if [ -n "${log_file}" ]; then
-		if run_with_combined_output \
-			run_parented_host_operation_with_retry \
+	if ! prepare_post_switch_health_check_transport "${node}" "${log_file}"; then
+		write_prefixed_host_log \
 			"${node}" \
-			"health-check transport preparation" \
-			prepare_deploy_context \
-			"${node}" \
-			primary-only > >(prefix_host_logs "${node}" | tee -a "${log_file}" >&2); then
-			:
-		else
-			prep_rc="$?"
-		fi
-	else
-		if run_with_combined_output \
-			run_parented_host_operation_with_retry \
-			"${node}" \
-			"health-check transport preparation" \
-			prepare_deploy_context \
-			"${node}" \
-			primary-only > >(prefix_host_logs "${node}" >&2); then
-			:
-		else
-			prep_rc="$?"
-		fi
-	fi
-	if [ "${prep_rc}" -ne 0 ]; then
-		if [ -n "${log_file}" ]; then
-			printf '%s\n' "[health-check] unavailable: failed to prepare deploy context" |
-				prefix_host_logs "${node}" |
-				tee -a "${log_file}" >&2
-		else
-			printf '%s\n' "[health-check] unavailable: failed to prepare deploy context" |
-				prefix_host_logs "${node}" >&2
-		fi
+			"${log_file}" \
+			"[health-check] unavailable: failed to prepare deploy context"
 		return 1
 	fi
 
-	if [ -n "${log_file}" ]; then
-		run_with_combined_output \
-			retry_transport_command \
-			"Health check on ${node}" \
-			refresh_prepared_primary_target \
-			run_prepared_root_command \
-			"${health_check_cmd}" > >(prefix_host_logs "${node}" | tee -a "${log_file}" >&2)
-	else
-		run_with_combined_output \
-			retry_transport_command \
-			"Health check on ${node}" \
-			refresh_prepared_primary_target \
-			run_prepared_root_command \
-			"${health_check_cmd}" > >(prefix_host_logs "${node}" >&2)
-	fi
+	run_post_switch_health_check_remote "${node}" "${log_file}" "${health_check_cmd}"
 }
 
 run_post_switch_health_check_job() {
@@ -8449,6 +8432,28 @@ print_host_block() {
 prefix_host_logs() {
 	local node="$1"
 	awk -v node="${node}" '{ if (length($0) == 0) { print ""; } else { print "| " node " | " $0; } fflush(); }'
+}
+
+write_prefixed_host_log() {
+	local node="$1" log_file="${2:-}"
+	shift 2
+
+	if [ -n "${log_file}" ]; then
+		printf '%s\n' "$@" | prefix_host_logs "${node}" | tee -a "${log_file}" >&2
+	else
+		printf '%s\n' "$@" | prefix_host_logs "${node}" >&2
+	fi
+}
+
+run_with_prefixed_combined_output() {
+	local node="$1" log_file="${2:-}"
+	shift 2
+
+	if [ -n "${log_file}" ]; then
+		run_with_combined_output "$@" > >(prefix_host_logs "${node}" | tee -a "${log_file}" >&2)
+	else
+		run_with_combined_output "$@" > >(prefix_host_logs "${node}" >&2)
+	fi
 }
 
 host_log_filter() {
