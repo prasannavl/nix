@@ -36,6 +36,10 @@
         systems.follows = "systems";
       };
     };
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixos-hardware.url = "github:nixos/nixos-hardware";
     vscode-ext = {
       url = "github:nix-community/nix-vscode-extensions";

@@ -131,6 +131,26 @@
         "type": "github"
       }
     },
+    "disko": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1779135526,
+        "narHash": "sha256-glCununz6lmaK5fs2X946HA3EkNxB2JagdAAvInuRYU=",
+        "owner": "nix-community",
+        "repo": "disko",
+        "rev": "d405a179887d52b24c0ddd31e09a150bd1f66779",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "disko",
+        "type": "github"
+      }
+    },
     "flake-compat": {
       "locked": {
         "lastModified": 1767039857,
@@ -403,6 +423,7 @@
       "inputs": {
         "agenix": "agenix",
         "antigravity": "antigravity",
+        "disko": "disko",
         "flake-utils": "flake-utils",
         "home-manager": "home-manager",
         "llm-agents": "llm-agents",

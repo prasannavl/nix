@@ -106,6 +106,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/hosts/pvl-dbus-broker-policy-2026-04.md`: Records the DBus
   broker policy cleanup for Debian-style `sudo` and `pulse` account references
   exposed by the broker migration.
+- `docs/ai/notes/hosts/pvl-disko-install-layout-2026-05.md`: Records the disko
+  automated-install layout for `pvl-x2` and `pvl-a1`, including target disk IDs,
+  pinned partition identities, LUKS, and Btrfs subvolumes.
 - `docs/ai/notes/hosts/pvl-x2-services-layout.md`: Canonical `pvl-x2` service
   module split and aggregation layout.
 - `docs/ai/notes/hosts/pvl-x2-inline-compose-2026-04.md`: Records the migration
