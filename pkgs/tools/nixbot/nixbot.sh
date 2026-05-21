@@ -4389,6 +4389,10 @@ prepare_deploy_context() {
 run_prepared_deploy_command() {
 	local tty_mode="$1" target_cmd="$2"
 
+	if ! require_prepared_deploy_context "run_prepared_deploy_command"; then
+		return 1
+	fi
+
 	if run_target_command \
 		"${PREP_DEPLOY_LOCAL_EXEC}" \
 		"${PREP_DEPLOY_SSH_TARGET}" \
@@ -4401,6 +4405,20 @@ run_prepared_deploy_command() {
 		return 0
 	fi
 
+	return 1
+}
+
+require_prepared_deploy_context() {
+	local caller="${1:-prepared deploy command}"
+
+	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
+		return 0
+	fi
+	if [ -n "${PREP_DEPLOY_SSH_TARGET}" ]; then
+		return 0
+	fi
+
+	echo "${caller}: missing prepared SSH target; call prepare_deploy_context in the same shell before running prepared commands" >&2
 	return 1
 }
 
@@ -6453,27 +6471,24 @@ build_post_switch_health_check_cmd() {
 		"_remote_post_switch_user_health_check"
 }
 
-prepare_post_switch_health_check_transport() {
-	local node="$1" log_file="${2:-}"
+run_prepared_post_switch_health_check() {
+	local node="$1" health_check_cmd="$2"
 
-	run_with_prefixed_combined_output \
-		"${node}" \
-		"${log_file}" \
-		run_parented_host_operation_with_retry \
+	if [ -n "$(host_parent_for "${node}")" ]; then
+		clear_primary_ready "${node}"
+	fi
+
+	if ! run_parented_host_operation_with_retry \
 		"${node}" \
 		"health-check transport preparation" \
 		prepare_deploy_context \
 		"${node}" \
-		primary-only
-}
+		primary-only; then
+		printf '%s\n' "[health-check] unavailable: failed to prepare deploy context" >&2
+		return 1
+	fi
 
-run_post_switch_health_check_remote() {
-	local node="$1" log_file="$2" health_check_cmd="$3"
-
-	run_with_prefixed_combined_output \
-		"${node}" \
-		"${log_file}" \
-		retry_transport_command \
+	retry_transport_command \
 		"Health check on ${node}" \
 		refresh_prepared_primary_target \
 		run_prepared_root_command \
@@ -6488,19 +6503,12 @@ run_post_switch_health_check() {
 	fi
 
 	health_check_cmd="$(build_post_switch_health_check_cmd)"
-	if [ -n "$(host_parent_for "${node}")" ]; then
-		clear_primary_ready "${node}"
-	fi
-
-	if ! prepare_post_switch_health_check_transport "${node}" "${log_file}"; then
-		write_prefixed_host_log \
-			"${node}" \
-			"${log_file}" \
-			"[health-check] unavailable: failed to prepare deploy context"
-		return 1
-	fi
-
-	run_post_switch_health_check_remote "${node}" "${log_file}" "${health_check_cmd}"
+	run_with_prefixed_combined_output \
+		"${node}" \
+		"${log_file}" \
+		run_prepared_post_switch_health_check \
+		"${node}" \
+		"${health_check_cmd}"
 }
 
 run_post_switch_health_check_job() {
