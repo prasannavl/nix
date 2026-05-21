@@ -10,6 +10,18 @@
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
   cloudflareTunnelsLib = import ../services/tunnels/cloudflare.nix {inherit lib;};
+  ageSecretSourceHashesByRuntimePath = lib.mapAttrs' (
+    name: secret:
+      lib.nameValuePair
+      (toString (secret.path or "/run/agenix/${name}"))
+      (
+        if (secret ? file) && secret.file != null
+        then builtins.hashFile "sha256" secret.file
+        else null
+      )
+  ) (config.age.secrets or {});
+  secretSourceHash = file:
+    ageSecretSourceHashesByRuntimePath.${toString file} or null;
   serviceDefaults = {
     source = null;
     files = {};
@@ -612,6 +624,18 @@
                     description = "Optional nginx proxy_buffer_size override for this route when upstream response headers are larger than nginx's default buffer.";
                   };
 
+                  proxyReadTimeout = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional nginx proxy_read_timeout override for long-running upstream responses.";
+                  };
+
+                  proxySendTimeout = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional nginx proxy_send_timeout override for long-running upstream requests.";
+                  };
+
                   clientMaxBodySize = lib.mkOption {
                     type = lib.types.nullOr lib.types.str;
                     default = null;
@@ -675,6 +699,18 @@
               type = lib.types.nullOr lib.types.str;
               default = null;
               description = "Optional nginx proxy_buffer_size override for this exposed port when upstream response headers are larger than nginx's default buffer.";
+            };
+
+            proxyReadTimeout = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional nginx proxy_read_timeout override for long-running upstream responses.";
+            };
+
+            proxySendTimeout = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional nginx proxy_send_timeout override for long-running upstream requests.";
             };
 
             clientMaxBodySize = lib.mkOption {
@@ -1095,12 +1131,17 @@
             readOnly
             services
             ;
+          sourceHash = secretSourceHash entry.file;
         }
         // entryPermsJson entry)
       service.fileSecrets;
       fileSecretRuntimePaths = service.fileSecretRuntimePaths;
       envSecrets = lib.mapAttrs (_: entry:
-        {inherit (entry) entries;} // entryPermsJson entry)
+        {
+          inherit (entry) entries;
+          sourceHashes = lib.mapAttrs (_: secretSourceHash) entry.entries;
+        }
+        // entryPermsJson entry)
       service.envSecrets;
       envSecretRuntimePaths = service.envSecretRuntimePaths;
     });
