@@ -956,6 +956,7 @@
         composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
         pullComposeFiles = resolvedPullComposeFiles;
+        expectedComposeServices = service.knownSourceComposeServices;
         stagedDirs = map (dirName: let
           entry = service.dirs.${dirName};
         in
@@ -1521,6 +1522,13 @@ in {
                   && builtins.isAttrs sourceCompose.services
                 then builtins.attrNames sourceCompose.services
                 else [serviceName];
+              knownSourceComposeServices =
+                if
+                  builtins.isAttrs sourceCompose
+                  && builtins.hasAttr "services" sourceCompose
+                  && builtins.isAttrs sourceCompose.services
+                then builtins.attrNames sourceCompose.services
+                else [];
               envSecretsOverride =
                 if normalizedService.envSecrets == {}
                 then {}
@@ -1675,6 +1683,7 @@ in {
                 fileSecretRuntimePaths = fileSecretRuntimePaths;
                 dirRuntimePaths = dirRuntimePaths;
                 envSecretRuntimePaths = envSecretRuntimePaths;
+                knownSourceComposeServices = knownSourceComposeServices;
                 stagedEntries = effectiveEntries;
                 sourcePaths = sourcePaths;
                 runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveEntries;

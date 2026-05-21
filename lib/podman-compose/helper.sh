@@ -22,6 +22,7 @@ init_vars() {
 	compose_args=()
 	compose_file_args=()
 	pull_compose_file_args=()
+	expected_compose_services=()
 	reload_services=()
 }
 
@@ -68,6 +69,12 @@ load_metadata() {
 	while IFS= read -r compose_file; do
 		pull_compose_file_args+=(-f "$compose_file")
 	done < <(jq -r '.pullComposeFiles[]?' "$podman_compose_metadata")
+
+	expected_compose_services=()
+	while IFS= read -r compose_service; do
+		[ -n "$compose_service" ] || continue
+		expected_compose_services+=("$compose_service")
+	done < <(jq -r '.expectedComposeServices[]?' "$podman_compose_metadata")
 
 	reload_services=()
 	while IFS= read -r compose_service; do
@@ -435,6 +442,38 @@ compose_pull() {
 	)
 }
 
+running_compose_services() {
+	(
+		cd /
+		podman ps \
+			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--format json |
+			jq -r '.[] | (.Labels["io.podman.compose.service"] // .Labels["com.docker.compose.service"] // empty)' |
+			sort -u
+	)
+}
+
+verify_expected_compose_services() {
+	local running_services="" missing_services="" compose_service=""
+
+	[ "$long_running" = "true" ] || return 0
+	[ "${#expected_compose_services[@]}" -gt 0 ] || return 0
+
+	running_services="$(running_compose_services)"
+	for compose_service in "${expected_compose_services[@]}"; do
+		if ! grep -Fxq "$compose_service" <<<"$running_services"; then
+			missing_services="${missing_services}${missing_services:+
+}${compose_service}"
+		fi
+	done
+
+	if [ -n "$missing_services" ]; then
+		printf '%s\n' "podman compose is missing running containers for expected services:" >&2
+		printf '%s\n' "$missing_services" >&2
+		exit 1
+	fi
+}
+
 compose_reload_signal() {
 	(
 		cd "$working_dir"
@@ -500,6 +539,8 @@ verify_compose_state() {
 		printf '%s\n' "podman compose found no running containers" >&2
 		exit 1
 	fi
+
+	verify_expected_compose_services
 }
 
 monitor_compose_state() {
@@ -534,6 +575,8 @@ monitor_compose_state() {
 			printf '%s\n' "podman compose monitor found no running containers" >&2
 			exit 1
 		fi
+
+		verify_expected_compose_services
 
 		unlock_lifecycle_shared
 		sleep "$monitor_interval"
