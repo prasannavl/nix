@@ -66,6 +66,8 @@
     if cfg.remote.serverCertificateFile != null
     then "--cacert ${lib.escapeShellArg cfg.remote.serverCertificateFile}"
     else lib.optionalString cfg.remote.acceptCertificate "--insecure";
+  certificateDelegationsRootEnv =
+    mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_ROOT" certificateDelegationsRoot;
 
   helperPackage = pkgs.writeShellApplication {
     name = "incus-machines-helper";
@@ -918,6 +920,7 @@
           (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_STATE_FILE" delegation.stateFile)
           (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME_PREFIX" delegation.namePrefix)
           (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATION_MAX_CERTIFICATES" delegation.maxCertificates)
+          certificateDelegationsRootEnv
         ];
         ExecStart = "${helperScript} certificate-delegation";
       };
@@ -1393,6 +1396,7 @@ in {
               Environment = [
                 (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE" certificateDelegationsFile)
                 (mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE" certificateDelegationsStateFile)
+                certificateDelegationsRootEnv
               ];
               ExecStart = "${helperScript} certificate-delegations-gc";
             };

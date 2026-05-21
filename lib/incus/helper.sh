@@ -22,6 +22,7 @@ init_vars() {
 	certificate_delegation_state_file="${INCUS_MACHINES_CERTIFICATE_DELEGATION_STATE_FILE-}"
 	certificate_delegation_name_prefix="${INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME_PREFIX-}"
 	certificate_delegation_max_certificates="${INCUS_MACHINES_CERTIFICATE_DELEGATION_MAX_CERTIFICATES-32}"
+	certificate_delegations_root="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_ROOT-/var/lib/incus-delegations}"
 	certificate_delegations="{}"
 	certificate_delegations_file="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE-}"
 	certificate_delegations_state_file="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE-/var/lib/incus-machines/delegated-certificates/delegations.json}"
@@ -977,10 +978,12 @@ previous_certificate_delegations_state() {
 is_safe_certificate_delegation_dir() {
 	local dir real_dir root
 	dir="$1"
-	root="/var/lib/incus-delegations"
+	root="$certificate_delegations_root"
 
 	[ -n "$dir" ] || return 1
+	[ -n "$root" ] || return 1
 	real_dir="$(realpath -e -- "$dir")" || return 1
+	root="$(realpath -e -- "$root")" || return 1
 	case "$real_dir" in
 	"$root" | "$root/" | "$root"/*)
 		[ "$real_dir" != "$root" ]
