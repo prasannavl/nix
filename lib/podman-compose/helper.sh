@@ -156,12 +156,12 @@ prepare_staged_dir_for_write() {
 			return
 		fi
 
-			if [ "$scope" = "container" ]; then
-				# Container-scoped dirs are finalized to non-stack host ids. Reset to
-				# userns root first so this helper can restage files on the next run.
-				# Contents are intentionally untouched; data dirs survive restarts.
-				podman unshare chown 0:0 "$path"
-			fi
+		if [ "$scope" = "container" ]; then
+			# Container-scoped dirs are finalized to non-stack host ids. Reset to
+			# userns root first so this helper can restage files on the next run.
+			# Contents are intentionally untouched; data dirs survive restarts.
+			podman unshare chown 0:0 "$path"
+		fi
 		chmod u+rwx "$path"
 	else
 		install -d -m 0700 "$path"
@@ -305,24 +305,20 @@ prepare_reload_dirs_for_write() {
 	local dst scope
 	while IFS=$'\t' read -r dst scope; do
 		[ -n "$dst" ] || continue
-		if path_is_under_reload_dir "$dst"; then
-			prepare_staged_dir_for_write "$dst" "$scope"
-		fi
-	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length))[] | [.dst, (.scope // "host")] | @tsv' "$podman_compose_metadata")
+		prepare_staged_dir_for_write "$dst" "$scope"
+	done < <(jq -r '(.reload.dirs // [] | sort_by(.dst | length))[] | [.dst, (.scope // "host")] | @tsv' "$podman_compose_metadata")
 }
 
 finalize_reload_dirs() {
 	local dst mode user group scope
 	while IFS=$'\t' read -r dst mode user group scope; do
 		[ -n "$dst" ] || continue
-		if path_is_under_reload_dir "$dst"; then
-			if [ ! -d "$dst" ] || [ -L "$dst" ]; then
-				remove_path_if_exists "$dst"
-				install -d -m 0700 "$dst"
-			fi
-			apply_perms "$dst" "$mode" "$user" "$group" "$scope"
+		if [ ! -d "$dst" ] || [ -L "$dst" ]; then
+			remove_path_if_exists "$dst"
+			install -d -m 0700 "$dst"
 		fi
-	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length) | reverse)[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host")] | @tsv' "$podman_compose_metadata")
+		apply_perms "$dst" "$mode" "$user" "$group" "$scope"
+	done < <(jq -r '(.reload.dirs // [] | sort_by(.dst | length) | reverse)[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host")] | @tsv' "$podman_compose_metadata")
 }
 
 stage_reload_files() {

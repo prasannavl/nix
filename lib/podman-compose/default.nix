@@ -6,7 +6,7 @@
 }: let
   cfg = config.services.podmanCompose;
   hasStacks = cfg != {};
-  collectionsLib = import ../flake/collections {lib = lib;};
+  flakeUtils = import ../flake/utils.nix {lib = lib;};
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
   cloudflareTunnelsLib = import ../services/tunnels/cloudflare.nix {inherit lib;};
@@ -889,6 +889,29 @@
       group = ownerRefToString entry.group;
       scope = entry.userScope;
     };
+    sourceDirEntryPerms = entry:
+      dirEntryDefaults
+      // {
+        mode =
+          if entry.mode == null || entry.mode == "none"
+          then dirEntryDefaults.mode
+          else entry.mode;
+        user = entry.user;
+        group = entry.group;
+        userScope = entry.userScope;
+      };
+    reloadDirEntry = dirName:
+      if builtins.hasAttr dirName service.dirs
+      then service.dirs.${dirName}
+      else if builtins.hasAttr dirName service.files
+      then sourceDirEntryPerms service.files.${dirName}
+      else dirEntryDefaults;
+    reloadDirMetadata = dirName:
+      {
+        name = dirName;
+        dst = reloadDirRuntimePath dirName;
+      }
+      // entryPermsJson (reloadDirEntry dirName);
     helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
       builtins.toJSON {
         version = 5;
@@ -927,12 +950,7 @@
             // entryPermsJson entry) (builtins.attrNames service.fileSecrets);
         reload = {
           inherit (service.reload) method signal services;
-          dirs =
-            map (dirName: {
-              name = dirName;
-              dst = reloadDirRuntimePath dirName;
-            })
-            service.reload.trigger.dirs;
+          dirs = map reloadDirMetadata service.reload.trigger.dirs;
           stagedFiles = map (fileName: let
             entry = reloadStagedEntries.${fileName};
           in
@@ -1129,7 +1147,7 @@
     cfg
   );
   allExposedPorts = map (entry: entry.portCfg) allExposedPortEntries;
-  duplicatedExposedPortKeys = collectionsLib.duplicateValues (map (entry: entry.key) allExposedPortEntries);
+  duplicatedExposedPortKeys = flakeUtils.duplicateValues (map (entry: entry.key) allExposedPortEntries);
   duplicatedExposedPortEntries =
     lib.filter (entry: builtins.elem entry.key duplicatedExposedPortKeys) allExposedPortEntries;
   describeExposedPortEntry = entry: "${entry.stackName}.${entry.serviceName}.${entry.portName}=${entry.protocol}/${toString entry.port}";
@@ -1163,7 +1181,7 @@
     ++ lib.concatMap
     (service: map (aux: aux.name) service.auxiliarySystemdUserServices)
     resolvedServices;
-  duplicateSystemdUserServiceNames = collectionsLib.duplicateValues generatedSystemdUserServiceNames;
+  duplicateSystemdUserServiceNames = flakeUtils.duplicateValues generatedSystemdUserServiceNames;
   rootlessStackUsers = lib.unique (
     builtins.filter (user: user != "root") (
       map (service: service.systemdUser) resolvedServices
@@ -1271,7 +1289,7 @@
       (lib.filterAttrs (_: service: service.subnet != null) stack.instances))
     cfg
   );
-  duplicatedSubnets = collectionsLib.duplicateValues (map (entry: entry.subnet) declaredSubnets);
+  duplicatedSubnets = flakeUtils.duplicateValues (map (entry: entry.subnet) declaredSubnets);
   describeSubnetEntry = entry: "${entry.stackName}.${entry.serviceName}=${entry.subnet}";
   duplicatedSubnetEntries =
     lib.filter (entry: builtins.elem entry.subnet duplicatedSubnets) declaredSubnets;

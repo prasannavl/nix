@@ -131,29 +131,33 @@ managed_unit_reload_request_marker_path() {
 }
 
 mark_deferred_managed_unit_reload() {
-	local user managed_name marker_path marker_dir
+	local user managed_name reload_stamp marker_path marker_dir
 	user="$1"
 	managed_name="$2"
+	reload_stamp="$3"
 	require_env SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR
 	marker_path="$(managed_unit_reload_request_marker_path "$user" "$managed_name")"
 	marker_dir="$(dirname "$marker_path")"
 	mkdir -p "$marker_dir"
-	printf '%s\n' "$managed_name" >"$marker_path"
+	printf '%s\n' "$reload_stamp" >"$marker_path"
 }
 
 consume_deferred_managed_unit_reload() {
-	local user managed_name marker_path marker_dir
+	local user managed_name expected_reload_stamp marker_path marker_dir marker_reload_stamp
 	user="$1"
 	managed_name="$2"
+	expected_reload_stamp="$3"
 	require_env SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR
 	marker_path="$(managed_unit_reload_request_marker_path "$user" "$managed_name")"
 	marker_dir="$(dirname "$marker_path")"
-	if [ -f "$marker_path" ]; then
-		rm -f "$marker_path"
-		rmdir "$marker_dir" 2>/dev/null || true
-		return 0
+	if [ ! -f "$marker_path" ]; then
+		return 1
 	fi
-	return 1
+
+	IFS= read -r marker_reload_stamp <"$marker_path" || marker_reload_stamp=""
+	rm -f "$marker_path"
+	rmdir "$marker_dir" 2>/dev/null || true
+	[ "$marker_reload_stamp" = "$expected_reload_stamp" ]
 }
 
 now_epoch() {
@@ -490,7 +494,7 @@ read_metadata_units_tsv() {
 read_metadata_reconcile_units_tsv() {
 	local metadata_file="$1"
 
-	jq -r '.managedUnits | sort_by(.name)[] | [.name, .unit, (if .autoStart then "1" else "0" end), (.timeoutStableSeconds // 120)] | @tsv' "$metadata_file"
+	jq -r '.managedUnits | sort_by(.name)[] | [.name, .unit, (if .autoStart then "1" else "0" end), (.timeoutStableSeconds // 120), (.reloadStamp // "")] | @tsv' "$metadata_file"
 }
 
 metadata_header_from_stop_state_tsv() {
@@ -618,7 +622,7 @@ diff_and_stop_units() {
 					active_state_before_stop="$(userctl_active_state "$managed_unit" 2>/dev/null || true)"
 					case "$active_state_before_stop" in
 					active | activating | deactivating | reloading)
-						mark_deferred_managed_unit_reload "$user" "$managed_name"
+						mark_deferred_managed_unit_reload "$user" "$managed_name" "$new_reload_stamp"
 						;;
 					esac
 				fi
@@ -936,16 +940,16 @@ reload_managed_unit() {
 }
 
 reload_changed_managed_units_from_metadata() {
-	local managed_units_tsv="" managed_name="" managed_unit="" _auto_start="" managed_timeout="" failed_units=""
+	local managed_units_tsv="" managed_name="" managed_unit="" _auto_start="" managed_timeout="" managed_reload_stamp="" failed_units=""
 	require_env SYSTEMD_USER_MANAGER_METADATA
 	if ! managed_units_tsv="$(read_metadata_reconcile_units_tsv "$systemd_user_manager_metadata")"; then
 		printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $systemd_user_manager_metadata" >&2
 		return 1
 	fi
 	[ -n "$managed_units_tsv" ] || return 0
-	while IFS=$'\t' read -r managed_name managed_unit _auto_start managed_timeout; do
+	while IFS=$'\t' read -r managed_name managed_unit _auto_start managed_timeout managed_reload_stamp; do
 		[ -n "$managed_name" ] || continue
-		if ! consume_deferred_managed_unit_reload "$systemd_user_manager_user" "$managed_name"; then
+		if ! consume_deferred_managed_unit_reload "$systemd_user_manager_user" "$managed_name" "$managed_reload_stamp"; then
 			continue
 		fi
 		if ! reload_managed_unit "$managed_name" "$managed_unit" "$managed_timeout"; then
@@ -1064,7 +1068,7 @@ run_reconciler_apply() {
 		exit 1
 	fi
 	if [ -n "$managed_units_tsv" ]; then
-		while IFS=$'\t' read -r managed_name managed_unit auto_start managed_timeout; do
+		while IFS=$'\t' read -r managed_name managed_unit auto_start managed_timeout _reload_stamp; do
 			total_units=$((total_units + 1))
 			if ! start_managed_unit "$managed_name" "$managed_unit" "$auto_start" "$managed_timeout"; then
 				failed_units="${failed_units} ${managed_name}"

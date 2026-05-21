@@ -5,7 +5,7 @@
   ...
 }: let
   cfg = config.services.systemdUserManager;
-  collectionsLib = import ../flake/collections {lib = lib;};
+  flakeUtils = import ../flake/utils.nix {lib = lib;};
   metadataVersion = 2;
 
   unitType = lib.types.submodule ({name, ...}: {
@@ -163,7 +163,7 @@
     map reconcilerServiceNameForUser managedUsers;
 
   duplicateGeneratedSystemdServiceNames =
-    collectionsLib.duplicateValues (generatedDispatcherServiceNames ++ generatedReconcilerServiceNames);
+    flakeUtils.duplicateValues (generatedDispatcherServiceNames ++ generatedReconcilerServiceNames);
 
   userIdentityStampFor = user: let
     userCfg = config.users.users.${user};

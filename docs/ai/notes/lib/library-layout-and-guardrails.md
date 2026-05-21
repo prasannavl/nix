@@ -10,13 +10,13 @@ Canonical placement rules and review guardrails for shared helpers under `lib/`.
 - Keep standalone overlay or maintenance helper derivations under `lib/ext/`,
   not `pkgs/`.
 - Keep service-specific shared modules under `lib/services/`.
-- Keep shared pure collection helpers in one reusable library location instead
-  of duplicating them across modules.
+- Keep shared pure flake helpers in one reusable library location instead of
+  duplicating them across modules.
 
 ## Current placement decisions
 
-- `duplicateValues` belongs with reusable flake-oriented helpers under
-  `lib/flake/collections/`.
+- `duplicateValues` belongs with reusable flake-oriented helpers in
+  `lib/flake/utils.nix`.
 - Service-module relocation and similar support code should move toward the
   closest durable library namespace instead of staying as historical top-level
   paths.
