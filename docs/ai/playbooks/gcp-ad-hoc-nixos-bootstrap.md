@@ -133,6 +133,33 @@ pkgs/ext/gcp-vms/create-vm.sh \
   --ensure-nats-fw
 ```
 
+For a repo-defined Free Tier VM, create the GCP instance and install the repo
+host directly:
+
+```bash
+pkgs/ext/gcp-vms/create-vm.sh \
+  --name gce-edge-1 \
+  --free-tier-max \
+  --nix \
+  --ensure-ssh-fw \
+  --ensure-wireguard-fw \
+  --ensure-smtp-fw \
+  --drop-ssh-fw-after
+```
+
+Use `--host <flake-host>` only if the GCE instance name and repo host name
+differ. Repo-mode `--free-tier-max --nix` uses the same local-build,
+minimal-disko-copy handoff as generic mode so the tiny installer environment
+does not need to substitute large dependency closures.
+
+By default, leave external IP allocation to GCP. `create-vm.sh` discovers the
+generated IP after instance creation and passes it to `nixify-vm.sh` as
+`--target-host`, so the direct repo-defined install does not need a temporary
+generic NixOS pass or a manually configured IP address. For an edge host where
+public SSH is only a bootstrap path, `--drop-ssh-fw-after` verifies the
+configured nixbot deploy route, removes the public SSH tag from the GCP
+instance, and deletes the SSH fw rule if no instance still uses it.
+
 1. After nixify, continue with the normal deploy path.
    - Run `./scripts/nixbot.sh deploy --hosts <host>` for the next steady-state
      reconcile.
@@ -156,10 +183,18 @@ boot disk. Use `--keep-fw-rules` to preserve fw rules.
   - creates a Debian bootstrap VM
   - enables GCP IP forwarding by default
   - injects the bootstrap SSH public key through instance metadata
+  - can pass a cloud-init user-data file through GCE metadata with
+    `--init <path>`
   - waits for SSH to come up
+  - preflights repo host evaluation and takeover metadata before GCP mutation
+    when used with `--nix` in repo mode
   - can create subnet-scoped observability, Postgres, and NATS fw rules using
     the VM subnet CIDR as the ingress source range
+  - can create public protocol-scoped fw rules and automatically add their
+    target tags to the VM with `--ensure-wireguard-fw` and `--ensure-smtp-fw`
   - can run `nixify-vm.sh` immediately after creation with `--nix`
+  - can remove bootstrap public SSH after repo-mode `--nix` with
+    `--drop-ssh-fw-after`
 - `pkgs/ext/gcp-vms/nixify-vm.sh`
   - resolves the VM by GCE instance name when `--target-host` is omitted
   - defaults the repo flake host to the instance name
@@ -179,8 +214,8 @@ boot disk. Use `--keep-fw-rules` to preserve fw rules.
   - deletes an ad hoc VM
   - auto-discovers the VM zone when `--zone` is omitted
   - deletes attached disks unless they match `--keep-disk=<csv>`
-  - deletes the optional SSH, observability, Postgres, and NATS fw rules only
-    when their target tag is not still used by another instance
+  - deletes the optional SSH, observability, Postgres, NATS, WireGuard, and SMTP
+    fw rules only when their target tag is not still used by another instance
   - does not delete networks, subnets, or reserved external addresses because
     `create-vm.sh` only references those resources
 
@@ -197,10 +232,12 @@ The bootstrap VM defaults are centralized in `pkgs/ext/gcp-vms/common.sh`:
 - disk: `200GB pd-ssd`
 - GCP IP forwarding: enabled
 - tag: `ssh`
-- SSH fw rule: `allow-22`
+- SSH fw rule: `allow-ssh`
 - observability fw rule: `allow-observability-subnet`
 - Postgres fw rule: `allow-postgres-subnet`
 - NATS fw rule: `allow-nats-subnet`
+- WireGuard fw rule/tag: `allow-wireguard` / `allow-wireguard`, `udp:51820`
+- SMTP fw rule/tag: `allow-smtp` / `allow-smtp`, `tcp:25`
 - subnet-scoped observability ports: `6000,6001,6002`
 - subnet-scoped Postgres ports: `5432`
 - subnet-scoped NATS ports: `4222,7422`
@@ -229,9 +266,9 @@ The free-tier mode is guarded. Later or earlier explicit `--zone`,
 contract. Non-free zones, larger disks, non-standard disks, non-`e2-micro`
 machine types, or non-preset images fail before GCP mutation.
 
-For `--free-tier-max --nix --generic`, `create-vm.sh` also makes the
-`nixos-anywhere` handoff free-tier-safe by forcing local builds and disabling
-remote destination substitution for the installer copy.
+For `--free-tier-max --nix`, `create-vm.sh` also makes the `nixos-anywhere`
+handoff free-tier-safe by forcing local builds and disabling remote destination
+substitution for the installer copy.
 
 ## Failure Boundaries
 

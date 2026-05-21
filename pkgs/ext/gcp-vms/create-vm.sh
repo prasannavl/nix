@@ -20,6 +20,7 @@ init_vars() {
 	GCP_OUTPUT_JSON="0"
 	GCP_CREATE_VM_TMP_DIR=""
 	GCP_CREATED_INSTANCE_IP=""
+	GCP_CLOUD_INIT_PATH=""
 	GCP_NIXIFY_AFTER_CREATE="0"
 	GCP_NIXIFY_HOST=""
 	GCP_NIXIFY_GENERIC="0"
@@ -28,6 +29,7 @@ init_vars() {
 	GCP_NIXIFY_NO_SUBSTITUTE_ON_DESTINATION="0"
 	GCP_NIXIFY_ARGS_SEEN="0"
 	GCP_NIXIFY_ARGS=()
+	GCP_DROP_SSH_FW_AFTER="0"
 }
 
 # -----------------------------------------------------------------------------
@@ -68,6 +70,8 @@ Options:
   --ssh-user <user>              Default: configured in pkgs/ext/gcp-vms/common.sh
   --ssh-key <path>               Private key; <path>.pub is injected into GCE.
                                   Default: configured in pkgs/ext/gcp-vms/common.sh
+  --init <path>                  Cloud-init user-data file to pass through GCE
+                                  instance metadata.
   --ssh-port <port>              Default: configured in pkgs/ext/gcp-vms/common.sh
   --ssh-wait-timeout <seconds>   Default: configured in pkgs/ext/gcp-vms/common.sh
   --can-ip-forward               Enable GCP instance IP forwarding. Default:
@@ -90,7 +94,24 @@ Options:
                                   configured in pkgs/ext/gcp-vms/common.sh
   --nats-fw-rule-name <name>
                                   Default: configured in pkgs/ext/gcp-vms/common.sh
+  --ensure-wireguard-fw          Create public WireGuard ingress and add the
+                                  matching allow-wireguard target tag.
+  --wireguard-fw-rule-name <name>
+  --wireguard-target-tag <tag>
+  --wireguard-source-ranges <csv>
+  --wireguard-allow <allow-spec>
+                                  Defaults configured in pkgs/ext/gcp-vms/common.sh
+  --ensure-smtp-fw               Create public SMTP ingress and add the
+                                  matching allow-smtp target tag.
+  --smtp-fw-rule-name <name>
+  --smtp-target-tag <tag>
+  --smtp-source-ranges <csv>
+  --smtp-allow <allow-spec>
+                                  Defaults configured in pkgs/ext/gcp-vms/common.sh
   --nix                           Run nixify-vm.sh after VM creation.
+  --drop-ssh-fw-after             After successful repo-mode --nix, verify the
+                                  nixbot deploy route, remove the public SSH
+                                  tag, and delete the SSH fw rule if unused.
   --host <flake-host>             Nixify repo flake host name. Default: same
                                   as --name.
   --generic                       Nixify into a generated minimal NixOS host.
@@ -125,16 +146,25 @@ parse_args() {
 			GCP_INSTANCE_NAME="${2:-}"
 			shift 2
 			;;
-		--project | --zone | --machine-type | --disk-size-gb | --disk-type | --image-family | --image-project | --network | --subnet | --address | --tags | --fw-target-tag | --ssh-user | --ssh-key | --ssh-port | --ssh-wait-timeout | --fw-rule-name | --ssh-source-ranges | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name)
+		--init)
+			gcp_need_value "$1" "${2:-}"
+			GCP_CLOUD_INIT_PATH="$2"
+			shift 2
+			;;
+		--project | --zone | --machine-type | --disk-size-gb | --disk-type | --image-family | --image-project | --network | --subnet | --address | --tags | --fw-target-tag | --ssh-user | --ssh-key | --ssh-port | --ssh-wait-timeout | --fw-rule-name | --ssh-source-ranges | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name | --wireguard-fw-rule-name | --wireguard-target-tag | --wireguard-source-ranges | --wireguard-allow | --smtp-fw-rule-name | --smtp-target-tag | --smtp-source-ranges | --smtp-allow)
 			gcp_apply_vm_value_arg "$1" "${2:-}"
 			shift 2
 			;;
-		--free-tier-max | --can-ip-forward | --no-can-ip-forward | --ensure-ssh-fw | --ensure-observability-fw | --ensure-postgres-fw | --ensure-nats-fw)
+		--free-tier-max | --can-ip-forward | --no-can-ip-forward | --ensure-ssh-fw | --ensure-observability-fw | --ensure-postgres-fw | --ensure-nats-fw | --ensure-wireguard-fw | --ensure-smtp-fw)
 			gcp_apply_vm_flag_arg "$1"
 			shift
 			;;
 		--nix)
 			GCP_NIXIFY_AFTER_CREATE="1"
+			shift
+			;;
+		--drop-ssh-fw-after)
+			GCP_DROP_SSH_FW_AFTER="1"
 			shift
 			;;
 		--host)
@@ -205,10 +235,48 @@ validate_args() {
 	if [ "${GCP_NIXIFY_AFTER_CREATE}" != "1" ] && [ "${GCP_NIXIFY_ARGS_SEEN}" = "1" ]; then
 		gcp_die "Nixify options require --nix"
 	fi
+	if [ "${GCP_DROP_SSH_FW_AFTER}" = "1" ] && [ "${GCP_NIXIFY_AFTER_CREATE}" != "1" ]; then
+		gcp_die "--drop-ssh-fw-after requires --nix"
+	fi
+	if [ "${GCP_DROP_SSH_FW_AFTER}" = "1" ] && [ "${GCP_NIXIFY_GENERIC}" = "1" ]; then
+		gcp_die "--drop-ssh-fw-after requires repo-mode --nix, not --generic"
+	fi
 
 	GCP_BOOTSTRAP_SSH_KEY_PATH="$(gcp_expand_path "${GCP_BOOTSTRAP_SSH_KEY_PATH}")"
 	[ -f "${GCP_BOOTSTRAP_SSH_KEY_PATH}" ] || gcp_die "SSH private key not found: ${GCP_BOOTSTRAP_SSH_KEY_PATH}"
 	[ -f "${GCP_BOOTSTRAP_SSH_KEY_PATH}.pub" ] || gcp_die "SSH public key not found: ${GCP_BOOTSTRAP_SSH_KEY_PATH}.pub"
+	if [ -n "${GCP_CLOUD_INIT_PATH}" ]; then
+		GCP_CLOUD_INIT_PATH="$(gcp_resolve_repo_path "${GCP_CLOUD_INIT_PATH}")"
+		[ -f "${GCP_CLOUD_INIT_PATH}" ] || gcp_die "Cloud-init file not found: ${GCP_CLOUD_INIT_PATH}"
+	fi
+
+	if [ "${GCP_NIXIFY_AFTER_CREATE}" = "1" ] && [ "${GCP_NIXIFY_GENERIC}" != "1" ]; then
+		preflight_repo_nixify
+	fi
+}
+
+preflight_repo_nixify() {
+	local flake_host="" deploy_user="" _deploy_target="" deploy_key=""
+	local bootstrap_key="" age_identity_key="" _proxy_jump=""
+
+	flake_host="${GCP_NIXIFY_HOST:-${GCP_INSTANCE_NAME}}"
+	gcp_preflight_flake_host "${flake_host}"
+	{
+		read -r deploy_user
+		read -r _deploy_target
+		read -r deploy_key
+		read -r bootstrap_key
+		read -r age_identity_key
+		read -r _proxy_jump
+	} < <(gcp_takeover_context "${flake_host}")
+
+	[ -n "${deploy_user}" ] || gcp_die "No deploy user configured for ${flake_host}"
+	[ -n "${deploy_key}" ] || gcp_die "No deploy key configured for ${flake_host} in hosts/nixbot.nix"
+	[ -n "${bootstrap_key}" ] || gcp_die "No bootstrap key configured for ${flake_host} in hosts/nixbot.nix"
+	[ -n "${age_identity_key}" ] || gcp_die "No ageIdentityKey configured for ${flake_host} in hosts/nixbot.nix"
+	[ -f "$(gcp_resolve_repo_path "${deploy_key}")" ] || gcp_die "Deploy key secret not found: ${deploy_key}"
+	[ -f "$(gcp_resolve_repo_path "${bootstrap_key}")" ] || gcp_die "Bootstrap key secret not found: ${bootstrap_key}"
+	[ -f "$(gcp_resolve_repo_path "${age_identity_key}")" ] || gcp_die "Age identity secret not found: ${age_identity_key}"
 }
 
 # -----------------------------------------------------------------------------
@@ -254,6 +322,24 @@ create_fw_rules() {
 			"${GCP_FW_TARGET_TAG}" \
 			"${GCP_NATS_PORTS}"
 	fi
+	if [ "${GCP_ENSURE_WIREGUARD_FW}" = "1" ]; then
+		gcp_maybe_create_public_fw \
+			"${GCP_PROJECT_ID}" \
+			"${GCP_NETWORK}" \
+			"${GCP_WIREGUARD_FW_RULE_NAME}" \
+			"${GCP_WIREGUARD_TARGET_TAG}" \
+			"${GCP_WIREGUARD_SOURCE_RANGES}" \
+			"${GCP_WIREGUARD_ALLOW}"
+	fi
+	if [ "${GCP_ENSURE_SMTP_FW}" = "1" ]; then
+		gcp_maybe_create_public_fw \
+			"${GCP_PROJECT_ID}" \
+			"${GCP_NETWORK}" \
+			"${GCP_SMTP_FW_RULE_NAME}" \
+			"${GCP_SMTP_TARGET_TAG}" \
+			"${GCP_SMTP_SOURCE_RANGES}" \
+			"${GCP_SMTP_ALLOW}"
+	fi
 }
 
 # -----------------------------------------------------------------------------
@@ -263,6 +349,7 @@ create_fw_rules() {
 create_instance() {
 	local metadata_file="" public_key="" instance_ip="" ssh_target=""
 	local -a create_cmd=()
+	local -a metadata_from_file=()
 
 	GCP_CREATE_VM_TMP_DIR="$(gcp_make_tmp_dir "gcp-create-vm")"
 	trap 'gcp_cleanup_tmp_dir "${GCP_CREATE_VM_TMP_DIR:-}"' EXIT
@@ -270,6 +357,10 @@ create_instance() {
 	public_key="$(<"${GCP_BOOTSTRAP_SSH_KEY_PATH}.pub")"
 	metadata_file="${GCP_CREATE_VM_TMP_DIR}/ssh-keys"
 	printf '%s:%s\n' "${GCP_BOOTSTRAP_SSH_USER}" "${public_key}" >"${metadata_file}"
+	metadata_from_file=("ssh-keys=${metadata_file}")
+	if [ -n "${GCP_CLOUD_INIT_PATH}" ]; then
+		metadata_from_file+=("user-data=${GCP_CLOUD_INIT_PATH}")
+	fi
 	create_fw_rules
 
 	create_cmd=(
@@ -283,7 +374,7 @@ create_instance() {
 		--image-project "${GCP_IMAGE_PROJECT}"
 		--tags "${GCP_TAGS}"
 		--metadata enable-oslogin=FALSE
-		--metadata-from-file "ssh-keys=${metadata_file}"
+		--metadata-from-file "$(IFS=,; printf '%s' "${metadata_from_file[*]}")"
 	)
 	if [ "${GCP_CAN_IP_FORWARD}" = "1" ]; then
 		create_cmd+=(--can-ip-forward)
@@ -368,7 +459,7 @@ nixify_instance() {
 	if [ -n "${GCP_NIXIFY_HOST}" ]; then
 		nixify_cmd+=(--host "${GCP_NIXIFY_HOST}")
 	fi
-	if [ "${GCP_FREE_TIER_MAX_MODE}" = "1" ] && [ "${GCP_NIXIFY_GENERIC}" = "1" ]; then
+	if [ "${GCP_FREE_TIER_MAX_MODE}" = "1" ]; then
 		if [ "${GCP_NIXIFY_BUILD_ON_SEEN}" != "1" ]; then
 			nixify_cmd+=(--build-on local)
 		fi
@@ -386,6 +477,61 @@ nixify_instance() {
 }
 
 # -----------------------------------------------------------------------------
+# Optional post-nixify SSH exposure cleanup
+# -----------------------------------------------------------------------------
+
+instance_has_tag() {
+	local tag="$1"
+
+	gcloud compute instances describe \
+		"${GCP_INSTANCE_NAME}" \
+		--project "${GCP_PROJECT_ID}" \
+		--zone "${GCP_ZONE}" \
+		--format=json |
+		jq -e --arg tag "${tag}" '
+			(.tags.items // []) | index($tag)
+		' >/dev/null
+}
+
+remove_instance_tag_if_present() {
+	local tag="$1"
+
+	[ -n "${tag}" ] || return 0
+	if ! instance_has_tag "${tag}"; then
+		return 0
+	fi
+
+	gcp_log "Removing tag ${tag} from ${GCP_INSTANCE_NAME}"
+	gcloud compute instances remove-tags \
+		"${GCP_INSTANCE_NAME}" \
+		--project "${GCP_PROJECT_ID}" \
+		--zone "${GCP_ZONE}" \
+		--tags "${tag}" >/dev/null
+}
+
+verify_nixbot_deploy_route() {
+	local flake_host="$1"
+
+	gcp_log "Verifying nixbot deploy route for ${flake_host}"
+	"${REPO_ROOT}/scripts/nixbot.sh" deploy \
+		--hosts "${flake_host}" \
+		--dry \
+		--dirty-staged \
+		--log-format plain >/dev/null
+}
+
+drop_ssh_fw_after_nix() {
+	local flake_host=""
+
+	[ "${GCP_DROP_SSH_FW_AFTER}" = "1" ] || return 0
+
+	flake_host="${GCP_NIXIFY_HOST:-${GCP_INSTANCE_NAME}}"
+	verify_nixbot_deploy_route "${flake_host}"
+	remove_instance_tag_if_present "${GCP_FW_TARGET_TAG}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_FW_RULE_NAME}" "${GCP_FW_TARGET_TAG}"
+}
+
+# -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
@@ -397,6 +543,7 @@ main() {
 	create_instance
 	if [ "${GCP_NIXIFY_AFTER_CREATE}" = "1" ]; then
 		nixify_instance
+		drop_ssh_fw_after_nix
 	fi
 }
 

@@ -58,6 +58,11 @@ Options:
                                   Default: configured in pkgs/ext/gcp-vms/common.sh
   --nats-fw-rule-name <name>
                                   Default: configured in pkgs/ext/gcp-vms/common.sh
+  --wireguard-fw-rule-name <name>
+  --wireguard-target-tag <tag>
+  --smtp-fw-rule-name <name>
+  --smtp-target-tag <tag>
+                                  Defaults configured in pkgs/ext/gcp-vms/common.sh
   -h, --help
 EOF
 }
@@ -73,7 +78,7 @@ parse_args() {
 			GCP_INSTANCE_NAME="${2:-}"
 			shift 2
 			;;
-		--project | --zone | --fw-target-tag | --fw-rule-name | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name)
+		--project | --zone | --fw-target-tag | --fw-rule-name | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name | --wireguard-fw-rule-name | --wireguard-target-tag | --smtp-fw-rule-name | --smtp-target-tag)
 			gcp_apply_vm_value_arg "$1" "${2:-}"
 			shift 2
 			;;
@@ -246,74 +251,13 @@ delete_attached_disks_if_unused() {
 	done < <(instance_disk_names "${description_json}")
 }
 
-# -----------------------------------------------------------------------------
-# Firewall cleanup helpers
-# -----------------------------------------------------------------------------
-
-fw_rule_json() {
-	local rule_name="$1"
-
-	gcloud compute firewall-rules describe \
-		"${rule_name}" \
-		--project "${GCP_PROJECT_ID}" \
-		--format=json
-}
-
-fw_rule_has_tag_user() {
-	local rule_json="$1" tag="" users=""
-
-	while IFS= read -r tag; do
-		[ -n "${tag}" ] || continue
-		users="$(
-			gcloud compute instances list \
-				--project "${GCP_PROJECT_ID}" \
-				--filter="tags.items=${tag}" \
-				--format='value(name)' 2>/dev/null || true
-		)"
-		if [ -n "${users}" ]; then
-			return 0
-		fi
-	done < <(jq -r '.targetTags[]?' <<<"${rule_json}")
-
-	return 1
-}
-
-fw_rule_targets_expected_tag() {
-	local rule_json="$1"
-
-	jq -e --arg tag "${GCP_FW_TARGET_TAG}" '
-		(.targetTags // []) | index($tag)
-	' <<<"${rule_json}" >/dev/null
-}
-
-delete_fw_rule_if_unused() {
-	local rule_name="$1" rule_json=""
-
-	[ -n "${rule_name}" ] || return 0
-	if ! rule_json="$(fw_rule_json "${rule_name}" 2>/dev/null)"; then
-		return 0
-	fi
-	if ! fw_rule_targets_expected_tag "${rule_json}"; then
-		gcp_log "Keeping fw rule ${rule_name}; target tag does not match ${GCP_FW_TARGET_TAG}"
-		return 0
-	fi
-	if fw_rule_has_tag_user "${rule_json}"; then
-		gcp_log "Keeping fw rule ${rule_name}; another instance still uses its target tag"
-		return 0
-	fi
-
-	gcp_log "Deleting fw rule ${rule_name}"
-	gcloud compute firewall-rules delete \
-		"${rule_name}" \
-		--project "${GCP_PROJECT_ID}" \
-		--quiet >/dev/null
-}
-
 delete_created_fw_rules() {
-	delete_fw_rule_if_unused "${GCP_FW_RULE_NAME}"
-	delete_fw_rule_if_unused "${GCP_OBSERVABILITY_FW_RULE_NAME}"
-	delete_fw_rule_if_unused "${GCP_POSTGRES_FW_RULE_NAME}"
-	delete_fw_rule_if_unused "${GCP_NATS_FW_RULE_NAME}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_FW_RULE_NAME}" "${GCP_FW_TARGET_TAG}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_OBSERVABILITY_FW_RULE_NAME}" "${GCP_FW_TARGET_TAG}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_POSTGRES_FW_RULE_NAME}" "${GCP_FW_TARGET_TAG}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_NATS_FW_RULE_NAME}" "${GCP_FW_TARGET_TAG}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_WIREGUARD_FW_RULE_NAME}" "${GCP_WIREGUARD_TARGET_TAG}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_SMTP_FW_RULE_NAME}" "${GCP_SMTP_TARGET_TAG}"
 }
 
 # -----------------------------------------------------------------------------

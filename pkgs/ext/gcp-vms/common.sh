@@ -62,7 +62,7 @@ gcp_init_access_defaults() {
 
 gcp_init_firewall_defaults() {
 	GCP_DEFAULT_ENSURE_SSH_FW="${GCP_DEFAULT_ENSURE_SSH_FW:-0}"
-	GCP_DEFAULT_FW_RULE_NAME="${GCP_DEFAULT_FW_RULE_NAME:-allow-22}"
+	GCP_DEFAULT_FW_RULE_NAME="${GCP_DEFAULT_FW_RULE_NAME:-allow-ssh}"
 	GCP_DEFAULT_SSH_SOURCE_RANGES="${GCP_DEFAULT_SSH_SOURCE_RANGES:-0.0.0.0/0}"
 	GCP_DEFAULT_ENSURE_OBSERVABILITY_FW="${GCP_DEFAULT_ENSURE_OBSERVABILITY_FW:-0}"
 	GCP_DEFAULT_OBSERVABILITY_FW_RULE_NAME="${GCP_DEFAULT_OBSERVABILITY_FW_RULE_NAME:-allow-observability-subnet}"
@@ -73,6 +73,16 @@ gcp_init_firewall_defaults() {
 	GCP_DEFAULT_ENSURE_NATS_FW="${GCP_DEFAULT_ENSURE_NATS_FW:-0}"
 	GCP_DEFAULT_NATS_FW_RULE_NAME="${GCP_DEFAULT_NATS_FW_RULE_NAME:-allow-nats-subnet}"
 	GCP_DEFAULT_NATS_PORTS="${GCP_DEFAULT_NATS_PORTS:-4222,7422}"
+	GCP_DEFAULT_ENSURE_WIREGUARD_FW="${GCP_DEFAULT_ENSURE_WIREGUARD_FW:-0}"
+	GCP_DEFAULT_WIREGUARD_FW_RULE_NAME="${GCP_DEFAULT_WIREGUARD_FW_RULE_NAME:-allow-wireguard}"
+	GCP_DEFAULT_WIREGUARD_TARGET_TAG="${GCP_DEFAULT_WIREGUARD_TARGET_TAG:-allow-wireguard}"
+	GCP_DEFAULT_WIREGUARD_SOURCE_RANGES="${GCP_DEFAULT_WIREGUARD_SOURCE_RANGES:-0.0.0.0/0}"
+	GCP_DEFAULT_WIREGUARD_ALLOW="${GCP_DEFAULT_WIREGUARD_ALLOW:-udp:51820}"
+	GCP_DEFAULT_ENSURE_SMTP_FW="${GCP_DEFAULT_ENSURE_SMTP_FW:-0}"
+	GCP_DEFAULT_SMTP_FW_RULE_NAME="${GCP_DEFAULT_SMTP_FW_RULE_NAME:-allow-smtp}"
+	GCP_DEFAULT_SMTP_TARGET_TAG="${GCP_DEFAULT_SMTP_TARGET_TAG:-allow-smtp}"
+	GCP_DEFAULT_SMTP_SOURCE_RANGES="${GCP_DEFAULT_SMTP_SOURCE_RANGES:-0.0.0.0/0}"
+	GCP_DEFAULT_SMTP_ALLOW="${GCP_DEFAULT_SMTP_ALLOW:-tcp:25}"
 }
 
 # -----------------------------------------------------------------------------
@@ -122,6 +132,16 @@ gcp_init_vm_config_defaults() {
 	GCP_ENSURE_NATS_FW="${GCP_DEFAULT_ENSURE_NATS_FW}"
 	GCP_NATS_FW_RULE_NAME="${GCP_DEFAULT_NATS_FW_RULE_NAME}"
 	GCP_NATS_PORTS="${GCP_DEFAULT_NATS_PORTS}"
+	GCP_ENSURE_WIREGUARD_FW="${GCP_DEFAULT_ENSURE_WIREGUARD_FW}"
+	GCP_WIREGUARD_FW_RULE_NAME="${GCP_DEFAULT_WIREGUARD_FW_RULE_NAME}"
+	GCP_WIREGUARD_TARGET_TAG="${GCP_DEFAULT_WIREGUARD_TARGET_TAG}"
+	GCP_WIREGUARD_SOURCE_RANGES="${GCP_DEFAULT_WIREGUARD_SOURCE_RANGES}"
+	GCP_WIREGUARD_ALLOW="${GCP_DEFAULT_WIREGUARD_ALLOW}"
+	GCP_ENSURE_SMTP_FW="${GCP_DEFAULT_ENSURE_SMTP_FW}"
+	GCP_SMTP_FW_RULE_NAME="${GCP_DEFAULT_SMTP_FW_RULE_NAME}"
+	GCP_SMTP_TARGET_TAG="${GCP_DEFAULT_SMTP_TARGET_TAG}"
+	GCP_SMTP_SOURCE_RANGES="${GCP_DEFAULT_SMTP_SOURCE_RANGES}"
+	GCP_SMTP_ALLOW="${GCP_DEFAULT_SMTP_ALLOW}"
 	GCP_FREE_TIER_MAX_MODE="0"
 	GCP_VM_ARG_ZONE_SEEN="0"
 	GCP_VM_ARG_MACHINE_TYPE_SEEN="0"
@@ -186,6 +206,14 @@ gcp_apply_vm_value_arg() {
 	--observability-fw-rule-name) GCP_OBSERVABILITY_FW_RULE_NAME="${value}" ;;
 	--postgres-fw-rule-name) GCP_POSTGRES_FW_RULE_NAME="${value}" ;;
 	--nats-fw-rule-name) GCP_NATS_FW_RULE_NAME="${value}" ;;
+	--wireguard-fw-rule-name) GCP_WIREGUARD_FW_RULE_NAME="${value}" ;;
+	--wireguard-target-tag) GCP_WIREGUARD_TARGET_TAG="${value}" ;;
+	--wireguard-source-ranges) GCP_WIREGUARD_SOURCE_RANGES="${value}" ;;
+	--wireguard-allow) GCP_WIREGUARD_ALLOW="${value}" ;;
+	--smtp-fw-rule-name) GCP_SMTP_FW_RULE_NAME="${value}" ;;
+	--smtp-target-tag) GCP_SMTP_TARGET_TAG="${value}" ;;
+	--smtp-source-ranges) GCP_SMTP_SOURCE_RANGES="${value}" ;;
+	--smtp-allow) GCP_SMTP_ALLOW="${value}" ;;
 	*) return 1 ;;
 	esac
 }
@@ -201,6 +229,8 @@ gcp_apply_vm_flag_arg() {
 	--ensure-observability-fw) GCP_ENSURE_OBSERVABILITY_FW="1" ;;
 	--ensure-postgres-fw) GCP_ENSURE_POSTGRES_FW="1" ;;
 	--ensure-nats-fw) GCP_ENSURE_NATS_FW="1" ;;
+	--ensure-wireguard-fw) GCP_ENSURE_WIREGUARD_FW="1" ;;
+	--ensure-smtp-fw) GCP_ENSURE_SMTP_FW="1" ;;
 	*) return 1 ;;
 	esac
 }
@@ -223,6 +253,25 @@ gcp_positive_int() {
 	local value="$1"
 
 	[[ "${value}" =~ ^[1-9][0-9]*$ ]]
+}
+
+gcp_append_csv_unique() {
+	local csv="$1" value="$2"
+
+	[ -n "${value}" ] || {
+		printf '%s\n' "${csv}"
+		return
+	}
+	if [ -z "${csv}" ]; then
+		printf '%s\n' "${value}"
+		return
+	fi
+	if gcp_csv_contains "${csv}" "${value}"; then
+		printf '%s\n' "${csv}"
+		return
+	fi
+
+	printf '%s,%s\n' "${csv}" "${value}"
 }
 
 gcp_apply_free_tier_defaults() {
@@ -274,6 +323,12 @@ gcp_finalize_vm_config() {
 		gcp_validate_free_tier_max_config
 	else
 		GCP_REGION="$(gcp_region_from_zone "${GCP_ZONE}")"
+	fi
+	if [ "${GCP_ENSURE_WIREGUARD_FW}" = "1" ]; then
+		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_WIREGUARD_TARGET_TAG}")"
+	fi
+	if [ "${GCP_ENSURE_SMTP_FW}" = "1" ]; then
+		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_SMTP_TARGET_TAG}")"
 	fi
 }
 
@@ -578,6 +633,19 @@ gcp_maybe_create_ssh_fw() {
 		"tcp:22"
 }
 
+gcp_maybe_create_public_fw() {
+	local project_id="$1" network="$2" fw_rule_name="$3" target_tag="$4"
+	local source_ranges="$5" allow_spec="$6"
+
+	gcp_maybe_create_fw_rule \
+		"${project_id}" \
+		"${network}" \
+		"${fw_rule_name}" \
+		"${target_tag}" \
+		"${source_ranges}" \
+		"${allow_spec}"
+}
+
 gcp_maybe_create_subnet_fw() {
 	local project_id="$1" zone="$2" network="$3" subnet="$4" fw_rule_name="$5"
 	local target_tag="$6" ports_csv="$7" cidr=""
@@ -593,4 +661,63 @@ gcp_maybe_create_subnet_fw() {
 		"${target_tag}" \
 		"${cidr}" \
 		"tcp:${ports_csv}"
+}
+
+gcp_fw_rule_json() {
+	local project_id="$1" rule_name="$2"
+
+	gcloud compute firewall-rules describe \
+		"${rule_name}" \
+		--project "${project_id}" \
+		--format=json
+}
+
+gcp_fw_rule_has_tag_user() {
+	local project_id="$1" rule_json="$2" tag="" users=""
+
+	while IFS= read -r tag; do
+		[ -n "${tag}" ] || continue
+		users="$(
+			gcloud compute instances list \
+				--project "${project_id}" \
+				--filter="tags.items=${tag}" \
+				--format='value(name)' 2>/dev/null || true
+		)"
+		if [ -n "${users}" ]; then
+			return 0
+		fi
+	done < <(jq -r '.targetTags[]?' <<<"${rule_json}")
+
+	return 1
+}
+
+gcp_fw_rule_targets_tag() {
+	local rule_json="$1" target_tag="$2"
+
+	jq -e --arg tag "${target_tag}" '
+		(.targetTags // []) | index($tag)
+	' <<<"${rule_json}" >/dev/null
+}
+
+gcp_delete_fw_rule_if_unused() {
+	local project_id="$1" rule_name="$2" target_tag="$3" rule_json=""
+
+	[ -n "${rule_name}" ] || return 0
+	if ! rule_json="$(gcp_fw_rule_json "${project_id}" "${rule_name}" 2>/dev/null)"; then
+		return 0
+	fi
+	if ! gcp_fw_rule_targets_tag "${rule_json}" "${target_tag}"; then
+		gcp_log "Keeping fw rule ${rule_name}; target tag does not match ${target_tag}"
+		return 0
+	fi
+	if gcp_fw_rule_has_tag_user "${project_id}" "${rule_json}"; then
+		gcp_log "Keeping fw rule ${rule_name}; another instance still uses its target tag"
+		return 0
+	fi
+
+	gcp_log "Deleting fw rule ${rule_name}"
+	gcloud compute firewall-rules delete \
+		"${rule_name}" \
+		--project "${project_id}" \
+		--quiet >/dev/null
 }
