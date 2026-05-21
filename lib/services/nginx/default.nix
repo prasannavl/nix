@@ -975,6 +975,7 @@
 
   mkProxyRouteLocation = name: route: let
     basePath = normalizeRoutePath route.path;
+    routeStripPath = route.stripPath or false;
     prefixPath =
       if basePath == "/"
       then "/"
@@ -982,7 +983,7 @@
     exactLocation =
       if basePath == "/"
       then ""
-      else if route.stripPath
+      else if routeStripPath
       then ''
         location = ${basePath} {
             return 307 ${prefixPath}$is_args$args;
