@@ -85,18 +85,18 @@ in {
       }
       (widget "plugin:screen-recorder")
       {
-        id = "Volume";
-        displayMode = "alwaysShow";
-        iconColor = "tertiary";
-        textColor = "tertiary";
-      }
-      {
         id = "Battery";
         displayMode = "icon-always";
         showPowerProfiles = true;
       }
       {
         id = "Brightness";
+        displayMode = "alwaysShow";
+        iconColor = "tertiary";
+        textColor = "tertiary";
+      }
+      {
+        id = "Volume";
         displayMode = "alwaysShow";
         iconColor = "tertiary";
         textColor = "tertiary";
