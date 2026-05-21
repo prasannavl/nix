@@ -1,4 +1,34 @@
-{...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: let
+  requiredModels = [
+    "nomic-embed-text"
+    "gemma4:e2b"
+    "gemma4:e4b"
+    "gemma4:26b"
+    "gemma4:31b"
+    "qwen3.5:0.8b"
+    "qwen3.5:2b"
+    "qwen3.5:4b"
+    "qwen3.5:9b"
+    "qwen3.6:27b"
+    "qwen3.6:35b-a3b"
+    "gpt-oss:20b"
+  ];
+  pullRequiredModels = pkgs.writeShellApplication {
+    name = "pvl-x2-ollama-pull-required-models";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.curl
+      pkgs.jq
+    ];
+    text = ''
+      exec ${lib.getExe pkgs.bash} ${../../../../lib/services/ollama-pull-models.sh} "$@"
+    '';
+  };
+in {
   config.services.podmanCompose.pvl.instances.ollama = rec {
     exposedPorts.main = {
       port = 11434;
@@ -28,5 +58,31 @@
           group_add:
             - keep-groups
     '';
+  };
+
+  config.systemd.user.services.pvl-ollama-models = {
+    description = "Pull required pvl-x2 Ollama models";
+    after = [
+      "pvl-ollama.service"
+      "network-online.target"
+    ];
+    wants = [
+      "pvl-ollama.service"
+      "network-online.target"
+    ];
+    unitConfig.ConditionUser = "pvl";
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
+    };
+  };
+
+  config.services.systemdUserManager.instances.pvl-ollama-models = {
+    user = "pvl";
+    unit = "pvl-ollama-models.service";
+    restartTriggers = [
+      pullRequiredModels
+      requiredModels
+    ];
   };
 }

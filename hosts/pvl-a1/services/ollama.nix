@@ -1,5 +1,29 @@
-{...}: let
+{
+  lib,
+  pkgs,
+  ...
+}: let
   ollamaModelsDir = "/var/lib/pvl/ollama-models";
+  requiredModels = [
+    "nomic-embed-text"
+    "gemma4:e2b"
+    "gemma4:e4b"
+    "qwen3.5:0.8b"
+    "qwen3.5:2b"
+    "qwen3.5:4b"
+    "qwen3.5:9b"
+  ];
+  pullRequiredModels = pkgs.writeShellApplication {
+    name = "pvl-a1-ollama-pull-required-models";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.curl
+      pkgs.jq
+    ];
+    text = ''
+      exec ${lib.getExe pkgs.bash} ${../../../lib/services/ollama-pull-models.sh} "$@"
+    '';
+  };
 in {
   systemd.tmpfiles.rules = [
     "d ${ollamaModelsDir} 0755 pvl pvl -"
@@ -73,5 +97,31 @@ in {
                         - gpu
       '';
     };
+  };
+
+  systemd.user.services.pvl-ollama-models = {
+    description = "Pull required pvl-a1 Ollama models";
+    after = [
+      "pvl-ollama.service"
+      "network-online.target"
+    ];
+    wants = [
+      "pvl-ollama.service"
+      "network-online.target"
+    ];
+    unitConfig.ConditionUser = "pvl";
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
+    };
+  };
+
+  services.systemdUserManager.instances.pvl-ollama-models = {
+    user = "pvl";
+    unit = "pvl-ollama-models.service";
+    restartTriggers = [
+      pullRequiredModels
+      requiredModels
+    ];
   };
 }

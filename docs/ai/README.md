@@ -183,8 +183,9 @@ Use this index as the canonical map for `docs/ai/**`.
   selective post-`87a57ae` `gap3/master` port, including per-commit port,
   equivalent, and skip decisions.
 - `docs/ai/notes/tooling/gap3-post-8314da5b-port-2026-05.md`: Tracks the
-  selective post-`8314da5b` `gap3/master` port, including generic `gcp-vms`
-  ports, equivalent local commits, and skipped project-specific work.
+  selective post-`8314da5b` `gap3/master` port, including generic `gcp-vms`,
+  Ollama model-pull, AGENTS guidance, equivalent local commits, and skipped
+  project-specific work.
 - `docs/ai/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
 - `docs/ai/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records the
