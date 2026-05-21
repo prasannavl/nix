@@ -8442,17 +8442,6 @@ prefix_host_logs() {
 	awk -v node="${node}" '{ if (length($0) == 0) { print ""; } else { print "| " node " | " $0; } fflush(); }'
 }
 
-write_prefixed_host_log() {
-	local node="$1" log_file="${2:-}"
-	shift 2
-
-	if [ -n "${log_file}" ]; then
-		printf '%s\n' "$@" | prefix_host_logs "${node}" | tee -a "${log_file}" >&2
-	else
-		printf '%s\n' "$@" | prefix_host_logs "${node}" >&2
-	fi
-}
-
 run_with_prefixed_combined_output() {
 	local node="$1" log_file="${2:-}"
 	shift 2
