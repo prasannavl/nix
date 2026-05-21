@@ -14,8 +14,93 @@
     "features.storage.buckets" = "true";
     "features.storage.volumes" = "true";
   };
-  mkRestrictedProject = name: network: extraConfig: {
-    inherit name;
+  projectNames = ["pvl" "abird" "abird-dev"];
+  projects = {
+    pvl = {
+      pool = "pvl";
+      network = {
+        name = "ipvlbr0";
+        ipv4Address = "10.10.50.1/24";
+        dhcpRanges = "10.10.50.100-10.10.50.199";
+      };
+      config = {
+        "restricted.containers.nesting" = "allow";
+        "restricted.devices.proxy" = "allow";
+      };
+    };
+    abird = {
+      pool = "abird";
+      network = {
+        name = "iabirdbr0";
+        ipv4Address = "10.10.100.1/24";
+        dhcpRanges = "10.10.100.100-10.10.100.199";
+      };
+      config = {
+        "restricted.containers.nesting" = "allow";
+        "restricted.devices.disk" = "allow";
+        "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-dev";
+        "restricted.devices.proxy" = "allow";
+      };
+    };
+    abird-dev = {
+      pool = "abird-dev";
+      network = {
+        name = "iabirddevbr0";
+        ipv4Address = "10.10.200.1/24";
+        dhcpRanges = "10.10.200.100-10.10.200.199";
+      };
+      config = {};
+    };
+  };
+  mkBridgeNetwork = network: {
+    config = {
+      "ipv4.address" = network.ipv4Address;
+      "ipv4.dhcp.ranges" = network.dhcpRanges;
+      "ipv4.nat" = "true";
+      "ipv6.address" = "auto";
+    };
+    description = "";
+    name = network.name;
+    type = "bridge";
+    project = "default";
+  };
+  projectBridgeNetworks =
+    builtins.map
+    (project: mkBridgeNetwork projects.${project}.network)
+    projectNames;
+  mkStoragePool = name: {
+    config = {
+      source = "/var/lib/incus/storage-pools/${name}";
+    };
+    description = "";
+    name = name;
+    driver = "btrfs";
+  };
+  projectStoragePools = builtins.map (project: mkStoragePool projects.${project}.pool) projectNames;
+  mkProjectProfile = project: let
+    projectConfig = projects.${project};
+  in {
+    config = {};
+    description = "";
+    devices = {
+      eth0 = {
+        name = "eth0";
+        network = projectConfig.network.name;
+        type = "nic";
+      };
+      root = {
+        path = "/";
+        pool = projectConfig.pool;
+        type = "disk";
+      };
+    };
+    name = "default";
+    project = project;
+  };
+  mkRestrictedProject = name: let
+    projectConfig = projects.${name};
+  in {
+    name = name;
     description = "";
     config =
       isolatedProjectConfig
@@ -26,10 +111,10 @@
         "restricted.containers.privilege" = "unprivileged";
         "restricted.devices.disk" = "managed";
         "restricted.devices.nic" = "managed";
-        "restricted.networks.access" = network;
-        "restricted.storage-pools.access" = "default";
+        "restricted.networks.access" = projectConfig.network.name;
+        "restricted.storage-pools.access" = projectConfig.pool;
       }
-      // extraConfig;
+      // projectConfig.config;
   };
   mkLxc = {
     name,
@@ -148,7 +233,7 @@ in {
       abird-nest = mkLxc {
         name = "abird-nest";
         project = "abird";
-        ipv4Address = "10.10.100.31";
+        ipv4Address = "10.10.100.10";
         recreateTag = "1";
         nestedContainers = true;
         extraDevices = {
@@ -167,158 +252,62 @@ in {
       "core.https_address" = "[::]:8443";
     };
 
-    networks = [
-      {
-        config = {
-          "ipv4.address" = "10.10.20.1/24";
-          "ipv4.dhcp.ranges" = "10.10.20.100-10.10.20.199";
-          "ipv4.nat" = "true";
-          "ipv6.address" = "auto";
-        };
-        description = "";
-        name = "incusbr0";
-        type = "bridge";
-        project = "default";
-      }
-      {
-        config = {
-          "ipv4.address" = "10.10.50.1/24";
-          "ipv4.dhcp.ranges" = "10.10.50.100-10.10.50.199";
-          "ipv4.nat" = "true";
-          "ipv6.address" = "auto";
-        };
-        description = "";
-        name = "ipvlbr0";
-        type = "bridge";
-        project = "default";
-      }
-      {
-        config = {
-          "ipv4.address" = "10.10.100.1/24";
-          "ipv4.dhcp.ranges" = "10.10.100.100-10.10.100.199";
-          "ipv4.nat" = "true";
-          "ipv6.address" = "auto";
-        };
-        description = "";
-        name = "iabirdbr0";
-        type = "bridge";
-        project = "default";
-      }
-      {
-        config = {
-          "ipv4.address" = "10.10.200.1/24";
-          "ipv4.dhcp.ranges" = "10.10.200.100-10.10.200.199";
-          "ipv4.nat" = "true";
-          "ipv6.address" = "auto";
-        };
-        description = "";
-        name = "iabirddevbr0";
-        type = "bridge";
-        project = "default";
-      }
-    ];
+    networks =
+      [
+        {
+          config = {
+            "ipv4.address" = "10.10.20.1/24";
+            "ipv4.dhcp.ranges" = "10.10.20.100-10.10.20.199";
+            "ipv4.nat" = "true";
+            "ipv6.address" = "auto";
+          };
+          description = "";
+          name = "incusbr0";
+          type = "bridge";
+          project = "default";
+        }
+      ]
+      ++ projectBridgeNetworks;
 
-    storage_pools = [
-      {
-        config = {
-          source = "/var/lib/incus/storage-pools/default";
-        };
-        description = "";
-        name = "default";
-        driver = "btrfs";
-      }
-    ];
+    storage_pools =
+      [
+        {
+          config = {
+            source = "/var/lib/incus/storage-pools/default";
+          };
+          description = "";
+          name = "default";
+          driver = "btrfs";
+        }
+      ]
+      ++ projectStoragePools;
 
     storage_volumes = [];
 
-    profiles = [
-      {
-        config = {};
-        description = "";
-        devices = {
-          eth0 = {
-            name = "eth0";
-            network = "incusbr0";
-            type = "nic";
+    profiles =
+      [
+        {
+          config = {};
+          description = "";
+          devices = {
+            eth0 = {
+              name = "eth0";
+              network = "incusbr0";
+              type = "nic";
+            };
+            root = {
+              path = "/";
+              pool = "default";
+              type = "disk";
+            };
           };
-          root = {
-            path = "/";
-            pool = "default";
-            type = "disk";
-          };
-        };
-        name = "default";
-        project = "default";
-      }
-      {
-        config = {};
-        description = "";
-        devices = {
-          eth0 = {
-            name = "eth0";
-            network = "ipvlbr0";
-            type = "nic";
-          };
-          root = {
-            path = "/";
-            pool = "default";
-            type = "disk";
-          };
-        };
-        name = "default";
-        project = "pvl";
-      }
-      {
-        config = {};
-        description = "";
-        devices = {
-          eth0 = {
-            name = "eth0";
-            network = "iabirdbr0";
-            type = "nic";
-          };
-          root = {
-            path = "/";
-            pool = "default";
-            type = "disk";
-          };
-        };
-        name = "default";
-        project = "abird";
-      }
-      {
-        config = {};
-        description = "";
-        devices = {
-          eth0 = {
-            name = "eth0";
-            network = "iabirddevbr0";
-            type = "nic";
-          };
-          root = {
-            path = "/";
-            pool = "default";
-            type = "disk";
-          };
-        };
-        name = "default";
-        project = "abird-dev";
-      }
-    ];
+          name = "default";
+          project = "default";
+        }
+      ]
+      ++ builtins.map mkProjectProfile projectNames;
 
-    projects = [
-      (mkRestrictedProject "pvl" "ipvlbr0" {
-        "restricted.containers.nesting" = "allow";
-        "restricted.devices.proxy" = "allow";
-      })
-      (mkRestrictedProject "abird" "iabirdbr0" {
-        "restricted.containers.nesting" = "allow";
-        "restricted.devices.disk" = "allow";
-        "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-dev";
-        "restricted.devices.proxy" = "allow";
-      })
-      (mkRestrictedProject "abird-dev" "iabirddevbr0" {})
-    ];
+    projects = builtins.map mkRestrictedProject projectNames;
     certificates = [];
     cluster = null;
   };
@@ -326,5 +315,7 @@ in {
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
   };
-  networking.firewall.trustedInterfaces = ["incusbr0" "ipvlbr0" "iabirdbr0" "iabirddevbr0"];
+  networking.firewall.trustedInterfaces =
+    ["incusbr0"]
+    ++ builtins.map (project: projects.${project}.network.name) projectNames;
 }

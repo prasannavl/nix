@@ -120,6 +120,9 @@ Use this index as the canonical map for `docs/ai/**`.
   the `pvl-x2` Incus deploy regression where local image store-path churn
   restarted declared guest lifecycle units during normal `switch`, plus the
   durable explicit-trigger fix.
+- `docs/ai/notes/hosts/pvl-x2-incus-project-storage-pools-2026-05.md`: Records
+  the separate Btrfs storage pools for the `pvl`, `abird`, and `abird-dev` Incus
+  projects on `pvl-x2`.
 
 ### Lib
 
