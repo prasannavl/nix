@@ -1,10 +1,4 @@
-{
-  config,
-  pkgs,
-  ...
-}: let
-  incusClientCert = pkgs.writeText "pvl-vlab-1-incus-client.crt" (builtins.readFile ../../data/secrets/incus/pvl-vlab-1.crt);
-in {
+{config, ...}: {
   age.secrets.incus-pvl-vlab-1-key = {
     file = ../../data/secrets/incus/pvl-vlab-1.key.age;
   };
@@ -15,11 +9,10 @@ in {
       name = "pvl-x2";
       address = "https://127.0.0.1:8443";
       project = "pvl";
-      allowedSubnets = ["10.10.50.0/24"];
-      clientCertificateFile = "${incusClientCert}";
+      projects.pvl.allowedSubnets = "10.10.50.0/24";
+      clientCertificateFile = ../../data/secrets/incus/pvl-vlab-1.crt;
       clientKeyFile = config.age.secrets.incus-pvl-vlab-1-key.path;
       acceptCertificate = true;
-      certificateDelegation.enable = true;
     };
 
     instances = {
