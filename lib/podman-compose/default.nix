@@ -10,7 +10,7 @@
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
   cloudflareTunnelsLib = import ../services/tunnels/cloudflare.nix {inherit lib;};
-  defaultService = {
+  serviceDefaults = {
     source = null;
     files = {};
     entryFile = null;
@@ -19,11 +19,22 @@
     serviceName = null;
     serviceOverrides = {};
     composeArgs = [];
+    reload = {
+      method = "restart";
+      signal = "HUP";
+      services = [];
+      trigger = {
+        dirs = [];
+        externalFiles = [];
+      };
+    };
     subnet = null;
     autoStart = true;
+    longRunning = true;
     timeoutStableSeconds = 120;
     recreateOnSwitch = false;
     bootTag = "0";
+    reloadTag = "0";
     recreateTag = "0";
     imageTag = "0";
     dependsOn = [];
@@ -35,6 +46,12 @@
     exposedPorts = {};
   };
   bootReadyTargetName = "systemd-user-manager-ready.target";
+  generatedRuntimeDirName = ".podman-compose";
+  envSecretsRuntimeDirName = "${generatedRuntimeDirName}/env-secrets";
+  fileSecretsRuntimeDirName = "${generatedRuntimeDirName}/file-secrets";
+  envSecretsOverrideFileName = "__podman-env-secrets.override.yml";
+  fileSecretsOverrideFileName = "__podman-file-secrets.override.yml";
+  explicitSystemdUnitPattern = ".*\\.(service|target|socket|timer|path|mount)$";
 
   ownerRefType = lib.types.either lib.types.str lib.types.int;
   modeOptionType = lib.types.nullOr lib.types.str;
@@ -96,6 +113,47 @@
     groupDescription = "Group for the staged directory. Numeric gid or name. When null, unchanged.";
   };
   dirEntryType = lib.types.submodule {options = dirEntryOptions;};
+  reloadType = lib.types.submodule {
+    options = {
+      method = lib.mkOption {
+        type = lib.types.enum ["restart" "signal"];
+        default = serviceDefaults.reload.method;
+        description = "How `systemctl --user reload` should apply the compose instance. `restart` is the safe fallback; `signal` is opt-in for services that can reload directory-mounted config.";
+      };
+
+      signal = lib.mkOption {
+        type = lib.types.str;
+        default = serviceDefaults.reload.signal;
+        description = "Signal passed to `podman compose kill --signal` when reload.method is `signal`.";
+      };
+
+      services = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = serviceDefaults.reload.services;
+        description = "Compose service names to signal when reload.method is `signal`.";
+      };
+
+      trigger = lib.mkOption {
+        type = lib.types.submodule {
+          options = {
+            dirs = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = serviceDefaults.reload.trigger.dirs;
+              description = "Directory-mounted runtime paths whose changes are safe to handle with native reload. Entries must refer to declared directory sources or dirs.";
+            };
+
+            externalFiles = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = serviceDefaults.reload.trigger.externalFiles;
+              description = "Explicit staged files outside container mounts whose changes may trigger native reload. Rejected when the same file is detected as a single-file bind mount. Compose-consumed files such as .env do not update container env or interpolation until restart/recreate.";
+            };
+          };
+        };
+        default = serviceDefaults.reload.trigger;
+        description = "Paths that may be handled by native reload instead of restart once the user-manager supports reload triggers.";
+      };
+    };
+  };
 
   fileEntryOptions =
     {
@@ -176,6 +234,16 @@
     isSkippedMode mode
     || builtins.match "[0-7]?([1357][0-7][0-7]|[0-7][1357][0-7]|[0-7][0-7][1357])" mode
     != null;
+  isReservedGeneratedPath = path:
+    path
+    == generatedRuntimeDirName
+    || lib.hasPrefix "${generatedRuntimeDirName}/" path
+    || path == envSecretsOverrideFileName
+    || path == fileSecretsOverrideFileName;
+  stackTmpfilesGroup = stack:
+    if builtins.hasAttr stack.user config.users.users && config.users.users.${stack.user}.group != null
+    then config.users.users.${stack.user}.group
+    else "-";
 
   helperPackage = pkgs.writeShellApplication {
     name = "podman-compose-helper";
@@ -185,6 +253,7 @@
       pkgs.jq
       pkgs.podman
       pkgs.systemd
+      pkgs.util-linux
     ];
     text = ''
       source ${./helper.sh}
@@ -197,13 +266,13 @@
     options = {
       source = lib.mkOption {
         type = lib.types.nullOr (lib.types.oneOf [lib.types.lines lib.types.attrs lib.types.path]);
-        default = null;
+        default = serviceDefaults.source;
         description = "Main compose source content. Attrsets are rendered to YAML; strings are copied as-is; paths are used directly.";
       };
 
       files = lib.mkOption {
         type = lib.types.attrsOf fileEntryType;
-        default = {};
+        default = serviceDefaults.files;
         description = ''
           Additional files keyed by destination path. Each value is a file entry
           submodule with text/source plus optional mode/user/group/userScope.
@@ -217,30 +286,32 @@
 
       dirs = lib.mkOption {
         type = lib.types.attrsOf dirEntryType;
-        default = {};
+        default = serviceDefaults.dirs;
         description = ''
-          Managed staged directories keyed by destination path under the compose
-          working directory. Each entry carries mode/user/group/userScope, and
-          is finalized after file staging so directory bind mounts can avoid
-          world traversal bits.
+          Managed staged directories keyed by destination path. Relative paths
+          are resolved under the compose working directory; absolute paths are
+          managed directly on the host. Each entry carries mode/user/group/userScope,
+          and is finalized after file staging so directory bind mounts can avoid
+          world traversal bits. The helper runs as the stack user, so absolute
+          path parents must already exist and be searchable/writable by that user.
         '';
       };
 
       entryFile = lib.mkOption {
         type = lib.types.nullOr (lib.types.oneOf [lib.types.str (lib.types.listOf lib.types.str)]);
-        default = null;
+        default = serviceDefaults.entryFile;
         description = "Optional compose entry filename(s) inside workingDir. Set a string for one file or a list for ordered repeated `-f` arguments. When null and source is set, `compose.yml` in workingDir is used; otherwise podman compose default file discovery is used in workingDir.";
       };
 
       user = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
-        default = null;
+        default = serviceDefaults.user;
         description = "Override user for this service.";
       };
 
       workingDir = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
-        default = null;
+        default = serviceDefaults.workingDir;
         description = "Override working directory for podman compose project context.";
       };
 
@@ -286,85 +357,103 @@
 
       serviceName = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
-        default = null;
+        default = serviceDefaults.serviceName;
         description = "Override generated systemd user service name.";
       };
 
       serviceOverrides = lib.mkOption {
         type = lib.types.attrs;
-        default = {};
+        default = serviceDefaults.serviceOverrides;
         description = "Extra attributes merged into generated systemd.user.services.<name>.";
       };
 
       subnet = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Optional default-network subnet used by this compose instance. The module asserts that declared subnets are unique across configured podmanCompose instances.";
+        default = serviceDefaults.subnet;
+        description = "Optional default-network subnet used by this compose instance. This option is the module-level source of truth for subnet collision checks; inline compose network IPAM is not parsed.";
       };
 
       composeArgs = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [];
+        default = serviceDefaults.composeArgs;
         description = "Additional arguments passed to every `podman compose` invocation for this instance, before compose-file flags and the subcommand.";
+      };
+
+      reload = lib.mkOption {
+        type = reloadType;
+        default = serviceDefaults.reload;
+        description = "Reload policy for this compose instance. Restart is the default; native signal reload is opt-in and only supports directory-mounted change sets.";
       };
 
       autoStart = lib.mkOption {
         type = lib.types.bool;
-        default = true;
+        default = serviceDefaults.autoStart;
         description = "Whether this compose instance should be auto-started by the generated user-manager reconcile flow during deploy and boot-ready startup.";
+      };
+
+      longRunning = lib.mkOption {
+        type = lib.types.bool;
+        default = serviceDefaults.longRunning;
+        description = "Whether this compose instance is expected to keep at least one container running. When false, all containers exiting cleanly is service success.";
       };
 
       timeoutStableSeconds = lib.mkOption {
         type = lib.types.ints.positive;
-        default = 120;
+        default = serviceDefaults.timeoutStableSeconds;
         description = "Seconds the generated user-manager reconciliation should wait for this compose unit to leave activating, deactivating, or reloading states.";
       };
 
       recreateOnSwitch = lib.mkOption {
         type = lib.types.bool;
-        default = false;
+        default = serviceDefaults.recreateOnSwitch;
         description = "Whether service starts triggered by switch/restart should force container recreation instead of reusing existing compose containers.";
       };
 
       recreateTag = lib.mkOption {
         type = lib.types.str;
-        default = "0";
-        description = "Declarative knob to force recreation of this compose instance on the next service start.";
+        default = serviceDefaults.recreateTag;
+        description = "Declarative knob to restart this compose instance and force container recreation with `podman compose up --force-recreate`. Value \"0\" disables the trigger.";
       };
 
       bootTag = lib.mkOption {
         type = lib.types.str;
-        default = "0";
+        default = serviceDefaults.bootTag;
         description = "Declarative knob to force a restart of this compose instance on the next service start.";
+      };
+
+      reloadTag = lib.mkOption {
+        type = lib.types.str;
+        default = serviceDefaults.reloadTag;
+        description = "Declarative knob to reload this compose instance through systemd-user-manager reloadTriggers when native reload is enabled.";
       };
 
       imageTag = lib.mkOption {
         type = lib.types.str;
-        default = "0";
-        description = "Declarative knob to force a compose image refresh on the next service start.";
+        default = serviceDefaults.imageTag;
+        description = "Declarative knob to enable a compose image refresh unit before this instance starts. Pair with bootTag or recreateTag when already-running containers must be restarted after the pull.";
       };
 
       dependsOn = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [];
+        default = serviceDefaults.dependsOn;
         description = "Hard dependencies. Generates Requires+After. Plain names resolve to generated services in this stack; unit names like foo.service are used as-is.";
       };
 
       wants = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [];
+        default = serviceDefaults.wants;
         description = "Soft dependencies. Generates Wants+After. Plain names resolve to generated services in this stack; unit names like foo.service are used as-is.";
       };
 
       waitForNetwork = lib.mkOption {
         type = lib.types.bool;
-        default = true;
+        default = serviceDefaults.waitForNetwork;
         description = "Whether to add network-online.target to Wants+After.";
       };
 
       envSecrets = lib.mkOption {
         type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
-        default = {};
+        default = serviceDefaults.envSecrets;
         description = ''
           Per-compose-service file-backed environment secret injection. Maps
           compose service name to environment variable name to host secret path.
@@ -375,7 +464,7 @@
 
       fileSecrets = lib.mkOption {
         type = lib.types.attrsOf fileSecretEntryType;
-        default = {};
+        default = serviceDefaults.fileSecrets;
         description = ''
           File-backed secret staging for bind-mounted runtime files. Maps a
           stable secret filename to a secret entry submodule (`file` plus
@@ -631,7 +720,7 @@
             };
           };
         }));
-        default = {};
+        default = serviceDefaults.exposedPorts;
         description = "Named host ports exposed by this compose instance, for example http/https/main. Intended for reuse in compose definitions and host policy like firewall rules.";
       };
     };
@@ -675,7 +764,7 @@
 
       timeoutStableSeconds = lib.mkOption {
         type = lib.types.ints.positive;
-        default = defaultService.timeoutStableSeconds;
+        default = serviceDefaults.timeoutStableSeconds;
         description = "Default stable-state wait timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutStableSeconds.";
       };
 
@@ -745,7 +834,7 @@
     resolveDependencyUnit = dep:
       if builtins.hasAttr dep stack.instances
       then "${resolveGeneratedServiceName dep}.service"
-      else if builtins.match ".*\\.[A-Za-z0-9_-]+$" dep != null
+      else if builtins.match explicitSystemdUnitPattern dep != null
       then dep
       else "${stack.servicePrefix}${dep}.service";
 
@@ -756,6 +845,44 @@
     imagePullServiceName = "${resolvedSystemdServiceName}-image-pull";
     imagePullUnit = "${imagePullServiceName}.service";
     hasImagePullUnit = service.imageTag != "0";
+    resolvedPullComposeFiles = map (file: service.sourcePaths.${file}) service.pullEntryFiles;
+    nativeReloadEnabled = service.reload.method == "signal";
+    reloadPathMatchesDir = dirName: fileName:
+      fileName == dirName || lib.hasPrefix "${dirName}/" fileName;
+    reloadExternalFileEntries =
+      if nativeReloadEnabled
+      then
+        lib.filterAttrs
+        (fileName: _: builtins.elem fileName service.reload.trigger.externalFiles)
+        service.stagedEntries
+      else {};
+    reloadStagedEntries =
+      if nativeReloadEnabled
+      then
+        reloadExternalFileEntries
+        // lib.filterAttrs
+        (
+          fileName: _:
+            builtins.any
+            (dirName: reloadPathMatchesDir dirName fileName)
+            service.reload.trigger.dirs
+        )
+        service.stagedEntries
+      else {};
+    restartStagedEntries =
+      lib.filterAttrs
+      (fileName: _: !(builtins.hasAttr fileName reloadStagedEntries))
+      service.stagedEntries;
+    restartRuntimePaths =
+      lib.filterAttrs
+      (fileName: _: !(builtins.hasAttr fileName reloadStagedEntries))
+      service.runtimePaths;
+    reloadDirRuntimePath = dirName:
+      if builtins.hasAttr dirName service.dirRuntimePaths
+      then service.dirRuntimePaths.${dirName}
+      else if lib.hasPrefix "/" dirName
+      then dirName
+      else "${resolvedWorkingDir}/${dirName}";
     entryPermsJson = entry: {
       mode = entry.mode;
       user = ownerRefToString entry.user;
@@ -764,11 +891,12 @@
     };
     helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
       builtins.toJSON {
-        version = 3;
+        version = 5;
         serviceName = resolvedSystemdServiceName;
         workingDir = resolvedWorkingDir;
         composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
+        pullComposeFiles = resolvedPullComposeFiles;
         stagedDirs = map (dirName: let
           entry = service.dirs.${dirName};
         in
@@ -797,7 +925,28 @@
               dstDirMode = "0700";
             }
             // entryPermsJson entry) (builtins.attrNames service.fileSecrets);
+        reload = {
+          inherit (service.reload) method signal services;
+          dirs =
+            map (dirName: {
+              name = dirName;
+              dst = reloadDirRuntimePath dirName;
+            })
+            service.reload.trigger.dirs;
+          stagedFiles = map (fileName: let
+            entry = reloadStagedEntries.${fileName};
+          in
+            {
+              src = service.sourcePaths.${fileName};
+              dst = service.runtimePaths.${fileName};
+              dstDir = builtins.dirOf service.runtimePaths.${fileName};
+              dstDirMode = "0750";
+            }
+            // entryPermsJson entry) (builtins.attrNames reloadStagedEntries);
+        };
         recreateOnSwitch = service.recreateOnSwitch;
+        recreateTag = service.recreateTag;
+        longRunning = service.longRunning;
         envSecretFiles = map (composeServiceName: let
           entry = service.envSecrets.${composeServiceName};
         in
@@ -856,7 +1005,7 @@
         Environment =
           helperEnvironment
           ++ [
-            "PODMAN_COMPOSE_IMAGE_TAG=${service.imageTag}"
+            "NIX_PODMAN_COMPOSE_IMAGE_TAG=${service.imageTag}"
           ];
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${helperScript} image-pull";
@@ -864,6 +1013,43 @@
       };
     };
     mergedSystemdService = lib.recursiveUpdate baseSystemdService service.serviceOverrides;
+    restartSystemdService =
+      mergedSystemdService
+      // {
+        serviceConfig =
+          mergedSystemdService.serviceConfig
+          // {
+            Environment =
+              map
+              (env:
+                if lib.hasPrefix "NIX_PODMAN_COMPOSE_METADATA=" env
+                then "NIX_PODMAN_COMPOSE_METADATA=<generation-local-metadata>"
+                else env)
+              mergedSystemdService.serviceConfig.Environment;
+          };
+      };
+    reloadStamp =
+      if nativeReloadEnabled
+      then
+        builtins.hashString "sha256" (builtins.toJSON {
+          reload = service.reload;
+          reloadTag = service.reloadTag;
+          dirs =
+            map (dirName: {
+              name = dirName;
+              dst = reloadDirRuntimePath dirName;
+              perms =
+                if builtins.hasAttr dirName service.dirs
+                then entryPermsJson service.dirs.${dirName}
+                else null;
+            })
+            service.reload.trigger.dirs;
+          sourcePaths = lib.mapAttrs (fileName: _: service.sourcePaths.${fileName}) reloadStagedEntries;
+          runtimePaths = lib.mapAttrs (fileName: _: service.runtimePaths.${fileName}) reloadStagedEntries;
+          stagedEntryPerms =
+            lib.mapAttrs (_: entryPermsJson) reloadStagedEntries;
+        })
+      else "";
   in {
     systemdServiceName = resolvedSystemdServiceName;
     systemdUser = resolvedUser;
@@ -873,13 +1059,14 @@
       value = imagePullSystemdService;
     };
     restartStamp = builtins.hashString "sha256" (builtins.toJSON {
-      unit = mergedSystemdService;
-      sourcePaths = service.sourcePaths;
-      runtimePaths = service.runtimePaths;
+      unit = restartSystemdService;
+      reload = service.reload;
+      sourcePaths = lib.mapAttrs (fileName: _: service.sourcePaths.${fileName}) restartStagedEntries;
+      runtimePaths = restartRuntimePaths;
       dirs = lib.mapAttrs (_: entryPermsJson) service.dirs;
       dirRuntimePaths = service.dirRuntimePaths;
       stagedEntryPerms =
-        lib.mapAttrs (_: entryPermsJson) service.stagedEntries;
+        lib.mapAttrs (_: entryPermsJson) restartStagedEntries;
       fileSecrets = lib.mapAttrs (_: entry:
         {
           inherit
@@ -899,7 +1086,8 @@
       service.envSecrets;
       envSecretRuntimePaths = service.envSecretRuntimePaths;
     });
-    inherit (service) autoStart timeoutStableSeconds imageTag recreateTag bootTag waitForNetwork;
+    reloadStamp = reloadStamp;
+    inherit (service) autoStart longRunning timeoutStableSeconds imageTag recreateTag bootTag reloadTag waitForNetwork;
   };
 
   resolvedServices = lib.concatLists (
@@ -916,10 +1104,47 @@
     cfg
   );
 
-  allExposedPorts = lib.concatLists (
+  allExposedPortEntries = lib.concatLists (
     lib.mapAttrsToList (
-      _: stack:
-        lib.concatMap (service: lib.attrValues service.exposedPorts) (builtins.attrValues stack.instances)
+      stackName: stack:
+        lib.concatLists (
+          lib.mapAttrsToList (
+            serviceName: service:
+              lib.concatLists (
+                lib.mapAttrsToList (
+                  portName: portCfg:
+                    map (protocol: {
+                      key = "${protocol}:${toString portCfg.port}";
+                      inherit stackName serviceName portName protocol portCfg;
+                      port = portCfg.port;
+                    })
+                    (portCfg.protocols or ["tcp"])
+                )
+                service.exposedPorts
+              )
+          )
+          stack.instances
+        )
+    )
+    cfg
+  );
+  allExposedPorts = map (entry: entry.portCfg) allExposedPortEntries;
+  duplicatedExposedPortKeys = collectionsLib.duplicateValues (map (entry: entry.key) allExposedPortEntries);
+  duplicatedExposedPortEntries =
+    lib.filter (entry: builtins.elem entry.key duplicatedExposedPortKeys) allExposedPortEntries;
+  describeExposedPortEntry = entry: "${entry.stackName}.${entry.serviceName}.${entry.portName}=${entry.protocol}/${toString entry.port}";
+  reservedGeneratedPathViolations = lib.concatLists (
+    lib.mapAttrsToList (
+      stackName: stack:
+        lib.concatLists (
+          lib.mapAttrsToList (
+            serviceName: service:
+              map
+              (path: "${stackName}.${serviceName}.${path}")
+              (lib.filter isReservedGeneratedPath service.userDeclaredRuntimePaths)
+          )
+          stack.instances
+        )
     )
     cfg
   );
@@ -1050,6 +1275,12 @@
   describeSubnetEntry = entry: "${entry.stackName}.${entry.serviceName}=${entry.subnet}";
   duplicatedSubnetEntries =
     lib.filter (entry: builtins.elem entry.subnet duplicatedSubnets) declaredSubnets;
+  describeEntryFile = entryFile:
+    if entryFile == null
+    then "<null>"
+    else if builtins.isList entryFile
+    then lib.concatStringsSep ", " entryFile
+    else toString entryFile;
 in {
   imports = [
     ../systemd-user-manager
@@ -1079,18 +1310,14 @@ in {
           );
         normalizeEnvSecretEntry = entry:
           envSecretEntryDefaults // {entries = entry;};
-        renderEntry = serviceName: fileName: entry: let
-          safeName = builtins.replaceStrings ["/" "."] ["__" "_"] fileName;
-          outName = "podman-compose-${stackName}-${serviceName}-${safeName}";
-        in
+        renderEntry = serviceName: fileName: entry:
           if entry.source != null
-          then
-            pkgs.runCommandLocal outName {} ''
-              set -eu
-              src=${entry.source}
-              ${pkgs.coreutils}/bin/cp -f "$src" "$out"
-            ''
-          else pkgs.writeText outName entry.text;
+          then entry.source
+          else let
+            safeName = builtins.replaceStrings ["/" "."] ["__" "_"] fileName;
+            outName = "podman-compose-${stackName}-${serviceName}-${safeName}";
+          in
+            pkgs.writeText outName entry.text;
         expandFileEntry = dstPrefix: entry:
           if entry.source != null && builtins.isPath entry.source
           then let
@@ -1126,6 +1353,53 @@ in {
               then lib.generators.toYAML {} composeSource
               else composeSource;
           };
+        stripVolumeSourceQuotes = source:
+          builtins.replaceStrings ["\"" "'"] ["" ""] (toString source);
+        volumeSourceFromShortSyntax = volume: let
+          parts = lib.splitString ":" (stripVolumeSourceQuotes volume);
+        in
+          if parts == []
+          then null
+          else builtins.head parts;
+        isLikelyHostBindSource = source:
+          source
+          != null
+          && (
+            lib.hasPrefix "." source
+            || lib.hasPrefix "/" source
+          );
+        volumeSourceFromEntry = volume:
+          if builtins.isString volume
+          then volumeSourceFromShortSyntax volume
+          else if
+            builtins.isAttrs volume
+            && builtins.hasAttr "source" volume
+            && ((volume.type or "bind") == "bind")
+          then stripVolumeSourceQuotes volume.source
+          else null;
+        volumeSourcesFromComposeAttrs = compose:
+          if
+            builtins.isAttrs compose
+            && builtins.hasAttr "services" compose
+            && builtins.isAttrs compose.services
+          then
+            lib.concatLists (
+              lib.mapAttrsToList (
+                _: composeService:
+                  map volumeSourceFromEntry (composeService.volumes or [])
+              )
+              compose.services
+            )
+          else [];
+        volumeSourcesFromComposeText = text:
+          lib.concatMap
+          (line: let
+            match = builtins.match "[[:space:]]*-[[:space:]]*([^:#]+):.*" line;
+          in
+            if match == null
+            then []
+            else [(stripVolumeSourceQuotes (builtins.head match))])
+          (lib.splitString "\n" text);
       in
         stack
         // (let
@@ -1162,7 +1436,7 @@ in {
             lib.mapAttrs
             (serviceName: service: let
               baseService =
-                defaultService
+                serviceDefaults
                 // {
                   timeoutStableSeconds = stack.timeoutStableSeconds;
                 }
@@ -1181,8 +1455,6 @@ in {
                 if builtins.isPath normalizedService.source
                 then builtins.readFile normalizedService.source
                 else normalizedService.source;
-              envSecretsOverrideFileName = "__podman-env-secrets.override.yml";
-              fileSecretsOverrideFileName = "__podman-file-secrets.override.yml";
               sourceDeclaredComposeServices =
                 if
                   builtins.isAttrs sourceCompose
@@ -1240,25 +1512,47 @@ in {
                     fileSecretTargetServices
                   );
                 };
-              normalizedEntryFile = let
-                baseEntryFiles =
-                  if normalizedService.entryFile != null
-                  then
-                    if builtins.isList normalizedService.entryFile
-                    then normalizedService.entryFile
-                    else [normalizedService.entryFile]
-                  else if useSource
-                  then ["compose.yml"]
-                  else [];
-                generatedOverrideFiles =
-                  lib.optionals (envSecretsOverride != {}) [envSecretsOverrideFileName]
-                  ++ lib.optionals (fileSecretsOverride != {}) [fileSecretsOverrideFileName];
-              in
+              baseEntryFiles =
+                if normalizedService.entryFile != null
+                then
+                  if builtins.isList normalizedService.entryFile
+                  then normalizedService.entryFile
+                  else [normalizedService.entryFile]
+                else if useSource
+                then ["compose.yml"]
+                else [];
+              generatedOverrideFiles =
+                lib.optionals (envSecretsOverride != {}) [envSecretsOverrideFileName]
+                ++ lib.optionals (fileSecretsOverride != {}) [fileSecretsOverrideFileName];
+              normalizedEntryFile =
                 if generatedOverrideFiles == []
                 then normalizedService.entryFile
                 else baseEntryFiles ++ generatedOverrideFiles;
               filesExpanded =
                 lib.concatMapAttrs (dstPath: entry: expandFileEntry dstPath entry) normalizedService.files;
+              declaredSourceDirNames = builtins.attrNames (
+                lib.filterAttrs (
+                  _: entry:
+                    entry.source
+                    != null
+                    && builtins.isPath entry.source
+                    && (let
+                      pathString = toString entry.source;
+                      pathName = builtins.baseNameOf pathString;
+                      pathParent = builtins.dirOf pathString;
+                      pathKind = (builtins.readDir pathParent).${pathName} or null;
+                    in
+                      pathKind == "directory")
+                )
+                normalizedService.files
+              );
+              validReloadOnChangeDirs = lib.unique (
+                (builtins.attrNames normalizedService.dirs) ++ declaredSourceDirNames
+              );
+              invalidReloadOnChangeDirs =
+                lib.filter
+                (dirName: !(builtins.elem dirName validReloadOnChangeDirs))
+                normalizedService.reload.trigger.dirs;
               effectiveEntries =
                 (lib.optionalAttrs useSource {"compose.yml" = mkGeneratedEntry sourceCompose;})
                 // filesExpanded
@@ -1268,9 +1562,35 @@ in {
                 if normalizedService.workingDir != null
                 then normalizedService.workingDir
                 else "${stack.stackDir}/${serviceName}";
+              normalizeComposeBindSource = source: let
+                strippedSource = stripVolumeSourceQuotes source;
+                withoutDotSlash =
+                  if lib.hasPrefix "./" strippedSource
+                  then lib.removePrefix "./" strippedSource
+                  else strippedSource;
+              in
+                if lib.hasPrefix "${resolvedWorkingDir}/" withoutDotSlash
+                then lib.removePrefix "${resolvedWorkingDir}/" withoutDotSlash
+                else withoutDotSlash;
+              composeBindSources = lib.unique (
+                map normalizeComposeBindSource (
+                  builtins.filter isLikelyHostBindSource (
+                    volumeSourcesFromComposeAttrs sourceCompose
+                    ++ lib.optionals (builtins.isString sourceCompose) (volumeSourcesFromComposeText sourceCompose)
+                  )
+                )
+              );
+              invalidReloadExternalFiles =
+                lib.filter
+                (fileName: !(builtins.hasAttr fileName filesExpanded))
+                normalizedService.reload.trigger.externalFiles;
+              bindMountedReloadExternalFiles =
+                lib.filter
+                (fileName: builtins.elem fileName composeBindSources)
+                normalizedService.reload.trigger.externalFiles;
               fileSecretRuntimePaths =
                 lib.mapAttrs
-                (secretName: _: "${resolvedWorkingDir}/.podman-file-secrets/${secretName}")
+                (secretName: _: "${resolvedWorkingDir}/${fileSecretsRuntimeDirName}/${secretName}")
                 normalizedService.fileSecrets;
               dirRuntimePaths =
                 lib.mapAttrs
@@ -1278,13 +1598,16 @@ in {
                   dirName: _:
                     if dirName == ""
                     then resolvedWorkingDir
+                    else if lib.hasPrefix "/" dirName
+                    then dirName
                     else "${resolvedWorkingDir}/${dirName}"
                 )
                 normalizedService.dirs;
               envSecretRuntimePaths =
                 lib.mapAttrs
-                (composeServiceName: _: "${resolvedWorkingDir}/.podman-env-secrets/${composeServiceName}.env")
+                (composeServiceName: _: "${resolvedWorkingDir}/${envSecretsRuntimeDirName}/${composeServiceName}.env")
                 normalizedService.envSecrets;
+              sourcePaths = lib.mapAttrs (fileName: entry: renderEntry serviceName fileName entry) effectiveEntries;
             in
               normalizedService
               // {
@@ -1294,9 +1617,15 @@ in {
                 dirRuntimePaths = dirRuntimePaths;
                 envSecretRuntimePaths = envSecretRuntimePaths;
                 stagedEntries = effectiveEntries;
-                sourcePaths = lib.mapAttrs (fileName: entry: renderEntry serviceName fileName entry) effectiveEntries;
+                sourcePaths = sourcePaths;
                 runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveEntries;
                 entryFile = normalizedEntryFile;
+                pullEntryFiles = baseEntryFiles;
+                userDeclaredRuntimePaths = (builtins.attrNames filesExpanded) ++ (builtins.attrNames normalizedService.dirs);
+                validReloadOnChangeDirs = validReloadOnChangeDirs;
+                invalidReloadOnChangeDirs = invalidReloadOnChangeDirs;
+                invalidReloadExternalFiles = invalidReloadExternalFiles;
+                bindMountedReloadExternalFiles = bindMountedReloadExternalFiles;
               })
             instancesWithContext;
         in {
@@ -1329,7 +1658,7 @@ in {
       tmpfiles.rules = lib.concatLists (
         lib.mapAttrsToList
         (_: stack: [
-          "d ${stack.stackDir} 0750 ${stack.user} ${stack.user} -"
+          "d ${stack.stackDir} 0750 ${stack.user} ${stackTmpfilesGroup stack} -"
         ])
         cfg
       );
@@ -1360,6 +1689,17 @@ in {
           assertion = duplicatedSubnets == [];
           message = "services.podmanCompose: duplicate declared subnet values: ${lib.concatStringsSep ", " (map describeSubnetEntry duplicatedSubnetEntries)}";
         }
+        {
+          assertion = duplicatedExposedPortKeys == [];
+          message = "services.podmanCompose: duplicate exposed host ports: ${lib.concatStringsSep ", " (map describeExposedPortEntry duplicatedExposedPortEntries)}";
+        }
+        {
+          assertion = reservedGeneratedPathViolations == [];
+          message =
+            "services.podmanCompose: user-declared files/dirs must not target generated runtime paths "
+            + "${generatedRuntimeDirName}/, ${envSecretsOverrideFileName}, or ${fileSecretsOverrideFileName}: "
+            + lib.concatStringsSep ", " reservedGeneratedPathViolations;
+        }
       ]
       ++ lib.concatLists (
         lib.mapAttrsToList
@@ -1368,6 +1708,67 @@ in {
           (serviceName: service: {
             assertion = service.source != null || service.files != {};
             message = "services.podmanCompose.${stackName}.instances.${serviceName}: set source and/or files.";
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.imageTag == "0" || service.hasComposeEntry;
+            message = "services.podmanCompose.${stackName}.instances.${serviceName}: imageTag requires source or entryFile so image-pull can use store-backed compose files without staging runtime files.";
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.invalidReloadOnChangeDirs == [];
+            message =
+              "services.podmanCompose.${stackName}.instances.${serviceName}.reload.trigger.dirs contains entries that are not declared dirs or directory sources: "
+              + lib.concatStringsSep ", " service.invalidReloadOnChangeDirs;
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.reload.method != "signal" || service.reload.services != [];
+            message = "services.podmanCompose.${stackName}.instances.${serviceName}.reload.services must list compose services when reload.method = \"signal\" so reload does not signal every container accidentally.";
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.invalidReloadExternalFiles == [];
+            message =
+              "services.podmanCompose.${stackName}.instances.${serviceName}.reload.trigger.externalFiles contains entries that are not declared staged files: "
+              + lib.concatStringsSep ", " service.invalidReloadExternalFiles;
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.bindMountedReloadExternalFiles == [];
+            message =
+              "services.podmanCompose.${stackName}.instances.${serviceName}.reload.trigger.externalFiles contains single-file bind mounts, which are unsafe for native Podman reload because the container can keep the old mounted inode until restart: "
+              + lib.concatStringsSep ", " service.bindMountedReloadExternalFiles;
           })
           stack.instances)
         cfg
@@ -1447,7 +1848,7 @@ in {
                 then lib.all (file: builtins.hasAttr file service.runtimePaths) service.entryFile
                 else builtins.hasAttr service.entryFile service.runtimePaths
               );
-            message = "services.podmanCompose.${stackName}.instances.${serviceName}: entryFile '${toString service.entryFile}' is not defined in source/files.";
+            message = "services.podmanCompose.${stackName}.instances.${serviceName}: entryFile '${describeEntryFile service.entryFile}' is not defined in source/files.";
           })
           stack.instances)
         cfg
@@ -1500,12 +1901,18 @@ in {
             s.recreateTag
             s.bootTag
           ];
+          reloadTriggers = lib.optionals (s.reloadStamp != "") [
+            s.reloadStamp
+            s.reloadTag
+          ];
           stampPayload =
             {
               kind = "podman-managed-unit";
               restartStamp = s.restartStamp;
               recreateTag = s.recreateTag;
               bootTag = s.bootTag;
+              reloadTag = s.reloadTag;
+              reloadCapable = s.reloadStamp != "";
             }
             // lib.optionalAttrs (s.systemdUser != "root" && s.waitForNetwork) {
               rootlessNetworkReadiness = "network-online-before-rootless-netns-v1";

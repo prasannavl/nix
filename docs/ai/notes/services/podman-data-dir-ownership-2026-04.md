@@ -12,11 +12,12 @@
 - Reserve `dirs` for cases that need non-default mode/ownership semantics or
   managed restrictive parent directories.
 - When a service must bind-mount a host path outside the compose working
-  directory, use `lib/podman-compose/lib.nix` `dirBootstrapScript` to create the
-  directory on first start instead of embedding raw `podman unshare` shell in
-  `serviceOverrides.preStart`.
-- `dirBootstrapScript` is also an ensure helper: when a user or group is set, it
-  reapplies the requested ownership and mode even if the directory already
-  exists.
+  directory, declare it as an absolute `dirs` key instead of embedding raw
+  `podman unshare` shell in `serviceOverrides.preStart`.
+- The parent of an absolute `dirs` path must already exist and be
+  searchable/writable by the stack user; prefer the stack root as that parent.
+- Absolute `dirs` entries are also ensure helpers: when a user or group is set,
+  the runtime helper reapplies the requested ownership and mode even if the
+  directory already exists.
 - `hosts/pvl-x2/services/postgres.nix` is the canonical example of the external
   data-dir bootstrap pattern.

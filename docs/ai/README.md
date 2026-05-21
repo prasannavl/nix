@@ -151,7 +151,7 @@ Use this index as the canonical map for `docs/ai/**`.
   record keys, plus remaining positional Cloudflare list inputs.
 - `docs/ai/notes/services/podman-data-dir-ownership-2026-04.md`: Records the
   standard `dirs`/container-scope ownership model for service-local Podman data
-  directories plus the shared bootstrap helper pattern for external data roots.
+  directories plus absolute `dirs` entries for external data roots.
 - `docs/ai/notes/services/postgres-port-publishing.md`: Durable note for the
   `pvl-x2` Postgres Podman Compose host-port publishing failure and workaround.
 - `docs/ai/notes/services/openwebui-ollama-host-alias-firewall-2026-04.md`:

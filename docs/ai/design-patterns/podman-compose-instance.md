@@ -6,7 +6,8 @@ include only what applies, but keep the relative order stable.
 
 ## Attribute Order
 
-1. **Config flags** — `imageTag`, `bootTag`, `recreateTag`, `recreateOnSwitch`
+1. **Config flags** — `reload`, `imageTag`, `bootTag`, `reloadTag`,
+   `recreateTag`, `recreateOnSwitch`
 2. **exposedPorts**
 3. **network identity** — `subnet` when a stable compose default-network subnet
    is declared

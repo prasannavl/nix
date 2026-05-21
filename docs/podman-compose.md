@@ -10,7 +10,8 @@ on a host.
 - env-secret injection
 - firewall derivation from exposed ports
 - nginx and Cloudflare Tunnel metadata derivation
-- optional duplicate-subnet detection for declared compose networks
+- duplicate-subnet detection for declared compose networks
+- duplicate exposed-port detection for declared host port/protocol pairs
 - deploy-time restart and recreate behavior
 
 The shared logic lives in `lib/podman-compose/default.nix` and
@@ -78,8 +79,9 @@ exposedPorts.http = {
 ## Lifecycle Tags
 
 - `bootTag`: stop and start the stack
-- `recreateTag`: force recreate on the next run
-- `imageTag`: force image refresh or image-pull path changes
+- `reloadTag`: reload the stack when native reload is enabled
+- `recreateTag`: stop, start, and force recreate once for each new tag value
+- `imageTag`: run the image-pull path before the stack starts
 
 These are manual lifecycle knobs. Toggle the value when you want the behavior.
 
@@ -112,6 +114,9 @@ services.podmanCompose.example.instances.app = {
 The module asserts that declared `subnet` values are unique across all
 configured `services.podmanCompose` instances. It does not generate compose
 network YAML by itself; the option records the subnet for clash detection.
+
+The module also asserts that declared `exposedPorts` do not reuse the same host
+port for the same protocol.
 
 ## Runtime Model
 
@@ -290,12 +295,14 @@ For each compose instance, the module generates a systemd user service that:
 - stays attached with a provider-agnostic monitor loop so systemd can observe
   runtime failure even when the external compose provider does not implement
   `wait`
+- supports `systemctl --user reload <unit>` through a helper-level lifecycle
+  lock so the monitor does not observe intentional transient reload states
 - runs `podman compose down` on stop
-- restages files and re-runs `up -d` on reload
 
-The main generated service is intentionally stateless:
+The main generated service keeps only narrow helper state:
 
-- no lifecycle tag state is stored on disk
+- the helper stores the last successfully applied `recreateTag` in the compose
+  working directory so force-recreate does not replay on later boots
 - boot-time startup is gated behind `systemd-user-manager-ready.target`, so the
   main compose services do not start until the per-user reconciler has run once
 
@@ -306,13 +313,18 @@ The main generated service is intentionally stateless:
   - when the declared value changes, the main generated compose unit is treated
     as changed
   - active stacks restart through the normal managed-unit path
+- `reloadTag`:
+  - default is `"0"`
+  - when native reload is enabled, a declared value change reloads active stacks
+    through `systemctl --user reload`
+  - restart triggers still win if restart and reload inputs change together
 - `recreateTag`:
   - default is `"0"`
   - when the declared value changes, the main generated compose unit is treated
     as changed
-  - it does not change steady-state `ExecStart` behavior
-  - instead it forces the normal managed stop/start switch path for active
-    stacks
+  - active stacks restart through the normal managed-unit path
+  - if the tag is nonzero and differs from the last successful helper state, the
+    next start uses `podman compose up --force-recreate`
 - `imageTag`:
   - default is `"0"`
   - generates a separate oneshot image-pull user unit
@@ -323,26 +335,79 @@ The main generated service is intentionally stateless:
 Operationally, the intended manual toggles are between `"0"` and `"1"`, though
 any new string value works.
 
+## Reload
+
+Reload is available for manual operator use. The default method is restart:
+
+```nix
+reload.method = "restart";
+```
+
+That path takes the lifecycle lock, runs `podman compose down` with the current
+compose context, cleans old manifest-managed runtime files, stages the desired
+runtime tree, starts the stack, verifies health, and then releases the monitor.
+
+Native reload is opt-in and currently signal-based:
+
+```nix
+reload = {
+  method = "signal";
+  signal = "HUP";
+  services = ["nginx"];
+  trigger.dirs = ["conf.d"];
+};
+```
+
+`reload.trigger.dirs` may only name declared `dirs` entries or staged directory
+sources. `reload.trigger.externalFiles` may name explicit staged file entries
+that are external to the container mount contract; the module rejects files that
+are detected as exact single-file bind mounts. Directory mounts, such as
+`./conf.d:/etc/nginx/conf.d`, can safely expose replaced child files to a
+process that reopens paths during native reload. For native reload, the helper
+stages new desired files and updates the runtime manifest before signaling;
+stale files under the reload dirs are pruned only after the signal path verifies
+cleanly.
+
+Deploy-time reload triggers are wired through `systemd-user-manager` for
+reload-capable instances. If only files under `reload.trigger.dirs` change, the
+dispatcher daemon-reloads the user manager and calls `systemctl --user reload`
+instead of old-world stop plus new-world start. Restart triggers still win when
+non-reload-safe inputs change.
+
 ## What Changes Trigger
 
 - `bootTag` change:
   - changes the main generated user unit restart stamp
   - only the declared `bootTag` value participates in that tag-specific stamp
   - active stacks restart through the normal managed-unit path
+- `reloadTag` change:
+  - changes the main generated user unit reload stamp when native reload is
+    enabled
+  - active stacks reload on deploy
 - `recreateTag` change:
   - changes the main generated user unit restart stamp
   - causes a managed stop/start cycle for active stacks during deploy
-  - does not remain sticky after that generation switch
+  - forces container recreation once per new nonzero tag value
 - `imageTag` change:
   - changes the separate generated image-pull user unit
   - does not by itself restart the main compose unit
   - any future start or restart of the main compose unit runs the pull unit
     first
-- compose `source`, `files`, `entryFile`, `envSecrets`, or generated unit
-  change:
+- compose `source`, non-reload-safe `files`, `entryFile`, `envSecrets`, or
+  generated unit change:
   - changes the main generated user service and restart stamp
   - active stacks restart on deploy
   - inactive stacks are started during reconcile unless disabled or masked
+- reload-safe `files` under `reload.trigger.dirs`:
+  - change the main generated user service reload stamp
+  - active stacks reload on deploy when `reload.method = "signal"`
+  - inactive stacks are still handled by normal reconcile
+- explicit `reload.trigger.externalFiles`:
+  - must name declared staged file entries
+  - are rejected when detected as exact single-file bind mount sources
+  - otherwise participate in the reload stamp as external trigger files
+  - compose-consumed files such as `.env` do not update container environment or
+    interpolation until restart/recreate
 - plain reboot:
   - starts the main compose user service
   - runs the image-pull helper first when image refresh is enabled
@@ -352,8 +417,10 @@ any new string value works.
 
 - `source` content is covered. When the compose source changes, the rendered
   store path changes, and that path is part of the main restart stamp.
-- `files` content is covered for the same reason. Rendered or copied store paths
-  for staged files participate in the restart stamp.
+- `files` content is covered. For normal entries, rendered or copied store paths
+  participate in the restart stamp. For reload-capable entries under
+  `reload.trigger.dirs` or `reload.trigger.externalFiles`, those paths
+  participate in the reload stamp instead.
 - `entryFile` selection is covered because it changes the generated user unit.
 - Generated unit configuration is covered. Changes to service environment,
   dependencies, or other generated unit wiring change the restart stamp through
@@ -428,8 +495,9 @@ can be injected without replacing the image entrypoint or command.
 
 ### fileSecrets
 
-File-backed secrets staged into `<workingDir>/.podman-file-secrets/<name>` and
-auto-mounted read-only into target compose services.
+File-backed secrets staged into
+`<workingDir>/.podman-compose/file-secrets/<name>` and auto-mounted read-only
+into target compose services.
 
 ```nix
 fileSecrets."server.key" = {
@@ -458,11 +526,13 @@ the podman-compose instance name. Set `services = [ ... ]` when the compose
 service name differs, and set `mount = false` for stage-only secrets that are
 mounted manually from the main compose source.
 
+The `.podman-compose/` working-directory prefix and generated override file
+names are reserved for the module's runtime files.
+
 ### dirs
 
-Managed staged directories for directory bind mounts or restrictive parent
-directories. `dirs` entries are keyed by destination path under the compose
-working directory:
+Managed directories for bind mounts or restrictive parent directories. Relative
+`dirs` keys are resolved under the compose working directory:
 
 ```nix
 dirs."conf.d" = {
@@ -473,19 +543,30 @@ dirs."conf.d" = {
 };
 ```
 
+Absolute keys manage host paths directly, which is the preferred shape for
+external data directories:
+
+```nix
+dirs."/var/lib/example" = {
+  mode = "0700";
+  user = 1000;
+  group = 1000;
+  userScope = "container";
+};
+```
+
+The helper runs as the stack user, so the parent of an absolute `dirs` path must
+already exist and be searchable/writable by that user. The stack root created by
+the module's tmpfiles rule is the intended parent for host-local service data.
+
 Directory modes must include an execute/search bit. For example, use `0750` for
 an owner-readable private config directory; `0640` is a file mode and makes the
 directory non-traversable.
 
 The helper temporarily resets managed dirs to stack-user-writable ownership
-before restaging or cleanup, then reapplies the declared mode/owner after file
-staging. This keeps restarts idempotent while allowing the final directory bind
-mount to avoid world traversal bits.
-
-For external data directories created with `lib/podman-compose/lib.nix`
-`dirBootstrapScript`, the helper now reasserts the requested owner and mode even
-when the directory already exists. This keeps one-off bootstrap snippets
-idempotent after manual repair or drift.
+before restaging or cleanup, then reapplies the declared mode/owner afterward.
+This keeps restarts idempotent while allowing the final directory bind mount to
+avoid world traversal bits.
 
 ### Ownership and permissions (applies to `dirs`, `files`, and `fileSecrets`)
 
@@ -505,8 +586,7 @@ evaluation time.
 
 Secret rotation caveat:
 
-- `envSecrets` and `fileSecrets` files are restaged on `start`, `reload`, and
-  `image-pull`
+- `envSecrets` and `fileSecrets` files are restaged on `start`
 - rotating a secret's contents at the same path does not by itself force a
   restart or restage
 - if you need deploy-time reconcile to pick that up, bump `bootTag`
@@ -520,7 +600,9 @@ On host deploy:
 1. systemd reloads the affected user manager once
 2. changed bridge units stop
 3. changed bridge units start in the new generation
-4. the reconciler starts inactive managed units in the new generation
+4. reload-only bridge units are reloaded after the user manager sees the new
+   unit definitions
+5. the reconciler starts inactive managed units in the new generation
 
 That means:
 
@@ -547,8 +629,12 @@ For each stack in the host's service module:
 - one or more `instances`
 - either `source` or `files` for each instance
 - optional `bootTag`
+- optional `reloadTag`
 - optional `recreateTag`
 - optional `imageTag`
+- optional `longRunning = false` for run-to-completion stacks where all
+  containers exiting with code 0 should be service success
+- optional `reload` policy for manual reload behavior
 - optional `subnet` when the compose source declares a stable default-network
   subnet
 - optional `dependsOn`, `wants`, `envSecrets`, `exposedPorts`,
@@ -573,9 +659,10 @@ bridge restarts it. If it was inactive but still startable, reconcile starts it.
 ### What happens when I bump `recreateTag`?
 
 The main generated unit changes, so active stacks restart through the normal
-managed-unit path. `recreateTag` is now a switch-time trigger only: it changes
-the managed-unit stamp so the active stack is stopped and started in the new
-generation, but it does not stay encoded in steady-state `ExecStart` behavior.
+managed-unit path. If the new tag is not `"0"` and differs from the helper state
+recorded during the last successful start, the helper uses
+`podman compose up --force-recreate` and records the new tag. Later boots with
+the same tag do not force another recreate.
 
 ### What happens when I bump `bootTag`?
 
@@ -584,11 +671,19 @@ systemd-user-manager reconciliation path restarts the main compose unit. This is
 keyed to the declared `bootTag` value itself, not helper script path or other
 generated unit churn.
 
+### What happens when I bump `reloadTag`?
+
+For native-reload-capable instances, the managed unit reload stamp changes. If
+the stack was active and no restart trigger also changed, systemd-user-manager
+reloads the main compose unit. If native reload is not enabled, `reloadTag` has
+no effect.
+
 ### What happens when I bump `imageTag`?
 
 The separate image-pull unit changes. That does not by itself restart the main
 compose service. The next time the main service starts or restarts, systemd runs
-the image-pull unit first.
+the image-pull unit first. Image pull reads store-backed compose files directly;
+runtime files and secrets are staged once by the main start path.
 
 ### Why didn't an `envSecrets` secret rotation restart my service?
 
