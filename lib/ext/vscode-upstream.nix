@@ -3,7 +3,7 @@
   commandLineArgs ? "",
   ...
 }: let
-  version = "1.120.0";
+  version = "1.121.0";
   inherit (pkgs.stdenv.hostPlatform) system;
   throwSystem = throw "Unsupported system for vscode-upstream: ${system}";
   plat =
@@ -19,22 +19,22 @@
     } or throwSystem;
   srcName =
     {
-      x86_64-linux = "code-stable-x64-1778618960.tar.gz";
+      x86_64-linux = "code-stable-x64-1779186414.tar.gz";
       x86_64-darwin = "VSCode-darwin.zip";
-      aarch64-linux = "code-stable-arm64-1778618964.tar.gz";
+      aarch64-linux = "code-stable-arm64-1779186419.tar.gz";
       aarch64-darwin = "VSCode-darwin-arm64.zip";
-      armv7l-linux = "code-stable-armhf-1778618962.tar.gz";
+      armv7l-linux = "code-stable-armhf-1779186409.tar.gz";
     }
     .${
       system
     } or throwSystem;
   srcHash =
     {
-      x86_64-linux = "sha256-UQQm6yPTML8l2E/ojkmgjZZdayGVe4Lhlq98z3vdiCs=";
-      x86_64-darwin = "sha256-+RuW3PctXg536b17B0ECPRJw18Lllr7sAmEgxCD62c0=";
-      aarch64-linux = "sha256-acDR0FNM1Bc+Kz2+5dAB7Vwr0MhGuyLcqRcxK2TrG68=";
-      aarch64-darwin = "sha256-VVomU5DMMPcnIBEPX0DTvujqeUSJvwnQE1zVIO+pmpc=";
-      armv7l-linux = "sha256-FmLT3QijYCVEvEyhsJHgTVOTojQUYHt8NPBXDr0NXao=";
+      x86_64-linux = "sha256-jPJMxBRBRT4R6P4a6eWNMpcOI9ztOZg1xLCQQmPWaCA=";
+      x86_64-darwin = "sha256-2ReidWJXYyunW9g0n5kc1nh13rHBrq3iAA0bG2VpRxM=";
+      aarch64-linux = "sha256-xLwtsFF1mkpyKbaLcSa6Onl/h9PqkiNzowcFkQLGG4U=";
+      aarch64-darwin = "sha256-3XKpLgJDH8CDf7BzIdFG8ApxxeYqh+ZiPzTL/oYMgrc=";
+      armv7l-linux = "sha256-B9y0cTrHpPxPqUboim0Js5RJ2TMnpNTmOXPOw8fM1kc=";
     }
     .${
       system
@@ -54,13 +54,13 @@
     armv7l-linux = "vscode-server-linux-armhf.tar.gz";
   };
   serverHash = {
-    x86_64-linux = "sha256-96dYU+xdw00yb+nXy5f92sg0GrR9plkamSgm72CqKnM=";
-    x86_64-darwin = "sha256-8Lgyz5I4+2ojb9ZehyIJEG/VhNeXl4E6iYcKHl1ROh0=";
-    aarch64-linux = "sha256-DfUIVQw8yNlSjDR+bNjsLLsb6xegUEDZNSdTwVziw6w=";
-    aarch64-darwin = "sha256-nCii52XPKFKsNlIqj5nyTD2y964/grnmERamfya8Mos=";
-    armv7l-linux = "sha256-oSi5GIbXRsJrBpUiXBzx8+AG48VcpvicvCpLOlkxfiE=";
+    x86_64-linux = "sha256-TdffAWOhL1Sl7YpaLsPIbnv/qoYToFvfv7R8kgR4XyI=";
+    x86_64-darwin = "sha256-TsyqBnRPwHoCucNis+TsbYaIz1ftKaECGuf/+1WVUX4=";
+    aarch64-linux = "sha256-7y7So67rKURR7FJG5bV1ytA00zSHQXMLSfqfVDsZH4Q=";
+    aarch64-darwin = "sha256-CteizYNgKgxEGxsQiyjJSIgy8v0J/X8om19MKJ6fmlM=";
+    armv7l-linux = "sha256-UxtfSPXUc5oGd1FXnbEVfz6QqeEKWV2cPzOfiV1WUMM=";
   };
-  rev = "0958016b2af9f09bb4257e0df4a95e2f90590f9f";
+  rev = "f6cfa2ea2403534de03f069bdf160d06451ed282";
 in
   (pkgs.unstable.vscode.override {
     inherit commandLineArgs;
