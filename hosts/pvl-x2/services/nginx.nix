@@ -9,6 +9,13 @@
   backendServices = nginxLib.dependencyServices (proxyVhosts // nginxRoutes);
 in {
   config.services.podmanCompose.pvl.instances.nginx = rec {
+    reload = {
+      method = "signal";
+      signal = "HUP";
+      services = ["nginx"];
+      trigger.dirs = ["conf.d"];
+    };
+
     exposedPorts.http = {
       port = 10800;
       openFirewall = true;
