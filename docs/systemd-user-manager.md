@@ -20,6 +20,7 @@ services.systemdUserManager.instances.<name> = {
   user = "app";
   unit = "app.service";
   restartTriggers = ["<stamp>"];
+  reloadTriggers = ["<reload-safe-stamp>"];
 };
 ```
 
@@ -31,6 +32,7 @@ Important options:
 - `stopOnRemoval`
 - `timeoutStableSeconds`
 - `restartTriggers`
+- `reloadTriggers`
 - `stampPayload`
 
 ## Switch Behavior
@@ -38,7 +40,8 @@ Important options:
 Applied old state:
 
 - stops removed units when `stopOnRemoval = true`
-- stops changed units
+- stops units whose restart stamp changed
+- defers reload for active units when only the reload stamp changed
 - restarts `user@<uid>.service` if the managed user identity changed
 
 New generation:
@@ -46,6 +49,7 @@ New generation:
 - ensures `user@<uid>.service` is running
 - waits for the user bus
 - runs `daemon-reload`
+- reloads units with deferred reload-only changes
 - restarts the reconciler
 - waits for successful convergence
 - records the new metadata as applied only after successful reconciliation
@@ -63,6 +67,11 @@ in the new world.
 `timeoutStableSeconds` defaults to 120 seconds and bounds waits for a managed
 unit to leave `activating`, `deactivating`, or `reloading` states during
 reconcile and stop handling.
+
+`reloadTriggers` are opt-in. If restart and reload stamps both change, restart
+wins. Reload-only changes call `systemctl --user reload <unit>` after the new
+generation's user units are daemon-reloaded, so the unit's new `ExecReload`
+definition is used.
 
 ## Reconciler Behavior
 
@@ -88,8 +97,12 @@ After success it starts `systemd-user-manager-ready.target`.
 
 - the main compose unit is managed here
 - `bootTag` changes the managed-unit stamp
+- `reloadTag` changes the managed-unit reload stamp when native reload is
+  enabled
 - `recreateTag` changes the compose unit and forces recreate behavior
 - `imageTag` is handled by a separate pull unit wired into the start path
+- reload-safe directory-mounted compose config can flow through
+  `reloadTriggers`; other changes keep using restart triggers
 
 This keeps `systemd-user-manager` generic. It switches units. Module-specific
 behavior stays in the unit definitions.

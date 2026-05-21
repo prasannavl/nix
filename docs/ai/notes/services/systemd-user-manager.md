@@ -21,7 +21,8 @@ interaction with deploy-time service reconciliation.
   `/run/current-system` has already advanced.
 - Podman and other higher-level lifecycle semantics should be expressed through
   normal units and dependencies, not through a generic action graph inside the
-  bridge.
+  bridge. `reloadTriggers` are only a generic reload route; service-specific
+  staging and validation still belong inside the unit's `ExecReload`.
 
 ## Switching rules
 
@@ -31,6 +32,10 @@ interaction with deploy-time service reconciliation.
   for that state and lets the dispatcher run a fresh reconcile path.
 - New-world reconcile uses only the new desired metadata plus live
   `systemctl --user` state.
+- Managed units have separate restart and reload stamps. Restart stamp changes
+  keep the old-world stop and new-world start behavior. Reload-only changes are
+  deferred, then applied with `systemctl --user reload <unit>` after the
+  dispatcher's user-manager `daemon-reload`.
 - Inactive or failed managed units are started unless they are disabled or
   masked.
 - Managed units may opt out of cold-start through `autoStart = false`; they

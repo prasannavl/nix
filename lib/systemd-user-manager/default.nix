@@ -33,6 +33,12 @@
         description = "Triggers that mark this managed unit as changed.";
       };
 
+      reloadTriggers = lib.mkOption {
+        type = lib.types.listOf lib.types.unspecified;
+        default = [];
+        description = "Triggers that reload this managed unit when only reload-safe inputs changed. Restart triggers take precedence.";
+      };
+
       autoStart = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -73,6 +79,7 @@
   appliedMetadataDir = "/run/systemd-user-manager/applied-metadata";
   deferredRestartRequestDir = "/run/systemd-user-manager/restart-requests";
   deferredUnitRestartRequestDir = "/run/systemd-user-manager/unit-restart-requests";
+  deferredUnitReloadRequestDir = "/run/systemd-user-manager/unit-reload-requests";
 
   helperPackage = pkgs.writeShellApplication {
     name = "systemd-user-manager-helper";
@@ -90,6 +97,7 @@
       SYSTEMD_USER_MANAGER_DISPATCHER_METADATA_POINTER_REL_DIR = dispatcherMetadataPointerRelDir;
       SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR = deferredRestartRequestDir;
       SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR = deferredUnitRestartRequestDir;
+      SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR = deferredUnitReloadRequestDir;
       SYSTEMD_USER_MANAGER_MANAGED_USER_ACTION_PATH = managedUserActionPath;
     };
     text = ''
@@ -118,6 +126,10 @@
         restartTriggers = managedUnit.restartTriggers;
       };
     stamp = builtins.hashString "sha256" (builtins.toJSON stampPayload);
+    reloadStamp =
+      if managedUnit.reloadTriggers == []
+      then ""
+      else builtins.hashString "sha256" (builtins.toJSON managedUnit.reloadTriggers);
   in {
     user = managedUnit.user;
     name = managedUnit.unitName;
@@ -126,6 +138,7 @@
     autoStart = managedUnit.autoStart;
     timeoutStableSeconds = managedUnit.timeoutStableSeconds;
     stamp = stamp;
+    reloadStamp = reloadStamp;
   };
 
   managedUnitsByUser =
@@ -192,6 +205,7 @@
             autoStart = managedUnit.autoStart;
             timeoutStableSeconds = managedUnit.timeoutStableSeconds;
             stamp = managedUnit.stamp;
+            reloadStamp = managedUnit.reloadStamp;
           })
           sortedUnits;
       };
