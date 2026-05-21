@@ -181,19 +181,19 @@ ledger: all 116 upstream commits are represented, with no missing hashes from
 
 ### Skip: Project, User, Terraform, Docs, And Package Work Not Applicable Now
 
-| Commit     | Subject                                    | Reason                                                                                  |
-| ---------- | ------------------------------------------ | --------------------------------------------------------------------------------------- |
-| `0ad6ffd1` | bots: isolate parrot-core                  | Adds gap3 bot packages not present locally; skip unless those bots are requested.       |
-| `85bbaf7a` | Update docs                                | Docs for upstream state not present here.                                               |
-| `8bbb3567` | plan: service registry + dns rollouts      | Planning doc for upstream service-registry rollout.                                     |
-| `77218825` | remove user: doug                          | User topology differs; do not apply.                                                    |
-| `a3892efc` | cf access: switch to reusable policies     | Project-specific Terraform state.                                                       |
-| `4f9880c2` | cf-access: cleanup policies                | Project-specific Terraform state.                                                       |
-| `f6bb4e29` | Rename user to match idc                   | User topology differs; do not apply.                                                    |
-| `158040d7` | user add: arjit                            | User topology differs; do not apply.                                                    |
-| `381f810a` | ai: live state mutation rules              | Existing docs cover current repo process; revisit only if user wants this policy added. |
-| `43cee8f7` | ai: durable rule: internal reachability    | Useful upstream process note, but tied to skipped abird/oauth2 work for this pass.      |
-| `376f6f92` | stack: abstract and split into gap3, abird | Project stack architecture not present locally.                                         |
-| `e003b3b2` | Fix lints                                  | Only applies to skipped docs/stack changes.                                             |
-| `242db9a8` | ai: add upstream pkg guidance              | Existing local Tailscale note covers the active upstream package case.                  |
-| `d14eec32` | refactor: bastion to ci hosts              | Ported locally as the nixbot CI-host terminology/secret-path migration, retaining local host and repo defaults.   |
+| Commit     | Subject                                    | Reason                                                                                                          |
+| ---------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `0ad6ffd1` | bots: isolate parrot-core                  | Adds gap3 bot packages not present locally; skip unless those bots are requested.                               |
+| `85bbaf7a` | Update docs                                | Docs for upstream state not present here.                                                                       |
+| `8bbb3567` | plan: service registry + dns rollouts      | Planning doc for upstream service-registry rollout.                                                             |
+| `77218825` | remove user: doug                          | User topology differs; do not apply.                                                                            |
+| `a3892efc` | cf access: switch to reusable policies     | Project-specific Terraform state.                                                                               |
+| `4f9880c2` | cf-access: cleanup policies                | Project-specific Terraform state.                                                                               |
+| `f6bb4e29` | Rename user to match idc                   | User topology differs; do not apply.                                                                            |
+| `158040d7` | user add: arjit                            | User topology differs; do not apply.                                                                            |
+| `381f810a` | ai: live state mutation rules              | Existing docs cover current repo process; revisit only if user wants this policy added.                         |
+| `43cee8f7` | ai: durable rule: internal reachability    | Useful upstream process note, but tied to skipped abird/oauth2 work for this pass.                              |
+| `376f6f92` | stack: abstract and split into gap3, abird | Project stack architecture not present locally.                                                                 |
+| `e003b3b2` | Fix lints                                  | Only applies to skipped docs/stack changes.                                                                     |
+| `242db9a8` | ai: add upstream pkg guidance              | Existing local Tailscale note covers the active upstream package case.                                          |
+| `d14eec32` | refactor: bastion to ci hosts              | Ported locally as the nixbot CI-host terminology/secret-path migration, retaining local host and repo defaults. |

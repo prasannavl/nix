@@ -28,7 +28,7 @@ in {
       mode = "0700";
       user = postgresUid;
       group = postgresGid;
-      userScope = "container";
+      scope = "container";
     };
     files."initdb/10-extensions.sql".text = ''
       CREATE EXTENSION IF NOT EXISTS timescaledb;
