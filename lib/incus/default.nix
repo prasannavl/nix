@@ -23,7 +23,15 @@
   hasInstances = cfg.instances != {};
   hasCertificates = cfg.certificates != [];
   hasCertificateDelegations = cfg.certificateDelegations != {};
-  hasHostHooks = hasInstances || hasCertificates || hasCertificateDelegations || cfg.hostSuspend.enable;
+  hasRemoteHooks =
+    cfg.remote.enable
+    && (
+      hasInstances
+      || cfg.remote.projects != {}
+      || cfg.remote.allowedSubnets != []
+      || cfg.remote.certificateDelegation.enable
+    );
+  hasHostHooks = hasInstances || hasCertificates || hasCertificateDelegations || cfg.hostSuspend.enable || hasRemoteHooks;
   mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
   remoteValue = value:
     if value == null
@@ -885,6 +893,7 @@
   mkUserMetadata = name: machine:
     {
       "user.managed-by" = "nixos";
+      "user.incus-machines.controller" = cfg.controllerId;
       "user.config-hash" = configHash name machine;
       "user.boot-tag" = machine.bootTag;
       "user.recreate-tag" = machine.recreateTag;
@@ -1215,12 +1224,24 @@
   instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) cfg.instances);
   instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) cfg.instances);
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) cfg.instances);
+  gcProjects = lib.unique (
+    lib.optionals cfg.remote.enable (
+      [cfg.remote.project]
+      ++ builtins.attrNames effectiveRemoteProjects
+      ++ builtins.attrValues (lib.mapAttrs (_name: resolveMachineProject) cfg.instances)
+    )
+  );
+  gcProjectsJson = builtins.toJSON gcProjects;
   incusImagesStateFile = pkgs.writeText "incus-machines-images-state.json" (builtins.toJSON {
     imageTag = cfg.imageTag;
     images = declaredImages;
   });
   incusGcStateFile = pkgs.writeText "incus-machines-gc-state.json" (builtins.toJSON {
     instances = builtins.attrNames cfg.instances;
+    instanceProjects = lib.mapAttrs (_name: resolveMachineProject) cfg.instances;
+    controllerId = cfg.controllerId;
+    projects = gcProjects;
+    remote = cfg.remote.enable;
   });
   localIncusDeps = lib.optional (!cfg.remote.enable) "incus-preseed.service";
   incusLifecycleDeps =
@@ -1325,6 +1346,17 @@ in {
         `image` default to `nixos-incus-<machine-name>` for local NixOS images
         and a sanitized alias derived from the remote image reference for string
         images unless they also set `imageAlias`.
+      '';
+    };
+
+    controllerId = lib.mkOption {
+      type = lib.types.str;
+      default = config.networking.hostName;
+      description = ''
+        Stable owner identifier written to managed Incus instances. Remote GC
+        uses this marker to delete only instances owned by this delegated
+        controller, even when multiple repo-managed controllers share a parent
+        Incus daemon or project.
       '';
     };
 
@@ -1806,11 +1838,14 @@ in {
           };
         }
         // lib.mapAttrs' mkCertificateDelegationService cfg.certificateDelegations
-        // lib.optionalAttrs hasInstances (let
-          incusGcDeps = localIncusDeps ++ ["incus-images.service"];
+        // (let
+          incusGcDeps =
+            localIncusDeps
+            ++ remoteProjectDelegationDeps
+            ++ lib.optional hasInstances "incus-images.service";
           incusImagesDeps = localIncusDeps ++ ["network-online.target"];
         in
-          {
+          lib.optionalAttrs hasRemoteProjectDelegations {
             incus-remote-project-delegated-certificates = lib.mkIf hasRemoteProjectDelegations {
               description = "Publish remote Incus delegated project certificates";
               before =
@@ -1843,7 +1878,8 @@ in {
                 ExecStart = "${helperScript} remote-project-delegations";
               };
             };
-
+          }
+          // lib.optionalAttrs hasInstances {
             incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
               description = "Reconciler for declared Incus guests";
               wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
@@ -1883,10 +1919,10 @@ in {
                 ExecStart = "${helperScript} images";
               };
             };
-
+          }
+          // lib.optionalAttrs (hasInstances || hasRemoteHooks) {
             incus-machines-gc = {
               description = "Garbage-collect Incus containers no longer declared in NixOS config";
-              enable = !cfg.remote.enable;
               wantedBy = ["sysinit-reactivation.target"];
               after = incusGcDeps;
               wants = incusGcDeps;
@@ -1901,6 +1937,8 @@ in {
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
                     (mkEnvAssignment "INCUS_MACHINES_MANAGED_GC_DIR_ROOT" managedGcDirRoot)
+                    (mkEnvAssignment "INCUS_MACHINES_CONTROLLER_ID" cfg.controllerId)
+                    (mkEnvAssignment "INCUS_MACHINES_GC_PROJECTS" gcProjectsJson)
                   ]
                   ++ remoteServiceEnvironment;
                 ExecStart = "${helperScript} gc";

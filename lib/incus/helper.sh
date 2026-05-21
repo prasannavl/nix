@@ -12,6 +12,8 @@ init_vars() {
 	host_suspend_force_timeout="${INCUS_MACHINES_HOST_SUSPEND_FORCE_TIMEOUT-10}"
 	host_suspend_restart="${INCUS_MACHINES_HOST_SUSPEND_RESTART-true}"
 	managed_gc_dir_root="${INCUS_MACHINES_MANAGED_GC_DIR_ROOT-/var/lib/incus-machines/managed-dirs}"
+	controller_id="${INCUS_MACHINES_CONTROLLER_ID-}"
+	gc_projects="${INCUS_MACHINES_GC_PROJECTS-[]}"
 	certificates="${INCUS_MACHINES_CERTIFICATES-[]}"
 	certificates_file="${INCUS_MACHINES_CERTIFICATES_FILE-}"
 	certificates_state_file="${INCUS_MACHINES_CERTIFICATES_STATE_FILE-/var/lib/incus-machines/certificates.json}"
@@ -121,6 +123,8 @@ EOF
 		printf '%s\n' "$remote_add_status" >&2
 		exit 1
 	fi
+
+	incus remote switch "$incus_remote_name"
 }
 
 server_ref() {
@@ -1504,7 +1508,7 @@ machine_main() {
 	local needs_create needs_recreate needs_restart adopting_existing current_config_hash current_recreate_tag current_boot_tag
 	local current_instance current_devices current_config current_status desired_disks desired_disk_gc_metadata
 	local current_ipv4 current_managed_by current_project desired_props current_props dev dev_exists dev_source dev_pool desired_gc_config_json key props query_name image_tag
-	local source_key
+	local source_key current_controller
 	local instance_image image_alias create_only_devices user_meta_json config_json desired_ipv4 desired_removal_policy desired_adopt
 	local recovery_attempted start_output
 	local -a create_only_device_names current_disk_names desired_disk_names current_prop_keys current_gc_device_names desired_gc_device_names
@@ -1549,6 +1553,11 @@ machine_main() {
 					echo "Refusing to manage existing unowned Incus instance $current_project/$name; set adopt = true to adopt it" >&2
 					exit 1
 				fi
+			fi
+			current_controller="$(incus_project config get "$(instance_ref "$instance_name")" user.incus-machines.controller 2>/dev/null || true)"
+			if [ -n "$controller_id" ] && [ -n "$current_controller" ] && [ "$current_controller" != "$controller_id" ]; then
+				echo "Refusing to manage Incus instance $current_project/$name owned by controller $current_controller" >&2
+				exit 1
 			fi
 
 			current_config_hash="$(incus_project config get "$(instance_ref "$instance_name")" user.config-hash 2>/dev/null || true)"
@@ -1870,16 +1879,49 @@ images_main() {
 	done < <(echo "${INCUS_MACHINES_DECLARED_IMAGES?missing INCUS_MACHINES_DECLARED_IMAGES}" | jq -c '.[]')
 }
 
+gc_remote_containers_json() {
+	local combined project project_json
+	local -a projects
+
+	mapfile -t projects < <(printf '%s' "$gc_projects" | jq -r '.[]' 2>/dev/null || true)
+	if [ "${#projects[@]}" -eq 0 ]; then
+		projects=("$incus_remote_project")
+	fi
+
+	combined='[]'
+	for project in "${projects[@]}"; do
+		[ -n "$project" ] || continue
+		current_project="$project"
+		if ! project_json="$(incus_project list "$(server_ref)" --format json 2>/dev/null)"; then
+			echo "Failed to list Incus containers for project $project during garbage collection" >&2
+			return 1
+		fi
+		combined="$(
+			jq -cn \
+				--arg project "$project" \
+				--argjson current "$combined" \
+				--argjson rows "$project_json" \
+				'$current + ($rows | map(.project = (.project // $project)))'
+		)"
+	done
+
+	printf '%s\n' "$combined"
+}
+
+gc_containers_json() {
+	if is_remote_target; then
+		gc_remote_containers_json
+		return
+	fi
+
+	incus list --all-projects --format json 2>/dev/null
+}
+
 gc_main() {
-	local all_containers cname current_project declared_project dir managed project removal_policy row
+	local all_containers cname current_project declared_project dir managed owner project removal_policy row
 	local -a dirs_to_remove
 
-	if is_remote_target; then
-		all_containers="$(incus list "$(server_ref)" --all-projects --format json 2>/dev/null)" || {
-			echo "Failed to list Incus containers for garbage collection" >&2
-			exit 1
-		}
-	elif ! all_containers="$(incus list --all-projects --format json 2>/dev/null)"; then
+	if ! all_containers="$(gc_containers_json)"; then
 		echo "Failed to list Incus containers for garbage collection" >&2
 		exit 1
 	fi
@@ -1891,6 +1933,13 @@ gc_main() {
 		managed="$(echo "$row" | jq -r '.config["user.managed-by"] // ""')"
 
 		[ "$managed" = "nixos" ] || continue
+		owner="$(echo "$row" | jq -r '.config["user.incus-machines.controller"] // ""')"
+		if [ -n "$controller_id" ] && [ -n "$owner" ] && [ "$owner" != "$controller_id" ]; then
+			continue
+		fi
+		if is_remote_target && [ -n "$controller_id" ] && [ "$owner" != "$controller_id" ]; then
+			continue
+		fi
 
 		declared_project="$(
 			printf '%s' "$instance_projects" |

@@ -12,9 +12,9 @@ its parent daemon:
 - helper commands build an ephemeral Incus client config under `/run`
 - lifecycle, image, reconcile, and settle commands target the configured remote
   name through normal Incus CLI remote references
-- remote-mode GC is disabled because the delegated host cannot distinguish its
-  own declared children from sibling or parent-managed containers on the same
-  remote daemon
+- remote-mode GC is enabled for delegated controllers, but scoped to configured
+  remote projects and to instances tagged with the controller's
+  `user.incus-machines.controller` owner marker
 - local Incus daemon enablement defaults off in remote mode
 - host suspend handling remains local-only
 
@@ -103,8 +103,11 @@ with `10.10.50.31` on `eth0`.
 The first deploy attempt exposed the GC boundary: `pvl-vlab-1` connected to the
 parent daemon, saw `pvl-vlab`, `gap3-gondor`, and its own outer `pvl-vlab-1`
 container as `user.managed-by=nixos` but not declared by the delegated host, and
-stopped/deleted them. Remote mode therefore must not run
-`incus-machines-gc.service` until ownership metadata is scoped per controller.
+stopped/deleted them. Remote GC now lists only configured delegated projects and
+requires both `user.managed-by=nixos` and
+`user.incus-machines.controller=<controllerId>` before applying a removal
+policy. The controller ID defaults to the NixOS host name and can be overridden
+with `services.incusMachines.controllerId`.
 
 The private delegated client key is not stored in the Nix store. Only the public
 certificate is imported directly from the repo. `acceptCertificate =
