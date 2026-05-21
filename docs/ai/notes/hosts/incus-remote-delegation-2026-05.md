@@ -121,7 +121,10 @@ bind-mounts selected delegation directories into tenant machines under
 watches and reconciles each file through the named
 `services.incusMachines.certificateDelegations.<name>` resource; each
 `incusLib.mkCertDelegation "<name>"` disk device only references and mounts that
-resource into the guest.
+resource into the guest. The parent lifecycle maps guest root through each
+guest's idmap, then applies host-side ownership to these handoff files. This
+lets root-owned guest services update the delegation state while keeping the
+mount compatible with restricted project source-path checks.
 
 The tenant file is JSON data, not Nix code. Parent validation requires a bounded
 certificate count, safe tenant-local names, and valid PEM certificate material.

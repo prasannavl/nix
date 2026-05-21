@@ -657,6 +657,10 @@
         {
           inherit (resolved) removalPolicy;
         }
+        // lib.optionalAttrs (resolved.certDelegation != null) {
+          certificateDelegation = true;
+          fileName = cfg.certificateDelegations.${resolved.certDelegation}.fileName;
+        }
         // lib.optionalAttrs (isManagedHostDirResolved resolved) {inherit (resolved) source;})
       (syncableDevices machine)
     );

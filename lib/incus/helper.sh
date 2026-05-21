@@ -642,6 +642,74 @@ set_device_config_json_if_changed() {
 	fi
 }
 
+guest_id_host_id_from_config() {
+	local config_json kind guest_id idmap
+	config_json="$1"
+	kind="$2"
+	guest_id="$3"
+
+	idmap="$(
+		printf '%s' "$config_json" |
+			jq -r '."volatile.idmap.current" // ."volatile.idmap.next" // empty'
+	)"
+	[ -n "$idmap" ] || return 1
+
+	case "$kind" in
+	uid | gid) ;;
+	*)
+		return 1
+		;;
+	esac
+
+	printf '%s' "$idmap" |
+		jq -r --arg kind "$kind" --argjson guest_id "$guest_id" '
+			(if type == "string" then (fromjson? // []) else . end)
+			| map(select(
+				((($kind == "uid") and (.Isuid == true))
+				or (($kind == "gid") and (.Isgid == true)))
+				and (($guest_id >= (.Nsid | tonumber))
+				and ($guest_id < ((.Nsid | tonumber) + (.Maprange | tonumber))))
+			))
+			| first
+			| if . == null then
+				empty
+			else
+				((.Hostid | tonumber) + ($guest_id - (.Nsid | tonumber)))
+			end
+		'
+}
+
+prepare_certificate_delegation_permissions() {
+	local config_json disk_gc_metadata host_uid host_gid entry source file_name file_path
+	config_json="$1"
+	disk_gc_metadata="$2"
+
+	while IFS= read -r entry; do
+		source="$(printf '%s' "$entry" | jq -r '.value.source // empty')"
+		file_name="$(printf '%s' "$entry" | jq -r '.value.fileName // "certs.json"')"
+		[ -n "$source" ] || continue
+		[ -d "$source" ] || continue
+
+		host_uid="$(guest_id_host_id_from_config "$config_json" uid 0 || true)"
+		host_gid="$(guest_id_host_id_from_config "$config_json" gid 0 || true)"
+		[ -n "$host_uid" ] || continue
+		[ -n "$host_gid" ] || continue
+
+		echo "  Setting certificate delegation $source ownership to guest root"
+		chown "$host_uid:$host_gid" "$source"
+		chmod 0700 "$source"
+
+		file_path="$source/$file_name"
+		if [ -e "$file_path" ]; then
+			chown "$host_uid:$host_gid" "$file_path"
+			chmod 0600 "$file_path"
+		fi
+	done < <(
+		printf '%s' "$disk_gc_metadata" |
+			jq -c 'to_entries[] | select(.value.certificateDelegation == true)'
+	)
+}
+
 is_safe_gc_removal_dir() {
 	local dir real_dir
 	dir="$1"
@@ -1482,6 +1550,8 @@ machine_main() {
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}' 2>/dev/null || echo '{}')"
 		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}' 2>/dev/null || echo '{}')"
 
+		prepare_certificate_delegation_permissions "$current_config" "$desired_disk_gc_metadata"
+
 		echo "Syncing disk devices for $name..."
 		if [ "$adopting_existing" -eq 1 ]; then
 			echo "  Skipping undeclared disk removal during first adoption pass"
@@ -1637,6 +1707,10 @@ machine_main() {
 				exit 1
 			fi
 		fi
+
+		current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null || echo '{}')"
+		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}' 2>/dev/null || echo '{}')"
+		prepare_certificate_delegation_permissions "$current_config" "$desired_disk_gc_metadata"
 
 		break
 	done
