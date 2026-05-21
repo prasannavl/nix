@@ -91,6 +91,18 @@
         description = "Optional nginx proxy_buffer_size override for large upstream response headers.";
       };
 
+      proxyReadTimeout = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_read_timeout override for long-running upstream responses.";
+      };
+
+      proxySendTimeout = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_send_timeout override for long-running upstream requests.";
+      };
+
       clientMaxBodySize = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -320,6 +332,18 @@
         description = "Optional nginx proxy_buffer_size override for large upstream response headers.";
       };
 
+      proxyReadTimeout = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_read_timeout override for long-running upstream responses.";
+      };
+
+      proxySendTimeout = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_send_timeout override for long-running upstream requests.";
+      };
+
       clientMaxBodySize = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -385,6 +409,8 @@
           rootRedirect = portCfg.rootRedirect or null;
           rateLimit = resolveRateLimit (portCfg.rateLimit or null);
           proxyBufferSize = portCfg.proxyBufferSize or null;
+          proxyReadTimeout = portCfg.proxyReadTimeout or null;
+          proxySendTimeout = portCfg.proxySendTimeout or null;
           clientMaxBodySize = portCfg.clientMaxBodySize or null;
           proxyCookiePath = portCfg.proxyCookiePath or null;
           proxyRedirects = portCfg.proxyRedirects or [];
@@ -487,6 +513,8 @@
               stripPath = route.stripPath;
               rateLimit = resolveRateLimit (portCfg.rateLimit or null);
               proxyBufferSize = route.proxyBufferSize or (portCfg.proxyBufferSize or null);
+              proxyReadTimeout = route.proxyReadTimeout or (portCfg.proxyReadTimeout or null);
+              proxySendTimeout = route.proxySendTimeout or (portCfg.proxySendTimeout or null);
               clientMaxBodySize = route.clientMaxBodySize or (portCfg.clientMaxBodySize or null);
               proxyCookiePath = route.proxyCookiePath or null;
               proxyRedirects = route.proxyRedirects or [];
@@ -753,6 +781,13 @@
     proxyBufferDirectives =
       lib.optionalString (proxyBufferSize != null)
       "        proxy_buffer_size ${proxyBufferSize};\n";
+    proxyReadTimeout = route.proxyReadTimeout or null;
+    proxySendTimeout = route.proxySendTimeout or null;
+    proxyTimeoutDirectives =
+      lib.optionalString (proxyReadTimeout != null)
+      "        proxy_read_timeout ${proxyReadTimeout};\n"
+      + lib.optionalString (proxySendTimeout != null)
+      "        proxy_send_timeout ${proxySendTimeout};\n";
     clientMaxBodySize = route.clientMaxBodySize or null;
     clientBodyDirectives =
       lib.optionalString (clientMaxBodySize != null)
@@ -834,7 +869,7 @@
       lib.optionalString (basePath != "/")
       "            proxy_set_header X-Forwarded-Prefix ${prefixPath};\n";
   in ''
-        ${rateLimitDirectives}${securityHeaderDirectives}${proxyBufferDirectives}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
+        ${rateLimitDirectives}${securityHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
                 ${hostHeaderDirective}
                 ${forwardedHeaderDirectives}
     ${upstreamTlsDirectives}            proxy_http_version 1.1;
@@ -855,6 +890,8 @@
         prependPath = proxy.prependPath or null;
         rateLimit = proxy.rateLimit or null;
         proxyBufferSize = proxy.proxyBufferSize or null;
+        proxyReadTimeout = proxy.proxyReadTimeout or null;
+        proxySendTimeout = proxy.proxySendTimeout or null;
         clientMaxBodySize = proxy.clientMaxBodySize or null;
         proxyCookiePath = proxy.proxyCookiePath or null;
         proxyRedirects = proxy.proxyRedirects or [];
@@ -971,18 +1008,26 @@
   staticSiteLocation = name: site: rateLimit: let
     rateLimitDirectives =
       lib.optionalString (rateLimit != null) (locationRateLimitDirectives name rateLimit);
-  in
-    if site.singlePageApp
-    then ''
-            location / {
-      ${rateLimitDirectives}                try_files $uri $uri/ /${site.index};
-            }
-    ''
-    else ''
-            location / {
-      ${rateLimitDirectives}                try_files $uri $uri/ =404;
+    staticAssetLocation = lib.optionalString site.singlePageApp ''
+            location ~ \.[^/]+$ {
+      ${rateLimitDirectives}                try_files $uri =404;
             }
     '';
+  in
+    staticAssetLocation
+    + (
+      if site.singlePageApp
+      then ''
+              location / {
+        ${rateLimitDirectives}                try_files $uri $uri/ /${site.index};
+              }
+      ''
+      else ''
+              location / {
+        ${rateLimitDirectives}                try_files $uri $uri/ =404;
+              }
+      ''
+    );
 
   staticSiteMountPath = name: site:
     if site.mountPath != null
