@@ -33,6 +33,14 @@ include only what applies, but keep the relative order stable.
 - `dirs`, `fileSecrets`, and `files` all stage the runtime tree. Keep `dirs`
   first so bind-mounted directory ownership is declared before staged files that
   may live under those directories.
+- When a container needs read-only repo-built package content, prefer a direct
+  `/nix/store` bind mount by interpolating the derivation in `source`, such as
+  `"${pkg}:/container/path:ro"`. This keeps the package in the system closure
+  and avoids copying it into the compose working directory, where rootless
+  Podman user mappings and staged directory modes can make the path unreadable
+  to a non-root container user. Use `files` / `dirs` staging only when the
+  runtime path must be mutable, secret-bearing, mode-adjusted, or otherwise
+  deliberately materialized under the compose workdir.
 - `preStart` runs before the container starts and often depends on staged path
   layout, so it comes last.
 

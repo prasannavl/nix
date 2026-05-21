@@ -17,7 +17,8 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/design-patterns/dns.md`: Durable DNS change-management rules for the
   repo Cloudflare stack.
 - `docs/ai/design-patterns/podman-compose-instance.md`: Canonical attribute
-  ordering for `services.podmanCompose.<stack>.instances.<name>` declarations.
+  ordering for `services.podmanCompose.<stack>.instances.<name>` declarations
+  and direct `/nix/store` mounts for read-only package content.
 - `docs/ai/design-patterns/prefer-defaults.md`: Prefer upstream defaults for
   infra and runtime knobs unless there is a demonstrated reason to override.
 - `docs/ai/design-patterns/tunnels-and-static-origins.md`: Tunnel edge-IP policy
@@ -181,6 +182,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/gap3-post-87a57ae-port-2026-05.md`: Tracks the
   selective post-`87a57ae` `gap3/master` port, including per-commit port,
   equivalent, and skip decisions.
+- `docs/ai/notes/tooling/gap3-post-8314da5b-port-2026-05.md`: Tracks the
+  selective post-`8314da5b` `gap3/master` port, including generic `gcp-vms`
+  ports, equivalent local commits, and skipped project-specific work.
 - `docs/ai/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
 - `docs/ai/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records the

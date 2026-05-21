@@ -32,10 +32,10 @@
   - Near completion, replace target files as atomically as possible.
   - If atomic replacement is not possible, use `docs/ai/runs/locks` for
     cross-agent file/folder locks.
-  - Agents waiting on a lock should pause changes on the locked target until
-    release.
-  - After another agent releases a lock, treat local context as stale and
-    re-evaluate before continuing.
+- For tasks that require multiple steps, or multiple file edits, use a git
+  worktree at `worktrees/<session>`, so multiple agents can work in parallel.
+  - When the task is done, and I approve to either merge to main branch or
+    create a PR, do the final merges and delete the worktree.
 - If you have to use tmp files, use `tmp/` dir at the root of our repo and then
   clean up at the end of the session if everything is successful. Otherwise, ask
   user if we should keep them for debugging.
