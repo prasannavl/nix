@@ -109,6 +109,7 @@ init_vars() {
 	SECRET_RUN_DIR=""
 	STAGE_DIR=""
 	MUTATION_LOCK_DIR=""
+	STORE_LOCK_DIR=""
 	GENERATED_HW_FILE=""
 	EXTRACTED_HW_FILE=""
 	GENERATED_SYS_FILE=""
@@ -468,12 +469,12 @@ parse_args() {
 
 validate_common() {
 	[[ -n "$HOST" ]] || die "Missing required --host."
-	valid_host_name "$HOST" || die "--host must start with a letter, end with a letter or number, and use only letters, numbers, and hyphens."
+	valid_host_name "$HOST" || die "--host must start and end with a letter or number, and use only letters, numbers, and hyphens."
 	[[ "$HOST_SYSTEM" == "none" || "$HOST_SYSTEM" == "live" || "$HOST_SYSTEM" == "incus" ]] || die "--system must be one of: none, live, incus."
 	[[ "$BOOT_MODE" == "efi" || "$BOOT_MODE" == "uefi" || "$BOOT_MODE" == "bios" ]] || die "--boot-mode must be one of: efi, uefi, bios."
 	[[ "$SWAP_SIZE_MIB" =~ ^[0-9]+$ ]] || die "--swap-size-mib must be a non-negative integer."
 	[[ -z "$INCUS_IPV4" ]] || valid_ipv4 "$INCUS_IPV4" || die "--incus-ipv4 must be an IPv4 address."
-	[[ -z "$INCUS_HOST" ]] || valid_host_name "$INCUS_HOST" || die "--incus-host must start with a letter, end with a letter or number, and use only letters, numbers, and hyphens."
+	[[ -z "$INCUS_HOST" ]] || valid_host_name "$INCUS_HOST" || die "--incus-host must start and end with a letter or number, and use only letters, numbers, and hyphens."
 	[[ -z "$STORE_DIR" ]] || validate_store_dir "$STORE_DIR"
 	[[ -z "$HARDWARE_CONFIG" || -f "$HARDWARE_CONFIG" ]] || die "Hardware config not found: $HARDWARE_CONFIG"
 	HOST_DIR="${REPO_ROOT}/hosts/${HOST}"
@@ -483,7 +484,7 @@ validate_common() {
 valid_host_name() {
 	local name="$1"
 
-	[[ "$name" =~ ^[A-Za-z]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
+	[[ "$name" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
 }
 
 valid_incus_instance_name() {
@@ -511,7 +512,7 @@ validate_delete_incus_parent() {
 	parent_file="${REPO_ROOT}/hosts/${INCUS_HOST}/incus.nix"
 	[[ -f "$parent_file" ]] || die "Incus host has no incus.nix: ${INCUS_HOST}"
 	source_file="$(target_read_path "$parent_file")"
-	grep -Eq "^[[:space:]]*${HOST}[[:space:]]*=" "$source_file" || die "Host ${HOST} is not declared in Incus host ${INCUS_HOST}."
+	grep -Eq "$(nix_attr_assignment_regex "$HOST")" "$source_file" || die "Host ${HOST} is not declared in Incus host ${INCUS_HOST}."
 }
 
 validate_args() {
@@ -724,6 +725,9 @@ cleanup_run_dir() {
 	if [[ -n "$MUTATION_LOCK_DIR" && -d "$MUTATION_LOCK_DIR" ]]; then
 		rm -rf "$MUTATION_LOCK_DIR"
 	fi
+	if [[ -n "$STORE_LOCK_DIR" && -d "$STORE_LOCK_DIR" ]]; then
+		rm -rf "$STORE_LOCK_DIR"
+	fi
 	if [[ -n "$SECRET_RUN_DIR" ]]; then
 		rm -rf "$SECRET_RUN_DIR"
 	fi
@@ -796,6 +800,45 @@ acquire_mutation_lock() {
 	printf '%s\n' "$$" >"${lock_dir}/pid"
 }
 
+acquire_store_lock() {
+	local lock_dir="${STORE_DIR%/}/.host-manager-build.lock"
+	local deadline=$((SECONDS + 60))
+	local announced_wait="0"
+	local owner
+
+	mkdir -p "$STORE_DIR"
+	while ! mkdir "$lock_dir" 2>/dev/null; do
+		owner=""
+		if owner="$(lock_owner_pid "$lock_dir")"; then
+			if ! kill -0 "$owner" 2>/dev/null; then
+				rm -rf "$lock_dir"
+				continue
+			fi
+		elif lock_dir_old_enough_to_reap "$lock_dir"; then
+			rm -rf "$lock_dir"
+			continue
+		fi
+		if [[ "$announced_wait" != "1" ]]; then
+			if [[ -n "$owner" ]]; then
+				info "Waiting for host-manager build-cache lock held by pid ${owner}: ${lock_dir}"
+			else
+				info "Waiting for host-manager build-cache lock: ${lock_dir}"
+			fi
+			announced_wait="1"
+		fi
+		if ((SECONDS >= deadline)); then
+			owner="$(lock_owner_pid "$lock_dir" || true)"
+			if [[ -n "$owner" ]]; then
+				die "Timed out waiting for host-manager build-cache lock held by pid ${owner}: ${lock_dir}"
+			fi
+			die "Timed out waiting for host-manager build-cache lock: ${lock_dir}"
+		fi
+		sleep 1
+	done
+	STORE_LOCK_DIR="$lock_dir"
+	printf '%s\n' "$$" >"${lock_dir}/pid"
+}
+
 root_cmd() {
 	local cmd="$1"
 	local cmd_path
@@ -838,6 +881,30 @@ nix_escape() {
 	printf '%s' "$value"
 }
 
+nix_attr_key() {
+	local name="$1"
+
+	if [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_\'-]*$ ]]; then
+		printf '%s' "$name"
+	else
+		printf '"%s"' "$(nix_escape "$name")"
+	fi
+}
+
+regex_escape() {
+	local value="$1"
+
+	# shellcheck disable=SC2001,SC2016
+	sed -e 's/[][\.^$*+?{}()|\\]/\\&/g' <<<"$value"
+}
+
+nix_attr_assignment_regex() {
+	local name
+	name="$(regex_escape "$1")"
+
+	printf '^[[:space:]]*("%s"|%s)[[:space:]]*=' "$name" "$name"
+}
+
 new_uuid() {
 	cat /proc/sys/kernel/random/uuid
 }
@@ -852,18 +919,18 @@ generate_ids() {
 
 # These probes intentionally match the repo's alejandra-formatted Nix shape.
 host_registered() {
-	grep -Eq "^[[:space:]]*${HOST}[[:space:]]*=[[:space:]]*mkNixosSystem[[:space:]]*\\{" "$(target_read_path "$HOSTS_DEFAULT_FILE")"
+	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*mkNixosSystem[[:space:]]*\\{" "$(target_read_path "$HOSTS_DEFAULT_FILE")"
 }
 
 has_nixbot_entry() {
-	grep -Eq "^[[:space:]]*${HOST}[[:space:]]*= \\{" "$(target_read_path "$NIXBOT_FILE")"
+	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*\\{" "$(target_read_path "$NIXBOT_FILE")"
 }
 
 has_machine_secret_registration() {
 	local source_file
 
 	source_file="$(target_read_path "$SECRETS_FILE")"
-	grep -Eq "^[[:space:]]*${HOST}[[:space:]]*= ./machine/${HOST}\\.key\\.pub;" "$source_file" ||
+	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file" ||
 		grep -Fq "\"data/secrets/machine/${HOST}.key.age\"" "$source_file"
 }
 
@@ -925,14 +992,16 @@ EOF
 register_host() {
 	local entry_file="${RUN_DIR}/host-entry.nix"
 	local next_hosts="${RUN_DIR}/hosts-default.nix"
+	local host_attr
 	local source_file
 
 	host_registered && return
+	host_attr="$(nix_attr_key "$HOST")"
 
 	cat >"$entry_file" <<EOF
-  ${HOST} = mkNixosSystem {
+  ${host_attr} = mkNixosSystem {
     system = "x86_64-linux";
-    hostName = "${HOST}";
+    hostName = "$(nix_escape "$HOST")";
     modules = [./${HOST}];
   };
 
@@ -1044,17 +1113,19 @@ register_machine_secret() {
 	local source_file
 	local machine_key_file="${RUN_DIR}/secrets-default-machine-key.nix"
 	local machine_secret_file="${RUN_DIR}/secrets-default-machine-secret.nix"
+	local host_attr
 	local changed="0"
 
+	host_attr="$(nix_attr_key "$HOST")"
 	source_file="$(target_read_path "$SECRETS_FILE")"
-	if ! grep -Eq "^[[:space:]]*${HOST}[[:space:]]*= ./machine/${HOST}\\.key\\.pub;" "$source_file"; then
-		awk -v host="$HOST" '
+	if ! grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file"; then
+		awk -v host="$HOST" -v host_attr="$host_attr" '
 			{
 				if ($0 ~ /^  machineKeyFiles = \{/) {
 					in_keys = 1
 				}
 				if (in_keys && $0 ~ /^  \};/) {
-					printf "    %s = ./machine/%s.key.pub;\n", host, host
+					printf "    %s = ./machine/%s.key.pub;\n", host_attr, host
 					inserted = 1
 					in_keys = 0
 				}
@@ -1102,9 +1173,11 @@ ensure_nixbot_entry() {
 	local proxy_jump="$PROXY_JUMP"
 	local entry_file="${RUN_DIR}/nixbot-entry.nix"
 	local next_file="${RUN_DIR}/nixbot.nix"
+	local host_attr
 	local source_file
 
 	has_nixbot_entry && return
+	host_attr="$(nix_attr_key "$HOST")"
 
 	if [[ -z "$target" ]]; then
 		if [[ "$HOST_SYSTEM" == "incus" && -n "$INCUS_IPV4" ]]; then
@@ -1119,7 +1192,7 @@ ensure_nixbot_entry() {
 	fi
 
 	cat >"$entry_file" <<EOF
-    ${HOST} = {
+    ${host_attr} = {
       target = "$(nix_escape "$target")";
       ageIdentityKey = "data/secrets/machine/${HOST}.key.age";
 EOF
@@ -1383,16 +1456,18 @@ ensure_incus_instance() {
 	local parent_file="${REPO_ROOT}/hosts/${INCUS_HOST}/incus.nix"
 	local entry_file="${RUN_DIR}/incus-entry.nix"
 	local next_file="${RUN_DIR}/incus.nix"
+	local host_attr
 	local source_file
 
+	host_attr="$(nix_attr_key "$HOST")"
 	source_file="$(target_read_path "$parent_file")"
-	if grep -Eq "^[[:space:]]*${HOST}[[:space:]]*=" "$source_file"; then
+	if grep -Eq "$(nix_attr_assignment_regex "$HOST")" "$source_file"; then
 		info "Incus instance already exists on ${INCUS_HOST}: ${HOST}"
 		return
 	fi
 
 	cat >"$entry_file" <<EOF
-      ${HOST} = {
+      ${host_attr} = {
 EOF
 	if [[ -n "$INCUS_PROJECT" ]]; then
 		cat >>"$entry_file" <<EOF
@@ -1428,12 +1503,16 @@ run_build() {
 	local cache_url
 	local system_ref
 	local system_path
+	local system_path_marker
+	local tmp_marker
 	local -a runtime_installables=()
 	local -a runtime_paths=()
 
-	mkdir -p "$STORE_DIR"
+	acquire_store_lock
 	cache_url="$(store_url "$STORE_DIR")"
 	system_ref="${REPO_ROOT}#nixosConfigurations.${HOST}.config.system.build.toplevel"
+	system_path_marker="${STORE_DIR}/host-${HOST}.system-path"
+	tmp_marker="${system_path_marker}.tmp.$$"
 
 	info "Archiving flake inputs to ${cache_url}"
 	nix flake archive --to "$cache_url" "$REPO_ROOT"
@@ -1448,9 +1527,10 @@ run_build() {
 	info "Copying system and runtime closures to ${cache_url}"
 	nix copy --to "$cache_url" "$system_path" "${runtime_paths[@]}"
 
-	printf '%s\n' "$system_path" >"${STORE_DIR}/host-${HOST}.system-path"
+	printf '%s\n' "$system_path" >"$tmp_marker"
+	mv -f "$tmp_marker" "$system_path_marker"
 	info "Cached ${HOST} system closure in ${STORE_DIR}"
-	info "Recorded system path: ${STORE_DIR}/host-${HOST}.system-path"
+	info "Recorded system path: ${system_path_marker}"
 }
 
 run_generate() {
@@ -1534,7 +1614,7 @@ print_install_commands() {
 	if [[ -n "$STORE_DIR" ]]; then
 		cat <<EOF
 NIX_CONFIG=$(printf '%q' "$(store_nix_config "$STORE_DIR")") disko --mode destroy,format,mount --flake ${REPO_ROOT}#${HOST} --root-mountpoint ${ROOT_MOUNT} --yes-wipe-all-disks
-nixos-install --option substituters $(store_url "$STORE_DIR") --option require-sigs false --flake ${REPO_ROOT}#${HOST} --root ${ROOT_MOUNT} --no-root-passwd
+nixos-install --option substituters $(printf '%q' "$(store_url "$STORE_DIR")") --option require-sigs false --flake ${REPO_ROOT}#${HOST} --root ${ROOT_MOUNT} --no-root-passwd
 EOF
 		return
 	fi
@@ -1549,9 +1629,11 @@ remove_attr_block() {
 	local attr_name="$1"
 	local input_file="$2"
 	local output_file="$3"
+	local attr_pattern
 
+	attr_pattern="$(nix_attr_assignment_regex "$attr_name")"
 	# Text-based Nix removal: braces inside strings/comments still affect depth.
-	awk -v name="$attr_name" '
+	awk -v attr_pattern="$attr_pattern" '
 		function delta(line, i, c, d) {
 			d = 0
 			for (i = 1; i <= length(line); i++) {
@@ -1562,7 +1644,7 @@ remove_attr_block() {
 			return d
 		}
 
-		!skipping && $0 ~ "^[[:space:]]*" name "[[:space:]]*=" {
+		!skipping && $0 ~ attr_pattern {
 			skipping = 1
 			depth = delta($0)
 			if (depth <= 0 && $0 ~ /;[[:space:]]*$/) {
@@ -1593,12 +1675,20 @@ remove_line_containing() {
 	awk -v needle="$needle" 'index($0, needle) == 0 { print }' "$input_file" >"$output_file"
 }
 
+remove_line_matching() {
+	local input_file="$1"
+	local output_file="$2"
+	local pattern="$3"
+
+	awk -v pattern="$pattern" '$0 !~ pattern { print }' "$input_file" >"$output_file"
+}
+
 find_incus_parent_for_host() {
 	local file
 
 	for file in "${REPO_ROOT}"/hosts/*/incus.nix; do
 		[[ -f "$file" ]] || continue
-		if grep -Eq "^[[:space:]]*${HOST}[[:space:]]*=" "$file"; then
+		if grep -Eq "$(nix_attr_assignment_regex "$HOST")" "$file"; then
 			basename "$(dirname "$file")"
 			return 0
 		fi
@@ -1630,7 +1720,7 @@ delete_host() {
 	if has_machine_secret_registration; then
 		next_file="${RUN_DIR}/secrets-default.nix"
 		# Remove key-file and encrypted-secret registrations in separate passes.
-		remove_line_containing "$SECRETS_FILE" "$next_file" "${HOST} = ./machine/${HOST}.key.pub;"
+		remove_line_matching "$SECRETS_FILE" "$next_file" "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./machine/$(regex_escape "$HOST")\\.key\\.pub;"
 		mv "$next_file" "$SECRETS_FILE"
 		remove_line_containing "$SECRETS_FILE" "$next_file" "\"data/secrets/machine/${HOST}.key.age\""
 		mv "$next_file" "$SECRETS_FILE"
