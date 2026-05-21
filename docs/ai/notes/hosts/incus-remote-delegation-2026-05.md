@@ -41,11 +41,11 @@ avoid likely home LAN overlap:
 `pvl-vlab-1` imports `../../lib/incus`, but its `services.incusMachines.remote`
 points at `https://127.0.0.1:8443` and uses the agenix-managed
 `data/secrets/incus/pvl-vlab-1.key.age` private key. Its
-`remote.allowedSubnets = [ "10.10.50.0/24" ]` setting is a local validation
-guard: declared child instance addresses must remain inside the delegated
-subnet, but addresses are still written explicitly. It declares `pvl-vk-1` at
-`10.10.50.31`; that instance is created on the `pvl-x2` Incus daemon, not in a
-nested Incus daemon inside `pvl-vlab-1`.
+`remote.projects.pvl.allowedSubnets = "10.10.50.0/24"` setting is a local
+validation guard: declared child instance addresses in the `pvl` project must
+remain inside the delegated subnet, but addresses are still written explicitly.
+It declares `pvl-vk-1` at `10.10.50.31`; that instance is created on the
+`pvl-x2` Incus daemon, not in a nested Incus daemon inside `pvl-vlab-1`.
 
 Raw `incus query` calls against a remote must include `?project=pvl`; relying
 only on the Incus remote config's project field caused readiness settlement to
@@ -141,18 +141,18 @@ Current delegated resources:
 - `abird`: mounted into `abird-nest` as `delegated-certs`
 - `abird-dev`: mounted into `abird-nest` as `delegated-dev-certs`
 
-`pvl-vlab-1` bootstraps its own parent access by declaring
-`services.incusMachines.remote.certificateDelegation.enable = true`. The shared
-Incus module derives the mounted tenant file from the remote project by default,
-writes the guest's public client certificate to
+`pvl-vlab-1` bootstraps its own parent access through
+`services.incusMachines.remote.projects.pvl`. The shared Incus module
+auto-publishes the default remote project's client certificate to
 `/var/lib/incus-delegation/pvl/certs.json`, waits until the parent Incus API
 accepts that delegated cert, and makes that step an explicit prerequisite of
-`incus-images.service`. The guest config only owns the remote endpoint and
-client certificate/key. If the guest declares no Incus resources, the module
-does not create the delegation writer service, so the absence of the mounted
-delegation file does not block activation. This keeps the direct parent trust
-store limited to the unrestricted `pvl` cert while still letting `pvl-vlab-1`
-manage the parent `pvl` project declaratively.
+`incus-images.service`. Additional project-scoped delegated certificates can be
+listed under `remote.projects.<project>.certs`; bare certificate paths derive
+their tenant-local name from the file basename, stripping the project suffix
+when present. The guest config only owns the remote endpoint, client
+certificate/key, per-project allowed subnets, and optional delegated cert files.
+This keeps the direct parent trust store limited to the unrestricted `pvl` cert
+while still letting `pvl-vlab-1` manage the parent `pvl` project declaratively.
 
 `abird-nest` is declared in the parent Incus `abird` project at `10.10.100.10`.
 Per-instance project placement is handled by

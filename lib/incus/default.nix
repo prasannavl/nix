@@ -24,33 +24,39 @@
   hasCertificates = cfg.certificates != [];
   hasCertificateDelegations = cfg.certificateDelegations != {};
   hasHostHooks = hasInstances || hasCertificates || hasCertificateDelegations || cfg.hostSuspend.enable;
-  hasRemoteCertificateDelegation =
-    cfg.remote.enable && cfg.remote.certificateDelegation.enable && hasInstances;
   mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
   remoteValue = value:
     if value == null
     then ""
     else value;
+  materializeRemoteFile = value:
+    if value == null
+    then null
+    else if builtins.isPath value
+    then pkgs.writeText (builtins.baseNameOf value) (builtins.readFile value)
+    else value;
+  remoteClientCertificateFile = materializeRemoteFile cfg.remote.clientCertificateFile;
+  remoteServerCertificateFile = materializeRemoteFile cfg.remote.serverCertificateFile;
   remoteEnvExports = lib.optionalString cfg.remote.enable ''
     export INCUS_MACHINES_REMOTE_NAME=${lib.escapeShellArg cfg.remote.name}
     export INCUS_MACHINES_REMOTE_ADDRESS=${lib.escapeShellArg (remoteValue cfg.remote.address)}
     export INCUS_MACHINES_REMOTE_PROJECT=${lib.escapeShellArg cfg.remote.project}
-    export INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE=${lib.escapeShellArg (remoteValue cfg.remote.clientCertificateFile)}
+    export INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE=${lib.escapeShellArg (remoteValue remoteClientCertificateFile)}
     export INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE=${lib.escapeShellArg (remoteValue cfg.remote.clientKeyFile)}
     export INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE=${lib.boolToString cfg.remote.acceptCertificate}
     ${lib.optionalString (cfg.remote.serverCertificateFile != null)
-      "export INCUS_MACHINES_REMOTE_SERVER_CERT_FILE=${lib.escapeShellArg cfg.remote.serverCertificateFile}"}
+      "export INCUS_MACHINES_REMOTE_SERVER_CERT_FILE=${lib.escapeShellArg remoteServerCertificateFile}"}
   '';
   remoteServiceEnvironment = lib.optionals cfg.remote.enable ([
       (mkEnvAssignment "INCUS_MACHINES_REMOTE_NAME" cfg.remote.name)
       (mkEnvAssignment "INCUS_MACHINES_REMOTE_ADDRESS" (remoteValue cfg.remote.address))
       (mkEnvAssignment "INCUS_MACHINES_REMOTE_PROJECT" cfg.remote.project)
-      (mkEnvAssignment "INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" (remoteValue cfg.remote.clientCertificateFile))
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" (remoteValue remoteClientCertificateFile))
       (mkEnvAssignment "INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE" (remoteValue cfg.remote.clientKeyFile))
       (mkEnvAssignment "INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE" (lib.boolToString cfg.remote.acceptCertificate))
     ]
     ++ lib.optional (cfg.remote.serverCertificateFile != null)
-    (mkEnvAssignment "INCUS_MACHINES_REMOTE_SERVER_CERT_FILE" cfg.remote.serverCertificateFile));
+    (mkEnvAssignment "INCUS_MACHINES_REMOTE_SERVER_CERT_FILE" remoteServerCertificateFile));
   remoteCertificateDelegationName =
     if cfg.remote.certificateDelegation.name != null
     then cfg.remote.certificateDelegation.name
@@ -59,13 +65,8 @@
     if cfg.remote.certificateDelegation.directory != null
     then cfg.remote.certificateDelegation.directory
     else "${certificateDelegationGuestRoot}/${remoteCertificateDelegationName}";
-  remoteCertificateDelegationTarget = "${remoteCertificateDelegationDirectory}/${cfg.remote.certificateDelegation.fileName}";
-  remoteCertificateDelegationUnit = "incus-remote-certificate-delegation.service";
-  remoteCertificateDelegationDeps = lib.optional hasRemoteCertificateDelegation remoteCertificateDelegationUnit;
-  remoteCertificateDelegationTrustArgs =
-    if cfg.remote.serverCertificateFile != null
-    then "--cacert ${lib.escapeShellArg cfg.remote.serverCertificateFile}"
-    else lib.optionalString cfg.remote.acceptCertificate "--insecure";
+  remoteProjectDelegationUnit = "incus-remote-project-delegated-certificates.service";
+  remoteProjectDelegationDeps = lib.optional hasRemoteProjectDelegations remoteProjectDelegationUnit;
   certificateDelegationsRootEnv =
     mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_ROOT" certificateDelegationsRoot;
 
@@ -76,6 +77,7 @@
       config.virtualisation.incus.package.client
       pkgs.bash
       pkgs.coreutils
+      pkgs.curl
       pkgs.gawk
       pkgs.jq
       pkgs.openssl
@@ -173,6 +175,72 @@
       "-"
     ]
     value;
+
+  stripSuffixes = suffixes: value:
+    lib.foldl'
+    (acc: suffix:
+      if lib.hasSuffix suffix acc
+      then lib.removeSuffix suffix acc
+      else acc)
+    value
+    suffixes;
+
+  remoteProjectCertName = projectName: cert: let
+    base = builtins.baseNameOf (toString cert.file);
+    withoutExtension = stripSuffixes [".age" ".crt" ".pem" ".cert"] base;
+    projectSuffix = "-${projectName}";
+  in
+    if cert.name != null
+    then cert.name
+    else if lib.hasSuffix projectSuffix withoutExtension
+    then lib.removeSuffix projectSuffix withoutExtension
+    else withoutExtension;
+
+  legacyRemoteProject = lib.optionalAttrs (cfg.remote.allowedSubnets != [] || cfg.remote.certificateDelegation.enable) {
+    ${cfg.remote.project} = {
+      allowedSubnets = cfg.remote.allowedSubnets;
+      certs = [];
+      includeClientCertificate = cfg.remote.certificateDelegation.enable;
+      certificateName = cfg.remote.certificateDelegation.certificateName;
+      directory = remoteCertificateDelegationDirectory;
+      fileName = cfg.remote.certificateDelegation.fileName;
+      waitForTrust = cfg.remote.certificateDelegation.waitForTrust;
+      waitTimeoutSeconds = cfg.remote.certificateDelegation.waitTimeoutSeconds;
+    };
+  };
+
+  effectiveRemoteProjects =
+    if cfg.remote.projects != {}
+    then cfg.remote.projects
+    else legacyRemoteProject;
+
+  remoteProjectCertificates = projectName: project:
+    lib.optional project.includeClientCertificate {
+      name = project.certificateName;
+      file = remoteClientCertificateFile;
+      automatic = true;
+    }
+    ++ map (cert: {
+      name = remoteProjectCertName projectName cert;
+      file = materializeRemoteFile cert.file;
+      automatic = false;
+    })
+    project.certs;
+
+  remoteProjectDelegations =
+    lib.mapAttrs (
+      projectName: project: {
+        inherit (project) directory fileName waitForTrust waitTimeoutSeconds;
+        certificates = map (cert: {
+          inherit (cert) name automatic;
+          file = toString cert.file;
+        }) (remoteProjectCertificates projectName project);
+      }
+    )
+    effectiveRemoteProjects;
+
+  hasRemoteProjectDelegations = cfg.remote.enable && effectiveRemoteProjects != {};
+  remoteProjectDelegationsFile = pkgs.writeText "incus-remote-project-delegated-certificates.json" (builtins.toJSON remoteProjectDelegations);
 
   deviceType = lib.types.submodule (_: {
     options = {
@@ -301,6 +369,106 @@
         type = lib.types.ints.positive;
         default = 32;
         description = "Maximum number of delegated certificates accepted from the tenant state file.";
+      };
+    };
+  });
+
+  remoteProjectCertFileType = lib.types.either lib.types.path lib.types.str;
+
+  remoteProjectCertType = projectName:
+    lib.types.coercedTo
+    remoteProjectCertFileType
+    (file: {file = file;})
+    (lib.types.submodule (_: {
+      options = {
+        name = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = ''
+            Tenant-local certificate name. When unset, the name is derived from
+            the certificate file basename, stripping the delegated project
+            suffix when present.
+          '';
+        };
+
+        file = lib.mkOption {
+          type = remoteProjectCertFileType;
+          description = ''
+            Runtime-readable PEM certificate file to publish into the delegated
+            certificate state for project `${projectName}`.
+          '';
+        };
+      };
+    }));
+
+  remoteProjectType = lib.types.submodule ({name, ...}: {
+    options = {
+      allowedSubnets = lib.mkOption {
+        type = lib.types.coercedTo lib.types.str (value: [value]) (lib.types.listOf lib.types.str);
+        default = [];
+        example = ["10.10.100.0/24"];
+        description = ''
+          Optional IPv4 CIDR allowlist for instances declared in this remote
+          project. When non-empty, each instance assigned to this project must
+          use an address inside one of these subnets.
+        '';
+      };
+
+      certs = lib.mkOption {
+        type = lib.types.listOf (remoteProjectCertType name);
+        default = [];
+        description = ''
+          Additional PEM certificates to publish into this project's delegated
+          certificate state file. Bare path and string entries derive their
+          tenant-local name from the file basename; use `{ name, file }` when a
+          specific name is required.
+        '';
+      };
+
+      includeClientCertificate = lib.mkOption {
+        type = lib.types.bool;
+        default = name == cfg.remote.project;
+        description = ''
+          Whether to include this remote client's certificate in this project's
+          delegated certificate state. Defaults to true only for
+          `services.incusMachines.remote.project`.
+        '';
+      };
+
+      certificateName = lib.mkOption {
+        type = lib.types.str;
+        default = config.networking.hostName;
+        description = ''
+          Tenant-local name used when `includeClientCertificate` publishes this
+          remote client's certificate.
+        '';
+      };
+
+      directory = lib.mkOption {
+        type = lib.types.str;
+        default = "${certificateDelegationGuestRoot}/${name}";
+        description = "Guest-visible delegated certificate directory for this project.";
+      };
+
+      fileName = lib.mkOption {
+        type = lib.types.str;
+        default = "certs.json";
+        description = "Delegated certificate JSON file written under `directory`.";
+      };
+
+      waitForTrust = lib.mkOption {
+        type = lib.types.bool;
+        default = name == cfg.remote.project;
+        description = ''
+          Wait for the remote Incus API to accept this client's certificate
+          after writing delegated certificate state.
+        '';
+      };
+
+      waitTimeoutSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 60;
+        description = "Seconds to wait for parent trust reconciliation.";
       };
     };
   });
@@ -867,14 +1035,14 @@
     parts = lib.splitString "/" subnet;
   in
     if builtins.length parts != 2
-    then throw "Invalid IPv4 CIDR for services.incusMachines.remote.allowedSubnets: ${subnet}"
+    then throw "Invalid IPv4 CIDR for services.incusMachines.remote project allowedSubnets: ${subnet}"
     else let
       prefixLength = lib.toInt (builtins.elemAt parts 1);
       size = pow2 (32 - prefixLength);
       base = ipv4ToInt (builtins.elemAt parts 0);
     in
       if prefixLength < 0 || prefixLength > 32
-      then throw "Invalid IPv4 CIDR for services.incusMachines.remote.allowedSubnets: ${subnet}"
+      then throw "Invalid IPv4 CIDR for services.incusMachines.remote project allowedSubnets: ${subnet}"
       else {
         start = (builtins.div base size) * size;
         end = ((builtins.div base size) + 1) * size - 1;
@@ -886,22 +1054,74 @@
   in
     address >= cidr.start && address <= cidr.end;
 
-  instancesOutsideAllowedSubnets =
+  remoteProjectSubnets = project:
+    if builtins.hasAttr project effectiveRemoteProjects
+    then effectiveRemoteProjects.${project}.allowedSubnets
+    else [];
+
+  instancesWithoutRemoteProjectConfig =
     lib.filter (
       name:
-        !lib.any
+        cfg.remote.enable
+        && cfg.remote.projects != {}
+        && !builtins.hasAttr (resolveMachineProject cfg.instances.${name}) cfg.remote.projects
+    )
+    (builtins.attrNames cfg.instances);
+
+  instancesOutsideAllowedSubnets =
+    lib.filter (
+      name: let
+        project = resolveMachineProject cfg.instances.${name};
+        subnets = remoteProjectSubnets project;
+      in
+        subnets
+        != []
+        && !lib.any
         (subnet: ipv4InCidr cfg.instances.${name}.ipv4Address subnet)
-        cfg.remote.allowedSubnets
+        subnets
     )
     (builtins.attrNames cfg.instances);
 
   allowedSubnetViolations =
-    map (name: "${name} (${cfg.instances.${name}.ipv4Address})") instancesOutsideAllowedSubnets;
+    map (
+      name: let
+        project = resolveMachineProject cfg.instances.${name};
+      in "${name} (${project}, ${cfg.instances.${name}.ipv4Address})"
+    )
+    instancesOutsideAllowedSubnets;
 
   invalidCertificateDelegationNames =
     lib.filter
     (name: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" name == null)
     (builtins.attrNames cfg.certificateDelegations);
+
+  invalidRemoteProjectNames =
+    lib.filter
+    (name: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" name == null)
+    (builtins.attrNames cfg.remote.projects);
+
+  invalidRemoteProjectCertificateNames = lib.concatLists (
+    lib.mapAttrsToList (
+      projectName: project:
+        lib.filter
+        (name: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" name == null)
+        (map (cert: cert.name) (remoteProjectCertificates projectName project))
+    )
+    effectiveRemoteProjects
+  );
+
+  remoteProjectCertificateFiles = lib.concatLists (
+    lib.mapAttrsToList (
+      projectName: project:
+        map (cert: toString cert.file) (remoteProjectCertificates projectName project)
+    )
+    effectiveRemoteProjects
+  );
+
+  duplicateRemoteProjectCertificateFiles =
+    lib.filter
+    (file: builtins.length (lib.filter (candidate: candidate == file) remoteProjectCertificateFiles) > 1)
+    (lib.unique remoteProjectCertificateFiles);
 
   invalidInstanceNames =
     lib.filter
@@ -1218,7 +1438,20 @@ in {
           Optional IPv4 CIDR allowlist for declared instance addresses managed
           through this remote. When non-empty, every
           `services.incusMachines.instances.<name>.ipv4Address` must fall
-          inside at least one listed subnet.
+          inside at least one listed subnet. Prefer
+          `services.incusMachines.remote.projects.<name>.allowedSubnets` for
+          project-scoped delegation.
+        '';
+      };
+
+      projects = lib.mkOption {
+        type = lib.types.attrsOf remoteProjectType;
+        default = {};
+        description = ''
+          Project-scoped remote delegation settings. Attribute names are Incus
+          project names. Each project can declare its own allowed subnets and
+          delegated certificate state to write under
+          `/var/lib/incus-delegation/<project>`.
         '';
       };
 
@@ -1386,7 +1619,7 @@ in {
       }
       {
         assertion = !cfg.remote.enable || !hasCertificates;
-        message = "services.incusMachines.certificates is only supported for local Incus management; use parent-side certificateDelegations or remote.certificateDelegation for remote targets.";
+        message = "services.incusMachines.certificates is only supported for local Incus management; use parent-side certificateDelegations or remote.projects for remote targets.";
       }
       {
         assertion = invalidCertificateDelegationNames == [];
@@ -1427,6 +1660,24 @@ in {
           + remoteCertificateDelegationName;
       }
       {
+        assertion = invalidRemoteProjectNames == [];
+        message =
+          "services.incusMachines.remote.projects names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          + lib.concatStringsSep ", " invalidRemoteProjectNames;
+      }
+      {
+        assertion = invalidRemoteProjectCertificateNames == [];
+        message =
+          "services.incusMachines.remote.projects cert names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          + lib.concatStringsSep ", " invalidRemoteProjectCertificateNames;
+      }
+      {
+        assertion = duplicateRemoteProjectCertificateFiles == [];
+        message =
+          "services.incusMachines.remote.projects cannot publish the same certificate file into multiple project delegations: "
+          + lib.concatStringsSep ", " duplicateRemoteProjectCertificateFiles;
+      }
+      {
         assertion = !cfg.remote.enable || !hasCertificateDelegations;
         message = "services.incusMachines.certificateDelegations is only supported for local Incus management.";
       }
@@ -1455,11 +1706,15 @@ in {
         message = "services.incusMachines.hostSuspend is only supported for local Incus management.";
       }
       {
-        assertion = cfg.remote.allowedSubnets == [] || instancesOutsideAllowedSubnets == [];
+        assertion = instancesWithoutRemoteProjectConfig == [];
         message =
-          "services.incusMachines instances outside remote.allowedSubnets ("
-          + lib.concatStringsSep ", " cfg.remote.allowedSubnets
-          + "): "
+          "services.incusMachines remote instances must declare a matching services.incusMachines.remote.projects entry: "
+          + lib.concatStringsSep ", " instancesWithoutRemoteProjectConfig;
+      }
+      {
+        assertion = !cfg.remote.enable || instancesOutsideAllowedSubnets == [];
+        message =
+          "services.incusMachines instances outside remote project allowedSubnets: "
           + lib.concatStringsSep ", " allowedSubnetViolations;
       }
     ];
@@ -1556,57 +1811,37 @@ in {
           incusImagesDeps = localIncusDeps ++ ["network-online.target"];
         in
           {
-            incus-remote-certificate-delegation = lib.mkIf hasRemoteCertificateDelegation {
-              description = "Publish remote Incus client certificate to parent delegation";
+            incus-remote-project-delegated-certificates = lib.mkIf hasRemoteProjectDelegations {
+              description = "Publish remote Incus delegated project certificates";
               before =
                 [
                   "incus-images.service"
                   "incus-machines-reconciler.service"
                 ]
                 ++ map (name: "incus-${name}.service") (builtins.attrNames cfg.instances);
-              after = ["network-online.target"];
+              after = [
+                "agenix.service"
+                "network-online.target"
+              ];
               wants = ["network-online.target"];
               path = [
                 pkgs.coreutils
-                pkgs.curl
                 pkgs.jq
               ];
+              restartTriggers = [
+                remoteProjectDelegationsFile
+              ];
+              restartIfChanged = true;
               serviceConfig = {
                 Type = "oneshot";
                 RemainAfterExit = true;
-                Environment = remoteServiceEnvironment;
+                Environment =
+                  [
+                    (mkEnvAssignment "INCUS_MACHINES_REMOTE_PROJECT_DELEGATIONS_FILE" remoteProjectDelegationsFile)
+                  ]
+                  ++ remoteServiceEnvironment;
+                ExecStart = "${helperScript} remote-project-delegations";
               };
-              script = ''
-                target=${lib.escapeShellArg remoteCertificateDelegationTarget}
-                install -d -m 0755 "$(dirname "$target")"
-                tmp="$(mktemp "$target.tmp.XXXXXX")"
-                jq -n \
-                  --arg name ${lib.escapeShellArg cfg.remote.certificateDelegation.certificateName} \
-                  --rawfile data "$INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" \
-                  '{version: 1, certificates: [{name: $name, data: $data}]}' \
-                  >"$tmp"
-                chmod 0644 "$tmp"
-                mv -f "$tmp" "$target"
-
-                ${lib.optionalString cfg.remote.certificateDelegation.waitForTrust ''
-                  api_url="''${INCUS_MACHINES_REMOTE_ADDRESS%/}/1.0"
-                  for _attempt in $(seq 1 ${toString cfg.remote.certificateDelegation.waitTimeoutSeconds}); do
-                    if curl \
-                      --silent \
-                      --fail \
-                      ${remoteCertificateDelegationTrustArgs} \
-                      --cert "$INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" \
-                      --key "$INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE" \
-                      "$api_url" >/dev/null; then
-                      exit 0
-                    fi
-                    sleep 1
-                  done
-
-                  echo "Timed out waiting for parent Incus to trust delegated client certificate" >&2
-                  exit 1
-                ''}
-              '';
             };
 
             incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
@@ -1630,9 +1865,9 @@ in {
             incus-images = {
               description = "Import/update declared Incus images";
               wantedBy = ["sysinit-reactivation.target"];
-              after = incusImagesDeps ++ remoteCertificateDelegationDeps;
+              after = incusImagesDeps ++ remoteProjectDelegationDeps;
               wants = incusImagesDeps;
-              requires = remoteCertificateDelegationDeps;
+              requires = remoteProjectDelegationDeps;
               restartTriggers = [
                 incusImagesStateFile
               ];

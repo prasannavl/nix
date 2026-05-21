@@ -26,6 +26,7 @@ init_vars() {
 	certificate_delegations="{}"
 	certificate_delegations_file="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_FILE-}"
 	certificate_delegations_state_file="${INCUS_MACHINES_CERTIFICATE_DELEGATIONS_STATE_FILE-/var/lib/incus-machines/delegated-certificates/delegations.json}"
+	remote_project_delegations_file="${INCUS_MACHINES_REMOTE_PROJECT_DELEGATIONS_FILE-}"
 	preseed_migrations="[]"
 	preseed_migrations_file="${INCUS_MACHINES_PRESEED_MIGRATIONS_FILE-}"
 	incus_remote_name="${INCUS_MACHINES_REMOTE_NAME-local}"
@@ -1264,6 +1265,77 @@ certificate_delegations_gc_main() {
 	commit_certificate_delegations_state
 }
 
+remote_project_delegations_wait_for_trust() {
+	local wait_timeout api_url
+	local -a curl_trust_args=()
+	wait_timeout="$1"
+
+	if [ -n "$incus_remote_server_cert_file" ]; then
+		curl_trust_args=(--cacert "$incus_remote_server_cert_file")
+	elif [ "$incus_remote_accept_certificate" = "true" ]; then
+		curl_trust_args=(--insecure)
+	fi
+
+	api_url="${incus_remote_address%/}/1.0"
+	for _attempt in $(seq 1 "$wait_timeout"); do
+		if curl \
+			--silent \
+			--fail \
+			"${curl_trust_args[@]}" \
+			--cert "$incus_remote_client_cert_file" \
+			--key "$incus_remote_client_key_file" \
+			"$api_url" >/dev/null; then
+			return 0
+		fi
+		sleep 1
+	done
+
+	echo "Timed out waiting for parent Incus to trust delegated client certificate" >&2
+	exit 1
+}
+
+remote_project_delegations_main() {
+	local cert_file cert_json cert_name certs_tmp directory file_name next_tmp project_json target tmp wait_timeout
+
+	[ -n "$remote_project_delegations_file" ] || {
+		echo "Missing remote project delegations file" >&2
+		exit 1
+	}
+
+	while IFS= read -r project_json; do
+		directory="$(printf '%s' "$project_json" | jq -r '.directory')"
+		file_name="$(printf '%s' "$project_json" | jq -r '.fileName')"
+		target="$directory/$file_name"
+
+		install -d -m 0755 "$directory"
+		certs_tmp="$(mktemp "$target.certs.XXXXXX")"
+		printf '[]\n' >"$certs_tmp"
+
+		while IFS= read -r cert_json; do
+			cert_name="$(printf '%s' "$cert_json" | jq -r '.name')"
+			cert_file="$(printf '%s' "$cert_json" | jq -r '.file')"
+			next_tmp="$(mktemp "$target.certs.XXXXXX")"
+			jq \
+				--arg name "$cert_name" \
+				--rawfile data "$cert_file" \
+				'. + [{name: $name, data: $data}]' \
+				"$certs_tmp" >"$next_tmp"
+			mv -f "$next_tmp" "$certs_tmp"
+		done < <(printf '%s' "$project_json" | jq -c '.certificates[]')
+
+		tmp="$(mktemp "$target.tmp.XXXXXX")"
+		jq -c '{version: 1, certificates: .}' "$certs_tmp" >"$tmp"
+		chmod 0600 "$tmp"
+		mv -f "$tmp" "$target"
+		rm -f "$certs_tmp"
+	done < <(jq -c 'to_entries[] | .value + {project: .key}' "$remote_project_delegations_file")
+
+	if jq -e 'to_entries | any(.value.waitForTrust)' "$remote_project_delegations_file" >/dev/null; then
+		wait_timeout="$(jq -r '[to_entries[].value.waitTimeoutSeconds] | max // 60' "$remote_project_delegations_file")"
+		remote_project_delegations_wait_for_trust "$wait_timeout"
+	fi
+}
+
 reconciler_main() {
 	parse_machine_selection_args "$@"
 
@@ -2000,7 +2072,7 @@ main() {
 	setup_incus_client
 	command="${1-}"
 	[ -n "$command" ] || {
-		echo "usage: incus-machines-helper <preseed-migrations|reconciler|settlement|machine|images|gc|host-suspend> [args...]" >&2
+		echo "usage: incus-machines-helper <preseed-migrations|certificates|certificate-delegation|certificate-delegations-gc|remote-project-delegations|reconciler|settlement|machine|stop-instance|images|gc|host-suspend> [args...]" >&2
 		exit 1
 	}
 	shift
@@ -2017,6 +2089,9 @@ main() {
 		;;
 	certificate-delegations-gc)
 		certificate_delegations_gc_main "$@"
+		;;
+	remote-project-delegations)
+		remote_project_delegations_main "$@"
 		;;
 	reconciler)
 		reconciler_main "$@"
