@@ -1,7 +1,7 @@
-{...}: let
+{lib, ...}: let
   # Disabled stack. Keep the compose definition inline until Zulip is wired
   # back into the host again.
-  _composeSource = ''
+  composeSource = ''
     services:
       database:
         image: "zulip/zulip-postgresql:14"
@@ -90,5 +90,7 @@
       redis:
   '';
 in {
-  # Compose source intentionally kept inline in `_composeSource` while disabled.
+  config = lib.mkIf false {
+    services.podmanCompose.pvl.instances.zulip.source = composeSource;
+  };
 }

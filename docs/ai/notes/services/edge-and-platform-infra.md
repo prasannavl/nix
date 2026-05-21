@@ -51,8 +51,8 @@ and documentation sanitization rules for infra-facing docs.
 ## Documentation sanitization
 
 - Durable infra notes and playbooks should prefer generic placeholders such as
-  `<zone>`, `<bucket>`, `<worker>`, and `<ci-host>` unless the literal repo
-  path is itself the interface being described.
+  `<zone>`, `<bucket>`, `<worker>`, and `<ci-host>` unless the literal repo path
+  is itself the interface being described.
 - Keep live identifiers in config and state, not in general notes.
 
 ## Source of truth files

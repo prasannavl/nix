@@ -1,4 +1,4 @@
-{lib, ...}: {
+{...}: {
   networking.firewall = {
     trustedInterfaces = ["p2p-*"];
     extraInputRules = ''

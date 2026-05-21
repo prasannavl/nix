@@ -13,15 +13,14 @@ Set these before execution:
   `data/secrets/nixbot/nixbot.key.age`).
 - `NEW_NIXBOT_KEY_PRIVATE`: path to new nixbot deploy private key file used for
   GitHub repo SSH access.
-- `NEW_CI_KEY_PRIVATE`: path to new CI host private key file used by
-  CI/local SSH calls.
+- `NEW_CI_KEY_PRIVATE`: path to new CI host private key file used by CI/local
+  SSH calls.
 
 Sensitive handling:
 
 - Never print, `cat`, or echo `NEW_NIXBOT_KEY_PRIVATE` contents in terminal
   output.
-- Never print, `cat`, or echo `NEW_CI_KEY_PRIVATE` contents in terminal
-  output.
+- Never print, `cat`, or echo `NEW_CI_KEY_PRIVATE` contents in terminal output.
 - Use path-only handling and manual secret updates for GitHub secrets.
 
 Optional for CI host-first cutover:
@@ -36,8 +35,8 @@ Optional for CI host-first cutover:
   `/var/lib/nixbot/.ssh/id_ed25519` on the target.
 - On replacement, previous key should be retained at
   `/var/lib/nixbot/.ssh/id_ed25519_legacy`.
-- On the CI host, that file is also the deploy identity used to SSH from
-  CI host to other hosts.
+- On the CI host, that file is also the deploy identity used to SSH from CI host
+  to other hosts.
 - CI host nixbot SSH client should attempt both identities (`id_ed25519`, then
   `id_ed25519_legacy`) during overlap.
 - During rotation, if CI host is bootstrapped with the new key before legacy
@@ -62,8 +61,8 @@ Before every step:
 
 Mode A safety precondition:
 
-- Only use Mode A if all target hosts already trust `NEW_NIXBOT_PUB` before
-  CI host switches to `NEW_NIXBOT_KEY_AGE`.
+- Only use Mode A if all target hosts already trust `NEW_NIXBOT_PUB` before CI
+  host switches to `NEW_NIXBOT_KEY_AGE`.
 - If any host may still require the old deploy key for SSH auth, use Mode B with
   `LEGACY_NIXBOT_KEY_AGE`.
 
@@ -111,8 +110,8 @@ Actions:
 - update GitHub secret used for repo SSH deploy-key auth (nixbot deploy key;
   name per your repo settings) to `NEW_NIXBOT_KEY_PRIVATE`.
 - update GitHub secret `NIXBOT_CI_SSH_KEY` to new private key.
-- if running local orchestrator checks, set `NIXBOT_CI_SSH_KEY_PATH` to new
-  CI host key age file/path.
+- if running local orchestrator checks, set `NIXBOT_CI_SSH_KEY_PATH` to new CI
+  host key age file/path.
 - do not print private key material during this step.
 
 Expected outcome:

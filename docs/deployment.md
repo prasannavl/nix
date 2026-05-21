@@ -116,8 +116,8 @@ these steady-state assumptions:
 - `/var/lib/nixbot/.age/identity` is not installed on the target
 - the host has not yet been switched onto the repo's `nixbot`/agenix model
 
-Bootstrap matters especially for CI host because the CI host is the first
-trust anchor for the whole fleet:
+Bootstrap matters especially for CI host because the CI host is the first trust
+anchor for the whole fleet:
 
 - CI and remote operators enter through CI host first, not directly to every
   node
@@ -199,8 +199,8 @@ shell access for `nixos-rebuild --target-host`.
   the `nixbot` user.
 - `lib/nixbot/default.nix` installs `nixbot.sshKeys` onto every managed host as
   `nixbot` authorized keys.
-- `lib/nixbot/ci.nix` separately installs `nixbot.ciSshKeys` onto the
-  CI host's `nixbot` account, but wrapped in a forced command:
+- `lib/nixbot/ci.nix` separately installs `nixbot.ciSshKeys` onto the CI host's
+  `nixbot` account, but wrapped in a forced command:
   - only the packaged `nixbot` command may run
   - no shell, PTY, forwarding, or user rc files
 - This means there are two SSH trust exchanges:
@@ -290,8 +290,8 @@ shell access for `nixos-rebuild --target-host`.
 
 - CI host is the configured CI host target.
 - CI host ingress identity is the SSH key whose public half is loaded from
-  `users/userdata.nix` (`nixbot.ciSshKeys` / `nixbot.ciSshKey`) and
-  forced into the packaged `nixbot` binary by `lib/nixbot/ci.nix`.
+  `users/userdata.nix` (`nixbot.ciSshKeys` / `nixbot.ciSshKey`) and forced into
+  the packaged `nixbot` binary by `lib/nixbot/ci.nix`.
 - The private half of that ingress key is stored as
   `data/secrets/ci/nixbot-ci-ssh.key.age`.
   - recipients: admins only
@@ -473,8 +473,8 @@ Use this order for a clean-room rebuild of the current model.
 4. Deploy CI host first, then the rest of hosts.
 5. Update CI secret `NIXBOT_CI_SSH_KEY` to the new CI host private key.
 6. If you run `nixbot` from outside CI host, also rotate
-   `NIXBOT_CI_SSH_KEY_PATH` (forced-command bootstrap check key) to the new
-   CI host ingress key file.
+   `NIXBOT_CI_SSH_KEY_PATH` (forced-command bootstrap check key) to the new CI
+   host ingress key file.
 7. Validate forced-command access and one full deploy run.
 8. Remove old public keys from both lists, re-encrypt again, and deploy.
 
@@ -495,8 +495,8 @@ only trust the old `nixbot` key.
 5. For nodes that still require old bootstrap injection material, also set:
    - `hosts.<old-node>.bootstrapKey = "data/secrets/nixbot/nixbot-legacy.key.age";`
 6. Deploy CI host and switch CI ingress key to the new CI host key.
-7. If applicable, switch `NIXBOT_CI_SSH_KEY_PATH` for local orchestrator
-   runs to the new CI host ingress key.
+7. If applicable, switch `NIXBOT_CI_SSH_KEY_PATH` for local orchestrator runs to
+   the new CI host ingress key.
 8. Run deploys in phase 2 to migrate old nodes onto new public key trust.
 9. Remove per-host legacy `key` and `bootstrapKey` overrides, remove legacy
    secret material, re-encrypt recipients without legacy keys.

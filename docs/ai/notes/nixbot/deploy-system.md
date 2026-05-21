@@ -25,8 +25,8 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 
 ## Core architecture
 
-- `nixbot` is the only supported orchestration entrypoint for local, CI, and
-  CI host-triggered runs.
+- `nixbot` is the only supported orchestration entrypoint for local, CI, and CI
+  host-triggered runs.
 - The deploy system separates:
   - SSH deploy identity
   - per-host machine age identity

@@ -73,8 +73,8 @@ ssh-keygen -t ed25519 -a 64 -N '' -C "nixbot-ci-github-actions-${NEW_KEY_TAG}" -
 
 Expected outcome:
 
-- `${KEYGEN_DIR}/nixbot-ci-ssh.key` and
-  `${KEYGEN_DIR}/nixbot-ci-ssh.key.pub` created.
+- `${KEYGEN_DIR}/nixbot-ci-ssh.key` and `${KEYGEN_DIR}/nixbot-ci-ssh.key.pub`
+  created.
 
 ## Step 4: Validate Fingerprints
 
@@ -147,8 +147,8 @@ Actions:
 Expected outcome:
 
 - GitHub repo SSH deploy-key secret updated to the rotated nixbot key.
-- GitHub `NIXBOT_CI_SSH_KEY` updated without exposing key material in
-  terminal logs.
+- GitHub `NIXBOT_CI_SSH_KEY` updated without exposing key material in terminal
+  logs.
 
 ## Step 8: Cleanup Local Plaintext Keys
 

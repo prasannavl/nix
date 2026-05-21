@@ -115,8 +115,8 @@ Workflow: `.github/workflows/nixbot.yaml`.
 - Push to `master`: trigger build-only run.
 - Manual (`workflow_dispatch`): set `hosts` and optionally deploy.
 
-The workflow is intentionally thin: it only SSHes into the configured CI host via
-the packaged `nixbot` entrypoint with `--ci-trigger`.
+The workflow is intentionally thin: it only SSHes into the configured CI host
+via the packaged `nixbot` entrypoint with `--ci-trigger`.
 
 Security note: deploy does **not** SCP/upload a script to CI host at runtime.
 The CI host forced-command key is restricted directly to the packaged `nixbot`
@@ -127,8 +127,8 @@ command.
 
 High-level architecture:
 
-- GitHub Actions connects to the configured CI host using a restricted
-  ingress key and forced command (`ssh-gate`).
+- GitHub Actions connects to the configured CI host using a restricted ingress
+  key and forced command (`ssh-gate`).
 - CI host runs the packaged `nixbot` command directly from the Nix store to
   build/deploy selected NixOS hosts.
 - Deploy SSH key material is stored as age-encrypted secrets in
@@ -213,8 +213,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - Deploy parallelism: `NIXBOT_JOBS` / `--deploy-jobs` (default: `16`).
 - Verification parallelism: `NIXBOT_VERIFY_JOBS` / `--verify-jobs` (default:
   `16`) for rollback snapshots and health checks.
-- `NIXBOT_CI_FIRST` / `--ci-first` prioritizes the CI host first
-  for both build ordering and deploy waves when selected.
+- `NIXBOT_CI_FIRST` / `--ci-first` prioritizes the CI host first for both build
+  ordering and deploy waves when selected.
 - Deploy derives dependency waves from `deps`.
 
 ## Package Conventions

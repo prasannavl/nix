@@ -6,7 +6,7 @@
   (import ./pvl.nix {inherit inputs;})
   (import ./pkgs.nix {inherit inputs;})
   (
-    final: prev: {
+    final: _prev: {
       handbrake-wrapped = final.callPackage ../lib/ext/handbrake.nix {};
       tailscale-upstream = final.callPackage ../lib/ext/tailscale-upstream.nix {
         tailscale = final.unstable.tailscale;
