@@ -115,11 +115,11 @@ Workflow: `.github/workflows/nixbot.yaml`.
 - Push to `master`: trigger build-only run.
 - Manual (`workflow_dispatch`): set `hosts` and optionally deploy.
 
-The workflow is intentionally thin: it only SSHes into the configured bastion
-host via the packaged `nixbot` entrypoint with `--bastion-trigger`.
+The workflow is intentionally thin: it only SSHes into the configured CI host via
+the packaged `nixbot` entrypoint with `--ci-trigger`.
 
-Security note: deploy does **not** SCP/upload a script to bastion at runtime.
-The bastion forced-command key is restricted directly to the packaged `nixbot`
+Security note: deploy does **not** SCP/upload a script to CI host at runtime.
+The CI host forced-command key is restricted directly to the packaged `nixbot`
 command from `pkgs/tools/nixbot`, so CI/local trigger only invokes that allowed
 command.
 
@@ -127,9 +127,9 @@ command.
 
 High-level architecture:
 
-- GitHub Actions connects to the configured bastion host using a restricted
+- GitHub Actions connects to the configured CI host using a restricted
   ingress key and forced command (`ssh-gate`).
-- Bastion runs the packaged `nixbot` command directly from the Nix store to
+- CI host runs the packaged `nixbot` command directly from the Nix store to
   build/deploy selected NixOS hosts.
 - Deploy SSH key material is stored as age-encrypted secrets in
   `data/secrets/*.age`, with bootstrap and rotation rules documented in
@@ -147,7 +147,7 @@ Primary files for deployment are:
 - `pkgs/tools/nixbot/` (canonical packaged nixbot source)
 - `nixbot` (packaged deployment entrypoint)
 - `pkgs/tools/nixbot/flake.nix` (packaged nixbot application wrapper)
-- `lib/nixbot/bastion.nix` (bastion-side nixbot setup)
+- `lib/nixbot/ci.nix` (CI host-side nixbot setup)
 - `lib/nixbot/default.nix` (nixbot user module with sudo/identity)
 - `nixbot` runs in a cached `nix shell` toolchain with pinned tools (`nix`,
   `age`, `cloudflared`, `coreutils`, `git`, `jq`, `nixos-rebuild-ng`, `openssh`,
@@ -187,16 +187,16 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
   phase-specific projects.
 - `tf/README.md`: Terraform project layout docs.
 - `nixbot tf-dns|tf-platform|tf-apps`: runs the phase-specific OpenTofu projects
-  locally or through the bastion-trigger path used by `nixbot`. Project
+  locally or through the CI host-trigger path used by `nixbot`. Project
   discovery is suffix-based, so future `tf/<provider>-dns`,
   `tf/<provider>-platform`, and `tf/<provider>-apps` projects participate
   automatically.
-- `.github/workflows/nixbot.yaml`: can dispatch the same bastion-based
+- `.github/workflows/nixbot.yaml`: can dispatch the same CI host-based
   build/deploy flow and the standard Terraform phase actions only; it does not
   expose per-project `tf/<project>` actions.
 - Terraform credentials can be stored as repo-managed age secrets under
   `data/secrets/cloudflare/*.key.age`; the phase-specific OpenTofu actions
-  decrypt them on demand using the existing bastion age key.
+  decrypt them on demand using the existing CI host age key.
 
 ## Deploy Ordering
 
@@ -213,7 +213,7 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - Deploy parallelism: `NIXBOT_JOBS` / `--deploy-jobs` (default: `16`).
 - Verification parallelism: `NIXBOT_VERIFY_JOBS` / `--verify-jobs` (default:
   `16`) for rollback snapshots and health checks.
-- `NIXBOT_BASTION_FIRST` / `--bastion-first` prioritizes the bastion host first
+- `NIXBOT_CI_FIRST` / `--ci-first` prioritizes the CI host first
   for both build ordering and deploy waves when selected.
 - Deploy derives dependency waves from `deps`.
 

@@ -8,7 +8,7 @@ Canonical secret topology, bootstrap order, and managed secret operations.
 
 - Host activation decrypt uses the machine-specific age identity at
   `/var/lib/nixbot/.age/identity`, not the deploy SSH key.
-- Bastion forced-command ingress and downstream deploy SSH are separate trust
+- CI host forced-command ingress and downstream deploy SSH are separate trust
   domains.
 - Service secrets are encrypted to the consuming machine recipient and
   materialized there through `age.secrets.*`.
@@ -18,14 +18,14 @@ Canonical secret topology, bootstrap order, and managed secret operations.
 ## Bootstrap order
 
 1. Define admin and `nixbot` public keys.
-2. Generate and encrypt bastion ingress private key material.
+2. Generate and encrypt CI host ingress private key material.
 3. Generate and encrypt the shared `nixbot` deploy private key.
 4. Generate one machine age identity per host.
 5. Commit machine recipients.
 6. Update recipient policy in `data/secrets/default.nix`.
 7. Encrypt managed secrets.
 8. Clean plaintext siblings.
-9. Bootstrap bastion first.
+9. Bootstrap CI host first.
 10. Bootstrap the rest of the fleet through the standard deploy path.
 
 ## Managed secret operations
@@ -53,7 +53,7 @@ Canonical secret topology, bootstrap order, and managed secret operations.
 - `scripts/age-secrets.sh`
 - `hosts/nixbot.nix`
 - `lib/nixbot/default.nix`
-- `lib/nixbot/bastion.nix`
+- `lib/nixbot/ci.nix`
 - `lib/incus-vm.nix`
 - `docs/deployment.md`
 

@@ -2,25 +2,25 @@
 
 ## Goal
 
-Reconstruct a secure deployment system where CI enters bastion using a
+Reconstruct a secure deployment system where CI enters CI host using a
 forced-command key, while regular `nixbot` SSH key behavior remains normal.
 
 ## High-Level Model
 
-- CI -> bastion forced command -> build derivations -> deploy targets.
+- CI -> CI host forced command -> build derivations -> deploy targets.
 - Script tries `nixbot@target` first, then bootstrap fallback if needed.
 
 ## Security Invariants
 
 - All hosts are on Tailscale.
 - CI should have only:
-  - Tailscale auth credential scoped to bastion reachability.
-  - bastion ingress SSH key (forced-command only).
-- Bastion ingress key must only run the packaged `nixbot` command from
+  - Tailscale auth credential scoped to CI host reachability.
+  - CI host ingress SSH key (forced-command only).
+- CI host ingress key must only run the packaged `nixbot` command from
   `pkgs/tools/nixbot`.
 - Regular `nixbot` SSH key remains a normal key (defined in
   `lib/nixbot/default.nix`).
-- Bastion stores private deploy key at `/var/lib/nixbot/.ssh/id_ed25519` (from
+- CI host stores private deploy key at `/var/lib/nixbot/.ssh/id_ed25519` (from
   `data/secrets/nixbot/nixbot.key.age`).
 - Activation-time agenix decrypt uses machine identity
   `/var/lib/nixbot/.age/identity` (host specific), not the deploy SSH key.
@@ -39,19 +39,19 @@ If bootstrap fails, fallback uses configured bootstrap user/key path.
 - `nixbot`
 - `hosts/nixbot.nix`
 - `lib/nixbot/default.nix`
-- `lib/nixbot/bastion.nix`
+- `lib/nixbot/ci.nix`
 - `users/userdata.nix`
 
-## Bastion Module Requirements (`lib/nixbot/bastion.nix`)
+## CI host Module Requirements (`lib/nixbot/ci.nix`)
 
-- Add forced-command authorized key for `userdata.bastionSshKey`.
+- Add forced-command authorized key for `userdata.ciSshKey`.
 - Do not replace the normal `nixbot` key from `lib/nixbot/default.nix`.
 - Point the forced command directly at the packaged binary:
   - `command="${pkgs.nixbot}/bin/nixbot"`
-- Ensure dependencies exist on bastion:
+- Ensure dependencies exist on CI host:
   - `age`, `jq`
 - Ensure runtime SSH dir/permissions exist.
-- Keep bastion deploy keys managed via `age.secrets.*` paths under
+- Keep CI host deploy keys managed via `age.secrets.*` paths under
   `/var/lib/nixbot/.ssh`.
 
 ## Deploy Mapping (`hosts/nixbot.nix`)
@@ -87,10 +87,10 @@ Defaults may also include:
   on the target.
 - When replacing `/var/lib/nixbot/.ssh/id_ed25519`, bootstrap preserves the
   previous key at `/var/lib/nixbot/.ssh/id_ed25519_legacy`.
-- On bastion, that path is also the deploy identity used for downstream host
+- On CI host, that path is also the deploy identity used for downstream host
   SSH; during rotation, use legacy key overrides until legacy hosts trust the
   new key.
-- Bastion nixbot SSH client should attempt both identities (`id_ed25519`, then
+- CI host nixbot SSH client should attempt both identities (`id_ed25519`, then
   `id_ed25519_legacy`) during overlap windows.
 - Host age identity injection installs machine key material to
   `/var/lib/nixbot/.age/identity` before `nixos-rebuild` activation.
@@ -112,7 +112,7 @@ Defaults may also include:
 
 - Keep top-level flow phase-oriented:
   - parse args
-  - optional `--bastion-trigger`
+  - optional `--ci-trigger`
   - optional TF phase
   - host orchestration
 - Keep SSH option assembly centralized in helpers so primary and bootstrap paths
@@ -130,11 +130,11 @@ Defaults may also include:
 ## Validation Commands
 
 - Forced-command help:
-  - `ssh -i <bastion-key> nixbot@<bastion> -- --hosts <host> --help`
+  - `ssh -i <ci-host-key> nixbot@<ci-host> -- --hosts <host> --help`
 - Bootstrap check:
-  - `ssh -i <bastion-key> nixbot@<bastion> -- check-bootstrap --hosts <host> --sha <commit> --config /var/lib/nixbot/nix/hosts/nixbot.nix`
+  - `ssh -i <ci-host-key> nixbot@<ci-host> -- check-bootstrap --hosts <host> --sha <commit> --config /var/lib/nixbot/nix/hosts/nixbot.nix`
 - Local orchestrator:
-  - `NIXBOT_BASTION_SSH_KEY_PATH=<...> nixbot deploy --hosts=<host> --force`
+  - `NIXBOT_CI_SSH_KEY_PATH=<...> nixbot deploy --hosts=<host> --force`
 
 ## Known Failure Signatures
 
@@ -142,6 +142,6 @@ Defaults may also include:
   - stale script path or missing explicit `--sha`/`--config` for forced-command
     call.
 - `jq: command not found`
-  - missing `jq` on bastion.
+  - missing `jq` on CI host.
 - `unknown option -- -`
   - missing `ssh ... -- <target> ...` separator.

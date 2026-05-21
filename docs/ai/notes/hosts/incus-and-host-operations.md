@@ -56,7 +56,7 @@ recent host incidents.
 
 - `docs/hosts.md` should stay focused on host layout, registration,
   provisioning, and host-type guidance.
-- SSH-specific operator and bastion guidance belongs in `docs/ssh-access.md`.
+- SSH-specific operator and CI-host guidance belongs in `docs/ssh-access.md`.
 - The human-facing add-host flow should include:
   - parent-host declaration for nested guests
   - machine secret generation and recipient wiring

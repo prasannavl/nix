@@ -119,7 +119,7 @@ Add an entry to `hosts/nixbot.nix`:
 
 Common optional fields:
 
-- `proxyJump = "<bastion-host>";`
+- `proxyJump = "<ci-host>";`
 - `parent = "<parent-host>";`
 - `after = [ ... ];`
 - bootstrap fields for first-time access when needed
@@ -218,7 +218,7 @@ Host-specific modules import shared functionality from `lib/`:
 | `lib/incus-vm.nix`         | Incus VM guest hardware config              |
 | `lib/swap-auto.nix`        | Automatic swap configuration                |
 | `lib/nixbot/`              | Deploy agent integration                    |
-| `lib/nixbot/bastion.nix`   | Bastion host role for deploy relay          |
+| `lib/nixbot/ci.nix`   | CI host role for deploy relay          |
 | `lib/devices/<device>.nix` | Hardware-specific kernel modules and quirks |
 
 ## Host Types

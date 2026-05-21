@@ -13,7 +13,7 @@ and documentation sanitization rules for infra-facing docs.
   - `tf/cloudflare-apps`
 - Shared module code lives under `tf/modules/cloudflare/`.
 - `scripts/nixbot.sh` is the supported execution path for Cloudflare OpenTofu
-  runs in local, bastion, and CI contexts.
+  runs in local and CI-host contexts.
 - DNS, platform resources, Worker source, and runtime credentials each have a
   clear source of truth. Keep public inputs in checked-in tfvars and sensitive
   inputs in encrypted tfvars.
@@ -51,7 +51,7 @@ and documentation sanitization rules for infra-facing docs.
 ## Documentation sanitization
 
 - Durable infra notes and playbooks should prefer generic placeholders such as
-  `<zone>`, `<bucket>`, `<worker>`, and `<bastion-host>` unless the literal repo
+  `<zone>`, `<bucket>`, `<worker>`, and `<ci-host>` unless the literal repo
   path is itself the interface being described.
 - Keep live identifiers in config and state, not in general notes.
 

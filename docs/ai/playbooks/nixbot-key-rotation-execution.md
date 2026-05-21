@@ -8,23 +8,23 @@ confirmation at each step.
 Set these before execution:
 
 - `NEW_NIXBOT_PUB`: new public key for normal nixbot login/deploy.
-- `NEW_BASTION_PUB`: new public key for CI/local forced-command ingress.
+- `NEW_CI_PUB`: new public key for CI/local forced-command ingress.
 - `NEW_NIXBOT_KEY_AGE`: age file path for new deploy private key (example:
   `data/secrets/nixbot/nixbot.key.age`).
 - `NEW_NIXBOT_KEY_PRIVATE`: path to new nixbot deploy private key file used for
   GitHub repo SSH access.
-- `NEW_BASTION_KEY_PRIVATE`: path to new bastion private key file used by
+- `NEW_CI_KEY_PRIVATE`: path to new CI host private key file used by
   CI/local SSH calls.
 
 Sensitive handling:
 
 - Never print, `cat`, or echo `NEW_NIXBOT_KEY_PRIVATE` contents in terminal
   output.
-- Never print, `cat`, or echo `NEW_BASTION_KEY_PRIVATE` contents in terminal
+- Never print, `cat`, or echo `NEW_CI_KEY_PRIVATE` contents in terminal
   output.
 - Use path-only handling and manual secret updates for GitHub secrets.
 
-Optional for bastion-first cutover:
+Optional for CI host-first cutover:
 
 - `LEGACY_NIXBOT_KEY_AGE`: age file path containing old deploy private key
   material (example: `data/secrets/nixbot/nixbot-legacy.key.age`).
@@ -36,12 +36,12 @@ Optional for bastion-first cutover:
   `/var/lib/nixbot/.ssh/id_ed25519` on the target.
 - On replacement, previous key should be retained at
   `/var/lib/nixbot/.ssh/id_ed25519_legacy`.
-- On the bastion host, that file is also the deploy identity used to SSH from
-  bastion to other hosts.
-- Bastion nixbot SSH client should attempt both identities (`id_ed25519`, then
+- On the CI host, that file is also the deploy identity used to SSH from
+  CI host to other hosts.
+- CI host nixbot SSH client should attempt both identities (`id_ed25519`, then
   `id_ed25519_legacy`) during overlap.
-- During rotation, if bastion is bootstrapped with the new key before legacy
-  hosts trust that key, bastion can lose SSH access to legacy hosts.
+- During rotation, if CI host is bootstrapped with the new key before legacy
+  hosts trust that key, CI host can lose SSH access to legacy hosts.
 - Therefore, when legacy hosts still require old trust, keep and use
   `LEGACY_NIXBOT_KEY_AGE` for those nodes (including `bootstrapKey` where
   applicable) until migration is complete.
@@ -63,7 +63,7 @@ Before every step:
 Mode A safety precondition:
 
 - Only use Mode A if all target hosts already trust `NEW_NIXBOT_PUB` before
-  bastion switches to `NEW_NIXBOT_KEY_AGE`.
+  CI host switches to `NEW_NIXBOT_KEY_AGE`.
 - If any host may still require the old deploy key for SSH auth, use Mode B with
   `LEGACY_NIXBOT_KEY_AGE`.
 
@@ -72,7 +72,7 @@ Mode A safety precondition:
 Edit `users/userdata.nix`:
 
 - append `NEW_NIXBOT_PUB` to `nixbot.sshKeys`
-- append `NEW_BASTION_PUB` to `nixbot.bastionSshKeys`
+- append `NEW_CI_PUB` to `nixbot.ciSshKeys`
 
 Expected outcome:
 
@@ -92,17 +92,17 @@ Expected outcome:
 - active deploy key material remains compatible with hosts targeted in Step 5
   (or Mode B is used).
 
-### Step 3: Deploy Bastion First
+### Step 3: Deploy CI Host First
 
 Run:
 
 ```bash
-nixbot deploy --hosts <bastion-host> --force
+nixbot deploy --hosts <ci-host> --force
 ```
 
 Expected outcome:
 
-- bastion has updated authorized_keys and runtime key material.
+- CI host has updated authorized_keys and runtime key material.
 
 ### Step 4: Switch CI/Local Forced-Command Key
 
@@ -110,9 +110,9 @@ Actions:
 
 - update GitHub secret used for repo SSH deploy-key auth (nixbot deploy key;
   name per your repo settings) to `NEW_NIXBOT_KEY_PRIVATE`.
-- update GitHub secret `NIXBOT_BASTION_SSH_KEY` to new private key.
-- if running local orchestrator checks, set `NIXBOT_BASTION_SSH_KEY_PATH` to new
-  bastion key age file/path.
+- update GitHub secret `NIXBOT_CI_SSH_KEY` to new private key.
+- if running local orchestrator checks, set `NIXBOT_CI_SSH_KEY_PATH` to new
+  CI host key age file/path.
 - do not print private key material during this step.
 
 Expected outcome:
@@ -126,7 +126,7 @@ Expected outcome:
 Run:
 
 ```bash
-nixbot check-bootstrap --hosts <bastion-host> --force
+nixbot check-bootstrap --hosts <ci-host> --force
 nixbot deploy --hosts all --force
 ```
 
@@ -140,7 +140,7 @@ Expected outcome:
 Edit `users/userdata.nix`:
 
 - remove old entry from `nixbot.sshKeys`
-- remove old entry from `nixbot.bastionSshKeys`
+- remove old entry from `nixbot.ciSshKeys`
 
 Then run:
 
@@ -153,7 +153,7 @@ Expected outcome:
 
 - only new keys trusted.
 
-## Mode B: Bastion-First Single-Pass Cutover (Legacy Nodes Allowed)
+## Mode B: CI Host First Single-Pass Cutover (Legacy Nodes Allowed)
 
 ### Step 1: Configure New Keys + Legacy Paths
 
@@ -170,7 +170,7 @@ Expected outcome:
 
 Expected outcome:
 
-- bastion/new nodes can use new key.
+- CI host/new nodes can use new key.
 - old nodes temporarily pinned to legacy key.
 
 ### Step 2: Re-encrypt Secrets
@@ -185,27 +185,27 @@ Expected outcome:
 
 - all relevant age files current.
 
-### Step 3: Deploy Bastion + Rotate Ingress
+### Step 3: Deploy CI host + Rotate Ingress
 
 Run:
 
 ```bash
-nixbot deploy --hosts <bastion-host> --force
+nixbot deploy --hosts <ci-host> --force
 ```
 
 Then rotate:
 
 - GitHub secret used for repo SSH deploy-key auth (nixbot deploy key; name per
   your repo settings) to new private key.
-- GitHub `NIXBOT_BASTION_SSH_KEY` to new private key.
-- local `NIXBOT_BASTION_SSH_KEY_PATH` to new key path (if used).
+- GitHub `NIXBOT_CI_SSH_KEY` to new private key.
+- local `NIXBOT_CI_SSH_KEY_PATH` to new key path (if used).
 
 Expected outcome:
 
-- bastion is on new key model.
+- CI host is on new key model.
 - GitHub workflows retain repo SSH access after key rotation.
-- ingress auth uses new bastion key.
-- bastion deploy identity at `/var/lib/nixbot/.ssh/id_ed25519` remains
+- ingress auth uses new CI host key.
+- CI host deploy identity at `/var/lib/nixbot/.ssh/id_ed25519` remains
   compatible with any still-legacy hosts you need to reach next.
 
 ### Step 4: Phase-2 Migrate Legacy Nodes
@@ -220,7 +220,7 @@ nixbot deploy --hosts all --force
 Expected outcome:
 
 - legacy nodes now trust new public keys.
-- after this point, bastion can safely run with only new deploy identity.
+- after this point, CI host can safely run with only new deploy identity.
 
 ### Step 5: Remove Legacy Overrides + Material
 

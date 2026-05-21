@@ -20,17 +20,17 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   and shell-style globs. Glob expansion happens against the NixOS configuration
   names before normal dependency expansion and ordering.
 - `dev-build` is local-only. It runs from the current checkout instead of the
-  managed repo worktree, rejects `--sha` and `--bastion-trigger`, and writes
+  managed repo worktree, rejects `--sha` and `--ci-trigger`, and writes
   `result-<host>` links in the repo root as temporary GC roots.
 
 ## Core architecture
 
 - `nixbot` is the only supported orchestration entrypoint for local, CI, and
-  bastion-triggered runs.
+  CI host-triggered runs.
 - The deploy system separates:
   - SSH deploy identity
   - per-host machine age identity
-  - bastion forced-command ingress identity
+  - CI host forced-command ingress identity
 - Worktree isolation is for concurrency and checkout safety, not for reducing
   operator trust.
 
@@ -38,7 +38,7 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 
 - Normal targeting prefers `nixbot@host`. Bootstrap is a fallback path unless
   explicitly forced.
-- Bastion-triggered runs may flatten leading self-targeting proxy hops, but they
+- CI host-triggered runs may flatten leading self-targeting proxy hops, but they
   must retry the full configured proxy chain before falling back to bootstrap.
 - Self-target deploys should execute locally only when the current runtime user
   is already the deploy user. Local operator runs should preserve the normal
@@ -189,14 +189,14 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   automation should keep `-lockfile=readonly` and fix lockfiles rather than
   mutating them during deploy.
 
-## CI and bastion trigger model
+## CI and CI host trigger model
 
 - The GitHub Actions workflow is a thin launcher that warms the local runner,
-  runs lint, and triggers the bastion-hosted deploy flow.
-- The bastion host owns the persistent repo, store, and worktree state.
-- Bastion-triggered forwarding should use encoded argv transport. Legacy raw
+  runs lint, and triggers the CI-hosted deploy flow.
+- The CI host owns the persistent repo, store, and worktree state.
+- CI host-triggered forwarding should use encoded argv transport. Legacy raw
   `SSH_ORIGINAL_COMMAND` parsing remains only as a narrow compatibility path.
-- Bastion-triggered operators are trusted deploy operators. If tighter SHA or
+- CI host-triggered operators are trusted deploy operators. If tighter SHA or
   ref policy is needed later, enforce it explicitly.
 
 ## Key rotation
@@ -213,7 +213,7 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - `scripts/nixbot.sh`
 - `hosts/nixbot.nix`
 - `lib/nixbot/default.nix`
-- `lib/nixbot/bastion.nix`
+- `lib/nixbot/ci.nix`
 - `.github/workflows/nixbot.yaml`
 
 ## Provenance

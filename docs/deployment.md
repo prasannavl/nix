@@ -2,24 +2,24 @@
 
 This document describes the deploy path used by `nixbot`.
 
-For the operator trust boundary around bastion-trigger access and arbitrary
+For the operator trust boundary around CI host-trigger access and arbitrary
 `--sha` execution, see
 [`docs/nixbot-security-trust-model.md`](./nixbot-security-trust-model.md).
 
 ## Deployment Path
 
-1. CI or an operator reaches the bastion as `nixbot@<bastion>`.
-2. Bastion runs the packaged `nixbot` binary from the Nix store.
-3. `nixbot` updates the bastion source mirror, creates a detached worktree for
+1. CI or an operator reaches the CI host as `nixbot@<ci-host>`.
+2. CI host runs the packaged `nixbot` binary from the Nix store.
+3. `nixbot` updates the CI host source mirror, creates a detached worktree for
    the requested commit, and runs from there.
-4. Bastion SSHes to target hosts as `nixbot`.
+4. CI host SSHes to target hosts as `nixbot`.
 5. `nixos-rebuild --target-host` performs the switch.
 
 ## Source Of Truth
 
 - deploy package: `pkgs/tools/nixbot`
 - deploy target mapping: `hosts/nixbot.nix`
-- bastion module: `lib/nixbot/bastion.nix`
+- CI host module: `lib/nixbot/ci.nix`
 - base nixbot user module: `lib/nixbot/default.nix`
 - repo secrets: `data/secrets/*.age`
 
@@ -27,22 +27,22 @@ For the operator trust boundary around bastion-trigger access and arbitrary
 
 There are three separate credential classes:
 
-1. Bastion ingress key
-   - used by CI or operators to reach the bastion
+1. CI host ingress key
+   - used by CI or operators to reach the CI host
    - forced-command only
 2. Deploy SSH key
-   - used by bastion to SSH to managed hosts as `nixbot`
+   - used by CI host to SSH to managed hosts as `nixbot`
    - installed at `/var/lib/nixbot/.ssh/id_ed25519`
 3. Machine age identity
    - used on each host for activation-time secret decryption
    - installed at `/var/lib/nixbot/.age/identity`
 
-## Bastion Rules
+## CI host Rules
 
-- The bastion ingress key is high-privilege.
+- The CI host ingress key is high-privilege.
 - The forced command must point directly at the packaged `nixbot` binary.
 - CI and operators must not upload ad hoc deploy scripts at runtime.
-- The persistent repo root on bastion is a source mirror, not the execution tree
+- The persistent repo root on CI host is a source mirror, not the execution tree
   for a deploy run.
 
 ## Bootstrap
@@ -68,14 +68,14 @@ The steady-state goal is always the same: later deploys should use normal
 ## Secret Model
 
 - deploy keys and machine identities are stored as age-encrypted repo secrets
-- bastion decrypts and uses the deploy key for host access
+- CI host decrypts and uses the deploy key for host access
 - each host decrypts secrets using its machine age identity
 
 ## Deploy Runtime Notes
 
-- treat bastion-trigger access as privileged production deploy access
+- treat CI host-trigger access as privileged production deploy access
 - use worktrees for isolation and concurrency, not as a trust boundary
-- keep bastion ingress keys tightly scoped
+- keep CI host ingress keys tightly scoped
 
 ## Further Reading
 
@@ -88,11 +88,11 @@ The steady-state goal is always the same: later deploys should use normal
 The sections below cover bootstrap mechanics, key exchange, and deploy
 internals.
 
-## Bastion Wiring Requirements
+## CI host Wiring Requirements
 
-In `lib/nixbot/bastion.nix`:
+In `lib/nixbot/ci.nix`:
 
-- Add forced-command authorized key entry for `bastionSshKey`.
+- Add forced-command authorized key entry for `ciSshKey`.
 - Point the forced command directly at the packaged binary:
   - `command="${pkgs.nixbot}/bin/nixbot"`
 - Ensure runtime prerequisites:
@@ -116,17 +116,17 @@ these steady-state assumptions:
 - `/var/lib/nixbot/.age/identity` is not installed on the target
 - the host has not yet been switched onto the repo's `nixbot`/agenix model
 
-Bootstrap matters especially for bastion because the bastion host is the first
+Bootstrap matters especially for CI host because the CI host is the first
 trust anchor for the whole fleet:
 
-- CI and remote operators enter through bastion first, not directly to every
+- CI and remote operators enter through CI host first, not directly to every
   node
-- bastion is where the shared `nixbot` deploy private key is decrypted to
+- CI host is where the shared `nixbot` deploy private key is decrypted to
   `/var/lib/nixbot/.ssh/id_ed25519`
-- bastion is the host that later SSHes to the rest of the fleet as `nixbot`
-- bastion also holds the OpenTofu/Cloudflare runtime secrets used by `tf`
+- CI host is the host that later SSHes to the rest of the fleet as `nixbot`
+- CI host also holds the OpenTofu/Cloudflare runtime secrets used by `tf`
 
-Until bastion itself is bootstrapped, the normal CI -> bastion -> node deploy
+Until CI host itself is bootstrapped, the normal CI -> CI host -> node deploy
 chain does not exist yet.
 
 `hosts/nixbot.nix` supports bootstrap fallback fields:
@@ -149,7 +149,7 @@ During deploy, script behavior is:
 1. Build host system closure.
 2. Attempt primary target (`nixbot@host`) shell reachability.
 3. If primary shell access fails, run forced-command bootstrap check
-   (`check-bootstrap`) via bastion key.
+   (`check-bootstrap`) via CI host key.
 4. If bootstrap check still fails, inject bootstrap key using bootstrap user
    path.
 5. Continue deployment (currently via `nixos-rebuild --target-host`).
@@ -163,7 +163,7 @@ shell access for `nixos-rebuild --target-host`.
 
 - `check-bootstrap` does not deploy anything.
 - It validates whether the configured bootstrap material can be resolved and, in
-  the forced-command case, whether the remote bastion-side wrapper can accept
+  the forced-command case, whether the remote CI host-side wrapper can accept
   the request.
 - In the current flow this is mainly used when the primary path is
   forced-command-only or otherwise not a normal shell session.
@@ -185,7 +185,7 @@ shell access for `nixos-rebuild --target-host`.
 
 - A brand-new or partially configured host cannot decrypt agenix secrets until
   it has its machine age identity.
-- A host also cannot participate in the normal bastion-to-node deploy path until
+- A host also cannot participate in the normal CI host-to-node deploy path until
   it trusts `nixbot` and has the expected SSH material in place.
 - Bootstrap breaks that chicken-and-egg problem by using some pre-existing admin
   path just long enough to install the `nixbot` and age identity state that the
@@ -199,19 +199,19 @@ shell access for `nixos-rebuild --target-host`.
   the `nixbot` user.
 - `lib/nixbot/default.nix` installs `nixbot.sshKeys` onto every managed host as
   `nixbot` authorized keys.
-- `lib/nixbot/bastion.nix` separately installs `nixbot.bastionSshKeys` onto the
-  bastion's `nixbot` account, but wrapped in a forced command:
+- `lib/nixbot/ci.nix` separately installs `nixbot.ciSshKeys` onto the
+  CI host's `nixbot` account, but wrapped in a forced command:
   - only the packaged `nixbot` command may run
   - no shell, PTY, forwarding, or user rc files
 - This means there are two SSH trust exchanges:
   - all managed nodes learn the normal deploy public keys at activation time
-  - the bastion learns the restricted ingress public keys at activation time
+  - the CI host learns the restricted ingress public keys at activation time
 
 ### Runtime key exchange during bootstrap
 
 - The private side of the shared deploy key lives encrypted at
   `data/secrets/nixbot/nixbot.key.age`.
-- On bastion, `lib/nixbot/bastion.nix` decrypts that file to:
+- On CI host, `lib/nixbot/ci.nix` decrypts that file to:
   - `/var/lib/nixbot/.ssh/id_ed25519`
 - During bootstrap of another node, `nixbot` may also copy that same private key
   onto the target if `nixbot@target` is not usable yet.
@@ -240,9 +240,9 @@ shell access for `nixos-rebuild --target-host`.
 
 ## End-to-End Secret Flow
 
-1. CI/operator reaches bastion using forced-command ingress key
-   (`nixbot-bastion-ssh`).
-2. Bastion uses `nixbot` deploy key (`/var/lib/nixbot/.ssh/id_ed25519`) to SSH
+1. CI/operator reaches CI host using forced-command ingress key
+   (`nixbot-ci-ssh`).
+2. CI host uses `nixbot` deploy key (`/var/lib/nixbot/.ssh/id_ed25519`) to SSH
    to target hosts and to decrypt repo-side `nixbot`-recipient `.age` files used
    by deploy tooling.
 
@@ -270,13 +270,13 @@ shell access for `nixos-rebuild --target-host`.
     `hosts.<desktop-host>.ageIdentityKey = "data/secrets/machine/<desktop-host>.key.age"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
-- `<bastion-host>`
+- `<ci-host>`
   - deploy metadata: `hosts/nixbot.nix` ->
-    `hosts.<bastion-host>.ageIdentityKey = "data/secrets/machine/<bastion-host>.key.age"`
+    `hosts.<ci-host>.ageIdentityKey = "data/secrets/machine/<ci-host>.key.age"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
-  - this host is also the bastion, so its machine recipient is included on the
-    shared bastion deploy-key secret and the bastion Cloudflare/OpenTofu runtime
+  - this host is also the CI host, so its machine recipient is included on the
+    shared CI host deploy-key secret and the CI host Cloudflare/OpenTofu runtime
     secrets
 - `<incus-guest>`
   - deploy metadata: `hosts/nixbot.nix` ->
@@ -286,27 +286,27 @@ shell access for `nixos-rebuild --target-host`.
   - host also consumes `data/secrets/tailscale/<incus-guest>.key.age` directly
     through `lib/incus-vm.nix`
 
-### Bastion identities and secrets
+### CI host identities and secrets
 
-- Bastion host is the configured bastion target.
-- Bastion ingress identity is the SSH key whose public half is loaded from
-  `users/userdata.nix` (`nixbot.bastionSshKeys` / `nixbot.bastionSshKey`) and
-  forced into the packaged `nixbot` binary by `lib/nixbot/bastion.nix`.
+- CI host is the configured CI host target.
+- CI host ingress identity is the SSH key whose public half is loaded from
+  `users/userdata.nix` (`nixbot.ciSshKeys` / `nixbot.ciSshKey`) and
+  forced into the packaged `nixbot` binary by `lib/nixbot/ci.nix`.
 - The private half of that ingress key is stored as
-  `data/secrets/bastion/nixbot-bastion-ssh.key.age`.
+  `data/secrets/ci/nixbot-ci-ssh.key.age`.
   - recipients: admins only
-  - consumers: CI or an operator initiating a bastion-triggered deploy
-- Bastion's downstream deploy identity is the private key in
+  - consumers: CI or an operator initiating a CI host-triggered deploy
+- CI host's downstream deploy identity is the private key in
   `data/secrets/nixbot/nixbot.key.age`.
-  - recipients: admins + current `nixbot` deploy keys + the bastion machine age
+  - recipients: admins + current `nixbot` deploy keys + the CI host machine age
     recipient
-  - runtime path on bastion: `/var/lib/nixbot/.ssh/id_ed25519`
+  - runtime path on CI host: `/var/lib/nixbot/.ssh/id_ed25519`
   - trusted by other nodes because `lib/nixbot/default.nix` installs the
     corresponding public keys into the `nixbot` account on those nodes
 - Optional overlap key:
   - source: `data/secrets/nixbot/nixbot-legacy.key.age`
   - runtime path: `/var/lib/nixbot/.ssh/id_ed25519_legacy`
-  - purpose: keep bastion able to reach nodes that still trust the old deploy
+  - purpose: keep CI host able to reach nodes that still trust the old deploy
     public key during rotation
 
 ### Service secrets
@@ -315,16 +315,16 @@ shell access for `nixos-rebuild --target-host`.
   1. recipient set is declared in `data/secrets/default.nix`
   2. the consumer host exposes the secret through `age.secrets.*`
   3. the consuming service reads the materialized file path, not repo plaintext
-- Bastion-host compose services:
+- CI host compose services:
   - source files live under `data/secrets/services/<service>/*.key.age`
-  - recipients are admins + the bastion machine age recipient
-  - the bastion host's imported service module maps them into `age.secrets.*`
+  - recipients are admins + the CI host machine age recipient
+  - the CI host's imported service module maps them into `age.secrets.*`
   - `services.podmanCompose.*.envSecrets` injects them into containers as
     file-backed environment values
-- Bastion OpenTofu/Cloudflare runtime:
+- CI host OpenTofu/Cloudflare runtime:
   - source files live under `data/secrets/cloudflare/*.key.age`
-  - recipients are admins + the bastion host
-  - `lib/nixbot/bastion.nix` decrypts them to
+  - recipients are admins + the CI host
+  - `lib/nixbot/ci.nix` decrypts them to
     `/var/lib/nixbot/secrets/cloudflare-tf/*`
   - `nixbot tf` auto-loads them into the OpenTofu environment when shell
     variables are absent
@@ -375,14 +375,14 @@ shell access for `nixos-rebuild --target-host`.
 Use this order for a clean-room rebuild of the current model.
 
 1. Establish the long-lived human/admin keys in `users/userdata.nix`.
-   - These keys must be able to decrypt every machine identity, the bastion
-     ingress key, and the bastion deploy key.
+   - These keys must be able to decrypt every machine identity, the CI host
+     ingress key, and the CI host deploy key.
 2. Generate the shared `nixbot` deploy SSH keypair.
    - public key goes into `users/userdata.nix` (`nixbot.sshKeys`)
    - private key becomes `data/secrets/nixbot/nixbot.key.age`
-3. Generate the bastion ingress SSH keypair.
-   - public key goes into `users/userdata.nix` (`nixbot.bastionSshKeys`)
-   - private key becomes `data/secrets/bastion/nixbot-bastion-ssh.key.age`
+3. Generate the CI host ingress SSH keypair.
+   - public key goes into `users/userdata.nix` (`nixbot.ciSshKeys`)
+   - private key becomes `data/secrets/ci/nixbot-ci-ssh.key.age`
 4. Generate one machine age identity per host.
    - private identities become `data/secrets/machine/<host>.key.age`
    - public recipients become `data/secrets/machine/<host>.key.pub`
@@ -393,24 +393,24 @@ Use this order for a clean-room rebuild of the current model.
    - use `scripts/age-secrets.sh encrypt data/secrets`
    - then remove plaintext siblings with
      `scripts/age-secrets.sh clean data/secrets`
-7. Bootstrap the bastion host first.
-   - it is the bastion and the only host that can later decrypt the shared
+7. Bootstrap the CI host first.
+   - it is the CI host and the only host that can later decrypt the shared
      deploy key and Cloudflare/OpenTofu runtime secrets
    - initial access still depends on the configured bootstrap account in
      `hosts/nixbot.nix` (currently `defaults.bootstrapUser = "pvl"`)
    - once deployed, it becomes the place where `nixbot` holds the shared deploy
      private key and initiates downstream SSH to the rest of the fleet
-   - this is the step that creates the CI/operator -> bastion -> fleet trust
+   - this is the step that creates the CI/operator -> CI host -> fleet trust
      chain; before it, only the bootstrap/admin path exists
-8. Validate bastion ingress after the bastion host is up.
+8. Validate CI host ingress after the CI host is up.
    - the forced-command key should be able to run the packaged `nixbot` command
-   - the bastion should hold `/var/lib/nixbot/.ssh/id_ed25519`
+   - the CI host should hold `/var/lib/nixbot/.ssh/id_ed25519`
 9. Deploy the remaining hosts through `nixbot`.
    - first managed deploy to each host injects `/var/lib/nixbot/.age/identity`
    - after that, agenix can decrypt host-local secrets during activation
-10. Only after bastion and machine identities are working, add higher-level
+10. Only after CI host and machine identities are working, add higher-level
     service secrets.
-    - bastion-host service secrets can be activated once bastion decrypt works
+    - CI host service secrets can be activated once CI host decrypt works
     - Incus-guest Tailscale auth can be activated once that host's machine
       identity is wired and deployable
 
@@ -418,8 +418,8 @@ Use this order for a clean-room rebuild of the current model.
 
 - If a host is activated out-of-band without first receiving
   `/var/lib/nixbot/.age/identity`, agenix-managed host secrets will not decrypt.
-- If the bastion host is missing from the recipient list of
-  `data/secrets/nixbot/nixbot.key.age`, bastion cannot obtain the downstream
+- If the CI host is missing from the recipient list of
+  `data/secrets/nixbot/nixbot.key.age`, CI host cannot obtain the downstream
   deploy private key.
 - If a service secret omits the consuming machine recipient, activation will
   succeed but the secret file will never materialize on that host.
@@ -462,25 +462,25 @@ Use this order for a clean-room rebuild of the current model.
 
 1. Generate new keypairs for:
    - `nixbot` deploy/login key
-   - `nixbot-bastion-ssh` ingress key
+   - `nixbot-ci-ssh` ingress key
 2. Add new public keys into `users/userdata.nix` lists while keeping old keys:
    - append to `nixbot.sshKeys`
-   - append to `nixbot.bastionSshKeys`
+   - append to `nixbot.ciSshKeys`
 3. Re-encrypt managed age files so both old and new nixbot public keys remain
    recipients:
    - `data/secrets/nixbot/nixbot.key.age`
-   - `data/secrets/bastion/nixbot-bastion-ssh.key.age`
-4. Deploy bastion first, then the rest of hosts.
-5. Update CI secret `NIXBOT_BASTION_SSH_KEY` to the new bastion private key.
-6. If you run `nixbot` from outside bastion, also rotate
-   `NIXBOT_BASTION_SSH_KEY_PATH` (forced-command bootstrap check key) to the new
-   bastion ingress key file.
+   - `data/secrets/ci/nixbot-ci-ssh.key.age`
+4. Deploy CI host first, then the rest of hosts.
+5. Update CI secret `NIXBOT_CI_SSH_KEY` to the new CI host private key.
+6. If you run `nixbot` from outside CI host, also rotate
+   `NIXBOT_CI_SSH_KEY_PATH` (forced-command bootstrap check key) to the new
+   CI host ingress key file.
 7. Validate forced-command access and one full deploy run.
 8. Remove old public keys from both lists, re-encrypt again, and deploy.
 
-### Bastion-First Single-Pass Cutover With Legacy Node Access
+### CI Host First Single-Pass Cutover With Legacy Node Access
 
-Use this when you want bastion on new keys immediately, but some nodes still
+Use this when you want CI host on new keys immediately, but some nodes still
 only trust the old `nixbot` key.
 
 1. Prepare two deploy key secrets:
@@ -494,9 +494,9 @@ only trust the old `nixbot` key.
    - `hosts.<old-node>.key = "data/secrets/nixbot/nixbot-legacy.key.age";`
 5. For nodes that still require old bootstrap injection material, also set:
    - `hosts.<old-node>.bootstrapKey = "data/secrets/nixbot/nixbot-legacy.key.age";`
-6. Deploy bastion and switch CI ingress key to the new bastion key.
-7. If applicable, switch `NIXBOT_BASTION_SSH_KEY_PATH` for local orchestrator
-   runs to the new bastion ingress key.
+6. Deploy CI host and switch CI ingress key to the new CI host key.
+7. If applicable, switch `NIXBOT_CI_SSH_KEY_PATH` for local orchestrator
+   runs to the new CI host ingress key.
 8. Run deploys in phase 2 to migrate old nodes onto new public key trust.
 9. Remove per-host legacy `key` and `bootstrapKey` overrides, remove legacy
    secret material, re-encrypt recipients without legacy keys.

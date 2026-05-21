@@ -7,15 +7,15 @@ Canonical SSH deploy-key rotation policy for `nixbot`.
 ## Durable rules
 
 - Default to overlap rotation.
-- `users/userdata.nix` may carry multiple active deploy and bastion ingress
+- `users/userdata.nix` may carry multiple active deploy and CI host ingress
   public keys during the overlap window.
 - `data/secrets/default.nix` must include recipients for every active key in
   that overlap set.
-- Bastion private-key cutover and downstream host trust rollout must move
+- CI host private-key cutover and downstream host trust rollout must move
   together.
 - If some hosts still need the legacy key, use temporary per-host `key` and
   `bootstrapKey` overrides in `hosts/nixbot.nix`.
-- Keep the legacy bastion-side private key available during the overlap window
+- Keep the legacy CI host-side private key available during the overlap window
   when downstream hosts still require it.
 
 ## Operator guardrails
@@ -34,7 +34,7 @@ Canonical SSH deploy-key rotation policy for `nixbot`.
 - `users/userdata.nix`
 - `hosts/nixbot.nix`
 - `lib/nixbot/default.nix`
-- `lib/nixbot/bastion.nix`
+- `lib/nixbot/ci.nix`
 - `data/secrets/default.nix`
 
 ## Provenance

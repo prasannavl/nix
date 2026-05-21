@@ -88,7 +88,7 @@ Before finalizing any surviving note or playbook:
 
 1. Replace concrete operational names with generic placeholders where the exact
    live value is not needed, for example:
-   - `<bastion-host>` instead of a real bastion hostname
+   - `<ci-host>` instead of a real CI host hostname
    - `<zone>` instead of a real domain
    - `<bucket>` instead of a real R2 bucket name
    - `<worker>` instead of a specific Worker service name

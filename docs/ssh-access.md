@@ -4,8 +4,8 @@ Use this document for operator SSH access and deploy SSH routing.
 
 ## What This Covers
 
-- operator SSH access to bastion and downstream hosts
-- bastion-mediated jump-host access
+- operator SSH access to CI host and downstream hosts
+- CI host-mediated jump-host access
 - per-host user wiring
 - local SSH config examples
 - deploy SSH routing through `proxyJump`
@@ -16,7 +16,7 @@ Use this document for operator SSH access and deploy SSH routing.
 - operator user modules: `users/<user>/`
 - per-host user imports: `hosts/<host>/users.nix`
 - deploy SSH routing: `hosts/nixbot.nix`
-- bastion tunnel exposure: `hosts/<bastion>/cloudflare.nix`
+- CI host tunnel exposure: `hosts/<ci-host>/cloudflare.nix`
 
 ## Access Model
 
@@ -24,12 +24,12 @@ Use this document for operator SSH access and deploy SSH routing.
 - A user's public key lives in `users/userdata.nix`.
 - A user module under `users/<user>/` creates the account and installs the key.
 - Each host grants access by importing that user module in `users.nix`.
-- If access goes through bastion, bastion must import the user too.
+- If access goes through CI host, CI host must import the user too.
 
-Current bastion pattern:
+Current CI host pattern:
 
-- one designated bastion host handles operator ingress
-- one bastion hostname is exposed through Cloudflare Tunnel
+- one designated CI host handles operator ingress
+- one CI hostname is exposed through Cloudflare Tunnel
 
 ## Grant Operator Access
 
@@ -74,18 +74,18 @@ Example:
 }
 ```
 
-If the user needs bastion-mediated access, import them on bastion too so the
+If the user needs CI host-mediated access, import them on CI host too so the
 jump-host flow works.
 
 ### 4. Deploy in the right order
 
-- Deploy bastion first if bastion access changed.
-- Deploy downstream hosts after bastion if the user also needs private-host
+- Deploy CI host first if CI host access changed.
+- Deploy downstream hosts after CI host if the user also needs private-host
   access.
 
 ## Test Access
 
-### Bastion via Cloudflare Access
+### CI host via Cloudflare Access
 
 Here are the commands to test access, if these work, you can move to ssh config
 below to simply connect with just `ssh <host>`.
@@ -99,22 +99,22 @@ below to simply connect with just `ssh <host>`.
   by cleaning up your agents if you have issues with multiple agents.
 
 ```bash
-ssh -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@<bastion-hostname>
+ssh -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@<ci-host-hostname>
 ```
 
 With explicit key:
 
 ```bash
-ssh -i ~/.ssh/<your-key> -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@<bastion-hostname>
+ssh -i ~/.ssh/<your-key> -o ProxyCommand="cloudflared access ssh --hostname %h" <user>@<ci-host-hostname>
 ```
 
-### Private host through bastion
+### Private host through CI host
 
 Private hosts needs a proxy jump.
 
 ```bash
 ssh \
--o 'ProxyCommand=ssh -o "ProxyCommand=cloudflared access ssh --hostname <bastion-hostname>" <user>@<bastion-hostname> -W %h:%p' \
+-o 'ProxyCommand=ssh -o "ProxyCommand=cloudflared access ssh --hostname <ci-host-hostname>" <user>@<ci-host-hostname> -W %h:%p' \
 <user>@<private-host-ip>
 ```
 
@@ -122,7 +122,7 @@ With explicit key:
 
 ```bash
 ssh \
--o 'ProxyCommand=ssh -i ~/.ssh/<your-key> -o IdentitiesOnly=yes -o "ProxyCommand=cloudflared access ssh --hostname <bastion-hostname>" <user>@<bastion-hostname> -W %h:%p' \
+-o 'ProxyCommand=ssh -i ~/.ssh/<your-key> -o IdentitiesOnly=yes -o "ProxyCommand=cloudflared access ssh --hostname <ci-host-hostname>" <user>@<ci-host-hostname> -W %h:%p' \
 -o IdentitiesOnly=yes \
 -i ~/.ssh/<your-key> \
 <user>@<private-host-ip>
@@ -131,17 +131,17 @@ ssh \
 Both of the above are the conceptual equivalent of:
 
 ```bash
-ssh -J <bastion-hostname> -o HostKeyAlias=<private-host-alias> <private-host-ip>
+ssh -J <ci-host-hostname> -o HostKeyAlias=<private-host-alias> <private-host-ip>
 ```
 
-However, it needs ssh config for `<bastion-hostname>` to work, see config below.
+However, it needs ssh config for `<ci-host-hostname>` to work, see config below.
 
 ## SSH Config
 
 ### Minimal
 
 ```sshconfig
-Host <bastion-hostname>
+Host <ci-host-hostname>
   User <user>
   ProxyCommand cloudflared access ssh --hostname %h
 ```
@@ -151,20 +151,20 @@ Host <bastion-hostname>
 Replace `<user>` with your actual username.
 
 ```sshconfig
-Host <bastion-hostname> <private-host-pattern>
+Host <ci-host-hostname> <private-host-pattern>
   User <user>
   # Optional, uncomment if you have to use explicit keys
   # IdentityFile ~/.ssh/<your-key>
   # IdentitiesOnly yes
 
-Host <bastion-hostname>
+Host <ci-host-hostname>
   ProxyCommand cloudflared access ssh --hostname %h
 
 Host <private-host-pattern>
-  ProxyJump <bastion-hostname>
+  ProxyJump <ci-host-hostname>
 
-Host <bastion-host-alias>
-  HostName <bastion-hostname>
+Host <ci-host-alias>
+  HostName <ci-host-hostname>
 
 Host <private-host-1>
   HostName <private-host-ip-1>
@@ -177,13 +177,12 @@ Host <private-host-2>
 
 ## Deploy SSH Routing
 
-Use `proxyJump` in `hosts/nixbot.nix` to route deploy SSH through a bastion
-host.
+Use `proxyJump` in `hosts/nixbot.nix` to route deploy SSH through a CI host.
 
 ```nix
 <host-name> = {
   target = "<host-or-ip>";
-  proxyJump = "<bastion-host>";
+  proxyJump = "<ci-host>";
 };
 ```
 
@@ -204,7 +203,7 @@ Typical patterns:
 Examples:
 
 ```bash
-sudo journalctl -u nixbot-bastion.service -f
+sudo journalctl -u nixbot-ci.service -f
 sudo journalctl -u incus-machines-reconciler.service -n 200
 sudo journalctl -u cloudflared.service -f
 ```
@@ -255,8 +254,8 @@ sudo journalctl --user -M <service-user>@ -u <service-user>-web.service -f
 
 ### How does deploy reach hosts behind NAT or firewalls?
 
-Use `proxyJump` in `hosts/nixbot.nix` to route deploy SSH through a bastion
-host. Chain multiple hops with `after` for ordering.
+Use `proxyJump` in `hosts/nixbot.nix` to route deploy SSH through a CI host.
+Chain multiple hops with `after` for ordering.
 
 ## Related Docs
 

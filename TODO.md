@@ -4,25 +4,25 @@
 
 Why:
 
-- Today, trusted bastion-triggered deploy operators can run arbitrary reachable
+- Today, trusted CI host-triggered deploy operators can run arbitrary reachable
   SHAs, but the workflow for PR dry runs is not yet set up as a clear,
   documented, and intentionally scoped path.
 - Worktree isolation solved the shared-checkout/concurrency problem, but the CI
   workflow, secret model, and review expectations for PR dry runs still need to
   be defined explicitly.
 
-- [x] Isolate `nixbot-deploy` runs into per-run Git worktrees so bastion can
+- [x] Isolate `nixbot-deploy` runs into per-run Git worktrees so CI host can
       evaluate/deploy committed state without mutating the persistent repo root.
       Dependency: none.
 
 - [ ] Allow PR-triggered `nixbot` dry runs in GitHub Actions while keeping the
-      trusted bastion deploy path and review/security expectations explicit.
+      trusted CI host deploy path and review/security expectations explicit.
       Depends on:
   - per-run Git worktree isolation in `nixbot-deploy`
-  - documented nixbot trust model for bastion-triggered arbitrary SHA runs
+  - documented nixbot trust model for CI host-triggered arbitrary SHA runs
 
 - [ ] Define a reduced-trust PR dry-run credential model if PR dry runs should
-      not have the same secret/key access as trusted bastion-triggered deploy
+      not have the same secret/key access as trusted CI host-triggered deploy
       operators. Depends on:
   - PR-triggered dry-run workflow design
   - environment-scoped secrets selection support
@@ -72,7 +72,7 @@ Why:
   harder to reason about.
 - The deploy specs and runtime behavior are now documented well enough that we
   can treat them as the contract for a more maintainable implementation.
-- A packaged Rust implementation would also simplify bootstrap because bastion
+- A packaged Rust implementation would also simplify bootstrap because CI host
   would no longer need a copied script wrapper and could instead receive normal
   package deployment updates.
 

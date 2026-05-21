@@ -39,7 +39,7 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--bastion-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--bastion-check-ssh-key-path <path>] [--bastion-trigger] [--bastion-host <host>] [--bastion-user <user>] [--bastion-ssh-key <key-content>] [--bastion-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -83,7 +83,7 @@ Deploy Action Options (`run`, `deploy`):
   --prefix-host-logs Always prefix host log lines
 
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
-  --bastion-first  Prioritize bastion host first when bastion is selected
+  --ci-first  Prioritize CI host first when CI host is selected
 
 Workflow Behavior Options:
   --dry            Print commands without applying changes
@@ -103,14 +103,14 @@ Auth / Config Options:
   --discover-keys  Fallback decrypt identity discovery (auto|on|off; default: auto)
 
 Bootstrap/Forced-Command Options:
-  --bastion-check-ssh-key-path .age key override for bootstrap checks
+  --ci-check-ssh-key-path .age key override for bootstrap checks
 
 Remote Trigger Options:
-  --bastion-trigger Run remotely on bastion via SSH and exit
-  --bastion-host   Bastion hostname/IP (default: pvl-x2)
-  --bastion-user   Bastion user (default: nixbot)
-  --bastion-ssh-key Optional SSH private key content for bastion trigger
-  --bastion-known-hosts Optional known_hosts content for bastion trigger
+  --ci-trigger Run remotely on the CI host via SSH and exit
+  --ci-host   CI host hostname/IP (default: pvl-x2)
+  --ci-user   CI host user (default: nixbot)
+  --ci-ssh-key Optional SSH private key content for CI trigger
+  --ci-known-hosts Optional known_hosts content for CI trigger
 
 Repo Options:
   --repo-url       Repo URL for cloning a managed repo root
@@ -134,7 +134,7 @@ Environment (Deploy Actions):
   NIXBOT_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
 
 Environment (Host Workflow Ordering):
-  NIXBOT_BASTION_FIRST        Same as --bastion-first (bool)
+  NIXBOT_CI_FIRST        Same as --ci-first (bool)
   NIXBOT_LOCAL_SELF_TARGET    Self-target transport policy: auto|on|off
                               (default: auto)
 
@@ -155,14 +155,14 @@ Environment (Auth / Config):
 
 Environment (Bootstrap / Forced-Command):
   NIXBOT_BOOTSTRAP            Same as --bootstrap (bool)
-  NIXBOT_BASTION_SSH_KEY_PATH Same as --bastion-check-ssh-key-path
+  NIXBOT_CI_SSH_KEY_PATH Same as --ci-check-ssh-key-path
 
 Environment (Remote Trigger):
-  NIXBOT_BASTION_TRIGGER      Same as --bastion-trigger (bool)
-  NIXBOT_BASTION_HOST         Same as --bastion-host
-  NIXBOT_BASTION_USER         Same as --bastion-user
-  NIXBOT_BASTION_SSH_KEY      Same as --bastion-ssh-key
-  NIXBOT_BASTION_KNOWN_HOSTS  Same as --bastion-known-hosts
+  NIXBOT_CI_TRIGGER      Same as --ci-trigger (bool)
+  NIXBOT_CI_HOST         Same as --ci-host
+  NIXBOT_CI_USER         Same as --ci-user
+  NIXBOT_CI_SSH_KEY      Same as --ci-ssh-key
+  NIXBOT_CI_KNOWN_HOSTS  Same as --ci-known-hosts
 
 Environment (Repo):
   NIXBOT_REPO_URL             Same as --repo-url
@@ -195,7 +195,7 @@ Local tofu wrapper:
   GCP projects can also auto-load `GOOGLE_APPLICATION_CREDENTIALS`,
   `GCP_STATE_BUCKET`, and `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` from
   encrypted files under `data/secrets/gcp/`.
-  This mode is local-only and not supported via bastion trigger.
+  This mode is local-only and not supported via CI trigger.
 USAGE
 }
 
@@ -248,7 +248,7 @@ init_vars() {
 	ALLOW_DIRTY_REPO=0
 	OVERLAY_STAGED=0
 	FORCE_BOOTSTRAP_PATH=0
-	PRIORITIZE_BASTION_FIRST=0
+	PRIORITIZE_CI_FIRST=0
 	DRY_RUN=0
 	ROLLBACK_ON_FAILURE=1
 	FORCE_PREFIX_HOST_LOGS=0
@@ -279,12 +279,12 @@ init_vars() {
 	fi
 	NIXBOT_CONFIG_PATH="${NIXBOT_CONFIG:-hosts/nixbot.nix}"
 	SHA="${NIXBOT_SHA:-}"
-	BASTION_TRIGGER=0
-	BASTION_TRIGGER_HOST="${NIXBOT_BASTION_HOST:-pvl-x2}"
-	BASTION_TRIGGER_USER="${NIXBOT_BASTION_USER:-nixbot}"
-	BASTION_TRIGGER_SSH_KEY="${NIXBOT_BASTION_SSH_KEY:-}"
-	BASTION_TRIGGER_KNOWN_HOSTS="${NIXBOT_BASTION_KNOWN_HOSTS:-}"
-	BASTION_TRIGGER_SSH_OPTS=()
+	CI_TRIGGER=0
+	CI_TRIGGER_HOST="${NIXBOT_CI_HOST:-pvl-x2}"
+	CI_TRIGGER_USER="${NIXBOT_CI_USER:-nixbot}"
+	CI_TRIGGER_SSH_KEY="${NIXBOT_CI_SSH_KEY:-}"
+	CI_TRIGGER_KNOWN_HOSTS="${NIXBOT_CI_KNOWN_HOSTS:-}"
+	CI_TRIGGER_SSH_OPTS=()
 	AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
 	AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=0
 	[ -n "${AGE_KEY_FILE:-}" ] && AGE_DECRYPT_IDENTITY_FILE_EXPLICIT=1
@@ -305,7 +305,7 @@ init_vars() {
 	NIXBOT_USER_OVERRIDE="${NIXBOT_USER:-}"
 	NIXBOT_KEY_PATH_OVERRIDE="${NIXBOT_SSH_KEY:-}"
 	NIXBOT_KNOWN_HOSTS_OVERRIDE="${NIXBOT_SSH_KNOWN_HOSTS:-}"
-	NIXBOT_BASTION_KEY_PATH_OVERRIDE="${NIXBOT_BASTION_SSH_KEY_PATH:-}"
+	NIXBOT_CI_KEY_PATH_OVERRIDE="${NIXBOT_CI_SSH_KEY_PATH:-}"
 	NIXBOT_KEY_OVERRIDE_EXPLICIT=0
 
 	set_discover_keys_mode "${DISCOVER_DECRYPT_KEYS_MODE}"
@@ -324,8 +324,8 @@ init_vars() {
 		OVERLAY_STAGED=1
 		ALLOW_DIRTY_REPO=1
 	fi
-	if parse_bool_env "${NIXBOT_BASTION_FIRST:-0}"; then
-		PRIORITIZE_BASTION_FIRST=1
+	if parse_bool_env "${NIXBOT_CI_FIRST:-0}"; then
+		PRIORITIZE_CI_FIRST=1
 	fi
 	if parse_bool_env "${NIXBOT_BOOTSTRAP:-0}"; then
 		FORCE_BOOTSTRAP_PATH=1
@@ -343,8 +343,8 @@ init_vars() {
 			set_prefix_host_logs_mode 0
 		fi
 	fi
-	if parse_bool_env "${NIXBOT_BASTION_TRIGGER:-0}"; then
-		BASTION_TRIGGER=1
+	if parse_bool_env "${NIXBOT_CI_TRIGGER:-0}"; then
+		CI_TRIGGER=1
 	fi
 	if parse_bool_env "${NIXBOT_USE_REPO_SCRIPT:-0}"; then
 		REEXEC_FROM_REPO=1
@@ -397,7 +397,7 @@ init_vars() {
 	OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS=()
 	OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=()
 
-	BASTION_TRIGGER_KEY_PATH="data/secrets/bastion/nixbot-bastion-ssh.key.age"
+	CI_TRIGGER_KEY_PATH="data/secrets/ci/nixbot-ci-ssh.key.age"
 	REMOTE_NIXBOT_BASE="/var/lib/nixbot"
 	REMOTE_NIXBOT_SSH_DIR="${REMOTE_NIXBOT_BASE}/.ssh"
 	REMOTE_NIXBOT_AGE_DIR="${REMOTE_NIXBOT_BASE}/.age"
@@ -415,7 +415,7 @@ init_vars() {
 	SSH_NULL_CONFIG_FILE="/dev/null"
 	RUNTIME_WORK_DIR_PREFIX="/dev/shm/nixbot-run."
 	RUNTIME_WORK_DIR_FALLBACK_PREFIX="${TMPDIR:-/tmp}/nixbot-run."
-	BASTION_KNOWN_HOSTS_PREFIX="bastion-known-hosts"
+	CI_KNOWN_HOSTS_PREFIX="ci-known-hosts"
 	NODE_KNOWN_HOSTS_PREFIX="known_hosts"
 	REPO_KNOWN_HOSTS_PREFIX="repo-known-hosts"
 	TMP_SECRETS_DIR=""
@@ -884,8 +884,8 @@ parse_args() {
 			FORCE_BOOTSTRAP_PATH=1
 			shift
 			;;
-		--bastion-first)
-			PRIORITIZE_BASTION_FIRST=1
+		--ci-first)
+			PRIORITIZE_CI_FIRST=1
 			shift
 			;;
 		--dry)
@@ -960,33 +960,33 @@ parse_args() {
 			REEXEC_FROM_REPO=1
 			shift
 			;;
-		--bastion-check-ssh-key-path | --bastion-check-ssh-key-path=*)
+		--ci-check-ssh-key-path | --ci-check-ssh-key-path=*)
 			take_optval "$@"
-			NIXBOT_BASTION_KEY_PATH_OVERRIDE="${OPTVAL}"
+			NIXBOT_CI_KEY_PATH_OVERRIDE="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
-		--bastion-trigger)
-			BASTION_TRIGGER=1
+		--ci-trigger)
+			CI_TRIGGER=1
 			shift
 			;;
-		--bastion-host | --bastion-host=*)
+		--ci-host | --ci-host=*)
 			take_optval "$@"
-			BASTION_TRIGGER_HOST="${OPTVAL}"
+			CI_TRIGGER_HOST="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
-		--bastion-user | --bastion-user=*)
+		--ci-user | --ci-user=*)
 			take_optval "$@"
-			BASTION_TRIGGER_USER="${OPTVAL}"
+			CI_TRIGGER_USER="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
-		--bastion-ssh-key | --bastion-ssh-key=*)
+		--ci-ssh-key | --ci-ssh-key=*)
 			take_optval "$@"
-			BASTION_TRIGGER_SSH_KEY="${OPTVAL}"
+			CI_TRIGGER_SSH_KEY="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
-		--bastion-known-hosts | --bastion-known-hosts=*)
+		--ci-known-hosts | --ci-known-hosts=*)
 			take_optval "$@"
-			BASTION_TRIGGER_KNOWN_HOSTS="${OPTVAL}"
+			CI_TRIGGER_KNOWN_HOSTS="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
 		-h | --help)
@@ -1030,9 +1030,9 @@ parse_args() {
 		die "Unsupported --sha: ${SHA}"
 	fi
 
-	if [ "${BASTION_TRIGGER}" -eq 1 ]; then
-		[ -n "${BASTION_TRIGGER_HOST}" ] || die "--bastion-host value is required"
-		[ -n "${BASTION_TRIGGER_USER}" ] || die "--bastion-user value is required"
+	if [ "${CI_TRIGGER}" -eq 1 ]; then
+		[ -n "${CI_TRIGGER_HOST}" ] || die "--ci-host value is required"
+		[ -n "${CI_TRIGGER_USER}" ] || die "--ci-user value is required"
 	fi
 	if [ "${ACTION}" = "dev-build" ] && [ -n "${SHA}" ]; then
 		die "dev-build uses the current local checkout; --sha is unsupported"
@@ -1650,39 +1650,39 @@ prepare_dev_build_workspace() {
 	cd "${current_repo_root}"
 }
 
-configure_bastion_trigger_ssh_opts() {
+configure_ci_trigger_ssh_opts() {
 	local key_file="" known_hosts_file="" scanned_known_hosts=""
 
-	BASTION_TRIGGER_SSH_OPTS=()
+	CI_TRIGGER_SSH_OPTS=()
 
 	ensure_tmp_dir
 
-	if [ -z "${BASTION_TRIGGER_SSH_KEY}" ]; then
-		if key_file="$(resolve_runtime_key_file "${BASTION_TRIGGER_KEY_PATH}" 1)" && [ -f "${key_file}" ]; then
-			BASTION_TRIGGER_SSH_KEY="$(<"${key_file}")"
+	if [ -z "${CI_TRIGGER_SSH_KEY}" ]; then
+		if key_file="$(resolve_runtime_key_file "${CI_TRIGGER_KEY_PATH}" 1)" && [ -f "${key_file}" ]; then
+			CI_TRIGGER_SSH_KEY="$(<"${key_file}")"
 		else
-			BASTION_TRIGGER_SSH_KEY=""
+			CI_TRIGGER_SSH_KEY=""
 		fi
 	fi
 
-	if [ -n "${BASTION_TRIGGER_SSH_KEY}" ]; then
-		key_file="$(tmp_runtime_mktemp ssh "bastion-key.XXXXXX")"
-		printf '%s\n' "${BASTION_TRIGGER_SSH_KEY}" >"${key_file}"
+	if [ -n "${CI_TRIGGER_SSH_KEY}" ]; then
+		key_file="$(tmp_runtime_mktemp ssh "ci-key.XXXXXX")"
+		printf '%s\n' "${CI_TRIGGER_SSH_KEY}" >"${key_file}"
 		chmod 600 "${key_file}"
-		BASTION_TRIGGER_SSH_OPTS+=(-i "${key_file}" -o IdentitiesOnly=yes)
+		CI_TRIGGER_SSH_OPTS+=(-i "${key_file}" -o IdentitiesOnly=yes)
 	fi
 
-	if [ -n "${BASTION_TRIGGER_KNOWN_HOSTS}" ]; then
-		scanned_known_hosts="${BASTION_TRIGGER_KNOWN_HOSTS}"
+	if [ -n "${CI_TRIGGER_KNOWN_HOSTS}" ]; then
+		scanned_known_hosts="${CI_TRIGGER_KNOWN_HOSTS}"
 	else
-		scanned_known_hosts="$(ssh-keyscan -H "${BASTION_TRIGGER_HOST}" 2>/dev/null || true)"
-		[ -n "${scanned_known_hosts}" ] || die "Could not determine bastion host key for ${BASTION_TRIGGER_HOST}. Pass --bastion-known-hosts/NIXBOT_BASTION_KNOWN_HOSTS or ensure ssh-keyscan can reach the bastion."
+		scanned_known_hosts="$(ssh-keyscan -H "${CI_TRIGGER_HOST}" 2>/dev/null || true)"
+		[ -n "${scanned_known_hosts}" ] || die "Could not determine CI host key for ${CI_TRIGGER_HOST}. Pass --ci-known-hosts/NIXBOT_CI_KNOWN_HOSTS or ensure ssh-keyscan can reach the CI host."
 	fi
 
-	known_hosts_file="$(tmp_runtime_mktemp ssh "${BASTION_KNOWN_HOSTS_PREFIX}.XXXXXX")"
+	known_hosts_file="$(tmp_runtime_mktemp ssh "${CI_KNOWN_HOSTS_PREFIX}.XXXXXX")"
 	printf '%s\n' "${scanned_known_hosts}" >"${known_hosts_file}"
 	chmod 600 "${known_hosts_file}"
-	BASTION_TRIGGER_SSH_OPTS+=(
+	CI_TRIGGER_SSH_OPTS+=(
 		-F "${SSH_NULL_CONFIG_FILE}"
 		-o "GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE}"
 		-o StrictHostKeyChecking=yes
@@ -1690,7 +1690,7 @@ configure_bastion_trigger_ssh_opts() {
 	)
 }
 
-run_bastion_trigger() {
+run_ci_trigger() {
 	local trigger_sha="${SHA}" trigger_hosts="" encoded_request=""
 	local -a remote_args=()
 	if [ -z "${trigger_sha}" ]; then
@@ -1699,22 +1699,22 @@ run_bastion_trigger() {
 	[ -n "${trigger_sha}" ] || die "Could not resolve local HEAD; pass --sha/NIXBOT_SHA explicitly"
 	[[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
 
-	action_is_supported "${ACTION}" || die "Unsupported action for --bastion-trigger: ${ACTION}"
+	action_is_supported "${ACTION}" || die "Unsupported action for --ci-trigger: ${ACTION}"
 
 	trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
 	[ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
 
-	configure_bastion_trigger_ssh_opts
+	configure_ci_trigger_ssh_opts
 
 	log_section "Phase: Remote Trigger"
-	echo "Bastion: ${BASTION_TRIGGER_USER}@${BASTION_TRIGGER_HOST}" >&2
+	echo "CI host: ${CI_TRIGGER_USER}@${CI_TRIGGER_HOST}" >&2
 	echo "Action: ${ACTION}" >&2
 	echo "Hosts: ${trigger_hosts}" >&2
 	echo "SHA: ${trigger_sha}" >&2
-	# Intentionally forward only the bastion-safe subset here. This restriction is
+	# Intentionally forward only the CI-safe subset here. This restriction is
 	# deliberate: the remote side is expected to use its repo-local defaults and
 	# checked-in config for deploy-shaping settings such as goal, build host, job
-	# counts, rollback policy, and similar local overrides. Bastion-trigger runs
+	# counts, rollback policy, and similar local overrides. CI host-trigger runs
 	# are therefore reproducible from committed state instead of inheriting
 	# arbitrary local operator flags.
 	remote_args=("${ACTION}" --sha "${trigger_sha}" --hosts "${trigger_hosts}")
@@ -1738,7 +1738,7 @@ run_bastion_trigger() {
 
 	encoded_request="$(encode_ssh_command_args "${remote_args[@]}")"
 	log_group_end
-	ssh "${BASTION_TRIGGER_SSH_OPTS[@]}" -- "${BASTION_TRIGGER_USER}@${BASTION_TRIGGER_HOST}" \
+	ssh "${CI_TRIGGER_SSH_OPTS[@]}" -- "${CI_TRIGGER_USER}@${CI_TRIGGER_HOST}" \
 		"${NIXBOT_SSH_ARGV_PREFIX} ${encoded_request}"
 }
 
@@ -1766,7 +1766,7 @@ is_bootstrap_check_action() {
 }
 
 # Resolve the source repo root exactly once. Local clean repo runs reuse the
-# current checkout as the mirror; bastion/explicit `--repo-path` runs use the
+# current checkout as the mirror; CI/explicit `--repo-path` runs use the
 # managed mirror path instead.
 resolve_repo_root() {
 	local current_repo_root=""
@@ -2312,7 +2312,7 @@ expand_selected_hosts_json() {
 }
 
 order_selected_hosts_json() {
-	local selected_json="$1" all_hosts_json="$2" node="" dep="" progress="" bastion_host="${BASTION_TRIGGER_HOST}"
+	local selected_json="$1" all_hosts_json="$2" node="" dep="" progress="" ci_host="${CI_TRIGGER_HOST}"
 	local -a selected_hosts=() runnable_selected_hosts=() skipped_hosts=() ordered_hosts=()
 	declare -A all_host_set=()
 	declare -A selected_host_set=()
@@ -2338,7 +2338,7 @@ order_selected_hosts_json() {
 		[ -n "${node}" ] || continue
 		while IFS= read -r dep; do
 			[ -n "${dep}" ] || continue
-			if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+			if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
 				continue
 			fi
 			if [ -z "${all_host_set["${dep}"]+x}" ]; then
@@ -2351,13 +2351,13 @@ order_selected_hosts_json() {
 		done < <(host_predecessors_for "${node}")
 	done
 
-	if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${bastion_host}"]+x}" ]; then
-		emitted_host_set["${bastion_host}"]=1
-		ordered_hosts+=("${bastion_host}")
+	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${ci_host}"]+x}" ]; then
+		emitted_host_set["${ci_host}"]=1
+		ordered_hosts+=("${ci_host}")
 		while IFS= read -r dep; do
 			[ -n "${dep}" ] || continue
 			indegree["${dep}"]=$((indegree["${dep}"] - 1))
-		done <<<"${dependents["${bastion_host}"]:-}"
+		done <<<"${dependents["${ci_host}"]:-}"
 	fi
 
 	while [ "${#ordered_hosts[@]}" -lt "${#runnable_selected_hosts[@]}" ]; do
@@ -2400,7 +2400,7 @@ order_selected_hosts_json() {
 
 selected_host_levels_json() {
 	local selected_json="$1" node="" dep="" dep_level="" node_level=""
-	local max_level="" level="" bastion_host="${BASTION_TRIGGER_HOST}"
+	local max_level="" level="" ci_host="${CI_TRIGGER_HOST}"
 	local -a selected_hosts=()
 	declare -A selected_host_set=()
 	declare -A host_level=()
@@ -2411,7 +2411,7 @@ selected_host_levels_json() {
 	max_level=0
 	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
-		if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+		if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
 			host_level["${node}"]=0
 			continue
 		fi
@@ -2427,7 +2427,7 @@ selected_host_levels_json() {
 			fi
 		done < <(host_predecessors_for "${node}")
 
-		if [ "${PRIORITIZE_BASTION_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${bastion_host}"]+x}" ] && [ "${node_level}" -lt 1 ]; then
+		if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${ci_host}"]+x}" ] && [ "${node_level}" -lt 1 ]; then
 			node_level=1
 		fi
 
@@ -2951,13 +2951,13 @@ check_bootstrap_via_forced_command() {
 	local i="" opt="" skip_next=0 use_override_key=0
 
 	# Forced-command ingress may require a key different from the deploy key.
-	if [ -n "${NIXBOT_BASTION_KEY_PATH_OVERRIDE}" ]; then
+	if [ -n "${NIXBOT_CI_KEY_PATH_OVERRIDE}" ]; then
 		ensure_tmp_dir
-		if ! check_key_file="$(resolve_runtime_key_file "${NIXBOT_BASTION_KEY_PATH_OVERRIDE}" 1)"; then
+		if ! check_key_file="$(resolve_runtime_key_file "${NIXBOT_CI_KEY_PATH_OVERRIDE}" 1)"; then
 			return 1
 		fi
 		if [ ! -f "${check_key_file}" ]; then
-			echo "Forced-command key file not found: ${NIXBOT_BASTION_KEY_PATH_OVERRIDE} (resolved: ${check_key_file})" >&2
+			echo "Forced-command key file not found: ${NIXBOT_CI_KEY_PATH_OVERRIDE} (resolved: ${check_key_file})" >&2
 			return 1
 		fi
 		use_override_key=1
@@ -6814,14 +6814,14 @@ resolve_build_out_path() {
 }
 
 run_build_phase() {
-	local build_jobs="$1" build_parallel="$2" prioritize_bastion="$3" bastion_host="$4"
+	local build_jobs="$1" build_parallel="$2" prioritize_ci="$3" ci_host="$4"
 	local build_log_dir="$5" build_status_dir="$6" build_out_dir="$7" built_hosts_out_name="$9"
 	local -n rbp_build_hosts_in_ref="$8"
 	# shellcheck disable=SC2178
 	local -n rbp_failed_hosts_out_ref="${10}"
 
 	local node="" active_jobs=0 status_file="" out_file="" log_file=""
-	local build_sync_leading_bastion=0 host_grouping=0 phase_rc=0
+	local build_sync_leading_ci=0 host_grouping=0 phase_rc=0
 
 	if [ "${build_parallel}" -eq 0 ] && [ "${#rbp_build_hosts_in_ref[@]}" -gt 1 ]; then
 		host_grouping=1
@@ -6830,10 +6830,10 @@ run_build_phase() {
 		log_grouped_phase_section "Phase: Build" "build" 0
 	fi
 
-	if [ "${build_parallel}" -eq 1 ] && [ "${prioritize_bastion}" -eq 1 ] &&
-		[ "${#rbp_build_hosts_in_ref[@]}" -gt 0 ] && [ "${rbp_build_hosts_in_ref[0]}" = "${bastion_host}" ]; then
-		build_sync_leading_bastion=1
-		node="${bastion_host}"
+	if [ "${build_parallel}" -eq 1 ] && [ "${prioritize_ci}" -eq 1 ] &&
+		[ "${#rbp_build_hosts_in_ref[@]}" -gt 0 ] && [ "${rbp_build_hosts_in_ref[0]}" = "${ci_host}" ]; then
+		build_sync_leading_ci=1
+		node="${ci_host}"
 		status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
 		out_file="${build_out_dir}/${node}.path"
 		run_build_job "${node}" "${out_file}" "${status_file}"
@@ -6850,7 +6850,7 @@ run_build_phase() {
 
 	for node in "${rbp_build_hosts_in_ref[@]}"; do
 		[ -n "${node}" ] || continue
-		if [ "${build_sync_leading_bastion}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+		if [ "${build_sync_leading_ci}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
 			continue
 		fi
 
@@ -6895,7 +6895,7 @@ run_build_phase() {
 		for node in "${rbp_build_hosts_in_ref[@]}"; do
 			[ -n "${node}" ] || continue
 			status_file="$(phase_dir_item_status_file "${build_status_dir}" "${node}")"
-			if [ "${build_sync_leading_bastion}" -eq 1 ] && [ "${node}" = "${bastion_host}" ]; then
+			if [ "${build_sync_leading_ci}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
 				continue
 			fi
 			if record_phase_status "${node}" "${status_file}" "${built_hosts_out_name}" "${10}"; then
@@ -7146,7 +7146,7 @@ capture_current_run_summary_state() {
 }
 
 run_hosts() {
-	local selected_json="$1" runnable_selected_json="" bastion_host="${BASTION_TRIGGER_HOST}"
+	local selected_json="$1" runnable_selected_json="" ci_host="${CI_TRIGGER_HOST}"
 	# shellcheck disable=SC2034
 	local -a selected_hosts=() failed_hosts=() successful_hosts=() built_hosts=()
 	# shellcheck disable=SC2034
@@ -7230,8 +7230,8 @@ run_hosts() {
 	if run_build_phase \
 		"${BUILD_JOBS}" \
 		"${build_parallel}" \
-		"${PRIORITIZE_BASTION_FIRST}" \
-		"${bastion_host}" \
+		"${PRIORITIZE_CI_FIRST}" \
+		"${ci_host}" \
 		"${build_log_dir}" \
 		"${build_status_dir}" \
 		"${build_out_dir}" \
@@ -8156,7 +8156,7 @@ run_tofu_wrapper() {
 	local -a cmd=()
 
 	[ "${#tofu_args[@]}" -gt 0 ] || die "Usage: nixbot tofu <tofu-args...>"
-	[ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot tofu wrapper is local-only and cannot run via SSH forced-command/bastion trigger."
+	[ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot tofu wrapper is local-only and cannot run via SSH forced-command/CI trigger."
 
 	if {
 		read -r project_dir
@@ -8863,7 +8863,7 @@ hydrate_request_args_from_ssh_command() {
 
 	case "${SSH_ORIGINAL_COMMAND}" in
 	*[\`\$\(\)\{\}\;\&\|\<\>\\\'\"]*)
-		die "Unsupported SSH forced-command syntax. Use nixbot --bastion-trigger or an unquoted simple argv form."
+		die "Unsupported SSH forced-command syntax. Use nixbot --ci-trigger or an unquoted simple argv form."
 		;;
 	esac
 
@@ -8992,9 +8992,9 @@ main() {
 
 	ensure_runtime_ready "$@"
 	parse_args "${request_args[@]}"
-	if [ "${BASTION_TRIGGER}" -eq 1 ]; then
-		[ "${ACTION}" != "dev-build" ] || die "dev-build is local-only and cannot run through --bastion-trigger"
-		run_bastion_trigger
+	if [ "${CI_TRIGGER}" -eq 1 ]; then
+		[ "${ACTION}" != "dev-build" ] || die "dev-build is local-only and cannot run through --ci-trigger"
+		run_ci_trigger
 		return
 	fi
 

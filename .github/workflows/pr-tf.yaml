@@ -99,18 +99,18 @@ jobs:
       - name: nixbot/tf-dry-run
         shell: bash
         env:
-          NIXBOT_BASTION_SSH_KEY: ${{ secrets.NIXBOT_BASTION_SSH_KEY }}
-          NIXBOT_BASTION_KNOWN_HOSTS: ${{ secrets.NIXBOT_BASTION_KNOWN_HOSTS }}
+          NIXBOT_CI_SSH_KEY: ${{ secrets.NIXBOT_CI_SSH_KEY }}
+          NIXBOT_CI_KNOWN_HOSTS: ${{ secrets.NIXBOT_CI_KNOWN_HOSTS }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
-          if [ -z "${NIXBOT_BASTION_SSH_KEY:-}" ]; then
-            echo "Missing required secret: NIXBOT_BASTION_SSH_KEY" >&2
+          if [ -z "${NIXBOT_CI_SSH_KEY:-}" ]; then
+            echo "Missing required secret: NIXBOT_CI_SSH_KEY" >&2
             exit 1
           fi
 
           nix run .#nixbot -- tf \
             --dry \
-            --bastion-trigger \
+            --ci-trigger \
             --sha "${PR_HEAD_SHA}"

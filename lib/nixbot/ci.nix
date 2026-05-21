@@ -4,14 +4,14 @@
   ...
 }: let
   userdata = (import ../../users/userdata.nix).nixbot;
-  bastionSshKeys =
-    userdata.bastionSshKeys or [userdata.bastionSshKey];
+  ciSshKeys =
+    userdata.ciSshKeys or [userdata.ciSshKey];
   forcedCommand = "${pkgs.nixbot}/bin/nixbot";
   forcedCommandKey = key: ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="${forcedCommand}" ${key}'';
   legacyKeyAgePath = ../../data/secrets/nixbot/nixbot-legacy.key.age;
   hasLegacyKeyAge = builtins.pathExists legacyKeyAgePath;
 in {
-  users.users.nixbot.openssh.authorizedKeys.keys = map forcedCommandKey bastionSshKeys;
+  users.users.nixbot.openssh.authorizedKeys.keys = map forcedCommandKey ciSshKeys;
 
   system.activationScripts.nixbotDeploy = ''
         install -d -m 0755 -o nixbot -g nixbot /var/lib/nixbot

@@ -2,7 +2,7 @@ let
   userdata = import ../../users/userdata.nix;
   admins = [userdata.pvl.sshKey];
   adminsWithNixbot = admins ++ nixbotKeys;
-  adminsWithBastion =
+  adminsWithCiHost =
     adminsWithNixbot
     ++ machines.pvl-x2;
   machineKeyFiles = {
@@ -22,11 +22,11 @@ let
 in
   with machines; {
     # Nixbot
-    "data/secrets/nixbot/nixbot.key.age".publicKeys = adminsWithBastion;
-    "data/secrets/nixbot/nixbot-legacy.key.age".publicKeys = adminsWithBastion;
+    "data/secrets/nixbot/nixbot.key.age".publicKeys = adminsWithCiHost;
+    "data/secrets/nixbot/nixbot-legacy.key.age".publicKeys = adminsWithCiHost;
 
-    # Bastion
-    "data/secrets/bastion/nixbot-bastion-ssh.key.age".publicKeys = admins;
+    # CI host
+    "data/secrets/ci/nixbot-ci-ssh.key.age".publicKeys = admins;
 
     # Machines
     "data/secrets/machine/pvl-a1.key.age".publicKeys = adminsWithNixbot;

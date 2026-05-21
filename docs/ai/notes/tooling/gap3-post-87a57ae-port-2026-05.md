@@ -196,4 +196,4 @@ ledger: all 116 upstream commits are represented, with no missing hashes from
 | `376f6f92` | stack: abstract and split into gap3, abird | Project stack architecture not present locally.                                         |
 | `e003b3b2` | Fix lints                                  | Only applies to skipped docs/stack changes.                                             |
 | `242db9a8` | ai: add upstream pkg guidance              | Existing local Tailscale note covers the active upstream package case.                  |
-| `d14eec32` | refactor: bastion to ci hosts              | Renames/secret rotations for upstream CI/bastion topology; do not apply blindly here.   |
+| `d14eec32` | refactor: bastion to ci hosts              | Ported locally as the nixbot CI-host terminology/secret-path migration, retaining local host and repo defaults.   |

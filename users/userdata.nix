@@ -5,11 +5,11 @@
     sshKeys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILcebdSP8tXYbp+vX0VM/cBFFh8sjLQOcf1futIV8sWD nixbot-deploy-2026q1"
     ];
-    bastionSshKeys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF221ghIGV2YzknYaDxSeo0LAD+8tNd4xUz0UMwsUdsc nixbot-bastion-github-actions-2026q1"
+    ciSshKeys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF221ghIGV2YzknYaDxSeo0LAD+8tNd4xUz0UMwsUdsc nixbot-ci-github-actions-2026q1"
     ];
     sshKey = builtins.head sshKeys;
-    bastionSshKey = builtins.head bastionSshKeys;
+    ciSshKey = builtins.head ciSshKeys;
   };
   pvl = {
     username = "pvl";

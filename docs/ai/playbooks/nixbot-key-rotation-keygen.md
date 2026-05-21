@@ -30,14 +30,14 @@ Execution behavior:
 ## Outputs (For Execution Playbook)
 
 - `NEW_NIXBOT_PUB`
-- `NEW_BASTION_PUB`
+- `NEW_CI_PUB`
 - `NEW_NIXBOT_KEY_AGE` (usually `data/secrets/nixbot/nixbot.key.age` or staged
   path)
 - `NEW_NIXBOT_KEY_PRIVATE` (private key file path for GitHub repo SSH deploy-key
   secret)
-- `NEW_BASTION_KEY_PRIVATE` (private key file path for GitHub secret
-  `NIXBOT_BASTION_SSH_KEY`)
-- optional `LEGACY_NIXBOT_KEY_AGE` for bastion-first cutover mode
+- `NEW_CI_KEY_PRIVATE` (private key file path for GitHub secret
+  `NIXBOT_CI_SSH_KEY`)
+- optional `LEGACY_NIXBOT_KEY_AGE` for CI host-first cutover mode
 
 ## Step 1: Create Secure Working Directory
 
@@ -63,18 +63,18 @@ Expected outcome:
 
 - `${KEYGEN_DIR}/nixbot.key` and `${KEYGEN_DIR}/nixbot.key.pub` created.
 
-## Step 3: Generate New Bastion Ingress Keypair
+## Step 3: Generate New CI host Ingress Keypair
 
 Run:
 
 ```bash
-ssh-keygen -t ed25519 -a 64 -N '' -C "nixbot-bastion-github-actions-${NEW_KEY_TAG}" -f "${KEYGEN_DIR}/nixbot-bastion-ssh.key"
+ssh-keygen -t ed25519 -a 64 -N '' -C "nixbot-ci-github-actions-${NEW_KEY_TAG}" -f "${KEYGEN_DIR}/nixbot-ci-ssh.key"
 ```
 
 Expected outcome:
 
-- `${KEYGEN_DIR}/nixbot-bastion-ssh.key` and
-  `${KEYGEN_DIR}/nixbot-bastion-ssh.key.pub` created.
+- `${KEYGEN_DIR}/nixbot-ci-ssh.key` and
+  `${KEYGEN_DIR}/nixbot-ci-ssh.key.pub` created.
 
 ## Step 4: Validate Fingerprints
 
@@ -82,7 +82,7 @@ Run:
 
 ```bash
 ssh-keygen -lf "${KEYGEN_DIR}/nixbot.key"
-ssh-keygen -lf "${KEYGEN_DIR}/nixbot-bastion-ssh.key"
+ssh-keygen -lf "${KEYGEN_DIR}/nixbot-ci-ssh.key"
 ```
 
 Expected outcome:
@@ -95,11 +95,11 @@ Actions:
 
 1. Update `users/userdata.nix` key lists:
    - append contents of `${KEYGEN_DIR}/nixbot.key.pub` to `nixbot.sshKeys`
-   - append contents of `${KEYGEN_DIR}/nixbot-bastion-ssh.key.pub` to
-     `nixbot.bastionSshKeys`
+   - append contents of `${KEYGEN_DIR}/nixbot-ci-ssh.key.pub` to
+     `nixbot.ciSshKeys`
 2. Optionally refresh helper public-key files:
    - `data/secrets/nixbot/nixbot.pub`
-   - `data/secrets/bastion/nixbot-bastion-ssh.key.pub`
+   - `data/secrets/ci/nixbot-ci-ssh.key.pub`
 
 Expected outcome:
 
@@ -116,13 +116,13 @@ Run (deterministic recipients from `data/secrets/default.nix`):
 
 ```bash
 mapfile -t NIXBOT_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/nixbot/nixbot.key.age".publicKeys[]')
-mapfile -t BASTION_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/bastion/nixbot-bastion-ssh.key.age".publicKeys[]')
+mapfile -t CI_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/ci/nixbot-ci-ssh.key.age".publicKeys[]')
 
 NIXBOT_ARGS=(); for r in "${NIXBOT_RECIPS[@]}"; do NIXBOT_ARGS+=(-r "$r"); done
-BASTION_ARGS=(); for r in "${BASTION_RECIPS[@]}"; do BASTION_ARGS+=(-r "$r"); done
+CI_ARGS=(); for r in "${CI_RECIPS[@]}"; do CI_ARGS+=(-r "$r"); done
 
 age "${NIXBOT_ARGS[@]}" -o data/secrets/nixbot/nixbot.key.age "${KEYGEN_DIR}/nixbot.key"
-age "${BASTION_ARGS[@]}" -o data/secrets/bastion/nixbot-bastion-ssh.key.age "${KEYGEN_DIR}/nixbot-bastion-ssh.key"
+age "${CI_ARGS[@]}" -o data/secrets/ci/nixbot-ci-ssh.key.age "${KEYGEN_DIR}/nixbot-ci-ssh.key"
 ```
 
 Preferred:
@@ -140,14 +140,14 @@ Actions:
 
 1. Use local file `${KEYGEN_DIR}/nixbot.key` to update the GitHub secret used
    for repo SSH deploy-key auth (name per your repo settings).
-2. Use local file `${KEYGEN_DIR}/nixbot-bastion-ssh.key` to update GitHub secret
-   `NIXBOT_BASTION_SSH_KEY`.
+2. Use local file `${KEYGEN_DIR}/nixbot-ci-ssh.key` to update GitHub secret
+   `NIXBOT_CI_SSH_KEY`.
 3. Do not print, `cat`, or echo private key contents in agent output.
 
 Expected outcome:
 
 - GitHub repo SSH deploy-key secret updated to the rotated nixbot key.
-- GitHub `NIXBOT_BASTION_SSH_KEY` updated without exposing key material in
+- GitHub `NIXBOT_CI_SSH_KEY` updated without exposing key material in
   terminal logs.
 
 ## Step 8: Cleanup Local Plaintext Keys
@@ -155,7 +155,7 @@ Expected outcome:
 After successful encryption and secure escrow:
 
 ```bash
-shred -u "${KEYGEN_DIR}/nixbot.key" "${KEYGEN_DIR}/nixbot-bastion-ssh.key"
+shred -u "${KEYGEN_DIR}/nixbot.key" "${KEYGEN_DIR}/nixbot-ci-ssh.key"
 ```
 
 If `shred` unavailable, use secure deletion method approved for your platform.
