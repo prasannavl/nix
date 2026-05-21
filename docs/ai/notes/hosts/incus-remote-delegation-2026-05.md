@@ -151,7 +151,7 @@ delegation file does not block activation. This keeps the direct parent trust
 store limited to the unrestricted `pvl` cert while still letting `pvl-vlab-1`
 manage the parent `pvl` project declaratively.
 
-`abird-nest` is declared in the parent Incus `abird` project at `10.10.100.31`.
+`abird-nest` is declared in the parent Incus `abird` project at `10.10.100.10`.
 Per-instance project placement is handled by
 `services.incusMachines.instances.<name>.project`; lifecycle commands pass that
 project through to the Incus CLI/API. Because `abird-nest` needs the parent API

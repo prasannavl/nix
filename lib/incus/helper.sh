@@ -269,7 +269,8 @@ instance_query_path() {
 }
 
 preseed_migrations_main() {
-	local current_project instance instance_config_json key keys_json migration prefixes_json project project_instances
+	local current_project device driver encoded_instance encoded_profile from_pool instance instance_config_json instance_json key keys_json migration name pool pool_config_json pool_exists pool_json prefixes_json profile profile_device_json profile_json project project_config_json project_config_migration_json project_instances root_pool status to_pool value volume_json
+	local -a create_pool_args=() set_profile_args=() set_project_args=()
 
 	printf '%s' "$preseed_migrations" |
 		jq -e '
@@ -279,10 +280,154 @@ preseed_migrations_main() {
 				and all(.projects[]; type == "string")
 				and (.unsetInstanceConfigKeyPrefixes | type == "array")
 				and all(.unsetInstanceConfigKeyPrefixes[]; type == "string")
+				and (.ensureStoragePools | type == "array")
+				and all(.ensureStoragePools[]; (
+					(.name | type == "string")
+					and (.driver | type == "string")
+					and (.config | type == "object")
+					and all(.config[]; type == "string")
+				))
+				and (.setProfileDeviceProperties | type == "array")
+				and all(.setProfileDeviceProperties[]; (
+					(.project | type == "string")
+					and (.profile | type == "string")
+					and (.device | type == "string")
+					and (.properties | type == "object")
+					and all(.properties[]; type == "string")
+				))
+				and (.setProjectConfig | type == "array")
+				and all(.setProjectConfig[]; (
+					(.project | type == "string")
+					and (.config | type == "object")
+					and all(.config[]; type == "string")
+				))
+				and (.moveInstancesToStoragePools | type == "array")
+				and all(.moveInstancesToStoragePools[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
+					and (.pool | type == "string")
+				))
+				and (.moveStorageVolumes | type == "array")
+				and all(.moveStorageVolumes[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
+					and (.fromPool | type == "string")
+					and (.toPool | type == "string")
+				))
 			))
 		' >/dev/null
 
 	while IFS= read -r migration; do
+		while IFS= read -r pool_json; do
+			[ -n "$pool_json" ] || continue
+			pool="$(printf '%s' "$pool_json" | jq -r '.name')"
+			driver="$(printf '%s' "$pool_json" | jq -r '.driver')"
+			pool_config_json="$(printf '%s' "$pool_json" | jq -c '.config')"
+			pool_exists=0
+			if incus storage show "$pool" >/dev/null 2>&1; then
+				pool_exists=1
+			fi
+
+			create_pool_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$pool_config_json" | jq -r --arg k "$key" '.[$k]')"
+				create_pool_args+=("$key=$value")
+			done < <(printf '%s' "$pool_config_json" | jq -r 'keys[]')
+
+			if [ "$pool_exists" -eq 0 ]; then
+				incus storage create "$pool" "$driver" "${create_pool_args[@]}"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.ensureStoragePools[]')
+
+		while IFS= read -r project_config_migration_json; do
+			[ -n "$project_config_migration_json" ] || continue
+			project="$(printf '%s' "$project_config_migration_json" | jq -r '.project')"
+			if ! incus project show "$project" >/dev/null 2>&1; then
+				continue
+			fi
+
+			project_config_json="$(printf '%s' "$project_config_migration_json" | jq -c '.config')"
+			set_project_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$project_config_json" | jq -r --arg k "$key" '.[$k]')"
+				set_project_args+=("$key=$value")
+			done < <(printf '%s' "$project_config_json" | jq -r 'keys[]')
+
+			if [ "${#set_project_args[@]}" -gt 0 ]; then
+				incus project set "$project" "${set_project_args[@]}"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.setProjectConfig[]')
+
+		while IFS= read -r instance_json; do
+			[ -n "$instance_json" ] || continue
+			project="$(printf '%s' "$instance_json" | jq -r '.project')"
+			name="$(printf '%s' "$instance_json" | jq -r '.name')"
+			pool="$(printf '%s' "$instance_json" | jq -r '.pool')"
+			encoded_instance="$(jq -nr --arg value "$name" '$value | @uri')"
+			current_project="$project"
+			if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+				continue
+			fi
+			root_pool="$(printf '%s' "$instance_config_json" | jq -r '.metadata.expanded_devices.root.pool // ""')"
+			if [ "$root_pool" = "$pool" ]; then
+				continue
+			fi
+
+			status="$(printf '%s' "$instance_config_json" | jq -r '.metadata.status // ""')"
+			if [ "$status" = "Running" ]; then
+				incus --project "$project" stop "$name" --force
+			fi
+			incus move --project "$project" "$name" --storage "$pool"
+		done < <(printf '%s' "$migration" | jq -c '.moveInstancesToStoragePools[]')
+
+		while IFS= read -r volume_json; do
+			[ -n "$volume_json" ] || continue
+			project="$(printf '%s' "$volume_json" | jq -r '.project')"
+			name="$(printf '%s' "$volume_json" | jq -r '.name')"
+			from_pool="$(printf '%s' "$volume_json" | jq -r '.fromPool')"
+			to_pool="$(printf '%s' "$volume_json" | jq -r '.toPool')"
+
+			if [ "$from_pool" = "$to_pool" ]; then
+				continue
+			fi
+			if incus storage volume show --project "$project" "$to_pool" "$name" >/dev/null 2>&1; then
+				continue
+			fi
+			if ! incus storage volume show --project "$project" "$from_pool" "$name" >/dev/null 2>&1; then
+				continue
+			fi
+			incus storage volume move --project "$project" "$from_pool/$name" "$to_pool/$name"
+		done < <(printf '%s' "$migration" | jq -c '.moveStorageVolumes[]')
+
+		while IFS= read -r profile_device_json; do
+			[ -n "$profile_device_json" ] || continue
+			project="$(printf '%s' "$profile_device_json" | jq -r '.project')"
+			profile="$(printf '%s' "$profile_device_json" | jq -r '.profile')"
+			device="$(printf '%s' "$profile_device_json" | jq -r '.device')"
+			encoded_profile="$(jq -nr --arg value "$profile" '$value | @uri')"
+
+			current_project="$project"
+			if ! profile_json="$(incus query "$(query_ref "/1.0/profiles/$encoded_profile")" --raw 2>/dev/null)"; then
+				continue
+			fi
+			if ! printf '%s' "$profile_json" | jq -e --arg device "$device" '.metadata.devices | has($device)' >/dev/null 2>&1; then
+				continue
+			fi
+
+			set_profile_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$profile_device_json" | jq -r --arg k "$key" '.properties[$k]')"
+				set_profile_args+=("$key=$value")
+			done < <(printf '%s' "$profile_device_json" | jq -r '.properties | keys[]')
+
+			if [ "${#set_profile_args[@]}" -gt 0 ]; then
+				incus profile device set --project "$project" "$profile" "$device" "${set_profile_args[@]}"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.setProfileDeviceProperties[]')
+
 		prefixes_json="$(printf '%s' "$migration" | jq -c '.unsetInstanceConfigKeyPrefixes')"
 		if [ "$prefixes_json" = "[]" ]; then
 			continue

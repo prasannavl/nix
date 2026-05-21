@@ -129,15 +129,23 @@
     if incusPreseed == null
     then []
     else map (project: project.name) (incusPreseed.projects or []);
+  preseedMigrationHasAction = migration:
+    migration.unsetInstanceConfigKeyPrefixes
+    != []
+    || migration.ensureStoragePools != []
+    || migration.moveInstancesToStoragePools != []
+    || migration.moveStorageVolumes != []
+    || migration.setProjectConfig != []
+    || migration.setProfileDeviceProperties != [];
   resolvedPreseedMigrations =
     lib.filter
-    (migration: migration.projects != [] && migration.unsetInstanceConfigKeyPrefixes != [])
+    (migration: migration.projects != [] && preseedMigrationHasAction migration)
     (map (migration: {
         projects =
           if migration.projects == null
           then preseedProjectNames
           else migration.projects;
-        inherit (migration) unsetInstanceConfigKeyPrefixes;
+        inherit (migration) ensureStoragePools moveInstancesToStoragePools moveStorageVolumes setProfileDeviceProperties setProjectConfig unsetInstanceConfigKeyPrefixes;
       })
       cfg.preseedMigrations);
   hasPreseedMigrations = !cfg.remote.enable && hasIncusPreseed && resolvedPreseedMigrations != [];
@@ -189,9 +197,12 @@
         description = "Enable UID/GID shift for disk mounts.";
       };
       pool = lib.mkOption {
-        type = lib.types.str;
-        default = "default";
-        description = "Storage pool for volume-backed disk devices.";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Storage pool for volume-backed disk devices. When unset, the pool
+          defaults to the resolved Incus project for the instance.
+        '';
       };
       removalPolicy = lib.mkOption {
         type = lib.types.enum ["keep" "delete"];
@@ -304,6 +315,135 @@
           `null` means all projects declared by
           `virtualisation.incus.preseed.projects`.
         '';
+      };
+
+      ensureStoragePools = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus storage pool name to create or align.";
+            };
+
+            driver = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus storage pool driver.";
+            };
+
+            description = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Incus storage pool description.";
+            };
+
+            config = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+              description = "Incus storage pool config keys.";
+            };
+          };
+        }));
+        default = [];
+        description = "Storage pools to create or align before preseed applies project restrictions.";
+      };
+
+      setProfileDeviceProperties = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project containing the profile.";
+            };
+
+            profile = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus profile name.";
+            };
+
+            device = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus profile device name.";
+            };
+
+            properties = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+              description = "Device properties to set before preseed applies project restrictions.";
+            };
+          };
+        }));
+        default = [];
+        description = "Existing profile device properties to align before project restriction updates.";
+      };
+
+      setProjectConfig = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project to update.";
+            };
+
+            config = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+              description = "Project config keys to set before other preseed migrations.";
+            };
+          };
+        }));
+        default = [];
+        description = "Project config keys to set before profile, volume, or restriction updates.";
+      };
+
+      moveInstancesToStoragePools = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project containing the instance.";
+            };
+
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus instance name.";
+            };
+
+            pool = lib.mkOption {
+              type = lib.types.str;
+              description = "Destination storage pool for the instance root volume.";
+            };
+          };
+        }));
+        default = [];
+        description = "Instances to move to another storage pool before profile or project restriction updates.";
+      };
+
+      moveStorageVolumes = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project containing the custom storage volume.";
+            };
+
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Custom storage volume name.";
+            };
+
+            fromPool = lib.mkOption {
+              type = lib.types.str;
+              description = "Source storage pool.";
+            };
+
+            toPool = lib.mkOption {
+              type = lib.types.str;
+              description = "Destination storage pool.";
+            };
+          };
+        }));
+        default = [];
+        description = "Custom storage volumes to move before disk-device pool changes.";
       };
 
       unsetInstanceConfigKeyPrefixes = lib.mkOption {
@@ -434,13 +574,17 @@
   isVolumeBackedDiskResolved = dev:
     dev.type == "disk" && dev.source != null && !isHostPath dev.source;
 
-  resolveDeviceProperties = _name: dev: let
+  resolveDeviceProperties = machine: _name: dev: let
     resolved = resolveCertDelegationDevice dev;
+    pool =
+      if resolved.pool != null
+      then resolved.pool
+      else resolveMachineProject machine;
     base = {inherit (resolved) type;};
     withSource = lib.optionalAttrs (resolved.source != null) {inherit (resolved) source;};
     withPath = lib.optionalAttrs (resolved.path != null) {inherit (resolved) path;};
     withShift = lib.optionalAttrs (resolved.type == "disk" && resolved.shift) {shift = "true";};
-    withPool = lib.optionalAttrs (isVolumeBackedDiskResolved resolved) {inherit (resolved) pool;};
+    withPool = lib.optionalAttrs (isVolumeBackedDiskResolved resolved) {pool = pool;};
   in
     base // withSource // withPath // withShift // withPool // resolved.extraProperties;
 
@@ -465,7 +609,7 @@
     in {
       inherit (resolvedImage) alias;
     };
-    createOnlyDevices = lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine);
+    createOnlyDevices = lib.mapAttrs (resolveDeviceProperties machine) (createOnlyDevices machine);
   };
 
   # Transitional compatibility for generations that hashed the derived
@@ -502,7 +646,7 @@
     });
 
   diskDeviceSpecJson = machine:
-    builtins.toJSON (lib.mapAttrs resolveDeviceProperties (syncableDevices machine));
+    builtins.toJSON (lib.mapAttrs (resolveDeviceProperties machine) (syncableDevices machine));
 
   diskGcMetadataJson = machine:
     builtins.toJSON (
@@ -518,7 +662,7 @@
     );
 
   createOnlyDeviceSpecJson = machine:
-    builtins.toJSON (lib.mapAttrs resolveDeviceProperties (createOnlyDevices machine));
+    builtins.toJSON (lib.mapAttrs (resolveDeviceProperties machine) (createOnlyDevices machine));
 
   machineRuntimeStateJson = name: machine: let
     instanceImage = instanceImages.${name};
