@@ -73,16 +73,34 @@
         description = "Optional fixed path prefix to prepend when proxying to this backend.";
       };
 
+      rootRedirect = lib.mkOption {
+        type = lib.types.nullOr rootRedirectTypeDef;
+        default = null;
+        description = "Optional redirect for exact root requests before proxying other paths.";
+      };
+
       rateLimit = lib.mkOption {
         type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
         default = null;
         description = "Optional resolved ingress rate-limiting policy for this proxy vhost.";
       };
 
-      rootRedirect = lib.mkOption {
-        type = lib.types.nullOr rootRedirectTypeDef;
-        default = null;
-        description = "Optional redirect for exact root requests before proxying other paths.";
+      useUpstreamCsp = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Content-Security-Policy for this vhost and let the upstream's CSP pass through. Other security headers remain applied.";
+      };
+
+      useUpstreamReferrer = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Referrer-Policy for this vhost and let the upstream's Referrer-Policy pass through. Other security headers remain applied.";
+      };
+
+      useUpstreamPermissionsPolicy = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "If true, suppress nginx's global Permissions-Policy for this vhost and let the upstream's Permissions-Policy pass through. Other security headers remain applied.";
       };
 
       proxyBufferSize = lib.mkOption {
@@ -125,24 +143,6 @@
         type = lib.types.nullOr authRequestTypeDef;
         default = null;
         description = "Optional nginx auth_request integration for this proxy vhost.";
-      };
-
-      useUpstreamCsp = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "If true, suppress nginx's global Content-Security-Policy for this vhost and let the upstream's CSP pass through. Other security headers remain applied.";
-      };
-
-      useUpstreamReferrer = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "If true, suppress nginx's global Referrer-Policy for this vhost and let the upstream's Referrer-Policy pass through. Other security headers remain applied.";
-      };
-
-      useUpstreamPermissionsPolicy = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "If true, suppress nginx's global Permissions-Policy for this vhost and let the upstream's Permissions-Policy pass through. Other security headers remain applied.";
       };
     };
   };
@@ -869,7 +869,7 @@
       lib.optionalString (basePath != "/")
       "            proxy_set_header X-Forwarded-Prefix ${prefixPath};\n";
   in ''
-        ${rateLimitDirectives}${securityHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
+      ${rateLimitDirectives}${securityHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
                 ${hostHeaderDirective}
                 ${forwardedHeaderDirectives}
     ${upstreamTlsDirectives}            proxy_http_version 1.1;
