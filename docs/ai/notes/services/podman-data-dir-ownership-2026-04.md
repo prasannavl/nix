@@ -4,9 +4,9 @@
   bind mounts like `./data`, `./db-data`, or `./open-webui_data` for
   service-local state under the compose working directory.
 - Do not add redundant
-  `dirs.<name> = { user = 0; group = 0; userScope =
-  "container"; };` entries
-  for those paths when the intended ownership is just container root under the
+  `dirs.<name> = { user = 0; group = 0; scope =
+  "container"; };` entries for
+  those paths when the intended ownership is just container root under the
   default rootless mapping. In that mapping, container `0:0` resolves to the
   stack user on the host, which is already the default staged-dir ownership.
 - Reserve `dirs` for cases that need non-default mode/ownership semantics or

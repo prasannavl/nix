@@ -125,6 +125,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 - `docs/ai/notes/lib/library-layout-and-guardrails.md`: Canonical placement
   rules and review guardrails for shared helpers under `lib/`.
+- `docs/ai/notes/lib/podman-compose-staged-file-ownership-2026-04.md`: Records
+  per-entry `mode`/`user`/`group`/`scope` plus `dirs.once` behavior for staged
+  Podman Compose directories, files, and file secrets.
 
 ### Nixbot
 

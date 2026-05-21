@@ -119,10 +119,22 @@ unlock_lifecycle_shared() {
 	exec 8>&-
 }
 
+run_scoped() {
+	local scope
+	scope="$1"
+	shift
+
+	if [ "$scope" = "container" ]; then
+		podman unshare "$@"
+	else
+		"$@"
+	fi
+}
+
 # apply_perms <path> <mode|null|none> <user|null> <group|null> <scope>
-# Applies mode then chown. For scope=container, chown is wrapped in
-# `podman unshare` so numeric uid/gid translate through the rootless user
-# namespace (e.g. container 1000 -> host SUB+999).
+# Applies mode then chown. For scope=container, both operations are wrapped in
+# `podman unshare` so uid/gid and mode changes are evaluated in the rootless
+# container user namespace.
 apply_perms() {
 	local path mode user group scope chown_spec
 	path="$1"
@@ -132,7 +144,7 @@ apply_perms() {
 	scope="$5"
 
 	if [ -n "$mode" ] && [ "$mode" != "null" ] && [ "$mode" != "none" ]; then
-		chmod "$mode" "$path"
+		run_scoped "$scope" chmod "$mode" "$path"
 	fi
 
 	if { [ -n "$user" ] && [ "$user" != "null" ]; } || { [ -n "$group" ] && [ "$group" != "null" ]; }; then
@@ -143,23 +155,30 @@ apply_perms() {
 		if [ -n "$group" ] && [ "$group" != "null" ]; then
 			chown_spec="${chown_spec}:${group}"
 		fi
-		if [ "$scope" = "container" ]; then
-			podman unshare chown "$chown_spec" "$path"
-		else
-			chown "$chown_spec" "$path"
-		fi
+		run_scoped "$scope" chown "$chown_spec" "$path"
 	fi
 }
 
 prepare_staged_dir_for_write() {
-	local path scope
+	local path mode user group scope once
 	path="$1"
-	scope="$2"
+	mode="$2"
+	user="$3"
+	group="$4"
+	scope="$5"
+	once="$6"
 
 	if [ -e "$path" ] || [ -L "$path" ]; then
 		if [ ! -d "$path" ] || [ -L "$path" ]; then
 			remove_path_if_exists "$path"
 			install -d -m 0700 "$path"
+			if [ "$once" = "true" ]; then
+				apply_perms "$path" "$mode" "$user" "$group" "$scope"
+			fi
+			return
+		fi
+
+		if [ "$once" = "true" ]; then
 			return
 		fi
 
@@ -169,30 +188,36 @@ prepare_staged_dir_for_write() {
 			# Contents are intentionally untouched; data dirs survive restarts.
 			podman unshare chown 0:0 "$path"
 		fi
-		chmod u+rwx "$path"
+		run_scoped "$scope" chmod u+rwx "$path"
 	else
 		install -d -m 0700 "$path"
+		if [ "$once" = "true" ]; then
+			apply_perms "$path" "$mode" "$user" "$group" "$scope"
+		fi
 	fi
 }
 
 prepare_staged_dirs_for_write() {
-	local dst scope
-	while IFS=$'\t' read -r dst scope; do
+	local dst mode user group scope once
+	while IFS=$'\t' read -r dst mode user group scope once; do
 		[ -n "$dst" ] || continue
-		prepare_staged_dir_for_write "$dst" "$scope"
-	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length))[] | [.dst, (.scope // "host")] | @tsv' "$podman_compose_metadata")
+		prepare_staged_dir_for_write "$dst" "$mode" "$user" "$group" "$scope" "$once"
+	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length))[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host"), (.once // false)] | @tsv' "$podman_compose_metadata")
 }
 
 finalize_staged_dirs() {
-	local dst mode user group scope
-	while IFS=$'\t' read -r dst mode user group scope; do
+	local dst mode user group scope once
+	while IFS=$'\t' read -r dst mode user group scope once; do
 		[ -n "$dst" ] || continue
+		if [ "$once" = "true" ]; then
+			continue
+		fi
 		if [ ! -d "$dst" ] || [ -L "$dst" ]; then
 			remove_path_if_exists "$dst"
 			install -d -m 0700 "$dst"
 		fi
 		apply_perms "$dst" "$mode" "$user" "$group" "$scope"
-	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length) | reverse)[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host")] | @tsv' "$podman_compose_metadata")
+	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length) | reverse)[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host"), (.once // false)] | @tsv' "$podman_compose_metadata")
 }
 
 stage_runtime_file() {
@@ -309,23 +334,26 @@ cleanup_stale_reload_files() {
 }
 
 prepare_reload_dirs_for_write() {
-	local dst scope
-	while IFS=$'\t' read -r dst scope; do
+	local dst mode user group scope once
+	while IFS=$'\t' read -r dst mode user group scope once; do
 		[ -n "$dst" ] || continue
-		prepare_staged_dir_for_write "$dst" "$scope"
-	done < <(jq -r '(.reload.dirs // [] | sort_by(.dst | length))[] | [.dst, (.scope // "host")] | @tsv' "$podman_compose_metadata")
+		prepare_staged_dir_for_write "$dst" "$mode" "$user" "$group" "$scope" "$once"
+	done < <(jq -r '(.reload.dirs // [] | sort_by(.dst | length))[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host"), (.once // false)] | @tsv' "$podman_compose_metadata")
 }
 
 finalize_reload_dirs() {
-	local dst mode user group scope
-	while IFS=$'\t' read -r dst mode user group scope; do
+	local dst mode user group scope once
+	while IFS=$'\t' read -r dst mode user group scope once; do
 		[ -n "$dst" ] || continue
+		if [ "$once" = "true" ]; then
+			continue
+		fi
 		if [ ! -d "$dst" ] || [ -L "$dst" ]; then
 			remove_path_if_exists "$dst"
 			install -d -m 0700 "$dst"
 		fi
 		apply_perms "$dst" "$mode" "$user" "$group" "$scope"
-	done < <(jq -r '(.reload.dirs // [] | sort_by(.dst | length) | reverse)[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host")] | @tsv' "$podman_compose_metadata")
+	done < <(jq -r '(.reload.dirs // [] | sort_by(.dst | length) | reverse)[] | [.dst, (if has("mode") then (.mode // "null") else "0750" end), (.user // "null"), (.group // "null"), (.scope // "host"), (.once // false)] | @tsv' "$podman_compose_metadata")
 }
 
 stage_reload_files() {

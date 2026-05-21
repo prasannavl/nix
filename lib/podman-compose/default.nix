@@ -67,14 +67,19 @@
 
   ownerRefType = lib.types.either lib.types.str lib.types.int;
   modeOptionType = lib.types.nullOr lib.types.str;
-  ownerScopeType = lib.types.enum ["host" "container"];
+  scopeType = lib.types.enum ["host" "container"];
   ownerEntryDefaults = mode: {
     mode = mode;
     user = null;
     group = null;
-    userScope = "host";
+    scope = null;
+    userScope = null;
   };
-  dirEntryDefaults = ownerEntryDefaults "0750";
+  dirEntryDefaults =
+    ownerEntryDefaults "0750"
+    // {
+      once = null;
+    };
   fileEntryDefaults =
     ownerEntryDefaults "none"
     // {
@@ -112,18 +117,32 @@
       default = (ownerEntryDefaults modeDefault).group;
       description = groupDescription;
     };
+    scope = lib.mkOption {
+      type = lib.types.nullOr scopeType;
+      default = (ownerEntryDefaults modeDefault).scope;
+      description = "Whether mode/user/group refer to host identities or to identities inside the container user namespace. Container scope requires numeric user/group when an owner is set and applies chmod/chown via `podman unshare`.";
+    };
     userScope = lib.mkOption {
-      type = ownerScopeType;
+      type = lib.types.nullOr scopeType;
       default = (ownerEntryDefaults modeDefault).userScope;
-      description = "Whether user/group refer to host identities or to identities inside the container user namespace. Container scope requires numeric user/group and chowns via `podman unshare`.";
+      internal = true;
+      description = "Compatibility alias for legacy service declarations. New declarations must use `scope`.";
     };
   };
-  dirEntryOptions = ownerOptions {
-    modeDefault = dirEntryDefaults.mode;
-    modeDescription = "Octal mode string applied to the staged directory.";
-    userDescription = "Owner for the staged directory. Numeric uid or name. When null, unchanged.";
-    groupDescription = "Group for the staged directory. Numeric gid or name. When null, unchanged.";
-  };
+  dirEntryOptions =
+    ownerOptions {
+      modeDefault = dirEntryDefaults.mode;
+      modeDescription = "Octal mode string applied to the staged directory.";
+      userDescription = "Owner for the staged directory. Numeric uid or name. When null, unchanged.";
+      groupDescription = "Group for the staged directory. Numeric gid or name. When null, unchanged.";
+    }
+    // {
+      once = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = dirEntryDefaults.once;
+        description = "When true, create and initialize the directory only when missing; existing directories are preserved. When false, reconcile mode and ownership on every helper run. Null selects the compatibility default.";
+      };
+    };
   dirEntryType = lib.types.submodule {options = dirEntryOptions;};
   reloadType = lib.types.submodule {
     options = {
@@ -238,6 +257,12 @@
     else if builtins.isInt v
     then toString v
     else v;
+  ownerEntryScope = entry:
+    if entry.scope != null
+    then entry.scope
+    else if entry.userScope != null
+    then entry.userScope
+    else "host";
   isOwnerNumeric = v:
     v == null || builtins.isInt v || (builtins.match "[0-9]+" v != null);
   isSkippedMode = mode: mode == null || mode == "none";
@@ -287,7 +312,7 @@
         default = serviceDefaults.files;
         description = ''
           Additional files keyed by destination path. Each value is a file entry
-          submodule with text/source plus optional mode/user/group/userScope.
+          submodule with text/source plus optional mode/user/group/scope.
           String and path shorthands coerce to `{ text = ...; }` or
           `{ source = ...; }`. The default `mode = "none"` preserves the copied
           source mode. Path sources that point to a directory expand recursively
@@ -302,10 +327,12 @@
         description = ''
           Managed staged directories keyed by destination path. Relative paths
           are resolved under the compose working directory; absolute paths are
-          managed directly on the host. Each entry carries mode/user/group/userScope,
-          and is finalized after file staging so directory bind mounts can avoid
-          world traversal bits. The helper runs as the stack user, so absolute
-          path parents must already exist and be searchable/writable by that user.
+          managed directly on the host. Each entry carries mode/user/group/scope,
+          plus `once` for create-only compatibility with persistent data dirs.
+          Managed entries are finalized after file staging so directory bind
+          mounts can avoid world traversal bits. The helper runs as the stack
+          user, so absolute path parents must already exist and be
+          searchable/writable by that user.
         '';
       };
 
@@ -480,7 +507,7 @@
         description = ''
           File-backed secret staging for bind-mounted runtime files. Maps a
           stable secret filename to a secret entry submodule (`file` plus
-          optional mode/user/group/userScope/mount/mountPath/services/readOnly).
+          optional mode/user/group/scope/mount/mountPath/services/readOnly).
           A bare string coerces to `{ file = <str>; }`. The helper copies each
           source to a stable path under the compose working directory before
           `podman compose up`. By default, staged secrets are bind-mounted
@@ -923,8 +950,21 @@
       mode = entry.mode;
       user = ownerRefToString entry.user;
       group = ownerRefToString entry.group;
-      scope = entry.userScope;
+      scope = ownerEntryScope entry;
     };
+    dirHasStagedEntries = dirName:
+      builtins.any
+      (fileName: fileName == dirName || lib.hasPrefix "${dirName}/" fileName)
+      (builtins.attrNames service.stagedEntries);
+    dirOnce = dirName: entry:
+      if entry.once != null
+      then entry.once
+      else entry.user == null && entry.group == null && !(dirHasStagedEntries dirName);
+    dirPermsJson = dirName: entry:
+      entryPermsJson entry
+      // {
+        once = dirOnce dirName entry;
+      };
     sourceDirEntryPerms = entry:
       dirEntryDefaults
       // {
@@ -934,7 +974,7 @@
           else entry.mode;
         user = entry.user;
         group = entry.group;
-        userScope = entry.userScope;
+        scope = ownerEntryScope entry;
       };
     reloadDirEntry = dirName:
       if builtins.hasAttr dirName service.dirs
@@ -947,10 +987,10 @@
         name = dirName;
         dst = reloadDirRuntimePath dirName;
       }
-      // entryPermsJson (reloadDirEntry dirName);
+      // dirPermsJson dirName (reloadDirEntry dirName);
     helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
       builtins.toJSON {
-        version = 5;
+        version = 6;
         serviceName = resolvedSystemdServiceName;
         workingDir = resolvedWorkingDir;
         composeArgs = service.composeArgs;
@@ -963,7 +1003,7 @@
           {
             dst = service.dirRuntimePaths.${dirName};
           }
-          // entryPermsJson entry) (builtins.attrNames service.dirs);
+          // dirPermsJson dirName entry) (builtins.attrNames service.dirs);
         stagedFiles =
           map (fileName: let
             entry = service.stagedEntries.${fileName};
@@ -1095,7 +1135,7 @@
               dst = reloadDirRuntimePath dirName;
               perms =
                 if builtins.hasAttr dirName service.dirs
-                then entryPermsJson service.dirs.${dirName}
+                then dirPermsJson dirName service.dirs.${dirName}
                 else null;
             })
             service.reload.trigger.dirs;
@@ -1118,7 +1158,7 @@
       reload = service.reload;
       sourcePaths = lib.mapAttrs (fileName: _: service.sourcePaths.${fileName}) restartStagedEntries;
       runtimePaths = restartRuntimePaths;
-      dirs = lib.mapAttrs (_: entryPermsJson) service.dirs;
+      dirs = lib.mapAttrs (dirName: entry: dirPermsJson dirName entry) service.dirs;
       dirRuntimePaths = service.dirRuntimePaths;
       stagedEntryPerms =
         lib.mapAttrs (_: entryPermsJson) restartStagedEntries;
@@ -1928,16 +1968,26 @@ in {
           (serviceName: let
             instance = stack.instances.${serviceName};
             checkEntry = kind: name: entry: let
-              ok = entry.userScope == "host" || (isOwnerNumeric entry.user && isOwnerNumeric entry.group);
-            in {
-              assertion = ok;
-              message = "services.podmanCompose.${stackName}.instances.${serviceName}.${kind}.${name}: userScope = \"container\" requires numeric user and group (userns has no name resolution).";
-            };
+              effectiveScope = ownerEntryScope entry;
+              scopeConflict = entry.scope != null && entry.userScope != null && entry.scope != entry.userScope;
+              ownerOk = effectiveScope == "host" || (isOwnerNumeric entry.user && isOwnerNumeric entry.group);
+            in [
+              {
+                assertion = !scopeConflict;
+                message = "services.podmanCompose.${stackName}.instances.${serviceName}.${kind}.${name}: scope and deprecated userScope must not disagree.";
+              }
+              {
+                assertion = ownerOk;
+                message = "services.podmanCompose.${stackName}.instances.${serviceName}.${kind}.${name}: scope = \"container\" requires numeric user and group when owner fields are set (userns has no name resolution).";
+              }
+            ];
           in
-            lib.mapAttrsToList (name: entry: checkEntry "dirs" name entry) instance.dirs
-            ++ lib.mapAttrsToList (name: entry: checkEntry "files" name entry) instance.stagedEntries
-            ++ lib.mapAttrsToList (name: entry: checkEntry "fileSecrets" name entry) instance.fileSecrets
-            ++ lib.mapAttrsToList (name: entry: checkEntry "envSecrets" name entry) instance.envSecrets)
+            lib.concatLists (
+              lib.mapAttrsToList (name: entry: checkEntry "dirs" name entry) instance.dirs
+              ++ lib.mapAttrsToList (name: entry: checkEntry "files" name entry) instance.stagedEntries
+              ++ lib.mapAttrsToList (name: entry: checkEntry "fileSecrets" name entry) instance.fileSecrets
+              ++ lib.mapAttrsToList (name: entry: checkEntry "envSecrets" name entry) instance.envSecrets
+            ))
           (builtins.attrNames stack.instances))
         cfg
       )

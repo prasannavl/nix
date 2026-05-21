@@ -505,7 +505,7 @@ fileSecrets."server.key" = {
   mode  = "0600";
   user  = 1000;
   group = 1000;
-  userScope = "container";
+  scope = "container";
 
   # Optional mount controls:
   mount = true;                    # default
@@ -539,7 +539,7 @@ dirs."conf.d" = {
   mode = "0750";
   user = 1000;
   group = 1000;
-  userScope = "container";
+  scope = "container";
 };
 ```
 
@@ -551,7 +551,8 @@ dirs."/var/lib/example" = {
   mode = "0700";
   user = 1000;
   group = 1000;
-  userScope = "container";
+  scope = "container";
+  once = false;
 };
 ```
 
@@ -563,10 +564,15 @@ Directory modes must include an execute/search bit. For example, use `0750` for
 an owner-readable private config directory; `0640` is a file mode and makes the
 directory non-traversable.
 
-The helper temporarily resets managed dirs to stack-user-writable ownership
-before restaging or cleanup, then reapplies the declared mode/owner afterward.
-This keeps restarts idempotent while allowing the final directory bind mount to
-avoid world traversal bits.
+By default, ownerless dirs without staged children are create-only: the helper
+creates and initializes them when missing, but preserves existing dirs. Set
+`once = false` to reconcile mode and ownership on every helper run. Dirs with an
+explicit `user` or `group`, and dirs that contain staged files, default to
+managed behavior.
+
+For managed dirs, the helper temporarily prepares them for restaging or cleanup,
+then reapplies the declared mode/owner afterward. This keeps restarts idempotent
+while allowing the final directory bind mount to avoid world traversal bits.
 
 ### Ownership and permissions (applies to `dirs`, `files`, and `fileSecrets`)
 
@@ -576,13 +582,13 @@ Each staged entry accepts:
   source mode; file default `"none"`, secret default 0400, directory default
   0750
 - `user`, `group` - name or numeric id; null means "leave as stack user"
-- `userScope` - `"host"` (default) or `"container"`; with `"container"`, the
-  helper runs `chown` via `podman unshare` so numeric uid/gid translate through
-  the rootless user namespace (container 1000 -> host SUB+999)
+- `scope` - `"host"` (default) or `"container"`; with `"container"`, the helper
+  runs `chmod` and `chown` via `podman unshare` so mode and numeric uid/gid are
+  applied in the rootless user namespace (container 1000 -> host SUB+999)
 
-Container-scoped ownership requires numeric `user` and `group` because the
-rootless user namespace has no name resolution. This is enforced by assertion at
-evaluation time.
+Container-scoped ownership requires numeric `user` and `group` when owner fields
+are set because the rootless user namespace has no name resolution. This is
+enforced by assertion at evaluation time.
 
 Secret rotation caveat:
 
