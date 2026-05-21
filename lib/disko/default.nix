@@ -103,9 +103,7 @@
 
     mkEfiBoot = spec: {
       boot =
-        if spec ? boot
-        then spec.boot
-        else mkEsp spec;
+        spec.boot or (mkEsp spec);
     };
 
     mkBiosBoot = {
