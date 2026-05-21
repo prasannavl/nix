@@ -94,7 +94,7 @@ Workflow Behavior Options:
 
 Auth / Config Options:
   --user           Default deploy user override
-  --ssh-key        SSH key path for deploy target auth (must be .age when set)
+  --ssh-key        SSH key path for deploy target auth (.age or private key file)
   --known-hosts    known_hosts override for all hosts
   --config         Nix deploy config path (default: hosts/nixbot.nix)
                    Per-host config supports proxyCommand for explicit SSH
@@ -306,13 +306,8 @@ init_vars() {
 	NIXBOT_KEY_PATH_OVERRIDE="${NIXBOT_SSH_KEY:-}"
 	NIXBOT_KNOWN_HOSTS_OVERRIDE="${NIXBOT_SSH_KNOWN_HOSTS:-}"
 	NIXBOT_CI_KEY_PATH_OVERRIDE="${NIXBOT_CI_SSH_KEY_PATH:-}"
-	NIXBOT_KEY_OVERRIDE_EXPLICIT=0
 
 	set_discover_keys_mode "${DISCOVER_DECRYPT_KEYS_MODE}"
-
-	if [ -n "${NIXBOT_SSH_KEY:-}" ]; then
-		NIXBOT_KEY_OVERRIDE_EXPLICIT=1
-	fi
 
 	if parse_bool_env "${NIXBOT_FORCE:-0}"; then
 		enable_force_mode
@@ -914,7 +909,6 @@ parse_args() {
 		--ssh-key | --ssh-key=*)
 			take_optval "$@"
 			NIXBOT_KEY_PATH_OVERRIDE="${OPTVAL}"
-			NIXBOT_KEY_OVERRIDE_EXPLICIT=1
 			shift "${OPTSHIFT}"
 			;;
 		--known-hosts | --known-hosts=*)
@@ -3937,7 +3931,7 @@ build_deploy_ssh_contexts() {
 		bdsc_bootstrap_nix_sshopts_out_ref || return 1
 
 	if [ -n "${key_path}" ]; then
-		if ! deploy_key_file="$(resolve_ssh_identity_file "${key_path}" "Deploy SSH key" "${NIXBOT_KEY_OVERRIDE_EXPLICIT}")"; then
+		if ! deploy_key_file="$(resolve_ssh_identity_file "${key_path}" "Deploy SSH key" 0)"; then
 			return 1
 		fi
 		apply_identity_to_ssh_context "${deploy_key_file}" bdsc_host_ssh_opts_out_ref bdsc_host_nix_sshopts_out_ref
