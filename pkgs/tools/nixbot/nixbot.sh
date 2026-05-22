@@ -404,6 +404,7 @@ init_vars() {
 	REMOTE_NIXBOT_DEPLOY_SCRIPT="nixbot"
 	REMOTE_NIXBOT_PRIMARY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519"
 	REMOTE_NIXBOT_LEGACY_KEY="${REMOTE_NIXBOT_SSH_DIR}/id_ed25519_legacy"
+	REMOTE_NIXBOT_AUTHORIZED_KEYS="/etc/ssh/authorized_keys.d/nixbot"
 	REMOTE_NIXBOT_AGE_IDENTITY="${REMOTE_NIXBOT_AGE_DIR}/identity"
 	REMOTE_CURRENT_SYSTEM_PATH="/run/current-system"
 	REMOTE_SYSTEM_PROFILE_PATH="/nix/var/nix/profiles/system"
@@ -2694,7 +2695,10 @@ ensure_known_host() {
 		return
 	fi
 
-	if ! grep -Fq "${host}" "${known_hosts_file}"; then
+	if ! ssh-keygen -F "${host}" -f "${known_hosts_file}" | grep -q ' ssh-ed25519 '; then
+		ssh-keyscan -t ed25519 "${host}" >>"${known_hosts_file}" 2>/dev/null || true
+	fi
+	if ! ssh-keygen -F "${host}" -f "${known_hosts_file}" >/dev/null 2>&1; then
 		ssh-keyscan "${host}" >>"${known_hosts_file}" 2>/dev/null || true
 	fi
 }
@@ -3043,7 +3047,7 @@ check_bootstrap_via_forced_command() {
 inject_bootstrap_nixbot_key() {
 	local node="$1" bootstrap_ssh_target="$2" bootstrap_nixbot_key_path="$3"
 	local -a bootstrap_ssh_opts=("${@:4}")
-	local bootstrap_key_file="" remote_tmp="" expected_bootstrap_fpr="" remote_check_rc=0
+	local bootstrap_key_file="" bootstrap_pub_file="" remote_tmp="" expected_bootstrap_fpr="" remote_check_rc=0
 	local bootstrap_dest="${REMOTE_NIXBOT_PRIMARY_KEY}" bootstrap_legacy_dest="${REMOTE_NIXBOT_LEGACY_KEY}"
 
 	if [ -z "${bootstrap_nixbot_key_path}" ]; then
@@ -3069,6 +3073,12 @@ inject_bootstrap_nixbot_key() {
 		echo "Unable to compute bootstrap key fingerprint from ${bootstrap_key_file}" >&2
 		return 1
 	fi
+	bootstrap_pub_file="$(mktemp "${NIXBOT_TMP_DIR}/nixbot-bootstrap-pub.${node}.XXXXXX")"
+	if ! ssh-keygen -y -f "${bootstrap_key_file}" >"${bootstrap_pub_file}"; then
+		echo "Unable to derive bootstrap public key for ${node}: ${bootstrap_nixbot_key_path}" >&2
+		rm -f "${bootstrap_pub_file}"
+		return 1
+	fi
 
 	# shellcheck disable=SC2016
 	if target_file_matches_expected_value \
@@ -3080,11 +3090,17 @@ inject_bootstrap_nixbot_key() {
 		0 \
 		"${bootstrap_ssh_opts[@]}" >/dev/null 2>&1; then
 		echo "==> Skipping bootstrap nixbot key for ${node}; matching key already present on target"
+		if ! ensure_bootstrap_nixbot_authorized_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_pub_file}" "${bootstrap_ssh_opts[@]}"; then
+			rm -f "${bootstrap_pub_file}"
+			return 1
+		fi
+		rm -f "${bootstrap_pub_file}"
 		return
 	else
 		remote_check_rc="$?"
 		if [ "${remote_check_rc}" -eq 255 ]; then
 			echo "Unable to verify bootstrap key for ${node}; bootstrap target ${bootstrap_ssh_target} is unreachable" >&2
+			rm -f "${bootstrap_pub_file}"
 			return 1
 		fi
 	fi
@@ -3107,6 +3123,37 @@ inject_bootstrap_nixbot_key() {
 		"bootstrap_legacy_dest='${bootstrap_legacy_dest}'" \
 		0 \
 		"${bootstrap_ssh_opts[@]}"; then
+		rm -f "${bootstrap_pub_file}"
+		return 1
+	fi
+	if ! ensure_bootstrap_nixbot_authorized_key "${node}" "${bootstrap_ssh_target}" "${bootstrap_pub_file}" "${bootstrap_ssh_opts[@]}"; then
+		rm -f "${bootstrap_pub_file}"
+		return 1
+	fi
+	rm -f "${bootstrap_pub_file}"
+}
+
+ensure_bootstrap_nixbot_authorized_key() {
+	local node="$1" bootstrap_ssh_target="$2" bootstrap_pub_file="$3"
+	local -a bootstrap_ssh_opts=("${@:4}")
+
+	# shellcheck disable=SC2016
+	if ! ssh "${bootstrap_ssh_opts[@]}" "${bootstrap_ssh_target}" \
+		"authorized_keys_path='${REMOTE_NIXBOT_AUTHORIZED_KEYS}'" '
+set -euo pipefail
+public_key="$(cat)"
+if sudo test -f "${authorized_keys_path}" && sudo grep -qxF "${public_key}" "${authorized_keys_path}"; then
+	exit 0
+fi
+tmp="$(mktemp)"
+trap '\''rm -f "${tmp}"'\'' EXIT
+if sudo test -f "${authorized_keys_path}"; then
+	sudo cat "${authorized_keys_path}" >"${tmp}"
+fi
+printf "%s\n" "${public_key}" >>"${tmp}"
+sudo install -D -m 0444 -o root -g root "${tmp}" "${authorized_keys_path}"
+' <"${bootstrap_pub_file}"; then
+		echo "Unable to ensure bootstrap nixbot authorized key for ${node}" >&2
 		return 1
 	fi
 }
@@ -4621,11 +4668,11 @@ run_named_prepared_root_command() {
 	return "${rc}"
 }
 
-run_parented_host_operation_with_retry() {
-	local node="$1" operation_label="$2"
-	shift 2
+run_host_operation_with_retry_budget() {
+	local node="$1" operation_label="$2" ready_timeout="$3" ready_interval_secs="$4"
+	shift 4
 
-	local parent_host="" ready_timeout=0 ready_interval_secs=0 max_attempts=0 attempt=1 rc=0
+	local parent_host="" max_attempts=0 attempt=1 rc=0
 
 	[ "${DRY_RUN}" -eq 0 ] || {
 		"$@"
@@ -4633,13 +4680,6 @@ run_parented_host_operation_with_retry() {
 	}
 
 	parent_host="$(host_parent_for "${node}")"
-	if [ -z "${parent_host}" ]; then
-		"$@"
-		return "$?"
-	fi
-
-	ready_timeout="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT}"
-	ready_interval_secs="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS}"
 	if [ "${ready_interval_secs}" -lt 1 ]; then
 		ready_interval_secs=1
 	fi
@@ -4656,10 +4696,50 @@ run_parented_host_operation_with_retry() {
 			return "${rc}"
 		fi
 
-		echo "[${node}] deploy | ${operation_label} attempt ${attempt}/${max_attempts} failed after parent barrier (${parent_host}); retrying in ${ready_interval_secs}s" >&2
+		if [ -n "${parent_host}" ]; then
+			echo "[${node}] deploy | ${operation_label} attempt ${attempt}/${max_attempts} failed after parent barrier (${parent_host}); retrying in ${ready_interval_secs}s" >&2
+		else
+			echo "[${node}] deploy | ${operation_label} attempt ${attempt}/${max_attempts} failed; retrying in ${ready_interval_secs}s" >&2
+		fi
 		sleep "${ready_interval_secs}"
 		attempt=$((attempt + 1))
 	done
+}
+
+run_parented_host_operation_with_retry() {
+	local node="$1" operation_label="$2"
+	shift 2
+
+	local parent_host="" ready_timeout=0 ready_interval_secs=0
+
+	parent_host="$(host_parent_for "${node}")"
+	if [ -n "${parent_host}" ]; then
+		ready_timeout="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT}"
+		ready_interval_secs="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS}"
+	else
+		ready_interval_secs="${NIXBOT_TRANSPORT_RETRY_DELAY_SECS}"
+		ready_timeout="$((NIXBOT_TRANSPORT_RETRY_ATTEMPTS * ready_interval_secs))"
+	fi
+
+	run_host_operation_with_retry_budget \
+		"${node}" \
+		"${operation_label}" \
+		"${ready_timeout}" \
+		"${ready_interval_secs}" \
+		"$@"
+}
+
+run_post_switch_health_transport_preparation_with_retry() {
+	local node="$1"
+
+	run_host_operation_with_retry_budget \
+		"${node}" \
+		"health-check transport preparation" \
+		"${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT}" \
+		"${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS}" \
+		prepare_deploy_context \
+		"${node}" \
+		primary-only
 }
 
 build_parent_resource_args() {
@@ -5851,54 +5931,30 @@ run_pre_switch_user_failed_state_reset() {
 	run_prepared_root_command "${reset_cmd}"
 }
 
-deploy_host() {
-	local node="$1" built_out_path="$2" skip_marker="${3:-}"
-	local remote_current_path="" nix_sshopts=""
-	local using_bootstrap_fallback="" age_identity_key="" build_host=""
-	local rebuild_nix_sshopts=""
-	local ask_sudo_password=0 deploy_rc=0
-	local -a rebuild_cmd=() sudo_policy=()
+deploy_rebuild_failure_is_copy_transport_loss() {
+	local output_path="$1"
 
-	log_host_stage "deploy" "${node}" "${GOAL}"
-	if [ -n "$(host_parent_for "${node}")" ]; then
-		clear_primary_ready "${node}"
-	fi
-	prepare_deploy_context "${node}" || return 1
-	nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
+	[ -s "${output_path}" ] || return 1
+
+	# nixos-rebuild-ng wraps the copy step, so SSH open failures from
+	# nix-copy-closure often surface as a generic rebuild failure instead of an
+	# ssh exit code 255.
+	grep -Eq \
+		"failed to start SSH connection|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|stdio forwarding failed|Connection timed out|No route to host" \
+		"${output_path}" || return 1
+	grep -Eq "nix-copy-closure|failed to start SSH connection" "${output_path}" || return 1
+}
+
+prepare_deploy_rebuild_command() {
+	local node="$1"
+	# shellcheck disable=SC2178
+	local -n pdrc_cmd_out_ref="$2"
+	local using_bootstrap_fallback="" nix_sshopts="" build_host=""
+	local rebuild_nix_sshopts="" ask_sudo_password=0
+	local -a sudo_policy=()
+
 	using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
-	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
-
-	# Missing local age-identity material is a hard precondition failure, not a
-	# parent-settle race. Resolve it once up front so deploy does not spend a full
-	# retry window repeating the same missing-file error.
-	if [ -n "${age_identity_key}" ]; then
-		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
-	fi
-
-	if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
-		remote_current_path="$(read_prepared_current_system_path)"
-		if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${built_out_path}" ]; then
-			echo "[${node}] deploy | skip" >&2
-			echo "${built_out_path}" >&2
-			if [ -n "${skip_marker}" ]; then
-				: >"${skip_marker}"
-			fi
-			return 0
-		fi
-	fi
-
-	run_parented_host_operation_with_retry \
-		"${node}" \
-		"deploy transport preparation" \
-		prepare_host_transport_for_deploy \
-		"${node}" \
-		1 || return 1
-
 	nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
-	using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
-	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
-
-	run_pre_switch_user_failed_state_reset || return 1
 
 	mapfile -t sudo_policy < <(
 		resolve_target_sudo_policy \
@@ -5938,28 +5994,28 @@ deploy_host() {
 		;;
 	esac
 
-	rebuild_cmd=(
+	pdrc_cmd_out_ref=(
 		nixos-rebuild-ng
 		--flake ".#${node}"
 		--sudo
 	)
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ]; then
-		rebuild_cmd+=(--target-host "${PREP_DEPLOY_SSH_TARGET}")
+		pdrc_cmd_out_ref+=(--target-host "${PREP_DEPLOY_SSH_TARGET}")
 	fi
 
 	if [ "${ask_sudo_password}" -eq 1 ]; then
-		rebuild_cmd+=(--ask-sudo-password)
+		pdrc_cmd_out_ref+=(--ask-sudo-password)
 	fi
 
 	if [ "${using_bootstrap_fallback}" -eq 1 ]; then
-		rebuild_cmd+=(--use-substitutes)
+		pdrc_cmd_out_ref+=(--use-substitutes)
 	fi
 
-	rebuild_cmd+=("${GOAL}")
+	pdrc_cmd_out_ref+=("${GOAL}")
 
 	if [ -n "${build_host}" ]; then
-		rebuild_cmd+=(--build-host "${build_host}")
+		pdrc_cmd_out_ref+=(--build-host "${build_host}")
 	fi
 
 	if [ -n "${nix_sshopts}" ]; then
@@ -5967,22 +6023,106 @@ deploy_host() {
 		# nixos-rebuild-ng appends its own ControlPath. OpenSSH keeps the first
 		# Control* settings, so nixbot's long-lived master would otherwise win and
 		# large nix-copy-closure streams can wedge on that reused TCP session.
-		rebuild_cmd=(env "NIX_SSHOPTS=${rebuild_nix_sshopts}" "${rebuild_cmd[@]}")
+		pdrc_cmd_out_ref=(env "NIX_SSHOPTS=${rebuild_nix_sshopts}" "${pdrc_cmd_out_ref[@]}")
 	fi
+}
+
+run_deploy_rebuild_command_with_retry() {
+	local node="$1" built_out_path="$2"
+	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" safe_node=""
+	local -a rebuild_cmd=()
+
+	ensure_tmp_dir
+	safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
+	output_path="$(mktemp "${NIXBOT_TMP_DIR}/deploy-${safe_node}.stderr.XXXXXX")"
+
+	while :; do
+		if ! prepare_deploy_rebuild_command "${node}" rebuild_cmd; then
+			rm -f "${output_path}"
+			return 1
+		fi
+		: >"${output_path}"
+		if "${rebuild_cmd[@]}" 2> >(tee "${output_path}" >&2); then
+			rm -f "${output_path}"
+			return 0
+		else
+			rc="$?"
+		fi
+
+		if [ "${rc}" -ne 0 ] && verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${rc}"; then
+			rm -f "${output_path}"
+			return 0
+		fi
+
+		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ] ||
+			! deploy_rebuild_failure_is_copy_transport_loss "${output_path}"; then
+			rm -f "${output_path}"
+			return "${rc}"
+		fi
+
+		attempt=$((attempt + 1))
+		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+		echo "Deploy copy transport closed for ${node}; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		sleep "${retry_sleep_secs}"
+		clear_primary_ready "${node}"
+		prepare_host_transport_for_deploy "${node}" 1 >/dev/null 2>&1 || true
+	done
+}
+
+deploy_host() {
+	local node="$1" built_out_path="$2" skip_marker="${3:-}"
+	local remote_current_path="" age_identity_key=""
+	local deploy_rc=0
+	local -a rebuild_cmd=()
+
+	log_host_stage "deploy" "${node}" "${GOAL}"
+	if [ -n "$(host_parent_for "${node}")" ]; then
+		clear_primary_ready "${node}"
+	fi
+	prepare_deploy_context "${node}" || return 1
+	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+
+	# Missing local age-identity material is a hard precondition failure, not a
+	# parent-settle race. Resolve it once up front so deploy does not spend a full
+	# retry window repeating the same missing-file error.
+	if [ -n "${age_identity_key}" ]; then
+		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
+	fi
+
+	if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
+		remote_current_path="$(read_prepared_current_system_path)"
+		if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${built_out_path}" ]; then
+			echo "[${node}] deploy | skip" >&2
+			echo "${built_out_path}" >&2
+			if [ -n "${skip_marker}" ]; then
+				: >"${skip_marker}"
+			fi
+			return 0
+		fi
+	fi
+
+	run_parented_host_operation_with_retry \
+		"${node}" \
+		"deploy transport preparation" \
+		prepare_host_transport_for_deploy \
+		"${node}" \
+		1 || return 1
+
+	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+
+	run_pre_switch_user_failed_state_reset || return 1
+
+	prepare_deploy_rebuild_command "${node}" rebuild_cmd || return 1
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		printf '%q ' "${rebuild_cmd[@]}"
 		echo
 	else
 		register_active_deploy "${node}"
-		if "${rebuild_cmd[@]}"; then
+		if run_deploy_rebuild_command_with_retry "${node}" "${built_out_path}"; then
 			deploy_rc=0
 		else
 			deploy_rc="$?"
-		fi
-
-		if [ "${deploy_rc}" -ne 0 ] && verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${deploy_rc}"; then
-			deploy_rc=0
 		fi
 
 		unregister_active_deploy "${node}"
@@ -6501,16 +6641,7 @@ build_post_switch_health_check_cmd() {
 run_prepared_post_switch_health_check() {
 	local node="$1" health_check_cmd="$2"
 
-	if [ -n "$(host_parent_for "${node}")" ]; then
-		clear_primary_ready "${node}"
-	fi
-
-	if ! run_parented_host_operation_with_retry \
-		"${node}" \
-		"health-check transport preparation" \
-		prepare_deploy_context \
-		"${node}" \
-		primary-only; then
+	if ! run_post_switch_health_transport_preparation_with_retry "${node}"; then
 		printf '%s\n' "[health-check] unavailable: failed to prepare deploy context" >&2
 		return 1
 	fi
