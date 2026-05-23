@@ -6,7 +6,34 @@
   ...
 }: let
   cfg = config.services.incusMachines;
+  globalCfg = cfg.global;
 
+  projectConfigs = builtins.removeAttrs cfg ["global"];
+  projectLogicalName = projectName: instanceName:
+    if projectName == "default"
+    then instanceName
+    else "${projectName}.${instanceName}";
+  projectInstanceEntries = lib.concatLists (
+    lib.mapAttrsToList (
+      projectName: projectCfg:
+        lib.mapAttrsToList (
+          instanceName: machine: let
+            logicalName = projectLogicalName projectName instanceName;
+          in {
+            inherit logicalName projectName projectCfg instanceName;
+            machine = machine // {project = projectName;};
+          }
+        )
+        projectCfg.instances
+    )
+    projectConfigs
+  );
+  allInstances = lib.listToAttrs (
+    map (entry: lib.nameValuePair entry.logicalName entry.machine) projectInstanceEntries
+  );
+  instanceProjectConfigs = lib.listToAttrs (
+    map (entry: lib.nameValuePair entry.logicalName entry.projectCfg) projectInstanceEntries
+  );
   defaultBaseImage = inputs.self.nixosImages.incus-base;
   defaultBaseAlias = "nixos-incus-base";
 
@@ -17,21 +44,18 @@
   certificateDelegationStateDir = "${incusMachinesStateDir}/delegated-certificates";
 
   certificatesStateFile = "${incusMachinesStateDir}/certificates.json";
-  legacyCertificatesStateFile = "${incusMachinesStateDir}/preseed-certificates.json";
   certificateDelegationsStateFile = "${certificateDelegationStateDir}/delegations.json";
 
-  hasInstances = cfg.instances != {};
-  hasCertificates = cfg.certificates != [];
-  hasCertificateDelegations = cfg.certificateDelegations != {};
+  hasInstances = allInstances != {};
+  hasCertificates = globalCfg.certificates != [];
+  hasCertificateDelegations = globalCfg.certificateDelegations != {};
   hasRemoteHooks =
-    cfg.remote.enable
+    globalCfg.remote.enable
     && (
       hasInstances
-      || cfg.remote.projects != {}
-      || cfg.remote.allowedSubnets != []
-      || cfg.remote.certificateDelegation.enable
+      || globalCfg.remote.projects != {}
     );
-  hasHostHooks = hasInstances || hasCertificates || hasCertificateDelegations || cfg.hostSuspend.enable || hasRemoteHooks;
+  hasHostHooks = hasInstances || hasCertificates || hasCertificateDelegations || globalCfg.hostSuspend.enable || hasRemoteHooks;
   mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
   remoteValue = value:
     if value == null
@@ -43,36 +67,28 @@
     else if builtins.isPath value
     then pkgs.writeText (builtins.baseNameOf value) (builtins.readFile value)
     else value;
-  remoteClientCertificateFile = materializeRemoteFile cfg.remote.clientCertificateFile;
-  remoteServerCertificateFile = materializeRemoteFile cfg.remote.serverCertificateFile;
-  remoteEnvExports = lib.optionalString cfg.remote.enable ''
-    export INCUS_MACHINES_REMOTE_NAME=${lib.escapeShellArg cfg.remote.name}
-    export INCUS_MACHINES_REMOTE_ADDRESS=${lib.escapeShellArg (remoteValue cfg.remote.address)}
-    export INCUS_MACHINES_REMOTE_PROJECT=${lib.escapeShellArg cfg.remote.project}
+  remoteClientCertificateFile = materializeRemoteFile globalCfg.remote.clientCertificateFile;
+  remoteServerCertificateFile = materializeRemoteFile globalCfg.remote.serverCertificateFile;
+  remoteEnvExports = lib.optionalString globalCfg.remote.enable ''
+    export INCUS_MACHINES_REMOTE_NAME=${lib.escapeShellArg globalCfg.remote.name}
+    export INCUS_MACHINES_REMOTE_ADDRESS=${lib.escapeShellArg (remoteValue globalCfg.remote.address)}
+    export INCUS_MACHINES_REMOTE_PROJECT=${lib.escapeShellArg remoteClientProject}
     export INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE=${lib.escapeShellArg (remoteValue remoteClientCertificateFile)}
-    export INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE=${lib.escapeShellArg (remoteValue cfg.remote.clientKeyFile)}
-    export INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE=${lib.boolToString cfg.remote.acceptCertificate}
-    ${lib.optionalString (cfg.remote.serverCertificateFile != null)
+    export INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE=${lib.escapeShellArg (remoteValue globalCfg.remote.clientKeyFile)}
+    export INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE=${lib.boolToString globalCfg.remote.acceptCertificate}
+    ${lib.optionalString (globalCfg.remote.serverCertificateFile != null)
       "export INCUS_MACHINES_REMOTE_SERVER_CERT_FILE=${lib.escapeShellArg remoteServerCertificateFile}"}
   '';
-  remoteServiceEnvironment = lib.optionals cfg.remote.enable ([
-      (mkEnvAssignment "INCUS_MACHINES_REMOTE_NAME" cfg.remote.name)
-      (mkEnvAssignment "INCUS_MACHINES_REMOTE_ADDRESS" (remoteValue cfg.remote.address))
-      (mkEnvAssignment "INCUS_MACHINES_REMOTE_PROJECT" cfg.remote.project)
+  remoteServiceEnvironment = lib.optionals globalCfg.remote.enable ([
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_NAME" globalCfg.remote.name)
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_ADDRESS" (remoteValue globalCfg.remote.address))
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_PROJECT" remoteClientProject)
       (mkEnvAssignment "INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE" (remoteValue remoteClientCertificateFile))
-      (mkEnvAssignment "INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE" (remoteValue cfg.remote.clientKeyFile))
-      (mkEnvAssignment "INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE" (lib.boolToString cfg.remote.acceptCertificate))
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE" (remoteValue globalCfg.remote.clientKeyFile))
+      (mkEnvAssignment "INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE" (lib.boolToString globalCfg.remote.acceptCertificate))
     ]
-    ++ lib.optional (cfg.remote.serverCertificateFile != null)
+    ++ lib.optional (globalCfg.remote.serverCertificateFile != null)
     (mkEnvAssignment "INCUS_MACHINES_REMOTE_SERVER_CERT_FILE" remoteServerCertificateFile));
-  remoteCertificateDelegationName =
-    if cfg.remote.certificateDelegation.name != null
-    then cfg.remote.certificateDelegation.name
-    else cfg.remote.project;
-  remoteCertificateDelegationDirectory =
-    if cfg.remote.certificateDelegation.directory != null
-    then cfg.remote.certificateDelegation.directory
-    else "${certificateDelegationGuestRoot}/${remoteCertificateDelegationName}";
   remoteProjectDelegationUnit = "incus-remote-project-delegated-certificates.service";
   remoteProjectDelegationDeps = lib.optional hasRemoteProjectDelegations remoteProjectDelegationUnit;
   certificateDelegationsRootEnv =
@@ -87,9 +103,11 @@
       pkgs.coreutils
       pkgs.curl
       pkgs.gawk
+      pkgs.gnutar
       pkgs.jq
       pkgs.openssl
       pkgs.systemd
+      pkgs.xz
     ];
     text = ''
       source ${./helper.sh}
@@ -102,8 +120,9 @@
 
   reconcilerCommand = pkgs.writeShellScriptBin "incus-machines-reconciler" ''
     ${remoteEnvExports}
-    export INCUS_MACHINES_RECONCILE_MODE=${lib.escapeShellArg cfg.reconcilePolicy}
+    export INCUS_MACHINES_RECONCILE_MODE=${lib.escapeShellArg globalCfg.reconcilePolicy}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
+    export INCUS_MACHINES_INSTANCE_NAMES=${lib.escapeShellArg instanceNamesJson}
     export INCUS_MACHINES_INSTANCE_PROJECTS=${lib.escapeShellArg instanceProjectsJson}
     exec ${helperScript} reconciler "$@"
   '';
@@ -111,6 +130,7 @@
   settlementCommand = pkgs.writeShellScriptBin "incus-machines-settlement" ''
     ${remoteEnvExports}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
+    export INCUS_MACHINES_INSTANCE_NAMES=${lib.escapeShellArg instanceNamesJson}
     export INCUS_MACHINES_INSTANCE_PROJECTS=${lib.escapeShellArg instanceProjectsJson}
     export INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES=${lib.escapeShellArg instanceIpv4AddressesJson}
     export INCUS_MACHINES_INSTANCE_SSH_PORTS=${lib.escapeShellArg instanceSshPortsJson}
@@ -120,12 +140,12 @@
 
   hostSuspendCommand = pkgs.writeShellScriptBin "incus-machines-host-suspend" ''
     ${remoteEnvExports}
-    export INCUS_MACHINES_HOST_SUSPEND_STATE_DIR=${lib.escapeShellArg cfg.hostSuspend.stateDir}
-    export INCUS_MACHINES_HOST_SUSPEND_DEFAULT_POLICY=${lib.escapeShellArg cfg.hostSuspend.defaultPolicy}
-    export INCUS_MACHINES_HOST_SUSPEND_INCLUDE_VMS=${lib.boolToString cfg.hostSuspend.includeVirtualMachines}
-    export INCUS_MACHINES_HOST_SUSPEND_GRACE_TIMEOUT=${toString cfg.hostSuspend.graceTimeoutSec}
-    export INCUS_MACHINES_HOST_SUSPEND_FORCE_TIMEOUT=${toString cfg.hostSuspend.forceTimeoutSec}
-    export INCUS_MACHINES_HOST_SUSPEND_RESTART=${lib.boolToString cfg.hostSuspend.restart}
+    export INCUS_MACHINES_HOST_SUSPEND_STATE_DIR=${lib.escapeShellArg globalCfg.hostSuspend.stateDir}
+    export INCUS_MACHINES_HOST_SUSPEND_DEFAULT_POLICY=${lib.escapeShellArg globalCfg.hostSuspend.defaultPolicy}
+    export INCUS_MACHINES_HOST_SUSPEND_INCLUDE_VMS=${lib.boolToString globalCfg.hostSuspend.includeVirtualMachines}
+    export INCUS_MACHINES_HOST_SUSPEND_GRACE_TIMEOUT=${toString globalCfg.hostSuspend.graceTimeoutSec}
+    export INCUS_MACHINES_HOST_SUSPEND_FORCE_TIMEOUT=${toString globalCfg.hostSuspend.forceTimeoutSec}
+    export INCUS_MACHINES_HOST_SUSPEND_RESTART=${lib.boolToString globalCfg.hostSuspend.restart}
     exec ${helperScript} host-suspend "$@"
   '';
 
@@ -157,13 +177,13 @@
           else migration.projects;
         inherit (migration) ensureStoragePools moveInstancesToStoragePools moveStorageVolumes setProfileDeviceProperties setProjectConfig unsetInstanceConfigKeyPrefixes;
       })
-      cfg.preseedMigrations);
-  hasPreseedMigrations = !cfg.remote.enable && hasIncusPreseed && resolvedPreseedMigrations != [];
+      globalCfg.preseedMigrations);
+  hasPreseedMigrations = !globalCfg.remote.enable && hasIncusPreseed && resolvedPreseedMigrations != [];
   preseedMigrationsFile = pkgs.writeText "incus-machines-preseed-migrations.json" (builtins.toJSON resolvedPreseedMigrations);
-  certificatesJson = builtins.toJSON cfg.certificates;
+  certificatesJson = builtins.toJSON globalCfg.certificates;
   certificatesFile = pkgs.writeText "incus-machines-certificates.json" certificatesJson;
   invalidRestrictedCertificates = map (cert: cert.name) (
-    lib.filter (cert: cert.restricted && cert.projects == []) cfg.certificates
+    lib.filter (cert: cert.restricted && cert.projects == []) globalCfg.certificates
   );
 
   sanitizeImageAlias = value:
@@ -204,23 +224,11 @@
     then lib.removeSuffix projectSuffix withoutExtension
     else withoutExtension;
 
-  legacyRemoteProject = lib.optionalAttrs (cfg.remote.allowedSubnets != [] || cfg.remote.certificateDelegation.enable) {
-    ${cfg.remote.project} = {
-      allowedSubnets = cfg.remote.allowedSubnets;
-      certs = [];
-      includeClientCertificate = cfg.remote.certificateDelegation.enable;
-      certificateName = cfg.remote.certificateDelegation.certificateName;
-      directory = remoteCertificateDelegationDirectory;
-      fileName = cfg.remote.certificateDelegation.fileName;
-      waitForTrust = cfg.remote.certificateDelegation.waitForTrust;
-      waitTimeoutSeconds = cfg.remote.certificateDelegation.waitTimeoutSeconds;
-    };
-  };
-
-  effectiveRemoteProjects =
-    if cfg.remote.projects != {}
-    then cfg.remote.projects
-    else legacyRemoteProject;
+  effectiveRemoteProjects = globalCfg.remote.projects;
+  remoteClientProject =
+    if effectiveRemoteProjects != {}
+    then builtins.head (builtins.attrNames effectiveRemoteProjects)
+    else "default";
 
   remoteProjectCertificates = projectName: project:
     lib.optional project.includeClientCertificate {
@@ -247,7 +255,7 @@
     )
     effectiveRemoteProjects;
 
-  hasRemoteProjectDelegations = cfg.remote.enable && effectiveRemoteProjects != {};
+  hasRemoteProjectDelegations = globalCfg.remote.enable && effectiveRemoteProjects != {};
   remoteProjectDelegationsFile = pkgs.writeText "incus-remote-project-delegated-certificates.json" (builtins.toJSON remoteProjectDelegations);
 
   deviceType = lib.types.submodule (_: {
@@ -296,7 +304,7 @@
         default = null;
         description = ''
           Name of a parent-side certificate delegation to mount into this
-          instance. The named `services.incusMachines.certificateDelegations`
+          instance. The named `services.incusMachines.global.certificateDelegations`
           entry owns the host directory and project binding.
         '';
       };
@@ -409,7 +417,9 @@
       };
     }));
 
-  remoteProjectType = lib.types.submodule ({name, ...}: {
+  remoteProjectType = lib.types.submodule (args @ {name, ...}: let
+    projectConfig = args.config;
+  in {
     options = {
       allowedSubnets = lib.mkOption {
         type = lib.types.coercedTo lib.types.str (value: [value]) (lib.types.listOf lib.types.str);
@@ -435,11 +445,12 @@
 
       includeClientCertificate = lib.mkOption {
         type = lib.types.bool;
-        default = name == cfg.remote.project;
+        default = true;
         description = ''
           Whether to include this remote client's certificate in this project's
-          delegated certificate state. Defaults to true only for
-          `services.incusMachines.remote.project`.
+          delegated certificate state. Defaults to true so each declared remote
+          project can be managed by this controller without repeating the
+          controller certificate in `certs`.
         '';
       };
 
@@ -466,7 +477,7 @@
 
       waitForTrust = lib.mkOption {
         type = lib.types.bool;
-        default = name == cfg.remote.project;
+        default = projectConfig.includeClientCertificate;
         description = ''
           Wait for the remote Incus API to accept this client's certificate
           after writing delegated certificate state.
@@ -633,8 +644,17 @@
     };
   });
 
-  machineType = lib.types.submodule (_: {
+  machineType = lib.types.submodule ({name, ...}: {
     options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        default = name;
+        description = ''
+          Incus instance name. Defaults to the attribute key under
+          `services.incusMachines.<project>.instances`.
+        '';
+      };
+
       image = lib.mkOption {
         type = lib.types.nullOr lib.types.raw;
         default = null;
@@ -642,8 +662,8 @@
           Optional image source for this machine. A string is treated as an
           Incus image reference such as `debian` or `images:debian/12`; a
           non-string value is treated as a NixOS image derivation/system attrset
-          to import into local Incus. Defaults to
-          `services.incusMachines.defaultImage`.
+          to import into local Incus. Defaults to the project default image, or
+          `services.incusMachines.global.defaultImage`.
         '';
       };
       imageAlias = lib.mkOption {
@@ -659,14 +679,6 @@
       ipv4Address = lib.mkOption {
         type = lib.types.str;
         description = "Static IPv4 address (outside the bridge DHCP range).";
-      };
-      project = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          Incus project for this instance. Defaults to the configured remote
-          project in remote mode and `default` for local Incus management.
-        '';
       };
       sshPort = lib.mkOption {
         type = lib.types.port;
@@ -730,11 +742,39 @@
     };
   });
 
+  projectType = lib.types.submodule (_: {
+    options = {
+      defaultImage = lib.mkOption {
+        type = lib.types.nullOr lib.types.raw;
+        default = null;
+        description = ''
+          Project-local default image source. When unset, instances use
+          `services.incusMachines.global.defaultImage`.
+        '';
+      };
+
+      defaultImageAlias = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Project-local default image alias. When unset, instances use
+          `services.incusMachines.global.defaultImageAlias`.
+        '';
+      };
+
+      instances = lib.mkOption {
+        type = lib.types.attrsOf machineType;
+        default = {};
+        description = "Declarative Incus containers in this Incus project.";
+      };
+    };
+  });
+
   resolveCertDelegationDevice = dev:
     if dev.certDelegation == null
     then dev
     else let
-      delegation = cfg.certificateDelegations.${dev.certDelegation};
+      delegation = globalCfg.certificateDelegations.${dev.certDelegation};
     in
       dev
       // {
@@ -764,12 +804,9 @@
   in
     base // withSource // withPath // withShift // withPool // resolved.extraProperties;
 
-  resolveMachineProject = machine:
-    if machine.project != null
-    then machine.project
-    else if cfg.remote.enable
-    then cfg.remote.project
-    else "default";
+  resolveMachineProject = machine: machine.project;
+  resolveMachineName = _name: machine: machine.name;
+  machineProjectNameRef = name: machine: "${resolveMachineProject machine}/${resolveMachineName name machine}";
 
   createOnlyDevices = machine:
     lib.filterAttrs (_: dev: dev.type != "disk") machine.devices;
@@ -777,7 +814,7 @@
     lib.filterAttrs (_: dev: dev.type == "disk") machine.devices;
 
   configHashPayload = name: machine: {
-    preseedTag = cfg.preseedTag;
+    preseedTag = globalCfg.preseedTag;
     inherit (machine) config;
     project = resolveMachineProject machine;
     image = let
@@ -788,37 +825,12 @@
     createOnlyDevices = lib.mapAttrs (resolveDeviceProperties machine) (createOnlyDevices machine);
   };
 
-  # Transitional compatibility for generations that hashed the derived
-  # `local:<alias>` createRef. Remove after all active Incus parents have
-  # reconciled once with `acceptedConfigHashes` in their runtime state.
-  # TODO(2026-07-01): remove this legacy hash payload after deployed parents
-  # have had enough time to pass through one reconcile.
-  legacyConfigHashPayload = name: machine:
-    configHashPayload name machine
-    // {
-      image = let
-        resolvedImage = resolveMachineImage name machine;
-      in {
-        inherit (resolvedImage) alias;
-        createRef = "local:${resolvedImage.alias}";
-      };
-    };
-
   configHash = name: machine:
     builtins.hashString "sha256" (builtins.toJSON (configHashPayload name machine));
-
-  acceptedConfigHashes = name: machine: let
-    current = configHash name machine;
-    legacy = builtins.hashString "sha256" (builtins.toJSON (legacyConfigHashPayload name machine));
-  in
-    if current == legacy
-    then [current]
-    else [current legacy];
 
   lifecycleConfigHash = name: machine:
     builtins.hashString "sha256" (builtins.toJSON {
       configHash = configHash name machine;
-      acceptedConfigHashes = acceptedConfigHashes name machine;
     });
 
   diskDeviceSpecJson = machine:
@@ -835,7 +847,7 @@
         }
         // lib.optionalAttrs (resolved.certDelegation != null) {
           certificateDelegation = true;
-          fileName = cfg.certificateDelegations.${resolved.certDelegation}.fileName;
+          fileName = globalCfg.certificateDelegations.${resolved.certDelegation}.fileName;
         }
         // lib.optionalAttrs (isManagedHostDirResolved resolved) {inherit (resolved) source;})
       (syncableDevices machine)
@@ -845,6 +857,7 @@
     builtins.toJSON (lib.mapAttrs (resolveDeviceProperties machine) (createOnlyDevices machine));
 
   machineRuntimeStateJson = name: machine: let
+    instanceName = resolveMachineName name machine;
     instanceImage = instanceImages.${name};
     hash = configHash name machine;
     diskDevSpec = diskDeviceSpecJson machine;
@@ -854,14 +867,13 @@
     configJson = builtins.toJSON machine.config;
   in
     builtins.toJSON {
-      name = name;
-      imageTag = cfg.imageTag;
+      name = instanceName;
+      imageTag = globalCfg.imageTag;
       instanceImage = instanceImage;
       imageAlias = instanceImage.alias;
       project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
       configHash = hash;
-      acceptedConfigHashes = acceptedConfigHashes name machine;
       bootTag = machine.bootTag;
       recreateTag = machine.recreateTag;
       removalPolicy = machine.removalPolicy;
@@ -874,11 +886,13 @@
     };
 
   machineLifecycleStateJson = name: machine: let
+    instanceName = resolveMachineName name machine;
     hash = lifecycleConfigHash name machine;
     diskDevSpec = diskDeviceSpecJson machine;
     diskGcMetadata = diskGcMetadataJson machine;
   in
     builtins.toJSON {
+      name = instanceName;
       configHash = hash;
       project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
@@ -893,7 +907,7 @@
   mkUserMetadata = name: machine:
     {
       "user.managed-by" = "nixos";
-      "user.incus-machines.controller" = cfg.controllerId;
+      "user.incus-machines.controller" = globalCfg.controllerId;
       "user.config-hash" = configHash name machine;
       "user.boot-tag" = machine.bootTag;
       "user.recreate-tag" = machine.recreateTag;
@@ -914,10 +928,14 @@
     machine.devices;
 
   resolveMachineImage = name: machine: let
+    projectCfg = instanceProjectConfigs.${name};
+    hasProjectDefaultImage = projectCfg.defaultImage != null;
     image =
       if machine.image != null
       then machine.image
-      else cfg.defaultImage;
+      else if hasProjectDefaultImage
+      then projectCfg.defaultImage
+      else globalCfg.defaultImage;
     isRemote = builtins.isString image;
     remoteRef =
       if isRemote
@@ -934,7 +952,9 @@
         if isRemote
         then "incus-${sanitizeImageAlias remoteRef}"
         else "nixos-incus-${name}"
-      else cfg.defaultImageAlias;
+      else if projectCfg.defaultImageAlias != null
+      then projectCfg.defaultImageAlias
+      else globalCfg.defaultImageAlias;
   in
     if isRemote
     then {
@@ -957,7 +977,7 @@
       imageIdentity = "local:${imageSource}";
     };
 
-  instanceImages = lib.mapAttrs resolveMachineImage cfg.instances;
+  instanceImages = lib.mapAttrs resolveMachineImage allInstances;
 
   declaredImages =
     builtins.attrValues
@@ -996,14 +1016,14 @@
   ipv4ToMachineNames =
     lib.foldl'
     (acc: name: let
-      ipv4Address = cfg.instances.${name}.ipv4Address;
+      ipv4Address = allInstances.${name}.ipv4Address;
     in
       acc
       // {
         ${ipv4Address} = (acc.${ipv4Address} or []) ++ [name];
       })
     {}
-    (builtins.attrNames cfg.instances);
+    (builtins.attrNames allInstances);
 
   duplicateIpv4Addresses =
     lib.attrNames
@@ -1044,14 +1064,14 @@
     parts = lib.splitString "/" subnet;
   in
     if builtins.length parts != 2
-    then throw "Invalid IPv4 CIDR for services.incusMachines.remote project allowedSubnets: ${subnet}"
+    then throw "Invalid IPv4 CIDR for services.incusMachines.global.remote project allowedSubnets: ${subnet}"
     else let
       prefixLength = lib.toInt (builtins.elemAt parts 1);
       size = pow2 (32 - prefixLength);
       base = ipv4ToInt (builtins.elemAt parts 0);
     in
       if prefixLength < 0 || prefixLength > 32
-      then throw "Invalid IPv4 CIDR for services.incusMachines.remote project allowedSubnets: ${subnet}"
+      then throw "Invalid IPv4 CIDR for services.incusMachines.global.remote project allowedSubnets: ${subnet}"
       else {
         start = (builtins.div base size) * size;
         end = ((builtins.div base size) + 1) * size - 1;
@@ -1071,43 +1091,68 @@
   instancesWithoutRemoteProjectConfig =
     lib.filter (
       name:
-        cfg.remote.enable
-        && cfg.remote.projects != {}
-        && !builtins.hasAttr (resolveMachineProject cfg.instances.${name}) cfg.remote.projects
+        globalCfg.remote.enable
+        && !builtins.hasAttr (resolveMachineProject allInstances.${name}) globalCfg.remote.projects
     )
-    (builtins.attrNames cfg.instances);
+    (builtins.attrNames allInstances);
 
   instancesOutsideAllowedSubnets =
     lib.filter (
       name: let
-        project = resolveMachineProject cfg.instances.${name};
+        project = resolveMachineProject allInstances.${name};
         subnets = remoteProjectSubnets project;
       in
         subnets
         != []
         && !lib.any
-        (subnet: ipv4InCidr cfg.instances.${name}.ipv4Address subnet)
+        (subnet: ipv4InCidr allInstances.${name}.ipv4Address subnet)
         subnets
     )
-    (builtins.attrNames cfg.instances);
+    (builtins.attrNames allInstances);
 
   allowedSubnetViolations =
     map (
       name: let
-        project = resolveMachineProject cfg.instances.${name};
-      in "${name} (${project}, ${cfg.instances.${name}.ipv4Address})"
+        project = resolveMachineProject allInstances.${name};
+      in "${name} (${project}, ${allInstances.${name}.ipv4Address})"
     )
     instancesOutsideAllowedSubnets;
 
   invalidCertificateDelegationNames =
     lib.filter
     (name: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" name == null)
-    (builtins.attrNames cfg.certificateDelegations);
+    (builtins.attrNames globalCfg.certificateDelegations);
 
   invalidRemoteProjectNames =
     lib.filter
     (name: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" name == null)
-    (builtins.attrNames cfg.remote.projects);
+    (builtins.attrNames globalCfg.remote.projects);
+
+  invalidResolvedInstanceNames =
+    lib.filter
+    (name: builtins.match "[a-z]([a-z0-9-]{0,61}[a-z0-9])?" (resolveMachineName name allInstances.${name}) == null)
+    (builtins.attrNames allInstances);
+
+  instanceRefToMachineNames =
+    lib.foldl'
+    (acc: name: let
+      ref = machineProjectNameRef name allInstances.${name};
+    in
+      acc
+      // {
+        ${ref} = (acc.${ref} or []) ++ [name];
+      })
+    {}
+    (builtins.attrNames allInstances);
+
+  duplicateInstanceRefs =
+    lib.attrNames
+    (lib.filterAttrs (_ref: machineNames: builtins.length machineNames > 1) instanceRefToMachineNames);
+
+  instanceRefConflicts =
+    map
+    (ref: "${ref} -> ${lib.concatStringsSep ", " instanceRefToMachineNames.${ref}}")
+    duplicateInstanceRefs;
 
   invalidRemoteProjectCertificateNames = lib.concatLists (
     lib.mapAttrsToList (
@@ -1122,7 +1167,7 @@
   remoteProjectCertificateFiles = lib.concatLists (
     lib.mapAttrsToList (
       projectName: project:
-        map (cert: toString cert.file) (remoteProjectCertificates projectName project)
+        map (cert: toString cert.file) (lib.filter (cert: !cert.automatic) (remoteProjectCertificates projectName project))
     )
     effectiveRemoteProjects
   );
@@ -1133,14 +1178,12 @@
     (lib.unique remoteProjectCertificateFiles);
 
   invalidInstanceNames =
-    lib.filter
-    (name: builtins.match "[a-z]([a-z0-9-]{0,61}[a-z0-9])?" name == null)
-    (builtins.attrNames cfg.instances);
-
-  invalidRemoteCertificateDelegationName =
-    cfg.remote.enable
-    && cfg.remote.certificateDelegation.enable
-    && builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" remoteCertificateDelegationName == null;
+    lib.concatMap
+    (entry:
+      lib.optional
+      (builtins.match "[a-z]([a-z0-9-]{0,61}[a-z0-9])?" entry.instanceName == null)
+      "${entry.projectName}.${entry.instanceName}")
+    projectInstanceEntries;
 
   invalidCertificateDelegationReferences = lib.concatLists (
     lib.mapAttrsToList (
@@ -1149,13 +1192,13 @@
           lib.mapAttrsToList (
             deviceName: dev:
               lib.optional
-              (dev.certDelegation != null && !builtins.hasAttr dev.certDelegation cfg.certificateDelegations)
+              (dev.certDelegation != null && !builtins.hasAttr dev.certDelegation globalCfg.certificateDelegations)
               "${machineName}.${deviceName} -> ${dev.certDelegation}"
           )
           machine.devices
         )
     )
-    cfg.instances
+    allInstances
   );
 
   invalidCertificateDelegationDevices = lib.concatLists (
@@ -1171,7 +1214,7 @@
           machine.devices
         )
     )
-    cfg.instances
+    allInstances
   );
 
   hasParentPathSegment = source:
@@ -1198,68 +1241,79 @@
           machine.devices
         )
     )
-    cfg.instances
+    allInstances
   );
 
   invalidCertificateDelegationDirectories =
     lib.filter
     (name: let
-      directory = cfg.certificateDelegations.${name}.directory;
+      directory = globalCfg.certificateDelegations.${name}.directory;
     in
       directory == certificateDelegationsRoot || directory == "${certificateDelegationsRoot}/" || !lib.hasPrefix "${certificateDelegationsRoot}/" directory)
-    (builtins.attrNames cfg.certificateDelegations);
+    (builtins.attrNames globalCfg.certificateDelegations);
 
   certificateDelegationsJson = builtins.toJSON (
     lib.mapAttrs
     (_: delegation: {
       inherit (delegation) directory stateFile;
     })
-    cfg.certificateDelegations
+    globalCfg.certificateDelegations
   );
   certificateDelegationsFile = pkgs.writeText "incus-machines-certificate-delegations.json" certificateDelegationsJson;
 
   declaredImagesJson = builtins.toJSON declaredImages;
-  declaredInstancesJson = builtins.toJSON (builtins.attrNames cfg.instances);
-  instanceProjectsJson = builtins.toJSON (lib.mapAttrs (_name: resolveMachineProject) cfg.instances);
-  instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) cfg.instances);
-  instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) cfg.instances);
-  instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) cfg.instances);
+  declaredInstancesJson = builtins.toJSON (builtins.attrNames allInstances);
+  instanceNamesJson = builtins.toJSON (lib.mapAttrs resolveMachineName allInstances);
+  instanceProjectsJson = builtins.toJSON (lib.mapAttrs (_name: resolveMachineProject) allInstances);
+  declaredInstanceRefsJson = builtins.toJSON (
+    lib.listToAttrs (
+      map
+      (name: lib.nameValuePair (machineProjectNameRef name allInstances.${name}) true)
+      (builtins.attrNames allInstances)
+    )
+  );
+  instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) allInstances);
+  instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) allInstances);
+  instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) allInstances);
   gcProjects = lib.unique (
-    lib.optionals cfg.remote.enable (
-      [cfg.remote.project]
-      ++ builtins.attrNames effectiveRemoteProjects
-      ++ builtins.attrValues (lib.mapAttrs (_name: resolveMachineProject) cfg.instances)
+    lib.optionals globalCfg.remote.enable (
+      builtins.attrNames effectiveRemoteProjects
+      ++ builtins.attrValues (lib.mapAttrs (_name: resolveMachineProject) allInstances)
     )
   );
   gcProjectsJson = builtins.toJSON gcProjects;
   incusImagesStateFile = pkgs.writeText "incus-machines-images-state.json" (builtins.toJSON {
-    imageTag = cfg.imageTag;
+    imageTag = globalCfg.imageTag;
     images = declaredImages;
   });
   incusGcStateFile = pkgs.writeText "incus-machines-gc-state.json" (builtins.toJSON {
-    instances = builtins.attrNames cfg.instances;
-    instanceProjects = lib.mapAttrs (_name: resolveMachineProject) cfg.instances;
-    controllerId = cfg.controllerId;
+    instances = builtins.attrNames allInstances;
+    instanceNames = lib.mapAttrs resolveMachineName allInstances;
+    instanceProjects = lib.mapAttrs (_name: resolveMachineProject) allInstances;
+    instanceRefs = builtins.attrNames (builtins.fromJSON declaredInstanceRefsJson);
+    controllerId = globalCfg.controllerId;
     projects = gcProjects;
-    remote = cfg.remote.enable;
+    remote = globalCfg.remote.enable;
   });
-  localIncusDeps = lib.optional (!cfg.remote.enable) "incus-preseed.service";
+  localIncusDeps = lib.optional (!globalCfg.remote.enable) "incus-preseed.service";
   incusLifecycleDeps =
     localIncusDeps
+    ++ remoteProjectDelegationDeps
     ++ [
       "network-online.target"
       "incus-images.service"
     ];
 
   mkMachineService = name: machine: let
+    instanceName = resolveMachineName name machine;
     lifecycleStateFile = pkgs.writeText "incus-machine-${name}-lifecycle-state.json" (machineLifecycleStateJson name machine);
   in
     lib.nameValuePair "incus-${name}" {
-      description = "Incus container lifecycle for ${name}";
+      description = "Incus container lifecycle for ${resolveMachineProject machine}/${instanceName}";
       wantedBy = ["multi-user.target"];
       after = incusLifecycleDeps;
       wants = incusLifecycleDeps;
-      requires = localIncusDeps ++ ["incus-images.service"];
+      requires = localIncusDeps ++ remoteProjectDelegationDeps ++ ["incus-images.service"];
       restartTriggers = [lifecycleStateFile];
       serviceConfig = {
         Type = "oneshot";
@@ -1269,7 +1323,7 @@
             (mkEnvAssignment "INCUS_MACHINES_INSTANCE_STATE_FILE" "/etc/incus-machines/${name}.json")
           ]
           ++ remoteServiceEnvironment;
-        ExecStop = "-${helperScript} stop-instance ${lib.escapeShellArg name} ${lib.escapeShellArg (resolveMachineProject machine)}";
+        ExecStop = "-${helperScript} stop-instance ${lib.escapeShellArg instanceName} ${lib.escapeShellArg (resolveMachineProject machine)}";
         ExecStart = "${helperScript} machine";
       };
     };
@@ -1327,294 +1381,216 @@
       };
     };
 in {
-  options.services.incusMachines = {
-    defaultImage = lib.mkOption {
-      type = lib.types.raw;
-      default = defaultBaseImage;
-      description = ''
-        Default image source used for Incus machines when a machine does not
-        set `image`. A string is treated as an Incus image reference; a
-        non-string value is treated as a local NixOS image build.
-      '';
-    };
-
-    defaultImageAlias = lib.mkOption {
-      type = lib.types.str;
-      default = defaultBaseAlias;
-      description = ''
-        Shared Incus alias used for `defaultImage`. Machines that set a custom
-        `image` default to `nixos-incus-<machine-name>` for local NixOS images
-        and a sanitized alias derived from the remote image reference for string
-        images unless they also set `imageAlias`.
-      '';
-    };
-
-    controllerId = lib.mkOption {
-      type = lib.types.str;
-      default = config.networking.hostName;
-      description = ''
-        Stable owner identifier written to managed Incus instances. Remote GC
-        uses this marker to delete only instances owned by this delegated
-        controller, even when multiple repo-managed controllers share a parent
-        Incus daemon or project.
-      '';
-    };
-
-    imageTag = lib.mkOption {
-      type = lib.types.str;
-      default = "0";
-      description = "Bump to force refresh of all declared Incus images on next rebuild.";
-    };
-
-    preseedTag = lib.mkOption {
-      type = lib.types.str;
-      default = "0";
-      description = ''
-        Manual coordination tag for disruptive parent Incus preseed changes.
-        Bumping this value folds the parent preseed epoch into every guest's
-        recreate hash, forcing declared guests to recreate on their next
-        lifecycle run.
-      '';
-    };
-
-    preseedMigrations = lib.mkOption {
-      type = lib.types.listOf preseedMigrationType;
-      default = [
-        {
-          unsetInstanceConfigKeyPrefixes = ["security.syscalls.intercept."];
-        }
-      ];
-      description = ''
-        Best-effort migrations run before upstream `incus-preseed.service`.
-        Entries are data-driven so one-time preseed compatibility cleanups can
-        live in the shared Incus module instead of host-local systemd overrides.
-      '';
-    };
-
-    certificates = lib.mkOption {
-      type = lib.types.listOf certificateType;
-      default = [];
-      description = ''
-        Declarative Incus trusted certificates reconciled by this module. The
-        upstream Incus preseed remains responsible for fabric objects such as
-        projects, networks, profiles, and storage pools.
-      '';
-    };
-
-    certificateDelegations = lib.mkOption {
-      type = lib.types.attrsOf certificateDelegationType;
-      default = {};
-      description = ''
-        Parent-owned delegated certificate directories. Instances mount these
-        by name through `incusLib.mkCertDelegation`, while this module owns
-        validation, reconciliation, and cleanup of the host-side directory.
-      '';
-    };
-
-    remote = {
-      enable = lib.mkEnableOption ''
-        managing a remote Incus daemon instead of the local host daemon
-      '';
-
-      name = lib.mkOption {
-        type = lib.types.str;
-        default = "local";
-        description = "Incus client remote name used by helper commands.";
-      };
-
-      address = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Remote Incus HTTPS API address.";
-      };
-
-      project = lib.mkOption {
-        type = lib.types.str;
-        default = "default";
-        description = "Default Incus project for the remote client.";
-      };
-
-      clientCertificateFile = lib.mkOption {
-        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-        default = null;
-        description = "Path to the public client certificate used for remote TLS auth.";
-      };
-
-      clientKeyFile = lib.mkOption {
-        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-        default = null;
-        description = "Path to the private client key used for remote TLS auth.";
-      };
-
-      serverCertificateFile = lib.mkOption {
-        type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-        default = null;
-        description = "Optional pinned remote Incus server certificate.";
-      };
-
-      acceptCertificate = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Whether helpers may accept the server certificate when creating the
-          ephemeral Incus client config. Prefer `serverCertificateFile` when a
-          stable server certificate is available.
-        '';
-      };
-
-      allowedSubnets = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [];
-        example = ["10.10.20.0/24"];
-        description = ''
-          Optional IPv4 CIDR allowlist for declared instance addresses managed
-          through this remote. When non-empty, every
-          `services.incusMachines.instances.<name>.ipv4Address` must fall
-          inside at least one listed subnet. Prefer
-          `services.incusMachines.remote.projects.<name>.allowedSubnets` for
-          project-scoped delegation.
-        '';
-      };
-
-      projects = lib.mkOption {
-        type = lib.types.attrsOf remoteProjectType;
-        default = {};
-        description = ''
-          Project-scoped remote delegation settings. Attribute names are Incus
-          project names. Each project can declare its own allowed subnets and
-          delegated certificate state to write under
-          `/var/lib/incus-delegation/<project>`.
-        '';
-      };
-
-      certificateDelegation = {
-        enable = lib.mkEnableOption ''
-          publishing this remote client's public certificate through a mounted
-          parent certificate delegation before managing remote resources
-        '';
-
-        name = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
+  options.services.incusMachines = lib.mkOption {
+    default = {};
+    type = lib.types.submodule {
+      freeformType = lib.types.attrsOf projectType;
+      options.global = {
+        defaultImage = lib.mkOption {
+          type = lib.types.raw;
+          default = defaultBaseImage;
           description = ''
-            Parent-side certificate delegation name. Defaults to the remote
-            project, matching the common one-delegation-per-project shape.
+            Default image source used for Incus machines when a machine does not
+            set `image`. A string is treated as an Incus image reference; a
+            non-string value is treated as a local NixOS image build.
           '';
         };
 
-        directory = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          description = ''
-            Guest-visible directory where the parent delegation is mounted.
-            Defaults to `${certificateDelegationGuestRoot}/<name>`.
-          '';
-        };
-
-        fileName = lib.mkOption {
+        defaultImageAlias = lib.mkOption {
           type = lib.types.str;
-          default = "certs.json";
-          description = "Delegated certificate JSON file written under `directory`.";
+          default = defaultBaseAlias;
+          description = ''
+            Shared Incus alias used for `defaultImage`. Machines that set a custom
+            `image` default to `nixos-incus-<machine-name>` for local NixOS images
+            and a sanitized alias derived from the remote image reference for string
+            images unless they also set `imageAlias`.
+          '';
         };
 
-        certificateName = lib.mkOption {
+        controllerId = lib.mkOption {
           type = lib.types.str;
           default = config.networking.hostName;
           description = ''
-            Tenant-local certificate name written to the delegated certificate
-            file. The parent still applies its configured delegation prefix.
+            Stable owner identifier written to managed Incus instances. Remote GC
+            uses this marker to delete only instances owned by this delegated
+            controller, even when multiple repo-managed controllers share a parent
+            Incus daemon or project.
           '';
         };
 
-        waitForTrust = lib.mkOption {
-          type = lib.types.bool;
-          default = true;
+        imageTag = lib.mkOption {
+          type = lib.types.str;
+          default = "0";
+          description = "Bump to force refresh of all declared Incus images on next rebuild.";
+        };
+
+        preseedTag = lib.mkOption {
+          type = lib.types.str;
+          default = "0";
           description = ''
-            Wait for the remote Incus API to accept the delegated certificate
-            before importing images or reconciling instances.
+            Manual coordination tag for disruptive parent Incus preseed changes.
+            Bumping this value folds the parent preseed epoch into every guest's
+            recreate hash, forcing declared guests to recreate on their next
+            lifecycle run.
           '';
         };
 
-        waitTimeoutSeconds = lib.mkOption {
-          type = lib.types.ints.positive;
-          default = 60;
-          description = "Seconds to wait for parent trust reconciliation.";
+        preseedMigrations = lib.mkOption {
+          type = lib.types.listOf preseedMigrationType;
+          default = [];
+          description = ''
+            Explicit best-effort migrations run before upstream
+            `incus-preseed.service`. Use these for durable, data-driven Incus
+            fabric transitions that must happen before preseed applies project
+            restrictions, profile changes, or storage changes.
+          '';
         };
-      };
-    };
 
-    reconcilePolicy = lib.mkOption {
-      type = lib.types.enum ["off" "best-effort" "strict"];
-      default = "best-effort";
-      description = ''
-        Reconcile policy for declared Incus guests. `off` disables guest
-        reconcile helpers, `best-effort` retries missing or stopped guests
-        without failing the caller, and `strict` makes guest reconcile failures
-        abort the caller.
-      '';
-    };
+        certificates = lib.mkOption {
+          type = lib.types.listOf certificateType;
+          default = [];
+          description = ''
+            Declarative Incus trusted certificates reconciled by this module. The
+            upstream Incus preseed remains responsible for fabric objects such as
+            projects, networks, profiles, and storage pools.
+          '';
+        };
 
-    autoReconcile = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Whether to run guest reconcile automatically at boot via
-        `incus-machines-reconciler.service`. This is disabled by default so
-        host activation and boot do not depend on child guest lifecycle
-        convergence.
-      '';
-    };
+        certificateDelegations = lib.mkOption {
+          type = lib.types.attrsOf certificateDelegationType;
+          default = {};
+          description = ''
+            Parent-owned delegated certificate directories. Instances mount these
+            by name through `incusLib.mkCertDelegation`, while this module owns
+            validation, reconciliation, and cleanup of the host-side directory.
+          '';
+        };
 
-    instances = lib.mkOption {
-      type = lib.types.attrsOf machineType;
-      default = {};
-      description = "Declarative Incus containers with lifecycle management.";
-    };
+        remote = {
+          enable = lib.mkEnableOption ''
+            managing a remote Incus daemon instead of the local host daemon
+          '';
 
-    hostSuspend = {
-      enable = lib.mkEnableOption ''
-        stopping running Incus containers before host sleep so container tasks
-        cannot block the physical host suspend freezer
-      '';
+          name = lib.mkOption {
+            type = lib.types.str;
+            default = "local";
+            description = "Incus client remote name used by helper commands.";
+          };
 
-      defaultPolicy = lib.mkOption {
-        type = lib.types.enum ["stop" "ignore"];
-        default = "stop";
-        description = ''
-          Policy for running containers that do not set
-          `user.host-suspend.policy`. `stop` is the laptop-safe default; set an
-          instance config key to `ignore` for explicit opt-outs.
-        '';
-      };
+          address = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Remote Incus HTTPS API address.";
+          };
 
-      includeVirtualMachines = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Whether to include Incus virtual machines in the host sleep stop/start cycle.";
-      };
+          clientCertificateFile = lib.mkOption {
+            type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+            default = null;
+            description = "Path to the public client certificate used for remote TLS auth.";
+          };
 
-      graceTimeoutSec = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 20;
-        description = "Seconds to wait for a graceful Incus stop before forcing the instance off.";
-      };
+          clientKeyFile = lib.mkOption {
+            type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+            default = null;
+            description = "Path to the private client key used for remote TLS auth.";
+          };
 
-      forceTimeoutSec = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 10;
-        description = "Seconds to allow a forced Incus stop command before treating it as failed.";
-      };
+          serverCertificateFile = lib.mkOption {
+            type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+            default = null;
+            description = "Optional pinned remote Incus server certificate.";
+          };
 
-      restart = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Restart instances that were stopped by the pre-sleep hook after resume.";
-      };
+          acceptCertificate = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = ''
+              Whether helpers may accept the server certificate when creating the
+              ephemeral Incus client config. Prefer `serverCertificateFile` when a
+              stable server certificate is available.
+            '';
+          };
 
-      stateDir = lib.mkOption {
-        type = lib.types.str;
-        default = "/run/incus-machines-host-suspend";
-        description = "Runtime directory used to remember which instances were stopped before sleep.";
+          projects = lib.mkOption {
+            type = lib.types.attrsOf remoteProjectType;
+            default = {};
+            description = ''
+              Project-scoped remote delegation settings. Attribute names are Incus
+              project names. Each project can declare its own allowed subnets and
+              delegated certificate state to write under
+              `/var/lib/incus-delegation/<project>`.
+            '';
+          };
+        };
+
+        reconcilePolicy = lib.mkOption {
+          type = lib.types.enum ["off" "best-effort" "strict"];
+          default = "best-effort";
+          description = ''
+            Reconcile policy for declared Incus guests. `off` disables guest
+            reconcile helpers, `best-effort` retries missing or stopped guests
+            without failing the caller, and `strict` makes guest reconcile failures
+            abort the caller.
+          '';
+        };
+
+        autoReconcile = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = ''
+            Whether to run guest reconcile automatically at boot via
+            `incus-machines-reconciler.service`. This is disabled by default so
+            host activation and boot do not depend on child guest lifecycle
+            convergence.
+          '';
+        };
+
+        hostSuspend = {
+          enable = lib.mkEnableOption ''
+            stopping running Incus containers before host sleep so container tasks
+            cannot block the physical host suspend freezer
+          '';
+
+          defaultPolicy = lib.mkOption {
+            type = lib.types.enum ["stop" "ignore"];
+            default = "stop";
+            description = ''
+              Policy for running containers that do not set
+              `user.host-suspend.policy`. `stop` is the laptop-safe default; set an
+              instance config key to `ignore` for explicit opt-outs.
+            '';
+          };
+
+          includeVirtualMachines = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Whether to include Incus virtual machines in the host sleep stop/start cycle.";
+          };
+
+          graceTimeoutSec = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 20;
+            description = "Seconds to wait for a graceful Incus stop before forcing the instance off.";
+          };
+
+          forceTimeoutSec = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 10;
+            description = "Seconds to allow a forced Incus stop command before treating it as failed.";
+          };
+
+          restart = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Restart instances that were stopped by the pre-sleep hook after resume.";
+          };
+
+          stateDir = lib.mkOption {
+            type = lib.types.str;
+            default = "/run/incus-machines-host-suspend";
+            description = "Runtime directory used to remember which instances were stopped before sleep.";
+          };
+        };
       };
     };
   };
@@ -1636,33 +1612,45 @@ in {
       {
         assertion = invalidInstanceNames == [];
         message =
-          "services.incusMachines instance names must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
+          "services.incusMachines instance keys must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
           + lib.concatStringsSep ", " invalidInstanceNames;
       }
       {
+        assertion = invalidResolvedInstanceNames == [];
+        message =
+          "services.incusMachines Incus instance names must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
+          + lib.concatStringsSep ", " invalidResolvedInstanceNames;
+      }
+      {
+        assertion = instanceRefConflicts == [];
+        message =
+          "services.incusMachines has duplicate Incus project/name assignments: "
+          + lib.concatStringsSep "; " instanceRefConflicts;
+      }
+      {
         assertion = preseedCertificates == [];
-        message = "Use services.incusMachines.certificates instead of virtualisation.incus.preseed.certificates.";
+        message = "Use services.incusMachines.global.certificates instead of virtualisation.incus.preseed.certificates.";
       }
       {
         assertion = invalidRestrictedCertificates == [];
         message =
-          "services.incusMachines.certificates restricted certificates must declare at least one project: "
+          "services.incusMachines.global.certificates restricted certificates must declare at least one project: "
           + lib.concatStringsSep ", " invalidRestrictedCertificates;
       }
       {
-        assertion = !cfg.remote.enable || !hasCertificates;
-        message = "services.incusMachines.certificates is only supported for local Incus management; use parent-side certificateDelegations or remote.projects for remote targets.";
+        assertion = !globalCfg.remote.enable || !hasCertificates;
+        message = "services.incusMachines.global.certificates is only supported for local Incus management; use parent-side certificateDelegations or remote.projects for remote targets.";
       }
       {
         assertion = invalidCertificateDelegationNames == [];
         message =
-          "services.incusMachines.certificateDelegations names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          "services.incusMachines.global.certificateDelegations names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
           + lib.concatStringsSep ", " invalidCertificateDelegationNames;
       }
       {
         assertion = invalidCertificateDelegationDirectories == [];
         message =
-          "services.incusMachines.certificateDelegations directories must be under ${certificateDelegationsRoot}/: "
+          "services.incusMachines.global.certificateDelegations directories must be under ${certificateDelegationsRoot}/: "
           + lib.concatStringsSep ", " invalidCertificateDelegationDirectories;
       }
       {
@@ -1686,65 +1674,59 @@ in {
           + lib.concatStringsSep ", " unsafeDeleteHostDirs;
       }
       {
-        assertion = !invalidRemoteCertificateDelegationName;
-        message =
-          "services.incusMachines.remote.certificateDelegation.name must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
-          + remoteCertificateDelegationName;
-      }
-      {
         assertion = invalidRemoteProjectNames == [];
         message =
-          "services.incusMachines.remote.projects names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          "services.incusMachines.global.remote.projects names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
           + lib.concatStringsSep ", " invalidRemoteProjectNames;
       }
       {
         assertion = invalidRemoteProjectCertificateNames == [];
         message =
-          "services.incusMachines.remote.projects cert names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          "services.incusMachines.global.remote.projects cert names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
           + lib.concatStringsSep ", " invalidRemoteProjectCertificateNames;
       }
       {
         assertion = duplicateRemoteProjectCertificateFiles == [];
         message =
-          "services.incusMachines.remote.projects cannot publish the same certificate file into multiple project delegations: "
+          "services.incusMachines.global.remote.projects cannot publish the same certificate file into multiple project delegations: "
           + lib.concatStringsSep ", " duplicateRemoteProjectCertificateFiles;
       }
       {
-        assertion = !cfg.remote.enable || !hasCertificateDelegations;
-        message = "services.incusMachines.certificateDelegations is only supported for local Incus management.";
+        assertion = !globalCfg.remote.enable || !hasCertificateDelegations;
+        message = "services.incusMachines.global.certificateDelegations is only supported for local Incus management.";
       }
       {
-        assertion = !cfg.remote.enable || cfg.remote.name != "local";
-        message = "services.incusMachines.remote.name must not be 'local' when remote mode is enabled.";
+        assertion = !globalCfg.remote.enable || globalCfg.remote.name != "local";
+        message = "services.incusMachines.global.remote.name must not be 'local' when remote mode is enabled.";
       }
       {
-        assertion = !cfg.remote.enable || cfg.remote.address != null;
-        message = "services.incusMachines.remote.address is required when remote mode is enabled.";
+        assertion = !globalCfg.remote.enable || globalCfg.remote.address != null;
+        message = "services.incusMachines.global.remote.address is required when remote mode is enabled.";
       }
       {
-        assertion = !cfg.remote.enable || cfg.remote.clientCertificateFile != null;
-        message = "services.incusMachines.remote.clientCertificateFile is required when remote mode is enabled.";
+        assertion = !globalCfg.remote.enable || globalCfg.remote.clientCertificateFile != null;
+        message = "services.incusMachines.global.remote.clientCertificateFile is required when remote mode is enabled.";
       }
       {
-        assertion = !cfg.remote.enable || cfg.remote.clientKeyFile != null;
-        message = "services.incusMachines.remote.clientKeyFile is required when remote mode is enabled.";
+        assertion = !globalCfg.remote.enable || globalCfg.remote.clientKeyFile != null;
+        message = "services.incusMachines.global.remote.clientKeyFile is required when remote mode is enabled.";
       }
       {
-        assertion = !cfg.remote.enable || cfg.remote.serverCertificateFile != null || cfg.remote.acceptCertificate;
-        message = "services.incusMachines.remote must set serverCertificateFile or acceptCertificate = true.";
+        assertion = !globalCfg.remote.enable || globalCfg.remote.serverCertificateFile != null || globalCfg.remote.acceptCertificate;
+        message = "services.incusMachines.global.remote must set serverCertificateFile or acceptCertificate = true.";
       }
       {
-        assertion = !cfg.remote.enable || !cfg.hostSuspend.enable;
-        message = "services.incusMachines.hostSuspend is only supported for local Incus management.";
+        assertion = !globalCfg.remote.enable || !globalCfg.hostSuspend.enable;
+        message = "services.incusMachines.global.hostSuspend is only supported for local Incus management.";
       }
       {
         assertion = instancesWithoutRemoteProjectConfig == [];
         message =
-          "services.incusMachines remote instances must declare a matching services.incusMachines.remote.projects entry: "
+          "services.incusMachines remote instances must declare a matching services.incusMachines.global.remote.projects entry: "
           + lib.concatStringsSep ", " instancesWithoutRemoteProjectConfig;
       }
       {
-        assertion = !cfg.remote.enable || instancesOutsideAllowedSubnets == [];
+        assertion = !globalCfg.remote.enable || instancesOutsideAllowedSubnets == [];
         message =
           "services.incusMachines instances outside remote project allowedSubnets: "
           + lib.concatStringsSep ", " allowedSubnetViolations;
@@ -1752,9 +1734,9 @@ in {
     ];
 
     virtualisation.incus = {
-      enable = lib.mkDefault (!cfg.remote.enable);
+      enable = lib.mkDefault (!globalCfg.remote.enable);
       package = lib.mkDefault pkgs.incus;
-      ui.enable = lib.mkDefault (!cfg.remote.enable);
+      ui.enable = lib.mkDefault (!globalCfg.remote.enable);
     };
 
     environment.systemPackages = [
@@ -1764,7 +1746,7 @@ in {
       hostSuspendCommand
     ];
 
-    powerManagement = lib.mkIf cfg.hostSuspend.enable {
+    powerManagement = lib.mkIf globalCfg.hostSuspend.enable {
       powerDownCommands = ''
         ${hostSuspendCommand}/bin/incus-machines-host-suspend pre
       '';
@@ -1779,14 +1761,14 @@ in {
         lib.nameValuePair "incus-machines/${name}.json" {
           text = machineRuntimeStateJson name machine;
         })
-      cfg.instances
+      allInstances
     );
 
     systemd = {
-      tmpfiles.rules = lib.mkIf (!cfg.remote.enable) (
+      tmpfiles.rules = lib.mkIf (!globalCfg.remote.enable) (
         lib.unique (
-          lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles cfg.instances)
-          ++ lib.concatLists (lib.mapAttrsToList mkCertificateDelegationTmpfiles cfg.certificateDelegations)
+          lib.concatLists (lib.mapAttrsToList mkDeviceTmpfiles allInstances)
+          ++ lib.concatLists (lib.mapAttrsToList mkCertificateDelegationTmpfiles globalCfg.certificateDelegations)
         )
       );
 
@@ -1798,7 +1780,7 @@ in {
               ${helperScript} preseed-migrations
             '';
           };
-          incus-machines-certificates = lib.mkIf (!cfg.remote.enable) {
+          incus-machines-certificates = lib.mkIf (!globalCfg.remote.enable) {
             description = "Reconcile declared Incus trusted certificates";
             wantedBy = ["sysinit-reactivation.target"];
             after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
@@ -1811,13 +1793,12 @@ in {
               Environment = [
                 (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_FILE" certificatesFile)
                 (mkEnvAssignment "INCUS_MACHINES_CERTIFICATES_STATE_FILE" certificatesStateFile)
-                (mkEnvAssignment "INCUS_MACHINES_LEGACY_CERTIFICATES_STATE_FILE" legacyCertificatesStateFile)
               ];
               Type = "oneshot";
               ExecStart = "${helperScript} certificates";
             };
           };
-          incus-cert-delegations-gc = lib.mkIf (!cfg.remote.enable) {
+          incus-cert-delegations-gc = lib.mkIf (!globalCfg.remote.enable) {
             description = "Garbage-collect removed Incus certificate delegations";
             wantedBy = ["sysinit-reactivation.target"];
             after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
@@ -1837,7 +1818,7 @@ in {
             };
           };
         }
-        // lib.mapAttrs' mkCertificateDelegationService cfg.certificateDelegations
+        // lib.mapAttrs' mkCertificateDelegationService globalCfg.certificateDelegations
         // (let
           incusGcDeps =
             localIncusDeps
@@ -1853,7 +1834,7 @@ in {
                   "incus-images.service"
                   "incus-machines-reconciler.service"
                 ]
-                ++ map (name: "incus-${name}.service") (builtins.attrNames cfg.instances);
+                ++ map (name: "incus-${name}.service") (builtins.attrNames allInstances);
               after = [
                 "agenix.service"
                 "network-online.target"
@@ -1880,17 +1861,18 @@ in {
             };
           }
           // lib.optionalAttrs hasInstances {
-            incus-machines-reconciler = lib.mkIf (cfg.reconcilePolicy != "off") {
+            incus-machines-reconciler = lib.mkIf (globalCfg.reconcilePolicy != "off") {
               description = "Reconciler for declared Incus guests";
-              wantedBy = lib.optional cfg.autoReconcile "multi-user.target";
+              wantedBy = lib.optional globalCfg.autoReconcile "multi-user.target";
               after = incusLifecycleDeps;
               wants = incusLifecycleDeps;
               serviceConfig = {
                 Type = "oneshot";
                 Environment =
                   [
-                    (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" cfg.reconcilePolicy)
+                    (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" globalCfg.reconcilePolicy)
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_NAMES" instanceNamesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
                   ]
                   ++ remoteServiceEnvironment;
@@ -1912,7 +1894,7 @@ in {
                 Type = "oneshot";
                 Environment =
                   [
-                    (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" cfg.imageTag)
+                    (mkEnvAssignment "INCUS_MACHINES_IMAGE_TAG" globalCfg.imageTag)
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_IMAGES" declaredImagesJson)
                   ]
                   ++ remoteServiceEnvironment;
@@ -1935,9 +1917,11 @@ in {
                 Environment =
                   [
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                    (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCE_REFS" declaredInstanceRefsJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_NAMES" instanceNamesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
                     (mkEnvAssignment "INCUS_MACHINES_MANAGED_GC_DIR_ROOT" managedGcDirRoot)
-                    (mkEnvAssignment "INCUS_MACHINES_CONTROLLER_ID" cfg.controllerId)
+                    (mkEnvAssignment "INCUS_MACHINES_CONTROLLER_ID" globalCfg.controllerId)
                     (mkEnvAssignment "INCUS_MACHINES_GC_PROJECTS" gcProjectsJson)
                   ]
                   ++ remoteServiceEnvironment;
@@ -1945,9 +1929,9 @@ in {
               };
             };
           }
-          // lib.mapAttrs' mkMachineService cfg.instances);
+          // lib.mapAttrs' mkMachineService allInstances);
 
-      paths = lib.mapAttrs' mkCertificateDelegationPath cfg.certificateDelegations;
+      paths = lib.mapAttrs' mkCertificateDelegationPath globalCfg.certificateDelegations;
     };
   };
 }

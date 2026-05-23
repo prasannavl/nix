@@ -346,10 +346,11 @@ steady-state model is host-side reconcile outside activation via the declared
 `incus-<guest>` lifecycle services, the `incus-machines-reconciler.service`
 oneshot, or `nixbot`'s parent readiness barriers.
 
-The reconcile policy is controlled by `services.incusMachines.reconcilePolicy`.
-The default is **best-effort** on non-container parent hosts and `"off"` on
-containerized Incus hosts such as nested guests. Boot-time auto-reconcile is
-opt-in through `services.incusMachines.autoReconcile = true;`.
+The reconcile policy is controlled by
+`services.incusMachines.global.reconcilePolicy`. The default is **best-effort**
+on non-container parent hosts and `"off"` on containerized Incus hosts such as
+nested guests. Boot-time auto-reconcile is opt-in through
+`services.incusMachines.global.autoReconcile = true;`.
 
 If you need to force a recreate even when the guest still exists and is running,
 bump `recreateTag` to a new value.

@@ -14,7 +14,8 @@ the guest is:
 
 ## Parent-Host Helpers
 
-Installed on parent hosts that declare `services.incusMachines.instances`:
+Installed on parent hosts that declare
+`services.incusMachines.<project>.instances`:
 
 - `incus-machines-reconciler`
 - `incus-machines-settlement`
@@ -30,7 +31,7 @@ incus-machines-reconciler --all
 incus-machines-reconciler --machine <guest-a> --machine <guest-b>
 ```
 
-Policy is controlled by `services.incusMachines.reconcilePolicy`:
+Policy is controlled by `services.incusMachines.global.reconcilePolicy`:
 
 - `off`
 - `best-effort`
@@ -163,7 +164,7 @@ Parent hosts can optionally run `incus-machines-reconciler --all` at boot via
 the `incus-machines-reconciler.service` systemd unit:
 
 ```nix
-services.incusMachines.autoReconcile = true;
+services.incusMachines.global.autoReconcile = true;
 ```
 
 This is **disabled by default** so that host boot does not block on guest

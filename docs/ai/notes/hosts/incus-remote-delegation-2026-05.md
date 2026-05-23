@@ -1,7 +1,7 @@
 # Incus Remote Delegation 2026-05
 
-`services.incusMachines.remote` lets a NixOS host run the repo Incus lifecycle
-helpers against a remote Incus HTTPS API instead of a local daemon.
+`services.incusMachines.global.remote` lets a NixOS host run the repo Incus
+lifecycle helpers against a remote Incus HTTPS API instead of a local daemon.
 
 The remote mode is intended for delegated control from an Incus guest back to
 its parent daemon:
@@ -38,9 +38,9 @@ avoid likely home LAN overlap:
 - `abird-dev`: `iabirddevbr0` on `10.10.200.1/24`
 - `pvl`: `ipvlbr0` on `10.10.50.1/24`
 
-`pvl-vlab-1` imports `../../lib/incus`, but its `services.incusMachines.remote`
-points at `https://127.0.0.1:8443` and uses the agenix-managed
-`data/secrets/incus/pvl-vlab-1.key.age` private key. Its
+`pvl-vlab-1` imports `../../lib/incus`, but its
+`services.incusMachines.global.remote` points at `https://127.0.0.1:8443` and
+uses the agenix-managed `data/secrets/incus/pvl-vlab-1.key.age` private key. Its
 `remote.projects.pvl.allowedSubnets = "10.10.50.0/24"` setting is a local
 validation guard: declared child instance addresses in the `pvl` project must
 remain inside the delegated subnet, but addresses are still written explicitly.
@@ -62,13 +62,12 @@ activation remounts because Incus/LXC already owns those mounts for the guest.
 
 Final delegated deploy fixes:
 
-- `pvl` project restrictions now explicitly block container syscall interception
-  and low-level container keys, and allow only unprivileged containers. Existing
-  stale `security.syscalls.intercept.*` instance keys must be removed before
-  tightening the project, otherwise Incus rejects the project update. The shared
-  `services.incusMachines.preseedMigrations` hook now runs that cleanup before
-  `incus-preseed` for declared preseed projects, keeping the migration out of
-  host-local systemd overrides.
+- `pvl` project restrictions explicitly block container syscall interception and
+  low-level container keys, and allow only unprivileged containers. Generic
+  `services.incusMachines.global.preseedMigrations` remains available for
+  explicit future Incus fabric transitions, but the temporary default cleanup
+  for stale `security.syscalls.intercept.*` keys was removed after the rollout
+  completed successfully.
 - The settlement helper no longer assumes `true` exists in `/bin`; it probes the
   NixOS profile path first. It also makes one best-effort networkd
   reconciliation attempt when an instance is running and accepts exec but has
@@ -122,12 +121,26 @@ files instead of native Incus trust-store delegation. `pvl-x2` creates one
 bind-mounts selected delegation directories into tenant machines under
 `/var/lib/incus-delegation/<name>`. The guest owns the file content. The parent
 watches and reconciles each file through the named
-`services.incusMachines.certificateDelegations.<name>` resource; each
+`services.incusMachines.global.certificateDelegations.<name>` resource; each
 `incusLib.mkCertDelegation "<name>"` disk device only references and mounts that
 resource into the guest. The parent lifecycle maps guest root through each
 guest's idmap, then applies host-side ownership to these handoff files. This
 lets root-owned guest services update the delegation state while keeping the
 mount compatible with restricted project source-path checks.
+
+Incus trust entries are globally unique by certificate fingerprint, not by
+project. If the same tenant certificate is published through multiple project
+delegations, the parent reconciler must converge one trust entry whose
+`projects` list contains all delegated projects. It must not delete and recreate
+the same fingerprint for each project-specific service.
+
+Incus images are also globally keyed by image fingerprint. If an import sees the
+same fingerprint before the repo metadata properties are present, the image
+reconciler should treat the existing fingerprint as the desired image and attach
+the declared alias instead of failing the deploy. For split local NixOS images,
+do not derive this from `sha256(metadata.tar.xz)`; reconcile by the metadata
+properties Incus stores on the image and serialize aliases that share the same
+declared image identity.
 
 The tenant file is JSON data, not Nix code. Parent validation requires a bounded
 certificate count, safe tenant-local names, and valid PEM certificate material.
@@ -145,7 +158,7 @@ Current delegated resources:
 - `abird-dev`: mounted into `abird-nest` as `delegated-dev-certs`
 
 `pvl-vlab-1` bootstraps its own parent access through
-`services.incusMachines.remote.projects.pvl`. The shared Incus module
+`services.incusMachines.global.remote.projects.pvl`. The shared Incus module
 auto-publishes the default remote project's client certificate to
 `/var/lib/incus-delegation/pvl/certs.json`, waits until the parent Incus API
 accepts that delegated cert, and makes that step an explicit prerequisite of
@@ -159,11 +172,11 @@ while still letting `pvl-vlab-1` manage the parent `pvl` project declaratively.
 
 `abird-nest` is declared in the parent Incus `abird` project at `10.10.100.10`.
 Per-instance project placement is handled by
-`services.incusMachines.instances.<name>.project`; lifecycle commands pass that
-project through to the Incus CLI/API. Because `abird-nest` needs the parent API
-proxy and host-path delegation mounts, the restricted `abird` project explicitly
-allows proxy devices and restricts host-path disk sources to the `abird` and
-`abird-dev` delegation directories.
+`services.incusMachines.<project>.instances.<name>.project`; lifecycle commands
+pass that project through to the Incus CLI/API. Because `abird-nest` needs the
+parent API proxy and host-path delegation mounts, the restricted `abird` project
+explicitly allows proxy devices and restricts host-path disk sources to the
+`abird` and `abird-dev` delegation directories.
 
 Incus CLI `query` must not go through the project-wrapped command helper:
 `incus query` rejects the global `--project` flag. Project-aware queries should
