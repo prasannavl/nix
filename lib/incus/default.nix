@@ -159,13 +159,51 @@
     if incusPreseed == null
     then []
     else map (project: project.name) (incusPreseed.projects or []);
+  preseedStoragePoolNames =
+    if incusPreseed == null
+    then []
+    else map (pool: pool.name) (incusPreseed.storage_pools or []);
+  preseedNetworkRefs =
+    if incusPreseed == null
+    then []
+    else map (network: "${network.project or "default"}/${network.name}") (incusPreseed.networks or []);
+  preseedProfileRefs =
+    if incusPreseed == null
+    then []
+    else map (profile: "${profile.project or "default"}/${profile.name}") (incusPreseed.profiles or []);
+  preseedProfileDeviceRefs =
+    if incusPreseed == null
+    then []
+    else
+      lib.concatLists (
+        map (
+          profile:
+            lib.mapAttrsToList
+            (deviceName: _: "${profile.project or "default"}/${profile.name}/${deviceName}")
+            (profile.devices or {})
+        )
+        (incusPreseed.profiles or [])
+      );
+  preseedProjectDeclared = project:
+    project == "default" || builtins.elem project preseedProjectNames;
   preseedMigrationHasAction = migration:
     migration.unsetInstanceConfigKeyPrefixes
     != []
     || migration.ensureStoragePools != []
+    || migration.ensureNetworks != []
+    || migration.ensureProjects != []
+    || migration.ensureProfiles != []
+    || migration.renameProjects != []
+    || migration.renameNetworks != []
+    || migration.deleteNetworks != []
+    || migration.stopInstances != []
+    || migration.startInstances != []
+    || migration.deleteInstances != []
     || migration.moveInstancesToStoragePools != []
     || migration.moveStorageVolumes != []
+    || migration.setNetworkConfig != []
     || migration.setProjectConfig != []
+    || migration.setInstanceDeviceProperties != []
     || migration.setProfileDeviceProperties != [];
   resolvedPreseedMigrations =
     lib.filter
@@ -175,7 +213,7 @@
           if migration.projects == null
           then preseedProjectNames
           else migration.projects;
-        inherit (migration) ensureStoragePools moveInstancesToStoragePools moveStorageVolumes setProfileDeviceProperties setProjectConfig unsetInstanceConfigKeyPrefixes;
+        inherit (migration) deleteInstances deleteNetworks ensureNetworks ensureProfiles ensureProjects ensureStoragePools moveInstancesToStoragePools moveStorageVolumes renameNetworks renameProjects setInstanceDeviceProperties setNetworkConfig setProfileDeviceProperties setProjectConfig startInstances stopInstances unsetInstanceConfigKeyPrefixes;
       })
       globalCfg.preseedMigrations);
   hasPreseedMigrations = !globalCfg.remote.enable && hasIncusPreseed && resolvedPreseedMigrations != [];
@@ -534,6 +572,189 @@
         description = "Storage pools to create or align before preseed applies project restrictions.";
       };
 
+      ensureNetworks = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus network name to create if missing.";
+            };
+
+            project = lib.mkOption {
+              type = lib.types.str;
+              default = "default";
+              description = "Incus project containing the managed network.";
+            };
+
+            type = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus network type.";
+            };
+
+            description = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Incus network description.";
+            };
+
+            config = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+              description = "Incus network config keys.";
+            };
+          };
+        }));
+        default = [];
+        description = "Networks to create before profile or instance devices are retargeted.";
+      };
+
+      setNetworkConfig = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              default = "default";
+              description = "Incus project containing the managed network.";
+            };
+
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus network name to update.";
+            };
+
+            config = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+              description = "Network config keys to set before other preseed migrations.";
+            };
+
+            unsetKeys = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+              description = "Network config keys to unset before setting config.";
+            };
+          };
+        }));
+        default = [];
+        description = "Network config keys to set or unset before creating replacement networks.";
+      };
+
+      ensureProjects = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project name to create if missing.";
+            };
+
+            config = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+              description = "Project config keys to set after creation or on existing projects.";
+            };
+          };
+        }));
+        default = [];
+        description = "Projects to create before preseed applies project changes or cross-project moves.";
+      };
+
+      ensureProfiles = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project containing the profile.";
+            };
+
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus profile name to create if missing.";
+            };
+
+            config = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+              description = "Profile config keys to set after creation or on existing profiles.";
+            };
+
+            description = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Profile description.";
+            };
+
+            devices = lib.mkOption {
+              type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
+              default = {};
+              description = "Profile devices to add or align after creation or on existing profiles.";
+            };
+          };
+        }));
+        default = [];
+        description = "Profiles to create or align before preseed applies profile changes or cross-project moves.";
+      };
+
+      renameProjects = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            from = lib.mkOption {
+              type = lib.types.str;
+              description = "Existing Incus project name.";
+            };
+
+            to = lib.mkOption {
+              type = lib.types.str;
+              description = "Desired Incus project name declared by preseed.";
+            };
+          };
+        }));
+        default = [];
+        description = "Empty project renames to apply before preseed creates or updates projects.";
+      };
+
+      renameNetworks = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              default = "default";
+              description = "Incus project containing the managed network.";
+            };
+
+            from = lib.mkOption {
+              type = lib.types.str;
+              description = "Existing Incus network name.";
+            };
+
+            to = lib.mkOption {
+              type = lib.types.str;
+              description = "Desired Incus network name declared by preseed.";
+            };
+          };
+        }));
+        default = [];
+        description = "Network renames to apply before preseed creates or updates networks.";
+      };
+
+      deleteNetworks = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              default = "default";
+              description = "Incus project containing the stale managed network.";
+            };
+
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus network name to delete if present.";
+            };
+          };
+        }));
+        default = [];
+        description = "Stale managed networks to delete after consumers are retargeted.";
+      };
+
       setProfileDeviceProperties = lib.mkOption {
         type = lib.types.listOf (lib.types.submodule (_: {
           options = {
@@ -563,6 +784,35 @@
         description = "Existing profile device properties to align before project restriction updates.";
       };
 
+      setInstanceDeviceProperties = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project containing the instance.";
+            };
+
+            instance = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus instance name.";
+            };
+
+            device = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus instance device name.";
+            };
+
+            properties = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+              description = "Device properties to set before preseed applies project restrictions.";
+            };
+          };
+        }));
+        default = [];
+        description = "Existing instance device properties to align before network deletion or project restriction updates.";
+      };
+
       setProjectConfig = lib.mkOption {
         type = lib.types.listOf (lib.types.submodule (_: {
           options = {
@@ -587,12 +837,18 @@
           options = {
             project = lib.mkOption {
               type = lib.types.str;
-              description = "Incus project containing the instance.";
+              description = "Source Incus project containing the instance.";
             };
 
             name = lib.mkOption {
               type = lib.types.str;
               description = "Incus instance name.";
+            };
+
+            targetProject = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional destination project for the instance.";
             };
 
             pool = lib.mkOption {
@@ -610,7 +866,7 @@
           options = {
             project = lib.mkOption {
               type = lib.types.str;
-              description = "Incus project containing the custom storage volume.";
+              description = "Source Incus project containing the custom storage volume.";
             };
 
             name = lib.mkOption {
@@ -627,10 +883,70 @@
               type = lib.types.str;
               description = "Destination storage pool.";
             };
+
+            targetProject = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional destination project for the custom storage volume.";
+            };
           };
         }));
         default = [];
         description = "Custom storage volumes to move before disk-device pool changes.";
+      };
+
+      stopInstances = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project containing the instance.";
+            };
+
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus instance name to stop if running.";
+            };
+          };
+        }));
+        default = [];
+        description = "Instances to stop before volume, project, or storage moves.";
+      };
+
+      startInstances = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project containing the instance.";
+            };
+
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus instance name to start if present and stopped.";
+            };
+          };
+        }));
+        default = [];
+        description = "Instances to start after migration retargeting completes.";
+      };
+
+      deleteInstances = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule (_: {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus project containing the stale instance.";
+            };
+
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Incus instance name to delete if present.";
+            };
+          };
+        }));
+        default = [];
+        description = "Stale instances to delete after their replacement exists elsewhere.";
       };
 
       unsetInstanceConfigKeyPrefixes = lib.mkOption {
@@ -1252,6 +1568,230 @@
       directory == certificateDelegationsRoot || directory == "${certificateDelegationsRoot}/" || !lib.hasPrefix "${certificateDelegationsRoot}/" directory)
     (builtins.attrNames globalCfg.certificateDelegations);
 
+  preseedMigrationsWithActions = lib.filter preseedMigrationHasAction globalCfg.preseedMigrations;
+  invalidPreseedMigrationEnsureStoragePools = lib.concatLists (
+    map (
+      migration:
+        map
+        (pool: "ensureStoragePools.${pool.name} is not declared in virtualisation.incus.preseed.storage_pools")
+        (lib.filter (pool: !builtins.elem pool.name preseedStoragePoolNames) migration.ensureStoragePools)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationEnsureNetworks = lib.concatLists (
+    map (
+      migration:
+        map
+        (network: "ensureNetworks ${network.project}/${network.name} is not declared in virtualisation.incus.preseed.networks")
+        (lib.filter (network: !builtins.elem "${network.project}/${network.name}" preseedNetworkRefs) migration.ensureNetworks)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationEnsureProjects = lib.concatLists (
+    map (
+      migration:
+        map
+        (entry: "ensureProjects.${entry.name} is not declared in virtualisation.incus.preseed.projects")
+        (lib.filter (entry: !builtins.elem entry.name preseedProjectNames) migration.ensureProjects)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationEnsureProfiles = lib.concatLists (
+    map (
+      migration:
+        map
+        (entry: "ensureProfiles ${entry.project}/${entry.name} is not declared in virtualisation.incus.preseed.profiles")
+        (lib.filter (entry: !builtins.elem "${entry.project}/${entry.name}" preseedProfileRefs) migration.ensureProfiles)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationRenameProjects = lib.concatLists (
+    map (
+      migration:
+        lib.concatLists (
+          map
+          (rename:
+            lib.optionals (rename.from == rename.to) [
+              "renameProjects ${rename.from} -> ${rename.to} uses the same source and target"
+            ]
+            ++ lib.optionals (rename.from == "default" || rename.to == "default") [
+              "renameProjects ${rename.from} -> ${rename.to} cannot rename the default project"
+            ]
+            ++ lib.optionals (!builtins.elem rename.to preseedProjectNames) [
+              "renameProjects ${rename.from} -> ${rename.to} target is not declared in virtualisation.incus.preseed.projects"
+            ])
+          migration.renameProjects
+        )
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationRenameNetworks = lib.concatLists (
+    map (
+      migration:
+        lib.concatLists (
+          map
+          (rename: let
+            targetRef = "${rename.project}/${rename.to}";
+          in
+            lib.optionals (rename.from == rename.to) [
+              "renameNetworks ${rename.project}/${rename.from} -> ${rename.to} uses the same source and target"
+            ]
+            ++ lib.optionals (!builtins.elem targetRef preseedNetworkRefs) [
+              "renameNetworks ${rename.project}/${rename.from} -> ${rename.to} target is not declared in virtualisation.incus.preseed.networks"
+            ])
+          migration.renameNetworks
+        )
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationDeleteNetworks = lib.concatLists (
+    map (
+      migration:
+        map
+        (network: "deleteNetworks ${network.project}/${network.name} is still declared in virtualisation.incus.preseed.networks")
+        (lib.filter (network: builtins.elem "${network.project}/${network.name}" preseedNetworkRefs) migration.deleteNetworks)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationSetNetworkConfig = lib.concatLists (
+    map (
+      migration:
+        map
+        (entry: "setNetworkConfig ${entry.project}/${entry.name} project is not declared in virtualisation.incus.preseed.projects")
+        (lib.filter (entry: !preseedProjectDeclared entry.project) migration.setNetworkConfig)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationSetProjectConfig = lib.concatLists (
+    map (
+      migration:
+        map
+        (entry: "setProjectConfig.${entry.project} is not declared in virtualisation.incus.preseed.projects")
+        (lib.filter (entry: !preseedProjectDeclared entry.project) migration.setProjectConfig)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationSetProfileDeviceProperties = lib.concatLists (
+    map (
+      migration:
+        map
+        (entry: "setProfileDeviceProperties ${entry.project}/${entry.profile}/${entry.device} is not declared in virtualisation.incus.preseed.profiles")
+        (lib.filter (entry: !builtins.elem "${entry.project}/${entry.profile}/${entry.device}" preseedProfileDeviceRefs) migration.setProfileDeviceProperties)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationSetInstanceDeviceProperties = lib.concatLists (
+    map (
+      migration:
+        lib.concatLists (
+          map
+          (entry:
+            lib.optionals (!preseedProjectDeclared entry.project) [
+              "setInstanceDeviceProperties ${entry.project}/${entry.instance}/${entry.device} project is not declared in virtualisation.incus.preseed.projects"
+            ]
+            ++ lib.optionals (builtins.hasAttr "network" entry.properties && !builtins.elem "default/${entry.properties.network}" preseedNetworkRefs) [
+              "setInstanceDeviceProperties ${entry.project}/${entry.instance}/${entry.device} network ${entry.properties.network} is not declared in virtualisation.incus.preseed.networks"
+            ])
+          migration.setInstanceDeviceProperties
+        )
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationStopInstances = lib.concatLists (
+    map (
+      migration:
+        map
+        (entry: "stopInstances ${entry.project}/${entry.name} project is not declared in virtualisation.incus.preseed.projects")
+        (lib.filter (entry: !preseedProjectDeclared entry.project) migration.stopInstances)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationStartInstances = lib.concatLists (
+    map (
+      migration:
+        map
+        (entry: "startInstances ${entry.project}/${entry.name} project is not declared in virtualisation.incus.preseed.projects")
+        (lib.filter (entry: !preseedProjectDeclared entry.project) migration.startInstances)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationDeleteInstances = lib.concatLists (
+    map (
+      migration:
+        map
+        (entry: "deleteInstances ${entry.project}/${entry.name} project is not declared in virtualisation.incus.preseed.projects")
+        (lib.filter (entry: !preseedProjectDeclared entry.project) migration.deleteInstances)
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationMoveInstancesToStoragePools = lib.concatLists (
+    map (
+      migration:
+        lib.concatLists (
+          map
+          (entry: let
+            targetProject =
+              if entry.targetProject == null
+              then entry.project
+              else entry.targetProject;
+          in
+            lib.optionals (!preseedProjectDeclared entry.project) [
+              "moveInstancesToStoragePools ${entry.project}/${entry.name} project is not declared in virtualisation.incus.preseed.projects"
+            ]
+            ++ lib.optionals (!preseedProjectDeclared targetProject) [
+              "moveInstancesToStoragePools ${entry.project}/${entry.name} target project ${targetProject} is not declared in virtualisation.incus.preseed.projects"
+            ]
+            ++ lib.optionals (!builtins.elem entry.pool preseedStoragePoolNames) [
+              "moveInstancesToStoragePools ${entry.project}/${entry.name} target pool ${entry.pool} is not declared in virtualisation.incus.preseed.storage_pools"
+            ])
+          migration.moveInstancesToStoragePools
+        )
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationMoveStorageVolumes = lib.concatLists (
+    map (
+      migration:
+        lib.concatLists (
+          map
+          (entry: let
+            targetProject =
+              if entry.targetProject == null
+              then entry.project
+              else entry.targetProject;
+          in
+            lib.optionals (!preseedProjectDeclared entry.project) [
+              "moveStorageVolumes ${entry.project}/${entry.name} project is not declared in virtualisation.incus.preseed.projects"
+            ]
+            ++ lib.optionals (!preseedProjectDeclared targetProject) [
+              "moveStorageVolumes ${entry.project}/${entry.name} target project ${targetProject} is not declared in virtualisation.incus.preseed.projects"
+            ]
+            ++ lib.optionals (!builtins.elem entry.toPool preseedStoragePoolNames) [
+              "moveStorageVolumes ${entry.project}/${entry.name} target pool ${entry.toPool} is not declared in virtualisation.incus.preseed.storage_pools"
+            ])
+          migration.moveStorageVolumes
+        )
+    )
+    globalCfg.preseedMigrations
+  );
+  invalidPreseedMigrationTargets =
+    invalidPreseedMigrationEnsureStoragePools
+    ++ invalidPreseedMigrationEnsureNetworks
+    ++ invalidPreseedMigrationEnsureProjects
+    ++ invalidPreseedMigrationEnsureProfiles
+    ++ invalidPreseedMigrationRenameProjects
+    ++ invalidPreseedMigrationRenameNetworks
+    ++ invalidPreseedMigrationDeleteNetworks
+    ++ invalidPreseedMigrationSetNetworkConfig
+    ++ invalidPreseedMigrationSetProjectConfig
+    ++ invalidPreseedMigrationSetProfileDeviceProperties
+    ++ invalidPreseedMigrationSetInstanceDeviceProperties
+    ++ invalidPreseedMigrationStopInstances
+    ++ invalidPreseedMigrationStartInstances
+    ++ invalidPreseedMigrationDeleteInstances
+    ++ invalidPreseedMigrationMoveInstancesToStoragePools
+    ++ invalidPreseedMigrationMoveStorageVolumes;
+
   certificateDelegationsJson = builtins.toJSON (
     lib.mapAttrs
     (_: delegation: {
@@ -1630,6 +2170,16 @@ in {
       {
         assertion = preseedCertificates == [];
         message = "Use services.incusMachines.global.certificates instead of virtualisation.incus.preseed.certificates.";
+      }
+      {
+        assertion = hasIncusPreseed || preseedMigrationsWithActions == [];
+        message = "services.incusMachines.global.preseedMigrations requires virtualisation.incus.preseed.";
+      }
+      {
+        assertion = invalidPreseedMigrationTargets == [];
+        message =
+          "services.incusMachines.global.preseedMigrations reference undeclared or invalid preseed targets: "
+          + lib.concatStringsSep "; " invalidPreseedMigrationTargets;
       }
       {
         assertion = invalidRestrictedCertificates == [];

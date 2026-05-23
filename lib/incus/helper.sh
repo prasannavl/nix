@@ -202,6 +202,121 @@ query_ref() {
 	printf '%s?project=%s\n' "$path" "$current_project"
 }
 
+query_response_is_error() {
+	local response
+	response="$1"
+	printf '%s' "$response" | jq -e '(.type // "") == "error" or (.error_code // null) != null' >/dev/null 2>&1
+}
+
+record_moved_volume_attachments() {
+	local attachment_device attachment_instance attachment_json attachment_status device_config_json encoded_instance instance_config_json instances_json name project target_pool target_project volume_pool volume_source
+	project="$1"
+	target_project="$2"
+	volume_pool="$3"
+	target_pool="$4"
+	volume_source="$5"
+
+	current_project="$project"
+	instances_json="$(incus query "$(query_ref "/1.0/instances?recursion=2")" --raw 2>/dev/null || printf '[]')"
+	while IFS= read -r attachment_json; do
+		[ -n "$attachment_json" ] || continue
+		attachment_instance="$(printf '%s' "$attachment_json" | jq -r '.instance')"
+		attachment_device="$(printf '%s' "$attachment_json" | jq -r '.device')"
+		device_config_json="$(printf '%s' "$attachment_json" | jq -c '.deviceConfig')"
+		encoded_instance="$(jq -nr --arg value "$attachment_instance" '$value | @uri')"
+
+		current_project="$project"
+		if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+			continue
+		fi
+		attachment_status="$(printf '%s' "$instance_config_json" | jq -r '.metadata.status // .status // ""')"
+		if [ "$attachment_status" = "Running" ]; then
+			incus --project "$project" stop "$attachment_instance" --force
+		fi
+
+		incus config device remove --project "$project" "$attachment_instance" "$attachment_device"
+		jq -cn \
+			--arg project "$project" \
+			--arg targetProject "$target_project" \
+			--arg instance "$attachment_instance" \
+			--arg device "$attachment_device" \
+			--arg targetPool "$target_pool" \
+			--argjson deviceConfig "$device_config_json" \
+			'{
+				project: $project,
+				targetProject: $targetProject,
+				instance: $instance,
+				device: $device,
+				targetPool: $targetPool,
+				deviceConfig: $deviceConfig
+			}' >>"$migration_volume_attachments_file"
+	done < <(
+		printf '%s' "$instances_json" |
+			jq -c --arg pool "$volume_pool" --arg source "$volume_source" '
+				(.metadata // .)[] |
+				.name as $instance |
+				(.devices // {}) |
+				to_entries[] |
+				select(
+					.value.type == "disk"
+					and (.value.pool // "") == $pool
+					and (.value.source // "") == $source
+				) |
+				{
+					instance: $instance,
+					device: .key,
+					deviceConfig: .value
+				}
+			'
+	)
+}
+
+reattach_moved_volume_devices() {
+	local attachment_json device device_config_json device_type encoded_instance instance_config_json instance_name key project target_project value
+	local -a device_args=()
+	project="$1"
+	target_project="$2"
+	instance_name="$3"
+
+	[ -s "$migration_volume_attachments_file" ] || return 0
+
+	while IFS= read -r attachment_json; do
+		[ -n "$attachment_json" ] || continue
+		device="$(printf '%s' "$attachment_json" | jq -r '.device')"
+		device_config_json="$(
+			printf '%s' "$attachment_json" |
+				jq -c '.deviceConfig + {pool: .targetPool}'
+		)"
+		device_type="$(printf '%s' "$device_config_json" | jq -r '.type')"
+		encoded_instance="$(jq -nr --arg value "$instance_name" '$value | @uri')"
+
+		current_project="$target_project"
+		if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+			continue
+		fi
+
+		device_args=()
+		while IFS= read -r key; do
+			[ -n "$key" ] || continue
+			value="$(printf '%s' "$device_config_json" | jq -r --arg k "$key" '.[$k]')"
+			device_args+=("$key=$value")
+		done < <(printf '%s' "$device_config_json" | jq -r 'keys[] | select(. != "type")')
+
+		if printf '%s' "$instance_config_json" | jq -e --arg device "$device" '(.metadata.devices // .devices // {}) | has($device)' >/dev/null 2>&1; then
+			incus config device set --project "$target_project" "$instance_name" "$device" "${device_args[@]}"
+		else
+			incus config device add --project "$target_project" "$instance_name" "$device" "$device_type" "${device_args[@]}"
+		fi
+	done < <(
+		jq -c \
+			--arg project "$project" \
+			--arg targetProject "$target_project" \
+			--arg instance "$instance_name" \
+			'select(.project == $project and .targetProject == $targetProject and .instance == $instance)' \
+			"$migration_volume_attachments_file"
+	)
+}
+
 target_image_ref() {
 	local alias
 	alias="$1"
@@ -300,8 +415,8 @@ instance_query_path() {
 }
 
 preseed_migrations_main() {
-	local current_project device driver encoded_instance encoded_profile from_pool instance instance_config_json instance_json key keys_json migration name pool pool_config_json pool_exists pool_json prefixes_json profile profile_device_json profile_json project project_config_json project_config_migration_json project_instances root_pool status to_pool value volume_json
-	local -a create_pool_args=() set_profile_args=() set_project_args=()
+	local current_project delete_instance_json delete_network_json device device_json device_type driver encoded_instance encoded_profile from_network from_pool from_project instance instance_config_json instance_device_json instance_json key keys_json migration migration_volume_attachments_file name network_config_json network_json network_project pool pool_config_json pool_exists pool_json prefixes_json profile profile_config_json profile_device_json profile_json project project_config_json project_config_migration_json project_exists project_instances project_json rename_network_json rename_project_json root_pool source_exists start_instance_json status stop_instance_json target_exists target_instance_config_json target_project to_network to_pool to_project unset_keys_json value volume_json
+	local -a create_network_args=() create_pool_args=() create_project_args=() set_device_args=() set_network_args=() set_profile_args=() set_project_args=() move_instance_args=() move_volume_args=()
 
 	printf '%s' "$preseed_migrations" |
 		jq -e '
@@ -318,10 +433,70 @@ preseed_migrations_main() {
 					and (.config | type == "object")
 					and all(.config[]; type == "string")
 				))
+				and (.ensureNetworks | type == "array")
+				and all(.ensureNetworks[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
+					and (.type | type == "string")
+					and (.config | type == "object")
+					and all(.config[]; type == "string")
+				))
+				and (.setNetworkConfig | type == "array")
+				and all(.setNetworkConfig[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
+					and (.config | type == "object")
+					and all(.config[]; type == "string")
+					and (.unsetKeys | type == "array")
+					and all(.unsetKeys[]; type == "string")
+				))
+				and (.ensureProjects | type == "array")
+				and all(.ensureProjects[]; (
+					(.name | type == "string")
+					and (.config | type == "object")
+					and all(.config[]; type == "string")
+				))
+				and (.ensureProfiles | type == "array")
+				and all(.ensureProfiles[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
+					and (.config | type == "object")
+					and all(.config[]; type == "string")
+					and (.devices | type == "object")
+					and all(.devices[]; (
+						type == "object"
+						and (.type | type == "string")
+						and all(.[]; type == "string")
+					))
+				))
+				and (.renameProjects | type == "array")
+				and all(.renameProjects[]; (
+					(.from | type == "string")
+					and (.to | type == "string")
+				))
+				and (.renameNetworks | type == "array")
+				and all(.renameNetworks[]; (
+					(.project | type == "string")
+					and (.from | type == "string")
+					and (.to | type == "string")
+				))
+				and (.deleteNetworks | type == "array")
+				and all(.deleteNetworks[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
+				))
 				and (.setProfileDeviceProperties | type == "array")
 				and all(.setProfileDeviceProperties[]; (
 					(.project | type == "string")
 					and (.profile | type == "string")
+					and (.device | type == "string")
+					and (.properties | type == "object")
+					and all(.properties[]; type == "string")
+				))
+				and (.setInstanceDeviceProperties | type == "array")
+				and all(.setInstanceDeviceProperties[]; (
+					(.project | type == "string")
+					and (.instance | type == "string")
 					and (.device | type == "string")
 					and (.properties | type == "object")
 					and all(.properties[]; type == "string")
@@ -336,6 +511,7 @@ preseed_migrations_main() {
 				and all(.moveInstancesToStoragePools[]; (
 					(.project | type == "string")
 					and (.name | type == "string")
+					and ((.targetProject == null) or (.targetProject | type == "string"))
 					and (.pool | type == "string")
 				))
 				and (.moveStorageVolumes | type == "array")
@@ -343,11 +519,28 @@ preseed_migrations_main() {
 					(.project | type == "string")
 					and (.name | type == "string")
 					and (.fromPool | type == "string")
+					and ((.targetProject == null) or (.targetProject | type == "string"))
 					and (.toPool | type == "string")
+				))
+				and (.stopInstances | type == "array")
+				and all(.stopInstances[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
+				))
+				and (.startInstances | type == "array")
+				and all(.startInstances[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
+				))
+				and (.deleteInstances | type == "array")
+				and all(.deleteInstances[]; (
+					(.project | type == "string")
+					and (.name | type == "string")
 				))
 			))
 		' >/dev/null
 
+	migration_volume_attachments_file="$(mktemp /run/incus-preseed-volume-attachments.XXXXXX)"
 	while IFS= read -r migration; do
 		while IFS= read -r pool_json; do
 			[ -n "$pool_json" ] || continue
@@ -371,6 +564,198 @@ preseed_migrations_main() {
 			fi
 		done < <(printf '%s' "$migration" | jq -c '.ensureStoragePools[]')
 
+		while IFS= read -r network_config_json; do
+			[ -n "$network_config_json" ] || continue
+			network_project="$(printf '%s' "$network_config_json" | jq -r '.project')"
+			name="$(printf '%s' "$network_config_json" | jq -r '.name')"
+			if ! incus network show --project "$network_project" "$name" >/dev/null 2>&1; then
+				continue
+			fi
+
+			unset_keys_json="$(printf '%s' "$network_config_json" | jq -c '.unsetKeys')"
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				incus network unset --project "$network_project" "$name" "$key" || true
+			done < <(printf '%s' "$unset_keys_json" | jq -r '.[]')
+
+			set_network_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$network_config_json" | jq -r --arg k "$key" '.config[$k]')"
+				set_network_args+=("$key=$value")
+			done < <(printf '%s' "$network_config_json" | jq -r '.config | keys[]')
+
+			if [ "${#set_network_args[@]}" -gt 0 ]; then
+				incus network set --project "$network_project" "$name" "${set_network_args[@]}"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.setNetworkConfig[]')
+
+		while IFS= read -r rename_network_json; do
+			[ -n "$rename_network_json" ] || continue
+			network_project="$(printf '%s' "$rename_network_json" | jq -r '.project')"
+			from_network="$(printf '%s' "$rename_network_json" | jq -r '.from')"
+			to_network="$(printf '%s' "$rename_network_json" | jq -r '.to')"
+			if [ "$from_network" = "$to_network" ]; then
+				continue
+			fi
+
+			source_exists=0
+			target_exists=0
+			incus network show --project "$network_project" "$from_network" >/dev/null 2>&1 && source_exists=1
+			incus network show --project "$network_project" "$to_network" >/dev/null 2>&1 && target_exists=1
+
+			if [ "$source_exists" -eq 1 ] && [ "$target_exists" -eq 1 ]; then
+				if [ "$(incus network show --project "$network_project" "$from_network" --format=json | jq '(.used_by // []) | length')" -eq 0 ]; then
+					incus network delete --project "$network_project" "$from_network"
+					continue
+				fi
+				echo "Cannot rename Incus network $network_project/$from_network to $to_network: both networks exist" >&2
+				exit 1
+			fi
+			if [ "$source_exists" -eq 1 ]; then
+				incus network rename --project "$network_project" "$from_network" "$to_network"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.renameNetworks[]')
+
+		while IFS= read -r network_json; do
+			[ -n "$network_json" ] || continue
+			network_project="$(printf '%s' "$network_json" | jq -r '.project')"
+			name="$(printf '%s' "$network_json" | jq -r '.name')"
+			device_type="$(printf '%s' "$network_json" | jq -r '.type')"
+			network_config_json="$(printf '%s' "$network_json" | jq -c '.config')"
+
+			if incus network show --project "$network_project" "$name" >/dev/null 2>&1; then
+				continue
+			fi
+
+			create_network_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$network_config_json" | jq -r --arg k "$key" '.[$k]')"
+				create_network_args+=("$key=$value")
+			done < <(printf '%s' "$network_config_json" | jq -r 'keys[]')
+
+			incus network create --project "$network_project" "$name" --type "$device_type" "${create_network_args[@]}"
+		done < <(printf '%s' "$migration" | jq -c '.ensureNetworks[]')
+
+		while IFS= read -r project_json; do
+			[ -n "$project_json" ] || continue
+			project="$(printf '%s' "$project_json" | jq -r '.name')"
+			project_config_json="$(printf '%s' "$project_json" | jq -c '.config')"
+			project_exists=0
+			if incus project show "$project" >/dev/null 2>&1; then
+				project_exists=1
+			fi
+
+			create_project_args=()
+			set_project_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$project_config_json" | jq -r --arg k "$key" '.[$k]')"
+				create_project_args+=("--config" "$key=$value")
+				set_project_args+=("$key=$value")
+			done < <(printf '%s' "$project_config_json" | jq -r 'keys[]')
+
+			if [ "$project_exists" -eq 0 ]; then
+				incus project create "$project" "${create_project_args[@]}"
+			fi
+
+			if [ "${#set_project_args[@]}" -gt 0 ]; then
+				incus project set "$project" "${set_project_args[@]}"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.ensureProjects[]')
+
+		while IFS= read -r instance_device_json; do
+			[ -n "$instance_device_json" ] || continue
+			project="$(printf '%s' "$instance_device_json" | jq -r '.project')"
+			instance="$(printf '%s' "$instance_device_json" | jq -r '.instance')"
+			device="$(printf '%s' "$instance_device_json" | jq -r '.device')"
+			encoded_instance="$(jq -nr --arg value "$instance" '$value | @uri')"
+
+			current_project="$project"
+			if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+				continue
+			fi
+			if ! printf '%s' "$instance_config_json" | jq -e --arg device "$device" '(.metadata.devices // .devices // {}) | has($device)' >/dev/null 2>&1; then
+				continue
+			fi
+
+			set_device_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$instance_device_json" | jq -r --arg k "$key" '.properties[$k]')"
+				set_device_args+=("$key=$value")
+			done < <(printf '%s' "$instance_device_json" | jq -r '.properties | keys[]')
+
+			if [ "${#set_device_args[@]}" -gt 0 ]; then
+				incus config device set --project "$project" "$instance" "$device" "${set_device_args[@]}"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.setInstanceDeviceProperties[]')
+
+		while IFS= read -r profile_json; do
+			[ -n "$profile_json" ] || continue
+			project="$(printf '%s' "$profile_json" | jq -r '.project')"
+			profile="$(printf '%s' "$profile_json" | jq -r '.name')"
+			profile_config_json="$(printf '%s' "$profile_json" | jq -c '.config')"
+			encoded_profile="$(jq -nr --arg value "$profile" '$value | @uri')"
+
+			current_project="$project"
+			if ! incus query "$(query_ref "/1.0/profiles/$encoded_profile")" --raw >/dev/null 2>&1; then
+				incus profile create --project "$project" "$profile"
+			fi
+
+			set_profile_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$profile_config_json" | jq -r --arg k "$key" '.[$k]')"
+				set_profile_args+=("$key=$value")
+			done < <(printf '%s' "$profile_config_json" | jq -r 'keys[]')
+
+			if [ "${#set_profile_args[@]}" -gt 0 ]; then
+				incus profile set --project "$project" "$profile" "${set_profile_args[@]}"
+			fi
+
+			while IFS= read -r device; do
+				[ -n "$device" ] || continue
+				device_json="$(printf '%s' "$profile_json" | jq -c --arg device "$device" '.devices[$device]')"
+				device_type="$(printf '%s' "$device_json" | jq -r '.type')"
+				set_device_args=()
+				while IFS= read -r key; do
+					[ -n "$key" ] || continue
+					value="$(printf '%s' "$device_json" | jq -r --arg k "$key" '.[$k]')"
+					set_device_args+=("$key=$value")
+				done < <(printf '%s' "$device_json" | jq -r 'keys[] | select(. != "type")')
+
+				if incus profile device get --project "$project" "$profile" "$device" type >/dev/null 2>&1; then
+					incus profile device set --project "$project" "$profile" "$device" "${set_device_args[@]}"
+				else
+					incus profile device add --project "$project" "$profile" "$device" "$device_type" "${set_device_args[@]}"
+				fi
+			done < <(printf '%s' "$profile_json" | jq -r '.devices | keys[]')
+		done < <(printf '%s' "$migration" | jq -c '.ensureProfiles[]')
+
+		while IFS= read -r rename_project_json; do
+			[ -n "$rename_project_json" ] || continue
+			from_project="$(printf '%s' "$rename_project_json" | jq -r '.from')"
+			to_project="$(printf '%s' "$rename_project_json" | jq -r '.to')"
+			if [ "$from_project" = "$to_project" ]; then
+				continue
+			fi
+
+			source_exists=0
+			target_exists=0
+			incus project show "$from_project" >/dev/null 2>&1 && source_exists=1
+			incus project show "$to_project" >/dev/null 2>&1 && target_exists=1
+
+			if [ "$source_exists" -eq 1 ] && [ "$target_exists" -eq 1 ]; then
+				echo "Cannot rename Incus project $from_project to $to_project: both projects exist" >&2
+				exit 1
+			fi
+			if [ "$source_exists" -eq 1 ]; then
+				incus project rename "$from_project" "$to_project"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.renameProjects[]')
+
 		while IFS= read -r project_config_migration_json; do
 			[ -n "$project_config_migration_json" ] || continue
 			project="$(printf '%s' "$project_config_migration_json" | jq -r '.project')"
@@ -391,27 +776,21 @@ preseed_migrations_main() {
 			fi
 		done < <(printf '%s' "$migration" | jq -c '.setProjectConfig[]')
 
-		while IFS= read -r instance_json; do
-			[ -n "$instance_json" ] || continue
-			project="$(printf '%s' "$instance_json" | jq -r '.project')"
-			name="$(printf '%s' "$instance_json" | jq -r '.name')"
-			pool="$(printf '%s' "$instance_json" | jq -r '.pool')"
+		while IFS= read -r stop_instance_json; do
+			[ -n "$stop_instance_json" ] || continue
+			project="$(printf '%s' "$stop_instance_json" | jq -r '.project')"
+			name="$(printf '%s' "$stop_instance_json" | jq -r '.name')"
 			encoded_instance="$(jq -nr --arg value "$name" '$value | @uri')"
 			current_project="$project"
 			if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
 				continue
 			fi
-			root_pool="$(printf '%s' "$instance_config_json" | jq -r '.metadata.expanded_devices.root.pool // ""')"
-			if [ "$root_pool" = "$pool" ]; then
-				continue
-			fi
 
-			status="$(printf '%s' "$instance_config_json" | jq -r '.metadata.status // ""')"
+			status="$(printf '%s' "$instance_config_json" | jq -r '.metadata.status // .status // ""')"
 			if [ "$status" = "Running" ]; then
 				incus --project "$project" stop "$name" --force
 			fi
-			incus move --project "$project" "$name" --storage "$pool"
-		done < <(printf '%s' "$migration" | jq -c '.moveInstancesToStoragePools[]')
+		done < <(printf '%s' "$migration" | jq -c '.stopInstances[]')
 
 		while IFS= read -r volume_json; do
 			[ -n "$volume_json" ] || continue
@@ -419,18 +798,118 @@ preseed_migrations_main() {
 			name="$(printf '%s' "$volume_json" | jq -r '.name')"
 			from_pool="$(printf '%s' "$volume_json" | jq -r '.fromPool')"
 			to_pool="$(printf '%s' "$volume_json" | jq -r '.toPool')"
+			target_project="$(printf '%s' "$volume_json" | jq -r '.targetProject // .project')"
 
-			if [ "$from_pool" = "$to_pool" ]; then
+			if [ "$from_pool" = "$to_pool" ] && [ "$project" = "$target_project" ]; then
 				continue
 			fi
-			if incus storage volume show --project "$project" "$to_pool" "$name" >/dev/null 2>&1; then
+			source_exists=0
+			target_exists=0
+			incus storage volume show --project "$project" "$from_pool" "$name" >/dev/null 2>&1 && source_exists=1
+			incus storage volume show --project "$target_project" "$to_pool" "$name" >/dev/null 2>&1 && target_exists=1
+			if [ "$target_exists" -eq 1 ]; then
 				continue
 			fi
-			if ! incus storage volume show --project "$project" "$from_pool" "$name" >/dev/null 2>&1; then
+			if [ "$source_exists" -eq 0 ]; then
 				continue
 			fi
-			incus storage volume move --project "$project" "$from_pool/$name" "$to_pool/$name"
+			record_moved_volume_attachments "$project" "$target_project" "$from_pool" "$to_pool" "$name"
+			move_volume_args=(--project "$project" "$from_pool/$name" "$to_pool/$name")
+			if [ "$target_project" != "$project" ]; then
+				move_volume_args+=(--target-project "$target_project")
+			fi
+			incus storage volume move "${move_volume_args[@]}"
 		done < <(printf '%s' "$migration" | jq -c '.moveStorageVolumes[]')
+
+		while IFS= read -r instance_json; do
+			[ -n "$instance_json" ] || continue
+			project="$(printf '%s' "$instance_json" | jq -r '.project')"
+			name="$(printf '%s' "$instance_json" | jq -r '.name')"
+			target_project="$(printf '%s' "$instance_json" | jq -r '.targetProject // .project')"
+			pool="$(printf '%s' "$instance_json" | jq -r '.pool')"
+			encoded_instance="$(jq -nr --arg value "$name" '$value | @uri')"
+
+			if [ "$target_project" != "$project" ]; then
+				current_project="$target_project"
+				if target_instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+					if ! query_response_is_error "$target_instance_config_json"; then
+						reattach_moved_volume_devices "$project" "$target_project" "$name"
+						continue
+					fi
+				fi
+			fi
+
+			current_project="$project"
+			if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+				continue
+			fi
+			if query_response_is_error "$instance_config_json"; then
+				continue
+			fi
+			root_pool="$(printf '%s' "$instance_config_json" | jq -r '.metadata.expanded_devices.root.pool // .expanded_devices.root.pool // ""')"
+			if [ "$root_pool" = "$pool" ] && [ "$project" = "$target_project" ]; then
+				continue
+			fi
+
+			status="$(printf '%s' "$instance_config_json" | jq -r '.metadata.status // .status // ""')"
+			if [ "$status" = "Running" ]; then
+				incus --project "$project" stop "$name" --force
+			fi
+			move_instance_args=(--project "$project" "$name" "$name" --storage "$pool")
+			if [ "$target_project" != "$project" ]; then
+				move_instance_args+=(--target-project "$target_project")
+				incus copy "${move_instance_args[@]}"
+			else
+				incus move "${move_instance_args[@]}"
+			fi
+			reattach_moved_volume_devices "$project" "$target_project" "$name"
+		done < <(printf '%s' "$migration" | jq -c '.moveInstancesToStoragePools[]')
+
+		while IFS= read -r delete_instance_json; do
+			[ -n "$delete_instance_json" ] || continue
+			project="$(printf '%s' "$delete_instance_json" | jq -r '.project')"
+			name="$(printf '%s' "$delete_instance_json" | jq -r '.name')"
+			encoded_instance="$(jq -nr --arg value "$name" '$value | @uri')"
+			current_project="$project"
+			if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+				continue
+			fi
+			if query_response_is_error "$instance_config_json"; then
+				continue
+			fi
+			status="$(printf '%s' "$instance_config_json" | jq -r '.metadata.status // .status // ""')"
+			if [ "$status" = "Running" ]; then
+				incus --project "$project" stop "$name" --force
+			fi
+			incus delete --project "$project" "$name" --force
+		done < <(printf '%s' "$migration" | jq -c '.deleteInstances[]')
+
+		while IFS= read -r instance_device_json; do
+			[ -n "$instance_device_json" ] || continue
+			project="$(printf '%s' "$instance_device_json" | jq -r '.project')"
+			instance="$(printf '%s' "$instance_device_json" | jq -r '.instance')"
+			device="$(printf '%s' "$instance_device_json" | jq -r '.device')"
+			encoded_instance="$(jq -nr --arg value "$instance" '$value | @uri')"
+
+			current_project="$project"
+			if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+				continue
+			fi
+			if ! printf '%s' "$instance_config_json" | jq -e --arg device "$device" '(.metadata.devices // .devices // {}) | has($device)' >/dev/null 2>&1; then
+				continue
+			fi
+
+			set_device_args=()
+			while IFS= read -r key; do
+				[ -n "$key" ] || continue
+				value="$(printf '%s' "$instance_device_json" | jq -r --arg k "$key" '.properties[$k]')"
+				set_device_args+=("$key=$value")
+			done < <(printf '%s' "$instance_device_json" | jq -r '.properties | keys[]')
+
+			if [ "${#set_device_args[@]}" -gt 0 ]; then
+				incus config device set --project "$project" "$instance" "$device" "${set_device_args[@]}"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.setInstanceDeviceProperties[]')
 
 		while IFS= read -r profile_device_json; do
 			[ -n "$profile_device_json" ] || continue
@@ -443,7 +922,7 @@ preseed_migrations_main() {
 			if ! profile_json="$(incus query "$(query_ref "/1.0/profiles/$encoded_profile")" --raw 2>/dev/null)"; then
 				continue
 			fi
-			if ! printf '%s' "$profile_json" | jq -e --arg device "$device" '.metadata.devices | has($device)' >/dev/null 2>&1; then
+			if ! printf '%s' "$profile_json" | jq -e --arg device "$device" '(.devices // .metadata.devices // {}) | has($device)' >/dev/null 2>&1; then
 				continue
 			fi
 
@@ -458,6 +937,33 @@ preseed_migrations_main() {
 				incus profile device set --project "$project" "$profile" "$device" "${set_profile_args[@]}"
 			fi
 		done < <(printf '%s' "$migration" | jq -c '.setProfileDeviceProperties[]')
+
+		while IFS= read -r delete_network_json; do
+			[ -n "$delete_network_json" ] || continue
+			network_project="$(printf '%s' "$delete_network_json" | jq -r '.project')"
+			name="$(printf '%s' "$delete_network_json" | jq -r '.name')"
+			if incus network show --project "$network_project" "$name" >/dev/null 2>&1; then
+				incus network delete --project "$network_project" "$name"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.deleteNetworks[]')
+
+		while IFS= read -r start_instance_json; do
+			[ -n "$start_instance_json" ] || continue
+			project="$(printf '%s' "$start_instance_json" | jq -r '.project')"
+			name="$(printf '%s' "$start_instance_json" | jq -r '.name')"
+			encoded_instance="$(jq -nr --arg value "$name" '$value | @uri')"
+			current_project="$project"
+			if ! instance_config_json="$(incus query "$(query_ref "/1.0/instances/$encoded_instance")" --raw 2>/dev/null)"; then
+				continue
+			fi
+			if query_response_is_error "$instance_config_json"; then
+				continue
+			fi
+			status="$(printf '%s' "$instance_config_json" | jq -r '.metadata.status // .status // ""')"
+			if [ "$status" != "Running" ]; then
+				incus start --project "$project" "$name"
+			fi
+		done < <(printf '%s' "$migration" | jq -c '.startInstances[]')
 
 		prefixes_json="$(printf '%s' "$migration" | jq -c '.unsetInstanceConfigKeyPrefixes')"
 		if [ "$prefixes_json" = "[]" ]; then
@@ -494,6 +1000,7 @@ preseed_migrations_main() {
 			done < <(printf '%s' "$project_instances" | jq -r '.[].name')
 		done < <(printf '%s' "$migration" | jq -r '.projects[]')
 	done < <(printf '%s' "$preseed_migrations" | jq -c '.[]')
+	rm -f -- "$migration_volume_attachments_file"
 }
 
 json_keys() {

@@ -30,6 +30,20 @@ recent host incidents.
 - GC must fail closed on Incus query failure and respect explicit removal
   policy.
 - Duplicate guest `ipv4Address` declarations are an evaluation error.
+- Preseed fabric changes that rename or move live projects, networks, profiles,
+  instances, or volumes must be declared explicitly in
+  `services.incusMachines.global.preseedMigrations`; build-time assertions check
+  that migration targets are present in `virtualisation.incus.preseed`.
+- Incus project renames only work for empty projects. For non-empty project
+  transitions, create/prepare the target project and profile, stop instances,
+  then move custom volumes and instances across projects.
+- Incus network renames only work when nothing uses the network. If a bridge is
+  already referenced by live profiles or instances, preserve the bridge name or
+  move consumers away before renaming it.
+- One-shot migration payloads should be removed after live validation reaches
+  the desired shape. Keep the generic migration actions, but do not leave
+  host-specific transition allowances, stale bridge names, or temporary access
+  grants in the steady-state host config.
 - Laptop parents should enable `services.incusMachines.global.hostSuspend` so
   running Incus instances are stopped before host sleep and restarted after
   resume. This is host policy, not guest cooperation: container userspace must
