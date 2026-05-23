@@ -7,30 +7,28 @@
     inherit config lib;
   };
 in {
-  services.incusMachines = {
-    instances = {
-      pvl-vk = {
-        ipv4Address = "10.10.30.10";
-        config = {
-          "security.privileged" = "false";
-          "security.nesting" = "true";
-          "security.syscalls.intercept.mount" = "true";
-          "security.syscalls.intercept.mount.shift" = "true";
-        };
-        devices =
-          {
-            state = {
-              source = "pvl-vk";
-              path = "/var/lib";
-              removalPolicy = "delete";
-            };
-          }
-          // incusLib.mkGpuDevices {
-            card = 1;
-            render = 128;
-            kfd = true;
-          };
+  services.incusMachines.default.instances = {
+    pvl-vk = {
+      ipv4Address = "10.10.30.10";
+      config = {
+        "security.privileged" = "false";
+        "security.nesting" = "true";
+        "security.syscalls.intercept.mount" = "true";
+        "security.syscalls.intercept.mount.shift" = "true";
       };
+      devices =
+        {
+          state = {
+            source = "pvl-vk";
+            path = "/var/lib";
+            removalPolicy = "delete";
+          };
+        }
+        // incusLib.mkGpuDevices {
+          card = 1;
+          render = 128;
+          kfd = true;
+        };
     };
   };
   virtualisation.incus = {

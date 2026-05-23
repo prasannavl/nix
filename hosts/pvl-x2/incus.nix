@@ -119,7 +119,6 @@
   mkLxc = {
     name,
     ipv4Address,
-    project ? null,
     image ? null,
     removalPolicy ? "delete-all",
     recreateTag ? null,
@@ -157,9 +156,6 @@
         }
         // extraDevices;
     }
-    // lib.optionalAttrs (project != null) {
-      project = project;
-    }
     // lib.optionalAttrs (image != null) {
       image = image;
     }
@@ -172,76 +168,81 @@
     kfd = true;
   };
 in {
-  services.incusMachines = {
-    certificates = [
-      {
-        name = "pvl";
-        type = "client";
-        restricted = false;
-        projects = [];
-        certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
-      }
-    ];
-
-    certificateDelegations = {
-      pvl = {
-        project = "pvl";
-      };
-      abird = {
-        project = "abird";
-      };
-      abird-dev = {
-        project = "abird-dev";
-      };
-    };
-
-    instances = {
-      pvl-vlab = mkLxc {
-        name = "pvl-vlab";
-        ipv4Address = "10.10.20.10";
-        privileged = true;
-        nestedContainers = true;
-        extraDevices = amdGpuDevices;
-      };
-
-      pvl-vlab-1 = mkLxc {
-        name = "pvl-vlab-1";
-        ipv4Address = "10.10.20.30";
-        privileged = true;
-        nestedContainers = true;
-        extraDevices =
+  services = {
+    incusMachines = {
+      global = {
+        certificates = [
           {
+            name = "pvl";
+            type = "client";
+            restricted = false;
+            projects = [];
+            certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
+          }
+        ];
+
+        certificateDelegations = {
+          pvl = {
+            project = "pvl";
+          };
+          abird = {
+            project = "abird";
+          };
+          abird-dev = {
+            project = "abird-dev";
+          };
+        };
+      };
+
+      default.instances = {
+        pvl-vlab = mkLxc {
+          name = "pvl-vlab";
+          ipv4Address = "10.10.20.10";
+          privileged = true;
+          nestedContainers = true;
+          extraDevices = amdGpuDevices;
+        };
+
+        pvl-vlab-1 = mkLxc {
+          name = "pvl-vlab-1";
+          ipv4Address = "10.10.20.30";
+          privileged = true;
+          nestedContainers = true;
+          extraDevices =
+            {
+              incus-api = incusLib.mkIncusProxy {
+                connectHost = "10.10.20.1";
+              };
+              delegated-certs = incusLib.mkCertDelegation "pvl";
+            }
+            // amdGpuDevices;
+        };
+
+        gap3-gondor = mkLxc {
+          name = "gap3-gondor";
+          image = inputs.self.nixosImages.gap3-base;
+          ipv4Address = "10.10.20.20";
+          recreateTag = "3";
+          privileged = true;
+          nestedContainers = true;
+          interceptMounts = true;
+          extraDevices = amdGpuDevices;
+        };
+      };
+
+      abird.instances = {
+        abird-nest = mkLxc {
+          name = "abird-nest";
+          ipv4Address = "10.10.100.10";
+          recreateTag = "1";
+          nestedContainers = true;
+          extraDevices = {
             incus-api = incusLib.mkIncusProxy {
               connectHost = "10.10.20.1";
             };
-            delegated-certs = incusLib.mkCertDelegation "pvl";
-          }
-          // amdGpuDevices;
-      };
-
-      gap3-gondor = mkLxc {
-        name = "gap3-gondor";
-        image = inputs.self.nixosImages.gap3-base;
-        ipv4Address = "10.10.20.20";
-        recreateTag = "3";
-        privileged = true;
-        nestedContainers = true;
-        interceptMounts = true;
-        extraDevices = amdGpuDevices;
-      };
-
-      abird-nest = mkLxc {
-        name = "abird-nest";
-        project = "abird";
-        ipv4Address = "10.10.100.10";
-        recreateTag = "1";
-        nestedContainers = true;
-        extraDevices = {
-          incus-api = incusLib.mkIncusProxy {
-            connectHost = "10.10.20.1";
+            delegated-certs = incusLib.mkCertDelegation "abird";
+            delegated-dev-certs = incusLib.mkCertDelegation "abird-dev";
           };
-          delegated-certs = incusLib.mkCertDelegation "abird";
-          delegated-dev-certs = incusLib.mkCertDelegation "abird-dev";
         };
       };
     };

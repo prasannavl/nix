@@ -1,10 +1,10 @@
 {pkgs, ...}: {
-  services.incusMachines.hostSuspend = {
+  services.incusMachines.global.hostSuspend = {
     enable = true;
     defaultPolicy = "stop";
     includeVirtualMachines = false;
   };
-  services.incusMachines.certificates = [
+  services.incusMachines.global.certificates = [
     {
       name = "pvl";
       type = "client";
