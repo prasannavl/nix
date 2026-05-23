@@ -4,13 +4,13 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  scripts/age-secrets.sh [-v] encrypt [path]
-  scripts/age-secrets.sh [-v] decrypt [path]
-  scripts/age-secrets.sh [-v] clean [path]
-  scripts/age-secrets.sh [-v] -e [path]
-  scripts/age-secrets.sh [-v] -d [path]
-  scripts/age-secrets.sh [-v] -c [path]
-  scripts/age-secrets.sh [-v] [path]
+  scripts/age-secrets.sh [-v] encrypt [path ...]
+  scripts/age-secrets.sh [-v] decrypt [path ...]
+  scripts/age-secrets.sh [-v] clean [path ...]
+  scripts/age-secrets.sh [-v] -e [path ...]
+  scripts/age-secrets.sh [-v] -d [path ...]
+  scripts/age-secrets.sh [-v] -c [path ...]
+  scripts/age-secrets.sh [-v] [path ...]
 Behavior:
   encrypt   Encrypts managed plaintext files to managed *.age files.
   decrypt   Decrypts managed *.age files to plaintext alongside them (drops .age suffix).
@@ -18,7 +18,7 @@ Behavior:
   (no mode) Auto-toggle: encrypt if any managed plaintext exists, otherwise decrypt.
 Notes:
   - Default scope is all files listed in data/secrets/default.nix.
-  - Pass [path] to limit the run to one managed subtree or one managed file.
+  - Pass [path ...] to limit the run to managed subtrees or files.
   - Only files listed in data/secrets/default.nix are managed.
   - encrypt does not delete plaintext source files.
   - decrypt uses AGE_KEY_FILE, or defaults to ~/.ssh/id_ed25519.
@@ -71,7 +71,20 @@ resolve_target_path() {
 	echo "$target_path"
 }
 
-load_managed_files() {
+resolve_target_paths() {
+	local out_name="$1"
+	shift
+	# shellcheck disable=SC2178
+	local -n out_ref="$out_name"
+	local target_path
+
+	out_ref=()
+	for target_path in "$@"; do
+		out_ref+=("$(resolve_target_path "$target_path")")
+	done
+}
+
+load_managed_files_for_target() {
 	local root="$1"
 	local target_path="${2:-}"
 	local recipients_json="$3"
@@ -99,6 +112,31 @@ load_managed_files() {
 	if jq -e --arg p "$age_rel" 'has($p)' <<<"$recipients_json" >/dev/null; then
 		printf '%s\n' "$age_rel"
 	fi
+}
+
+load_managed_files() {
+	local root="$1"
+	local recipients_json="$2"
+	shift 2
+	local -a target_paths=("$@")
+	local target_path
+	local rel
+	local -A seen=()
+
+	if [ "${#target_paths[@]}" -eq 0 ]; then
+		load_managed_files_for_target "$root" "" "$recipients_json"
+		return 0
+	fi
+
+	for target_path in "${target_paths[@]}"; do
+		while IFS= read -r rel; do
+			if [ -n "${seen[$rel]+x}" ]; then
+				continue
+			fi
+			seen["$rel"]=1
+			printf '%s\n' "$rel"
+		done < <(load_managed_files_for_target "$root" "$target_path" "$recipients_json")
+	done
 }
 
 encrypt_file() {
@@ -153,16 +191,16 @@ decrypt_file() {
 
 parse_args() {
 	local mode_name="$1"
-	local target_dir_name="$2"
+	local target_paths_name="$2"
 	local verbose_name="$3"
 	shift 3
 	local raw_mode
-	local raw_target_dir="${2:-}"
 	local parsed_mode=""
-	local parsed_target_dir=""
 	local parsed_verbose="0"
 	local arg
 	local -a positionals=()
+	local -a parsed_target_paths=()
+	local -n target_paths_ref="$target_paths_name"
 
 	for arg in "$@"; do
 		case "$arg" in
@@ -172,17 +210,15 @@ parse_args() {
 	done
 
 	raw_mode="${positionals[0]:-}"
-	raw_target_dir="${positionals[1]:-}"
 	parsed_mode="$raw_mode"
-	parsed_target_dir="$raw_target_dir"
 
 	if [ -n "$raw_mode" ] && [[ "$raw_mode" != -* ]]; then
 		case "$raw_mode" in
 		encrypt | decrypt | clean | -e | -d | -c) ;;
 		*)
 			parsed_mode=""
-			parsed_target_dir="$raw_mode"
 			raw_mode=""
+			parsed_target_paths=("${positionals[@]}")
 			;;
 		esac
 	fi
@@ -197,8 +233,8 @@ parse_args() {
 		exit 0
 		;;
 	"")
-		if [ -n "${1:-}" ] && [[ "${1}" != -* ]]; then
-			parsed_target_dir="${1}"
+		if [ "${#parsed_target_paths[@]}" -eq 0 ]; then
+			parsed_target_paths=("${positionals[@]}")
 		fi
 		;;
 	*)
@@ -207,8 +243,13 @@ parse_args() {
 		;;
 	esac
 
+	if [ -n "$parsed_mode" ]; then
+		parsed_target_paths=("${positionals[@]:1}")
+	fi
+
 	printf -v "$mode_name" '%s' "$parsed_mode"
-	printf -v "$target_dir_name" '%s' "$parsed_target_dir"
+	# shellcheck disable=SC2034
+	target_paths_ref=("${parsed_target_paths[@]}")
 	printf -v "$verbose_name" '%s' "$parsed_verbose"
 }
 
@@ -250,6 +291,7 @@ collect_candidates() {
 filter_existing_files() {
 	local out_name="$1"
 	shift
+	# shellcheck disable=SC2178
 	local -n out_ref="$out_name"
 	local path
 
@@ -262,13 +304,13 @@ filter_existing_files() {
 }
 
 report_no_managed_files() {
-	local target_path="${1:-}"
+	local target_label="${1:-}"
 	local managed_secrets_label
 
 	managed_secrets_label="$(rel_from_root "$REPO_ROOT" "$MANAGED_SECRETS_FILE")"
 
-	if [ -n "$target_path" ]; then
-		echo "No managed secrets found for $target_path (from ${managed_secrets_label})"
+	if [ -n "$target_label" ]; then
+		echo "No managed secrets found for $target_label (from ${managed_secrets_label})"
 	else
 		echo "No managed secrets found in ${managed_secrets_label}"
 	fi
@@ -276,7 +318,7 @@ report_no_managed_files() {
 
 report_no_mode_files() {
 	local mode="$1"
-	local target_path="${2:-}"
+	local target_label="${2:-}"
 	local message
 
 	case "$mode" in
@@ -286,8 +328,8 @@ report_no_mode_files() {
 	*) die "Unsupported mode for empty-state message: $mode" ;;
 	esac
 
-	if [ -n "$target_path" ]; then
-		echo "${message} for $target_path"
+	if [ -n "$target_label" ]; then
+		echo "${message} for $target_label"
 	else
 		echo "$message"
 	fi
@@ -311,7 +353,7 @@ resolve_mode() {
 
 run_mode() {
 	local mode="$1"
-	local target_path="$2"
+	local target_label="$2"
 	local root="$3"
 	local recipients_json="$4"
 	shift 4
@@ -321,7 +363,7 @@ run_mode() {
 	local success_count=0
 
 	if [ "${#files[@]}" -eq 0 ]; then
-		report_no_mode_files "$mode" "$target_path"
+		report_no_mode_files "$mode" "$target_label"
 		return 0
 	fi
 
@@ -385,12 +427,14 @@ ensure_runtime_shell() {
 
 main() {
 	local mode=""
-	local target_path=""
+	local target_label=""
 	local requested_mode=""
 	local verbose="0"
 	local recipients_json
 	local -a files=()
 	local -a managed=()
+	local -a target_paths=()
+	local -a resolved_target_paths=()
 	local -a enc_candidates=()
 	local -a dec_candidates=()
 	local -a clean_candidates=()
@@ -398,7 +442,7 @@ main() {
 
 	ensure_runtime_shell "$@"
 	init_vars
-	parse_args mode target_path verbose "$@"
+	parse_args mode target_paths verbose "$@"
 	requested_mode="$mode"
 
 	require_cmd age
@@ -407,13 +451,16 @@ main() {
 	require_cmd nix
 	require_cmd realpath
 	VERBOSE="$verbose"
-	target_path="$(resolve_target_path "$target_path")"
+	resolve_target_paths resolved_target_paths "${target_paths[@]}"
+	if [ "${#resolved_target_paths[@]}" -gt 0 ]; then
+		target_label="${resolved_target_paths[*]}"
+	fi
 
 	recipients_json="$(load_recipients_json)"
-	mapfile -t managed < <(load_managed_files "$REPO_ROOT" "$target_path" "$recipients_json")
+	mapfile -t managed < <(load_managed_files "$REPO_ROOT" "$recipients_json" "${resolved_target_paths[@]}")
 
 	if [ "${#managed[@]}" -eq 0 ]; then
-		report_no_managed_files "$target_path"
+		report_no_managed_files "$target_label"
 		exit 0
 	fi
 
@@ -437,7 +484,7 @@ main() {
 	*) die "Unsupported mode: $mode" ;;
 	esac
 
-	run_mode "$mode" "$target_path" "$REPO_ROOT" "$recipients_json" "${files[@]}"
+	run_mode "$mode" "$target_label" "$REPO_ROOT" "$recipients_json" "${files[@]}"
 }
 
 main "$@"
