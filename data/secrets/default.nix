@@ -41,9 +41,8 @@ in
     "data/secrets/incus/pvl.key.age".publicKeys = admins;
     "data/secrets/incus/pvl.pfx.age".publicKeys = admins;
     "data/secrets/incus/abird.key.age".publicKeys = admins;
-    "data/secrets/incus/abird.pfx.age".publicKeys = admins;
+    "data/secrets/incus/abird-stage.key.age".publicKeys = admins;
     "data/secrets/incus/abird-dev.key.age".publicKeys = admins;
-    "data/secrets/incus/abird-dev.pfx.age".publicKeys = admins;
     "data/secrets/incus/pvl-vlab-1.key.age".publicKeys = admins ++ pvl-vlab-1;
 
     # Cloudflare DNS

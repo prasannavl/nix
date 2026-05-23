@@ -14,7 +14,7 @@
     "features.storage.buckets" = "true";
     "features.storage.volumes" = "true";
   };
-  projectNames = ["pvl" "abird" "abird-dev"];
+  projectNames = ["pvl" "abird" "abird-stage" "abird-dev"];
   projects = {
     pvl = {
       pool = "pvl";
@@ -38,16 +38,25 @@
       config = {
         "restricted.containers.nesting" = "allow";
         "restricted.devices.disk" = "allow";
-        "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-dev";
+        "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-stage,/var/lib/incus-delegations/abird-dev";
         "restricted.devices.proxy" = "allow";
       };
+    };
+    abird-stage = {
+      pool = "abird-stage";
+      network = {
+        name = "iabirdbr1";
+        ipv4Address = "10.10.200.1/24";
+        dhcpRanges = "10.10.200.100-10.10.200.199";
+      };
+      config = {};
     };
     abird-dev = {
       pool = "abird-dev";
       network = {
-        name = "iabirddevbr0";
-        ipv4Address = "10.10.200.1/24";
-        dhcpRanges = "10.10.200.100-10.10.200.199";
+        name = "iabirdbr2";
+        ipv4Address = "10.10.220.1/24";
+        dhcpRanges = "10.10.220.100-10.10.220.199";
       };
       config = {};
     };
@@ -97,25 +106,26 @@
     name = "default";
     project = project;
   };
-  mkRestrictedProject = name: let
-    projectConfig = projects.${name};
-  in {
+  mkRestrictedProject = name: {
     name = name;
     description = "";
-    config =
-      isolatedProjectConfig
-      // {
-        restricted = "true";
-        "restricted.containers.interception" = "block";
-        "restricted.containers.lowlevel" = "block";
-        "restricted.containers.privilege" = "unprivileged";
-        "restricted.devices.disk" = "managed";
-        "restricted.devices.nic" = "managed";
-        "restricted.networks.access" = projectConfig.network.name;
-        "restricted.storage-pools.access" = projectConfig.pool;
-      }
-      // projectConfig.config;
+    config = mkRestrictedProjectConfig name;
   };
+  mkRestrictedProjectConfig = name: let
+    projectConfig = projects.${name};
+  in
+    isolatedProjectConfig
+    // {
+      restricted = "true";
+      "restricted.containers.interception" = "block";
+      "restricted.containers.lowlevel" = "block";
+      "restricted.containers.privilege" = "unprivileged";
+      "restricted.devices.disk" = "managed";
+      "restricted.devices.nic" = "managed";
+      "restricted.networks.access" = projectConfig.network.name;
+      "restricted.storage-pools.access" = projectConfig.pool;
+    }
+    // projectConfig.config;
   mkLxc = {
     name,
     ipv4Address,
@@ -188,6 +198,9 @@ in {
           abird = {
             project = "abird";
           };
+          abird-stage = {
+            project = "abird-stage";
+          };
           abird-dev = {
             project = "abird-dev";
           };
@@ -241,6 +254,7 @@ in {
               connectHost = "10.10.20.1";
             };
             delegated-certs = incusLib.mkCertDelegation "abird";
+            delegated-stage-certs = incusLib.mkCertDelegation "abird-stage";
             delegated-dev-certs = incusLib.mkCertDelegation "abird-dev";
           };
         };

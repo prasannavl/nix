@@ -121,8 +121,8 @@ Use this index as the canonical map for `docs/ai/**`.
   restarted declared guest lifecycle units during normal `switch`, plus the
   durable explicit-trigger fix.
 - `docs/ai/notes/hosts/pvl-x2-incus-project-storage-pools-2026-05.md`: Records
-  the separate Btrfs storage pools for the `pvl`, `abird`, and `abird-dev` Incus
-  projects on `pvl-x2`.
+  the separate Btrfs storage pools for the `pvl`, `abird`, `abird-stage`, and
+  `abird-dev` Incus projects on `pvl-x2`.
 
 ### Lib
 

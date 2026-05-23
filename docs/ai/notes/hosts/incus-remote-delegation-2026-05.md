@@ -31,12 +31,22 @@ unprivileged; the NixOS Incus guest profile disables activation-time remounts of
 container-manager-owned special filesystems instead of widening the Incus
 project to allow privileged containers.
 
-`pvl-x2` mirrors the `pvl-a1` tenant project shape but uses subnets chosen to
-avoid likely home LAN overlap:
+`pvl-x2` declares tenant projects with subnets chosen to avoid likely home LAN
+overlap:
 
 - `abird`: `iabirdbr0` on `10.10.100.1/24`
-- `abird-dev`: `iabirddevbr0` on `10.10.200.1/24`
+- `abird-stage`: `iabirdbr1` on `10.10.200.1/24`
+- `abird-dev`: `iabirdbr2` on `10.10.220.1/24`
 - `pvl`: `ipvlbr0` on `10.10.50.1/24`
+
+The `abird-stage` project is the moved previous `abird-dev` environment, not an
+empty create. `pvl-x2` used `services.incusMachines.global.preseedMigrations`
+for the one-shot transition that created the final `iabirdbr1`/`iabirdbr2`
+bridges, moved the known guest volumes into `abird-stage`, retargeted the stage
+guests off the stale `iabirddevbr0` bridge, and then let preseed converge the
+fresh `abird-dev` bridge on `10.10.220.1/24`. After the live state reached that
+shape, the host-specific migration payload was removed and only the generic
+migration mechanism remains.
 
 `pvl-vlab-1` imports `../../lib/incus`, but its
 `services.incusMachines.global.remote` points at `https://127.0.0.1:8443` and
@@ -155,6 +165,7 @@ Current delegated resources:
 
 - `pvl`: mounted into `pvl-vlab-1` as `delegated-certs`
 - `abird`: mounted into `abird-nest` as `delegated-certs`
+- `abird-stage`: mounted into `abird-nest` as `delegated-stage-certs`
 - `abird-dev`: mounted into `abird-nest` as `delegated-dev-certs`
 
 `pvl-vlab-1` bootstraps its own parent access through
@@ -176,7 +187,7 @@ Per-instance project placement is handled by
 pass that project through to the Incus CLI/API. Because `abird-nest` needs the
 parent API proxy and host-path delegation mounts, the restricted `abird` project
 explicitly allows proxy devices and restricts host-path disk sources to the
-`abird` and `abird-dev` delegation directories.
+`abird`, `abird-stage`, and `abird-dev` delegation directories.
 
 Incus CLI `query` must not go through the project-wrapped command helper:
 `incus query` rejects the global `--project` flag. Project-aware queries should
