@@ -119,15 +119,26 @@ unlock_lifecycle_shared() {
 	exec 8>&-
 }
 
+close_lifecycle_fds_for_child() {
+	exec 8>&- 2>/dev/null || true
+	exec 9>&- 2>/dev/null || true
+}
+
 run_scoped() {
 	local scope
 	scope="$1"
 	shift
 
 	if [ "$scope" = "container" ]; then
-		podman unshare "$@"
+		(
+			close_lifecycle_fds_for_child
+			podman unshare "$@"
+		)
 	else
-		"$@"
+		(
+			close_lifecycle_fds_for_child
+			"$@"
+		)
 	fi
 }
 
@@ -186,7 +197,7 @@ prepare_staged_dir_for_write() {
 			# Container-scoped dirs are finalized to non-stack host ids. Reset to
 			# userns root first so this helper can restage files on the next run.
 			# Contents are intentionally untouched; data dirs survive restarts.
-			podman unshare chown 0:0 "$path"
+			run_scoped "$scope" chown 0:0 "$path"
 		fi
 		run_scoped "$scope" chmod u+rwx "$path"
 	else
@@ -437,6 +448,7 @@ failing_states_report() {
 
 compose_state_json() {
 	(
+		close_lifecycle_fds_for_child
 		cd "$working_dir"
 		podman compose "${compose_args[@]}" "${compose_file_args[@]}" ps --format json
 	)
@@ -444,6 +456,7 @@ compose_state_json() {
 
 compose_up() {
 	(
+		close_lifecycle_fds_for_child
 		cd "$working_dir"
 		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans 2>&1
 	)
@@ -451,6 +464,7 @@ compose_up() {
 
 compose_up_force_recreate() {
 	(
+		close_lifecycle_fds_for_child
 		cd "$working_dir"
 		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans --force-recreate 2>&1
 	)
@@ -458,6 +472,7 @@ compose_up_force_recreate() {
 
 compose_down() {
 	(
+		close_lifecycle_fds_for_child
 		cd "$working_dir"
 		podman compose "${compose_args[@]}" "${compose_file_args[@]}" down 2>&1
 	)
@@ -465,6 +480,7 @@ compose_down() {
 
 compose_pull() {
 	(
+		close_lifecycle_fds_for_child
 		cd "$working_dir"
 		podman compose "${compose_args[@]}" "${pull_compose_file_args[@]}" pull 2>&1
 	)
@@ -472,6 +488,7 @@ compose_pull() {
 
 running_compose_services() {
 	(
+		close_lifecycle_fds_for_child
 		cd /
 		podman ps \
 			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
@@ -504,6 +521,7 @@ verify_expected_compose_services() {
 
 compose_reload_signal() {
 	(
+		close_lifecycle_fds_for_child
 		cd "$working_dir"
 		podman compose "${compose_args[@]}" "${compose_file_args[@]}" kill --signal "$reload_signal" "${reload_services[@]}" 2>&1
 	)
