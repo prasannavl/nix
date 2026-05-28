@@ -64,7 +64,7 @@ let
     defaultNginxSecretsBasePath = /nonexistent/lib-flake/nginx-secrets;
     defaultNginxSecretsBase = /nonexistent/lib-flake/nginx-secrets;
     defaultCaCertFile = null;
-    defaultCaCertAgeFile = /nonexistent/lib-flake/client-secrets/ca.crt.age;
+    defaultCaCertAgeFile = /nonexistent/lib-flake/secrets/ca.crt.age;
     defaultCaCertHostPath = "/etc/ssl/certs/package-ca.crt";
     defaultCaCertContainerPath = "/run/secrets/package-ca.crt";
     defaultCaCertificate = {
@@ -72,8 +72,13 @@ let
       sourceHashFile = null;
       mountPath = "/run/secrets/package-ca.crt";
     };
-    secrets = {
+    secrets = rec {
+      base = /nonexistent/lib-flake/secrets;
       services = /nonexistent/lib-flake/client-secrets;
+      service = name: services + "/${name}";
+      ext = provider: base + "/ext/${provider}";
+      ca = base;
+      acme = base + "/acme";
       nats = null;
       postgres = null;
       vmstack = null;

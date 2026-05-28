@@ -6,6 +6,7 @@ import ../flake/stack/lib.nix {
   publicDomain = "p7log.com";
   internalDomain = "pvl.internal";
   defaultUser = "pvl";
+  stackSecretsBasePath = ../../data/secrets/pvl;
   defaultClientSecretsBasePath = ../../data/secrets/services;
   defaultNatsSecretsBasePath = ../../data/secrets/nats;
   defaultPostgresSecretsBasePath = ../../data/secrets/postgres;

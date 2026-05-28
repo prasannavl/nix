@@ -51,6 +51,33 @@ rec {
       defaultNatsAfter
       ;
 
+    mkSecret = file: overrides:
+      {
+        file = file;
+        owner = defaultSecretOwner;
+        group = defaultSecretGroup;
+        mode = defaultSecretMode;
+      }
+      // overrides;
+
+    mkServiceSecretPath = serviceName: fileName:
+      defaultClientSecretsBasePath + "/${serviceName}/${fileName}";
+
+    mkServiceKeySecretPath = serviceName: secretName:
+      mkServiceSecretPath serviceName "${secretName}.key.age";
+
+    mkServiceSecret = serviceName: secretName: overrides:
+      mkSecret (mkServiceKeySecretPath serviceName secretName) overrides;
+
+    mkServiceSecrets = serviceName:
+      builtins.mapAttrs (
+        secretName: spec: let
+          sourceName = spec.sourceName or secretName;
+          file = spec.file or (mkServiceKeySecretPath serviceName sourceName);
+        in
+          mkSecret file (builtins.removeAttrs spec ["file" "sourceName"])
+      );
+
     ########################################
     # Core Exported Module Entry Points
     ########################################

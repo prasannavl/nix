@@ -6,12 +6,13 @@
   publicDomain ? defaultMailDomain,
   internalDomain ? "${org}.internal",
   defaultUser,
+  stackSecretsBasePath ? defaultClientSecretsBasePath,
   defaultClientSecretsBasePath,
   defaultNatsSecretsBasePath ? null,
   defaultPostgresSecretsBasePath ? null,
   defaultVmstackSecretsBasePath ? null,
   defaultNginxSecretsBasePath ? null,
-  defaultCaCertAgeFile ? defaultClientSecretsBasePath + "/ca.crt.age",
+  defaultCaCertAgeFile ? stackSecretsBasePath + "/ca.crt.age",
   defaultCaCertHostPath ? "/etc/ssl/certs/${stackName}-ca.crt",
   defaultCaCertContainerPath ? "/run/secrets/${stackName}-ca.crt",
   defaultClientIdentitySuffix,
@@ -49,8 +50,13 @@ in {
   nixosConfig = userData.nixosConfig;
   registry = serviceRegistry;
   serviceRegistry = serviceRegistry;
-  secrets = {
+  secrets = rec {
+    base = stackSecretsBasePath;
     services = defaultClientSecretsBasePath;
+    service = name: services + "/${name}";
+    ext = provider: base + "/ext/${provider}";
+    ca = base;
+    acme = base + "/acme";
     nats = defaultNatsSecretsBasePath;
     postgres = defaultPostgresSecretsBasePath;
     vmstack = defaultVmstackSecretsBasePath;
