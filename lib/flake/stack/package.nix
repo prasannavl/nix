@@ -67,10 +67,17 @@ let
     defaultCaCertAgeFile = /nonexistent/lib-flake/secrets/ca.crt.age;
     defaultCaCertHostPath = "/etc/ssl/certs/package-ca.crt";
     defaultCaCertContainerPath = "/run/secrets/package-ca.crt";
+    defaultCaBundleHostPath = "/etc/ssl/certs/package-ca-bundle.crt";
+    defaultCaBundleContainerPath = "/run/secrets/package-ca-bundle.crt";
     defaultCaCertificate = {
       file = "/etc/ssl/certs/package-ca.crt";
       sourceHashFile = null;
       mountPath = "/run/secrets/package-ca.crt";
+    };
+    defaultCaBundleCertificate = {
+      file = "/etc/ssl/certs/package-ca-bundle.crt";
+      sourceHashFile = null;
+      mountPath = "/run/secrets/package-ca-bundle.crt";
     };
     secrets = rec {
       base = /nonexistent/lib-flake/secrets;

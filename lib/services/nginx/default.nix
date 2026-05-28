@@ -2,7 +2,33 @@
   exposedPortsLib = import ../exposed-ports {inherit lib;};
   rateLimitProfiles = {
     default = exposedPortsLib.defaultRateLimitProfile;
+    web =
+      exposedPortsLib.defaultRateLimitProfile
+      // {
+        requestsPerSecond = 30;
+        requestsPerSecondBurst = 300;
+        requestsPerMinute = null;
+        requestsPerMinuteBurst = null;
+      };
   };
+  mkProxyTimeout = value:
+    if builtins.isAttrs value
+    then {
+      proxyReadTimeout = value.read;
+      proxySendTimeout = value.send;
+    }
+    else {
+      proxyReadTimeout = value;
+      proxySendTimeout = value;
+    };
+  mkProxyTimeouts = values: builtins.mapAttrs (_: mkProxyTimeout) values;
+  redirectStatusType = lib.types.enum [
+    301
+    302
+    303
+    307
+    308
+  ];
   rootRedirectTypeDef = lib.types.submodule {
     options = {
       path = lib.mkOption {
@@ -11,15 +37,34 @@
       };
 
       status = lib.mkOption {
-        type = lib.types.enum [
-          301
-          302
-          303
-          307
-          308
-        ];
+        type = redirectStatusType;
         default = 307;
         description = "HTTP redirect status for exact root requests.";
+      };
+    };
+  };
+  redirectVhostTypeDef = lib.types.submodule {
+    options = {
+      serverNames = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Hostname(s) served by this nginx redirect vhost.";
+      };
+
+      target = lib.mkOption {
+        type = lib.types.str;
+        description = "Absolute URL or path nginx should redirect all requests to.";
+      };
+
+      status = lib.mkOption {
+        type = redirectStatusType;
+        default = 307;
+        description = "HTTP redirect status for requests to this vhost.";
+      };
+
+      preserveQuery = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether to append the incoming query string to the redirect target.";
       };
     };
   };
@@ -107,6 +152,12 @@
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Optional nginx proxy_buffer_size override for large upstream response headers.";
+      };
+
+      proxyBuffering = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Optional nginx proxy_buffering override for streaming upstream responses.";
       };
 
       proxyReadTimeout = lib.mkOption {
@@ -332,6 +383,12 @@
         description = "Optional nginx proxy_buffer_size override for large upstream response headers.";
       };
 
+      proxyBuffering = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Optional nginx proxy_buffering override for streaming upstream responses.";
+      };
+
       proxyReadTimeout = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -409,6 +466,7 @@
           rootRedirect = portCfg.rootRedirect or null;
           rateLimit = resolveRateLimit (portCfg.rateLimit or null);
           proxyBufferSize = portCfg.proxyBufferSize or null;
+          proxyBuffering = portCfg.proxyBuffering or null;
           proxyReadTimeout = portCfg.proxyReadTimeout or null;
           proxySendTimeout = portCfg.proxySendTimeout or null;
           clientMaxBodySize = portCfg.clientMaxBodySize or null;
@@ -513,6 +571,7 @@
               stripPath = route.stripPath;
               rateLimit = resolveRateLimit (portCfg.rateLimit or null);
               proxyBufferSize = route.proxyBufferSize or (portCfg.proxyBufferSize or null);
+              proxyBuffering = route.proxyBuffering or (portCfg.proxyBuffering or null);
               proxyReadTimeout = route.proxyReadTimeout or (portCfg.proxyReadTimeout or null);
               proxySendTimeout = route.proxySendTimeout or (portCfg.proxySendTimeout or null);
               clientMaxBodySize = route.clientMaxBodySize or (portCfg.clientMaxBodySize or null);
@@ -778,9 +837,16 @@
     securityHeaderDirectives = mkLocationSecurityHeaderIncludes route;
     authRequestDirectives = mkAuthRequestDirectives (route.authRequest or null);
     proxyBufferSize = route.proxyBufferSize or null;
+    proxyBuffering = route.proxyBuffering or null;
     proxyBufferDirectives =
       lib.optionalString (proxyBufferSize != null)
-      "        proxy_buffer_size ${proxyBufferSize};\n";
+      "        proxy_buffer_size ${proxyBufferSize};\n"
+      + lib.optionalString (proxyBuffering != null)
+      "        proxy_buffering ${
+        if proxyBuffering
+        then "on"
+        else "off"
+      };\n";
     proxyReadTimeout = route.proxyReadTimeout or null;
     proxySendTimeout = route.proxySendTimeout or null;
     proxyTimeoutDirectives =
@@ -890,6 +956,7 @@
         prependPath = proxy.prependPath or null;
         rateLimit = proxy.rateLimit or null;
         proxyBufferSize = proxy.proxyBufferSize or null;
+        proxyBuffering = proxy.proxyBuffering or null;
         proxyReadTimeout = proxy.proxyReadTimeout or null;
         proxySendTimeout = proxy.proxySendTimeout or null;
         clientMaxBodySize = proxy.clientMaxBodySize or null;
@@ -1126,11 +1193,28 @@
         site.serverNames))
     staticSites;
 
+  redirectRootsByServerName = redirectVhosts:
+    lib.concatMapAttrs
+    (redirectName: redirect:
+      lib.listToAttrs
+      (map
+        (serverName: {
+          name = serverName;
+          value = redirect // {name = redirectName;};
+        })
+        redirect.serverNames))
+    redirectVhosts;
+
   rootHostnames = {
+    redirectVhosts,
     staticSites,
     proxyVhosts,
   }:
     (lib.flatten
+      (lib.mapAttrsToList
+        (_: redirect: redirect.serverNames)
+        redirectVhosts))
+    ++ (lib.flatten
       (lib.mapAttrsToList
         (_: site: site.serverNames)
         staticSites))
@@ -1154,6 +1238,7 @@
 
   mkMergedServer = {
     serverName,
+    rootRedirectVhost ? null,
     rootStaticSite ? null,
     rootProxy ? null,
     routes ? {},
@@ -1184,7 +1269,13 @@
           else mkProxyRouteLocation name route)
         routes);
     rootBlock =
-      if rootStaticSite != null
+      if rootRedirectVhost != null
+      then ''
+        location / {
+            return ${toString (rootRedirectVhost.status or 307)} ${rootRedirectVhost.target}${lib.optionalString (rootRedirectVhost.preserveQuery or true) "$is_args$args"};
+        }
+      ''
+      else if rootStaticSite != null
       then let
         mountPath = staticSiteMountPath rootStaticSite.name rootStaticSite;
       in ''
@@ -1197,7 +1288,7 @@
       then mkProxyRootLocation rootProxy.name rootProxy
       else defaultServerBlock;
   in
-    assert rootStaticSite != null || rootProxy != null || routes != {}; ''
+    assert rootRedirectVhost != null || rootStaticSite != null || rootProxy != null || routes != {}; ''
             server {
       ${lib.concatMapStringsSep "\n" (directive: "        ${directive}") listenDirectives}
               server_name ${serverName};
@@ -1211,8 +1302,9 @@
             }
     '';
 in rec {
-  inherit rateLimitProfiles;
+  inherit mkProxyTimeout mkProxyTimeouts rateLimitProfiles;
   proxyVhostType = proxyVhostTypeDef;
+  redirectVhostType = redirectVhostTypeDef;
   routeType = routeTypeDef;
 
   composeSource = ./compose/compose.yaml;
@@ -1307,6 +1399,7 @@ in rec {
     rateLimit ? null,
     nginxRoutes ? {},
     proxyVhosts ? {},
+    redirectVhosts ? {},
     staticSites ? {},
     includeHttpPreamble ? true,
     listenDirectives ? ["listen 80;"],
@@ -1317,6 +1410,7 @@ in rec {
       lib.mapAttrs
       (name: site: site // {name = name;})
       staticSites;
+    rootRedirectVhostsByServerName = redirectRootsByServerName redirectVhosts;
     staticRoutes =
       lib.mapAttrs
       (_: route: route // {rateLimit = resolvedRateLimit;})
@@ -1330,6 +1424,7 @@ in rec {
     rootProxyVhostsByServerName = proxyRootsByServerName proxyVhosts;
     rootStaticSitesByServerName = staticRootsByServerName namedStaticSites;
     duplicateHostnames = duplicateRootHostnames (rootHostnames {
+      redirectVhosts = redirectVhosts;
       staticSites = namedStaticSites;
       proxyVhosts = proxyVhosts;
     });
@@ -1350,7 +1445,8 @@ in rec {
           else "")
         nginxRoutes);
     serverNames = lib.unique (
-      builtins.attrNames rootStaticSitesByServerName
+      builtins.attrNames rootRedirectVhostsByServerName
+      ++ builtins.attrNames rootStaticSitesByServerName
       ++ builtins.attrNames rootProxyVhostsByServerName
       ++ map (route: route.serverName) (builtins.attrValues (staticRoutes // nginxRoutes))
     );
@@ -1358,9 +1454,12 @@ in rec {
       lib.concatStringsSep "\n"
       (map
         (serverName:
+          assert !(builtins.hasAttr serverName rootRedirectVhostsByServerName && builtins.hasAttr serverName rootStaticSitesByServerName);
+          assert !(builtins.hasAttr serverName rootRedirectVhostsByServerName && builtins.hasAttr serverName rootProxyVhostsByServerName);
           assert !(builtins.hasAttr serverName rootStaticSitesByServerName && builtins.hasAttr serverName rootProxyVhostsByServerName);
             mkMergedServer {
               inherit serverName;
+              rootRedirectVhost = rootRedirectVhostsByServerName.${serverName} or null;
               rootStaticSite = rootStaticSitesByServerName.${serverName} or null;
               rootProxy = rootProxyVhostsByServerName.${serverName} or null;
               routes = routesForServer serverName (staticRoutes // nginxRoutes);

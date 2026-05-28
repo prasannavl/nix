@@ -206,6 +206,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/gap3-unit5-stack-secrets-2026-05.md`: Records the Unit
   5 stack-aware secret helper port, the local `pvl` recipient-policy split, and
   the skipped Abird/Gap3 and absent Kanidm/Stalwart service-library work.
+- `docs/ai/notes/tooling/gap3-unit6-nginx-composer-2026-05.md`: Records the Unit
+  6 nginx ingress composer, redirect vhost, proxy buffering, stack unit, and
+  Podman Compose trusted-CA helper port, plus skipped Abird/GAP3 route
+  applications.
 - `docs/ai/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
 - `docs/ai/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records the

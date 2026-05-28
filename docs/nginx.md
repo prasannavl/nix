@@ -25,6 +25,7 @@ Use this model for these outcomes:
 - Proxy a backend service on its own hostname
 - Mount a backend service under a subpath
 - Proxy to an external domain or Cloud Run origin
+- Redirect a hostname to another URL without a backend
 - Add a fixed upstream path prefix with `prependPath`
 - Apply nginx-managed rate limits
 - Preserve forwarded client identity to upstream services
@@ -32,11 +33,12 @@ Use this model for these outcomes:
 
 ## Core Model
 
-There are three ingress declaration surfaces:
+There are four ingress declaration surfaces:
 
 - `exposedPorts.<name>` on a
   `services.podmanCompose.<stack>.instances.<service>` entry
 - `proxyVhosts` passed to `nginxLib.renderServers`
+- `redirectVhosts` passed to `nginxLib.renderServers`
 - `staticSites` passed to `nginxLib.renderServers`
 
 Most callers do not construct `proxyVhosts` manually. They come from
@@ -49,6 +51,9 @@ come from `services.podmanCompose.<stack>.nginxRoutes`, which is derived from
 
 Manual route attrsets are valid when the origin is external and not represented
 as a local compose service.
+
+Manual redirect vhosts are valid when a hostname should return a redirect
+without proxying to a backend.
 
 ## Outcome: Add A Root Static Site
 
@@ -96,6 +101,24 @@ Result:
 - `GET /hello` redirects to `/hello/`
 - `GET /hello/...` serves from the static tree
 - root-relative HTML assets are rewritten onto `/hello/`
+
+## Outcome: Redirect A Hostname
+
+Declare a redirect vhost and pass it to `renderServers`.
+
+```nix
+redirectVhosts.calendar = {
+  serverNames = ["cal.example.com"];
+  target = "https://mail.example.com/calendar";
+  status = 307;
+};
+```
+
+Result:
+
+- nginx creates a root server for `cal.example.com`
+- all paths return the configured redirect target
+- query strings are preserved by default
 
 ## Outcome: Add A Backend On Its Own Hostname
 
@@ -242,12 +265,15 @@ Set proxy buffer or request body size limits on root vhosts or routes.
   serverNames = ["app.example.com"];
   upstreams = ["127.0.0.1:3000"];
   proxyBufferSize = "16k";
+  proxyBuffering = false;
   clientMaxBodySize = "128m";
 }
 ```
 
 The same knobs are available on `exposedPorts.<name>` and
 `exposedPorts.<name>.nginxRoutes[]`; route values override exposed-port values.
+Use `proxyBuffering = false` for streaming upstream responses that should not be
+buffered by nginx.
 
 ## Outcome: Add Auth Request
 
@@ -419,6 +445,8 @@ Common fields used by the nginx and tunnel model:
 - `rootRedirect`: optional exact-root redirect on a derived root vhost
 - `proxyBufferSize`: optional `proxy_buffer_size` for large upstream response
   headers
+- `proxyBuffering`: optional `proxy_buffering` override for streaming upstream
+  responses
 - `clientMaxBodySize`: optional `client_max_body_size` for uploads
 - `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
 - `proxyRedirects`: additional `proxy_redirect` rewrites
@@ -444,6 +472,8 @@ Common fields used by the nginx and tunnel model:
   route
 - `proxyBufferSize`: optional `proxy_buffer_size` for large upstream response
   headers
+- `proxyBuffering`: optional `proxy_buffering` override for streaming upstream
+  responses
 - `clientMaxBodySize`: optional `client_max_body_size` for uploads
 - `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
 - `proxyRedirects`: additional `proxy_redirect` rewrites
@@ -455,7 +485,17 @@ Derived defaults for these routes:
 - `upstreamHost` inherits from the exposed port
 - `upstreamTlsName` inherits from the exposed port
 - `prependPath = null`
-- `proxyBufferSize` and `clientMaxBodySize` inherit from the exposed port
+- `proxyBufferSize`, `proxyBuffering`, and `clientMaxBodySize` inherit from the
+  exposed port
+
+### `redirectVhost`
+
+Shared attrset type in `lib/services/nginx/default.nix`:
+
+- `serverNames`: root hostnames served by the redirect vhost
+- `target`: absolute URL or path returned by nginx
+- `status`: redirect status; defaults to `307`
+- `preserveQuery`: append `$is_args$args` to the target; defaults to `true`
 
 ### `proxyVhost`
 
@@ -474,6 +514,8 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `rateLimit`: resolved rate-limit profile or `null`
 - `proxyBufferSize`: optional `proxy_buffer_size` for large upstream response
   headers
+- `proxyBuffering`: optional `proxy_buffering` override for streaming upstream
+  responses
 - `clientMaxBodySize`: optional `client_max_body_size` for uploads
 - `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
 - `proxyRedirects`: additional `proxy_redirect` rewrites
@@ -505,6 +547,8 @@ Shared attrset type in `lib/services/nginx/default.nix`:
 - `rateLimit`: resolved rate-limit profile or `null`
 - `proxyBufferSize`: optional `proxy_buffer_size` for large upstream response
   headers
+- `proxyBuffering`: optional `proxy_buffering` override for streaming upstream
+  responses
 - `clientMaxBodySize`: optional `client_max_body_size` for uploads
 - `proxyCookiePath`: optional replacement path for `proxy_cookie_path`
 - `proxyRedirects`: additional `proxy_redirect` rewrites
@@ -570,6 +614,7 @@ Arguments:
   static routes
 - `nginxRoutes ? {}`: dynamic and static route attrsets keyed by route name
 - `proxyVhosts ? {}`: root proxy vhosts keyed by vhost name
+- `redirectVhosts ? {}`: root redirect vhosts keyed by vhost name
 - `staticSites ? {}`: static-site declarations keyed by site name
 - `includeHttpPreamble ? true`: include upstream blocks and rate-limit zones
   before server blocks

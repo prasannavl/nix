@@ -21,7 +21,14 @@
       )
   ) (config.age.secrets or {});
   secretSourceHash = file:
-    ageSecretSourceHashesByRuntimePath.${toString file} or null;
+    ageSecretSourceHashesByRuntimePath.${
+      toString file
+    }
+    or (
+      if builtins.isPath file && builtins.pathExists file
+      then builtins.hashFile "sha256" file
+      else null
+    );
   serviceDefaults = {
     source = null;
     files = {};
@@ -54,6 +61,8 @@
     waitForNetwork = true;
     envSecrets = {};
     fileSecrets = {};
+    trustedCa = false;
+    trustedCaCertificates = {};
     dirs = {};
     exposedPorts = {};
   };
@@ -92,6 +101,24 @@
       mountPath = null;
       readOnly = true;
       services = null;
+    };
+  trustedCaCertificateEntryDefaults =
+    ownerEntryDefaults "0444"
+    // {
+      mountPath = null;
+      readOnly = true;
+      services = null;
+      envVars = [
+        "SSL_CERT_FILE"
+        "REQUESTS_CA_BUNDLE"
+        "NODE_EXTRA_CA_CERTS"
+      ];
+      sourceHashFile = null;
+    };
+  trustedCaDefaultEntryDefaults =
+    trustedCaCertificateEntryDefaults
+    // {
+      name = null;
     };
   envSecretEntryDefaults = ownerEntryDefaults "0400";
 
@@ -243,6 +270,71 @@
     lib.types.str
     (v: {file = v;})
     fileSecretEntrySubmoduleType;
+
+  trustedCaCertificateEntryOptions =
+    {
+      file = lib.mkOption {
+        type = lib.types.either lib.types.path lib.types.str;
+        description = "Host path to the CA certificate file to stage and mount.";
+      };
+    }
+    // (ownerOptions {
+      modeDefault = trustedCaCertificateEntryDefaults.mode;
+      modeDescription = "Octal mode string applied to the staged CA certificate.";
+    })
+    // {
+      mountPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = trustedCaCertificateEntryDefaults.mountPath;
+        description = "In-container CA certificate path. When null, defaults to `/run/secrets/<name>`.";
+      };
+      services = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = trustedCaCertificateEntryDefaults.services;
+        description = "Compose services that should receive the CA certificate mount and environment. When null, resolves to every service declared in an attrs-shaped `source`, otherwise falls back to a single service named after the instance.";
+      };
+      readOnly = lib.mkOption {
+        type = lib.types.bool;
+        default = trustedCaCertificateEntryDefaults.readOnly;
+        description = "Whether the CA certificate mount should be read-only (`:ro`).";
+      };
+      envVars = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = trustedCaCertificateEntryDefaults.envVars;
+        description = "Environment variables set to the CA certificate mount path for each target compose service. Use an empty list for applications with explicit CA-file flags.";
+      };
+      sourceHashFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = trustedCaCertificateEntryDefaults.sourceHashFile;
+        description = "Optional Nix source file to hash for restart detection when `file` is a stable host runtime path.";
+      };
+    };
+  trustedCaCertificateEntrySubmoduleType = lib.types.submodule {options = trustedCaCertificateEntryOptions;};
+  trustedCaCertificateEntryType =
+    lib.types.coercedTo
+    (lib.types.either lib.types.path lib.types.str)
+    (v: {file = v;})
+    trustedCaCertificateEntrySubmoduleType;
+  trustedCaDefaultEntryOptions =
+    {
+      name = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = trustedCaDefaultEntryDefaults.name;
+        description = "Secret filename used when this CA default is injected. When null, the default key is used.";
+      };
+    }
+    // trustedCaCertificateEntryOptions;
+  trustedCaDefaultEntrySubmoduleType = lib.types.submodule {options = trustedCaDefaultEntryOptions;};
+  trustedCaDefaultEntryType =
+    lib.types.coercedTo
+    (lib.types.either lib.types.path lib.types.str)
+    (v: {file = v;})
+    trustedCaDefaultEntrySubmoduleType;
+  trustedCaInjectionType = lib.types.oneOf [
+    lib.types.bool
+    (lib.types.listOf (lib.types.either lib.types.str lib.types.attrs))
+    lib.types.attrs
+  ];
 
   ownerRefToString = v:
     if v == null
@@ -502,6 +594,35 @@
         '';
       };
 
+      trustedCaCertificates = lib.mkOption {
+        type = lib.types.attrsOf trustedCaCertificateEntryType;
+        default = serviceDefaults.trustedCaCertificates;
+        description = ''
+          Public CA certificates to stage, bind-mount, and optionally expose
+          through common runtime trust environment variables. This is for
+          non-secret trust anchors used by containerized applications; keep
+          app-specific CA flags in the compose source when an application
+          requires them.
+        '';
+      };
+
+      trustedCa = lib.mkOption {
+        type = trustedCaInjectionType;
+        default = serviceDefaults.trustedCa;
+        description = ''
+          Convenience injection for stack-level trusted CA material. Set true
+          to inject the public-root CA bundle into all compose services in
+          this instance, set a list of compose service names to scope that
+          bundle, set an attrset to override fields such as `services`,
+          `envVars`, `name`, `mountPath`, or `publicRoots`, or set a
+          list of attrsets when a service needs multiple CA files. Leave
+          `publicRoots = true` for process-wide trust environment
+          variables, and set it to false for app-native CA-file options that
+          must receive only the stack CA.
+          `trustedCaCertificates` remains the low-level escape hatch.
+        '';
+      };
+
       exposedPorts = lib.mkOption {
         type = lib.types.attrsOf (lib.types.submodule (_: {
           options = {
@@ -638,6 +759,12 @@
                     description = "Optional nginx proxy_buffer_size override for this route when upstream response headers are larger than nginx's default buffer.";
                   };
 
+                  proxyBuffering = lib.mkOption {
+                    type = lib.types.nullOr lib.types.bool;
+                    default = null;
+                    description = "Optional nginx proxy_buffering override for streaming upstream responses.";
+                  };
+
                   proxyReadTimeout = lib.mkOption {
                     type = lib.types.nullOr lib.types.str;
                     default = null;
@@ -713,6 +840,12 @@
               type = lib.types.nullOr lib.types.str;
               default = null;
               description = "Optional nginx proxy_buffer_size override for this exposed port when upstream response headers are larger than nginx's default buffer.";
+            };
+
+            proxyBuffering = lib.mkOption {
+              type = lib.types.nullOr lib.types.bool;
+              default = null;
+              description = "Optional nginx proxy_buffering override for streaming upstream responses.";
             };
 
             proxyReadTimeout = lib.mkOption {
@@ -816,6 +949,29 @@
         type = lib.types.ints.positive;
         default = serviceDefaults.timeoutStableSeconds;
         description = "Default stable-state wait timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutStableSeconds.";
+      };
+
+      trustedCaDefaults = lib.mkOption {
+        type = lib.types.submodule {
+          options = {
+            ca = lib.mkOption {
+              type = lib.types.nullOr trustedCaDefaultEntryType;
+              default = null;
+              description = "CA entry containing only the stack CA.";
+            };
+            caBundle = lib.mkOption {
+              type = lib.types.nullOr trustedCaDefaultEntryType;
+              default = null;
+              description = "CA entry containing public roots plus the stack CA.";
+            };
+          };
+        };
+        default = {};
+        description = ''
+          Default trusted CA entries that instances can inject with `trustedCa`.
+          `ca` is only the stack CA; `caBundle` is public roots plus the stack
+          CA.
+        '';
       };
 
       instances = lib.mkOption {
@@ -1159,7 +1315,10 @@
             readOnly
             services
             ;
-          sourceHash = secretSourceHash entry.file;
+          sourceHash =
+            if (entry.sourceHash or null) != null
+            then entry.sourceHash
+            else secretSourceHash entry.file;
         }
         // entryPermsJson entry)
       service.fileSecrets;
@@ -1395,6 +1554,78 @@ in {
             then {file = entry;}
             else entry
           );
+        normalizeTrustedCaCertificateEntry = entry:
+          applyEntryDefaults trustedCaCertificateEntryDefaults (
+            if builtins.isPath entry || builtins.isString entry
+            then {file = entry;}
+            else entry
+          );
+        normalizeTrustedCaDefaultEntry = defaultName: entry: let
+          normalized = applyEntryDefaults trustedCaDefaultEntryDefaults (
+            if builtins.isPath entry || builtins.isString entry
+            then {file = entry;}
+            else entry
+          );
+        in
+          normalized
+          // {
+            name =
+              if normalized.name == null
+              then defaultName
+              else normalized.name;
+          };
+        trustedCaInjections = trustedCa:
+          if builtins.isBool trustedCa
+          then lib.optional trustedCa {}
+          else if builtins.isList trustedCa
+          then
+            if lib.all builtins.isString trustedCa
+            then [{services = trustedCa;}]
+            else if lib.all builtins.isAttrs trustedCa
+            then trustedCa
+            else throw "services.podmanCompose.${stackName}: trustedCa lists must contain either service-name strings or CA attrsets, not a mix."
+          else [trustedCa];
+        trustedCaDefaultCertificates = defaultEntries: trustedCa:
+          lib.listToAttrs (
+            map (injection: let
+              publicRoots = injection.publicRoots or true;
+              defaultName =
+                if publicRoots
+                then "caBundle"
+                else "ca";
+              defaultEntryOrNull = defaultEntries.${defaultName} or null;
+              defaultEntry =
+                if defaultEntryOrNull == null
+                then throw "services.podmanCompose.${stackName}: trustedCa default '${defaultName}' is not defined."
+                else defaultEntryOrNull;
+              certName =
+                if (injection.name or null) == null
+                then defaultEntry.name
+                else injection.name;
+              entry =
+                builtins.removeAttrs defaultEntry ["name"]
+                // builtins.removeAttrs injection ["publicRoots" "name"];
+            in {
+              name = certName;
+              value = entry;
+            })
+            (trustedCaInjections trustedCa)
+          );
+        trustedCaCertificateFileSecretEntry = entry: {
+          file = toString entry.file;
+          mode = entry.mode;
+          user = entry.user;
+          group = entry.group;
+          scope = entry.scope;
+          mount = true;
+          mountPath = entry.mountPath;
+          readOnly = entry.readOnly;
+          services = entry.services;
+          sourceHash =
+            if entry.sourceHashFile == null
+            then null
+            else builtins.hashFile "sha256" entry.sourceHashFile;
+        };
         normalizeEnvSecretEntry = entry:
           envSecretEntryDefaults // {entries = entry;};
         renderEntry = serviceName: fileName: entry:
@@ -1490,6 +1721,11 @@ in {
       in
         stack
         // (let
+          normalizedTrustedCaDefaults = lib.mapAttrs (name: entry:
+            if entry == null
+            then null
+            else normalizeTrustedCaDefaultEntry name entry)
+          stack.trustedCaDefaults;
           instancesWithContext =
             lib.mapAttrs
             (serviceName: serviceOrFn:
@@ -1528,13 +1764,20 @@ in {
                   timeoutStableSeconds = stack.timeoutStableSeconds;
                 }
                 // service;
+              defaultTrustedCaCertificates =
+                trustedCaDefaultCertificates normalizedTrustedCaDefaults baseService.trustedCa;
+              normalizedTrustedCaCertificates =
+                lib.mapAttrs (_: normalizeTrustedCaCertificateEntry) (defaultTrustedCaCertificates // baseService.trustedCaCertificates);
+              trustedCaFileSecrets =
+                lib.mapAttrs (_: trustedCaCertificateFileSecretEntry) normalizedTrustedCaCertificates;
               normalizedService =
                 baseService
                 // {
                   dirs = lib.mapAttrs (_: applyEntryDefaults dirEntryDefaults) baseService.dirs;
                   envSecrets = lib.mapAttrs (_: normalizeEnvSecretEntry) baseService.envSecrets;
                   files = lib.mapAttrs (_: normalizeFileEntry) baseService.files;
-                  fileSecrets = lib.mapAttrs (_: normalizeFileSecretEntry) baseService.fileSecrets;
+                  fileSecrets = lib.mapAttrs (_: normalizeFileSecretEntry) (baseService.fileSecrets // trustedCaFileSecrets);
+                  trustedCaCertificates = normalizedTrustedCaCertificates;
                 };
               useSource = normalizedService.source != null;
               hasComposeEntry = useSource || normalizedService.entryFile != null;
@@ -1592,17 +1835,41 @@ in {
                       "${fileSecretRuntimePaths.${secretName}}:${fileSecretMountPath secretName entry}${lib.optionalString entry.readOnly ":ro"}"
                     ]
                 ) (builtins.attrNames mountedFileSecrets);
+              trustedCaEnvironmentForService = composeServiceName:
+                lib.listToAttrs (
+                  lib.concatMap (
+                    certName: let
+                      entry = normalizedService.trustedCaCertificates.${certName};
+                      mountPath = fileSecretMountPath certName normalizedService.fileSecrets.${certName};
+                    in
+                      lib.optionals (builtins.elem composeServiceName (fileSecretMountServices entry)) (
+                        map (envVar: {
+                          name = envVar;
+                          value = mountPath;
+                        })
+                        entry.envVars
+                      )
+                  ) (builtins.attrNames normalizedService.trustedCaCertificates)
+                );
               fileSecretsOverride =
                 if fileSecretTargetServices == []
                 then {}
                 else {
                   services = lib.listToAttrs (
-                    map (composeServiceName: {
-                      name = composeServiceName;
-                      value = {
-                        volumes = fileSecretMountsForService composeServiceName;
-                      };
-                    })
+                    map (
+                      composeServiceName: let
+                        trustedCaEnvironment = trustedCaEnvironmentForService composeServiceName;
+                      in {
+                        name = composeServiceName;
+                        value =
+                          {
+                            volumes = fileSecretMountsForService composeServiceName;
+                          }
+                          // lib.optionalAttrs (trustedCaEnvironment != {}) {
+                            environment = trustedCaEnvironment;
+                          };
+                      }
+                    )
                     fileSecretTargetServices
                   );
                 };

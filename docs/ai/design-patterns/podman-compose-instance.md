@@ -16,7 +16,7 @@ include only what applies, but keep the relative order stable.
 6. **dependsOn**
 7. **env** / **envSecrets**
 8. **dirs**
-9. **fileSecrets** / **files**
+9. **fileSecrets** / **trustedCa** / **files**
 10. **serviceOverrides.preStart**
 
 ## Why
@@ -33,6 +33,12 @@ include only what applies, but keep the relative order stable.
 - `dirs`, `fileSecrets`, and `files` all stage the runtime tree. Keep `dirs`
   first so bind-mounted directory ownership is declared before staged files that
   may live under those directories.
+- `trustedCa` injects stack-level public CA material into selected compose
+  services. It stages, mounts, and optionally exposes the CA through common
+  runtime trust environment variables. Use `trustedCaCertificates` only for
+  low-level multi-CA or non-profile cases. Keep app-native CA flags in `source`
+  when an app requires a specific option such as `custom_ca_path`,
+  `OC_LDAP_CACERT`, or `ssl.ca_file_path`.
 - When a container needs read-only repo-built package content, prefer a direct
   `/nix/store` bind mount by interpolating the derivation in `source`, such as
   `"${pkg}:/container/path:ro"`. This keeps the package in the system closure
