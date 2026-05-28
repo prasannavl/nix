@@ -22,4 +22,7 @@ import ../flake/stack/lib.nix {
   defaultNatsUrl = "tls://127.0.0.1:4222";
   defaultNatsCaCertPath = "/run/agenix/pvl-ca-cert";
   defaultNatsAfter = ["pvl-nats.service"];
+  serviceRegistry = {
+    limits = {};
+  };
 }

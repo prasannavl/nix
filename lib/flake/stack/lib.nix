@@ -45,6 +45,11 @@
     else if builtins.pathExists defaultCaCertAgeFile
     then defaultCaCertAgeFile
     else null;
+  serviceRegistryWithDefaults =
+    {
+      limits = {};
+    }
+    // serviceRegistry;
 in {
   pkg = pkg;
   stackName = stackName;
@@ -89,8 +94,8 @@ in {
         inherit (unitsLib) sizeToBytes sizesToBytes;
       };
   };
-  registry = serviceRegistry;
-  serviceRegistry = serviceRegistry;
+  registry = serviceRegistryWithDefaults;
+  serviceRegistry = serviceRegistryWithDefaults;
   secrets = rec {
     base = stackSecretsBasePath;
     services = defaultClientSecretsBasePath;
