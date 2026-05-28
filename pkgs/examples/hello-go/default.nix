@@ -1,7 +1,8 @@
 {
   pkgs ? import <nixpkgs> {},
-  s ? import ../../../lib/flake/stack.nix,
+  stack ? import ../../../lib/flake/stack/package.nix,
 }: let
+  s = stack;
   pkg = s.pkg;
   srv = s.srv;
   build = pkgs.buildGoModule {

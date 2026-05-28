@@ -6,25 +6,21 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = {
-    nixpkgs,
-    flake-utils,
-    ...
-  }:
-    flake-utils.lib.eachDefaultSystem (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-      pkgHelper = import ../../../lib/flake/pkg-helper.nix;
-      drv = pkgs.callPackage ./default.nix {};
-    in
-      pkgHelper.mkStdFlakeOutputs {
-        inherit pkgs;
-        build = drv;
-        inherit (drv) devShell;
-        extraPackages = {
-          "wrangler-deploy" = drv.wrangler-deploy;
-        };
-        extraApps = {
-          "wrangler-deploy" = pkgHelper.mkPackageApp pkgs drv.wrangler-deploy;
+  outputs = inputs:
+    (import ../../../lib/flake/stack/package.nix).mkFlakeOutputs ./default.nix (inputs
+      // {
+        stdFlakeOutputArgs = {
+          build,
+          pkgHelper,
+          pkgs,
+        }: {
+          inherit (build) devShell;
+          extraPackages = {
+            "wrangler-deploy" = build.wrangler-deploy;
+          };
+          extraApps = {
+            "wrangler-deploy" = pkgHelper.mkPackageApp pkgs build.wrangler-deploy;
+          };
         };
       });
 }

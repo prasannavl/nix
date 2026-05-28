@@ -24,6 +24,8 @@ Use this index as the canonical map for `docs/ai/**`.
   and direct `/nix/store` mounts for read-only package content.
 - `docs/ai/design-patterns/prefer-defaults.md`: Prefer upstream defaults for
   infra and runtime knobs unless there is a demonstrated reason to override.
+- `docs/ai/design-patterns/stack-first-environments.md`: Stack-first
+  environment, service-registry, package-boundary, and deferred-consumer rules.
 - `docs/ai/design-patterns/tunnels-and-static-origins.md`: Tunnel edge-IP policy
   and static-origin rollout rules.
 
@@ -197,6 +199,10 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/gap3-post-8314da5b-port-2026-05.md`: Tracks the
   selective post-`8314da5b` `gap3/master` port plan, per-commit dispositions,
   staged foundations, and skipped project-specific work.
+- `docs/ai/notes/tooling/gap3-unit4-stack-registry-foundation-2026-05.md`:
+  Records the Unit 4 stack/service-registry/package helper foundation port and
+  the Abird-specific, secret-policy, nginx-composer, and mail-directory
+  deferrals.
 - `docs/ai/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
 - `docs/ai/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records the

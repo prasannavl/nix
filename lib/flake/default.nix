@@ -1,19 +1,31 @@
 {
   nixpkgs,
   flake-utils,
+  stackProfiles ? import ../stacks,
 }: let
   appsFn = import ./apps.nix;
   pkgHelper = import ./pkg-helper.nix;
   serviceModuleFactory = import ./service-module.nix;
-  stack = import ./stack.nix;
+  serviceRegistry = import ./service-registry.nix;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
 in rec {
   inherit pkgHelper;
-  inherit stack;
+  stacks = stackProfiles;
   inherit serviceModuleFactory;
-  servicePlatform = stack;
-  serviceModule = stack.srv;
+  inherit serviceRegistry;
+  servicePlatform = stackProfiles.pvl;
+  stack = stackProfiles.pvl;
+  serviceModule = serviceModuleFactory.mkServiceLib {
+    defaultUser = "root";
+    defaultClientSecretsBasePath = ../../data/secrets/services;
+    defaultClientIdentitySuffix = "invalid.invalid";
+    defaultServiceIdentitySuffix = "invalid.invalid";
+    defaultPostgresUrl = "";
+    defaultPostgresCaCertPath = "";
+    defaultNatsUrl = "";
+    defaultNatsCaCertPath = "";
+  };
   withPkgs = pkgs: let
     baseOutputs = packagesFn {
       inherit pkgs;
@@ -65,14 +77,26 @@ in rec {
   }: {
     hostName,
     modules,
+    stack ? stackProfiles.pvl,
     system,
   }:
     nixpkgs.lib.nixosSystem {
       inherit system;
       specialArgs = {
-        inherit hostName inputs system;
+        inherit hostName inputs stack system;
+        stacks = stackProfiles;
       };
-      modules = commonModules ++ modules;
+      modules =
+        commonModules
+        ++ [
+          {
+            home-manager.extraSpecialArgs = {
+              inherit inputs stack;
+              stacks = stackProfiles;
+            };
+          }
+        ]
+        ++ modules;
     };
 
   packagesFor = systems:

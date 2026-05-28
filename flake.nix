@@ -101,6 +101,7 @@
     allSystems = flake-utils.lib.defaultSystems;
     flakeLib = import ./lib/flake {
       inherit flake-utils nixpkgs;
+      stackProfiles = import ./lib/stacks;
     };
     allOutputs = flakeLib.outputsFor allSystems;
     overlays = import ./overlays {inherit inputs;};
@@ -112,7 +113,6 @@
       flakeLib.serviceModule.portCheckModule
       {nixpkgs.overlays = overlays;}
       {imports = builtins.attrValues (builtins.removeAttrs flakeLib.nixosModules ["default"]);}
-      {home-manager.extraSpecialArgs = {inherit inputs;};}
     ];
     mkNixosSystem = flakeLib.mkNixosSystem {
       inherit commonModules inputs;
@@ -153,10 +153,12 @@
       overlays.default = nixpkgs.lib.composeManyExtensions overlays;
       nixosConfigurations = import ./hosts {
         inherit mkNixosSystem;
+        stacks = flakeLib.stacks;
       };
       # Intentional non-standard addition.
       nixosImages = import ./lib/images {
         inherit mkNixosSystem;
+        stacks = flakeLib.stacks;
       };
     };
 }

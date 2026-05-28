@@ -486,6 +486,10 @@ rec {
       moduleFn,
       constructor,
     }: {
+      __moduleArgs = args;
+      __moduleFn = moduleFn;
+      __moduleConstructor = constructor;
+      __moduleSourcePath = sourcePath;
       __boundModuleFactory = build: let
         resolvedSourcePath =
           if sourcePath != null
@@ -500,11 +504,36 @@ rec {
           inputs,
           system,
           ...
-        } @ moduleArgs:
-          (moduleFn (
-            args
+        } @ moduleArgs: let
+          rawModuleStack = moduleArgs.stack or null;
+          moduleStack =
+            if rawModuleStack != null && rawModuleStack ? pkg && rawModuleStack ? srv
+            then rawModuleStack
+            else null;
+          effectiveStack =
+            if moduleStack != null
+            then moduleStack
+            else import ./stack/package.nix;
+          sourceArgs = builtins.functionArgs (import resolvedSourcePath);
+          packageArgs =
+            if sourceArgs ? stack
+            then {stack = effectiveStack;}
+            else {};
+          package = inputs.nixpkgs.legacyPackages.${system}.callPackage resolvedSourcePath packageArgs;
+          currentModuleFactory = package.passthru.nixosModule or {};
+          currentModuleFn =
+            if builtins.isAttrs currentModuleFactory && currentModuleFactory ? __moduleFn
+            then currentModuleFactory.__moduleFn
+            else moduleFn;
+          currentModuleArgs =
+            if builtins.isAttrs currentModuleFactory && currentModuleFactory ? __moduleArgs
+            then currentModuleFactory.__moduleArgs
+            else args;
+        in
+          (currentModuleFn (
+            currentModuleArgs
             // {
-              package = inputs.nixpkgs.legacyPackages.${system}.callPackage resolvedSourcePath {};
+              package = package;
               sourcePath = resolvedSourcePath;
             }
           ))
@@ -787,14 +816,36 @@ rec {
             config,
             lib,
             pkgs,
+            stack ? null,
             ...
           }: let
+            rawModuleStack = stack;
+            moduleStack =
+              if rawModuleStack != null && rawModuleStack ? pkg && rawModuleStack ? srv
+              then rawModuleStack
+              else null;
+            effectiveStack =
+              if moduleStack != null
+              then moduleStack
+              else import ./stack/package.nix;
+            sourceArgs =
+              if sourcePath != null
+              then builtins.functionArgs (import sourcePath)
+              else {};
+            packageArgs =
+              if sourceArgs ? stack
+              then {stack = effectiveStack;}
+              else {};
             package =
               if sourcePath != null
-              then pkgs.callPackage sourcePath {}
+              then pkgs.callPackage sourcePath packageArgs
               else drv;
+            moduleIdentity =
+              if moduleStack != null && moduleStack ? srv
+              then (moduleStack.srv.mkIdentity package) (builtins.removeAttrs args ["drv"])
+              else {ageSecrets = ageSecrets;};
           in {
-            age.secrets = lib.mkIf (builtins.elem package config.environment.systemPackages) ageSecrets;
+            age.secrets = lib.mkIf (builtins.elem package config.environment.systemPackages) moduleIdentity.ageSecrets;
           };
       flakeExtraNixosModules.clientIdentity = nixosModule;
     };

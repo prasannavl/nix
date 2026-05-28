@@ -1,10 +1,19 @@
-{pkgs}: let
+{
+  pkgs,
+  stack ? import ./stack/package.nix,
+}: let
   manifest = import ../../pkgs/manifest.nix {inherit pkgs;};
   inherit (manifest) packageEntries;
+  stackArgsFor = path: let
+    args = builtins.functionArgs (import path);
+  in
+    if args ? stack
+    then {stack = stack;}
+    else {};
   buildEntry = packages: entry:
     if entry ? build
     then entry.build packages
-    else pkgs.callPackage entry.path {};
+    else pkgs.callPackage entry.path (stackArgsFor entry.path);
   packageAttrs = builtins.listToAttrs (
     map (entry: {
       name = entry.id;

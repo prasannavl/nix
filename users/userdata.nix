@@ -10,6 +10,7 @@
     ];
     sshKey = builtins.head sshKeys;
     ciSshKey = builtins.head ciSshKeys;
+    email = false;
   };
   pvl = {
     username = "pvl";

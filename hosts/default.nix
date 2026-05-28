@@ -1,35 +1,42 @@
-{mkNixosSystem, ...}: {
-  pvl-a1 = mkNixosSystem {
+{
+  mkNixosSystem,
+  stacks,
+  ...
+}: let
+  mkPvlSystem = args:
+    mkNixosSystem (args // {stack = stacks.pvl;});
+in {
+  pvl-a1 = mkPvlSystem {
     system = "x86_64-linux";
     hostName = "pvl-a1";
     modules = [./pvl-a1];
   };
 
-  pvl-x2 = mkNixosSystem {
+  pvl-x2 = mkPvlSystem {
     system = "x86_64-linux";
     hostName = "pvl-x2";
     modules = [./pvl-x2];
   };
 
-  pvl-vlab = mkNixosSystem {
+  pvl-vlab = mkPvlSystem {
     system = "x86_64-linux";
     hostName = "pvl-vlab";
     modules = [./pvl-vlab];
   };
 
-  pvl-vlab-1 = mkNixosSystem {
+  pvl-vlab-1 = mkPvlSystem {
     system = "x86_64-linux";
     hostName = "pvl-vlab-1";
     modules = [./pvl-vlab-1];
   };
 
-  pvl-vk = mkNixosSystem {
+  pvl-vk = mkPvlSystem {
     system = "x86_64-linux";
     hostName = "pvl-vk";
     modules = [./pvl-vk];
   };
 
-  pvl-vk-1 = mkNixosSystem {
+  pvl-vk-1 = mkPvlSystem {
     system = "x86_64-linux";
     hostName = "pvl-vk-1";
     modules = [./pvl-vk-1];

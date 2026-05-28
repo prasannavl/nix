@@ -6,19 +6,11 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = {
-    nixpkgs,
-    flake-utils,
-    ...
-  }:
-    flake-utils.lib.eachDefaultSystem (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-      pkgHelper = import ../../../lib/flake/pkg-helper.nix;
-      drv = pkgs.callPackage ./default.nix {};
-    in
-      pkgHelper.mkStdFlakeOutputs {
-        pkgs = pkgs;
-        build = drv;
-        devShell = drv.devShell;
+  outputs = inputs:
+    (import ../../../lib/flake/stack/package.nix).mkFlakeOutputs ./default.nix (inputs
+      // {
+        stdFlakeOutputArgs = {build, ...}: {
+          devShell = build.devShell;
+        };
       });
 }
