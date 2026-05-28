@@ -4,6 +4,11 @@
 `services.incusMachines.global.certificates`. The host firewall also allows TCP
 `8443`, matching the Incus HTTPS listener.
 
+The certificate inventory is declared in `data/incus/certs.nix`. That file is
+the source of truth for the trusted public certificate path, the age-managed
+private key path, the age-managed PFX path, and the userdata SSH recipients that
+can decrypt the private artifacts.
+
 As of 2026-05-15, `pvl-a1` is intentionally reduced back to a single default
 Incus project. The host preseed declares only the default bridge `incusbr0` on
 `10.10.20.1/24`, the default storage pool, and the default profile. The previous
@@ -28,6 +33,17 @@ The PFX bundles use an empty import password. They contain private key material,
 so keep only the `.pfx.age` files in the repo and create plaintext PFX files
 temporarily outside the repo when importing into a browser or OS certificate
 store.
+
+To rotate or recreate the declared local Incus client identity, run:
+
+```bash
+nix run .#incus-certs -- --force pvl
+```
+
+The generator creates a fresh browser-compatible ECDSA P-256 Incus client key
+and certificate, writes only the public certificate as plaintext, and
+age-encrypts the private key plus PKCS#12 bundle to the userdata SSH recipients.
+Userdata SSH keys are decryption recipients, not the Incus TLS private key.
 
 Do not put private keys in Nix store paths or Incus preseed. The
 `services.incusMachines.global.certificates` reconciler only needs the public

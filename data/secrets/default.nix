@@ -1,5 +1,6 @@
 let
   userdata = import ../../users/userdata.nix;
+  incusCerts = import ../incus/certs.nix;
   admins = [userdata.pvl.sshKey];
   adminsWithNixbot = admins ++ nixbotKeys;
   adminsWithCiHost =
@@ -43,8 +44,6 @@ in
       "data/secrets/machine/gap3-gondor.key.age".publicKeys = adminsWithNixbot;
 
       # Incus client identities
-      "data/secrets/incus/pvl.key.age".publicKeys = admins;
-      "data/secrets/incus/pvl.pfx.age".publicKeys = admins;
       "data/secrets/incus/abird.key.age".publicKeys = admins;
       "data/secrets/incus/abird-stage.key.age".publicKeys = admins;
       "data/secrets/incus/abird-dev.key.age".publicKeys = admins;
@@ -99,4 +98,5 @@ in
       "data/secrets/tailscale/pvl-vlab.key.age".publicKeys = admins ++ pvl-vlab;
       "data/secrets/tailscale/gap3-gondor.key.age".publicKeys = admins ++ gap3-gondor;
     }
+    // incusCerts.ageSecrets
     // import ./pvl stackArgs

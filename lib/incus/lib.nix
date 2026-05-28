@@ -84,6 +84,14 @@
     type = "disk";
     certDelegation = name;
   };
+
+  certsForUsers = users: import ./certs.nix {users = users;};
+
+  mkIncusCertsForUser = {users, ...} @ args: let
+    certs = certsForUsers users;
+  in
+    certs.mkIncusCertsForUser (builtins.removeAttrs args ["users"]);
 in {
-  inherit mkCertDelegation mkGpuDevices mkIncusProxy;
+  inherit certsForUsers mkCertDelegation mkGpuDevices mkIncusCertsForUser mkIncusProxy;
+  certs = import ./certs.nix;
 }
