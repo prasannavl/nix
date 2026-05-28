@@ -93,23 +93,33 @@
   remoteProjectDelegationDeps = lib.optional hasRemoteProjectDelegations remoteProjectDelegationUnit;
   certificateDelegationsRootEnv =
     mkEnvAssignment "INCUS_MACHINES_CERTIFICATE_DELEGATIONS_ROOT" certificateDelegationsRoot;
+  certsPython = pkgs.python3.withPackages (ps: [
+    ps.cryptography
+  ]);
 
   helperPackage = pkgs.writeShellApplication {
     name = "incus-machines-helper";
     excludeShellChecks = ["SC1091" "SC2016"];
     runtimeInputs = [
       config.virtualisation.incus.package.client
+      pkgs.age
       pkgs.bash
       pkgs.coreutils
       pkgs.curl
       pkgs.gawk
+      pkgs.git
       pkgs.gnutar
       pkgs.jq
+      pkgs.nix
       pkgs.openssl
       pkgs.systemd
       pkgs.xz
     ];
     text = ''
+      if [ "''${1:-}" = "certs" ]; then
+        shift
+        exec ${certsPython}/bin/python ${./helper-certs.py} "$@"
+      fi
       source ${./helper.sh}
       main "$@"
     '';
@@ -264,6 +274,15 @@
     else withoutExtension;
 
   effectiveRemoteProjects = globalCfg.remote.projects;
+  remoteProjectUserCertificateRefs = lib.unique (
+    lib.concatLists (
+      lib.mapAttrsToList (_projectName: project: project.userCerts) effectiveRemoteProjects
+    )
+  );
+  missingRemoteProjectUserCertificates =
+    lib.filter
+    (user: !builtins.hasAttr user globalCfg.remote.userCertificates)
+    remoteProjectUserCertificateRefs;
   remoteClientProject =
     if effectiveRemoteProjects != {}
     then builtins.head (builtins.attrNames effectiveRemoteProjects)
@@ -280,7 +299,13 @@
       file = materializeRemoteFile cert.file;
       automatic = false;
     })
-    project.certs;
+    project.certs
+    ++ map (user: {
+      name = user;
+      file = materializeRemoteFile globalCfg.remote.userCertificates.${user};
+      automatic = false;
+    })
+    project.userCerts;
 
   remoteProjectDelegations =
     lib.mapAttrs (
@@ -479,6 +504,16 @@
           certificate state file. Bare path and string entries derive their
           tenant-local name from the file basename; use `{ name, file }` when a
           specific name is required.
+        '';
+      };
+
+      userCerts = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          User names from `services.incusMachines.global.remote.userCertificates`
+          whose generated client certificates should be published into this
+          project's delegated certificate state. These are appended to `certs`.
         '';
       };
 
@@ -1492,19 +1527,6 @@
     effectiveRemoteProjects
   );
 
-  remoteProjectCertificateFiles = lib.concatLists (
-    lib.mapAttrsToList (
-      projectName: project:
-        map (cert: toString cert.file) (lib.filter (cert: !cert.automatic) (remoteProjectCertificates projectName project))
-    )
-    effectiveRemoteProjects
-  );
-
-  duplicateRemoteProjectCertificateFiles =
-    lib.filter
-    (file: builtins.length (lib.filter (candidate: candidate == file) remoteProjectCertificateFiles) > 1)
-    (lib.unique remoteProjectCertificateFiles);
-
   invalidInstanceNames =
     lib.concatMap
     (entry:
@@ -2076,6 +2098,17 @@ in {
               `/var/lib/incus-delegation/<project>`.
             '';
           };
+
+          userCertificates = lib.mkOption {
+            type = lib.types.attrsOf remoteProjectCertFileType;
+            default = {};
+            description = ''
+              User-name to PEM certificate file mapping used by
+              `services.incusMachines.global.remote.projects.<name>.userCerts`.
+              This lets each project compose raw `certs` with generated user
+              certificates without repeating certificate paths in every project.
+            '';
+          };
         };
 
         reconcilePolicy = lib.mkOption {
@@ -2251,10 +2284,10 @@ in {
           + lib.concatStringsSep ", " invalidRemoteProjectCertificateNames;
       }
       {
-        assertion = duplicateRemoteProjectCertificateFiles == [];
+        assertion = missingRemoteProjectUserCertificates == [];
         message =
-          "services.incusMachines.global.remote.projects cannot publish the same certificate file into multiple project delegations: "
-          + lib.concatStringsSep ", " duplicateRemoteProjectCertificateFiles;
+          "services.incusMachines.global.remote.projects userCerts must exist in services.incusMachines.global.remote.userCertificates: "
+          + lib.concatStringsSep ", " missingRemoteProjectUserCertificates;
       }
       {
         assertion = !globalCfg.remote.enable || !hasCertificateDelegations;

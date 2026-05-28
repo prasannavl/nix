@@ -16,7 +16,6 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="incus-certs",
         description="Generate repo-declared Incus client cert/key/PFX artifacts."
     )
     parser.add_argument(
@@ -59,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "selectors",
         nargs="*",
-        help="Optional user, cert name, project, or user/project selectors.",
+        help="Optional user, project, or user/project selectors.",
     )
     return parser.parse_args()
 
@@ -101,7 +100,9 @@ def load_config(root: pathlib.Path, args: argparse.Namespace) -> list[dict]:
             raise SystemExit("Unexpected Incus cert generator config shape")
         return config
 
-    expr = args.config_expr or "(import ./data/incus/certs.nix).generatorConfig"
+    expr = args.config_expr
+    if not expr:
+        raise SystemExit("Pass --config-expr, --config-file, or INCUS_CERTS_CONFIG_EXPR")
     out = run(["nix", "eval", "--impure", "--json", "--expr", expr], cwd=root)
     config = json.loads(out)
     if not isinstance(config, list):
@@ -192,12 +193,7 @@ def check_outputs(paths: list[pathlib.Path], force: bool) -> None:
         raise SystemExit(f"Refusing to overwrite existing files without --force:\n{formatted}")
 
 
-def encrypt_bytes(
-    root: pathlib.Path,
-    data: bytes,
-    output: pathlib.Path,
-    recipients: list[str],
-) -> None:
+def encrypt_bytes(root: pathlib.Path, data: bytes, output: pathlib.Path, recipients: list[str]) -> None:
     if not recipients:
         raise SystemExit(f"No recipients configured for {output}")
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -13,10 +13,6 @@
       path = ./tools/data-migrator/default.nix;
     }
     {
-      id = "incus-certs";
-      path = ./tools/incus-certs/default.nix;
-    }
-    {
       id = "cloudflare-apps";
       rootApp = false;
       build = packages:

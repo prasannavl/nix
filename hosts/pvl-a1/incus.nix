@@ -1,12 +1,18 @@
-{pkgs, ...}: let
-  incusCerts = import ../../data/incus/certs.nix;
-in {
+{pkgs, ...}: {
   services.incusMachines.global.hostSuspend = {
     enable = true;
     defaultPolicy = "stop";
     includeVirtualMachines = false;
   };
-  services.incusMachines.global.certificates = incusCerts.trustedCertificates;
+  services.incusMachines.global.certificates = [
+    {
+      name = "pvl";
+      type = "client";
+      restricted = false;
+      projects = [];
+      certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
+    }
+  ];
 
   virtualisation.incus = {
     enable = true;

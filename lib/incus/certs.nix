@@ -1,126 +1,101 @@
 {users}: let
-  concatMap = f: xs: builtins.concatLists (map f xs);
-  listToAttrs = builtins.listToAttrs;
-  mapAttrsToList = f: attrs:
-    map (name: f name attrs.${name}) (builtins.attrNames attrs);
   mergeAttrs = attrs:
     builtins.foldl' (acc: value: acc // value) {} attrs;
 
+  unique = values:
+    builtins.foldl'
+    (acc: value:
+      if builtins.elem value acc
+      then acc
+      else acc ++ [value])
+    []
+    values;
+
   userSshKeys = user:
     if users ? ${user}
-    then
-      users.${
-        user
-      }.sshKeys
-      or (
-        if users.${user} ? sshKey
-        then [users.${user}.sshKey]
-        else []
-      )
+    then users.${user}.sshKeys or []
     else throw "Unknown user for Incus cert recipients: ${user}";
 
-  normalizeCertificate = user: cert:
-    if builtins.isString cert
-    then {
-      name = cert;
-      projects = [];
-      restricted = false;
-    }
-    else
-      cert
-      // {
-        name = cert.name or user;
-        projects = cert.projects or [];
-        restricted = cert.restricted or ((cert.projects or []) != []);
-      };
-
-  mkCertificateEntry = {
+  mkUserCertWithKeys = {
     user,
-    recipientUser,
-    extraRecipients,
-    root,
-    publicDir,
-    secretDir,
-    keyType,
-    days,
-  }: cert: let
-    normalized = normalizeCertificate user cert;
-    name = normalized.name;
-    projects = normalized.projects;
-    restricted = normalized.restricted;
-    type = normalized.type or "client";
-    recipients = userSshKeys recipientUser ++ extraRecipients;
-    publicCert = "${publicDir}/${name}.crt";
-    keyAge = "${secretDir}/${name}.key.age";
-    pfxAge = "${secretDir}/${name}.pfx.age";
-  in {
-    inherit days keyAge keyType name pfxAge projects publicCert recipients restricted type;
-    inherit recipientUser user;
-    ageSecrets = {
-      "${keyAge}".publicKeys = recipients;
-      "${pfxAge}".publicKeys = recipients;
-    };
-    generatorConfig = [
-      {
-        inherit days keyAge keyType name pfxAge projects publicCert recipients restricted type;
-        inherit recipientUser user;
-      }
-    ];
-    trustedCertificate = {
-      inherit name projects restricted type;
-      certificate = builtins.readFile (root + "/${publicCert}");
-    };
-  };
-
-  mkIncusCertsForUser = {
-    user,
-    certificates ? [
-      {
-        name = user;
-        projects = [];
-        restricted = false;
-      }
-    ],
+    projects,
+    cert,
+    key,
+    pfx,
+    name ? user,
     recipientUser ? user,
     extraRecipients ? [],
-    root ? ../..,
-    publicDir ? "data/secrets/incus",
-    secretDir ? "data/secrets/incus",
     keyType ? "ecdsa-p256",
     days ? 3650,
   }: let
-    entries =
-      map
-      (mkCertificateEntry {
-        inherit days extraRecipients keyType publicDir recipientUser root secretDir user;
-      })
-      certificates;
+    recipients = userSshKeys recipientUser ++ extraRecipients;
   in {
-    inherit certificates entries recipientUser user;
-    ageSecrets = mergeAttrs (map (entry: entry.ageSecrets) entries);
-    generatorConfig = concatMap (entry: entry.generatorConfig) entries;
-    trustedCertificates = map (entry: entry.trustedCertificate) entries;
-    byName = listToAttrs (map (entry: {
-        inherit (entry) name;
-        value = entry;
-      })
-      entries);
+    inherit cert days key keyType name pfx projects recipients recipientUser user;
+    ageSecrets = {
+      "${key}".publicKeys = recipients;
+      "${pfx}".publicKeys = recipients;
+    };
+    generatorConfig = [
+      {
+        inherit days keyType name projects recipients recipientUser user;
+        publicCert = cert;
+        keyAge = key;
+        pfxAge = pfx;
+      }
+    ];
   };
 
-  mergeIncusCertGroups = groups: let
-    groupList = mapAttrsToList (_: value: value) groups;
-    entries = concatMap (group: group.entries) groupList;
-  in {
-    inherit entries;
-    ageSecrets = mergeAttrs (map (group: group.ageSecrets) groupList);
-    generatorConfig = concatMap (group: group.generatorConfig) groupList;
-    trustedCertificates = concatMap (group: group.trustedCertificates) groupList;
-    byName = listToAttrs (map (entry: {
-        inherit (entry) name;
-        value = entry;
-      })
-      entries);
+  mergeUserCerts = certs: {
+    ageSecrets = mergeAttrs (map (cert: cert.ageSecrets) certs);
+    generatorConfig = builtins.concatLists (map (cert: cert.generatorConfig) certs);
   };
+
+  certFiles = root: certs:
+    map (cert: root + "/${cert.cert}") certs;
+
+  certFilesByName = root: certsByName:
+    builtins.mapAttrs (_user: cert: root + "/${cert.cert}") certsByName;
+
+  usersFromProjects = projects:
+    unique (
+      builtins.concatLists (
+        map (project: projects.${project}.userCerts or [])
+        (builtins.attrNames projects)
+      )
+    );
+
+  projectsForUser = projects: user:
+    builtins.filter
+    (project: builtins.elem user (projects.${project}.userCerts or []))
+    (builtins.attrNames projects);
+
+  certFilesForUsers = root: certsByName: users:
+    certFiles root (map (user: certsByName.${user}) users);
+
+  mkUserCertsForProjects = {
+    root,
+    projects,
+    mkUserCert,
+  }: let
+    projectUsers = usersFromProjects projects;
+    certsByName =
+      builtins.listToAttrs
+      (map (user: {
+          name = user;
+          value = mkUserCert {
+            user = user;
+            projects = projectsForUser projects user;
+          };
+        })
+        projectUsers);
+    certs = map (user: certsByName.${user}) projectUsers;
+    merged = mergeUserCerts certs;
+  in
+    merged
+    // {
+      inherit certs certsByName projectUsers;
+      userCertificates = certFilesByName root certsByName;
+    };
 in {
-  inherit mergeIncusCertGroups mkIncusCertsForUser;
+  inherit certFiles certFilesByName certFilesForUsers mergeUserCerts mkUserCertsForProjects mkUserCertWithKeys projectsForUser usersFromProjects;
 }

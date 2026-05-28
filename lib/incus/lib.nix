@@ -87,11 +87,33 @@
 
   certsForUsers = users: import ./certs.nix {users = users;};
 
-  mkIncusCertsForUser = {users, ...} @ args: let
+  mkUserCertsForProjects = {
+    users,
+    root,
+    projects,
+    certPath,
+    keyPath,
+    pfxPath,
+    keyType ? "ecdsa-p256",
+    days ? 3650,
+  }: let
     certs = certsForUsers users;
   in
-    certs.mkIncusCertsForUser (builtins.removeAttrs args ["users"]);
+    certs.mkUserCertsForProjects {
+      root = root;
+      projects = projects;
+      mkUserCert = {
+        user,
+        projects,
+      }:
+        certs.mkUserCertWithKeys {
+          inherit days keyType projects user;
+          cert = certPath user;
+          key = keyPath user;
+          pfx = pfxPath user;
+        };
+    };
 in {
-  inherit certsForUsers mkCertDelegation mkGpuDevices mkIncusCertsForUser mkIncusProxy;
+  inherit certsForUsers mkCertDelegation mkGpuDevices mkIncusProxy mkUserCertsForProjects;
   certs = import ./certs.nix;
 }

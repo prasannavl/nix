@@ -108,8 +108,7 @@ Use this index as the canonical map for `docs/ai/**`.
   `pvl-a1` pinned Incus client certificates and admin-only encrypted private
   keys used for deterministic TLS client login, the matching TCP `8443` firewall
   opening, and the current default-project-only Incus shape with just the
-  unrestricted `pvl` client certificate declared through `data/incus/certs.nix`
-  and materialized with `nix run .#incus-certs`.
+  unrestricted `pvl` client certificate declared.
 - `docs/ai/notes/hosts/pvl-dbus-broker-policy-2026-04.md`: Records the DBus
   broker policy cleanup for Debian-style `sudo` and `pulse` account references
   exposed by the broker migration.
