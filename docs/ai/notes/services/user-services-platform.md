@@ -47,8 +47,14 @@ service-facing ingress policy.
   are resolved under the compose working directory; absolute keys manage host
   paths directly.
 - `envSecrets` is the canonical file-backed secret injection mechanism.
-- Pure secret-content rotation at the same runtime path does not force a restart
-  by itself; use `bootTag` when a managed restart is required.
+- Age-backed `envSecrets` and `fileSecrets` participate in restart stamps via
+  the encrypted source `*.age` hash. Rotating a managed age source restarts the
+  compose unit on the next deploy when the runtime path resolves through
+  `age.secrets`.
+- Non-age secret paths are not hashed by content; use an explicit lifecycle tag
+  or convert the source to `age.secrets`.
+- Secret-content rotation at an unmanaged runtime path does not force a restart
+  by itself; use a lifecycle tag when a managed restart is required.
 
 ## Lifecycle tags
 
@@ -66,6 +72,9 @@ service-facing ingress policy.
 - Tag semantics should depend only on the declared tag value, not on incidental
   generated helper path churn.
 - Boots do not replay lifecycle tags. Tags are deploy-time triggers.
+- Prefer a small tri-state rotation for manual tags: unset or `0`, then `1`,
+  then `2`, then back to unset or `0`. This avoids rollback collisions with a
+  stale two-state runtime marker.
 - Rootless stack users get a system-level Podman idmap migration check before
   their user-manager dispatcher. It runs `podman system migrate` only when
   subordinate uid/gid ranges exist and Podman's active map is still the stale
@@ -86,6 +95,9 @@ service-facing ingress policy.
   stay soft `Wants`-style startup edges, not hard `Requires`.
 - Backend outages should degrade to route-level `502` or `504` responses, not
   block nginx startup entirely.
+- Use per-route or per-port proxy timeout knobs for known long-lived upstream
+  streams. Do not hide service readiness failures by raising stable-state
+  startup timeouts.
 
 ## Rate limiting
 

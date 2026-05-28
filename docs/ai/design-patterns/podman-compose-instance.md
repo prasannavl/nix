@@ -44,6 +44,21 @@ include only what applies, but keep the relative order stable.
 - `preStart` runs before the container starts and often depends on staged path
   layout, so it comes last.
 
+## Network And Timeout Debugging
+
+- Keep the default Podman/Compose network mode unless the user explicitly asks
+  to change it. Do not switch a service to `network_mode: host` as a debugging
+  shortcut for rootless port, DNS, or readiness failures. First fix the actual
+  published-port, rootless namespace, service readiness, or provisioning error
+  inside the existing network model.
+- Do not raise `timeoutStableSeconds`, `TimeoutStartSec`, or related settling
+  windows just because a deploy is slow or a health check is stuck. A long
+  start-post or health-settling delay usually means the service is failing
+  elsewhere: an unreachable local port, a crashed container, a stale pod, a bad
+  secret, or an auto-apply/provisioning error.
+- Increase startup timeouts only when a normal healthy startup path is measured
+  to require it, and document the reason next to the override.
+
 ## Example
 
 ```nix

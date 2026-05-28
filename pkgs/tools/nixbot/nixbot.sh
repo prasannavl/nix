@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
-readonly NIXBOT_VERSION="2026.05.17.1"
+readonly NIXBOT_VERSION="2026.05.23.1"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 
@@ -39,7 +39,7 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|!host"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -63,7 +63,7 @@ Local Wrapper Action:
   tofu            Run local OpenTofu in the nixbot runtime shell.
 
 Workflow Selection Options:
-  --hosts          Hosts/context to target (comma/space-separated, globs, or `all`; default: all)
+  --hosts          Hosts/context to target (comma/space-separated, globs, !exclusions, or `all`; default: all)
   --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
@@ -71,7 +71,7 @@ Build Action Options (`run`, `deploy`, `build`):
   --build-jobs     Parallel host builds (default: 1)
 
 Dev Build Action Options (`dev-build`):
-  --hosts          Hosts/globs to build into result-<host> links (default: all)
+  --hosts          Hosts/globs to build into result-<host> links; !exclusions are supported (default: all)
   --build-jobs     Parallel host builds (default: 1)
 
 Deploy Action Options (`run`, `deploy`):
@@ -2129,13 +2129,15 @@ load_all_hosts_json() {
 
 ##### Host Selection #####
 
-select_hosts_json() {
-	local all_hosts_json="$1" token="" host="" matched=""
-	local -a all_hosts=() selected_hosts=()
+parse_host_selectors_json() {
+	local all_hosts_json="$1" token="" selector="" host="" matched="" exclusion=0
+	local selected_json="" excluded_json=""
+	local -a all_hosts=() selected_hosts=() excluded_hosts=()
 	declare -A selected_host_set=()
+	declare -A excluded_host_set=()
 
 	if [ "${HOSTS_RAW}" = "all" ]; then
-		printf '%s\n' "${all_hosts_json}"
+		jq -cn --argjson selected "${all_hosts_json}" '{selected: $selected, excluded: []}'
 		return
 	fi
 
@@ -2144,32 +2146,79 @@ select_hosts_json() {
 	while IFS= read -r token; do
 		[ -n "${token}" ] || continue
 
-		if host_token_is_glob "${token}"; then
+		exclusion=0
+		selector="${token}"
+		if [[ "${token}" == '!'* ]]; then
+			exclusion=1
+			selector="${token#!}"
+			[ -n "${selector}" ] || selector="${token}"
+		fi
+
+		if [ "${selector}" = "all" ]; then
+			for host in "${all_hosts[@]}"; do
+				if [ "${exclusion}" -eq 1 ]; then
+					if [ -z "${excluded_host_set["${host}"]+x}" ]; then
+						excluded_host_set["${host}"]=1
+						excluded_hosts+=("${host}")
+					fi
+				elif [ -z "${selected_host_set["${host}"]+x}" ]; then
+					selected_host_set["${host}"]=1
+					selected_hosts+=("${host}")
+				fi
+			done
+			continue
+		fi
+
+		if host_token_is_glob "${selector}"; then
 			matched=0
 			for host in "${all_hosts[@]}"; do
 				# shellcheck disable=SC2053
-				if [[ "${host}" == ${token} ]]; then
+				if [[ "${host}" == ${selector} ]]; then
 					matched=1
-					if [ -z "${selected_host_set["${host}"]+x}" ]; then
+					if [ "${exclusion}" -eq 1 ]; then
+						if [ -z "${excluded_host_set["${host}"]+x}" ]; then
+							excluded_host_set["${host}"]=1
+							excluded_hosts+=("${host}")
+						fi
+					elif [ -z "${selected_host_set["${host}"]+x}" ]; then
 						selected_host_set["${host}"]=1
 						selected_hosts+=("${host}")
 					fi
 				fi
 			done
-			if [ "${matched}" -eq 0 ] && [ -z "${selected_host_set["${token}"]+x}" ]; then
-				selected_host_set["${token}"]=1
-				selected_hosts+=("${token}")
+			if [ "${matched}" -eq 0 ]; then
+				if [ "${exclusion}" -eq 1 ]; then
+					if [ -z "${excluded_host_set["${selector}"]+x}" ]; then
+						excluded_host_set["${selector}"]=1
+						excluded_hosts+=("${selector}")
+					fi
+				elif [ -z "${selected_host_set["${selector}"]+x}" ]; then
+					selected_host_set["${selector}"]=1
+					selected_hosts+=("${selector}")
+				fi
 			fi
 			continue
 		fi
 
-		if [ -z "${selected_host_set["${token}"]+x}" ]; then
-			selected_host_set["${token}"]=1
-			selected_hosts+=("${token}")
+		if [ "${exclusion}" -eq 1 ]; then
+			if [ -z "${excluded_host_set["${selector}"]+x}" ]; then
+				excluded_host_set["${selector}"]=1
+				excluded_hosts+=("${selector}")
+			fi
+			continue
+		fi
+
+		if [ -z "${selected_host_set["${selector}"]+x}" ]; then
+			selected_host_set["${selector}"]=1
+			selected_hosts+=("${selector}")
 		fi
 	done < <(emit_normalized_hosts "${HOSTS_RAW}")
 
-	jq -cn '$ARGS.positional' --args "${selected_hosts[@]}"
+	selected_json="$(jq -cn '$ARGS.positional' --args "${selected_hosts[@]}")"
+	excluded_json="$(jq -cn '$ARGS.positional' --args "${excluded_hosts[@]}")"
+
+	jq -cn --argjson selected "${selected_json}" --argjson excluded "${excluded_json}" \
+		'{selected: $selected, excluded: $excluded}'
 }
 
 host_dependencies_for() {
@@ -2464,6 +2513,41 @@ validate_selected_hosts() {
 	[ "$(jq 'length' <<<"${selected_json}")" -gt 0 ] || die "No hosts selected"
 }
 
+validate_excluded_hosts() {
+	local excluded_json="$1" all_hosts_json="$2" invalid=""
+
+	invalid="$(jq -n --argjson excluded "${excluded_json}" --argjson all "${all_hosts_json}" '$excluded - $all')"
+
+	if [ "$(jq 'length' <<<"${invalid}")" -gt 0 ]; then
+		die "Unknown hosts excluded: $(jq -r 'join(", ")' <<<"${invalid}")"
+	fi
+}
+
+apply_host_exclusions_json() {
+	local selected_json="$1" excluded_json="$2"
+
+	jq -cn --argjson selected "${selected_json}" --argjson excluded "${excluded_json}" '$selected - $excluded'
+}
+
+validate_selected_hosts_do_not_depend_on_excluded() {
+	local selected_json="$1" excluded_json="$2" node="" dep=""
+	local -a selected_hosts=()
+	declare -A excluded_host_set=()
+
+	json_array_to_bash_array "${selected_json}" selected_hosts
+	json_array_to_bash_set "${excluded_json}" excluded_host_set
+
+	for node in "${selected_hosts[@]}"; do
+		[ -n "${node}" ] || continue
+		while IFS= read -r dep; do
+			[ -n "${dep}" ] || continue
+			if [ -n "${excluded_host_set["${dep}"]+x}" ]; then
+				die "Host ${node} cannot depend on excluded host ${dep}"
+			fi
+		done < <(host_dependencies_for "${node}")
+	done
+}
+
 validate_selected_host_execution_policies() {
 	local selected_json="$1" node="" dep=""
 	local -a selected_hosts=() deps=()
@@ -2509,11 +2593,19 @@ filter_runnable_hosts_json() {
 }
 
 resolve_selected_hosts_json() {
-	local all_hosts_json="$1" selected_json=""
+	local all_hosts_json="$1" selection_json="" selected_json="" excluded_json=""
 
-	selected_json="$(select_hosts_json "${all_hosts_json}")"
+	selection_json="$(parse_host_selectors_json "${all_hosts_json}")"
+	selected_json="$(jq -c '.selected' <<<"${selection_json}")"
+	excluded_json="$(jq -c '.excluded' <<<"${selection_json}")"
+	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
+	validate_excluded_hosts "${excluded_json}" "${all_hosts_json}"
+	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
 	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
 	selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
+	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
+	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
+	validate_selected_hosts_do_not_depend_on_excluded "${selected_json}" "${excluded_json}"
 	validate_selected_host_execution_policies "${selected_json}"
 	order_selected_hosts_json "${selected_json}" "${all_hosts_json}"
 }

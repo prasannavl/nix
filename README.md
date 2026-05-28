@@ -113,7 +113,9 @@ are first-class citizens regardless of their backing infrastructure.
 Workflow: `.github/workflows/nixbot.yaml`.
 
 - Push to `master`: trigger build-only run.
-- Manual (`workflow_dispatch`): set `hosts` and optionally deploy.
+- Manual (`workflow_dispatch`): set `hosts` and optionally deploy. Host
+  selectors accept exact names, `all`, globs, and `!` exclusions such as
+  `all,!pvl-a1`.
 
 The workflow is intentionally thin: it only SSHes into the configured CI host
 via the packaged `nixbot` entrypoint with `--ci-trigger`.
