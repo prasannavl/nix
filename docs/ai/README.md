@@ -199,7 +199,8 @@ Use this index as the canonical map for `docs/ai/**`.
   equivalent, and skip decisions.
 - `docs/ai/notes/tooling/gap3-post-8314da5b-port-2026-05.md`: Tracks the
   selective post-`8314da5b` `gap3/master` port plan, per-commit dispositions,
-  staged foundations, and skipped project-specific work.
+  staged foundations, Cloudflare DNSSEC output support, and skipped
+  project-specific work.
 - `docs/ai/notes/tooling/gap3-unit4-stack-registry-foundation-2026-05.md`:
   Records the Unit 4 stack/service-registry/package helper foundation port and
   the Abird-specific, secret-policy, nginx-composer, and mail-directory

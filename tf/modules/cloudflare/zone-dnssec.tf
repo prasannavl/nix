@@ -7,3 +7,18 @@ resource "cloudflare_zone_dnssec" "dnssec" {
   dnssec_presigned    = try(each.value.dnssec_presigned, null)
   dnssec_use_nsec3    = try(each.value.dnssec_use_nsec3, null)
 }
+
+output "managed_zone_dnssec" {
+  value = {
+    for zone_name, dnssec in cloudflare_zone_dnssec.dnssec : zone_name => {
+      status           = dnssec.status
+      algorithm        = try(dnssec.algorithm, null)
+      digest           = try(dnssec.digest, null)
+      digest_algorithm = try(dnssec.digest_algorithm, null)
+      digest_type      = try(dnssec.digest_type, null)
+      ds               = try(dnssec.ds, null)
+      key_tag          = try(dnssec.key_tag, null)
+      public_key       = try(dnssec.public_key, null)
+    }
+  }
+}

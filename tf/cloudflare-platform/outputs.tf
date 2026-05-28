@@ -41,3 +41,7 @@ output "managed_r2_buckets" {
 output "managed_zone_rulesets" {
   value = module.cloudflare_platform.managed_zone_rulesets
 }
+
+output "managed_zone_dnssec" {
+  value = module.cloudflare_platform.managed_zone_dnssec
+}
