@@ -4,6 +4,7 @@ set -Eeuo pipefail
 init_vars() {
 	incus_machines_reconcile_mode="${INCUS_MACHINES_RECONCILE_MODE-}"
 	declared_instances="${INCUS_MACHINES_DECLARED_INSTANCES-[]}"
+	drained_instances="${INCUS_MACHINES_DRAINED_INSTANCES-[]}"
 	declared_instance_refs="${INCUS_MACHINES_DECLARED_INSTANCE_REFS-{}}"
 	instance_names="${INCUS_MACHINES_INSTANCE_NAMES-{}}"
 	instance_projects="${INCUS_MACHINES_INSTANCE_PROJECTS-{}}"
@@ -2018,6 +2019,12 @@ remote_project_delegations_main() {
 	done < <(jq -c 'to_entries[] | select(.value.waitForTrust) | .value + {project: .key}' "$remote_project_delegations_file")
 }
 
+instance_is_drained() {
+	local id
+	id="$1"
+	jq -en --argjson ids "$drained_instances" --arg id "$id" '$ids | index($id) != null' >/dev/null
+}
+
 reconciler_main() {
 	local id name status
 
@@ -2043,6 +2050,19 @@ reconciler_main() {
 		set_current_project_for_instance "$id"
 		name="$(instance_name_for_id "$id")"
 		status="$(instance_status "$name")"
+
+		if instance_is_drained "$id"; then
+			if [ "$status" = "Running" ]; then
+				echo "Draining Incus container $current_project/$name"
+				if ! systemctl restart "incus-$id.service"; then
+					if [ "$incus_machines_reconcile_mode" = "strict" ]; then
+						exit 1
+					fi
+					echo "Best-effort instance drain failed for $id ($current_project/$name); continuing" >&2
+				fi
+			fi
+			continue
+		fi
 
 		if [ "$status" = "Running" ]; then
 			continue
@@ -2184,6 +2204,28 @@ settlement_main() {
 	done
 }
 
+drain_container_instance() {
+	local name instance_json instance_type status
+	name="$1"
+	instance_json="$(incus query "$(query_ref "$(instance_query_path "$name")")" --raw 2>/dev/null || echo '{}')"
+	if [ "$instance_json" = "{}" ]; then
+		echo "Drain requested for absent Incus container $current_project/$name; suppressing cold-start"
+		return 0
+	fi
+	instance_type="$(printf '%s' "$instance_json" | jq -r '.metadata.type // ""' 2>/dev/null || true)"
+	if [ "$instance_type" != "container" ]; then
+		echo "Refusing to drain non-container Incus instance $current_project/$name (type: ${instance_type:-unknown})" >&2
+		exit 1
+	fi
+	status="$(printf '%s' "$instance_json" | jq -r '.metadata.status // "unknown"' 2>/dev/null || printf 'unknown\n')"
+	if [ "$status" = "Stopped" ]; then
+		echo "Incus container $current_project/$name is already drained"
+		return 0
+	fi
+	echo "Stopping Incus container $current_project/$name for migration drain (status: $status)"
+	incus_project stop "$(instance_ref "$name")"
+}
+
 machine_main() {
 	local state_file state_json
 	local name instance_name desired_config_hash desired_boot_tag desired_recreate_tag
@@ -2191,7 +2233,7 @@ machine_main() {
 	local current_instance current_devices current_config current_status desired_disks desired_disk_gc_metadata
 	local current_ipv4 current_managed_by current_project desired_props current_props dev dev_exists dev_source dev_pool desired_gc_config_json key props query_name image_tag
 	local source_key current_controller
-	local instance_image image_alias create_only_devices user_meta_json config_json desired_ipv4 desired_removal_policy desired_adopt
+	local instance_image image_alias create_only_devices user_meta_json config_json desired_ipv4 desired_removal_policy desired_adopt desired_drain
 	local recovery_attempted start_output
 	local -a create_only_device_names current_disk_names desired_disk_names current_prop_keys current_gc_device_names desired_gc_device_names
 
@@ -2214,8 +2256,14 @@ machine_main() {
 	desired_ipv4="$(printf '%s' "$state_json" | jq -r '.ipv4Address')"
 	desired_removal_policy="$(printf '%s' "$state_json" | jq -r '.removalPolicy')"
 	desired_adopt="$(printf '%s' "$state_json" | jq -r '.adopt // false')"
+	desired_drain="$(printf '%s' "$state_json" | jq -r '.drain // false')"
 	query_name="$(jq -nr --arg value "$name" '$value | @uri')"
 	recovery_attempted=0
+
+	if [ "$desired_drain" = "true" ]; then
+		drain_container_instance "$instance_name"
+		return 0
+	fi
 
 	while :; do
 		needs_create=0

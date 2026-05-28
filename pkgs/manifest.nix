@@ -9,6 +9,10 @@
       path = ./tools/nixbot/default.nix;
     }
     {
+      id = "data-migrator";
+      path = ./tools/data-migrator/default.nix;
+    }
+    {
       id = "cloudflare-apps";
       rootApp = false;
       build = packages:
