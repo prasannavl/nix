@@ -108,10 +108,32 @@ Options:
   --smtp-source-ranges <csv>
   --smtp-allow <allow-spec>
                                   Defaults configured in pkgs/ext/gcp-vms/common.sh
+  --ensure-smtps-fw              Create public implicit TLS submission ingress
+                                  and add the matching allow-smtps target tag.
+  --smtps-fw-rule-name <name>
+  --smtps-target-tag <tag>
+  --smtps-source-ranges <csv>
+  --smtps-allow <allow-spec>
+                                  Defaults configured in pkgs/ext/gcp-vms/common.sh
+  --ensure-imap-fw               Create public IMAP STARTTLS ingress and add the
+                                  matching allow-imap target tag.
+  --imap-fw-rule-name <name>
+  --imap-target-tag <tag>
+  --imap-source-ranges <csv>
+  --imap-allow <allow-spec>
+                                  Defaults configured in pkgs/ext/gcp-vms/common.sh
+  --ensure-imaps-fw               Create public IMAPS ingress and add the
+                                  matching allow-imaps target tag.
+  --imaps-fw-rule-name <name>
+  --imaps-target-tag <tag>
+  --imaps-source-ranges <csv>
+  --imaps-allow <allow-spec>
+                                  Defaults configured in pkgs/ext/gcp-vms/common.sh
   --nix                           Run nixify-vm.sh after VM creation.
   --drop-ssh-fw-after             After successful repo-mode --nix, verify the
-                                  nixbot deploy route, remove the public SSH
-                                  tag, and delete the SSH fw rule if unused.
+                                  configured nixbot deploy route, remove the
+                                  SSH target tag from the VM, and delete the
+                                  SSH fw rule if unused.
   --host <flake-host>             Nixify repo flake host name. Default: same
                                   as --name.
   --generic                       Nixify into a generated minimal NixOS host.
@@ -151,11 +173,11 @@ parse_args() {
 			GCP_CLOUD_INIT_PATH="$2"
 			shift 2
 			;;
-		--project | --zone | --machine-type | --disk-size-gb | --disk-type | --image-family | --image-project | --network | --subnet | --address | --tags | --fw-target-tag | --ssh-user | --ssh-key | --ssh-port | --ssh-wait-timeout | --fw-rule-name | --ssh-source-ranges | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name | --wireguard-fw-rule-name | --wireguard-target-tag | --wireguard-source-ranges | --wireguard-allow | --smtp-fw-rule-name | --smtp-target-tag | --smtp-source-ranges | --smtp-allow)
+		--project | --zone | --machine-type | --disk-size-gb | --disk-type | --image-family | --image-project | --network | --subnet | --address | --tags | --fw-target-tag | --ssh-user | --ssh-key | --ssh-port | --ssh-wait-timeout | --fw-rule-name | --ssh-source-ranges | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name | --wireguard-fw-rule-name | --wireguard-target-tag | --wireguard-source-ranges | --wireguard-allow | --smtp-fw-rule-name | --smtp-target-tag | --smtp-source-ranges | --smtp-allow | --smtps-fw-rule-name | --smtps-target-tag | --smtps-source-ranges | --smtps-allow | --imap-fw-rule-name | --imap-target-tag | --imap-source-ranges | --imap-allow | --imaps-fw-rule-name | --imaps-target-tag | --imaps-source-ranges | --imaps-allow)
 			gcp_apply_vm_value_arg "$1" "${2:-}"
 			shift 2
 			;;
-		--free-tier-max | --can-ip-forward | --no-can-ip-forward | --ensure-ssh-fw | --ensure-observability-fw | --ensure-postgres-fw | --ensure-nats-fw | --ensure-wireguard-fw | --ensure-smtp-fw)
+		--free-tier-max | --can-ip-forward | --no-can-ip-forward | --ensure-ssh-fw | --ensure-observability-fw | --ensure-postgres-fw | --ensure-nats-fw | --ensure-wireguard-fw | --ensure-smtp-fw | --ensure-smtps-fw | --ensure-imap-fw | --ensure-imaps-fw)
 			gcp_apply_vm_flag_arg "$1"
 			shift
 			;;
@@ -339,6 +361,33 @@ create_fw_rules() {
 			"${GCP_SMTP_TARGET_TAG}" \
 			"${GCP_SMTP_SOURCE_RANGES}" \
 			"${GCP_SMTP_ALLOW}"
+	fi
+	if [ "${GCP_ENSURE_SMTPS_FW}" = "1" ]; then
+		gcp_maybe_create_public_fw \
+			"${GCP_PROJECT_ID}" \
+			"${GCP_NETWORK}" \
+			"${GCP_SMTPS_FW_RULE_NAME}" \
+			"${GCP_SMTPS_TARGET_TAG}" \
+			"${GCP_SMTPS_SOURCE_RANGES}" \
+			"${GCP_SMTPS_ALLOW}"
+	fi
+	if [ "${GCP_ENSURE_IMAP_FW}" = "1" ]; then
+		gcp_maybe_create_public_fw \
+			"${GCP_PROJECT_ID}" \
+			"${GCP_NETWORK}" \
+			"${GCP_IMAP_FW_RULE_NAME}" \
+			"${GCP_IMAP_TARGET_TAG}" \
+			"${GCP_IMAP_SOURCE_RANGES}" \
+			"${GCP_IMAP_ALLOW}"
+	fi
+	if [ "${GCP_ENSURE_IMAPS_FW}" = "1" ]; then
+		gcp_maybe_create_public_fw \
+			"${GCP_PROJECT_ID}" \
+			"${GCP_NETWORK}" \
+			"${GCP_IMAPS_FW_RULE_NAME}" \
+			"${GCP_IMAPS_TARGET_TAG}" \
+			"${GCP_IMAPS_SOURCE_RANGES}" \
+			"${GCP_IMAPS_ALLOW}"
 	fi
 }
 

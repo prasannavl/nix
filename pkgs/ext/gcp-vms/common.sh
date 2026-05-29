@@ -83,6 +83,21 @@ gcp_init_firewall_defaults() {
 	GCP_DEFAULT_SMTP_TARGET_TAG="${GCP_DEFAULT_SMTP_TARGET_TAG:-allow-smtp}"
 	GCP_DEFAULT_SMTP_SOURCE_RANGES="${GCP_DEFAULT_SMTP_SOURCE_RANGES:-0.0.0.0/0}"
 	GCP_DEFAULT_SMTP_ALLOW="${GCP_DEFAULT_SMTP_ALLOW:-tcp:25}"
+	GCP_DEFAULT_ENSURE_SMTPS_FW="${GCP_DEFAULT_ENSURE_SMTPS_FW:-0}"
+	GCP_DEFAULT_SMTPS_FW_RULE_NAME="${GCP_DEFAULT_SMTPS_FW_RULE_NAME:-allow-smtps}"
+	GCP_DEFAULT_SMTPS_TARGET_TAG="${GCP_DEFAULT_SMTPS_TARGET_TAG:-allow-smtps}"
+	GCP_DEFAULT_SMTPS_SOURCE_RANGES="${GCP_DEFAULT_SMTPS_SOURCE_RANGES:-0.0.0.0/0}"
+	GCP_DEFAULT_SMTPS_ALLOW="${GCP_DEFAULT_SMTPS_ALLOW:-tcp:465}"
+	GCP_DEFAULT_ENSURE_IMAP_FW="${GCP_DEFAULT_ENSURE_IMAP_FW:-0}"
+	GCP_DEFAULT_IMAP_FW_RULE_NAME="${GCP_DEFAULT_IMAP_FW_RULE_NAME:-allow-imap}"
+	GCP_DEFAULT_IMAP_TARGET_TAG="${GCP_DEFAULT_IMAP_TARGET_TAG:-allow-imap}"
+	GCP_DEFAULT_IMAP_SOURCE_RANGES="${GCP_DEFAULT_IMAP_SOURCE_RANGES:-0.0.0.0/0}"
+	GCP_DEFAULT_IMAP_ALLOW="${GCP_DEFAULT_IMAP_ALLOW:-tcp:143}"
+	GCP_DEFAULT_ENSURE_IMAPS_FW="${GCP_DEFAULT_ENSURE_IMAPS_FW:-0}"
+	GCP_DEFAULT_IMAPS_FW_RULE_NAME="${GCP_DEFAULT_IMAPS_FW_RULE_NAME:-allow-imaps}"
+	GCP_DEFAULT_IMAPS_TARGET_TAG="${GCP_DEFAULT_IMAPS_TARGET_TAG:-allow-imaps}"
+	GCP_DEFAULT_IMAPS_SOURCE_RANGES="${GCP_DEFAULT_IMAPS_SOURCE_RANGES:-0.0.0.0/0}"
+	GCP_DEFAULT_IMAPS_ALLOW="${GCP_DEFAULT_IMAPS_ALLOW:-tcp:993}"
 }
 
 # -----------------------------------------------------------------------------
@@ -142,6 +157,21 @@ gcp_init_vm_config_defaults() {
 	GCP_SMTP_TARGET_TAG="${GCP_DEFAULT_SMTP_TARGET_TAG}"
 	GCP_SMTP_SOURCE_RANGES="${GCP_DEFAULT_SMTP_SOURCE_RANGES}"
 	GCP_SMTP_ALLOW="${GCP_DEFAULT_SMTP_ALLOW}"
+	GCP_ENSURE_SMTPS_FW="${GCP_DEFAULT_ENSURE_SMTPS_FW}"
+	GCP_SMTPS_FW_RULE_NAME="${GCP_DEFAULT_SMTPS_FW_RULE_NAME}"
+	GCP_SMTPS_TARGET_TAG="${GCP_DEFAULT_SMTPS_TARGET_TAG}"
+	GCP_SMTPS_SOURCE_RANGES="${GCP_DEFAULT_SMTPS_SOURCE_RANGES}"
+	GCP_SMTPS_ALLOW="${GCP_DEFAULT_SMTPS_ALLOW}"
+	GCP_ENSURE_IMAP_FW="${GCP_DEFAULT_ENSURE_IMAP_FW}"
+	GCP_IMAP_FW_RULE_NAME="${GCP_DEFAULT_IMAP_FW_RULE_NAME}"
+	GCP_IMAP_TARGET_TAG="${GCP_DEFAULT_IMAP_TARGET_TAG}"
+	GCP_IMAP_SOURCE_RANGES="${GCP_DEFAULT_IMAP_SOURCE_RANGES}"
+	GCP_IMAP_ALLOW="${GCP_DEFAULT_IMAP_ALLOW}"
+	GCP_ENSURE_IMAPS_FW="${GCP_DEFAULT_ENSURE_IMAPS_FW}"
+	GCP_IMAPS_FW_RULE_NAME="${GCP_DEFAULT_IMAPS_FW_RULE_NAME}"
+	GCP_IMAPS_TARGET_TAG="${GCP_DEFAULT_IMAPS_TARGET_TAG}"
+	GCP_IMAPS_SOURCE_RANGES="${GCP_DEFAULT_IMAPS_SOURCE_RANGES}"
+	GCP_IMAPS_ALLOW="${GCP_DEFAULT_IMAPS_ALLOW}"
 	GCP_FREE_TIER_MAX_MODE="0"
 	GCP_VM_ARG_ZONE_SEEN="0"
 	GCP_VM_ARG_MACHINE_TYPE_SEEN="0"
@@ -214,6 +244,18 @@ gcp_apply_vm_value_arg() {
 	--smtp-target-tag) GCP_SMTP_TARGET_TAG="${value}" ;;
 	--smtp-source-ranges) GCP_SMTP_SOURCE_RANGES="${value}" ;;
 	--smtp-allow) GCP_SMTP_ALLOW="${value}" ;;
+	--smtps-fw-rule-name) GCP_SMTPS_FW_RULE_NAME="${value}" ;;
+	--smtps-target-tag) GCP_SMTPS_TARGET_TAG="${value}" ;;
+	--smtps-source-ranges) GCP_SMTPS_SOURCE_RANGES="${value}" ;;
+	--smtps-allow) GCP_SMTPS_ALLOW="${value}" ;;
+	--imap-fw-rule-name) GCP_IMAP_FW_RULE_NAME="${value}" ;;
+	--imap-target-tag) GCP_IMAP_TARGET_TAG="${value}" ;;
+	--imap-source-ranges) GCP_IMAP_SOURCE_RANGES="${value}" ;;
+	--imap-allow) GCP_IMAP_ALLOW="${value}" ;;
+	--imaps-fw-rule-name) GCP_IMAPS_FW_RULE_NAME="${value}" ;;
+	--imaps-target-tag) GCP_IMAPS_TARGET_TAG="${value}" ;;
+	--imaps-source-ranges) GCP_IMAPS_SOURCE_RANGES="${value}" ;;
+	--imaps-allow) GCP_IMAPS_ALLOW="${value}" ;;
 	*) return 1 ;;
 	esac
 }
@@ -231,6 +273,9 @@ gcp_apply_vm_flag_arg() {
 	--ensure-nats-fw) GCP_ENSURE_NATS_FW="1" ;;
 	--ensure-wireguard-fw) GCP_ENSURE_WIREGUARD_FW="1" ;;
 	--ensure-smtp-fw) GCP_ENSURE_SMTP_FW="1" ;;
+	--ensure-smtps-fw) GCP_ENSURE_SMTPS_FW="1" ;;
+	--ensure-imap-fw) GCP_ENSURE_IMAP_FW="1" ;;
+	--ensure-imaps-fw) GCP_ENSURE_IMAPS_FW="1" ;;
 	*) return 1 ;;
 	esac
 }
@@ -329,6 +374,15 @@ gcp_finalize_vm_config() {
 	fi
 	if [ "${GCP_ENSURE_SMTP_FW}" = "1" ]; then
 		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_SMTP_TARGET_TAG}")"
+	fi
+	if [ "${GCP_ENSURE_SMTPS_FW}" = "1" ]; then
+		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_SMTPS_TARGET_TAG}")"
+	fi
+	if [ "${GCP_ENSURE_IMAP_FW}" = "1" ]; then
+		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_IMAP_TARGET_TAG}")"
+	fi
+	if [ "${GCP_ENSURE_IMAPS_FW}" = "1" ]; then
+		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_IMAPS_TARGET_TAG}")"
 	fi
 }
 
@@ -555,6 +609,35 @@ gcp_instance_ip() {
 		--format='value(networkInterfaces[0].accessConfigs[0].natIP)'
 }
 
+gcp_instance_has_tag() {
+	local project_id="$1" zone="$2" instance_name="$3" tag="$4"
+
+	gcloud compute instances describe \
+		"${instance_name}" \
+		--project "${project_id}" \
+		--zone "${zone}" \
+		--format=json |
+		jq -e --arg tag "${tag}" '
+			(.tags.items // []) | index($tag)
+		' >/dev/null
+}
+
+gcp_add_instance_tag_if_missing() {
+	local project_id="$1" zone="$2" instance_name="$3" tag="$4"
+
+	[ -n "${tag}" ] || return 0
+	if gcp_instance_has_tag "${project_id}" "${zone}" "${instance_name}" "${tag}"; then
+		return 0
+	fi
+
+	gcp_log "Adding tag ${tag} to ${instance_name}"
+	gcloud compute instances add-tags \
+		"${instance_name}" \
+		--project "${project_id}" \
+		--zone "${zone}" \
+		--tags "${tag}" >/dev/null
+}
+
 gcp_discover_instance_zone() {
 	local project_id="$1" instance_name="$2"
 	local zones="" zone_count=""
@@ -633,19 +716,6 @@ gcp_maybe_create_ssh_fw() {
 		"tcp:22"
 }
 
-gcp_maybe_create_public_fw() {
-	local project_id="$1" network="$2" fw_rule_name="$3" target_tag="$4"
-	local source_ranges="$5" allow_spec="$6"
-
-	gcp_maybe_create_fw_rule \
-		"${project_id}" \
-		"${network}" \
-		"${fw_rule_name}" \
-		"${target_tag}" \
-		"${source_ranges}" \
-		"${allow_spec}"
-}
-
 gcp_maybe_create_subnet_fw() {
 	local project_id="$1" zone="$2" network="$3" subnet="$4" fw_rule_name="$5"
 	local target_tag="$6" ports_csv="$7" cidr=""
@@ -661,6 +731,19 @@ gcp_maybe_create_subnet_fw() {
 		"${target_tag}" \
 		"${cidr}" \
 		"tcp:${ports_csv}"
+}
+
+gcp_maybe_create_public_fw() {
+	local project_id="$1" network="$2" fw_rule_name="$3" target_tag="$4"
+	local source_ranges="$5" allow_spec="$6"
+
+	gcp_maybe_create_fw_rule \
+		"${project_id}" \
+		"${network}" \
+		"${fw_rule_name}" \
+		"${target_tag}" \
+		"${source_ranges}" \
+		"${allow_spec}"
 }
 
 gcp_fw_rule_json() {
@@ -691,23 +774,23 @@ gcp_fw_rule_has_tag_user() {
 	return 1
 }
 
-gcp_fw_rule_targets_tag() {
-	local rule_json="$1" target_tag="$2"
+gcp_fw_rule_targets_expected_tag() {
+	local rule_json="$1" expected_tag="$2"
 
-	jq -e --arg tag "${target_tag}" '
+	jq -e --arg tag "${expected_tag}" '
 		(.targetTags // []) | index($tag)
 	' <<<"${rule_json}" >/dev/null
 }
 
 gcp_delete_fw_rule_if_unused() {
-	local project_id="$1" rule_name="$2" target_tag="$3" rule_json=""
+	local project_id="$1" rule_name="$2" expected_tag="$3" rule_json=""
 
 	[ -n "${rule_name}" ] || return 0
 	if ! rule_json="$(gcp_fw_rule_json "${project_id}" "${rule_name}" 2>/dev/null)"; then
 		return 0
 	fi
-	if ! gcp_fw_rule_targets_tag "${rule_json}" "${target_tag}"; then
-		gcp_log "Keeping fw rule ${rule_name}; target tag does not match ${target_tag}"
+	if ! gcp_fw_rule_targets_expected_tag "${rule_json}" "${expected_tag}"; then
+		gcp_log "Keeping fw rule ${rule_name}; target tag does not match ${expected_tag}"
 		return 0
 	fi
 	if gcp_fw_rule_has_tag_user "${project_id}" "${rule_json}"; then
