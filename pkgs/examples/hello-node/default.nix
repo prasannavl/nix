@@ -19,21 +19,19 @@
       mainProgram = "hello-node";
     };
   };
-  drv =
-    pkg.wirePassthru
-    (pkg.mkWebDerivation {
-      inherit pkgs;
-      build = build;
-      lintParts = [
-        (pkg.projectLintBiome pkgs {})
-        {
-          inputs = [pkgs.nodejs];
-          commands = ["node --check index.js"];
-        }
-      ];
-    })
-    {
-      nixosModule = srv.mkModule {};
-    };
 in
-  drv
+  pkg.wirePassthru
+  (pkg.mkWebDerivation {
+    inherit pkgs;
+    build = build;
+    lintParts = [
+      (pkg.projectLintBiome pkgs {})
+      {
+        inputs = [pkgs.nodejs];
+        commands = ["node --check index.js"];
+      }
+    ];
+  })
+  {
+    nixosModule = srv.mkModule {};
+  }

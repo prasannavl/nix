@@ -21,14 +21,12 @@
       mainProgram = "hello-python";
     };
   };
-  drv =
-    pkg.wirePassthru
-    (pkg.mkPythonDerivation {
-      inherit pkgs;
-      build = build;
-    })
-    {
-      nixosModule = srv.mkModule {};
-    };
 in
-  drv
+  pkg.wirePassthru
+  (pkg.mkPythonDerivation {
+    inherit pkgs;
+    build = build;
+  })
+  {
+    nixosModule = srv.mkModule {};
+  }

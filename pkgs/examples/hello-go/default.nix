@@ -17,14 +17,12 @@
       mainProgram = "hello-go";
     };
   };
-  drv =
-    pkg.wirePassthru
-    (pkg.mkGoDerivation {
-      inherit pkgs;
-      build = build;
-    })
-    {
-      nixosModule = srv.mkModule {};
-    };
 in
-  drv
+  pkg.wirePassthru
+  (pkg.mkGoDerivation {
+    inherit pkgs;
+    build = build;
+  })
+  {
+    nixosModule = srv.mkModule {};
+  }

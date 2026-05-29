@@ -7,10 +7,5 @@
   };
 
   outputs = inputs:
-    (import ../../../lib/flake/stack/package.nix).mkFlakeOutputs ./default.nix (inputs
-      // {
-        stdFlakeOutputArgs = {build, ...}: {
-          devShell = build.devShell;
-        };
-      });
+    (import ../../../lib/flake/stack/package.nix).mkFlakeOutputs ./default.nix inputs;
 }
