@@ -13,6 +13,31 @@
       path = ./tools/data-migrator/default.nix;
     }
     {
+      id = "nats-wrecking-ball";
+      path = ./tools/nats-wrecking-ball/default.nix;
+      rootApp = false;
+    }
+    {
+      id = "nats-http-bridge";
+      path = ./support/nats-http-bridge/default.nix;
+      rootApp = false;
+    }
+    {
+      id = "nats-streams";
+      path = ./support/nats-streams/default.nix;
+      rootApp = false;
+    }
+    {
+      id = "zep-graphiti";
+      path = ./support/zep-graphiti/default.nix;
+      rootApp = false;
+    }
+    {
+      id = "zep-cloud-compat";
+      path = ./support/zep-cloud-compat/default.nix;
+      rootApp = false;
+    }
+    {
       id = "cloudflare-apps";
       rootApp = false;
       build = packages:
@@ -28,6 +53,26 @@
           package = packages.cloudflare-apps.deploy;
         }
       ];
+    }
+    {
+      id = "kanidm-server";
+      path = ./ext/kanidm-server/default.nix;
+      rootApp = false;
+    }
+    {
+      id = "stalwart-server";
+      path = ./ext/stalwart-server/default.nix;
+      rootApp = false;
+    }
+    {
+      id = "z-push";
+      path = ./ext/z-push/default.nix;
+      rootApp = false;
+    }
+    {
+      id = "mirofish";
+      path = ./ext/mirofish/default.nix;
+      rootApp = false;
     }
     {
       id = "example-hello-go";
