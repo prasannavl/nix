@@ -5,8 +5,9 @@
   ...
 }: let
   cfg = config.services.systemdUserManager;
+  migratorOn = config.x.migrator.on or false;
   flakeUtils = import ../flake/utils.nix {lib = lib;};
-  metadataVersion = 2;
+  metadataVersion = 3;
 
   unitType = lib.types.submodule ({name, ...}: {
     options = {
@@ -45,6 +46,12 @@
         description = "Whether the reconciler should automatically start this managed unit when it is inactive or failed.";
       };
 
+      drain = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether this managed unit should be stopped and kept inactive during reconciliation.";
+      };
+
       timeoutStableSeconds = lib.mkOption {
         type = lib.types.ints.positive;
         default = 120;
@@ -65,6 +72,11 @@
       unit
       // {
         unitName = name;
+        autoStart =
+          if migratorOn
+          then false
+          else unit.autoStart;
+        drain = migratorOn || unit.drain;
       })
     cfg.instances;
 
@@ -115,17 +127,22 @@
     else throw "services.systemdUserManager: user '${user}' is missing or has null uid in users.users";
 
   mkUnitEntry = managedUnit: let
-    stampPayload =
+    declaredStampPayload =
       if managedUnit.stampPayload != null
-      then managedUnit.stampPayload
+      then {
+        payload = managedUnit.stampPayload;
+        autoStart = managedUnit.autoStart;
+        drain = managedUnit.drain;
+      }
       else {
         kind = "unit";
         unit = managedUnit.unit;
         stopOnRemoval = managedUnit.stopOnRemoval;
         autoStart = managedUnit.autoStart;
+        drain = managedUnit.drain;
         restartTriggers = managedUnit.restartTriggers;
       };
-    stamp = builtins.hashString "sha256" (builtins.toJSON stampPayload);
+    stamp = builtins.hashString "sha256" (builtins.toJSON declaredStampPayload);
     reloadStamp =
       if managedUnit.reloadTriggers == []
       then ""
@@ -136,6 +153,7 @@
     unit = managedUnit.unit;
     stopOnRemoval = managedUnit.stopOnRemoval;
     autoStart = managedUnit.autoStart;
+    drain = managedUnit.drain;
     timeoutStableSeconds = managedUnit.timeoutStableSeconds;
     stamp = stamp;
     reloadStamp = reloadStamp;
@@ -203,6 +221,7 @@
             unit = managedUnit.unit;
             stopOnRemoval = managedUnit.stopOnRemoval;
             autoStart = managedUnit.autoStart;
+            drain = managedUnit.drain;
             timeoutStableSeconds = managedUnit.timeoutStableSeconds;
             stamp = managedUnit.stamp;
             reloadStamp = managedUnit.reloadStamp;
