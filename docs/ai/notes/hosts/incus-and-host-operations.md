@@ -26,9 +26,10 @@ recent host incidents.
 - Disk devices sync in place. Non-disk device changes are recreate-scoped.
 - `bootTag`, `recreateTag`, `imageTag`, and `preseedTag` are the intentional
   operator bump knobs. Image refresh and guest recreate are separate decisions.
-- `drain = true` on a declared Incus machine is the migration hold for
-  repo-managed LXCs: it stops the container and suppresses lifecycle cold-starts
-  without applying host-wide or Podman stack holds.
+- Migration drain for NixOS hosts, including hosts that run as Incus LXCs, is
+  the guest-side `x.migrator.on` hold. Do not use parent-side Incus lifecycle
+  stops as an application drain: that turns off the whole container instead of
+  keeping the host reachable while repo-managed writers are quiesced.
 - Image import, reconcile, and GC services are ordinary rerunnable oneshots.
 - GC must fail closed on Incus query failure and respect explicit removal
   policy.
