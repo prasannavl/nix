@@ -15,13 +15,13 @@ spec.loader.exec_module(data_migrator)
 
 class IncusPlanningTest(unittest.TestCase):
     def test_incus_controller_wraps_client_command(self):
-        args = SimpleNamespace(incus_controller_host="incus-parent")
+        args = SimpleNamespace(incus_controller_host="abird-nest")
 
         self.assertEqual(
             data_migrator.via_incus_controller(
-                args, ["incus", "list", "--project", "app"]
+                args, ["incus", "list", "--project", "abird"]
             ),
-            ["ssh", "incus-parent", "incus list --project app"],
+            ["ssh", "abird-nest", "incus list --project abird"],
         )
 
     def test_local_incus_command_is_unchanged(self):
@@ -67,8 +67,8 @@ class IncusPlanningTest(unittest.TestCase):
 
     def test_incus_copy_adds_target_project_only_when_cross_project(self):
         args = SimpleNamespace(
-            source_project="app",
-            target_project="app-stage",
+            source_project="abird",
+            target_project="abird-stage",
             incus_remote="local",
             target_incus_remote="local",
             incus_instance="old",
@@ -87,7 +87,7 @@ class IncusPlanningTest(unittest.TestCase):
             [
                 "incus",
                 "--project",
-                "app",
+                "abird",
                 "copy",
                 "old",
                 "new",
@@ -96,7 +96,7 @@ class IncusPlanningTest(unittest.TestCase):
                 "--mode",
                 "pull",
                 "--target-project",
-                "app-stage",
+                "abird-stage",
                 "--refresh",
                 "--refresh-exclude-older",
                 "--stateless",
@@ -260,35 +260,6 @@ class TarFallbackTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 data_migrator.safe_clean_command("/")
-
-
-class PathMappingTest(unittest.TestCase):
-    def test_migrate_path_defaults_to_root_bases(self):
-        args = SimpleNamespace(
-            effective_transport="rsync",
-            rsync_ssh=None,
-            source_host="source",
-            target_host="target",
-            target_dir=None,
-            target_base=None,
-            source_base=None,
-            remote_sudo=False,
-            source_rsync_path=None,
-            copy_mode="pull",
-            dry_run=False,
-        )
-        plan = {}
-        entry = {"path": "/var/lib/app", "excludes": []}
-
-        with (
-            mock.patch.object(data_migrator, "remote_shell") as remote_shell,
-            mock.patch.object(data_migrator, "run"),
-        ):
-            data_migrator.migrate_one_path(args, plan, entry, "seed", [])
-
-        remote_shell.assert_any_call(
-            "target", "install -d /var/lib/app/", dry_run=False
-        )
 
 
 if __name__ == "__main__":

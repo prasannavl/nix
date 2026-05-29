@@ -2,7 +2,9 @@
 import argparse
 import json
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -747,6 +749,31 @@ def migrate_incus_instance(args, plan):
         else:
             info("incus: btrfs fast path unavailable; using file-copy fallback")
 
+    target_drain_host = (
+        args.target_drain_host
+        or plan_string(plan, "target_drain_host")
+        or args.target_host
+        or args.target_instance
+    )
+    source_drain_host = (
+        args.source_drain_host
+        or plan_string(plan, "source_drain_host")
+        or args.incus_instance
+    )
+    drained_hosts = set()
+
+    def drain_host(host):
+        if host and host not in drained_hosts:
+            deploy_drain(args, host, True)
+            drained_hosts.add(host)
+
+    def resume_host(host):
+        if host and host in drained_hosts:
+            deploy_drain(args, host, False)
+            drained_hosts.remove(host)
+
+    drain_host(target_drain_host)
+
     if native_path:
         seed_snapshot = incus_snapshot_name(args, "seed")
         final_snapshot = incus_snapshot_name(args, "final")
@@ -762,6 +789,8 @@ def migrate_incus_instance(args, plan):
             args, target_exists=target_instance_json is not None
         )
         if not args.warm:
+            if not args.skip_source_drain and source_drain_host:
+                drain_host(source_drain_host)
             incus_stop_instance(
                 args,
                 args.source_project,
@@ -821,6 +850,8 @@ def migrate_incus_instance(args, plan):
         args.effective_transport = resolve_transport(args)
         migrate_paths(args, plan, "warm" if args.warm else "seed")
         if not args.warm:
+            if not args.skip_source_drain and source_drain_host:
+                drain_host(source_drain_host)
             incus_stop_instance(
                 args,
                 args.source_project,
@@ -853,6 +884,16 @@ def migrate_incus_instance(args, plan):
                     args, args.source_project, args.incus_remote, args.incus_instance
                 )
 
+    if target_drain_host and not args.no_resume_target and not args.warm:
+        resume_host(target_drain_host)
+    if (
+        args.resume_source
+        and not args.skip_source_drain
+        and source_drain_host
+        and not args.warm
+    ):
+        resume_host(source_drain_host)
+
 
 def migrate_one_path(args, plan, entry, phase, raw_excludes):
     configured_source_path_base = (
@@ -861,14 +902,14 @@ def migrate_one_path(args, plan, entry, phase, raw_excludes):
         or plan.get("base")
         or plan.get("target_path_base")
         or plan.get("target_base")
-        or "/"
+        or "/var/lib/abird"
     )
     target_path_base = (
         args.target_base
         or plan.get("target_path_base")
         or plan.get("target_base")
         or plan.get("base")
-        or "/"
+        or "/var/lib/abird"
     )
     source_path_base = args.source_base or configured_source_path_base
     rel = ensure_under_base(entry["path"], source_path_base)
@@ -951,15 +992,74 @@ def migrate_paths(args, plan, phase):
         migrate_one_path(args, plan, entry, phase, raw_excludes)
 
 
+def patch_host_drain(repo_root, host, enabled):
+    hosts_default = repo_root / "hosts/default.nix"
+    text = hosts_default.read_text(encoding="utf-8")
+    block_re = re.compile(
+        rf"(?P<prefix>\n  {re.escape(host)} = mkNixosSystem \{{(?P<body>.*?)\n  \}};)",
+        re.DOTALL,
+    )
+    match = block_re.search(text)
+    if not match:
+        die(f"host not found in hosts/default.nix: {host}")
+    block = match.group("prefix")
+    body = match.group("body")
+    body = re.sub(r"\s*\{ x\.migrator\.on = true; \}", "", body)
+    body = re.sub(r"\s*\{ x\.migrator\.on = false; \}", "", body)
+    if enabled:
+        body = re.sub(
+            r"modules = \[(?P<modules>[^\]]*)\];",
+            r"modules = [\g<modules> { x.migrator.on = true; }];",
+            body,
+            count=1,
+        )
+    new_block = f"\n  {host} = mkNixosSystem {{{body}\n  }};"
+    if new_block == block:
+        return
+    patched = text[: match.start("prefix")] + new_block + text[match.end("prefix") :]
+    hosts_default.write_text(patched, encoding="utf-8")
+
+
+def deploy_drain(args, host, enabled):
+    state = "true" if enabled else "false"
+    action = "drain" if enabled else "resume"
+    if args.skip_deploy:
+        info(f"skip-deploy: would set x.migrator.on={state} for {host}")
+        return
+
+    tmp_root = Path(args.repo_root) / "tmp" / f"data-migrator.{os.getpid()}"
+    worktree = tmp_root / f"{host}-{action}"
+    if worktree.exists():
+        shutil.rmtree(worktree)
+    run(
+        ["git", "worktree", "add", "--detach", worktree, "HEAD"],
+        cwd=args.repo_root,
+        dry_run=args.dry_run,
+    )
+    if args.dry_run:
+        info(f"dry-run: would patch {host} x.migrator.on={state} in {worktree}")
+    else:
+        patch_host_drain(worktree, host, enabled)
+    nixbot = ["nixbot", "deploy", "--hosts", host, "--dirty", "--force"]
+    if args.nixbot_goal:
+        nixbot.extend(["--goal", args.nixbot_goal])
+    if args.nixbot_dry:
+        nixbot.append("--dry")
+    run(nixbot, cwd=worktree, dry_run=args.dry_run)
+    if not args.keep_workdir and not args.dry_run:
+        run(["git", "worktree", "remove", "--force", worktree], cwd=args.repo_root)
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="data-migrator",
-        description="Migrate declared host data with rsync, tar, or Incus copy.",
+        description="Migrate declared host data with rsync and optional migrator drain deploys.",
     )
     parser.add_argument(
         "--profile",
         required=True,
-        help="profile name used for built-in config lookup and Incus instance defaults",
+        help="profile from pkgs/tools/data-migrator/profiles.nix",
     )
     parser.add_argument("--config", help="explicit migration YAML path")
     parser.add_argument(
@@ -974,7 +1074,7 @@ def parse_args(argv):
     )
     parser.add_argument(
         "--target-base",
-        help="target path base; defaults to config target_path_base or /",
+        help="target path base; defaults to config target_path_base or /var/lib/abird",
     )
     parser.add_argument(
         "--transport",
@@ -991,12 +1091,48 @@ def parse_args(argv):
     parser.add_argument(
         "--warm",
         action="store_true",
-        help="only run the seed copy",
+        help="only run the seed copy; do not deploy drain/resume",
+    )
+    parser.add_argument(
+        "--source-drain-host",
+        help="nixbot host to drain before final copy; defaults to --source-host",
+    )
+    parser.add_argument(
+        "--target-drain-host",
+        help="nixbot host to drain/resume; defaults to --target-host",
+    )
+    parser.add_argument(
+        "--skip-source-drain",
+        action="store_true",
+        help="allow a final copy without draining the source host",
+    )
+    parser.add_argument(
+        "--no-resume-target",
+        action="store_true",
+        help="leave the target host drained after final copy",
+    )
+    parser.add_argument(
+        "--resume-source",
+        action="store_true",
+        help="resume the source host after final copy",
+    )
+    parser.add_argument(
+        "--skip-deploy",
+        action="store_true",
+        help="do not call nixbot; useful when hosts are already in the desired drain state",
+    )
+    parser.add_argument(
+        "--nixbot-goal",
+        default="switch",
+        help="nixbot deploy goal for drain/resume deploys",
+    )
+    parser.add_argument(
+        "--nixbot-dry", action="store_true", help="pass --dry to nixbot deploy"
     )
     parser.add_argument("--repo-root", help="repo root; auto-detected by default")
     parser.add_argument(
         "--rsync-ssh",
-        help="rsync remote shell command passed as -e, for example 'ssh -J bastion'",
+        help="rsync remote shell command passed as -e, for example 'ssh -J gap3-gondor'",
     )
     parser.add_argument(
         "--source-rsync-path",
@@ -1093,6 +1229,11 @@ def parse_args(argv):
     parser.add_argument(
         "--dry-run", action="store_true", help="print commands without running them"
     )
+    parser.add_argument(
+        "--keep-workdir",
+        action="store_true",
+        help="keep temporary git worktrees under tmp/",
+    )
     args = parser.parse_args(argv)
     args.incus_mode = bool(
         args.incus_instance
@@ -1126,8 +1267,31 @@ def main(argv):
         migrate_paths(args, plan, "warm")
         return
 
+    target_drain_host = (
+        args.target_drain_host
+        or plan_string(plan, "target_drain_host")
+        or args.target_host
+    )
+    source_drain_host = (
+        args.source_drain_host
+        or plan_string(plan, "source_drain_host")
+        or args.source_host
+    )
+    if not target_drain_host and not args.skip_deploy:
+        die("full migration to --target-dir needs --target-drain-host or --skip-deploy")
+    if not args.skip_source_drain and not source_drain_host:
+        die("full migration needs --source-drain-host or --skip-source-drain")
+
+    if target_drain_host:
+        deploy_drain(args, target_drain_host, True)
     migrate_paths(args, plan, "seed")
+    if not args.skip_source_drain:
+        deploy_drain(args, source_drain_host, True)
     migrate_paths(args, plan, "final")
+    if target_drain_host and not args.no_resume_target:
+        deploy_drain(args, target_drain_host, False)
+    if args.resume_source and not args.skip_source_drain:
+        deploy_drain(args, source_drain_host, False)
 
 
 if __name__ == "__main__":

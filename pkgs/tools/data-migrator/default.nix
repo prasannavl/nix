@@ -1,6 +1,7 @@
 {
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
+  nixbot ? pkgs.callPackage ../nixbot/default.nix {inherit pkgHelper;},
 }: let
   lib = pkgs.lib;
   python = pkgs.python3.withPackages (ps: [
@@ -21,7 +22,7 @@
     build = pkgs.writeShellApplication {
       name = "data-migrator";
       meta = {
-        description = "Repo data migration helper for file and Incus moves";
+        description = "Repo data migration helper for drained host cutovers";
         mainProgram = "data-migrator";
       };
       runtimeInputs = with pkgs; [
@@ -32,6 +33,7 @@
         incus
         openssh
         rsync
+        nixbot
       ];
       text = ''
         export DATA_MIGRATOR_CONFIG_DIR=${profileFiles}
