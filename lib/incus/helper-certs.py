@@ -223,12 +223,14 @@ def generate_entry(root: pathlib.Path, entry: dict, pfx_password: bytes, force: 
     )
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
     pfx = serialize_pfx(entry, private_key, cert, pfx_password)
+    key_recipients = entry.get("keyRecipients", entry["recipients"])
+    pfx_recipients = entry.get("pfxRecipients", entry["recipients"])
 
     public_cert.parent.mkdir(parents=True, exist_ok=True)
     public_cert.write_bytes(cert_pem)
     public_cert.chmod(0o644)
-    encrypt_bytes(root, key_pem, key_age, entry["recipients"])
-    encrypt_bytes(root, pfx, pfx_age, entry["recipients"])
+    encrypt_bytes(root, key_pem, key_age, key_recipients)
+    encrypt_bytes(root, pfx, pfx_age, pfx_recipients)
 
     print(f"wrote {public_cert}")
     print(f"wrote {key_age}")

@@ -134,7 +134,6 @@
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
     export INCUS_MACHINES_INSTANCE_NAMES=${lib.escapeShellArg instanceNamesJson}
     export INCUS_MACHINES_INSTANCE_PROJECTS=${lib.escapeShellArg instanceProjectsJson}
-    export INCUS_MACHINES_DRAINED_INSTANCES=${lib.escapeShellArg drainedInstancesJson}
     exec ${helperScript} reconciler "$@"
   '';
 
@@ -1055,15 +1054,6 @@
           `ignore` opts out for guests with a separately justified lifecycle.
         '';
       };
-      drain = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Stop this managed Incus container and suppress lifecycle cold-starts
-          while migration data is being moved. This is intentionally scoped to
-          Incus LXC guests, not ordinary hosts or Podman stacks.
-        '';
-      };
       devices = lib.mkOption {
         type = lib.types.attrsOf deviceType;
         default = {};
@@ -1237,7 +1227,6 @@
       configHash = hash;
       bootTag = machine.bootTag;
       recreateTag = machine.recreateTag;
-      drain = machine.drain;
       removalPolicy = machine.removalPolicy;
       adopt = machine.adopt;
       desiredDisks = builtins.fromJSON diskDevSpec;
@@ -1260,7 +1249,6 @@
       ipv4Address = machine.ipv4Address;
       bootTag = machine.bootTag;
       recreateTag = machine.recreateTag;
-      drain = machine.drain;
       removalPolicy = machine.removalPolicy;
       adopt = machine.adopt;
       desiredDisks = builtins.fromJSON diskDevSpec;
@@ -1849,9 +1837,6 @@
   instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) allInstances);
   instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) allInstances);
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) allInstances);
-  drainedInstancesJson = builtins.toJSON (
-    lib.attrNames (lib.filterAttrs (_name: instance: instance.drain) allInstances)
-  );
   gcProjects = lib.unique (
     lib.optionals globalCfg.remote.enable (
       builtins.attrNames effectiveRemoteProjects
@@ -2472,7 +2457,6 @@ in {
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_NAMES" instanceNamesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
-                    (mkEnvAssignment "INCUS_MACHINES_DRAINED_INSTANCES" drainedInstancesJson)
                   ]
                   ++ remoteServiceEnvironment;
                 ExecStart = "${helperScript} reconciler --all";

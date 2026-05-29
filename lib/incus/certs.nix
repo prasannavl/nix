@@ -25,19 +25,23 @@
     name ? user,
     recipientUser ? user,
     extraRecipients ? [],
+    extraKeyRecipients ? [],
     keyType ? "ecdsa-p256",
     days ? 3650,
   }: let
-    recipients = userSshKeys recipientUser ++ extraRecipients;
+    pfxRecipients = userSshKeys recipientUser ++ extraRecipients;
+    keyRecipients = pfxRecipients ++ extraKeyRecipients;
   in {
-    inherit cert days key keyType name pfx projects recipients recipientUser user;
+    inherit cert days key keyRecipients keyType name pfx pfxRecipients projects recipientUser user;
+    recipients = pfxRecipients;
     ageSecrets = {
-      "${key}".publicKeys = recipients;
-      "${pfx}".publicKeys = recipients;
+      "${key}".publicKeys = keyRecipients;
+      "${pfx}".publicKeys = pfxRecipients;
     };
     generatorConfig = [
       {
-        inherit days keyType name projects recipients recipientUser user;
+        inherit days keyRecipients keyType name pfxRecipients projects recipientUser user;
+        recipients = pfxRecipients;
         publicCert = cert;
         keyAge = key;
         pfxAge = pfx;

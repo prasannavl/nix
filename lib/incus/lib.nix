@@ -94,6 +94,7 @@
     certPath,
     keyPath,
     pfxPath,
+    extraKeyRecipients ? [],
     keyType ? "ecdsa-p256",
     days ? 3650,
   }: let
@@ -109,6 +110,7 @@
         certs.mkUserCertWithKeys {
           inherit days keyType projects user;
           cert = certPath user;
+          inherit extraKeyRecipients;
           key = keyPath user;
           pfx = pfxPath user;
         };
