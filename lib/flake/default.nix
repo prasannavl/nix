@@ -1,21 +1,17 @@
 {
   nixpkgs,
   flake-utils,
-  stackProfiles ? import ../stacks,
+  stackProfiles ? {},
 }: let
   appsFn = import ./apps.nix;
   pkgHelper = import ./pkg-helper.nix;
   serviceModuleFactory = import ./service-module.nix;
-  serviceRegistry = import ./service-registry.nix;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
 in rec {
   inherit pkgHelper;
   stacks = stackProfiles;
   inherit serviceModuleFactory;
-  inherit serviceRegistry;
-  servicePlatform = stackProfiles.pvl;
-  stack = stackProfiles.pvl;
   serviceModule = serviceModuleFactory.mkServiceLib {
     defaultUser = "root";
     defaultClientSecretsBasePath = ../../data/secrets/services;
@@ -77,7 +73,7 @@ in rec {
   }: {
     hostName,
     modules,
-    stack ? stackProfiles.pvl,
+    stack,
     system,
   }:
     nixpkgs.lib.nixosSystem {

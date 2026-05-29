@@ -5,6 +5,7 @@
     dnsRouteDomains,
     internalDomain,
     limits ? {},
+    loopbackCidrs ? ["127.0.0.0/8"],
     publicHosts ? {},
     publicTunnelHosts ? builtins.concatLists (builtins.attrValues publicHosts),
     roleEndpointOverrides ? {},
@@ -102,12 +103,16 @@
       portFor = service: portName: (serviceRegistry.portSpecFor service portName).port;
       upstreamForService = service: portName: "${serviceRegistry.ipForService service}:${toString (serviceRegistry.portFor service portName)}";
       upstreamsForService = service: portName: [(serviceRegistry.upstreamForService service portName)];
+      # Private URLs target the active internal service IP and named host port.
       urlPrivateFor = scheme: service: portName: "${scheme}://${serviceRegistry.upstreamForService service portName}";
+      # Public URLs target the service's public hostname and the default HTTPS port.
       urlPublicFor = service: "https://${serviceRegistry.publicHostFor (serviceRegistry.serviceFor service).publicHostGroup}";
       dns = {
         resolverAddress = (activeEndpoint splitHorizonRole).address;
         routeDomains = dnsRouteDomains;
+        loopbackCidrs = loopbackCidrs;
         trustedCidrs = trustedCidrs;
+        trustedCidrsWithLoopback = loopbackCidrs ++ trustedCidrs;
         records = dnsRecords;
         hostsLines = dnsHostsLines;
         hostsText = builtins.concatStringsSep "\n" dnsHostsLines;

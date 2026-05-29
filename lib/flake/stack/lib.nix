@@ -13,11 +13,11 @@
   defaultVmstackSecretsBasePath ? null,
   defaultNginxSecretsBasePath ? null,
   defaultCaCertFile ? null,
-  defaultCaCertAgeFile ? stackSecretsBasePath + "/ca.crt.age",
-  defaultCaCertHostPath ? "/etc/ssl/certs/${stackName}-ca.crt",
-  defaultCaCertContainerPath ? "/run/secrets/${stackName}-ca.crt",
-  defaultCaBundleHostPath ? "/etc/ssl/certs/${stackName}-ca-bundle.crt",
-  defaultCaBundleContainerPath ? "/run/secrets/${stackName}-ca-bundle.crt",
+  defaultCaCertAgeFile ? defaultClientSecretsBasePath + "/ca.crt.age",
+  defaultCaCertHostPath ? "/etc/ssl/certs/${org}-ca.crt",
+  defaultCaCertContainerPath ? "/run/secrets/${org}-ca.crt",
+  defaultCaBundleHostPath ? "/etc/ssl/certs/${org}-ca-bundle.crt",
+  defaultCaBundleContainerPath ? "/run/secrets/${org}-ca-bundle.crt",
   defaultClientIdentitySuffix,
   defaultExtServiceIdentitySuffix ? defaultClientIdentitySuffix,
   defaultServiceIdentitySuffix,
@@ -30,7 +30,6 @@
   defaultNatsUrl,
   defaultNatsCaCertPath,
   defaultNatsAfter ? [],
-  serviceRegistry ? {},
 }: let
   pkg = import ../pkg-helper.nix;
   serviceModuleFactory = import ../service-module.nix;
@@ -39,23 +38,13 @@
   userData = import ./users.nix {
     inherit defaultMailDomain stackName;
   };
-  defaultCaSourceHashFile =
-    if defaultCaCertFile != null
-    then defaultCaCertFile
-    else if builtins.pathExists defaultCaCertAgeFile
-    then defaultCaCertAgeFile
-    else null;
-  serviceRegistryWithDefaults =
-    {
-      limits = {};
-    }
-    // serviceRegistry;
 in {
   pkg = pkg;
   stackName = stackName;
   org = org;
   env = env;
   defaultMailDomain = defaultMailDomain;
+  noReplyEmailFor = appName: "no-reply+${appName}@${defaultMailDomain}";
   publicDomain = publicDomain;
   internalDomain = internalDomain;
   users = userData.userData;
@@ -94,8 +83,6 @@ in {
         inherit (unitsLib) sizeToBytes sizesToBytes;
       };
   };
-  registry = serviceRegistryWithDefaults;
-  serviceRegistry = serviceRegistryWithDefaults;
   secrets = rec {
     base = stackSecretsBasePath;
     services = defaultClientSecretsBasePath;
@@ -118,12 +105,12 @@ in {
   defaultCaBundleContainerPath = defaultCaBundleContainerPath;
   defaultCaCertificate = {
     file = defaultCaCertHostPath;
-    sourceHashFile = defaultCaSourceHashFile;
+    sourceHashFile = defaultCaCertFile;
     mountPath = defaultCaCertContainerPath;
   };
   defaultCaBundleCertificate = {
     file = defaultCaBundleHostPath;
-    sourceHashFile = defaultCaSourceHashFile;
+    sourceHashFile = defaultCaCertFile;
     mountPath = defaultCaBundleContainerPath;
   };
   srv = serviceModuleFactory.mkServiceLib {

@@ -13,7 +13,7 @@
       settings = {
         user = {
           inherit (userdata) name;
-          inherit (userdata) email;
+          email = userdata.contactEmail or userdata.email;
           signingKey = userdata.sshKey;
         };
         commit.gpgSign = true;

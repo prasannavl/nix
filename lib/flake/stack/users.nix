@@ -6,7 +6,7 @@
   rawGroupData ? import ../../../users/groupdata.nix,
 }: let
   userDataLib = import ./user-data-lib.nix;
-  inherit (userDataLib) filterAttrs userFilter;
+  inherit (userDataLib) userFilter;
 
   normalizeList = value:
     if value == null
@@ -32,15 +32,24 @@
   in
     go [] values;
 
+  filterAttrs = predicate: attrs:
+    builtins.listToAttrs (
+      builtins.filter ({
+        name,
+        value,
+      }:
+        predicate name value) (
+        map (name: {
+          inherit name;
+          value = attrs.${name};
+        }) (builtins.attrNames attrs)
+      )
+    );
+
   optional = condition: value:
     if condition
     then [value]
     else [];
-
-  optionalAttrs = condition: attrs:
-    if condition
-    then attrs
-    else {};
 
   sortStrings = builtins.sort (a: b: a < b);
 
@@ -58,31 +67,17 @@
   rawCiSshKeysFor = details:
     normalizeList (details.ciSshKeys or (optional (details ? ciSshKey) details.ciSshKey));
 
-  emailEnabled = details:
-    if details ? email && builtins.isBool details.email
-    then details.email
-    else enabled details;
-
-  explicitEmail = details:
-    if details ? email && builtins.isString details.email
-    then details.email
-    else null;
-
   normalizeUser = userId: details: let
     username = usernameFor userId details;
     userEnabled = enabled details;
     userStackEnabled = stackEnabled details;
-    userMailEnabled = userEnabled && emailEnabled details;
+    userMailEnabled = userEnabled && (details.email or true);
     aliases = normalizeList (details.aliases or []);
     localParts =
       if userMailEnabled
       then unique ([username] ++ aliases)
       else [];
-    generatedEmails = map (localPart: "${localPart}@${defaultMailDomain}") localParts;
-    emails =
-      if explicitEmail details != null && userMailEnabled
-      then unique ([explicitEmail details] ++ generatedEmails)
-      else generatedEmails;
+    emails = map (localPart: "${localPart}@${defaultMailDomain}") localParts;
   in
     details
     // {
@@ -114,6 +109,11 @@
     // optionalAttrs (userEnabled && rawCiSshKeysFor details != []) {
       ciSshKey = builtins.head (rawCiSshKeysFor details);
     };
+
+  optionalAttrs = condition: attrs:
+    if condition
+    then attrs
+    else {};
 
   baseUsers = builtins.mapAttrs normalizeUser rawUserdata;
 

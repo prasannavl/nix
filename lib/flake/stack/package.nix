@@ -59,37 +59,16 @@ let
     defaultMailDomain = "invalid.invalid";
     publicDomain = "invalid.invalid";
     internalDomain = "package.internal";
-    registry = {};
-    serviceRegistry = {};
     defaultNginxSecretsBasePath = /nonexistent/lib-flake/nginx-secrets;
     defaultNginxSecretsBase = /nonexistent/lib-flake/nginx-secrets;
     defaultCaCertFile = null;
-    defaultCaCertAgeFile = /nonexistent/lib-flake/secrets/ca.crt.age;
+    defaultCaCertAgeFile = /nonexistent/lib-flake/client-secrets/ca.crt.age;
     defaultCaCertHostPath = "/etc/ssl/certs/package-ca.crt";
     defaultCaCertContainerPath = "/run/secrets/package-ca.crt";
-    defaultCaBundleHostPath = "/etc/ssl/certs/package-ca-bundle.crt";
-    defaultCaBundleContainerPath = "/run/secrets/package-ca-bundle.crt";
     defaultCaCertificate = {
       file = "/etc/ssl/certs/package-ca.crt";
       sourceHashFile = null;
       mountPath = "/run/secrets/package-ca.crt";
-    };
-    defaultCaBundleCertificate = {
-      file = "/etc/ssl/certs/package-ca-bundle.crt";
-      sourceHashFile = null;
-      mountPath = "/run/secrets/package-ca-bundle.crt";
-    };
-    secrets = rec {
-      base = /nonexistent/lib-flake/secrets;
-      services = /nonexistent/lib-flake/client-secrets;
-      service = name: services + "/${name}";
-      ext = provider: base + "/ext/${provider}";
-      ca = base;
-      acme = base + "/acme";
-      nats = null;
-      postgres = null;
-      vmstack = null;
-      nginx = /nonexistent/lib-flake/nginx-secrets;
     };
     srv = serviceModuleFactory.mkServiceLib {
       defaultUser = "root";

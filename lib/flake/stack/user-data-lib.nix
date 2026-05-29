@@ -20,7 +20,7 @@ let
     (details.enabled or true) && (details.stackEnabled or true);
 
   userHasMail = details:
-    details.mailEnabled or false;
+    details.mailEnabled or ((details.enabled or true) && (details.email or true));
 
   matchesUserFilter = {
     isActive ? null,
@@ -40,5 +40,5 @@ let
     then getIds filtered
     else filtered;
 in {
-  inherit filterAttrs userFilter;
+  inherit userFilter;
 }

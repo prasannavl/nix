@@ -144,11 +144,15 @@ rec {
           };
           cfg = config.services.${spec.resolvedName};
           partUnitConfig = spec.composedServices.unitConfig lib cfg;
+          migratorOn = config.x.migrator.on or false;
           resolvedAfter = lib.unique (after ++ cfg.after ++ partUnitConfig.after);
           resolvedBefore = lib.unique (before ++ cfg.before ++ partUnitConfig.before);
           resolvedWants = lib.unique (wants ++ cfg.wants ++ partUnitConfig.wants);
           resolvedRequires = lib.unique (requires ++ cfg.requires ++ partUnitConfig.requires);
-          resolvedWantedBy = lib.unique (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy);
+          resolvedWantedBy =
+            if migratorOn
+            then []
+            else lib.unique (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy);
         in {
           options.services.${spec.resolvedName} =
             {
@@ -173,6 +177,9 @@ rec {
                 systemd.services.${spec.resolvedName} = {
                   description = spec.resolvedServiceDescription;
                   wantedBy = resolvedWantedBy;
+                  restartTriggers = [migratorOn];
+                  restartIfChanged = !migratorOn;
+                  stopIfChanged = true;
                   after = resolvedAfter;
                   before = resolvedBefore;
                   wants = resolvedWants;
@@ -250,11 +257,15 @@ rec {
           };
           cfg = config.userServices.${resolvedUser}.${spec.resolvedName};
           partUnitConfig = spec.composedServices.unitConfig lib cfg;
+          migratorOn = config.x.migrator.on or false;
           resolvedAfter = lib.unique (map resolveUnitReference (after ++ cfg.after ++ partUnitConfig.after));
           resolvedBefore = lib.unique (map resolveUnitReference (before ++ cfg.before ++ partUnitConfig.before));
           resolvedWants = lib.unique (map resolveUnitReference (wants ++ cfg.wants ++ partUnitConfig.wants));
           resolvedRequires = lib.unique (map resolveUnitReference (requires ++ cfg.requires ++ partUnitConfig.requires));
-          resolvedWantedBy = lib.unique (map resolveUnitReference (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy));
+          resolvedWantedBy =
+            if migratorOn
+            then []
+            else lib.unique (map resolveUnitReference (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy));
           unitLabel = cfg.unitName;
           unitFile = "${unitLabel}.service";
           instanceName = "${resolvedUser}-${spec.resolvedName}";
@@ -974,10 +985,6 @@ rec {
             else throw "service-module.mkIdentityForVmstack: `secretsBasePath` is required when no defaultVmstackSecretsBasePath is configured";
         }
       );
-
-    mkClientIdentityCore = mkIdentityCore;
-    mkClientIdentity = mkIdentity;
-    mkClientIdentityFor = mkIdentityFor;
 
     mkServiceIdentityHost = serviceName: mkIdentityHost serviceName defaultServiceIdentitySuffix;
     mkServiceIdentityUser = serviceName: mkIdentityUser serviceName defaultServiceIdentitySuffix;

@@ -29,6 +29,17 @@ let
   binPath = inputs:
     builtins.concatStringsSep ":" (map (input: "${input}/bin") inputs);
 
+  attrIf = condition: name: value:
+    if condition
+    then
+      builtins.listToAttrs [
+        {
+          name = name;
+          value = value;
+        }
+      ]
+    else {};
+
   hasPrefix = prefix: str: let
     prefixLen = builtins.stringLength prefix;
   in
@@ -102,25 +113,10 @@ let
       (
         if projectDir == null
         then ""
-        else
-          cargoWorkspacePrePatch {
-            projectDir = projectDir;
-            deps = deps;
-          }
+        else cargoWorkspacePrePatch {inherit projectDir deps;}
       )
       prePatch
     ];
-
-  attrIf = condition: name: value:
-    if condition
-    then
-      builtins.listToAttrs [
-        {
-          name = name;
-          value = value;
-        }
-      ]
-    else {};
 
   shellArrayRef = varName:
     builtins.concatStringsSep "" [
@@ -1340,110 +1336,6 @@ in rec {
   in
     wirePassthru drv ({dev = dev;} // extraPassthru);
 
-  mkShellScriptDerivation = {
-    pkgs,
-    src,
-    build,
-    pname ? deriveProjectName src,
-    fmtParts ? [
-      (projectFmtGlobal {})
-    ],
-    lintParts ? [
-      (projectLintShell pkgs {})
-    ],
-    lintCommands ? [],
-    devShellPackages ? [
-      pkgs.shellcheck
-      pkgs.shfmt
-    ],
-    extraPassthru ? {},
-  }: let
-    bundle = mkPackageOpsBundle {
-      inherit pkgs src pname;
-      devShellPackages =
-        if devShellPackages == []
-        then null
-        else devShellPackages;
-      apps = {
-        fmt = {
-          parts = fmtParts;
-        };
-      };
-      checks =
-        {
-          fmt = {
-            parts = fmtParts;
-          };
-        }
-        // (
-          if lintParts == []
-          then {}
-          else {
-            lint = {
-              parts = lintParts;
-              commands = lintCommands;
-            };
-          }
-        );
-    };
-  in
-    wirePassthru build ({
-        inherit (bundle) fmt pkgOps checks;
-      }
-      // (
-        if builtins.hasAttr "devShell" bundle
-        then {inherit (bundle) devShell;}
-        else {}
-      )
-      // extraPassthru);
-
-  mkAggregateDerivation = {
-    pkgs,
-    src,
-    pname ? deriveProjectName src,
-    buildPaths ? [],
-    emptyName ? "${pname}-empty",
-    fmtParts ? [
-      (projectFmtGlobal {})
-    ],
-    extraPassthru ? {},
-    extraPackages ? {},
-    extraApps ? {},
-  }: let
-    build =
-      if buildPaths == []
-      then
-        pkgs.runCommand emptyName {} ''
-          mkdir -p "$out"
-        ''
-      else
-        pkgs.symlinkJoin {
-          name = "${pname}-build";
-          paths = buildPaths;
-        };
-    bundle = mkPackageOpsBundle {
-      inherit pkgs src pname;
-      apps = {
-        fmt = {
-          parts = fmtParts;
-        };
-      };
-      checks = {
-        fmt = {
-          parts = fmtParts;
-        };
-      };
-      devShellPackages = null;
-    };
-  in
-    wirePassthru build ({
-        build = build;
-        inherit (bundle) fmt pkgOps checks;
-        flakeExtraPackages = extraPackages;
-        flakeExtraApps = extraApps;
-      }
-      // extraPassthru);
-
   mkTrunkProject = {
     pkgs,
     src ?
@@ -1593,6 +1485,110 @@ in rec {
       }
       // extraPassthru);
 
+  mkShellScriptDerivation = {
+    pkgs,
+    src,
+    build,
+    pname ? deriveProjectName src,
+    fmtParts ? [
+      (projectFmtGlobal {})
+    ],
+    lintParts ? [
+      (projectLintShell pkgs {})
+    ],
+    lintCommands ? [],
+    devShellPackages ? [
+      pkgs.shellcheck
+      pkgs.shfmt
+    ],
+    extraPassthru ? {},
+  }: let
+    bundle = mkPackageOpsBundle {
+      inherit pkgs src pname;
+      devShellPackages =
+        if devShellPackages == []
+        then null
+        else devShellPackages;
+      apps = {
+        fmt = {
+          parts = fmtParts;
+        };
+      };
+      checks =
+        {
+          fmt = {
+            parts = fmtParts;
+          };
+        }
+        // (
+          if lintParts == []
+          then {}
+          else {
+            lint = {
+              parts = lintParts;
+              commands = lintCommands;
+            };
+          }
+        );
+    };
+  in
+    wirePassthru build ({
+        inherit (bundle) fmt pkgOps checks;
+      }
+      // (
+        if builtins.hasAttr "devShell" bundle
+        then {inherit (bundle) devShell;}
+        else {}
+      )
+      // extraPassthru);
+
+  mkAggregateDerivation = {
+    pkgs,
+    src,
+    pname ? deriveProjectName src,
+    buildPaths ? [],
+    emptyName ? "${pname}-empty",
+    fmtParts ? [
+      (projectFmtGlobal {})
+    ],
+    extraPassthru ? {},
+    extraPackages ? {},
+    extraApps ? {},
+  }: let
+    build =
+      if buildPaths == []
+      then
+        pkgs.runCommand emptyName {} ''
+          mkdir -p "$out"
+        ''
+      else
+        pkgs.symlinkJoin {
+          name = "${pname}-build";
+          paths = buildPaths;
+        };
+    bundle = mkPackageOpsBundle {
+      inherit pkgs src pname;
+      apps = {
+        fmt = {
+          parts = fmtParts;
+        };
+      };
+      checks = {
+        fmt = {
+          parts = fmtParts;
+        };
+      };
+      devShellPackages = null;
+    };
+  in
+    wirePassthru build ({
+        build = build;
+        inherit (bundle) fmt pkgOps checks;
+        flakeExtraPackages = extraPackages;
+        flakeExtraApps = extraApps;
+      }
+      // extraPassthru);
+
   mkRustDerivation = {
     pkgs,
     build ? null,
@@ -1684,17 +1680,14 @@ in rec {
             then src
             else
               mkCargoWorkspaceSource pkgs {
-                src = src;
-                projectDir = projectDir;
-                deps = deps;
+                inherit src projectDir deps;
               };
           resolvedCargoLock =
             if cargoLock != null
             then cargoLock
             else {lockFileContents = builtins.readFile (src + "/Cargo.lock");};
           buildPrePatch = composeCargoWorkspacePrePatch {
-            projectDir = projectDir;
-            deps = deps;
+            inherit projectDir deps;
             prePatch = joinLines [
               prePatch
               (buildAttrs.prePatch or "")
@@ -1703,9 +1696,7 @@ in rec {
           buildAttrsNoPrePatch = builtins.removeAttrs buildAttrs ["prePatch" "nativeCheckInputs"];
         in
           {
-            pname = pname;
-            version = version;
-            meta = meta;
+            inherit pname version meta;
             src = buildSrc;
             cargoLock = resolvedCargoLock;
             prePatch = buildPrePatch;
@@ -1825,10 +1816,12 @@ in rec {
       if builtins.isFunction extraPassthru
       then extraPassthru baseDrv
       else extraPassthru;
+    drv =
+      if resolvedExtraPassthru == {}
+      then baseDrv
+      else wirePassthru baseDrv resolvedExtraPassthru;
   in
-    if resolvedExtraPassthru == {}
-    then baseDrv
-    else wirePassthru baseDrv resolvedExtraPassthru;
+    drv;
 
   mkPackageApp = pkgs: pkg: {
     type = "app";

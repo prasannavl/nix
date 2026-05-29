@@ -11,5 +11,11 @@
       default = 1;
       description = "Enable or disable panic recovery sysctl settings.";
     };
+
+    migrator.on = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "When true, drain repo-managed application services for data migration: stop already-running services and suppress cold-start.";
+    };
   };
 }
