@@ -9,7 +9,7 @@
       if cond
       then attrs
       else {};
-    without = args: names: builtins.removeAttrs args names;
+    without = builtins.removeAttrs;
     withExtra = args: extra:
       (without args ["extra"]) // {extra = extra // (args.extra or {});};
 
@@ -26,7 +26,7 @@
         # nginx checks the auth subrequest body limit before
         # proxy_pass_request_body off, so this must cover protected upload
         # routes on the same hostname.
-        clientMaxBodySize = clientMaxBodySize;
+        inherit clientMaxBodySize;
       };
 
     mkServiceProxy = {
@@ -116,8 +116,7 @@
           useUpstreamCsp = true;
         });
 
-    mkHttpsServiceProxy = args: let
-      hostName = args.hostName;
+    mkHttpsServiceProxy = args @ {hostName, ...}: let
       proxyArgs = {portName = "https";} // without args ["hostName"];
     in
       mkCspServiceProxy (withExtra proxyArgs {
@@ -126,8 +125,7 @@
         upstreamTlsName = hostName;
       });
 
-    mkHttpsServiceRoute = args: let
-      hostName = args.hostName;
+    mkHttpsServiceRoute = args @ {hostName, ...}: let
       routeArgs = {portName = "https";} // without args ["hostName"];
     in
       mkServiceRoute (withExtra routeArgs {

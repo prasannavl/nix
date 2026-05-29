@@ -1,9 +1,10 @@
 {
   config,
   lib,
+  stack,
   ...
 }: let
-  tunnelsLib = import ../../lib/services/tunnels/cloudflare.nix {lib = lib;};
+  tunnelsLib = import ../../lib/services/tunnels/cloudflare.nix {inherit lib stack;};
   tunnelId = "f052edf6-4bc4-41a5-bf0c-be7a7dd05f03";
   tunnelIngress = config.services.podmanCompose.pvl.cloudflareTunnelIngress;
 in

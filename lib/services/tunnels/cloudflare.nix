@@ -1,4 +1,7 @@
-{lib}: let
+{
+  lib,
+  stack ? null,
+}: let
   tunnelPortFor = portCfg:
     if portCfg.cfTunnelPort != null
     then portCfg.cfTunnelPort
@@ -11,14 +14,10 @@
       (portCfg.cfTunnelNames or [])
     );
 
-  trackedPath = path: name:
-    if builtins.pathExists path
-    then
-      builtins.path {
-        path = path;
-        name = name;
-      }
-    else null;
+  trackedPath =
+    if stack != null
+    then stack.srv.trackedPath
+    else throw "cloudflare tunnel helper mkHostManagedTunnel requires a stack profile";
 
   credentialBaseName = credentialsStoreName: let
     withoutJsonAge = lib.removeSuffix ".json.age" credentialsStoreName;
@@ -56,30 +55,33 @@ in {
       then credentialsSecretPath
       else ../../../data/secrets + "/cloudflare/tunnels/${credentialsStoreName}";
     credentials = trackedPath resolvedCredentialsSecretPath credentialsStoreName;
-  in {
-    age.secrets = lib.optionalAttrs (credentials != null) {
-      ${resolvedAgeSecretName} = {
-        file = credentials;
-        owner = "root";
-        group = "root";
-        mode = "0400";
+    migratorOn = config.x.migrator.on or false;
+  in
+    {
+      services.cloudflared = lib.mkIf (credentials != null && ! migratorOn) {
+        enable = true;
+        tunnels.${tunnelId} =
+          {
+            credentialsFile = config.age.secrets.${resolvedAgeSecretName}.path;
+            default = defaultService;
+            ingress = ingress;
+          }
+          // lib.optionalAttrs (edgeIPVersion != null) {
+            edgeIPVersion = edgeIPVersion;
+          }
+          // lib.optionalAttrs (originRequest != {}) {
+            originRequest = originRequest;
+          };
+      };
+    }
+    // {
+      age.secrets = lib.optionalAttrs (credentials != null) {
+        ${resolvedAgeSecretName} = {
+          file = credentials;
+          owner = "root";
+          group = "root";
+          mode = "0400";
+        };
       };
     };
-
-    services.cloudflared = lib.mkIf (credentials != null) {
-      enable = true;
-      tunnels.${tunnelId} =
-        {
-          credentialsFile = config.age.secrets.${resolvedAgeSecretName}.path;
-          default = defaultService;
-          ingress = ingress;
-        }
-        // lib.optionalAttrs (edgeIPVersion != null) {
-          edgeIPVersion = edgeIPVersion;
-        }
-        // lib.optionalAttrs (originRequest != {}) {
-          originRequest = originRequest;
-        };
-    };
-  };
 }

@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.services.podmanCompose;
+  migratorOn = config.x.migrator.on or false;
   hasStacks = cfg != {};
   flakeUtils = import ../flake/utils.nix {lib = lib;};
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
@@ -25,7 +26,7 @@
       toString file
     }
     or (
-      if builtins.isPath file && builtins.pathExists file
+      if builtins.pathExists file
       then builtins.hashFile "sha256" file
       else null
     );
@@ -48,7 +49,7 @@
       };
     };
     subnet = null;
-    autoStart = true;
+    autoStart = null;
     longRunning = true;
     timeoutStableSeconds = 120;
     recreateOnSwitch = false;
@@ -504,9 +505,9 @@
       };
 
       autoStart = lib.mkOption {
-        type = lib.types.bool;
+        type = lib.types.nullOr lib.types.bool;
         default = serviceDefaults.autoStart;
-        description = "Whether this compose instance should be auto-started by the generated user-manager reconcile flow during deploy and boot-ready startup.";
+        description = "Whether this compose instance should be auto-started by the generated user-manager reconcile flow during deploy and boot-ready startup. When null, inherit the stack default.";
       };
 
       longRunning = lib.mkOption {
@@ -753,6 +754,18 @@
                     description = "TLS SNI name for HTTPS nginx upstream routes. \"auto\" derives it from upstreamHost when upstreamHost is host-only; null disables SNI.";
                   };
 
+                  upstreamCaCertificate = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "CA bundle nginx should use to verify this HTTPS upstream route. When null, upstream certificate verification is not enabled by the nginx renderer.";
+                  };
+
+                  location = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional full nginx location match expression, such as '= /api/upload' or '~ ^/api/.*/upload$'. When set, path is still used for route-local rewrite and cookie path defaults.";
+                  };
+
                   proxyBufferSize = lib.mkOption {
                     type = lib.types.nullOr lib.types.str;
                     default = null;
@@ -777,10 +790,22 @@
                     description = "Optional nginx proxy_send_timeout override for long-running upstream requests.";
                   };
 
+                  proxyRequestBuffering = lib.mkOption {
+                    type = lib.types.nullOr lib.types.bool;
+                    default = null;
+                    description = "Optional nginx proxy_request_buffering override for streaming large request bodies to the upstream.";
+                  };
+
                   clientMaxBodySize = lib.mkOption {
                     type = lib.types.nullOr lib.types.str;
                     default = null;
                     description = "Optional nginx client_max_body_size override for uploads to this route.";
+                  };
+
+                  rateLimit = lib.mkOption {
+                    type = lib.types.nullOr exposedPortsLib.rateLimitProfileType;
+                    default = null;
+                    description = "Optional ingress rate-limit policy override for this route. When unset, the parent exposed port policy is used.";
                   };
 
                   proxyCookiePath = lib.mkOption {
@@ -858,6 +883,12 @@
               type = lib.types.nullOr lib.types.str;
               default = null;
               description = "Optional nginx proxy_send_timeout override for long-running upstream requests.";
+            };
+
+            upstreamCaCertificate = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "CA bundle nginx should use to verify this HTTPS upstream. When null, upstream certificate verification is not enabled by the nginx renderer.";
             };
 
             clientMaxBodySize = lib.mkOption {
@@ -949,6 +980,12 @@
         type = lib.types.ints.positive;
         default = serviceDefaults.timeoutStableSeconds;
         description = "Default stable-state wait timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutStableSeconds.";
+      };
+
+      autoStart = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Default auto-start behavior for compose instances in this stack. Instances can override this with their own autoStart.";
       };
 
       trustedCaDefaults = lib.mkOption {
@@ -1773,6 +1810,12 @@ in {
               normalizedService =
                 baseService
                 // {
+                  autoStart =
+                    if migratorOn
+                    then false
+                    else if baseService.autoStart == null
+                    then stack.autoStart
+                    else baseService.autoStart;
                   dirs = lib.mapAttrs (_: applyEntryDefaults dirEntryDefaults) baseService.dirs;
                   envSecrets = lib.mapAttrs (_: normalizeEnvSecretEntry) baseService.envSecrets;
                   files = lib.mapAttrs (_: normalizeFileEntry) baseService.files;

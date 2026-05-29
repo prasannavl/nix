@@ -112,6 +112,12 @@
         description = "TLS SNI name for HTTPS upstreams. \"auto\" derives it from upstreamHost when upstreamHost is host-only; null disables SNI.";
       };
 
+      upstreamCaCertificate = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "CA bundle nginx should use to verify HTTPS upstream certificates. When null, upstream certificate verification is not enabled by this renderer.";
+      };
+
       prependPath = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -284,6 +290,12 @@
         description = "Path prefix on the host vhost that nginx should mount.";
       };
 
+      location = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional full nginx location match expression, such as '= /api/upload' or '~ ^/api/.*/upload$'. When set, path is still used for route-local rewrite and cookie path defaults.";
+      };
+
       port = lib.mkOption {
         type = lib.types.nullOr lib.types.port;
         default = null;
@@ -321,6 +333,12 @@
         type = lib.types.nullOr lib.types.str;
         default = "auto";
         description = "TLS SNI name for HTTPS upstream routes. \"auto\" derives it from upstreamHost when upstreamHost is host-only; null disables SNI.";
+      };
+
+      upstreamCaCertificate = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "CA bundle nginx should use to verify HTTPS upstream route certificates. When null, upstream certificate verification is not enabled by this renderer.";
       };
 
       prependPath = lib.mkOption {
@@ -401,6 +419,12 @@
         description = "Optional nginx proxy_send_timeout override for long-running upstream requests.";
       };
 
+      proxyRequestBuffering = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Optional nginx proxy_request_buffering override for streaming large request bodies to the upstream.";
+      };
+
       clientMaxBodySize = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -462,7 +486,7 @@
           inherit (portCfg) port;
           serverNames = nginxHostNames;
           upstreams = ["${defaultHost}:${toString portCfg.port}"];
-          inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName;
+          inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName upstreamCaCertificate;
           rootRedirect = portCfg.rootRedirect or null;
           rateLimit = resolveRateLimit (portCfg.rateLimit or null);
           proxyBufferSize = portCfg.proxyBufferSize or null;
@@ -554,6 +578,10 @@
       (route: let
         normalizedPath = normalizeRoutePath route.path;
         routeName = "${serviceName}-${portName}-${sanitizeName route.serverName}-${sanitizeName normalizedPath}";
+        routeRateLimit =
+          if route.rateLimit != null
+          then route.rateLimit
+          else portCfg.rateLimit or null;
       in
         assert lib.hasPrefix "/" normalizedPath;
         assert normalizedPath != "/"; {
@@ -564,16 +592,18 @@
               mode = "upstream";
               serverName = route.serverName;
               path = normalizedPath;
+              location = route.location or null;
               inherit (portCfg) port;
               upstreams = ["${defaultHost}:${toString portCfg.port}"];
-              inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName;
+              inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName upstreamCaCertificate;
               prependPath = null;
               stripPath = route.stripPath;
-              rateLimit = resolveRateLimit (portCfg.rateLimit or null);
+              rateLimit = resolveRateLimit routeRateLimit;
               proxyBufferSize = route.proxyBufferSize or (portCfg.proxyBufferSize or null);
               proxyBuffering = route.proxyBuffering or (portCfg.proxyBuffering or null);
               proxyReadTimeout = route.proxyReadTimeout or (portCfg.proxyReadTimeout or null);
               proxySendTimeout = route.proxySendTimeout or (portCfg.proxySendTimeout or null);
+              proxyRequestBuffering = route.proxyRequestBuffering or null;
               clientMaxBodySize = route.clientMaxBodySize or (portCfg.clientMaxBodySize or null);
               proxyCookiePath = route.proxyCookiePath or null;
               proxyRedirects = route.proxyRedirects or [];
@@ -811,6 +841,7 @@
     routeUpstreamHost = route.upstreamHost or null;
     routeUpstreamProtocol = route.upstreamProtocol or "http";
     routeUpstreamTlsName = route.upstreamTlsName or "auto";
+    routeUpstreamCaCertificate = route.upstreamCaCertificate or null;
     routeResolver = route.resolver or null;
     dynamicUpstream = routeResolver != null;
     dynamicUpstreamValue =
@@ -849,11 +880,19 @@
       };\n";
     proxyReadTimeout = route.proxyReadTimeout or null;
     proxySendTimeout = route.proxySendTimeout or null;
+    proxyRequestBuffering = route.proxyRequestBuffering or null;
     proxyTimeoutDirectives =
       lib.optionalString (proxyReadTimeout != null)
       "        proxy_read_timeout ${proxyReadTimeout};\n"
       + lib.optionalString (proxySendTimeout != null)
       "        proxy_send_timeout ${proxySendTimeout};\n";
+    proxyRequestBufferingDirective =
+      lib.optionalString (proxyRequestBuffering != null)
+      "        proxy_request_buffering ${
+        if proxyRequestBuffering
+        then "on"
+        else "off"
+      };\n";
     clientMaxBodySize = route.clientMaxBodySize or null;
     clientBodyDirectives =
       lib.optionalString (clientMaxBodySize != null)
@@ -929,16 +968,21 @@
       proxy_ssl_server_name on;
       proxy_ssl_name ${effectiveUpstreamTlsName};
     '';
+    upstreamTlsVerifyDirectives = lib.optionalString (routeUpstreamProtocol == "https" && routeUpstreamCaCertificate != null) ''
+      proxy_ssl_verify on;
+      proxy_ssl_verify_depth 3;
+      proxy_ssl_trusted_certificate ${routeUpstreamCaCertificate};
+    '';
     htmlRewriteDirectives =
       lib.optionalString (basePath != "/") (routeHtmlRewriteDirectives route effectiveUpstreamPathPrefix);
     forwardedPrefixDirective =
       lib.optionalString (basePath != "/")
       "            proxy_set_header X-Forwarded-Prefix ${prefixPath};\n";
   in ''
-      ${rateLimitDirectives}${securityHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
+      ${rateLimitDirectives}${securityHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${proxyRequestBufferingDirective}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
                 ${hostHeaderDirective}
                 ${forwardedHeaderDirectives}
-    ${upstreamTlsDirectives}            proxy_http_version 1.1;
+    ${upstreamTlsDirectives}${upstreamTlsVerifyDirectives}            proxy_http_version 1.1;
                 proxy_cookie_path / ${effectiveProxyCookiePath};
     ${proxyRedirectDirectives}${prependRedirectDirective}${defaultRedirectDirective}${forwardedPrefixDirective}
                 ${htmlRewriteDirectives}
@@ -953,6 +997,7 @@
         upstreamProtocol = proxy.upstreamProtocol or "http";
         upstreamHost = proxy.upstreamHost or null;
         upstreamTlsName = proxy.upstreamTlsName or "auto";
+        upstreamCaCertificate = proxy.upstreamCaCertificate or null;
         prependPath = proxy.prependPath or null;
         rateLimit = proxy.rateLimit or null;
         proxyBufferSize = proxy.proxyBufferSize or null;
@@ -1042,6 +1087,7 @@
 
   mkProxyRouteLocation = name: route: let
     basePath = normalizeRoutePath route.path;
+    explicitLocation = route.location or null;
     routeStripPath = route.stripPath or false;
     prefixPath =
       if basePath == "/"
@@ -1071,7 +1117,12 @@
         ${locationProxyPassDirectives name route}            }
       '';
   in
-    exactLocation + prefixLocation;
+    if explicitLocation != null
+    then ''
+                  location ${explicitLocation} {
+      ${locationProxyPassDirectives name route}          }
+    ''
+    else exactLocation + prefixLocation;
 
   staticSiteLocation = name: site: rateLimit: let
     rateLimitDirectives =
