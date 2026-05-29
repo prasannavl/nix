@@ -1,0 +1,192 @@
+diff --git a/crates/directory/src/backend/ldap/config.rs b/crates/directory/src/backend/ldap/config.rs
+index be3d1cf..b36d97c 100644
+--- a/crates/directory/src/backend/ldap/config.rs
++++ b/crates/directory/src/backend/ldap/config.rs
+@@ -40,6 +40,12 @@ impl LdapDirectory {
+ 
+         let mut mappings = LdapMappings {
+             base_dn: config.base_dn,
++            bind_auth_dn_template: config
++                .bind_auth_dn_template
++                .as_deref()
++                .filter(|template| !template.is_empty())
++                .map(LdapFilter::new)
++                .transpose()?,
+             filter_login: LdapFilter::new(&config.filter_login)?,
+             filter_mailbox: LdapFilter::new(&config.filter_mailbox)?,
+             filter_member_of: if let Some(filter) = config.filter_member_of {
+diff --git a/crates/directory/src/backend/ldap/lookup.rs b/crates/directory/src/backend/ldap/lookup.rs
+index 0e9bccb..6288776 100644
+--- a/crates/directory/src/backend/ldap/lookup.rs
++++ b/crates/directory/src/backend/ldap/lookup.rs
+@@ -23,6 +23,13 @@ impl LdapDirectory {
+         let mut result = if self.auth_bind {
+             let filter = self.mappings.filter_login.build(username);
+             if let Some(mut result) = self.find_object(&mut conn, &filter).await? {
++                let bind_dn = self
++                    .mappings
++                    .bind_auth_dn_template
++                    .as_ref()
++                    .map(|template| template.build(username))
++                    .unwrap_or_else(|| result.dn.clone());
++
+                 // Perform bind auth using the found dn
+                 let (auth_bind_conn, mut ldap) = LdapConnAsync::with_settings(
+                     self.pool.manager().settings.clone(),
+@@ -34,7 +41,7 @@ impl LdapDirectory {
+                 ldap3::drive!(auth_bind_conn);
+ 
+                 if ldap
+-                    .simple_bind(&result.dn, secret)
++                    .simple_bind(&bind_dn, secret)
+                     .await
+                     .map_err(|err| err.into_error().caused_by(trc::location!()))?
+                     .success()
+@@ -49,7 +56,7 @@ impl LdapDirectory {
+                     return Err(trc::AuthEvent::Failed
+                         .into_err()
+                         .details("Secret rejected during auth bind using lookup filter")
+-                        .details(vec![result.dn, filter]));
++                        .details(vec![bind_dn, result.dn, filter]));
+                 }
+             } else {
+                 return Err(trc::AuthEvent::Failed
+diff --git a/crates/directory/src/backend/ldap/mod.rs b/crates/directory/src/backend/ldap/mod.rs
+index 7fedeec..7042e1d 100644
+--- a/crates/directory/src/backend/ldap/mod.rs
++++ b/crates/directory/src/backend/ldap/mod.rs
+@@ -20,6 +20,7 @@ pub struct LdapDirectory {
+ #[derive(Debug, Default)]
+ pub struct LdapMappings {
+     base_dn: String,
++    bind_auth_dn_template: Option<LdapFilter>,
+     filter_login: LdapFilter,
+     filter_mailbox: LdapFilter,
+     filter_member_of: Option<LdapFilter>,
+diff --git a/crates/registry/src/schema/properties.rs b/crates/registry/src/schema/properties.rs
+index 9f2ac70..79c70fe 100644
+--- a/crates/registry/src/schema/properties.rs
++++ b/crates/registry/src/schema/properties.rs
+@@ -342,6 +342,7 @@ pub enum Property {
+     BearerToken = 403,
+     Beta = 389,
+     Bind = 589,
++    BindAuthDnTemplate = 900,
+     BindAuthentication = 466,
+     BindDn = 464,
+     BindSecret = 465,
+diff --git a/crates/registry/src/schema/properties_impl.rs b/crates/registry/src/schema/properties_impl.rs
+index 0a81e9e..e471540 100644
+--- a/crates/registry/src/schema/properties_impl.rs
++++ b/crates/registry/src/schema/properties_impl.rs
+@@ -495,6 +495,7 @@ impl EnumImpl for Property {
+             b"bearerToken" => Property::BearerToken,
+             b"beta" => Property::Beta,
+             b"bind" => Property::Bind,
++            b"bindAuthDnTemplate" => Property::BindAuthDnTemplate,
+             b"bindAuthentication" => Property::BindAuthentication,
+             b"bindDn" => Property::BindDn,
+             b"bindSecret" => Property::BindSecret,
+@@ -1375,6 +1376,7 @@ impl EnumImpl for Property {
+             Property::BearerToken => "bearerToken",
+             Property::Beta => "beta",
+             Property::Bind => "bind",
++            Property::BindAuthDnTemplate => "bindAuthDnTemplate",
+             Property::BindAuthentication => "bindAuthentication",
+             Property::BindDn => "bindDn",
+             Property::BindSecret => "bindSecret",
+@@ -2259,6 +2261,7 @@ impl EnumImpl for Property {
+             403 => Some(Property::BearerToken),
+             389 => Some(Property::Beta),
+             589 => Some(Property::Bind),
++            900 => Some(Property::BindAuthDnTemplate),
+             466 => Some(Property::BindAuthentication),
+             464 => Some(Property::BindDn),
+             465 => Some(Property::BindSecret),
+diff --git a/crates/registry/src/schema/structs.rs b/crates/registry/src/schema/structs.rs
+index 3b867bf..ca298ed 100644
+--- a/crates/registry/src/schema/structs.rs
++++ b/crates/registry/src/schema/structs.rs
+@@ -2156,6 +2156,8 @@ pub struct LdapDirectory {
+     pub bind_secret: SecretKeyOptional,
+     #[serde(rename = "bindAuthentication")]
+     pub bind_authentication: bool,
++    #[serde(rename = "bindAuthDnTemplate")]
++    pub bind_auth_dn_template: Option<String>,
+     #[serde(rename = "filterLogin")]
+     pub filter_login: String,
+     #[serde(rename = "filterMailbox")]
+diff --git a/crates/registry/src/schema/structs_impl.rs b/crates/registry/src/schema/structs_impl.rs
+index 254b041..ba0f59f 100644
+--- a/crates/registry/src/schema/structs_impl.rs
++++ b/crates/registry/src/schema/structs_impl.rs
+@@ -15674,6 +15674,11 @@ impl LdapDirectory {
+         }
+         let value = &self.bind_secret;
+         value.validate(errors);
++        if let Some(value) = &self.bind_auth_dn_template {
++            if value.is_empty() {
++                errors.push(ValidationError::required(Property::BindAuthDnTemplate));
++            }
++        }
+         let value = &self.filter_login;
+         if value.is_empty() {
+             errors.push(ValidationError::required(Property::FilterLogin));
+@@ -15783,6 +15788,7 @@ impl Pickle for LdapDirectory {
+         self.pool_timeout_recycle.pickle(out);
+         self.pool_timeout_wait.pickle(out);
+         self.member_tenant_id.pickle(out);
++        self.bind_auth_dn_template.pickle(out);
+     }
+ 
+     fn unpickle(stream: &mut crate::pickle::PickledStream<'_>) -> Option<Self> {
+@@ -15812,6 +15818,11 @@ impl Pickle for LdapDirectory {
+         this.pool_timeout_recycle = Pickle::unpickle(stream)?;
+         this.pool_timeout_wait = Pickle::unpickle(stream)?;
+         this.member_tenant_id = Pickle::unpickle(stream)?;
++        this.bind_auth_dn_template = if stream.eof() {
++            None
++        } else {
++            Pickle::unpickle(stream)?
++        };
+         Some(this)
+     }
+ }
+@@ -15828,6 +15839,7 @@ impl Default for LdapDirectory {
+             bind_dn: Default::default(),
+             bind_secret: Default::default(),
+             bind_authentication: true,
++            bind_auth_dn_template: Default::default(),
+             filter_login: "(&(objectClass=inetOrgPerson)(mail=?))".to_string(),
+             filter_mailbox: "(|(&(objectClass=inetOrgPerson)(|(mail=?)(mailAlias=?)))(&(objectClass=groupOfNames)(|(mail=?)(mailAlias=?))))".to_string(),
+             filter_member_of: Some("(&(objectClass=groupOfNames)(member=?))".to_string()),
+@@ -15850,7 +15862,7 @@ impl Default for LdapDirectory {
+ 
+ impl IntoValue for LdapDirectory {
+     fn into_value(self) -> JmapValue<'static> {
+-        let mut map = jmap_tools::Map::with_capacity(27);
++        let mut map = jmap_tools::Map::with_capacity(28);
+         map.insert_unchecked(Property::Description, self.description.into_value());
+         map.insert_unchecked(Property::Url, self.url.into_value());
+         map.insert_unchecked(Property::Timeout, self.timeout.into_value());
+@@ -15866,6 +15878,10 @@ impl IntoValue for LdapDirectory {
+             Property::BindAuthentication,
+             self.bind_authentication.into_value(),
+         );
++        map.insert_unchecked(
++            Property::BindAuthDnTemplate,
++            self.bind_auth_dn_template.into_value(),
++        );
+         map.insert_unchecked(Property::FilterLogin, self.filter_login.into_value());
+         map.insert_unchecked(Property::FilterMailbox, self.filter_mailbox.into_value());
+         map.insert_unchecked(Property::FilterMemberOf, self.filter_member_of.into_value());
+@@ -15928,6 +15944,9 @@ impl RegistryJsonPropertyPatch for LdapDirectory {
+                 .patch(pointer.with_validators(&[StringValidator::Trim]), value),
+             Some(Property::BindSecret) => self.bind_secret.patch(pointer, value),
+             Some(Property::BindAuthentication) => self.bind_authentication.patch(pointer, value),
++            Some(Property::BindAuthDnTemplate) => self
++                .bind_auth_dn_template
++                .patch(pointer.with_validators(&[StringValidator::Trim]), value),
+             Some(Property::FilterLogin) => self
+                 .filter_login
+                 .patch(pointer.with_validators(&[StringValidator::Trim]), value),

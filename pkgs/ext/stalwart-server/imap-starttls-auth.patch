@@ -1,0 +1,155 @@
+diff --git a/crates/imap-proto/src/protocol/capability.rs b/crates/imap-proto/src/protocol/capability.rs
+index 68fc0b780..be56fecea 100644
+--- a/crates/imap-proto/src/protocol/capability.rs
++++ b/crates/imap-proto/src/protocol/capability.rs
+@@ -133,12 +133,15 @@ impl Capability {
+         });
+     }
+
+-    pub fn all_capabilities(is_authenticated: bool, offer_tls: bool) -> Vec<Capability> {
++    pub fn all_capabilities(
++        is_authenticated: bool,
++        offer_tls: bool,
++        allow_authentication: bool,
++    ) -> Vec<Capability> {
+         let mut capabilities = vec![
+             Capability::IMAP4rev2,
+             Capability::IMAP4rev1,
+             Capability::Enable,
+-            Capability::SASLIR,
+             Capability::LiteralPlus,
+             Capability::Id,
+             Capability::Utf8Accept,
+@@ -177,12 +176,15 @@ impl Capability {
+                 Capability::Quota,
+                 Capability::QuotaResource(QuotaResourceName::Storage),
+             ]);
+-        } else {
++        } else if allow_authentication {
+             capabilities.extend([
++                Capability::SASLIR,
+                 Capability::Auth(Mechanism::Plain),
+                 Capability::Auth(Mechanism::OAuthBearer),
+                 Capability::Auth(Mechanism::XOauth2),
+             ]);
++        } else {
++            capabilities.push(Capability::LoginDisabled);
+         }
+         if offer_tls {
+             capabilities.push(Capability::StartTLS);
+diff --git a/crates/imap/src/op/authenticate.rs b/crates/imap/src/op/authenticate.rs
+index 8c71cb1eb..0de2a8544 100644
+--- a/crates/imap/src/op/authenticate.rs
++++ b/crates/imap/src/op/authenticate.rs
+@@ -21,6 +21,13 @@ use std::sync::Arc;
+
+ impl<T: SessionStream> Session<T> {
+     pub async fn handle_authenticate(&mut self, request: Request<Command>) -> trc::Result<()> {
++        if !self.is_tls && !self.server.core.imap.allow_plain_auth {
++            return Err(trc::ImapEvent::Error
++                .into_err()
++                .details("AUTHENTICATE is disabled on the clear-text port.")
++                .id(request.tag));
++        }
++
+         let mut args = request.parse_authenticate()?;
+
+         match args.mechanism {
+@@ -117,6 +125,7 @@ impl<T: SessionStream> Session<T> {
+                     capabilities: Capability::all_capabilities(
+                         true,
+                         !self.is_tls && self.instance.acceptor.is_tls(),
++                        true,
+                     ),
+                 })
+                 .with_tag(tag)
+diff --git a/crates/imap/src/lib.rs b/crates/imap/src/lib.rs
+index 7ef8d5a6d..680964821 100644
+--- a/crates/imap/src/lib.rs
++++ b/crates/imap/src/lib.rs
+@@ -6,8 +6,6 @@
+
+ #![warn(clippy::large_futures)]
+
+-use std::sync::LazyLock;
+-
+ use imap_proto::{ResponseCode, StatusResponse, protocol::capability::Capability};
+
+ pub mod core;
+@@ -15,20 +13,13 @@ pub mod op;
+
+ static SERVER_GREETING: &str = "Stalwart IMAP4rev2 at your service.";
+
+-pub(crate) static GREETING_WITH_TLS: LazyLock<Vec<u8>> = LazyLock::new(|| {
++pub(crate) fn greeting(offer_tls: bool, allow_authentication: bool) -> Vec<u8> {
+     StatusResponse::ok(SERVER_GREETING)
+         .with_code(ResponseCode::Capability {
+-            capabilities: Capability::all_capabilities(false, true),
++            capabilities: Capability::all_capabilities(false, offer_tls, allow_authentication),
+         })
+         .into_bytes()
+-});
++}
+
+-pub(crate) static GREETING_WITHOUT_TLS: LazyLock<Vec<u8>> = LazyLock::new(|| {
+-    StatusResponse::ok(SERVER_GREETING)
+-        .with_code(ResponseCode::Capability {
+-            capabilities: Capability::all_capabilities(false, false),
+-        })
+-        .into_bytes()
+-});
+
+ pub struct ImapError;
+diff --git a/crates/imap/src/core/session.rs b/crates/imap/src/core/session.rs
+index b4407c526..2197def18 100644
+--- a/crates/imap/src/core/session.rs
++++ b/crates/imap/src/core/session.rs
+@@ -5,7 +5,7 @@
+  */
+
+ use super::{ImapSessionManager, Session, State};
+-use crate::{GREETING_WITH_TLS, GREETING_WITHOUT_TLS};
++use crate::greeting;
+ use common::{
+     BuildServer,
+     network::{SessionData, SessionManager, SessionResult, SessionStream, stream::NullIo},
+@@ -118,13 +118,13 @@ impl<T: SessionStream> Session<T> {
+     ) -> Result<Session<T>, ()> {
+         // Write greeting
+         let is_tls = session.stream.is_tls();
+-        let greeting = if !is_tls && session.instance.acceptor.is_tls() {
+-            &GREETING_WITH_TLS
+-        } else {
+-            &GREETING_WITHOUT_TLS
+-        };
++        let server = manager.inner.build_server();
++        let greeting = greeting(
++            !is_tls && session.instance.acceptor.is_tls(),
++            is_tls || server.core.imap.allow_plain_auth,
++        );
+
+-        if let Err(err) = session.stream.write_all(greeting).await {
++        if let Err(err) = session.stream.write_all(&greeting).await {
+             trc::event!(
+                 Network(trc::NetworkEvent::WriteError),
+                 Reason = err.to_string(),
+@@ -138,7 +138,6 @@ impl<T: SessionStream> Session<T> {
+
+         // Split stream into read and write halves
+         let (stream_rx, stream_tx) = tokio::io::split(session.stream);
+-        let server = manager.inner.build_server();
+
+         Ok(Session {
+             receiver: Receiver::with_max_request_size(server.core.imap.max_request_size),
+diff --git a/crates/imap/src/op/capability.rs b/crates/imap/src/op/capability.rs
+index 02ee802bc..a6697571e 100644
+--- a/crates/imap/src/op/capability.rs
++++ b/crates/imap/src/op/capability.rs
+@@ -40,6 +40,7 @@ impl<T: SessionStream> Session<T> {
+                         capabilities: Capability::all_capabilities(
+                             self.state.is_authenticated(),
+                             !self.is_tls && self.instance.acceptor.is_tls(),
++                            self.is_tls || self.server.core.imap.allow_plain_auth,
+                         ),
+                     }
+                     .serialize(),
