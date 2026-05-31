@@ -451,11 +451,42 @@
     };
   };
 
+  streamProxyTypeDef = lib.types.submodule {
+    options = {
+      listenPort = lib.mkOption {
+        type = lib.types.port;
+        description = "Host/container port nginx stream should listen on.";
+      };
+
+      protocol = lib.mkOption {
+        type = lib.types.enum [
+          "tcp"
+          "udp"
+        ];
+        default = "tcp";
+        description = "Transport protocol for this nginx stream proxy.";
+      };
+
+      upstreams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Plain upstream host:port nginx stream should proxy to.";
+      };
+
+      serverNames = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Optional TLS SNI names for this stream proxy.";
+      };
+    };
+  };
+
   upstreamHeaderFlags = src: {
     useUpstreamCsp = src.useUpstreamCsp or false;
     useUpstreamReferrer = src.useUpstreamReferrer or false;
     useUpstreamPermissionsPolicy = src.useUpstreamPermissionsPolicy or false;
   };
+
+  isStreamProtocol = protocol: protocol == "tcp" || protocol == "udp";
 
   # When a location opts any security header out to the upstream, nginx's
   # replace-not-merge add_header inheritance means we must re-declare every
@@ -478,14 +509,19 @@
 
   mkProxyVhost = {defaultHost ? "localhost"}: serviceName: portName: portCfg: let
     nginxHostNames = portCfg.nginxHostNames or [];
+    upstreamProtocol = portCfg.upstreamProtocol or "http";
+    upstreams =
+      if (portCfg.upstreams or null) != null
+      then portCfg.upstreams
+      else ["${defaultHost}:${toString portCfg.port}"];
   in
-    lib.optionalAttrs (nginxHostNames != []) {
+    lib.optionalAttrs (nginxHostNames != [] && ! isStreamProtocol upstreamProtocol) {
       "${serviceName}-${portName}" =
         {
           service = serviceName;
           inherit (portCfg) port;
           serverNames = nginxHostNames;
-          upstreams = ["${defaultHost}:${toString portCfg.port}"];
+          upstreams = upstreams;
           inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName upstreamCaCertificate;
           rootRedirect = portCfg.rootRedirect or null;
           rateLimit = resolveRateLimit (portCfg.rateLimit or null);
@@ -578,6 +614,10 @@
       (route: let
         normalizedPath = normalizeRoutePath route.path;
         routeName = "${serviceName}-${portName}-${sanitizeName route.serverName}-${sanitizeName normalizedPath}";
+        upstreams =
+          if (portCfg.upstreams or null) != null
+          then portCfg.upstreams
+          else ["${defaultHost}:${toString portCfg.port}"];
         routeRateLimit =
           if route.rateLimit != null
           then route.rateLimit
@@ -594,7 +634,7 @@
               path = normalizedPath;
               location = route.location or null;
               inherit (portCfg) port;
-              upstreams = ["${defaultHost}:${toString portCfg.port}"];
+              upstreams = upstreams;
               inherit (portCfg) upstreamProtocol upstreamHost upstreamTlsName upstreamCaCertificate;
               prependPath = null;
               stripPath = route.stripPath;
@@ -620,6 +660,173 @@
       "    ${lib.concatMapStringsSep "\n    " (s: "server ${validatePlainUpstreamValue "nginx upstream server" s};") upstreams}\n"
       "}\n"
     ];
+
+  mkStreamUpstreamBlock = name: upstreams:
+    lib.concatStrings
+    [
+      "upstream ${name} {\n"
+      "    ${lib.concatMapStringsSep "\n    " (s: "server ${validatePlainUpstreamValue "nginx stream upstream server" s};") upstreams}\n"
+      "}\n"
+    ];
+
+  mkStreamProxyServer = name: proxy: let
+    listenProtocolSuffix =
+      if proxy.protocol == "udp"
+      then " udp"
+      else "";
+    proxyPassTarget = "stream_${sanitizeVariableName name}";
+  in ''
+    server {
+        listen ${toString proxy.listenPort}${listenProtocolSuffix};
+        proxy_pass ${proxyPassTarget};
+    }
+  '';
+
+  streamListenKey = proxy: "${proxy.protocol}-${toString proxy.listenPort}";
+
+  streamListenVariableName = key: "$stream_upstream_${sanitizeVariableName key}";
+
+  groupStreamProxiesByListen = streamProxies:
+    builtins.foldl'
+    (
+      acc: name: let
+        proxy = streamProxies.${name};
+        key = streamListenKey proxy;
+        entry = proxy // {name = name;};
+      in
+        acc
+        // {
+          ${key} = (acc.${key} or []) ++ [entry];
+        }
+    )
+    {}
+    (builtins.attrNames streamProxies);
+
+  mkNamedStreamProxyServer = listenKey: proxies: let
+    firstProxy = builtins.head proxies;
+    listenProtocolSuffix =
+      if firstProxy.protocol == "udp"
+      then " udp"
+      else "";
+    namedProxies = builtins.filter (proxy: proxy.serverNames != []) proxies;
+    defaultProxy =
+      builtins.head
+      ((builtins.filter (proxy: proxy.serverNames == []) proxies) ++ [firstProxy]);
+    upstreamName = proxy: "stream_${sanitizeVariableName proxy.name}";
+    mapEntries =
+      lib.concatMapStringsSep "\n"
+      (proxy:
+        lib.concatMapStringsSep "\n"
+        (serverName: "    ${serverName} ${upstreamName proxy};")
+        proxy.serverNames)
+      namedProxies;
+    mapBlock = ''
+      map $ssl_preread_server_name ${streamListenVariableName listenKey} {
+      ${mapEntries}
+          default ${upstreamName defaultProxy};
+      }
+    '';
+  in
+    if firstProxy.protocol == "udp"
+    then throw "nginx stream listener ${listenKey} cannot use nginxHostNames because UDP has no TLS SNI preread"
+    else ''
+      ${mapBlock}
+      server {
+          listen ${toString firstProxy.listenPort}${listenProtocolSuffix};
+          proxy_pass ${streamListenVariableName listenKey};
+          ssl_preread on;
+      }
+    '';
+
+  mkStreamProxyListenServer = listenKey: proxies:
+    if builtins.any (proxy: proxy.serverNames != []) proxies
+    then mkNamedStreamProxyServer listenKey proxies
+    else if builtins.length proxies == 1
+    then mkStreamProxyServer (builtins.head proxies).name (builtins.head proxies)
+    else throw "nginx stream listener ${listenKey} has multiple unnamed upstreams; set nginxHostNames for SNI routing or use distinct ports";
+
+  renderStreamProxies = streamProxies: let
+    upstreamBlocks =
+      lib.concatStringsSep "\n"
+      (lib.mapAttrsToList
+        (name: proxy:
+          mkStreamUpstreamBlock "stream_${sanitizeVariableName name}" proxy.upstreams)
+        streamProxies);
+    servers =
+      lib.concatStringsSep "\n"
+      (lib.mapAttrsToList mkStreamProxyListenServer (groupStreamProxiesByListen streamProxies));
+  in
+    lib.concatStringsSep "\n" (builtins.filter (value: value != "") [
+      upstreamBlocks
+      servers
+    ]);
+
+  streamProxyFromExposedPort = name: portCfg: let
+    protocols = portCfg.protocols or ["tcp"];
+    upstreamProtocol = portCfg.upstreamProtocol or "http";
+    upstreams =
+      if (portCfg.upstreams or null) != null
+      then portCfg.upstreams
+      else ["localhost:${toString portCfg.port}"];
+  in
+    if builtins.length protocols != 1
+    then throw "nginx stream proxy exposed port ${name} must declare exactly one protocol"
+    else if builtins.head protocols != upstreamProtocol
+    then throw "nginx stream proxy exposed port ${name} has protocols = [\"${builtins.head protocols}\"] but upstreamProtocol = \"${upstreamProtocol}\""
+    else {
+      listenPort = portCfg.port;
+      protocol = upstreamProtocol;
+      upstreams = upstreams;
+      serverNames = portCfg.nginxHostNames or [];
+    };
+
+  streamProxiesFromExposedPorts = exposedPorts:
+    lib.mapAttrs
+    streamProxyFromExposedPort
+    (lib.filterAttrs (_: portCfg: isStreamProtocol (portCfg.upstreamProtocol or "http")) exposedPorts);
+
+  renderStreamProxiesFromExposedPorts = exposedPorts:
+    renderStreamProxies (streamProxiesFromExposedPorts exposedPorts);
+
+  streamPortMappings = streamProxies:
+    lib.concatMap
+    (protocol:
+      map
+      (port:
+        if protocol == "udp"
+        then "${toString port}:${toString port}/udp"
+        else "${toString port}:${toString port}")
+      (streamProxyPortsForProtocol protocol streamProxies))
+    [
+      "tcp"
+      "udp"
+    ];
+
+  streamProxyPortsForProtocol = protocol: streamProxies:
+    lib.unique (
+      map
+      (proxy: proxy.listenPort)
+      (builtins.filter (proxy: proxy.protocol == protocol) (builtins.attrValues streamProxies))
+    );
+
+  streamProxyDnatInputRules = streamProxies:
+    lib.concatStringsSep "\n"
+    (lib.concatMap
+      (protocol: let
+        ports = streamProxyPortsForProtocol protocol streamProxies;
+      in
+        lib.optional (ports != [])
+        "ct status dnat ${protocol} dport { ${lib.concatMapStringsSep ", " toString ports} } accept")
+      [
+        "tcp"
+        "udp"
+      ]);
+
+  streamPortMappingsFromExposedPorts = exposedPorts:
+    streamPortMappings (streamProxiesFromExposedPorts exposedPorts);
+
+  streamProxyDnatInputRulesFromExposedPorts = exposedPorts:
+    streamProxyDnatInputRules (streamProxiesFromExposedPorts exposedPorts);
 
   rateLimitZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit";
   rateLimitMinuteZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_minute";
@@ -1552,4 +1759,16 @@ in rec {
     listenAddress = "127.0.0.1";
     scrapeUri = "http://127.0.0.1:${toString httpPort}/nginx_status";
   };
+
+  inherit
+    renderStreamProxiesFromExposedPorts
+    renderStreamProxies
+    streamPortMappingsFromExposedPorts
+    streamPortMappings
+    streamProxiesFromExposedPorts
+    streamProxyDnatInputRulesFromExposedPorts
+    streamProxyDnatInputRules
+    streamProxyPortsForProtocol
+    streamProxyTypeDef
+    ;
 }

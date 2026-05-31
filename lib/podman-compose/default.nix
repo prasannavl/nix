@@ -654,9 +654,17 @@
               type = lib.types.enum [
                 "http"
                 "https"
+                "tcp"
+                "udp"
               ];
               default = "http";
-              description = "Protocol nginx should use when proxying to this exposed port.";
+              description = "Protocol nginx should use when proxying to this exposed port. http/https render an HTTP proxy; tcp/udp render a stream proxy.";
+            };
+
+            upstreams = lib.mkOption {
+              type = lib.types.nullOr (lib.types.listOf lib.types.str);
+              default = null;
+              description = "Optional explicit upstream host:port targets for nginx proxying. When unset, nginx derives a local upstream from the exposed port.";
             };
 
             upstreamHost = lib.mkOption {

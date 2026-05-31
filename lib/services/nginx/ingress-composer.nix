@@ -134,6 +134,33 @@
         upstreamTlsName = hostName;
       });
 
+    mkStreamServiceProxy = protocol: {
+      serviceName,
+      portName,
+      hostGroup ? null,
+      upstreamPortName ? portName,
+      listenPort ? registry.portFor serviceName portName,
+      serverNames ?
+        if hostGroup == null
+        then []
+        else registry.publicHosts.${hostGroup},
+      upstream ? registry.upstreamForService serviceName upstreamPortName,
+      extra ? {},
+    }:
+      {
+        port = listenPort;
+        protocols = [protocol];
+        openFirewall = true;
+        upstreamProtocol = protocol;
+        upstreams = [upstream];
+        nginxHostNames = serverNames;
+      }
+      // extra;
+
+    mkTcpServiceProxy = mkStreamServiceProxy "tcp";
+
+    mkUdpServiceProxy = mkStreamServiceProxy "udp";
+
     mkOauth2ProxyRoute = args:
       mkServiceRoute (withExtra ({
           serviceName = "oauth2-proxy";
@@ -166,6 +193,8 @@
       mkOauth2ProxyRoute
       mkServiceProxy
       mkServiceRoute
+      mkTcpServiceProxy
+      mkUdpServiceProxy
       ;
   };
 }

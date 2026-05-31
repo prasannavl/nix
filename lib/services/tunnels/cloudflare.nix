@@ -7,11 +7,19 @@
     then portCfg.cfTunnelPort
     else portCfg.port;
 
+  tunnelServiceFor = portCfg: let
+    upstreamProtocol = portCfg.upstreamProtocol or "http";
+    port = toString (tunnelPortFor portCfg);
+  in
+    if upstreamProtocol == "tcp"
+    then "tcp://127.0.0.1:${port}"
+    else if upstreamProtocol == "udp"
+    then throw "Cloudflare Tunnel ingress does not support generic UDP service targets for cfTunnelNames"
+    else "http://127.0.0.1:${port}";
+
   ingressFromPortCfg = portCfg:
     lib.foldl' lib.recursiveUpdate {} (
-      map
-      (hostName: {"${hostName}" = "http://127.0.0.1:${toString (tunnelPortFor portCfg)}";})
-      (portCfg.cfTunnelNames or [])
+      map (hostName: {"${hostName}" = tunnelServiceFor portCfg;}) (portCfg.cfTunnelNames or [])
     );
 
   trackedPath =
