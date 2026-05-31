@@ -14,6 +14,10 @@ in
       hash = "sha256-cca6O8HfzzgZ3FdBRU7qWNsTlnzIE0l/YP71QuHYcJE=";
     };
 
+    patches = [
+      ./caldav-response-filter.patch
+    ];
+
     installPhase = ''
       runHook preInstall
       mkdir -p $out/share/z-push

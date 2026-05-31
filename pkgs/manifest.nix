@@ -70,6 +70,11 @@
       rootApp = false;
     }
     {
+      id = "awl";
+      path = ./ext/awl/default.nix;
+      rootApp = false;
+    }
+    {
       id = "mirofish";
       path = ./ext/mirofish/default.nix;
       rootApp = false;

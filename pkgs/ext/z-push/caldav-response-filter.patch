@@ -1,0 +1,26 @@
+diff --git a/src/backend/caldav/caldav.php b/src/backend/caldav/caldav.php
+--- a/src/backend/caldav/caldav.php
++++ b/src/backend/caldav/caldav.php
+@@ -222,0 +223,3 @@
++            if (!isset($e['href']) || !isset($e['etag'])) {
++                continue;
++            }
+@@ -278,0 +282,3 @@
++        if (!isset($data['href']) || !isset($data['etag'])) {
++            return false;
++        }
+diff --git a/src/include/z_caldav.php b/src/include/z_caldav.php
+--- a/src/include/z_caldav.php
++++ b/src/include/z_caldav.php
+@@ -807 +807,3 @@
+-						$report[] = $response;
++						if (isset($response['href']) && isset($response['etag'])) {
++							$report[] = $response;
++						}
+@@ -1034,2 +1036,4 @@
+-						$report[] = $response;
+-						ZLog::Write(LOGLEVEL_WBXML, sprintf("CalDAVClient->GetSync return value includes response: %s",implode("|",$response)));
++						if (isset($response['href']) && isset($response['etag'])) {
++							$report[] = $response;
++							ZLog::Write(LOGLEVEL_WBXML, sprintf("CalDAVClient->GetSync return value includes response: %s",implode("|",$response)));
++						}
