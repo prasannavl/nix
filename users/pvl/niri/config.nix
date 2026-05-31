@@ -7,7 +7,8 @@
   terminal = "${pkgs.alacritty}/bin/alacritty";
   runner = "${pkgs.fuzzel}/bin/fuzzel --list-executables-in-path";
   launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
-  lockCmd = "${pkgs.swaylock}/bin/swaylock -f -c 000000 --indicator-idle-visible";
+  lockCmd = "${pkgs.swaylock}/bin/swaylock";
+  lockArgs = ''"${lockCmd}" "-f" "-c" "000000" "--indicator-idle-visible"'';
   screenshot = import ../wm/screenshot.nix {inherit pkgs config;};
   grimshot = screenshot.bin;
   wpctl = "${pkgs.wireplumber}/bin/wpctl";
@@ -30,7 +31,15 @@
   '';
   outputDefaults = lib.concatMapStringsSep "\n\n" renderOutputDefaults outputs.all;
 
-  baseConfig = builtins.replaceStrings [''spawn-at-startup "waybar"''] [""] (builtins.readFile ./pkg-default.kdl);
+  baseConfig =
+    builtins.replaceStrings [
+      ''spawn-at-startup "waybar"''
+      ''Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "swaylock"; }''
+    ] [
+      ""
+      ''Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn ${lockArgs}; }''
+    ]
+    (builtins.readFile ./pkg-default.kdl);
   nixConfig = ''
     // Nix-managed overlay.
 
@@ -295,7 +304,7 @@
 
         Mod+Space hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn-sh "${launcher} || ${runner}"; }
 
-        Mod+Escape hotkey-overlay-title="Lock the Screen: swaylock" { spawn "${lockCmd}"; }
+        Mod+Escape hotkey-overlay-title="Lock the Screen: swaylock" { spawn ${lockArgs}; }
         Mod+Shift+Escape allow-inhibiting=false { toggle-keyboard-shortcuts-inhibit; }
 
         Mod+Z { spawn "systemctl" "--user" "restart" "kanshi" "noctalia-shell"; }
