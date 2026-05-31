@@ -1362,6 +1362,10 @@ in rec {
     extraNativeBuildInputs ? [],
     extraDevRuntimeInputs ? [],
     extraDevShellPackages ? [pkgs.rust-analyzer],
+    nativeCheckInputs ? [],
+    fmtNativeBuildInputs ? [],
+    lintNativeBuildInputs ? [],
+    checkEnv ? {},
     buildAttrs ? {},
     extraPassthru ? {},
     fmtCargoArgs ? [],
@@ -1477,6 +1481,7 @@ in rec {
     drv = mkRustDerivation {
       projectDir = projectPath;
       inherit pkgs build src pname fmtCargoArgs lintFixCargoArgs checkCargoArgs testCargoArgs;
+      inherit nativeCheckInputs fmtNativeBuildInputs lintNativeBuildInputs checkEnv;
     };
   in
     wirePassthru drv ({
@@ -1608,6 +1613,7 @@ in rec {
     nativeCheckInputs ? [],
     fmtNativeBuildInputs ? [],
     lintNativeBuildInputs ? [],
+    checkEnv ? {},
     buildAttrs ? {},
     prePatch ? "",
     fmtCargoArgs ? [],
@@ -1647,6 +1653,7 @@ in rec {
       "nativeCheckInputs"
       "fmtNativeBuildInputs"
       "lintNativeBuildInputs"
+      "checkEnv"
       "buildAttrs"
       "prePatch"
       "fmtCargoArgs"
@@ -1665,10 +1672,14 @@ in rec {
       ++ (buildAttrs.nativeCheckInputs or []);
     resolvedFmtNativeBuildInputs = fmtNativeBuildInputs;
     resolvedLintNativeBuildInputs = lintNativeBuildInputs;
-    rustCheckPreBuildPhase =
-      if projectDir == null
-      then ""
-      else "cargo generate-lockfile --offline";
+    rustCheckPreBuildPhase = joinLines [
+      (exportEnv checkEnv)
+      (
+        if projectDir == null
+        then ""
+        else "cargo generate-lockfile --offline"
+      )
+    ];
     resolvedBuild =
       if build != null
       then build
@@ -1748,6 +1759,7 @@ in rec {
                 ++ resolvedFmtNativeBuildInputs;
             }
           ];
+          env = checkEnv;
           commands = [(rustFmtCheckCommand resolvedFmtCargoArgs)];
         };
         lint = {
@@ -1762,6 +1774,7 @@ in rec {
                 ++ resolvedLintNativeBuildInputs;
             }
           ];
+          env = checkEnv;
           commands = [(rustClippyCheckCommand checkCargoArgs checkLintArgs)];
         };
         test = {
@@ -1775,6 +1788,7 @@ in rec {
                 ++ resolvedNativeCheckInputs;
             }
           ];
+          env = checkEnv;
           commands = [(rustTestCommand testCargoArgs)];
         };
       };
