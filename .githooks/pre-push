@@ -3,6 +3,15 @@ set -Eeuo pipefail
 
 ZERO="0000000000000000000000000000000000000000"
 
+require_clean_worktree() {
+	if [ -n "$(git status --porcelain=v1 --untracked-files=normal)" ]; then
+		printf '[pre-push] Refusing to lint a dirty worktree.\n' >&2
+		printf '[pre-push] Commit or stash local changes before pushing.\n' >&2
+		git status --short --untracked-files=normal >&2
+		exit 1
+	fi
+}
+
 resolve_range_start() {
 	local remote_sha="$1" local_sha="$2" local_ref="$3"
 	local default_branch base
@@ -32,6 +41,7 @@ main() {
 
 	repo_root="$(git rev-parse --show-toplevel)"
 	cd "${repo_root}"
+	require_clean_worktree
 
 	while read -r local_ref local_sha _remote_ref remote_sha; do
 		if [ "${local_sha}" = "${ZERO}" ]; then
@@ -50,8 +60,7 @@ main() {
 		printf '[pre-push] Linting files changed across %d commit(s) on %s\n' \
 			"${commit_count}" "${local_ref}" >&2
 
-		# Keep the outer lint entrypoint Git-backed; explicit path-scheme
-		# flake refs snapshot
+		# Keep the outer lint entrypoint Git-backed; `path:.#lint` snapshots
 		# ignored build output like `target/` and `tmp/` into the store.
 		nix run .#lint -- --diff --base "${range_start}"
 	done
