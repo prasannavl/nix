@@ -167,10 +167,12 @@ Primary files for deployment are:
   and exit
 - `check-deps`: verify the required toolchain is already available in the
   current environment and exit
+- `--list-hosts`: list selected deploy hosts using the same ordered host block
+  shown in the run banner, then exit
 - `run` (default full workflow): build/deploy flow with optional TF phases
 - `deploy`: host build and deploy only
 - `build`: host build only
-- `dev-build`: local host build only, writing `result-<host>` links into the
+- `dev-build`: local host build only, writing `result-dev/<host>` links into the
   current repo checkout as temporary GC roots
 - `tf`: all Terraform phases (tf-dns, tf-platform, tf-apps)
 - `tf-dns`: Cloudflare DNS only

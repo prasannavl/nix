@@ -22,7 +22,8 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   configuration names before normal dependency expansion and ordering.
 - `dev-build` is local-only. It runs from the current checkout instead of the
   managed repo worktree, rejects `--sha` and `--ci-trigger`, and writes
-  `result-<host>` links in the repo root as temporary GC roots.
+  `result-dev/<host>` links in the repo root as temporary GC roots. Clearing
+  those roots is `rm -rf result-dev`.
 
 ## Core architecture
 

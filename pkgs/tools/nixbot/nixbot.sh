@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
-readonly NIXBOT_VERSION="2026.05.23.1"
+readonly NIXBOT_VERSION="2026.05.31.1"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 
@@ -22,6 +22,7 @@ readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
 readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	nix
 	age
+	cloudflared
 	git
 	jq
 	nixos-rebuild-ng
@@ -39,6 +40,7 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
+  nixbot --list-hosts [--hosts "host1,host2|all|!host"] [--config <path>] [--ci-first]
   nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|!host"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
@@ -51,7 +53,7 @@ Workflow Actions:
   run             Run the full workflow.
   deploy          Run host build and deploy.
   build           Run host build only.
-  dev-build       Build hosts into repo-local result-<host> GC-root links.
+  dev-build       Build hosts into repo-local result-dev/<host> GC-root links.
   tf              Run all Terraform phases.
   tf-dns          Run the DNS Terraform phase.
   tf-platform     Run the platform Terraform phase.
@@ -63,6 +65,7 @@ Local Wrapper Action:
   tofu            Run local OpenTofu in the nixbot runtime shell.
 
 Workflow Selection Options:
+  --list-hosts     List selected hosts using the same host block as the info banner
   --hosts          Hosts/context to target (comma/space-separated, globs, !exclusions, or `all`; default: all)
   --sha            Commit to check out before running
 
@@ -71,7 +74,7 @@ Build Action Options (`run`, `deploy`, `build`):
   --build-jobs     Parallel host builds (default: 1)
 
 Dev Build Action Options (`dev-build`):
-  --hosts          Hosts/globs to build into result-<host> links; !exclusions are supported (default: all)
+  --hosts          Hosts/globs to build into result-dev/<host> links; !exclusions are supported (default: all)
   --build-jobs     Parallel host builds (default: 1)
 
 Deploy Action Options (`run`, `deploy`):
@@ -83,7 +86,7 @@ Deploy Action Options (`run`, `deploy`):
   --prefix-host-logs Always prefix host log lines
 
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
-  --ci-first  Prioritize CI host first when CI host is selected
+  --ci-first  Prioritize CI host first when the CI host is selected
 
 Workflow Behavior Options:
   --dry            Print commands without applying changes
@@ -107,7 +110,7 @@ Bootstrap/Forced-Command Options:
 
 Remote Trigger Options:
   --ci-trigger Run remotely on the CI host via SSH and exit
-  --ci-host   CI host hostname/IP (default: pvl-x2)
+  --ci-host   CI host hostname/IP (default: gap3-gondor)
   --ci-user   CI host user (default: nixbot)
   --ci-ssh-key Optional SSH private key content for CI trigger
   --ci-known-hosts Optional known_hosts content for CI trigger
@@ -195,7 +198,7 @@ Local tofu wrapper:
   GCP projects can also auto-load `GOOGLE_APPLICATION_CREDENTIALS`,
   `GCP_STATE_BUCKET`, and `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` from
   encrypted files under `data/secrets/gcp/`.
-  This mode is local-only and not supported via CI trigger.
+  This mode is local-only and not supported via ci trigger.
 USAGE
 }
 
@@ -280,7 +283,7 @@ init_vars() {
 	NIXBOT_CONFIG_PATH="${NIXBOT_CONFIG:-hosts/nixbot.nix}"
 	SHA="${NIXBOT_SHA:-}"
 	CI_TRIGGER=0
-	CI_TRIGGER_HOST="${NIXBOT_CI_HOST:-pvl-x2}"
+	CI_TRIGGER_HOST="${NIXBOT_CI_HOST:-gap3-gondor}"
 	CI_TRIGGER_USER="${NIXBOT_CI_USER:-nixbot}"
 	CI_TRIGGER_SSH_KEY="${NIXBOT_CI_SSH_KEY:-}"
 	CI_TRIGGER_KNOWN_HOSTS="${NIXBOT_CI_KNOWN_HOSTS:-}"
@@ -445,7 +448,7 @@ init_vars() {
 	REPO_WORKTREE_ROOT="${NIXBOT_REPO_WORKTREE_ROOT:-}"
 	REPO_ROOT_LOCK_DIR=""
 	REPO_ROOT_MANAGED=1
-	REPO_URL="${NIXBOT_REPO_URL:-ssh://git@github.com/prasannavl/nix.git}"
+	REPO_URL="${NIXBOT_REPO_URL:-ssh://git@github.com/gap3ai/nix.git}"
 	REPO_SSH_KEY_PATH="${REMOTE_NIXBOT_PRIMARY_KEY}"
 	RUNTIME_WORK_DIR="${NIXBOT_RUNTIME_WORK_DIR:-}"
 
@@ -736,7 +739,7 @@ tf_project_name_is_configured() {
 
 action_is_supported() {
 	case "${1:-}" in
-	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap) return 0 ;;
+	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | list-hosts) return 0 ;;
 	*)
 		if action_is_tf_project_only "${1:-}"; then
 			tf_project_name_is_configured "$(tf_action_project_name "${1:-}")"
@@ -828,6 +831,11 @@ decode_ssh_command_args() {
 parse_args() {
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
+		--list-hosts)
+			ACTION="list-hosts"
+			HOST_ACTION="list-hosts"
+			shift
+			;;
 		--sha | --sha=*)
 			take_optval "$@"
 			SHA="${OPTVAL}"
@@ -1706,7 +1714,7 @@ run_ci_trigger() {
 	echo "Action: ${ACTION}" >&2
 	echo "Hosts: ${trigger_hosts}" >&2
 	echo "SHA: ${trigger_sha}" >&2
-	# Intentionally forward only the CI-safe subset here. This restriction is
+	# Intentionally forward only the ci-safe subset here. This restriction is
 	# deliberate: the remote side is expected to use its repo-local defaults and
 	# checked-in config for deploy-shaping settings such as goal, build host, job
 	# counts, rollback policy, and similar local overrides. CI host-trigger runs
@@ -1761,7 +1769,7 @@ is_bootstrap_check_action() {
 }
 
 # Resolve the source repo root exactly once. Local clean repo runs reuse the
-# current checkout as the mirror; CI/explicit `--repo-path` runs use the
+# current checkout as the mirror; ci/explicit `--repo-path` runs use the
 # managed mirror path instead.
 resolve_repo_root() {
 	local current_repo_root=""
@@ -2623,16 +2631,18 @@ prepare_run_context() {
 	# Keep this as an in-process write: init_deploy_settings mutates global
 	# deploy defaults/host metadata that must survive after this helper returns.
 	# shellcheck disable=SC2034
-	prc_selected_json_out_ref="$(resolve_selected_hosts_json "${all_hosts_json}")"
+	if ! prc_selected_json_out_ref="$(resolve_selected_hosts_json "${all_hosts_json}")"; then
+		exit 1
+	fi
 }
 
-log_run_context() {
+emit_annotated_selected_hosts() {
 	local selected_json="$1" node="" mode="" wait_secs="" parent_host="" annotation=""
-	local -a log_hosts=() annotated_hosts=()
+	local -a selected_hosts=()
 
-	json_array_to_bash_array "${selected_json}" log_hosts
+	json_array_to_bash_array "${selected_json}" selected_hosts
 
-	for node in "${log_hosts[@]}"; do
+	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
 		annotation=""
 		mode="$(host_deploy_mode "${node}")"
@@ -2648,16 +2658,28 @@ log_run_context() {
 			annotation="${annotation:+${annotation}, }parent: ${parent_host}"
 		fi
 		if [ -n "${annotation}" ]; then
-			annotated_hosts+=("${node} (${annotation})")
+			printf '%s (%s)\n' "${node}" "${annotation}"
 		else
-			annotated_hosts+=("${node}")
+			printf '%s\n' "${node}"
 		fi
 	done
+}
+
+print_selected_hosts_block() {
+	local selected_json="$1"
+	local -a annotated_hosts=()
+
+	mapfile -t annotated_hosts < <(emit_annotated_selected_hosts "${selected_json}")
+	print_host_block "Hosts" "${annotated_hosts[@]}"
+}
+
+log_run_context() {
+	local selected_json="$1"
 
 	log_section "nixbot"
 	echo "Version: ${NIXBOT_VERSION}" >&2
 	echo "Action: ${ACTION}" >&2
-	print_host_block "Hosts" "${annotated_hosts[@]}"
+	print_selected_hosts_block "${selected_json}"
 	if is_deploy_style_action; then
 		echo "Goal: ${GOAL}" >&2
 		echo "Build host: ${BUILD_HOST}" >&2
@@ -5147,22 +5169,25 @@ run_streamed_host_command() {
 }
 
 run_build_job() {
-	local node="$1" out_file="$2" status_file="$3" log_file="${4:-}" built_out_path="" rc=""
+	local node="$1" out_file="$2" status_file="$3" log_file="${4:-}"
+	local built_out_path="" result_link="" rc=""
+
+	result_link="${out_file%.path}.result"
 
 	(
 		set +e
 		if [ -n "${log_file}" ]; then
-			built_out_path="$(resolve_build_out_path "${node}" \
+			built_out_path="$(resolve_build_out_path "${node}" "${result_link}" \
 				2> >(host_log_filter "${node}" | tee -a "${log_file}" >&2))"
 			rc="$?"
 			if [ "${rc}" = "0" ] && [ -n "${built_out_path}" ]; then
 				printf '%s\n' "${built_out_path}" | host_log_filter "${node}" | tee -a "${log_file}" >/dev/null
 			fi
 		elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-			built_out_path="$(resolve_build_out_path "${node}" 2> >(host_log_filter "${node}" >&2))"
+			built_out_path="$(resolve_build_out_path "${node}" "${result_link}" 2> >(host_log_filter "${node}" >&2))"
 			rc="$?"
 		else
-			built_out_path="$(resolve_build_out_path "${node}")"
+			built_out_path="$(resolve_build_out_path "${node}" "${result_link}")"
 			rc="$?"
 		fi
 		if [ "${rc}" = "0" ]; then
@@ -6949,11 +6974,17 @@ ensure_phase_runtime_dirs() {
 ##### Build Phase #####
 
 build_host() {
-	local node="$1" out_path=""
+	local node="$1" result_link="${2:-}" out_path=""
+	local -a build_cmd=()
 
 	log_host_stage "build" "${node}"
 	echo "Starting local build" >&2
-	if ! out_path="$(nix build "${NIXBOT_BUILD_NIX_ARGS[@]}" --print-out-paths ".#nixosConfigurations.${node}.config.system.build.toplevel")"; then
+	build_cmd=(nix build "${NIXBOT_BUILD_NIX_ARGS[@]}" --print-out-paths)
+	if [ -n "${result_link}" ]; then
+		build_cmd+=(-o "${result_link}")
+	fi
+	build_cmd+=(".#nixosConfigurations.${node}.config.system.build.toplevel")
+	if ! out_path="$("${build_cmd[@]}")"; then
 		echo "Build failed for ${node}" >&2
 		return 1
 	fi
@@ -6964,6 +6995,9 @@ build_host() {
 	}
 
 	echo "Built out path: ${out_path}" >&2
+	if [ -n "${result_link}" ]; then
+		echo "Result link: ${result_link}" >&2
+	fi
 	if ! nix path-info --closure-size --human-readable "${out_path}" >&2; then
 		echo "Unable to resolve closure size for ${node}: ${out_path}" >&2
 		return 1
@@ -6975,10 +7009,11 @@ build_host() {
 dev_build_host() {
 	local node="$1" out_path="" result_link=""
 
-	result_link="result-${node}"
+	result_link="result-dev/${node}"
 
 	log_host_stage "build" "${node}" "dev build"
 	echo "Starting dev build: ${result_link}" >&2
+	mkdir -p "$(dirname "${result_link}")"
 	if ! out_path="$(nix build "${NIXBOT_BUILD_NIX_ARGS[@]}" --print-out-paths -o "${result_link}" ".#nixosConfigurations.${node}.config.system.build.toplevel")"; then
 		echo "Dev build failed for ${node}" >&2
 		return 1
@@ -7019,14 +7054,14 @@ eval_host_out_path() {
 }
 
 resolve_build_out_path() {
-	local node="$1"
+	local node="$1" result_link="${2:-}"
 
 	if [ "${ACTION}" = "dev-build" ]; then
 		dev_build_host "${node}"
 	elif is_deploy_style_action && [ "${BUILD_HOST}" != "local" ]; then
 		eval_host_out_path "${node}"
 	else
-		build_host "${node}"
+		build_host "${node}" "${result_link}"
 	fi
 }
 
@@ -7825,11 +7860,8 @@ emit_tf_secret_paths_for_project() {
 
 	provider_name="$(tf_project_provider_from_name "${project_name}")"
 
-	[ -f "${TF_SECRETS_DIR}/${provider_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${provider_name}.tfvars.age"
-	[ -d "${TF_SECRETS_DIR}/${provider_name}" ] && find "${TF_SECRETS_DIR}/${provider_name}" -type f -name '*.tfvars.age' | sort
-
-	[ -f "${TF_SECRETS_DIR}/${project_name}.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${project_name}.tfvars.age"
-	[ -d "${TF_SECRETS_DIR}/${project_name}" ] && find "${TF_SECRETS_DIR}/${project_name}" -type f -name '*.tfvars.age' | sort
+	[ -f "${TF_SECRETS_DIR}/${provider_name}/secrets.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${provider_name}/secrets.tfvars.age"
+	[ -f "${TF_SECRETS_DIR}/${project_name}/secrets.tfvars.age" ] && printf '%s\n' "${TF_SECRETS_DIR}/${project_name}/secrets.tfvars.age"
 }
 
 load_tf_runtime_secrets_for_project() {
@@ -7859,10 +7891,8 @@ is_tf_candidate_path_for_project() {
 	"tf/${project_name}" | "tf/${project_name}/"*) return 0 ;;
 	"tf/modules/${provider_name}" | "tf/modules/${provider_name}/"*) return 0 ;;
 	"data/secrets/${provider_name}" | "data/secrets/${provider_name}/"*) return 0 ;;
-	"data/secrets/tf/${provider_name}.tfvars.age") return 0 ;;
-	"data/secrets/tf/${provider_name}" | "data/secrets/tf/${provider_name}/"*) return 0 ;;
-	"data/secrets/tf/${project_name}.tfvars.age") return 0 ;;
-	"data/secrets/tf/${project_name}" | "data/secrets/tf/${project_name}/"*) return 0 ;;
+	"data/secrets/tf/${provider_name}/secrets.tfvars.age") return 0 ;;
+	"data/secrets/tf/${project_name}/secrets.tfvars.age") return 0 ;;
 	"data/secrets/cloudflare/r2-account-id.key.age" | "data/secrets/cloudflare/r2-state-bucket.key.age" | "data/secrets/cloudflare/r2-access-key-id.key.age" | "data/secrets/cloudflare/r2-secret-access-key.key.age") return 0 ;;
 	esac
 
@@ -8373,7 +8403,7 @@ run_tofu_wrapper() {
 	local -a cmd=()
 
 	[ "${#tofu_args[@]}" -gt 0 ] || die "Usage: nixbot tofu <tofu-args...>"
-	[ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot tofu wrapper is local-only and cannot run via SSH forced-command/CI trigger."
+	[ -z "${SSH_ORIGINAL_COMMAND:-}" ] || die "The nixbot tofu wrapper is local-only and cannot run via SSH forced-command/ci trigger."
 
 	if {
 		read -r project_dir
@@ -9050,6 +9080,13 @@ run_version_action() {
 	printf '%s\n' "${NIXBOT_VERSION}"
 }
 
+run_list_hosts_action() {
+	local selected_json=""
+
+	prepare_run_context selected_json
+	print_selected_hosts_block "${selected_json}"
+}
+
 deps_action_help_requested() {
 	[ "$#" -gt 0 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }
 }
@@ -9161,6 +9198,10 @@ main() {
 	fi
 
 	case "${request_args[0]}" in
+	--list-hosts)
+		ACTION="list-hosts"
+		request_args=("${request_args[@]:1}")
+		;;
 	deps)
 		if deps_action_help_requested "${request_args[@]:1}"; then
 			usage
@@ -9209,6 +9250,12 @@ main() {
 
 	ensure_runtime_ready "$@"
 	parse_args "${request_args[@]}"
+	if [ "${ACTION}" = "list-hosts" ]; then
+		[ -z "${SHA}" ] || die "--list-hosts uses the current checkout; --sha is unsupported"
+		[ "${CI_TRIGGER}" -eq 0 ] || die "--list-hosts is local-only and cannot run through --ci-trigger"
+		run_list_hosts_action
+		return
+	fi
 	if [ "${CI_TRIGGER}" -eq 1 ]; then
 		[ "${ACTION}" != "dev-build" ] || die "dev-build is local-only and cannot run through --ci-trigger"
 		run_ci_trigger
