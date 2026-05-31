@@ -10,6 +10,7 @@ locals {
 
   email_routing_rules = {
     for rule in local.email_routing_rule_flat : rule.tf_key => rule
+    if try(rule.enabled, true)
   }
 
   email_routing_catch_alls = {
