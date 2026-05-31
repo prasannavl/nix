@@ -14,6 +14,12 @@
   patchHash = builtins.substring 0 12 (builtins.hashString "sha256" ''
     ${builtins.readFile ./bind-auth-dn-template.patch}
     ${builtins.readFile ./imap-starttls-auth.patch}
+    ${builtins.readFile ./calendar-mailto-normalization.patch}
+    ${builtins.readFile ./calendar-floating-timezone-summary.patch}
+    ${builtins.readFile ./calendar-organizer-recipient-filter.patch}
+    ${builtins.readFile ./calendar-organizer-self-attendee.patch}
+    ${builtins.readFile ./dmarc-without-mail-from-spf.patch}
+    ${builtins.readFile ./calendar-reply-sender-detection.patch}
   '');
   imageName = "localhost/abird/stalwart";
   imageTag = "${version}-bind-template-${patchHash}";
@@ -33,6 +39,12 @@
     patches = [
       ./bind-auth-dn-template.patch
       ./imap-starttls-auth.patch
+      ./calendar-mailto-normalization.patch
+      ./calendar-floating-timezone-summary.patch
+      ./calendar-organizer-recipient-filter.patch
+      ./calendar-organizer-self-attendee.patch
+      ./dmarc-without-mail-from-spf.patch
+      ./calendar-reply-sender-detection.patch
     ];
     buildAndTestSubdir = "crates/main";
     nativeBuildInputs = [

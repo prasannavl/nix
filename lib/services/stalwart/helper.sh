@@ -1035,17 +1035,18 @@ prune_obsolete_users() {
 }
 
 reconcile_user_roles() {
-	local account account_id current_role domain_id name patch query_output role
+	local account account_id current_description current_role desired desired_description domain_id name patch query_output role user
 
 	[ -n "$stalwart_user_roles_host_path" ] || return 0
 	[ -s "$stalwart_user_roles_host_path" ] || return 0
 
 	prune_obsolete_users
 
-	while IFS= read -r -u 3 account; do
-		name="$(jq -r '.name' <<<"$account")"
-		domain_id="$(jq -r '.domainId' <<<"$account")"
-		role="$(jq -r '.role' <<<"$account")"
+	while IFS= read -r -u 3 user; do
+		name="$(jq -r '.name' <<<"$user")"
+		domain_id="$(jq -r '.domainId' <<<"$user")"
+		role="$(jq -r '.role' <<<"$user")"
+		desired_description="$(jq -r '.description // empty' <<<"$user")"
 
 		require_value "user role name" "$name"
 		require_value "user role domainId" "$domain_id"
@@ -1058,12 +1059,20 @@ reconcile_user_roles() {
 			;;
 		esac
 
+		desired="$(jq -c '{
+			"@type": "User",
+			name,
+			domainId,
+			roles: {"@type": .role},
+			description: (.description // null)
+		}' <<<"$user")"
+
 		query_output="$(
 			stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
 				query Account \
 				--where "name=$name" \
 				--where "domainId=$domain_id" \
-				--fields id,name,domainId,roles \
+				--fields id,name,domainId,roles,description \
 				--json
 		)"
 		account="$(
@@ -1075,23 +1084,28 @@ reconcile_user_roles() {
 		)"
 
 		if [ -z "$account" ]; then
-			printf 'Stalwart role: skipping missing account %s in domain %s\n' "$name" "$domain_id"
+			stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
+				create Account/User \
+				--json "$desired" \
+				--no-color
+			printf 'Stalwart user: created %s in domain %s\n' "$name" "$domain_id"
 			continue
 		fi
 
 		account_id="$(jq -r '.id' <<<"$account")"
 		current_role="$(jq -r '.roles."@type" // ""' <<<"$account")"
-		if [ "$current_role" = "$role" ]; then
-			printf 'Stalwart role: %s already %s\n' "$name" "$role"
+		current_description="$(jq -r '.description // empty' <<<"$account")"
+		if [ "$current_role" = "$role" ] && [ "$current_description" = "$desired_description" ]; then
+			printf 'Stalwart user: %s already current\n' "$name"
 			continue
 		fi
 
-		patch="$(jq -n -c --arg role "$role" '{roles: {"@type": $role}}')"
+		patch="$(jq -c 'del(."@type", .name, .domainId)' <<<"$desired")"
 		stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
 			update Account "$account_id" \
 			--json "$patch" \
 			--no-color
-		printf 'Stalwart role: set %s to %s\n' "$name" "$role"
+		printf 'Stalwart user: updated %s in domain %s\n' "$name" "$domain_id"
 	done 3< <(jq -c '.[]' "$stalwart_user_roles_host_path")
 
 	remember_declared_users

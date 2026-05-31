@@ -1,0 +1,162 @@
+--- a/crates/groupware/src/scheduling/inbound.rs
++++ b/crates/groupware/src/scheduling/inbound.rs
+@@ -48,6 +48,41 @@
+     None,
+ }
+
++pub fn itip_reply_sender(
++    snapshots: &ItipSnapshots<'_>,
++    itip_snapshots: &ItipSnapshots<'_>,
++) -> Option<String> {
++    let mut sender = None;
++
++    for (instance_id, itip_snapshot) in &itip_snapshots.components {
++        let snapshot = snapshots.components.get(instance_id)?;
++
++        for updated_attendee in &itip_snapshot.attendees {
++            let Some(attendee) = snapshot.attendee_by_email(&updated_attendee.email.email) else {
++                continue;
++            };
++
++            let changed = attendee.part_stat != updated_attendee.part_stat
++                || attendee.rsvp != updated_attendee.rsvp
++                || attendee.delegated_to != updated_attendee.delegated_to
++                || !itip_snapshot.request_status.is_empty();
++
++            if changed {
++                if sender
++                    .as_ref()
++                    .is_some_and(|sender| sender != &updated_attendee.email.email)
++                {
++                    return None;
++                }
++
++                sender = Some(updated_attendee.email.email.clone());
++            }
++        }
++    }
++
++    sender
++}
++
+ pub fn itip_process_message(
+     ical: &ICalendar,
+     snapshots: ItipSnapshots<'_>,
+--- a/crates/groupware/src/calendar/itip.rs
++++ b/crates/groupware/src/calendar/itip.rs
+@@ -14,7 +14,8 @@
+     scheduling::{
+         ItipError, ItipMessage,
+         inbound::{
+-            MergeResult, itip_import_message, itip_merge_changes, itip_method, itip_process_message,
++            MergeResult, itip_import_message, itip_merge_changes, itip_method,
++            itip_process_message, itip_reply_sender,
+         },
+         snapshot::itip_snapshot,
+     },
+@@ -133,19 +134,14 @@
+         }
+
+         let itip_snapshots = itip_snapshot(&itip, account_info.addresses(), false)?;
+-        if !itip_snapshots.sender_is_organizer_or_attendee(sender) {
++        let method = itip_method(&itip)?;
++        let sender_matches_itip = itip_snapshots.sender_is_organizer_or_attendee(sender);
++        if !sender_matches_itip && !matches!(method, ICalendarMethod::Reply) {
+             return Err(ItipIngestError::Message(
+                 ItipError::SenderIsNotOrganizerNorAttendee,
+             ));
+         }
+
+-        // Obtain changedBy
+-        let changed_by = if let Some(id) = self.account_id_from_email(sender, true).await? {
+-            ChangedBy::PrincipalId(id)
+-        } else {
+-            ChangedBy::CalendarAddress(sender.into())
+-        };
+-
+         // Find event by UID
+         let account_id = account_info.account_id();
+         let document_id = self
+@@ -180,13 +176,32 @@
+
+                 // Process the iTIP message
+                 let snapshots = itip_snapshot(&event.data.event, account_info.addresses(), false)?;
++                let sender = if matches!(method, ICalendarMethod::Reply) {
++                    if let Some(reply_sender) = itip_reply_sender(&snapshots, &itip_snapshots) {
++                        reply_sender
++                    } else if sender_matches_itip {
++                        sender.to_string()
++                    } else {
++                        return Err(ItipIngestError::Message(
++                            ItipError::SenderIsNotOrganizerNorAttendee,
++                        ));
++                    }
++                } else {
++                    sender.to_string()
++                };
++                let changed_by = if let Some(id) = self.account_id_from_email(&sender, true).await?
++                {
++                    ChangedBy::PrincipalId(id)
++                } else {
++                    ChangedBy::CalendarAddress(sender.clone())
++                };
+                 let is_organizer_update = !itip_snapshots.organizer.email.is_local;
+                 match itip_process_message(
+                     &event.data.event,
+                     snapshots,
+                     &itip,
+                     itip_snapshots,
+-                    sender.to_string(),
++                    sender,
+                 )? {
+                     MergeResult::Actions(changes) => {
+                         // Merge changes
+@@ -289,6 +298,16 @@
+             }
+         } else {
+             // Verify that auto-adding invitations is allowed
++            if method != &ICalendarMethod::Request {
++                return Err(ItipIngestError::Message(ItipError::EventNotFound));
++            }
++
++            let changed_by = if let Some(id) = self.account_id_from_email(sender, true).await? {
++                ChangedBy::PrincipalId(id)
++            } else {
++                ChangedBy::CalendarAddress(sender.into())
++            };
++
+             if !self.core.groupware.itip_auto_add
+                 && !matches!(changed_by, ChangedBy::PrincipalId(_))
+                 && !self
+@@ -302,8 +321,6 @@
+                     .caused_by(trc::location!())?
+             {
+                 return Err(ItipIngestError::Message(ItipError::AutoAddDisabled));
+-            } else if itip_method(&itip)? != &ICalendarMethod::Request {
+-                return Err(ItipIngestError::Message(ItipError::EventNotFound));
+             }
+
+             // Import the iTIP message
+--- a/crates/email/src/message/ingest.rs
++++ b/crates/email/src/message/ingest.rs
+@@ -374,13 +374,18 @@
+                         .caused_by(trc::location!())?;
+                     let mut sender = None;
+                     for part in &message.parts {
+-                        if part.content_type().is_some_and(|ct| {
++                        if let Some(ct) = part.content_type().filter(|ct| {
+                             ct.ctype().eq_ignore_ascii_case("text")
+                                 && ct
+                                     .subtype()
+                                     .is_some_and(|st| st.eq_ignore_ascii_case("calendar"))
+-                                && ct.has_attribute("method")
+                         }) && let Some(itip_message) = part.text_contents()
++                            && (ct.has_attribute("method")
++                                || itip_message.lines().any(|line| {
++                                    line.get(..7).is_some_and(|prefix| {
++                                        prefix.eq_ignore_ascii_case("METHOD:")
++                                    })
++                                }))
+                         {
+                             if itip_message.len() < self.core.groupware.itip_inbound_max_ical_size {
+                                 if let Some(sender) = sender.get_or_insert_with(|| {

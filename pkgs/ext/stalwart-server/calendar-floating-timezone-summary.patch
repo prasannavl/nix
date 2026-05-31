@@ -1,0 +1,30 @@
+diff --git a/crates/groupware/src/scheduling/snapshot.rs b/crates/groupware/src/scheduling/snapshot.rs
+index 036c6f06..5b087f74 100644
+--- a/crates/groupware/src/scheduling/snapshot.rs
++++ b/crates/groupware/src/scheduling/snapshot.rs
+@@ -8,6 +8,7 @@ use crate::scheduling::{
+ };
+ use ahash::AHashMap;
++use calcard::common::timezone::Tz;
+ use calcard::icalendar::{
+     ICalendar, ICalendarParameterName, ICalendarParameterValue, ICalendarProperty,
+     ICalendarScheduleAgentValue, ICalendarValue, Uri,
+ };
+@@ -313,11 +313,16 @@ pub fn itip_snapshot<'x, 'y>(
+                                     let tz = tz_resolver
+                                         .get_or_insert_with(|| ical.build_tz_resolver())
+                                         .resolve_or_default(tz_id);
++                                    let tz_code = if tz.is_floating() {
++                                        Tz::UTC.as_id()
++                                    } else {
++                                        tz.as_id()
++                                    };
+                                     ItipEntryValue::DateTime(ItipDateTime {
+                                         date: date.as_ref(),
+                                         tz_id,
+-                                        tz_code: tz.as_id(),
++                                        tz_code,
+                                         timestamp: date
+                                             .to_date_time_with_tz(tz)
+                                             .map(|dt| dt.timestamp())
+                                             .unwrap_or_else(|| {

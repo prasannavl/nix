@@ -1,0 +1,34 @@
+diff --git a/crates/smtp/src/inbound/data.rs b/crates/smtp/src/inbound/data.rs
+index 20d6e74..e83062f 100644
+--- a/crates/smtp/src/inbound/data.rs
++++ b/crates/smtp/src/inbound/data.rs
+@@ -24,7 +24,8 @@ use common::{
+ };
+ use mail_auth::{
+     AuthenticatedMessage, AuthenticationResults, DkimResult, DmarcResult, ReceivedSpf,
+-    common::{crypto::Algorithm, headers::HeaderWriter, verify::VerifySignature},
++    SpfOutput,
++    common::{crypto::Algorithm, headers::HeaderWriter, verify::VerifySignature},
+     dmarc::{self, verify::DmarcParameters},
+ };
+ use mail_builder::headers::{date::Date, message_id::generate_message_id_header};
+@@ -251,8 +251,10 @@ impl<T: SessionStream> Session<T> {
+         // Verify DMARC
+         let is_report = !self.is_authenticated() && self.is_report();
+-        let (dmarc_result, dmarc_policy) = match &self.data.spf_mail_from {
+-            Some(spf_output) if dmarc.verify() => {
++        let spf_output_default = SpfOutput::new(mail_from.domain.clone());
++        let spf_output = self.data.spf_mail_from.as_ref().unwrap_or(&spf_output_default);
++        let (dmarc_result, dmarc_policy) = match dmarc.verify() {
++            true => {
+                 let time = Instant::now();
+                 let dmarc_output =
+                     self.server
+                         .core
+@@ -335,6 +337,6 @@ impl<T: SessionStream> Session<T> {
+                 (dmarc_result.into(), dmarc_policy.into())
+             }
+-            _ => (None, None),
++            false => (None, None),
+         };
+         // Analyze reports

@@ -1,0 +1,20 @@
+diff --git a/crates/groupware/src/scheduling/mod.rs b/crates/groupware/src/scheduling/mod.rs
+index 5751efe..e83f329 100644
+--- a/crates/groupware/src/scheduling/mod.rs
++++ b/crates/groupware/src/scheduling/mod.rs
+@@ -238,7 +238,14 @@ impl Attendee<'_> {
+ impl Email {
+     pub fn new(email: &str, local_addresses: &[String]) -> Option<Self> {
+         email.contains('@').then(|| {
+-            let email = email.trim().trim_start_matches("mailto:").to_lowercase();
++            let email = email.trim();
++            let email = email
++                .get(..7)
++                .filter(|prefix| prefix.eq_ignore_ascii_case("mailto:"))
++                .map(|_| &email[7..])
++                .unwrap_or(email)
++                .trim()
++                .to_lowercase();
+             let is_local = local_addresses.contains(&email);
+             Email { email, is_local }
+         })

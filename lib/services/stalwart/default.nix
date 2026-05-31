@@ -62,6 +62,7 @@ in {
           else details.username;
       in {
         inherit domainId name;
+        description = details.name or details.username;
         role =
           if groupSets.hasAnyGroup roleGroups.admin details
           then "Admin"
