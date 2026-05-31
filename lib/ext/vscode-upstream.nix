@@ -3,7 +3,7 @@
   commandLineArgs ? "",
   ...
 }: let
-  version = "1.121.0";
+  version = "1.122.1";
   inherit (pkgs.stdenv.hostPlatform) system;
   throwSystem = throw "Unsupported system for vscode-upstream: ${system}";
   plat =
@@ -19,22 +19,22 @@
     } or throwSystem;
   srcName =
     {
-      x86_64-linux = "code-stable-x64-1779186414.tar.gz";
+      x86_64-linux = "code-stable-x64-1780040715.tar.gz";
       x86_64-darwin = "VSCode-darwin.zip";
-      aarch64-linux = "code-stable-arm64-1779186419.tar.gz";
+      aarch64-linux = "code-stable-arm64-1780040736.tar.gz";
       aarch64-darwin = "VSCode-darwin-arm64.zip";
-      armv7l-linux = "code-stable-armhf-1779186409.tar.gz";
+      armv7l-linux = "code-stable-armhf-1780040724.tar.gz";
     }
     .${
       system
     } or throwSystem;
   srcHash =
     {
-      x86_64-linux = "sha256-jPJMxBRBRT4R6P4a6eWNMpcOI9ztOZg1xLCQQmPWaCA=";
-      x86_64-darwin = "sha256-2ReidWJXYyunW9g0n5kc1nh13rHBrq3iAA0bG2VpRxM=";
-      aarch64-linux = "sha256-xLwtsFF1mkpyKbaLcSa6Onl/h9PqkiNzowcFkQLGG4U=";
-      aarch64-darwin = "sha256-3XKpLgJDH8CDf7BzIdFG8ApxxeYqh+ZiPzTL/oYMgrc=";
-      armv7l-linux = "sha256-B9y0cTrHpPxPqUboim0Js5RJ2TMnpNTmOXPOw8fM1kc=";
+      x86_64-linux = "sha256-t26YN3E5XaSJ7gki8nm06hVh4ZvXDEU77M749ZrqfAo=";
+      x86_64-darwin = "sha256-jOnwhiDJmU+EqU30wg1+frqDDxJgfngETx414i2YTIg=";
+      aarch64-linux = "sha256-8sYanI12qDMPgVG7S0QKLEkU0i/SICkJ5wz/OwhP+i4=";
+      aarch64-darwin = "sha256-oXeZZWAvpUn5KItEOR8yX9iQ0Fp6EzXGux0jvYbZqtU=";
+      armv7l-linux = "sha256-16cUu1C389edf0aHxXxTLJwjxmpHxM8mv1YFnPDLgP4=";
     }
     .${
       system
@@ -54,13 +54,24 @@
     armv7l-linux = "vscode-server-linux-armhf.tar.gz";
   };
   serverHash = {
-    x86_64-linux = "sha256-TdffAWOhL1Sl7YpaLsPIbnv/qoYToFvfv7R8kgR4XyI=";
-    x86_64-darwin = "sha256-TsyqBnRPwHoCucNis+TsbYaIz1ftKaECGuf/+1WVUX4=";
-    aarch64-linux = "sha256-7y7So67rKURR7FJG5bV1ytA00zSHQXMLSfqfVDsZH4Q=";
-    aarch64-darwin = "sha256-CteizYNgKgxEGxsQiyjJSIgy8v0J/X8om19MKJ6fmlM=";
-    armv7l-linux = "sha256-UxtfSPXUc5oGd1FXnbEVfz6QqeEKWV2cPzOfiV1WUMM=";
+    x86_64-linux = "sha256-7n8KvIYEDYO8qqJjfbuUsgUwCxq9FJ6i/EuDBd1HQDk=";
+    x86_64-darwin = "sha256-iBGuHM5ElkSArM7CPb/A0hasUGCNjT+7dt5o4MByvCI=";
+    aarch64-linux = "sha256-Gp2kldowXk7OE1yO+gT0o+QgiZkucbOb0BjIF77j4sM=";
+    aarch64-darwin = "sha256-ztQnTMssQ86sed0G7tlHmNi/0Sx66MhVts9meIElCo0=";
+    armv7l-linux = "sha256-HUfGNnoTGa7yJih1uy7RTnC7Sjqstq/lLY1GrQ4fQXo=";
   };
-  rev = "f6cfa2ea2403534de03f069bdf160d06451ed282";
+  rev = "8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e";
+  ripgrepPath =
+    {
+      x86_64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-x64/rg";
+      x86_64-darwin = "Contents/Resources/app/node_modules/@vscode/ripgrep-universal/bin/darwin-x64/rg";
+      aarch64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-arm64/rg";
+      aarch64-darwin = "Contents/Resources/app/node_modules/@vscode/ripgrep-universal/bin/darwin-arm64/rg";
+      armv7l-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-arm/rg";
+    }
+    .${
+      system
+    } or throwSystem;
 in
   (pkgs.unstable.vscode.override {
     inherit commandLineArgs;
@@ -92,5 +103,13 @@ in
       url = "https://update.code.visualstudio.com/commit:${rev}/${plat}/stable";
       hash = srcHash;
     };
+    autoPatchelfIgnoreMissingDeps =
+      (old.autoPatchelfIgnoreMissingDeps or [])
+      ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+        "libc.musl-x86_64.so.1"
+        "libc.musl-aarch64.so.1"
+        "libc.musl-armv7.so.1"
+      ];
+    postPatch = builtins.replaceStrings ["resources/app/node_modules/@vscode/ripgrep/bin/rg"] [ripgrepPath] (old.postPatch or "");
     vscodeServer = vscodeServers.x86_64-linux;
   })

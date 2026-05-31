@@ -211,6 +211,17 @@ render_file() {
     armv7l-linux = "${ARMHF_SERVER_HASH}";
   };
   rev = "${RESOLVED_REV}";
+  ripgrepPath =
+    {
+      x86_64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-x64/rg";
+      x86_64-darwin = "Contents/Resources/app/node_modules/@vscode/ripgrep-universal/bin/darwin-x64/rg";
+      aarch64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-arm64/rg";
+      aarch64-darwin = "Contents/Resources/app/node_modules/@vscode/ripgrep-universal/bin/darwin-arm64/rg";
+      armv7l-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-arm/rg";
+    }
+    .\${
+      system
+    } or throwSystem;
 in
   (pkgs.unstable.vscode.override {
     inherit commandLineArgs;
@@ -242,6 +253,14 @@ in
       url = "https://update.code.visualstudio.com/commit:\${rev}/\${plat}/stable";
       hash = srcHash;
     };
+    autoPatchelfIgnoreMissingDeps =
+      (old.autoPatchelfIgnoreMissingDeps or [])
+      ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+        "libc.musl-x86_64.so.1"
+        "libc.musl-aarch64.so.1"
+        "libc.musl-armv7.so.1"
+      ];
+    postPatch = builtins.replaceStrings ["resources/app/node_modules/@vscode/ripgrep/bin/rg"] [ripgrepPath] (old.postPatch or "");
     vscodeServer = vscodeServers.x86_64-linux;
   })
 EOF
