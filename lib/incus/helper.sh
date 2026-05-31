@@ -181,6 +181,42 @@ instance_ref() {
 	fi
 }
 
+incus_instance_type_for_kind() {
+	local kind
+	kind="$1"
+
+	case "$kind" in
+	lxc)
+		printf 'container\n'
+		;;
+	vm)
+		printf 'virtual-machine\n'
+		;;
+	*)
+		echo "Unknown Incus instance kind: $kind" >&2
+		exit 1
+		;;
+	esac
+}
+
+image_kind_args() {
+	local kind
+	kind="$1"
+
+	case "$kind" in
+	lxc)
+		return 0
+		;;
+	vm)
+		printf '%s\n' "--vm"
+		;;
+	*)
+		echo "Unknown Incus image kind: $kind" >&2
+		exit 1
+		;;
+	esac
+}
+
 query_ref() {
 	local path
 	path="$1"
@@ -2192,8 +2228,8 @@ machine_main() {
 	local current_ipv4 current_managed_by current_project desired_props current_props dev dev_exists dev_source dev_pool desired_gc_config_json key props query_name image_tag
 	local source_key current_controller
 	local instance_image image_alias create_only_devices user_meta_json config_json desired_ipv4 desired_removal_policy desired_adopt
-	local recovery_attempted start_output
-	local -a create_only_device_names current_disk_names desired_disk_names current_prop_keys current_gc_device_names desired_gc_device_names
+	local desired_kind desired_incus_type current_incus_type recovery_attempted start_output
+	local -a create_args create_only_device_names current_disk_names desired_disk_names current_prop_keys current_gc_device_names desired_gc_device_names
 
 	state_file="${INCUS_MACHINES_INSTANCE_STATE_FILE?missing INCUS_MACHINES_INSTANCE_STATE_FILE}"
 	state_json="$(cat "$state_file")"
@@ -2203,6 +2239,8 @@ machine_main() {
 	image_tag="$(printf '%s' "$state_json" | jq -r '.imageTag')"
 	instance_image="$(printf '%s' "$state_json" | jq -c '.instanceImage')"
 	image_alias="$(printf '%s' "$state_json" | jq -r '.imageAlias')"
+	desired_kind="$(printf '%s' "$state_json" | jq -r '.kind // "lxc"')"
+	desired_incus_type="$(incus_instance_type_for_kind "$desired_kind")"
 	desired_config_hash="$(printf '%s' "$state_json" | jq -r '.configHash')"
 	desired_boot_tag="$(printf '%s' "$state_json" | jq -r '.bootTag')"
 	desired_recreate_tag="$(printf '%s' "$state_json" | jq -r '.recreateTag')"
@@ -2226,6 +2264,19 @@ machine_main() {
 		if ! incus_project info "$(instance_ref "$instance_name")" >/dev/null 2>&1; then
 			needs_create=1
 		else
+			current_incus_type="$(
+				incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null |
+					jq -r '.metadata.type // empty' 2>/dev/null ||
+					true
+			)"
+			if [ -n "$current_incus_type" ] && [ "$current_incus_type" != "$desired_incus_type" ]; then
+				if [ "$desired_adopt" = "true" ]; then
+					echo "Refusing to adopt Incus instance $current_project/$name with type $current_incus_type; declared kind is $desired_kind" >&2
+					exit 1
+				fi
+				needs_recreate=1
+			fi
+
 			current_managed_by="$(incus_project config get "$(instance_ref "$instance_name")" user.managed-by 2>/dev/null || true)"
 			if [ "$current_managed_by" != "nixos" ]; then
 				if [ "$desired_adopt" = "true" ]; then
@@ -2247,7 +2298,9 @@ machine_main() {
 			current_boot_tag="$(incus_project config get "$(instance_ref "$instance_name")" user.boot-tag 2>/dev/null || true)"
 
 			if [ "$adopting_existing" -eq 0 ]; then
-				if [ "$current_recreate_tag" != "$desired_recreate_tag" ] ||
+				if [ "$needs_recreate" -eq 1 ]; then
+					:
+				elif [ "$current_recreate_tag" != "$desired_recreate_tag" ] ||
 					{ [ -n "$current_config_hash" ] && [ "$current_config_hash" != "$desired_config_hash" ]; }; then
 					needs_recreate=1
 				elif [ -n "$current_boot_tag" ] && [ "$current_boot_tag" != "$desired_boot_tag" ]; then
@@ -2267,8 +2320,12 @@ machine_main() {
 			if [ "$instance_image" != "null" ]; then
 				ensure_declared_image_present "$instance_image" "$image_tag"
 			fi
-			echo "Creating $name from image $(target_image_ref "$image_alias")..."
-			incus_project create "$(target_image_ref "$image_alias")" "$(instance_ref "$name")"
+			echo "Creating $name as $desired_kind from image $(target_image_ref "$image_alias")..."
+			create_args=("$(target_image_ref "$image_alias")" "$(instance_ref "$name")")
+			if [ "$desired_kind" = "vm" ]; then
+				create_args+=(--vm)
+			fi
+			incus_project create "${create_args[@]}"
 
 			if [ "$config_json" != "null" ]; then
 				apply_instance_config_json "$instance_name" "$config_json"
@@ -2537,39 +2594,50 @@ local_image_properties_json() {
 }
 
 remote_image_fingerprint() {
-	local remote_ref
+	local remote_ref instance_kind
+	local -a kind_args=()
 	remote_ref="$1"
+	instance_kind="$2"
+	mapfile -t kind_args < <(image_kind_args "$instance_kind")
 
-	incus image info "$remote_ref" 2>/dev/null |
+	incus image info "$remote_ref" "${kind_args[@]}" 2>/dev/null |
 		awk -F': *' '$1 == "Fingerprint" { print $2; exit }' ||
 		true
 }
 
 image_fingerprint_exists() {
-	local fingerprint
+	local fingerprint instance_kind
+	local -a kind_args=()
 	fingerprint="$1"
+	instance_kind="$2"
+	mapfile -t kind_args < <(image_kind_args "$instance_kind")
 
 	[ -n "$fingerprint" ] &&
-		incus_project image info "$(target_remote_ref)$fingerprint" >/dev/null 2>&1
+		incus_project image info "$(target_remote_ref)$fingerprint" "${kind_args[@]}" >/dev/null 2>&1
 }
 
 image_fingerprint_for_ref() {
-	local image_ref
+	local image_ref instance_kind
+	local -a kind_args=()
 	image_ref="$1"
+	instance_kind="$2"
+	mapfile -t kind_args < <(image_kind_args "$instance_kind")
 
-	incus_project image info "$image_ref" 2>/dev/null |
+	incus_project image info "$image_ref" "${kind_args[@]}" 2>/dev/null |
 		awk -F': *' '$1 == "Fingerprint" { print $2; exit }' ||
 		true
 }
 
 image_fingerprint_matches_properties() {
-	local fingerprint properties_json
+	local fingerprint properties_json instance_kind incus_image_type
 	fingerprint="$1"
 	properties_json="$2"
+	instance_kind="$3"
+	incus_image_type="$(incus_instance_type_for_kind "$instance_kind")"
 
 	incus_project image list "$(target_remote_ref)" --format=json 2>/dev/null |
-		jq -e --arg fingerprint "$fingerprint" --argjson desired "$properties_json" '
-			any(.[]; .fingerprint == $fingerprint and (
+		jq -e --arg fingerprint "$fingerprint" --arg image_type "$incus_image_type" --argjson desired "$properties_json" '
+			any(.[]; .fingerprint == $fingerprint and (.type // "") == $image_type and (
 				. as $image
 				| all($desired | keys[]; ($image.properties[.] // "") == ($desired[.] | tostring))
 			))
@@ -2577,13 +2645,16 @@ image_fingerprint_matches_properties() {
 }
 
 image_fingerprint_by_properties() {
-	local properties_json
+	local properties_json instance_kind incus_image_type
 	properties_json="$1"
+	instance_kind="$2"
+	incus_image_type="$(incus_instance_type_for_kind "$instance_kind")"
 
 	incus_project image list "$(target_remote_ref)" --format=json 2>/dev/null |
-		jq -r --argjson desired "$properties_json" '
+		jq -r --arg image_type "$incus_image_type" --argjson desired "$properties_json" '
 			map(
 				. as $image
+				| select((.type // "") == $image_type)
 				| select(all($desired | keys[]; ($image.properties[.] // "") == ($desired[.] | tostring)))
 			)
 			| first
@@ -2621,17 +2692,19 @@ ensure_declared_image_present() {
 
 ensure_declared_image_present_unlocked() {
 	local image desired_rebuild_tag alias image_kind image_identity current_source current_rebuild_tag
-	local current_fingerprint desired_fingerprint import_output metadata_file rootfs_file remote_ref existing_fingerprint properties_json
+	local instance_kind current_fingerprint desired_fingerprint import_output metadata_file artifact_file remote_ref existing_fingerprint properties_json
+	local -a copy_args=() kind_args=()
 
 	image="$1"
 	desired_rebuild_tag="$2"
 	alias="$(printf '%s' "$image" | jq -r '.alias')"
 	image_kind="$(printf '%s' "$image" | jq -r '.kind')"
+	instance_kind="$(printf '%s' "$image" | jq -r '.instanceKind // "lxc"')"
 	image_identity="$(printf '%s' "$image" | jq -r '.imageIdentity')"
 
 	current_source="$(incus_project image get-property "$(target_image_ref "$alias")" user.base-image-id 2>/dev/null || true)"
 	current_rebuild_tag="$(incus_project image get-property "$(target_image_ref "$alias")" user.base-image-rebuild-tag 2>/dev/null || true)"
-	current_fingerprint="$(image_fingerprint_for_ref "$(target_image_ref "$alias")")"
+	current_fingerprint="$(image_fingerprint_for_ref "$(target_image_ref "$alias")" "$instance_kind")"
 
 	if [ "$current_source" = "$image_identity" ] &&
 		[ "$current_rebuild_tag" = "$desired_rebuild_tag" ] &&
@@ -2642,12 +2715,12 @@ ensure_declared_image_present_unlocked() {
 	case "$image_kind" in
 	local)
 		metadata_file="$(printf '%s' "$image" | jq -r '.metadataFile')"
-		rootfs_file="$(printf '%s' "$image" | jq -r '.rootfsFile')"
+		artifact_file="$(printf '%s' "$image" | jq -r '.rootfsFile // .diskFile')"
 
-		if [ ! -f "$metadata_file" ] || [ ! -f "$rootfs_file" ]; then
-			echo "Missing base image tarballs for $alias:" >&2
+		if [ ! -f "$metadata_file" ] || [ ! -f "$artifact_file" ]; then
+			echo "Missing base image artifacts for $alias:" >&2
 			echo "  $metadata_file" >&2
-			echo "  $rootfs_file" >&2
+			echo "  $artifact_file" >&2
 			exit 1
 		fi
 
@@ -2663,13 +2736,13 @@ ensure_declared_image_present_unlocked() {
 		)"
 
 		if [ -n "$current_fingerprint" ] &&
-			image_fingerprint_matches_properties "$current_fingerprint" "$properties_json"; then
+			image_fingerprint_matches_properties "$current_fingerprint" "$properties_json" "$instance_kind"; then
 			:
 		elif [ -n "$existing_fingerprint" ]; then
 			ensure_image_alias "$alias" "$existing_fingerprint"
 		else
-			if ! import_output="$(incus_project image import "$metadata_file" "$rootfs_file" "$(target_remote_ref)" --alias "$alias" 2>&1)"; then
-				desired_fingerprint="$(image_fingerprint_by_properties "$properties_json")"
+			if ! import_output="$(incus_project image import "$metadata_file" "$artifact_file" "$(target_remote_ref)" --alias "$alias" 2>&1)"; then
+				desired_fingerprint="$(image_fingerprint_by_properties "$properties_json" "$instance_kind")"
 				if printf '%s' "$import_output" | grep -qi 'same fingerprint already exists' &&
 					[ -n "$desired_fingerprint" ] &&
 					ensure_image_alias "$alias" "$desired_fingerprint" >/dev/null 2>&1; then
@@ -2683,13 +2756,18 @@ ensure_declared_image_present_unlocked() {
 		;;
 	remote)
 		remote_ref="$(printf '%s' "$image" | jq -r '.remoteRef')"
-		desired_fingerprint="$(remote_image_fingerprint "$remote_ref")"
+		desired_fingerprint="$(remote_image_fingerprint "$remote_ref" "$instance_kind")"
 		if [ -n "$desired_fingerprint" ] && [ "$current_fingerprint" = "$desired_fingerprint" ]; then
 			:
-		elif image_fingerprint_exists "$desired_fingerprint"; then
+		elif image_fingerprint_exists "$desired_fingerprint" "$instance_kind"; then
 			ensure_image_alias "$alias" "$desired_fingerprint"
-		elif ! import_output="$(incus_project image copy "$remote_ref" "$(target_remote_ref)" --alias "$alias" 2>&1)"; then
-			if printf '%s' "$import_output" | grep -qi 'same fingerprint already exists' &&
+		else
+			copy_args=("$remote_ref" "$(target_remote_ref)" --alias "$alias")
+			mapfile -t kind_args < <(image_kind_args "$instance_kind")
+			copy_args+=("${kind_args[@]}")
+			if import_output="$(incus_project image copy "${copy_args[@]}" 2>&1)"; then
+				:
+			elif printf '%s' "$import_output" | grep -qi 'same fingerprint already exists' &&
 				[ -n "$desired_fingerprint" ] &&
 				ensure_image_alias "$alias" "$desired_fingerprint" >/dev/null 2>&1; then
 				:

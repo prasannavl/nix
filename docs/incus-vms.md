@@ -19,7 +19,8 @@ in `lib/incus-vm.nix`.
 - parent host declarations: `hosts/<parent>/incus.nix`
 - shared lifecycle logic: `lib/incus/default.nix`
 - guest bootstrap logic: `lib/incus-vm.nix`
-- base image build: `lib/images/incus-base.nix`
+- LXC base image build: `lib/images/incus-lxc-base.nix`
+- VM base image build: `lib/images/incus-vm-base.nix`
 - guest config: `hosts/<guest>/`
 - deploy metadata: `hosts/nixbot.nix`
 
@@ -27,13 +28,16 @@ in `lib/incus-vm.nix`.
 
 ```nix
 services.incusMachines = {
-  defaultImage = inputs.self.nixosImages.incus-base;
-  defaultImageAlias = "nixos-incus-base";
+  defaultLxcImage = inputs.self.nixosImages.incus-lxc-base;
+  defaultLxcImageAlias = "nixos-incus-lxc-base";
+  defaultVmImage = inputs.self.nixosImages.incus-vm-base;
+  defaultVmImageAlias = "nixos-incus-vm-base";
   imageTag = "0";
   preseedTag = "0";
 
   instances.<name> = {
-    ipv4Address = "<guest-ipv4>";
+    kind = "lxc";
+    ipv4Address = "10.10.20.10";
     bootTag = "0";
     recreateTag = "0";
 
@@ -277,7 +281,7 @@ For nested Incus specifically:
 
 ### What happens when I bump `recreateTag`?
 
-The guest is deleted and recreated from the current `local:nixos-incus-base`
+The guest is deleted and recreated from the current `local:nixos-incus-lxc-base`
 alias, or from that guest's configured `imageAlias`, the next time the per-guest
 lifecycle service runs.
 
@@ -380,7 +384,8 @@ recreate it.
 
 - `lib/incus/default.nix`
 - `lib/incus-vm.nix`
-- `lib/images/incus-base.nix`
+- `lib/images/incus-lxc-base.nix`
+- `lib/images/incus-vm-base.nix`
 - `lib/images/default.nix`
 - `hosts/<parent-host>/incus.nix`
 - `hosts/<guest>/default.nix`

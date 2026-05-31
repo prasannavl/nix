@@ -34,8 +34,10 @@
   instanceProjectConfigs = lib.listToAttrs (
     map (entry: lib.nameValuePair entry.logicalName entry.projectCfg) projectInstanceEntries
   );
-  defaultBaseImage = inputs.self.nixosImages.incus-base;
-  defaultBaseAlias = "nixos-incus-base";
+  defaultLxcBaseImage = inputs.self.nixosImages.incus-lxc-base;
+  defaultLxcBaseAlias = "nixos-incus-lxc-base";
+  defaultVmBaseImage = inputs.self.nixosImages.incus-vm-base;
+  defaultVmBaseAlias = "nixos-incus-vm-base";
 
   incusMachinesStateDir = "/var/lib/incus-machines";
   managedGcDirRoot = "${incusMachinesStateDir}/managed-dirs";
@@ -336,7 +338,7 @@
       path = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Mount/device path inside the container.";
+        description = "Mount/device path inside the instance.";
       };
       shift = lib.mkOption {
         type = lib.types.bool;
@@ -354,7 +356,7 @@
       removalPolicy = lib.mkOption {
         type = lib.types.enum ["keep" "delete"];
         default = "keep";
-        description = "For disk devices: 'delete' wipes the source dir on container delete-all; 'keep' (default) preserves it.";
+        description = "For disk devices: 'delete' wipes the source dir on instance delete-all; 'keep' (default) preserves it.";
       };
       extraProperties = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
@@ -1006,6 +1008,16 @@
         '';
       };
 
+      kind = lib.mkOption {
+        type = lib.types.enum ["lxc" "vm"];
+        default = "lxc";
+        description = ''
+          Incus instance kind. `lxc` creates a system container; `vm` creates an
+          Incus virtual machine while preserving the same declarative instance
+          shape where Incus supports it.
+        '';
+      };
+
       image = lib.mkOption {
         type = lib.types.nullOr lib.types.raw;
         default = null;
@@ -1014,7 +1026,8 @@
           Incus image reference such as `debian` or `images:debian/12`; a
           non-string value is treated as a NixOS image derivation/system attrset
           to import into local Incus. Defaults to the project default image, or
-          `services.incusMachines.global.defaultImage`.
+          `services.incusMachines.global.defaultLxcImage` for LXC instances and
+          `services.incusMachines.global.defaultVmImage` for VM instances.
         '';
       };
       imageAlias = lib.mkOption {
@@ -1041,7 +1054,7 @@
         default = true;
         description = ''
           Whether settle should wait for TCP reachability on `sshPort` for this
-          guest. Disable this for containers that are intentionally not managed
+          guest. Disable this for instances that are intentionally not managed
           over SSH.
         '';
       };
@@ -1057,12 +1070,12 @@
       devices = lib.mkOption {
         type = lib.types.attrsOf deviceType;
         default = {};
-        description = "Incus devices attached to this container.";
+        description = "Incus devices attached to this instance.";
       };
       config = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
         default = {};
-        description = "Incus container config keys. Changes trigger stop+delete+recreate.";
+        description = "Incus instance config keys. Changes trigger stop+delete+recreate.";
       };
       removalPolicy = lib.mkOption {
         type = lib.types.enum ["stop-only" "delete-container" "delete-all"];
@@ -1099,8 +1112,9 @@
         type = lib.types.nullOr lib.types.raw;
         default = null;
         description = ''
-          Project-local default image source. When unset, instances use
-          `services.incusMachines.global.defaultImage`.
+          Deprecated project-local alias for `defaultLxcImage`. Prefer
+          `defaultLxcImage` for LXC instances and `defaultVmImage` for VM
+          instances.
         '';
       };
 
@@ -1108,15 +1122,50 @@
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = ''
-          Project-local default image alias. When unset, instances use
-          `services.incusMachines.global.defaultImageAlias`.
+          Deprecated project-local alias for `defaultLxcImageAlias`.
+        '';
+      };
+
+      defaultLxcImage = lib.mkOption {
+        type = lib.types.nullOr lib.types.raw;
+        default = null;
+        description = ''
+          Project-local default LXC image source. When unset, LXC instances use
+          `services.incusMachines.global.defaultLxcImage`.
+        '';
+      };
+
+      defaultLxcImageAlias = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Project-local default LXC image alias. When unset, LXC instances use
+          `services.incusMachines.global.defaultLxcImageAlias`.
+        '';
+      };
+
+      defaultVmImage = lib.mkOption {
+        type = lib.types.nullOr lib.types.raw;
+        default = null;
+        description = ''
+          Project-local default VM image source. When unset, VM instances use
+          `services.incusMachines.global.defaultVmImage`.
+        '';
+      };
+
+      defaultVmImageAlias = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Project-local default VM image alias. When unset, VM instances use
+          `services.incusMachines.global.defaultVmImageAlias`.
         '';
       };
 
       instances = lib.mkOption {
         type = lib.types.attrsOf machineType;
         default = {};
-        description = "Declarative Incus containers in this Incus project.";
+        description = "Declarative Incus instances in this Incus project.";
       };
     };
   });
@@ -1166,7 +1215,7 @@
 
   configHashPayload = name: machine: {
     preseedTag = globalCfg.preseedTag;
-    inherit (machine) config;
+    inherit (machine) config kind;
     project = resolveMachineProject machine;
     image = let
       resolvedImage = resolveMachineImage name machine;
@@ -1222,6 +1271,7 @@
       imageTag = globalCfg.imageTag;
       instanceImage = instanceImage;
       imageAlias = instanceImage.alias;
+      kind = machine.kind;
       project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
       configHash = hash;
@@ -1245,6 +1295,7 @@
     builtins.toJSON {
       name = instanceName;
       configHash = hash;
+      kind = machine.kind;
       project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
       bootTag = machine.bootTag;
@@ -1260,6 +1311,7 @@
       "user.managed-by" = "nixos";
       "user.incus-machines.controller" = globalCfg.controllerId;
       "user.config-hash" = configHash name machine;
+      "user.incus-machines.kind" = machine.kind;
       "user.boot-tag" = machine.bootTag;
       "user.recreate-tag" = machine.recreateTag;
       "user.removal-policy" = machine.removalPolicy;
@@ -1280,13 +1332,28 @@
 
   resolveMachineImage = name: machine: let
     projectCfg = instanceProjectConfigs.${name};
-    hasProjectDefaultImage = projectCfg.defaultImage != null;
+    hasProjectDefaultLxcImage = projectCfg.defaultLxcImage != null || projectCfg.defaultImage != null;
+    hasProjectDefaultVmImage = projectCfg.defaultVmImage != null;
+    projectDefaultLxcImage =
+      if projectCfg.defaultLxcImage != null
+      then projectCfg.defaultLxcImage
+      else projectCfg.defaultImage;
+    projectDefaultLxcImageAlias =
+      if projectCfg.defaultLxcImageAlias != null
+      then projectCfg.defaultLxcImageAlias
+      else projectCfg.defaultImageAlias;
     image =
       if machine.image != null
       then machine.image
-      else if hasProjectDefaultImage
-      then projectCfg.defaultImage
-      else globalCfg.defaultImage;
+      else if machine.kind == "vm" && hasProjectDefaultVmImage
+      then projectCfg.defaultVmImage
+      else if machine.kind == "lxc" && hasProjectDefaultLxcImage
+      then projectDefaultLxcImage
+      else if machine.kind == "vm"
+      then globalCfg.defaultVmImage
+      else if globalCfg.defaultImage != null
+      then globalCfg.defaultImage
+      else globalCfg.defaultLxcImage;
     isRemote = builtins.isString image;
     remoteRef =
       if isRemote
@@ -1302,31 +1369,51 @@
       then
         if isRemote
         then "incus-${sanitizeImageAlias remoteRef}"
-        else "nixos-incus-${name}"
-      else if projectCfg.defaultImageAlias != null
-      then projectCfg.defaultImageAlias
-      else globalCfg.defaultImageAlias;
+        else "nixos-incus-${machine.kind}-${name}"
+      else if machine.kind == "lxc" && projectDefaultLxcImageAlias != null
+      then projectDefaultLxcImageAlias
+      else if machine.kind == "vm" && projectCfg.defaultVmImageAlias != null
+      then projectCfg.defaultVmImageAlias
+      else if machine.kind == "vm"
+      then globalCfg.defaultVmImageAlias
+      else if globalCfg.defaultImageAlias != null
+      then globalCfg.defaultImageAlias
+      else globalCfg.defaultLxcImageAlias;
   in
     if isRemote
     then {
       kind = "remote";
+      instanceKind = machine.kind;
       inherit alias remoteRef;
-      imageIdentity = "remote:${remoteRef}";
+      imageIdentity = "remote:${machine.kind}:${remoteRef}";
     }
     else let
       imageLabel = image.config.system.nixos.label;
       imageSystem = image.pkgs.stdenv.hostPlatform.system;
       imageFile = "nixos-image-${imageLabel}-${imageSystem}.tar.xz";
       metadata = image.config.system.build.metadata;
-      rootfs = image.config.system.build.tarball;
       metadataFile = "${metadata}/tarball/${imageFile}";
-      rootfsFile = "${rootfs}/tarball/${imageFile}";
-      imageSource = "${metadataFile}|${rootfsFile}";
-    in {
-      kind = "local";
-      inherit alias imageSource metadataFile rootfsFile;
-      imageIdentity = "local:${imageSource}";
-    };
+    in
+      if machine.kind == "vm"
+      then let
+        diskFile = "${image.config.system.build.qemuImage}/nixos.qcow2";
+        imageSource = "${metadataFile}|${diskFile}";
+      in {
+        kind = "local";
+        instanceKind = machine.kind;
+        inherit alias imageSource metadataFile diskFile;
+        imageIdentity = "local:${machine.kind}:${imageSource}";
+      }
+      else let
+        rootfs = image.config.system.build.tarball;
+        rootfsFile = "${rootfs}/tarball/${imageFile}";
+        imageSource = "${metadataFile}|${rootfsFile}";
+      in {
+        kind = "local";
+        instanceKind = machine.kind;
+        inherit alias imageSource metadataFile rootfsFile;
+        imageIdentity = "local:${machine.kind}:${imageSource}";
+      };
 
   instanceImages = lib.mapAttrs resolveMachineImage allInstances;
 
@@ -1550,6 +1637,42 @@
               "${machineName}.${deviceName}"
           )
           machine.devices
+        )
+    )
+    allInstances
+  );
+
+  vmOnlyUnsupportedConfigKeys = [
+    "security.nesting"
+    "security.privileged"
+    "security.syscalls.intercept.mount"
+    "security.syscalls.intercept.mount.shift"
+  ];
+
+  invalidVmConfigKeys = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.optionals (machine.kind == "vm") (
+          map (key: "${machineName}.${key}") (
+            builtins.filter (key: builtins.hasAttr key machine.config) vmOnlyUnsupportedConfigKeys
+          )
+        )
+    )
+    allInstances
+  );
+
+  invalidVmDevices = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.optionals (machine.kind == "vm") (
+          lib.concatLists (
+            lib.mapAttrsToList (
+              deviceName: dev:
+                lib.optional (builtins.elem dev.type ["gpu" "unix-char"])
+                "${machineName}.${deviceName}:${dev.type}"
+            )
+            machine.devices
+          )
         )
     )
     allInstances
@@ -1871,7 +1994,7 @@
     lifecycleStateFile = pkgs.writeText "incus-machine-${name}-lifecycle-state.json" (machineLifecycleStateJson name machine);
   in
     lib.nameValuePair "incus-${name}" {
-      description = "Incus container lifecycle for ${resolveMachineProject machine}/${instanceName}";
+      description = "Incus instance lifecycle for ${resolveMachineProject machine}/${instanceName}";
       wantedBy = ["multi-user.target"];
       after = incusLifecycleDeps;
       wants = incusLifecycleDeps;
@@ -1949,23 +2072,57 @@ in {
       freeformType = lib.types.attrsOf projectType;
       options.global = {
         defaultImage = lib.mkOption {
-          type = lib.types.raw;
-          default = defaultBaseImage;
+          type = lib.types.nullOr lib.types.raw;
+          default = null;
           description = ''
-            Default image source used for Incus machines when a machine does not
-            set `image`. A string is treated as an Incus image reference; a
-            non-string value is treated as a local NixOS image build.
+            Deprecated alias for `defaultLxcImage`. Prefer `defaultLxcImage` for
+            LXC instances and `defaultVmImage` for VM instances.
           '';
         };
 
         defaultImageAlias = lib.mkOption {
-          type = lib.types.str;
-          default = defaultBaseAlias;
+          type = lib.types.nullOr lib.types.str;
+          default = null;
           description = ''
-            Shared Incus alias used for `defaultImage`. Machines that set a custom
-            `image` default to `nixos-incus-<machine-name>` for local NixOS images
-            and a sanitized alias derived from the remote image reference for string
-            images unless they also set `imageAlias`.
+            Deprecated alias for `defaultLxcImageAlias`.
+          '';
+        };
+
+        defaultLxcImage = lib.mkOption {
+          type = lib.types.raw;
+          default = defaultLxcBaseImage;
+          description = ''
+            Default image source used for Incus LXC machines when a machine does
+            not set `image`. A string is treated as an Incus image reference; a
+            non-string value is treated as a local NixOS image build.
+          '';
+        };
+
+        defaultLxcImageAlias = lib.mkOption {
+          type = lib.types.str;
+          default = defaultLxcBaseAlias;
+          description = ''
+            Shared Incus alias used for `defaultLxcImage`. Machines that set a
+            custom `image` default to `nixos-incus-lxc-<machine-name>` for local
+            NixOS images and a sanitized alias derived from the remote image
+            reference for string images unless they also set `imageAlias`.
+          '';
+        };
+
+        defaultVmImage = lib.mkOption {
+          type = lib.types.raw;
+          default = defaultVmBaseImage;
+          description = ''
+            Default local NixOS image source used for Incus virtual machines
+            when a VM machine does not set `image`.
+          '';
+        };
+
+        defaultVmImageAlias = lib.mkOption {
+          type = lib.types.str;
+          default = defaultVmBaseAlias;
+          description = ''
+            Shared Incus alias used for `defaultVmImage`.
           '';
         };
 
@@ -2247,6 +2404,18 @@ in {
         message =
           "services.incusMachines certDelegation devices must be disk devices: "
           + lib.concatStringsSep ", " invalidCertificateDelegationDevices;
+      }
+      {
+        assertion = invalidVmConfigKeys == [];
+        message =
+          "services.incusMachines VM instances cannot use LXC-only config keys: "
+          + lib.concatStringsSep ", " invalidVmConfigKeys;
+      }
+      {
+        assertion = invalidVmDevices == [];
+        message =
+          "services.incusMachines VM instances do not yet support GPU/unix-char devices in this repo helper: "
+          + lib.concatStringsSep ", " invalidVmDevices;
       }
       {
         assertion = unsafeDeleteHostDirs == [];
