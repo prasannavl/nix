@@ -1,4 +1,4 @@
-{...}: {
+{pkgs, ...}: {
   imports = [
     ../hardware/mesa.nix
     ../hardware/amdgpu-strix.nix
@@ -91,4 +91,135 @@
     # when opening new apps.
     GSK_RENDERER = "gl";
   };
+  environment.systemPackages = let
+    asusFa401wvPower = pkgs.writeShellApplication {
+      name = "asus-fa401wv-power";
+      runtimeInputs = [pkgs.coreutils];
+      text = ''
+        usage() {
+          cat >&2 <<'EOF'
+        usage: sudo asus-fa401wv-power 5w|15w|15-35w|35w|80w|low|med|high
+
+        Modes:
+          5w       experimental 5W cap for maximum battery life
+          15w      15W cap across all exposed PPT limits
+          15-35w   firmware-supported low-power cap
+          35w      firmware-supported balanced cap
+          80w      firmware-supported max power
+
+        Firmware aliases:
+          low   same as 15-35w
+          med   same as 35w
+          high  same as 80w
+        EOF
+          exit 2
+        }
+
+        mode="''${1:-}"
+        [ "$#" -eq 1 ] || usage
+
+        if [ "$(id -u)" -ne 0 ]; then
+          echo "asus-fa401wv-power: run as root, e.g. sudo asus-fa401wv-power $mode" >&2
+          exit 1
+        fi
+
+        asus_wmi=/sys/devices/platform/asus-nb-wmi
+        amd_profile=/sys/devices/platform/AMDI0103:00/platform-profile/platform-profile-0/profile
+        asus_profile=/sys/devices/platform/asus-nb-wmi/platform-profile/platform-profile-1/profile
+        acpi_profile=/sys/firmware/acpi/platform_profile
+
+        case "$mode" in
+          5w)
+            pl1=5
+            pl2=5
+            fppt=5
+            ppd_mode=power-saver
+            amd_mode=low-power
+            asus_mode=quiet
+            acpi_mode=low-power
+            ;;
+          15w)
+            pl1=15
+            pl2=15
+            fppt=15
+            ppd_mode=power-saver
+            amd_mode=low-power
+            asus_mode=quiet
+            acpi_mode=low-power
+            ;;
+          15-35w | low)
+            pl1=15
+            pl2=35
+            fppt=35
+            ppd_mode=power-saver
+            amd_mode=low-power
+            asus_mode=quiet
+            acpi_mode=low-power
+            ;;
+          35w | med)
+            pl1=35
+            pl2=35
+            fppt=35
+            ppd_mode=balanced
+            amd_mode=balanced
+            asus_mode=balanced
+            acpi_mode=balanced
+            ;;
+          80w | high)
+            pl1=80
+            pl2=80
+            fppt=80
+            ppd_mode=performance
+            amd_mode=performance
+            asus_mode=performance
+            acpi_mode=performance
+            ;;
+          *)
+            usage
+            ;;
+        esac
+
+        write_value() {
+          path="$1"
+          value="$2"
+
+          if [ ! -e "$path" ]; then
+            echo "skip missing $path" >&2
+            return 0
+          fi
+
+          printf '%s\n' "$value" >"$path"
+        }
+
+        if command -v powerprofilesctl >/dev/null 2>&1; then
+          if ! powerprofilesctl set "$ppd_mode"; then
+            echo "warning: powerprofilesctl set $ppd_mode failed" >&2
+          fi
+        fi
+
+        write_value "$asus_wmi/ppt_pl1_spl" "$pl1"
+        write_value "$asus_wmi/ppt_pl2_sppt" "$pl2"
+        write_value "$asus_wmi/ppt_fppt" "$fppt"
+
+        # The global ACPI profile can fan out to provider profiles, so write it
+        # before the provider-specific profiles we want to pin.
+        write_value "$acpi_profile" "$acpi_mode"
+        write_value "$amd_profile" "$amd_mode"
+        write_value "$asus_profile" "$asus_mode"
+
+        echo "mode=$mode"
+        for path in \
+          "$asus_wmi/ppt_pl1_spl" \
+          "$asus_wmi/ppt_pl2_sppt" \
+          "$asus_wmi/ppt_fppt" \
+          "$acpi_profile" \
+          "$amd_profile" \
+          "$asus_profile"; do
+          if [ -e "$path" ]; then
+            printf '%s=%s\n' "$path" "$(cat "$path")"
+          fi
+        done
+      '';
+    };
+  in [asusFa401wvPower];
 }
