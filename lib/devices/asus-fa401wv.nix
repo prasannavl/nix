@@ -98,7 +98,7 @@
       text = ''
         usage() {
           cat >&2 <<'EOF'
-        usage: sudo asus-fa401wv-power 5w|15w|15-35w|35w|80w|low|med|high
+        usage: sudo asus-fa401wv-power 5w|15w|15-35w|35w|80w|low|med|high|reset
 
         Modes:
           5w       experimental 5W cap for maximum battery life
@@ -106,6 +106,7 @@
           15-35w   firmware-supported low-power cap
           35w      firmware-supported balanced cap
           80w      firmware-supported max power
+          reset    apply 35w, then rebind amd-pmf
 
         Firmware aliases:
           low   same as 15-35w
@@ -117,6 +118,7 @@
 
         mode="''${1:-}"
         [ "$#" -eq 1 ] || usage
+        reset_amd_pmf=0
 
         if [ "$(id -u)" -ne 0 ]; then
           echo "asus-fa401wv-power: run as root, e.g. sudo asus-fa401wv-power $mode" >&2
@@ -174,6 +176,16 @@
             asus_mode=performance
             acpi_mode=performance
             ;;
+          reset)
+            pl1=35
+            pl2=35
+            fppt=35
+            ppd_mode=balanced
+            amd_mode=balanced
+            asus_mode=balanced
+            acpi_mode=balanced
+            reset_amd_pmf=1
+            ;;
           *)
             usage
             ;;
@@ -191,6 +203,30 @@
           printf '%s\n' "$value" >"$path"
         }
 
+        reset_amd_pmf() {
+          device=AMDI0103:00
+          driver=/sys/bus/platform/drivers/amd-pmf
+
+          if [ ! -e "$driver/unbind" ] || [ ! -e "$driver/bind" ]; then
+            echo "warning: amd-pmf bind controls are not available" >&2
+            return 0
+          fi
+
+          if [ -L "/sys/bus/platform/devices/$device/driver" ]; then
+            if ! printf '%s\n' "$device" >"$driver/unbind"; then
+              echo "warning: failed to unbind amd-pmf device $device" >&2
+              return 0
+            fi
+            sleep 2
+          else
+            echo "warning: amd-pmf device $device is not currently bound" >&2
+          fi
+
+          if ! printf '%s\n' "$device" >"$driver/bind"; then
+            echo "warning: failed to bind amd-pmf device $device" >&2
+          fi
+        }
+
         if command -v powerprofilesctl >/dev/null 2>&1; then
           if ! powerprofilesctl set "$ppd_mode"; then
             echo "warning: powerprofilesctl set $ppd_mode failed" >&2
@@ -206,6 +242,10 @@
         write_value "$acpi_profile" "$acpi_mode"
         write_value "$amd_profile" "$amd_mode"
         write_value "$asus_profile" "$asus_mode"
+
+        if [ "$reset_amd_pmf" = 1 ]; then
+          reset_amd_pmf
+        fi
 
         echo "mode=$mode"
         for path in \
