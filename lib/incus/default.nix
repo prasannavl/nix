@@ -31,6 +31,7 @@
   allInstances = lib.listToAttrs (
     map (entry: lib.nameValuePair entry.logicalName entry.machine) projectInstanceEntries
   );
+  actionableInstances = lib.filterAttrs (_name: machine: machine.reconcilePolicy != "ignore") allInstances;
   instanceProjectConfigs = lib.listToAttrs (
     map (entry: lib.nameValuePair entry.logicalName entry.projectCfg) projectInstanceEntries
   );
@@ -44,11 +45,13 @@
   certificateDelegationsRoot = "/var/lib/incus-delegations";
   certificateDelegationGuestRoot = "/var/lib/incus-delegation";
   certificateDelegationStateDir = "${incusMachinesStateDir}/delegated-certificates";
+  incusNixosMetaVersion = 1;
 
   certificatesStateFile = "${incusMachinesStateDir}/certificates.json";
   certificateDelegationsStateFile = "${certificateDelegationStateDir}/delegations.json";
 
   hasInstances = allInstances != {};
+  hasActionableInstances = actionableInstances != {};
   hasCertificates = globalCfg.certificates != [];
   hasCertificateDelegations = globalCfg.certificateDelegations != {};
   hasRemoteHooks =
@@ -132,10 +135,12 @@
 
   reconcilerCommand = pkgs.writeShellScriptBin "incus-machines-reconciler" ''
     ${remoteEnvExports}
-    export INCUS_MACHINES_RECONCILE_MODE=${lib.escapeShellArg globalCfg.reconcilePolicy}
+    export INCUS_MACHINES_RECONCILE_MODE=${lib.escapeShellArg globalCfg.reconcileFailurePolicy}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
     export INCUS_MACHINES_INSTANCE_NAMES=${lib.escapeShellArg instanceNamesJson}
     export INCUS_MACHINES_INSTANCE_PROJECTS=${lib.escapeShellArg instanceProjectsJson}
+    export INCUS_MACHINES_INSTANCE_STATES=${lib.escapeShellArg instanceStatesJson}
+    export INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES=${lib.escapeShellArg instanceReconcilePoliciesJson}
     exec ${helperScript} reconciler "$@"
   '';
 
@@ -147,6 +152,8 @@
     export INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES=${lib.escapeShellArg instanceIpv4AddressesJson}
     export INCUS_MACHINES_INSTANCE_SSH_PORTS=${lib.escapeShellArg instanceSshPortsJson}
     export INCUS_MACHINES_INSTANCE_WAIT_FOR_SSH=${lib.escapeShellArg instanceWaitForSshJson}
+    export INCUS_MACHINES_INSTANCE_STATES=${lib.escapeShellArg instanceStatesJson}
+    export INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES=${lib.escapeShellArg instanceReconcilePoliciesJson}
     exec ${helperScript} settlement "$@"
   '';
 
@@ -1058,6 +1065,36 @@
           over SSH.
         '';
       };
+      state = lib.mkOption {
+        type = lib.types.enum ["running" "stopped"];
+        default = "running";
+        description = ''
+          Desired runtime state for this Incus instance. `running` creates and
+          starts the instance when policy allows reconciliation; `stopped`
+          creates or reconciles the declared instance but leaves it stopped.
+        '';
+      };
+      autoStart = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Whether to enable this instance's systemd unit for automatic boot or
+          target startup. Ignored instances still keep manual start and stop
+          control through the unit; auto-starting an ignored instance starts only
+          the existing guest and does not create, recreate, or drift-reconcile it.
+        '';
+      };
+      reconcilePolicy = lib.mkOption {
+        type = lib.types.enum ["auto" "declarative" "ignore"];
+        default = "auto";
+        description = ''
+          Per-instance lifecycle policy. `auto` allows drift-driven recreate,
+          `declarative` honors declared state and lifecycle tags but reports
+          recreate drift without deleting the instance, and `ignore` excludes the
+          instance from automatic declarative lifecycle actions and from batch
+          reconcile strictness.
+        '';
+      };
       hostSuspendPolicy = lib.mkOption {
         type = lib.types.enum ["stop" "ignore"];
         default = "stop";
@@ -1078,9 +1115,15 @@
         description = "Incus instance config keys. Changes trigger stop+delete+recreate.";
       };
       removalPolicy = lib.mkOption {
-        type = lib.types.enum ["stop-only" "delete-container" "delete-all"];
-        default = "delete-container";
-        description = "What happens when this machine is removed from config.";
+        type = lib.types.enum ["keep" "stop" "delete" "delete-all"];
+        default = "delete";
+        description = ''
+          What happens when this machine is removed from config. `keep`
+          removes this module's ownership metadata for manual takeover, `stop`
+          stops the guest, `delete` deletes the Incus instance, and
+          `delete-all` also deletes device sources explicitly marked for
+          deletion.
+        '';
       };
       adopt = lib.mkOption {
         type = lib.types.bool;
@@ -1274,6 +1317,9 @@
       kind = machine.kind;
       project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
+      state = machine.state;
+      autoStart = machine.autoStart;
+      reconcilePolicy = machine.reconcilePolicy;
       configHash = hash;
       bootTag = machine.bootTag;
       recreateTag = machine.recreateTag;
@@ -1298,6 +1344,9 @@
       kind = machine.kind;
       project = resolveMachineProject machine;
       ipv4Address = machine.ipv4Address;
+      state = machine.state;
+      autoStart = machine.autoStart;
+      reconcilePolicy = machine.reconcilePolicy;
       bootTag = machine.bootTag;
       recreateTag = machine.recreateTag;
       removalPolicy = machine.removalPolicy;
@@ -1306,29 +1355,25 @@
       desiredDiskGcMetadata = builtins.fromJSON diskGcMetadata;
     };
 
-  mkUserMetadata = name: machine:
-    {
-      "user.managed-by" = "nixos";
-      "user.incus-machines.controller" = globalCfg.controllerId;
-      "user.config-hash" = configHash name machine;
-      "user.incus-machines.kind" = machine.kind;
-      "user.boot-tag" = machine.bootTag;
-      "user.recreate-tag" = machine.recreateTag;
-      "user.removal-policy" = machine.removalPolicy;
-      "user.host-suspend.policy" = machine.hostSuspendPolicy;
-    }
-    // lib.concatMapAttrs (
-      devName: dev: let
-        resolved = resolveCertDelegationDevice dev;
-      in
-        lib.optionalAttrs (resolved.type == "disk") {
-          "user.device.${devName}.removal-policy" = resolved.removalPolicy;
-        }
-        // lib.optionalAttrs (isManagedHostDirResolved resolved) {
-          "user.device.${devName}.source" = resolved.source;
-        }
-    )
-    machine.devices;
+  mkNixosMeta = name: machine: {
+    version = incusNixosMetaVersion;
+    kind = "incus-machine";
+    controller = globalCfg.controllerId;
+    configHash = configHash name machine;
+    instanceKind = machine.kind;
+    state = machine.state;
+    autoStart = machine.autoStart;
+    reconcilePolicy = machine.reconcilePolicy;
+    bootTag = machine.bootTag;
+    recreateTag = machine.recreateTag;
+    removalPolicy = machine.removalPolicy;
+    hostSuspendPolicy = machine.hostSuspendPolicy;
+    devices = builtins.fromJSON (diskGcMetadataJson machine);
+  };
+
+  mkUserMetadata = name: machine: {
+    "user.nixos-meta" = builtins.toJSON (mkNixosMeta name machine);
+  };
 
   resolveMachineImage = name: machine: let
     projectCfg = instanceProjectConfigs.${name};
@@ -1422,7 +1467,7 @@
     (lib.mapAttrs'
       (_name: image:
         lib.nameValuePair image.alias image)
-      instanceImages);
+      (lib.filterAttrs (name: _image: allInstances.${name}.reconcilePolicy != "ignore") instanceImages));
 
   aliasToMachineNames =
     lib.foldl'
@@ -1957,9 +2002,18 @@
       (builtins.attrNames allInstances)
     )
   );
+  declaredInstanceMetaJson = builtins.toJSON (
+    lib.listToAttrs (
+      map
+      (name: lib.nameValuePair (machineProjectNameRef name allInstances.${name}) (mkNixosMeta name allInstances.${name}))
+      (builtins.attrNames allInstances)
+    )
+  );
   instanceIpv4AddressesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.ipv4Address) allInstances);
   instanceSshPortsJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.sshPort) allInstances);
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) allInstances);
+  instanceStatesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.state) allInstances);
+  instanceReconcilePoliciesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.reconcilePolicy) allInstances);
   gcProjects = lib.unique (
     lib.optionals globalCfg.remote.enable (
       builtins.attrNames effectiveRemoteProjects
@@ -1972,10 +2026,12 @@
     images = declaredImages;
   });
   incusGcStateFile = pkgs.writeText "incus-machines-gc-state.json" (builtins.toJSON {
+    metadataVersion = incusNixosMetaVersion;
     instances = builtins.attrNames allInstances;
     instanceNames = lib.mapAttrs resolveMachineName allInstances;
     instanceProjects = lib.mapAttrs (_name: resolveMachineProject) allInstances;
     instanceRefs = builtins.attrNames (builtins.fromJSON declaredInstanceRefsJson);
+    instanceMeta = builtins.fromJSON declaredInstanceMetaJson;
     controllerId = globalCfg.controllerId;
     projects = gcProjects;
     remote = globalCfg.remote.enable;
@@ -1992,14 +2048,36 @@
   mkMachineService = name: machine: let
     instanceName = resolveMachineName name machine;
     lifecycleStateFile = pkgs.writeText "incus-machine-${name}-lifecycle-state.json" (machineLifecycleStateJson name machine);
+    ignored = machine.reconcilePolicy == "ignore";
+    automaticStart = machine.autoStart && (ignored || machine.state == "running");
+    machineLifecycleDeps =
+      localIncusDeps
+      ++ remoteProjectDelegationDeps
+      ++ [
+        "network-online.target"
+      ]
+      ++ lib.optional (!ignored) "incus-images.service";
+    machineRequiredDeps =
+      localIncusDeps
+      ++ remoteProjectDelegationDeps
+      ++ lib.optional (!ignored) "incus-images.service";
+    # Incus `ignore` keeps the systemd control surface but disables declarative
+    # create/recreate/drift reconciliation. Manual start therefore uses the
+    # narrow start-instance path instead of the full machine helper.
+    execStart =
+      if ignored
+      then "${helperScript} start-instance ${lib.escapeShellArg instanceName} ${lib.escapeShellArg (resolveMachineProject machine)}"
+      else "${helperScript} machine";
   in
     lib.nameValuePair "incus-${name}" {
       description = "Incus instance lifecycle for ${resolveMachineProject machine}/${instanceName}";
-      wantedBy = ["multi-user.target"];
-      after = incusLifecycleDeps;
-      wants = incusLifecycleDeps;
-      requires = localIncusDeps ++ remoteProjectDelegationDeps ++ ["incus-images.service"];
-      restartTriggers = [lifecycleStateFile];
+      wantedBy = lib.optional automaticStart "multi-user.target";
+      after = machineLifecycleDeps;
+      wants = machineLifecycleDeps;
+      requires = machineRequiredDeps;
+      restartTriggers = lib.optional (!ignored) lifecycleStateFile;
+      restartIfChanged = !ignored;
+      stopIfChanged = !ignored;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -2009,7 +2087,7 @@
           ]
           ++ remoteServiceEnvironment;
         ExecStop = "-${helperScript} stop-instance ${lib.escapeShellArg instanceName} ${lib.escapeShellArg (resolveMachineProject machine)}";
-        ExecStart = "${helperScript} machine";
+        ExecStart = execStart;
       };
     };
 
@@ -2026,8 +2104,7 @@
     );
 
   mkCertificateDelegationTmpfiles = _name: delegation: [
-    "d ${delegation.directory} 0755 root root -"
-    "f ${delegation.directory}/${delegation.fileName} 0644 root root -"
+    "d ${delegation.directory} - - - -"
   ];
 
   mkCertificateDelegationService = name: delegation: let
@@ -2253,14 +2330,15 @@ in {
           };
         };
 
-        reconcilePolicy = lib.mkOption {
-          type = lib.types.enum ["off" "best-effort" "strict"];
+        reconcileFailurePolicy = lib.mkOption {
+          type = lib.types.enum ["best-effort" "strict"];
           default = "best-effort";
           description = ''
-            Reconcile policy for declared Incus guests. `off` disables guest
-            reconcile helpers, `best-effort` retries missing or stopped guests
-            without failing the caller, and `strict` makes guest reconcile failures
-            abort the caller.
+            Failure behavior for batch Incus reconciliation. `best-effort`
+            continues after individual guest reconcile failures; `strict` aborts
+            the caller on the first failed action it attempts. This does not turn
+            `declarative` pending recreate drift into a failure, and ignored
+            instances are outside the batch reconcile contract.
           '';
         };
 
@@ -2286,8 +2364,9 @@ in {
             default = "stop";
             description = ''
               Policy for running containers that do not set
-              `user.host-suspend.policy`. `stop` is the laptop-safe default; set an
-              instance config key to `ignore` for explicit opt-outs.
+              `hostSuspendPolicy` inside `user.nixos-meta`. `stop` is the
+              laptop-safe default; set an instance host suspend policy to
+              `ignore` for explicit opt-outs.
             '';
           };
 
@@ -2484,7 +2563,6 @@ in {
           + lib.concatStringsSep ", " allowedSubnetViolations;
       }
     ];
-
     virtualisation.incus = {
       enable = lib.mkDefault (!globalCfg.remote.enable);
       package = lib.mkDefault pkgs.incus;
@@ -2613,7 +2691,7 @@ in {
             };
           }
           // lib.optionalAttrs hasInstances {
-            incus-machines-reconciler = lib.mkIf (globalCfg.reconcilePolicy != "off") {
+            incus-machines-reconciler = lib.mkIf hasActionableInstances {
               description = "Reconciler for declared Incus guests";
               wantedBy = lib.optional globalCfg.autoReconcile "multi-user.target";
               after = incusLifecycleDeps;
@@ -2622,10 +2700,12 @@ in {
                 Type = "oneshot";
                 Environment =
                   [
-                    (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" globalCfg.reconcilePolicy)
+                    (mkEnvAssignment "INCUS_MACHINES_RECONCILE_MODE" globalCfg.reconcileFailurePolicy)
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_NAMES" instanceNamesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_STATES" instanceStatesJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES" instanceReconcilePoliciesJson)
                   ]
                   ++ remoteServiceEnvironment;
                 ExecStart = "${helperScript} reconciler --all";
@@ -2670,6 +2750,8 @@ in {
                   [
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
                     (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCE_REFS" declaredInstanceRefsJson)
+                    (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCE_META" declaredInstanceMetaJson)
+                    (mkEnvAssignment "INCUS_MACHINES_NIXOS_META_VERSION" incusNixosMetaVersion)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_NAMES" instanceNamesJson)
                     (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
                     (mkEnvAssignment "INCUS_MACHINES_MANAGED_GC_DIR_ROOT" managedGcDirRoot)

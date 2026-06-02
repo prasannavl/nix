@@ -11,13 +11,13 @@ Use this model for declarative Incus guest lifecycle on parent hosts.
 - cleanup of undeclared guests
 - manual lifecycle tags
 
-Shared logic lives in `lib/incus/default.nix`. Guest bootstrap conveniences live
-in `lib/incus-vm.nix`.
+Shared lifecycle logic lives in `lib/incus/default.nix` and
+`lib/incus/helper.sh`. Guest bootstrap conveniences live in `lib/incus-vm.nix`.
 
 ## Source Of Truth
 
 - parent host declarations: `hosts/<parent>/incus.nix`
-- shared lifecycle logic: `lib/incus/default.nix`
+- shared lifecycle logic: `lib/incus/default.nix`, `lib/incus/helper.sh`
 - guest bootstrap logic: `lib/incus-vm.nix`
 - LXC base image build: `lib/images/incus-lxc-base.nix`
 - VM base image build: `lib/images/incus-vm-base.nix`
@@ -121,15 +121,16 @@ operator-facing procedures.
 ## Why This Module Exists
 
 Incus provides runtime guest management, but not this repo's declarative guest
-lifecycle model. `lib/incus/default.nix` exists to make image import,
-create/start, recreate triggers, in-place disk sync, guest GC, and manual
-lifecycle tags part of ordinary deploy-time reconciliation instead of ad hoc
-host-local scripts.
+lifecycle model. `lib/incus/default.nix` and `lib/incus/helper.sh` make image
+import, create/start, recreate triggers, in-place disk sync, guest GC, and
+manual lifecycle tags part of ordinary deploy-time reconciliation instead of ad
+hoc host-local scripts.
 
 ## Current Model
 
 - parent hosts declare guests in `hosts/<parent>/incus.nix`
-- shared lifecycle logic lives in `lib/incus/default.nix`
+- shared lifecycle logic lives in `lib/incus/default.nix` and
+  `lib/incus/helper.sh`
 - guest bootstrap conveniences live in `lib/incus-vm.nix`
 - guests become normal `nixbot` deploy targets after bootstrap
 - images, tags, and devices are declarative inputs to the parent-host lifecycle
@@ -211,6 +212,14 @@ That means:
 - guest create/recreate also performs a just-in-time image preflight for its
   exact declared image, so the create path verifies the alias exists at the
   moment it is needed
+- `autoStart` controls whether the `incus-<guest>.service` is wanted at boot or
+  target startup, independently of `reconcilePolicy`. With
+  `reconcilePolicy = "ignore"`, start only starts an existing guest and does not
+  create, recreate, stop, or drift-reconcile it.
+- For ignored guests, `autoStart = true` still enables the lifecycle unit even
+  when `state = "stopped"`. The enabled unit starts the existing guest through
+  the narrow start path. Set `autoStart = false` when an ignored guest must
+  remain stopped across boot or target startup.
 
 ## What A Parent Host Must Provide
 
@@ -222,6 +231,19 @@ For each guest entry in `hosts/<parent-host>/incus.nix`:
 - optional `bootTag`
 - optional `recreateTag`
 - optional `removalPolicy`
+- optional `adopt`
+
+`removalPolicy` accepts `keep`, `stop`, `delete`, or `delete-all`. `keep`
+removes the module ownership metadata so the existing guest can be taken over
+manually. `stop` stops a removed managed guest. `delete` deletes the Incus
+instance and is the default. `delete-all` also removes disk sources explicitly
+marked with device `removalPolicy = "delete"` and still passes through the
+managed-directory safety check.
+
+`adopt = true` lets the module claim an existing unmanaged Incus instance with
+the same project/name. Use it when bringing a manually managed guest back after
+`removalPolicy = "keep"` or when importing a pre-existing guest. Remove the flag
+after the adoption deploy succeeds.
 
 Typical devices:
 
@@ -274,8 +296,9 @@ For nested Incus specifically:
 
 - the outer guest can use a normal Incus `gpu` device
 - the inner nested guest should use `/dev/dri` passthrough plus `/dev/kfd`
-- `/dev` host-path disk mounts are treated by `lib/incus/default.nix` as
-  existing device trees, not persistent state directories
+- `/dev` host-path disk mounts are treated by `lib/incus/default.nix` and
+  `lib/incus/helper.sh` as existing device trees, not persistent state
+  directories
 
 ## FAQ
 
@@ -350,11 +373,32 @@ steady-state model is host-side reconcile outside activation via the declared
 `incus-<guest>` lifecycle services, the `incus-machines-reconciler.service`
 oneshot, or `nixbot`'s parent readiness barriers.
 
-The reconcile policy is controlled by
-`services.incusMachines.global.reconcilePolicy`. The default is **best-effort**
-on non-container parent hosts and `"off"` on containerized Incus hosts such as
-nested guests. Boot-time auto-reconcile is opt-in through
-`services.incusMachines.global.autoReconcile = true;`.
+Batch reconcile failure behavior is controlled by
+`services.incusMachines.global.reconcileFailurePolicy`. Per-instance lifecycle
+mutation is controlled by
+`services.incusMachines.<project>.instances.<name>.reconcilePolicy`, which
+defaults to `auto` and can be set to `declarative` or `ignore` when existing
+guests must not be recreated from drift. Per-instance `state` controls running
+versus stopped, and `autoStart` controls boot/target enablement separately. For
+ignored guests, boot/target enablement wins over `state = "stopped"`:
+`autoStart = true` starts the existing guest without declarative reconcile.
+Boot-time auto-reconcile remains opt-in through
+`services.incusMachines.global.autoReconcile = true;`. Strict batch failure
+means failed attempted actions abort the batch; it does not make `declarative`
+pending recreate drift fail, and ignored instances are outside the batch
+reconcile contract.
+
+`declarative` pending recreate drift means destructive delete/recreate is held
+back until explicit recreate intent. It does not freeze every mutable Incus
+property: disk-device reconciliation, backing storage-volume creation, and eth0
+IPv4 updates may still apply in place. The helper preserves the old applied
+config hash while recreate-only drift is pending so the pending recreate signal
+remains visible.
+
+Structured `user.nixos-meta` is the sole source for ownership, lifecycle, and
+removal policy metadata. The helper no longer emits or trusts legacy
+`user.managed-by`, `user.config-hash`, `user.removal-policy`, or `user.device.*`
+metadata; old keys are cleaned during normal convergence.
 
 If you need to force a recreate even when the guest still exists and is running,
 bump `recreateTag` to a new value.
@@ -383,6 +427,7 @@ recreate it.
 ## Source Of Truth Files
 
 - `lib/incus/default.nix`
+- `lib/incus/helper.sh`
 - `lib/incus-vm.nix`
 - `lib/images/incus-lxc-base.nix`
 - `lib/images/incus-vm-base.nix`

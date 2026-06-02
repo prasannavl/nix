@@ -5,8 +5,12 @@ init_vars() {
 	incus_machines_reconcile_mode="${INCUS_MACHINES_RECONCILE_MODE-}"
 	declared_instances="${INCUS_MACHINES_DECLARED_INSTANCES-[]}"
 	declared_instance_refs="${INCUS_MACHINES_DECLARED_INSTANCE_REFS-{}}"
+	declared_instance_meta="${INCUS_MACHINES_DECLARED_INSTANCE_META-{}}"
+	nixos_meta_version="${INCUS_MACHINES_NIXOS_META_VERSION-1}"
 	instance_names="${INCUS_MACHINES_INSTANCE_NAMES-{}}"
 	instance_projects="${INCUS_MACHINES_INSTANCE_PROJECTS-{}}"
+	instance_states="${INCUS_MACHINES_INSTANCE_STATES-{}}"
+	instance_reconcile_policies="${INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES-{}}"
 	host_suspend_state_dir="${INCUS_MACHINES_HOST_SUSPEND_STATE_DIR-/run/incus-machines-host-suspend}"
 	host_suspend_default_policy="${INCUS_MACHINES_HOST_SUSPEND_DEFAULT_POLICY-stop}"
 	host_suspend_include_vms="${INCUS_MACHINES_HOST_SUSPEND_INCLUDE_VMS-false}"
@@ -52,6 +56,8 @@ init_vars() {
 		preseed_migrations="$(cat "$preseed_migrations_file")"
 	fi
 	selected_json='[]'
+	selection_all=0
+	selection_explicit=0
 }
 
 is_remote_target() {
@@ -169,6 +175,20 @@ instance_name_for_id() {
 	id="$1"
 	jq -nr --argjson names "$instance_names" --arg id "$id" '$names[$id] // $id' 2>/dev/null ||
 		printf '%s\n' "$id"
+}
+
+instance_state_for_id() {
+	local id
+	id="$1"
+	jq -nr --argjson states "$instance_states" --arg id "$id" '$states[$id] // "running"' 2>/dev/null ||
+		printf '%s\n' "running"
+}
+
+instance_reconcile_policy_for_id() {
+	local id
+	id="$1"
+	jq -nr --argjson policies "$instance_reconcile_policies" --arg id "$id" '$policies[$id] // "auto"' 2>/dev/null ||
+		printf '%s\n' "auto"
 }
 
 instance_ref() {
@@ -410,6 +430,7 @@ append_instance() {
 	local id selector
 	selector="$1"
 	id="$(instance_id_for_selector "$selector")"
+	selection_explicit=1
 	selected_json="$(
 		printf '%s' "$selected_json" |
 			jq -c --arg id "$id" '. + [$id]'
@@ -417,13 +438,26 @@ append_instance() {
 }
 
 parse_machine_selection_args() {
+	selected_json='[]'
+	selection_all=0
+	selection_explicit=0
+
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		--all)
+			if [ "$selection_explicit" -eq 1 ]; then
+				echo "Cannot combine --all with --machine/--instance" >&2
+				exit 1
+			fi
+			selection_all=1
 			selected_json="$declared_instances"
 			shift
 			;;
 		--instance | --machine)
+			if [ "$selection_all" -eq 1 ]; then
+				echo "Cannot combine --machine/--instance with --all" >&2
+				exit 1
+			fi
 			[ "$#" -ge 2 ] || {
 				echo "Missing value for $1" >&2
 				exit 1
@@ -1183,6 +1217,81 @@ set_instance_config_json_if_changed() {
 	fi
 }
 
+obsolete_metadata_keys() {
+	jq -r '
+		keys[]
+		| select(
+			. == "user.managed-by"
+			or . == "user.config-hash"
+			or . == "user.boot-tag"
+			or . == "user.recreate-tag"
+			or . == "user.removal-policy"
+			or . == "user.host-suspend.policy"
+			or startswith("user.incus-machines.")
+			or startswith("user.device.")
+		)
+	'
+}
+
+obsolete_metadata_present() {
+	local current_config_json
+	current_config_json="$1"
+
+	printf '%s' "$current_config_json" |
+		jq -e '
+			keys
+			| any(
+				. == "user.managed-by"
+				or . == "user.config-hash"
+				or . == "user.boot-tag"
+				or . == "user.recreate-tag"
+				or . == "user.removal-policy"
+				or . == "user.host-suspend.policy"
+				or startswith("user.incus-machines.")
+				or startswith("user.device.")
+			)
+		' >/dev/null
+}
+
+nixos_meta_from_config_json() {
+	local current_config_json
+	current_config_json="$1"
+
+	printf '%s' "$current_config_json" |
+		jq -c --arg version "$nixos_meta_version" '
+			(.["user.nixos-meta"] // "" | try fromjson catch null) as $meta
+			| if (
+				($meta | type) == "object"
+				and (($meta.version // "") | tostring) == $version
+				and ($meta.kind // "") == "incus-machine"
+			) then
+				$meta
+			else
+				{}
+			end
+		'
+}
+
+declared_meta_for_ref() {
+	local ref
+	ref="$1"
+
+	jq -nc --argjson meta "$declared_instance_meta" --arg ref "$ref" '$meta[$ref] // {}'
+}
+
+set_nixos_meta_if_changed() {
+	local instance_name current_config_json desired_meta_json current_value desired_value
+	instance_name="$1"
+	current_config_json="$2"
+	desired_meta_json="$3"
+
+	desired_value="$(printf '%s' "$desired_meta_json" | jq -c '.')"
+	current_value="$(printf '%s' "$current_config_json" | jq -r '.["user.nixos-meta"] // empty')"
+	if [ "$current_value" != "$desired_value" ]; then
+		incus_project config set "$(instance_ref "$instance_name")" "user.nixos-meta=$desired_value"
+	fi
+}
+
 unset_instance_config_key_if_present() {
 	local instance_name current_config_json key
 	instance_name="$1"
@@ -1192,6 +1301,44 @@ unset_instance_config_key_if_present() {
 	if printf '%s' "$current_config_json" | jq -e --arg k "$key" 'has($k)' >/dev/null; then
 		incus_project config unset "$(instance_ref "$instance_name")" "$key" 2>/dev/null || true
 	fi
+}
+
+cleanup_obsolete_metadata_keys() {
+	local instance_name current_config_json key
+	instance_name="$1"
+	current_config_json="$2"
+
+	while IFS= read -r key; do
+		[ -n "$key" ] || continue
+		incus_project config unset "$(instance_ref "$instance_name")" "$key" 2>/dev/null || true
+	done < <(printf '%s' "$current_config_json" | obsolete_metadata_keys)
+}
+
+unmanage_instance_for_takeover() {
+	local instance_name current_config_json key
+	instance_name="$1"
+	current_config_json="$2"
+
+	while IFS= read -r key; do
+		[ -n "$key" ] || continue
+		incus_project config unset "$(instance_ref "$instance_name")" "$key" 2>/dev/null || true
+	done < <(
+		printf '%s' "$current_config_json" |
+			jq -r '
+				keys[]
+				| select(
+					. == "user.nixos-meta"
+					or . == "user.managed-by"
+					or . == "user.config-hash"
+					or . == "user.boot-tag"
+					or . == "user.recreate-tag"
+					or . == "user.removal-policy"
+					or . == "user.host-suspend.policy"
+					or startswith("user.incus-machines.")
+					or startswith("user.device.")
+				)
+			'
+	)
 }
 
 set_device_config_json_if_changed() {
@@ -1262,22 +1409,24 @@ prepare_certificate_delegation_permissions() {
 		source="$(printf '%s' "$entry" | jq -r '.value.source // empty')"
 		file_name="$(printf '%s' "$entry" | jq -r '.value.fileName // "certs.json"')"
 		[ -n "$source" ] || continue
-		[ -d "$source" ] || continue
 
 		host_uid="$(guest_id_host_id_from_config "$config_json" uid 0 || true)"
 		host_gid="$(guest_id_host_id_from_config "$config_json" gid 0 || true)"
 		[ -n "$host_uid" ] || continue
 		[ -n "$host_gid" ] || continue
 
+		install -d -m 0700 "$source"
+		file_path="$source/$file_name"
+		if [ ! -e "$file_path" ]; then
+			printf '{"version":1,"certificates":[]}\n' >"$file_path"
+		fi
+
 		echo "  Setting certificate delegation $source ownership to guest root"
 		chown "$host_uid:$host_gid" "$source"
 		chmod 0700 "$source"
 
-		file_path="$source/$file_name"
-		if [ -e "$file_path" ]; then
-			chown "$host_uid:$host_gid" "$file_path"
-			chmod 0600 "$file_path"
-		fi
+		chown "$host_uid:$host_gid" "$file_path"
+		chmod 0600 "$file_path"
 	done < <(
 		printf '%s' "$disk_gc_metadata" |
 			jq -c 'to_entries[] | select(.value.certificateDelegation == true)'
@@ -2010,8 +2159,28 @@ remote_project_delegations_wait_for_trust() {
 	exit 1
 }
 
+write_remote_project_delegation_payload() {
+	local payload_file target tmp
+	payload_file="$1"
+	target="$2"
+
+	if tmp="$(mktemp "$target.tmp.XXXXXX" 2>/dev/null)"; then
+		cat "$payload_file" >"$tmp"
+		chmod 0600 "$tmp" 2>/dev/null || true
+		mv -f "$tmp" "$target"
+		return
+	fi
+
+	if [ ! -e "$target" ]; then
+		echo "Cannot create delegated Incus certificate file $target; directory is not writable and target does not exist" >&2
+		exit 1
+	fi
+
+	cat "$payload_file" >"$target"
+}
+
 remote_project_delegations_main() {
-	local cert_file cert_json cert_name certs_tmp directory file_name next_tmp project_json target tmp wait_timeout
+	local cert_file cert_json cert_name certs_tmp directory file_name next_tmp payload_tmp project_json target wait_timeout
 
 	[ -n "$remote_project_delegations_file" ] || {
 		echo "Missing remote project delegations file" >&2
@@ -2023,14 +2192,17 @@ remote_project_delegations_main() {
 		file_name="$(printf '%s' "$project_json" | jq -r '.fileName')"
 		target="$directory/$file_name"
 
-		install -d -m 0755 "$directory"
-		certs_tmp="$(mktemp "$target.certs.XXXXXX")"
+		if [ ! -d "$directory" ]; then
+			install -d -m 0755 "$directory"
+		fi
+
+		certs_tmp="$(mktemp "${TMPDIR:-/tmp}/incus-remote-project-certs.XXXXXX")"
 		printf '[]\n' >"$certs_tmp"
 
 		while IFS= read -r cert_json; do
 			cert_name="$(printf '%s' "$cert_json" | jq -r '.name')"
 			cert_file="$(printf '%s' "$cert_json" | jq -r '.file')"
-			next_tmp="$(mktemp "$target.certs.XXXXXX")"
+			next_tmp="$(mktemp "${TMPDIR:-/tmp}/incus-remote-project-certs.XXXXXX")"
 			jq \
 				--arg name "$cert_name" \
 				--rawfile data "$cert_file" \
@@ -2039,11 +2211,10 @@ remote_project_delegations_main() {
 			mv -f "$next_tmp" "$certs_tmp"
 		done < <(printf '%s' "$project_json" | jq -c '.certificates[]')
 
-		tmp="$(mktemp "$target.tmp.XXXXXX")"
-		jq -c '{version: 1, certificates: .}' "$certs_tmp" >"$tmp"
-		chmod 0600 "$tmp"
-		mv -f "$tmp" "$target"
-		rm -f "$certs_tmp"
+		payload_tmp="$(mktemp "${TMPDIR:-/tmp}/incus-remote-project-payload.XXXXXX")"
+		jq -c '{version: 1, certificates: .}' "$certs_tmp" >"$payload_tmp"
+		write_remote_project_delegation_payload "$payload_tmp" "$target"
+		rm -f "$certs_tmp" "$payload_tmp"
 	done < <(jq -c 'to_entries[] | .value + {project: .key}' "$remote_project_delegations_file")
 
 	while IFS= read -r project_json; do
@@ -2055,7 +2226,7 @@ remote_project_delegations_main() {
 }
 
 reconciler_main() {
-	local id name status
+	local id name status desired_state reconcile_policy
 
 	parse_machine_selection_args "$@"
 
@@ -2078,13 +2249,20 @@ reconciler_main() {
 
 		set_current_project_for_instance "$id"
 		name="$(instance_name_for_id "$id")"
+		desired_state="$(instance_state_for_id "$id")"
+		reconcile_policy="$(instance_reconcile_policy_for_id "$id")"
+		if [ "$reconcile_policy" = "ignore" ]; then
+			echo "Skipping ignored Incus instance $current_project/$name"
+			continue
+		fi
 		status="$(instance_status "$name")"
 
-		if [ "$status" = "Running" ]; then
+		if { [ "$desired_state" = "running" ] && [ "$status" = "Running" ]; } ||
+			{ [ "$desired_state" = "stopped" ] && [ "$status" = "Stopped" ]; }; then
 			continue
 		fi
 
-		echo "Reconciling Incus instance $current_project/$name (status: $status)"
+		echo "Reconciling Incus instance $current_project/$name (state: $desired_state, status: $status)"
 		if ! systemctl restart "incus-$id.service"; then
 			if [ "$incus_machines_reconcile_mode" = "strict" ]; then
 				exit 1
@@ -2095,18 +2273,20 @@ reconciler_main() {
 }
 
 settlement_main() {
-	local timeout_secs interval_secs deadline pending id name expected_ip expected_ssh_port wait_for_ssh
+	local timeout_secs interval_secs deadline pending id name expected_ip expected_ssh_port wait_for_ssh desired_state reconcile_policy track_ignored
 	local instance_json status instance_state_json
+	local -a selection_args
 	declare -A network_reconcile_attempted=()
 
 	timeout_secs=180
 	interval_secs=2
+	track_ignored=0
+	selection_args=()
+
+	declare -A readiness_ignore_reported=()
 
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
-		--all | --instance | --machine)
-			break
-			;;
 		--timeout)
 			[ "$#" -ge 2 ] || {
 				echo "Missing value for --timeout" >&2
@@ -2123,14 +2303,22 @@ settlement_main() {
 			interval_secs="$2"
 			shift 2
 			;;
+		--track-ignored)
+			track_ignored=1
+			shift
+			;;
 		*)
-			echo "Unknown argument: $1" >&2
-			exit 1
+			selection_args+=("$1")
+			shift
 			;;
 		esac
 	done
 
-	parse_machine_selection_args "$@"
+	parse_machine_selection_args "${selection_args[@]}"
+	if [ "$selection_all" -eq 0 ] && [ "$selection_explicit" -eq 0 ]; then
+		selection_all=1
+		selected_json="$declared_instances"
+	fi
 
 	if ! incus_server_info >/dev/null 2>&1; then
 		echo "Incus daemon is unavailable; settle cannot continue" >&2
@@ -2151,6 +2339,15 @@ settlement_main() {
 
 			set_current_project_for_instance "$id"
 			name="$(instance_name_for_id "$id")"
+			desired_state="$(instance_state_for_id "$id")"
+			reconcile_policy="$(instance_reconcile_policy_for_id "$id")"
+			if [ "$reconcile_policy" = "ignore" ] && [ "$selection_explicit" -ne 1 ] && [ "$track_ignored" -ne 1 ]; then
+				if [ -z "${readiness_ignore_reported[$id]+x}" ]; then
+					readiness_ignore_reported[$id]=1
+					echo "Skipping ignored Incus instance $current_project/$name during broad readiness" >&2
+				fi
+				continue
+			fi
 			expected_ip="$(
 				jq -nr --argjson addresses "${INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES:-"{}"}" --arg id "$id" '$addresses[$id] // ""'
 			)"
@@ -2162,6 +2359,19 @@ settlement_main() {
 			)"
 			instance_json="$(instance_metadata_json "$name")"
 			status="$(printf '%s' "$instance_json" | jq -r 'if . == {} then "missing" else .status // "unknown" end')"
+			if [ "$reconcile_policy" = "ignore" ]; then
+				if [ "$status" != "Running" ]; then
+					echo "Incus instance $current_project/$name is ignored by declarative reconcile and is not ready (current: $status)" >&2
+					exit 1
+				fi
+			elif [ "$desired_state" = "stopped" ]; then
+				if [ "$status" = "Stopped" ]; then
+					continue
+				fi
+				pending=1
+				echo "Waiting for Incus instance $current_project/$name to reach Stopped (current: $status)" >&2
+				continue
+			fi
 			if [ "$status" != "Running" ]; then
 				pending=1
 				echo "Waiting for Incus instance $current_project/$name to reach Running (current: $status)" >&2
@@ -2188,6 +2398,10 @@ settlement_main() {
           | .value.addresses[]?
           | select(.family == "inet" and .address == $ip)
         ' >/dev/null 2>&1; then
+				if [ "$reconcile_policy" = "ignore" ]; then
+					echo "Incus instance $current_project/$name is ignored and does not report expected IPv4 ${expected_ip}" >&2
+					exit 1
+				fi
 				if [ -z "${network_reconcile_attempted[$id]+x}" ]; then
 					network_reconcile_attempted[$id]=1
 					echo "Reconciling guest network for Incus instance $name" >&2
@@ -2223,13 +2437,28 @@ settlement_main() {
 machine_main() {
 	local state_file state_json
 	local name instance_name desired_config_hash desired_boot_tag desired_recreate_tag
-	local needs_create needs_recreate needs_restart adopting_existing current_config_hash current_recreate_tag current_boot_tag
+	local desired_state reconcile_policy force_policy
+	local needs_create needs_recreate needs_restart needs_recreate_from_drift needs_recreate_from_tag pending_recreate_drift adopting_existing current_config_hash current_recreate_tag current_boot_tag
 	local current_instance current_devices current_config current_status desired_disks desired_disk_gc_metadata
-	local current_ipv4 current_managed_by current_project desired_props current_props dev dev_exists dev_source dev_pool desired_gc_config_json key props query_name image_tag
-	local source_key current_controller
-	local instance_image image_alias create_only_devices user_meta_json config_json desired_ipv4 desired_removal_policy desired_adopt
+	local current_ipv4 current_managed_by current_project desired_props current_props dev dev_exists dev_source dev_pool key props query_name image_tag
+	local current_controller current_meta desired_meta_json desired_user_meta_json
+	local instance_image image_alias create_only_devices user_meta_json nixos_meta_json config_json desired_ipv4 desired_adopt
 	local desired_kind desired_incus_type current_incus_type recovery_attempted start_output
-	local -a create_args create_only_device_names current_disk_names desired_disk_names current_prop_keys current_gc_device_names desired_gc_device_names
+	local -a create_args create_only_device_names current_disk_names desired_disk_names current_prop_keys
+
+	force_policy=0
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--force-policy | --ignore-policy)
+			force_policy=1
+			shift
+			;;
+		*)
+			echo "Unknown machine argument: $1" >&2
+			exit 1
+			;;
+		esac
+	done
 
 	state_file="${INCUS_MACHINES_INSTANCE_STATE_FILE?missing INCUS_MACHINES_INSTANCE_STATE_FILE}"
 	state_json="$(cat "$state_file")"
@@ -2240,6 +2469,8 @@ machine_main() {
 	instance_image="$(printf '%s' "$state_json" | jq -c '.instanceImage')"
 	image_alias="$(printf '%s' "$state_json" | jq -r '.imageAlias')"
 	desired_kind="$(printf '%s' "$state_json" | jq -r '.kind // "lxc"')"
+	desired_state="$(printf '%s' "$state_json" | jq -r '.state // "running"')"
+	reconcile_policy="$(printf '%s' "$state_json" | jq -r '.reconcilePolicy // "auto"')"
 	desired_incus_type="$(incus_instance_type_for_kind "$desired_kind")"
 	desired_config_hash="$(printf '%s' "$state_json" | jq -r '.configHash')"
 	desired_boot_tag="$(printf '%s' "$state_json" | jq -r '.bootTag')"
@@ -2248,24 +2479,38 @@ machine_main() {
 	desired_disk_gc_metadata="$(printf '%s' "$state_json" | jq -c '.desiredDiskGcMetadata')"
 	create_only_devices="$(printf '%s' "$state_json" | jq -c '.createOnlyDevices')"
 	user_meta_json="$(printf '%s' "$state_json" | jq -c '.userMeta')"
+	nixos_meta_json="$(printf '%s' "$state_json" | jq -c '.userMeta["user.nixos-meta"] | fromjson')"
 	config_json="$(printf '%s' "$state_json" | jq -c '.config')"
 	desired_ipv4="$(printf '%s' "$state_json" | jq -r '.ipv4Address')"
-	desired_removal_policy="$(printf '%s' "$state_json" | jq -r '.removalPolicy')"
 	desired_adopt="$(printf '%s' "$state_json" | jq -r '.adopt // false')"
 	query_name="$(jq -nr --arg value "$name" '$value | @uri')"
 	recovery_attempted=0
+
+	if [ "$reconcile_policy" = "ignore" ] && [ "$force_policy" -ne 1 ]; then
+		echo "Skipping ignored Incus instance $current_project/$name"
+		return 0
+	fi
 
 	while :; do
 		needs_create=0
 		needs_recreate=0
 		needs_restart=0
+		needs_recreate_from_drift=0
+		needs_recreate_from_tag=0
+		pending_recreate_drift=0
 		adopting_existing=0
+		current_config_hash=""
+		current_recreate_tag=""
+		current_boot_tag=""
 
 		if ! incus_project info "$(instance_ref "$instance_name")" >/dev/null 2>&1; then
 			needs_create=1
 		else
+			current_instance="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null || echo '{}')"
+			current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}' 2>/dev/null || echo '{}')"
+			current_meta="$(nixos_meta_from_config_json "$current_config")"
 			current_incus_type="$(
-				incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null |
+				printf '%s' "$current_instance" |
 					jq -r '.metadata.type // empty' 2>/dev/null ||
 					true
 			)"
@@ -2274,11 +2519,12 @@ machine_main() {
 					echo "Refusing to adopt Incus instance $current_project/$name with type $current_incus_type; declared kind is $desired_kind" >&2
 					exit 1
 				fi
+				needs_recreate_from_drift=1
 				needs_recreate=1
 			fi
 
-			current_managed_by="$(incus_project config get "$(instance_ref "$instance_name")" user.managed-by 2>/dev/null || true)"
-			if [ "$current_managed_by" != "nixos" ]; then
+			current_managed_by="$(printf '%s' "$current_meta" | jq -r '.kind // empty')"
+			if [ "$current_managed_by" != "incus-machine" ]; then
 				if [ "$desired_adopt" = "true" ]; then
 					echo "Adopting existing Incus instance $current_project/$name"
 					adopting_existing=1
@@ -2287,26 +2533,38 @@ machine_main() {
 					exit 1
 				fi
 			fi
-			current_controller="$(incus_project config get "$(instance_ref "$instance_name")" user.incus-machines.controller 2>/dev/null || true)"
+			current_controller="$(printf '%s' "$current_meta" | jq -r '.controller // empty')"
 			if [ -n "$controller_id" ] && [ -n "$current_controller" ] && [ "$current_controller" != "$controller_id" ]; then
 				echo "Refusing to manage Incus instance $current_project/$name owned by controller $current_controller" >&2
 				exit 1
 			fi
 
-			current_config_hash="$(incus_project config get "$(instance_ref "$instance_name")" user.config-hash 2>/dev/null || true)"
-			current_recreate_tag="$(incus_project config get "$(instance_ref "$instance_name")" user.recreate-tag 2>/dev/null || true)"
-			current_boot_tag="$(incus_project config get "$(instance_ref "$instance_name")" user.boot-tag 2>/dev/null || true)"
+			current_config_hash="$(printf '%s' "$current_meta" | jq -r '.configHash // empty')"
+			current_recreate_tag="$(printf '%s' "$current_meta" | jq -r '.recreateTag // empty')"
+			current_boot_tag="$(printf '%s' "$current_meta" | jq -r '.bootTag // empty')"
+			if [ "$current_recreate_tag" != "$desired_recreate_tag" ]; then
+				needs_recreate_from_tag=1
+			fi
 
 			if [ "$adopting_existing" -eq 0 ]; then
 				if [ "$needs_recreate" -eq 1 ]; then
 					:
-				elif [ "$current_recreate_tag" != "$desired_recreate_tag" ] ||
-					{ [ -n "$current_config_hash" ] && [ "$current_config_hash" != "$desired_config_hash" ]; }; then
+				elif [ "$needs_recreate_from_tag" -eq 1 ]; then
+					needs_recreate=1
+				elif [ -n "$current_config_hash" ] && [ "$current_config_hash" != "$desired_config_hash" ]; then
+					needs_recreate_from_drift=1
 					needs_recreate=1
 				elif [ -n "$current_boot_tag" ] && [ "$current_boot_tag" != "$desired_boot_tag" ]; then
 					needs_restart=1
 				fi
 			fi
+		fi
+
+		if [ "$needs_recreate_from_drift" -eq 1 ] && [ "$needs_recreate_from_tag" -eq 0 ] && [ "$reconcile_policy" = "declarative" ]; then
+			# Declarative policy reports recreate-only drift but converges only on explicit recreateTag intent.
+			pending_recreate_drift=1
+			needs_recreate=0
+			echo "Incus instance $current_project/$name has pending recreate drift; reconcilePolicy=declarative will not delete/recreate it automatically" >&2
 		fi
 
 		if [ "$needs_recreate" -eq 1 ]; then
@@ -2439,72 +2697,40 @@ machine_main() {
 				incus_project config device override "$(instance_ref "$instance_name")" eth0 "ipv4.address=$desired_ipv4" 2>/dev/null || true
 		fi
 
-		set_instance_config_json_if_changed "$instance_name" "$current_config" "$(
-			jq -cn \
-				--arg configHash "$desired_config_hash" \
-				--arg bootTag "$desired_boot_tag" \
-				--arg recreateTag "$desired_recreate_tag" \
-				--arg removalPolicy "$desired_removal_policy" \
-				'{
-					"user.config-hash": $configHash,
-					"user.boot-tag": $bootTag,
-					"user.recreate-tag": $recreateTag,
-					"user.removal-policy": $removalPolicy
-				}'
+		desired_meta_json="$(
+			printf '%s' "$nixos_meta_json" |
+				jq -c \
+					--arg configHash "$desired_config_hash" \
+					--arg currentConfigHash "$current_config_hash" \
+					--argjson applyConfigHash "$([ "$pending_recreate_drift" -eq 1 ] && printf 'false' || printf 'true')" '
+						.configHash = (if $applyConfigHash then $configHash else $currentConfigHash end)
+						| if (.configHash // "") == "" then del(.configHash) else . end
+						'
 		)"
+		desired_user_meta_json="$(
+			printf '%s' "$user_meta_json" |
+				jq -c --arg desiredMeta "$desired_meta_json" '
+					.["user.nixos-meta"] = $desiredMeta
+				'
+		)"
+		set_instance_config_json_if_changed "$instance_name" "$current_config" "$desired_user_meta_json"
+		cleanup_obsolete_metadata_keys "$instance_name" "$current_config"
 
-		mapfile -t current_gc_device_names < <(
-			printf '%s' "$current_config" |
-				jq -r '
-        to_entries[]
-        | select(.key | test("^user\\.device\\..+\\.(removal-policy|source)$"))
-        | (.key | capture("^user\\.device\\.(?<name>.*)\\.(removal-policy|source)$").name)
-      ' 2>/dev/null |
-				sort -u ||
-				true
-		)
-
-		mapfile -t desired_gc_device_names < <(json_keys "$desired_disks")
-		if [ "${#desired_gc_device_names[@]}" -gt 0 ]; then
-			desired_gc_config_json="$(
-				printf '%s' "$desired_disk_gc_metadata" |
-					jq -c '
-						to_entries
-						| reduce .[] as $entry ({};
-							.["user.device.\($entry.key).removal-policy"] = ($entry.value.removalPolicy // "keep")
-							| if (($entry.value.source // "") != "") then
-								.["user.device.\($entry.key).source"] = $entry.value.source
-							else
-								.
-							end
-						)
-					'
-			)"
-			set_instance_config_json_if_changed "$instance_name" "$current_config" "$desired_gc_config_json"
-
-			for dev in "${desired_gc_device_names[@]}"; do
-				source_key="user.device.$dev.source"
-				if ! printf '%s' "$desired_gc_config_json" | jq -e --arg key "$source_key" 'has($key)' >/dev/null; then
-					unset_instance_config_key_if_present "$instance_name" "$current_config" "$source_key"
-				fi
-			done
-		fi
-
-		if [ "${#current_gc_device_names[@]}" -gt 0 ]; then
-			for dev in "${current_gc_device_names[@]}"; do
-				if ! printf '%s' "$desired_disks" | jq -e --arg d "$dev" 'has($d)' >/dev/null 2>&1; then
-					unset_instance_config_key_if_present "$instance_name" "$current_config" "user.device.$dev.removal-policy"
-					unset_instance_config_key_if_present "$instance_name" "$current_config" "user.device.$dev.source"
-				fi
-			done
-		fi
-
-		if [ "$needs_restart" -eq 1 ]; then
+		if [ "$needs_restart" -eq 1 ] && [ "$desired_state" = "running" ]; then
 			echo "Restarting $name (boot tag changed)..."
 			incus_project stop "$(instance_ref "$instance_name")" --force 2>/dev/null || true
+		elif [ "$needs_restart" -eq 1 ]; then
+			echo "Skipping restart for $name because desired state is stopped"
 		fi
 
 		current_status="$(incus query "$(query_ref "/1.0/instances/$query_name")" --raw 2>/dev/null | jq -r '.metadata.status // "unknown"' 2>/dev/null || printf 'missing\n')"
+		if [ "$desired_state" = "stopped" ]; then
+			if [ "$current_status" = "Running" ]; then
+				echo "Stopping $name (desired state: stopped)..."
+				incus_project stop "$(instance_ref "$instance_name")" --force 2>/dev/null || true
+			fi
+			break
+		fi
 		if [ "$current_status" != "Running" ]; then
 			if ! start_output="$(incus_project start "$(instance_ref "$instance_name")" 2>&1)"; then
 				if printf '%s' "$start_output" | grep -qi 'instance is already running'; then
@@ -2513,7 +2739,7 @@ machine_main() {
 				fi
 
 				printf '%s\n' "$start_output" >&2
-				if [ "$recovery_attempted" -eq 0 ] && is_recoverable_start_error "$start_output"; then
+				if [ "$recovery_attempted" -eq 0 ] && [ "$reconcile_policy" = "auto" ] && is_recoverable_start_error "$start_output"; then
 					if [ "$adopting_existing" -eq 1 ]; then
 						echo "Refusing recovery delete/recreate for adopted existing Incus instance $current_project/$name" >&2
 						exit 1
@@ -2534,6 +2760,20 @@ machine_main() {
 
 		break
 	done
+}
+
+start_instance_main() {
+	local name project start_output
+	name="${1?missing instance name}"
+	project="${2:-$current_project}"
+	current_project="$project"
+	if ! start_output="$(incus_project start "$(instance_ref "$name")" 2>&1)"; then
+		if printf '%s' "$start_output" | grep -qi 'instance is already running'; then
+			return 0
+		fi
+		printf '%s\n' "$start_output" >&2
+		exit 1
+	fi
 }
 
 stop_instance_main() {
@@ -2863,7 +3103,8 @@ gc_declared_instance_refs_json() {
 }
 
 gc_main() {
-	local all_containers cname current_project dir managed owner project removal_policy row effective_declared_instance_refs declared_count effective_refs_count
+	local all_containers cname current_project dir owner project removal_policy row effective_declared_instance_refs declared_count effective_refs_count
+	local config_json current_meta declared_meta ref
 	local -a dirs_to_remove
 
 	if ! all_containers="$(gc_containers_json)"; then
@@ -2883,10 +3124,36 @@ gc_main() {
 		cname="$(echo "$row" | jq -r '.name')"
 		project="$(echo "$row" | jq -r '.project // "default"')"
 		current_project="$project"
-		managed="$(echo "$row" | jq -r '.config["user.managed-by"] // ""')"
+		ref="$project/$cname"
+		config_json="$(echo "$row" | jq -c '.config // {}')"
+		current_meta="$(nixos_meta_from_config_json "$config_json")"
 
-		[ "$managed" = "nixos" ] || continue
-		owner="$(echo "$row" | jq -r '.config["user.incus-machines.controller"] // ""')"
+		if printf '%s' "$effective_declared_instance_refs" |
+			jq -e --arg ref "$ref" '.[$ref] == true' >/dev/null 2>&1; then
+			owner="$(printf '%s' "$current_meta" | jq -r '.controller // empty')"
+			if [ -n "$controller_id" ] && [ -n "$owner" ] && [ "$owner" != "$controller_id" ]; then
+				continue
+			fi
+			if [ "$(printf '%s' "$current_meta" | jq -r '.kind // empty')" = "incus-machine" ]; then
+				declared_meta="$(declared_meta_for_ref "$ref")"
+				if [ "$declared_meta" != "{}" ]; then
+					set_nixos_meta_if_changed "$cname" "$config_json" "$declared_meta"
+					cleanup_obsolete_metadata_keys "$cname" "$config_json"
+				fi
+			fi
+			continue
+		fi
+
+		if [ "$(printf '%s' "$current_meta" | jq -r '.kind // empty')" != "incus-machine" ]; then
+			if obsolete_metadata_present "$config_json"; then
+				unmanage_instance_for_takeover "$cname" "$config_json"
+			elif printf '%s' "$config_json" | jq -e 'has("user.nixos-meta")' >/dev/null; then
+				echo "Skipping Incus instance $project/$cname with unsupported user.nixos-meta" >&2
+			fi
+			continue
+		fi
+
+		owner="$(printf '%s' "$current_meta" | jq -r '.controller // empty')"
 		if [ -n "$controller_id" ] && [ -n "$owner" ] && [ "$owner" != "$controller_id" ]; then
 			continue
 		fi
@@ -2894,31 +3161,26 @@ gc_main() {
 			continue
 		fi
 
-		if printf '%s' "$effective_declared_instance_refs" |
-			jq -e --arg ref "$project/$cname" '.[$ref] == true' >/dev/null 2>&1; then
-			continue
-		fi
-
-		removal_policy="$(echo "$row" | jq -r '.config["user.removal-policy"] // "delete-container"')"
+		removal_policy="$(printf '%s' "$current_meta" | jq -r '.removalPolicy // "delete"')"
 		echo "GC: container $project/$cname (policy: $removal_policy)"
 
 		case "$removal_policy" in
-		stop-only)
+		keep)
+			unmanage_instance_for_takeover "$cname" "$config_json"
+			;;
+		stop)
 			incus_project stop "$(instance_ref "$cname")" --force 2>/dev/null || true
 			;;
-		delete-container)
+		delete)
 			incus_project delete "$(instance_ref "$cname")" --force 2>/dev/null || true
 			;;
 		delete-all)
 			mapfile -t dirs_to_remove < <(
-				echo "$row" | jq -r '
-            .config as $cfg
-            | $cfg
+				printf '%s' "$current_meta" | jq -r '
+            .devices // {}
             | to_entries[]
-            | select(.key | test("^user\\.device\\..+\\.removal-policy$"))
-            | select(.value == "delete")
-            | (.key | capture("^user\\.device\\.(?<name>.*)\\.removal-policy$").name) as $name
-            | $cfg["user.device.\($name).source"] // empty
+            | select(.value.removalPolicy == "delete")
+            | .value.source // empty
           '
 			)
 
@@ -2949,17 +3211,25 @@ host_suspend_list_candidates() {
 	incus list --all-projects --format json |
 		jq -c \
 			--arg default_policy "$host_suspend_default_policy" \
-			--arg include_vms "$host_suspend_include_vms" '
+			--arg include_vms "$host_suspend_include_vms" \
+			--arg version "$nixos_meta_version" '
         [
           .[]
           | select(.status == "Running")
           | select(.type == "container" or ($include_vms == "true" and .type == "virtual-machine"))
-          | select((.config["user.host-suspend.policy"] // $default_policy) != "ignore")
+          | (.config["user.nixos-meta"] // "" | try fromjson catch {}) as $raw_meta
+          | (if (
+              ($raw_meta | type) == "object"
+              and (($raw_meta.version // "") | tostring) == $version
+              and ($raw_meta.kind // "") == "incus-machine"
+            ) then $raw_meta else {} end) as $meta
+          | ($meta.hostSuspendPolicy // $default_policy) as $policy
+          | select($policy != "ignore")
           | {
               name,
               project: (.project // "default"),
               type,
-              policy: (.config["user.host-suspend.policy"] // $default_policy)
+              policy: $policy
             }
         ]
       '
@@ -3070,7 +3340,7 @@ main() {
 	setup_incus_client
 	command="${1-}"
 	[ -n "$command" ] || {
-		echo "usage: incus-machines-helper <preseed-migrations|certificates|certificate-delegation|certificate-delegations-gc|remote-project-delegations|reconciler|settlement|machine|stop-instance|images|gc|host-suspend> [args...]" >&2
+		echo "usage: incus-machines-helper <preseed-migrations|certificates|certificate-delegation|certificate-delegations-gc|remote-project-delegations|reconciler|settlement|machine|start-instance|stop-instance|images|gc|host-suspend> [args...]" >&2
 		exit 1
 	}
 	shift
@@ -3099,6 +3369,9 @@ main() {
 		;;
 	machine)
 		machine_main "$@"
+		;;
+	start-instance)
+		start_instance_main "$@"
 		;;
 	stop-instance)
 		stop_instance_main "$@"

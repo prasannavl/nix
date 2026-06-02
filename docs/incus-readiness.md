@@ -22,20 +22,42 @@ Installed on parent hosts that declare
 
 ## `incus-machines-reconciler`
 
-Ensures declared guests are running.
+Ensures selected non-ignored guests match their declared `state`.
 
 Typical usage:
 
 ```sh
 incus-machines-reconciler --all
-incus-machines-reconciler --machine <guest-a> --machine <guest-b>
+incus-machines-reconciler --machine llmug-rivendell
 ```
 
-Policy is controlled by `services.incusMachines.global.reconcilePolicy`:
+Batch failure behavior is controlled by
+`services.incusMachines.global.reconcileFailurePolicy`:
 
-- `off`
 - `best-effort`
 - `strict`
+
+`strict` means failed attempted reconcile actions abort the batch. It does not
+make `declarative` pending recreate drift fail, and ignored instances are
+outside the batch reconcile contract.
+
+Per-instance lifecycle mutation is controlled by
+`services.incusMachines.<project>.instances.<name>.reconcilePolicy`:
+
+- `auto`
+- `declarative`
+- `ignore`
+
+Use `state = "running" | "stopped"` for desired runtime state and `autoStart`
+for whether the `incus-<name>.service` is wanted at boot or target startup.
+`autoStart` is independent of `reconcilePolicy`. Ignored instances keep that
+systemd control surface; start only starts an existing guest, and declarative
+create/recreate/stop/drift reconcile is skipped.
+
+For `reconcilePolicy = "ignore"`, `autoStart = true` still enables the
+`incus-<name>.service` even when `state = "stopped"`. That unit start uses the
+narrow existing-guest start path, so set `autoStart = false` if the ignored
+guest should stay stopped.
 
 ## `incus-machines-settlement`
 
@@ -50,8 +72,16 @@ Typical usage:
 
 ```sh
 incus-machines-settlement --all
-incus-machines-settlement --machine <guest-a> --timeout 120
+incus-machines-settlement --timeout 120
+incus-machines-settlement --track-ignored --all
+incus-machines-settlement --timeout 120 --machine llmug-rivendell
 ```
+
+Broad settlement (`--all`, or no explicit selector) skips instances with
+`reconcilePolicy = "ignore"` unless `--track-ignored` is set. Explicit
+settlement with `--machine` or `--instance` still checks ignored instances, so a
+deploy target can be opted out of mutation while remaining an explicit readiness
+dependency.
 
 Per-guest settings that affect settlement:
 
@@ -72,6 +102,10 @@ For each parent group it:
 
 If either step fails, the deploy wave fails.
 
+`nixbot` passes explicit `--machine <name>` arguments for the children in the
+current deploy wave. That means ignored siblings are not checked by default, but
+an ignored child that is actually being deployed must still be ready.
+
 ## Failure Behavior
 
 If parent readiness fails:
@@ -80,7 +114,7 @@ If parent readiness fails:
 - earlier successfully deployed hosts in the run are rolled back
 - unrelated hosts outside that readiness group are unaffected
 
-## Quick Links
+## Further Reading
 
 - [`docs/incus-vms.md`](./incus-vms.md)
 - [`docs/deployment.md`](./deployment.md)
@@ -111,22 +145,27 @@ For example, given:
 ```nix
 {
   hosts = {
-    <parent-host> = { target = "<parent-host>"; };
-    <guest-a> = {
-      target = "<guest-a-ip>";
-      parent = "<parent-host>";
+    pvl-x2 = { target = "pvl-x2"; };
+    llmug-rivendell = {
+      target = "10.10.20.10";
+      parent = "pvl-x2";
     };
-    <guest-b> = {
-      target = "<guest-b-ip>";
-      parent = "<parent-host>";
-      after = ["<guest-a>"];
+    gap3-gondor = {
+      target = "10.10.20.11";
+      parent = "pvl-x2";
+      after = ["llmug-rivendell"];
     };
   };
 }
 ```
 
-When deploying `<guest-a>`, `nixbot` SSHes to `<parent-host>` and runs
-reconcile + settle for `<guest-a>` before deploying into it.
+When deploying `llmug-rivendell`, `nixbot` SSHes to `pvl-x2` and runs
+reconcile + settle for `llmug-rivendell` before deploying into it.
+
+Ignored guests are skipped by broad settlement (`--all` or no selector) unless
+`--track-ignored` is set, but explicit `--machine` selection still requires
+readiness. This keeps manual lifecycle opt-outs quiet during catch-all checks
+while preserving deploy safety for hosts selected by the current wave.
 
 ### Command templates
 
@@ -172,9 +211,11 @@ convergence. When enabled, it runs after `incus-preseed.service`,
 `incus-images.service`, and `incus-machines-gc.service`.
 
 Even without `autoReconcile`, each declared guest has its own
-`incus-<name>.service` that runs at boot. The reconcile service is an additional
-catch-all that restarts any guest that failed to start or was stopped
-externally.
+`incus-<name>.service`. `autoStart` controls whether that unit is wanted at
+boot, including for ignored guests. The reconcile service is an additional
+catch-all for non-ignored guests that drift away from their desired `state`. For
+ignored guests, an enabled lifecycle unit starts the existing guest even if the
+declaration says `state = "stopped"`.
 
 ## Lifecycle Summary
 
@@ -183,13 +224,14 @@ Parent host activation (NixOS rebuild):
   incus-preseed.service
   incus-images.service        (import/refresh declared images)
   incus-machines-gc.service   (remove undeclared containers)
-  incus-<name>.service        (create/start each declared container)
-  incus-machines-reconciler   (optional: restart any that aren't Running)
+  incus-<name>.service        (create/start/stop according to state and policy)
+  incus-machines-reconciler   (optional: reconcile non-ignored state drift)
 
 nixbot deploy wave for child hosts:
   ensure_deploy_wave_parent_readiness:
     SSH to parent -> incus-machines-reconciler --machine <children>
     SSH to parent -> incus-machines-settlement --timeout T --machine <children>
+      explicitly selected ignored children are checked; ignored siblings are not
       polls until:
         container status == Running
         incus exec succeeds
@@ -201,13 +243,14 @@ nixbot deploy wave for child hosts:
 
 ## Source Of Truth Files
 
-- `lib/incus/default.nix` -- reconciler helper, settle helper, per-machine
-  service, machine type options (`sshPort`, `waitForSsh`, `ipv4Address`)
+- `lib/incus/default.nix` and `lib/incus/helper.sh` -- reconciler helper, settle
+  helper, per-machine service, machine type options (`sshPort`, `waitForSsh`,
+  `ipv4Address`)
 - `pkgs/tools/nixbot/nixbot.sh` -- `ensure_deploy_wave_parent_readiness`,
   `run_named_prepared_root_command`, command template rendering
 - `hosts/nixbot.nix` -- `parent`, `after`, and deploy target definitions
 
-## Further Reading
+## Related Docs
 
 - `docs/incus-vms.md`: Incus guest lifecycle model (images, tags, devices, GC).
 - `docs/deployment.md`: Deploy architecture, bootstrap flow, and secret model.
