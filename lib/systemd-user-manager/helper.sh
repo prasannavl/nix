@@ -440,6 +440,62 @@ apply_stop_phase_action() {
 	log_managed_unit "$user" "$managed_name" "stopped in $(elapsed_since "$managed_stopped_at") ($stopped_state)"
 }
 
+removal_command_args() {
+	local command_b64
+	command_b64="$1"
+	[ -n "$command_b64" ] || return 0
+	printf '%s' "$command_b64" | base64 -d | jq -r '.[]'
+}
+
+has_removal_command() {
+	local command_b64
+	command_b64="$1"
+	[ -n "$command_b64" ] || return 1
+	printf '%s' "$command_b64" | base64 -d | jq -e 'length > 0' >/dev/null 2>&1
+}
+
+run_removal_command() {
+	local command_b64
+	local -a command=()
+	command_b64="$1"
+	mapfile -t command < <(removal_command_args "$command_b64")
+	[ "${#command[@]}" -gt 0 ] || return 1
+	run_as_managed_user env PATH="$managed_user_action_path" "${command[@]}"
+}
+
+apply_removal_phase_action() {
+	local phase_mode user managed_name managed_unit removal_policy removal_command_b64 timeout_seconds
+	phase_mode="$1"
+	user="$2"
+	managed_name="$3"
+	managed_unit="$4"
+	removal_policy="$5"
+	removal_command_b64="$6"
+	timeout_seconds="${7:-$stable_state_timeout_seconds}"
+
+	if [ "$removal_policy" = keep ]; then
+		log_managed_unit "$user" "$managed_name" "removal kept for manual takeover"
+		return 0
+	fi
+
+	if ! has_removal_command "$removal_command_b64"; then
+		apply_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$timeout_seconds"
+		return $?
+	fi
+
+	if [ "$phase_mode" = preview ]; then
+		log_managed_unit "$user" "$managed_name" "would run removal command"
+		return 0
+	fi
+
+	userctl_mode=root
+	log_managed_unit "$user" "$managed_name" "running removal command"
+	if ! run_removal_command "$removal_command_b64"; then
+		return 1
+	fi
+	log_managed_unit "$user" "$managed_name" "removal command finished"
+}
+
 metadata_path_from_pointer_file() {
 	local pointer_file metadata_path
 	pointer_file="$1"
@@ -487,12 +543,16 @@ read_metadata_stop_state_tsv() {
 			"unit",
 			(.name // ""),
 			(.unit // ""),
-			(if .stopOnRemoval then "1" else "0" end),
+			(.removalPolicy // (if (.stopOnRemoval // true) then "stop" else "keep" end)),
+			((.removalCommand // []) | @base64),
 			(.stamp // ""),
 			(.reloadStamp // ""),
 			(if .autoStart then "1" else "0" end),
-			(if .drain then "1" else "0" end),
-			(.timeoutStableSeconds // 120)
+			(.state // "running"),
+			(.timeoutStableSeconds // 120),
+			(.transitionNeutralStamp // ""),
+			(.stopOnTransitionFrom // ""),
+			(.stopOnTransitionTo // "")
 		] | @tsv)
 	' "$metadata_file"
 }
@@ -511,13 +571,13 @@ read_empty_metadata_stop_state_tsv() {
 read_metadata_units_tsv() {
 	local metadata_file="$1"
 
-	jq -r '.managedUnits[]? | [.name, .unit, (if .stopOnRemoval then "1" else "0" end), (.stamp // ""), (if .autoStart then "1" else "0" end), (if .drain then "1" else "0" end), (.timeoutStableSeconds // 120)] | @tsv' "$metadata_file"
+	jq -r '.managedUnits[]? | [.name, .unit, (.removalPolicy // (if (.stopOnRemoval // true) then "stop" else "keep" end)), ((.removalCommand // []) | @base64), (.stamp // ""), (if .autoStart then "1" else "0" end), (.state // "running"), (.timeoutStableSeconds // 120)] | @tsv' "$metadata_file"
 }
 
 read_metadata_reconcile_units_tsv() {
 	local metadata_file="$1"
 
-	jq -r '.managedUnits | sort_by(.name)[] | [.name, .unit, (if .autoStart then "1" else "0" end), (if .drain then "1" else "0" end), (.timeoutStableSeconds // 120), (.reloadStamp // "")] | @tsv' "$metadata_file"
+	jq -r '.managedUnits | sort_by(.name)[] | [.name, .unit, (if .autoStart then "1" else "0" end), (.state // "running"), (.timeoutStableSeconds // 120), (.reloadStamp // "")] | @tsv' "$metadata_file"
 }
 
 metadata_header_from_stop_state_tsv() {
@@ -570,16 +630,18 @@ empty_metadata_for_user() {
 
 diff_and_stop_units() {
 	local phase_mode user old_metadata_tsv new_metadata_tsv
-	local stop_failed=0 new_name="" new_stamp="" new_reload_stamp="" new_auto_start="" new_drain="" new_timeout="" managed_name="" managed_unit="" stop_on_removal="" old_stamp="" old_reload_stamp="" _old_auto_start="" _old_drain="" managed_timeout=""
+	local stop_failed=0 new_name="" new_stamp="" new_reload_stamp="" new_auto_start="" new_state="" new_timeout="" new_transition_neutral_stamp="" new_stop_on_transition_to="" managed_name="" managed_unit="" removal_policy="" removal_command_b64="" old_stamp="" old_reload_stamp="" _old_auto_start="" _old_state="" managed_timeout="" old_transition_neutral_stamp="" old_stop_on_transition_from="" reset_failed=""
 	local active_state_before_stop="" old_identity="" new_identity=""
 	local record="" old_header="" new_header="" _old_version="" _old_user="" _new_version="" _new_user=""
-	local changed_stop_timeout=""
+	local changed_stop_timeout="" policy_only_change=0 transition_stop=0 stamp_changed=0 should_stop=0
 	local new_metadata_present=0
 	local -A new_stamps_by_name=()
 	local -A new_reload_stamps_by_name=()
 	local -A new_auto_start_by_name=()
-	local -A new_drain_by_name=()
+	local -A new_states_by_name=()
 	local -A new_timeouts_by_name=()
+	local -A new_transition_neutral_stamps_by_name=()
+	local -A new_stop_on_transition_to_by_name=()
 
 	phase_mode="$1"
 	user="$2"
@@ -598,37 +660,64 @@ diff_and_stop_units() {
 			return 1
 		fi
 		IFS=$'\t' read -r _new_version _new_user new_identity <<<"$new_header"
-		while IFS=$'\t' read -r record new_name _ _ new_stamp new_reload_stamp new_auto_start new_drain new_timeout; do
+		while IFS=$'\t' read -r record new_name _ _ _ new_stamp new_reload_stamp new_auto_start new_state new_timeout new_transition_neutral_stamp _new_stop_on_transition_from new_stop_on_transition_to; do
 			[ "$record" = unit ] || continue
 			[ -n "$new_name" ] || continue
 			new_stamps_by_name["$new_name"]="$new_stamp"
 			new_reload_stamps_by_name["$new_name"]="$new_reload_stamp"
 			new_auto_start_by_name["$new_name"]="$new_auto_start"
-			new_drain_by_name["$new_name"]="$new_drain"
+			new_states_by_name["$new_name"]="$new_state"
 			new_timeouts_by_name["$new_name"]="$new_timeout"
+			new_transition_neutral_stamps_by_name["$new_name"]="$new_transition_neutral_stamp"
+			new_stop_on_transition_to_by_name["$new_name"]="$new_stop_on_transition_to"
 		done <<<"$new_metadata_tsv"
 	fi
 
 	if [ -n "$old_metadata_tsv" ]; then
-		while IFS=$'\t' read -r record managed_name managed_unit stop_on_removal old_stamp old_reload_stamp _old_auto_start _old_drain managed_timeout; do
+		while IFS=$'\t' read -r record managed_name managed_unit removal_policy removal_command_b64 old_stamp old_reload_stamp _old_auto_start _old_state managed_timeout old_transition_neutral_stamp old_stop_on_transition_from _old_stop_on_transition_to; do
 			[ "$record" = unit ] || continue
 			new_stamp="${new_stamps_by_name["$managed_name"]-}"
 			new_reload_stamp="${new_reload_stamps_by_name["$managed_name"]-}"
 			new_auto_start="${new_auto_start_by_name["$managed_name"]-1}"
-			new_drain="${new_drain_by_name["$managed_name"]-0}"
+			new_state="${new_states_by_name["$managed_name"]-running}"
+			new_transition_neutral_stamp="${new_transition_neutral_stamps_by_name["$managed_name"]-}"
+			new_stop_on_transition_to="${new_stop_on_transition_to_by_name["$managed_name"]-}"
 
 			if [ -z "$new_stamp" ]; then
-				if [ "$stop_on_removal" = 1 ]; then
-					if ! apply_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$managed_timeout"; then
-						stop_failed=1
-					fi
+				if ! apply_removal_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$removal_policy" "$removal_command_b64" "$managed_timeout"; then
+					stop_failed=1
 				fi
 				continue
 			fi
 
-			if [ "$old_stamp" != "$new_stamp" ]; then
+			stamp_changed=0
+			should_stop=0
+			policy_only_change=0
+			transition_stop=0
+			[ "$old_stamp" != "$new_stamp" ] && stamp_changed=1
+			if [ -n "$old_transition_neutral_stamp" ] &&
+				[ -n "$new_transition_neutral_stamp" ] &&
+				[ "$old_transition_neutral_stamp" = "$new_transition_neutral_stamp" ]; then
+				policy_only_change=1
+				if [ -n "$old_stop_on_transition_from" ] &&
+					[ "$old_stop_on_transition_from" = "$new_stop_on_transition_to" ]; then
+					transition_stop=1
+				fi
+			fi
+			if [ "$stamp_changed" -eq 1 ]; then
+				if [ "$policy_only_change" -eq 1 ]; then
+					:
+				else
+					should_stop=1
+				fi
+			fi
+			if [ "$transition_stop" -eq 1 ]; then
+				should_stop=1
+			fi
+
+			if [ "$should_stop" -eq 1 ]; then
 				changed_stop_timeout="${new_timeouts_by_name["$managed_name"]-$managed_timeout}"
-				if [ "$phase_mode" = apply ] && [ "$new_auto_start" != 1 ] && [ "$new_drain" != 1 ]; then
+				if [ "$phase_mode" = apply ] && [ "$new_auto_start" != 1 ] && [ "$new_state" != "stopped" ]; then
 					userctl_mode=root
 					active_state_before_stop="$(userctl_active_state "$managed_unit" 2>/dev/null || true)"
 					case "$active_state_before_stop" in
@@ -637,11 +726,20 @@ diff_and_stop_units() {
 						;;
 					esac
 				fi
-				if ! apply_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$changed_stop_timeout" "$new_drain"; then
+				if [ "$new_state" = "stopped" ]; then
+					reset_failed=1
+				else
+					reset_failed=0
+				fi
+				if ! apply_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$changed_stop_timeout" "$reset_failed"; then
 					stop_failed=1
 				fi
 			elif [ -n "$new_reload_stamp" ] && [ "$old_reload_stamp" != "$new_reload_stamp" ]; then
-				if [ "$phase_mode" = preview ]; then
+				if [ "$new_state" = "stopped" ]; then
+					if ! apply_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$managed_timeout" 1; then
+						stop_failed=1
+					fi
+				elif [ "$phase_mode" = preview ]; then
 					log_managed_unit "$user" "$managed_name" "would reload"
 				else
 					userctl_mode=root
@@ -666,6 +764,42 @@ diff_and_stop_units() {
 			log_user_progress "$user" "deferring user manager restart to dispatcher"
 			mark_deferred_user_manager_restart "$user"
 		fi
+	fi
+	return 0
+}
+
+stop_absent_units_after_metadata_version_change() {
+	local phase_mode user old_metadata_tsv new_metadata_tsv
+	local stop_failed=0 record="" managed_name="" managed_unit="" removal_policy="" removal_command_b64="" old_stamp="" old_reload_stamp="" _old_auto_start="" _old_state="" managed_timeout="" _old_transition_neutral_stamp="" _old_stop_on_transition_from="" _old_stop_on_transition_to=""
+	local new_name=""
+	local -A new_units_by_name=()
+
+	phase_mode="$1"
+	user="$2"
+	old_metadata_tsv="$3"
+	new_metadata_tsv="$4"
+
+	if [ -n "$new_metadata_tsv" ]; then
+		while IFS=$'\t' read -r record new_name _; do
+			[ "$record" = unit ] || continue
+			[ -n "$new_name" ] || continue
+			new_units_by_name["$new_name"]=1
+		done <<<"$new_metadata_tsv"
+	fi
+
+	while IFS=$'\t' read -r record managed_name managed_unit removal_policy removal_command_b64 old_stamp old_reload_stamp _old_auto_start _old_state managed_timeout _old_transition_neutral_stamp _old_stop_on_transition_from _old_stop_on_transition_to; do
+		[ "$record" = unit ] || continue
+		[ -n "$managed_name" ] || continue
+		if [ -n "${new_units_by_name["$managed_name"]+x}" ]; then
+			continue
+		fi
+		if ! apply_removal_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$removal_policy" "$removal_command_b64" "$managed_timeout"; then
+			stop_failed=1
+		fi
+	done <<<"$old_metadata_tsv"
+
+	if [ "$phase_mode" = apply ] && [ "$stop_failed" -ne 0 ]; then
+		return 1
 	fi
 	return 0
 }
@@ -704,6 +838,10 @@ stop_changed_managed_units_from_applied_metadata() {
 	fi
 	IFS=$'\t' read -r new_version _ _ <<<"$new_header"
 	if [ "$old_version" != "$new_version" ]; then
+		log_user_progress "$systemd_user_manager_user" "applied metadata version changed; stopping removed units only"
+		if ! stop_absent_units_after_metadata_version_change apply "$systemd_user_manager_user" "$state_metadata_tsv" "$new_metadata_tsv"; then
+			return 1
+		fi
 		log_user_progress "$systemd_user_manager_user" "applied metadata version changed; running fresh reconcile"
 		stop_active_managed_units_without_applied_metadata
 		return
@@ -712,14 +850,14 @@ stop_changed_managed_units_from_applied_metadata() {
 }
 
 stop_active_managed_units_without_applied_metadata() {
-	local managed_units_tsv="" managed_name="" managed_unit="" auto_start="" drain="" managed_timeout="" active_state="" stop_failed=0
+	local managed_units_tsv="" managed_name="" managed_unit="" _removal_policy="" _removal_command_b64="" auto_start="" desired_state="" managed_timeout="" active_state="" stop_failed=0 reset_failed=0
 	require_env SYSTEMD_USER_MANAGER_METADATA
 	if ! managed_units_tsv="$(read_metadata_units_tsv "$systemd_user_manager_metadata")"; then
 		printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $systemd_user_manager_metadata" >&2
 		return 1
 	fi
 	[ -n "$managed_units_tsv" ] || return 0
-	while IFS=$'\t' read -r managed_name managed_unit _ _ auto_start drain managed_timeout; do
+	while IFS=$'\t' read -r managed_name managed_unit _removal_policy _removal_command_b64 _ auto_start desired_state managed_timeout; do
 		[ -n "$managed_name" ] || continue
 		active_state="$(userctl_active_state "$managed_unit" 2>/dev/null || true)"
 		case "$active_state" in
@@ -728,10 +866,15 @@ stop_active_managed_units_without_applied_metadata() {
 			continue
 			;;
 		esac
-		if [ "$auto_start" != 1 ] && [ "$drain" != 1 ]; then
+		if [ "$auto_start" != 1 ] && [ "$desired_state" != "stopped" ]; then
 			mark_deferred_managed_unit_restart "$systemd_user_manager_user" "$managed_name"
 		fi
-		if ! apply_stop_phase_action apply "$systemd_user_manager_user" "$managed_name" "$managed_unit" "$managed_timeout" "$drain"; then
+		if [ "$desired_state" = "stopped" ]; then
+			reset_failed=1
+		else
+			reset_failed=0
+		fi
+		if ! apply_stop_phase_action apply "$systemd_user_manager_user" "$managed_name" "$managed_unit" "$managed_timeout" "$reset_failed"; then
 			stop_failed=1
 		fi
 	done <<<"$managed_units_tsv"
@@ -880,11 +1023,11 @@ emit_new_journal() {
 }
 
 start_managed_unit() {
-	local managed_name managed_unit auto_start drain timeout_seconds active_state unit_file_state managed_started_at
+	local managed_name managed_unit auto_start desired_state timeout_seconds active_state unit_file_state managed_started_at
 	managed_name="$1"
 	managed_unit="$2"
 	auto_start="$3"
-	drain="$4"
+	desired_state="$4"
 	timeout_seconds="${5:-$stable_state_timeout_seconds}"
 	managed_unit_outcome="noop"
 	managed_unit_start_pid=""
@@ -899,9 +1042,11 @@ start_managed_unit() {
 
 	case "$active_state" in
 	active)
-		if [ "$drain" = 1 ]; then
+		if [ "$desired_state" = "stopped" ]; then
 			managed_unit_outcome="skip"
-			if ! apply_stop_phase_action apply "$systemd_user_manager_user" "$managed_name" "$managed_unit" "$timeout_seconds" 1; then
+			if [ "$dry_run" = 1 ]; then
+				apply_stop_phase_action preview "$systemd_user_manager_user" "$managed_name" "$managed_unit" "$timeout_seconds" 1
+			elif ! apply_stop_phase_action apply "$systemd_user_manager_user" "$managed_name" "$managed_unit" "$timeout_seconds" 1; then
 				managed_unit_outcome="fail"
 				return 1
 			fi
@@ -917,12 +1062,12 @@ start_managed_unit() {
 			return 0
 			;;
 		esac
-		if [ "$drain" = 1 ]; then
-			if ! reset_failed_managed_unit "$managed_unit"; then
+		if [ "$desired_state" = "stopped" ]; then
+			if [ "$dry_run" != 1 ] && ! reset_failed_managed_unit "$managed_unit"; then
 				managed_unit_outcome="fail"
 				return 1
 			fi
-			log_managed_unit "$systemd_user_manager_user" "$managed_name" "skipped (drain=true)"
+			log_managed_unit "$systemd_user_manager_user" "$managed_name" "skipped (state=stopped)"
 			managed_unit_outcome="skip"
 			return 0
 		fi
@@ -983,14 +1128,14 @@ reload_managed_unit() {
 }
 
 reload_changed_managed_units_from_metadata() {
-	local managed_units_tsv="" managed_name="" managed_unit="" _auto_start="" _drain="" managed_timeout="" managed_reload_stamp="" failed_units=""
+	local managed_units_tsv="" managed_name="" managed_unit="" _auto_start="" _desired_state="" managed_timeout="" managed_reload_stamp="" failed_units=""
 	require_env SYSTEMD_USER_MANAGER_METADATA
 	if ! managed_units_tsv="$(read_metadata_reconcile_units_tsv "$systemd_user_manager_metadata")"; then
 		printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $systemd_user_manager_metadata" >&2
 		return 1
 	fi
 	[ -n "$managed_units_tsv" ] || return 0
-	while IFS=$'\t' read -r managed_name managed_unit _auto_start _drain managed_timeout managed_reload_stamp; do
+	while IFS=$'\t' read -r managed_name managed_unit _auto_start _desired_state managed_timeout managed_reload_stamp; do
 		[ -n "$managed_name" ] || continue
 		if ! consume_deferred_managed_unit_reload "$systemd_user_manager_user" "$managed_name" "$managed_reload_stamp"; then
 			continue
@@ -1111,9 +1256,9 @@ run_reconciler_apply() {
 		exit 1
 	fi
 	if [ -n "$managed_units_tsv" ]; then
-		while IFS=$'\t' read -r managed_name managed_unit auto_start drain managed_timeout _reload_stamp; do
+		while IFS=$'\t' read -r managed_name managed_unit auto_start desired_state managed_timeout _reload_stamp; do
 			total_units=$((total_units + 1))
-			if ! start_managed_unit "$managed_name" "$managed_unit" "$auto_start" "$drain" "$managed_timeout"; then
+			if ! start_managed_unit "$managed_name" "$managed_unit" "$auto_start" "$desired_state" "$managed_timeout"; then
 				failed_units="${failed_units} ${managed_name}"
 			elif [ "$managed_unit_outcome" = "start" ]; then
 				work_units=$((work_units + 1))
@@ -1271,7 +1416,10 @@ run_metadata_pointer_stop_phase() {
 			fi
 			IFS=$'\t' read -r new_version _ _ <<<"$new_header"
 			if [ "$old_version" != "$new_version" ]; then
-				log_user_progress "$old_user" "stop skipped: metadata version changed"
+				log_user_progress "$old_user" "metadata version changed; stopping removed units only"
+				if ! stop_absent_units_after_metadata_version_change "$phase_mode" "$old_user" "$old_metadata_tsv" "$new_metadata_tsv"; then
+					return 1
+				fi
 				continue
 			fi
 		fi
@@ -1345,7 +1493,10 @@ run_activation_stop_applied() {
 			fi
 			IFS=$'\t' read -r new_version _ _ <<<"$new_header"
 			if [ "$old_version" != "$new_version" ]; then
-				log_user_progress "$old_user" "stop skipped: applied metadata version changed"
+				log_user_progress "$old_user" "applied metadata version changed; stopping removed units only"
+				if ! stop_absent_units_after_metadata_version_change apply "$old_user" "$state_metadata_tsv" "$new_metadata_tsv"; then
+					return 1
+				fi
 				continue
 			fi
 			if ! diff_and_stop_units apply "$old_user" "$state_metadata_tsv" "$new_metadata_tsv"; then

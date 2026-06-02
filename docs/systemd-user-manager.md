@@ -19,6 +19,7 @@ manager and uses `systemctl --user`.
 services.systemdUserManager.instances.<name> = {
   user = "app";
   unit = "app.service";
+  state = "running";
   restartTriggers = ["<stamp>"];
   reloadTriggers = ["<reload-safe-stamp>"];
 };
@@ -28,18 +29,23 @@ Important options:
 
 - `user`
 - `unit`
+- `state`
 - `autoStart`
-- `stopOnRemoval`
+- `removalPolicy`
+- `removalCommand`
 - `timeoutStableSeconds`
 - `restartTriggers`
 - `reloadTriggers`
 - `stampPayload`
+- `transitionNeutralStamp`
+- `stopOnTransitionFrom`
+- `stopOnTransitionTo`
 
 ## Switch Behavior
 
 Applied old state:
 
-- stops removed units when `stopOnRemoval = true`
+- handles removed units according to `removalPolicy`
 - stops units whose restart stamp changed
 - defers reload for active units when only the reload stamp changed
 - restarts `user@<uid>.service` if the managed user identity changed
@@ -64,14 +70,31 @@ does not remove that unit from old-versus-new diff management. If a deploy had
 to stop a changed unit that was already running, the reconciler starts it again
 in the new world.
 
+`state = "stopped"` is desired stopped state. The dispatcher stops an active
+unit and the reconciler keeps it inactive until the declaration returns to
+`state = "running"`.
+
 `timeoutStableSeconds` defaults to 120 seconds and bounds waits for a managed
 unit to leave `activating`, `deactivating`, or `reloading` states during
 reconcile and stop handling.
+
+`removalPolicy = "keep"` leaves a removed managed entry alone. With
+`removalPolicy = "stop"`, the manager either stops the old unit directly or, if
+`removalCommand` is set, runs that command as the managed user. Provider
+commands are responsible for their own provider-specific stop, cleanup, or
+takeover behavior.
 
 `reloadTriggers` are opt-in. If restart and reload stamps both change, restart
 wins. Reload-only changes call `systemctl --user reload <unit>` after the new
 generation's user units are daemon-reloaded, so the unit's new `ExecReload`
 definition is used.
+
+`transitionNeutralStamp`, `stopOnTransitionFrom`, and `stopOnTransitionTo` are
+provider-owned transition controls. When old and new `transitionNeutralStamp`
+match, a managed stamp change is treated as policy-only drift and does not stop
+the unit by itself. The dispatcher still stops once when the old
+`stopOnTransitionFrom` token matches the new `stopOnTransitionTo` token.
+`systemd-user-manager` does not interpret provider policy names.
 
 ## Reconciler Behavior
 
@@ -80,7 +103,8 @@ The reconciler is intentionally narrow:
 - reads generation metadata
 - checks live `systemctl --user` state
 - leaves active units alone
-- starts inactive or failed managed units unless `autoStart = false`
+- starts inactive or failed managed units unless `autoStart = false` or
+  `state = "stopped"`
 - uses each managed unit's `timeoutStableSeconds` for stable-state waits
 
 After success it starts `systemd-user-manager-ready.target`.

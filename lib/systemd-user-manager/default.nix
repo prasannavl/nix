@@ -7,7 +7,7 @@
   cfg = config.services.systemdUserManager;
   migratorOn = config.x.migrator.on or false;
   flakeUtils = import ../flake/utils.nix {lib = lib;};
-  metadataVersion = 3;
+  metadataVersion = 5;
 
   unitType = lib.types.submodule ({name, ...}: {
     options = {
@@ -22,10 +22,23 @@
         description = "User unit name to keep started by the per-user reconciler.";
       };
 
-      stopOnRemoval = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Whether removing the managed entry should stop the old user unit during dispatcher stop.";
+      removalPolicy = lib.mkOption {
+        type = lib.types.enum ["keep" "stop"];
+        default = "stop";
+        description = ''
+          What to do when the managed entry is removed. `stop` stops the old
+          user unit or runs `removalCommand` when set. `keep` leaves the old
+          workload alone for manual takeover.
+        '';
+      };
+
+      removalCommand = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        description = ''
+          Optional command to run as the managed user instead of a generic
+          systemctl stop when this entry is removed and `removalPolicy = "stop"`.
+        '';
       };
 
       restartTriggers = lib.mkOption {
@@ -46,10 +59,10 @@
         description = "Whether the reconciler should automatically start this managed unit when it is inactive or failed.";
       };
 
-      drain = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Whether this managed unit should be stopped and kept inactive during reconciliation.";
+      state = lib.mkOption {
+        type = lib.types.enum ["running" "stopped"];
+        default = "running";
+        description = "Desired runtime state for this managed user unit.";
       };
 
       timeoutStableSeconds = lib.mkOption {
@@ -62,6 +75,24 @@
         type = lib.types.nullOr lib.types.unspecified;
         default = null;
         description = "Optional explicit payload to hash for this managed unit stamp. Defaults to the managed-unit definition fields.";
+      };
+
+      transitionNeutralStamp = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional provider-owned stamp used to distinguish policy-only changes from real managed unit drift.";
+      };
+
+      stopOnTransitionFrom = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional provider-owned token exported by the old unit state. When it matches the new unit's stopOnTransitionTo token and transitionNeutralStamp is unchanged, the unit is stopped once.";
+      };
+
+      stopOnTransitionTo = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional provider-owned token imported by the new unit state. When it matches the old unit's stopOnTransitionFrom token and transitionNeutralStamp is unchanged, the unit is stopped once.";
       };
     };
   });
@@ -76,7 +107,10 @@
           if migratorOn
           then false
           else unit.autoStart;
-        drain = migratorOn || unit.drain;
+        state =
+          if migratorOn
+          then "stopped"
+          else unit.state;
       })
     cfg.instances;
 
@@ -132,14 +166,15 @@
       then {
         payload = managedUnit.stampPayload;
         autoStart = managedUnit.autoStart;
-        drain = managedUnit.drain;
+        state = managedUnit.state;
       }
       else {
         kind = "unit";
         unit = managedUnit.unit;
-        stopOnRemoval = managedUnit.stopOnRemoval;
+        removalPolicy = managedUnit.removalPolicy;
+        removalCommand = managedUnit.removalCommand;
         autoStart = managedUnit.autoStart;
-        drain = managedUnit.drain;
+        state = managedUnit.state;
         restartTriggers = managedUnit.restartTriggers;
       };
     stamp = builtins.hashString "sha256" (builtins.toJSON declaredStampPayload);
@@ -151,12 +186,16 @@
     user = managedUnit.user;
     name = managedUnit.unitName;
     unit = managedUnit.unit;
-    stopOnRemoval = managedUnit.stopOnRemoval;
+    removalPolicy = managedUnit.removalPolicy;
+    removalCommand = managedUnit.removalCommand;
     autoStart = managedUnit.autoStart;
-    drain = managedUnit.drain;
+    state = managedUnit.state;
     timeoutStableSeconds = managedUnit.timeoutStableSeconds;
     stamp = stamp;
     reloadStamp = reloadStamp;
+    transitionNeutralStamp = managedUnit.transitionNeutralStamp;
+    stopOnTransitionFrom = managedUnit.stopOnTransitionFrom;
+    stopOnTransitionTo = managedUnit.stopOnTransitionTo;
   };
 
   managedUnitsByUser =
@@ -219,12 +258,16 @@
           (managedUnit: {
             name = managedUnit.name;
             unit = managedUnit.unit;
-            stopOnRemoval = managedUnit.stopOnRemoval;
+            removalPolicy = managedUnit.removalPolicy;
+            removalCommand = managedUnit.removalCommand;
             autoStart = managedUnit.autoStart;
-            drain = managedUnit.drain;
+            state = managedUnit.state;
             timeoutStableSeconds = managedUnit.timeoutStableSeconds;
             stamp = managedUnit.stamp;
             reloadStamp = managedUnit.reloadStamp;
+            transitionNeutralStamp = managedUnit.transitionNeutralStamp;
+            stopOnTransitionFrom = managedUnit.stopOnTransitionFrom;
+            stopOnTransitionTo = managedUnit.stopOnTransitionTo;
           })
           sortedUnits;
       };

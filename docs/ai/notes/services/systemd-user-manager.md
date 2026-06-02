@@ -41,6 +41,9 @@ interaction with deploy-time service reconciliation.
 - Managed units may opt out of cold-start through `autoStart = false`; they
   still remain under old-versus-new diff management, and units that were running
   when old-world stop touched them are restarted during new-world reconcile.
+- Managed units use `state = "running" | "stopped"` for desired runtime state.
+  `state = "stopped"` stops active units, keeps them inactive during
+  reconciliation, and is the only generic stopped-state API.
 - Managed units carry `timeoutStableSeconds`, defaulting to 120 seconds. The
   helper uses that per-unit timeout for stable-state and stopped-state waits so
   slow services can extend their own convergence budget.
