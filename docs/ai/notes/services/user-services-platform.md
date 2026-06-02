@@ -7,8 +7,8 @@ service-facing ingress policy.
 
 ## Podman compose model
 
-- Shared implementation lives in `lib/podman-compose/` and the higher-level
-  service wiring under `lib/podman.nix`.
+- Shared compose implementation lives in `lib/podman-compose/`. Base Podman
+  enablement defaults live in `lib/podman.nix`.
 - `services.podmanCompose.<stack>.instances` is the canonical instance shape.
 - Generated runtime trees are store-backed, staged at service start, and cleaned
   through runtime manifests rather than handwritten ad hoc cleanup.
@@ -47,34 +47,57 @@ service-facing ingress policy.
   are resolved under the compose working directory; absolute keys manage host
   paths directly.
 - `envSecrets` is the canonical file-backed secret injection mechanism.
-- Age-backed `envSecrets` and `fileSecrets` participate in restart stamps via
-  the encrypted source `*.age` hash. Rotating a managed age source restarts the
-  compose unit on the next deploy when the runtime path resolves through
-  `age.secrets`.
-- Non-age secret paths are not hashed by content; use an explicit lifecycle tag
-  or convert the source to `age.secrets`.
-- Secret-content rotation at an unmanaged runtime path does not force a restart
-  by itself; use a lifecycle tag when a managed restart is required.
+- Repo-managed age secret source changes are included in restart stamps when the
+  configured secret runtime path maps back to `config.age.secrets`; use
+  `bootTag` for secret files outside that model when a managed restart is
+  required.
 
 ## Lifecycle tags
 
+- `state = "running" | "stopped"` is the public desired-state knob for
+  `services.podmanCompose.<stack>.instances.<name>`. Stopped instances still
+  render metadata and generated units, but the generated user-manager entry uses
+  `state = "stopped"` to stop the unit and avoid auto-starting it. Podman
+  runtime files are staged on manual or automatic start and cleaned after stop.
+  This cleanup is intentional: stopped state is still declared ownership, but it
+  must not leave stale staged files from an older generation. Resuming the unit
+  stages the current generation again. Removal behavior is a separate
+  `removalPolicy` path.
+- Stack `reconcilePolicy` defaults to `auto`; instance `reconcilePolicy`
+  defaults to `inherit` and resolves before helper metadata is generated. `auto`
+  uses smart reload/restart/recreate classification, `restart` restarts for
+  reload/restart-class and recreate-class drift without force-recreating
+  containers, and `recreate` collapses restart-class and recreate-class drift
+  into a force-recreate.
+- Stack `removalPolicy` defaults to `delete`; instance `removalPolicy` defaults
+  to `inherit`. `keep` leaves the old workload running when the declaration is
+  removed; `stop` stops containers without deleting compose objects;
+  `delete-all` also removes compose volumes and managed staged dirs under the
+  working directory. Re-declaration requires matching
+  `.podman-compose/state.json` identity state or a one-time `adopt = true`.
+- `adopt = true` is a takeover knob, not a steady-state policy. It
+  force-recreates containers on start so the adopted runtime matches the
+  declaration, regardless of `reconcilePolicy`.
 - `bootTag`, `reloadTag`, `recreateTag`, and `imageTag` are explicit operator
   knobs.
 - `reloadTag` routes through reloadTriggers for native-reload-capable instances
   and does not affect services where native reload is not enabled.
-- `recreateTag != "0"` restarts the managed unit through the reconciler and
-  makes the helper use `podman compose up --force-recreate` once for each new
-  tag value. The helper records the last successful tag in the compose working
-  directory so later boots do not replay the same tag.
+- `recreateTag != "0"` restarts the managed unit through the reconciler. Under
+  `auto` or `recreate`, it makes the helper use
+  `podman compose up --force-recreate` once for each new tag value. Under
+  `restart`, it restarts without force-recreating containers. The helper records
+  the last successful tag in the compose working directory so later boots do not
+  replay the same tag.
+- Recreate-relevant runtime shape is also folded into a generated
+  `recreateStamp`; under `auto` or `recreate`, stamp drift makes the helper run
+  `podman compose up --force-recreate`. Under `restart`, the same drift restarts
+  without force-recreating containers.
 - `imageTag != "0"` enables the auxiliary image-pull unit before the managed
-  service starts; use `bootTag` or `recreateTag` when existing containers should
-  be restarted after an image pull.
+  service starts and is included in recreate intent so changed images are
+  consumed automatically when policy allows recreate.
 - Tag semantics should depend only on the declared tag value, not on incidental
   generated helper path churn.
 - Boots do not replay lifecycle tags. Tags are deploy-time triggers.
-- Prefer a small tri-state rotation for manual tags: unset or `0`, then `1`,
-  then `2`, then back to unset or `0`. This avoids rollback collisions with a
-  stale two-state runtime marker.
 - Rootless stack users get a system-level Podman idmap migration check before
   their user-manager dispatcher. It runs `podman system migrate` only when
   subordinate uid/gid ranges exist and Podman's active map is still the stale
@@ -95,9 +118,6 @@ service-facing ingress policy.
   stay soft `Wants`-style startup edges, not hard `Requires`.
 - Backend outages should degrade to route-level `502` or `504` responses, not
   block nginx startup entirely.
-- Use per-route or per-port proxy timeout knobs for known long-lived upstream
-  streams. Do not hide service readiness failures by raising stable-state
-  startup timeouts.
 
 ## Rate limiting
 

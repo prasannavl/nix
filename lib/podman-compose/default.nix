@@ -48,11 +48,19 @@
         externalFiles = [];
       };
     };
+    recreate = {
+      trigger = {
+        files = [];
+      };
+    };
     subnet = null;
+    state = "running";
+    reconcilePolicy = "inherit";
+    removalPolicy = "inherit";
+    adopt = false;
     autoStart = null;
     longRunning = true;
     timeoutStableSeconds = 120;
-    recreateOnSwitch = false;
     bootTag = "0";
     reloadTag = "0";
     recreateTag = "0";
@@ -67,6 +75,12 @@
     dirs = {};
     exposedPorts = {};
   };
+  defaultComposeEntryFiles = [
+    "compose.yml"
+    "compose.yaml"
+    "docker-compose.yml"
+    "docker-compose.yaml"
+  ];
   bootReadyTargetName = "systemd-user-manager-ready.target";
   generatedRuntimeDirName = ".podman-compose";
   envSecretsRuntimeDirName = "${generatedRuntimeDirName}/env-secrets";
@@ -161,7 +175,7 @@
       once = lib.mkOption {
         type = lib.types.nullOr lib.types.bool;
         default = dirEntryDefaults.once;
-        description = "When true, create and initialize the directory only when missing; existing directories are preserved. When false, reconcile mode and ownership on every helper run. Null selects the compatibility default.";
+        description = "When true, create and initialize the directory only when missing; existing directories are preserved. When false, reconcile mode and ownership on every helper run. Null selects the automatic default.";
       };
     };
   dirEntryType = lib.types.submodule {options = dirEntryOptions;};
@@ -203,6 +217,23 @@
         };
         default = serviceDefaults.reload.trigger;
         description = "Paths that may be handled by native reload instead of restart once the user-manager supports reload triggers.";
+      };
+    };
+  };
+  recreateType = lib.types.submodule {
+    options = {
+      trigger = lib.mkOption {
+        type = lib.types.submodule {
+          options = {
+            files = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = serviceDefaults.recreate.trigger.files;
+              description = "Explicit staged files whose changes require container recreation. Automatically detected exact single-file bind mounts are added to this effective list.";
+            };
+          };
+        };
+        default = serviceDefaults.recreate.trigger;
+        description = "Paths that require `podman compose up --force-recreate` instead of reload or restart.";
       };
     };
   };
@@ -336,6 +367,19 @@
     (lib.types.listOf (lib.types.either lib.types.str lib.types.attrs))
     lib.types.attrs
   ];
+  podmanReconcilePolicyType = lib.types.enum [
+    "inherit"
+    "auto"
+    "restart"
+    "recreate"
+  ];
+  podmanRemovalPolicyType = lib.types.enum [
+    "inherit"
+    "keep"
+    "stop"
+    "delete"
+    "delete-all"
+  ];
 
   ownerRefToString = v:
     if v == null
@@ -357,6 +401,8 @@
     || lib.hasPrefix "${generatedRuntimeDirName}/" path
     || path == envSecretsOverrideFileName
     || path == fileSecretsOverrideFileName;
+  pathMatchesDir = dirName: fileName:
+    fileName == dirName || lib.hasPrefix "${dirName}/" fileName;
   stackTmpfilesGroup = stack:
     if builtins.hasAttr stack.user config.users.users && config.users.users.${stack.user}.group != null
     then config.users.users.${stack.user}.group
@@ -367,6 +413,7 @@
     excludeShellChecks = ["SC1091"];
     runtimeInputs = [
       pkgs.coreutils
+      pkgs.findutils
       pkgs.jq
       pkgs.podman
       pkgs.systemd
@@ -408,7 +455,7 @@
           Managed staged directories keyed by destination path. Relative paths
           are resolved under the compose working directory; absolute paths are
           managed directly on the host. Each entry carries mode/user/group/scope,
-          plus `once` for create-only compatibility with persistent data dirs.
+          plus `once` for create-only handling of persistent data dirs.
           Managed entries are finalized after file staging so directory bind
           mounts can avoid world traversal bits. The helper runs as the stack
           user, so absolute path parents must already exist and be
@@ -419,7 +466,7 @@
       entryFile = lib.mkOption {
         type = lib.types.nullOr (lib.types.oneOf [lib.types.str (lib.types.listOf lib.types.str)]);
         default = serviceDefaults.entryFile;
-        description = "Optional compose entry filename(s) inside workingDir. Set a string for one file or a list for ordered repeated `-f` arguments. When null and source is set, `compose.yml` in workingDir is used; otherwise podman compose default file discovery is used in workingDir.";
+        description = "Optional compose entry filename(s) inside workingDir. Set a string for one file or a list for ordered repeated `-f` arguments. When null and source is set, `compose.yml` is used. When null for files-only stacks, staged default compose filenames are derived automatically.";
       };
 
       user = lib.mkOption {
@@ -504,6 +551,56 @@
         description = "Reload policy for this compose instance. Restart is the default; native signal reload is opt-in and only supports directory-mounted change sets.";
       };
 
+      recreate = lib.mkOption {
+        type = recreateType;
+        default = serviceDefaults.recreate;
+        description = "Recreate policy for staged files whose changes cannot be safely consumed by native reload or restart.";
+      };
+
+      state = lib.mkOption {
+        type = lib.types.enum ["running" "stopped"];
+        default = serviceDefaults.state;
+        description = "Desired runtime state for this compose instance.";
+      };
+
+      reconcilePolicy = lib.mkOption {
+        type = podmanReconcilePolicyType;
+        default = serviceDefaults.reconcilePolicy;
+        description = ''
+          Drift-action policy for this compose instance. `inherit` uses the
+          stack default. `auto` uses smart reload/restart/recreate
+          classification; `restart` restarts for reload/restart-class drift and
+          recreate-class drift; `recreate` force-recreates for restart-class or
+          recreate-class drift.
+        '';
+      };
+
+      removalPolicy = lib.mkOption {
+        type = podmanRemovalPolicyType;
+        default = serviceDefaults.removalPolicy;
+        description = ''
+          What to do when this compose instance is removed from the declaration.
+          `inherit` uses the stack default. `keep` leaves the old workload
+          alone for manual takeover; `stop` stops containers without removing
+          compose objects; `delete` runs compose down and cleans generated
+          runtime files; `delete-all` also asks compose to remove volumes and
+          deletes managed staged dirs under the compose working directory.
+        '';
+      };
+
+      adopt = lib.mkOption {
+        type = lib.types.bool;
+        default = serviceDefaults.adopt;
+        description = ''
+          Allow this declaration to initialize or replace missing or mismatched
+          helper identity state in the compose working directory. Normal
+          operation should leave this false; set it for one deploy when
+          deliberately taking over an existing working directory. Adoption
+          force-recreates containers so the adopted runtime starts from the
+          declared compose shape.
+        '';
+      };
+
       autoStart = lib.mkOption {
         type = lib.types.nullOr lib.types.bool;
         default = serviceDefaults.autoStart;
@@ -520,12 +617,6 @@
         type = lib.types.ints.positive;
         default = serviceDefaults.timeoutStableSeconds;
         description = "Seconds the generated user-manager reconciliation should wait for this compose unit to leave activating, deactivating, or reloading states.";
-      };
-
-      recreateOnSwitch = lib.mkOption {
-        type = lib.types.bool;
-        default = serviceDefaults.recreateOnSwitch;
-        description = "Whether service starts triggered by switch/restart should force container recreation instead of reusing existing compose containers.";
       };
 
       recreateTag = lib.mkOption {
@@ -996,6 +1087,26 @@
         description = "Default auto-start behavior for compose instances in this stack. Instances can override this with their own autoStart.";
       };
 
+      reconcilePolicy = lib.mkOption {
+        type = lib.types.enum ["auto" "restart" "recreate"];
+        default = "auto";
+        description = ''
+          Default drift-action policy for compose instances in this stack.
+          `auto` uses smart reload/restart/recreate classification; `restart`
+          restarts for reload/restart-class drift and recreate-class drift;
+          `recreate` force-recreates for restart-class or recreate-class drift.
+        '';
+      };
+
+      removalPolicy = lib.mkOption {
+        type = lib.types.enum ["keep" "stop" "delete" "delete-all"];
+        default = "delete";
+        description = ''
+          Default removal behavior for compose instances in this stack.
+          Instances can override this or use `inherit` to take this value.
+        '';
+      };
+
       trustedCaDefaults = lib.mkOption {
         type = lib.types.submodule {
           options = {
@@ -1098,8 +1209,6 @@
     hasImagePullUnit = service.imageTag != "0";
     resolvedPullComposeFiles = map (file: service.sourcePaths.${file}) service.pullEntryFiles;
     nativeReloadEnabled = service.reload.method == "signal";
-    reloadPathMatchesDir = dirName: fileName:
-      fileName == dirName || lib.hasPrefix "${dirName}/" fileName;
     reloadExternalFileEntries =
       if nativeReloadEnabled
       then
@@ -1115,19 +1224,29 @@
         (
           fileName: _:
             builtins.any
-            (dirName: reloadPathMatchesDir dirName fileName)
+            (dirName: pathMatchesDir dirName fileName)
             service.reload.trigger.dirs
         )
         service.stagedEntries
       else {};
+    isReloadTriggerDir = dirName:
+      builtins.elem dirName service.reload.trigger.dirs;
+    restartDirs =
+      lib.filterAttrs
+      (dirName: _: !isReloadTriggerDir dirName)
+      service.dirs;
+    restartDirRuntimePaths =
+      lib.filterAttrs
+      (dirName: _: !isReloadTriggerDir dirName)
+      service.dirRuntimePaths;
     restartStagedEntries =
       lib.filterAttrs
-      (fileName: _: !(builtins.hasAttr fileName reloadStagedEntries))
+      (fileName: _: !(builtins.hasAttr fileName reloadStagedEntries) && !(builtins.hasAttr fileName recreateStagedEntries))
       service.stagedEntries;
-    restartRuntimePaths =
+    recreateStagedEntries =
       lib.filterAttrs
-      (fileName: _: !(builtins.hasAttr fileName reloadStagedEntries))
-      service.runtimePaths;
+      (fileName: _: builtins.elem fileName service.recreateTriggerFiles)
+      service.stagedEntries;
     reloadDirRuntimePath = dirName:
       if builtins.hasAttr dirName service.dirRuntimePaths
       then service.dirRuntimePaths.${dirName}
@@ -1176,11 +1295,223 @@
         dst = reloadDirRuntimePath dirName;
       }
       // dirPermsJson dirName (reloadDirEntry dirName);
+    stagedFileActionInputs = entries: {
+      sourcePaths = lib.mapAttrs (fileName: _: service.sourcePaths.${fileName}) entries;
+      runtimePaths = lib.mapAttrs (fileName: _: service.runtimePaths.${fileName}) entries;
+      stagedEntryPerms = lib.mapAttrs (_: entryPermsJson) entries;
+    };
+    sortJsonValues = values: lib.sort (a: b: builtins.toJSON a < builtins.toJSON b) values;
+    secretSourceInput = file: let
+      sourceHash = secretSourceHash file;
+    in {
+      inherit sourceHash;
+      source =
+        if sourceHash == null
+        then file
+        else null;
+    };
+    fileSecretSourceInput = entry: let
+      sourceHash =
+        if (entry.sourceHash or null) != null
+        then entry.sourceHash
+        else secretSourceHash entry.file;
+    in {
+      inherit sourceHash;
+      source =
+        if sourceHash == null
+        then entry.file
+        else null;
+    };
+    secretRestartInputs = {
+      fileSecrets = sortJsonValues (
+        map
+        (entry:
+          fileSecretSourceInput entry
+          // entryPermsJson entry)
+        (lib.attrValues service.fileSecrets)
+      );
+      envSecrets = sortJsonValues (
+        map
+        (entry:
+          {
+            sources = sortJsonValues (map secretSourceInput (lib.attrValues entry.entries));
+          }
+          // entryPermsJson entry)
+        (lib.attrValues service.envSecrets)
+      );
+    };
+    secretRecreateInputs = {
+      fileSecrets =
+        lib.mapAttrs (_: entry: {
+          inherit
+            (entry)
+            mount
+            mountPath
+            readOnly
+            services
+            ;
+        })
+        service.fileSecrets;
+      fileSecretRuntimePaths = service.fileSecretRuntimePaths;
+      envSecrets =
+        lib.mapAttrs (_: entry: {
+          envVars = builtins.attrNames entry.entries;
+        })
+        service.envSecrets;
+      envSecretRuntimePaths = service.envSecretRuntimePaths;
+    };
+    actionInputs = {
+      reload = {
+        reload = service.reload;
+        reloadTag = service.reloadTag;
+        dirs =
+          map (dirName: {
+            name = dirName;
+            dst = reloadDirRuntimePath dirName;
+            perms =
+              if builtins.hasAttr dirName service.dirs
+              then dirPermsJson dirName service.dirs.${dirName}
+              else null;
+          })
+          service.reload.trigger.dirs;
+        files = stagedFileActionInputs reloadStagedEntries;
+      };
+      restart =
+        {
+          unit = restartSystemdService;
+          reload = service.reload;
+          files = stagedFileActionInputs restartStagedEntries;
+          dirs = lib.mapAttrs (dirName: entry: dirPermsJson dirName entry) restartDirs;
+          dirRuntimePaths = restartDirRuntimePaths;
+        }
+        // secretRestartInputs;
+      recreate =
+        {
+          composeArgs = service.composeArgs;
+          composeFiles = resolvedComposeFiles;
+          pullComposeFiles = resolvedPullComposeFiles;
+          entryFile = service.entryFile;
+          expectedComposeServices = service.knownSourceComposeServices;
+          files = stagedFileActionInputs recreateStagedEntries;
+          imageTag = service.imageTag;
+        }
+        // secretRecreateInputs;
+    };
+    hashActionInput = value: builtins.hashString "sha256" (builtins.toJSON value);
+    actionStamps = rec {
+      reload =
+        if nativeReloadEnabled
+        then hashActionInput actionInputs.reload
+        else "";
+      restart = hashActionInput actionInputs.restart;
+      recreate = hashActionInput actionInputs.recreate;
+      restartPolicy = hashActionInput {
+        policy = service.reconcilePolicy;
+        reload = actionInputs.reload;
+        restart = actionInputs.restart;
+        recreate = actionInputs.recreate;
+        reloadTag = service.reloadTag;
+        bootTag = service.bootTag;
+        recreateTag = service.recreateTag;
+      };
+      anyChange = hashActionInput {
+        policy = service.reconcilePolicy;
+        reload = actionInputs.reload;
+        restart = actionInputs.restart;
+        recreate = actionInputs.recreate;
+        reloadTag = service.reloadTag;
+        bootTag = service.bootTag;
+        recreateTag = service.recreateTag;
+      };
+      policyNeutral = hashActionInput ({
+          state = service.state;
+          removalPolicy = service.removalPolicy;
+          adopt = service.adopt;
+          reload = actionInputs.reload;
+          restart = actionInputs.restart;
+          recreate = actionInputs.recreate;
+          reloadTag = service.reloadTag;
+          bootTag = service.bootTag;
+          recreateTag = service.recreateTag;
+        }
+        // lib.optionalAttrs (resolvedUser != "root" && service.waitForNetwork) {
+          rootlessNetworkReadiness = "network-online-before-rootless-netns-v1";
+        });
+      helperRecreate =
+        if service.reconcilePolicy == "recreate"
+        then anyChange
+        else recreate;
+    };
+    lifecyclePolicy = let
+      smart = service.reconcilePolicy == "auto";
+      forcedRestart = service.reconcilePolicy == "restart";
+      forcedRecreate = service.reconcilePolicy == "recreate";
+      restartToRecreateCapableTransitionToken = "podman-compose/restart-to-recreate-capable-v1";
+    in {
+      helperRecreateStamp = actionStamps.helperRecreate;
+      restartTriggers =
+        lib.optionals smart [
+          actionStamps.restart
+          service.bootTag
+          actionStamps.recreate
+          service.recreateTag
+        ]
+        ++ lib.optionals forcedRestart [
+          actionStamps.restartPolicy
+        ]
+        ++ lib.optionals forcedRecreate [
+          actionStamps.anyChange
+        ];
+      reloadTriggers = lib.optionals (smart && actionStamps.reload != "") [
+        actionStamps.reload
+        service.reloadTag
+      ];
+      stampPayload =
+        {
+          kind = "podman-managed-unit";
+          state = service.state;
+          reconcilePolicy = service.reconcilePolicy;
+          removalPolicy = service.removalPolicy;
+          adopt = service.adopt;
+        }
+        // lib.optionalAttrs smart {
+          restartStamp = actionStamps.restart;
+          bootTag = service.bootTag;
+          recreateStamp = actionStamps.recreate;
+          recreateTag = service.recreateTag;
+        }
+        // lib.optionalAttrs forcedRestart {
+          restartPolicyStamp = actionStamps.restartPolicy;
+          recreateTag = service.recreateTag;
+        }
+        // lib.optionalAttrs forcedRecreate {
+          anyChangeStamp = actionStamps.anyChange;
+        };
+      transitionNeutralStamp = actionStamps.policyNeutral;
+      stopOnTransitionFrom =
+        if forcedRestart
+        then restartToRecreateCapableTransitionToken
+        else null;
+      stopOnTransitionTo =
+        if smart || forcedRecreate
+        then restartToRecreateCapableTransitionToken
+        else null;
+    };
+    adoptionStamp = builtins.hashString "sha256" (builtins.toJSON {
+      kind = "podman-compose-adoption";
+      serviceName = resolvedSystemdServiceName;
+      workingDir = resolvedWorkingDir;
+    });
     helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
       builtins.toJSON {
-        version = 6;
+        version = 9;
         serviceName = resolvedSystemdServiceName;
         workingDir = resolvedWorkingDir;
+        adoptionStamp = adoptionStamp;
+        state = service.state;
+        reconcilePolicy = service.reconcilePolicy;
+        removalPolicy = service.removalPolicy;
+        adopt = service.adopt;
         composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
         pullComposeFiles = resolvedPullComposeFiles;
@@ -1227,8 +1558,9 @@
             }
             // entryPermsJson entry) (builtins.attrNames reloadStagedEntries);
         };
-        recreateOnSwitch = service.recreateOnSwitch;
         recreateTag = service.recreateTag;
+        recreateStamp = lifecyclePolicy.helperRecreateStamp;
+        recreateClassStamp = actionStamps.recreate;
         longRunning = service.longRunning;
         envSecretFiles = map (composeServiceName: let
           entry = service.envSecrets.${composeServiceName};
@@ -1247,6 +1579,11 @@
     helperEnvironment = [
       "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
       "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
+      "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
+    ];
+    stampHelperEnvironment = [
+      "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+      "NIX_PODMAN_COMPOSE_METADATA=<generation-local-metadata>"
       "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
     ];
     baseSystemdService = {
@@ -1271,7 +1608,7 @@
         ExecStart = "${helperScript} start";
         ExecStop = "${helperScript} stop";
         ExecReload = "${helperScript} reload";
-        ExecStopPost = "${helperScript} cleanup-files";
+        ExecStopPost = "${helperScript} post-stop";
         KillMode = "mixed";
         Delegate = true;
         Restart = "on-failure";
@@ -1296,89 +1633,27 @@
       };
     };
     mergedSystemdService = lib.recursiveUpdate baseSystemdService service.serviceOverrides;
-    restartSystemdService =
-      mergedSystemdService
+    stampBaseSystemdService =
+      baseSystemdService
       // {
         serviceConfig =
-          mergedSystemdService.serviceConfig
+          baseSystemdService.serviceConfig
           // {
-            Environment =
-              map
-              (env:
-                if lib.hasPrefix "NIX_PODMAN_COMPOSE_METADATA=" env
-                then "NIX_PODMAN_COMPOSE_METADATA=<generation-local-metadata>"
-                else env)
-              mergedSystemdService.serviceConfig.Environment;
+            Environment = stampHelperEnvironment;
           };
       };
-    reloadStamp =
-      if nativeReloadEnabled
-      then
-        builtins.hashString "sha256" (builtins.toJSON {
-          reload = service.reload;
-          reloadTag = service.reloadTag;
-          dirs =
-            map (dirName: {
-              name = dirName;
-              dst = reloadDirRuntimePath dirName;
-              perms =
-                if builtins.hasAttr dirName service.dirs
-                then dirPermsJson dirName service.dirs.${dirName}
-                else null;
-            })
-            service.reload.trigger.dirs;
-          sourcePaths = lib.mapAttrs (fileName: _: service.sourcePaths.${fileName}) reloadStagedEntries;
-          runtimePaths = lib.mapAttrs (fileName: _: service.runtimePaths.${fileName}) reloadStagedEntries;
-          stagedEntryPerms =
-            lib.mapAttrs (_: entryPermsJson) reloadStagedEntries;
-        })
-      else "";
+    restartSystemdService = lib.recursiveUpdate stampBaseSystemdService service.serviceOverrides;
   in {
     systemdServiceName = resolvedSystemdServiceName;
     systemdUser = resolvedUser;
+    helperMetadata = helperMetadata;
     systemdService = mergedSystemdService;
     auxiliarySystemdUserServices = lib.optional hasImagePullUnit {
       name = imagePullServiceName;
       value = imagePullSystemdService;
     };
-    restartStamp = builtins.hashString "sha256" (builtins.toJSON {
-      unit = restartSystemdService;
-      reload = service.reload;
-      sourcePaths = lib.mapAttrs (fileName: _: service.sourcePaths.${fileName}) restartStagedEntries;
-      runtimePaths = restartRuntimePaths;
-      dirs = lib.mapAttrs (dirName: entry: dirPermsJson dirName entry) service.dirs;
-      dirRuntimePaths = service.dirRuntimePaths;
-      stagedEntryPerms =
-        lib.mapAttrs (_: entryPermsJson) restartStagedEntries;
-      fileSecrets = lib.mapAttrs (_: entry:
-        {
-          inherit
-            (entry)
-            file
-            mount
-            mountPath
-            readOnly
-            services
-            ;
-          sourceHash =
-            if (entry.sourceHash or null) != null
-            then entry.sourceHash
-            else secretSourceHash entry.file;
-        }
-        // entryPermsJson entry)
-      service.fileSecrets;
-      fileSecretRuntimePaths = service.fileSecretRuntimePaths;
-      envSecrets = lib.mapAttrs (_: entry:
-        {
-          inherit (entry) entries;
-          sourceHashes = lib.mapAttrs (_: secretSourceHash) entry.entries;
-        }
-        // entryPermsJson entry)
-      service.envSecrets;
-      envSecretRuntimePaths = service.envSecretRuntimePaths;
-    });
-    reloadStamp = reloadStamp;
-    inherit (service) autoStart longRunning timeoutStableSeconds imageTag recreateTag bootTag reloadTag waitForNetwork;
+    lifecyclePolicy = lifecyclePolicy;
+    inherit (service) state reconcilePolicy removalPolicy adopt autoStart longRunning timeoutStableSeconds imageTag recreateTag bootTag reloadTag waitForNetwork;
   };
 
   resolvedServices = lib.concatLists (
@@ -1394,6 +1669,45 @@
     )
     cfg
   );
+  userUidString = user:
+    if user == "root"
+    then "0"
+    else if builtins.hasAttr user config.users.users && config.users.users.${user}.uid != null
+    then toString config.users.users.${user}.uid
+    else throw "services.podmanCompose: rootless stack user '${user}' must exist in users.users with a non-null uid.";
+  controlRegistryFile = pkgs.writeText "podman-compose-control-registry.json" (builtins.toJSON (
+    lib.listToAttrs (
+      map
+      (service:
+        lib.nameValuePair service.systemdServiceName {
+          user = service.systemdUser;
+          uid = userUidString service.systemdUser;
+          unit = "${service.systemdServiceName}.service";
+          serviceName = service.systemdServiceName;
+          metadataFile = service.helperMetadata;
+        })
+      resolvedServices
+    )
+  ));
+  controlPackage = pkgs.writeShellApplication {
+    name = "podman-composectl";
+    excludeShellChecks = [
+      "SC1091"
+      "SC2034"
+    ];
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.jq
+      pkgs.systemd
+      pkgs.util-linux
+    ];
+    text = ''
+      registry="''${NIX_PODMAN_COMPOSE_CONTROL_REGISTRY:-/run/current-system/share/podman-compose/control-registry.json}"
+      helper=${lib.escapeShellArg helperScript}
+      source ${./composectl.sh}
+      main "$@"
+    '';
+  };
 
   allExposedPortEntries = lib.concatLists (
     lib.mapAttrsToList (
@@ -1757,11 +2071,14 @@ in {
         volumeSourcesFromComposeText = text:
           lib.concatMap
           (line: let
-            match = builtins.match "[[:space:]]*-[[:space:]]*([^:#]+):.*" line;
+            shortSyntaxMatch = builtins.match "[[:space:]]*-[[:space:]]*['\"]?((\\./|/)[^:'\"[:space:]]+)['\"]?:.*" line;
+            longSyntaxMatch = builtins.match "[[:space:]]*(source|src):[[:space:]]*['\"]?((\\./|/)[^'\"[:space:]]+)['\"]?[[:space:]]*" line;
           in
-            if match == null
-            then []
-            else [(stripVolumeSourceQuotes (builtins.head match))])
+            if shortSyntaxMatch != null
+            then [(stripVolumeSourceQuotes (builtins.head shortSyntaxMatch))]
+            else if longSyntaxMatch != null
+            then [(stripVolumeSourceQuotes (builtins.elemAt longSyntaxMatch 1))]
+            else [])
           (lib.splitString "\n" text);
       in
         stack
@@ -1809,6 +2126,14 @@ in {
                   timeoutStableSeconds = stack.timeoutStableSeconds;
                 }
                 // service;
+              effectiveReconcilePolicy =
+                if baseService.reconcilePolicy == "inherit"
+                then stack.reconcilePolicy
+                else baseService.reconcilePolicy;
+              effectiveRemovalPolicy =
+                if baseService.removalPolicy == "inherit"
+                then stack.removalPolicy
+                else baseService.removalPolicy;
               defaultTrustedCaCertificates =
                 trustedCaDefaultCertificates normalizedTrustedCaDefaults baseService.trustedCa;
               normalizedTrustedCaCertificates =
@@ -1818,8 +2143,12 @@ in {
               normalizedService =
                 baseService
                 // {
+                  reconcilePolicy = effectiveReconcilePolicy;
+                  removalPolicy = effectiveRemovalPolicy;
                   autoStart =
                     if migratorOn
+                    then false
+                    else if baseService.state == "stopped"
                     then false
                     else if baseService.autoStart == null
                     then stack.autoStart
@@ -1831,7 +2160,6 @@ in {
                   trustedCaCertificates = normalizedTrustedCaCertificates;
                 };
               useSource = normalizedService.source != null;
-              hasComposeEntry = useSource || normalizedService.entryFile != null;
               sourceCompose =
                 if builtins.isPath normalizedService.source
                 then builtins.readFile normalizedService.source
@@ -1924,6 +2252,21 @@ in {
                     fileSecretTargetServices
                   );
                 };
+              filesExpanded =
+                lib.concatMapAttrs (dstPath: entry: expandFileEntry dstPath entry) normalizedService.files;
+              effectiveEntries =
+                (lib.optionalAttrs useSource {"compose.yml" = mkGeneratedEntry sourceCompose;})
+                // filesExpanded
+                // (lib.optionalAttrs (envSecretsOverride != {}) {"${envSecretsOverrideFileName}" = mkGeneratedEntry envSecretsOverride;})
+                // (lib.optionalAttrs (fileSecretsOverride != {}) {"${fileSecretsOverrideFileName}" = mkGeneratedEntry fileSecretsOverride;});
+              implicitEntryFileCandidates =
+                lib.filter
+                (fileName: builtins.hasAttr fileName effectiveEntries)
+                defaultComposeEntryFiles;
+              implicitEntryFiles =
+                if builtins.length implicitEntryFileCandidates == 1
+                then implicitEntryFileCandidates
+                else [];
               baseEntryFiles =
                 if normalizedService.entryFile != null
                 then
@@ -1932,16 +2275,17 @@ in {
                   else [normalizedService.entryFile]
                 else if useSource
                 then ["compose.yml"]
-                else [];
+                else implicitEntryFiles;
+              hasComposeEntry = baseEntryFiles != [];
               generatedOverrideFiles =
                 lib.optionals (envSecretsOverride != {}) [envSecretsOverrideFileName]
                 ++ lib.optionals (fileSecretsOverride != {}) [fileSecretsOverrideFileName];
               normalizedEntryFile =
-                if generatedOverrideFiles == []
+                if baseEntryFiles == []
+                then null
+                else if generatedOverrideFiles == [] && normalizedService.entryFile != null
                 then normalizedService.entryFile
                 else baseEntryFiles ++ generatedOverrideFiles;
-              filesExpanded =
-                lib.concatMapAttrs (dstPath: entry: expandFileEntry dstPath entry) normalizedService.files;
               declaredSourceDirNames = builtins.attrNames (
                 lib.filterAttrs (
                   _: entry:
@@ -1965,11 +2309,6 @@ in {
                 lib.filter
                 (dirName: !(builtins.elem dirName validReloadOnChangeDirs))
                 normalizedService.reload.trigger.dirs;
-              effectiveEntries =
-                (lib.optionalAttrs useSource {"compose.yml" = mkGeneratedEntry sourceCompose;})
-                // filesExpanded
-                // (lib.optionalAttrs (envSecretsOverride != {}) {"${envSecretsOverrideFileName}" = mkGeneratedEntry envSecretsOverride;})
-                // (lib.optionalAttrs (fileSecretsOverride != {}) {"${fileSecretsOverrideFileName}" = mkGeneratedEntry fileSecretsOverride;});
               resolvedWorkingDir =
                 if normalizedService.workingDir != null
                 then normalizedService.workingDir
@@ -1996,10 +2335,29 @@ in {
                 lib.filter
                 (fileName: !(builtins.hasAttr fileName filesExpanded))
                 normalizedService.reload.trigger.externalFiles;
-              bindMountedReloadExternalFiles =
+              bindMountedStagedEntries =
                 lib.filter
                 (fileName: builtins.elem fileName composeBindSources)
-                normalizedService.reload.trigger.externalFiles;
+                (builtins.attrNames effectiveEntries);
+              invalidRecreateTriggerFiles =
+                lib.filter
+                (fileName: !(builtins.hasAttr fileName filesExpanded))
+                normalizedService.recreate.trigger.files;
+              recreateTriggerFiles =
+                lib.unique (normalizedService.recreate.trigger.files ++ bindMountedStagedEntries ++ generatedOverrideFiles);
+              reloadTriggerFiles = lib.unique (
+                normalizedService.reload.trigger.externalFiles
+                ++ lib.filter
+                (fileName:
+                  builtins.any
+                  (dirName: pathMatchesDir dirName fileName)
+                  normalizedService.reload.trigger.dirs)
+                (builtins.attrNames effectiveEntries)
+              );
+              conflictingReloadRecreateFiles =
+                lib.filter
+                (fileName: builtins.elem fileName recreateTriggerFiles)
+                reloadTriggerFiles;
               fileSecretRuntimePaths =
                 lib.mapAttrs
                 (secretName: _: "${resolvedWorkingDir}/${fileSecretsRuntimeDirName}/${secretName}")
@@ -2038,7 +2396,11 @@ in {
                 validReloadOnChangeDirs = validReloadOnChangeDirs;
                 invalidReloadOnChangeDirs = invalidReloadOnChangeDirs;
                 invalidReloadExternalFiles = invalidReloadExternalFiles;
-                bindMountedReloadExternalFiles = bindMountedReloadExternalFiles;
+                bindMountedStagedEntries = bindMountedStagedEntries;
+                invalidRecreateTriggerFiles = invalidRecreateTriggerFiles;
+                recreateTriggerFiles = recreateTriggerFiles;
+                conflictingReloadRecreateFiles = conflictingReloadRecreateFiles;
+                implicitEntryFileCandidates = implicitEntryFileCandidates;
               })
             instancesWithContext;
         in {
@@ -2059,10 +2421,18 @@ in {
   };
 
   config = lib.mkIf hasStacks {
-    environment.systemPackages = with pkgs; [
-      podman
-      podman-compose
-    ];
+    system.systemBuilderCommands = ''
+      install -Dm0444 ${lib.escapeShellArg controlRegistryFile} "$out/share/podman-compose/control-registry.json"
+    '';
+
+    environment.systemPackages = with pkgs;
+      [
+        podman
+        podman-compose
+      ]
+      ++ [
+        controlPackage
+      ];
 
     networking.firewall.allowedTCPPorts = firewallPortsForProtocol "tcp";
     networking.firewall.allowedUDPPorts = firewallPortsForProtocol "udp";
@@ -2130,6 +2500,19 @@ in {
         (stackName: stack:
           lib.mapAttrsToList
           (serviceName: service: {
+            assertion = service.entryFile != null || builtins.length service.implicitEntryFileCandidates <= 1;
+            message =
+              "services.podmanCompose.${stackName}.instances.${serviceName}: multiple default compose files are staged; set entryFile explicitly to declare compose file order: "
+              + lib.concatStringsSep ", " service.implicitEntryFileCandidates;
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
             assertion = service.imageTag == "0" || service.hasComposeEntry;
             message = "services.podmanCompose.${stackName}.instances.${serviceName}: imageTag requires source or entryFile so image-pull can use store-backed compose files without staging runtime files.";
           })
@@ -2178,10 +2561,23 @@ in {
         (stackName: stack:
           lib.mapAttrsToList
           (serviceName: service: {
-            assertion = service.bindMountedReloadExternalFiles == [];
+            assertion = service.invalidRecreateTriggerFiles == [];
             message =
-              "services.podmanCompose.${stackName}.instances.${serviceName}.reload.trigger.externalFiles contains single-file bind mounts, which are unsafe for native Podman reload because the container can keep the old mounted inode until restart: "
-              + lib.concatStringsSep ", " service.bindMountedReloadExternalFiles;
+              "services.podmanCompose.${stackName}.instances.${serviceName}.recreate.trigger.files contains entries that are not declared staged files: "
+              + lib.concatStringsSep ", " service.invalidRecreateTriggerFiles;
+          })
+          stack.instances)
+        cfg
+      )
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.conflictingReloadRecreateFiles == [];
+            message =
+              "services.podmanCompose.${stackName}.instances.${serviceName}.reload.trigger contains recreate-class staged files, which are unsafe for native Podman reload because the container can keep stale runtime shape until container recreation: "
+              + lib.concatStringsSep ", " service.conflictingReloadRecreateFiles;
           })
           stack.instances)
         cfg
@@ -2307,26 +2703,21 @@ in {
         value = {
           user = s.systemdUser;
           unit = "${s.systemdServiceName}.service";
+          state = s.state;
           autoStart = s.autoStart;
+          removalPolicy = "stop";
+          removalCommand = [
+            "${pkgs.coreutils}/bin/env"
+            "NIX_PODMAN_COMPOSE_METADATA=${s.helperMetadata}"
+            "NIX_PODMAN_COMPOSE_SERVICE_NAME=${s.systemdServiceName}"
+            helperScript
+            "remove"
+          ];
           timeoutStableSeconds = s.timeoutStableSeconds;
-          restartTriggers = [
-            s.restartStamp
-            s.recreateTag
-            s.bootTag
-          ];
-          reloadTriggers = lib.optionals (s.reloadStamp != "") [
-            s.reloadStamp
-            s.reloadTag
-          ];
+          inherit (s.lifecyclePolicy) restartTriggers reloadTriggers;
+          inherit (s.lifecyclePolicy) transitionNeutralStamp stopOnTransitionFrom stopOnTransitionTo;
           stampPayload =
-            {
-              kind = "podman-managed-unit";
-              restartStamp = s.restartStamp;
-              recreateTag = s.recreateTag;
-              bootTag = s.bootTag;
-              reloadTag = s.reloadTag;
-              reloadCapable = s.reloadStamp != "";
-            }
+            s.lifecyclePolicy.stampPayload
             // lib.optionalAttrs (s.systemdUser != "root" && s.waitForNetwork) {
               rootlessNetworkReadiness = "network-online-before-rootless-netns-v1";
             };

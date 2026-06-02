@@ -10,10 +10,17 @@ init_vars() {
 	manifest_path=""
 	lifecycle_lock_path=""
 	state_path=""
-	legacy_state_path=""
+	runtime_state_version=1
+	runtime_state_kind="podman-compose-runtime-state"
+	adoption_stamp=""
 	working_dir=""
-	recreate_on_switch="false"
+	desired_state="running"
+	reconcile_policy="auto"
+	removal_policy="delete"
+	adopt_existing="false"
 	recreate_tag="0"
+	recreate_stamp=""
+	recreate_class_stamp=""
 	long_running="true"
 	reload_method="restart"
 	reload_signal="HUP"
@@ -44,12 +51,17 @@ load_metadata() {
 
 	manifest_path="$runtime_dir/podman-compose/${podman_compose_service_name}.manifest"
 	working_dir="$(jq -r '.workingDir' "$podman_compose_metadata")"
+	desired_state="$(jq -r '.state // "running"' "$podman_compose_metadata")"
+	reconcile_policy="$(jq -r '.reconcilePolicy // "auto"' "$podman_compose_metadata")"
 	generated_dir="$working_dir/.podman-compose"
 	lifecycle_lock_path="$generated_dir/lifecycle.lock"
-	state_path="$generated_dir/helper-state.json"
-	legacy_state_path="$working_dir/.podman-compose-helper-state.json"
-	recreate_on_switch="$(jq -r '.recreateOnSwitch // false' "$podman_compose_metadata")"
+	state_path="$generated_dir/state.json"
+	adoption_stamp="$(jq -r '.adoptionStamp // ""' "$podman_compose_metadata")"
 	recreate_tag="$(jq -r '.recreateTag // "0"' "$podman_compose_metadata")"
+	recreate_stamp="$(jq -r '.recreateStamp // ""' "$podman_compose_metadata")"
+	recreate_class_stamp="$(jq -r '.recreateClassStamp // (.recreateStamp // "")' "$podman_compose_metadata")"
+	removal_policy="$(jq -r '.removalPolicy // "delete"' "$podman_compose_metadata")"
+	adopt_existing="$(jq -r '.adopt // false' "$podman_compose_metadata")"
 	long_running="$(jq -r '.longRunning // true' "$podman_compose_metadata")"
 	reload_method="$(jq -r '.reload.method // "restart"' "$podman_compose_metadata")"
 	reload_signal="$(jq -r '.reload.signal // "HUP"' "$podman_compose_metadata")"
@@ -122,6 +134,36 @@ unlock_lifecycle_shared() {
 close_lifecycle_fds_for_child() {
 	exec 8>&- 2>/dev/null || true
 	exec 9>&- 2>/dev/null || true
+}
+
+adoption_state_matches() {
+	[ -n "$adoption_stamp" ] || return 1
+	[ -f "$state_path" ] || return 1
+	runtime_state_matches
+}
+
+assert_adoption_allowed() {
+	if [ ! -e "$working_dir" ]; then
+		return 0
+	fi
+
+	migrate_legacy_runtime_state_if_needed
+
+	if adoption_state_matches; then
+		return 0
+	fi
+
+	if [ "$adopt_existing" = "true" ]; then
+		printf '%s\n' "Adopting Podman compose working directory with unmatched helper state: $working_dir"
+		return 0
+	fi
+
+	if [ -f "$state_path" ]; then
+		printf '%s\n' "Refusing to manage Podman compose working directory with incompatible helper state: $working_dir; set adopt = true to adopt it" >&2
+	else
+		printf '%s\n' "Refusing to manage existing Podman compose working directory without compatible helper state: $working_dir; set adopt = true to adopt it" >&2
+	fi
+	exit 1
 }
 
 run_scoped() {
@@ -432,6 +474,131 @@ cleanup_runtime_files() {
 	finalize_staged_dirs
 }
 
+path_is_under_working_dir() {
+	local path
+	path="$1"
+	[ "$path" != "$working_dir" ] && [[ "$path" == "$working_dir"/* ]]
+}
+
+cleanup_staged_dirs_under_working_dir() {
+	local dst
+	while IFS= read -r dst; do
+		[ -n "$dst" ] || continue
+		[ -e "$dst" ] || [ -L "$dst" ] || continue
+		if ! path_is_under_working_dir "$dst"; then
+			printf '%s\n' "refusing to remove managed staged dir outside workingDir during delete-all: $dst" >&2
+			exit 1
+		fi
+		rm -rf -- "$dst"
+	done < <(jq -r '(.stagedDirs // [] | sort_by(.dst | length) | reverse)[] | .dst' "$podman_compose_metadata")
+}
+
+current_stop_policy() {
+	if [ -f "$state_path" ] && runtime_state_matches; then
+		jq -r '.removalPolicy // "delete"' "$state_path" 2>/dev/null || printf '%s\n' "delete"
+		return
+	fi
+	printf '%s\n' "delete"
+}
+
+unit_is_active_or_transitioning() {
+	local active_state
+	active_state="$(systemctl --user show --property=ActiveState --value "${podman_compose_service_name}.service" 2>/dev/null || true)"
+	case "$active_state" in
+	active | activating | deactivating | reloading)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+removal_has_no_staged_runtime() {
+	[ ! -f "$manifest_path" ] || return 1
+	unit_is_active_or_transitioning && return 1
+	return 0
+}
+
+apply_compose_stop_policy() {
+	local stop_policy
+	stop_policy="$1"
+
+	if [ ! -d "$working_dir" ]; then
+		printf '%s\n' "podman compose working directory is absent; cannot stop safely: $working_dir" >&2
+		return 1
+	fi
+
+	case "$stop_policy" in
+	stop)
+		compose_stop
+		;;
+	delete)
+		compose_down
+		;;
+	delete-all)
+		compose_down_volumes
+		;;
+	*)
+		printf '%s\n' "unsupported podman compose stop policy: $stop_policy" >&2
+		return 1
+		;;
+	esac
+}
+
+apply_compose_post_stop_policy() {
+	local stop_policy
+	stop_policy="$1"
+
+	case "$stop_policy" in
+	stop)
+		;;
+	delete)
+		cleanup_runtime_files
+		;;
+	delete-all)
+		cleanup_runtime_files
+		cleanup_staged_dirs_under_working_dir
+		;;
+	*)
+		cleanup_runtime_files
+		;;
+	esac
+	clear_removal_policy_marker
+}
+
+has_removal_policy_marker() {
+	[ -f "$state_path" ] || return 1
+	runtime_state_matches || return 1
+	jq -e 'has("removalPolicy")' "$state_path" >/dev/null 2>&1
+}
+
+write_removal_policy_marker() {
+	local tmp_state
+	install -d -m 0750 "$generated_dir"
+	tmp_state="${state_path}.tmp"
+	existing_runtime_state_json |
+		jq -c \
+			--argjson version "$runtime_state_version" \
+			--arg kind "$runtime_state_kind" \
+			--arg adoptionStamp "$adoption_stamp" \
+			--arg removalPolicy "$removal_policy" \
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, removalPolicy: $removalPolicy}' >"$tmp_state"
+	chmod 0640 "$tmp_state"
+	mv -f "$tmp_state" "$state_path"
+}
+
+clear_removal_policy_marker() {
+	if [ ! -f "$state_path" ]; then
+		return
+	fi
+	if ! runtime_state_matches; then
+		rm -f "$state_path"
+		return
+	fi
+	write_runtime_state_with_filter 'del(.removalPolicy)'
+}
+
 failing_states_report() {
 	jq -r '
     map(
@@ -478,11 +645,35 @@ compose_down() {
 	)
 }
 
+compose_down_volumes() {
+	(
+		close_lifecycle_fds_for_child
+		cd "$working_dir"
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" down --volumes 2>&1
+	)
+}
+
+compose_stop() {
+	(
+		close_lifecycle_fds_for_child
+		cd "$working_dir"
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" stop 2>&1
+	)
+}
+
 compose_pull() {
 	(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
 		podman compose "${compose_args[@]}" "${pull_compose_file_args[@]}" pull 2>&1
+	)
+}
+
+compose_logs() {
+	(
+		close_lifecycle_fds_for_child
+		cd "$working_dir"
+		podman compose "${compose_args[@]}" "${compose_file_args[@]}" logs "$@"
 	)
 }
 
@@ -527,35 +718,183 @@ compose_reload_signal() {
 	)
 }
 
-last_applied_recreate_tag() {
-	if [ -f "$state_path" ]; then
-		jq -r '.recreateTag // "0"' "$state_path" 2>/dev/null || printf '%s\n' "0"
-	elif [ -f "$legacy_state_path" ]; then
-		jq -r '.recreateTag // "0"' "$legacy_state_path" 2>/dev/null || printf '%s\n' "0"
-	else
-		printf '%s\n' "0"
-	fi
+policy_allows_recreate() {
+	case "$reconcile_policy" in
+	auto | recreate)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
 }
 
 should_force_recreate() {
-	local applied_recreate_tag
-	if [ "$recreate_on_switch" = "true" ]; then
+	local applied_recreate_tag applied_recreate_stamp applied_recreate_class_stamp
+	migrate_legacy_runtime_state_if_needed
+	if [ "$adopt_existing" = "true" ]; then
 		return 0
 	fi
-	if [ "$recreate_tag" = "0" ]; then
+	if ! policy_allows_recreate; then
 		return 1
 	fi
-	applied_recreate_tag="$(last_applied_recreate_tag)"
-	[ "$recreate_tag" != "$applied_recreate_tag" ]
+	if policy_transition_forces_recreate; then
+		return 0
+	fi
+	if [ "$recreate_tag" != "0" ]; then
+		applied_recreate_tag="$(last_applied_recreate_tag)"
+		if [ "$recreate_tag" != "$applied_recreate_tag" ]; then
+			return 0
+		fi
+	fi
+	if [ "$reconcile_policy" != recreate ]; then
+		applied_recreate_class_stamp="$(last_applied_recreate_class_stamp)"
+		if [ -n "$recreate_class_stamp" ] && [ "$applied_recreate_class_stamp" = "$recreate_class_stamp" ]; then
+			return 1
+		fi
+	fi
+	if [ -n "$recreate_stamp" ]; then
+		applied_recreate_stamp="$(last_applied_recreate_stamp)"
+		[ "$recreate_stamp" != "$applied_recreate_stamp" ] && return 0
+	fi
+	return 1
 }
 
-record_helper_state() {
-	local tmp_state
+runtime_state_matches() {
+	jq -e \
+		--argjson version "$runtime_state_version" \
+		--arg kind "$runtime_state_kind" \
+		--arg adoptionStamp "$adoption_stamp" \
+		'(.version == $version) and (.kind == $kind) and (.adoptionStamp == $adoptionStamp)' \
+		"$state_path" >/dev/null 2>&1
+}
+
+runtime_state_field() {
+	local field default
+	field="$1"
+	default="$2"
+	if [ -f "$state_path" ] && runtime_state_matches; then
+		jq -r --arg field "$field" --arg default "$default" '.[$field] // $default' "$state_path" 2>/dev/null || printf '%s\n' "$default"
+	else
+		printf '%s\n' "$default"
+	fi
+}
+
+existing_runtime_state_json() {
+	if [ -f "$state_path" ] && runtime_state_matches; then
+		jq -c '.' "$state_path" 2>/dev/null || printf '{}'
+	else
+		printf '{}'
+	fi
+}
+
+write_runtime_state_with_filter() {
+	local jq_filter tmp_state
+	jq_filter="$1"
+	install -d -m 0750 "$generated_dir"
 	tmp_state="${state_path}.tmp"
-	jq -n --arg recreateTag "$recreate_tag" '{recreateTag: $recreateTag}' >"$tmp_state"
+	existing_runtime_state_json |
+		jq -c \
+			--argjson version "$runtime_state_version" \
+			--arg kind "$runtime_state_kind" \
+			--arg adoptionStamp "$adoption_stamp" \
+			"(. + {version: \$version, kind: \$kind, adoptionStamp: \$adoptionStamp}) | ($jq_filter)" >"$tmp_state"
 	chmod 0640 "$tmp_state"
 	mv -f "$tmp_state" "$state_path"
-	rm -f "$legacy_state_path"
+}
+
+legacy_state_path() {
+	printf '%s\n' "$generated_dir/helper-state.json"
+}
+
+migrate_legacy_runtime_state_if_needed() {
+	local legacy tmp_state
+	[ ! -f "$state_path" ] || return 0
+	legacy="$(legacy_state_path)"
+	[ -f "$legacy" ] || return 0
+
+	install -d -m 0750 "$generated_dir"
+	tmp_state="${state_path}.tmp"
+	if ! jq -c \
+		--argjson version "$runtime_state_version" \
+		--arg kind "$runtime_state_kind" \
+		--arg adoptionStamp "$adoption_stamp" \
+		'{
+			version: $version,
+			kind: $kind,
+			adoptionStamp: $adoptionStamp,
+			recreateTag: (.recreateTag // "0"),
+			recreateStamp: (.recreateStamp // "")
+		}' "$legacy" >"$tmp_state"; then
+		rm -f "$tmp_state"
+		return 0
+	fi
+	chmod 0640 "$tmp_state"
+	mv -f "$tmp_state" "$state_path"
+	rm -f "$legacy"
+}
+
+last_applied_recreate_tag() {
+	runtime_state_field recreateTag "0"
+}
+
+last_applied_recreate_stamp() {
+	runtime_state_field recreateStamp ""
+}
+
+last_applied_recreate_class_stamp() {
+	runtime_state_field recreateClassStamp "$(last_applied_recreate_stamp)"
+}
+
+last_applied_reconcile_policy() {
+	runtime_state_field reconcilePolicy ""
+}
+
+policy_transition_forces_recreate() {
+	local applied_reconcile_policy
+	applied_reconcile_policy="$(last_applied_reconcile_policy)"
+	[ "$applied_reconcile_policy" = restart ] || return 1
+	case "$reconcile_policy" in
+	auto | recreate)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+record_runtime_state() {
+	local tmp_state
+	install -d -m 0750 "$generated_dir"
+	tmp_state="${state_path}.tmp"
+	existing_runtime_state_json |
+		jq -c \
+			--argjson version "$runtime_state_version" \
+			--arg kind "$runtime_state_kind" \
+			--arg adoptionStamp "$adoption_stamp" \
+			--arg reconcilePolicy "$reconcile_policy" \
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy}' >"$tmp_state"
+	chmod 0640 "$tmp_state"
+	mv -f "$tmp_state" "$state_path"
+}
+
+record_applied_recreate_state() {
+	local tmp_state
+	install -d -m 0750 "$generated_dir"
+	tmp_state="${state_path}.tmp"
+	existing_runtime_state_json |
+		jq -c \
+			--argjson version "$runtime_state_version" \
+			--arg kind "$runtime_state_kind" \
+			--arg adoptionStamp "$adoption_stamp" \
+			--arg reconcilePolicy "$reconcile_policy" \
+			--arg recreateTag "$recreate_tag" \
+			--arg recreateStamp "$recreate_stamp" \
+			--arg recreateClassStamp "$recreate_class_stamp" \
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, recreateTag: $recreateTag, recreateStamp: $recreateStamp, recreateClassStamp: $recreateClassStamp}' >"$tmp_state"
+	chmod 0640 "$tmp_state"
+	mv -f "$tmp_state" "$state_path"
 }
 
 verify_compose_state() {
@@ -629,6 +968,19 @@ monitor_compose_state() {
 	done
 }
 
+notify_ready_and_monitor() {
+	local status
+	status="$1"
+	if [ -n "${NOTIFY_SOCKET-}" ]; then
+		exec systemd-notify \
+			--ready \
+			--status="$status" \
+			--exec ';' -- \
+			"$0" monitor
+	fi
+	exec "$0" monitor
+}
+
 cmd_cleanup_files() {
 	load_metadata
 	lock_lifecycle_exclusive
@@ -638,9 +990,11 @@ cmd_cleanup_files() {
 
 cmd_link_files() {
 	load_metadata
+	assert_adoption_allowed
 	ensure_runtime_dirs
 	lock_lifecycle_exclusive
 	stage_runtime_files
+	record_runtime_state
 	unlock_lifecycle_exclusive
 }
 
@@ -659,7 +1013,12 @@ cmd_monitor() {
 cmd_reload() {
 	local working_dir_exists=0 reload_old_manifest reload_selected_manifest
 	load_metadata
+	if [ "$desired_state" = "stopped" ]; then
+		printf '%s\n' "podman compose instance desired state is stopped; skipping reload"
+		return 0
+	fi
 	[ -d "$working_dir" ] && working_dir_exists=1
+	assert_adoption_allowed
 	lock_lifecycle_exclusive
 	ensure_runtime_dirs
 	case "$reload_method" in
@@ -672,7 +1031,7 @@ cmd_reload() {
 		stage_runtime_files
 		compose_up
 		verify_compose_state
-		record_helper_state
+		record_runtime_state
 		;;
 	signal)
 		reload_old_manifest="${manifest_path}.reload-old.$$"
@@ -695,45 +1054,111 @@ cmd_reload() {
 }
 
 cmd_start() {
+	local force_recreate=0
 	load_metadata
+	assert_adoption_allowed
 	ensure_runtime_dirs
 	lock_lifecycle_exclusive
+	clear_removal_policy_marker
 	stage_runtime_files
 	if should_force_recreate; then
+		force_recreate=1
 		compose_up_force_recreate
 	else
 		compose_up
 	fi
 	verify_compose_state
-	record_helper_state
+	if [ "$force_recreate" -eq 1 ]; then
+		record_applied_recreate_state
+	else
+		record_runtime_state
+	fi
 	unlock_lifecycle_exclusive
-	exec systemd-notify \
-		--ready \
-		--status="podman compose running" \
-		--exec ';' -- \
-		"$0" monitor
+	notify_ready_and_monitor "podman compose running"
 }
 
 cmd_stop() {
-	local working_dir_exists=0
+	local stop_policy
 	load_metadata
-	[ -d "$working_dir" ] && working_dir_exists=1
+	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
-	if [ "$working_dir_exists" -eq 1 ]; then
-		compose_down
-	else
-		printf '%s\n' "podman compose working directory is absent; cannot run compose down safely: $working_dir" >&2
+	if ! apply_compose_stop_policy "$stop_policy"; then
+		unlock_lifecycle_exclusive
 		return 1
 	fi
 	unlock_lifecycle_exclusive
 }
 
+cmd_post_stop() {
+	local stop_policy
+	load_metadata
+	stop_policy="$(current_stop_policy)"
+	lock_lifecycle_exclusive
+	if ! apply_compose_post_stop_policy "$stop_policy"; then
+		unlock_lifecycle_exclusive
+		return 1
+	fi
+	unlock_lifecycle_exclusive
+}
+
+cmd_remove() {
+	local stop_policy
+	load_metadata
+	case "$removal_policy" in
+	stop | delete | delete-all) ;;
+	keep)
+		clear_removal_policy_marker
+		printf '%s\n' "podman compose removal policy is keep; skipping removal stop"
+		return 0
+		;;
+	*)
+		printf '%s\n' "unsupported podman compose removal policy: $removal_policy" >&2
+		exit 1
+		;;
+	esac
+	if removal_has_no_staged_runtime; then
+		printf '%s\n' "podman compose runtime is already absent; skipping removal stop"
+		return 0
+	fi
+	write_removal_policy_marker
+	if ! systemctl --user stop "${podman_compose_service_name}.service"; then
+		clear_removal_policy_marker
+		return 1
+	fi
+	if has_removal_policy_marker; then
+		if [ ! -f "$manifest_path" ]; then
+			clear_removal_policy_marker
+			printf '%s\n' "podman compose runtime was already cleaned; skipping removal fallback"
+			return 0
+		fi
+		stop_policy="$(current_stop_policy)"
+		lock_lifecycle_exclusive
+		if ! apply_compose_stop_policy "$stop_policy" ||
+			! apply_compose_post_stop_policy "$stop_policy"; then
+			unlock_lifecycle_exclusive
+			clear_removal_policy_marker
+			return 1
+		fi
+		unlock_lifecycle_exclusive
+	fi
+}
+
 cmd_image_pull() {
 	load_metadata
+	assert_adoption_allowed
 	ensure_runtime_dirs
 	lock_lifecycle_exclusive
 	compose_pull
 	unlock_lifecycle_exclusive
+}
+
+cmd_logs() {
+	load_metadata
+	if [ ! -f "$manifest_path" ]; then
+		printf '%s\n' "podman compose runtime files are not staged for ${podman_compose_service_name}; run 'podman-composectl ${podman_compose_service_name} link' or start the unit before reading logs" >&2
+		return 1
+	fi
+	compose_logs "$@"
 }
 
 main() {
@@ -745,6 +1170,9 @@ main() {
 		;;
 	cleanup-files)
 		cmd_cleanup_files
+		;;
+	post-stop)
+		cmd_post_stop
 		;;
 	verify)
 		cmd_verify
@@ -761,11 +1189,18 @@ main() {
 	stop)
 		cmd_stop
 		;;
+	remove)
+		cmd_remove
+		;;
 	image-pull)
 		cmd_image_pull
 		;;
+	logs)
+		shift
+		cmd_logs "$@"
+		;;
 	*)
-		printf '%s\n' "usage: $0 {link-files|cleanup-files|verify|monitor|reload|start|stop|image-pull}" >&2
+		printf '%s\n' "usage: $0 {link-files|cleanup-files|post-stop|verify|monitor|reload|start|stop|remove|image-pull|logs}" >&2
 		exit 1
 		;;
 	esac
