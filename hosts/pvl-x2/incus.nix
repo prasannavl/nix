@@ -116,9 +116,10 @@
     isolatedProjectConfig
     // {
       restricted = "true";
-      # Rootless Podman inside delegated nested guests depends on mount syscall
-      # interception, which restricted projects only allow at the "full" level.
-      "restricted.containers.interception" = "full";
+      # Incus 7.0 only accepts security.syscalls.intercept.mount when restricted
+      # projects use interception = allow. "full" is only for the more dangerous
+      # mount.allowed / mount.shift path, which we do not use here.
+      "restricted.containers.interception" = "allow";
       "restricted.containers.lowlevel" = "block";
       "restricted.containers.nesting" = "allow";
       "restricted.containers.privilege" = "unprivileged";
