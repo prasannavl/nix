@@ -36,7 +36,6 @@
         dhcpRanges = "10.10.100.100-10.10.100.199";
       };
       config = {
-        "restricted.containers.nesting" = "allow";
         "restricted.devices.disk" = "allow";
         "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-stage,/var/lib/incus-delegations/abird-dev";
         "restricted.devices.proxy" = "allow";
@@ -117,11 +116,16 @@
     isolatedProjectConfig
     // {
       restricted = "true";
-      "restricted.containers.interception" = "block";
+      # Rootless Podman inside delegated nested guests depends on mount syscall
+      # interception, which restricted projects only allow at the "full" level.
+      "restricted.containers.interception" = "full";
       "restricted.containers.lowlevel" = "block";
+      "restricted.containers.nesting" = "allow";
       "restricted.containers.privilege" = "unprivileged";
       "restricted.devices.disk" = "managed";
+      "restricted.devices.gpu" = "allow";
       "restricted.devices.nic" = "managed";
+      "restricted.devices.unix-char" = "allow";
       "restricted.networks.access" = projectConfig.network.name;
       "restricted.storage-pools.access" = projectConfig.pool;
     }
