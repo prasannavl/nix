@@ -6,7 +6,7 @@
   swayUnwrappedGit =
     (
       prev.unstable.callPackage "${inputs.unstable}/pkgs/by-name/sw/sway-unwrapped/package.nix" {
-        wlroots_0_19 = wlrootsGit;
+        wlroots_0_20 = wlrootsGit;
       }
     ).overrideAttrs (_old: {
       version = "git";
