@@ -7,6 +7,7 @@
   incusLib = import ../../lib/incus/lib.nix {
     inherit config lib;
   };
+  fpp = incusLib.fabricPolicyProfiles;
   isolatedProjectConfig = {
     "features.images" = "true";
     "features.networks" = "false";
@@ -19,6 +20,7 @@
     pvl = {
       pool = "pvl";
       network = {
+        policy = fpp.open;
         name = "ipvlbr0";
         ipv4Address = "10.10.50.1/24";
         dhcpRanges = "10.10.50.100-10.10.50.199";
@@ -31,6 +33,7 @@
     abird = {
       pool = "abird";
       network = {
+        policy = fpp.containedPublic;
         name = "iabirdbr0";
         ipv4Address = "10.10.100.1/24";
         dhcpRanges = "10.10.100.100-10.10.100.199";
@@ -44,6 +47,7 @@
     abird-stage = {
       pool = "abird-stage";
       network = {
+        policy = fpp.containedPublic;
         name = "iabirdbr1";
         ipv4Address = "10.10.200.1/24";
         dhcpRanges = "10.10.200.100-10.10.200.199";
@@ -53,12 +57,21 @@
     abird-dev = {
       pool = "abird-dev";
       network = {
+        policy =
+          fpp.containedPublic
+          // {
+            forwardTo = ["abird-stage"];
+          };
         name = "iabirdbr2";
         ipv4Address = "10.10.220.1/24";
         dhcpRanges = "10.10.220.100-10.10.220.199";
       };
       config = {};
     };
+  };
+  fabricIsolation = incusLib.mkManagedFabricPolicy {
+    defaultPolicy = fpp.open;
+    projects = projects;
   };
   mkBridgeNetwork = network: {
     config = {
@@ -183,6 +196,8 @@
     kfd = true;
   };
 in {
+  assertions = fabricIsolation.assertions;
+
   services = {
     incusMachines = {
       global = {
@@ -335,7 +350,13 @@ in {
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
   };
-  networking.firewall.trustedInterfaces =
-    ["incusbr0"]
-    ++ builtins.map (project: projects.${project}.network.name) projectNames;
+  networking.interfaces.incusbr0.ipv4.routes = [
+    {
+      address = "10.10.30.0";
+      prefixLength = 24;
+      via = "10.10.20.20";
+    }
+  ];
+  networking.nftables.tables = fabricIsolation.nftablesTable;
+  networking.firewall.trustedInterfaces = fabricIsolation.trustedInterfaces;
 }

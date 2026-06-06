@@ -18,6 +18,38 @@ config, and trusted firewall interfaces are generated from the host-local
 extra restriction `config`, keeping the preseed sections derived from one source
 of truth instead of parallel maps.
 
+Cross-project traffic policy is also parent-owned from that same map. `pvl-x2`
+uses the shared `lib/incus/lib.nix` helper to render a host nftables `forward`
+plus matching host `input` / `output` hooks for managed-fabric access control,
+instead of relying on guest firewalls or Incus restricted project flags for
+east-west isolation. The policy lives under `projects.<name>.network.policy`:
+
+- `forwardTo = true | false | [ ... ]`: which managed fabrics this fabric may
+  initiate traffic toward.
+- `allowFromHost = true | false`: whether the parent host may initiate traffic
+  to this fabric.
+- `allowToHost = true | false`: whether this fabric may initiate traffic to the
+  parent host.
+- `allowToUplink = true | false`: whether this fabric may initiate traffic to
+  non-managed uplink networks.
+- `allowFromUplink = true | false`: whether non-managed uplink networks may
+  initiate traffic to this fabric.
+
+The helper also exports reusable policy profiles through
+`incusLib.fabricPolicyProfiles`:
+
+- `open`: permissive baseline matching the earlier no-project-policy shape
+- `isolated`: no managed-fabric forwarding, no host access, uplink egress on
+- `isolatedPublic`: `isolated` plus uplink-originated ingress allowed
+- `contained`: `isolated` plus host-originated ingress allowed
+- `containedPublic`: `contained` plus uplink-originated ingress allowed
+- `quarantine`: no managed-fabric forwarding, no host access, no uplink egress
+
+The default project fabric is configured separately from the tenant `projects`
+map, but uses the same policy semantics. Host-originated traffic from `pvl-x2`
+and routed traffic between the managed Incus fabrics are both gated by this
+policy helper.
+
 Volume-backed `state` disks use the tenant pool too. When a disk device omits
 `pool`, `lib/incus` derives the pool from the resolved instance project. For
 remote-managed instances, that means the configured remote project; for local
