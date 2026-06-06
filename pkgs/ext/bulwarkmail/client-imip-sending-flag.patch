@@ -1,0 +1,167 @@
+diff --git a/components/email/calendar-invitation-banner.tsx b/components/email/calendar-invitation-banner.tsx
+index 17cc4fde..b93f1eb9 100644
+--- a/components/email/calendar-invitation-banner.tsx
++++ b/components/email/calendar-invitation-banner.tsx
+@@ -33,6 +33,7 @@ import {
+   type InvitationTrustAssessment,
+ } from '@/lib/calendar-invitation';
+ import { cn } from '@/lib/utils';
++import { CLIENT_IMIP_SENDING_ENABLED } from '@/lib/calendar-scheduling';
+ import { sanitizeColor } from '@/components/calendar/event-card';
+ import { RecipientPopover } from './recipient-popover';
+
+@@ -563,6 +564,10 @@ export function CalendarInvitationBanner({ email }: CalendarInvitationBannerProp
+     // Called after updating the local calendar event. Best-effort - if it
+     // fails we still report the RSVP as sent since the calendar was updated.
+     const sendImipReply = async () => {
++      if (!CLIENT_IMIP_SENDING_ENABLED) {
++        return;
++      }
++
+       if (!organizerEmail || !parsedEvent?.uid || !currentUserEmail) {
+         return;
+       }
+diff --git a/lib/calendar-scheduling.ts b/lib/calendar-scheduling.ts
+new file mode 100644
+index 00000000..3f62d7d9
+--- /dev/null
++++ b/lib/calendar-scheduling.ts
+@@ -0,0 +1,2 @@
++export const CLIENT_IMIP_SENDING_ENABLED =
++  process.env.NEXT_PUBLIC_ENABLE_CLIENT_IMIP_SENDING !== 'false';
+--- a/components/calendar/event-modal.tsx
++++ b/components/calendar/event-modal.tsx
+@@ -16,7 +16,7 @@
+   getUserStatus,
+   getParticipantList,
+   getStatusCounts,
+-  buildParticipantMap,
++  buildAttendeeParticipantMap,
+ } from "@/lib/calendar-participants";
+ import { PluginSlot } from "@/components/plugins/plugin-slot";
+ import { useSettingsStore } from "@/stores/settings-store";
+@@ -493,9 +493,8 @@
+
+     if (effectiveAttendees.length > 0 && currentUserEmails.length > 0) {
+       const organizerEmail = currentUserEmails[0];
+-      const organizerName = existingParticipants.find(p => p.isOrganizer)?.name || "";
+-      data.participants = buildParticipantMap(
++      data.organizerCalendarAddress = `mailto:${organizerEmail}`;
+-        { name: organizerName, email: organizerEmail },
++      data.participants = buildAttendeeParticipantMap(
+         effectiveAttendees
+       ) as Record<string, CalendarParticipant>;
+       data.replyTo = { imip: `mailto:${organizerEmail}` };
+--- a/lib/calendar-participants.ts
++++ b/lib/calendar-participants.ts
+@@ -35,11 +35,28 @@
+   return false;
+ }
+
++
++function normalizeCalendarAddress(value?: string | null): string {
++  return (value || '').replace(/^mailto:/i, '').toLowerCase();
++}
++
++function isOrganizerParticipant(event: CalendarEvent, p: CalendarParticipant): boolean {
++  if (p.roles?.owner) return true;
++  if (!event.organizerCalendarAddress) return false;
++  const organizer = normalizeCalendarAddress(event.organizerCalendarAddress);
++  return organizer !== '' && (
++    normalizeCalendarAddress(p.email) === organizer ||
++    normalizeCalendarAddress(p.calendarAddress) === organizer ||
++    normalizeCalendarAddress(p.sendTo?.imip) === organizer
++  );
++}
++
+ export function isOrganizer(event: CalendarEvent, userEmails: string[]): boolean {
+-  if (!event.participants) return false;
+   const lower = userEmails.map(e => e.toLowerCase());
++  if (event.organizerCalendarAddress && lower.includes(normalizeCalendarAddress(event.organizerCalendarAddress))) return true;
++  if (!event.participants) return false;
+   return Object.values(event.participants).some(p =>
+-    p.roles?.owner && participantMatchesEmail(p, lower)
++    isOrganizerParticipant(event, p) && participantMatchesEmail(p, lower)
+   );
+ }
+
+@@ -79,7 +96,7 @@
+       name: p.name || '',
+       email,
+       status: p.participationStatus || 'needs-action',
+-      isOrganizer: !!p.roles?.owner,
++      isOrganizer: isOrganizerParticipant(event, p),
+     };
+   });
+ }
+@@ -99,6 +116,31 @@
+   return Object.keys(event.participants).length;
+ }
+
++export function buildAttendeeParticipantMap(
++  attendees: { name: string; email: string }[]
++): Record<string, Partial<CalendarParticipant>> {
++  const participants: Record<string, Partial<CalendarParticipant>> = {};
++
++  const generateId = () => generateUUID();
++
++  attendees.forEach((a) => {
++    participants[generateId()] = {
++      '@type': 'Participant',
++      name: a.name,
++      email: a.email,
++      calendarAddress: `mailto:${a.email}`,
++      roles: { attendee: true },
++      participationStatus: 'needs-action',
++      scheduleAgent: 'server',
++      sendTo: { imip: `mailto:${a.email}` },
++      expectReply: true,
++      kind: 'individual',
++    };
++  });
++
++  return participants;
++}
++
+ export function buildParticipantMap(
+   organizer: { name: string; email: string },
+   attendees: { name: string; email: string }[]
+diff --git a/stores/calendar-store.ts b/stores/calendar-store.ts
+index 1fb94a40..d737cb78 100644
+--- a/stores/calendar-store.ts
++++ b/stores/calendar-store.ts
+@@ -9,6 +9,7 @@ import { expandRecurringEvents } from '@/lib/recurrence-expansion';
+ import { generateUUID } from '@/lib/utils';
+ import { apiFetch } from '@/lib/browser-navigation';
+ import { BIRTHDAY_CALENDAR_ID } from '@/lib/birthday-calendar';
++import { CLIENT_IMIP_SENDING_ENABLED } from '@/lib/calendar-scheduling';
+ import { getClientByLocalAccountId } from './client-registry';
+
+ /**
+@@ -464,7 +465,7 @@ export const useCalendarStore = create<CalendarStore>()(
+           }
+
+           set((state) => ({ events: [...state.events, mappedCreated] }));
+-          if (sendSchedulingMessages && created.participants) {
++          if (CLIENT_IMIP_SENDING_ENABLED && sendSchedulingMessages && created.participants) {
+             try {
+               await client.sendImipInvitation(created);
+             } catch (e) {
+@@ -534,7 +535,7 @@ export const useCalendarStore = create<CalendarStore>()(
+               return merged;
+             }),
+           }));
+-          if (sendSchedulingMessages) {
++          if (CLIENT_IMIP_SENDING_ENABLED && sendSchedulingMessages) {
+             const mergedParticipants = cleanUpdates.participants ?? storeEvent?.participants;
+             if (mergedParticipants) {
+               const eventForInvitation = {
+@@ -780,7 +781,7 @@ export const useCalendarStore = create<CalendarStore>()(
+           const realId = storeEvent?.originalId || stripLocalAccountPrefix(id, storeEvent?.localAccountId);
+           const targetAccountId = storeEvent?.accountId;
+           client = resolveAccountClient(client, storeEvent?.localAccountId);
+-          if (sendSchedulingMessages) {
++          if (CLIENT_IMIP_SENDING_ENABLED && sendSchedulingMessages) {
+             try {
+               const event = await client.getCalendarEvent(realId, targetAccountId);
+               if (event?.participants) {

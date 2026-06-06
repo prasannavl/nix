@@ -60,6 +60,11 @@
       rootApp = false;
     }
     {
+      id = "bulwarkmail";
+      path = ./ext/bulwarkmail/default.nix;
+      rootApp = false;
+    }
+    {
       id = "stalwart-server";
       path = ./ext/stalwart-server/default.nix;
       rootApp = false;
