@@ -24,6 +24,7 @@ init_vars() {
 	long_running="true"
 	reload_method="restart"
 	reload_signal="HUP"
+	restart_stamp=""
 	monitor_interval=10
 
 	compose_args=()
@@ -65,6 +66,7 @@ load_metadata() {
 	long_running="$(jq -r '.longRunning // true' "$podman_compose_metadata")"
 	reload_method="$(jq -r '.reload.method // "restart"' "$podman_compose_metadata")"
 	reload_signal="$(jq -r '.reload.signal // "HUP"' "$podman_compose_metadata")"
+	restart_stamp="$(jq -r '.restartStamp // ""' "$podman_compose_metadata")"
 
 	compose_args=()
 	while IFS= read -r compose_arg; do
@@ -320,6 +322,66 @@ stage_runtime_files() {
 	mv -f "$tmp_manifest" "$manifest_path"
 }
 
+verify_staged_file_entries() {
+	local jq_filter label src dst scope failed=0
+	jq_filter="$1"
+	label="$2"
+	while IFS=$'\t' read -r src dst scope; do
+		[ -n "$src" ] || continue
+		if ! run_scoped "$scope" test -f "$dst"; then
+			printf '%s\n' "podman compose ${label} is missing: $dst" >&2
+			failed=1
+			continue
+		fi
+		if ! run_scoped "$scope" cmp -s -- "$src" "$dst"; then
+			printf '%s\n' "podman compose ${label} drifted from source: $dst" >&2
+			failed=1
+		fi
+	done < <(jq -r "$jq_filter" "$podman_compose_metadata")
+	[ "$failed" -eq 0 ]
+}
+
+render_secret_env_file() {
+	local secret_json env_name src
+	secret_json="$1"
+
+	while IFS=$'\t' read -r env_name src; do
+		[ -n "$env_name" ] || continue
+		{
+			printf '%s=' "$env_name"
+			tr -d '\n' <"$src"
+			printf '\n'
+		}
+	done < <(jq -r '.entries[]? | [.name, .src] | @tsv' <<<"$secret_json")
+}
+
+verify_secret_env_files() {
+	local secret_json dst scope failed=0
+	while IFS= read -r secret_json; do
+		[ -n "$secret_json" ] || continue
+		dst="$(jq -r '.dst' <<<"$secret_json")"
+		scope="$(jq -r '.scope // "host"' <<<"$secret_json")"
+		if ! run_scoped "$scope" test -f "$dst"; then
+			printf '%s\n' "podman compose generated env-secret file is missing: $dst" >&2
+			failed=1
+			continue
+		fi
+		if ! render_secret_env_file "$secret_json" | run_scoped "$scope" cmp -s - "$dst"; then
+			printf '%s\n' "podman compose generated env-secret file drifted from source: $dst" >&2
+			failed=1
+		fi
+	done < <(jq -c '.envSecretFiles[]?' "$podman_compose_metadata")
+	[ "$failed" -eq 0 ]
+}
+
+verify_staged_runtime_files() {
+	local failed=0
+	verify_staged_file_entries '.stagedFiles[]? | [.src, .dst, (.scope // "host")] | @tsv' "staged file" || failed=1
+	verify_staged_file_entries '.reload.stagedFiles[]? | [.src, .dst, (.scope // "host")] | @tsv' "reload staged file" || failed=1
+	verify_secret_env_files || failed=1
+	[ "$failed" -eq 0 ]
+}
+
 path_in_file() {
 	local path file
 	path="$1"
@@ -433,7 +495,7 @@ stage_reload_files() {
 }
 
 stage_secret_env_file() {
-	local secret_json tmp_manifest dst dst_dir mode user group scope tmp_secret_env env_name src
+	local secret_json tmp_manifest dst dst_dir mode user group scope tmp_secret_env
 	secret_json="$1"
 	tmp_manifest="$2"
 	IFS=$'\t' read -r dst dst_dir mode user group scope < <(
@@ -444,16 +506,7 @@ stage_secret_env_file() {
 	install -d -m 0700 "$dst_dir"
 	remove_path_if_exists "$dst"
 	remove_path_if_exists "$tmp_secret_env"
-	: >"$tmp_secret_env"
-
-	while IFS=$'\t' read -r env_name src; do
-		[ -n "$env_name" ] || continue
-		{
-			printf '%s=' "$env_name"
-			tr -d '\n' <"$src"
-			printf '\n'
-		} >>"$tmp_secret_env"
-	done < <(jq -r '.entries[]? | [.name, .src] | @tsv' <<<"$secret_json")
+	render_secret_env_file "$secret_json" >"$tmp_secret_env"
 
 	apply_perms "$tmp_secret_env" "$mode" "$user" "$group" "$scope"
 	mv -f "$tmp_secret_env" "$dst"
@@ -849,6 +902,10 @@ last_applied_reconcile_policy() {
 	runtime_state_field reconcilePolicy ""
 }
 
+last_applied_restart_stamp() {
+	runtime_state_field restartStamp ""
+}
+
 policy_transition_forces_recreate() {
 	local applied_reconcile_policy
 	applied_reconcile_policy="$(last_applied_reconcile_policy)"
@@ -863,6 +920,23 @@ policy_transition_forces_recreate() {
 	esac
 }
 
+verify_runtime_state_current() {
+	local applied_restart_stamp
+	if [ "$adopt_existing" = "true" ]; then
+		return 0
+	fi
+	applied_restart_stamp="$(last_applied_restart_stamp)"
+	if [ "$restart_stamp" != "$applied_restart_stamp" ]; then
+		printf '%s\n' "podman compose restart-class metadata is not applied for ${podman_compose_service_name}" >&2
+		printf '%s\n' "expected restartStamp=$restart_stamp applied restartStamp=$applied_restart_stamp" >&2
+		return 1
+	fi
+	if should_force_recreate; then
+		printf '%s\n' "podman compose recreate-class metadata is not applied for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+}
+
 record_runtime_state() {
 	local tmp_state
 	install -d -m 0750 "$generated_dir"
@@ -873,7 +947,8 @@ record_runtime_state() {
 			--arg kind "$runtime_state_kind" \
 			--arg adoptionStamp "$adoption_stamp" \
 			--arg reconcilePolicy "$reconcile_policy" \
-			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy}' >"$tmp_state"
+			--arg restartStamp "$restart_stamp" \
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp}' >"$tmp_state"
 	chmod 0640 "$tmp_state"
 	mv -f "$tmp_state" "$state_path"
 }
@@ -888,10 +963,11 @@ record_applied_recreate_state() {
 			--arg kind "$runtime_state_kind" \
 			--arg adoptionStamp "$adoption_stamp" \
 			--arg reconcilePolicy "$reconcile_policy" \
+			--arg restartStamp "$restart_stamp" \
 			--arg recreateTag "$recreate_tag" \
 			--arg recreateStamp "$recreate_stamp" \
 			--arg recreateClassStamp "$recreate_class_stamp" \
-			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, recreateTag: $recreateTag, recreateStamp: $recreateStamp, recreateClassStamp: $recreateClassStamp}' >"$tmp_state"
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp, recreateTag: $recreateTag, recreateStamp: $recreateStamp, recreateClassStamp: $recreateClassStamp}' >"$tmp_state"
 	chmod 0640 "$tmp_state"
 	mv -f "$tmp_state" "$state_path"
 }
@@ -961,6 +1037,9 @@ monitor_compose_state() {
 		fi
 
 		verify_expected_compose_services
+		if ! verify_staged_runtime_files || ! verify_runtime_state_current; then
+			exit 1
+		fi
 
 		unlock_lifecycle_shared
 		sleep "$monitor_interval"
@@ -1000,7 +1079,12 @@ cmd_link_files() {
 cmd_verify() {
 	load_metadata
 	lock_lifecycle_shared
-	verify_compose_state
+	if ! verify_staged_runtime_files ||
+		! verify_runtime_state_current ||
+		! verify_compose_state; then
+		unlock_lifecycle_shared
+		return 1
+	fi
 	unlock_lifecycle_shared
 }
 

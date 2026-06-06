@@ -1,3 +1,6 @@
+: "${registry:?missing podman-composectl registry path}"
+: "${helper:?missing podman-compose helper path}"
+
 usage() {
 	cat >&2 <<'EOF'
 usage:
@@ -92,9 +95,6 @@ run_helper_action() {
 
 main() {
 	local service action entry owner uid unit service_name metadata runtime_dir bus_path
-
-	registry="${registry:-${NIX_PODMAN_COMPOSE_CONTROL_REGISTRY:-/run/current-system/share/podman-compose/control-registry.json}}"
-	helper="${helper:?podman-composectl: generated wrapper did not set helper}"
 
 	if [ "$#" -eq 1 ] && [ "$1" = list ]; then
 		list_services

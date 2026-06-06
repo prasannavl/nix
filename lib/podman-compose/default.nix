@@ -11,13 +11,27 @@
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
   cloudflareTunnelsLib = import ../services/tunnels/cloudflare.nix {inherit lib;};
+  secretFileSourceHash = file: let
+    fileString = toString file;
+  in
+    if lib.hasPrefix (builtins.storeDir + "/") fileString
+    then builtins.hashString "sha256" (builtins.unsafeDiscardStringContext fileString)
+    else if builtins.pathExists file
+    then builtins.hashFile "sha256" file
+    else null;
+  sourceHashFromInputs = inputs: let
+    inputHashes = builtins.filter (hash: hash != null) (map secretFileSourceHash inputs);
+  in
+    if inputHashes == []
+    then null
+    else builtins.hashString "sha256" (builtins.toJSON inputHashes);
   ageSecretSourceHashesByRuntimePath = lib.mapAttrs' (
     name: secret:
       lib.nameValuePair
       (toString (secret.path or "/run/agenix/${name}"))
       (
         if (secret ? file) && secret.file != null
-        then builtins.hashFile "sha256" secret.file
+        then secretFileSourceHash secret.file
         else null
       )
   ) (config.age.secrets or {});
@@ -26,9 +40,7 @@
       toString file
     }
     or (
-      if builtins.pathExists file
-      then builtins.hashFile "sha256" file
-      else null
+      secretFileSourceHash file
     );
   serviceDefaults = {
     source = null;
@@ -128,6 +140,8 @@
         "REQUESTS_CA_BUNDLE"
         "NODE_EXTRA_CA_CERTS"
       ];
+      sourceHashInputs = [];
+      sourceHash = null;
       sourceHashFile = null;
     };
   trustedCaDefaultEntryDefaults =
@@ -335,10 +349,20 @@
         default = trustedCaCertificateEntryDefaults.envVars;
         description = "Environment variables set to the CA certificate mount path for each target compose service. Use an empty list for applications with explicit CA-file flags.";
       };
+      sourceHashInputs = lib.mkOption {
+        type = lib.types.listOf (lib.types.either lib.types.path lib.types.str);
+        default = trustedCaCertificateEntryDefaults.sourceHashInputs;
+        description = "Optional Nix-visible files or store paths that should drive restart detection for this CA entry. Store-backed public inputs are hashed by path identity, while ordinary files are hashed by contents.";
+      };
       sourceHashFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = trustedCaCertificateEntryDefaults.sourceHashFile;
         description = "Optional Nix source file to hash for restart detection when `file` is a stable host runtime path.";
+      };
+      sourceHash = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = trustedCaCertificateEntryDefaults.sourceHash;
+        description = "Optional explicit source hash for restart detection when `sourceHashFile` would require a generated store path.";
       };
     };
   trustedCaCertificateEntrySubmoduleType = lib.types.submodule {options = trustedCaCertificateEntryOptions;};
@@ -1559,6 +1583,7 @@
             // entryPermsJson entry) (builtins.attrNames reloadStagedEntries);
         };
         recreateTag = service.recreateTag;
+        restartStamp = actionStamps.restart;
         recreateStamp = lifecyclePolicy.helperRecreateStamp;
         recreateClassStamp = actionStamps.recreate;
         longRunning = service.longRunning;
@@ -1981,7 +2006,11 @@ in {
           readOnly = entry.readOnly;
           services = entry.services;
           sourceHash =
-            if entry.sourceHashFile == null
+            if entry.sourceHash != null
+            then entry.sourceHash
+            else if entry.sourceHashInputs != []
+            then sourceHashFromInputs entry.sourceHashInputs
+            else if entry.sourceHashFile == null
             then null
             else builtins.hashFile "sha256" entry.sourceHashFile;
         };
@@ -2712,6 +2741,13 @@ in {
             "NIX_PODMAN_COMPOSE_SERVICE_NAME=${s.systemdServiceName}"
             helperScript
             "remove"
+          ];
+          verifyCommand = [
+            "${pkgs.coreutils}/bin/env"
+            "NIX_PODMAN_COMPOSE_METADATA=${s.helperMetadata}"
+            "NIX_PODMAN_COMPOSE_SERVICE_NAME=${s.systemdServiceName}"
+            helperScript
+            "verify"
           ];
           timeoutStableSeconds = s.timeoutStableSeconds;
           inherit (s.lifecyclePolicy) restartTriggers reloadTriggers;
