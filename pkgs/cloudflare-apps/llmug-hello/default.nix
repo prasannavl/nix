@@ -49,6 +49,7 @@
     meta = {
       description = "Deploy llmug-hello Wrangler worker";
       mainProgram = "llmug-hello-wrangler-deploy";
+      platforms = pkgs.lib.platforms.linux;
     };
     runtimeInputs = with pkgs; [
       git
