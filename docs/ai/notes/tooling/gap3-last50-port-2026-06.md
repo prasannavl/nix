@@ -6,6 +6,9 @@ Selective port of the refreshed last 50 commits on `gap3/master` as of
 2026-06-01, first ending at `254bdf52 docs(incus): format vm support note`, then
 refreshed through `4f11011c fix(git): reject dirty pre-push lint`.
 
+The next refresh on 2026-06-06 reviewed `4f11011c..086549c3`, ending at
+`086549c3 feat(incus): add managed fabric policies`.
+
 Do not cherry-pick the range wholesale. Port shared library/package machinery
 byte-for-byte where this repo has no intentional divergence; adapt only local
 repo surfaces such as package manifests, image aliases, and docs.
@@ -24,6 +27,17 @@ only when classifying commits.
 4. Nixbot and Rust package-helper utilities: `e224a6d1`, generic
    `lib/flake/pkg-helper.nix` portion of `5df298e2`.
 5. Nixbot refresh and git hook hygiene: `53fdad50`, `5cc7dac1`, `4f11011c`.
+6. Mail package refresh: `d5c87b96`, `8d11ef18`, `c483953c`, `441f7dc6`,
+   `a88c2308`, `49875633`, `cc7ae3ba`, `d8f1eb96`, `37ef6e1b`, `7f6198d8`,
+   `7e9e3604`, `809b532a`, `51975d34`, `2079c695`, `82102560`, `9ba95f6e`,
+   `0f58144f`, `e7f3303e`, `b939bdfa`, `acd1c294`.
+7. Lifecycle and verification helpers: `b552af06`, `933ead20`, `fc7a95e9`,
+   `04e618c9`, `74ced4e3`, `24de1c0a`, `0da83f1e`, `e866ac32`, `b8f83778`,
+   `a89ea9b3`, `9408d292`, `fa08daf4`, `8009c5e8`, `086549c3`.
+8. Nix, lint, and deployment tooling: `7d37017a`, `10019c2c`, `2a797daf`,
+   `a571fcea`, `90ab7901`, `3cf9366e`, `b00101b1`, `0b2e6108`, `c3e982ec`,
+   `30ccd900`, `4acb4186`, `a1334c8f`, `ee0bf55f`, `5d991a24`, `e774e74c`.
+9. GCP VM helper HTTPS firewall support from `b8a008e3`.
 
 ## Current Decisions
 
@@ -53,6 +67,16 @@ only when classifying commits.
   note files.
 - Keep Abird/GAP3 host services, DNS, route usage, and secret wiring skipped
   unless a matching local service stack is explicitly requested.
+- For the 2026-06-06 refresh, kept this repo's `data/secrets/services` service
+  default and existing Terraform/CI secret paths instead of adopting gap3's
+  `data/secrets/globals` and `data/secrets/gap3/services` migration.
+- Kept local flake inputs and overlays, including desktop overlays. Ported
+  `crane` support by adding the input and overlay without copying gap3's smaller
+  top-level `flake.nix`.
+- Kept local `lib/flake/stack.nix` compatibility import even though gap3 removed
+  it.
+- Ported portable Nixbot behavior changes but not gap3-specific secret path
+  defaults.
 
 ## Commit Disposition
 
@@ -111,6 +135,71 @@ only when classifying commits.
 | `53fdad50` | fix(nixbot): keep per-host result links               | Ported shared nixbot script byte-for-byte.                                                            |
 | `5cc7dac1` | fix(nixbot): group dev-build result links             | Ported shared nixbot script and adapted local README/nixbot note to `result-dev/<host>`.              |
 | `4f11011c` | fix(git): reject dirty pre-push lint                  | Ported shared pre-push hook byte-for-byte and adapted README wording only.                            |
+
+## 2026-06-06 Refresh Disposition
+
+| Commit     | Subject                                                                 | Disposition                                                                        |
+| ---------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `d5c87b96` | rust: split cargo builds with crane                                     | Ported `pkg-helper` crane helpers and adapted local flake/overlay wiring.          |
+| `b3426894` | fix(stalwart): authenticate smtp calendar replies                       | Skip Abird host config.                                                            |
+| `8d11ef18` | stalwart: fixes                                                         | Ported shared Stalwart patch updates; skipped Abird docs/host usage.               |
+| `c483953c` | bulwarkmail: use stalwart scheduling                                    | Ported reusable `bulwarkmail` package; skipped Abird service wiring.               |
+| `441f7dc6` | fix(bulwarkmail): gate client iMIP sending                              | Ported reusable `bulwarkmail` package patch.                                       |
+| `a88c2308` | fix(stalwart): avoid patch drift                                        | Ported shared Stalwart patches.                                                    |
+| `49875633` | build(stalwart): bump to 0.16.7                                         | Ported shared Stalwart package bump.                                               |
+| `0bcb1be5` | docs(mail): record scheduling ownership                                 | Skip Abird host notes.                                                             |
+| `7d37017a` | fix(nixbot): use dash host exclusions                                   | Ported Nixbot selector behavior with local docs.                                   |
+| `10019c2c` | docs(nixbot): document dash exclusions                                  | Adapted into local `deploy-system.md`; skipped gap3 doc layout.                    |
+| `cc7ae3ba` | build(stalwart): use fixed thin LTO units                               | Ported shared Stalwart package build settings.                                     |
+| `267aa7b8` | docs(stalwart): record thin LTO override                                | Skip Abird host note.                                                              |
+| `2a797daf` | style(docs): format nixbot docs                                         | Skip gap3-only consolidated docs.                                                  |
+| `66600700` | fix(stalwart): add internal smtp listener                               | Skip Abird host/listener wiring.                                                   |
+| `d8f1eb96` | fix(z-push): normalize calendar writes                                  | Ported shared ActiveSync and Z-Push patches.                                       |
+| `37ef6e1b` | fix(bulwarkmail): defer calendar iMIP                                   | Ported reusable `bulwarkmail` package patch.                                       |
+| `7f6198d8` | fix(stalwart): own calendar iTIP                                        | Ported shared Stalwart reply sender patch; skipped host config.                    |
+| `7e9e3604` | fix(z-push): use IANA fixed offsets                                     | Ported shared Z-Push timezone patch.                                               |
+| `b552af06` | feat(systemd-user-manager): add lifecycle state                         | Already represented locally; resynced shared helper.                               |
+| `933ead20` | feat(podman-compose): add lifecycle policies                            | Already represented locally; resynced shared helper.                               |
+| `fc7a95e9` | feat(incus): add lifecycle policies                                     | Already represented locally; remaining shared diff skipped or absent.              |
+| `04e618c9` | docs: record lifecycle policy redesign                                  | Already represented by local lifecycle docs.                                       |
+| `74ced4e3` | fix(podman-compose): declare composectl inputs                          | Ported shared composectl/helper update.                                            |
+| `7b23748e` | fix(zulip): suppress shutdown admin noise                               | Skip host-specific Zulip helper.                                                   |
+| `b8a008e3` | feat(abird): add JMAP SRV discovery                                     | Ported reusable GCP VM HTTPS firewall helper only; skipped Abird DNS/routes.       |
+| `3e06f34b` | fix(bulwarkmail): defer iMIP scheduling                                 | Ported reusable `bulwarkmail` package patch.                                       |
+| `809b532a` | fix(z-push): normalize organizer attendees                              | Ported shared Z-Push organizer patch.                                              |
+| `51975d34` | fix(stalwart): dedupe organizer snapshots                               | Ported shared Stalwart organizer patch replacement.                                |
+| `2079c695` | fix(stalwart): accept calendar reply senders                            | Ported shared Stalwart reply sender patch.                                         |
+| `7619f3b6` | docs: record calendar scheduling fixes                                  | Skip Abird host note.                                                              |
+| `82102560` | fix(calendar): tighten organizer handling                               | Ported shared Stalwart/Z-Push patch updates.                                       |
+| `9ba95f6e` | fix(stalwart): load local image for reconcile                           | Ported reusable Stalwart helper `imageTar` support.                                |
+| `0f58144f` | style(stalwart): fix lint formatting                                    | Ported shared Stalwart formatting in copied helper.                                |
+| `24de1c0a` | feat(systemd-user): add verify hook                                     | Ported shared systemd-user-manager verify hook.                                    |
+| `0da83f1e` | fix(podman): verify applied runtime state                               | Ported shared podman-compose verify hook.                                          |
+| `e7f3303e` | fixes(stalwart): bulwarkmail and zpush cal organizer fixes              | Ported reusable package patches.                                                   |
+| `b939bdfa` | fix(stalwart): hydrate organizer CN from identity                       | Ported shared Stalwart patch.                                                      |
+| `8fcfb0d2` | refactor(secrets): stack-scope secret tree                              | Skip gap3 secret-tree migration; keep local secret paths.                          |
+| `a571fcea` | feat(nix): fix cross-system flake outputs and package platform handling | Ported package-platform handling; adapted local flake wiring.                      |
+| `a9a122c4` | refactor(abird-tictactoe): isolate test host identity                   | Skip Abird/tictactoe host identity.                                                |
+| `e866ac32` | fix(podman): avoid hashing generated ca bundle                          | Ported shared podman CA hash handling.                                             |
+| `b8f83778` | fix(podman): avoid reading store secret sources                         | Ported shared podman secret-source hash handling.                                  |
+| `90ab7901` | fix(lint): target root checks for prs                                   | Ported shared lint workflow/script behavior.                                       |
+| `3cf9366e` | feat: run full flake checks in full lint mode                           | Ported shared lint script behavior.                                                |
+| `b00101b1` | refactor(flake): avoid IFD in package availability checks               | Ported package availability filtering.                                             |
+| `0b2e6108` | chore(nixbot): use cheap nix eval for host list                         | Ported Nixbot host list eval.                                                      |
+| `acd1c294` | fix(activesync): stabilize z-push root                                  | Ported reusable ActiveSync document root support.                                  |
+| `c3e982ec` | fix(lint): widen shared host root checks                                | Ported shared lint script behavior.                                                |
+| `30ccd900` | refactor(lint): default to current system                               | Ported shared lint script behavior.                                                |
+| `a89ea9b3` | fix(podman): declare CA restart inputs                                  | Ported shared podman CA restart input options.                                     |
+| `9408d292` | fix(podman-compose): verify scoped staged files                         | Ported shared podman-compose verification.                                         |
+| `4acb4186` | fix(nixbot): verify deploys after transport loss                        | Ported Nixbot transport-loss verification without secret path migration.           |
+| `fa08daf4` | fix(systemd-user-manager): reject duplicate units                       | Ported shared duplicate managed-unit assertion.                                    |
+| `8009c5e8` | fix(systemd-user-manager): harden reconcile state                       | Ported shared request-marker and reconcile hardening.                              |
+| `a1334c8f` | fix(lint): format flake and docs                                        | Ported shared flake helper formatting; skipped gap3 doc layout.                    |
+| `ee0bf55f` | fix(pkg): gate cloudflare apps deploy to linux                          | Ported package platform metadata.                                                  |
+| `5d991a24` | feat(flake): pass overlays through flakeLib package eval                | Ported overlay threading with local flake inputs preserved.                        |
+| `e774e74c` | feat(rust): add isolated cargo workspace helper                         | Ported `mkCargoWorkspacePackage`.                                                  |
+| `24ae0efa` | fix(incus): abird-nest incus mount interceptions                        | Skip Abird host Incus usage.                                                       |
+| `086549c3` | feat(incus): add managed fabric policies                                | Already represented locally by managed fabric commits; no new shared diff to port. |
 
 ## Closeout Checks
 
