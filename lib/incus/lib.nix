@@ -85,6 +85,239 @@
     certDelegation = name;
   };
 
+  fabricPolicyProfiles = rec {
+    open = {
+      forwardTo = true;
+      allowFromHost = true;
+      allowToHost = true;
+      allowToUplink = true;
+      allowFromUplink = true;
+    };
+    isolated = {
+      forwardTo = false;
+      allowFromHost = false;
+      allowToHost = false;
+      allowToUplink = true;
+      allowFromUplink = false;
+    };
+    isolatedPublic =
+      isolated
+      // {
+        allowFromUplink = true;
+      };
+    contained =
+      isolated
+      // {
+        allowFromHost = true;
+      };
+    containedPublic =
+      contained
+      // {
+        allowFromUplink = true;
+      };
+    quarantine =
+      isolated
+      // {
+        allowToUplink = false;
+      };
+  };
+
+  mkManagedFabricPolicy = {
+    defaultInterface ? "incusbr0",
+    defaultPolicy ? fabricPolicyProfiles.open,
+    projects,
+    tableName ? "incusManagedFabricPolicy",
+  }: let
+    managedFabricInterfaces =
+      {
+        default = defaultInterface;
+      }
+      // lib.mapAttrs (_project: project: project.network.name) projects;
+    managedFabricNames = builtins.attrNames managedFabricInterfaces;
+
+    managedFabricInterfaceSet = lib.concatStringsSep ", " (
+      lib.mapAttrsToList (_name: iface: "\"${iface}\"") managedFabricInterfaces
+    );
+
+    normalizeForwardTo = source: forwardTo:
+      if forwardTo == true
+      then lib.remove source managedFabricNames
+      else if forwardTo == false || forwardTo == []
+      then []
+      else forwardTo;
+
+    normalizePolicy = source: policy: {
+      forwardTo = normalizeForwardTo source (policy.forwardTo or false);
+      allowFromHost = policy.allowFromHost or false;
+      allowToHost = policy.allowToHost or false;
+      allowToUplink = policy.allowToUplink or false;
+      allowFromUplink = policy.allowFromUplink or false;
+    };
+
+    fabricPolicy = source:
+      normalizePolicy source (
+        if source == "default"
+        then defaultPolicy
+        else projects.${source}.network.policy or {}
+      );
+
+    invalidFabricPolicyModes =
+      lib.filter
+      (
+        source: let
+          rawPolicy =
+            if source == "default"
+            then defaultPolicy
+            else projects.${source}.network.policy or {};
+        in
+          !(
+            builtins.isAttrs rawPolicy
+            && builtins.isBool (rawPolicy.allowFromHost or false)
+            && builtins.isBool (rawPolicy.allowToHost or false)
+            && builtins.isBool (rawPolicy.allowToUplink or false)
+            && builtins.isBool (rawPolicy.allowFromUplink or false)
+            && (builtins.isBool (rawPolicy.forwardTo or false) || builtins.isList (rawPolicy.forwardTo or false))
+          )
+      )
+      managedFabricNames;
+
+    invalidFabricPolicyTargets =
+      lib.concatMap (
+        source:
+          lib.map
+          (target: "${source} -> ${target}")
+          (
+            lib.filter
+            (target: !builtins.elem target managedFabricNames)
+            (
+              if builtins.elem source invalidFabricPolicyModes
+              then []
+              else (fabricPolicy source).forwardTo
+            )
+          )
+      )
+      managedFabricNames;
+
+    forwardToDropRules = builtins.concatStringsSep "\n" (
+      lib.concatMap (
+        source:
+          let
+            deniedTargets = lib.filter
+              (target: target != source && !builtins.elem target (fabricPolicy source).forwardTo)
+              managedFabricNames;
+          in
+            lib.map
+            (
+              target:
+                ''iifname "${managedFabricInterfaces.${source}}" oifname "${managedFabricInterfaces.${target}}" drop comment "deny ${source} -> ${target}"''
+            )
+            deniedTargets
+      )
+      managedFabricNames
+    );
+
+    hostToFabricDropRules = builtins.concatStringsSep "\n" (
+      lib.concatMap (
+        source:
+          lib.optional (!(fabricPolicy source).allowFromHost)
+          ''oifname "${managedFabricInterfaces.${source}}" ct state { new, untracked } drop comment "deny host -> ${source}"''
+      )
+      managedFabricNames
+    );
+
+    fabricToHostDropRules = builtins.concatStringsSep "\n" (
+      lib.concatMap (
+        source:
+          lib.optional (!(fabricPolicy source).allowToHost)
+          ''iifname "${managedFabricInterfaces.${source}}" ct state { new, untracked } drop comment "deny ${source} -> host"''
+      )
+      managedFabricNames
+    );
+
+    fabricToUplinkDropRules = builtins.concatStringsSep "\n" (
+      lib.concatMap (
+        source:
+          lib.optional (!(fabricPolicy source).allowToUplink)
+          ''iifname "${managedFabricInterfaces.${source}}" oifname != { ${managedFabricInterfaceSet} } drop comment "deny ${source} -> uplink"''
+      )
+      managedFabricNames
+    );
+
+    uplinkToFabricDropRules = builtins.concatStringsSep "\n" (
+      lib.concatMap (
+        source:
+          lib.optional (!(fabricPolicy source).allowFromUplink)
+          ''iifname != { ${managedFabricInterfaceSet} } oifname "${managedFabricInterfaces.${source}}" ct state { new, untracked } drop comment "deny uplink -> ${source}"''
+      )
+      managedFabricNames
+    );
+
+    trustedInterfaces =
+      lib.filter
+      (iface: iface != null)
+      (
+        lib.map
+        (
+          source:
+            if (fabricPolicy source).allowToHost
+            then managedFabricInterfaces.${source}
+            else null
+        )
+        managedFabricNames
+      );
+  in {
+    inherit managedFabricInterfaces managedFabricNames trustedInterfaces;
+    assertions = [
+      {
+        assertion = invalidFabricPolicyModes == [];
+        message =
+          "Incus managed fabric policies must be attrsets with boolean host/uplink flags and forwardTo as bool or list: "
+          + lib.concatStringsSep ", " invalidFabricPolicyModes;
+      }
+      {
+        assertion = invalidFabricPolicyTargets == [];
+        message =
+          "Incus managed fabric policy forwardTo targets must reference managed fabrics only: "
+          + lib.concatStringsSep ", " invalidFabricPolicyTargets;
+      }
+    ];
+    nftablesTable = {
+      ${tableName} = {
+        family = "inet";
+        content = ''
+          chain input {
+            type filter hook input priority -5; policy accept;
+
+            ct state { established, related } accept
+            ct state invalid drop
+
+            ${fabricToHostDropRules}
+          }
+
+          chain output {
+            type filter hook output priority -5; policy accept;
+
+            ct state { established, related } accept
+            ct state invalid drop
+
+            ${hostToFabricDropRules}
+          }
+
+          chain forward {
+            type filter hook forward priority -5; policy accept;
+
+            ct state { established, related } accept
+            ct state invalid drop
+
+            ${forwardToDropRules}
+            ${fabricToUplinkDropRules}
+            ${uplinkToFabricDropRules}
+          }
+        '';
+      };
+    };
+  };
+
   certsForUsers = users: import ./certs.nix {users = users;};
 
   mkUserCertsForProjects = {
@@ -116,6 +349,6 @@
         };
     };
 in {
-  inherit certsForUsers mkCertDelegation mkGpuDevices mkIncusProxy mkUserCertsForProjects;
+  inherit certsForUsers fabricPolicyProfiles mkCertDelegation mkGpuDevices mkIncusProxy mkManagedFabricPolicy mkUserCertsForProjects;
   certs = import ./certs.nix;
 }
