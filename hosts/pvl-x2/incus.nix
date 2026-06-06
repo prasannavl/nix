@@ -33,7 +33,12 @@
     abird = {
       pool = "abird";
       network = {
-        policy = fpp.containedPublic;
+        policy =
+          fpp.containedPublic
+          // {
+            # Temporary migration path
+            forwardTo = ["default"];
+          };
         name = "iabirdbr0";
         ipv4Address = "10.10.100.1/24";
         dhcpRanges = "10.10.100.100-10.10.100.199";
