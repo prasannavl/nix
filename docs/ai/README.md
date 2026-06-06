@@ -154,6 +154,9 @@ Use this index as the canonical map for `docs/ai/**`.
 
 ### Secrets
 
+- `docs/ai/notes/secrets/age-secrets-recipient-eval-2026-06.md`: Records the Nix
+  list/function-application parsing bug that put a function into machine
+  recipient lists and broke `scripts/age-secrets.sh` JSON evaluation.
 - `docs/ai/notes/secrets/topology-and-operations.md`: Canonical secret topology,
   bootstrap order, and managed secret operations.
 

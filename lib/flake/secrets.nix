@@ -36,10 +36,11 @@ in {
       builtins.replaceStrings ["\n"] [""] (builtins.readFile keyPath);
     machine = name: let
       publicKey = path + "/machine/${name}.key.pub";
+      recipient = readRecipient publicKey;
     in {
       key = scope.file "machine/${name}.key.age";
       publicKey = publicKey;
-      recipients = [readRecipient publicKey];
+      recipients = [recipient];
     };
   in
     scope
