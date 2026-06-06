@@ -1,119 +1,100 @@
 let
-  userdata = import ../../users/userdata.nix;
-  admins = [userdata.pvl.sshKey];
+  secretsLib = import ../../lib/flake/secrets.nix;
+  userdata = (import ../../lib/stacks).all.users;
+  admins = userdata.pvl.sshKeys;
   adminsWithNixbot = admins ++ nixbotKeys;
+  deployMachines = machines.pvl-x2;
   adminsWithCiHost =
     adminsWithNixbot
-    ++ machines.pvl-x2;
-  machineKeyFiles = {
-    pvl-a1 = ./globals/machine/pvl-a1.key.pub;
-    pvl-x2 = ./globals/machine/pvl-x2.key.pub;
-    pvl-vlab = ./globals/machine/pvl-vlab.key.pub;
-    pvl-vlab-1 = ./globals/machine/pvl-vlab-1.key.pub;
-    pvl-vk = ./globals/machine/pvl-vk.key.pub;
-    pvl-vk-1 = ./globals/machine/pvl-vk-1.key.pub;
-    gap3-gondor = ./globals/machine/gap3-gondor.key.pub;
+    ++ deployMachines;
+  globals = secretsLib.mkGlobals {
+    path = ./globals;
   };
-  machines = builtins.mapAttrs (_: keyPath: let
-    recipient = builtins.replaceStrings ["\n"] [""] (builtins.readFile keyPath);
-  in [recipient])
-  machineKeyFiles;
-  nixbotKeys = userdata.nixbot.sshKeys or [userdata.nixbot.sshKey];
-  globals = rec {
-    base = "data/secrets/globals";
-    file = name: "${base}/${name}";
-    key = name: file "${name}.key.age";
-    machineKey = host: key "machine/${host}";
-    nixbotKey = name: key "nixbot/${name}";
-    ciKey = name: key "ci/${name}";
-    incusKey = name: key "incus/${name}";
-    incusPfx = name: file "incus/${name}.pfx.age";
-    cloudflareKey = name: key "cloudflare/${name}";
-    gcpFile = name: file "gcp/${name}";
-    tfFile = name: file "tf/${name}";
-    tunnelFile = name: file "cloudflare/tunnels/${name}";
-    tailscaleKey = host: key "tailscale/${host}";
+  machineIdentities = globals.machineIdentities {
+    machines = {
+      pvl-a1 = {};
+      pvl-x2 = {};
+      pvl-vlab = {};
+      pvl-vlab-1 = {};
+      pvl-vk = {};
+      pvl-vk-1 = {};
+      gap3-gondor = {};
+    };
+    defaultAccess = adminsWithNixbot;
   };
+  machines = machineIdentities.recipients;
+  nixbotKeys = userdata.nixbot.sshKeys;
   stackArgs = {
     admins = admins;
     machines = machines;
   };
 in
-  with machines;
-    {
-      # Nixbot
-      ${globals.nixbotKey "nixbot"}.publicKeys = adminsWithCiHost;
-      ${globals.nixbotKey "nixbot-legacy"}.publicKeys = adminsWithCiHost;
+  (with machines; {
+    # Nixbot
+    ${globals.key "nixbot/nixbot"}.publicKeys = adminsWithCiHost;
+    ${globals.key "nixbot/nixbot-legacy"}.publicKeys = adminsWithCiHost;
 
-      # CI host
-      ${globals.ciKey "nixbot-ci-ssh"}.publicKeys = admins;
+    # CI host ingress
+    ${globals.key "ci/nixbot-ci-ssh"}.publicKeys = admins;
 
-      # Machines
-      ${globals.machineKey "pvl-a1"}.publicKeys = adminsWithNixbot;
-      ${globals.machineKey "pvl-x2"}.publicKeys = adminsWithNixbot;
-      ${globals.machineKey "pvl-vlab"}.publicKeys = adminsWithNixbot;
-      ${globals.machineKey "pvl-vlab-1"}.publicKeys = adminsWithNixbot;
-      ${globals.machineKey "pvl-vk"}.publicKeys = adminsWithNixbot;
-      ${globals.machineKey "pvl-vk-1"}.publicKeys = adminsWithNixbot;
-      ${globals.machineKey "gap3-gondor"}.publicKeys = adminsWithNixbot;
+    # Incus client identities
+    ${globals.key "incus/pvl"}.publicKeys = admins;
+    ${globals.file "incus/pvl.pfx.age"}.publicKeys = admins;
+    ${globals.key "incus/abird"}.publicKeys = admins;
+    ${globals.file "incus/abird.pfx.age"}.publicKeys = admins;
+    ${globals.key "incus/abird-stage"}.publicKeys = admins;
+    ${globals.key "incus/abird-dev"}.publicKeys = admins;
+    ${globals.file "incus/abird-dev.pfx.age"}.publicKeys = admins;
+    ${globals.key "incus/pvl-vlab-1"}.publicKeys = admins ++ pvl-vlab-1;
 
-      # Incus client identities
-      ${globals.incusKey "pvl"}.publicKeys = admins;
-      ${globals.incusPfx "pvl"}.publicKeys = admins;
-      ${globals.incusKey "abird"}.publicKeys = admins;
-      ${globals.incusPfx "abird"}.publicKeys = admins;
-      ${globals.incusKey "abird-stage"}.publicKeys = admins;
-      ${globals.incusKey "abird-dev"}.publicKeys = admins;
-      ${globals.incusPfx "abird-dev"}.publicKeys = admins;
-      ${globals.incusKey "pvl-vlab-1"}.publicKeys = admins ++ pvl-vlab-1;
+    # Cloudflare DNS
+    ${globals.key "cloudflare/api-token"}.publicKeys = admins ++ pvl-x2;
 
-      # Cloudflare DNS
-      ${globals.cloudflareKey "api-token"}.publicKeys = admins ++ pvl-x2;
+    ${globals.key "cloudflare/r2-account-id"}.publicKeys = admins ++ pvl-x2;
+    ${globals.key "cloudflare/r2-state-bucket"}.publicKeys = admins ++ pvl-x2;
+    ${globals.key "cloudflare/r2-access-key-id"}.publicKeys = admins ++ pvl-x2;
+    ${globals.key "cloudflare/r2-secret-access-key"}.publicKeys = admins ++ pvl-x2;
 
-      ${globals.cloudflareKey "r2-account-id"}.publicKeys = admins ++ pvl-x2;
-      ${globals.cloudflareKey "r2-state-bucket"}.publicKeys = admins ++ pvl-x2;
-      ${globals.cloudflareKey "r2-access-key-id"}.publicKeys = admins ++ pvl-x2;
-      ${globals.cloudflareKey "r2-secret-access-key"}.publicKeys = admins ++ pvl-x2;
+    # GCP runtime auth
+    ${globals.file "gcp/application-default-credentials.json.age"}.publicKeys = adminsWithNixbot;
+    ${globals.key "gcp/state-bucket"}.publicKeys = adminsWithNixbot;
+    ${globals.key "gcp/backend-impersonate-service-account"}.publicKeys = adminsWithNixbot;
 
-      # GCP runtime auth
-      ${globals.gcpFile "application-default-credentials.json.age"}.publicKeys = adminsWithNixbot;
-      ${globals.gcpFile "state-bucket.key.age"}.publicKeys = adminsWithNixbot;
-      ${globals.gcpFile "backend-impersonate-service-account.key.age"}.publicKeys = adminsWithNixbot;
+    # Terraform Secrets
+    ${globals.file "tf/cloudflare/globals.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare/account.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-dns/project-main.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-dns/project-stage.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-dns/project-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-dns/project-inactive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/access-account.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/tunnels-account.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/email-routing-main.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/email-routing-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/r2-main.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-dnssec-main.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-dnssec-stage.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-dnssec-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-dnssec-inactive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-settings-main.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-settings-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-security-main.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-security-stage.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-security-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-platform/zone-security-inactive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-apps/project-main.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-apps/project-stage.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/cloudflare-apps/project-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/gcp/globals.tfvars.age"}.publicKeys = adminsWithNixbot;
+    ${globals.file "tf/gcp-bootstrap/globals.tfvars.age"}.publicKeys = adminsWithNixbot;
 
-      # Terraform Secrets
-      ${globals.tfFile "cloudflare/globals.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare/account.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-dns/project-main.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-dns/project-stage.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-dns/project-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-dns/project-inactive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/access-account.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/tunnels-account.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/email-routing-main.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/email-routing-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/r2-main.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-dnssec-main.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-dnssec-stage.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-dnssec-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-dnssec-inactive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-settings-main.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-settings-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-security-main.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-security-stage.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-security-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-platform/zone-security-inactive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-apps/project-main.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-apps/project-stage.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "cloudflare-apps/project-archive.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "gcp/globals.tfvars.age"}.publicKeys = adminsWithNixbot;
-      ${globals.tfFile "gcp-bootstrap/globals.tfvars.age"}.publicKeys = adminsWithNixbot;
+    # Cloudflare Tunnels
+    ${globals.file "cloudflare/tunnels/p7log-main.json.age"}.publicKeys = admins ++ pvl-x2;
+    ${globals.file "cloudflare/tunnels/prasannavl-main.json.age"}.publicKeys = admins ++ pvl-x2 ++ pvl-vlab;
 
-      # Cloudflare tunnels
-      ${globals.tunnelFile "p7log-main.json.age"}.publicKeys = admins ++ pvl-x2;
-      ${globals.tunnelFile "prasannavl-main.json.age"}.publicKeys = admins ++ pvl-x2 ++ pvl-vlab;
-
-      # Tailscale
-      ${globals.tailscaleKey "pvl-vlab"}.publicKeys = admins ++ pvl-vlab;
-      ${globals.tailscaleKey "gap3-gondor"}.publicKeys = admins ++ gap3-gondor;
-    }
-    // import ./pvl stackArgs
+    # Tailscale
+    ${globals.key "tailscale/pvl-vlab"}.publicKeys = admins ++ pvl-vlab;
+    ${globals.key "tailscale/gap3-gondor"}.publicKeys = admins ++ gap3-gondor;
+  })
+  // machineIdentities.secrets
+  // import ./pvl stackArgs
