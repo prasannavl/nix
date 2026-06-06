@@ -14,8 +14,8 @@ Actions:
   fix         Apply best-effort auto-fixes, then re-run lint.
 
 Modes:
-  (default)       Auto: diff lints against origin/master, full flake checks
-                  on changed sub-projects only.
+  (default)       Auto: diff lints against origin/master, targeted root checks
+                  and flake checks on changed sub-projects only.
   --diff          Diff against --base REF (required with --diff).
   --full-no-test  Full lints on all files, flake checks on all sub-projects
                   but skip test checks.
@@ -25,6 +25,9 @@ Modes:
 Options:
   --base REF  Compare against REF (required with --diff, optional with auto
               to override origin/master).
+  --system SYSTEM
+              Limit root package/app/shell checks to a specific system.
+              Use "all" to evaluate all flake systems.
   --project NAME
   -h, --help
 EOF
@@ -35,11 +38,16 @@ die() {
 	exit 1
 }
 
+detect_default_lint_system() {
+	nix eval --impure --raw --expr builtins.currentSystem 2>/dev/null || printf 'x86_64-linux\n'
+}
+
 init_vars() {
 	REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
 	LINT_MODE='auto'
 	LINT_FIX='0'
 	LINT_DIFF_BASE=''
+	LINT_SYSTEM="$(detect_default_lint_system)"
 	PROJECT_NAMES=()
 	CURRENT_STEP=""
 	CURRENT_STEP_DESCRIPTION=""
@@ -180,6 +188,11 @@ parse_lint_args() {
 			[ "$#" -gt 0 ] || die "lint: --base requires an argument"
 			LINT_DIFF_BASE="$1"
 			;;
+		--system)
+			shift
+			[ "$#" -gt 0 ] || die "lint: --system requires an argument"
+			LINT_SYSTEM="$1"
+			;;
 		--project)
 			shift
 			[ "$#" -gt 0 ] || die "lint: --project requires an argument"
@@ -222,6 +235,17 @@ emit_unique_existing_from() {
 	done < <("${cmd[@]}" 2>/dev/null || true)
 }
 
+##### Best-Effort Collection #####
+
+##### Diff / Repo Paths #####
+
+lint_scope() {
+	case "${LINT_MODE}" in
+	auto | diff) echo diff ;;
+	*) echo full ;;
+	esac
+}
+
 collect_diff_files() {
 	local -a patterns=("$@")
 	local -A seen=()
@@ -247,6 +271,14 @@ collect_repo_files() {
 	emit_unique_existing_from seen git ls-files -z --cached --others --exclude-standard -- "${patterns[@]}"
 }
 
+collect_files() {
+	if [ "$(lint_scope)" = diff ]; then
+		collect_diff_files "$@"
+	else
+		collect_repo_files "$@"
+	fi
+}
+
 collect_root_only_files_from() {
 	local path=""
 
@@ -260,24 +292,11 @@ collect_root_only_files_from() {
 	done
 }
 
-lint_scope() {
-	case "${LINT_MODE}" in
-	auto | diff) echo diff ;;
-	*) echo full ;;
-	esac
-}
-
-collect_files() {
-	if [ "$(lint_scope)" = diff ]; then
-		collect_diff_files "$@"
-	else
-		collect_repo_files "$@"
-	fi
-}
-
 collect_root_files() {
 	collect_files "$@" | collect_root_only_files_from
 }
+
+##### Package Paths #####
 
 matches_selected_project() {
 	local project_path="$1"
@@ -350,6 +369,107 @@ collect_all_package_paths() {
 	done < <(manifest_package_records | jq -r '.path')
 }
 
+##### Host Targeting #####
+
+emit_host_name() {
+	local host_name="$1"
+
+	[ -n "${host_name}" ] || return 0
+	[ -d "hosts/${host_name}" ] || return 0
+	if ! [[ -v "seen_host_names[${host_name}]" ]]; then
+		printf '%s\0' "${host_name}"
+		seen_host_names["${host_name}"]=1
+	fi
+}
+
+load_all_host_names() {
+	nix eval --json .#nixosConfigurations --apply builtins.attrNames | jq -r '.[]' 2>/dev/null
+}
+
+emit_all_host_names() {
+	local host_name=""
+
+	for host_name in "${all_host_names[@]}"; do
+		emit_host_name "${host_name}"
+	done
+}
+
+emit_host_names_for_stack_prefix() {
+	local stack_prefix="$1"
+	local host_name=""
+
+	[ -n "${stack_prefix}" ] || return 0
+
+	for host_name in "${all_host_names[@]}"; do
+		case "${host_name}" in
+		"${stack_prefix}"-*)
+			emit_host_name "${host_name}"
+			;;
+		esac
+	done
+}
+
+collect_changed_host_names() {
+	local -a changed_paths=()
+	local -a all_host_names=()
+	local -A seen_host_names=()
+	local path=""
+	local host_name=""
+	local stack_prefix=""
+	local widen_all_hosts=0
+
+	mapfile -d $'\0' -t changed_paths < <(collect_files '*')
+
+	for path in "${changed_paths[@]}"; do
+		case "${path}" in
+		hosts/*/*)
+			host_name="${path#hosts/}"
+			host_name="${host_name%%/*}"
+			emit_host_name "${host_name}"
+			;;
+		hosts/*-common.nix)
+			if [ "${#all_host_names[@]}" -eq 0 ]; then
+				mapfile -t all_host_names < <(load_all_host_names)
+			fi
+			stack_prefix="${path#hosts/}"
+			stack_prefix="${stack_prefix%-common.nix}"
+			emit_host_names_for_stack_prefix "${stack_prefix}"
+			;;
+		*)
+			widen_all_hosts=1
+			;;
+		esac
+	done
+
+	if [ "${widen_all_hosts}" -eq 1 ] || [ "${#seen_host_names[@]}" -eq 0 ]; then
+		if [ "${#all_host_names[@]}" -eq 0 ]; then
+			mapfile -t all_host_names < <(load_all_host_names)
+		fi
+		emit_all_host_names
+	fi
+}
+
+##### Root Output Indexes #####
+
+collect_target_systems() {
+	local -a systems=()
+	local requested_system="$1"
+
+	case "${requested_system}" in
+	all)
+		mapfile -t systems < <(nix eval --json .#packages --apply builtins.attrNames | jq -r '.[]' 2>/dev/null)
+		;;
+	*)
+		systems=("${requested_system}")
+		;;
+	esac
+
+	for system in "${systems[@]}"; do
+		[ -n "${system}" ] || continue
+		printf '%s\0' "${system}"
+	done
+}
+
 project_arg_list() {
 	local project_name=""
 
@@ -405,6 +525,47 @@ run_conventional_package_apps() {
 		env_script="$(jq -r --arg app "${app}" '.apps[$app].envScript // ""' <<<"${record}")"
 		run_manifest_command "${project_path}" "${env_script}" "${command}"
 	done
+}
+
+run_full_root_flake_check() {
+	nix flake check --all-systems . 2> >(grep -v "^warning: unknown flake output\|^warning: The check omitted these incompatible systems" >&2)
+}
+
+run_targeted_root_flake_check() {
+	local -a host_names=()
+	local -a target_systems=()
+	local host_name=""
+	local system=""
+
+	printf '  - root output indexes\n' >&2
+	mapfile -d $'\0' -t target_systems < <(collect_target_systems "${LINT_SYSTEM}")
+	for system in "${target_systems[@]}"; do
+		printf '    - system: %s\n' "${system}" >&2
+		nix eval --json ".#packages.${system}" --apply builtins.attrNames >/dev/null
+		nix eval --json ".#apps.${system}" --apply builtins.attrNames >/dev/null
+		nix eval --json ".#devShells.${system}" --apply builtins.attrNames >/dev/null
+	done
+	nix eval --json .#nixosModules --apply builtins.attrNames >/dev/null
+	nix eval --json .#nixosConfigurations --apply builtins.attrNames >/dev/null
+
+	mapfile -d $'\0' -t host_names < <(collect_changed_host_names)
+	if [ "${#host_names[@]}" -eq 0 ]; then
+		return 0
+	fi
+
+	printf '  - changed NixOS hosts\n' >&2
+	for host_name in "${host_names[@]}"; do
+		printf '    - %s\n' "${host_name}" >&2
+		nix eval --raw ".#nixosConfigurations.${host_name}.config.system.build.toplevel.drvPath" >/dev/null
+	done
+}
+
+run_root_flake_check() {
+	if [ "$(lint_scope)" = full ]; then
+		run_step root-flake-check 'Checking root flake evaluates cleanly' run_full_root_flake_check
+	else
+		run_step root-flake-check 'Checking changed root flake outputs' run_targeted_root_flake_check
+	fi
 }
 
 run_lint_action() {
@@ -544,8 +705,7 @@ run_lint_action() {
 			done
 		fi
 
-		run_step root-flake-check 'Checking root flake evaluates cleanly' \
-			nix flake check --no-build 2> >(grep -v "^warning: unknown flake output\|^warning: The check omitted these incompatible systems" >&2)
+		run_root_flake_check
 	fi
 
 	if [ "${#package_paths[@]}" -gt 0 ]; then

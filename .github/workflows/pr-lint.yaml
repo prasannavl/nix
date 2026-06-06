@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   checks:
-    if: github.head_ref != 'master'
+    # if: github.head_ref != 'master'
     name: pr/lint
     runs-on: ubuntu-latest
     steps:
@@ -43,4 +43,5 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          nix run .#lint
+          git fetch --no-tags origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          nix run .#lint -- --diff --base "origin/${{ github.base_ref }}"
