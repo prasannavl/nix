@@ -4,8 +4,8 @@
   pkgHelper,
 }: let
   repoRoot = ../..;
-  packageRuntimeInputs = pkgs.lib.unique (pkgHelper.pkgOpsRuntimeInputs packageSet);
-  pkgOpsManifestFile = pkgs.writeText "pkg-ops-manifest.json" (builtins.toJSON (pkgHelper.pkgOpsManifest packageSet));
+  packageRuntimeInputs = pkgs.lib.unique (pkgHelper.pkgOpsRuntimeInputs pkgs packageSet);
+  pkgOpsManifestFile = pkgs.writeText "pkg-ops-manifest.json" (builtins.toJSON (pkgHelper.pkgOpsManifest pkgs packageSet));
   formatterPkgs =
     (pkgHelper.repoFmtRuntimeInputs pkgs)
     ++ (with pkgs; [

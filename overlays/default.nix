@@ -3,6 +3,9 @@
   (import ./unstable.nix {inherit inputs;})
   (import ./sway.nix {inherit inputs;})
   inputs.vscode-ext.overlays.default
+  (_final: prev: {
+    craneLib = inputs.crane.mkLib prev;
+  })
   (import ./pvl.nix {inherit inputs;})
   (import ./pkgs.nix {inherit inputs;})
   (

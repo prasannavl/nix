@@ -18,10 +18,15 @@ let
       flake-utils,
       defaultSystem ? builtins.head flake-utils.lib.defaultSystems,
       systems ? flake-utils.lib.defaultSystems,
+      overlays ? [],
       stdFlakeOutputArgs ? _: {},
       ...
     }: let
       pkgHelper = packageStack.pkg;
+      pkgsFor = system:
+        if overlays == []
+        then nixpkgs.legacyPackages.${system}
+        else import nixpkgs {inherit system overlays;};
       mkOutputs = pkgsInput: let
         pkgs = packageStack.mkPkgs pkgsInput;
         drv = pkgs.callPackage packageFile {};
@@ -41,10 +46,10 @@ let
         flakeOutputs = flakeOutputs;
         nixosModules = nixosModules;
       };
-      defaultOutputs = mkOutputs nixpkgs.legacyPackages.${defaultSystem};
+      defaultOutputs = mkOutputs (pkgsFor defaultSystem);
     in
       flake-utils.lib.eachSystem systems (system:
-        (mkOutputs nixpkgs.legacyPackages.${system}).flakeOutputs)
+        (mkOutputs (pkgsFor system)).flakeOutputs)
       // (
         if defaultOutputs.nixosModules == {}
         then {}

@@ -83,6 +83,7 @@
       url = "github:thiagokokada/nix-alien";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    crane.url = "github:ipetkov/crane";
     # Support
     systems.url = "github:nix-systems/default";
     treefmt-nix = {
@@ -99,12 +100,12 @@
     ...
   }: let
     allSystems = flake-utils.lib.defaultSystems;
+    overlays = import ./overlays {inherit inputs;};
     flakeLib = import ./lib/flake {
-      inherit flake-utils nixpkgs;
+      inherit flake-utils inputs nixpkgs overlays;
       stackProfiles = import ./lib/stacks;
     };
     allOutputs = flakeLib.outputsFor allSystems;
-    overlays = import ./overlays {inherit inputs;};
     commonModules = [
       home-manager.nixosModules.home-manager
       agenix.nixosModules.default

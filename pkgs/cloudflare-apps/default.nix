@@ -9,6 +9,7 @@
     meta = {
       description = "Deploy Cloudflare apps";
       mainProgram = "cloudflare-apps-deploy";
+      platforms = pkgs.lib.platforms.linux;
     };
     text = ''
       set -euo pipefail

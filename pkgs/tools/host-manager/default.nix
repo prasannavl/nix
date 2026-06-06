@@ -9,6 +9,7 @@
       name = "host-manager";
       meta = {
         description = "Repo host generation and installation helper";
+        platforms = pkgs.lib.platforms.linux;
         mainProgram = "host-manager";
       };
       # Keep in sync with runtime_packages in ./host-manager.sh.

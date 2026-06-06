@@ -23,6 +23,7 @@
       name = "data-migrator";
       meta = {
         description = "Repo data migration helper for drained host cutovers";
+        platforms = pkgs.lib.platforms.linux;
         mainProgram = "data-migrator";
       };
       runtimeInputs = with pkgs; [

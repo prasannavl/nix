@@ -9,11 +9,11 @@
       name = "nixbot";
       meta = {
         description = "NixOS management bot";
+        platforms = pkgs.lib.platforms.linux;
         mainProgram = "nixbot";
       };
       runtimeInputs = with pkgs; [
         age
-        cloudflared
         coreutils
         findutils
         git
@@ -23,6 +23,7 @@
         openssh
         opentofu
         procps
+        cloudflared
       ];
       text = ''
         export NIXBOT_IN_NIX_SHELL=1
