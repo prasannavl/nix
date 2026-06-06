@@ -18,8 +18,8 @@ Run this once with organization-level credentials.
 - `cd tf/gcp-bootstrap`
 - `tofu init` with the same R2 backend settings used by the other Terraform
   projects, or use the wrapper: `nixbot tofu -chdir=tf/gcp-bootstrap init`
-- `tofu plan -var-file=../../data/secrets/tf/gcp/globals.tfvars -var-file=../../data/secrets/tf/gcp-bootstrap/globals.tfvars`
-- `tofu apply -var-file=../../data/secrets/tf/gcp/globals.tfvars -var-file=../../data/secrets/tf/gcp-bootstrap/globals.tfvars`
+- `tofu plan -var-file=../../data/secrets/globals/tf/gcp/globals.tfvars -var-file=../../data/secrets/globals/tf/gcp-bootstrap/globals.tfvars`
+- `tofu apply -var-file=../../data/secrets/globals/tf/gcp/globals.tfvars -var-file=../../data/secrets/globals/tf/gcp-bootstrap/globals.tfvars`
 - or use the wrapper so encrypted tfvars are auto-loaded:
   `nixbot tofu -chdir=tf/gcp-bootstrap plan`
 
@@ -28,11 +28,11 @@ Run this once with organization-level credentials.
 - State uses the shared R2 Terraform backend with the default key
   `gcp-bootstrap/terraform.tfstate`.
 - The checked-in `bootstrap.auto.tfvars` carries only non-secret naming and
-  bucket-location values. Sensitive IDs now live under `data/secrets/tf/gcp/`
-  and `data/secrets/tf/gcp-bootstrap/`.
+  bucket-location values. Sensitive IDs now live under
+  `data/secrets/globals/tf/gcp/` and `data/secrets/globals/tf/gcp-bootstrap/`.
 - Provider auth is expected to come from the repo-managed encrypted Google
   service-account JSON at
-  `data/secrets/gcp/application-default-credentials.json.age`.
+  `data/secrets/globals/gcp/application-default-credentials.json.age`.
 - `nixbot` decrypts that file at runtime and exports
   `GOOGLE_APPLICATION_CREDENTIALS` automatically for bootstrap runs too.
 - That credential still needs organization-level permissions sufficient for the

@@ -561,8 +561,8 @@ def resolve_cloudflare_api_token(repo_root: Path, identity: Path) -> str:
         return env_token
 
     for path in (
-        repo_root / "data/secrets/cloudflare/api-token-readall.key.age",
-        repo_root / "data/secrets/cloudflare/api-token.key.age",
+        repo_root / "data/secrets/globals/cloudflare/api-token-readall.key.age",
+        repo_root / "data/secrets/globals/cloudflare/api-token.key.age",
     ):
         if path.exists():
             return decrypt_age(repo_root, identity, path)
@@ -573,7 +573,7 @@ def resolve_cloudflare_account_id(repo_root: Path, identity: Path) -> str:
     env_account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     if env_account_id:
         return env_account_id
-    return decrypt_age(repo_root, identity, repo_root / "data/secrets/cloudflare/r2-account-id.key.age")
+    return decrypt_age(repo_root, identity, repo_root / "data/secrets/globals/cloudflare/r2-account-id.key.age")
 
 
 class CloudflareAPI:
@@ -829,7 +829,7 @@ def tf_project_provider(project: str) -> str:
 
 def tf_var_secret_paths(repo_root: Path, project: str) -> list[Path]:
     provider = tf_project_provider(project)
-    secrets_root = repo_root / "data/secrets/tf"
+    secrets_root = repo_root / "data/secrets/globals/tf"
     paths: list[Path] = []
     seen: set[Path] = set()
 
@@ -905,10 +905,10 @@ def write_import_script_header(lines: list[str]) -> None:
             'tf_recover_emit_var_paths() {',
             '  local project="$1" provider=""',
             '  provider="$(tf_recover_provider_for_project "${project}")"',
-            '  [ -f "data/secrets/tf/${provider}.tfvars.age" ] && printf \'%s\\n\' "data/secrets/tf/${provider}.tfvars.age"',
-            '  [ -d "data/secrets/tf/${provider}" ] && find "data/secrets/tf/${provider}" -type f -name \'*.tfvars.age\' | sort',
-            '  [ -f "data/secrets/tf/${project}.tfvars.age" ] && printf \'%s\\n\' "data/secrets/tf/${project}.tfvars.age"',
-            '  [ -d "data/secrets/tf/${project}" ] && find "data/secrets/tf/${project}" -type f -name \'*.tfvars.age\' | sort',
+            '  [ -f "data/secrets/globals/tf/${provider}.tfvars.age" ] && printf \'%s\\n\' "data/secrets/globals/tf/${provider}.tfvars.age"',
+            '  [ -d "data/secrets/globals/tf/${provider}" ] && find "data/secrets/globals/tf/${provider}" -type f -name \'*.tfvars.age\' | sort',
+            '  [ -f "data/secrets/globals/tf/${project}.tfvars.age" ] && printf \'%s\\n\' "data/secrets/globals/tf/${project}.tfvars.age"',
+            '  [ -d "data/secrets/globals/tf/${project}" ] && find "data/secrets/globals/tf/${project}" -type f -name \'*.tfvars.age\' | sort',
             "}",
             "",
             'tf_recover_import() {',

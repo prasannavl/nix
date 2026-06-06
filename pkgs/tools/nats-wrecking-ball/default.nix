@@ -17,9 +17,6 @@ in
       mainProgram = "nats-wrecking-ball";
     };
     extraPassthru = build: {
-      clientIdentity = builtins.removeAttrs (srv.mkIdentity build) [
-        "flakeExtraNixosModules"
-        "nixosModule"
-      ];
+      clientIdentity = srv.mkIdentity build;
     };
   }

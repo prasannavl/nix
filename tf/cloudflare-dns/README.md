@@ -5,9 +5,10 @@ Pre-deploy Cloudflare DNS phase.
 ## Scope
 
 - public-safe DNS records from `dns.auto.tfvars`
-- provider-wide encrypted inputs from `data/secrets/tf/cloudflare/*.tfvars.age`
+- provider-wide encrypted inputs from
+  `data/secrets/globals/tf/cloudflare/*.tfvars.age`
 - project-specific encrypted DNS records from
-  `data/secrets/tf/cloudflare-dns/*.tfvars.age`
+  `data/secrets/globals/tf/cloudflare-dns/*.tfvars.age`
 
 ## Runtime
 

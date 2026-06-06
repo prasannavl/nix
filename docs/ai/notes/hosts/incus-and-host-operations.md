@@ -56,7 +56,7 @@ recent host incidents.
 ## Guest secret and bootstrap model
 
 - Machine identity secrets remain the canonical guest secret surface:
-  `data/secrets/machine/<host>.key.age`.
+  `data/secrets/globals/machine/<host>.key.age`.
 - Optional guest Tailscale wiring belongs in `lib/incus-vm.nix`, not in the
   shared LXC base profile.
 - Persistent server semantics for guest Tailscale should keep explicit tagged,
@@ -85,7 +85,7 @@ recent host incidents.
 - Hosts should use the native `services.cloudflared.tunnels` NixOS module
   directly.
 - Tunnel credentials stay in agenix-managed files under
-  `data/secrets/cloudflare/tunnels/`.
+  `data/secrets/globals/cloudflare/tunnels/`.
 - Host config may derive ingress metadata locally, but the final host wiring
   should still use the upstream NixOS module surface.
 

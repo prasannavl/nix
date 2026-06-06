@@ -17,9 +17,9 @@
 - The common-case helper contract should only need `credentialsStoreName`,
   `tunnelId`, and `ingress`.
 - By convention, the helper derives the agenix secret path as
-  `data/secrets/cloudflare/tunnels/<credentialsStoreName>` and the age secret
-  name as `cloudflare-tunnel-<basename>-credentials`, where `<basename>` drops
-  `.json.age` or `.age`.
+  `data/secrets/globals/cloudflare/tunnels/<credentialsStoreName>` and the age
+  secret name as `cloudflare-tunnel-<basename>-credentials`, where `<basename>`
+  drops `.json.age` or `.age`.
 - Keep `ageSecretName` and `credentialsSecretPath` as optional escape hatches
   for non-standard layouts only.
 - Do not use the invalid top-level shape `services.cloudflared.edgeIpVersion`.

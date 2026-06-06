@@ -85,7 +85,7 @@ Repository surfaces:
 
 - tunnel object: `tf/cloudflare-platform/tunnels.auto.tfvars`
 - host runtime config: `hosts/<host>/cloudflare.nix`
-- credentials secret: `data/secrets/cloudflare/tunnels/*.json.age`
+- credentials secret: `data/secrets/globals/cloudflare/tunnels/*.json.age`
 
 Do not create a second tunnel just to add another hostname on the same host.
 

@@ -16,7 +16,7 @@ in rec {
   inherit serviceModuleFactory;
   serviceModule = serviceModuleFactory.mkServiceLib {
     defaultUser = "root";
-    defaultClientSecretsBasePath = ../../data/secrets/services;
+    defaultClientSecretsBasePath = ../../data/secrets/pvl/services;
     defaultClientIdentitySuffix = "invalid.invalid";
     defaultServiceIdentitySuffix = "invalid.invalid";
     defaultPostgresUrl = "";

@@ -2,19 +2,19 @@
   admins,
   machines,
 }: let
-  inherit (machines) pvl-x2;
   secrets = rec {
-    base = "data/secrets";
+    base = "data/secrets/pvl";
+    file = name: "${base}/${name}";
     service = name: "${base}/services/${name}";
-    key = serviceName: secretName: "${service serviceName}/${secretName}.key.age";
+    serviceFile = serviceName: fileName: "${service serviceName}/${fileName}";
+    serviceKey = serviceName: secretName: serviceFile serviceName "${secretName}.key.age";
+    key = serviceKey;
+    ext = provider: "${base}/ext/${provider}";
+    extFile = provider: fileName: "${ext provider}/${fileName}";
+    extKey = provider: secretName: extFile provider "${secretName}.key.age";
   };
-in {
-  # Services
-  ${secrets.key "beszel" "key"}.publicKeys = admins ++ pvl-x2;
-  ${secrets.key "beszel" "token"}.publicKeys = admins ++ pvl-x2;
-  ${secrets.key "docmost" "app-secret"}.publicKeys = admins ++ pvl-x2;
-  ${secrets.key "docmost" "database-url"}.publicKeys = admins ++ pvl-x2;
-  ${secrets.key "docmost" "postgres-password"}.publicKeys = admins ++ pvl-x2;
-  ${secrets.key "immich" "db-password"}.publicKeys = admins ++ pvl-x2;
-  ${secrets.key "shadowsocks" "password"}.publicKeys = admins ++ pvl-x2;
-}
+  serviceSecrets = import ./services.nix {
+    inherit admins machines secrets;
+  };
+in
+  serviceSecrets

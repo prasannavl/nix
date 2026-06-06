@@ -48,13 +48,13 @@ of the dashboard.
 - Shared implementation:
   - `tf/modules/cloudflare/`
 - Encrypted inputs:
-  - `data/secrets/tf/cloudflare/`
-  - `data/secrets/tf/cloudflare-platform/`
-  - `data/secrets/tf/cloudflare-apps/`
+  - `data/secrets/globals/tf/cloudflare/`
+  - `data/secrets/globals/tf/cloudflare-platform/`
+  - `data/secrets/globals/tf/cloudflare-apps/`
 - Export refresh:
   - `scripts/archive/cloudflare-export.py`
   - tunnel export writes
-    `data/secrets/tf/cloudflare-platform/tunnels-account.tfvars.age` and
+    `data/secrets/globals/tf/cloudflare-platform/tunnels-account.tfvars.age` and
     intentionally omits unrecoverable runtime tunnel credentials/secrets
 
 ## Preconditions
@@ -246,9 +246,10 @@ This keeps the import pass auditable and makes retries deterministic.
   before importing, because changing a `for_each` key later requires a state
   move.
 - On March 16, 2026, the first Access import wave confirmed that the current
-  repo-managed write token in `data/secrets/cloudflare/api-token.key.age`
-  initially lacked Access endpoint permission, but that scope was later added
-  and the Access slice now plans cleanly with the normal runtime token.
+  repo-managed write token in
+  `data/secrets/globals/cloudflare/api-token.key.age` initially lacked Access
+  endpoint permission, but that scope was later added and the Access slice now
+  plans cleanly with the normal runtime token.
 - The exporter captures current configuration shape, but import IDs are still
   provider-resource specific and should be sourced from the provider docs or
   from a confirmed successful trial during execution.

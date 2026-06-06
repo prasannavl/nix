@@ -21,5 +21,5 @@ Application-layer Cloudflare phase that runs after host build and deploy.
 - child app directories are resolved to their `#build` outputs during plan/apply
 
 Inputs live in `workers.auto.tfvars` plus encrypted provider-level inputs under
-`data/secrets/tf/cloudflare/` and project-level worker inputs under
-`data/secrets/tf/cloudflare-apps/`.
+`data/secrets/globals/tf/cloudflare/` and project-level worker inputs under
+`data/secrets/globals/tf/cloudflare-apps/`.

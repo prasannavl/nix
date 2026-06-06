@@ -14,7 +14,7 @@ Options:
 
 Behavior:
   - Exports Cloudflare resources (DNS, access, tunnels, workers, R2) into
-    repo-managed tfvars under data/secrets/tf/cloudflare/.
+    repo-managed tfvars under data/secrets/globals/tf/cloudflare/.
   - Calls the Cloudflare API using an age-encrypted API token from the repo.
   - Writes or overwrites age-encrypted tfvars files; does not modify
     Terraform state.

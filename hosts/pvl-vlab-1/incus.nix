@@ -1,6 +1,10 @@
-{config, ...}: {
+{...}: let
+  incusSecrets = ../../data/secrets/globals/incus;
+  clientKeyPath = "/run/agenix/incus-pvl-vlab-1-key";
+in {
   age.secrets.incus-pvl-vlab-1-key = {
-    file = ../../data/secrets/incus/pvl-vlab-1.key.age;
+    file = incusSecrets + "/pvl-vlab-1.key.age";
+    name = "incus-pvl-vlab-1-key";
   };
 
   services.incusMachines.global = {
@@ -9,8 +13,8 @@
       name = "pvl-x2";
       address = "https://127.0.0.1:8443";
       projects.pvl.allowedSubnets = "10.10.50.0/24";
-      clientCertificateFile = ../../data/secrets/incus/pvl-vlab-1.crt;
-      clientKeyFile = config.age.secrets.incus-pvl-vlab-1-key.path;
+      clientCertificateFile = incusSecrets + "/pvl-vlab-1.crt";
+      clientKeyFile = clientKeyPath;
       acceptCertificate = true;
     };
   };

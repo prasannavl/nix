@@ -14,15 +14,15 @@ The `pvl` certificate is an unrestricted admin client certificate.
 
 The public certificates live at:
 
-- `data/secrets/incus/pvl.crt`
+- `data/secrets/globals/incus/pvl.crt`
 
 The private keys are age-encrypted for admins only at:
 
-- `data/secrets/incus/pvl.key.age`
+- `data/secrets/globals/incus/pvl.key.age`
 
 PKCS#12 browser/import bundles are age-encrypted for admins only at:
 
-- `data/secrets/incus/pvl.pfx.age`
+- `data/secrets/globals/incus/pvl.pfx.age`
 
 The PFX bundles use an empty import password. They contain private key material,
 so keep only the `.pfx.age` files in the repo and create plaintext PFX files

@@ -197,7 +197,7 @@ Local tofu wrapper:
   and provider secrets plus decrypted `-var-file` inputs when none are set.
   GCP projects can also auto-load `GOOGLE_APPLICATION_CREDENTIALS`,
   `GCP_STATE_BUCKET`, and `GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT` from
-  encrypted files under `data/secrets/gcp/`.
+  encrypted files under `data/secrets/globals/gcp/`.
   This mode is local-only and not supported via ci trigger.
 USAGE
 }
@@ -395,7 +395,7 @@ init_vars() {
 	OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS=()
 	OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=()
 
-	CI_TRIGGER_KEY_PATH="data/secrets/ci/nixbot-ci-ssh.key.age"
+	CI_TRIGGER_KEY_PATH="data/secrets/globals/ci/nixbot-ci-ssh.key.age"
 	REMOTE_NIXBOT_BASE="/var/lib/nixbot"
 	REMOTE_NIXBOT_SSH_DIR="${REMOTE_NIXBOT_BASE}/.ssh"
 	REMOTE_NIXBOT_AGE_DIR="${REMOTE_NIXBOT_BASE}/.age"
@@ -425,15 +425,15 @@ init_vars() {
 	REPO_DEPLOY_SCRIPT_REL="pkgs/tools/nixbot/nixbot.sh"
 	REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="/tmp/nixbot-bootstrap-key."
 	REMOTE_AGE_IDENTITY_TMP_PREFIX="/tmp/nixbot-age-identity."
-	TF_CLOUDFLARE_API_TOKEN_PATH="data/secrets/cloudflare/api-token.key.age"
-	TF_R2_ACCOUNT_ID_PATH="data/secrets/cloudflare/r2-account-id.key.age"
-	TF_R2_STATE_BUCKET_PATH="data/secrets/cloudflare/r2-state-bucket.key.age"
-	TF_R2_ACCESS_KEY_ID_PATH="data/secrets/cloudflare/r2-access-key-id.key.age"
-	TF_R2_SECRET_ACCESS_KEY_PATH="data/secrets/cloudflare/r2-secret-access-key.key.age"
-	TF_GCP_APPLICATION_CREDENTIALS_PATH="data/secrets/gcp/application-default-credentials.json.age"
-	TF_GCP_STATE_BUCKET_PATH="data/secrets/gcp/state-bucket.key.age"
-	TF_GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT_PATH="data/secrets/gcp/backend-impersonate-service-account.key.age"
-	TF_SECRETS_DIR="data/secrets/tf"
+	TF_CLOUDFLARE_API_TOKEN_PATH="data/secrets/globals/cloudflare/api-token.key.age"
+	TF_R2_ACCOUNT_ID_PATH="data/secrets/globals/cloudflare/r2-account-id.key.age"
+	TF_R2_STATE_BUCKET_PATH="data/secrets/globals/cloudflare/r2-state-bucket.key.age"
+	TF_R2_ACCESS_KEY_ID_PATH="data/secrets/globals/cloudflare/r2-access-key-id.key.age"
+	TF_R2_SECRET_ACCESS_KEY_PATH="data/secrets/globals/cloudflare/r2-secret-access-key.key.age"
+	TF_GCP_APPLICATION_CREDENTIALS_PATH="data/secrets/globals/gcp/application-default-credentials.json.age"
+	TF_GCP_STATE_BUCKET_PATH="data/secrets/globals/gcp/state-bucket.key.age"
+	TF_GCP_BACKEND_IMPERSONATE_SERVICE_ACCOUNT_PATH="data/secrets/globals/gcp/backend-impersonate-service-account.key.age"
+	TF_SECRETS_DIR="data/secrets/globals/tf"
 	TF_PROJECT_NAMES=(
 		cloudflare-dns
 		cloudflare-platform
@@ -7925,12 +7925,12 @@ is_tf_candidate_path_for_project() {
 	case "${path}" in
 	"tf/${project_name}" | "tf/${project_name}/"*) return 0 ;;
 	"tf/modules/${provider_name}" | "tf/modules/${provider_name}/"*) return 0 ;;
-	"data/secrets/${provider_name}" | "data/secrets/${provider_name}/"*) return 0 ;;
-	"data/secrets/tf/${provider_name}.tfvars.age") return 0 ;;
-	"data/secrets/tf/${provider_name}" | "data/secrets/tf/${provider_name}/"*) return 0 ;;
-	"data/secrets/tf/${project_name}.tfvars.age") return 0 ;;
-	"data/secrets/tf/${project_name}" | "data/secrets/tf/${project_name}/"*) return 0 ;;
-	"data/secrets/cloudflare/r2-account-id.key.age" | "data/secrets/cloudflare/r2-state-bucket.key.age" | "data/secrets/cloudflare/r2-access-key-id.key.age" | "data/secrets/cloudflare/r2-secret-access-key.key.age") return 0 ;;
+	"data/secrets/globals/${provider_name}" | "data/secrets/globals/${provider_name}/"*) return 0 ;;
+	"data/secrets/globals/tf/${provider_name}.tfvars.age") return 0 ;;
+	"data/secrets/globals/tf/${provider_name}" | "data/secrets/globals/tf/${provider_name}/"*) return 0 ;;
+	"data/secrets/globals/tf/${project_name}.tfvars.age") return 0 ;;
+	"data/secrets/globals/tf/${project_name}" | "data/secrets/globals/tf/${project_name}/"*) return 0 ;;
+	"data/secrets/globals/cloudflare/r2-account-id.key.age" | "data/secrets/globals/cloudflare/r2-state-bucket.key.age" | "data/secrets/globals/cloudflare/r2-access-key-id.key.age" | "data/secrets/globals/cloudflare/r2-secret-access-key.key.age") return 0 ;;
 	esac
 
 	if [ "${phase}" = "apps" ]; then

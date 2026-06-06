@@ -210,7 +210,7 @@ shell access for `nixos-rebuild --target-host`.
 ### Runtime key exchange during bootstrap
 
 - The private side of the shared deploy key lives encrypted at
-  `data/secrets/nixbot/nixbot.key.age`.
+  `data/secrets/globals/nixbot/nixbot.key.age`.
 - On CI host, `lib/nixbot/ci.nix` decrypts that file to:
   - `/var/lib/nixbot/.ssh/id_ed25519`
 - During bootstrap of another node, `nixbot` may also copy that same private key
@@ -267,12 +267,12 @@ shell access for `nixos-rebuild --target-host`.
 
 - `<desktop-host>`
   - deploy metadata: `hosts/nixbot.nix` ->
-    `hosts.<desktop-host>.ageIdentityKey = "data/secrets/machine/<desktop-host>.key.age"`
+    `hosts.<desktop-host>.ageIdentityKey = "data/secrets/globals/machine/<desktop-host>.key.age"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
 - `<ci-host>`
   - deploy metadata: `hosts/nixbot.nix` ->
-    `hosts.<ci-host>.ageIdentityKey = "data/secrets/machine/<ci-host>.key.age"`
+    `hosts.<ci-host>.ageIdentityKey = "data/secrets/globals/machine/<ci-host>.key.age"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
   - this host is also the CI host, so its machine recipient is included on the
@@ -280,11 +280,11 @@ shell access for `nixos-rebuild --target-host`.
     secrets
 - `<incus-guest>`
   - deploy metadata: `hosts/nixbot.nix` ->
-    `hosts.<incus-guest>.ageIdentityKey = "data/secrets/machine/<incus-guest>.key.age"`
+    `hosts.<incus-guest>.ageIdentityKey = "data/secrets/globals/machine/<incus-guest>.key.age"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
-  - host also consumes `data/secrets/tailscale/<incus-guest>.key.age` directly
-    through `lib/incus-vm.nix`
+  - host also consumes `data/secrets/globals/tailscale/<incus-guest>.key.age`
+    directly through `lib/incus-vm.nix`
 
 ### CI host identities and secrets
 
@@ -293,18 +293,18 @@ shell access for `nixos-rebuild --target-host`.
   `users/userdata.nix` (`nixbot.ciSshKeys` / `nixbot.ciSshKey`) and forced into
   the packaged `nixbot` binary by `lib/nixbot/ci.nix`.
 - The private half of that ingress key is stored as
-  `data/secrets/ci/nixbot-ci-ssh.key.age`.
+  `data/secrets/globals/ci/nixbot-ci-ssh.key.age`.
   - recipients: admins only
   - consumers: CI or an operator initiating a CI host-triggered deploy
 - CI host's downstream deploy identity is the private key in
-  `data/secrets/nixbot/nixbot.key.age`.
+  `data/secrets/globals/nixbot/nixbot.key.age`.
   - recipients: admins + current `nixbot` deploy keys + the CI host machine age
     recipient
   - runtime path on CI host: `/var/lib/nixbot/.ssh/id_ed25519`
   - trusted by other nodes because `lib/nixbot/default.nix` installs the
     corresponding public keys into the `nixbot` account on those nodes
 - Optional overlap key:
-  - source: `data/secrets/nixbot/nixbot-legacy.key.age`
+  - source: `data/secrets/globals/nixbot/nixbot-legacy.key.age`
   - runtime path: `/var/lib/nixbot/.ssh/id_ed25519_legacy`
   - purpose: keep CI host able to reach nodes that still trust the old deploy
     public key during rotation
@@ -316,20 +316,20 @@ shell access for `nixos-rebuild --target-host`.
   2. the consumer host exposes the secret through `age.secrets.*`
   3. the consuming service reads the materialized file path, not repo plaintext
 - CI host compose services:
-  - source files live under `data/secrets/services/<service>/*.key.age`
+  - source files live under `data/secrets/pvl/services/<service>/*.key.age`
   - recipients are admins + the CI host machine age recipient
   - the CI host's imported service module maps them into `age.secrets.*`
   - `services.podmanCompose.*.envSecrets` injects them into containers as
     file-backed environment values
 - CI host OpenTofu/Cloudflare runtime:
-  - source files live under `data/secrets/cloudflare/*.key.age`
+  - source files live under `data/secrets/globals/cloudflare/*.key.age`
   - recipients are admins + the CI host
   - `lib/nixbot/ci.nix` decrypts them to
     `/var/lib/nixbot/secrets/cloudflare-tf/*`
   - `nixbot tf` auto-loads them into the OpenTofu environment when shell
     variables are absent
 - Incus-guest Tailscale auth:
-  - source file: `data/secrets/tailscale/<incus-guest>.key.age`
+  - source file: `data/secrets/globals/tailscale/<incus-guest>.key.age`
   - recipients: admins + `<incus-guest>`
   - `lib/incus-vm.nix` exposes it as `services.tailscale.authKeyFile`
 
@@ -337,24 +337,26 @@ shell access for `nixos-rebuild --target-host`.
 
 - Incus guests do not currently have a separate Incus-specific secret system.
 - They use the same host secret model as any other managed node:
-  - machine age identity in `data/secrets/machine/<host>.key.age`
+  - machine age identity in `data/secrets/globals/machine/<host>.key.age`
   - optional service secrets encrypted to that guest's machine recipient
 - The one shared guest-specific convenience path today is in `lib/incus-vm.nix`:
-  - optional Tailscale auth secret at `data/secrets/tailscale/<host>.key.age`
+  - optional Tailscale auth secret at
+    `data/secrets/globals/tailscale/<host>.key.age`
   - wired to `services.tailscale.authKeyFile` only if the encrypted file exists
 - Incus guest SSH host keys are persisted under `/var/lib/machine/*`, but those
   are runtime-generated host keys, not repo-managed agenix secrets.
 - For an Incus guest, the related repo secrets are therefore:
-  - `data/secrets/machine/<incus-guest>.key.age`
-  - `data/secrets/tailscale/<incus-guest>.key.age`
+  - `data/secrets/globals/machine/<incus-guest>.key.age`
+  - `data/secrets/globals/tailscale/<incus-guest>.key.age`
 
 ## Adding A New Machine Or Secret
 
 ### New machine identity
 
 1. Generate a new age identity for the host.
-2. Commit the public recipient to `data/secrets/machine/<host>.key.pub`.
-3. Encrypt the private identity to `data/secrets/machine/<host>.key.age`.
+2. Commit the public recipient to `data/secrets/globals/machine/<host>.key.pub`.
+3. Encrypt the private identity to
+   `data/secrets/globals/machine/<host>.key.age`.
 4. Add the new `.key.age` entry and its recipients in
    `data/secrets/default.nix`.
 5. Point `hosts/nixbot.nix` at that secret with `hosts.<host>.ageIdentityKey`.
@@ -363,7 +365,7 @@ shell access for `nixos-rebuild --target-host`.
 
 ### New service secret
 
-1. Create the secret file under `data/secrets/services/<service>/`.
+1. Create the secret file under `data/secrets/pvl/services/<service>/`.
 2. Add the recipient policy in `data/secrets/default.nix`.
 3. Wire it into the consuming host with `age.secrets.<name>.file = ...`.
 4. Pass `config.age.secrets.<name>.path` to the service, usually through
@@ -379,13 +381,13 @@ Use this order for a clean-room rebuild of the current model.
      ingress key, and the CI host deploy key.
 2. Generate the shared `nixbot` deploy SSH keypair.
    - public key goes into `users/userdata.nix` (`nixbot.sshKeys`)
-   - private key becomes `data/secrets/nixbot/nixbot.key.age`
+   - private key becomes `data/secrets/globals/nixbot/nixbot.key.age`
 3. Generate the CI host ingress SSH keypair.
    - public key goes into `users/userdata.nix` (`nixbot.ciSshKeys`)
-   - private key becomes `data/secrets/ci/nixbot-ci-ssh.key.age`
+   - private key becomes `data/secrets/globals/ci/nixbot-ci-ssh.key.age`
 4. Generate one machine age identity per host.
-   - private identities become `data/secrets/machine/<host>.key.age`
-   - public recipients become `data/secrets/machine/<host>.key.pub`
+   - private identities become `data/secrets/globals/machine/<host>.key.age`
+   - public recipients become `data/secrets/globals/machine/<host>.key.pub`
 5. Fill in `data/secrets/default.nix`.
    - every managed `*.age` file must have the correct recipient set before
      encryption is trustworthy
@@ -419,8 +421,8 @@ Use this order for a clean-room rebuild of the current model.
 - If a host is activated out-of-band without first receiving
   `/var/lib/nixbot/.age/identity`, agenix-managed host secrets will not decrypt.
 - If the CI host is missing from the recipient list of
-  `data/secrets/nixbot/nixbot.key.age`, CI host cannot obtain the downstream
-  deploy private key.
+  `data/secrets/globals/nixbot/nixbot.key.age`, CI host cannot obtain the
+  downstream deploy private key.
 - If a service secret omits the consuming machine recipient, activation will
   succeed but the secret file will never materialize on that host.
 - If `data/secrets/default.nix` and the committed `*.pub` files diverge,
@@ -430,8 +432,8 @@ Use this order for a clean-room rebuild of the current model.
 ## Deploy Config Defaults (`hosts/nixbot.nix`)
 
 - `defaults.user = "nixbot"`
-- `defaults.key = "data/secrets/nixbot/nixbot.key.age"`
-- `defaults.bootstrapKey = "data/secrets/nixbot/nixbot.key.age"`
+- `defaults.key = "data/secrets/globals/nixbot/nixbot.key.age"`
+- `defaults.bootstrapKey = "data/secrets/globals/nixbot/nixbot.key.age"`
 - `defaults.bootstrapUser = "pvl"` (or your chosen bootstrap account)
 - `knownHosts = null` means temporary `ssh-keyscan` host pinning.
 - `hosts.<name>.ageIdentityKey` can define the host-specific runtime age key
@@ -468,8 +470,8 @@ Use this order for a clean-room rebuild of the current model.
    - append to `nixbot.ciSshKeys`
 3. Re-encrypt managed age files so both old and new nixbot public keys remain
    recipients:
-   - `data/secrets/nixbot/nixbot.key.age`
-   - `data/secrets/ci/nixbot-ci-ssh.key.age`
+   - `data/secrets/globals/nixbot/nixbot.key.age`
+   - `data/secrets/globals/ci/nixbot-ci-ssh.key.age`
 4. Deploy CI host first, then the rest of hosts.
 5. Update CI secret `NIXBOT_CI_SSH_KEY` to the new CI host private key.
 6. If you run `nixbot` from outside CI host, also rotate
@@ -484,16 +486,17 @@ Use this when you want CI host on new keys immediately, but some nodes still
 only trust the old `nixbot` key.
 
 1. Prepare two deploy key secrets:
-   - new key: `data/secrets/nixbot/nixbot.key.age` (or another chosen path)
-   - legacy key: `data/secrets/nixbot/nixbot-legacy.key.age`
+   - new key: `data/secrets/globals/nixbot/nixbot.key.age` (or another chosen
+     path)
+   - legacy key: `data/secrets/globals/nixbot/nixbot-legacy.key.age`
 2. Add recipients for the legacy file in `data/secrets/default.nix` so
    `scripts/age-secrets.sh` manages it.
 3. Set defaults in `hosts/nixbot.nix` to the new key.
 4. Add per-host `key` overrides for nodes that still require legacy auth, for
    example:
-   - `hosts.<old-node>.key = "data/secrets/nixbot/nixbot-legacy.key.age";`
+   - `hosts.<old-node>.key = "data/secrets/globals/nixbot/nixbot-legacy.key.age";`
 5. For nodes that still require old bootstrap injection material, also set:
-   - `hosts.<old-node>.bootstrapKey = "data/secrets/nixbot/nixbot-legacy.key.age";`
+   - `hosts.<old-node>.bootstrapKey = "data/secrets/globals/nixbot/nixbot-legacy.key.age";`
 6. Deploy CI host and switch CI ingress key to the new CI host key.
 7. If applicable, switch `NIXBOT_CI_SSH_KEY_PATH` for local orchestrator runs to
    the new CI host ingress key.
@@ -514,7 +517,7 @@ activation always has the current identity.
 Single-step rotation:
 
 1. Generate new host machine keypair.
-2. Re-encrypt `data/secrets/machine/<host>.key.age` with admin/deployer
+2. Re-encrypt `data/secrets/globals/machine/<host>.key.age` with admin/deployer
    recipients.
 3. Update any host secret recipients in `data/secrets/default.nix` to new
    machine public key.

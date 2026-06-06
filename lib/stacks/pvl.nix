@@ -8,11 +8,11 @@ let
     internalDomain = "pvl.internal";
     defaultUser = "pvl";
     stackSecretsBasePath = ../../data/secrets/pvl;
-    defaultClientSecretsBasePath = ../../data/secrets/services;
-    defaultCaCertAgeFile = ../../data/secrets/pvl/ca.crt.age;
-    defaultNatsSecretsBasePath = ../../data/secrets/nats;
-    defaultPostgresSecretsBasePath = ../../data/secrets/postgres;
-    defaultVmstackSecretsBasePath = ../../data/secrets/vmstack;
+    defaultClientSecretsBasePath = ../../data/secrets/pvl/services;
+    defaultCaCertAgeFile = ../../data/secrets/pvl/ca/ca.crt.age;
+    defaultNatsSecretsBasePath = ../../data/secrets/pvl/nats;
+    defaultPostgresSecretsBasePath = ../../data/secrets/pvl/postgres;
+    defaultVmstackSecretsBasePath = ../../data/secrets/pvl/vmstack;
     defaultClientIdentitySuffix = "p7log.com";
     defaultExtServiceIdentitySuffix = "p7log.com";
     defaultSecretOwner = "pvl";

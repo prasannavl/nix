@@ -117,7 +117,7 @@ init_vars() {
 	HOSTS_DEFAULT_FILE="${REPO_ROOT}/hosts/default.nix"
 	NIXBOT_FILE="${REPO_ROOT}/hosts/nixbot.nix"
 	SECRETS_FILE="${REPO_ROOT}/data/secrets/default.nix"
-	MACHINE_SECRET_DIR="${REPO_ROOT}/data/secrets/machine"
+	MACHINE_SECRET_DIR="${REPO_ROOT}/data/secrets/globals/machine"
 
 	BOOT_PART_UUID=""
 	BIOS_PART_UUID=""
@@ -930,8 +930,8 @@ has_machine_secret_registration() {
 	local source_file
 
 	source_file="$(target_read_path "$SECRETS_FILE")"
-	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file" ||
-		grep -Fq "\"data/secrets/machine/${HOST}.key.age\"" "$source_file"
+	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./globals/machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file" ||
+		grep -Fq "\"data/secrets/globals/machine/${HOST}.key.age\"" "$source_file"
 }
 
 has_machine_key_files() {
@@ -1045,12 +1045,29 @@ insert_before_final_brace() {
 eval_staged_secrets() {
 	local eval_root="${RUN_DIR}/secrets-eval"
 	local eval_secrets_dir="${eval_root}/data/secrets"
-	local eval_machine_dir="${eval_secrets_dir}/machine"
-	local pub_file staged_pub_file staged_machine_dir secrets_source
+	local eval_machine_dir="${eval_secrets_dir}/globals/machine"
+	local pub_file staged_pub_file staged_machine_dir secrets_source stack_dir globals_family
 
 	rm -rf "$eval_root"
 	mkdir -p "$eval_machine_dir"
+	ln -s "$REPO_ROOT/lib" "${eval_root}/lib"
+	ln -s "$REPO_ROOT/hosts" "${eval_root}/hosts"
 	ln -s "$REPO_ROOT/users" "${eval_root}/users"
+	for stack_dir in "$REPO_ROOT"/data/secrets/*; do
+		[[ -d "$stack_dir" ]] || continue
+		case "$(basename "$stack_dir")" in
+		globals) ;;
+		*) ln -s "$stack_dir" "${eval_secrets_dir}/$(basename "$stack_dir")" ;;
+		esac
+	done
+	mkdir -p "${eval_secrets_dir}/globals"
+	for globals_family in "$REPO_ROOT"/data/secrets/globals/*; do
+		[[ -d "$globals_family" ]] || continue
+		case "$(basename "$globals_family")" in
+		machine) ;;
+		*) ln -s "$globals_family" "${eval_secrets_dir}/globals/$(basename "$globals_family")" ;;
+		esac
+	done
 	for pub_file in "$MACHINE_SECRET_DIR"/*.key.pub; do
 		[[ -e "$pub_file" ]] || continue
 		ln -s "$pub_file" "${eval_machine_dir}/$(basename "$pub_file")"
@@ -1084,12 +1101,12 @@ ensure_machine_age_identity() {
 	staged_age_file="$(stage_target_path "$age_file")"
 
 	if [[ -f "$pub_file" && -f "$age_file" ]] || [[ -f "$staged_pub_file" && -f "$staged_age_file" ]]; then
-		info "Machine age identity already exists: data/secrets/machine/${HOST}.key.age"
+		info "Machine age identity already exists: data/secrets/globals/machine/${HOST}.key.age"
 		return
 	fi
 
 	if [[ -e "${MACHINE_SECRET_DIR}/${HOST}.key" || -e "$pub_file" || -e "$age_file" || -e "$staged_pub_file" || -e "$staged_age_file" ]]; then
-		die "Partial machine identity exists for ${HOST}; inspect data/secrets/machine/${HOST}.key* before continuing."
+		die "Partial machine identity exists for ${HOST}; inspect data/secrets/globals/machine/${HOST}.key* before continuing."
 	fi
 
 	public_line="$(age-keygen -o "$tmp_key_file" 2>&1 | awk -F': ' '/^Public key:/ {print $2}')"
@@ -1097,8 +1114,8 @@ ensure_machine_age_identity() {
 	printf '%s\n' "$public_line" >"$(stage_file_for_write "$pub_file")"
 
 	recipients_json="$(eval_staged_secrets)"
-	mapfile -t recipients < <(jq -r --arg path "data/secrets/machine/${HOST}.key.age" '.[$path].publicKeys[]? // empty' <<<"$recipients_json")
-	[[ "${#recipients[@]}" -gt 0 ]] || die "No recipients configured for data/secrets/machine/${HOST}.key.age"
+	mapfile -t recipients < <(jq -r --arg path "data/secrets/globals/machine/${HOST}.key.age" '.[$path].publicKeys[]? // empty' <<<"$recipients_json")
+	[[ "${#recipients[@]}" -gt 0 ]] || die "No recipients configured for data/secrets/globals/machine/${HOST}.key.age"
 
 	for recipient in "${recipients[@]}"; do
 		age_args+=(-r "$recipient")
@@ -1106,7 +1123,7 @@ ensure_machine_age_identity() {
 
 	age "${age_args[@]}" -o "$(stage_file_for_write "$age_file")" "$tmp_key_file"
 	rm -f -- "$tmp_key_file"
-	info "Created machine age identity: data/secrets/machine/${HOST}.key.age"
+	info "Created machine age identity: data/secrets/globals/machine/${HOST}.key.age"
 }
 
 register_machine_secret() {
@@ -1118,14 +1135,14 @@ register_machine_secret() {
 
 	host_attr="$(nix_attr_key "$HOST")"
 	source_file="$(target_read_path "$SECRETS_FILE")"
-	if ! grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file"; then
+	if ! grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./globals/machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file"; then
 		awk -v host="$HOST" -v host_attr="$host_attr" '
 			{
 				if ($0 ~ /^  machineKeyFiles = \{/) {
 					in_keys = 1
 				}
 				if (in_keys && $0 ~ /^  \};/) {
-					printf "    %s = ./machine/%s.key.pub;\n", host_attr, host
+					printf "    %s = ./globals/machine/%s.key.pub;\n", host_attr, host
 					inserted = 1
 					in_keys = 0
 				}
@@ -1142,12 +1159,12 @@ register_machine_secret() {
 		changed="1"
 	fi
 
-	if ! grep -Fq "\"data/secrets/machine/${HOST}.key.age\"" "$source_file"; then
+	if ! grep -Fq "\"data/secrets/globals/machine/${HOST}.key.age\"" "$source_file"; then
 		awk -v host="$HOST" '
 			{
 				print
 				if ($0 ~ /^    # Machines$/) {
-					printf "    \"data/secrets/machine/%s.key.age\".publicKeys = adminsWithNixbot;\n", host
+					printf "    \"data/secrets/globals/machine/%s.key.age\".publicKeys = adminsWithNixbot;\n", host
 					inserted = 1
 				}
 			}
@@ -1194,7 +1211,7 @@ ensure_nixbot_entry() {
 	cat >"$entry_file" <<EOF
     ${host_attr} = {
       target = "$(nix_escape "$target")";
-      ageIdentityKey = "data/secrets/machine/${HOST}.key.age";
+      ageIdentityKey = "data/secrets/globals/machine/${HOST}.key.age";
 EOF
 	if [[ -n "$proxy_jump" ]]; then
 		cat >>"$entry_file" <<EOF
@@ -1720,9 +1737,9 @@ delete_host() {
 	if has_machine_secret_registration; then
 		next_file="${RUN_DIR}/secrets-default.nix"
 		# Remove key-file and encrypted-secret registrations in separate passes.
-		remove_line_matching "$SECRETS_FILE" "$next_file" "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./machine/$(regex_escape "$HOST")\\.key\\.pub;"
+		remove_line_matching "$SECRETS_FILE" "$next_file" "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./globals/machine/$(regex_escape "$HOST")\\.key\\.pub;"
 		mv "$next_file" "$SECRETS_FILE"
-		remove_line_containing "$SECRETS_FILE" "$next_file" "\"data/secrets/machine/${HOST}.key.age\""
+		remove_line_containing "$SECRETS_FILE" "$next_file" "\"data/secrets/globals/machine/${HOST}.key.age\""
 		mv "$next_file" "$SECRETS_FILE"
 		alejandra -q "$SECRETS_FILE"
 	fi

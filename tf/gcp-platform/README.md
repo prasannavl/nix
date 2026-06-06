@@ -35,5 +35,5 @@ GCP platform phase for managed projects.
 
 - non-secret shared values: [`globals.auto.tfvars`](./globals.auto.tfvars)
 - dev project naming: [`project-dev.auto.tfvars`](./project-dev.auto.tfvars)
-- provider secrets: `data/secrets/tf/gcp/`
-- project secrets: `data/secrets/tf/gcp-platform/`
+- provider secrets: `data/secrets/globals/tf/gcp/`
+- project secrets: `data/secrets/globals/tf/gcp-platform/`

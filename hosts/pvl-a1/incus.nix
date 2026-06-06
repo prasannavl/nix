@@ -1,4 +1,6 @@
-{pkgs, ...}: {
+{pkgs, ...}: let
+  incusSecrets = ../../data/secrets/globals/incus;
+in {
   services.incusMachines.global.hostSuspend = {
     enable = true;
     defaultPolicy = "stop";
@@ -10,7 +12,7 @@
       type = "client";
       restricted = false;
       projects = [];
-      certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
+      certificate = builtins.readFile (incusSecrets + "/pvl.crt");
     }
   ];
 

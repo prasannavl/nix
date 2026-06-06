@@ -25,8 +25,8 @@
 
 Terraform secret tfvars are discovered by convention:
 
-- provider-wide secrets: `data/secrets/tf/<provider>/`
-- project-specific secrets: `data/secrets/tf/<project>/`
+- provider-wide secrets: `data/secrets/globals/tf/<provider>/`
+- project-specific secrets: `data/secrets/globals/tf/<project>/`
 
 Project-specific values override provider-wide values.
 

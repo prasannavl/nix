@@ -7,6 +7,7 @@
   incusLib = import ../../lib/incus/lib.nix {
     inherit config lib;
   };
+  incusSecrets = ../../data/secrets/globals/incus;
   fpp = incusLib.fabricPolicyProfiles;
   isolatedProjectConfig = {
     "features.images" = "true";
@@ -212,7 +213,7 @@ in {
             type = "client";
             restricted = false;
             projects = [];
-            certificate = builtins.readFile ../../data/secrets/incus/pvl.crt;
+            certificate = builtins.readFile (incusSecrets + "/pvl.crt");
           }
         ];
 

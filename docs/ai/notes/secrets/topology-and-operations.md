@@ -79,6 +79,7 @@ Canonical secret topology, bootstrap order, and managed secret operations.
 - `lib/nixbot/default.nix`
 - `lib/nixbot/ci.nix`
 - `lib/incus-vm.nix`
+- `docs/secrets.md`
 - `docs/deployment.md`
 
 ## Provenance

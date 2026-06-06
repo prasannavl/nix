@@ -1,41 +1,48 @@
-{
+let
+  secretPaths = rec {
+    globals = "data/secrets/globals";
+    machine = host: "${globals}/machine/${host}.key.age";
+    nixbot = name: "${globals}/nixbot/${name}";
+  };
+  nixbotKey = secretPaths.nixbot "nixbot.key.age";
+in {
   hosts = {
     pvl-a1 = {
       target = "pvl-a1";
-      ageIdentityKey = "data/secrets/machine/pvl-a1.key.age";
+      ageIdentityKey = secretPaths.machine "pvl-a1";
       deploy = "optional";
     };
     pvl-x2 = {
       target = "pvl-x2";
-      ageIdentityKey = "data/secrets/machine/pvl-x2.key.age";
+      ageIdentityKey = secretPaths.machine "pvl-x2";
     };
     pvl-vlab = {
       target = "10.10.20.10";
-      ageIdentityKey = "data/secrets/machine/pvl-vlab.key.age";
+      ageIdentityKey = secretPaths.machine "pvl-vlab";
       proxyJump = "pvl-x2";
       parent = "pvl-x2";
     };
     pvl-vlab-1 = {
       target = "10.10.20.30";
-      ageIdentityKey = "data/secrets/machine/pvl-vlab-1.key.age";
+      ageIdentityKey = secretPaths.machine "pvl-vlab-1";
       proxyJump = "pvl-x2";
       parent = "pvl-x2";
     };
     pvl-vk = {
       target = "10.10.30.10";
-      ageIdentityKey = "data/secrets/machine/pvl-vk.key.age";
+      ageIdentityKey = secretPaths.machine "pvl-vk";
       proxyJump = "pvl-vlab";
       parent = "pvl-vlab";
     };
     pvl-vk-1 = {
       target = "10.10.50.31";
-      ageIdentityKey = "data/secrets/machine/pvl-vk-1.key.age";
+      ageIdentityKey = secretPaths.machine "pvl-vk-1";
       proxyJump = "pvl-x2";
       parent = "pvl-vlab-1";
     };
     gap3-gondor = {
       target = "10.10.20.11";
-      ageIdentityKey = "data/secrets/machine/gap3-gondor.key.age";
+      ageIdentityKey = secretPaths.machine "gap3-gondor";
       proxyJump = "pvl-x2";
       parent = "pvl-x2";
       deploy = "skip";
@@ -44,8 +51,8 @@
 
   defaults = {
     user = "nixbot";
-    key = "data/secrets/nixbot/nixbot.key.age";
-    bootstrapKey = "data/secrets/nixbot/nixbot.key.age";
+    key = nixbotKey;
+    bootstrapKey = nixbotKey;
     bootstrapUser = "pvl";
     knownHosts = null;
     ageIdentityKey = "";

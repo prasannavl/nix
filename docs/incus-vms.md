@@ -273,9 +273,9 @@ Typical devices:
 ## Secret Model
 
 - Required:
-  - `data/secrets/machine/<host>.key.age`
+  - `data/secrets/globals/machine/<host>.key.age`
 - Optional:
-  - `data/secrets/tailscale/<host>.key.age`
+  - `data/secrets/globals/tailscale/<host>.key.age`
   - when present, `lib/incus-vm.nix` both wires and enables `services.tailscale`
 - Not repo-managed:
   - `/var/lib/machine/ssh_host_ed25519_key`

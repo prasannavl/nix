@@ -13,7 +13,7 @@
   defaultVmstackSecretsBasePath ? null,
   defaultNginxSecretsBasePath ? null,
   defaultCaCertFile ? null,
-  defaultCaCertAgeFile ? defaultClientSecretsBasePath + "/ca.crt.age",
+  defaultCaCertAgeFile ? stackSecretsBasePath + "/ca/ca.crt.age",
   defaultCaCertHostPath ? "/etc/ssl/certs/${org}-ca.crt",
   defaultCaCertContainerPath ? "/run/secrets/${org}-ca.crt",
   defaultCaBundleHostPath ? "/etc/ssl/certs/${org}-ca-bundle.crt",
@@ -88,7 +88,7 @@ in {
     services = defaultClientSecretsBasePath;
     service = name: services + "/${name}";
     ext = provider: base + "/ext/${provider}";
-    ca = base;
+    ca = base + "/ca";
     acme = base + "/acme";
     nats = defaultNatsSecretsBasePath;
     postgres = defaultPostgresSecretsBasePath;

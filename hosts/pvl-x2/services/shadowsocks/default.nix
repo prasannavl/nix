@@ -1,5 +1,10 @@
-{config, ...}: let
+{
+  config,
+  stack,
+  ...
+}: let
   composeSecretUser = "pvl";
+  secretsBase = stack.secrets.service "shadowsocks";
 in {
   config = {
     services.podmanCompose.pvl.instances.shadowsocks = rec {
@@ -27,7 +32,7 @@ in {
     };
 
     age.secrets.shadowsocks-password = {
-      file = ../../../../data/secrets/services/shadowsocks/password.key.age;
+      file = secretsBase + "/password.key.age";
       owner = composeSecretUser;
       group = composeSecretUser;
     };

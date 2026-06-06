@@ -1,11 +1,10 @@
 {
   lib,
   pkgs,
+  stacks,
   ...
 }: let
-  userdata = (import ../../users/userdata.nix).nixbot;
-  sshKeys =
-    userdata.sshKeys or [userdata.sshKey];
+  userdata = stacks.all.users.nixbot;
 in {
   users.groups.nixbot = {
     gid = userdata.uid;
@@ -20,7 +19,7 @@ in {
     createHome = true;
     home = "/var/lib/nixbot";
     shell = pkgs.bashInteractive;
-    openssh.authorizedKeys.keys = sshKeys;
+    openssh.authorizedKeys.keys = userdata.sshKeys;
   };
 
   security.sudo.extraRules = [

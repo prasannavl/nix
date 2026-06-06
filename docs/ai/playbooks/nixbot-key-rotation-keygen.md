@@ -31,8 +31,8 @@ Execution behavior:
 
 - `NEW_NIXBOT_PUB`
 - `NEW_CI_PUB`
-- `NEW_NIXBOT_KEY_AGE` (usually `data/secrets/nixbot/nixbot.key.age` or staged
-  path)
+- `NEW_NIXBOT_KEY_AGE` (usually `data/secrets/globals/nixbot/nixbot.key.age` or
+  staged path)
 - `NEW_NIXBOT_KEY_PRIVATE` (private key file path for GitHub repo SSH deploy-key
   secret)
 - `NEW_CI_KEY_PRIVATE` (private key file path for GitHub secret
@@ -98,8 +98,8 @@ Actions:
    - append contents of `${KEYGEN_DIR}/nixbot-ci-ssh.key.pub` to
      `nixbot.ciSshKeys`
 2. Optionally refresh helper public-key files:
-   - `data/secrets/nixbot/nixbot.pub`
-   - `data/secrets/ci/nixbot-ci-ssh.key.pub`
+   - `data/secrets/globals/nixbot/nixbot.pub`
+   - `data/secrets/globals/ci/nixbot-ci-ssh.key.pub`
 
 Expected outcome:
 
@@ -115,14 +115,14 @@ Important:
 Run (deterministic recipients from `data/secrets/default.nix`):
 
 ```bash
-mapfile -t NIXBOT_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/nixbot/nixbot.key.age".publicKeys[]')
-mapfile -t CI_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/ci/nixbot-ci-ssh.key.age".publicKeys[]')
+mapfile -t NIXBOT_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/globals/nixbot/nixbot.key.age".publicKeys[]')
+mapfile -t CI_RECIPS < <(nix eval --json --file data/secrets/default.nix | jq -r '."data/secrets/globals/ci/nixbot-ci-ssh.key.age".publicKeys[]')
 
 NIXBOT_ARGS=(); for r in "${NIXBOT_RECIPS[@]}"; do NIXBOT_ARGS+=(-r "$r"); done
 CI_ARGS=(); for r in "${CI_RECIPS[@]}"; do CI_ARGS+=(-r "$r"); done
 
-age "${NIXBOT_ARGS[@]}" -o data/secrets/nixbot/nixbot.key.age "${KEYGEN_DIR}/nixbot.key"
-age "${CI_ARGS[@]}" -o data/secrets/ci/nixbot-ci-ssh.key.age "${KEYGEN_DIR}/nixbot-ci-ssh.key"
+age "${NIXBOT_ARGS[@]}" -o data/secrets/globals/nixbot/nixbot.key.age "${KEYGEN_DIR}/nixbot.key"
+age "${CI_ARGS[@]}" -o data/secrets/globals/ci/nixbot-ci-ssh.key.age "${KEYGEN_DIR}/nixbot-ci-ssh.key"
 ```
 
 Preferred:

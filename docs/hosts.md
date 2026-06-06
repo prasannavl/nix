@@ -113,7 +113,7 @@ Add an entry to `hosts/nixbot.nix`:
 ```nix
 <host-name> = {
   target = "<host-or-ip>";
-  ageIdentityKey = "data/secrets/machine/<host-name>.key.age";
+  ageIdentityKey = "data/secrets/globals/machine/<host-name>.key.age";
 };
 ```
 
@@ -161,38 +161,38 @@ notes.
 
 Each deployed host needs a machine age key pair:
 
-- `data/secrets/machine/<host-name>.key`
-- `data/secrets/machine/<host-name>.key.pub`
-- `data/secrets/machine/<host-name>.key.age`
+- `data/secrets/globals/machine/<host-name>.key`
+- `data/secrets/globals/machine/<host-name>.key.pub`
+- `data/secrets/globals/machine/<host-name>.key.age`
 
 Current repo workflow:
 
 1. Generate the machine identity:
 
    ```bash
-   age-keygen -o data/secrets/machine/<host-name>.key
+   age-keygen -o data/secrets/globals/machine/<host-name>.key
    ```
 
 2. Save the printed `Public key: ...` value to
-   `data/secrets/machine/<host-name>.key.pub`.
+   `data/secrets/globals/machine/<host-name>.key.pub`.
 3. Add the new public key file to `machineKeyFiles` in
    `data/secrets/default.nix`.
-4. Add the managed `data/secrets/machine/<host-name>.key.age` recipient entry to
-   `data/secrets/default.nix`.
+4. Add the managed `data/secrets/globals/machine/<host-name>.key.age` recipient
+   entry to `data/secrets/default.nix`.
 5. Encrypt the managed secret:
 
    ```bash
-   ./scripts/age-secrets.sh encrypt data/secrets/machine/<host-name>.key
+   ./scripts/age-secrets.sh encrypt data/secrets/globals/machine/<host-name>.key
    ```
 
 6. Remove the plaintext private key after encryption succeeds:
 
    ```bash
-   ./scripts/age-secrets.sh clean data/secrets/machine/<host-name>.key
+   ./scripts/age-secrets.sh clean data/secrets/globals/machine/<host-name>.key
    ```
 
 Optional guest-local Tailscale auth uses the same pattern at
-`data/secrets/tailscale/<host-name>.key.age`.
+`data/secrets/globals/tailscale/<host-name>.key.age`.
 
 See `docs/deployment.md` for the full bootstrap and re-encryption procedure.
 
@@ -251,7 +251,8 @@ built on `core.nix` is a Tailscale member with zero per-host configuration.
 
 Incus VM guests join automatically too, but through a different mechanism.
 `lib/incus-vm.nix` checks for a Tailscale auth key at
-`data/secrets/tailscale/<host-name>.key.age`. When that file exists, the module:
+`data/secrets/globals/tailscale/<host-name>.key.age`. When that file exists, the
+module:
 
 - Decrypts it via `agenix`.
 - Enables `services.tailscale`.
@@ -261,8 +262,8 @@ Incus VM guests join automatically too, but through a different mechanism.
 To add a new Incus guest to the Tailscale network:
 
 1. Generate or obtain a Tailscale auth key for the guest.
-2. Store it at `data/secrets/tailscale/<host-name>.key`.
-3. Encrypt it: `data/secrets/tailscale/<host-name>.key.age`.
+2. Store it at `data/secrets/globals/tailscale/<host-name>.key`.
+3. Encrypt it: `data/secrets/globals/tailscale/<host-name>.key.age`.
 4. Re-encrypt secrets and deploy.
 
 If the auth key file does not exist, Tailscale is simply not enabled on that
@@ -280,8 +281,8 @@ repo-specific wrapper.
 Each tunneled host has a `cloudflare.nix` file that:
 
 1. Decrypts the tunnel credentials JSON from
-   `data/secrets/cloudflare/tunnels/<host>-main.credentials.json.age` via
-   `agenix`.
+   `data/secrets/globals/cloudflare/tunnels/<host>-main.credentials.json.age`
+   via `agenix`.
 2. Configures `services.cloudflared.tunnels."<tunnel-uuid>"` with the
    credentials file and ingress rules.
 
@@ -290,7 +291,7 @@ Example shape:
 ```nix
 {config, lib, ...}: let
   s = ../../data/secrets
-    + "/cloudflare/tunnels/<host>-main.credentials.json.age";
+    + "/globals/cloudflare/tunnels/<host>-main.credentials.json.age";
   c =
     if builtins.pathExists s
     then builtins.path {path = s; name = "<host>-main.credentials.json.age";}
@@ -328,7 +329,7 @@ To add Cloudflare Tunnel support to a new host:
 
 1. Create the tunnel in Cloudflare via the normal platform workflow.
 2. Store the credentials JSON at
-   `data/secrets/cloudflare/tunnels/<host>-main.credentials.json`.
+   `data/secrets/globals/cloudflare/tunnels/<host>-main.credentials.json`.
 3. Encrypt it as `.age` and re-encrypt secrets.
 4. Create `hosts/<host-name>/cloudflare.nix` following the pattern above.
 5. Import `./cloudflare.nix` from the host's `default.nix`.

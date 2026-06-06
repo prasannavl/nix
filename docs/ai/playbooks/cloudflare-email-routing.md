@@ -9,18 +9,18 @@ step for destination addresses.
 ## Source Of Truth
 
 - Account-level destination addresses:
-  `data/secrets/tf/cloudflare/account.tfvars.age`
+  `data/secrets/globals/tf/cloudflare/account.tfvars.age`
 - Zone routing state:
-  `data/secrets/tf/cloudflare-platform/email-routing-<group>.tfvars.age`
+  `data/secrets/globals/tf/cloudflare-platform/email-routing-<group>.tfvars.age`
 - DNS records for the zone:
-  `data/secrets/tf/cloudflare-dns/project-<group>.tfvars.age`
+  `data/secrets/globals/tf/cloudflare-dns/project-<group>.tfvars.age`
 - Terraform resources: `tf/modules/cloudflare/account.tf`
   `tf/modules/cloudflare/zone-email-routing.tf` via the project root in
   `tf/cloudflare-platform/`
 
 ## Add A Destination Address
 
-1. Decrypt or edit `data/secrets/tf/cloudflare/account.tfvars.age`.
+1. Decrypt or edit `data/secrets/globals/tf/cloudflare/account.tfvars.age`.
 2. Add the email address to `email_routing_addresses`.
 3. Run `nixbot tf-platform --dry`.
 4. Run `nixbot tf-platform`.
@@ -32,7 +32,7 @@ step for destination addresses.
 ## Enable Email Routing For A Zone
 
 1. Pick the correct zone group file under
-   `data/secrets/tf/cloudflare-platform/`.
+   `data/secrets/globals/tf/cloudflare-platform/`.
 2. Add or update the zone under `email_routing`.
 3. Set `settings = true` when the zone should have Email Routing provisioned.
 4. Set `dns = true` only when you want Terraform to manage the Cloudflare MX,

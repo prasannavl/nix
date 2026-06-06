@@ -10,7 +10,7 @@ Set these before execution:
 - `NEW_NIXBOT_PUB`: new public key for normal nixbot login/deploy.
 - `NEW_CI_PUB`: new public key for CI/local forced-command ingress.
 - `NEW_NIXBOT_KEY_AGE`: age file path for new deploy private key (example:
-  `data/secrets/nixbot/nixbot.key.age`).
+  `data/secrets/globals/nixbot/nixbot.key.age`).
 - `NEW_NIXBOT_KEY_PRIVATE`: path to new nixbot deploy private key file used for
   GitHub repo SSH access.
 - `NEW_CI_KEY_PRIVATE`: path to new CI host private key file used by CI/local
@@ -26,7 +26,7 @@ Sensitive handling:
 Optional for CI host-first cutover:
 
 - `LEGACY_NIXBOT_KEY_AGE`: age file path containing old deploy private key
-  material (example: `data/secrets/nixbot/nixbot-legacy.key.age`).
+  material (example: `data/secrets/globals/nixbot/nixbot-legacy.key.age`).
 - `LEGACY_NODES`: comma-separated nodes still requiring old key trust.
 
 ## Bootstrap Overwrite Rule (Critical)

@@ -21,7 +21,7 @@ forced-command key, while regular `nixbot` SSH key behavior remains normal.
 - Regular `nixbot` SSH key remains a normal key (defined in
   `lib/nixbot/default.nix`).
 - CI host stores private deploy key at `/var/lib/nixbot/.ssh/id_ed25519` (from
-  `data/secrets/nixbot/nixbot.key.age`).
+  `data/secrets/globals/nixbot/nixbot.key.age`).
 - Activation-time agenix decrypt uses machine identity
   `/var/lib/nixbot/.age/identity` (host specific), not the deploy SSH key.
 
@@ -59,7 +59,7 @@ If bootstrap fails, fallback uses configured bootstrap user/key path.
 Defaults:
 
 - `user = "nixbot"`
-- `key = "data/secrets/nixbot/nixbot.key.age"`
+- `key = "data/secrets/globals/nixbot/nixbot.key.age"`
 
 Optional per-host:
 

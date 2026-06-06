@@ -67,9 +67,9 @@ only when classifying commits.
   note files.
 - Keep Abird/GAP3 host services, DNS, route usage, and secret wiring skipped
   unless a matching local service stack is explicitly requested.
-- For the 2026-06-06 refresh, kept this repo's `data/secrets/services` service
-  default and existing Terraform/CI secret paths instead of adopting gap3's
-  `data/secrets/globals` and `data/secrets/gap3/services` migration.
+- For the 2026-06-06 refresh, kept this repo's `data/secrets/pvl/services`
+  service default and existing Terraform/CI secret paths instead of adopting
+  gap3's `data/secrets/globals` and `data/secrets/gap3/services` migration.
 - Kept local flake inputs and overlays, including desktop overlays. Ported
   `crane` support by adding the input and overlay without copying gap3's smaller
   top-level `flake.nix`.

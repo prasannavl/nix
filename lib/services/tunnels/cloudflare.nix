@@ -61,7 +61,7 @@ in {
     resolvedCredentialsSecretPath =
       if credentialsSecretPath != null
       then credentialsSecretPath
-      else ../../../data/secrets + "/cloudflare/tunnels/${credentialsStoreName}";
+      else ../../../data/secrets + "/globals/cloudflare/tunnels/${credentialsStoreName}";
     credentials = trackedPath resolvedCredentialsSecretPath credentialsStoreName;
     migratorOn = config.x.migrator.on or false;
   in

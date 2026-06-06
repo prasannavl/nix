@@ -2,7 +2,7 @@
 
 - Date: 2026-04-14
 - Scope: `tf/modules/cloudflare/dns.tf`, `tf/cloudflare-dns/**`, and the
-  plaintext DNS tfvars under `data/secrets/tf/cloudflare-dns/`.
+  plaintext DNS tfvars under `data/secrets/globals/tf/cloudflare-dns/`.
 
 ## Decision
 

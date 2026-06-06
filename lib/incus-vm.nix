@@ -55,7 +55,7 @@
     k =
       if tailscaleKey == null || tailscaleKey == ""
       then null
-      else ../data/secrets + "/tailscale/${tailscaleKey}.key.age";
+      else ../data/secrets + "/globals/tailscale/${tailscaleKey}.key.age";
   in
     lib.optionalAttrs (k != null && builtins.pathExists k) {
       age.secrets.tailscale-auth-key = {

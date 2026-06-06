@@ -23,12 +23,12 @@ import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 IDENTITY = Path(os.environ.get("AGE_KEY_FILE", str(Path.home() / ".ssh" / "id_ed25519")))
-TF_CLOUDFLARE_ROOT = REPO_ROOT / "data/secrets/tf/cloudflare"
+TF_CLOUDFLARE_ROOT = REPO_ROOT / "data/secrets/globals/tf/cloudflare"
 API_TOKEN_CANDIDATES = [
-    REPO_ROOT / "data/secrets/cloudflare/api-token-readall.key.age",
-    REPO_ROOT / "data/secrets/cloudflare/api-token.key.age",
+    REPO_ROOT / "data/secrets/globals/cloudflare/api-token-readall.key.age",
+    REPO_ROOT / "data/secrets/globals/cloudflare/api-token.key.age",
 ]
-ACCOUNT_ID_PATH = REPO_ROOT / "data/secrets/cloudflare/r2-account-id.key.age"
+ACCOUNT_ID_PATH = REPO_ROOT / "data/secrets/globals/cloudflare/r2-account-id.key.age"
 CLOUDFLARE_APPS_ROOT = REPO_ROOT / "pkgs/cloudflare-apps"
 TMP_DIR = Path(tempfile.mkdtemp(prefix="cf-export."))
 ZONE_GROUPS = ("main", "stage", "archive", "inactive")
