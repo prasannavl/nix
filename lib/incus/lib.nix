@@ -85,6 +85,63 @@
     certDelegation = name;
   };
 
+  mkLxc = {
+    name,
+    ipv4Address,
+    image ? null,
+    removalPolicy ? null,
+    adopt ? null,
+    recreateTag ? null,
+    privileged ? false,
+    nestedContainers ? false,
+    interceptMounts ? false,
+    interceptMountShift ? true,
+    extraConfig ? {},
+    extraDevices ? {},
+  }:
+    {
+      name = name;
+      ipv4Address = ipv4Address;
+      config =
+        {
+          "security.privileged" =
+            if privileged
+            then "true"
+            else "false";
+        }
+        // lib.optionalAttrs nestedContainers {
+          "security.nesting" = "true";
+        }
+        // lib.optionalAttrs interceptMounts {
+          "security.syscalls.intercept.mount" = "true";
+        }
+        // lib.optionalAttrs (interceptMounts && interceptMountShift) {
+          "security.syscalls.intercept.mount.shift" = "true";
+        }
+        // extraConfig;
+      devices =
+        {
+          state = {
+            source = name;
+            path = "/var/lib";
+            removalPolicy = "keep";
+          };
+        }
+        // extraDevices;
+    }
+    // lib.optionalAttrs (image != null) {
+      image = image;
+    }
+    // lib.optionalAttrs (removalPolicy != null) {
+      removalPolicy = removalPolicy;
+    }
+    // lib.optionalAttrs (adopt != null) {
+      adopt = adopt;
+    }
+    // lib.optionalAttrs (recreateTag != null) {
+      recreateTag = recreateTag;
+    };
+
   fabricPolicyProfiles = rec {
     open = {
       forwardTo = true;
@@ -348,6 +405,6 @@
         };
     };
 in {
-  inherit certsForUsers fabricPolicyProfiles mkCertDelegation mkGpuDevices mkIncusProxy mkManagedFabricPolicy mkUserCertsForProjects;
+  inherit certsForUsers fabricPolicyProfiles mkCertDelegation mkGpuDevices mkIncusProxy mkLxc mkManagedFabricPolicy mkUserCertsForProjects;
   certs = import ./certs.nix;
 }

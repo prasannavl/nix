@@ -150,52 +150,7 @@
       "restricted.storage-pools.access" = projectConfig.pool;
     }
     // projectConfig.config;
-  mkLxc = {
-    name,
-    ipv4Address,
-    image ? null,
-    removalPolicy ? "delete-all",
-    recreateTag ? null,
-    privileged ? false,
-    nestedContainers ? false,
-    interceptMounts ? false,
-    extraConfig ? {},
-    extraDevices ? {},
-  }:
-    {
-      ipv4Address = ipv4Address;
-      removalPolicy = removalPolicy;
-      config =
-        {
-          "security.privileged" =
-            if privileged
-            then "true"
-            else "false";
-        }
-        // lib.optionalAttrs nestedContainers {
-          "security.nesting" = "true";
-        }
-        // lib.optionalAttrs interceptMounts {
-          "security.syscalls.intercept.mount" = "true";
-          "security.syscalls.intercept.mount.shift" = "true";
-        }
-        // extraConfig;
-      devices =
-        {
-          state = {
-            source = name;
-            path = "/var/lib";
-            removalPolicy = "keep";
-          };
-        }
-        // extraDevices;
-    }
-    // lib.optionalAttrs (image != null) {
-      image = image;
-    }
-    // lib.optionalAttrs (recreateTag != null) {
-      recreateTag = recreateTag;
-    };
+  mkLxc = incusLib.mkLxc;
   amdGpuDevices = incusLib.mkGpuDevices {
     card = 1;
     render = 128;
@@ -237,6 +192,7 @@ in {
         pvl-vlab = mkLxc {
           name = "pvl-vlab";
           ipv4Address = "10.10.20.10";
+          removalPolicy = "delete-all";
           privileged = true;
           nestedContainers = true;
           extraDevices = amdGpuDevices;
@@ -245,6 +201,7 @@ in {
         pvl-vlab-1 = mkLxc {
           name = "pvl-vlab-1";
           ipv4Address = "10.10.20.30";
+          removalPolicy = "delete-all";
           privileged = true;
           nestedContainers = true;
           extraDevices =
@@ -261,6 +218,7 @@ in {
           name = "gap3-gondor";
           image = inputs.self.nixosImages.gap3-base;
           ipv4Address = "10.10.20.20";
+          removalPolicy = "delete-all";
           recreateTag = "3";
           privileged = true;
           nestedContainers = true;
@@ -273,6 +231,7 @@ in {
         abird-nest = mkLxc {
           name = "abird-nest";
           ipv4Address = "10.10.100.10";
+          removalPolicy = "delete-all";
           recreateTag = "1";
           nestedContainers = true;
           extraDevices = {
