@@ -1,23 +1,25 @@
 {
   dockerTools,
   fetchFromGitHub,
+  craneLib ? null,
   lib,
   llvmPackages,
   cmake,
   pkg-config,
+  pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
   rustPlatform,
   stdenvNoCC,
 }: let
-  version = "0.16.5";
+  version = "0.16.7";
   rev = "v${version}";
-  upstreamCommit = "bdba3f20e15e782a083eb2ac91171c73e3a7f6e9";
+  upstreamCommit = "68946d4f982f60a1fa54f335547be11879ed7fea";
   patchHash = builtins.substring 0 12 (builtins.hashString "sha256" ''
     ${builtins.readFile ./bind-auth-dn-template.patch}
     ${builtins.readFile ./imap-starttls-auth.patch}
     ${builtins.readFile ./calendar-mailto-normalization.patch}
     ${builtins.readFile ./calendar-floating-timezone-summary.patch}
-    ${builtins.readFile ./calendar-organizer-recipient-filter.patch}
-    ${builtins.readFile ./calendar-organizer-self-attendee.patch}
+    ${builtins.readFile ./calendar-organizer-snapshot-dedupe.patch}
+    ${builtins.readFile ./calendar-organizer-cn-from-identity.patch}
     ${builtins.readFile ./dmarc-without-mail-from-spf.patch}
     ${builtins.readFile ./calendar-reply-sender-detection.patch}
   '');
@@ -29,30 +31,36 @@
     owner = "stalwartlabs";
     repo = "stalwart";
     inherit rev;
-    hash = "sha256-hlaWB88QRGIT5MdF/PVfREgyjFQlwXWenhavunAMXZ0=";
+    hash = "sha256-wL6cWEv3pc5v833OXbMjZrlbqXcvrCWA4NI1n897CxU=";
   };
 
-  server = rustPlatform.buildRustPackage {
+  patches = [
+    ./bind-auth-dn-template.patch
+    ./imap-starttls-auth.patch
+    ./calendar-mailto-normalization.patch
+    ./calendar-floating-timezone-summary.patch
+    ./calendar-organizer-snapshot-dedupe.patch
+    ./calendar-organizer-cn-from-identity.patch
+    ./dmarc-without-mail-from-spf.patch
+    ./calendar-reply-sender-detection.patch
+  ];
+
+  cargoExtraArgs = "--locked -p stalwart";
+  commonRustAttrs = {
     pname = "stalwart-server";
     inherit version src;
     cargoHash = "sha256-AiZNbVJkzpGF0cgLRs0Knm00bLokFHShl15z5sehx/k=";
-    patches = [
-      ./bind-auth-dn-template.patch
-      ./imap-starttls-auth.patch
-      ./calendar-mailto-normalization.patch
-      ./calendar-floating-timezone-summary.patch
-      ./calendar-organizer-recipient-filter.patch
-      ./calendar-organizer-self-attendee.patch
-      ./dmarc-without-mail-from-spf.patch
-      ./calendar-reply-sender-detection.patch
-    ];
-    buildAndTestSubdir = "crates/main";
     nativeBuildInputs = [
       cmake
       llvmPackages.libclang
       pkg-config
     ];
     LIBCLANG_PATH = "${lib.getLib llvmPackages.libclang}/lib";
+    preBuild = ''
+      export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8
+      export CARGO_PROFILE_RELEASE_LTO=thin
+      echo "Stalwart release profile override: codegen-units=$CARGO_PROFILE_RELEASE_CODEGEN_UNITS lto=$CARGO_PROFILE_RELEASE_LTO"
+    '';
 
     meta = {
       description = "Stalwart Mail and Collaboration Server";
@@ -63,12 +71,24 @@
     };
   };
 
+  server = pkgHelper.mkCraneRustPackage {
+    inherit cargoExtraArgs craneLib rustPlatform;
+    attrs = commonRustAttrs;
+    finalAttrs = {
+      inherit patches;
+    };
+    fallbackAttrs = {
+      inherit patches;
+      buildAndTestSubdir = "crates/main";
+    };
+  };
+
   upstreamImage = dockerTools.pullImage {
     imageName = "stalwartlabs/stalwart";
-    imageDigest = "sha256:c435a9b97526205dd0bc46245ae97b960cf4cd7a5f1e411f14f36a9d5fc6efdb";
+    imageDigest = "sha256:6a8ddaa5728a5e78a8611085069f63414cd43c3a669471785dd41aad1ca16e63";
     finalImageName = "stalwartlabs/stalwart";
     finalImageTag = "v${version}";
-    hash = "sha256-AO9+KjkinPd59PkP2RbWJUbEtrnoK1JhXciY3CI6P3U=";
+    hash = "sha256-folsH+5HTP8x2YyNXyF8lFriVQT3WkRdxMHNdqxyp74=";
   };
 
   serverLayer = stdenvNoCC.mkDerivation {
@@ -137,7 +157,7 @@ in
         upstreamCommit
         version
         ;
-      upstreamImageDigest = "sha256:c435a9b97526205dd0bc46245ae97b960cf4cd7a5f1e411f14f36a9d5fc6efdb";
+      upstreamImageDigest = "sha256:6a8ddaa5728a5e78a8611085069f63414cd43c3a669471785dd41aad1ca16e63";
     };
 
     meta = {

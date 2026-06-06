@@ -11,6 +11,7 @@ init_vars() {
 	stalwart_domain_id="${STALWART_DOMAIN_ID-}"
 	stalwart_extra_recovery_mounts="${STALWART_EXTRA_RECOVERY_MOUNTS-}"
 	stalwart_image="${STALWART_IMAGE-}"
+	stalwart_image_tar="${STALWART_IMAGE_TAR-}"
 	stalwart_kanidm_ldap_token_host_path="${STALWART_KANIDM_LDAP_TOKEN_HOST_PATH-}"
 	stalwart_plan_container_path="${STALWART_PLAN_CONTAINER_PATH-}"
 	stalwart_plan_host_path="${STALWART_PLAN_HOST_PATH-}"
@@ -77,6 +78,7 @@ stalwart_cli_for() {
 		printf 'missing executable Stalwart CLI: %s\n' "$stalwart_cli_bin" >&2
 		exit 1
 	fi
+	ensure_stalwart_image
 
 	network_args=(--network host)
 
@@ -98,6 +100,21 @@ stalwart_cli_for() {
 		"${volume_args[@]}" \
 		"$stalwart_image" \
 		"$@"
+}
+
+ensure_stalwart_image() {
+	require_var stalwart_image
+	if podman image exists "$stalwart_image"; then
+		return 0
+	fi
+	if [ -z "$stalwart_image_tar" ]; then
+		return 0
+	fi
+	if [ ! -r "$stalwart_image_tar" ]; then
+		printf 'missing readable Stalwart image tar: %s\n' "$stalwart_image_tar" >&2
+		exit 1
+	fi
+	podman load --input "$stalwart_image_tar" >/dev/null
 }
 
 require_value() {
@@ -267,6 +284,7 @@ with_recovery() {
 
 	systemctl --user stop "$stalwart_service_name" || true
 	podman rm -f "$stalwart_recovery_container" >/dev/null 2>&1 || true
+	ensure_stalwart_image
 	podman run \
 		--detach \
 		--name "$stalwart_recovery_container" \

@@ -44,7 +44,7 @@
      snapshots: ItipSnapshots<'_>,
 --- a/crates/groupware/src/calendar/itip.rs
 +++ b/crates/groupware/src/calendar/itip.rs
-@@ -14,7 +14,8 @@
+@@ -14,7 +14,9 @@
      scheduling::{
          ItipError, ItipMessage,
          inbound::{
@@ -52,6 +52,7 @@
 +            MergeResult, itip_import_message, itip_merge_changes, itip_method,
 +            itip_process_message, itip_reply_sender,
          },
++        itip::entry_email,
          snapshot::itip_snapshot,
      },
 @@ -133,19 +134,14 @@
@@ -137,8 +138,27 @@
              }
 
              // Import the iTIP message
+@@ -450,8 +467,7 @@
+                         'outer: for entry in &mut component.entries {
+                             if entry.name == ICalendarProperty::Attendee
+-                                && entry
+-                                    .calendar_address()
+-                                    .is_some_and(|v| v.eq_ignore_ascii_case(&rsvp.attendee))
++                                && entry_email(entry)
++                                    .is_some_and(|v| v.eq_ignore_ascii_case(&rsvp.attendee))
+                             {
+                                 let mut add_partstat = true;
+                                 for param in &mut entry.params {
 --- a/crates/email/src/message/ingest.rs
 +++ b/crates/email/src/message/ingest.rs
+@@ -364,7 +364,6 @@
+                 if self.core.groupware.itip_enabled
+                     && !is_spam
+-                    && is_sender_authenticated
+                     && params
+                         .access_token
+                         .has_permission(Permission::CalendarSchedulingReceive)
+                 {
 @@ -374,13 +374,18 @@
                          .caused_by(trc::location!())?;
                      let mut sender = None;
