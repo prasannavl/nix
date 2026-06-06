@@ -129,6 +129,13 @@ Options:
   --imaps-source-ranges <csv>
   --imaps-allow <allow-spec>
                                   Defaults configured in pkgs/ext/gcp-vms/common.sh
+  --ensure-https-fw              Create public HTTPS ingress and add the matching
+                                  allow-https target tag.
+  --https-fw-rule-name <name>
+  --https-target-tag <tag>
+  --https-source-ranges <csv>
+  --https-allow <allow-spec>
+                                  Defaults configured in pkgs/ext/gcp-vms/common.sh
   --nix                           Run nixify-vm.sh after VM creation.
   --drop-ssh-fw-after             After successful repo-mode --nix, verify the
                                   configured nixbot deploy route, remove the
@@ -173,11 +180,11 @@ parse_args() {
 			GCP_CLOUD_INIT_PATH="$2"
 			shift 2
 			;;
-		--project | --zone | --machine-type | --disk-size-gb | --disk-type | --image-family | --image-project | --network | --subnet | --address | --tags | --fw-target-tag | --ssh-user | --ssh-key | --ssh-port | --ssh-wait-timeout | --fw-rule-name | --ssh-source-ranges | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name | --wireguard-fw-rule-name | --wireguard-target-tag | --wireguard-source-ranges | --wireguard-allow | --smtp-fw-rule-name | --smtp-target-tag | --smtp-source-ranges | --smtp-allow | --smtps-fw-rule-name | --smtps-target-tag | --smtps-source-ranges | --smtps-allow | --imap-fw-rule-name | --imap-target-tag | --imap-source-ranges | --imap-allow | --imaps-fw-rule-name | --imaps-target-tag | --imaps-source-ranges | --imaps-allow)
+		--project | --zone | --machine-type | --disk-size-gb | --disk-type | --image-family | --image-project | --network | --subnet | --address | --tags | --fw-target-tag | --ssh-user | --ssh-key | --ssh-port | --ssh-wait-timeout | --fw-rule-name | --ssh-source-ranges | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name | --wireguard-fw-rule-name | --wireguard-target-tag | --wireguard-source-ranges | --wireguard-allow | --smtp-fw-rule-name | --smtp-target-tag | --smtp-source-ranges | --smtp-allow | --smtps-fw-rule-name | --smtps-target-tag | --smtps-source-ranges | --smtps-allow | --imap-fw-rule-name | --imap-target-tag | --imap-source-ranges | --imap-allow | --imaps-fw-rule-name | --imaps-target-tag | --imaps-source-ranges | --imaps-allow | --https-fw-rule-name | --https-target-tag | --https-source-ranges | --https-allow)
 			gcp_apply_vm_value_arg "$1" "${2:-}"
 			shift 2
 			;;
-		--free-tier-max | --can-ip-forward | --no-can-ip-forward | --ensure-ssh-fw | --ensure-observability-fw | --ensure-postgres-fw | --ensure-nats-fw | --ensure-wireguard-fw | --ensure-smtp-fw | --ensure-smtps-fw | --ensure-imap-fw | --ensure-imaps-fw)
+		--free-tier-max | --can-ip-forward | --no-can-ip-forward | --ensure-ssh-fw | --ensure-observability-fw | --ensure-postgres-fw | --ensure-nats-fw | --ensure-wireguard-fw | --ensure-smtp-fw | --ensure-smtps-fw | --ensure-imap-fw | --ensure-imaps-fw | --ensure-https-fw)
 			gcp_apply_vm_flag_arg "$1"
 			shift
 			;;
@@ -388,6 +395,15 @@ create_fw_rules() {
 			"${GCP_IMAPS_TARGET_TAG}" \
 			"${GCP_IMAPS_SOURCE_RANGES}" \
 			"${GCP_IMAPS_ALLOW}"
+	fi
+	if [ "${GCP_ENSURE_HTTPS_FW}" = "1" ]; then
+		gcp_maybe_create_public_fw \
+			"${GCP_PROJECT_ID}" \
+			"${GCP_NETWORK}" \
+			"${GCP_HTTPS_FW_RULE_NAME}" \
+			"${GCP_HTTPS_TARGET_TAG}" \
+			"${GCP_HTTPS_SOURCE_RANGES}" \
+			"${GCP_HTTPS_ALLOW}"
 	fi
 }
 

@@ -98,6 +98,11 @@ gcp_init_firewall_defaults() {
 	GCP_DEFAULT_IMAPS_TARGET_TAG="${GCP_DEFAULT_IMAPS_TARGET_TAG:-allow-imaps}"
 	GCP_DEFAULT_IMAPS_SOURCE_RANGES="${GCP_DEFAULT_IMAPS_SOURCE_RANGES:-0.0.0.0/0}"
 	GCP_DEFAULT_IMAPS_ALLOW="${GCP_DEFAULT_IMAPS_ALLOW:-tcp:993}"
+	GCP_DEFAULT_ENSURE_HTTPS_FW="${GCP_DEFAULT_ENSURE_HTTPS_FW:-0}"
+	GCP_DEFAULT_HTTPS_FW_RULE_NAME="${GCP_DEFAULT_HTTPS_FW_RULE_NAME:-allow-https}"
+	GCP_DEFAULT_HTTPS_TARGET_TAG="${GCP_DEFAULT_HTTPS_TARGET_TAG:-allow-https}"
+	GCP_DEFAULT_HTTPS_SOURCE_RANGES="${GCP_DEFAULT_HTTPS_SOURCE_RANGES:-0.0.0.0/0}"
+	GCP_DEFAULT_HTTPS_ALLOW="${GCP_DEFAULT_HTTPS_ALLOW:-tcp:443}"
 }
 
 # -----------------------------------------------------------------------------
@@ -172,6 +177,11 @@ gcp_init_vm_config_defaults() {
 	GCP_IMAPS_TARGET_TAG="${GCP_DEFAULT_IMAPS_TARGET_TAG}"
 	GCP_IMAPS_SOURCE_RANGES="${GCP_DEFAULT_IMAPS_SOURCE_RANGES}"
 	GCP_IMAPS_ALLOW="${GCP_DEFAULT_IMAPS_ALLOW}"
+	GCP_ENSURE_HTTPS_FW="${GCP_DEFAULT_ENSURE_HTTPS_FW}"
+	GCP_HTTPS_FW_RULE_NAME="${GCP_DEFAULT_HTTPS_FW_RULE_NAME}"
+	GCP_HTTPS_TARGET_TAG="${GCP_DEFAULT_HTTPS_TARGET_TAG}"
+	GCP_HTTPS_SOURCE_RANGES="${GCP_DEFAULT_HTTPS_SOURCE_RANGES}"
+	GCP_HTTPS_ALLOW="${GCP_DEFAULT_HTTPS_ALLOW}"
 	GCP_FREE_TIER_MAX_MODE="0"
 	GCP_VM_ARG_ZONE_SEEN="0"
 	GCP_VM_ARG_MACHINE_TYPE_SEEN="0"
@@ -256,6 +266,10 @@ gcp_apply_vm_value_arg() {
 	--imaps-target-tag) GCP_IMAPS_TARGET_TAG="${value}" ;;
 	--imaps-source-ranges) GCP_IMAPS_SOURCE_RANGES="${value}" ;;
 	--imaps-allow) GCP_IMAPS_ALLOW="${value}" ;;
+	--https-fw-rule-name) GCP_HTTPS_FW_RULE_NAME="${value}" ;;
+	--https-target-tag) GCP_HTTPS_TARGET_TAG="${value}" ;;
+	--https-source-ranges) GCP_HTTPS_SOURCE_RANGES="${value}" ;;
+	--https-allow) GCP_HTTPS_ALLOW="${value}" ;;
 	*) return 1 ;;
 	esac
 }
@@ -276,6 +290,7 @@ gcp_apply_vm_flag_arg() {
 	--ensure-smtps-fw) GCP_ENSURE_SMTPS_FW="1" ;;
 	--ensure-imap-fw) GCP_ENSURE_IMAP_FW="1" ;;
 	--ensure-imaps-fw) GCP_ENSURE_IMAPS_FW="1" ;;
+	--ensure-https-fw) GCP_ENSURE_HTTPS_FW="1" ;;
 	*) return 1 ;;
 	esac
 }
@@ -383,6 +398,9 @@ gcp_finalize_vm_config() {
 	fi
 	if [ "${GCP_ENSURE_IMAPS_FW}" = "1" ]; then
 		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_IMAPS_TARGET_TAG}")"
+	fi
+	if [ "${GCP_ENSURE_HTTPS_FW}" = "1" ]; then
+		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_HTTPS_TARGET_TAG}")"
 	fi
 }
 
