@@ -17,9 +17,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   first-class modes: deploy, build, local dev-build, Terraform phases,
   dependency checks, and bootstrap checks.
 - `--hosts` accepts exact host names, comma/space-separated host lists, `all`,
-  shell-style globs, and `!`-prefixed exact or glob exclusions such as
-  `all,!abird-id`. Glob expansion and exclusions happen against the NixOS
-  configuration names before normal dependency expansion and ordering.
+  shell-style globs, and `-`-prefixed exact or glob exclusions such as
+  `all,-pvl-a1`. A selector list containing only exclusions means all hosts
+  except those exclusions. Glob expansion and exclusions happen against the
+  NixOS configuration names before normal dependency expansion and ordering.
 - `dev-build` is local-only. It runs from the current checkout instead of the
   managed repo worktree, rejects `--sha` and `--ci-trigger`, and writes
   `result-dev/<host>` links in the repo root as temporary GC roots. Clearing

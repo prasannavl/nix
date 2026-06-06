@@ -40,8 +40,8 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
-  nixbot --list-hosts [--hosts "host1,host2|all|!host"] [--config <path>] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|!host"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--ci-first]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -66,7 +66,7 @@ Local Wrapper Action:
 
 Workflow Selection Options:
   --list-hosts     List selected hosts using the same host block as the info banner
-  --hosts          Hosts/context to target (comma/space-separated, globs, !exclusions, or `all`; default: all)
+  --hosts          Hosts/context to target (comma/space-separated, globs, -exclusions, or `all`; default: all)
   --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
@@ -74,7 +74,7 @@ Build Action Options (`run`, `deploy`, `build`):
   --build-jobs     Parallel host builds (default: 1)
 
 Dev Build Action Options (`dev-build`):
-  --hosts          Hosts/globs to build into result-dev/<host> links; !exclusions are supported (default: all)
+  --hosts          Hosts/globs to build into result-dev/<host> links; -exclusions are supported (default: all)
   --build-jobs     Parallel host builds (default: 1)
 
 Deploy Action Options (`run`, `deploy`):
@@ -2132,7 +2132,7 @@ resolve_runtime_key_file() {
 }
 
 load_all_hosts_json() {
-	nix flake show --json --no-write-lock-file 2>/dev/null | jq -c '.nixosConfigurations | keys'
+	nix eval --json --no-write-lock-file .#nixosConfigurations --apply builtins.attrNames 2>/dev/null
 }
 
 ##### Host Selection #####
@@ -2156,9 +2156,9 @@ parse_host_selectors_json() {
 
 		exclusion=0
 		selector="${token}"
-		if [[ "${token}" == '!'* ]]; then
+		if [[ "${token}" == '-'* ]]; then
 			exclusion=1
-			selector="${token#!}"
+			selector="${token#-}"
 			[ -n "${selector}" ] || selector="${token}"
 		fi
 
@@ -2221,6 +2221,15 @@ parse_host_selectors_json() {
 			selected_hosts+=("${selector}")
 		fi
 	done < <(emit_normalized_hosts "${HOSTS_RAW}")
+
+	if [ "${#selected_hosts[@]}" -eq 0 ] && [ "${#excluded_hosts[@]}" -gt 0 ]; then
+		for host in "${all_hosts[@]}"; do
+			if [ -z "${selected_host_set["${host}"]+x}" ]; then
+				selected_host_set["${host}"]=1
+				selected_hosts+=("${host}")
+			fi
+		done
+	fi
 
 	selected_json="$(jq -cn '$ARGS.positional' --args "${selected_hosts[@]}")"
 	excluded_json="$(jq -cn '$ARGS.positional' --args "${excluded_hosts[@]}")"
@@ -4760,19 +4769,25 @@ run_prepared_root_command() {
 
 run_named_prepared_root_command() {
 	local phase_name="$1" parent="$2" resources="$3" target_cmd="$4"
-	local rc=0
+	local rc=0 start_epoch="" elapsed_secs=0
+
+	start_epoch="$(date +%s)"
+	echo "[parent-readiness] ${parent}: starting ${phase_name} for ${resources}" >&2
 
 	if retry_transport_command \
 		"Parent readiness ${phase_name} on ${parent}" \
 		refresh_prepared_primary_target \
 		run_prepared_root_command \
 		"${target_cmd}"; then
+		elapsed_secs="$(($(date +%s) - start_epoch))"
+		echo "[parent-readiness] ${parent}: ${phase_name} ok for ${resources} after ${elapsed_secs}s" >&2
 		return 0
 	else
 		rc="$?"
 	fi
 
-	echo "Parent readiness ${phase_name} failed on ${parent} for ${resources}" >&2
+	elapsed_secs="$(($(date +%s) - start_epoch))"
+	echo "[parent-readiness] ${parent}: ${phase_name} failed for ${resources} after ${elapsed_secs}s" >&2
 	return "${rc}"
 }
 
@@ -5846,9 +5861,15 @@ verify_deploy_target_state() {
 }
 
 verify_remote_deploy_after_transport_loss() {
-	local node="$1" built_out_path="$2" deploy_rc="$3"
+	local node="$1" built_out_path="$2" deploy_rc="$3" output_path="${4:-}"
 
-	[ "${deploy_rc}" -eq 255 ] || return 1
+	if [ "${deploy_rc}" -eq 255 ]; then
+		:
+	elif deploy_rebuild_failure_is_transport_loss "${output_path}"; then
+		:
+	else
+		return 1
+	fi
 	[ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] || return 1
 
 	echo "==> Deploy transport closed for ${node}; verifying target state" >&2
@@ -6056,6 +6077,16 @@ deploy_rebuild_failure_is_copy_transport_loss() {
 	grep -Eq "nix-copy-closure|failed to start SSH connection" "${output_path}" || return 1
 }
 
+deploy_rebuild_failure_is_transport_loss() {
+	local output_path="$1"
+
+	[ -s "${output_path}" ] || return 1
+
+	grep -Eq \
+		"failed to start SSH connection|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|Connection closed by .* port [0-9]+|Received disconnect|client_loop: send disconnect: Broken pipe|Broken pipe|stdio forwarding failed|Connection timed out|No route to host" \
+		"${output_path}"
+}
+
 prepare_deploy_rebuild_command() {
 	local node="$1"
 	# shellcheck disable=SC2178
@@ -6160,7 +6191,8 @@ run_deploy_rebuild_command_with_retry() {
 			rc="$?"
 		fi
 
-		if [ "${rc}" -ne 0 ] && verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${rc}"; then
+		if [ "${rc}" -ne 0 ] &&
+			verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${rc}" "${output_path}"; then
 			rm -f "${output_path}"
 			return 0
 		fi
