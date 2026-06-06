@@ -41,6 +41,17 @@
         '';
       };
 
+      verifyCommand = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        description = ''
+          Optional command to run as the managed user after the unit reaches a
+          stable active state. Failure keeps reconciliation from being marked
+          applied. Verification is metadata for the reconcile transaction; it
+          does not by itself force a managed unit restart.
+        '';
+      };
+
       restartTriggers = lib.mkOption {
         type = lib.types.listOf lib.types.unspecified;
         default = [];
@@ -188,6 +199,7 @@
     unit = managedUnit.unit;
     removalPolicy = managedUnit.removalPolicy;
     removalCommand = managedUnit.removalCommand;
+    verifyCommand = managedUnit.verifyCommand;
     autoStart = managedUnit.autoStart;
     state = managedUnit.state;
     timeoutStableSeconds = managedUnit.timeoutStableSeconds;
@@ -221,6 +233,22 @@
 
   duplicateGeneratedSystemdServiceNames =
     flakeUtils.duplicateValues (generatedDispatcherServiceNames ++ generatedReconcilerServiceNames);
+
+  duplicateManagedUnitsByUser =
+    lib.mapAttrs
+    (_: userUnits:
+      flakeUtils.duplicateValues (map (userUnit: userUnit.unit) userUnits))
+    managedUnitsByUser;
+
+  usersWithDuplicateManagedUnits =
+    lib.filter
+    (user: duplicateManagedUnitsByUser.${user} != [])
+    managedUsers;
+
+  duplicateManagedUnitMessages =
+    map
+    (user: "${user}: ${lib.concatStringsSep ", " duplicateManagedUnitsByUser.${user}}")
+    usersWithDuplicateManagedUnits;
 
   userIdentityStampFor = user: let
     userCfg = config.users.users.${user};
@@ -260,6 +288,7 @@
             unit = managedUnit.unit;
             removalPolicy = managedUnit.removalPolicy;
             removalCommand = managedUnit.removalCommand;
+            verifyCommand = managedUnit.verifyCommand;
             autoStart = managedUnit.autoStart;
             state = managedUnit.state;
             timeoutStableSeconds = managedUnit.timeoutStableSeconds;
@@ -448,6 +477,10 @@ in {
         {
           assertion = duplicateGeneratedSystemdServiceNames == [];
           message = "services.systemdUserManager: duplicate generated systemd service names: ${lib.concatStringsSep ", " duplicateGeneratedSystemdServiceNames}";
+        }
+        {
+          assertion = usersWithDuplicateManagedUnits == [];
+          message = "services.systemdUserManager: duplicate managed user units are not allowed: ${lib.concatStringsSep "; " duplicateManagedUnitMessages}";
         }
       ]
       ++ lib.concatMap

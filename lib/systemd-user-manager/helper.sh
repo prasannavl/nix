@@ -26,6 +26,8 @@ init_vars() {
 	deferred_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR-}"
 	deferred_unit_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR-}"
 	deferred_unit_reload_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR-}"
+	metadata_field_sep=$'\037'
+	metadata_field_sep_json='\u001f'
 	stable_state_timeout_seconds="${SYSTEMD_USER_MANAGER_STABLE_STATE_TIMEOUT_SECONDS:-120}"
 }
 
@@ -95,6 +97,43 @@ managed_unit_restart_request_marker_path() {
 	printf '%s/%s/%s' "$deferred_unit_restart_request_dir" "$sanitized_user" "$sanitized_name"
 }
 
+ensure_user_owned_request_dir() {
+	local user request_root request_dir user_gid
+	user="$1"
+	request_root="$2"
+	request_dir="$3"
+	user_gid="$(id -g "$user")"
+	install -d -m 0711 "$request_root"
+	chmod 0711 "$request_root"
+	install -d -m 0750 "$request_dir"
+	chown "$user:$user_gid" "$request_dir"
+}
+
+write_user_owned_request_file() {
+	local user marker_path marker_value marker_tmp user_gid marker_dir
+	user="$1"
+	marker_path="$2"
+	marker_value="$3"
+	user_gid="$(id -g "$user")"
+	marker_dir="$(dirname "$marker_path")"
+	marker_tmp="${marker_dir}/.$(basename "$marker_path").tmp.$$"
+
+	rm -f "$marker_tmp"
+	printf '%s\n' "$marker_value" >"$marker_tmp"
+	chown "$user:$user_gid" "$marker_tmp"
+	chmod 0640 "$marker_tmp"
+	mv -f "$marker_tmp" "$marker_path"
+}
+
+clear_user_owned_request_file() {
+	local marker_path marker_dir
+	marker_path="$1"
+	marker_dir="$(dirname "$marker_path")"
+
+	rm -f "$marker_path"
+	rmdir "$marker_dir" 2>/dev/null || true
+}
+
 mark_deferred_managed_unit_restart() {
 	local user managed_name marker_path marker_dir
 	user="$1"
@@ -102,8 +141,17 @@ mark_deferred_managed_unit_restart() {
 	require_env SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR
 	marker_path="$(managed_unit_restart_request_marker_path "$user" "$managed_name")"
 	marker_dir="$(dirname "$marker_path")"
-	mkdir -p "$marker_dir"
-	printf '%s\n' "$managed_name" >"$marker_path"
+	ensure_user_owned_request_dir "$user" "$deferred_unit_restart_request_dir" "$marker_dir"
+	write_user_owned_request_file "$user" "$marker_path" "$managed_name"
+}
+
+clear_deferred_managed_unit_restart() {
+	local user managed_name marker_path
+	user="$1"
+	managed_name="$2"
+	require_env SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR
+	marker_path="$(managed_unit_restart_request_marker_path "$user" "$managed_name")"
+	clear_user_owned_request_file "$marker_path"
 }
 
 consume_deferred_managed_unit_restart() {
@@ -113,12 +161,15 @@ consume_deferred_managed_unit_restart() {
 	require_env SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR
 	marker_path="$(managed_unit_restart_request_marker_path "$user" "$managed_name")"
 	marker_dir="$(dirname "$marker_path")"
-	if [ -f "$marker_path" ]; then
-		rm -f "$marker_path"
-		rmdir "$marker_dir" 2>/dev/null || true
+	if [ ! -f "$marker_path" ]; then
+		printf '%s\n' "absent"
 		return 0
 	fi
-	return 1
+	if ! rm -f "$marker_path"; then
+		return 1
+	fi
+	rmdir "$marker_dir" 2>/dev/null || true
+	printf '%s\n' "consumed"
 }
 
 managed_unit_reload_request_marker_path() {
@@ -138,8 +189,17 @@ mark_deferred_managed_unit_reload() {
 	require_env SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR
 	marker_path="$(managed_unit_reload_request_marker_path "$user" "$managed_name")"
 	marker_dir="$(dirname "$marker_path")"
-	mkdir -p "$marker_dir"
-	printf '%s\n' "$reload_stamp" >"$marker_path"
+	ensure_user_owned_request_dir "$user" "$deferred_unit_reload_request_dir" "$marker_dir"
+	write_user_owned_request_file "$user" "$marker_path" "$reload_stamp"
+}
+
+clear_deferred_managed_unit_reload() {
+	local user managed_name marker_path
+	user="$1"
+	managed_name="$2"
+	require_env SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR
+	marker_path="$(managed_unit_reload_request_marker_path "$user" "$managed_name")"
+	clear_user_owned_request_file "$marker_path"
 }
 
 consume_deferred_managed_unit_reload() {
@@ -151,13 +211,22 @@ consume_deferred_managed_unit_reload() {
 	marker_path="$(managed_unit_reload_request_marker_path "$user" "$managed_name")"
 	marker_dir="$(dirname "$marker_path")"
 	if [ ! -f "$marker_path" ]; then
-		return 1
+		printf '%s\n' "absent"
+		return 0
 	fi
 
-	IFS= read -r marker_reload_stamp <"$marker_path" || marker_reload_stamp=""
-	rm -f "$marker_path"
+	if ! IFS= read -r marker_reload_stamp <"$marker_path"; then
+		return 1
+	fi
+	if ! rm -f "$marker_path"; then
+		return 1
+	fi
 	rmdir "$marker_dir" 2>/dev/null || true
-	[ "$marker_reload_stamp" = "$expected_reload_stamp" ]
+	if [ "$marker_reload_stamp" = "$expected_reload_stamp" ]; then
+		printf '%s\n' "consumed"
+	else
+		printf '%s\n' "stale"
+	fi
 }
 
 now_epoch() {
@@ -319,6 +388,53 @@ userctl_active_state() {
 	userctl show --property=ActiveState --value "$unit"
 }
 
+managed_unit_is_live_state() {
+	case "$1" in
+	active | activating | deactivating | reloading)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+mark_deferred_managed_unit_restart_if_live() {
+	local user managed_name managed_unit active_state
+	user="$1"
+	managed_name="$2"
+	managed_unit="$3"
+
+	userctl_mode=root
+	active_state="$(userctl_active_state "$managed_unit" 2>/dev/null || true)"
+	if managed_unit_is_live_state "$active_state"; then
+		mark_deferred_managed_unit_restart "$user" "$managed_name"
+	fi
+}
+
+mark_deferred_managed_unit_reload_if_live() {
+	local user managed_name managed_unit reload_stamp active_state
+	user="$1"
+	managed_name="$2"
+	managed_unit="$3"
+	reload_stamp="$4"
+
+	userctl_mode=root
+	active_state="$(userctl_active_state "$managed_unit" 2>/dev/null || true)"
+	if managed_unit_is_live_state "$active_state"; then
+		mark_deferred_managed_unit_reload "$user" "$managed_name" "$reload_stamp"
+	fi
+}
+
+clear_deferred_managed_unit_requests() {
+	local user managed_name
+	user="$1"
+	managed_name="$2"
+
+	clear_deferred_managed_unit_restart "$user" "$managed_name"
+	clear_deferred_managed_unit_reload "$user" "$managed_name"
+}
+
 stop_managed_unit() {
 	local managed_unit load_state stop_error
 	managed_unit="$1"
@@ -440,14 +556,14 @@ apply_stop_phase_action() {
 	log_managed_unit "$user" "$managed_name" "stopped in $(elapsed_since "$managed_stopped_at") ($stopped_state)"
 }
 
-removal_command_args() {
+encoded_command_args() {
 	local command_b64
 	command_b64="$1"
 	[ -n "$command_b64" ] || return 0
 	printf '%s' "$command_b64" | base64 -d | jq -r '.[]'
 }
 
-has_removal_command() {
+has_encoded_command() {
 	local command_b64
 	command_b64="$1"
 	[ -n "$command_b64" ] || return 1
@@ -458,9 +574,18 @@ run_removal_command() {
 	local command_b64
 	local -a command=()
 	command_b64="$1"
-	mapfile -t command < <(removal_command_args "$command_b64")
+	mapfile -t command < <(encoded_command_args "$command_b64")
 	[ "${#command[@]}" -gt 0 ] || return 1
 	run_as_managed_user env PATH="$managed_user_action_path" "${command[@]}"
+}
+
+run_verify_command() {
+	local command_b64
+	local -a command=()
+	command_b64="$1"
+	mapfile -t command < <(encoded_command_args "$command_b64")
+	[ "${#command[@]}" -gt 0 ] || return 0
+	env PATH="$managed_user_action_path" "${command[@]}"
 }
 
 apply_removal_phase_action() {
@@ -478,7 +603,7 @@ apply_removal_phase_action() {
 		return 0
 	fi
 
-	if ! has_removal_command "$removal_command_b64"; then
+	if ! has_encoded_command "$removal_command_b64"; then
 		apply_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$timeout_seconds"
 		return $?
 	fi
@@ -534,11 +659,21 @@ is_valid_metadata_file() {
 	jq --slurp -e 'length == 1 and (.[0] | type == "object" and (.managedUnits | type == "array"))' "$metadata_file" >/dev/null 2>&1
 }
 
+metadata_jq_rows() {
+	local row_filter="$1"
+	shift || true
+
+	jq -r "
+		def usv: map(tostring) | join(\"${metadata_field_sep_json}\");
+		(${row_filter}) | usv
+	" "$@"
+}
+
 read_metadata_stop_state_tsv() {
 	local metadata_file="$1"
 
-	jq -r '
-		(["metadata", (.version // 0), (.user // ""), (.identityStamp // "")] | @tsv),
+	metadata_jq_rows '
+		["metadata", (.version // 0), (.user // ""), (.identityStamp // "")],
 		(.managedUnits[]? | [
 			"unit",
 			(.name // ""),
@@ -553,7 +688,7 @@ read_metadata_stop_state_tsv() {
 			(.transitionNeutralStamp // ""),
 			(.stopOnTransitionFrom // ""),
 			(.stopOnTransitionTo // "")
-		] | @tsv)
+		])
 	' "$metadata_file"
 }
 
@@ -563,30 +698,54 @@ read_empty_metadata_stop_state_tsv() {
 	version="$2"
 	identity_stamp="$3"
 
-	empty_metadata_for_user "$user" "$version" "$identity_stamp" | jq -r '
-		["metadata", (.version // 0), (.user // ""), (.identityStamp // "")] | @tsv
+	empty_metadata_for_user "$user" "$version" "$identity_stamp" | metadata_jq_rows '
+		["metadata", (.version // 0), (.user // ""), (.identityStamp // "")]
 	'
 }
 
 read_metadata_units_tsv() {
 	local metadata_file="$1"
 
-	jq -r '.managedUnits[]? | [.name, .unit, (.removalPolicy // (if (.stopOnRemoval // true) then "stop" else "keep" end)), ((.removalCommand // []) | @base64), (.stamp // ""), (if .autoStart then "1" else "0" end), (.state // "running"), (.timeoutStableSeconds // 120)] | @tsv' "$metadata_file"
+	metadata_jq_rows '
+		.managedUnits[]?
+		| [
+			.name,
+			.unit,
+			(.removalPolicy // (if (.stopOnRemoval // true) then "stop" else "keep" end)),
+			((.removalCommand // []) | @base64),
+			(.stamp // ""),
+			(if .autoStart then "1" else "0" end),
+			(.state // "running"),
+			(.timeoutStableSeconds // 120)
+		]
+	' "$metadata_file"
 }
 
 read_metadata_reconcile_units_tsv() {
 	local metadata_file="$1"
 
-	jq -r '.managedUnits | sort_by(.name)[] | [.name, .unit, (if .autoStart then "1" else "0" end), (.state // "running"), (.timeoutStableSeconds // 120), (.reloadStamp // "")] | @tsv' "$metadata_file"
+	metadata_jq_rows '
+		.managedUnits
+		| sort_by(.name)[]
+		| [
+			.name,
+			.unit,
+			(if .autoStart then "1" else "0" end),
+			(.state // "running"),
+			(.timeoutStableSeconds // 120),
+			(.reloadStamp // ""),
+			((.verifyCommand // []) | @base64)
+		]
+	' "$metadata_file"
 }
 
 metadata_header_from_stop_state_tsv() {
 	local metadata_tsv record version user identity_stamp
 	metadata_tsv="$1"
 
-	while IFS=$'\t' read -r record version user identity_stamp; do
+	while IFS="$metadata_field_sep" read -r record version user identity_stamp; do
 		if [ "$record" = metadata ]; then
-			printf '%s\t%s\t%s\n' "$version" "$user" "$identity_stamp"
+			printf '%s%s%s%s%s\n' "$version" "$metadata_field_sep" "$user" "$metadata_field_sep" "$identity_stamp"
 			return 0
 		fi
 	done <<<"$metadata_tsv"
@@ -631,7 +790,7 @@ empty_metadata_for_user() {
 diff_and_stop_units() {
 	local phase_mode user old_metadata_tsv new_metadata_tsv
 	local stop_failed=0 new_name="" new_stamp="" new_reload_stamp="" new_auto_start="" new_state="" new_timeout="" new_transition_neutral_stamp="" new_stop_on_transition_to="" managed_name="" managed_unit="" removal_policy="" removal_command_b64="" old_stamp="" old_reload_stamp="" _old_auto_start="" _old_state="" managed_timeout="" old_transition_neutral_stamp="" old_stop_on_transition_from="" reset_failed=""
-	local active_state_before_stop="" old_identity="" new_identity=""
+	local old_identity="" new_identity=""
 	local record="" old_header="" new_header="" _old_version="" _old_user="" _new_version="" _new_user=""
 	local changed_stop_timeout="" policy_only_change=0 transition_stop=0 stamp_changed=0 should_stop=0
 	local new_metadata_present=0
@@ -652,15 +811,15 @@ diff_and_stop_units() {
 		printf '%s\n' "[systemd-user-manager] failed to read old metadata header for user: $user" >&2
 		return 1
 	fi
-	IFS=$'\t' read -r _old_version _old_user old_identity <<<"$old_header"
+	IFS="$metadata_field_sep" read -r _old_version _old_user old_identity <<<"$old_header"
 	if [ -n "$new_metadata_tsv" ]; then
 		new_metadata_present=1
 		if ! new_header="$(metadata_header_from_stop_state_tsv "$new_metadata_tsv")"; then
 			printf '%s\n' "[systemd-user-manager] failed to read new metadata header for user: $user" >&2
 			return 1
 		fi
-		IFS=$'\t' read -r _new_version _new_user new_identity <<<"$new_header"
-		while IFS=$'\t' read -r record new_name _ _ _ new_stamp new_reload_stamp new_auto_start new_state new_timeout new_transition_neutral_stamp _new_stop_on_transition_from new_stop_on_transition_to; do
+		IFS="$metadata_field_sep" read -r _new_version _new_user new_identity <<<"$new_header"
+		while IFS="$metadata_field_sep" read -r record new_name _ _ _ new_stamp new_reload_stamp new_auto_start new_state new_timeout new_transition_neutral_stamp _new_stop_on_transition_from new_stop_on_transition_to; do
 			[ "$record" = unit ] || continue
 			[ -n "$new_name" ] || continue
 			new_stamps_by_name["$new_name"]="$new_stamp"
@@ -674,8 +833,11 @@ diff_and_stop_units() {
 	fi
 
 	if [ -n "$old_metadata_tsv" ]; then
-		while IFS=$'\t' read -r record managed_name managed_unit removal_policy removal_command_b64 old_stamp old_reload_stamp _old_auto_start _old_state managed_timeout old_transition_neutral_stamp old_stop_on_transition_from _old_stop_on_transition_to; do
+		while IFS="$metadata_field_sep" read -r record managed_name managed_unit removal_policy removal_command_b64 old_stamp old_reload_stamp _old_auto_start _old_state managed_timeout old_transition_neutral_stamp old_stop_on_transition_from _old_stop_on_transition_to; do
 			[ "$record" = unit ] || continue
+			if [ "$phase_mode" = apply ]; then
+				clear_deferred_managed_unit_requests "$user" "$managed_name"
+			fi
 			new_stamp="${new_stamps_by_name["$managed_name"]-}"
 			new_reload_stamp="${new_reload_stamps_by_name["$managed_name"]-}"
 			new_auto_start="${new_auto_start_by_name["$managed_name"]-1}"
@@ -717,14 +879,8 @@ diff_and_stop_units() {
 
 			if [ "$should_stop" -eq 1 ]; then
 				changed_stop_timeout="${new_timeouts_by_name["$managed_name"]-$managed_timeout}"
-				if [ "$phase_mode" = apply ] && [ "$new_auto_start" != 1 ] && [ "$new_state" != "stopped" ]; then
-					userctl_mode=root
-					active_state_before_stop="$(userctl_active_state "$managed_unit" 2>/dev/null || true)"
-					case "$active_state_before_stop" in
-					active | activating | deactivating | reloading)
-						mark_deferred_managed_unit_restart "$user" "$managed_name"
-						;;
-					esac
+				if [ "$phase_mode" = apply ] && [ "$new_state" != "stopped" ]; then
+					mark_deferred_managed_unit_restart_if_live "$user" "$managed_name" "$managed_unit"
 				fi
 				if [ "$new_state" = "stopped" ]; then
 					reset_failed=1
@@ -742,13 +898,7 @@ diff_and_stop_units() {
 				elif [ "$phase_mode" = preview ]; then
 					log_managed_unit "$user" "$managed_name" "would reload"
 				else
-					userctl_mode=root
-					active_state_before_stop="$(userctl_active_state "$managed_unit" 2>/dev/null || true)"
-					case "$active_state_before_stop" in
-					active | activating | deactivating | reloading)
-						mark_deferred_managed_unit_reload "$user" "$managed_name" "$new_reload_stamp"
-						;;
-					esac
+					mark_deferred_managed_unit_reload_if_live "$user" "$managed_name" "$managed_unit" "$new_reload_stamp"
 				fi
 			fi
 		done <<<"$old_metadata_tsv"
@@ -780,16 +930,19 @@ stop_absent_units_after_metadata_version_change() {
 	new_metadata_tsv="$4"
 
 	if [ -n "$new_metadata_tsv" ]; then
-		while IFS=$'\t' read -r record new_name _; do
+		while IFS="$metadata_field_sep" read -r record new_name _; do
 			[ "$record" = unit ] || continue
 			[ -n "$new_name" ] || continue
 			new_units_by_name["$new_name"]=1
 		done <<<"$new_metadata_tsv"
 	fi
 
-	while IFS=$'\t' read -r record managed_name managed_unit removal_policy removal_command_b64 old_stamp old_reload_stamp _old_auto_start _old_state managed_timeout _old_transition_neutral_stamp _old_stop_on_transition_from _old_stop_on_transition_to; do
+	while IFS="$metadata_field_sep" read -r record managed_name managed_unit removal_policy removal_command_b64 old_stamp old_reload_stamp _old_auto_start _old_state managed_timeout _old_transition_neutral_stamp _old_stop_on_transition_from _old_stop_on_transition_to; do
 		[ "$record" = unit ] || continue
 		[ -n "$managed_name" ] || continue
+		if [ "$phase_mode" = apply ]; then
+			clear_deferred_managed_unit_requests "$user" "$managed_name"
+		fi
 		if [ -n "${new_units_by_name["$managed_name"]+x}" ]; then
 			continue
 		fi
@@ -827,7 +980,7 @@ stop_changed_managed_units_from_applied_metadata() {
 		printf '%s\n' "[systemd-user-manager] failed to read applied metadata header: $state_file" >&2
 		return 1
 	fi
-	IFS=$'\t' read -r old_version _ _ <<<"$state_header"
+	IFS="$metadata_field_sep" read -r old_version _ _ <<<"$state_header"
 	if ! new_metadata_tsv="$(read_metadata_stop_state_tsv "$systemd_user_manager_metadata")"; then
 		printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $systemd_user_manager_metadata" >&2
 		return 1
@@ -836,7 +989,7 @@ stop_changed_managed_units_from_applied_metadata() {
 		printf '%s\n' "[systemd-user-manager] failed to read metadata header: $systemd_user_manager_metadata" >&2
 		return 1
 	fi
-	IFS=$'\t' read -r new_version _ _ <<<"$new_header"
+	IFS="$metadata_field_sep" read -r new_version _ _ <<<"$new_header"
 	if [ "$old_version" != "$new_version" ]; then
 		log_user_progress "$systemd_user_manager_user" "applied metadata version changed; stopping removed units only"
 		if ! stop_absent_units_after_metadata_version_change apply "$systemd_user_manager_user" "$state_metadata_tsv" "$new_metadata_tsv"; then
@@ -857,8 +1010,9 @@ stop_active_managed_units_without_applied_metadata() {
 		return 1
 	fi
 	[ -n "$managed_units_tsv" ] || return 0
-	while IFS=$'\t' read -r managed_name managed_unit _removal_policy _removal_command_b64 _ auto_start desired_state managed_timeout; do
+	while IFS="$metadata_field_sep" read -r managed_name managed_unit _removal_policy _removal_command_b64 _ auto_start desired_state managed_timeout; do
 		[ -n "$managed_name" ] || continue
+		clear_deferred_managed_unit_requests "$systemd_user_manager_user" "$managed_name"
 		active_state="$(userctl_active_state "$managed_unit" 2>/dev/null || true)"
 		case "$active_state" in
 		active | activating | deactivating | reloading) ;;
@@ -866,8 +1020,8 @@ stop_active_managed_units_without_applied_metadata() {
 			continue
 			;;
 		esac
-		if [ "$auto_start" != 1 ] && [ "$desired_state" != "stopped" ]; then
-			mark_deferred_managed_unit_restart "$systemd_user_manager_user" "$managed_name"
+		if [ "$desired_state" != "stopped" ]; then
+			mark_deferred_managed_unit_restart_if_live "$systemd_user_manager_user" "$managed_name" "$managed_unit"
 		fi
 		if [ "$desired_state" = "stopped" ]; then
 			reset_failed=1
@@ -1022,16 +1176,50 @@ emit_new_journal() {
 	return 0
 }
 
+launch_managed_unit_action() {
+	local managed_name managed_unit action managed_started_at
+	managed_name="$1"
+	managed_unit="$2"
+	action="$3"
+	managed_started_at="$4"
+	managed_unit_outcome="$action"
+
+	if [ "$dry_run" = 1 ]; then
+		log_managed_unit "$systemd_user_manager_user" "$managed_name" "would $action"
+	else
+		log_managed_unit "$systemd_user_manager_user" "$managed_name" "${action}ing"
+		(
+			userctl "$action" "$managed_unit"
+		) &
+		managed_unit_action_pid=$!
+		managed_unit_action_started_at="$managed_started_at"
+	fi
+}
+
+managed_unit_action_past_tense() {
+	case "$1" in
+	start)
+		printf '%s\n' "started"
+		;;
+	restart)
+		printf '%s\n' "restarted"
+		;;
+	*)
+		printf '%s\n' "$1"
+		;;
+	esac
+}
+
 start_managed_unit() {
-	local managed_name managed_unit auto_start desired_state timeout_seconds active_state unit_file_state managed_started_at
+	local managed_name managed_unit auto_start desired_state timeout_seconds active_state unit_file_state managed_started_at restart_marker_state
 	managed_name="$1"
 	managed_unit="$2"
 	auto_start="$3"
 	desired_state="$4"
 	timeout_seconds="${5:-$stable_state_timeout_seconds}"
 	managed_unit_outcome="noop"
-	managed_unit_start_pid=""
-	managed_unit_start_started_at=""
+	managed_unit_action_pid=""
+	managed_unit_action_started_at=""
 	managed_started_at="$(now_epoch)"
 
 	if ! active_state="$(unit_stable_state "$managed_unit" "$timeout_seconds")"; then
@@ -1042,6 +1230,16 @@ start_managed_unit() {
 
 	case "$active_state" in
 	active)
+		if [ "$desired_state" != "stopped" ]; then
+			if ! restart_marker_state="$(consume_deferred_managed_unit_restart "$systemd_user_manager_user" "$managed_name")"; then
+				managed_unit_outcome="fail"
+				return 1
+			fi
+			if [ "$restart_marker_state" = consumed ]; then
+				launch_managed_unit_action "$managed_name" "$managed_unit" restart "$managed_started_at"
+				return 0
+			fi
+		fi
 		if [ "$desired_state" = "stopped" ]; then
 			managed_unit_outcome="skip"
 			if [ "$dry_run" = 1 ]; then
@@ -1071,22 +1269,16 @@ start_managed_unit() {
 			managed_unit_outcome="skip"
 			return 0
 		fi
-		if [ "$auto_start" != 1 ] && ! consume_deferred_managed_unit_restart "$systemd_user_manager_user" "$managed_name"; then
+		if ! restart_marker_state="$(consume_deferred_managed_unit_restart "$systemd_user_manager_user" "$managed_name")"; then
+			managed_unit_outcome="fail"
+			return 1
+		fi
+		if [ "$restart_marker_state" = absent ] && [ "$auto_start" != 1 ]; then
 			log_managed_unit "$systemd_user_manager_user" "$managed_name" "skipped (autoStart=false)"
 			managed_unit_outcome="skip"
 			return 0
 		fi
-		managed_unit_outcome="start"
-		if [ "$dry_run" = 1 ]; then
-			log_managed_unit "$systemd_user_manager_user" "$managed_name" "would start"
-		else
-			log_managed_unit "$systemd_user_manager_user" "$managed_name" "starting"
-			(
-				userctl start "$managed_unit"
-			) &
-			managed_unit_start_pid=$!
-			managed_unit_start_started_at="$managed_started_at"
-		fi
+		launch_managed_unit_action "$managed_name" "$managed_unit" start "$managed_started_at"
 		return 0
 		;;
 	*)
@@ -1128,16 +1320,20 @@ reload_managed_unit() {
 }
 
 reload_changed_managed_units_from_metadata() {
-	local managed_units_tsv="" managed_name="" managed_unit="" _auto_start="" _desired_state="" managed_timeout="" managed_reload_stamp="" failed_units=""
+	local managed_units_tsv="" managed_name="" managed_unit="" _auto_start="" _desired_state="" managed_timeout="" managed_reload_stamp="" _verify_command_b64="" failed_units="" reload_marker_state=""
 	require_env SYSTEMD_USER_MANAGER_METADATA
 	if ! managed_units_tsv="$(read_metadata_reconcile_units_tsv "$systemd_user_manager_metadata")"; then
 		printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $systemd_user_manager_metadata" >&2
 		return 1
 	fi
 	[ -n "$managed_units_tsv" ] || return 0
-	while IFS=$'\t' read -r managed_name managed_unit _auto_start _desired_state managed_timeout managed_reload_stamp; do
+	while IFS="$metadata_field_sep" read -r managed_name managed_unit _auto_start _desired_state managed_timeout managed_reload_stamp _verify_command_b64; do
 		[ -n "$managed_name" ] || continue
-		if ! consume_deferred_managed_unit_reload "$systemd_user_manager_user" "$managed_name" "$managed_reload_stamp"; then
+		if ! reload_marker_state="$(consume_deferred_managed_unit_reload "$systemd_user_manager_user" "$managed_name" "$managed_reload_stamp")"; then
+			failed_units="${failed_units} ${managed_name}"
+			continue
+		fi
+		if [ "$reload_marker_state" != consumed ]; then
 			continue
 		fi
 		if ! reload_managed_unit "$managed_name" "$managed_unit" "$managed_timeout"; then
@@ -1146,6 +1342,61 @@ reload_changed_managed_units_from_metadata() {
 	done <<<"$managed_units_tsv"
 	if [ -n "$failed_units" ]; then
 		printf '%s\n' "failed managed unit reloads:$failed_units" >&2
+		return 1
+	fi
+}
+
+verify_managed_units_from_metadata() {
+	local managed_units_tsv="" managed_name="" managed_unit="" _auto_start="" desired_state="" managed_timeout="" _reload_stamp="" verify_command_b64="" active_state="" failed_units="" managed_verified_at=""
+	require_env SYSTEMD_USER_MANAGER_METADATA
+	if ! managed_units_tsv="$(read_metadata_reconcile_units_tsv "$systemd_user_manager_metadata")"; then
+		printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $systemd_user_manager_metadata" >&2
+		return 1
+	fi
+	[ -n "$managed_units_tsv" ] || return 0
+	while IFS="$metadata_field_sep" read -r managed_name managed_unit _auto_start desired_state managed_timeout _reload_stamp verify_command_b64; do
+		[ -n "$managed_name" ] || continue
+		[ "$desired_state" = "running" ] || continue
+		if ! has_encoded_command "$verify_command_b64"; then
+			continue
+		fi
+		if ! active_state="$(unit_stable_state "$managed_unit" "$managed_timeout")"; then
+			failed_units="${failed_units} ${managed_name}"
+			continue
+		fi
+		if [ "$active_state" != active ]; then
+			if [ "$_auto_start" != 1 ]; then
+				log_managed_unit "$systemd_user_manager_user" "$managed_name" "verification skipped (autoStart=false state=$active_state)"
+				continue
+			fi
+			log_managed_unit "$systemd_user_manager_user" "$managed_name" "verification failed (state=$active_state)"
+			failed_units="${failed_units} ${managed_name}"
+			continue
+		fi
+		log_managed_unit "$systemd_user_manager_user" "$managed_name" "verifying"
+		if ! run_verify_command "$verify_command_b64"; then
+			managed_verified_at="$(now_epoch)"
+			log_managed_unit "$systemd_user_manager_user" "$managed_name" "verification failed; restarting"
+			if ! userctl restart "$managed_unit"; then
+				log_managed_unit "$systemd_user_manager_user" "$managed_name" "failed to restart after verification failure"
+				failed_units="${failed_units} ${managed_name}"
+				continue
+			fi
+			if ! active_state="$(unit_stable_state "$managed_unit" "$managed_timeout")" || [ "$active_state" != active ]; then
+				log_managed_unit "$systemd_user_manager_user" "$managed_name" "failed after restart from verification failure"
+				failed_units="${failed_units} ${managed_name}"
+				continue
+			fi
+			if ! run_verify_command "$verify_command_b64"; then
+				log_managed_unit "$systemd_user_manager_user" "$managed_name" "verification still failed after restart"
+				failed_units="${failed_units} ${managed_name}"
+				continue
+			fi
+			log_managed_unit "$systemd_user_manager_user" "$managed_name" "verified after restart in $(elapsed_since "$managed_verified_at")"
+		fi
+	done <<<"$managed_units_tsv"
+	if [ -n "$failed_units" ]; then
+		printf '%s\n' "failed managed unit verification:$failed_units" >&2
 		return 1
 	fi
 }
@@ -1219,11 +1470,11 @@ wait_for_reconciler() {
 
 run_reconciler_apply() {
 	local failed_units apply_started_at total_units work_units skipped_units
-	local i finished_pid="" managed_name="" managed_started_at="" managed_pid=""
+	local i finished_pid="" managed_name="" managed_started_at="" managed_action="" _verify_command_b64=""
 	local managed_units_tsv=""
-	local -a started_unit_names started_unit_pids started_unit_started_ats
-	local -a pending_unit_start_pids next_pending_unit_start_pids
-	local -A started_unit_names_by_pid started_unit_started_ats_by_pid
+	local -a action_unit_names action_unit_actions action_unit_pids action_unit_started_ats
+	local -a pending_unit_action_pids next_pending_unit_action_pids
+	local -A action_unit_names_by_pid action_unit_actions_by_pid action_unit_started_ats_by_pid
 
 	require_env SYSTEMD_USER_MANAGER_USER
 	require_env SYSTEMD_USER_MANAGER_METADATA
@@ -1233,9 +1484,10 @@ run_reconciler_apply() {
 	total_units=0
 	work_units=0
 	skipped_units=0
-	started_unit_names=()
-	started_unit_pids=()
-	started_unit_started_ats=()
+	action_unit_names=()
+	action_unit_actions=()
+	action_unit_pids=()
+	action_unit_started_ats=()
 	apply_started_at="$(now_epoch)"
 
 	if ! wait_for_user_manager; then
@@ -1256,16 +1508,17 @@ run_reconciler_apply() {
 		exit 1
 	fi
 	if [ -n "$managed_units_tsv" ]; then
-		while IFS=$'\t' read -r managed_name managed_unit auto_start desired_state managed_timeout _reload_stamp; do
+		while IFS="$metadata_field_sep" read -r managed_name managed_unit auto_start desired_state managed_timeout _reload_stamp _verify_command_b64; do
 			total_units=$((total_units + 1))
 			if ! start_managed_unit "$managed_name" "$managed_unit" "$auto_start" "$desired_state" "$managed_timeout"; then
 				failed_units="${failed_units} ${managed_name}"
-			elif [ "$managed_unit_outcome" = "start" ]; then
+			elif [ "$managed_unit_outcome" = "start" ] || [ "$managed_unit_outcome" = "restart" ]; then
 				work_units=$((work_units + 1))
-				if [ -n "$managed_unit_start_pid" ]; then
-					started_unit_names+=("$managed_name")
-					started_unit_pids+=("$managed_unit_start_pid")
-					started_unit_started_ats+=("$managed_unit_start_started_at")
+				if [ -n "$managed_unit_action_pid" ]; then
+					action_unit_names+=("$managed_name")
+					action_unit_actions+=("$managed_unit_outcome")
+					action_unit_pids+=("$managed_unit_action_pid")
+					action_unit_started_ats+=("$managed_unit_action_started_at")
 				fi
 			elif [ "$managed_unit_outcome" = "skip" ]; then
 				skipped_units=$((skipped_units + 1))
@@ -1273,41 +1526,44 @@ run_reconciler_apply() {
 		done <<<"$managed_units_tsv"
 	fi
 
-	if [ "$dry_run" != 1 ] && [ "${#started_unit_pids[@]}" -gt 0 ]; then
-		for i in "${!started_unit_pids[@]}"; do
-			started_unit_names_by_pid["${started_unit_pids[$i]}"]="${started_unit_names[$i]}"
-			started_unit_started_ats_by_pid["${started_unit_pids[$i]}"]="${started_unit_started_ats[$i]}"
+	if [ "$dry_run" != 1 ] && [ "${#action_unit_pids[@]}" -gt 0 ]; then
+		for i in "${!action_unit_pids[@]}"; do
+			action_unit_names_by_pid["${action_unit_pids[$i]}"]="${action_unit_names[$i]}"
+			action_unit_actions_by_pid["${action_unit_pids[$i]}"]="${action_unit_actions[$i]}"
+			action_unit_started_ats_by_pid["${action_unit_pids[$i]}"]="${action_unit_started_ats[$i]}"
 		done
-		pending_unit_start_pids=("${started_unit_pids[@]}")
-		while [ "${#pending_unit_start_pids[@]}" -gt 0 ]; do
+		pending_unit_action_pids=("${action_unit_pids[@]}")
+		while [ "${#pending_unit_action_pids[@]}" -gt 0 ]; do
 			finished_pid=""
 			# wait -p needs Bash >= 5.1; this helper runs through nixpkgs bash.
-			if wait -n -p finished_pid "${pending_unit_start_pids[@]}"; then
-				managed_name="${started_unit_names_by_pid[$finished_pid]-}"
-				managed_started_at="${started_unit_started_ats_by_pid[$finished_pid]-}"
-				if [ -z "$managed_name" ] || [ -z "$managed_started_at" ]; then
-					printf '%s\n' "[systemd-user-manager] unexpected wait result for managed unit start pid=${finished_pid:-unknown}" >&2
+			if wait -n -p finished_pid "${pending_unit_action_pids[@]}"; then
+				managed_name="${action_unit_names_by_pid[$finished_pid]-}"
+				managed_action="${action_unit_actions_by_pid[$finished_pid]-}"
+				managed_started_at="${action_unit_started_ats_by_pid[$finished_pid]-}"
+				if [ -z "$managed_name" ] || [ -z "$managed_action" ] || [ -z "$managed_started_at" ]; then
+					printf '%s\n' "[systemd-user-manager] unexpected wait result for managed unit action pid=${finished_pid:-unknown}" >&2
 					exit 1
 				fi
-				log_managed_unit "$systemd_user_manager_user" "$managed_name" "started in $(elapsed_since "$managed_started_at")"
+				log_managed_unit "$systemd_user_manager_user" "$managed_name" "$(managed_unit_action_past_tense "$managed_action") in $(elapsed_since "$managed_started_at")"
 			else
-				managed_name="${started_unit_names_by_pid[$finished_pid]-}"
-				managed_started_at="${started_unit_started_ats_by_pid[$finished_pid]-}"
-				if [ -z "$managed_name" ] || [ -z "$managed_started_at" ]; then
-					printf '%s\n' "[systemd-user-manager] unexpected failed wait result for managed unit start pid=${finished_pid:-unknown}" >&2
+				managed_name="${action_unit_names_by_pid[$finished_pid]-}"
+				managed_action="${action_unit_actions_by_pid[$finished_pid]-}"
+				managed_started_at="${action_unit_started_ats_by_pid[$finished_pid]-}"
+				if [ -z "$managed_name" ] || [ -z "$managed_action" ] || [ -z "$managed_started_at" ]; then
+					printf '%s\n' "[systemd-user-manager] unexpected failed wait result for managed unit action pid=${finished_pid:-unknown}" >&2
 					exit 1
 				fi
-				log_managed_unit "$systemd_user_manager_user" "$managed_name" "failed to start after $(elapsed_since "$managed_started_at")"
+				log_managed_unit "$systemd_user_manager_user" "$managed_name" "failed to ${managed_action} after $(elapsed_since "$managed_started_at")"
 				failed_units="${failed_units} ${managed_name}"
 			fi
 
-			next_pending_unit_start_pids=()
-			for managed_pid in "${pending_unit_start_pids[@]}"; do
+			next_pending_unit_action_pids=()
+			for managed_pid in "${pending_unit_action_pids[@]}"; do
 				[ "$managed_pid" = "$finished_pid" ] && continue
-				next_pending_unit_start_pids+=("$managed_pid")
+				next_pending_unit_action_pids+=("$managed_pid")
 			done
-			pending_unit_start_pids=("${next_pending_unit_start_pids[@]}")
-			unset "started_unit_names_by_pid[$finished_pid]" "started_unit_started_ats_by_pid[$finished_pid]"
+			pending_unit_action_pids=("${next_pending_unit_action_pids[@]}")
+			unset "action_unit_names_by_pid[$finished_pid]" "action_unit_actions_by_pid[$finished_pid]" "action_unit_started_ats_by_pid[$finished_pid]"
 		done
 	fi
 
@@ -1318,6 +1574,11 @@ run_reconciler_apply() {
 			log_user_progress "$systemd_user_manager_user" "reconcile failed after $(elapsed_since "$apply_started_at"): failed_units=$failed_units"
 		fi
 		printf '%s\n' "failed managed units:$failed_units" >&2
+		exit 1
+	fi
+
+	if [ "$dry_run" != 1 ] && ! verify_managed_units_from_metadata; then
+		log_user_progress "$systemd_user_manager_user" "reconcile verification failed after $(elapsed_since "$apply_started_at")"
 		exit 1
 	fi
 
@@ -1389,7 +1650,7 @@ run_metadata_pointer_stop_phase() {
 			printf '%s\n' "[systemd-user-manager] failed to read metadata header: $old_metadata_file" >&2
 			return 1
 		fi
-		IFS=$'\t' read -r old_version old_user _ <<<"$old_header"
+		IFS="$metadata_field_sep" read -r old_version old_user _ <<<"$old_header"
 		[ -n "$old_user" ] || continue
 		if [ -n "$skipped_users" ] && grep -Fxq -- "$old_user" <<<"$skipped_users"; then
 			continue
@@ -1414,7 +1675,7 @@ run_metadata_pointer_stop_phase() {
 				printf '%s\n' "[systemd-user-manager] failed to read metadata header: $new_metadata_file" >&2
 				return 1
 			fi
-			IFS=$'\t' read -r new_version _ _ <<<"$new_header"
+			IFS="$metadata_field_sep" read -r new_version _ _ <<<"$new_header"
 			if [ "$old_version" != "$new_version" ]; then
 				log_user_progress "$old_user" "metadata version changed; stopping removed units only"
 				if ! stop_absent_units_after_metadata_version_change "$phase_mode" "$old_user" "$old_metadata_tsv" "$new_metadata_tsv"; then
@@ -1435,7 +1696,10 @@ run_preview_as_user() {
 	preview_metadata="$2"
 	preview_reconciler_service="$3"
 
-	init_managed_user "$preview_user"
+	if ! init_managed_user "$preview_user"; then
+		log_user_progress "$preview_user" "dry-activate preview skipped: account unavailable"
+		return 0
+	fi
 	printf '%s\n' "[systemd-user-manager] dry-activate preview $preview_reconciler_service"
 	run_as_managed_user \
 		env \
@@ -1474,7 +1738,7 @@ run_activation_stop_applied() {
 			printf '%s\n' "[systemd-user-manager] failed to read applied metadata header: $state_file" >&2
 			return 1
 		fi
-		IFS=$'\t' read -r old_version old_user old_identity <<<"$state_header"
+		IFS="$metadata_field_sep" read -r old_version old_user old_identity <<<"$state_header"
 		[ -n "$old_user" ] || continue
 		applied_users="${applied_users}${old_user}"$'\n'
 		if ! init_managed_user "$old_user"; then
@@ -1491,7 +1755,7 @@ run_activation_stop_applied() {
 				printf '%s\n' "[systemd-user-manager] failed to read metadata header: $new_metadata_file" >&2
 				return 1
 			fi
-			IFS=$'\t' read -r new_version _ _ <<<"$new_header"
+			IFS="$metadata_field_sep" read -r new_version _ _ <<<"$new_header"
 			if [ "$old_version" != "$new_version" ]; then
 				log_user_progress "$old_user" "applied metadata version changed; stopping removed units only"
 				if ! stop_absent_units_after_metadata_version_change apply "$old_user" "$state_metadata_tsv" "$new_metadata_tsv"; then
