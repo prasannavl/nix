@@ -58,4 +58,6 @@ $imap_smtp_params = array(
 define('MAIL_MIMEPART_CRLF', "\r\n");
 define('SYSTEM_MIME_TYPES_MAPPING', '@mimeTypesPath@');
 define('IMAP_MEETING_USE_CALDAV', false);
+define('IMAP_MEETING_RESPONSE_USE_CALDAV', true);
+define('IMAP_SENDMAIL_SUPPRESS_CALENDAR_OBJECTS', true);
 define('IMAP_SEARCH_CHARSET', 'UTF-8');

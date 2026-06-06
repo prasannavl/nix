@@ -1,0 +1,59 @@
+diff --git a/src/backend/imap/imap.php b/src/backend/imap/imap.php
+index 90526a54..7e1cc4dc 100644
+--- a/src/backend/imap/imap.php
++++ b/src/backend/imap/imap.php
+@@ -231,6 +231,13 @@ class BackendIMAP extends BackendDiff {
+         $message = $mobj->decode(array('decode_headers' => 'utf-8', 'decode_bodies' => true, 'include_bodies' => true, 'rfc_822bodies' => true, 'charset' => 'utf-8'));
+         unset($mobj);
+
++        if (defined('IMAP_SENDMAIL_SUPPRESS_CALENDAR_OBJECTS') &&
++            IMAP_SENDMAIL_SUPPRESS_CALENDAR_OBJECTS &&
++            has_scheduling_calendar_object($message)) {
++            ZLog::Write(LOGLEVEL_INFO, "BackendIMAP->SendMail(): Suppressed client-sent scheduling iMIP; server-side calendar scheduling owns delivery");
++            return true;
++        }
++
+         ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendIMAP->SendMail(): We get the From and To"));
+         $Mail_RFC822 = new Mail_RFC822();
+
+diff --git a/src/backend/imap/mime_calendar.php b/src/backend/imap/mime_calendar.php
+index 26206f99..61bf6900 100644
+--- a/src/backend/imap/mime_calendar.php
++++ b/src/backend/imap/mime_calendar.php
+@@ -151,6 +151,35 @@ function has_calendar_object($message) {
+     return false;
+ }
+
++/**
++ * Detect if one message has an iTIP scheduling VCALENDAR part.
++ *
++ * This is intentionally narrower than has_calendar_object(): a normal e-mail
++ * may attach an .ics file, while ActiveSync calendar clients often emit
++ * REQUEST/REPLY/CANCEL iMIP messages in parallel with their CalDAV write.
++ *
++ * @param Mail_mimeDecode $message
++ * @return boolean
++ */
++function has_scheduling_calendar_object($message) {
++    if (is_calendar($message)) {
++        $method = $message->ctype_parameters['method'] ?? null;
++        $body = $message->body ?? "";
++        return ($method !== null && preg_match('/^(REQUEST|REPLY|CANCEL)$/i', $method)) ||
++            preg_match('/^\s*METHOD\s*:\s*(REQUEST|REPLY|CANCEL)\s*$/mi', $body);
++    }
++
++    if(isset($message->parts)) {
++        for ($i = 0; $i < count($message->parts); $i++) {
++            if (has_scheduling_calendar_object($message->parts[$i])) {
++                return true;
++            }
++        }
++    }
++
++    return false;
++}
++
+
+ /**
+  * Detect if the message-part is VCALENDAR
+  * Detect if the message-part is VCALENDAR

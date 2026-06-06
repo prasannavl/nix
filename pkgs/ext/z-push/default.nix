@@ -16,6 +16,11 @@ in
 
     patches = [
       ./caldav-response-filter.patch
+      ./caldav-windows-timezone-names.patch
+      ./caldav-preserve-fixed-offset-timezone.patch
+      ./caldav-organizer-attendee-normalization.patch
+      ./imap-meetingresponse-caldav-flag.patch
+      ./imap-suppress-calendar-sendmail.patch
     ];
 
     installPhase = ''

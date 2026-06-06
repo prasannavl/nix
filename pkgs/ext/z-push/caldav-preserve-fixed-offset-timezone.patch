@@ -1,0 +1,93 @@
+--- a/src/backend/caldav/caldav.php
++++ b/src/backend/caldav/caldav.php
+@@ -2055,62 +2055,13 @@
+                     ."/".$mstz_parts['dststartweek']
+                     ."/".$mstz_parts['dststartday']
+                     ."/".$mstz_parts['dststarthour'];
+-        if (isset(self::$knownMSTZS[$mstz])) {
+-            $tzid = self::$knownMSTZS[$mstz];
+-            ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendCalDAV->tzidFromMSTZ(): Found tzid in known list: '%s'.", $tzid));
+-            return $tzid;
+-        }
+-
+-        // 2. Loop all time zones to find a match on offset and transition date
+         $year = date("Y", $eventstart);
+         $offset_std = -($mstz_parts["bias"] * 60);
+-        $offset_dst = -(($mstz_parts["bias"] + $mstz_parts["dstbias"]) * 60);
+         $dststart_timestamp = self::timestampFromMSTZ($mstz_parts, "dststart", $mstz_parts["bias"], $year);
+-        $dstend_timestamp = self::timestampFromMSTZ($mstz_parts, "dstend", $mstz_parts["bias"] + $mstz_parts["dstbias"], $year);
+
+-        $tzids = DateTimeZone::listIdentifiers();
+-        foreach ($tzids as $tzid) {
+-            $timezone = new DateTimeZone($tzid);
+-            $transitions = $timezone->getTransitions(date("U", strtotime($year."0101T000000Z")), date("U", strtotime($year."1231T235959Z")));
+-
+-            $tno = count($transitions);
+-            if ($tno == 1 && $dststart_timestamp == 0) {
+-                if ($transitions[0]['offset'] == $offset_std) {
+-                    ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendCalDAV->tzidFromMSTZ(): Found tzid: '%s'.", $tzid));
+-                    ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendCalDAV->tzidFromMSTZ(): Add tzid to knownMSTZS array for better performance: '%s'.", ',"'.$mstz.'"=>"'.$tzid.'"'));
+-                    return $tzid;
+-                }
+-            }
+-            else if (($tno == 3 || $tno == 5) && $dststart_timestamp != 0) {
+-                if ($dststart_timestamp < $dstend_timestamp) {
+-                    if(
+-                        $transitions[1]['isdst'] == 1 &&
+-                        $transitions[1]['ts'] == $dststart_timestamp &&
+-                        $transitions[1]['offset'] == $offset_dst &&
+-                        $transitions[2]['isdst'] == 0 &&
+-                        $transitions[2]['ts'] == $dstend_timestamp &&
+-                        $transitions[2]['offset'] == $offset_std)
+-                    {
+-                        ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendCalDAV->tzidFromMSTZ(): Found tzid: '%s'.", $tzid));
+-                        ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendCalDAV->tzidFromMSTZ(): Add tzid to knownMSTZS array for better performance: '%s'.", ',"'.$mstz.'"=>"'.$tzid.'"'));
+-                        return $tzid;
+-                    }
+-                }
+-                else {
+-                    if (
+-                        $transitions[1]['isdst'] == 0 &&
+-                        $transitions[1]['ts'] == $dstend_timestamp &&
+-                        $transitions[1]['offset'] == $offset_std &&
+-                        $transitions[2]['isdst'] == 1 &&
+-                        $transitions[2]['ts'] == $dststart_timestamp &&
+-                        $transitions[2]['offset'] == $offset_dst)
+-                    {
+-                        ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendCalDAV->tzidFromMSTZ(): Found tzid: '%s'.", $tzid));
+-                        ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendCalDAV->tzidFromMSTZ(): Add tzid to knownMSTZS array for better performance: '%s'.", ',"'.$mstz.'"=>"'.$tzid.'"'));
+-                        return $tzid;
+-                    }
+-                }
+-            }
++        if ($dststart_timestamp == 0 && ($tzid = self::tzidFromFixedOffset($offset_std))) {
++            ZLog::Write(LOGLEVEL_DEBUG, sprintf("BackendCalDAV->tzidFromMSTZ(): Using fixed offset tzid from ActiveSync timezone data: '%s'.", $tzid));
++            return $tzid;
+         }
+
+         // 3. Give up, use Zulu
+@@ -2152,6 +2103,24 @@
+         return $tzid == 'Z' ? $dt->format('Ymd\THis\Z') : $dt->format('Ymd\THis');
+     }
+
++    private static function tzidFromFixedOffset($phpoffset) {
++        if ($phpoffset % 3600 !== 0) {
++            return null;
++        }
++
++        $hours = (int) ($phpoffset / 3600);
++        if ($hours < -12 || $hours > 14) {
++            return null;
++        }
++
++        if ($hours == 0) {
++            return "Etc/GMT";
++        }
++
++        $sign = $hours > 0 ? "-" : "+";
++        return sprintf("Etc/GMT%s%d", $sign, abs($hours));
++    }
++
+     /**
+      * Convert the offset provided by php to what ical uses in VTIMEZONE.
+      * @param integer $phpoffset

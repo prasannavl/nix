@@ -110,10 +110,11 @@
     cp ${zpushCalDavConfig} $out/backend/caldav/config.php
     cp ${zpushCardDavConfig} $out/backend/carddav/config.php
   '';
+  zpushDocumentRoot = cfg.documentRoot;
   fastcgiBase = ''
     include /etc/nginx/fastcgi_params;
     fastcgi_param SCRIPT_FILENAME $request_filename;
-    fastcgi_param DOCUMENT_ROOT ${zpushRoot};
+    fastcgi_param DOCUMENT_ROOT ${zpushDocumentRoot};
     fastcgi_param HTTP_PROXY "";
     fastcgi_read_timeout ${cfg.nginx.timeout};
     fastcgi_send_timeout ${cfg.nginx.timeout};
@@ -130,26 +131,26 @@
         }
 
         location = /Microsoft-Server-ActiveSync {
-            alias ${zpushRoot}/index.php;
+            alias ${zpushDocumentRoot}/index.php;
             client_max_body_size ${cfg.clientBodySizes.activeSync};
             client_body_buffer_size 128k;
             ${fastcgiBase}
         }
 
         location = /AutoDiscover/AutoDiscover.xml {
-            alias ${zpushRoot}/autodiscover/autodiscover.php;
+            alias ${zpushDocumentRoot}/autodiscover/autodiscover.php;
             client_max_body_size ${cfg.clientBodySizes.autodiscover};
             ${fastcgiBase}
         }
 
         location = /Autodiscover/Autodiscover.xml {
-            alias ${zpushRoot}/autodiscover/autodiscover.php;
+            alias ${zpushDocumentRoot}/autodiscover/autodiscover.php;
             client_max_body_size ${cfg.clientBodySizes.autodiscover};
             ${fastcgiBase}
         }
 
         location = /autodiscover/autodiscover.xml {
-            alias ${zpushRoot}/autodiscover/autodiscover.php;
+            alias ${zpushDocumentRoot}/autodiscover/autodiscover.php;
             client_max_body_size ${cfg.clientBodySizes.autodiscover};
             ${fastcgiBase}
         }
@@ -157,11 +158,13 @@
   '';
   phpIncludePath = builtins.concatStringsSep ":" [
     "."
-    "${zpushRoot}"
+    zpushDocumentRoot
+    "${zpushDocumentRoot}/backend/imap"
     "${cfg.awlPackage}/share/awl/inc"
   ];
   openBasedir = builtins.concatStringsSep ":" (
     [
+      zpushDocumentRoot
       "${zpushRoot}"
       "${cfg.awlPackage}/share/awl/inc"
       cfg.dataDir
@@ -198,6 +201,12 @@ in {
       type = types.str;
       default = "activesync-z-push-root";
       description = "Name for the generated Z-Push root derivation.";
+    };
+
+    documentRoot = lib.mkOption {
+      type = types.str;
+      default = "${cfg.dataDir}/www";
+      description = "Stable host path exposed as the Z-Push FastCGI document root.";
     };
 
     user = lib.mkOption {
@@ -593,6 +602,7 @@ in {
       "d ${cfg.dataDir} 0750 ${cfg.user} ${cfg.group} -"
       "d ${cfg.stateDir} 0750 ${cfg.user} ${cfg.group} -"
       "d ${cfg.logDir} 0750 ${cfg.user} ${cfg.group} -"
+      "L+ ${zpushDocumentRoot} - ${cfg.user} ${cfg.group} - ${zpushRoot}"
     ];
 
     networking.firewall.extraInputRules = lib.mkIf (cfg.phpFpm.allowedCidrs != []) ''

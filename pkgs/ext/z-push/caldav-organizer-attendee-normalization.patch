@@ -1,0 +1,62 @@
+--- a/src/backend/caldav/caldav.php
++++ b/src/backend/caldav/caldav.php
+@@ -1379,22 +1379,53 @@
+                 $vevent->AddProperty("STATUS", "CANCELLED");
+                 $vevent->AddProperty("X-MICROSOFT-DISALLOW-COUNTER", "TRUE");
+             }
++            $organizerEmail = null;
++            $organizerName = null;
++            $userDetails = ZPush::GetBackend()->GetCurrentUsername();
+             if (isset($data->organizeremail) && isset($data->organizername)) {
+-                $vevent->AddProperty("ORGANIZER", sprintf("MAILTO:%s", $data->organizeremail), array("CN" => $data->organizername));
++                $organizerEmail = $data->organizeremail;
++                $organizerName = $data->organizername;
+             }
+             elseif (isset($data->organizeremail)) {
+-                $vevent->AddProperty("ORGANIZER", sprintf("MAILTO:%s", $data->organizeremail));
++                $organizerEmail = $data->organizeremail;
+             }
+             else {
+                 //Some phones doesn't send the organizeremail, so we gotto get it somewhere else.
+-                $userDetails = ZPush::GetBackend()->GetCurrentUsername();
+-                $vevent->AddProperty("ORGANIZER", sprintf("MAILTO:%s", $userDetails['emailaddress']), array("CN" => $userDetails['fullname']));
++                $organizerEmail = $userDetails['emailaddress'];
++                $organizerName = $userDetails['fullname'];
++            }
++            $isLocalOrganizer = $organizerEmail !== null && strcasecmp($organizerEmail, $userDetails['emailaddress']) == 0;
++            if ($isLocalOrganizer) {
++                $localPart = Utils::GetLocalPartFromEmail($organizerEmail);
++                if (
++                    $organizerName === null ||
++                    trim($organizerName) === "" ||
++                    strcasecmp($organizerName, $localPart) == 0 ||
++                    strcasecmp($organizerName, $organizerEmail) == 0
++                ) {
++                    $organizerName = $userDetails['fullname'];
++                }
++            }
++            $data->organizeremail = $organizerEmail;
++            if ($organizerName !== null && trim($organizerName) !== "") {
++                $data->organizername = $organizerName;
++            }
++            if ($organizerName !== null && trim($organizerName) !== "") {
++                $vevent->AddProperty("ORGANIZER", sprintf("MAILTO:%s", $organizerEmail), array("CN" => $organizerName));
++            }
++            else {
++                $vevent->AddProperty("ORGANIZER", sprintf("MAILTO:%s", $organizerEmail));
+             }
+             if (isset($data->attendees) && is_array($data->attendees)) {
+                 foreach ($data->attendees as $attendee) {
+                     $attendeeParameters = array();
+-                    if (isset($attendee->name)) {
+-                        $attendeeParameters += array("CN" => $attendee->name);
++                    $isOrganizerAttendee = isset($attendee->email) && strcasecmp($attendee->email, $organizerEmail) == 0;
++                    if ($isOrganizerAttendee && $isLocalOrganizer) {
++                        continue;
++                    }
++                    $attendeeName = isset($attendee->name) ? $attendee->name : null;
++                    if ($attendeeName !== null && trim($attendeeName) !== "") {
++                        $attendeeParameters += array("CN" => $attendeeName);
+                     }
+                     if (isset($attendee->attendeetype)) {
+                         switch($attendee->attendeetype) {

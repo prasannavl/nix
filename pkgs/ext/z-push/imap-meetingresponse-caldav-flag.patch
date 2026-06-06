@@ -1,0 +1,37 @@
+diff --git a/src/backend/imap/imap.php b/src/backend/imap/imap.php
+index 90526a54..12673125 100644
+--- a/src/backend/imap/imap.php
++++ b/src/backend/imap/imap.php
+@@ -1878,7 +1878,7 @@ class BackendIMAP extends BackendDiff {
+         switch($response) {
+             case 1: // ACCEPTED
+             case 2: // TENTATIVE
+-                $uuid_calendar = create_calendar_dav($body_part);
++                $uuid_calendar = create_calendar_dav($body_part, true);
+                 break;
+             case 3: // DECLINED
+                 // Do nothing
+diff --git a/src/backend/imap/mime_calendar.php b/src/backend/imap/mime_calendar.php
+index 26206f99..60fd1d56 100644
+--- a/src/backend/imap/mime_calendar.php
++++ b/src/backend/imap/mime_calendar.php
+@@ -23,10 +23,17 @@
+ * Consult LICENSE file for details
+ ************************************************/
+
+-function create_calendar_dav($data) {
++function imap_meeting_use_caldav($meeting_response = false) {
++    if (defined('IMAP_MEETING_USE_CALDAV') && IMAP_MEETING_USE_CALDAV) {
++        return true;
++    }
++    return $meeting_response && defined('IMAP_MEETING_RESPONSE_USE_CALDAV') && IMAP_MEETING_RESPONSE_USE_CALDAV;
++}
++
++function create_calendar_dav($data, $meeting_response = false) {
+     ZLog::Write(LOGLEVEL_DEBUG, "BackendIMAP->create_calendar_dav(): Creating calendar event");
+
+-    if (defined('IMAP_MEETING_USE_CALDAV') && IMAP_MEETING_USE_CALDAV) {
++    if (imap_meeting_use_caldav($meeting_response)) {
+         $caldav = new BackendCalDAV();
+         if ($caldav->Logon(Request::GetAuthUser(), Request::GetAuthDomain(), Request::GetAuthPassword())) {
+             $etag = $caldav->CreateUpdateCalendar($data);
