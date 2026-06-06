@@ -350,13 +350,15 @@ in {
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
   };
-  networking.interfaces.incusbr0.ipv4.routes = [
-    {
-      address = "10.10.30.0";
-      prefixLength = 24;
-      via = "10.10.20.20";
-    }
-  ];
-  networking.nftables.tables = fabricIsolation.nftablesTable;
-  networking.firewall.trustedInterfaces = fabricIsolation.trustedInterfaces;
+  networking = {
+    interfaces.incusbr0.ipv4.routes = [
+      {
+        address = "10.10.30.0";
+        prefixLength = 24;
+        via = "10.10.20.20";
+      }
+    ];
+    nftables.tables = fabricIsolation.nftablesTable;
+    firewall.trustedInterfaces = fabricIsolation.trustedInterfaces;
+  };
 }

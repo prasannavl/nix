@@ -79,15 +79,15 @@ when the mount permits creating temporary files there.
 
 Parent tmpfiles must not reset delegation directory or file ownership on every
 activation. The Incus instance lifecycle helper creates the handoff file when
-missing, maps guest root through the instance idmap, and owns the handoff path to
-that host UID/GID so guest root can update it.
+missing, maps guest root through the instance idmap, and owns the handoff path
+to that host UID/GID so guest root can update it.
 
 Remote delegated cleanup uses the same `incus-machines-gc.service` as local
 management. In remote mode it does not use `--all-projects`; it lists only the
 projects configured under `services.incusMachines.global.remote.projects` and
 only deletes instances whose structured `user.nixos-meta` marks them as owned by
-the current controller. The controller ID defaults to the NixOS host name and can
-be overridden with `services.incusMachines.controllerId`.
+the current controller. The controller ID defaults to the NixOS host name and
+can be overridden with `services.incusMachines.controllerId`.
 
 The pvl-x2 parent still owns the final Incus trust entries and project
 restriction. The tenant JSON only supplies local certificate names and public

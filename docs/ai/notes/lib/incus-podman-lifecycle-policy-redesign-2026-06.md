@@ -21,8 +21,8 @@ The final target model is:
 | Incus            | `reconcilePolicy` enum `auto`, `declarative`, or `ignore`                             | Per-instance permission boundary for automatic reconciler mutation.                                               |
 | Incus            | `reconcileFailurePolicy` enum `best-effort` or `strict`                               | Batch failure behavior. This replaces the current overloaded failure use of `reconcilePolicy`.                    |
 | Incus            | `removalPolicy` enum `keep`, `stop`, `delete`, or `delete-all`                        | Removed-instance behavior; `keep` strips module ownership metadata for manual takeover.                           |
-| Podman           | stack `reconcilePolicy`; instance `reconcilePolicy` with `inherit` plus action values | Drift action mode. Provider-specific semantics, not the same as Incus.                                           |
-| Podman           | stack `removalPolicy`; instance `removalPolicy` with `inherit` plus action values     | Removed-instance behavior; default `delete`, with `keep`, `stop`, `delete`, and `delete-all` modes.              |
+| Podman           | stack `reconcilePolicy`; instance `reconcilePolicy` with `inherit` plus action values | Drift action mode. Provider-specific semantics, not the same as Incus.                                            |
+| Podman           | stack `removalPolicy`; instance `removalPolicy` with `inherit` plus action values     | Removed-instance behavior; default `delete`, with `keep`, `stop`, `delete`, and `delete-all` modes.               |
 | Podman           | instance `adopt` boolean                                                              | Explicit permission to claim an existing unmanaged compose working directory.                                     |
 | Podman           | remove `recreateOnSwitch`                                                             | Replace the blunt switch-time recreate knob with automatic recreate intent derived from recreate-relevant inputs. |
 | Podman           | reload-aware recreate drift                                                           | `reloadStamp` reloads, restart-only drift restarts, and `recreateStamp` force-recreates.                          |
@@ -103,9 +103,9 @@ helper drift handling must all consult the same policy.
 - Reconciler action: a mutation inferred from rendered declarative state, such
   as create, stop-for-desired-state, recreate-on-config-hash-drift, or restart
   on lifecycle tags.
-- Auto-start action: the systemd unit start path controlled by `autoStart`.
-  This is intentionally outside `reconcilePolicy`; for ignored Incus guests it
-  may only start an existing instance and must not create, recreate, or
+- Auto-start action: the systemd unit start path controlled by `autoStart`. This
+  is intentionally outside `reconcilePolicy`; for ignored Incus guests it may
+  only start an existing instance and must not create, recreate, or
   drift-reconcile it.
 - Declarative explicit action: a mutation explicitly encoded in declared state,
   such as `state = "stopped"`, `bootTag`, or `recreateTag`.
@@ -154,8 +154,8 @@ does not disable boot or target startup; use `autoStart = false` for that.
 
 `ignore` in this table is only the reconciler policy. It does not override
 `autoStart`: an ignored guest with `autoStart = true` may still have its
-`incus-<guest>.service` wanted at boot or target startup, but that path must only
-start an existing guest.
+`incus-<guest>.service` wanted at boot or target startup, but that path must
+only start an existing guest.
 
 `imageTag` remains image-import or image-refresh intent. It must not recreate an
 Incus instance by itself. Pair it with `recreateTag` when an existing instance
@@ -217,8 +217,8 @@ Important edge rules:
     which reconciler mutations are allowed.
 - Make the helper branch before destructive work:
   - `ignore`: return without reconciler mutation unless an explicit
-    non-declarative override command is used. The separate start-only helper path
-    may start an existing instance for `autoStart` or manual unit starts.
+    non-declarative override command is used. The separate start-only helper
+    path may start an existing instance for `autoStart` or manual unit starts.
   - `declarative`: allow create, start, stop, `bootTag`, and `recreateTag`;
     detect config/kind drift but do not recreate from drift alone.
   - `auto`: preserve current drift-driven recreate behavior.
@@ -302,20 +302,23 @@ Podman should have a stack-level `reconcilePolicy` default and per-instance
 because operators may want to set the normal drift policy once per stack and
 override only exceptional instances. This is intentionally provider-specific. It
 uses the same option name as Incus for discoverability, but it does not share
-Incus's enum or exact semantics. Podman should not have `reconcilePolicy =
+Incus's enum or exact semantics. Podman should not have
+`reconcilePolicy =
 "ignore"`; manual takeover belongs to `removalPolicy`.
 
-Podman should expose stack-level `removalPolicy = "keep" | "stop" | "delete" |
-"delete-all"` with instance-level `inherit` plus those values. `delete` is the
-default because it preserves the old removal behavior: compose runtime shape and
-generated files are cleaned up. `keep` leaves the old workload untouched for
-manual takeover and clears helper ownership state, so a later re-declaration
-requires `adopt = true`. `stop` stops compose containers without removing
-compose objects or generated files, and keeps helper ownership state so the
-instance can be re-declared without adoption. `delete-all` also asks compose to
-remove volumes and removes managed staged dirs under the compose working
-directory. The generated unit still disappears from the new system generation,
-so `keep` is a removal behavior, not a steady-state unmanaged mode.
+Podman should expose stack-level
+`removalPolicy = "keep" | "stop" | "delete" |
+"delete-all"` with instance-level
+`inherit` plus those values. `delete` is the default because it preserves the
+old removal behavior: compose runtime shape and generated files are cleaned up.
+`keep` leaves the old workload untouched for manual takeover and clears helper
+ownership state, so a later re-declaration requires `adopt = true`. `stop` stops
+compose containers without removing compose objects or generated files, and
+keeps helper ownership state so the instance can be re-declared without
+adoption. `delete-all` also asks compose to remove volumes and removes managed
+staged dirs under the compose working directory. The generated unit still
+disappears from the new system generation, so `keep` is a removal behavior, not
+a steady-state unmanaged mode.
 
 Podman should have instance-level `adopt = true` as a temporary, explicit
 permission to claim an unmanaged working directory. The helper should refuse
@@ -449,9 +452,9 @@ without the blunt `recreateOnSwitch` hammer.
   helper as the recreate stamp only for `recreate`.
 - Gate helper force-recreate by `reconcilePolicy`, including explicit
   `recreateTag`.
-- Replace `systemdUserManager.stopOnRemoval` with `removalPolicy` and a
-  provider removal command hook so Podman removal can distinguish `stop`,
-  `delete`, and `delete-all`.
+- Replace `systemdUserManager.stopOnRemoval` with `removalPolicy` and a provider
+  removal command hook so Podman removal can distinguish `stop`, `delete`, and
+  `delete-all`.
 - Have provider removal commands own their own stop/wait semantics so Podman
   `keep` can clear helper ownership without stopping the workload.
 - Remove `recreateOnSwitch` from defaults, option docs, generated metadata, and
@@ -517,8 +520,8 @@ generated config, and package/image changes matter.
 
 - Prefer preserving current default behavior for existing declarations: Incus
   defaults to `state = "running"` and `reconcilePolicy = "auto"`; Podman
-  defaults to `state = "running"`, stack `reconcilePolicy = "auto"`, and
-  stack `removalPolicy = "delete"`, with instance `reconcilePolicy` and
+  defaults to `state = "running"`, stack `reconcilePolicy = "auto"`, and stack
+  `removalPolicy = "delete"`, with instance `reconcilePolicy` and
   `removalPolicy` both defaulting to `inherit`.
 - If old Incus `global.reconcilePolicy` values are still accepted during a
   transition, emit clear deprecation warnings or assertions that point to
@@ -548,8 +551,8 @@ generated config, and package/image changes matter.
 - Build representative affected hosts with `--no-link`.
 - Inspect generated Incus runtime/lifecycle JSON for policy and state fields.
 - Inspect generated Podman metadata for `state`, effective `reconcilePolicy`,
-  `removalPolicy`, `recreateStamp`, and absence of `recreateOnSwitch` and
-  Podman `reconcilePolicy = "ignore"`.
+  `removalPolicy`, `recreateStamp`, and absence of `recreateOnSwitch` and Podman
+  `reconcilePolicy = "ignore"`.
 - Confirm current Stalwart call sites no longer use `recreateOnSwitch`.
 - Do not perform live persistent runtime mutation during validation without
   explicit user approval.

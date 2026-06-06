@@ -551,8 +551,7 @@ apply_compose_post_stop_policy() {
 	stop_policy="$1"
 
 	case "$stop_policy" in
-	stop)
-		;;
+	stop) ;;
 	delete)
 		cleanup_runtime_files
 		;;

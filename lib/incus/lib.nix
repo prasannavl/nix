@@ -140,11 +140,11 @@
     );
 
     normalizeForwardTo = source: forwardTo:
-      if forwardTo == true
+      if builtins.isList forwardTo
+      then forwardTo
+      else if builtins.isBool forwardTo && forwardTo
       then lib.remove source managedFabricNames
-      else if forwardTo == false || forwardTo == []
-      then []
-      else forwardTo;
+      else [];
 
     normalizePolicy = source: policy: {
       forwardTo = normalizeForwardTo source (policy.forwardTo or false);
@@ -200,18 +200,17 @@
 
     forwardToDropRules = builtins.concatStringsSep "\n" (
       lib.concatMap (
-        source:
-          let
-            deniedTargets = lib.filter
-              (target: target != source && !builtins.elem target (fabricPolicy source).forwardTo)
-              managedFabricNames;
-          in
-            lib.map
-            (
-              target:
-                ''iifname "${managedFabricInterfaces.${source}}" oifname "${managedFabricInterfaces.${target}}" drop comment "deny ${source} -> ${target}"''
-            )
-            deniedTargets
+        source: let
+          deniedTargets =
+            lib.filter
+            (target: target != source && !builtins.elem target (fabricPolicy source).forwardTo)
+            managedFabricNames;
+        in
+          lib.map
+          (
+            target: ''iifname "${managedFabricInterfaces.${source}}" oifname "${managedFabricInterfaces.${target}}" drop comment "deny ${source} -> ${target}"''
+          )
+          deniedTargets
       )
       managedFabricNames
     );

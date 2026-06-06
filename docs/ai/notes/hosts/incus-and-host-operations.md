@@ -126,11 +126,10 @@ recent host incidents.
   host, and the nested guest.
 - When sibling parent fabrics need to reach a subnet behind a nested Incus
   router, declare the route on the parent host that owns both fabrics. In the
-  current `pvl-x2` plus `gap3-gondor` shape, traffic from the `abird` project
-  to `10.10.30.0/24` needs a parent-host route via `10.10.20.20`; the nested
-  bridge NAT handles guest egress, but reverse-initiated traffic does not work
-  until the parent knows that `10.10.30.0/24` lives behind the outer nested
-  host.
+  current `pvl-x2` plus `gap3-gondor` shape, traffic from the `abird` project to
+  `10.10.30.0/24` needs a parent-host route via `10.10.20.20`; the nested bridge
+  NAT handles guest egress, but reverse-initiated traffic does not work until
+  the parent knows that `10.10.30.0/24` lives behind the outer nested host.
 
 ## Source of truth files
 
