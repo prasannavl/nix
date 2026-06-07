@@ -5,7 +5,6 @@
   ...
 }: let
   cfg = config.services.podmanCompose;
-  migratorOn = config.x.migrator.on or false;
   hasStacks = cfg != {};
   flakeUtils = import ../flake/utils.nix {lib = lib;};
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
@@ -19,8 +18,12 @@
     else if builtins.pathExists file
     then builtins.hashFile "sha256" file
     else null;
+  fileContentSourceHash = file:
+    if builtins.pathExists file
+    then builtins.hashFile "sha256" file
+    else null;
   sourceHashFromInputs = inputs: let
-    inputHashes = builtins.filter (hash: hash != null) (map secretFileSourceHash inputs);
+    inputHashes = builtins.filter (hash: hash != null) (map fileContentSourceHash inputs);
   in
     if inputHashes == []
     then null
@@ -31,7 +34,7 @@
       (toString (secret.path or "/run/agenix/${name}"))
       (
         if (secret ? file) && secret.file != null
-        then secretFileSourceHash secret.file
+        then fileContentSourceHash secret.file
         else null
       )
   ) (config.age.secrets or {});
@@ -352,7 +355,7 @@
       sourceHashInputs = lib.mkOption {
         type = lib.types.listOf (lib.types.either lib.types.path lib.types.str);
         default = trustedCaCertificateEntryDefaults.sourceHashInputs;
-        description = "Optional Nix-visible files or store paths that should drive restart detection for this CA entry. Store-backed public inputs are hashed by path identity, while ordinary files are hashed by contents.";
+        description = "Optional Nix-visible files whose contents should drive restart detection for this CA entry.";
       };
       sourceHashFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
@@ -2175,9 +2178,7 @@ in {
                   reconcilePolicy = effectiveReconcilePolicy;
                   removalPolicy = effectiveRemovalPolicy;
                   autoStart =
-                    if migratorOn
-                    then false
-                    else if baseService.state == "stopped"
+                    if baseService.state == "stopped"
                     then false
                     else if baseService.autoStart == null
                     then stack.autoStart

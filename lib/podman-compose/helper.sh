@@ -144,6 +144,38 @@ adoption_state_matches() {
 	runtime_state_matches
 }
 
+working_dir_has_compose_containers() {
+	local containers
+	if ! containers="$(
+		close_lifecycle_fds_for_child
+		cd /
+		podman ps -a \
+			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--format '{{.ID}}'
+	)"; then
+		return 0
+	fi
+	[ -n "$containers" ]
+}
+
+working_dir_is_uninitialized_helper_shell() {
+	local path rel
+	[ -d "$working_dir" ] || return 1
+	[ -d "$generated_dir" ] || return 1
+	[ ! -f "$state_path" ] || return 1
+	[ ! -f "$(legacy_state_path)" ] || return 1
+	[ ! -f "$manifest_path" ] || return 1
+	! working_dir_has_compose_containers || return 1
+
+	while IFS= read -r path; do
+		rel="${path#"$working_dir"/}"
+		case "$rel" in
+		.podman-compose | .podman-compose/lifecycle.lock) ;;
+		*) return 1 ;;
+		esac
+	done < <(find "$working_dir" -mindepth 1 -print)
+}
+
 assert_adoption_allowed() {
 	if [ ! -e "$working_dir" ]; then
 		return 0
@@ -152,6 +184,11 @@ assert_adoption_allowed() {
 	migrate_legacy_runtime_state_if_needed
 
 	if adoption_state_matches; then
+		return 0
+	fi
+
+	if working_dir_is_uninitialized_helper_shell; then
+		printf '%s\n' "Recovering uninitialized Podman compose helper working directory: $working_dir"
 		return 0
 	fi
 
@@ -1175,6 +1212,15 @@ cmd_stop() {
 cmd_post_stop() {
 	local stop_policy
 	load_metadata
+	if [ ! -e "$working_dir" ] &&
+		[ ! -f "$manifest_path" ] &&
+		[ ! -f "$state_path" ] &&
+		[ ! -f "$(legacy_state_path)" ]; then
+		return 0
+	fi
+	if working_dir_is_uninitialized_helper_shell; then
+		return 0
+	fi
 	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
 	if ! apply_compose_post_stop_policy "$stop_policy"; then
