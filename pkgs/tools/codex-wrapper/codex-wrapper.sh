@@ -2,11 +2,22 @@
 set -Eeuo pipefail
 
 usage() {
-	printf 'Usage: %s [-u] [-xNUM|-xxNUM] [--switch NUM] [codex args...]\n' "${0##*/}" >&2
+	printf 'Usage: %s [-u] [-xNUM] [-xswap NUM] [codex args...]\n' "$(name)" >&2
+}
+
+help() {
+	cat <<EOF
+$(name) wrapper options:
+  -u                 Pass --dangerously-bypass-approvals-and-sandbox to Codex.
+  -xNUM, -x NUM      Run Codex with auth.NUM.json mounted as auth.json.
+  -xswap NUM         Permanently swap auth.json with auth.NUM.json.
+
+Codex help:
+EOF
 }
 
 name() {
-	printf '%s\n' "${0##*/}"
+	printf '%s\n' "${CODEX_WRAPPER_NAME:-${0##*/}}"
 }
 
 auth_dir() {
@@ -105,7 +116,7 @@ detect_current_slot_for_switch() {
 	fi
 
 	printf '%s: cannot infer current auth slot for %s/auth.json\n' "$(name)" "$dir" >&2
-	printf '%s: run with --switch only when auth.current names the active slot, or when only auth.json exists.\n' "$(name)" >&2
+	printf '%s: run with -xswap only when auth.current names the active slot, or when only auth.json exists.\n' "$(name)" >&2
 	exit 1
 }
 
@@ -143,45 +154,21 @@ switch_auth() {
 }
 
 run_with_overlay_auth() {
-	local target="$1" dir target_file overlay_dir overlay_auth_file rc path base dest
-	local -a bwrap_args
+	local target="$1" dir target_file auth_file
 	shift
 
 	target_file="$(ensure_slot_file "$target")"
 	dir="$(auth_dir)"
-	overlay_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-home.XXXXXX")"
-	overlay_auth_file="$overlay_dir/auth.json"
-	: >"$overlay_auth_file"
+	auth_file="$dir/auth.json"
+	if [[ ! -f "$auth_file" ]]; then
+		: >"$auth_file"
+	fi
 
-	bwrap_args=(
-		--dev-bind / /
-		--setenv CODEX_HOME "$overlay_dir"
-		--bind "$target_file" "$overlay_auth_file"
-	)
-
-	shopt -s dotglob nullglob
-	for path in "$dir"/*; do
-		base="${path##*/}"
-		case "$base" in
-		auth.json | auth.current | auth.*.json)
-			continue
-			;;
-		esac
-
-		dest="$overlay_dir/$base"
-		if [[ -d "$path" ]]; then
-			mkdir -p "$dest"
-		else
-			: >"$dest"
-		fi
-		bwrap_args+=(--bind "$path" "$dest")
-	done
-	shopt -u dotglob nullglob
-
-	bwrap "${bwrap_args[@]}" -- "$CODEX_REAL" "$@"
-	rc=$?
-	rm -rf -- "$overlay_dir"
-	exit "$rc"
+	exec bwrap \
+		--dev-bind / / \
+		--bind "$target_file" "$auth_file" \
+		-- \
+		"$CODEX_REAL" "$@"
 }
 
 take_slot_arg() {
@@ -198,14 +185,30 @@ parse_args() {
 	local arg
 	AUTH_MODE=""
 	AUTH_SLOT=""
+	SHOW_HELP=""
 	CODEX_ARGS=()
 
 	while (($# > 0)); do
 		arg="$1"
 		case "$arg" in
+		-h | --help)
+			SHOW_HELP="1"
+			CODEX_ARGS+=("$arg")
+			shift
+			;;
 		-u)
 			CODEX_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
 			shift
+			;;
+		-xswap=*)
+			AUTH_MODE="switch"
+			AUTH_SLOT="${arg#-xswap=}"
+			shift
+			;;
+		-xswap)
+			AUTH_MODE="switch"
+			AUTH_SLOT="$(take_slot_arg "$arg" "${2:-}")"
+			shift 2
 			;;
 		-x[0-9]*)
 			AUTH_MODE="overlay"
@@ -214,26 +217,6 @@ parse_args() {
 			;;
 		-x)
 			AUTH_MODE="overlay"
-			AUTH_SLOT="$(take_slot_arg "$arg" "${2:-}")"
-			shift 2
-			;;
-		-xx[0-9]*)
-			AUTH_MODE="overlay"
-			AUTH_SLOT="${arg#-xx}"
-			shift
-			;;
-		-xx)
-			AUTH_MODE="overlay"
-			AUTH_SLOT="$(take_slot_arg "$arg" "${2:-}")"
-			shift 2
-			;;
-		--switch=*)
-			AUTH_MODE="switch"
-			AUTH_SLOT="${arg#--switch=}"
-			shift
-			;;
-		--switch)
-			AUTH_MODE="switch"
 			AUTH_SLOT="$(take_slot_arg "$arg" "${2:-}")"
 			shift 2
 			;;
@@ -257,6 +240,10 @@ main() {
 	fi
 
 	parse_args "$@"
+
+	if [[ -n "$SHOW_HELP" ]]; then
+		help
+	fi
 
 	case "$AUTH_MODE" in
 	"")

@@ -11,6 +11,7 @@
     ];
     text = ''
       export CODEX_REAL=${pkgs.lib.getExe codex-unwrapped}
+      export CODEX_WRAPPER_NAME=''${CODEX_WRAPPER_NAME:-cr}
       exec ${pkgs.bash}/bin/bash ${./codex-wrapper.sh} "$@"
     '';
   };
@@ -18,6 +19,7 @@
     name = "cra";
     runtimeInputs = [];
     text = ''
+      export CODEX_WRAPPER_NAME=cra
       exec ${cr}/bin/cr -u "$@"
     '';
   };
