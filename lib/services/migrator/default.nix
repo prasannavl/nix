@@ -20,14 +20,15 @@
   hostName = config.networking.hostName or "";
   bootstrapEntry = lib.attrByPath [hostName] {} bootstrapHosts;
   bootstrapState =
-    if bootstrapEntry ? state
-    then bootstrapEntry.state
-    else if bootstrapEntry ? on
-    then
-      if bootstrapEntry.on
-      then "on"
-      else "off"
-    else null;
+    bootstrapEntry.state
+    or (
+      if bootstrapEntry ? on
+      then
+        if bootstrapEntry.on
+        then "on"
+        else "off"
+      else null
+    );
   unitNameToServiceAttr = unitName: lib.removeSuffix ".service" unitName;
   serviceUnitNames = unitSet: builtins.attrNames unitSet;
   systemUnits = cfg.managedUnits.system;
