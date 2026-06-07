@@ -1,4 +1,15 @@
-{lib}: rec {
+{lib}: let
+  repoRoot = builtins.toString ../..;
+  repoCompletionHook = ''
+    if [ -n "''${BASH_VERSION:-}" ] && type complete >/dev/null 2>&1 && type compgen >/dev/null 2>&1; then
+      completion_root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s\n' ${repoRoot})"
+      if [ -f "''${completion_root}/pkgs/support/bash-completions/load.bash" ]; then
+        source "''${completion_root}/pkgs/support/bash-completions/load.bash"
+      fi
+      unset completion_root
+    fi
+  '';
+in rec {
   # Build the lean default devShell. Holds repo-wide authoring tools only
   # (nix, formatter, deploy helpers). Keep this small — it is evaluated on
   # every `direnv allow` at the repo root and must stay fast.
@@ -9,6 +20,7 @@
     pkgs.mkShell {
       name = "nix-repo";
       packages = rootPackages;
+      shellHook = repoCompletionHook;
     };
 
   # Build the aggregate devShell. Walks the provided package attrset, pulls
@@ -32,6 +44,7 @@
       name = "nix-repo-full";
       packages = rootPackages;
       inputsFrom = childShells;
+      shellHook = repoCompletionHook;
     };
 
   mkDevShells = args: {

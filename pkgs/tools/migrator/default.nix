@@ -34,6 +34,10 @@
       migratorctl
       migratorHelper
     ];
+    postBuild = ''
+      install -Dm0644 ${./migratorctl.bash} \
+        $out/share/bash-completion/completions/migratorctl
+    '';
     meta = {
       description = "Runtime migration gate control for repo-managed services";
       platforms = pkgs.lib.platforms.linux;

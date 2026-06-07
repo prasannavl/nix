@@ -17,32 +17,41 @@
     })
     profiles
   );
+  app = pkgs.writeShellApplication {
+    name = "data-migrator";
+    meta = {
+      description = "Repo data migration helper for drained host cutovers";
+      platforms = pkgs.lib.platforms.linux;
+      mainProgram = "data-migrator";
+    };
+    runtimeInputs = with pkgs; [
+      coreutils
+      findutils
+      git
+      gnutar
+      incus
+      migrator
+      nix
+      openssh
+      rsync
+      nixbot
+    ];
+    text = ''
+      export DATA_MIGRATOR_CONFIG_DIR=${profileFiles}
+      exec ${python}/bin/python ${./data-migrator.py} "$@"
+    '';
+  };
   drv = pkgHelper.mkShellScriptDerivation {
     pkgs = pkgs;
     src = ./.;
-    build = pkgs.writeShellApplication {
+    build = pkgs.symlinkJoin {
       name = "data-migrator";
-      meta = {
-        description = "Repo data migration helper for drained host cutovers";
-        platforms = pkgs.lib.platforms.linux;
-        mainProgram = "data-migrator";
-      };
-      runtimeInputs = with pkgs; [
-        coreutils
-        findutils
-        git
-        gnutar
-        incus
-        migrator
-        nix
-        openssh
-        rsync
-        nixbot
-      ];
-      text = ''
-        export DATA_MIGRATOR_CONFIG_DIR=${profileFiles}
-        exec ${python}/bin/python ${./data-migrator.py} "$@"
+      paths = [app];
+      postBuild = ''
+        install -Dm0644 ${./data-migrator.bash} \
+          $out/share/bash-completion/completions/data-migrator
       '';
+      meta = app.meta;
     };
   };
 in
