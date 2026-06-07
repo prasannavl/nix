@@ -20,8 +20,7 @@
   hostName = config.networking.hostName or "";
   bootstrapEntry = lib.attrByPath [hostName] {} bootstrapHosts;
   bootstrapState =
-    bootstrapEntry.state
-    or (
+    bootstrapEntry.state or (
       if bootstrapEntry ? on
       then
         if bootstrapEntry.on
