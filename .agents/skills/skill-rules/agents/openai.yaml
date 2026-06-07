@@ -1,0 +1,3 @@
+interface:
+  display_name: "abird-skill-rules"
+  default_prompt: "Use $skill-rules to create or update repository-local agent skills."

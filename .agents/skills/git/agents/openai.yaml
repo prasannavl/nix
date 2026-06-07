@@ -1,0 +1,3 @@
+interface:
+  display_name: "abird-git"
+  default_prompt: "Use $git to inspect changes and create safe, logical git commits."
