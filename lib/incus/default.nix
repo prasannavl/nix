@@ -168,6 +168,15 @@
     exec ${helperScript} host-suspend "$@"
   '';
 
+  incusClientCommand = pkgs.writeShellScriptBin "incus" ''
+    if [ "$(id -u)" != 0 ]; then
+      echo "incus remote CLI access is restricted to root on this host" >&2
+      exit 1
+    fi
+    ${remoteEnvExports}
+    exec ${helperScript} client "$@"
+  '';
+
   incusPreseed = config.virtualisation.incus.preseed;
   preseedCertificates =
     if incusPreseed == null
@@ -2267,6 +2276,10 @@ in {
             managing a remote Incus daemon instead of the local host daemon
           '';
 
+          cli.enable = lib.mkEnableOption ''
+            installing an `incus` CLI wrapper configured for this remote target
+          '';
+
           name = lib.mkOption {
             type = lib.types.str;
             default = "local";
@@ -2527,6 +2540,10 @@ in {
         message = "services.incusMachines.global.certificateDelegations is only supported for local Incus management.";
       }
       {
+        assertion = !globalCfg.remote.cli.enable || globalCfg.remote.enable;
+        message = "services.incusMachines.global.remote.cli.enable requires services.incusMachines.global.remote.enable.";
+      }
+      {
         assertion = !globalCfg.remote.enable || globalCfg.remote.name != "local";
         message = "services.incusMachines.global.remote.name must not be 'local' when remote mode is enabled.";
       }
@@ -2569,12 +2586,14 @@ in {
       ui.enable = lib.mkDefault (!globalCfg.remote.enable);
     };
 
-    environment.systemPackages = [
-      helperPackage
-      reconcilerCommand
-      settlementCommand
-      hostSuspendCommand
-    ];
+    environment.systemPackages =
+      [
+        helperPackage
+        reconcilerCommand
+        settlementCommand
+        hostSuspendCommand
+      ]
+      ++ lib.optional globalCfg.remote.cli.enable incusClientCommand;
 
     powerManagement = lib.mkIf globalCfg.hostSuspend.enable {
       powerDownCommands = ''

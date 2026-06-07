@@ -3340,12 +3340,15 @@ main() {
 	setup_incus_client
 	command="${1-}"
 	[ -n "$command" ] || {
-		echo "usage: incus-machines-helper <preseed-migrations|certificates|certificate-delegation|certificate-delegations-gc|remote-project-delegations|reconciler|settlement|machine|start-instance|stop-instance|images|gc|host-suspend> [args...]" >&2
+		echo "usage: incus-machines-helper <client|preseed-migrations|certificates|certificate-delegation|certificate-delegations-gc|remote-project-delegations|reconciler|settlement|machine|start-instance|stop-instance|images|gc|host-suspend> [args...]" >&2
 		exit 1
 	}
 	shift
 
 	case "$command" in
+	client)
+		incus "$@"
+		;;
 	preseed-migrations)
 		preseed_migrations_main "$@"
 		;;
