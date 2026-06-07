@@ -966,6 +966,9 @@
     clientBodyDirectives =
       lib.optionalString ((auth.clientMaxBodySize or null) != null)
       "        client_max_body_size ${auth.clientMaxBodySize};\n";
+    authSecurityHeaderDirectives = mkLocationSecurityHeaderIncludes {
+      useUpstreamCsp = true;
+    };
     resolverDirective = lib.optionalString dynamicUpstream ''
       resolver ${auth.resolver};
       set $auth_request_upstream ${upstream};
@@ -976,6 +979,7 @@
       else upstream;
   in ''
         location ${prefix}/ {
+    ${authSecurityHeaderDirectives}
     ${resolverDirective}        proxy_pass http://${proxyPassTarget};
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -988,6 +992,7 @@
 
         location = ${prefix}/auth {
             internal;
+    ${authSecurityHeaderDirectives}
     ${clientBodyDirectives}
     ${resolverDirective}        proxy_pass http://${proxyPassTarget};
             proxy_set_header Host $host;
