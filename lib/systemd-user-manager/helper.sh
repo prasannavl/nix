@@ -26,6 +26,7 @@ init_vars() {
 	deferred_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR-}"
 	deferred_unit_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR-}"
 	deferred_unit_reload_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR-}"
+	migrator_gate_path="${SYSTEMD_USER_MANAGER_MIGRATOR_GATE_PATH-}"
 	metadata_field_sep=$'\037'
 	metadata_field_sep_json='\u001f'
 	stable_state_timeout_seconds="${SYSTEMD_USER_MANAGER_STABLE_STATE_TIMEOUT_SECONDS:-120}"
@@ -58,6 +59,10 @@ log_managed_unit() {
 	managed_name="$2"
 	message="$3"
 	printf '[systemd-user-manager/%s] %s: %s\n' "$user" "$managed_name" "$message" >&2
+}
+
+migrator_gate_on() {
+	[ -n "$migrator_gate_path" ] && [ -f "$migrator_gate_path" ]
 }
 
 restart_request_marker_path() {
@@ -736,7 +741,21 @@ read_metadata_reconcile_units_tsv() {
 			(.reloadStamp // ""),
 			((.verifyCommand // []) | @base64)
 		]
-	' "$metadata_file"
+	' "$metadata_file" |
+		while IFS="$metadata_field_sep" read -r managed_name managed_unit auto_start desired_state timeout_seconds reload_stamp verify_command_b64; do
+			if migrator_gate_on; then
+				auto_start="0"
+				desired_state="stopped"
+			fi
+			printf '%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+				"$managed_name" "$metadata_field_sep" \
+				"$managed_unit" "$metadata_field_sep" \
+				"$auto_start" "$metadata_field_sep" \
+				"$desired_state" "$metadata_field_sep" \
+				"$timeout_seconds" "$metadata_field_sep" \
+				"$reload_stamp" "$metadata_field_sep" \
+				"$verify_command_b64"
+		done
 }
 
 metadata_header_from_stop_state_tsv() {
@@ -1373,7 +1392,6 @@ verify_managed_units_from_metadata() {
 			failed_units="${failed_units} ${managed_name}"
 			continue
 		fi
-		log_managed_unit "$systemd_user_manager_user" "$managed_name" "verifying"
 		if ! run_verify_command "$verify_command_b64"; then
 			managed_verified_at="$(now_epoch)"
 			log_managed_unit "$systemd_user_manager_user" "$managed_name" "verification failed; restarting"
@@ -1582,7 +1600,9 @@ run_reconciler_apply() {
 		exit 1
 	fi
 
-	if [ "$dry_run" != 1 ]; then
+	if [ "$dry_run" != 1 ] && migrator_gate_on; then
+		log_user_progress "$systemd_user_manager_user" "migration gate is on; not starting $boot_ready_target_name"
+	elif [ "$dry_run" != 1 ]; then
 		userctl start "$boot_ready_target_name"
 	elif [ "$work_units" -gt 0 ] || [ "$skipped_units" -gt 0 ]; then
 		log_user_progress "$systemd_user_manager_user" "would start $boot_ready_target_name"
