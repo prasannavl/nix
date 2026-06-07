@@ -233,6 +233,9 @@ Use this index as the canonical map for `docs/ai/**`.
   applications.
 - `docs/ai/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
+- `docs/ai/notes/tooling/pvl-tmux-extended-keys-2026-06.md`: Records the
+  `pvl` Home Manager tmux extended-key settings needed for Codex `Shift+Enter`
+  newline handling inside tmux.
 - `docs/ai/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records the
   move from `arrterian.nix-env-selector` to `mkhl.direnv` plus the root flake
   `devShells.default`/`devShells.full` abstraction in

@@ -14,7 +14,11 @@
         # Let's bind this too, so that repeated presses work, esp. when nesting.
         bind M-e send-prefix
 
-        set -asg terminal-features ",alacritty*:256:RGB:mouse:cstyle"
+        # Preserve modified Enter keys for terminal TUIs such as Codex.
+        set -g xterm-keys on
+        set -g extended-keys always
+        set -g extended-keys-format csi-u
+        set -asg terminal-features ",xterm*:extkeys,alacritty*:256:RGB:mouse:cstyle:extkeys,kitty*:extkeys,wezterm*:extkeys"
 
         # start window numbering at 1
         set -g base-index 1
