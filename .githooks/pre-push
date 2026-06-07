@@ -62,7 +62,7 @@ main() {
 
 		# Keep the outer lint entrypoint Git-backed; `path:.#lint` snapshots
 		# ignored build output like `target/` and `tmp/` into the store.
-		nix run .#lint -- --diff --base "${range_start}"
+		nix run .#lint -- --diff --base "${range_start}" --system all
 	done
 }
 

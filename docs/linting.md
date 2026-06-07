@@ -34,10 +34,11 @@ The repo uses a `pre-push` hook, not a `pre-commit` hook:
 - lint still runs before code leaves your machine
 - the hook computes the push base and only lints the changed scope
 
-The hook runs the same diff-based flow directly:
+The hook runs the same diff-based flow directly, with all root flake systems
+evaluated for the root package/app/dev-shell indexes:
 
 ```sh
-nix run .#lint -- --diff --base <base>
+nix run .#lint -- --diff --base <base> --system all
 ```
 
 ## Ownership Model
@@ -61,17 +62,33 @@ Package tooling handles files inside child flakes:
 
 ## Common Package Commands
 
-From the repo root:
+Root-flake commands for root-exported packages:
+
+- `nix build .#<name>`
+- `nix run .#<name>`
+- `nix build .#<name>.checks.fmt`
+- `nix build .#<name>.checks.lint`
+- `nix build .#<name>.checks.test`
+
+Use these for the shortest package build, run, and test commands from the repo
+root.
+
+Child-flake commands by package path:
 
 - `nix build ./pkgs/<name>`
 - `nix run ./pkgs/<name>`
 - `nix run ./pkgs/<name>#dev`
 - `nix run ./pkgs/<name>#fmt`
 - `nix run ./pkgs/<name>#lint-fix`
-- `nix build ./pkgs/<name>#checks.fmt`
-- `nix build ./pkgs/<name>#checks.lint`
-- `nix build ./pkgs/<name>#checks.test`
-- `nix flake check ./pkgs/<name>`
+- `system=$(nix eval --raw --impure --expr builtins.currentSystem)`
+- `nix build ./pkgs/<name>#checks.${system}.fmt`
+- `nix build ./pkgs/<name>#checks.${system}.lint`
+- `nix build ./pkgs/<name>#checks.${system}.test`
+- `(cd ./pkgs/<name> && nix flake check)`
+
+The bare child-flake form `./pkgs/<name>#checks.test` is not valid for these
+wrapper flakes. Child checks live under `checks.${system}.test`; the shorter
+test command is the root-flake package form, `.#<name>.checks.test`.
 
 ## Root Tooling
 
