@@ -15,6 +15,7 @@ in rec {
   stacks = stackProfiles;
   inherit serviceModuleFactory;
   serviceModule = serviceModuleFactory.mkServiceLib {
+    stackName = "root";
     defaultUser = "root";
     defaultClientSecretsBasePath = ../../data/secrets/pvl/services;
     defaultClientIdentitySuffix = "invalid.invalid";

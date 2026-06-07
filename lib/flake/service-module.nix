@@ -1,6 +1,7 @@
 rec {
   mkServiceLib = {
     defaultUser ? "root",
+    stackName ? defaultUser,
     defaultClientRuntimeBasePath ? "/run/agenix",
     defaultClientSecretsBasePath,
     defaultNatsSecretsBasePath ? null,
@@ -30,6 +31,7 @@ rec {
   in rec {
     inherit
       trackedPath
+      stackName
       defaultUser
       defaultClientRuntimeBasePath
       defaultClientSecretsBasePath
@@ -65,6 +67,17 @@ rec {
 
     mkServiceKeySecretPath = serviceName: secretName:
       mkServiceSecretPath serviceName "${secretName}.key.age";
+
+    sanitizeStoreName = name:
+      builtins.replaceStrings ["." "/"] ["-" "-"] name;
+
+    mkTrackedServiceSecretStoreName = serviceName: fileName: "${stackName}-${serviceName}-${sanitizeStoreName fileName}";
+
+    mkTrackedServiceSecretPath = serviceName: fileName:
+      trackedPath (mkServiceSecretPath serviceName fileName) (mkTrackedServiceSecretStoreName serviceName fileName);
+
+    mkTrackedServiceKeySecretPath = serviceName: secretName:
+      trackedPath (mkServiceKeySecretPath serviceName secretName) "${stackName}-${serviceName}-${secretName}-age";
 
     mkServiceSecret = serviceName: secretName: overrides:
       mkSecret (mkServiceKeySecretPath serviceName secretName) overrides;

@@ -114,6 +114,7 @@ in {
     mountPath = defaultCaBundleContainerPath;
   };
   srv = serviceModuleFactory.mkServiceLib {
+    stackName = stackName;
     defaultUser = defaultUser;
     defaultClientSecretsBasePath = defaultClientSecretsBasePath;
     defaultNatsSecretsBasePath = defaultNatsSecretsBasePath;

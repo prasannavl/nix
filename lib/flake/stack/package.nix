@@ -76,6 +76,7 @@ let
       mountPath = "/run/secrets/package-ca.crt";
     };
     srv = serviceModuleFactory.mkServiceLib {
+      stackName = "package";
       defaultUser = "root";
       defaultClientSecretsBasePath = /nonexistent/lib-flake/client-secrets;
       defaultClientIdentitySuffix = "invalid.invalid";
