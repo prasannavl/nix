@@ -6,7 +6,7 @@
   rawGroupData ? import ../../../users/groupdata.nix,
 }: let
   userDataLib = import ./user-data-lib.nix;
-  inherit (userDataLib) userFilter;
+  inherit (userDataLib) unique userFilter;
 
   normalizeList = value:
     if value == null
@@ -17,20 +17,6 @@
 
   hasValue = value: values:
     builtins.any (candidate: candidate == value) values;
-
-  unique = values: let
-    go = seen: rest:
-      if rest == []
-      then []
-      else let
-        value = builtins.head rest;
-        tail = builtins.tail rest;
-      in
-        if hasValue value seen
-        then go seen tail
-        else [value] ++ go (seen ++ [value]) tail;
-  in
-    go [] values;
 
   filterAttrs = predicate: attrs:
     builtins.listToAttrs (
@@ -168,12 +154,6 @@
   activeStackUserRecords = filterAttrs (_: details: details.enabled && details.stackEnabled) users;
   stackUserRecords = filterAttrs (_: details: details.stackEnabled) users;
 
-  hasGroup = group: details:
-    hasValue group details.groups;
-
-  hasAnyGroup = groups: details:
-    builtins.any (group: hasGroup group details) groups;
-
   groupNamesForUserIds = userIds:
     builtins.filter (
       groupName:
@@ -256,7 +236,8 @@ in {
     members = groupMembers;
     namesForUserIds = groupNamesForUserIds;
     userIdsIn = userIdsInGroup;
-    inherit hasAnyGroup hasGroup;
+    hasAnyGroup = userDataLib.userHasAnyGroup;
+    hasGroup = userDataLib.userHasGroup;
   };
 
   meta = {
