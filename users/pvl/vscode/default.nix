@@ -73,6 +73,11 @@
             command = "-workbench.action.navigateForward";
             when = "canNavigateForward";
           }
+          {
+            key = "alt+x";
+            command = "workbench.action.toggleMaximizedPanel";
+            when = "panelAlignment == 'center'";
+          }
         ];
       };
     };
