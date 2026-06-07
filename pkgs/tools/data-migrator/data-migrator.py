@@ -2,7 +2,6 @@
 import argparse
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -772,82 +771,120 @@ def migrate_incus_instance(args, plan):
             deploy_drain(args, host, False)
             drained_hosts.remove(host)
 
-    drain_host(target_drain_host)
+    def resume_target_host(host):
+        if host and host in drained_hosts:
+            deploy_target_resumed(args, host)
+            drained_hosts.remove(host)
 
     if native_path:
         seed_snapshot = incus_snapshot_name(args, "seed")
         final_snapshot = incus_snapshot_name(args, "final")
-        snapshots = [seed_snapshot, final_snapshot]
-        incus_snapshot_create(
-            args,
-            args.source_project,
-            args.incus_remote,
-            args.incus_instance,
-            seed_snapshot,
-        )
-        incus_copy_or_refresh_instance(
-            args, target_exists=target_instance_json is not None
-        )
-        if not args.warm:
-            if not args.skip_source_drain and source_drain_host:
-                drain_host(source_drain_host)
-            incus_stop_instance(
-                args,
-                args.source_project,
-                args.incus_remote,
-                args.incus_instance,
-                "Running"
-                if source_was_running
-                else instance_status(source_instance_json),
-            )
-            if target_instance_json:
-                incus_stop_instance(
-                    args,
-                    args.target_project,
-                    args.target_incus_remote,
-                    args.target_instance,
-                    "Running"
-                    if target_was_running
-                    else instance_status(target_instance_json),
-                )
+        created_snapshots = []
+        try:
             incus_snapshot_create(
                 args,
                 args.source_project,
                 args.incus_remote,
                 args.incus_instance,
-                final_snapshot,
+                seed_snapshot,
             )
-            incus_copy_or_refresh_instance(args, target_exists=True)
-            if (source_was_running or target_was_running) and not args.no_start_target:
-                incus_start_instance(
+            created_snapshots.append(seed_snapshot)
+            incus_copy_or_refresh_instance(
+                args, target_exists=target_instance_json is not None
+            )
+            target_instance_json = incus_instance(
+                args,
+                args.target_incus_remote,
+                args.target_project,
+                args.target_instance,
+                missing_ok=False,
+            )
+            if not args.warm:
+                if target_drain_host:
+                    if instance_status(target_instance_json) != "Running":
+                        incus_start_instance(
+                            args,
+                            args.target_project,
+                            args.target_incus_remote,
+                            args.target_instance,
+                        )
+                        target_instance_json = incus_instance(
+                            args,
+                            args.target_incus_remote,
+                            args.target_project,
+                            args.target_instance,
+                            missing_ok=False,
+                        )
+                    deploy_target_prepared(args, target_drain_host)
+                    drain_host(target_drain_host)
+                if not args.skip_source_drain and source_drain_host:
+                    drain_host(source_drain_host)
+                incus_stop_instance(
+                    args,
+                    args.source_project,
+                    args.incus_remote,
+                    args.incus_instance,
+                    "Running"
+                    if source_was_running
+                    else instance_status(source_instance_json),
+                )
+                target_instance_json = incus_instance(
+                    args,
+                    args.target_incus_remote,
+                    args.target_project,
+                    args.target_instance,
+                    missing_ok=False,
+                )
+                incus_stop_instance(
                     args,
                     args.target_project,
                     args.target_incus_remote,
                     args.target_instance,
+                    instance_status(target_instance_json),
                 )
-            if args.leave_source_running and source_was_running:
-                incus_start_instance(
-                    args, args.source_project, args.incus_remote, args.incus_instance
+                incus_snapshot_create(
+                    args,
+                    args.source_project,
+                    args.incus_remote,
+                    args.incus_instance,
+                    final_snapshot,
                 )
-        for snapshot in snapshots:
-            incus_snapshot_delete(
-                args,
-                args.source_project,
-                args.incus_remote,
-                args.incus_instance,
-                snapshot,
-            )
-            incus_snapshot_delete(
-                args,
-                args.target_project,
-                args.target_incus_remote,
-                args.target_instance,
-                snapshot,
-            )
+                created_snapshots.append(final_snapshot)
+                incus_copy_or_refresh_instance(args, target_exists=True)
+                if (source_was_running or target_was_running) and not args.no_start_target:
+                    incus_start_instance(
+                        args,
+                        args.target_project,
+                        args.target_incus_remote,
+                        args.target_instance,
+                    )
+                if args.leave_source_running and source_was_running:
+                    incus_start_instance(
+                        args, args.source_project, args.incus_remote, args.incus_instance
+                    )
+        finally:
+            for snapshot in created_snapshots:
+                incus_snapshot_delete(
+                    args,
+                    args.source_project,
+                    args.incus_remote,
+                    args.incus_instance,
+                    snapshot,
+                )
+                incus_snapshot_delete(
+                    args,
+                    args.target_project,
+                    args.target_incus_remote,
+                    args.target_instance,
+                    snapshot,
+                )
     else:
         if not args.target_host and not args.target_dir:
             die("file-copy fallback needs --target-host or --target-dir")
         args.effective_transport = resolve_transport(args)
+        if target_drain_host and not args.warm:
+            deploy_target_prepared(args, target_drain_host)
+            drain_host(target_drain_host)
         migrate_paths(args, plan, "warm" if args.warm else "seed")
         if not args.warm:
             if not args.skip_source_drain and source_drain_host:
@@ -885,7 +922,7 @@ def migrate_incus_instance(args, plan):
                 )
 
     if target_drain_host and not args.no_resume_target and not args.warm:
-        resume_host(target_drain_host)
+        resume_target_host(target_drain_host)
     if (
         args.resume_source
         and not args.skip_source_drain
@@ -992,43 +1029,80 @@ def migrate_paths(args, plan, phase):
         migrate_one_path(args, plan, entry, phase, raw_excludes)
 
 
-def patch_host_drain(repo_root, host, enabled):
-    hosts_default = repo_root / "hosts/default.nix"
-    text = hosts_default.read_text(encoding="utf-8")
-    block_re = re.compile(
-        rf"(?P<prefix>\n  {re.escape(host)} = mkNixosSystem \{{(?P<body>.*?)\n  \}};)",
-        re.DOTALL,
+def render_nix_value(value, indent=0):
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        current_indent = "  " * indent
+        child_indent = "  " * (indent + 1)
+        lines = ["{"]
+        for key in sorted(value):
+            lines.append(
+                f"{child_indent}{json.dumps(str(key))} = "
+                f"{render_nix_value(value[key], indent + 1)};"
+            )
+        lines.append(f"{current_indent}}}")
+        return "\n".join(lines)
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        return "[ " + " ".join(render_nix_value(item, indent) for item in value) + " ]"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    die(f"unsupported bootstrap host value: {value!r}")
+
+
+def render_bootstrap_hosts(hosts):
+    return render_nix_value(hosts) + "\n"
+
+
+def read_bootstrap_hosts(bootstrap_path):
+    if not bootstrap_path.exists():
+        return {}
+    output = run_capture(["nix", "eval", "--json", "--file", bootstrap_path])
+    try:
+        hosts = json.loads(output)
+    except json.JSONDecodeError as exc:
+        die(f"could not parse bootstrap hosts JSON from {bootstrap_path}: {exc}")
+    if not isinstance(hosts, dict):
+        die(f"bootstrap hosts file must evaluate to an attrset: {bootstrap_path}")
+    for host, entry in hosts.items():
+        if not isinstance(host, str) or not isinstance(entry, dict):
+            die(f"bootstrap host entries must be attrsets keyed by host name: {host!r}")
+    return hosts
+
+
+def updated_bootstrap_hosts(hosts, host):
+    updated = dict(hosts)
+    entry = dict(updated.get(host, {}))
+    entry.pop("on", None)
+    entry["state"] = "on"
+    updated[host] = entry
+    return updated
+
+
+def write_bootstrap_hosts(repo_root, host):
+    bootstrap_path = repo_root / "lib" / "services" / "migrator" / "bootstrap-hosts.nix"
+    hosts = read_bootstrap_hosts(bootstrap_path)
+    bootstrap_path.write_text(
+        render_bootstrap_hosts(updated_bootstrap_hosts(hosts, host)),
+        encoding="utf-8",
     )
-    match = block_re.search(text)
-    if not match:
-        die(f"host not found in hosts/default.nix: {host}")
-    block = match.group("prefix")
-    body = match.group("body")
-    body = re.sub(r"\s*\{ x\.migrator\.on = true; \}", "", body)
-    body = re.sub(r"\s*\{ x\.migrator\.on = false; \}", "", body)
-    if enabled:
-        body = re.sub(
-            r"modules = \[(?P<modules>[^\]]*)\];",
-            r"modules = [\g<modules> { x.migrator.on = true; }];",
-            body,
-            count=1,
-        )
-    new_block = f"\n  {host} = mkNixosSystem {{{body}\n  }};"
-    if new_block == block:
-        return
-    patched = text[: match.start("prefix")] + new_block + text[match.end("prefix") :]
-    hosts_default.write_text(patched, encoding="utf-8")
 
 
-def deploy_drain(args, host, enabled):
-    state = "true" if enabled else "false"
-    action = "drain" if enabled else "resume"
+def deploy_target_prepared(args, host):
     if args.skip_deploy:
-        info(f"skip-deploy: would set x.migrator.on={state} for {host}")
+        info(f"skip-deploy: would deploy drained target generation for {host}")
         return
 
     tmp_root = Path(args.repo_root) / "tmp" / f"data-migrator.{os.getpid()}"
-    worktree = tmp_root / f"{host}-{action}"
+    worktree = tmp_root / f"{host}-prepare"
     if worktree.exists():
         shutil.rmtree(worktree)
     run(
@@ -1036,25 +1110,70 @@ def deploy_drain(args, host, enabled):
         cwd=args.repo_root,
         dry_run=args.dry_run,
     )
-    if args.dry_run:
-        info(f"dry-run: would patch {host} x.migrator.on={state} in {worktree}")
-    else:
-        patch_host_drain(worktree, host, enabled)
+    deploy_succeeded = False
+    try:
+        if args.dry_run:
+            info(
+                f"dry-run: would write migrator bootstrap host override for {host} in {worktree}"
+            )
+        else:
+            write_bootstrap_hosts(worktree, host)
+        nixbot = ["nixbot", "deploy", "--hosts", host, "--dirty", "--force"]
+        if args.nixbot_goal:
+            nixbot.extend(["--goal", args.nixbot_goal])
+        if args.nixbot_dry:
+            nixbot.append("--dry")
+        run(nixbot, cwd=worktree, dry_run=args.dry_run)
+        deploy_succeeded = True
+    finally:
+        if deploy_succeeded and not args.keep_workdir and not args.dry_run:
+            run(
+                ["git", "worktree", "remove", "--force", worktree],
+                cwd=args.repo_root,
+            )
+            shutil.rmtree(tmp_root, ignore_errors=True)
+        elif not deploy_succeeded and not args.dry_run:
+            info(f"kept failed bootstrap worktree for inspection: {worktree}")
+
+
+def deploy_target_resumed(args, host):
+    if args.skip_deploy:
+        info(
+            f"skip-deploy: would deploy normal target generation and turn gate off for {host}"
+        )
+        return
+
     nixbot = ["nixbot", "deploy", "--hosts", host, "--dirty", "--force"]
     if args.nixbot_goal:
         nixbot.extend(["--goal", args.nixbot_goal])
     if args.nixbot_dry:
         nixbot.append("--dry")
-    run(nixbot, cwd=worktree, dry_run=args.dry_run)
-    if not args.keep_workdir and not args.dry_run:
-        run(["git", "worktree", "remove", "--force", worktree], cwd=args.repo_root)
-        shutil.rmtree(tmp_root, ignore_errors=True)
+    run(nixbot, cwd=args.repo_root, dry_run=args.dry_run)
+    deploy_drain(args, host, False)
+
+
+def deploy_drain(args, host, enabled):
+    state = "on" if enabled else "off"
+    if args.skip_deploy:
+        info(f"skip-deploy: would set services.migrator gate {state} for {host}")
+        return
+
+    cmd = [
+        "migratorctl",
+        "remote",
+        state,
+        "--host",
+        host,
+        "--repo-root",
+        str(args.repo_root),
+    ]
+    run(cmd, cwd=args.repo_root, dry_run=args.dry_run or args.nixbot_dry)
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="data-migrator",
-        description="Migrate declared host data with rsync and optional migrator drain deploys.",
+        description="Migrate declared host data with rsync, an optional drained target bootstrap deploy, and runtime migrator gate toggles.",
     )
     parser.add_argument(
         "--profile",
@@ -1091,7 +1210,7 @@ def parse_args(argv):
     parser.add_argument(
         "--warm",
         action="store_true",
-        help="only run the seed copy; do not deploy drain/resume",
+        help="only run the seed copy; do not bootstrap the target or toggle migrator drain state",
     )
     parser.add_argument(
         "--source-drain-host",
@@ -1119,15 +1238,17 @@ def parse_args(argv):
     parser.add_argument(
         "--skip-deploy",
         action="store_true",
-        help="do not call nixbot; useful when hosts are already in the desired drain state",
+        help="do not bootstrap the target or call migratorctl; useful when hosts are already deployed and in the desired drain state",
     )
     parser.add_argument(
         "--nixbot-goal",
         default="switch",
-        help="nixbot deploy goal for drain/resume deploys",
+        help="goal passed to the drained target bootstrap nixbot deploy",
     )
     parser.add_argument(
-        "--nixbot-dry", action="store_true", help="pass --dry to nixbot deploy"
+        "--nixbot-dry",
+        action="store_true",
+        help="treat the bootstrap deploy and migratorctl runtime drain calls as dry-run",
     )
     parser.add_argument("--repo-root", help="repo root; auto-detected by default")
     parser.add_argument(
@@ -1232,7 +1353,7 @@ def parse_args(argv):
     parser.add_argument(
         "--keep-workdir",
         action="store_true",
-        help="keep temporary git worktrees under tmp/",
+        help="keep the temporary drained target bootstrap worktree for inspection",
     )
     args = parser.parse_args(argv)
     args.incus_mode = bool(
@@ -1247,6 +1368,8 @@ def parse_args(argv):
         die("pass at most one of --target-host or --target-dir")
     if args.target_dir and args.copy_mode != "pull":
         die("--target-dir only supports --copy-mode pull")
+    if args.no_start_target and not args.no_resume_target:
+        die("--no-start-target requires --no-resume-target")
     return args
 
 
@@ -1283,13 +1406,14 @@ def main(argv):
         die("full migration needs --source-drain-host or --skip-source-drain")
 
     if target_drain_host:
+        deploy_target_prepared(args, target_drain_host)
         deploy_drain(args, target_drain_host, True)
     migrate_paths(args, plan, "seed")
     if not args.skip_source_drain:
         deploy_drain(args, source_drain_host, True)
     migrate_paths(args, plan, "final")
     if target_drain_host and not args.no_resume_target:
-        deploy_drain(args, target_drain_host, False)
+        deploy_target_resumed(args, target_drain_host)
     if args.resume_source and not args.skip_source_drain:
         deploy_drain(args, source_drain_host, False)
 

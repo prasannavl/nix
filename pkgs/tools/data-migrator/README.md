@@ -1,7 +1,8 @@
 # data-migrator
 
-`data-migrator` copies declared host state paths and can wrap the copy with
-`x.migrator.on` drain/resume deploys through `nixbot`.
+`data-migrator` copies declared host state paths. In full migrations it can
+first deploy the target host into a declarative drained generation, then use
+runtime `migratorctl` drain/resume calls around the final cutover copy.
 
 Incus project move with automatic path selection:
 
@@ -34,6 +35,30 @@ data-migrator --profile abird-corp \
   --source-drain-host old-abird-corp \
   --target-host abird-corp
 ```
+
+That full flow does two distinct control actions:
+
+1. a one-time drained bootstrap deploy for the target host, so the new
+   generation, secrets, users, and runtime directories exist before the seed
+   copy, and
+2. runtime `migratorctl` gate toggles for the target and source hosts during the
+   final sync window.
+
+When the target resumes, `data-migrator` deploys the normal target generation
+again, then flips the runtime gate off. That returns the host to the default
+runtime-owned mode with no drain marker and no persistent migrator state.
+
+Remote gate toggles require the remote host to already run a generation that
+contains `services.migrator` and `/run/current-system/sw/bin/migratorctl`. The
+target bootstrap deploy establishes that for the target. Source drain hosts
+should be pre-deployed with migrator support, or already drained when using
+`--skip-deploy`.
+
+`services.migrator.state` is tri-state. The normal default is `"runtime"`, which
+keeps `migratorctl on|off` state live across switch within the current boot. The
+target bootstrap deploy temporarily forces `"on"` in its private worktree;
+target resume deploys the normal generation and runs `migratorctl off` so the
+host returns to runtime-owned gate control.
 
 Local staging copy:
 
@@ -157,11 +182,15 @@ The flow is:
 
 1. create a temporary source snapshot while the source is still live,
 2. copy or refresh the target instance with `incus copy`,
-3. drain source writers with `x.migrator.on` unless `--skip-deploy` is set,
-4. stop the source instance, stop an existing target instance if needed,
-5. create the final source snapshot and run a final `incus copy --refresh`,
-6. start the target instance when the source or previous target was running,
-7. remove the temporary migration snapshots.
+3. for full migrations, deploy the target host into a drained generation unless
+   `--skip-deploy` is set,
+4. for full migrations, drain source writers with `migratorctl on` unless
+   `--skip-deploy` is set,
+5. stop the source instance and stop the current target instance,
+6. create the final source snapshot and run a final `incus copy --refresh`,
+7. start the target instance when the source or target had been running before
+   the final refresh, unless `--no-start-target --no-resume-target` is set,
+8. remove the temporary migration snapshots.
 
 The first copy is allowed to be inconsistent by default because it is only the
 warm seed. The final copy runs after the source instance is stopped, so the
@@ -169,6 +198,6 @@ target is the authoritative crash-consistent state; with nixbot drains enabled,
 service state is app-consistent before that stop.
 
 If the btrfs fast path is not available, file-copy fallback uses the same
-seed/final/drain ordering as the existing data migrator. It requires
+bootstrap/seed/final/drain ordering as the existing data migrator. It requires
 `--target-host` or `--target-dir` because there must be a destination filesystem
 to receive the declared profile paths.

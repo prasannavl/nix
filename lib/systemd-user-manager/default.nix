@@ -5,7 +5,8 @@
   ...
 }: let
   cfg = config.services.systemdUserManager;
-  migratorOn = config.x.migrator.on or false;
+  migratorEnabled = config.services.migrator.enable or false;
+  migratorGatePath = config.services.migrator.gatePath;
   flakeUtils = import ../flake/utils.nix {lib = lib;};
   metadataVersion = 5;
 
@@ -114,14 +115,6 @@
       unit
       // {
         unitName = name;
-        autoStart =
-          if migratorOn
-          then false
-          else unit.autoStart;
-        state =
-          if migratorOn
-          then "stopped"
-          else unit.state;
       })
     cfg.instances;
 
@@ -156,6 +149,10 @@
       SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR = deferredUnitRestartRequestDir;
       SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR = deferredUnitReloadRequestDir;
       SYSTEMD_USER_MANAGER_MANAGED_USER_ACTION_PATH = managedUserActionPath;
+      SYSTEMD_USER_MANAGER_MIGRATOR_GATE_PATH =
+        if migratorEnabled
+        then migratorGatePath
+        else "";
     };
     text = ''
       source ${./helper.sh}
@@ -412,6 +409,10 @@
     )
   );
 in {
+  imports = [
+    ../services/migrator/options.nix
+  ];
+
   options.services.systemdUserManager = {
     instances = lib.mkOption {
       type = lib.types.attrsOf unitType;
@@ -506,7 +507,13 @@ in {
 
       user.targets.${lib.removeSuffix ".target" bootReadyTargetName} = {
         description = "Managed user units ready target";
+        unitConfig = lib.mkIf migratorEnabled {
+          ConditionPathExists = "!${migratorGatePath}";
+        };
       };
     };
+
+    services.migrator.managedUnits.dispatchers =
+      map (dispatcher: "${dispatcher.name}.service") (builtins.attrValues dispatcherServicesByUser);
   };
 }

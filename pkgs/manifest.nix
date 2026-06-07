@@ -18,6 +18,10 @@
       path = ./tools/data-migrator/default.nix;
     }
     {
+      id = "migrator";
+      path = ./tools/migrator/default.nix;
+    }
+    {
       id = "nats-wrecking-ball";
       path = ./tools/nats-wrecking-ball/default.nix;
       rootApp = false;

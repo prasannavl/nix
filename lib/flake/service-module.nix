@@ -157,16 +157,22 @@ rec {
           };
           cfg = config.services.${spec.resolvedName};
           partUnitConfig = spec.composedServices.unitConfig lib cfg;
-          migratorOn = config.x.migrator.on or false;
-          resolvedAfter = lib.unique (after ++ cfg.after ++ partUnitConfig.after);
+          resolvedAfter =
+            lib.unique
+            (
+              after
+              ++ cfg.after
+              ++ partUnitConfig.after
+            );
           resolvedBefore = lib.unique (before ++ cfg.before ++ partUnitConfig.before);
           resolvedWants = lib.unique (wants ++ cfg.wants ++ partUnitConfig.wants);
           resolvedRequires = lib.unique (requires ++ cfg.requires ++ partUnitConfig.requires);
-          resolvedWantedBy =
-            if migratorOn
-            then []
-            else lib.unique (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy);
+          resolvedWantedBy = lib.unique (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy);
         in {
+          imports = [
+            ../services/migrator/options.nix
+          ];
+
           options.services.${spec.resolvedName} =
             {
               enable = lib.mkEnableOption "${spec.resolvedName} service";
@@ -190,8 +196,6 @@ rec {
                 systemd.services.${spec.resolvedName} = {
                   description = spec.resolvedServiceDescription;
                   wantedBy = resolvedWantedBy;
-                  restartTriggers = [migratorOn];
-                  restartIfChanged = !migratorOn;
                   stopIfChanged = true;
                   after = resolvedAfter;
                   before = resolvedBefore;
@@ -209,6 +213,9 @@ rec {
                 _serviceModule.registeredPorts = lib.optional spec.hasPort {
                   name = spec.resolvedName;
                   port = cfg.port;
+                };
+                services.migrator.managedUnits.system."${spec.resolvedName}.service" = {
+                  startOnResume = resolvedWantedBy != [];
                 };
               }
             ]
@@ -270,15 +277,11 @@ rec {
           };
           cfg = config.userServices.${resolvedUser}.${spec.resolvedName};
           partUnitConfig = spec.composedServices.unitConfig lib cfg;
-          migratorOn = config.x.migrator.on or false;
           resolvedAfter = lib.unique (map resolveUnitReference (after ++ cfg.after ++ partUnitConfig.after));
           resolvedBefore = lib.unique (map resolveUnitReference (before ++ cfg.before ++ partUnitConfig.before));
           resolvedWants = lib.unique (map resolveUnitReference (wants ++ cfg.wants ++ partUnitConfig.wants));
           resolvedRequires = lib.unique (map resolveUnitReference (requires ++ cfg.requires ++ partUnitConfig.requires));
-          resolvedWantedBy =
-            if migratorOn
-            then []
-            else lib.unique (map resolveUnitReference (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy));
+          resolvedWantedBy = lib.unique (map resolveUnitReference (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy));
           unitLabel = cfg.unitName;
           unitFile = "${unitLabel}.service";
           instanceName = "${resolvedUser}-${spec.resolvedName}";

@@ -110,8 +110,12 @@
       home-manager.nixosModules.home-manager
       agenix.nixosModules.default
       ./lib/podman-compose
+      ./lib/services/migrator
       ./lib/systemd-user-manager
       flakeLib.serviceModule.portCheckModule
+      ({lib, ...}: {
+        services.migrator.enable = lib.mkDefault true;
+      })
       {nixpkgs.overlays = overlays;}
       {imports = builtins.attrValues (builtins.removeAttrs flakeLib.nixosModules ["default"]);}
     ];

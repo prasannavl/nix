@@ -202,6 +202,9 @@ Use this index as the canonical map for `docs/ai/**`.
 - `docs/ai/notes/tooling/data-migrator-host-drain-2026-05.md`: Records the
   generic `data-migrator` port and the gap3-compatible `x.migrator.on` host
   drain semantics.
+- `docs/ai/notes/tooling/migrator-runtime-gate-2026-06.md`: Records the
+  runtime-owned `services.migrator` gate, `migratorctl`, managed-unit registry,
+  and data-migrator cutover integration.
 - `docs/ai/notes/tooling/gap3-post-87a57ae-port-2026-05.md`: Tracks the
   selective post-`87a57ae` `gap3/master` port, including per-commit port,
   equivalent, and skip decisions.

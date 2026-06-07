@@ -63,10 +63,10 @@ in {
       then credentialsSecretPath
       else ../../../data/secrets + "/globals/cloudflare/tunnels/${credentialsStoreName}";
     credentials = trackedPath resolvedCredentialsSecretPath credentialsStoreName;
-    migratorOn = config.x.migrator.on or false;
+    tunnelUnitName = "cloudflared-tunnel-${tunnelId}";
   in
     {
-      services.cloudflared = lib.mkIf (credentials != null && ! migratorOn) {
+      services.cloudflared = lib.mkIf (credentials != null) {
         enable = true;
         tunnels.${tunnelId} =
           {
@@ -80,6 +80,10 @@ in {
           // lib.optionalAttrs (originRequest != {}) {
             originRequest = originRequest;
           };
+      };
+
+      services.migrator.managedUnits.system = lib.optionalAttrs (credentials != null) {
+        "${tunnelUnitName}.service" = {};
       };
     }
     // {

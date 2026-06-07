@@ -2,6 +2,7 @@
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
   nixbot ? pkgs.callPackage ../nixbot/default.nix {inherit pkgHelper;},
+  migrator ? pkgs.callPackage ../migrator/default.nix {inherit pkgHelper;},
 }: let
   lib = pkgs.lib;
   python = pkgs.python3.withPackages (ps: [
@@ -32,6 +33,8 @@
         git
         gnutar
         incus
+        migrator
+        nix
         openssh
         rsync
         nixbot

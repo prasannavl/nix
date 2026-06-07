@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -260,6 +261,154 @@ class TarFallbackTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 data_migrator.safe_clean_command("/")
+
+
+class DeployPlanningTest(unittest.TestCase):
+    def test_bootstrap_override_is_service_owned_and_host_encoded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            bootstrap_dir = repo_root / "lib" / "services" / "migrator"
+            bootstrap_dir.mkdir(parents=True)
+
+            with mock.patch.object(data_migrator, "read_bootstrap_hosts", return_value={}):
+                data_migrator.write_bootstrap_hosts(repo_root, 'abird-"corp"')
+
+            self.assertEqual(
+                (bootstrap_dir / "bootstrap-hosts.nix").read_text(encoding="utf-8"),
+                '{\n  "abird-\\"corp\\"" = {\n    "state" = "on";\n  };\n}\n',
+            )
+
+    def test_bootstrap_override_preserves_other_hosts(self):
+        hosts = {
+            "abird-data": {"state": "off"},
+            "abird-id": {"on": False},
+        }
+
+        self.assertEqual(
+            data_migrator.render_bootstrap_hosts(
+                data_migrator.updated_bootstrap_hosts(hosts, "abird-corp")
+            ),
+            "\n".join(
+                [
+                    "{",
+                    '  "abird-corp" = {',
+                    '    "state" = "on";',
+                    "  };",
+                    '  "abird-data" = {',
+                    '    "state" = "off";',
+                    "  };",
+                    '  "abird-id" = {',
+                    '    "on" = false;',
+                    "  };",
+                    "}",
+                    "",
+                ]
+            ),
+        )
+
+    def test_bootstrap_override_replaces_legacy_on_for_target(self):
+        self.assertEqual(
+            data_migrator.updated_bootstrap_hosts(
+                {"abird-corp": {"on": False}}, "abird-corp"
+            ),
+            {"abird-corp": {"state": "on"}},
+        )
+
+    def test_read_bootstrap_hosts_uses_nix_eval_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / "bootstrap-hosts.nix"
+            bootstrap_path.write_text("{}", encoding="utf-8")
+
+            with mock.patch.object(
+                data_migrator,
+                "run_capture",
+                return_value='{"abird-id":{"state":"off"}}',
+            ) as run_capture:
+                self.assertEqual(
+                    data_migrator.read_bootstrap_hosts(bootstrap_path),
+                    {"abird-id": {"state": "off"}},
+                )
+
+        run_capture.assert_called_once_with(
+            ["nix", "eval", "--json", "--file", bootstrap_path]
+        )
+
+    def test_target_resume_deploys_normal_generation(self):
+        args = SimpleNamespace(
+            skip_deploy=False,
+            nixbot_goal="switch",
+            nixbot_dry=False,
+            repo_root=Path("/repo"),
+            dry_run=False,
+        )
+
+        with mock.patch.object(data_migrator, "run") as run:
+            data_migrator.deploy_target_resumed(args, "abird-corp")
+
+        self.assertEqual(
+            run.call_args_list,
+            [
+                mock.call(
+                    [
+                        "nixbot",
+                        "deploy",
+                        "--hosts",
+                        "abird-corp",
+                        "--dirty",
+                        "--force",
+                        "--goal",
+                        "switch",
+                    ],
+                    cwd=Path("/repo"),
+                    dry_run=False,
+                ),
+                mock.call(
+                    [
+                        "migratorctl",
+                        "remote",
+                        "off",
+                        "--host",
+                        "abird-corp",
+                        "--repo-root",
+                        "/repo",
+                    ],
+                    cwd=Path("/repo"),
+                    dry_run=False,
+                ),
+            ],
+        )
+
+    def test_no_start_target_requires_no_resume_target(self):
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                data_migrator.parse_args(
+                    [
+                        "--profile",
+                        "abird-corp",
+                        "--source-project",
+                        "abird",
+                        "--target-project",
+                        "abird-stage",
+                        "--no-start-target",
+                    ]
+                )
+
+    def test_no_start_target_allows_no_resume_target(self):
+        args = data_migrator.parse_args(
+            [
+                "--profile",
+                "abird-corp",
+                "--source-project",
+                "abird",
+                "--target-project",
+                "abird-stage",
+                "--no-start-target",
+                "--no-resume-target",
+            ]
+        )
+
+        self.assertTrue(args.no_start_target)
+        self.assertTrue(args.no_resume_target)
 
 
 if __name__ == "__main__":
