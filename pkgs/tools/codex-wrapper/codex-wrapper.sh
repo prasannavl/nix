@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+	printf 'Usage: %s [-u] [-xNUM|-xxNUM] [--switch NUM] [codex args...]\n' "${0##*/}" >&2
+}
+
+name() {
+	printf '%s\n' "${0##*/}"
+}
+
+auth_dir() {
+	if [[ -n "${CODEX_HOME:-}" ]]; then
+		printf '%s\n' "$CODEX_HOME"
+	else
+		printf '%s/.codex\n' "$HOME"
+	fi
+}
+
+slot_file() {
+	local dir="$1" slot="$2"
+	printf '%s/auth.%s.json\n' "$dir" "$slot"
+}
+
+state_file() {
+	local dir="$1"
+	printf '%s/auth.current\n' "$dir"
+}
+
+validate_slot() {
+	local slot="$1"
+	if [[ ! "$slot" =~ ^[0-9]+$ ]]; then
+		printf '%s: auth slot must be numeric: %s\n' "$(name)" "$slot" >&2
+		exit 2
+	fi
+}
+
+ensure_slot_file() {
+	local slot="$1" dir target_file
+
+	validate_slot "$slot"
+	dir="$(auth_dir)"
+	mkdir -p "$dir"
+	target_file="$(slot_file "$dir" "$slot")"
+	if [[ ! -f "$target_file" ]]; then
+		: >"$target_file"
+	fi
+	printf '%s\n' "$target_file"
+}
+
+rename_no_clobber() {
+	local from="$1" to="$2"
+	if [[ -e "$to" ]]; then
+		printf '%s: refusing to overwrite existing auth file: %s\n' "$(name)" "$to" >&2
+		exit 1
+	fi
+	mv -T -- "$from" "$to"
+}
+
+current_slot_from_state() {
+	local dir="$1" slot state
+
+	state="$(state_file "$dir")"
+	if [[ -f "$state" ]]; then
+		read -r slot <"$state" || true
+		if [[ "${slot:-}" =~ ^[0-9]+$ && ! -e "$(slot_file "$dir" "$slot")" ]]; then
+			printf '%s\n' "$slot"
+			return 0
+		fi
+	fi
+	return 1
+}
+
+current_slot_from_only_auth_json() {
+	local dir="$1" file count=0
+
+	[[ -f "$dir/auth.json" ]] || return 1
+
+	shopt -s nullglob
+	for file in "$dir"/auth.[0-9]*.json; do
+		if [[ -f "$file" ]]; then
+			count=$((count + 1))
+		fi
+	done
+	shopt -u nullglob
+
+	if [[ "$count" -eq 0 ]]; then
+		printf '0\n'
+		return 0
+	fi
+	return 1
+}
+
+detect_current_slot_for_switch() {
+	local dir="$1" slot
+
+	if slot="$(current_slot_from_state "$dir")"; then
+		printf '%s\n' "$slot"
+		return 0
+	fi
+
+	if slot="$(current_slot_from_only_auth_json "$dir")"; then
+		printf '%s\n' "$slot"
+		return 0
+	fi
+
+	printf '%s: cannot infer current auth slot for %s/auth.json\n' "$(name)" "$dir" >&2
+	printf '%s: run with --switch only when auth.current names the active slot, or when only auth.json exists.\n' "$(name)" >&2
+	exit 1
+}
+
+record_current_slot() {
+	local dir="$1" slot="$2"
+	printf '%s\n' "$slot" >"$(state_file "$dir")"
+}
+
+switch_auth() {
+	local target="$1" dir target_file current current_file
+
+	validate_slot "$target"
+	dir="$(auth_dir)"
+	mkdir -p "$dir"
+	target_file="$(slot_file "$dir" "$target")"
+
+	if [[ ! -f "$dir/auth.json" ]]; then
+		target_file="$(ensure_slot_file "$target")"
+		rename_no_clobber "$target_file" "$dir/auth.json"
+		record_current_slot "$dir" "$target"
+		return 0
+	fi
+
+	current="$(detect_current_slot_for_switch "$dir")"
+	if [[ "$current" == "$target" ]]; then
+		record_current_slot "$dir" "$target"
+		return 0
+	fi
+
+	target_file="$(ensure_slot_file "$target")"
+	current_file="$(slot_file "$dir" "$current")"
+	rename_no_clobber "$dir/auth.json" "$current_file"
+	rename_no_clobber "$target_file" "$dir/auth.json"
+	record_current_slot "$dir" "$target"
+}
+
+run_with_overlay_auth() {
+	local target="$1" dir target_file overlay_dir overlay_auth_file rc path base dest
+	local -a bwrap_args
+	shift
+
+	target_file="$(ensure_slot_file "$target")"
+	dir="$(auth_dir)"
+	overlay_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-home.XXXXXX")"
+	overlay_auth_file="$overlay_dir/auth.json"
+	: >"$overlay_auth_file"
+
+	bwrap_args=(
+		--dev-bind / /
+		--setenv CODEX_HOME "$overlay_dir"
+		--bind "$target_file" "$overlay_auth_file"
+	)
+
+	shopt -s dotglob nullglob
+	for path in "$dir"/*; do
+		base="${path##*/}"
+		case "$base" in
+		auth.json | auth.current | auth.*.json)
+			continue
+			;;
+		esac
+
+		dest="$overlay_dir/$base"
+		if [[ -d "$path" ]]; then
+			mkdir -p "$dest"
+		else
+			: >"$dest"
+		fi
+		bwrap_args+=(--bind "$path" "$dest")
+	done
+	shopt -u dotglob nullglob
+
+	bwrap "${bwrap_args[@]}" -- "$CODEX_REAL" "$@"
+	rc=$?
+	rm -rf -- "$overlay_dir"
+	exit "$rc"
+}
+
+take_slot_arg() {
+	local opt="$1" value="${2:-}"
+
+	if [[ -z "$value" ]]; then
+		printf '%s: %s requires a numeric slot\n' "$(name)" "$opt" >&2
+		exit 2
+	fi
+	printf '%s\n' "$value"
+}
+
+parse_args() {
+	local arg
+	AUTH_MODE=""
+	AUTH_SLOT=""
+	CODEX_ARGS=()
+
+	while (($# > 0)); do
+		arg="$1"
+		case "$arg" in
+		-u)
+			CODEX_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+			shift
+			;;
+		-x[0-9]*)
+			AUTH_MODE="overlay"
+			AUTH_SLOT="${arg#-x}"
+			shift
+			;;
+		-x)
+			AUTH_MODE="overlay"
+			AUTH_SLOT="$(take_slot_arg "$arg" "${2:-}")"
+			shift 2
+			;;
+		-xx[0-9]*)
+			AUTH_MODE="overlay"
+			AUTH_SLOT="${arg#-xx}"
+			shift
+			;;
+		-xx)
+			AUTH_MODE="overlay"
+			AUTH_SLOT="$(take_slot_arg "$arg" "${2:-}")"
+			shift 2
+			;;
+		--switch=*)
+			AUTH_MODE="switch"
+			AUTH_SLOT="${arg#--switch=}"
+			shift
+			;;
+		--switch)
+			AUTH_MODE="switch"
+			AUTH_SLOT="$(take_slot_arg "$arg" "${2:-}")"
+			shift 2
+			;;
+		--)
+			shift
+			CODEX_ARGS+=("$@")
+			break
+			;;
+		*)
+			CODEX_ARGS+=("$arg")
+			shift
+			;;
+		esac
+	done
+}
+
+main() {
+	if [[ -z "${CODEX_REAL:-}" ]]; then
+		printf '%s: CODEX_REAL is not set\n' "$(name)" >&2
+		exit 1
+	fi
+
+	parse_args "$@"
+
+	case "$AUTH_MODE" in
+	"")
+		exec "$CODEX_REAL" "${CODEX_ARGS[@]}"
+		;;
+	overlay)
+		run_with_overlay_auth "$AUTH_SLOT" "${CODEX_ARGS[@]}"
+		;;
+	switch)
+		switch_auth "$AUTH_SLOT"
+		if ((${#CODEX_ARGS[@]} == 0)); then
+			exit 0
+		fi
+		exec "$CODEX_REAL" "${CODEX_ARGS[@]}"
+		;;
+	*)
+		usage
+		exit 2
+		;;
+	esac
+}
+
+main "$@"

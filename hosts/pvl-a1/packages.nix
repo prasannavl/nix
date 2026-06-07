@@ -210,6 +210,7 @@
       jan
       antigravity-pkgs.default
       codex
+      codex-wrapper
       gemini-cli
       claude-code
       opencode

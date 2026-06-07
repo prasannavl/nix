@@ -9,6 +9,11 @@
       path = ./tools/nixbot/default.nix;
     }
     {
+      id = "codex-wrapper";
+      path = ./tools/codex-wrapper/default.nix;
+      appName = "cr";
+    }
+    {
       id = "data-migrator";
       path = ./tools/data-migrator/default.nix;
     }
