@@ -142,6 +142,14 @@
       recreateTag = recreateTag;
     };
 
+  allowToHostProfiles = {
+    default = {
+      dhcpv4 = true;
+      dhcpv6 = true;
+      dns = true;
+    };
+  };
+
   fabricPolicyProfiles = rec {
     open = {
       forwardTo = true;
@@ -153,7 +161,7 @@
     isolated = {
       forwardTo = false;
       allowFromHost = false;
-      allowToHost = false;
+      allowToHost = allowToHostProfiles.default;
       allowToUplink = true;
       allowFromUplink = false;
     };
@@ -175,6 +183,7 @@
     quarantine =
       isolated
       // {
+        allowToHost = false;
         allowToUplink = false;
       };
   };
@@ -203,10 +212,25 @@
       then lib.remove source managedFabricNames
       else [];
 
+    normalizeAllowToHost = allowToHost:
+      if builtins.isBool allowToHost
+      then {
+        all = allowToHost;
+        services = {};
+      }
+      else {
+        all = false;
+        services = {
+          dhcpv4 = allowToHost.dhcpv4 or false;
+          dhcpv6 = allowToHost.dhcpv6 or false;
+          dns = allowToHost.dns or false;
+        };
+      };
+
     normalizePolicy = source: policy: {
       forwardTo = normalizeForwardTo source (policy.forwardTo or false);
       allowFromHost = policy.allowFromHost or false;
-      allowToHost = policy.allowToHost or false;
+      allowToHost = normalizeAllowToHost (policy.allowToHost or false);
       allowToUplink = policy.allowToUplink or false;
       allowFromUplink = policy.allowFromUplink or false;
     };
@@ -226,11 +250,22 @@
             if source == "default"
             then defaultPolicy
             else projects.${source}.network.policy or {};
+          rawAllowToHost = rawPolicy.allowToHost or false;
+          validAllowToHost =
+            if builtins.isBool rawAllowToHost
+            then true
+            else if builtins.isAttrs rawAllowToHost
+            then
+              lib.all
+              (name: builtins.elem name ["dhcpv4" "dhcpv6" "dns"])
+              (builtins.attrNames rawAllowToHost)
+              && lib.all builtins.isBool (builtins.attrValues rawAllowToHost)
+            else false;
         in
           !(
             builtins.isAttrs rawPolicy
             && builtins.isBool (rawPolicy.allowFromHost or false)
-            && builtins.isBool (rawPolicy.allowToHost or false)
+            && validAllowToHost
             && builtins.isBool (rawPolicy.allowToUplink or false)
             && builtins.isBool (rawPolicy.allowFromUplink or false)
             && (builtins.isBool (rawPolicy.forwardTo or false) || builtins.isList (rawPolicy.forwardTo or false))
@@ -281,10 +316,30 @@
       managedFabricNames
     );
 
+    fabricToHostServiceRules = builtins.concatStringsSep "\n" (
+      lib.concatMap (
+        source: let
+          services = (fabricPolicy source).allowToHost.services;
+          iface = managedFabricInterfaces.${source};
+        in
+          lib.optionals (services.dhcpv4 or false) [
+            ''iifname "${iface}" udp sport 68 udp dport 67 accept comment "allow ${source} -> host dhcpv4"''
+          ]
+          ++ lib.optionals (services.dhcpv6 or false) [
+            ''iifname "${iface}" meta nfproto ipv6 udp sport 546 udp dport 547 accept comment "allow ${source} -> host dhcpv6"''
+          ]
+          ++ lib.optionals (services.dns or false) [
+            ''iifname "${iface}" udp dport 53 accept comment "allow ${source} -> host dns udp"''
+            ''iifname "${iface}" tcp dport 53 accept comment "allow ${source} -> host dns tcp"''
+          ]
+      )
+      managedFabricNames
+    );
+
     fabricToHostDropRules = builtins.concatStringsSep "\n" (
       lib.concatMap (
         source:
-          lib.optional (!(fabricPolicy source).allowToHost)
+          lib.optional (!(fabricPolicy source).allowToHost.all)
           ''iifname "${managedFabricInterfaces.${source}}" ct state { new, untracked } drop comment "deny ${source} -> host"''
       )
       managedFabricNames
@@ -315,14 +370,42 @@
         lib.map
         (
           source:
-            if (fabricPolicy source).allowToHost
+            if (fabricPolicy source).allowToHost.all
             then managedFabricInterfaces.${source}
             else null
         )
         managedFabricNames
       );
+
+    firewallInterfaces = lib.listToAttrs (
+      lib.filter
+      (entry: entry.value != {})
+      (
+        lib.map (
+          source: let
+            allowToHost = (fabricPolicy source).allowToHost;
+            services = allowToHost.services;
+            udpPorts =
+              lib.optionals (services.dhcpv4 or false) [67]
+              ++ lib.optionals (services.dhcpv6 or false) [547]
+              ++ lib.optionals (services.dns or false) [53];
+            tcpPorts = lib.optionals (services.dns or false) [53];
+          in {
+            name = managedFabricInterfaces.${source};
+            value =
+              lib.optionalAttrs (!allowToHost.all && udpPorts != []) {
+                allowedUDPPorts = udpPorts;
+              }
+              // lib.optionalAttrs (!allowToHost.all && tcpPorts != []) {
+                allowedTCPPorts = tcpPorts;
+              };
+          }
+        )
+        managedFabricNames
+      )
+    );
   in {
-    inherit managedFabricInterfaces managedFabricNames trustedInterfaces;
+    inherit firewallInterfaces managedFabricInterfaces managedFabricNames trustedInterfaces;
     assertions = [
       {
         assertion = invalidFabricPolicyModes == [];
@@ -347,6 +430,7 @@
             ct state { established, related } accept
             ct state invalid drop
 
+            ${fabricToHostServiceRules}
             ${fabricToHostDropRules}
           }
 
@@ -405,6 +489,6 @@
         };
     };
 in {
-  inherit certsForUsers fabricPolicyProfiles mkCertDelegation mkGpuDevices mkIncusProxy mkLxc mkManagedFabricPolicy mkUserCertsForProjects;
+  inherit allowToHostProfiles certsForUsers fabricPolicyProfiles mkCertDelegation mkGpuDevices mkIncusProxy mkLxc mkManagedFabricPolicy mkUserCertsForProjects;
   certs = import ./certs.nix;
 }

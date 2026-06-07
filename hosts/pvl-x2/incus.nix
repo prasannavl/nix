@@ -324,6 +324,9 @@ in {
       }
     ];
     nftables.tables = fabricIsolation.nftablesTable;
-    firewall.trustedInterfaces = fabricIsolation.trustedInterfaces;
+    firewall = {
+      interfaces = fabricIsolation.firewallInterfaces;
+      trustedInterfaces = fabricIsolation.trustedInterfaces;
+    };
   };
 }

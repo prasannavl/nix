@@ -28,8 +28,11 @@ east-west isolation. The policy lives under `projects.<name>.network.policy`:
   initiate traffic toward.
 - `allowFromHost = true | false`: whether the parent host may initiate traffic
   to this fabric.
-- `allowToHost = true | false`: whether this fabric may initiate traffic to the
-  parent host.
+- `allowToHost = true | false | { ... }`: whether this fabric may initiate
+  traffic to the parent host. `true` allows all host-local traffic, `false`
+  denies all host-local traffic, and an attrset allows only named host-local
+  services. `incusLib.allowToHostProfiles.default` allows the managed bridge
+  infrastructure services: DHCPv4, DHCPv6, and DNS.
 - `allowToUplink = true | false`: whether this fabric may initiate traffic to
   non-managed uplink networks.
 - `allowFromUplink = true | false`: whether non-managed uplink networks may
@@ -39,7 +42,8 @@ The helper also exports reusable policy profiles through
 `incusLib.fabricPolicyProfiles`:
 
 - `open`: permissive baseline matching the earlier no-project-policy shape
-- `isolated`: no managed-fabric forwarding, no host access, uplink egress on
+- `isolated`: no managed-fabric forwarding, only default managed bridge
+  host-service access, uplink egress on
 - `isolatedPublic`: `isolated` plus uplink-originated ingress allowed
 - `contained`: `isolated` plus host-originated ingress allowed
 - `containedPublic`: `contained` plus uplink-originated ingress allowed
@@ -49,6 +53,14 @@ The default project fabric is configured separately from the tenant `projects`
 map, but uses the same policy semantics. Host-originated traffic from `pvl-x2`
 and routed traffic between the managed Incus fabrics are both gated by this
 policy helper.
+
+Service-scoped `allowToHost` profiles render both Incus fabric nftables rules
+and NixOS firewall interface allowances. nftables `accept` in one base chain
+does not bypass later base chains for the same hook, so DHCP/DNS exceptions for
+isolated bridges must be represented in `networking.firewall.interfaces` as
+well as the Incus managed-fabric table. The helper exposes this as
+`fabricIsolation.firewallInterfaces`; pvl-x2 wires it next to
+`fabricIsolation.trustedInterfaces`.
 
 Volume-backed `state` disks use the tenant pool too. When a disk device omits
 `pool`, `lib/incus` derives the pool from the resolved instance project. For
