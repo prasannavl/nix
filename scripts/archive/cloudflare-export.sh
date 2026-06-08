@@ -47,7 +47,7 @@ ensure_runtime_shell() {
 
 	command -v nix >/dev/null 2>&1 || die "Required command not found: nix"
 
-	exec nix shell --inputs-from "${REPO_ROOT}" "${runtime_packages[@]}" -c \
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${REPO_ROOT}" "${runtime_packages[@]}" -c \
 		env CF_EXPORT_IN_NIX_SHELL=1 bash "${SCRIPT_PATH}" "$@"
 }
 

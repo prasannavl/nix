@@ -211,6 +211,8 @@ render_file() {
     armv7l-linux = "${ARMHF_SERVER_HASH}";
   };
   rev = "${RESOLVED_REV}";
+  # VS Code now vendors ripgrep under @vscode/ripgrep-universal; keep the
+  # package patch aligned so search keeps working after upstream updates.
   ripgrepPath =
     {
       x86_64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-x64/rg";
@@ -333,7 +335,7 @@ ensure_runtime_shell() {
 
 	script_path="${BASH_SOURCE[0]:-$0}"
 	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
-	exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_VSCODE_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_VSCODE_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 
 main() {

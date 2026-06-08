@@ -180,7 +180,7 @@ ensure_runtime_shell() {
 	mapfile -t runtime_pkgs < <(runtime_packages)
 
 	if [[ -n "$store_dir" && -f "${store_dir}/nix-cache-info" ]]; then
-		exec nix shell \
+		exec nix --quiet --no-warn-dirty shell \
 			--option substituters "$(store_url "$store_dir")" \
 			--option require-sigs false \
 			--inputs-from "${flake_path}" \
@@ -188,7 +188,7 @@ ensure_runtime_shell() {
 			-c env HOST_MANAGER_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 	fi
 
-	exec nix shell --inputs-from "${flake_path}" "${runtime_pkgs[@]}" -c env HOST_MANAGER_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_pkgs[@]}" -c env HOST_MANAGER_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 
 # Keep in sync with runtimeInputs in pkgs/tools/host-manager/default.nix.

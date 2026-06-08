@@ -436,7 +436,7 @@ gcp_ensure_runtime_shell() {
 	fi
 
 	command -v nix >/dev/null 2>&1 || gcp_die "Required command not found: nix"
-	exec nix shell --impure --expr "$(gcp_runtime_shell_expr)" -c \
+	exec nix --quiet --no-warn-dirty shell --impure --expr "$(gcp_runtime_shell_expr)" -c \
 		env GCP_VMS_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 

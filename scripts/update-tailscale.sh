@@ -60,8 +60,7 @@ resolve_target_file() {
 }
 
 get_release_metadata() {
-	local metadata
-	local tag
+	local metadata tag
 
 	if [[ -n "$REQUESTED_VERSION" ]]; then
 		RESOLVED_VERSION="${REQUESTED_VERSION#v}"
@@ -123,8 +122,7 @@ EOF
 }
 
 compute_vendor_hash() {
-	local build_output
-	local expr_file
+	local build_output expr_file
 
 	mkdir -p "${REPO_ROOT}/tmp"
 	expr_file="$(mktemp "${REPO_ROOT}/tmp/update-tailscale-expr.XXXXXX.nix")"
@@ -202,8 +200,7 @@ EOF
 
 ensure_runtime_shell() {
 	local runtime_shell_flag="${UPDATE_TAILSCALE_IN_NIX_SHELL:-0}"
-	local script_path
-	local flake_path
+	local script_path flake_path
 	local -a runtime_packages=(
 		nixpkgs#coreutils
 		nixpkgs#curl
@@ -221,7 +218,7 @@ ensure_runtime_shell() {
 
 	script_path="${BASH_SOURCE[0]:-$0}"
 	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
-	exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_TAILSCALE_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_TAILSCALE_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 
 main() {

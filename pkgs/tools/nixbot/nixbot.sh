@@ -9089,13 +9089,13 @@ ensure_runtime_shell() {
 	script_path="${BASH_SOURCE[0]:-$0}"
 	script_dir="$(cd "$(dirname "${script_path}")" && pwd -P)"
 	if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
-		nix_shell_cmd=(nix shell "${NIXBOT_RUNTIME_INSTALLABLES[@]}")
+		nix_shell_cmd=(nix --quiet --no-warn-dirty shell "${NIXBOT_RUNTIME_INSTALLABLES[@]}")
 	else
 		flake_path="$(git -C "${script_dir}" rev-parse --show-toplevel 2>/dev/null || true)"
 		if [ -z "${flake_path}" ]; then
 			flake_path="$(cd "${script_dir}/../.." && pwd -P)"
 		fi
-		nix_shell_cmd=(nix shell --inputs-from "${flake_path}" "${NIXBOT_RUNTIME_INSTALLABLES[@]}")
+		nix_shell_cmd=(nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${NIXBOT_RUNTIME_INSTALLABLES[@]}")
 	fi
 
 	exec "${nix_shell_cmd[@]}" -c env NIXBOT_IN_NIX_SHELL=1 bash "${script_path}" "$@"

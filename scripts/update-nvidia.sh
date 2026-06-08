@@ -175,7 +175,7 @@ ensure_runtime_shell() {
 
 	script_path="${BASH_SOURCE[0]:-$0}"
 	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
-	exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_NVIDIA_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_NVIDIA_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 
 main() {
