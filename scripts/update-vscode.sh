@@ -28,22 +28,14 @@ init_vars() {
 	X64_SRC_HASH=""
 	ARM64_SRC_NAME=""
 	ARM64_SRC_HASH=""
-	DARWIN_SRC_NAME=""
-	DARWIN_SRC_HASH=""
 	DARWIN_ARM64_SRC_NAME=""
 	DARWIN_ARM64_SRC_HASH=""
-	ARMHF_SRC_NAME=""
-	ARMHF_SRC_HASH=""
 	X64_SERVER_NAME=""
 	X64_SERVER_HASH=""
 	ARM64_SERVER_NAME=""
 	ARM64_SERVER_HASH=""
-	DARWIN_SERVER_NAME=""
-	DARWIN_SERVER_HASH=""
 	DARWIN_ARM64_SERVER_NAME=""
 	DARWIN_ARM64_SERVER_HASH=""
-	ARMHF_SERVER_NAME=""
-	ARMHF_SERVER_HASH=""
 }
 
 parse_args() {
@@ -135,15 +127,11 @@ prefetch_artifact() {
 compute_hashes() {
 	prefetch_artifact "linux-x64" X64_SRC_NAME X64_SRC_HASH
 	prefetch_artifact "linux-arm64" ARM64_SRC_NAME ARM64_SRC_HASH
-	prefetch_artifact "darwin" DARWIN_SRC_NAME DARWIN_SRC_HASH
 	prefetch_artifact "darwin-arm64" DARWIN_ARM64_SRC_NAME DARWIN_ARM64_SRC_HASH
-	prefetch_artifact "linux-armhf" ARMHF_SRC_NAME ARMHF_SRC_HASH
 
 	prefetch_artifact "server-linux-x64" X64_SERVER_NAME X64_SERVER_HASH
 	prefetch_artifact "server-linux-arm64" ARM64_SERVER_NAME ARM64_SERVER_HASH
-	prefetch_artifact "server-darwin" DARWIN_SERVER_NAME DARWIN_SERVER_HASH
 	prefetch_artifact "server-darwin-arm64" DARWIN_ARM64_SERVER_NAME DARWIN_ARM64_SERVER_HASH
-	prefetch_artifact "server-linux-armhf" ARMHF_SERVER_NAME ARMHF_SERVER_HASH
 }
 
 render_file() {
@@ -159,10 +147,8 @@ render_file() {
   plat =
     {
       x86_64-linux = "linux-x64";
-      x86_64-darwin = "darwin";
       aarch64-linux = "linux-arm64";
       aarch64-darwin = "darwin-arm64";
-      armv7l-linux = "linux-armhf";
     }
     .\${
       system
@@ -170,10 +156,8 @@ render_file() {
   srcName =
     {
       x86_64-linux = "${X64_SRC_NAME}";
-      x86_64-darwin = "${DARWIN_SRC_NAME}";
       aarch64-linux = "${ARM64_SRC_NAME}";
       aarch64-darwin = "${DARWIN_ARM64_SRC_NAME}";
-      armv7l-linux = "${ARMHF_SRC_NAME}";
     }
     .\${
       system
@@ -181,34 +165,26 @@ render_file() {
   srcHash =
     {
       x86_64-linux = "${X64_SRC_HASH}";
-      x86_64-darwin = "${DARWIN_SRC_HASH}";
       aarch64-linux = "${ARM64_SRC_HASH}";
       aarch64-darwin = "${DARWIN_ARM64_SRC_HASH}";
-      armv7l-linux = "${ARMHF_SRC_HASH}";
     }
     .\${
       system
     } or throwSystem;
   serverPlat = {
     x86_64-linux = "server-linux-x64";
-    x86_64-darwin = "server-darwin";
     aarch64-linux = "server-linux-arm64";
     aarch64-darwin = "server-darwin-arm64";
-    armv7l-linux = "server-linux-armhf";
   };
   serverName = {
     x86_64-linux = "${X64_SERVER_NAME}";
-    x86_64-darwin = "${DARWIN_SERVER_NAME}";
     aarch64-linux = "${ARM64_SERVER_NAME}";
     aarch64-darwin = "${DARWIN_ARM64_SERVER_NAME}";
-    armv7l-linux = "${ARMHF_SERVER_NAME}";
   };
   serverHash = {
     x86_64-linux = "${X64_SERVER_HASH}";
-    x86_64-darwin = "${DARWIN_SERVER_HASH}";
     aarch64-linux = "${ARM64_SERVER_HASH}";
     aarch64-darwin = "${DARWIN_ARM64_SERVER_HASH}";
-    armv7l-linux = "${ARMHF_SERVER_HASH}";
   };
   rev = "${RESOLVED_REV}";
   # VS Code now vendors ripgrep under @vscode/ripgrep-universal; keep the
@@ -216,10 +192,8 @@ render_file() {
   ripgrepPath =
     {
       x86_64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-x64/rg";
-      x86_64-darwin = "Contents/Resources/app/node_modules/@vscode/ripgrep-universal/bin/darwin-x64/rg";
       aarch64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-arm64/rg";
       aarch64-darwin = "Contents/Resources/app/node_modules/@vscode/ripgrep-universal/bin/darwin-arm64/rg";
-      armv7l-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-arm/rg";
     }
     .\${
       system
@@ -295,22 +269,14 @@ EOF
   x86_64-linux app hash=$X64_SRC_HASH
   aarch64-linux app name=$ARM64_SRC_NAME
   aarch64-linux app hash=$ARM64_SRC_HASH
-  x86_64-darwin app name=$DARWIN_SRC_NAME
-  x86_64-darwin app hash=$DARWIN_SRC_HASH
   aarch64-darwin app name=$DARWIN_ARM64_SRC_NAME
   aarch64-darwin app hash=$DARWIN_ARM64_SRC_HASH
-  armv7l-linux app name=$ARMHF_SRC_NAME
-  armv7l-linux app hash=$ARMHF_SRC_HASH
   x86_64-linux server name=$X64_SERVER_NAME
   x86_64-linux server hash=$X64_SERVER_HASH
   aarch64-linux server name=$ARM64_SERVER_NAME
   aarch64-linux server hash=$ARM64_SERVER_HASH
-  x86_64-darwin server name=$DARWIN_SERVER_NAME
-  x86_64-darwin server hash=$DARWIN_SERVER_HASH
   aarch64-darwin server name=$DARWIN_ARM64_SERVER_NAME
   aarch64-darwin server hash=$DARWIN_ARM64_SERVER_HASH
-  armv7l-linux server name=$ARMHF_SERVER_NAME
-  armv7l-linux server hash=$ARMHF_SERVER_HASH
 EOF
 }
 

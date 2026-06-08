@@ -60,7 +60,7 @@ resolve_target_file() {
 }
 
 get_release_metadata() {
-	local metadata tag
+	local latest_url
 
 	if [[ -n "$REQUESTED_VERSION" ]]; then
 		RESOLVED_VERSION="${REQUESTED_VERSION#v}"
@@ -68,10 +68,14 @@ get_release_metadata() {
 		return
 	fi
 
-	metadata="$(curl -fsSL "https://api.github.com/repos/tailscale/tailscale/releases/latest")"
-	tag="$(jq -er '.tag_name' <<<"$metadata")"
-	RESOLVED_VERSION="${tag#v}"
-	RELEASE_URL="$(jq -r '.html_url // empty' <<<"$metadata")"
+	latest_url="$(
+		curl -fsSLI -o /dev/null -w "%{url_effective}" \
+			"https://github.com/tailscale/tailscale/releases/latest"
+	)"
+	[[ "$latest_url" =~ /releases/tag/v([^/]+)$ ]] || die "Could not resolve latest Tailscale release URL: $latest_url"
+
+	RESOLVED_VERSION="${BASH_REMATCH[1]}"
+	RELEASE_URL="$latest_url"
 
 	[[ -n "$RESOLVED_VERSION" ]] || die "Could not resolve latest Tailscale version"
 }
