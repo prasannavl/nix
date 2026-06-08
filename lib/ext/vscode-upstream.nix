@@ -61,6 +61,8 @@
     armv7l-linux = "sha256-HUfGNnoTGa7yJih1uy7RTnC7Sjqstq/lLY1GrQ4fQXo=";
   };
   rev = "8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e";
+  # VS Code now vendors ripgrep under @vscode/ripgrep-universal; keep the
+  # package patch aligned so search keeps working after upstream updates.
   ripgrepPath =
     {
       x86_64-linux = "resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-x64/rg";
