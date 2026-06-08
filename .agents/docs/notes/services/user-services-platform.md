@@ -143,7 +143,7 @@ service-facing ingress policy.
 
 ## Superseded notes
 
-- `docs/ai/notes/services/nginx-soft-backend-deps-2026-04.md`
+- `.agents/docs/notes/services/nginx-soft-backend-deps-2026-04.md`
 
 ## Provenance
 

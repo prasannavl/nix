@@ -48,7 +48,7 @@ playbook or README.
   `tf/cloudflare-apps` phase
 - `pkgs/cloudflare-apps/<app>/`: repo-managed Cloudflare app source trees
 - `pkgs/ext/gcp-vms/`: standalone GCP VM bootstrap and NixOS takeover scripts;
-  see `docs/ai/playbooks/gcp-ad-hoc-nixos-bootstrap.md`
+  see `.agents/docs/playbooks/gcp-ad-hoc-nixos-bootstrap.md`
 
 ## Root Flake Examples
 

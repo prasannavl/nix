@@ -57,8 +57,8 @@ policy helper.
 Service-scoped `allowToHost` profiles render both Incus fabric nftables rules
 and NixOS firewall interface allowances. nftables `accept` in one base chain
 does not bypass later base chains for the same hook, so DHCP/DNS exceptions for
-isolated bridges must be represented in `networking.firewall.interfaces` as
-well as the Incus managed-fabric table. The helper exposes this as
+isolated bridges must be represented in `networking.firewall.interfaces` as well
+as the Incus managed-fabric table. The helper exposes this as
 `fabricIsolation.firewallInterfaces`; pvl-x2 wires it next to
 `fabricIsolation.trustedInterfaces`.
 

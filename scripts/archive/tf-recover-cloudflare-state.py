@@ -998,7 +998,7 @@ def build_project_entries(workspace_root: Path, project: str, run_dir: Path) -> 
 
 
 def load_prior_manifest(repo_root: Path, source_run_id: str) -> list[dict[str, Any]]:
-    manifest_path = repo_root / "docs/ai/runs" / source_run_id / "manifest.json"
+    manifest_path = repo_root / ".agents/runs" / source_run_id / "manifest.json"
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found for prior run: {manifest_path}")
 
@@ -1674,7 +1674,7 @@ def main() -> None:
     args = parse_args()
     repo_root = Path(args.repo_root).resolve()
     run_id = args.run_id or f"tf-recover-cloudflare-state-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
-    run_dir = repo_root / "docs/ai/runs" / run_id
+    run_dir = repo_root / ".agents/runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
 
     identity = Path(os.environ.get("AGE_KEY_FILE", str(Path.home() / ".ssh" / "id_ed25519")))

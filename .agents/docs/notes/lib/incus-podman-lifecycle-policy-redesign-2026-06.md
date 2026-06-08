@@ -74,10 +74,10 @@ Known code surfaces to inspect during implementation:
 - `lib/systemd-user-manager/default.nix`
 - `hosts/abird-corp/services/stalwart/default.nix`
 - `hosts/gap3-rivendell/services/stalwart/default.nix`
-- `docs/ai/design-patterns/podman-compose-instance.md`
-- `docs/ai/notes/hosts/incus-platform-consolidated-2026-04.md`
-- `docs/ai/notes/services/user-services-platform.md`
-- `docs/ai/notes/services/systemd-user-manager.md`
+- `.agents/docs/design-patterns/podman-compose-instance.md`
+- `.agents/docs/notes/hosts/incus-platform-consolidated-2026-04.md`
+- `.agents/docs/notes/services/user-services-platform.md`
+- `.agents/docs/notes/services/systemd-user-manager.md`
 
 ## Root cause to preserve
 
@@ -508,10 +508,10 @@ generated config, and package/image changes matter.
    `recreateOnSwitch`.
 7. Migrate Podman call sites.
 8. Update current canonical docs and examples:
-   - `docs/ai/README.md`
-   - `docs/ai/design-patterns/podman-compose-instance.md`
-   - `docs/ai/notes/hosts/incus-platform-consolidated-2026-04.md`
-   - `docs/ai/notes/services/user-services-platform.md`
+   - `.agents/docs/README.md`
+   - `.agents/docs/design-patterns/podman-compose-instance.md`
+   - `.agents/docs/notes/hosts/incus-platform-consolidated-2026-04.md`
+   - `.agents/docs/notes/services/user-services-platform.md`
    - systemd-user-manager notes if the drain mapping changes
 9. Port the Incus policy to `/home/pvl/src/nix` for parent-owned guests such as
    `gap3-gondor` and `abird-nest` after the current repo change is validated.

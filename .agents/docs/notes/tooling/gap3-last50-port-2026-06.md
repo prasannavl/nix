@@ -12,6 +12,9 @@ The next refresh on 2026-06-06 reviewed `4f11011c..086549c3`, ending at
 The 2026-06-07 refresh reviewed gap3 `9a8de8de..99a9d640` from `origin/master`
 plus local gap3 `11f905d3`, which was ahead of origin in the gap3 checkout.
 
+The 2026-06-08 refresh reviewed gap3 `11f905d3..6aa0246c`, with the explicit
+last-10 commit set from `020d2bcf..6aa0246c`.
+
 Do not cherry-pick the range wholesale. Port shared library/package machinery
 byte-for-byte where this repo has no intentional divergence; adapt only local
 repo surfaces such as package manifests, image aliases, and docs.
@@ -64,7 +67,7 @@ only when classifying commits.
 - Adapted `README.md` to document the Incus image split and
   `nixbot --list-hosts` / `result-dev/<host>` behavior without importing
   unrelated upstream README drift.
-- Adapted local `docs/ai/notes/nixbot/deploy-system.md` with the upstream
+- Adapted local `.agents/docs/notes/nixbot/deploy-system.md` with the upstream
   `dev-build` result directory semantics. Skipped importing gap3's consolidated
   nixbot operations note because this repo keeps that content split into local
   note files.
@@ -236,6 +239,24 @@ only when classifying commits.
 | `2292939f` | fix(abird): mount OpenClaw config in state       | Skipped Abird OpenClaw service config.                                                                                                                                                                                                          |
 | `99a9d640` | agents: add git skills                           | Ported local agent skill files byte-for-byte.                                                                                                                                                                                                   |
 | `11f905d3` | feat(migrator): add runtime drain gate           | Adopted shared runtime migrator service/package/data-migrator integration. Shared modules are byte-identical; local adaptations are `flake.nix` module enablement, `pkgs/manifest.nix`, docs index, and formatter-only shell/Markdown wrapping. |
+
+## 2026-06-08 Refresh Disposition
+
+| Commit     | Subject                                           | Disposition                                                                                                                                                                                                     |
+| ---------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `2226b060` | feat(completions): add repo CLI completions       | Already ported locally as `a23f4f1d`; repo completion bridge and docs are present.                                                                                                                              |
+| `7a7d2f84` | style: fix repo lint                              | Already represented locally by migrator/statix formatting commits after the runtime-drain port.                                                                                                                 |
+| `279db17a` | fix(lint): check all systems pre-push             | Already ported locally as `d93723e4`; pre-push/lint all-systems behavior is present.                                                                                                                            |
+| `020d2bcf` | config(oauth2-proxy): disable debug error         | Skipped Abird oauth2-proxy host config.                                                                                                                                                                         |
+| `0cfc3ceb` | refactor(migration): cleanup stale hold files     | Skipped gap3 Abird hold-module cleanup as host-specific; this repo already has runtime migrator docs and no matching `hosts/abird-migration-hold.nix` import path.                                              |
+| `49b994dc` | config(tmux): ext keys, csi                       | Already ported locally as `a957bbd8`; user tmux CSI/ext-key settings and note are present.                                                                                                                      |
+| `ae9258d8` | feat(incus): dns, dhcp only host ingress profiles | Already ported locally as `54e869a9`; `lib/incus/lib.nix` contains the shared DNS/DHCP-only host-ingress profile helpers.                                                                                       |
+| `861967b8` | style(docs): fix markdown formatting              | Adopted in principle through the local `.agents/docs` migration and formatter pass; skipped gap3-only doc content drift.                                                                                        |
+| `29708a8a` | refactor(ai): move to .agents dir                 | Adopted in principle with local docs content: moved `docs/ai` to the canonical `.agents/docs` tree and rewired run staging to `.agents/runs`; skipped gap3's Abird-specific docs additions.                     |
+| `b64a8509` | chore: update flake, cleanup flake locks          | Adopted nested flake-lock cleanup and `scripts/update-flakes.sh` lock discovery; skipped gap3 root `flake.lock` update and preserved local `data/secrets/**/*.crt` ignore exception.                            |
+| `11b80626` | feat(age-secrets): dry run mode                   | Ported `scripts/age-secrets.sh` byte-for-byte from gap3, including `--dry-run` and quiet runtime shell reexec.                                                                                                  |
+| `148d2a03` | feat(clean-repo): script to clean up repo         | Ported `scripts/clean-repo.sh` byte-for-byte from gap3.                                                                                                                                                         |
+| `6aa0246c` | chore(bash): use quiet on reexec shell            | Ported shared quiet `nix --quiet --no-warn-dirty shell` reexec behavior; adapted to local-only updater scripts; skipped gap3 `.agents` docs and `TODO.md` removal. Kept local `nixbot` Terraform secret layout. |
 
 ## Closeout Checks
 

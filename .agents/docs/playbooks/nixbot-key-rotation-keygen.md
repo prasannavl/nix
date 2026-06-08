@@ -1,7 +1,7 @@
 # Nixbot Key Rotation Prep Playbook (Key Generation)
 
 This playbook prepares key material for
-`docs/ai/playbooks/nixbot-key-rotation-execution.md`.
+`.agents/docs/playbooks/nixbot-key-rotation-execution.md`.
 
 ## Confirmation Protocol (Mandatory)
 
@@ -168,7 +168,7 @@ Expected outcome:
 
 Use generated values with:
 
-- `docs/ai/playbooks/nixbot-key-rotation-execution.md`
+- `.agents/docs/playbooks/nixbot-key-rotation-execution.md`
 
 Recommended next sequence:
 

@@ -9,13 +9,13 @@ Usage:
 Options:
   --apply              Execute imports into the configured Terraform backends.
   --apply-from-run-id ID
-                       Reuse docs/ai/runs/<ID>/manifest.json instead of
+                       Reuse .agents/runs/<ID>/manifest.json instead of
                        re-reading modules and Cloudflare API. Requires
                        --apply.
   --project NAME       Limit to one project. Repeat for multiple projects.
                        Defaults to: cloudflare-dns, cloudflare-platform,
                        cloudflare-apps.
-  --run-id ID          Override the run/session id used under docs/ai/runs/.
+  --run-id ID          Override the run/session id used under .agents/runs/.
   --keep-workspace     Keep the temporary planning workspace under tmp/.
   -h, --help
 
@@ -27,7 +27,7 @@ Behavior:
     the full desired address set even when the live backend state is missing or
     partial.
   - It writes a recovery manifest and shell command list under
-    docs/ai/runs/<run-id>/.
+    .agents/runs/<run-id>/.
 EOF
 }
 
@@ -60,7 +60,7 @@ ensure_runtime_shell() {
 
 	command -v nix >/dev/null 2>&1 || die "Required command not found: nix"
 
-	exec nix shell --inputs-from "${REPO_ROOT}" "${runtime_packages[@]}" -c \
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${REPO_ROOT}" "${runtime_packages[@]}" -c \
 		env TF_RECOVER_IN_NIX_SHELL=1 bash "${SCRIPT_PATH}" "$@"
 }
 

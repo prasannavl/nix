@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Apply these rules to Markdown files, especially `docs/ai/**/*.md`.
+- Apply these rules to Markdown files, especially `.agents/docs/**/*.md`.
 
 ## Formatting authority
 
@@ -26,7 +26,7 @@
 ## Writing conventions
 
 - Keep headings, lists, and fenced code blocks in formatter-stable form.
-- Prefer concise durable prose in `docs/ai` notes and playbooks; avoid
+- Prefer concise durable prose in `.agents/docs` notes and playbooks; avoid
   conversational filler.
-- When updating `docs/ai`, keep `docs/ai/README.md` in sync with file adds,
-  removals, renames, or moves.
+- When updating `.agents/docs`, keep `.agents/docs/README.md` in sync with file
+  adds, removals, renames, or moves.

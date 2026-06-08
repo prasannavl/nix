@@ -58,8 +58,8 @@ scripts.
 
 ## Source of truth files
 
-- `docs/ai/lang-patterns/bash.md`
-- `docs/ai/lang-patterns/markdown.md`
+- `.agents/docs/lang-patterns/bash.md`
+- `.agents/docs/lang-patterns/markdown.md`
 - `scripts/lint.sh`
 - `scripts/fmt.sh`
 - `scripts/git-install-hooks.sh`

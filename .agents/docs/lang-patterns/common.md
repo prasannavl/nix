@@ -31,4 +31,4 @@
 ## Supporting analysis
 
 - For the durable repo tooling and formatting contract that applies this
-  recommendation, see `docs/ai/notes/tooling/repo-tooling.md`.
+  recommendation, see `.agents/docs/notes/tooling/repo-tooling.md`.

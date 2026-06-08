@@ -42,7 +42,7 @@ and documentation sanitization rules for infra-facing docs.
 ## State migration and import safety
 
 - Selective Terraform state migration should remain plan-first and write only to
-  `docs/ai/runs/` during planning.
+  `.agents/runs/` during planning.
 - Generate import and removal steps separately so the target state can be
   verified before source-side deletion.
 - Provider-specific import ID quirks and `-var-file` path rules should stay in
@@ -64,9 +64,9 @@ and documentation sanitization rules for infra-facing docs.
 - `tf/gcp-platform/**`
 - `tf/modules/cloudflare/**`
 - `tf/modules/gcp/**`
-- `docs/ai/playbooks/cloudflare-state-adoption.md`
-- `docs/ai/playbooks/cloudflare-apps.md`
-- `docs/ai/playbooks/cloudflare-email-routing.md`
+- `.agents/docs/playbooks/cloudflare-state-adoption.md`
+- `.agents/docs/playbooks/cloudflare-apps.md`
+- `.agents/docs/playbooks/cloudflare-email-routing.md`
 
 ## Provenance
 

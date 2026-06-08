@@ -2,33 +2,33 @@
 
 ## Goal
 
-Periodically compress `docs/ai` back into a smaller canonical set by merging
-completed `notes` and `runs` into durable notes, keeping reusable procedures in
-`playbooks`, and updating the top-level index.
+Periodically compress `.agents/docs` back into a smaller canonical set by
+merging completed `notes` and `runs` into durable notes, keeping reusable
+procedures in `playbooks`, and updating the top-level index.
 
 ## When To Run
 
 Run this playbook when one or more of these are true:
 
-- `docs/ai/notes/` has accumulated several small overlapping notes in the same
-  topic area.
-- `docs/ai/runs/` contains completed session artifacts that should no longer be
+- `.agents/docs/notes/` has accumulated several small overlapping notes in the
+  same topic area.
+- `.agents/runs/` contains completed session artifacts that should no longer be
   treated as active staging state.
-- `docs/ai/README.md` has become noisy, flat, or out of sync with the current
-  canonical files.
+- `.agents/docs/README.md` has become noisy, flat, or out of sync with the
+  current canonical files.
 - A migration or investigation thread has stabilized and should be represented
   by one durable note instead of many incremental fragments.
 
 ## Core rules
 
-1. Keep `docs/ai/playbooks/` for reusable, execution-oriented procedures.
-2. Keep `docs/ai/notes/` for durable task memory, design decisions, lessons, and
-   final state.
-3. Treat `docs/ai/runs/` as temporary staging or short-lived execution history.
+1. Keep `.agents/docs/playbooks/` for reusable, execution-oriented procedures.
+2. Keep `.agents/docs/notes/` for durable task memory, design decisions,
+   lessons, and final state.
+3. Treat `.agents/runs/` as temporary staging or short-lived execution history.
    Once the outcome is durable and settled, fold the important content back into
    notes and remove the run artifacts.
-4. Update `docs/ai/README.md` whenever files are added, removed, renamed, or
-   moved.
+4. Update `.agents/docs/README.md` whenever files are added, removed, renamed,
+   or moved.
 5. Preserve only short provenance in canonical notes; do not keep multiple full
    copies of the same story.
 6. Sanitize durable docs so concrete hostnames, domains, bucket names, Worker
@@ -39,11 +39,12 @@ Run this playbook when one or more of these are true:
 ## Preparation
 
 1. Read `AGENTS.md`.
-2. Read `docs/ai/README.md` first to understand the current documented shape.
+2. Read `.agents/docs/README.md` first to understand the current documented
+   shape.
 3. List the current contents of:
-   - `docs/ai/notes/`
-   - `docs/ai/playbooks/`
-   - `docs/ai/runs/`
+   - `.agents/docs/notes/`
+   - `.agents/docs/playbooks/`
+   - `.agents/runs/`
 4. Identify topic clusters with duplicated or incremental notes.
 5. Check whether any `runs/` entries are still active staging work before
    deleting or folding them back.
@@ -104,9 +105,9 @@ Before finalizing any surviving note or playbook:
 For each document being reviewed:
 
 1. If it is a step-by-step reusable operating procedure, it belongs in
-   `docs/ai/playbooks/`.
+   `.agents/docs/playbooks/`.
 2. If it is a summary of what was learned, decided, or implemented, it belongs
-   in `docs/ai/notes/`.
+   in `.agents/docs/notes/`.
 3. If a note has drifted into procedure-heavy content, either trim it back to
    durable memory or extract the repeatable procedure into a playbook.
 
@@ -128,26 +129,27 @@ For each completed run folder:
 
 ### 5. Clean the index
 
-1. Rewrite `docs/ai/README.md` into grouped sections when helpful.
+1. Rewrite `.agents/docs/README.md` into grouped sections when helpful.
 2. Keep the index concise and pointed at canonical files.
 3. Do not keep completed run artifacts indexed once they have been folded back
    into notes.
-4. Make sure every surviving `docs/ai/**` doc that should be discoverable is
-   represented in the index.
+4. Make sure every surviving `.agents/docs/**` doc that should be discoverable
+   is represented in the index.
 5. Make sure index descriptions also stay generic and do not reintroduce live
    identifiers through summaries.
 
 ## Verification
 
-1. Re-list `docs/ai/notes/`, `docs/ai/playbooks/`, and `docs/ai/runs/`.
-2. Confirm the surviving files match the updated `docs/ai/README.md`.
+1. Re-list `.agents/docs/notes/`, `.agents/docs/playbooks/`, and
+   `.agents/runs/`.
+2. Confirm the surviving files match the updated `.agents/docs/README.md`.
 3. Confirm each remaining doc has a clear home:
    - note
    - playbook
    - active run staging artifact
 4. Confirm the canonical notes still contain the important final state from any
    deleted note or run manifest.
-5. If `docs/ai/runs/` is empty after cleanup, leave it empty rather than
+5. If `.agents/runs/` is empty after cleanup, leave it empty rather than
    reintroducing placeholder clutter.
 6. Confirm the surviving docs use generic role-based placeholders instead of
    live hostnames, domains, or other operational names where possible.
@@ -159,7 +161,7 @@ For each completed run folder:
 
 A successful run of this playbook should leave:
 
-- fewer overlapping files under `docs/ai/notes/`
-- only reusable procedures under `docs/ai/playbooks/`
-- little or nothing under `docs/ai/runs/` unless active staging is in progress
-- an updated `docs/ai/README.md` that points at the current canonical set
+- fewer overlapping files under `.agents/docs/notes/`
+- only reusable procedures under `.agents/docs/playbooks/`
+- little or nothing under `.agents/runs/` unless active staging is in progress
+- an updated `.agents/docs/README.md` that points at the current canonical set

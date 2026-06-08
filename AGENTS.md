@@ -2,35 +2,36 @@
 
 ## Tasks management
 
-- Use `docs/ai/` to document tasks and related context.
-- Use `docs/ai/README.md` as the canonical top-level index of `docs/ai/**`.
+- Use `.agents/docs/` to document tasks and related context.
+- Use `.agents/docs/README.md` as the canonical top-level index of
+  `.agents/docs/**`.
   - Keep it updated whenever files are added, removed, renamed, or moved under
-    `docs/ai`.
+    `.agents/docs`.
   - Agents should consult this index first to decide what to load into context.
-- Use `docs/ai/lang-patterns/` for language-specific coding rules and
+- Use `.agents/docs/lang-patterns/` for language-specific coding rules and
   conventions.
   - When working in a language, agents should scan the matching
-    `docs/ai/lang-patterns/<language>.md` files before editing.
+    `.agents/docs/lang-patterns/<language>.md` files before editing.
   - If a relevant language-pattern file does not exist yet and the user defines
     durable rules for that language, create it and update the index.
-- Look at `docs/ai/design-patterns/` for system design and architectural rules
-  and conventions relevant to the task.
-- Use `docs/ai/playbooks` for user-defined, reusable processes.
+- Look at `.agents/docs/design-patterns/` for system design and architectural
+  rules and conventions relevant to the task.
+- Use `.agents/docs/playbooks` for user-defined, reusable processes.
   - When a user asks to "record a process" (or equivalent), create/update a
     playbook here.
   - Playbooks should be execution-oriented so an agent can run them step-by-step
     later.
   - If a user tweaks a process, update the same playbook (or create a clear
     versioned successor) so the latest procedure is explicit.
-- Use `docs/ai/notes` for task-specific memory and decision logs.
+- Use `.agents/docs/notes` for task-specific memory and decision logs.
   - Record user interventions, changes in direction, constraints, and key
     decisions.
   - Keep notes scoped to a specific task (one task-focused file, not mixed notes
     across unrelated tasks).
-- Use `docs/ai/runs/<session>` as a staging area for temporary edits (inside
-  `docs/ai` or elsewhere) when multiple agents are working in parallel.
+- Use `.agents/runs/<session>` as a staging area for temporary edits (inside
+  `.agents/docs` or elsewhere) when multiple agents are working in parallel.
   - Near completion, replace target files as atomically as possible.
-  - If atomic replacement is not possible, use `docs/ai/runs/locks` for
+  - If atomic replacement is not possible, use `.agents/runs/locks` for
     cross-agent file/folder locks.
 - For tasks that require multiple steps, or multiple file edits, use a git
   worktree at `worktrees/<session>`, so multiple agents can work in parallel.

@@ -26,7 +26,7 @@ application wiring, concrete stack registry values, or encrypted secrets.
   stack `trustedCaDefaults`, trusted-CA file-secret conversion, generated mount
   and runtime trust environment overrides, source-hash restart detection, and
   `proxyBuffering` exposed-port metadata.
-- `docs/nginx.md` and `docs/ai/design-patterns/podman-compose-instance.md`
+- `docs/nginx.md` and `.agents/docs/design-patterns/podman-compose-instance.md`
   document the reusable redirect, buffering, and trusted-CA surfaces.
 
 ## Skipped

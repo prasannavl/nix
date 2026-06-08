@@ -69,7 +69,7 @@ def read_json(path: Path) -> Any:
 
 
 def load_prior_run_bundle(repo_root: Path, run_id: str, projects: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    run_dir = repo_root / "docs/ai/runs" / run_id
+    run_dir = repo_root / ".agents/runs" / run_id
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found for prior run: {manifest_path}")
@@ -540,7 +540,7 @@ def main() -> None:
     args = parse_args()
     repo_root = Path(args.repo_root).resolve()
     run_id = args.run_id or f"tf-plan-cloudflare-state-migration-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
-    run_dir = repo_root / "docs/ai/runs" / run_id
+    run_dir = repo_root / ".agents/runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
 
     projects = args.projects or DEFAULT_PROJECTS

@@ -26,8 +26,8 @@ Canonical SSH deploy-key rotation policy for `nixbot`.
 
 ## Execution surface
 
-- `docs/ai/playbooks/nixbot-key-rotation-keygen.md`
-- `docs/ai/playbooks/nixbot-key-rotation-execution.md`
+- `.agents/docs/playbooks/nixbot-key-rotation-keygen.md`
+- `.agents/docs/playbooks/nixbot-key-rotation-execution.md`
 
 ## Source of truth files
 

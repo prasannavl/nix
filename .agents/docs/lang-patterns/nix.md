@@ -172,6 +172,7 @@
 - For AI-driven validation, do not use `path:` as the live-untracked escape
   hatch. Use `.`, an absolute repo path, or an intentional `git+file:///...`
   ref; if untracked files seem required, stop and make the state explicit first.
-  See `docs/ai/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
-- Lock files are committed. Run `nix flake update` or `scripts/update-flakes.sh`
-  to refresh them.
+  See `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
+- The root `flake.lock` is committed. Child-flake `flake.lock` files are
+  generated local state and ignored; run `scripts/update-flakes.sh` to refresh
+  existing locks without creating new tracked child locks.

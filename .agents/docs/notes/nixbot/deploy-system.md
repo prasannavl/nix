@@ -211,7 +211,7 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 ## Key rotation
 
 - Overlap rotation is the default for SSH deploy keys.
-- Keep design memory in `docs/ai/notes/nixbot/key-rotation.md` and the
+- Keep design memory in `.agents/docs/notes/nixbot/key-rotation.md` and the
   step-by-step execution in the key-rotation playbooks.
 
 ## Source of truth files

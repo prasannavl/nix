@@ -14,19 +14,19 @@ Options:
                            Repeatable.
   --address-contains TEXT  Select resources whose address or desired metadata
                            mentions the given text. Repeatable.
-  --from-run-id ID         Reuse docs/ai/runs/<ID>/manifest.json and desired
+  --from-run-id ID         Reuse .agents/runs/<ID>/manifest.json and desired
                            inventories instead of rebuilding from the repo/API.
   --project NAME           Limit to one project. Repeat for multiple projects.
                            Defaults to: cloudflare-dns, cloudflare-platform,
                            cloudflare-apps.
-  --run-id ID              Override the run/session id used under docs/ai/runs/.
+  --run-id ID              Override the run/session id used under .agents/runs/.
   --keep-workspace         Keep the temporary planning workspace under tmp/
                            when rebuilding inventory from the repo/API.
   -h, --help
 
 Behavior:
   - This script is planning-only by default and does not mutate Terraform state.
-  - It writes a selective migration plan under docs/ai/runs/<run-id>/:
+  - It writes a selective migration plan under .agents/runs/<run-id>/:
     - selected-manifest.json
     - import-into-target.sh
     - remove-from-source.sh
@@ -65,7 +65,7 @@ ensure_runtime_shell() {
 
 	command -v nix >/dev/null 2>&1 || die "Required command not found: nix"
 
-	exec nix shell --inputs-from "${REPO_ROOT}" "${runtime_packages[@]}" -c \
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${REPO_ROOT}" "${runtime_packages[@]}" -c \
 		env TF_PLAN_MIGRATE_IN_NIX_SHELL=1 bash "${SCRIPT_PATH}" "$@"
 }
 

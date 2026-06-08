@@ -70,8 +70,8 @@ of the dashboard.
    - `nix shell nixpkgs#opentofu -c tofu -chdir=tf/cloudflare-platform init`
    - `nix shell nixpkgs#opentofu -c tofu -chdir=tf/cloudflare-apps init`
 4. Snapshot the current remote states before each wave:
-   - `tofu -chdir=tf/cloudflare-platform state pull > docs/ai/runs/<session>/cloudflare-platform.tfstate.json`
-   - `tofu -chdir=tf/cloudflare-apps state pull > docs/ai/runs/<session>/cloudflare-apps.tfstate.json`
+   - `tofu -chdir=tf/cloudflare-platform state pull > .agents/runs/<session>/cloudflare-platform.tfstate.json`
+   - `tofu -chdir=tf/cloudflare-apps state pull > .agents/runs/<session>/cloudflare-apps.tfstate.json`
 5. Do not run `apply` for a phase until its import wave finishes and `plan`
    shows no unintentional creates or destroys.
 
@@ -219,7 +219,7 @@ If an import was attached to the wrong address:
 
 ## Import Manifest Guidance
 
-Build a session-local manifest under `docs/ai/runs/<session>/` before executing
+Build a session-local manifest under `.agents/runs/<session>/` before executing
 imports. Each row should capture:
 
 - project

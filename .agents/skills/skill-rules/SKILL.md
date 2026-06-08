@@ -40,7 +40,7 @@ it contains `Abird:` or any other colon-bearing prefix.
 Do not put user-specific absolute paths in skill definitions. Use
 `current
 repository root`, `.agents/skills`, or repo-relative paths such as
-`docs/ai/README.md`.
+`.agents/docs/README.md`.
 
 ## OpenAI Metadata
 

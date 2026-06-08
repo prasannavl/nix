@@ -152,11 +152,11 @@ stack wiring.
 
 ## Superseded notes
 
-- `docs/ai/notes/lib/service-lib-gap3-instantiation-2026-04.md`
-- `docs/ai/notes/lib/package-client-identity-installed-package-gating-2026-04.md`
-- `docs/ai/notes/lib/flake-system-specific-host-modules-2026-04.md`
-- `docs/ai/notes/services/package-owned-nixos-modules-passthru-2026-04.md`
-- `docs/ai/notes/services/package-user-services-gap3-2026-04.md`
+- `.agents/docs/notes/lib/service-lib-gap3-instantiation-2026-04.md`
+- `.agents/docs/notes/lib/package-client-identity-installed-package-gating-2026-04.md`
+- `.agents/docs/notes/lib/flake-system-specific-host-modules-2026-04.md`
+- `.agents/docs/notes/services/package-owned-nixos-modules-passthru-2026-04.md`
+- `.agents/docs/notes/services/package-user-services-gap3-2026-04.md`
 
 ## Provenance
 
