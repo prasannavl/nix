@@ -7,8 +7,8 @@ die() {
 }
 
 init_vars() {
-	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
-	TARGET_DIR="${REPO_ROOT}/pkgs/ext"
+	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd -P)"
+	TARGET_DIR="${REPO_ROOT}/lib/ext"
 }
 
 ensure_runtime_shell() {
@@ -28,7 +28,7 @@ ensure_runtime_shell() {
 		die "Required command not found: nix"
 	fi
 	script_path="${BASH_SOURCE[0]:-$0}"
-	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
+	flake_path="$(cd "$(dirname "${script_path}")/../.." && pwd -P)"
 	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_FETCHZIP_HASHES_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 
@@ -45,7 +45,7 @@ main() {
 	if [[ -d "$TARGET_DIR" ]]; then
 		while IFS= read -r -d '' file; do
 			target_files+=("$file")
-		done < <(find "$TARGET_DIR" -maxdepth 1 -type f -name '*.nix' -print0)
+		done < <(find "$TARGET_DIR" -type f -name '*.nix' -print0)
 	fi
 
 	if [[ "${#target_files[@]}" -eq 0 ]]; then

@@ -3,12 +3,12 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: update-gnome-ext.sh [--file PATH] [--version VERSION]
+Usage: lib/ext/gnome-ext/update.sh [--file PATH] [--version VERSION]
 By default, updates all known extensions. Optionally specify a single file to update.
 Examples:
-  update-gnome-ext.sh
-  update-gnome-ext.sh --file lib/ext/p7-borders.nix
-  update-gnome-ext.sh --file lib/ext/p7-cmds.nix --version 30
+  lib/ext/gnome-ext/update.sh
+  lib/ext/gnome-ext/update.sh --file lib/ext/gnome-ext/p7-borders.nix
+  lib/ext/gnome-ext/update.sh --file lib/ext/gnome-ext/p7-cmds.nix --version 30
 EOF
 }
 
@@ -18,10 +18,10 @@ die() {
 }
 
 init_vars() {
-	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
+	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
 	DEFAULT_FILES=(
-		"${REPO_ROOT}/lib/ext/p7-borders.nix"
-		"${REPO_ROOT}/lib/ext/p7-cmds.nix"
+		"${REPO_ROOT}/lib/ext/gnome-ext/p7-borders.nix"
+		"${REPO_ROOT}/lib/ext/gnome-ext/p7-cmds.nix"
 	)
 	TARGET_FILE=""
 	REQUESTED_VERSION=""
@@ -142,7 +142,7 @@ ensure_runtime_shell() {
 	fi
 
 	script_path="${BASH_SOURCE[0]:-$0}"
-	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
+	flake_path="$(cd "$(dirname "${script_path}")/../../.." && pwd -P)"
 	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_GNOME_EXT_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 

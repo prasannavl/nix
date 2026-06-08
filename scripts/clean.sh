@@ -4,7 +4,7 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  scripts/clean-repo.sh [options]
+  scripts/clean.sh [options]
 
 Modes:
   (default)     Recursive cleanup.

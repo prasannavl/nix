@@ -3,11 +3,11 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: update-vscode.sh [--version VERSION] [--file PATH]
+Usage: lib/ext/vscode/update.sh [--version VERSION] [--file PATH]
 Examples:
-  update-vscode.sh
-  update-vscode.sh --version 1.112.0
-  update-vscode.sh --file lib/ext/vscode-upstream.nix
+  lib/ext/vscode/update.sh
+  lib/ext/vscode/update.sh --version 1.112.0
+  lib/ext/vscode/update.sh --file lib/ext/vscode/default.nix
 EOF
 }
 
@@ -17,8 +17,8 @@ die() {
 }
 
 init_vars() {
-	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
-	TARGET_FILE="${REPO_ROOT}/lib/ext/vscode-upstream.nix"
+	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/vscode/default.nix"
 	REQUESTED_VERSION=""
 	RESOLVED_TARGET_FILE=""
 	RESOLVED_VERSION=""
@@ -300,7 +300,7 @@ ensure_runtime_shell() {
 	fi
 
 	script_path="${BASH_SOURCE[0]:-$0}"
-	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
+	flake_path="$(cd "$(dirname "${script_path}")/../../.." && pwd -P)"
 	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_VSCODE_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 

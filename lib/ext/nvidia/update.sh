@@ -3,11 +3,11 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: update-nvidia.sh [--version VERSION] [--file PATH]
+Usage: lib/ext/nvidia/update.sh [--version VERSION] [--file PATH]
 Examples:
-  update-nvidia.sh
-  update-nvidia.sh --version 580.126.09
-  update-nvidia.sh --file lib/ext/nvidia-driver.nix
+  lib/ext/nvidia/update.sh
+  lib/ext/nvidia/update.sh --version 580.126.09
+  lib/ext/nvidia/update.sh --file lib/ext/nvidia/default.nix
 EOF
 }
 
@@ -17,9 +17,9 @@ die() {
 }
 
 init_vars() {
-	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd -P)"
+	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
 	BASE_INDEX_URL="https://download.nvidia.com/XFree86/Linux-x86_64/"
-	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia-driver.nix"
+	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia/default.nix"
 	REQUESTED_VERSION=""
 	RUNFILE_URL=""
 	OPEN_URL=""
@@ -174,7 +174,7 @@ ensure_runtime_shell() {
 	fi
 
 	script_path="${BASH_SOURCE[0]:-$0}"
-	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
+	flake_path="$(cd "$(dirname "${script_path}")/../../.." && pwd -P)"
 	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env UPDATE_NVIDIA_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 

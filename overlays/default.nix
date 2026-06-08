@@ -11,14 +11,14 @@
   (
     final: _prev: {
       handbrake-wrapped = final.callPackage ../lib/ext/handbrake.nix {};
-      tailscale-upstream = final.callPackage ../lib/ext/tailscale-upstream.nix {
+      tailscale-upstream = final.callPackage ../lib/ext/tailscale {
         tailscale = final.unstable.tailscale;
       };
       tailscale = final.tailscale-upstream;
-      vscode-upstream = final.callPackage ../lib/ext/vscode-upstream.nix {};
+      vscode-upstream = final.callPackage ../lib/ext/vscode {};
       zed-wrapped = final.callPackage ../lib/ext/zed.nix {};
       nvidiaCustomForKernel = kernelPackages:
-        final.callPackage ../lib/ext/nvidia-driver.nix {inherit kernelPackages;};
+        final.callPackage ../lib/ext/nvidia {inherit kernelPackages;};
       nvidia-custom = final.nvidiaCustomForKernel final.linuxPackages;
     }
   )
