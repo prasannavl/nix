@@ -4,13 +4,13 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  scripts/age-secrets.sh [-v] encrypt [path ...]
-  scripts/age-secrets.sh [-v] decrypt [path ...]
-  scripts/age-secrets.sh [-v] clean [path ...]
-  scripts/age-secrets.sh [-v] -e [path ...]
-  scripts/age-secrets.sh [-v] -d [path ...]
-  scripts/age-secrets.sh [-v] -c [path ...]
-  scripts/age-secrets.sh [-v] [path ...]
+  scripts/age-secrets.sh [-n] [-v] encrypt [path ...]
+  scripts/age-secrets.sh [-n] [-v] decrypt [path ...]
+  scripts/age-secrets.sh [-n] [-v] clean [path ...]
+  scripts/age-secrets.sh [-n] [-v] -e [path ...]
+  scripts/age-secrets.sh [-n] [-v] -d [path ...]
+  scripts/age-secrets.sh [-n] [-v] -c [path ...]
+  scripts/age-secrets.sh [-n] [-v] [path ...]
 Behavior:
   encrypt   Encrypts managed plaintext files to managed *.age files.
   decrypt   Decrypts managed *.age files to plaintext alongside them (drops .age suffix).
@@ -24,6 +24,7 @@ Notes:
   - decrypt uses AGE_KEY_FILE, or defaults to ~/.ssh/id_ed25519.
   - decrypt continues across other files even if one file fails to decrypt.
   - use -v / --verbose to print per-file decrypt failures and other detailed logs.
+  - use -n / --dry-run to print planned file actions without changing files.
   - clean only deletes plaintext siblings of managed *.age files.
 EOF
 }
@@ -42,6 +43,7 @@ init_vars() {
 	MANAGED_SECRETS_FILE="${REPO_ROOT}/data/secrets/default.nix"
 	AGE_DECRYPT_IDENTITY_FILE="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
 	VERBOSE="${VERBOSE:-0}"
+	DRY_RUN="${DRY_RUN:-0}"
 }
 
 repo_root() {
@@ -193,10 +195,12 @@ parse_args() {
 	local mode_name="$1"
 	local target_paths_name="$2"
 	local verbose_name="$3"
-	shift 3
+	local dry_run_name="$4"
+	shift 4
 	local raw_mode
 	local parsed_mode=""
 	local parsed_verbose="0"
+	local parsed_dry_run="0"
 	local arg
 	local -a positionals=()
 	local -a parsed_target_paths=()
@@ -205,6 +209,7 @@ parse_args() {
 	for arg in "$@"; do
 		case "$arg" in
 		-v | --verbose) parsed_verbose="1" ;;
+		-n | --dry-run) parsed_dry_run="1" ;;
 		*) positionals+=("$arg") ;;
 		esac
 	done
@@ -251,6 +256,7 @@ parse_args() {
 	# shellcheck disable=SC2034
 	target_paths_ref=("${parsed_target_paths[@]}")
 	printf -v "$verbose_name" '%s' "$parsed_verbose"
+	printf -v "$dry_run_name" '%s' "$parsed_dry_run"
 }
 
 ensure_decrypt_identity_file() {
@@ -361,6 +367,7 @@ run_mode() {
 	local f
 	local -a failed_files=()
 	local success_count=0
+	local rel_f
 
 	if [ "${#files[@]}" -eq 0 ]; then
 		report_no_mode_files "$mode" "$target_label"
@@ -370,13 +377,24 @@ run_mode() {
 	case "$mode" in
 	encrypt)
 		for f in "${files[@]}"; do
+			if [ "$DRY_RUN" = "1" ]; then
+				echo "encrypt: ${f} -> ${f}.age"
+				continue
+			fi
 			encrypt_file "$root" "$recipients_json" "$f"
 		done
 		;;
 	decrypt)
-		ensure_decrypt_identity_file
-		echo "decrypt identity: ${AGE_DECRYPT_IDENTITY_FILE}"
+		if [ "$DRY_RUN" = "0" ]; then
+			ensure_decrypt_identity_file
+			echo "decrypt identity: ${AGE_DECRYPT_IDENTITY_FILE}"
+		fi
 		for f in "${files[@]}"; do
+			if [ "$DRY_RUN" = "1" ]; then
+				echo "decrypt: ${f} -> ${f%.age}"
+				success_count=$((success_count + 1))
+				continue
+			fi
 			if ! decrypt_file "$f"; then
 				failed_files+=("$f")
 			else
@@ -391,6 +409,11 @@ run_mode() {
 		;;
 	clean)
 		for f in "${files[@]}"; do
+			if [ "$DRY_RUN" = "1" ]; then
+				rel_f="$(rel_from_root "$root" "$f")"
+				echo "- ${rel_f}"
+				continue
+			fi
 			echo "clean: removing ${f}"
 			rm -f -- "$f"
 		done
@@ -422,13 +445,14 @@ ensure_runtime_shell() {
 
 	script_path="${BASH_SOURCE[0]:-$0}"
 	flake_path="$(cd "$(dirname "${script_path}")/.." && pwd -P)"
-	exec nix shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env AGE_SECRETS_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env AGE_SECRETS_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 
 main() {
 	local mode=""
 	local target_label=""
 	local requested_mode=""
+	local dry_run="0"
 	local verbose="0"
 	local recipients_json
 	local -a files=()
@@ -442,7 +466,7 @@ main() {
 
 	ensure_runtime_shell "$@"
 	init_vars
-	parse_args mode target_paths verbose "$@"
+	parse_args mode target_paths verbose dry_run "$@"
 	requested_mode="$mode"
 
 	require_cmd age
@@ -451,6 +475,7 @@ main() {
 	require_cmd nix
 	require_cmd realpath
 	VERBOSE="$verbose"
+	DRY_RUN="$dry_run"
 	resolve_target_paths resolved_target_paths "${target_paths[@]}"
 	if [ "${#resolved_target_paths[@]}" -gt 0 ]; then
 		target_label="${resolved_target_paths[*]}"
