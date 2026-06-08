@@ -5,6 +5,8 @@
 result/
 result-*
 .direnv/
+flake.lock
+!/flake.lock
 
 # Secrets
 data/secrets/**

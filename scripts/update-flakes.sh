@@ -12,8 +12,9 @@ find_flakes() {
 		dirs+=("$(dirname "$f")")
 	done < <(
 		find "$REPO_ROOT" \
-			-path '*/worktree' -prune -o \
-			-name flake.nix -print0
+			-path '*/worktrees' -prune -o \
+			-path '*/target' -prune -o \
+			-name flake.lock -print0
 	)
 	printf '%s\n' "${dirs[@]}"
 }
