@@ -4,25 +4,25 @@
   stdenvNoCC,
 }: let
   pname = "stalwart-cli";
-  version = "1.0.6";
+  version = "1.0.8";
   platform = stdenvNoCC.hostPlatform.system;
   release =
     {
       x86_64-linux = {
         target = "x86_64-unknown-linux-musl";
-        hash = "sha256-Ln+fAcSmJmwoLUqfH+ezzEmmdcor4GWancxlrIq6AQM=";
+        hash = "sha256-PZE6eoHxNkAczQml1FUQb2dVzbqLaca5NIRfIMNa1KY=";
       };
       aarch64-linux = {
         target = "aarch64-unknown-linux-musl";
-        hash = "sha256-ONUuv5Z/PJ658bz/XISwRrqtp4gQ+kqmORwZj7GikeE=";
+        hash = "sha256-fqP7v2czeVBPuJgd6W1Er2ZNRndn23XkhBfyBNYtGUk=";
       };
       x86_64-darwin = {
         target = "x86_64-apple-darwin";
-        hash = "sha256-5I/5YJBIuyGsT89cul4T3iPD/4VjCDeaq00h+CWAwqM=";
+        hash = "sha256-jLdXaCxzvs7yC/rp1AVODLpxazUq2yVuWPCpSqoUGsM=";
       };
       aarch64-darwin = {
         target = "aarch64-apple-darwin";
-        hash = "sha256-LIUNiWdwZkuScPf8mGKcE8ausN8ecKmopnXRUwLJ6HI=";
+        hash = "sha256-q25seOD2Y4hw65x/LVg9Mc0I9th8xlH6NWs5I28HRrY=";
       };
     }.${
       platform

@@ -58,9 +58,9 @@ or live-system changes unless the user explicitly approved that exact operation.
 ## Abird Repository Rules
 
 Default to the current repository root when the request does not name another
-worktree. Consult `.agents/docs/README.md` before repo-specific work and load only
-the relevant notes, design patterns, playbooks, or language pattern files needed
-for the commit/sync task.
+worktree. Consult `.agents/docs/README.md` before repo-specific work and load
+only the relevant notes, design patterns, playbooks, or language pattern files
+needed for the commit/sync task.
 
 For Nix validation, never use explicit `path:` flake refs. Use `.` from the repo
 root, an absolute repo path without a `path:` prefix from outside the repo, or
