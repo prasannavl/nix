@@ -70,11 +70,14 @@
       url = "github:noctalia-dev/noctalia-shell";
       inputs = {
         nixpkgs.follows = "nixpkgs";
-        noctalia-qs.inputs = {
-          systems.follows = "systems";
-          treefmt-nix = {
-            follows = "treefmt-nix";
-            inputs.nixpkgs.follows = "nixpkgs";
+        noctalia-qs = {
+          url = "github:noctalia-dev/noctalia-qs";
+          inputs = {
+            systems.follows = "systems";
+            treefmt-nix = {
+              follows = "treefmt-nix";
+              inputs.nixpkgs.follows = "nixpkgs";
+            };
           };
         };
       };
