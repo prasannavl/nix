@@ -1,5 +1,6 @@
 {...}: {
   imports = [
+    ../../lib/devices/lenovo-legion-5-15ach6h.nix
     ../../lib/incus
     ../../lib/swap-auto.nix
     ../../lib/profiles/all.nix

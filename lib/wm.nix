@@ -12,6 +12,9 @@
     pvl-a1 = {
       drmDevices = "/dev/dri/zcard-default:/dev/dri/zcard-nvidia";
     };
+    pvl-l5 = {
+      drmDevices = "/dev/dri/zcard-default:/dev/dri/zcard-nvidia";
+    };
   };
   wlrCfg = wlrDefaults // lib.attrByPath [hostName] {} wlrByHost;
 in {
