@@ -242,6 +242,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/pvl-tmux-extended-keys-2026-06.md`: Records the
   `pvl` Home Manager tmux extended-key settings needed for Codex `Shift+Enter`
   newline handling inside tmux.
+- `.agents/docs/notes/tooling/pvl-terminal-shift-enter-2026-06.md`: Records the
+  terminal-side `Shift+Enter` CSI-u mappings for Alacritty, foot, and VS Code,
+  plus the Ghostty config-open MIME default fix.
 - `.agents/docs/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records
   the move from `arrterian.nix-env-selector` to `mkhl.direnv` plus the root
   flake `devShells.default`/`devShells.full` abstraction in

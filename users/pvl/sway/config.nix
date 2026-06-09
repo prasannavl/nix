@@ -6,7 +6,8 @@
   ...
 }: let
   mod = "Mod4";
-  terminal = "${pkgs.alacritty}/bin/alacritty";
+  foot = "${pkgs.foot}/bin/foot";
+  terminal = import ../wm/terminal.nix {pkgs = pkgs;};
   menu = "${pkgs.wmenu}/bin/wmenu-run";
   runner = "${pkgs.fuzzel}/bin/fuzzel --list-executables-in-path";
   launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
@@ -38,7 +39,8 @@ in {
     systemd.variables = ["--all"];
     config = {
       modifier = mod;
-      inherit terminal menu;
+      terminal = foot;
+      inherit menu;
       defaultWorkspace = "workspace number 1";
 
       bars = [
@@ -60,7 +62,8 @@ in {
       };
 
       keybindings = {
-        "${mod}+Return" = "exec ${terminal}";
+        "${mod}+t" = "exec ${foot}";
+        "${mod}+Return" = "exec ${terminal.bin}";
         "${mod}+space" = "exec ${launcher} || ${runner}";
         "${mod}+d" = "exec ${runner} || ${launcher}";
         "${mod}+Shift+d" = "exec ${menu}";

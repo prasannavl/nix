@@ -35,7 +35,8 @@ Assumes local `config.kdl` includes `base-config.kdl` then `nix-config.kdl`;
 ## Launch And Session
 
 - `Mod+Shift+Slash`: show hotkey overlay
-- `Mod+T`: open Alacritty
+- `Mod+T`: open foot
+- `Mod+Return`: open wm-terminal with fallback
 - `Mod+D`: open Noctalia launcher, fallback fuzzel
 - `Mod+Escape`: lock with swaylock
 - `Super+Alt+S`: toggle Orca

@@ -2,6 +2,7 @@
   nixos = {...}: {};
 
   home = {pkgs, ...}: let
+    shiftEnterCsiU = builtins.fromJSON ''"\u001b[13;2u"'';
     vscodePackage = pkgs.vscode-upstream.override {
       commandLineArgs = "--password-store=gnome-libsecret";
     };
@@ -77,6 +78,12 @@
             key = "alt+x";
             command = "workbench.action.toggleMaximizedPanel";
             when = "panelAlignment == 'center'";
+          }
+          {
+            key = "shift+enter";
+            command = "workbench.action.terminal.sendSequence";
+            when = "terminalFocus";
+            args.text = shiftEnterCsiU;
           }
         ];
       };

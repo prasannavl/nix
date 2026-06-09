@@ -4,7 +4,8 @@
   pkgs,
   ...
 }: let
-  terminal = "${pkgs.alacritty}/bin/alacritty";
+  foot = "${pkgs.foot}/bin/foot";
+  terminal = import ../wm/terminal.nix {pkgs = pkgs;};
   runner = "${pkgs.fuzzel}/bin/fuzzel --list-executables-in-path";
   launcher = "${config.programs.noctalia-shell.package}/bin/noctalia-shell ipc call launcher toggle";
   lockCmd = "${pkgs.swaylock}/bin/swaylock";
@@ -298,7 +299,8 @@
 
         // Common applications
 
-        Mod+Return hotkey-overlay-title="Open a Terminal: alacritty" { spawn "${terminal}"; }
+        Mod+T hotkey-overlay-title="Open a Terminal: foot" { spawn "${foot}"; }
+        Mod+Return hotkey-overlay-title="Open a Terminal: wm-terminal" { spawn "${terminal.bin}"; }
 
         Mod+D hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn-sh "${runner} || ${launcher}"; }
 

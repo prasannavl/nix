@@ -4,7 +4,8 @@ Assumes the Sway config from `users/pvl/sway/config.nix`.
 
 ## Launch And Session
 
-- `Mod+Return`: open Alacritty
+- `Mod+T`: open foot
+- `Mod+Return`: open wm-terminal with fallback
 - `Mod+Space`: open fuzzel executable runner
 - `Mod+D`: open Noctalia launcher, fallback fuzzel
 - `Mod+Shift+D`: open wmenu

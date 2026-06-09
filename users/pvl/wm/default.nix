@@ -1,33 +1,37 @@
-{
+let
+  terminal = pkgs: import ./terminal.nix {pkgs = pkgs;};
+in {
   nixos = {pkgs, ...}: {
-    environment.systemPackages = with pkgs; [
-      alacritty
-      foot
-      ghostty
-      brightnessctl
-      fuzzel
-      wmenu
-      dmenu
-      lxqt.lxqt-policykit
-      pulseaudio
-      pavucontrol
-      playerctl
-      wireplumber
-      wdisplays
-      swaybg
-      swaylock
-      swayidle
-      wl-clipboard
-      grim
-      slurp
-      sway-contrib.grimshot
-      lswt
-      gpu-screen-recorder
-      gpu-screen-recorder-gtk
-      xdg-utils
-      xdg-user-dirs
-      xdg-desktop-portal-gtk
-    ];
+    environment.systemPackages = with pkgs;
+      [
+        alacritty
+        foot
+        ghostty
+        brightnessctl
+        fuzzel
+        wmenu
+        dmenu
+        lxqt.lxqt-policykit
+        pulseaudio
+        pavucontrol
+        playerctl
+        wireplumber
+        wdisplays
+        swaybg
+        swaylock
+        swayidle
+        wl-clipboard
+        grim
+        slurp
+        sway-contrib.grimshot
+        lswt
+        gpu-screen-recorder
+        gpu-screen-recorder-gtk
+        xdg-utils
+        xdg-user-dirs
+        xdg-desktop-portal-gtk
+      ]
+      ++ [(terminal pkgs).package];
 
     qt = {
       enable = true;

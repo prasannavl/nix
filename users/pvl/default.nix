@@ -25,6 +25,9 @@ in rec {
       ./fzf
       ./firefox
       ./gtk
+      ./mime-apps
+      ./alacritty
+      ./foot
       ./kanshi
       ./wm
       ./noctalia
