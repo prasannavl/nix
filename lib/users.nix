@@ -1,10 +1,17 @@
 {
   pkgs,
   lib,
-  stack,
+  stack ? null,
   ...
 }: let
-  nixosConfig = stack.nixosConfig {inherit lib pkgs;};
+  nixosConfig =
+    if stack == null
+    then {
+      disabledUsers = {};
+      disabledGroups = {};
+      disabledActivationScripts = {};
+    }
+    else stack.nixosConfig {inherit lib pkgs;};
 in {
   users = {
     mutableUsers = false;

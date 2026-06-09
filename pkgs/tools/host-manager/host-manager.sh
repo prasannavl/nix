@@ -36,6 +36,7 @@ Actions:
 
 Options:
   --host HOST              Host name.
+  --stack STACK            Optional stack key from lib/stacks.
   --system SYSTEM          Generate target type: none, live, or incus.
                            Default: none.
   --disk PATH              Stable target disk path. Adds physical disko sys.nix.
@@ -44,7 +45,8 @@ Options:
   --hardware-config PATH   Use an existing hardware config instead of live probing.
   --incus-host HOST        Parent host with hosts/HOST/incus.nix.
   --incus-project PROJECT  Optional Incus project for the instance.
-  --incus-ipv4 ADDRESS     Optional Incus instance address and nixbot target.
+  --incus-ipv4 ADDRESS     Incus instance address and nixbot target.
+                           Required for --system=incus.
   --target TARGET          Nixbot target. Defaults to HOST or --incus-ipv4.
   --proxy-jump HOST        Nixbot proxyJump. Defaults to --incus-host for Incus.
   --root PATH              Install root mountpoint. Default: /mnt
@@ -84,6 +86,7 @@ init_vars() {
 	REPO_ROOT="$(find_repo_root)"
 	ACTION=""
 	HOST=""
+	HOST_STACK=""
 	HOST_SYSTEM="none"
 	DISK_DEVICE=""
 	HARDWARE_CONFIG=""
@@ -315,6 +318,15 @@ parse_args() {
 			HOST_SYSTEM="${1#--system=}"
 			shift
 			;;
+		--stack)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			HOST_STACK="$2"
+			shift 2
+			;;
+		--stack=*)
+			HOST_STACK="${1#--stack=}"
+			shift
+			;;
 		--disk)
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			DISK_DEVICE="$2"
@@ -493,6 +505,12 @@ valid_incus_instance_name() {
 	[[ "$name" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
+stack_exists() {
+	local stack="$1"
+
+	[[ "$(nix eval --raw --file "${REPO_ROOT}/lib/stacks/default.nix" --apply "stacks: if builtins.hasAttr \"$(nix_escape "$stack")\" stacks then \"1\" else \"0\"")" == "1" ]]
+}
+
 valid_ipv4() {
 	local ip="$1"
 	local octet
@@ -508,7 +526,7 @@ valid_ipv4() {
 validate_delete_incus_parent() {
 	local parent_file source_file
 
-	[[ -n "$INCUS_HOST" ]] || return
+	[[ -n "$INCUS_HOST" ]] || return 0
 	parent_file="${REPO_ROOT}/hosts/${INCUS_HOST}/incus.nix"
 	[[ -f "$parent_file" ]] || die "Incus host has no incus.nix: ${INCUS_HOST}"
 	source_file="$(target_read_path "$parent_file")"
@@ -524,8 +542,10 @@ validate_args() {
 		host_registered || die "Host is not registered: ${HOST}."
 		;;
 	generate)
+		[[ -z "$HOST_STACK" ]] || stack_exists "$HOST_STACK" || die "Stack does not exist in lib/stacks: ${HOST_STACK}"
 		if [[ "$HOST_SYSTEM" == "incus" ]]; then
 			[[ -n "$INCUS_HOST" ]] || die "--system=incus requires --incus-host HOST."
+			[[ -n "$INCUS_IPV4" ]] || die "--system=incus requires --incus-ipv4 ADDRESS."
 			valid_incus_instance_name "$HOST" || die "--host must match Incus instance names for --system=incus: [a-z]([a-z0-9-]{0,61}[a-z0-9])?"
 			[[ -d "${REPO_ROOT}/hosts/${INCUS_HOST}" ]] || die "Incus host not found: ${INCUS_HOST}"
 			[[ -f "${REPO_ROOT}/hosts/${INCUS_HOST}/incus.nix" ]] || die "Incus host has no incus.nix: ${INCUS_HOST}"
@@ -572,6 +592,7 @@ infer_disk_device() {
 		DISK_DEVICE="$inferred"
 		info "Using diskDevice from existing ${sys_file}: ${DISK_DEVICE}"
 	fi
+	return 0
 }
 
 confirm_or_die() {
@@ -667,7 +688,6 @@ stage_file_for_write() {
 
 	staged="$(stage_target_path "$target")"
 	mkdir -p "$(dirname "$staged")"
-	register_staged_target "$target"
 	printf '%s\n' "$staged"
 }
 
@@ -676,6 +696,7 @@ replace_staged_file() {
 	local target="$2"
 	local staged
 
+	register_staged_target "$target"
 	staged="$(stage_file_for_write "$target")"
 	mv "$source" "$staged"
 }
@@ -685,6 +706,7 @@ copy_staged_file() {
 	local target="$2"
 	local staged
 
+	register_staged_target "$target"
 	staged="$(stage_file_for_write "$target")"
 	cp -p "$source" "$staged"
 }
@@ -919,7 +941,7 @@ generate_ids() {
 
 # These probes intentionally match the repo's alejandra-formatted Nix shape.
 host_registered() {
-	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*mkNixosSystem[[:space:]]*\\{" "$(target_read_path "$HOSTS_DEFAULT_FILE")"
+	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*mk[A-Za-z0-9_'-]*System[^{;]*\\{" "$(target_read_path "$HOSTS_DEFAULT_FILE")"
 }
 
 has_nixbot_entry() {
@@ -930,7 +952,8 @@ has_machine_secret_registration() {
 	local source_file
 
 	source_file="$(target_read_path "$SECRETS_FILE")"
-	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./globals/machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file" ||
+	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*\\{\\};" "$source_file" ||
+		grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./globals/machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file" ||
 		grep -Fq "\"data/secrets/globals/machine/${HOST}.key.age\"" "$source_file"
 }
 
@@ -956,6 +979,7 @@ ensure_host_absent_or_confirm() {
 write_physical_host_default() {
 	local target_file
 
+	register_staged_target "${HOST_DIR}/default.nix"
 	target_file="$(stage_file_for_write "${HOST_DIR}/default.nix")"
 	cat >"$target_file" <<'EOF'
 {...}: {
@@ -971,6 +995,9 @@ EOF
 write_lxc_host_default() {
 	local default_file packages_file users_file
 
+	register_staged_target "${HOST_DIR}/default.nix"
+	register_staged_target "${HOST_DIR}/packages.nix"
+	register_staged_target "${HOST_DIR}/users.nix"
 	default_file="$(stage_file_for_write "${HOST_DIR}/default.nix")"
 	packages_file="$(stage_file_for_write "${HOST_DIR}/packages.nix")"
 	users_file="$(stage_file_for_write "${HOST_DIR}/users.nix")"
@@ -1002,6 +1029,13 @@ register_host() {
   ${host_attr} = mkNixosSystem {
     system = "x86_64-linux";
     hostName = "$(nix_escape "$HOST")";
+EOF
+	if [[ -n "$HOST_STACK" ]]; then
+		cat >>"$entry_file" <<EOF
+    stack = stacks.$(nix_attr_key "$HOST_STACK");
+EOF
+	fi
+	cat >>"$entry_file" <<EOF
     modules = [./${HOST}];
   };
 
@@ -1088,7 +1122,7 @@ ensure_machine_age_identity() {
 	local tmp_key_file="${SECRET_RUN_DIR}/${HOST}.key"
 	local pub_file="${MACHINE_SECRET_DIR}/${HOST}.key.pub"
 	local age_file="${MACHINE_SECRET_DIR}/${HOST}.key.age"
-	local staged_pub_file staged_age_file
+	local staged_pub_file staged_age_file target_pub_file target_age_file
 	local public_line
 	local recipients_json
 	local -a recipients=()
@@ -1111,7 +1145,9 @@ ensure_machine_age_identity() {
 
 	public_line="$(age-keygen -o "$tmp_key_file" 2>&1 | awk -F': ' '/^Public key:/ {print $2}')"
 	[[ -n "$public_line" ]] || die "age-keygen did not print a public key."
-	printf '%s\n' "$public_line" >"$(stage_file_for_write "$pub_file")"
+	register_staged_target "$pub_file"
+	target_pub_file="$(stage_file_for_write "$pub_file")"
+	printf '%s\n' "$public_line" >"$target_pub_file"
 
 	recipients_json="$(eval_staged_secrets)"
 	mapfile -t recipients < <(jq -r --arg path "data/secrets/globals/machine/${HOST}.key.age" '.[$path].publicKeys[]? // empty' <<<"$recipients_json")
@@ -1121,30 +1157,30 @@ ensure_machine_age_identity() {
 		age_args+=(-r "$recipient")
 	done
 
-	age "${age_args[@]}" -o "$(stage_file_for_write "$age_file")" "$tmp_key_file"
+	register_staged_target "$age_file"
+	target_age_file="$(stage_file_for_write "$age_file")"
+	age "${age_args[@]}" -o "$target_age_file" "$tmp_key_file"
 	rm -f -- "$tmp_key_file"
 	info "Created machine age identity: data/secrets/globals/machine/${HOST}.key.age"
 }
 
 register_machine_secret() {
 	local source_file
-	local machine_key_file="${RUN_DIR}/secrets-default-machine-key.nix"
-	local machine_secret_file="${RUN_DIR}/secrets-default-machine-secret.nix"
+	local machine_identity_file="${RUN_DIR}/secrets-default-machine-identity.nix"
 	local host_attr
-	local changed="0"
 
 	host_attr="$(nix_attr_key "$HOST")"
 	source_file="$(target_read_path "$SECRETS_FILE")"
-	if ! grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./globals/machine/$(regex_escape "$HOST")\\.key\\.pub;" "$source_file"; then
+	if ! grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*\\{\\};" "$source_file"; then
 		awk -v host="$HOST" -v host_attr="$host_attr" '
 			{
-				if ($0 ~ /^  machineKeyFiles = \{/) {
-					in_keys = 1
+				if ($0 ~ /^    machines = \{/) {
+					in_machines = 1
 				}
-				if (in_keys && $0 ~ /^  \};/) {
-					printf "    %s = ./globals/machine/%s.key.pub;\n", host_attr, host
+				if (in_machines && $0 ~ /^    \};/) {
+					printf "      %s = {};\n", host_attr
 					inserted = 1
-					in_keys = 0
+					in_machines = 0
 				}
 				print
 			}
@@ -1154,34 +1190,9 @@ register_machine_secret() {
 					exit 1
 				}
 			}
-		' "$source_file" >"$machine_key_file" || die "Could not register machine key file in ${SECRETS_FILE}."
-		source_file="$machine_key_file"
-		changed="1"
-	fi
-
-	if ! grep -Fq "\"data/secrets/globals/machine/${HOST}.key.age\"" "$source_file"; then
-		awk -v host="$HOST" '
-			{
-				print
-				if ($0 ~ /^    # Machines$/) {
-					printf "    \"data/secrets/globals/machine/%s.key.age\".publicKeys = adminsWithNixbot;\n", host
-					inserted = 1
-				}
-			}
-
-			END {
-				if (!inserted) {
-					exit 1
-				}
-			}
-		' "$source_file" >"$machine_secret_file" || die "Could not register machine secret in ${SECRETS_FILE}."
-		source_file="$machine_secret_file"
-		changed="1"
-	fi
-
-	if [[ "$changed" == "1" ]]; then
-		alejandra -q "$source_file"
-		copy_staged_file "$source_file" "$SECRETS_FILE"
+		' "$source_file" >"$machine_identity_file" || die "Could not register machine identity in ${SECRETS_FILE}."
+		alejandra -q "$machine_identity_file"
+		copy_staged_file "$machine_identity_file" "$SECRETS_FILE"
 	fi
 }
 
@@ -1211,7 +1222,7 @@ ensure_nixbot_entry() {
 	cat >"$entry_file" <<EOF
     ${host_attr} = {
       target = "$(nix_escape "$target")";
-      ageIdentityKey = "data/secrets/globals/machine/${HOST}.key.age";
+      ageIdentityKey = secretPaths.machine "$(nix_escape "$HOST")";
 EOF
 	if [[ -n "$proxy_jump" ]]; then
 		cat >>"$entry_file" <<EOF
@@ -1474,6 +1485,7 @@ ensure_incus_instance() {
 	local entry_file="${RUN_DIR}/incus-entry.nix"
 	local next_file="${RUN_DIR}/incus.nix"
 	local host_attr
+	local incus_project="${INCUS_PROJECT:-default}"
 	local source_file
 
 	host_attr="$(nix_attr_key "$HOST")"
@@ -1485,18 +1497,7 @@ ensure_incus_instance() {
 
 	cat >"$entry_file" <<EOF
       ${host_attr} = {
-EOF
-	if [[ -n "$INCUS_PROJECT" ]]; then
-		cat >>"$entry_file" <<EOF
-        project = "$(nix_escape "$INCUS_PROJECT")";
-EOF
-	fi
-	if [[ -n "$INCUS_IPV4" ]]; then
-		cat >>"$entry_file" <<EOF
         ipv4Address = "${INCUS_IPV4}";
-EOF
-	fi
-	cat >>"$entry_file" <<EOF
         config = {
           "security.privileged" = "false";
         };
@@ -1510,10 +1511,10 @@ EOF
       };
 EOF
 
-	insert_into_attrset "$entry_file" "$source_file" "$next_file" '^[[:space:]]*instances = [{]$' '^    [}];$'
+	insert_into_attrset "$entry_file" "$source_file" "$next_file" "^[[:space:]]*$(regex_escape "$incus_project")[.]instances = [{]$" '^      [}];$'
 	alejandra -q "$next_file"
 	replace_staged_file "$next_file" "$parent_file"
-	info "Added Incus instance ${HOST} to hosts/${INCUS_HOST}/incus.nix"
+	info "Added Incus instance ${incus_project}/${HOST} to hosts/${INCUS_HOST}/incus.nix"
 }
 
 run_build() {
@@ -1736,8 +1737,10 @@ delete_host() {
 
 	if has_machine_secret_registration; then
 		next_file="${RUN_DIR}/secrets-default.nix"
-		# Remove key-file and encrypted-secret registrations in separate passes.
-		remove_line_matching "$SECRETS_FILE" "$next_file" "$(nix_attr_assignment_regex "$HOST")[[:space:]]*./globals/machine/$(regex_escape "$HOST")\\.key\\.pub;"
+		# Remove current machineIdentities entries and legacy direct registrations.
+		remove_line_matching "$SECRETS_FILE" "$next_file" "$(nix_attr_assignment_regex "$HOST")[[:space:]]*[{][}];"
+		mv "$next_file" "$SECRETS_FILE"
+		remove_line_containing "$SECRETS_FILE" "$next_file" "./globals/machine/${HOST}.key.pub;"
 		mv "$next_file" "$SECRETS_FILE"
 		remove_line_containing "$SECRETS_FILE" "$next_file" "\"data/secrets/globals/machine/${HOST}.key.age\""
 		mv "$next_file" "$SECRETS_FILE"

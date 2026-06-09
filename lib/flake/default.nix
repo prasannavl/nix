@@ -106,7 +106,7 @@ in rec {
   }: {
     hostName,
     modules,
-    stack,
+    stack ? null,
     system,
   }:
     nixpkgs.lib.nixosSystem {
