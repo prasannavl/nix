@@ -93,8 +93,8 @@
       mimeGroups;
   in {
     # Temporary one-deploy takeover for unmanaged existing files.
-    # xdg.configFile."mimeapps.list".force = true;
-    # xdg.dataFile."applications/mimeapps.list".force = true;
+    xdg.configFile."mimeapps.list".force = true;
+    xdg.dataFile."applications/mimeapps.list".force = true;
 
     xdg.mimeApps = {
       enable = true;
