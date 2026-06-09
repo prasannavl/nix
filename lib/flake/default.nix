@@ -108,11 +108,24 @@ in rec {
     modules,
     stack ? null,
     system,
-  }:
+  }: let
+    defaultStack = {
+      nixosConfig = {...}: {
+        disabledUsers = {};
+        disabledGroups = {};
+        disabledActivationScripts = {};
+      };
+    };
+    effectiveStack =
+      if stack == null
+      then defaultStack
+      else stack;
+  in
     nixpkgs.lib.nixosSystem {
       inherit system;
       specialArgs = {
-        inherit hostName inputs stack system;
+        inherit hostName inputs system;
+        stack = effectiveStack;
         stacks = stackProfiles;
       };
       modules =
@@ -120,7 +133,8 @@ in rec {
         ++ [
           {
             home-manager.extraSpecialArgs = {
-              inherit inputs stack;
+              inherit inputs;
+              stack = effectiveStack;
               stacks = stackProfiles;
             };
           }
