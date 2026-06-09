@@ -1,0 +1,63 @@
+{pkgs, ...}: let
+  chromeRuntimeLibs = with pkgs; [
+    alsa-lib
+    at-spi2-atk
+    at-spi2-core
+    atk
+    bzip2
+    cairo
+    cups
+    curl
+    dbus
+    expat
+    flac
+    fontconfig
+    freetype
+    gcc-unwrapped.lib
+    gdk-pixbuf
+    glib
+    gtk3
+    gtk4
+    harfbuzz
+    icu
+    libcap
+    libdrm
+    libexif
+    libgbm
+    libglvnd
+    libkrb5
+    libpng
+    libpulseaudio
+    libva
+    xorg.libX11
+    libxcb
+    xorg.libXcomposite
+    xorg.libXcursor
+    xorg.libXdamage
+    xorg.libXext
+    xorg.libXfixes
+    xorg.libXi
+    libxkbcommon
+    xorg.libXrandr
+    xorg.libXrender
+    xorg.libXScrnSaver
+    libxshmfence
+    xorg.libXtst
+    (libopus.override {withCustomModes = true;})
+    nspr
+    nss
+    pango
+    pciutils
+    pipewire
+    qt6.qtbase
+    qt6.qtwayland
+    snappy
+    speechd-minimal
+    systemd
+    util-linux
+    vulkan-loader
+    wayland
+  ];
+in {
+  programs.nix-ld.libraries = chromeRuntimeLibs;
+}

@@ -14,6 +14,7 @@ let
     machines = {
       pvl-a1 = {};
       pvl-x2 = {};
+      pvl-l5 = {};
       pvl-vlab = {};
       pvl-vlab-1 = {};
       pvl-vk = {};

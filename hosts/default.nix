@@ -18,6 +18,12 @@ in {
     modules = [./pvl-x2];
   };
 
+  pvl-l5 = mkPvlSystem {
+    system = "x86_64-linux";
+    hostName = "pvl-l5";
+    modules = [./pvl-l5];
+  };
+
   pvl-vlab = mkPvlSystem {
     system = "x86_64-linux";
     hostName = "pvl-vlab";
@@ -50,4 +56,5 @@ in {
   #   hostName = "gap3-gondor";
   #   modules = [./gap3-gondor];
   # };
+
 }
