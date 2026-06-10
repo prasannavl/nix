@@ -4,7 +4,7 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  scripts/archive/cloudflare-export.sh [options]
+  scripts/support/cloudflare-export.sh [options]
 
 Options:
   --only all|access|tunnels   Limit export to a single surface.

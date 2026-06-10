@@ -51,7 +51,7 @@ scripts.
 
 ## Small maintenance conventions
 
-- `scripts/update-flakes.sh` is the repo-wide flake-lock updater.
+- `scripts/update.sh --only-flake` is the repo-wide flake-lock updater.
 - VS Code packaging and update automation should stay explicit about upstream
   source, pinned hashes, and toolchain dependencies needed by the configured
   extensions.
@@ -63,7 +63,7 @@ scripts.
 - `scripts/lint.sh`
 - `scripts/fmt.sh`
 - `scripts/git-install-hooks.sh`
-- `scripts/update-flakes.sh`
+- `scripts/update.sh`
 - `lib/flake/lint.nix`
 - `lib/flake/pkg-helper.nix`
 - `README.md`

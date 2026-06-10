@@ -54,7 +54,7 @@ def quote_shell(value: str) -> str:
 
 
 def load_recovery_module(repo_root: Path) -> Any:
-    path = repo_root / "scripts/archive/tf-recover-cloudflare-state.py"
+    path = repo_root / "scripts/support/tf-recover-cloudflare-state.py"
     spec = importlib.util.spec_from_file_location("tf_recover_cloudflare_state", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load recovery helper: {path}")

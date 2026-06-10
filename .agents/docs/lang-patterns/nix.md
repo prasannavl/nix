@@ -174,5 +174,5 @@
   ref; if untracked files seem required, stop and make the state explicit first.
   See `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`.
 - The root `flake.lock` is committed. Child-flake `flake.lock` files are
-  generated local state and ignored; run `scripts/update-flakes.sh` to refresh
-  existing locks without creating new tracked child locks.
+  generated local state and ignored; run `scripts/update.sh --only-flake` to
+  refresh existing locks without creating new tracked child locks.

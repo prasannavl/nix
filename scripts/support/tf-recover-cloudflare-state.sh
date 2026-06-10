@@ -4,7 +4,7 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  scripts/archive/tf-recover-cloudflare-state.sh [options]
+  scripts/support/tf-recover-cloudflare-state.sh [options]
 
 Options:
   --apply              Execute imports into the configured Terraform backends.

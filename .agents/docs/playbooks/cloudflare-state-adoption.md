@@ -52,7 +52,7 @@ of the dashboard.
   - `data/secrets/globals/tf/cloudflare-platform/`
   - `data/secrets/globals/tf/cloudflare-apps/`
 - Export refresh:
-  - `scripts/archive/cloudflare-export.py`
+  - `scripts/support/cloudflare-export.py`
   - tunnel export writes
     `data/secrets/globals/tf/cloudflare-platform/tunnels-account.tfvars.age` and
     intentionally omits unrecoverable runtime tunnel credentials/secrets
@@ -62,9 +62,9 @@ of the dashboard.
 1. Refresh the repo-side Cloudflare inputs from live before importing:
    - full export if multiple surfaces changed
    - targeted export if only one surface changed, for example
-     `python scripts/archive/cloudflare-export.py --only access`
+     `python scripts/support/cloudflare-export.py --only access`
    - tunnel-only refresh is available via
-     `python scripts/archive/cloudflare-export.py --only tunnels`
+     `python scripts/support/cloudflare-export.py --only tunnels`
 2. Review the generated tfvars and normalize names/keys before import.
 3. Run:
    - `nix shell nixpkgs#opentofu -c tofu -chdir=tf/cloudflare-platform init`

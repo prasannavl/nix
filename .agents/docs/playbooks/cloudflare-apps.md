@@ -65,7 +65,7 @@ There is also a single aggregate entrypoint:
 
 ## Adopt An Existing Dashboard Worker
 
-1. Run `python scripts/archive/cloudflare-export.py` to refresh repo-side app
+1. Run `python scripts/support/cloudflare-export.py` to refresh repo-side app
    source and tfvars from the live account.
 2. Normalize the app under `pkgs/cloudflare-apps/<app>/`.
 3. Add a child flake only if that app needs a generated local tree before

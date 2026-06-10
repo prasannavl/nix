@@ -4,7 +4,7 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  scripts/archive/tf-plan-cloudflare-state-migration.sh [options]
+  scripts/support/tf-plan-cloudflare-state-migration.sh [options]
 
 Options:
   --zone NAME              Select resources related to a zone/domain. Repeatable.
