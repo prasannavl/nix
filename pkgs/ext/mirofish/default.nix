@@ -8,8 +8,8 @@
   stdenvNoCC,
 }: let
   pname = "mirofish";
-  version = "0-unstable-2026-04-02";
-  rev = "fa0f6519b10c4a25b78f1bcc1f00dfcd8bf1ab41";
+  version = "0-unstable-2026-05-24";
+  rev = "96096ea0ff42b1a30cbc41a1560b8c91090f9968";
   shortRev = builtins.substring 0 12 rev;
   imageBuild = "src-${builtins.substring 0 12 (builtins.hashString "sha256" (builtins.readFile ./helper.sh))}";
 
@@ -21,7 +21,7 @@
     owner = "666ghj";
     repo = "MiroFish";
     inherit rev;
-    hash = "sha256-UiyCO+hoY8cHqMJuOJETyvSTEs8DMY63eQq0Py9apdY=";
+    hash = "sha256-13Jpf3bKP8edAZgOBWSxrDp2W8nOLbyfRcKKrQWWE18=";
   };
 
   upstreamRuntimeImage = dockerTools.pullImage {

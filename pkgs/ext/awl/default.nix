@@ -5,11 +5,11 @@
 }:
 stdenvNoCC.mkDerivation {
   pname = "awl";
-  version = "0.64";
+  version = "0.65";
 
   src = fetchurl {
-    url = "https://gitlab.com/davical-project/awl/-/archive/r0.64/awl-r0.64.tar.gz";
-    hash = "sha256-lcL1VjZ+SL2LDcgU7VyPRV049XtUoFjNk3L6Zw4LjZc=";
+    url = "https://gitlab.com/davical-project/awl/-/archive/r0.65/awl-r0.65.tar.gz";
+    hash = "sha256-dv61h6ZoJYBofWUfSWvJqg0IWOQJ/HgsgXNfNkLMHFk=";
   };
 
   installPhase = ''

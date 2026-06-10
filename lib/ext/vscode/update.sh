@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: lib/ext/vscode/update.sh [--version VERSION] [--file PATH]
+Usage: lib/ext/vscode/update.sh [--version VERSION] [--file PATH] [--report] [--ansi|--color=WHEN]
 Examples:
   lib/ext/vscode/update.sh
   lib/ext/vscode/update.sh --version 1.112.0
@@ -20,6 +20,8 @@ init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
 	TARGET_FILE="${REPO_ROOT}/lib/ext/vscode/default.nix"
 	REQUESTED_VERSION=""
+	REPORT=0
+	COLOR_MODE="auto"
 	RESOLVED_TARGET_FILE=""
 	RESOLVED_VERSION=""
 	RESOLVED_REV=""
@@ -51,6 +53,22 @@ parse_args() {
 			TARGET_FILE="$2"
 			shift 2
 			;;
+		--report)
+			REPORT=1
+			shift
+			;;
+		--ansi)
+			COLOR_MODE="always"
+			shift
+			;;
+		--color)
+			COLOR_MODE="always"
+			shift
+			;;
+		--color=*)
+			COLOR_MODE="${1#--color=}"
+			shift
+			;;
 		--help | -h)
 			usage
 			exit 0
@@ -67,6 +85,72 @@ resolve_target_file() {
 		RESOLVED_TARGET_FILE="$TARGET_FILE"
 	else
 		RESOLVED_TARGET_FILE="${REPO_ROOT}/$TARGET_FILE"
+	fi
+}
+
+use_color() {
+	case "$COLOR_MODE" in
+	always) return 0 ;;
+	never) return 1 ;;
+	auto) [[ -t 1 ]] ;;
+	*) die "--color must be one of: auto, always, never" ;;
+	esac
+}
+
+print_update_line() {
+	local line="$1"
+	local current_version="$2"
+	local latest_version="$3"
+	local color_code="1;38;2;232;170;117"
+	if is_attention_update "$current_version" "$latest_version"; then
+		color_code="1;38;2;255;150;150"
+	fi
+	if use_color; then
+		printf -- '- \033[%sm%s\033[0m\n' "$color_code" "$line"
+	else
+		printf -- '- %s\n' "$line"
+	fi
+}
+
+is_attention_update() {
+	local current_version="$1"
+	local latest_version="$2"
+	local current_major current_minor latest_major latest_minor
+	local current_parts latest_parts
+
+	[[ "$current_version" =~ ^v?([0-9]+)([._-]([0-9]+))? ]] || return 1
+	current_major="${BASH_REMATCH[1]}"
+	current_minor="${BASH_REMATCH[3]:-0}"
+	[[ "$latest_version" =~ ^v?([0-9]+)([._-]([0-9]+))? ]] || return 1
+	latest_major="${BASH_REMATCH[1]}"
+	latest_minor="${BASH_REMATCH[3]:-0}"
+
+	if ((latest_major > current_major)); then
+		return 0
+	fi
+	current_parts="$(grep -oE '[0-9]+' <<<"$current_version" | wc -l)"
+	latest_parts="$(grep -oE '[0-9]+' <<<"$latest_version" | wc -l)"
+	if [[ "$current_version" =~ ^v?[0-9]+([._-][0-9]+)*$ ]] &&
+		[[ "$latest_version" =~ ^v?[0-9]+([._-][0-9]+)*$ ]] &&
+		((current_major == 0 && latest_major == 0 && current_parts > 2 && latest_parts > 2 && latest_minor > current_minor)); then
+		return 0
+	fi
+	return 1
+}
+
+get_current_version() {
+	[[ -f "$RESOLVED_TARGET_FILE" ]] || die "Target file not found: $RESOLVED_TARGET_FILE"
+	sed -nE 's/^[[:space:]]*version = "([^"]+)";.*/\1/p' "$RESOLVED_TARGET_FILE" | head -n1
+}
+
+print_report() {
+	local current_version="$1"
+	local latest_version="$2"
+
+	if [[ "$current_version" == "$latest_version" ]]; then
+		echo "- vscode: ${current_version} [latest]"
+	else
+		print_update_line "vscode: ${current_version} -> ${latest_version}" "$current_version" "$latest_version"
 	fi
 }
 
@@ -310,6 +394,11 @@ main() {
 	parse_args "$@"
 	resolve_target_file
 	get_release_metadata
+	if ((REPORT)); then
+		print_report "$(get_current_version)" "$RESOLVED_VERSION"
+		return
+	fi
+
 	resolve_release_notes_url
 	compute_hashes
 	update_file

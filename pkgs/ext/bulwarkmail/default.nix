@@ -8,8 +8,8 @@
   nodejs_24,
 }: let
   pname = "bulwarkmail";
-  version = "1.7.1";
-  rev = "1fc6185002d171464c622ea171d0f998f90cd871";
+  version = "1.7.3";
+  rev = "9db7b6b55f1d81a6a0e8439b371605fac92e2989";
   shortRev = builtins.substring 0 12 rev;
   patchHash = builtins.substring 0 12 (builtins.hashString "sha256" ''
     ${builtins.readFile ./client-imip-sending-flag.patch}
@@ -25,13 +25,13 @@
     owner = "bulwarkmail";
     repo = "webmail";
     inherit rev;
-    hash = "sha256-qS1zHS+QtS26Nb7K8OyR7QKaExTZUf1jwSRKIuStMQA=";
+    hash = "sha256-8EW1o3lIL/wVmrA4bpP09x6fApsEUKAdZq3+mVidPis=";
   };
 
   patchedApp = buildNpmPackage {
     inherit pname version src;
     nodejs = nodejs_24;
-    npmDepsHash = "sha256-FH4Y0vt3n9XtLPjMrSpMp8GzNh6ucgmOP2L1SFMyo24=";
+    npmDepsHash = "sha256-MJ5pwPeHE+zBjvTeGaGG4Ybp7gHDaZAiNBwk6bIKaNg=";
     patches = [
       ./client-imip-sending-flag.patch
       ./local-geist-fonts.patch
