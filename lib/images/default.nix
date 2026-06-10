@@ -3,6 +3,12 @@
   stacks,
   ...
 }: let
+  hosts = import ../../hosts {
+    inherit mkNixosSystem stacks;
+  };
+  installerImages = import ../installer {
+    inherit mkNixosSystem stacks hosts;
+  };
   incusLxcBase = mkNixosSystem {
     system = "x86_64-linux";
     hostName = "nixos";
@@ -10,6 +16,8 @@
     modules = [./incus-lxc-base.nix];
   };
 in {
+  installer = installerImages;
+
   incus-lxc-base = incusLxcBase;
   incus-vm-base = mkNixosSystem {
     system = "x86_64-linux";
