@@ -43,10 +43,7 @@
     builtins.filter
     (path: path != null)
     (lib.mapAttrsToList
-      (_: input:
-        if input ? outPath
-        then input.outPath
-        else null)
+      (_: input: input.outPath or null)
       inputs);
   metadata = pkgs.writeText "${installerName}-offline-install-metadata.json" (builtins.toJSON {
     version = 1;
