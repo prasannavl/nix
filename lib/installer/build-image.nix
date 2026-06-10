@@ -6,6 +6,7 @@
   lib = flake.inputs.nixpkgs.lib;
   system = "x86_64-linux";
   spec = builtins.fromJSON (builtins.readFile specFile);
+  installerProfile = spec.installerProfile or "minimal";
   hosts = flake.nixosConfigurations;
   installableHostNames = builtins.filter (name: builtins.hasAttr "diskoScript" hosts.${name}.config.system.build) (builtins.attrNames hosts);
   rawTargets =
@@ -63,6 +64,7 @@
   );
   installerModule = import ./module.nix {
     installerName = spec.installerName;
+    installerProfile = installerProfile;
     targetConfigs = targetConfigs;
   };
 in

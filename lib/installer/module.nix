@@ -1,5 +1,6 @@
 {
   installerName,
+  installerProfile ? "minimal",
   targetConfigs,
   ...
 }: {
@@ -106,9 +107,15 @@
       main "$@"
     '';
   };
+  installerProfileModule =
+    if installerProfile == "minimal"
+    then modulesPath + "/installer/cd-dvd/installation-cd-minimal.nix"
+    else if installerProfile == "gnome"
+    then modulesPath + "/installer/cd-dvd/installation-cd-graphical-calamares-gnome.nix"
+    else throw "installer ${installerName}: unsupported installerProfile ${installerProfile}";
 in {
   imports = [
-    (modulesPath + "/installer/cd-dvd/installation-cd-minimal.nix")
+    installerProfileModule
   ];
 
   image.baseName = lib.mkForce "${installerName}-installer";

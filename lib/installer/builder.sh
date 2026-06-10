@@ -17,9 +17,12 @@ Build a repo live installer ISO with embedded offline-install target closures.
 
 Defaults:
   --bundle all
+  --minimal
 
 Options:
   --bundle NAME         Build a declared bundle from nixosImages.installer.bundle.
+  --minimal             Build the minimal NixOS live installer image.
+  --gnome               Build the GNOME Calamares NixOS live installer image.
   --config FILE         Build targets from a Nix config file.
   --host HOST           Add one host as target HOST=HOST.
   --hosts A,B,C         Add comma-separated hosts as targets A=A,B=B,C=C.
@@ -46,6 +49,7 @@ Options:
 Target config file shape:
   {
     name = "installer-targets";
+    installerProfile = "minimal"; # or "gnome"
     targets.example = {
       host = "example-host";
       disk = "/dev/disk/by-id/...";
@@ -85,6 +89,7 @@ init_vars() {
 	DISK_MODE=""
 	BUNDLE=""
 	CONFIG_FILE=""
+	INSTALLER_PROFILE=""
 	IMAGE_NAME=""
 	OUT_LINK=""
 	NO_LINK="0"
@@ -124,6 +129,25 @@ validate_name() {
 	local name="$1"
 
 	[[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "Invalid name: $name"
+}
+
+set_installer_profile() {
+	local profile="$1"
+
+	case "$profile" in
+	minimal | gnome) ;;
+	*) die "Unsupported installer profile: $profile" ;;
+	esac
+
+	if [ -n "$INSTALLER_PROFILE" ] && [ "$INSTALLER_PROFILE" != "$profile" ]; then
+		die "Use only one installer profile"
+	fi
+
+	INSTALLER_PROFILE="$profile"
+}
+
+effective_installer_profile() {
+	printf '%s\n' "${INSTALLER_PROFILE:-minimal}"
 }
 
 split_csv() {
@@ -256,6 +280,12 @@ parse_args() {
 			;;
 		--bundle=*)
 			BUNDLE="${1#--bundle=}"
+			;;
+		--minimal)
+			set_installer_profile "minimal"
+			;;
+		--gnome)
+			set_installer_profile "gnome"
 			;;
 		--config)
 			[ "$#" -ge 2 ] || die "--config requires a value"
@@ -395,7 +425,9 @@ list_images() {
 	info "Installable default target images:"
 	nix eval --json "${REPO_ROOT}#nixosImages.installer" --apply 'x: builtins.filter (name: name != "bundle") (builtins.attrNames x)'
 	info "Declared bundles:"
-	nix eval --json "${REPO_ROOT}#nixosImages.installer.bundle" --apply 'x: builtins.attrNames x'
+	nix eval --json "${REPO_ROOT}#nixosImages.installer.bundle" --apply 'x: builtins.filter (name: name != "profiles") (builtins.attrNames x)'
+	info "Declared bundle profiles:"
+	nix eval --json "${REPO_ROOT}#nixosImages.installer.bundle.profiles" --apply 'x: builtins.attrNames x'
 }
 
 list_installable_hosts_raw() {
@@ -781,6 +813,7 @@ write_custom_spec() {
 	local ids
 	local ids_json
 	local luks_uuid
+	local profile
 	local root_part_uuid
 	local spec
 	local spec_file="$1"
@@ -790,7 +823,11 @@ write_custom_spec() {
 		[ -n "$spec" ] && entries+=("$spec")
 	done < <(selected_target_entries)
 
-	jq -n --arg installerName "$IMAGE_NAME" '{installerName: $installerName, targets: {}}' >"$spec_file"
+	profile="$(effective_installer_profile)"
+	jq -n \
+		--arg installerName "$IMAGE_NAME" \
+		--arg installerProfile "$profile" \
+		'{installerName: $installerName, installerProfile: $installerProfile, targets: {}}' >"$spec_file"
 
 	for spec in "${entries[@]}"; do
 		target="${spec%%=*}"
@@ -853,8 +890,16 @@ normalize_config_spec() {
 	jq '
 		{
 			installerName: (.installerName // .name // ""),
+			installerProfile: (.installerProfile // .profile // "minimal"),
 			targets: (.targets // {})
 		}
+		| if (.installerProfile | type) != "string" then
+			error("installerProfile must be a string")
+		elif (.installerProfile != "minimal" and .installerProfile != "gnome") then
+			error("installerProfile must be minimal or gnome")
+		else
+			.
+		end
 		| if (.targets | type) != "object" then
 			error("installer config targets must be an attrset")
 		else
@@ -920,6 +965,9 @@ finalize_config_spec() {
 	if [ -n "$IMAGE_NAME" ]; then
 		rewrite_json_file "$spec_file" --arg name "$IMAGE_NAME" '.installerName = $name'
 	fi
+	if [ -n "$INSTALLER_PROFILE" ]; then
+		rewrite_json_file "$spec_file" --arg profile "$INSTALLER_PROFILE" '.installerProfile = $profile'
+	fi
 
 	IMAGE_NAME="$(jq -r '.installerName // ""' "$spec_file")"
 	if [ -z "$IMAGE_NAME" ]; then
@@ -929,6 +977,8 @@ finalize_config_spec() {
 	fi
 
 	validate_name "$IMAGE_NAME"
+	jq -e '.installerProfile == "minimal" or .installerProfile == "gnome"' "$spec_file" >/dev/null ||
+		die "Installer config installerProfile must be minimal or gnome"
 	jq -e '(.targets | type == "object") and (.targets | length > 0)' "$spec_file" >/dev/null ||
 		die "Installer config must select at least one target"
 
@@ -992,6 +1042,7 @@ prepare_cli_custom_spec() {
 build_installer() {
 	local build_output
 	local installable
+	local installer_profile
 	local iso_path
 	local physical_output
 	local spec_file=""
@@ -1000,6 +1051,7 @@ build_installer() {
 	local use_custom_expr="0"
 
 	require_cmds nix
+	installer_profile="$(effective_installer_profile)"
 	if [ "$USE_OVERLAY_STORE" = "1" ] && [ -z "$STORE_ROOT" ]; then
 		die "--overlay requires --store-root"
 	fi
@@ -1022,7 +1074,11 @@ build_installer() {
 		BUNDLE="${BUNDLE:-all}"
 		validate_name "$BUNDLE"
 		IMAGE_NAME="${IMAGE_NAME:-$BUNDLE}"
-		installable="${REPO_ROOT}#nixosImages.installer.bundle.${BUNDLE}.config.system.build.isoImage"
+		if [ "$installer_profile" = "minimal" ]; then
+			installable="${REPO_ROOT}#nixosImages.installer.bundle.${BUNDLE}.config.system.build.isoImage"
+		else
+			installable="${REPO_ROOT}#nixosImages.installer.bundle.profiles.${installer_profile}.${BUNDLE}.config.system.build.isoImage"
+		fi
 	else
 		use_custom_expr="1"
 	fi
@@ -1039,6 +1095,7 @@ build_installer() {
 		else
 			prepare_cli_custom_spec "$spec_file"
 		fi
+		installer_profile="$(jq -r '.installerProfile // "minimal"' "$spec_file")"
 		installable="${REPO_ROOT}/lib/installer/build-image.nix"
 	fi
 
@@ -1076,7 +1133,7 @@ build_installer() {
 		cmd+=("$installable")
 	fi
 
-	printf 'Building installer image: %s\n' "$IMAGE_NAME" >&2
+	printf 'Building installer image: %s (%s)\n' "$IMAGE_NAME" "$installer_profile" >&2
 	printf 'Command:' >&2
 	shell_quote_args "${cmd[@]}" >&2
 
