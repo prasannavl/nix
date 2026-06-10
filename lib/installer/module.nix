@@ -148,6 +148,12 @@ in {
       pkgs.nixos-install-tools
       pkgs.parted
       pkgs.ripgrep
+      pkgs.helix
+      pkgs.htop
+      pkgs.socat
+      pkgs.lsof
+      pkgs.dmidecode
+      pkgs.ranger
     ];
   };
 
