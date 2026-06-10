@@ -5,6 +5,7 @@
 }: let
   pname = "zep-graphiti";
   version = "0.1.0";
+  checkPython = python3.withPackages (ps: [ps.pydantic]);
   package = stdenvNoCC.mkDerivation {
     inherit pname version;
     src = ./app;
@@ -16,6 +17,7 @@
     checkPhase = ''
       runHook preCheck
       ${python3}/bin/python3 -m py_compile main.py
+      ${checkPython}/bin/python3 -m unittest discover -s tests
       runHook postCheck
     '';
 
