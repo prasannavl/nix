@@ -7,6 +7,7 @@ RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
 readonly NIXBOT_VERSION="2026.05.31.1"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
+readonly NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS="${NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS:-5}"
 
 readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
 	nixpkgs#age
@@ -29,8 +30,10 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	pgrep
 	ssh
 	scp
+	ssh-keyscan
 	ssh-keygen
 	stty
+	timeout
 	tofu
 )
 readonly NIXBOT_SSH_ARGV_PREFIX="__nixbot_argv64"
@@ -262,6 +265,9 @@ init_vars() {
 	NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT:-45}"
 	NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS:-5}"
 	NIXBOT_CONTROL_PERSIST_SECS="${NIXBOT_CONTROL_PERSIST_SECS:-120}"
+	NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS="${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS:-5}"
+	NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX="${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX:-3}"
+	NIXBOT_REMOTE_READ_TIMEOUT_SECS="${NIXBOT_REMOTE_READ_TIMEOUT_SECS:-20}"
 	NIXBOT_CANCEL_REQUESTED=0
 	NIXBOT_CANCEL_LAST_SIGNAL_EPOCH=0
 	NIXBOT_CANCEL_ACTIVE_DEPLOYS_SEEN=0
@@ -1678,7 +1684,7 @@ configure_ci_trigger_ssh_opts() {
 	if [ -n "${CI_TRIGGER_KNOWN_HOSTS}" ]; then
 		scanned_known_hosts="${CI_TRIGGER_KNOWN_HOSTS}"
 	else
-		scanned_known_hosts="$(ssh-keyscan -H "${CI_TRIGGER_HOST}" 2>/dev/null || true)"
+		scanned_known_hosts="$(run_ssh_keyscan -H "${CI_TRIGGER_HOST}" 2>/dev/null || true)"
 		[ -n "${scanned_known_hosts}" ] || die "Could not determine CI host key for ${CI_TRIGGER_HOST}. Pass --ci-known-hosts/NIXBOT_CI_KNOWN_HOSTS or ensure ssh-keyscan can reach the CI host."
 	fi
 
@@ -2805,6 +2811,10 @@ ensure_known_hosts_file() {
 	printf '%s\n' "${known_hosts_file}"
 }
 
+run_ssh_keyscan() {
+	ssh-keyscan -T "${NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS}" "$@"
+}
+
 ensure_known_host() {
 	local host="$1" known_hosts="$2" known_hosts_file="$3"
 
@@ -2813,10 +2823,10 @@ ensure_known_host() {
 	fi
 
 	if ! ssh-keygen -F "${host}" -f "${known_hosts_file}" | grep -q ' ssh-ed25519 '; then
-		ssh-keyscan -t ed25519 "${host}" >>"${known_hosts_file}" 2>/dev/null || true
+		run_ssh_keyscan -t ed25519 "${host}" >>"${known_hosts_file}" 2>/dev/null || true
 	fi
 	if ! ssh-keygen -F "${host}" -f "${known_hosts_file}" >/dev/null 2>&1; then
-		ssh-keyscan "${host}" >>"${known_hosts_file}" 2>/dev/null || true
+		run_ssh_keyscan "${host}" >>"${known_hosts_file}" 2>/dev/null || true
 	fi
 }
 
@@ -2870,9 +2880,9 @@ ensure_repo_known_hosts_file_for_url() {
 
 	if [ ! -s "${known_hosts_file}" ]; then
 		if [ -n "${repo_port}" ] && [ "${repo_port}" != "22" ]; then
-			scanned_known_hosts="$(ssh-keyscan -H -p "${repo_port}" "${repo_host}" 2>/dev/null || true)"
+			scanned_known_hosts="$(run_ssh_keyscan -H -p "${repo_port}" "${repo_host}" 2>/dev/null || true)"
 		else
-			scanned_known_hosts="$(ssh-keyscan -H "${repo_host}" 2>/dev/null || true)"
+			scanned_known_hosts="$(run_ssh_keyscan -H "${repo_host}" 2>/dev/null || true)"
 		fi
 		[ -n "${scanned_known_hosts}" ] || {
 			echo "Could not determine repo host key for ${repo_host} from ${repo_url}" >&2
@@ -3375,6 +3385,8 @@ run_target_command() {
 		bash -c "${target_cmd}"
 	elif [ "${tty_mode}" -eq 1 ]; then
 		run_tty_target_command "${ssh_target}" "${target_cmd}" "${ssh_opts[@]}"
+	elif [ -n "${RUN_TARGET_COMMAND_TIMEOUT_SECS:-}" ]; then
+		timeout --foreground "${RUN_TARGET_COMMAND_TIMEOUT_SECS}s" ssh "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}"
 	else
 		# shellcheck disable=SC2029
 		ssh "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}"
@@ -3424,6 +3436,17 @@ transport_retry_backoff_seconds() {
 	printf '%s\n' "$((NIXBOT_TRANSPORT_RETRY_DELAY_SECS * (attempt - 1)))"
 }
 
+transport_status_is_retryable() {
+	case "${1:-}" in
+	124 | 255)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
 retry_transport_command() {
 	local retry_label="$1" retry_hook="${2:-}"
 	shift 2
@@ -3436,13 +3459,13 @@ retry_transport_command() {
 			rc="$?"
 		fi
 
-		if [ "${rc}" -ne 255 ] || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+		if ! transport_status_is_retryable "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
 			return "${rc}"
 		fi
 
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
-		echo "${retry_label} transport closed; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
 		sleep "${retry_sleep_secs}"
 		if [ -n "${retry_hook}" ]; then
 			"${retry_hook}" || return "$?"
@@ -3468,13 +3491,13 @@ retry_transport_capture() {
 		# shellcheck disable=SC2034
 		rtc_output_out_ref="${captured}"
 
-		if [ "${rc}" -ne 255 ] || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+		if ! transport_status_is_retryable "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
 			return "${rc}"
 		fi
 
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
-		echo "${retry_label} transport closed; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
 		sleep "${retry_sleep_secs}"
 		if [ -n "${retry_hook}" ]; then
 			"${retry_hook}" || return "$?"
@@ -3500,13 +3523,13 @@ retry_transport_stdout_capture() {
 		# shellcheck disable=SC2034
 		rtsc_output_out_ref="${captured}"
 
-		if [ "${rc}" -ne 255 ] || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+		if ! transport_status_is_retryable "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
 			return "${rc}"
 		fi
 
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
-		echo "${retry_label} transport closed; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
 		sleep "${retry_sleep_secs}"
 		if [ -n "${retry_hook}" ]; then
 			"${retry_hook}" || return "$?"
@@ -3696,12 +3719,14 @@ init_known_hosts_ssh_context() {
 		-F "${SSH_NULL_CONFIG_FILE}"
 		-o ConnectTimeout=10
 		-o ConnectionAttempts=1
+		-o "ServerAliveInterval=${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS}"
+		-o "ServerAliveCountMax=${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX}"
 		-o LogLevel=ERROR
 		-o "GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE}"
 		-o "UserKnownHostsFile=${known_hosts_file}"
 		-o "StrictHostKeyChecking=${host_key_check}"
 	)
-	ikhsc_nix_sshopts_out_ref="-F ${SSH_NULL_CONFIG_FILE} -o ConnectTimeout=10 -o ConnectionAttempts=1 -o LogLevel=ERROR -o GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE} -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
+	ikhsc_nix_sshopts_out_ref="-F ${SSH_NULL_CONFIG_FILE} -o ConnectTimeout=10 -o ConnectionAttempts=1 -o ServerAliveInterval=${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS} -o ServerAliveCountMax=${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX} -o LogLevel=ERROR -o GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE} -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
 
 	if [ "${batch_mode}" -eq 1 ]; then
 		ikhsc_ssh_opts_out_ref=(-o BatchMode=yes "${ikhsc_ssh_opts_out_ref[@]}")
@@ -4587,6 +4612,8 @@ require_prepared_deploy_context() {
 }
 
 refresh_prepared_primary_target() {
+	local node="${PREP_DEPLOY_NODE}"
+
 	[ -n "${PREP_DEPLOY_NODE}" ] || return 0
 	[ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] || return 0
 	# Bootstrap-fallback retries are already operating on the prepared bootstrap
@@ -4594,7 +4621,9 @@ refresh_prepared_primary_target() {
 	# noise and does not affect the in-flight retry arguments.
 	[ "${PREP_USING_BOOTSTRAP_FALLBACK}" -eq 0 ] || return 0
 
-	prepare_deploy_context "${PREP_DEPLOY_NODE}" primary-only
+	clear_primary_ready "${node}"
+	clear_control_master_socket "${node}" primary
+	prepare_deploy_context "${node}" primary-only
 }
 
 run_prepared_deploy_command_with_retry() {
@@ -4606,6 +4635,25 @@ run_prepared_deploy_command_with_retry() {
 		run_prepared_deploy_command \
 		"${tty_mode}" \
 		"${target_cmd}"
+}
+
+run_prepared_deploy_command_with_bounded_retry() {
+	local tty_mode="$1" retry_label="$2" timeout_secs="$3" target_cmd="$4"
+
+	retry_transport_command \
+		"${retry_label}" \
+		refresh_prepared_primary_target \
+		run_prepared_deploy_command_with_timeout \
+		"${tty_mode}" \
+		"${timeout_secs}" \
+		"${target_cmd}"
+}
+
+run_prepared_deploy_command_with_timeout() {
+	local tty_mode="$1" timeout_secs="$2" target_cmd="$3"
+
+	RUN_TARGET_COMMAND_TIMEOUT_SECS="${timeout_secs}" \
+		run_prepared_deploy_command "${tty_mode}" "${target_cmd}"
 }
 
 prepared_target_has_passwordless_sudo() {
@@ -5012,16 +5060,18 @@ ensure_deploy_wave_parent_readiness() {
 }
 
 read_prepared_current_system_path() {
-	run_prepared_deploy_command_with_retry \
+	run_prepared_deploy_command_with_bounded_retry \
 		0 \
 		"Current system read for ${PREP_DEPLOY_NODE:-target}" \
+		"${NIXBOT_REMOTE_READ_TIMEOUT_SECS}" \
 		"${REMOTE_SYSTEM_BIN_DIR}/readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
 }
 
 read_prepared_system_profile_path() {
-	run_prepared_deploy_command_with_retry \
+	run_prepared_deploy_command_with_bounded_retry \
 		0 \
 		"System profile read for ${PREP_DEPLOY_NODE:-target}" \
+		"${NIXBOT_REMOTE_READ_TIMEOUT_SECS}" \
 		"${REMOTE_SYSTEM_BIN_DIR}/readlink -f ${REMOTE_SYSTEM_PROFILE_PATH} 2>/dev/null || true"
 }
 
