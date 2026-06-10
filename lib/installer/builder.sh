@@ -249,133 +249,133 @@ append_csv_fresh_ids() {
 parse_args() {
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
-			--bundle)
-				[ "$#" -ge 2 ] || die "--bundle requires a value"
-				BUNDLE="$2"
+		--bundle)
+			[ "$#" -ge 2 ] || die "--bundle requires a value"
+			BUNDLE="$2"
+			shift
+			;;
+		--bundle=*)
+			BUNDLE="${1#--bundle=}"
+			;;
+		--config)
+			[ "$#" -ge 2 ] || die "--config requires a value"
+			CONFIG_FILE="$2"
+			shift
+			;;
+		--config=*)
+			CONFIG_FILE="${1#--config=}"
+			;;
+		--host)
+			[ "$#" -ge 2 ] || die "--host requires a value"
+			append_single_host "$2"
+			shift
+			;;
+		--host=*)
+			append_single_host "${1#--host=}"
+			;;
+		--hosts)
+			[ "$#" -ge 2 ] || die "--hosts requires a value"
+			append_csv_hosts "$2"
+			shift
+			;;
+		--hosts=*)
+			append_csv_hosts "${1#--hosts=}"
+			;;
+		--target)
+			[ "$#" -ge 2 ] || die "--target requires a value"
+			append_single_target "$2"
+			shift
+			;;
+		--target=*)
+			append_single_target "${1#--target=}"
+			;;
+		--targets)
+			[ "$#" -ge 2 ] || die "--targets requires a value"
+			append_csv_targets "$2"
+			shift
+			;;
+		--targets=*)
+			append_csv_targets "${1#--targets=}"
+			;;
+		--disk)
+			[ "$#" -ge 2 ] || die "--disk requires a value"
+			append_disk_override "$2"
+			shift
+			;;
+		--disk=*)
+			append_disk_override "${1#--disk=}"
+			;;
+		--disks)
+			[ "$#" -ge 2 ] || die "--disks requires a value"
+			append_csv_disk_overrides "$2"
+			shift
+			;;
+		--disks=*)
+			append_csv_disk_overrides "${1#--disks=}"
+			;;
+		--fresh-ids)
+			if [ "$#" -ge 2 ] && [[ "$2" != --* ]]; then
+				append_csv_fresh_ids "$2"
 				shift
-				;;
-			--bundle=*)
-				BUNDLE="${1#--bundle=}"
-				;;
-			--config)
-				[ "$#" -ge 2 ] || die "--config requires a value"
-				CONFIG_FILE="$2"
-				shift
-				;;
-			--config=*)
-				CONFIG_FILE="${1#--config=}"
-				;;
-			--host)
-				[ "$#" -ge 2 ] || die "--host requires a value"
-				append_single_host "$2"
-				shift
-				;;
-			--host=*)
-				append_single_host "${1#--host=}"
-				;;
-			--hosts)
-				[ "$#" -ge 2 ] || die "--hosts requires a value"
-				append_csv_hosts "$2"
-				shift
-				;;
-			--hosts=*)
-				append_csv_hosts "${1#--hosts=}"
-				;;
-			--target)
-				[ "$#" -ge 2 ] || die "--target requires a value"
-				append_single_target "$2"
-				shift
-				;;
-			--target=*)
-				append_single_target "${1#--target=}"
-				;;
-			--targets)
-				[ "$#" -ge 2 ] || die "--targets requires a value"
-				append_csv_targets "$2"
-				shift
-				;;
-			--targets=*)
-				append_csv_targets "${1#--targets=}"
-				;;
-			--disk)
-				[ "$#" -ge 2 ] || die "--disk requires a value"
-				append_disk_override "$2"
-				shift
-				;;
-			--disk=*)
-				append_disk_override "${1#--disk=}"
-				;;
-			--disks)
-				[ "$#" -ge 2 ] || die "--disks requires a value"
-				append_csv_disk_overrides "$2"
-				shift
-				;;
-			--disks=*)
-				append_csv_disk_overrides "${1#--disks=}"
-				;;
-			--fresh-ids)
-				if [ "$#" -ge 2 ] && [[ "$2" != --* ]]; then
-					append_csv_fresh_ids "$2"
-					shift
-				else
-					FRESH_ID_REQUESTS+=("__all__")
-				fi
-				;;
-			--fresh-ids=*)
-				append_csv_fresh_ids "${1#--fresh-ids=}"
-				;;
-			--name)
-				[ "$#" -ge 2 ] || die "--name requires a value"
-				IMAGE_NAME="$2"
-				shift
-				;;
-			--name=*)
-				IMAGE_NAME="${1#--name=}"
-				;;
-			--out-link)
-				[ "$#" -ge 2 ] || die "--out-link requires a value"
-				OUT_LINK="$2"
-				NO_LINK="0"
-				shift
-				;;
-			--out-link=*)
-				OUT_LINK="${1#--out-link=}"
-				NO_LINK="0"
-				;;
-			--no-link)
-				NO_LINK="1"
-				;;
-			--store-root)
-				[ "$#" -ge 2 ] || die "--store-root requires a value"
-				STORE_ROOT="$2"
-				shift
-				;;
-			--store-root=*)
-				STORE_ROOT="${1#--store-root=}"
-				;;
-			--overlay)
-				USE_OVERLAY_STORE="1"
-				;;
-			--print-overlay-mount)
-				PRINT_OVERLAY_MOUNT="1"
-				;;
-			--system-store)
-				USE_SYSTEM_STORE="1"
-				;;
-			--dry-run)
-				DRY_RUN="1"
-				;;
-			--list)
-				list_images
-				exit 0
-				;;
-			-h | --help)
-				usage
-				exit 0
-				;;
-			*)
-				die "Unknown argument: $1"
-				;;
+			else
+				FRESH_ID_REQUESTS+=("__all__")
+			fi
+			;;
+		--fresh-ids=*)
+			append_csv_fresh_ids "${1#--fresh-ids=}"
+			;;
+		--name)
+			[ "$#" -ge 2 ] || die "--name requires a value"
+			IMAGE_NAME="$2"
+			shift
+			;;
+		--name=*)
+			IMAGE_NAME="${1#--name=}"
+			;;
+		--out-link)
+			[ "$#" -ge 2 ] || die "--out-link requires a value"
+			OUT_LINK="$2"
+			NO_LINK="0"
+			shift
+			;;
+		--out-link=*)
+			OUT_LINK="${1#--out-link=}"
+			NO_LINK="0"
+			;;
+		--no-link)
+			NO_LINK="1"
+			;;
+		--store-root)
+			[ "$#" -ge 2 ] || die "--store-root requires a value"
+			STORE_ROOT="$2"
+			shift
+			;;
+		--store-root=*)
+			STORE_ROOT="${1#--store-root=}"
+			;;
+		--overlay)
+			USE_OVERLAY_STORE="1"
+			;;
+		--print-overlay-mount)
+			PRINT_OVERLAY_MOUNT="1"
+			;;
+		--system-store)
+			USE_SYSTEM_STORE="1"
+			;;
+		--dry-run)
+			DRY_RUN="1"
+			;;
+		--list)
+			list_images
+			exit 0
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*)
+			die "Unknown argument: $1"
+			;;
 		esac
 		shift
 	done
@@ -412,8 +412,8 @@ resolve_path() {
 	local path="$1"
 
 	case "$path" in
-		/*) printf '%s\n' "$path" ;;
-		*) printf '%s/%s\n' "$PWD" "$path" ;;
+	/*) printf '%s\n' "$path" ;;
+	*) printf '%s/%s\n' "$PWD" "$path" ;;
 	esac
 }
 
