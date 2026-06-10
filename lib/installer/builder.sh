@@ -45,9 +45,9 @@ Options:
 
 Target config file shape:
   {
-    name = "workstations";
-    targets.l5-service = {
-      host = "pvl-l5";
+    name = "installer-targets";
+    targets.example = {
+      host = "example-host";
       disk = "/dev/disk/by-id/...";
       freshIds = true;
     };
@@ -56,8 +56,8 @@ Target config file shape:
 Examples:
   ${COMMAND_NAME}
   ${COMMAND_NAME} --bundle all
-  ${COMMAND_NAME} --hosts=pvl-a1,pvl-l5 --name workstations
-  ${COMMAND_NAME} --target l5-service=pvl-l5 --disk l5-service=/dev/disk/by-id/nvme-... --fresh-ids l5-service
+  ${COMMAND_NAME} --hosts=host-a,host-b --name workstations
+  ${COMMAND_NAME} --target target-a=host-a --disk target-a=/dev/disk/by-id/nvme-... --fresh-ids target-a
   ${COMMAND_NAME} --config scripts/support/installer-targets.nix
 EOF
 }
