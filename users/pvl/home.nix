@@ -8,7 +8,6 @@
       {_module.args = {inherit userdata;};}
       ({pkgs, ...}: {
         xdg.enable = true;
-        xdg.configFile."user-dirs.dirs".force = true;
 
         home = {
           preferXdgDirectories = true;
