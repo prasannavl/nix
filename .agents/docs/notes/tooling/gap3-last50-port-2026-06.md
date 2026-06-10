@@ -15,6 +15,9 @@ plus local gap3 `11f905d3`, which was ahead of origin in the gap3 checkout.
 The 2026-06-08 refresh reviewed gap3 `11f905d3..6aa0246c`, with the explicit
 last-10 commit set from `020d2bcf..6aa0246c`.
 
+The 2026-06-10 refresh reviewed the current `abird/master` last 50 ending at
+`2f7eee54 fix(abird): restore nest tailnet ssh`.
+
 Do not cherry-pick the range wholesale. Port shared library/package machinery
 byte-for-byte where this repo has no intentional divergence; adapt only local
 repo surfaces such as package manifests, image aliases, and docs.
@@ -258,11 +261,66 @@ only when classifying commits.
 | `148d2a03` | feat(clean-repo): script to clean up repo         | Ported `scripts/clean-repo.sh` byte-for-byte from gap3.                                                                                                                                                         |
 | `6aa0246c` | chore(bash): use quiet on reexec shell            | Ported shared quiet `nix --quiet --no-warn-dirty shell` reexec behavior; adapted to local-only updater scripts; skipped gap3 `.agents` docs and `TODO.md` removal. Kept local `nixbot` Terraform secret layout. |
 
+## 2026-06-10 Refresh Disposition
+
+| Commit     | Subject                                               | Disposition                                                                                                                                                                           |
+| ---------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0e28d41b` | docs(abird-nest): record incus cli setup              | Already reviewed; skipped Abird-nest docs.                                                                                                                                            |
+| `0c135c16` | feat(abird): add OpenClaw gateway                     | Already reviewed; skipped Abird service/DNS/Terraform. Shared migrator profile support was retained from the earlier runtime-drain port.                                              |
+| `2bde2207` | feat(abird): add Hermes agent                         | Already reviewed; shared Podman helper behavior was already ported, host service/DNS/Terraform skipped.                                                                               |
+| `c89daedd` | fix(abird): show oauth2-proxy error info              | Already reviewed; skipped Abird oauth2-proxy host config.                                                                                                                             |
+| `a17b95da` | fix(nginx): allow oauth2 error details                | Already ported as shared nginx auth-location behavior.                                                                                                                                |
+| `2292939f` | fix(abird): mount OpenClaw config in state            | Already reviewed; skipped Abird OpenClaw service config.                                                                                                                              |
+| `99a9d640` | agents: add git skills                                | Already ported local agent skill files.                                                                                                                                               |
+| `11f905d3` | feat(migrator): add runtime drain gate                | Already ported as shared runtime migrator, data-migrator, and systemd-user-manager integration with local docs/module adaptations.                                                    |
+| `2226b060` | feat(completions): add repo CLI completions           | Already ported locally; completion bridge and docs are present.                                                                                                                       |
+| `7a7d2f84` | style: fix repo lint                                  | Already represented locally by formatter/statix cleanup after the migrator port.                                                                                                      |
+| `279db17a` | fix(lint): check all systems pre-push                 | Already ported locally; all-systems pre-push lint behavior is present.                                                                                                                |
+| `020d2bcf` | config(oauth2-proxy): disable debug error             | Skipped Abird oauth2-proxy host config.                                                                                                                                               |
+| `0cfc3ceb` | refactor(migration): cleanup stale hold files         | Skipped Abird hold-module cleanup; no matching local hold-module import exists.                                                                                                       |
+| `49b994dc` | config(tmux): ext keys, csi                           | Already ported locally in user tmux config and docs.                                                                                                                                  |
+| `ae9258d8` | feat(incus): dns, dhcp only host ingress profiles     | Already ported locally; `lib/incus/lib.nix` contains the shared host-ingress helpers.                                                                                                 |
+| `861967b8` | style(docs): fix markdown formatting                  | Adopted in principle through local `.agents/docs` formatter passes; skipped gap3-only doc drift.                                                                                      |
+| `29708a8a` | refactor(ai): move to .agents dir                     | Already adopted locally with repo-specific `.agents/docs` content; skipped Abird-specific docs.                                                                                       |
+| `b64a8509` | chore: update flake, cleanup flake locks              | Previously adopted nested flake-lock cleanup; root `flake.lock` drift remains intentionally local.                                                                                    |
+| `11b80626` | feat(age-secrets): dry run mode                       | Already ported in `scripts/age-secrets.sh`.                                                                                                                                           |
+| `148d2a03` | feat(clean-repo): script to clean up repo             | Already ported as local cleanup script support.                                                                                                                                       |
+| `6aa0246c` | chore(bash): use quiet on reexec shell                | Already ported for local reexec scripts, with Terraform secret layout kept local.                                                                                                     |
+| `a83b2f5f` | fix(vscode): vendoring fix                            | Adopted byte-for-byte in `lib/ext/vscode/default.nix` and `lib/ext/vscode/update.sh`.                                                                                                 |
+| `1c5fa6b7` | fix(ext): update tailscale, vscode                    | Adopted byte-for-byte for `lib/ext/tailscale` and `lib/ext/vscode`; skipped one-off GitHub-token note.                                                                                |
+| `2865eafb` | chore(flake): update                                  | Adopted the reusable `lib/ext/tailscale` pin state only; skipped root `flake.lock` because this repo's flake graph diverges.                                                          |
+| `22408432` | refactor(scripts): localize update helpers            | Already mostly ported; retained local-only extension helpers while keeping shared `lib/ext/*/update.sh` parity.                                                                       |
+| `31242bfd` | refactor(scripts): fold flake updates                 | Adopted `scripts/update.sh --only-flake`, removed `scripts/update-flakes.sh`, and updated local docs to the new command.                                                              |
+| `d614ff22` | feat(update): add package reports                     | Adopted update report support, `scripts/support/report-pkgs-ext.py`, `scripts/support/report-podman-images.py`, and moved Cloudflare/Terraform helper scripts from `scripts/archive`. |
+| `011ca087` | chore(ext): update safe package pins                  | Adopted byte-for-byte for `pkgs/ext/awl` and `lib/ext/stalwart-cli`.                                                                                                                  |
+| `865e70f1` | chore(abird): update safe image pins                  | Skipped Abird host image pins; report tooling from the same update workflow is covered by `d614ff22` and `83c1891d`.                                                                  |
+| `6d489d20` | fix(abird): heal stale mx wireguard                   | Skipped Abird Stalwart MX WireGuard host helper.                                                                                                                                      |
+| `8457f275` | chore(abird): update patched app pins                 | Adopted byte-for-byte for shared `pkgs/ext/bulwarkmail`, `pkgs/ext/kanidm-server`, and `pkgs/ext/mirofish`; skipped Abird update note text.                                           |
+| `f104b4d7` | chore(abird): update patched stalwart                 | Adopted byte-for-byte for shared `pkgs/ext/stalwart-server`; skipped Abird `wg-autoheal.sh` host change and update note text.                                                         |
+| `bf5119c9` | refactor: make robin-core a shared library            | Skipped Robin app/package family; previous refresh intentionally skipped Robin service rollout and the local manifest does not carry those packages.                                  |
+| `1a358c0f` | docs: update Robin service notes                      | Skipped Robin docs with the skipped app family.                                                                                                                                       |
+| `93d27478` | fix(graphiti): use direct extraction LLM              | Adopted reusable `pkgs/support/zep-graphiti` application changes; skipped Abird host config/docs.                                                                                     |
+| `e0b476e9` | fix(graphiti): harden local ingestion                 | Adopted reusable `pkgs/support/zep-graphiti` application changes; skipped Abird host config/docs.                                                                                     |
+| `fa6648db` | fix(nixbot): bound remote profile reads               | Adapted portable `nixbot` bounded remote reads, SSH keepalives, timeout dependency, and retry cache clearing while preserving local Terraform secret discovery.                       |
+| `1211419b` | fix(graphiti): sanitize local graph payloads          | Adopted reusable `pkgs/support/zep-graphiti` application changes.                                                                                                                     |
+| `72df69b5` | fix(ollama): fail on pull API errors                  | Skipped Abird Ollama host helper.                                                                                                                                                     |
+| `77cbd49f` | feat(graphiti): accept graph ontologies               | Adopted reusable `pkgs/support/zep-graphiti` ontology support.                                                                                                                        |
+| `83c1891d` | fix(update): flag floating image tags                 | Adopted byte-for-byte in `scripts/support/report-podman-images.py`.                                                                                                                   |
+| `6ae020b1` | fix(graphiti): sanitize ontology attributes           | Adopted reusable `pkgs/support/zep-graphiti` application changes.                                                                                                                     |
+| `471a0129` | chore(abird): pin service images                      | Skipped Abird service image pins; adopted the reusable report-script behavior that recognizes floating tags.                                                                          |
+| `7de2bcf2` | chore(abird): update corp images                      | Skipped Abird corp image pins.                                                                                                                                                        |
+| `837ead34` | fix(abird): use ollama rag embeddings                 | Skipped Abird Open WebUI/Ollama host config and docs.                                                                                                                                 |
+| `c9605e63` | Merge pull request #4 from abird-ai/ai/robin-core-lib | No direct port; constituent Robin and graphiti commits handled separately.                                                                                                            |
+| `23274ddf` | fix(zep-graphiti): normalize structured output        | Adopted reusable `pkgs/support/zep-graphiti` structured-output normalization and tests.                                                                                               |
+| `86a2ee46` | fix(zep-graphiti): unwrap nested list fields          | Adopted reusable `pkgs/support/zep-graphiti` nested-list normalization and tests.                                                                                                     |
+| `88fb28cc` | fix(zep-graphiti): bound graph LLM calls              | Adopted reusable `pkgs/support/zep-graphiti` bounded graph-call behavior and tests; skipped Abird host timeout config/docs.                                                           |
+| `2f7eee54` | fix(abird): restore nest tailnet ssh                  | Adapted portable `nixbot` bounded keyscan behavior; skipped `hosts/abird-common.nix` tailnet SSH config.                                                                              |
+
 ## Closeout Checks
 
-- Shared files copied from `gap3/master` should be byte-identical unless listed
-  in Current Decisions as locally adapted.
+- Shared files copied from the audited Abird remote branch should be
+  byte-identical unless listed in Current Decisions as locally adapted.
 - Validate Nix formatting and relevant eval/build checks after the full unit
   port.
-- Re-run a final `master..gap3/master` path audit for shared scopes before
+- Re-run a final `master..abird/master` path audit for shared scopes before
   merging or committing.
