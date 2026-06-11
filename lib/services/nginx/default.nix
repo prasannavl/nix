@@ -558,6 +558,16 @@
   sanitizeVariableName = value:
     builtins.replaceStrings ["-"] ["_"] (sanitizeName value);
 
+  sanitizeRouteNamePart = value: let
+    normalizedValue = lib.removePrefix "/" value;
+    withoutLeadingDot = lib.removePrefix "." normalizedValue;
+  in
+    builtins.replaceStrings ["/" "_" "."] ["-" "-" "-"] (
+      lib.strings.toLower withoutLeadingDot
+    );
+
+  mkPathRouteName = prefix: path: "${prefix}-${sanitizeRouteNamePart path}";
+
   normalizeRoutePath = path:
     if path == "/"
     then "/"
@@ -1766,8 +1776,10 @@ in rec {
   };
 
   inherit
+    mkPathRouteName
     renderStreamProxiesFromExposedPorts
     renderStreamProxies
+    sanitizeRouteNamePart
     streamPortMappingsFromExposedPorts
     streamPortMappings
     streamProxiesFromExposedPorts
