@@ -10,7 +10,7 @@ in {
     pvl-a1 = {
       target = "pvl-a1";
       ageIdentityKey = secretPaths.machine "pvl-a1";
-      deploy = "optional";
+      deploy = "skip";
     };
     pvl-x2 = {
       target = "pvl-x2";
