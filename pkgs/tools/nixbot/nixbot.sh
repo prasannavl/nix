@@ -2659,6 +2659,9 @@ emit_annotated_selected_hosts() {
 
 	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
+		if host_skip_enabled "${node}"; then
+			continue
+		fi
 		annotation=""
 		mode="$(host_deploy_mode "${node}")"
 		if [ "${mode}" != "strict" ]; then
@@ -5161,6 +5164,9 @@ wave_needs_snapshot_retry() {
 
 	for node in "$@"; do
 		[ -n "${node}" ] || continue
+		if host_deploy_stage_skipped "${node}"; then
+			continue
+		fi
 		if ! snapshot_exists "${snapshot_dir}/${node}.path"; then
 			return 0
 		fi
@@ -5719,14 +5725,24 @@ run_snapshot_job() {
 run_initial_snapshot_wave() {
 	local level_group="$1" snapshot_dir="$2" snapshot_log_dir="$3" snapshot_status_dir="$4"
 	local verify_parallel="${5:-0}" verify_parallel_jobs="${6:-1}"
-	local -a level_hosts=()
+	local -a level_hosts=() snapshot_hosts=()
 	local node="" active_jobs=0 status_file="" log_file="" status=""
 
 	[ -n "${level_group}" ] || return 0
 
 	mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
-	log_subsection "Snapshot Wave 0: $(join_by_comma "${level_hosts[@]}")"
 	for node in "${level_hosts[@]}"; do
+		[ -n "${node}" ] || continue
+		if host_deploy_stage_skipped "${node}"; then
+			continue
+		fi
+		snapshot_hosts+=("${node}")
+	done
+
+	[ "${#snapshot_hosts[@]}" -gt 0 ] || return 0
+
+	log_subsection "Snapshot Wave 0: $(join_by_comma "${snapshot_hosts[@]}")"
+	for node in "${snapshot_hosts[@]}"; do
 		[ -n "${node}" ] || continue
 		if [ "${verify_parallel}" -eq 1 ]; then
 			status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
@@ -5744,7 +5760,7 @@ run_initial_snapshot_wave() {
 
 	if [ "${verify_parallel}" -eq 1 ]; then
 		drain_job_slots active_jobs || return "$?"
-		for node in "${level_hosts[@]}"; do
+		for node in "${snapshot_hosts[@]}"; do
 			[ -n "${node}" ] || continue
 			status_file="$(phase_dir_item_status_file "${snapshot_status_dir}" "${node}")"
 			if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
@@ -5771,6 +5787,9 @@ ensure_wave_snapshots() {
 
 	for node in "$@"; do
 		[ -n "${node}" ] || continue
+		if host_deploy_stage_skipped "${node}"; then
+			continue
+		fi
 		snapshot_file="${snapshot_dir}/${node}.path"
 		if snapshot_exists "${snapshot_file}"; then
 			continue
@@ -5795,6 +5814,9 @@ ensure_wave_snapshots() {
 		drain_job_slots active_jobs || return "$?"
 		for node in "$@"; do
 			[ -n "${node}" ] || continue
+			if host_deploy_stage_skipped "${node}"; then
+				continue
+			fi
 			snapshot_file="${snapshot_dir}/${node}.path"
 			if snapshot_exists "${snapshot_file}"; then
 				continue
