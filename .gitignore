@@ -7,6 +7,7 @@ result-*
 .direnv/
 flake.lock
 !/flake.lock
+*.override.nix
 
 # Secrets
 data/secrets/**

@@ -8,6 +8,7 @@ readonly NIXBOT_VERSION="2026.05.31.1"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 readonly NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS="${NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS:-5}"
+readonly NIXBOT_DEFAULT_CONFIG_PATH="hosts/nixbot.nix"
 
 readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
 	nixpkgs#age
@@ -43,8 +44,8 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
-  nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -96,6 +97,7 @@ Workflow Behavior Options:
   --force          Bypass change-detection gates
   --dirty          Allow running from a dirty repo root (worktree = HEAD)
   --dirty-staged   Like --dirty, but overlay staged changes into the worktree
+  --no-override    Skip the sibling *.override.nix config overlay
   --log-format     auto|gh|plain (default: auto)
 
 Auth / Config Options:
@@ -212,6 +214,34 @@ die() {
 
 ##### Init Vars #####
 
+override_config_path_for() {
+	local config_path="$1" repo_root="" resolved_config="" override_config=""
+
+	case "${config_path}" in
+	*.nix) ;;
+	*) return 0 ;;
+	esac
+
+	if [[ "${config_path}" == /* ]]; then
+		resolved_config="${config_path}"
+	else
+		if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+			resolved_config="${repo_root}/${config_path}"
+		fi
+		if [ -z "${resolved_config}" ] || [ ! -f "${resolved_config}" ]; then
+			resolved_config="$(pwd -P)/${config_path}"
+		fi
+	fi
+
+	override_config="${resolved_config%.nix}.override.nix"
+	if [ -f "${override_config}" ]; then
+		printf '%s\n' "${override_config}"
+		return 0
+	fi
+
+	return 0
+}
+
 resolve_ssh_tty_stdin_path() {
 	if [ -t 0 ] || [ -t 1 ] || [ -t 2 ]; then
 		printf '/dev/tty\n'
@@ -254,6 +284,7 @@ init_vars() {
 	ALLOW_DIRTY_REPO=0
 	OVERLAY_STAGED=0
 	FORCE_BOOTSTRAP_PATH=0
+	SKIP_CONFIG_OVERRIDE=0
 	PRIORITIZE_CI_FIRST=0
 	DRY_RUN=0
 	ROLLBACK_ON_FAILURE=1
@@ -286,7 +317,11 @@ init_vars() {
 	if [ -z "${NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE}" ]; then
 		NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE="${NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK}"
 	fi
-	NIXBOT_CONFIG_PATH="${NIXBOT_CONFIG:-hosts/nixbot.nix}"
+	NIXBOT_CONFIG_PATH="${NIXBOT_CONFIG:-${NIXBOT_DEFAULT_CONFIG_PATH}}"
+	NIXBOT_CONFIG_OVERRIDE_PATH="${NIXBOT_CONFIG_OVERRIDE_PATH:-}"
+	if [ -z "${NIXBOT_CONFIG_OVERRIDE_PATH}" ]; then
+		NIXBOT_CONFIG_OVERRIDE_PATH="$(override_config_path_for "${NIXBOT_CONFIG_PATH}")"
+	fi
 	SHA="${NIXBOT_SHA:-}"
 	CI_TRIGGER=0
 	CI_TRIGGER_HOST="${NIXBOT_CI_HOST:-gap3-gondor}"
@@ -890,6 +925,11 @@ parse_args() {
 			ALLOW_DIRTY_REPO=1
 			shift
 			;;
+		--no-override)
+			SKIP_CONFIG_OVERRIDE=1
+			NIXBOT_CONFIG_OVERRIDE_PATH=""
+			shift
+			;;
 		--bootstrap)
 			FORCE_BOOTSTRAP_PATH=1
 			shift
@@ -933,6 +973,11 @@ parse_args() {
 		--config | --config=*)
 			take_optval "$@"
 			NIXBOT_CONFIG_PATH="${OPTVAL}"
+			if [ "${SKIP_CONFIG_OVERRIDE}" -eq 0 ]; then
+				NIXBOT_CONFIG_OVERRIDE_PATH="$(override_config_path_for "${NIXBOT_CONFIG_PATH}")"
+			else
+				NIXBOT_CONFIG_OVERRIDE_PATH=""
+			fi
 			shift "${OPTSHIFT}"
 			;;
 		--age-key-file | --age-key-file=*)
@@ -2002,15 +2047,60 @@ reexec_repo_script_if_needed() {
 	log_section "Phase: Repo Re-exec"
 	echo "Re-executing deploy from worktree repo script:" >&2
 	echo "${repo_script}" >&2
-	exec env NIXBOT_REEXECED_FROM_REPO=1 NIXBOT_REPO_ROOT="${REPO_ROOT}" NIXBOT_REPO_WORKTREE_ROOT="${REPO_WORKTREE_ROOT}" NIXBOT_RUNTIME_WORK_DIR="${RUNTIME_WORK_DIR}" bash "${repo_script}" "${request_args[@]}"
+	exec env \
+		NIXBOT_REEXECED_FROM_REPO=1 \
+		NIXBOT_REPO_ROOT="${REPO_ROOT}" \
+		NIXBOT_REPO_WORKTREE_ROOT="${REPO_WORKTREE_ROOT}" \
+		NIXBOT_RUNTIME_WORK_DIR="${RUNTIME_WORK_DIR}" \
+		NIXBOT_CONFIG_OVERRIDE_PATH="${NIXBOT_CONFIG_OVERRIDE_PATH}" \
+		bash "${repo_script}" "${request_args[@]}"
 }
 
 ##### Config / Secrets #####
 
-load_deploy_config_json() {
+resolve_config_path() {
 	local path="$1"
+
+	if [[ "${path}" == /* ]]; then
+		printf '%s\n' "${path}"
+	else
+		printf '%s/%s\n' "$(pwd -P)" "${path}"
+	fi
+}
+
+load_deploy_config_json() {
+	local path="$1" override_path="${NIXBOT_CONFIG_OVERRIDE_PATH:-}"
+	local resolved_path="" resolved_override_path="" expr=""
+
 	[ -f "${path}" ] || die "Deploy config not found: ${path}"
-	nix eval --json --file "${path}"
+	if [ -z "${override_path}" ] || [ ! -f "${override_path}" ]; then
+		nix eval --json --file "${path}"
+		return
+	fi
+
+	resolved_path="$(resolve_config_path "${path}")"
+	resolved_override_path="$(resolve_config_path "${override_path}")"
+	# The sibling override is a partial attrset layered over the selected config:
+	# nested attrsets merge recursively, while scalar/list values replace the
+	# base value.
+	expr="
+let
+  recursiveUpdate = lhs: rhs:
+    lhs
+    // rhs
+    // builtins.mapAttrs (
+      name: rhsValue:
+        let
+          lhsValue = lhs.\${name} or null;
+        in
+          if builtins.isAttrs lhsValue && builtins.isAttrs rhsValue
+          then recursiveUpdate lhsValue rhsValue
+          else rhsValue
+    ) rhs;
+in
+  recursiveUpdate (import ${resolved_path}) (import ${resolved_override_path})
+"
+	nix eval --impure --json --expr "${expr}"
 }
 
 init_deploy_settings() {
@@ -2315,9 +2405,18 @@ host_parent_for() {
 	jq -r --arg h "${node}" '.[$h].parent // ""' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
+host_target_for() {
+	local node="$1"
+
+	jq -r --arg h "${node}" --arg default "${node}" '
+    (.[$h].target // "") as $target |
+    if $target == "" then $default else $target end
+  ' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
 host_parent_resource_for() {
 	local node="$1"
-	jq -r --arg h "${node}" '.[$h].parentResource // $h' <<<"${NIXBOT_HOSTS_JSON}"
+	jq -r --arg h "${node}" '.[$h].resourceId // $h' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
 host_parent_reconcile_template_for() {
@@ -2652,7 +2751,7 @@ prepare_run_context() {
 }
 
 emit_annotated_selected_hosts() {
-	local selected_json="$1" node="" mode="" wait_secs="" parent_host="" annotation=""
+	local selected_json="$1" node="" mode="" wait_secs="" parent_host="" target="" annotation=""
 	local -a selected_hosts=()
 
 	json_array_to_bash_array "${selected_json}" selected_hosts
@@ -2662,10 +2761,11 @@ emit_annotated_selected_hosts() {
 		if host_skip_enabled "${node}"; then
 			continue
 		fi
-		annotation=""
+		target="$(host_target_for "${node}")"
+		annotation="target: ${target}"
 		mode="$(host_deploy_mode "${node}")"
 		if [ "${mode}" != "strict" ]; then
-			annotation="deploy: ${mode}"
+			annotation="${annotation}, deploy: ${mode}"
 		fi
 		wait_secs="$(host_wait_seconds "${node}")"
 		if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
@@ -2691,12 +2791,19 @@ print_selected_hosts_block() {
 	print_host_block "Hosts" "${annotated_hosts[@]}"
 }
 
+print_config_override_line() {
+	if [ -n "${NIXBOT_CONFIG_OVERRIDE_PATH:-}" ] && [ -f "${NIXBOT_CONFIG_OVERRIDE_PATH}" ]; then
+		echo "Config override: ${NIXBOT_CONFIG_OVERRIDE_PATH}" >&2
+	fi
+}
+
 log_run_context() {
 	local selected_json="$1"
 
 	log_section "nixbot"
 	echo "Version: ${NIXBOT_VERSION}" >&2
 	echo "Action: ${ACTION}" >&2
+	print_config_override_line
 	print_selected_hosts_block "${selected_json}"
 	if is_deploy_style_action; then
 		echo "Goal: ${GOAL}" >&2
@@ -4157,28 +4264,30 @@ clear_prepared_deploy_context() {
 }
 
 probe_primary_deploy_target() {
-	local ssh_target="$1"
-	shift
+	local node="$1" ssh_target="$2"
+	shift 2
 	local -a ssh_opts=("$@")
-	# shellcheck disable=SC2034
-	local probe_output="" rc=0
+	local attempt=1 rc=0 retry_sleep_secs=0 captured=""
 
-	if retry_transport_capture \
-		probe_output \
-		"Primary connectivity probe for ${ssh_target}" \
-		"" \
-		ssh \
-		"${ssh_opts[@]}" \
-		"${ssh_target}" \
-		true; then
-		PRIMARY_PROBE_LAST_OUTPUT=""
-		return 0
-	else
-		rc="$?"
-	fi
+	while :; do
+		if captured="$(ssh "${ssh_opts[@]}" "${ssh_target}" true 2>&1)"; then
+			PRIMARY_PROBE_LAST_OUTPUT=""
+			return 0
+		else
+			rc="$?"
+		fi
+		PRIMARY_PROBE_LAST_OUTPUT="${captured}"
 
-	PRIMARY_PROBE_LAST_OUTPUT="${probe_output}"
-	return "${rc}"
+		if ! transport_status_is_retryable "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+			return "${rc}"
+		fi
+
+		attempt=$((attempt + 1))
+		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+		echo "Primary connectivity probe for ${ssh_target} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		clear_control_master_socket "${node}" primary
+		sleep "${retry_sleep_secs}"
+	done
 }
 
 log_primary_probe_failure() {
@@ -4203,7 +4312,7 @@ ensure_primary_deploy_connectivity() {
 	local -n epdc_nix_sshopts_inout_ref="${14}" epdc_bootstrap_nix_sshopts_inout_ref="${16}"
 	local direct_probe_output="" proxied_probe_output=""
 
-	if probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
+	if probe_primary_deploy_target "${node}" "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
 		mark_primary_ready "${node}"
 		return 0
 	fi
@@ -4238,7 +4347,7 @@ ensure_primary_deploy_connectivity() {
 		"${age_identity_key}" \
 		"${epdc_ssh_opts_inout_ref[@]}"
 
-	if probe_primary_deploy_target "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
+	if probe_primary_deploy_target "${node}" "${ssh_target}" "${epdc_ssh_opts_inout_ref[@]}"; then
 		mark_primary_ready "${node}"
 		return 0
 	fi
@@ -9150,6 +9259,7 @@ record_tf_run_summary() {
 ensure_runtime_shell() {
 	local script_path="" script_dir="" flake_path=""
 	local -a nix_shell_cmd=()
+	local -a runtime_env=(NIXBOT_IN_NIX_SHELL=1)
 
 	if [ "${RUNTIME_SHELL_FLAG}" = "1" ]; then
 		return
@@ -9169,7 +9279,11 @@ ensure_runtime_shell() {
 		nix_shell_cmd=(nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${NIXBOT_RUNTIME_INSTALLABLES[@]}")
 	fi
 
-	exec "${nix_shell_cmd[@]}" -c env NIXBOT_IN_NIX_SHELL=1 bash "${script_path}" "$@"
+	if [ -n "${NIXBOT_CONFIG_PATH:-}" ]; then
+		runtime_env+=(NIXBOT_CONFIG_OVERRIDE_PATH="${NIXBOT_CONFIG_OVERRIDE_PATH}")
+	fi
+
+	exec "${nix_shell_cmd[@]}" -c env "${runtime_env[@]}" bash "${script_path}" "$@"
 }
 
 ensure_runtime_tools() {
@@ -9197,6 +9311,7 @@ run_list_hosts_action() {
 	local selected_json=""
 
 	prepare_run_context selected_json
+	print_config_override_line
 	print_selected_hosts_block "${selected_json}"
 }
 

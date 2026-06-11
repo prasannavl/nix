@@ -5,8 +5,8 @@ _nixbot_repo_root() {
 	printf '%s\n' "$root"
 }
 
-_nixbot_config_path() {
-	local i word root
+_nixbot_explicit_config_path() {
+	local i word
 
 	for ((i = 1; i < COMP_CWORD; i++)); do
 		word="${COMP_WORDS[i]}"
@@ -23,17 +23,36 @@ _nixbot_config_path() {
 			;;
 		esac
 	done
+}
 
-	root="$(_nixbot_repo_root)" || return 1
-	printf '%s\n' "${root}/hosts/nixbot.nix"
+_nixbot_no_override_requested() {
+	local i word
+
+	for ((i = 1; i < COMP_CWORD; i++)); do
+		word="${COMP_WORDS[i]}"
+		if [ "$word" = "--no-override" ]; then
+			return 0
+		fi
+	done
+
+	return 1
 }
 
 _nixbot_hosts() {
-	local config
+	local root config=""
+	local -a cmd=()
 
-	config="$(_nixbot_config_path)" || return 0
-	nix eval --json --file "$config" 2>/dev/null |
-		jq -r '(.hosts // {}) | keys[]' 2>/dev/null
+	root="$(_nixbot_repo_root)" || return 0
+	config="$(_nixbot_explicit_config_path)"
+	cmd=("${root}/scripts/nixbot.sh" --list-hosts --hosts all --log-format plain)
+	if [ -n "$config" ]; then
+		cmd+=(--config "$config")
+	fi
+	if _nixbot_no_override_requested; then
+		cmd+=(--no-override)
+	fi
+
+	"${cmd[@]}" 2>&1 | sed -n 's/^[[:space:]]*-[[:space:]]*\([^[:space:]()]*\).*/\1/p'
 }
 
 _nixbot_tf_projects() {
@@ -134,8 +153,8 @@ _nixbot() {
 	options=(
 		--list-hosts --sha --hosts --goal --build-host --build-jobs
 		--deploy-jobs --verify-jobs --force --bootstrap --ci-first --dirty
-		--dirty-staged --dry --no-rollback --prefix-host-logs --log-format
-		--user --ssh-key --known-hosts --config --age-key-file
+		--dirty-staged --dry --no-override --no-rollback --prefix-host-logs
+		--log-format --user --ssh-key --known-hosts --config --age-key-file
 		--discover-keys --no-discover-keys --repo-url --repo-path
 		--use-repo-script --ci-check-ssh-key-path --ci-trigger --ci-host
 		--ci-user --ci-ssh-key --ci-known-hosts --help

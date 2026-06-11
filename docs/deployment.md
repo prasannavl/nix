@@ -431,6 +431,14 @@ Use this order for a clean-room rebuild of the current model.
 
 ## Deploy Config Defaults (`hosts/nixbot.nix`)
 
+For local operator overrides, create a sibling local config by replacing the
+selected config file's final `.nix` suffix with `.override.nix`. For the
+default `hosts/nixbot.nix`, that file is `hosts/nixbot.override.nix`. Nixbot
+evaluates the selected config first, then recursively overlays the gitignored
+override file when it exists. The override file only needs the partial
+overrides, for example `hosts.<name>.target = "...";`. Pass `--no-override` to
+ignore the sibling override for one run.
+
 - `defaults.user = "nixbot"`
 - `defaults.key = "data/secrets/globals/nixbot/nixbot.key.age"`
 - `defaults.bootstrapKey = "data/secrets/globals/nixbot/nixbot.key.age"`
