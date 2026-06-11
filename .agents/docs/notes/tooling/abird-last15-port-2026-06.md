@@ -10,23 +10,23 @@ no `data/secrets/**/*.key` contents were read.
 
 ## Commit Ledger
 
-| Commit | Subject | Result |
-| --- | --- | --- |
-| `db9d610f` | `feat(hosts): abird-labs (formerly tic-tac-toe)` | Skipped. Host, secret, stack-inventory, and Abird data-migrator profile changes are Abird-specific. |
-| `0827ffe9` | `chore(gitignore): track secret dirs` | Already present locally for secret directory tracking. Kept local `.crt` and `.kilo/` ignore differences. |
-| `0b32a9f6` | `fix(incus): resolve instance selectors` | Ported byte-for-byte in `lib/incus/helper.sh`. |
-| `b3238cee` | `fix(nixbot): harden parent readiness` | Ported relevant `pkgs/tools/nixbot/nixbot.sh` changes: `resourceId` parent resource lookup and stale primary ControlMaster clearing on retry. |
-| `28ae0c4a` | `fix(abird): grant labs service secrets` | Skipped. Abird secret-recipient and host inventory only. |
-| `3b94b663` | `refactor(nginx): add path route names` | Ported byte-for-byte in `lib/services/nginx/default.nix`. |
-| `adf0f248` | `fix(nginx): honor Cloudflare scheme` | Ported byte-for-byte in `lib/services/nginx/compose/nginx.conf`. |
-| `ceb01187` | `fix(abird): scope Zulip upload routes` | Skipped. Abird host ingress/docs only, no shared lib/pkg changes. |
-| `66b14818` | `Use staged dirty deploys in data migrator` | Ported byte-for-byte in `pkgs/tools/data-migrator/data-migrator.py` and tests. |
-| `85573678` | `feat(nixbot): add config overrides` | Ported code, completion, `.gitignore`, and deployment docs. Adapted agent note into this repo's current `deploy-system.md` note. |
-| `810f31a4` | `style(docs): wrap nixbot override notes` | Adopted through local documentation shape; no separate content change needed beyond wrapped docs. |
-| `0d92028c` | `feat(nixbot): improve override summary` | Ported manually on top of existing skipped-host banner logic: target annotations plus config override line. |
-| `f692d006` | `chore(flake): update root, vscode` | VS Code package content already matched Abird. Root lock intentionally left local because the lock graphs differ. |
-| `8e91401e` | `feat(installer): add live persistence` | Mostly already present locally. Ported missing non-LUKS/optional-ID support from `module.nix` and `offline-install.sh`; kept local installer target config and MBR persistence fix. |
-| `86b7e4af` | `fix(nixbot): omit skipped hosts` | Already partly present locally. Kept existing snapshot/deploy skip handling and ported the remaining banner/summary pieces through the `0d92028c` merge. |
+| Commit     | Subject                                          | Result                                                                                                                                                                              |
+| ---------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db9d610f` | `feat(hosts): abird-labs (formerly tic-tac-toe)` | Skipped. Host, secret, stack-inventory, and Abird data-migrator profile changes are Abird-specific.                                                                                 |
+| `0827ffe9` | `chore(gitignore): track secret dirs`            | Already present locally for secret directory tracking. Kept local `.crt` and `.kilo/` ignore differences.                                                                           |
+| `0b32a9f6` | `fix(incus): resolve instance selectors`         | Ported byte-for-byte in `lib/incus/helper.sh`.                                                                                                                                      |
+| `b3238cee` | `fix(nixbot): harden parent readiness`           | Ported relevant `pkgs/tools/nixbot/nixbot.sh` changes: `resourceId` parent resource lookup and stale primary ControlMaster clearing on retry.                                       |
+| `28ae0c4a` | `fix(abird): grant labs service secrets`         | Skipped. Abird secret-recipient and host inventory only.                                                                                                                            |
+| `3b94b663` | `refactor(nginx): add path route names`          | Ported byte-for-byte in `lib/services/nginx/default.nix`.                                                                                                                           |
+| `adf0f248` | `fix(nginx): honor Cloudflare scheme`            | Ported byte-for-byte in `lib/services/nginx/compose/nginx.conf`.                                                                                                                    |
+| `ceb01187` | `fix(abird): scope Zulip upload routes`          | Skipped. Abird host ingress/docs only, no shared lib/pkg changes.                                                                                                                   |
+| `66b14818` | `Use staged dirty deploys in data migrator`      | Ported byte-for-byte in `pkgs/tools/data-migrator/data-migrator.py` and tests.                                                                                                      |
+| `85573678` | `feat(nixbot): add config overrides`             | Ported code, completion, `.gitignore`, and deployment docs. Adapted agent note into this repo's current `deploy-system.md` note.                                                    |
+| `810f31a4` | `style(docs): wrap nixbot override notes`        | Adopted through local documentation shape; no separate content change needed beyond wrapped docs.                                                                                   |
+| `0d92028c` | `feat(nixbot): improve override summary`         | Ported manually on top of existing skipped-host banner logic: target annotations plus config override line.                                                                         |
+| `f692d006` | `chore(flake): update root, vscode`              | VS Code package content already matched Abird. Root lock intentionally left local because the lock graphs differ.                                                                   |
+| `8e91401e` | `feat(installer): add live persistence`          | Mostly already present locally. Ported missing non-LUKS/optional-ID support from `module.nix` and `offline-install.sh`; kept local installer target config and MBR persistence fix. |
+| `86b7e4af` | `fix(nixbot): omit skipped hosts`                | Already partly present locally. Kept existing snapshot/deploy skip handling and ported the remaining banner/summary pieces through the `0d92028c` merge.                            |
 
 ## Parity Audit
 

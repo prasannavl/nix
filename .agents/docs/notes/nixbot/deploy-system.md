@@ -90,9 +90,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Nixbot evaluates the selected config file and recursively overlays a
   gitignored sibling local config when that file exists. The local path is
   derived by replacing the final `.nix` suffix with `.override.nix`, so
-  `hosts/nixbot.nix` can be overridden by `hosts/nixbot.override.nix`. The
-  local file should contain only partial machine-local overrides. Use
-  `--no-override` to evaluate the selected config alone.
+  `hosts/nixbot.nix` can be overridden by `hosts/nixbot.override.nix`. The local
+  file should contain only partial machine-local overrides. Use `--no-override`
+  to evaluate the selected config alone.
 - Agent-run deploys should prefer `--no-rollback` during diagnosis so failed
   state remains inspectable. Finish with a fully successful deploy, or perform a
   deliberate rollback after the root cause is understood.
