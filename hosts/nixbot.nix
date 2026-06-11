@@ -12,13 +12,14 @@ in {
       ageIdentityKey = secretPaths.machine "pvl-a1";
       deploy = "skip";
     };
-    pvl-x2 = {
-      target = "pvl-x2";
-      ageIdentityKey = secretPaths.machine "pvl-x2";
-    };
     pvl-l5 = {
       target = "pvl-l5";
       ageIdentityKey = secretPaths.machine "pvl-l5";
+      deploy = "optional";
+    };
+    pvl-x2 = {
+      target = "pvl-x2";
+      ageIdentityKey = secretPaths.machine "pvl-x2";
     };
     pvl-vlab = {
       target = "10.10.20.10";
