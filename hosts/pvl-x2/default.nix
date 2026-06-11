@@ -1,11 +1,8 @@
 {...}: {
   imports = [
     ../../lib/nixbot/ci.nix
-    ../../lib/incus
-    ../../lib/podman.nix
+    ../pvl-common.nix
     ../../lib/devices/gmtek-evo-x2.nix
-    ../../lib/swap-auto.nix
-    ../../lib/profiles/all.nix
     ./cloudflare.nix
     ./sys.nix
     ./packages.nix
