@@ -205,6 +205,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/ai-nix-evaluation-source-refs-2026-05.md`: Records
   the AI-agent validation rule to avoid explicit `path:` flake refs and prefer
   `.`, absolute repo paths, or intentional `git+file:///...` refs.
+- `.agents/docs/notes/tooling/abird-last15-port-2026-06.md`: Records the
+  last-15 Abird port ledger, shared-file parity audit, and intentional
+  divergence list.
 - `.agents/docs/notes/tooling/codex-wrapper-auth-2026-06.md`: Records the local
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.
