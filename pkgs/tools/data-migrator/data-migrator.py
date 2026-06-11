@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+DEFAULT_NIXBOT_DIRTY_FLAG = "--dirty-staged"
+
 
 def die(message):
     print(f"error: {message}", file=sys.stderr)
@@ -1096,6 +1098,10 @@ def write_bootstrap_hosts(repo_root, host):
     )
 
 
+def nixbot_dirty_flag():
+    return os.environ.get("MIGRATOR_NIXBOT_DIRTY_FLAG", DEFAULT_NIXBOT_DIRTY_FLAG)
+
+
 def deploy_target_prepared(args, host):
     if args.skip_deploy:
         info(f"skip-deploy: would deploy drained target generation for {host}")
@@ -1118,7 +1124,18 @@ def deploy_target_prepared(args, host):
             )
         else:
             write_bootstrap_hosts(worktree, host)
-        nixbot = ["nixbot", "deploy", "--hosts", host, "--dirty", "--force"]
+            run(
+                ["git", "add", "lib/services/migrator/bootstrap-hosts.nix"],
+                cwd=worktree,
+            )
+        nixbot = [
+            "nixbot",
+            "deploy",
+            "--hosts",
+            host,
+            nixbot_dirty_flag(),
+            "--force",
+        ]
         if args.nixbot_goal:
             nixbot.extend(["--goal", args.nixbot_goal])
         if args.nixbot_dry:
@@ -1143,7 +1160,14 @@ def deploy_target_resumed(args, host):
         )
         return
 
-    nixbot = ["nixbot", "deploy", "--hosts", host, "--dirty", "--force"]
+    nixbot = [
+        "nixbot",
+        "deploy",
+        "--hosts",
+        host,
+        nixbot_dirty_flag(),
+        "--force",
+    ]
     if args.nixbot_goal:
         nixbot.extend(["--goal", args.nixbot_goal])
     if args.nixbot_dry:

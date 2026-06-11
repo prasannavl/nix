@@ -354,7 +354,7 @@ class DeployPlanningTest(unittest.TestCase):
                         "deploy",
                         "--hosts",
                         "abird-corp",
-                        "--dirty",
+                        "--dirty-staged",
                         "--force",
                         "--goal",
                         "switch",
@@ -374,6 +374,63 @@ class DeployPlanningTest(unittest.TestCase):
                     ],
                     cwd=Path("/repo"),
                     dry_run=False,
+                ),
+            ],
+        )
+
+    def test_target_prepare_stages_generated_gate_before_deploy(self):
+        args = SimpleNamespace(
+            skip_deploy=False,
+            nixbot_goal="switch",
+            nixbot_dry=False,
+            repo_root=Path("/repo"),
+            dry_run=False,
+            keep_workdir=False,
+        )
+
+        with (
+            mock.patch.object(data_migrator.os, "getpid", return_value=123),
+            mock.patch.object(data_migrator, "write_bootstrap_hosts") as write_hosts,
+            mock.patch.object(data_migrator.shutil, "rmtree") as rmtree,
+            mock.patch.object(data_migrator, "run") as run,
+        ):
+            data_migrator.deploy_target_prepared(args, "abird-corp")
+
+        worktree = Path("/repo/tmp/data-migrator.123/abird-corp-prepare")
+        write_hosts.assert_called_once_with(worktree, "abird-corp")
+        rmtree.assert_called_once_with(
+            Path("/repo/tmp/data-migrator.123"),
+            ignore_errors=True,
+        )
+        self.assertEqual(
+            run.call_args_list,
+            [
+                mock.call(
+                    ["git", "worktree", "add", "--detach", worktree, "HEAD"],
+                    cwd=Path("/repo"),
+                    dry_run=False,
+                ),
+                mock.call(
+                    ["git", "add", "lib/services/migrator/bootstrap-hosts.nix"],
+                    cwd=worktree,
+                ),
+                mock.call(
+                    [
+                        "nixbot",
+                        "deploy",
+                        "--hosts",
+                        "abird-corp",
+                        "--dirty-staged",
+                        "--force",
+                        "--goal",
+                        "switch",
+                    ],
+                    cwd=worktree,
+                    dry_run=False,
+                ),
+                mock.call(
+                    ["git", "worktree", "remove", "--force", worktree],
+                    cwd=Path("/repo"),
                 ),
             ],
         )
