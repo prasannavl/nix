@@ -32,9 +32,9 @@ the selected system closure with --system.
 --disk overrides the selected target's configured disko main disk for this install
 run, for example /dev/disk/by-id/nvme-...
 
---fresh-ids generates fresh boot/root partition UUIDs and a fresh LUKS UUID at
-install time, then rebuilds the selected host closure with matching IDs before
-installing it.
+--fresh-ids generates fresh boot/root partition UUIDs and a fresh LUKS UUID for
+targets that declare those IDs, then rebuilds the selected host closure with
+matching IDs before installing it.
 EOF
 }
 
@@ -62,6 +62,13 @@ target_field() {
 	jq -er --arg target "$target_name" --arg field "$field" '.targets[$target][$field] // empty' "$metadata"
 }
 
+optional_target_field() {
+	local field target_name
+	target_name="$1"
+	field="$2"
+	jq -r --arg target "$target_name" --arg field "$field" '.targets[$target][$field] // ""' "$metadata"
+}
+
 target_host() {
 	target_field "$1" host
 }
@@ -79,15 +86,15 @@ system_path() {
 }
 
 boot_part_uuid_for_target() {
-	target_field "$1" bootPartUuid
+	optional_target_field "$1" bootPartUuid
 }
 
 root_part_uuid_for_target() {
-	target_field "$1" rootPartUuid
+	optional_target_field "$1" rootPartUuid
 }
 
 luks_uuid_for_target() {
-	target_field "$1" luksUuid
+	optional_target_field "$1" luksUuid
 }
 
 select_target_if_needed() {
@@ -151,9 +158,15 @@ write_storage_override() {
 		printf '%s\n' 'import ../../lib/installer/storage-override.nix {'
 		printf '%s\n' '  inherit lib;'
 		printf '  disk = %s;\n' "$(nix_string "$install_disk")"
-		printf '  bootPartUuid = %s;\n' "$(nix_string "$boot_uuid")"
-		printf '  rootPartUuid = %s;\n' "$(nix_string "$root_uuid")"
-		printf '  luksUuid = %s;\n' "$(nix_string "$luks_uuid")"
+		if [ -n "$boot_uuid" ]; then
+			printf '  bootPartUuid = %s;\n' "$(nix_string "$boot_uuid")"
+		fi
+		if [ -n "$root_uuid" ]; then
+			printf '  rootPartUuid = %s;\n' "$(nix_string "$root_uuid")"
+		fi
+		if [ -n "$luks_uuid" ]; then
+			printf '  luksUuid = %s;\n' "$(nix_string "$luks_uuid")"
+		fi
 		printf '%s\n' '}'
 	} >"$override_file"
 
@@ -184,9 +197,15 @@ rebuild_target() {
 		printf '%s\n' '      (import /etc/nixos/lib/installer/storage-override.nix {'
 		printf '%s\n' '        inherit lib;'
 		printf '        disk = %s;\n' "$(nix_string "$install_disk")"
-		printf '        bootPartUuid = %s;\n' "$(nix_string "$boot_part_uuid")"
-		printf '        rootPartUuid = %s;\n' "$(nix_string "$root_part_uuid")"
-		printf '        luksUuid = %s;\n' "$(nix_string "$luks_uuid")"
+		if [ -n "$boot_part_uuid" ]; then
+			printf '        bootPartUuid = %s;\n' "$(nix_string "$boot_part_uuid")"
+		fi
+		if [ -n "$root_part_uuid" ]; then
+			printf '        rootPartUuid = %s;\n' "$(nix_string "$root_part_uuid")"
+		fi
+		if [ -n "$luks_uuid" ]; then
+			printf '        luksUuid = %s;\n' "$(nix_string "$luks_uuid")"
+		fi
 		printf '%s\n' '      })'
 		printf '%s\n' '    ];'
 		printf '%s\n' '  };'
@@ -285,14 +304,28 @@ resolve_target() {
 }
 
 resolve_ids() {
+	local current_boot_part_uuid current_luks_uuid current_root_part_uuid
+
+	current_boot_part_uuid="$(boot_part_uuid_for_target "$target")"
+	current_root_part_uuid="$(root_part_uuid_for_target "$target")"
+	current_luks_uuid="$(luks_uuid_for_target "$target")"
 	if [ "$fresh_ids" = 1 ]; then
-		boot_part_uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-		root_part_uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-		luks_uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+		boot_part_uuid=""
+		root_part_uuid=""
+		luks_uuid=""
+		if [ -n "$current_boot_part_uuid" ]; then
+			boot_part_uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+		fi
+		if [ -n "$current_root_part_uuid" ]; then
+			root_part_uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+		fi
+		if [ -n "$current_luks_uuid" ]; then
+			luks_uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+		fi
 	else
-		boot_part_uuid="$(boot_part_uuid_for_target "$target")"
-		root_part_uuid="$(root_part_uuid_for_target "$target")"
-		luks_uuid="$(luks_uuid_for_target "$target")"
+		boot_part_uuid="$current_boot_part_uuid"
+		root_part_uuid="$current_root_part_uuid"
+		luks_uuid="$current_luks_uuid"
 	fi
 }
 
@@ -306,10 +339,9 @@ print_plan() {
 		"System path: $system"
 
 	if [ "$fresh_ids" = 1 ]; then
-		printf '%s\n' \
-			"Fresh boot partition UUID: $boot_part_uuid" \
-			"Fresh root partition UUID: $root_part_uuid" \
-			"Fresh LUKS UUID: $luks_uuid"
+		[ -n "$boot_part_uuid" ] && printf '%s\n' "Fresh boot partition UUID: $boot_part_uuid"
+		[ -n "$root_part_uuid" ] && printf '%s\n' "Fresh root partition UUID: $root_part_uuid"
+		[ -n "$luks_uuid" ] && printf '%s\n' "Fresh LUKS UUID: $luks_uuid"
 	fi
 
 	echo

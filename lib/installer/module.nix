@@ -18,18 +18,24 @@
     lib.mapAttrs
     (targetName: targetConfig: let
       systemConfig = targetConfig.config;
-      luksExtraFormatArgs = systemConfig.config.disko.devices.disk.main.content.partitions.root.content.extraFormatArgs;
+      diskConfig = systemConfig.config.disko.devices.disk.main;
+      partitions = diskConfig.content.partitions;
+      rootContent = partitions.root.content or {};
+      luksExtraFormatArgs = rootContent.extraFormatArgs or [];
       luksUuid =
-        if builtins.length luksExtraFormatArgs >= 2 && builtins.elemAt luksExtraFormatArgs 0 == "--uuid"
-        then builtins.elemAt luksExtraFormatArgs 1
-        else throw "installer target ${targetName}: expected root LUKS extraFormatArgs to start with --uuid";
+        if (rootContent.type or null) == "luks"
+        then
+          if builtins.length luksExtraFormatArgs >= 2 && builtins.elemAt luksExtraFormatArgs 0 == "--uuid"
+          then builtins.elemAt luksExtraFormatArgs 1
+          else throw "installer target ${targetName}: expected root LUKS extraFormatArgs to start with --uuid"
+        else null;
     in {
       host = targetConfig.hostName;
       system = systemConfig.config.system.build.toplevel;
       diskoScript = systemConfig.config.system.build.diskoScript;
-      disk = systemConfig.config.disko.devices.disk.main.device;
-      bootPartUuid = systemConfig.config.disko.devices.disk.main.content.partitions.boot.uuid;
-      rootPartUuid = systemConfig.config.disko.devices.disk.main.content.partitions.root.uuid;
+      disk = diskConfig.device;
+      bootPartUuid = partitions.boot.uuid or null;
+      rootPartUuid = partitions.root.uuid or null;
       luksUuid = luksUuid;
     })
     targetConfigs;
