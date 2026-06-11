@@ -1,15 +1,18 @@
 {
-  name = "live-installer";
+  name = "live";
+
+  installerProfile = "gnome";
+
+  installerPersistence = {
+    enable = true;
+    label = "NIXOS_PERSIST";
+    mapperName = "nixos-persist";
+  };
 
   installerUsers.pvl = {
     enable = true;
     profile = "all";
     persistHome = true;
-  };
-  installerPersistence = {
-    enable = true;
-    label = "NIXOS_PERSIST";
-    mapperName = "nixos-persist";
   };
 
   targets = {
