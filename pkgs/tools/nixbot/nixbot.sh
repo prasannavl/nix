@@ -7533,9 +7533,9 @@ run_hosts() {
 	# shellcheck disable=SC2034
 	HEALTH_FAILED_ROLLBACK_FAILED_HOSTS=()
 	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
+	json_array_to_bash_array "${runnable_selected_json}" selected_hosts
 
 	if is_bootstrap_check_action; then
-		json_array_to_bash_array "${selected_json}" selected_hosts
 		if ! run_bootstrap_key_checks "${runnable_selected_json}" bootstrap_ok_hosts bootstrap_failed_hosts; then
 			final_rc=1
 		fi
@@ -7551,7 +7551,6 @@ run_hosts() {
 		return "${final_rc}"
 	fi
 
-	json_array_to_bash_array "${selected_json}" selected_hosts
 	levels_json="$(selected_host_levels_json "${runnable_selected_json}")"
 	mapfile -t level_groups < <(jq -c '.[]' <<<"${levels_json}")
 	# shellcheck disable=SC2034

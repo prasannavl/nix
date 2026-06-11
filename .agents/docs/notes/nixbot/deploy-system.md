@@ -109,8 +109,8 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 ## Deploy orchestration
 
 - Host `skip = true` is a full orchestration exclusion. Such hosts may match a
-  selector, but they are omitted from the runnable host banner and are not
-  built, snapshotted, deployed, or health-checked.
+  selector, but they are omitted from the runnable host banner and final summary
+  and are not built, snapshotted, deployed, or health-checked.
 - Host `deploy = "skip"` is narrower: the host stays buildable/evaluable, but
   nixbot must not touch the live target. Rollback snapshots and deploy/switch
   work are skipped because no activation can require rollback.
