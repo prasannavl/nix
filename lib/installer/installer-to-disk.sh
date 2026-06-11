@@ -313,22 +313,70 @@ find_persistence_partition() {
 	lsblk -nrpo NAME,PARTLABEL "$disk" | awk -v label="$partition_label" '$2 == label { print $1 }'
 }
 
-create_persistence_partition() {
-	local end_sector
-	local start_sector
+find_partition_by_number() {
+	local partition_number="$1"
 
-	run_cmd sgdisk -e "$disk"
+	lsblk -nrpo NAME,PARTN "$disk" | awk -v partition_number="$partition_number" '$2 == partition_number { print $1 }'
+}
+
+partition_table_type() {
+	lsblk -dnro PTTYPE "$disk" | awk 'NF > 0 { print $1; exit }'
+}
+
+create_persistence_partition() {
+	local pttype
+
 	if [ "$dry_run" = 1 ]; then
 		printf 'Dry run would create the persistence partition in the free space left after writing the ISO.\n' >&2
 		return
 	fi
 
-	read -r start_sector end_sector < <(persistence_partition_bounds)
+	pttype="$(partition_table_type)"
+	case "$pttype" in
+	gpt)
+		create_gpt_persistence_partition
+		;;
+	dos)
+		create_mbr_persistence_partition
+		;;
+	"")
+		die "Could not detect partition table type on $disk after writing the ISO"
+		;;
+	*)
+		die "Unsupported partition table type on $disk after writing the ISO: $pttype"
+		;;
+	esac
+}
+
+create_gpt_persistence_partition() {
+	local end_sector
+	local start_sector
+
+	run_cmd sgdisk -e "$disk"
+
+	read -r start_sector end_sector < <(gpt_persistence_partition_bounds)
 	run_cmd sgdisk -n "0:$start_sector:$end_sector" -t 0:8309 -c "0:$partition_label" "$disk"
 	reread_partition_table
 
 	persistence_partition="$(find_persistence_partition | head -n 1)"
 	[ -n "$persistence_partition" ] || die "Could not find partition labeled $partition_label after creating it"
+}
+
+create_mbr_persistence_partition() {
+	local end_sector
+	local partition_number
+	local sector_count
+	local start_sector
+
+	partition_number="$(next_mbr_partition_number)"
+	read -r start_sector end_sector < <(mbr_persistence_partition_bounds)
+	sector_count="$((end_sector - start_sector + 1))"
+
+	run_sfdisk_create_mbr_partition "$partition_number" "$start_sector" "$sector_count"
+	reread_partition_table
+
+	persistence_partition="$(find_partition_by_number "$partition_number" | head -n 1)"
+	[ -n "$persistence_partition" ] || die "Could not find MBR partition $partition_number after creating it"
 }
 
 persistence_size_gib() {
@@ -354,7 +402,7 @@ sectors_to_gib() {
 	printf '%s\n' "$((sector_count * sector_size / 1024 / 1024 / 1024))"
 }
 
-persistence_partition_bounds() {
+gpt_persistence_partition_bounds() {
 	local end_sector
 	local free_sectors
 	local requested_gib
@@ -386,6 +434,102 @@ persistence_partition_bounds() {
 	fi
 
 	printf '%s %s\n' "$start_sector" "$end_sector"
+}
+
+mbr_gib_to_sectors() {
+	local gib="$1"
+
+	printf '%s\n' "$((gib * 1024 * 1024 * 1024 / 512))"
+}
+
+mbr_sectors_to_gib() {
+	local sector_count="$1"
+
+	printf '%s\n' "$((sector_count * 512 / 1024 / 1024 / 1024))"
+}
+
+align_sector_up() {
+	local alignment="$2"
+	local sector="$1"
+
+	printf '%s\n' "$(((sector + alignment - 1) / alignment * alignment))"
+}
+
+mbr_last_partition_end_sector() {
+	lsblk -bnrpo START,SIZE,TYPE "$disk" |
+		awk '$3 == "part" {
+			end = $1 + int(($2 + 511) / 512) - 1
+			if (end > max) {
+				max = end
+			}
+		}
+		END {
+			print max + 0
+		}'
+}
+
+next_mbr_partition_number() {
+	local partition_number
+
+	for partition_number in 1 2 3 4; do
+		if ! lsblk -nrpo PARTN "$disk" | awk -v partition_number="$partition_number" '$1 == partition_number { found = 1 } END { exit found ? 0 : 1 }'; then
+			printf '%s\n' "$partition_number"
+			return
+		fi
+	done
+
+	die "MBR partition table on $disk has no free primary partition slots"
+}
+
+mbr_persistence_partition_bounds() {
+	local alignment_sectors=2048
+	local end_sector
+	local free_sectors
+	local last_partition_end
+	local requested_gib
+	local requested_sectors
+	local start_sector
+	local total_sectors
+
+	total_sectors="$(blockdev --getsz "$disk")"
+	last_partition_end="$(mbr_last_partition_end_sector)"
+	start_sector="$(align_sector_up "$((last_partition_end + 1))" "$alignment_sectors")"
+	end_sector="$((total_sectors - 1))"
+	[ "$start_sector" -gt 0 ] || die "No free space remains on $disk for a persistence partition"
+	[ "$end_sector" -ge "$start_sector" ] || die "No usable free space remains on $disk for a persistence partition"
+
+	free_sectors="$((end_sector - start_sector + 1))"
+	requested_gib="$(persistence_size_gib)"
+
+	if [ "$requested_gib" = "max" ]; then
+		:
+	elif [[ "$requested_gib" == -* ]]; then
+		requested_sectors="$(mbr_gib_to_sectors "${requested_gib#-}")"
+		if [ "$free_sectors" -le "$requested_sectors" ]; then
+			die "Cannot leave ${requested_gib#-} GiB free; only $(mbr_sectors_to_gib "$free_sectors") GiB is available after the ISO"
+		fi
+		end_sector="$((end_sector - requested_sectors))"
+	else
+		requested_sectors="$(mbr_gib_to_sectors "$requested_gib")"
+		if [ "$free_sectors" -lt "$requested_sectors" ]; then
+			die "Cannot create ${requested_gib} GiB persistence partition; only $(mbr_sectors_to_gib "$free_sectors") GiB is available after the ISO"
+		fi
+		end_sector="$((start_sector + requested_sectors - 1))"
+	fi
+
+	printf '%s %s\n' "$start_sector" "$end_sector"
+}
+
+run_sfdisk_create_mbr_partition() {
+	local partition_number="$1"
+	local sector_count="$3"
+	local start_sector="$2"
+
+	printf 'Command:' >&2
+	shell_quote_args sfdisk --no-reread -N "$partition_number" "$disk" >&2
+	printf 'sfdisk input: start=%s, size=%s, type=83\n' "$start_sector" "$sector_count" >&2
+	printf 'start=%s, size=%s, type=83\n' "$start_sector" "$sector_count" |
+		sfdisk --no-reread -N "$partition_number" "$disk"
 }
 
 format_persistence_partition() {
@@ -446,7 +590,7 @@ main() {
 	parse_args "$@"
 	require_cmds awk blockdev dd id lsblk partprobe sort sync umount
 	if [ "$persistence" = 1 ]; then
-		require_cmds cryptsetup mkfs.ext4 sgdisk
+		require_cmds cryptsetup mkfs.ext4 sfdisk sgdisk
 	fi
 	require_root_for_write
 	validate_args
