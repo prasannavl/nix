@@ -2241,6 +2241,7 @@ reconciler_main() {
 
 	while IFS= read -r id; do
 		[ -n "$id" ] || continue
+		id="$(instance_id_for_selector "$id")"
 
 		if ! jq -en --argjson ids "$declared_instances" --arg id "$id" '$ids | index($id) != null' >/dev/null; then
 			echo "Skipping undeclared Incus instance: $id" >&2
@@ -2331,6 +2332,7 @@ settlement_main() {
 
 		while IFS= read -r id; do
 			[ -n "$id" ] || continue
+			id="$(instance_id_for_selector "$id")"
 
 			if ! jq -en --argjson ids "$declared_instances" --arg id "$id" '$ids | index($id) != null' >/dev/null; then
 				echo "Skipping undeclared Incus instance: $id" >&2
