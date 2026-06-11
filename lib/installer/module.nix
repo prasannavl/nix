@@ -1,6 +1,8 @@
 {
   installerName,
+  installerPersistence ? {},
   installerProfile ? "minimal",
+  installerUsers ? {},
   targetConfigs,
   ...
 }: {
@@ -116,6 +118,12 @@
 in {
   imports = [
     installerProfileModule
+    (import ./persistence.nix {
+      installerName = installerName;
+      installerPersistence = installerPersistence;
+      installerUsers = installerUsers;
+      repoSource = repoSource;
+    })
   ];
 
   image.baseName = lib.mkForce "${installerName}-installer";
@@ -158,5 +166,6 @@ in {
   };
 
   users.users.nixos.initialHashedPassword = lib.mkForce "";
+
   services.openssh.enable = lib.mkDefault true;
 }

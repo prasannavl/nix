@@ -1,6 +1,17 @@
 {
   name = "live-installer";
 
+  installerUsers.pvl = {
+    enable = true;
+    profile = "all";
+    persistHome = true;
+  };
+  installerPersistence = {
+    enable = true;
+    label = "NIXOS_PERSIST";
+    mapperName = "nixos-persist";
+  };
+
   targets = {
     # Matches hosts/pvl-a1/sys.nix: same host, disk, partition UUIDs, and LUKS UUID.
     pvl-a1 = {

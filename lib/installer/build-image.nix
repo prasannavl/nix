@@ -6,7 +6,9 @@
   lib = flake.inputs.nixpkgs.lib;
   system = "x86_64-linux";
   spec = builtins.fromJSON (builtins.readFile specFile);
+  installerPersistence = spec.installerPersistence or {};
   installerProfile = spec.installerProfile or "minimal";
+  installerUsers = spec.installerUsers or {};
   hosts = flake.nixosConfigurations;
   installableHostNames = builtins.filter (name: builtins.hasAttr "diskoScript" hosts.${name}.config.system.build) (builtins.attrNames hosts);
   rawTargets =
@@ -64,7 +66,9 @@
   );
   installerModule = import ./module.nix {
     installerName = spec.installerName;
+    installerPersistence = installerPersistence;
     installerProfile = installerProfile;
+    installerUsers = installerUsers;
     targetConfigs = targetConfigs;
   };
 in
@@ -76,6 +80,10 @@ in
       hostName = "installer-${spec.installerName}";
     };
     modules = [
+      {
+        nixpkgs.config.allowUnfree = true;
+        nixpkgs.overlays = [flake.overlays.default];
+      }
       installerModule
     ];
   })

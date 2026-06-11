@@ -23,6 +23,21 @@ Options:
   --bundle NAME         Build a declared bundle from nixosImages.installer.bundle.
   --minimal             Build the minimal NixOS live installer image.
   --gnome               Build the GNOME Calamares NixOS live installer image.
+  --user USER[=PROFILE] Add a live user from users/userdata.nix. If
+                        users/USER/default.nix exists, import PROFILE from it.
+                        PROFILE defaults to core.
+  --persistence         Enable encrypted installer persistence.
+                        Persists /etc/nixos and
+                        /etc/NetworkManager/system-connections.
+  --persistence-user USER[=PROFILE]
+                        Add USER and persist USER's home on the encrypted
+                        persistence layer. Implies --user and --persistence.
+  --persistence-label LABEL
+                        LUKS label to unlock for persistence. Defaults to
+                        NIXOS_PERSIST.
+  --persistence-mapper NAME
+                        Device-mapper name for persistence. Defaults to
+                        nixos-persist.
   --config FILE         Build targets from a Nix config file.
   --host HOST           Add one host as target HOST=HOST.
   --hosts A,B,C         Add comma-separated hosts as targets A=A,B=B,C=C.
@@ -50,6 +65,16 @@ Target config file shape:
   {
     name = "installer-targets";
     installerProfile = "minimal"; # or "gnome"
+    installerUsers.example = {
+      enable = true;
+      profile = "core";
+      persistHome = true;
+    };
+    installerPersistence = {
+      enable = true;
+      label = "NIXOS_PERSIST";
+      mapperName = "nixos-persist";
+    };
     targets.example = {
       host = "example-host";
       disk = "/dev/disk/by-id/...";
@@ -62,7 +87,7 @@ Examples:
   ${COMMAND_NAME} --bundle all
   ${COMMAND_NAME} --hosts=host-a,host-b --name workstations
   ${COMMAND_NAME} --target target-a=host-a --disk target-a=/dev/disk/by-id/nvme-... --fresh-ids target-a
-  ${COMMAND_NAME} --config scripts/support/installer-targets.nix
+  ${COMMAND_NAME} --config lib/installer/config/default.nix
 EOF
 }
 
@@ -73,6 +98,32 @@ die() {
 
 info() {
 	printf '%s\n' "$*" >&2
+}
+
+ensure_runtime_shell() {
+	local runtime_shell_flag="${INSTALLER_BUILDER_IN_NIX_SHELL:-0}"
+	local script_path
+	local flake_path
+	local -a runtime_packages=(
+		nixpkgs#bash
+		nixpkgs#coreutils
+		nixpkgs#findutils
+		nixpkgs#jq
+		nixpkgs#nix
+		nixpkgs#util-linux
+	)
+
+	if [ "$runtime_shell_flag" = "1" ]; then
+		return
+	fi
+
+	if ! command -v nix >/dev/null 2>&1; then
+		die "Required command not found: nix"
+	fi
+
+	script_path="${BASH_SOURCE[0]:-$0}"
+	flake_path="$(cd "$(dirname "${script_path}")/../.." && pwd -P)"
+	exec nix --quiet --no-warn-dirty shell --inputs-from "${flake_path}" "${runtime_packages[@]}" -c env INSTALLER_BUILDER_IN_NIX_SHELL=1 bash "${script_path}" "$@"
 }
 
 init_vars() {
@@ -90,6 +141,11 @@ init_vars() {
 	BUNDLE=""
 	CONFIG_FILE=""
 	INSTALLER_PROFILE=""
+	INSTALLER_USERS=()
+	INSTALLER_PERSISTENCE_USERS=()
+	INSTALLER_PERSISTENCE="0"
+	INSTALLER_PERSISTENCE_LABEL=""
+	INSTALLER_PERSISTENCE_MAPPER=""
 	IMAGE_NAME=""
 	OUT_LINK=""
 	NO_LINK="0"
@@ -148,6 +204,74 @@ set_installer_profile() {
 
 effective_installer_profile() {
 	printf '%s\n' "${INSTALLER_PROFILE:-minimal}"
+}
+
+append_installer_user() {
+	local name
+	local profile=""
+	local spec="$1"
+
+	[ -n "$spec" ] || die "Installer user spec requires a non-empty value"
+	if [[ "$spec" == *=* ]]; then
+		name="${spec%%=*}"
+		profile="${spec#*=}"
+		[ -n "$profile" ] || die "Installer user profile must be non-empty: $spec"
+	else
+		name="$spec"
+	fi
+
+	validate_name "$name"
+	if [ -n "$profile" ]; then
+		validate_name "$profile"
+	fi
+	INSTALLER_USERS+=("${name}=${profile}")
+}
+
+append_persistence_user() {
+	local name
+	local profile=""
+	local spec="$1"
+
+	[ -n "$spec" ] || die "Persistence user spec requires a non-empty value"
+	if [[ "$spec" == *=* ]]; then
+		name="${spec%%=*}"
+		profile="${spec#*=}"
+		[ -n "$profile" ] || die "Persistence user profile must be non-empty: $spec"
+	else
+		name="$spec"
+	fi
+
+	validate_name "$name"
+	if [ -n "$profile" ]; then
+		validate_name "$profile"
+	fi
+	INSTALLER_PERSISTENCE_USERS+=("${name}=${profile}")
+	INSTALLER_PERSISTENCE="1"
+}
+
+set_persistence_label() {
+	local label="$1"
+
+	[ -n "$label" ] || die "--persistence-label requires a non-empty value"
+	[[ "$label" =~ ^[A-Za-z0-9._:-]+$ ]] || die "Invalid persistence label: $label"
+	INSTALLER_PERSISTENCE_LABEL="$label"
+	INSTALLER_PERSISTENCE="1"
+}
+
+set_persistence_mapper() {
+	local mapper="$1"
+
+	validate_name "$mapper"
+	INSTALLER_PERSISTENCE_MAPPER="$mapper"
+	INSTALLER_PERSISTENCE="1"
+}
+
+has_custom_installer_options() {
+	[ "${#INSTALLER_USERS[@]}" -gt 0 ] ||
+		[ "${#INSTALLER_PERSISTENCE_USERS[@]}" -gt 0 ] ||
+		[ "$INSTALLER_PERSISTENCE" = "1" ] ||
+		[ -n "$INSTALLER_PERSISTENCE_LABEL" ] ||
+		[ -n "$INSTALLER_PERSISTENCE_MAPPER" ]
 }
 
 split_csv() {
@@ -286,6 +410,41 @@ parse_args() {
 			;;
 		--gnome)
 			set_installer_profile "gnome"
+			;;
+		--user)
+			[ "$#" -ge 2 ] || die "--user requires a value"
+			append_installer_user "$2"
+			shift
+			;;
+		--user=*)
+			append_installer_user "${1#--user=}"
+			;;
+		--persistence)
+			INSTALLER_PERSISTENCE="1"
+			;;
+		--persistence-user)
+			[ "$#" -ge 2 ] || die "--persistence-user requires a value"
+			append_persistence_user "$2"
+			shift
+			;;
+		--persistence-user=*)
+			append_persistence_user "${1#--persistence-user=}"
+			;;
+		--persistence-label)
+			[ "$#" -ge 2 ] || die "--persistence-label requires a value"
+			set_persistence_label "$2"
+			shift
+			;;
+		--persistence-label=*)
+			set_persistence_label "${1#--persistence-label=}"
+			;;
+		--persistence-mapper)
+			[ "$#" -ge 2 ] || die "--persistence-mapper requires a value"
+			set_persistence_mapper "$2"
+			shift
+			;;
+		--persistence-mapper=*)
+			set_persistence_mapper "${1#--persistence-mapper=}"
 			;;
 		--config)
 			[ "$#" -ge 2 ] || die "--config requires a value"
@@ -465,6 +624,51 @@ rewrite_json_file() {
 	tmp_file="$(make_temp_json)"
 	jq "$@" "$file" >"$tmp_file"
 	mv "$tmp_file" "$file"
+}
+
+apply_installer_option_overrides() {
+	local name
+	local profile
+	local spec
+	local spec_file="$1"
+
+	for spec in "${INSTALLER_USERS[@]}"; do
+		name="${spec%%=*}"
+		profile="${spec#*=}"
+		if [ -n "$profile" ]; then
+			rewrite_json_file "$spec_file" \
+				--arg name "$name" \
+				--arg profile "$profile" \
+				'.installerUsers[$name].enable = true | .installerUsers[$name].profile = $profile'
+		else
+			rewrite_json_file "$spec_file" \
+				--arg name "$name" \
+				'.installerUsers[$name].enable = true'
+		fi
+	done
+	for spec in "${INSTALLER_PERSISTENCE_USERS[@]}"; do
+		name="${spec%%=*}"
+		profile="${spec#*=}"
+		if [ -n "$profile" ]; then
+			rewrite_json_file "$spec_file" \
+				--arg name "$name" \
+				--arg profile "$profile" \
+				'.installerPersistence.enable = true | .installerUsers[$name].enable = true | .installerUsers[$name].persistHome = true | .installerUsers[$name].profile = $profile'
+		else
+			rewrite_json_file "$spec_file" \
+				--arg name "$name" \
+				'.installerPersistence.enable = true | .installerUsers[$name].enable = true | .installerUsers[$name].persistHome = true'
+		fi
+	done
+	if [ "$INSTALLER_PERSISTENCE" = "1" ]; then
+		rewrite_json_file "$spec_file" '.installerPersistence.enable = true'
+	fi
+	if [ -n "$INSTALLER_PERSISTENCE_LABEL" ]; then
+		rewrite_json_file "$spec_file" --arg label "$INSTALLER_PERSISTENCE_LABEL" '.installerPersistence.label = $label'
+	fi
+	if [ -n "$INSTALLER_PERSISTENCE_MAPPER" ]; then
+		rewrite_json_file "$spec_file" --arg mapper "$INSTALLER_PERSISTENCE_MAPPER" '.installerPersistence.mapperName = $mapper'
+	fi
 }
 
 validate_hosts() {
@@ -828,6 +1032,7 @@ write_custom_spec() {
 		--arg installerName "$IMAGE_NAME" \
 		--arg installerProfile "$profile" \
 		'{installerName: $installerName, installerProfile: $installerProfile, targets: {}}' >"$spec_file"
+	apply_installer_option_overrides "$spec_file"
 
 	for spec in "${entries[@]}"; do
 		target="${spec%%=*}"
@@ -891,15 +1096,40 @@ normalize_config_spec() {
 		{
 			installerName: (.installerName // .name // ""),
 			installerProfile: (.installerProfile // .profile // "minimal"),
+			installerUsers: (.installerUsers // .users // {}),
+			installerPersistence: (.installerPersistence // .persistence // {}),
 			targets: (.targets // {})
 		}
 		| if (.installerProfile | type) != "string" then
 			error("installerProfile must be a string")
 		elif (.installerProfile != "minimal" and .installerProfile != "gnome") then
 			error("installerProfile must be minimal or gnome")
+		elif (.installerUsers | type) != "object" then
+			error("installerUsers must be an attrset")
+		elif (.installerPersistence | type) != "object" then
+			error("installerPersistence must be an attrset")
+		elif (.installerPersistence.enable != null and (.installerPersistence.enable | type) != "boolean") then
+			error("installerPersistence.enable must be a boolean")
+		elif (.installerPersistence.label != null and (.installerPersistence.label | type) != "string") then
+			error("installerPersistence.label must be a string")
+		elif (.installerPersistence.mapperName != null and (.installerPersistence.mapperName | type) != "string") then
+			error("installerPersistence.mapperName must be a string")
 		else
 			.
 		end
+		| .installerUsers |= with_entries(
+			if (.value | type) != "object" then
+				error("installerUsers." + .key + " must be an attrset")
+			elif (.value.enable != null and (.value.enable | type) != "boolean") then
+				error("installerUsers." + .key + ".enable must be a boolean")
+			elif (.value.persistHome != null and (.value.persistHome | type) != "boolean") then
+				error("installerUsers." + .key + ".persistHome must be a boolean")
+			elif (.value.profile != null and (.value.profile | type) != "string") then
+				error("installerUsers." + .key + ".profile must be a string")
+			else
+				.
+			end
+		)
 		| if (.targets | type) != "object" then
 			error("installer config targets must be an attrset")
 		else
@@ -959,8 +1189,10 @@ apply_config_fresh_ids() {
 finalize_config_spec() {
 	local config_name
 	local host
+	local profile
 	local spec_file="$1"
 	local target
+	local user
 
 	if [ -n "$IMAGE_NAME" ]; then
 		rewrite_json_file "$spec_file" --arg name "$IMAGE_NAME" '.installerName = $name'
@@ -968,6 +1200,7 @@ finalize_config_spec() {
 	if [ -n "$INSTALLER_PROFILE" ]; then
 		rewrite_json_file "$spec_file" --arg profile "$INSTALLER_PROFILE" '.installerProfile = $profile'
 	fi
+	apply_installer_option_overrides "$spec_file"
 
 	IMAGE_NAME="$(jq -r '.installerName // ""' "$spec_file")"
 	if [ -z "$IMAGE_NAME" ]; then
@@ -979,8 +1212,20 @@ finalize_config_spec() {
 	validate_name "$IMAGE_NAME"
 	jq -e '.installerProfile == "minimal" or .installerProfile == "gnome"' "$spec_file" >/dev/null ||
 		die "Installer config installerProfile must be minimal or gnome"
+	jq -e '
+		(.installerPersistence.label == null or (.installerPersistence.label | test("^[A-Za-z0-9._:-]+$"))) and
+		(.installerPersistence.mapperName == null or (.installerPersistence.mapperName | test("^[A-Za-z0-9._-]+$")))
+	' "$spec_file" >/dev/null || die "Installer config has invalid persistence label or mapperName"
 	jq -e '(.targets | type == "object") and (.targets | length > 0)' "$spec_file" >/dev/null ||
 		die "Installer config must select at least one target"
+
+	while IFS= read -r user || [ -n "$user" ]; do
+		validate_name "$user"
+	done < <(jq -r '.installerUsers | keys[]' "$spec_file")
+
+	while IFS= read -r profile || [ -n "$profile" ]; do
+		validate_name "$profile"
+	done < <(jq -r '.installerUsers[] | .profile // empty' "$spec_file")
 
 	while IFS= read -r target || [ -n "$target" ]; do
 		validate_name "$target"
@@ -1062,7 +1307,15 @@ build_installer() {
 	if [ -n "$STORE_ROOT" ] && [ -n "$OUT_LINK" ]; then
 		die "Use --system-store with --out-link; custom store builds print the ISO path under the custom store root instead"
 	fi
+	if has_custom_installer_options && [ -n "$BUNDLE" ] && [ "$BUNDLE" != "all" ]; then
+		die "Build-time overrides require --host/--hosts, --target/--targets, or the default all-host custom image; do not combine them with --bundle"
+	fi
+	if has_custom_installer_options && [ "$BUNDLE" = "all" ]; then
+		BUNDLE=""
+	fi
 	if [ -n "$CONFIG_FILE" ]; then
+		use_custom_expr="1"
+	elif has_custom_installer_options; then
 		use_custom_expr="1"
 	elif [ "${#HOSTS[@]}" -gt 0 ] && [ -n "$BUNDLE" ]; then
 		die "Use either --bundle or --host/--hosts, not both"
@@ -1184,6 +1437,7 @@ build_installer() {
 }
 
 main() {
+	ensure_runtime_shell "$@"
 	init_vars
 	trap cleanup EXIT
 	parse_args "$@"
