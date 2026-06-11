@@ -64,7 +64,7 @@
   });
   repoSource = lib.cleanSourceWith {
     src = repoRoot;
-    filter = path: type: let
+    filter = path: _type: let
       root = toString repoRoot;
       rel = lib.removePrefix "${root}/" (toString path);
       base = baseNameOf path;

@@ -1,6 +1,6 @@
 {
   name = "live-installer";
-  
+
   targets = {
     # Matches hosts/pvl-a1/sys.nix: same host, disk, partition UUIDs, and LUKS UUID.
     pvl-a1 = {
