@@ -36,9 +36,9 @@ chain rpfilter {
 }
 ```
 
-Tailscale installs policy rules around fwmark `0x80000`. On `pvl-x2`, the
-marked route lookup for tailnet peer source addresses resolves through the LAN
-uplink instead of `tailscale0`:
+Tailscale installs policy rules around fwmark `0x80000`. On `pvl-x2`, the marked
+route lookup for tailnet peer source addresses resolves through the LAN uplink
+instead of `tailscale0`:
 
 ```text
 ip route get 100.64.248.124 mark 0x80000
@@ -56,9 +56,9 @@ for TCP/22 or ICMP matter. Opening SSH globally or trusting `tailscale0` in the
 input chain is not the core fix if the packet is already dropped in
 `prerouting`.
 
-No declarative `eth0`, `eno1`, or `192.168.1.1` host route was found in
-`pvl-x2` history. The physical-interface choice is an emergent live routing
-result: NetworkManager/DHCP gives `pvl-x2` a main-table default via `eno1`, and
+No declarative `eth0`, `eno1`, or `192.168.1.1` host route was found in `pvl-x2`
+history. The physical-interface choice is an emergent live routing result:
+NetworkManager/DHCP gives `pvl-x2` a main-table default via `eno1`, and
 Tailscale's marked policy rules consult the main/default tables before the
 tailnet table. The Incus project-scoping work did not explicitly force tailnet
 traffic onto `eno1`, but it did expand `pvl-x2`'s bridge/route topology around
@@ -115,13 +115,13 @@ least-surprising default for tailnet participants.
 
 ## Investigation Notes
 
-- Do not infer effective pvl-x2 firewall ports from
-  `hosts/pvl-x2/firewall.nix` alone. The evaluated config includes additional
-  ports from OpenSSH and service modules.
+- Do not infer effective pvl-x2 firewall ports from `hosts/pvl-x2/firewall.nix`
+  alone. The evaluated config includes additional ports from OpenSSH and service
+  modules.
 - The Incus managed-fabric nftables table only matches managed bridge
   interfaces. It is not the direct rule dropping `tailscale0` traffic.
-- `tailscale ping` without `--icmp` is a disco-layer diagnostic. Normal
-  `ping`, `nc`, or `tailscale ping --icmp` are better tests for OS packet-path
+- `tailscale ping` without `--icmp` is a disco-layer diagnostic. Normal `ping`,
+  `nc`, or `tailscale ping --icmp` are better tests for OS packet-path
   reachability.
 - Cloudflare Access route `x.p7log.com` can be used as a read-only escape hatch
   for pvl-x2 diagnostics when direct tailnet SSH is broken.
