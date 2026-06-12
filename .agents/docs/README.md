@@ -224,6 +224,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   `.`, absolute repo paths, or intentional `git+file:///...` refs.
 - `.agents/docs/notes/tooling/abird-last15-port-2026-06.md`: Records the last-15
   Abird port ledger, shared-file parity audit, and intentional divergence list.
+- `.agents/docs/notes/tooling/abird-last30-port-2026-06.md`: Records the
+  refreshed last-30 Abird port ledger, `nixbot` deploy-host port, skipped
+  `srv-search` decision, and parity audit.
 - `.agents/docs/notes/tooling/codex-wrapper-auth-2026-06.md`: Records the local
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.

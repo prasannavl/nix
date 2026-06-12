@@ -151,7 +151,7 @@ _nixbot() {
 	commands+=("${tf_projects[@]}")
 
 	options=(
-		--list-hosts --sha --hosts --goal --build-host --build-jobs
+		--list-hosts --sha --hosts --goal --build-host --deploy-host --build-jobs
 		--deploy-jobs --verify-jobs --force --bootstrap --ci-first --dirty
 		--dirty-staged --dry --no-override --no-rollback --prefix-host-logs
 		--log-format --user --ssh-key --known-hosts --config --age-key-file
@@ -170,7 +170,11 @@ _nixbot() {
 		return 0
 		;;
 	--build-host)
-		_nixbot_compgen_words "$cur" "local target $(_nixbot_hosts)"
+		_nixbot_compgen_words "$cur" "local $(_nixbot_hosts)"
+		return 0
+		;;
+	--deploy-host)
+		_nixbot_compgen_words "$cur" "local build-host $(_nixbot_hosts)"
 		return 0
 		;;
 	--log-format)
@@ -197,7 +201,11 @@ _nixbot() {
 		return 0
 		;;
 	--build-host)
-		_nixbot_compgen_words "$cur" "local target $(_nixbot_hosts)"
+		_nixbot_compgen_words "$cur" "local $(_nixbot_hosts)"
+		return 0
+		;;
+	--deploy-host)
+		_nixbot_compgen_words "$cur" "local build-host $(_nixbot_hosts)"
 		return 0
 		;;
 	--log-format)
@@ -223,7 +231,10 @@ _nixbot() {
 		_nixbot_compgen_words "${cur#--goal=}" "switch boot test dry-activate" "--goal="
 		;;
 	--build-host=*)
-		_nixbot_compgen_words "${cur#--build-host=}" "local target $(_nixbot_hosts)" "--build-host="
+		_nixbot_compgen_words "${cur#--build-host=}" "local $(_nixbot_hosts)" "--build-host="
+		;;
+	--deploy-host=*)
+		_nixbot_compgen_words "${cur#--deploy-host=}" "local build-host $(_nixbot_hosts)" "--deploy-host="
 		;;
 	--log-format=*)
 		_nixbot_compgen_words "${cur#--log-format=}" "auto gh github-actions plain" "--log-format="

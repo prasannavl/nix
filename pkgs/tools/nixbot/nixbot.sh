@@ -45,7 +45,7 @@ Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|target|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--deploy-host <local|build-host|host>] [--build-jobs <n>] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -74,7 +74,8 @@ Workflow Selection Options:
   --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
-  --build-host     local|target|<ssh-host> (default: local)
+  --build-host     local|<ssh-host> (default: local)
+  --deploy-host    local|build-host|<ssh-host> (default: local; non-local must match build host)
   --build-jobs     Parallel host builds (default: 1)
 
 Dev Build Action Options (`dev-build`):
@@ -132,6 +133,7 @@ Environment (Workflow Selection):
 
 Environment (Build Actions):
   NIXBOT_BUILD_HOST           Same as --build-host
+  NIXBOT_DEPLOY_HOST          Same as --deploy-host
   NIXBOT_BUILD_JOBS           Same as --build-jobs
 
 Environment (Deploy Actions):
@@ -274,6 +276,7 @@ init_vars() {
 	HOST_ACTION=""
 	GOAL="${NIXBOT_GOAL:-switch}"
 	BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"
+	DEPLOY_HOST="${NIXBOT_DEPLOY_HOST:-local}"
 	BUILD_JOBS="${NIXBOT_BUILD_JOBS:-1}"
 	NIXBOT_BUILD_NIX_ARGS=()
 	NIXBOT_PARALLEL_JOBS="${NIXBOT_JOBS:-16}"
@@ -341,6 +344,7 @@ init_vars() {
 	NIXBOT_TRANSPORT_RETRY_DELAY_SECS="${NIXBOT_TRANSPORT_RETRY_DELAY_SECS:-2}"
 	TF_WORK_DIR="${NIXBOT_TF_DIR:-}"
 	TF_CHANGE_BASE_REF=""
+	REMOTE_ACTIVATE_SYSTEM_PATH=""
 	_NIXBOT_LOG_GROUP_DEPTH=0
 	_NIXBOT_LOG_GROUP_SCOPE=""
 
@@ -618,6 +622,9 @@ take_optval() {
 		;;
 	*)
 		[ "$#" -ge 2 ] || die "Missing value for $1"
+		case "$2" in
+		--*) die "Missing value for $1 before $2" ;;
+		esac
 		OPTVAL="$2"
 		OPTSHIFT=2
 		;;
@@ -780,7 +787,7 @@ tf_project_name_is_configured() {
 
 action_is_supported() {
 	case "${1:-}" in
-	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | list-hosts) return 0 ;;
+	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | remote-activate | list-hosts) return 0 ;;
 	*)
 		if action_is_tf_project_only "${1:-}"; then
 			tf_project_name_is_configured "$(tf_action_project_name "${1:-}")"
@@ -833,6 +840,15 @@ normalize_hosts_input() {
 	fi
 
 	emit_normalized_hosts "${raw}" | paste -sd, -
+}
+
+bash_args_to_json_array() {
+	if [ "$#" -eq 0 ]; then
+		printf '[]\n'
+		return
+	fi
+
+	printf '%s\n' "$@" | jq -Rcn '[inputs]'
 }
 
 json_array_to_bash_array() {
@@ -895,6 +911,11 @@ parse_args() {
 		--build-host | --build-host=*)
 			take_optval "$@"
 			BUILD_HOST="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
+		--deploy-host | --deploy-host=*)
+			take_optval "$@"
+			DEPLOY_HOST="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
 		--build-jobs | --build-jobs=*)
@@ -1043,6 +1064,11 @@ parse_args() {
 			CI_TRIGGER_KNOWN_HOSTS="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
+		--system-path | --system-path=*)
+			take_optval "$@"
+			REMOTE_ACTIVATE_SYSTEM_PATH="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
 		-h | --help)
 			usage
 			exit 0
@@ -1065,8 +1091,13 @@ parse_args() {
 	esac
 
 	case "${BUILD_HOST}" in
-	local | target) ;;
+	local) ;;
 	"") die "Unsupported --build-host: empty value" ;;
+	*) ;;
+	esac
+	case "${DEPLOY_HOST}" in
+	local | build-host) ;;
+	"") die "Unsupported --deploy-host: empty value" ;;
 	*) ;;
 	esac
 
@@ -1082,6 +1113,24 @@ parse_args() {
 	fi
 	if [ -n "${SHA}" ] && ! [[ "${SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
 		die "Unsupported --sha: ${SHA}"
+	fi
+	if is_remote_activate_action; then
+		[ -n "${REMOTE_ACTIVATE_SYSTEM_PATH}" ] || die "remote-activate requires --system-path"
+		case "${REMOTE_ACTIVATE_SYSTEM_PATH}" in
+		/nix/store/*) ;;
+		*) die "Unsupported --system-path: ${REMOTE_ACTIVATE_SYSTEM_PATH}" ;;
+		esac
+		[ "${BUILD_HOST}" = "local" ] || die "remote-activate does not accept --build-host"
+		[ "${DEPLOY_HOST}" = "local" ] || die "remote-activate does not accept --deploy-host"
+	elif [ -n "${REMOTE_ACTIVATE_SYSTEM_PATH}" ]; then
+		die "--system-path is only supported for remote-activate"
+	elif [ "${DEPLOY_HOST}" != "local" ]; then
+		[ "${HOST_ACTION}" = "deploy" ] || die "--deploy-host is only supported for deploy-style actions"
+		[ "${BUILD_HOST}" != "local" ] || die "Non-local --deploy-host requires non-local --build-host"
+		case "$(resolve_effective_deploy_host)" in
+		"${BUILD_HOST}") ;;
+		*) die "Non-local --deploy-host currently must be build-host or the same host as --build-host" ;;
+		esac
 	fi
 
 	if [ "${CI_TRIGGER}" -eq 1 ]; then
@@ -1771,7 +1820,7 @@ run_ci_trigger() {
 	# counts, rollback policy, and similar local overrides. CI host-trigger runs
 	# are therefore reproducible from committed state instead of inheriting
 	# arbitrary local operator flags.
-	remote_args=("${ACTION}" --sha "${trigger_sha}" --hosts "${trigger_hosts}")
+	remote_args=("${ACTION}" --sha "${trigger_sha}" --hosts "${trigger_hosts}" --no-override)
 	if [ "${LOG_FORMAT}" != "auto" ]; then
 		remote_args+=(--log-format "${LOG_FORMAT}")
 	elif is_github_actions_log_mode; then
@@ -1817,6 +1866,21 @@ is_host_build_only_action() {
 
 is_bootstrap_check_action() {
 	[ "${ACTION}" = "check-bootstrap" ]
+}
+
+is_remote_activate_action() {
+	[ "${ACTION}" = "remote-activate" ]
+}
+
+resolve_effective_deploy_host() {
+	case "${DEPLOY_HOST}" in
+	build-host)
+		printf '%s\n' "${BUILD_HOST}"
+		;;
+	*)
+		printf '%s\n' "${DEPLOY_HOST}"
+		;;
+	esac
 }
 
 # Resolve the source repo root exactly once. Local clean repo runs reuse the
@@ -2340,8 +2404,8 @@ parse_host_selectors_json() {
 		done
 	fi
 
-	selected_json="$(jq -cn '$ARGS.positional' --args "${selected_hosts[@]}")"
-	excluded_json="$(jq -cn '$ARGS.positional' --args "${excluded_hosts[@]}")"
+	selected_json="$(bash_args_to_json_array "${selected_hosts[@]}")"
+	excluded_json="$(bash_args_to_json_array "${excluded_hosts[@]}")"
 
 	jq -cn --argjson selected "${selected_json}" --argjson excluded "${excluded_json}" \
 		'{selected: $selected, excluded: $excluded}'
@@ -2487,7 +2551,7 @@ expand_selected_hosts_json() {
 		done < <(host_dependencies_for "${node}")
 	done
 
-	jq -cn '$ARGS.positional' --args "${expanded_hosts[@]}"
+	bash_args_to_json_array "${expanded_hosts[@]}"
 }
 
 order_selected_hosts_json() {
@@ -2574,7 +2638,7 @@ order_selected_hosts_json() {
 
 	ordered_hosts+=("${skipped_hosts[@]}")
 
-	jq -cn '$ARGS.positional' --args "${ordered_hosts[@]}"
+	bash_args_to_json_array "${ordered_hosts[@]}"
 }
 
 selected_host_levels_json() {
@@ -2724,7 +2788,7 @@ filter_runnable_hosts_json() {
 		runnable_hosts+=("${node}")
 	done
 
-	jq -cn '$ARGS.positional' --args "${runnable_hosts[@]}"
+	bash_args_to_json_array "${runnable_hosts[@]}"
 }
 
 resolve_selected_hosts_json() {
@@ -2821,6 +2885,11 @@ log_run_context() {
 	if is_deploy_style_action; then
 		echo "Goal: ${GOAL}" >&2
 		echo "Build host: ${BUILD_HOST}" >&2
+		if [ "${DEPLOY_HOST}" = "build-host" ]; then
+			echo "Deploy host: ${DEPLOY_HOST} (${BUILD_HOST})" >&2
+		else
+			echo "Deploy host: ${DEPLOY_HOST}" >&2
+		fi
 	fi
 	echo "Decrypt identities: $(announce_age_decrypt_identity_candidates)" >&2
 }
@@ -3994,7 +4063,7 @@ prepare_host_ssh_contexts() {
 		fi
 	fi
 	case "${BUILD_HOST}" in
-	local | target) ;;
+	local) ;;
 	*)
 		build_host_host="$(ssh_host_from_target "${BUILD_HOST}")"
 		if [ -n "${build_host_host}" ] && [ "${build_host_host}" != "${host}" ]; then
@@ -4315,6 +4384,16 @@ log_primary_probe_failure() {
 	done <<<"${probe_output}"
 }
 
+primary_probe_failure_is_temporary_transport() {
+	local probe_output="$1"
+
+	[ -n "${probe_output}" ] || return 1
+
+	grep -Eq \
+		"Connection timed out|Connection timed out during banner exchange|No route to host|Connection reset by peer|Connection closed by remote host|kex_exchange_identification|ssh_exchange_identification|stdio forwarding failed|mux_client_request_session|Broken pipe" \
+		<<<"${probe_output}"
+}
+
 ensure_primary_deploy_connectivity() {
 	local node="$1" host="$2" port="$3" bootstrap_port="$4" known_hosts="$5" ssh_target="$6"
 	local full_proxy_chain="$7" effective_proxy_chain="$8" proxy_command="$9"
@@ -4629,6 +4708,11 @@ prepare_deploy_context() {
 		elif [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
 			if [ "${primary_target_ready}" -eq 0 ]; then
 				local bootstrap_readiness_source=""
+
+				if primary_probe_failure_is_temporary_transport "${PRIMARY_PROBE_LAST_OUTPUT}"; then
+					echo "==> Primary deploy target ${ssh_target} has a temporary transport failure; delaying bootstrap fallback" >&2
+					return 255
+				fi
 
 				if is_bootstrap_ready "${node}"; then
 					echo "==> Reusing bootstrap readiness for ${node} from earlier step"
@@ -6257,10 +6341,23 @@ run_pre_switch_user_failed_state_reset() {
 	run_prepared_root_command "${reset_cmd}"
 }
 
+deploy_rebuild_failure_is_host_key_verification() {
+	local output_path="$1"
+
+	[ -s "${output_path}" ] || return 1
+
+	grep -Eq \
+		"REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED|Offending .* key in " \
+		"${output_path}"
+}
+
 deploy_rebuild_failure_is_copy_transport_loss() {
 	local output_path="$1"
 
 	[ -s "${output_path}" ] || return 1
+	if deploy_rebuild_failure_is_host_key_verification "${output_path}"; then
+		return 1
+	fi
 
 	# nixos-rebuild-ng wraps the copy step, so SSH open failures from
 	# nix-copy-closure often surface as a generic rebuild failure instead of an
@@ -6275,6 +6372,9 @@ deploy_rebuild_failure_is_transport_loss() {
 	local output_path="$1"
 
 	[ -s "${output_path}" ] || return 1
+	if deploy_rebuild_failure_is_host_key_verification "${output_path}"; then
+		return 1
+	fi
 
 	grep -Eq \
 		"failed to start SSH connection|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|Connection closed by .* port [0-9]+|Received disconnect|client_loop: send disconnect: Broken pipe|Broken pipe|stdio forwarding failed|Connection timed out|No route to host" \
@@ -6285,7 +6385,7 @@ prepare_deploy_rebuild_command() {
 	local node="$1"
 	# shellcheck disable=SC2178
 	local -n pdrc_cmd_out_ref="$2"
-	local using_bootstrap_fallback="" nix_sshopts="" build_host=""
+	local using_bootstrap_fallback="" nix_sshopts=""
 	local rebuild_nix_sshopts="" ask_sudo_password=0
 	local -a sudo_policy=()
 
@@ -6313,23 +6413,6 @@ prepare_deploy_rebuild_command() {
 		fi
 	fi
 
-	case "${BUILD_HOST}" in
-	local)
-		# Keep deploys on the already-built local closure. Even with a non-root
-		# target user override, forcing --build-host back onto the target makes
-		# nixos-rebuild-ng launch a second remote nix build that can wedge after
-		# nixbot has already completed the real local build phase.
-		;;
-	target)
-		if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ]; then
-			build_host="${PREP_DEPLOY_SSH_TARGET}"
-		fi
-		;;
-	*)
-		build_host="${BUILD_HOST}"
-		;;
-	esac
-
 	pdrc_cmd_out_ref=(
 		nixos-rebuild-ng
 		--flake ".#${node}"
@@ -6349,10 +6432,6 @@ prepare_deploy_rebuild_command() {
 	fi
 
 	pdrc_cmd_out_ref+=("${GOAL}")
-
-	if [ -n "${build_host}" ]; then
-		pdrc_cmd_out_ref+=(--build-host "${build_host}")
-	fi
 
 	if [ -n "${nix_sshopts}" ]; then
 		rebuild_nix_sshopts="-S none -o ControlMaster=no ${nix_sshopts}"
@@ -6406,6 +6485,124 @@ run_deploy_rebuild_command_with_retry() {
 	done
 }
 
+prepared_target_store_uri() {
+	format_ssh_store_uri "${PREP_DEPLOY_SSH_TARGET}"
+}
+
+copy_system_path_to_prepared_target() {
+	local node="$1" system_path="$2" target_store_uri=""
+	local -a copy_cmd=()
+
+	[ -n "${system_path}" ] || return 1
+	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
+		nix path-info "${system_path}" >/dev/null
+		return
+	fi
+
+	target_store_uri="$(prepared_target_store_uri)"
+	echo "Copying built closure to ${node} from deploy host: ${system_path}" >&2
+	copy_cmd=(nix copy --to "${target_store_uri}" "${system_path}")
+	run_nix_with_optional_sshopts "${PREP_DEPLOY_NIX_SSHOPTS}" "${copy_cmd[@]}"
+}
+
+ensure_prepared_target_has_machine_identity() {
+	local node="$1" check_cmd=""
+
+	if [ -z "${PREP_DEPLOY_AGE_IDENTITY_KEY}" ]; then
+		return 0
+	fi
+
+	# shellcheck disable=SC2016
+	check_cmd='test -s '"${REMOTE_NIXBOT_AGE_IDENTITY}"' || { echo "target machine age identity is missing: '"${REMOTE_NIXBOT_AGE_IDENTITY}"'" >&2; exit 1; }'
+	if ! run_prepared_root_command "${check_cmd}"; then
+		echo "Remote activation refused for ${node}: target must already have ${REMOTE_NIXBOT_AGE_IDENTITY}" >&2
+		return 1
+	fi
+}
+
+activate_prepared_system_path() {
+	local node="$1" system_path="$2" activate_cmd=""
+
+	printf -v activate_cmd \
+		'test -x %q/bin/switch-to-configuration || { echo "system path is not activatable: %q" >&2; exit 1; }; %q/bin/switch-to-configuration %q' \
+		"${system_path}" \
+		"${system_path}" \
+		"${system_path}" \
+		"${GOAL}"
+
+	echo "${system_path}" >&2
+	run_prepared_root_command "${activate_cmd}"
+}
+
+remote_activate_host() {
+	local node="$1" system_path="$2"
+
+	log_host_stage "deploy" "${node}" "${GOAL} via deploy-host"
+	prepare_deploy_context "${node}" primary-only || return 1
+	ensure_prepared_target_has_machine_identity "${node}" || return 1
+	run_pre_switch_user_failed_state_reset || return 1
+	copy_system_path_to_prepared_target "${node}" "${system_path}" || return 1
+	activate_prepared_system_path "${node}" "${system_path}"
+}
+
+run_remote_activate_action() {
+	local selected_json="$1" node="" selected_count=0
+
+	selected_count="$(jq 'length' <<<"${selected_json}")"
+	[ "${selected_count}" -eq 1 ] || die "remote-activate requires exactly one host"
+	node="$(jq -r '.[0]' <<<"${selected_json}")"
+	remote_activate_host "${node}" "${REMOTE_ACTIVATE_SYSTEM_PATH}"
+}
+
+run_deploy_on_remote_host() {
+	local node="$1" built_out_path="$2" deploy_role_host="" deploy_ssh_target=""
+	# shellcheck disable=SC2034
+	local deploy_nix_sshopts="" encoded_request="" local_sha=""
+	local -a deploy_ssh_opts=() remote_args=()
+
+	deploy_role_host="$(resolve_effective_deploy_host)"
+	prepare_role_host_ssh_context \
+		"${deploy_role_host}" \
+		deploy_ssh_target \
+		deploy_ssh_opts \
+		deploy_nix_sshopts || return 1
+
+	local_sha="${SHA}"
+	if [ -z "${local_sha}" ]; then
+		local_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+	fi
+
+	remote_args=(
+		remote-activate
+		--hosts "${node}"
+		--goal "${GOAL}"
+		--system-path "${built_out_path}"
+		--no-override
+	)
+	if [ -n "${local_sha}" ]; then
+		remote_args+=(--sha "${local_sha}")
+	fi
+	if [ "${LOG_FORMAT}" != "auto" ]; then
+		remote_args+=(--log-format "${LOG_FORMAT}")
+	elif is_github_actions_log_mode; then
+		remote_args+=(--log-format gh)
+	fi
+
+	encoded_request="$(encode_ssh_command_args "${remote_args[@]}")"
+	echo "Delegating activation for ${node} to deploy host ${deploy_role_host}" >&2
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		printf 'ssh '
+		printf '%q ' "${deploy_ssh_opts[@]}" "--" "${deploy_ssh_target}" "${REMOTE_NIXBOT_DEPLOY_SCRIPT}" "${NIXBOT_SSH_ARGV_PREFIX}" "${encoded_request}"
+		echo
+		return 0
+	fi
+
+	ssh "${deploy_ssh_opts[@]}" -- "${deploy_ssh_target}" \
+		"${REMOTE_NIXBOT_DEPLOY_SCRIPT}" \
+		"${NIXBOT_SSH_ARGV_PREFIX}" \
+		"${encoded_request}"
+}
+
 deploy_host() {
 	local node="$1" built_out_path="$2" skip_marker="${3:-}"
 	local remote_current_path="" age_identity_key=""
@@ -6416,18 +6613,11 @@ deploy_host() {
 	if [ -n "$(host_parent_for "${node}")" ]; then
 		clear_primary_ready "${node}"
 	fi
-	prepare_deploy_context "${node}" || return 1
-	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
-
-	# Missing local age-identity material is a hard precondition failure, not a
-	# parent-settle race. Resolve it once up front so deploy does not spend a full
-	# retry window repeating the same missing-file error.
-	if [ -n "${age_identity_key}" ]; then
-		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
-	fi
 
 	if [ "${NIXBOT_IF_CHANGED}" -eq 1 ]; then
-		remote_current_path="$(read_prepared_current_system_path)"
+		if prepare_deploy_context "${node}" primary-only; then
+			remote_current_path="$(read_prepared_current_system_path 2>/dev/null || true)"
+		fi
 		if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${built_out_path}" ]; then
 			echo "[${node}] deploy | skip" >&2
 			echo "${built_out_path}" >&2
@@ -6436,6 +6626,14 @@ deploy_host() {
 			fi
 			return 0
 		fi
+		if [ -z "${remote_current_path}" ]; then
+			echo "==> Current system read for ${node} unavailable; continuing to deploy transport preparation" >&2
+		fi
+	fi
+
+	if [ "${DEPLOY_HOST}" != "local" ]; then
+		run_deploy_on_remote_host "${node}" "${built_out_path}"
+		return "$?"
 	fi
 
 	run_parented_host_operation_with_retry \
@@ -6446,6 +6644,12 @@ deploy_host() {
 		1 || return 1
 
 	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+
+	# Missing local age-identity material is a hard precondition failure, not a
+	# parent-settle race.
+	if [ -n "${age_identity_key}" ]; then
+		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
+	fi
 
 	run_pre_switch_user_failed_state_reset || return 1
 
@@ -7199,6 +7403,96 @@ ensure_phase_runtime_dirs() {
 
 ##### Build Phase #####
 
+format_ssh_store_uri() {
+	local ssh_target="$1" user_prefix="" host_only=""
+
+	if [[ "${ssh_target}" == *@* ]]; then
+		user_prefix="${ssh_target%@*}@"
+	fi
+	host_only="$(ssh_host_from_target "${ssh_target}")"
+	if [[ "${host_only}" == *:* ]]; then
+		host_only="[${host_only}]"
+	fi
+	printf 'ssh-ng://%s%s\n' "${user_prefix}" "${host_only}"
+}
+
+prepare_role_host_ssh_context() {
+	local role_host="$1"
+	# shellcheck disable=SC2178,SC2034
+	local -n prhsc_ssh_target_out_ref="$2" prhsc_ssh_opts_out_ref="$3" prhsc_nix_sshopts_out_ref="$4"
+	local target_info="" user="" host="" port="" key_path="" known_hosts=""
+	local bootstrap_key="" bootstrap_user="" bootstrap_port="" bootstrap_key_path=""
+	local _age_identity_key="" proxy_jump="" proxy_command="" effective_proxy_chain=""
+	local -a bootstrap_ssh_opts=()
+	local bootstrap_nix_sshopts=""
+
+	target_info="$(resolve_deploy_target "${role_host}")"
+	{
+		read -r user
+		read -r host
+		read -r port
+		read -r key_path
+		read -r known_hosts
+		read -r bootstrap_key
+		read -r bootstrap_user
+		read -r bootstrap_port
+		read -r bootstrap_key_path
+		read -r _age_identity_key
+		read -r proxy_jump
+		read -r proxy_command
+	} < <(jq -r '[.user, .target, (.port // "22"), (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapPort // .port // "22"), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // ""), (.proxyCommand // "")] | .[]' <<<"${target_info}")
+
+	if [ -n "${proxy_jump}" ]; then
+		effective_proxy_chain="$(resolve_effective_proxy_chain "${proxy_jump}")"
+	fi
+
+	build_deploy_ssh_contexts \
+		"${role_host}" \
+		"${host}" \
+		"${port}" \
+		"${bootstrap_port}" \
+		"${known_hosts}" \
+		"${effective_proxy_chain}" \
+		"${proxy_command}" \
+		"${key_path}" \
+		"${bootstrap_key_path}" \
+		prhsc_ssh_opts_out_ref \
+		prhsc_nix_sshopts_out_ref \
+		bootstrap_ssh_opts \
+		bootstrap_nix_sshopts || return 1
+
+	# shellcheck disable=SC2034
+	prhsc_ssh_target_out_ref="${user}@${host}"
+}
+
+prepare_build_host_store_context() {
+	local build_host="$1"
+	# shellcheck disable=SC2178,SC2034
+	local -n pbhsc_store_uri_out_ref="$2" pbhsc_nix_sshopts_out_ref="$3"
+	local ssh_target=""
+	local -a ssh_opts=()
+
+	prepare_role_host_ssh_context \
+		"${build_host}" \
+		ssh_target \
+		ssh_opts \
+		pbhsc_nix_sshopts_out_ref || return 1
+
+	# shellcheck disable=SC2034
+	pbhsc_store_uri_out_ref="$(format_ssh_store_uri "${ssh_target}")"
+}
+
+run_nix_with_optional_sshopts() {
+	local nix_sshopts="$1"
+	shift
+
+	if [ -n "${nix_sshopts}" ]; then
+		env NIX_SSHOPTS="${nix_sshopts}" "$@"
+	else
+		"$@"
+	fi
+}
+
 build_host() {
 	local node="$1" result_link="${2:-}" out_path=""
 	local -a build_cmd=()
@@ -7232,6 +7526,47 @@ build_host() {
 	printf '%s\n' "${out_path}"
 }
 
+remote_build_host() {
+	local node="$1" result_link="${2:-}" out_path="" store_uri="" nix_sshopts=""
+	local -a build_cmd=() copy_cmd=()
+
+	log_host_stage "build" "${node}" "remote build"
+	echo "Starting remote build on ${BUILD_HOST}" >&2
+	prepare_build_host_store_context "${BUILD_HOST}" store_uri nix_sshopts || return 1
+
+	build_cmd=(nix build "${NIXBOT_BUILD_NIX_ARGS[@]}" --store "${store_uri}" --print-out-paths --no-link)
+	build_cmd+=(".#nixosConfigurations.${node}.config.system.build.toplevel")
+	if ! out_path="$(run_nix_with_optional_sshopts "${nix_sshopts}" "${build_cmd[@]}")"; then
+		echo "Remote build failed for ${node} on ${BUILD_HOST}" >&2
+		return 1
+	fi
+
+	[ -n "${out_path}" ] || {
+		echo "Remote build produced no output path for ${node}" >&2
+		return 1
+	}
+
+	echo "Built out path on ${BUILD_HOST}: ${out_path}" >&2
+	if [ "${DEPLOY_HOST}" = "local" ] || ! is_deploy_style_action; then
+		echo "Copying built closure from ${BUILD_HOST}" >&2
+		copy_cmd=(nix copy --from "${store_uri}" "${out_path}")
+		if ! run_nix_with_optional_sshopts "${nix_sshopts}" "${copy_cmd[@]}"; then
+			echo "Failed to copy built closure from ${BUILD_HOST}: ${out_path}" >&2
+			return 1
+		fi
+		if ! nix path-info --closure-size --human-readable "${out_path}" >&2; then
+			echo "Unable to resolve closure size for ${node}: ${out_path}" >&2
+			return 1
+		fi
+		if [ -n "${result_link}" ]; then
+			ln -sfn "${out_path}" "${result_link}"
+			echo "Result link: ${result_link}" >&2
+		fi
+	fi
+
+	printf '%s\n' "${out_path}"
+}
+
 dev_build_host() {
 	local node="$1" out_path="" result_link=""
 
@@ -7260,32 +7595,13 @@ dev_build_host() {
 	printf '%s\n' "${out_path}"
 }
 
-eval_host_out_path() {
-	local node="$1" out_path=""
-
-	log_host_stage "build" "${node}" "remote build"
-	echo "Evaluating output path" >&2
-	if ! out_path="$(nix eval "${NIXBOT_BUILD_NIX_ARGS[@]}" --raw ".#nixosConfigurations.${node}.config.system.build.toplevel.outPath")"; then
-		echo "Evaluation failed for ${node}" >&2
-		return 1
-	fi
-
-	[ -n "${out_path}" ] || {
-		echo "Evaluation produced no output path for ${node}" >&2
-		return 1
-	}
-
-	echo "Planned out path: ${out_path}" >&2
-	printf '%s\n' "${out_path}"
-}
-
 resolve_build_out_path() {
 	local node="$1" result_link="${2:-}"
 
 	if [ "${ACTION}" = "dev-build" ]; then
 		dev_build_host "${node}"
-	elif is_deploy_style_action && [ "${BUILD_HOST}" != "local" ]; then
-		eval_host_out_path "${node}"
+	elif [ "${BUILD_HOST}" != "local" ]; then
+		remote_build_host "${node}" "${result_link}"
 	else
 		build_host "${node}" "${result_link}"
 	fi
@@ -9344,6 +9660,15 @@ hydrate_request_args_from_ssh_command() {
 	local encoded_prefix="${NIXBOT_SSH_ARGV_PREFIX} "
 	local encoded_args=""
 
+	if [ "${#hrafsc_request_args_out_ref[@]}" -ge 1 ] &&
+		[ "${hrafsc_request_args_out_ref[0]}" = "${NIXBOT_SSH_ARGV_PREFIX}" ]; then
+		encoded_args="${hrafsc_request_args_out_ref[1]:-}"
+		[ -n "${encoded_args}" ] || die "Empty encoded argv payload"
+		mapfile -d '' -t hrafsc_request_args_out_ref < <(decode_ssh_command_args "${encoded_args}") ||
+			die "Failed to decode argv payload"
+		return
+	fi
+
 	if [ "${#hrafsc_request_args_out_ref[@]}" -ne 0 ] || [ -z "${SSH_ORIGINAL_COMMAND:-}" ]; then
 		return
 	fi
@@ -9373,12 +9698,21 @@ hydrate_request_args_from_ssh_command() {
 			;;
 		esac
 	fi
+	if [ "${#hrafsc_request_args_out_ref[@]}" -ge 1 ] &&
+		[ "${hrafsc_request_args_out_ref[0]}" = "${NIXBOT_SSH_ARGV_PREFIX}" ]; then
+		encoded_args="${hrafsc_request_args_out_ref[1]:-}"
+		[ -n "${encoded_args}" ] || die "Empty encoded argv payload"
+		mapfile -d '' -t hrafsc_request_args_out_ref < <(decode_ssh_command_args "${encoded_args}") ||
+			die "Failed to decode argv payload"
+	fi
 }
 
 run_deploy_request_action() {
 	local selected_json="$1"
 
-	if [ "${ACTION}" = "run" ]; then
+	if is_remote_activate_action; then
+		run_remote_activate_action "${selected_json}"
+	elif [ "${ACTION}" = "run" ]; then
 		run_all_action "${selected_json}"
 	elif action_is_tf_only "${ACTION}"; then
 		run_tf_only_action
@@ -9470,7 +9804,7 @@ main() {
 		run_version_action
 		return
 		;;
-	run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | tf/*)
+	run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | remote-activate | tf/*)
 		ACTION="${request_args[0]}"
 		request_args=("${request_args[@]:1}")
 		;;
@@ -9499,6 +9833,7 @@ main() {
 	fi
 	if [ "${CI_TRIGGER}" -eq 1 ]; then
 		[ "${ACTION}" != "dev-build" ] || die "dev-build is local-only and cannot run through --ci-trigger"
+		[ "${ACTION}" != "remote-activate" ] || die "remote-activate cannot run through --ci-trigger"
 		run_ci_trigger
 		return
 	fi
