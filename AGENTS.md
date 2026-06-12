@@ -28,6 +28,16 @@
     decisions.
   - Keep notes scoped to a specific task (one task-focused file, not mixed notes
     across unrelated tasks).
+  - Treat `.agents/docs` updates as a closeout gate, not optional follow-up, for
+    non-trivial repository work.
+  - Before a final response, decide whether the task created durable context:
+    root cause, design decision, user correction, migration/deploy finding,
+    reusable validation sequence, or a changed ownership boundary.
+  - If yes, create or update the appropriate note under `.agents/docs/notes/**`
+    and update `.agents/docs/README.md` in the same turn.
+  - If no durable note is needed for non-trivial work, say that explicitly in
+    the final response.
+  - Format changed Markdown with the repo formatter before finishing.
 - Use `.agents/runs/<session>` as a staging area for temporary edits (inside
   `.agents/docs` or elsewhere) when multiple agents are working in parallel.
   - Near completion, replace target files as atomically as possible.
