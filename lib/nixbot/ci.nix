@@ -33,6 +33,7 @@ in
     environment.systemPackages = with pkgs; [
       age
       jq
+      nixbot
     ];
   }
   // (let
