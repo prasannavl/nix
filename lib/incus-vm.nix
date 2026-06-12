@@ -67,6 +67,7 @@
 
       services.tailscale = {
         enable = true;
+        useRoutingFeatures = "client";
         authKeyFile = config.age.secrets.tailscale-auth-key.path;
         authKeyParameters = {
           ephemeral = false;
