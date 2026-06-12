@@ -188,42 +188,52 @@ in {
         };
       };
 
-      default.instances = {
-        pvl-vlab = mkLxc {
-          name = "pvl-vlab";
-          ipv4Address = "10.10.20.10";
-          removalPolicy = "delete-all";
-          privileged = true;
-          nestedContainers = true;
-          extraDevices = amdGpuDevices;
-        };
+      default = {
+        routes = [
+          {
+            address = "10.10.30.0";
+            prefixLength = 24;
+            via = "10.10.20.20";
+          }
+        ];
 
-        pvl-vlab-1 = mkLxc {
-          name = "pvl-vlab-1";
-          ipv4Address = "10.10.20.30";
-          removalPolicy = "delete-all";
-          privileged = true;
-          nestedContainers = true;
-          extraDevices =
-            {
-              incus-api = incusLib.mkIncusProxy {
-                connectHost = "10.10.20.1";
-              };
-              delegated-certs = incusLib.mkCertDelegation "pvl";
-            }
-            // amdGpuDevices;
-        };
+        instances = {
+          pvl-vlab = mkLxc {
+            name = "pvl-vlab";
+            ipv4Address = "10.10.20.10";
+            removalPolicy = "delete-all";
+            privileged = true;
+            nestedContainers = true;
+            extraDevices = amdGpuDevices;
+          };
 
-        gap3-gondor = mkLxc {
-          name = "gap3-gondor";
-          image = inputs.self.nixosImages.gap3-base;
-          ipv4Address = "10.10.20.20";
-          removalPolicy = "delete-all";
-          recreateTag = "3";
-          privileged = true;
-          nestedContainers = true;
-          interceptMounts = true;
-          extraDevices = amdGpuDevices;
+          pvl-vlab-1 = mkLxc {
+            name = "pvl-vlab-1";
+            ipv4Address = "10.10.20.30";
+            removalPolicy = "delete-all";
+            privileged = true;
+            nestedContainers = true;
+            extraDevices =
+              {
+                incus-api = incusLib.mkIncusProxy {
+                  connectHost = "10.10.20.1";
+                };
+                delegated-certs = incusLib.mkCertDelegation "pvl";
+              }
+              // amdGpuDevices;
+          };
+
+          gap3-gondor = mkLxc {
+            name = "gap3-gondor";
+            image = inputs.self.nixosImages.gap3-base;
+            ipv4Address = "10.10.20.20";
+            removalPolicy = "delete-all";
+            recreateTag = "3";
+            privileged = true;
+            nestedContainers = true;
+            interceptMounts = true;
+            extraDevices = amdGpuDevices;
+          };
         };
       };
 
@@ -316,13 +326,6 @@ in {
     "net.ipv4.ip_forward" = 1;
   };
   networking = {
-    interfaces.incusbr0.ipv4.routes = [
-      {
-        address = "10.10.30.0";
-        prefixLength = 24;
-        via = "10.10.20.20";
-      }
-    ];
     nftables.tables = fabricIsolation.nftablesTable;
     firewall = {
       interfaces = fabricIsolation.firewallInterfaces;

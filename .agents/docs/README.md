@@ -131,6 +131,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-storage-pools-2026-05.md`:
   Records the separate Btrfs storage pools for the `pvl`, `abird`,
   `abird-stage`, and `abird-dev` Incus projects on `pvl-x2`.
+- `.agents/docs/notes/hosts/pvl-x2-incus-project-routes-2026-06.md`: Records the
+  project-owned Incus route API, helper-based route reconciler, and `pvl-x2`
+  route to the still-live `10.10.30.0/24` subnet through `gap3-gondor`.
 
 ### Lib
 
