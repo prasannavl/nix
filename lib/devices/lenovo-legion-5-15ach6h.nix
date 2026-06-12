@@ -15,7 +15,7 @@
     prime = {
       offload.enable = true;
       reverseSync.enable = true;
-      amdgpuBusId = "PCI:5:0:0";
+      amdgpuBusId = "PCI:6:0:0";
       nvidiaBusId = "PCI:1:0:0";
     };
   };
@@ -30,8 +30,8 @@
 
   services = {
     udev.extraRules = ''
-      KERNEL=="card*", KERNELS=="0000:05:00.0", SYMLINK+="dri/zcard-amd", SYMLINK+="dri/zcard-default"
-      KERNEL=="renderD*", KERNELS=="0000:05:00.0", SYMLINK+="dri/zrender-amd", SYMLINK+="dri/zrender-default"
+      KERNEL=="card*", KERNELS=="0000:06:00.0", SYMLINK+="dri/zcard-amd", SYMLINK+="dri/zcard-default"
+      KERNEL=="renderD*", KERNELS=="0000:06:00.0", SYMLINK+="dri/zrender-amd", SYMLINK+="dri/zrender-default"
       KERNEL=="card*", KERNELS=="0000:01:00.0", SYMLINK+="dri/zcard-nvidia"
       KERNEL=="renderD*", KERNELS=="0000:01:00.0", SYMLINK+="dri/zrender-nvidia"
     '';

@@ -74,6 +74,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-shared-screenshot-keybindings-2026-04.md`:
   Records the screenshot keybinding layout across Sway, Niri, and GNOME plus the
   current split between `Super+X` on tiling WMs and `Super+C` on GNOME.
+- `.agents/docs/notes/hosts/pvl-l5-legion-gpu-pci-map-2026-06.md`: Records the
+  live `pvl-l5` Lenovo Legion 5 GPU PCI mapping and the correction from
+  `PCI:5:0:0` to `PCI:6:0:0` for the AMD iGPU.
 - `.agents/docs/notes/hosts/pvl-wm-idle-lock-2026-04.md`: Records the shared
   `swayidle` battery and AC lock policy for Sway and Niri plus the existing
   manual lock shortcuts.
@@ -260,6 +263,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/pvl-terminal-shift-enter-2026-06.md`: Records the
   terminal-side `Shift+Enter` CSI-u mappings for Alacritty, foot, and VS Code,
   plus the Ghostty config-open MIME default fix.
+- `.agents/docs/notes/tooling/pvl-l5-vscode-terminal-gpu-rendering-2026-06.md`:
+  Records the `pvl-l5` VS Code integrated-terminal glyph corruption root cause,
+  live GPU evidence, and the related AMD PCI alias correction.
 - `.agents/docs/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records
   the move from `arrterian.nix-env-selector` to `mkhl.direnv` plus the root
   flake `devShells.default`/`devShells.full` abstraction in
