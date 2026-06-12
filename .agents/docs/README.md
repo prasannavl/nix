@@ -152,6 +152,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   bootstrap, SSH, worktree, Terraform, and CI behavior.
 - `.agents/docs/notes/nixbot/key-rotation.md`: Canonical deploy-key rotation
   policy and guardrails.
+- `.agents/docs/notes/nixbot/repo-relative-secret-paths-2026-06.md`: Records the
+  repo-root-relative secret path boundary for nixbot config, overrides, and SSH
+  fallback path resolution.
 
 ### Reviews
 

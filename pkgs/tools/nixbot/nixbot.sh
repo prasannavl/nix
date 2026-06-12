@@ -2063,22 +2063,28 @@ resolve_config_path() {
 
 	if [[ "${path}" == /* ]]; then
 		printf '%s\n' "${path}"
-	else
-		printf '%s/%s\n' "$(pwd -P)" "${path}"
+		return
 	fi
+
+	if [ -f "${path}" ]; then
+		readlink -f "${path}"
+		return
+	fi
+
+	printf '%s/%s\n' "$(pwd -P)" "${path}"
 }
 
 load_deploy_config_json() {
 	local path="$1" override_path="${NIXBOT_CONFIG_OVERRIDE_PATH:-}"
 	local resolved_path="" resolved_override_path="" expr=""
 
-	[ -f "${path}" ] || die "Deploy config not found: ${path}"
+	resolved_path="$(resolve_config_path "${path}")"
+	[ -f "${resolved_path}" ] || die "Deploy config not found: ${path} (resolved: ${resolved_path})"
 	if [ -z "${override_path}" ] || [ ! -f "${override_path}" ]; then
-		nix eval --json --file "${path}"
+		nix eval --json --file "${resolved_path}"
 		return
 	fi
 
-	resolved_path="$(resolve_config_path "${path}")"
 	resolved_override_path="$(resolve_config_path "${override_path}")"
 	# The sibling override is a partial attrset layered over the selected config:
 	# nested attrsets merge recursively, while scalar/list values replace the
@@ -2105,8 +2111,10 @@ in
 
 init_deploy_settings() {
 	local config_json="$1"
+	local resolved_config_path=""
 
-	NIXBOT_CONFIG_DIR="$(cd "$(dirname "${NIXBOT_CONFIG_PATH}")" && pwd -P)"
+	resolved_config_path="$(resolve_config_path "${NIXBOT_CONFIG_PATH}")"
+	NIXBOT_CONFIG_DIR="$(cd "$(dirname "${resolved_config_path}")" && pwd -P)"
 
 	{
 		read -r NIXBOT_DEFAULT_USER
@@ -2149,21 +2157,26 @@ resolve_key_source_path() {
 	fi
 
 	if [ -f "${key_path}" ]; then
-		printf '%s\n' "${key_path}"
+		readlink -f "${key_path}"
 		return
 	fi
 
-	if [ -f "${NIXBOT_CONFIG_DIR}/${key_path}" ]; then
+	if [ -n "${NIXBOT_CONFIG_DIR}" ] && [ -f "${NIXBOT_CONFIG_DIR}/${key_path}" ]; then
 		printf '%s/%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
 		return
 	fi
 
-	if [ -f "${NIXBOT_CONFIG_DIR}/../${key_path}" ]; then
+	if [ -n "${NIXBOT_CONFIG_DIR}" ] && [ -f "${NIXBOT_CONFIG_DIR}/../${key_path}" ]; then
 		printf '%s/../%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
 		return
 	fi
 
-	printf '%s/%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
+	if [ -n "${NIXBOT_CONFIG_DIR}" ]; then
+		printf '%s/../%s\n' "${NIXBOT_CONFIG_DIR}" "${key_path}"
+		return
+	fi
+
+	printf '%s\n' "${key_path}"
 }
 
 resolve_runtime_key_file() {
