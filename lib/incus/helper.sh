@@ -24,6 +24,9 @@ init_vars() {
 	certificates="${INCUS_MACHINES_CERTIFICATES-[]}"
 	certificates_file="${INCUS_MACHINES_CERTIFICATES_FILE-}"
 	certificates_state_file="${INCUS_MACHINES_CERTIFICATES_STATE_FILE-/var/lib/incus-machines/certificates.json}"
+	routes_file="${INCUS_MACHINES_ROUTES_FILE-}"
+	routes_state_file="${INCUS_MACHINES_ROUTES_STATE_FILE-/var/lib/incus-machines/routes.json}"
+	routes="[]"
 	certificate_delegation_name="${INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME-}"
 	certificate_delegation_project="${INCUS_MACHINES_CERTIFICATE_DELEGATION_PROJECT-}"
 	certificate_delegation_source_file="${INCUS_MACHINES_CERTIFICATE_DELEGATION_SOURCE_FILE-}"
@@ -48,6 +51,9 @@ init_vars() {
 	incus_remote_config_dir=""
 	if [ -n "$certificates_file" ]; then
 		certificates="$(cat "$certificates_file")"
+	fi
+	if [ -n "$routes_file" ]; then
+		routes="$(cat "$routes_file")"
 	fi
 	if [ -n "$certificate_delegations_file" ]; then
 		certificate_delegations="$(cat "$certificate_delegations_file")"
@@ -139,6 +145,74 @@ server_ref() {
 	if is_remote_target; then
 		printf '%s:\n' "$incus_remote_name"
 	fi
+}
+
+route_prefix() {
+	local route_json
+	route_json="$1"
+
+	jq -r '"\(.address)/\(.prefixLength)"' <<<"$route_json"
+}
+
+remove_route() {
+	local route_json prefix iface via project
+	route_json="$1"
+	prefix="$(route_prefix "$route_json")"
+	iface="$(jq -r '.interface' <<<"$route_json")"
+	via="$(jq -r '.via' <<<"$route_json")"
+	project="$(jq -r '.project // "unknown"' <<<"$route_json")"
+
+	echo "Removing Incus route $project $prefix via $via dev $iface"
+	ip -4 route del "$prefix" via "$via" dev "$iface" proto static 2>/dev/null || true
+}
+
+apply_route() {
+	local route_json prefix iface via project
+	route_json="$1"
+	prefix="$(route_prefix "$route_json")"
+	iface="$(jq -r '.interface' <<<"$route_json")"
+	via="$(jq -r '.via' <<<"$route_json")"
+	project="$(jq -r '.project // "unknown"' <<<"$route_json")"
+
+	echo "Applying Incus route $project $prefix via $via dev $iface"
+	ip -4 route replace "$prefix" via "$via" dev "$iface" proto static
+}
+
+routes_main() {
+	local state_dir tmp_file route_json
+
+	jq -e '
+		type == "array"
+		and all(.[]; type == "object")
+		and all(.[]; (.project | type) == "string")
+		and all(.[]; (.interface | type) == "string")
+		and all(.[]; (.address | type) == "string")
+		and all(.[]; (.prefixLength | type) == "number")
+		and all(.[]; (.via | type) == "string")
+	' <<<"$routes" >/dev/null || {
+		echo "Invalid INCUS_MACHINES_ROUTES JSON" >&2
+		exit 1
+	}
+
+	state_dir="$(dirname "$routes_state_file")"
+	install -d -m 0755 "$state_dir"
+
+	if [ -f "$routes_state_file" ]; then
+		while IFS= read -r route_json; do
+			if ! jq -e --argjson route "$route_json" 'index($route)' <<<"$routes" >/dev/null; then
+				remove_route "$route_json"
+			fi
+		done < <(jq -c '.[]' "$routes_state_file")
+	fi
+
+	while IFS= read -r route_json; do
+		apply_route "$route_json"
+	done < <(jq -c '.[]' <<<"$routes")
+
+	tmp_file="$(mktemp "${routes_state_file}.tmp.XXXXXX")"
+	printf '%s\n' "$routes" >"$tmp_file"
+	chmod 0644 "$tmp_file"
+	mv "$tmp_file" "$routes_state_file"
 }
 
 incus_project() {
@@ -3342,7 +3416,7 @@ main() {
 	setup_incus_client
 	command="${1-}"
 	[ -n "$command" ] || {
-		echo "usage: incus-machines-helper <client|preseed-migrations|certificates|certificate-delegation|certificate-delegations-gc|remote-project-delegations|reconciler|settlement|machine|start-instance|stop-instance|images|gc|host-suspend> [args...]" >&2
+		echo "usage: incus-machines-helper <client|preseed-migrations|certificates|routes|certificate-delegation|certificate-delegations-gc|remote-project-delegations|reconciler|settlement|machine|start-instance|stop-instance|images|gc|host-suspend> [args...]" >&2
 		exit 1
 	}
 	shift
@@ -3356,6 +3430,9 @@ main() {
 		;;
 	certificates)
 		certificates_main "$@"
+		;;
+	routes)
+		routes_main "$@"
 		;;
 	certificate-delegation)
 		certificate_delegation_main "$@"

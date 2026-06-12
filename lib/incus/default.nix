@@ -54,13 +54,15 @@
   hasActionableInstances = actionableInstances != {};
   hasCertificates = globalCfg.certificates != [];
   hasCertificateDelegations = globalCfg.certificateDelegations != {};
+  hasLocalHooks = hasInstances || hasCertificates || hasCertificateDelegations || hasProjectRoutes || globalCfg.hostSuspend.enable;
   hasRemoteHooks =
     globalCfg.remote.enable
     && (
       hasInstances
       || globalCfg.remote.projects != {}
     );
-  hasHostHooks = hasInstances || hasCertificates || hasCertificateDelegations || globalCfg.hostSuspend.enable || hasRemoteHooks;
+  hasHostHooks = hasLocalHooks || hasRemoteHooks;
+  hasRouteReconciler = !globalCfg.remote.enable && hasLocalHooks;
   mkEnvAssignment = name: value: "${name}=${lib.escapeShellArg (toString value)}";
   remoteValue = value:
     if value == null
@@ -114,6 +116,7 @@
       pkgs.gawk
       pkgs.git
       pkgs.gnutar
+      pkgs.iproute2
       pkgs.jq
       pkgs.nix
       pkgs.openssl
@@ -199,6 +202,42 @@
     if incusPreseed == null
     then []
     else map (profile: "${profile.project or "default"}/${profile.name}") (incusPreseed.profiles or []);
+  preseedDefaultProfileForProject = projectName:
+    if incusPreseed == null
+    then null
+    else
+      lib.findFirst
+      (profile: (profile.project or "default") == projectName && profile.name == "default")
+      null
+      (incusPreseed.profiles or []);
+  preseedDefaultProfileNetworkForProject = projectName: let
+    nicNetworks = preseedDefaultProfileNicNetworksForProject projectName;
+  in
+    if builtins.length nicNetworks == 1
+    then (builtins.head nicNetworks).network
+    else null;
+  preseedDefaultProfileNicNetworksForProject = projectName: let
+    profile = preseedDefaultProfileForProject projectName;
+  in
+    if profile == null
+    then []
+    else
+      lib.concatLists (
+        lib.mapAttrsToList (
+          deviceName: device:
+            lib.optional
+            (
+              (device.type or null)
+              == "nic"
+              && builtins.hasAttr "network" device
+            )
+            {
+              inherit deviceName;
+              network = device.network;
+            }
+        )
+        (profile.devices or {})
+      );
   preseedProfileDeviceRefs =
     if incusPreseed == null
     then []
@@ -248,6 +287,46 @@
   preseedMigrationsFile = pkgs.writeText "incus-machines-preseed-migrations.json" (builtins.toJSON resolvedPreseedMigrations);
   certificatesJson = builtins.toJSON globalCfg.certificates;
   certificatesFile = pkgs.writeText "incus-machines-certificates.json" certificatesJson;
+  projectRouteEntries = lib.concatLists (
+    lib.mapAttrsToList (
+      projectName: projectCfg:
+        map (route:
+          route
+          // {
+            project = projectName;
+            interface = preseedDefaultProfileNetworkForProject projectName;
+          })
+        projectCfg.routes
+    )
+    projectConfigs
+  );
+  hasProjectRoutes = projectRouteEntries != [];
+  routeProjectNames = lib.mapAttrsToList (projectName: _projectCfg: projectName) (
+    lib.filterAttrs (_projectName: projectCfg: projectCfg.routes != []) projectConfigs
+  );
+  routeProjectsMissingPreseedNetwork =
+    lib.filter (
+      projectName:
+        preseedDefaultProfileNicNetworksForProject projectName == []
+    )
+    routeProjectNames;
+  routeProjectsAmbiguousPreseedNetworks =
+    map (
+      projectName: let
+        nicNetworks = preseedDefaultProfileNicNetworksForProject projectName;
+        candidates = map (entry: "${entry.deviceName}=${entry.network}") nicNetworks;
+      in
+        "${projectName}: " + lib.concatStringsSep ", " candidates
+    ) (
+      lib.filter (
+        projectName:
+          builtins.length (preseedDefaultProfileNicNetworksForProject projectName) > 1
+      )
+      routeProjectNames
+    );
+  routesJson = builtins.toJSON projectRouteEntries;
+  routesFile = pkgs.writeText "incus-machines-routes.json" routesJson;
+  routesStateFile = "${incusMachinesStateDir}/routes.json";
   invalidRestrictedCertificates = map (cert: cert.name) (
     lib.filter (cert: cert.restricted && cert.projects == []) globalCfg.certificates
   );
@@ -466,6 +545,25 @@
         type = lib.types.ints.positive;
         default = 32;
         description = "Maximum number of delegated certificates accepted from the tenant state file.";
+      };
+    };
+  });
+
+  routeType = lib.types.submodule (_: {
+    options = {
+      address = lib.mkOption {
+        type = lib.types.str;
+        description = "Destination IPv4 network address.";
+      };
+
+      prefixLength = lib.mkOption {
+        type = lib.types.ints.between 0 32;
+        description = "Destination IPv4 network prefix length.";
+      };
+
+      via = lib.mkOption {
+        type = lib.types.str;
+        description = "Next-hop IPv4 address reachable on this project's Incus bridge.";
       };
     };
   });
@@ -1219,6 +1317,17 @@
         default = {};
         description = "Declarative Incus instances in this Incus project.";
       };
+
+      routes = lib.mkOption {
+        type = lib.types.listOf routeType;
+        default = [];
+        description = ''
+          Host routes owned by this Incus project fabric. The module attaches
+          these routes to the bridge used by the project's default profile, so
+          they are reconciled after Incus preseed creates the bridge instead of
+          through generic NixOS interface setup.
+        '';
+      };
     };
   });
 
@@ -1609,6 +1718,41 @@
       in "${name} (${project}, ${allInstances.${name}.ipv4Address})"
     )
     instancesOutsideAllowedSubnets;
+
+  isIpv4 = value:
+    (builtins.tryEval (builtins.deepSeq (parseIpv4 value) true)).success;
+  routeEntriesWithRefs = lib.concatLists (
+    lib.mapAttrsToList (
+      projectName: projectCfg:
+        map (route: {
+          inherit projectName route;
+        })
+        projectCfg.routes
+    )
+    projectConfigs
+  );
+  routeDestinationAligned = route: let
+    size = pow2 (32 - route.prefixLength);
+    address = ipv4ToInt route.address;
+  in
+    address == (builtins.div address size) * size;
+  invalidRouteIpv4Values = lib.concatLists (
+    map (
+      entry:
+        lib.optional (!isIpv4 entry.route.address) "${entry.projectName}.routes.address=${entry.route.address}"
+        ++ lib.optional (!isIpv4 entry.route.via) "${entry.projectName}.routes.via=${entry.route.via}"
+    )
+    routeEntriesWithRefs
+  );
+  invalidRouteNetworkAddresses =
+    lib.concatMap
+    (
+      entry:
+        lib.optional
+        (isIpv4 entry.route.address && !routeDestinationAligned entry.route)
+        "${entry.projectName}.routes.address=${entry.route.address}/${toString entry.route.prefixLength}"
+    )
+    routeEntriesWithRefs;
 
   invalidCertificateDelegationNames =
     lib.filter
@@ -2045,7 +2189,9 @@
     projects = gcProjects;
     remote = globalCfg.remote.enable;
   });
-  localIncusDeps = lib.optional (!globalCfg.remote.enable) "incus-preseed.service";
+  localIncusDeps =
+    lib.optional (!globalCfg.remote.enable) "incus-preseed.service"
+    ++ lib.optional (!globalCfg.remote.enable && hasProjectRoutes) "incus-machines-routes.service";
   incusLifecycleDeps =
     localIncusDeps
     ++ remoteProjectDelegationDeps
@@ -2540,6 +2686,34 @@ in {
         message = "services.incusMachines.global.certificateDelegations is only supported for local Incus management.";
       }
       {
+        assertion = !globalCfg.remote.enable || !hasProjectRoutes;
+        message = "services.incusMachines.<project>.routes is only supported for local Incus management.";
+      }
+      {
+        assertion = routeProjectsMissingPreseedNetwork == [];
+        message =
+          "services.incusMachines.<project>.routes requires each project default Incus profile to declare a NIC with network: "
+          + lib.concatStringsSep ", " routeProjectsMissingPreseedNetwork;
+      }
+      {
+        assertion = routeProjectsAmbiguousPreseedNetworks == [];
+        message =
+          "services.incusMachines.<project>.routes requires a unique default-profile NIC network per project: "
+          + lib.concatStringsSep "; " routeProjectsAmbiguousPreseedNetworks;
+      }
+      {
+        assertion = invalidRouteIpv4Values == [];
+        message =
+          "services.incusMachines.<project>.routes must use valid IPv4 address and via values: "
+          + lib.concatStringsSep ", " invalidRouteIpv4Values;
+      }
+      {
+        assertion = invalidRouteNetworkAddresses == [];
+        message =
+          "services.incusMachines.<project>.routes address must be aligned to prefixLength: "
+          + lib.concatStringsSep ", " invalidRouteNetworkAddresses;
+      }
+      {
         assertion = !globalCfg.remote.cli.enable || globalCfg.remote.enable;
         message = "services.incusMachines.global.remote.cli.enable requires services.incusMachines.global.remote.enable.";
       }
@@ -2664,6 +2838,28 @@ in {
                 certificateDelegationsRootEnv
               ];
               ExecStart = "${helperScript} certificate-delegations-gc";
+            };
+          };
+          incus-machines-routes = lib.mkIf hasRouteReconciler {
+            description = "Reconcile Incus project host routes";
+            wantedBy = ["multi-user.target" "sysinit-reactivation.target"];
+            after = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+            wants = ["incus.service"] ++ lib.optional hasIncusPreseed "incus-preseed.service";
+            before =
+              ["incus-images.service" "incus-machines-reconciler.service"]
+              ++ map (name: "incus-${name}.service") (builtins.attrNames allInstances);
+            restartTriggers = [
+              routesFile
+            ];
+            restartIfChanged = true;
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              Environment = [
+                (mkEnvAssignment "INCUS_MACHINES_ROUTES_FILE" routesFile)
+                (mkEnvAssignment "INCUS_MACHINES_ROUTES_STATE_FILE" routesStateFile)
+              ];
+              ExecStart = "${helperScript} routes";
             };
           };
         }
