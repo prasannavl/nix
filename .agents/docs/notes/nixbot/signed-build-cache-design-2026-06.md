@@ -276,7 +276,9 @@ Implemented in the pvl repo:
 - Target-side cache copies pass the target's declared Nix public trust keys as
   temporary `nix --option extra-trusted-public-keys ... copy` options. This lets
   the first rollout of cache trust use the signed builder cache before the
-  target has activated the new Nix daemon trust config.
+  target has activated the new Nix daemon trust config. The `local-copy` relay
+  path uses the same temporary target trust bridge while still sourcing the
+  deployed closure from the signed build-host cache.
 - Remote builds keep `--build-jobs` concurrency. If a remote Nix daemon drops a
   store connection under load and Nix reports
   `Nix daemon disconnected
@@ -299,9 +301,9 @@ Implemented in the pvl repo:
   `local-copy`. `cache` verifies the build-host cache, makes the target copy the
   exact path from that cache, then activates it. `local-copy` copies the signed
   closure back to the local store for local availability, then relays that exact
-  signed path from the build-host cache to the target before activation. Use
-  `local-copy` when the operator can reach both sides but the target cannot
-  reach the build-host cache.
+  signed path from the build-host cache to the target with the same temporary
+  target trust-key bridge before activation. Use `local-copy` when the operator
+  can reach both sides but the target cannot reach the build-host cache.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`

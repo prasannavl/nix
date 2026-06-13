@@ -45,7 +45,7 @@ Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-port <port>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-port <port>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -294,6 +294,9 @@ init_vars() {
 	FORCE_REQUESTED=0
 	ALLOW_DIRTY_REPO=0
 	OVERLAY_STAGED=0
+	DIRTY_STAGED_PATCH_STDIN=0
+	DIRTY_STAGED_PATCH_FILE=""
+	DIRTY_STAGED_BASE_SHA=""
 	FORCE_BOOTSTRAP_PATH=0
 	SKIP_CONFIG_OVERRIDE=0
 	PRIORITIZE_CI_FIRST=0
@@ -900,6 +903,16 @@ encode_ssh_command_args() {
 	printf '%s\0' "$@" | base64 | tr -d '\n'
 }
 
+shell_quote_argv() {
+	local arg="" sep=""
+
+	for arg in "$@"; do
+		printf '%s%q' "${sep}" "${arg}"
+		sep=" "
+	done
+	printf '\n'
+}
+
 decode_ssh_command_args() {
 	local encoded_args="$1"
 
@@ -981,6 +994,17 @@ parse_args() {
 			OVERLAY_STAGED=1
 			ALLOW_DIRTY_REPO=1
 			shift
+			;;
+		--dirty-staged-patch-stdin)
+			DIRTY_STAGED_PATCH_STDIN=1
+			OVERLAY_STAGED=1
+			ALLOW_DIRTY_REPO=1
+			shift
+			;;
+		--dirty-staged-base | --dirty-staged-base=*)
+			take_optval "$@"
+			DIRTY_STAGED_BASE_SHA="${OPTVAL}"
+			shift "${OPTSHIFT}"
 			;;
 		--no-override)
 			SKIP_CONFIG_OVERRIDE=1
@@ -1144,6 +1168,9 @@ parse_args() {
 	fi
 	if [ -n "${SHA}" ] && ! [[ "${SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
 		die "Unsupported --sha: ${SHA}"
+	fi
+	if [ -n "${DIRTY_STAGED_BASE_SHA}" ] && ! [[ "${DIRTY_STAGED_BASE_SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
+		die "Unsupported --dirty-staged base: ${DIRTY_STAGED_BASE_SHA}"
 	fi
 
 	if [ "${CI_TRIGGER}" -eq 1 ]; then
@@ -1881,6 +1908,88 @@ prepare_dev_build_workspace() {
 	cd "${current_repo_root}"
 }
 
+warn_if_unstaged_changes_ignored() {
+	local repo_root="$1" untracked_path=""
+
+	if ! git -C "${repo_root}" diff --quiet --no-ext-diff --; then
+		echo "warning: --dirty-staged ignores unstaged tracked changes" >&2
+	fi
+
+	untracked_path="$(git -C "${repo_root}" ls-files --others --exclude-standard | sed -n '1p')"
+	if [ -n "${untracked_path}" ]; then
+		echo "warning: --dirty-staged ignores unstaged untracked files" >&2
+	fi
+}
+
+write_staged_patch_from_repo() {
+	local repo_root="$1" patch_file="$2"
+
+	if git -C "${repo_root}" diff --cached --quiet --no-ext-diff --; then
+		die "No staged changes to overlay; use --dirty when no staged payload is needed"
+	fi
+
+	git -C "${repo_root}" diff --cached --binary --full-index --no-ext-diff >"${patch_file}" ||
+		die "Failed to prepare staged patch from ${repo_root}"
+	[ -s "${patch_file}" ] || die "Staged patch was empty: ${patch_file}"
+}
+
+capture_dirty_staged_patch_stdin() {
+	[ "${DIRTY_STAGED_PATCH_STDIN}" -eq 1 ] || return 0
+	[ -z "${DIRTY_STAGED_PATCH_FILE}" ] || return 0
+
+	[ ! -t 0 ] || die "--dirty-staged patch payload must be provided on stdin"
+	ensure_tmp_dir
+	DIRTY_STAGED_PATCH_FILE="$(tmp_runtime_mktemp target "dirty-staged-stdin.XXXXXX.patch")"
+	cat >"${DIRTY_STAGED_PATCH_FILE}" || die "Failed to read --dirty-staged patch payload"
+	[ -s "${DIRTY_STAGED_PATCH_FILE}" ] || die "--dirty-staged patch payload was empty"
+}
+
+prepare_local_dirty_staged_patch() {
+	ensure_tmp_dir
+	DIRTY_STAGED_PATCH_FILE="$(tmp_runtime_mktemp target "dirty-staged.XXXXXX.patch")"
+	write_staged_patch_from_repo "${REPO_ROOT}" "${DIRTY_STAGED_PATCH_FILE}"
+	warn_if_unstaged_changes_ignored "${REPO_ROOT}"
+}
+
+validate_dirty_staged_base() {
+	local target_ref="$1" target_commit="" base_commit=""
+
+	[ "${OVERLAY_STAGED}" -eq 1 ] || return 0
+
+	target_commit="$(git -C "${REPO_ROOT}" rev-parse --verify "${target_ref}^{commit}" 2>/dev/null)" ||
+		die "Requested repo target not available: ${target_ref}"
+
+	if [ -z "${DIRTY_STAGED_BASE_SHA}" ] && [ "${REPO_ROOT_MANAGED}" -eq 0 ]; then
+		DIRTY_STAGED_BASE_SHA="$(git -C "${REPO_ROOT}" rev-parse --verify HEAD)"
+	fi
+
+	[ -n "${DIRTY_STAGED_BASE_SHA}" ] ||
+		die "--dirty-staged requires a base commit for managed repo worktrees"
+
+	base_commit="$(git -C "${REPO_ROOT}" rev-parse --verify "${DIRTY_STAGED_BASE_SHA}^{commit}" 2>/dev/null)" ||
+		die "--dirty-staged base commit is unavailable: ${DIRTY_STAGED_BASE_SHA}"
+
+	[ "${target_commit}" = "${base_commit}" ] ||
+		die "--dirty-staged patch is based on ${base_commit}, but requested target is ${target_commit}"
+}
+
+overlay_dirty_staged_patch_to_worktree() {
+	[ "${OVERLAY_STAGED}" -eq 1 ] || return 0
+
+	capture_dirty_staged_patch_stdin
+	if [ -z "${DIRTY_STAGED_PATCH_FILE}" ]; then
+		if [ "${REPO_ROOT_MANAGED}" -eq 0 ]; then
+			prepare_local_dirty_staged_patch
+		else
+			die "--dirty-staged on a managed repo requires a staged patch payload"
+		fi
+	fi
+
+	echo "Overlaying staged changes into worktree..." >&2
+	git -C "${REPO_WORKTREE_ROOT}" apply --index --binary --allow-empty "${DIRTY_STAGED_PATCH_FILE}" ||
+		die "Failed to overlay staged changes into repo worktree"
+}
+
 configure_ci_trigger_ssh_opts() {
 	local key_file="" known_hosts_file="" scanned_known_hosts=""
 
@@ -1921,8 +2030,29 @@ configure_ci_trigger_ssh_opts() {
 	)
 }
 
+prepare_ci_trigger_dirty_staged_patch() {
+	local trigger_sha="$1" local_repo_root="" local_head="" trigger_commit=""
+
+	local_repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+	[ -n "${local_repo_root}" ] || die "--dirty-staged --ci-trigger must run from inside a Git checkout"
+
+	local_head="$(git -C "${local_repo_root}" rev-parse --verify HEAD)" ||
+		die "Could not resolve local HEAD for --dirty-staged"
+	trigger_commit="$(git -C "${local_repo_root}" rev-parse --verify "${trigger_sha}^{commit}" 2>/dev/null)" ||
+		die "Requested --dirty-staged trigger SHA is unavailable locally: ${trigger_sha}"
+
+	[ "${trigger_commit}" = "${local_head}" ] ||
+		die "--dirty-staged --ci-trigger can only send staged changes based on local HEAD (${local_head}); requested ${trigger_commit}"
+
+	ensure_tmp_dir
+	DIRTY_STAGED_PATCH_FILE="$(tmp_runtime_mktemp target "dirty-staged-ci.XXXXXX.patch")"
+	DIRTY_STAGED_BASE_SHA="${local_head}"
+	write_staged_patch_from_repo "${local_repo_root}" "${DIRTY_STAGED_PATCH_FILE}"
+	warn_if_unstaged_changes_ignored "${local_repo_root}"
+}
+
 run_ci_trigger() {
-	local trigger_sha="${SHA}" trigger_hosts="" encoded_request="" config_json=""
+	local trigger_sha="${SHA}" trigger_hosts="" encoded_request="" config_json="" patch_bytes=""
 	local -a remote_args=()
 	if [ -z "${trigger_sha}" ]; then
 		trigger_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
@@ -1936,8 +2066,11 @@ run_ci_trigger() {
 	[ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
 
 	if [ -z "${CI_TRIGGER_HOST}" ]; then
-		config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}")"
+		config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}" "")"
 		apply_global_defaults "${config_json}"
+	fi
+	if [ "${OVERLAY_STAGED}" -eq 1 ]; then
+		prepare_ci_trigger_dirty_staged_patch "${trigger_sha}"
 	fi
 
 	configure_ci_trigger_ssh_opts
@@ -1947,12 +2080,11 @@ run_ci_trigger() {
 	echo "Action: ${ACTION}" >&2
 	echo "Hosts: ${trigger_hosts}" >&2
 	echo "SHA: ${trigger_sha}" >&2
-	# Intentionally forward only the ci-safe subset here. This restriction is
-	# deliberate: the remote side is expected to use its repo-local defaults and
-	# checked-in config for deploy-shaping settings such as goal, build host, job
-	# counts, rollback policy, and similar local overrides. CI host-trigger runs
-	# are therefore reproducible from committed state instead of inheriting
-	# arbitrary local operator flags.
+	# Intentionally forward only the ci-trigger contract here. The remote side is
+	# expected to use its repo-local defaults and checked-in config for
+	# deploy-shaping settings such as goal, build host, job counts, rollback
+	# policy, and similar local overrides. Operator execution modifiers such as
+	# --dry, --force, --dirty, and --ci-first are explicit parts of this contract.
 	remote_args=("${ACTION}" --sha "${trigger_sha}" --hosts "${trigger_hosts}" --no-override)
 	if [ "${LOG_FORMAT}" != "auto" ]; then
 		remote_args+=(--log-format "${LOG_FORMAT}")
@@ -1967,15 +2099,28 @@ run_ci_trigger() {
 		remote_args+=(--force)
 		echo "Force: true" >&2
 	fi
-	if [ "${ALLOW_DIRTY_REPO}" -eq 1 ]; then
+	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ]; then
+		remote_args+=(--ci-first)
+		echo "CI-first host ordering: true" >&2
+	fi
+	if [ "${OVERLAY_STAGED}" -eq 1 ]; then
+		remote_args+=(--dirty-staged --dirty-staged-patch-stdin --dirty-staged-base "${DIRTY_STAGED_BASE_SHA}")
+		patch_bytes="$(wc -c <"${DIRTY_STAGED_PATCH_FILE}" | tr -d '[:space:]')"
+		echo "Dirty staged patch: ${patch_bytes} bytes" >&2
+	elif [ "${ALLOW_DIRTY_REPO}" -eq 1 ]; then
 		remote_args+=(--dirty)
 		echo "Dirty repo allowed: true" >&2
 	fi
 
 	encoded_request="$(encode_ssh_command_args "${remote_args[@]}")"
 	log_group_end
-	ssh "${CI_TRIGGER_SSH_OPTS[@]}" -- "${CI_TRIGGER_USER}@${CI_TRIGGER_HOST}" \
-		"${NIXBOT_SSH_ARGV_PREFIX} ${encoded_request}"
+	if [ -n "${DIRTY_STAGED_PATCH_FILE}" ]; then
+		ssh "${CI_TRIGGER_SSH_OPTS[@]}" -- "${CI_TRIGGER_USER}@${CI_TRIGGER_HOST}" \
+			"${NIXBOT_SSH_ARGV_PREFIX} ${encoded_request}" <"${DIRTY_STAGED_PATCH_FILE}"
+	else
+		ssh "${CI_TRIGGER_SSH_OPTS[@]}" -- "${CI_TRIGGER_USER}@${CI_TRIGGER_HOST}" \
+			"${NIXBOT_SSH_ARGV_PREFIX} ${encoded_request}"
+	fi
 }
 
 require_cmds() {
@@ -2162,9 +2307,10 @@ prepare_repo_worktree() {
 	local target_ref=""
 
 	resolve_repo_root
-	apply_global_defaults_if_config_available
 	[ -n "${REPO_WORKTREE_ROOT}" ] && return 0
 	ensure_runtime_work_dir
+	capture_dirty_staged_patch_stdin
+	apply_global_defaults_if_config_available
 
 	acquire_repo_root_lock
 	ensure_repo_root_exists
@@ -2179,33 +2325,14 @@ prepare_repo_worktree() {
 
 	target_ref="$(resolve_repo_worktree_target_ref)"
 	git -C "${REPO_ROOT}" rev-parse --verify "${target_ref}^{commit}" >/dev/null 2>&1 || die "Requested repo target not available: ${target_ref}"
+	validate_dirty_staged_base "${target_ref}"
 
 	REPO_WORKTREE_ROOT="${RUNTIME_WORK_DIR}/repo"
 	git -C "${REPO_ROOT}" worktree add --detach "${REPO_WORKTREE_ROOT}" "${target_ref}" >/dev/null
 	git -C "${REPO_ROOT}" worktree prune >/dev/null 2>&1 || true
 	release_repo_root_lock
 
-	# When --dirty-staged is set on a local repo, overlay staged changes and new
-	# staged files into the worktree so the deploy includes them.
-	if [ "${OVERLAY_STAGED}" -eq 1 ] && [ "${REPO_ROOT_MANAGED}" -eq 0 ]; then
-		echo "Overlaying staged changes into worktree..." >&2
-		if ! git -C "${REPO_ROOT}" diff --cached --binary | git -C "${REPO_WORKTREE_ROOT}" apply --allow-empty; then
-			die "Failed to overlay staged changes into repo worktree"
-		fi
-		# Also copy untracked files that have been staged.
-		while IFS= read -r -d '' f; do
-			[ -n "${f}" ] || continue
-			mkdir -p "${REPO_WORKTREE_ROOT}/$(dirname "${f}")"
-			if ! git -C "${REPO_ROOT}" show ":${f}" >"${REPO_WORKTREE_ROOT}/${f}"; then
-				die "Failed to materialize staged file in repo worktree: ${f}"
-			fi
-		done < <(git -C "${REPO_ROOT}" diff --cached --name-only --diff-filter=A -z)
-		# Make staged-only paths visible to Nix by staging the overlaid index
-		# state inside the temporary worktree as well.
-		if ! git -C "${REPO_ROOT}" diff --cached --name-only -z | xargs -0r git -C "${REPO_WORKTREE_ROOT}" add --; then
-			die "Failed to stage overlaid changes in repo worktree"
-		fi
-	fi
+	overlay_dirty_staged_patch_to_worktree
 
 	[ -f "$(repo_worktree_script_path)" ] || die "deploy script missing in repo worktree: $(repo_worktree_script_path)"
 	cd "${REPO_WORKTREE_ROOT}"
@@ -2262,7 +2389,7 @@ resolve_config_path() {
 }
 
 load_deploy_config_json() {
-	local path="$1" override_path="${NIXBOT_CONFIG_OVERRIDE_PATH:-}"
+	local path="$1" override_path="${2-${NIXBOT_CONFIG_OVERRIDE_PATH:-}}"
 	local resolved_path="" resolved_override_path="" expr=""
 
 	resolved_path="$(resolve_config_path "${path}")"
@@ -4287,7 +4414,7 @@ prepare_host_ssh_contexts() {
 	# shellcheck disable=SC2178,SC2034
 	local -n phsc_bootstrap_nix_sshopts_out_ref="$7"
 	local proxy_chain="${8:-}" proxy_command="${9:-}"
-	local known_hosts_file="" build_host_host=""
+	local known_hosts_file=""
 
 	# shellcheck disable=SC2034
 	phsc_host_ssh_opts_out_ref=()
@@ -4330,16 +4457,6 @@ prepare_host_ssh_contexts() {
 			fi
 		fi
 	fi
-	case "${BUILD_HOST}" in
-	local) ;;
-	*)
-		build_host_host="$(ssh_host_from_target "${BUILD_HOST}")"
-		if [ -n "${build_host_host}" ] && [ "${build_host_host}" != "${host}" ]; then
-			ensure_known_host "${build_host_host}" "${known_hosts}" "${known_hosts_file}"
-		fi
-		;;
-	esac
-
 	# When the target is behind a proxy, ssh-keyscan cannot reach it
 	# (it has no ProxyCommand support).  Use accept-new so the host key
 	# is recorded on first contact — same trust model as the proxy scripts.
@@ -6902,19 +7019,27 @@ target_trusted_public_keys_for_copy() {
 	' <<<"${settings_json}"
 }
 
+append_extra_trusted_public_keys_option() {
+	local trusted_public_keys="$1"
+	# shellcheck disable=SC2178
+	local -n aetpko_args_out_ref="$2"
+
+	if [ -n "${trusted_public_keys}" ]; then
+		# shellcheck disable=SC2034
+		aetpko_args_out_ref+=(--option extra-trusted-public-keys "${trusted_public_keys}")
+	fi
+}
+
 copy_system_path_from_build_cache_to_prepared_target() {
 	local node="$1" system_path="$2" cache_url="" copy_script="" trusted_public_keys=""
+	local -a copy_cmd=()
 
 	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
 	trusted_public_keys="$(target_trusted_public_keys_for_copy "${node}")" || return 1
-	if [ -n "${trusted_public_keys}" ]; then
-		printf -v copy_script 'nix --option extra-trusted-public-keys %q copy --from %q %q' \
-			"${trusted_public_keys}" \
-			"${cache_url}" \
-			"${system_path}"
-	else
-		printf -v copy_script 'nix copy --from %q %q' "${cache_url}" "${system_path}"
-	fi
+	copy_cmd=(nix)
+	append_extra_trusted_public_keys_option "${trusted_public_keys}" copy_cmd
+	copy_cmd+=(copy --from "${cache_url}" "${system_path}")
+	copy_script="$(shell_quote_argv "${copy_cmd[@]}")"
 	echo "Copying built closure to ${node} from ${BUILD_HOST} cache: ${system_path}" >&2
 	run_prepared_root_command_with_retry \
 		"Build-cache copy to ${node}" \
@@ -6923,7 +7048,7 @@ copy_system_path_from_build_cache_to_prepared_target() {
 
 copy_system_path_from_build_cache_via_local_to_prepared_target() {
 	# shellcheck disable=SC2034
-	local node="$1" system_path="$2" cache_url="" target_store_uri="" copy_nix_sshopts="" remote_copy_output=""
+	local node="$1" system_path="$2" cache_url="" target_store_uri="" copy_nix_sshopts="" remote_copy_output="" trusted_public_keys=""
 	local -a copy_cmd=()
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
@@ -6931,12 +7056,15 @@ copy_system_path_from_build_cache_via_local_to_prepared_target() {
 	fi
 
 	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
+	trusted_public_keys="$(target_trusted_public_keys_for_copy "${node}")" || return 1
 	target_store_uri="$(format_ssh_store_uri "${PREP_DEPLOY_SSH_TARGET}")"
 	copy_nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
 	if [ -n "${copy_nix_sshopts}" ]; then
 		copy_nix_sshopts="-S none -o ControlMaster=no ${copy_nix_sshopts}"
 	fi
-	copy_cmd=(nix copy --from "${cache_url}" --to "${target_store_uri}" "${system_path}")
+	copy_cmd=(nix)
+	append_extra_trusted_public_keys_option "${trusted_public_keys}" copy_cmd
+	copy_cmd+=(copy --from "${cache_url}" --to "${target_store_uri}" "${system_path}")
 
 	echo "Relaying built closure to ${node} from ${BUILD_HOST} cache via local client: ${system_path}" >&2
 	run_remote_store_command_with_retry \

@@ -98,9 +98,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   `local-copy`. `cache` verifies the build-host cache, makes the target copy the
   exact path from that cache, then activates it. `local-copy` copies the signed
   closure back to the local store for local availability, then relays that exact
-  signed path from the build-host cache to the target before activation. Use
-  `local-copy` when the operator can reach both sides but the target cannot
-  reach the build-host cache.
+  signed path from the build-host cache to the target with the same temporary
+  target trust-key bridge before activation. Use `local-copy` when the operator
+  can reach both sides but the target cannot reach the build-host cache.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`
@@ -123,13 +123,19 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   repo refreshes.
 - Repo-root locks must recover from stale owners rather than spinning forever.
 - `--dirty-staged` overlays must fail closed if the cached diff cannot be
-  applied cleanly.
+  applied cleanly. Local runs generate the overlay from the staged index; CI
+  host-triggered runs send a binary staged patch over SSH stdin and require the
+  remote detached worktree to be at the matching base commit. Unstaged tracked
+  and untracked files are intentionally ignored.
 - Nixbot evaluates the selected config file and recursively overlays a
   gitignored sibling local config when that file exists. The local path is
   derived by replacing the final `.nix` suffix with `.override.nix`, so
   `hosts/nixbot.nix` can be overridden by `hosts/nixbot.override.nix`. The local
   file should contain only partial machine-local overrides. Use `--no-override`
   to evaluate the selected config alone.
+- `--ci-trigger` uses the checked-in config boundary on both sides: the remote
+  request includes `--no-override`, and local discovery of `globals.ciHost` also
+  ignores sibling `*.override.nix` files.
 - Agent-run deploys should prefer `--no-rollback` during diagnosis so failed
   state remains inspectable. Finish with a fully successful deploy, or perform a
   deliberate rollback after the root cause is understood.
@@ -271,6 +277,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - The CI host owns the persistent repo, store, and worktree state.
 - CI host-triggered forwarding should use encoded argv transport. Legacy raw
   `SSH_ORIGINAL_COMMAND` parsing remains only as a narrow compatibility path.
+- `--ci-trigger --dirty-staged` is an explicit payload transport, not just a
+  forwarded flag: the operator side sends staged changes on stdin, and the CI
+  host applies them with index updates inside the isolated run worktree.
 - CI host-triggered operators are trusted deploy operators. If tighter SHA or
   ref policy is needed later, enforce it explicitly.
 
