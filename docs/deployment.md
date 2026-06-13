@@ -101,10 +101,12 @@ Target-side cache copies temporarily pass the public keys declared by the target
 configuration to `nix copy`. This supports the first rollout of cache trust
 before the target has activated the new Nix daemon settings.
 
-Use `--build-host-deploy-mode local-copy` when targets cannot reach the build
-host cache. In that mode, `nixbot` still builds on `--build-host`, then copies
-the signed closure back into the local store and pushes the exact path from the
-local store to each target before activation. The default
+The default `--build-host-deploy-mode auto` chooses `cache` when `--build-host`
+resolves to the configured `globals.ciHost`; otherwise it chooses `local-copy`.
+Use `--build-host-deploy-mode local-copy` explicitly when targets cannot reach
+the build host cache. In that mode, `nixbot` still builds on `--build-host`,
+then copies the signed closure back into the local store and pushes the exact
+path from the local store to each target before activation.
 `--build-host-deploy-mode cache` is more direct when targets can reach the
 build-host Harmonia endpoint.
 

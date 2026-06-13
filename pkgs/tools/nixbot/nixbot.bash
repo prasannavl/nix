@@ -175,7 +175,7 @@ _nixbot() {
 		return 0
 		;;
 	--build-host-deploy-mode)
-		_nixbot_compgen_words "$cur" "cache local-copy"
+		_nixbot_compgen_words "$cur" "auto cache local-copy"
 		return 0
 		;;
 	--log-format)
@@ -206,7 +206,7 @@ _nixbot() {
 		return 0
 		;;
 	--build-host-deploy-mode)
-		_nixbot_compgen_words "$cur" "cache local-copy"
+		_nixbot_compgen_words "$cur" "auto cache local-copy"
 		return 0
 		;;
 	--log-format)
@@ -235,7 +235,7 @@ _nixbot() {
 		_nixbot_compgen_words "${cur#--build-host=}" "local $(_nixbot_hosts)" "--build-host="
 		;;
 	--build-host-deploy-mode=*)
-		_nixbot_compgen_words "${cur#--build-host-deploy-mode=}" "cache local-copy" "--build-host-deploy-mode="
+		_nixbot_compgen_words "${cur#--build-host-deploy-mode=}" "auto cache local-copy" "--build-host-deploy-mode="
 		;;
 	--log-format=*)
 		_nixbot_compgen_words "${cur#--log-format=}" "auto gh github-actions plain" "--log-format="

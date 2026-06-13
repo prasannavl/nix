@@ -45,7 +45,7 @@ Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <cache|local-copy>] [--build-cache-port <port>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-port <port>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -75,7 +75,7 @@ Workflow Selection Options:
 
 Build Action Options (`run`, `deploy`, `build`):
   --build-host     local|<ssh-host> (default: local)
-  --build-host-deploy-mode cache|local-copy (default: cache)
+  --build-host-deploy-mode auto|cache|local-copy (default: auto)
   --build-cache-port Signed cache HTTP port for remote deploy builds
   --build-jobs     Parallel host builds (default: 1)
   --build-logs     Pass -L/--print-build-logs to nix build
@@ -281,7 +281,7 @@ init_vars() {
 	HOST_ACTION=""
 	GOAL="${NIXBOT_GOAL:-switch}"
 	BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"
-	BUILD_HOST_DEPLOY_MODE="${NIXBOT_BUILD_HOST_DEPLOY_MODE:-cache}"
+	BUILD_HOST_DEPLOY_MODE="${NIXBOT_BUILD_HOST_DEPLOY_MODE:-auto}"
 	BUILD_CACHE_PORT="${NIXBOT_BUILD_CACHE_PORT:-}"
 	BUILD_JOBS="${NIXBOT_BUILD_JOBS:-1}"
 	BUILD_LOGS=0
@@ -1127,7 +1127,7 @@ parse_args() {
 	*) ;;
 	esac
 	case "${BUILD_HOST_DEPLOY_MODE}" in
-	cache | local-copy) ;;
+	auto | cache | local-copy) ;;
 	*) die "Unsupported --build-host-deploy-mode: ${BUILD_HOST_DEPLOY_MODE}" ;;
 	esac
 
@@ -2702,7 +2702,45 @@ require_build_host_cache_config() {
 }
 
 remote_build_deploy_uses_local_store() {
-	[ "${BUILD_HOST}" != "local" ] && [ "${BUILD_HOST_DEPLOY_MODE}" = "local-copy" ]
+	[ "${BUILD_HOST}" != "local" ] && [ "$(effective_build_host_deploy_mode)" = "local-copy" ]
+}
+
+resolved_target_host_for_role() {
+	local role_host="$1" target_info="" target=""
+
+	target_info="$(resolve_deploy_target "${role_host}")" || return 1
+	target="$(jq -r '.target // empty' <<<"${target_info}")"
+	[ -n "${target}" ] || target="${role_host}"
+	ssh_host_from_target "${target}"
+}
+
+build_host_matches_ci_host() {
+	local build_target="" ci_target=""
+
+	[ -n "${CI_TRIGGER_HOST}" ] || return 1
+	[ "${BUILD_HOST}" = "${CI_TRIGGER_HOST}" ] && return 0
+
+	build_target="$(resolved_target_host_for_role "${BUILD_HOST}" 2>/dev/null || true)"
+	ci_target="$(resolved_target_host_for_role "${CI_TRIGGER_HOST}" 2>/dev/null || true)"
+
+	[ -n "${build_target}" ] &&
+		[ -n "${ci_target}" ] &&
+		[ "${build_target}" = "${ci_target}" ]
+}
+
+effective_build_host_deploy_mode() {
+	case "${BUILD_HOST_DEPLOY_MODE}" in
+	cache | local-copy)
+		printf '%s\n' "${BUILD_HOST_DEPLOY_MODE}"
+		;;
+	auto)
+		if build_host_matches_ci_host; then
+			printf 'cache\n'
+		else
+			printf 'local-copy\n'
+		fi
+		;;
+	esac
 }
 
 copy_remote_build_closure_to_local_store() {
@@ -3103,7 +3141,11 @@ log_run_context() {
 		echo "Goal: ${GOAL}" >&2
 		echo "Build host: ${BUILD_HOST}" >&2
 		if [ "${BUILD_HOST}" != "local" ]; then
-			echo "Build-host deploy mode: ${BUILD_HOST_DEPLOY_MODE}" >&2
+			if [ "${BUILD_HOST_DEPLOY_MODE}" = "auto" ]; then
+				echo "Build-host deploy mode: auto ($(effective_build_host_deploy_mode))" >&2
+			else
+				echo "Build-host deploy mode: ${BUILD_HOST_DEPLOY_MODE}" >&2
+			fi
 		fi
 	fi
 	echo "Decrypt identities: $(announce_age_decrypt_identity_candidates)" >&2
