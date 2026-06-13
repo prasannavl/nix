@@ -125,3 +125,29 @@ least-surprising default for tailnet participants.
   reachability.
 - Cloudflare Access route `x.p7log.com` can be used as a read-only escape hatch
   for pvl-x2 diagnostics when direct tailnet SSH is broken.
+
+## 2026-06-12 Follow-up: Policy-Like Asymmetric Block
+
+After `useRoutingFeatures = "client"` was deployed, the original strict rpfilter
+failure was no longer the active cause on `pvl-x2` or `pvl-l5`:
+
+- both hosts reported Tailscale `1.98.5`;
+- both hosts had `net.ipv4.conf.tailscale0.rp_filter = 2`;
+- `pvl-x2` generated nftables rules had loose rpfilter and allowed TCP ports
+  including `22`, `443`, `8443`, and service ports;
+- `pvl-x2` could initiate ordinary Tailscale ICMP, TCP/22, and PeerAPI traffic
+  to `pvl-l5`.
+
+The live failure was asymmetric and source-specific:
+
+- `pvl-l5 -> pvl-x2` timed out for ICMP, TCP/22, TCP/8443, service ports, and
+  the pvl-x2 PeerAPI at `100.100.1.1:47929`;
+- tagged VM nodes such as `abird-ci`, `gap3-gondor`, and `gap3-rivendell` could
+  reach pvl-x2 TCP/22 and PeerAPI over Tailscale;
+- `pvl-l5` could reach tagged VM nodes over Tailscale using ordinary ICMP,
+  TCP/22, and PeerAPI.
+
+That evidence points away from NixOS firewall/rpfilter and toward Tailscale's
+tailnet policy/filtering for the user-owned `pvl-l5 -> pvl-x2` direction. If
+this recurs, first check the Tailscale ACL or node policy for user-device to
+user-device traffic before changing host firewall rules.

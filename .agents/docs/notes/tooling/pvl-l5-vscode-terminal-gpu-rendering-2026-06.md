@@ -26,8 +26,8 @@ Before the hardware fix, the repo's Lenovo Legion module identified the AMD iGPU
 as PCI `0000:05:00.0` / `PCI:5:0:0`, but the live machine reports it at
 `0000:06:00.0` / `PCI:6:0:0`.
 
-As a result, the declared udev aliases for the default AMD GPU do not exist on
-the live machine:
+As a result, before the hardware fix, the declared udev aliases for the default
+AMD GPU did not exist on the live machine:
 
 - `/dev/dri/zrender-default` is missing.
 - `/dev/dri/zcard-default` is missing.
@@ -42,9 +42,16 @@ directly, but it adds avoidable display-stack ambiguity.
 `0000:06:00.0` for the AMD iGPU. NVIDIA remains `PCI:1:0:0` / `0000:01:00.0`.
 Live `0000:05:00.0` is the SK hynix NVMe SSD, not a GPU.
 
+After deploying and rebooting with the corrected PCI aliases, Niri successfully
+used `/dev/dri/zrender-default` as `/dev/dri/renderD128`, but VS Code still
+reported the same ANGLE/WebGL texture allocation errors. The durable workaround
+is therefore terminal-scoped: `users/pvl/vscode/default.nix` sets
+`terminal.integrated.gpuAcceleration = "off"` so xterm.js avoids the WebGL glyph
+atlas path without disabling acceleration for the whole editor.
+
 ## Candidate Fixes
 
-- Narrow VS Code terminal workaround: set
+- Narrow VS Code terminal workaround: keep
   `terminal.integrated.gpuAcceleration = "off"` in the managed VS Code user
   settings. This avoids the WebGL terminal path without disabling all Electron
   acceleration.
