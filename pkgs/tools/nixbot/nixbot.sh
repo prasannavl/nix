@@ -6921,26 +6921,27 @@ copy_system_path_from_build_cache_to_prepared_target() {
 		"${copy_script}"
 }
 
-copy_system_path_from_local_store_to_prepared_target() {
+copy_system_path_from_build_cache_via_local_to_prepared_target() {
 	# shellcheck disable=SC2034
-	local node="$1" system_path="$2" target_store_uri="" copy_nix_sshopts="" remote_copy_output=""
+	local node="$1" system_path="$2" cache_url="" target_store_uri="" copy_nix_sshopts="" remote_copy_output=""
 	local -a copy_cmd=()
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
 		return 0
 	fi
 
+	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
 	target_store_uri="$(format_ssh_store_uri "${PREP_DEPLOY_SSH_TARGET}")"
 	copy_nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
 	if [ -n "${copy_nix_sshopts}" ]; then
 		copy_nix_sshopts="-S none -o ControlMaster=no ${copy_nix_sshopts}"
 	fi
-	copy_cmd=(nix copy --to "${target_store_uri}" "${system_path}")
+	copy_cmd=(nix copy --from "${cache_url}" --to "${target_store_uri}" "${system_path}")
 
-	echo "Copying built closure to ${node} from local store: ${system_path}" >&2
+	echo "Relaying built closure to ${node} from ${BUILD_HOST} cache via local client: ${system_path}" >&2
 	run_remote_store_command_with_retry \
 		remote_copy_output \
-		"Local-store copy to ${node}" \
+		"Build-cache relay to ${node}" \
 		"${copy_nix_sshopts}" \
 		"${copy_cmd[@]}"
 }
@@ -6995,7 +6996,7 @@ deploy_local_store_system_path() {
 	run_pre_switch_user_failed_state_reset || return 1
 
 	register_active_deploy "${node}"
-	if copy_system_path_from_local_store_to_prepared_target "${node}" "${built_out_path}" &&
+	if copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${built_out_path}" &&
 		activate_prepared_system_path "${node}" "${built_out_path}"; then
 		deploy_rc=0
 	else
@@ -7988,6 +7989,7 @@ remote_build_host() {
 	echo "Built out path on ${BUILD_HOST}: ${out_path}" >&2
 	if is_deploy_style_action; then
 		if remote_build_deploy_uses_local_store; then
+			verify_remote_build_output_for_deploy "${out_path}" || return 1
 			copy_remote_build_closure_to_local_store "${node}" "${store_uri}" "${nix_sshopts}" "${out_path}" || return 1
 		else
 			verify_remote_build_output_for_deploy "${out_path}" || return 1

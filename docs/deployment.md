@@ -105,8 +105,9 @@ The default `--build-host-deploy-mode auto` chooses `cache` when `--build-host`
 resolves to the configured `globals.ciHost`; otherwise it chooses `local-copy`.
 Use `--build-host-deploy-mode local-copy` explicitly when targets cannot reach
 the build host cache. In that mode, `nixbot` still builds on `--build-host`,
-then copies the signed closure back into the local store and pushes the exact
-path from the local store to each target before activation.
+verifies the signed build-host cache, copies the closure back into the local
+store for local availability, and relays the exact signed path from the
+build-host cache to each target before activation.
 `--build-host-deploy-mode cache` is more direct when targets can reach the
 build-host Harmonia endpoint.
 

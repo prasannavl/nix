@@ -298,9 +298,10 @@ Implemented in the pvl repo:
   when `--build-host` resolves to the configured `globals.ciHost`; otherwise use
   `local-copy`. `cache` verifies the build-host cache, makes the target copy the
   exact path from that cache, then activates it. `local-copy` copies the signed
-  closure back to the local store and pushes that exact local store path to the
-  target before activation. Use `local-copy` when the operator can reach both
-  sides but the target cannot reach the build-host cache.
+  closure back to the local store for local availability, then relays that exact
+  signed path from the build-host cache to the target before activation. Use
+  `local-copy` when the operator can reach both sides but the target cannot
+  reach the build-host cache.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`
