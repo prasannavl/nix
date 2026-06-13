@@ -67,6 +67,9 @@
 
       services.tailscale = {
         enable = true;
+        # Incus guests often share their parent's public/NAT address. Avoid
+        # advertising the same fixed UDP endpoint as the host or sibling guests.
+        port = 0;
         useRoutingFeatures = "client";
         authKeyFile = config.age.secrets.tailscale-auth-key.path;
         authKeyParameters = {
