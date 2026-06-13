@@ -426,6 +426,7 @@ init_vars() {
 	NIXBOT_TMP_DIR=""
 	NIXBOT_DIAG_DIR="${NIXBOT_RUNTIME_DIAG_DIR:-}"
 	NIXBOT_KEEP_DIAG_DIR=0
+	NIXBOT_KEEP_DIAG_ON_FAILURE=0
 	NIXBOT_DIAG_REPORTED=0
 	NIXBOT_TTY_LOCK_DIR=""
 	NIXBOT_TTY_STDIN_PATH=""
@@ -1192,7 +1193,7 @@ cleanup() {
 	if [ -n "${REPO_ROOT_LOCK_DIR}" ]; then
 		release_repo_root_lock
 	fi
-	if [ "${cleanup_rc}" -ne 0 ]; then
+	if [ "${cleanup_rc}" -ne 0 ] && [ "${NIXBOT_KEEP_DIAG_ON_FAILURE:-0}" -eq 1 ]; then
 		NIXBOT_KEEP_DIAG_DIR=1
 	fi
 	if [ "${NIXBOT_KEEP_DIAG_DIR:-0}" -eq 1 ]; then
@@ -1844,6 +1845,10 @@ keep_diag_dir() {
 	fi
 	printf '\nLogs kept at: %s\n' "${NIXBOT_DIAG_DIR}" >&2
 	NIXBOT_DIAG_REPORTED=1
+}
+
+keep_diag_on_failure() {
+	NIXBOT_KEEP_DIAG_ON_FAILURE=1
 }
 
 ##### Repo Workspace #####
@@ -7254,6 +7259,7 @@ run_bootstrap_key_checks() {
 
 	log_section "Phase: Bootstrap Key Check"
 	ensure_tmp_dir
+	keep_diag_on_failure
 	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
 
@@ -8614,6 +8620,7 @@ run_hosts() {
 	fi
 
 	ensure_tmp_dir
+	keep_diag_on_failure
 	init_run_dirs \
 		"${NIXBOT_DIAG_DIR}" \
 		"${NIXBOT_TMP_DIR}" \
@@ -9464,6 +9471,7 @@ run_tf_project_action() {
 	log_grouped_nested_item_start "$(log_group_tf_project_title "${phase}" "${project_name}")"
 	log_subsection "Terraform Project: ${project_name}"
 	ensure_tmp_dir
+	keep_diag_on_failure
 	log_file="$(phase_item_log_file "${NIXBOT_DIAG_DIR}" "tf" "${phase}" "${project_name}")"
 	status_file="$(phase_item_status_file "${NIXBOT_DIAG_DIR}" "tf" "${phase}" "${project_name}")"
 	if run_tf_action "${project_dir}" > >(tee -a "${log_file}") 2>&1; then
