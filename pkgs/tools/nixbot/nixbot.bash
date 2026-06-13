@@ -151,13 +151,14 @@ _nixbot() {
 	commands+=("${tf_projects[@]}")
 
 	options=(
-		--list-hosts --sha --hosts --goal --build-host --build-jobs
-		--deploy-jobs --verify-jobs --force --bootstrap --ci-first --dirty
-		--dirty-staged --dry --no-override --no-rollback --prefix-host-logs
-		--log-format --user --ssh-key --known-hosts --config --age-key-file
-		--discover-keys --no-discover-keys --repo-url --repo-path
-		--use-repo-script --ci-check-ssh-key-path --ci-trigger --ci-host
-		--ci-user --ci-ssh-key --ci-known-hosts --help
+		--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
+		--build-cache-port --build-jobs --build-logs --no-build-logs
+		--deploy-jobs --verify-jobs --force --bootstrap --ci-first
+		--dirty --dirty-staged --dry --no-override --no-rollback
+		--prefix-host-logs --log-format --user --ssh-key --known-hosts --config
+		--age-key-file --discover-keys --no-discover-keys --repo-url
+		--repo-path --use-repo-script --ci-check-ssh-key-path --ci-trigger
+		--ci-host --ci-user --ci-ssh-key --ci-known-hosts --help
 	)
 
 	case "$prev" in
@@ -171,6 +172,10 @@ _nixbot() {
 		;;
 	--build-host)
 		_nixbot_compgen_words "$cur" "local $(_nixbot_hosts)"
+		return 0
+		;;
+	--build-host-deploy-mode)
+		_nixbot_compgen_words "$cur" "cache local-copy"
 		return 0
 		;;
 	--log-format)
@@ -200,6 +205,10 @@ _nixbot() {
 		_nixbot_compgen_words "$cur" "local $(_nixbot_hosts)"
 		return 0
 		;;
+	--build-host-deploy-mode)
+		_nixbot_compgen_words "$cur" "cache local-copy"
+		return 0
+		;;
 	--log-format)
 		_nixbot_compgen_words "$cur" "auto gh github-actions plain"
 		return 0
@@ -224,6 +233,9 @@ _nixbot() {
 		;;
 	--build-host=*)
 		_nixbot_compgen_words "${cur#--build-host=}" "local $(_nixbot_hosts)" "--build-host="
+		;;
+	--build-host-deploy-mode=*)
+		_nixbot_compgen_words "${cur#--build-host-deploy-mode=}" "cache local-copy" "--build-host-deploy-mode="
 		;;
 	--log-format=*)
 		_nixbot_compgen_words "${cur#--log-format=}" "auto gh github-actions plain" "--log-format="

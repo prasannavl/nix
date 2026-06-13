@@ -45,7 +45,7 @@ Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-cache-port <port>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <cache|local-copy>] [--build-cache-port <port>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -75,6 +75,7 @@ Workflow Selection Options:
 
 Build Action Options (`run`, `deploy`, `build`):
   --build-host     local|<ssh-host> (default: local)
+  --build-host-deploy-mode cache|local-copy (default: cache)
   --build-cache-port Signed cache HTTP port for remote deploy builds
   --build-jobs     Parallel host builds (default: 1)
   --build-logs     Pass -L/--print-build-logs to nix build
@@ -134,6 +135,7 @@ Environment (Workflow Selection):
 
 Environment (Build Actions):
   NIXBOT_BUILD_HOST           Same as --build-host
+  NIXBOT_BUILD_HOST_DEPLOY_MODE Same as --build-host-deploy-mode
   NIXBOT_BUILD_CACHE_PORT     Same as --build-cache-port
   NIXBOT_BUILD_JOBS           Same as --build-jobs
   NIXBOT_BUILD_LOGS           Same as --build-logs (bool)
@@ -279,6 +281,7 @@ init_vars() {
 	HOST_ACTION=""
 	GOAL="${NIXBOT_GOAL:-switch}"
 	BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"
+	BUILD_HOST_DEPLOY_MODE="${NIXBOT_BUILD_HOST_DEPLOY_MODE:-cache}"
 	BUILD_CACHE_PORT="${NIXBOT_BUILD_CACHE_PORT:-}"
 	BUILD_JOBS="${NIXBOT_BUILD_JOBS:-1}"
 	BUILD_LOGS=0
@@ -928,16 +931,21 @@ parse_args() {
 			GOAL="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
-			--build-host | --build-host=*)
-				take_optval "$@"
-				BUILD_HOST="${OPTVAL}"
-				shift "${OPTSHIFT}"
-				;;
-			--build-cache-port | --build-cache-port=*)
-				take_optval "$@"
-				BUILD_CACHE_PORT="${OPTVAL}"
-				shift "${OPTSHIFT}"
-				;;
+		--build-host | --build-host=*)
+			take_optval "$@"
+			BUILD_HOST="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
+		--build-cache-port | --build-cache-port=*)
+			take_optval "$@"
+			BUILD_CACHE_PORT="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
+		--build-host-deploy-mode | --build-host-deploy-mode=*)
+			take_optval "$@"
+			BUILD_HOST_DEPLOY_MODE="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
 		--build-jobs | --build-jobs=*)
 			take_optval "$@"
 			BUILD_JOBS="${OPTVAL}"
@@ -1117,6 +1125,10 @@ parse_args() {
 	local) ;;
 	"") die "Unsupported --build-host: empty value" ;;
 	*) ;;
+	esac
+	case "${BUILD_HOST_DEPLOY_MODE}" in
+	cache | local-copy) ;;
+	*) die "Unsupported --build-host-deploy-mode: ${BUILD_HOST_DEPLOY_MODE}" ;;
 	esac
 
 	[[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --build-jobs: ${BUILD_JOBS} (must be a positive integer)"
@@ -2689,6 +2701,30 @@ require_build_host_cache_config() {
 		die "Remote deploy builds require globals.ciCachePort in ${NIXBOT_CONFIG_PATH}"
 }
 
+remote_build_deploy_uses_local_store() {
+	[ "${BUILD_HOST}" != "local" ] && [ "${BUILD_HOST_DEPLOY_MODE}" = "local-copy" ]
+}
+
+copy_remote_build_closure_to_local_store() {
+	local node="$1" store_uri="$2" nix_sshopts="$3" out_path="$4" remote_copy_output=""
+	local -a copy_cmd=()
+
+	echo "Copying built closure from ${BUILD_HOST} to local store: ${out_path}" >&2
+	copy_cmd=(nix copy --from "${store_uri}" "${out_path}")
+	if ! run_remote_store_command_with_retry \
+		remote_copy_output \
+		"Remote build copy from ${BUILD_HOST}" \
+		"${nix_sshopts}" \
+		"${copy_cmd[@]}"; then
+		echo "Failed to copy built closure from ${BUILD_HOST}: ${out_path}" >&2
+		return 1
+	fi
+	if ! nix path-info --closure-size --human-readable "${out_path}" >&2; then
+		echo "Unable to resolve closure size for ${node}: ${out_path}" >&2
+		return 1
+	fi
+}
+
 wait_before_host_phase() {
 	local node="$1" phase="$2" wait_secs=""
 
@@ -3066,6 +3102,9 @@ log_run_context() {
 	if is_deploy_style_action; then
 		echo "Goal: ${GOAL}" >&2
 		echo "Build host: ${BUILD_HOST}" >&2
+		if [ "${BUILD_HOST}" != "local" ]; then
+			echo "Build-host deploy mode: ${BUILD_HOST_DEPLOY_MODE}" >&2
+		fi
 	fi
 	echo "Decrypt identities: $(announce_age_decrypt_identity_candidates)" >&2
 }
@@ -5527,7 +5566,7 @@ require_local_build_primary_deploy_context() {
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -ne 0 ] ||
 		[ "${PREP_USING_BOOTSTRAP_FALLBACK}" -ne 1 ] ||
-		[ "${BUILD_HOST}" != "local" ]; then
+		{ [ "${BUILD_HOST}" != "local" ] && ! remote_build_deploy_uses_local_store; }; then
 		return 0
 	fi
 
@@ -5536,7 +5575,7 @@ require_local_build_primary_deploy_context() {
 		return 0
 	fi
 
-	echo "==> Local-build deploy for ${node} needs primary deploy user; rechecking primary target"
+	echo "==> Local-store deploy for ${node} needs primary deploy user; rechecking primary target"
 	prepare_deploy_context "${node}" primary-only
 }
 
@@ -6822,22 +6861,46 @@ target_trusted_public_keys_for_copy() {
 }
 
 copy_system_path_from_build_cache_to_prepared_target() {
-	local node="$1" system_path="$2" cache_url="" copy_cmd="" trusted_public_keys=""
+	local node="$1" system_path="$2" cache_url="" copy_script="" trusted_public_keys=""
 
 	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
 	trusted_public_keys="$(target_trusted_public_keys_for_copy "${node}")" || return 1
 	if [ -n "${trusted_public_keys}" ]; then
-		printf -v copy_cmd 'nix --option extra-trusted-public-keys %q copy --from %q %q' \
+		printf -v copy_script 'nix --option extra-trusted-public-keys %q copy --from %q %q' \
 			"${trusted_public_keys}" \
 			"${cache_url}" \
 			"${system_path}"
 	else
-		printf -v copy_cmd 'nix copy --from %q %q' "${cache_url}" "${system_path}"
+		printf -v copy_script 'nix copy --from %q %q' "${cache_url}" "${system_path}"
 	fi
 	echo "Copying built closure to ${node} from ${BUILD_HOST} cache: ${system_path}" >&2
 	run_prepared_root_command_with_retry \
 		"Build-cache copy to ${node}" \
-		"${copy_cmd}"
+		"${copy_script}"
+}
+
+copy_system_path_from_local_store_to_prepared_target() {
+	# shellcheck disable=SC2034
+	local node="$1" system_path="$2" target_store_uri="" copy_nix_sshopts="" remote_copy_output=""
+	local -a copy_cmd=()
+
+	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
+		return 0
+	fi
+
+	target_store_uri="$(format_ssh_store_uri "${PREP_DEPLOY_SSH_TARGET}")"
+	copy_nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
+	if [ -n "${copy_nix_sshopts}" ]; then
+		copy_nix_sshopts="-S none -o ControlMaster=no ${copy_nix_sshopts}"
+	fi
+	copy_cmd=(nix copy --to "${target_store_uri}" "${system_path}")
+
+	echo "Copying built closure to ${node} from local store: ${system_path}" >&2
+	run_remote_store_command_with_retry \
+		remote_copy_output \
+		"Local-store copy to ${node}" \
+		"${copy_nix_sshopts}" \
+		"${copy_cmd[@]}"
 }
 
 deploy_remote_build_host_path() {
@@ -6866,6 +6929,37 @@ deploy_remote_build_host_path() {
 	else
 		deploy_rc="$?"
 	fi
+	unregister_active_deploy "${node}"
+	return "${deploy_rc}"
+}
+
+deploy_local_store_system_path() {
+	local node="$1" built_out_path="$2"
+	local age_identity_key="" deploy_rc=0
+
+	run_parented_host_operation_with_retry \
+		"${node}" \
+		"deploy transport preparation" \
+		prepare_host_transport_for_deploy \
+		"${node}" \
+		1 || return 1
+
+	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
+
+	if [ -n "${age_identity_key}" ]; then
+		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
+	fi
+
+	run_pre_switch_user_failed_state_reset || return 1
+
+	register_active_deploy "${node}"
+	if copy_system_path_from_local_store_to_prepared_target "${node}" "${built_out_path}" &&
+		activate_prepared_system_path "${node}" "${built_out_path}"; then
+		deploy_rc=0
+	else
+		deploy_rc="$?"
+	fi
+
 	unregister_active_deploy "${node}"
 	return "${deploy_rc}"
 }
@@ -6899,6 +6993,10 @@ deploy_host() {
 	fi
 
 	if [ "${BUILD_HOST}" != "local" ]; then
+		if remote_build_deploy_uses_local_store; then
+			deploy_local_store_system_path "${node}" "${built_out_path}"
+			return "$?"
+		fi
 		deploy_remote_build_host_path "${node}" "${built_out_path}"
 		return "$?"
 	fi
@@ -7820,9 +7918,7 @@ build_host() {
 
 remote_build_host() {
 	local node="$1" result_link="${2:-}" out_path="" store_uri="" nix_sshopts=""
-	# shellcheck disable=SC2034
-	local remote_copy_output=""
-	local -a build_cmd=() copy_cmd=()
+	local -a build_cmd=()
 
 	log_host_stage "build" "${node}" "remote build"
 	echo "Starting remote build on ${BUILD_HOST}" >&2
@@ -7849,22 +7945,13 @@ remote_build_host() {
 
 	echo "Built out path on ${BUILD_HOST}: ${out_path}" >&2
 	if is_deploy_style_action; then
-		verify_remote_build_output_for_deploy "${out_path}" || return 1
+		if remote_build_deploy_uses_local_store; then
+			copy_remote_build_closure_to_local_store "${node}" "${store_uri}" "${nix_sshopts}" "${out_path}" || return 1
+		else
+			verify_remote_build_output_for_deploy "${out_path}" || return 1
+		fi
 	else
-		echo "Copying built closure from ${BUILD_HOST}" >&2
-		copy_cmd=(nix copy --from "${store_uri}" "${out_path}")
-		if ! run_remote_store_command_with_retry \
-			remote_copy_output \
-			"Remote build copy from ${BUILD_HOST}" \
-			"${nix_sshopts}" \
-			"${copy_cmd[@]}"; then
-			echo "Failed to copy built closure from ${BUILD_HOST}: ${out_path}" >&2
-			return 1
-		fi
-		if ! nix path-info --closure-size --human-readable "${out_path}" >&2; then
-			echo "Unable to resolve closure size for ${node}: ${out_path}" >&2
-			return 1
-		fi
+		copy_remote_build_closure_to_local_store "${node}" "${store_uri}" "${nix_sshopts}" "${out_path}" || return 1
 		if [ -n "${result_link}" ]; then
 			ln -sfn "${out_path}" "${result_link}"
 			echo "Result link: ${result_link}" >&2

@@ -93,6 +93,12 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   Evaluation should stay local while realization happens on the build host;
   otherwise Nix can spend minutes materializing evaluation inputs through the
   remote store before the build host has CPU-heavy derivation work.
+- Remote deploy builds default to `--build-host-deploy-mode cache`: verify the
+  build-host cache, make the target copy the exact path from that cache, then
+  activate it. `--build-host-deploy-mode local-copy` instead copies the signed
+  closure back to the local store and pushes that exact local store path to the
+  target before activation. Use `local-copy` when the operator can reach both
+  sides but the target cannot reach the build-host cache.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`
