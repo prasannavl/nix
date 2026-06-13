@@ -54,6 +54,12 @@ in {
     };
   };
 
+  globals = {
+    ciHost = "pvl-x2";
+    ciCachePort = 5000;
+    repoUrl = "ssh://git@github.com/prasannavl/nix.git";
+  };
+
   defaults = {
     user = "nixbot";
     key = nixbotKey;

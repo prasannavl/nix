@@ -77,6 +77,30 @@ The steady-state goal is always the same: later deploys should use normal
 - use worktrees for isolation and concurrency, not as a trust boundary
 - keep CI host ingress keys tightly scoped
 
+## Remote Build Cache Deploys
+
+By default, `nixbot run`, `nixbot deploy`, and `nixbot build` use local builds.
+
+Use `--build-host <ssh-host>` to build the closure on a remote Nix store using
+`ssh-ng://<ssh-host>`. For build-only actions, `nixbot` copies that built
+closure back from the build host for local inspection and result-link handling.
+
+For deploy actions with non-local `--build-host`, the build host entry in
+`hosts/nixbot.nix` must resolve through the normal host inventory. `nixbot`
+derives the cache URL from the same effective host target used for remote builds
+and the repo default `globals.ciCachePort`. The builder's Nix daemon signs
+locally built paths through host-side `nix.settings.secret-key-files`; Harmonia
+serves the builder's `/nix/store` as the signed binary cache on that port.
+`nixbot` verifies that the exact built path is available from the builder cache,
+prepares the target from the local orchestrator, makes the target pull the exact
+path from the cache, and activates that path over the target SSH context.
+Activation, snapshots, rollback, parent readiness, and health checks remain
+owned by the local `nixbot` process.
+
+Target-side cache copies temporarily pass the public keys declared by the target
+configuration to `nix copy`. This supports the first rollout of cache trust
+before the target has activated the new Nix daemon settings.
+
 ## Further Reading
 
 - [`docs/nixbot-security-trust-model.md`](./nixbot-security-trust-model.md)
@@ -89,6 +113,10 @@ The sections below cover bootstrap mechanics, key exchange, and deploy
 internals.
 
 ## CI host Wiring Requirements
+
+`hosts/nixbot.nix` declares repo defaults under `globals`, including the default
+CI trigger endpoint, CI cache port, and managed repo URL. Explicit CLI flags or
+matching environment variables still override them for one run.
 
 In `lib/nixbot/ci.nix`:
 
@@ -267,12 +295,12 @@ shell access for `nixos-rebuild --target-host`.
 
 - `<desktop-host>`
   - deploy metadata: `hosts/nixbot.nix` ->
-    `hosts.<desktop-host>.ageIdentityKey = "data/secrets/globals/machine/<desktop-host>.key.age"`
+    `hosts.<desktop-host>.ageIdentityKey = secretPaths.machine "<desktop-host>"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
 - `<ci-host>`
   - deploy metadata: `hosts/nixbot.nix` ->
-    `hosts.<ci-host>.ageIdentityKey = "data/secrets/globals/machine/<ci-host>.key.age"`
+    `hosts.<ci-host>.ageIdentityKey = secretPaths.machine "<ci-host>"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
   - this host is also the CI host, so its machine recipient is included on the
@@ -280,7 +308,7 @@ shell access for `nixos-rebuild --target-host`.
     secrets
 - `<incus-guest>`
   - deploy metadata: `hosts/nixbot.nix` ->
-    `hosts.<incus-guest>.ageIdentityKey = "data/secrets/globals/machine/<incus-guest>.key.age"`
+    `hosts.<incus-guest>.ageIdentityKey = secretPaths.machine "<incus-guest>"`
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
   - host also consumes `data/secrets/globals/tailscale/<incus-guest>.key.age`
@@ -288,7 +316,7 @@ shell access for `nixos-rebuild --target-host`.
 
 ### CI host identities and secrets
 
-- CI host is the configured CI host target.
+- CI host is the configured `hosts/nixbot.nix` `globals.ciHost` target.
 - CI host ingress identity is the SSH key whose public half is loaded from
   `users/userdata.nix` (`nixbot.ciSshKeys` / `nixbot.ciSshKey`) and forced into
   the packaged `nixbot` binary by `lib/nixbot/ci.nix`.

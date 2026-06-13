@@ -35,6 +35,9 @@ in
     ${globals.key "nixbot/nixbot"}.publicKeys = adminsWithCiHost;
     ${globals.key "nixbot/nixbot-legacy"}.publicKeys = adminsWithCiHost;
 
+    # Nix build cache signing
+    ${globals.key "nix/builder-pvl"}.publicKeys = admins ++ pvl-x2;
+
     # CI host ingress
     ${globals.key "ci/nixbot-ci-ssh"}.publicKeys = admins;
 

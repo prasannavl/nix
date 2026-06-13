@@ -141,10 +141,6 @@ Use this index as the canonical map for `.agents/docs/**`.
   `pvl-a1`/`pvl-l5` to `pvl-x2` tailnet timeout root cause: strict NixOS
   rpfilter with Tailscale fwmark routing, and the
   `services.tailscale.useRoutingFeatures` fix.
-- `.agents/docs/notes/hosts/nixbot-deploy-host-command-2026-06.md`: Records the
-  deploy-host command path contract: install `pkgs.nixbot` into the system
-  profile and invoke `/run/current-system/sw/bin/nixbot` for delegated
-  activation.
 
 ### Lib
 
@@ -164,6 +160,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
   bootstrap, SSH, worktree, Terraform, and CI behavior.
+- `.agents/docs/notes/nixbot/signed-build-cache-design-2026-06.md`: Detailed
+  plan and implementation handoff for signed build-host cache publishing plus
+  local-orchestrated activation.
 - `.agents/docs/notes/nixbot/key-rotation.md`: Canonical deploy-key rotation
   policy and guardrails.
 - `.agents/docs/notes/nixbot/repo-relative-secret-paths-2026-06.md`: Records the

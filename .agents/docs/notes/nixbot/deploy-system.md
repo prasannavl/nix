@@ -77,11 +77,40 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 
 ## Runtime workspace and locking
 
-- Each run should allocate one workspace root that contains:
-  - the detached repo worktree
-  - logs
-  - runtime secrets
-  - SSH temp state
+- Each run should allocate paired runtime and diagnostic directories with the
+  same id:
+  - runtime: `/dev/shm/nixbot/run-XXXXXX`
+  - diagnostics: `/dev/shm/nixbot/diag-XXXXXX`
+  - if `/dev/shm` is unavailable, both fall back under `${TMPDIR:-/tmp}/nixbot`
+- Runtime contains the detached repo worktree, decrypted secrets, SSH control
+  sockets, Terraform plans, self-target temp files, build result symlinks, build
+  output path files, rollback snapshots, and phase artifacts.
+- Diagnostics contains logs, status files, and stderr captures. It must stay
+  safe to retain directly without a cleanup or sanitization pass.
+- Parallel remote builds prewarm the build-host SSH ControlMaster before fanout
+  so per-host builds reuse the same socket instead of racing to create it.
+- Remote builds use `--eval-store auto` with `--store ssh-ng://<build-host>`.
+  Evaluation should stay local while realization happens on the build host;
+  otherwise Nix can spend minutes materializing evaluation inputs through the
+  remote store before the build host has CPU-heavy derivation work.
+- Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
+  untrusted operator account can still warn that the client-specified `store`
+  setting is restricted; avoid broad trust expansion and run through `nixbot`
+  when the warning must be eliminated.
+- Quiet remote builds emit a low-noise heartbeat every
+  `NIXBOT_BUILD_HEARTBEAT_SECS` seconds, defaulting to 30. Set it to `0` to
+  disable. `--build-logs` / `NIXBOT_BUILD_LOGS=1` additionally passes `-L` to
+  `nix build` when actual builder logs are desired. Heartbeat workers must close
+  stdout because remote builds are captured through command substitution; if a
+  heartbeat inherits that pipe, the wrapper can appear stuck after Nix exits.
+- Successful runs remove both runtime and diagnostic directories. Failed,
+  interrupted, or hung-up runs always remove runtime and retain diagnostics by
+  moving `diag-XXXXXX` to `/var/tmp/nixbot/diag-XXXXXX` when the run used
+  `/dev/shm`.
+- Interrupt cleanup terminates registered background jobs, SSH control masters,
+  and same-process-group nixbot wrapper processes. The wrapper cleanup is
+  guarded so it only runs when nixbot has a distinct process group from its
+  parent.
 - Managed repo locking must cover the first clone path as well as steady-state
   repo refreshes.
 - Repo-root locks must recover from stale owners rather than spinning forever.
@@ -159,6 +188,23 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   network-disrupting switch verify the target system path before being treated
   as failed. This mirrors the self-target deploy guard without masking ordinary
   non-transport activation failures.
+- Remote build-host store operations must use the same bounded transport retry
+  policy. `nix build --store ssh-ng://...` can wrap an SSH timeout as a generic
+  Nix failure instead of returning SSH's exit code 255, so retry classification
+  must inspect the Nix stderr text for transport failures.
+- Deploys with non-local `--build-host` require a configured builder cache in
+  `hosts/nixbot.nix`. The builder's Nix daemon signs locally built paths through
+  host-side `nix.settings.secret-key-files`; local `nixbot` verifies the path is
+  visible through the builder cache, the target pulls that path from the cache,
+  and local `nixbot` activates that exact path over the prepared target SSH
+  context.
+- Cache-pull transport to the target uses the prepared target transport retry
+  path, while activation itself remains a single mutating operation. `nixbot`
+  must not take ownership of builder signing commands.
+- Dry deploys may still evaluate and build systems, but prepared target commands
+  must be printed instead of executed. This includes parent readiness
+  reconcile/settle commands; do not let `--dry` run parent-side Incus
+  reconciliation.
 - Parent-host readiness failures must propagate real command failures; do not
   swallow exit status through Bash `if` compound semantics.
 - Host selection and helper naming should keep classification side-effect free:
