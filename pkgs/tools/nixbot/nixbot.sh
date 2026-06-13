@@ -1925,7 +1925,7 @@ write_staged_patch_from_repo() {
 	local repo_root="$1" patch_file="$2"
 
 	if git -C "${repo_root}" diff --cached --quiet --no-ext-diff --; then
-		die "No staged changes to overlay; use --dirty when no staged payload is needed"
+		return 2
 	fi
 
 	git -C "${repo_root}" diff --cached --binary --full-index --no-ext-diff >"${patch_file}" ||
@@ -1945,10 +1945,23 @@ capture_dirty_staged_patch_stdin() {
 }
 
 prepare_local_dirty_staged_patch() {
+	local rc=0
+
 	ensure_tmp_dir
 	DIRTY_STAGED_PATCH_FILE="$(tmp_runtime_mktemp target "dirty-staged.XXXXXX.patch")"
-	write_staged_patch_from_repo "${REPO_ROOT}" "${DIRTY_STAGED_PATCH_FILE}"
 	warn_if_unstaged_changes_ignored "${REPO_ROOT}"
+	if write_staged_patch_from_repo "${REPO_ROOT}" "${DIRTY_STAGED_PATCH_FILE}"; then
+		return 0
+	else
+		rc="$?"
+	fi
+	if [ "${rc}" -eq 2 ]; then
+		rm -f "${DIRTY_STAGED_PATCH_FILE}"
+		DIRTY_STAGED_PATCH_FILE=""
+		echo "No staged changes to overlay; continuing with committed state" >&2
+		return 2
+	fi
+	return "${rc}"
 }
 
 validate_dirty_staged_base() {
@@ -1974,12 +1987,20 @@ validate_dirty_staged_base() {
 }
 
 overlay_dirty_staged_patch_to_worktree() {
+	local rc=0
+
 	[ "${OVERLAY_STAGED}" -eq 1 ] || return 0
 
 	capture_dirty_staged_patch_stdin
 	if [ -z "${DIRTY_STAGED_PATCH_FILE}" ]; then
 		if [ "${REPO_ROOT_MANAGED}" -eq 0 ]; then
-			prepare_local_dirty_staged_patch
+			if prepare_local_dirty_staged_patch; then
+				:
+			else
+				rc="$?"
+				[ "${rc}" -eq 2 ] && return 0
+				return "${rc}"
+			fi
 		else
 			die "--dirty-staged on a managed repo requires a staged patch payload"
 		fi
@@ -2031,7 +2052,7 @@ configure_ci_trigger_ssh_opts() {
 }
 
 prepare_ci_trigger_dirty_staged_patch() {
-	local trigger_sha="$1" local_repo_root="" local_head="" trigger_commit=""
+	local trigger_sha="$1" local_repo_root="" local_head="" trigger_commit="" rc=0
 
 	local_repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 	[ -n "${local_repo_root}" ] || die "--dirty-staged --ci-trigger must run from inside a Git checkout"
@@ -2047,8 +2068,21 @@ prepare_ci_trigger_dirty_staged_patch() {
 	ensure_tmp_dir
 	DIRTY_STAGED_PATCH_FILE="$(tmp_runtime_mktemp target "dirty-staged-ci.XXXXXX.patch")"
 	DIRTY_STAGED_BASE_SHA="${local_head}"
-	write_staged_patch_from_repo "${local_repo_root}" "${DIRTY_STAGED_PATCH_FILE}"
 	warn_if_unstaged_changes_ignored "${local_repo_root}"
+	if write_staged_patch_from_repo "${local_repo_root}" "${DIRTY_STAGED_PATCH_FILE}"; then
+		return 0
+	else
+		rc="$?"
+	fi
+	if [ "${rc}" -eq 2 ]; then
+		rm -f "${DIRTY_STAGED_PATCH_FILE}"
+		DIRTY_STAGED_PATCH_FILE=""
+		DIRTY_STAGED_BASE_SHA=""
+		OVERLAY_STAGED=0
+		echo "No staged changes to send; continuing CI trigger with committed state" >&2
+		return 0
+	fi
+	return "${rc}"
 }
 
 run_ci_trigger() {

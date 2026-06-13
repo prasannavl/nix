@@ -126,7 +126,8 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   applied cleanly. Local runs generate the overlay from the staged index; CI
   host-triggered runs send a binary staged patch over SSH stdin and require the
   remote detached worktree to be at the matching base commit. Unstaged tracked
-  and untracked files are intentionally ignored.
+  and untracked files are intentionally ignored. If there are no staged changes,
+  the overlay is a no-op and the run continues from committed state.
 - Nixbot evaluates the selected config file and recursively overlays a
   gitignored sibling local config when that file exists. The local path is
   derived by replacing the final `.nix` suffix with `.override.nix`, so
