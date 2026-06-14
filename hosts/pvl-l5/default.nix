@@ -14,4 +14,6 @@
   # sleep move into lower power state, even if resume isn't always
   # reliable.
   x.panicReboot = 0;
+
+  services.fail2ban.enable = true;
 }

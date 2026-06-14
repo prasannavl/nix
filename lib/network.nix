@@ -1,6 +1,7 @@
 {hostName, ...}: {
   imports = [
     ./openssh.nix
+    ./services/fail2ban-helper
   ];
 
   networking = {
@@ -20,6 +21,5 @@
       enable = true;
       useRoutingFeatures = "client";
     };
-    fail2ban.enable = true;
   };
 }

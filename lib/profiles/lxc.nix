@@ -10,6 +10,7 @@
     (modulesPath + "/virtualisation/lxc-image-metadata.nix")
     ../openssh.nix
     ../options.nix
+    ../services/fail2ban-helper
     ../nix.nix
     ../systemd.nix
     ../security.nix
@@ -141,7 +142,6 @@
   services = {
     getty.autologinUser = null;
     resolved.enable = true;
-    fail2ban.enable = true;
   };
 
   security.sudo.wheelNeedsPassword = false;
