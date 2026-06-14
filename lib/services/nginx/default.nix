@@ -838,6 +838,28 @@
   streamProxyDnatInputRulesFromExposedPorts = exposedPorts:
     streamProxyDnatInputRules (streamProxiesFromExposedPorts exposedPorts);
 
+  ipv6HextetPattern = "[0-9A-Fa-f]{1,4}";
+  ipv4AddressPattern = "[0-9]{1,3}(?:\\.[0-9]{1,3}){3}";
+  clientAddrPrefixKeyVarName = "$client_addr_prefix_key";
+  mkClientAddrPrefixKeyMap = let
+    h = ipv6HextetPattern;
+  in ''
+    map $remote_addr ${clientAddrPrefixKeyVarName} {
+        default "";
+        ~^(${h}):(${h}):(${h}):(${h})(?::|$) $1:$2:$3:$4;
+        ~^(${h}):(${h}):(${h}):: $1:$2:$3:0;
+        ~^(${h}):(${h})::(${h}):${h}:${h}:${h}:${h}$ $1:$2:0:$3;
+        ~^(${h}):(${h}):: $1:$2:0:0;
+        ~^(${h})::(${h}):(${h}):${h}:${h}:${h}:${h}$ $1:0:$2:$3;
+        ~^(${h})::(${h}):${h}:${h}:${h}:${h}$ $1:0:0:$2;
+        ~^(${h}):: $1:0:0:0;
+        ~^::(${h}):(${h}):(${h}):${h}:${h}:${h}:${h}$ 0:$1:$2:$3;
+        ~^::(${h}):(${h}):${h}:${h}:${h}:${h}$ 0:0:$1:$2;
+        ~^::(${h}):${h}:${h}:${h}:${h}$ 0:0:0:$1;
+        ~^::(?:ffff:)?${ipv4AddressPattern}$ 0:0:0:0;
+        ~^:: 0:0:0:0;
+    }
+  '';
   rateLimitZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit";
   rateLimitPrefixZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_prefix";
   rateLimitMinuteZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_minute";
@@ -909,7 +931,7 @@
 
     map ${rateLimitBypassVarName name} ${rateLimitPrefixKeyVarName name} {
         1 "";
-        0 $client_addr_prefix_key;
+        0 ${clientAddrPrefixKeyVarName};
     }
   '';
 
@@ -921,7 +943,7 @@
   rateLimitPrefixKey = name: rateLimit:
     if (effectiveBypassCidrs rateLimit != []) || rateLimit.bypass.cloudflareTunnel
     then rateLimitPrefixKeyVarName name
-    else "$client_addr_prefix_key";
+    else clientAddrPrefixKeyVarName;
 
   rateLimitPrefixValue = value: rateLimit:
     if value == null
@@ -1723,6 +1745,8 @@ in rec {
       + lib.concatStringsSep ", " duplicateHostnames;
     rateLimitZones =
       renderRateLimitZones (staticVhosts // staticRoutes // nginxRoutes // proxyVhosts);
+    rateLimitPreamble =
+      lib.optionalString (rateLimitZones != "") "${mkClientAddrPrefixKeyMap}\n";
     proxyUpstreamBlocks =
       lib.concatStringsSep "\n"
       (lib.mapAttrsToList (name: proxy: mkUpstreamBlock name proxy.upstreams) proxyVhosts);
@@ -1764,7 +1788,7 @@ in rec {
     then
       lib.optionalString
       (rateLimitZones != "")
-      "${rateLimitZones}\n${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}"
+      "${rateLimitPreamble}${rateLimitZones}\n${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}"
       + lib.optionalString
       (rateLimitZones == "")
       "${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}"

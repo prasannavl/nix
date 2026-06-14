@@ -3,9 +3,10 @@
 ## Summary
 
 The personal Nix repo owns a generic `services.fail2ban-helper` module for
-host-local fail2ban bans. It starts with exact source-address bans, then
-escalates repeated IPv6 exact-address bans from one canonical `/64` into an
-nftables prefix ban.
+host-local fail2ban bans. Nginx enforces exact client-address request limits and
+IPv6 `/64` aggregate request limits before traffic reaches apps. Fail2ban then
+starts with exact source-address bans and escalates repeated IPv6 exact-address
+bans from one canonical `/64` into an nftables prefix ban.
 
 The controls are provider-agnostic. Cloudflare Tunnel or other upstream
 filtering can reduce load, but host-local nginx and SSH controls must stand on
@@ -28,12 +29,27 @@ their own.
 - IPv6 prefix escalation: 3 exact IPv6 bans from the same `/64` inside 10
   minutes adds a `/64` nftables ban.
 - IPv6 prefix ban time: 10 minutes.
+- Nginx keeps exact-IP `limit_req` zones keyed by `$binary_remote_addr`.
+- Nginx also renders IPv6 `/64` aggregate `limit_req` zones keyed by
+  `$client_addr_prefix_key`, derived from nginx's normalized `$remote_addr` text
+  form. The prefix key is empty for IPv4, so IPv4 remains exact-address only.
 - Nginx prefix guardrail: 5x the exact-IP request and burst thresholds.
+- Nginx logs for stack-owned rootless nginx live under `/var/log/<stack>/nginx`;
+  for `pvl-x2` this is `/var/log/pvl/nginx`.
+- The nginx error log watched by fail2ban must exist before fail2ban starts. For
+  rootless podman nginx, create `/var/log/<stack>` in the stack common/user
+  module, then create the mounted `nginx` log directory and files in the nginx
+  module with the stack user as owner. Otherwise nginx cannot open its logs and
+  fail2ban rejects the file-backed jail.
+- The fail2ban helper orders fail2ban after systemd tmpfiles when the nginx jail
+  is enabled. The systemd-user-manager module orders rootless dispatchers after
+  tmpfiles globally, so switch-time restarts see declared files before either
+  service starts.
 
 ## Pipeline
 
 ```text
-nginx rate-limit event or sshd auth failure
+nginx exact-IP or IPv6-/64 rate-limit event, or sshd auth failure
   |
   v
 fail2ban jail crosses maxretry/findtime

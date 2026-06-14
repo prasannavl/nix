@@ -7,7 +7,7 @@
   proxyVhosts = config.services.podmanCompose.pvl.nginxProxyVhosts;
   nginxRoutes = config.services.podmanCompose.pvl.nginxRoutes;
   backendServices = nginxLib.dependencyServices (proxyVhosts // nginxRoutes);
-  nginxLogDir = "/var/log/pvl-x2-nginx";
+  nginxLogDir = "/var/log/pvl/nginx";
 in {
   config = {
     services = {
@@ -49,7 +49,9 @@ in {
     };
 
     systemd.tmpfiles.rules = [
-      "d ${nginxLogDir} 0755 root root -"
+      "d ${nginxLogDir} 0755 pvl pvl -"
+      "f ${nginxLogDir}/access.log 0644 pvl pvl -"
+      "f ${nginxLogDir}/error.log 0644 pvl pvl -"
     ];
   };
 }

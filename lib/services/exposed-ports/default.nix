@@ -170,6 +170,12 @@
         description = "Optional override for the hourly request rate limit per client IP.";
       };
 
+      ipv6PrefixMultiplier = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = null;
+        description = "Optional override for the IPv6 prefix request-limit multiplier.";
+      };
+
       requestsPerSecondBurst = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.unsigned;
         default = null;

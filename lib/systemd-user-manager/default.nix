@@ -351,6 +351,8 @@
     value = {
       description = "Dispatch managed systemd --user reconciliation for ${user}";
       after = [
+        "systemd-tmpfiles-setup.service"
+        "systemd-tmpfiles-resetup.service"
         userAtService
       ];
       wantedBy = ["multi-user.target"];

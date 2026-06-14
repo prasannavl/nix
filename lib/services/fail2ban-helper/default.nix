@@ -171,9 +171,16 @@ in {
       '';
     };
 
-    systemd.tmpfiles.rules = [
-      "d ${cfg.stateDir} 0750 root root -"
-    ];
+    systemd = {
+      services.fail2ban.after = lib.mkIf cfg.nginx.enable [
+        "systemd-tmpfiles-setup.service"
+        "systemd-tmpfiles-resetup.service"
+      ];
+
+      tmpfiles.rules = [
+        "d ${cfg.stateDir} 0750 root root -"
+      ];
+    };
 
     networking.nftables.tables.${tableName} = {
       family = "inet";

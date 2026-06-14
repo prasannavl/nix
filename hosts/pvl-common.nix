@@ -95,4 +95,8 @@
     iftop.enable = true;
     iotop.enable = true;
   };
+
+  systemd.tmpfiles.rules = [
+    "d /var/log/pvl 0755 pvl pvl -"
+  ];
 }

@@ -9,6 +9,24 @@ import time
 from pathlib import Path
 
 
+TIME_UNITS = {
+    "s": 1,
+    "m": 60,
+    "h": 60 * 60,
+    "d": 24 * 60 * 60,
+    "w": 7 * 24 * 60 * 60,
+}
+
+
+def parse_duration(value):
+    match = re.fullmatch(r"([0-9]+)([smhdw]?)", value)
+    if match is None:
+        raise argparse.ArgumentTypeError(f"invalid duration: {value}")
+    amount = int(match.group(1))
+    unit = match.group(2) or "s"
+    return amount * TIME_UNITS[unit]
+
+
 def run_nft_command(command, check=True):
     result = subprocess.run(
         ["nft", "-f", "-"],
@@ -125,9 +143,9 @@ def add_common_args(parser):
     parser.add_argument("--ipv6-prefix-set", default="prefix6")
     parser.add_argument("--ipv6-prefix-length", type=int, default=64)
     parser.add_argument("--state-dir", default="/var/lib/fail2ban/fail2ban-helper")
-    parser.add_argument("--exact-timeout", type=int, default=600)
-    parser.add_argument("--prefix-timeout", type=int, default=600)
-    parser.add_argument("--escalation-find-time", type=int, default=600)
+    parser.add_argument("--exact-timeout", type=parse_duration, default=600)
+    parser.add_argument("--prefix-timeout", type=parse_duration, default=600)
+    parser.add_argument("--escalation-find-time", type=parse_duration, default=600)
     parser.add_argument("--escalation-max-retry", type=int, default=3)
 
 
