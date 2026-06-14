@@ -363,6 +363,8 @@ init_vars() {
 	TF_CHANGE_BASE_REF=""
 	_NIXBOT_LOG_GROUP_DEPTH=0
 	_NIXBOT_LOG_GROUP_SCOPE=""
+	NIXBOT_RUN_STARTED_EPOCH="$(date +%s)"
+	NIXBOT_RUN_STARTED_AT="$(format_epoch "${NIXBOT_RUN_STARTED_EPOCH}")"
 
 	clear_run_summary_state
 
@@ -3305,6 +3307,7 @@ log_run_context() {
 	log_section "nixbot"
 	echo "Version: ${NIXBOT_VERSION}" >&2
 	echo "Action: ${ACTION}" >&2
+	echo "Started: ${NIXBOT_RUN_STARTED_AT}" >&2
 	print_config_override_line
 	print_selected_hosts_block "${selected_json}"
 	if is_deploy_style_action; then
@@ -5902,13 +5905,16 @@ run_streamed_host_command() {
 
 run_build_job() {
 	local node="$1" out_file="$2" status_file="$3" log_file="${4:-}"
-	local built_out_path="" result_link="" rc="" safe_node=""
+	local build_start_epoch="" built_out_path="" duration_file="" duration_secs=""
+	local result_link="" rc="" safe_node=""
 
 	safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
 	result_link="$(tmp_runtime_dir_path build-results)/${safe_node}.result"
+	duration_file="$(phase_dir_item_duration_file "$(dirname "${status_file}")" "${node}")"
 
 	(
 		set +e
+		build_start_epoch="$(date +%s)"
 		if [ -n "${log_file}" ]; then
 			built_out_path="$(resolve_build_out_path "${node}" "${result_link}" \
 				2> >(host_log_filter "${node}" | tee -a "${log_file}" >&2))"
@@ -5926,6 +5932,9 @@ run_build_job() {
 		if [ "${rc}" = "0" ]; then
 			printf '%s\n' "${built_out_path}" >"${out_file}"
 		fi
+		duration_secs="$(elapsed_seconds "${build_start_epoch}")"
+		write_duration_file "${duration_file}" "${duration_secs}"
+		log_host_phase_duration "${node}" build "${duration_secs}" "${log_file}"
 		log_group_end_host_stage "build"
 		write_status_file "${status_file}" "${rc}"
 		exit "${rc}"
@@ -6182,9 +6191,11 @@ log_snapshot_retry_transition() {
 
 run_deploy_job() {
 	local node="$1" out_file="$2" status_file="$3" log_file="${4:-}"
-	local built_out_path="" rc="" skip_marker="" deploy_start_epoch=""
+	local built_out_path="" deploy_start_epoch="" duration_file="" duration_secs=""
+	local rc="" skip_marker=""
 
 	wait_before_host_phase "${node}" "deploy"
+	duration_file="$(phase_dir_item_duration_file "$(dirname "${status_file}")" "${node}")"
 
 	(
 		set +e
@@ -6208,6 +6219,9 @@ run_deploy_job() {
 		else
 			write_status_file "${status_file}" "${rc}"
 		fi
+		duration_secs="$(elapsed_seconds "${deploy_start_epoch}")"
+		write_duration_file "${duration_file}" "${duration_secs}"
+		log_host_phase_duration "${node}" deploy "${duration_secs}" "${log_file}"
 		if [ "${rc}" = "0" ] && [ ! -e "${skip_marker}" ]; then
 			print_deploy_systemd_user_manager_report "${node}" "${deploy_start_epoch}" "${log_file}" || true
 		fi
@@ -7395,6 +7409,12 @@ phase_dir_item_status_file() {
 	printf '%s/%s.rc\n' "${status_dir}" "${item}"
 }
 
+phase_dir_item_duration_file() {
+	local status_dir="$1" item="$2"
+
+	printf '%s/%s.duration\n' "${status_dir}" "${item}"
+}
+
 _remote_systemd_user_manager_unit_is_terminal() {
 	local unit="$1" active_state="" sub_state="" result=""
 
@@ -7957,6 +7977,69 @@ read_status_file() {
 
 	[ -s "${status_file}" ] || return 1
 	cat "${status_file}"
+}
+
+write_duration_file() {
+	local duration_file="$1" seconds="$2"
+
+	printf '%s\n' "${seconds}" >"${duration_file}"
+}
+
+read_duration_file() {
+	local duration_file="$1"
+
+	[ -s "${duration_file}" ] || return 1
+	cat "${duration_file}"
+}
+
+elapsed_seconds() {
+	local start_epoch="$1" now_epoch=""
+
+	[ -n "${start_epoch}" ] || return 1
+	now_epoch="$(date +%s)"
+	printf '%s\n' "$((now_epoch - start_epoch))"
+}
+
+format_duration() {
+	local seconds="${1:-}" hours=0 minutes=0 remainder=0
+
+	[[ "${seconds}" =~ ^[0-9]+$ ]] || return 1
+	if [ "${seconds}" -lt 60 ]; then
+		printf '%ss' "${seconds}"
+		return
+	fi
+	if [ "${seconds}" -lt 3600 ]; then
+		printf '%sm%02ds' "$((seconds / 60))" "$((seconds % 60))"
+		return
+	fi
+	hours=$((seconds / 3600))
+	remainder=$((seconds % 3600))
+	minutes=$((remainder / 60))
+	printf '%sh%02dm%02ds' "${hours}" "${minutes}" "$((remainder % 60))"
+}
+
+format_epoch() {
+	local epoch="$1"
+
+	date -d "@${epoch}" '+%Y-%m-%d %H:%M:%S %z'
+}
+
+log_host_phase_duration() {
+	local node="$1" phase="$2" seconds="$3" log_file="${4:-}" label="" line=""
+
+	case "${phase}" in
+	build) label="Build" ;;
+	deploy) label="Deploy" ;;
+	*) label="${phase}" ;;
+	esac
+	line="${label} duration: $(format_duration "${seconds}")"
+	if [ -n "${log_file}" ]; then
+		printf '%s\n' "${line}" | host_log_filter "${node}" | tee -a "${log_file}" >&2
+	elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+		printf '%s\n' "${line}" | host_log_filter "${node}" >&2
+	else
+		printf '%s\n' "${line}" >&2
+	fi
 }
 
 ensure_phase_artifact_dirs() {
@@ -8577,6 +8660,7 @@ run_hosts() {
 	local deploy_log_dir="" deploy_status_dir="" build_out_dir="" snapshot_dir=""
 	local rollback_log_dir="" rollback_status_dir="" health_log_dir="" health_status_dir=""
 	local levels_json="" final_rc=0 build_parallel=0 deploy_parallel=0 verify_parallel=0
+	local build_phase_start_epoch="" deploy_phase_start_epoch=""
 
 	FULLY_SKIPPED_HOSTS=()
 	# shellcheck disable=SC2034
@@ -8646,7 +8730,10 @@ run_hosts() {
 		rollback_status_dir \
 		health_log_dir \
 		health_status_dir
+	RUN_SUMMARY_BUILD_STATUS_DIR="${build_status_dir}"
+	RUN_SUMMARY_DEPLOY_STATUS_DIR="${deploy_status_dir}"
 
+	build_phase_start_epoch="$(date +%s)"
 	if run_build_phase \
 		"${BUILD_JOBS}" \
 		"${build_parallel}" \
@@ -8662,6 +8749,7 @@ run_hosts() {
 	else
 		final_rc="$?"
 		if is_signal_exit_status "${final_rc}"; then
+			RUN_SUMMARY_BUILD_DURATION_SECS="$(elapsed_seconds "${build_phase_start_epoch}")"
 			capture_current_run_summary_state \
 				"${ACTION}" \
 				selected_hosts \
@@ -8674,6 +8762,7 @@ run_hosts() {
 			return "${final_rc}"
 		fi
 	fi
+	RUN_SUMMARY_BUILD_DURATION_SECS="$(elapsed_seconds "${build_phase_start_epoch}")"
 
 	if is_host_build_only_action || [ "${final_rc}" -ne 0 ]; then
 		capture_current_run_summary_state \
@@ -8705,6 +8794,7 @@ run_hosts() {
 	failed_hosts=()
 	successful_hosts=()
 
+	deploy_phase_start_epoch="$(date +%s)"
 	if run_deploy_phase \
 		"${deploy_parallel}" \
 		"${NIXBOT_PARALLEL_JOBS}" \
@@ -8727,6 +8817,7 @@ run_hosts() {
 	else
 		final_rc="$?"
 		if is_signal_exit_status "${final_rc}"; then
+			RUN_SUMMARY_DEPLOY_DURATION_SECS="$(elapsed_seconds "${deploy_phase_start_epoch}")"
 			capture_current_run_summary_state \
 				"${ACTION}" \
 				selected_hosts \
@@ -8739,6 +8830,7 @@ run_hosts() {
 			return "${final_rc}"
 		fi
 	fi
+	RUN_SUMMARY_DEPLOY_DURATION_SECS="$(elapsed_seconds "${deploy_phase_start_epoch}")"
 
 	# Health check phase: verify user services are healthy after deploy.
 	if [ "${DRY_RUN}" -eq 0 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
@@ -10057,14 +10149,55 @@ run_summary_has_failures() {
 	return 1
 }
 
+host_summary_timing_suffix() {
+	local node="$1" build_duration="" deploy_duration=""
+	local build_duration_file="" deploy_duration_file=""
+	local -a parts=()
+
+	if [ -n "${RUN_SUMMARY_BUILD_STATUS_DIR:-}" ]; then
+		build_duration_file="$(phase_dir_item_duration_file "${RUN_SUMMARY_BUILD_STATUS_DIR}" "${node}")"
+		if build_duration="$(read_duration_file "${build_duration_file}" 2>/dev/null)"; then
+			parts+=("build $(format_duration "${build_duration}")")
+		fi
+	fi
+	if [ -n "${RUN_SUMMARY_DEPLOY_STATUS_DIR:-}" ]; then
+		deploy_duration_file="$(phase_dir_item_duration_file "${RUN_SUMMARY_DEPLOY_STATUS_DIR}" "${node}")"
+		if deploy_duration="$(read_duration_file "${deploy_duration_file}" 2>/dev/null)"; then
+			parts+=("deploy $(format_duration "${deploy_duration}")")
+		fi
+	fi
+
+	if [ "${#parts[@]}" -eq 0 ]; then
+		return 0
+	fi
+	printf ' (%s)' "$(join_by_comma "${parts[@]}")"
+}
+
+format_summary_duration_or_dash() {
+	local seconds="${1:-}"
+
+	if [ -n "${seconds}" ]; then
+		format_duration "${seconds}"
+	else
+		printf '%s' '-'
+	fi
+}
+
 print_run_summary() {
 	local final_rc="$1" node="" status=""
 	local -a failed_summary_hosts=()
 	local tf_label="" tf_status="" tf_display_status=""
+	local total_duration_secs="" timing_suffix=""
 	local -a failed_summary_tf=()
 
 	log_section "Phase: Summary"
 	echo "Action: ${RUN_SUMMARY_ACTION:-${ACTION}}" >&2
+	if [ -n "${RUN_SUMMARY_STARTED_AT:-}" ]; then
+		echo "Started: ${RUN_SUMMARY_STARTED_AT}" >&2
+	fi
+	if [ -n "${RUN_SUMMARY_STARTED_EPOCH:-}" ]; then
+		total_duration_secs="$(elapsed_seconds "${RUN_SUMMARY_STARTED_EPOCH}")"
+	fi
 	echo "Hosts:" >&2
 	if [ "${#RUN_SUMMARY_SELECTED_HOSTS[@]}" -eq 0 ]; then
 		echo "  - (none)" >&2
@@ -10091,7 +10224,8 @@ print_run_summary() {
 			RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_OK_HOSTS \
 			RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_FAILED_HOSTS)"
 
-		echo "  - ${node}: ${status}" >&2
+		timing_suffix="$(host_summary_timing_suffix "${node}")"
+		echo "  - ${node}: ${status}${timing_suffix}" >&2
 		if [[ "${status}" == FAIL* ]]; then
 			failed_summary_hosts+=("${node}: ${status}")
 		fi
@@ -10109,6 +10243,10 @@ print_run_summary() {
 			failed_summary_tf+=("${tf_label}: FAIL (tf)")
 		fi
 	done
+	echo "Timing:" >&2
+	echo "  - total: $(format_summary_duration_or_dash "${total_duration_secs}")" >&2
+	echo "  - build: $(format_summary_duration_or_dash "${RUN_SUMMARY_BUILD_DURATION_SECS:-}")" >&2
+	echo "  - deploy: $(format_summary_duration_or_dash "${RUN_SUMMARY_DEPLOY_DURATION_SECS:-}")" >&2
 	if [ "${#failed_summary_hosts[@]}" -gt 0 ] || [ "${#failed_summary_tf[@]}" -gt 0 ]; then
 		printf '\n!!!!!!!!!! FAILURE !!!!!!!!!!\n' >&2
 		for node in "${failed_summary_hosts[@]}"; do
@@ -10129,6 +10267,8 @@ print_run_summary() {
 
 clear_run_summary_state() {
 	RUN_SUMMARY_ACTION=""
+	RUN_SUMMARY_STARTED_AT="${NIXBOT_RUN_STARTED_AT:-}"
+	RUN_SUMMARY_STARTED_EPOCH="${NIXBOT_RUN_STARTED_EPOCH:-}"
 	RUN_SUMMARY_SELECTED_HOSTS=()
 	RUN_SUMMARY_FULLY_SKIPPED_HOSTS=()
 	RUN_SUMMARY_BUILD_OK_HOSTS=()
@@ -10149,6 +10289,10 @@ clear_run_summary_state() {
 	RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_FAILED_HOSTS=()
 	RUN_SUMMARY_TF_LABELS=()
 	RUN_SUMMARY_TF_STATUSES=()
+	RUN_SUMMARY_BUILD_DURATION_SECS=""
+	RUN_SUMMARY_DEPLOY_DURATION_SECS=""
+	RUN_SUMMARY_BUILD_STATUS_DIR=""
+	RUN_SUMMARY_DEPLOY_STATUS_DIR=""
 }
 
 set_run_summary_host_state() {
@@ -10368,6 +10512,7 @@ run_requested_action() {
 		log_section "nixbot"
 		echo "Version: ${NIXBOT_VERSION}" >&2
 		echo "Action: ${ACTION}" >&2
+		echo "Started: ${NIXBOT_RUN_STARTED_AT}" >&2
 		echo "Decrypt identities: $(announce_age_decrypt_identity_candidates)" >&2
 	else
 		prepare_run_context selected_json

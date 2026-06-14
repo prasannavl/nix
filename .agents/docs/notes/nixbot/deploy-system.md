@@ -266,6 +266,18 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   in the run-local SSH directory, because those can outlive the shell job that
   created them.
 
+## Timing Breadcrumbs
+
+- The initial nixbot context should print the run start timestamp so a long
+  captured log has an absolute anchor before the final summary appears.
+- Build and deploy jobs should record per-host duration sidecars beside their
+  status files and emit a small duration line when the job exits. This keeps
+  timing correct for parallel jobs because each child process records its own
+  elapsed time.
+- The final summary should report wall-clock total time, build phase time, and
+  deploy phase time. Build/deploy phase totals are operator wait time, not a sum
+  of parallel host durations.
+
 ## Terraform dispatch
 
 - `tf`, `tf-dns`, `tf-platform`, `tf-apps`, and `tf/<project>` should bypass
