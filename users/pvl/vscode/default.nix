@@ -24,33 +24,36 @@
           ms-azuretools.vscode-containers
           ms-vscode.hexeditor
           ms-vscode.cpptools-extension-pack
+          ms-python.python
+
+          ms-azuretools.vscode-containers
+          ms-ossdata.vscode-pgsql
+          github.vscode-pull-request-github
+          # github.copilot-chat
 
           # vscodevim.vim
-          yzhang.markdown-all-in-one
+          # yzhang.markdown-all-in-one
           redhat.vscode-yaml
           jnoortheen.nix-ide
           mkhl.direnv
           rust-lang.rust-analyzer
           fill-labs.dependi
           hashicorp.terraform
-          ms-python.python
           golang.go
 
-          # github.copilot-chat
           openai.chatgpt
-          anthropic.claude-code
           kilocode.kilo-code
+          # anthropic.claude-code
           # google.gemini-cli-vscode-ide-companion
           # google.geminicodeassist
           # continue.continue
 
           denoland.vscode-deno
-          ms-ossdata.vscode-pgsql
           alexcvzz.vscode-sqlite
           johnpapa.vscode-peacock
           kdl-org.kdl
           bierner.markdown-mermaid
-          ms-azuretools.vscode-containers
+          reduckted.vscode-gitweblinks
         ];
 
         keybindings = [
