@@ -33,6 +33,10 @@ their own.
 - Nginx also renders IPv6 `/64` aggregate `limit_req` zones keyed by
   `$client_addr_prefix_key`, derived from nginx's normalized `$remote_addr` text
   form. The prefix key is empty for IPv4, so IPv4 remains exact-address only.
+- Quote generated nginx `map` regex keys. Nginx's config lexer treats unquoted
+  `{}` regex quantifiers as block syntax and fails startup with
+  `unexpected
+  "{"`.
 - Nginx prefix guardrail: 5x the exact-IP request and burst thresholds.
 - Nginx logs for stack-owned rootless nginx live under `/var/log/<stack>/nginx`;
   for `pvl-x2` this is `/var/log/pvl/nginx`.
@@ -77,5 +81,10 @@ alejandra lib/services/fail2ban-helper/default.nix lib/services/nginx/default.ni
 python3 -m py_compile lib/services/fail2ban-helper/fail2ban-helper.py
 nix eval --json .#nixosConfigurations.pvl-x2.config.services.fail2ban.jails
 nix eval --json .#nixosConfigurations.pvl-x2.config.services.fail2ban.bantime
+nix eval --raw '.#nixosConfigurations.pvl-x2.config.services.podmanCompose.pvl.instances.nginx.files."conf.d/srv-http-default.conf".text'
 nix eval .#nixosConfigurations.pvl-x2.config.system.build.toplevel.drvPath
 ```
+
+For nginx renderer changes, also run `nginx -t` against a config tree that uses
+the rendered `srv-http-default.conf`; render-only checks do not catch nginx
+parser failures.
