@@ -839,14 +839,19 @@
     streamProxyDnatInputRules (streamProxiesFromExposedPorts exposedPorts);
 
   rateLimitZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit";
+  rateLimitPrefixZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_prefix";
   rateLimitMinuteZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_minute";
+  rateLimitMinutePrefixZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_minute_prefix";
   rateLimitQuarterHourZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_quarter_hour";
+  rateLimitQuarterHourPrefixZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_quarter_hour_prefix";
   rateLimitHourZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_hour";
+  rateLimitHourPrefixZoneName = name: "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_hour_prefix";
   rateLimitBypassCidrsVarName = name: "$" + "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_bypass_cidrs";
   rateLimitTrustedProxyVarName = name: "$" + "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_trusted_proxy";
   rateLimitBypassTunnelVarName = name: "$" + "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_bypass_tunnel";
   rateLimitBypassVarName = name: "$" + "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_bypass";
   rateLimitKeyVarName = name: "$" + "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_key";
+  rateLimitPrefixKeyVarName = name: "$" + "proxy_${builtins.replaceStrings ["-"] ["_"] name}_rate_limit_prefix_key";
   lanBypassCidrs = [
     "127.0.0.0/8"
     "::1/128"
@@ -901,7 +906,27 @@
         1 "";
         0 $binary_remote_addr;
     }
+
+    map ${rateLimitBypassVarName name} ${rateLimitPrefixKeyVarName name} {
+        1 "";
+        0 $client_addr_prefix_key;
+    }
   '';
+
+  rateLimitExactKey = name: rateLimit:
+    if (effectiveBypassCidrs rateLimit != []) || rateLimit.bypass.cloudflareTunnel
+    then rateLimitKeyVarName name
+    else "$binary_remote_addr";
+
+  rateLimitPrefixKey = name: rateLimit:
+    if (effectiveBypassCidrs rateLimit != []) || rateLimit.bypass.cloudflareTunnel
+    then rateLimitPrefixKeyVarName name
+    else "$client_addr_prefix_key";
+
+  rateLimitPrefixValue = value: rateLimit:
+    if value == null
+    then null
+    else value * rateLimit.ipv6PrefixMultiplier;
 
   mkRateLimitZone = name: rateLimit:
     lib.concatStrings
@@ -920,32 +945,20 @@
         (mkRateLimitKeyMap name))
       (lib.optionalString
         (rateLimit.requestsPerSecond != null)
-        "limit_req_zone ${
-          if (effectiveBypassCidrs rateLimit != []) || rateLimit.bypass.cloudflareTunnel
-          then rateLimitKeyVarName name
-          else "$binary_remote_addr"
-        } zone=${rateLimitZoneName name}:10m rate=${toString rateLimit.requestsPerSecond}r/s;\n\n")
+        ("limit_req_zone ${rateLimitExactKey name rateLimit} zone=${rateLimitZoneName name}:10m rate=${toString rateLimit.requestsPerSecond}r/s;\n"
+          + "limit_req_zone ${rateLimitPrefixKey name rateLimit} zone=${rateLimitPrefixZoneName name}:10m rate=${toString (rateLimitPrefixValue rateLimit.requestsPerSecond rateLimit)}r/s;\n\n"))
       (lib.optionalString
         (rateLimit.requestsPerMinute != null)
-        "limit_req_zone ${
-          if (effectiveBypassCidrs rateLimit != []) || rateLimit.bypass.cloudflareTunnel
-          then rateLimitKeyVarName name
-          else "$binary_remote_addr"
-        } zone=${rateLimitMinuteZoneName name}:10m rate=${toString rateLimit.requestsPerMinute}r/m;\n\n")
+        ("limit_req_zone ${rateLimitExactKey name rateLimit} zone=${rateLimitMinuteZoneName name}:10m rate=${toString rateLimit.requestsPerMinute}r/m;\n"
+          + "limit_req_zone ${rateLimitPrefixKey name rateLimit} zone=${rateLimitMinutePrefixZoneName name}:10m rate=${toString (rateLimitPrefixValue rateLimit.requestsPerMinute rateLimit)}r/m;\n\n"))
       (lib.optionalString
         (rateLimit.requestsPerQuarterHour != null)
-        "limit_req_zone ${
-          if (effectiveBypassCidrs rateLimit != []) || rateLimit.bypass.cloudflareTunnel
-          then rateLimitKeyVarName name
-          else "$binary_remote_addr"
-        } zone=${rateLimitQuarterHourZoneName name}:10m rate=${toString rateLimit.requestsPerQuarterHour}r/15m;\n\n")
+        ("limit_req_zone ${rateLimitExactKey name rateLimit} zone=${rateLimitQuarterHourZoneName name}:10m rate=${toString rateLimit.requestsPerQuarterHour}r/15m;\n"
+          + "limit_req_zone ${rateLimitPrefixKey name rateLimit} zone=${rateLimitQuarterHourPrefixZoneName name}:10m rate=${toString (rateLimitPrefixValue rateLimit.requestsPerQuarterHour rateLimit)}r/15m;\n\n"))
       (lib.optionalString
         (rateLimit.requestsPerHour != null)
-        "limit_req_zone ${
-          if (effectiveBypassCidrs rateLimit != []) || rateLimit.bypass.cloudflareTunnel
-          then rateLimitKeyVarName name
-          else "$binary_remote_addr"
-        } zone=${rateLimitHourZoneName name}:10m rate=${toString rateLimit.requestsPerHour}r/h;\n\n")
+        ("limit_req_zone ${rateLimitExactKey name rateLimit} zone=${rateLimitHourZoneName name}:10m rate=${toString rateLimit.requestsPerHour}r/h;\n"
+          + "limit_req_zone ${rateLimitPrefixKey name rateLimit} zone=${rateLimitHourPrefixZoneName name}:10m rate=${toString (rateLimitPrefixValue rateLimit.requestsPerHour rateLimit)}r/h;\n\n"))
     ];
 
   mkRateLimitDirectives = name: rateLimit:
@@ -953,16 +966,20 @@
     [
       (lib.optionalString
         (rateLimit.requestsPerSecond != null)
-        "    limit_req zone=${rateLimitZoneName name} burst=${toString rateLimit.requestsPerSecondBurst} nodelay;\n")
+        ("    limit_req zone=${rateLimitZoneName name} burst=${toString rateLimit.requestsPerSecondBurst} nodelay;\n"
+          + "    limit_req zone=${rateLimitPrefixZoneName name} burst=${toString (rateLimitPrefixValue rateLimit.requestsPerSecondBurst rateLimit)} nodelay;\n"))
       (lib.optionalString
         (rateLimit.requestsPerMinute != null)
-        "    limit_req zone=${rateLimitMinuteZoneName name} burst=${toString rateLimit.requestsPerMinuteBurst} nodelay;\n")
+        ("    limit_req zone=${rateLimitMinuteZoneName name} burst=${toString rateLimit.requestsPerMinuteBurst} nodelay;\n"
+          + "    limit_req zone=${rateLimitMinutePrefixZoneName name} burst=${toString (rateLimitPrefixValue rateLimit.requestsPerMinuteBurst rateLimit)} nodelay;\n"))
       (lib.optionalString
         (rateLimit.requestsPerQuarterHour != null)
-        "    limit_req zone=${rateLimitQuarterHourZoneName name} burst=${toString rateLimit.requestsPerQuarterHourBurst} nodelay;\n")
+        ("    limit_req zone=${rateLimitQuarterHourZoneName name} burst=${toString rateLimit.requestsPerQuarterHourBurst} nodelay;\n"
+          + "    limit_req zone=${rateLimitQuarterHourPrefixZoneName name} burst=${toString (rateLimitPrefixValue rateLimit.requestsPerQuarterHourBurst rateLimit)} nodelay;\n"))
       (lib.optionalString
         (rateLimit.requestsPerHour != null)
-        "    limit_req zone=${rateLimitHourZoneName name} burst=${toString rateLimit.requestsPerHourBurst} nodelay;\n")
+        ("    limit_req zone=${rateLimitHourZoneName name} burst=${toString rateLimit.requestsPerHourBurst} nodelay;\n"
+          + "    limit_req zone=${rateLimitHourPrefixZoneName name} burst=${toString (rateLimitPrefixValue rateLimit.requestsPerHourBurst rateLimit)} nodelay;\n"))
       "    limit_req_status ${toString rateLimit.statusCode};\n"
     ];
 

@@ -7,3 +7,4 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro,Z
       - ./conf.d:/etc/nginx/conf.d:ro,Z
+      - ${NGINX_LOG_DIR:-./logs}:/var/log/nginx:Z

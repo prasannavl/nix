@@ -9,6 +9,7 @@
     requestsPerQuarterHourBurst = null;
     requestsPerHour = null;
     requestsPerHourBurst = null;
+    ipv6PrefixMultiplier = 5;
     statusCode = 429;
     bypass = {
       cidrs = [];
@@ -91,6 +92,12 @@
         type = lib.types.nullOr lib.types.ints.positive;
         default = defaultRateLimitProfile.requestsPerHour;
         description = "Optional hourly request rate limit per client IP.";
+      };
+
+      ipv6PrefixMultiplier = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = defaultRateLimitProfile.ipv6PrefixMultiplier;
+        description = "Multiplier applied to per-address request limits for the shared IPv6 prefix guardrail.";
       };
 
       requestsPerSecondBurst = lib.mkOption {

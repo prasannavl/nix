@@ -190,6 +190,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/services/cloudflare-dns-stable-record-keys-2026-04.md`:
   Records the DNS migration from positional Terraform addresses to explicit
   stable record keys, plus remaining positional Cloudflare list inputs.
+- `.agents/docs/notes/services/ipv6-fail2ban-helper-2026-06.md`: Records the
+  generic fail2ban helper, IPv6 exact-to-/64 escalation policy, nginx prefix
+  guardrail, and host opt-in scope for `pvl-x2`, `pvl-a1`, and `pvl-l5`.
 - `.agents/docs/notes/services/podman-data-dir-ownership-2026-04.md`: Records
   the standard `dirs`/container-scope ownership model for service-local Podman
   data directories plus absolute `dirs` entries for external data roots.
