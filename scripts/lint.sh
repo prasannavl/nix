@@ -376,6 +376,7 @@ emit_host_name() {
 
 	[ -n "${host_name}" ] || return 0
 	[ -d "hosts/${host_name}" ] || return 0
+	host_name_is_registered "${host_name}" || return 0
 	if ! [[ -v "seen_host_names[${host_name}]" ]]; then
 		printf '%s\0' "${host_name}"
 		seen_host_names["${host_name}"]=1
@@ -384,6 +385,20 @@ emit_host_name() {
 
 load_all_host_names() {
 	nix eval --json .#nixosConfigurations --apply builtins.attrNames | jq -r '.[]' 2>/dev/null
+}
+
+host_name_is_registered() {
+	local candidate="$1"
+	local host_name=""
+
+	if [ "${#all_host_names[@]}" -eq 0 ]; then
+		mapfile -t all_host_names < <(load_all_host_names)
+	fi
+
+	for host_name in "${all_host_names[@]}"; do
+		[ "${host_name}" = "${candidate}" ] && return 0
+	done
+	return 1
 }
 
 emit_all_host_names() {
