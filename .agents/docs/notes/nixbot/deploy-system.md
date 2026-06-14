@@ -111,6 +111,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   `nix build` when actual builder logs are desired. Heartbeat workers must close
   stdout because remote builds are captured through command substitution; if a
   heartbeat inherits that pipe, the wrapper can appear stuck after Nix exits.
+- Long-running remote-store commands must be supervised as background jobs with
+  stdout captured to an explicit temp file. Do not wrap `nix build --store
+  ssh-ng://...` directly in command substitution: Bash defers the parent trap
+  while waiting for that foreground capture, so Ctrl-C can interrupt Nix but
+  leave nixbot's heartbeat/retry wrapper alive.
 - Successful runs remove both runtime and diagnostic directories. Failed,
   interrupted, or hung-up runs always remove runtime and retain diagnostics by
   moving `diag-XXXXXX` to `/var/tmp/nixbot/diag-XXXXXX` when the run used

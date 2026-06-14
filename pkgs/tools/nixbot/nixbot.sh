@@ -490,6 +490,7 @@ init_vars() {
 	TMP_SSH_DIR=""
 	TMP_TARGET_DIR=""
 	TMP_STDERR_DIR=""
+	TMP_STDOUT_DIR=""
 	TMP_BUILD_RESULTS_DIR=""
 	TMP_TF_ARTIFACT_DIR=""
 	TMP_ACTIVE_DEPLOY_DIR=""
@@ -1501,6 +1502,7 @@ ensure_tmp_dir() {
 	TMP_SSH_DIR="${NIXBOT_TMP_DIR}/ssh"
 	TMP_TARGET_DIR="${NIXBOT_TMP_DIR}/target-tmp"
 	TMP_STDERR_DIR="${NIXBOT_DIAG_DIR}/stderr"
+	TMP_STDOUT_DIR="${NIXBOT_TMP_DIR}/stdout"
 	TMP_BUILD_RESULTS_DIR="${NIXBOT_TMP_DIR}/build-results"
 	TMP_TF_ARTIFACT_DIR="$(phase_artifact_dir_path "${NIXBOT_TMP_DIR}" "tf")"
 	TMP_ACTIVE_DEPLOY_DIR="${NIXBOT_TMP_DIR}/active-deploys"
@@ -1511,6 +1513,7 @@ ensure_tmp_dir() {
 		"${TMP_SSH_DIR}" \
 		"${TMP_TARGET_DIR}" \
 		"${TMP_STDERR_DIR}" \
+		"${TMP_STDOUT_DIR}" \
 		"${TMP_BUILD_RESULTS_DIR}" \
 		"${TMP_TF_ARTIFACT_DIR}" \
 		"${TMP_ACTIVE_DEPLOY_DIR}" \
@@ -1527,6 +1530,7 @@ tmp_runtime_dir_path() {
 	ssh) printf '%s\n' "${TMP_SSH_DIR}" ;;
 	target) printf '%s\n' "${TMP_TARGET_DIR}" ;;
 	stderr) printf '%s\n' "${TMP_STDERR_DIR}" ;;
+	stdout) printf '%s\n' "${TMP_STDOUT_DIR}" ;;
 	build-results) printf '%s\n' "${TMP_BUILD_RESULTS_DIR}" ;;
 	tf) printf '%s\n' "${TMP_TF_ARTIFACT_DIR}" ;;
 	*)
@@ -6872,30 +6876,36 @@ run_remote_store_command_with_retry() {
 	local -n rrsc_output_out_ref="$1"
 	local retry_label="$2" nix_sshopts="$3"
 	shift 3
-	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" captured="" heartbeat_pid=""
+	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" stdout_path="" captured="" heartbeat_pid="" command_pid=""
 
 	ensure_tmp_dir
 	output_path="$(tmp_runtime_mktemp stderr "remote-store.stderr.XXXXXX")"
+	stdout_path="$(tmp_runtime_mktemp stdout "remote-store.stdout.XXXXXX")"
 
 	while :; do
 		: >"${output_path}"
+		: >"${stdout_path}"
 		heartbeat_pid="$(start_remote_build_heartbeat "${retry_label}" || true)"
-		if captured="$(run_nix_with_optional_sshopts "${nix_sshopts}" "$@" 2> >(tee "${output_path}" >&2))"; then
+		run_nix_with_optional_sshopts "${nix_sshopts}" "$@" >"${stdout_path}" 2> >(tee "${output_path}" >&2) &
+		command_pid="$!"
+		if wait "${command_pid}"; then
 			stop_remote_build_heartbeat "${heartbeat_pid}"
+			captured="$(<"${stdout_path}")"
 			# shellcheck disable=SC2034
 			rrsc_output_out_ref="${captured}"
-			rm -f "${output_path}"
+			rm -f "${output_path}" "${stdout_path}"
 			return 0
 		else
 			rc="$?"
 		fi
 		stop_remote_build_heartbeat "${heartbeat_pid}"
+		captured="$(<"${stdout_path}")"
 		# shellcheck disable=SC2034
 		rrsc_output_out_ref="${captured}"
 
 		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ] ||
 			! remote_store_failure_is_transport_loss "${output_path}"; then
-			rm -f "${output_path}"
+			rm -f "${output_path}" "${stdout_path}"
 			return "${rc}"
 		fi
 
