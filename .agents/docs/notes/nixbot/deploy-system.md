@@ -116,6 +116,19 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   ssh-ng://...` directly in command substitution: Bash defers the parent trap
   while waiting for that foreground capture, so Ctrl-C can interrupt Nix but
   leave nixbot's heartbeat/retry wrapper alive.
+- Long-running commands that capture stdout, including local builds, dev builds,
+  remote builds, and transport checks, should use the shared supervised capture
+  runner. Do not add new command-substitution wrappers around `nix`, `ssh`,
+  `tofu`, or other potentially long-running commands; the runner owns the child
+  process tree, temp stdout capture, optional stderr tee, and signal-status
+  restoration.
+- Retry loops must test `is_signal_exit_status` before transport retry,
+  parent-readiness retry, or post-failure verification. `130` and `143` are
+  control flow, not ordinary operation failures.
+- Operator-visible local wait and polling loops should use
+  `sleep_for_retry_or_signal` so Ctrl-C cannot be consumed as a transient wait
+  failure. Deliberate cleanup grace sleeps and remote-side helper sleeps are
+  separate contracts.
 - Successful runs remove both runtime and diagnostic directories. Failed,
   interrupted, or hung-up runs always remove runtime and retain diagnostics by
   moving `diag-XXXXXX` to `/var/tmp/nixbot/diag-XXXXXX` when the run used
@@ -241,6 +254,18 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Ctrl-C and `SIGTERM` are explicit cancellation requests. If no remote deploy
   activation is active yet, nixbot should clean up local jobs and exit
   immediately.
+- Remote-store builds must own an interrupt trap inside the host-job shell that
+  starts the background `nix build` and heartbeat. It is not enough for the
+  top-level nixbot process to have a trap: Bash can defer a parent trap while it
+  waits on a foreground host-job subshell, and a child shell without its own
+  trap can keep printing remote-build heartbeats after Nix itself has already
+  received Ctrl-C. The remote-store wrapper should treat `SIGINT`/`SIGTERM` as
+  a first-class result, kill its heartbeat and command tree, and return the
+  signal status without transport retries.
+- Captured long-running commands must use the shared supervised runner instead
+  of command substitution. This keeps the trap in the waiting shell, terminates
+  the command process tree, restores the previous trap state, and propagates the
+  signal exit code to callers.
 - The first Ctrl-C or `SIGTERM` while remote deploy activation is active should
   stop scheduling new deploy work, wait for already-started deploy jobs to
   finish, then exit.

@@ -2047,7 +2047,7 @@ configure_ci_trigger_ssh_opts() {
 	if [ -n "${CI_TRIGGER_KNOWN_HOSTS}" ]; then
 		scanned_known_hosts="${CI_TRIGGER_KNOWN_HOSTS}"
 	else
-		scanned_known_hosts="$(run_ssh_keyscan -H "${CI_TRIGGER_HOST}" 2>/dev/null || true)"
+		run_supervised_stdout_capture scanned_known_hosts "" run_quiet_ssh_keyscan -H "${CI_TRIGGER_HOST}" || true
 		[ -n "${scanned_known_hosts}" ] || die "Could not determine CI host key for ${CI_TRIGGER_HOST}. Pass --ci-known-hosts/NIXBOT_CI_KNOWN_HOSTS or ensure ssh-keyscan can reach the CI host."
 	fi
 
@@ -2435,12 +2435,13 @@ resolve_config_path() {
 
 load_deploy_config_json() {
 	local path="$1" override_path="${2-${NIXBOT_CONFIG_OVERRIDE_PATH:-}}"
-	local resolved_path="" resolved_override_path="" expr=""
+	local resolved_path="" resolved_override_path="" expr="" output=""
 
 	resolved_path="$(resolve_config_path "${path}")"
 	[ -f "${resolved_path}" ] || die "Deploy config not found: ${path} (resolved: ${resolved_path})"
 	if [ -z "${override_path}" ] || [ ! -f "${override_path}" ]; then
-		nix eval --json --file "${resolved_path}"
+		run_supervised_stdout_capture output "" nix eval --json --file "${resolved_path}" || return "$?"
+		printf '%s\n' "${output}"
 		return
 	fi
 
@@ -2465,7 +2466,8 @@ let
 in
   recursiveUpdate (import ${resolved_path}) (import ${resolved_override_path})
 "
-	nix eval --impure --json --expr "${expr}"
+	run_supervised_stdout_capture output "" nix eval --impure --json --expr "${expr}" || return "$?"
+	printf '%s\n' "${output}"
 }
 
 apply_global_defaults_if_config_available() {
@@ -2639,7 +2641,10 @@ resolve_runtime_key_file() {
 }
 
 load_all_hosts_json() {
-	nix eval --json --no-write-lock-file .#nixosConfigurations --apply builtins.attrNames 2>/dev/null
+	local output=""
+
+	run_supervised_stdout_capture output "" nix eval --json --no-write-lock-file .#nixosConfigurations --apply builtins.attrNames 2>/dev/null || return "$?"
+	printf '%s\n' "${output}"
 }
 
 ##### Host Selection #####
@@ -2941,7 +2946,7 @@ wait_before_host_phase() {
 	wait_secs="$(host_wait_seconds "${node}")"
 	if [ "${wait_secs}" -gt 0 ] 2>/dev/null; then
 		echo "[${node}] ${phase} | waiting ${wait_secs}s before ${phase}" >&2
-		sleep "${wait_secs}"
+		sleep_for_retry_or_signal "${wait_secs}" || return "$?"
 	fi
 }
 
@@ -3437,6 +3442,10 @@ run_ssh_keyscan() {
 	ssh-keyscan -T "${NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS}" "$@"
 }
 
+run_quiet_ssh_keyscan() {
+	run_ssh_keyscan "$@" 2>/dev/null
+}
+
 ensure_known_host() {
 	local host="$1" known_hosts="$2" known_hosts_file="$3"
 
@@ -3502,9 +3511,9 @@ ensure_repo_known_hosts_file_for_url() {
 
 	if [ ! -s "${known_hosts_file}" ]; then
 		if [ -n "${repo_port}" ] && [ "${repo_port}" != "22" ]; then
-			scanned_known_hosts="$(run_ssh_keyscan -H -p "${repo_port}" "${repo_host}" 2>/dev/null || true)"
+			run_supervised_stdout_capture scanned_known_hosts "" run_quiet_ssh_keyscan -H -p "${repo_port}" "${repo_host}" || true
 		else
-			scanned_known_hosts="$(run_ssh_keyscan -H "${repo_host}" 2>/dev/null || true)"
+			run_supervised_stdout_capture scanned_known_hosts "" run_quiet_ssh_keyscan -H "${repo_host}" || true
 		fi
 		[ -n "${scanned_known_hosts}" ] || {
 			echo "Could not determine repo host key for ${repo_host} from ${repo_url}" >&2
@@ -4058,6 +4067,19 @@ transport_retry_backoff_seconds() {
 	printf '%s\n' "$((NIXBOT_TRANSPORT_RETRY_DELAY_SECS * (attempt - 1)))"
 }
 
+sleep_for_retry_or_signal() {
+	local seconds="$1" rc=0
+
+	sleep "${seconds}" || rc="$?"
+	if is_signal_exit_status "${rc}"; then
+		return "${rc}"
+	fi
+	if cancel_requested; then
+		return "${NIXBOT_CANCEL_EXIT_STATUS}"
+	fi
+	return 0
+}
+
 transport_status_is_retryable() {
 	case "${1:-}" in
 	124 | 255)
@@ -4080,6 +4102,9 @@ retry_transport_command() {
 		else
 			rc="$?"
 		fi
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 
 		if ! transport_status_is_retryable "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
 			return "${rc}"
@@ -4088,7 +4113,7 @@ retry_transport_command() {
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
 		echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
-		sleep "${retry_sleep_secs}"
+		sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
 		if [ -n "${retry_hook}" ]; then
 			"${retry_hook}" || return "$?"
 		fi
@@ -4103,7 +4128,7 @@ retry_transport_capture() {
 	local attempt=1 rc=0 retry_sleep_secs=0 captured=""
 
 	while :; do
-		if captured="$("$@" 2>&1)"; then
+		if run_supervised_combined_capture captured "$@"; then
 			# shellcheck disable=SC2034
 			rtc_output_out_ref="${captured}"
 			return 0
@@ -4112,6 +4137,9 @@ retry_transport_capture() {
 		fi
 		# shellcheck disable=SC2034
 		rtc_output_out_ref="${captured}"
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 
 		if ! transport_status_is_retryable "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
 			return "${rc}"
@@ -4120,7 +4148,7 @@ retry_transport_capture() {
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
 		echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
-		sleep "${retry_sleep_secs}"
+		sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
 		if [ -n "${retry_hook}" ]; then
 			"${retry_hook}" || return "$?"
 		fi
@@ -4135,7 +4163,7 @@ retry_transport_stdout_capture() {
 	local attempt=1 rc=0 retry_sleep_secs=0 captured=""
 
 	while :; do
-		if captured="$("$@" 2> >(cat >&2))"; then
+		if run_supervised_stdout_capture captured "" "$@"; then
 			# shellcheck disable=SC2034
 			rtsc_output_out_ref="${captured}"
 			return 0
@@ -4144,6 +4172,9 @@ retry_transport_stdout_capture() {
 		fi
 		# shellcheck disable=SC2034
 		rtsc_output_out_ref="${captured}"
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 
 		if ! transport_status_is_retryable "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
 			return "${rc}"
@@ -4152,7 +4183,7 @@ retry_transport_stdout_capture() {
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
 		echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
-		sleep "${retry_sleep_secs}"
+		sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
 		if [ -n "${retry_hook}" ]; then
 			"${retry_hook}" || return "$?"
 		fi
@@ -4783,7 +4814,7 @@ probe_primary_deploy_target() {
 	local attempt=1 rc=0 retry_sleep_secs=0 captured=""
 
 	while :; do
-		if captured="$(ssh "${ssh_opts[@]}" "${ssh_target}" true 2>&1)"; then
+		if run_supervised_combined_capture captured ssh "${ssh_opts[@]}" "${ssh_target}" true; then
 			PRIMARY_PROBE_LAST_OUTPUT=""
 			return 0
 		else
@@ -4791,6 +4822,9 @@ probe_primary_deploy_target() {
 		fi
 		PRIMARY_PROBE_LAST_OUTPUT="${captured}"
 
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 		if ! transport_status_is_retryable "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
 			return "${rc}"
 		fi
@@ -4799,7 +4833,7 @@ probe_primary_deploy_target() {
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
 		echo "Primary connectivity probe for ${ssh_target} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
 		clear_control_master_socket "${node}" primary
-		sleep "${retry_sleep_secs}"
+		sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
 	done
 }
 
@@ -5403,7 +5437,7 @@ wait_for_prepared_host_age_identity_activation_visibility() {
 		fi
 
 		echo "==> Waiting for activation context to see host age identity for ${node} (${attempt}/${max_attempts})" >&2
-		sleep 1
+		sleep_for_retry_or_signal 1 || return "$?"
 		attempt=$((attempt + 1))
 	done
 }
@@ -5530,6 +5564,9 @@ run_host_operation_with_retry_budget() {
 		else
 			rc="$?"
 		fi
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 		if [ "${attempt}" -ge "${max_attempts}" ]; then
 			return "${rc}"
 		fi
@@ -5539,7 +5576,7 @@ run_host_operation_with_retry_budget() {
 		else
 			echo "[${node}] deploy | ${operation_label} attempt ${attempt}/${max_attempts} failed; retrying in ${ready_interval_secs}s" >&2
 		fi
-		sleep "${ready_interval_secs}"
+		sleep_for_retry_or_signal "${ready_interval_secs}" || return "$?"
 		attempt=$((attempt + 1))
 	done
 }
@@ -6338,7 +6375,7 @@ process_snapshot_wave_results() {
 
 snapshot_host_with_retry() {
 	local node="$1" snapshot_file="$2"
-	local parent_host="" ready_timeout=0 ready_interval_secs=0 max_attempts=0 attempt=0
+	local parent_host="" ready_timeout=0 ready_interval_secs=0 max_attempts=0 attempt=0 rc=0
 
 	[ "${DRY_RUN}" -eq 0 ] || return 0
 	[ "${ROLLBACK_ON_FAILURE}" -eq 1 ] || return 0
@@ -6362,17 +6399,22 @@ snapshot_host_with_retry() {
 	max_attempts=$((((ready_timeout - 1) / ready_interval_secs) + 1))
 	attempt=1
 
-	while ! snapshot_host_generation "${node}" "${snapshot_file}"; do
+	while :; do
+		if snapshot_host_generation "${node}" "${snapshot_file}"; then
+			return 0
+		fi
+		rc="$?"
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 		if [ "${attempt}" -ge "${max_attempts}" ]; then
 			return 1
 		fi
 
 		echo "[${node}] snapshot | attempt ${attempt}/${max_attempts} failed after parent barrier (${parent_host}); retrying in ${ready_interval_secs}s" >&2
-		sleep "${ready_interval_secs}"
+		sleep_for_retry_or_signal "${ready_interval_secs}" || return "$?"
 		attempt=$((attempt + 1))
 	done
-
-	return 0
 }
 
 run_snapshot_job() {
@@ -6563,7 +6605,7 @@ verify_rollback_target_state() {
 	local node="$1" snapshot_path="$2" remote_current_path="" attempt="" max_attempts=15
 
 	for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-		sleep 2
+		sleep_for_retry_or_signal 2 || return "$?"
 
 		if ! prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
 			continue
@@ -6582,7 +6624,7 @@ verify_deploy_target_state() {
 	local node="$1" built_out_path="$2" observed_path="" attempt="" max_attempts=15
 
 	for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-		sleep 2
+		sleep_for_retry_or_signal 2 || return "$?"
 
 		if ! prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
 			continue
@@ -6885,48 +6927,148 @@ stop_remote_build_heartbeat() {
 	wait "${heartbeat_pid}" 2>/dev/null || true
 }
 
+restore_saved_trap() {
+	local signal_name="$1" saved_trap="$2"
+
+	if [ -n "${saved_trap}" ]; then
+		eval "${saved_trap}"
+	else
+		trap - "${signal_name}"
+	fi
+}
+
+restore_saved_trap_after_signal() {
+	local signal_name="$1" saved_trap="$2"
+
+	if [ -n "${saved_trap}" ]; then
+		eval "${saved_trap}"
+	else
+		trap : "${signal_name}"
+	fi
+}
+
+mark_supervised_command_interrupted() {
+	local exit_status="$1"
+
+	NIXBOT_SUPERVISED_COMMAND_INTERRUPTED_STATUS="${exit_status}"
+	NIXBOT_KEEP_DIAG_DIR=1
+	[ -z "${heartbeat_pid:-}" ] || kill "${heartbeat_pid}" 2>/dev/null || true
+	[ -z "${command_pid:-}" ] || terminate_pid_tree "${command_pid}" TERM
+}
+
+run_supervised_stdout_capture() {
+	# shellcheck disable=SC2034
+	local -n rssc_output_out_ref="$1"
+	local stderr_path="${2:-}"
+	shift 2
+	local rssc_captured="" command_pid="" rc=0 saved_int_trap="" saved_term_trap="" stdout_path=""
+	local NIXBOT_SUPERVISED_COMMAND_INTERRUPTED_STATUS=""
+
+	ensure_tmp_dir
+	stdout_path="$(tmp_runtime_mktemp stdout "command.stdout.XXXXXX")"
+	: >"${stdout_path}"
+	saved_int_trap="$(trap -p INT || true)"
+	saved_term_trap="$(trap -p TERM || true)"
+	trap 'mark_supervised_command_interrupted 130' INT
+	trap 'mark_supervised_command_interrupted 143' TERM
+
+	if [ -n "${stderr_path}" ]; then
+		"$@" >"${stdout_path}" 2> >(tee "${stderr_path}" >&2) &
+	else
+		"$@" >"${stdout_path}" &
+	fi
+	command_pid="$!"
+
+	if wait "${command_pid}"; then
+		rc=0
+	else
+		rc="$?"
+	fi
+
+	rssc_captured="$(<"${stdout_path}")"
+	# shellcheck disable=SC2034
+	rssc_output_out_ref="${rssc_captured}"
+	rm -f "${stdout_path}"
+
+	if [ -n "${NIXBOT_SUPERVISED_COMMAND_INTERRUPTED_STATUS}" ] ||
+		is_signal_exit_status "${rc}"; then
+		restore_saved_trap_after_signal INT "${saved_int_trap}"
+		restore_saved_trap_after_signal TERM "${saved_term_trap}"
+		return "${NIXBOT_SUPERVISED_COMMAND_INTERRUPTED_STATUS:-${rc}}"
+	fi
+
+	restore_saved_trap INT "${saved_int_trap}"
+	restore_saved_trap TERM "${saved_term_trap}"
+	return "${rc}"
+}
+
+run_supervised_combined_capture() {
+	# shellcheck disable=SC2034
+	local -n rscc_output_out_ref="$1"
+	shift
+	local rscc_captured=""
+
+	if run_supervised_stdout_capture rscc_captured "" run_with_combined_output "$@"; then
+		# shellcheck disable=SC2034
+		rscc_output_out_ref="${rscc_captured}"
+		return 0
+	fi
+	local rc="$?"
+	# shellcheck disable=SC2034
+	rscc_output_out_ref="${rscc_captured}"
+	return "${rc}"
+}
+
 run_remote_store_command_with_retry() {
 	# shellcheck disable=SC2034
 	local -n rrsc_output_out_ref="$1"
 	local retry_label="$2" nix_sshopts="$3"
 	shift 3
-	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" stdout_path="" captured="" heartbeat_pid="" command_pid=""
+	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" captured="" heartbeat_pid=""
 
 	ensure_tmp_dir
 	output_path="$(tmp_runtime_mktemp stderr "remote-store.stderr.XXXXXX")"
-	stdout_path="$(tmp_runtime_mktemp stdout "remote-store.stdout.XXXXXX")"
 
 	while :; do
 		: >"${output_path}"
-		: >"${stdout_path}"
 		heartbeat_pid="$(start_remote_build_heartbeat "${retry_label}" || true)"
-		run_nix_with_optional_sshopts "${nix_sshopts}" "$@" >"${stdout_path}" 2> >(tee "${output_path}" >&2) &
-		command_pid="$!"
-		if wait "${command_pid}"; then
+		if run_supervised_stdout_capture \
+			captured \
+			"${output_path}" \
+			run_nix_with_optional_sshopts \
+			"${nix_sshopts}" \
+			"$@"; then
 			stop_remote_build_heartbeat "${heartbeat_pid}"
-			captured="$(<"${stdout_path}")"
 			# shellcheck disable=SC2034
 			rrsc_output_out_ref="${captured}"
-			rm -f "${output_path}" "${stdout_path}"
+			rm -f "${output_path}"
 			return 0
 		else
 			rc="$?"
 		fi
 		stop_remote_build_heartbeat "${heartbeat_pid}"
-		captured="$(<"${stdout_path}")"
 		# shellcheck disable=SC2034
 		rrsc_output_out_ref="${captured}"
 
+		if is_signal_exit_status "${rc}"; then
+			rm -f "${output_path}"
+			return "${rc}"
+		fi
+
 		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ] ||
 			! remote_store_failure_is_transport_loss "${output_path}"; then
-			rm -f "${output_path}" "${stdout_path}"
+			rm -f "${output_path}"
 			return "${rc}"
 		fi
 
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
 		echo "${retry_label} transport unavailable; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
-		sleep "${retry_sleep_secs}"
+		sleep_for_retry_or_signal "${retry_sleep_secs}" || {
+			rc="$?"
+			rm -f "${output_path}"
+			return "${rc}"
+		}
 	done
 }
 
@@ -7031,6 +7173,10 @@ run_deploy_rebuild_command_with_retry() {
 		else
 			rc="$?"
 		fi
+		if is_signal_exit_status "${rc}"; then
+			rm -f "${output_path}"
+			return "${rc}"
+		fi
 
 		if [ "${rc}" -ne 0 ] &&
 			verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${rc}" "${output_path}"; then
@@ -7047,7 +7193,11 @@ run_deploy_rebuild_command_with_retry() {
 		attempt=$((attempt + 1))
 		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
 		echo "Deploy copy transport closed for ${node}; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
-		sleep "${retry_sleep_secs}"
+		sleep_for_retry_or_signal "${retry_sleep_secs}" || {
+			rc="$?"
+			rm -f "${output_path}"
+			return "${rc}"
+		}
 		clear_primary_ready "${node}"
 		prepare_host_transport_for_deploy "${node}" 1 >/dev/null 2>&1 || true
 	done
@@ -7070,7 +7220,7 @@ activate_prepared_system_path() {
 target_trusted_public_keys_for_copy() {
 	local node="$1" settings_json=""
 
-	settings_json="$(nix eval --json --no-write-lock-file ".#nixosConfigurations.${node}.config.nix.settings")" || return 1
+	run_supervised_stdout_capture settings_json "" nix eval --json --no-write-lock-file ".#nixosConfigurations.${node}.config.nix.settings" || return 1
 	jq -r '
 		[
 			(."trusted-public-keys" // []),
@@ -8186,6 +8336,7 @@ run_nix_with_optional_sshopts() {
 
 build_host() {
 	local node="$1" result_link="${2:-}" out_path=""
+	local rc=0
 	local -a build_cmd=()
 
 	log_host_stage "build" "${node}"
@@ -8198,8 +8349,12 @@ build_host() {
 		build_cmd+=(-o "${result_link}")
 	fi
 	build_cmd+=(".#nixosConfigurations.${node}.config.system.build.toplevel")
-	if ! out_path="$("${build_cmd[@]}")"; then
+	if ! run_supervised_stdout_capture out_path "" "${build_cmd[@]}"; then
+		rc="$?"
 		echo "Build failed for ${node}" >&2
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 		return 1
 	fi
 
@@ -8222,6 +8377,7 @@ build_host() {
 
 remote_build_host() {
 	local node="$1" result_link="${2:-}" out_path="" store_uri="" nix_sshopts=""
+	local rc=0
 	local -a build_cmd=()
 
 	log_host_stage "build" "${node}" "remote build"
@@ -8238,7 +8394,11 @@ remote_build_host() {
 		"Remote build on ${BUILD_HOST}" \
 		"${nix_sshopts}" \
 		"${build_cmd[@]}"; then
+		rc="$?"
 		echo "Remote build failed for ${node} on ${BUILD_HOST}" >&2
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 		return 1
 	fi
 
@@ -8268,6 +8428,7 @@ remote_build_host() {
 
 dev_build_host() {
 	local node="$1" out_path="" result_link=""
+	local rc=0
 	local -a build_cmd=()
 
 	result_link="result-dev/${node}"
@@ -8280,8 +8441,12 @@ dev_build_host() {
 		build_cmd+=(-L)
 	fi
 	build_cmd+=(".#nixosConfigurations.${node}.config.system.build.toplevel")
-	if ! out_path="$("${build_cmd[@]}")"; then
+	if ! run_supervised_stdout_capture out_path "" "${build_cmd[@]}"; then
+		rc="$?"
 		echo "Dev build failed for ${node}" >&2
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
 		return 1
 	fi
 
