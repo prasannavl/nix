@@ -115,6 +115,7 @@
       ./lib/podman-compose
       ./lib/services/migrator
       ./lib/systemd-user-manager
+      ./pkgs/tools/nixbot/nixos-module.nix
       flakeLib.serviceModule.portCheckModule
       ({lib, ...}: {
         services.migrator.enable = lib.mkDefault true;

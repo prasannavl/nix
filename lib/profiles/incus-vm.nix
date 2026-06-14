@@ -14,7 +14,6 @@
     ../systemd.nix
     ../security.nix
     ../sudo.nix
-    ../nixbot
     ../nix-ld.nix
     ../users.nix
     ../sysctl-inotify.nix

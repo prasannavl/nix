@@ -30,6 +30,19 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 
 - `nixbot` is the only supported orchestration entrypoint for local, CI, and CI
   host-triggered runs.
+- `pkgs/tools/nixbot/nixos-module.nix` owns the NixOS service integration:
+  primary `nixbot` user, trusted-user wiring, sudo policy, age identity paths,
+  state directories, optional CLI exposure, outbound SSH client config, and
+  repo-specific forced-command ingress.
+- Host common modules own policy:
+  - `hosts/common/all.nix` enables `services.nixbot` by default and sets normal
+    deploy/login authorized keys.
+  - CI host common modules add `services.nixbot.repos.<name>` entries plus
+    `age.secrets` for the deploy SSH identities used by outbound Git and host
+    deploy SSH.
+- `users/userdata.nix` carries identity metadata for humans and automation.
+  `nixbot.sshKeys` and `nixbot.ciSshKeys` are the single public-key source for
+  deploy trust, CI ingress trust, and secret recipients.
 - The deploy system separates:
   - SSH deploy identity
   - per-host machine age identity
@@ -112,10 +125,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   stdout because remote builds are captured through command substitution; if a
   heartbeat inherits that pipe, the wrapper can appear stuck after Nix exits.
 - Long-running remote-store commands must be supervised as background jobs with
-  stdout captured to an explicit temp file. Do not wrap `nix build --store
-  ssh-ng://...` directly in command substitution: Bash defers the parent trap
-  while waiting for that foreground capture, so Ctrl-C can interrupt Nix but
-  leave nixbot's heartbeat/retry wrapper alive.
+  stdout captured to an explicit temp file. Do not wrap
+  `nix build --store
+  ssh-ng://...` directly in command substitution: Bash
+  defers the parent trap while waiting for that foreground capture, so Ctrl-C
+  can interrupt Nix but leave nixbot's heartbeat/retry wrapper alive.
 - Long-running commands that capture stdout, including local builds, dev builds,
   remote builds, and transport checks, should use the shared supervised capture
   runner. Do not add new command-substitution wrappers around `nix`, `ssh`,
@@ -259,9 +273,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   top-level nixbot process to have a trap: Bash can defer a parent trap while it
   waits on a foreground host-job subshell, and a child shell without its own
   trap can keep printing remote-build heartbeats after Nix itself has already
-  received Ctrl-C. The remote-store wrapper should treat `SIGINT`/`SIGTERM` as
-  a first-class result, kill its heartbeat and command tree, and return the
-  signal status without transport retries.
+  received Ctrl-C. The remote-store wrapper should treat `SIGINT`/`SIGTERM` as a
+  first-class result, kill its heartbeat and command tree, and return the signal
+  status without transport retries.
 - Captured long-running commands must use the shared supervised runner instead
   of command substitution. This keeps the trap in the waiting shell, terminates
   the command process tree, restores the previous trap state, and propagates the
@@ -337,10 +351,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - `pkgs/tools/nixbot/nixbot.sh`
 - `pkgs/tools/nixbot/default.nix`
 - `pkgs/tools/nixbot/flake.nix`
+- `pkgs/tools/nixbot/nixos-module.nix`
 - `scripts/nixbot.sh`
 - `hosts/nixbot.nix`
-- `lib/nixbot/default.nix`
-- `lib/nixbot/ci.nix`
+- `hosts/common/all.nix`
+- `hosts/common/ci.nix`
 - `.github/workflows/nixbot.yaml`
 
 ## Provenance

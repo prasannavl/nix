@@ -156,7 +156,7 @@ Expected outcome:
 
 ### Step 1: Configure New Keys + Legacy Paths
 
-1. Add new pubkeys in `users/userdata.nix` as in Mode A.
+1. Add new pubkeys in nixbot service key lists as in Mode A.
 2. Ensure `LEGACY_NIXBOT_KEY_AGE` exists and is listed in
    `data/secrets/default.nix`.
 3. In `hosts/nixbot.nix`:

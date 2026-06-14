@@ -28,6 +28,7 @@
   };
 in {
   imports = [
+    ../common/all.nix
     ../../lib/profiles/lxc.nix
     (import ../../lib/incus-vm.nix {inherit hostName;})
     (import ../../users/pvl).lxc

@@ -19,8 +19,8 @@ For the operator trust boundary around CI host-trigger access and arbitrary
 
 - deploy package: `pkgs/tools/nixbot`
 - deploy target mapping: `hosts/nixbot.nix`
-- CI host module: `lib/nixbot/ci.nix`
-- base nixbot user module: `lib/nixbot/default.nix`
+- package service module: `pkgs/tools/nixbot/nixos-module.nix`
+- host policy modules: `hosts/common/all.nix`, `hosts/common/ci.nix`
 - repo secrets: `data/secrets/*.age`
 
 ## Keys And Identities
@@ -128,11 +128,11 @@ internals.
 CI trigger endpoint, CI cache port, and managed repo URL. Explicit CLI flags or
 matching environment variables still override them for one run.
 
-In `lib/nixbot/ci.nix`:
+In `hosts/common/ci.nix` through `services.nixbot.repos`:
 
-- Add forced-command authorized key entry for `ciSshKey`.
-- Point the forced command directly at the packaged binary:
-  - `command="${pkgs.nixbot}/bin/nixbot"`
+- Add forced-command authorized key entries for repo-specific CI ingress keys.
+- Export repo-specific `NIXBOT_REPO_URL` and `NIXBOT_REPO_PATH` before running
+  the packaged binary.
 - Ensure runtime prerequisites:
   - `/var/lib/nixbot/.ssh` exists, mode `0700`, owner `nixbot`
   - `environment.systemPackages` includes `age` and `jq`
@@ -233,12 +233,12 @@ shell access for `nixos-rebuild --target-host`.
 
 ### Static key exchange from configuration
 
-- `users/userdata.nix` is the source of truth for the public SSH keys trusted by
-  the `nixbot` user.
-- `lib/nixbot/default.nix` installs `nixbot.sshKeys` onto every managed host as
-  `nixbot` authorized keys.
-- `lib/nixbot/ci.nix` separately installs `nixbot.ciSshKeys` onto the CI host's
-  `nixbot` account, but wrapped in a forced command:
+- `users/userdata.nix` is the source of truth for `nixbot.sshKeys` and
+  `nixbot.ciSshKeys`.
+- `services.nixbot.user.authorizedKeys` installs ordinary public SSH keys
+  trusted by the `nixbot` user.
+- `services.nixbot.repos.<name>.sshKeys` installs CI ingress keys onto the
+  configured repo SSH user, wrapped in a forced command:
   - only the packaged `nixbot` command may run
   - no shell, PTY, forwarding, or user rc files
 - This means there are two SSH trust exchanges:
@@ -249,7 +249,7 @@ shell access for `nixos-rebuild --target-host`.
 
 - The private side of the shared deploy key lives encrypted at
   `data/secrets/globals/nixbot/nixbot.key.age`.
-- On CI host, `lib/nixbot/ci.nix` decrypts that file to:
+- On CI host, `hosts/common/ci.nix` decrypts that file to:
   - `/var/lib/nixbot/.ssh/id_ed25519`
 - During bootstrap of another node, `nixbot` may also copy that same private key
   onto the target if `nixbot@target` is not usable yet.
@@ -293,8 +293,7 @@ shell access for `nixos-rebuild --target-host`.
    - `/var/lib/nixbot/.age/identity`
 4. Target activation runs agenix with:
 
-   - `age.identityPaths = [ "/var/lib/nixbot/.ssh/id_ed25519"
-     "/var/lib/nixbot/.age/identity" ]`
+   - `age.identityPaths = [ "/var/lib/nixbot/.age/identity" ]`
 
 5. Secrets are materialized on target and access to plaintext is constrained
    with Unix ownership/mode via `age.secrets.<name>.owner/group/mode`.
@@ -327,9 +326,9 @@ shell access for `nixos-rebuild --target-host`.
 ### CI host identities and secrets
 
 - CI host is the configured `hosts/nixbot.nix` `globals.ciHost` target.
-- CI host ingress identity is the SSH key whose public half is loaded from
-  `users/userdata.nix` (`nixbot.ciSshKeys` / `nixbot.ciSshKey`) and forced into
-  the packaged `nixbot` binary by `lib/nixbot/ci.nix`.
+- CI host ingress identity is the SSH key whose public half is listed under the
+  relevant `services.nixbot.repos.<name>.sshKeys` entry and forced into the
+  packaged `nixbot` binary by `pkgs/tools/nixbot/nixos-module.nix`.
 - The private half of that ingress key is stored as
   `data/secrets/globals/ci/nixbot-ci-ssh.key.age`.
   - recipients: admins only
@@ -339,8 +338,8 @@ shell access for `nixos-rebuild --target-host`.
   - recipients: admins + current `nixbot` deploy keys + the CI host machine age
     recipient
   - runtime path on CI host: `/var/lib/nixbot/.ssh/id_ed25519`
-  - trusted by other nodes because `lib/nixbot/default.nix` installs the
-    corresponding public keys into the `nixbot` account on those nodes
+  - trusted by other nodes because `services.nixbot.user.authorizedKeys`
+    installs the corresponding public keys into the `nixbot` account
 - Optional overlap key:
   - source: `data/secrets/globals/nixbot/nixbot-legacy.key.age`
   - runtime path: `/var/lib/nixbot/.ssh/id_ed25519_legacy`
@@ -362,7 +361,7 @@ shell access for `nixos-rebuild --target-host`.
 - CI host OpenTofu/Cloudflare runtime:
   - source files live under `data/secrets/globals/cloudflare/*.key.age`
   - recipients are admins + the CI host
-  - `lib/nixbot/ci.nix` decrypts them to
+  - the CI host nixbot service configuration decrypts them to
     `/var/lib/nixbot/secrets/cloudflare-tf/*`
   - `nixbot tf` auto-loads them into the OpenTofu environment when shell
     variables are absent
@@ -511,9 +510,9 @@ sibling override for one run.
 1. Generate new keypairs for:
    - `nixbot` deploy/login key
    - `nixbot-ci-ssh` ingress key
-2. Add new public keys into `users/userdata.nix` lists while keeping old keys:
-   - append to `nixbot.sshKeys`
-   - append to `nixbot.ciSshKeys`
+2. Add new public keys into `users/userdata.nix` while keeping old keys:
+   - append deploy/login keys to `nixbot.sshKeys`
+   - append ingress keys to `nixbot.ciSshKeys`
 3. Re-encrypt managed age files so both old and new nixbot public keys remain
    recipients:
    - `data/secrets/globals/nixbot/nixbot.key.age`
@@ -574,8 +573,7 @@ Optional overlap (only for unusual partial/out-of-band flows):
 
 1. Keep previous key as `/var/lib/nixbot/.age/identity_legacy`.
 2. Temporarily set
-   `age.identityPaths = [ "/var/lib/nixbot/.ssh/id_ed25519"
-   "/var/lib/nixbot/.age/identity"
+   `age.identityPaths = [ "/var/lib/nixbot/.age/identity"
    "/var/lib/nixbot/.age/identity_legacy" ]`.
 3. Encrypt host secrets to both old and new machine recipients.
 4. After successful migration, remove legacy recipient and legacy file/path.

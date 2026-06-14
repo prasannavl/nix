@@ -1,6 +1,6 @@
 {...}: {
   imports = [
-    ../pvl-common.nix
+    ../common/pvl.nix
     ../../lib/devices/asus-fa401wv.nix
     ./sys.nix
     ./nix-ld.nix

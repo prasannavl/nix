@@ -182,6 +182,7 @@ Environment (Remote Trigger):
 Environment (Repo):
   NIXBOT_REPO_URL             Same as --repo-url
   NIXBOT_REPO_PATH            Same as --repo-path
+  NIXBOT_REPO_SSH_KEY_PATHS   Colon-separated SSH key paths used for Git repo clone/fetch
   NIXBOT_USE_REPO_SCRIPT      Same as --use-repo-script (bool)
 
 Environment (Terraform actions):
@@ -524,7 +525,7 @@ init_vars() {
 	REPO_ROOT_LOCK_DIR=""
 	REPO_ROOT_MANAGED=1
 	REPO_URL="${NIXBOT_REPO_URL:-}"
-	REPO_SSH_KEY_PATH="${REMOTE_NIXBOT_PRIMARY_KEY}"
+	REPO_SSH_KEY_PATHS="${NIXBOT_REPO_SSH_KEY_PATHS:-${REMOTE_NIXBOT_PRIMARY_KEY}}"
 	RUNTIME_WORK_DIR="${NIXBOT_RUNTIME_WORK_DIR:-}"
 
 	init_current_host_aliases
@@ -3527,7 +3528,8 @@ ensure_repo_known_hosts_file_for_url() {
 }
 
 build_repo_git_ssh_command_for_url() {
-	local repo_url="$1" known_hosts_file="" git_ssh_command=""
+	local repo_url="$1" known_hosts_file="" git_ssh_command="" key_path=""
+	local -a repo_ssh_key_paths=()
 
 	known_hosts_file="$(ensure_repo_known_hosts_file_for_url "${repo_url}")" || return 1
 
@@ -3536,11 +3538,15 @@ build_repo_git_ssh_command_for_url() {
 		"${SSH_NULL_CONFIG_FILE}" \
 		"${SSH_NULL_KNOWN_HOSTS_FILE}" \
 		"${known_hosts_file}"
-	if [ -f "${REPO_SSH_KEY_PATH}" ]; then
+
+	IFS=':' read -r -a repo_ssh_key_paths <<<"${REPO_SSH_KEY_PATHS}"
+	for key_path in "${repo_ssh_key_paths[@]}"; do
+		[ -n "${key_path}" ] || continue
+		[ -f "${key_path}" ] || continue
 		printf -v git_ssh_command '%s -i %q -o IdentitiesOnly=yes' \
 			"${git_ssh_command}" \
-			"${REPO_SSH_KEY_PATH}"
-	fi
+			"${key_path}"
+	done
 
 	printf '%s\n' "${git_ssh_command}"
 }

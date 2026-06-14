@@ -9,7 +9,6 @@
     ../network-wifi.nix
     ../security.nix
     ../sudo.nix
-    ../nixbot
     ../systemd.nix
     ../sysctl-inotify.nix
     ../sysctl-kernel-coredump.nix

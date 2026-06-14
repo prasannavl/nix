@@ -2,6 +2,7 @@ let
   secretsLib = import ../../lib/flake/secrets.nix;
   userdata = (import ../../lib/stacks).all.users;
   admins = userdata.pvl.sshKeys;
+  nixbotKeys = userdata.nixbot.sshKeys;
   adminsWithNixbot = admins ++ nixbotKeys;
   deployMachines = machines.pvl-x2;
   adminsWithCiHost =
@@ -24,7 +25,6 @@ let
     defaultAccess = adminsWithNixbot;
   };
   machines = machineIdentities.recipients;
-  nixbotKeys = userdata.nixbot.sshKeys;
   stackArgs = {
     admins = admins;
     machines = machines;

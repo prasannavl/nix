@@ -94,9 +94,9 @@ Expected outcome:
 Actions:
 
 1. Update `users/userdata.nix` key lists:
-   - append contents of `${KEYGEN_DIR}/nixbot.key.pub` to `nixbot.sshKeys`
+   - append contents of `${KEYGEN_DIR}/nixbot.key.pub` to `nixbot.sshKeys`.
    - append contents of `${KEYGEN_DIR}/nixbot-ci-ssh.key.pub` to
-     `nixbot.ciSshKeys`
+     `nixbot.ciSshKeys`.
 2. Optionally refresh helper public-key files:
    - `data/secrets/globals/nixbot/nixbot.pub`
    - `data/secrets/globals/ci/nixbot-ci-ssh.key.pub`

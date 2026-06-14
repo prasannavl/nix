@@ -7,8 +7,11 @@ Canonical SSH deploy-key rotation policy for `nixbot`.
 ## Durable rules
 
 - Default to overlap rotation.
-- `users/userdata.nix` may carry multiple active deploy and CI host ingress
-  public keys during the overlap window.
+- `users/userdata.nix` is the source of truth for `nixbot.sshKeys` and
+  `nixbot.ciSshKeys`.
+- `services.nixbot.user.authorizedKeys` and
+  `services.nixbot.repos.<name>.sshKeys` may carry multiple active public keys
+  during the overlap window.
 - `data/secrets/default.nix` must include recipients for every active key in
   that overlap set.
 - CI host private-key cutover and downstream host trust rollout must move
@@ -31,10 +34,11 @@ Canonical SSH deploy-key rotation policy for `nixbot`.
 
 ## Source of truth files
 
-- `users/userdata.nix`
 - `hosts/nixbot.nix`
-- `lib/nixbot/default.nix`
-- `lib/nixbot/ci.nix`
+- `users/userdata.nix`
+- `hosts/common/all.nix`
+- `hosts/common/ci.nix`
+- `pkgs/tools/nixbot/nixos-module.nix`
 - `data/secrets/default.nix`
 
 ## Provenance

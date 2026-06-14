@@ -76,8 +76,9 @@ Canonical secret topology, bootstrap order, and managed secret operations.
 - `data/secrets/default.nix`
 - `scripts/age-secrets.sh`
 - `hosts/nixbot.nix`
-- `lib/nixbot/default.nix`
-- `lib/nixbot/ci.nix`
+- `pkgs/tools/nixbot/nixos-module.nix`
+- `hosts/common/all.nix`
+- `hosts/common/ci.nix`
 - `lib/incus-vm.nix`
 - `docs/secrets.md`
 - `docs/deployment.md`

@@ -1,6 +1,6 @@
 {...}: {
   imports = [
-    ../pvl-common.nix
+    ../common/pvl.nix
     ../../lib/devices/lenovo-legion-5-15ach6h.nix
     ./sys.nix
     ./nix-ld.nix

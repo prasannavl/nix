@@ -31,6 +31,7 @@
     inherit pkgs;
     src = ./.;
     build = pkgs.symlinkJoin {
+      pname = "nixbot";
       name = "nixbot";
       paths = [app];
       postBuild = ''
@@ -38,6 +39,9 @@
           $out/share/bash-completion/completions/nixbot
       '';
       meta = app.meta;
+    };
+    extraPassthru = {
+      flakeExtraNixosModules.nixbot = import ./nixos-module.nix;
     };
   };
 in

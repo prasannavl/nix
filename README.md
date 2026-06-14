@@ -150,8 +150,8 @@ Primary files for deployment are:
 - `pkgs/tools/nixbot/` (canonical packaged nixbot source)
 - `nixbot` (packaged deployment entrypoint)
 - `pkgs/tools/nixbot/flake.nix` (packaged nixbot application wrapper)
-- `lib/nixbot/ci.nix` (CI host-side nixbot setup)
-- `lib/nixbot/default.nix` (nixbot user module with sudo/identity)
+- `pkgs/tools/nixbot/nixos-module.nix` (package-owned NixOS service module)
+- `hosts/common/all.nix` and `hosts/common/ci.nix` (host-side nixbot policy)
 - `nixbot` runs in a cached `nix shell` toolchain with pinned tools (`nix`,
   `age`, `cloudflared`, `coreutils`, `git`, `jq`, `nixos-rebuild-ng`, `openssh`,
   `opentofu`, `procps`) so deploy runs use consistent command sets everywhere.

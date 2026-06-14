@@ -46,7 +46,7 @@ The session started from local `master` at
 | `e01f7df7` | `fix(tailscale): use client routing`                 | Already ported byte-for-byte in `lib/incus-vm.nix` and `lib/network.nix`.                                                                                   |
 | `8e6e2e25` | `docs(nixbot): record pvl-x2 deploy gaps`            | Skipped. Abird/pvl-x2 operational note from the source repo.                                                                                                |
 | `020b4883` | `style(docs): format nixbot note`                    | Skipped with the source-only note.                                                                                                                          |
-| `c6da9ded` | `fix(nixbot): use system deploy command`             | Already ported byte-for-byte in `lib/nixbot/ci.nix`; `pkgs/tools/nixbot/nixbot.sh` remains byte-identical except the preserved local tfvars block.          |
+| `c6da9ded` | `fix(nixbot): use system deploy command`             | Superseded by package-owned `services.nixbot`; `pkgs/tools/nixbot/nixbot.sh` retains the system deploy command behavior.                                    |
 
 ## Parity Audit
 
@@ -56,7 +56,7 @@ Byte-for-byte parity with `abird/master` after the port:
 - `lib/incus/helper.sh`
 - `lib/services/nginx/default.nix`
 - `lib/services/nginx/compose/nginx.conf`
-- `lib/nixbot/ci.nix`
+- `pkgs/tools/nixbot/nixos-module.nix`
 - `lib/incus-vm.nix`
 - `lib/network.nix`
 - `pkgs/tools/data-migrator/data-migrator.py`

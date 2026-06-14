@@ -217,8 +217,7 @@ Host-specific modules import shared functionality from `lib/`:
 | `lib/incus/default.nix`    | Declarative Incus guest lifecycle           |
 | `lib/incus-vm.nix`         | Incus VM guest hardware config              |
 | `lib/swap-auto.nix`        | Automatic swap configuration                |
-| `lib/nixbot/`              | Deploy agent integration                    |
-| `lib/nixbot/ci.nix`        | CI host role for deploy relay               |
+| `pkgs/tools/nixbot/`       | Deploy agent package and service module     |
 | `lib/devices/<device>.nix` | Hardware-specific kernel modules and quirks |
 
 ## Host Types

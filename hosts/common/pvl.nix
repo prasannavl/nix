@@ -1,9 +1,10 @@
 {pkgs, ...}: {
   imports = [
-    ../lib/incus
-    ../lib/swap-auto.nix
-    ../lib/profiles/all.nix
-    ../lib/podman.nix
+    ./all.nix
+    ../../lib/incus
+    ../../lib/swap-auto.nix
+    ../../lib/profiles/all.nix
+    ../../lib/podman.nix
   ];
 
   environment.systemPackages = with pkgs; [

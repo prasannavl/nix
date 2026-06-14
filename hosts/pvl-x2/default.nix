@@ -1,7 +1,7 @@
 {config, ...}: {
   imports = [
-    ../../lib/nixbot/ci.nix
-    ../pvl-common.nix
+    ../common/pvl.nix
+    ../common/ci.nix
     ../../lib/devices/gmtek-evo-x2.nix
     ./cloudflare.nix
     ./sys.nix

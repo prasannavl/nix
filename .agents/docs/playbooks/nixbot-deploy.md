@@ -18,8 +18,8 @@ forced-command key, while regular `nixbot` SSH key behavior remains normal.
   - CI host ingress SSH key (forced-command only).
 - CI host ingress key must only run the packaged `nixbot` command from
   `pkgs/tools/nixbot`.
-- Regular `nixbot` SSH key remains a normal key (defined in
-  `lib/nixbot/default.nix`).
+- Regular `nixbot` SSH access is sourced from `users/userdata.nix`
+  `nixbot.sshKeys` and installed through `services.nixbot.user.authorizedKeys`.
 - CI host stores private deploy key at `/var/lib/nixbot/.ssh/id_ed25519` (from
   `data/secrets/globals/nixbot/nixbot.key.age`).
 - Activation-time agenix decrypt uses machine identity
@@ -38,16 +38,19 @@ If bootstrap fails, fallback uses configured bootstrap user/key path.
 
 - `nixbot`
 - `hosts/nixbot.nix`
-- `lib/nixbot/default.nix`
-- `lib/nixbot/ci.nix`
-- `users/userdata.nix`
+- `pkgs/tools/nixbot/nixos-module.nix`
+- `hosts/common/all.nix`
+- `hosts/common/ci.nix`
 
-## CI host Module Requirements (`lib/nixbot/ci.nix`)
+## CI host Module Requirements (`hosts/common/ci.nix`)
 
-- Add forced-command authorized key for `userdata.ciSshKey`.
-- Do not replace the normal `nixbot` key from `lib/nixbot/default.nix`.
-- Point the forced command directly at the packaged binary:
-  - `command="${pkgs.nixbot}/bin/nixbot"`
+- Define `services.nixbot.repos.<name>` for each repo the host should accept CI
+  forced-command ingress for.
+- Keep ordinary `nixbot` login/deploy keys in `users/userdata.nix`
+  `nixbot.sshKeys`; `hosts/common/all.nix` installs them through
+  `services.nixbot.user.authorizedKeys`.
+- Let the module generate forced-command wrappers that export `NIXBOT_REPO_URL`
+  and `NIXBOT_REPO_PATH` before running the packaged binary.
 - Ensure dependencies exist on CI host:
   - `age`, `jq`
 - Ensure runtime SSH dir/permissions exist.
