@@ -16,7 +16,7 @@ manager and uses `systemctl --user`.
 ## Declaration
 
 ```nix
-services.systemdUserManager.instances.<name> = {
+services.systemd-user-manager.instances.<name> = {
   user = "app";
   unit = "app.service";
   state = "running";

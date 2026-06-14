@@ -4,19 +4,21 @@
   lib,
   modulesPath,
   ...
-}: {
+}: let
+  diskoLib = import ../../lib/disko/lib.nix {lib = lib;};
+in {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
     ../../lib/disko
   ];
 
-  disko.devices.disk.main = config.diskoLib.mkMain {
+  disko.devices.disk.main = diskoLib.mkMain {
     diskDevice = "/dev/disk/by-id/nvme-SKHynix_HFS001TDE9X084N_ANA4N476110504A1C";
-    boot = config.diskoLib.mkEfiBoot {
+    boot = diskoLib.mkEfiBoot {
       size = "1G";
       partUuid = "30f09e27-d8a0-4b1e-9ae5-4f2543ca2353";
     };
-    root = config.diskoLib.mkLuksBtrfs {
+    root = diskoLib.mkLuksBtrfs {
       size = "100%";
       name = "luks-696fd608-b5dc-4a8d-94ee-4925d011a449";
       luksUuid = "696fd608-b5dc-4a8d-94ee-4925d011a449";

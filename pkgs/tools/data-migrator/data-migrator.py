@@ -1179,7 +1179,9 @@ def deploy_target_resumed(args, host):
 def deploy_drain(args, host, enabled):
     state = "on" if enabled else "off"
     if args.skip_deploy:
-        info(f"skip-deploy: would set services.migrator gate {state} for {host}")
+        info(
+            f"skip-deploy: would set services.migration-manager gate {state} for {host}"
+        )
         return
 
     cmd = [

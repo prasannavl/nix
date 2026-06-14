@@ -9,7 +9,7 @@
       domain = domain;
       type = "-";
       item = "nofile";
-      value = toString config.x.fdlimit;
+      value = toString config.x.fdLimit;
     }) ["*" "root"];
   };
 }

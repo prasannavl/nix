@@ -55,7 +55,7 @@ NixOS module:
   `lib/systemd-user-manager/default.nix` with shared shell logic in
   `lib/systemd-user-manager/helper.sh` (documented in
   `docs/systemd-user-manager.md`).
-- Hosts declare stacks under `services.podmanCompose.<stack>` in a host service
+- Hosts declare stacks under `services.podman-compose.<stack>` in a host service
   module, commonly `hosts/<host>/services.nix` or
   `hosts/<host>/services/default.nix`.
 - Compose content can be a Nix attrset, inline YAML, a file path, or a staged
@@ -76,7 +76,7 @@ module:
 - Reusable guest bootstrap lives in `lib/incus-vm.nix`.
 - Base image builds live in `lib/images/incus-lxc-base.nix` and
   `lib/images/incus-vm-base.nix`; `incus-base` remains a compatibility alias.
-- Guests are declared under `services.incusMachines.instances.<name>`.
+- Guests are declared under `services.incus-manager.instances.<name>`.
 - Machines can use the shared default image or point at per-machine image
   overrides.
 - Lifecycle tags (`bootTag`, `recreateTag`, `imageTag`) control guest

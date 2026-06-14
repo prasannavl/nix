@@ -118,7 +118,7 @@
       ./pkgs/tools/nixbot/nixos-module.nix
       flakeLib.serviceModule.portCheckModule
       ({lib, ...}: {
-        services.migrator.enable = lib.mkDefault true;
+        services.migration-manager.enable = lib.mkDefault true;
       })
       {nixpkgs.overlays = overlays;}
       {imports = builtins.attrValues (builtins.removeAttrs flakeLib.nixosModules ["default"]);}

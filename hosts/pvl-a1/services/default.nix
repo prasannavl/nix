@@ -8,7 +8,7 @@
     "d /var/lib/pvl 0755 pvl pvl -"
   ];
 
-  services.podmanCompose.pvl = {
+  services.podman-compose.pvl = {
     user = "pvl";
     stackDir = "/var/lib/pvl/compose";
     servicePrefix = "pvl-";

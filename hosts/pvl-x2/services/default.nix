@@ -14,7 +14,7 @@
     ./postgres.nix
   ];
 
-  config.services.podmanCompose.pvl = {
+  config.services.podman-compose.pvl = {
     user = "pvl";
     stackDir = "/var/lib/pvl/compose";
     servicePrefix = "pvl-";

@@ -81,7 +81,7 @@ alejandra lib/services/fail2ban-helper/default.nix lib/services/nginx/default.ni
 python3 -m py_compile lib/services/fail2ban-helper/fail2ban-helper.py
 nix eval --json .#nixosConfigurations.pvl-x2.config.services.fail2ban.jails
 nix eval --json .#nixosConfigurations.pvl-x2.config.services.fail2ban.bantime
-nix eval --raw '.#nixosConfigurations.pvl-x2.config.services.podmanCompose.pvl.instances.nginx.files."conf.d/srv-http-default.conf".text'
+nix eval --raw '.#nixosConfigurations.pvl-x2.config.services.podman-compose.pvl.instances.nginx.files."conf.d/srv-http-default.conf".text'
 nix eval .#nixosConfigurations.pvl-x2.config.system.build.toplevel.drvPath
 ```
 

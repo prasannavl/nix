@@ -5,7 +5,7 @@
   pkgs,
   ...
 }: let
-  cfg = config.services.incusMachines;
+  cfg = config.services.incus-manager;
   globalCfg = cfg.global;
 
   projectConfigs = builtins.removeAttrs cfg ["global"];
@@ -40,14 +40,14 @@
   defaultVmBaseImage = inputs.self.nixosImages.incus-vm-base;
   defaultVmBaseAlias = "nixos-incus-vm-base";
 
-  incusMachinesStateDir = "/var/lib/incus-machines";
-  managedGcDirRoot = "${incusMachinesStateDir}/managed-dirs";
+  incusManagerStateDir = "/var/lib/incus-machines";
+  managedGcDirRoot = "${incusManagerStateDir}/managed-dirs";
   certificateDelegationsRoot = "/var/lib/incus-delegations";
   certificateDelegationGuestRoot = "/var/lib/incus-delegation";
-  certificateDelegationStateDir = "${incusMachinesStateDir}/delegated-certificates";
+  certificateDelegationStateDir = "${incusManagerStateDir}/delegated-certificates";
   incusNixosMetaVersion = 1;
 
-  certificatesStateFile = "${incusMachinesStateDir}/certificates.json";
+  certificatesStateFile = "${incusManagerStateDir}/certificates.json";
   certificateDelegationsStateFile = "${certificateDelegationStateDir}/delegations.json";
 
   hasInstances = allInstances != {};
@@ -326,7 +326,7 @@
     );
   routesJson = builtins.toJSON projectRouteEntries;
   routesFile = pkgs.writeText "incus-machines-routes.json" routesJson;
-  routesStateFile = "${incusMachinesStateDir}/routes.json";
+  routesStateFile = "${incusManagerStateDir}/routes.json";
   invalidRestrictedCertificates = map (cert: cert.name) (
     lib.filter (cert: cert.restricted && cert.projects == []) globalCfg.certificates
   );
@@ -464,7 +464,7 @@
         default = null;
         description = ''
           Name of a parent-side certificate delegation to mount into this
-          instance. The named `services.incusMachines.global.certificateDelegations`
+          instance. The named `services.incus-manager.global.certificateDelegations`
           entry owns the host directory and project binding.
         '';
       };
@@ -626,7 +626,7 @@
         type = lib.types.listOf lib.types.str;
         default = [];
         description = ''
-          User names from `services.incusMachines.global.remote.userCertificates`
+          User names from `services.incus-manager.global.remote.userCertificates`
           whose generated client certificates should be published into this
           project's delegated certificate state. These are appended to `certs`.
         '';
@@ -1118,7 +1118,7 @@
         default = name;
         description = ''
           Incus instance name. Defaults to the attribute key under
-          `services.incusMachines.<project>.instances`.
+          `services.incus-manager.<project>.instances`.
         '';
       };
 
@@ -1140,8 +1140,8 @@
           Incus image reference such as `debian` or `images:debian/12`; a
           non-string value is treated as a NixOS image derivation/system attrset
           to import into local Incus. Defaults to the project default image, or
-          `services.incusMachines.global.defaultLxcImage` for LXC instances and
-          `services.incusMachines.global.defaultVmImage` for VM instances.
+          `services.incus-manager.global.defaultLxcImage` for LXC instances and
+          `services.incus-manager.global.defaultVmImage` for VM instances.
         '';
       };
       imageAlias = lib.mkOption {
@@ -1281,7 +1281,7 @@
         default = null;
         description = ''
           Project-local default LXC image source. When unset, LXC instances use
-          `services.incusMachines.global.defaultLxcImage`.
+          `services.incus-manager.global.defaultLxcImage`.
         '';
       };
 
@@ -1290,7 +1290,7 @@
         default = null;
         description = ''
           Project-local default LXC image alias. When unset, LXC instances use
-          `services.incusMachines.global.defaultLxcImageAlias`.
+          `services.incus-manager.global.defaultLxcImageAlias`.
         '';
       };
 
@@ -1299,7 +1299,7 @@
         default = null;
         description = ''
           Project-local default VM image source. When unset, VM instances use
-          `services.incusMachines.global.defaultVmImage`.
+          `services.incus-manager.global.defaultVmImage`.
         '';
       };
 
@@ -1308,7 +1308,7 @@
         default = null;
         description = ''
           Project-local default VM image alias. When unset, VM instances use
-          `services.incusMachines.global.defaultVmImageAlias`.
+          `services.incus-manager.global.defaultVmImageAlias`.
         '';
       };
 
@@ -1644,12 +1644,12 @@
     parts = builtins.match "([0-9]+)\\.([0-9]+)\\.([0-9]+)\\.([0-9]+)" value;
   in
     if parts == null
-    then throw "Invalid IPv4 address for services.incusMachines: ${value}"
+    then throw "Invalid IPv4 address for services.incus-manager: ${value}"
     else let
       octets = map lib.toInt parts;
     in
       if !lib.all (octet: octet >= 0 && octet <= 255) octets
-      then throw "Invalid IPv4 address for services.incusMachines: ${value}"
+      then throw "Invalid IPv4 address for services.incus-manager: ${value}"
       else octets;
 
   ipv4ToInt = value: let
@@ -1665,14 +1665,14 @@
     parts = lib.splitString "/" subnet;
   in
     if builtins.length parts != 2
-    then throw "Invalid IPv4 CIDR for services.incusMachines.global.remote project allowedSubnets: ${subnet}"
+    then throw "Invalid IPv4 CIDR for services.incus-manager.global.remote project allowedSubnets: ${subnet}"
     else let
       prefixLength = lib.toInt (builtins.elemAt parts 1);
       size = pow2 (32 - prefixLength);
       base = ipv4ToInt (builtins.elemAt parts 0);
     in
       if prefixLength < 0 || prefixLength > 32
-      then throw "Invalid IPv4 CIDR for services.incusMachines.global.remote project allowedSubnets: ${subnet}"
+      then throw "Invalid IPv4 CIDR for services.incus-manager.global.remote project allowedSubnets: ${subnet}"
       else {
         start = (builtins.div base size) * size;
         end = ((builtins.div base size) + 1) * size - 1;
@@ -2298,7 +2298,7 @@
       };
     };
 in {
-  options.services.incusMachines = lib.mkOption {
+  options.services.incus-manager = lib.mkOption {
     default = {};
     type = lib.types.submodule {
       freeformType = lib.types.attrsOf projectType;
@@ -2482,7 +2482,7 @@ in {
             default = {};
             description = ''
               User-name to PEM certificate file mapping used by
-              `services.incusMachines.global.remote.projects.<name>.userCerts`.
+              `services.incus-manager.global.remote.projects.<name>.userCerts`.
               This lets each project compose raw `certs` with generated user
               certificates without repeating certificate paths in every project.
             '';
@@ -2568,97 +2568,97 @@ in {
       {
         assertion = imageAliasConflicts == [];
         message =
-          "services.incusMachines has conflicting image aliases with different image sources: "
+          "services.incus-manager has conflicting image aliases with different image sources: "
           + lib.concatStringsSep ", " imageAliasConflicts;
       }
       {
         assertion = ipv4AddressConflicts == [];
         message =
-          "services.incusMachines has duplicate ipv4Address assignments: "
+          "services.incus-manager has duplicate ipv4Address assignments: "
           + lib.concatStringsSep "; " ipv4AddressConflicts;
       }
       {
         assertion = invalidInstanceNames == [];
         message =
-          "services.incusMachines instance keys must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
+          "services.incus-manager instance keys must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
           + lib.concatStringsSep ", " invalidInstanceNames;
       }
       {
         assertion = invalidResolvedInstanceNames == [];
         message =
-          "services.incusMachines Incus instance names must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
+          "services.incus-manager Incus instance names must match [a-z]([a-z0-9-]{0,61}[a-z0-9])?: "
           + lib.concatStringsSep ", " invalidResolvedInstanceNames;
       }
       {
         assertion = instanceRefConflicts == [];
         message =
-          "services.incusMachines has duplicate Incus project/name assignments: "
+          "services.incus-manager has duplicate Incus project/name assignments: "
           + lib.concatStringsSep "; " instanceRefConflicts;
       }
       {
         assertion = preseedCertificates == [];
-        message = "Use services.incusMachines.global.certificates instead of virtualisation.incus.preseed.certificates.";
+        message = "Use services.incus-manager.global.certificates instead of virtualisation.incus.preseed.certificates.";
       }
       {
         assertion = hasIncusPreseed || preseedMigrationsWithActions == [];
-        message = "services.incusMachines.global.preseedMigrations requires virtualisation.incus.preseed.";
+        message = "services.incus-manager.global.preseedMigrations requires virtualisation.incus.preseed.";
       }
       {
         assertion = invalidPreseedMigrationTargets == [];
         message =
-          "services.incusMachines.global.preseedMigrations reference undeclared or invalid preseed targets: "
+          "services.incus-manager.global.preseedMigrations reference undeclared or invalid preseed targets: "
           + lib.concatStringsSep "; " invalidPreseedMigrationTargets;
       }
       {
         assertion = invalidRestrictedCertificates == [];
         message =
-          "services.incusMachines.global.certificates restricted certificates must declare at least one project: "
+          "services.incus-manager.global.certificates restricted certificates must declare at least one project: "
           + lib.concatStringsSep ", " invalidRestrictedCertificates;
       }
       {
         assertion = !globalCfg.remote.enable || !hasCertificates;
-        message = "services.incusMachines.global.certificates is only supported for local Incus management; use parent-side certificateDelegations or remote.projects for remote targets.";
+        message = "services.incus-manager.global.certificates is only supported for local Incus management; use parent-side certificateDelegations or remote.projects for remote targets.";
       }
       {
         assertion = invalidCertificateDelegationNames == [];
         message =
-          "services.incusMachines.global.certificateDelegations names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          "services.incus-manager.global.certificateDelegations names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
           + lib.concatStringsSep ", " invalidCertificateDelegationNames;
       }
       {
         assertion = invalidCertificateDelegationDirectories == [];
         message =
-          "services.incusMachines.global.certificateDelegations directories must be under ${certificateDelegationsRoot}/: "
+          "services.incus-manager.global.certificateDelegations directories must be under ${certificateDelegationsRoot}/: "
           + lib.concatStringsSep ", " invalidCertificateDelegationDirectories;
       }
       {
         assertion = invalidCertificateDelegationReferences == [];
         message =
-          "services.incusMachines certDelegation devices reference missing certificateDelegations: "
+          "services.incus-manager certDelegation devices reference missing certificateDelegations: "
           + lib.concatStringsSep ", " invalidCertificateDelegationReferences;
       }
       {
         assertion = invalidCertificateDelegationDevices == [];
         message =
-          "services.incusMachines certDelegation devices must be disk devices: "
+          "services.incus-manager certDelegation devices must be disk devices: "
           + lib.concatStringsSep ", " invalidCertificateDelegationDevices;
       }
       {
         assertion = invalidVmConfigKeys == [];
         message =
-          "services.incusMachines VM instances cannot use LXC-only config keys: "
+          "services.incus-manager VM instances cannot use LXC-only config keys: "
           + lib.concatStringsSep ", " invalidVmConfigKeys;
       }
       {
         assertion = invalidVmDevices == [];
         message =
-          "services.incusMachines VM instances do not yet support GPU/unix-char devices in this repo helper: "
+          "services.incus-manager VM instances do not yet support GPU/unix-char devices in this repo helper: "
           + lib.concatStringsSep ", " invalidVmDevices;
       }
       {
         assertion = unsafeDeleteHostDirs == [];
         message =
-          "services.incusMachines disk devices with removalPolicy = \"delete\" must use host paths under "
+          "services.incus-manager disk devices with removalPolicy = \"delete\" must use host paths under "
           + managedGcDirRoot
           + "/: "
           + lib.concatStringsSep ", " unsafeDeleteHostDirs;
@@ -2666,91 +2666,91 @@ in {
       {
         assertion = invalidRemoteProjectNames == [];
         message =
-          "services.incusMachines.global.remote.projects names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          "services.incus-manager.global.remote.projects names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
           + lib.concatStringsSep ", " invalidRemoteProjectNames;
       }
       {
         assertion = invalidRemoteProjectCertificateNames == [];
         message =
-          "services.incusMachines.global.remote.projects cert names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
+          "services.incus-manager.global.remote.projects cert names must match [A-Za-z0-9][A-Za-z0-9_.-]*: "
           + lib.concatStringsSep ", " invalidRemoteProjectCertificateNames;
       }
       {
         assertion = missingRemoteProjectUserCertificates == [];
         message =
-          "services.incusMachines.global.remote.projects userCerts must exist in services.incusMachines.global.remote.userCertificates: "
+          "services.incus-manager.global.remote.projects userCerts must exist in services.incus-manager.global.remote.userCertificates: "
           + lib.concatStringsSep ", " missingRemoteProjectUserCertificates;
       }
       {
         assertion = !globalCfg.remote.enable || !hasCertificateDelegations;
-        message = "services.incusMachines.global.certificateDelegations is only supported for local Incus management.";
+        message = "services.incus-manager.global.certificateDelegations is only supported for local Incus management.";
       }
       {
         assertion = !globalCfg.remote.enable || !hasProjectRoutes;
-        message = "services.incusMachines.<project>.routes is only supported for local Incus management.";
+        message = "services.incus-manager.<project>.routes is only supported for local Incus management.";
       }
       {
         assertion = routeProjectsMissingPreseedNetwork == [];
         message =
-          "services.incusMachines.<project>.routes requires each project default Incus profile to declare a NIC with network: "
+          "services.incus-manager.<project>.routes requires each project default Incus profile to declare a NIC with network: "
           + lib.concatStringsSep ", " routeProjectsMissingPreseedNetwork;
       }
       {
         assertion = routeProjectsAmbiguousPreseedNetworks == [];
         message =
-          "services.incusMachines.<project>.routes requires a unique default-profile NIC network per project: "
+          "services.incus-manager.<project>.routes requires a unique default-profile NIC network per project: "
           + lib.concatStringsSep "; " routeProjectsAmbiguousPreseedNetworks;
       }
       {
         assertion = invalidRouteIpv4Values == [];
         message =
-          "services.incusMachines.<project>.routes must use valid IPv4 address and via values: "
+          "services.incus-manager.<project>.routes must use valid IPv4 address and via values: "
           + lib.concatStringsSep ", " invalidRouteIpv4Values;
       }
       {
         assertion = invalidRouteNetworkAddresses == [];
         message =
-          "services.incusMachines.<project>.routes address must be aligned to prefixLength: "
+          "services.incus-manager.<project>.routes address must be aligned to prefixLength: "
           + lib.concatStringsSep ", " invalidRouteNetworkAddresses;
       }
       {
         assertion = !globalCfg.remote.cli.enable || globalCfg.remote.enable;
-        message = "services.incusMachines.global.remote.cli.enable requires services.incusMachines.global.remote.enable.";
+        message = "services.incus-manager.global.remote.cli.enable requires services.incus-manager.global.remote.enable.";
       }
       {
         assertion = !globalCfg.remote.enable || globalCfg.remote.name != "local";
-        message = "services.incusMachines.global.remote.name must not be 'local' when remote mode is enabled.";
+        message = "services.incus-manager.global.remote.name must not be 'local' when remote mode is enabled.";
       }
       {
         assertion = !globalCfg.remote.enable || globalCfg.remote.address != null;
-        message = "services.incusMachines.global.remote.address is required when remote mode is enabled.";
+        message = "services.incus-manager.global.remote.address is required when remote mode is enabled.";
       }
       {
         assertion = !globalCfg.remote.enable || globalCfg.remote.clientCertificateFile != null;
-        message = "services.incusMachines.global.remote.clientCertificateFile is required when remote mode is enabled.";
+        message = "services.incus-manager.global.remote.clientCertificateFile is required when remote mode is enabled.";
       }
       {
         assertion = !globalCfg.remote.enable || globalCfg.remote.clientKeyFile != null;
-        message = "services.incusMachines.global.remote.clientKeyFile is required when remote mode is enabled.";
+        message = "services.incus-manager.global.remote.clientKeyFile is required when remote mode is enabled.";
       }
       {
         assertion = !globalCfg.remote.enable || globalCfg.remote.serverCertificateFile != null || globalCfg.remote.acceptCertificate;
-        message = "services.incusMachines.global.remote must set serverCertificateFile or acceptCertificate = true.";
+        message = "services.incus-manager.global.remote must set serverCertificateFile or acceptCertificate = true.";
       }
       {
         assertion = !globalCfg.remote.enable || !globalCfg.hostSuspend.enable;
-        message = "services.incusMachines.global.hostSuspend is only supported for local Incus management.";
+        message = "services.incus-manager.global.hostSuspend is only supported for local Incus management.";
       }
       {
         assertion = instancesWithoutRemoteProjectConfig == [];
         message =
-          "services.incusMachines remote instances must declare a matching services.incusMachines.global.remote.projects entry: "
+          "services.incus-manager remote instances must declare a matching services.incus-manager.global.remote.projects entry: "
           + lib.concatStringsSep ", " instancesWithoutRemoteProjectConfig;
       }
       {
         assertion = !globalCfg.remote.enable || instancesOutsideAllowedSubnets == [];
         message =
-          "services.incusMachines instances outside remote project allowedSubnets: "
+          "services.incus-manager instances outside remote project allowedSubnets: "
           + lib.concatStringsSep ", " allowedSubnetViolations;
       }
     ];

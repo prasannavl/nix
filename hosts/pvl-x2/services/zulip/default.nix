@@ -91,6 +91,6 @@
   '';
 in {
   config = lib.mkIf false {
-    services.podmanCompose.pvl.instances.zulip.source = composeSource;
+    services.podman-compose.pvl.instances.zulip.source = composeSource;
   };
 }

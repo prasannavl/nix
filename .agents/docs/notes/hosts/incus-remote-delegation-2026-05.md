@@ -1,6 +1,6 @@
 # Incus Remote Delegation 2026-05
 
-`services.incusMachines.global.remote` lets a NixOS host run the repo Incus
+`services.incus-manager.global.remote` lets a NixOS host run the repo Incus
 lifecycle helpers against a remote Incus HTTPS API instead of a local daemon.
 
 The remote mode is intended for delegated control from an Incus guest back to a
@@ -13,21 +13,21 @@ parent daemon:
 - lifecycle, image, reconcile, and settlement commands target the configured
   remote through normal Incus CLI remote references
 - instance operations are project-aware through
-  `services.incusMachines.<project>.instances.<name>.project`
+  `services.incus-manager.<project>.instances.<name>.project`
 - remote-mode GC is enabled for delegated controllers, but scoped to configured
   remote projects and to instances whose structured `user.nixos-meta` owner
   matches the controller
-- generic `services.incusMachines.global.preseedMigrations` remains available
+- generic `services.incus-manager.global.preseedMigrations` remains available
   for explicit future parent fabric transitions before `incus-preseed.service`;
   throwaway one-shot defaults should be removed after rollout
 - local Incus daemon enablement defaults off in remote mode
 
 Parent-side certificate delegation is modeled separately from remote mode:
 
-- parent hosts declare `services.incusMachines.global.certificateDelegations`
+- parent hosts declare `services.incus-manager.global.certificateDelegations`
 - guests mount a delegation with `incusLib.mkCertDelegation "<name>"`
 - delegated guests declare
-  `services.incusMachines.global.remote.projects.<project>` to publish
+  `services.incus-manager.global.remote.projects.<project>` to publish
   project-scoped certificate state back through mounted delegation directories
 - the parent reconciler validates, prefixes, restricts, and garbage-collects
   delegated trusted certificates
@@ -55,9 +55,9 @@ the guest, and mounts the parent-owned `abird`, `abird-stage`, and `abird-dev`
 certificate delegation directories.
 
 This repo owns the guest configuration. `hosts/abird-nest/incus.nix` uses
-`services.incusMachines.global.remote` against the forwarded pvl-x2 API with the
+`services.incus-manager.global.remote` against the forwarded pvl-x2 API with the
 `abird` project as the default remote project. Project-scoped settings live
-under `services.incusMachines.global.remote.projects`:
+under `services.incus-manager.global.remote.projects`:
 
 - `abird`: allowed subnet `10.10.100.0/24`; auto-publishes the `abird-nest`
   client certificate and additionally publishes `pvl`
@@ -84,10 +84,10 @@ to that host UID/GID so guest root can update it.
 
 Remote delegated cleanup uses the same `incus-machines-gc.service` as local
 management. In remote mode it does not use `--all-projects`; it lists only the
-projects configured under `services.incusMachines.global.remote.projects` and
+projects configured under `services.incus-manager.global.remote.projects` and
 only deletes instances whose structured `user.nixos-meta` marks them as owned by
 the current controller. The controller ID defaults to the NixOS host name and
-can be overridden with `services.incusMachines.controllerId`.
+can be overridden with `services.incus-manager.controllerId`.
 
 The pvl-x2 parent still owns the final Incus trust entries and project
 restriction. The tenant JSON only supplies local certificate names and public
@@ -118,7 +118,7 @@ outputs such as `data/secrets/abird/incus/<user>.key.age` /
 `data/secrets/abird/incus/<user>.pfx.age`. The Incus helper `certs` subcommand
 materializes those declared artifacts through `lib/incus/helper-certs.py`. Keep
 the access source project-centric:
-`services.incusMachines.global.remote.projects.<project>.userCerts` determines
+`services.incus-manager.global.remote.projects.<project>.userCerts` determines
 both the remote project's generated certs and each user's restricted project
 list. Raw `certs` remain available and are merged with the generated user certs
 through `global.remote.userCertificates`. Chrome / NSS can import RSA and ECDSA

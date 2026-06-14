@@ -20,7 +20,7 @@ The shared logic lives in `lib/podman-compose/default.nix` and
 ## Declaration Shape
 
 ```nix
-services.podmanCompose.<stack> = {
+services.podman-compose.<stack> = {
   user = "app";
   stackDir = "/var/lib/app/compose";
   servicePrefix = "app-";
@@ -149,7 +149,7 @@ Set `subnet` when an instance declares a stable default-network subnet in its
 compose source.
 
 ```nix
-services.podmanCompose.example.instances.app = {
+services.podman-compose.example.instances.app = {
   subnet = "10.89.10.0/24";
   source = ''
     networks:
@@ -165,7 +165,7 @@ services.podmanCompose.example.instances.app = {
 ```
 
 The module asserts that declared `subnet` values are unique across all
-configured `services.podmanCompose` instances. It does not generate compose
+configured `services.podman-compose` instances. It does not generate compose
 network YAML by itself; the option records the subnet for clash detection.
 
 The module also asserts that declared `exposedPorts` do not reuse the same host
@@ -217,7 +217,7 @@ This is useful when you want Nix expressions to build the compose structure
 directly:
 
 ```nix
-services.podmanCompose.example.instances.control-panel = {
+services.podman-compose.example.instances.control-panel = {
   source = {
     services.control-panel = {
       image = "docker.io/example/control-panel:latest";
@@ -235,7 +235,7 @@ This is the pattern for a small Nix-rendered admin service.
 This is the simplest pattern for small services and generated definitions:
 
 ```nix
-services.podmanCompose.example = {
+services.podman-compose.example = {
   user = "app";
   stackDir = "/var/lib/app/compose";
 
@@ -259,7 +259,7 @@ This is the right pattern when the main compose YAML already lives as a normal
 file:
 
 ```nix
-services.podmanCompose.example.instances.service = {podmanSocket, ...}: {
+services.podman-compose.example.instances.service = {podmanSocket, ...}: {
   source = ./compose/service/docker-compose.yml;
 
   files.".env" = ''
@@ -277,7 +277,7 @@ This is useful when a service is naturally a directory tree with multiple
 compose fragments, env files, or companion config files:
 
 ```nix
-services.podmanCompose.example.instances.suite = {
+services.podman-compose.example.instances.suite = {
   entryFile = [
     "docker-compose.yml"
     "weboffice/collabora.yml"
@@ -308,7 +308,7 @@ You can also keep the main compose file as a repo path and override companion
 files inline:
 
 ```nix
-services.podmanCompose.example.instances.media = {
+services.podman-compose.example.instances.media = {
   source = ./compose/media/docker-compose.yml;
 
   files = {
@@ -592,7 +592,7 @@ manager does not know Podman policy names.
 
 ## Derived Metadata
 
-`services.podmanCompose.<stack>.instances.<name>.exposedPorts` is the source of
+`services.podman-compose.<stack>.instances.<name>.exposedPorts` is the source of
 truth for compose-managed port metadata.
 
 It drives:
@@ -811,7 +811,7 @@ For each stack in the host's service module:
 ## How To Create A New Compose Service
 
 1. Add or update the host's imported service module.
-2. Declare a stack under `services.podmanCompose.<stack>`.
+2. Declare a stack under `services.podman-compose.<stack>`.
 3. Add one or more instances.
 4. If the service needs ingress, define `exposedPorts`.
 5. If it needs secrets, define `envSecrets`.
@@ -907,5 +907,5 @@ need an explicit build flow if image refresh semantics need to cover them too.
 - `lib/podman-compose/default.nix`
 - `lib/podman-compose/helper.sh`
 - `lib/systemd-user-manager/default.nix`
-- the host service module that declares `services.podmanCompose.<stack>`
+- the host service module that declares `services.podman-compose.<stack>`
 - `hosts/nixbot.nix`

@@ -4,14 +4,14 @@
   ...
 }: let
   nginxLib = import ../../../lib/services/nginx {inherit lib;};
-  proxyVhosts = config.services.podmanCompose.pvl.nginxProxyVhosts;
-  nginxRoutes = config.services.podmanCompose.pvl.nginxRoutes;
+  proxyVhosts = config.services.podman-compose.pvl.nginx-proxy-vhosts;
+  nginxRoutes = config.services.podman-compose.pvl.nginxRoutes;
   backendServices = nginxLib.dependencyServices (proxyVhosts // nginxRoutes);
   nginxLogDir = "/var/log/pvl/nginx";
 in {
   config = {
     services = {
-      podmanCompose.pvl.instances.nginx = rec {
+      podman-compose.pvl.instances.nginx = rec {
         reload = {
           method = "signal";
           signal = "HUP";

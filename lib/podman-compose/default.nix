@@ -4,7 +4,7 @@
   pkgs,
   ...
 }: let
-  cfg = config.services.podmanCompose;
+  cfg = config.services.podman-compose;
   hasStacks = cfg != {};
   flakeUtils = import ../flake/utils.nix {lib = lib;};
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
@@ -759,7 +759,7 @@
             openFirewall = lib.mkOption {
               type = lib.types.bool;
               default = false;
-              description = "Whether this port should be included when deriving firewall rules from services.podmanCompose.";
+              description = "Whether this port should be included when deriving firewall rules from services.podman-compose.";
             };
 
             nginxHostNames = lib.mkOption {
@@ -1073,7 +1073,7 @@
     merge = loc: defs:
       if builtins.length defs == 1
       then (builtins.head defs).value
-      else throw "services.podmanCompose.${lib.concatStringsSep "." loc}: multiple function definitions are not supported.";
+      else throw "services.podman-compose.${lib.concatStringsSep "." loc}: multiple function definitions are not supported.";
   };
 
   stackType = lib.types.submodule ({name, ...}: {
@@ -1163,7 +1163,7 @@
         description = "Compose instances in this stack keyed by instance name. Each value can be an instance attrset or a function receiving { stackName; instanceName; user; uid; workDir; stackDir; podmanSocket } and returning an instance attrset. podmanSocket resolves to /run/podman/podman.sock for root stacks, otherwise /run/user/<uid>/podman/podman.sock.";
       };
 
-      nginxProxyVhosts = lib.mkOption {
+      nginx-proxy-vhosts = lib.mkOption {
         type = lib.types.attrsOf nginxLib.proxyVhostType;
         default = {};
         readOnly = true;
@@ -1702,7 +1702,7 @@
     then "0"
     else if builtins.hasAttr user config.users.users && config.users.users.${user}.uid != null
     then toString config.users.users.${user}.uid
-    else throw "services.podmanCompose: rootless stack user '${user}' must exist in users.users with a non-null uid.";
+    else throw "services.podman-compose: rootless stack user '${user}' must exist in users.users with a non-null uid.";
   controlRegistryFile = pkgs.writeText "podman-compose-control-registry.json" (builtins.toJSON (
     lib.listToAttrs (
       map
@@ -1919,10 +1919,10 @@ in {
     ../systemd-user-manager
   ];
 
-  options.services.podmanCompose = lib.mkOption {
+  options.services.podman-compose = lib.mkOption {
     type = lib.types.attrsOf stackType;
     default = {};
-    description = "Podman compose stacks. Example: services.podmanCompose.stack1.instances.web = { ... };";
+    description = "Podman compose stacks. Example: services.podman-compose.stack1.instances.web = { ... };";
     apply = stacks:
       lib.mapAttrs
       (stackName: stack: let
@@ -1970,7 +1970,7 @@ in {
             then [{services = trustedCa;}]
             else if lib.all builtins.isAttrs trustedCa
             then trustedCa
-            else throw "services.podmanCompose.${stackName}: trustedCa lists must contain either service-name strings or CA attrsets, not a mix."
+            else throw "services.podman-compose.${stackName}: trustedCa lists must contain either service-name strings or CA attrsets, not a mix."
           else [trustedCa];
         trustedCaDefaultCertificates = defaultEntries: trustedCa:
           lib.listToAttrs (
@@ -1983,7 +1983,7 @@ in {
               defaultEntryOrNull = defaultEntries.${defaultName} or null;
               defaultEntry =
                 if defaultEntryOrNull == null
-                then throw "services.podmanCompose.${stackName}: trustedCa default '${defaultName}' is not defined."
+                then throw "services.podman-compose.${stackName}: trustedCa default '${defaultName}' is not defined."
                 else defaultEntryOrNull;
               certName =
                 if (injection.name or null) == null
@@ -2131,7 +2131,7 @@ in {
                   then "0"
                   else if builtins.hasAttr resolvedUser config.users.users && config.users.users.${resolvedUser}.uid != null
                   then toString config.users.users.${resolvedUser}.uid
-                  else throw "services.podmanCompose.${stackName}: stack user '${resolvedUser}' must exist in config.users.users with a non-null uid when using function-valued instances.";
+                  else throw "services.podman-compose.${stackName}: stack user '${resolvedUser}' must exist in config.users.users with a non-null uid when using function-valued instances.";
                 podmanSocket =
                   if resolvedUser == "root"
                   then "/run/podman/podman.sock"
@@ -2435,7 +2435,7 @@ in {
             instancesWithContext;
         in {
           instances = resolvedInstances;
-          nginxProxyVhosts =
+          nginx-proxy-vhosts =
             nginxLib.proxyVhostsFromInstances {
               defaultHost = stack.nginxDefaultHost;
             }
@@ -2496,20 +2496,20 @@ in {
       [
         {
           assertion = duplicateSystemdUserServiceNames == [];
-          message = "services.podmanCompose: duplicate generated systemd.user service names: ${lib.concatStringsSep ", " duplicateSystemdUserServiceNames}";
+          message = "services.podman-compose: duplicate generated systemd.user service names: ${lib.concatStringsSep ", " duplicateSystemdUserServiceNames}";
         }
         {
           assertion = duplicatedSubnets == [];
-          message = "services.podmanCompose: duplicate declared subnet values: ${lib.concatStringsSep ", " (map describeSubnetEntry duplicatedSubnetEntries)}";
+          message = "services.podman-compose: duplicate declared subnet values: ${lib.concatStringsSep ", " (map describeSubnetEntry duplicatedSubnetEntries)}";
         }
         {
           assertion = duplicatedExposedPortKeys == [];
-          message = "services.podmanCompose: duplicate exposed host ports: ${lib.concatStringsSep ", " (map describeExposedPortEntry duplicatedExposedPortEntries)}";
+          message = "services.podman-compose: duplicate exposed host ports: ${lib.concatStringsSep ", " (map describeExposedPortEntry duplicatedExposedPortEntries)}";
         }
         {
           assertion = reservedGeneratedPathViolations == [];
           message =
-            "services.podmanCompose: user-declared files/dirs must not target generated runtime paths "
+            "services.podman-compose: user-declared files/dirs must not target generated runtime paths "
             + "${generatedRuntimeDirName}/, ${envSecretsOverrideFileName}, or ${fileSecretsOverrideFileName}: "
             + lib.concatStringsSep ", " reservedGeneratedPathViolations;
         }
@@ -2520,7 +2520,7 @@ in {
           lib.mapAttrsToList
           (serviceName: service: {
             assertion = service.source != null || service.files != {};
-            message = "services.podmanCompose.${stackName}.instances.${serviceName}: set source and/or files.";
+            message = "services.podman-compose.${stackName}.instances.${serviceName}: set source and/or files.";
           })
           stack.instances)
         cfg
@@ -2532,7 +2532,7 @@ in {
           (serviceName: service: {
             assertion = service.entryFile != null || builtins.length service.implicitEntryFileCandidates <= 1;
             message =
-              "services.podmanCompose.${stackName}.instances.${serviceName}: multiple default compose files are staged; set entryFile explicitly to declare compose file order: "
+              "services.podman-compose.${stackName}.instances.${serviceName}: multiple default compose files are staged; set entryFile explicitly to declare compose file order: "
               + lib.concatStringsSep ", " service.implicitEntryFileCandidates;
           })
           stack.instances)
@@ -2544,7 +2544,7 @@ in {
           lib.mapAttrsToList
           (serviceName: service: {
             assertion = service.imageTag == "0" || service.hasComposeEntry;
-            message = "services.podmanCompose.${stackName}.instances.${serviceName}: imageTag requires source or entryFile so image-pull can use store-backed compose files without staging runtime files.";
+            message = "services.podman-compose.${stackName}.instances.${serviceName}: imageTag requires source or entryFile so image-pull can use store-backed compose files without staging runtime files.";
           })
           stack.instances)
         cfg
@@ -2556,7 +2556,7 @@ in {
           (serviceName: service: {
             assertion = service.invalidReloadOnChangeDirs == [];
             message =
-              "services.podmanCompose.${stackName}.instances.${serviceName}.reload.trigger.dirs contains entries that are not declared dirs or directory sources: "
+              "services.podman-compose.${stackName}.instances.${serviceName}.reload.trigger.dirs contains entries that are not declared dirs or directory sources: "
               + lib.concatStringsSep ", " service.invalidReloadOnChangeDirs;
           })
           stack.instances)
@@ -2568,7 +2568,7 @@ in {
           lib.mapAttrsToList
           (serviceName: service: {
             assertion = service.reload.method != "signal" || service.reload.services != [];
-            message = "services.podmanCompose.${stackName}.instances.${serviceName}.reload.services must list compose services when reload.method = \"signal\" so reload does not signal every container accidentally.";
+            message = "services.podman-compose.${stackName}.instances.${serviceName}.reload.services must list compose services when reload.method = \"signal\" so reload does not signal every container accidentally.";
           })
           stack.instances)
         cfg
@@ -2580,7 +2580,7 @@ in {
           (serviceName: service: {
             assertion = service.invalidReloadExternalFiles == [];
             message =
-              "services.podmanCompose.${stackName}.instances.${serviceName}.reload.trigger.externalFiles contains entries that are not declared staged files: "
+              "services.podman-compose.${stackName}.instances.${serviceName}.reload.trigger.externalFiles contains entries that are not declared staged files: "
               + lib.concatStringsSep ", " service.invalidReloadExternalFiles;
           })
           stack.instances)
@@ -2593,7 +2593,7 @@ in {
           (serviceName: service: {
             assertion = service.invalidRecreateTriggerFiles == [];
             message =
-              "services.podmanCompose.${stackName}.instances.${serviceName}.recreate.trigger.files contains entries that are not declared staged files: "
+              "services.podman-compose.${stackName}.instances.${serviceName}.recreate.trigger.files contains entries that are not declared staged files: "
               + lib.concatStringsSep ", " service.invalidRecreateTriggerFiles;
           })
           stack.instances)
@@ -2606,7 +2606,7 @@ in {
           (serviceName: service: {
             assertion = service.conflictingReloadRecreateFiles == [];
             message =
-              "services.podmanCompose.${stackName}.instances.${serviceName}.reload.trigger contains recreate-class staged files, which are unsafe for native Podman reload because the container can keep stale runtime shape until container recreation: "
+              "services.podman-compose.${stackName}.instances.${serviceName}.reload.trigger contains recreate-class staged files, which are unsafe for native Podman reload because the container can keep stale runtime shape until container recreation: "
               + lib.concatStringsSep ", " service.conflictingReloadRecreateFiles;
           })
           stack.instances)
@@ -2614,12 +2614,12 @@ in {
       )
       ++ map (user: {
         assertion = builtins.hasAttr user config.users.users && config.users.users.${user}.uid != null;
-        message = "services.podmanCompose: rootless stack user '${user}' must exist in users.users with a non-null uid.";
+        message = "services.podman-compose: rootless stack user '${user}' must exist in users.users with a non-null uid.";
       })
       rootlessStackUsers
       ++ map (user: {
         assertion = builtins.hasAttr user config.users.users && config.users.users.${user}.home != null;
-        message = "services.podmanCompose: rootless stack user '${user}' must have users.users.${user}.home set.";
+        message = "services.podman-compose: rootless stack user '${user}' must have users.users.${user}.home set.";
       })
       rootlessStackUsers
       ++ lib.concatLists (
@@ -2630,7 +2630,7 @@ in {
             lib.mapAttrsToList
             (fileName: entry: {
               assertion = (entry.text != null && entry.source == null) || (entry.text == null && entry.source != null);
-              message = "services.podmanCompose.${stackName}.instances.${serviceName}.files.${fileName}: set exactly one of text or source.";
+              message = "services.podman-compose.${stackName}.instances.${serviceName}.files.${fileName}: set exactly one of text or source.";
             })
             stack.instances.${serviceName}.files)
           (builtins.attrNames stack.instances))
@@ -2644,7 +2644,7 @@ in {
             mountedFileSecrets = lib.filterAttrs (_: entry: entry.mount) service.fileSecrets;
           in {
             assertion = mountedFileSecrets == {} || service.hasComposeEntry;
-            message = "services.podmanCompose.${stackName}.instances.${serviceName}: auto-mounted fileSecrets require source or entryFile so podman compose can include the generated override file.";
+            message = "services.podman-compose.${stackName}.instances.${serviceName}: auto-mounted fileSecrets require source or entryFile so podman compose can include the generated override file.";
           })
           stack.instances)
         cfg
@@ -2655,7 +2655,7 @@ in {
           lib.mapAttrsToList
           (serviceName: service: {
             assertion = service.envSecrets == {} || service.hasComposeEntry;
-            message = "services.podmanCompose.${stackName}.instances.${serviceName}: envSecrets requires source or entryFile so podman compose can include the generated override file.";
+            message = "services.podman-compose.${stackName}.instances.${serviceName}: envSecrets requires source or entryFile so podman compose can include the generated override file.";
           })
           stack.instances)
         cfg
@@ -2668,7 +2668,7 @@ in {
             lib.mapAttrsToList
             (composeServiceName: secretCfg: {
               assertion = secretCfg.entries != {};
-              message = "services.podmanCompose.${stackName}.instances.${serviceName}.envSecrets.${composeServiceName}: set at least one environment secret.";
+              message = "services.podman-compose.${stackName}.instances.${serviceName}.envSecrets.${composeServiceName}: set at least one environment secret.";
             })
             stack.instances.${serviceName}.envSecrets)
           (builtins.attrNames stack.instances))
@@ -2687,7 +2687,7 @@ in {
                 then lib.all (file: builtins.hasAttr file service.runtimePaths) service.entryFile
                 else builtins.hasAttr service.entryFile service.runtimePaths
               );
-            message = "services.podmanCompose.${stackName}.instances.${serviceName}: entryFile '${describeEntryFile service.entryFile}' is not defined in source/files.";
+            message = "services.podman-compose.${stackName}.instances.${serviceName}: entryFile '${describeEntryFile service.entryFile}' is not defined in source/files.";
           })
           stack.instances)
         cfg
@@ -2702,7 +2702,7 @@ in {
               ownerOk = entry.scope == "host" || (isOwnerNumeric entry.user && isOwnerNumeric entry.group);
             in {
               assertion = ownerOk;
-              message = "services.podmanCompose.${stackName}.instances.${serviceName}.${kind}.${name}: scope = \"container\" requires numeric user and group when owner fields are set (userns has no name resolution).";
+              message = "services.podman-compose.${stackName}.instances.${serviceName}.${kind}.${name}: scope = \"container\" requires numeric user and group when owner fields are set (userns has no name resolution).";
             };
           in
             lib.mapAttrsToList (name: entry: checkEntry "dirs" name entry) instance.dirs
@@ -2720,14 +2720,14 @@ in {
             lib.mapAttrsToList
             (dirName: entry: {
               assertion = isOctalMode entry.mode && dirModeHasSearchBit entry.mode;
-              message = "services.podmanCompose.${stackName}.instances.${serviceName}.dirs.${dirName}.mode must be an octal directory mode with at least one execute/search bit.";
+              message = "services.podman-compose.${stackName}.instances.${serviceName}.dirs.${dirName}.mode must be an octal directory mode with at least one execute/search bit.";
             })
             stack.instances.${serviceName}.dirs)
           (builtins.attrNames stack.instances))
         cfg
       );
 
-    services.systemdUserManager.instances = lib.listToAttrs (map
+    services.systemd-user-manager.instances = lib.listToAttrs (map
       (s: {
         name = s.systemdServiceName;
         value = {

@@ -1,6 +1,6 @@
 # Podman Data Dir Ownership (2026-04)
 
-- For rootless `services.podmanCompose.*` instances, keep using staged relative
+- For rootless `services.podman-compose.*` instances, keep using staged relative
   bind mounts like `./data`, `./db-data`, or `./open-webui_data` for
   service-local state under the compose working directory.
 - Do not add redundant

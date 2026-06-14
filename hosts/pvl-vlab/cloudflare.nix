@@ -6,7 +6,7 @@
 }: let
   tunnelsLib = import ../../lib/services/tunnels/cloudflare.nix {inherit lib stack;};
   tunnelId = "00bbdab6-1509-479f-83cd-24375fc70835";
-  tunnelIngress = config.services.podmanCompose.pvl.cloudflareTunnelIngress;
+  tunnelIngress = config.services.podman-compose.pvl.cloudflareTunnelIngress;
 in
   tunnelsLib.mkHostManagedTunnel {
     inherit config tunnelId;

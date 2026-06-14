@@ -7,7 +7,7 @@ in {
     name = "incus-pvl-vlab-1-key";
   };
 
-  services.incusMachines.global = {
+  services.incus-manager.global = {
     remote = {
       enable = true;
       name = "pvl-x2";
@@ -19,7 +19,7 @@ in {
     };
   };
 
-  services.incusMachines.pvl.instances = {
+  services.incus-manager.pvl.instances = {
     pvl-vk-1 = {
       ipv4Address = "10.10.50.31";
       config = {

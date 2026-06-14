@@ -356,7 +356,7 @@ shell access for `nixos-rebuild --target-host`.
   - source files live under `data/secrets/pvl/services/<service>/*.key.age`
   - recipients are admins + the CI host machine age recipient
   - the CI host's imported service module maps them into `age.secrets.*`
-  - `services.podmanCompose.*.envSecrets` injects them into containers as
+  - `services.podman-compose.*.envSecrets` injects them into containers as
     file-backed environment values
 - CI host OpenTofu/Cloudflare runtime:
   - source files live under `data/secrets/globals/cloudflare/*.key.age`

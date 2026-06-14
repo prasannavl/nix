@@ -27,7 +27,7 @@ changed when the local NixOS image store paths changed.
   - `bootTag`
   - `recreateTag`
   - mutable instance properties such as `ipv4Address` and `removalPolicy`
-- Image refresh remains owned by `services.incusMachines.global.imageTag` and
+- Image refresh remains owned by `services.incus-manager.global.imageTag` and
   the `incus-images.service` path, not by incidental unit restarts.
 
 ## Implementation direction

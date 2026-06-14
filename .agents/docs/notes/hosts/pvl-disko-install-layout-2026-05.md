@@ -7,9 +7,9 @@ automated installation with `nixos-anywhere`.
 - `pvl-a1` installs to
   `/dev/disk/by-id/nvme-Lexar_SSD_ARES_2TB_QEC053R000846P2222`.
 - Both hosts use a 1 GiB ESP followed by LUKS and Btrfs.
-- The shared `lib/disko/default.nix` module imports upstream disko and exposes
-  `diskoLib`; host configs set
-  `disko.devices.disk.main = config.diskoLib.mkMain { ... }`.
+- The shared `lib/disko/default.nix` module imports upstream disko and installer
+  overrides. Pure helpers live in `lib/disko/lib.nix`; host configs import them
+  directly and set `disko.devices.disk.main = diskoLib.mkMain { ... }`.
 - `diskoLib.mkMain` returns only the main disk config. It creates one GPT disk
   and composes `diskDevice`, `boot`, and `root`; additional disks stay explicit
   under their own `disko.devices.disk.<name>` entries.
@@ -21,10 +21,8 @@ automated installation with `nixos-anywhere`.
 - `diskoLib.mkBoot` remains a dispatcher with `mode = "efi"` by default, or
   `mode = "bios"`.
 - Root partitions are normal composable values: use
-  `root = config.diskoLib.mkLuksBtrfs { ... };`,
-  `root = config.diskoLib.mkLuksExt4 { ... };`,
-  `root = config.diskoLib.mkExt4 { ... };`, or pass a raw disko partition
-  config.
+  `root = diskoLib.mkLuksBtrfs { ... };`, `root = diskoLib.mkLuksExt4 { ... };`,
+  `root = diskoLib.mkExt4 { ... };`, or pass a raw disko partition config.
 - UEFI layout is `boot + root`, where `boot` is the ESP and `root` is currently
   LUKS/Btrfs.
 - BIOS layout is `biosBoot + boot + root`; `biosBoot` is a tiny GPT EF02 GRUB

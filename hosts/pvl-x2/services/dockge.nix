@@ -1,5 +1,5 @@
 {...}: {
-  config.services.podmanCompose.pvl.instances.dockge = {
+  config.services.podman-compose.pvl.instances.dockge = {
     workDir,
     stackDir,
     podmanSocket,

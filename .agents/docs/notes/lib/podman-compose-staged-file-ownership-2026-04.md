@@ -2,7 +2,7 @@
 
 ## Summary
 
-`services.podmanCompose.<stack>.instances.<name>` staged directory and file
+`services.podman-compose.<stack>.instances.<name>` staged directory and file
 entries now declare ownership and mode alongside their content. The helper
 applies them after staging, every `start`/`reload`/`image-pull`, so permissions
 never drift back to the stack-user default.

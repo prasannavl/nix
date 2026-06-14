@@ -17,7 +17,7 @@ The result was an apparently healthy Incus bridge with no host route to
 ## Design Decision
 
 Routes owned by Incus fabrics belong under the project that owns the fabric:
-`services.incusMachines.<project>.routes`.
+`services.incus-manager.<project>.routes`.
 
 Do not make callers repeat the host bridge interface in normal project route
 declarations. The module derives the host-side bridge from the project default

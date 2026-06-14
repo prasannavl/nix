@@ -20,8 +20,8 @@ host-port publishing failure observed on April 12, 2026.
 
 ## Decision
 
-- `services.podmanCompose.<stack>.instances.<name>.composeArgs` is the canonical
-  escape hatch for instance-specific `podman compose` CLI flags.
+- `services.podman-compose.<stack>.instances.<name>.composeArgs` is the
+  canonical escape hatch for instance-specific `podman compose` CLI flags.
 - Keep the compose-args plumbing in the shared module so instance-scoped compose
   behavior can be adjusted when a runtime issue needs a narrow workaround.
 - Do not set `composeArgs` for `hosts/pvl-x2/services/postgres.nix` by default.

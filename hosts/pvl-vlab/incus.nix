@@ -7,7 +7,7 @@
     inherit config lib;
   };
 in {
-  services.incusMachines.default.instances = {
+  services.incus-manager.default.instances = {
     pvl-vk = {
       ipv4Address = "10.10.30.10";
       config = {

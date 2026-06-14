@@ -214,7 +214,7 @@ rec {
                   name = spec.resolvedName;
                   port = cfg.port;
                 };
-                services.migrator.managedUnits.system."${spec.resolvedName}.service" = {
+                services.migration-manager.managedUnits.system."${spec.resolvedName}.service" = {
                   startOnResume = resolvedWantedBy != [];
                 };
               }
@@ -275,7 +275,7 @@ rec {
             kindLabel = "user service";
             constructorName = "mkUserServicesModule";
           };
-          cfg = config.userServices.${resolvedUser}.${spec.resolvedName};
+          cfg = config.user-services.${resolvedUser}.${spec.resolvedName};
           partUnitConfig = spec.composedServices.unitConfig lib cfg;
           resolvedAfter = lib.unique (map resolveUnitReference (after ++ cfg.after ++ partUnitConfig.after));
           resolvedBefore = lib.unique (map resolveUnitReference (before ++ cfg.before ++ partUnitConfig.before));
@@ -307,7 +307,7 @@ rec {
             serviceConfig = serviceConfig;
           };
         in {
-          options.userServices.${resolvedUser}.${spec.resolvedName} =
+          options.user-services.${resolvedUser}.${spec.resolvedName} =
             {
               enable = lib.mkEnableOption "${spec.resolvedName} user service";
 
@@ -347,7 +347,7 @@ rec {
                   inherit serviceConfig;
                 };
 
-                services.systemdUserManager.instances.${instanceName} = {
+                services.systemd-user-manager.instances.${instanceName} = {
                   user = resolvedUser;
                   unit = unitFile;
                   restartTriggers = [

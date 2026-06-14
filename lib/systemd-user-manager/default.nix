@@ -4,9 +4,9 @@
   config,
   ...
 }: let
-  cfg = config.services.systemdUserManager;
-  migratorEnabled = config.services.migrator.enable or false;
-  migratorGatePath = config.services.migrator.gatePath;
+  cfg = config.services.systemd-user-manager;
+  migratorEnabled = config.services.migration-manager.enable or false;
+  migratorGatePath = config.services.migration-manager.gatePath;
   flakeUtils = import ../flake/utils.nix {lib = lib;};
   metadataVersion = 5;
 
@@ -166,7 +166,7 @@
   in
     if builtins.hasAttr user users && users.${user}.uid != null
     then users.${user}.uid
-    else throw "services.systemdUserManager: user '${user}' is missing or has null uid in users.users";
+    else throw "services.systemd-user-manager: user '${user}' is missing or has null uid in users.users";
 
   mkUnitEntry = managedUnit: let
     declaredStampPayload =
@@ -415,7 +415,7 @@ in {
     ../services/migrator/options.nix
   ];
 
-  options.services.systemdUserManager = {
+  options.services.systemd-user-manager = {
     instances = lib.mkOption {
       type = lib.types.attrsOf unitType;
       default = {};
@@ -439,7 +439,7 @@ in {
         })
       dispatcherServicesByUser;
 
-    system.activationScripts.systemdUserManagerStopApplied = {
+    system.activationScripts.systemd-user-manager-stop-applied = {
       supportsDryActivation = false;
       text = ''
         set -eu
@@ -457,7 +457,7 @@ in {
       '';
     };
 
-    system.activationScripts.systemdUserManagerDryActivatePreview = {
+    system.activationScripts.systemd-user-manager-dry-activate-preview = {
       deps = ["users"];
       supportsDryActivation = true;
       text = ''
@@ -479,22 +479,22 @@ in {
       [
         {
           assertion = duplicateGeneratedSystemdServiceNames == [];
-          message = "services.systemdUserManager: duplicate generated systemd service names: ${lib.concatStringsSep ", " duplicateGeneratedSystemdServiceNames}";
+          message = "services.systemd-user-manager: duplicate generated systemd service names: ${lib.concatStringsSep ", " duplicateGeneratedSystemdServiceNames}";
         }
         {
           assertion = usersWithDuplicateManagedUnits == [];
-          message = "services.systemdUserManager: duplicate managed user units are not allowed: ${lib.concatStringsSep "; " duplicateManagedUnitMessages}";
+          message = "services.systemd-user-manager: duplicate managed user units are not allowed: ${lib.concatStringsSep "; " duplicateManagedUnitMessages}";
         }
       ]
       ++ lib.concatMap
       (managedUnit: [
         {
           assertion = builtins.hasAttr managedUnit.user config.users.users;
-          message = "services.systemdUserManager: users.users.${managedUnit.user} is not defined";
+          message = "services.systemd-user-manager: users.users.${managedUnit.user} is not defined";
         }
         {
           assertion = (! builtins.hasAttr managedUnit.user config.users.users) || (config.users.users.${managedUnit.user}.uid != null);
-          message = "services.systemdUserManager: users.users.${managedUnit.user}.uid must be set";
+          message = "services.systemd-user-manager: users.users.${managedUnit.user}.uid must be set";
         }
       ])
       instances;
@@ -515,7 +515,7 @@ in {
       };
     };
 
-    services.migrator.managedUnits.dispatchers =
+    services.migration-manager.managedUnits.dispatchers =
       map (dispatcher: "${dispatcher.name}.service") (builtins.attrValues dispatcherServicesByUser);
   };
 }

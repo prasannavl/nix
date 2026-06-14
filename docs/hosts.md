@@ -321,8 +321,8 @@ in {
 
 For hosts running Podman compose stacks with `exposedPorts` metadata, the
 ingress map can be derived automatically from the stack configuration via
-`config.services.podmanCompose.<stack>.cloudflareTunnelIngress` instead of being
-written by hand.
+`config.services.podman-compose.<stack>.cloudflareTunnelIngress` instead of
+being written by hand.
 
 To add Cloudflare Tunnel support to a new host:
 

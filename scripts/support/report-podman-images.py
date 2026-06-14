@@ -98,10 +98,10 @@ def run_nix_eval():
         "(_: cfg: { "
         "hostName = cfg.config.networking.hostName; "
         "stackName = cfg._module.specialArgs.stack.stackName or \"\"; "
-        "podmanCompose = builtins.mapAttrs "
+        "podmanSources = builtins.mapAttrs "
         "(_: stack: builtins.mapAttrs "
         "(_: inst: inst.source) stack.instances) "
-        "cfg.config.services.podmanCompose; "
+        "cfg.config.services.\"podman-compose\"; "
         "}) cfgs"
     )
     result = subprocess.run(
@@ -159,7 +159,7 @@ def collect_images_by_context(sources):
             continue
         host_name = host.get("hostName") or host_key
         stack_name = host.get("stackName") or ""
-        podman_stacks = host.get("podmanCompose") or {}
+        podman_stacks = host.get("podmanSources") or {}
         if not isinstance(podman_stacks, dict):
             continue
         for podman_stack, instances in podman_stacks.items():

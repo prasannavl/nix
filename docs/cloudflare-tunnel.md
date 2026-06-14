@@ -9,7 +9,7 @@ Cloudflare Tunnel model for repo-managed hosts.
 - Tunnel objects and routes: `tf/cloudflare-platform/`
 - Tunnel DNS hostnames: `tf/cloudflare-dns/dns.auto.tfvars`
 - Host listener hostnames: `cfTunnelNames` on
-  `services.podmanCompose.<stack>.instances.<name>.exposedPorts.<port>`
+  `services.podman-compose.<stack>.instances.<name>.exposedPorts.<port>`
 
 ## Outcome: Expose A Host Through An Existing Tunnel
 
@@ -139,14 +139,14 @@ Common pattern:
 tunnelsLib.mkHostManagedTunnel {
   inherit config tunnelId;
   credentialsStoreName = "edge-main.json.age";
-  ingress = config.services.podmanCompose.pvl.cloudflareTunnelIngress;
+  ingress = config.services.podman-compose.pvl.cloudflareTunnelIngress;
   edgeIPVersion = "auto";
 }
 ```
 
 ### Derived Ingress
 
-`config.services.podmanCompose.<stack>.cloudflareTunnelIngress` is derived from
+`config.services.podman-compose.<stack>.cloudflareTunnelIngress` is derived from
 `cfTunnelNames` and maps each public hostname to a local origin URL.
 
 For nginx listeners this is usually:
@@ -177,7 +177,7 @@ Check all three layers:
 
 Useful checks:
 
-- `nix eval --json .#nixosConfigurations.<host>.config.services.podmanCompose.<stack>.cloudflareTunnelIngress`
+- `nix eval --json .#nixosConfigurations.<host>.config.services.podman-compose.<stack>.cloudflareTunnelIngress`
 - inspect `tf/cloudflare-dns/dns.auto.tfvars`
 - inspect `hosts/<host>/cloudflare.nix`
 - verify local origin port before debugging Cloudflare

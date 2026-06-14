@@ -21,7 +21,7 @@ Reason:
   manifests are shared, while per-instance runtime state under `/root/.ollama`
   remains isolated.
 - Relative paths like `./ollama_models` are not sufficient here because
-  `services.podmanCompose.<stack>.instances.<name>` resolves them under each
+  `services.podman-compose.<stack>.instances.<name>` resolves them under each
   instance's own compose working directory, producing two different host paths.
 - The live host already used `/var/lib/pvl/ollama_models`; an earlier draft
   mistakenly switched the absolute path to `/var/lib/pvl/ollama-models`, which

@@ -3,7 +3,7 @@
 ## Scope
 
 - Apply these rules when a host exposes services through Cloudflare Tunnel and
-  serves static assets through `services.podmanCompose`.
+  serves static assets through `services.podman-compose`.
 - Treat tunnel transport choice and origin materialization as first-class design
   concerns, not ad hoc per-host tweaks.
 
@@ -57,7 +57,7 @@
   content roots instead of duplicating listener metadata.
 - Keep per-service rate limits on dynamic/API services through their own
   `exposedPorts`, so derived proxy vhosts can still vary limits independently.
-- `services.podmanCompose.<stack>.instances.<name>.files` distinguishes between
+- `services.podman-compose.<stack>.instances.<name>.files` distinguishes between
   text/attrs values and real Nix paths.
 - Directory expansion only happens when the value is an actual Nix path
   (`builtins.isPath value == true`).

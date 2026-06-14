@@ -27,7 +27,7 @@ Shared lifecycle logic lives in `lib/incus/default.nix` and
 ## Declaration Shape
 
 ```nix
-services.incusMachines = {
+services.incus-manager = {
   defaultLxcImage = inputs.self.nixosImages.incus-lxc-base;
   defaultLxcImageAlias = "nixos-incus-lxc-base";
   defaultVmImage = inputs.self.nixosImages.incus-vm-base;
@@ -374,16 +374,16 @@ steady-state model is host-side reconcile outside activation via the declared
 oneshot, or `nixbot`'s parent readiness barriers.
 
 Batch reconcile failure behavior is controlled by
-`services.incusMachines.global.reconcileFailurePolicy`. Per-instance lifecycle
+`services.incus-manager.global.reconcileFailurePolicy`. Per-instance lifecycle
 mutation is controlled by
-`services.incusMachines.<project>.instances.<name>.reconcilePolicy`, which
+`services.incus-manager.<project>.instances.<name>.reconcilePolicy`, which
 defaults to `auto` and can be set to `declarative` or `ignore` when existing
 guests must not be recreated from drift. Per-instance `state` controls running
 versus stopped, and `autoStart` controls boot/target enablement separately. For
 ignored guests, boot/target enablement wins over `state = "stopped"`:
 `autoStart = true` starts the existing guest without declarative reconcile.
 Boot-time auto-reconcile remains opt-in through
-`services.incusMachines.global.autoReconcile = true;`. Strict batch failure
+`services.incus-manager.global.autoReconcile = true;`. Strict batch failure
 means failed attempted actions abort the batch; it does not make `declarative`
 pending recreate drift fail, and ignored instances are outside the batch
 reconcile contract.

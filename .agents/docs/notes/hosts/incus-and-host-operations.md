@@ -22,21 +22,21 @@ recent host incidents.
 ## Incus machines module
 
 - The canonical module path is `lib/incus/default.nix`.
-- Declarative guests live under `services.incusMachines`.
+- Declarative guests live under `services.incus-manager`.
 - Disk devices sync in place. Non-disk device changes are recreate-scoped.
 - `bootTag`, `recreateTag`, `imageTag`, and `preseedTag` are the intentional
   operator bump knobs. Image refresh and guest recreate are separate decisions.
 - Migration drain for NixOS hosts, including hosts that run as Incus LXCs, is
-  the guest-side `x.migrator.on` hold. Do not use parent-side Incus lifecycle
-  stops as an application drain: that turns off the whole container instead of
-  keeping the host reachable while repo-managed writers are quiesced.
+  guest-side `services.migration-manager`. Do not use parent-side Incus
+  lifecycle stops as an application drain: that turns off the whole container
+  instead of keeping the host reachable while repo-managed writers are quiesced.
 - Image import, reconcile, and GC services are ordinary rerunnable oneshots.
 - GC must fail closed on Incus query failure and respect explicit removal
   policy.
 - Duplicate guest `ipv4Address` declarations are an evaluation error.
 - Preseed fabric changes that rename or move live projects, networks, profiles,
   instances, or volumes must be declared explicitly in
-  `services.incusMachines.global.preseedMigrations`; build-time assertions check
+  `services.incus-manager.global.preseedMigrations`; build-time assertions check
   that migration targets are present in `virtualisation.incus.preseed`.
 - Incus project renames only work for empty projects. For non-empty project
   transitions, create/prepare the target project and profile, stop instances,
@@ -48,7 +48,7 @@ recent host incidents.
   the desired shape. Keep the generic migration actions, but do not leave
   host-specific transition allowances, stale bridge names, or temporary access
   grants in the steady-state host config.
-- Laptop parents should enable `services.incusMachines.global.hostSuspend` so
+- Laptop parents should enable `services.incus-manager.global.hostSuspend` so
   running Incus instances are stopped before host sleep and restarted after
   resume. This is host policy, not guest cooperation: container userspace must
   not be able to block the physical host freezer.

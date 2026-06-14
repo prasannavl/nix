@@ -1,8 +1,8 @@
 {config, ...}: let
-  ollamaPort = config.services.podmanCompose.pvl.instances.ollama.exposedPorts.main.port;
-  ollamaNvidiaPort = config.services.podmanCompose.pvl.instances.ollama-nvidia.exposedPorts.main.port;
+  ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
+  ollamaNvidiaPort = config.services.podman-compose.pvl.instances.ollama-nvidia.exposedPorts.main.port;
 in {
-  services.podmanCompose.pvl.instances.openwebui = rec {
+  services.podman-compose.pvl.instances.openwebui = rec {
     exposedPorts.http = {
       port = 4000;
     };

@@ -3,12 +3,12 @@
   stack,
   ...
 }: let
-  nginxPort = config.services.podmanCompose.pvl.instances.nginx.exposedPorts.http.port;
+  nginxPort = config.services.podman-compose.pvl.instances.nginx.exposedPorts.http.port;
   composeSecretUser = "pvl";
   secretsBase = stack.secrets.service "docmost";
 in {
   config = {
-    services.podmanCompose.pvl.instances.docmost = rec {
+    services.podman-compose.pvl.instances.docmost = rec {
       exposedPorts.http = {
         port = 3000;
         openFirewall = true;

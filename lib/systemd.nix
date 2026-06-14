@@ -11,12 +11,12 @@
           else "off";
         # HW watchdog reset limit during shutdown/reboot
         RebootWatchdogSec = "5min";
-        DefaultLimitNOFILE = toString config.x.fdlimit;
+        DefaultLimitNOFILE = toString config.x.fdLimit;
       };
 
       # user conf
       user.extraConfig = ''
-        DefaultLimitNOFILE=${toString config.x.fdlimit}
+        DefaultLimitNOFILE=${toString config.x.fdLimit}
       '';
 
       # Misc systemd

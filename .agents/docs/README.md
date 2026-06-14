@@ -21,7 +21,7 @@ Use this index as the canonical map for `.agents/docs/**`.
   Stack-scoped external-provider secret placement under
   `data/secrets/<stack>/ext/<provider>`.
 - `.agents/docs/design-patterns/podman-compose-instance.md`: Canonical attribute
-  ordering for `services.podmanCompose.<stack>.instances.<name>` declarations
+  ordering for `services.podman-compose.<stack>.instances.<name>` declarations
   and direct `/nix/store` mounts for read-only package content.
 - `.agents/docs/design-patterns/prefer-defaults.md`: Prefer upstream defaults
   for infra and runtime knobs unless there is a demonstrated reason to override.
@@ -50,7 +50,7 @@ Use this index as the canonical map for `.agents/docs/**`.
   model, host docs structure, tunnel host wiring, LXC networking, and durable
   host incident findings.
 - `.agents/docs/notes/hosts/incus-remote-delegation-2026-05.md`: Records the
-  remote `services.incusMachines` target mode and the first `pvl-x2` delegation
+  remote `services.incus-manager` target mode and the first `pvl-x2` delegation
   into `pvl-vlab-1`, where lifecycle commands create instances on the parent
   daemon.
 - `.agents/docs/notes/hosts/incus-gpu-device-helpers-2026-04.md`: Records the
@@ -152,6 +152,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/lib/installer-to-disk-mbr-persistence-2026-06.md`: Records
   the `installer-to-disk.sh` ISO-hybrid MBR persistence partition failure and
   the GPT-vs-MBR partitioning split.
+- `.agents/docs/notes/lib/nixos-option-namespace-cleanup-2026-06.md`: Records
+  repo-owned NixOS option naming, top-level `user-services`, and direct disko
+  helper imports instead of exposing pure helpers through the option tree.
 - `.agents/docs/notes/lib/podman-compose-staged-file-ownership-2026-04.md`:
   Records per-entry `mode`/`user`/`group`/`scope` plus `dirs.once` behavior for
   staged Podman Compose directories, files, and file secrets.
@@ -233,13 +236,13 @@ Use this index as the canonical map for `.agents/docs/**`.
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.
 - `.agents/docs/notes/tooling/data-migrator-host-drain-2026-05.md`: Records the
-  generic `data-migrator` port and the gap3-compatible `x.migrator.on` host
-  drain semantics.
+  generic `data-migrator` port and the legacy generation-owned host drain
+  semantics.
 - `.agents/docs/notes/tooling/bash-completions-2026-06.md`: Records repo-local
   Bash completion sources for operator CLIs and root dev-shell loading.
 - `.agents/docs/notes/tooling/migrator-runtime-gate-2026-06.md`: Records the
-  runtime-owned `services.migrator` gate, `migratorctl`, managed-unit registry,
-  and data-migrator cutover integration.
+  runtime-owned `services.migration-manager` gate, `migratorctl`, managed-unit
+  registry, and data-migrator cutover integration.
 - `.agents/docs/notes/tooling/nix-run-completion-delegation-2026-06.md`: Records
   the repo-local Bash completion bridge for delegated root-flake `nix run`
   completions.

@@ -36,17 +36,17 @@ Use this model for these outcomes:
 There are four ingress declaration surfaces:
 
 - `exposedPorts.<name>` on a
-  `services.podmanCompose.<stack>.instances.<service>` entry
+  `services.podman-compose.<stack>.instances.<service>` entry
 - `proxyVhosts` passed to `nginxLib.renderServers`
 - `redirectVhosts` passed to `nginxLib.renderServers`
 - `staticSites` passed to `nginxLib.renderServers`
 
 Most callers do not construct `proxyVhosts` manually. They come from
-`services.podmanCompose.<stack>.nginxProxyVhosts`, which is derived from
+`services.podman-compose.<stack>.nginx-proxy-vhosts`, which is derived from
 `exposedPorts`.
 
 Most path-mounted dynamic routes do not construct route attrsets manually. They
-come from `services.podmanCompose.<stack>.nginxRoutes`, which is derived from
+come from `services.podman-compose.<stack>.nginxRoutes`, which is derived from
 `exposedPorts.<name>.nginxRoutes`.
 
 Manual route attrsets are valid when the origin is external and not represented
@@ -401,7 +401,7 @@ forwards the request upstream.
 
 ## Outcome: Publish Hostnames Through Cloudflare Tunnel
 
-`services.podmanCompose.<stack>.cloudflareTunnelIngress` is derived from
+`services.podman-compose.<stack>.cloudflareTunnelIngress` is derived from
 `cfTunnelNames` on exposed ports.
 
 Example:
@@ -674,7 +674,7 @@ Constraints:
 Typical host wiring:
 
 ```nix
-services.podmanCompose.pvl.instances.nginx = rec {
+services.podman-compose.pvl.instances.nginx = rec {
   exposedPorts.http = {
     port = 8000;
     openFirewall = true;

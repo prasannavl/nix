@@ -201,7 +201,7 @@ Important edge rules:
 ## Incus implementation details
 
 - Add `state` and per-instance `reconcilePolicy` to
-  `services.incusMachines.<project>.instances.<name>`.
+  `services.incus-manager.<project>.instances.<name>`.
 - Add a global default for the per-instance policy only if it keeps declarations
   readable; default to current behavior with `auto`.
 - Rename the existing global failure knob to `reconcileFailurePolicy`.
@@ -281,8 +281,8 @@ removalPolicy = "inherit"; # "inherit" | "keep" | "stop" | "delete" | "delete-al
 Add stack-level default drift/action policy:
 
 ```nix
-services.podmanCompose.<stack>.reconcilePolicy = "auto";
-services.podmanCompose.<stack>.removalPolicy = "delete";
+services.podman-compose.<stack>.reconcilePolicy = "auto";
+services.podman-compose.<stack>.removalPolicy = "delete";
 ```
 
 Remove `recreateOnSwitch`.
@@ -368,7 +368,7 @@ effective policy.
 Policy meanings:
 
 - `inherit`: per-instance default. Resolve to
-  `services.podmanCompose.<stack>.reconcilePolicy`.
+  `services.podman-compose.<stack>.reconcilePolicy`.
 - `auto`: default smart policy. Use the module's classification: reload-class
   drift reloads, restart-class drift restarts, and recreate-class drift
   force-recreates.
@@ -452,9 +452,9 @@ without the blunt `recreateOnSwitch` hammer.
   helper as the recreate stamp only for `recreate`.
 - Gate helper force-recreate by `reconcilePolicy`, including explicit
   `recreateTag`.
-- Replace `systemdUserManager.stopOnRemoval` with `removalPolicy` and a provider
-  removal command hook so Podman removal can distinguish `stop`, `delete`, and
-  `delete-all`.
+- Replace `services.systemd-user-manager.stopOnRemoval` with `removalPolicy` and
+  a provider removal command hook so Podman removal can distinguish `stop`,
+  `delete`, and `delete-all`.
 - Have provider removal commands own their own stop/wait semantics so Podman
   `keep` can clear helper ownership without stopping the workload.
 - Remove `recreateOnSwitch` from defaults, option docs, generated metadata, and

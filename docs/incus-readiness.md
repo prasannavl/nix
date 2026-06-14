@@ -15,7 +15,7 @@ the guest is:
 ## Parent-Host Helpers
 
 Installed on parent hosts that declare
-`services.incusMachines.<project>.instances`:
+`services.incus-manager.<project>.instances`:
 
 - `incus-machines-reconciler`
 - `incus-machines-settlement`
@@ -32,7 +32,7 @@ incus-machines-reconciler --machine llmug-rivendell
 ```
 
 Batch failure behavior is controlled by
-`services.incusMachines.global.reconcileFailurePolicy`:
+`services.incus-manager.global.reconcileFailurePolicy`:
 
 - `best-effort`
 - `strict`
@@ -42,7 +42,7 @@ make `declarative` pending recreate drift fail, and ignored instances are
 outside the batch reconcile contract.
 
 Per-instance lifecycle mutation is controlled by
-`services.incusMachines.<project>.instances.<name>.reconcilePolicy`:
+`services.incus-manager.<project>.instances.<name>.reconcilePolicy`:
 
 - `auto`
 - `declarative`
@@ -203,7 +203,7 @@ Parent hosts can optionally run `incus-machines-reconciler --all` at boot via
 the `incus-machines-reconciler.service` systemd unit:
 
 ```nix
-services.incusMachines.global.autoReconcile = true;
+services.incus-manager.global.autoReconcile = true;
 ```
 
 This is **disabled by default** so that host boot does not block on guest

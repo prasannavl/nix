@@ -149,7 +149,7 @@ activation details.
 
 ## Container Secrets
 
-`services.podmanCompose` supports two secret injection paths.
+`services.podman-compose` supports two secret injection paths.
 
 ### `envSecrets`
 
@@ -241,7 +241,7 @@ nix eval --raw \
   .#nixosConfigurations.<host>.config.age.secrets.<name>.path
 
 nix eval --json \
-  .#nixosConfigurations.<host>.config.services.systemdUserManager.instances.<unit>.restartTriggers
+  .#nixosConfigurations.<host>.config.services.systemd-user-manager.instances.<unit>.restartTriggers
 ```
 
 For mounted runtime bytes, verify metadata without printing contents:
@@ -287,7 +287,7 @@ printf '%s' "$hosts_json" | jq -r '.[]' | while read -r host; do
     nix eval --json ".#nixosConfigurations.${host}.config.age.secrets" \
       --apply 'secrets: builtins.mapAttrs (n: v: toString (v.path or "/run/agenix/${n}")) secrets'
   )
-  pc_json=$(nix eval --json ".#nixosConfigurations.${host}.config.services.podmanCompose")
+  pc_json=$(nix eval --json ".#nixosConfigurations.${host}.config.services.podman-compose")
   jq -r --arg host "$host" --argjson age "$age_json" '
     def ageNameFor($p):
       ($age | to_entries | map(select(.value == $p)) | .[0].key // null);

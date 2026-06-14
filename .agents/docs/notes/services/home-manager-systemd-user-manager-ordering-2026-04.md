@@ -15,7 +15,7 @@
 - `home-manager-pvl.service` and `systemd-user-manager-dispatcher-pvl.service`
   were both plain `multi-user.target` units with no ordering between them.
 - The dispatcher restarted `user@1000.service` because
-  `services.systemdUserManager` thought the `pvl` identity changed.
+  `services.systemd-user-manager` thought the `pvl` identity changed.
 - That identity change was a false positive: both generations referenced the
   same `users-groups.json`, so the effective system user/group database did not
   change.

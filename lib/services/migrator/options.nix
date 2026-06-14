@@ -3,7 +3,7 @@
   pkgs,
   ...
 }: {
-  options.services.migrator = {
+  options.services.migration-manager = {
     enable = lib.mkEnableOption "runtime migration gate control";
 
     package = lib.mkOption {

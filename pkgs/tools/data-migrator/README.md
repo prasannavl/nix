@@ -49,16 +49,16 @@ again, then flips the runtime gate off. That returns the host to the default
 runtime-owned mode with no drain marker and no persistent migrator state.
 
 Remote gate toggles require the remote host to already run a generation that
-contains `services.migrator` and `/run/current-system/sw/bin/migratorctl`. The
-target bootstrap deploy establishes that for the target. Source drain hosts
-should be pre-deployed with migrator support, or already drained when using
-`--skip-deploy`.
+contains `services.migration-manager` and
+`/run/current-system/sw/bin/migratorctl`. The target bootstrap deploy
+establishes that for the target. Source drain hosts should be pre-deployed with
+migrator support, or already drained when using `--skip-deploy`.
 
-`services.migrator.state` is tri-state. The normal default is `"runtime"`, which
-keeps `migratorctl on|off` state live across switch within the current boot. The
-target bootstrap deploy temporarily forces `"on"` in its private worktree;
-target resume deploys the normal generation and runs `migratorctl off` so the
-host returns to runtime-owned gate control.
+`services.migration-manager.state` is tri-state. The normal default is
+`"runtime"`, which keeps `migratorctl on|off` state live across switch within
+the current boot. The target bootstrap deploy temporarily forces `"on"` in its
+private worktree; target resume deploys the normal generation and runs
+`migratorctl off` so the host returns to runtime-owned gate control.
 
 Local staging copy:
 

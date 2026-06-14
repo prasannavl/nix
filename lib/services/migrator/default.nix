@@ -4,7 +4,7 @@
   pkgs,
   ...
 }: let
-  cfg = config.services.migrator;
+  cfg = config.services.migration-manager;
   gatePath = cfg.gatePath;
   gateParentDir = builtins.dirOf gatePath;
   configuredPackage = pkgs.symlinkJoin {
@@ -61,7 +61,7 @@ in {
 
   config = lib.mkMerge [
     (lib.mkIf (bootstrapState != null) {
-      services.migrator = {
+      services.migration-manager = {
         enable = true;
         state = lib.mkForce bootstrapState;
       };
@@ -75,11 +75,11 @@ in {
       assertions = [
         {
           assertion = lib.all (unit: lib.hasSuffix ".service" unit) (serviceUnitNames systemUnits);
-          message = "services.migrator.managedUnits.system keys must be full .service unit names.";
+          message = "services.migration-manager.managedUnits.system keys must be full .service unit names.";
         }
         {
           assertion = lib.all (unit: lib.hasSuffix ".service" unit) dispatcherUnits;
-          message = "services.migrator.managedUnits.dispatchers entries must be full .service unit names.";
+          message = "services.migration-manager.managedUnits.dispatchers entries must be full .service unit names.";
         }
       ];
 

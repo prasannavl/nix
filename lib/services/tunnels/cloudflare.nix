@@ -82,7 +82,7 @@ in {
           };
       };
 
-      services.migrator.managedUnits.system = lib.optionalAttrs (credentials != null) {
+      services.migration-manager.managedUnits.system = lib.optionalAttrs (credentials != null) {
         "${tunnelUnitName}.service" = {};
       };
     }

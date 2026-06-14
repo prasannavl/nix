@@ -4,7 +4,7 @@
   postgresUid = 1000;
   postgresGid = 1000;
 in {
-  services.podmanCompose.pvl.instances.postgres = rec {
+  services.podman-compose.pvl.instances.postgres = rec {
     exposedPorts.main = {
       port = 5432;
     };

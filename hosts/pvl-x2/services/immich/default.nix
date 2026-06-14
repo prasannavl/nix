@@ -7,7 +7,7 @@
   secretsBase = stack.secrets.service "immich";
 in {
   config = {
-    services.podmanCompose.pvl.instances.immich = rec {
+    services.podman-compose.pvl.instances.immich = rec {
       exposedPorts.http = {
         port = 2283;
         openFirewall = true;

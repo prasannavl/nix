@@ -1325,18 +1325,18 @@ extract_hardware_assignments() {
 print_boot_config() {
 	if [[ "$BOOT_MODE" == "efi" || "$BOOT_MODE" == "uefi" ]]; then
 		cat <<EOF
-    boot = config.diskoLib.mkEfiBoot {
+    boot = diskoLib.mkEfiBoot {
       size = "$(nix_escape "$ESP_SIZE")";
       partUuid = "$(nix_escape "$BOOT_PART_UUID")";
     };
 EOF
 	else
 		cat <<EOF
-    boot = config.diskoLib.mkBiosBoot {
+    boot = diskoLib.mkBiosBoot {
       biosBoot = {
         partUuid = "$(nix_escape "$BIOS_PART_UUID")";
       };
-      boot = config.diskoLib.mkExt4Boot {
+      boot = diskoLib.mkExt4Boot {
         size = "$(nix_escape "$BOOT_SIZE")";
         partUuid = "$(nix_escape "$BOOT_PART_UUID")";
       };
@@ -1399,18 +1399,20 @@ write_sys_nix() {
   lib,
   modulesPath,
   ...
-}: {
+}: let
+  diskoLib = import ../../lib/disko/lib.nix {lib = lib;};
+in {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
     ${disko_import}
   ];
 
-  disko.devices.disk.main = config.diskoLib.mkMain {
+  disko.devices.disk.main = diskoLib.mkMain {
     diskDevice = "$(nix_escape "$DISK_DEVICE")";
 EOF
 		print_boot_config
 		cat <<EOF
-    root = config.diskoLib.mkLuksBtrfs {
+    root = diskoLib.mkLuksBtrfs {
       size = "100%";
       name = "$(nix_escape "$LUKS_NAME")";
       luksUuid = "$(nix_escape "$LUKS_UUID")";

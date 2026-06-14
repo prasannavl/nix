@@ -91,7 +91,7 @@ ledger: all 116 upstream commits are represented, with no missing hashes from
 | `ab1e6878` | nixbot: health check fixes                                      | Verified present in local nixbot health-check filters and container health checks.                                   |
 | `b1f33479` | nixbot: add glob support                                        | Verified present in local nixbot host glob support.                                                                  |
 | `343728c4` | conv: systemd-container to lxc                                  | Already represented by local `fd9a2d66`.                                                                             |
-| `530c6272` | incus: add cert reconciler                                      | Verified present in local `services.incusMachines.certificates` and helper reconciliation flow.                      |
+| `530c6272` | incus: add cert reconciler                                      | Verified present in local `services.incus-manager.certificates` and helper reconciliation flow.                      |
 | `797891b5` | lxc: add intercept mounts                                       | Verified present in local `hosts/pvl-x2/incus.nix` `interceptMounts` support.                                        |
 | `0b503a88` | incus: remote delegation                                        | Verified present in local Incus remote mode, certificate delegation, and project-aware query flow.                   |
 | `7e3c9193` | lxc: rootless base adaptations                                  | Already represented in `lib/profiles/lxc.nix`: unprivileged mount disables, first-boot link, and activation service. |

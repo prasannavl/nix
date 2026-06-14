@@ -7,7 +7,7 @@
   secretsBase = stack.secrets.service "shadowsocks";
 in {
   config = {
-    services.podmanCompose.pvl.instances.shadowsocks = rec {
+    services.podman-compose.pvl.instances.shadowsocks = rec {
       exposedPorts.main = {
         port = 8388;
         protocols = [

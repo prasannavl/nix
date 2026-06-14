@@ -1,7 +1,7 @@
 {config, ...}: let
-  nginxPort = config.services.podmanCompose.pvl.instances.nginx.exposedPorts.http.port;
+  nginxPort = config.services.podman-compose.pvl.instances.nginx.exposedPorts.http.port;
 in {
-  config.services.podmanCompose.pvl.instances.memos = rec {
+  config.services.podman-compose.pvl.instances.memos = rec {
     exposedPorts.http = {
       port = 5230;
       openFirewall = true;

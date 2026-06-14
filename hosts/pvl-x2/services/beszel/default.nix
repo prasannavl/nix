@@ -6,7 +6,7 @@
   secretsBase = stack.secrets.service "beszel";
 in {
   config = {
-    services.podmanCompose.pvl.instances.beszel = {podmanSocket, ...}: rec {
+    services.podman-compose.pvl.instances.beszel = {podmanSocket, ...}: rec {
       exposedPorts.http = {
         port = 8090;
         openFirewall = true;

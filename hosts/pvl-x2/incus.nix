@@ -160,7 +160,7 @@ in {
   assertions = fabricIsolation.assertions;
 
   services = {
-    incusMachines = {
+    incus-manager = {
       global = {
         certificates = [
           {

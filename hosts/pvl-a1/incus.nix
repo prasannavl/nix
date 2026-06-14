@@ -1,12 +1,12 @@
 {pkgs, ...}: let
   incusSecrets = ../../data/secrets/globals/incus;
 in {
-  services.incusMachines.global.hostSuspend = {
+  services.incus-manager.global.hostSuspend = {
     enable = true;
     defaultPolicy = "stop";
     includeVirtualMachines = false;
   };
-  services.incusMachines.global.certificates = [
+  services.incus-manager.global.certificates = [
     {
       name = "pvl";
       type = "client";

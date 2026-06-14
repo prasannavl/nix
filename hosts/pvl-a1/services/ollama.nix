@@ -29,7 +29,7 @@ in {
     "d ${ollamaModelsDir} 0755 pvl pvl -"
   ];
 
-  services.podmanCompose.pvl.instances = {
+  services.podman-compose.pvl.instances = {
     ollama = rec {
       exposedPorts.main = {
         port = 11434;
@@ -116,7 +116,7 @@ in {
     };
   };
 
-  services.systemdUserManager.instances.pvl-ollama-models = {
+  services.systemd-user-manager.instances.pvl-ollama-models = {
     user = "pvl";
     unit = "pvl-ollama-models.service";
     restartTriggers = [

@@ -1,7 +1,7 @@
 {config, ...}: let
-  ollamaPort = config.services.podmanCompose.pvl.instances.ollama.exposedPorts.main.port;
+  ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
 in {
-  config.services.podmanCompose.pvl.instances.openwebui = rec {
+  config.services.podman-compose.pvl.instances.openwebui = rec {
     exposedPorts.http = {
       port = 4000;
       openFirewall = true;

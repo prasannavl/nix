@@ -5,19 +5,21 @@
   lib,
   modulesPath,
   ...
-}: {
+}: let
+  diskoLib = import ../../lib/disko/lib.nix {lib = lib;};
+in {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
     ../../lib/disko
   ];
 
-  disko.devices.disk.main = config.diskoLib.mkMain {
+  disko.devices.disk.main = diskoLib.mkMain {
     diskDevice = "/dev/disk/by-id/nvme-Lexar_SSD_ARES_2TB_QEC053R000846P2222";
-    boot = config.diskoLib.mkEfiBoot {
+    boot = diskoLib.mkEfiBoot {
       size = "1G";
       partUuid = "faa11c99-6122-468d-b86f-ef682963b4f6";
     };
-    root = config.diskoLib.mkLuksBtrfs {
+    root = diskoLib.mkLuksBtrfs {
       size = "100%";
       name = "luks-d01c0df8-7fa4-4a15-b7d6-497a1e37f313";
       luksUuid = "d01c0df8-7fa4-4a15-b7d6-497a1e37f313";

@@ -1,5 +1,5 @@
 {...}: {
-  config.services.podmanCompose.pvl.instances.portainer = {podmanSocket, ...}: rec {
+  config.services.podman-compose.pvl.instances.portainer = {podmanSocket, ...}: rec {
     exposedPorts = {
       http = {
         port = 8001;

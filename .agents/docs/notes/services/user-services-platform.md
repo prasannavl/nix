@@ -9,7 +9,7 @@ service-facing ingress policy.
 
 - Shared compose implementation lives in `lib/podman-compose/`. Base Podman
   enablement defaults live in `lib/podman.nix`.
-- `services.podmanCompose.<stack>.instances` is the canonical instance shape.
+- `services.podman-compose.<stack>.instances` is the canonical instance shape.
 - Generated runtime trees are store-backed, staged at service start, and cleaned
   through runtime manifests rather than handwritten ad hoc cleanup.
 - If a compose instance declares a stable default-network subnet, record it in
@@ -17,9 +17,9 @@ service-facing ingress policy.
   compose network IPAM is not parsed for collision checks.
 - Duplicate `exposedPorts` host port/protocol pairs are rejected at evaluation
   time.
-- `services.podmanCompose.<stack>.timeoutStableSeconds` is the stack default for
-  generated user-manager stable-state waits; instances may override it with
-  `services.podmanCompose.<stack>.instances.<name>.timeoutStableSeconds`.
+- `services.podman-compose.<stack>.timeoutStableSeconds` is the stack default
+  for generated user-manager stable-state waits; instances may override it with
+  `services.podman-compose.<stack>.instances.<name>.timeoutStableSeconds`.
 - The main generated service is a long-running unit that uses
   `podman compose up -d --remove-orphans`, verifies startup state, and then
   monitors `podman compose ps --format json`.
@@ -55,7 +55,7 @@ service-facing ingress policy.
 ## Lifecycle tags
 
 - `state = "running" | "stopped"` is the public desired-state knob for
-  `services.podmanCompose.<stack>.instances.<name>`. Stopped instances still
+  `services.podman-compose.<stack>.instances.<name>`. Stopped instances still
   render metadata and generated units, but the generated user-manager entry uses
   `state = "stopped"` to stop the unit and avoid auto-starting it. Podman
   runtime files are staged on manual or automatic start and cleaned after stop.
@@ -139,7 +139,7 @@ service-facing ingress policy.
 - `lib/podman-compose/helper.sh`
 - `lib/services/nginx/default.nix`
 - `lib/services/tunnels/cloudflare.nix`
-- the host service module that declares `services.podmanCompose.<stack>`
+- the host service module that declares `services.podman-compose.<stack>`
 
 ## Superseded notes
 

@@ -1,7 +1,7 @@
 # Podman Compose Instance Attribute Ordering
 
-When defining a `services.podmanCompose.<stack>.instances.<name>` attribute set,
-follow this canonical ordering. Not every instance uses every attribute —
+When defining a `services.podman-compose.<stack>.instances.<name>` attribute
+set, follow this canonical ordering. Not every instance uses every attribute —
 include only what applies, but keep the relative order stable.
 
 ## Attribute Order
@@ -109,7 +109,7 @@ documented next to the override.
 ## Example
 
 ```nix
-services.podmanCompose.pvl.instances.example = rec {
+services.podman-compose.pvl.instances.example = rec {
   state = "running";
   recreateTag = "1";
 

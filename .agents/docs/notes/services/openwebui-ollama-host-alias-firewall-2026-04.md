@@ -8,7 +8,7 @@ WebUI's persisted config defaults), while Ollama is published on host port
 
 The important host-specific difference was firewall policy, not Compose
 networking. `pvl-x2` already opened TCP `11434` through
-`services.podmanCompose...exposedPorts.<name>.openFirewall = true;`, while
+`services.podman-compose...exposedPorts.<name>.openFirewall = true;`, while
 `pvl-a1` did not.
 
 Observed behavior:

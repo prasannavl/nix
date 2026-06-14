@@ -15,10 +15,10 @@ data-migrator and migration-drain commits.
   - tar fallback
   - guarded Incus native copy/refresh with `user.data-migrator.*` source markers
   - controller-host wrapping for Incus client commands
-- Ported the gap3 `x.migrator.on` host drain design instead of the earlier local
-  Incus-container stop drain.
-  - `data-migrator` patches host modules with `{ x.migrator.on = true; }` in
-    temporary worktrees and deploys them through `nixbot`.
+- Ported the gap3 generation-owned host drain design instead of the earlier
+  local Incus-container stop drain.
+  - `data-migrator` used to patch host modules in temporary worktrees and deploy
+    them through `nixbot`.
   - `lib/flake/service-module.nix` actively stops package-backed services and
     suppresses their normal `wantedBy` attachments while drain is on.
   - `lib/podman-compose/default.nix` suppresses compose auto-start during drain.
@@ -28,7 +28,7 @@ data-migrator and migration-drain commits.
 
 ## Removed
 
-- Removed the local `services.incusMachines.<project>.instances.<name>.drain`
+- Removed the local `services.incus-manager.<project>.instances.<name>.drain`
   invention. It stopped the whole Incus container from the parent host, which is
   not the desired semantics for NixOS hosts that are themselves Incus LXCs.
 - `lib/incus/default.nix` and `lib/incus/helper.sh` are back to the upstream

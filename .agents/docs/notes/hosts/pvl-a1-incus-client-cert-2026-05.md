@@ -1,7 +1,7 @@
 # pvl-a1 Incus Client Certificate 2026-05
 
 `pvl-a1` trusts a pinned Incus TLS client certificate through
-`services.incusMachines.global.certificates`. The host firewall also allows TCP
+`services.incus-manager.global.certificates`. The host firewall also allows TCP
 `8443`, matching the Incus HTTPS listener.
 
 As of 2026-05-15, `pvl-a1` is intentionally reduced back to a single default
@@ -30,7 +30,7 @@ temporarily outside the repo when importing into a browser or OS certificate
 store.
 
 Do not put private keys in Nix store paths or Incus preseed. The
-`services.incusMachines.global.certificates` reconciler only needs the public
+`services.incus-manager.global.certificates` reconciler only needs the public
 certificate material so the server can deterministically trust the same client
 identities after activation.
 

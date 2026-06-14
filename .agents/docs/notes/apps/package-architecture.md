@@ -115,11 +115,11 @@ stack wiring.
   - `services.<name>.enable`
   - `services.<name>.package`
   - `systemd.services.<name>` when the resolved user is `root`
-  - `userServices.<user>.<name>` plus `systemd-user-manager` registration when
+  - `user-services.<user>.<name>` plus `systemd-user-manager` registration when
     the resolved user is non-root
 - Generated user-service modules should materialize both:
   - `systemd.user.services.<unit>`
-  - `services.systemdUserManager.instances.<user>-<name>`
+  - `services.systemd-user-manager.instances.<user>-<name>`
 - Prefer direct systemd wiring fields such as `after`, `before`, `wants`,
   `requires`, and `wantedBy` instead of repo-specific dependency abstractions.
 - `mkTcpServiceModule` extends that model with listener address and port options
