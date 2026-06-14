@@ -846,6 +846,7 @@
   in ''
     map $remote_addr ${clientAddrPrefixKeyVarName} {
         default "";
+        ~^${ipv4AddressPattern}$ "";
         ~^(${h}):(${h}):(${h}):(${h})(?::|$) $1:$2:$3:$4;
         ~^(${h}):(${h}):(${h}):: $1:$2:$3:0;
         ~^(${h}):(${h})::(${h}):${h}:${h}:${h}:${h}$ $1:$2:0:$3;
