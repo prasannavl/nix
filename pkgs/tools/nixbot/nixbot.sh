@@ -10359,6 +10359,7 @@ print_run_summary() {
 	local -a failed_summary_hosts=()
 	local tf_label="" tf_status="" tf_display_status=""
 	local total_duration_secs="" timing_suffix=""
+	local total_duration="" build_duration="" deploy_duration=""
 	local -a failed_summary_tf=()
 
 	log_section "Phase: Summary"
@@ -10414,10 +10415,10 @@ print_run_summary() {
 			failed_summary_tf+=("${tf_label}: FAIL (tf)")
 		fi
 	done
-	echo "Timing:" >&2
-	echo "  - total: $(format_summary_duration_or_dash "${total_duration_secs}")" >&2
-	echo "  - build: $(format_summary_duration_or_dash "${RUN_SUMMARY_BUILD_DURATION_SECS:-}")" >&2
-	echo "  - deploy: $(format_summary_duration_or_dash "${RUN_SUMMARY_DEPLOY_DURATION_SECS:-}")" >&2
+	total_duration="$(format_summary_duration_or_dash "${total_duration_secs}")"
+	build_duration="$(format_summary_duration_or_dash "${RUN_SUMMARY_BUILD_DURATION_SECS:-}")"
+	deploy_duration="$(format_summary_duration_or_dash "${RUN_SUMMARY_DEPLOY_DURATION_SECS:-}")"
+	echo "Run time: ${total_duration} (build: ${build_duration}, deploy: ${deploy_duration})" >&2
 	if [ "${#failed_summary_hosts[@]}" -gt 0 ] || [ "${#failed_summary_tf[@]}" -gt 0 ]; then
 		printf '\n!!!!!!!!!! FAILURE !!!!!!!!!!\n' >&2
 		for node in "${failed_summary_hosts[@]}"; do
