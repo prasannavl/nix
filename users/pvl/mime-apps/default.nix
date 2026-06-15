@@ -92,42 +92,44 @@
       )
       mimeGroups;
   in {
-    xdg.configFile."mimeapps.list".force = true;
-    xdg.dataFile."applications/mimeapps.list".force = true;
+    xdg = {
+      configFile."mimeapps.list".force = true;
+      dataFile."applications/mimeapps.list".force = true;
 
-    xdg.mimeApps = {
-      enable = true;
+      mimeApps = {
+        enable = true;
 
-      # Chosen app for direct opens.
-      defaultApplications =
-        {
-          "application/x-extension-htm" = [apps.browsers.firefox];
-          "application/x-extension-html" = [apps.browsers.firefox];
-          "application/x-extension-shtml" = [apps.browsers.firefox];
-          "application/x-extension-xht" = [apps.browsers.firefox];
-          "application/x-extension-xhtml" = [apps.browsers.firefox];
-          "application/xhtml+xml" = [apps.browsers.firefox];
-          "x-scheme-handler/about" = [apps.browsers.chrome];
-          "x-scheme-handler/chrome" = [apps.browsers.firefox];
-          "x-scheme-handler/claude-cli" = [apps.misc.claudeCli];
-          "x-scheme-handler/unknown" = [apps.browsers.chrome];
-        }
-        // autoDefaults;
+        # Chosen app for direct opens.
+        defaultApplications =
+          {
+            "application/x-extension-htm" = [apps.browsers.firefox];
+            "application/x-extension-html" = [apps.browsers.firefox];
+            "application/x-extension-shtml" = [apps.browsers.firefox];
+            "application/x-extension-xht" = [apps.browsers.firefox];
+            "application/x-extension-xhtml" = [apps.browsers.firefox];
+            "application/xhtml+xml" = [apps.browsers.firefox];
+            "x-scheme-handler/about" = [apps.browsers.chrome];
+            "x-scheme-handler/chrome" = [apps.browsers.firefox];
+            "x-scheme-handler/claude-cli" = [apps.misc.claudeCli];
+            "x-scheme-handler/unknown" = [apps.browsers.chrome];
+          }
+          // autoDefaults;
 
-      # Candidate apps shown in open-with menus.
-      associations.added =
-        {
-          "application/x-extension-htm" = [apps.browsers.firefox];
-          "application/x-extension-html" = [apps.browsers.firefox];
-          "application/x-extension-shtml" = [apps.browsers.firefox];
-          "application/x-extension-xht" = [apps.browsers.firefox];
-          "application/x-extension-xhtml" = [apps.browsers.firefox];
-          "application/xhtml+xml" = [apps.browsers.firefox];
-          "x-scheme-handler/chrome" = [apps.browsers.firefox];
-          "x-scheme-handler/sms" = [apps.misc.gsconnect];
-          "x-scheme-handler/tel" = [apps.misc.gsconnect];
-        }
-        // autoAssociations;
+        # Candidate apps shown in open-with menus.
+        associations.added =
+          {
+            "application/x-extension-htm" = [apps.browsers.firefox];
+            "application/x-extension-html" = [apps.browsers.firefox];
+            "application/x-extension-shtml" = [apps.browsers.firefox];
+            "application/x-extension-xht" = [apps.browsers.firefox];
+            "application/x-extension-xhtml" = [apps.browsers.firefox];
+            "application/xhtml+xml" = [apps.browsers.firefox];
+            "x-scheme-handler/chrome" = [apps.browsers.firefox];
+            "x-scheme-handler/sms" = [apps.misc.gsconnect];
+            "x-scheme-handler/tel" = [apps.misc.gsconnect];
+          }
+          // autoAssociations;
+      };
     };
   };
 }
