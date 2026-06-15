@@ -1,4 +1,13 @@
-{config, ...}: {
+{
+  config,
+  lib,
+  options,
+  pkgs,
+  ...
+}: let
+  harmoniaLessThan3 = version: lib.versionOlder version "3";
+  signingKey = config.age.secrets.nix-builder-pvl-signing-key.path;
+in {
   imports = [
     ../common/pvl.nix
     ../common/ci.nix
@@ -13,18 +22,21 @@
   ];
 
   nix.settings.secret-key-files = [
-    config.age.secrets.nix-builder-pvl-signing-key.path
+    signingKey
   ];
 
   networking.firewall.allowedTCPPorts = [5000];
 
-  services.harmonia = {
-    enable = true;
-    signKeyPaths = [
-      config.age.secrets.nix-builder-pvl-signing-key.path
-    ];
-    settings.bind = "0.0.0.0:5000";
-  };
+  services.harmonia = let
+    cacheConfig = {
+      enable = true;
+      signKeyPaths = [signingKey];
+      settings.bind = "0.0.0.0:5000";
+    };
+  in
+    if harmoniaLessThan3 pkgs.harmonia.version || !(options.services.harmonia ? cache)
+    then cacheConfig
+    else {cache = cacheConfig;};
 
   age.secrets.nix-builder-pvl-signing-key = {
     file = ../../data/secrets/globals/nix/builder-pvl.key.age;

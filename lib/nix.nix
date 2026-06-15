@@ -1,4 +1,10 @@
-{pkgs, ...}: let
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  nixosLessThan2605 = version: lib.versionOlder version "26.05";
   pvlBuilderCacheUrl = "http://pvl-x2:5000";
   pvlBuilderPublicKey = "pvl-1:gW+9RR4ONrwIBL1mpEwORnHdqdcixPnkm6xHYLiu4o4=";
   abirdBuilderPublicKey = "abird-1:DYGYgDPKODWjpQMohvZsfMRAiLn5XCc6efYhVprzL50=";
@@ -27,7 +33,13 @@ in {
         "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
       ];
     };
-    package = pkgs.nixVersions.nix_2_33;
+    package = let
+      nixPackage =
+        if nixosLessThan2605 config.system.nixos.release
+        then pkgs.nixVersions.nix_2_33
+        else pkgs.nixVersions.nix_2_34;
+    in
+      nixPackage;
     gc = {
       automatic = true;
       dates = "weekly";

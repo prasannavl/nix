@@ -1,4 +1,10 @@
-{lib, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: let
+  mutterLessThan50 = version: lib.versionOlder version "50";
+in {
   services.displayManager.gdm.enable = true;
   services.displayManager.gdm.autoSuspend = false;
 
@@ -8,11 +14,15 @@
         "org/gnome/mutter" = {
           # Empty list disables fractional scaling support
           # experimental-features = lib.mkForce [ ];
-          experimental-features = [
-            "scale-monitor-framebuffer" # Enables fractional scaling (125% 150% 175%)
-            "variable-refresh-rate" # Enables Variable Refresh Rate (VRR) on compatible displays
-            "xwayland-native-scaling" # Scales Xwayland applications to look crisp on HiDPI screens
-          ];
+          experimental-features = let
+            features =
+              [
+                "scale-monitor-framebuffer"
+                "xwayland-native-scaling"
+              ]
+              ++ lib.optional (mutterLessThan50 pkgs.mutter.version) "variable-refresh-rate";
+          in
+            features;
           # Physical mode forces integer-only scaling (1, 2, etc.)
           layout-mode = "physical";
         };

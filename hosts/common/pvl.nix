@@ -86,6 +86,7 @@
     # AI
     codex
     codex-wrapper
+    github-copilot-cli
     opencode
   ];
 

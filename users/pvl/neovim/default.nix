@@ -12,6 +12,8 @@
       defaultEditor = true;
       viAlias = true;
       vimAlias = true;
+      withPython3 = true;
+      withRuby = true;
       # We don't do config here, we link the whole nvim config from our dotfiles.
       # plugins = [
       # We basically use the LazyVim distro instead

@@ -29,20 +29,20 @@
     libpng
     libpulseaudio
     libva
-    xorg.libX11
+    libx11
     libxcb
-    xorg.libXcomposite
-    xorg.libXcursor
-    xorg.libXdamage
-    xorg.libXext
-    xorg.libXfixes
-    xorg.libXi
+    libxcomposite
+    libxcursor
+    libxdamage
+    libxext
+    libxfixes
+    libxi
     libxkbcommon
-    xorg.libXrandr
-    xorg.libXrender
-    xorg.libXScrnSaver
+    libxrandr
+    libxrender
+    libxscrnsaver
     libxshmfence
-    xorg.libXtst
+    libxtst
     (libopus.override {withCustomModes = true;})
     nspr
     nss

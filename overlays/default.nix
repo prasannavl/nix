@@ -2,6 +2,8 @@
   # (import ./unstable-sys.nix {inherit inputs; })
   (import ./unstable.nix {inherit inputs;})
   (import ./sway.nix {inherit inputs;})
+  (import ./gdm.nix {inherit inputs;})
+  (import ./supergfxctl.nix {inherit inputs;})
   inputs.vscode-ext.overlays.default
   (_final: prev: {
     craneLib = inputs.crane.mkLib prev;

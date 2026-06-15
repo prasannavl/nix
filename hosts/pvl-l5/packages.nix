@@ -122,8 +122,8 @@ in {
     wavemon
 
     # Input debugging
-    xorg.xev
-    xorg.xeyes
+    xev
+    xeyes
     xprop
     xset
     v4l-utils
