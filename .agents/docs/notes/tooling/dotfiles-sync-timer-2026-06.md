@@ -16,3 +16,9 @@ future runs independently of whether the previous service invocation succeeded,
 and `Persistent=true` is meaningful for calendar timers. Keep a short delayed
 `OnStartupSec=30s` trigger so a fresh login or boot still attempts an early sync
 without racing the first network setup as aggressively as `OnStartupSec=0`.
+
+The user unit still cannot reliably order itself after the system
+`network-online.target`, so the sync script also waits for DNS resolution of
+`github.com` before invoking Git. `link_editable_bin` runs only after both the
+network wait and `sync_dotfiles` succeed, so a failed clone or fetch leaves the
+existing `~/bin` state untouched.

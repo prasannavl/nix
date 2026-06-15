@@ -15,8 +15,25 @@
         bin_dir="$home_dir/bin"
         getent="${pkgs.getent}/bin/getent"
         git="${pkgs.git}/bin/git"
-        mkdir="${pkgs.coreutils}/bin/mkdir"
         ln="${pkgs.coreutils}/bin/ln"
+        mkdir="${pkgs.coreutils}/bin/mkdir"
+        sleep="${pkgs.coreutils}/bin/sleep"
+      }
+
+      wait_for_network() {
+        local attempts host
+        attempts=5
+        host="github.com"
+
+        while ! "$getent" hosts "$host" >/dev/null; do
+          attempts=$((attempts - 1))
+          if [ "$attempts" -le 0 ]; then
+            echo "Timed out waiting for DNS resolution of $host" >&2
+            return 1
+          fi
+
+          "$sleep" 2
+        done
       }
 
       sync_dotfiles() {
@@ -43,6 +60,7 @@
       }
 
       vars
+      wait_for_network
       sync_dotfiles
       link_editable_bin
     '';
