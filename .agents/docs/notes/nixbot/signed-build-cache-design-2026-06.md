@@ -299,11 +299,14 @@ Implemented in the pvl repo:
 - Remote deploy builds default to `--build-host-deploy-mode auto`: use `cache`
   when `--build-host` resolves to the configured `globals.ciHost`; otherwise use
   `local-copy`. `cache` verifies the build-host cache, makes the target copy the
-  exact path from that cache, then activates it. `local-copy` copies the signed
-  closure back to the local store for local availability, then relays that exact
-  signed path from the build-host cache to the target with the same temporary
-  target trust-key bridge before activation. Use `local-copy` when the operator
-  can reach both sides but the target cannot reach the build-host cache.
+  exact path from that cache, then activates it. `local-copy` verifies the same
+  signed cache path, then relays it from the build-host cache to the target with
+  the local client and the same temporary target trust-key bridge. Deploy
+  local-copy mode intentionally avoids raw `ssh-ng://` copy-back into the
+  operator store. Build-only copy-back uses the signed build-host cache when it
+  is configured, and falls back to raw `ssh-ng://` only when there is no cache.
+  Use `local-copy` when the operator can reach both sides but the target cannot
+  reach the build-host cache.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`
@@ -312,8 +315,9 @@ Implemented in the pvl repo:
   This matters because nixbot captures remote build stdout with command
   substitution; a heartbeat that inherits stdout can keep the capture pipe open
   after Nix exits, producing a false long-running build with no remote load.
-- Build-only remote builds still copy the closure back from `ssh-ng://` for
-  local result handling.
+- Build-only remote builds still copy the closure back for local result
+  handling. They use the signed build-host cache when it is configured, and fall
+  back to raw `ssh-ng://` only when there is no cache.
 - The superseded pvl note
   `.agents/docs/notes/hosts/nixbot-deploy-host-command-2026-06.md` was deleted;
   `docs/deployment.md` and `.agents/docs/notes/nixbot/deploy-system.md` were

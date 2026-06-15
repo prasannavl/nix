@@ -83,7 +83,9 @@ By default, `nixbot run`, `nixbot deploy`, and `nixbot build` use local builds.
 
 Use `--build-host <ssh-host>` to build the closure on a remote Nix store using
 `ssh-ng://<ssh-host>`. For build-only actions, `nixbot` copies that built
-closure back from the build host for local inspection and result-link handling.
+closure back for local inspection and result-link handling. When the build host
+cache is configured, that local import comes from the signed cache; otherwise it
+falls back to the raw `ssh-ng://` store.
 
 For deploy actions with non-local `--build-host`, the build host entry in
 `hosts/nixbot.nix` must resolve through the normal host inventory. `nixbot`
@@ -105,11 +107,12 @@ The default `--build-host-deploy-mode auto` chooses `cache` when `--build-host`
 resolves to the configured `globals.ciHost`; otherwise it chooses `local-copy`.
 Use `--build-host-deploy-mode local-copy` explicitly when targets cannot reach
 the build host cache. In that mode, `nixbot` still builds on `--build-host`,
-verifies the signed build-host cache, copies the closure back into the local
-store for local availability, and relays the exact signed path from the
-build-host cache to each target before activation.
-`--build-host-deploy-mode cache` is more direct when targets can reach the
-build-host Harmonia endpoint.
+verifies the signed build-host cache, and uses the local client to relay the
+exact signed path from the build-host cache to each target before activation.
+Deploy local-copy mode does not import the raw `ssh-ng://` closure into the
+operator store; build-only copy-back also prefers the signed build-host cache
+when available. `--build-host-deploy-mode cache` is more direct when targets can
+reach the build-host Harmonia endpoint.
 
 ## Further Reading
 

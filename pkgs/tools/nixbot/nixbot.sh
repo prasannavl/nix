@@ -2879,7 +2879,7 @@ require_build_host_cache_config() {
 		die "Remote deploy builds require globals.ciCachePort in ${NIXBOT_CONFIG_PATH}"
 }
 
-remote_build_deploy_uses_local_store() {
+remote_build_deploy_uses_local_relay() {
 	[ "${BUILD_HOST}" != "local" ] && [ "$(effective_build_host_deploy_mode)" = "local-copy" ]
 }
 
@@ -2922,11 +2922,22 @@ effective_build_host_deploy_mode() {
 }
 
 copy_remote_build_closure_to_local_store() {
-	local node="$1" store_uri="$2" nix_sshopts="$3" out_path="$4" remote_copy_output=""
+	local node="$1" store_uri="$2" nix_sshopts="$3" out_path="$4" cache_url="" remote_copy_output="" trusted_public_keys=""
 	local -a copy_cmd=()
 
-	echo "Copying built closure from ${BUILD_HOST} to local store: ${out_path}" >&2
-	copy_cmd=(nix copy --from "${store_uri}" "${out_path}")
+	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
+	copy_cmd=(nix)
+	if [ -n "${cache_url}" ]; then
+		trusted_public_keys="$(target_trusted_public_keys_for_copy "${node}")" || return 1
+		append_extra_trusted_public_keys_option "${trusted_public_keys}" copy_cmd
+		copy_cmd+=(copy --from "${cache_url}" "${out_path}")
+		nix_sshopts=""
+		echo "Copying built closure from ${BUILD_HOST} cache to local store: ${out_path}" >&2
+	else
+		copy_cmd+=(copy --from "${store_uri}" "${out_path}")
+		echo "Copying built closure from ${BUILD_HOST} to local store: ${out_path}" >&2
+	fi
+
 	if ! run_remote_store_command_with_retry \
 		remote_copy_output \
 		"Remote build copy from ${BUILD_HOST}" \
@@ -5814,7 +5825,7 @@ require_local_build_primary_deploy_context() {
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -ne 0 ] ||
 		[ "${PREP_USING_BOOTSTRAP_FALLBACK}" -ne 1 ] ||
-		{ [ "${BUILD_HOST}" != "local" ] && ! remote_build_deploy_uses_local_store; }; then
+		{ [ "${BUILD_HOST}" != "local" ] && ! remote_build_deploy_uses_local_relay; }; then
 		return 0
 	fi
 
@@ -5823,7 +5834,7 @@ require_local_build_primary_deploy_context() {
 		return 0
 	fi
 
-	echo "==> Local-store deploy for ${node} needs primary deploy user; rechecking primary target"
+	echo "==> Local relay deploy for ${node} needs primary deploy user; rechecking primary target"
 	prepare_deploy_context "${node}" primary-only
 }
 
@@ -7323,7 +7334,7 @@ deploy_remote_build_host_path() {
 	return "${deploy_rc}"
 }
 
-deploy_local_store_system_path() {
+deploy_build_cache_via_local_client() {
 	local node="$1" built_out_path="$2"
 	local age_identity_key="" deploy_rc=0
 
@@ -7383,8 +7394,8 @@ deploy_host() {
 	fi
 
 	if [ "${BUILD_HOST}" != "local" ]; then
-		if remote_build_deploy_uses_local_store; then
-			deploy_local_store_system_path "${node}" "${built_out_path}"
+		if remote_build_deploy_uses_local_relay; then
+			deploy_build_cache_via_local_client "${node}" "${built_out_path}"
 			return "$?"
 		fi
 		deploy_remote_build_host_path "${node}" "${built_out_path}"
@@ -8415,12 +8426,7 @@ remote_build_host() {
 
 	echo "Built out path on ${BUILD_HOST}: ${out_path}" >&2
 	if is_deploy_style_action; then
-		if remote_build_deploy_uses_local_store; then
-			verify_remote_build_output_for_deploy "${out_path}" || return 1
-			copy_remote_build_closure_to_local_store "${node}" "${store_uri}" "${nix_sshopts}" "${out_path}" || return 1
-		else
-			verify_remote_build_output_for_deploy "${out_path}" || return 1
-		fi
+		verify_remote_build_output_for_deploy "${out_path}" || return 1
 	else
 		copy_remote_build_closure_to_local_store "${node}" "${store_uri}" "${nix_sshopts}" "${out_path}" || return 1
 		if [ -n "${result_link}" ]; then
