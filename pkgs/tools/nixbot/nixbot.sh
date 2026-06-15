@@ -10365,8 +10365,9 @@ print_run_summary() {
 	local -a failed_summary_hosts=()
 	local tf_label="" tf_status="" tf_display_status=""
 	local total_duration_secs="" timing_suffix=""
-	local total_duration="" build_duration="" deploy_duration=""
+	local total_duration="" build_duration="" deploy_duration="" runtime_suffix=""
 	local -a failed_summary_tf=()
+	local -a runtime_parts=()
 
 	log_section "Phase: Summary"
 	echo "Action: ${RUN_SUMMARY_ACTION:-${ACTION}}" >&2
@@ -10424,7 +10425,16 @@ print_run_summary() {
 	total_duration="$(format_summary_duration_or_dash "${total_duration_secs}")"
 	build_duration="$(format_summary_duration_or_dash "${RUN_SUMMARY_BUILD_DURATION_SECS:-}")"
 	deploy_duration="$(format_summary_duration_or_dash "${RUN_SUMMARY_DEPLOY_DURATION_SECS:-}")"
-	echo "Run time: ${total_duration} (build: ${build_duration}, deploy: ${deploy_duration})" >&2
+	if [ -n "${RUN_SUMMARY_BUILD_DURATION_SECS:-}" ]; then
+		runtime_parts+=("build: ${build_duration}")
+	fi
+	if [ -n "${RUN_SUMMARY_DEPLOY_DURATION_SECS:-}" ]; then
+		runtime_parts+=("deploy: ${deploy_duration}")
+	fi
+	if [ "${#runtime_parts[@]}" -gt 0 ]; then
+		runtime_suffix=" ($(join_by_comma "${runtime_parts[@]}"))"
+	fi
+	echo "Run time: ${total_duration}${runtime_suffix}" >&2
 	if [ "${#failed_summary_hosts[@]}" -gt 0 ] || [ "${#failed_summary_tf[@]}" -gt 0 ]; then
 		printf '\n!!!!!!!!!! FAILURE !!!!!!!!!!\n' >&2
 		for node in "${failed_summary_hosts[@]}"; do
