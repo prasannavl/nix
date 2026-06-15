@@ -107,16 +107,16 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   otherwise Nix can spend minutes materializing evaluation inputs through the
   remote store before the build host has CPU-heavy derivation work.
 - Remote deploy builds default to `--build-host-deploy-mode auto`: use `cache`
-  when `--build-host` resolves to the configured `globals.ciHost`; otherwise use
-  `local-copy`. `cache` verifies the build-host cache, makes the target copy the
-  exact path from that cache, then activates it. `local-copy` verifies the same
-  signed cache path, then relays it from the build-host cache to the target with
-  the local client and the same temporary target trust-key bridge. Deploy
-  local-copy mode intentionally avoids raw `ssh-ng://` copy-back into the
-  operator store. Build-only copy-back uses the signed build-host cache when it
-  is configured, and falls back to raw `ssh-ng://` only when there is no cache.
-  Use `local-copy` when the operator can reach both sides but the target cannot
-  reach the build-host cache.
+  when `--build-host` resolves to the configured `globals.buildCache.host`;
+  otherwise use `local-copy`. `cache` verifies the build-host cache, makes the
+  target copy the exact path from that cache, then activates it. `local-copy`
+  verifies the same signed cache path, then relays it from the build-host cache
+  to the target with the local client and the same temporary target trust-key
+  bridge. Deploy local-copy mode intentionally avoids raw `ssh-ng://` copy-back
+  into the operator store. Build-only copy-back uses the signed build-host cache
+  when it is configured, and falls back to raw `ssh-ng://` only when there is no
+  cache. Use `local-copy` when the operator can reach both sides but the target
+  cannot reach the build-host cache.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`
@@ -170,8 +170,8 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   file should contain only partial machine-local overrides. Use `--no-override`
   to evaluate the selected config alone.
 - `--ci-trigger` uses the checked-in config boundary on both sides: the remote
-  request includes `--no-override`, and local discovery of `globals.ciHost` also
-  ignores sibling `*.override.nix` files.
+  request includes `--no-override`, and local discovery of `globals.ci.host`
+  also ignores sibling `*.override.nix` files.
 - Agent-run deploys should prefer `--no-rollback` during diagnosis so failed
   state remains inspectable. Finish with a fully successful deploy, or perform a
   deliberate rollback after the root cause is understood.
@@ -204,8 +204,17 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Deploy parallelism defaults to 16 jobs per dependency wave. Rollback-snapshot
   and post-switch health-check work use a separate verify parallelism budget
   controlled by `--verify-jobs` / `NIXBOT_VERIFY_JOBS`, also defaulting to 16.
-- Parallel host builds disable Nix's flake eval cache for per-host build and
-  output-path evaluation commands to avoid SQLite cache contention.
+- Host builds first evaluate the selected NixOS toplevel derivation paths in one
+  `nix eval .#nixosConfigurations --apply ...` build-plan pass. Per-host build
+  jobs then realize the precomputed `.drv^out` installable, preserving existing
+  per-host logs, status files, result links, and remote/local build modes
+  without re-evaluating the flake for every host. Remote build-host jobs
+  explicitly copy the planned derivation closure to the build-host store before
+  realization so `--build-host` does not depend on per-host flake installable
+  evaluation.
+- Parallel host builds still disable Nix's flake eval cache for the per-host
+  build commands to avoid SQLite cache contention; those commands should already
+  consume build-plan `.drv^out` installables instead of host flake attributes.
 - Before switching a host generation, deploy clears stale system-unit failed
   state and failed unit state for active managed user managers. The post-switch
   health check should fail the deploy on new system-unit failures, including

@@ -88,31 +88,30 @@ cache is configured, that local import comes from the signed cache; otherwise it
 falls back to the raw `ssh-ng://` store.
 
 For deploy actions with non-local `--build-host`, the build host entry in
-`hosts/nixbot.nix` must resolve through the normal host inventory. `nixbot`
-derives the cache URL from the same effective host target used for remote builds
-and the repo default `globals.ciCachePort`. The builder's Nix daemon signs
-locally built paths through host-side `nix.settings.secret-key-files`; Harmonia
-serves the builder's `/nix/store` as the signed binary cache on that port.
-`nixbot` verifies that the exact built path is available from the builder cache,
-prepares the target from the local orchestrator, makes the target pull the exact
-path from the cache, and activates that path over the target SSH context.
-Activation, snapshots, rollback, parent readiness, and health checks remain
-owned by the local `nixbot` process.
+`hosts/nixbot.nix` must resolve through the normal host inventory. `nixbot` uses
+the explicit `globals.buildCache.url`. The builder's Nix daemon signs locally
+built paths through host-side `nix.settings.secret-key-files`; Harmonia serves
+the builder's `/nix/store` as the signed binary cache on that port. `nixbot`
+verifies that the exact built path is available from the builder cache, prepares
+the target from the local orchestrator, makes the target pull the exact path
+from the cache, and activates that path over the target SSH context. Activation,
+snapshots, rollback, parent readiness, and health checks remain owned by the
+local `nixbot` process.
 
 Target-side cache copies temporarily pass the public keys declared by the target
 configuration to `nix copy`. This supports the first rollout of cache trust
 before the target has activated the new Nix daemon settings.
 
 The default `--build-host-deploy-mode auto` chooses `cache` when `--build-host`
-resolves to the configured `globals.ciHost`; otherwise it chooses `local-copy`.
-Use `--build-host-deploy-mode local-copy` explicitly when targets cannot reach
-the build host cache. In that mode, `nixbot` still builds on `--build-host`,
-verifies the signed build-host cache, and uses the local client to relay the
-exact signed path from the build-host cache to each target before activation.
-Deploy local-copy mode does not import the raw `ssh-ng://` closure into the
-operator store; build-only copy-back also prefers the signed build-host cache
-when available. `--build-host-deploy-mode cache` is more direct when targets can
-reach the build-host Harmonia endpoint.
+resolves to the configured `globals.buildCache.host`; otherwise it chooses
+`local-copy`. Use `--build-host-deploy-mode local-copy` explicitly when targets
+cannot reach the build host cache. In that mode, `nixbot` still builds on
+`--build-host`, verifies the signed build-host cache, and uses the local client
+to relay the exact signed path from the build-host cache to each target before
+activation. Deploy local-copy mode does not import the raw `ssh-ng://` closure
+into the operator store; build-only copy-back also prefers the signed build-host
+cache when available. `--build-host-deploy-mode cache` is more direct when
+targets can reach the build-host Harmonia endpoint.
 
 ## Further Reading
 
@@ -328,7 +327,7 @@ shell access for `nixos-rebuild --target-host`.
 
 ### CI host identities and secrets
 
-- CI host is the configured `hosts/nixbot.nix` `globals.ciHost` target.
+- CI host is the configured `hosts/nixbot.nix` `globals.ci.host` target.
 - CI host ingress identity is the SSH key whose public half is listed under the
   relevant `services.nixbot.repos.<name>.sshKeys` entry and forced into the
   packaged `nixbot` binary by `pkgs/tools/nixbot/nixos-module.nix`.

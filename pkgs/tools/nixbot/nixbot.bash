@@ -152,7 +152,7 @@ _nixbot() {
 
 	options=(
 		--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
-		--build-cache-port --build-jobs --build-logs --no-build-logs
+		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
 		--deploy-jobs --verify-jobs --force --bootstrap --ci-first
 		--dirty --dirty-staged --dry --no-override --no-rollback
 		--prefix-host-logs --log-format --user --ssh-key --known-hosts --config

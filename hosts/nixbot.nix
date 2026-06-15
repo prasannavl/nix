@@ -55,8 +55,13 @@ in {
   };
 
   globals = {
-    ciHost = "pvl-x2";
-    ciCachePort = 5000;
+    ci = {
+      host = "pvl-x2";
+    };
+    buildCache = {
+      host = "pvl-x2";
+      url = "http://pvl-x2:5000";
+    };
     repoUrl = "ssh://git@github.com/prasannavl/nix.git";
   };
 

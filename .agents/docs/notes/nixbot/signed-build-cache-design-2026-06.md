@@ -117,8 +117,13 @@ Add repo-local nixbot defaults and keep the build host itself as an ordinary
 
 ```nix
 globals = {
-  ciHost = "pvl-x2";
-  ciCachePort = 5000;
+  ci = {
+    host = "pvl-x2";
+  };
+  buildCache = {
+    host = "pvl-x2";
+    url = "http://pvl-x2:5000";
+  };
   repoUrl = "ssh://git@github.com/prasannavl/nix.git";
 };
 
@@ -130,10 +135,11 @@ hosts = {
 ```
 
 The cache endpoint is local to the repo's own build host. It must not point at a
-peer repo's cache. By default nixbot derives
-`http://<effective-build-host-target>:<globals.ciCachePort>` after
-`hosts/nixbot.override.nix` is applied, so cache verification and target-side
-cache copies follow the same transport override as remote builds.
+peer repo's cache. `globals.buildCache.url` is the target/operator-facing cache
+URL, and `globals.buildCache.host` is the host identity that owns that URL for
+`--build-host-deploy-mode auto`. Keep the cache URL separate from SSH inventory
+overrides so cache verification and target-side cache copies use the published
+cache endpoint.
 
 Do not reuse SSH, TLS, or CA keys. Use a dedicated Nix signing key.
 
@@ -253,10 +259,11 @@ Implemented in the pvl repo:
 - `--deploy-host`, `NIXBOT_DEPLOY_HOST`, hidden `remote-activate`, and
   `--system-path` were removed from `pkgs/tools/nixbot/nixbot.sh` and Bash
   completion.
-- `hosts/nixbot.nix` now declares `globals.ciHost = "pvl-x2"`,
-  `globals.ciCachePort = 5000`, and the managed `repoUrl`. The pvl builder URL
-  is derived from the effective inventory target plus `ciCachePort`, so cache
-  verification follows local transport overrides.
+- `hosts/nixbot.nix` now declares `globals.ci.host = "pvl-x2"`,
+  `globals.buildCache.host = "pvl-x2"`,
+  `globals.buildCache.url = "http://pvl-x2:5000"`, and the managed `repoUrl`.
+  The pvl builder URL is explicit so cache verification does not follow local
+  SSH transport overrides.
 - `pvl-x2` owns signing and cache publishing through
   `nix.settings.secret-key-files` and `services.harmonia`.
 - The pvl builder signing key is generated under
@@ -297,16 +304,16 @@ Implemented in the pvl repo:
   build host. Without that split, Nix can materialize evaluation inputs through
   the remote store and make the build host look idle before derivations start.
 - Remote deploy builds default to `--build-host-deploy-mode auto`: use `cache`
-  when `--build-host` resolves to the configured `globals.ciHost`; otherwise use
-  `local-copy`. `cache` verifies the build-host cache, makes the target copy the
-  exact path from that cache, then activates it. `local-copy` verifies the same
-  signed cache path, then relays it from the build-host cache to the target with
-  the local client and the same temporary target trust-key bridge. Deploy
-  local-copy mode intentionally avoids raw `ssh-ng://` copy-back into the
-  operator store. Build-only copy-back uses the signed build-host cache when it
-  is configured, and falls back to raw `ssh-ng://` only when there is no cache.
-  Use `local-copy` when the operator can reach both sides but the target cannot
-  reach the build-host cache.
+  when `--build-host` resolves to the configured `globals.buildCache.host`;
+  otherwise use `local-copy`. `cache` verifies the build-host cache, makes the
+  target copy the exact path from that cache, then activates it. `local-copy`
+  verifies the same signed cache path, then relays it from the build-host cache
+  to the target with the local client and the same temporary target trust-key
+  bridge. Deploy local-copy mode intentionally avoids raw `ssh-ng://` copy-back
+  into the operator store. Build-only copy-back uses the signed build-host cache
+  when it is configured, and falls back to raw `ssh-ng://` only when there is no
+  cache. Use `local-copy` when the operator can reach both sides but the target
+  cannot reach the build-host cache.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`
