@@ -14,24 +14,6 @@
     nixpkgs-next.url = "github:nixos/nixpkgs/nixos-26.05";
     unstable.url = "github:nixos/nixpkgs/nixos-unstable";
 
-    # Source inputs used by overlays.
-    sway-git = {
-      url = "github:swaywm/sway?ref=master";
-      flake = false;
-    };
-    wlroots-git = {
-      url = "git+https://gitlab.freedesktop.org/wlroots/wlroots?ref=master";
-      flake = false;
-    };
-    xdg-desktop-portal-wlr-git = {
-      url = "github:emersion/xdg-desktop-portal-wlr?ref=master";
-      flake = false;
-    };
-    xdg-desktop-portal-git = {
-      url = "github:flatpak/xdg-desktop-portal?ref=main";
-      flake = false;
-    };
-
     # Inputs that follow the selected host profile.
     home-manager = {
       url = "github:nix-community/home-manager/release-25.11";

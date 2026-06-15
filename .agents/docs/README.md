@@ -40,6 +40,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/tailscale-upstream-package-2026-05.md`: Records the
   upstream Tailscale source-build override, overlay alias, and NixOS module
   consumption contract.
+- `.agents/docs/notes/apps/sway-overlay-source-pins-2026-06.md`: Records that
+  the Sway git overlay owns its local upstream source pins instead of root flake
+  inputs, including the portal by-name package path.
 - `.agents/docs/notes/apps/vscode-libsecret-password-store-2026-04.md`: Records
   the user VS Code wrapper choice that forces Code to use libsecret for password
   storage.

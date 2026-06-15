@@ -800,33 +800,12 @@
         "p7-borders-next": "p7-borders-next",
         "p7-cmds": "p7-cmds",
         "p7-cmds-next": "p7-cmds-next",
-        "sway-git": "sway-git",
         "systems": "systems",
         "treefmt-nix": "treefmt-nix",
         "treefmt-nix-next": "treefmt-nix-next",
         "unstable": "unstable",
         "vscode-ext": "vscode-ext",
-        "vscode-ext-next": "vscode-ext-next",
-        "wlroots-git": "wlroots-git",
-        "xdg-desktop-portal-git": "xdg-desktop-portal-git",
-        "xdg-desktop-portal-wlr-git": "xdg-desktop-portal-wlr-git"
-      }
-    },
-    "sway-git": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1780440100,
-        "narHash": "sha256-d1azpQVNuQdUTr5KffV4HmlhQTi5AqvG7mnfvopNKTQ=",
-        "owner": "swaywm",
-        "repo": "sway",
-        "rev": "97c342f9e1e1f6ac640f58d53950d92bc48dd889",
-        "type": "github"
-      },
-      "original": {
-        "owner": "swaywm",
-        "ref": "master",
-        "repo": "sway",
-        "type": "github"
+        "vscode-ext-next": "vscode-ext-next"
       }
     },
     "systems": {
@@ -937,57 +916,6 @@
       "original": {
         "owner": "nix-community",
         "repo": "nix-vscode-extensions",
-        "type": "github"
-      }
-    },
-    "wlroots-git": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1781190059,
-        "narHash": "sha256-YGMXx72kWxQAta0s7dp0/gV08w3OgM+hQc3aoYQUJb8=",
-        "ref": "master",
-        "rev": "63318d28b1ea86873eeb1023d88e56d57bdd2453",
-        "revCount": 7857,
-        "type": "git",
-        "url": "https://gitlab.freedesktop.org/wlroots/wlroots"
-      },
-      "original": {
-        "ref": "master",
-        "type": "git",
-        "url": "https://gitlab.freedesktop.org/wlroots/wlroots"
-      }
-    },
-    "xdg-desktop-portal-git": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1780962825,
-        "narHash": "sha256-MmY5rAk6BsJfn7QrS487e46ohAk2K9J6oSGrbQ+ByUw=",
-        "owner": "flatpak",
-        "repo": "xdg-desktop-portal",
-        "rev": "89f2f5e3d219bc5fd66a2505ee772b16022e8575",
-        "type": "github"
-      },
-      "original": {
-        "owner": "flatpak",
-        "ref": "main",
-        "repo": "xdg-desktop-portal",
-        "type": "github"
-      }
-    },
-    "xdg-desktop-portal-wlr-git": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1777189825,
-        "narHash": "sha256-R0oeuca9HmgeOkZpFpOwl7M3zZ1+DJgsTVcIxhr7L34=",
-        "owner": "emersion",
-        "repo": "xdg-desktop-portal-wlr",
-        "rev": "5b047df2492d6772df2089835b579f34ab4048b7",
-        "type": "github"
-      },
-      "original": {
-        "owner": "emersion",
-        "ref": "master",
-        "repo": "xdg-desktop-portal-wlr",
         "type": "github"
       }
     }
