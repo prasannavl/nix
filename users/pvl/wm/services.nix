@@ -11,6 +11,7 @@
   readyTargetUnits = builtins.mapAttrs (_: unit: "${unit}.target") readyTargets;
   allReadyTargets = builtins.attrValues readyTargetUnits;
   portalUnits = [
+    "xdg-document-portal.service"
     "xdg-desktop-portal.service"
     "xdg-desktop-portal-gtk.service"
     "xdg-desktop-portal-gnome.service"

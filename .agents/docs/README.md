@@ -147,7 +147,8 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-x2-nixos-26.05-transition-2026-06.md`: Records
   the June 15, 2026 `pvl-x2` NixOS 26.05 transition check, including stale
   graphical-session user-unit failures, the `xdg-document-portal` stop timeout,
-  and the `dotfiles-sync` `getent` dependency fix.
+  the `dotfiles-sync` `getent` dependency fix, and GDM greeter UID-renumbering
+  activation warnings.
 - `.agents/docs/notes/hosts/pvl-tailnet-rpfilter-2026-06.md`: Records the
   `pvl-a1`/`pvl-l5` to `pvl-x2` tailnet timeout root cause: strict NixOS
   rpfilter with Tailscale fwmark routing, and the

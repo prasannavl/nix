@@ -21,16 +21,38 @@ completed user-service reconciliation.
   independent NixOS 26.05 service failure.
 - `xdg-document-portal.service` remained the only failed user unit after the
   switch. It was stopping during the same session teardown, did not exit before
-  systemd's stop timeout, and was killed along with a `fusermount3` child.
+  systemd's stop timeout, and was killed along with a `fusermount3` child. Live
+  inspection after rollback still showed `/run/user/1000/doc` mounted as
+  `fuse.portal`, so the failure source was document-portal FUSE teardown during
+  logout rather than a unit that should be hidden from health checks.
 - `dotfiles-sync.service` failed during boot because the generated script used
   `${pkgs.glibc.bin}/bin/getent`, which pointed at a store path no longer
   present on the live 26.05 system. The script then reported a misleading DNS
   timeout for `github.com` because every retry failed before the DNS lookup.
 - `dotfiles-sync.timer` remained healthy and had a real next firing time, so the
   prior timer wedge was not reproduced.
+- Activation warnings like
+  `not applying UID change of user 'gdm-greeter-2' (60580 -> 60579)` come from
+  the upstream GDM module's 26.05 greeter-user renumbering. In 25.11, GDM
+  declared `gdm-greeter`, then `gdm-greeter-1` through `gdm-greeter-4` with UIDs
+  `60578` through `60582`. In 26.05, it declares `gdm-greeter`, then
+  `gdm-greeter-2` through `gdm-greeter-5` with the same UID range. Existing
+  `/etc/passwd` entries for `gdm-greeter-2` through `gdm-greeter-4` therefore
+  sit one UID higher than the new declaration. NixOS activation refuses to
+  rewrite existing UIDs in place, so the warnings preserve the old UIDs instead
+  of applying the shifted declarations.
 
 ## Follow-up
 
 Use `pkgs.getent` for the sync script's DNS probe. It resolves to the standalone
 `getent-glibc` output used by the current system profile instead of the broader
 glibc output path.
+
+Use the shared WM `portalCleanup` owner to cleanly exit document portal on
+logout by including `xdg-document-portal.service` in the existing portal stop
+set.
+
+For the GDM greeter UID warnings, treat the messages as stale local account
+state after the upstream suffix change, not as agenix, nixbot, or secret
+deployment failures. If cleanup is needed, remove or reconcile the stale
+`gdm-greeter-*` accounts while GDM is stopped, then rerun activation.

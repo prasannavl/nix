@@ -97,6 +97,14 @@
   `portalBackendUnits` right before starting them, so every WM session starts
   from a fresh backend state without interfering with dbus activation
   bookkeeping during teardown.
+- `portalCleanup` also owns `xdg-document-portal.service` teardown. After the
+  pvl-x2 NixOS 26.05 transition, native Niri logout left `/run/user/1000/doc`
+  mounted as `fuse.portal`; `xdg-document-portal.service` then waited on its
+  `fusermount3` child until systemd's 90s stop timeout and entered failed state.
+  The cleanup script now includes `xdg-document-portal.service` in the same
+  portal stop set as the desktop portal units, so the existing session-teardown
+  owner initiates document-portal stop earlier and explicitly. Keep this as a
+  source fix rather than filtering the deploy health check.
 - Compositor quit/exit actions should stay native. Do not override quit
   keybindings to run cleanup wrappers; cleanup belongs to the compositor-ready
   target lifecycle so it also runs for non-keybinding exits.
