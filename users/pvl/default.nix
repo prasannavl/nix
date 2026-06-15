@@ -52,7 +52,6 @@ in rec {
       ./neovim
       ./vscode
       ./direnv
-      ./dotfiles-link-bin
       ./xdg-user-dirs
       ./env/cargo.nix
       ./env/go.nix

@@ -80,6 +80,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-l5-legion-gpu-pci-map-2026-06.md`: Records the
   live `pvl-l5` Lenovo Legion 5 GPU PCI mapping and the correction from
   `PCI:5:0:0` to `PCI:6:0:0` for the AMD iGPU.
+- `.agents/docs/notes/hosts/pvl-l5-home-manager-neovim-boot-2026-06.md`: Records
+  the `pvl-l5` boot failure where Home Manager tried to manage
+  `.config/nvim/init.lua` below the editable dotfiles symlink, plus the
+  non-fatal activation fix.
 - `.agents/docs/notes/hosts/pvl-wm-idle-lock-2026-04.md`: Records the shared
   `swayidle` battery and AC lock policy for Sway and Niri plus the existing
   manual lock shortcuts.
@@ -140,6 +144,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-routes-2026-06.md`: Records the
   project-owned Incus route API, helper-based route reconciler, and `pvl-x2`
   route to the still-live `10.10.30.0/24` subnet through `gap3-gondor`.
+- `.agents/docs/notes/hosts/pvl-x2-nixos-26.05-transition-2026-06.md`: Records
+  the June 15, 2026 `pvl-x2` NixOS 26.05 transition check, including stale
+  graphical-session user-unit failures, the `xdg-document-portal` stop timeout,
+  and the `dotfiles-sync` `getent` dependency fix.
 - `.agents/docs/notes/hosts/pvl-tailnet-rpfilter-2026-06.md`: Records the
   `pvl-a1`/`pvl-l5` to `pvl-x2` tailnet timeout root cause: strict NixOS
   rpfilter with Tailscale fwmark routing, and the
@@ -238,6 +246,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/codex-wrapper-auth-2026-06.md`: Records the local
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.
+- `.agents/docs/notes/tooling/dotfiles-sync-timer-2026-06.md`: Records why the
+  dotfiles sync user timer stopped scheduling after a failed first clone, and
+  the calendar-timer replacement.
 - `.agents/docs/notes/tooling/data-migrator-host-drain-2026-05.md`: Records the
   generic `data-migrator` port and the legacy generation-owned host drain
   semantics.
