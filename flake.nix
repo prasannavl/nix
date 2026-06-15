@@ -2,8 +2,19 @@
   description = "NixOS Config";
 
   inputs = {
+    systems.url = "github:nix-systems/default";
+
+    flake-utils = {
+      url = "github:numtide/flake-utils";
+      inputs.systems.follows = "systems";
+    };
+
+    # Nixpkgs channels.
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    nixpkgs-next.url = "github:nixos/nixpkgs/nixos-26.05";
     unstable.url = "github:nixos/nixpkgs/nixos-unstable";
+
+    # Source inputs used by overlays.
     sway-git = {
       url = "github:swaywm/sway?ref=master";
       flake = false;
@@ -20,13 +31,15 @@
       url = "github:flatpak/xdg-desktop-portal?ref=main";
       flake = false;
     };
-    flake-utils = {
-      url = "github:numtide/flake-utils";
-      inputs.systems.follows = "systems";
-    };
+
+    # Inputs that follow the selected host profile.
     home-manager = {
       url = "github:nix-community/home-manager/release-25.11";
       inputs.nixpkgs.follows = "nixpkgs";
+    };
+    home-manager-next = {
+      url = "github:nix-community/home-manager/release-26.05";
+      inputs.nixpkgs.follows = "nixpkgs-next";
     };
     agenix = {
       url = "github:ryantm/agenix";
@@ -36,35 +49,59 @@
         systems.follows = "systems";
       };
     };
+    agenix-next = {
+      url = "github:ryantm/agenix";
+      inputs = {
+        nixpkgs.follows = "nixpkgs-next";
+        home-manager.follows = "home-manager-next";
+        systems.follows = "systems";
+      };
+    };
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nixos-hardware.url = "github:nixos/nixos-hardware";
+    disko-next = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs-next";
+    };
     vscode-ext = {
       url = "github:nix-community/nix-vscode-extensions";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    llm-agents = {
-      url = "github:numtide/llm-agents.nix";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        systems.follows = "systems";
-        treefmt-nix.follows = "treefmt-nix";
-      };
+    vscode-ext-next = {
+      url = "github:nix-community/nix-vscode-extensions";
+      inputs.nixpkgs.follows = "nixpkgs-next";
     };
     antigravity = {
       url = "github:jacopone/antigravity-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-utils.follows = "flake-utils";
+      };
+    };
+    antigravity-next = {
+      url = "github:jacopone/antigravity-nix";
+      inputs = {
+        nixpkgs.follows = "nixpkgs-next";
+        flake-utils.follows = "flake-utils";
+      };
     };
     p7-borders = {
       url = "github:prasannavl/p7-borders-shell-extension";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    p7-borders-next = {
+      url = "github:prasannavl/p7-borders-shell-extension";
+      inputs.nixpkgs.follows = "nixpkgs-next";
+    };
     p7-cmds = {
       url = "github:prasannavl/p7-cmds-shell-extension";
       inputs.nixpkgs.follows = "nixpkgs";
+    };
+    p7-cmds-next = {
+      url = "github:prasannavl/p7-cmds-shell-extension";
+      inputs.nixpkgs.follows = "nixpkgs-next";
     };
     noctalia = {
       url = "github:noctalia-dev/noctalia-shell?ref=legacy-v4";
@@ -82,92 +119,56 @@
         };
       };
     };
+    noctalia-next = {
+      url = "github:noctalia-dev/noctalia-shell?ref=legacy-v4";
+      inputs = {
+        nixpkgs.follows = "nixpkgs-next";
+        noctalia-qs = {
+          url = "github:noctalia-dev/noctalia-qs";
+          inputs = {
+            systems.follows = "systems";
+            treefmt-nix = {
+              follows = "treefmt-nix-next";
+              inputs.nixpkgs.follows = "nixpkgs-next";
+            };
+          };
+        };
+      };
+    };
+
+    # Root package/tooling inputs.
+    nixos-hardware.url = "github:nixos/nixos-hardware";
+    llm-agents = {
+      url = "github:numtide/llm-agents.nix";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        systems.follows = "systems";
+        treefmt-nix.follows = "treefmt-nix";
+      };
+    };
+    llm-agents-next = {
+      url = "github:numtide/llm-agents.nix";
+      inputs = {
+        nixpkgs.follows = "nixpkgs-next";
+        systems.follows = "systems";
+        treefmt-nix.follows = "treefmt-nix-next";
+      };
+    };
     nix-alien = {
       url = "github:thiagokokada/nix-alien";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
-    # Support
-    systems.url = "github:nix-systems/default";
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    treefmt-nix-next = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs-next";
+    };
   };
 
-  outputs = inputs @ {
-    nixpkgs,
-    flake-utils,
-    home-manager,
-    agenix,
-    ...
-  }: let
-    allSystems = flake-utils.lib.defaultSystems;
-    overlays = import ./overlays {inherit inputs;};
-    flakeLib = import ./lib/flake {
-      inherit flake-utils inputs nixpkgs overlays;
-      stackProfiles = import ./lib/stacks;
-    };
-    allOutputs = flakeLib.outputsFor allSystems;
-    commonModules = [
-      home-manager.nixosModules.home-manager
-      agenix.nixosModules.default
-      ./lib/podman-compose
-      ./lib/services/migrator
-      ./lib/systemd-user-manager
-      ./pkgs/tools/nixbot/nixos-module.nix
-      flakeLib.serviceModule.portCheckModule
-      ({lib, ...}: {
-        services.migration-manager.enable = lib.mkDefault true;
-      })
-      {nixpkgs.overlays = overlays;}
-      {imports = builtins.attrValues (builtins.removeAttrs flakeLib.nixosModules ["default"]);}
-    ];
-    mkNixosSystem = flakeLib.mkNixosSystem {
-      inherit commonModules inputs;
-    };
-    devShellsLib = import ./lib/flake/dev-shells.nix {
-      inherit (nixpkgs) lib;
-    };
-    devShellsFor = system: let
-      pkgs = import nixpkgs {
-        inherit system;
-        overlays = overlays;
-      };
-      rootPackages = [
-        pkgs.alejandra
-        pkgs.git
-        pkgs.jq
-        pkgs.nix
-        pkgs.nix-output-monitor
-        pkgs.nvd
-        agenix.packages.${system}.default
-      ];
-      childPackages = allOutputs.${system}.packages;
-    in
-      devShellsLib.mkDevShells {
-        inherit pkgs rootPackages childPackages;
-      };
-  in
-    flakeLib.standardOutputsFrom allSystems allOutputs
-    // {
-      devShells = nixpkgs.lib.genAttrs allSystems devShellsFor;
-    }
-    // {
-      # This is intentional, as std packages attr doesn't
-      # allow arbitrary nested shape and we expose those
-      # in pkgs.
-      pkgs = nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) allOutputs;
-      inherit (flakeLib) nixosModules;
-      overlays.default = nixpkgs.lib.composeManyExtensions overlays;
-      nixosConfigurations = import ./hosts {
-        inherit mkNixosSystem;
-        stacks = flakeLib.stacks;
-      };
-      # Intentional non-standard addition.
-      nixosImages = import ./lib/images {
-        inherit mkNixosSystem;
-        stacks = flakeLib.stacks;
-      };
-    };
+  outputs = inputs:
+    (import ./lib/flake/root.nix {inputs = inputs;}).outputs;
 }

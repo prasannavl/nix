@@ -5,16 +5,46 @@
   overlays ? [],
   stackProfiles ? {},
 }: let
+  lib = nixpkgs.lib;
+
   appsFn = import ./apps.nix;
-  pkgHelper = import ./pkg-helper.nix;
-  serviceModuleFactory = import ./service-module.nix;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
-in rec {
-  inherit pkgHelper;
-  stacks = stackProfiles;
-  inherit serviceModuleFactory;
-  serviceModule = serviceModuleFactory.mkServiceLib {
+  pkgHelper = import ./pkg-helper.nix;
+  serviceModuleFactory = import ./service-module.nix;
+
+  fallbackOverlays =
+    lib.optional (inputs ? crane)
+    (_final: prev: {
+      craneLib = inputs.crane.mkLib prev;
+    });
+
+  isAvailablePackage = pkgs: pkg: let
+    resolved = builtins.tryEval pkg;
+  in
+    if !resolved.success
+    then false
+    else if !pkgs.lib.isDerivation resolved.value
+    then false
+    else if !((resolved.value.meta or {}) ? platforms)
+    then true
+    else pkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform resolved.value;
+
+  availableAttrs = pkgs:
+    pkgs.lib.filterAttrs (_: isAvailablePackage pkgs);
+
+  moduleAttrsFor = packageSet:
+    lib.foldl' (
+      acc: pkg:
+        acc
+        // (
+          if builtins.isAttrs pkg && pkg ? passthru
+          then pkgHelper.mkNixosModuleAttrs {build = pkg;}
+          else {}
+        )
+    ) {} (builtins.attrValues packageSet);
+
+  rootServiceModule = serviceModuleFactory.mkServiceLib {
     stackName = "root";
     defaultUser = "root";
     defaultClientSecretsBasePath = ../../data/secrets/pvl/services;
@@ -25,66 +55,48 @@ in rec {
     defaultNatsUrl = "";
     defaultNatsCaCertPath = "";
   };
-  withPkgs = pkgs: let
-    baseOutputs = packagesFn {
-      inherit pkgs;
-    };
-    isPackageAvailableForSystem = pkg: let
-      resolved = builtins.tryEval pkg;
-    in
-      if !resolved.success
-      then false
-      else if !pkgs.lib.isDerivation resolved.value
-      then false
-      else if
-        !(
-          builtins.hasAttr "meta" resolved.value
-          && builtins.hasAttr "platforms" resolved.value.meta
-        )
-      then true
-      else pkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform resolved.value;
-    packageSetForSystem = pkgs.lib.filterAttrs (_: isPackageAvailableForSystem) baseOutputs.packages;
-    stdPackageSetForSystem = pkgs.lib.filterAttrs (_: isPackageAvailableForSystem) baseOutputs.stdPackages;
-    rootAppSetForSystem = pkgs.lib.filterAttrs (_: isPackageAvailableForSystem) baseOutputs.rootApps;
-    lint = lintFn {
-      inherit pkgs;
-      packageSet = stdPackageSetForSystem;
-      inherit pkgHelper;
-    };
-    packages = packageSetForSystem // lint.packages;
-    apps = appsFn {
-      rootApps = rootAppSetForSystem;
-      lint = lint;
-    };
-    nixosModules = nixpkgs.lib.foldl' (
-      acc: pkg:
-        acc
-        // (
-          if builtins.isAttrs pkg && builtins.hasAttr "passthru" pkg
-          then pkgHelper.mkNixosModuleAttrs {build = pkg;}
-          else {}
-        )
-    ) {} (builtins.attrValues packageSetForSystem);
-  in {
-    inherit apps lint nixosModules packages;
-    inherit (lint) formatter;
-  };
+in rec {
+  inherit pkgHelper serviceModuleFactory;
+  stacks = stackProfiles;
+  serviceModule = rootServiceModule;
 
   pkgsFor = system:
     import nixpkgs {
       inherit system;
       overlays =
-        if overlays != []
-        then overlays
-        else
-          nixpkgs.lib.optional (builtins.hasAttr "crane" inputs)
-          (_final: prev: {
-            craneLib = inputs.crane.mkLib prev;
-          });
+        if overlays == []
+        then fallbackOverlays
+        else overlays;
     };
 
+  withPkgs = pkgs: let
+    packageOutputs = packagesFn {inherit pkgs;};
+    available = availableAttrs pkgs;
+
+    packageSet = available packageOutputs.packages;
+    stdPackageSet = available packageOutputs.stdPackages;
+    rootAppSet = available packageOutputs.rootApps;
+
+    lint = lintFn {
+      inherit pkgs;
+      packageSet = stdPackageSet;
+      inherit pkgHelper;
+    };
+
+    apps = appsFn {
+      rootApps = rootAppSet;
+      lint = lint;
+    };
+
+    packages = packageSet // lint.packages;
+    nixosModules = moduleAttrsFor packageSet;
+  in {
+    inherit apps lint nixosModules packages;
+    inherit (lint) formatter;
+  };
+
   outputsFor = systems:
-    nixpkgs.lib.genAttrs systems (system: withPkgs (pkgsFor system));
+    lib.genAttrs systems (system: withPkgs (pkgsFor system));
 
   standardOutputsFrom = systems: outputsBySystem:
     flake-utils.lib.eachSystem systems (system: let
@@ -96,52 +108,10 @@ in rec {
   standardOutputsFor = systems:
     standardOutputsFrom systems (outputsFor systems);
 
-  # Package-owned modules now resolve their package from the consuming host's
+  # Package-owned modules resolve their package from the consuming host's
   # `pkgs`, so any system's exported module set is equivalent.
   nixosModules = (withPkgs (pkgsFor (builtins.head flake-utils.lib.defaultSystems))).nixosModules;
 
-  mkNixosSystem = {
-    commonModules,
-    inputs,
-  }: {
-    hostName,
-    modules,
-    stack ? null,
-    system,
-  }: let
-    defaultStack = {
-      nixosConfig = {...}: {
-        disabledUsers = {};
-        disabledGroups = {};
-        disabledActivationScripts = {};
-      };
-    };
-    effectiveStack =
-      if stack == null
-      then defaultStack
-      else stack;
-  in
-    nixpkgs.lib.nixosSystem {
-      inherit system;
-      specialArgs = {
-        inherit hostName inputs system;
-        stack = effectiveStack;
-        stacks = stackProfiles;
-      };
-      modules =
-        commonModules
-        ++ [
-          {
-            home-manager.extraSpecialArgs = {
-              inherit inputs;
-              stack = effectiveStack;
-              stacks = stackProfiles;
-            };
-          }
-        ]
-        ++ modules;
-    };
-
   packagesFor = systems:
-    nixpkgs.lib.mapAttrs (_: outputs: outputs.packages) (outputsFor systems);
+    lib.mapAttrs (_: outputs: outputs.packages) (outputsFor systems);
 }

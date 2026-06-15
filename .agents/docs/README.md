@@ -246,6 +246,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/nix-run-completion-delegation-2026-06.md`: Records
   the repo-local Bash completion bridge for delegated root-flake `nix run`
   completions.
+- `.agents/docs/notes/tooling/selective-nixpkgs-home-manager-upgrade-2026-06.md`:
+  Records the input-profile design for selective per-host NixOS/Home Manager
+  upgrades, including the PVL-specific host input twins and `pvl-vlab` canary.
 - `.agents/docs/notes/tooling/gap3-post-87a57ae-port-2026-05.md`: Tracks the
   selective post-`87a57ae` `gap3/master` port, including per-commit port,
   equivalent, and skip decisions.

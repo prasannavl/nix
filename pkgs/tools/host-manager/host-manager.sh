@@ -941,7 +941,12 @@ generate_ids() {
 
 # These probes intentionally match the repo's alejandra-formatted Nix shape.
 host_registered() {
-	grep -Eq "$(nix_attr_assignment_regex "$HOST")[[:space:]]*mk[A-Za-z0-9_'-]*System[^{;]*\\{" "$(target_read_path "$HOSTS_DEFAULT_FILE")"
+	local source_file
+	local host_pattern
+
+	source_file="$(target_read_path "$HOSTS_DEFAULT_FILE")"
+	host_pattern="$(nix_attr_assignment_regex "$HOST")"
+	grep -Eq "${host_pattern}[[:space:]]*mk[A-Za-z0-9_'-]*[^{;]*\\{" "$source_file"
 }
 
 has_nixbot_entry() {
@@ -1027,7 +1032,6 @@ register_host() {
 
 	cat >"$entry_file" <<EOF
   ${host_attr} = mkNixosSystem {
-    system = "x86_64-linux";
     hostName = "$(nix_escape "$HOST")";
 EOF
 	if [[ -n "$HOST_STACK" ]]; then
