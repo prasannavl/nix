@@ -243,14 +243,15 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   pre-switch primary-ready cache entry or ControlMaster can be stale after
   parent and guest activation. Bootstrap fallback is for repair/deploy
   preparation, not steady-state health verdicts.
-- Remote `nixos-rebuild-ng` deploys that lose SSH with exit `255` after a
+- Remote `nixos-rebuild` deploys that lose SSH with exit `255` after a
   network-disrupting switch verify the target system path before being treated
   as failed. This mirrors the self-target deploy guard without masking ordinary
   non-transport activation failures.
 - Remote build-host store operations must use the same bounded transport retry
   policy. `nix build --store ssh-ng://...` can wrap an SSH timeout as a generic
   Nix failure instead of returning SSH's exit code 255, so retry classification
-  must inspect the Nix stderr text for transport failures.
+  must inspect the Nix stderr text for transport failures such as broken pipes
+  or bad file descriptors.
 - Deploys with non-local `--build-host` require a configured builder cache in
   `hosts/nixbot.nix`. The builder's Nix daemon signs locally built paths through
   host-side `nix.settings.secret-key-files`; local `nixbot` verifies the path is
@@ -275,7 +276,7 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 
 - `SIGHUP` is an incidental caller disconnect. Local cleanup should run; this
   cancels local deploy work that has not reached the switch submission yet, and
-  any activation that `nixos-rebuild-ng` has already submitted through
+  any activation that `nixos-rebuild` has already submitted through
   `systemd-run` should be left to complete.
 - Ctrl-C and `SIGTERM` are explicit cancellation requests. If no remote deploy
   activation is active yet, nixbot should clean up local jobs and exit
@@ -296,18 +297,18 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   stop scheduling new deploy work, wait for already-started deploy jobs to
   finish, then exit.
 - Three consecutive Ctrl-C or `SIGTERM` signals within 3 seconds should make a
-  best-effort attempt to stop `nixos-rebuild-ng`'s fixed
+  best-effort attempt to stop `nixos-rebuild`'s fixed
   `nixos-rebuild-switch-to-configuration.service` only on hosts currently inside
-  the `nixos-rebuild-ng` deploy command or its transport-loss verification
-  window, wait for cancellation, then send `SIGKILL` after the remote
-  cancellation grace period.
+  the `nixos-rebuild` deploy command or its transport-loss verification window,
+  wait for cancellation, then send `SIGKILL` after the remote cancellation grace
+  period.
 - Serial and parallel deploys should both run host deploy work through the same
   supervised background-job path so cancellation behavior does not depend on
   `--deploy-jobs`.
-- Self-target SSH deploys should use the same `nixos-rebuild-ng` path as other
-  remote deploys. `nixos-rebuild-ng` already wraps activation in `systemd-run`
-  on systemd hosts, so nixbot should not add a second activation unit layer
-  unless it needs per-run remote status ownership later.
+- Self-target SSH deploys should use the same `nixos-rebuild` path as other
+  remote deploys. `nixos-rebuild` already wraps activation in `systemd-run` on
+  systemd hosts, so nixbot should not add a second activation unit layer unless
+  it needs per-run remote status ownership later.
 - Cancellation cleanup should terminate local host-job process trees, then
   escalate to `SIGKILL` after a short grace window.
 - Active deploy tracking should be file-backed and keyed by a

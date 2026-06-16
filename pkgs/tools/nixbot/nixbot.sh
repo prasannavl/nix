@@ -27,7 +27,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	cloudflared
 	git
 	jq
-	nixos-rebuild-ng
+	nixos-rebuild
 	pgrep
 	ssh
 	scp
@@ -202,7 +202,7 @@ Environment (Terraform actions):
 
 Runtime:
   Workflow actions and `tofu` always re-exec inside `nix shell` to provide a
-  consistent toolchain: age, git, jq, nixos-rebuild-ng, openssh, and opentofu.
+  consistent toolchain: age, git, jq, nixos-rebuild, openssh, and opentofu.
   `deps` re-execs and exits after verification.
   `check-deps` only checks the current environment.
 
@@ -6896,7 +6896,7 @@ deploy_rebuild_failure_is_copy_transport_loss() {
 		return 1
 	fi
 
-	# nixos-rebuild-ng wraps the copy step, so SSH open failures from
+	# nixos-rebuild wraps the copy step, so SSH open failures from
 	# nix-copy-closure often surface as a generic rebuild failure instead of an
 	# ssh exit code 255.
 	grep -Eq \
@@ -6914,7 +6914,7 @@ deploy_rebuild_failure_is_transport_loss() {
 	fi
 
 	grep -Eq \
-		"failed to start SSH connection|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|Connection closed by .* port [0-9]+|Received disconnect|client_loop: send disconnect: Broken pipe|Broken pipe|stdio forwarding failed|Connection timed out|No route to host" \
+		"failed to start SSH connection|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|Connection closed by .* port [0-9]+|Received disconnect|client_loop: send disconnect: Broken pipe|Broken pipe|Bad file descriptor|stdio forwarding failed|Connection timed out|No route to host" \
 		"${output_path}"
 }
 
@@ -7134,7 +7134,7 @@ prepare_deploy_rebuild_command() {
 	fi
 
 	pdrc_cmd_out_ref=(
-		nixos-rebuild-ng
+		nixos-rebuild
 		--flake ".#${node}"
 		--sudo
 	)
@@ -7155,7 +7155,7 @@ prepare_deploy_rebuild_command() {
 
 	if [ -n "${nix_sshopts}" ]; then
 		rebuild_nix_sshopts="-S none -o ControlMaster=no ${nix_sshopts}"
-		# nixos-rebuild-ng appends its own ControlPath. OpenSSH keeps the first
+		# nixos-rebuild appends its own ControlPath. OpenSSH keeps the first
 		# Control* settings, so nixbot's long-lived master would otherwise win and
 		# large nix-copy-closure streams can wedge on that reused TCP session.
 		pdrc_cmd_out_ref=(env "NIX_SSHOPTS=${rebuild_nix_sshopts}" "${pdrc_cmd_out_ref[@]}")
