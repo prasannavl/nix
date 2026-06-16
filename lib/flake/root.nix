@@ -18,18 +18,6 @@
       noctalia = "noctalia";
       llmAgents = "llm-agents";
     };
-    next = {
-      nixpkgs = "nixpkgs-next";
-      homeManager = "home-manager-next";
-      agenix = "agenix-next";
-      disko = "disko-next";
-      vscodeExt = "vscode-ext-next";
-      antigravity = "antigravity-next";
-      p7Borders = "p7-borders-next";
-      p7Cmds = "p7-cmds-next";
-      noctalia = "noctalia-next";
-      llmAgents = "llm-agents-next";
-    };
   };
 
   overlaysFor = profileInputs: import ../../overlays {inputs = profileInputs;};

@@ -10,18 +10,13 @@
     };
 
     # Nixpkgs channels.
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
-    nixpkgs-next.url = "github:nixos/nixpkgs/nixos-26.05";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
     unstable.url = "github:nixos/nixpkgs/nixos-unstable";
 
     # Inputs that follow the selected host profile.
     home-manager = {
-      url = "github:nix-community/home-manager/release-25.11";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    home-manager-next = {
       url = "github:nix-community/home-manager/release-26.05";
-      inputs.nixpkgs.follows = "nixpkgs-next";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     agenix = {
       url = "github:ryantm/agenix";
@@ -31,29 +26,13 @@
         systems.follows = "systems";
       };
     };
-    agenix-next = {
-      url = "github:ryantm/agenix";
-      inputs = {
-        nixpkgs.follows = "nixpkgs-next";
-        home-manager.follows = "home-manager-next";
-        systems.follows = "systems";
-      };
-    };
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    disko-next = {
-      url = "github:nix-community/disko";
-      inputs.nixpkgs.follows = "nixpkgs-next";
-    };
     vscode-ext = {
       url = "github:nix-community/nix-vscode-extensions";
       inputs.nixpkgs.follows = "nixpkgs";
-    };
-    vscode-ext-next = {
-      url = "github:nix-community/nix-vscode-extensions";
-      inputs.nixpkgs.follows = "nixpkgs-next";
     };
     antigravity = {
       url = "github:jacopone/antigravity-nix";
@@ -62,28 +41,13 @@
         flake-utils.follows = "flake-utils";
       };
     };
-    antigravity-next = {
-      url = "github:jacopone/antigravity-nix";
-      inputs = {
-        nixpkgs.follows = "nixpkgs-next";
-        flake-utils.follows = "flake-utils";
-      };
-    };
     p7-borders = {
       url = "github:prasannavl/p7-borders-shell-extension";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    p7-borders-next = {
-      url = "github:prasannavl/p7-borders-shell-extension";
-      inputs.nixpkgs.follows = "nixpkgs-next";
-    };
     p7-cmds = {
       url = "github:prasannavl/p7-cmds-shell-extension";
       inputs.nixpkgs.follows = "nixpkgs";
-    };
-    p7-cmds-next = {
-      url = "github:prasannavl/p7-cmds-shell-extension";
-      inputs.nixpkgs.follows = "nixpkgs-next";
     };
     noctalia = {
       url = "github:noctalia-dev/noctalia-shell?ref=legacy-v4";
@@ -101,22 +65,6 @@
         };
       };
     };
-    noctalia-next = {
-      url = "github:noctalia-dev/noctalia-shell?ref=legacy-v4";
-      inputs = {
-        nixpkgs.follows = "nixpkgs-next";
-        noctalia-qs = {
-          url = "github:noctalia-dev/noctalia-qs";
-          inputs = {
-            systems.follows = "systems";
-            treefmt-nix = {
-              follows = "treefmt-nix-next";
-              inputs.nixpkgs.follows = "nixpkgs-next";
-            };
-          };
-        };
-      };
-    };
 
     # Root package/tooling inputs.
     nixos-hardware.url = "github:nixos/nixos-hardware";
@@ -128,14 +76,6 @@
         treefmt-nix.follows = "treefmt-nix";
       };
     };
-    llm-agents-next = {
-      url = "github:numtide/llm-agents.nix";
-      inputs = {
-        nixpkgs.follows = "nixpkgs-next";
-        systems.follows = "systems";
-        treefmt-nix.follows = "treefmt-nix-next";
-      };
-    };
     nix-alien = {
       url = "github:thiagokokada/nix-alien";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -144,10 +84,6 @@
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
-    };
-    treefmt-nix-next = {
-      url = "github:numtide/treefmt-nix";
-      inputs.nixpkgs.follows = "nixpkgs-next";
     };
   };
 
