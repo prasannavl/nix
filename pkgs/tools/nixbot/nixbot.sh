@@ -28,6 +28,7 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	git
 	jq
 	nixos-rebuild
+	nproc
 	pgrep
 	ssh
 	scp
@@ -45,7 +46,7 @@ Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -78,11 +79,13 @@ Build Action Options (`run`, `deploy`, `build`):
   --build-host-deploy-mode auto|cache|local-copy (default: auto)
   --build-cache-url Signed cache URL for remote deploy builds
   --build-cache-host Host identity that owns --build-cache-url
+  --build-plan-jobs Parallel host build-plan evals (default: auto = threads/2+1)
   --build-jobs     Parallel host builds (default: 1)
   --build-logs     Pass -L/--print-build-logs to nix build
 
 Dev Build Action Options (`dev-build`):
   --hosts          Hosts/globs to build into result-dev/<host> links; -exclusions are supported (default: all)
+  --build-plan-jobs Parallel host build-plan evals (default: auto = threads/2+1)
   --build-jobs     Parallel host builds (default: 1)
 
 Deploy Action Options (`run`, `deploy`):
@@ -139,6 +142,9 @@ Environment (Build Actions):
   NIXBOT_BUILD_HOST_DEPLOY_MODE Same as --build-host-deploy-mode
   NIXBOT_BUILD_CACHE_URL      Same as --build-cache-url
   NIXBOT_BUILD_CACHE_HOST     Same as --build-cache-host
+  NIXBOT_BUILD_PLAN_JOBS      Same as --build-plan-jobs (n or auto)
+  NIXBOT_BUILD_PLAN_CACHE     Enable persistent build-plan cache (default: 1)
+  NIXBOT_BUILD_PLAN_CACHE_DIR Persistent build-plan cache directory override
   NIXBOT_BUILD_JOBS           Same as --build-jobs
   NIXBOT_BUILD_LOGS           Same as --build-logs (bool)
   NIXBOT_BUILD_HEARTBEAT_SECS Remote build heartbeat interval; 0 disables (default: 30)
@@ -287,6 +293,12 @@ init_vars() {
 	BUILD_HOST_DEPLOY_MODE="${NIXBOT_BUILD_HOST_DEPLOY_MODE:-auto}"
 	BUILD_CACHE_URL="${NIXBOT_BUILD_CACHE_URL:-}"
 	BUILD_CACHE_HOST="${NIXBOT_BUILD_CACHE_HOST:-}"
+	BUILD_PLAN_JOBS="${NIXBOT_BUILD_PLAN_JOBS:-auto}"
+	BUILD_PLAN_CACHE_ENABLED="${NIXBOT_BUILD_PLAN_CACHE:-1}"
+	NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY=""
+	NIXBOT_BUILD_PLAN_ATTR_BASE=""
+	NIXBOT_BUILD_PLAN_ATTR_SUFFIX=""
+	NIXBOT_BUILD_PLAN_NIX_ARGS=()
 	BUILD_JOBS="${NIXBOT_BUILD_JOBS:-1}"
 	BUILD_LOGS=0
 	NIXBOT_BUILD_HEARTBEAT_SECS="${NIXBOT_BUILD_HEARTBEAT_SECS:-30}"
@@ -697,6 +709,14 @@ set_log_format_mode() {
 	esac
 }
 
+default_auto_build_plan_jobs() {
+	local threads=""
+
+	threads="$(nproc 2>/dev/null || printf '1\n')"
+	[[ "${threads}" =~ ^[1-9][0-9]*$ ]] || threads=1
+	printf '%s\n' "$(((threads / 2) + 1))"
+}
+
 is_github_actions_log_mode() {
 	case "${LOG_FORMAT}" in
 	gh | github-actions)
@@ -976,6 +996,11 @@ parse_args() {
 			BUILD_HOST_DEPLOY_MODE="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
+		--build-plan-jobs | --build-plan-jobs=*)
+			take_optval "$@"
+			BUILD_PLAN_JOBS="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
 		--build-jobs | --build-jobs=*)
 			take_optval "$@"
 			BUILD_JOBS="${OPTVAL}"
@@ -1173,6 +1198,14 @@ parse_args() {
 	esac
 
 	[[ "${BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --build-jobs: ${BUILD_JOBS} (must be a positive integer)"
+	if [ "${BUILD_PLAN_JOBS}" = "auto" ]; then
+		BUILD_PLAN_JOBS="$(default_auto_build_plan_jobs)"
+	fi
+	[[ "${BUILD_PLAN_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --build-plan-jobs: ${BUILD_PLAN_JOBS} (must be a positive integer or auto)"
+	case "${BUILD_PLAN_CACHE_ENABLED}" in
+	1 | true | TRUE | yes | YES | on | ON | "" | 0 | false | FALSE | no | NO | off | OFF) ;;
+	*) die "Unsupported NIXBOT_BUILD_PLAN_CACHE: ${BUILD_PLAN_CACHE_ENABLED}" ;;
+	esac
 	[[ "${NIXBOT_BUILD_HEARTBEAT_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_BUILD_HEARTBEAT_SECS: ${NIXBOT_BUILD_HEARTBEAT_SECS} (must be a non-negative integer)"
 	[[ "${NIXBOT_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${NIXBOT_PARALLEL_JOBS} (must be a positive integer)"
 	[[ "${NIXBOT_VERIFY_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --verify-jobs: ${NIXBOT_VERIFY_JOBS} (must be a positive integer)"
@@ -1180,7 +1213,7 @@ parse_args() {
 	auto | gh | github-actions | plain) ;;
 	*) die "Unsupported --log-format: ${LOG_FORMAT}" ;;
 	esac
-	if [ "${PREFIX_HOST_LOGS_EXPLICIT}" -eq 0 ] && { [ "${BUILD_JOBS}" -gt 1 ] || [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ] || [ "${NIXBOT_VERIFY_JOBS}" -gt 1 ]; }; then
+	if [ "${PREFIX_HOST_LOGS_EXPLICIT}" -eq 0 ] && { [ "${BUILD_PLAN_JOBS}" -gt 1 ] || [ "${BUILD_JOBS}" -gt 1 ] || [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ] || [ "${NIXBOT_VERIFY_JOBS}" -gt 1 ]; }; then
 		FORCE_PREFIX_HOST_LOGS=1
 	fi
 	if [ -n "${SHA}" ] && ! [[ "${SHA}" =~ ^[0-9a-f]{7,40}$ ]]; then
@@ -8557,32 +8590,239 @@ build_drv_output_installable() {
 	printf '%s^out\n' "${drv_path}"
 }
 
-prepare_build_plan() {
-	local hosts_json="" apply_expr="" plan_json="" node="" drv_path="" plan_file=""
+host_build_plan_status_file() {
+	local node="$1"
 
-	[ "$#" -gt 0 ] || return 0
+	[ -n "${NIXBOT_BUILD_PLAN_DIR}" ] || return 1
+	printf '%s/%s.rc\n' "${NIXBOT_BUILD_PLAN_DIR}" "${node}"
+}
 
-	NIXBOT_BUILD_PLAN_DIR="$(tmp_runtime_dir_path build-plans)"
-	mkdir -p "${NIXBOT_BUILD_PLAN_DIR}"
+host_build_plan_cache_root() {
+	local cache_home=""
 
-	hosts_json="$(printf '%s\n' "$@" | jq -Rcn '[inputs]')"
-	apply_expr="configs: let hosts = builtins.fromJSON ''${hosts_json}''; in map (host: { inherit host; drvPath = (builtins.getAttr host configs).config.system.build.toplevel.drvPath; }) hosts"
+	if [ -n "${NIXBOT_BUILD_PLAN_CACHE_DIR:-}" ]; then
+		printf '%s\n' "${NIXBOT_BUILD_PLAN_CACHE_DIR}"
+		return 0
+	fi
+	cache_home="${XDG_CACHE_HOME:-}"
+	if [ -z "${cache_home}" ]; then
+		[ -n "${HOME:-}" ] || return 1
+		cache_home="${HOME}/.cache"
+	fi
+	printf '%s/nixbot/build-plans/v1\n' "${cache_home}"
+}
 
-	log_section "Phase: Build Plan"
-	echo "Running batched toplevel nix eval.." >&2
-	if ! run_supervised_stdout_capture plan_json "" \
-		nix eval --json .#nixosConfigurations --apply "${apply_expr}"; then
-		echo "Build plan evaluation failed" >&2
+build_plan_cache_enabled() {
+	parse_bool_env "${BUILD_PLAN_CACHE_ENABLED}"
+}
+
+build_plan_cache_context_key() {
+	local head="" index_tree="" nix_version="" key_input=""
+
+	if [ -n "${NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY}" ]; then
+		printf '%s\n' "${NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY}"
+		return 0
+	fi
+	build_plan_cache_enabled || return 1
+	git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+	git update-index --refresh >/dev/null 2>&1 || return 1
+	[ -z "$(git diff --name-only --diff-filter=U)" ] || return 1
+	if ! git diff --quiet; then
 		return 1
 	fi
 
-	while IFS=$'\t' read -r node drv_path; do
+	head="$(git rev-parse HEAD)" || return 1
+	index_tree="$(git write-tree)" || return 1
+	nix_version="$(nix --version)"
+	key_input="$(
+		printf 'schema=build-plan-v1\n'
+		printf 'nix=%s\n' "${nix_version}"
+		printf 'head=%s\n' "${head}"
+		printf 'indexTree=%s\n' "${index_tree}"
+	)"
+	NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY="$(printf '%s' "${key_input}" | sha256sum | awk '{print $1}')"
+	printf '%s\n' "${NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY}"
+}
+
+host_build_plan_cache_file() {
+	local node="$1" cache_root="" context_key="" safe_node=""
+
+	cache_root="$(host_build_plan_cache_root)" || return 1
+	context_key="$(build_plan_cache_context_key)" || return 1
+	safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
+	printf '%s/%s/%s.drv-path\n' "${cache_root}" "${context_key}" "${safe_node}"
+}
+
+read_cached_host_build_plan() {
+	local node="$1" cache_file="" drv_path=""
+
+	cache_file="$(host_build_plan_cache_file "${node}")" || return 1
+	[ -s "${cache_file}" ] || return 1
+	drv_path="$(<"${cache_file}")"
+	case "${drv_path}" in
+	/nix/store/*.drv) ;;
+	*) return 1 ;;
+	esac
+	[ -e "${drv_path}" ] || return 1
+	printf '%s\n' "${drv_path}"
+}
+
+write_cached_host_build_plan() {
+	local node="$1" drv_path="$2" cache_file="" cache_tmp=""
+
+	cache_file="$(host_build_plan_cache_file "${node}")" || return 0
+	mkdir -p "$(dirname "${cache_file}")"
+	cache_tmp="${cache_file}.$$"
+	printf '%s\n' "${drv_path}" >"${cache_tmp}"
+	mv -f "${cache_tmp}" "${cache_file}"
+}
+
+validate_build_plan_drv_path() {
+	local node="$1" drv_path="$2"
+
+	case "${drv_path}" in
+	/nix/store/*.drv) ;;
+	*)
+		echo "Build plan for ${node} did not evaluate to a derivation path: ${drv_path}" >&2
+		return 1
+		;;
+	esac
+}
+
+eval_host_build_plan_drv_path() {
+	local node="$1" drv_path="" rc=0
+
+	if ! run_supervised_stdout_capture drv_path "" \
+		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --raw --no-write-lock-file ".#${NIXBOT_BUILD_PLAN_ATTR_BASE}.${node}.${NIXBOT_BUILD_PLAN_ATTR_SUFFIX}"; then
+		rc="$?"
+		if is_signal_exit_status "${rc}"; then
+			return "${rc}"
+		fi
+		echo "Build plan evaluation failed for ${node}" >&2
+		return 1
+	fi
+	validate_build_plan_drv_path "${node}" "${drv_path}" || return 1
+	printf '%s\n' "${drv_path}"
+}
+
+select_build_plan_attr_base() {
+	# shellcheck disable=SC2034
+	local plans_json=""
+
+	if run_supervised_stdout_capture plans_json "" \
+		nix eval --json --no-write-lock-file .#nixbot.plans --apply builtins.attrNames; then
+		NIXBOT_BUILD_PLAN_ATTR_BASE="nixbot.plans"
+		NIXBOT_BUILD_PLAN_ATTR_SUFFIX="drvPath"
+		return 0
+	fi
+
+	NIXBOT_BUILD_PLAN_ATTR_BASE="nixosConfigurations"
+	NIXBOT_BUILD_PLAN_ATTR_SUFFIX="config.system.build.toplevel.drvPath"
+	echo "nixbot: flake out nixbot.plans unavailable; using fallback" >&2
+}
+
+resolve_host_build_plan_drv_path() {
+	local node="$1" drv_path=""
+
+	if drv_path="$(read_cached_host_build_plan "${node}")"; then
+		echo "Build plan cache hit for ${node}" >&2
+		printf '%s\n' "${drv_path}"
+		return 0
+	fi
+
+	echo "Evaluating build plan for ${node}" >&2
+	drv_path="$(eval_host_build_plan_drv_path "${node}")" || return "$?"
+	write_cached_host_build_plan "${node}" "${drv_path}"
+	printf '%s\n' "${drv_path}"
+}
+
+run_build_plan_job() {
+	local node="$1" plan_file="$2" status_file="$3"
+	local drv_path="" rc=0
+
+	(
+		set +e
+		if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+			drv_path="$(resolve_host_build_plan_drv_path "${node}" 2> >(host_log_filter "${node}" >&2))"
+		else
+			drv_path="$(resolve_host_build_plan_drv_path "${node}")"
+		fi
+		rc="$?"
+		if [ "${rc}" = "0" ]; then
+			printf '%s\n' "${drv_path}" >"${plan_file}"
+		fi
+		write_status_file "${status_file}" "${rc}"
+		exit "${rc}"
+	)
+}
+
+prepare_build_plan() {
+	local node="" plan_file="" status_file="" status="" build_plan_jobs="$#" active_jobs=0 phase_rc=0
+
+	[ "$#" -gt 0 ] || return 0
+	if [ "${BUILD_PLAN_JOBS}" -lt "${build_plan_jobs}" ]; then
+		build_plan_jobs="${BUILD_PLAN_JOBS}"
+	fi
+	if [ "${build_plan_jobs}" -gt 1 ]; then
+		NIXBOT_BUILD_PLAN_NIX_ARGS=(--option eval-cache false)
+	else
+		NIXBOT_BUILD_PLAN_NIX_ARGS=()
+	fi
+
+	NIXBOT_BUILD_PLAN_DIR="$(tmp_runtime_dir_path build-plans)"
+	mkdir -p "${NIXBOT_BUILD_PLAN_DIR}"
+	select_build_plan_attr_base
+
+	log_section "Phase: Build Plan"
+	echo "Evaluating build plan for selected hosts (${build_plan_jobs} job(s)).." >&2
+	for node in "$@"; do
 		[ -n "${node}" ] || continue
 		plan_file="$(host_build_plan_file "${node}")" || return 1
-		printf '%s\n' "${drv_path}" >"${plan_file}"
-	done < <(jq -r '.[] | [.host, .drvPath] | @tsv' <<<"${plan_json}")
+		status_file="$(host_build_plan_status_file "${node}")" || return 1
+		if [ "${build_plan_jobs}" -gt 1 ]; then
+			run_build_plan_job "${node}" "${plan_file}" "${status_file}" &
+			active_jobs=$((active_jobs + 1))
+			if ! wait_for_job_slot active_jobs "${build_plan_jobs}"; then
+				phase_rc="$?"
+				return "${phase_rc}"
+			fi
+			continue
+		fi
+
+		run_build_plan_job "${node}" "${plan_file}" "${status_file}"
+		if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
+			echo "Build plan failed for ${node}: no status recorded" >&2
+			return 1
+		fi
+		if [ "${status}" != "0" ]; then
+			echo "Build plan failed for ${node}" >&2
+			if is_signal_exit_status "${status}"; then
+				return "${status}"
+			fi
+			return 1
+		fi
+	done
+
+	if [ "${build_plan_jobs}" -gt 1 ]; then
+		if ! drain_job_slots active_jobs; then
+			phase_rc="$?"
+			return "${phase_rc}"
+		fi
+	fi
 
 	for node in "$@"; do
+		status_file="$(host_build_plan_status_file "${node}")" || return 1
+		if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
+			echo "Build plan failed for ${node}: no status recorded" >&2
+			return 1
+		fi
+		if [ "${status}" != "0" ]; then
+			echo "Build plan failed for ${node}" >&2
+			if is_signal_exit_status "${status}"; then
+				return "${status}"
+			fi
+			return 1
+		fi
 		plan_file="$(host_build_plan_file "${node}")" || return 1
 		if [ ! -s "${plan_file}" ]; then
 			echo "Build plan did not include ${node}" >&2

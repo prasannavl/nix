@@ -151,10 +151,20 @@
     stacks = rootLib.stacks;
   };
 
+  # We use this for build plan cache.
+  # It's entirely optional and non necessary.
+  nixbot = {
+    plans =
+      nixpkgs.lib.mapAttrs (_: nixosConfig: {
+        drvPath = nixosConfig.config.system.build.toplevel.drvPath;
+      })
+      nixosConfigurations;
+  };
+
   outputs =
     standardOutputs
     // {
-      inherit devShells nixosConfigurations nixosImages pkgs;
+      inherit devShells nixbot nixosConfigurations nixosImages pkgs;
       inherit (rootLib) nixosModules;
       overlays.default = overlay;
     };
