@@ -323,6 +323,7 @@ init_vars() {
 	NIXBOT_CANCEL_ACTIVE_DEPLOYS_SEEN=0
 	NIXBOT_CANCEL_REMOTE_WAIT_DONE=0
 	NIXBOT_CANCEL_EXIT_STATUS=130
+	NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS=0
 	NIXBOT_SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 	if command -v readlink >/dev/null 2>&1; then
 		NIXBOT_SCRIPT_PATH="$(readlink -f "${NIXBOT_SCRIPT_PATH}" 2>/dev/null || printf '%s\n' "${NIXBOT_SCRIPT_PATH}")"
@@ -502,6 +503,7 @@ init_vars() {
 	TMP_BUILD_PLAN_DIR=""
 	TMP_TF_ARTIFACT_DIR=""
 	TMP_ACTIVE_DEPLOY_DIR=""
+	TMP_DEPLOY_JOB_DIR=""
 	TMP_STATE_LOCK_DIR=""
 	REPO_DEPLOY_SCRIPT_REL="pkgs/tools/nixbot/nixbot.sh"
 	REMOTE_BOOTSTRAP_KEY_TMP_PREFIX="bootstrap-key."
@@ -1288,6 +1290,29 @@ active_deploy_registry_file() {
 	printf '%s/%s.deploy\n' "${TMP_ACTIVE_DEPLOY_DIR}" "${node_hash}"
 }
 
+deploy_job_registry_file() {
+	local pid="$1"
+
+	ensure_tmp_dir
+	printf '%s/%s.job\n' "${TMP_DEPLOY_JOB_DIR}" "${pid}"
+}
+
+deploy_activation_marker_file() {
+	local node="$1" node_hash=""
+
+	ensure_tmp_dir
+	node_hash="$(printf '%s' "${node}" | sha256sum | cut -d ' ' -f 1)"
+	printf '%s/%s.activation\n' "${TMP_DEPLOY_JOB_DIR}" "${node_hash}"
+}
+
+deploy_pre_activation_cancel_marker_file() {
+	local node="$1" node_hash=""
+
+	ensure_tmp_dir
+	node_hash="$(printf '%s' "${node}" | sha256sum | cut -d ' ' -f 1)"
+	printf '%s/%s.pre-activation-canceled\n' "${TMP_DEPLOY_JOB_DIR}" "${node_hash}"
+}
+
 mark_deploy_job_started() {
 	NIXBOT_DEPLOY_STARTED=1
 }
@@ -1304,6 +1329,20 @@ unregister_active_deploy() {
 
 	registry_file="$(active_deploy_registry_file "${node}")"
 	rm -f "${registry_file}"
+}
+
+register_deploy_job_pid() {
+	local node="$1" pid="$2" registry_file=""
+
+	registry_file="$(deploy_job_registry_file "${pid}")"
+	printf '%s\n' "${node}" >"${registry_file}"
+}
+
+mark_deploy_activation_started() {
+	local node="$1" marker_file=""
+
+	marker_file="$(deploy_activation_marker_file "${node}")"
+	printf '%s\n' "${node}" >"${marker_file}"
 }
 
 deploy_jobs_started() {
@@ -1365,6 +1404,65 @@ active_deploy_activation_units_running() {
 	done < <(active_deploy_files)
 
 	return 1
+}
+
+host_deploy_activation_unit_running() {
+	local node="$1" check_cmd="" state=""
+
+	check_cmd='systemctl show --property=ActiveState --value nixos-rebuild-switch-to-configuration.service 2>/dev/null || true'
+	if ! state="$(run_host_root_command "${node}" "${check_cmd}" 2>/dev/null)"; then
+		return 1
+	fi
+	case "${state}" in
+	active | activating | reloading | deactivating)
+		return 0
+		;;
+	esac
+
+	return 1
+}
+
+host_deploy_reached_activation() {
+	local node="$1"
+
+	if [ -s "$(deploy_activation_marker_file "${node}")" ]; then
+		return 0
+	fi
+	host_deploy_activation_unit_running "${node}"
+}
+
+terminate_pre_activation_deploy_jobs() {
+	local failed_node="$1" file="" pid="" node=""
+	local -a canceled_pids=()
+
+	[ -n "${TMP_DEPLOY_JOB_DIR:-}" ] || return 0
+	[ -d "${TMP_DEPLOY_JOB_DIR}" ] || return 0
+
+	while IFS= read -r file; do
+		[ -n "${file}" ] || continue
+		pid="$(basename "${file}" .job)"
+		[ -n "${pid}" ] || continue
+		kill -0 "${pid}" 2>/dev/null || continue
+		node="$(cat "${file}" 2>/dev/null || true)"
+		[ -n "${node}" ] || continue
+		[ "${node}" != "${failed_node}" ] || continue
+		if host_deploy_reached_activation "${node}"; then
+			echo "Deploy failed on ${failed_node}; leaving ${node} activation to finish" >&2
+			continue
+		fi
+		NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS=$((NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS + 1))
+		: >"$(deploy_pre_activation_cancel_marker_file "${node}")"
+		echo "Deploy failed on ${failed_node}; canceling pre-activation deploy for ${node}" >&2
+		terminate_pid_tree "${pid}" TERM
+		canceled_pids+=("${pid}")
+	done < <(find "${TMP_DEPLOY_JOB_DIR}" -type f -name '*.job' -print 2>/dev/null | sort)
+
+	[ "${#canceled_pids[@]}" -gt 0 ] || return 0
+	sleep "${NIXBOT_CANCEL_TERM_GRACE_SECS}"
+	for pid in "${canceled_pids[@]}"; do
+		kill -0 "${pid}" 2>/dev/null || continue
+		terminate_pid_tree "${pid}" KILL
+	done
 }
 
 run_active_deploy_activation_unit_command() {
@@ -1520,6 +1618,7 @@ ensure_tmp_dir() {
 	TMP_BUILD_PLAN_DIR="${NIXBOT_TMP_DIR}/build-plans"
 	TMP_TF_ARTIFACT_DIR="$(phase_artifact_dir_path "${NIXBOT_TMP_DIR}" "tf")"
 	TMP_ACTIVE_DEPLOY_DIR="${NIXBOT_TMP_DIR}/active-deploys"
+	TMP_DEPLOY_JOB_DIR="${NIXBOT_TMP_DIR}/deploy-jobs"
 	TMP_STATE_LOCK_DIR="${NIXBOT_TMP_DIR}/state-locks"
 	NIXBOT_TTY_LOCK_DIR="${NIXBOT_TMP_DIR}/ssh-tty.lock"
 	mkdir -p \
@@ -1532,6 +1631,7 @@ ensure_tmp_dir() {
 		"${TMP_BUILD_PLAN_DIR}" \
 		"${TMP_TF_ARTIFACT_DIR}" \
 		"${TMP_ACTIVE_DEPLOY_DIR}" \
+		"${TMP_DEPLOY_JOB_DIR}" \
 		"${TMP_STATE_LOCK_DIR}"
 	ensure_phase_artifact_dirs "${NIXBOT_DIAG_DIR}" tf
 }
@@ -5920,6 +6020,11 @@ wait_for_job_slot() {
 				return "${NIXBOT_CANCEL_EXIT_STATUS}"
 			fi
 			if is_signal_exit_status "${wait_rc}"; then
+				if [ "${NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS:-0}" -gt 0 ]; then
+					NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS=$((NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS - 1))
+					wfjs_active_jobs_inout_ref=$((wfjs_active_jobs_inout_ref - 1))
+					return 0
+				fi
 				return "${wait_rc}"
 			fi
 		fi
@@ -5945,6 +6050,11 @@ drain_job_slots() {
 				return "${NIXBOT_CANCEL_EXIT_STATUS}"
 			fi
 			if is_signal_exit_status "${wait_rc}"; then
+				if [ "${NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS:-0}" -gt 0 ]; then
+					NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS=$((NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS - 1))
+					djs_active_jobs_inout_ref=$((djs_active_jobs_inout_ref - 1))
+					continue
+				fi
 				return "${wait_rc}"
 			fi
 		fi
@@ -6098,6 +6208,86 @@ process_completed_deploy_job() {
 		die "Unsupported deploy phase result for ${node}: ${result_kind}"
 		;;
 	esac
+}
+
+deploy_status_is_required_failure() {
+	local node="$1" status="$2"
+
+	case "${status}" in
+	0 | skip)
+		return 1
+		;;
+	esac
+	if is_signal_exit_status "${status}"; then
+		return 1
+	fi
+	if host_optional_deploy_enabled "${node}"; then
+		return 1
+	fi
+
+	return 0
+}
+
+find_completed_required_deploy_failure() {
+	local deploy_status_dir="$1" node="" status_file="" status=""
+	shift
+
+	for node in "$@"; do
+		[ -n "${node}" ] || continue
+		if [ -e "$(deploy_pre_activation_cancel_marker_file "${node}")" ]; then
+			continue
+		fi
+		status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
+		if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
+			continue
+		fi
+		if deploy_status_is_required_failure "${node}" "${status}"; then
+			printf '%s\n' "${node}"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+drain_deploy_wave_job_slots() {
+	local -n ddwjs_active_jobs_inout_ref="$1"
+	local deploy_status_dir="$2" started_hosts_name="$3" failed_node_out_name="$4"
+	local -n ddwjs_started_hosts_in_ref="${started_hosts_name}"
+	local -n ddwjs_failed_node_out_ref="${failed_node_out_name}"
+	local wait_rc=0
+
+	while [ "${ddwjs_active_jobs_inout_ref}" -gt 0 ]; do
+		if cancel_requested; then
+			wait_active_deploy_jobs_to_finish || true
+			return "${NIXBOT_CANCEL_EXIT_STATUS}"
+		fi
+		if wait -n; then
+			:
+		else
+			wait_rc="$?"
+			if cancel_requested; then
+				wait_active_deploy_jobs_to_finish || true
+				return "${NIXBOT_CANCEL_EXIT_STATUS}"
+			fi
+			if is_signal_exit_status "${wait_rc}"; then
+				if [ "${NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS:-0}" -gt 0 ]; then
+					NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS=$((NIXBOT_DEPLOY_FAIL_FAST_PENDING_SIGNAL_JOBS - 1))
+				else
+					return "${wait_rc}"
+				fi
+			fi
+		fi
+		ddwjs_active_jobs_inout_ref=$((ddwjs_active_jobs_inout_ref - 1))
+		if [ -z "${ddwjs_failed_node_out_ref}" ] &&
+			ddwjs_failed_node_out_ref="$(
+				find_completed_required_deploy_failure \
+					"${deploy_status_dir}" \
+					"${ddwjs_started_hosts_in_ref[@]}"
+			)"; then
+			terminate_pre_activation_deploy_jobs "${ddwjs_failed_node_out_ref}"
+		fi
+	done
 }
 
 append_unique_array_item() {
@@ -7318,6 +7508,7 @@ deploy_remote_build_host_path() {
 
 	register_active_deploy "${node}"
 	if copy_system_path_from_build_cache_to_prepared_target "${node}" "${built_out_path}" &&
+		mark_deploy_activation_started "${node}" &&
 		activate_prepared_system_path "${node}" "${built_out_path}"; then
 		deploy_rc=0
 	else
@@ -7348,6 +7539,7 @@ deploy_build_cache_via_local_client() {
 
 	register_active_deploy "${node}"
 	if copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${built_out_path}" &&
+		mark_deploy_activation_started "${node}" &&
 		activate_prepared_system_path "${node}" "${built_out_path}"; then
 		deploy_rc=0
 	else
@@ -8692,8 +8884,8 @@ run_deploy_phase() {
 	# shellcheck disable=SC2178
 	local -n rdp_deploy_failed_hosts_out_ref="${17}"
 
-	local level_group="" node="" active_jobs="" level_index=0
-	local -a level_hosts=() deploy_level_hosts=()
+	local level_group="" node="" active_jobs="" level_index=0 failed_node="" deploy_job_pid=""
+	local -a level_hosts=() deploy_level_hosts=() deploy_started_hosts=()
 	local status_file="" out_file="" log_file="" snapshot_retry_logged=0
 	local deploy_wave_failed=0 total_deploy_hosts=0 level_group_size=0 host_grouping=0 phase_rc=0
 
@@ -8771,6 +8963,8 @@ run_deploy_phase() {
 
 		log_subsection "Deploy Wave: $(join_by_comma "${deploy_level_hosts[@]}")"
 		deploy_wave_failed=0
+		deploy_started_hosts=()
+		failed_node=""
 		active_jobs=0
 
 		for node in "${deploy_level_hosts[@]}"; do
@@ -8786,6 +8980,9 @@ run_deploy_phase() {
 				log_file="$(phase_dir_item_log_file "${deploy_log_dir}" "${node}")"
 				mark_deploy_job_started
 				run_deploy_job "${node}" "${out_file}" "${status_file}" "${log_file}" &
+				deploy_job_pid="$!"
+				register_deploy_job_pid "${node}" "${deploy_job_pid}"
+				deploy_started_hosts+=("${node}")
 				active_jobs=$((active_jobs + 1))
 				if wait_for_job_slot active_jobs "${deploy_parallel_jobs}"; then
 					:
@@ -8796,11 +8993,19 @@ run_deploy_phase() {
 					log_group_scope_end
 					return "${phase_rc}"
 				fi
+				if failed_node="$(find_completed_required_deploy_failure "${deploy_status_dir}" "${deploy_started_hosts[@]}")"; then
+					terminate_pre_activation_deploy_jobs "${failed_node}"
+					deploy_wave_failed=1
+					break
+				fi
 				continue
 			fi
 
 			mark_deploy_job_started
 			run_deploy_job "${node}" "${out_file}" "${status_file}" &
+			deploy_job_pid="$!"
+			register_deploy_job_pid "${node}" "${deploy_job_pid}"
+			deploy_started_hosts+=("${node}")
 			active_jobs=1
 			if drain_job_slots active_jobs; then
 				:
@@ -8827,7 +9032,7 @@ run_deploy_phase() {
 		done
 
 		if [ "${deploy_parallel}" -eq 1 ]; then
-			if drain_job_slots active_jobs; then
+			if drain_deploy_wave_job_slots active_jobs "${deploy_status_dir}" deploy_started_hosts failed_node; then
 				:
 			else
 				phase_rc="$?"
@@ -8836,12 +9041,19 @@ run_deploy_phase() {
 				log_group_scope_end
 				return "${phase_rc}"
 			fi
-			for node in "${deploy_level_hosts[@]}"; do
+			if [ -n "${failed_node}" ]; then
+				deploy_wave_failed=1
+			fi
+			for node in "${deploy_started_hosts[@]}"; do
 				[ -n "${node}" ] || continue
 				if array_contains "${node}" "${OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS[@]}"; then
 					continue
 				fi
+				if [ -e "$(deploy_pre_activation_cancel_marker_file "${node}")" ]; then
+					continue
+				fi
 				status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
+				[ -s "${status_file}" ] || continue
 				if process_completed_deploy_job "${node}" "${status_file}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${_success_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${_failed_hosts_out_name}"; then
 					:
 				else

@@ -204,6 +204,12 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Deploy parallelism defaults to 16 jobs per dependency wave. Rollback-snapshot
   and post-switch health-check work use a separate verify parallelism budget
   controlled by `--verify-jobs` / `NIXBOT_VERIFY_JOBS`, also defaulting to 16.
+- Parallel deploy waves fail fast after the first required host deploy failure:
+  `nixbot` stops scheduling new hosts, terminates sibling deploy jobs that have
+  not reached `switch-to-configuration`, and leaves sibling hosts that have
+  already submitted activation to finish. Pre-activation siblings canceled this
+  way remain built-only in the final summary rather than becoming independent
+  deploy failures.
 - Host builds first evaluate the selected NixOS toplevel derivation paths in one
   `nix eval .#nixosConfigurations --apply ...` build-plan pass. Per-host build
   jobs then realize the precomputed `.drv^out` installable, preserving existing
