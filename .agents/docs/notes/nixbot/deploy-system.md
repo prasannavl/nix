@@ -216,18 +216,23 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   bounded parallelism from `--build-plan-jobs` / `NIXBOT_BUILD_PLAN_JOBS`
   (default `auto`, calculated as online CPU threads divided by 2 plus 1), and
   writes the resulting per-host `.drv` paths into the run-local build-plan
-  directory. Cache keys use `HEAD` plus `git write-tree`, so normal clean runs
-  and `--dirty-staged` snapshots share the same source-identity model. Plain
+  directory. The phase prints an immediate total duration after all selected
+  hosts have a plan. Cache keys use `HEAD` plus `git write-tree`, so normal
+  clean runs and `--dirty-staged` snapshots share the same source-identity
+  model. The cache context is computed once in the parent before parallel
+  fanout; host workers must not run Git index refreshes, because parallel
+  `git update-index` attempts can contend on `.git/**/index.lock`. Plain
   unstaged `--dirty` runs skip the persistent cache because unstaged file
   contents are not represented by the index tree. If `nixbot.plans` is
   unavailable, the plan phase falls back to the compatible
   `nixosConfigurations.${host}.config.system.build.toplevel.drvPath` attr path.
 - Per-host build jobs then realize the precomputed `.drv^out` installable,
   preserving existing per-host logs, status files, result links, and
-  remote/local build modes without re-evaluating host flake attributes. Remote
-  build-host jobs explicitly copy the planned derivation closure to the
-  build-host store before realization so `--build-host` does not depend on
-  per-host flake installable evaluation.
+  remote/local build modes without re-evaluating host flake attributes. The
+  overall build phase prints an immediate total duration after build jobs
+  finish. Remote build-host jobs explicitly copy the planned derivation closure
+  to the build-host store before realization so `--build-host` does not depend
+  on per-host flake installable evaluation.
 - Parallel build-plan workers disable Nix's SQLite flake eval cache to avoid
   contention; nixbot's persistent clean-worktree build-plan cache is the repeat
   run cache for this phase. Sequential build-plan evals can still use Nix's eval

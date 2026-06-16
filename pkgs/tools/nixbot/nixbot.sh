@@ -8619,6 +8619,9 @@ build_plan_cache_enabled() {
 build_plan_cache_context_key() {
 	local head="" index_tree="" nix_version="" key_input=""
 
+	if [ "${NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY}" = "__disabled__" ]; then
+		return 1
+	fi
 	if [ -n "${NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY}" ]; then
 		printf '%s\n' "${NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY}"
 		return 0
@@ -8642,6 +8645,12 @@ build_plan_cache_context_key() {
 	)"
 	NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY="$(printf '%s' "${key_input}" | sha256sum | awk '{print $1}')"
 	printf '%s\n' "${NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY}"
+}
+
+prepare_build_plan_cache_context() {
+	if ! build_plan_cache_context_key >/dev/null; then
+		NIXBOT_BUILD_PLAN_CACHE_CONTEXT_KEY="__disabled__"
+	fi
 }
 
 host_build_plan_cache_file() {
@@ -8758,6 +8767,7 @@ run_build_plan_job() {
 
 prepare_build_plan() {
 	local node="" plan_file="" status_file="" status="" build_plan_jobs="$#" active_jobs=0 phase_rc=0
+	local build_plan_start_epoch="" duration_secs=""
 
 	[ "$#" -gt 0 ] || return 0
 	if [ "${BUILD_PLAN_JOBS}" -lt "${build_plan_jobs}" ]; then
@@ -8771,9 +8781,11 @@ prepare_build_plan() {
 
 	NIXBOT_BUILD_PLAN_DIR="$(tmp_runtime_dir_path build-plans)"
 	mkdir -p "${NIXBOT_BUILD_PLAN_DIR}"
-	select_build_plan_attr_base
 
 	log_section "Phase: Build Plan"
+	build_plan_start_epoch="$(date +%s)"
+	select_build_plan_attr_base
+	prepare_build_plan_cache_context
 	echo "Evaluating build plan for selected hosts (${build_plan_jobs} job(s)).." >&2
 	for node in "$@"; do
 		[ -n "${node}" ] || continue
@@ -8829,6 +8841,8 @@ prepare_build_plan() {
 			return 1
 		fi
 	done
+	duration_secs="$(elapsed_seconds "${build_plan_start_epoch}")"
+	echo "Build plan duration: $(format_duration "${duration_secs}")" >&2
 }
 
 copy_build_drv_to_remote_store() {
@@ -9450,6 +9464,7 @@ run_hosts() {
 			write_status_file "$(phase_dir_item_status_file "${build_status_dir}" "${node}")" 1
 		done
 		RUN_SUMMARY_BUILD_DURATION_SECS="$(elapsed_seconds "${build_phase_start_epoch}")"
+		echo "Build phase duration: $(format_duration "${RUN_SUMMARY_BUILD_DURATION_SECS}")" >&2
 		capture_current_run_summary_state \
 			"${ACTION}" \
 			selected_hosts \
@@ -9491,6 +9506,7 @@ run_hosts() {
 		fi
 	fi
 	RUN_SUMMARY_BUILD_DURATION_SECS="$(elapsed_seconds "${build_phase_start_epoch}")"
+	echo "Build phase duration: $(format_duration "${RUN_SUMMARY_BUILD_DURATION_SECS}")" >&2
 
 	if is_host_build_only_action || [ "${final_rc}" -ne 0 ]; then
 		capture_current_run_summary_state \
