@@ -8710,7 +8710,7 @@ select_build_plan_attr_base() {
 	local plans_json=""
 
 	if run_supervised_stdout_capture plans_json "" \
-		nix eval --json --no-write-lock-file .#nixbot.plans --apply builtins.attrNames; then
+		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --json --no-write-lock-file .#nixbot.plans --apply builtins.attrNames; then
 		NIXBOT_BUILD_PLAN_ATTR_BASE="nixbot.plans"
 		NIXBOT_BUILD_PLAN_ATTR_SUFFIX="drvPath"
 		return 0
