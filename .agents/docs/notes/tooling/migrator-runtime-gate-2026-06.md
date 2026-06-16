@@ -62,6 +62,11 @@ When the gate file is present:
 3. trigger all managed systemd-user dispatchers so user units reconcile against
    the live gate state.
 
+The manifest booleans are real opt-outs, so helper jq filters must distinguish
+missing keys from explicit `false` values. Do not write `.stopOnDrain // true`
+or `.startOnResume // true`; in jq, `//` also defaults `false`. Use `has("...")`
+around the key-specific default instead.
+
 `migrator-apply.service` is intentionally a non-persistent oneshot, and
 `migratorctl` restarts it for each local or remote gate change. Managed
 systemd-user dispatcher units are persistent oneshots, so the helper restarts

@@ -46,8 +46,9 @@ read_manifest_system_units() {
     .systemUnits[]?
     | select(
         if $selector == "stop"
-        then (.stopOnDrain // true)
-        else (.startOnResume // true)
+        then (if has("stopOnDrain") then .stopOnDrain else true end)
+        else (if has("startOnResume") then .startOnResume else true end)
+        end
       )
     | .unit
   ' "$manifest_path"
