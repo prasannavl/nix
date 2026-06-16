@@ -42,6 +42,8 @@
     nvidia-container-toolkit.enable = true;
   };
 
+  systemd.services.nvidia-container-toolkit-cdi-generator.restartIfChanged = false;
+
   # X server configuration
   services.xserver.videoDrivers = ["nvidia"];
 }

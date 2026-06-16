@@ -80,6 +80,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-l5-legion-gpu-pci-map-2026-06.md`: Records the
   live `pvl-l5` Lenovo Legion 5 GPU PCI mapping and the correction from
   `PCI:5:0:0` to `PCI:6:0:0` for the AMD iGPU.
+- `.agents/docs/notes/hosts/pvl-l5-nvidia-cdi-driver-bump-2026-06.md`: Records
+  the `pvl-l5` NVIDIA `595.71.05` to `595.80` switch failure where the CDI
+  generator restarted against new user-space libraries while the old kernel
+  module was still loaded.
 - `.agents/docs/notes/hosts/pvl-l5-home-manager-neovim-boot-2026-06.md`: Records
   the `pvl-l5` boot failure where Home Manager tried to manage
   `.config/nvim/init.lua` below the editable dotfiles symlink, plus the
