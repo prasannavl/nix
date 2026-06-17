@@ -4,7 +4,7 @@
   pkgs,
   ...
 }: let
-  cfg = config.services.active-sync;
+  cfg = config.services.activesync;
   types = lib.types;
   phpBool = value:
     if value
@@ -176,7 +176,7 @@
     ++ ["/tmp"]
   );
 in {
-  options.services.active-sync = {
+  options.services.activesync = {
     enable = lib.mkEnableOption "Z-Push Exchange ActiveSync bridge";
 
     package = lib.mkOption {
@@ -551,7 +551,7 @@ in {
       serverNames = lib.mkOption {
         type = types.nonEmptyListOf types.str;
         default = [cfg.publicHostName];
-        defaultText = lib.literalExpression "[ config.services.active-sync.publicHostName ]";
+        defaultText = lib.literalExpression "[ config.services.activesync.publicHostName ]";
         description = "Hostnames served by the rendered ActiveSync nginx origin vhost.";
       };
 
@@ -588,7 +588,7 @@ in {
             && imapSenderIdentityLdap.baseDn != ""
             && imapSenderIdentityLdap.fields != []
           );
-        message = "services.active-sync.imap.senderIdentity.ldap must set serverUri, bindDn, bindPasswordFile, baseDn, and fields when mode is ldap.";
+        message = "services.activesync.imap.senderIdentity.ldap must set serverUri, bindDn, bindPasswordFile, baseDn, and fields when mode is ldap.";
       }
     ];
 
@@ -639,6 +639,6 @@ in {
         };
     };
 
-    services.active-sync.nginx.serverConfig = originServerConfig;
+    services.activesync.nginx.serverConfig = originServerConfig;
   };
 }
