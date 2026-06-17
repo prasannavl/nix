@@ -14,6 +14,7 @@
     system = "x86_64-linux";
     hostName = "nixos";
     stack = stacks.all;
+    machineProfile = machineProfiles.incusLxc;
     modules = [./incus-lxc-base.nix];
   };
 in {
@@ -28,7 +29,8 @@ in {
     modules = [./incus-vm-base.nix];
   };
 
-  # Compatibility alias for local host definitions that still reference the
-  # pre-VM split name directly.
+  # Compatibility aliases for local host definitions that still reference the
+  # pre-VM split names directly.
   incus-base = incusLxcBase;
+  gap3-base = incusLxcBase;
 }
