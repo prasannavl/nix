@@ -73,7 +73,8 @@ module:
 
 - Parent host orchestration lives in `hosts/<parent-host>/incus.nix`.
 - Shared lifecycle logic lives in `lib/incus/default.nix`.
-- Reusable guest bootstrap lives in `lib/incus-vm.nix`.
+- Reusable guest bootstrap lives in the selected machine profile under
+  `lib/profiles/`.
 - Base image builds live in `lib/images/incus-lxc-base.nix` and
   `lib/images/incus-vm-base.nix`; `incus-base` remains a compatibility alias.
 - Guests are declared under `services.incus-manager.instances.<name>`.

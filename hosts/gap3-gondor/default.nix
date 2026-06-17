@@ -1,8 +1,4 @@
-{
-  hostName,
-  pkgs,
-  ...
-}: let
+{pkgs, ...}: let
   packages = {
     core = with pkgs; [
       wget
@@ -29,8 +25,6 @@
 in {
   imports = [
     ../common/all.nix
-    ../../lib/profiles/lxc.nix
-    (import ../../lib/incus-vm.nix {inherit hostName;})
     (import ../../users/pvl).lxc
   ];
 

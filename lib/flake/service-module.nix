@@ -170,7 +170,7 @@ rec {
           resolvedWantedBy = lib.unique (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy);
         in {
           imports = [
-            ../services/migrator/options.nix
+            ../services/migration-manager/options.nix
           ];
 
           options.services.${spec.resolvedName} =

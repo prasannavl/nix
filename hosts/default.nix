@@ -1,5 +1,5 @@
 {
-  inputProfiles,
+  machineProfiles,
   mkNixosSystem,
   stacks,
   ...
@@ -24,21 +24,25 @@ in {
 
   pvl-vlab = mkPvlHost {
     hostName = "pvl-vlab";
+    machineProfile = machineProfiles.incusLxc;
     modules = [./pvl-vlab];
   };
 
   pvl-vlab-1 = mkPvlHost {
     hostName = "pvl-vlab-1";
+    machineProfile = machineProfiles.incusLxc;
     modules = [./pvl-vlab-1];
   };
 
   pvl-vk = mkPvlHost {
     hostName = "pvl-vk";
+    machineProfile = machineProfiles.incusLxc;
     modules = [./pvl-vk];
   };
 
   pvl-vk-1 = mkPvlHost {
     hostName = "pvl-vk-1";
+    machineProfile = machineProfiles.incusLxc;
     modules = [./pvl-vk-1];
   };
 }

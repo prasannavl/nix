@@ -1,10 +1,11 @@
 {
+  machineProfiles,
   mkNixosSystem,
   stacks,
   ...
 }: let
   hosts = import ../../hosts {
-    inherit mkNixosSystem stacks;
+    inherit machineProfiles mkNixosSystem stacks;
   };
   installerImages = import ../installer {
     inherit mkNixosSystem stacks hosts;
@@ -23,16 +24,11 @@ in {
     system = "x86_64-linux";
     hostName = "nixos";
     stack = stacks.all;
+    machineProfile = machineProfiles.incusVm;
     modules = [./incus-vm-base.nix];
   };
 
-  # Compatibility aliases for local host definitions that still reference the
-  # pre-VM split names directly.
+  # Compatibility alias for local host definitions that still reference the
+  # pre-VM split name directly.
   incus-base = incusLxcBase;
-  gap3-base = mkNixosSystem {
-    system = "x86_64-linux";
-    hostName = "nixos";
-    stack = stacks.pvl;
-    modules = [./gap3-base.nix];
-  };
 }

@@ -248,6 +248,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-last30-port-2026-06.md`: Records the
   refreshed last-30 Abird port ledger, `nixbot` deploy-host port, skipped
   `srv-search` decision, and parity audit.
+- `.agents/docs/notes/tooling/abird-last30-port-2026-06-17.md`: Records the June
+  17 last-30 Abird port ledger, shared helper adoptions, local profile
+  adaptations, and intentional divergences.
 - `.agents/docs/notes/tooling/codex-wrapper-auth-2026-06.md`: Records the local
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.
@@ -306,6 +309,12 @@ Use this index as the canonical map for `.agents/docs/**`.
   `lib/flake/dev-shells.nix`.
 - `.agents/docs/notes/tooling/repo-tooling.md`: Canonical Bash entrypoint,
   lint/fmt, package-local verification, and docs-maintenance rules.
+
+## Plans
+
+- `.agents/docs/plans/nixbot-target-local-rollback-supervisor-2026-06.md`:
+  Design plan for a target-local rollback runner that preserves rollback
+  semantics after SSH transport loss during activation.
 
 ## Playbooks
 

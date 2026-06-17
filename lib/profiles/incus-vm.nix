@@ -1,19 +1,33 @@
 {
+  config,
   lib,
   pkgs,
   modulesPath,
   hostName,
   ...
-}: {
+}: let
+  tailscale = import ../services/tunnels/tailscale.nix {lib = lib;};
+  tailscaleClient = tailscale.mkOptionalAuthKeyClient {
+    config = config;
+    keyName = hostName;
+    secretsDir = ../../data/secrets/globals/tailscale;
+    authKeyStoreName = "tailscale-${hostName}-auth-key.age";
+    port = 0;
+    advertiseTags = ["tag:vm"];
+  };
+  tailscaleServices = tailscaleClient.services or {};
+in {
   imports = [
     (modulesPath + "/virtualisation/incus-virtual-machine.nix")
     ../openssh.nix
     ../options.nix
-    ../services/fail2ban-helper
+    ../services/machine-id
     ../nix.nix
     ../systemd.nix
     ../security.nix
     ../sudo.nix
+    ../services/migration-manager
+    ../services/fail2ban-helper
     ../nix-ld.nix
     ../users.nix
     ../sysctl-inotify.nix
@@ -22,6 +36,13 @@
   ];
 
   systemd = {
+    tmpfiles.rules = [
+      # The state disk is mounted from the host at 0750 for security; fix
+      # the in-guest /var/lib to the standard 0755 so non-root services such as
+      # nixbot can traverse it.
+      "d /var/lib 0755 root root -"
+    ];
+
     network = {
       enable = true;
       wait-online.extraArgs = [
@@ -36,6 +57,10 @@
       };
     };
   };
+
+  age.secrets = tailscaleClient.age.secrets or {};
+
+  x.sshDefault = true;
 
   documentation.enable = false;
   networking = {
@@ -66,7 +91,12 @@
   };
   services = {
     getty.autologinUser = null;
+    "machine-id" = {
+      enable = true;
+      runtimeHostname.enable = true;
+    };
     resolved.enable = true;
+    tailscale = tailscaleServices.tailscale or {};
   };
 
   security.sudo.wheelNeedsPassword = false;

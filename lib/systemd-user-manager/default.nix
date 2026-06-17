@@ -412,7 +412,7 @@
   );
 in {
   imports = [
-    ../services/migrator/options.nix
+    ../services/migration-manager/options.nix
   ];
 
   options.services.systemd-user-manager = {

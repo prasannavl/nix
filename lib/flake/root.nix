@@ -5,8 +5,8 @@
   systems ? flake-utils.lib.defaultSystems,
   stackProfiles ? import ../stacks,
 }: let
-  profileInputNames = {
-    stable = {
+  flakeProfileInputNames = {
+    default = {
       nixpkgs = "nixpkgs";
       homeManager = "home-manager";
       agenix = "agenix";
@@ -20,9 +20,24 @@
     };
   };
 
+  machineProfiles = {
+    vm = {
+      name = "vm";
+      module = ../profiles/vm.nix;
+    };
+    incusLxc = {
+      name = "incus-lxc";
+      module = ../profiles/incus-lxc.nix;
+    };
+    incusVm = {
+      name = "incus-vm";
+      module = ../profiles/incus-vm.nix;
+    };
+  };
+
   overlaysFor = profileInputs: import ../../overlays {inputs = profileInputs;};
 
-  mkInputProfile = name: inputNames: let
+  mkFlakeProfile = name: inputNames: let
     selected = builtins.mapAttrs (_: inputName: inputs.${inputName}) inputNames;
     profileInputs =
       inputs
@@ -46,8 +61,9 @@
       overlays = overlaysFor profileInputs;
     };
 
-  inputProfiles = builtins.mapAttrs mkInputProfile profileInputNames;
-  overlays = inputProfiles.stable.overlays;
+  flakeProfiles = builtins.mapAttrs mkFlakeProfile flakeProfileInputNames;
+
+  overlays = flakeProfiles.default.overlays;
 
   rootLib = import ./. {
     inherit flake-utils inputs nixpkgs overlays stackProfiles;
@@ -55,18 +71,14 @@
 
   packageOutputs = rootLib.outputsFor systems;
 
-  commonModulesFor = inputProfile: [
-    inputProfile.homeManager.nixosModules.home-manager
-    inputProfile.agenix.nixosModules.default
-    {nixpkgs.overlays = inputProfile.overlays;}
+  commonModulesFor = flakeProfile: [
+    flakeProfile.homeManager.nixosModules.home-manager
+    flakeProfile.agenix.nixosModules.default
+    {nixpkgs.overlays = flakeProfile.overlays;}
     ../podman-compose
-    ../services/migrator
     ../systemd-user-manager
     ../../pkgs/tools/nixbot/nixos-module.nix
     rootLib.serviceModule.portCheckModule
-    ({lib, ...}: {
-      services.migration-manager.enable = lib.mkDefault true;
-    })
     {imports = builtins.attrValues (builtins.removeAttrs rootLib.nixosModules ["default"]);}
   ];
 
@@ -80,37 +92,43 @@
 
   mkNixosSystem = {
     hostName,
-    inputProfile ? inputProfiles.stable,
+    flakeProfile ? flakeProfiles.default,
+    machineProfile ? null,
     modules,
     stack ? null,
     system ? "x86_64-linux",
   }: let
-    selectedInputs = inputProfile.inputs;
+    selectedInputs = flakeProfile.inputs;
     effectiveStack =
       if stack == null
       then defaultStack
       else stack;
+    selectedMachineProfileModules =
+      if machineProfile == null
+      then []
+      else [machineProfile.module];
   in
-    inputProfile.nixpkgs.lib.nixosSystem {
-      system = system;
+    flakeProfile.nixpkgs.lib.nixosSystem {
+      inherit system;
       specialArgs = {
-        inherit hostName inputProfile inputProfiles system;
+        inherit flakeProfile flakeProfiles hostName machineProfile machineProfiles system;
         inputs = selectedInputs;
         stack = effectiveStack;
         stacks = stackProfiles;
       };
       modules =
-        commonModulesFor inputProfile
+        commonModulesFor flakeProfile
         ++ [
           {
             home-manager.extraSpecialArgs = {
-              inherit inputProfile inputProfiles;
+              inherit flakeProfile flakeProfiles machineProfile machineProfiles;
               inputs = selectedInputs;
               stack = effectiveStack;
               stacks = stackProfiles;
             };
           }
         ]
+        ++ selectedMachineProfileModules
         ++ modules;
     };
 
@@ -124,7 +142,7 @@
     };
   in
     devShellsLib.mkDevShells {
-      pkgs = pkgs;
+      inherit pkgs;
       rootPackages = [
         pkgs.alejandra
         pkgs.git
@@ -142,12 +160,12 @@
   standardOutputs = rootLib.standardOutputsFrom systems packageOutputs;
 
   nixosConfigurations = import ../../hosts {
-    inherit inputProfiles mkNixosSystem;
+    inherit machineProfiles mkNixosSystem;
     stacks = rootLib.stacks;
   };
 
   nixosImages = import ../images {
-    mkNixosSystem = mkNixosSystem;
+    inherit machineProfiles mkNixosSystem;
     stacks = rootLib.stacks;
   };
 

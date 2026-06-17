@@ -12,13 +12,15 @@ Use this model for declarative Incus guest lifecycle on parent hosts.
 - manual lifecycle tags
 
 Shared lifecycle logic lives in `lib/incus/default.nix` and
-`lib/incus/helper.sh`. Guest bootstrap conveniences live in `lib/incus-vm.nix`.
+`lib/incus/helper.sh`. Guest bootstrap conveniences live in the selected machine
+profile under `lib/profiles/`.
 
 ## Source Of Truth
 
 - parent host declarations: `hosts/<parent>/incus.nix`
 - shared lifecycle logic: `lib/incus/default.nix`, `lib/incus/helper.sh`
-- guest bootstrap logic: `lib/incus-vm.nix`
+- guest bootstrap logic: `lib/profiles/incus-lxc.nix` and
+  `lib/profiles/incus-vm.nix`
 - LXC base image build: `lib/images/incus-lxc-base.nix`
 - VM base image build: `lib/images/incus-vm-base.nix`
 - guest config: `hosts/<guest>/`
@@ -131,7 +133,7 @@ hoc host-local scripts.
 - parent hosts declare guests in `hosts/<parent>/incus.nix`
 - shared lifecycle logic lives in `lib/incus/default.nix` and
   `lib/incus/helper.sh`
-- guest bootstrap conveniences live in `lib/incus-vm.nix`
+- guest bootstrap conveniences live in the selected `machineProfile`
 - guests become normal `nixbot` deploy targets after bootstrap
 - images, tags, and devices are declarative inputs to the parent-host lifecycle
 
@@ -255,10 +257,9 @@ Typical devices:
 ## How To Create A New Guest
 
 1. Add `hosts/<name>/default.nix`.
-   - import `../../lib/profiles/lxc.nix`
-   - import `(import ../../lib/incus-vm.nix { inherit hostName; })`
    - add host-local modules as needed
-2. Register the guest in `hosts/default.nix`.
+2. Register the guest in `hosts/default.nix` with `machineProfiles.incusLxc` or
+   `machineProfiles.incusVm`.
 3. Add a guest entry to `hosts/<parent-host>/incus.nix`.
    - pick a stable IP on the parent-host Incus bridge
    - add the persistent `/var/lib` device
@@ -276,7 +277,8 @@ Typical devices:
   - `data/secrets/globals/machine/<host>.key.age`
 - Optional:
   - `data/secrets/globals/tailscale/<host>.key.age`
-  - when present, `lib/incus-vm.nix` both wires and enables `services.tailscale`
+  - when present, the Incus machine profile both wires and enables
+    `services.tailscale`
 - Not repo-managed:
   - `/var/lib/machine/ssh_host_ed25519_key`
   - `/var/lib/machine/ssh_host_rsa_key`
@@ -428,7 +430,8 @@ recreate it.
 
 - `lib/incus/default.nix`
 - `lib/incus/helper.sh`
-- `lib/incus-vm.nix`
+- `lib/profiles/incus-lxc.nix`
+- `lib/profiles/incus-vm.nix`
 - `lib/images/incus-lxc-base.nix`
 - `lib/images/incus-vm-base.nix`
 - `lib/images/default.nix`

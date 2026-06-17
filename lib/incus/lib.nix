@@ -108,6 +108,8 @@
             if privileged
             then "true"
             else "false";
+          "security.syscalls.intercept.mknod" = "true";
+          "security.syscalls.intercept.setxattr" = "true";
         }
         // lib.optionalAttrs nestedContainers {
           "security.nesting" = "true";
@@ -125,6 +127,11 @@
             source = name;
             path = "/var/lib";
             removalPolicy = "keep";
+          };
+        }
+        // lib.optionalAttrs nestedContainers {
+          fuse = mkUnixCharDevice {
+            source = "/dev/fuse";
           };
         }
         // extraDevices;

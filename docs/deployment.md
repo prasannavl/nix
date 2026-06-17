@@ -323,7 +323,7 @@ shell access for `nixos-rebuild --target-host`.
   - recipients: admins + current `nixbot` deploy keys
   - runtime path on host: `/var/lib/nixbot/.age/identity`
   - host also consumes `data/secrets/globals/tailscale/<incus-guest>.key.age`
-    directly through `lib/incus-vm.nix`
+    directly through the selected Incus machine profile
 
 ### CI host identities and secrets
 
@@ -370,7 +370,8 @@ shell access for `nixos-rebuild --target-host`.
 - Incus-guest Tailscale auth:
   - source file: `data/secrets/globals/tailscale/<incus-guest>.key.age`
   - recipients: admins + `<incus-guest>`
-  - `lib/incus-vm.nix` exposes it as `services.tailscale.authKeyFile`
+  - the selected Incus machine profile exposes it as
+    `services.tailscale.authKeyFile`
 
 ### Incus guest secret notes
 
@@ -378,7 +379,7 @@ shell access for `nixos-rebuild --target-host`.
 - They use the same host secret model as any other managed node:
   - machine age identity in `data/secrets/globals/machine/<host>.key.age`
   - optional service secrets encrypted to that guest's machine recipient
-- The one shared guest-specific convenience path today is in `lib/incus-vm.nix`:
+- The shared guest-specific convenience path lives in the Incus machine profile:
   - optional Tailscale auth secret at
     `data/secrets/globals/tailscale/<host>.key.age`
   - wired to `services.tailscale.authKeyFile` only if the encrypted file exists
