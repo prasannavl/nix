@@ -67,6 +67,7 @@ init_vars() {
 		markdownlint-cli2
 		tflint
 		find
+		xargs
 		sort
 	)
 }
@@ -330,16 +331,27 @@ run_manifest_command() {
 		cd "${REPO_ROOT}/${project_path}"
 		export repo_root="${REPO_ROOT}"
 		if [ -z "${TMPDIR:-}" ]; then
-			TMPDIR="$(mktemp -d)"
-			export TMPDIR
-			trap 'rm -rf "$TMPDIR"' EXIT
+			local manifest_tmpdir
+			manifest_tmpdir="$(mktemp -d)"
+			trap 'rm -rf "$manifest_tmpdir"' EXIT
+			TMPDIR="${manifest_tmpdir}" run_manifest_command_body "${env_script}" "${command}"
+			return
+		else
+			run_manifest_command_body "${env_script}" "${command}"
+			return
 		fi
-		set --
-		if [ -n "${env_script}" ]; then
-			eval "${env_script}"
-		fi
-		eval "${command}"
 	)
+}
+
+run_manifest_command_body() {
+	local env_script="$1"
+	local command="$2"
+
+	set --
+	if [ -n "${env_script}" ]; then
+		eval "${env_script}"
+	fi
+	eval "${command}"
 }
 
 collect_changed_package_paths() {
@@ -485,6 +497,83 @@ collect_target_systems() {
 	done
 }
 
+root_host_eval_jobs() {
+	local host_count="$1"
+	local cpu_count=1
+	local jobs=""
+
+	if command -v nproc >/dev/null 2>&1; then
+		cpu_count="$(nproc 2>/dev/null || printf '1')"
+	fi
+
+	jobs="${LINT_ROOT_HOST_JOBS:-$((cpu_count / 2 + 1))}"
+	case "${jobs}" in
+	'' | *[!0-9]*)
+		die "LINT_ROOT_HOST_JOBS must be a positive integer"
+		;;
+	esac
+	if [ "${jobs}" -lt 1 ]; then
+		die "LINT_ROOT_HOST_JOBS must be a positive integer"
+	fi
+	if [ "${jobs}" -gt "${host_count}" ]; then
+		jobs="${host_count}"
+	fi
+
+	printf '%s\n' "${jobs}"
+}
+
+print_indented_file() {
+	local file_path="$1"
+	local line=""
+
+	while IFS= read -r line; do
+		printf '      %s\n' "${line}" >&2
+	done <"${file_path}"
+}
+
+run_changed_host_evals() {
+	local -a host_names=("$@")
+	local host_name=""
+	local jobs=""
+	local log_dir=""
+	local status=0
+
+	[ "${#host_names[@]}" -gt 0 ] || return 0
+
+	jobs="$(root_host_eval_jobs "${#host_names[@]}")"
+	log_dir="$(mktemp -d "${TMPDIR:-/tmp}/lint-root-hosts.XXXXXX")"
+
+	printf '    parallel jobs: %s\n' "${jobs}" >&2
+	for host_name in "${host_names[@]}"; do
+		printf '    - %s\n' "${host_name}" >&2
+	done
+
+	if printf '%s\0' "${host_names[@]}" |
+		xargs -0 -n 1 -P "${jobs}" bash -c "
+			set -Eeuo pipefail
+			log_dir=\"\$1\"
+			host_name=\"\$2\"
+			log_file=\"\${log_dir}/\${host_name}.log\"
+
+			nix eval --raw \".#nixosConfigurations.\${host_name}.config.system.build.toplevel.drvPath\" > /dev/null 2>\"\${log_file}\"
+		" _ "${log_dir}"; then
+		rm -rf "${log_dir}"
+		return 0
+	else
+		status=$?
+	fi
+
+	printf '    failed host eval logs:\n' >&2
+	for host_name in "${host_names[@]}"; do
+		if [ -s "${log_dir}/${host_name}.log" ]; then
+			printf '    --- %s ---\n' "${host_name}" >&2
+			print_indented_file "${log_dir}/${host_name}.log"
+		fi
+	done
+	rm -rf "${log_dir}"
+	return "${status}"
+}
+
 project_arg_list() {
 	local project_name=""
 
@@ -569,10 +658,7 @@ run_targeted_root_flake_check() {
 	fi
 
 	printf '  - changed NixOS hosts\n' >&2
-	for host_name in "${host_names[@]}"; do
-		printf '    - %s\n' "${host_name}" >&2
-		nix eval --raw ".#nixosConfigurations.${host_name}.config.system.build.toplevel.drvPath" >/dev/null
-	done
+	run_changed_host_evals "${host_names[@]}"
 }
 
 run_root_flake_check() {
