@@ -267,8 +267,7 @@ class DeployPlanningTest(unittest.TestCase):
     def test_bootstrap_override_is_service_owned_and_host_encoded(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            bootstrap_dir = repo_root / "lib" / "services" / "migrator"
-            bootstrap_dir.mkdir(parents=True)
+            bootstrap_dir = repo_root / "lib" / "services" / "migration-manager"
 
             with mock.patch.object(data_migrator, "read_bootstrap_hosts", return_value={}):
                 data_migrator.write_bootstrap_hosts(repo_root, 'abird-"corp"')
@@ -411,7 +410,7 @@ class DeployPlanningTest(unittest.TestCase):
                     dry_run=False,
                 ),
                 mock.call(
-                    ["git", "add", "lib/services/migrator/bootstrap-hosts.nix"],
+                    ["git", "add", "lib/services/migration-manager/bootstrap-hosts.nix"],
                     cwd=worktree,
                 ),
                 mock.call(

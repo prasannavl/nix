@@ -6868,57 +6868,6 @@ verify_rollback_target_state() {
 	return 1
 }
 
-verify_deploy_target_state() {
-	local node="$1" built_out_path="$2" observed_path="" attempt="" max_attempts=15
-
-	for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-		sleep_for_retry_or_signal 2 || return "$?"
-
-		if ! prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
-			continue
-		fi
-
-		case "${GOAL}" in
-		boot)
-			observed_path="$(read_prepared_system_profile_path 2>/dev/null || true)"
-			;;
-		switch | test)
-			observed_path="$(read_prepared_current_system_path 2>/dev/null || true)"
-			;;
-		*)
-			return 1
-			;;
-		esac
-
-		if [ -n "${observed_path}" ] && [ "${observed_path}" = "${built_out_path}" ]; then
-			return 0
-		fi
-	done
-
-	return 1
-}
-
-verify_remote_deploy_after_transport_loss() {
-	local node="$1" built_out_path="$2" deploy_rc="$3" output_path="${4:-}"
-
-	if [ "${deploy_rc}" -eq 255 ]; then
-		:
-	elif deploy_rebuild_failure_is_transport_loss "${output_path}"; then
-		:
-	else
-		return 1
-	fi
-	[ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] || return 1
-
-	echo "==> Deploy transport closed for ${node}; verifying target state" >&2
-	if verify_deploy_target_state "${node}" "${built_out_path}"; then
-		echo "==> Deploy for ${node} completed despite transport disconnect" >&2
-		return 0
-	fi
-
-	return 1
-}
-
 rollback_successful_hosts() {
 	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
 	shift 3
@@ -7386,7 +7335,7 @@ prepare_deploy_rebuild_command() {
 }
 
 run_deploy_rebuild_command_with_retry() {
-	local node="$1" built_out_path="$2"
+	local node="$1"
 	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" safe_node=""
 	local -a rebuild_cmd=()
 
@@ -7409,12 +7358,6 @@ run_deploy_rebuild_command_with_retry() {
 		if is_signal_exit_status "${rc}"; then
 			rm -f "${output_path}"
 			return "${rc}"
-		fi
-
-		if [ "${rc}" -ne 0 ] &&
-			verify_remote_deploy_after_transport_loss "${node}" "${built_out_path}" "${rc}" "${output_path}"; then
-			rm -f "${output_path}"
-			return 0
 		fi
 
 		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ] ||
@@ -7644,7 +7587,7 @@ deploy_host() {
 		echo
 	else
 		register_active_deploy "${node}"
-		if run_deploy_rebuild_command_with_retry "${node}" "${built_out_path}"; then
+		if run_deploy_rebuild_command_with_retry "${node}"; then
 			deploy_rc=0
 		else
 			deploy_rc="$?"

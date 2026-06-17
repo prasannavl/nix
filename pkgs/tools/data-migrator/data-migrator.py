@@ -1090,8 +1090,11 @@ def updated_bootstrap_hosts(hosts, host):
 
 
 def write_bootstrap_hosts(repo_root, host):
-    bootstrap_path = repo_root / "lib" / "services" / "migrator" / "bootstrap-hosts.nix"
+    bootstrap_path = (
+        repo_root / "lib" / "services" / "migration-manager" / "bootstrap-hosts.nix"
+    )
     hosts = read_bootstrap_hosts(bootstrap_path)
+    bootstrap_path.parent.mkdir(parents=True, exist_ok=True)
     bootstrap_path.write_text(
         render_bootstrap_hosts(updated_bootstrap_hosts(hosts, host)),
         encoding="utf-8",
@@ -1125,7 +1128,7 @@ def deploy_target_prepared(args, host):
         else:
             write_bootstrap_hosts(worktree, host)
             run(
-                ["git", "add", "lib/services/migrator/bootstrap-hosts.nix"],
+                ["git", "add", "lib/services/migration-manager/bootstrap-hosts.nix"],
                 cwd=worktree,
             )
         nixbot = [

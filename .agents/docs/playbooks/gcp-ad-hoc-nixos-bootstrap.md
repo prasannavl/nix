@@ -210,6 +210,12 @@ boot disk. Use `--keep-fw-rules` to preserve fw rules.
   - stages the repo deploy key and machine age identity
   - runs `nixos-anywhere`
   - verifies steady-state SSH with the repo deploy key
+- `pkgs/ext/gcp-vms/iap-ssh.sh`
+  - temporarily enables IAP SSH for an existing GCE instance
+  - creates the IAP source-range firewall rule and target tag when needed
+  - runs `gcloud compute ssh --tunnel-through-iap`
+  - removes the temporary tag and deletes the firewall rule when no other
+    instance still uses it, unless `--keep-access` is set
 - `pkgs/ext/gcp-vms/delete-vm.sh`
   - deletes an ad hoc VM
   - auto-discovers the VM zone when `--zone` is omitted

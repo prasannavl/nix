@@ -1007,10 +1007,8 @@ write_lxc_host_default() {
 	packages_file="$(stage_file_for_write "${HOST_DIR}/packages.nix")"
 	users_file="$(stage_file_for_write "${HOST_DIR}/users.nix")"
 	cat >"$default_file" <<'EOF'
-{hostName, ...}: {
+{...}: {
   imports = [
-    ../../lib/profiles/lxc.nix
-    (import ../../lib/incus-vm.nix {inherit hostName;})
     ./packages.nix
     ./users.nix
   ];
@@ -1033,6 +1031,7 @@ register_host() {
 	cat >"$entry_file" <<EOF
   ${host_attr} = mkNixosSystem {
     hostName = "$(nix_escape "$HOST")";
+    machineProfile = machineProfiles.vm;
 EOF
 	if [[ -n "$HOST_STACK" ]]; then
 		cat >>"$entry_file" <<EOF
