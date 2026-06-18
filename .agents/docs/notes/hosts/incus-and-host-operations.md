@@ -9,8 +9,10 @@ recent host incidents.
 ## Incus parent and guest model
 
 - Parent hosts own guest creation and startup.
-- Guests boot from the reusable `lib/images/incus-base.nix` image and then
-  converge to their real host config through `nixbot`.
+- Guests boot from the reusable `nixosImages.incus-lxc-base` or
+  `nixosImages.incus-vm-base` image and then converge to their real host config
+  through `nixbot`. Compatibility image exports are not part of the steady-state
+  API.
 - Guest-specific configuration stays under `hosts/<name>/`.
 - Selecting a guest for deploy should also include its declared parent host.
 - Activation-time guest reconcile should stay conservative on containerized
@@ -93,10 +95,63 @@ recent host incidents.
 
 - Bash prompt command substitution must stay as `'$(...)'` inside `PS1`; the
   escaped `'\$(...)'` form renders literally.
-- For Incus LXC containers using `lib/profiles/lxc.nix`, the online contract is
-  the underlay interface `eth0:routable`. Overlay interfaces such as Tailscale
-  should not decide `network-online.target` during activation. Keep
+- For Incus LXC containers using `lib/profiles/incus-lxc.nix`, the online
+  contract is the underlay interface `eth0:routable`. Overlay interfaces such as
+  Tailscale should not decide `network-online.target` during activation. Keep
   `systemd-networkd-wait-online` scoped to `--interface=eth0:routable`.
+- Incus LXC images should rely on the upstream NixOS activation path to create
+  `/run/current-system` before systemd starts. Do not add repo-owned tmpfiles
+  rules or early systemd units that relink `/run/current-system` to
+  `/nix/var/nix/profiles/system`: the profile does not exist until
+  `register-nix-paths.service` creates it with
+  `nix-env --set /run/current-system`.
+- `lib/profiles/incus-lxc.nix` is an Incus integration profile layered on top of
+  upstream `virtualisation/lxc-container.nix`; it should not reimplement or
+  fight upstream LXC boot, activation, or store-registration semantics. Prefer
+  removing local meddling and restoring the upstream invariant over adding
+  compensating first-boot services.
+- NixOS LXC stage-2 activation creates `/run/current-system` before it execs
+  systemd, but container systemd can establish the real tmpfs-backed `/run`
+  after that point. When this hides activation-created runtime links, restore
+  `/run/current-system` and `/run/booted-system` once, before upstream sysinit
+  units. Derive the target from `/sbin/init`'s embedded `systemConfig` store
+  path, and never point the links at `/nix/var/nix/profiles/system`, because
+  that profile is the `register-nix-paths.service` output.
+- Incus may still need narrow integration overrides where the runtime, not
+  NixOS, owns the boundary. For LXC guests, force `boot.specialFileSystems = {}`
+  as a whole-boundary override: upstream generic NixOS declares API/runtime
+  mounts such as `/dev`, `/dev/pts`, `/dev/shm`, `/proc`, `/run`, and
+  `/run/keys`, while Incus and container systemd provide the actual runtime
+  mounts.
+- Nested Incus LXC guests need udev coldplug before `systemd-networkd` can
+  manage `eth0`. Upstream `virtualisation/lxc-container.nix` re-enables
+  `systemd-udev-trigger.service` for this reason, and distrobuilder's LXC
+  runtime drop-in calls `udevadm` through `/run/current-system/sw/bin/udevadm`.
+  If the runtime system links are missing, the symptom is
+  `systemd-udev-trigger.service` showing `status=203/EXEC`, `udevadm info`
+  missing `ID_NET_DRIVER` and `ID_NET_LINK_FILE` on `eth0`, and networkd showing
+  `Network File: n/a` plus `SETUP=pending`. Restore the NixOS runtime links
+  before coldplug and let DHCP/networkd do the address assignment; do not add a
+  separate service that reads `ipv4.address` from `/dev/incus/sock` and writes
+  IP addresses manually.
+- Incus base images must include the bootstrap `nixbot` SSH account, deploy
+  public key, and trusted Nix user status. Snapshot and first deploy access
+  happen before the guest-specific host configuration has been switched in, so
+  relying on `hosts/<guest>` imports alone breaks freshly recreated guests with
+  `Permission denied (publickey)` or unsigned-path copy failures.
+- Fixing a base image does not repair an already-created guest rootfs. Keep
+  `imageTag` as image import or refresh intent, and bump the affected guest's
+  `recreateTag` when it must consume the fixed image.
+- Incus local image cache checks must verify the actual metadata/rootfs artifact
+  content, not only mutable image properties. A stale image can have its
+  `user.base-image-*` properties rewritten while still exporting an old rootfs;
+  after that happens, bump `recreateTag` again so guests consume the corrected
+  alias.
+- Do not flip an existing stateful LXC between privileged and unprivileged while
+  preserving its `/var/lib` state disk. The rootfs can be recreated, but the
+  kept state volume retains ownership/idmap assumptions from the previous
+  privilege mode and can leave the instance Running while `incus exec` never
+  becomes usable.
 - LXC hostnames are declared through `networking.hostName`. Networkd must not
   apply DHCP-provided hostnames on `eth0`; set DHCPv4 and DHCPv6
   `UseHostname=false` to avoid D-Bus activation of `systemd-hostnamed.service`
@@ -135,8 +190,11 @@ recent host incidents.
 
 - `lib/incus/default.nix`
 - `lib/incus/helper.sh`
-- `lib/incus-vm.nix`
-- `lib/images/incus-base.nix`
+- `lib/profiles/incus-lxc.nix`
+- `lib/profiles/incus-vm.nix`
+- `lib/images/default.nix`
+- `lib/images/incus-lxc-base.nix`
+- `lib/images/incus-vm-base.nix`
 - `hosts/<parent-host>/incus.nix`
 - `hosts/<guest>/default.nix`
 - `hosts/nixbot.nix`
