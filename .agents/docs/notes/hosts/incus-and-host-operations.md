@@ -27,7 +27,10 @@ recent host incidents.
 - Declarative guests live under `services.incus-manager`.
 - Disk devices sync in place. Non-disk device changes are recreate-scoped.
 - `bootTag`, `recreateTag`, `imageTag`, and `preseedTag` are the intentional
-  operator bump knobs. Image refresh and guest recreate are separate decisions.
+  operator bump knobs. `bootTag` and `recreateTag` exist both globally under
+  `services.incus-manager.global` and per instance; global lifecycle tags are
+  folded into every declared instance tag. Image refresh and guest recreate are
+  separate decisions.
 - Migration drain for NixOS hosts, including hosts that run as Incus LXCs, is
   guest-side `services.migration-manager`. Do not use parent-side Incus
   lifecycle stops as an application drain: that turns off the whole container
@@ -141,7 +144,8 @@ recent host incidents.
   `Permission denied (publickey)` or unsigned-path copy failures.
 - Fixing a base image does not repair an already-created guest rootfs. Keep
   `imageTag` as image import or refresh intent, and bump the affected guest's
-  `recreateTag` when it must consume the fixed image.
+  per-instance `recreateTag` or the global `recreateTag` when guests must
+  consume the fixed image.
 - Incus local image cache checks must verify the actual metadata/rootfs artifact
   content, not only mutable image properties. A stale image can have its
   `user.base-image-*` properties rewritten while still exporting an old rootfs;

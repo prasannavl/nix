@@ -1389,6 +1389,16 @@
   configHash = name: machine:
     builtins.hashString "sha256" (builtins.toJSON (configHashPayload name machine));
 
+  effectiveBootTag = machine:
+    if globalCfg.bootTag == "0"
+    then machine.bootTag
+    else "${globalCfg.bootTag}:${machine.bootTag}";
+
+  effectiveRecreateTag = machine:
+    if globalCfg.recreateTag == "0"
+    then machine.recreateTag
+    else "${globalCfg.recreateTag}:${machine.recreateTag}";
+
   lifecycleConfigHash = name: machine:
     builtins.hashString "sha256" (builtins.toJSON {
       configHash = configHash name machine;
@@ -1439,8 +1449,8 @@
       autoStart = machine.autoStart;
       reconcilePolicy = machine.reconcilePolicy;
       configHash = hash;
-      bootTag = machine.bootTag;
-      recreateTag = machine.recreateTag;
+      bootTag = effectiveBootTag machine;
+      recreateTag = effectiveRecreateTag machine;
       removalPolicy = machine.removalPolicy;
       adopt = machine.adopt;
       desiredDisks = builtins.fromJSON diskDevSpec;
@@ -1465,8 +1475,8 @@
       state = machine.state;
       autoStart = machine.autoStart;
       reconcilePolicy = machine.reconcilePolicy;
-      bootTag = machine.bootTag;
-      recreateTag = machine.recreateTag;
+      bootTag = effectiveBootTag machine;
+      recreateTag = effectiveRecreateTag machine;
       removalPolicy = machine.removalPolicy;
       adopt = machine.adopt;
       desiredDisks = builtins.fromJSON diskDevSpec;
@@ -1482,8 +1492,8 @@
     state = machine.state;
     autoStart = machine.autoStart;
     reconcilePolicy = machine.reconcilePolicy;
-    bootTag = machine.bootTag;
-    recreateTag = machine.recreateTag;
+    bootTag = effectiveBootTag machine;
+    recreateTag = effectiveRecreateTag machine;
     removalPolicy = machine.removalPolicy;
     hostSuspendPolicy = machine.hostSuspendPolicy;
     devices = builtins.fromJSON (diskGcMetadataJson machine);
@@ -2373,6 +2383,27 @@ in {
           type = lib.types.str;
           default = "0";
           description = "Bump to force refresh of all declared Incus images on next rebuild.";
+        };
+
+        bootTag = lib.mkOption {
+          type = lib.types.str;
+          default = "0";
+          description = ''
+            Global lifecycle tag folded into every declared instance's
+            `bootTag`. Bump to force all managed instances to restart
+            (stop+start) on their next lifecycle run without recreating rootfs.
+          '';
+        };
+
+        recreateTag = lib.mkOption {
+          type = lib.types.str;
+          default = "0";
+          description = ''
+            Global lifecycle tag folded into every declared instance's
+            `recreateTag`. Bump to force all managed instances to recreate
+            (stop+delete+create) on their next lifecycle run. Persistent disks
+            are still governed by each device's removal policy.
+          '';
         };
 
         preseedTag = lib.mkOption {
