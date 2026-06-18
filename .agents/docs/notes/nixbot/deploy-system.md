@@ -204,9 +204,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Deploy parallelism defaults to 16 jobs per dependency wave. Rollback-snapshot
   and post-switch health-check work use a separate verify parallelism budget
   controlled by `--verify-jobs` / `NIXBOT_VERIFY_JOBS`, also defaulting to 16.
-- `--no-verify` / `NIXBOT_NO_VERIFY=1` skips post-switch health checks only.
-  It does not disable rollback snapshots while rollback remains enabled, so
-  deploy failures can still roll back to the recorded pre-deploy generation.
+- `--no-verify` / `NIXBOT_NO_VERIFY=1` skips post-switch health checks only. It
+  does not disable rollback snapshots while rollback remains enabled, so deploy
+  failures can still roll back to the recorded pre-deploy generation.
 - Parallel deploy waves fail fast after the first required host deploy failure:
   `nixbot` stops scheduling new hosts, terminates sibling deploy jobs that have
   not reached `switch-to-configuration`, and leaves sibling hosts that have
