@@ -36,86 +36,59 @@ in {
     ../hardware.nix
   ];
 
+  # Keep this profile as a thin Incus integration layer over upstream
+  # virtualisation/lxc-container.nix. Do not replace upstream LXC boot,
+  # activation, or store-registration behavior here.
   boot = {
     # This host is designed to run as a container image (shared kernel).
     isContainer = true;
 
-    # Incus/LXC owns these mounts for unprivileged guests. NixOS activation
-    # otherwise tries to remount them and fails with fsconfig(2) denied/missing.
-    specialFileSystems =
-      lib.genAttrs [
-        "/dev"
-        "/dev/pts"
-        "/dev/shm"
-        "/proc"
-        "/run"
-        "/run/keys"
-      ] (_: {
-        enable = lib.mkForce false;
-      });
+    # Generic NixOS special filesystems are API/runtime mounts in Incus LXC:
+    # Incus/LXC creates the container's minimal tmpfs /dev and procfs /proc,
+    # while container systemd creates the tmpfs /run before normal units start.
+    # Unprivileged guests cannot reliably remount these, so treat the full
+    # attrset as runtime-owned instead of carrying a partial denylist.
+    specialFileSystems = lib.mkForce {};
 
     enableContainers = false;
   };
 
   systemd = {
+    services.nixos-container-runtime-system-links = {
+      description = "Restore NixOS runtime system links after container /run setup";
+      wantedBy = ["sysinit.target"];
+      before = [
+        "register-nix-paths.service"
+        "systemd-tmpfiles-setup.service"
+        "systemd-udev-trigger.service"
+        "systemd-networkd.service"
+      ];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        # Stage-2 activation creates these links before execing systemd. In an
+        # LXC container, systemd then establishes the runtime tmpfs for /run,
+        # so restore the same invariant before upstream sysinit units consume it.
+        system_config="$(${pkgs.gnused}/bin/sed -n 's/^systemConfig=//p' /sbin/init | ${pkgs.coreutils}/bin/head -n 1)"
+        if [ -z "$system_config" ] || [ ! -e "$system_config" ]; then
+          echo "Unable to resolve booted NixOS system from /sbin/init" >&2
+          exit 1
+        fi
+
+        ${pkgs.coreutils}/bin/ln -sfn "$system_config" /run/current-system
+        ${pkgs.coreutils}/bin/ln -sfn "$system_config" /run/booted-system
+      '';
+    };
+
     tmpfiles.rules = [
       # The state disk is mounted from the host at 0750 for security; fix
       # the in-container /var/lib to the standard 0755 so non-root services
       # such as nixbot can traverse it.
       "d /var/lib 0755 root root -"
-
-      # Container images boot from the system profile, but many generated units
-      # execute binaries through /run/current-system. Create that first-boot link
-      # before udev/networkd start so the container can coldplug devices and
-      # bring up networking before the first deploy switch.
-      "L+ /run/current-system - - - - /nix/var/nix/profiles/system"
     ];
-
-    services = {
-      # The LXC image metadata injects a /run drop-in for udev coldplug that uses
-      # /run/current-system. Create that link before udev-trigger, because
-      # tmpfiles normally runs after the trigger and is too late for first-boot
-      # networking.
-      nixos-current-system-link = {
-        description = "Create /run/current-system for container first boot";
-        wantedBy = ["sysinit.target"];
-        before = [
-          "systemd-udev-trigger.service"
-          "systemd-networkd.service"
-          "systemd-tmpfiles-setup.service"
-        ];
-        unitConfig.DefaultDependencies = false;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = "${pkgs.coreutils}/bin/ln -sfn /nix/var/nix/profiles/system /run/current-system";
-        };
-      };
-
-      # NixOS container images start systemd directly, so they do not get the
-      # normal stage-2 activation path that materializes runtime state like
-      # /run/agenix. Run activation once early after /run/current-system exists.
-      nixos-container-activation = {
-        description = "Run NixOS activation for container boot";
-        wantedBy = ["sysinit.target"];
-        after = ["nixos-current-system-link.service"];
-        before = [
-          "systemd-udev-trigger.service"
-          "systemd-networkd.service"
-          "systemd-tmpfiles-setup.service"
-        ];
-        unitConfig = {
-          ConditionPathExists = "/run/current-system/activate";
-          DefaultDependencies = false;
-        };
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          Environment = "NIXOS_ACTION=boot";
-          ExecStart = "/run/current-system/activate";
-        };
-      };
-    };
 
     network = {
       enable = true;
