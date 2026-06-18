@@ -46,7 +46,7 @@ Usage:
   nixbot
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -94,6 +94,7 @@ Deploy Action Options (`run`, `deploy`):
   --verify-jobs    Parallel rollback snapshot and health-check work (default: 16)
   --bootstrap      Always use bootstrap SSH user/key selection
   --no-rollback    Disable rollback if any deploy fails
+  --no-verify      Skip post-deploy health checks; deploy failures can still roll back
   --prefix-host-logs Always prefix host log lines
 
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
@@ -154,6 +155,7 @@ Environment (Deploy Actions):
   NIXBOT_JOBS                 Same as --deploy-jobs
   NIXBOT_VERIFY_JOBS          Same as --verify-jobs
   NIXBOT_NO_ROLLBACK          Same as --no-rollback (bool)
+  NIXBOT_NO_VERIFY            Same as --no-verify (bool)
   NIXBOT_PREFIX_HOST_LOGS     Same as --prefix-host-logs (bool)
 
 Environment (Host Workflow Ordering):
@@ -319,6 +321,7 @@ init_vars() {
 	PRIORITIZE_CI_FIRST=0
 	DRY_RUN=0
 	ROLLBACK_ON_FAILURE=1
+	VERIFY_AFTER_DEPLOY=1
 	FORCE_PREFIX_HOST_LOGS=0
 	PREFIX_HOST_LOGS_EXPLICIT=0
 	LOG_FORMAT="${NIXBOT_LOG_FORMAT:-auto}"
@@ -417,6 +420,9 @@ init_vars() {
 	fi
 	if parse_bool_env "${NIXBOT_NO_ROLLBACK:-0}"; then
 		ROLLBACK_ON_FAILURE=0
+	fi
+	if parse_bool_env "${NIXBOT_NO_VERIFY:-0}"; then
+		VERIFY_AFTER_DEPLOY=0
 	fi
 	if [ -n "${NIXBOT_PREFIX_HOST_LOGS:-}" ]; then
 		if parse_bool_env "${NIXBOT_PREFIX_HOST_LOGS}"; then
@@ -1067,6 +1073,10 @@ parse_args() {
 			;;
 		--no-rollback)
 			ROLLBACK_ON_FAILURE=0
+			shift
+			;;
+		--no-verify)
+			VERIFY_AFTER_DEPLOY=0
 			shift
 			;;
 		--prefix-host-logs)
@@ -2276,7 +2286,8 @@ run_ci_trigger() {
 	# expected to use its repo-local defaults and checked-in config for
 	# deploy-shaping settings such as goal, build host, job counts, rollback
 	# policy, and similar local overrides. Operator execution modifiers such as
-	# --dry, --force, --dirty, and --ci-first are explicit parts of this contract.
+	# --dry, --force, --dirty, --no-verify, and --ci-first are explicit parts
+	# of this contract.
 	remote_args=("${ACTION}" --sha "${trigger_sha}" --hosts "${trigger_hosts}" --no-override)
 	if [ "${LOG_FORMAT}" != "auto" ]; then
 		remote_args+=(--log-format "${LOG_FORMAT}")
@@ -2294,6 +2305,10 @@ run_ci_trigger() {
 	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ]; then
 		remote_args+=(--ci-first)
 		echo "CI-first host ordering: true" >&2
+	fi
+	if [ "${VERIFY_AFTER_DEPLOY}" -eq 0 ]; then
+		remote_args+=(--no-verify)
+		echo "Post-deploy health checks: skipped" >&2
 	fi
 	if [ "${OVERLAY_STAGED}" -eq 1 ]; then
 		remote_args+=(--dirty-staged --dirty-staged-patch-stdin --dirty-staged-base "${DIRTY_STAGED_BASE_SHA}")
@@ -9521,7 +9536,10 @@ run_hosts() {
 
 	# Health check phase: verify user services are healthy after deploy.
 	if [ "${DRY_RUN}" -eq 0 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
-		if run_post_switch_health_check_phase \
+		if [ "${VERIFY_AFTER_DEPLOY}" -eq 0 ]; then
+			log_section "Phase: Health Check"
+			echo "Skipping post-deploy health checks (--no-verify)" >&2
+		elif run_post_switch_health_check_phase \
 			"${snapshot_dir}" \
 			"${rollback_log_dir}" \
 			"${rollback_status_dir}" \
