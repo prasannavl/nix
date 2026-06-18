@@ -76,7 +76,7 @@ module:
 - Reusable guest bootstrap lives in the selected machine profile under
   `lib/profiles/`.
 - Base image builds live in `lib/images/incus-lxc-base.nix` and
-  `lib/images/incus-vm-base.nix`; `incus-base` remains a compatibility alias.
+  `lib/images/incus-vm-base.nix`.
 - Guests are declared under `services.incus-manager.instances.<name>`.
 - Machines can use the shared default image or point at per-machine image
   overrides.

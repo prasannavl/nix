@@ -162,6 +162,8 @@ in {
   services = {
     incus-manager = {
       global = {
+        imageTag = "1";
+
         certificates = [
           {
             name = "pvl";
@@ -225,13 +227,11 @@ in {
 
           gap3-gondor = mkLxc {
             name = "gap3-gondor";
-            image = inputs.self.nixosImages.gap3-base;
+            image = inputs.self.nixosImages.incus-lxc-base;
             ipv4Address = "10.10.20.20";
             removalPolicy = "delete-all";
-            recreateTag = "3";
             privileged = true;
             nestedContainers = true;
-            interceptMounts = true;
             extraDevices = amdGpuDevices;
           };
         };
@@ -242,7 +242,6 @@ in {
           name = "abird-nest";
           ipv4Address = "10.10.100.10";
           removalPolicy = "delete-all";
-          recreateTag = "1";
           nestedContainers = true;
           extraDevices = {
             incus-api = incusLib.mkIncusProxy {
