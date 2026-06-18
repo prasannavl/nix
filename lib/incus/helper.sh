@@ -3009,6 +3009,7 @@ ensure_declared_image_present() {
 ensure_declared_image_present_unlocked() {
 	local image desired_rebuild_tag alias image_kind image_identity current_source current_rebuild_tag
 	local instance_kind current_fingerprint desired_fingerprint import_output metadata_file artifact_file remote_ref existing_fingerprint properties_json
+	local current_artifact_digest artifact_digest existing_imported_fingerprint
 	local -a copy_args=() kind_args=()
 
 	image="$1"
@@ -3020,13 +3021,8 @@ ensure_declared_image_present_unlocked() {
 
 	current_source="$(incus_project image get-property "$(target_image_ref "$alias")" user.base-image-id 2>/dev/null || true)"
 	current_rebuild_tag="$(incus_project image get-property "$(target_image_ref "$alias")" user.base-image-rebuild-tag 2>/dev/null || true)"
+	current_artifact_digest="$(incus_project image get-property "$(target_image_ref "$alias")" user.base-image-artifact-sha256 2>/dev/null || true)"
 	current_fingerprint="$(image_fingerprint_for_ref "$(target_image_ref "$alias")" "$instance_kind")"
-
-	if [ "$current_source" = "$image_identity" ] &&
-		[ "$current_rebuild_tag" = "$desired_rebuild_tag" ] &&
-		[ -n "$current_fingerprint" ]; then
-		return 0
-	fi
 
 	case "$image_kind" in
 	local)
@@ -3040,25 +3036,46 @@ ensure_declared_image_present_unlocked() {
 			exit 1
 		fi
 
+		artifact_digest="$(
+			{
+				sha256sum "$metadata_file"
+				sha256sum "$artifact_file"
+			} | sha256sum | awk '{print $1}'
+		)"
+
+		if [ "$current_source" = "$image_identity" ] &&
+			[ "$current_rebuild_tag" = "$desired_rebuild_tag" ] &&
+			[ "$current_artifact_digest" = "$artifact_digest" ] &&
+			[ -n "$current_fingerprint" ]; then
+			return 0
+		fi
+
 		properties_json="$(local_image_properties_json "$metadata_file")"
 		existing_fingerprint="$(
 			incus_project image list "$(target_remote_ref)" --format=json 2>/dev/null |
-				jq -r --arg image_identity "$image_identity" '
-            map(select((.properties["user.base-image-id"] // "") == $image_identity))
+				jq -r --arg image_identity "$image_identity" --arg artifact_digest "$artifact_digest" '
+            map(select(
+              (.properties["user.base-image-id"] // "") == $image_identity
+              and (.properties["user.base-image-artifact-sha256"] // "") == $artifact_digest
+            ))
             | first
             | .fingerprint // ""
           ' 2>/dev/null ||
 				true
 		)"
 
-		if [ -n "$current_fingerprint" ] &&
-			image_fingerprint_matches_properties "$current_fingerprint" "$properties_json" "$instance_kind"; then
-			:
-		elif [ -n "$existing_fingerprint" ]; then
+		if [ -n "$existing_fingerprint" ]; then
 			ensure_image_alias "$alias" "$existing_fingerprint"
 		else
+			incus_project image alias delete "$(target_image_ref "$alias")" >/dev/null 2>&1 || true
 			if ! import_output="$(incus_project image import "$metadata_file" "$artifact_file" "$(target_remote_ref)" --alias "$alias" 2>&1)"; then
-				desired_fingerprint="$(image_fingerprint_by_properties "$properties_json" "$instance_kind")"
+				existing_imported_fingerprint="$(
+					printf '%s\n' "$import_output" |
+						sed -nE 's/.*fingerprint[^0-9a-fA-F]*([0-9a-fA-F]{64}).*/\1/ip' |
+						head -n 1 |
+						tr 'A-F' 'a-f'
+				)"
+				desired_fingerprint="${existing_imported_fingerprint:-$(image_fingerprint_by_properties "$properties_json" "$instance_kind")}"
 				if printf '%s' "$import_output" | grep -qi 'same fingerprint already exists' &&
 					[ -n "$desired_fingerprint" ] &&
 					ensure_image_alias "$alias" "$desired_fingerprint" >/dev/null 2>&1; then
@@ -3073,7 +3090,10 @@ ensure_declared_image_present_unlocked() {
 	remote)
 		remote_ref="$(printf '%s' "$image" | jq -r '.remoteRef')"
 		desired_fingerprint="$(remote_image_fingerprint "$remote_ref" "$instance_kind")"
-		if [ -n "$desired_fingerprint" ] && [ "$current_fingerprint" = "$desired_fingerprint" ]; then
+		if [ "$current_source" = "$image_identity" ] &&
+			[ "$current_rebuild_tag" = "$desired_rebuild_tag" ] &&
+			[ -n "$desired_fingerprint" ] &&
+			[ "$current_fingerprint" = "$desired_fingerprint" ]; then
 			:
 		elif image_fingerprint_exists "$desired_fingerprint" "$instance_kind"; then
 			ensure_image_alias "$alias" "$desired_fingerprint"
@@ -3101,6 +3121,9 @@ ensure_declared_image_present_unlocked() {
 
 	incus_project image set-property "$(target_image_ref "$alias")" "user.base-image-id=$image_identity"
 	incus_project image set-property "$(target_image_ref "$alias")" "user.base-image-rebuild-tag=$desired_rebuild_tag"
+	if [ "$image_kind" = "local" ]; then
+		incus_project image set-property "$(target_image_ref "$alias")" "user.base-image-artifact-sha256=$artifact_digest"
+	fi
 }
 
 images_main() {
