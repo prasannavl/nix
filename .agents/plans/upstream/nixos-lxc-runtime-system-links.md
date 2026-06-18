@@ -408,29 +408,29 @@ lxc/lxc-ci#786.
 ## Execution Checklist
 
 1. Create nixpkgs branch.
-2. Patch `generator.nix` wrapper inputs.
-3. Patch `nixos-generator.patch` to remove `/run/current-system` generator
+1. Patch `generator.nix` wrapper inputs.
+1. Patch `nixos-generator.patch` to remove `/run/current-system` generator
    dependencies.
-4. Patch `lxc-container.nix` with early runtime-link restore service.
-5. Decide whether to include `boot.specialFileSystems = lib.mkForce {};` in the
+1. Patch `lxc-container.nix` with early runtime-link restore service.
+1. Decide whether to include `boot.specialFileSystems = lib.mkForce {};` in the
    same PR or split it to a follow-up.
-6. Add test assertions.
-7. Run Nix formatting.
-8. Build affected package:
+1. Add test assertions.
+1. Run Nix formatting.
+1. Build affected package:
 
 ```sh
 nix build .#distrobuilder.generator
 ```
 
-9. Build LXC image:
+1. Build LXC image:
 
 ```sh
 nix build .#nixosConfigurations.<test-lxc>.config.system.build.tarball
 ```
 
-10. Run NixOS tests for LXC/Incus if present.
-11. Open draft PR with links above.
-12. Post issue comment linking draft PR.
+1. Run NixOS tests for LXC/Incus if present.
+1. Open draft PR with links above.
+1. Post issue comment linking draft PR.
 
 ## Handoff Notes
 
