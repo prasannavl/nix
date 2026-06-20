@@ -7,6 +7,7 @@ rec {
     defaultNatsSecretsBasePath ? null,
     defaultPostgresSecretsBasePath ? null,
     defaultVmstackSecretsBasePath ? null,
+    secretScope ? null,
     defaultClientIdentitySuffix ? null,
     defaultExtServiceRuntimeBasePath ? "/run/agenix",
     defaultExtServiceIdentitySuffix ? null,
@@ -21,6 +22,11 @@ rec {
     defaultNatsCaCertPath,
     defaultNatsAfter ? [],
   }: let
+    hasSecretScope = secretScope != null && secretScope != "";
+    scopedFileName = name:
+      if !hasSecretScope
+      then name
+      else "${secretScope}-${name}";
     trackedPath = path: name:
       if builtins.pathExists path
       then
@@ -38,6 +44,7 @@ rec {
       defaultNatsSecretsBasePath
       defaultPostgresSecretsBasePath
       defaultVmstackSecretsBasePath
+      secretScope
       defaultClientIdentitySuffix
       defaultExtServiceRuntimeBasePath
       defaultExtServiceIdentitySuffix
@@ -63,7 +70,7 @@ rec {
       // overrides;
 
     mkServiceSecretPath = serviceName: fileName:
-      defaultClientSecretsBasePath + "/${serviceName}/${fileName}";
+      defaultClientSecretsBasePath + "/${serviceName}/${scopedFileName fileName}";
 
     mkServiceKeySecretPath = serviceName: secretName:
       mkServiceSecretPath serviceName "${secretName}.key.age";
@@ -758,7 +765,7 @@ rec {
         else if isExtService
         then throw "service-module.mkIdentity: `secretsBasePath` is required when `family` is set"
         else defaultClientSecretsBasePath + "/${resolvedFullName}";
-      resolvedCertSecretFileName =
+      rawCertSecretFileName =
         if certSecretFileName != null
         then certSecretFileName
         else if isExtService
@@ -767,7 +774,7 @@ rec {
           then "${resolvedLabel}.crt.age"
           else "${resolvedName}.crt.age"
         else "crt.age";
-      resolvedKeySecretFileName =
+      rawKeySecretFileName =
         if keySecretFileName != null
         then keySecretFileName
         else if isExtService
@@ -776,6 +783,8 @@ rec {
           then "${resolvedLabel}.key.age"
           else "${resolvedName}.key.age"
         else "key.age";
+      resolvedCertSecretFileName = scopedFileName rawCertSecretFileName;
+      resolvedKeySecretFileName = scopedFileName rawKeySecretFileName;
       resolvedRuntimeBasePath =
         if runtimeBasePath != null
         then runtimeBasePath

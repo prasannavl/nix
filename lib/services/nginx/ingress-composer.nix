@@ -34,7 +34,7 @@
       hostGroup,
       portName ? "http",
       upstreamPortName ? portName,
-      serverNames ? registry.publicHosts.${hostGroup},
+      serverNames ? registry.domains.${hostGroup},
       upstreams ? registry.upstreamsForService serviceName upstreamPortName,
       authRequest ? null,
       useUpstreamCsp ? false,
@@ -66,7 +66,7 @@
       path,
       portName ? "http",
       upstreamPortName ? portName,
-      serverName ? registry.publicHostFor hostGroup,
+      serverName ? registry.domainFor hostGroup,
       upstreams ? registry.upstreamsForService serviceName upstreamPortName,
       authRequest ? null,
       useUpstreamCsp ? true,
@@ -143,7 +143,7 @@
       serverNames ?
         if hostGroup == null
         then []
-        else registry.publicHosts.${hostGroup},
+        else registry.domains.${hostGroup},
       upstream ? registry.upstreamForService serviceName upstreamPortName,
       extra ? {},
     }:

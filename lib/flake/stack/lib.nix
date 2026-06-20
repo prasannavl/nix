@@ -6,14 +6,16 @@
   publicDomain ? defaultMailDomain,
   internalDomain ? "${org}.internal",
   defaultUser,
+  secretScope ? null,
   stackSecretsBasePath ? defaultClientSecretsBasePath,
+  stackSecretsLabel ? toString stackSecretsBasePath,
   defaultClientSecretsBasePath,
   defaultNatsSecretsBasePath ? null,
   defaultPostgresSecretsBasePath ? null,
   defaultVmstackSecretsBasePath ? null,
   defaultNginxSecretsBasePath ? null,
   defaultCaCertFile ? null,
-  defaultCaCertAgeFile ? stackSecretsBasePath + "/ca/ca.crt.age",
+  defaultCaCertAgeFile ? null,
   defaultCaCertHostPath ? "/etc/ssl/certs/${org}-ca.crt",
   defaultCaCertContainerPath ? "/run/secrets/${org}-ca.crt",
   defaultCaBundleHostPath ? "/etc/ssl/certs/${org}-ca-bundle.crt",
@@ -31,10 +33,23 @@
   defaultNatsCaCertPath,
   defaultNatsAfter ? [],
 }: let
+  secretsLib = import ../secrets.nix;
   pkg = import ../pkg-helper.nix;
   serviceModuleFactory = import ../service-module.nix;
   unitsLib = import ../units.nix;
   nginxIngressComposerLib = import ../../services/nginx/ingress-composer.nix;
+  secretPaths = secretsLib.mkStack {
+    base = stackSecretsBasePath;
+    scope = secretScope;
+  };
+  secretLabels = secretsLib.mkStack {
+    base = stackSecretsLabel;
+    scope = secretScope;
+  };
+  resolvedDefaultCaCertAgeFile =
+    if defaultCaCertAgeFile != null
+    then defaultCaCertAgeFile
+    else secretPaths.file "ca/ca.crt.age";
   userData = import ./users.nix {
     inherit defaultMailDomain stackName;
   };
@@ -43,6 +58,7 @@ in {
   stackName = stackName;
   org = org;
   env = env;
+  secretScope = secretScope;
   defaultMailDomain = defaultMailDomain;
   noReplyEmailFor = appName: "no-reply+${appName}@${defaultMailDomain}";
   publicDomain = publicDomain;
@@ -85,6 +101,21 @@ in {
   };
   secrets = rec {
     base = stackSecretsBasePath;
+    labelBase = stackSecretsLabel;
+    scope = secretScope;
+    inherit
+      (secretPaths)
+      file
+      key
+      scopedFileName
+      serviceFile
+      serviceKey
+      extFile
+      extKey
+      ;
+    label = secretLabels.file;
+    serviceLabel = secretLabels.serviceFile;
+    extLabel = secretLabels.extFile;
     services = defaultClientSecretsBasePath;
     service = name: services + "/${name}";
     ext = provider: base + "/ext/${provider}";
@@ -98,7 +129,7 @@ in {
   defaultNginxSecretsBasePath = defaultNginxSecretsBasePath;
   defaultNginxSecretsBase = defaultNginxSecretsBasePath;
   defaultCaCertFile = defaultCaCertFile;
-  defaultCaCertAgeFile = defaultCaCertAgeFile;
+  defaultCaCertAgeFile = resolvedDefaultCaCertAgeFile;
   defaultCaCertHostPath = defaultCaCertHostPath;
   defaultCaCertContainerPath = defaultCaCertContainerPath;
   defaultCaBundleHostPath = defaultCaBundleHostPath;
@@ -120,6 +151,7 @@ in {
     defaultNatsSecretsBasePath = defaultNatsSecretsBasePath;
     defaultPostgresSecretsBasePath = defaultPostgresSecretsBasePath;
     defaultVmstackSecretsBasePath = defaultVmstackSecretsBasePath;
+    secretScope = secretScope;
     defaultClientIdentitySuffix = defaultClientIdentitySuffix;
     defaultExtServiceIdentitySuffix = defaultExtServiceIdentitySuffix;
     defaultServiceIdentitySuffix = defaultServiceIdentitySuffix;

@@ -1,27 +1,51 @@
 let
-  mkScope = {base}: let
+  mkScope = {
+    base,
+    scope ? null,
+    scopeSeparator ? "-",
+  }: let
     scopeBase = base;
+    hasScope = scope != null && scope != "";
+    scopedName = name:
+      if !hasScope
+      then name
+      else let
+        parts = builtins.match "(.*/)?([^/]+)" name;
+        dir = builtins.elemAt parts 0;
+        basename = builtins.elemAt parts 1;
+        prefix =
+          if dir == null
+          then ""
+          else dir;
+      in "${prefix}${scope}${scopeSeparator}${basename}";
   in rec {
     base = scopeBase;
-    file = name: "${scopeBase}/${name}";
+    secretScope = scope;
+    scopedFileName = scopedName;
+    unscopedFile = name: "${scopeBase}/${name}";
+    file = name: unscopedFile (scopedName name);
     key = name: file "${name}.key.age";
   };
 in {
   inherit mkScope;
 
-  mkStack = {base}: let
-    scope = mkScope {
+  mkStack = {
+    base,
+    scope ? null,
+  }: let
+    paths = mkScope {
       base = base;
+      scope = scope;
     };
   in
-    scope
+    paths
     // rec {
-      service = name: scope.file "services/${name}";
-      serviceFile = serviceName: fileName: "${service serviceName}/${fileName}";
+      service = name: paths.unscopedFile "services/${name}";
+      serviceFile = serviceName: fileName: "${service serviceName}/${paths.scopedFileName fileName}";
       serviceKey = serviceName: secretName: serviceFile serviceName "${secretName}.key.age";
       key = serviceKey;
-      ext = provider: scope.file "ext/${provider}";
-      extFile = provider: fileName: "${ext provider}/${fileName}";
+      ext = provider: paths.unscopedFile "ext/${provider}";
+      extFile = provider: fileName: "${ext provider}/${paths.scopedFileName fileName}";
       extKey = provider: secretName: extFile provider "${secretName}.key.age";
     };
 
