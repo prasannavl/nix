@@ -140,6 +140,7 @@
     ${remoteEnvExports}
     export INCUS_MACHINES_RECONCILE_MODE=${lib.escapeShellArg globalCfg.reconcileFailurePolicy}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
+    export INCUS_MACHINES_DECLARED_INSTANCE_REFS=${lib.escapeShellArg declaredInstanceRefsJson}
     export INCUS_MACHINES_INSTANCE_NAMES=${lib.escapeShellArg instanceNamesJson}
     export INCUS_MACHINES_INSTANCE_PROJECTS=${lib.escapeShellArg instanceProjectsJson}
     export INCUS_MACHINES_INSTANCE_STATES=${lib.escapeShellArg instanceStatesJson}
@@ -150,6 +151,7 @@
   settlementCommand = pkgs.writeShellScriptBin "incus-machines-settlement" ''
     ${remoteEnvExports}
     export INCUS_MACHINES_DECLARED_INSTANCES=${lib.escapeShellArg declaredInstancesJson}
+    export INCUS_MACHINES_DECLARED_INSTANCE_REFS=${lib.escapeShellArg declaredInstanceRefsJson}
     export INCUS_MACHINES_INSTANCE_NAMES=${lib.escapeShellArg instanceNamesJson}
     export INCUS_MACHINES_INSTANCE_PROJECTS=${lib.escapeShellArg instanceProjectsJson}
     export INCUS_MACHINES_INSTANCE_IPV4_ADDRESSES=${lib.escapeShellArg instanceIpv4AddressesJson}

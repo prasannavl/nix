@@ -50,6 +50,24 @@ For the delegated Abird projects on `pvl-x2`, the parent fabric allows:
 - `abird-dev` to reach only `abird-ci` (`10.10.100.80`) on TCP `22` and `5000`
   inside the `abird` fabric.
 
+## Project-Qualified Readiness Selectors
+
+When one Incus controller owns multiple projects with the same guest names,
+readiness and reconcile selectors must resolve through the declared machine ID
+or the `project/name` reference before calling `incus list`.
+
+The delegated Abird project rollout exposed a shell gotcha in
+`lib/incus/helper.sh`: parameter defaults such as `${VAR-{}}` append an extra
+literal `}` when `VAR` is set. That corrupts JSON object maps like
+`INCUS_MACHINES_INSTANCE_NAMES`, so `jq --argjson` fails and the helper falls
+back to the raw selector.
+
+Keep JSON-object defaults behind an explicit helper rather than inline parameter
+expansion. The generated reconciler and settlement commands should also export
+`INCUS_MACHINES_DECLARED_INSTANCE_REFS`, and selector resolution should accept
+`project/name` refs so ambiguous bare names remain unresolved while explicit
+project refs select the intended machine ID.
+
 ## Reconciler Semantics
 
 `incus-machines-routes.service` is a local-only oneshot that runs after

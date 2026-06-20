@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+env_default() {
+	local default name
+	name="$1"
+	default="$2"
+	if [ "${!name+x}" ]; then
+		printf '%s\n' "${!name}"
+	else
+		printf '%s\n' "$default"
+	fi
+}
+
 init_vars() {
 	incus_machines_reconcile_mode="${INCUS_MACHINES_RECONCILE_MODE-}"
 	declared_instances="${INCUS_MACHINES_DECLARED_INSTANCES-[]}"
-	declared_instance_refs="${INCUS_MACHINES_DECLARED_INSTANCE_REFS-{}}"
-	declared_instance_meta="${INCUS_MACHINES_DECLARED_INSTANCE_META-{}}"
+	declared_instance_refs="$(env_default INCUS_MACHINES_DECLARED_INSTANCE_REFS '{}')"
+	declared_instance_meta="$(env_default INCUS_MACHINES_DECLARED_INSTANCE_META '{}')"
 	nixos_meta_version="${INCUS_MACHINES_NIXOS_META_VERSION-1}"
-	instance_names="${INCUS_MACHINES_INSTANCE_NAMES-{}}"
-	instance_projects="${INCUS_MACHINES_INSTANCE_PROJECTS-{}}"
-	instance_states="${INCUS_MACHINES_INSTANCE_STATES-{}}"
-	instance_reconcile_policies="${INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES-{}}"
+	instance_names="$(env_default INCUS_MACHINES_INSTANCE_NAMES '{}')"
+	instance_projects="$(env_default INCUS_MACHINES_INSTANCE_PROJECTS '{}')"
+	instance_states="$(env_default INCUS_MACHINES_INSTANCE_STATES '{}')"
+	instance_reconcile_policies="$(env_default INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES '{}')"
 	host_suspend_state_dir="${INCUS_MACHINES_HOST_SUSPEND_STATE_DIR-/run/incus-machines-host-suspend}"
 	host_suspend_default_policy="${INCUS_MACHINES_HOST_SUSPEND_DEFAULT_POLICY-stop}"
 	host_suspend_include_vms="${INCUS_MACHINES_HOST_SUSPEND_INCLUDE_VMS-false}"
@@ -489,12 +500,18 @@ instance_id_for_selector() {
 	jq -nr \
 		--argjson ids "$declared_instances" \
 		--argjson names "$instance_names" \
+		--argjson projects "$instance_projects" \
 		--arg selector "$selector" '
 			if ($ids | index($selector)) != null then
 				$selector
 			else
 				($names | to_entries | map(select(.value == $selector).key)) as $matches |
-				if ($matches | length) == 1 then $matches[0] else $selector end
+				if ($matches | length) == 1 then
+					$matches[0]
+				else
+					($ids | map(select((($projects[.] // "default") + "/" + ($names[.] // .)) == $selector))) as $refMatches |
+					if ($refMatches | length) == 1 then $refMatches[0] else $selector end
+				end
 			end
 		' 2>/dev/null ||
 		printf '%s\n' "$selector"
