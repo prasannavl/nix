@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
-readonly NIXBOT_VERSION="2026.06.13"
+readonly NIXBOT_VERSION="2026.06.20"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 readonly NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS="${NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS:-5}"
@@ -16,7 +16,7 @@ readonly -a NIXBOT_RUNTIME_INSTALLABLES=(
 	nixpkgs#coreutils
 	nixpkgs#git
 	nixpkgs#jq
-	nixpkgs#nixos-rebuild-ng
+	nixpkgs#nix
 	nixpkgs#openssh
 	nixpkgs#opentofu
 	nixpkgs#procps
@@ -27,7 +27,6 @@ readonly -a NIXBOT_RUNTIME_COMMANDS=(
 	cloudflared
 	git
 	jq
-	nixos-rebuild
 	nproc
 	pgrep
 	ssh
@@ -45,8 +44,9 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
-  nixbot --list-hosts [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot --list-hosts [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
+  nixbot --list-groups [--config <path>] [--no-override]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -71,6 +71,8 @@ Local Wrapper Action:
 
 Workflow Selection Options:
   --list-hosts     List selected hosts using the same host block as the info banner
+  --list-groups    List configured nixbot groups
+  --group          Deployment group(s) to target (comma/space-separated; repeatable)
   --hosts          Hosts/context to target (comma/space-separated, globs, -exclusions, or `all`; default: all)
   --sha            Commit to check out before running
 
@@ -135,6 +137,7 @@ Repo Options:
                     default for security
 
 Environment (Workflow Selection):
+  NIXBOT_GROUPS               Same as --group
   NIXBOT_HOSTS                Same as --hosts
   NIXBOT_SHA                  Same as --sha
 
@@ -210,7 +213,7 @@ Environment (Terraform actions):
 
 Runtime:
   Workflow actions and `tofu` always re-exec inside `nix shell` to provide a
-  consistent toolchain: age, git, jq, nixos-rebuild, openssh, and opentofu.
+  consistent toolchain: age, git, jq, nix, openssh, and opentofu.
   `deps` re-execs and exits after verification.
   `check-deps` only checks the current environment.
 
@@ -288,6 +291,9 @@ restore_initial_tty_state() {
 
 init_vars() {
 	HOSTS_RAW="${NIXBOT_HOSTS:-all}"
+	HOSTS_EXPLICIT=0
+	[ -z "${NIXBOT_HOSTS+x}" ] || HOSTS_EXPLICIT=1
+	GROUPS_RAW="${NIXBOT_GROUPS:-}"
 	ACTION=""
 	HOST_ACTION=""
 	GOAL="${NIXBOT_GOAL:-switch}"
@@ -448,6 +454,8 @@ init_vars() {
 	NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH=""
 	NIXBOT_DEFAULT_AGE_IDENTITY_KEY=""
 	NIXBOT_HOSTS_JSON='{}'
+	NIXBOT_GROUPS_JSON='{}'
+	NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON='{}'
 
 	NIXBOT_TMP_DIR=""
 	NIXBOT_DIAG_DIR="${NIXBOT_RUNTIME_DIAG_DIR:-}"
@@ -851,7 +859,7 @@ tf_project_name_is_configured() {
 
 action_is_supported() {
 	case "${1:-}" in
-	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | list-hosts) return 0 ;;
+	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | list-hosts | list-groups) return 0 ;;
 	*)
 		if action_is_tf_project_only "${1:-}"; then
 			tf_project_name_is_configured "$(tf_action_project_name "${1:-}")"
@@ -904,6 +912,22 @@ normalize_hosts_input() {
 	fi
 
 	emit_normalized_hosts "${raw}" | paste -sd, -
+}
+
+normalize_groups_input() {
+	emit_normalized_hosts "$1" | paste -sd, -
+}
+
+append_selector_raw() {
+	local -n asr_target_ref="$1"
+	local value="$2"
+
+	[ -n "${value}" ] || return 0
+	if [ -n "${asr_target_ref}" ]; then
+		asr_target_ref="${asr_target_ref},${value}"
+	else
+		asr_target_ref="${value}"
+	fi
 }
 
 bash_args_to_json_array() {
@@ -967,6 +991,10 @@ parse_args() {
 			HOST_ACTION="list-hosts"
 			shift
 			;;
+		--list-groups)
+			ACTION="list-groups"
+			shift
+			;;
 		--sha | --sha=*)
 			take_optval "$@"
 			SHA="${OPTVAL}"
@@ -975,6 +1003,12 @@ parse_args() {
 		--hosts | --hosts=*)
 			take_optval "$@"
 			HOSTS_RAW="${OPTVAL}"
+			HOSTS_EXPLICIT=1
+			shift "${OPTSHIFT}"
+			;;
+		--group | --group=*)
+			take_optval "$@"
+			append_selector_raw GROUPS_RAW "${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
 		--goal | --goal=*)
@@ -1188,6 +1222,9 @@ parse_args() {
 	done
 
 	[ -n "${HOSTS_RAW}" ] || die "--hosts cannot be empty"
+	if [ -n "${GROUPS_RAW}" ] && [ -z "$(normalize_groups_input "${GROUPS_RAW}")" ]; then
+		die "--group cannot be empty"
+	fi
 
 	action_is_supported "${ACTION}" || die "Unsupported action: ${ACTION}"
 	normalize_host_action
@@ -1435,7 +1472,7 @@ active_deploy_activation_units_running() {
 		[ -n "${file}" ] || continue
 		node="$(cat "${file}" 2>/dev/null || true)"
 		[ -n "${node}" ] || continue
-		check_cmd='systemctl show --property=ActiveState --value nixos-rebuild-switch-to-configuration.service 2>/dev/null || true'
+		check_cmd='systemctl show --property=ActiveState --value nixbot-switch-to-configuration.service 2>/dev/null || true'
 		if ! state="$(run_host_root_command "${node}" "${check_cmd}" 2>/dev/null)"; then
 			continue
 		fi
@@ -1452,7 +1489,7 @@ active_deploy_activation_units_running() {
 host_deploy_activation_unit_running() {
 	local node="$1" check_cmd="" state=""
 
-	check_cmd='systemctl show --property=ActiveState --value nixos-rebuild-switch-to-configuration.service 2>/dev/null || true'
+	check_cmd='systemctl show --property=ActiveState --value nixbot-switch-to-configuration.service 2>/dev/null || true'
 	if ! state="$(run_host_root_command "${node}" "${check_cmd}" 2>/dev/null)"; then
 		return 1
 	fi
@@ -1513,10 +1550,10 @@ run_active_deploy_activation_unit_command() {
 
 	case "${action}" in
 	stop)
-		command='systemctl --no-block stop nixos-rebuild-switch-to-configuration.service'
+		command='systemctl --no-block stop nixbot-switch-to-configuration.service'
 		;;
 	kill)
-		command='systemctl kill --kill-who=all --signal=KILL nixos-rebuild-switch-to-configuration.service'
+		command='systemctl kill --kill-who=all --signal=KILL nixbot-switch-to-configuration.service'
 		;;
 	*)
 		die "Unsupported active deploy activation unit action: ${action}"
@@ -2254,7 +2291,8 @@ prepare_ci_trigger_dirty_staged_patch() {
 }
 
 run_ci_trigger() {
-	local trigger_sha="${SHA}" trigger_hosts="" encoded_request="" config_json="" patch_bytes=""
+	local trigger_sha="${SHA}" trigger_groups="" trigger_hosts="" encoded_request="" config_json="" patch_bytes=""
+	local all_hosts_json="" selected_hosts_json=""
 	local -a remote_args=()
 	if [ -z "${trigger_sha}" ]; then
 		trigger_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
@@ -2264,12 +2302,20 @@ run_ci_trigger() {
 
 	action_is_supported "${ACTION}" || die "Unsupported action for --ci-trigger: ${ACTION}"
 
-	trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
+	config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}" "")"
+	init_deploy_settings "${config_json}"
+	trigger_groups="$(normalize_groups_input "${GROUPS_RAW}")"
+	if [ -n "${trigger_groups}" ]; then
+		all_hosts_json="$(load_all_hosts_json)"
+		selected_hosts_json="$(resolve_selected_hosts_json "${all_hosts_json}")" || exit "$?"
+		trigger_hosts="$(jq -r 'join(",")' <<<"${selected_hosts_json}")"
+	elif [ "${HOSTS_EXPLICIT}" -eq 1 ] || [ -z "${trigger_groups}" ]; then
+		trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
+	fi
 	[ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
 
 	if [ -z "${CI_TRIGGER_HOST}" ]; then
-		config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}" "")"
-		apply_global_defaults "${config_json}"
+		apply_config_defaults "${config_json}"
 	fi
 	if [ "${OVERLAY_STAGED}" -eq 1 ]; then
 		prepare_ci_trigger_dirty_staged_patch "${trigger_sha}"
@@ -2280,6 +2326,9 @@ run_ci_trigger() {
 	log_section "Phase: Remote Trigger"
 	echo "CI host: ${CI_TRIGGER_USER}@${CI_TRIGGER_HOST}" >&2
 	echo "Action: ${ACTION}" >&2
+	if [ -n "${trigger_groups}" ]; then
+		echo "Groups: ${trigger_groups}" >&2
+	fi
 	echo "Hosts: ${trigger_hosts}" >&2
 	echo "SHA: ${trigger_sha}" >&2
 	# Intentionally forward only the ci-trigger contract here. The remote side is
@@ -2288,7 +2337,11 @@ run_ci_trigger() {
 	# policy, and similar local overrides. Operator execution modifiers such as
 	# --dry, --force, --dirty, --no-verify, and --ci-first are explicit parts
 	# of this contract.
-	remote_args=("${ACTION}" --sha "${trigger_sha}" --hosts "${trigger_hosts}" --no-override)
+	# Groups are resolved locally and forwarded as --hosts so an installed remote
+	# nixbot can accept the request even before it has been upgraded with group
+	# parsing support.
+	remote_args=("${ACTION}" --sha "${trigger_sha}" --no-override)
+	remote_args+=(--hosts "${trigger_hosts}")
 	if [ "${LOG_FORMAT}" != "auto" ]; then
 		remote_args+=(--log-format "${LOG_FORMAT}")
 	elif is_github_actions_log_mode; then
@@ -2438,7 +2491,7 @@ ensure_repo_root_exists() {
 	fi
 
 	[ -n "${REPO_URL}" ] ||
-		die "Managed repo root is missing and no repo URL is configured; set globals.repoUrl in ${NIXBOT_CONFIG_PATH} or pass --repo-url"
+		die "Managed repo root is missing and no repo URL is configured; set config.repoUrl in ${NIXBOT_CONFIG_PATH} or pass --repo-url"
 
 	if extract_ssh_endpoint_from_repo_url "${REPO_URL}" >/dev/null; then
 		repo_git_ssh_command="$(build_repo_git_ssh_command_for_url "${REPO_URL}")" || return 1
@@ -2517,7 +2570,7 @@ prepare_repo_worktree() {
 	[ -n "${REPO_WORKTREE_ROOT}" ] && return 0
 	ensure_runtime_work_dir
 	capture_dirty_staged_patch_stdin
-	apply_global_defaults_if_config_available
+	apply_config_defaults_if_config_available
 
 	acquire_repo_root_lock
 	ensure_repo_root_exists
@@ -2632,7 +2685,7 @@ in
 	printf '%s\n' "${output}"
 }
 
-apply_global_defaults_if_config_available() {
+apply_config_defaults_if_config_available() {
 	local config_path="" config_json=""
 
 	if [ -f "$(resolve_config_path "${NIXBOT_CONFIG_PATH}")" ]; then
@@ -2644,7 +2697,72 @@ apply_global_defaults_if_config_available() {
 	fi
 
 	config_json="$(load_deploy_config_json "${config_path}")" || return 0
-	apply_global_defaults "${config_json}"
+	apply_config_defaults "${config_json}"
+}
+
+derive_groups_json() {
+	local config_json="$1"
+
+	jq -c '
+    def stable_unique:
+      reduce .[] as $item ([]; if index($item) then . else . + [$item] end);
+    .hosts // {}
+    | if type == "object" then . else error("hosts must be an attrset") end
+    | to_entries
+    | reduce .[] as $host ({};
+        (
+          ($host.value.groups // [])
+          | if type == "array" then .
+            else error("host groups must be lists")
+            end
+          | map(
+              if type == "string" and length > 0 then .
+              else error("host groups must contain non-empty strings")
+              end
+            )
+          | map(select(startswith("-") | not))
+        ) as $groups
+        | reduce $groups[] as $group (.;
+            .[$group] = ((.[$group] // []) + [$host.key])
+          )
+      )
+    | with_entries(.value |= stable_unique)
+  ' <<<"${config_json}"
+}
+
+derive_group_dependency_exclusions_json() {
+	local config_json="$1"
+
+	jq -c '
+    def stable_unique:
+      reduce .[] as $item ([]; if index($item) then . else . + [$item] end);
+    .hosts // {}
+    | if type == "object" then . else error("hosts must be an attrset") end
+    | to_entries
+    | reduce .[] as $host ({};
+        (
+          ($host.value.groups // [])
+          | if type == "array" then .
+            else error("host groups must be lists")
+            end
+          | map(
+              if type == "string" and length > 0 then .
+              else error("host groups must contain non-empty strings")
+              end
+            )
+          | map(select(startswith("-")) | .[1:])
+          | map(
+              if length > 0 then .
+              else error("negated host groups must include a group name")
+              end
+            )
+        ) as $groups
+        | reduce $groups[] as $group (.;
+            .[$group] = ((.[$group] // []) + [$host.key])
+          )
+      )
+    | with_entries(.value |= stable_unique)
+  ' <<<"${config_json}"
 }
 
 init_deploy_settings() {
@@ -2662,9 +2780,23 @@ init_deploy_settings() {
 		read -r NIXBOT_DEFAULT_BOOTSTRAP_USER
 		read -r NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH
 		read -r NIXBOT_DEFAULT_AGE_IDENTITY_KEY
-	} < <(jq -r '[(.defaults.user // "root"), (.defaults.key // ""), (.defaults.knownHosts // ""), (.defaults.bootstrapKey // ""), (.defaults.bootstrapUser // "root"), (.defaults.bootstrapKeyPath // ""), (.defaults.ageIdentityKey // "")] | .[]' <<<"${config_json}")
+	} < <(jq -r '
+    (.config.hostDefaults // {}) as $hostDefaults
+    | [
+      ($hostDefaults.user // "root"),
+      ($hostDefaults.key // ""),
+      ($hostDefaults.knownHosts // ""),
+      ($hostDefaults.bootstrapKey // ""),
+      ($hostDefaults.bootstrapUser // "root"),
+      ($hostDefaults.bootstrapKeyPath // ""),
+      ($hostDefaults.ageIdentityKey // "")
+    ]
+    | .[]
+	' <<<"${config_json}")
 	NIXBOT_HOSTS_JSON="$(jq -c '.hosts // {}' <<<"${config_json}")"
-	apply_global_defaults "${config_json}"
+	NIXBOT_GROUPS_JSON="$(derive_groups_json "${config_json}")" || die "Nixbot host groups must be lists of non-empty strings"
+	NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON="$(derive_group_dependency_exclusions_json "${config_json}")" || die "Nixbot host groups must be lists of non-empty strings"
+	apply_config_defaults "${config_json}"
 
 	if [ -n "${NIXBOT_USER_OVERRIDE}" ]; then
 		NIXBOT_DEFAULT_USER="${NIXBOT_USER_OVERRIDE}"
@@ -2682,28 +2814,42 @@ init_deploy_settings() {
 	fi
 }
 
-apply_global_defaults() {
-	local config_json="$1" globals_json="" configured_ci_host="" configured_cache_host="" configured_cache_url="" configured_repo_url=""
+apply_config_defaults() {
+	local config_json="$1" nixbot_config_json="" configured_default_group="" configured_ci_host="" configured_cache_host="" configured_cache_url="" configured_repo_url=""
 
-	globals_json="$(jq -c '.globals // {}' <<<"${config_json}")"
+	nixbot_config_json="$(jq -c '.config // {}' <<<"${config_json}")"
+
+	if [ -z "${GROUPS_RAW}" ] && [ "${HOSTS_EXPLICIT}" -eq 0 ]; then
+		configured_default_group="$(
+			jq -r '
+        .defaultGroup // ""
+        | if type == "string" then .
+          else error("defaultGroup must be a string")
+          end
+      ' <<<"${nixbot_config_json}"
+		)" || die "Nixbot default group must be a string"
+		if [ -n "${configured_default_group}" ]; then
+			GROUPS_RAW="${configured_default_group}"
+		fi
+	fi
 
 	if [ -z "${CI_TRIGGER_HOST}" ]; then
-		configured_ci_host="$(jq -r '.ci.host // empty' <<<"${globals_json}")"
+		configured_ci_host="$(jq -r '.ci.host // empty' <<<"${nixbot_config_json}")"
 		CI_TRIGGER_HOST="${configured_ci_host}"
 	fi
 
 	if [ -z "${BUILD_CACHE_URL}" ]; then
-		configured_cache_url="$(jq -r '.buildCache.url // empty' <<<"${globals_json}")"
+		configured_cache_url="$(jq -r '.buildCache.url // empty' <<<"${nixbot_config_json}")"
 		BUILD_CACHE_URL="${configured_cache_url}"
 	fi
 
 	if [ -z "${BUILD_CACHE_HOST}" ]; then
-		configured_cache_host="$(jq -r '.buildCache.host // empty' <<<"${globals_json}")"
+		configured_cache_host="$(jq -r '.buildCache.host // empty' <<<"${nixbot_config_json}")"
 		BUILD_CACHE_HOST="${configured_cache_host}"
 	fi
 
 	if [ -z "${REPO_URL}" ]; then
-		configured_repo_url="$(jq -r '.repoUrl // empty' <<<"${globals_json}")"
+		configured_repo_url="$(jq -r '.repoUrl // empty' <<<"${nixbot_config_json}")"
 		REPO_URL="${configured_repo_url}"
 	fi
 }
@@ -2815,13 +2961,19 @@ load_all_hosts_json() {
 ##### Host Selection #####
 
 parse_host_selectors_json() {
-	local all_hosts_json="$1" token="" selector="" host="" matched="" exclusion=0
+	local all_hosts_json="$1" raw_selectors="$2" imply_all_on_only_exclusions="$3"
+	local token="" selector="" host="" matched="" exclusion=0
 	local selected_json="" excluded_json=""
 	local -a all_hosts=() selected_hosts=() excluded_hosts=()
 	declare -A selected_host_set=()
 	declare -A excluded_host_set=()
 
-	if [ "${HOSTS_RAW}" = "all" ]; then
+	if [ -z "${raw_selectors}" ]; then
+		jq -cn '{selected: [], excluded: []}'
+		return
+	fi
+
+	if [ "${raw_selectors}" = "all" ]; then
 		jq -cn --argjson selected "${all_hosts_json}" '{selected: $selected, excluded: []}'
 		return
 	fi
@@ -2897,9 +3049,9 @@ parse_host_selectors_json() {
 			selected_host_set["${selector}"]=1
 			selected_hosts+=("${selector}")
 		fi
-	done < <(emit_normalized_hosts "${HOSTS_RAW}")
+	done < <(emit_normalized_hosts "${raw_selectors}")
 
-	if [ "${#selected_hosts[@]}" -eq 0 ] && [ "${#excluded_hosts[@]}" -gt 0 ]; then
+	if [ "${imply_all_on_only_exclusions}" -eq 1 ] && [ "${#selected_hosts[@]}" -eq 0 ] && [ "${#excluded_hosts[@]}" -gt 0 ]; then
 		for host in "${all_hosts[@]}"; do
 			if [ -z "${selected_host_set["${host}"]+x}" ]; then
 				selected_host_set["${host}"]=1
@@ -2913,6 +3065,106 @@ parse_host_selectors_json() {
 
 	jq -cn --argjson selected "${selected_json}" --argjson excluded "${excluded_json}" \
 		'{selected: $selected, excluded: $excluded}'
+}
+
+group_exists() {
+	local group="$1"
+	jq -e --arg group "${group}" 'has($group)' <<<"${NIXBOT_GROUPS_JSON}" >/dev/null
+}
+
+group_hosts_for() {
+	local group="$1"
+	jq -r --arg group "${group}" '
+    .[$group] | if type == "array" then .[] else empty end
+  ' <<<"${NIXBOT_GROUPS_JSON}"
+}
+
+group_dependency_exclusions_for() {
+	local group="$1"
+	jq -r --arg group "${group}" '
+    .[$group] | if type == "array" then .[] else empty end
+  ' <<<"${NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON}"
+}
+
+validate_group_shapes() {
+	local invalid=""
+
+	invalid="$(jq -r '
+    to_entries
+    | map(select(.value | type != "array") | .key)
+    | join(", ")
+  ' <<<"${NIXBOT_GROUPS_JSON}")"
+	[ -z "${invalid}" ] || die "Nixbot groups must be direct host lists; invalid groups: ${invalid}"
+}
+
+append_group_hosts() {
+	local group="$1"
+	local host=""
+
+	group_exists "${group}" || die "Unknown group requested: ${group}"
+	if [ -n "${GROUP_SELECTED_SET["${group}"]+x}" ]; then
+		return 0
+	fi
+
+	GROUP_SELECTED_SET["${group}"]=1
+	GROUP_SELECTED_NAMES+=("${group}")
+
+	while IFS= read -r host; do
+		[ -n "${host}" ] || continue
+		if [ -z "${GROUP_SELECTED_HOST_SET["${host}"]+x}" ]; then
+			GROUP_SELECTED_HOST_SET["${host}"]=1
+			GROUP_SELECTED_HOSTS+=("${host}")
+		fi
+	done < <(group_hosts_for "${group}")
+
+	while IFS= read -r host; do
+		[ -n "${host}" ] || continue
+		if [ -z "${GROUP_DEPENDENCY_EXCLUDED_HOST_SET["${host}"]+x}" ]; then
+			GROUP_DEPENDENCY_EXCLUDED_HOST_SET["${host}"]=1
+			GROUP_DEPENDENCY_EXCLUDED_HOSTS+=("${host}")
+		fi
+	done < <(group_dependency_exclusions_for "${group}")
+}
+
+parse_group_selectors_json() {
+	local token="" selected_json="" groups_json="" dependency_excluded_json=""
+
+	declare -gA GROUP_SELECTED_HOST_SET
+	declare -gA GROUP_SELECTED_SET
+	declare -gA GROUP_DEPENDENCY_EXCLUDED_HOST_SET
+	GROUP_SELECTED_HOSTS=()
+	GROUP_SELECTED_NAMES=()
+	GROUP_DEPENDENCY_EXCLUDED_HOSTS=()
+	GROUP_SELECTED_HOST_SET=()
+	GROUP_SELECTED_SET=()
+	GROUP_DEPENDENCY_EXCLUDED_HOST_SET=()
+	validate_group_shapes
+
+	while IFS= read -r token; do
+		[ -n "${token}" ] || continue
+		append_group_hosts "${token}"
+	done < <(emit_normalized_hosts "${GROUPS_RAW}")
+
+	selected_json="$(bash_args_to_json_array "${GROUP_SELECTED_HOSTS[@]}")"
+	groups_json="$(bash_args_to_json_array "${GROUP_SELECTED_NAMES[@]}")"
+	dependency_excluded_json="$(bash_args_to_json_array "${GROUP_DEPENDENCY_EXCLUDED_HOSTS[@]}")"
+	jq -cn --argjson selected "${selected_json}" --argjson groups "${groups_json}" --argjson dependencyExcluded "${dependency_excluded_json}" \
+		'{selected: $selected, groups: $groups, dependencyExcluded: $dependencyExcluded}'
+}
+
+merge_selection_json() {
+	local group_selection_json="$1" host_selection_json="$2"
+
+	jq -cn --argjson groupSelection "${group_selection_json}" --argjson hostSelection "${host_selection_json}" '
+    def stable_unique:
+      reduce .[] as $item ([]; if index($item) then . else . + [$item] end);
+    {
+      selected: ((($groupSelection.selected // []) + ($hostSelection.selected // [])) | stable_unique),
+      excluded: ($hostSelection.excluded // []),
+      dependencyExcluded: ($groupSelection.dependencyExcluded // []),
+      groups: ($groupSelection.groups // [])
+    }
+  '
 }
 
 host_dependencies_for() {
@@ -3026,7 +3278,7 @@ require_build_host_cache_config() {
 	cache_url="$(build_host_cache_url_for "${build_host}")"
 
 	[ -n "${cache_url}" ] ||
-		die "Remote deploy builds require globals.buildCache.url and globals.buildCache.host in ${NIXBOT_CONFIG_PATH}"
+		die "Remote deploy builds require config.buildCache.url and config.buildCache.host in ${NIXBOT_CONFIG_PATH}"
 }
 
 remote_build_deploy_uses_local_relay() {
@@ -3328,23 +3580,14 @@ apply_host_exclusions_json() {
 	jq -cn --argjson selected "${selected_json}" --argjson excluded "${excluded_json}" '$selected - $excluded'
 }
 
-validate_selected_hosts_do_not_depend_on_excluded() {
-	local selected_json="$1" excluded_json="$2" node="" dep=""
-	local -a selected_hosts=()
-	declare -A excluded_host_set=()
+apply_dependency_exclusions_json() {
+	local selected_json="$1" direct_json="$2" excluded_json="$3"
 
-	json_array_to_bash_array "${selected_json}" selected_hosts
-	json_array_to_bash_set "${excluded_json}" excluded_host_set
-
-	for node in "${selected_hosts[@]}"; do
-		[ -n "${node}" ] || continue
-		while IFS= read -r dep; do
-			[ -n "${dep}" ] || continue
-			if [ -n "${excluded_host_set["${dep}"]+x}" ]; then
-				die "Host ${node} cannot depend on excluded host ${dep}"
-			fi
-		done < <(host_dependencies_for "${node}")
-	done
+	jq -cn --argjson selected "${selected_json}" --argjson direct "${direct_json}" --argjson excluded "${excluded_json}" '
+    def dependency_excluded($host):
+      (($excluded | index($host)) != null) and (($direct | index($host)) == null);
+    $selected | map(select(dependency_excluded(.) | not))
+  '
 }
 
 validate_selected_host_execution_policies() {
@@ -3392,19 +3635,40 @@ filter_runnable_hosts_json() {
 }
 
 resolve_selected_hosts_json() {
-	local all_hosts_json="$1" selection_json="" selected_json="" excluded_json=""
+	local all_hosts_json="$1" group_selection_json="" host_selection_json="" selection_json="" direct_selected_json="" selected_json="" excluded_json="" dependency_excluded_json=""
+	local parse_hosts=0 imply_all_on_only_exclusions=1
 
-	selection_json="$(parse_host_selectors_json "${all_hosts_json}")"
+	if [ -n "${GROUPS_RAW}" ]; then
+		group_selection_json="$(parse_group_selectors_json)" || return "$?"
+		imply_all_on_only_exclusions=0
+	fi
+	if [ "${HOSTS_EXPLICIT}" -eq 1 ] || [ -z "${GROUPS_RAW}" ]; then
+		parse_hosts=1
+	fi
+	if [ "${parse_hosts}" -eq 1 ]; then
+		host_selection_json="$(parse_host_selectors_json "${all_hosts_json}" "${HOSTS_RAW}" "${imply_all_on_only_exclusions}")" || return "$?"
+	else
+		host_selection_json="$(jq -cn '{selected: [], excluded: []}')"
+	fi
+	if [ -z "${group_selection_json}" ]; then
+		group_selection_json="$(jq -cn '{selected: [], groups: []}')"
+	fi
+
+	selection_json="$(merge_selection_json "${group_selection_json}" "${host_selection_json}")"
 	selected_json="$(jq -c '.selected' <<<"${selection_json}")"
+	direct_selected_json="${selected_json}"
 	excluded_json="$(jq -c '.excluded' <<<"${selection_json}")"
+	dependency_excluded_json="$(jq -c '.dependencyExcluded' <<<"${selection_json}")"
 	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
 	validate_excluded_hosts "${excluded_json}" "${all_hosts_json}"
+	validate_excluded_hosts "${dependency_excluded_json}" "${all_hosts_json}"
 	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
 	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
+	direct_selected_json="${selected_json}"
 	selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
+	selected_json="$(apply_dependency_exclusions_json "${selected_json}" "${direct_selected_json}" "${dependency_excluded_json}")"
 	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
 	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
-	validate_selected_hosts_do_not_depend_on_excluded "${selected_json}" "${excluded_json}"
 	validate_selected_host_execution_policies "${selected_json}"
 	order_selected_hosts_json "${selected_json}" "${all_hosts_json}"
 }
@@ -3468,6 +3732,51 @@ print_selected_hosts_block() {
 	print_host_block "Hosts" "${annotated_hosts[@]}"
 }
 
+print_selected_groups_block() {
+	local -a selected_groups=()
+
+	[ -n "${GROUPS_RAW}" ] || return 0
+	mapfile -t selected_groups < <(emit_normalized_hosts "${GROUPS_RAW}")
+	print_host_block "Groups" "${selected_groups[@]}"
+}
+
+print_groups_block() {
+	local group="" host=""
+	local -a groups=() hosts=() ungrouped_hosts=()
+
+	echo "Groups:" >&2
+	mapfile -t groups < <(jq -r 'keys[]' <<<"${NIXBOT_GROUPS_JSON}")
+	if [ "${#groups[@]}" -eq 0 ]; then
+		echo "  - (none)" >&2
+	fi
+
+	for group in "${groups[@]}"; do
+		echo "  - ${group}" >&2
+		mapfile -t hosts < <(jq -r --arg group "${group}" '
+      .[$group] | if type == "array" then .[] else empty end
+    ' <<<"${NIXBOT_GROUPS_JSON}")
+		if [ "${#hosts[@]}" -eq 0 ]; then
+			echo "    - (none)" >&2
+			continue
+		fi
+		for host in "${hosts[@]}"; do
+			echo "    - ${host}" >&2
+		done
+	done
+
+	mapfile -t ungrouped_hosts < <(jq -r '
+    to_entries[]
+    | select((.value.groups // []) | length == 0)
+    | .key
+  ' <<<"${NIXBOT_HOSTS_JSON}")
+	if [ "${#ungrouped_hosts[@]}" -gt 0 ]; then
+		echo "  - (ungrouped)" >&2
+		for host in "${ungrouped_hosts[@]}"; do
+			echo "    - ${host}" >&2
+		done
+	fi
+}
+
 print_config_override_line() {
 	if [ -n "${NIXBOT_CONFIG_OVERRIDE_PATH:-}" ] && [ -f "${NIXBOT_CONFIG_OVERRIDE_PATH}" ]; then
 		echo "Config override: ${NIXBOT_CONFIG_OVERRIDE_PATH}" >&2
@@ -3482,6 +3791,7 @@ log_run_context() {
 	echo "Action: ${ACTION}" >&2
 	echo "Started: ${NIXBOT_RUN_STARTED_AT}" >&2
 	print_config_override_line
+	print_selected_groups_block
 	print_selected_hosts_block "${selected_json}"
 	if is_deploy_style_action; then
 		echo "Goal: ${GOAL}" >&2
@@ -5395,7 +5705,7 @@ prepare_deploy_context() {
 
 				case "${bootstrap_readiness_source}" in
 				forced-command)
-					echo "==> Bootstrap check passed for ${ssh_target}, but primary shell access is still unavailable; using bootstrap target ${bootstrap_ssh_target} for nixos-rebuild"
+					echo "==> Bootstrap check passed for ${ssh_target}, but primary shell access is still unavailable; using bootstrap target ${bootstrap_ssh_target} for deploy"
 					;;
 				cached)
 					echo "==> Primary deploy target ${ssh_target} is still unavailable; reusing cached bootstrap path ${bootstrap_ssh_target}"
@@ -7065,7 +7375,7 @@ run_pre_switch_user_failed_state_reset() {
 	run_prepared_root_command "${reset_cmd}"
 }
 
-deploy_rebuild_failure_is_host_key_verification() {
+command_failure_is_host_key_verification() {
 	local output_path="$1"
 
 	[ -s "${output_path}" ] || return 1
@@ -7075,28 +7385,11 @@ deploy_rebuild_failure_is_host_key_verification() {
 		"${output_path}"
 }
 
-deploy_rebuild_failure_is_copy_transport_loss() {
+command_failure_is_transport_loss() {
 	local output_path="$1"
 
 	[ -s "${output_path}" ] || return 1
-	if deploy_rebuild_failure_is_host_key_verification "${output_path}"; then
-		return 1
-	fi
-
-	# nixos-rebuild wraps the copy step, so SSH open failures from
-	# nix-copy-closure often surface as a generic rebuild failure instead of an
-	# ssh exit code 255.
-	grep -Eq \
-		"failed to start SSH connection|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|stdio forwarding failed|Connection timed out|No route to host" \
-		"${output_path}" || return 1
-	grep -Eq "nix-copy-closure|failed to start SSH connection" "${output_path}" || return 1
-}
-
-deploy_rebuild_failure_is_transport_loss() {
-	local output_path="$1"
-
-	[ -s "${output_path}" ] || return 1
-	if deploy_rebuild_failure_is_host_key_verification "${output_path}"; then
+	if command_failure_is_host_key_verification "${output_path}"; then
 		return 1
 	fi
 
@@ -7108,7 +7401,7 @@ deploy_rebuild_failure_is_transport_loss() {
 remote_store_failure_is_transport_loss() {
 	local output_path="$1"
 
-	deploy_rebuild_failure_is_transport_loss "${output_path}" && return 0
+	command_failure_is_transport_loss "${output_path}" && return 0
 
 	[ -s "${output_path}" ] || return 1
 	grep -Eq "Nix daemon disconnected unexpectedly|cannot connect to socket at .*nix/daemon-socket/socket" "${output_path}"
@@ -7288,117 +7581,11 @@ require_remote_build_cache_for_deploy() {
 	require_build_host_cache_config "${BUILD_HOST}"
 }
 
-prepare_deploy_rebuild_command() {
-	local node="$1"
-	# shellcheck disable=SC2178
-	local -n pdrc_cmd_out_ref="$2"
-	local using_bootstrap_fallback="" nix_sshopts=""
-	local rebuild_nix_sshopts="" ask_sudo_password=0
-	local -a sudo_policy=()
-
-	using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
-	nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
-
-	mapfile -t sudo_policy < <(
-		resolve_target_sudo_policy \
-			"${PREP_DEPLOY_LOCAL_EXEC}" \
-			"${PREP_DEPLOY_SSH_TARGET}" \
-			"${using_bootstrap_fallback}"
-	)
-	ask_sudo_password="${sudo_policy[1]:-0}"
-	if [ "${ask_sudo_password}" -eq 1 ] && prepared_target_has_passwordless_sudo; then
-		ask_sudo_password=0
-	fi
-
-	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ] &&
-		[ "${using_bootstrap_fallback}" -eq 1 ] &&
-		[ "${BUILD_HOST}" = "local" ]; then
-		local prepared_user="${PREP_DEPLOY_SSH_TARGET%%@*}"
-		if [ "${prepared_user}" != "root" ] && [ "${prepared_user}" != "nixbot" ]; then
-			echo "Bootstrap fallback left ${node} on ${PREP_DEPLOY_SSH_TARGET}, but local-build deploys require the primary deploy user before nixos-rebuild to avoid untrusted remote store imports" >&2
-			return 1
-		fi
-	fi
-
-	pdrc_cmd_out_ref=(
-		nixos-rebuild
-		--flake ".#${node}"
-		--sudo
-	)
-
-	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 0 ]; then
-		pdrc_cmd_out_ref+=(--target-host "${PREP_DEPLOY_SSH_TARGET}")
-	fi
-
-	if [ "${ask_sudo_password}" -eq 1 ]; then
-		pdrc_cmd_out_ref+=(--ask-sudo-password)
-	fi
-
-	if [ "${using_bootstrap_fallback}" -eq 1 ]; then
-		pdrc_cmd_out_ref+=(--use-substitutes)
-	fi
-
-	pdrc_cmd_out_ref+=("${GOAL}")
-
-	if [ -n "${nix_sshopts}" ]; then
-		rebuild_nix_sshopts="-S none -o ControlMaster=no ${nix_sshopts}"
-		# nixos-rebuild appends its own ControlPath. OpenSSH keeps the first
-		# Control* settings, so nixbot's long-lived master would otherwise win and
-		# large nix-copy-closure streams can wedge on that reused TCP session.
-		pdrc_cmd_out_ref=(env "NIX_SSHOPTS=${rebuild_nix_sshopts}" "${pdrc_cmd_out_ref[@]}")
-	fi
-}
-
-run_deploy_rebuild_command_with_retry() {
-	local node="$1"
-	local attempt=1 rc=0 retry_sleep_secs=0 output_path="" safe_node=""
-	local -a rebuild_cmd=()
-
-	ensure_tmp_dir
-	safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
-	output_path="$(tmp_runtime_mktemp stderr "deploy-${safe_node}.stderr.XXXXXX")"
-
-	while :; do
-		if ! prepare_deploy_rebuild_command "${node}" rebuild_cmd; then
-			rm -f "${output_path}"
-			return 1
-		fi
-		: >"${output_path}"
-		if "${rebuild_cmd[@]}" 2> >(tee "${output_path}" >&2); then
-			rm -f "${output_path}"
-			return 0
-		else
-			rc="$?"
-		fi
-		if is_signal_exit_status "${rc}"; then
-			rm -f "${output_path}"
-			return "${rc}"
-		fi
-
-		if [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ] ||
-			! deploy_rebuild_failure_is_copy_transport_loss "${output_path}"; then
-			rm -f "${output_path}"
-			return "${rc}"
-		fi
-
-		attempt=$((attempt + 1))
-		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
-		echo "Deploy copy transport closed for ${node}; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
-		sleep_for_retry_or_signal "${retry_sleep_secs}" || {
-			rc="$?"
-			rm -f "${output_path}"
-			return "${rc}"
-		}
-		clear_primary_ready "${node}"
-		prepare_host_transport_for_deploy "${node}" 1 >/dev/null 2>&1 || true
-	done
-}
-
 activate_prepared_system_path() {
 	local node="$1" system_path="$2" activate_cmd=""
 
 	printf -v activate_cmd \
-		'test -x %q/bin/switch-to-configuration || { echo "system path is not activatable: %q" >&2; exit 1; }; %q/bin/switch-to-configuration %q' \
+		'test -x %q/bin/switch-to-configuration || { echo "system path is not activatable: %q" >&2; exit 1; }; NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec --unit=nixbot-switch-to-configuration %q/bin/switch-to-configuration %q' \
 		"${system_path}" \
 		"${system_path}" \
 		"${system_path}" \
@@ -7478,6 +7665,39 @@ copy_system_path_from_build_cache_via_local_to_prepared_target() {
 		"${copy_cmd[@]}"
 }
 
+copy_system_path_from_local_to_prepared_target() {
+	local node="$1" system_path="$2" target_store_uri="" copy_nix_sshopts="" copy_output=""
+	local -a copy_cmd=()
+
+	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
+		return 0
+	fi
+
+	target_store_uri="$(format_ssh_store_uri "${PREP_DEPLOY_SSH_TARGET}")"
+	copy_nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
+	if [ -n "${copy_nix_sshopts}" ]; then
+		copy_nix_sshopts="-S none -o ControlMaster=no ${copy_nix_sshopts}"
+	fi
+	copy_cmd=(nix copy --no-check-sigs --to "${target_store_uri}" "${system_path}")
+
+	echo "Copying built closure to ${node}: ${system_path}" >&2
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		if [ -n "${copy_nix_sshopts}" ]; then
+			printf 'env NIX_SSHOPTS=%q ' "${copy_nix_sshopts}"
+		fi
+		printf '%q ' "${copy_cmd[@]}"
+		echo
+		return 0
+	fi
+
+	run_remote_store_command_with_retry \
+		copy_output \
+		"Local build copy to ${node}" \
+		"${copy_nix_sshopts}" \
+		"${copy_cmd[@]}" || return "$?"
+	: "${copy_output}"
+}
+
 deploy_remote_build_host_path() {
 	local node="$1" built_out_path="$2"
 	local age_identity_key="" deploy_rc=0
@@ -7545,7 +7765,6 @@ deploy_host() {
 	local node="$1" built_out_path="$2" skip_marker="${3:-}"
 	local remote_current_path="" age_identity_key=""
 	local deploy_rc=0
-	local -a rebuild_cmd=()
 
 	log_host_stage "deploy" "${node}" "${GOAL}"
 	if [ -n "$(host_parent_for "${node}")" ]; then
@@ -7595,14 +7814,14 @@ deploy_host() {
 
 	run_pre_switch_user_failed_state_reset || return 1
 
-	prepare_deploy_rebuild_command "${node}" rebuild_cmd || return 1
-
 	if [ "${DRY_RUN}" -eq 1 ]; then
-		printf '%q ' "${rebuild_cmd[@]}"
-		echo
+		copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
+			activate_prepared_system_path "${node}" "${built_out_path}"
 	else
 		register_active_deploy "${node}"
-		if run_deploy_rebuild_command_with_retry "${node}"; then
+		if copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
+			mark_deploy_activation_started "${node}" &&
+			activate_prepared_system_path "${node}" "${built_out_path}"; then
 			deploy_rc=0
 		else
 			deploy_rc="$?"
@@ -11149,7 +11368,17 @@ run_list_hosts_action() {
 
 	prepare_run_context selected_json
 	print_config_override_line
+	print_selected_groups_block
 	print_selected_hosts_block "${selected_json}"
+}
+
+run_list_groups_action() {
+	local config_json=""
+
+	config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}")"
+	init_deploy_settings "${config_json}"
+	print_config_override_line
+	print_groups_block
 }
 
 deps_action_help_requested() {
@@ -11284,6 +11513,10 @@ main() {
 		ACTION="list-hosts"
 		request_args=("${request_args[@]:1}")
 		;;
+	--list-groups)
+		ACTION="list-groups"
+		request_args=("${request_args[@]:1}")
+		;;
 	deps)
 		if deps_action_help_requested "${request_args[@]:1}"; then
 			usage
@@ -11336,6 +11569,12 @@ main() {
 		[ -z "${SHA}" ] || die "--list-hosts uses the current checkout; --sha is unsupported"
 		[ "${CI_TRIGGER}" -eq 0 ] || die "--list-hosts is local-only and cannot run through --ci-trigger"
 		run_list_hosts_action
+		return
+	fi
+	if [ "${ACTION}" = "list-groups" ]; then
+		[ -z "${SHA}" ] || die "--list-groups uses the current checkout; --sha is unsupported"
+		[ "${CI_TRIGGER}" -eq 0 ] || die "--list-groups is local-only and cannot run through --ci-trigger"
+		run_list_groups_action
 		return
 	fi
 	if [ "${CI_TRIGGER}" -eq 1 ]; then

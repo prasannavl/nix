@@ -16,7 +16,6 @@
       git
       jq
       nix
-      nixos-rebuild-ng
       openssh
       opentofu
       procps

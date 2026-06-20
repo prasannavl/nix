@@ -54,7 +54,7 @@ in {
     };
   };
 
-  globals = {
+  config = {
     ci = {
       host = "pvl-x2";
     };
@@ -63,14 +63,13 @@ in {
       url = "http://pvl-x2:5000";
     };
     repoUrl = "ssh://git@github.com/prasannavl/nix.git";
-  };
-
-  defaults = {
-    user = "nixbot";
-    key = nixbotKey;
-    bootstrapKey = nixbotKey;
-    bootstrapUser = "pvl";
-    knownHosts = null;
-    ageIdentityKey = "";
+    hostDefaults = {
+      user = "nixbot";
+      key = nixbotKey;
+      bootstrapKey = nixbotKey;
+      bootstrapUser = "pvl";
+      knownHosts = null;
+      ageIdentityKey = "";
+    };
   };
 }
