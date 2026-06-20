@@ -198,6 +198,7 @@
   mkManagedFabricPolicy = {
     defaultInterface ? "incusbr0",
     defaultPolicy ? fabricPolicyProfiles.open,
+    forwardRules ? [],
     projects,
     tableName ? "incusManagedFabricPolicy",
   }: let
@@ -296,6 +297,60 @@
           )
       )
       managedFabricNames;
+
+    validPort = port: builtins.isInt port && port > 0 && port < 65536;
+    validPortList = ports: builtins.isList ports && lib.all validPort ports;
+
+    validForwardRule = rule:
+      builtins.isAttrs rule
+      && builtins.isString (rule.from or null)
+      && builtins.isString (rule.to or null)
+      && builtins.elem rule.from managedFabricNames
+      && builtins.elem rule.to managedFabricNames
+      && (
+        !(rule ? source)
+        || builtins.isString rule.source
+      )
+      && (
+        !(rule ? destination)
+        || builtins.isString rule.destination
+      )
+      && validPortList (rule.tcpPorts or [])
+      && validPortList (rule.udpPorts or [])
+      && ((rule.tcpPorts or []) != [] || (rule.udpPorts or []) != []);
+
+    invalidForwardRules = lib.filter (rule: !validForwardRule rule) forwardRules;
+    validForwardRules = lib.filter validForwardRule forwardRules;
+
+    describeForwardRule = rule:
+      if builtins.isAttrs rule
+      then "${rule.from or "<missing>"} -> ${rule.to or "<missing>"}"
+      else builtins.toJSON rule;
+
+    renderPortSet = ports:
+      if builtins.length ports == 1
+      then builtins.toString (builtins.head ports)
+      else "{ ${lib.concatMapStringsSep ", " builtins.toString ports} }";
+
+    renderForwardRule = rule: protocol: ports: let
+      sourceMatch = lib.optionalString (rule ? source) " ip saddr ${rule.source}";
+      destinationMatch = lib.optionalString (rule ? destination) " ip daddr ${rule.destination}";
+    in ''
+      iifname "${managedFabricInterfaces.${rule.from}}" oifname "${managedFabricInterfaces.${rule.to}}"${sourceMatch}${destinationMatch} ${protocol} dport ${renderPortSet ports} accept comment "allow ${rule.from} -> ${rule.to}"
+    '';
+
+    forwardRuleset = builtins.concatStringsSep "\n" (
+      lib.concatMap (
+        rule:
+          lib.optionals ((rule.tcpPorts or []) != []) [
+            (renderForwardRule rule "tcp" rule.tcpPorts)
+          ]
+          ++ lib.optionals ((rule.udpPorts or []) != []) [
+            (renderForwardRule rule "udp" rule.udpPorts)
+          ]
+      )
+      validForwardRules
+    );
 
     forwardToDropRules = builtins.concatStringsSep "\n" (
       lib.concatMap (
@@ -426,6 +481,12 @@
           "Incus managed fabric policy forwardTo targets must reference managed fabrics only: "
           + lib.concatStringsSep ", " invalidFabricPolicyTargets;
       }
+      {
+        assertion = invalidForwardRules == [];
+        message =
+          "Incus managed fabric policy forwardRules must reference managed fabrics and include tcpPorts or udpPorts: "
+          + lib.concatMapStringsSep ", " describeForwardRule invalidForwardRules;
+      }
     ];
     nftablesTable = {
       ${tableName} = {
@@ -456,6 +517,7 @@
             ct state { established, related } accept
             ct state invalid drop
 
+            ${forwardRuleset}
             ${forwardToDropRules}
             ${fabricToUplinkDropRules}
             ${uplinkToFabricDropRules}
