@@ -1023,15 +1023,21 @@ register_host() {
 	local entry_file="${RUN_DIR}/host-entry.nix"
 	local next_hosts="${RUN_DIR}/hosts-default.nix"
 	local host_attr
+	local machine_profile
 	local source_file
 
 	host_registered && return
 	host_attr="$(nix_attr_key "$HOST")"
+	if [[ "$HOST_SYSTEM" == "incus" ]]; then
+		machine_profile="machineProfiles.incusLxc"
+	else
+		machine_profile="machineProfiles.vm"
+	fi
 
 	cat >"$entry_file" <<EOF
   ${host_attr} = mkNixosSystem {
     hostName = "$(nix_escape "$HOST")";
-    machineProfile = machineProfiles.vm;
+    machineProfile = ${machine_profile};
 EOF
 	if [[ -n "$HOST_STACK" ]]; then
 		cat >>"$entry_file" <<EOF
