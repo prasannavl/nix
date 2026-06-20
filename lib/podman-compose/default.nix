@@ -54,6 +54,9 @@
     serviceName = null;
     serviceOverrides = {};
     composeArgs = [];
+    stop = {
+      pre = [];
+    };
     reload = {
       method = "restart";
       signal = "HUP";
@@ -570,6 +573,12 @@
         type = lib.types.listOf lib.types.str;
         default = serviceDefaults.composeArgs;
         description = "Additional arguments passed to every `podman compose` invocation for this instance, before compose-file flags and the subcommand.";
+      };
+
+      stop.pre = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = serviceDefaults.stop.pre;
+        description = "Commands to run before the generated `podman compose stop` command.";
       };
 
       reload = lib.mkOption {
@@ -1634,7 +1643,7 @@
         # ExecStart creates it before invoking podman compose.
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${helperScript} start";
-        ExecStop = "${helperScript} stop";
+        ExecStop = service.stop.pre ++ ["${helperScript} stop"];
         ExecReload = "${helperScript} reload";
         ExecStopPost = "${helperScript} post-stop";
         KillMode = "mixed";

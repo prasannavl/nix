@@ -6,6 +6,9 @@
 }: let
   cfg = config.services.fail2ban-helper;
   actionName = "fail2ban-helper-nftables";
+  prefixActionName = "fail2ban-helper-prefix-nftables";
+  nginxExactFilterName = "nginx-limit-req-exact";
+  nginxPrefixFilterName = "nginx-limit-req-prefix";
   tableName = "fail2ban_helper";
   ipv4ExactSet = "exact4";
   ipv6ExactSet = "exact6";
@@ -27,9 +30,12 @@
     "--ipv6-prefix-set ${ipv6PrefixSet}"
     "--ipv6-prefix-length ${toString cfg.ipv6PrefixLength}"
     "--state-dir ${cfg.stateDir}"
-    "--prefix-timeout ${toString cfg.prefixBanSeconds}"
     "--escalation-find-time ${toString cfg.escalation.findTimeSeconds}"
     "--escalation-max-retry ${toString cfg.escalation.maxRetry}"
+  ];
+  escalatingActionArgs = lib.concatStringsSep " " [
+    commonActionArgs
+    "--prefix-timeout ${toString cfg.prefixBanSeconds}"
   ];
   rejectVerdict =
     if cfg.blockVerdict == "drop"
@@ -135,6 +141,12 @@ in {
         description = "nginx limit_req events before fail2ban exact-bans a client.";
       };
 
+      prefixMaxRetry = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 1;
+        description = "nginx IPv6 prefix limit_req events before fail2ban directly prefix-bans a client.";
+      };
+
       findTimeSeconds = lib.mkOption {
         type = lib.types.ints.positive;
         default = 600;
@@ -161,14 +173,47 @@ in {
 
     environment = {
       systemPackages = [helper];
-      etc."fail2ban/action.d/${actionName}.conf".text = ''
-        [Definition]
-        actionban = ${helper}/bin/fail2ban-helper ban ${commonActionArgs} --exact-timeout <bantime> --ip <ip>
-        actionprolong = %(actionban)s
-        actionunban = ${helper}/bin/fail2ban-helper unban ${commonActionArgs} --ip <ip>
+      etc =
+        {
+          "fail2ban/action.d/${actionName}.conf".text = ''
+            [Definition]
+            actionban = ${helper}/bin/fail2ban-helper ban ${escalatingActionArgs} --exact-timeout <bantime> --ip <ip>
+            actionprolong = %(actionban)s
+            actionunban = ${helper}/bin/fail2ban-helper unban ${commonActionArgs} --ip <ip>
 
-        [Init]
-      '';
+            [Init]
+          '';
+
+          "fail2ban/action.d/${prefixActionName}.conf".text = ''
+            [Definition]
+            actionban = ${helper}/bin/fail2ban-helper ban-prefix ${commonActionArgs} --prefix-timeout <bantime> --ip <ip>
+            actionprolong = %(actionban)s
+            actionunban = ${helper}/bin/fail2ban-helper unban-prefix ${commonActionArgs} --ip <ip>
+
+            [Init]
+          '';
+        }
+        // lib.optionalAttrs cfg.nginx.enable {
+          "fail2ban/filter.d/${nginxExactFilterName}.conf".text = ''
+            [INCLUDES]
+            before = nginx-error-common.conf
+
+            [Definition]
+            failregex = ^%(__prefix_line)slimiting requests, excess: [\d\.]+ by zone "(?![^"]*_prefix")[^"]+", client: <HOST>,
+            ignoreregex =
+            datepattern = {^LN-BEG}
+          '';
+
+          "fail2ban/filter.d/${nginxPrefixFilterName}.conf".text = ''
+            [INCLUDES]
+            before = nginx-error-common.conf
+
+            [Definition]
+            failregex = ^%(__prefix_line)slimiting requests, excess: [\d\.]+ by zone "[^"]*_prefix", client: <HOST>,
+            ignoreregex =
+            datepattern = {^LN-BEG}
+          '';
+        };
     };
 
     systemd = {
@@ -221,12 +266,22 @@ in {
       jails = lib.mkIf cfg.nginx.enable {
         nginx-limit-req.settings = {
           enabled = true;
-          filter = "nginx-limit-req[logtype=file]";
+          filter = "${nginxExactFilterName}[logtype=file]";
           logpath = nginxLogPath;
           backend = "auto";
           maxretry = cfg.nginx.maxRetry;
           findtime = "${toString cfg.nginx.findTimeSeconds}s";
           action = "${actionName}[name=nginx-limit-req]";
+        };
+
+        nginx-limit-req-prefix.settings = {
+          enabled = true;
+          filter = "${nginxPrefixFilterName}[logtype=file]";
+          logpath = nginxLogPath;
+          backend = "auto";
+          maxretry = cfg.nginx.prefixMaxRetry;
+          findtime = "${toString cfg.nginx.findTimeSeconds}s";
+          action = "${prefixActionName}[name=nginx-limit-req-prefix]";
         };
       };
     };

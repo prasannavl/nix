@@ -104,6 +104,10 @@ def parse_ip(value):
     return address
 
 
+def prefix_for_address(address, prefix_length):
+    return str(ipaddress.ip_network(f"{address}/{prefix_length}", strict=False))
+
+
 def ban(args):
     address = parse_ip(args.ip)
     if address.version == 4:
@@ -111,10 +115,25 @@ def ban(args):
         return 0
 
     replace_nft_element(args.table, args.ipv6_exact_set, str(address), args.exact_timeout)
-    prefix = str(ipaddress.ip_network(f"{address}/{args.ipv6_prefix_length}", strict=False))
+    prefix = prefix_for_address(address, args.ipv6_prefix_length)
     hit_count = record_prefix_hit(Path(args.state_dir), prefix, args.escalation_find_time)
     if hit_count >= args.escalation_max_retry:
         replace_nft_element(args.table, args.ipv6_prefix_set, prefix, args.prefix_timeout)
+    return 0
+
+
+def ban_prefix(args):
+    address = parse_ip(args.ip)
+    if address.version == 4:
+        replace_nft_element(args.table, args.ipv4_exact_set, str(address), args.exact_timeout)
+        return 0
+
+    replace_nft_element(
+        args.table,
+        args.ipv6_prefix_set,
+        prefix_for_address(address, args.ipv6_prefix_length),
+        args.prefix_timeout,
+    )
     return 0
 
 
@@ -127,12 +146,16 @@ def unban(args):
     return 0
 
 
+def noop(_args):
+    return 0
+
+
 def normalize_key(args):
     address = parse_ip(args.ip)
     if address.version == 4:
         print(str(address))
     else:
-        print(ipaddress.ip_network(f"{address}/{args.ipv6_prefix_length}", strict=False))
+        print(prefix_for_address(address, args.ipv6_prefix_length))
     return 0
 
 
@@ -158,10 +181,20 @@ def main():
     ban_parser.add_argument("--ip", required=True)
     ban_parser.set_defaults(func=ban)
 
+    ban_prefix_parser = subparsers.add_parser("ban-prefix")
+    add_common_args(ban_prefix_parser)
+    ban_prefix_parser.add_argument("--ip", required=True)
+    ban_prefix_parser.set_defaults(func=ban_prefix)
+
     unban_parser = subparsers.add_parser("unban")
     add_common_args(unban_parser)
     unban_parser.add_argument("--ip", required=True)
     unban_parser.set_defaults(func=unban)
+
+    unban_prefix_parser = subparsers.add_parser("unban-prefix")
+    add_common_args(unban_prefix_parser)
+    unban_prefix_parser.add_argument("--ip", required=True)
+    unban_prefix_parser.set_defaults(func=noop)
 
     key_parser = subparsers.add_parser("normalize-key")
     key_parser.add_argument("--ipv6-prefix-length", type=int, default=64)
