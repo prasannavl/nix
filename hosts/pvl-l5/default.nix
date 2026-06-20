@@ -7,6 +7,7 @@
     ./packages.nix
     ./firewall.nix
     ./users.nix
+    ./services
   ];
 
   # hw gets stuck on suspend, and triggers watchdog and reboots, even though
