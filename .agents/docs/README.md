@@ -181,6 +181,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
   bootstrap, SSH, worktree, Terraform, and CI behavior.
+- `.agents/docs/notes/nixbot/abird-shared-port-parity-2026-06.md`: Records the
+  June 2026 shared Abird port, byte-parity files, local adaptations, and skipped
+  topology-owned units.
 - `.agents/docs/notes/nixbot/signed-build-cache-design-2026-06.md`: Detailed
   plan and implementation handoff for signed build-host cache publishing plus
   local-orchestrated activation.

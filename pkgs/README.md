@@ -16,11 +16,12 @@ To add a new package:
 
 - create a package-local `default.nix` under `pkgs/` as the canonical package
   definition
-- add it to `lib/flake/packages.nix`
+- add it to `pkgs/manifest.nix` so the root flake exports it through
+  `lib/flake/packages.nix`
 - optionally add a package-local `flake.nix` as a wrapper flake for local UX and
   focused local commands
 - if you want extra root-flake entrypoints such as `nix run .#<name>`, expose
-  them from the canonical package tree in `lib/flake/packages.nix`
+  them from `pkgs/manifest.nix`
 
 Example projects live under `pkgs/examples/`. Their root flake package names are
 prefixed with `example-`.
