@@ -29,6 +29,27 @@ The imperative apply/delete behavior belongs in `lib/incus/helper.sh`, not as
 inline shell inside `lib/incus/default.nix`. Nix serializes desired route state
 to JSON and wires systemd ordering; the helper reconciles kernel routes.
 
+## Managed Fabric Forward Exceptions
+
+Project-to-project forwarding policy is also owned by the Incus parent fabric.
+Use `incusLib.mkManagedFabricPolicy.forwardRules` for narrow exceptions that
+must not become broad `forwardTo` trust between whole projects.
+
+`forwardRules` entries name the source fabric, target fabric, optional source
+address, optional destination address or CIDR, and allowed TCP/UDP ports. The
+helper renders these as explicit nft `accept` rules before the generated
+project-to-project deny matrix. Return traffic is still handled by connection
+tracking, so an exception grants only new flows in the declared direction.
+
+For the delegated Abird projects on `pvl-x2`, the parent fabric allows:
+
+- `abird-nest` (`10.10.100.10`) to SSH to `abird-stage` (`10.10.200.0/24`).
+- `abird-nest` (`10.10.100.10`) to SSH to `abird-dev` (`10.10.220.0/24`).
+- `abird-stage` to reach only `abird-ci` (`10.10.100.80`) on TCP `22` and `5000`
+  inside the `abird` fabric.
+- `abird-dev` to reach only `abird-ci` (`10.10.100.80`) on TCP `22` and `5000`
+  inside the `abird` fabric.
+
 ## Reconciler Semantics
 
 `incus-machines-routes.service` is a local-only oneshot that runs after

@@ -9,6 +9,10 @@
   };
   incusSecrets = ../../data/secrets/globals/incus;
   fpp = incusLib.fabricPolicyProfiles;
+  abirdNestAddress = "10.10.100.10";
+  abirdCiAddress = "10.10.100.80";
+  abirdStageSubnet = "10.10.200.0/24";
+  abirdDevSubnet = "10.10.220.0/24";
   isolatedProjectConfig = {
     "features.images" = "true";
     "features.networks" = "false";
@@ -77,6 +81,34 @@
   };
   fabricIsolation = incusLib.mkManagedFabricPolicy {
     defaultPolicy = fpp.open;
+    forwardRules = [
+      {
+        from = "abird";
+        source = abirdNestAddress;
+        to = "abird-stage";
+        destination = abirdStageSubnet;
+        tcpPorts = [22];
+      }
+      {
+        from = "abird";
+        source = abirdNestAddress;
+        to = "abird-dev";
+        destination = abirdDevSubnet;
+        tcpPorts = [22];
+      }
+      {
+        from = "abird-stage";
+        to = "abird";
+        destination = abirdCiAddress;
+        tcpPorts = [22 5000];
+      }
+      {
+        from = "abird-dev";
+        to = "abird";
+        destination = abirdCiAddress;
+        tcpPorts = [22 5000];
+      }
+    ];
     projects = projects;
   };
   mkBridgeNetwork = network: {
