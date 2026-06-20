@@ -2,9 +2,7 @@
   config,
   stack,
   ...
-}: let
-  secretsBase = stack.secrets.service "beszel";
-in {
+}: {
   config = {
     services.podman-compose.pvl.instances.beszel = {podmanSocket, ...}: rec {
       exposedPorts.http = {
@@ -48,12 +46,12 @@ in {
       composeSecretUser = "pvl";
     in {
       beszel-key = {
-        file = secretsBase + "/key.key.age";
+        file = stack.secrets.serviceKey "beszel" "key";
         owner = composeSecretUser;
         group = composeSecretUser;
       };
       beszel-token = {
-        file = secretsBase + "/token.key.age";
+        file = stack.secrets.serviceKey "beszel" "token";
         owner = composeSecretUser;
         group = composeSecretUser;
       };

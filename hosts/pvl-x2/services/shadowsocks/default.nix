@@ -4,7 +4,6 @@
   ...
 }: let
   composeSecretUser = "pvl";
-  secretsBase = stack.secrets.service "shadowsocks";
 in {
   config = {
     services.podman-compose.pvl.instances.shadowsocks = rec {
@@ -32,7 +31,7 @@ in {
     };
 
     age.secrets.shadowsocks-password = {
-      file = secretsBase + "/password.key.age";
+      file = stack.secrets.serviceKey "shadowsocks" "password";
       owner = composeSecretUser;
       group = composeSecretUser;
     };

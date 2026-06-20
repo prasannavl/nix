@@ -4,7 +4,6 @@
   ...
 }: let
   composeSecretUser = "pvl";
-  secretsBase = stack.secrets.service "immich";
 in {
   config = {
     services.podman-compose.pvl.instances.immich = rec {
@@ -92,7 +91,7 @@ in {
     };
 
     age.secrets.immich-db-password = {
-      file = secretsBase + "/db-password.key.age";
+      file = stack.secrets.serviceKey "immich" "db-password";
       owner = composeSecretUser;
       group = composeSecretUser;
     };

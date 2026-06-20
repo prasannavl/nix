@@ -5,7 +5,6 @@
 }: let
   nginxPort = config.services.podman-compose.pvl.instances.nginx.exposedPorts.http.port;
   composeSecretUser = "pvl";
-  secretsBase = stack.secrets.service "docmost";
 in {
   config = {
     services.podman-compose.pvl.instances.docmost = rec {
@@ -63,17 +62,17 @@ in {
 
     age.secrets = {
       docmost-app-secret = {
-        file = secretsBase + "/app-secret.key.age";
+        file = stack.secrets.serviceKey "docmost" "app-secret";
         owner = composeSecretUser;
         group = composeSecretUser;
       };
       docmost-database-url = {
-        file = secretsBase + "/database-url.key.age";
+        file = stack.secrets.serviceKey "docmost" "database-url";
         owner = composeSecretUser;
         group = composeSecretUser;
       };
       docmost-postgres-password = {
-        file = secretsBase + "/postgres-password.key.age";
+        file = stack.secrets.serviceKey "docmost" "postgres-password";
         owner = composeSecretUser;
         group = composeSecretUser;
       };

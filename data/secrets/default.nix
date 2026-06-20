@@ -102,3 +102,7 @@ in
   })
   // machineIdentities.secrets
   // import ./pvl stackArgs
+  // import ./pvl (stackArgs
+    // {
+      scope = "dev";
+    })

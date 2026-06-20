@@ -6,6 +6,7 @@ let
   };
 in rec {
   pvl = import ./pvl.nix;
+  "pvl-dev" = import ./pvl-dev.nix;
   all = {
     stackName = "all";
     org = "all";
