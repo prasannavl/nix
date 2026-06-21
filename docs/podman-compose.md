@@ -181,6 +181,12 @@ For each instance, the generated service:
 - verifies that containers reached a healthy running state
 - stays attached with a monitor loop so systemd can observe failure
 
+Failed starts must leave the compose project retryable. If `podman compose up`
+fails or the immediate post-start state check finds failed or missing
+containers, the helper removes only the compose project containers and networks
+before returning failure. It does not remove volumes or managed data
+directories; persistent data recovery remains an operator decision.
+
 The user-service switching path is handled by
 [`docs/systemd-user-manager.md`](./systemd-user-manager.md).
 

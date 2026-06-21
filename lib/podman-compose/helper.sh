@@ -787,6 +787,71 @@ compose_down() {
 	)
 }
 
+compose_project_container_ids() {
+	(
+		close_lifecycle_fds_for_child
+		cd /
+		podman ps -a \
+			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--format '{{.ID}}'
+	)
+}
+
+remove_compose_project_containers() {
+	local container containers=()
+
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		containers+=("$container")
+	done < <(compose_project_container_ids)
+
+	[ "${#containers[@]}" -gt 0 ] || return 0
+	printf '%s\n' "removing stale podman compose containers for ${podman_compose_service_name}"
+	(
+		close_lifecycle_fds_for_child
+		podman rm -f "${containers[@]}"
+	)
+}
+
+cleanup_failed_compose_start() {
+	printf '%s\n' "podman compose start failed for ${podman_compose_service_name}; cleaning project containers before retry" >&2
+	if ! compose_down; then
+		printf '%s\n' "podman compose down after failed start failed for ${podman_compose_service_name}; attempting direct container removal" >&2
+	fi
+	if ! remove_compose_project_containers; then
+		printf '%s\n' "direct removal of failed podman compose containers also failed for ${podman_compose_service_name}" >&2
+	fi
+}
+
+compose_up_checked() {
+	local mode
+	mode="$1"
+
+	case "$mode" in
+	force)
+		if ! compose_up_force_recreate; then
+			cleanup_failed_compose_start
+			return 1
+		fi
+		;;
+	normal)
+		if ! compose_up; then
+			cleanup_failed_compose_start
+			return 1
+		fi
+		;;
+	*)
+		printf '%s\n' "unsupported podman compose up mode: $mode" >&2
+		return 1
+		;;
+	esac
+
+	if ! verify_compose_state; then
+		cleanup_failed_compose_start
+		return 1
+	fi
+}
+
 compose_down_volumes() {
 	(
 		close_lifecycle_fds_for_child
@@ -890,7 +955,7 @@ verify_expected_compose_services() {
 	if [ -n "$missing_services" ]; then
 		printf '%s\n' "podman compose is missing running containers for expected services:" >&2
 		printf '%s\n' "$missing_services" >&2
-		exit 1
+		return 1
 	fi
 }
 
@@ -1112,7 +1177,7 @@ verify_compose_state() {
 	if [ -n "$failing_states" ]; then
 		printf '%s\n' "podman compose left containers in a non-running state:" >&2
 		printf '%s\n' "$failing_states" >&2
-		exit 1
+		return 1
 	fi
 
 	state_counts="$(
@@ -1124,12 +1189,12 @@ verify_compose_state() {
 
 	if [ "$total_count" -eq 0 ]; then
 		printf '%s\n' "podman compose found no managed containers" >&2
-		exit 1
+		return 1
 	fi
 
 	if [ "$running_count" -eq 0 ] && [ "$long_running" = "true" ]; then
 		printf '%s\n' "podman compose found no running containers" >&2
-		exit 1
+		return 1
 	fi
 
 	verify_expected_compose_services
@@ -1247,11 +1312,10 @@ cmd_reload() {
 		repair_stale_rootless_netns_resolver
 		run_pre_start_hooks
 		if [ "$stale_rootless_netns_repaired" -eq 1 ]; then
-			compose_up_force_recreate
+			compose_up_checked force
 		else
-			compose_up
+			compose_up_checked normal
 		fi
-		verify_compose_state
 		record_runtime_state
 		;;
 	signal)
@@ -1286,11 +1350,10 @@ cmd_start() {
 	run_pre_start_hooks
 	if [ "$stale_rootless_netns_repaired" -eq 1 ] || should_force_recreate; then
 		force_recreate=1
-		compose_up_force_recreate
+		compose_up_checked force
 	else
-		compose_up
+		compose_up_checked normal
 	fi
-	verify_compose_state
 	if [ "$force_recreate" -eq 1 ]; then
 		record_applied_recreate_state
 	else
