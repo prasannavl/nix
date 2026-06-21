@@ -751,6 +751,10 @@ clear_removal_policy_marker() {
 	write_runtime_state_with_filter 'del(.removalPolicy)'
 }
 
+record_helper_ownership_state() {
+	write_runtime_state_with_filter '.'
+}
+
 failing_states_report() {
 	jq -r '
     map(
@@ -1067,6 +1071,7 @@ cleanup_failed_compose_start() {
 	if ! remove_compose_project_containers; then
 		printf '%s\n' "direct removal of failed podman compose containers also failed for ${podman_compose_service_name}" >&2
 	fi
+	cleanup_runtime_files
 }
 
 post_stop_should_cleanup_failed_start() {
@@ -1594,6 +1599,7 @@ cmd_start() {
 	ensure_runtime_dirs
 	lock_lifecycle_exclusive
 	clear_removal_policy_marker
+	record_helper_ownership_state
 	stage_runtime_files
 	repair_stale_rootless_netns_resolver
 	run_pre_start_hooks
