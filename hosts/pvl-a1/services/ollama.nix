@@ -60,6 +60,9 @@ in {
             group_add:
               - keep-groups
       '';
+
+      # Model pulls run in pvl-ollama-models; this covers cold image/container startup.
+      serviceOverrides.serviceConfig.TimeoutStartSec = "5min";
     };
 
     ollama-nvidia = rec {

@@ -69,6 +69,10 @@ Likely fixes:
 - Pre-pull the large `ollama/ollama:rocm` image before activation, or enable the
   instance `imageTag`/image-pull path so image transfer happens outside the
   critical service start.
+- The main ROCm Ollama compose units on `pvl-a1`, `pvl-l5`, and `pvl-x2` now set
+  `serviceOverrides.serviceConfig.TimeoutStartSec = "5min"`. This is for cold
+  image/container startup only; model pulls remain owned by
+  `pvl-ollama-models.service`.
 - The shared helper now records helper ownership before staging runtime files,
   and failed-start cleanup removes generated runtime files while preserving real
   service data and the retry ownership marker. The hard adoption refusal remains
