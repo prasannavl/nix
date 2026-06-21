@@ -1336,7 +1336,7 @@ wait_for_kanidm_status() {
 }
 
 auto_apply_idm() {
-	local command password_file
+	local command password_file login_started_epoch login_output login_rc
 	command="${KANIDM_AUTO_APPLY_COMMAND:-apply-idm}"
 	password_file="${KANIDM_AUTO_APPLY_PASSWORD_FILE-}"
 
@@ -1356,8 +1356,28 @@ auto_apply_idm() {
 	export KANIDM_TOKEN_CACHE_PATH="$kanidm_auto_apply_token_dir/tokens.json"
 
 	wait_for_kanidm_status
-	KANIDM_PASSWORD="$(tr -d '\n' <"$password_file")" kanidm_cmd login >/dev/null
-	apply_idm
+	login_started_epoch="$(date +%s)"
+	login_output="$(mktemp)"
+	if KANIDM_PASSWORD="$(tr -d '\n' <"$password_file")" kanidm_cmd login >"$login_output" 2>&1; then
+		rm -f "$login_output"
+		apply_idm
+		return
+	fi
+
+	login_rc="$?"
+	if journalctl -b --since "@$login_started_epoch" --no-pager -o cat 2>/dev/null |
+		grep -F "Initiating Authentication Session | username: $kanidm_name |" >/dev/null &&
+		journalctl -b --since "@$login_started_epoch" --no-pager -o cat 2>/dev/null |
+		grep -F "account has no available credentials" >/dev/null; then
+		printf '%s\n' "Kanidm account $kanidm_name is not bootstrapped; skipping IdM auto-apply until the password-backed account can log in." >&2
+		rm -f "$login_output"
+		return 0
+	fi
+
+	printf '%s\n' "Kanidm auto-apply login failed for $kanidm_name; refusing to skip because this does not look like an unbootstrapped account." >&2
+	cat "$login_output" >&2
+	rm -f "$login_output"
+	exit "$login_rc"
 }
 
 usage() {

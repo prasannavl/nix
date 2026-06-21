@@ -158,7 +158,9 @@ in {
         kanidmPackage
         pkgs.coreutils
         pkgs.curl
+        pkgs.gnugrep
         pkgs.jq
+        pkgs.systemd
       ];
       runtimeEnv.KANIDM_DECLARATIVE_METADATA = metadata;
       text = ''
