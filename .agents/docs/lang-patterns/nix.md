@@ -106,6 +106,9 @@
 ## Lists and attrsets
 
 - Nix lists use spaces, not commas: `[ a b c ]`, not `[a, b, c]`.
+- Parenthesize function applications when they are single list elements:
+  `[(subDomain "chat")]`, not `[subDomain "chat"]`. The latter is two list
+  elements: the function and the string.
 - Attrset keys do not need quotes unless they contain special characters:
   `{ foo = 1; }`, not `{ "foo" = 1; }`.
 - Use `//` for attrset merging. The right side wins on conflict.
