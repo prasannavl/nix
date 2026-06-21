@@ -192,6 +192,7 @@ rec {
         endpointGroupData = endpointGroups.${endpointGroup};
       in
         {
+          activeEndpointGroup = endpointGroupData.activeEndpointGroup or activeEndpointGroup;
           enableExternalConnectors = endpointGroupData.enableExternalConnectors or false;
           tunnels = recursiveMerge tunnels (endpointGroupData.tunnels or {});
         }
@@ -217,7 +218,7 @@ rec {
   }: let
     hostMap = hostsByDomain domains;
     resolvedTunnelHosts = tunnelHosts tunnelDomains;
-    endpointGroupFor = group: builtins.removeAttrs endpointGroups.${group} ["enableExternalConnectors" "roles" "tunnels"];
+    endpointGroupFor = group: builtins.removeAttrs endpointGroups.${group} ["activeEndpointGroup" "enableExternalConnectors" "roles" "tunnels"];
     endpointSpecFor = role: group:
       (endpointGroupFor group)
       // (endpointGroups.${group}.roles.${role} or {});
