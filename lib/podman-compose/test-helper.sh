@@ -195,8 +195,12 @@ run_failed_start_cleanup_retry_test() {
 	staged_compose_file="${working_dir}/compose.yml"
 	printf '%s\n' "services: {}" >"$staged_compose_file"
 	printf '%s\n' "$staged_compose_file" >"$manifest_path"
-	record_helper_ownership_state
+	record_staging_runtime_state
 	assert_adoption_allowed
+	if [ "$(jq -r '.startupPhase // ""' "$state_path")" != "staging" ]; then
+		printf '%s\n' "expected failed-start state to record startupPhase=staging" >&2
+		exit 1
+	fi
 	cleanup_runtime_files
 	assert_path_absent "$staged_compose_file"
 	assert_path_exists "$working_dir/data"

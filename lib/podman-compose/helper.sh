@@ -234,9 +234,29 @@ working_dir_is_uninitialized_helper_shell() {
 		rel="${path#"$working_dir"/}"
 		case "$rel" in
 		.podman-compose | .podman-compose/lifecycle.lock) ;;
-		*) return 1 ;;
+		*)
+			if ! working_dir_path_is_declared_helper_staging "$path"; then
+				return 1
+			fi
+			;;
 		esac
 	done < <(find "$working_dir" -mindepth 1 -print)
+}
+
+working_dir_path_is_declared_helper_staging() {
+	local path
+	path="$1"
+
+	jq -e --arg path "$path" '
+		def contains_path($parent; $child):
+			$child == $parent or ($child | startswith($parent + "/"));
+
+		any(.stagedDirs[]?.dst; contains_path(.; $path) or contains_path($path; .))
+		or any(.stagedFiles[]?.dst; . == $path or contains_path($path; .))
+		or any(.envSecretFiles[]?.dst; . == $path or contains_path($path; .))
+		or any(.reload.dirs[]?.dst; contains_path(.; $path) or contains_path($path; .))
+		or any(.reload.stagedFiles[]?.dst; . == $path or contains_path($path; .))
+	' "$podman_compose_metadata" >/dev/null
 }
 
 assert_adoption_allowed() {
@@ -749,10 +769,6 @@ clear_removal_policy_marker() {
 		return
 	fi
 	write_runtime_state_with_filter 'del(.removalPolicy)'
-}
-
-record_helper_ownership_state() {
-	write_runtime_state_with_filter '.'
 }
 
 failing_states_report() {
@@ -1399,7 +1415,23 @@ record_runtime_state() {
 			--arg adoptionStamp "$adoption_stamp" \
 			--arg reconcilePolicy "$reconcile_policy" \
 			--arg restartStamp "$restart_stamp" \
-			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp}' >"$tmp_state"
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp} | del(.startupPhase)' >"$tmp_state"
+	chmod 0640 "$tmp_state"
+	mv -f "$tmp_state" "$state_path"
+}
+
+record_staging_runtime_state() {
+	local tmp_state
+	install -d -m 0750 "$generated_dir"
+	tmp_state="${state_path}.tmp"
+	existing_runtime_state_json |
+		jq -c \
+			--argjson version "$runtime_state_version" \
+			--arg kind "$runtime_state_kind" \
+			--arg adoptionStamp "$adoption_stamp" \
+			--arg reconcilePolicy "$reconcile_policy" \
+			--arg restartStamp "$restart_stamp" \
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp, startupPhase: "staging"}' >"$tmp_state"
 	chmod 0640 "$tmp_state"
 	mv -f "$tmp_state" "$state_path"
 }
@@ -1418,7 +1450,7 @@ record_applied_recreate_state() {
 			--arg recreateTag "$recreate_tag" \
 			--arg recreateStamp "$recreate_stamp" \
 			--arg recreateClassStamp "$recreate_class_stamp" \
-			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp, recreateTag: $recreateTag, recreateStamp: $recreateStamp, recreateClassStamp: $recreateClassStamp}' >"$tmp_state"
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp, recreateTag: $recreateTag, recreateStamp: $recreateStamp, recreateClassStamp: $recreateClassStamp} | del(.startupPhase)' >"$tmp_state"
 	chmod 0640 "$tmp_state"
 	mv -f "$tmp_state" "$state_path"
 }
@@ -1522,6 +1554,7 @@ cmd_link_files() {
 	assert_adoption_allowed
 	ensure_runtime_dirs
 	lock_lifecycle_exclusive
+	record_staging_runtime_state
 	stage_runtime_files
 	record_runtime_state
 	unlock_lifecycle_exclusive
@@ -1562,6 +1595,7 @@ cmd_reload() {
 		fi
 		cleanup_runtime_files
 		ensure_runtime_dirs
+		record_staging_runtime_state
 		stage_runtime_files
 		repair_stale_rootless_netns_resolver
 		run_pre_start_hooks
@@ -1599,7 +1633,7 @@ cmd_start() {
 	ensure_runtime_dirs
 	lock_lifecycle_exclusive
 	clear_removal_policy_marker
-	record_helper_ownership_state
+	record_staging_runtime_state
 	stage_runtime_files
 	repair_stale_rootless_netns_resolver
 	run_pre_start_hooks

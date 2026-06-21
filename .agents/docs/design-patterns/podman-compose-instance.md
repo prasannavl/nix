@@ -78,6 +78,10 @@ include only what applies, but keep the relative order stable.
   `delete-all` only for explicit removal semantics. Re-declaring a kept working
   directory requires matching `.podman-compose/state.json` identity state or a
   one-time `adopt = true`.
+- First-start staging must write compatible helper state before creating runtime
+  files or starting Compose. If `podman compose up` fails after helper staging,
+  the next start should recover helper-created declared paths instead of
+  requiring `adopt = true`.
 - Do not use `autoStart = false` to mean desired stopped state. Keep `autoStart`
   for lower-level cold-start behavior on otherwise running services.
 
