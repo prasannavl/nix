@@ -1646,7 +1646,7 @@
       unitConfig.Requires = dependsOnUnits ++ lib.optional hasImagePullUnit imagePullUnit;
       serviceConfig = {
         Type = "notify";
-        NotifyAccess = "all";
+        NotifyAccess = "main";
         Environment = helperEnvironment;
         # Allow first start when the compose working directory doesn't exist yet.
         # ExecStart creates it before invoking podman compose.
@@ -1658,6 +1658,7 @@
         KillMode = "mixed";
         Delegate = true;
         Restart = "on-failure";
+        TimeoutStopSec = lib.mkDefault 180;
       };
     };
     imagePullSystemdService = lib.optionalAttrs hasImagePullUnit {

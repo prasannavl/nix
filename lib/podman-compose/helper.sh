@@ -27,6 +27,8 @@ init_vars() {
 	restart_stamp=""
 	monitor_interval=10
 	stale_rootless_netns_repaired=0
+	compose_start_default_timeout_seconds=90
+	compose_stop_default_timeout_seconds=180
 
 	compose_args=()
 	compose_file_args=()
@@ -43,6 +45,10 @@ require_env() {
 		printf '%s\n' "missing required environment variable: $name" >&2
 		exit 1
 	fi
+}
+
+now_epoch() {
+	date +%s
 }
 
 load_metadata() {
@@ -139,6 +145,10 @@ close_lifecycle_fds_for_child() {
 	exec 9>&- 2>/dev/null || true
 }
 
+podman_no_notify() {
+	env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC podman "$@"
+}
+
 run_lifecycle_hook_command() {
 	local hook_name command ignore_failure status
 	hook_name="$1"
@@ -202,7 +212,7 @@ working_dir_has_compose_containers() {
 	if ! containers="$(
 		close_lifecycle_fds_for_child
 		cd /
-		podman ps -a \
+		podman_no_notify ps -a \
 			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
 			--format '{{.ID}}'
 	)"; then
@@ -266,7 +276,7 @@ run_scoped() {
 	if [ "$scope" = "container" ]; then
 		(
 			close_lifecycle_fds_for_child
-			podman unshare "$@"
+			podman_no_notify unshare "$@"
 		)
 	else
 		(
@@ -759,57 +769,293 @@ compose_state_json() {
 	(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" ps --format json
+		podman_no_notify compose "${compose_args[@]}" "${compose_file_args[@]}" ps --format json
 	)
 }
 
 compose_up() {
-	(
-		close_lifecycle_fds_for_child
-		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans 2>&1
-	)
+	compose_up_supervised normal
 }
 
 compose_up_force_recreate() {
-	(
-		close_lifecycle_fds_for_child
-		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans --force-recreate 2>&1
-	)
+	compose_up_supervised force
+}
+
+compose_up_fatal_line() {
+	local line
+	line="$1"
+	grep -Eq \
+		'container name ".*" is already in use|cannot be used as a dependency|rootlessport listen tcp .* bind:' \
+		<<<"$line"
+}
+
+parse_systemd_timespan_seconds() {
+	local value token number unit total=0
+	value="$1"
+
+	case "$value" in
+	"" | infinity)
+		printf '%s\n' 0
+		return 0
+		;;
+	esac
+
+	for token in $value; do
+		if [[ "$token" =~ ^([0-9]+)([a-zA-Z]+)$ ]]; then
+			number="${BASH_REMATCH[1]}"
+			unit="${BASH_REMATCH[2]}"
+		elif [[ "$token" =~ ^([0-9]+)$ ]]; then
+			number="${BASH_REMATCH[1]}"
+			unit="s"
+		else
+			continue
+		fi
+
+		case "$unit" in
+		us | usec)
+			[ "$number" -gt 0 ] && total=$((total + 1))
+			;;
+		ms | msec)
+			total=$((total + (number + 999) / 1000))
+			;;
+		s | sec)
+			total=$((total + number))
+			;;
+		min)
+			total=$((total + number * 60))
+			;;
+		h | hr)
+			total=$((total + number * 3600))
+			;;
+		d | day)
+			total=$((total + number * 86400))
+			;;
+		esac
+	done
+
+	printf '%s\n' "$total"
+}
+
+compose_unit_timeout_seconds() {
+	local property default_seconds timeout_value timeout_seconds
+	property="$1"
+	default_seconds="$2"
+	timeout_value="$(systemctl --user show --property="$property" --value "${podman_compose_service_name}.service" 2>/dev/null || true)"
+	timeout_seconds="$(parse_systemd_timespan_seconds "$timeout_value")"
+	if [ "$timeout_seconds" -le 0 ]; then
+		timeout_seconds="$default_seconds"
+	fi
+	printf '%s\n' "$timeout_seconds"
+}
+
+compose_start_timeout_seconds() {
+	compose_unit_timeout_seconds TimeoutStartUSec "$compose_start_default_timeout_seconds"
+}
+
+compose_stop_timeout_seconds() {
+	compose_unit_timeout_seconds TimeoutStopUSec "$compose_stop_default_timeout_seconds"
+}
+
+compose_cleanup_reserve_seconds() {
+	local timeout_seconds reserve_seconds
+	timeout_seconds="$1"
+	reserve_seconds="$((timeout_seconds / 10))"
+	if [ "$reserve_seconds" -lt 5 ]; then
+		reserve_seconds=5
+	fi
+	if [ "$reserve_seconds" -gt 30 ]; then
+		reserve_seconds=30
+	fi
+	if [ "$timeout_seconds" -le "$((reserve_seconds + 1))" ]; then
+		reserve_seconds=1
+	fi
+	printf '%s\n' "$reserve_seconds"
+}
+
+terminate_compose_process() {
+	local pid
+	pid="$1"
+	kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+	sleep 1
+	kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+}
+
+compose_command_supervised() {
+	local label timeout_seconds reserve_seconds deadline_seconds started_at now line timeout_seen=0 status=0
+	local compose_output_fd compose_pid
+	label="$1"
+	timeout_seconds="$2"
+	shift 2
+
+	reserve_seconds="$(compose_cleanup_reserve_seconds "$timeout_seconds")"
+	started_at="$(now_epoch)"
+	deadline_seconds="$((started_at + timeout_seconds - reserve_seconds))"
+
+	coproc COMPOSE_CMD_PROC {
+		(
+			close_lifecycle_fds_for_child
+			cd "$working_dir"
+			exec setsid env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC "$@"
+		) 2>&1
+	}
+	compose_pid="$COMPOSE_CMD_PROC_PID"
+	compose_output_fd="${COMPOSE_CMD_PROC[0]}"
+
+	while true; do
+		if IFS= read -r -t 1 -u "$compose_output_fd" line 2>/dev/null; then
+			printf '%s\n' "$line"
+			continue
+		fi
+
+		now="$(now_epoch)"
+		if [ "$now" -ge "$deadline_seconds" ]; then
+			printf '%s\n' "podman compose ${label} exceeded helper deadline for ${podman_compose_service_name}; reserving ${reserve_seconds}s for cleanup before systemd timeout" >&2
+			terminate_compose_process "$compose_pid"
+			timeout_seen=1
+			break
+		fi
+
+		if ! kill -0 "$compose_pid" 2>/dev/null; then
+			break
+		fi
+	done
+
+	while IFS= read -r -t 0.1 -u "$compose_output_fd" line 2>/dev/null; do
+		printf '%s\n' "$line"
+	done
+
+	wait "$compose_pid" || status="$?"
+	exec {compose_output_fd}<&- 2>/dev/null || true
+
+	if [ "$timeout_seen" -eq 1 ]; then
+		return 1
+	fi
+	return "$status"
+}
+
+compose_up_supervised() {
+	local mode timeout_seconds reserve_seconds deadline_seconds started_at now line fatal_seen=0 status=0
+	local compose_output_fd compose_up_pid
+	local -a up_args=()
+	mode="$1"
+	timeout_seconds="$(compose_start_timeout_seconds)"
+	reserve_seconds="$(compose_cleanup_reserve_seconds "$timeout_seconds")"
+	started_at="$(now_epoch)"
+	deadline_seconds="$((started_at + timeout_seconds - reserve_seconds))"
+
+	up_args=(podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans)
+	if [ "$mode" = "force" ]; then
+		up_args+=(--force-recreate)
+	fi
+
+	coproc COMPOSE_UP_PROC {
+		(
+			close_lifecycle_fds_for_child
+			cd "$working_dir"
+			exec setsid env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC "${up_args[@]}"
+		) 2>&1
+	}
+	compose_up_pid="$COMPOSE_UP_PROC_PID"
+	compose_output_fd="${COMPOSE_UP_PROC[0]}"
+
+	while true; do
+		if IFS= read -r -t 1 -u "$compose_output_fd" line 2>/dev/null; then
+			printf '%s\n' "$line"
+			if compose_up_fatal_line "$line"; then
+				fatal_seen=1
+				printf '%s\n' "podman compose start hit fatal output for ${podman_compose_service_name}; terminating early" >&2
+				terminate_compose_process "$compose_up_pid"
+				break
+			fi
+			continue
+		fi
+
+		now="$(now_epoch)"
+		if [ "$now" -ge "$deadline_seconds" ]; then
+			printf '%s\n' "podman compose start exceeded helper deadline for ${podman_compose_service_name}; reserving ${reserve_seconds}s for cleanup before systemd timeout" >&2
+			terminate_compose_process "$compose_up_pid"
+			fatal_seen=1
+			break
+		fi
+
+		if ! kill -0 "$compose_up_pid" 2>/dev/null; then
+			break
+		fi
+	done
+
+	while IFS= read -r -t 0.1 -u "$compose_output_fd" line 2>/dev/null; do
+		printf '%s\n' "$line"
+	done
+
+	wait "$compose_up_pid" || status="$?"
+	exec {compose_output_fd}<&- 2>/dev/null || true
+
+	if [ "$fatal_seen" -eq 1 ]; then
+		return 1
+	fi
+	return "$status"
 }
 
 compose_down() {
-	(
-		close_lifecycle_fds_for_child
-		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" down 2>&1
-	)
+	compose_command_supervised down "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" down
 }
 
 compose_project_container_ids() {
 	(
 		close_lifecycle_fds_for_child
 		cd /
-		podman ps -a \
+		podman_no_notify ps -a \
 			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
 			--format '{{.ID}}'
 	)
 }
 
+compose_project_container_names() {
+	local compose_project compose_service
+	compose_project="$(basename "$working_dir")"
+	for compose_service in "${expected_compose_services[@]}"; do
+		[ -n "$compose_service" ] || continue
+		printf '%s\n' "${compose_project}_${compose_service}_1"
+	done
+}
+
+remove_container_target() {
+	local target remove_error
+	target="$1"
+	if remove_error="$(podman_no_notify rm -f "$target" 2>&1)"; then
+		[ -n "$remove_error" ] && printf '%s\n' "$remove_error"
+		return 0
+	fi
+	case "$remove_error" in
+	*"no such container"* | *"no container with name or ID"*)
+		return 0
+		;;
+	esac
+	printf '%s\n' "$remove_error" >&2
+	return 1
+}
+
 remove_compose_project_containers() {
-	local container containers=()
+	local container failed=0 containers=() container_names=()
 
 	while IFS= read -r container; do
 		[ -n "$container" ] || continue
 		containers+=("$container")
 	done < <(compose_project_container_ids)
 
-	[ "${#containers[@]}" -gt 0 ] || return 0
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		container_names+=("$container")
+	done < <(compose_project_container_names)
+
+	[ "${#containers[@]}" -gt 0 ] || [ "${#container_names[@]}" -gt 0 ] || return 0
 	printf '%s\n' "removing stale podman compose containers for ${podman_compose_service_name}"
 	(
 		close_lifecycle_fds_for_child
-		podman rm -f "${containers[@]}"
+		for container in "${containers[@]}" "${container_names[@]}"; do
+			remove_container_target "$container" || failed=1
+		done
+		return "$failed"
 	)
 }
 
@@ -821,6 +1067,17 @@ cleanup_failed_compose_start() {
 	if ! remove_compose_project_containers; then
 		printf '%s\n' "direct removal of failed podman compose containers also failed for ${podman_compose_service_name}" >&2
 	fi
+}
+
+post_stop_should_cleanup_failed_start() {
+	case "${SERVICE_RESULT-}" in
+	"" | success)
+		return 1
+		;;
+	*)
+		return 0
+		;;
+	esac
 }
 
 compose_up_checked() {
@@ -853,26 +1110,18 @@ compose_up_checked() {
 }
 
 compose_down_volumes() {
-	(
-		close_lifecycle_fds_for_child
-		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" down --volumes 2>&1
-	)
+	compose_command_supervised "down --volumes" "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" down --volumes
 }
 
 compose_stop() {
-	(
-		close_lifecycle_fds_for_child
-		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" stop 2>&1
-	)
+	compose_command_supervised stop "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" stop
 }
 
 compose_pull() {
 	(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${pull_compose_file_args[@]}" pull 2>&1
+		podman_no_notify compose "${compose_args[@]}" "${pull_compose_file_args[@]}" pull 2>&1
 	)
 }
 
@@ -880,7 +1129,7 @@ compose_logs() {
 	(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" logs "$@"
+		podman_no_notify compose "${compose_args[@]}" "${compose_file_args[@]}" logs "$@"
 	)
 }
 
@@ -911,7 +1160,7 @@ repair_stale_rootless_netns_resolver() {
 	[ -e "$resolved_stub" ] || return 0
 	[ ! -e "$netns_resolved_stub" ] || return 0
 
-	if running_containers="$(podman ps -q)"; then
+	if running_containers="$(podman_no_notify ps -q)"; then
 		if [ -n "$running_containers" ]; then
 			printf '%s\n' "podman rootless netns resolver state is stale but containers are running; leaving $netns_dir unchanged"
 			return 0
@@ -930,7 +1179,7 @@ running_compose_services() {
 	(
 		close_lifecycle_fds_for_child
 		cd /
-		podman ps \
+		podman_no_notify ps \
 			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
 			--format json |
 			jq -r '.[] | (.Labels["io.podman.compose.service"] // .Labels["com.docker.compose.service"] // empty)' |
@@ -963,7 +1212,7 @@ compose_reload_signal() {
 	(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
-		podman compose "${compose_args[@]}" "${compose_file_args[@]}" kill --signal "$reload_signal" "${reload_services[@]}" 2>&1
+		podman_no_notify compose "${compose_args[@]}" "${compose_file_args[@]}" kill --signal "$reload_signal" "${reload_services[@]}" 2>&1
 	)
 }
 
@@ -1390,6 +1639,10 @@ cmd_post_stop() {
 	fi
 	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
+	if post_stop_should_cleanup_failed_start; then
+		printf '%s\n' "systemd reported ${podman_compose_service_name}.service result=${SERVICE_RESULT}; running failed-start cleanup"
+		cleanup_failed_compose_start
+	fi
 	if ! apply_compose_post_stop_policy "$stop_policy"; then
 		unlock_lifecycle_exclusive
 		return 1

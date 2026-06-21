@@ -184,15 +184,33 @@ For each instance, the generated service:
 
 - stages managed files into the working directory
 - removes managed file-versus-directory conflicts before restaging
-- runs `podman compose up -d --remove-orphans`
+- runs supervised `podman compose up -d --remove-orphans`
 - verifies that containers reached a healthy running state
 - stays attached with a monitor loop so systemd can observe failure
 
-Failed starts must leave the compose project retryable. If `podman compose up`
-fails or the immediate post-start state check finds failed or missing
-containers, the helper removes only the compose project containers and networks
-before returning failure. It does not remove volumes or managed data
-directories; persistent data recovery remains an operator decision.
+Readiness is owned by the helper/monitor process only. Generated units use
+`NotifyAccess = "main"`, and helper-spawned `podman` commands scrub systemd
+notify/watchdog environment so conmon or container children cannot satisfy
+readiness or become the effective `Type=notify` authority.
+
+Failed starts must leave the compose project retryable. The helper owns
+`podman compose up` supervision and derives its deadline from the effective
+systemd `TimeoutStartSec`, keeping a small cleanup reserve before systemd would
+kill the helper. If compose output shows a fatal start error, the helper should
+terminate compose early instead of waiting for the full timeout.
+
+Stop paths are also helper-supervised against the unit's own timeout budget.
+`compose stop`, `compose down`, and `compose down --volumes` derive their
+deadline from `TimeoutStopSec`; generated compose units set it explicitly so the
+helper has a predictable cleanup window instead of relying on the user manager
+default.
+
+Failed-start cleanup removes only compose project containers and networks,
+including expected compose container names left behind by partial Podman storage
+state. It does not remove volumes or managed data directories; persistent data
+recovery remains an operator decision. `ExecStopPost` may call the same cleanup
+after a systemd timeout or helper crash, but it is a backstop rather than the
+primary failure path.
 
 The user-service switching path is handled by
 [`docs/systemd-user-manager.md`](./systemd-user-manager.md).
