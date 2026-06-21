@@ -17,7 +17,8 @@ include only what applies, but keep the relative order stable.
 7. **env** / **envSecrets**
 8. **dirs**
 9. **fileSecrets** / **trustedCa** / **files**
-10. **serviceOverrides.preStart**
+10. **preStart** / **preStop**
+11. **serviceOverrides**
 
 ## Why
 
@@ -41,8 +42,13 @@ include only what applies, but keep the relative order stable.
   service needs both files. Keep app-native CA flags in `source` when an app
   requires a specific option such as `custom_ca_path`, `OC_LDAP_CACERT`, or
   `ssl.ca_file_path`.
-- `preStart` runs before the container starts and often depends on staged path
-  layout, so it comes last.
+- `preStart` and `preStop` are helper-owned lifecycle hooks. `preStart` runs
+  after helper-managed dirs, files, env secrets, and file secrets are staged and
+  before `podman compose up`; use it for first-run env generation, image loads,
+  bootstrap commands, and other work that depends on the staged runtime tree.
+  `preStop` runs before the helper applies the compose stop policy and accepts a
+  leading `-` on a command to ignore failure. Keep raw `serviceOverrides` last
+  for true systemd-level overrides such as timeouts or `ExecStartPost`.
 
 ## Lifecycle Policy
 
@@ -132,8 +138,10 @@ services.podman-compose.pvl.instances.example = rec {
   files."example/config.yml" = ''
     key: value
   '';
-  serviceOverrides.preStart = ''
+  preStart = [
+    ''
     install -d -m 0750 /var/lib/example
-  '';
+  ''
+  ];
 };
 ```

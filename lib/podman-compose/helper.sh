@@ -26,6 +26,7 @@ init_vars() {
 	reload_signal="HUP"
 	restart_stamp=""
 	monitor_interval=10
+	stale_rootless_netns_repaired=0
 
 	compose_args=()
 	compose_file_args=()
@@ -136,6 +137,58 @@ unlock_lifecycle_shared() {
 close_lifecycle_fds_for_child() {
 	exec 8>&- 2>/dev/null || true
 	exec 9>&- 2>/dev/null || true
+}
+
+run_lifecycle_hook_command() {
+	local hook_name command ignore_failure status
+	hook_name="$1"
+	command="$2"
+	ignore_failure=0
+
+	if [ "${command#-}" != "$command" ]; then
+		ignore_failure=1
+		command="${command#-}"
+	fi
+	[ -n "$command" ] || return 0
+
+	if (
+		close_lifecycle_fds_for_child
+		if [ -d "$working_dir" ]; then
+			cd "$working_dir"
+		else
+			cd /
+		fi
+		/bin/sh -eu -c "$command"
+	); then
+		return 0
+	fi
+
+	status="$?"
+	if [ "$ignore_failure" -eq 1 ]; then
+		printf '%s\n' "podman compose ${hook_name} hook failed with status ${status}; ignoring"
+		return 0
+	fi
+	printf '%s\n' "podman compose ${hook_name} hook failed with status ${status}" >&2
+	return "$status"
+}
+
+run_lifecycle_hooks() {
+	local hook_name metadata_key encoded command
+	hook_name="$1"
+	metadata_key="$2"
+	while IFS= read -r encoded; do
+		[ -n "$encoded" ] || continue
+		command="$(printf '%s' "$encoded" | base64 -d)"
+		run_lifecycle_hook_command "$hook_name" "$command"
+	done < <(jq -r --arg key "$metadata_key" '.[$key][]? | @base64' "$podman_compose_metadata")
+}
+
+run_pre_start_hooks() {
+	run_lifecycle_hooks preStart preStart
+}
+
+run_pre_stop_hooks() {
+	run_lifecycle_hooks preStop preStop
 }
 
 adoption_state_matches() {
@@ -766,6 +819,48 @@ compose_logs() {
 	)
 }
 
+rootless_netns_has_live_connection() {
+	local netns_dir pid_file pid
+	netns_dir="$1"
+	pid_file="$netns_dir/rootless-netns-conn.pid"
+
+	[ -s "$pid_file" ] || return 1
+	read -r pid <"$pid_file" || return 1
+	case "$pid" in
+	"" | *[!0-9]*)
+		return 1
+		;;
+	esac
+	[ -d "/proc/$pid" ]
+}
+
+repair_stale_rootless_netns_resolver() {
+	local netns_dir resolved_stub netns_resolved_stub running_containers
+
+	[ -n "$runtime_dir" ] || return 0
+	netns_dir="$runtime_dir/containers/networks/rootless-netns"
+	resolved_stub="/run/systemd/resolve/stub-resolv.conf"
+	netns_resolved_stub="$netns_dir/run/systemd/resolve/stub-resolv.conf"
+
+	[ -d "$netns_dir" ] || return 0
+	[ -e "$resolved_stub" ] || return 0
+	[ ! -e "$netns_resolved_stub" ] || return 0
+
+	if running_containers="$(podman ps -q)"; then
+		if [ -n "$running_containers" ]; then
+			printf '%s\n' "podman rootless netns resolver state is stale but containers are running; leaving $netns_dir unchanged"
+			return 0
+		fi
+	elif rootless_netns_has_live_connection "$netns_dir"; then
+		printf '%s\n' "podman rootless netns resolver state is stale but namespace connection is live; leaving $netns_dir unchanged"
+		return 0
+	fi
+
+	printf '%s\n' "removing stale inactive podman rootless netns resolver state: $netns_dir"
+	rm -rf -- "$netns_dir"
+	stale_rootless_netns_repaired=1
+}
+
 running_compose_services() {
 	(
 		close_lifecycle_fds_for_child
@@ -1149,7 +1244,13 @@ cmd_reload() {
 		cleanup_runtime_files
 		ensure_runtime_dirs
 		stage_runtime_files
-		compose_up
+		repair_stale_rootless_netns_resolver
+		run_pre_start_hooks
+		if [ "$stale_rootless_netns_repaired" -eq 1 ]; then
+			compose_up_force_recreate
+		else
+			compose_up
+		fi
 		verify_compose_state
 		record_runtime_state
 		;;
@@ -1181,7 +1282,9 @@ cmd_start() {
 	lock_lifecycle_exclusive
 	clear_removal_policy_marker
 	stage_runtime_files
-	if should_force_recreate; then
+	repair_stale_rootless_netns_resolver
+	run_pre_start_hooks
+	if [ "$stale_rootless_netns_repaired" -eq 1 ] || should_force_recreate; then
 		force_recreate=1
 		compose_up_force_recreate
 	else
@@ -1202,6 +1305,7 @@ cmd_stop() {
 	load_metadata
 	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
+	run_pre_stop_hooks
 	if ! apply_compose_stop_policy "$stop_policy"; then
 		unlock_lifecycle_exclusive
 		return 1

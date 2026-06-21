@@ -13,11 +13,15 @@
   managed restrictive parent directories.
 - When a service must bind-mount a host path outside the compose working
   directory, declare it as an absolute `dirs` key instead of embedding raw
-  `podman unshare` shell in `serviceOverrides.preStart`.
+  `podman unshare` shell in a lifecycle hook.
 - The parent of an absolute `dirs` path must already exist and be
   searchable/writable by the stack user; prefer the stack root as that parent.
 - Absolute `dirs` entries are also ensure helpers: when a user or group is set,
   the runtime helper reapplies the requested ownership and mode even if the
   directory already exists.
+- If a service still needs first-run shell around a managed absolute path, put
+  it in the podman-compose instance `preStart` hook, not
+  `serviceOverrides.preStart`; helper-owned `preStart` runs after `dirs` are
+  staged.
 - `hosts/pvl-x2/services/postgres.nix` is the canonical example of the external
   data-dir bootstrap pattern.

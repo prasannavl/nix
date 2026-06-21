@@ -586,9 +586,15 @@ Representative hosts and surfaces:
 - Podman instances can set `adopt = true` temporarily to reclaim an unmanaged
   working directory, including one previously handed off with
   `removalPolicy = "keep"`.
+- Helper-owned `preStart` and `preStop` hooks run inside the compose helper, not
+  as raw systemd overrides. Use them for staged-runtime-dependent bootstrap and
+  pre-stop commands; keep `serviceOverrides` for true unit-level behavior.
 - Under Podman `auto`, recreate-relevant drift and explicit `recreateTag`
   force-recreate while reload-safe drift still routes through reload. Under
   `restart` and `recreate`, any declarative drift uses the selected blunt mode.
 - Podman has no `reconcilePolicy = "ignore"` mode.
 - `recreateOnSwitch` is removed from the public Podman API and from known
   callsites.
+- The start and restart-style reload paths repair stale inactive rootless
+  network namespace resolver state before `podman compose up`, and force
+  recreate when repair was needed so Podman does not reuse broken containers.

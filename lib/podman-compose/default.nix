@@ -54,9 +54,8 @@
     serviceName = null;
     serviceOverrides = {};
     composeArgs = [];
-    stop = {
-      pre = [];
-    };
+    preStart = [];
+    preStop = [];
     reload = {
       method = "restart";
       signal = "HUP";
@@ -575,10 +574,16 @@
         description = "Additional arguments passed to every `podman compose` invocation for this instance, before compose-file flags and the subcommand.";
       };
 
-      stop.pre = lib.mkOption {
+      preStart = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = serviceDefaults.stop.pre;
-        description = "Commands to run before the generated `podman compose stop` command.";
+        default = serviceDefaults.preStart;
+        description = "Commands to run inside the compose helper after runtime dirs, files, and secrets are staged, and before `podman compose up`.";
+      };
+
+      preStop = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = serviceDefaults.preStop;
+        description = "Commands to run inside the compose helper before applying the compose stop policy. Prefix a command with `-` to ignore failure.";
       };
 
       reload = lib.mkOption {
@@ -1416,6 +1421,7 @@
         {
           unit = restartSystemdService;
           reload = service.reload;
+          preStart = service.preStart;
           files = stagedFileActionInputs restartStagedEntries;
           dirs = lib.mapAttrs (dirName: entry: dirPermsJson dirName entry) restartDirs;
           dirRuntimePaths = restartDirRuntimePaths;
@@ -1466,6 +1472,7 @@
           reload = actionInputs.reload;
           restart = actionInputs.restart;
           recreate = actionInputs.recreate;
+          preStop = service.preStop;
           reloadTag = service.reloadTag;
           bootTag = service.bootTag;
           recreateTag = service.recreateTag;
@@ -1540,7 +1547,7 @@
     });
     helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
       builtins.toJSON {
-        version = 9;
+        version = 10;
         serviceName = resolvedSystemdServiceName;
         workingDir = resolvedWorkingDir;
         adoptionStamp = adoptionStamp;
@@ -1548,6 +1555,8 @@
         reconcilePolicy = service.reconcilePolicy;
         removalPolicy = service.removalPolicy;
         adopt = service.adopt;
+        preStart = service.preStart;
+        preStop = service.preStop;
         composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
         pullComposeFiles = resolvedPullComposeFiles;
@@ -1643,7 +1652,7 @@
         # ExecStart creates it before invoking podman compose.
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${helperScript} start";
-        ExecStop = service.stop.pre ++ ["${helperScript} stop"];
+        ExecStop = "${helperScript} stop";
         ExecReload = "${helperScript} reload";
         ExecStopPost = "${helperScript} post-stop";
         KillMode = "mixed";
