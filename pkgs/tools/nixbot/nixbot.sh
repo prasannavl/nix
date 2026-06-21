@@ -339,6 +339,8 @@ init_vars() {
 	NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS="${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS:-5}"
 	NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX="${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX:-3}"
 	NIXBOT_REMOTE_READ_TIMEOUT_SECS="${NIXBOT_REMOTE_READ_TIMEOUT_SECS:-20}"
+	NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS="${NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS:-1200}"
+	NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS="${NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS:-180}"
 	NIXBOT_CANCEL_REQUESTED=0
 	NIXBOT_CANCEL_LAST_SIGNAL_EPOCH=0
 	NIXBOT_CANCEL_ACTIVE_DEPLOYS_SEEN=0
@@ -1256,6 +1258,8 @@ parse_args() {
 	[[ "${NIXBOT_BUILD_HEARTBEAT_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_BUILD_HEARTBEAT_SECS: ${NIXBOT_BUILD_HEARTBEAT_SECS} (must be a non-negative integer)"
 	[[ "${NIXBOT_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${NIXBOT_PARALLEL_JOBS} (must be a positive integer)"
 	[[ "${NIXBOT_VERIFY_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --verify-jobs: ${NIXBOT_VERIFY_JOBS} (must be a positive integer)"
+	[[ "${NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS: ${NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS} (must be a positive integer)"
+	[[ "${NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS: ${NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS} (must be a positive integer)"
 	case "${LOG_FORMAT}" in
 	auto | gh | github-actions | plain) ;;
 	*) die "Unsupported --log-format: ${LOG_FORMAT}" ;;
@@ -1385,6 +1389,53 @@ deploy_activation_marker_file() {
 	printf '%s/%s.activation\n' "${TMP_DEPLOY_JOB_DIR}" "${node_hash}"
 }
 
+nixbot_run_id() {
+	local run_id=""
+
+	ensure_runtime_work_dir
+	run_id="$(basename "${RUNTIME_WORK_DIR}")"
+	run_id="${run_id#run-}"
+	printf '%s\n' "$(printf '%s' "${run_id}" | tr -c 'a-zA-Z0-9._-' '-')"
+}
+
+nixbot_host_unit_name() {
+	local purpose="$1" node="$2" run_id="" node_hash=""
+
+	run_id="$(nixbot_run_id)"
+	node_hash="$(printf '%s' "${node}" | sha256sum | cut -c 1-16)"
+	printf 'nixbot-%s-%s-%s\n' "${purpose}" "${run_id}" "${node_hash}"
+}
+
+deploy_activation_unit_name() {
+	local node="$1"
+
+	nixbot_host_unit_name switch-to-configuration "${node}"
+}
+
+rollback_activation_unit_name() {
+	local node="$1"
+
+	nixbot_host_unit_name rollback-to-configuration "${node}"
+}
+
+nixbot_activation_lock_command() {
+	local switch_path="$1" goal="$2" lock_path="/run/nixbot-switch-to-configuration.lock"
+
+	printf '%q --close -n -E 75 %q %q %q' \
+		"/run/current-system/sw/bin/flock" \
+		"${lock_path}" \
+		"${switch_path}" \
+		"${goal}"
+}
+
+nixbot_activation_systemd_run_properties() {
+	printf -- '--property=%q --property=%q --property=%q --property=%q ' \
+		"RuntimeMaxSec=${NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS}s" \
+		"TimeoutStopSec=${NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS}s" \
+		"KillMode=control-group" \
+		"CollectMode=inactive-or-failed"
+}
+
 deploy_pre_activation_cancel_marker_file() {
 	local node="$1" node_hash=""
 
@@ -1466,13 +1517,14 @@ wait_active_deploy_jobs_to_finish() {
 }
 
 active_deploy_activation_units_running() {
-	local file="" node="" check_cmd="" state=""
+	local file="" node="" unit_name="" check_cmd="" state=""
 
 	while IFS= read -r file; do
 		[ -n "${file}" ] || continue
 		node="$(cat "${file}" 2>/dev/null || true)"
 		[ -n "${node}" ] || continue
-		check_cmd='systemctl show --property=ActiveState --value nixbot-switch-to-configuration.service 2>/dev/null || true'
+		unit_name="$(deploy_activation_unit_name "${node}")"
+		printf -v check_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${unit_name}"
 		if ! state="$(run_host_root_command "${node}" "${check_cmd}" 2>/dev/null)"; then
 			continue
 		fi
@@ -1487,9 +1539,10 @@ active_deploy_activation_units_running() {
 }
 
 host_deploy_activation_unit_running() {
-	local node="$1" check_cmd="" state=""
+	local node="$1" unit_name="" check_cmd="" state=""
 
-	check_cmd='systemctl show --property=ActiveState --value nixbot-switch-to-configuration.service 2>/dev/null || true'
+	unit_name="$(deploy_activation_unit_name "${node}")"
+	printf -v check_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${unit_name}"
 	if ! state="$(run_host_root_command "${node}" "${check_cmd}" 2>/dev/null)"; then
 		return 1
 	fi
@@ -1546,24 +1599,24 @@ terminate_pre_activation_deploy_jobs() {
 }
 
 run_active_deploy_activation_unit_command() {
-	local action="$1" file="" node="" command=""
-
-	case "${action}" in
-	stop)
-		command='systemctl --no-block stop nixbot-switch-to-configuration.service'
-		;;
-	kill)
-		command='systemctl kill --kill-who=all --signal=KILL nixbot-switch-to-configuration.service'
-		;;
-	*)
-		die "Unsupported active deploy activation unit action: ${action}"
-		;;
-	esac
+	local action="$1" file="" node="" unit_name="" command=""
 
 	while IFS= read -r file; do
 		[ -n "${file}" ] || continue
 		node="$(cat "${file}" 2>/dev/null || true)"
 		[ -n "${node}" ] || continue
+		unit_name="$(deploy_activation_unit_name "${node}")"
+		case "${action}" in
+		stop)
+			printf -v command 'systemctl --no-block stop %q' "${unit_name}"
+			;;
+		kill)
+			printf -v command 'systemctl kill --kill-who=all --signal=KILL %q' "${unit_name}"
+			;;
+		*)
+			die "Unsupported active deploy activation unit action: ${action}"
+			;;
+		esac
 		run_host_root_command "${node}" "${command}" >/dev/null 2>&1 || true
 	done < <(active_deploy_files)
 }
@@ -7147,10 +7200,8 @@ ensure_wave_snapshots() {
 }
 
 rollback_host_to_snapshot() {
-	local node="$1" snapshot_path="$2" rollback_cmd="" deploy_user=""
-	local using_bootstrap_fallback="" sudo_tty_mode=0
+	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_script="" rollback_unit="" systemd_run_properties=""
 	local rollback_rc=0 rollback_start_epoch=""
-	local -a sudo_policy=()
 
 	[ -n "${snapshot_path}" ] || {
 		echo "Rollback snapshot is empty for ${node}" >&2
@@ -7159,23 +7210,21 @@ rollback_host_to_snapshot() {
 
 	log_host_stage "rollback" "${node}"
 	prepare_deploy_context "${node}" || return 1
-	using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
-	mapfile -t sudo_policy < <(
-		resolve_target_sudo_policy \
-			"${PREP_DEPLOY_LOCAL_EXEC}" \
-			"${PREP_DEPLOY_SSH_TARGET}" \
-			"${using_bootstrap_fallback}"
-	)
-	deploy_user="${sudo_policy[0]:-}"
-	sudo_tty_mode="${sudo_policy[2]:-0}"
-
-	# shellcheck disable=SC2016
-	rollback_cmd='set -euo pipefail; snap="'"${snapshot_path}"'"; if [ ! -x "${snap}/bin/switch-to-configuration" ]; then echo "snapshot is not activatable: ${snap}" >&2; exit 1; fi; if [ "$(id -u)" -eq 0 ]; then "${snap}/bin/switch-to-configuration" switch; elif command -v sudo >/dev/null 2>&1; then sudo "${snap}/bin/switch-to-configuration" switch; else echo "sudo is required for rollback as non-root user" >&2; exit 1; fi'
+	rollback_unit="$(rollback_activation_unit_name "${node}")"
+	rollback_script="$(nixbot_activation_lock_command "${snapshot_path}/bin/switch-to-configuration" switch)"
+	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
+	printf -v rollback_cmd \
+		'test -x %q/bin/switch-to-configuration || { echo "snapshot is not activatable: %q" >&2; exit 1; }; NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
+		"${snapshot_path}" \
+		"${snapshot_path}" \
+		"${systemd_run_properties}" \
+		"${rollback_unit}" \
+		"${REMOTE_SYSTEM_BASH}" \
+		"${rollback_script}"
 
 	echo "${snapshot_path}" >&2
-	[ -n "${deploy_user}" ] || die "Unable to resolve deploy user for rollback target ${node}"
 	rollback_start_epoch="$(date +%s)"
-	if run_prepared_deploy_command "${sudo_tty_mode}" "${rollback_cmd}"; then
+	if run_prepared_root_command "${rollback_cmd}"; then
 		print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
 		return 0
 	else
@@ -7600,14 +7649,19 @@ require_remote_build_cache_for_deploy() {
 }
 
 activate_prepared_system_path() {
-	local node="$1" system_path="$2" activate_cmd=""
+	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_unit="" systemd_run_properties=""
 
+	activation_unit="$(deploy_activation_unit_name "${node}")"
+	activation_script="$(nixbot_activation_lock_command "${system_path}/bin/switch-to-configuration" "${GOAL}")"
+	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 	printf -v activate_cmd \
-		'test -x %q/bin/switch-to-configuration || { echo "system path is not activatable: %q" >&2; exit 1; }; NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec --unit=nixbot-switch-to-configuration %q/bin/switch-to-configuration %q' \
+		'test -x %q/bin/switch-to-configuration || { echo "system path is not activatable: %q" >&2; exit 1; }; NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
 		"${system_path}" \
 		"${system_path}" \
-		"${system_path}" \
-		"${GOAL}"
+		"${systemd_run_properties}" \
+		"${activation_unit}" \
+		"${REMOTE_SYSTEM_BASH}" \
+		"${activation_script}"
 
 	echo "${system_path}" >&2
 	run_prepared_root_command "${activate_cmd}"
