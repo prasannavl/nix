@@ -76,6 +76,13 @@ exposedPorts.http = {
 };
 ```
 
+Compose `ports` entries should omit the host address unless the bind address is
+part of the intended behavior. Use `12000:8080` for the default all-interface
+bind, `127.0.0.1:12000:8080` for loopback-only listeners, and a specific local
+address only when the service truly requires that interface. Do not use a
+service-registry target address as a host bind address; target addresses may
+point at another endpoint group during migrations.
+
 ## Lifecycle Tags
 
 - `bootTag`: stop and start the stack
