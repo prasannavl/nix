@@ -54,10 +54,14 @@ in {
   };
 
   systemd = {
+    # NixOS stage-2 creates these links before handing off to systemd, but
+    # Incus/LXC can replace the early /run with the final container tmpfs.
+    # Restore the links in final /run before upstream sysinit units need them.
     services.nixos-container-runtime-system-links = {
       description = "Restore NixOS runtime system links after container /run setup";
       wantedBy = ["sysinit.target"];
       before = [
+        "nixos-container-runtime-activation.service"
         "register-nix-paths.service"
         "systemd-tmpfiles-setup.service"
         "systemd-udev-trigger.service"
@@ -80,6 +84,44 @@ in {
 
         ${pkgs.coreutils}/bin/ln -sfn "$system_config" /run/current-system
         ${pkgs.coreutils}/bin/ln -sfn "$system_config" /run/booted-system
+      '';
+    };
+
+    # Boot activation also writes runtime state under /run, such as agenix
+    # secrets. Re-run the boot activation after final /run exists so services
+    # see the same activation-owned state they would see on bare metal.
+    services.nixos-container-runtime-activation = {
+      description = "Replay NixOS activation after container /run setup";
+      wantedBy = ["sysinit.target"];
+      requires = ["nixos-container-runtime-system-links.service"];
+      after = ["nixos-container-runtime-system-links.service"];
+      before = [
+        "sysinit.target"
+        "register-nix-paths.service"
+        "systemd-tmpfiles-setup.service"
+        "systemd-udev-trigger.service"
+        "systemd-networkd.service"
+        "nix-daemon.service"
+        "tailscaled.service"
+      ];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        # Stage-2 activation runs before container systemd establishes the
+        # final /run tmpfs. Replay activation once after /run exists so
+        # runtime activation products such as /run/agenix are present before
+        # services consume them.
+        system_config="$(${pkgs.coreutils}/bin/readlink -f /run/current-system || true)"
+        if [ -z "$system_config" ] || [ ! -x "$system_config/activate" ]; then
+          echo "Unable to resolve activatable NixOS system from /run/current-system" >&2
+          exit 1
+        fi
+
+        export NIXOS_ACTION=boot
+        "$system_config/activate"
       '';
     };
 

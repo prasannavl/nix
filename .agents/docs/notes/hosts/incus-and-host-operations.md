@@ -102,11 +102,11 @@ recent host incidents.
   contract is the underlay interface `eth0:routable`. Overlay interfaces such as
   Tailscale should not decide `network-online.target` during activation. Keep
   `systemd-networkd-wait-online` scoped to `--interface=eth0:routable`.
-- Incus LXC images should rely on the upstream NixOS activation path to create
-  `/run/current-system` before systemd starts. Do not add repo-owned tmpfiles
-  rules or early systemd units that relink `/run/current-system` to
-  `/nix/var/nix/profiles/system`: the profile does not exist until
-  `register-nix-paths.service` creates it with
+- Incus LXC images use upstream NixOS activation before systemd starts, but
+  container systemd can replace the early `/run` with the final tmpfs-backed
+  runtime directory. Repo-owned boot helpers must repair that runtime boundary
+  without pointing at `/nix/var/nix/profiles/system`: the profile does not exist
+  until `register-nix-paths.service` creates it with
   `nix-env --set /run/current-system`.
 - `lib/profiles/incus-lxc.nix` is an Incus integration profile layered on top of
   upstream `virtualisation/lxc-container.nix`; it should not reimplement or
@@ -120,6 +120,11 @@ recent host incidents.
   units. Derive the target from `/sbin/init`'s embedded `systemConfig` store
   path, and never point the links at `/nix/var/nix/profiles/system`, because
   that profile is the `register-nix-paths.service` output.
+- After those links are restored, replay the booted system's activation script
+  once in the final `/run` through `nixos-container-runtime-activation.service`.
+  This recreates activation-owned runtime material such as `/run/agenix` before
+  `nix-daemon`, Tailscale, networkd, tmpfiles, and other sysinit consumers can
+  observe missing secrets.
 - Incus may still need narrow integration overrides where the runtime, not
   NixOS, owns the boundary. For LXC guests, force `boot.specialFileSystems = {}`
   as a whole-boundary override: upstream generic NixOS declares API/runtime
