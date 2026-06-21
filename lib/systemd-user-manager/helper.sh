@@ -404,6 +404,26 @@ managed_unit_is_live_state() {
 	esac
 }
 
+managed_user_stop_state_unavailable() {
+	local unit out
+	unit="$1"
+
+	if [ "$userctl_mode" != root ]; then
+		return 1
+	fi
+	if ! systemctl is-active --quiet "user@${managed_user_uid}.service"; then
+		return 0
+	fi
+	if [ ! -S "$managed_user_runtime_dir/bus" ]; then
+		return 0
+	fi
+
+	if out="$(run_userctl_raw show --property=LoadState --value "$unit" 2>&1 >/dev/null)"; then
+		return 1
+	fi
+	is_transient_userctl_error "$out"
+}
+
 mark_deferred_managed_unit_restart_if_live() {
 	local user managed_name managed_unit active_state
 	user="$1"
@@ -482,6 +502,11 @@ wait_for_unit_stopped_state() {
 	timeout_seconds="${2:-$stable_state_timeout_seconds}"
 	started_at="$(now_epoch)"
 	while true; do
+		if managed_user_stop_state_unavailable "$unit"; then
+			printf '%s\n' "user-manager-unavailable"
+			return 0
+		fi
+
 		load_state="$(userctl_load_state "$unit" 2>/dev/null || true)"
 		if [ "$load_state" = not-found ]; then
 			printf '%s\n' "not-found"
@@ -551,6 +576,10 @@ apply_stop_phase_action() {
 		return 1
 	fi
 	managed_stopped_at="$(now_epoch)"
+	if managed_user_stop_state_unavailable "$managed_unit"; then
+		log_managed_unit "$user" "$managed_name" "stopped in $(elapsed_since "$managed_stopped_at") (user-manager-unavailable)"
+		return 0
+	fi
 	if ! stopped_state="$(wait_for_unit_stopped_state "$managed_unit" "$timeout_seconds")"; then
 		log_managed_unit "$user" "$managed_name" "failed to stop after $(elapsed_since "$managed_stopped_at")"
 		return 1

@@ -336,10 +336,13 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Serial and parallel deploys should both run host deploy work through the same
   supervised background-job path so cancellation behavior does not depend on
   `--deploy-jobs`.
-- Self-target SSH deploys should use the same `nixos-rebuild` path as other
-  remote deploys. `nixos-rebuild` already wraps activation in `systemd-run` on
-  systemd hosts, so nixbot should not add a second activation unit layer unless
-  it needs per-run remote status ownership later.
+- Target activation and rollback use per-run transient units for remote status
+  ownership and bounded lifetime, but `switch-to-configuration` itself owns
+  same-host activation serialization through
+  `/run/nixos/switch-to-configuration.lock`. Nixbot must not wrap activation in
+  its own persistent lock. If that native lock reports contention, nixbot should
+  fail the deploy and print current nixbot activation/rollback units plus recent
+  `switch-to-configuration` journal context.
 - Cancellation cleanup should terminate local host-job process trees, then
   escalate to `SIGKILL` after a short grace window.
 - Active deploy tracking should be file-backed and keyed by a

@@ -1418,12 +1418,10 @@ rollback_activation_unit_name() {
 	nixbot_host_unit_name rollback-to-configuration "${node}"
 }
 
-nixbot_activation_lock_command() {
-	local switch_path="$1" goal="$2" lock_path="/run/nixbot-switch-to-configuration.lock"
+nixbot_activation_command() {
+	local switch_path="$1" goal="$2"
 
-	printf '%q --close -n -E 75 %q %q %q' \
-		"/run/current-system/sw/bin/flock" \
-		"${lock_path}" \
+	printf '%q %q' \
 		"${switch_path}" \
 		"${goal}"
 }
@@ -7201,7 +7199,7 @@ ensure_wave_snapshots() {
 
 rollback_host_to_snapshot() {
 	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_script="" rollback_unit="" systemd_run_properties=""
-	local rollback_rc=0 rollback_start_epoch=""
+	local rollback_rc=0 rollback_start_epoch="" rollback_output=""
 
 	[ -n "${snapshot_path}" ] || {
 		echo "Rollback snapshot is empty for ${node}" >&2
@@ -7211,7 +7209,7 @@ rollback_host_to_snapshot() {
 	log_host_stage "rollback" "${node}"
 	prepare_deploy_context "${node}" || return 1
 	rollback_unit="$(rollback_activation_unit_name "${node}")"
-	rollback_script="$(nixbot_activation_lock_command "${snapshot_path}/bin/switch-to-configuration" switch)"
+	rollback_script="$(nixbot_activation_command "${snapshot_path}/bin/switch-to-configuration" switch)"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 	printf -v rollback_cmd \
 		'test -x %q/bin/switch-to-configuration || { echo "snapshot is not activatable: %q" >&2; exit 1; }; NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
@@ -7224,12 +7222,14 @@ rollback_host_to_snapshot() {
 
 	echo "${snapshot_path}" >&2
 	rollback_start_epoch="$(date +%s)"
-	if run_prepared_root_command "${rollback_cmd}"; then
+	if run_with_combined_stream_capture rollback_output run_prepared_root_command "${rollback_cmd}"; then
 		print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
 		return 0
 	else
 		rollback_rc="$?"
 	fi
+
+	report_activation_lock_contention_if_present "${node}" "${rollback_unit}" "${rollback_start_epoch}" "${rollback_output}" || true
 
 	echo "==> Rollback transport closed or failed for ${node}; verifying target state" >&2
 	if verify_rollback_target_state "${node}" "${snapshot_path}"; then
@@ -7591,6 +7591,39 @@ run_supervised_combined_capture() {
 	return "${rc}"
 }
 
+run_with_combined_stream_capture() {
+	# shellcheck disable=SC2034
+	local -n rwcsc_output_out_ref="$1"
+	shift
+	local rwcsc_tmp_dir="" rwcsc_tmp_file="" rwcsc_fifo="" rwcsc_tee_pid="" rwcsc_rc=0
+
+	rwcsc_output_out_ref=""
+	rwcsc_tmp_dir="$(mktemp -d)"
+	rwcsc_tmp_file="${rwcsc_tmp_dir}/output"
+	rwcsc_fifo="${rwcsc_tmp_dir}/stream"
+	: >"${rwcsc_tmp_file}"
+	if ! mkfifo "${rwcsc_fifo}"; then
+		rm -f "${rwcsc_tmp_file}"
+		rmdir "${rwcsc_tmp_dir}" 2>/dev/null || true
+		return 1
+	fi
+
+	tee "${rwcsc_tmp_file}" <"${rwcsc_fifo}" &
+	rwcsc_tee_pid="$!"
+	if run_with_combined_output "$@" >"${rwcsc_fifo}"; then
+		rwcsc_rc=0
+	else
+		rwcsc_rc="$?"
+	fi
+	wait "${rwcsc_tee_pid}" || true
+
+	# shellcheck disable=SC2034
+	rwcsc_output_out_ref="$(cat "${rwcsc_tmp_file}" 2>/dev/null || true)"
+	rm -f "${rwcsc_tmp_file}" "${rwcsc_fifo}"
+	rmdir "${rwcsc_tmp_dir}" 2>/dev/null || true
+	return "${rwcsc_rc}"
+}
+
 run_remote_store_command_with_retry() {
 	# shellcheck disable=SC2034
 	local -n rrsc_output_out_ref="$1"
@@ -7650,9 +7683,10 @@ require_remote_build_cache_for_deploy() {
 
 activate_prepared_system_path() {
 	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_unit="" systemd_run_properties=""
+	local activation_rc=0 activation_start_epoch="" activation_output=""
 
 	activation_unit="$(deploy_activation_unit_name "${node}")"
-	activation_script="$(nixbot_activation_lock_command "${system_path}/bin/switch-to-configuration" "${GOAL}")"
+	activation_script="$(nixbot_activation_command "${system_path}/bin/switch-to-configuration" "${GOAL}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 	printf -v activate_cmd \
 		'test -x %q/bin/switch-to-configuration || { echo "system path is not activatable: %q" >&2; exit 1; }; NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
@@ -7664,7 +7698,15 @@ activate_prepared_system_path() {
 		"${activation_script}"
 
 	echo "${system_path}" >&2
-	run_prepared_root_command "${activate_cmd}"
+	activation_start_epoch="$(date +%s)"
+	if run_with_combined_stream_capture activation_output run_prepared_root_command "${activate_cmd}"; then
+		return 0
+	else
+		activation_rc="$?"
+	fi
+
+	report_activation_lock_contention_if_present "${node}" "${activation_unit}" "${activation_start_epoch}" "${activation_output}" || true
+	return "${activation_rc}"
 }
 
 target_trusted_public_keys_for_copy() {
@@ -8549,6 +8591,76 @@ build_systemd_user_manager_report_cmd() {
 		"$(declare -f _remote_systemd_user_manager_stream_unit)" \
 		"$(declare -f _remote_systemd_user_manager_report)" \
 		"_remote_systemd_user_manager_report '@${since_epoch}'"
+}
+
+_remote_activation_lock_contention_report() {
+	local node="$1" activation_unit="$2" since="$3" force_report="$4"
+	local journal_unit="" unit_log="" units="" recent=""
+
+	case "${activation_unit}" in
+	*.service)
+		journal_unit="${activation_unit}"
+		;;
+	*)
+		journal_unit="${activation_unit}.service"
+		;;
+	esac
+
+	unit_log="$(journalctl -u "${journal_unit}" --since "${since}" --no-pager -o cat 2>/dev/null || true)"
+	if [ "${force_report}" -ne 1 ] &&
+		! printf '%s\n' "${unit_log}" | grep -Eq 'Could not acquire lock|/run/nixos/switch-to-configuration.lock'; then
+		return 0
+	fi
+
+	echo "==> ${node}: switch-to-configuration lock contention detected" >&2
+	echo "Current nixbot activation units:" >&2
+	units="$(systemctl list-units 'nixbot-switch-to-configuration-*.service' 'nixbot-rollback-to-configuration-*.service' --all --no-legend --plain 2>/dev/null || true)"
+	if [ -n "${units}" ]; then
+		echo "${units}" >&2
+	else
+		echo "(none)" >&2
+	fi
+
+	echo "Recent switch-to-configuration journal:" >&2
+	recent="$(
+		journalctl --since "${since}" --no-pager -o short-iso 2>/dev/null |
+			grep -E 'nixbot-(switch|rollback)-to-configuration|switch-to-configuration|/run/nixos/switch-to-configuration.lock|Could not acquire lock|Acquiring lock|Creating lock file' |
+			tail -n 120 || true
+	)"
+	if [ -n "${recent}" ]; then
+		echo "${recent}" >&2
+	elif [ -n "${unit_log}" ]; then
+		echo "${unit_log}" | tail -n 80 >&2
+	else
+		echo "(no recent switch-to-configuration journal entries found)" >&2
+	fi
+}
+
+build_activation_lock_contention_report_cmd() {
+	local node="$1" activation_unit="$2" since_epoch="$3" force_report="$4"
+
+	printf '%s\n%s\n' \
+		"$(declare -f _remote_activation_lock_contention_report)" \
+		"_remote_activation_lock_contention_report $(printf '%q' "${node}") $(printf '%q' "${activation_unit}") $(printf '%q' "@${since_epoch}") $(printf '%q' "${force_report}")"
+}
+
+report_activation_lock_contention_if_present() {
+	local node="$1" activation_unit="$2" since_epoch="$3" activation_output="${4:-}"
+	local report_cmd="" report_output="" force_report=0
+
+	if [ -z "${since_epoch}" ]; then
+		return 0
+	fi
+
+	if printf '%s\n' "${activation_output}" | grep -Eq 'Could not acquire lock|/run/nixos/switch-to-configuration.lock'; then
+		force_report=1
+	fi
+
+	report_cmd="$(build_activation_lock_contention_report_cmd "${node}" "${activation_unit}" "${since_epoch}" "${force_report}")"
+	if run_supervised_combined_capture report_output run_prepared_root_command "${report_cmd}" &&
+		[ -n "${report_output}" ]; then
+		printf '%s\n' "${report_output}" >&2
+	fi
 }
 
 run_deploy_systemd_user_manager_report_command() {
