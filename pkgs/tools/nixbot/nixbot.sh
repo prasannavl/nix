@@ -3277,8 +3277,26 @@ require_build_host_cache_config() {
 
 	cache_url="$(build_host_cache_url_for "${build_host}")"
 
-	[ -n "${cache_url}" ] ||
-		die "Remote deploy builds require config.buildCache.url and config.buildCache.host in ${NIXBOT_CONFIG_PATH}"
+	if [ -n "${cache_url}" ]; then
+		return 0
+	fi
+
+	if [ -z "${BUILD_CACHE_URL}" ] && [ -z "${BUILD_CACHE_HOST}" ]; then
+		die "Remote deploy build on ${build_host} requires config.buildCache.url" \
+			"and config.buildCache.host in ${NIXBOT_CONFIG_PATH}"
+	fi
+	if [ -z "${BUILD_CACHE_URL}" ]; then
+		die "Remote deploy build on ${build_host} requires config.buildCache.url" \
+			"in ${NIXBOT_CONFIG_PATH} (config.buildCache.host='${BUILD_CACHE_HOST}')"
+	fi
+	if [ -z "${BUILD_CACHE_HOST}" ]; then
+		die "Remote deploy build on ${build_host} requires config.buildCache.host" \
+			"in ${NIXBOT_CONFIG_PATH} for cache '${BUILD_CACHE_URL}'"
+	fi
+
+	die "Remote deploy build on ${build_host} cannot use cache '${BUILD_CACHE_URL}':" \
+		"config.buildCache.host is '${BUILD_CACHE_HOST}'." \
+		"Use --build-host ${BUILD_CACHE_HOST} or set --build-cache-host ${build_host}."
 }
 
 remote_build_deploy_uses_local_relay() {

@@ -117,6 +117,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   when it is configured, and falls back to raw `ssh-ng://` only when there is no
   cache. Use `local-copy` when the operator can reach both sides but the target
   cannot reach the build-host cache.
+- Build-cache config validation is fail-fast and specific: missing URL, missing
+  host, and selected-build-host/cache-owner mismatches should each produce a
+  distinct pre-activation error.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`

@@ -314,6 +314,12 @@ Implemented in the pvl repo:
   when it is configured, and falls back to raw `ssh-ng://` only when there is no
   cache. Use `local-copy` when the operator can reach both sides but the target
   cannot reach the build-host cache.
+- Remote deploy build-cache validation fails before activation when
+  `globals.buildCache.url` or `globals.buildCache.host` is missing, or when the
+  selected `--build-host` does not match the configured cache owner. The
+  diagnostic should name the build host, configured cache URL, configured cache
+  host, and the expected `--build-cache-host`/`--build-host` correction instead
+  of a generic missing-config message.
 - Only the `nixbot` account is added as a trusted Nix user. Direct runs from an
   untrusted operator account can still warn that the client-specified `store`
   setting is restricted; avoid broad trust expansion and run through `nixbot`
