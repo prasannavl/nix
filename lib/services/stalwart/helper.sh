@@ -9,6 +9,7 @@ init_vars() {
 	stalwart_data_dir="${STALWART_DATA_DIR-}"
 	stalwart_default_certificate="${STALWART_DEFAULT_CERTIFICATE-null}"
 	stalwart_domain_id="${STALWART_DOMAIN_ID-}"
+	stalwart_domain_name="${STALWART_DOMAIN_NAME-}"
 	stalwart_extra_recovery_mounts="${STALWART_EXTRA_RECOVERY_MOUNTS-}"
 	stalwart_image="${STALWART_IMAGE-}"
 	stalwart_image_tar="${STALWART_IMAGE_TAR-}"
@@ -231,6 +232,127 @@ prepare_plan_host_path() {
 	printf '%s\n' "$staged_plan"
 }
 
+primary_domain_resolution_enabled() {
+	[ -n "$stalwart_domain_name" ] && [ -n "$stalwart_domain_id" ]
+}
+
+find_primary_domain_id_by_name() {
+	local query_output
+
+	query_output="$(
+		stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
+			query Domain \
+			--where "name=$stalwart_domain_name" \
+			--fields id,name \
+			--json
+	)"
+
+	jq -s -r \
+		--arg name "$stalwart_domain_name" \
+		'map(select(.name == $name)) | first.id // empty' \
+		<<<"$query_output"
+}
+
+desired_primary_domain_json() {
+	jq -s -c \
+		--arg name "$stalwart_domain_name" \
+		'
+			def domain_values:
+				if ."@type" == "create" then
+					(.value // {} | if type == "object" then [.[]] else [] end)
+				elif ."@type" == "update" then
+					[.value // {}]
+				else
+					[]
+				end;
+
+			[.[] | select(.object == "Domain") | domain_values[] | select(.name == $name)]
+			| first // empty
+		' "$stalwart_plan_host_path"
+}
+
+resolve_primary_domain_id_for_apply() {
+	local dry_run="$1" domain_id desired_domain
+
+	primary_domain_resolution_enabled || return 0
+
+	domain_id="$(find_primary_domain_id_by_name)"
+	if [ -n "$domain_id" ]; then
+		stalwart_domain_id="$domain_id"
+		return 0
+	fi
+
+	desired_domain="$(desired_primary_domain_json)"
+	require_value "desired Stalwart primary domain for $stalwart_domain_name" "$desired_domain"
+
+	if [ "$dry_run" -eq 1 ]; then
+		printf 'Stalwart domain %s does not exist; non-dry apply would create it before applying the plan\n' "$stalwart_domain_name" >&2
+		exit 1
+	fi
+
+	stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
+		create Domain \
+		--json "$desired_domain" \
+		--no-color
+
+	domain_id="$(find_primary_domain_id_by_name)"
+	require_value "created Stalwart primary domain id for $stalwart_domain_name" "$domain_id"
+	stalwart_domain_id="$domain_id"
+	printf 'Stalwart domain: resolved %s as id %s\n' "$stalwart_domain_name" "$stalwart_domain_id"
+}
+
+resolve_primary_domain_id_for_read() {
+	local domain_id
+
+	primary_domain_resolution_enabled || return 0
+
+	domain_id="$(find_primary_domain_id_by_name)"
+	require_value "Stalwart primary domain id for $stalwart_domain_name" "$domain_id"
+	stalwart_domain_id="$domain_id"
+}
+
+rewrite_json_file_domain_token() {
+	local source_path target_name old_domain_id target_path
+	source_path="$1"
+	target_name="$2"
+	old_domain_id="$3"
+
+	if [ -z "$source_path" ]; then
+		return 0
+	fi
+	if [ ! -r "$source_path" ] || [ -z "$old_domain_id" ]; then
+		printf '%s\n' "$source_path"
+		return 0
+	fi
+
+	require_var stalwart_recovery_secret_dir
+	target_path="$stalwart_recovery_secret_dir/${target_name}.json"
+	jq -c \
+		--arg old_domain_id "$old_domain_id" \
+		--arg domain_id "$stalwart_domain_id" \
+		'walk(if type == "string" and . == $old_domain_id then $domain_id else . end)' \
+		"$source_path" >"$target_path"
+	chmod 0444 "$target_path"
+	printf '%s\n' "$target_path"
+}
+
+prepare_primary_domain_apply_inputs() {
+	local dry_run=0 old_domain_id
+
+	primary_domain_resolution_enabled || return 0
+
+	if has_arg --dry-run "$@"; then
+		dry_run=1
+	fi
+
+	old_domain_id="$stalwart_domain_id"
+	resolve_primary_domain_id_for_apply "$dry_run"
+	stalwart_plan_host_path="$(rewrite_json_file_domain_token "$stalwart_plan_host_path" "plan-domain-resolved" "$old_domain_id")"
+	stalwart_user_roles_host_path="$(rewrite_json_file_domain_token "$stalwart_user_roles_host_path" "user-roles-domain-resolved" "$old_domain_id")"
+	stalwart_mailing_lists_host_path="$(rewrite_json_file_domain_token "$stalwart_mailing_lists_host_path" "mailing-lists-domain-resolved" "$old_domain_id")"
+	stalwart_shared_mailboxes_host_path="$(rewrite_json_file_domain_token "$stalwart_shared_mailboxes_host_path" "shared-groups-domain-resolved" "$old_domain_id")"
+}
+
 with_recovery() {
 	require_var stalwart_config_host_path
 	require_var stalwart_container
@@ -319,6 +441,8 @@ has_arg() {
 }
 
 apply_plan() {
+	prepare_primary_domain_apply_inputs "$@"
+
 	stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
 		apply --file "$stalwart_plan_container_path" "$@"
 
@@ -1138,7 +1262,12 @@ recovery_cli() {
 dns_zone() {
 	require_var stalwart_domain_id
 	with_recovery \
-		stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
+		dns_zone_recovery "$@"
+}
+
+dns_zone_recovery() {
+	resolve_primary_domain_id_for_read
+	stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
 		get Domain "$stalwart_domain_id" --fields dnsZoneFile "$@"
 }
 

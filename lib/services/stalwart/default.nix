@@ -111,6 +111,7 @@ in {
     url ? "http://127.0.0.1:8080",
     credentialsFile ? "/run/agenix/stalwart-recovery-admin",
     domainId ? "",
+    domainName ? "",
     extraRecoveryMounts ? [],
     planStringFileSubstitutions ? {},
     defaultCertificate ? null,
@@ -144,6 +145,7 @@ in {
           STALWART_DATA_DIR = dataDir;
           STALWART_DEFAULT_CERTIFICATE = builtins.toJSON defaultCertificate;
           STALWART_DOMAIN_ID = domainId;
+          STALWART_DOMAIN_NAME = domainName;
           STALWART_EXTRA_RECOVERY_MOUNTS = builtins.concatStringsSep "\n" (map (mount: "${mount.hostPath}:${mount.containerPath}") extraRecoveryMounts);
           STALWART_IMAGE = image;
           STALWART_KANIDM_LDAP_TOKEN_HOST_PATH = kanidmLdapTokenHostPath;

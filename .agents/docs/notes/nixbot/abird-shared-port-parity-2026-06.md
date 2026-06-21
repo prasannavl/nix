@@ -55,3 +55,21 @@ Skipped or intentionally divergent:
   removed from the port scope.
 - `pkgs/support/nats-streams/default.nix` and `pkgs/tools/data-migrator` remain
   repo-specific.
+
+## Follow-up Deploy Retryability Port
+
+Ported from Abird `master` after `61d5da7e`:
+
+- `nixbot` now lets NixOS `switch-to-configuration` own activation serialization
+  and reports native lock contention with transient-unit and journal context.
+- `systemd-user-manager` stop-phase waits treat inactive user managers and
+  missing user buses as already stopped.
+- `podman-compose` writes compatible staging state before runtime file staging
+  or Compose startup, so failed first starts remain retryable.
+- Shared Stalwart apply helpers can resolve a primary domain by name and rewrite
+  staged plan/userdata domain tokens before apply/reconcile work.
+
+Skipped as Abird-specific:
+
+- `hosts/abird-corp/services/stalwart/default.nix`
+- Abird consolidated deployment notes that do not exist in this repo
