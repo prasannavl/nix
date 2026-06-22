@@ -4,5 +4,5 @@
       config.allowUnfree = true;
     },
 }: {
-  incusLxc = import ./incus-lxc.nix {inherit pkgs;};
+  lib-profiles-incus-lxc = import ./profiles-incus-lxc.nix {inherit pkgs;};
 }

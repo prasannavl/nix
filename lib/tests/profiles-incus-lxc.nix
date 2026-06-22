@@ -12,7 +12,7 @@
       };
     };
     modules = [
-      ../incus-lxc.nix
+      ../profiles/incus-lxc.nix
       {
         options.age.secrets = lib.mkOption {
           type = lib.types.attrs;

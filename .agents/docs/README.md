@@ -174,6 +174,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   shared Abird helper-fix port for LXC boot profile alignment, Podman Compose
   stack timeout inheritance, Stalwart stable-ID recovery, and helper regression
   test exposure.
+- `.agents/docs/notes/lib/lib-test-layout-2026-06.md`: Records `lib/tests` as
+  the global home for cross-cutting `lib/**` tests, with isolated `lib/flake`
+  helper tests under `lib/flake/tests`.
 - `.agents/docs/notes/lib/installer-to-disk-mbr-persistence-2026-06.md`: Records
   the `installer-to-disk.sh` ISO-hybrid MBR persistence partition failure and
   the GPT-vs-MBR partitioning split.

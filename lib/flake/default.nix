@@ -8,6 +8,8 @@
   lib = nixpkgs.lib;
 
   appsFn = import ./apps.nix;
+  flakeTestsFn = import ./tests;
+  libTestsFn = import ../tests;
   lintFn = import ./lint.nix;
   packagesFn = import ./packages.nix;
   pkgHelper = import ./pkg-helper.nix;
@@ -47,7 +49,7 @@
   rootServiceModule = serviceModuleFactory.mkServiceLib {
     stackName = "root";
     defaultUser = "root";
-    defaultClientSecretsBasePath = ../../data/secrets/pvl/services;
+    defaultClientSecretsBasePath = ../../data/secrets/gap3/services;
     defaultClientIdentitySuffix = "invalid.invalid";
     defaultServiceIdentitySuffix = "invalid.invalid";
     defaultPostgresUrl = "";
@@ -76,6 +78,7 @@ in rec {
     packageSet = available packageOutputs.packages;
     stdPackageSet = available packageOutputs.stdPackages;
     rootAppSet = available packageOutputs.rootApps;
+    checks = (libTestsFn {pkgs = pkgs;}) // (flakeTestsFn {pkgs = pkgs;});
 
     lint = lintFn {
       inherit pkgs;
@@ -91,7 +94,7 @@ in rec {
     packages = packageSet // lint.packages;
     nixosModules = moduleAttrsFor packageSet;
   in {
-    inherit apps lint nixosModules packages;
+    inherit apps checks lint nixosModules packages;
     inherit (lint) formatter;
   };
 
@@ -102,7 +105,7 @@ in rec {
     flake-utils.lib.eachSystem systems (system: let
       outputs = outputsBySystem.${system};
     in {
-      inherit (outputs) apps formatter packages;
+      inherit (outputs) apps checks formatter packages;
     });
 
   standardOutputsFor = systems:
