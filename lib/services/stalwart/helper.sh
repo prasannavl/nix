@@ -249,7 +249,16 @@ find_primary_domain_id_by_name() {
 
 	jq -s -r \
 		--arg name "$stalwart_domain_name" \
-		'map(select(.name == $name)) | first.id // empty' \
+		'
+			map(select(.name == $name)) as $matches
+			| if ($matches | length) == 0 then
+				empty
+			elif ($matches | length) == 1 then
+				$matches[0].id // empty
+			else
+				error("multiple Stalwart domains match name: " + $name)
+			end
+		' \
 		<<<"$query_output"
 }
 
@@ -276,13 +285,17 @@ resolve_primary_domain_id_for_apply() {
 
 	primary_domain_resolution_enabled || return 0
 
-	domain_id="$(find_primary_domain_id_by_name)"
+	if ! domain_id="$(find_primary_domain_id_by_name)"; then
+		return 1
+	fi
 	if [ -n "$domain_id" ]; then
 		stalwart_domain_id="$domain_id"
 		return 0
 	fi
 
-	desired_domain="$(desired_primary_domain_json)"
+	if ! desired_domain="$(desired_primary_domain_json)"; then
+		return 1
+	fi
 	require_value "desired Stalwart primary domain for $stalwart_domain_name" "$desired_domain"
 
 	if [ "$dry_run" -eq 1 ]; then
@@ -295,7 +308,9 @@ resolve_primary_domain_id_for_apply() {
 		--json "$desired_domain" \
 		--no-color
 
-	domain_id="$(find_primary_domain_id_by_name)"
+	if ! domain_id="$(find_primary_domain_id_by_name)"; then
+		return 1
+	fi
 	require_value "created Stalwart primary domain id for $stalwart_domain_name" "$domain_id"
 	stalwart_domain_id="$domain_id"
 	printf 'Stalwart domain: resolved %s as id %s\n' "$stalwart_domain_name" "$stalwart_domain_id"
@@ -306,7 +321,9 @@ resolve_primary_domain_id_for_read() {
 
 	primary_domain_resolution_enabled || return 0
 
-	domain_id="$(find_primary_domain_id_by_name)"
+	if ! domain_id="$(find_primary_domain_id_by_name)"; then
+		return 1
+	fi
 	require_value "Stalwart primary domain id for $stalwart_domain_name" "$domain_id"
 	stalwart_domain_id="$domain_id"
 }
@@ -327,14 +344,35 @@ rewrite_json_file_token() {
 	fi
 
 	require_var stalwart_recovery_secret_dir
-	target_path="$stalwart_recovery_secret_dir/${target_name}.json"
-	jq -c \
+	if ! target_path="$(mktemp "$stalwart_recovery_secret_dir/${target_name}.XXXXXX.json")"; then
+		return 1
+	fi
+	if ! jq -c \
 		--arg old_token "$old_token" \
 		--arg new_token "$new_token" \
 		'walk(if type == "string" and . == $old_token then $new_token else . end)' \
-		"$source_path" >"$target_path"
-	chmod 0444 "$target_path"
+		"$source_path" >"$target_path"; then
+		rm -f -- "$target_path"
+		return 1
+	fi
+	if ! chmod 0444 "$target_path"; then
+		rm -f -- "$target_path"
+		return 1
+	fi
 	printf '%s\n' "$target_path"
+}
+
+rewrite_json_file_token_var() {
+	local var_name target_name old_token new_token rewritten_path
+	var_name="$1"
+	target_name="$2"
+	old_token="$3"
+	new_token="$4"
+
+	if ! rewritten_path="$(rewrite_json_file_token "${!var_name-}" "$target_name" "$old_token" "$new_token")"; then
+		return 1
+	fi
+	printf -v "$var_name" '%s' "$rewritten_path"
 }
 
 prepare_primary_domain_apply_inputs() {
@@ -347,11 +385,21 @@ prepare_primary_domain_apply_inputs() {
 	fi
 
 	old_domain_id="$stalwart_domain_id"
-	resolve_primary_domain_id_for_apply "$dry_run"
-	stalwart_plan_host_path="$(rewrite_json_file_token "$stalwart_plan_host_path" "plan-domain-resolved" "$old_domain_id" "$stalwart_domain_id")"
-	stalwart_user_roles_host_path="$(rewrite_json_file_token "$stalwart_user_roles_host_path" "user-roles-domain-resolved" "$old_domain_id" "$stalwart_domain_id")"
-	stalwart_mailing_lists_host_path="$(rewrite_json_file_token "$stalwart_mailing_lists_host_path" "mailing-lists-domain-resolved" "$old_domain_id" "$stalwart_domain_id")"
-	stalwart_shared_mailboxes_host_path="$(rewrite_json_file_token "$stalwart_shared_mailboxes_host_path" "shared-groups-domain-resolved" "$old_domain_id" "$stalwart_domain_id")"
+	if ! resolve_primary_domain_id_for_apply "$dry_run"; then
+		return 1
+	fi
+	if ! rewrite_json_file_token_var stalwart_plan_host_path "plan-domain-resolved" "$old_domain_id" "$stalwart_domain_id"; then
+		return 1
+	fi
+	if ! rewrite_json_file_token_var stalwart_user_roles_host_path "user-roles-domain-resolved" "$old_domain_id" "$stalwart_domain_id"; then
+		return 1
+	fi
+	if ! rewrite_json_file_token_var stalwart_mailing_lists_host_path "mailing-lists-domain-resolved" "$old_domain_id" "$stalwart_domain_id"; then
+		return 1
+	fi
+	if ! rewrite_json_file_token_var stalwart_shared_mailboxes_host_path "shared-groups-domain-resolved" "$old_domain_id" "$stalwart_domain_id"; then
+		return 1
+	fi
 }
 
 directory_update_ids() {
@@ -382,7 +430,7 @@ find_directory_id_by_desired() {
 	query_output="$(
 		stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
 			query Directory \
-			--fields id,description,url \
+			--fields id,description \
 			--json
 	)"
 
@@ -390,12 +438,18 @@ find_directory_id_by_desired() {
 		--argjson desired "$desired" \
 		'
 			($desired.description // "") as $description
-			| ($desired.url // "") as $url
-			| map(select(
-				(.description // "") == $description
-				and (.url // "") == $url
-			))
-			| first.id // empty
+			| if $description == "" then
+				error("desired Stalwart directory is missing description")
+			else
+				map(select((.description // "") == $description)) as $matches
+				| if ($matches | length) == 0 then
+					empty
+				elif ($matches | length) == 1 then
+					$matches[0].id // empty
+				else
+					error("multiple Stalwart directories match description: " + $description)
+				end
+			end
 		' \
 		<<<"$query_output"
 }
@@ -403,10 +457,14 @@ find_directory_id_by_desired() {
 resolve_directory_id_for_apply() {
 	local old_directory_id="$1" dry_run="$2" desired_directory directory_id
 
-	desired_directory="$(desired_directory_json "$old_directory_id")"
+	if ! desired_directory="$(desired_directory_json "$old_directory_id")"; then
+		return 1
+	fi
 	require_value "desired Stalwart directory for $old_directory_id" "$desired_directory"
 
-	directory_id="$(find_directory_id_by_desired "$desired_directory")"
+	if ! directory_id="$(find_directory_id_by_desired "$desired_directory")"; then
+		return 1
+	fi
 	if [ -n "$directory_id" ]; then
 		stalwart_directory_id="$directory_id"
 		return 0
@@ -422,7 +480,9 @@ resolve_directory_id_for_apply() {
 		--json "$desired_directory" \
 		--no-color
 
-	directory_id="$(find_directory_id_by_desired "$desired_directory")"
+	if ! directory_id="$(find_directory_id_by_desired "$desired_directory")"; then
+		return 1
+	fi
 	require_value "created Stalwart directory id for $old_directory_id" "$directory_id"
 	stalwart_directory_id="$directory_id"
 	printf 'Stalwart directory: resolved %s as id %s\n' "$old_directory_id" "$stalwart_directory_id"
@@ -440,14 +500,125 @@ prepare_directory_apply_inputs() {
 
 	while IFS= read -r old_directory_id; do
 		[ -n "$old_directory_id" ] || continue
-		resolve_directory_id_for_apply "$old_directory_id" "$dry_run"
-		stalwart_plan_host_path="$(rewrite_json_file_token "$stalwart_plan_host_path" "plan-directory-resolved" "$old_directory_id" "$stalwart_directory_id")"
+		if ! resolve_directory_id_for_apply "$old_directory_id" "$dry_run"; then
+			return 1
+		fi
+		if ! rewrite_json_file_token_var stalwart_plan_host_path "plan-directory-resolved" "$old_directory_id" "$stalwart_directory_id"; then
+			return 1
+		fi
 	done < <(directory_update_ids)
 }
 
+network_listener_update_ids() {
+	jq -r '
+		select(
+			."@type" == "update"
+			and .object == "NetworkListener"
+			and (.id // "") != ""
+			and (.value.name // "") != ""
+		)
+		| .id
+	' "$stalwart_plan_host_path" | LC_ALL=C sort -u
+}
+
+desired_network_listener_json() {
+	local listener_id="$1"
+
+	jq -s -c \
+		--arg listener_id "$listener_id" \
+		'
+			[
+				.[] |
+				select(
+					."@type" == "update"
+					and .object == "NetworkListener"
+					and .id == $listener_id
+				)
+				| .value
+			]
+			| first // empty
+		' "$stalwart_plan_host_path"
+}
+
+find_network_listener_id_by_desired() {
+	local desired="$1" query_output
+
+	query_output="$(
+		stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
+			query NetworkListener \
+			--fields id,name \
+			--json
+	)"
+
+	jq -s -r \
+		--argjson desired "$desired" \
+		'
+			($desired.name // "") as $name
+			| if $name == "" then
+				error("desired Stalwart network listener is missing name")
+			else
+				map(select((.name // "") == $name)) as $matches
+				| if ($matches | length) == 0 then
+					empty
+				elif ($matches | length) == 1 then
+					$matches[0].id // empty
+				else
+					error("multiple Stalwart network listeners match name: " + $name)
+				end
+			end
+		' \
+		<<<"$query_output"
+}
+
+resolve_network_listener_id_for_apply() {
+	local old_listener_id="$1" desired_listener listener_id listener_name
+
+	if ! desired_listener="$(desired_network_listener_json "$old_listener_id")"; then
+		return 1
+	fi
+	require_value "desired Stalwart network listener for $old_listener_id" "$desired_listener"
+
+	listener_name="$(jq -r '.name // empty' <<<"$desired_listener")"
+	require_value "desired Stalwart network listener name for $old_listener_id" "$listener_name"
+
+	if ! listener_id="$(find_network_listener_id_by_desired "$desired_listener")"; then
+		return 1
+	fi
+	if [ -z "$listener_id" ]; then
+		printf 'Stalwart network listener %s does not exist; declare it as a create operation before updating it\n' "$listener_name" >&2
+		exit 1
+	fi
+
+	stalwart_network_listener_id="$listener_id"
+}
+
+prepare_network_listener_apply_inputs() {
+	local old_listener_id
+
+	[ -n "$stalwart_plan_host_path" ] || return 0
+	[ -r "$stalwart_plan_host_path" ] || return 0
+
+	while IFS= read -r old_listener_id; do
+		[ -n "$old_listener_id" ] || continue
+		if ! resolve_network_listener_id_for_apply "$old_listener_id"; then
+			return 1
+		fi
+		if ! rewrite_json_file_token_var stalwart_plan_host_path "plan-network-listener-resolved" "$old_listener_id" "$stalwart_network_listener_id"; then
+			return 1
+		fi
+	done < <(network_listener_update_ids)
+}
+
 prepare_apply_inputs() {
-	prepare_directory_apply_inputs "$@"
-	prepare_primary_domain_apply_inputs "$@"
+	if ! prepare_directory_apply_inputs "$@"; then
+		return 1
+	fi
+	if ! prepare_network_listener_apply_inputs "$@"; then
+		return 1
+	fi
+	if ! prepare_primary_domain_apply_inputs "$@"; then
+		return 1
+	fi
 }
 
 with_recovery() {
@@ -538,7 +709,9 @@ has_arg() {
 }
 
 apply_plan() {
-	prepare_apply_inputs "$@"
+	if ! prepare_apply_inputs "$@"; then
+		return 1
+	fi
 
 	stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
 		apply --file "$stalwart_plan_container_path" "$@"

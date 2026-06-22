@@ -1,7 +1,6 @@
 {pkgs}: let
   lib = pkgs.lib;
   mailDirectoryLib = import ../mail-directory {inherit lib;};
-in {
   mkUserdataProvisioning = {
     domainId,
     domainName,
@@ -82,6 +81,9 @@ in {
       ;
     inherit (mailDirectory) internalMailingListAddresses;
   };
+  tests = import ./tests {inherit pkgs mkUserdataProvisioning;};
+in {
+  inherit mkUserdataProvisioning;
 
   mkDataStoreConfig = {
     type ? "RocksDb",
@@ -107,7 +109,7 @@ in {
     sharedGroupsHostPath ? "",
     recoveryContainerName ? "stalwart-recovery",
     recoveryUrl ? "http://127.0.0.1:8080",
-    serviceName ? "gap3-stalwart.service",
+    serviceName ? "stalwart.service",
     url ? "http://127.0.0.1:8080",
     credentialsFile ? "/run/agenix/stalwart-recovery-admin",
     domainId ? "",
@@ -122,7 +124,7 @@ in {
     pruneSieveSystemScripts ? false,
     pruneUsers ? false,
   }:
-    pkgs.writeShellApplication {
+    (pkgs.writeShellApplication {
       name = name;
       excludeShellChecks = [
         "SC1091"
@@ -193,5 +195,14 @@ in {
         source ${./helper.sh}
         main "$@"
       '';
-    };
+    })
+    .overrideAttrs (old: let
+      oldPassthru = old.passthru or {};
+    in {
+      passthru =
+        oldPassthru
+        // {
+          tests = (oldPassthru.tests or {}) // tests;
+        };
+    });
 }
