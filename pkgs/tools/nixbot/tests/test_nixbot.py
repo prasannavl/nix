@@ -337,6 +337,112 @@ class NixbotScriptTest(unittest.TestCase):
             result.stdout.splitlines(),
         )
 
+    def test_cleanup_removes_success_runtime_and_empty_diag_dirs(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            NIXBOT_DIAG_KEEP_ROOT={self.work_dir / "diag-keep"}
+            ensure_tmp_dir
+            runtime_dir="$RUNTIME_WORK_DIR"
+            diag_dir="$NIXBOT_DIAG_DIR"
+            cleanup
+            [ ! -e "$runtime_dir" ] && printf 'runtime-gone\n'
+            [ ! -e "$diag_dir" ] && printf 'diag-gone\n'
+            [ ! -e "$NIXBOT_DIAG_KEEP_ROOT" ] && printf 'keep-root-gone\n'
+            """
+        )
+
+        self.assertEqual(
+            ["runtime-gone", "diag-gone", "keep-root-gone"],
+            result.stdout.splitlines(),
+        )
+
+    def test_cleanup_discards_empty_kept_diag_dir(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            NIXBOT_DIAG_KEEP_ROOT={self.work_dir / "diag-keep"}
+            ensure_tmp_dir
+            runtime_dir="$RUNTIME_WORK_DIR"
+            diag_dir="$NIXBOT_DIAG_DIR"
+            NIXBOT_KEEP_DIAG_DIR=1
+            cleanup
+            [ ! -e "$runtime_dir" ] && printf 'runtime-gone\n'
+            [ ! -e "$diag_dir" ] && printf 'diag-gone\n'
+            [ ! -e "$NIXBOT_DIAG_KEEP_ROOT" ] && printf 'keep-root-gone\n'
+            """
+        )
+
+        self.assertEqual(
+            ["runtime-gone", "diag-gone", "keep-root-gone"],
+            result.stdout.splitlines(),
+        )
+        self.assertNotIn("Logs kept at:", result.stderr)
+
+    def test_cleanup_preserves_nonempty_kept_diag_dir(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            NIXBOT_DIAG_KEEP_ROOT={self.work_dir / "diag-keep"}
+            ensure_tmp_dir
+            runtime_dir="$RUNTIME_WORK_DIR"
+            diag_name="$(basename "$NIXBOT_DIAG_DIR")"
+            printf 'failure log\n' >"$NIXBOT_DIAG_DIR/failure.log"
+            NIXBOT_KEEP_DIAG_DIR=1
+            cleanup
+            [ ! -e "$runtime_dir" ] && printf 'runtime-gone\n'
+            [ -f "$NIXBOT_DIAG_KEEP_ROOT/$diag_name/failure.log" ] && printf 'diag-kept\n'
+            cat "$NIXBOT_DIAG_KEEP_ROOT/$diag_name/failure.log"
+            """
+        )
+
+        self.assertEqual(
+            ["runtime-gone", "diag-kept", "failure log"],
+            result.stdout.splitlines(),
+        )
+        self.assertIn("Logs kept at:", result.stderr)
+
+    def test_cleanup_continues_after_best_effort_helper_failure(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            NIXBOT_DIAG_KEEP_ROOT={self.work_dir / "diag-keep"}
+            ensure_tmp_dir
+            runtime_dir="$RUNTIME_WORK_DIR"
+            cleanup_repo_worktree() {{ return 1; }}
+            cleanup
+            [ ! -e "$runtime_dir" ] && printf 'runtime-gone\n'
+            """
+        )
+
+        self.assertEqual(["runtime-gone"], result.stdout.splitlines())
+
+    def test_cleanup_preserves_errexit_for_direct_callers(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            NIXBOT_DIAG_KEEP_ROOT={self.work_dir / "diag-keep"}
+            ensure_tmp_dir
+            cleanup
+            case "$-" in
+              *e*) printf 'errexit-on\n' ;;
+              *) printf 'errexit-off\n' ;;
+            esac
+            """
+        )
+
+        self.assertEqual(["errexit-on"], result.stdout.splitlines())
+
     def test_active_deploy_and_activation_markers_use_hashed_runtime_paths(self):
         result = self.run_script(
             f"""
@@ -384,6 +490,7 @@ class NixbotScriptTest(unittest.TestCase):
             NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
             mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
             prepare_deploy_context() {{ return 0; }}
+            wait_for_in_flight_deploy_activation() {{ return 0; }}
             print_deploy_systemd_user_manager_report() {{ return 0; }}
             report_activation_lock_contention_if_present() {{ return 0; }}
             run_with_combined_stream_capture() {{
@@ -424,6 +531,130 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertIn("/run/current-system/sw/bin/bash -lc", command)
         self.assertIn("/nix/store/snapshot", command)
         self.assertIn("path/bin/switch-to-configuration\\ switch", command)
+
+
+    def test_wait_for_in_flight_deploy_activation_waits_then_proceeds(self):
+        count_file = self.work_dir / "call-count"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=1200
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=180
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            : >{count_file}
+            deploy_activation_unit_state() {{
+              local n
+              n=$(($(cat {count_file}) + 1))
+              printf '%s' "$n" >{count_file}
+              if [ "$n" -lt 3 ]; then
+                printf 'active'
+              else
+                printf 'inactive'
+              fi
+              return 0
+            }}
+            sleep_for_retry_or_signal() {{ return 0; }}
+            set +e
+            wait_for_in_flight_deploy_activation app
+            printf 'wait-rc:%s\n' "$?"
+            set -e
+            printf 'calls:%s\n' "$(cat {count_file})"
+            """
+        )
+        lines = result.stdout.splitlines()
+        self.assertEqual("wait-rc:0", lines[-2])
+        self.assertEqual("calls:3", lines[-1])
+        self.assertIn("waiting for in-flight deploy activation", result.stderr)
+        self.assertIn("in-flight deploy activation settled", result.stderr)
+
+    def test_wait_for_in_flight_deploy_activation_proceeds_when_unit_absent(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=1200
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=180
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            deploy_activation_unit_state() {{ printf ''; return 0; }}
+            sleep_for_retry_or_signal() {{ return 0; }}
+            set +e
+            wait_for_in_flight_deploy_activation app
+            printf 'wait-rc:%s\n' "$?"
+            set -e
+            """
+        )
+        lines = result.stdout.splitlines()
+        self.assertEqual("wait-rc:0", lines[-1])
+
+    def test_parent_readiness_fast_success_summarizes_per_parent(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_PARENT_READINESS_SLOW_SECS=10
+            host_parent_for() { printf 'parent'; }
+            host_parent_resource_for() { printf '%s' "${1#abird-}"; }
+            host_parent_reconcile_template_for() { printf 'reconcile{resourceArgs}'; }
+            host_parent_settle_template_for() { printf 'settle{resourceArgs}'; }
+            prepare_deploy_context() { return 0; }
+            retry_transport_command() { return 0; }
+            ensure_deploy_wave_parent_readiness abird-ci abird-corp
+            """
+        )
+
+        self.assertIn("--- Parent Readiness: parent ---", result.stderr)
+        self.assertIn("[parent-readiness] parent: ok (0s)", result.stderr)
+        self.assertNotIn("starting reconcile", result.stderr)
+        self.assertNotIn("reconcile ok for", result.stderr)
+        self.assertNotIn("ci, corp", result.stderr)
+
+    def test_parent_readiness_slow_success_expands_phase_detail(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_PARENT_READINESS_SLOW_SECS=0
+            retry_transport_command() { return 0; }
+            run_named_prepared_root_command reconcile parent "ci, corp" true
+            """
+        )
+
+        self.assertIn("[parent-readiness] parent: reconcile ok for ci, corp after 0s", result.stderr)
+
+    def test_parent_readiness_failure_keeps_phase_and_resources(self):
+        result = self.run_script(
+            """
+            init_vars
+            retry_transport_command() { return 7; }
+            set +e
+            run_named_prepared_root_command settle parent "ci, corp" false
+            printf 'rc:%s\n' "$?"
+            set -e
+            """
+        )
+
+        self.assertEqual(["rc:7"], result.stdout.splitlines())
+        self.assertIn("[parent-readiness] parent: settle failed for ci, corp after 0s", result.stderr)
+
+    def test_build_plan_cache_miss_progress_is_concise(self):
+        result = self.run_script(
+            """
+            init_vars
+            read_cached_host_build_plan() { return 1; }
+            eval_host_build_plan_drv_path() { printf '/nix/store/app.drv\\n'; }
+            write_cached_host_build_plan() { return 0; }
+            resolve_host_build_plan_drv_path app
+            """
+        )
+
+        self.assertEqual(["/nix/store/app.drv"], result.stdout.splitlines())
+        self.assertIn("Evaluating..", result.stderr)
+        self.assertNotIn("Evaluating build plan for app", result.stderr)
 
     def test_activate_prepared_system_path_uses_transient_unit_command_shape(self):
         cmd_file = self.work_dir / "activate-cmd"
@@ -1127,6 +1358,32 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual(["app"], json.loads(lines[5]))
         self.assertEqual(["db"], json.loads(lines[6]))
 
+    def test_health_check_success_output_is_concise(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            ROLLBACK_ON_FAILURE=1
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            health_log_dir={self.work_dir / "health-log"}
+            health_status_dir={self.work_dir / "health-status"}
+            mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" "$health_log_dir" "$health_status_dir"
+            successful=(app)
+            run_post_switch_health_check() {{ return 0; }}
+            run_post_switch_health_check_phase \
+              "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
+              "$health_log_dir" "$health_status_dir" \
+              0 1 successful
+            build_post_switch_health_check_cmd | grep -F '[health-check] ok'
+            """
+        )
+
+        self.assertIn("[health-check] ok", result.stdout)
+        self.assertIn("Scanning..", result.stderr)
+        self.assertNotIn("Scanning deployed hosts for failed units", result.stderr)
+        self.assertNotIn("All deployed hosts healthy", result.stderr)
+
     def test_deploy_failure_detection_ignores_optional_signal_and_pre_activation_cancel(self):
         result = self.run_script(
             f"""
@@ -1266,6 +1523,278 @@ class NixbotScriptTest(unittest.TestCase):
             ["clean", "deploy-failed", "health-failed", "rollback-failed", "tf-failed"],
             result.stdout.splitlines(),
         )
+
+    def test_host_log_filter_skips_prefix_when_prefix_context_is_active(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            FORCE_PREFIX_HOST_LOGS=1
+            emit_inner() {
+              printf 'inner\\n' | host_log_filter web
+            }
+            printf 'outer\\n' | host_log_filter web
+            run_with_host_log_prefix_context deploy emit_inner
+            """
+        )
+
+        self.assertEqual(["| web | outer", "inner"], result.stdout.splitlines())
+
+    def test_run_streamed_host_command_prefixes_nested_host_logs_once(self):
+        log_file = self.work_dir / "streamed.log"
+        result = self.run_script(
+            f"""
+            init_vars
+            LOG_FORMAT=plain
+            FORCE_PREFIX_HOST_LOGS=1
+            emit_nested_host_output() {{
+              printf 'nested\\n' | host_log_filter web
+            }}
+            run_streamed_host_command deploy web {log_file} emit_nested_host_output
+            printf 'log:%s\\n' "$(cat {log_file})"
+            """
+        )
+
+        self.assertEqual(
+            ["| web | nested", "log:| web | nested"],
+            result.stdout.splitlines(),
+        )
+
+    def test_run_streamed_host_command_keeps_persisted_log_plain_when_terminal_is_colored(self):
+        log_file = self.work_dir / "streamed-color.log"
+        result = self.run_script(
+            f"""
+            init_vars
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            FORCE_PREFIX_HOST_LOGS=1
+            emit_nested_host_output() {{
+              printf 'nested\\n' | host_log_filter web
+            }}
+            run_streamed_host_command deploy web {log_file} emit_nested_host_output >/dev/null
+            if LC_ALL=C grep -q $'\\033' {log_file}; then
+              printf 'ansi-log\n'
+            else
+              printf 'log:%s\n' "$(cat {log_file})"
+            fi
+            """
+        )
+
+        self.assertEqual(["log:| web | nested"], result.stdout.splitlines())
+
+    def test_run_streamed_host_command_strips_colored_inner_headers_from_log(self):
+        log_file = self.work_dir / "streamed-rollback.log"
+        result = self.run_script(
+            f"""
+            init_vars
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            FORCE_PREFIX_HOST_LOGS=1
+            emit_rollback_output() {{
+              log_host_stage rollback web
+              printf 'body\\n'
+            }}
+            run_streamed_host_command rollback web {log_file} emit_rollback_output
+            if LC_ALL=C grep -q $'\\033' {log_file}; then
+              printf 'ansi-log\n'
+            else
+              printf 'plain-log\n'
+            fi
+            printf 'log:%s\n' "$(grep -m1 'rollback' {log_file})"
+            """
+        )
+
+        self.assertIn("| \x1b[90mweb\x1b[0m |", result.stdout)
+        self.assertEqual(["plain-log", "log:| web | -------- web | rollback --------"], result.stdout.splitlines()[-2:])
+
+    def test_run_streamed_host_command_keeps_unprefixed_persisted_log_plain(self):
+        log_file = self.work_dir / "streamed-unprefixed-color.log"
+        result = self.run_script(
+            f"""
+            init_vars
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            FORCE_PREFIX_HOST_LOGS=0
+            emit_colored_output() {{
+              log_host_stage rollback web
+              printf 'body\\n'
+            }}
+            run_streamed_host_command rollback web {log_file} emit_colored_output >/dev/null
+            if LC_ALL=C grep -q $'\\033' {log_file}; then
+              printf 'ansi-log\n'
+            else
+              printf 'plain-log\n'
+            fi
+            printf 'log:%s\n' "$(grep -m1 'rollback' {log_file})"
+            """
+        )
+
+        self.assertEqual(["plain-log", "log:-------- web | rollback --------"], result.stdout.splitlines())
+
+    def test_append_host_log_filter_keeps_persisted_log_plain_when_terminal_is_colored(self):
+        log_file = self.work_dir / "append-color.log"
+        result = self.run_script(
+            f"""
+            init_vars
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            FORCE_PREFIX_HOST_LOGS=1
+            printf 'built-path\\n' | append_host_log_filter web {log_file}
+            if LC_ALL=C grep -q $'\\033' {log_file}; then
+              printf 'ansi-log\n'
+            else
+              printf 'log:%s\n' "$(cat {log_file})"
+            fi
+            """
+        )
+
+        self.assertEqual(["log:| web | built-path"], result.stdout.splitlines())
+
+    def test_print_run_summary_host_color_does_not_inherit_rollback_phase(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            RUN_SUMMARY_SELECTED_HOSTS=(web)
+            RUN_SUMMARY_DEPLOY_OK_HOSTS=(web)
+            _NIXBOT_HOST_LOG_PHASE=rollback
+            print_run_summary 0
+            """
+        )
+
+        self.assertNotIn("\x1b[90mweb\x1b[0m", result.stderr)
+        self.assertIn("web", result.stderr)
+
+    def test_print_run_summary_colors_host_lines_by_outcome(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            RUN_SUMMARY_SELECTED_HOSTS=(okhost rolled skipped optional failed)
+            RUN_SUMMARY_DEPLOY_OK_HOSTS=(okhost)
+            RUN_SUMMARY_ROLLBACK_OK_HOSTS=(rolled)
+            RUN_SUMMARY_DEPLOY_SKIPPED_HOSTS=(skipped)
+            RUN_SUMMARY_OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=(optional)
+            RUN_SUMMARY_DEPLOY_FAILED_HOSTS=(failed)
+            print_run_summary 1
+            """
+        )
+
+        lines = result.stderr.splitlines()
+        self.assertIn("  - okhost: \x1b[32mok\x1b[0m", lines)
+        self.assertIn("\x1b[90m  - rolled: rolled back\x1b[0m", lines)
+        self.assertIn("\x1b[90m  - skipped: ok (skip)\x1b[0m", lines)
+        self.assertIn("\x1b[33m  - optional: optional (rollback failed)\x1b[0m", lines)
+        self.assertIn("\x1b[31m  - failed: FAIL (deploy)\x1b[0m", lines)
+        self.assertNotIn("\x1b[90mokhost\x1b[0m", result.stderr)
+        self.assertNotIn("\x1b[36mokhost\x1b[0m", result.stderr)
+
+
+    def test_should_use_color_respects_no_color_and_force_color(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            unset NO_COLOR
+            should_use_color && printf 'default-yes\\n' || printf 'default-no\\n'
+            NO_COLOR=1 should_use_color && printf 'nocolor-yes\\n' || printf 'nocolor-no\\n'
+            NIXBOT_FORCE_COLOR=1 should_use_color && printf 'force-yes\\n' || printf 'force-no\\n'
+            """
+        )
+        lines = result.stdout.splitlines()
+        self.assertIn(lines[0], ("default-yes", "default-no"))
+        self.assertEqual(lines[1], "nocolor-no")
+        self.assertEqual(lines[2], "force-yes")
+
+    def test_should_use_color_disabled_in_github_actions_mode(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=gh
+            should_use_color && printf 'gh-yes\\n' || printf 'gh-no\\n'
+            LOG_FORMAT=plain
+            GITHUB_ACTIONS=true should_use_color && printf 'auto-gh-yes\\n' || printf 'auto-gh-no\\n'
+            """
+        )
+        self.assertEqual(result.stdout.splitlines(), ["gh-no", "auto-gh-no"])
+
+    def test_host_color_index_is_stable_and_within_palette(self):
+        result = self.run_script(
+            """
+            init_vars
+            printf 'idx-alpha:%s\\n' "$(host_color_index alpha)"
+            printf 'idx-alpha2:%s\\n' "$(host_color_index alpha)"
+            printf 'idx-bravo:%s\\n' "$(host_color_index bravo)"
+            printf 'palette-size:%s\\n' "${#_NIXBOT_HOST_PALETTE[@]}"
+            """
+        )
+        lines = result.stdout.splitlines()
+        alpha_idx = lines[0].split(":")[1]
+        alpha_idx2 = lines[1].split(":")[1]
+        bravo_idx = lines[2].split(":")[1]
+        palette_size = int(lines[3].split(":")[1])
+        self.assertEqual(alpha_idx, alpha_idx2)
+        self.assertNotEqual(alpha_idx, bravo_idx)
+        self.assertGreaterEqual(int(alpha_idx), 0)
+        self.assertLess(int(alpha_idx), palette_size)
+
+    def test_host_color_code_uses_gray_for_rollback_phase(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            printf 'deploy:%s\\n' "$(host_color_code web deploy)"
+            printf 'rollback:%s\\n' "$(host_color_code web rollback)"
+            printf 'gray:%s\\n' "${_NIXBOT_C_GRAY}"
+            """
+        )
+        lines = result.stdout.splitlines()
+        deploy_code = lines[0].split(":", 1)[1]
+        rollback_code = lines[1].split(":", 1)[1]
+        gray_code = lines[2].split(":", 1)[1]
+        self.assertNotEqual(deploy_code, rollback_code)
+        self.assertEqual(rollback_code, gray_code)
+
+    def test_colorize_wraps_text_when_color_enabled(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            printf '%s\\n' "$(colorize "${_NIXBOT_C_GREEN}" hello)"
+            printf '%s\\n' "$(NIXBOT_FORCE_COLOR= colorize "${_NIXBOT_C_GREEN}" hello)"
+            """
+        )
+        lines = result.stdout.splitlines()
+        self.assertIn("hello", lines[0])
+        self.assertNotEqual(lines[0], "hello")
+        self.assertEqual(lines[1], "hello")
+
+    def test_status_color_code_maps_statuses(self):
+        result = self.run_script(
+            """
+            init_vars
+            printf 'ok:%s\\n' "$(status_color_code ok)"
+            printf 'built:%s\\n' "$(status_color_code built)"
+            printf 'fail:%s\\n' "$(status_color_code 'FAIL (deploy)')"
+            printf 'skip:%s\\n' "$(status_color_code skip)"
+            printf 'rollback:%s\\n' "$(status_color_code 'rolled back')"
+            """
+        )
+        lines = result.stdout.splitlines()
+        green = lines[0].split(":", 1)[1]
+        red = lines[2].split(":", 1)[1]
+        gray = lines[3].split(":", 1)[1]
+        self.assertEqual(lines[1].split(":", 1)[1], green)
+        self.assertEqual(lines[4].split(":", 1)[1], gray)
+        self.assertNotEqual(green, red)
+        self.assertNotEqual(green, gray)
+        self.assertNotEqual(red, gray)
 
 
 if __name__ == "__main__":

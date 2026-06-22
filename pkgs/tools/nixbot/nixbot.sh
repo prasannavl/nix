@@ -92,7 +92,7 @@ Dev Build Action Options (`dev-build`):
 
 Deploy Action Options (`run`, `deploy`):
   --goal           switch|boot|test|dry-activate (default: switch)
-  --deploy-jobs    Parallel deploys within a dependency wave (default: 16)
+  --deploy-jobs    Parallel deploys within a dependency wave (default: 8)
   --verify-jobs    Parallel rollback snapshot and health-check work (default: 16)
   --bootstrap      Always use bootstrap SSH user/key selection
   --no-rollback    Disable rollback if any deploy fails
@@ -233,6 +233,138 @@ die() {
 	exit 1
 }
 
+##### Color #####
+
+_NIXBOT_C_RESET=$'\033[0m'
+_NIXBOT_C_RED=$'\033[31m'
+_NIXBOT_C_GREEN=$'\033[32m'
+_NIXBOT_C_YELLOW=$'\033[33m'
+_NIXBOT_C_GRAY=$'\033[90m'
+
+_NIXBOT_HOST_PALETTE=(
+	$'\033[36m'
+	$'\033[34m'
+	$'\033[35m'
+	$'\033[33m'
+	$'\033[94m'
+	$'\033[95m'
+	$'\033[96m'
+	$'\033[92m'
+	$'\033[93m'
+)
+
+should_use_color() {
+	case "${NIXBOT_FORCE_COLOR:-}" in
+	1 | true | yes | on)
+		return 0
+		;;
+	esac
+	case "${NO_COLOR:-}" in
+	?*)
+		return 1
+		;;
+	esac
+	case "${LOG_FORMAT:-auto}" in
+	gh | github-actions)
+		return 1
+		;;
+	auto)
+		[ "${GITHUB_ACTIONS:-false}" = "true" ] && return 1
+		;;
+	plain | "")
+		;;
+	*)
+		return 1
+		;;
+	esac
+	[ -t 2 ]
+}
+
+host_color_index() {
+	local node="$1" hash=2166136261 ord=0 i
+
+	for ((i = 0; i < ${#node}; i++)); do
+		printf -v ord '%d' "'${node:i:1}"
+		hash=$(( (hash ^ ord) * 16777619 & 0xFFFFFFFF ))
+	done
+	printf '%s\n' "$(( hash % ${#_NIXBOT_HOST_PALETTE[@]} ))"
+}
+
+host_color_code() {
+	local node="$1" phase="${2:-${_NIXBOT_HOST_LOG_PHASE:-}}"
+	local idx
+
+	case "${phase}" in
+	rollback)
+		printf '%s' "${_NIXBOT_C_GRAY}"
+		;;
+	*)
+		idx="$(host_color_index "${node}")"
+		printf '%s' "${_NIXBOT_HOST_PALETTE[idx]}"
+		;;
+	esac
+}
+
+colorize() {
+	local code="$1" text="$2"
+
+	if should_use_color; then
+		printf '%s%s%s' "${code}" "${text}" "${_NIXBOT_C_RESET}"
+	else
+		printf '%s' "${text}"
+	fi
+}
+
+status_color_code() {
+	local status="$1"
+
+	case "${status}" in
+	FAIL*)
+		printf '%s' "${_NIXBOT_C_RED}"
+		;;
+	ok | built)
+		printf '%s' "${_NIXBOT_C_GREEN}"
+		;;
+	*)
+		printf '%s' "${_NIXBOT_C_GRAY}"
+		;;
+	esac
+}
+
+summary_host_line_color_code() {
+	local status="$1"
+
+	case "${status}" in
+	FAIL*)
+		printf '%s' "${_NIXBOT_C_RED}"
+		;;
+	optional*)
+		printf '%s' "${_NIXBOT_C_YELLOW}"
+		;;
+	rolled\ back | ok\ \(skip\) | skip)
+		printf '%s' "${_NIXBOT_C_GRAY}"
+		;;
+	esac
+}
+
+format_summary_host_line() {
+	local node="$1" status="$2" timing_suffix="$3"
+	local line="" line_color="" status_text=""
+
+	line="  - ${node}: ${status}${timing_suffix}"
+	line_color="$(summary_host_line_color_code "${status}")"
+	if [ -n "${line_color}" ]; then
+		colorize "${line_color}" "${line}"
+		return
+	fi
+	if [ "${status}" = "ok" ]; then
+		status_text="$(colorize "${_NIXBOT_C_GREEN}" "${status}")"
+		printf '  - %s: %s%s' "${node}" "${status_text}" "${timing_suffix}"
+		return
+	fi
+	printf '%s' "${line}"
+}
+
 ##### Init Vars #####
 
 override_config_path_for() {
@@ -312,7 +444,7 @@ init_vars() {
 	NIXBOT_BUILD_HEARTBEAT_SECS="${NIXBOT_BUILD_HEARTBEAT_SECS:-30}"
 	NIXBOT_BUILD_NIX_ARGS=()
 	NIXBOT_BUILD_PLAN_DIR=""
-	NIXBOT_PARALLEL_JOBS="${NIXBOT_JOBS:-16}"
+	NIXBOT_PARALLEL_JOBS="${NIXBOT_JOBS:-8}"
 	NIXBOT_VERIFY_JOBS="${NIXBOT_VERIFY_JOBS:-16}"
 	NIXBOT_IF_CHANGED=1
 	TF_IF_CHANGED=1
@@ -335,6 +467,8 @@ init_vars() {
 	NIXBOT_PARENT_SETTLE_TIMEOUT="${NIXBOT_PARENT_SETTLE_TIMEOUT:-180}"
 	NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT="${NIXBOT_PARENT_SNAPSHOT_READY_TIMEOUT:-45}"
 	NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS:-5}"
+	NIXBOT_PARENT_READINESS_SLOW_SECS="${NIXBOT_PARENT_READINESS_SLOW_SECS:-10}"
+	NIXBOT_PARENT_READINESS_LAST_ELAPSED_SECS=0
 	NIXBOT_CONTROL_PERSIST_SECS="${NIXBOT_CONTROL_PERSIST_SECS:-120}"
 	NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS="${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS:-5}"
 	NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX="${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX:-3}"
@@ -392,6 +526,8 @@ init_vars() {
 	TF_CHANGE_BASE_REF=""
 	_NIXBOT_LOG_GROUP_DEPTH=0
 	_NIXBOT_LOG_GROUP_SCOPE=""
+	_NIXBOT_HOST_LOG_PREFIX_ACTIVE=0
+	_NIXBOT_HOST_LOG_PHASE=""
 	NIXBOT_RUN_STARTED_EPOCH="$(date +%s)"
 	NIXBOT_RUN_STARTED_AT="$(format_epoch "${NIXBOT_RUN_STARTED_EPOCH}")"
 
@@ -1258,6 +1394,7 @@ parse_args() {
 	[[ "${NIXBOT_BUILD_HEARTBEAT_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_BUILD_HEARTBEAT_SECS: ${NIXBOT_BUILD_HEARTBEAT_SECS} (must be a non-negative integer)"
 	[[ "${NIXBOT_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${NIXBOT_PARALLEL_JOBS} (must be a positive integer)"
 	[[ "${NIXBOT_VERIFY_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --verify-jobs: ${NIXBOT_VERIFY_JOBS} (must be a positive integer)"
+	[[ "${NIXBOT_PARENT_READINESS_SLOW_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_PARENT_READINESS_SLOW_SECS: ${NIXBOT_PARENT_READINESS_SLOW_SECS} (must be a non-negative integer)"
 	[[ "${NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS: ${NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS} (must be a positive integer)"
 	[[ "${NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS: ${NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS} (must be a positive integer)"
 	case "${LOG_FORMAT}" in
@@ -1282,30 +1419,53 @@ parse_args() {
 	fi
 }
 
-cleanup() {
-	local cleanup_rc="$?"
+cleanup_core() {
+	local cleanup_rc="$1"
 
-	trap - HUP INT TERM EXIT
-	terminate_background_jobs
-	restore_initial_tty_state
-	log_group_end_all
-	cleanup_repo_worktree
+	terminate_background_jobs || true
+	restore_initial_tty_state || true
+	log_group_end_all || true
+	cleanup_repo_worktree || true
 	if [ -n "${REPO_ROOT_LOCK_DIR}" ]; then
-		release_repo_root_lock
+		release_repo_root_lock || true
 	fi
 	if [ "${cleanup_rc}" -ne 0 ] && [ "${NIXBOT_KEEP_DIAG_ON_FAILURE:-0}" -eq 1 ]; then
 		NIXBOT_KEEP_DIAG_DIR=1
 	fi
 	if [ "${NIXBOT_KEEP_DIAG_DIR:-0}" -eq 1 ]; then
-		keep_diag_dir
+		keep_diag_dir || true
 	else
 		[ -n "${NIXBOT_DIAG_DIR:-}" ] && rm -rf "${NIXBOT_DIAG_DIR}"
 	fi
 	if [ -n "${RUNTIME_WORK_DIR}" ] && [ -d "${RUNTIME_WORK_DIR}" ]; then
 		rm -rf "${RUNTIME_WORK_DIR}"
 	fi
-	rmdir "${RUNTIME_WORK_ROOT}" "${RUNTIME_WORK_FALLBACK_ROOT}" 2>/dev/null || true
-	restore_initial_tty_state
+	rmdir "${RUNTIME_WORK_ROOT}" "${RUNTIME_WORK_FALLBACK_ROOT}" "${NIXBOT_DIAG_KEEP_ROOT}" 2>/dev/null || true
+	restore_initial_tty_state || true
+}
+
+cleanup() {
+	local cleanup_rc="$?" shell_opts="$-"
+
+	case "${shell_opts}" in
+	*e*)
+		set +e
+		;;
+	esac
+	cleanup_core "${cleanup_rc}"
+	case "${shell_opts}" in
+	*e*)
+		set -e
+		;;
+	esac
+}
+
+cleanup_trap() {
+	local cleanup_rc="$?"
+
+	set +e
+	trap - HUP INT TERM EXIT
+	cleanup_core "${cleanup_rc}"
 }
 
 request_hangup() {
@@ -1551,6 +1711,16 @@ host_deploy_activation_unit_running() {
 	esac
 
 	return 1
+}
+
+
+deploy_activation_unit_state() {
+	local node="$1" unit_name="" check_cmd="" state=""
+
+	unit_name="$(deploy_activation_unit_name "${node}")"
+	printf -v check_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${unit_name}"
+	state="$(run_host_root_command "${node}" "${check_cmd}" 2>/dev/null)" || return 1
+	printf '%s' "${state}"
 }
 
 host_deploy_reached_activation() {
@@ -2074,6 +2244,34 @@ cleanup_stale_runtime_dirs() {
 				-mtime +3 -print 2>/dev/null
 		)
 	done
+
+	scan_root="${NIXBOT_DIAG_KEEP_ROOT}"
+	if [ -d "${scan_root}" ]; then
+		while IFS= read -r path; do
+			[ -n "${path}" ] || continue
+			rm -rf "${path}" || true
+		done < <(
+			find "${scan_root}" -maxdepth 1 -mindepth 1 -type d \
+				-name 'diag-*' \
+				-mtime +3 -print 2>/dev/null
+		)
+		while IFS= read -r path; do
+			[ -n "${path}" ] || continue
+			rmdir "${path}" 2>/dev/null || true
+		done < <(
+			find "${scan_root}" -maxdepth 1 -mindepth 1 -type d \
+				-name 'diag-*' \
+				-empty -print 2>/dev/null
+		)
+		rmdir "${scan_root}" 2>/dev/null || true
+	fi
+}
+
+dir_has_regular_files() {
+	local dir="$1"
+
+	[ -d "${dir}" ] || return 1
+	find "${dir}" -type f -print -quit 2>/dev/null | grep -q .
 }
 
 keep_diag_dir() {
@@ -2082,6 +2280,12 @@ keep_diag_dir() {
 	[ "${NIXBOT_DIAG_REPORTED:-0}" -eq 0 ] || return 0
 	[ -n "${NIXBOT_DIAG_DIR:-}" ] || return 0
 	[ -d "${NIXBOT_DIAG_DIR}" ] || return 0
+
+	if ! dir_has_regular_files "${NIXBOT_DIAG_DIR}"; then
+		rm -rf "${NIXBOT_DIAG_DIR}"
+		rmdir "${NIXBOT_DIAG_KEEP_ROOT}" 2>/dev/null || true
+		return 0
+	fi
 
 	keep_dir="${NIXBOT_DIAG_KEEP_ROOT}/$(basename "${NIXBOT_DIAG_DIR}")"
 	if [ "${NIXBOT_DIAG_DIR}" != "${keep_dir}" ]; then
@@ -6073,7 +6277,6 @@ run_named_prepared_root_command() {
 	local rc=0 start_epoch="" elapsed_secs=0
 
 	start_epoch="$(date +%s)"
-	echo "[parent-readiness] ${parent}: starting ${phase_name} for ${resources}" >&2
 
 	if retry_transport_command \
 		"Parent readiness ${phase_name} on ${parent}" \
@@ -6081,7 +6284,10 @@ run_named_prepared_root_command() {
 		run_prepared_root_command \
 		"${target_cmd}"; then
 		elapsed_secs="$(($(date +%s) - start_epoch))"
-		echo "[parent-readiness] ${parent}: ${phase_name} ok for ${resources} after ${elapsed_secs}s" >&2
+		NIXBOT_PARENT_READINESS_LAST_ELAPSED_SECS="${elapsed_secs}"
+		if [ "${elapsed_secs}" -ge "${NIXBOT_PARENT_READINESS_SLOW_SECS}" ]; then
+			echo "[parent-readiness] ${parent}: ${phase_name} ok for ${resources} after ${elapsed_secs}s" >&2
+		fi
 		return 0
 	else
 		rc="$?"
@@ -6090,6 +6296,12 @@ run_named_prepared_root_command() {
 	elapsed_secs="$(($(date +%s) - start_epoch))"
 	echo "[parent-readiness] ${parent}: ${phase_name} failed for ${resources} after ${elapsed_secs}s" >&2
 	return "${rc}"
+}
+
+log_parent_readiness_ok() {
+	local parent="$1" elapsed_secs="$2"
+
+	echo "[parent-readiness] ${parent}: ok (${elapsed_secs}s)" >&2
 }
 
 run_host_operation_with_retry_budget() {
@@ -6211,6 +6423,7 @@ parent_template_supports_batching() {
 ensure_deploy_wave_parent_readiness() {
 	local node="" parent="" resource="" reconcile_template="" settle_template=""
 	local group_key="" reconcile_cmd="" settle_cmd="" rendered_resource_args="" resource_args=""
+	local group_elapsed_secs=0
 	local -a group_order=() resources=()
 	declare -A grouped_resources=() grouped_parents=() grouped_reconcile_templates=() grouped_settle_templates=()
 
@@ -6252,7 +6465,8 @@ ensure_deploy_wave_parent_readiness() {
 			rendered_resource_args+="${rendered_resource_args:+, }${resource}"
 		done
 
-		log_subsection "Parent Readiness: ${grouped_parents["${group_key}"]} -> ${rendered_resource_args}"
+		group_elapsed_secs=0
+		log_subsection "Parent Readiness: ${grouped_parents["${group_key}"]}"
 		prepare_deploy_context "${grouped_parents["${group_key}"]}" || return 1
 		if parent_template_supports_batching "${grouped_reconcile_templates["${group_key}"]}" &&
 			parent_template_supports_batching "${grouped_settle_templates["${group_key}"]}"; then
@@ -6276,11 +6490,14 @@ ensure_deploy_wave_parent_readiness() {
 				"${grouped_parents["${group_key}"]}" \
 				"${rendered_resource_args}" \
 				"${reconcile_cmd}" || return 1
+			group_elapsed_secs=$((group_elapsed_secs + NIXBOT_PARENT_READINESS_LAST_ELAPSED_SECS))
 			run_named_prepared_root_command \
 				"settle" \
 				"${grouped_parents["${group_key}"]}" \
 				"${rendered_resource_args}" \
 				"${settle_cmd}" || return 1
+			group_elapsed_secs=$((group_elapsed_secs + NIXBOT_PARENT_READINESS_LAST_ELAPSED_SECS))
+			log_parent_readiness_ok "${grouped_parents["${group_key}"]}" "${group_elapsed_secs}"
 			continue
 		fi
 
@@ -6306,12 +6523,15 @@ ensure_deploy_wave_parent_readiness() {
 				"${grouped_parents["${group_key}"]}" \
 				"${resource}" \
 				"${reconcile_cmd}" || return 1
+			group_elapsed_secs=$((group_elapsed_secs + NIXBOT_PARENT_READINESS_LAST_ELAPSED_SECS))
 			run_named_prepared_root_command \
 				"settle" \
 				"${grouped_parents["${group_key}"]}" \
 				"${resource}" \
 				"${settle_cmd}" || return 1
+			group_elapsed_secs=$((group_elapsed_secs + NIXBOT_PARENT_READINESS_LAST_ELAPSED_SECS))
 		done
+		log_parent_readiness_ok "${grouped_parents["${group_key}"]}" "${group_elapsed_secs}"
 	done
 }
 
@@ -6490,13 +6710,17 @@ drain_job_slots() {
 }
 
 run_streamed_host_command() {
-	local node="$1" log_file="${2:-}"
-	shift 2
+	local phase="$1" node="$2" log_file="${3:-}"
+	shift 3
 
-	if [ -n "${log_file}" ]; then
-		run_with_combined_output "$@" > >(host_log_filter "${node}" | tee -a "${log_file}")
+	if [ -n "${log_file}" ] && [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+		run_with_host_log_prefix_context "${phase}" \
+			run_with_combined_output "$@" > >(tee_prefixed_host_logs "${node}" "${log_file}" "${phase}")
+	elif [ -n "${log_file}" ]; then
+		run_with_combined_output "$@" > >(tee_plain_host_logs "${log_file}")
 	elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-		run_with_combined_output "$@" > >(host_log_filter "${node}")
+		run_with_host_log_prefix_context "${phase}" \
+			run_with_combined_output "$@" > >(prefix_host_logs "${node}" "${phase}")
 	else
 		"$@"
 	fi
@@ -6516,13 +6740,13 @@ run_build_job() {
 		build_start_epoch="$(date +%s)"
 		if [ -n "${log_file}" ]; then
 			built_out_path="$(resolve_build_out_path "${node}" "${result_link}" \
-				2> >(host_log_filter "${node}" | tee -a "${log_file}" >&2))"
+				2> >(tee_host_log_filter "${node}" "${log_file}" build >&2))"
 			rc="$?"
 			if [ "${rc}" = "0" ] && [ -n "${built_out_path}" ]; then
-				printf '%s\n' "${built_out_path}" | host_log_filter "${node}" | tee -a "${log_file}" >/dev/null
+				printf '%s\n' "${built_out_path}" | append_host_log_filter "${node}" "${log_file}" build
 			fi
 		elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-			built_out_path="$(resolve_build_out_path "${node}" "${result_link}" 2> >(host_log_filter "${node}" >&2))"
+			built_out_path="$(resolve_build_out_path "${node}" "${result_link}" 2> >(host_log_filter "${node}" build >&2))"
 			rc="$?"
 		else
 			built_out_path="$(resolve_build_out_path "${node}" "${result_link}")"
@@ -6893,7 +7117,7 @@ run_deploy_job() {
 			rc=1
 		else
 			built_out_path="$(cat "${out_file}")"
-			if run_streamed_host_command "${node}" "${log_file}" deploy_host "${node}" "${built_out_path}" "${skip_marker}"; then
+			if run_streamed_host_command deploy "${node}" "${log_file}" deploy_host "${node}" "${built_out_path}" "${skip_marker}"; then
 				rc=0
 			else
 				rc="$?"
@@ -7081,7 +7305,7 @@ run_snapshot_job() {
 			rm -f "${status_file}"
 		fi
 		if [ -n "${log_file}" ]; then
-			run_streamed_host_command "${node}" "${log_file}" snapshot_host_with_retry "${node}" "${snapshot_file}"
+			run_streamed_host_command snapshot "${node}" "${log_file}" snapshot_host_with_retry "${node}" "${snapshot_file}"
 			rc="$?"
 		else
 			snapshot_host_with_retry "${node}" "${snapshot_file}"
@@ -7210,6 +7434,49 @@ ensure_wave_snapshots() {
 	return "${rc}"
 }
 
+wait_for_in_flight_deploy_activation() {
+	local node="$1"
+	local deploy_unit="" wait_start_epoch="" elapsed_secs="" max_wait_secs="" poll_secs=5
+	local state="" last_log_bucket=-1 bucket=0
+
+	deploy_unit="$(deploy_activation_unit_name "${node}")"
+	wait_start_epoch="$(date +%s)"
+	max_wait_secs=$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))
+
+	while :; do
+		elapsed_secs="$(($(date +%s) - wait_start_epoch))"
+		bucket=$((elapsed_secs / 30))
+
+		if [ "${elapsed_secs}" -ge "${max_wait_secs}" ]; then
+			echo "==> ${node}: in-flight deploy activation (${deploy_unit}) did not finish within ${elapsed_secs}s; proceeding with rollback" >&2
+			return 0
+		fi
+
+		if state="$(deploy_activation_unit_state "${node}" 2>/dev/null)"; then
+			case "${state}" in
+			active | activating | reloading | deactivating)
+				if [ "${bucket}" -ne "${last_log_bucket}" ]; then
+					echo "==> ${node}: waiting for in-flight deploy activation (${deploy_unit}, state=${state}) to release lock; elapsed ${elapsed_secs}s" >&2
+					last_log_bucket="${bucket}"
+				fi
+				sleep_for_retry_or_signal "${poll_secs}" || return "$?"
+				continue
+				;;
+			esac
+			echo "==> ${node}: in-flight deploy activation settled (state=${state:-none}) after ${elapsed_secs}s; proceeding with rollback" >&2
+			return 0
+		fi
+
+		# Transport failure: the host is likely still overloaded from activation.
+		# Keep waiting until it recovers or the timeout expires.
+		if [ "${bucket}" -ne "${last_log_bucket}" ]; then
+			echo "==> ${node}: host unreachable while checking in-flight deploy activation (${deploy_unit}); elapsed ${elapsed_secs}s" >&2
+			last_log_bucket="${bucket}"
+		fi
+		sleep_for_retry_or_signal "${poll_secs}" || return "$?"
+	done
+}
+
 rollback_host_to_snapshot() {
 	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_script="" rollback_unit="" systemd_run_properties=""
 	local rollback_rc=0 rollback_start_epoch="" rollback_output=""
@@ -7221,6 +7488,7 @@ rollback_host_to_snapshot() {
 
 	log_host_stage "rollback" "${node}"
 	prepare_deploy_context "${node}" || return 1
+	wait_for_in_flight_deploy_activation "${node}" || return "$?"
 	rollback_unit="$(rollback_activation_unit_name "${node}")"
 	rollback_script="$(nixbot_activation_command "${snapshot_path}/bin/switch-to-configuration" switch)"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
@@ -7310,7 +7578,7 @@ run_rollback_job() {
 	(
 		set +e
 		rm -f "${status_file}"
-		if run_streamed_host_command "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "${snapshot_path}"; then
+		if run_streamed_host_command rollback "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "${snapshot_path}"; then
 			rc=0
 		else
 			rc="$?"
@@ -8482,7 +8750,7 @@ EOF_HC_UNITS
 		return 2
 	fi
 
-	echo "[health-check] no failed units, unsettled units, or unhealthy containers" >&2
+	echo "[health-check] ok" >&2
 }
 
 _remote_health_check_starting_timeout_seconds() {
@@ -8603,6 +8871,7 @@ run_post_switch_health_check() {
 
 	health_check_cmd="$(build_post_switch_health_check_cmd)"
 	run_with_prefixed_combined_output \
+		health \
 		"${node}" \
 		"${log_file}" \
 		run_prepared_post_switch_health_check \
@@ -8632,7 +8901,7 @@ run_post_switch_health_check_phase() {
 	local -a health_check_failed_hosts=() remaining_successful=()
 
 	log_section "Phase: Health Check"
-	echo "Scanning deployed hosts for failed units and unhealthy containers" >&2
+	echo "Scanning.." >&2
 
 	for node in "${hcp_successful_hosts_ref[@]}"; do
 		[ -n "${node}" ] || continue
@@ -8671,10 +8940,7 @@ run_post_switch_health_check_phase() {
 		done
 	fi
 
-	if [ "${#health_check_failed_hosts[@]}" -eq 0 ]; then
-		echo "All deployed hosts healthy" >&2
-		return 0
-	fi
+	[ "${#health_check_failed_hosts[@]}" -ne 0 ] || return 0
 
 	phase_rc=1
 
@@ -8813,12 +9079,12 @@ print_deploy_systemd_user_manager_report() {
 		run_with_combined_output \
 			run_deploy_systemd_user_manager_report_command \
 			"${node}" \
-			"${report_cmd}" > >(host_log_filter "${node}" | tee -a "${log_file}" >&2)
+			"${report_cmd}" > >(tee_host_log_filter "${node}" "${log_file}" report >&2)
 	elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
 		run_with_combined_output \
 			run_deploy_systemd_user_manager_report_command \
 			"${node}" \
-			"${report_cmd}" > >(host_log_filter "${node}" >&2)
+			"${report_cmd}" > >(host_log_filter "${node}" report >&2)
 	else
 		run_with_combined_output \
 			run_deploy_systemd_user_manager_report_command \
@@ -8895,9 +9161,9 @@ log_host_phase_duration() {
 	esac
 	line="${label} duration: $(format_duration "${seconds}")"
 	if [ -n "${log_file}" ]; then
-		printf '%s\n' "${line}" | host_log_filter "${node}" | tee -a "${log_file}" >&2
+		printf '%s\n' "${line}" | tee_host_log_filter "${node}" "${log_file}" "${phase}" >&2
 	elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-		printf '%s\n' "${line}" | host_log_filter "${node}" >&2
+		printf '%s\n' "${line}" | host_log_filter "${node}" "${phase}" >&2
 	else
 		printf '%s\n' "${line}" >&2
 	fi
@@ -9215,7 +9481,7 @@ resolve_host_build_plan_drv_path() {
 		return 0
 	fi
 
-	echo "Evaluating build plan for ${node}" >&2
+	echo "Evaluating.." >&2
 	drv_path="$(eval_host_build_plan_drv_path "${node}")" || return "$?"
 	write_cached_host_build_plan "${node}" "${drv_path}"
 	printf '%s\n' "${drv_path}"
@@ -9228,7 +9494,7 @@ run_build_plan_job() {
 	(
 		set +e
 		if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-			drv_path="$(resolve_host_build_plan_drv_path "${node}" 2> >(host_log_filter "${node}" >&2))"
+			drv_path="$(resolve_host_build_plan_drv_path "${node}" 2> >(host_log_filter "${node}" build >&2))"
 		else
 			drv_path="$(resolve_host_build_plan_drv_path "${node}")"
 		fi
@@ -11124,16 +11390,20 @@ log_group_tf_project_title() {
 
 log_host_stage() {
 	local phase="$1" node="$2" extra="${3:-}"
+	local colored_node="" colored_phase=""
 
 	if log_group_scope_matches "${phase}"; then
 		log_grouped_item_start "$(log_group_host_stage_title "${phase}" "${node}")"
 	fi
 
-	printf '\n-------- %s | %s --------\n' "${node}" "${phase}" >&2
+	_NIXBOT_HOST_LOG_PHASE="${phase}"
+	colored_node="$(colorize "$(host_color_code "${node}" "${phase}")" "${node}")"
+	colored_phase="$(colorize "${_NIXBOT_C_GRAY}" "${phase}")"
+	printf '\n-------- %s | %s --------\n' "${colored_node}" "${colored_phase}" >&2
 	if [ -n "${extra}" ]; then
-		printf '[%s] %s | %s\n' "${node}" "${phase}" "${extra}" >&2
+		printf '[%s] %s | %s\n' "${colored_node}" "${colored_phase}" "${extra}" >&2
 	else
-		printf '[%s] %s\n' "${node}" "${phase}" >&2
+		printf '[%s] %s\n' "${colored_node}" "${colored_phase}" >&2
 	fi
 }
 
@@ -11235,30 +11505,123 @@ print_host_block() {
 	done
 }
 
+prefix_host_logs_with_prefix() {
+	local prefix_str="$1"
+
+	awk -v prefix="${prefix_str}" '{ if (length($0) == 0) { print ""; } else { print prefix $0; } fflush(); }'
+}
+
 prefix_host_logs() {
-	local node="$1"
-	awk -v node="${node}" '{ if (length($0) == 0) { print ""; } else { print "| " node " | " $0; } fflush(); }'
+	local node="$1" phase="${2:-${_NIXBOT_HOST_LOG_PHASE:-}}"
+	local color="" reset=""
+
+	if should_use_color; then
+		color="$(host_color_code "${node}" "${phase}")"
+		reset="${_NIXBOT_C_RESET}"
+	fi
+	prefix_host_logs_with_prefix "| ${color}${node}${reset} | "
+}
+
+prefix_host_logs_plain() {
+	prefix_host_logs_with_prefix "| $1 | "
+}
+
+host_log_prefix_enabled() {
+	[ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ] && ! host_log_prefix_active
+}
+
+tee_prefixed_host_logs() {
+	local node="$1" log_file="$2" phase="${3:-${_NIXBOT_HOST_LOG_PHASE:-}}"
+
+	if should_use_color; then
+		tee >(strip_ansi_escape_sequences | prefix_host_logs_plain "${node}" >>"${log_file}") |
+			prefix_host_logs "${node}" "${phase}"
+	else
+		tee >(strip_ansi_escape_sequences | prefix_host_logs_plain "${node}" >>"${log_file}") |
+			prefix_host_logs_plain "${node}"
+	fi
+}
+
+tee_plain_host_logs() {
+	local log_file="$1"
+
+	tee >(strip_ansi_escape_sequences >>"${log_file}")
+}
+
+host_log_prefix_active() {
+	[ "${_NIXBOT_HOST_LOG_PREFIX_ACTIVE:-0}" -eq 1 ]
+}
+
+run_with_host_log_prefix_context() {
+	local phase="$1"
+	shift
+	local previous_active="${_NIXBOT_HOST_LOG_PREFIX_ACTIVE:-0}"
+	local previous_phase="${_NIXBOT_HOST_LOG_PHASE:-}" rc=0 shell_opts="$-"
+
+	case "${shell_opts}" in
+	*e*)
+		set +e
+		;;
+	esac
+	_NIXBOT_HOST_LOG_PREFIX_ACTIVE=1
+	_NIXBOT_HOST_LOG_PHASE="${phase}"
+	"$@"
+	rc="$?"
+	_NIXBOT_HOST_LOG_PREFIX_ACTIVE="${previous_active}"
+	_NIXBOT_HOST_LOG_PHASE="${previous_phase}"
+	case "${shell_opts}" in
+	*e*)
+		set -e
+		;;
+	esac
+	return "${rc}"
 }
 
 run_with_prefixed_combined_output() {
-	local node="$1" log_file="${2:-}"
-	shift 2
+	local phase="$1" node="$2" log_file="${3:-}"
+	shift 3
 
 	if [ -n "${log_file}" ]; then
-		run_with_combined_output "$@" > >(prefix_host_logs "${node}" | tee -a "${log_file}" >&2)
+		run_with_host_log_prefix_context "${phase}" \
+			run_with_combined_output "$@" > >(tee_prefixed_host_logs "${node}" "${log_file}" "${phase}" >&2)
 	else
-		run_with_combined_output "$@" > >(prefix_host_logs "${node}" >&2)
+		run_with_host_log_prefix_context "${phase}" \
+			run_with_combined_output "$@" > >(prefix_host_logs "${node}" "${phase}" >&2)
 	fi
 }
 
 host_log_filter() {
-	local node="$1"
+	local node="$1" phase="${2:-${_NIXBOT_HOST_LOG_PHASE:-}}"
 
-	if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-		prefix_host_logs "${node}"
+	if host_log_prefix_enabled; then
+		prefix_host_logs "${node}" "${phase}"
 	else
 		cat
 	fi
+}
+
+tee_host_log_filter() {
+	local node="$1" log_file="$2" phase="${3:-${_NIXBOT_HOST_LOG_PHASE:-}}"
+
+	if host_log_prefix_enabled; then
+		tee_prefixed_host_logs "${node}" "${log_file}" "${phase}"
+	else
+		tee_plain_host_logs "${log_file}"
+	fi
+}
+
+append_host_log_filter() {
+	local node="$1" log_file="$2"
+
+	if host_log_prefix_enabled; then
+		prefix_host_logs_plain "${node}" >>"${log_file}"
+	else
+		strip_ansi_escape_sequences >>"${log_file}"
+	fi
+}
+
+strip_ansi_escape_sequences() {
+	sed -E $'s/\x1B\\[[0-9;?]*[ -/]*[@-~]//g'
 }
 
 run_with_combined_output() {
@@ -11444,6 +11807,7 @@ print_run_summary() {
 	local total_duration="" build_duration="" deploy_duration="" runtime_suffix=""
 	local -a failed_summary_tf=()
 	local -a runtime_parts=()
+	local colored_tf_status="" result_label=""
 
 	log_section "Phase: Summary"
 	echo "Action: ${RUN_SUMMARY_ACTION:-${ACTION}}" >&2
@@ -11480,7 +11844,8 @@ print_run_summary() {
 			RUN_SUMMARY_HEALTH_FAILED_ROLLBACK_FAILED_HOSTS)"
 
 		timing_suffix="$(host_summary_timing_suffix "${node}")"
-		echo "  - ${node}: ${status}${timing_suffix}" >&2
+		format_summary_host_line "${node}" "${status}" "${timing_suffix}" >&2
+		echo >&2
 		if [[ "${status}" == FAIL* ]]; then
 			failed_summary_hosts+=("${node}: ${status}")
 		fi
@@ -11493,7 +11858,8 @@ print_run_summary() {
 		tf_label="${RUN_SUMMARY_TF_LABELS[$i]}"
 		tf_status="${RUN_SUMMARY_TF_STATUSES[$i]}"
 		tf_display_status="$(tf_summary_display_status "${tf_status}")"
-		echo "  - ${tf_label}: ${tf_display_status}" >&2
+		colored_tf_status="$(colorize "$(status_color_code "${tf_display_status}")" "${tf_display_status}")"
+		echo "  - ${tf_label}: ${colored_tf_status}" >&2
 		if [ "${tf_status}" = "fail" ]; then
 			failed_summary_tf+=("${tf_label}: FAIL (tf)")
 		fi
@@ -11512,7 +11878,9 @@ print_run_summary() {
 	fi
 	echo "Run time: ${total_duration}${runtime_suffix}" >&2
 	if [ "${#failed_summary_hosts[@]}" -gt 0 ] || [ "${#failed_summary_tf[@]}" -gt 0 ]; then
-		printf '\n!!!!!!!!!! FAILURE !!!!!!!!!!\n' >&2
+		printf '\n%s!!!!!!!!!! FAILURE !!!!!!!!!!%s\n' \
+			"$(should_use_color && printf '%s' "${_NIXBOT_C_RED}" || true)" \
+			"$(should_use_color && printf '%s' "${_NIXBOT_C_RESET}" || true)" >&2
 		for node in "${failed_summary_hosts[@]}"; do
 			echo "  - ${node}" >&2
 		done
@@ -11526,7 +11894,11 @@ print_run_summary() {
 	if [ "${NIXBOT_KEEP_DIAG_DIR:-0}" -eq 1 ] && [ -n "${NIXBOT_DIAG_DIR}" ]; then
 		keep_diag_dir
 	fi
-	printf '\nResult: %s\n' "$([ "${final_rc}" -eq 0 ] && printf 'success' || printf 'failure')" >&2
+	result_label="$([ "${final_rc}" -eq 0 ] && printf 'success' || printf 'failure')"
+	printf '\nResult: %s\n' \
+		"$(colorize \
+			"$([ "${final_rc}" -eq 0 ] && printf '%s' "${_NIXBOT_C_GREEN}" || printf '%s' "${_NIXBOT_C_RED}")" \
+			"${result_label}")" >&2
 }
 
 clear_run_summary_state() {
@@ -11810,7 +12182,7 @@ main() {
 
 	init_vars
 	capture_initial_tty_state
-	trap cleanup EXIT
+	trap cleanup_trap EXIT
 	trap request_hangup HUP
 	trap 'request_cancel 130 INT' INT
 	trap 'request_cancel 143 TERM' TERM

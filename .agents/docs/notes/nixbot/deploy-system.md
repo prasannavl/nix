@@ -150,9 +150,14 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   failure. Deliberate cleanup grace sleeps and remote-side helper sleeps are
   separate contracts.
 - Successful runs remove both runtime and diagnostic directories. Failed,
-  interrupted, or hung-up runs always remove runtime and retain diagnostics by
-  moving `diag-XXXXXX` to `/var/tmp/nixbot/diag-XXXXXX` when the run used
-  `/dev/shm`.
+  interrupted, or hung-up runs always remove runtime and retain diagnostics only
+  when the diagnostic tree contains actual files, moving non-empty `diag-XXXXXX`
+  to `/var/tmp/nixbot/diag-XXXXXX` when the run used `/dev/shm`. Empty
+  diagnostic scaffolding must be removed instead of leaving empty `/dev/shm` or
+  `/var/tmp` directories behind.
+- EXIT cleanup runs through a trap-specific wrapper over a best-effort cleanup
+  core. Individual cleanup helpers may fail without skipping runtime removal,
+  while direct cleanup callers keep their original `errexit` state.
 - Interrupt cleanup terminates registered background jobs, SSH control masters,
   and same-process-group nixbot wrapper processes. The wrapper cleanup is
   guarded so it only runs when nixbot has a distinct process group from its
@@ -206,7 +211,7 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   budget within a dependency wave. Rollback execution walks dependency levels in
   reverse, so child/dependent hosts roll back before parents while hosts inside
   each rollback level can still fan out up to the deploy job limit.
-- Deploy parallelism defaults to 16 jobs per dependency wave. Rollback-snapshot
+- Deploy parallelism defaults to 8 jobs per dependency wave. Rollback-snapshot
   and post-switch health-check work use a separate verify parallelism budget
   controlled by `--verify-jobs` / `NIXBOT_VERIFY_JOBS`, also defaulting to 16.
 - `--no-verify` / `NIXBOT_NO_VERIFY=1` skips post-switch health checks only. It
@@ -235,6 +240,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   contents are not represented by the index tree. If `nixbot.plans` is
   unavailable, the plan phase falls back to the compatible
   `nixosConfigurations.${host}.config.system.build.toplevel.drvPath` attr path.
+  Per-host cache-miss progress is intentionally compact: the per-host prefix
+  identifies the host, so the message body should stay `Evaluating..` instead of
+  repeating the host name.
 - Per-host build jobs then realize the precomputed `.drv^out` installable,
   preserving existing per-host logs, status files, result links, and
   remote/local build modes without re-evaluating host flake attributes. The
@@ -354,6 +362,28 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Cleanup should also terminate persistent SSH control-master processes rooted
   in the run-local SSH directory, because those can outlive the shell job that
   created them.
+- Parent readiness output is summarized on the successful path: each parent
+  group prints one `ok (Ns)` line after reconcile and settle complete. Slow
+  successful phases and failures expand with phase, resource list, and timing.
+- ANSI color is applied to per-host stage headers, log-line prefixes, and the
+  run summary when stderr is a TTY and not in GitHub Actions log mode. Each host
+  receives a stable palette color derived from an FNV-1a hash of its name for
+  stage output, so the same host always uses the same color across runs.
+  Rollback phase headers and prefixes use gray for all hosts so rollback output
+  is visually distinct from deploy. In the summary, host names are not
+  palette-colored: plain successful `ok` statuses are green, skipped and
+  rolled-back host lines are gray, failed host lines are red, and optional
+  failure/rollback lines are mild yellow. Terminal output may be colored, but
+  persisted per-host diagnostic logs stay plain text. Set `NO_COLOR=1` to
+  disable; set `NIXBOT_FORCE_COLOR=1` to force on (overrides `NO_COLOR`). Color
+  is automatically suppressed in `gh`/`github-actions` log format.
+- Host log prefixes are applied at stream boundaries. Helpers that may run
+  inside an already-prefixed stream should emit raw lines through
+  `host_log_filter`; the active prefix context suppresses redundant nested
+  prefixes instead of cleaning them up after formatting.
+- Health-check success output is intentionally compact: the phase prints a short
+  `Scanning..` line, each healthy host prints `[health-check] ok`, and there is
+  no extra all-healthy footer.
 
 ## Timing Breadcrumbs
 
