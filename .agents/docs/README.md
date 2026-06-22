@@ -170,6 +170,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/lib/incus-podman-lifecycle-policy-redesign-2026-06.md`:
   Records the Incus, Podman Compose, and `systemd-user-manager` lifecycle policy
   redesign, rollout, and post-rollout cleanup model.
+- `.agents/docs/notes/lib/shared-helper-recovery-tests-2026-06.md`: Records the
+  shared Abird helper-fix port for LXC boot profile alignment, Podman Compose
+  stack timeout inheritance, Stalwart stable-ID recovery, and helper regression
+  test exposure.
 - `.agents/docs/notes/lib/installer-to-disk-mbr-persistence-2026-06.md`: Records
   the `installer-to-disk.sh` ISO-hybrid MBR persistence partition failure and
   the GPT-vs-MBR partitioning split.
