@@ -1,0 +1,168 @@
+{pkgs}: let
+  lib = pkgs.lib;
+
+  evalConfig = import (pkgs.path + "/nixos/lib/eval-config.nix") {
+    system = pkgs.stdenv.hostPlatform.system;
+    pkgs = pkgs;
+    modules = [
+      ../default.nix
+      {
+        system.stateVersion = "26.05";
+        boot.loader.grub.enable = false;
+        fileSystems."/" = {
+          device = "/dev/disk/by-label/nixos";
+          fsType = "ext4";
+        };
+
+        users.users = {
+          alice = {
+            isNormalUser = true;
+            uid = 1001;
+            group = "alice";
+            extraGroups = ["ops"];
+            home = "/home/alice";
+          };
+          bob = {
+            isNormalUser = true;
+            uid = 1002;
+            group = "bob";
+            home = "/home/bob";
+          };
+        };
+        users.groups = {
+          alice.gid = 1001;
+          bob.gid = 1002;
+          ops.gid = 3000;
+        };
+
+        services.systemd-user-manager.instances = {
+          zeta = {
+            user = "alice";
+            unit = "zeta.service";
+            removalPolicy = "keep";
+            autoStart = false;
+            state = "stopped";
+            timeoutStableSeconds = 17;
+            restartTriggers = ["restart-a"];
+            reloadTriggers = ["reload-a"];
+            verifyCommand = ["/bin/true"];
+            transitionNeutralStamp = "neutral-a";
+            stopOnTransitionFrom = "old-token";
+            stopOnTransitionTo = "new-token";
+          };
+
+          alpha = {
+            user = "alice";
+            unit = "alpha.timer";
+            removalCommand = ["/bin/systemctl" "--user" "stop" "alpha.timer"];
+            restartTriggers = ["restart-b"];
+            stampPayload = {
+              kind = "custom";
+              value = 1;
+            };
+          };
+
+          beta = {
+            user = "bob";
+            restartTriggers = ["restart-c"];
+          };
+        };
+      }
+    ];
+  };
+
+  config = evalConfig.config;
+  failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
+
+  metadataPathFromEnv = env: let
+    prefix = "SYSTEMD_USER_MANAGER_METADATA=";
+    matches = builtins.filter (entry: lib.hasPrefix prefix entry) env;
+  in
+    assert builtins.length matches == 1;
+      lib.removePrefix prefix (builtins.head matches);
+
+  metadataFromSystemService = service:
+    builtins.fromJSON (builtins.readFile (metadataPathFromEnv service.serviceConfig.Environment));
+
+  aliceDispatcher = config.systemd.services.systemd-user-manager-dispatcher-alice;
+  bobDispatcher = config.systemd.services.systemd-user-manager-dispatcher-bob;
+  aliceReconciler = config.systemd.user.services.systemd-user-manager-reconciler-alice;
+  bobReconciler = config.systemd.user.services.systemd-user-manager-reconciler-bob;
+  aliceMetadata = metadataFromSystemService aliceDispatcher;
+  bobMetadata = metadataFromSystemService bobDispatcher;
+  aliceUnitNames = map (unit: unit.name) aliceMetadata.managedUnits;
+  alphaUnit = builtins.elemAt aliceMetadata.managedUnits 0;
+  zetaUnit = builtins.elemAt aliceMetadata.managedUnits 1;
+  bobUnit = builtins.head bobMetadata.managedUnits;
+in
+  assert failedAssertions == [];
+  assert config.environment.etc."systemd-user-manager/dispatchers/systemd-user-manager-dispatcher-alice.metadata".text == "${metadataPathFromEnv aliceDispatcher.serviceConfig.Environment}\n";
+  assert aliceDispatcher.after
+  == [
+    "systemd-tmpfiles-setup.service"
+    "systemd-tmpfiles-resetup.service"
+    "user@1001.service"
+  ];
+  assert aliceDispatcher.wants == ["user@1001.service"];
+  assert aliceDispatcher.wantedBy == ["multi-user.target"];
+  assert aliceDispatcher.serviceConfig.User == "root";
+  assert aliceDispatcher.serviceConfig.Type == "oneshot";
+  assert aliceDispatcher.serviceConfig.RemainAfterExit == true;
+  assert aliceDispatcher.serviceConfig.Environment
+  == [
+    "SYSTEMD_USER_MANAGER_USER=alice"
+    "SYSTEMD_USER_MANAGER_UID=1001"
+    "SYSTEMD_USER_MANAGER_METADATA=${metadataPathFromEnv aliceDispatcher.serviceConfig.Environment}"
+    "SYSTEMD_USER_MANAGER_RECONCILER_SERVICE=systemd-user-manager-reconciler-alice.service"
+  ];
+  assert lib.hasSuffix " dispatcher-start" aliceDispatcher.serviceConfig.ExecStart;
+  assert aliceReconciler.serviceConfig.Type == "oneshot";
+  assert aliceReconciler.serviceConfig.RemainAfterExit == true;
+  assert lib.hasSuffix " reconciler-apply" aliceReconciler.serviceConfig.ExecStart;
+  assert aliceReconciler.serviceConfig.Environment
+  == [
+    "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+    "SYSTEMD_USER_MANAGER_USER=alice"
+    "SYSTEMD_USER_MANAGER_METADATA=${metadataPathFromEnv aliceReconciler.serviceConfig.Environment}"
+  ];
+  assert bobDispatcher.serviceConfig.Environment
+  == [
+    "SYSTEMD_USER_MANAGER_USER=bob"
+    "SYSTEMD_USER_MANAGER_UID=1002"
+    "SYSTEMD_USER_MANAGER_METADATA=${metadataPathFromEnv bobDispatcher.serviceConfig.Environment}"
+    "SYSTEMD_USER_MANAGER_RECONCILER_SERVICE=systemd-user-manager-reconciler-bob.service"
+  ];
+  assert aliceMetadata.version == 5;
+  assert aliceMetadata.user == "alice";
+  assert aliceUnitNames == ["alpha" "zeta"];
+  assert alphaUnit.unit == "alpha.timer";
+  assert alphaUnit.removalPolicy == "stop";
+  assert alphaUnit.removalCommand == ["/bin/systemctl" "--user" "stop" "alpha.timer"];
+  assert alphaUnit.autoStart == true;
+  assert alphaUnit.state == "running";
+  assert alphaUnit.timeoutStableSeconds == 120;
+  assert alphaUnit.reloadStamp == "";
+  assert zetaUnit.unit == "zeta.service";
+  assert zetaUnit.removalPolicy == "keep";
+  assert zetaUnit.verifyCommand == ["/bin/true"];
+  assert zetaUnit.autoStart == false;
+  assert zetaUnit.state == "stopped";
+  assert zetaUnit.timeoutStableSeconds == 17;
+  assert zetaUnit.reloadStamp != "";
+  assert zetaUnit.transitionNeutralStamp == "neutral-a";
+  assert zetaUnit.stopOnTransitionFrom == "old-token";
+  assert zetaUnit.stopOnTransitionTo == "new-token";
+  assert bobMetadata.user == "bob";
+  assert bobUnit.name == "beta";
+  assert bobUnit.unit == "beta.service";
+  assert config.systemd.user.targets.systemd-user-manager-ready.description == "Managed user units ready target";
+  assert config.services.migration-manager.managedUnits.dispatchers
+  == [
+    "systemd-user-manager-dispatcher-alice.service"
+    "systemd-user-manager-dispatcher-bob.service"
+  ];
+  assert lib.hasInfix "activation-stop-applied" config.system.activationScripts.systemd-user-manager-stop-applied.text;
+  assert lib.hasInfix "activation-dry-preview" config.system.activationScripts.systemd-user-manager-dry-activate-preview.text;
+    pkgs.runCommand "systemd-user-manager-module-test" {} ''
+      touch "$out"
+    ''

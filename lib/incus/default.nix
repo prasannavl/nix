@@ -104,34 +104,45 @@
     ps.cryptography
   ]);
 
-  helperPackage = pkgs.writeShellApplication {
-    name = "incus-machines-helper";
-    excludeShellChecks = ["SC1091" "SC2016"];
-    runtimeInputs = [
-      config.virtualisation.incus.package.client
-      pkgs.age
-      pkgs.bash
-      pkgs.coreutils
-      pkgs.curl
-      pkgs.gawk
-      pkgs.git
-      pkgs.gnutar
-      pkgs.iproute2
-      pkgs.jq
-      pkgs.nix
-      pkgs.openssl
-      pkgs.systemd
-      pkgs.xz
-    ];
-    text = ''
-      if [ "''${1:-}" = "certs" ]; then
-        shift
-        exec ${certsPython}/bin/python ${./helper-certs.py} "$@"
-      fi
-      source ${./helper.sh}
-      main "$@"
-    '';
-  };
+  tests = import ./tests {pkgs = pkgs;};
+  helperPackage =
+    (pkgs.writeShellApplication {
+      name = "incus-machines-helper";
+      excludeShellChecks = ["SC1091" "SC2016"];
+      runtimeInputs = [
+        config.virtualisation.incus.package.client
+        pkgs.age
+        pkgs.bash
+        pkgs.coreutils
+        pkgs.curl
+        pkgs.gawk
+        pkgs.git
+        pkgs.gnutar
+        pkgs.iproute2
+        pkgs.jq
+        pkgs.nix
+        pkgs.openssl
+        pkgs.systemd
+        pkgs.xz
+      ];
+      text = ''
+        if [ "''${1:-}" = "certs" ]; then
+          shift
+          exec ${certsPython}/bin/python ${./helper-certs.py} "$@"
+        fi
+        source ${./helper.sh}
+        main "$@"
+      '';
+    })
+    .overrideAttrs (old: let
+      oldPassthru = old.passthru or {};
+    in {
+      passthru =
+        oldPassthru
+        // {
+          tests = (oldPassthru.tests or {}) // tests;
+        };
+    });
   # Switch-time units must pair new state JSON with the same generation's
   # helper; /run/current-system can still point at the old generation here.
   helperScript = "${helperPackage}/bin/incus-machines-helper";

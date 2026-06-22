@@ -131,34 +131,45 @@
   deferredUnitRestartRequestDir = "/run/systemd-user-manager/unit-restart-requests";
   deferredUnitReloadRequestDir = "/run/systemd-user-manager/unit-reload-requests";
 
-  helperPackage = pkgs.writeShellApplication {
-    name = "systemd-user-manager-helper";
-    excludeShellChecks = ["SC1091"];
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.gnugrep
-      pkgs.jq
-      pkgs.systemd
-      pkgs.util-linux
-    ];
-    runtimeEnv = {
-      SYSTEMD_USER_MANAGER_BOOT_READY_TARGET = bootReadyTargetName;
-      SYSTEMD_USER_MANAGER_APPLIED_METADATA_DIR = appliedMetadataDir;
-      SYSTEMD_USER_MANAGER_DISPATCHER_METADATA_POINTER_REL_DIR = dispatcherMetadataPointerRelDir;
-      SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR = deferredRestartRequestDir;
-      SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR = deferredUnitRestartRequestDir;
-      SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR = deferredUnitReloadRequestDir;
-      SYSTEMD_USER_MANAGER_MANAGED_USER_ACTION_PATH = managedUserActionPath;
-      SYSTEMD_USER_MANAGER_MIGRATOR_GATE_PATH =
-        if migratorEnabled
-        then migratorGatePath
-        else "";
-    };
-    text = ''
-      source ${./helper.sh}
-      main "$@"
-    '';
-  };
+  tests = import ./tests {pkgs = pkgs;};
+  helperPackage =
+    (pkgs.writeShellApplication {
+      name = "systemd-user-manager-helper";
+      excludeShellChecks = ["SC1091"];
+      runtimeInputs = [
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.jq
+        pkgs.systemd
+        pkgs.util-linux
+      ];
+      runtimeEnv = {
+        SYSTEMD_USER_MANAGER_BOOT_READY_TARGET = bootReadyTargetName;
+        SYSTEMD_USER_MANAGER_APPLIED_METADATA_DIR = appliedMetadataDir;
+        SYSTEMD_USER_MANAGER_DISPATCHER_METADATA_POINTER_REL_DIR = dispatcherMetadataPointerRelDir;
+        SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR = deferredRestartRequestDir;
+        SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR = deferredUnitRestartRequestDir;
+        SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR = deferredUnitReloadRequestDir;
+        SYSTEMD_USER_MANAGER_MANAGED_USER_ACTION_PATH = managedUserActionPath;
+        SYSTEMD_USER_MANAGER_MIGRATOR_GATE_PATH =
+          if migratorEnabled
+          then migratorGatePath
+          else "";
+      };
+      text = ''
+        source ${./helper.sh}
+        main "$@"
+      '';
+    })
+    .overrideAttrs (old: let
+      oldPassthru = old.passthru or {};
+    in {
+      passthru =
+        oldPassthru
+        // {
+          tests = (oldPassthru.tests or {}) // tests;
+        };
+    });
   helperScript = "${helperPackage}/bin/systemd-user-manager-helper";
 
   userUidFor = user: let
