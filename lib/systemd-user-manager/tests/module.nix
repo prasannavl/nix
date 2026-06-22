@@ -1,40 +1,43 @@
 {pkgs}: let
   lib = pkgs.lib;
 
+  commonModule = {
+    system.stateVersion = "26.05";
+    boot.loader.grub.enable = false;
+    fileSystems."/" = {
+      device = "/dev/disk/by-label/nixos";
+      fsType = "ext4";
+    };
+
+    users.users = {
+      alice = {
+        isNormalUser = true;
+        uid = 1001;
+        group = "alice";
+        extraGroups = ["ops"];
+        home = "/home/alice";
+      };
+      bob = {
+        isNormalUser = true;
+        uid = 1002;
+        group = "bob";
+        home = "/home/bob";
+      };
+    };
+    users.groups = {
+      alice.gid = 1001;
+      bob.gid = 1002;
+      ops.gid = 3000;
+    };
+  };
+
   evalConfig = import (pkgs.path + "/nixos/lib/eval-config.nix") {
     system = pkgs.stdenv.hostPlatform.system;
     pkgs = pkgs;
     modules = [
       ../default.nix
+      commonModule
       {
-        system.stateVersion = "26.05";
-        boot.loader.grub.enable = false;
-        fileSystems."/" = {
-          device = "/dev/disk/by-label/nixos";
-          fsType = "ext4";
-        };
-
-        users.users = {
-          alice = {
-            isNormalUser = true;
-            uid = 1001;
-            group = "alice";
-            extraGroups = ["ops"];
-            home = "/home/alice";
-          };
-          bob = {
-            isNormalUser = true;
-            uid = 1002;
-            group = "bob";
-            home = "/home/bob";
-          };
-        };
-        users.groups = {
-          alice.gid = 1001;
-          bob.gid = 1002;
-          ops.gid = 3000;
-        };
-
         services.systemd-user-manager.instances = {
           zeta = {
             user = "alice";
@@ -56,6 +59,7 @@
             unit = "alpha.timer";
             removalCommand = ["/bin/systemctl" "--user" "stop" "alpha.timer"];
             restartTriggers = ["restart-b"];
+            verifyCommand = ["/bin/true" "--alpha"];
             stampPayload = {
               kind = "custom";
               value = 1;
@@ -70,9 +74,32 @@
       }
     ];
   };
+  duplicateEvalConfig = import (pkgs.path + "/nixos/lib/eval-config.nix") {
+    system = pkgs.stdenv.hostPlatform.system;
+    pkgs = pkgs;
+    modules = [
+      ../default.nix
+      commonModule
+      {
+        services.systemd-user-manager.instances = {
+          dup-a = {
+            user = "alice";
+            unit = "dup.service";
+          };
+          dup-b = {
+            user = "alice";
+            unit = "dup.service";
+          };
+        };
+      }
+    ];
+  };
 
   config = evalConfig.config;
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
+  duplicateConfig = duplicateEvalConfig.config;
+  duplicateFailedAssertions = builtins.filter (assertion: ! assertion.assertion) duplicateConfig.assertions;
+  duplicateFailedMessages = map (assertion: assertion.message) duplicateFailedAssertions;
 
   metadataPathFromEnv = env: let
     prefix = "SYSTEMD_USER_MANAGER_METADATA=";
@@ -138,10 +165,20 @@ in
   assert alphaUnit.unit == "alpha.timer";
   assert alphaUnit.removalPolicy == "stop";
   assert alphaUnit.removalCommand == ["/bin/systemctl" "--user" "stop" "alpha.timer"];
+  assert alphaUnit.verifyCommand == ["/bin/true" "--alpha"];
   assert alphaUnit.autoStart == true;
   assert alphaUnit.state == "running";
   assert alphaUnit.timeoutStableSeconds == 120;
   assert alphaUnit.reloadStamp == "";
+  assert alphaUnit.stamp
+  == builtins.hashString "sha256" (builtins.toJSON {
+    payload = {
+      kind = "custom";
+      value = 1;
+    };
+    autoStart = true;
+    state = "running";
+  });
   assert zetaUnit.unit == "zeta.service";
   assert zetaUnit.removalPolicy == "keep";
   assert zetaUnit.verifyCommand == ["/bin/true"];
@@ -156,6 +193,10 @@ in
   assert bobUnit.name == "beta";
   assert bobUnit.unit == "beta.service";
   assert config.systemd.user.targets.systemd-user-manager-ready.description == "Managed user units ready target";
+  assert duplicateFailedMessages
+  == [
+    "services.systemd-user-manager: duplicate managed user units are not allowed: alice: dup.service"
+  ];
   assert config.services.migration-manager.managedUnits.dispatchers
   == [
     "systemd-user-manager-dispatcher-alice.service"

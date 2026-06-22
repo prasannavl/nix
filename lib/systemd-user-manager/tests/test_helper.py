@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -32,6 +33,101 @@ class SystemdUserManagerHelperTest(unittest.TestCase):
     def _write_executable(self, path: Path, body: str):
         path.write_text(body, encoding="utf-8")
         path.chmod(0o755)
+
+    def write_fake_setpriv(self):
+        self._write_executable(
+            self.fake_bin / "setpriv",
+            """#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "env" ]; then
+    exec "$@"
+  fi
+  shift
+done
+exit 127
+""",
+        )
+
+    def write_fake_systemctl(self):
+        log_path = shlex.quote(str(self.state_dir / "systemctl.log"))
+        systemctl_state_dir = shlex.quote(str(self.state_dir / "systemctl-state"))
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"""#!/bin/sh
+set -eu
+log={log_path}
+state_dir={systemctl_state_dir}
+mkdir -p "$state_dir"
+printf '%s\\n' "$*" >> "$log"
+
+unit_key() {{
+  printf '%s' "$1" | tr '/ ' '__'
+}}
+
+unit_state_file() {{
+  printf '%s/%s.active' "$state_dir" "$(unit_key "$1")"
+}}
+
+active_state_for() {{
+  state_file="$(unit_state_file "$1")"
+  if [ -f "$state_file" ]; then
+    cat "$state_file"
+  else
+    printf '%s\\n' "active"
+  fi
+}}
+
+if [ "${{1-}}" = "is-active" ]; then
+  exit 0
+fi
+
+if [ "${{1-}}" = "--user" ]; then
+  shift
+fi
+
+cmd="${{1-}}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+case "$cmd" in
+  show)
+    property=""
+    unit=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --property=*) property="${{1#--property=}}" ;;
+        --value) ;;
+        *) unit="$1" ;;
+      esac
+      shift
+    done
+    case "$property" in
+      ActiveState) active_state_for "$unit" ;;
+      LoadState) printf '%s\\n' "loaded" ;;
+      SubState) printf '%s\\n' "dead" ;;
+      Result) printf '%s\\n' "success" ;;
+      UnitFileState) printf '%s\\n' "enabled" ;;
+      InvocationID) printf '%s\\n' "fake-invocation" ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+  stop)
+    printf '%s\\n' "inactive" > "$(unit_state_file "$1")"
+    ;;
+  restart)
+    if [ "${{FAKE_SYSTEMCTL_RESTART_FAIL-0}}" = 1 ]; then
+      exit 1
+    fi
+    printf '%s\\n' "active" > "$(unit_state_file "$1")"
+    ;;
+  start|reload|daemon-reload)
+    ;;
+  *)
+    ;;
+esac
+""",
+        )
 
     def helper_env(self, **overrides):
         env = os.environ.copy()
@@ -78,6 +174,104 @@ class SystemdUserManagerHelperTest(unittest.TestCase):
 
     def encoded_command(self, command):
         return base64.b64encode(json.dumps(command).encode()).decode()
+
+    def test_apply_mode_marks_restart_reload_and_runs_removal_command(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        removal_log = self.state_dir / "removal.log"
+        self._write_executable(
+            self.fake_bin / "remove-managed-unit",
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {shlex.quote(str(removal_log))}\n",
+        )
+        old_metadata = self.write_metadata(
+            "apply-old.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "restart",
+                        "unit": "restart.service",
+                        "removalPolicy": "stop",
+                        "stamp": "old-restart",
+                        "reloadStamp": "same",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                    {
+                        "name": "reload",
+                        "unit": "reload.service",
+                        "removalPolicy": "stop",
+                        "stamp": "same",
+                        "reloadStamp": "old-reload",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                    {
+                        "name": "removed",
+                        "unit": "removed.service",
+                        "removalPolicy": "stop",
+                        "removalCommand": ["remove-managed-unit", "removed"],
+                        "stamp": "removed",
+                    },
+                ],
+            },
+        )
+        new_metadata = self.write_metadata(
+            "apply-new.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "restart",
+                        "unit": "restart.service",
+                        "removalPolicy": "stop",
+                        "stamp": "new-restart",
+                        "reloadStamp": "same",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                    {
+                        "name": "reload",
+                        "unit": "reload.service",
+                        "removalPolicy": "stop",
+                        "stamp": "same",
+                        "reloadStamp": "new-reload",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        self.run_helper(
+            f"""
+            init_managed_user alice
+            old_tsv="$(read_metadata_stop_state_tsv {old_metadata})"
+            new_tsv="$(read_metadata_stop_state_tsv {new_metadata})"
+            diff_and_stop_units apply alice "$old_tsv" "$new_tsv"
+            """
+        )
+
+        self.assertEqual(
+            "restart\n",
+            (self.state_dir / "unit-restarts/alice/restart").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            "new-reload\n",
+            (self.state_dir / "unit-reloads/alice/reload").read_text(encoding="utf-8"),
+        )
+        self.assertEqual("removed\n", removal_log.read_text(encoding="utf-8"))
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user stop restart.service", systemctl_log)
+        self.assertNotIn("--user stop removed.service", systemctl_log)
 
     def test_metadata_rows_and_migrator_gate_override_reconcile_state(self):
         metadata = self.write_metadata(
@@ -249,6 +443,127 @@ class SystemdUserManagerHelperTest(unittest.TestCase):
         self.assertIn("reload: would reload", result.stderr)
         self.assertIn("removed: would stop", result.stderr)
         self.assertIn("would restart user manager", result.stderr)
+
+    def test_verification_failure_restarts_and_succeeds_on_second_verify(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        verify_count = self.state_dir / "verify-count"
+        self._write_executable(
+            self.fake_bin / "verify-web",
+            f"""#!/bin/sh
+count_file={shlex.quote(str(verify_count))}
+count="$(cat "$count_file" 2>/dev/null || printf '%s\\n' 0)"
+count="$((count + 1))"
+printf '%s\\n' "$count" > "$count_file"
+[ "$count" -gt 1 ]
+""",
+        )
+        metadata = self.write_metadata(
+            "verify.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                        "verifyCommand": ["verify-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "verify_managed_units_from_metadata",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertEqual("", result.stdout)
+        self.assertEqual("2\n", verify_count.read_text(encoding="utf-8"))
+        self.assertIn("web: verification failed; restarting", result.stderr)
+        self.assertIn("web: verified after restart", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user restart web.service", systemctl_log)
+
+    def test_verification_failure_reports_second_verify_failure(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        self._write_executable(self.fake_bin / "verify-web", "#!/bin/sh\nexit 1\n")
+        metadata = self.write_metadata(
+            "verify-fail.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                        "verifyCommand": ["verify-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "verify_managed_units_from_metadata",
+            check=False,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("web: verification still failed after restart", result.stderr)
+        self.assertIn("failed managed unit verification: web", result.stderr)
+
+    def test_malformed_applied_metadata_is_discarded_and_current_metadata_is_stopped(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        metadata = self.write_metadata(
+            "current.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+        malformed_state = self.state_dir / "applied/alice.json"
+        malformed_state.parent.mkdir(parents=True)
+        malformed_state.write_text("{not-json", encoding="utf-8")
+
+        result = self.run_helper(
+            """
+            init_managed_user_from_env
+            userctl_mode=root
+            stop_changed_managed_units_from_applied_metadata
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_UID="1001",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertFalse(malformed_state.exists())
+        self.assertIn("discarding malformed applied metadata", result.stderr)
+        self.assertEqual(
+            "web\n",
+            (self.state_dir / "unit-restarts/alice/web").read_text(encoding="utf-8"),
+        )
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user stop web.service", systemctl_log)
 
 
 if __name__ == "__main__":
