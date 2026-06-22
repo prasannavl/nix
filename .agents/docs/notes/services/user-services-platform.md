@@ -122,6 +122,12 @@ service-facing ingress policy.
   renderer must re-include the standard location security headers when it emits
   any route-local `add_header`, because nginx `add_header` inheritance is
   replace-not-merge.
+- Route and vhost proxy locations may also declare low-level proxy controls for
+  logout/callback glue: `requestHeaders`, `proxyMethod`, `proxyPassRequestBody`,
+  `proxySetBody`, `proxyRewritePath`, and `errorRedirects`. Prefer
+  ingress-composer helpers such as `mkLogoutChainRoutes` over hand-written route
+  attrs when chaining app logout endpoints through a shared edge-auth sign-out
+  flow.
 - oauth2-proxy forward-auth failures should redirect only likely top-level
   document navigations to login. Unauthenticated asset, API, and background
   requests should return `401` so SPA fanout does not create many abandoned

@@ -77,6 +77,7 @@ in {
     }: let
       nginxService = import ../../services/nginx {inherit lib;};
       ingressComposer = nginxIngressComposerLib.mkIngressComposer {
+        inherit lib;
         serviceRegistry = registry;
         rateLimitProfiles = nginxService.rateLimitProfiles;
       };

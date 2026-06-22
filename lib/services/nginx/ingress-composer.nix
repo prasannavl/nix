@@ -1,5 +1,6 @@
 {
   mkIngressComposer = {
+    lib,
     rateLimitProfiles,
     serviceRegistry,
     oauth2ProxyListenPort ? serviceRegistry.portFor "oauth2-proxy" "http",
@@ -12,6 +13,8 @@
     without = builtins.removeAttrs;
     withExtra = args: extra:
       (without args ["extra"]) // {extra = extra // (args.extra or {});};
+    urlEncode = lib.strings.escapeURL;
+    logoutPath = "/.abird/logout";
 
     mkEdgeAuth = clientMaxBodySize:
       {
@@ -175,6 +178,104 @@
         proxyCookiePath = "/";
       });
 
+    mkLogoutUrl = {
+      hostGroup,
+      path ? logoutPath,
+      serverName ? registry.domainFor hostGroup,
+    }: "https://${serverName}${path}";
+
+    mkOauth2SignOutUrl = {
+      hostGroup ? "auth",
+      path ? "/oauth2/sign_out",
+      serverName ? registry.domainFor hostGroup,
+      rd,
+    }: "https://${serverName}${path}?rd=${urlEncode rd}";
+
+    mkLogoutChainRoute = {
+      serviceName,
+      hostGroup,
+      nextUrl,
+      upstreamPath,
+      path ? logoutPath,
+      portName ? "http",
+      upstreamPortName ? portName,
+      serverName ? registry.domainFor hostGroup,
+      upstreams ? registry.upstreamsForService serviceName upstreamPortName,
+      upstreamMethod ? "GET",
+      upstreamBody ? null,
+      requestHeaders ? [],
+      upstreamRedirects ? ["~^(/.*)$"],
+      continueStatuses ? [],
+      rateLimit ? rateLimitProfiles.web,
+      extra ? {},
+    }:
+      mkServiceRoute {
+        inherit
+          serviceName
+          hostGroup
+          path
+          portName
+          upstreamPortName
+          serverName
+          upstreams
+          rateLimit
+          ;
+        extra =
+          {
+            location = "= ${path}";
+            proxyCookiePath = "/";
+            proxyMethod = upstreamMethod;
+            proxyRewritePath = upstreamPath;
+            proxyRedirects =
+              map (from: {
+                inherit from;
+                to = nextUrl;
+              })
+              upstreamRedirects;
+            errorRedirects =
+              map (status: {
+                inherit status;
+                target = nextUrl;
+              })
+              continueStatuses;
+          }
+          // optional (upstreamBody != null) {
+            proxyPassRequestBody = false;
+            proxySetBody = upstreamBody;
+          }
+          // optional (requestHeaders != []) {inherit requestHeaders;}
+          // extra;
+      };
+
+    logoutHopUrl = hop:
+      mkLogoutUrl {
+        hostGroup = hop.hostGroup;
+        path = hop.path or logoutPath;
+        serverName = hop.serverName or (registry.domainFor hop.hostGroup);
+      };
+
+    mkLogoutChainRoutes = {
+      finalUrl,
+      hops,
+    }:
+      builtins.listToAttrs (
+        builtins.genList (
+          index: let
+            hop = builtins.elemAt hops index;
+            nextUrl =
+              hop.nextUrl
+              or (
+                if index + 1 < builtins.length hops
+                then logoutHopUrl (builtins.elemAt hops (index + 1))
+                else finalUrl
+              );
+          in {
+            name = hop.name;
+            value = mkLogoutChainRoute ((without hop ["name"]) // {inherit nextUrl;});
+          }
+        ) (builtins.length hops)
+      );
+
     mergeServiceAttr = attrName: serviceConfigs:
       builtins.foldl' (acc: service: acc // (service.${attrName} or {})) {} serviceConfigs;
 
@@ -190,11 +291,16 @@
       mkEdgeProtectedRoute
       mkHttpsServiceProxy
       mkHttpsServiceRoute
+      mkLogoutChainRoute
+      mkLogoutChainRoutes
+      mkLogoutUrl
+      mkOauth2SignOutUrl
       mkOauth2ProxyRoute
       mkServiceProxy
       mkServiceRoute
       mkTcpServiceProxy
       mkUdpServiceProxy
       ;
+    inherit logoutPath urlEncode;
   };
 }

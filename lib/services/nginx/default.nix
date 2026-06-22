@@ -202,6 +202,42 @@
         description = "Additional nginx response headers to add in this vhost's proxy location.";
       };
 
+      requestHeaders = lib.mkOption {
+        type = lib.types.listOf responseHeaderTypeDef;
+        default = [];
+        description = "Additional nginx request headers to set before proxying to this vhost's upstream.";
+      };
+
+      proxyMethod = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_method override for requests to this vhost.";
+      };
+
+      proxyPassRequestBody = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Optional nginx proxy_pass_request_body override for requests to this vhost.";
+      };
+
+      proxySetBody = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_set_body expression for requests to this vhost.";
+      };
+
+      proxyRewritePath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional fixed upstream request path rewrite for this vhost.";
+      };
+
+      errorRedirects = lib.mkOption {
+        type = lib.types.listOf errorRedirectTypeDef;
+        default = [];
+        description = "Optional upstream error statuses to convert into redirects from this vhost.";
+      };
+
       authRequest = lib.mkOption {
         type = lib.types.nullOr authRequestTypeDef;
         default = null;
@@ -280,6 +316,26 @@
       value = lib.mkOption {
         type = lib.types.str;
         description = "Nginx response header value expression.";
+      };
+    };
+  };
+
+  errorRedirectTypeDef = lib.types.submodule {
+    options = {
+      status = lib.mkOption {
+        type = lib.types.ints.positive;
+        description = "Upstream error status to redirect.";
+      };
+
+      redirectStatus = lib.mkOption {
+        type = redirectStatusType;
+        default = 307;
+        description = "Redirect status nginx should return for this intercepted upstream error.";
+      };
+
+      target = lib.mkOption {
+        type = lib.types.str;
+        description = "Absolute URL or path nginx should redirect to for this intercepted upstream error.";
       };
     };
   };
@@ -469,6 +525,42 @@
         description = "Additional nginx response headers to add in this route's proxy location.";
       };
 
+      requestHeaders = lib.mkOption {
+        type = lib.types.listOf responseHeaderTypeDef;
+        default = [];
+        description = "Additional nginx request headers to set before proxying to this route's upstream.";
+      };
+
+      proxyMethod = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_method override for requests to this route.";
+      };
+
+      proxyPassRequestBody = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Optional nginx proxy_pass_request_body override for requests to this route.";
+      };
+
+      proxySetBody = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx proxy_set_body expression for requests to this route.";
+      };
+
+      proxyRewritePath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional fixed upstream request path rewrite for this route.";
+      };
+
+      errorRedirects = lib.mkOption {
+        type = lib.types.listOf errorRedirectTypeDef;
+        default = [];
+        description = "Optional upstream error statuses to convert into redirects from this route.";
+      };
+
       authRequest = lib.mkOption {
         type = lib.types.nullOr authRequestTypeDef;
         default = null;
@@ -561,6 +653,12 @@
           proxyCookiePath = portCfg.proxyCookiePath or null;
           proxyRedirects = portCfg.proxyRedirects or [];
           responseHeaders = portCfg.responseHeaders or [];
+          requestHeaders = portCfg.requestHeaders or [];
+          proxyMethod = portCfg.proxyMethod or null;
+          proxyPassRequestBody = portCfg.proxyPassRequestBody or null;
+          proxySetBody = portCfg.proxySetBody or null;
+          proxyRewritePath = portCfg.proxyRewritePath or null;
+          errorRedirects = portCfg.errorRedirects or [];
           authRequest = portCfg.authRequest or null;
         }
         // upstreamHeaderFlags portCfg;
@@ -1184,6 +1282,11 @@
     proxyReadTimeout = route.proxyReadTimeout or null;
     proxySendTimeout = route.proxySendTimeout or null;
     proxyRequestBuffering = route.proxyRequestBuffering or null;
+    proxyPassRequestBody = route.proxyPassRequestBody or null;
+    proxyMethod = route.proxyMethod or null;
+    proxySetBody = route.proxySetBody or null;
+    proxyRewritePath = route.proxyRewritePath or null;
+    errorRedirects = route.errorRedirects or [];
     proxyTimeoutDirectives =
       lib.optionalString (proxyReadTimeout != null)
       "        proxy_read_timeout ${proxyReadTimeout};\n"
@@ -1196,6 +1299,19 @@
         then "on"
         else "off"
       };\n";
+    proxyPassRequestBodyDirective =
+      lib.optionalString (proxyPassRequestBody != null)
+      "        proxy_pass_request_body ${
+        if proxyPassRequestBody
+        then "on"
+        else "off"
+      };\n";
+    proxyMethodDirective =
+      lib.optionalString (proxyMethod != null)
+      "        proxy_method ${proxyMethod};\n";
+    proxySetBodyDirective =
+      lib.optionalString (proxySetBody != null)
+      "        proxy_set_body ${proxySetBody};\n";
     clientMaxBodySize = route.clientMaxBodySize or null;
     clientBodyDirectives =
       lib.optionalString (clientMaxBodySize != null)
@@ -1240,6 +1356,14 @@
       proxy_redirect ${redirect.from} ${redirect.to};
     '') (route.proxyRedirects or []);
     responseHeaderDirectives = lib.concatMapStringsSep "" (header: "        add_header ${header.name} ${header.value} always;\n") (route.responseHeaders or []);
+    requestHeaderDirectives = lib.concatMapStringsSep "" (header: "        proxy_set_header ${header.name} ${header.value};\n") (route.requestHeaders or []);
+    proxyRewritePathDirective =
+      lib.optionalString (proxyRewritePath != null)
+      "        rewrite ^.*$ ${proxyRewritePath} break;\n";
+    errorRedirectDirectives = lib.optionalString (errorRedirects != []) (
+      "        proxy_intercept_errors on;\n"
+      + lib.concatMapStringsSep "" (redirect: "        error_page ${toString redirect.status} =${toString (redirect.redirectStatus or 307)} ${redirect.target};\n") errorRedirects
+    );
     exactRewriteDirective =
       if basePath != "/" && !routeStripPath && effectiveUpstreamPathPrefix != null
       then "        rewrite ^${routeRegexEscape basePath}$ ${prefixedBasePath} break;\n"
@@ -1283,14 +1407,15 @@
       lib.optionalString (basePath != "/")
       "            proxy_set_header X-Forwarded-Prefix ${prefixPath};\n";
   in ''
-      ${rateLimitDirectives}${securityHeaderDirectives}${responseHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${proxyRequestBufferingDirective}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
+      ${rateLimitDirectives}${securityHeaderDirectives}${responseHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${proxyRequestBufferingDirective}${proxyPassRequestBodyDirective}${proxyMethodDirective}${proxySetBodyDirective}${errorRedirectDirectives}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
                 ${hostHeaderDirective}
+    ${requestHeaderDirectives}
                 ${forwardedHeaderDirectives}
     ${upstreamTlsDirectives}${upstreamTlsVerifyDirectives}            proxy_http_version 1.1;
                 proxy_cookie_path / ${effectiveProxyCookiePath};
     ${proxyRedirectDirectives}${prependRedirectDirective}${defaultRedirectDirective}${forwardedPrefixDirective}
                 ${htmlRewriteDirectives}
-    ${resolverDirective}${exactRewriteDirective}${rewriteDirective}        proxy_pass ${routeUpstreamProtocol}://${proxyPassTarget};
+    ${resolverDirective}${proxyRewritePathDirective}${exactRewriteDirective}${rewriteDirective}        proxy_pass ${routeUpstreamProtocol}://${proxyPassTarget};
   '';
 
   mkProxyRootLocation = name: proxy: let
@@ -1312,6 +1437,12 @@
         proxyCookiePath = proxy.proxyCookiePath or null;
         proxyRedirects = proxy.proxyRedirects or [];
         responseHeaders = proxy.responseHeaders or [];
+        requestHeaders = proxy.requestHeaders or [];
+        proxyMethod = proxy.proxyMethod or null;
+        proxyPassRequestBody = proxy.proxyPassRequestBody or null;
+        proxySetBody = proxy.proxySetBody or null;
+        proxyRewritePath = proxy.proxyRewritePath or null;
+        errorRedirects = proxy.errorRedirects or [];
         authRequest = proxy.authRequest or null;
       }
       // upstreamHeaderFlags proxy;
