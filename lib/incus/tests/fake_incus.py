@@ -19,6 +19,18 @@ def should_fail(args):
     return False
 
 
+def query_response(path):
+    responses = json.loads(os.environ.get("TEST_INCUS_QUERY_RESPONSES", "{}"))
+    if path in responses:
+        response = responses[path]
+    else:
+        response = json.loads(os.environ.get("TEST_INCUS_QUERY_JSON", "{}"))
+    if isinstance(response, str):
+        print(response)
+    else:
+        print(json.dumps(response))
+
+
 def main():
     args = sys.argv[1:]
     write_log(args)
@@ -37,7 +49,7 @@ def main():
         return 0
 
     if args[0] == "query":
-        print(os.environ.get("TEST_INCUS_QUERY_JSON", "{}"))
+        query_response(args[1])
         return 0
 
     if args[0] == "list":
