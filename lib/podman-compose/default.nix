@@ -77,7 +77,7 @@
     adopt = false;
     autoStart = null;
     longRunning = true;
-    timeoutStableSeconds = 120;
+    timeoutStableSeconds = null;
     bootTag = "0";
     reloadTag = "0";
     recreateTag = "0";
@@ -92,6 +92,7 @@
     dirs = {};
     exposedPorts = {};
   };
+  stackDefaultTimeoutStableSeconds = 120;
   defaultComposeEntryFiles = [
     "compose.yml"
     "compose.yaml"
@@ -437,22 +438,33 @@
     then config.users.users.${stack.user}.group
     else "-";
 
-  helperPackage = pkgs.writeShellApplication {
-    name = "podman-compose-helper";
-    excludeShellChecks = ["SC1091"];
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.findutils
-      pkgs.jq
-      pkgs.podman
-      pkgs.systemd
-      pkgs.util-linux
-    ];
-    text = ''
-      source ${./helper.sh}
-      main "$@"
-    '';
-  };
+  tests = import ./tests {inherit pkgs;};
+  helperPackage =
+    (pkgs.writeShellApplication {
+      name = "podman-compose-helper";
+      excludeShellChecks = ["SC1091"];
+      runtimeInputs = [
+        pkgs.coreutils
+        pkgs.findutils
+        pkgs.jq
+        pkgs.podman
+        pkgs.systemd
+        pkgs.util-linux
+      ];
+      text = ''
+        source ${./helper.sh}
+        main "$@"
+      '';
+    })
+    .overrideAttrs (old: let
+      oldPassthru = old.passthru or {};
+    in {
+      passthru =
+        oldPassthru
+        // {
+          tests = (oldPassthru.tests or {}) // tests;
+        };
+    });
   helperScript = "${helperPackage}/bin/podman-compose-helper";
 
   serviceType = lib.types.submodule (_: {
@@ -655,9 +667,9 @@
       };
 
       timeoutStableSeconds = lib.mkOption {
-        type = lib.types.ints.positive;
+        type = lib.types.nullOr lib.types.ints.positive;
         default = serviceDefaults.timeoutStableSeconds;
-        description = "Seconds the generated user-manager reconciliation should wait for this compose unit to leave activating, deactivating, or reloading states.";
+        description = "Seconds the generated user-manager reconciliation should wait for this compose unit to leave activating, deactivating, or reloading states. When null, inherit the stack default.";
       };
 
       recreateTag = lib.mkOption {
@@ -1118,7 +1130,7 @@
 
       timeoutStableSeconds = lib.mkOption {
         type = lib.types.ints.positive;
-        default = serviceDefaults.timeoutStableSeconds;
+        default = stackDefaultTimeoutStableSeconds;
         description = "Default stable-state wait timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutStableSeconds.";
       };
 
@@ -2202,6 +2214,10 @@ in {
                     else if baseService.autoStart == null
                     then stack.autoStart
                     else baseService.autoStart;
+                  timeoutStableSeconds =
+                    if baseService.timeoutStableSeconds == null
+                    then stack.timeoutStableSeconds
+                    else baseService.timeoutStableSeconds;
                   dirs = lib.mapAttrs (_: applyEntryDefaults dirEntryDefaults) baseService.dirs;
                   envSecrets = lib.mapAttrs (_: normalizeEnvSecretEntry) baseService.envSecrets;
                   files = lib.mapAttrs (_: normalizeFileEntry) baseService.files;

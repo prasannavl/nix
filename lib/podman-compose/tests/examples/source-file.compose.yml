@@ -1,0 +1,4 @@
+services:
+  file:
+    image: docker.io/library/busybox:latest
+    command: ["sh", "-c", "printf file-source"]

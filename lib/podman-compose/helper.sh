@@ -70,7 +70,7 @@ load_metadata() {
 	recreate_class_stamp="$(jq -r '.recreateClassStamp // (.recreateStamp // "")' "$podman_compose_metadata")"
 	removal_policy="$(jq -r '.removalPolicy // "delete"' "$podman_compose_metadata")"
 	adopt_existing="$(jq -r '.adopt // false' "$podman_compose_metadata")"
-	long_running="$(jq -r '.longRunning // true' "$podman_compose_metadata")"
+	long_running="$(jq -r 'if has("longRunning") then .longRunning else true end' "$podman_compose_metadata")"
 	reload_method="$(jq -r '.reload.method // "restart"' "$podman_compose_metadata")"
 	reload_signal="$(jq -r '.reload.signal // "HUP"' "$podman_compose_metadata")"
 	restart_stamp="$(jq -r '.restartStamp // ""' "$podman_compose_metadata")"
