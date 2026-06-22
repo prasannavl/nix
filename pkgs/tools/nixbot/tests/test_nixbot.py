@@ -399,6 +399,514 @@ class NixbotScriptTest(unittest.TestCase):
 
         self.assertEqual(["cache", "local-copy", "cache", "local-copy"], result.stdout.splitlines())
 
+    def test_transport_retry_policy_and_backoff_are_narrow(self):
+        result = self.run_script(
+            """
+            init_vars
+            for rc in 124 255 1 2 130 143; do
+              if transport_status_is_retryable "$rc"; then
+                printf '%s=retry\n' "$rc"
+              else
+                printf '%s=stop\n' "$rc"
+              fi
+            done
+            NIXBOT_TRANSPORT_RETRY_DELAY_SECS=7
+            transport_retry_backoff_seconds 1
+            transport_retry_backoff_seconds 2
+            transport_retry_backoff_seconds 3
+            primary_probe_failure_is_temporary_transport 'ssh: connect to host 10.0.0.1 port 22: Connection timed out' && printf 'timeout=temporary\n'
+            primary_probe_failure_is_temporary_transport 'kex_exchange_identification: Connection closed by remote host' && printf 'kex=temporary\n'
+            primary_probe_failure_is_temporary_transport 'switch-to-configuration failed' || printf 'activation=permanent\n'
+            """
+        )
+
+        self.assertEqual(
+            [
+                "124=retry",
+                "255=retry",
+                "1=stop",
+                "2=stop",
+                "130=stop",
+                "143=stop",
+                "0",
+                "7",
+                "14",
+                "timeout=temporary",
+                "kex=temporary",
+                "activation=permanent",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_retry_transport_command_retries_ssh_failures_and_stops_on_permanent_failures(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_TRANSPORT_RETRY_ATTEMPTS=3
+            NIXBOT_TRANSPORT_RETRY_DELAY_SECS=1
+            sleep() { printf 'sleep:%s\n' "$1"; }
+            retry_hook() { printf 'hook\n'; }
+            attempts=0
+            flaky_ssh() {
+              attempts=$((attempts + 1))
+              printf 'attempt:%s\n' "$attempts"
+              [ "$attempts" -ge 3 ] && return 0
+              return 255
+            }
+            retry_transport_command 'SSH probe for app' retry_hook flaky_ssh
+            printf 'final-attempts:%s\n' "$attempts"
+
+            attempts=0
+            permanent_failure() {
+              attempts=$((attempts + 1))
+              printf 'permanent-attempt:%s\n' "$attempts"
+              return 1
+            }
+            set +e
+            retry_transport_command 'Activation for app' retry_hook permanent_failure
+            rc=$?
+            set -e
+            printf 'permanent-rc:%s attempts:%s\n' "$rc" "$attempts"
+            """,
+        )
+
+        self.assertEqual(
+            [
+                "attempt:1",
+                "sleep:1",
+                "hook",
+                "attempt:2",
+                "sleep:2",
+                "hook",
+                "attempt:3",
+                "final-attempts:3",
+                "permanent-attempt:1",
+                "permanent-rc:1 attempts:1",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertIn("SSH probe for app transport unavailable; retrying (2/3) in 1s", result.stderr)
+        self.assertIn("SSH probe for app transport unavailable; retrying (3/3) in 2s", result.stderr)
+        self.assertNotIn("Activation for app transport unavailable", result.stderr)
+
+    def test_primary_probe_retries_ssh_transport_and_clears_control_master(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_TRANSPORT_RETRY_ATTEMPTS=3
+            NIXBOT_TRANSPORT_RETRY_DELAY_SECS=1
+            sleep() { printf 'sleep:%s\n' "$1"; }
+            clear_control_master_socket() { printf 'clear:%s:%s\n' "$1" "$2"; }
+            attempts=0
+            run_supervised_combined_capture() {
+              local -n output_ref="$1"
+              shift
+              attempts=$((attempts + 1))
+              printf 'probe:%s:%s\n' "$attempts" "$*"
+              if [ "$attempts" -lt 2 ]; then
+                output_ref='Connection reset by peer'
+                return 255
+              fi
+              output_ref=''
+              return 0
+            }
+            probe_primary_deploy_target app nixbot@10.0.0.5 -o BatchMode=yes
+            printf 'attempts:%s output:%s\n' "$attempts" "$PRIMARY_PROBE_LAST_OUTPUT"
+            """
+        )
+
+        self.assertEqual(
+            [
+                "probe:1:ssh -o BatchMode=yes nixbot@10.0.0.5 true",
+                "clear:app:primary",
+                "sleep:1",
+                "probe:2:ssh -o BatchMode=yes nixbot@10.0.0.5 true",
+                "attempts:2 output:",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertIn(
+            "Primary connectivity probe for nixbot@10.0.0.5 transport unavailable; retrying (2/3) in 1s",
+            result.stderr,
+        )
+
+    def test_parented_host_operation_retries_until_readiness_budget_is_exhausted_or_successful(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            NIXBOT_HOSTS_JSON='{{"app":{{"parent":"parent"}}}}'
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            NIXBOT_STATE_LOCK_TIMEOUT=1
+            ensure_tmp_dir
+            sleep() {{ printf 'sleep:%s\n' "$1"; }}
+            clear_control_master_socket() {{ printf 'clear:%s:%s\n' "$1" "$2"; }}
+            attempts=0
+            flaky_operation() {{
+              attempts=$((attempts + 1))
+              printf 'attempt:%s\n' "$attempts"
+              [ "$attempts" -ge 3 ]
+            }}
+            run_host_operation_with_retry_budget app 'deploy transport preparation' 5 2 flaky_operation
+            printf 'success-attempts:%s\n' "$attempts"
+
+            attempts=0
+            always_fails() {{
+              attempts=$((attempts + 1))
+              printf 'fail-attempt:%s\n' "$attempts"
+              return 1
+            }}
+            set +e
+            run_host_operation_with_retry_budget app 'deploy transport preparation' 3 2 always_fails
+            printf 'failure-rc:%s attempts:%s\n' "$?" "$attempts"
+            set -e
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual(
+            [
+                "clear:app:primary",
+                "clear:app:bootstrap",
+                "attempt:1",
+                "sleep:2",
+                "clear:app:primary",
+                "clear:app:bootstrap",
+                "attempt:2",
+                "sleep:2",
+                "clear:app:primary",
+                "clear:app:bootstrap",
+                "attempt:3",
+                "success-attempts:3",
+                "clear:app:primary",
+                "clear:app:bootstrap",
+                "fail-attempt:1",
+                "sleep:2",
+                "clear:app:primary",
+                "clear:app:bootstrap",
+                "fail-attempt:2",
+                "failure-rc:1 attempts:2",
+            ],
+            lines,
+        )
+        self.assertIn("failed after parent barrier (parent); retrying in 2s", result.stderr)
+
+    def test_sleep_for_retry_exits_early_when_cancel_was_requested(self):
+        result = self.run_script(
+            """
+            init_vars
+            sleep() { return 0; }
+            NIXBOT_CANCEL_REQUESTED=1
+            NIXBOT_CANCEL_EXIT_STATUS=130
+            set +e
+            sleep_for_retry_or_signal 5
+            printf 'cancel-rc:%s\n' "$?"
+            sleep() { return 143; }
+            NIXBOT_CANCEL_REQUESTED=0
+            sleep_for_retry_or_signal 5
+            printf 'signal-rc:%s\n' "$?"
+            set -e
+            """
+        )
+
+        self.assertEqual(["cancel-rc:130", "signal-rc:143"], result.stdout.splitlines())
+
+    def test_readiness_markers_persist_and_clear_primary_control_sockets(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            NIXBOT_STATE_LOCK_TIMEOUT=1
+            ensure_tmp_dir
+            clear_control_master_socket() {{ printf 'clear:%s:%s\n' "$1" "$2"; }}
+            mark_bootstrap_ready app
+            is_bootstrap_ready app && printf 'bootstrap-ready\n'
+            mark_primary_ready app
+            is_primary_ready app && printf 'primary-ready\n'
+            clear_primary_ready app
+            is_primary_ready app || printf 'primary-cleared\n'
+            is_bootstrap_ready app && printf 'bootstrap-still-ready\n'
+            """
+        )
+
+        self.assertEqual(
+            [
+                "bootstrap-ready",
+                "primary-ready",
+                "clear:app:primary",
+                "clear:app:bootstrap",
+                "primary-cleared",
+                "bootstrap-still-ready",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_key_path_resolution_and_age_requirement_do_not_silently_accept_plain_keys(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p {self.work_dir / "config"} {self.work_dir / "shared"}
+            printf 'plain-key\n' >{self.work_dir / "plain-key"}
+            printf 'config-key\n' >{self.work_dir / "config" / "deploy-key"}
+            printf 'shared-key\n' >{self.work_dir / "shared" / "shared-key"}
+            NIXBOT_CONFIG_DIR={self.work_dir / "config"}
+            resolve_key_source_path ''
+            resolve_key_source_path {self.work_dir / "plain-key"}
+            resolve_key_source_path deploy-key
+            resolve_key_source_path shared/shared-key
+            resolve_key_source_path missing-key
+            set +e
+            resolve_runtime_key_file {self.work_dir / "plain-key"} 1 >{self.work_dir / "plain-key.out"}
+            printf 'plain-age-rc:%s\n' "$?"
+            set -e
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("", lines[0])
+        self.assertEqual(str(self.work_dir / "plain-key"), lines[1])
+        self.assertEqual(str(self.work_dir / "config" / "deploy-key"), lines[2])
+        self.assertEqual(str(self.work_dir / "config" / "../shared/shared-key"), lines[3])
+        self.assertEqual(str(self.work_dir / "config" / "../missing-key"), lines[4])
+        self.assertEqual("plain-age-rc:1", lines[5])
+        self.assertIn("Provided key path must point to an .age file", result.stderr)
+
+    def test_bootstrap_check_uses_override_identity_without_leaking_deploy_identity(self):
+        args_file = self.work_dir / "bootstrap-args.json"
+        override_key = self.work_dir / "ci-check-key"
+        result = self.run_script(
+            f"""
+            init_vars
+            printf 'key\n' >{override_key}
+            REMOTE_NIXBOT_DEPLOY_SCRIPT=/run/current-system/sw/bin/nixbot
+            SHA=abc123
+            NIXBOT_CONFIG_PATH=pkgs/tools/nixbot/config.json
+            NIXBOT_CI_KEY_PATH_OVERRIDE={override_key}
+            resolve_runtime_key_file() {{
+              printf '%s\n' "$1"
+            }}
+            retry_transport_capture() {{
+              local -n out_ref="$1"
+              shift 3
+              bash_args_to_json_array "$@" >{args_file}
+              out_ref='ok'
+              return 0
+            }}
+            check_bootstrap_via_forced_command app nixbot@10.0.0.5 -i deploy-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
+            """
+        )
+
+        self.assertIn("Bootstrap check validated remote nixbot access for app", result.stdout)
+        args = json.loads(args_file.read_text(encoding="utf-8"))
+        self.assertEqual("ssh", args[0])
+        self.assertEqual(["-i", str(override_key), "-o", "IdentitiesOnly=yes"], args[1:5])
+        self.assertNotIn("deploy-key", args)
+        self.assertIn("-o", args)
+        self.assertIn("StrictHostKeyChecking=no", args)
+        target_index = args.index("nixbot@10.0.0.5")
+        self.assertEqual(
+            ["/run/current-system/sw/bin/nixbot", "check-bootstrap", "--sha", "abc123", "--hosts", "app", "--config", "pkgs/tools/nixbot/config.json"],
+            args[target_index + 1 :],
+        )
+
+    def test_deploy_result_handling_buckets_failures_and_rollbacks(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            NIXBOT_HOSTS_JSON='{{"ok":{{}},"skipped":{{}},"required":{{}},"optional":{{"deploy":"optional"}},"signaled":{{}}}}'
+            status_dir={self.work_dir / "status"}
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            mkdir -p "$status_dir" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
+            printf '0\n' >"$status_dir/ok.rc"
+            printf 'skip\n' >"$status_dir/skipped.rc"
+            printf '1\n' >"$status_dir/required.rc"
+            printf '1\n' >"$status_dir/optional.rc"
+            printf '130\n' >"$status_dir/signaled.rc"
+            success=()
+            skipped=()
+            failed=()
+            rollback_failed_deploy_host() {{
+              printf 'required-rollback:%s\n' "$1"
+              DEPLOY_FAILED_ROLLBACK_OK_HOSTS+=("$1")
+            }}
+            rollback_optional_deploy_host() {{
+              printf 'optional-rollback:%s\n' "$1"
+              OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS+=("$1")
+            }}
+            process_completed_deploy_job ok "$status_dir/ok.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
+            process_completed_deploy_job skipped "$status_dir/skipped.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
+            process_completed_deploy_job optional "$status_dir/optional.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
+            set +e
+            process_completed_deploy_job required "$status_dir/required.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
+            printf 'required-rc:%s\n' "$?"
+            process_completed_deploy_job signaled "$status_dir/signaled.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
+            printf 'signal-rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{success[@]}}"
+            bash_args_to_json_array "${{skipped[@]}}"
+            bash_args_to_json_array "${{failed[@]}}"
+            bash_args_to_json_array "${{OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS[@]}}"
+            bash_args_to_json_array "${{DEPLOY_FAILED_ROLLBACK_OK_HOSTS[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("optional-rollback:optional", lines[0])
+        self.assertEqual("required-rollback:required", lines[1])
+        self.assertEqual("required-rc:1", lines[2])
+        self.assertEqual("signal-rc:130", lines[3])
+        self.assertEqual(["ok"], json.loads(lines[4]))
+        self.assertEqual(["skipped"], json.loads(lines[5]))
+        self.assertEqual(["required"], json.loads(lines[6]))
+        self.assertEqual(["optional"], json.loads(lines[7]))
+        self.assertEqual(["required"], json.loads(lines[8]))
+
+    def test_deploy_failure_detection_ignores_optional_signal_and_pre_activation_cancel(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            ensure_tmp_dir
+            NIXBOT_HOSTS_JSON='{{"required":{{}},"optional":{{"deploy":"optional"}},"signaled":{{}},"canceled":{{}}}}'
+            status_dir={self.work_dir / "status"}
+            mkdir -p "$status_dir"
+            printf '1\n' >"$status_dir/optional.rc"
+            printf '130\n' >"$status_dir/signaled.rc"
+            printf '1\n' >"$status_dir/canceled.rc"
+            printf '1\n' >"$status_dir/required.rc"
+            : >"$(deploy_pre_activation_cancel_marker_file canceled)"
+            find_completed_required_deploy_failure "$status_dir" optional signaled canceled required
+            """
+        )
+
+        self.assertEqual("required", result.stdout.strip())
+
+    def test_pre_activation_fail_fast_cancels_only_jobs_that_have_not_reached_activation(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            NIXBOT_CANCEL_TERM_GRACE_SECS=0
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            ensure_tmp_dir
+            pre_alive=1
+            active_alive=1
+            kill() {{
+              local signal="$1" pid="$2"
+              if [ "$signal" = "-0" ]; then
+                case "$pid" in
+                  111) [ "$pre_alive" -eq 1 ] ;;
+                  222) [ "$active_alive" -eq 1 ] ;;
+                  *) return 1 ;;
+                esac
+                return "$?"
+              fi
+              return 0
+            }}
+            terminate_pid_tree() {{
+              printf 'terminate:%s:%s\n' "$1" "$2"
+              [ "$1" = 111 ] && pre_alive=0
+              [ "$1" = 222 ] && active_alive=0
+              return 0
+            }}
+            host_deploy_activation_unit_running() {{ return 1; }}
+            register_deploy_job_pid pre 111
+            register_deploy_job_pid active 222
+            mark_deploy_activation_started active
+            terminate_pre_activation_deploy_jobs failed
+            [ -e "$(deploy_pre_activation_cancel_marker_file pre)" ] && printf 'pre-canceled\n'
+            [ -e "$(deploy_pre_activation_cancel_marker_file active)" ] || printf 'active-not-canceled\n'
+            [ "$active_alive" -eq 1 ] && printf 'active-still-running\n'
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("terminate:111:TERM", lines[0])
+        self.assertEqual(["pre-canceled", "active-not-canceled", "active-still-running"], lines[1:])
+        self.assertIn("leaving active activation to finish", result.stderr)
+        self.assertIn("canceling pre-activation deploy for pre", result.stderr)
+
+    def test_interrupt_request_exits_before_deploy_and_escalates_active_deploy_cancel(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_FORCE_CANCEL_SIGNAL_COUNT=3
+            NIXBOT_FORCE_CANCEL_WINDOW_SECS=60
+            terminate_background_jobs() { printf 'terminate:%s\n' "${1:-normal}"; }
+            cancel_active_deploy_activation_units() { printf 'remote-cancel\n'; }
+
+            active_deploy_jobs_running() { return 1; }
+            deploy_jobs_started() { return 1; }
+            set +e
+            (request_cancel 130 INT)
+            printf 'before-deploy-rc:%s\n' "$?"
+            set -e
+
+            NIXBOT_CANCEL_REQUESTED=0
+            active_deploy_jobs_running() { return 0; }
+            deploy_jobs_started() { return 0; }
+            request_cancel 130 INT
+            printf 'after-first:%s force:%s\n' "$NIXBOT_CANCEL_REQUESTED" "$(force_cancel_requested && printf yes || printf no)"
+            request_cancel 130 INT
+            printf 'after-second:%s force:%s\n' "$NIXBOT_CANCEL_REQUESTED" "$(force_cancel_requested && printf yes || printf no)"
+            set +e
+            (request_cancel 130 INT)
+            printf 'force-rc:%s\n' "$?"
+            set -e
+            """
+        )
+
+        self.assertEqual(
+            [
+                "terminate:normal",
+                "before-deploy-rc:130",
+                "after-first:1 force:no",
+                "after-second:2 force:no",
+                "remote-cancel",
+                "terminate:force",
+                "force-rc:130",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertIn("no deploy job has started, canceling local jobs", result.stderr)
+        self.assertIn("waiting for active deploy jobs to finish", result.stderr)
+        self.assertIn("best-effort canceling activation", result.stderr)
+
+    def test_run_summary_failure_detection_includes_deploy_health_rollback_and_tf_failures(self):
+        result = self.run_script(
+            """
+            init_vars
+            clear_run_summary_state
+            run_summary_has_failures || printf 'clean\n'
+            RUN_SUMMARY_DEPLOY_FAILED_HOSTS=(app)
+            run_summary_has_failures && printf 'deploy-failed\n'
+            clear_run_summary_state
+            RUN_SUMMARY_HEALTH_FAILED_HOSTS=(app)
+            run_summary_has_failures && printf 'health-failed\n'
+            clear_run_summary_state
+            RUN_SUMMARY_ROLLBACK_FAILED_HOSTS=(app)
+            run_summary_has_failures && printf 'rollback-failed\n'
+            clear_run_summary_state
+            RUN_SUMMARY_TF_STATUSES=(ok skip fail)
+            run_summary_has_failures && printf 'tf-failed\n'
+            """
+        )
+
+        self.assertEqual(
+            ["clean", "deploy-failed", "health-failed", "rollback-failed", "tf-failed"],
+            result.stdout.splitlines(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
