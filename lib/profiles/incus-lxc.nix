@@ -98,15 +98,17 @@ in {
       stopIfChanged = false;
       wantedBy = ["sysinit.target"];
       requires = ["nixos-lxc-boot-system-links.service"];
-      after = ["nixos-lxc-boot-system-links.service"];
       before = [
         "sysinit.target"
-        "register-nix-paths.service"
         "systemd-tmpfiles-setup.service"
         "systemd-udev-trigger.service"
         "systemd-networkd.service"
         "nix-daemon.service"
         "tailscaled.service"
+      ];
+      after = [
+        "nixos-lxc-boot-system-links.service"
+        "register-nix-paths.service"
       ];
       unitConfig.DefaultDependencies = false;
       serviceConfig = {
@@ -126,6 +128,14 @@ in {
 
         export NIXOS_ACTION=boot
         "$system_config/activate"
+
+        # Some NixOS activation paths consult the root system profile. Incus
+        # LXC images start with that profile set to the generic base image, so
+        # keep it aligned with the guest-specific init system after replaying
+        # activation.
+        ${config.nix.package}/bin/nix-env -p /nix/var/nix/profiles/system --set "$system_config"
+        ${pkgs.coreutils}/bin/ln -sfn "$system_config" /run/current-system
+        ${pkgs.coreutils}/bin/ln -sfn "$system_config" /run/booted-system
       '';
     };
 
