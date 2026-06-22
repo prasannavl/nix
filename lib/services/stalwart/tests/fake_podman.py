@@ -88,6 +88,7 @@ def network_listener_rows(mode):
             {"id": "live-http", "name": "http"},
             {"id": "live-smtp", "name": "smtp"},
             {"id": "live-imaps", "name": "imaps"},
+            {"id": "live-submissions", "name": "submissions"},
         ],
         "duplicate": [
             {"id": "live-http", "name": "http"},

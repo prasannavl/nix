@@ -509,104 +509,90 @@ prepare_directory_apply_inputs() {
 	done < <(directory_update_ids)
 }
 
-network_listener_update_ids() {
-	jq -r '
-		select(
-			."@type" == "update"
-			and .object == "NetworkListener"
-			and (.id // "") != ""
-			and (.value.name // "") != ""
-		)
-		| .id
-	' "$stalwart_plan_host_path" | LC_ALL=C sort -u
-}
+prepare_network_listener_apply_inputs() {
+	local listener_specs live_listeners id_map target_path
 
-desired_network_listener_json() {
-	local listener_id="$1"
+	[ -n "$stalwart_plan_host_path" ] || return 0
+	[ -r "$stalwart_plan_host_path" ] || return 0
 
-	jq -s -c \
-		--arg listener_id "$listener_id" \
-		'
+	listener_specs="$(
+		jq -s -c '
 			[
 				.[] |
 				select(
 					."@type" == "update"
 					and .object == "NetworkListener"
-					and .id == $listener_id
+					and (.id // "") != ""
+					and (.value.name // "") != ""
 				)
-				| .value
+				| {oldId: .id, name: .value.name}
 			]
-			| first // empty
 		' "$stalwart_plan_host_path"
-}
+	)"
 
-find_network_listener_id_by_desired() {
-	local desired="$1" query_output
+	if [ "$listener_specs" = "[]" ]; then
+		return 0
+	fi
 
-	query_output="$(
+	live_listeners="$(
 		stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
 			query NetworkListener \
 			--fields id,name \
-			--json
+			--json |
+			jq -s -c '.'
 	)"
 
-	jq -s -r \
-		--argjson desired "$desired" \
+	if ! id_map="$(
+		jq -n -c \
+			--argjson specs "$listener_specs" \
+			--argjson live_listeners "$live_listeners" \
+			'
+				def resolved_id($spec):
+					($spec.name // "") as $name
+					| if $name == "" then
+						error("desired Stalwart network listener is missing name")
+					else
+						($live_listeners | map(select((.name // "") == $name))) as $matches
+						| if ($matches | length) == 0 then
+							error("Stalwart network listener " + $name + " does not exist; declare it as a create operation before updating it")
+						elif ($matches | length) == 1 then
+							$matches[0].id // empty
+						else
+							error("multiple Stalwart network listeners match name: " + $name)
+						end
+					end;
+
+				reduce $specs[] as $spec ({};
+					. + {($spec.oldId): resolved_id($spec)}
+				)
+			'
+	)"; then
+		return 1
+	fi
+
+	require_var stalwart_recovery_secret_dir
+	if ! target_path="$(mktemp "$stalwart_recovery_secret_dir/plan-network-listeners-resolved.XXXXXX.json")"; then
+		return 1
+	fi
+	if ! jq -c \
+		--argjson id_map "$id_map" \
 		'
-			($desired.name // "") as $name
-			| if $name == "" then
-				error("desired Stalwart network listener is missing name")
+			walk(if type == "string" and ($id_map[.]? != null) then $id_map[.] else . end)
+			| if ."@type" == "update" and .object == "NetworkListener" then
+				del(.value.name)
 			else
-				map(select((.name // "") == $name)) as $matches
-				| if ($matches | length) == 0 then
-					empty
-				elif ($matches | length) == 1 then
-					$matches[0].id // empty
-				else
-					error("multiple Stalwart network listeners match name: " + $name)
-				end
+				.
 			end
 		' \
-		<<<"$query_output"
-}
-
-resolve_network_listener_id_for_apply() {
-	local old_listener_id="$1" desired_listener listener_id listener_name
-
-	if ! desired_listener="$(desired_network_listener_json "$old_listener_id")"; then
+		"$stalwart_plan_host_path" >"$target_path"; then
+		rm -f -- "$target_path"
 		return 1
 	fi
-	require_value "desired Stalwart network listener for $old_listener_id" "$desired_listener"
-
-	listener_name="$(jq -r '.name // empty' <<<"$desired_listener")"
-	require_value "desired Stalwart network listener name for $old_listener_id" "$listener_name"
-
-	if ! listener_id="$(find_network_listener_id_by_desired "$desired_listener")"; then
+	if ! chmod 0444 "$target_path"; then
+		rm -f -- "$target_path"
 		return 1
 	fi
-	if [ -z "$listener_id" ]; then
-		printf 'Stalwart network listener %s does not exist; declare it as a create operation before updating it\n' "$listener_name" >&2
-		exit 1
-	fi
-
-	stalwart_network_listener_id="$listener_id"
-}
-
-prepare_network_listener_apply_inputs() {
-	local old_listener_id
-
-	[ -n "$stalwart_plan_host_path" ] || return 0
-	[ -r "$stalwart_plan_host_path" ] || return 0
-
-	while IFS= read -r old_listener_id; do
-		[ -n "$old_listener_id" ] || continue
-		if ! resolve_network_listener_id_for_apply "$old_listener_id"; then
-			return 1
-		fi
-		if ! rewrite_json_file_token_var stalwart_plan_host_path "plan-network-listener-resolved" "$old_listener_id" "$stalwart_network_listener_id"; then
-			return 1
-		fi
-	done < <(network_listener_update_ids)
+	stalwart_plan_host_path="$target_path"
 }
 
 prepare_apply_inputs() {

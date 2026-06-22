@@ -219,6 +219,8 @@ class StalwartHelperTest(unittest.TestCase):
         plan = self.write_plan(
             "listeners.ndjson",
             '{"@type":"update","object":"NetworkListener","id":"__network_listener_http__","value":{"name":"http","bind":{"0.0.0.0:8080":true}}}',
+            '{"@type":"update","object":"NetworkListener","id":"__network_listener_smtp__","value":{"name":"smtp","bind":{"0.0.0.0:25":true}}}',
+            '{"@type":"update","object":"NetworkListener","id":"__network_listener_submissions__","value":{"name":"submissions","bind":{"0.0.0.0:465":true}}}',
             '{"@type":"update","object":"NetworkListener","id":"__network_listener_imaps__","value":{"name":"imaps","bind":{"0.0.0.0:993":true}}}',
             '{"@type":"update","object":"SystemSettings","value":{"httpListenerId":"__network_listener_http__","imapsListenerId":"__network_listener_imaps__"}}',
         )
@@ -231,9 +233,17 @@ class StalwartHelperTest(unittest.TestCase):
         )
         rendered = Path(result.stdout.strip()).read_text(encoding="utf-8")
         self.assertIn("live-http", rendered)
+        self.assertIn("live-smtp", rendered)
+        self.assertIn("live-submissions", rendered)
         self.assertIn("live-imaps", rendered)
         self.assertNotIn("__network_listener_http__", rendered)
+        self.assertNotIn("__network_listener_smtp__", rendered)
+        self.assertNotIn("__network_listener_submissions__", rendered)
         self.assertNotIn("__network_listener_imaps__", rendered)
+        self.assertNotIn('"name":"http"', rendered)
+        self.assertNotIn('"name":"smtp"', rendered)
+        self.assertNotIn('"name":"submissions"', rendered)
+        self.assertNotIn('"name":"imaps"', rendered)
 
     def test_network_listener_updates_without_name_are_not_rewritten(self):
         plan = self.write_plan(
@@ -249,6 +259,23 @@ class StalwartHelperTest(unittest.TestCase):
         )
         rendered = Path(result.stdout.strip()).read_text(encoding="utf-8")
         self.assertIn("literal-id", rendered)
+
+    def test_network_listener_create_names_are_kept(self):
+        plan = self.write_plan(
+            "listener-create-name.ndjson",
+            '{"@type":"create","object":"NetworkListener","value":{"custom":{"name":"custom","protocol":"smtp"}}}',
+            '{"@type":"update","object":"NetworkListener","id":"__network_listener_http__","value":{"name":"http","bind":{"0.0.0.0:8080":true}}}',
+        )
+        result = self.run_helper(
+            f"""
+            stalwart_plan_host_path={plan}
+            prepare_network_listener_apply_inputs
+            printf '%s\\n' "$stalwart_plan_host_path"
+            """
+        )
+        rendered = Path(result.stdout.strip()).read_text(encoding="utf-8")
+        self.assertIn('"name":"custom"', rendered)
+        self.assertNotIn('"name":"http"', rendered)
 
     def test_network_listener_duplicate_match_fails(self):
         plan = self.write_plan(
@@ -366,6 +393,7 @@ class StalwartHelperTest(unittest.TestCase):
         self.assertIn("live-domain", rendered)
         self.assertNotIn("old-directory", rendered)
         self.assertNotIn("__network_listener_http__", rendered)
+        self.assertNotIn('"name":"http"', rendered)
         self.assertNotIn("__domain__", rendered)
 
 
