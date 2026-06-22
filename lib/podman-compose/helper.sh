@@ -171,9 +171,10 @@ run_lifecycle_hook_command() {
 		/bin/sh -eu -c "$command"
 	); then
 		return 0
+	else
+		status="$?"
 	fi
 
-	status="$?"
 	if [ "$ignore_failure" -eq 1 ]; then
 		printf '%s\n' "podman compose ${hook_name} hook failed with status ${status}; ignoring"
 		return 0
@@ -189,7 +190,7 @@ run_lifecycle_hooks() {
 	while IFS= read -r encoded; do
 		[ -n "$encoded" ] || continue
 		command="$(printf '%s' "$encoded" | base64 -d)"
-		run_lifecycle_hook_command "$hook_name" "$command"
+		run_lifecycle_hook_command "$hook_name" "$command" || return "$?"
 	done < <(jq -r --arg key "$metadata_key" '.[$key][]? | @base64' "$podman_compose_metadata")
 }
 
@@ -1598,7 +1599,10 @@ cmd_reload() {
 		record_staging_runtime_state
 		stage_runtime_files
 		repair_stale_rootless_netns_resolver
-		run_pre_start_hooks
+		run_pre_start_hooks || {
+			unlock_lifecycle_exclusive
+			return 1
+		}
 		if [ "$stale_rootless_netns_repaired" -eq 1 ]; then
 			compose_up_checked force
 		else
@@ -1636,7 +1640,10 @@ cmd_start() {
 	record_staging_runtime_state
 	stage_runtime_files
 	repair_stale_rootless_netns_resolver
-	run_pre_start_hooks
+	run_pre_start_hooks || {
+		unlock_lifecycle_exclusive
+		return 1
+	}
 	if [ "$stale_rootless_netns_repaired" -eq 1 ] || should_force_recreate; then
 		force_recreate=1
 		compose_up_checked force
@@ -1657,7 +1664,10 @@ cmd_stop() {
 	load_metadata
 	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
-	run_pre_stop_hooks
+	run_pre_stop_hooks || {
+		unlock_lifecycle_exclusive
+		return 1
+	}
 	if ! apply_compose_stop_policy "$stop_policy"; then
 		unlock_lifecycle_exclusive
 		return 1

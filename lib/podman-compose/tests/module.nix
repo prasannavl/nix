@@ -107,6 +107,18 @@
               longRunning = false;
               source.services.job.image = "docker.io/library/busybox:latest";
             };
+
+            "restart-policy" = {
+              reconcilePolicy = "restart";
+              source.services.web.image = "docker.io/library/nginx:latest";
+              files."ordinary.txt".text = "restart ordinary\n";
+            };
+
+            "recreate-policy" = {
+              reconcilePolicy = "recreate";
+              source.services.web.image = "docker.io/library/nginx:latest";
+              files."ordinary.txt".text = "recreate ordinary\n";
+            };
           };
         };
       }
@@ -120,6 +132,8 @@
   textSource = stack.instances."text-source";
   fileSource = stack.instances."file-source";
   job = stack.instances.job;
+  restartPolicy = stack.instances."restart-policy";
+  recreatePolicy = stack.instances."recreate-policy";
   appUnit = config.systemd.user.services.demo-app;
   dbUnit = config.systemd.user.services.demo-db;
   textSourceUnit = config.systemd.user.services.demo-text-source;
@@ -127,6 +141,8 @@
   jobUnit = config.systemd.user.services.demo-custom-job;
   appManagedUnit = config.services.systemd-user-manager.instances.demo-app;
   jobManagedUnit = config.services.systemd-user-manager.instances.demo-custom-job;
+  restartPolicyManagedUnit = config.services.systemd-user-manager.instances.demo-restart-policy;
+  recreatePolicyManagedUnit = config.services.systemd-user-manager.instances.demo-recreate-policy;
   imagePullUnit = config.systemd.user.services.demo-app-image-pull;
 
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
@@ -145,6 +161,8 @@
   textSourceMetadata = metadataFromUnit textSourceUnit;
   fileSourceMetadata = metadataFromUnit fileSourceUnit;
   jobMetadata = metadataFromUnit jobUnit;
+  restartPolicyMetadata = metadataFromUnit config.systemd.user.services.demo-restart-policy;
+  recreatePolicyMetadata = metadataFromUnit config.systemd.user.services.demo-recreate-policy;
 
   entryByDst = dst: entries: let
     matches = builtins.filter (entry: entry.dst == dst) entries;
@@ -166,6 +184,7 @@
   appFileSecret = entryByBaseName "db-password" appMetadata.stagedFiles;
   appReloadDir = entryByDst "/srv/demo/app/reload" appMetadata.reload.dirs;
   appManualRecreate = entryByDst "/srv/demo/app/manual-recreate.txt" appMetadata.stagedFiles;
+  appOrdinaryFile = entryByDst "/srv/demo/app/other.txt" appMetadata.stagedFiles;
   appRenderedCompose = builtins.readFile app.sourcePaths."compose.yml";
   textRenderedCompose = builtins.readFile textSource.sourcePaths."compose.yml";
   fileRenderedCompose = builtins.readFile fileSource.sourcePaths."compose.yml";
@@ -237,6 +256,10 @@ in
   assert appMetadata.reconcilePolicy == "auto";
   assert appMetadata.removalPolicy == "delete";
   assert appMetadata.longRunning == false;
+  assert appMetadata.restartStamp != "";
+  assert appMetadata.recreateStamp != "";
+  assert appMetadata.recreateClassStamp != "";
+  assert appMetadata.recreateStamp == appMetadata.recreateClassStamp;
   assert appMetadata.composeArgs == ["--project-name" "demo-app"];
   assert appMetadata.preStart == ["printf start"];
   assert appMetadata.preStop == ["-printf stop"];
@@ -283,6 +306,8 @@ in
     "/srv/demo/app/external-reload.txt"
     "/srv/demo/app/reload/web.conf"
   ];
+  assert appOrdinaryFile.dst == "/srv/demo/app/other.txt";
+  assert !(builtins.elem appOrdinaryFile.dst appReloadDsts);
   assert textSourceMetadata.serviceName == "demo-text-source";
   assert textSourceMetadata.workingDir == "/srv/demo/text-source";
   assert textSourceMetadata.expectedComposeServices == [];
@@ -298,6 +323,23 @@ in
   assert jobMetadata.state == "stopped";
   assert jobMetadata.removalPolicy == "keep";
   assert jobMetadata.longRunning == false;
+  assert restartPolicy.reconcilePolicy == "restart";
+  assert restartPolicyMetadata.reconcilePolicy == "restart";
+  assert restartPolicyMetadata.restartStamp != "";
+  assert restartPolicyMetadata.recreateStamp == restartPolicyMetadata.recreateClassStamp;
+  assert restartPolicyManagedUnit.reloadTriggers == [];
+  assert builtins.length restartPolicyManagedUnit.restartTriggers == 1;
+  assert restartPolicyManagedUnit.stopOnTransitionFrom != null;
+  assert restartPolicyManagedUnit.stopOnTransitionTo == null;
+  assert recreatePolicy.reconcilePolicy == "recreate";
+  assert recreatePolicyMetadata.reconcilePolicy == "recreate";
+  assert recreatePolicyMetadata.restartStamp != "";
+  assert recreatePolicyMetadata.recreateClassStamp != "";
+  assert recreatePolicyMetadata.recreateStamp != recreatePolicyMetadata.recreateClassStamp;
+  assert recreatePolicyManagedUnit.reloadTriggers == [];
+  assert builtins.length recreatePolicyManagedUnit.restartTriggers == 1;
+  assert recreatePolicyManagedUnit.stopOnTransitionFrom == null;
+  assert recreatePolicyManagedUnit.stopOnTransitionTo != null;
     pkgs.runCommand "podman-compose-module-test" {} ''
       touch "$out"
     ''

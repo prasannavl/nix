@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import shlex
 import shutil
 import subprocess
 import sys
@@ -130,6 +131,33 @@ class PodmanComposeHelperTest(unittest.TestCase):
         path = self.state_dir / name
         path.write_text(json.dumps(metadata), encoding="utf-8")
         return path
+
+    def write_service_metadata(self, name: str, **overrides) -> Path:
+        metadata = {
+            "workingDir": str(self.compose_dir),
+            "adoptionStamp": "test-adoption-stamp",
+            "state": "running",
+            "reconcilePolicy": "auto",
+            "removalPolicy": "delete",
+            "longRunning": True,
+        }
+        metadata.update(overrides)
+        return self.write_metadata(name, metadata)
+
+    def write_runtime_state(self, **overrides):
+        self.generated_dir.mkdir(exist_ok=True)
+        state = {
+            "version": 1,
+            "kind": "podman-compose-runtime-state",
+            "adoptionStamp": "test-adoption-stamp",
+            "reconcilePolicy": "auto",
+            "restartStamp": "restart-a",
+            "recreateTag": "0",
+            "recreateStamp": "recreate-a",
+            "recreateClassStamp": "class-a",
+        }
+        state.update(overrides)
+        self.state_path.write_text(json.dumps(state), encoding="utf-8")
 
     def test_compose_up_supervised_runs_without_systemd_notify_environment(self):
         self.run_helper(
@@ -468,39 +496,80 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual("stamp-old", state["recreateStamp"])
         self.assertEqual("test-adoption-stamp", state["adoptionStamp"])
 
-    def test_should_force_recreate_respects_policy_tags_and_class_stamps(self):
-        result = self.run_helper(
-            """
-            adoption_stamp=test-adoption-stamp
-            reconcile_policy=auto
-            restart_stamp=restart-a
-            recreate_tag=0
-            recreate_stamp=stamp-a
-            recreate_class_stamp=class-a
-            record_applied_recreate_state
+    def test_should_force_recreate_respects_auto_restart_recreate_policy_classes(self):
+        cases = [
+            (
+                "auto tag drift",
+                "auto",
+                {"recreateTag": "old-tag", "recreateStamp": "recreate-a", "recreateClassStamp": "class-a"},
+                {"recreate_tag": "new-tag", "recreate_stamp": "recreate-a", "recreate_class_stamp": "class-a"},
+                True,
+            ),
+            (
+                "auto restart-only drift",
+                "auto",
+                {"recreateTag": "0", "recreateStamp": "recreate-a", "recreateClassStamp": "class-a"},
+                {"recreate_tag": "0", "recreate_stamp": "recreate-b", "recreate_class_stamp": "class-a"},
+                False,
+            ),
+            (
+                "auto recreate-class drift",
+                "auto",
+                {"recreateTag": "0", "recreateStamp": "recreate-a", "recreateClassStamp": "class-a"},
+                {"recreate_tag": "0", "recreate_stamp": "recreate-b", "recreate_class_stamp": "class-b"},
+                True,
+            ),
+            (
+                "restart policy blocks force recreate",
+                "restart",
+                {"recreateTag": "0", "recreateStamp": "recreate-a", "recreateClassStamp": "class-a"},
+                {"recreate_tag": "0", "recreate_stamp": "recreate-b", "recreate_class_stamp": "class-b"},
+                False,
+            ),
+            (
+                "recreate policy promotes restart-class drift",
+                "recreate",
+                {"recreateTag": "0", "recreateStamp": "any-a", "recreateClassStamp": "class-a"},
+                {"recreate_tag": "0", "recreate_stamp": "any-b", "recreate_class_stamp": "class-a"},
+                True,
+            ),
+        ]
 
-            recreate_tag=1
-            should_force_recreate && printf '%s\n' tag
+        for name, policy, applied_state, desired, expected in cases:
+            with self.subTest(name=name):
+                self.write_runtime_state(reconcilePolicy=policy, **applied_state)
+                result = self.run_helper(
+                    f"""
+                    adoption_stamp=test-adoption-stamp
+                    reconcile_policy={policy}
+                    recreate_tag={desired["recreate_tag"]}
+                    recreate_stamp={desired["recreate_stamp"]}
+                    recreate_class_stamp={desired["recreate_class_stamp"]}
+                    should_force_recreate && printf '%s\n' force || printf '%s\n' no-force
+                    """
+                )
+                self.assertEqual("force" if expected else "no-force", result.stdout.strip())
 
-            recreate_tag=0
-            recreate_stamp=stamp-b
-            recreate_class_stamp=class-a
-            should_force_recreate && printf '%s\n' class-cache-hit || printf '%s\n' no-class-recreate
-
-            recreate_class_stamp=class-b
-            should_force_recreate && printf '%s\n' class-changed
-
-            reconcile_policy=restart
-            recreate_stamp=stamp-c
-            recreate_class_stamp=class-c
-            should_force_recreate && printf '%s\n' restart-forced || printf '%s\n' restart-policy-blocked
-            """
-        )
-
-        self.assertEqual(
-            ["tag", "no-class-recreate", "class-changed", "restart-policy-blocked"],
-            result.stdout.splitlines(),
-        )
+    def test_should_force_recreate_on_restart_to_auto_or_recreate_policy_transition(self):
+        for policy in ("auto", "recreate"):
+            with self.subTest(policy=policy):
+                self.write_runtime_state(
+                    reconcilePolicy="restart",
+                    recreateTag="0",
+                    recreateStamp="recreate-a",
+                    recreateClassStamp="class-a",
+                )
+                result = self.run_helper(
+                    f"""
+                    adoption_stamp=test-adoption-stamp
+                    reconcile_policy={policy}
+                    recreate_tag=0
+                    recreate_stamp=recreate-a
+                    recreate_class_stamp=class-a
+                    should_force_recreate && printf '%s\n' force || printf '%s\n' no-force
+                    """
+                )
+                self.assertEqual("force", result.stdout.strip())
 
     def test_verify_compose_state_accepts_completed_short_lived_containers(self):
         self.run_helper(
@@ -675,6 +744,87 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertTrue(data_dir.exists())
         self.assertTrue(self.state_path.exists())
         self.assertEqual("staging", json.loads(self.state_path.read_text())["startupPhase"])
+
+    def test_pre_stop_hard_failure_blocks_compose_stop_after_prior_hooks(self):
+        hook_log = self.compose_dir / "pre-stop.log"
+        metadata = self.write_service_metadata(
+            "metadata-pre-stop-hard.json",
+            preStop=[
+                f"printf 'first\\n' >> {shlex.quote(str(hook_log))}",
+                "exit 42",
+                f"printf 'never\\n' >> {shlex.quote(str(hook_log))}",
+            ],
+        )
+
+        result = self.run_helper(
+            "cmd_stop",
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_TIMEOUT_VALUE="5s",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(["first"], hook_log.read_text(encoding="utf-8").splitlines())
+        self.assertEqual("", self.podman_history_file.read_text(encoding="utf-8"))
+        self.assertIn("preStop hook failed with status 42", result.stderr)
+
+    def test_pre_stop_ignored_failure_continues_before_compose_stop(self):
+        hook_log = self.compose_dir / "pre-stop.log"
+        metadata = self.write_service_metadata(
+            "metadata-pre-stop-ignored.json",
+            preStop=[
+                f"printf 'first\\n' >> {shlex.quote(str(hook_log))}",
+                f"-printf 'ignored\\n' >> {shlex.quote(str(hook_log))}; exit 42",
+                f"printf 'after\\n' >> {shlex.quote(str(hook_log))}",
+            ],
+        )
+
+        self.run_helper(
+            "cmd_stop",
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_TIMEOUT_VALUE="5s",
+        )
+
+        self.assertEqual(["first", "ignored", "after"], hook_log.read_text(encoding="utf-8").splitlines())
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(["compose down"], history)
+
+    def test_cmd_start_adoption_forces_recreate_and_records_recreate_state(self):
+        metadata = self.write_service_metadata(
+            "metadata-adopt-start.json",
+            adopt=True,
+            reconcilePolicy="restart",
+            restartStamp="restart-a",
+            recreateTag="0",
+            recreateStamp="recreate-a",
+            recreateClassStamp="class-a",
+            stagedFiles=[],
+        )
+
+        self.run_helper(
+            """
+            notify_ready_and_monitor() {
+              printf '%s\n' monitor-skipped
+            }
+            cmd_start
+            """,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_TIMEOUT_VALUE="5s",
+        )
+
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn("compose up -d --remove-orphans --force-recreate", history)
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual("restart", state["reconcilePolicy"])
+        self.assertEqual("restart-a", state["restartStamp"])
+        self.assertEqual("recreate-a", state["recreateStamp"])
+        self.assertEqual("class-a", state["recreateClassStamp"])
 
 
 if __name__ == "__main__":
