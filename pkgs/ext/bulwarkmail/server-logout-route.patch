@@ -1,0 +1,85 @@
+diff --git a/app/api/auth/logout/route.ts b/app/api/auth/logout/route.ts
+new file mode 100644
+index 0000000..0dfebc0
+--- /dev/null
++++ b/app/api/auth/logout/route.ts
+@@ -0,0 +1,79 @@
++import { NextRequest, NextResponse } from 'next/server';
++import { cookies } from 'next/headers';
++import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
++import { sessionCookieName } from '@/lib/auth/session-cookie';
++import { logger } from '@/lib/logger';
++import { buildOAuthParams, getMetadata } from '@/lib/oauth/token-exchange';
++import { refreshTokenCookieName, refreshTokenServerCookieName } from '@/lib/oauth/tokens';
++import { stalwartAuthContextCookieName } from '@/lib/stalwart/auth-context';
++
++async function revokeRefreshToken(token: string, serverId: string | null): Promise<void> {
++  try {
++    const metadata = await getMetadata(serverId).catch(() => null);
++    if (!metadata?.revocation_endpoint) {
++      return;
++    }
++
++    const params = buildOAuthParams({ token, token_type_hint: 'refresh_token' }, serverId);
++    const response = await fetch(metadata.revocation_endpoint, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
++      body: params.toString(),
++    });
++
++    if (!response.ok) {
++      logger.warn('Logout token revocation returned error', { status: response.status });
++    }
++  } catch (error) {
++    logger.warn('Logout token revocation failed', {
++      error: error instanceof Error ? error.message : 'Unknown error',
++    });
++  }
++}
++
++function deleteIfPresent(cookieStore: Awaited<ReturnType<typeof cookies>>, name: string): void {
++  if (cookieStore.has(name)) {
++    cookieStore.delete(name);
++  }
++}
++
++async function clearAllAuthCookies(cookieStore: Awaited<ReturnType<typeof cookies>>): Promise<void> {
++  for (let slot = 0; slot < MAX_ACCOUNT_SLOTS; slot += 1) {
++    const sessionName = sessionCookieName(slot);
++    const refreshTokenName = refreshTokenCookieName(slot);
++    const refreshToken = cookieStore.get(refreshTokenName)?.value;
++    const serverCookieName = refreshTokenServerCookieName(slot);
++    const serverId = cookieStore.get(serverCookieName)?.value || null;
++    const authContextName = stalwartAuthContextCookieName(slot);
++
++    if (refreshToken) {
++      await revokeRefreshToken(refreshToken, serverId);
++    }
++
++    deleteIfPresent(cookieStore, sessionName);
++    deleteIfPresent(cookieStore, refreshTokenName);
++    deleteIfPresent(cookieStore, serverCookieName);
++    deleteIfPresent(cookieStore, authContextName);
++  }
++}
++
++function loginRedirect(): NextResponse {
++  return new NextResponse(null, {
++    status: 303,
++    headers: { Location: '/en/login' },
++  });
++}
++
++export async function GET(_request: NextRequest) {
++  const cookieStore = await cookies();
++  await clearAllAuthCookies(cookieStore);
++  return loginRedirect();
++}
++
++export async function POST(request: NextRequest) {
++  return GET(request);
++}
++
++export async function DELETE(request: NextRequest) {
++  return GET(request);
++}

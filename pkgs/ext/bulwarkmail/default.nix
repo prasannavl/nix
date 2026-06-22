@@ -14,6 +14,7 @@
   patchHash = builtins.substring 0 12 (builtins.hashString "sha256" ''
     ${builtins.readFile ./client-imip-sending-flag.patch}
     ${builtins.readFile ./local-geist-fonts.patch}
+    ${builtins.readFile ./server-logout-route.patch}
     client-imip-sending-v9
   '');
 
@@ -35,6 +36,7 @@
     patches = [
       ./client-imip-sending-flag.patch
       ./local-geist-fonts.patch
+      ./server-logout-route.patch
     ];
 
     NEXT_TELEMETRY_DISABLED = "1";

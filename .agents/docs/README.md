@@ -37,6 +37,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/package-architecture.md`: Canonical package,
   child-flake, package-owned module, service-module helper, and repo stack
   rules.
+- `.agents/docs/notes/apps/bulwarkmail-package-patches-2026-06.md`: Records the
+  reusable Bulwarkmail package patches, including the server-side logout route
+  used by edge-auth logout chains.
 - `.agents/docs/notes/apps/tailscale-upstream-package-2026-05.md`: Records the
   upstream Tailscale source-build override, overlay alias, and NixOS module
   consumption contract.
