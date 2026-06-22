@@ -16,6 +16,9 @@ Service shape:
   `host.containers.internal`.
 - `pvl-ollama-models.service` pulls the same required model list as `pvl-a1`
   after `pvl-ollama.service` is available.
+- The model-pull script lives at `lib/services/ollama/helper.sh`, matching
+  Abird's helper behavior while keeping the reusable implementation under the
+  shared service-helper namespace.
 
 Validation:
 

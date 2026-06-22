@@ -11,12 +11,12 @@ wait_for_ollama() {
 	local attempt=1
 
 	while [ "$attempt" -le "$OLLAMA_WAIT_ATTEMPTS" ]; do
-		if curl -fsS "${OLLAMA_URL}/api/tags" >/dev/null; then
+		if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then
 			return
 		fi
 
 		if [ "$attempt" -eq "$OLLAMA_WAIT_ATTEMPTS" ]; then
-			echo "ollama model pull: timed out waiting for ${OLLAMA_URL}" >&2
+			echo "ollama model pull: timed out waiting for $OLLAMA_URL" >&2
 			exit 1
 		fi
 
@@ -28,7 +28,7 @@ wait_for_ollama() {
 has_model() {
 	local model="$1"
 
-	curl -fsS "${OLLAMA_URL}/api/tags" |
+	curl -fsS "$OLLAMA_URL/api/tags" |
 		jq -e --arg model "$model" '
 			any(
 				.models[]?;
@@ -41,27 +41,49 @@ has_model() {
 }
 
 pull_model() {
-	local model="$1" payload=""
+	local model="$1"
+	local payload response_file error_message
 
 	if has_model "$model"; then
-		echo "ollama model pull: ${model} already present"
+		echo "ollama model pull: $model already present"
 		return
 	fi
 
-	echo "ollama model pull: pulling ${model}"
+	echo "ollama model pull: pulling $model"
 	payload="$(jq -n --arg model "$model" '{model: $model}')"
-	curl -fsS -N \
+	response_file="$(mktemp)"
+	if ! curl -fsS -N \
 		-H 'Content-Type: application/json' \
-		--data "${payload}" \
-		"${OLLAMA_URL}/api/pull"
+		--data "$payload" \
+		"$OLLAMA_URL/api/pull" |
+		tee "$response_file"; then
+		rm -f "$response_file"
+		return 1
+	fi
 	echo
+
+	if ! error_message="$(
+		jq -r '
+			select(type == "object" and has("error"))
+			| .error
+		' "$response_file"
+	)"; then
+		rm -f "$response_file"
+		return 1
+	fi
+	rm -f "$response_file"
+
+	if [ -n "$error_message" ]; then
+		echo "ollama model pull: failed to pull $model: $error_message" >&2
+		return 1
+	fi
 }
 
 pull_required_models() {
-	local model=""
+	local model
 
 	for model in "$@"; do
-		pull_model "${model}"
+		pull_model "$model"
 	done
 }
 

@@ -25,7 +25,7 @@
       pkgs.jq
     ];
     text = ''
-      exec ${lib.getExe pkgs.bash} ${../../../../lib/services/ollama-pull-models.sh} "$@"
+      exec ${lib.getExe pkgs.bash} ${../../../../lib/services/ollama/helper.sh} "$@"
     '';
   };
 in {
