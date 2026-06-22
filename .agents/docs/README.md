@@ -49,6 +49,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/apps/vscode-libsecret-password-store-2026-04.md`: Records
   the user VS Code wrapper choice that forces Code to use libsecret for password
   storage.
+- `.agents/docs/notes/apps/vscode-copilot-patchelf-2026-06.md`: Records the
+  Linux auto-patchelf library inputs needed by VS Code 1.125.1's bundled Copilot
+  native `computer.node` module.
 
 ### Hosts
 

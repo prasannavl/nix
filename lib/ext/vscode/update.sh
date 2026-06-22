@@ -313,6 +313,14 @@ in
       url = "https://update.code.visualstudio.com/commit:\${rev}/\${plat}/stable";
       hash = srcHash;
     };
+    buildInputs =
+      (old.buildInputs or [])
+      ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+        pkgs.libei
+        pkgs.libjpeg8.out
+        pkgs.libxtst
+        pkgs.pipewire
+      ];
     autoPatchelfIgnoreMissingDeps =
       (old.autoPatchelfIgnoreMissingDeps or [])
       ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
