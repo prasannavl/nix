@@ -269,6 +269,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-last30-port-2026-06-17.md`: Records the June
   17 last-30 Abird port ledger, shared helper adoptions, local profile
   adaptations, and intentional divergences.
+- `.agents/docs/notes/tooling/abird-last30-port-2026-06-22.md`: Records the June
+  22 last-30 Abird port audit, remaining shared Kanidm adoption, byte-parity
+  audit, and skipped Abird topology units.
 - `.agents/docs/notes/tooling/codex-wrapper-auth-2026-06.md`: Records the local
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.
