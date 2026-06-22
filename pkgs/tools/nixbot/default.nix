@@ -2,6 +2,7 @@
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
+  tests = import ./tests {pkgs = pkgs;};
   app = pkgs.writeShellApplication {
     name = "nixbot";
     meta = {
@@ -40,6 +41,7 @@
       meta = app.meta;
     };
     extraPassthru = {
+      tests = tests;
       flakeExtraNixosModules.nixbot = import ./nixos-module.nix;
     };
   };

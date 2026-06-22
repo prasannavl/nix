@@ -2,6 +2,7 @@
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
+  tests = import ./tests {pkgs = pkgs;};
   migratorctl = pkgs.writeShellApplication {
     name = "migratorctl";
     runtimeInputs = with pkgs; [
@@ -48,4 +49,7 @@ in
   pkgHelper.mkShellScriptDerivation {
     inherit build pkgs;
     src = ./.;
+    extraPassthru = {
+      tests = tests;
+    };
   }

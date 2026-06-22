@@ -2,6 +2,7 @@
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
+  tests = import ./tests {pkgs = pkgs;};
   drv = pkgHelper.mkShellScriptDerivation {
     inherit pkgs;
     src = ./.;
@@ -29,6 +30,9 @@
         export HOST_MANAGER_IN_NIX_SHELL=1
         exec ${pkgs.bash}/bin/bash ${./host-manager.sh} "$@"
       '';
+    };
+    extraPassthru = {
+      tests = tests;
     };
   };
 in

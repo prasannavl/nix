@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 
-MODULE_PATH = Path(__file__).with_name("data-migrator.py")
+MODULE_PATH = Path(__file__).resolve().parents[1] / "data-migrator.py"
 spec = importlib.util.spec_from_file_location("data_migrator", MODULE_PATH)
 data_migrator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(data_migrator)

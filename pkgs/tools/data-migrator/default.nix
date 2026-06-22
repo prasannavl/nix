@@ -5,6 +5,7 @@
   migrator ? pkgs.callPackage ../migrator/default.nix {inherit pkgHelper;},
 }: let
   lib = pkgs.lib;
+  tests = import ./tests {pkgs = pkgs;};
   python = pkgs.python3.withPackages (ps: [
     ps.pyyaml
   ]);
@@ -52,6 +53,9 @@
           $out/share/bash-completion/completions/data-migrator
       '';
       meta = app.meta;
+    };
+    extraPassthru = {
+      tests = tests;
     };
   };
 in
