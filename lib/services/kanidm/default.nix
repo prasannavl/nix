@@ -57,12 +57,33 @@
     name = normalizeAccountId name;
   };
 
+  materializeOauthIcon = name: icon: let
+    iconPath = toString icon;
+    iconFileName = builtins.baseNameOf iconPath;
+    iconStorePath =
+      if builtins.pathExists icon
+      then
+        pkgs.runCommand "kanidm-oauth-${lib.strings.sanitizeDerivationName name}-icon-${lib.strings.sanitizeDerivationName iconFileName}" {
+          src = icon;
+          preferLocalBuild = true;
+          allowSubstitutes = false;
+        } ''
+          install -Dm444 "$src" "$out"/${lib.escapeShellArg iconFileName}
+        ''
+      else throw "kanidm oauth app '${name}' icon path does not exist: ${iconPath}";
+  in "${iconStorePath}/${iconFileName}";
+
   normalizeOauthApp = name: client: {
     name = name;
     displayName = client.displayName or name;
     type = client.type or "confidential";
     origin = client.origin;
     landingUrl = client.landingUrl or client.origin;
+    iconPath =
+      if client ? icon
+      then materializeOauthIcon name client.icon
+      else null;
+    ui = client.ui or {};
     redirectUrls = client.redirectUrls or [];
     scopeMaps = client.scopeMaps or {};
     pkce = client.pkce or true;

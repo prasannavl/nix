@@ -2,12 +2,40 @@
   dockerTools,
   lib,
   stdenvNoCC,
+  appLinksMetadata ? [],
 }: let
   version = "1.10.3";
+  uiAssets = {
+    "external/forms.js" = ./forms.js;
+    "app-passwords.js" = ./app-passwords.js;
+    "app-links.js" = ./app-links.js;
+    "override.css" = ./override.css;
+    "style.js" = ./style.js;
+  };
+  appLinksData = builtins.toFile "abird-kanidm-app-links-data.js" ''
+    export const appLinks = ${builtins.toJSON appLinksMetadata};
+  '';
+  uiHashFiles =
+    uiAssets
+    // {
+      "default.nix" = ./default.nix;
+    };
+  uiHashInput =
+    lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (
+        dst: src: "${dst}\n${builtins.hashFile "sha256" src}"
+      )
+      uiHashFiles
+    )
+    + "\napp-links-data\n${builtins.hashString "sha256" (builtins.toJSON appLinksMetadata)}";
+  installUiAssets = lib.concatStringsSep "\n" (
+    lib.mapAttrsToList (
+      dst: src: ''install -D -m 0644 "${src}" "$out/hpkg/${dst}"''
+    )
+    uiAssets
+  );
   imageBuild = "app-password-ui-${builtins.substring 0 12 (builtins.hashString "sha256" ''
-    ${builtins.readFile ./app-passwords.js}
-    ${builtins.readFile ./forms.js}
-    config-v5
+    ${uiHashInput}
   '')}";
 
   imageName = "localhost/abird/kanidm-server";
@@ -25,15 +53,16 @@
   uiLayer = stdenvNoCC.mkDerivation {
     pname = "kanidm-server-app-password-ui-layer";
     inherit version;
-    src = ./.;
     dontUnpack = true;
     dontConfigure = true;
     dontBuild = true;
 
     installPhase = ''
       runHook preInstall
-      install -D -m 0644 "$src/forms.js" "$out/hpkg/external/forms.js"
-      install -D -m 0644 "$src/app-passwords.js" "$out/hpkg/app-passwords.js"
+      ${installUiAssets}
+      install -D -m 0644 ${appLinksData} "$out/hpkg/app-links-data.js"
+      substituteInPlace "$out/hpkg/style.js" \
+        --replace-fail "@abirdUiVersion@" "${imageBuild}"
       runHook postInstall
     '';
   };

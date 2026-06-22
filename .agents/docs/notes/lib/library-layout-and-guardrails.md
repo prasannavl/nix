@@ -35,6 +35,11 @@ Canonical placement rules and review guardrails for shared helpers under `lib/`.
 - `lib/services/kanidm` accepts `oauthApps` as either the historical attrset or
   an ordered list of entries. Use the list form when declaration order matters
   for generated provisioning state, while keeping attrset callers compatible.
+- Kanidm OAuth app declarations may include `icon` and `ui` metadata. The
+  service helper applies `icon` to Kanidm, while `pkgs/ext/kanidm-server` uses
+  the generated metadata to sort/group the application links UI. Keep UI-only
+  ordering/grouping data in that metadata instead of hard-coding it in the
+  patched JavaScript.
 
 ## Source of truth files
 

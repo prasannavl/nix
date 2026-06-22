@@ -900,13 +900,14 @@ apply_scim_app() {
 }
 
 apply_oauth_app() {
-	local client name display_name origin landing_url type create_command pkce
+	local client name display_name origin landing_url icon_path type create_command pkce
 	local -a scopes
 	client="$1"
 	name="$(jq_value '.name' "$client")"
 	display_name="$(jq_value '.displayName' "$client")"
 	origin="$(jq_value '.origin' "$client")"
 	landing_url="$(jq_value '.landingUrl' "$client")"
+	icon_path="$(jq -r '.iconPath // empty' <<<"$client")"
 	type="$(jq_value '.type' "$client")"
 	pkce="$(jq_value 'if has("pkce") then .pkce else true end' "$client")"
 
@@ -940,6 +941,10 @@ apply_oauth_app() {
 		mapfile -d '' -t scopes < <(jq -r '.[]' <<<"$scopes_json" | while IFS= read -r scope; do printf '%s\0' "$scope"; done)
 		run system oauth2 update-scope-map "$name" "$group" "${scopes[@]}"
 	done < <(jq -r '.scopeMaps | to_entries[]? | [.key, (.value | tojson)] | @tsv' <<<"$client")
+
+	if [ -n "$icon_path" ]; then
+		run system oauth2 set-image "$name" "$icon_path"
+	fi
 
 	prune_oauth_redirect_urls "$client"
 	prune_oauth_scope_maps "$client"
@@ -1113,12 +1118,17 @@ verify_scim_app() {
 }
 
 verify_oauth_app() {
-	local client name group scopes_json live domain group_spn scope_map scope redirect_url desired_urls desired_groups live_group
+	local client name icon_path group scopes_json live domain group_spn scope_map scope redirect_url desired_urls desired_groups live_group
 	client="$1"
 	name="$(jq_value '.name' "$client")"
+	icon_path="$(jq -r '.iconPath // empty' <<<"$client")"
 	domain="$(kanidm_domain)"
 
 	live="$(kanidm_json_cmd system oauth2 get "$name")"
+
+	if [ -n "$icon_path" ] && ! jq -e '(.attrs.image // []) | length > 0' <<<"$live" >/dev/null; then
+		verify_fail "oauth app $name missing image"
+	fi
 
 	while IFS= read -r redirect_url; do
 		[ -n "$redirect_url" ] || continue

@@ -1,0 +1,54 @@
+body:not(.abird-app-links-ready) main .row:has(img.oauth2-img) {
+    visibility: hidden;
+}
+
+main:has(.abird-app-group) {
+    padding-bottom: 2rem;
+}
+
+main .abird-app-group {
+    margin-top: 1.75rem;
+}
+
+main .abird-app-group:first-of-type {
+    margin-top: 1rem;
+}
+
+main .abird-app-group-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+}
+
+main .abird-app-group .card > a {
+    height: 80px !important;
+}
+
+main .abird-app-group .card img {
+    padding: 12px;
+}
+
+main .abird-app-group .card label {
+    padding-bottom: 5px;
+}
+
+@media (min-width: 768px) {
+    main .abird-app-group-row > [class*="col"] {
+        max-width: 220px;
+    }
+}
+
+@media (max-width: 575.98px) {
+    main:has(.abird-app-group) {
+        padding-bottom: 1.5rem;
+    }
+
+    main .abird-app-group {
+        margin-top: 1.25rem;
+    }
+
+    main .abird-app-group-title {
+        font-size: 1.125rem;
+        margin-bottom: 0.5rem;
+    }
+}
