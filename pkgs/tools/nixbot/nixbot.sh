@@ -285,9 +285,9 @@ host_color_index() {
 
 	for ((i = 0; i < ${#node}; i++)); do
 		printf -v ord '%d' "'${node:i:1}"
-		hash=$(( (hash ^ ord) * 16777619 & 0xFFFFFFFF ))
+		hash=$(((hash ^ ord) * 16777619 & 0xFFFFFFFF))
 	done
-	printf '%s\n' "$(( hash % ${#_NIXBOT_HOST_PALETTE[@]} ))"
+	printf '%s\n' "$((hash % ${#_NIXBOT_HOST_PALETTE[@]}))"
 }
 
 host_color_code() {
@@ -1712,7 +1712,6 @@ host_deploy_activation_unit_running() {
 
 	return 1
 }
-
 
 deploy_activation_unit_state() {
 	local node="$1" unit_name="" check_cmd="" state=""
