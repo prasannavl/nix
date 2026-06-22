@@ -425,7 +425,7 @@ desired_directory_json() {
 }
 
 find_directory_id_by_desired() {
-	local desired="$1" query_output
+	local old_directory_id="$1" desired="$2" query_output
 
 	query_output="$(
 		stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
@@ -435,19 +435,25 @@ find_directory_id_by_desired() {
 	)"
 
 	jq -s -r \
+		--arg old_directory_id "$old_directory_id" \
 		--argjson desired "$desired" \
 		'
-			($desired.description // "") as $description
-			| if $description == "" then
-				error("desired Stalwart directory is missing description")
+			map(select((.id // "") == $old_directory_id)) as $exact_matches
+			| if ($exact_matches | length) > 0 then
+				$exact_matches[0].id // empty
 			else
-				map(select((.description // "") == $description)) as $matches
-				| if ($matches | length) == 0 then
-					empty
-				elif ($matches | length) == 1 then
-					$matches[0].id // empty
+				($desired.description // "") as $description
+				| if $description == "" then
+					error("desired Stalwart directory is missing description")
 				else
-					error("multiple Stalwart directories match description: " + $description)
+					map(select((.description // "") == $description)) as $matches
+					| if ($matches | length) == 0 then
+						empty
+					elif ($matches | length) == 1 then
+						$matches[0].id // empty
+					else
+						error("multiple Stalwart directories match description: " + $description)
+					end
 				end
 			end
 		' \
@@ -462,7 +468,7 @@ resolve_directory_id_for_apply() {
 	fi
 	require_value "desired Stalwart directory for $old_directory_id" "$desired_directory"
 
-	if ! directory_id="$(find_directory_id_by_desired "$desired_directory")"; then
+	if ! directory_id="$(find_directory_id_by_desired "$old_directory_id" "$desired_directory")"; then
 		return 1
 	fi
 	if [ -n "$directory_id" ]; then
@@ -480,7 +486,7 @@ resolve_directory_id_for_apply() {
 		--json "$desired_directory" \
 		--no-color
 
-	if ! directory_id="$(find_directory_id_by_desired "$desired_directory")"; then
+	if ! directory_id="$(find_directory_id_by_desired "$old_directory_id" "$desired_directory")"; then
 		return 1
 	fi
 	require_value "created Stalwart directory id for $old_directory_id" "$directory_id"

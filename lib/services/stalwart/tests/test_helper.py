@@ -178,6 +178,24 @@ class StalwartHelperTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("multiple Stalwart directories match description: A", result.stderr)
 
+    def test_directory_resolution_prefers_existing_id_over_duplicate_description(self):
+        plan = self.write_plan(
+            "directory-duplicate-existing-id.ndjson",
+            '{"@type":"update","object":"Directory","id":"live-a","value":{"description":"A","url":"ldap://a"}}',
+            '{"@type":"update","object":"Authentication","value":{"directoryId":"live-a"}}',
+        )
+        result = self.run_helper(
+            f"""
+            stalwart_plan_host_path={plan}
+            prepare_directory_apply_inputs
+            printf '%s\\n' "$stalwart_plan_host_path"
+            """,
+            TEST_STALWART_DIRECTORY_MODE="duplicate",
+        )
+        rendered = Path(result.stdout.strip()).read_text(encoding="utf-8")
+        self.assertIn("live-a", rendered)
+        self.assertNotIn("multiple Stalwart directories match description", result.stderr)
+
     def test_directory_missing_dry_run_fails_before_create(self):
         plan = self.write_plan(
             "directory-missing.ndjson",

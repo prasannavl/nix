@@ -18,8 +18,10 @@ deployment incident notes stay in the Abird repo.
   uses `has("longRunning")` so explicit `false` survives jq parsing.
 - `lib/services/stalwart` resolves mutable Stalwart IDs from stable data before
   apply: primary domains by name, directories by description, and network
-  listeners by name. Duplicate matches are fatal instead of silently selecting
-  the first row. Network listener update patches also strip `value.name` before
+  listeners by name. Declared directory IDs still win when they already exist
+  live, so duplicate stale descriptions do not block a valid plan. Duplicate
+  fallback matches are fatal instead of silently selecting the first row.
+  Network listener update patches also strip `value.name` before
   `stalwart-cli apply` because Stalwart treats listener names as read-only on
   update.
 - `lib/incus`, `lib/podman-compose`, `lib/profiles`, `lib/services/stalwart`,
