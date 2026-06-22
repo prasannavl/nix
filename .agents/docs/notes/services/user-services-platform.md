@@ -118,6 +118,13 @@ service-facing ingress policy.
   stay soft `Wants`-style startup edges, not hard `Requires`.
 - Backend outages should degrade to route-level `502` or `504` responses, not
   block nginx startup entirely.
+- oauth2-proxy forward-auth failures should redirect only likely top-level
+  document navigations to login. Unauthenticated asset, API, and background
+  requests should return `401` so SPA fanout does not create many abandoned
+  per-request CSRF cookies.
+- Shared nginx client-header buffers are intentionally above the upstream
+  defaults to tolerate domain-wide auth cookies. Treat that as a guardrail, not
+  the primary fix for OAuth cookie fanout.
 
 ## Rate limiting
 

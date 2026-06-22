@@ -1008,9 +1008,12 @@
 
   authPrefix = auth: normalizeRoutePath (auth.prefix or "/oauth2");
 
+  authLoginLocationName = auth: "@oauth2_login_${sanitizeVariableName (authPrefix auth)}";
+
   mkOauth2ProxyAuthLocations = auth: let
     prefix = authPrefix auth;
     requestScheme = auth.externalScheme or "$scheme";
+    loginLocationName = authLoginLocationName auth;
     upstream = validatePlainUpstreamValue "authRequest.upstream" auth.upstream;
     dynamicUpstream = (auth.resolver or null) != null;
     clientBodyDirectives =
@@ -1054,6 +1057,14 @@
             proxy_pass_request_body off;
         }
 
+        location ${loginLocationName} {
+            if ($oauth2_login_redirect_allowed = 0) {
+                return 401;
+            }
+
+            return 302 ${prefix}/sign_in?rd=${requestScheme}://$host$request_uri;
+        }
+
   '';
 
   mkAuthRequestDirectives = auth:
@@ -1061,7 +1072,7 @@
     then ""
     else let
       prefix = authPrefix auth;
-      requestScheme = auth.externalScheme or "$scheme";
+      loginLocationName = authLoginLocationName auth;
       authHeaderDirectives = lib.optionalString (auth.passHeaders or true) ''
         auth_request_set $auth_request_user $upstream_http_x_auth_request_user;
         auth_request_set $auth_request_email $upstream_http_x_auth_request_email;
@@ -1077,7 +1088,7 @@
       '';
     in ''
                 auth_request ${prefix}/auth;
-                error_page 401 = ${prefix}/sign_in?rd=${requestScheme}://$host$request_uri;
+                error_page 401 = ${loginLocationName};
                 auth_request_set $auth_request_cookie $upstream_http_set_cookie;
                 add_header Set-Cookie $auth_request_cookie always;
       ${authHeaderDirectives}
