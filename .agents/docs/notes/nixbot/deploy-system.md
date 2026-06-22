@@ -202,8 +202,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Host `deploy = "skip"` is narrower: the host stays buildable/evaluable, but
   nixbot must not touch the live target. Rollback snapshots and deploy/switch
   work are skipped because no activation can require rollback.
-- Snapshot work and deploy work both use the deploy parallelism budget within a
-  dependency wave.
+- Snapshot work, deploy work, and rollback execution use the deploy parallelism
+  budget within a dependency wave. Rollback execution walks dependency levels in
+  reverse, so child/dependent hosts roll back before parents while hosts inside
+  each rollback level can still fan out up to the deploy job limit.
 - Deploy parallelism defaults to 16 jobs per dependency wave. Rollback-snapshot
   and post-switch health-check work use a separate verify parallelism budget
   controlled by `--verify-jobs` / `NIXBOT_VERIFY_JOBS`, also defaulting to 16.
@@ -215,7 +217,8 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   not reached `switch-to-configuration`, and leaves sibling hosts that have
   already submitted activation to finish. Pre-activation siblings canceled this
   way remain built-only in the final summary rather than becoming independent
-  deploy failures.
+  deploy failures. Completed failed-host rollbacks and subsequent unwind
+  rollbacks share the same deploy parallelism budget.
 - Host builds first evaluate selected NixOS toplevel derivation paths through
   the host-scoped flake output `nixbot.plans.${host}.drvPath`. The build-plan
   phase checks a persistent source-snapshot cache, evaluates cache misses with

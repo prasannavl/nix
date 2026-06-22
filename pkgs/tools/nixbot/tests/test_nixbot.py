@@ -373,6 +373,98 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertRegex(lines[7], r"^nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}$")
         self.assertEqual("inactive", lines[8])
 
+    def test_rollback_host_to_snapshot_command_and_transport_failure_verification(self):
+        cmd_file = self.work_dir / "rollback-cmd"
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            prepare_deploy_context() {{ return 0; }}
+            print_deploy_systemd_user_manager_report() {{ return 0; }}
+            report_activation_lock_contention_if_present() {{ return 0; }}
+            run_with_combined_stream_capture() {{
+              local -n out_ref="$1"
+              shift
+              printf '%s\n' "$2" >{cmd_file}
+              out_ref='transport closed'
+              return 37
+            }}
+            verify_rollback_target_state() {{
+              printf 'verify:%s:%s\n' "$1" "$2"
+              return "$VERIFY_ROLLBACK_RC"
+            }}
+            set +e
+            VERIFY_ROLLBACK_RC=0
+            rollback_host_to_snapshot app '/nix/store/snapshot path'
+            printf 'verified-rc:%s\n' "$?"
+            VERIFY_ROLLBACK_RC=1
+            rollback_host_to_snapshot app '/nix/store/snapshot path'
+            printf 'failed-rc:%s\n' "$?"
+            set -e
+            cat {cmd_file}
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("verify:app:/nix/store/snapshot path", lines[0])
+        self.assertEqual("verified-rc:0", lines[1])
+        self.assertEqual("verify:app:/nix/store/snapshot path", lines[2])
+        self.assertEqual("failed-rc:37", lines[3])
+        command = lines[4]
+        self.assertIn("test -x /nix/store/snapshot\\ path/bin/switch-to-configuration", command)
+        self.assertIn("snapshot is not activatable: /nix/store/snapshot\\ path", command)
+        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("--wait --collect --no-ask-password --pipe --quiet", command)
+        self.assertIn("--service-type=exec", command)
+        self.assertRegex(command, r"--unit=nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}")
+        self.assertIn("/run/current-system/sw/bin/bash -lc", command)
+        self.assertIn("/nix/store/snapshot", command)
+        self.assertIn("path/bin/switch-to-configuration\\ switch", command)
+
+    def test_activate_prepared_system_path_uses_transient_unit_command_shape(self):
+        cmd_file = self.work_dir / "activate-cmd"
+        result = self.run_script(
+            f"""
+            init_vars
+            GOAL=boot
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            run_with_combined_stream_capture() {{
+              local -n out_ref="$1"
+              shift
+              printf '%s\n' "$2" >{cmd_file}
+              out_ref=''
+              return 0
+            }}
+            activate_prepared_system_path app '/nix/store/system path'
+            printf 'activate-rc:%s\n' "$?"
+            cat {cmd_file}
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("activate-rc:0", lines[0])
+        command = lines[1]
+        self.assertIn("test -x /nix/store/system\\ path/bin/switch-to-configuration", command)
+        self.assertIn("system path is not activatable: /nix/store/system\\ path", command)
+        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("-E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK", command)
+        self.assertIn("--property=RuntimeMaxSec=", command)
+        self.assertIn("--property=TimeoutStopSec=", command)
+        self.assertIn("--property=KillMode=control-group", command)
+        self.assertIn("--property=CollectMode=inactive-or-failed", command)
+        self.assertRegex(command, r"--unit=nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}")
+        self.assertIn("/run/current-system/sw/bin/bash -lc", command)
+        self.assertIn("/nix/store/system", command)
+        self.assertIn("path/bin/switch-to-configuration\\ boot", command)
+
     def test_build_cache_mode_resolution_uses_configured_cache_identity(self):
         result = self.run_script(
             """
@@ -711,13 +803,13 @@ class NixbotScriptTest(unittest.TestCase):
             args[target_index + 1 :],
         )
 
-    def test_deploy_result_handling_buckets_failures_and_rollbacks(self):
+    def test_deploy_wave_completion_buckets_failures_and_rolls_back_failed_hosts(self):
         result = self.run_script(
             f"""
             init_vars
             DRY_RUN=0
             ROLLBACK_ON_FAILURE=1
-            NIXBOT_HOSTS_JSON='{{"ok":{{}},"skipped":{{}},"required":{{}},"optional":{{"deploy":"optional"}},"signaled":{{}}}}'
+            NIXBOT_HOSTS_JSON='{{"ok":{{}},"skipped":{{}},"required":{{}},"optional":{{"deploy":"optional"}}}}'
             status_dir={self.work_dir / "status"}
             snapshot_dir={self.work_dir / "snapshot"}
             rollback_log_dir={self.work_dir / "rollback-log"}
@@ -727,26 +819,25 @@ class NixbotScriptTest(unittest.TestCase):
             printf 'skip\n' >"$status_dir/skipped.rc"
             printf '1\n' >"$status_dir/required.rc"
             printf '1\n' >"$status_dir/optional.rc"
-            printf '130\n' >"$status_dir/signaled.rc"
             success=()
             skipped=()
             failed=()
-            rollback_failed_deploy_host() {{
-              printf 'required-rollback:%s\n' "$1"
-              DEPLOY_FAILED_ROLLBACK_OK_HOSTS+=("$1")
+            rollback_hosts_to_snapshots() {{
+              local ok_hosts_name="$4"
+              shift 5
+              local -n ok_hosts_ref="$ok_hosts_name"
+              local node=""
+              for node in "$@"; do
+                printf 'rollback:%s\n' "$node"
+                ok_hosts_ref+=("$node")
+              done
             }}
-            rollback_optional_deploy_host() {{
-              printf 'optional-rollback:%s\n' "$1"
-              OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS+=("$1")
-            }}
-            process_completed_deploy_job ok "$status_dir/ok.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
-            process_completed_deploy_job skipped "$status_dir/skipped.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
-            process_completed_deploy_job optional "$status_dir/optional.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
             set +e
-            process_completed_deploy_job required "$status_dir/required.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
-            printf 'required-rc:%s\n' "$?"
-            process_completed_deploy_job signaled "$status_dir/signaled.rc" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" success skipped failed
-            printf 'signal-rc:%s\n' "$?"
+            process_completed_deploy_wave_jobs \
+              "$status_dir" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
+              success skipped failed \
+              ok skipped optional required
+            printf 'deploy-rc:%s\n' "$?"
             set -e
             bash_args_to_json_array "${{success[@]}}"
             bash_args_to_json_array "${{skipped[@]}}"
@@ -757,15 +848,284 @@ class NixbotScriptTest(unittest.TestCase):
         )
 
         lines = result.stdout.splitlines()
-        self.assertEqual("optional-rollback:optional", lines[0])
-        self.assertEqual("required-rollback:required", lines[1])
-        self.assertEqual("required-rc:1", lines[2])
-        self.assertEqual("signal-rc:130", lines[3])
-        self.assertEqual(["ok"], json.loads(lines[4]))
-        self.assertEqual(["skipped"], json.loads(lines[5]))
-        self.assertEqual(["required"], json.loads(lines[6]))
-        self.assertEqual(["optional"], json.loads(lines[7]))
-        self.assertEqual(["required"], json.loads(lines[8]))
+        self.assertEqual("rollback:optional", lines[0])
+        self.assertEqual("rollback:required", lines[1])
+        self.assertEqual("deploy-rc:1", lines[2])
+        self.assertEqual(["ok"], json.loads(lines[3]))
+        self.assertEqual(["skipped"], json.loads(lines[4]))
+        self.assertEqual(["required"], json.loads(lines[5]))
+        self.assertEqual(["optional"], json.loads(lines[6]))
+        self.assertEqual(["required"], json.loads(lines[7]))
+
+    def test_deploy_wave_signal_short_circuits_before_rollbacks(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            NIXBOT_HOSTS_JSON='{{"required":{{}},"optional":{{"deploy":"optional"}},"signaled":{{}},"ok":{{}}}}'
+            status_dir={self.work_dir / "status"}
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            mkdir -p "$status_dir" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
+            printf '1\n' >"$status_dir/optional.rc"
+            printf '1\n' >"$status_dir/required.rc"
+            printf '130\n' >"$status_dir/signaled.rc"
+            printf '0\n' >"$status_dir/ok.rc"
+            success=()
+            skipped=()
+            failed=()
+            rollback_hosts_to_snapshots() {{
+              shift 5
+              printf 'unexpected-rollback:%s\n' "$*"
+            }}
+            set +e
+            process_completed_deploy_wave_jobs \
+              "$status_dir" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
+              success skipped failed \
+              optional required signaled ok
+            printf 'deploy-rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{success[@]}}"
+            bash_args_to_json_array "${{skipped[@]}}"
+            bash_args_to_json_array "${{failed[@]}}"
+            bash_args_to_json_array "${{OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS[@]}}"
+            bash_args_to_json_array "${{DEPLOY_FAILED_ROLLBACK_OK_HOSTS[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("deploy-rc:130", lines[0])
+        self.assertEqual([], json.loads(lines[1]))
+        self.assertEqual([], json.loads(lines[2]))
+        self.assertEqual([], json.loads(lines[3]))
+        self.assertEqual([], json.loads(lines[4]))
+        self.assertEqual([], json.loads(lines[5]))
+        self.assertNotIn("unexpected-rollback", result.stdout)
+
+    def test_deploy_wave_rollback_is_gated_by_dry_run_and_no_rollback(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_HOSTS_JSON='{{"required":{{}},"optional":{{"deploy":"optional"}}}}'
+            status_dir={self.work_dir / "status"}
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            mkdir -p "$status_dir" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
+            printf '1\n' >"$status_dir/required.rc"
+            printf '1\n' >"$status_dir/optional.rc"
+            rollback_hosts_to_snapshots() {{
+              printf 'unexpected-rollback:%s\n' "$*"
+            }}
+            run_case() {{
+              local label="$1"
+              DRY_RUN="$2"
+              ROLLBACK_ON_FAILURE="$3"
+              success=()
+              skipped=()
+              failed=()
+              OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS=()
+              DEPLOY_FAILED_ROLLBACK_OK_HOSTS=()
+              set +e
+              process_completed_deploy_wave_jobs \
+                "$status_dir" "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
+                success skipped failed \
+                optional required
+              printf '%s-rc:%s\n' "$label" "$?"
+              set -e
+              bash_args_to_json_array "${{success[@]}}"
+              bash_args_to_json_array "${{skipped[@]}}"
+              bash_args_to_json_array "${{failed[@]}}"
+              bash_args_to_json_array "${{OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS[@]}}"
+              bash_args_to_json_array "${{DEPLOY_FAILED_ROLLBACK_OK_HOSTS[@]}}"
+            }}
+            run_case dry 1 1
+            run_case disabled 0 0
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertNotIn("unexpected-rollback", result.stdout)
+        self.assertEqual("dry-rc:1", lines[0])
+        self.assertEqual([], json.loads(lines[1]))
+        self.assertEqual([], json.loads(lines[2]))
+        self.assertEqual(["required"], json.loads(lines[3]))
+        self.assertEqual([], json.loads(lines[4]))
+        self.assertEqual([], json.loads(lines[5]))
+        self.assertEqual("disabled-rc:1", lines[6])
+        self.assertEqual([], json.loads(lines[7]))
+        self.assertEqual([], json.loads(lines[8]))
+        self.assertEqual(["required"], json.loads(lines[9]))
+        self.assertEqual([], json.loads(lines[10]))
+        self.assertEqual([], json.loads(lines[11]))
+
+    def test_rollback_waves_run_in_reverse_dependency_order_and_record_failures(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            NIXBOT_PARALLEL_JOBS=2
+            NIXBOT_HOSTS_JSON='{{"parent":{{}},"db":{{}},"app":{{"parent":"parent","deps":["db"]}},"side":{{"parent":"parent"}},"worker":{{"after":["app"]}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            order_file={self.work_dir / "rollback-order"}
+            mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
+            for node in parent db app side worker; do
+              printf '/snap/%s\n' "$node" >"$snapshot_dir/$node.path"
+            done
+            rollback_host_to_snapshot() {{
+              printf '%s\n' "$1" >>"$order_file"
+              [ "$1" != side ]
+            }}
+            set +e
+            rollback_successful_hosts "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" parent db app side worker
+            printf 'rollback-rc:%s\n' "$?"
+            set -e
+            cat "$order_file"
+            bash_args_to_json_array "${{ROLLBACK_OK_HOSTS[@]}}"
+            bash_args_to_json_array "${{ROLLBACK_FAILED_HOSTS[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("rollback-rc:1", lines[0])
+        order = lines[1:6]
+        self.assertEqual("worker", order[0])
+        self.assertEqual({"app", "side"}, set(order[1:3]))
+        self.assertEqual({"parent", "db"}, set(order[3:5]))
+        self.assertEqual(["worker", "app", "parent", "db"], json.loads(lines[6]))
+        self.assertEqual(["side"], json.loads(lines[7]))
+
+    def test_rollback_signal_stops_later_rollback_waves(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            NIXBOT_PARALLEL_JOBS=1
+            NIXBOT_HOSTS_JSON='{{"parent":{{}},"app":{{"parent":"parent"}},"worker":{{"after":["app"]}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            order_file={self.work_dir / "rollback-order"}
+            mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
+            for node in parent app worker; do
+              printf '/snap/%s\n' "$node" >"$snapshot_dir/$node.path"
+            done
+            rollback_host_to_snapshot() {{
+              printf '%s\n' "$1" >>"$order_file"
+              [ "$1" != worker ] || return 130
+            }}
+            set +e
+            rollback_successful_hosts "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" parent app worker
+            printf 'rollback-rc:%s\n' "$?"
+            set -e
+            cat "$order_file"
+            bash_args_to_json_array "${{ROLLBACK_OK_HOSTS[@]}}"
+            bash_args_to_json_array "${{ROLLBACK_FAILED_HOSTS[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual(["rollback-rc:130", "worker"], lines[:2])
+        self.assertEqual([], json.loads(lines[2]))
+        self.assertEqual(["worker"], json.loads(lines[3]))
+
+    def test_rollback_host_level_records_missing_snapshot_and_missing_status(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_PARALLEL_JOBS=1
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
+            printf '/snap/ok\n' >"$snapshot_dir/ok.path"
+            printf '/snap/nostatus\n' >"$snapshot_dir/nostatus.path"
+            ok_hosts=()
+            failed_hosts=()
+            run_rollback_job() {{
+              if [ "$1" = ok ]; then
+                write_status_file "$3" 0
+              fi
+              return 0
+            }}
+            set +e
+            rollback_host_level_to_snapshots \
+              "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
+              ok_hosts failed_hosts \
+              ok missing nostatus
+            printf 'level-rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{ok_hosts[@]}}"
+            bash_args_to_json_array "${{failed_hosts[@]}}"
+            printf 'missing-status:%s\n' "$(cat "$rollback_status_dir/missing.rc")"
+            if [ -e "$rollback_status_dir/nostatus.rc" ]; then
+              printf 'nostatus-status:%s\n' "$(cat "$rollback_status_dir/nostatus.rc")"
+            else
+              printf 'nostatus-status:missing\n'
+            fi
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("level-rc:1", lines[0])
+        self.assertEqual(["ok"], json.loads(lines[1]))
+        self.assertEqual(["missing", "nostatus"], json.loads(lines[2]))
+        self.assertEqual("missing-status:snapshot-missing", lines[3])
+        self.assertEqual("nostatus-status:missing", lines[4])
+
+    def test_health_check_failure_rolls_back_failed_and_remaining_successful_hosts(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            ROLLBACK_ON_FAILURE=1
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            health_log_dir={self.work_dir / "health-log"}
+            health_status_dir={self.work_dir / "health-status"}
+            mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" "$health_log_dir" "$health_status_dir"
+            successful=(app db)
+            run_post_switch_health_check() {{
+              [ "$1" = db ]
+            }}
+            rollback_failed_health_hosts() {{
+              shift 3
+              printf 'health-rollback:%s\n' "$*"
+              HEALTH_FAILED_ROLLBACK_OK_HOSTS+=("$@")
+            }}
+            maybe_rollback_successful_hosts() {{
+              shift 3
+              printf 'remaining-rollback:%s\n' "$*"
+              ROLLBACK_OK_HOSTS+=("$@")
+            }}
+            set +e
+            run_post_switch_health_check_phase \
+              "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
+              "$health_log_dir" "$health_status_dir" \
+              0 1 successful
+            printf 'health-rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{successful[@]}}"
+            bash_args_to_json_array "${{HEALTH_FAILED_HOSTS[@]}}"
+            bash_args_to_json_array "${{HEALTH_FAILED_ROLLBACK_OK_HOSTS[@]}}"
+            bash_args_to_json_array "${{ROLLBACK_OK_HOSTS[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("health-rollback:app", lines[0])
+        self.assertEqual("remaining-rollback:db", lines[1])
+        self.assertEqual("health-rc:1", lines[2])
+        self.assertEqual([], json.loads(lines[3]))
+        self.assertEqual(["app"], json.loads(lines[4]))
+        self.assertEqual(["app"], json.loads(lines[5]))
+        self.assertEqual(["db"], json.loads(lines[6]))
 
     def test_deploy_failure_detection_ignores_optional_signal_and_pre_activation_cancel(self):
         result = self.run_script(

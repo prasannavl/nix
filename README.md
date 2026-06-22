@@ -216,7 +216,8 @@ Infrastructure managed outside NixOS modules lives in `tf/`.
 - Build parallelism: `NIXBOT_BUILD_JOBS` / `--build-jobs`. When build jobs is
   greater than `1`, `nixbot` disables Nix's flake eval cache for per-host build
   and output-path evaluation commands to avoid parallel SQLite cache contention.
-- Deploy parallelism: `NIXBOT_JOBS` / `--deploy-jobs` (default: `16`).
+- Deploy parallelism: `NIXBOT_JOBS` / `--deploy-jobs` (default: `16`) for deploy
+  work and rollback execution.
 - Verification parallelism: `NIXBOT_VERIFY_JOBS` / `--verify-jobs` (default:
   `16`) for rollback snapshots and health checks.
 - `NIXBOT_CI_FIRST` / `--ci-first` prioritizes the CI host first for both build

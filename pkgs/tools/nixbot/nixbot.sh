@@ -6595,48 +6595,6 @@ resolve_deploy_phase_result() {
 	printf '%s\n%s\n' "${result_kind}" "${status}"
 }
 
-process_completed_deploy_job() {
-	local node="$1" status_file="$2" snapshot_dir="$3" rollback_log_dir="$4" rollback_status_dir="$5"
-	# shellcheck disable=SC2178
-	local -n pcdj_success_hosts_out_ref="$6" pcdj_skipped_hosts_out_ref="$7"
-	# shellcheck disable=SC2178
-	local -n pcdj_failed_hosts_out_ref="$8"
-	local result_kind="" status=""
-
-	{
-		read -r result_kind
-		read -r status
-	} < <(resolve_deploy_phase_result "${node}" "${status_file}")
-
-	case "${result_kind}" in
-	success)
-		pcdj_success_hosts_out_ref+=("${node}")
-		return 0
-		;;
-	skip)
-		pcdj_skipped_hosts_out_ref+=("${node}")
-		return 0
-		;;
-	optional-fail)
-		rollback_optional_deploy_host "${node}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}"
-		return 0
-		;;
-	signal)
-		return "${status}"
-		;;
-	fail)
-		pcdj_failed_hosts_out_ref+=("${node}")
-		if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
-			rollback_failed_deploy_host "${node}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}"
-		fi
-		return 1
-		;;
-	*)
-		die "Unsupported deploy phase result for ${node}: ${result_kind}"
-		;;
-	esac
-}
-
 deploy_status_is_required_failure() {
 	local node="$1" status="$2"
 
@@ -6755,38 +6713,87 @@ collect_completed_deploy_wave_statuses() {
 			;;
 		esac
 	done
+
+	return 0
 }
 
-process_completed_deploy_wave_jobs() {
-	local deploy_status_dir="$1" snapshot_dir="$2" rollback_log_dir="$3" rollback_status_dir="$4"
-	local success_hosts_out_name="$5" skipped_hosts_out_name="$6" failed_hosts_out_name="$7"
-	shift 7
+classify_completed_deploy_jobs() {
+	local deploy_status_dir="$1"
+	local success_hosts_out_name="$2" skipped_hosts_out_name="$3"
+	local optional_failed_hosts_out_name="$4" required_failed_hosts_out_name="$5"
+	# shellcheck disable=SC2178,SC2034
+	local -n ccdj_success_hosts_out_ref="${success_hosts_out_name}"
+	# shellcheck disable=SC2178,SC2034
+	local -n ccdj_skipped_hosts_out_ref="${skipped_hosts_out_name}"
+	# shellcheck disable=SC2178,SC2034
+	local -n ccdj_optional_failed_hosts_out_ref="${optional_failed_hosts_out_name}"
+	# shellcheck disable=SC2178,SC2034
+	local -n ccdj_required_failed_hosts_out_ref="${required_failed_hosts_out_name}"
+	shift 5
 
-	local node="" status_file="" rc=0 job_rc=0
+	local node="" status_file="" result_kind="" status=""
 
 	for node in "$@"; do
 		[ -n "${node}" ] || continue
 		status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
 		[ -s "${status_file}" ] || continue
-		if process_completed_deploy_job \
-			"${node}" \
-			"${status_file}" \
-			"${snapshot_dir}" \
-			"${rollback_log_dir}" \
-			"${rollback_status_dir}" \
-			"${success_hosts_out_name}" \
-			"${skipped_hosts_out_name}" \
-			"${failed_hosts_out_name}"; then
-			:
-		else
-			job_rc="$?"
-			if is_signal_exit_status "${job_rc}"; then
-				rc="${job_rc}"
-			elif [ "${rc}" -eq 0 ]; then
-				rc=1
-			fi
-		fi
+		{
+			read -r result_kind
+			read -r status
+		} < <(resolve_deploy_phase_result "${node}" "${status_file}")
+
+		case "${result_kind}" in
+		success)
+			ccdj_success_hosts_out_ref+=("${node}")
+			;;
+		skip)
+			ccdj_skipped_hosts_out_ref+=("${node}")
+			;;
+		optional-fail)
+			ccdj_optional_failed_hosts_out_ref+=("${node}")
+			;;
+		signal)
+			return "${status}"
+			;;
+		fail)
+			ccdj_required_failed_hosts_out_ref+=("${node}")
+			;;
+		*)
+			die "Unsupported deploy phase result for ${node}: ${result_kind}"
+			;;
+		esac
 	done
+
+	return 0
+}
+
+process_completed_deploy_wave_jobs() {
+	local deploy_status_dir="$1" snapshot_dir="$2" rollback_log_dir="$3" rollback_status_dir="$4"
+	local success_hosts_out_name="$5" skipped_hosts_out_name="$6" failed_hosts_out_name="$7"
+	# shellcheck disable=SC2178
+	local -n pcdwj_failed_hosts_out_ref="${failed_hosts_out_name}"
+	shift 7
+
+	local rc=0
+	local -a optional_failed_hosts=() required_failed_hosts=()
+
+	classify_completed_deploy_jobs \
+		"${deploy_status_dir}" \
+		"${success_hosts_out_name}" \
+		"${skipped_hosts_out_name}" \
+		optional_failed_hosts \
+		required_failed_hosts \
+		"$@" || return "$?"
+
+	if [ "${#required_failed_hosts[@]}" -gt 0 ]; then
+		pcdwj_failed_hosts_out_ref+=("${required_failed_hosts[@]}")
+		rc=1
+	fi
+
+	if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
+		rollback_optional_deploy_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${optional_failed_hosts[@]}"
+		rollback_failed_deploy_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${required_failed_hosts[@]}"
+	fi
 
 	return "${rc}"
 }
@@ -6959,10 +6966,16 @@ maybe_rollback_successful_hosts() {
 	shift 3
 
 	local -a successful_hosts=("$@")
+	local rollback_rc=0
 
 	if [ "${DRY_RUN}" -eq 0 ] && [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#successful_hosts[@]}" -gt 0 ]; then
-		rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts[@]}" || true
+		rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${successful_hosts[@]}" || {
+			rollback_rc="$?"
+			is_signal_exit_status "${rollback_rc}" && return "${rollback_rc}"
+		}
 	fi
+
+	return 0
 }
 
 resolve_snapshot_wave_host_result() {
@@ -7265,38 +7278,24 @@ rollback_successful_hosts() {
 	shift 3
 
 	local -a successful_hosts=("$@")
-	local node="" status_file="" log_file="" rc="" rollback_rc=0
+	local rollback_rc=0
+	# shellcheck disable=SC2034
 	ROLLBACK_OK_HOSTS=()
+	# shellcheck disable=SC2034
 	ROLLBACK_FAILED_HOSTS=()
 
 	[ "${#successful_hosts[@]}" -gt 0 ] || return 0
 
-	# Reverse the host order so rollback undoes deploys in the opposite sequence.
-	# This ensures containers are rolled back before the hosts they run on.
-	local -a reversed_hosts=()
-	local i
-	for ((i = ${#successful_hosts[@]} - 1; i >= 0; i--)); do
-		reversed_hosts+=("${successful_hosts[i]}")
-	done
-	successful_hosts=("${reversed_hosts[@]}")
-
 	log_section "Phase: Rollback"
 	echo "Rolling back ${#successful_hosts[@]} successful host(s) to pre-deploy generations" >&2
 
-	for node in "${successful_hosts[@]}"; do
-		status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
-		log_file="$(phase_dir_item_log_file "${rollback_log_dir}" "${node}")"
-
-		if run_streamed_host_command "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "$(cat "${snapshot_dir}/${node}.path")"; then
-			write_status_file "${status_file}" 0
-			ROLLBACK_OK_HOSTS+=("${node}")
-		else
-			rc="$?"
-			write_status_file "${status_file}" "${rc}"
-			ROLLBACK_FAILED_HOSTS+=("${node}")
-			rollback_rc=1
-		fi
-	done
+	rollback_hosts_to_snapshots \
+		"${snapshot_dir}" \
+		"${rollback_log_dir}" \
+		"${rollback_status_dir}" \
+		ROLLBACK_OK_HOSTS \
+		ROLLBACK_FAILED_HOSTS \
+		"${successful_hosts[@]}" || rollback_rc="$?"
 
 	if [ "${rollback_rc}" -ne 0 ]; then
 		echo "Rollback failed for one or more hosts. Check logs under ${rollback_log_dir}" >&2
@@ -7305,69 +7304,185 @@ rollback_successful_hosts() {
 	return "${rollback_rc}"
 }
 
-rollback_optional_deploy_host() {
-	local node="$1" snapshot_dir="$2" rollback_log_dir="$3" rollback_status_dir="$4"
-	local status_file="" log_file="" snapshot_path="" rc=""
+run_rollback_job() {
+	local node="$1" snapshot_path="$2" status_file="$3" log_file="$4" rc=0
 
-	status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
-	log_file="$(phase_dir_item_log_file "${rollback_log_dir}" "${node}")"
-	snapshot_path="${snapshot_dir}/${node}.path"
-
-	echo "Optional deploy failed for ${node}; attempting host-only rollback" >&2
-	if ! snapshot_exists "${snapshot_path}"; then
-		echo "Optional deploy rollback unavailable for ${node}: no rollback snapshot recorded" >&2
-		write_status_file "${status_file}" "snapshot-missing"
-		append_unique_array_item OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS "${node}"
-		return 0
-	fi
-
-	if run_streamed_host_command "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "$(cat "${snapshot_path}")"; then
-		write_status_file "${status_file}" 0
-		append_unique_array_item OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS "${node}"
-	else
-		rc="$?"
+	(
+		set +e
+		rm -f "${status_file}"
+		if run_streamed_host_command "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "${snapshot_path}"; then
+			rc=0
+		else
+			rc="$?"
+		fi
 		write_status_file "${status_file}" "${rc}"
-		append_unique_array_item OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS "${node}"
+		exit "${rc}"
+	)
+}
+
+record_rollback_status() {
+	local node="$1" status_file="$2" ok_hosts_name="$3" failed_hosts_name="$4"
+	# shellcheck disable=SC2178,SC2034
+	local -n rrs_ok_hosts_out_ref="${ok_hosts_name}" rrs_failed_hosts_out_ref="${failed_hosts_name}"
+	local status=""
+
+	if ! status="$(read_status_file "${status_file}" 2>/dev/null)"; then
+		append_unique_array_item rrs_failed_hosts_out_ref "${node}"
+		return 1
+	fi
+	if [ "${status}" = "0" ]; then
+		append_unique_array_item rrs_ok_hosts_out_ref "${node}"
+	else
+		append_unique_array_item rrs_failed_hosts_out_ref "${node}"
+		is_signal_exit_status "${status}" && return "${status}"
+		return 1
 	fi
 
 	return 0
 }
 
-rollback_failed_host() {
-	local node="$1" snapshot_dir="$2" rollback_log_dir="$3" rollback_status_dir="$4"
-	local failure_label="$5" rollback_ok_hosts_name="$6" rollback_failed_hosts_name="$7"
-	local status_file="" log_file="" snapshot_path="" rc=""
+rollback_host_level_to_snapshots() {
+	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
+	local rollback_ok_hosts_name="$4" rollback_failed_hosts_name="$5"
+	shift 5
 
-	status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
-	log_file="$(phase_dir_item_log_file "${rollback_log_dir}" "${node}")"
-	snapshot_path="${snapshot_dir}/${node}.path"
+	local node="" snapshot_path="" status_file="" log_file="" active_jobs=0 record_rc=0 rollback_rc=0
+	local -a rollback_started_hosts=()
 
-	echo "${failure_label} failed for ${node}; attempting host-local rollback" >&2
-	if ! snapshot_exists "${snapshot_path}"; then
-		echo "${failure_label} rollback unavailable for ${node}: no rollback snapshot recorded" >&2
-		write_status_file "${status_file}" "snapshot-missing"
-		append_unique_array_item "${rollback_failed_hosts_name}" "${node}"
-		return 0
+	for node in "$@"; do
+		[ -n "${node}" ] || continue
+		status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
+		log_file="$(phase_dir_item_log_file "${rollback_log_dir}" "${node}")"
+		snapshot_path="${snapshot_dir}/${node}.path"
+
+		if ! snapshot_exists "${snapshot_path}"; then
+			echo "Rollback unavailable for ${node}: no rollback snapshot recorded" >&2
+			write_status_file "${status_file}" "snapshot-missing"
+			append_unique_array_item "${rollback_failed_hosts_name}" "${node}"
+			rollback_rc=1
+			continue
+		fi
+
+		if [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ]; then
+			run_rollback_job "${node}" "$(cat "${snapshot_path}")" "${status_file}" "${log_file}" &
+			rollback_started_hosts+=("${node}")
+			active_jobs=$((active_jobs + 1))
+			wait_for_job_slot active_jobs "${NIXBOT_PARALLEL_JOBS}" || return "$?"
+			continue
+		fi
+
+		run_rollback_job "${node}" "$(cat "${snapshot_path}")" "${status_file}" "${log_file}" || true
+		record_rollback_status "${node}" "${status_file}" "${rollback_ok_hosts_name}" "${rollback_failed_hosts_name}" || {
+			record_rc="$?"
+			is_signal_exit_status "${record_rc}" && return "${record_rc}"
+			rollback_rc=1
+		}
+	done
+
+	if [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ]; then
+		drain_job_slots active_jobs || return "$?"
+		for node in "${rollback_started_hosts[@]}"; do
+			[ -n "${node}" ] || continue
+			status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
+			record_rollback_status "${node}" "${status_file}" "${rollback_ok_hosts_name}" "${rollback_failed_hosts_name}" || {
+				record_rc="$?"
+				is_signal_exit_status "${record_rc}" && return "${record_rc}"
+				rollback_rc=1
+			}
+		done
 	fi
 
-	if run_streamed_host_command "${node}" "${log_file}" rollback_host_to_snapshot "${node}" "$(cat "${snapshot_path}")"; then
-		write_status_file "${status_file}" 0
-		append_unique_array_item "${rollback_ok_hosts_name}" "${node}"
-	else
+	return "${rollback_rc}"
+}
+
+rollback_hosts_to_snapshots() {
+	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
+	local rollback_ok_hosts_name="$4" rollback_failed_hosts_name="$5"
+	shift 5
+
+	local selected_json="" levels_json="" level_group="" level_index=0 level_rc=0 rollback_rc=0
+	local -a host_levels=() level_hosts=()
+
+	[ "$#" -gt 0 ] || return 0
+
+	selected_json="$(bash_args_to_json_array "$@")"
+	levels_json="$(selected_host_levels_json "${selected_json}")"
+	mapfile -t host_levels < <(jq -c '.[]' <<<"${levels_json}")
+
+	# Roll back dependency levels in reverse while preserving parallelism within
+	# each level. This keeps children/dependents ahead of parent hosts.
+	for ((level_index = ${#host_levels[@]} - 1; level_index >= 0; level_index--)); do
+		level_group="${host_levels[${level_index}]}"
+		mapfile -t level_hosts < <(jq -r '.[]' <<<"${level_group}")
+		rollback_host_level_to_snapshots \
+			"${snapshot_dir}" \
+			"${rollback_log_dir}" \
+			"${rollback_status_dir}" \
+			"${rollback_ok_hosts_name}" \
+			"${rollback_failed_hosts_name}" \
+			"${level_hosts[@]}" || {
+			level_rc="$?"
+			is_signal_exit_status "${level_rc}" && return "${level_rc}"
+			rollback_rc="${level_rc}"
+		}
+	done
+
+	return "${rollback_rc}"
+}
+
+rollback_optional_deploy_hosts() {
+	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
+	shift 3
+
+	local node="" rc=0
+
+	[ "$#" -gt 0 ] || return 0
+	for node in "$@"; do
+		echo "Optional deploy failed for ${node}; attempting host-only rollback" >&2
+	done
+	rollback_hosts_to_snapshots \
+		"${snapshot_dir}" \
+		"${rollback_log_dir}" \
+		"${rollback_status_dir}" \
+		OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS \
+		OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS \
+		"$@" || {
 		rc="$?"
-		write_status_file "${status_file}" "${rc}"
-		append_unique_array_item "${rollback_failed_hosts_name}" "${node}"
-	fi
-
+		is_signal_exit_status "${rc}" && return "${rc}"
+	}
 	return 0
 }
 
-rollback_failed_deploy_host() {
-	rollback_failed_host "$1" "$2" "$3" "$4" deploy DEPLOY_FAILED_ROLLBACK_OK_HOSTS DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS
+rollback_failed_deploy_hosts() {
+	rollback_failed_hosts "$1" "$2" "$3" deploy DEPLOY_FAILED_ROLLBACK_OK_HOSTS DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS "${@:4}"
 }
 
-rollback_failed_health_host() {
-	rollback_failed_host "$1" "$2" "$3" "$4" health HEALTH_FAILED_ROLLBACK_OK_HOSTS HEALTH_FAILED_ROLLBACK_FAILED_HOSTS
+rollback_failed_health_hosts() {
+	rollback_failed_hosts "$1" "$2" "$3" health HEALTH_FAILED_ROLLBACK_OK_HOSTS HEALTH_FAILED_ROLLBACK_FAILED_HOSTS "${@:4}"
+}
+
+rollback_failed_hosts() {
+	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
+	local failure_label="$4" rollback_ok_hosts_name="$5" rollback_failed_hosts_name="$6"
+	shift 6
+
+	local node="" rc=0
+
+	[ "$#" -gt 0 ] || return 0
+	for node in "$@"; do
+		echo "${failure_label} failed for ${node}; attempting host-local rollback" >&2
+	done
+	rollback_hosts_to_snapshots \
+		"${snapshot_dir}" \
+		"${rollback_log_dir}" \
+		"${rollback_status_dir}" \
+		"${rollback_ok_hosts_name}" \
+		"${rollback_failed_hosts_name}" \
+		"$@" || {
+		rc="$?"
+		is_signal_exit_status "${rc}" && return "${rc}"
+	}
+	return 0
 }
 
 _remote_pre_switch_system_failed_state_reset() {
@@ -8565,10 +8680,10 @@ run_post_switch_health_check_phase() {
 
 	for node in "${health_check_failed_hosts[@]}"; do
 		append_unique_array_item HEALTH_FAILED_HOSTS "${node}"
-		if [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
-			rollback_failed_health_host "${node}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}"
-		fi
 	done
+	if [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
+		rollback_failed_health_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${health_check_failed_hosts[@]}"
+	fi
 
 	hcp_successful_hosts_ref=("${remaining_successful[@]}")
 
@@ -9500,7 +9615,7 @@ run_deploy_phase() {
 	local -n rdp_deploy_failed_hosts_out_ref="${17}"
 
 	local level_group="" node="" active_jobs="" level_index=0 failed_node="" deploy_job_pid=""
-	local -a level_hosts=() deploy_level_hosts=() deploy_started_hosts=()
+	local -a level_hosts=() deploy_level_hosts=() deploy_started_hosts=() completed_deploy_hosts=()
 	local status_file="" out_file="" log_file="" snapshot_retry_logged=0
 	local deploy_wave_failed=0 total_deploy_hosts=0 level_group_size=0 host_grouping=0 phase_rc=0
 
@@ -9631,7 +9746,15 @@ run_deploy_phase() {
 				log_group_scope_end
 				return "${phase_rc}"
 			fi
-			if process_completed_deploy_job "${node}" "${status_file}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${_success_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${_failed_hosts_out_name}"; then
+			if process_completed_deploy_wave_jobs \
+				"${deploy_status_dir}" \
+				"${snapshot_dir}" \
+				"${rollback_log_dir}" \
+				"${rollback_status_dir}" \
+				"${_success_hosts_out_name}" \
+				"${deploy_skipped_hosts_out_name}" \
+				"${_failed_hosts_out_name}" \
+				"${node}"; then
 				:
 			else
 				phase_rc="$?"
@@ -9659,6 +9782,7 @@ run_deploy_phase() {
 			if [ -n "${failed_node}" ]; then
 				deploy_wave_failed=1
 			fi
+			completed_deploy_hosts=()
 			for node in "${deploy_started_hosts[@]}"; do
 				[ -n "${node}" ] || continue
 				if array_contains "${node}" "${OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS[@]}"; then
@@ -9667,20 +9791,27 @@ run_deploy_phase() {
 				if [ -e "$(deploy_pre_activation_cancel_marker_file "${node}")" ]; then
 					continue
 				fi
-				status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
-				[ -s "${status_file}" ] || continue
-				if process_completed_deploy_job "${node}" "${status_file}" "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${_success_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${_failed_hosts_out_name}"; then
-					:
-				else
-					phase_rc="$?"
-					_try_abort_wave "${phase_rc}"
-					phase_rc="$?"
-					if is_signal_exit_status "${phase_rc}"; then
-						log_group_scope_end
-						return "${phase_rc}"
-					fi
-				fi
+				completed_deploy_hosts+=("${node}")
 			done
+			if process_completed_deploy_wave_jobs \
+				"${deploy_status_dir}" \
+				"${snapshot_dir}" \
+				"${rollback_log_dir}" \
+				"${rollback_status_dir}" \
+				"${_success_hosts_out_name}" \
+				"${deploy_skipped_hosts_out_name}" \
+				"${_failed_hosts_out_name}" \
+				"${completed_deploy_hosts[@]}"; then
+				:
+			else
+				phase_rc="$?"
+				_try_abort_wave "${phase_rc}"
+				phase_rc="$?"
+				if is_signal_exit_status "${phase_rc}"; then
+					log_group_scope_end
+					return "${phase_rc}"
+				fi
+			fi
 			if [ "${#rdp_deploy_failed_hosts_out_ref[@]}" -gt 0 ]; then
 				deploy_wave_failed=1
 			fi
