@@ -23,8 +23,8 @@ Added Bash completion sources for operator CLIs:
     `pkgs/tools/data-migrator/profiles.nix`;
   - completes nixbot-backed host arguments from `hosts/nixbot.nix`;
   - registers `data-migrator`.
-- `pkgs/tools/migrator/migratorctl.bash`
-  - installed by the `migrator` package;
+- `pkgs/tool/migration-manager/migratorctl.bash`
+  - installed by the `migration-manager` package;
   - completes local actions, `remote` actions, remote options, and `--host` from
     `hosts/nixbot.nix`;
   - follows `MIGRATOR_NIXBOT_CONFIG` when set.
@@ -32,7 +32,7 @@ Added Bash completion sources for operator CLIs:
   - sourceable repo-local completion for `scripts/age-secrets.sh`;
   - completes modes and managed secret paths from `data/secrets/default.nix`.
 
-The rebased worktree includes a standalone `migrator` package exporting
+The rebased worktree includes a standalone `migration-manager` package exporting
 `migratorctl`, so `migratorctl` completion is owned by that package rather than
 the `data-migrator` package.
 

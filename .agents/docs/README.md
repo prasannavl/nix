@@ -274,9 +274,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   semantics.
 - `.agents/docs/notes/tooling/bash-completions-2026-06.md`: Records repo-local
   Bash completion sources for operator CLIs and root dev-shell loading.
-- `.agents/docs/notes/tooling/migrator-runtime-gate-2026-06.md`: Records the
-  runtime-owned `services.migration-manager` gate, `migratorctl`, managed-unit
-  registry, and data-migrator cutover integration.
+- `.agents/docs/notes/tooling/migration-manager-runtime-gate-2026-06.md`:
+  Records the runtime-owned `services.migration-manager` gate, `migratorctl`,
+  managed-unit registry, and data-migrator cutover integration.
 - `.agents/docs/notes/tooling/nix-run-completion-delegation-2026-06.md`: Records
   the repo-local Bash completion bridge for delegated root-flake `nix run`
   completions.

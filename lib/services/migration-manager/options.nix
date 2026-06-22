@@ -8,7 +8,7 @@
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.migrator;
+      default = pkgs.migration-manager;
       description = "Package providing migratorctl and migrator-helper.";
     };
 

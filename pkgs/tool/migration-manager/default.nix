@@ -30,7 +30,7 @@
   };
 
   build = pkgs.symlinkJoin {
-    name = "migrator";
+    name = "migration-manager";
     paths = [
       migratorctl
       migratorHelper

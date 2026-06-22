@@ -1,4 +1,4 @@
-# Migrator Runtime Gate 2026-06
+# Migration Manager Runtime Gate 2026-06
 
 `services.migration-manager` is the runtime-owned migration drain for
 repo-managed host services.
@@ -9,6 +9,8 @@ model keeps the drain under a dedicated module and package:
 
 - `services.migration-manager.enable = true` installs `migratorctl` and the
   host-local runtime helpers.
+- The package lives at `pkgs/tool/migration-manager` and is exported as
+  `pkgs.migration-manager`.
 - `services.migration-manager.state = "runtime" | "on" | "off"` declares gate
   ownership. `runtime` is the default and leaves the transient live gate
   untouched during switch. `on` forces the host drained declaratively. `off`
@@ -79,8 +81,8 @@ resume deploys the normal generation, then turns the runtime gate off with
 `migratorctl`, leaving the normal `"runtime"` ownership mode with an absent gate
 file and no persistent migrator state. The temporary bootstrap override is
 service-owned: `data-migrator` rewrites
-`lib/services/migrator/bootstrap-hosts.nix` inside the temporary worktree, not
-`hosts/default.nix`.
+`lib/services/migration-manager/bootstrap-hosts.nix` inside the temporary
+worktree, not `hosts/default.nix`.
 
 Remote gate changes require the remote host to already expose
 `/run/current-system/sw/bin/migratorctl`. The target bootstrap deploy provides

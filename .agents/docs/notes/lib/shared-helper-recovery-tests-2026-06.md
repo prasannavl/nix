@@ -27,10 +27,10 @@ deployment incident notes stay in the Abird repo.
 - `lib/incus`, `lib/podman-compose`, `lib/profiles`, `lib/services/stalwart`,
   and `lib/systemd-user-manager` expose package/module regression tests through
   passthru or direct test imports.
-- `pkgs/tools/data-migrator`, `host-manager`, `migrator`, and `nixbot` expose
-  helper regression tests through package passthru. Keep these tests under each
-  package's `tests/` directory so package-local conventional checks can run them
-  without importing unrelated repo state.
+- `pkgs/tools/data-migrator`, `host-manager`, `migration-manager`, and `nixbot`
+  expose helper regression tests through package passthru. Keep these tests
+  under each package's `tests/` directory so package-local conventional checks
+  can run them without importing unrelated repo state.
 
 ## Port boundary
 

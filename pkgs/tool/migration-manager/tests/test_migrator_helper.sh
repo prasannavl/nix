@@ -48,7 +48,7 @@ SH
 		MIGRATOR_GATE_PATH="$tmp_dir/gate" \
 		MIGRATOR_MANIFEST="$tmp_dir/manifest.json" \
 		SYSTEMCTL_LOG="$systemctl_log" \
-		bash "$repo_root/pkgs/tools/migrator/migrator-helper.sh" apply
+		bash "$repo_root/pkgs/tool/migration-manager/migrator-helper.sh" apply
 
 	diff -u - "$systemctl_log" <<'EXPECTED'
 start start-only.service
@@ -62,7 +62,7 @@ EXPECTED
 		MIGRATOR_GATE_PATH="$tmp_dir/gate" \
 		MIGRATOR_MANIFEST="$tmp_dir/manifest.json" \
 		SYSTEMCTL_LOG="$systemctl_log" \
-		bash "$repo_root/pkgs/tools/migrator/migrator-helper.sh" apply
+		bash "$repo_root/pkgs/tool/migration-manager/migrator-helper.sh" apply
 
 	diff -u - "$systemctl_log" <<'EXPECTED'
 stop --wait stop-only.service

@@ -12,8 +12,8 @@ class MigratorScriptTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.repo_root = Path(__file__).resolve().parents[4]
-        cls.helper = cls.repo_root / "pkgs/tools/migrator/migrator-helper.sh"
-        cls.control = cls.repo_root / "pkgs/tools/migrator/migratorctl.sh"
+        cls.helper = cls.repo_root / "pkgs/tool/migration-manager/migrator-helper.sh"
+        cls.control = cls.repo_root / "pkgs/tool/migration-manager/migratorctl.sh"
         cls.tmp_root = cls.repo_root / "tmp"
         cls.tmp_root.mkdir(exist_ok=True)
 

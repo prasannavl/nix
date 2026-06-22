@@ -12,9 +12,9 @@ Supported delegated forms:
 
 - `nix run .#nixbot -- ...` -> `_nixbot`
 - `nix run .#data-migrator -- ...` -> `_data_migrator`
-- `nix run .#migrator -- ...` -> `_migratorctl`
+- `nix run .#migration-manager -- ...` -> `_migratorctl`
 
-`migratorctl` is provided by the root app `migrator`, whose package
+`migratorctl` is provided by the root app `migration-manager`, whose package
 `meta.mainProgram` is `migratorctl`. Do not add `.#migratorctl` handling unless
 the root flake also exports that app name.
 
@@ -25,7 +25,7 @@ the root flake also exports that app name.
 - Source existing package completion scripts from the bridge:
   - `pkgs/tools/nixbot/nixbot.bash`
   - `pkgs/tools/data-migrator/data-migrator.bash`
-  - `pkgs/tools/migrator/migratorctl.bash`
+  - `pkgs/tool/migration-manager/migratorctl.bash`
 - Capture the pre-existing completion function for `nix` when one is present.
 - Register a wrapper completion for `nix`.
 - Register direct script completion aliases for:
@@ -39,7 +39,7 @@ the root flake also exports that app name.
 - Match a fixed repo-local app table:
   - `nixbot` -> `_nixbot`
   - `data-migrator` -> `_data_migrator`
-  - `migrator` -> `_migratorctl`
+  - `migration-manager` -> `_migratorctl`
 - For a recognized app ref, temporarily rewrite Bash completion globals:
   - original: `COMP_WORDS=(nix run .#nixbot -- --hosts ab)`
   - synthetic: `COMP_WORDS=(nixbot --hosts ab)`
@@ -60,6 +60,7 @@ the root flake also exports that app name.
 - Synthetic completion checks:
   - `nix run .#nixbot -- --hosts ab<TAB>` suggests Abird hosts.
   - `nix run .#data-migrator -- --profile ab<TAB>` suggests profiles.
-  - `nix run .#migrator -- remote on --host ab<TAB>` suggests nixbot hosts.
+  - `nix run .#migration-manager -- remote on --host ab<TAB>` suggests nixbot
+    hosts.
 - Verify fallback still works for ordinary `nix` and `nix run` completion when a
   previous Nix completion function is available.
