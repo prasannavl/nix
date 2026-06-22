@@ -196,6 +196,12 @@
         description = "Additional nginx proxy_redirect rewrites to apply before the default path-preserving redirect rewrite.";
       };
 
+      responseHeaders = lib.mkOption {
+        type = lib.types.listOf responseHeaderTypeDef;
+        default = [];
+        description = "Additional nginx response headers to add in this vhost's proxy location.";
+      };
+
       authRequest = lib.mkOption {
         type = lib.types.nullOr authRequestTypeDef;
         default = null;
@@ -260,6 +266,20 @@
       to = lib.mkOption {
         type = lib.types.str;
         description = "Replacement Location value for nginx proxy_redirect.";
+      };
+    };
+  };
+
+  responseHeaderTypeDef = lib.types.submodule {
+    options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        description = "Response header name to add.";
+      };
+
+      value = lib.mkOption {
+        type = lib.types.str;
+        description = "Nginx response header value expression.";
       };
     };
   };
@@ -443,6 +463,12 @@
         description = "Additional nginx proxy_redirect rewrites to apply before the default path-preserving redirect rewrite.";
       };
 
+      responseHeaders = lib.mkOption {
+        type = lib.types.listOf responseHeaderTypeDef;
+        default = [];
+        description = "Additional nginx response headers to add in this route's proxy location.";
+      };
+
       authRequest = lib.mkOption {
         type = lib.types.nullOr authRequestTypeDef;
         default = null;
@@ -494,13 +520,15 @@
   # re-declared; the rest are included only when not opted out.
   mkLocationSecurityHeaderIncludes = src: let
     flags = upstreamHeaderFlags src;
+    hasResponseHeaders = (src.responseHeaders or []) != [];
     anyOptOut =
       flags.useUpstreamCsp
       || flags.useUpstreamReferrer
       || flags.useUpstreamPermissionsPolicy;
+    anyLocationAddHeader = anyOptOut || hasResponseHeaders;
     include = file: "        include /etc/nginx/conf.d/lib/${file};\n";
   in
-    lib.optionalString anyOptOut (
+    lib.optionalString anyLocationAddHeader (
       include "http-security-xcto.conf"
       + lib.optionalString (!flags.useUpstreamReferrer) (include "http-security-referrer.conf")
       + lib.optionalString (!flags.useUpstreamPermissionsPolicy) (include "http-security-permissions.conf")
@@ -532,6 +560,7 @@
           clientMaxBodySize = portCfg.clientMaxBodySize or null;
           proxyCookiePath = portCfg.proxyCookiePath or null;
           proxyRedirects = portCfg.proxyRedirects or [];
+          responseHeaders = portCfg.responseHeaders or [];
           authRequest = portCfg.authRequest or null;
         }
         // upstreamHeaderFlags portCfg;
@@ -657,6 +686,7 @@
               clientMaxBodySize = route.clientMaxBodySize or (portCfg.clientMaxBodySize or null);
               proxyCookiePath = route.proxyCookiePath or null;
               proxyRedirects = route.proxyRedirects or [];
+              responseHeaders = route.responseHeaders or (portCfg.responseHeaders or []);
               authRequest = route.authRequest or (portCfg.authRequest or null);
             }
             // upstreamHeaderFlags route;
@@ -1209,6 +1239,7 @@
     proxyRedirectDirectives = lib.concatMapStringsSep "" (redirect: ''
       proxy_redirect ${redirect.from} ${redirect.to};
     '') (route.proxyRedirects or []);
+    responseHeaderDirectives = lib.concatMapStringsSep "" (header: "        add_header ${header.name} ${header.value} always;\n") (route.responseHeaders or []);
     exactRewriteDirective =
       if basePath != "/" && !routeStripPath && effectiveUpstreamPathPrefix != null
       then "        rewrite ^${routeRegexEscape basePath}$ ${prefixedBasePath} break;\n"
@@ -1252,7 +1283,7 @@
       lib.optionalString (basePath != "/")
       "            proxy_set_header X-Forwarded-Prefix ${prefixPath};\n";
   in ''
-      ${rateLimitDirectives}${securityHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${proxyRequestBufferingDirective}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
+      ${rateLimitDirectives}${securityHeaderDirectives}${responseHeaderDirectives}${proxyBufferDirectives}${proxyTimeoutDirectives}${proxyRequestBufferingDirective}${clientBodyDirectives}${authRequestDirectives}        proxy_set_header Accept-Encoding "";
                 ${hostHeaderDirective}
                 ${forwardedHeaderDirectives}
     ${upstreamTlsDirectives}${upstreamTlsVerifyDirectives}            proxy_http_version 1.1;
@@ -1280,6 +1311,7 @@
         clientMaxBodySize = proxy.clientMaxBodySize or null;
         proxyCookiePath = proxy.proxyCookiePath or null;
         proxyRedirects = proxy.proxyRedirects or [];
+        responseHeaders = proxy.responseHeaders or [];
         authRequest = proxy.authRequest or null;
       }
       // upstreamHeaderFlags proxy;

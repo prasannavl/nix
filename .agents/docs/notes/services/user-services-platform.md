@@ -118,6 +118,10 @@ service-facing ingress policy.
   stay soft `Wants`-style startup edges, not hard `Requires`.
 - Backend outages should degrade to route-level `502` or `504` responses, not
   block nginx startup entirely.
+- Route and vhost proxy locations may declare extra `responseHeaders`. The
+  renderer must re-include the standard location security headers when it emits
+  any route-local `add_header`, because nginx `add_header` inheritance is
+  replace-not-merge.
 - oauth2-proxy forward-auth failures should redirect only likely top-level
   document navigations to login. Unauthenticated asset, API, and background
   requests should return `401` so SPA fanout does not create many abandoned
