@@ -3,10 +3,11 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: lib/ext/nvidia/update.sh [--version VERSION] [--file PATH] [--report] [--ansi|--color=WHEN]
+Usage: lib/ext/nvidia/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
 Examples:
   lib/ext/nvidia/update.sh
   lib/ext/nvidia/update.sh --version 580.126.09
+  lib/ext/nvidia/update.sh --force
   lib/ext/nvidia/update.sh --file lib/ext/nvidia/default.nix
 EOF
 }
@@ -21,6 +22,7 @@ init_vars() {
 	BASE_INDEX_URL="https://download.nvidia.com/XFree86/Linux-x86_64/"
 	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia/default.nix"
 	REQUESTED_VERSION=""
+	FORCE=0
 	REPORT=0
 	COLOR_MODE="auto"
 	RUNFILE_URL=""
@@ -48,6 +50,10 @@ parse_args() {
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			TARGET_FILE="$2"
 			shift 2
+			;;
+		--force)
+			FORCE=1
+			shift
 			;;
 		--report)
 			REPORT=1
@@ -154,6 +160,13 @@ print_report() {
 	else
 		print_update_line "nvidia: ${current_version} -> ${latest_version}" "$current_version" "$latest_version"
 	fi
+}
+
+print_no_update() {
+	local current_version="$1"
+
+	echo "NVIDIA $(basename "$TARGET_FILE") already at ${current_version}; skipping prefetch."
+	echo "Use --force to recompute hashes for the pinned version."
 }
 
 build_urls() {
@@ -263,15 +276,20 @@ ensure_runtime_shell() {
 }
 
 main() {
-	local selected_version
+	local current_version selected_version
 
 	ensure_runtime_shell "$@"
 	init_vars
 	parse_args "$@"
 
+	current_version="$(get_current_version)"
 	selected_version="$(get_version)"
 	if ((REPORT)); then
-		print_report "$(get_current_version)" "$selected_version"
+		print_report "$current_version" "$selected_version"
+		return
+	fi
+	if ((!FORCE)) && [[ "$current_version" == "$selected_version" ]]; then
+		print_no_update "$current_version"
 		return
 	fi
 

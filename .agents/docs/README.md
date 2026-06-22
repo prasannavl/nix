@@ -318,6 +318,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   applications.
 - `.agents/docs/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
+- `.agents/docs/notes/tooling/nvidia-updater-prefetch-skip-2026-06.md`: NVIDIA
+  updater rule: same-version `scripts/update.sh` runs may check `latest.txt`,
+  but skip large payload prefetches unless `--force` is requested.
 - `.agents/docs/notes/tooling/pvl-tmux-extended-keys-2026-06.md`: Records the
   `pvl` Home Manager tmux extended-key settings needed for Codex `Shift+Enter`
   newline handling inside tmux.
