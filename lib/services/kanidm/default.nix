@@ -169,6 +169,7 @@ in {
     url,
     adminName ? "idm_admin",
     systemAdminName ? "admin",
+    containerName ? "kanidm_kanidm_1",
     state ? {},
     kanidmPackage ? pkgs.kanidm_1_9,
   }: let
@@ -177,6 +178,7 @@ in {
       url = url;
       adminName = adminName;
       systemAdminName = systemAdminName;
+      containerName = containerName;
       state = normalizeState state;
     });
   in
@@ -189,6 +191,7 @@ in {
         pkgs.curl
         pkgs.gnugrep
         pkgs.jq
+        pkgs.podman
         pkgs.systemd
       ];
       runtimeEnv.KANIDM_DECLARATIVE_METADATA = metadata;
@@ -205,28 +208,35 @@ in {
     url,
     domain ? null,
     adminName ? "idm_admin",
+    systemAdminName ? null,
     passwordFile,
     command ? "apply-idm",
     acceptInvalidCerts ? false,
     waitSeconds ? 60,
-  }:
+  }: let
+    mkRuntimeEnvExport = name: value: "export ${name}=${lib.escapeShellArg (toString value)}";
+    runtimeEnv =
+      {
+        KANIDM_URL = url;
+        KANIDM_NAME = adminName;
+        KANIDM_AUTO_APPLY_PASSWORD_FILE = passwordFile;
+        KANIDM_AUTO_APPLY_COMMAND = command;
+        KANIDM_AUTO_APPLY_WAIT_SECONDS = toString waitSeconds;
+      }
+      // lib.optionalAttrs (systemAdminName != null) {
+        KANIDM_SYSTEM_NAME = systemAdminName;
+      }
+      // lib.optionalAttrs (domain != null) {
+        KANIDM_DOMAIN = domain;
+      }
+      // lib.optionalAttrs acceptInvalidCerts {
+        KANIDM_ACCEPT_INVALID_CERTS = "true";
+      };
+  in
     pkgs.writeShellApplication {
       name = name;
-      runtimeEnv =
-        {
-          KANIDM_URL = url;
-          KANIDM_NAME = adminName;
-          KANIDM_AUTO_APPLY_PASSWORD_FILE = passwordFile;
-          KANIDM_AUTO_APPLY_COMMAND = command;
-          KANIDM_AUTO_APPLY_WAIT_SECONDS = toString waitSeconds;
-        }
-        // lib.optionalAttrs (domain != null) {
-          KANIDM_DOMAIN = domain;
-        }
-        // lib.optionalAttrs acceptInvalidCerts {
-          KANIDM_ACCEPT_INVALID_CERTS = "true";
-        };
       text = ''
+        ${lib.concatStringsSep "\n" (lib.mapAttrsToList mkRuntimeEnvExport runtimeEnv)}
         exec ${lib.escapeShellArg "${applyScript}/bin/${applyCommandName}"} auto-apply-idm
       '';
     };

@@ -6,9 +6,11 @@ init_vars() {
 	kanidm_url="${KANIDM_URL-}"
 	kanidm_name="${KANIDM_NAME-}"
 	kanidm_system_name="${KANIDM_SYSTEM_NAME-}"
+	kanidm_container="${KANIDM_CONTAINER-}"
 	kanidm_default_url=""
 	kanidm_default_name=""
 	kanidm_default_system_name=""
+	kanidm_default_container=""
 }
 
 require_env() {
@@ -26,9 +28,11 @@ load_metadata() {
 	kanidm_default_url="$(jq -r '.url' "$kanidm_metadata")"
 	kanidm_default_name="$(jq -r '.adminName' "$kanidm_metadata")"
 	kanidm_default_system_name="$(jq -r '.systemAdminName // "admin"' "$kanidm_metadata")"
+	kanidm_default_container="$(jq -r '.containerName // "kanidm_kanidm_1"' "$kanidm_metadata")"
 	: "${kanidm_url:=$kanidm_default_url}"
 	: "${kanidm_name:=$kanidm_default_name}"
 	: "${kanidm_system_name:=$kanidm_default_system_name}"
+	: "${kanidm_container:=$kanidm_default_container}"
 }
 
 kanidm_cmd_as() {
@@ -82,6 +86,33 @@ run_as() {
 run() {
 	log_run "$@"
 	kanidm_cmd "$@"
+}
+
+exec_in_container() {
+	local -a exec_args
+	exec_args=(exec)
+	if [ -t 0 ]; then
+		exec_args+=(-i)
+	fi
+	if [ -t 1 ]; then
+		exec_args+=(-t)
+	fi
+	exec_args+=("$kanidm_container" "$@")
+
+	printf '+ podman'
+	printf ' %q' "${exec_args[@]}"
+	printf '\n'
+	podman "${exec_args[@]}"
+}
+
+recover_account() {
+	local account
+	account="$1"
+	run_admin recover-account "$account"
+}
+
+run_admin() {
+	exec_in_container kanidmd "$@"
 }
 
 get() {
@@ -158,7 +189,7 @@ kanidm_bearer_token() {
 
 	if [ ! -r "$path" ]; then
 		printf 'Kanidm token cache is not readable: %s\n' "$path" >&2
-		printf 'Run: %s login\n' "$0" >&2
+		printf 'Run: %s login-idm-admin\n' "$0" >&2
 		exit 1
 	fi
 
@@ -187,7 +218,7 @@ kanidm_bearer_token() {
 
 	if [ -z "$token" ] || [ "$token" = null ]; then
 		printf 'No usable Kanidm token found for %s in %s.\n' "$kanidm_name" "$path" >&2
-		printf 'Run: %s login\n' "$0" >&2
+		printf 'Run: %s login-idm-admin\n' "$0" >&2
 		exit 1
 	fi
 
@@ -261,7 +292,7 @@ try_add() {
 }
 
 require_login() {
-	require_login_as "$kanidm_name" "login"
+	require_login_as "$kanidm_name" "login-idm-admin"
 }
 
 require_login_as() {
@@ -721,9 +752,9 @@ remember_declared_ssh_public_keys() {
 
 apply_domain() {
 	local display_name
-	display_name="$(jq_state '.state.domain.displayName // empty')"
+	display_name="$(jq_state_raw '.state.domain.displayName // empty')"
 	if [ -n "$display_name" ]; then
-		require_login_as "$kanidm_system_name" "login-system"
+		require_login_as "$kanidm_system_name" "login-system-admin"
 		run_as "$kanidm_system_name" system domain set-displayname "$display_name"
 	fi
 }
@@ -1346,14 +1377,22 @@ wait_for_kanidm_status() {
 }
 
 auto_apply_idm() {
-	local command password_file login_started_epoch login_output login_rc
+	local account_name command login_started_epoch login_output login_rc password_file
 	command="${KANIDM_AUTO_APPLY_COMMAND:-apply-idm}"
 	password_file="${KANIDM_AUTO_APPLY_PASSWORD_FILE-}"
 
-	if [ "$command" != apply-idm ]; then
+	case "$command" in
+	apply-idm)
+		account_name="$kanidm_name"
+		;;
+	apply-system)
+		account_name="$kanidm_system_name"
+		;;
+	*)
 		printf 'unsupported Kanidm auto-apply command: %s\n' "$command" >&2
 		exit 2
-	fi
+		;;
+	esac
 
 	require_env KANIDM_AUTO_APPLY_PASSWORD_FILE
 	if [ ! -s "$password_file" ]; then
@@ -1368,23 +1407,32 @@ auto_apply_idm() {
 	wait_for_kanidm_status
 	login_started_epoch="$(date +%s)"
 	login_output="$(mktemp)"
-	if KANIDM_PASSWORD="$(tr -d '\n' <"$password_file")" kanidm_cmd login >"$login_output" 2>&1; then
+	if KANIDM_PASSWORD="$(tr -d '\n' <"$password_file")" kanidm_cmd_as "$account_name" login >"$login_output" 2>&1; then
 		rm -f "$login_output"
-		apply_idm
+		case "$command" in
+		apply-idm)
+			apply_idm
+			;;
+		apply-system)
+			apply_domain
+			;;
+		esac
 		return
 	fi
 
 	login_rc="$?"
 	if journalctl -b --since "@$login_started_epoch" --no-pager -o cat 2>/dev/null |
-		grep -F "Initiating Authentication Session | username: $kanidm_name |" >/dev/null &&
+		grep -F "Initiating Authentication Session | username: $account_name |" >/dev/null &&
 		journalctl -b --since "@$login_started_epoch" --no-pager -o cat 2>/dev/null |
 		grep -F "account has no available credentials" >/dev/null; then
-		printf '%s\n' "Kanidm account $kanidm_name is not bootstrapped; skipping IdM auto-apply until the password-backed account can log in." >&2
+		printf 'Kanidm account %s is not bootstrapped; skipping %s until the password-backed account can log in.\n' \
+			"$account_name" "$command" >&2
 		rm -f "$login_output"
 		return 0
 	fi
 
-	printf '%s\n' "Kanidm auto-apply login failed for $kanidm_name; refusing to skip because this does not look like an unbootstrapped account." >&2
+	printf 'Kanidm auto-apply login failed for %s; refusing to skip.\n' "$account_name" >&2
+	printf '%s\n' "This does not look like an unbootstrapped account." >&2
 	cat "$login_output" >&2
 	rm -f "$login_output"
 	exit "$login_rc"
@@ -1395,12 +1443,17 @@ usage() {
 Usage: $(basename "$0") <command>
 
 Commands:
-  login                       Log in as $kanidm_name for IdM state commands.
-  login-system                Log in as $kanidm_system_name for system/domain settings.
+  login-idm-admin             Log in as $kanidm_name for IdM state commands.
+  login-system-admin          Log in as $kanidm_system_name for system/domain settings.
   apply                       Apply declared system/domain settings and IdM state.
   apply-system                Apply declared system/domain settings.
   apply-idm                   Apply declared people, service accounts, groups, ScimApps, and OAuthApps.
-  auto-apply-idm              Log in from a password file and apply IdM state.
+  auto-apply-idm              Log in from a password file and run the configured auto-apply command.
+  cli <args...>               Run kanidm with the configured URL and account defaults.
+  admin <args...>             Run kanidmd inside the Kanidm container.
+  exec <args...>              Run a command inside the Kanidm container.
+  recover-idm-admin           Recover credentials for $kanidm_name.
+  recover-system-admin        Recover credentials for $kanidm_system_name.
   verify-idm                  Verify declared people, groups, ScimApps, OAuthApps redirect URLs, and scope maps.
   reset <account> [ttl]       Create a credential reset token for a person account.
   service-password <account>  Generate a service-account password.
@@ -1412,6 +1465,7 @@ Environment:
   KANIDM_URL          Defaults to $kanidm_default_url
   KANIDM_NAME         Defaults to $kanidm_default_name
   KANIDM_SYSTEM_NAME  Defaults to $kanidm_default_system_name
+  KANIDM_CONTAINER    Defaults to $kanidm_default_container
 USAGE
 }
 
@@ -1424,10 +1478,10 @@ main() {
 	shift || true
 
 	case "$command" in
-	login)
+	login-idm-admin)
 		run login
 		;;
-	login-system)
+	login-system-admin)
 		run_as "$kanidm_system_name" login
 		;;
 	apply)
@@ -1441,6 +1495,21 @@ main() {
 		;;
 	auto-apply-idm)
 		auto_apply_idm
+		;;
+	cli)
+		run "$@"
+		;;
+	admin)
+		run_admin "$@"
+		;;
+	exec)
+		exec_in_container "$@"
+		;;
+	recover-idm-admin)
+		recover_account "$kanidm_name"
+		;;
+	recover-system-admin)
+		recover_account "$kanidm_system_name"
 		;;
 	verify-idm)
 		verify_idm
