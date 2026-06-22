@@ -32,6 +32,9 @@ Canonical placement rules and review guardrails for shared helpers under `lib/`.
 - Service scripts must declare every runtime tool they invoke.
 - Incus-related shell assembly should use arrays and structured iteration, and
   dangerous cleanup paths should fail closed.
+- `lib/services/kanidm` accepts `oauthApps` as either the historical attrset or
+  an ordered list of entries. Use the list form when declaration order matters
+  for generated provisioning state, while keeping attrset callers compatible.
 
 ## Source of truth files
 

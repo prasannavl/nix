@@ -67,6 +67,14 @@
     scopeMaps = client.scopeMaps or {};
     pkce = client.pkce or true;
   };
+  normalizeOauthAppEntry = entry:
+    if entry ? name && entry ? value
+    then normalizeOauthApp entry.name entry.value
+    else normalizeOauthApp entry.name (builtins.removeAttrs entry ["name"]);
+  normalizeOauthApps = oauthApps:
+    if builtins.isList oauthApps
+    then map normalizeOauthAppEntry oauthApps
+    else lib.mapAttrsToList normalizeOauthApp oauthApps;
 
   normalizeScimApp = name: application: {
     name = name;
@@ -91,7 +99,7 @@
     absentGroups = map normalizeAbsentGroup (normalizeList (state.absentGroups or []));
     groupMembers = lib.mapAttrsToList normalizeGroupMembers (state.groupMembers or {});
     scimApps = lib.mapAttrsToList normalizeScimApp (state.scimApps or {});
-    oauthApps = lib.mapAttrsToList normalizeOauthApp (state.oauthApps or {});
+    oauthApps = normalizeOauthApps (state.oauthApps or {});
   };
 in {
   mkServerConfig = {
