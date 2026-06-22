@@ -33,9 +33,11 @@ stack wiring.
   package-local checks, apps, dev shells, and flake output wiring.
 - `lib/flake/service-module.nix` exposes the generic `mkServiceLib` factory for
   service modules, transport helpers, and client-identity wiring.
-- `lib/flake/stack.nix` is the repo-local instantiation of that factory. It owns
-  repo defaults such as secret roots, identity suffixes, transport defaults, and
-  default user-service ownership.
+- `lib/stacks/*.nix` files are the repo-local stack instantiations of that
+  factory. They own repo defaults such as secret roots, identity suffixes,
+  transport defaults, and default user-service ownership. Do not add
+  compatibility shims such as `lib/flake/stack.nix`; import the selected stack
+  directly or receive it through the root flake's `stack` special arg.
 - Prefer the high-level helper entrypoints:
   - `mkRustDerivation`
   - `mkGoDerivation`
@@ -146,7 +148,7 @@ stack wiring.
 - `lib/flake/apps.nix`
 - `lib/flake/pkg-helper.nix`
 - `lib/flake/service-module.nix`
-- `lib/flake/stack.nix`
+- `lib/stacks/*.nix`
 - `pkgs/*/default.nix`
 - `pkgs/*/flake.nix`
 

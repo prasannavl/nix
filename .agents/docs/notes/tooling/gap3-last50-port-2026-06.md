@@ -82,8 +82,10 @@ only when classifying commits.
 - Kept local flake inputs and overlays, including desktop overlays. Ported
   `crane` support by adding the input and overlay without copying gap3's smaller
   top-level `flake.nix`.
-- Kept local `lib/flake/stack.nix` compatibility import even though gap3 removed
-  it.
+- Originally kept local `lib/flake/stack.nix` compatibility import even though
+  gap3 removed it. This was superseded by the 2026-06-22 cleanup: import
+  concrete `lib/stacks/*.nix` profiles directly or receive the selected stack
+  through the root flake's `stack` special arg.
 - Ported portable Nixbot behavior changes but not gap3-specific secret path
   defaults.
 

@@ -34,6 +34,9 @@ Ported generic foundations:
 
 ## Local Shape
 
-`lib/flake/stack.nix` remains as a compatibility import for the local `pvl`
-stack. Runtime hosts choose `stacks.pvl` through `hosts/default.nix`; standalone
+Runtime hosts choose `stacks.pvl` through `hosts/default.nix`; standalone
 package and child-flake evaluation uses the stub `package` stack.
+`lib/flake/stack.nix` was temporarily kept as a compatibility import during the
+original port, then removed in the 2026-06-22 cleanup. Import concrete
+`lib/stacks/*.nix` profiles directly or receive the selected stack through the
+root flake's `stack` special arg.
