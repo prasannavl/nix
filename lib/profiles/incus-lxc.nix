@@ -57,11 +57,13 @@ in {
     # NixOS stage-2 creates these links before handing off to systemd, but
     # Incus/LXC can replace the early /run with the final container tmpfs.
     # Restore the links in final /run before upstream sysinit units need them.
-    services.nixos-container-runtime-system-links = {
+    services.nixos-lxc-boot-system-links = {
       description = "Restore NixOS runtime system links after container /run setup";
+      restartIfChanged = false;
+      stopIfChanged = false;
       wantedBy = ["sysinit.target"];
       before = [
-        "nixos-container-runtime-activation.service"
+        "nixos-lxc-boot-activation.service"
         "register-nix-paths.service"
         "systemd-tmpfiles-setup.service"
         "systemd-udev-trigger.service"
@@ -90,11 +92,13 @@ in {
     # Boot activation also writes runtime state under /run, such as agenix
     # secrets. Re-run the boot activation after final /run exists so services
     # see the same activation-owned state they would see on bare metal.
-    services.nixos-container-runtime-activation = {
+    services.nixos-lxc-boot-activation = {
       description = "Replay NixOS activation after container /run setup";
+      restartIfChanged = false;
+      stopIfChanged = false;
       wantedBy = ["sysinit.target"];
-      requires = ["nixos-container-runtime-system-links.service"];
-      after = ["nixos-container-runtime-system-links.service"];
+      requires = ["nixos-lxc-boot-system-links.service"];
+      after = ["nixos-lxc-boot-system-links.service"];
       before = [
         "sysinit.target"
         "register-nix-paths.service"
