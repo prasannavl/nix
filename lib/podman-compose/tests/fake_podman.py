@@ -46,6 +46,13 @@ def main():
     if args and args[0] == "rm":
         return
 
+    if args and args[0] == "inspect":
+        if "--format" in args and "{{json .State}}" in args:
+            print(os.environ.get("TEST_PODMAN_INSPECT_STATE_JSON", '{"Running":true,"Pid":1,"ConmonPid":1}'))
+            return
+        print(os.environ.get("TEST_PODMAN_INSPECT_JSON", "{}"))
+        return
+
     if args and args[0] == "compose":
         if "up" in args:
             if mode == "success":

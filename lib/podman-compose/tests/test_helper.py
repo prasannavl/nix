@@ -826,6 +826,52 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual("recreate-a", state["recreateStamp"])
         self.assertEqual("class-a", state["recreateClassStamp"])
 
+    def test_cmd_start_force_recreates_when_running_container_pid_is_missing(self):
+        metadata = self.write_service_metadata(
+            "metadata-stale-pid-start.json",
+            adopt=False,
+            reconcilePolicy="auto",
+            restartStamp="restart-a",
+            recreateTag="0",
+            recreateStamp="recreate-a",
+            recreateClassStamp="class-a",
+            stagedFiles=[],
+        )
+        self.write_runtime_state(
+            reconcilePolicy="auto",
+            restartStamp="restart-a",
+            recreateTag="0",
+            recreateStamp="recreate-a",
+            recreateClassStamp="class-a",
+        )
+
+        result = self.run_helper(
+            """
+            notify_ready_and_monitor() {
+              printf '%s\n' monitor-skipped
+            }
+            cmd_start
+            """,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_TIMEOUT_VALUE="5s",
+            TEST_PODMAN_PS_IDS="stale123",
+            TEST_PODMAN_INSPECT_STATE_JSON='{"Running":true,"Pid":999999999,"ConmonPid":1}',
+        )
+
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "ps -a --filter label=com.docker.compose.project.working_dir=" + str(self.compose_dir) + " --format {{.ID}}",
+            history,
+        )
+        self.assertIn("inspect --format {{json .State}} stale123", history)
+        self.assertIn("compose up -d --remove-orphans --force-recreate", history)
+        self.assertIn("marked running but runtime pid 999999999 is not present", result.stderr)
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual("recreate-a", state["recreateStamp"])
+        self.assertEqual("class-a", state["recreateClassStamp"])
+
 
 if __name__ == "__main__":
     unittest.main()

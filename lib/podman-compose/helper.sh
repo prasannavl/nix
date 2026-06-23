@@ -1040,6 +1040,85 @@ compose_project_container_names() {
 	done
 }
 
+container_state_json() {
+	local container
+	container="$1"
+	(
+		close_lifecycle_fds_for_child
+		cd /
+		podman_no_notify inspect --format '{{json .State}}' "$container"
+	)
+}
+
+is_positive_integer() {
+	case "${1-}" in
+	"" | *[!0-9]*)
+		return 1
+		;;
+	0)
+		return 1
+		;;
+	*)
+		return 0
+		;;
+	esac
+}
+
+running_container_pid_missing() {
+	local container state_json running pid conmon_pid has_conmon_pid
+	container="$1"
+
+	if ! state_json="$(container_state_json "$container" 2>/dev/null)"; then
+		printf '%s\n' "podman compose container $container was listed but cannot be inspected; forcing recreate for ${podman_compose_service_name}" >&2
+		return 0
+	fi
+
+	if ! running="$(jq -r '.Running // false' <<<"$state_json")"; then
+		printf '%s\n' "podman compose container $container has unreadable inspect state; forcing recreate for ${podman_compose_service_name}" >&2
+		return 0
+	fi
+	[ "$running" = "true" ] || return 1
+
+	if ! pid="$(jq -r '.Pid // 0' <<<"$state_json")"; then
+		printf '%s\n' "podman compose container $container has unreadable runtime pid; forcing recreate for ${podman_compose_service_name}" >&2
+		return 0
+	fi
+	if ! is_positive_integer "$pid" || [ ! -d "/proc/$pid" ]; then
+		printf '%s\n' "podman compose container $container is marked running but runtime pid $pid is not present; forcing recreate for ${podman_compose_service_name}" >&2
+		return 0
+	fi
+
+	if ! has_conmon_pid="$(jq -r 'has("ConmonPid")' <<<"$state_json")"; then
+		printf '%s\n' "podman compose container $container has unreadable conmon pid state; forcing recreate for ${podman_compose_service_name}" >&2
+		return 0
+	fi
+	if [ "$has_conmon_pid" = "true" ]; then
+		if ! conmon_pid="$(jq -r '.ConmonPid // 0' <<<"$state_json")"; then
+			printf '%s\n' "podman compose container $container has unreadable conmon pid; forcing recreate for ${podman_compose_service_name}" >&2
+			return 0
+		fi
+		if ! is_positive_integer "$conmon_pid" || [ ! -d "/proc/$conmon_pid" ]; then
+			printf '%s\n' "podman compose container $container is marked running but conmon pid $conmon_pid is not present; forcing recreate for ${podman_compose_service_name}" >&2
+			return 0
+		fi
+	fi
+
+	return 1
+}
+
+compose_running_container_pids_missing() {
+	local container found_stale=1
+
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		if running_container_pid_missing "$container"; then
+			found_stale=0
+		fi
+	done < <(compose_project_container_ids)
+
+	return "$found_stale"
+}
+
 remove_container_target() {
 	local target remove_error
 	target="$1"
@@ -1644,7 +1723,10 @@ cmd_start() {
 		unlock_lifecycle_exclusive
 		return 1
 	}
-	if [ "$stale_rootless_netns_repaired" -eq 1 ] || should_force_recreate; then
+	if compose_running_container_pids_missing; then
+		force_recreate=1
+	fi
+	if [ "$force_recreate" -eq 1 ] || [ "$stale_rootless_netns_repaired" -eq 1 ] || should_force_recreate; then
 		force_recreate=1
 		compose_up_checked force
 	else
