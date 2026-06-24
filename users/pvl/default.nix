@@ -18,55 +18,41 @@ in rec {
   ];
   core = mkModule coreModules;
 
-  desktop-core-modules =
-    coreModules
-    ++ [
-      ./zoxide
-      ./fzf
-      ./firefox
-      ./fonts
-      ./gtk
-      ./mime-apps
-      ./alacritty
-      ./foot
-      ./kanshi
-      ./wm
-      ./noctalia
-      ./sway
-      ./niri
-    ];
-  desktop-core = mkModule desktop-core-modules;
-
-  desktop-gnome-minimal-modules =
-    desktop-core-modules
-    ++ [
-      ./gnome
-    ];
-  desktop-gnome-minimal = mkModule desktop-gnome-minimal-modules;
-
-  desktop-gnome-modules =
-    desktop-gnome-minimal-modules
-    ++ [
-      ./tmux
-      ./git
-      ./ranger
-      ./neovim
-      ./vscode
-      ./direnv
-      ./xdg-user-dirs
-      ./env/cargo.nix
-      ./env/go.nix
-    ];
-  desktop-gnome = mkModule desktop-gnome-modules;
-
-  all-modules = desktop-gnome-modules;
-  all = mkModule all-modules;
-
-  lxc-modules = [
+  devModules = [
     ./bash
     ./inputrc
+    ./dotfiles
+    ./neovim/dev.nix
+    ./zoxide
+    ./fzf
+    ./firefox
+    ./fonts
+    ./gtk
+    ./mime-apps
+    ./alacritty
+    ./foot
+    ./kanshi
+    ./wm
+    ./noctalia
+    ./sway
+    ./niri
+    ./gnome
+    ./tmux
+    ./git
+    ./ranger
+    ./vscode
+    ./direnv
+    ./xdg-user-dirs
+    ./env/cargo.nix
+    ./env/go.nix
   ];
-  lxc = mkModule lxc-modules;
+  dev = mkModule devModules;
 
-  default = all;
+  lxcModules = [
+    ./bash
+    ./inputrc
+    ./dotfiles
+    ./neovim
+  ];
+  lxc = mkModule lxcModules;
 }

@@ -1,7 +1,8 @@
 # pvl Neovim Nix Profile 2026-06
 
-`users/pvl/neovim/default.nix` owns the pvl Neovim profile through Home Manager.
-The profile is intentionally Nix-native:
+`users/pvl/neovim/default.nix` owns the simple pvl Neovim profile through Home
+Manager. `users/pvl/neovim/dev.nix` owns the development plugin and tool
+profile. The dev profile is intentionally Nix-native:
 
 - plugins are declared in `programs.neovim.plugins`;
 - LSP servers, formatters, linters, search tools, and AI helper runtime tools
@@ -9,7 +10,7 @@ The profile is intentionally Nix-native:
 - the Lua config is generated with `programs.neovim.initLua`;
 - `lazy.nvim`, LazyVim, Mason, and Mason-managed binary installs are not used.
 
-The profile layout is intentionally modular:
+The dev profile layout is intentionally modular:
 
 - `enabledPlugins` is the central on/off switch set;
 - `pluginOrder` preserves deterministic package and config load order;
@@ -17,18 +18,35 @@ The profile layout is intentionally modular:
 - `pluginSpecs.<name>.config` owns that plugin's Lua setup and keymaps;
 - plugin-specific Nix inputs, such as Treesitter parser selection, stay inside
   that plugin's `pluginSpecs.<name>` entry;
-- `sensibleConfig` owns leader keys, loader setup, and basic keymaps;
-- `baseConfig` owns core `vim.opt`, diagnostics, and editor autocmd behavior;
+- `sensibleConfig` owns leader keys, loader setup, and basic keymaps and is
+  exported from the simple profile for reuse;
+- `baseConfig` owns shared core `vim.opt`, diagnostics, and editor autocmd
+  behavior and is exported from the simple profile for reuse;
+- `devConfig` owns dev-only options that depend on plugins or richer UI state,
+  such as tree-sitter folds and completion menu behavior;
 - `neovimTools` owns Mason-replacement language servers, formatters, linters,
   and CLI helpers.
 
-When adding or disabling editor features, prefer updating those sections instead
-of appending more unrelated Lua to `initLua`.
+When adding or disabling dev editor features, prefer updating those sections
+instead of appending more unrelated Lua to `initLua`.
 
-This avoids the NixOS dynamic-binary boundary that Mason commonly crosses and
-keeps plugin and tool versions tied to the flake's pinned package set. The
-profile keeps the existing `xdg.configFile."nvim/init.lua"` fallback with
-`lib.mkDefault ""` and `force = true` so Home Manager still owns
+Profile selection is owned by `users/pvl/default.nix`:
+
+- `core` is the regular desktop profile. It imports `./neovim`, the simple
+  profile with basic options and keymaps but no plugins or Mason-replacement
+  tools;
+- `dev` is the full development desktop profile. It imports `./neovim/dev.nix`,
+  so `pvl-a1`, `pvl-l5`, and `pvl-x2` get the dev editor;
+- `lxc` is the minimal container profile. It imports `./neovim`, matching the
+  simple editor profile used by `core`;
+- the old public profile names (`desktop-core`, `desktop-gnome-minimal`,
+  `desktop-gnome`, and `all`) were removed so consumers choose only `core`,
+  `dev`, or `lxc`.
+
+The dev profile avoids the NixOS dynamic-binary boundary that Mason commonly
+crosses and keeps plugin and tool versions tied to the flake's pinned package
+set. Both profiles keep the existing `xdg.configFile."nvim/init.lua"` fallback
+with `lib.mkDefault ""` and `force = true` so Home Manager still owns
 `.config/nvim/init.lua` without reintroducing the previous editable-dotfiles
 symlink activation failure.
 
@@ -41,14 +59,15 @@ incompatible rewrite. Configure it with:
   tree-sitter indentation;
 - `require("nvim-treesitter-textobjects").setup(...)` for textobjects.
 
-Do not use the older `require("nvim-treesitter.configs").setup(...)` API in this
-profile.
+Do not use the older `require("nvim-treesitter.configs").setup(...)` API in the
+dev profile.
 
 Dotfiles parity from `~/dotfiles/nvim` that should stay intentional in this
 profile:
 
 - wrapping is enabled;
 - `tabstop` and `shiftwidth` are `4`, with `softtabstop = -1`;
+- `smoothscroll` is explicitly disabled in shared `baseConfig`;
 - `whichwrap` lets left/right movement cross line boundaries;
 - `<C-Left>`, `<C-Right>`, insert-mode `<C-BS>`, and insert-mode `<C-h>` keep
   the dotfiles word-movement and word-delete behavior;

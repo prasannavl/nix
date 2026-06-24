@@ -1,5 +1,5 @@
 {...}: {
   imports = [
-    (import ../../users/pvl).all
+    (import ../../users/pvl).dev
   ];
 }

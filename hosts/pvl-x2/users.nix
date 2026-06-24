@@ -1,5 +1,5 @@
 {...}: {
   imports = [
-    (import ../../users/pvl).desktop-gnome
+    (import ../../users/pvl).dev
   ];
 }
