@@ -1,4 +1,5 @@
 {
+  config,
   lib,
   pkgs,
   ...
@@ -106,24 +107,44 @@ in {
     description = "Pull required pvl-a1 Ollama models";
     after = [
       "pvl-ollama.service"
+      "pvl-ollama-nvidia.service"
       "network-online.target"
     ];
     wants = [
-      "pvl-ollama.service"
       "network-online.target"
     ];
     unitConfig.ConditionUser = "pvl";
     serviceConfig = {
       Type = "simple";
+      RemainAfterExit = true;
+      Environment = let
+        ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
+        ollamaNvidiaPort = config.services.podman-compose.pvl.instances.ollama-nvidia.exposedPorts.main.port;
+      in [
+        "OLLAMA_URLS=http://127.0.0.1:${toString ollamaPort} http://127.0.0.1:${toString ollamaNvidiaPort}"
+      ];
       ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
+    };
+  };
+
+  systemd.user.timers.pvl-ollama-models-boot = {
+    description = "Start pvl-a1 Ollama model pull after boot";
+    wantedBy = ["timers.target"];
+    unitConfig.ConditionUser = "pvl";
+    timerConfig = {
+      OnBootSec = "2min";
+      Unit = "pvl-ollama-models.service";
     };
   };
 
   services.systemd-user-manager.instances.pvl-ollama-models = {
     user = "pvl";
     unit = "pvl-ollama-models.service";
+    autoStart = false;
     restartTriggers = [
       pullRequiredModels
+      config.services.podman-compose.pvl.instances.ollama
+      config.services.podman-compose.pvl.instances.ollama-nvidia
       requiredModels
     ];
   };

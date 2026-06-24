@@ -8,17 +8,29 @@ Service shape:
 - `services.podman-compose.pvl` uses user `pvl`, stack directory
   `/var/lib/pvl/compose`, and service prefix `pvl-`.
 - `ollama` runs the ROCm image on host port `11434`, mounts `/dev/kfd` and
-  `/dev/dri`, and stores shared model data at `/var/lib/pvl/ollama-models`.
+  `/dev/dri`, stores shared model data at `/var/lib/pvl/ollama-models`, and uses
+  `OLLAMA_CONTEXT_LENGTH=65536`.
 - `ollama-nvidia` is declared with the same shared model store on host port
-  `11435`, but its desired state is `stopped` so it is available for manual use
-  without starting by default.
+  `11435` and also uses `OLLAMA_CONTEXT_LENGTH=65536`, but its desired state is
+  `stopped` so it is available for manual use without starting by default.
 - `openwebui` runs on host port `4000` and points at both Ollama backends via
-  `host.containers.internal`.
+  `host.containers.internal:11434` and `host.containers.internal:11435`.
 - `pvl-ollama-models.service` pulls the same required model list as `pvl-a1`
-  after `pvl-ollama.service` is available.
+  after both backend units in ordering only; it does not want either backend, so
+  it does not start a stopped backend during reconcile. It is not auto-started
+  by `systemd-user-manager`; instead, `pvl-ollama-models-boot.timer` starts it 2
+  minutes after boot. The boot delay gives the selected Ollama backend time to
+  expose its API and keeps model pulls from competing with early startup. Its
+  restart triggers include the normalized `ollama` and `ollama-nvidia` Podman
+  Compose instance configs, so backend config changes rerun the model-pull
+  helper.
 - The model-pull script lives at `lib/services/ollama/helper.sh`, matching
   Abird's helper behavior while keeping the reusable implementation under the
-  shared service-helper namespace.
+  shared service-helper namespace. `pvl-l5` sets `OLLAMA_URLS` to both local
+  backend endpoints, so the helper pulls through whichever backend API is
+  reachable. If no configured Ollama API is available after the wait window, the
+  helper logs a skip and exits successfully; model-pull failure remains reserved
+  for API/pull errors after an API is reachable.
 
 Validation:
 

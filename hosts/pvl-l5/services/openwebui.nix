@@ -19,6 +19,5 @@ in {
           volumes:
             - ./open-webui_data:/app/backend/data
     '';
-    dependsOn = ["ollama"];
   };
 }

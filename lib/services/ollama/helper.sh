@@ -3,21 +3,24 @@ set -Eeuo pipefail
 
 init_vars() {
 	: "${OLLAMA_URL:=http://127.0.0.1:11434}"
+	: "${OLLAMA_URLS:=$OLLAMA_URL}"
 	: "${OLLAMA_WAIT_ATTEMPTS:=120}"
 	: "${OLLAMA_WAIT_DELAY_SECONDS:=2}"
 }
 
 wait_for_ollama() {
-	local attempt=1
+	local attempt=1 url
 
 	while [ "$attempt" -le "$OLLAMA_WAIT_ATTEMPTS" ]; do
-		if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null; then
-			return
-		fi
+		for url in $OLLAMA_URLS; do
+			if curl -fsS "$url/api/tags" >/dev/null 2>&1; then
+				OLLAMA_URL="$url"
+				return
+			fi
+		done
 
 		if [ "$attempt" -eq "$OLLAMA_WAIT_ATTEMPTS" ]; then
-			echo "ollama model pull: timed out waiting for $OLLAMA_URL" >&2
-			exit 1
+			return 1
 		fi
 
 		sleep "$OLLAMA_WAIT_DELAY_SECONDS"
@@ -95,7 +98,11 @@ main() {
 		return
 	fi
 
-	wait_for_ollama
+	if ! wait_for_ollama; then
+		echo "ollama model pull: no Ollama API available in OLLAMA_URLS=$OLLAMA_URLS; skipping" >&2
+		return
+	fi
+
 	pull_required_models "$@"
 }
 
