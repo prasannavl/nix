@@ -59,8 +59,9 @@ profile:
 - `mini.surround` uses the `gsa`/`gsd`/`gsf`/`gsF`/`gsh`/`gsr`/`gsn` mappings;
 - `snacks.nvim` dashboard is disabled; the picker, explorer, lazygit, notifier,
   terminal, and other Snacks utility modules stay enabled;
-- the profile expects Nerd Font glyph support: pvl terminal modules select
-  `JetBrainsMono Nerd Font Mono`, `vim.g.have_nerd_font = true`, and
+- the profile expects Nerd Font glyph support: the pvl desktop font module makes
+  `JetBrainsMono Nerd Font Mono` the fontconfig monospace default, sets GNOME's
+  monospace font to the same family, `vim.g.have_nerd_font = true`, and
   `mini.icons` plus `nvim-web-devicons` stay installed so plugin defaults can
   render their normal icons;
 - when running on a real TTY without Wayland or X11, `termguicolors` is disabled

@@ -24,6 +24,7 @@ in rec {
       ./zoxide
       ./fzf
       ./firefox
+      ./fonts
       ./gtk
       ./mime-apps
       ./alacritty

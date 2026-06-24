@@ -7,8 +7,6 @@ in {
     programs.alacritty = {
       enable = true;
       settings = {
-        font.normal.family = "JetBrainsMono Nerd Font Mono";
-
         # Default Alacritty sessions attach to tmux.
         terminal.shell = {
           program = "${pkgs.tmux}/bin/tmux";
