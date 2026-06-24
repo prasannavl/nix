@@ -338,6 +338,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/pvl-l5-vscode-terminal-gpu-rendering-2026-06.md`:
   Records the `pvl-l5` VS Code integrated-terminal glyph corruption root cause,
   live GPU evidence, and the related AMD PCI alias correction.
+- `.agents/docs/notes/tooling/pvl-neovim-nix-profile-2026-06.md`: Records the
+  pvl Neovim profile ownership boundary: Home Manager owns the config, plugins
+  and language tools come from Nix, Mason/Lazy bootstrap is intentionally
+  avoided, and the profile uses the Neovim 0.12 `nvim-treesitter` rewrite API.
 - `.agents/docs/notes/tooling/pvl-vscode-direnv-devshells-2026-04.md`: Records
   the move from `arrterian.nix-env-selector` to `mkhl.direnv` plus the root
   flake `devShells.default`/`devShells.full` abstraction in

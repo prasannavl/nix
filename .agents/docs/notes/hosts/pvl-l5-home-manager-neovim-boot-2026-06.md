@@ -39,3 +39,18 @@ Other current-boot errors observed during triage were not systemd failures:
 early ACPI firmware namespace errors, repeated
 `i2c_designware AMDI0010:03: controller timed out`, and NVIDIA EDID warnings for
 `DP-4`. AMD and NVIDIA DRM drivers both initialized.
+
+## 2026-06-24 Neovim module expansion
+
+The user Neovim module now keeps the full Neovim plugin and Lua configuration
+inside `programs.neovim`, rather than restoring an editable dotfiles symlink.
+The `xdg.configFile."nvim/init.lua"` default source remains as a fallback so
+Home Manager still owns a real generated file path if the Neovim module ever has
+no generated Lua payload.
+
+Validation:
+
+- `alejandra --check users/pvl/neovim/default.nix`
+- `statix check -- users/pvl/neovim/default.nix`
+- `deadnix users/pvl/neovim/default.nix`
+- `nix build --no-link .#nixosConfigurations.pvl-l5.config.home-manager.users.pvl.home.activationPackage`

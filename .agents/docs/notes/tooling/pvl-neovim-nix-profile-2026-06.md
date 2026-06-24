@@ -1,0 +1,74 @@
+# pvl Neovim Nix Profile 2026-06
+
+`users/pvl/neovim/default.nix` owns the pvl Neovim profile through Home Manager.
+The profile is intentionally Nix-native:
+
+- plugins are declared in `programs.neovim.plugins`;
+- LSP servers, formatters, linters, search tools, and AI helper runtime tools
+  are declared in `programs.neovim.extraPackages`;
+- the Lua config is generated with `programs.neovim.initLua`;
+- `lazy.nvim`, LazyVim, Mason, and Mason-managed binary installs are not used.
+
+The profile layout is intentionally modular:
+
+- `enabledPlugins` is the central on/off switch set;
+- `pluginOrder` preserves deterministic package and config load order;
+- `pluginSpecs.<name>.package` owns the Nix plugin package;
+- `pluginSpecs.<name>.config` owns that plugin's Lua setup and keymaps;
+- plugin-specific Nix inputs, such as Treesitter parser selection, stay inside
+  that plugin's `pluginSpecs.<name>` entry;
+- `sensibleConfig` owns leader keys, loader setup, and basic keymaps;
+- `baseConfig` owns core `vim.opt`, diagnostics, and editor autocmd behavior;
+- `neovimTools` owns Mason-replacement language servers, formatters, linters,
+  and CLI helpers.
+
+When adding or disabling editor features, prefer updating those sections instead
+of appending more unrelated Lua to `initLua`.
+
+This avoids the NixOS dynamic-binary boundary that Mason commonly crosses and
+keeps plugin and tool versions tied to the flake's pinned package set. The
+profile keeps the existing `xdg.configFile."nvim/init.lua"` fallback with
+`lib.mkDefault ""` and `force = true` so Home Manager still owns
+`.config/nvim/init.lua` without reintroducing the previous editable-dotfiles
+symlink activation failure.
+
+The pinned Neovim is `0.12.3`, and the packaged `nvim-treesitter` is the new
+incompatible rewrite. Configure it with:
+
+- `require("nvim-treesitter").setup()`;
+- `vim.treesitter.start()` from a `FileType` autocmd for highlighting;
+- `vim.bo.indentexpr = "v:lua.require'nvim-treesitter'.indentexpr()"` for
+  tree-sitter indentation;
+- `require("nvim-treesitter-textobjects").setup(...)` for textobjects.
+
+Do not use the older `require("nvim-treesitter.configs").setup(...)` API in this
+profile.
+
+Dotfiles parity from `~/dotfiles/nvim` that should stay intentional in this
+profile:
+
+- wrapping is enabled;
+- `tabstop` and `shiftwidth` are `4`, with `softtabstop = -1`;
+- `whichwrap` lets left/right movement cross line boundaries;
+- `<C-Left>`, `<C-Right>`, insert-mode `<C-BS>`, and insert-mode `<C-h>` keep
+  the dotfiles word-movement and word-delete behavior;
+- `VimEnter` changes the working directory to the opened file's directory when
+  there is one;
+- `vim.g.snacks_animate = false`;
+- `noice.nvim` is not installed or configured;
+- `mini.surround` uses the `gsa`/`gsd`/`gsf`/`gsF`/`gsh`/`gsr`/`gsn` mappings;
+- `snacks.nvim` dashboard is disabled; the picker, explorer, lazygit, notifier,
+  terminal, and other Snacks utility modules stay enabled;
+- when running on a real TTY without Wayland or X11, `termguicolors` is disabled
+  and the default colorscheme is used.
+
+Validation used after the initial profile build:
+
+```sh
+nix build --no-link .#nixosConfigurations.pvl-l5.config.home-manager.users.pvl.home.activationPackage
+nix build --no-link --print-out-paths .#nixosConfigurations.pvl-l5.config.home-manager.users.pvl.home.activationPackage
+```
+
+For a headless Lua smoke test, include the generated Home Manager pack path;
+loading only the generated `init.lua` is too bare and will not put Nix-installed
+plugins on `packpath`.
