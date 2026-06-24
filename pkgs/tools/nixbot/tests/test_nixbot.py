@@ -523,15 +523,15 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual("verify:app:/nix/store/snapshot path", lines[2])
         self.assertEqual("failed-rc:37", lines[3])
         command = lines[4]
-        self.assertIn("NIXOS_INSTALL_BOOTLOADER=1 systemd-run", command)
+        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
         self.assertIn("--wait --collect --no-ask-password --pipe --quiet", command)
         self.assertIn("--service-type=exec", command)
         self.assertRegex(command, r"--unit=nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}")
-        self.assertIn("/run/current-system/sw/bin/bash -lc", command)
-        self.assertIn("/nix/store/snapshot", command)
-        self.assertIn("nix-env", command)
-        self.assertIn("/nix/var/nix/profiles/system", command)
-        self.assertIn("switch-to-configuration", command)
+        self.assertIn("/run/current-system/sw/bin/bash -c", command)
+        self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
+        self.assertIn("nixbot-activation", command)
+        self.assertNotIn(" -lc ", command)
+        self.assertNotIn("$'", command)
 
 
     def test_wait_for_in_flight_deploy_activation_waits_then_proceeds(self):
@@ -598,14 +598,152 @@ class NixbotScriptTest(unittest.TestCase):
         result = self.run_script(
             """
             init_vars
-            nixbot_activation_command '/nix/store/system path' switch 1
+            nixbot_activation_command '/nix/store/system path' switch 1 boot
             """
         )
 
         command = result.stdout
-        switch_index = command.index('"${system_path}/bin/switch-to-configuration" "${goal}"')
-        profile_index = command.index("nix-env -p /nix/var/nix/profiles/system --set")
+        switch_index = command.index('NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"')
+        profile_index = command.index('"${nix_env_path}" -p /nix/var/nix/profiles/system --set')
+        boot_index = command.index('NIXOS_INSTALL_BOOTLOADER=1 "${system_path}/bin/switch-to-configuration" "${post_promote_bootloader_goal}"')
         self.assertLess(switch_index, profile_index)
+        self.assertLess(profile_index, boot_index)
+        self.assertIn("post_promote_bootloader_goal=boot", command)
+        self.assertIn('nix_env_path="${system_path}/sw/bin/nix-env"', command)
+        self.assertIn('system path is missing nix-env: ${nix_env_path}', command)
+
+    def test_nixbot_activation_command_skips_bootloader_for_containers(self):
+        result = self.run_script(
+            """
+            init_vars
+            nixbot_activation_command '/nix/store/container system' switch 1 ''
+            """
+        )
+
+        command = result.stdout
+        self.assertIn('NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"', command)
+        self.assertIn('"${nix_env_path}" -p /nix/var/nix/profiles/system --set', command)
+        self.assertIn("post_promote_bootloader_goal=''", command)
+        self.assertIn('if [ -n "${post_promote_bootloader_goal}" ]; then', command)
+
+    def test_nixbot_activation_runner_decodes_script_without_login_shell(self):
+        fake_system = self.work_dir / "fake system"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{fake_system}/bin"
+            touch "{fake_system}/nixos-version"
+            cat >"{fake_system}/bin/switch-to-configuration" <<'EOF_SWITCH'
+#!/usr/bin/env bash
+printf 'switched:%s\n' "$1"
+EOF_SWITCH
+            chmod +x "{fake_system}/bin/switch-to-configuration"
+            script="$(nixbot_activation_command "{fake_system}" test 0 '')"
+            runner="$(nixbot_activation_runner_command "$script")"
+            printf 'runner:%s\n' "$runner"
+            eval "$runner"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertIn("/run/current-system/sw/bin/bash -c", lines[0])
+        self.assertIn("/run/current-system/sw/bin/base64\\ -d", lines[0])
+        self.assertIn("nixbot-activation", lines[0])
+        self.assertNotIn(" -lc ", lines[0])
+        self.assertNotIn("$'", lines[0])
+        self.assertEqual("switched:test", lines[1])
+
+    def test_host_boot_is_container_evaluates_boolean_as_json(self):
+        result = self.run_script(
+            """
+            init_vars
+            run_supervised_stdout_capture() {
+              local -n out_ref="$1"
+              shift 2
+              printf 'args:%s\n' "$*"
+              case " $* " in
+                *" --json "*) ;;
+                *) echo "missing --json" >&2; return 2 ;;
+              esac
+              case " $* " in
+                *" --raw "*) echo "unexpected --raw" >&2; return 2 ;;
+              esac
+              out_ref="${BOOT_IS_CONTAINER}"
+              return 0
+            }
+
+            set +e
+            BOOT_IS_CONTAINER=false
+            host_boot_is_container pvl-l5
+            printf 'false-rc:%s\n' "$?"
+            BOOT_IS_CONTAINER=true
+            host_boot_is_container pvl-lxc
+            printf 'true-rc:%s\n' "$?"
+            set -e
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertIn("--json", lines[0])
+        self.assertIn("--option warn-dirty false", lines[0])
+        self.assertNotIn("--raw", lines[0])
+        self.assertEqual("false-rc:1", lines[1])
+        self.assertIn("--json", lines[2])
+        self.assertIn("--option warn-dirty false", lines[2])
+        self.assertNotIn("--raw", lines[2])
+        self.assertEqual("true-rc:0", lines[3])
+
+    def test_activation_post_promote_bootloader_goal_is_contained(self):
+        result = self.run_script(
+            """
+            init_vars
+            host_boot_is_container() {
+              case "$1" in
+                physical) return 1 ;;
+                container) return 0 ;;
+                *) echo "unexpected container eval" >&2; return 2 ;;
+              esac
+            }
+            printf 'physical:%s\n' "$(activation_post_promote_bootloader_goal physical switch)"
+            printf 'container:%s\n' "$(activation_post_promote_bootloader_goal container switch)"
+            printf 'test:%s\n' "$(activation_post_promote_bootloader_goal unexpected test)"
+            """
+        )
+
+        self.assertEqual(
+            ["physical:boot", "container:", "test:"],
+            result.stdout.splitlines(),
+        )
+        self.assertNotIn("unexpected container eval", result.stderr)
+
+    def test_read_snapshot_system_path_file_extracts_single_system_path(self):
+        snapshot_file = self.work_dir / "snapshot.path"
+        result = self.run_script(
+            f"""
+            init_vars
+            printf '%s\n%s\n' \
+              "warning: Git tree '/tmp/repo' is dirty" \
+              "/nix/store/h6ai32lqbrwmlkn8qv79cq0xbns8s801-nixos-system-pvl-l5-26.05" \
+              >{snapshot_file}
+            read_snapshot_system_path_file {snapshot_file}
+
+            printf '%s\n%s\n' \
+              "/nix/store/h6ai32lqbrwmlkn8qv79cq0xbns8s801-nixos-system-pvl-l5-26.05" \
+              "/nix/store/215y4cfg0phxmd9m0bdiz6wa5zpqyac5-nixos-system-pvl-x2-26.05" \
+              >{snapshot_file}
+            set +e
+            read_snapshot_system_path_file {snapshot_file}
+            printf 'multi-rc:%s\n' "$?"
+            set -e
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual(
+            "/nix/store/h6ai32lqbrwmlkn8qv79cq0xbns8s801-nixos-system-pvl-l5-26.05",
+            lines[0],
+        )
+        self.assertEqual("multi-rc:1", lines[1])
 
     def test_parent_readiness_fast_success_summarizes_per_parent(self):
         result = self.run_script(
@@ -698,18 +836,18 @@ class NixbotScriptTest(unittest.TestCase):
         lines = result.stdout.splitlines()
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
-        self.assertIn("NIXOS_INSTALL_BOOTLOADER=1 systemd-run", command)
+        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
         self.assertIn("-E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK", command)
         self.assertIn("--property=RuntimeMaxSec=", command)
         self.assertIn("--property=TimeoutStopSec=", command)
         self.assertIn("--property=KillMode=control-group", command)
         self.assertIn("--property=CollectMode=inactive-or-failed", command)
         self.assertRegex(command, r"--unit=nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}")
-        self.assertIn("/run/current-system/sw/bin/bash -lc", command)
-        self.assertIn("/nix/store/system", command)
-        self.assertIn("nix-env", command)
-        self.assertIn("/nix/var/nix/profiles/system", command)
-        self.assertIn("switch-to-configuration", command)
+        self.assertIn("/run/current-system/sw/bin/bash -c", command)
+        self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
+        self.assertIn("nixbot-activation", command)
+        self.assertNotIn(" -lc ", command)
+        self.assertNotIn("$'", command)
 
     def test_activate_prepared_system_path_disables_bootloader_for_containers(self):
         cmd_file = self.work_dir / "activate-container-cmd"
@@ -740,9 +878,11 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
         self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("nix-env", command)
-        self.assertIn("/nix/var/nix/profiles/system", command)
-        self.assertIn("switch-to-configuration", command)
+        self.assertIn("/run/current-system/sw/bin/bash -c", command)
+        self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
+        self.assertIn("nixbot-activation", command)
+        self.assertNotIn(" -lc ", command)
+        self.assertNotIn("$'", command)
 
     def test_activate_prepared_system_path_does_not_persist_test_goal(self):
         cmd_file = self.work_dir / "activate-test-cmd"
@@ -776,8 +916,11 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
         self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("persist_profile=0", command)
-        self.assertIn("switch-to-configuration", command)
+        self.assertIn("/run/current-system/sw/bin/bash -c", command)
+        self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
+        self.assertIn("nixbot-activation", command)
+        self.assertNotIn(" -lc ", command)
+        self.assertNotIn("$'", command)
         self.assertNotIn("unexpected container eval", result.stderr)
 
     def test_build_cache_mode_resolution_uses_configured_cache_identity(self):
@@ -1290,7 +1433,7 @@ class NixbotScriptTest(unittest.TestCase):
             order_file={self.work_dir / "rollback-order"}
             mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
             for node in parent db app side worker; do
-              printf '/snap/%s\n' "$node" >"$snapshot_dir/$node.path"
+              printf '/nix/store/test-nixos-system-%s\n' "$node" >"$snapshot_dir/$node.path"
             done
             rollback_host_to_snapshot() {{
               printf '%s\n' "$1" >>"$order_file"
@@ -1329,7 +1472,7 @@ class NixbotScriptTest(unittest.TestCase):
             order_file={self.work_dir / "rollback-order"}
             mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
             for node in parent app worker; do
-              printf '/snap/%s\n' "$node" >"$snapshot_dir/$node.path"
+              printf '/nix/store/test-nixos-system-%s\n' "$node" >"$snapshot_dir/$node.path"
             done
             rollback_host_to_snapshot() {{
               printf '%s\n' "$1" >>"$order_file"
@@ -1359,8 +1502,8 @@ class NixbotScriptTest(unittest.TestCase):
             rollback_log_dir={self.work_dir / "rollback-log"}
             rollback_status_dir={self.work_dir / "rollback-status"}
             mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir"
-            printf '/snap/ok\n' >"$snapshot_dir/ok.path"
-            printf '/snap/nostatus\n' >"$snapshot_dir/nostatus.path"
+            printf '/nix/store/test-nixos-system-ok\n' >"$snapshot_dir/ok.path"
+            printf '/nix/store/test-nixos-system-nostatus\n' >"$snapshot_dir/nostatus.path"
             ok_hosts=()
             failed_hosts=()
             run_rollback_job() {{

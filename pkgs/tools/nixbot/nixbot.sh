@@ -1579,28 +1579,49 @@ rollback_activation_unit_name() {
 }
 
 nixbot_activation_command() {
-	local system_path="$1" goal="$2" persist_profile="$3"
+	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4"
 
 	printf 'set -Eeuo pipefail\n'
 	printf 'system_path=%q\n' "${system_path}"
 	printf 'goal=%q\n' "${goal}"
 	printf 'persist_profile=%q\n' "${persist_profile}"
+	printf 'post_promote_bootloader_goal=%q\n' "${post_promote_bootloader_goal}"
 	cat <<'EOF_ACTIVATION'
+nix_env_path="${system_path}/sw/bin/nix-env"
+
 if [ ! -x "${system_path}/bin/switch-to-configuration" ]; then
 	echo "system path is not activatable: ${system_path}" >&2
 	exit 1
 fi
 
-"${system_path}/bin/switch-to-configuration" "${goal}"
+NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"
 
 if [ "${persist_profile}" -eq 1 ]; then
 	if [ ! -f "${system_path}/nixos-version" ]; then
 		echo "system path is missing nixos-version after activation: ${system_path}" >&2
 		exit 1
 	fi
-	nix-env -p /nix/var/nix/profiles/system --set "${system_path}"
+	if [ ! -x "${nix_env_path}" ]; then
+		echo "system path is missing nix-env: ${nix_env_path}" >&2
+		exit 1
+	fi
+	"${nix_env_path}" -p /nix/var/nix/profiles/system --set "${system_path}"
+	if [ -n "${post_promote_bootloader_goal}" ]; then
+		NIXOS_INSTALL_BOOTLOADER=1 "${system_path}/bin/switch-to-configuration" "${post_promote_bootloader_goal}"
+	fi
 fi
 EOF_ACTIVATION
+}
+
+nixbot_activation_runner_command() {
+	local activation_script="$1" encoded_script="" runner_script=""
+
+	encoded_script="$(printf '%s' "${activation_script}" | base64 | tr -d '\n')"
+	printf -v runner_script \
+		'set -o pipefail; printf %%s "$1" | %q -d | %q -s' \
+		"${REMOTE_SYSTEM_BIN_DIR}/base64" \
+		"${REMOTE_SYSTEM_BASH}"
+	shell_quote_argv "${REMOTE_SYSTEM_BASH}" -c "${runner_script}" nixbot-activation "${encoded_script}"
 }
 
 activation_goal_persists_profile() {
@@ -1616,7 +1637,7 @@ host_boot_is_container() {
 	local node="$1" is_container=""
 
 	if ! run_supervised_stdout_capture is_container "" \
-		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --raw --no-write-lock-file ".#nixosConfigurations.${node}.config.boot.isContainer"; then
+		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --option warn-dirty false --json --no-write-lock-file ".#nixosConfigurations.${node}.config.boot.isContainer"; then
 		echo "Failed to evaluate boot.isContainer for ${node}" >&2
 		return 2
 	fi
@@ -1631,11 +1652,10 @@ host_boot_is_container() {
 	esac
 }
 
-activation_bootloader_flag() {
+activation_post_promote_bootloader_goal() {
 	local node="$1" goal="$2" is_container_rc=0
 
 	if ! activation_goal_persists_profile "${goal}"; then
-		printf '0\n'
 		return 0
 	fi
 
@@ -1646,10 +1666,9 @@ activation_bootloader_flag() {
 	fi
 	case "${is_container_rc}" in
 	0)
-		printf '0\n'
 		;;
 	1)
-		printf '1\n'
+		printf 'boot\n'
 		;;
 	*)
 		return "${is_container_rc}"
@@ -6690,10 +6709,36 @@ snapshot_host_generation() {
 	echo "${remote_current_path}"
 }
 
+extract_nixos_system_path() {
+	local input="$1" line="" system_path="" count=0
+
+	while IFS= read -r line; do
+		if [[ "${line}" =~ ^/nix/store/[^[:space:]]+-nixos-system-[^[:space:]]+$ ]]; then
+			system_path="${line}"
+			count=$((count + 1))
+		fi
+	done <<<"${input}"
+
+	[ "${count}" -eq 1 ] || return 1
+	printf '%s\n' "${system_path}"
+}
+
+read_snapshot_system_path_file() {
+	local snapshot_file="$1" snapshot_content="" system_path=""
+
+	[ -s "${snapshot_file}" ] || return 1
+	snapshot_content="$(<"${snapshot_file}")"
+	if ! system_path="$(extract_nixos_system_path "${snapshot_content}")"; then
+		return 1
+	fi
+
+	printf '%s\n' "${system_path}"
+}
+
 snapshot_exists() {
 	local snapshot_file="$1"
 
-	[ -s "${snapshot_file}" ]
+	read_snapshot_system_path_file "${snapshot_file}" >/dev/null
 }
 
 wave_needs_snapshot_retry() {
@@ -7548,8 +7593,8 @@ wait_for_in_flight_deploy_activation() {
 }
 
 rollback_host_to_snapshot() {
-	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_script="" rollback_unit="" systemd_run_properties=""
-	local install_bootloader=0
+	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_script="" rollback_runner="" rollback_unit="" systemd_run_properties=""
+	local post_promote_bootloader_goal=""
 	local rollback_rc=0 rollback_start_epoch="" rollback_output=""
 
 	[ -n "${snapshot_path}" ] || {
@@ -7561,16 +7606,16 @@ rollback_host_to_snapshot() {
 	prepare_deploy_context "${node}" || return 1
 	wait_for_in_flight_deploy_activation "${node}" || return "$?"
 	rollback_unit="$(rollback_activation_unit_name "${node}")"
-	install_bootloader="$(activation_bootloader_flag "${node}" switch)" || return "$?"
-	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1)"
+	post_promote_bootloader_goal="$(activation_post_promote_bootloader_goal "${node}" switch)" || return "$?"
+	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1 "${post_promote_bootloader_goal}")"
+	rollback_runner="$(nixbot_activation_runner_command "${rollback_script}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 	printf -v rollback_cmd \
-		'NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
-		"${install_bootloader}" \
+		'NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
+		0 \
 		"${systemd_run_properties}" \
 		"${rollback_unit}" \
-		"${REMOTE_SYSTEM_BASH}" \
-		"${rollback_script}"
+		"${rollback_runner}"
 
 	echo "${snapshot_path}" >&2
 	rollback_start_epoch="$(date +%s)"
@@ -7685,16 +7730,16 @@ rollback_host_level_to_snapshots() {
 	local rollback_ok_hosts_name="$4" rollback_failed_hosts_name="$5"
 	shift 5
 
-	local node="" snapshot_path="" status_file="" log_file="" active_jobs=0 record_rc=0 rollback_rc=0
+	local node="" snapshot_file="" snapshot_path="" status_file="" log_file="" active_jobs=0 record_rc=0 rollback_rc=0
 	local -a rollback_started_hosts=()
 
 	for node in "$@"; do
 		[ -n "${node}" ] || continue
 		status_file="$(phase_dir_item_status_file "${rollback_status_dir}" "${node}")"
 		log_file="$(phase_dir_item_log_file "${rollback_log_dir}" "${node}")"
-		snapshot_path="${snapshot_dir}/${node}.path"
+		snapshot_file="${snapshot_dir}/${node}.path"
 
-		if ! snapshot_exists "${snapshot_path}"; then
+		if ! snapshot_path="$(read_snapshot_system_path_file "${snapshot_file}")"; then
 			echo "Rollback unavailable for ${node}: no rollback snapshot recorded" >&2
 			write_status_file "${status_file}" "snapshot-missing"
 			append_unique_array_item "${rollback_failed_hosts_name}" "${node}"
@@ -7703,14 +7748,14 @@ rollback_host_level_to_snapshots() {
 		fi
 
 		if [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ]; then
-			run_rollback_job "${node}" "$(cat "${snapshot_path}")" "${status_file}" "${log_file}" &
+			run_rollback_job "${node}" "${snapshot_path}" "${status_file}" "${log_file}" &
 			rollback_started_hosts+=("${node}")
 			active_jobs=$((active_jobs + 1))
 			wait_for_job_slot active_jobs "${NIXBOT_PARALLEL_JOBS}" || return "$?"
 			continue
 		fi
 
-		run_rollback_job "${node}" "$(cat "${snapshot_path}")" "${status_file}" "${log_file}" || true
+		run_rollback_job "${node}" "${snapshot_path}" "${status_file}" "${log_file}" || true
 		record_rollback_status "${node}" "${status_file}" "${rollback_ok_hosts_name}" "${rollback_failed_hosts_name}" || {
 			record_rc="$?"
 			is_signal_exit_status "${record_rc}" && return "${record_rc}"
@@ -8136,24 +8181,24 @@ require_remote_build_cache_for_deploy() {
 }
 
 activate_prepared_system_path() {
-	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_unit="" systemd_run_properties=""
-	local install_bootloader=0 persist_profile=0
+	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_runner="" activation_unit="" systemd_run_properties=""
+	local post_promote_bootloader_goal="" persist_profile=0
 	local activation_rc=0 activation_start_epoch="" activation_output=""
 
 	activation_unit="$(deploy_activation_unit_name "${node}")"
 	if activation_goal_persists_profile "${GOAL}"; then
 		persist_profile=1
 	fi
-	install_bootloader="$(activation_bootloader_flag "${node}" "${GOAL}")" || return "$?"
-	activation_script="$(nixbot_activation_command "${system_path}" "${GOAL}" "${persist_profile}")"
+	post_promote_bootloader_goal="$(activation_post_promote_bootloader_goal "${node}" "${GOAL}")" || return "$?"
+	activation_script="$(nixbot_activation_command "${system_path}" "${GOAL}" "${persist_profile}" "${post_promote_bootloader_goal}")"
+	activation_runner="$(nixbot_activation_runner_command "${activation_script}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 	printf -v activate_cmd \
-		'NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
-		"${install_bootloader}" \
+		'NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
+		0 \
 		"${systemd_run_properties}" \
 		"${activation_unit}" \
-		"${REMOTE_SYSTEM_BASH}" \
-		"${activation_script}"
+		"${activation_runner}"
 
 	echo "${system_path}" >&2
 	activation_start_epoch="$(date +%s)"

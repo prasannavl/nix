@@ -310,7 +310,22 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   `nixos-rebuild switch` and makes failed activation avoid promoting the system
   profile. Bare-metal hosts may run bootloader work during activation; hosts
   whose evaluated `config.boot.isContainer` is true must keep
-  `NIXOS_INSTALL_BOOTLOADER=0`.
+  `NIXOS_INSTALL_BOOTLOADER=0`. For promote-after-success `switch`, the first
+  activation must also keep `NIXOS_INSTALL_BOOTLOADER=0`; after profile
+  promotion succeeds, bare-metal hosts run a separate
+  `switch-to-configuration boot` so boot entries are generated from the promoted
+  system profile.
+- Transient activation scripts must be transported as single-line,
+  POSIX-shell-safe commands, not as `bash -lc $'...'` multiline payloads. Decode
+  the script inside the transient unit and run it with non-login Bash so
+  `/etc/bash_logout` cannot inherit activation `set -u`. Because that runner is
+  non-login, activation scripts must use explicit tool paths instead of relying
+  on ambient `PATH`; post-activation profile promotion should use the target
+  system's own `sw/bin/nix-env`.
+- Boolean host classification evals must use `nix eval --json`, not `--raw`.
+  Rollback snapshot files are data inputs: before rollback activation they must
+  resolve to exactly one NixOS system store path, even if surrounding warning
+  text was captured from a previous command.
 - Dry deploys may still evaluate and build systems, but prepared target commands
   must be printed instead of executed. This includes parent readiness
   reconcile/settle commands; do not let `--dry` run parent-side Incus
