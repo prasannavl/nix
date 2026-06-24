@@ -52,29 +52,32 @@
 
         controlCenter = controlCenterSettings;
 
-        dock = if !dockEnabled then false else {
-          enabled = true;
-          position = "top";
-          size = 1.25;
-          floatingRatio = 0;
-          pinnedApps = [
-            "Alacritty"
-            "google-chrome"
-            "code"
-            "org.gnome.Calendar"
-            "org.gnome.clocks"
-            "chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default"
-          ];
-          pinnedStatic = true;
-          groupApps = true;
-          inactiveIndicators = true;
-          showLauncherIcon = true;
-          showDockIndicator = true;
-          launcherPosition = "start";
-          launcherUseDistroLogo = true;
-          indicatorColor = "none";
-          indicatorOpacity = 0.25;
-        };
+        dock =
+          if !dockEnabled
+          then false
+          else {
+            enabled = true;
+            position = "top";
+            size = 1.25;
+            floatingRatio = 0;
+            pinnedApps = [
+              "Alacritty"
+              "google-chrome"
+              "code"
+              "org.gnome.Calendar"
+              "org.gnome.clocks"
+              "chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default"
+            ];
+            pinnedStatic = true;
+            groupApps = true;
+            inactiveIndicators = true;
+            showLauncherIcon = true;
+            showDockIndicator = true;
+            launcherPosition = "start";
+            launcherUseDistroLogo = true;
+            indicatorColor = "none";
+            indicatorOpacity = 0.25;
+          };
 
         general = {
           animationDisabled = true;
