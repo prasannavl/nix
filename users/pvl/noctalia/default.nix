@@ -7,6 +7,7 @@
     barSettings = import ./bar.nix;
     controlCenterSettings = import ./control-center.nix;
     pluginConfig = import ./plugins.nix;
+    dockEnabled = true;
     powerOption = action: keybind: {
       action = action;
       keybind = keybind;
@@ -25,6 +26,17 @@
           enableClipboardHistory = true;
           iconMode = "native";
           position = "top_center";
+          pinnedApps = [
+            "Alacritty"
+            "google-chrome"
+            "code"
+            "org.gnome.Nautilus"
+            "chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default"
+            "org.gnome.Calendar"
+            "org.gnome.clocks"
+            "org.gnome.Characters"
+            "org.gnome.Calculator"
+          ];
         };
 
         audio.volumeOverdrive = true;
@@ -40,7 +52,29 @@
 
         controlCenter = controlCenterSettings;
 
-        dock.enabled = false;
+        dock = if !dockEnabled then false else {
+          enabled = true;
+          position = "top";
+          size = 1.25;
+          floatingRatio = 0;
+          pinnedApps = [
+            "Alacritty"
+            "google-chrome"
+            "code"
+            "org.gnome.Calendar"
+            "org.gnome.clocks"
+            "chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default"
+          ];
+          pinnedStatic = true;
+          groupApps = true;
+          inactiveIndicators = true;
+          showLauncherIcon = true;
+          showDockIndicator = true;
+          launcherPosition = "start";
+          launcherUseDistroLogo = true;
+          indicatorColor = "none";
+          indicatorOpacity = 0.25;
+        };
 
         general = {
           animationDisabled = true;
@@ -53,11 +87,12 @@
           lockOnSuspend = false;
           radiusRatio = 0.2;
           scaleRatio = 1.2;
+          showChangelogOnStartup = false;
           smoothScrollEnabled = false;
         };
 
         location = {
-          name = "Singapore";
+          autoLocate = true;
           showWeekNumberInCalendar = true;
         };
 
