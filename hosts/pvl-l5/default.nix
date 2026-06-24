@@ -1,4 +1,4 @@
-{...}: {
+{lib,...}: {
   imports = [
     ../common/pvl.nix
     ../../lib/devices/lenovo-legion-5-15ach6h.nix
@@ -17,4 +17,7 @@
   x.panicReboot = 0;
 
   services.fail2ban.enable = true;
+
+  time.timeZone = lib.mkForce null;
+  services.automatic-timezoned.enable = true;
 }

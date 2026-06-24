@@ -94,6 +94,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   the `pvl-l5` boot failure where Home Manager tried to manage
   `.config/nvim/init.lua` below the editable dotfiles symlink, plus the
   non-fatal activation fix.
+- `.agents/docs/notes/hosts/pvl-l5-automatic-timezoned-generation-mismatch-2026-06.md`:
+  Records `pvl-l5` generation/profile mismatch symptoms, including
+  `automatic-timezoned.service` appearing in deploy output but not live and the
+  Noctalia dock-enabled settings being lost after rebooting into the older boot
+  generation.
 - `.agents/docs/notes/hosts/pvl-l5-ai-services-port-2026-06.md`: Records the
   `pvl-a1` Ollama and Open WebUI service port onto `pvl-l5`, including the
   shared model directory and stopped optional NVIDIA Ollama backend.
