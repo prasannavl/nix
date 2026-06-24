@@ -7,9 +7,7 @@
     ...
   }: let
     enabledPlugins = {
-      miniIcons = false;
       noice = false;
-      nvimWebDevicons = false;
     };
 
     isPluginEnabled = name: enabledPlugins.${name} or true;
@@ -17,7 +15,7 @@
     sensibleConfig = ''
       vim.g.mapleader = " "
       vim.g.maplocalleader = ","
-      vim.g.have_nerd_font = false
+      vim.g.have_nerd_font = true
       vim.g.snacks_animate = false
 
       if vim.loader then
@@ -25,47 +23,6 @@
       end
 
       local map = vim.keymap.set
-      local pvl_ascii_kind_icons = {
-        Array = "",
-        Boolean = "",
-        Class = "",
-        Color = "",
-        Constant = "",
-        Constructor = "",
-        Control = "",
-        Copilot = "",
-        Collapsed = "",
-        Enum = "",
-        EnumMember = "",
-        Event = "",
-        Field = "",
-        File = "",
-        Folder = "",
-        Function = "",
-        Interface = "",
-        Key = "",
-        Keyword = "",
-        Method = "",
-        Module = "",
-        Namespace = "",
-        Null = "",
-        Number = "",
-        Object = "",
-        Operator = "",
-        Package = "",
-        Property = "",
-        Reference = "",
-        Snippet = "",
-        String = "",
-        Struct = "",
-        Text = "",
-        Trait = "",
-        TypeParameter = "",
-        Unit = "",
-        Unknown = "",
-        Value = "",
-        Variable = "",
-      }
 
       map("n", "<Esc>", "<cmd>nohlsearch<cr>", { desc = "Clear search highlight" })
       map("n", "<leader>qq", "<cmd>qa<cr>", { desc = "Quit all" })
@@ -145,14 +102,7 @@
 
       vim.diagnostic.config({
         severity_sort = true,
-        signs = {
-          text = {
-            [vim.diagnostic.severity.ERROR] = "E",
-            [vim.diagnostic.severity.WARN] = "W",
-            [vim.diagnostic.severity.INFO] = "I",
-            [vim.diagnostic.severity.HINT] = "H",
-          },
-        },
+        signs = true,
         underline = true,
         update_in_insert = false,
         virtual_text = {
@@ -183,21 +133,10 @@
         config = ''
           require("blink.cmp").setup({
             keymap = { preset = "default" },
-            appearance = {
-              nerd_font_variant = "normal",
-              kind_icons = pvl_ascii_kind_icons,
-            },
+            appearance = { nerd_font_variant = "mono" },
             completion = {
               documentation = { auto_show = true, auto_show_delay_ms = 250 },
               ghost_text = { enabled = true },
-              menu = {
-                draw = {
-                  columns = {
-                    { "label", "label_description", gap = 1 },
-                    { "kind" },
-                  },
-                },
-              },
             },
             signature = { enabled = true },
             sources = {
@@ -214,10 +153,7 @@
           require("bufferline").setup({
             options = {
               diagnostics = "nvim_lsp",
-              indicator = { style = "none" },
-              modified_icon = "*",
-              separator_style = "",
-              show_buffer_icons = false,
+              separator_style = "thin",
               show_buffer_close_icons = false,
               show_close_icon = false,
             },
@@ -349,22 +285,6 @@
           require("gitsigns").setup({
             current_line_blame = true,
             current_line_blame_opts = { delay = 500 },
-            signs = {
-              add = { text = "+" },
-              change = { text = "~" },
-              delete = { text = "_" },
-              topdelete = { text = "-" },
-              changedelete = { text = "~" },
-              untracked = { text = "?" },
-            },
-            signs_staged = {
-              add = { text = "+" },
-              change = { text = "~" },
-              delete = { text = "_" },
-              topdelete = { text = "-" },
-              changedelete = { text = "~" },
-              untracked = { text = "?" },
-            },
             on_attach = function(bufnr)
               local gs = package.loaded.gitsigns
               local function opts(desc)
@@ -419,48 +339,19 @@
         config = ''
           require("lualine").setup({
             options = {
-              icons_enabled = false,
               component_separators = "",
               globalstatus = true,
               section_separators = "",
               theme = "auto",
             },
             sections = {
-              lualine_a = {
-                { "mode" },
-              },
-              lualine_b = {
-                { "branch", icon = "" },
-                {
-                  "diff",
-                  symbols = {
-                    added = "+",
-                    modified = "~",
-                    removed = "-",
-                  },
-                },
-              },
               lualine_c = {
                 { "filename", path = 1 },
               },
               lualine_x = {
-                {
-                  "diagnostics",
-                  symbols = {
-                    error = "E:",
-                    warn = "W:",
-                    info = "I:",
-                    hint = "H:",
-                  },
-                },
+                "diagnostics",
                 "encoding",
                 "filetype",
-              },
-              lualine_y = {
-                { "progress" },
-              },
-              lualine_z = {
-                { "location" },
               },
             },
           })
@@ -852,62 +743,6 @@
           require("render-markdown").setup({
             preset = "lazy",
             file_types = { "markdown", "codecompanion" },
-            bullet = {
-              icons = { "-", "+", "*", "-" },
-            },
-            checkbox = {
-              checked = { icon = "[x] " },
-              unchecked = { icon = "[ ] " },
-              custom = {
-                todo = { raw = "[-]", rendered = "[-] ", highlight = "RenderMarkdownTodo" },
-              },
-            },
-            code = {
-              language_icon = false,
-              sign = false,
-              language_border = "-",
-              above = "-",
-              below = "-",
-            },
-            heading = {
-              icons = {},
-              signs = {},
-              sign = false,
-              above = "-",
-              below = "-",
-            },
-            dash = {
-              icon = "-",
-            },
-            callout = {
-              note = { raw = "[!NOTE]", rendered = "Note", highlight = "RenderMarkdownInfo", category = "github" },
-              tip = { raw = "[!TIP]", rendered = "Tip", highlight = "RenderMarkdownSuccess", category = "github" },
-              important = { raw = "[!IMPORTANT]", rendered = "Important", highlight = "RenderMarkdownHint", category = "github" },
-              warning = { raw = "[!WARNING]", rendered = "Warning", highlight = "RenderMarkdownWarn", category = "github" },
-              caution = { raw = "[!CAUTION]", rendered = "Caution", highlight = "RenderMarkdownError", category = "github" },
-              abstract = { raw = "[!ABSTRACT]", rendered = "Abstract", highlight = "RenderMarkdownInfo", category = "obsidian" },
-              summary = { raw = "[!SUMMARY]", rendered = "Summary", highlight = "RenderMarkdownInfo", category = "obsidian" },
-              tldr = { raw = "[!TLDR]", rendered = "Tldr", highlight = "RenderMarkdownInfo", category = "obsidian" },
-              info = { raw = "[!INFO]", rendered = "Info", highlight = "RenderMarkdownInfo", category = "obsidian" },
-              todo = { raw = "[!TODO]", rendered = "Todo", highlight = "RenderMarkdownInfo", category = "obsidian" },
-              hint = { raw = "[!HINT]", rendered = "Hint", highlight = "RenderMarkdownSuccess", category = "obsidian" },
-              success = { raw = "[!SUCCESS]", rendered = "Success", highlight = "RenderMarkdownSuccess", category = "obsidian" },
-              check = { raw = "[!CHECK]", rendered = "Check", highlight = "RenderMarkdownSuccess", category = "obsidian" },
-              done = { raw = "[!DONE]", rendered = "Done", highlight = "RenderMarkdownSuccess", category = "obsidian" },
-              question = { raw = "[!QUESTION]", rendered = "Question", highlight = "RenderMarkdownWarn", category = "obsidian" },
-              help = { raw = "[!HELP]", rendered = "Help", highlight = "RenderMarkdownWarn", category = "obsidian" },
-              faq = { raw = "[!FAQ]", rendered = "Faq", highlight = "RenderMarkdownWarn", category = "obsidian" },
-              attention = { raw = "[!ATTENTION]", rendered = "Attention", highlight = "RenderMarkdownWarn", category = "obsidian" },
-              failure = { raw = "[!FAILURE]", rendered = "Failure", highlight = "RenderMarkdownError", category = "obsidian" },
-              fail = { raw = "[!FAIL]", rendered = "Fail", highlight = "RenderMarkdownError", category = "obsidian" },
-              missing = { raw = "[!MISSING]", rendered = "Missing", highlight = "RenderMarkdownError", category = "obsidian" },
-              danger = { raw = "[!DANGER]", rendered = "Danger", highlight = "RenderMarkdownError", category = "obsidian" },
-              error = { raw = "[!ERROR]", rendered = "Error", highlight = "RenderMarkdownError", category = "obsidian" },
-              bug = { raw = "[!BUG]", rendered = "Bug", highlight = "RenderMarkdownError", category = "obsidian" },
-              example = { raw = "[!EXAMPLE]", rendered = "Example", highlight = "RenderMarkdownHint", category = "obsidian" },
-              quote = { raw = "[!QUOTE]", rendered = "Quote", highlight = "RenderMarkdownQuote", category = "obsidian" },
-              cite = { raw = "[!CITE]", rendered = "Cite", highlight = "RenderMarkdownQuote", category = "obsidian" },
-            },
           })
         '';
       };
@@ -923,51 +758,7 @@
             input = { enabled = true },
             lazygit = { enabled = true },
             notifier = { enabled = true },
-            picker = {
-              enabled = true,
-              prompt = "> ",
-              formatters = {
-                file = { icon_width = 0 },
-                severity = { icons = false, level = true },
-              },
-              icons = {
-                files = { enabled = false },
-                keymaps = { nowait = "! " },
-                tree = {
-                  vertical = "| ",
-                  middle = "+-",
-                  last = "`-",
-                },
-                undo = {
-                  saved = "S ",
-                },
-                ui = {
-                  live = "* ",
-                  hidden = "h",
-                  ignored = "i",
-                  follow = "f",
-                  selected = "* ",
-                  unselected = "  ",
-                },
-                git = {
-                  enabled = false,
-                  commit = "commit ",
-                },
-                diagnostics = {
-                  Error = "E ",
-                  Warn = "W ",
-                  Hint = "H ",
-                  Info = "I ",
-                },
-                lsp = {
-                  unavailable = "x ",
-                  enabled = "+ ",
-                  disabled = "- ",
-                  attached = "* ",
-                },
-                kinds = pvl_ascii_kind_icons,
-              },
-            },
+            picker = { enabled = true },
             quickfile = { enabled = true },
             scope = { enabled = true },
             scroll = { enabled = true },
@@ -1045,18 +836,7 @@
       todoComments = {
         package = pkgs.vimPlugins.todo-comments-nvim;
         config = ''
-          require("todo-comments").setup({
-            signs = false,
-            keywords = {
-              FIX = { icon = "F", color = "error", alt = { "FIXME", "BUG", "FIXIT", "ISSUE" } },
-              TODO = { icon = "T", color = "info" },
-              HACK = { icon = "H", color = "warning" },
-              WARN = { icon = "W", color = "warning", alt = { "WARNING", "XXX" } },
-              PERF = { icon = "P", alt = { "OPTIM", "PERFORMANCE", "OPTIMIZE" } },
-              NOTE = { icon = "N", color = "hint", alt = { "INFO" } },
-              TEST = { icon = "S", color = "test", alt = { "TESTING", "PASSED", "FAILED" } },
-            },
-          })
+          require("todo-comments").setup()
           map("n", "<leader>st", "<cmd>TodoSnacks<cr>", { desc = "Todo comments" })
         '';
       };
@@ -1072,21 +852,7 @@
       trouble = {
         package = pkgs.vimPlugins.trouble-nvim;
         config = ''
-          require("trouble").setup({
-            icons = {
-              indent = {
-                top = "| ",
-                middle = "+-",
-                last = "`-",
-                fold_open = "v ",
-                fold_closed = "> ",
-                ws = "  ",
-              },
-              folder_closed = "d ",
-              folder_open = "d ",
-              kinds = pvl_ascii_kind_icons,
-            },
-          })
+          require("trouble").setup()
           map("n", "<leader>xx", "<cmd>Trouble diagnostics toggle<cr>", { desc = "Diagnostics" })
           map("n", "<leader>xX", "<cmd>Trouble diagnostics toggle filter.buf=0<cr>", { desc = "Buffer diagnostics" })
           map("n", "<leader>cs", "<cmd>Trouble symbols toggle focus=false<cr>", { desc = "Symbols" })
@@ -1105,46 +871,7 @@
         package = pkgs.vimPlugins.which-key-nvim;
         config = ''
           local wk = require("which-key")
-          wk.setup({
-            preset = "modern",
-            icons = {
-              breadcrumb = ">",
-              separator = "->",
-              ellipsis = "...",
-              mappings = false,
-              rules = false,
-              keys = {
-                BS = "BS",
-                C = "C-",
-                CR = "Enter",
-                D = "D-",
-                Down = "Down",
-                Esc = "Esc",
-                F1 = "F1",
-                F2 = "F2",
-                F3 = "F3",
-                F4 = "F4",
-                F5 = "F5",
-                F6 = "F6",
-                F7 = "F7",
-                F8 = "F8",
-                F9 = "F9",
-                F10 = "F10",
-                F11 = "F11",
-                F12 = "F12",
-                Left = "Left",
-                M = "M-",
-                NL = "Enter",
-                Right = "Right",
-                S = "S-",
-                ScrollWheelDown = "ScrollDown",
-                ScrollWheelUp = "ScrollUp",
-                Space = "Space",
-                Tab = "Tab",
-                Up = "Up",
-              },
-            },
-          })
+          wk.setup({ preset = "modern" })
           wk.add({
             { "<leader>a", group = "ai" },
             { "<leader>b", group = "buffer" },
