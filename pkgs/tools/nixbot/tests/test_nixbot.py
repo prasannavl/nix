@@ -493,6 +493,7 @@ class NixbotScriptTest(unittest.TestCase):
             wait_for_in_flight_deploy_activation() {{ return 0; }}
             print_deploy_systemd_user_manager_report() {{ return 0; }}
             report_activation_lock_contention_if_present() {{ return 0; }}
+            host_boot_is_container() {{ return 1; }}
             run_with_combined_stream_capture() {{
               local -n out_ref="$1"
               shift
@@ -522,15 +523,15 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual("verify:app:/nix/store/snapshot path", lines[2])
         self.assertEqual("failed-rc:37", lines[3])
         command = lines[4]
-        self.assertIn("test -x /nix/store/snapshot\\ path/bin/switch-to-configuration", command)
-        self.assertIn("snapshot is not activatable: /nix/store/snapshot\\ path", command)
-        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("NIXOS_INSTALL_BOOTLOADER=1 systemd-run", command)
         self.assertIn("--wait --collect --no-ask-password --pipe --quiet", command)
         self.assertIn("--service-type=exec", command)
         self.assertRegex(command, r"--unit=nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}")
         self.assertIn("/run/current-system/sw/bin/bash -lc", command)
         self.assertIn("/nix/store/snapshot", command)
-        self.assertIn("path/bin/switch-to-configuration\\ switch", command)
+        self.assertIn("nix-env", command)
+        self.assertIn("/nix/var/nix/profiles/system", command)
+        self.assertIn("switch-to-configuration", command)
 
 
     def test_wait_for_in_flight_deploy_activation_waits_then_proceeds(self):
@@ -592,6 +593,19 @@ class NixbotScriptTest(unittest.TestCase):
         )
         lines = result.stdout.splitlines()
         self.assertEqual("wait-rc:0", lines[-1])
+
+    def test_nixbot_activation_command_promotes_profile_after_successful_switch(self):
+        result = self.run_script(
+            """
+            init_vars
+            nixbot_activation_command '/nix/store/system path' switch 1
+            """
+        )
+
+        command = result.stdout
+        switch_index = command.index('"${system_path}/bin/switch-to-configuration" "${goal}"')
+        profile_index = command.index("nix-env -p /nix/var/nix/profiles/system --set")
+        self.assertLess(switch_index, profile_index)
 
     def test_parent_readiness_fast_success_summarizes_per_parent(self):
         result = self.run_script(
@@ -667,6 +681,7 @@ class NixbotScriptTest(unittest.TestCase):
             RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
             NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
             mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            host_boot_is_container() {{ return 1; }}
             run_with_combined_stream_capture() {{
               local -n out_ref="$1"
               shift
@@ -683,9 +698,7 @@ class NixbotScriptTest(unittest.TestCase):
         lines = result.stdout.splitlines()
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
-        self.assertIn("test -x /nix/store/system\\ path/bin/switch-to-configuration", command)
-        self.assertIn("system path is not activatable: /nix/store/system\\ path", command)
-        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("NIXOS_INSTALL_BOOTLOADER=1 systemd-run", command)
         self.assertIn("-E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK", command)
         self.assertIn("--property=RuntimeMaxSec=", command)
         self.assertIn("--property=TimeoutStopSec=", command)
@@ -694,7 +707,78 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertRegex(command, r"--unit=nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}")
         self.assertIn("/run/current-system/sw/bin/bash -lc", command)
         self.assertIn("/nix/store/system", command)
-        self.assertIn("path/bin/switch-to-configuration\\ boot", command)
+        self.assertIn("nix-env", command)
+        self.assertIn("/nix/var/nix/profiles/system", command)
+        self.assertIn("switch-to-configuration", command)
+
+    def test_activate_prepared_system_path_disables_bootloader_for_containers(self):
+        cmd_file = self.work_dir / "activate-container-cmd"
+        result = self.run_script(
+            f"""
+            init_vars
+            GOAL=switch
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            host_boot_is_container() {{ return 0; }}
+            run_with_combined_stream_capture() {{
+              local -n out_ref="$1"
+              shift
+              printf '%s\n' "$2" >{cmd_file}
+              out_ref=''
+              return 0
+            }}
+            activate_prepared_system_path app '/nix/store/system path'
+            printf 'activate-rc:%s\n' "$?"
+            cat {cmd_file}
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("activate-rc:0", lines[0])
+        command = lines[1]
+        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("nix-env", command)
+        self.assertIn("/nix/var/nix/profiles/system", command)
+        self.assertIn("switch-to-configuration", command)
+
+    def test_activate_prepared_system_path_does_not_persist_test_goal(self):
+        cmd_file = self.work_dir / "activate-test-cmd"
+        result = self.run_script(
+            f"""
+            init_vars
+            GOAL=test
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            host_boot_is_container() {{
+              echo "unexpected container eval" >&2
+              return 2
+            }}
+            run_with_combined_stream_capture() {{
+              local -n out_ref="$1"
+              shift
+              printf '%s\n' "$2" >{cmd_file}
+              out_ref=''
+              return 0
+            }}
+            activate_prepared_system_path app '/nix/store/system path'
+            printf 'activate-rc:%s\n' "$?"
+            cat {cmd_file}
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("activate-rc:0", lines[0])
+        command = lines[1]
+        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("persist_profile=0", command)
+        self.assertIn("switch-to-configuration", command)
+        self.assertNotIn("unexpected container eval", result.stderr)
 
     def test_build_cache_mode_resolution_uses_configured_cache_identity(self):
         result = self.run_script(

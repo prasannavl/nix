@@ -1579,11 +1579,82 @@ rollback_activation_unit_name() {
 }
 
 nixbot_activation_command() {
-	local switch_path="$1" goal="$2"
+	local system_path="$1" goal="$2" persist_profile="$3"
 
-	printf '%q %q' \
-		"${switch_path}" \
-		"${goal}"
+	printf 'set -Eeuo pipefail\n'
+	printf 'system_path=%q\n' "${system_path}"
+	printf 'goal=%q\n' "${goal}"
+	printf 'persist_profile=%q\n' "${persist_profile}"
+	cat <<'EOF_ACTIVATION'
+if [ ! -x "${system_path}/bin/switch-to-configuration" ]; then
+	echo "system path is not activatable: ${system_path}" >&2
+	exit 1
+fi
+
+"${system_path}/bin/switch-to-configuration" "${goal}"
+
+if [ "${persist_profile}" -eq 1 ]; then
+	if [ ! -f "${system_path}/nixos-version" ]; then
+		echo "system path is missing nixos-version after activation: ${system_path}" >&2
+		exit 1
+	fi
+	nix-env -p /nix/var/nix/profiles/system --set "${system_path}"
+fi
+EOF_ACTIVATION
+}
+
+activation_goal_persists_profile() {
+	local goal="$1"
+
+	case "${goal}" in
+	switch | boot) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+host_boot_is_container() {
+	local node="$1" is_container=""
+
+	if ! run_supervised_stdout_capture is_container "" \
+		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --raw --no-write-lock-file ".#nixosConfigurations.${node}.config.boot.isContainer"; then
+		echo "Failed to evaluate boot.isContainer for ${node}" >&2
+		return 2
+	fi
+
+	case "${is_container}" in
+	true) return 0 ;;
+	false) return 1 ;;
+	*)
+		echo "Unexpected boot.isContainer value for ${node}: ${is_container}" >&2
+		return 2
+		;;
+	esac
+}
+
+activation_bootloader_flag() {
+	local node="$1" goal="$2" is_container_rc=0
+
+	if ! activation_goal_persists_profile "${goal}"; then
+		printf '0\n'
+		return 0
+	fi
+
+	if host_boot_is_container "${node}"; then
+		is_container_rc=0
+	else
+		is_container_rc="$?"
+	fi
+	case "${is_container_rc}" in
+	0)
+		printf '0\n'
+		;;
+	1)
+		printf '1\n'
+		;;
+	*)
+		return "${is_container_rc}"
+		;;
+	esac
 }
 
 nixbot_activation_systemd_run_properties() {
@@ -7478,6 +7549,7 @@ wait_for_in_flight_deploy_activation() {
 
 rollback_host_to_snapshot() {
 	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_script="" rollback_unit="" systemd_run_properties=""
+	local install_bootloader=0
 	local rollback_rc=0 rollback_start_epoch="" rollback_output=""
 
 	[ -n "${snapshot_path}" ] || {
@@ -7489,12 +7561,12 @@ rollback_host_to_snapshot() {
 	prepare_deploy_context "${node}" || return 1
 	wait_for_in_flight_deploy_activation "${node}" || return "$?"
 	rollback_unit="$(rollback_activation_unit_name "${node}")"
-	rollback_script="$(nixbot_activation_command "${snapshot_path}/bin/switch-to-configuration" switch)"
+	install_bootloader="$(activation_bootloader_flag "${node}" switch)" || return "$?"
+	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1)"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 	printf -v rollback_cmd \
-		'test -x %q/bin/switch-to-configuration || { echo "snapshot is not activatable: %q" >&2; exit 1; }; NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
-		"${snapshot_path}" \
-		"${snapshot_path}" \
+		'NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
+		"${install_bootloader}" \
 		"${systemd_run_properties}" \
 		"${rollback_unit}" \
 		"${REMOTE_SYSTEM_BASH}" \
@@ -8065,15 +8137,19 @@ require_remote_build_cache_for_deploy() {
 
 activate_prepared_system_path() {
 	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_unit="" systemd_run_properties=""
+	local install_bootloader=0 persist_profile=0
 	local activation_rc=0 activation_start_epoch="" activation_output=""
 
 	activation_unit="$(deploy_activation_unit_name "${node}")"
-	activation_script="$(nixbot_activation_command "${system_path}/bin/switch-to-configuration" "${GOAL}")"
+	if activation_goal_persists_profile "${GOAL}"; then
+		persist_profile=1
+	fi
+	install_bootloader="$(activation_bootloader_flag "${node}" "${GOAL}")" || return "$?"
+	activation_script="$(nixbot_activation_command "${system_path}" "${GOAL}" "${persist_profile}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 	printf -v activate_cmd \
-		'test -x %q/bin/switch-to-configuration || { echo "system path is not activatable: %q" >&2; exit 1; }; NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
-		"${system_path}" \
-		"${system_path}" \
+		'NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %q -lc %q' \
+		"${install_bootloader}" \
 		"${systemd_run_properties}" \
 		"${activation_unit}" \
 		"${REMOTE_SYSTEM_BASH}" \

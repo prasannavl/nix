@@ -303,6 +303,14 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Cache-pull transport to the target uses the prepared target transport retry
   path, while activation itself remains a single mutating operation. `nixbot`
   must not take ownership of builder signing commands.
+- Direct store-path activation intentionally uses promote-after-success ordering
+  for `switch` and `boot`: first run the target's `bin/switch-to-configuration`,
+  then set `/nix/var/nix/profiles/system` to the target system with
+  `nix-env --set` only if activation succeeds. This differs from
+  `nixos-rebuild switch` and makes failed activation avoid promoting the system
+  profile. Bare-metal hosts may run bootloader work during activation; hosts
+  whose evaluated `config.boot.isContainer` is true must keep
+  `NIXOS_INSTALL_BOOTLOADER=0`.
 - Dry deploys may still evaluate and build systems, but prepared target commands
   must be printed instead of executed. This includes parent readiness
   reconcile/settle commands; do not let `--dry` run parent-side Incus
