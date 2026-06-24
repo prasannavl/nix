@@ -1,4 +1,4 @@
-{lib,...}: {
+{lib, ...}: {
   imports = [
     ../common/pvl.nix
     ../../lib/devices/lenovo-legion-5-15ach6h.nix
