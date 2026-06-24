@@ -26,9 +26,47 @@
     '';
   };
 in {
-  systemd.tmpfiles.rules = [
-    "d ${ollamaModelsDir} 0755 pvl pvl -"
-  ];
+  systemd = {
+    tmpfiles.rules = [
+      "d ${ollamaModelsDir} 0755 pvl pvl -"
+    ];
+
+    user = {
+      services.pvl-ollama-models = {
+        description = "Pull required pvl-l5 Ollama models";
+        after = [
+          "pvl-ollama.service"
+          "pvl-ollama-nvidia.service"
+          "network-online.target"
+        ];
+        wants = [
+          "network-online.target"
+        ];
+        unitConfig.ConditionUser = "pvl";
+        serviceConfig = {
+          Type = "simple";
+          RemainAfterExit = true;
+          Environment = let
+            ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
+            ollamaNvidiaPort = config.services.podman-compose.pvl.instances.ollama-nvidia.exposedPorts.main.port;
+          in [
+            "OLLAMA_URLS=http://127.0.0.1:${toString ollamaPort} http://127.0.0.1:${toString ollamaNvidiaPort}"
+          ];
+          ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
+        };
+      };
+
+      timers.pvl-ollama-models-boot = {
+        description = "Start pvl-l5 Ollama model pull after boot";
+        wantedBy = ["timers.target"];
+        unitConfig.ConditionUser = "pvl";
+        timerConfig = {
+          OnBootSec = "2min";
+          Unit = "pvl-ollama-models.service";
+        };
+      };
+    };
+  };
 
   services.podman-compose.pvl.instances = {
     ollama = rec {
@@ -97,40 +135,6 @@ in {
                       capabilities:
                         - gpu
       '';
-    };
-  };
-
-  systemd.user.services.pvl-ollama-models = {
-    description = "Pull required pvl-l5 Ollama models";
-    after = [
-      "pvl-ollama.service"
-      "pvl-ollama-nvidia.service"
-      "network-online.target"
-    ];
-    wants = [
-      "network-online.target"
-    ];
-    unitConfig.ConditionUser = "pvl";
-    serviceConfig = {
-      Type = "simple";
-      RemainAfterExit = true;
-      Environment = let
-        ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
-        ollamaNvidiaPort = config.services.podman-compose.pvl.instances.ollama-nvidia.exposedPorts.main.port;
-      in [
-        "OLLAMA_URLS=http://127.0.0.1:${toString ollamaPort} http://127.0.0.1:${toString ollamaNvidiaPort}"
-      ];
-      ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
-    };
-  };
-
-  systemd.user.timers.pvl-ollama-models-boot = {
-    description = "Start pvl-l5 Ollama model pull after boot";
-    wantedBy = ["timers.target"];
-    unitConfig.ConditionUser = "pvl";
-    timerConfig = {
-      OnBootSec = "2min";
-      Unit = "pvl-ollama-models.service";
     };
   };
 
