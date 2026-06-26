@@ -74,7 +74,10 @@ resource "cloudflare_dns_record" "record" {
   settings = try(each.value.settings, null)
 
   lifecycle {
-    create_before_destroy = true
+    # Cloudflare does not allow two records of different types with the same
+    # name to coexist. destroy_before_create avoids the race where a new
+    # record cannot be created because the old one still exists.
+    create_before_destroy = false
 
     precondition {
       condition = (
