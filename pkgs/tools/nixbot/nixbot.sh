@@ -6741,6 +6741,18 @@ snapshot_exists() {
 	read_snapshot_system_path_file "${snapshot_file}" >/dev/null
 }
 
+snapshot_deploy_skip_marker_file() {
+	local snapshot_dir="$1" node="$2"
+
+	printf '%s/%s.deploy-skip\n' "${snapshot_dir}" "${node}"
+}
+
+snapshot_deploy_skip_marked() {
+	local snapshot_dir="$1" node="$2"
+
+	[ -e "$(snapshot_deploy_skip_marker_file "${snapshot_dir}" "${node}")" ]
+}
+
 wave_needs_snapshot_retry() {
 	local snapshot_dir="$1"
 	shift
@@ -7365,6 +7377,48 @@ process_snapshot_wave_results() {
 	done
 
 	[ "${fatal_failure}" -eq 0 ]
+}
+
+mark_snapshot_matched_deploy_skips() {
+	local snapshot_dir="$1" build_out_dir="$2" deploy_status_dir="$3"
+	local deploy_skipped_hosts_out_name="$4"
+	# shellcheck disable=SC2178,SC2034
+	local -n msmds_deploy_skipped_hosts_out_ref="${deploy_skipped_hosts_out_name}"
+	shift 4
+
+	local node="" snapshot_path="" built_out_file="" built_out_path=""
+	local marker_file="" status_file="" duration_file=""
+
+	[ "${NIXBOT_IF_CHANGED}" -eq 1 ] || return 0
+
+	for node in "$@"; do
+		[ -n "${node}" ] || continue
+		if host_deploy_stage_skipped "${node}"; then
+			continue
+		fi
+		if array_contains "${node}" "${OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS[@]}"; then
+			continue
+		fi
+		if ! snapshot_path="$(read_snapshot_system_path_file "${snapshot_dir}/${node}.path")"; then
+			continue
+		fi
+
+		built_out_file="${build_out_dir}/${node}.path"
+		[ -s "${built_out_file}" ] || continue
+		built_out_path="$(<"${built_out_file}")"
+		if [ "${snapshot_path}" != "${built_out_path}" ]; then
+			continue
+		fi
+
+		marker_file="$(snapshot_deploy_skip_marker_file "${snapshot_dir}" "${node}")"
+		status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
+		duration_file="$(phase_dir_item_duration_file "${deploy_status_dir}" "${node}")"
+		: >"${marker_file}"
+		write_status_file "${status_file}" "skip"
+		write_duration_file "${duration_file}" 0
+		append_unique_array_item msmds_deploy_skipped_hosts_out_ref "${node}"
+		echo "[${node}] snapshot | deploy skip (current generation already matches built output)" >&2
+	done
 }
 
 snapshot_host_with_retry() {
@@ -10073,21 +10127,40 @@ run_deploy_phase() {
 				return 1
 			fi
 		fi
+		mark_snapshot_matched_deploy_skips \
+			"${snapshot_dir}" \
+			"${build_out_dir}" \
+			"${deploy_status_dir}" \
+			"${deploy_skipped_hosts_out_name}" \
+			"${deploy_level_hosts[@]}"
 		if [ "${snapshot_retry_logged}" -eq 1 ]; then
 			log_grouped_phase_section "Phase: Deploy" "deploy" "${host_grouping}"
 		fi
 
-		log_subsection "Deploy Wave: $(join_by_comma "${deploy_level_hosts[@]}")"
-		deploy_wave_failed=0
-		deploy_started_hosts=()
-		failed_node=""
-		active_jobs=0
-
+		completed_deploy_hosts=()
 		for node in "${deploy_level_hosts[@]}"; do
 			[ -n "${node}" ] || continue
 			if array_contains "${node}" "${OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS[@]}"; then
 				continue
 			fi
+			if snapshot_deploy_skip_marked "${snapshot_dir}" "${node}"; then
+				continue
+			fi
+			completed_deploy_hosts+=("${node}")
+		done
+		if [ "${#completed_deploy_hosts[@]}" -eq 0 ]; then
+			level_index=$((level_index + 1))
+			continue
+		fi
+
+		log_subsection "Deploy Wave: $(join_by_comma "${completed_deploy_hosts[@]}")"
+		deploy_wave_failed=0
+		deploy_started_hosts=()
+		failed_node=""
+		active_jobs=0
+
+		for node in "${completed_deploy_hosts[@]}"; do
+			[ -n "${node}" ] || continue
 
 			status_file="$(phase_dir_item_status_file "${deploy_status_dir}" "${node}")"
 			out_file="${build_out_dir}/${node}.path"

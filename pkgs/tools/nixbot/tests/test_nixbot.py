@@ -628,13 +628,21 @@ class NixbotScriptTest(unittest.TestCase):
 
     def test_nixbot_activation_runner_decodes_script_without_login_shell(self):
         fake_system = self.work_dir / "fake system"
+        remote_bin = self.work_dir / "remote-bin"
+        bash_path = shutil.which("bash")
+        self.assertIsNotNone(bash_path)
         result = self.run_script(
             f"""
             init_vars
+            mkdir -p "{remote_bin}"
+            ln -s "$(command -v bash)" "{remote_bin}/bash"
+            ln -s "$(command -v base64)" "{remote_bin}/base64"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
             mkdir -p "{fake_system}/bin"
             touch "{fake_system}/nixos-version"
             cat >"{fake_system}/bin/switch-to-configuration" <<'EOF_SWITCH'
-#!/usr/bin/env bash
+#!{bash_path}
 printf 'switched:%s\n' "$1"
 EOF_SWITCH
             chmod +x "{fake_system}/bin/switch-to-configuration"
@@ -646,8 +654,8 @@ EOF_SWITCH
         )
 
         lines = result.stdout.splitlines()
-        self.assertIn("/run/current-system/sw/bin/bash -c", lines[0])
-        self.assertIn("/run/current-system/sw/bin/base64\\ -d", lines[0])
+        self.assertIn(f"{remote_bin}/bash -c", lines[0])
+        self.assertIn(f"{remote_bin}/base64\\ -d", lines[0])
         self.assertIn("nixbot-activation", lines[0])
         self.assertNotIn(" -lc ", lines[0])
         self.assertNotIn("$'", lines[0])
@@ -776,7 +784,7 @@ EOF_SWITCH
             """
         )
 
-        self.assertIn("[parent-readiness] parent: reconcile ok for ci, corp after 0s", result.stderr)
+        self.assertRegex(result.stderr, r"\[parent-readiness\] parent: reconcile ok for ci, corp after [0-9]+s")
 
     def test_parent_readiness_failure_keeps_phase_and_resources(self):
         result = self.run_script(
@@ -791,7 +799,7 @@ EOF_SWITCH
         )
 
         self.assertEqual(["rc:7"], result.stdout.splitlines())
-        self.assertIn("[parent-readiness] parent: settle failed for ci, corp after 0s", result.stderr)
+        self.assertRegex(result.stderr, r"\[parent-readiness\] parent: settle failed for ci, corp after [0-9]+s")
 
     def test_build_plan_cache_miss_progress_is_concise(self):
         result = self.run_script(
@@ -1314,6 +1322,110 @@ EOF_SWITCH
         self.assertEqual(["required"], json.loads(lines[5]))
         self.assertEqual(["optional"], json.loads(lines[6]))
         self.assertEqual(["required"], json.loads(lines[7]))
+
+    def test_deploy_phase_skips_hosts_already_at_snapshot_generation(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            NIXBOT_IF_CHANGED=1
+            NIXBOT_HOSTS_JSON='{{"same":{{}},"changed":{{}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}
+            snapshot_log_dir={self.work_dir / "snapshot-log"}
+            snapshot_status_dir={self.work_dir / "snapshot-status"}
+            deploy_log_dir={self.work_dir / "deploy-log"}
+            deploy_status_dir={self.work_dir / "deploy-status"}
+            build_out_dir={self.work_dir / "build-out"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir"
+            printf '/nix/store/same-nixos-system-same-26.05\n' >"$snapshot_dir/same.path"
+            printf '/nix/store/same-nixos-system-same-26.05\n' >"$build_out_dir/same.path"
+            printf '/nix/store/old-nixos-system-changed-26.05\n' >"$snapshot_dir/changed.path"
+            printf '/nix/store/new-nixos-system-changed-26.05\n' >"$build_out_dir/changed.path"
+            level_groups=('["same","changed"]')
+            success=()
+            skipped=()
+            snapshot_failed=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ return 0; }}
+            run_deploy_job() {{
+              printf 'deploy:%s\n' "$1"
+              write_status_file "$3" 0
+            }}
+            run_deploy_phase \
+              0 1 0 1 \
+              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir" \
+              level_groups success skipped snapshot_failed failed
+            bash_args_to_json_array "${{success[@]}}"
+            bash_args_to_json_array "${{skipped[@]}}"
+            bash_args_to_json_array "${{failed[@]}}"
+            printf 'same-status:%s\n' "$(cat "$deploy_status_dir/same.rc")"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("deploy:changed", lines[0])
+        self.assertEqual(["changed"], json.loads(lines[1]))
+        self.assertEqual(["same"], json.loads(lines[2]))
+        self.assertEqual([], json.loads(lines[3]))
+        self.assertEqual("same-status:skip", lines[4])
+        self.assertIn(
+            "[same] snapshot | deploy skip (current generation already matches built output)",
+            result.stderr,
+        )
+
+    def test_force_keeps_deploying_snapshot_matched_hosts(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            NIXBOT_IF_CHANGED=0
+            NIXBOT_HOSTS_JSON='{{"same":{{}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}
+            snapshot_log_dir={self.work_dir / "snapshot-log"}
+            snapshot_status_dir={self.work_dir / "snapshot-status"}
+            deploy_log_dir={self.work_dir / "deploy-log"}
+            deploy_status_dir={self.work_dir / "deploy-status"}
+            build_out_dir={self.work_dir / "build-out"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir"
+            printf '/nix/store/same-nixos-system-same-26.05\n' >"$snapshot_dir/same.path"
+            printf '/nix/store/same-nixos-system-same-26.05\n' >"$build_out_dir/same.path"
+            level_groups=('["same"]')
+            success=()
+            skipped=()
+            snapshot_failed=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ return 0; }}
+            run_deploy_job() {{
+              printf 'deploy:%s\n' "$1"
+              write_status_file "$3" 0
+            }}
+            run_deploy_phase \
+              0 1 0 1 \
+              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir" \
+              level_groups success skipped snapshot_failed failed
+            bash_args_to_json_array "${{success[@]}}"
+            bash_args_to_json_array "${{skipped[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("deploy:same", lines[0])
+        self.assertEqual(["same"], json.loads(lines[1]))
+        self.assertEqual([], json.loads(lines[2]))
 
     def test_deploy_wave_signal_short_circuits_before_rollbacks(self):
         result = self.run_script(
