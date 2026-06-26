@@ -94,6 +94,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   the `pvl-l5` boot failure where Home Manager tried to manage
   `.config/nvim/init.lua` below the editable dotfiles symlink, plus the
   non-fatal activation fix.
+- `.agents/docs/notes/hosts/pvl-l5-home-manager-vscode-extensions-2026-06.md`:
+  Records the `pvl-l5` Home Manager activation conflict where
+  `mutableExtensionsDir = false` made Home Manager own `.vscode/extensions`,
+  while the `mimeapps.list` force path in the log was only Home Manager's
+  generic example.
 - `.agents/docs/notes/hosts/pvl-l5-automatic-timezoned-generation-mismatch-2026-06.md`:
   Records `pvl-l5` generation/profile mismatch symptoms, including
   `automatic-timezoned.service` appearing in deploy output but not live and the

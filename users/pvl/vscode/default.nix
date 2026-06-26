@@ -10,6 +10,7 @@
     programs.vscode = {
       enable = true;
       package = vscodePackage;
+      mutableExtensionsDir = false;
       profiles.default = let
         # Keep extensions aligned to the stable release train that nix-vscode-extensions publishes.
         v = vscodePackage.version;
