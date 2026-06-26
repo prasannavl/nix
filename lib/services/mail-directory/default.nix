@@ -19,12 +19,14 @@ in {
         enable = value.enable or default;
         external = value.external or false;
         name = value.name or null;
+        description = value.description or null;
         aliases = value.aliases or [];
       }
       else {
         enable = value;
         external = false;
         name = null;
+        description = null;
         aliases = [];
       };
 
@@ -39,6 +41,7 @@ in {
       mailingListAliases = mailingListConfig.aliases;
       shared = sharedConfig.enable;
       sharedName = sharedConfig.name;
+      sharedDescription = sharedConfig.description;
       sharedAliases = sharedConfig.aliases;
     };
 
@@ -80,6 +83,7 @@ in {
         aliases = flags.mailingListAliases;
         inherit aliasLocalParts aliasAddresses;
         sharedAliases = flags.sharedAliases;
+        sharedDescription = flags.sharedDescription;
         sharedAliasLocalParts = map (addressLocalPart domainName) flags.sharedAliases;
         inherit recipients;
         inherit (flags) externalList mailingList shared;

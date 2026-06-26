@@ -84,6 +84,7 @@
       shared = {
         enable = true;
         name = "team";
+        description = "Team";
         aliases = ["team-shared@example.test"];
       };
     };
@@ -170,7 +171,8 @@ in
     "nomail@example.test"
   ];
   assert aliasNames usersList == [];
-  assert teamShared.description == "Userdata-managed team shared mailbox.";
+  assert teamShared.description == "Team";
+  assert adminsShared.description == "Userdata-managed admins shared mailbox.";
   assert aliasNames teamShared == ["team-shared"];
   assert aliasNames adminsShared == ["admins" "admin-team"];
   assert provisioning.internalMailingListAddresses

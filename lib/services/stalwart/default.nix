@@ -39,7 +39,10 @@
     sharedGroupForGroup = group: {
       name = group.sharedName;
       inherit domainId;
-      description = "Userdata-managed ${group.name} shared mailbox.";
+      description =
+        if group.sharedDescription != null
+        then group.sharedDescription
+        else "Userdata-managed ${group.name} shared mailbox.";
       aliases =
         map (localPart: {
           name = localPart;
