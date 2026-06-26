@@ -47,6 +47,8 @@ in {
 
     # Productivity
     google-chrome
+    thunderbird
+    geary
     obsidian
     libreoffice
     xournalpp
