@@ -6753,6 +6753,16 @@ snapshot_deploy_skip_marked() {
 	[ -e "$(snapshot_deploy_skip_marker_file "${snapshot_dir}" "${node}")" ]
 }
 
+log_snapshot_deploy_skip() {
+	local node="$1" message="skip deploy: gen up-to-date"
+
+	if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+		printf '%s\n' "${message}" | host_log_filter "${node}" snapshot >&2
+	else
+		printf '[%s] snapshot | %s\n' "${node}" "${message}" >&2
+	fi
+}
+
 wave_needs_snapshot_retry() {
 	local snapshot_dir="$1"
 	shift
@@ -7417,7 +7427,7 @@ mark_snapshot_matched_deploy_skips() {
 		write_status_file "${status_file}" "skip"
 		write_duration_file "${duration_file}" 0
 		append_unique_array_item msmds_deploy_skipped_hosts_out_ref "${node}"
-		echo "[${node}] snapshot | deploy skip (current generation already matches built output)" >&2
+		log_snapshot_deploy_skip "${node}"
 	done
 }
 
@@ -9655,7 +9665,7 @@ resolve_host_build_plan_drv_path() {
 		return 0
 	fi
 
-	echo "Evaluating.." >&2
+	echo "Run: nix eval" >&2
 	drv_path="$(eval_host_build_plan_drv_path "${node}")" || return "$?"
 	write_cached_host_build_plan "${node}" "${drv_path}"
 	printf '%s\n' "${drv_path}"

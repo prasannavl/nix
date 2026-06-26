@@ -813,7 +813,8 @@ EOF_SWITCH
         )
 
         self.assertEqual(["/nix/store/app.drv"], result.stdout.splitlines())
-        self.assertIn("Evaluating..", result.stderr)
+        self.assertIn("Run: nix eval", result.stderr)
+        self.assertNotIn("Evaluating..", result.stderr)
         self.assertNotIn("Evaluating build plan for app", result.stderr)
 
     def test_activate_prepared_system_path_uses_transient_unit_command_shape(self):
@@ -1330,6 +1331,7 @@ EOF_SWITCH
             DRY_RUN=0
             ROLLBACK_ON_FAILURE=1
             NIXBOT_IF_CHANGED=1
+            FORCE_PREFIX_HOST_LOGS=1
             NIXBOT_HOSTS_JSON='{{"same":{{}},"changed":{{}}}}'
             snapshot_dir={self.work_dir / "snapshot"}
             snapshot_log_dir={self.work_dir / "snapshot-log"}
@@ -1375,10 +1377,8 @@ EOF_SWITCH
         self.assertEqual(["same"], json.loads(lines[2]))
         self.assertEqual([], json.loads(lines[3]))
         self.assertEqual("same-status:skip", lines[4])
-        self.assertIn(
-            "[same] snapshot | deploy skip (current generation already matches built output)",
-            result.stderr,
-        )
+        self.assertIn("| same | skip deploy: gen up-to-date", result.stderr)
+        self.assertNotIn("deploy skip (current generation already matches built output)", result.stderr)
 
     def test_deploy_phase_logs_when_entire_wave_is_skipped(self):
         result = self.run_script(
