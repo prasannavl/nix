@@ -1380,6 +1380,56 @@ EOF_SWITCH
             result.stderr,
         )
 
+    def test_deploy_phase_logs_when_entire_wave_is_skipped(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            NIXBOT_IF_CHANGED=1
+            NIXBOT_HOSTS_JSON='{{"same":{{}},"same2":{{}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}
+            snapshot_log_dir={self.work_dir / "snapshot-log"}
+            snapshot_status_dir={self.work_dir / "snapshot-status"}
+            deploy_log_dir={self.work_dir / "deploy-log"}
+            deploy_status_dir={self.work_dir / "deploy-status"}
+            build_out_dir={self.work_dir / "build-out"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir"
+            printf '/nix/store/same-nixos-system-same-26.05\n' >"$snapshot_dir/same.path"
+            printf '/nix/store/same-nixos-system-same-26.05\n' >"$build_out_dir/same.path"
+            printf '/nix/store/same2-nixos-system-same2-26.05\n' >"$snapshot_dir/same2.path"
+            printf '/nix/store/same2-nixos-system-same2-26.05\n' >"$build_out_dir/same2.path"
+            level_groups=('["same","same2"]')
+            success=()
+            skipped=()
+            snapshot_failed=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ return 0; }}
+            run_deploy_job() {{
+              printf 'unexpected-deploy:%s\n' "$1"
+              return 1
+            }}
+            run_deploy_phase \
+              0 1 0 1 \
+              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir" \
+              level_groups success skipped snapshot_failed failed
+            bash_args_to_json_array "${{success[@]}}"
+            bash_args_to_json_array "${{skipped[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual([], json.loads(lines[0]))
+        self.assertEqual(["same", "same2"], json.loads(lines[1]))
+        self.assertNotIn("unexpected-deploy", result.stdout)
+        self.assertIn("Skipping: No changed hosts", result.stderr)
+
     def test_force_keeps_deploying_snapshot_matched_hosts(self):
         result = self.run_script(
             f"""

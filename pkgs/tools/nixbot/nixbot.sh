@@ -10149,6 +10149,7 @@ run_deploy_phase() {
 			completed_deploy_hosts+=("${node}")
 		done
 		if [ "${#completed_deploy_hosts[@]}" -eq 0 ]; then
+			echo "Skipping: No changed hosts" >&2
 			level_index=$((level_index + 1))
 			continue
 		fi

@@ -221,7 +221,9 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   processing compares the recorded current generation to the built target
   generation. Matching hosts are recorded as deploy skips and are not scheduled
   into the deploy wave, so no switch preparation, activation, health check, or
-  rollback is attempted for that no-op host.
+  rollback is attempted for that no-op host. If a deploy wave has no remaining
+  changed hosts after this filtering, the deploy phase prints
+  `Skipping: No changed hosts`.
 - Parallel deploy waves fail fast after the first required host deploy failure:
   `nixbot` stops scheduling new hosts, terminates sibling deploy jobs that have
   not reached `switch-to-configuration`, and leaves sibling hosts that have
