@@ -1,0 +1,173 @@
+diff --git a/crates/common/src/config/groupware.rs b/crates/common/src/config/groupware.rs
+index bc0aec1..b46d0c9 100644
+--- a/crates/common/src/config/groupware.rs
++++ b/crates/common/src/config/groupware.rs
+@@ -29,6 +29,7 @@ pub struct GroupwareConfig {
+     pub max_ical_attendees_per_instance: usize,
+     pub default_calendar_name: Option<String>,
+     pub default_calendar_display_name: Option<String>,
++    pub append_account_name_to_default_calendar_display_name: bool,
+     pub alarms_enabled: bool,
+     pub alarms_minimum_interval: i64,
+     pub alarms_allow_external_recipients: bool,
+@@ -102,6 +103,8 @@ impl GroupwareConfig {
+             max_results: dav.max_results as usize,
+             default_calendar_name: calendar.default_href_name,
+             default_calendar_display_name: calendar.default_display_name,
++            append_account_name_to_default_calendar_display_name: calendar
++                .append_account_name_to_default_display_name,
+             default_addressbook_name: book.default_href_name,
+             default_addressbook_display_name: book.default_display_name,
+             max_ical_size: calendar.max_i_calendar_size as usize,
+diff --git a/crates/groupware/src/cache/mod.rs b/crates/groupware/src/cache/mod.rs
+index 0541143..c33d9c9 100644
+--- a/crates/groupware/src/cache/mod.rs
++++ b/crates/groupware/src/cache/mod.rs
+@@ -373,6 +373,12 @@ impl GroupwareCache for Server {
+             let mut batch = BatchBuilder::new();
+             let account_id = account_info_owner.account_id();
+             let account_name = account_info_owner.name();
++            let display_name = self
++                .core
++                .groupware
++                .default_calendar_display_name
++                .as_ref()
++                .unwrap_or(name);
+             let document_id = self
+                 .store()
+                 .assign_document_ids(account_id, Collection::Calendar, 1)
+@@ -381,15 +387,15 @@ impl GroupwareCache for Server {
+                 name: name.clone(),
+                 preferences: vec![CalendarPreferences {
+                     account_id,
+-                    name: format!(
+-                        "{} ({})",
+-                        self.core
+-                            .groupware
+-                            .default_calendar_display_name
+-                            .as_ref()
+-                            .unwrap_or(name),
+-                        account_name
+-                    ),
++                    name: if self
++                        .core
++                        .groupware
++                        .append_account_name_to_default_calendar_display_name
++                    {
++                        format!("{display_name} ({account_name})")
++                    } else {
++                        display_name.to_string()
++                    },
+                     ..Default::default()
+                 }],
+                 ..Default::default()
+diff --git a/crates/registry/src/schema/properties.rs b/crates/registry/src/schema/properties.rs
+index 19abd78..bd3408a 100644
+--- a/crates/registry/src/schema/properties.rs
++++ b/crates/registry/src/schema/properties.rs
+@@ -305,6 +305,7 @@ pub enum Property {
+     AllowedNotifyUris = 712,
+     Alpha = 388,
+     AnonymousClientRegistration = 614,
++    AppendAccountNameToDefaultDisplayName = 1901,
+     Ansi = 858,
+     ApiKey = 325,
+     ApiUser = 892,
+diff --git a/crates/registry/src/schema/properties_impl.rs b/crates/registry/src/schema/properties_impl.rs
+index fbde05b..a0b548f 100644
+--- a/crates/registry/src/schema/properties_impl.rs
++++ b/crates/registry/src/schema/properties_impl.rs
+@@ -458,6 +458,9 @@ impl EnumImpl for Property {
+             b"allowedNotifyUris" => Property::AllowedNotifyUris,
+             b"alpha" => Property::Alpha,
+             b"anonymousClientRegistration" => Property::AnonymousClientRegistration,
++            b"appendAccountNameToDefaultDisplayName" => {
++                Property::AppendAccountNameToDefaultDisplayName
++            },
+             b"ansi" => Property::Ansi,
+             b"apiKey" => Property::ApiKey,
+             b"apiUser" => Property::ApiUser,
+@@ -1373,6 +1376,9 @@ impl EnumImpl for Property {
+             Property::AllowedNotifyUris => "allowedNotifyUris",
+             Property::Alpha => "alpha",
+             Property::AnonymousClientRegistration => "anonymousClientRegistration",
++            Property::AppendAccountNameToDefaultDisplayName => {
++                "appendAccountNameToDefaultDisplayName"
++            },
+             Property::Ansi => "ansi",
+             Property::ApiKey => "apiKey",
+             Property::ApiUser => "apiUser",
+@@ -2292,6 +2298,7 @@ impl EnumImpl for Property {
+             712 => Some(Property::AllowedNotifyUris),
+             388 => Some(Property::Alpha),
+             614 => Some(Property::AnonymousClientRegistration),
++            1901 => Some(Property::AppendAccountNameToDefaultDisplayName),
+             858 => Some(Property::Ansi),
+             325 => Some(Property::ApiKey),
+             892 => Some(Property::ApiUser),
+diff --git a/crates/registry/src/schema/structs.rs b/crates/registry/src/schema/structs.rs
+index 92949fe..b63bf6a 100644
+--- a/crates/registry/src/schema/structs.rs
++++ b/crates/registry/src/schema/structs.rs
+@@ -623,6 +623,8 @@ pub struct Cache {
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(default)]
+ pub struct Calendar {
++    #[serde(rename = "appendAccountNameToDefaultDisplayName")]
++    pub append_account_name_to_default_display_name: bool,
+     #[serde(rename = "defaultDisplayName")]
+     pub default_display_name: Option<String>,
+     #[serde(rename = "defaultHrefName")]
+diff --git a/crates/registry/src/schema/structs_impl.rs b/crates/registry/src/schema/structs_impl.rs
+index 27db890..084b395 100644
+--- a/crates/registry/src/schema/structs_impl.rs
++++ b/crates/registry/src/schema/structs_impl.rs
+@@ -4532,4 +4532,6 @@ impl Pickle for Calendar {
+         self.max_events.pickle(out);
+         self.max_participant_identities.pickle(out);
+         self.max_event_notifications.pickle(out);
++        self.append_account_name_to_default_display_name
++            .pickle(out);
+     }
+@@ -4545,6 +4547,11 @@ impl Pickle for Calendar {
+         this.max_events = Pickle::unpickle(stream)?;
+         this.max_participant_identities = Pickle::unpickle(stream)?;
+         this.max_event_notifications = Pickle::unpickle(stream)?;
++        this.append_account_name_to_default_display_name = if stream.eof() {
++            true
++        } else {
++            Pickle::unpickle(stream)?
++        };
+         Some(this)
+     }
+ }
+@@ -4561,6 +4568,7 @@ impl Default for Calendar {
+             max_events: Default::default(),
+             max_participant_identities: Some(100u64),
+             max_event_notifications: Default::default(),
++            append_account_name_to_default_display_name: true,
+         }
+     }
+ }
+@@ -4570,6 +4578,10 @@ impl Default for Calendar {
+ impl IntoValue for Calendar {
+     fn into_value(self) -> JmapValue<'static> {
+-        let mut map = jmap_tools::Map::with_capacity(11);
++        let mut map = jmap_tools::Map::with_capacity(12);
++        map.insert_unchecked(
++            Property::AppendAccountNameToDefaultDisplayName,
++            self.append_account_name_to_default_display_name.into_value(),
++        );
+         map.insert_unchecked(
+             Property::DefaultDisplayName,
+             self.default_display_name.into_value(),
+@@ -4606,6 +4618,9 @@ impl RegistryJsonPropertyPatch for Calendar {
+         value: JmapValue<'x>,
+     ) -> PatchResult<'x> {
+         match pointer.next_property() {
++            Some(Property::AppendAccountNameToDefaultDisplayName) => self
++                .append_account_name_to_default_display_name
++                .patch(pointer, value),
+             Some(Property::DefaultDisplayName) => self
+                 .default_display_name
+                 .patch(pointer.with_validators(&[StringValidator::Trim]), value),

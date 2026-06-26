@@ -22,6 +22,7 @@
     ${builtins.readFile ./calendar-organizer-cn-from-identity.patch}
     ${builtins.readFile ./dmarc-without-mail-from-spf.patch}
     ${builtins.readFile ./calendar-reply-sender-detection.patch}
+    ${builtins.readFile ./calendar-default-display-name-policy.patch}
   '');
   imageName = "localhost/abird/stalwart";
   imageTag = "${version}-bind-template-${patchHash}";
@@ -43,6 +44,7 @@
     ./calendar-organizer-cn-from-identity.patch
     ./dmarc-without-mail-from-spf.patch
     ./calendar-reply-sender-detection.patch
+    ./calendar-default-display-name-policy.patch
   ];
 
   cargoExtraArgs = "--locked -p stalwart";
