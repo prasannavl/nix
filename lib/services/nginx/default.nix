@@ -1991,6 +1991,126 @@ in rec {
     scrapeUri = "http://127.0.0.1:${toString httpPort}/nginx_status";
   };
 
+  ########################################
+  # High-level compose helpers
+  ########################################
+
+  # Split vhosts/routes/redirects/staticSites into two groups based on a set
+  # of server names. Returns { matched = {...}; rest = {...}; } for each.
+  splitByServerNames = hostnameSet: {
+    proxyVhosts,
+    nginxRoutes ? {},
+    redirectVhosts ? {},
+    staticSites ? {},
+  }: let
+    hasAny = names: builtins.any (n: builtins.elem n hostnameSet) names;
+    isVhost = _: v: hasAny (v.serverNames or []);
+    isRoute = _: r: builtins.elem (r.serverName or "") hostnameSet;
+    isRedirect = _: r: hasAny (r.serverNames or []);
+    isStatic = _: s: hasAny (s.serverNames or []);
+  in {
+    matched = {
+      proxyVhosts = lib.filterAttrs isVhost proxyVhosts;
+      nginxRoutes = lib.filterAttrs isRoute nginxRoutes;
+      redirectVhosts = lib.filterAttrs isRedirect redirectVhosts;
+      staticSites = lib.filterAttrs isStatic staticSites;
+    };
+    rest = {
+      proxyVhosts = lib.filterAttrs (n: v: !(isVhost n v)) proxyVhosts;
+      nginxRoutes = lib.filterAttrs (n: r: !(isRoute n r)) nginxRoutes;
+      redirectVhosts = lib.filterAttrs (n: r: !(isRedirect n r)) redirectVhosts;
+      staticSites = lib.filterAttrs (n: s: !(isStatic n s)) staticSites;
+    };
+  };
+
+  # Render a TLS server config (listen 443 ssl + cert directives).
+  # Shorthand for renderServers with TLS listen directives and cert paths.
+  renderTlsServers = {
+    rateLimit ? null,
+    nginxRoutes ? {},
+    proxyVhosts ? {},
+    redirectVhosts ? {},
+    staticSites ? {},
+    certPath,
+    keyPath,
+    deferCertificateLoad ? false,
+    certPathVariable ? "nginx_tls_certificate",
+    keyPathVariable ? "nginx_tls_certificate_key",
+    listenPort ? 443,
+    rejectUnknownServerNames ? false,
+  }: let
+    tlsDirectives = [
+      "listen ${toString listenPort} ssl;"
+      "http2 on;"
+    ];
+    certVariableRef = "$" + certPathVariable;
+    keyVariableRef = "$" + keyPathVariable;
+    effectiveCertPath =
+      if deferCertificateLoad
+      then certVariableRef
+      else certPath;
+    effectiveKeyPath =
+      if deferCertificateLoad
+      then keyVariableRef
+      else keyPath;
+    deferredCertificateMaps = lib.optionalString deferCertificateLoad ''
+      map $ssl_server_name ${certVariableRef} {
+          default ${certPath};
+      }
+
+      map $ssl_server_name ${keyVariableRef} {
+          default ${keyPath};
+      }
+
+    '';
+    unknownServerNameRejector = lib.optionalString rejectUnknownServerNames ''
+      server {
+          listen 443 ssl default_server;
+          ssl_reject_handshake on;
+      }
+
+    '';
+  in
+    deferredCertificateMaps
+    + unknownServerNameRejector
+    + renderServers {
+      inherit rateLimit nginxRoutes proxyVhosts redirectVhosts staticSites;
+      includeHttpPreamble = false;
+      listenDirectives = tlsDirectives;
+      serverExtraDirectives = ''
+        ssl_certificate ${effectiveCertPath};
+        ssl_certificate_key ${effectiveKeyPath};
+      '';
+    };
+
+  # Generate https.override.yml content for the nginx compose instance.
+  httpsOverrideYaml = {
+    internalTlsProxyPort,
+    internalTlsContainerPort ? 443,
+    portMappings ? ["${toString internalTlsProxyPort}:${toString internalTlsContainerPort}"],
+    streamPortMappings ? [],
+    extraHosts ? ["host.containers.internal:host-gateway"],
+    volumes ? [],
+  }: let
+    toYaml = lib.generators.toYAML {};
+  in
+    toYaml {
+      services.nginx =
+        {
+          ports = portMappings ++ streamPortMappings;
+          extra_hosts = extraHosts;
+        }
+        // lib.optionalAttrs (volumes != []) {
+          inherit volumes;
+        };
+    };
+
+  # Generate network.override.yml content for the nginx compose instance.
+  networkOverrideYaml = subnet:
+    (lib.generators.toYAML {}) {
+      networks.default.ipam.config = [{inherit subnet;}];
+    };
+
   inherit
     mkPathRouteName
     renderStreamProxiesFromExposedPorts
