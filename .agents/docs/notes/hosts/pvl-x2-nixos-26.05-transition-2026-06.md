@@ -41,6 +41,14 @@ completed user-service reconciliation.
   sit one UID higher than the new declaration. NixOS activation refuses to
   rewrite existing UIDs in place, so the warnings preserve the old UIDs instead
   of applying the shifted declarations.
+- On June 28, 2026, another pvl-x2 deploy hit the same stale account state. Live
+  readback showed `gdm-greeter-2`, `gdm-greeter-3`, and `gdm-greeter-4` still
+  had their pre-26.05 shifted UIDs, while `gdm-greeter-4` and `gdm-greeter-5`
+  both mapped to UID `60582`.
+- The one-time account migration removed the stale users and eliminated the UID
+  warnings, but deploy still failed because `switch-to-configuration-ng` reloads
+  every active logind user. The active GDM greeter user then failed to restart
+  GNOME login-session user targets and made the switch return exit code `4`.
 
 ## Follow-up
 
@@ -54,5 +62,7 @@ set.
 
 For the GDM greeter UID warnings, treat the messages as stale local account
 state after the upstream suffix change, not as agenix, nixbot, or secret
-deployment failures. If cleanup is needed, remove or reconcile the stale
-`gdm-greeter-*` accounts while GDM is stopped, then rerun activation.
+deployment failures. The deploy-time migration experiment showed that stopping
+`display-manager.service` before account reconciliation avoids the active GDM
+greeter user-manager reload failure, but no durable repo-side GDM migration is
+kept after the live account state converged.
