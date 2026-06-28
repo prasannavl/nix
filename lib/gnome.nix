@@ -2,9 +2,7 @@
   lib,
   pkgs,
   ...
-}: let
-  mutterLessThan50 = version: lib.versionOlder version "50";
-in {
+}: {
   security = {
     rtkit.enable = true;
     polkit.enable = true;
@@ -15,12 +13,10 @@ in {
     desktopManager.gnome = {
       enable = true;
       extraGSettingsOverrides = let
-        mutterExperimentalFeatures =
-          [
-            "scale-monitor-framebuffer"
-            "xwayland-native-scaling"
-          ]
-          ++ lib.optional (mutterLessThan50 pkgs.mutter.version) "variable-refresh-rate";
+        mutterExperimentalFeatures = [
+          "scale-monitor-framebuffer"
+          "xwayland-native-scaling"
+        ];
       in ''
         [org.gnome.mutter]
         experimental-features=[${lib.concatMapStringsSep ", " (feature: "'${feature}'") mutterExperimentalFeatures}]

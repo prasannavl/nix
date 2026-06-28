@@ -199,6 +199,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/lib/nixos-option-namespace-cleanup-2026-06.md`: Records
   repo-owned NixOS option naming, top-level `user-services`, and direct disko
   helper imports instead of exposing pure helpers through the option tree.
+- `.agents/docs/notes/lib/version-upgrade-compat-migrations-2026-06.md`: Records
+  the durable pattern for temporary version-compat branches and one-time
+  activation migrations during NixOS/package upgrades.
 - `.agents/docs/notes/lib/podman-compose-staged-file-ownership-2026-04.md`:
   Records per-entry `mode`/`user`/`group`/`scope` plus `dirs.once` behavior for
   staged Podman Compose directories, files, and file secrets.
