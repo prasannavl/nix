@@ -3,7 +3,7 @@ let
 in {
   backgroundOpacity = 0.5;
   density = "comfortable";
-  fontScale = 1.11;
+  fontScale = 1.1;
   middleClickAction = "launcherPanel";
   middleClickFollowMouse = true;
   mouseWheelAction = "workspace";

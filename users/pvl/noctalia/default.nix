@@ -58,10 +58,11 @@
           else {
             enabled = true;
             position = "top";
-            size = 1.25;
+            size = 1.5;
             floatingRatio = 0;
             pinnedApps = [
               "Alacritty"
+              "org.gnome.Nautilus"
               "google-chrome"
               "code"
               "org.gnome.Calendar"
@@ -135,7 +136,7 @@
           fontDefault = "Noto Sans";
           fontFixed = "Noto Sans Mono";
           panelBackgroundOpacity = 1;
-          panelsAttachedToBar = false;
+          panelsAttachedToBar = true;
           tooltipsEnabled = false;
         };
 
