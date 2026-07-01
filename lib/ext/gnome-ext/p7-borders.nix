@@ -5,7 +5,7 @@
 }:
 stdenv.mkDerivation rec {
   pname = "gnome-shell-extension-p7-borders";
-  version = "42";
+  version = "44";
 
   uuid = "p7-borders@prasannavl.com";
   extensionDataUuid = builtins.replaceStrings ["@"] [""] uuid;
@@ -19,7 +19,7 @@ stdenv.mkDerivation rec {
 
   src = fetchzip {
     url = "https://extensions.gnome.org/extension-data/${extensionDataUuid}.v${version}.shell-extension.zip";
-    sha256 = "sha256-VcyCa2XzY6xLCAbaPfc1+npYFU0AsUT5I1f2/vfnPoU=";
+    sha256 = "sha256-UXYotwW4DPuz+n/zA7RYnsT2SoLf1J7QkZOrqqUurjc=";
     stripRoot = false;
   };
 

@@ -3,7 +3,7 @@
   tailscale,
   ...
 }: let
-  version = "1.98.5";
+  version = "1.98.8";
 in
   tailscale.overrideAttrs (finalAttrs: old: {
     version = version;
@@ -12,10 +12,10 @@ in
       owner = "tailscale";
       repo = "tailscale";
       tag = "v${version}";
-      hash = "sha256-JaVCmMdZMaP/8RaNRmYpQOj+y/NfHuXdqp8qyWNYEqM=";
+      hash = "sha256-3Ikti52jcncQTq9//rBa3Q9N2C2MkGONJ6+4cn4eUFc=";
     };
 
-    vendorHash = "sha256-mbxLXR2TBgiwyVGfLmMR5xWk+0f66mPDas95Wla70Lk=";
+    vendorHash = "sha256-Sd2iLJ7eDfDYdIRuW4xuiKgzhQWJWGAnz97FJWrVRlE=";
 
     ldflags =
       builtins.map
