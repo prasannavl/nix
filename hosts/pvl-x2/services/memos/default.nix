@@ -6,8 +6,13 @@ in {
       port = 5230;
       openFirewall = true;
       nginxHostNames = ["memos-x.p7log.com"];
-      cfTunnelNames = ["memos-x.p7log.com"];
-      cfTunnelPort = nginxPort;
+      tunnels = [
+        {
+          kind = "cloudflare";
+          hostNames = ["memos-x.p7log.com"];
+          targetPort = nginxPort;
+        }
+      ];
       clientMaxBodySize = "100m";
     };
 

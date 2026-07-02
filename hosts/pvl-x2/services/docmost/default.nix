@@ -12,8 +12,13 @@ in {
         port = 3000;
         openFirewall = true;
         nginxHostNames = ["docmost-x.p7log.com"];
-        cfTunnelNames = ["docmost-x.p7log.com"];
-        cfTunnelPort = nginxPort;
+        tunnels = [
+          {
+            kind = "cloudflare";
+            hostNames = ["docmost-x.p7log.com"];
+            targetPort = nginxPort;
+          }
+        ];
         clientMaxBodySize = "250m";
       };
 

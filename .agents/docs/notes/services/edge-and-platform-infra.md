@@ -28,8 +28,10 @@ and documentation sanitization rules for infra-facing docs.
   to centralize ingress in Cloudflare-managed config.
 - For repo-managed services, derive nginx and tunnel ingress from application
   metadata instead of maintaining a second handwritten map.
-- `nginxHostNames`, `cfTunnelNames`, and `cfTunnelPort` are the durable
-  application-facing ingress metadata surface.
+- `nginxHostNames` plus provider-neutral `tunnels` entries are the durable
+  application-facing ingress metadata surface. Use `kind = "cloudflare"` for
+  Cloudflare publications and `targetPort` when the tunnel should hit a local
+  proxy instead of the exposed service port.
 
 ## GCP model
 

@@ -6,8 +6,13 @@ in {
       port = 2000;
       openFirewall = true;
       nginxHostNames = ["vaultwarden-x.p7log.com"];
-      cfTunnelNames = ["vaultwarden-x.p7log.com"];
-      cfTunnelPort = nginxPort;
+      tunnels = [
+        {
+          kind = "cloudflare";
+          hostNames = ["vaultwarden-x.p7log.com"];
+          targetPort = nginxPort;
+        }
+      ];
       clientMaxBodySize = "100m";
     };
 
