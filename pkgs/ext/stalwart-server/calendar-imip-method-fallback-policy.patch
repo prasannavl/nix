@@ -1,0 +1,186 @@
+diff --git a/crates/common/src/config/groupware.rs b/crates/common/src/config/groupware.rs
+index bc0aec1..1d21f53 100644
+--- a/crates/common/src/config/groupware.rs
++++ b/crates/common/src/config/groupware.rs
+@@ -37,6 +37,8 @@ pub struct GroupwareConfig {
+     pub alarms_template: Template<CalendarTemplateVariable>,
+     pub itip_enabled: bool,
+     pub itip_auto_add: bool,
++    pub imip_allow_method_compat: bool,
++    pub imip_allow_external_sender: bool,
+     pub itip_inbound_max_ical_size: usize,
+     pub itip_outbound_max_recipients: usize,
+     pub itip_http_rsvp_url: Option<String>,
+@@ -121,6 +123,8 @@ impl GroupwareConfig {
+             .expect("Failed to parse calendar template"),
+             itip_enabled: sched.enable,
+             itip_auto_add: sched.auto_add_invitations,
++            imip_allow_method_compat: sched.imip_allow_method_compat,
++            imip_allow_external_sender: sched.imip_allow_external_sender,
+             itip_inbound_max_ical_size: sched.itip_max_size as usize,
+             itip_outbound_max_recipients: sched.max_recipients as usize,
+             itip_inbox_auto_expunge: dr
+diff --git a/crates/email/src/message/ingest.rs b/crates/email/src/message/ingest.rs
+index 219cfdb..2324ab0 100644
+--- a/crates/email/src/message/ingest.rs
++++ b/crates/email/src/message/ingest.rs
+@@ -363,7 +363,8 @@ impl EmailIngest for Server {
+                 // iMIP processing
+                 if self.core.groupware.itip_enabled
+                     && !is_spam
+-                    && is_sender_authenticated
++                    && (is_sender_authenticated
++                        || self.core.groupware.imip_allow_external_sender)
+                     && params
+                         .access_token
+                         .has_permission(Permission::CalendarSchedulingReceive)
+@@ -374,13 +375,21 @@ impl EmailIngest for Server {
+                         .caused_by(trc::location!())?;
+                     let mut sender = None;
+                     for part in &message.parts {
+-                        if part.content_type().is_some_and(|ct| {
++                        if let Some(ct) = part.content_type().filter(|ct| {
+                             ct.ctype().eq_ignore_ascii_case("text")
+                                 && ct
+                                     .subtype()
+                                     .is_some_and(|st| st.eq_ignore_ascii_case("calendar"))
+-                                && ct.has_attribute("method")
+                         }) && let Some(itip_message) = part.text_contents()
++                            && (ct.has_attribute("method")
++                                || (self
++                                    .core
++                                    .groupware
++                                    .imip_allow_method_compat
++                                    && itip_message.lines().any(|line| {
++                                        line.get(..7)
++                                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("METHOD:"))
++                                    })))
+                         {
+                             if itip_message.len() < self.core.groupware.itip_inbound_max_ical_size {
+                                 if let Some(sender) = sender.get_or_insert_with(|| {
+diff --git a/crates/registry/src/schema/properties.rs b/crates/registry/src/schema/properties.rs
+index a5aaa0a..9e5e2de 100644
+--- a/crates/registry/src/schema/properties.rs
++++ b/crates/registry/src/schema/properties.rs
+@@ -297,6 +297,8 @@ pub enum Property {
+     AllowDirectoryQueries = 695,
+     AllowExternalRcpts = 164,
+     AllowInvalidCerts = 26,
++    IMipAllowMethodCompat = 1902,
++    IMipAllowExternalSender = 1904,
+     AllowPlainTextAuth = 424,
+     AllowRelaying = 348,
+     AllowSpamTraining = 369,
+diff --git a/crates/registry/src/schema/properties_impl.rs b/crates/registry/src/schema/properties_impl.rs
+index 4a5b770..3183555 100644
+--- a/crates/registry/src/schema/properties_impl.rs
++++ b/crates/registry/src/schema/properties_impl.rs
+@@ -450,6 +450,8 @@ impl EnumImpl for Property {
+             b"allowDirectoryQueries" => Property::AllowDirectoryQueries,
+             b"allowExternalRcpts" => Property::AllowExternalRcpts,
+             b"allowInvalidCerts" => Property::AllowInvalidCerts,
++            b"iMipAllowMethodCompat" => Property::IMipAllowMethodCompat,
++            b"iMipAllowExternalSender" => Property::IMipAllowExternalSender,
+             b"allowPlainTextAuth" => Property::AllowPlainTextAuth,
+             b"allowRelaying" => Property::AllowRelaying,
+             b"allowSpamTraining" => Property::AllowSpamTraining,
+@@ -1373,6 +1375,8 @@ impl EnumImpl for Property {
+             Property::AllowDirectoryQueries => "allowDirectoryQueries",
+             Property::AllowExternalRcpts => "allowExternalRcpts",
+             Property::AllowInvalidCerts => "allowInvalidCerts",
++            Property::IMipAllowMethodCompat => "iMipAllowMethodCompat",
++            Property::IMipAllowExternalSender => "iMipAllowExternalSender",
+             Property::AllowPlainTextAuth => "allowPlainTextAuth",
+             Property::AllowRelaying => "allowRelaying",
+             Property::AllowSpamTraining => "allowSpamTraining",
+@@ -2300,6 +2304,8 @@ impl EnumImpl for Property {
+             695 => Some(Property::AllowDirectoryQueries),
+             164 => Some(Property::AllowExternalRcpts),
+             26 => Some(Property::AllowInvalidCerts),
++            1902 => Some(Property::IMipAllowMethodCompat),
++            1904 => Some(Property::IMipAllowExternalSender),
+             424 => Some(Property::AllowPlainTextAuth),
+             348 => Some(Property::AllowRelaying),
+             369 => Some(Property::AllowSpamTraining),
+diff --git a/crates/registry/src/schema/structs.rs b/crates/registry/src/schema/structs.rs
+index 56c7ec4..892aea8 100644
+--- a/crates/registry/src/schema/structs.rs
++++ b/crates/registry/src/schema/structs.rs
+@@ -677,6 +677,10 @@ pub struct CalendarScheduling {
+     pub http_rsvp_url: Option<String>,
+     #[serde(rename = "autoAddInvitations")]
+     pub auto_add_invitations: bool,
++    #[serde(rename = "iMipAllowMethodCompat")]
++    pub imip_allow_method_compat: bool,
++    #[serde(rename = "iMipAllowExternalSender")]
++    pub imip_allow_external_sender: bool,
+     #[serde(rename = "itipMaxSize")]
+     pub itip_max_size: u64,
+     #[serde(rename = "maxRecipients")]
+diff --git a/crates/registry/src/schema/structs_impl.rs b/crates/registry/src/schema/structs_impl.rs
+index 99160f6..b81a4c9 100644
+--- a/crates/registry/src/schema/structs_impl.rs
++++ b/crates/registry/src/schema/structs_impl.rs
+@@ -4809,6 +4809,8 @@ impl Pickle for CalendarScheduling {
+         self.max_recipients.pickle(out);
+         self.email_template.pickle(out);
+         self.http_rsvp_template.pickle(out);
++        self.imip_allow_method_compat.pickle(out);
++        self.imip_allow_external_sender.pickle(out);
+     }
+
+     fn unpickle(stream: &mut crate::pickle::PickledStream<'_>) -> Option<Self> {
+@@ -4822,6 +4824,16 @@ impl Pickle for CalendarScheduling {
+         this.max_recipients = Pickle::unpickle(stream)?;
+         this.email_template = Pickle::unpickle(stream)?;
+         this.http_rsvp_template = Pickle::unpickle(stream)?;
++        this.imip_allow_method_compat = if !stream.eof() {
++            Pickle::unpickle(stream)?
++        } else {
++            false
++        };
++        this.imip_allow_external_sender = if !stream.eof() {
++            Pickle::unpickle(stream)?
++        } else {
++            false
++        };
+         Some(this)
+     }
+ }
+@@ -4834,6 +4846,8 @@ impl Default for CalendarScheduling {
+             http_rsvp_link_expiry: Duration::from_millis(7776000000),
+             http_rsvp_url: Default::default(),
+             auto_add_invitations: false,
++            imip_allow_method_compat: false,
++            imip_allow_external_sender: false,
+             itip_max_size: 524288,
+             max_recipients: 100u64,
+             email_template: Default::default(),
+@@ -4856,6 +4870,14 @@ impl IntoValue for CalendarScheduling {
+             Property::AutoAddInvitations,
+             self.auto_add_invitations.into_value(),
+         );
++        map.insert_unchecked(
++            Property::IMipAllowMethodCompat,
++            self.imip_allow_method_compat.into_value(),
++        );
++        map.insert_unchecked(
++            Property::IMipAllowExternalSender,
++            self.imip_allow_external_sender.into_value(),
++        );
+         map.insert_unchecked(Property::ItipMaxSize, self.itip_max_size.into_value());
+         map.insert_unchecked(Property::MaxRecipients, self.max_recipients.into_value());
+         map.insert_unchecked(Property::EmailTemplate, self.email_template.into_value());
+@@ -4881,6 +4903,12 @@ impl RegistryJsonPropertyPatch for CalendarScheduling {
+                 .http_rsvp_url
+                 .patch(pointer.with_validators(&[StringValidator::Trim]), value),
+             Some(Property::AutoAddInvitations) => self.auto_add_invitations.patch(pointer, value),
++            Some(Property::IMipAllowMethodCompat) => self
++                .imip_allow_method_compat
++                .patch(pointer, value),
++            Some(Property::IMipAllowExternalSender) => {
++                self.imip_allow_external_sender.patch(pointer, value)
++            }
+             Some(Property::ItipMaxSize) => self.itip_max_size.patch(pointer, value),
+             Some(Property::MaxRecipients) => self.max_recipients.patch(pointer, value),
+             Some(Property::EmailTemplate) => self.email_template.patch(pointer, value),

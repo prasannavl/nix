@@ -1,107 +1,25 @@
-diff --git a/crates/imap-proto/src/protocol/capability.rs b/crates/imap-proto/src/protocol/capability.rs
-index 68fc0b780..be56fecea 100644
---- a/crates/imap-proto/src/protocol/capability.rs
-+++ b/crates/imap-proto/src/protocol/capability.rs
-@@ -133,12 +133,15 @@ impl Capability {
-         });
-     }
+diff --git a/crates/common/src/config/mailstore/imap.rs b/crates/common/src/config/mailstore/imap.rs
+index cda5e589..88604929 100644
+--- a/crates/common/src/config/mailstore/imap.rs
++++ b/crates/common/src/config/mailstore/imap.rs
+@@ -13,6 +13,7 @@ pub struct ImapConfig {
+     pub max_request_size: usize,
+     pub max_auth_failures: u32,
+     pub allow_plain_auth: bool,
++    pub allow_plain_sasl_auth: bool,
 
--    pub fn all_capabilities(is_authenticated: bool, offer_tls: bool) -> Vec<Capability> {
-+    pub fn all_capabilities(
-+        is_authenticated: bool,
-+        offer_tls: bool,
-+        allow_authentication: bool,
-+    ) -> Vec<Capability> {
-         let mut capabilities = vec![
-             Capability::IMAP4rev2,
-             Capability::IMAP4rev1,
-             Capability::Enable,
--            Capability::SASLIR,
-             Capability::LiteralPlus,
-             Capability::Id,
-             Capability::Utf8Accept,
-@@ -177,12 +176,15 @@ impl Capability {
-                 Capability::Quota,
-                 Capability::QuotaResource(QuotaResourceName::Storage),
-             ]);
--        } else {
-+        } else if allow_authentication {
-             capabilities.extend([
-+                Capability::SASLIR,
-                 Capability::Auth(Mechanism::Plain),
-                 Capability::Auth(Mechanism::OAuthBearer),
-                 Capability::Auth(Mechanism::XOauth2),
-             ]);
-+        } else {
-+            capabilities.push(Capability::LoginDisabled);
+     pub timeout_auth: Duration,
+     pub timeout_unauth: Duration,
+@@ -35,6 +36,7 @@ impl ImapConfig {
+             rate_requests: imap.max_request_rate,
+             rate_concurrent: imap.max_concurrent,
+             allow_plain_auth: imap.allow_plain_text_auth,
++            allow_plain_sasl_auth: imap.allow_plain_text_sasl_auth,
          }
-         if offer_tls {
-             capabilities.push(Capability::StartTLS);
-diff --git a/crates/imap/src/op/authenticate.rs b/crates/imap/src/op/authenticate.rs
-index 8c71cb1eb..0de2a8544 100644
---- a/crates/imap/src/op/authenticate.rs
-+++ b/crates/imap/src/op/authenticate.rs
-@@ -21,6 +21,13 @@ use std::sync::Arc;
-
- impl<T: SessionStream> Session<T> {
-     pub async fn handle_authenticate(&mut self, request: Request<Command>) -> trc::Result<()> {
-+        if !self.is_tls && !self.server.core.imap.allow_plain_auth {
-+            return Err(trc::ImapEvent::Error
-+                .into_err()
-+                .details("AUTHENTICATE is disabled on the clear-text port.")
-+                .id(request.tag));
-+        }
-+
-         let mut args = request.parse_authenticate()?;
-
-         match args.mechanism {
-@@ -117,6 +125,7 @@ impl<T: SessionStream> Session<T> {
-                     capabilities: Capability::all_capabilities(
-                         true,
-                         !self.is_tls && self.instance.acceptor.is_tls(),
-+                        true,
-                     ),
-                 })
-                 .with_tag(tag)
-diff --git a/crates/imap/src/lib.rs b/crates/imap/src/lib.rs
-index 7ef8d5a6d..680964821 100644
---- a/crates/imap/src/lib.rs
-+++ b/crates/imap/src/lib.rs
-@@ -6,8 +6,6 @@
-
- #![warn(clippy::large_futures)]
-
--use std::sync::LazyLock;
--
- use imap_proto::{ResponseCode, StatusResponse, protocol::capability::Capability};
-
- pub mod core;
-@@ -15,20 +13,13 @@ pub mod op;
-
- static SERVER_GREETING: &str = "Stalwart IMAP4rev2 at your service.";
-
--pub(crate) static GREETING_WITH_TLS: LazyLock<Vec<u8>> = LazyLock::new(|| {
-+pub(crate) fn greeting(offer_tls: bool, allow_authentication: bool) -> Vec<u8> {
-     StatusResponse::ok(SERVER_GREETING)
-         .with_code(ResponseCode::Capability {
--            capabilities: Capability::all_capabilities(false, true),
-+            capabilities: Capability::all_capabilities(false, offer_tls, allow_authentication),
-         })
-         .into_bytes()
--});
-+}
-
--pub(crate) static GREETING_WITHOUT_TLS: LazyLock<Vec<u8>> = LazyLock::new(|| {
--    StatusResponse::ok(SERVER_GREETING)
--        .with_code(ResponseCode::Capability {
--            capabilities: Capability::all_capabilities(false, false),
--        })
--        .into_bytes()
--});
-
- pub struct ImapError;
+     }
+ }
 diff --git a/crates/imap/src/core/session.rs b/crates/imap/src/core/session.rs
-index b4407c526..2197def18 100644
+index 6d80ee4c..a6faf06d 100644
 --- a/crates/imap/src/core/session.rs
 +++ b/crates/imap/src/core/session.rs
 @@ -5,7 +5,7 @@
@@ -125,7 +43,7 @@ index b4407c526..2197def18 100644
 +        let server = manager.inner.build_server();
 +        let greeting = greeting(
 +            !is_tls && session.instance.acceptor.is_tls(),
-+            is_tls || server.core.imap.allow_plain_auth,
++            is_tls || server.core.imap.allow_plain_sasl_auth,
 +        );
 
 -        if let Err(err) = session.stream.write_all(greeting).await {
@@ -133,7 +51,7 @@ index b4407c526..2197def18 100644
              trc::event!(
                  Network(trc::NetworkEvent::WriteError),
                  Reason = err.to_string(),
-@@ -138,7 +138,6 @@ impl<T: SessionStream> Session<T> {
+@@ -137,7 +137,6 @@ impl<T: SessionStream> Session<T> {
 
          // Split stream into read and write halves
          let (stream_rx, stream_tx) = tokio::io::split(session.stream);
@@ -141,15 +59,228 @@ index b4407c526..2197def18 100644
 
          Ok(Session {
              receiver: Receiver::with_max_request_size(server.core.imap.max_request_size),
+diff --git a/crates/imap/src/lib.rs b/crates/imap/src/lib.rs
+index b2a83d5e..8abbba0e 100644
+--- a/crates/imap/src/lib.rs
++++ b/crates/imap/src/lib.rs
+@@ -6,8 +6,6 @@
+
+ #![warn(clippy::large_futures)]
+
+-use std::sync::LazyLock;
+-
+ use imap_proto::{ResponseCode, StatusResponse, protocol::capability::Capability};
+
+ pub mod core;
+@@ -15,20 +13,12 @@ pub mod op;
+
+ static SERVER_GREETING: &str = "Stalwart IMAP4rev2 at your service.";
+
+-pub(crate) static GREETING_WITH_TLS: LazyLock<Vec<u8>> = LazyLock::new(|| {
+-    StatusResponse::ok(SERVER_GREETING)
+-        .with_code(ResponseCode::Capability {
+-            capabilities: Capability::all_capabilities(false, true),
+-        })
+-        .into_bytes()
+-});
+-
+-pub(crate) static GREETING_WITHOUT_TLS: LazyLock<Vec<u8>> = LazyLock::new(|| {
++pub(crate) fn greeting(offer_tls: bool, allow_sasl_auth: bool) -> Vec<u8> {
+     StatusResponse::ok(SERVER_GREETING)
+         .with_code(ResponseCode::Capability {
+-            capabilities: Capability::all_capabilities(false, false),
++            capabilities: Capability::all_capabilities(false, offer_tls, allow_sasl_auth),
+         })
+         .into_bytes()
+-});
++}
+
+ pub struct ImapError;
+diff --git a/crates/imap/src/op/authenticate.rs b/crates/imap/src/op/authenticate.rs
+index 3289c55f..9805d51b 100644
+--- a/crates/imap/src/op/authenticate.rs
++++ b/crates/imap/src/op/authenticate.rs
+@@ -21,6 +21,13 @@ use std::sync::Arc;
+
+ impl<T: SessionStream> Session<T> {
+     pub async fn handle_authenticate(&mut self, request: Request<Command>) -> trc::Result<()> {
++        if !self.is_tls && !self.server.core.imap.allow_plain_sasl_auth {
++            return Err(trc::ImapEvent::Error
++                .into_err()
++                .details("AUTHENTICATE is disabled on the clear-text port.")
++                .id(request.tag));
++        }
++
+         let mut args = request.parse_authenticate()?;
+
+         match args.mechanism {
+@@ -117,6 +124,7 @@ impl<T: SessionStream> Session<T> {
+                     capabilities: Capability::all_capabilities(
+                         true,
+                         !self.is_tls && self.instance.acceptor.is_tls(),
++                        true,
+                     ),
+                 })
+                 .with_tag(tag)
 diff --git a/crates/imap/src/op/capability.rs b/crates/imap/src/op/capability.rs
-index 02ee802bc..a6697571e 100644
+index 92aab03c..5c2cd655 100644
 --- a/crates/imap/src/op/capability.rs
 +++ b/crates/imap/src/op/capability.rs
-@@ -40,6 +40,7 @@ impl<T: SessionStream> Session<T> {
+@@ -41,6 +41,7 @@ impl<T: SessionStream> Session<T> {
                          capabilities: Capability::all_capabilities(
                              self.state.is_authenticated(),
                              !self.is_tls && self.instance.acceptor.is_tls(),
-+                            self.is_tls || self.server.core.imap.allow_plain_auth,
++                            self.is_tls || self.server.core.imap.allow_plain_sasl_auth,
                          ),
                      }
                      .serialize(),
+diff --git a/crates/imap-proto/src/protocol/capability.rs b/crates/imap-proto/src/protocol/capability.rs
+index 31f1340c..8b48a5ee 100644
+--- a/crates/imap-proto/src/protocol/capability.rs
++++ b/crates/imap-proto/src/protocol/capability.rs
+@@ -124,12 +124,15 @@ impl Capability {
+         });
+     }
+
+-    pub fn all_capabilities(is_authenticated: bool, offer_tls: bool) -> Vec<Capability> {
++    pub fn all_capabilities(
++        is_authenticated: bool,
++        offer_tls: bool,
++        allow_sasl_auth: bool,
++    ) -> Vec<Capability> {
+         let mut capabilities = vec![
+             Capability::IMAP4rev2,
+             Capability::IMAP4rev1,
+             Capability::Enable,
+-            Capability::SASLIR,
+             Capability::LiteralPlus,
+             Capability::Id,
+             Capability::Utf8Accept,
+@@ -168,12 +171,15 @@ impl Capability {
+                 Capability::Quota,
+                 Capability::QuotaResource(QuotaResourceName::Storage),
+             ]);
+-        } else {
++        } else if allow_sasl_auth {
+             capabilities.extend([
++                Capability::SASLIR,
+                 Capability::Auth(Mechanism::Plain),
+                 Capability::Auth(Mechanism::OAuthBearer),
+                 Capability::Auth(Mechanism::XOauth2),
+             ]);
++        } else {
++            capabilities.push(Capability::LoginDisabled);
+         }
+         if offer_tls {
+             capabilities.push(Capability::StartTLS);
+diff --git a/crates/registry/src/schema/properties.rs b/crates/registry/src/schema/properties.rs
+index 5fc70e72..cef83a8e 100644
+--- a/crates/registry/src/schema/properties.rs
++++ b/crates/registry/src/schema/properties.rs
+@@ -970,6 +970,7 @@ pub enum Property {
+     RequireClientRegistration = 615,
+     RequireScopes = 608,
+     RequireTls = 525,
++    AllowPlainTextSaslAuth = 1905,
+     ReservoirCapacity = 733,
+     ResourceGroup = 880,
+     ResourceUrl = 51,
+diff --git a/crates/registry/src/schema/properties_impl.rs b/crates/registry/src/schema/properties_impl.rs
+index 8ffc914a..8daf1a65 100644
+--- a/crates/registry/src/schema/properties_impl.rs
++++ b/crates/registry/src/schema/properties_impl.rs
+@@ -1123,6 +1123,7 @@ impl EnumImpl for Property {
+             b"requireClientRegistration" => Property::RequireClientRegistration,
+             b"requireScopes" => Property::RequireScopes,
+             b"requireTls" => Property::RequireTls,
++            b"allowPlainTextSaslAuth" => Property::AllowPlainTextSaslAuth,
+             b"reservoirCapacity" => Property::ReservoirCapacity,
+             b"resourceGroup" => Property::ResourceGroup,
+             b"resourceUrl" => Property::ResourceUrl,
+@@ -2044,6 +2045,7 @@ impl EnumImpl for Property {
+             Property::RequireClientRegistration => "requireClientRegistration",
+             Property::RequireScopes => "requireScopes",
+             Property::RequireTls => "requireTls",
++            Property::AllowPlainTextSaslAuth => "allowPlainTextSaslAuth",
+             Property::ReservoirCapacity => "reservoirCapacity",
+             Property::ResourceGroup => "resourceGroup",
+             Property::ResourceUrl => "resourceUrl",
+@@ -2969,6 +2971,7 @@ impl EnumImpl for Property {
+             615 => Some(Property::RequireClientRegistration),
+             608 => Some(Property::RequireScopes),
+             525 => Some(Property::RequireTls),
++            1905 => Some(Property::AllowPlainTextSaslAuth),
+             733 => Some(Property::ReservoirCapacity),
+             880 => Some(Property::ResourceGroup),
+             51 => Some(Property::ResourceUrl),
+diff --git a/crates/registry/src/schema/structs.rs b/crates/registry/src/schema/structs.rs
+index 7060358e..89b11799 100644
+--- a/crates/registry/src/schema/structs.rs
++++ b/crates/registry/src/schema/structs.rs
+@@ -3053,6 +3053,8 @@ pub struct HurricaneCredential {
+ pub struct Imap {
+     #[serde(rename = "allowPlainTextAuth")]
+     pub allow_plain_text_auth: bool,
++    #[serde(rename = "allowPlainTextSaslAuth")]
++    pub allow_plain_text_sasl_auth: bool,
+     #[serde(rename = "maxAuthFailures")]
+     pub max_auth_failures: u64,
+     #[serde(rename = "maxConcurrent")]
+diff --git a/crates/registry/src/schema/structs_impl.rs b/crates/registry/src/schema/structs_impl.rs
+index cc947584..40923a86 100644
+--- a/crates/registry/src/schema/structs_impl.rs
++++ b/crates/registry/src/schema/structs_impl.rs
+@@ -22232,6 +22232,7 @@ impl Pickle for Imap {
+         self.timeout_anonymous.pickle(out);
+         self.timeout_authenticated.pickle(out);
+         self.timeout_idle.pickle(out);
++        self.allow_plain_text_sasl_auth.pickle(out);
+     }
+
+     fn unpickle(stream: &mut crate::pickle::PickledStream<'_>) -> Option<Self> {
+@@ -22244,6 +22245,10 @@ impl Pickle for Imap {
+         this.timeout_anonymous = Pickle::unpickle(stream)?;
+         this.timeout_authenticated = Pickle::unpickle(stream)?;
+         this.timeout_idle = Pickle::unpickle(stream)?;
++        if stream.eof() {
++            return Some(this);
++        }
++        this.allow_plain_text_sasl_auth = Pickle::unpickle(stream)?;
+         Some(this)
+     }
+ }
+@@ -22252,6 +22257,7 @@ impl Default for Imap {
+     fn default() -> Self {
+         Self {
+             allow_plain_text_auth: false,
++            allow_plain_text_sasl_auth: true,
+             max_auth_failures: 3u64,
+             max_concurrent: Some(16u64),
+             max_request_rate: Some(Rate {
+@@ -22268,11 +22274,15 @@ impl Default for Imap {
+
+ impl IntoValue for Imap {
+     fn into_value(self) -> JmapValue<'static> {
+-        let mut map = jmap_tools::Map::with_capacity(10);
++        let mut map = jmap_tools::Map::with_capacity(11);
+         map.insert_unchecked(
+             Property::AllowPlainTextAuth,
+             self.allow_plain_text_auth.into_value(),
+         );
++        map.insert_unchecked(
++            Property::AllowPlainTextSaslAuth,
++            self.allow_plain_text_sasl_auth.into_value(),
++        );
+         map.insert_unchecked(
+             Property::MaxAuthFailures,
+             self.max_auth_failures.into_value(),
+@@ -22301,6 +22311,9 @@ impl RegistryJsonPropertyPatch for Imap {
+     ) -> PatchResult<'x> {
+         match pointer.next_property() {
+             Some(Property::AllowPlainTextAuth) => self.allow_plain_text_auth.patch(pointer, value),
++            Some(Property::AllowPlainTextSaslAuth) => {
++                self.allow_plain_text_sasl_auth.patch(pointer, value)
++            }
+             Some(Property::MaxAuthFailures) => self.max_auth_failures.patch(pointer, value),
+             Some(Property::MaxConcurrent) => self.max_concurrent.patch(pointer, value),
+             Some(Property::MaxRequestRate) => self.max_request_rate.patch(pointer, value),

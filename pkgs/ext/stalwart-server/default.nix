@@ -10,19 +10,24 @@
   rustPlatform,
   stdenvNoCC,
 }: let
-  version = "0.16.8";
+  version = "0.16.11";
   rev = "v${version}";
-  upstreamCommit = "26f41f8aa78fd6daa4cfc88bb57708a8b93a80be";
+  upstreamCommit = "0b520b6334379ac64d2d95a37f53e209c89e9577";
   patchHash = builtins.substring 0 12 (builtins.hashString "sha256" ''
     ${builtins.readFile ./bind-auth-dn-template.patch}
     ${builtins.readFile ./imap-starttls-auth.patch}
     ${builtins.readFile ./calendar-mailto-normalization.patch}
     ${builtins.readFile ./calendar-floating-timezone-summary.patch}
-    ${builtins.readFile ./calendar-organizer-snapshot-dedupe.patch}
-    ${builtins.readFile ./calendar-organizer-cn-from-identity.patch}
     ${builtins.readFile ./dmarc-without-mail-from-spf.patch}
-    ${builtins.readFile ./calendar-reply-sender-detection.patch}
+    ${builtins.readFile ./calendar-imip-method-fallback-policy.patch}
     ${builtins.readFile ./calendar-default-display-name-policy.patch}
+    ${builtins.readFile ./calendar-organizer-attendee-export-policy.patch}
+    ${builtins.readFile ./calendar-organizer-snapshot-dedupe-policy.patch}
+    ${builtins.readFile ./calendar-reply-sender-detection-policy.patch}
+    ${builtins.readFile ./calendar-organizer-cn-from-identity-policy.patch}
+    ${builtins.readFile ./imap-idle-selected-mailbox-updates.patch}
+    ${builtins.readFile ./imap-store-pipeline-sync.patch}
+    ${builtins.readFile ./imap-quota-empty-root-compat.patch}
   '');
   imageName = "localhost/abird/stalwart";
   imageTag = "${version}-bind-template-${patchHash}";
@@ -32,7 +37,7 @@
     owner = "stalwartlabs";
     repo = "stalwart";
     inherit rev;
-    hash = "sha256-4097zzxUyHYB4TLFgsF6tKNVUiEX0T8Me+D5Efwv2FE=";
+    hash = "sha256-0A8IjetGV4h4qdpm44eZb0sNQ4abulb2+VUAeYWItT0=";
   };
 
   patches = [
@@ -40,18 +45,23 @@
     ./imap-starttls-auth.patch
     ./calendar-mailto-normalization.patch
     ./calendar-floating-timezone-summary.patch
-    ./calendar-organizer-snapshot-dedupe.patch
-    ./calendar-organizer-cn-from-identity.patch
     ./dmarc-without-mail-from-spf.patch
-    ./calendar-reply-sender-detection.patch
+    ./calendar-imip-method-fallback-policy.patch
     ./calendar-default-display-name-policy.patch
+    ./calendar-organizer-attendee-export-policy.patch
+    ./calendar-organizer-snapshot-dedupe-policy.patch
+    ./calendar-reply-sender-detection-policy.patch
+    ./calendar-organizer-cn-from-identity-policy.patch
+    ./imap-idle-selected-mailbox-updates.patch
+    ./imap-store-pipeline-sync.patch
+    ./imap-quota-empty-root-compat.patch
   ];
 
   cargoExtraArgs = "--locked -p stalwart";
   commonRustAttrs = {
     pname = "stalwart-server";
     inherit version src;
-    cargoHash = "sha256-zo7w+sBG3XTsn2mailsrQWqnwsITBqUITKES/HtnpdM=";
+    cargoHash = "sha256-OpoQzNNm5JUrnk1tRZL9JUpDQnGH73Lj6SW52gSthl0=";
     nativeBuildInputs = [
       cmake
       llvmPackages.libclang
@@ -87,10 +97,10 @@
 
   upstreamImage = dockerTools.pullImage {
     imageName = "stalwartlabs/stalwart";
-    imageDigest = "sha256:154dc1f2895ba8d319817fb37c3c26bac3f3e36e2eb338edcf789a79717a5d49";
+    imageDigest = "sha256:5ed90ea664cca8eb0058927b8c528abcb9c2c9990e73ccfd3218606555618082";
     finalImageName = "stalwartlabs/stalwart";
     finalImageTag = "v${version}";
-    hash = "sha256-Tmu8p0TcG2IHY6jD0yx7UIQETh863hGBLGwNEQbGORk=";
+    hash = "sha256-gWBtmPLkrgJTS49Sp5eSzfZYegDFgLLL4KT1s7J7IqY=";
   };
 
   serverLayer = stdenvNoCC.mkDerivation {
@@ -159,7 +169,7 @@ in
         upstreamCommit
         version
         ;
-      upstreamImageDigest = "sha256:154dc1f2895ba8d319817fb37c3c26bac3f3e36e2eb338edcf789a79717a5d49";
+      upstreamImageDigest = "sha256:5ed90ea664cca8eb0058927b8c528abcb9c2c9990e73ccfd3218606555618082";
     };
 
     meta = {

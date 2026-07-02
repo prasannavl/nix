@@ -1,0 +1,325 @@
+diff --git a/crates/common/src/config/groupware.rs b/crates/common/src/config/groupware.rs
+index 442f349..efed6ad 100644
+--- a/crates/common/src/config/groupware.rs
++++ b/crates/common/src/config/groupware.rs
+@@ -43,6 +43,7 @@ pub struct GroupwareConfig {
+     pub itip_dedupe_organizer_attendee_snapshot: bool,
+     pub itip_infer_reply_sender: bool,
+     pub itip_exclude_outbound_organizer_attendee: bool,
++    pub itip_organizer_cn_from_identity: bool,
+     pub itip_inbound_max_ical_size: usize,
+     pub itip_outbound_max_recipients: usize,
+     pub itip_http_rsvp_url: Option<String>,
+@@ -135,6 +136,7 @@ impl GroupwareConfig {
+             itip_infer_reply_sender: sched.itip_infer_reply_sender,
+             itip_exclude_outbound_organizer_attendee: sched
+                 .itip_exclude_outbound_organizer_attendee,
++            itip_organizer_cn_from_identity: sched.itip_organizer_cn_from_identity,
+             itip_inbound_max_ical_size: sched.itip_max_size as usize,
+             itip_outbound_max_recipients: sched.max_recipients as usize,
+             itip_inbox_auto_expunge: dr
+diff --git a/crates/jmap/src/calendar_event/set.rs b/crates/jmap/src/calendar_event/set.rs
+index e31d856..a2c7c5d 100644
+--- a/crates/jmap/src/calendar_event/set.rs
++++ b/crates/jmap/src/calendar_event/set.rs
+@@ -4,13 +4,16 @@
+  * SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-SEL
+  */
+
+-use crate::calendar_event::{CalendarSyntheticId, assert_is_unique_uid};
++use crate::{
++    calendar_event::{CalendarSyntheticId, assert_is_unique_uid},
++    participant_identity::get::ParticipantIdentityGet,
++};
+ use calcard::{
+     common::timezone::Tz,
+     icalendar::{
+-        ICalendarAction, ICalendarComponent, ICalendarComponentType, ICalendarDuration,
+-        ICalendarEntry, ICalendarParameter, ICalendarParameterValue, ICalendarProperty,
+-        ICalendarRelated, ICalendarValue,
++        ICalendar, ICalendarAction, ICalendarComponent, ICalendarComponentType, ICalendarDuration,
++        ICalendarEntry, ICalendarParameter, ICalendarParameterName, ICalendarParameterValue,
++        ICalendarProperty, ICalendarRelated, ICalendarValue, Uri,
+     },
+     jscalendar::{JSCalendar, JSCalendarDateTime, JSCalendarProperty, JSCalendarValue},
+ };
+@@ -25,7 +28,7 @@ use groupware::{
+     calendar::{
+         ALERT_EMAIL, ALERT_RELATIVE_TO_END, ArchivedDefaultAlert, Calendar, CalendarEvent,
+         CalendarEventData, EVENT_DRAFT, EVENT_HIDE_ATTENDEES, EVENT_INVITE_OTHERS,
+-        EVENT_INVITE_SELF,
++        EVENT_INVITE_SELF, ParticipantIdentities,
+     },
+     scheduling::{ItipMessages, event_create::itip_create, event_update::itip_update},
+ };
+@@ -41,7 +44,7 @@ use jmap_tools::{JsonPointerHandler, JsonPointerItem, Key, Map, Value};
+ use registry::schema::enums::Permission;
+ use std::{borrow::Cow, str::FromStr};
+ use store::{
+-    ValueKey,
++    Serialize, ValueKey,
+     ahash::AHashSet,
+     roaring::RoaringBitmap,
+     write::{AlignedBytes, Archive, BatchBuilder, now, serialize::rkyv_deserialize},
+@@ -206,7 +209,7 @@ impl CalendarEventSet for Server {
+             }
+
+             // Convert JSCalendar to iCalendar
+-            let Some(ical) = js_calendar_group.into_icalendar() else {
++            let Some(mut ical) = js_calendar_group.into_icalendar() else {
+                 response.not_updated.append(
+                     id,
+                     SetError::invalid_properties()
+@@ -214,6 +217,17 @@ impl CalendarEventSet for Server {
+                 );
+                 continue 'update;
+             };
++            if self.core.groupware.itip_organizer_cn_from_identity {
++                if let Err(err) =
++                    hydrate_organizer_cn_from_identity(self, account_id, &mut ical).await
++                {
++                    response.not_updated.append(
++                        id,
++                        SetError::invalid_properties().with_description(err.to_string()),
++                    );
++                    continue 'update;
++                }
++            }
+             new_calendar_event.data.event = ical;
+
+             // Validate UID
+@@ -566,6 +580,14 @@ impl CalendarEventSet for Server {
+                 "Failed to convert calendar event to iCalendar.",
+             )));
+         };
++        if self.core.groupware.itip_organizer_cn_from_identity {
++            if let Err(err) = hydrate_organizer_cn_from_identity(self, account_id, &mut ical).await
++            {
++                return Ok(Err(
++                    SetError::invalid_properties().with_description(err.to_string())
++                ));
++            }
++        }
+
+         // Verify that the calendar ids valid
+         let default_alert_comp_id = ical.components.len();
+@@ -988,6 +1010,104 @@ fn patch_parent_ids(
+     }
+ }
+
++async fn hydrate_organizer_cn_from_identity(
++    server: &Server,
++    account_id: u32,
++    ical: &mut ICalendar,
++) -> trc::Result<()> {
++    let Some(identities) = server
++        .participant_identity_get_or_create(account_id)
++        .await?
++    else {
++        return Ok(());
++    };
++    let identities = identities
++        .deserialize::<ParticipantIdentities>()
++        .caused_by(trc::location!())?;
++
++    for component in &mut ical.components {
++        if !component.component_type.is_scheduling_object() {
++            continue;
++        }
++
++        for entry in &mut component.entries {
++            if entry.name != ICalendarProperty::Organizer
++                || has_non_empty_cn(entry)
++                || entry.values.is_empty()
++            {
++                continue;
++            }
++
++            let Some(email) = calendar_entry_email(entry) else {
++                continue;
++            };
++            let Some(name) = organizer_identity_name(&identities, &email) else {
++                continue;
++            };
++
++            entry
++                .params
++                .retain(|param| param.name != ICalendarParameterName::Cn);
++            entry.params.push(ICalendarParameter {
++                name: ICalendarParameterName::Cn,
++                value: ICalendarParameterValue::Text(name),
++            });
++        }
++    }
++
++    Ok(())
++}
++
++fn has_non_empty_cn(entry: &ICalendarEntry) -> bool {
++    entry.params.iter().any(|param| {
++        matches!(
++            (&param.name, &param.value),
++            (ICalendarParameterName::Cn, ICalendarParameterValue::Text(name))
++                if !name.trim().is_empty()
++        )
++    })
++}
++
++fn calendar_entry_email(entry: &ICalendarEntry) -> Option<String> {
++    let value = entry.values.first()?;
++    let value = value.as_text().or_else(|| match value {
++        ICalendarValue::Uri(Uri::Location(uri)) => Some(uri.as_str()),
++        _ => None,
++    })?;
++    let value = value.trim();
++    let value = value
++        .get(..7)
++        .filter(|prefix| prefix.eq_ignore_ascii_case("mailto:"))
++        .map(|_| &value[7..])
++        .unwrap_or(value)
++        .trim();
++    value.contains('@').then(|| value.to_lowercase())
++}
++
++fn organizer_identity_name(identities: &ParticipantIdentities, email: &str) -> Option<String> {
++    identities
++        .identities
++        .iter()
++        .find(|identity| {
++            calendar_address_email(&identity.calendar_address).as_deref() == Some(email)
++        })
++        .map(|identity| identity.name.as_deref().unwrap_or(&identities.default_name))
++        .map(str::trim)
++        .filter(|name| !name.is_empty())
++        .map(ToString::to_string)
++}
++
++fn calendar_address_email(value: &str) -> Option<String> {
++    let value = value.trim();
++    let value = value
++        .get(..7)
++        .filter(|prefix| prefix.eq_ignore_ascii_case("mailto:"))
++        .map(|_| &value[7..])
++        .unwrap_or(value)
++        .trim();
++    value.contains('@').then(|| value.to_lowercase())
++}
++
+ fn default_alert_to_ical(alert: &ArchivedDefaultAlert) -> ICalendarComponent {
+     let flags = alert.flags.to_native();
+     ICalendarComponent {
+diff --git a/crates/registry/src/schema/properties.rs b/crates/registry/src/schema/properties.rs
+index 884f913..2ed572d 100644
+--- a/crates/registry/src/schema/properties.rs
++++ b/crates/registry/src/schema/properties.rs
+@@ -298,6 +298,7 @@ pub enum Property {
+     AllowExternalRcpts = 164,
+     AllowInvalidCerts = 26,
+     ITipDedupeOrganizerAttendeeSnapshot = 1906,
++    ITipOrganizerCnFromIdentity = 1907,
+     ITipInferReplySender = 1908,
+     IMipAllowMethodCompat = 1902,
+     IMipAllowExternalSender = 1904,
+diff --git a/crates/registry/src/schema/properties_impl.rs b/crates/registry/src/schema/properties_impl.rs
+index 6e69faa..1d1792f 100644
+--- a/crates/registry/src/schema/properties_impl.rs
++++ b/crates/registry/src/schema/properties_impl.rs
+@@ -455,6 +455,7 @@ impl EnumImpl for Property {
+             b"iTipDedupeOrganizerAttendeeSnapshot" => {
+                 Property::ITipDedupeOrganizerAttendeeSnapshot
+             },
++            b"iTipOrganizerCnFromIdentity" => Property::ITipOrganizerCnFromIdentity,
+             b"iTipInferReplySender" => Property::ITipInferReplySender,
+             b"allowPlainTextAuth" => Property::AllowPlainTextAuth,
+             b"allowRelaying" => Property::AllowRelaying,
+@@ -1388,6 +1389,7 @@ impl EnumImpl for Property {
+             Property::IMipAllowMethodCompat => "iMipAllowMethodCompat",
+             Property::IMipAllowExternalSender => "iMipAllowExternalSender",
+             Property::ITipDedupeOrganizerAttendeeSnapshot => "iTipDedupeOrganizerAttendeeSnapshot",
++            Property::ITipOrganizerCnFromIdentity => "iTipOrganizerCnFromIdentity",
+             Property::ITipInferReplySender => "iTipInferReplySender",
+             Property::AllowPlainTextAuth => "allowPlainTextAuth",
+             Property::AllowRelaying => "allowRelaying",
+@@ -2325,6 +2327,7 @@ impl EnumImpl for Property {
+             1902 => Some(Property::IMipAllowMethodCompat),
+             1904 => Some(Property::IMipAllowExternalSender),
+             1906 => Some(Property::ITipDedupeOrganizerAttendeeSnapshot),
++            1907 => Some(Property::ITipOrganizerCnFromIdentity),
+             1908 => Some(Property::ITipInferReplySender),
+             424 => Some(Property::AllowPlainTextAuth),
+             348 => Some(Property::AllowRelaying),
+diff --git a/crates/registry/src/schema/structs.rs b/crates/registry/src/schema/structs.rs
+index e0c4aae..57f34a0 100644
+--- a/crates/registry/src/schema/structs.rs
++++ b/crates/registry/src/schema/structs.rs
+@@ -685,6 +685,8 @@ pub struct CalendarScheduling {
+     pub imip_allow_external_sender: bool,
+     #[serde(rename = "iTipDedupeOrganizerAttendeeSnapshot")]
+     pub itip_dedupe_organizer_attendee_snapshot: bool,
++    #[serde(rename = "iTipOrganizerCnFromIdentity")]
++    pub itip_organizer_cn_from_identity: bool,
+     #[serde(rename = "iTipInferReplySender")]
+     pub itip_infer_reply_sender: bool,
+     #[serde(rename = "iTipExcludeOutboundOrganizerAttendee")]
+diff --git a/crates/registry/src/schema/structs_impl.rs b/crates/registry/src/schema/structs_impl.rs
+index 65067ab..2149bc0 100644
+--- a/crates/registry/src/schema/structs_impl.rs
++++ b/crates/registry/src/schema/structs_impl.rs
+@@ -393,7 +393,7 @@ impl Default for AcmeProvider {
+
+ impl IntoValue for AcmeProvider {
+     fn into_value(self) -> JmapValue<'static> {
+-        let mut map = jmap_tools::Map::with_capacity(14);
++        let mut map = jmap_tools::Map::with_capacity(15);
+         map.insert_unchecked(Property::ChallengeType, self.challenge_type.into_value());
+         map.insert_unchecked(Property::Contact, self.contact.into_value());
+         map.insert_unchecked(Property::Directory, self.directory.into_value());
+@@ -4827,6 +4827,7 @@ impl Pickle for CalendarScheduling {
+         self.imip_allow_method_compat.pickle(out);
+         self.imip_allow_external_sender.pickle(out);
+         self.itip_dedupe_organizer_attendee_snapshot.pickle(out);
++        self.itip_organizer_cn_from_identity.pickle(out);
+         self.itip_infer_reply_sender.pickle(out);
+         self.itip_exclude_outbound_organizer_attendee.pickle(out);
+     }
+@@ -4857,6 +4858,11 @@ impl Pickle for CalendarScheduling {
+         } else {
+             false
+         };
++        this.itip_organizer_cn_from_identity = if !stream.eof() {
++            Pickle::unpickle(stream)?
++        } else {
++            false
++        };
+         this.itip_infer_reply_sender = if !stream.eof() {
+             Pickle::unpickle(stream)?
+         } else {
+@@ -4882,6 +4888,7 @@ impl Default for CalendarScheduling {
+             imip_allow_method_compat: false,
+             imip_allow_external_sender: false,
+             itip_dedupe_organizer_attendee_snapshot: false,
++            itip_organizer_cn_from_identity: false,
+             itip_infer_reply_sender: false,
+             itip_exclude_outbound_organizer_attendee: false,
+             itip_max_size: 524288,
+@@ -4918,6 +4925,10 @@ impl IntoValue for CalendarScheduling {
+             Property::ITipDedupeOrganizerAttendeeSnapshot,
+             self.itip_dedupe_organizer_attendee_snapshot.into_value(),
+         );
++        map.insert_unchecked(
++            Property::ITipOrganizerCnFromIdentity,
++            self.itip_organizer_cn_from_identity.into_value(),
++        );
+         map.insert_unchecked(
+             Property::ITipInferReplySender,
+             self.itip_infer_reply_sender.into_value(),
+@@ -4960,6 +4971,9 @@ impl RegistryJsonPropertyPatch for CalendarScheduling {
+             Some(Property::ITipDedupeOrganizerAttendeeSnapshot) => self
+                 .itip_dedupe_organizer_attendee_snapshot
+                 .patch(pointer, value),
++            Some(Property::ITipOrganizerCnFromIdentity) => {
++                self.itip_organizer_cn_from_identity.patch(pointer, value)
++            }
+             Some(Property::ITipInferReplySender) => {
+                 self.itip_infer_reply_sender.patch(pointer, value)
+             }

@@ -1,0 +1,318 @@
+diff --git a/crates/common/src/config/groupware.rs b/crates/common/src/config/groupware.rs
+index 7d2e7514..442f349e 100644
+--- a/crates/common/src/config/groupware.rs
++++ b/crates/common/src/config/groupware.rs
+@@ -41,6 +41,7 @@ pub struct GroupwareConfig {
+     pub imip_allow_method_compat: bool,
+     pub imip_allow_external_sender: bool,
+     pub itip_dedupe_organizer_attendee_snapshot: bool,
++    pub itip_infer_reply_sender: bool,
+     pub itip_exclude_outbound_organizer_attendee: bool,
+     pub itip_inbound_max_ical_size: usize,
+     pub itip_outbound_max_recipients: usize,
+@@ -131,6 +132,7 @@ impl GroupwareConfig {
+             imip_allow_method_compat: sched.imip_allow_method_compat,
+             imip_allow_external_sender: sched.imip_allow_external_sender,
+             itip_dedupe_organizer_attendee_snapshot: sched.itip_dedupe_organizer_attendee_snapshot,
++            itip_infer_reply_sender: sched.itip_infer_reply_sender,
+             itip_exclude_outbound_organizer_attendee: sched
+                 .itip_exclude_outbound_organizer_attendee,
+             itip_inbound_max_ical_size: sched.itip_max_size as usize,
+diff --git a/crates/groupware/src/calendar/itip.rs b/crates/groupware/src/calendar/itip.rs
+index 9994f37a..bab22d92 100644
+--- a/crates/groupware/src/calendar/itip.rs
++++ b/crates/groupware/src/calendar/itip.rs
+@@ -14,8 +14,10 @@ use crate::{
+     scheduling::{
+         ItipError, ItipMessage,
+         inbound::{
+-            MergeResult, itip_import_message, itip_merge_changes, itip_method, itip_process_message,
++            MergeResult, itip_import_message, itip_merge_changes, itip_method,
++            itip_process_message, itip_reply_sender,
+         },
++        itip::entry_email,
+         snapshot::itip_snapshot,
+     },
+ };
+@@ -139,19 +141,16 @@ impl ItipIngest for Server {
+             false,
+             self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
+         )?;
+-        if !itip_snapshots.sender_is_organizer_or_attendee(sender) {
++        let method = itip_method(&itip)?;
++        let sender_matches_itip = itip_snapshots.sender_is_organizer_or_attendee(sender);
++        let infer_reply_sender =
++            self.core.groupware.itip_infer_reply_sender && matches!(method, ICalendarMethod::Reply);
++        if !sender_matches_itip && !infer_reply_sender {
+             return Err(ItipIngestError::Message(
+                 ItipError::SenderIsNotOrganizerNorAttendee,
+             ));
+         }
+
+-        // Obtain changedBy
+-        let changed_by = if let Some(id) = self.account_id_from_email(sender, true).await? {
+-            ChangedBy::PrincipalId(id)
+-        } else {
+-            ChangedBy::CalendarAddress(sender.into())
+-        };
+-
+         // Find event by UID
+         let account_id = account_info.account_id();
+         let document_id = self
+@@ -191,13 +190,34 @@ impl ItipIngest for Server {
+                     false,
+                     self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
+                 )?;
++                let sender = if infer_reply_sender {
++                    if let Some(reply_sender) =
++                        itip_reply_sender(sender, &snapshots, &itip_snapshots)
++                    {
++                        reply_sender
++                    } else if sender_matches_itip {
++                        sender.to_string()
++                    } else {
++                        return Err(ItipIngestError::Message(
++                            ItipError::SenderIsNotOrganizerNorAttendee,
++                        ));
++                    }
++                } else {
++                    sender.to_string()
++                };
++                let changed_by = if let Some(id) = self.account_id_from_email(&sender, true).await?
++                {
++                    ChangedBy::PrincipalId(id)
++                } else {
++                    ChangedBy::CalendarAddress(sender.clone())
++                };
+                 let is_organizer_update = !itip_snapshots.organizer.email.is_local;
+                 match itip_process_message(
+                     &event.data.event,
+                     snapshots,
+                     &itip,
+                     itip_snapshots,
+-                    sender.to_string(),
++                    sender,
+                     self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                 )? {
+                     MergeResult::Actions(changes) => {
+@@ -301,6 +321,16 @@ impl ItipIngest for Server {
+             }
+         } else {
+             // Verify that auto-adding invitations is allowed
++            if method != &ICalendarMethod::Request {
++                return Err(ItipIngestError::Message(ItipError::EventNotFound));
++            }
++
++            let changed_by = if let Some(id) = self.account_id_from_email(sender, true).await? {
++                ChangedBy::PrincipalId(id)
++            } else {
++                ChangedBy::CalendarAddress(sender.into())
++            };
++
+             if !self.core.groupware.itip_auto_add
+                 && !matches!(changed_by, ChangedBy::PrincipalId(_))
+                 && !self
+@@ -314,8 +344,6 @@ impl ItipIngest for Server {
+                     .caused_by(trc::location!())?
+             {
+                 return Err(ItipIngestError::Message(ItipError::AutoAddDisabled));
+-            } else if itip_method(&itip)? != &ICalendarMethod::Request {
+-                return Err(ItipIngestError::Message(ItipError::EventNotFound));
+             }
+
+             // Import the iTIP message
+@@ -466,8 +494,7 @@ impl ItipIngest for Server {
+                     if component.component_type.is_scheduling_object() {
+                         'outer: for entry in &mut component.entries {
+                             if entry.name == ICalendarProperty::Attendee
+-                                && entry
+-                                    .calendar_address()
++                                && entry_email(entry)
+                                     .is_some_and(|v| v.eq_ignore_ascii_case(&rsvp.attendee))
+                             {
+                                 let mut add_partstat = true;
+diff --git a/crates/groupware/src/scheduling/inbound.rs b/crates/groupware/src/scheduling/inbound.rs
+index b827ce13..d43cec44 100644
+--- a/crates/groupware/src/scheduling/inbound.rs
++++ b/crates/groupware/src/scheduling/inbound.rs
+@@ -5,7 +5,7 @@
+  */
+
+ use crate::scheduling::{
+-    InstanceId, ItipError, ItipMessage, ItipSnapshots, organizer::organizer_request_full,
++    Attendee, InstanceId, ItipError, ItipMessage, ItipSnapshots, organizer::organizer_request_full,
+ };
+ use ahash::AHashSet;
+ use calcard::icalendar::{
+@@ -48,6 +48,56 @@ pub enum MergeResult {
+     None,
+ }
+
++pub fn itip_reply_sender(
++    smtp_sender: &str,
++    snapshots: &ItipSnapshots<'_>,
++    itip_snapshots: &ItipSnapshots<'_>,
++) -> Option<String> {
++    let mut sender = None;
++
++    for (instance_id, itip_snapshot) in &itip_snapshots.components {
++        let snapshot = snapshots.components.get(instance_id)?;
++
++        for updated_attendee in &itip_snapshot.attendees {
++            let Some(attendee) = snapshot.attendee_by_email(&updated_attendee.email.email) else {
++                continue;
++            };
++
++            let changed = attendee.part_stat != updated_attendee.part_stat
++                || attendee.rsvp != updated_attendee.rsvp
++                || attendee.delegated_to != updated_attendee.delegated_to
++                || !itip_snapshot.request_status.is_empty();
++
++            if changed {
++                if !sender_matches_attendee(smtp_sender, attendee)
++                    && !sender_matches_attendee(smtp_sender, updated_attendee)
++                {
++                    return None;
++                }
++
++                if sender
++                    .as_ref()
++                    .is_some_and(|sender| sender != &updated_attendee.email.email)
++                {
++                    return None;
++                }
++
++                sender = Some(updated_attendee.email.email.clone());
++            }
++        }
++    }
++
++    sender
++}
++
++fn sender_matches_attendee(sender: &str, attendee: &Attendee<'_>) -> bool {
++    attendee.email.email.eq_ignore_ascii_case(sender)
++        || attendee
++            .sent_by
++            .as_ref()
++            .is_some_and(|sent_by| sent_by.email.eq_ignore_ascii_case(sender))
++}
++
+ pub fn itip_process_message(
+     ical: &ICalendar,
+     snapshots: ItipSnapshots<'_>,
+diff --git a/crates/registry/src/schema/properties.rs b/crates/registry/src/schema/properties.rs
+index 0f964c8b..552c45fe 100644
+--- a/crates/registry/src/schema/properties.rs
++++ b/crates/registry/src/schema/properties.rs
+@@ -298,6 +298,7 @@ pub enum Property {
+     AllowExternalRcpts = 164,
+     AllowInvalidCerts = 26,
+     ITipDedupeOrganizerAttendeeSnapshot = 1906,
++    ITipInferReplySender = 1908,
+     IMipAllowMethodCompat = 1902,
+     IMipAllowExternalSender = 1904,
+     AllowPlainTextAuth = 424,
+diff --git a/crates/registry/src/schema/properties_impl.rs b/crates/registry/src/schema/properties_impl.rs
+index 979b166a..db1a8e2e 100644
+--- a/crates/registry/src/schema/properties_impl.rs
++++ b/crates/registry/src/schema/properties_impl.rs
+@@ -455,6 +455,7 @@ impl EnumImpl for Property {
+             b"iTipDedupeOrganizerAttendeeSnapshot" => {
+                 Property::ITipDedupeOrganizerAttendeeSnapshot
+             },
++            b"iTipInferReplySender" => Property::ITipInferReplySender,
+             b"allowPlainTextAuth" => Property::AllowPlainTextAuth,
+             b"allowRelaying" => Property::AllowRelaying,
+             b"allowSpamTraining" => Property::AllowSpamTraining,
+@@ -1387,6 +1388,7 @@ impl EnumImpl for Property {
+             Property::IMipAllowMethodCompat => "iMipAllowMethodCompat",
+             Property::IMipAllowExternalSender => "iMipAllowExternalSender",
+             Property::ITipDedupeOrganizerAttendeeSnapshot => "iTipDedupeOrganizerAttendeeSnapshot",
++            Property::ITipInferReplySender => "iTipInferReplySender",
+             Property::AllowPlainTextAuth => "allowPlainTextAuth",
+             Property::AllowRelaying => "allowRelaying",
+             Property::AllowSpamTraining => "allowSpamTraining",
+@@ -2323,6 +2325,7 @@ impl EnumImpl for Property {
+             1902 => Some(Property::IMipAllowMethodCompat),
+             1904 => Some(Property::IMipAllowExternalSender),
+             1906 => Some(Property::ITipDedupeOrganizerAttendeeSnapshot),
++            1908 => Some(Property::ITipInferReplySender),
+             424 => Some(Property::AllowPlainTextAuth),
+             348 => Some(Property::AllowRelaying),
+             369 => Some(Property::AllowSpamTraining),
+diff --git a/crates/registry/src/schema/structs.rs b/crates/registry/src/schema/structs.rs
+index 134b9b03..4147d9d1 100644
+--- a/crates/registry/src/schema/structs.rs
++++ b/crates/registry/src/schema/structs.rs
+@@ -685,6 +685,8 @@ pub struct CalendarScheduling {
+     pub imip_allow_external_sender: bool,
+     #[serde(rename = "iTipDedupeOrganizerAttendeeSnapshot")]
+     pub itip_dedupe_organizer_attendee_snapshot: bool,
++    #[serde(rename = "iTipInferReplySender")]
++    pub itip_infer_reply_sender: bool,
+     #[serde(rename = "iTipExcludeOutboundOrganizerAttendee")]
+     pub itip_exclude_outbound_organizer_attendee: bool,
+     #[serde(rename = "itipMaxSize")]
+diff --git a/crates/registry/src/schema/structs_impl.rs b/crates/registry/src/schema/structs_impl.rs
+index caa81b9a..e891e2f6 100644
+--- a/crates/registry/src/schema/structs_impl.rs
++++ b/crates/registry/src/schema/structs_impl.rs
+@@ -393,7 +393,7 @@ impl Default for AcmeProvider {
+
+ impl IntoValue for AcmeProvider {
+     fn into_value(self) -> JmapValue<'static> {
+-        let mut map = jmap_tools::Map::with_capacity(13);
++        let mut map = jmap_tools::Map::with_capacity(14);
+         map.insert_unchecked(Property::ChallengeType, self.challenge_type.into_value());
+         map.insert_unchecked(Property::Contact, self.contact.into_value());
+         map.insert_unchecked(Property::Directory, self.directory.into_value());
+@@ -4827,6 +4827,7 @@ impl Pickle for CalendarScheduling {
+         self.imip_allow_method_compat.pickle(out);
+         self.imip_allow_external_sender.pickle(out);
+         self.itip_dedupe_organizer_attendee_snapshot.pickle(out);
++        self.itip_infer_reply_sender.pickle(out);
+         self.itip_exclude_outbound_organizer_attendee.pickle(out);
+     }
+
+@@ -4856,6 +4857,11 @@ impl Pickle for CalendarScheduling {
+         } else {
+             false
+         };
++        this.itip_infer_reply_sender = if !stream.eof() {
++            Pickle::unpickle(stream)?
++        } else {
++            false
++        };
+         this.itip_exclude_outbound_organizer_attendee = if !stream.eof() {
+             Pickle::unpickle(stream)?
+         } else {
+@@ -4876,6 +4882,7 @@ impl Default for CalendarScheduling {
+             imip_allow_method_compat: false,
+             imip_allow_external_sender: false,
+             itip_dedupe_organizer_attendee_snapshot: false,
++            itip_infer_reply_sender: false,
+             itip_exclude_outbound_organizer_attendee: false,
+             itip_max_size: 524288,
+             max_recipients: 100u64,
+@@ -4911,6 +4918,10 @@ impl IntoValue for CalendarScheduling {
+             Property::ITipDedupeOrganizerAttendeeSnapshot,
+             self.itip_dedupe_organizer_attendee_snapshot.into_value(),
+         );
++        map.insert_unchecked(
++            Property::ITipInferReplySender,
++            self.itip_infer_reply_sender.into_value(),
++        );
+         map.insert_unchecked(
+             Property::ITipExcludeOutboundOrganizerAttendee,
+             self.itip_exclude_outbound_organizer_attendee.into_value(),
+@@ -4949,6 +4960,9 @@ impl RegistryJsonPropertyPatch for CalendarScheduling {
+             Some(Property::ITipDedupeOrganizerAttendeeSnapshot) => self
+                 .itip_dedupe_organizer_attendee_snapshot
+                 .patch(pointer, value),
++            Some(Property::ITipInferReplySender) => {
++                self.itip_infer_reply_sender.patch(pointer, value)
++            }
+             Some(Property::ITipExcludeOutboundOrganizerAttendee) => self
+                 .itip_exclude_outbound_organizer_attendee
+                 .patch(pointer, value),

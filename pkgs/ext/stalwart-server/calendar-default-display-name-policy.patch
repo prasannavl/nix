@@ -36,7 +36,7 @@ index 0541143..c33d9c9 100644
              let document_id = self
                  .store()
                  .assign_document_ids(account_id, Collection::Calendar, 1)
-@@ -381,15 +387,15 @@ impl GroupwareCache for Server {
+@@ -381,16 +387,16 @@ impl GroupwareCache for Server {
                  name: name.clone(),
                  preferences: vec![CalendarPreferences {
                      account_id,
@@ -58,6 +58,7 @@ index 0541143..c33d9c9 100644
 +                    } else {
 +                        display_name.to_string()
 +                    },
+                     flags: CALENDAR_SUBSCRIBED,
                      ..Default::default()
                  }],
                  ..Default::default()

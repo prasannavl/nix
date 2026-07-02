@@ -1,0 +1,584 @@
+diff --git a/crates/common/src/config/groupware.rs b/crates/common/src/config/groupware.rs
+index 6bb4b64..7d2e751 100644
+--- a/crates/common/src/config/groupware.rs
++++ b/crates/common/src/config/groupware.rs
+@@ -40,6 +40,7 @@ pub struct GroupwareConfig {
+     pub itip_auto_add: bool,
+     pub imip_allow_method_compat: bool,
+     pub imip_allow_external_sender: bool,
++    pub itip_dedupe_organizer_attendee_snapshot: bool,
+     pub itip_exclude_outbound_organizer_attendee: bool,
+     pub itip_inbound_max_ical_size: usize,
+     pub itip_outbound_max_recipients: usize,
+@@ -129,6 +130,7 @@ impl GroupwareConfig {
+             itip_auto_add: sched.auto_add_invitations,
+             imip_allow_method_compat: sched.imip_allow_method_compat,
+             imip_allow_external_sender: sched.imip_allow_external_sender,
++            itip_dedupe_organizer_attendee_snapshot: sched.itip_dedupe_organizer_attendee_snapshot,
+             itip_exclude_outbound_organizer_attendee: sched
+                 .itip_exclude_outbound_organizer_attendee,
+             itip_inbound_max_ical_size: sched.itip_max_size as usize,
+diff --git a/crates/dav/src/calendar/copy_move.rs b/crates/dav/src/calendar/copy_move.rs
+index ee9e56c..915add5 100644
+--- a/crates/dav/src/calendar/copy_move.rs
++++ b/crates/dav/src/calendar/copy_move.rs
+@@ -571,6 +571,7 @@ async fn copy_event(
+                     None,
+                     false,
+                     false,
++                    false,
+                     &mut batch,
+                 )
+                 .caused_by(trc::location!())?;
+@@ -706,6 +707,7 @@ async fn move_event(
+                 from_resource_path.into(),
+                 false,
+                 false,
++                false,
+                 &mut batch,
+             )
+             .caused_by(trc::location!())?;
+@@ -751,6 +753,7 @@ async fn move_event(
+                     None,
+                     false,
+                     false,
++                    false,
+                     &mut batch,
+                 )
+                 .caused_by(trc::location!())?;
+@@ -918,6 +921,7 @@ async fn copy_container(
+                     None,
+                     false,
+                     false,
++                    false,
+                     &mut batch,
+                 )
+                 .await
+@@ -1009,6 +1013,7 @@ async fn copy_container(
+                             None,
+                             false,
+                             false,
++                            false,
+                             &mut batch,
+                         )
+                         .caused_by(trc::location!())?;
+diff --git a/crates/dav/src/calendar/delete.rs b/crates/dav/src/calendar/delete.rs
+index 76d84fd..78ba232 100644
+--- a/crates/dav/src/calendar/delete.rs
++++ b/crates/dav/src/calendar/delete.rs
+@@ -153,9 +153,8 @@ impl CalendarDeleteRequestHandler for Server {
+                         .collect::<Vec<_>>(),
+                     resources.format_resource(delete_resource).into(),
+                     send_itip,
+-                    self.core
+-                        .groupware
+-                        .itip_exclude_outbound_organizer_attendee,
++                    self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                    self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                     &mut batch,
+                 )
+                 .await
+@@ -236,9 +235,8 @@ impl CalendarDeleteRequestHandler for Server {
+                     calendar_id,
+                     resources.format_resource(delete_resource).into(),
+                     send_itip,
+-                    self.core
+-                        .groupware
+-                        .itip_exclude_outbound_organizer_attendee,
++                    self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                    self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                     &mut batch,
+                 )
+                 .caused_by(trc::location!())?;
+diff --git a/crates/dav/src/calendar/update.rs b/crates/dav/src/calendar/update.rs
+index cd026c4..c54b87f 100644
+--- a/crates/dav/src/calendar/update.rs
++++ b/crates/dav/src/calendar/update.rs
+@@ -231,17 +231,15 @@ impl CalendarUpdateRequestHandler for Server {
+                         &mut new_event.data.event,
+                         &old_ical,
+                         account_info.addresses(),
+-                        self.core
+-                            .groupware
+-                            .itip_exclude_outbound_organizer_attendee,
++                        self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                        self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                     )
+                 } else {
+                     itip_create(
+                         &mut new_event.data.event,
+                         account_info.addresses(),
+-                        self.core
+-                            .groupware
+-                            .itip_exclude_outbound_organizer_attendee,
++                        self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                        self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                     )
+                 };
+
+@@ -401,9 +399,8 @@ impl CalendarUpdateRequestHandler for Server {
+                 match itip_create(
+                     &mut event.data.event,
+                     account_info.addresses(),
+-                    self.core
+-                        .groupware
+-                        .itip_exclude_outbound_organizer_attendee,
++                    self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                    self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                 ) {
+                     Ok(messages) => {
+                         if messages.iter().map(|r| r.to.len()).sum::<usize>()
+diff --git a/crates/groupware/src/calendar/itip.rs b/crates/groupware/src/calendar/itip.rs
+index 0cff91d..9994f37 100644
+--- a/crates/groupware/src/calendar/itip.rs
++++ b/crates/groupware/src/calendar/itip.rs
+@@ -133,7 +133,12 @@ impl ItipIngest for Server {
+             }
+         }
+
+-        let itip_snapshots = itip_snapshot(&itip, account_info.addresses(), false)?;
++        let itip_snapshots = itip_snapshot(
++            &itip,
++            account_info.addresses(),
++            false,
++            self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++        )?;
+         if !itip_snapshots.sender_is_organizer_or_attendee(sender) {
+             return Err(ItipIngestError::Message(
+                 ItipError::SenderIsNotOrganizerNorAttendee,
+@@ -180,7 +185,12 @@ impl ItipIngest for Server {
+                     .caused_by(trc::location!())?;
+
+                 // Process the iTIP message
+-                let snapshots = itip_snapshot(&event.data.event, account_info.addresses(), false)?;
++                let snapshots = itip_snapshot(
++                    &event.data.event,
++                    account_info.addresses(),
++                    false,
++                    self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                )?;
+                 let is_organizer_update = !itip_snapshots.organizer.email.is_local;
+                 match itip_process_message(
+                     &event.data.event,
+@@ -188,9 +198,7 @@ impl ItipIngest for Server {
+                     &itip,
+                     itip_snapshots,
+                     sender.to_string(),
+-                    self.core
+-                        .groupware
+-                        .itip_exclude_outbound_organizer_attendee,
++                    self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                 )? {
+                     MergeResult::Actions(changes) => {
+                         // Merge changes
+diff --git a/crates/groupware/src/calendar/storage.rs b/crates/groupware/src/calendar/storage.rs
+index 0a7cc93..277d3a4 100644
+--- a/crates/groupware/src/calendar/storage.rs
++++ b/crates/groupware/src/calendar/storage.rs
+@@ -332,6 +332,7 @@ impl DestroyArchive<Archive<&ArchivedCalendar>> {
+         children_ids: Vec<u32>,
+         delete_path: Option<String>,
+         send_itip: bool,
++        itip_dedupe_organizer_attendee_snapshot: bool,
+         itip_exclude_outbound_organizer_attendee: bool,
+         batch: &mut BatchBuilder,
+     ) -> trc::Result<()> {
+@@ -359,6 +360,7 @@ impl DestroyArchive<Archive<&ArchivedCalendar>> {
+                     calendar_id,
+                     None,
+                     send_itip,
++                    itip_dedupe_organizer_attendee_snapshot,
+                     itip_exclude_outbound_organizer_attendee,
+                     batch,
+                 )?;
+@@ -413,6 +415,7 @@ impl DestroyArchive<Archive<&ArchivedCalendarEvent>> {
+         calendar_id: u32,
+         delete_path: Option<String>,
+         send_itip: bool,
++        itip_dedupe_organizer_attendee_snapshot: bool,
+         itip_exclude_outbound_organizer_attendee: bool,
+         batch: &mut BatchBuilder,
+     ) -> trc::Result<()> {
+@@ -447,6 +450,7 @@ impl DestroyArchive<Archive<&ArchivedCalendarEvent>> {
+                     account_id,
+                     document_id,
+                     send_itip,
++                    itip_dedupe_organizer_attendee_snapshot,
+                     itip_exclude_outbound_organizer_attendee,
+                     batch,
+                 )?;
+@@ -469,6 +473,7 @@ impl DestroyArchive<Archive<&ArchivedCalendarEvent>> {
+         account_id: u32,
+         document_id: u32,
+         send_itip: bool,
++        itip_dedupe_organizer_attendee_snapshot: bool,
+         itip_exclude_outbound_organizer_attendee: bool,
+         batch: &mut BatchBuilder,
+     ) -> trc::Result<()> {
+@@ -498,6 +503,7 @@ impl DestroyArchive<Archive<&ArchivedCalendarEvent>> {
+                 &event.data.event,
+                 account_info.addresses(),
+                 true,
++                itip_dedupe_organizer_attendee_snapshot,
+                 itip_exclude_outbound_organizer_attendee,
+             ) {
+                 ItipMessages::new(vec![messages])
+diff --git a/crates/groupware/src/scheduling/event_cancel.rs b/crates/groupware/src/scheduling/event_cancel.rs
+index b74c58a..fa01751 100644
+--- a/crates/groupware/src/scheduling/event_cancel.rs
++++ b/crates/groupware/src/scheduling/event_cancel.rs
+@@ -23,10 +23,16 @@ pub fn itip_cancel(
+     ical: &ICalendar,
+     account_emails: &[String],
+     is_deletion: bool,
++    itip_dedupe_organizer_attendee_snapshot: bool,
+     itip_exclude_outbound_organizer_attendee: bool,
+ ) -> Result<ItipMessage<ICalendar>, ItipError> {
+     // Prepare iTIP message
+-    let itip = itip_snapshot(ical, account_emails, false)?;
++    let itip = itip_snapshot(
++        ical,
++        account_emails,
++        false,
++        itip_dedupe_organizer_attendee_snapshot,
++    )?;
+     let dt_stamp = PartialDateTime::now();
+     let mut message = ICalendar {
+         components: Vec::with_capacity(2),
+@@ -60,12 +66,7 @@ pub fn itip_cancel(
+
+         if !recipients.is_empty() && component_type != &ICalendarComponentType::VFreebusy {
+             let instance = itip.main_instance_or_default();
+-            let mut component = build_cancel_component(
+-                instance.comp,
+-                sequence,
+-                dt_stamp,
+-                &[],
+-            );
++            let mut component = build_cancel_component(instance.comp, sequence, dt_stamp, &[]);
+             if itip_exclude_outbound_organizer_attendee {
+                 remove_organizer_attendee(&mut component, &itip.organizer.email.email);
+             }
+diff --git a/crates/groupware/src/scheduling/event_create.rs b/crates/groupware/src/scheduling/event_create.rs
+index b33c06e..9e16419 100644
+--- a/crates/groupware/src/scheduling/event_create.rs
++++ b/crates/groupware/src/scheduling/event_create.rs
+@@ -13,9 +13,15 @@ use calcard::icalendar::ICalendar;
+ pub fn itip_create(
+     ical: &mut ICalendar,
+     account_emails: &[String],
++    itip_dedupe_organizer_attendee_snapshot: bool,
+     itip_exclude_outbound_organizer_attendee: bool,
+ ) -> Result<Vec<ItipMessage<ICalendar>>, ItipError> {
+-    let itip = itip_snapshot(ical, account_emails, false)?;
++    let itip = itip_snapshot(
++        ical,
++        account_emails,
++        false,
++        itip_dedupe_organizer_attendee_snapshot,
++    )?;
+     if !itip.organizer.is_server_scheduling {
+         Err(ItipError::OtherSchedulingAgent)
+     } else if !itip.organizer.email.is_local {
+diff --git a/crates/groupware/src/scheduling/event_update.rs b/crates/groupware/src/scheduling/event_update.rs
+index c2782c7..80e2ca2 100644
+--- a/crates/groupware/src/scheduling/event_update.rs
++++ b/crates/groupware/src/scheduling/event_update.rs
+@@ -14,10 +14,21 @@ pub fn itip_update(
+     ical: &mut ICalendar,
+     old_ical: &ICalendar,
+     account_emails: &[String],
++    itip_dedupe_organizer_attendee_snapshot: bool,
+     itip_exclude_outbound_organizer_attendee: bool,
+ ) -> Result<Vec<ItipMessage<ICalendar>>, ItipError> {
+-    let old_itip = itip_snapshot(old_ical, account_emails, false)?;
+-    match itip_snapshot(ical, account_emails, false) {
++    let old_itip = itip_snapshot(
++        old_ical,
++        account_emails,
++        false,
++        itip_dedupe_organizer_attendee_snapshot,
++    )?;
++    match itip_snapshot(
++        ical,
++        account_emails,
++        false,
++        itip_dedupe_organizer_attendee_snapshot,
++    ) {
+         Ok(new_itip) => {
+             let mut sequences = Vec::new();
+             if old_itip.organizer.email != new_itip.organizer.email {
+@@ -56,6 +67,7 @@ pub fn itip_update(
+                             old_ical,
+                             account_emails,
+                             false,
++                            itip_dedupe_organizer_attendee_snapshot,
+                             itip_exclude_outbound_organizer_attendee,
+                         )
+                         .map(|message| vec![message])
+diff --git a/crates/groupware/src/scheduling/snapshot.rs b/crates/groupware/src/scheduling/snapshot.rs
+index cf51ca7..4f7287a 100644
+--- a/crates/groupware/src/scheduling/snapshot.rs
++++ b/crates/groupware/src/scheduling/snapshot.rs
+@@ -19,6 +19,7 @@ pub fn itip_snapshot<'x, 'y>(
+     ical: &'x ICalendar,
+     account_emails: &'y [String],
+     force_add_client_scheduling: bool,
++    dedupe_organizer_attendee: bool,
+ ) -> Result<ItipSnapshots<'x>, ItipError> {
+     if !ical.components.iter().any(|comp| {
+         comp.component_type.is_scheduling_object()
+@@ -356,8 +357,17 @@ pub fn itip_snapshot<'x, 'y>(
+     }
+
+     if has_local_emails {
++        let organizer = organizer.ok_or(ItipError::NoSchedulingInfo)?;
++        if dedupe_organizer_attendee {
++            for component in components.values_mut() {
++                component
++                    .attendees
++                    .retain(|attendee| attendee.email.email != organizer.email.email);
++            }
++        }
++
+         Ok(ItipSnapshots {
+-            organizer: organizer.ok_or(ItipError::NoSchedulingInfo)?,
++            organizer,
+             uid: uid.ok_or(ItipError::MissingUid)?,
+             components,
+         })
+diff --git a/crates/jmap/src/calendar/set.rs b/crates/jmap/src/calendar/set.rs
+index 6e33ba5..12770b2 100644
+--- a/crates/jmap/src/calendar/set.rs
++++ b/crates/jmap/src/calendar/set.rs
+@@ -343,9 +343,8 @@ impl CalendarSet for Server {
+                                 account_id,
+                                 document_id,
+                                 false,
+-                                self.core
+-                                    .groupware
+-                                    .itip_exclude_outbound_organizer_attendee,
++                                false,
++                                self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                                 &mut batch,
+                             )?;
+                         } else {
+diff --git a/crates/jmap/src/calendar_event/set.rs b/crates/jmap/src/calendar_event/set.rs
+index 31e24fd..e31d856 100644
+--- a/crates/jmap/src/calendar_event/set.rs
++++ b/crates/jmap/src/calendar_event/set.rs
+@@ -336,17 +336,15 @@ impl CalendarEventSet for Server {
+                         &mut new_calendar_event.data.event,
+                         &old_ical,
+                         account_info.addresses(),
+-                        self.core
+-                            .groupware
+-                            .itip_exclude_outbound_organizer_attendee,
++                        self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                        self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                     )
+                 } else {
+                     itip_create(
+                         &mut new_calendar_event.data.event,
+                         account_info.addresses(),
+-                        self.core
+-                            .groupware
+-                            .itip_exclude_outbound_organizer_attendee,
++                        self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                        self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                     )
+                 };
+
+@@ -507,9 +505,8 @@ impl CalendarEventSet for Server {
+                     account_id,
+                     document_id,
+                     send_scheduling_messages,
+-                    self.core
+-                        .groupware
+-                        .itip_exclude_outbound_organizer_attendee,
++                    self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                    self.core.groupware.itip_exclude_outbound_organizer_attendee,
+                     &mut batch,
+                 )
+                 .caused_by(trc::location!())?;
+@@ -657,9 +654,8 @@ impl CalendarEventSet for Server {
+             match itip_create(
+                 &mut event.data.event,
+                 account_info.addresses(),
+-                self.core
+-                    .groupware
+-                    .itip_exclude_outbound_organizer_attendee,
++                self.core.groupware.itip_dedupe_organizer_attendee_snapshot,
++                self.core.groupware.itip_exclude_outbound_organizer_attendee,
+             ) {
+                 Ok(messages) => {
+                     if messages.iter().map(|r| r.to.len()).sum::<usize>()
+diff --git a/crates/registry/src/schema/properties.rs b/crates/registry/src/schema/properties.rs
+index 92ece57..df2cdad 100644
+--- a/crates/registry/src/schema/properties.rs
++++ b/crates/registry/src/schema/properties.rs
+@@ -297,6 +297,7 @@ pub enum Property {
+     AllowDirectoryQueries = 695,
+     AllowExternalRcpts = 164,
+     AllowInvalidCerts = 26,
++    ITipDedupeOrganizerAttendeeSnapshot = 1906,
+     IMipAllowMethodCompat = 1902,
+     IMipAllowExternalSender = 1904,
+     AllowPlainTextAuth = 424,
+diff --git a/crates/registry/src/schema/properties_impl.rs b/crates/registry/src/schema/properties_impl.rs
+index 1f8d2d5..fcef9f1 100644
+--- a/crates/registry/src/schema/properties_impl.rs
++++ b/crates/registry/src/schema/properties_impl.rs
+@@ -452,6 +452,9 @@ impl EnumImpl for Property {
+             b"allowInvalidCerts" => Property::AllowInvalidCerts,
+             b"iMipAllowMethodCompat" => Property::IMipAllowMethodCompat,
+             b"iMipAllowExternalSender" => Property::IMipAllowExternalSender,
++            b"iTipDedupeOrganizerAttendeeSnapshot" => {
++                Property::ITipDedupeOrganizerAttendeeSnapshot
++            },
+             b"allowPlainTextAuth" => Property::AllowPlainTextAuth,
+             b"allowRelaying" => Property::AllowRelaying,
+             b"allowSpamTraining" => Property::AllowSpamTraining,
+@@ -1383,6 +1386,7 @@ impl EnumImpl for Property {
+             Property::AllowInvalidCerts => "allowInvalidCerts",
+             Property::IMipAllowMethodCompat => "iMipAllowMethodCompat",
+             Property::IMipAllowExternalSender => "iMipAllowExternalSender",
++            Property::ITipDedupeOrganizerAttendeeSnapshot => "iTipDedupeOrganizerAttendeeSnapshot",
+             Property::AllowPlainTextAuth => "allowPlainTextAuth",
+             Property::AllowRelaying => "allowRelaying",
+             Property::AllowSpamTraining => "allowSpamTraining",
+@@ -1393,7 +1397,7 @@ impl EnumImpl for Property {
+             Property::AnonymousClientRegistration => "anonymousClientRegistration",
+             Property::AppendAccountNameToDefaultDisplayName => {
+                 "appendAccountNameToDefaultDisplayName"
+-            },
++            }
+             Property::Ansi => "ansi",
+             Property::ApiKey => "apiKey",
+             Property::ApiUser => "apiUser",
+@@ -1943,7 +1947,7 @@ impl EnumImpl for Property {
+             Property::OutboundReportSubmitter => "outboundReportSubmitter",
+             Property::ITipExcludeOutboundOrganizerAttendee => {
+                 "iTipExcludeOutboundOrganizerAttendee"
+-            },
++            }
+             Property::OverrideProxyTrustedNetworks => "overrideProxyTrustedNetworks",
+             Property::OverrideType => "overrideType",
+             Property::OvhEndpoint => "ovhEndpoint",
+@@ -2318,6 +2322,7 @@ impl EnumImpl for Property {
+             26 => Some(Property::AllowInvalidCerts),
+             1902 => Some(Property::IMipAllowMethodCompat),
+             1904 => Some(Property::IMipAllowExternalSender),
++            1906 => Some(Property::ITipDedupeOrganizerAttendeeSnapshot),
+             424 => Some(Property::AllowPlainTextAuth),
+             348 => Some(Property::AllowRelaying),
+             369 => Some(Property::AllowSpamTraining),
+diff --git a/crates/registry/src/schema/structs.rs b/crates/registry/src/schema/structs.rs
+index 512b40c..9baa1e5 100644
+--- a/crates/registry/src/schema/structs.rs
++++ b/crates/registry/src/schema/structs.rs
+@@ -683,6 +683,8 @@ pub struct CalendarScheduling {
+     pub imip_allow_method_compat: bool,
+     #[serde(rename = "iMipAllowExternalSender")]
+     pub imip_allow_external_sender: bool,
++    #[serde(rename = "iTipDedupeOrganizerAttendeeSnapshot")]
++    pub itip_dedupe_organizer_attendee_snapshot: bool,
+     #[serde(rename = "iTipExcludeOutboundOrganizerAttendee")]
+     pub itip_exclude_outbound_organizer_attendee: bool,
+     #[serde(rename = "itipMaxSize")]
+diff --git a/crates/registry/src/schema/structs_impl.rs b/crates/registry/src/schema/structs_impl.rs
+index 539bf25..c73095d 100644
+--- a/crates/registry/src/schema/structs_impl.rs
++++ b/crates/registry/src/schema/structs_impl.rs
+@@ -393,7 +393,7 @@ impl Default for AcmeProvider {
+
+ impl IntoValue for AcmeProvider {
+     fn into_value(self) -> JmapValue<'static> {
+-        let mut map = jmap_tools::Map::with_capacity(12);
++        let mut map = jmap_tools::Map::with_capacity(13);
+         map.insert_unchecked(Property::ChallengeType, self.challenge_type.into_value());
+         map.insert_unchecked(Property::Contact, self.contact.into_value());
+         map.insert_unchecked(Property::Directory, self.directory.into_value());
+@@ -4553,8 +4553,7 @@ impl Pickle for Calendar {
+         self.max_events.pickle(out);
+         self.max_participant_identities.pickle(out);
+         self.max_event_notifications.pickle(out);
+-        self.append_account_name_to_default_display_name
+-            .pickle(out);
++        self.append_account_name_to_default_display_name.pickle(out);
+     }
+
+     fn unpickle(stream: &mut crate::pickle::PickledStream<'_>) -> Option<Self> {
+@@ -4599,7 +4598,8 @@ impl IntoValue for Calendar {
+         let mut map = jmap_tools::Map::with_capacity(12);
+         map.insert_unchecked(
+             Property::AppendAccountNameToDefaultDisplayName,
+-            self.append_account_name_to_default_display_name.into_value(),
++            self.append_account_name_to_default_display_name
++                .into_value(),
+         );
+         map.insert_unchecked(
+             Property::DefaultDisplayName,
+@@ -4826,6 +4826,7 @@ impl Pickle for CalendarScheduling {
+         self.http_rsvp_template.pickle(out);
+         self.imip_allow_method_compat.pickle(out);
+         self.imip_allow_external_sender.pickle(out);
++        self.itip_dedupe_organizer_attendee_snapshot.pickle(out);
+         self.itip_exclude_outbound_organizer_attendee.pickle(out);
+     }
+
+@@ -4850,6 +4851,11 @@ impl Pickle for CalendarScheduling {
+         } else {
+             false
+         };
++        this.itip_dedupe_organizer_attendee_snapshot = if !stream.eof() {
++            Pickle::unpickle(stream)?
++        } else {
++            false
++        };
+         this.itip_exclude_outbound_organizer_attendee = if !stream.eof() {
+             Pickle::unpickle(stream)?
+         } else {
+@@ -4869,6 +4875,7 @@ impl Default for CalendarScheduling {
+             auto_add_invitations: false,
+             imip_allow_method_compat: false,
+             imip_allow_external_sender: false,
++            itip_dedupe_organizer_attendee_snapshot: false,
+             itip_exclude_outbound_organizer_attendee: false,
+             itip_max_size: 524288,
+             max_recipients: 100u64,
+@@ -4900,10 +4907,13 @@ impl IntoValue for CalendarScheduling {
+             Property::IMipAllowExternalSender,
+             self.imip_allow_external_sender.into_value(),
+         );
++        map.insert_unchecked(
++            Property::ITipDedupeOrganizerAttendeeSnapshot,
++            self.itip_dedupe_organizer_attendee_snapshot.into_value(),
++        );
+         map.insert_unchecked(
+             Property::ITipExcludeOutboundOrganizerAttendee,
+-            self.itip_exclude_outbound_organizer_attendee
+-                .into_value(),
++            self.itip_exclude_outbound_organizer_attendee.into_value(),
+         );
+         map.insert_unchecked(Property::ItipMaxSize, self.itip_max_size.into_value());
+         map.insert_unchecked(Property::MaxRecipients, self.max_recipients.into_value());
+@@ -4930,12 +4940,15 @@ impl RegistryJsonPropertyPatch for CalendarScheduling {
+                 .http_rsvp_url
+                 .patch(pointer.with_validators(&[StringValidator::Trim]), value),
+             Some(Property::AutoAddInvitations) => self.auto_add_invitations.patch(pointer, value),
+-            Some(Property::IMipAllowMethodCompat) => self
+-                .imip_allow_method_compat
+-                .patch(pointer, value),
++            Some(Property::IMipAllowMethodCompat) => {
++                self.imip_allow_method_compat.patch(pointer, value)
++            }
+             Some(Property::IMipAllowExternalSender) => {
+                 self.imip_allow_external_sender.patch(pointer, value)
+             }
++            Some(Property::ITipDedupeOrganizerAttendeeSnapshot) => self
++                .itip_dedupe_organizer_attendee_snapshot
++                .patch(pointer, value),
+             Some(Property::ITipExcludeOutboundOrganizerAttendee) => self
+                 .itip_exclude_outbound_organizer_attendee
+                 .patch(pointer, value),

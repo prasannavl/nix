@@ -1,0 +1,418 @@
+diff --git a/crates/imap/src/op/idle.rs b/crates/imap/src/op/idle.rs
+index 737d5dfc..3766bde3 100644
+--- a/crates/imap/src/op/idle.rs
++++ b/crates/imap/src/op/idle.rs
+@@ -46,6 +46,8 @@ impl<T: SessionStream> Session<T> {
+         };
+         let is_rev2 = self.version.is_rev2();
+         let is_utf8 = self.is_utf8;
++        let is_condstore =
++            self.is_condstore || mailbox.as_ref().is_some_and(|mailbox| mailbox.is_condstore);
+         let is_qresync = self.is_qresync;
+
+         // Register with push manager
+@@ -119,7 +121,15 @@ impl<T: SessionStream> Session<T> {
+                         }
+
+                         if has_mailbox_changes || has_email_changes {
+-                            data.write_changes(&mailbox, has_mailbox_changes, has_email_changes, is_qresync, is_rev2, is_utf8).await?;
++                            data.write_changes(
++                                &mailbox,
++                                has_mailbox_changes,
++                                has_email_changes,
++                                is_condstore,
++                                is_qresync,
++                                is_rev2,
++                                is_utf8,
++                            ).await?;
+                         }
+                     } else {
+                         self.write_bytes(&b"* BYE Server shutting down.\r\n"[..]).await.ok();
+@@ -137,10 +147,81 @@ impl<T: SessionStream> SessionData<T> {
+         mailbox: &Option<Arc<SelectedMailbox>>,
+         check_mailboxes: bool,
+         check_emails: bool,
++        is_condstore: bool,
+         is_qresync: bool,
+         is_rev2: bool,
+         is_utf8: bool,
+     ) -> trc::Result<()> {
++        // Fetch selected mailbox changes before general mailbox status changes.
++        // The selected mailbox is updated through EXISTS/EXPUNGE/FETCH here,
++        // so do not also emit unsolicited STATUS for the same mailbox below.
++        if check_emails {
++            // Synchronize emails
++            if let Some(mailbox) = mailbox {
++                // Obtain changes since last sync
++                let modseq = mailbox.state.lock().modseq;
++                let new_state = self
++                    .write_mailbox_changes(mailbox, is_qresync)
++                    .await
++                    .caused_by(trc::location!())?;
++
++                if new_state != modseq {
++                    // Obtain changed messages
++                    let changelog = self
++                        .server
++                        .store()
++                        .changes(
++                            mailbox.id.account_id,
++                            SyncCollection::Email.into(),
++                            Query::Since(modseq),
++                        )
++                        .await
++                        .caused_by(trc::location!())?;
++                    let changed_ids = {
++                        let state = mailbox.state.lock();
++                        changelog
++                            .changes
++                            .into_iter()
++                            .filter_map(|change| {
++                                change.try_unwrap_item_id().and_then(|item_id| {
++                                    state
++                                        .id_to_imap
++                                        .get(&((item_id & u32::MAX as u64) as u32))
++                                        .map(|id| id.uid)
++                                })
++                            })
++                            .collect::<AHashSet<_>>()
++                    };
++
++                    if !changed_ids.is_empty() {
++                        let op_start = Instant::now();
++                        self.fetch(
++                            fetch::Arguments {
++                                tag: "".into(),
++                                sequence_set: Sequence::List {
++                                    items: changed_ids
++                                        .into_iter()
++                                        .map(|uid| Sequence::Number { value: uid })
++                                        .collect(),
++                                },
++                                attributes: vec![fetch::Attribute::Flags, fetch::Attribute::Uid],
++                                changed_since: None,
++                                include_vanished: false,
++                            },
++                            mailbox.clone(),
++                            true,
++                            is_qresync,
++                            false,
++                            op_start,
++                        )
++                        .await
++                        .caused_by(trc::location!())
++                        .map(|_| ())?;
++                    }
++                }
++            }
++        }
++
+         // Fetch all changed mailboxes
+         if check_mailboxes {
+             let changes = self
+@@ -148,9 +229,27 @@ impl<T: SessionStream> SessionData<T> {
+                 .await
+                 .caused_by(trc::location!())?
+                 .unwrap();
++            let selected_mailbox_id = mailbox.as_ref().map(|mailbox| mailbox.id);
+
+             let mut buf = Vec::with_capacity(64);
+
++            let status_items = if is_condstore {
++                &[
++                    Status::Messages,
++                    Status::Unseen,
++                    Status::UidNext,
++                    Status::UidValidity,
++                    Status::HighestModSeq,
++                ][..]
++            } else {
++                &[
++                    Status::Messages,
++                    Status::Unseen,
++                    Status::UidNext,
++                    Status::UidValidity,
++                ][..]
++            };
++
+             // List deleted mailboxes
+             for mailbox_name in changes.deleted {
+                 ListItem {
+@@ -172,18 +271,17 @@ impl<T: SessionStream> SessionData<T> {
+             }
+             // Obtain status of changed mailboxes
+             for mailbox_name in changes.changed {
+-                if let Ok(status) = self
+-                    .status(
+-                        mailbox_name,
+-                        &[
+-                            Status::Messages,
+-                            Status::Unseen,
+-                            Status::UidNext,
+-                            Status::UidValidity,
+-                        ],
+-                    )
+-                    .await
++                if selected_mailbox_id
++                    .and_then(|selected_mailbox_id| {
++                        self.get_mailbox_by_name(&mailbox_name)
++                            .map(|mailbox_id| mailbox_id == selected_mailbox_id)
++                    })
++                    .unwrap_or(false)
+                 {
++                    continue;
++                }
++
++                if let Ok(status) = self.status(mailbox_name, status_items).await {
+                     status.serialize(&mut buf, is_utf8);
+                 }
+             }
+@@ -193,76 +291,6 @@ impl<T: SessionStream> SessionData<T> {
+             }
+         }
+
+-        // Fetch selected mailbox changes
+-        if check_emails {
+-            // Synchronize emails
+-            if let Some(mailbox) = mailbox {
+-                // Obtain changes since last sync
+-                let modseq = mailbox.state.lock().modseq;
+-                let new_state = self
+-                    .write_mailbox_changes(mailbox, is_qresync)
+-                    .await
+-                    .caused_by(trc::location!())?;
+-                if new_state == modseq {
+-                    return Ok(());
+-                }
+-
+-                // Obtain changed messages
+-                let changelog = self
+-                    .server
+-                    .store()
+-                    .changes(
+-                        mailbox.id.account_id,
+-                        SyncCollection::Email.into(),
+-                        Query::Since(modseq),
+-                    )
+-                    .await
+-                    .caused_by(trc::location!())?;
+-                let changed_ids = {
+-                    let state = mailbox.state.lock();
+-                    changelog
+-                        .changes
+-                        .into_iter()
+-                        .filter_map(|change| {
+-                            change.try_unwrap_item_id().and_then(|item_id| {
+-                                state
+-                                    .id_to_imap
+-                                    .get(&((item_id & u32::MAX as u64) as u32))
+-                                    .map(|id| id.uid)
+-                            })
+-                        })
+-                        .collect::<AHashSet<_>>()
+-                };
+-
+-                if !changed_ids.is_empty() {
+-                    let op_start = Instant::now();
+-                    return self
+-                        .fetch(
+-                            fetch::Arguments {
+-                                tag: "".into(),
+-                                sequence_set: Sequence::List {
+-                                    items: changed_ids
+-                                        .into_iter()
+-                                        .map(|uid| Sequence::Number { value: uid })
+-                                        .collect(),
+-                                },
+-                                attributes: vec![fetch::Attribute::Flags, fetch::Attribute::Uid],
+-                                changed_since: None,
+-                                include_vanished: false,
+-                            },
+-                            mailbox.clone(),
+-                            true,
+-                            is_qresync,
+-                            false,
+-                            op_start,
+-                        )
+-                        .await
+-                        .caused_by(trc::location!())
+-                        .map(|_| ());
+-                }
+-            }
+-        }
+-
+         Ok(())
+     }
+ }
+diff --git a/crates/imap/src/op/noop.rs b/crates/imap/src/op/noop.rs
+index fee287ce..289f1273 100644
+--- a/crates/imap/src/op/noop.rs
++++ b/crates/imap/src/op/noop.rs
+@@ -19,6 +19,7 @@ impl<T: SessionStream> Session<T> {
+                 &Some(mailbox.clone()),
+                 false,
+                 true,
++                self.is_condstore || mailbox.is_condstore,
+                 self.is_qresync,
+                 self.version.is_rev2(),
+                 self.is_utf8,
+diff --git a/tests/src/imap/idle.rs b/tests/src/imap/idle.rs
+index 0aa47f9c..e11c5524 100644
+--- a/tests/src/imap/idle.rs
++++ b/tests/src/imap/idle.rs
+@@ -22,7 +22,7 @@ pub async fn test(
+     // Switch connection to IDLE mode
+     imap_check.send("CREATE Parmeggiano").await;
+     imap_check.assert_read(Type::Tagged, ResponseType::Ok).await;
+-    imap_check.send("SELECT Parmeggiano").await;
++    imap_check.send("SELECT Parmeggiano (CONDSTORE)").await;
+     imap_check.assert_read(Type::Tagged, ResponseType::Ok).await;
+     imap_check.send("NOOP").await;
+     imap_check.assert_read(Type::Tagged, ResponseType::Ok).await;
+@@ -58,7 +58,8 @@ pub async fn test(
+         .assert_contains("STATUS \"Provolone\"")
+         .assert_contains("MESSAGES 1")
+         .assert_contains("UNSEEN 1")
+-        .assert_contains("UIDNEXT 2");
++        .assert_contains("UIDNEXT 2")
++        .assert_contains("HIGHESTMODSEQ");
+
+     // Change message to Seen and expect an update
+     imap.send("SELECT Provolone").await;
+@@ -74,7 +75,8 @@ pub async fn test(
+         .assert_contains("STATUS \"Provolone\"")
+         .assert_contains("MESSAGES 1")
+         .assert_contains("UNSEEN 0")
+-        .assert_contains("UIDNEXT 2");
++        .assert_contains("UIDNEXT 2")
++        .assert_contains("HIGHESTMODSEQ");
+
+     // Delete message and expect an update
+     imap.send("STORE 1:* +FLAGS (\\Deleted)").await;
+@@ -90,7 +92,8 @@ pub async fn test(
+         .assert_contains("STATUS \"Provolone\"")
+         .assert_contains("MESSAGES 0")
+         .assert_contains("UNSEEN 0")
+-        .assert_contains("UIDNEXT 2");
++        .assert_contains("UIDNEXT 2")
++        .assert_contains("HIGHESTMODSEQ");
+
+     // Delete folder and expect an update
+     imap.send("DELETE Provolone").await;
+@@ -103,7 +106,7 @@ pub async fn test(
+         .await
+         .assert_contains("LIST (\\NonExistent) \"/\" \"Provolone\"");
+
+-    // Add a message to Inbox and expect an update
++    // Add a message to the selected mailbox and expect selected-mailbox updates.
+     imap.send(&format!("APPEND Parmeggiano {{{}}}", message.len()))
+         .await;
+     imap.assert_read(Type::Continuation, ResponseType::Ok).await;
+@@ -115,16 +118,13 @@ pub async fn test(
+     imap_check
+         .assert_read(Type::Status, ResponseType::Ok)
+         .await
+-        .assert_contains("MESSAGES 1")
+-        .assert_contains("UNSEEN 1");
+-    imap_check
+-        .assert_read(Type::Status, ResponseType::Ok)
+-        .await
+-        .assert_contains("* 1 EXISTS");
++        .assert_contains("* 1 EXISTS")
++        .assert_not_contains("STATUS");
+     imap_check
+         .assert_read(Type::Status, ResponseType::Ok)
+         .await
+-        .assert_contains("* 1 FETCH (FLAGS () UID 1)");
++        .assert_contains("* 1 FETCH (FLAGS () UID 1)")
++        .assert_not_contains("STATUS");
+
+     // Delete message and expect an update
+     imap.send("SELECT Parmeggiano").await;
+@@ -138,7 +138,8 @@ pub async fn test(
+     imap_check
+         .assert_read(Type::Status, ResponseType::Ok)
+         .await
+-        .assert_contains("* 1 FETCH (FLAGS (\\Deleted) UID 1)");
++        .assert_contains("* 1 FETCH (FLAGS (\\Deleted) UID 1)")
++        .assert_not_contains("STATUS");
+
+     imap.send("UID EXPUNGE").await;
+     imap.assert_read(Type::Tagged, ResponseType::Ok)
+@@ -151,16 +152,13 @@ pub async fn test(
+     imap_check
+         .assert_read(Type::Status, ResponseType::Ok)
+         .await
+-        .assert_contains("MESSAGES 0")
+-        .assert_contains("UNSEEN 0");
+-    imap_check
+-        .assert_read(Type::Status, ResponseType::Ok)
+-        .await
+-        .assert_contains("* 1 EXPUNGE");
++        .assert_contains("* 1 EXPUNGE")
++        .assert_not_contains("STATUS");
+     imap_check
+         .assert_read(Type::Status, ResponseType::Ok)
+         .await
+-        .assert_contains("* 0 EXISTS");
++        .assert_contains("* 0 EXISTS")
++        .assert_not_contains("STATUS");
+
+     // Test SMTP delivery notifications
+     let mut lmtp = SmtpConnection::connect().await;
+@@ -185,12 +183,55 @@ pub async fn test(
+         .assert_read(Type::Status, ResponseType::Ok)
+         .await
+         .assert_contains("STATUS \"INBOX\"")
++        .assert_not_contains("EXISTS")
++        .assert_not_contains("FETCH")
++        .assert_contains("HIGHESTMODSEQ")
+         .assert_contains(if is_cluster_test {
+             "MESSAGES 1"
+         } else {
+             "MESSAGES 11"
+         });
+
++    // Test SMTP delivery notifications for a selected INBOX.
++    imap_check.send_raw("DONE").await;
++    imap_check.assert_read(Type::Tagged, ResponseType::Ok).await;
++    imap_check.send("SELECT INBOX").await;
++    imap_check.assert_read(Type::Tagged, ResponseType::Ok).await;
++    imap_check.send("NOOP").await;
++    imap_check.assert_read(Type::Tagged, ResponseType::Ok).await;
++    imap_check.send("IDLE").await;
++    imap_check
++        .assert_read(Type::Continuation, ResponseType::Ok)
++        .await;
++
++    let mut lmtp = SmtpConnection::connect().await;
++    lmtp.ingest(
++        "bill@example.com",
++        &["jdoe@example.com"],
++        concat!(
++            "From: bill@example.com\r\n",
++            "To: jdoe@example.com\r\n",
++            "Subject: Cover Sheet\r\n",
++            "X-Spam-Status: No\r\n",
++            "\r\n",
++            "Please add a cover sheet to the TPS report."
++        ),
++    )
++    .await;
++    if is_cluster_test {
++        tokio::time::sleep(SLEEP).await;
++    }
++    imap_check
++        .assert_read(Type::Status, ResponseType::Ok)
++        .await
++        .assert_contains("EXISTS")
++        .assert_not_contains("STATUS");
++    imap_check
++        .assert_read(Type::Status, ResponseType::Ok)
++        .await
++        .assert_contains("FETCH (FLAGS () UID")
++        .assert_not_contains("STATUS");
++
+     // Stop IDLE mode
+     imap_check.send_raw("DONE").await;
+     imap_check.assert_read(Type::Tagged, ResponseType::Ok).await;
