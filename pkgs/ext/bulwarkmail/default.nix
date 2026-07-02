@@ -8,39 +8,38 @@
   nodejs_24,
 }: let
   pname = "bulwarkmail";
-  version = "1.7.3";
-  rev = "9db7b6b55f1d81a6a0e8439b371605fac92e2989";
+  version = "1.7.5";
+  rev = "de56229ef29cf87f620ad49de397941bf405834f";
   shortRev = builtins.substring 0 12 rev;
   patchHash = builtins.substring 0 12 (builtins.hashString "sha256" ''
-    ${builtins.readFile ./client-imip-sending-flag.patch}
+    ${builtins.readFile ./calendar-organizer-attendee-shape.patch}
     ${builtins.readFile ./local-geist-fonts.patch}
     ${builtins.readFile ./server-logout-route.patch}
-    client-imip-sending-v9
+    calendar-organizer-attendee-shape-v1
   '');
 
   imageName = "localhost/abird/bulwarkmail";
-  imageTag = "${version}-client-imip-sending-off-${patchHash}";
+  imageTag = "${version}-calendar-shape-${patchHash}";
   imageRef = "${imageName}:${imageTag}";
 
   src = fetchFromGitHub {
     owner = "bulwarkmail";
     repo = "webmail";
     inherit rev;
-    hash = "sha256-8EW1o3lIL/wVmrA4bpP09x6fApsEUKAdZq3+mVidPis=";
+    hash = "sha256-2N9Y4AMMXjXzXU+VWN6cQq0BGpIERfPGJmI0L9WbTtg=";
   };
 
   patchedApp = buildNpmPackage {
     inherit pname version src;
     nodejs = nodejs_24;
-    npmDepsHash = "sha256-MJ5pwPeHE+zBjvTeGaGG4Ybp7gHDaZAiNBwk6bIKaNg=";
+    npmDepsHash = "sha256-ffXwwvyodHRLpQ0B4M8tJHnes8KtAfX9fLsyZL68+KQ=";
     patches = [
-      ./client-imip-sending-flag.patch
+      ./calendar-organizer-attendee-shape.patch
       ./local-geist-fonts.patch
       ./server-logout-route.patch
     ];
 
     NEXT_TELEMETRY_DISABLED = "1";
-    NEXT_PUBLIC_ENABLE_CLIENT_IMIP_SENDING = "false";
     GIT_COMMIT = shortRev;
 
     postPatch = ''
@@ -87,7 +86,6 @@
       Env = [
         "NODE_ENV=production"
         "NEXT_TELEMETRY_DISABLED=1"
-        "NEXT_PUBLIC_ENABLE_CLIENT_IMIP_SENDING=false"
         "PORT=3000"
         "HOSTNAME=0.0.0.0"
       ];
@@ -98,7 +96,7 @@
         "org.opencontainers.image.source" = "https://github.com/bulwarkmail/webmail";
         "org.opencontainers.image.revision" = rev;
         "org.opencontainers.image.version" = version;
-        "ai.abird.patch.clientImipSending" = patchHash;
+        "ai.abird.patch.calendarOrganizerAttendeeShape" = patchHash;
       };
       User = "1001:65533";
       WorkingDir = "/app";
@@ -112,7 +110,7 @@ in
     };
 
     meta = {
-      description = "Bulwark Webmail image with client iMIP sending disabled";
+      description = "Bulwark Webmail image with Abird calendar organizer/attendee shape fixes";
       homepage = "https://github.com/bulwarkmail/webmail";
       license = lib.licenses.agpl3Only;
       platforms = lib.platforms.linux;
