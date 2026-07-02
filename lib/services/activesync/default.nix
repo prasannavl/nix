@@ -279,13 +279,19 @@ in {
 
     pingMaxLifetimeSec = lib.mkOption {
       type = types.ints.positive;
-      default = 300;
+      # Original default, kept for rollback/reference:
+      # default = 300;
+      # Use a lower Ping lifetime because Cloudflare Tunnel drops quiet origin reads at 120s.
+      default = 90;
       description = "Maximum ActiveSync Ping long-poll lifetime in seconds.";
     };
 
     processTimeoutSec = lib.mkOption {
       type = types.ints.positive;
-      default = 900;
+      # Original default, kept for rollback/reference:
+      # default = 900;
+      # Keep PHP slightly above the Ping lifetime but below Cloudflare Tunnel's quiet read limit.
+      default = 110;
       description = "PHP-FPM request timeout for long-running ActiveSync requests.";
     };
 
@@ -562,7 +568,10 @@ in {
 
       timeout = lib.mkOption {
         type = types.str;
-        default = "15m";
+        # Original default, kept for rollback/reference:
+        # default = "15m";
+        # Keep origin FastCGI waits below Cloudflare Tunnel's quiet read limit.
+        default = "100s";
         description = "Nginx FastCGI read/send timeout for ActiveSync requests.";
       };
 

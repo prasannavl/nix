@@ -11,7 +11,7 @@
         requestsPerMinuteBurst = null;
       };
   };
-  mkProxyTimeout = value:
+  mkTimeout = value:
     if builtins.isAttrs value
     then {
       proxyReadTimeout = value.read;
@@ -21,7 +21,7 @@
       proxyReadTimeout = value;
       proxySendTimeout = value;
     };
-  mkProxyTimeouts = values: builtins.mapAttrs (_: mkProxyTimeout) values;
+  mkTimeouts = values: builtins.mapAttrs (_: mkTimeout) values;
   redirectStatusType = lib.types.enum [
     301
     302
@@ -595,6 +595,18 @@
         default = [];
         description = "Optional TLS SNI names for this stream proxy.";
       };
+
+      proxyConnectTimeout = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx stream proxy_connect_timeout override.";
+      };
+
+      proxyTimeout = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional nginx stream proxy_timeout override.";
+      };
     };
   };
 
@@ -807,18 +819,31 @@
       "}\n"
     ];
 
+  streamTimeoutLines = proxy:
+    lib.optionals ((proxy.proxyConnectTimeout or null) != null) [
+      "    proxy_connect_timeout ${proxy.proxyConnectTimeout};"
+    ]
+    ++ lib.optionals ((proxy.proxyTimeout or null) != null) [
+      "    proxy_timeout ${proxy.proxyTimeout};"
+    ];
+
   mkStreamProxyServer = name: proxy: let
     listenProtocolSuffix =
       if proxy.protocol == "udp"
       then " udp"
       else "";
     proxyPassTarget = "stream_${sanitizeVariableName name}";
-  in ''
-    server {
-        listen ${toString proxy.listenPort}${listenProtocolSuffix};
-        proxy_pass ${proxyPassTarget};
-    }
-  '';
+  in
+    builtins.concatStringsSep "\n" ([
+        "server {"
+        "    listen ${toString proxy.listenPort}${listenProtocolSuffix};"
+        "    proxy_pass ${proxyPassTarget};"
+      ]
+      ++ streamTimeoutLines proxy
+      ++ [
+        "}"
+        ""
+      ]);
 
   streamListenKey = proxy: "${proxy.protocol}-${toString proxy.listenPort}";
 
@@ -867,14 +892,19 @@
   in
     if firstProxy.protocol == "udp"
     then throw "nginx stream listener ${listenKey} cannot use nginxHostNames because UDP has no TLS SNI preread"
-    else ''
-      ${mapBlock}
-      server {
-          listen ${toString firstProxy.listenPort}${listenProtocolSuffix};
-          proxy_pass ${streamListenVariableName listenKey};
-          ssl_preread on;
-      }
-    '';
+    else
+      mapBlock
+      + builtins.concatStringsSep "\n" ([
+          "server {"
+          "    listen ${toString firstProxy.listenPort}${listenProtocolSuffix};"
+          "    proxy_pass ${streamListenVariableName listenKey};"
+          "    ssl_preread on;"
+        ]
+        ++ streamTimeoutLines firstProxy
+        ++ [
+          "}"
+          ""
+        ]);
 
   mkStreamProxyListenServer = listenKey: proxies:
     if builtins.any (proxy: proxy.serverNames != []) proxies
@@ -916,6 +946,8 @@
       protocol = upstreamProtocol;
       upstreams = upstreams;
       serverNames = portCfg.nginxHostNames or [];
+      proxyConnectTimeout = portCfg.proxyConnectTimeout or null;
+      proxyTimeout = portCfg.proxyTimeout or null;
     };
 
   streamProxiesFromExposedPorts = exposedPorts:
@@ -1190,7 +1222,7 @@
                 return 401;
             }
 
-            return 302 ${prefix}/sign_in?rd=${requestScheme}://$host$request_uri;
+            return 302 ${requestScheme}://$host${prefix}/sign_in?rd=${requestScheme}://$host$request_uri;
         }
 
   '';
@@ -1789,7 +1821,7 @@
             }
     '';
 in rec {
-  inherit mkProxyTimeout mkProxyTimeouts rateLimitProfiles;
+  inherit mkTimeout mkTimeouts rateLimitProfiles;
   proxyVhostType = proxyVhostTypeDef;
   redirectVhostType = redirectVhostTypeDef;
   routeType = routeTypeDef;

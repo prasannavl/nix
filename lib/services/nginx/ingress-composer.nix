@@ -15,6 +15,38 @@
       (without args ["extra"]) // {extra = extra // (args.extra or {});};
     urlEncode = lib.strings.escapeURL;
     logoutPath = "/.abird/logout";
+    edgeAuthCachePolicyResponseHeaders = {
+      default = [];
+      no-cache = [
+        {
+          name = "Cache-Control";
+          value = ''"no-cache, private, max-age=0, must-revalidate"'';
+        }
+      ];
+      no-store = [
+        {
+          name = "Cache-Control";
+          value = ''"no-store, private, max-age=0"'';
+        }
+      ];
+    };
+    edgeAuthCachePolicyHeaders = policy:
+      if builtins.hasAttr policy edgeAuthCachePolicyResponseHeaders
+      then edgeAuthCachePolicyResponseHeaders.${policy}
+      else throw "Unsupported edge auth cache policy: ${policy}";
+    withEdgeAuthCachePolicy = args: let
+      extra = args.extra or {};
+      cachePolicy = args.edgeAuthCachePolicy or "default";
+      cachePolicyHeaders = edgeAuthCachePolicyHeaders cachePolicy;
+    in
+      (without args ["edgeAuthCachePolicy" "extra"])
+      // {
+        extra =
+          extra
+          // optional (cachePolicyHeaders != []) {
+            responseHeaders = cachePolicyHeaders ++ (extra.responseHeaders or []);
+          };
+      };
 
     mkEdgeAuth = clientMaxBodySize:
       {
@@ -103,21 +135,21 @@
     mkEdgeProtectedProxy = args: let
       authClientMaxBodySize = args.authClientMaxBodySize or null;
     in
-      mkServiceProxy ((without args ["authClientMaxBodySize"])
+      mkServiceProxy (withEdgeAuthCachePolicy ((without args ["authClientMaxBodySize"])
         // {
           authRequest = mkEdgeAuth authClientMaxBodySize;
           useUpstreamCsp = true;
-        });
+        }));
 
     mkEdgeProtectedRoute = args: let
       authClientMaxBodySize =
         args.authClientMaxBodySize or (args.clientMaxBodySize or null);
     in
-      mkServiceRoute ((without args ["authClientMaxBodySize"])
+      mkServiceRoute (withEdgeAuthCachePolicy ((without args ["authClientMaxBodySize"])
         // {
           authRequest = mkEdgeAuth authClientMaxBodySize;
           useUpstreamCsp = true;
-        });
+        }));
 
     mkHttpsServiceProxy = args @ {hostName, ...}: let
       proxyArgs = {portName = "https";} // without args ["hostName"];
@@ -148,8 +180,17 @@
         then []
         else registry.domains.${hostGroup},
       upstream ? registry.upstreamForService serviceName upstreamPortName,
+      tcpTimeout ? registry.limits.tcpTimeouts.default or null,
       extra ? {},
-    }:
+    }: let
+      streamTimeout =
+        if protocol == "tcp" && tcpTimeout != null
+        then {
+          proxyConnectTimeout = tcpTimeout.connect;
+          proxyTimeout = tcpTimeout.server;
+        }
+        else {};
+    in
       {
         port = listenPort;
         protocols = [protocol];
@@ -158,6 +199,7 @@
         upstreams = [upstream];
         nginxHostNames = serverNames;
       }
+      // streamTimeout
       // extra;
 
     mkTcpServiceProxy = mkStreamServiceProxy "tcp";

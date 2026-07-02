@@ -14,6 +14,7 @@
   defaultPostgresSecretsBasePath ? null,
   defaultVmstackSecretsBasePath ? null,
   defaultNginxSecretsBasePath ? null,
+  defaultCaCertBasePath ? null,
   defaultCaCertFile ? null,
   defaultCaCertAgeFile ? null,
   defaultCaCertHostPath ? "/etc/ssl/certs/${org}-ca.crt",
@@ -27,10 +28,10 @@
   defaultSecretGroup ? defaultUser,
   defaultSecretMode ? "0400",
   defaultPostgresUrl,
-  defaultPostgresCaCertPath,
+  defaultPostgresCaCertPath ? defaultCaCertHostPath,
   defaultPostgresAfter ? [],
   defaultNatsUrl,
-  defaultNatsCaCertPath,
+  defaultNatsCaCertPath ? defaultCaCertHostPath,
   defaultNatsAfter ? [],
 }: let
   secretsLib = import ../secrets.nix;
@@ -46,6 +47,16 @@
     base = stackSecretsLabel;
     scope = secretScope;
   };
+  caCertPaths = secretsLib.mkScope {
+    base = defaultCaCertBasePath;
+    scope = secretScope;
+  };
+  resolvedDefaultCaCertFile =
+    if defaultCaCertFile != null
+    then defaultCaCertFile
+    else if defaultCaCertBasePath != null
+    then caCertPaths.file "ca.crt"
+    else null;
   resolvedDefaultCaCertAgeFile =
     if defaultCaCertAgeFile != null
     then defaultCaCertAgeFile
@@ -82,11 +93,12 @@ in {
         rateLimitProfiles = nginxService.rateLimitProfiles;
       };
       rawLimits = registry.limits or {};
+      rawTimeouts = rawLimits.timeouts or {};
       resolvedLimits =
         rawLimits
         // (
-          if rawLimits ? proxyTimeouts
-          then {proxyTimeouts = nginxService.mkProxyTimeouts rawLimits.proxyTimeouts;}
+          if builtins.attrNames rawTimeouts != []
+          then {timeouts = nginxService.mkTimeouts rawTimeouts;}
           else {}
         );
     in
@@ -129,7 +141,8 @@ in {
   };
   defaultNginxSecretsBasePath = defaultNginxSecretsBasePath;
   defaultNginxSecretsBase = defaultNginxSecretsBasePath;
-  defaultCaCertFile = defaultCaCertFile;
+  defaultCaCertBasePath = defaultCaCertBasePath;
+  defaultCaCertFile = resolvedDefaultCaCertFile;
   defaultCaCertAgeFile = resolvedDefaultCaCertAgeFile;
   defaultCaCertHostPath = defaultCaCertHostPath;
   defaultCaCertContainerPath = defaultCaCertContainerPath;
@@ -137,12 +150,12 @@ in {
   defaultCaBundleContainerPath = defaultCaBundleContainerPath;
   defaultCaCertificate = {
     file = defaultCaCertHostPath;
-    sourceHashFile = defaultCaCertFile;
+    sourceHashFile = resolvedDefaultCaCertFile;
     mountPath = defaultCaCertContainerPath;
   };
   defaultCaBundleCertificate = {
     file = defaultCaBundleHostPath;
-    sourceHashFile = defaultCaCertFile;
+    sourceHashFile = resolvedDefaultCaCertFile;
     mountPath = defaultCaBundleContainerPath;
   };
   srv = serviceModuleFactory.mkServiceLib {
