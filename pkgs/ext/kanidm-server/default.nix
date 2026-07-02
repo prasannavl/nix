@@ -4,7 +4,7 @@
   stdenvNoCC,
   appLinksMetadata ? [],
 }: let
-  version = "1.10.3";
+  version = "1.10.4";
   uiAssets = {
     "external/forms.js" = ./forms.js;
     "app-passwords.js" = ./app-passwords.js;
@@ -44,10 +44,10 @@
 
   upstreamImage = dockerTools.pullImage {
     imageName = "kanidm/server";
-    imageDigest = "sha256:cb33c84cb69bf15da5a58ddc866c641ec7ed768a6df68c3b99b069927ddcc431";
+    imageDigest = "sha256:d68cc899542fa494120f4014a76c59d5beacad8ee1673e1e62e95f82a332fb68";
     finalImageName = "kanidm/server";
     finalImageTag = version;
-    hash = "sha256-jSjuBVOtAQYgOtE7WVWVmMdhB8pM3+moNvJnwRbZOJ8=";
+    hash = "sha256-MXZvjmeiK0k/R25ZUwo7Sk0FzjSTqNZmxMKsEAQDUIE=";
   };
 
   uiLayer = stdenvNoCC.mkDerivation {
@@ -83,7 +83,7 @@
         "8443/tcp" = {};
       };
       Labels = {
-        "com.kanidm.git-commit" = "7e087f6edd9ec5bf3877d6b8fee4b26fbc3d0d6f";
+        "com.kanidm.git-commit" = "97b1edbc4183084e1a942823d867bed0fd73e0c9";
         "com.kanidm.version" = version;
       };
       WorkingDir = "/data";
@@ -94,7 +94,7 @@ in
   // {
     passthru = {
       inherit imageBuild imageName imageRef imageTag version;
-      upstreamImageDigest = "sha256:cb33c84cb69bf15da5a58ddc866c641ec7ed768a6df68c3b99b069927ddcc431";
+      upstreamImageDigest = "sha256:d68cc899542fa494120f4014a76c59d5beacad8ee1673e1e62e95f82a332fb68";
     };
 
     meta = {
