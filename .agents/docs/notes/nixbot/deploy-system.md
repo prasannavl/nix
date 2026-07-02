@@ -158,6 +158,17 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - EXIT cleanup runs through a trap-specific wrapper over a best-effort cleanup
   core. Individual cleanup helpers may fail without skipping runtime removal,
   while direct cleanup callers keep their original `errexit` state.
+- `nixbot clean` and `nixbot --clean[=auto|all]` are local cleanup actions.
+  `auto` removes stale `/dev/shm/nixbot` and `/var/tmp/nixbot` run/diagnostic
+  directories older than one day; `all` removes those roots entirely.
+  `--clean --ci-trigger` forwards the same hostless cleanup request to the CI
+  host and does not accept `--dirty-staged`.
+- `nixbot clear-remote-locks` and
+  `nixbot --clear-remote-locks[=all|nixbot|podman]` remove only repo-managed
+  remote lock paths for the selected hosts. The `nixbot` mode clears nixbot
+  runtime, SSH TTY, and managed worktree locks; the `podman` mode clears
+  declared Podman Compose lifecycle lock files; `all` clears both. `--dry`
+  prints the exact host-local shell script and must not execute it.
 - Interrupt cleanup terminates registered background jobs, SSH control masters,
   and same-process-group nixbot wrapper processes. The wrapper cleanup is
   guarded so it only runs when nixbot has a distinct process group from its

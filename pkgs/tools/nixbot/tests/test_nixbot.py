@@ -116,6 +116,210 @@ class NixbotScriptTest(unittest.TestCase):
             parsed,
         )
 
+    def test_clean_argument_parsing_accepts_action_and_option_forms(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --clean=all
+            printf '%s %s %s\n' "$ACTION" "$HOST_ACTION" "$NIXBOT_CLEAN_MODE"
+
+            init_vars
+            ACTION=clean
+            normalize_host_action
+            parse_args --clean
+            printf '%s %s %s\n' "$ACTION" "$HOST_ACTION" "$NIXBOT_CLEAN_MODE"
+            """
+        )
+
+        self.assertEqual(
+            [
+                "clean clean all",
+                "clean clean auto",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_clean_auto_removes_old_run_and_diag_dirs_only(self):
+        result = self.run_script(
+            """
+            init_vars
+            RUNTIME_WORK_ROOT="$TEST_WORK_DIR/shm-nixbot"
+            NIXBOT_DIAG_KEEP_ROOT="$TEST_WORK_DIR/var-nixbot"
+            mkdir -p \
+              "$RUNTIME_WORK_ROOT/run-old" \
+              "$RUNTIME_WORK_ROOT/diag-old" \
+              "$RUNTIME_WORK_ROOT/run-new" \
+              "$RUNTIME_WORK_ROOT/other-old" \
+              "$NIXBOT_DIAG_KEEP_ROOT/diag-old" \
+              "$NIXBOT_DIAG_KEEP_ROOT/diag-new"
+            touch -d '2 days ago' \
+              "$RUNTIME_WORK_ROOT/run-old" \
+              "$RUNTIME_WORK_ROOT/diag-old" \
+              "$RUNTIME_WORK_ROOT/other-old" \
+              "$NIXBOT_DIAG_KEEP_ROOT/diag-old"
+            NIXBOT_CLEAN_MODE=auto
+            run_clean_action >/dev/null
+            for path in \
+              "$RUNTIME_WORK_ROOT/run-old" \
+              "$RUNTIME_WORK_ROOT/diag-old" \
+              "$NIXBOT_DIAG_KEEP_ROOT/diag-old"; do
+              [ ! -e "$path" ] || printf 'kept-old %s\n' "$path"
+            done
+            for path in \
+              "$RUNTIME_WORK_ROOT/run-new" \
+              "$RUNTIME_WORK_ROOT/other-old" \
+              "$NIXBOT_DIAG_KEEP_ROOT/diag-new"; do
+              [ -e "$path" ] || printf 'removed-kept %s\n' "$path"
+            done
+            """,
+            env={"TEST_WORK_DIR": str(self.work_dir)},
+        )
+
+        self.assertEqual("", result.stdout.strip())
+
+    def test_clean_all_removes_runtime_and_diag_roots(self):
+        result = self.run_script(
+            """
+            init_vars
+            RUNTIME_WORK_ROOT="$TEST_WORK_DIR/shm-nixbot"
+            NIXBOT_DIAG_KEEP_ROOT="$TEST_WORK_DIR/var-nixbot"
+            mkdir -p "$RUNTIME_WORK_ROOT/run-new" "$NIXBOT_DIAG_KEEP_ROOT/diag-new"
+            NIXBOT_CLEAN_MODE=all
+            run_clean_action >/dev/null
+            [ ! -e "$RUNTIME_WORK_ROOT" ] || printf 'kept-runtime\n'
+            [ ! -e "$NIXBOT_DIAG_KEEP_ROOT" ] || printf 'kept-diag\n'
+            """,
+            env={"TEST_WORK_DIR": str(self.work_dir)},
+        )
+
+        self.assertEqual("", result.stdout.strip())
+
+    def test_clean_ci_trigger_forwards_hostless_clean_request(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=clean
+            normalize_host_action
+            CI_TRIGGER=1
+            NIXBOT_CLEAN_MODE=all
+            SHA=""
+            load_deploy_config_json() { printf '{}'; }
+            init_deploy_settings() { :; }
+            apply_config_defaults() {
+              CI_TRIGGER_USER=ci
+              CI_TRIGGER_HOST=ci-host
+            }
+            configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
+            encode_ssh_command_args() { printf '%s\n' "$*"; }
+            ssh() {
+              printf '%s\n' "$*"
+            }
+            run_ci_trigger
+            """
+        )
+
+        self.assertIn("ci@ci-host", result.stdout)
+        self.assertIn("clean --no-override --clean all", result.stdout)
+        self.assertNotIn("--hosts", result.stdout)
+        self.assertNotIn("--sha", result.stdout)
+
+    def test_clear_remote_locks_argument_parsing_accepts_action_and_option_forms(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --clear-remote-locks=podman --hosts app
+            printf '%s %s %s %s\n' "$ACTION" "$HOST_ACTION" "$NIXBOT_CLEAR_REMOTE_LOCKS_MODE" "$HOSTS_RAW"
+
+            init_vars
+            ACTION=clear-remote-locks
+            normalize_host_action
+            parse_args --clear-remote-locks nixbot --hosts db
+            printf '%s %s %s %s\n' "$ACTION" "$HOST_ACTION" "$NIXBOT_CLEAR_REMOTE_LOCKS_MODE" "$HOSTS_RAW"
+
+            init_vars
+            ACTION=clear-remote-locks
+            normalize_host_action
+            parse_args --hosts web
+            printf '%s %s %s %s\n' "$ACTION" "$HOST_ACTION" "$NIXBOT_CLEAR_REMOTE_LOCKS_MODE" "$HOSTS_RAW"
+            """
+        )
+
+        self.assertEqual(
+            [
+                "clear-remote-locks clear-remote-locks podman app",
+                "clear-remote-locks clear-remote-locks nixbot db",
+                "clear-remote-locks clear-remote-locks all web",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_clear_remote_locks_command_removes_only_nixbot_and_podman_lock_paths(self):
+        result = self.run_script(
+            """
+            init_vars
+            build_clear_remote_locks_command all
+            """
+        )
+
+        command = result.stdout
+        self.assertIn("clear_remote_locks_mode=all", command)
+        self.assertIn("state-locks/*.lock", command)
+        self.assertIn("nixbot-worktree.lock", command)
+        self.assertIn("/run/current-system/share/podman-compose/control-registry.json", command)
+        self.assertIn(".podman-compose/lifecycle.lock", command)
+        self.assertNotIn("/run/nixos/switch-to-configuration.lock", command)
+        self.assertNotIn("systemctl stop", command)
+        self.assertNotIn("kill ", command)
+        self.assertNotIn("podman pod rm", command)
+        self.assertNotIn("state.json", command)
+
+    def test_clear_remote_locks_dry_run_prints_host_local_script(self):
+        result = self.run_script(
+            """
+            init_vars
+            enable_dry_run_mode
+            prepare_deploy_context() {
+              PREP_DEPLOY_LOCAL_EXEC=0
+              PREP_DEPLOY_SSH_TARGET='root@10.0.0.5'
+              return 0
+            }
+            log_host_stage() { :; }
+            log_group_end_host_stage() { :; }
+            run_prepared_root_command_with_retry() {
+              printf 'unexpected remote execution\n'
+              return 1
+            }
+            run_clear_remote_locks_for_host app podman
+            """
+        )
+
+        self.assertIn("# app: clear podman locks", result.stdout)
+        self.assertIn("# target: root@10.0.0.5", result.stdout)
+        self.assertIn("# run inside the target host as root:", result.stdout)
+        self.assertIn("clear_remote_locks_mode=podman", result.stdout)
+        self.assertIn(".podman-compose/lifecycle.lock", result.stdout)
+        self.assertNotIn("unexpected remote execution", result.stdout)
+
+    def test_clear_remote_locks_selection_does_not_expand_dependencies(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=clear-remote-locks
+            normalize_host_action
+            HOSTS_RAW=app
+            NIXBOT_HOSTS_JSON='{"app":{"deps":["parent"]},"parent":{}}'
+            NIXBOT_GROUPS_JSON='{}'
+            NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON='{}'
+            resolve_selected_hosts_json '["app","parent"]'
+            """
+        )
+
+        self.assertEqual(["app"], json.loads(result.stdout))
+
     def test_host_selector_parsing_supports_globs_exclusions_and_implicit_all(self):
         result = self.run_script(
             """

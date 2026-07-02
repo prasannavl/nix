@@ -145,7 +145,7 @@ _nixbot() {
 
 	commands=(
 		deps check-deps version run deploy build dev-build tf tf-dns
-		tf-platform tf-apps check-bootstrap tofu help --list-hosts
+		tf-platform tf-apps check-bootstrap clear-remote-locks clean tofu help --list-hosts
 	)
 	mapfile -t tf_projects < <(_nixbot_tf_projects)
 	commands+=("${tf_projects[@]}")
@@ -153,7 +153,7 @@ _nixbot() {
 	options=(
 		--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
 		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
-		--deploy-jobs --verify-jobs --force --bootstrap --ci-first
+		--deploy-jobs --verify-jobs --clear-remote-locks --clean --force --bootstrap --ci-first
 		--dirty --dirty-staged --dry --no-override --no-rollback
 		--prefix-host-logs --log-format --user --ssh-key --known-hosts --config
 		--age-key-file --discover-keys --no-discover-keys --repo-url
@@ -184,6 +184,14 @@ _nixbot() {
 		;;
 	--discover-keys)
 		_nixbot_compgen_words "$cur" "auto on off"
+		return 0
+		;;
+	--clear-remote-locks)
+		_nixbot_compgen_words "$cur" "all nixbot podman"
+		return 0
+		;;
+	--clean)
+		_nixbot_compgen_words "$cur" "auto all"
 		return 0
 		;;
 	--config | --ssh-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
@@ -217,6 +225,14 @@ _nixbot() {
 		_nixbot_compgen_words "$cur" "auto on off"
 		return 0
 		;;
+	--clear-remote-locks)
+		_nixbot_compgen_words "$cur" "all nixbot podman"
+		return 0
+		;;
+	--clean)
+		_nixbot_compgen_words "$cur" "auto all"
+		return 0
+		;;
 	--config | --ssh-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
 		_nixbot_compgen_files "$cur"
 		return 0
@@ -243,6 +259,12 @@ _nixbot() {
 	--discover-keys=*)
 		_nixbot_compgen_words "${cur#--discover-keys=}" "auto on off" "--discover-keys="
 		;;
+	--clear-remote-locks=*)
+		_nixbot_compgen_words "${cur#--clear-remote-locks=}" "all nixbot podman" "--clear-remote-locks="
+		;;
+	--clean=*)
+		_nixbot_compgen_words "${cur#--clean=}" "auto all" "--clean="
+		;;
 	--config=* | --ssh-key=* | --age-key-file=* | --ci-check-ssh-key-path=* | --repo-path=*)
 		_nixbot_compgen_files "${cur#*=}" "${cur%%=*}="
 		;;
@@ -252,7 +274,7 @@ _nixbot() {
 	*)
 		for word in "${COMP_WORDS[@]:1:COMP_CWORD-1}"; do
 			case "$word" in
-			deps | check-deps | version | run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | tofu | tf/*)
+			deps | check-deps | version | run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clear-remote-locks | clean | tofu | tf/*)
 				command="$word"
 				break
 				;;

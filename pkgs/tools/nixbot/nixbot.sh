@@ -46,7 +46,9 @@ Usage:
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clear-remote-locks|clean> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--clear-remote-locks <all|nixbot|podman>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot --clear-remote-locks[=all|nixbot|podman] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--dry] [auth/config options]
+  nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
 Dependency Actions:
@@ -65,6 +67,8 @@ Workflow Actions:
   tf-apps         Run the apps Terraform phase.
   tf/<project>    Run one configured Terraform project.
   check-bootstrap Run bootstrap checks.
+  clear-remote-locks Remove repo-managed lock files on selected hosts.
+  clean           Clean operator-machine nixbot runtime and diagnostic dirs.
 
 Local Wrapper Action:
   tofu            Run local OpenTofu in the nixbot runtime shell.
@@ -98,6 +102,20 @@ Deploy Action Options (`run`, `deploy`):
   --no-rollback    Disable rollback if any deploy fails
   --no-verify      Skip post-deploy health checks; deploy failures can still roll back
   --prefix-host-logs Always prefix host log lines
+
+Clean Action Options (`clean` or `--clean`):
+  --clean          auto|all (default: auto)
+                   auto removes /dev/shm/nixbot and /var/tmp/nixbot run/diag
+                   dirs older than 1 day; all removes those roots entirely.
+                   With --ci-trigger, runs the same cleanup on the CI host.
+
+Clear Remote Locks Action Options (`clear-remote-locks` or `--clear-remote-locks`):
+  --clear-remote-locks all|nixbot|podman (default for bare flag: all)
+                   nixbot removes nixbot runtime, SSH tty, and worktree lock
+                   dirs; podman removes podman-compose lifecycle lock files
+                   discovered from the current system registry.
+                   --dry prints the exact host-local shell script instead of
+                   mutating the hosts.
 
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
   --ci-first  Prioritize CI host first when the CI host is selected
@@ -469,6 +487,8 @@ init_vars() {
 	NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS="${NIXBOT_PARENT_SNAPSHOT_READY_INTERVAL_SECS:-5}"
 	NIXBOT_PARENT_READINESS_SLOW_SECS="${NIXBOT_PARENT_READINESS_SLOW_SECS:-10}"
 	NIXBOT_PARENT_READINESS_LAST_ELAPSED_SECS=0
+	NIXBOT_CLEAN_MODE="${NIXBOT_CLEAN:-}"
+	NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${NIXBOT_CLEAR_REMOTE_LOCKS:-}"
 	NIXBOT_CONTROL_PERSIST_SECS="${NIXBOT_CONTROL_PERSIST_SECS:-120}"
 	NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS="${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS:-5}"
 	NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX="${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX:-3}"
@@ -997,7 +1017,7 @@ tf_project_name_is_configured() {
 
 action_is_supported() {
 	case "${1:-}" in
-	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | list-hosts | list-groups) return 0 ;;
+	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clear-remote-locks | clean | list-hosts | list-groups) return 0 ;;
 	*)
 		if action_is_tf_project_only "${1:-}"; then
 			tf_project_name_is_configured "$(tf_action_project_name "${1:-}")"
@@ -1021,6 +1041,8 @@ resolved_host_action() {
 	case "${1:-}" in
 	run) printf 'deploy\n' ;;
 	dev-build) printf 'build\n' ;;
+	clear-remote-locks) printf 'clear-remote-locks\n' ;;
+	clean) printf 'clean\n' ;;
 	*) printf '%s\n' "${1:-}" ;;
 	esac
 }
@@ -1202,6 +1224,38 @@ parse_args() {
 			NIXBOT_VERIFY_JOBS="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
+		--clean)
+			ACTION="clean"
+			if [ "$#" -gt 1 ] && [[ "${2:-}" != --* ]]; then
+				NIXBOT_CLEAN_MODE="$2"
+				shift 2
+			else
+				NIXBOT_CLEAN_MODE="auto"
+				shift
+			fi
+			;;
+		--clean=*)
+			take_optval "$@"
+			ACTION="clean"
+			NIXBOT_CLEAN_MODE="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
+		--clear-remote-locks)
+			ACTION="clear-remote-locks"
+			if [ "$#" -gt 1 ] && [[ "${2:-}" != --* ]]; then
+				NIXBOT_CLEAR_REMOTE_LOCKS_MODE="$2"
+				shift 2
+			else
+				NIXBOT_CLEAR_REMOTE_LOCKS_MODE="all"
+				shift
+			fi
+			;;
+		--clear-remote-locks=*)
+			take_optval "$@"
+			ACTION="clear-remote-locks"
+			NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
 		--force)
 			enable_force_mode
 			shift
@@ -1366,6 +1420,20 @@ parse_args() {
 
 	action_is_supported "${ACTION}" || die "Unsupported action: ${ACTION}"
 	normalize_host_action
+	if [ "${ACTION}" = "clean" ] && [ -z "${NIXBOT_CLEAN_MODE}" ]; then
+		NIXBOT_CLEAN_MODE="auto"
+	fi
+	case "${NIXBOT_CLEAN_MODE}" in
+	"" | auto | all) ;;
+	*) die "Unsupported --clean: ${NIXBOT_CLEAN_MODE}" ;;
+	esac
+	if [ "${ACTION}" = "clear-remote-locks" ] && [ -z "${NIXBOT_CLEAR_REMOTE_LOCKS_MODE}" ]; then
+		NIXBOT_CLEAR_REMOTE_LOCKS_MODE="all"
+	fi
+	case "${NIXBOT_CLEAR_REMOTE_LOCKS_MODE}" in
+	"" | all | nixbot | podman) ;;
+	*) die "Unsupported --clear-remote-locks: ${NIXBOT_CLEAR_REMOTE_LOCKS_MODE}" ;;
+	esac
 
 	case "${GOAL}" in
 	switch | boot | test | dry-activate) ;;
@@ -2638,30 +2706,37 @@ run_ci_trigger() {
 	local trigger_sha="${SHA}" trigger_groups="" trigger_hosts="" encoded_request="" config_json="" patch_bytes=""
 	local all_hosts_json="" selected_hosts_json=""
 	local -a remote_args=()
-	if [ -z "${trigger_sha}" ]; then
+	if ! is_clean_action && [ -z "${trigger_sha}" ]; then
 		trigger_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
 	fi
-	[ -n "${trigger_sha}" ] || die "Could not resolve local HEAD; pass --sha/NIXBOT_SHA explicitly"
-	[[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
+	if ! is_clean_action; then
+		[ -n "${trigger_sha}" ] || die "Could not resolve local HEAD; pass --sha/NIXBOT_SHA explicitly"
+		[[ "${trigger_sha}" =~ ^[0-9a-f]{7,40}$ ]] || die "Unsupported --sha: ${trigger_sha}"
+	fi
 
 	action_is_supported "${ACTION}" || die "Unsupported action for --ci-trigger: ${ACTION}"
 
 	config_json="$(load_deploy_config_json "${NIXBOT_CONFIG_PATH}" "")"
 	init_deploy_settings "${config_json}"
-	trigger_groups="$(normalize_groups_input "${GROUPS_RAW}")"
-	if [ -n "${trigger_groups}" ]; then
-		all_hosts_json="$(load_all_hosts_json)"
-		selected_hosts_json="$(resolve_selected_hosts_json "${all_hosts_json}")" || exit "$?"
-		trigger_hosts="$(jq -r 'join(",")' <<<"${selected_hosts_json}")"
-	elif [ "${HOSTS_EXPLICIT}" -eq 1 ] || [ -z "${trigger_groups}" ]; then
-		trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
+	if ! is_clean_action; then
+		trigger_groups="$(normalize_groups_input "${GROUPS_RAW}")"
+		if [ -n "${trigger_groups}" ]; then
+			all_hosts_json="$(load_all_hosts_json)"
+			selected_hosts_json="$(resolve_selected_hosts_json "${all_hosts_json}")" || exit "$?"
+			trigger_hosts="$(jq -r 'join(",")' <<<"${selected_hosts_json}")"
+		elif [ "${HOSTS_EXPLICIT}" -eq 1 ] || [ -z "${trigger_groups}" ]; then
+			trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
+		fi
+		[ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
 	fi
-	[ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
 
 	if [ -z "${CI_TRIGGER_HOST}" ]; then
 		apply_config_defaults "${config_json}"
 	fi
-	if [ "${OVERLAY_STAGED}" -eq 1 ]; then
+	if is_clean_action && [ "${OVERLAY_STAGED}" -eq 1 ]; then
+		die "--clean --ci-trigger does not accept --dirty-staged"
+	fi
+	if ! is_clean_action && [ "${OVERLAY_STAGED}" -eq 1 ]; then
 		prepare_ci_trigger_dirty_staged_patch "${trigger_sha}"
 	fi
 
@@ -2673,8 +2748,10 @@ run_ci_trigger() {
 	if [ -n "${trigger_groups}" ]; then
 		echo "Groups: ${trigger_groups}" >&2
 	fi
-	echo "Hosts: ${trigger_hosts}" >&2
-	echo "SHA: ${trigger_sha}" >&2
+	if ! is_clean_action; then
+		echo "Hosts: ${trigger_hosts}" >&2
+		echo "SHA: ${trigger_sha}" >&2
+	fi
 	# Intentionally forward only the ci-trigger contract here. The remote side is
 	# expected to use its repo-local defaults and checked-in config for
 	# deploy-shaping settings such as goal, build host, job counts, rollback
@@ -2684,8 +2761,19 @@ run_ci_trigger() {
 	# Groups are resolved locally and forwarded as --hosts so an installed remote
 	# nixbot can accept the request even before it has been upgraded with group
 	# parsing support.
-	remote_args=("${ACTION}" --sha "${trigger_sha}" --no-override)
-	remote_args+=(--hosts "${trigger_hosts}")
+	if is_clean_action; then
+		remote_args=("${ACTION}" --no-override --clean "${NIXBOT_CLEAN_MODE:-auto}")
+	elif is_clear_remote_locks_action; then
+		remote_args=("${ACTION}" --no-override)
+	else
+		remote_args=("${ACTION}" --sha "${trigger_sha}" --no-override)
+	fi
+	if ! is_clean_action; then
+		remote_args+=(--hosts "${trigger_hosts}")
+	fi
+	if is_clear_remote_locks_action; then
+		remote_args+=(--clear-remote-locks "${NIXBOT_CLEAR_REMOTE_LOCKS_MODE:-all}")
+	fi
 	if [ "${LOG_FORMAT}" != "auto" ]; then
 		remote_args+=(--log-format "${LOG_FORMAT}")
 	elif is_github_actions_log_mode; then
@@ -2748,6 +2836,14 @@ is_host_build_only_action() {
 
 is_bootstrap_check_action() {
 	[ "${ACTION}" = "check-bootstrap" ]
+}
+
+is_clean_action() {
+	[ "${ACTION}" = "clean" ]
+}
+
+is_clear_remote_locks_action() {
+	[ "${ACTION}" = "clear-remote-locks" ]
 }
 
 # Resolve the source repo root exactly once. Local clean repo runs reuse the
@@ -4027,6 +4123,11 @@ resolve_selected_hosts_json() {
 	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
 	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
 	direct_selected_json="${selected_json}"
+	if is_clear_remote_locks_action; then
+		validate_selected_host_execution_policies "${direct_selected_json}"
+		order_selected_hosts_json "${direct_selected_json}" "${all_hosts_json}"
+		return
+	fi
 	selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
 	selected_json="$(apply_dependency_exclusions_json "${selected_json}" "${direct_selected_json}" "${dependency_excluded_json}")"
 	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
@@ -6089,7 +6190,7 @@ prepare_deploy_context() {
 		else
 			ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
 		fi
-	elif [ -n "${bootstrap_key}" ]; then
+	elif [ -n "${bootstrap_key}" ] && [ "${mode}" != "primary-only" ]; then
 		ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
 	fi
 }
@@ -8566,6 +8667,233 @@ run_bootstrap_key_checks() {
 	return "${rc}"
 }
 
+clean_nixbot_root() {
+	local root="$1" mode="$2" path=""
+
+	if [ "${mode}" = "all" ]; then
+		if [ -e "${root}" ] || [ -L "${root}" ]; then
+			if [ "${DRY_RUN}" -eq 1 ]; then
+				printf 'would remove %s\n' "${root}"
+			else
+				printf 'remove %s\n' "${root}"
+				rm -rf -- "${root}"
+			fi
+		else
+			printf 'absent %s\n' "${root}"
+		fi
+		return 0
+	fi
+
+	if [ ! -d "${root}" ]; then
+		printf 'absent %s\n' "${root}"
+		return 0
+	fi
+
+	while IFS= read -r path; do
+		[ -n "${path}" ] || continue
+		if [ "${DRY_RUN}" -eq 1 ]; then
+			printf 'would remove %s\n' "${path}"
+		else
+			printf 'remove %s\n' "${path}"
+			rm -rf -- "${path}"
+		fi
+	done < <(
+		find "${root}" -maxdepth 1 -mindepth 1 -type d \
+			\( -name 'run-*' -o -name 'diag-*' \) \
+			-mmin +1440 -print 2>/dev/null
+	)
+	rmdir "${root}" 2>/dev/null || true
+}
+
+run_clean_action() {
+	local mode="${NIXBOT_CLEAN_MODE:-auto}" rc=0
+
+	log_section "nixbot"
+	echo "Version: ${NIXBOT_VERSION}" >&2
+	echo "Action: clean" >&2
+	echo "Started: ${NIXBOT_RUN_STARTED_AT}" >&2
+
+	log_section "Phase: Clean"
+	echo "Mode: ${mode}" >&2
+	clean_nixbot_root "${RUNTIME_WORK_ROOT}" "${mode}" || rc=1
+	clean_nixbot_root "${NIXBOT_DIAG_KEEP_ROOT}" "${mode}" || rc=1
+
+	log_section "Phase: Summary"
+	echo "Action: clean" >&2
+	echo "Started: ${NIXBOT_RUN_STARTED_AT}" >&2
+	echo "Mode: ${mode}" >&2
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		echo "Dry run: true" >&2
+	fi
+	if [ "${rc}" -eq 0 ]; then
+		echo "Result: success" >&2
+	else
+		echo "Result: failure" >&2
+	fi
+	return "${rc}"
+}
+
+build_clear_remote_locks_command() {
+	local mode="$1"
+
+	printf 'clear_remote_locks_mode=%q\n' "${mode}"
+	cat <<'EOF'
+set -Eeuo pipefail
+
+remove_lock_path() {
+	local path="$1"
+
+	if [ -e "$path" ] || [ -L "$path" ]; then
+		printf 'remove %s\n' "$path"
+		rm -rf -- "$path"
+	else
+		printf 'absent %s\n' "$path"
+	fi
+}
+
+remove_lock_paths_from_find() {
+	local path=""
+
+	while IFS= read -r path; do
+		[ -n "$path" ] || continue
+		remove_lock_path "$path"
+	done
+}
+
+clear_nixbot_locks() {
+	local root=""
+
+	for root in /dev/shm/nixbot "${TMPDIR:-/tmp}/nixbot"; do
+		[ -d "$root" ] || continue
+		find "$root" -xdev -depth -path '*/state-locks/*.lock' -type d -print 2>/dev/null |
+			remove_lock_paths_from_find
+		find "$root" -xdev -depth -name 'ssh-tty.lock' -type d -print 2>/dev/null |
+			remove_lock_paths_from_find
+	done
+
+	if [ -d /var/lib/nixbot ]; then
+		find /var/lib/nixbot -xdev -depth \
+			\( -name 'nixbot-worktree.lock' -o -name '.nixbot-worktree.lock' \) \
+			-type d -print 2>/dev/null |
+			remove_lock_paths_from_find
+	fi
+}
+
+emit_declared_podman_lifecycle_locks() {
+	local registry="/run/current-system/share/podman-compose/control-registry.json"
+	local metadata_file="" working_dir=""
+
+	[ -f "$registry" ] || return 0
+	command -v jq >/dev/null 2>&1 || return 0
+
+	while IFS= read -r metadata_file; do
+		[ -n "$metadata_file" ] || continue
+		[ -f "$metadata_file" ] || continue
+		working_dir="$(jq -r '.workingDir // empty' "$metadata_file" 2>/dev/null || true)"
+		[ -n "$working_dir" ] || continue
+		printf '%s/.podman-compose/lifecycle.lock\n' "$working_dir"
+	done < <(jq -r 'to_entries[]?.value.metadataFile // empty' "$registry" 2>/dev/null || true)
+}
+
+emit_fallback_podman_lifecycle_locks() {
+	[ -d /var/lib ] || return 0
+	find /var/lib -xdev -path '*/.podman-compose/lifecycle.lock' -type f -print 2>/dev/null || true
+}
+
+clear_podman_locks() {
+	{
+		emit_declared_podman_lifecycle_locks
+		emit_fallback_podman_lifecycle_locks
+	} | awk 'NF && !seen[$0]++' | remove_lock_paths_from_find
+}
+
+case "$clear_remote_locks_mode" in
+all)
+	clear_nixbot_locks
+	clear_podman_locks
+	;;
+nixbot)
+	clear_nixbot_locks
+	;;
+podman)
+	clear_podman_locks
+	;;
+*)
+	printf 'unsupported clear-remote-locks mode: %s\n' "$clear_remote_locks_mode" >&2
+	exit 2
+	;;
+esac
+EOF
+}
+
+print_clear_remote_locks_dry_run() {
+	local node="$1" mode="$2" script="$3"
+
+	printf '\n# %s: clear %s locks\n' "${node}" "${mode}"
+	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
+		printf '# target: local host\n'
+	else
+		printf '# target: %s\n' "${PREP_DEPLOY_SSH_TARGET}"
+	fi
+	printf '# run inside the target host as root:\n'
+	printf '%s\n' "${script}"
+}
+
+run_clear_remote_locks_for_host() {
+	local node="$1" mode="${2:-all}" script=""
+
+	log_host_stage clear-remote-locks "${node}" "mode=${mode}"
+	if ! prepare_deploy_context "${node}" primary-only; then
+		log_group_end_host_stage clear-remote-locks
+		return 1
+	fi
+
+	script="$(build_clear_remote_locks_command "${mode}")"
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		print_clear_remote_locks_dry_run "${node}" "${mode}" "${script}"
+		log_group_end_host_stage clear-remote-locks
+		return 0
+	fi
+
+	if run_prepared_root_command_with_retry "Clear locks on ${node}" "${script}"; then
+		log_group_end_host_stage clear-remote-locks
+		return 0
+	fi
+	log_group_end_host_stage clear-remote-locks
+	return 1
+}
+
+run_clear_remote_locks_action() {
+	local selected_json="$1" runnable_selected_json="" node="" final_rc=0 mode="${NIXBOT_CLEAR_REMOTE_LOCKS_MODE:-all}"
+	local -a selected_hosts=() cleared_hosts=() failed_hosts=()
+	local -a empty_hosts=()
+
+	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
+	json_array_to_bash_array "${runnable_selected_json}" selected_hosts
+
+	log_section "Phase: Clear Remote Locks"
+	for node in "${selected_hosts[@]}"; do
+		[ -n "${node}" ] || continue
+		if run_clear_remote_locks_for_host "${node}" "${mode}"; then
+			cleared_hosts+=("${node}")
+		else
+			failed_hosts+=("${node}")
+			final_rc=1
+		fi
+	done
+
+	capture_current_run_summary_state \
+		"${ACTION}" \
+		selected_hosts \
+		cleared_hosts \
+		failed_hosts \
+		empty_hosts \
+		empty_hosts \
+		empty_hosts \
+		empty_hosts
+	return "${final_rc}"
+}
+
 ##### Host Phase Artifacts #####
 
 init_run_dirs() {
@@ -10367,6 +10695,11 @@ run_hosts() {
 	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
 	json_array_to_bash_array "${runnable_selected_json}" selected_hosts
 
+	if is_clear_remote_locks_action; then
+		run_clear_remote_locks_action "${runnable_selected_json}"
+		return
+	fi
+
 	if is_bootstrap_check_action; then
 		if ! run_bootstrap_key_checks "${runnable_selected_json}" bootstrap_ok_hosts bootstrap_failed_hosts; then
 			final_rc=1
@@ -11889,7 +12222,7 @@ host_final_status() {
 		return
 	fi
 
-	if [ "${action}" = "build" ] || [ "${action}" = "check-bootstrap" ]; then
+	if [ "${action}" = "build" ] || [ "${action}" = "check-bootstrap" ] || [ "${action}" = "clear-remote-locks" ]; then
 		if array_contains "${node}" "${hfs_build_ok_hosts_in_ref[@]}"; then
 			printf '%s' 'ok'
 		else
@@ -12390,7 +12723,6 @@ main() {
 	trap request_hangup HUP
 	trap 'request_cancel 130 INT' INT
 	trap 'request_cancel 143 TERM' TERM
-	cleanup_stale_runtime_dirs
 
 	hydrate_request_args_from_ssh_command request_args
 
@@ -12400,6 +12732,36 @@ main() {
 	fi
 
 	case "${request_args[0]}" in
+	--clean)
+		ACTION="clean"
+		if [ "${#request_args[@]}" -gt 1 ] && [[ "${request_args[1]}" != --* ]]; then
+			NIXBOT_CLEAN_MODE="${request_args[1]}"
+			request_args=("${request_args[@]:2}")
+		else
+			NIXBOT_CLEAN_MODE="auto"
+			request_args=("${request_args[@]:1}")
+		fi
+		;;
+	--clean=*)
+		ACTION="clean"
+		NIXBOT_CLEAN_MODE="${request_args[0]#--clean=}"
+		request_args=("${request_args[@]:1}")
+		;;
+	--clear-remote-locks)
+		ACTION="clear-remote-locks"
+		if [ "${#request_args[@]}" -gt 1 ] && [[ "${request_args[1]}" != --* ]]; then
+			NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${request_args[1]}"
+			request_args=("${request_args[@]:2}")
+		else
+			NIXBOT_CLEAR_REMOTE_LOCKS_MODE="all"
+			request_args=("${request_args[@]:1}")
+		fi
+		;;
+	--clear-remote-locks=*)
+		ACTION="clear-remote-locks"
+		NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${request_args[0]#--clear-remote-locks=}"
+		request_args=("${request_args[@]:1}")
+		;;
 	--list-hosts)
 		ACTION="list-hosts"
 		request_args=("${request_args[@]:1}")
@@ -12435,7 +12797,7 @@ main() {
 		run_version_action
 		return
 		;;
-	run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | tf/*)
+	run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clear-remote-locks | clean | tf/*)
 		ACTION="${request_args[0]}"
 		request_args=("${request_args[@]:1}")
 		;;
@@ -12456,6 +12818,9 @@ main() {
 
 	ensure_runtime_ready "$@"
 	parse_args "${request_args[@]}"
+	if [ "${ACTION}" != "clean" ]; then
+		cleanup_stale_runtime_dirs
+	fi
 	if [ "${ACTION}" = "list-hosts" ]; then
 		[ -z "${SHA}" ] || die "--list-hosts uses the current checkout; --sha is unsupported"
 		[ "${CI_TRIGGER}" -eq 0 ] || die "--list-hosts is local-only and cannot run through --ci-trigger"
@@ -12468,17 +12833,29 @@ main() {
 		run_list_groups_action
 		return
 	fi
+	if [ "${ACTION}" = "clean" ]; then
+		[ -z "${SHA}" ] || die "clean uses the current checkout; --sha is unsupported"
+	fi
+	if [ "${ACTION}" = "clear-remote-locks" ]; then
+		[ -z "${SHA}" ] || die "clear-remote-locks uses the current checkout; --sha is unsupported"
+	fi
 	if [ "${CI_TRIGGER}" -eq 1 ]; then
 		[ "${ACTION}" != "dev-build" ] || die "dev-build is local-only and cannot run through --ci-trigger"
 		run_ci_trigger
 		return
 	fi
+	if [ "${ACTION}" = "clean" ]; then
+		run_clean_action
+		return
+	fi
 
-	if [ "${ACTION}" != "dev-build" ]; then
+	if [ "${ACTION}" != "dev-build" ] && [ "${ACTION}" != "clear-remote-locks" ]; then
 		prepare_repo_worktree
 		reexec_repo_script_if_needed "${ACTION}" "${request_args[@]}"
 	else
-		prepare_dev_build_workspace
+		if [ "${ACTION}" = "dev-build" ]; then
+			prepare_dev_build_workspace
+		fi
 	fi
 
 	run_requested_action
