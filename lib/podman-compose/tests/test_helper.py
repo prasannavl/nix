@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -127,6 +128,21 @@ class PodmanComposeHelperTest(unittest.TestCase):
             check=check,
         )
 
+    def wait_for_pid_absent(self, pid: int, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def assert_child_process_was_cleaned_up(self, child_pid_file: Path):
+        self.assertTrue(child_pid_file.exists())
+        child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+        self.assertTrue(self.wait_for_pid_absent(child_pid), f"compose child pid {child_pid} survived")
+
     def write_metadata(self, name: str, metadata: dict) -> Path:
         path = self.state_dir / name
         path.write_text(json.dumps(metadata), encoding="utf-8")
@@ -143,6 +159,43 @@ class PodmanComposeHelperTest(unittest.TestCase):
         }
         metadata.update(overrides)
         return self.write_metadata(name, metadata)
+
+    def write_staged_service_metadata(self, name: str, **overrides):
+        src_config = self.state_dir / f"{name}.config.yml"
+        staged_config = self.compose_dir / "config" / f"{name}.yml"
+        data_dir = self.compose_dir / "data"
+        src_config.write_text("key: value\n", encoding="utf-8")
+        metadata = {
+            "workingDir": str(self.compose_dir),
+            "adoptionStamp": "test-adoption-stamp",
+            "state": "running",
+            "reconcilePolicy": "auto",
+            "removalPolicy": "delete",
+            "longRunning": True,
+            "stagedDirs": [
+                {
+                    "dst": str(data_dir),
+                    "mode": "0755",
+                    "user": None,
+                    "group": None,
+                    "scope": "host",
+                }
+            ],
+            "stagedFiles": [
+                {
+                    "src": str(src_config),
+                    "dst": str(staged_config),
+                    "dstDir": str(staged_config.parent),
+                    "dstDirMode": "0750",
+                    "mode": "0640",
+                    "user": None,
+                    "group": None,
+                    "scope": "host",
+                }
+            ],
+        }
+        metadata.update(overrides)
+        return self.write_metadata(name, metadata), staged_config, data_dir
 
     def write_runtime_state(self, **overrides):
         self.generated_dir.mkdir(exist_ok=True)
@@ -204,6 +257,84 @@ class PodmanComposeHelperTest(unittest.TestCase):
             TEST_TIMEOUT_VALUE="2s",
         )
         self.assertNotEqual(0, result.returncode)
+
+    def test_compose_up_checked_kills_timeout_process_group_before_cleanup(self):
+        child_pid_file = self.state_dir / "compose-child.pid"
+        result = self.run_helper(
+            """
+            compose_start_default_timeout_seconds=2
+            compose_up_checked normal
+            """,
+            check=False,
+            timeout=15,
+            TEST_PODMAN_MODE="timeout_child",
+            TEST_TIMEOUT_VALUE="2s",
+            TEST_PODMAN_CHILD_PID_FILE=str(child_pid_file),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assert_child_process_was_cleaned_up(child_pid_file)
+        self.assertIn("podman compose process group", result.stderr)
+        self.assertIn("still has live members", result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            [
+                "compose up -d --remove-orphans",
+                "compose down",
+                "ps -a --filter label=com.docker.compose.project.working_dir="
+                + str(self.compose_dir)
+                + " --format {{.ID}}",
+            ],
+            history,
+        )
+
+    def test_compose_up_checked_kills_fatal_output_process_group_before_cleanup(self):
+        child_pid_file = self.state_dir / "compose-fatal-child.pid"
+        result = self.run_helper(
+            """
+            compose_up_checked normal
+            """,
+            check=False,
+            timeout=15,
+            TEST_PODMAN_MODE="fatal_child",
+            TEST_TIMEOUT_VALUE="10s",
+            TEST_PODMAN_CHILD_PID_FILE=str(child_pid_file),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assert_child_process_was_cleaned_up(child_pid_file)
+        self.assertIn("podman compose start hit fatal output", result.stderr)
+        self.assertIn("podman compose process group", result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            [
+                "compose up -d --remove-orphans",
+                "compose down",
+                "ps -a --filter label=com.docker.compose.project.working_dir="
+                + str(self.compose_dir)
+                + " --format {{.ID}}",
+            ],
+            history,
+        )
+
+    def test_compose_down_kills_timeout_process_group(self):
+        child_pid_file = self.state_dir / "compose-down-child.pid"
+        result = self.run_helper(
+            """
+            compose_down
+            """,
+            check=False,
+            timeout=15,
+            TEST_PODMAN_MODE="down_timeout_child",
+            TEST_TIMEOUT_VALUE="2s",
+            TEST_PODMAN_CHILD_PID_FILE=str(child_pid_file),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assert_child_process_was_cleaned_up(child_pid_file)
+        self.assertIn("podman compose down exceeded helper deadline", result.stderr)
+        self.assertIn("podman compose process group", result.stderr)
+        self.assertEqual(["compose down"], self.podman_history_file.read_text(encoding="utf-8").splitlines())
 
     def test_load_metadata_populates_core_fields_and_arrays(self):
         compose_file = self.compose_dir / "compose.yml"
@@ -744,6 +875,75 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertTrue(data_dir.exists())
         self.assertTrue(self.state_path.exists())
         self.assertEqual("staging", json.loads(self.state_path.read_text())["startupPhase"])
+
+    def test_cmd_start_timeout_kills_process_group_and_preserves_retryable_state(self):
+        metadata, staged_config, data_dir = self.write_staged_service_metadata("metadata-start-timeout.json")
+        child_pid_file = self.state_dir / "cmd-start-child.pid"
+        self.compose_dir.rmdir()
+
+        result = self.run_helper(
+            """
+            cmd_start
+            """,
+            check=False,
+            timeout=20,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="timeout_child",
+            TEST_TIMEOUT_VALUE="2s",
+            TEST_PODMAN_CHILD_PID_FILE=str(child_pid_file),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assert_child_process_was_cleaned_up(child_pid_file)
+        self.assertFalse(staged_config.exists())
+        self.assertTrue(data_dir.exists())
+        self.assertEqual("staging", json.loads(self.state_path.read_text(encoding="utf-8"))["startupPhase"])
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn("compose up -d --remove-orphans", history)
+        self.assertIn("compose down", history)
+        self.assertIn(
+            "ps -a --filter label=com.docker.compose.project.working_dir="
+            + str(self.compose_dir)
+            + " --format {{.ID}}",
+            history,
+        )
+
+    def test_cmd_post_stop_timeout_result_runs_failed_start_cleanup_backstop(self):
+        metadata, staged_config, data_dir = self.write_staged_service_metadata("metadata-post-stop-timeout.json")
+        staged_config.parent.mkdir(parents=True)
+        staged_config.write_text("key: value\n", encoding="utf-8")
+        data_dir.mkdir()
+        self.manifest_path.parent.mkdir(parents=True)
+        self.manifest_path.write_text(str(staged_config) + "\n", encoding="utf-8")
+        self.write_runtime_state(startupPhase="staging")
+
+        result = self.run_helper(
+            """
+            cmd_post_stop
+            """,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            SERVICE_RESULT="timeout",
+            TEST_PODMAN_MODE="success",
+            TEST_TIMEOUT_VALUE="5s",
+        )
+
+        self.assertIn("systemd reported test-compose.service result=timeout", result.stdout)
+        self.assertFalse(staged_config.exists())
+        self.assertTrue(data_dir.exists())
+        self.assertEqual("staging", json.loads(self.state_path.read_text(encoding="utf-8"))["startupPhase"])
+        self.assertEqual(
+            [
+                "compose down",
+                "ps -a --filter label=com.docker.compose.project.working_dir="
+                + str(self.compose_dir)
+                + " --format {{.ID}}",
+            ],
+            self.podman_history_file.read_text(encoding="utf-8").splitlines(),
+        )
 
     def test_pre_stop_hard_failure_blocks_compose_stop_after_prior_hooks(self):
         hook_log = self.compose_dir / "pre-stop.log"

@@ -5,6 +5,7 @@
         pkgs.bash
         pkgs.coreutils
         pkgs.jq
+        pkgs.procps
         pkgs.python3
         pkgs.util-linux
       ];

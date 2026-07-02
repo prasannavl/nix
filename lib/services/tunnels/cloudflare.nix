@@ -2,26 +2,6 @@
   lib,
   stack ? null,
 }: let
-  tunnelPortFor = portCfg:
-    if portCfg.cfTunnelPort != null
-    then portCfg.cfTunnelPort
-    else portCfg.port;
-
-  tunnelServiceFor = portCfg: let
-    upstreamProtocol = portCfg.upstreamProtocol or "http";
-    port = toString (tunnelPortFor portCfg);
-  in
-    if upstreamProtocol == "tcp"
-    then "tcp://127.0.0.1:${port}"
-    else if upstreamProtocol == "udp"
-    then throw "Cloudflare Tunnel ingress does not support generic UDP service targets for cfTunnelNames"
-    else "http://127.0.0.1:${port}";
-
-  ingressFromPortCfg = portCfg:
-    lib.foldl' lib.recursiveUpdate {} (
-      map (hostName: {"${hostName}" = tunnelServiceFor portCfg;}) (portCfg.cfTunnelNames or [])
-    );
-
   trackedPath =
     if stack != null
     then stack.srv.trackedPath
@@ -35,13 +15,6 @@
     then withoutJsonAge
     else withoutAge;
 in {
-  ingressFromInstances = instances:
-    lib.foldl' lib.recursiveUpdate {} (
-      lib.concatMap
-      (service: lib.mapAttrsToList (_: ingressFromPortCfg) service.exposedPorts)
-      (builtins.attrValues instances)
-    );
-
   mkHostManagedTunnel = {
     config,
     credentialsStoreName,

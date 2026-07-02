@@ -893,17 +893,111 @@ compose_cleanup_reserve_seconds() {
 	printf '%s\n' "$reserve_seconds"
 }
 
-terminate_compose_process() {
+supervised_pid_file() {
+	mktemp "${TMPDIR:-/tmp}/podman-compose-supervised.XXXXXX"
+}
+
+supervised_child_pid() {
+	local fallback_pid pid_file child_pid
+	fallback_pid="$1"
+	pid_file="$2"
+
+	if [ -s "$pid_file" ] && read -r child_pid <"$pid_file"; then
+		case "$child_pid" in
+		"" | *[!0-9]*)
+			printf '%s\n' "$fallback_pid"
+			;;
+		*)
+			printf '%s\n' "$child_pid"
+			;;
+		esac
+	else
+		printf '%s\n' "$fallback_pid"
+	fi
+}
+
+process_group_id_for_pid() {
 	local pid
 	pid="$1"
-	kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-	sleep 1
-	kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+	ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]'
+}
+
+current_process_group_id() {
+	ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]'
+}
+
+process_group_member_pids() {
+	local pgid
+	pgid="$1"
+	ps -eo pid=,pgid= |
+		awk -v pgid="$pgid" '$2 == pgid { print $1 }'
+}
+
+process_group_has_members() {
+	local pgid
+	pgid="$1"
+	[ -n "$(process_group_member_pids "$pgid")" ]
+}
+
+wait_for_compose_process_group_exit() {
+	local pid pgid timeout_seconds started_at now member_pids
+	pid="$1"
+	pgid="$2"
+	timeout_seconds="$3"
+	started_at="$(now_epoch)"
+
+	while true; do
+		if [ -n "$pgid" ]; then
+			if ! process_group_has_members "$pgid"; then
+				return 0
+			fi
+		elif ! kill -0 "$pid" 2>/dev/null; then
+			return 0
+		fi
+
+		now="$(now_epoch)"
+		if [ "$now" -ge "$((started_at + timeout_seconds))" ]; then
+			if [ -n "$pgid" ]; then
+				member_pids="$(process_group_member_pids "$pgid" | paste -sd ' ' -)"
+				printf '%s\n' "podman compose process group $pgid still has live members after ${timeout_seconds}s: ${member_pids:-<unknown>}" >&2
+			else
+				printf '%s\n' "podman compose process $pid still alive after ${timeout_seconds}s" >&2
+			fi
+			return 1
+		fi
+
+		sleep 0.2
+	done
+}
+
+terminate_compose_process() {
+	local pid pgid own_pgid
+	pid="$1"
+	pgid="$(process_group_id_for_pid "$pid")"
+	own_pgid="$(current_process_group_id)"
+	if [ -n "$pgid" ] && [ "$pgid" = "$own_pgid" ]; then
+		printf '%s\n' "refusing to signal caller process group $pgid while terminating podman compose pid $pid; falling back to direct pid signal" >&2
+		pgid=""
+	fi
+
+	if [ -n "$pgid" ]; then
+		kill -- "-$pgid" 2>/dev/null || true
+	else
+		kill "$pid" 2>/dev/null || true
+	fi
+	wait_for_compose_process_group_exit "$pid" "$pgid" 3 && return 0
+
+	if [ -n "$pgid" ]; then
+		kill -KILL -- "-$pgid" 2>/dev/null || true
+	else
+		kill -KILL "$pid" 2>/dev/null || true
+	fi
+	wait_for_compose_process_group_exit "$pid" "$pgid" 5 || true
 }
 
 compose_command_supervised() {
 	local label timeout_seconds reserve_seconds deadline_seconds started_at now line timeout_seen=0 status=0
-	local compose_output_fd compose_pid
+	local compose_output_fd compose_pid compose_child_pid compose_pid_file
 	label="$1"
 	timeout_seconds="$2"
 	shift 2
@@ -911,12 +1005,16 @@ compose_command_supervised() {
 	reserve_seconds="$(compose_cleanup_reserve_seconds "$timeout_seconds")"
 	started_at="$(now_epoch)"
 	deadline_seconds="$((started_at + timeout_seconds - reserve_seconds))"
+	compose_pid_file="$(supervised_pid_file)"
 
 	coproc COMPOSE_CMD_PROC {
 		(
 			close_lifecycle_fds_for_child
 			cd "$working_dir"
-			exec setsid env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC "$@"
+			# shellcheck disable=SC2016
+			exec setsid bash -c \
+				'printf "%s\n" "$$" > "$1"; shift; exec "$@"' \
+				bash "$compose_pid_file" env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC "$@"
 		) 2>&1
 	}
 	compose_pid="$COMPOSE_CMD_PROC_PID"
@@ -931,7 +1029,8 @@ compose_command_supervised() {
 		now="$(now_epoch)"
 		if [ "$now" -ge "$deadline_seconds" ]; then
 			printf '%s\n' "podman compose ${label} exceeded helper deadline for ${podman_compose_service_name}; reserving ${reserve_seconds}s for cleanup before systemd timeout" >&2
-			terminate_compose_process "$compose_pid"
+			compose_child_pid="$(supervised_child_pid "$compose_pid" "$compose_pid_file")"
+			terminate_compose_process "$compose_child_pid"
 			timeout_seen=1
 			break
 		fi
@@ -947,6 +1046,7 @@ compose_command_supervised() {
 
 	wait "$compose_pid" || status="$?"
 	exec {compose_output_fd}<&- 2>/dev/null || true
+	rm -f "$compose_pid_file"
 
 	if [ "$timeout_seen" -eq 1 ]; then
 		return 1
@@ -956,7 +1056,7 @@ compose_command_supervised() {
 
 compose_up_supervised() {
 	local mode timeout_seconds reserve_seconds deadline_seconds started_at now line fatal_seen=0 status=0
-	local compose_output_fd compose_up_pid
+	local compose_output_fd compose_up_pid compose_up_child_pid compose_up_pid_file
 	local -a up_args=()
 	mode="$1"
 	timeout_seconds="$(compose_start_timeout_seconds)"
@@ -968,12 +1068,16 @@ compose_up_supervised() {
 	if [ "$mode" = "force" ]; then
 		up_args+=(--force-recreate)
 	fi
+	compose_up_pid_file="$(supervised_pid_file)"
 
 	coproc COMPOSE_UP_PROC {
 		(
 			close_lifecycle_fds_for_child
 			cd "$working_dir"
-			exec setsid env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC "${up_args[@]}"
+			# shellcheck disable=SC2016
+			exec setsid bash -c \
+				'printf "%s\n" "$$" > "$1"; shift; exec "$@"' \
+				bash "$compose_up_pid_file" env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC "${up_args[@]}"
 		) 2>&1
 	}
 	compose_up_pid="$COMPOSE_UP_PROC_PID"
@@ -985,7 +1089,8 @@ compose_up_supervised() {
 			if compose_up_fatal_line "$line"; then
 				fatal_seen=1
 				printf '%s\n' "podman compose start hit fatal output for ${podman_compose_service_name}; terminating early" >&2
-				terminate_compose_process "$compose_up_pid"
+				compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
+				terminate_compose_process "$compose_up_child_pid"
 				break
 			fi
 			continue
@@ -994,7 +1099,8 @@ compose_up_supervised() {
 		now="$(now_epoch)"
 		if [ "$now" -ge "$deadline_seconds" ]; then
 			printf '%s\n' "podman compose start exceeded helper deadline for ${podman_compose_service_name}; reserving ${reserve_seconds}s for cleanup before systemd timeout" >&2
-			terminate_compose_process "$compose_up_pid"
+			compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
+			terminate_compose_process "$compose_up_child_pid"
 			fatal_seen=1
 			break
 		fi
@@ -1010,6 +1116,7 @@ compose_up_supervised() {
 
 	wait "$compose_up_pid" || status="$?"
 	exec {compose_output_fd}<&- 2>/dev/null || true
+	rm -f "$compose_up_pid_file"
 
 	if [ "$fatal_seen" -eq 1 ]; then
 		return 1

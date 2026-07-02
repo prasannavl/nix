@@ -62,6 +62,20 @@
                 http = {
                   port = 18080;
                   openFirewall = true;
+                  tunnels = [
+                    {
+                      kind = "cloudflare";
+                      hostNames = ["app.example.test"];
+                      targetPort = 18082;
+                    }
+                    {
+                      kind = "rathole";
+                      name = "app-rathole";
+                      hostNames = ["app-rathole.example.test"];
+                      targetPort = 18083;
+                      remotePort = 443;
+                    }
+                  ];
                 };
                 dns = {
                   port = 1053;
@@ -211,6 +225,16 @@ in
   assert job.removalPolicy == "keep";
   assert config.networking.firewall.allowedTCPPorts == [18080];
   assert config.networking.firewall.allowedUDPPorts == [1053];
+  assert stack.tunnelIngress.cloudflare
+  == {
+    "app.example.test" = "http://127.0.0.1:18082";
+  };
+  assert stack.tunnelIngress.rathole
+  == {
+    "app-rathole.example.test" = "http://127.0.0.1:18083";
+  };
+  assert builtins.length stack.tunnelEndpoints == 2;
+  assert (builtins.head (builtins.filter (endpoint: endpoint.name == "app-rathole") stack.tunnelEndpoints)).remotePort == 443;
   assert appUnit.wantedBy == ["systemd-user-manager-ready.target"];
   assert jobUnit.wantedBy == [];
   assert builtins.elem "demo-db.service" appUnit.after;

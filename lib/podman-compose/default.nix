@@ -9,7 +9,7 @@
   flakeUtils = import ../flake/utils.nix {lib = lib;};
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
-  cloudflareTunnelsLib = import ../services/tunnels/cloudflare.nix {inherit lib;};
+  tunnelsLib = import ../services/tunnels {inherit lib;};
   secretFileSourceHash = file: let
     fileString = toString file;
   in
@@ -448,6 +448,7 @@
         pkgs.findutils
         pkgs.jq
         pkgs.podman
+        pkgs.procps
         pkgs.systemd
         pkgs.util-linux
       ];
@@ -1037,6 +1038,18 @@
               description = "Optional nginx proxy_send_timeout override for long-running upstream requests.";
             };
 
+            proxyConnectTimeout = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional nginx stream proxy_connect_timeout override for TCP/UDP exposed ports.";
+            };
+
+            proxyTimeout = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional nginx stream proxy_timeout override for TCP/UDP exposed ports.";
+            };
+
             upstreamCaCertificate = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
@@ -1073,16 +1086,48 @@
               description = "Additional nginx proxy_redirect rewrites to apply before the default path-preserving redirect rewrite.";
             };
 
-            cfTunnelNames = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [];
-              description = "Optional Cloudflare Tunnel hostnames to route to this exposed port.";
-            };
+            tunnels = lib.mkOption {
+              type = lib.types.listOf (lib.types.submodule {
+                options = {
+                  kind = lib.mkOption {
+                    type = lib.types.enum tunnelsLib.tunnelKinds;
+                    description = "Tunnel transport kind that should publish this exposed port.";
+                  };
 
-            cfTunnelPort = lib.mkOption {
-              type = lib.types.nullOr lib.types.port;
-              default = null;
-              description = "Optional host port Cloudflare Tunnel should target for these hostnames. Defaults to this exposed port when unset.";
+                  hostNames = lib.mkOption {
+                    type = lib.types.nonEmptyListOf lib.types.str;
+                    description = "Public hostnames or stable endpoint names published through this tunnel transport.";
+                  };
+
+                  name = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional stable logical tunnel endpoint name. Defaults to the first hostName.";
+                  };
+
+                  targetPort = lib.mkOption {
+                    type = lib.types.nullOr lib.types.port;
+                    default = null;
+                    description = "Optional host port this tunnel should target. Defaults to this exposed port.";
+                  };
+
+                  service = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional rendered tunnel service target. Defaults to a protocol-derived localhost target.";
+                  };
+
+                  remotePort = lib.mkOption {
+                    type = lib.types.nullOr lib.types.port;
+                    default = null;
+                    description = "Optional public bind port for tunnel kinds, such as rathole, that expose numbered remote ports instead of hostname ingress.";
+                  };
+                };
+              });
+              default = [];
+              description = ''
+                Provider-neutral tunnel publications for this exposed port.
+              '';
             };
           };
         }));
@@ -1203,11 +1248,18 @@
         description = "Derived nginx routes built from instance exposedPorts metadata.";
       };
 
-      cloudflareTunnelIngress = lib.mkOption {
-        type = lib.types.attrsOf lib.types.str;
+      tunnelIngress = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
         default = {};
         readOnly = true;
-        description = "Derived Cloudflare Tunnel ingress built from instance exposedPorts metadata.";
+        description = "Derived tunnel ingress targets keyed by transport kind.";
+      };
+
+      tunnelEndpoints = lib.mkOption {
+        type = lib.types.listOf lib.types.attrs;
+        default = [];
+        readOnly = true;
+        description = "Provider-neutral tunnel endpoint metadata derived from instance exposedPorts.";
       };
     };
   });
@@ -2480,7 +2532,8 @@ in {
               defaultHost = stack.nginxDefaultHost;
             }
             resolvedInstances;
-          cloudflareTunnelIngress = cloudflareTunnelsLib.ingressFromInstances resolvedInstances;
+          tunnelEndpoints = tunnelsLib.endpointsFromInstances stackName resolvedInstances;
+          tunnelIngress = tunnelsLib.ingressByKindFromInstances stackName resolvedInstances;
         }))
       stacks;
   };

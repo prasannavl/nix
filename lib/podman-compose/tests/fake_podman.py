@@ -1,4 +1,6 @@
 import os
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -17,6 +19,27 @@ def assert_no_systemd_notify_env():
     if inherited:
         print("podman inherited systemd notify environment: " + ", ".join(inherited), file=sys.stderr)
         sys.exit(70)
+
+
+def spawn_term_resistant_child():
+    child_pid_file = os.environ["TEST_PODMAN_CHILD_PID_FILE"]
+    subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            "trap '' TERM; "
+            "printf '%s\\n' $$ > \"$TEST_PODMAN_CHILD_PID_FILE\"; "
+            "while :; do sleep 1; done",
+        ],
+        env={**os.environ, "TEST_PODMAN_CHILD_PID_FILE": child_pid_file},
+    )
+
+
+def block_until_supervisor_kills_us():
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(143))
+    time.sleep(30)
+    print(f"TEST_PODMAN_MODE={os.environ.get('TEST_PODMAN_MODE', 'success')} was not interrupted", file=sys.stderr)
+    sys.exit(65)
 
 
 def main():
@@ -61,8 +84,15 @@ def main():
             if mode == "fatal":
                 print('Error: container name "stale" is already in use', flush=True)
                 time.sleep(30)
+            if mode == "fatal_child":
+                print('Error: container name "stale" is already in use', flush=True)
+                spawn_term_resistant_child()
+                block_until_supervisor_kills_us()
             if mode == "timeout":
                 time.sleep(30)
+            if mode == "timeout_child":
+                spawn_term_resistant_child()
+                block_until_supervisor_kills_us()
             print(f"unknown TEST_PODMAN_MODE={mode}", file=sys.stderr)
             sys.exit(64)
         if "ps" in args:
@@ -71,7 +101,12 @@ def main():
         if "kill" in args:
             print("fake podman compose kill ok")
             return
-        if any(command in args for command in ("down", "stop", "pull")):
+        for command in ("down", "stop", "pull"):
+            if command not in args:
+                continue
+            if mode == f"{command}_timeout_child":
+                spawn_term_resistant_child()
+                block_until_supervisor_kills_us()
             print("fake podman compose command ok")
             return
 
