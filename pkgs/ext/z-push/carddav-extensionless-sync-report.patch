@@ -1,0 +1,11 @@
+diff --git a/src/include/z_carddav.php b/src/include/z_carddav.php
+--- a/src/include/z_carddav.php
++++ b/src/include/z_carddav.php
+@@ -416,6 +416,7 @@ EOFCONTENTSEARCH;
+     <D:sync-level>1</D:sync-level>
+     <D:prop>
+         <D:getetag/>
++        <D:getcontenttype/>
+         <D:getlastmodified/>
+     </D:prop>
+ </D:sync-collection>
