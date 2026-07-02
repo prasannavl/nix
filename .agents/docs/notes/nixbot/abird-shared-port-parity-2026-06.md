@@ -73,3 +73,60 @@ Skipped as Abird-specific:
 
 - `hosts/abird-corp/services/stalwart/default.nix`
 - Abird consolidated deployment notes that do not exist in this repo
+
+## July 2026 Last-50 Port
+
+Reviewed the newest 50 commits on `abird/master` at `a61b7aa8` from local base
+`703eefd8`.
+
+Adopted as shared byte-parity units:
+
+- `lib/flake/stack/lib.nix` and `lib/flake/tests/default.nix`: scoped CA source
+  paths, host-path defaults for native Postgres/NATS clients, and centralized
+  `timeouts` handling.
+- `lib/podman-compose/default.nix`, `lib/podman-compose/helper.sh`, and
+  `lib/podman-compose/tests/**`: supervised child PID/process-group cleanup and
+  provider-neutral tunnel metadata.
+- `lib/services/nginx/default.nix` and
+  `lib/services/nginx/ingress-composer.nix`: stream timeout rendering, edge-auth
+  cache policy headers, and absolute oauth2 sign-in redirects.
+- `pkgs/tools/nixbot/nixbot.sh`, `pkgs/tools/nixbot/nixbot.bash`, and
+  `pkgs/tools/nixbot/tests/test_nixbot.py`: local `clean` and remote
+  `clear-remote-locks` actions.
+- `pkgs/ext/kanidm-server/default.nix`, `pkgs/ext/bulwarkmail/**`,
+  `pkgs/ext/stalwart-server/**`, and `pkgs/ext/z-push/**`: portable
+  package/image updates and compatibility patches from the Abird mail/auth
+  stack. The Stalwart `calendar-imip-method-fallback-policy.patch` and
+  `imap-starttls-auth.patch` files are semantically equivalent to Abird but have
+  trailing whitespace removed to satisfy this repo's whitespace gate.
+
+Adopted older shared prerequisites to keep the copied helpers coherent:
+
+- `lib/services/tunnels/default.nix` plus the reduced
+  `lib/services/tunnels/cloudflare.nix` provider wrapper from Abird's generic
+  tunnel model.
+- `lib/services/activesync/default.nix` timeout defaults from Abird's bounded
+  silent HTTP wait fixes.
+
+Repo-local adaptations:
+
+- `hosts/pvl-x2/services/{docmost,memos,vaultwarden}/default.nix` now express
+  Cloudflare publications as `tunnels = [{ kind = "cloudflare"; ... }]`.
+- `hosts/pvl-x2/cloudflare.nix` and `hosts/pvl-vlab/cloudflare.nix` now import
+  the provider-neutral tunnel helper and read
+  `config.services.podman-compose.pvl.tunnelIngress.cloudflare`.
+- `.agents/docs/notes/nixbot/deploy-system.md` documents the local cleanup and
+  remote lock cleanup actions because Abird's matching wording lives in a
+  consolidated note that this repo does not have.
+- `.agents/docs/notes/services/edge-and-platform-infra.md` now names
+  provider-neutral `tunnels` metadata instead of the removed `cfTunnelNames` /
+  `cfTunnelPort` options.
+
+Skipped as Abird-specific:
+
+- Abird host inventories, `lib/stacks/abird*`, `lib/stacks/gap3.nix`, and scoped
+  Abird secret payload rotations.
+- Abird app/service packages under `pkgs/bots`, `pkgs/srv`, `pkgs/labs`,
+  `pkgs/web`, and `pkgs/ext/gcp-cloud-run`.
+- `pkgs/manifest.nix` changes outside the last-50 portable package scope; this
+  repo already registers the adopted package families.
