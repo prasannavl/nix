@@ -73,6 +73,8 @@
       upstreams ? registry.upstreamsForService serviceName upstreamPortName,
       authRequest ? null,
       useUpstreamCsp ? false,
+      useUpstreamReferrer ? false,
+      useUpstreamPermissionsPolicy ? false,
       clientMaxBodySize ? null,
       timeout ? null,
       rateLimit ? rateLimitProfiles.web,
@@ -88,6 +90,8 @@
         }
         // optional (authRequest != null) {authRequest = authRequest;}
         // optional useUpstreamCsp {useUpstreamCsp = true;}
+        // optional useUpstreamReferrer {useUpstreamReferrer = true;}
+        // optional useUpstreamPermissionsPolicy {useUpstreamPermissionsPolicy = true;}
         // optional (clientMaxBodySize != null) {clientMaxBodySize = clientMaxBodySize;}
         // extra;
     in
@@ -105,6 +109,8 @@
       upstreams ? registry.upstreamsForService serviceName upstreamPortName,
       authRequest ? null,
       useUpstreamCsp ? true,
+      useUpstreamReferrer ? false,
+      useUpstreamPermissionsPolicy ? false,
       clientMaxBodySize ? null,
       timeout ? null,
       rateLimit ? rateLimitProfiles.default,
@@ -122,6 +128,8 @@
         }
         // optional (authRequest != null) {authRequest = authRequest;}
         // optional useUpstreamCsp {useUpstreamCsp = true;}
+        // optional useUpstreamReferrer {useUpstreamReferrer = true;}
+        // optional useUpstreamPermissionsPolicy {useUpstreamPermissionsPolicy = true;}
         // optional (clientMaxBodySize != null) {clientMaxBodySize = clientMaxBodySize;}
         // extra;
     in
