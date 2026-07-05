@@ -9,6 +9,8 @@ init_vars() {
 	generated_dir=""
 	manifest_path=""
 	lifecycle_lock_path=""
+	start_in_progress_path=""
+	stop_in_progress_path=""
 	state_path=""
 	runtime_state_version=1
 	runtime_state_kind="podman-compose-runtime-state"
@@ -26,8 +28,9 @@ init_vars() {
 	reload_signal="HUP"
 	restart_stamp=""
 	monitor_interval=10
-	stale_rootless_netns_repaired=0
-	compose_start_default_timeout_seconds=90
+	podman_network_dns_repaired=0
+	compose_start_default_timeout_seconds=900
+	compose_start_idle_timeout_seconds=180
 	compose_stop_default_timeout_seconds=180
 
 	compose_args=()
@@ -35,6 +38,7 @@ init_vars() {
 	pull_compose_file_args=()
 	expected_compose_services=()
 	reload_services=()
+	podman_network_dns_lock_depth=0
 }
 
 require_env() {
@@ -63,6 +67,8 @@ load_metadata() {
 	reconcile_policy="$(jq -r '.reconcilePolicy // "auto"' "$podman_compose_metadata")"
 	generated_dir="$working_dir/.podman-compose"
 	lifecycle_lock_path="$generated_dir/lifecycle.lock"
+	start_in_progress_path="$generated_dir/start-in-progress"
+	stop_in_progress_path="$generated_dir/stop-in-progress"
 	state_path="$generated_dir/state.json"
 	adoption_stamp="$(jq -r '.adoptionStamp // ""' "$podman_compose_metadata")"
 	recreate_tag="$(jq -r '.recreateTag // "0"' "$podman_compose_metadata")"
@@ -141,6 +147,7 @@ unlock_lifecycle_shared() {
 }
 
 close_lifecycle_fds_for_child() {
+	exec 7>&- 2>/dev/null || true
 	exec 8>&- 2>/dev/null || true
 	exec 9>&- 2>/dev/null || true
 }
@@ -795,18 +802,26 @@ compose_state_json() {
 }
 
 compose_up() {
-	compose_up_supervised normal
+	local status=0
+	podman_network_dns_lock
+	compose_up_supervised normal || status="$?"
+	podman_network_dns_unlock
+	return "$status"
 }
 
 compose_up_force_recreate() {
-	compose_up_supervised force
+	local status=0
+	podman_network_dns_lock
+	compose_up_supervised force || status="$?"
+	podman_network_dns_unlock
+	return "$status"
 }
 
 compose_up_fatal_line() {
 	local line
 	line="$1"
 	grep -Eq \
-		'container name ".*" is already in use|cannot be used as a dependency|rootlessport listen tcp .* bind:' \
+		'container name ".*" is already in use|cannot be used as a dependency|rootlessport listen tcp .* bind:|aardvark-dns failed to start|failed to bind udp listener .*:53|(^|[[:space:]])image pull-error[[:space:]]' \
 		<<<"$line"
 }
 
@@ -1055,13 +1070,14 @@ compose_command_supervised() {
 }
 
 compose_up_supervised() {
-	local mode timeout_seconds reserve_seconds deadline_seconds started_at now line fatal_seen=0 status=0
+	local mode timeout_seconds reserve_seconds deadline_seconds started_at last_progress_at now line fatal_seen=0 status=0
 	local compose_output_fd compose_up_pid compose_up_child_pid compose_up_pid_file
 	local -a up_args=()
 	mode="$1"
 	timeout_seconds="$(compose_start_timeout_seconds)"
 	reserve_seconds="$(compose_cleanup_reserve_seconds "$timeout_seconds")"
 	started_at="$(now_epoch)"
+	last_progress_at="$started_at"
 	deadline_seconds="$((started_at + timeout_seconds - reserve_seconds))"
 
 	up_args=(podman compose "${compose_args[@]}" "${compose_file_args[@]}" up -d --remove-orphans)
@@ -1085,6 +1101,7 @@ compose_up_supervised() {
 
 	while true; do
 		if IFS= read -r -t 1 -u "$compose_output_fd" line 2>/dev/null; then
+			last_progress_at="$(now_epoch)"
 			printf '%s\n' "$line"
 			if compose_up_fatal_line "$line"; then
 				fatal_seen=1
@@ -1099,6 +1116,14 @@ compose_up_supervised() {
 		now="$(now_epoch)"
 		if [ "$now" -ge "$deadline_seconds" ]; then
 			printf '%s\n' "podman compose start exceeded helper deadline for ${podman_compose_service_name}; reserving ${reserve_seconds}s for cleanup before systemd timeout" >&2
+			compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
+			terminate_compose_process "$compose_up_child_pid"
+			fatal_seen=1
+			break
+		fi
+		if [ "$compose_start_idle_timeout_seconds" -gt 0 ] &&
+			[ "$now" -ge "$((last_progress_at + compose_start_idle_timeout_seconds))" ]; then
+			printf '%s\n' "podman compose start made no output progress for ${compose_start_idle_timeout_seconds}s for ${podman_compose_service_name}; treating as a stuck start and retrying" >&2
 			compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
 			terminate_compose_process "$compose_up_child_pid"
 			fatal_seen=1
@@ -1125,7 +1150,12 @@ compose_up_supervised() {
 }
 
 compose_down() {
-	compose_command_supervised down "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" down
+	local status=0
+	podman_network_dns_lock
+	disable_compose_project_restart_policies
+	compose_command_supervised down "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" down || status="$?"
+	podman_network_dns_unlock
+	return "$status"
 }
 
 compose_project_container_ids() {
@@ -1242,8 +1272,93 @@ remove_container_target() {
 	return 1
 }
 
+disable_container_restart_policy_target() {
+	local target update_error
+	target="$1"
+	if update_error="$(podman_no_notify update --restart=no "$target" 2>&1)"; then
+		[ -n "$update_error" ] && printf '%s\n' "$update_error"
+		return 0
+	fi
+	case "$update_error" in
+	*"no such container"* | *"no container with name or ID"*)
+		return 0
+		;;
+	esac
+	printf '%s\n' "warning: failed to disable restart policy for $target: $update_error" >&2
+	return 0
+}
+
+disable_compose_project_restart_policies() {
+	local container containers=() container_names=()
+
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		containers+=("$container")
+	done < <(compose_project_container_ids)
+
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		container_names+=("$container")
+	done < <(compose_project_container_names)
+
+	[ "${#containers[@]}" -gt 0 ] || [ "${#container_names[@]}" -gt 0 ] || return 0
+	printf '%s\n' "disabling podman compose restart policies for ${podman_compose_service_name}"
+	(
+		close_lifecycle_fds_for_child
+		for container in "${containers[@]}" "${container_names[@]}"; do
+			disable_container_restart_policy_target "$container"
+		done
+	)
+}
+
+is_anonymous_volume_name() {
+	local volume_name
+	volume_name="$1"
+	[ "${#volume_name}" -eq 64 ] || return 1
+	case "$volume_name" in
+	*[!0-9a-f]*)
+		return 1
+		;;
+	*)
+		return 0
+		;;
+	esac
+}
+
+container_anonymous_volume_names() {
+	local target mounts volume
+	target="$1"
+
+	if ! mounts="$(podman_no_notify inspect "$target" --format '{{json .Mounts}}' 2>/dev/null)"; then
+		return 0
+	fi
+
+	while IFS= read -r volume; do
+		[ -n "$volume" ] || continue
+		is_anonymous_volume_name "$volume" || continue
+		printf '%s\n' "$volume"
+	done < <(jq -r '.[]? | select(.Type == "volume") | .Name // empty' <<<"$mounts" 2>/dev/null || true)
+}
+
+remove_anonymous_volume_target() {
+	local target remove_error
+	target="$1"
+	if remove_error="$(podman_no_notify volume rm "$target" 2>&1)"; then
+		[ -n "$remove_error" ] && printf '%s\n' "$remove_error"
+		return 0
+	fi
+	case "$remove_error" in
+	*"no such volume"* | *"volume not known"* | *"is being used"*)
+		[ -n "$remove_error" ] && printf '%s\n' "$remove_error" >&2
+		return 0
+		;;
+	esac
+	printf '%s\n' "$remove_error" >&2
+	return 1
+}
+
 remove_compose_project_containers() {
-	local container failed=0 containers=() container_names=()
+	local container volume failed=0 containers=() container_names=() anonymous_volumes=()
 
 	while IFS= read -r container; do
 		[ -n "$container" ] || continue
@@ -1260,7 +1375,16 @@ remove_compose_project_containers() {
 	(
 		close_lifecycle_fds_for_child
 		for container in "${containers[@]}" "${container_names[@]}"; do
+			while IFS= read -r volume; do
+				[ -n "$volume" ] || continue
+				anonymous_volumes+=("$volume")
+			done < <(container_anonymous_volume_names "$container")
+		done
+		for container in "${containers[@]}" "${container_names[@]}"; do
 			remove_container_target "$container" || failed=1
+		done
+		for volume in "${anonymous_volumes[@]}"; do
+			remove_anonymous_volume_target "$volume" || failed=1
 		done
 		return "$failed"
 	)
@@ -1275,9 +1399,75 @@ cleanup_failed_compose_start() {
 		printf '%s\n' "direct removal of failed podman compose containers also failed for ${podman_compose_service_name}" >&2
 	fi
 	cleanup_runtime_files
+	clear_start_in_progress
+}
+
+cleanup_failed_compose_stop() {
+	local stop_policy
+	stop_policy="$1"
+
+	case "$stop_policy" in
+	delete | delete-all) ;;
+	*)
+		return 0
+		;;
+	esac
+
+	printf '%s\n' "podman compose stop failed for ${podman_compose_service_name}; cleaning project containers"
+	if ! remove_compose_project_containers; then
+		printf '%s\n' "direct removal of stopped podman compose containers failed for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+}
+
+post_stop_should_cleanup_failed_stop() {
+	local stop_policy
+	stop_policy="$1"
+
+	[ -f "$stop_in_progress_path" ] || return 1
+	case "${SERVICE_RESULT-}" in
+	"" | success)
+		return 1
+		;;
+	esac
+	case "$stop_policy" in
+	delete | delete-all)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+mark_start_in_progress() {
+	install -d -m 0750 "$generated_dir"
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'startedAt=%s\n' "$(now_epoch)"
+	} >"${start_in_progress_path}.tmp"
+	mv -f "${start_in_progress_path}.tmp" "$start_in_progress_path"
+}
+
+clear_start_in_progress() {
+	rm -f -- "$start_in_progress_path" "${start_in_progress_path}.tmp"
+}
+
+mark_stop_in_progress() {
+	install -d -m 0750 "$generated_dir"
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'startedAt=%s\n' "$(now_epoch)"
+	} >"${stop_in_progress_path}.tmp"
+	mv -f "${stop_in_progress_path}.tmp" "$stop_in_progress_path"
+}
+
+clear_stop_in_progress() {
+	rm -f -- "$stop_in_progress_path" "${stop_in_progress_path}.tmp"
 }
 
 post_stop_should_cleanup_failed_start() {
+	[ -f "$start_in_progress_path" ] || return 1
 	case "${SERVICE_RESULT-}" in
 	"" | success)
 		return 1
@@ -1289,40 +1479,62 @@ post_stop_should_cleanup_failed_start() {
 }
 
 compose_up_checked() {
-	local mode
+	local mode dns_retried=0
 	mode="$1"
 
-	case "$mode" in
-	force)
-		if ! compose_up_force_recreate; then
-			cleanup_failed_compose_start
+	while true; do
+		case "$mode" in
+		force)
+			if ! compose_up_force_recreate; then
+				cleanup_failed_compose_start
+				return 1
+			fi
+			;;
+		normal)
+			if ! compose_up; then
+				cleanup_failed_compose_start
+				return 1
+			fi
+			;;
+		*)
+			printf '%s\n' "unsupported podman compose up mode: $mode" >&2
 			return 1
-		fi
-		;;
-	normal)
-		if ! compose_up; then
-			cleanup_failed_compose_start
-			return 1
-		fi
-		;;
-	*)
-		printf '%s\n' "unsupported podman compose up mode: $mode" >&2
-		return 1
-		;;
-	esac
+			;;
+		esac
 
-	if ! verify_compose_state; then
-		cleanup_failed_compose_start
-		return 1
-	fi
+		if ! verify_compose_state; then
+			cleanup_failed_compose_start
+			return 1
+		fi
+		if verify_compose_dns; then
+			return 0
+		fi
+		if [ "$dns_retried" -eq 1 ]; then
+			cleanup_failed_compose_start
+			return 1
+		fi
+		dns_retried=1
+		restart_aardvark_dns "compose DNS probe failed"
+		mode=force
+	done
 }
 
 compose_down_volumes() {
-	compose_command_supervised "down --volumes" "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" down --volumes
+	local status=0
+	podman_network_dns_lock
+	disable_compose_project_restart_policies
+	compose_command_supervised "down --volumes" "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" down --volumes || status="$?"
+	podman_network_dns_unlock
+	return "$status"
 }
 
 compose_stop() {
-	compose_command_supervised stop "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" stop
+	local status=0
+	podman_network_dns_lock
+	disable_compose_project_restart_policies
+	compose_command_supervised stop "$(compose_stop_timeout_seconds)" podman compose "${compose_args[@]}" "${compose_file_args[@]}" stop || status="$?"
+	podman_network_dns_unlock
+	return "$status"
 }
 
 compose_pull() {
@@ -1339,6 +1551,312 @@ compose_logs() {
 		cd "$working_dir"
 		podman_no_notify compose "${compose_args[@]}" "${compose_file_args[@]}" logs "$@"
 	)
+}
+
+podman_network_dns_lock() {
+	if [ "$podman_network_dns_lock_depth" -gt 0 ]; then
+		podman_network_dns_lock_depth="$((podman_network_dns_lock_depth + 1))"
+		return 0
+	fi
+	install -d -m 0700 "$runtime_dir/podman-compose"
+	# v2 avoids live v1 locks leaked into older long-running rootless children.
+	exec 7>"$runtime_dir/podman-compose/rootless-network-dns-v2.lock"
+	flock -x 7
+	podman_network_dns_lock_depth=1
+}
+
+podman_network_dns_unlock() {
+	if [ "$podman_network_dns_lock_depth" -le 0 ]; then
+		return 0
+	fi
+	podman_network_dns_lock_depth="$((podman_network_dns_lock_depth - 1))"
+	if [ "$podman_network_dns_lock_depth" -gt 0 ]; then
+		return 0
+	fi
+	flock -u 7
+	exec 7>&-
+}
+
+process_cmdline_contains() {
+	local pid needle
+	pid="$1"
+	needle="$2"
+
+	[ -r "/proc/$pid/cmdline" ] || return 1
+	tr '\0' ' ' <"/proc/$pid/cmdline" | grep -Fq -- "$needle"
+}
+
+process_uid_matches() {
+	local pid uid
+	pid="$1"
+	uid="$2"
+
+	[ -r "/proc/$pid/status" ] || return 1
+	awk -v uid="$uid" '$1 == "Uid:" { found = 1; ok = ($2 == uid) } END { exit !(found && ok) }' "/proc/$pid/status"
+}
+
+process_comm_matches() {
+	local pid name comm
+	pid="$1"
+	name="$2"
+
+	[ -r "/proc/$pid/comm" ] || return 1
+	read -r comm <"/proc/$pid/comm" || return 1
+	[ "$comm" = "$name" ]
+}
+
+process_is_aardvark_dns_for_dir() {
+	local pid aardvark_dir
+	pid="$1"
+	aardvark_dir="$2"
+
+	process_comm_matches "$pid" "aardvark-dns" &&
+		process_cmdline_contains "$pid" "$aardvark_dir"
+}
+
+aardvark_dns_pids_for_dir() {
+	local aardvark_dir pid_dir pid
+	aardvark_dir="$1"
+
+	for pid_dir in /proc/[0-9]*; do
+		[ -d "$pid_dir" ] || continue
+		pid="${pid_dir##*/}"
+		if process_is_aardvark_dns_for_dir "$pid" "$aardvark_dir"; then
+			printf '%s\n' "$pid"
+		fi
+	done
+}
+
+aardvark_dns_pids_for_current_user() {
+	local uid pid_dir pid
+	uid="$(id -u)"
+
+	for pid_dir in /proc/[0-9]*; do
+		[ -d "$pid_dir" ] || continue
+		pid="${pid_dir##*/}"
+		if process_comm_matches "$pid" "aardvark-dns" &&
+			process_uid_matches "$pid" "$uid"; then
+			printf '%s\n' "$pid"
+		fi
+	done
+}
+
+read_pid_file() {
+	local pid_file pid
+	pid_file="$1"
+
+	[ -s "$pid_file" ] || return 1
+	read -r pid <"$pid_file" || return 1
+	case "$pid" in
+	"" | *[!0-9]*)
+		return 1
+		;;
+	esac
+	printf '%s\n' "$pid"
+}
+
+mark_podman_network_dns_repaired() {
+	podman_network_dns_repaired=1
+}
+
+restart_aardvark_dns() {
+	local reason aardvark_dir pid_file pid candidate pids seen killed _
+	reason="$1"
+
+	[ -n "$runtime_dir" ] || return 0
+	aardvark_dir="$runtime_dir/containers/networks/aardvark-dns"
+	pid_file="$aardvark_dir/aardvark.pid"
+	[ -d "$aardvark_dir" ] || return 0
+
+	podman_network_dns_lock
+	pids=""
+	seen=""
+	killed=0
+	if pid="$(read_pid_file "$pid_file")"; then
+		if [ -d "/proc/$pid" ] &&
+			process_is_aardvark_dns_for_dir "$pid" "$aardvark_dir"; then
+			pids="${pids}${pids:+ }${pid}"
+		else
+			printf '%s\n' "removing stale podman aardvark DNS pid file for ${podman_compose_service_name}: ${pid_file}"
+		fi
+	else
+		printf '%s\n' "podman aardvark DNS has no usable pid file for ${podman_compose_service_name}: ${pid_file}"
+	fi
+
+	while IFS= read -r candidate; do
+		[ -n "$candidate" ] || continue
+		pids="${pids}${pids:+ }${candidate}"
+	done < <(aardvark_dns_pids_for_dir "$aardvark_dir")
+	while IFS= read -r candidate; do
+		[ -n "$candidate" ] || continue
+		pids="${pids}${pids:+ }${candidate}"
+	done < <(aardvark_dns_pids_for_current_user)
+
+	for pid in $pids; do
+		case " $seen " in
+		*" $pid "*) continue ;;
+		esac
+		seen="${seen}${seen:+ }${pid}"
+		if [ -d "/proc/$pid" ]; then
+			if [ "$killed" -eq 0 ]; then
+				printf '%s\n' "restarting podman aardvark DNS for ${podman_compose_service_name}: ${reason}"
+			fi
+			killed=1
+			kill "$pid" 2>/dev/null || true
+		fi
+	done
+
+	if [ "$killed" -eq 1 ]; then
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			killed=0
+			for pid in $seen; do
+				if [ -d "/proc/$pid" ]; then
+					killed=1
+					break
+				fi
+			done
+			[ "$killed" -eq 0 ] && break
+			sleep 0.1
+		done
+		for pid in $seen; do
+			if [ -d "/proc/$pid" ]; then
+				printf '%s\n' "podman aardvark DNS pid $pid did not exit after TERM; sending KILL"
+				kill -KILL "$pid" 2>/dev/null || true
+			fi
+		done
+	fi
+	rm -f -- "$pid_file"
+	mark_podman_network_dns_repaired
+	podman_network_dns_unlock
+}
+
+repair_stale_aardvark_dns_pid() {
+	local aardvark_dir pid_file pid matching_pids matching_count
+
+	[ -n "$runtime_dir" ] || return 0
+	aardvark_dir="$runtime_dir/containers/networks/aardvark-dns"
+	pid_file="$aardvark_dir/aardvark.pid"
+	[ -d "$aardvark_dir" ] || return 0
+	matching_pids="$(aardvark_dns_pids_for_dir "$aardvark_dir" || true)"
+	matching_count="$(grep -c . <<<"$matching_pids" || true)"
+
+	if pid="$(read_pid_file "$pid_file")" &&
+		[ -d "/proc/$pid" ] &&
+		process_is_aardvark_dns_for_dir "$pid" "$aardvark_dir"; then
+		if [ "$matching_count" -le 1 ]; then
+			return 0
+		fi
+		restart_aardvark_dns "duplicate aardvark DNS processes"
+		return 0
+	fi
+
+	if [ -e "$pid_file" ]; then
+		restart_aardvark_dns "stale pid file"
+	elif [ -n "$matching_pids" ]; then
+		restart_aardvark_dns "missing pid file"
+	fi
+}
+
+repair_stale_aardvark_dns_config_files() {
+	local aardvark_dir running_ids config_file config_name line container_id has_running_entry removed=0
+
+	[ -n "$runtime_dir" ] || return 0
+	aardvark_dir="$runtime_dir/containers/networks/aardvark-dns"
+	[ -d "$aardvark_dir" ] || return 0
+
+	if ! running_ids="$(podman_no_notify ps -q --no-trunc)"; then
+		return 0
+	fi
+
+	for config_file in "$aardvark_dir"/*; do
+		[ -f "$config_file" ] || continue
+		config_name="${config_file##*/}"
+		case "$config_name" in
+		aardvark.pid) continue ;;
+		esac
+
+		has_running_entry=0
+		while IFS= read -r line; do
+			container_id="${line%%[[:space:]]*}"
+			[ -n "$container_id" ] || continue
+			case "$container_id" in
+			*.*.*.*) continue ;;
+			esac
+			if grep -Fxq "$container_id" <<<"$running_ids"; then
+				has_running_entry=1
+				break
+			fi
+		done <"$config_file"
+
+		if [ "$has_running_entry" -eq 0 ]; then
+			printf '%s\n' "removing stale podman aardvark DNS config with no running containers for ${podman_compose_service_name}: ${config_file}"
+			rm -f -- "$config_file"
+			removed=1
+		fi
+	done
+
+	if [ "$removed" -eq 1 ]; then
+		restart_aardvark_dns "stale DNS config file"
+	fi
+}
+
+compose_dns_probe_pair() {
+	local container_id compose_service peer
+
+	[ "$long_running" = "true" ] || return 1
+	[ "${#expected_compose_services[@]}" -gt 1 ] || return 1
+
+	while IFS=$'\t' read -r container_id compose_service; do
+		[ -n "$container_id" ] || continue
+		[ -n "$compose_service" ] || continue
+		for peer in "${expected_compose_services[@]}"; do
+			[ -n "$peer" ] || continue
+			if [ "$peer" != "$compose_service" ]; then
+				printf '%s\t%s\t%s\n' "$container_id" "$compose_service" "$peer"
+				return 0
+			fi
+		done
+	done < <(
+		close_lifecycle_fds_for_child
+		cd /
+		podman_no_notify ps \
+			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--format json |
+			jq -r '.[] | [.ID, (.Labels["io.podman.compose.service"] // .Labels["com.docker.compose.service"] // "")] | @tsv'
+	)
+	return 1
+}
+
+verify_compose_dns() {
+	local pair container_id compose_service peer output status
+
+	if ! pair="$(compose_dns_probe_pair)"; then
+		return 0
+	fi
+	IFS=$'\t' read -r container_id compose_service peer <<<"$pair"
+
+	output="$(
+		close_lifecycle_fds_for_child
+		cd /
+		# shellcheck disable=SC2016 # $1 is expanded by the inner shell.
+		timeout 5 env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC podman exec "$container_id" sh -c '
+			if ! command -v getent >/dev/null 2>&1; then
+				exit 77
+			fi
+			getent hosts "$1" >/dev/null
+		' sh "$peer" 2>&1
+	)" && return 0
+	status="$?"
+	if [ "$status" -eq 77 ]; then
+		printf '%s\n' "podman compose DNS probe skipped for ${podman_compose_service_name}: getent unavailable in ${compose_service}"
+		return 0
+	fi
+
+	printf '%s\n' "podman compose DNS probe failed for ${podman_compose_service_name}: ${compose_service} cannot resolve ${peer}" >&2
+	if [ -n "$output" ]; then
+		printf '%s\n' "$output" >&2
+	fi
+	return 1
 }
 
 rootless_netns_has_live_connection() {
@@ -1380,7 +1898,17 @@ repair_stale_rootless_netns_resolver() {
 
 	printf '%s\n' "removing stale inactive podman rootless netns resolver state: $netns_dir"
 	rm -rf -- "$netns_dir"
-	stale_rootless_netns_repaired=1
+	mark_podman_network_dns_repaired
+}
+
+repair_podman_rootless_dns_state() {
+	local status=0
+	podman_network_dns_lock
+	repair_stale_aardvark_dns_pid
+	repair_stale_aardvark_dns_config_files
+	repair_stale_rootless_netns_resolver || status="$?"
+	podman_network_dns_unlock
+	return "$status"
 }
 
 running_compose_services() {
@@ -1784,12 +2312,12 @@ cmd_reload() {
 		ensure_runtime_dirs
 		record_staging_runtime_state
 		stage_runtime_files
-		repair_stale_rootless_netns_resolver
+		repair_podman_rootless_dns_state
 		run_pre_start_hooks || {
 			unlock_lifecycle_exclusive
 			return 1
 		}
-		if [ "$stale_rootless_netns_repaired" -eq 1 ]; then
+		if [ "$podman_network_dns_repaired" -eq 1 ]; then
 			compose_up_checked force
 		else
 			compose_up_checked normal
@@ -1822,18 +2350,20 @@ cmd_start() {
 	assert_adoption_allowed
 	ensure_runtime_dirs
 	lock_lifecycle_exclusive
+	mark_start_in_progress
 	clear_removal_policy_marker
 	record_staging_runtime_state
 	stage_runtime_files
-	repair_stale_rootless_netns_resolver
+	repair_podman_rootless_dns_state
 	run_pre_start_hooks || {
+		clear_start_in_progress
 		unlock_lifecycle_exclusive
 		return 1
 	}
 	if compose_running_container_pids_missing; then
 		force_recreate=1
 	fi
-	if [ "$force_recreate" -eq 1 ] || [ "$stale_rootless_netns_repaired" -eq 1 ] || should_force_recreate; then
+	if [ "$force_recreate" -eq 1 ] || [ "$podman_network_dns_repaired" -eq 1 ] || should_force_recreate; then
 		force_recreate=1
 		compose_up_checked force
 	else
@@ -1844,6 +2374,7 @@ cmd_start() {
 	else
 		record_runtime_state
 	fi
+	clear_start_in_progress
 	unlock_lifecycle_exclusive
 	notify_ready_and_monitor "podman compose running"
 }
@@ -1853,14 +2384,19 @@ cmd_stop() {
 	load_metadata
 	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
+	mark_stop_in_progress
 	run_pre_stop_hooks || {
+		clear_stop_in_progress
 		unlock_lifecycle_exclusive
 		return 1
 	}
 	if ! apply_compose_stop_policy "$stop_policy"; then
+		cleanup_failed_compose_stop "$stop_policy" || true
+		clear_stop_in_progress
 		unlock_lifecycle_exclusive
 		return 1
 	fi
+	clear_stop_in_progress
 	unlock_lifecycle_exclusive
 }
 
@@ -1881,11 +2417,16 @@ cmd_post_stop() {
 	if post_stop_should_cleanup_failed_start; then
 		printf '%s\n' "systemd reported ${podman_compose_service_name}.service result=${SERVICE_RESULT}; running failed-start cleanup"
 		cleanup_failed_compose_start
+	elif post_stop_should_cleanup_failed_stop "$stop_policy"; then
+		printf '%s\n' "systemd reported ${podman_compose_service_name}.service result=${SERVICE_RESULT}; running failed-stop cleanup"
+		cleanup_failed_compose_stop "$stop_policy" || true
 	fi
 	if ! apply_compose_post_stop_policy "$stop_policy"; then
 		unlock_lifecycle_exclusive
 		return 1
 	fi
+	clear_start_in_progress
+	clear_stop_in_progress
 	unlock_lifecycle_exclusive
 }
 

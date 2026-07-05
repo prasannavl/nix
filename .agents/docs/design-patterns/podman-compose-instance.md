@@ -78,12 +78,33 @@ include only what applies, but keep the relative order stable.
   `delete-all` only for explicit removal semantics. Re-declaring a kept working
   directory requires matching `.podman-compose/state.json` identity state or a
   one-time `adopt = true`.
-- First-start staging must write compatible helper state before creating runtime
-  files or starting Compose. If `podman compose up` fails after helper staging,
-  the next start should recover helper-created declared paths instead of
-  requiring `adopt = true`.
 - Do not use `autoStart = false` to mean desired stopped state. Keep `autoStart`
   for lower-level cold-start behavior on otherwise running services.
+- Failed starts must leave the compose project retryable. The helper owns
+  `podman compose up` supervision and derives its deadline from the effective
+  systemd `TimeoutStartSec`, keeping a small cleanup reserve before systemd
+  would kill the helper. It must write compatible helper state before staging
+  runtime directories or starting Compose, because a first-start failure can
+  otherwise leave helper-created data directories that later retries reject as
+  unmanaged. If compose output shows a fatal start error, the helper should
+  terminate compose early instead of waiting for the full timeout.
+- Failed-start cleanup removes only compose project containers and networks,
+  including expected compose container names left behind by partial Podman
+  storage state. Do not remove volumes or managed data directories on
+  failed-start cleanup; persistent data recovery is a separate operator
+  decision. `ExecStopPost` may call the same cleanup after a systemd timeout or
+  helper crash, but it is a backstop rather than the primary failure path.
+- The helper owns systemd lifecycle for compose projects. Before `stop`/`down`,
+  it disables Podman restart policies on known project containers so Compose
+  entries such as `restart: unless-stopped` cannot recreate a container while
+  systemd is trying to stop the unit. Do not invent compose service names for
+  opaque YAML sources; keep `expectedComposeServices` empty unless the source is
+  a structured attrset or the service names are otherwise known.
+- Keep expected-service verification separate from default file-secret mount
+  targeting. Opaque YAML sources should not produce expected-service assertions,
+  but fileSecrets with no explicit `services` still default to the instance
+  service name so legacy string-YAML services keep their generated
+  `/run/secrets/*` mounts.
 
 ## Port Bindings
 
@@ -97,7 +118,12 @@ address is intentionally part of the behavior:
   `"<address>:${toString exposedPorts.http.port}:8080"`
 
 Do not write an explicit `0.0.0.0` host bind just to express the default.
-Including a bind address should signal a deliberate reachability constraint.
+Including a bind address should signal a deliberate reachability constraint. Do
+not use `registry.ipForService` as a host bind address. It is the routed service
+target address, which may intentionally point at a different endpoint group
+during a migration. For host listens, bind to loopback, omit the host address
+for the default all-interface bind, or use an explicitly local endpoint address
+only when the service truly requires one.
 
 Keep the default Podman/Compose network mode unless the user explicitly asks to
 change it. Do not switch a service to `network_mode: host` as a debugging

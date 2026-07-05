@@ -92,7 +92,7 @@
     dirs = {};
     exposedPorts = {};
   };
-  stackDefaultTimeoutStableSeconds = 120;
+  stackDefaultTimeoutStableSeconds = 900;
   defaultComposeEntryFiles = [
     "compose.yml"
     "compose.yaml"
@@ -1705,7 +1705,12 @@
         ++ lib.optional hasImagePullUnit imagePullUnit
       );
       wants = lib.unique (networkOnlineUnits ++ wantsUnits ++ lib.optional hasImagePullUnit imagePullUnit);
-      wantedBy = lib.optional service.autoStart bootReadyTargetName;
+      # systemd-user-manager owns compose unit start/restart ordering. Attaching
+      # these units directly to a target lets NixOS user activation start them
+      # before the reconciler can apply its monitored, non-blocking lifecycle.
+      wantedBy = [];
+      restartIfChanged = false;
+      stopIfChanged = false;
       unitConfig.ConditionUser = resolvedUser;
       unitConfig.Requires = dependsOnUnits ++ lib.optional hasImagePullUnit imagePullUnit;
       serviceConfig = {
@@ -1719,9 +1724,13 @@
         ExecStop = "${helperScript} stop";
         ExecReload = "${helperScript} reload";
         ExecStopPost = "${helperScript} post-stop";
-        KillMode = "mixed";
+        # Keep helper subprocesses in the service kill boundary. If a start
+        # times out while podman-compose or flock is blocked, leaving those
+        # children alive can wedge the lifecycle lock for the next activation.
+        KillMode = "control-group";
         Delegate = true;
         Restart = "on-failure";
+        TimeoutStartSec = lib.mkDefault 900;
         TimeoutStopSec = lib.mkDefault 180;
       };
     };

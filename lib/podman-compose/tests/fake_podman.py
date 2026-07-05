@@ -69,12 +69,22 @@ def main():
     if args and args[0] == "rm":
         return
 
+    if args and args[0] == "update":
+        return
+
     if args and args[0] == "inspect":
+        if "--format" in args and "{{json .Mounts}}" in args:
+            print(os.environ.get("TEST_PODMAN_INSPECT_MOUNTS_JSON", "[]"))
+            return
         if "--format" in args and "{{json .State}}" in args:
             print(os.environ.get("TEST_PODMAN_INSPECT_STATE_JSON", '{"Running":true,"Pid":1,"ConmonPid":1}'))
             return
         print(os.environ.get("TEST_PODMAN_INSPECT_JSON", "{}"))
         return
+
+    if args and args[0] == "volume":
+        if len(args) > 1 and args[1] == "rm":
+            return
 
     if args and args[0] == "compose":
         if "up" in args:

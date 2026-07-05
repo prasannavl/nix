@@ -112,6 +112,18 @@
 
             "file-source".source = sourceFile;
 
+            "opaque-secret" = {
+              source = ''
+                services:
+                  opaque-secret:
+                    image: docker.io/library/busybox:latest
+                    command: ["sh", "-c", "cat /run/secrets/default-token"]
+              '';
+              fileSecrets."default-token" = {
+                file = "/run/secrets/default-token";
+              };
+            };
+
             job = {
               user = "root";
               serviceName = "demo-custom-job";
@@ -145,6 +157,7 @@
   db = stack.instances.db;
   textSource = stack.instances."text-source";
   fileSource = stack.instances."file-source";
+  opaqueSecret = stack.instances."opaque-secret";
   job = stack.instances.job;
   restartPolicy = stack.instances."restart-policy";
   recreatePolicy = stack.instances."recreate-policy";
@@ -152,6 +165,7 @@
   dbUnit = config.systemd.user.services.demo-db;
   textSourceUnit = config.systemd.user.services.demo-text-source;
   fileSourceUnit = config.systemd.user.services.demo-file-source;
+  opaqueSecretUnit = config.systemd.user.services.demo-opaque-secret;
   jobUnit = config.systemd.user.services.demo-custom-job;
   appManagedUnit = config.services.systemd-user-manager.instances.demo-app;
   jobManagedUnit = config.services.systemd-user-manager.instances.demo-custom-job;
@@ -174,6 +188,7 @@
   appMetadata = metadataFromUnit appUnit;
   textSourceMetadata = metadataFromUnit textSourceUnit;
   fileSourceMetadata = metadataFromUnit fileSourceUnit;
+  opaqueSecretMetadata = metadataFromUnit opaqueSecretUnit;
   jobMetadata = metadataFromUnit jobUnit;
   restartPolicyMetadata = metadataFromUnit config.systemd.user.services.demo-restart-policy;
   recreatePolicyMetadata = metadataFromUnit config.systemd.user.services.demo-recreate-policy;
@@ -202,6 +217,7 @@
   appRenderedCompose = builtins.readFile app.sourcePaths."compose.yml";
   textRenderedCompose = builtins.readFile textSource.sourcePaths."compose.yml";
   fileRenderedCompose = builtins.readFile fileSource.sourcePaths."compose.yml";
+  opaqueSecretFileSecretOverride = builtins.readFile opaqueSecret.sourcePaths."__podman-file-secrets.override.yml";
 in
   assert failedAssertions == [];
   assert stack.user == "tester";
@@ -219,6 +235,11 @@ in
   assert fileSource.source == sourceFile;
   assert fileSource.resolvedWorkingDir == "/srv/demo/file-source";
   assert fileSource.knownSourceComposeServices == [];
+  assert opaqueSecret.knownSourceComposeServices == [];
+  assert opaqueSecretMetadata.expectedComposeServices == [];
+  assert builtins.elem "/srv/demo/opaque-secret/__podman-file-secrets.override.yml" opaqueSecretMetadata.composeFiles;
+  assert lib.hasInfix ''"opaque-secret"'' opaqueSecretFileSecretOverride;
+  assert lib.hasInfix "/run/secrets/default-token" opaqueSecretFileSecretOverride;
   assert job.user == "root";
   assert job.serviceName == "demo-custom-job";
   assert job.autoStart == false;
@@ -235,8 +256,12 @@ in
   };
   assert builtins.length stack.tunnelEndpoints == 2;
   assert (builtins.head (builtins.filter (endpoint: endpoint.name == "app-rathole") stack.tunnelEndpoints)).remotePort == 443;
-  assert appUnit.wantedBy == ["systemd-user-manager-ready.target"];
+  assert appUnit.wantedBy == [];
+  assert appUnit.restartIfChanged == false;
+  assert appUnit.stopIfChanged == false;
   assert jobUnit.wantedBy == [];
+  assert jobUnit.restartIfChanged == false;
+  assert jobUnit.stopIfChanged == false;
   assert builtins.elem "demo-db.service" appUnit.after;
   assert builtins.elem "demo-optional.service" appUnit.after;
   assert builtins.elem "external-ready.service" appUnit.after;
@@ -258,6 +283,7 @@ in
   assert lib.hasSuffix " stop" appUnit.serviceConfig.ExecStop;
   assert lib.hasSuffix " reload" appUnit.serviceConfig.ExecReload;
   assert lib.hasSuffix " post-stop" appUnit.serviceConfig.ExecStopPost;
+  assert appUnit.serviceConfig.KillMode == "control-group";
   assert imagePullUnit.serviceConfig.Type == "oneshot";
   assert lib.hasSuffix " image-pull" imagePullUnit.serviceConfig.ExecStart;
   assert appManagedUnit.user == "tester";
