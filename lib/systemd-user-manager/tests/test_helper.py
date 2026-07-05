@@ -84,6 +84,9 @@ fi
 if [ "${{1-}}" = "--user" ]; then
   shift
 fi
+if [ "${{1-}}" = "--no-block" ]; then
+  shift
+fi
 
 cmd="${{1-}}"
 if [ "$#" -gt 0 ]; then
@@ -103,12 +106,14 @@ case "$cmd" in
       shift
     done
     case "$property" in
-      ActiveState) active_state_for "$unit" ;;
-      LoadState) printf '%s\\n' "loaded" ;;
-      SubState) printf '%s\\n' "dead" ;;
-      Result) printf '%s\\n' "success" ;;
-      UnitFileState) printf '%s\\n' "enabled" ;;
-      InvocationID) printf '%s\\n' "fake-invocation" ;;
+	      ActiveState) active_state_for "$unit" ;;
+	      LoadState) printf '%s\\n' "loaded" ;;
+	      SubState) printf '%s\\n' "dead" ;;
+	      Result) printf '%s\\n' "success" ;;
+	      Type) printf '%s\\n' "${{FAKE_SYSTEMCTL_SERVICE_TYPE:-simple}}" ;;
+	      NRestarts) printf '%s\\n' "0" ;;
+	      UnitFileState) printf '%s\\n' "enabled" ;;
+	      InvocationID) printf '%s\\n' "fake-invocation" ;;
       *) printf '%s\\n' "" ;;
     esac
     ;;
@@ -121,7 +126,15 @@ case "$cmd" in
     fi
     printf '%s\\n' "active" > "$(unit_state_file "$1")"
     ;;
-  start|reload|daemon-reload)
+  start)
+    if [ -n "${{FAKE_SYSTEMCTL_START_STATE-}}" ]; then
+      printf '%s\\n' "$FAKE_SYSTEMCTL_START_STATE" > "$(unit_state_file "$1")"
+    fi
+    if [ "${{FAKE_SYSTEMCTL_START_FAIL-0}}" = 1 ]; then
+      exit 1
+    fi
+    ;;
+  reload|daemon-reload)
     ;;
   *)
     ;;
@@ -487,7 +500,440 @@ printf '%s\\n' "$count" > "$count_file"
         self.assertIn("web: verification failed; restarting", result.stderr)
         self.assertIn("web: verified after restart", result.stderr)
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
-        self.assertIn("--user restart web.service", systemctl_log)
+        self.assertIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_unit_stable_state_fails_when_restart_count_keeps_increasing(self):
+        self.write_fake_setpriv()
+        log_path = shlex.quote(str(self.state_dir / "systemctl.log"))
+        restarts_path = shlex.quote(str(self.state_dir / "restarts"))
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"""#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> {log_path}
+if [ "${{1-}}" = "--user" ]; then
+  shift
+fi
+case "${{1-}}" in
+  show)
+    property=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --property=*) property="${{1#--property=}}" ;;
+      esac
+      shift
+    done
+    case "$property" in
+      ActiveState) printf '%s\\n' "activating" ;;
+      SubState) printf '%s\\n' "start" ;;
+      Result) printf '%s\\n' "success" ;;
+      NRestarts)
+        count="$(cat {restarts_path} 2>/dev/null || printf '%s\\n' 0)"
+        next="$((count + 1))"
+        printf '%s\\n' "$next" > {restarts_path}
+        printf '%s\\n' "$count"
+        ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+esac
+""",
+        )
+
+        result = self.run_helper(
+            "unit_stable_state web.service 30",
+            check=False,
+            SYSTEMD_USER_MANAGER_USER="alice",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("repeated transitional failure state", result.stderr)
+        self.assertIn("restarts=", result.stderr)
+
+    def test_unit_stable_state_accepts_active_state_after_transient_restart(self):
+        self.write_fake_setpriv()
+        log_path = shlex.quote(str(self.state_dir / "systemctl.log"))
+        active_calls_path = shlex.quote(str(self.state_dir / "active-calls"))
+        restart_calls_path = shlex.quote(str(self.state_dir / "restart-calls"))
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"""#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> {log_path}
+if [ "${{1-}}" = "--user" ]; then
+  shift
+fi
+case "${{1-}}" in
+  show)
+    property=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --property=*) property="${{1#--property=}}" ;;
+      esac
+      shift
+    done
+    case "$property" in
+      ActiveState)
+        calls="$(cat {active_calls_path} 2>/dev/null || printf '%s\\n' 0)"
+        calls="$((calls + 1))"
+        printf '%s\\n' "$calls" > {active_calls_path}
+        if [ "$calls" -lt 3 ]; then
+          printf '%s\\n' "activating"
+        else
+          printf '%s\\n' "active"
+        fi
+        ;;
+      SubState) printf '%s\\n' "start" ;;
+      Result) printf '%s\\n' "success" ;;
+      NRestarts)
+        restart_calls="$(cat {restart_calls_path} 2>/dev/null || printf '%s\\n' 0)"
+        restart_calls="$((restart_calls + 1))"
+        printf '%s\\n' "$restart_calls" > {restart_calls_path}
+        if [ "$restart_calls" -eq 1 ]; then
+          printf '%s\\n' "0"
+        else
+          printf '%s\\n' "1"
+        fi
+        ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+esac
+""",
+        )
+
+        result = self.run_helper(
+            "unit_stable_state web.service 30",
+            SYSTEMD_USER_MANAGER_USER="alice",
+        )
+
+        self.assertEqual("active\n", result.stdout)
+        self.assertIn("restarted while converging", result.stderr)
+        self.assertIn("stable state reached", result.stderr)
+
+    def test_reconciler_start_fails_when_no_block_start_reaches_failed_state(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("failed\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "start-failed.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            check=False,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unit web.service reached stable non-active state after start: failed", result.stderr)
+        self.assertIn("web: failed to start after", result.stderr)
+        self.assertIn("failed managed units: web", result.stderr)
+
+    def test_reconciler_start_accepts_active_state_after_no_block_failure(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("inactive\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "start-active-after-error.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_FAIL="1",
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        self.assertIn("web: started in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+        self.assertIn("--no-block start web.service", (self.state_dir / "systemctl.log").read_text())
+
+    def test_reconciler_start_waits_for_no_block_start_to_materialize(self):
+        self.write_fake_setpriv()
+        log_path = shlex.quote(str(self.state_dir / "systemctl.log"))
+        active_calls_path = shlex.quote(str(self.state_dir / "active-calls"))
+        start_called_path = shlex.quote(str(self.state_dir / "start-called"))
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"""#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> {log_path}
+if [ "${{1-}}" = "is-active" ]; then
+  exit 0
+fi
+if [ "${{1-}}" = "--user" ]; then
+  shift
+fi
+if [ "${{1-}}" = "--no-block" ]; then
+  shift
+fi
+cmd="${{1-}}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+case "$cmd" in
+  show)
+    property=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --property=*) property="${{1#--property=}}" ;;
+      esac
+      shift
+    done
+    case "$property" in
+      ActiveState)
+        if [ ! -f {start_called_path} ]; then
+          printf '%s\\n' "inactive"
+          exit 0
+        fi
+        calls="$(cat {active_calls_path} 2>/dev/null || printf '%s\\n' 0)"
+        calls="$((calls + 1))"
+        printf '%s\\n' "$calls" > {active_calls_path}
+        if [ "$calls" -lt 3 ]; then
+          printf '%s\\n' "inactive"
+        else
+          printf '%s\\n' "active"
+        fi
+        ;;
+      LoadState) printf '%s\\n' "loaded" ;;
+      SubState) printf '%s\\n' "dead" ;;
+      Result) printf '%s\\n' "success" ;;
+      Type) printf '%s\\n' "simple" ;;
+      NRestarts) printf '%s\\n' "0" ;;
+      UnitFileState) printf '%s\\n' "enabled" ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+  start)
+    : > {start_called_path}
+    ;;
+esac
+""",
+        )
+        metadata = self.write_metadata(
+            "start-materialize.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertIn("waiting for start transaction", result.stderr)
+        self.assertIn("web: started in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+
+    def test_reconciler_start_fails_when_service_remains_inactive(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("inactive\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "start-inactive.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            check=False,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            SYSTEMD_USER_MANAGER_START_MATERIALIZE_SECONDS="1",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unit web.service reached stable non-active state after start: inactive", result.stderr)
+        self.assertIn("failed managed units: web", result.stderr)
+
+    def test_reconciler_start_waits_for_pending_start_job(self):
+        self.write_fake_setpriv()
+        log_path = shlex.quote(str(self.state_dir / "systemctl.log"))
+        active_calls_path = shlex.quote(str(self.state_dir / "active-calls"))
+        start_called_path = shlex.quote(str(self.state_dir / "start-called"))
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"""#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> {log_path}
+if [ "${{1-}}" = "is-active" ]; then
+  exit 0
+fi
+if [ "${{1-}}" = "--user" ]; then
+  shift
+fi
+if [ "${{1-}}" = "--no-block" ]; then
+  shift
+fi
+cmd="${{1-}}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+case "$cmd" in
+  show)
+    property=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --property=*) property="${{1#--property=}}" ;;
+      esac
+      shift
+    done
+    calls="$(cat {active_calls_path} 2>/dev/null || printf '%s\\n' 0)"
+    case "$property" in
+      ActiveState)
+        if [ ! -f {start_called_path} ]; then
+          printf '%s\\n' "inactive"
+          exit 0
+        fi
+        calls="$((calls + 1))"
+        printf '%s\\n' "$calls" > {active_calls_path}
+        if [ "$calls" -lt 4 ]; then
+          printf '%s\\n' "inactive"
+        else
+          printf '%s\\n' "active"
+        fi
+        ;;
+      Job)
+        if [ -f {start_called_path} ] && [ "$calls" -lt 4 ]; then
+          printf '%s\\n' "77"
+        else
+          printf '%s\\n' ""
+        fi
+        ;;
+      LoadState) printf '%s\\n' "loaded" ;;
+      SubState) printf '%s\\n' "dead" ;;
+      Result) printf '%s\\n' "success" ;;
+      Type) printf '%s\\n' "simple" ;;
+      NRestarts) printf '%s\\n' "0" ;;
+      UnitFileState) printf '%s\\n' "enabled" ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+  start)
+    : > {start_called_path}
+    ;;
+esac
+""",
+        )
+        metadata = self.write_metadata(
+            "start-job.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            SYSTEMD_USER_MANAGER_START_MATERIALIZE_SECONDS="1",
+        )
+
+        self.assertIn("waiting for start job", result.stderr)
+        self.assertIn("web: started in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+
+    def test_reconciler_start_accepts_successful_oneshot_completion(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("inactive\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "start-oneshot.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_SERVICE_TYPE="oneshot",
+        )
+
+        self.assertIn("web: started in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
 
     def test_verification_failure_reports_second_verify_failure(self):
         self.write_fake_setpriv()

@@ -33,9 +33,12 @@ interaction with deploy-time service reconciliation.
 - New-world reconcile uses only the new desired metadata plus live
   `systemctl --user` state.
 - Managed units have separate restart and reload stamps. Restart stamp changes
-  keep the old-world stop and new-world start behavior. Reload-only changes are
-  deferred, then applied with `systemctl --user reload <unit>` after the
-  dispatcher's user-manager `daemon-reload`.
+  keep the old-world stop and new-world start behavior. For active changed
+  units, the stop phase also writes a deferred restart marker so the reconciler
+  treats the unit as explicit work if it is still active after daemon-reload.
+  Reload-only changes are deferred, then applied with
+  `systemctl --user reload <unit>` after the dispatcher's user-manager
+  `daemon-reload`.
 - Inactive or failed managed units are started unless they are disabled or
   masked.
 - Managed units may opt out of cold-start through `autoStart = false`; they
@@ -44,6 +47,9 @@ interaction with deploy-time service reconciliation.
 - Managed units use `state = "running" | "stopped"` for desired runtime state.
   `state = "stopped"` stops active units, keeps them inactive during
   reconciliation, and is the only generic stopped-state API.
+- Managed entries are unique by `(user, unit)`. Two instance keys must not
+  target the same user-owned systemd unit, because reconciliation semantics are
+  defined per live unit, not per declaration alias.
 - Managed units carry `timeoutStableSeconds`, defaulting to 120 seconds. The
   helper uses that per-unit timeout for stable-state and stopped-state waits so
   slow services can extend their own convergence budget.
@@ -56,8 +62,10 @@ interaction with deploy-time service reconciliation.
   `/run` markers.
 - The dispatcher rechecks applied metadata before running the reconciler.
   Missing or version-mismatched applied metadata triggers a fresh reconcile path
-  that stops already-active managed units once before starting them from new
-  metadata, while normal fresh boots still start inactive units normally.
+  that stops already-active managed units once, writing the same deferred
+  restart markers as the normal diff path when desired state remains running,
+  before starting them from new metadata, while normal fresh boots still start
+  inactive units normally.
 - Dispatcher system units must not add `After=` on the same target that pulls
   them in via `WantedBy=`. In particular, `WantedBy=multi-user.target` must not
   be paired with `After=multi-user.target`, or explicit deploy-time starts can
@@ -68,6 +76,13 @@ interaction with deploy-time service reconciliation.
   heartbeats while waiting so quiet or slow journald paths do not look hung.
 - Metadata parsing failures must be fatal; malformed JSON must not become a
   silent noop because of process-substitution behavior.
+- Dry-activate preview may target future users that are not live accounts yet.
+  Preview should skip those users cleanly instead of failing the whole preview
+  transaction.
+- Old-world stop can run either from root activation or from inside the managed
+  user context. Initialize the target user before stopping and choose userctl
+  mode from the current UID, so managed-user helpers do not force a root
+  `machinectl`/`runuser` path back into themselves.
 
 ## Operational refinements
 

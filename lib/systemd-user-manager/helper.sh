@@ -30,6 +30,7 @@ init_vars() {
 	metadata_field_sep=$'\037'
 	metadata_field_sep_json='\u001f'
 	stable_state_timeout_seconds="${SYSTEMD_USER_MANAGER_STABLE_STATE_TIMEOUT_SECONDS:-120}"
+	start_materialize_seconds="${SYSTEMD_USER_MANAGER_START_MATERIALIZE_SECONDS:-10}"
 }
 
 require_env() {
@@ -243,6 +244,43 @@ elapsed_since() {
 	start="$1"
 	now="$(now_epoch)"
 	printf '%ss' "$((now - start))"
+}
+
+user_unit_progress_summary() {
+	local unit active sub rest unit_result unit_restarts item summary="" count=0 max_units=8
+
+	while read -r unit _load active sub rest; do
+		[ -n "$unit" ] || continue
+		case "$active:$sub" in
+		activating:* | deactivating:* | failed:* | *:auto-restart | *:start | *:stop | *:stop-post) ;;
+		*) continue ;;
+		esac
+
+		unit_result="$(userctl show --property=Result --value "$unit" 2>/dev/null || true)"
+		unit_restarts="$(userctl show --property=NRestarts --value "$unit" 2>/dev/null || true)"
+		item="${unit%.service}=${active}/${sub}"
+		if [ -n "$unit_result" ] && [ "$unit_result" != success ]; then
+			item="${item},result=${unit_result}"
+		fi
+		if [ -n "$unit_restarts" ] && [ "$unit_restarts" != 0 ]; then
+			item="${item},restarts=${unit_restarts}"
+		fi
+		if [ -n "$summary" ]; then
+			summary="${summary}; ${item}"
+		else
+			summary="$item"
+		fi
+		count=$((count + 1))
+		if [ "$count" -ge "$max_units" ]; then
+			break
+		fi
+	done < <(list_units_raw 2>/dev/null || true)
+
+	if [ -n "$summary" ]; then
+		printf '%s\n' "$summary"
+	else
+		printf '%s\n' "no pending/failed service units"
+	fi
 }
 
 is_transient_userctl_error() {
@@ -570,7 +608,14 @@ apply_stop_phase_action() {
 		return 0
 	fi
 
-	userctl_mode=root
+	if [ -z "$managed_user_name" ] || [ "$managed_user_name" != "$user" ]; then
+		init_managed_user "$user"
+	fi
+	if [ "$(id -u)" = "$managed_user_uid" ]; then
+		userctl_mode=user
+	else
+		userctl_mode=root
+	fi
 	log_managed_unit "$user" "$managed_name" "stopping"
 	if ! stop_managed_unit "$managed_unit"; then
 		return 1
@@ -1103,21 +1148,35 @@ stable_state_backoff_seconds() {
 }
 
 unit_stable_state() {
-	local unit timeout_seconds active_state sub_state result started_at now elapsed_seconds sleep_seconds
+	local unit timeout_seconds active_state sub_state result initial_restarts current_restarts last_reported_restarts restart_delta started_at now elapsed_seconds sleep_seconds
 	unit="$1"
 	timeout_seconds="${2:-$stable_state_timeout_seconds}"
+	initial_restarts="$(userctl show --property=NRestarts --value "$unit" 2>/dev/null || true)"
+	case "$initial_restarts" in
+	'' | *[!0-9]*) initial_restarts=0 ;;
+	esac
+	last_reported_restarts="$initial_restarts"
 	started_at="$(now_epoch)"
 	while true; do
 		active_state="$(userctl show --property=ActiveState --value "$unit")"
 		sub_state="$(userctl show --property=SubState --value "$unit")"
 		result="$(userctl show --property=Result --value "$unit")"
+		current_restarts="$(userctl show --property=NRestarts --value "$unit" 2>/dev/null || true)"
+		case "$current_restarts" in
+		'' | *[!0-9]*) current_restarts=0 ;;
+		esac
 		case "$active_state" in
 		activating | deactivating | reloading)
 			now="$(now_epoch)"
 			elapsed_seconds="$((now - started_at))"
-			if [ "$sub_state" = auto-restart ] || [ "$result" = failed ]; then
-				printf '%s\n' "unit $unit entered transitional failure state active=$active_state sub=$sub_state result=$result" >&2
+			restart_delta="$((current_restarts - initial_restarts))"
+			if [ "$restart_delta" -ge 3 ]; then
+				printf '%s\n' "unit $unit entered repeated transitional failure state active=$active_state sub=$sub_state result=$result restarts=${current_restarts} initial_restarts=${initial_restarts}" >&2
 				return 1
+			fi
+			if [ "$current_restarts" -gt "$last_reported_restarts" ]; then
+				log_progress "unit $unit restarted while converging: active=$active_state sub=$sub_state result=$result restarts=${current_restarts} initial_restarts=${initial_restarts}"
+				last_reported_restarts="$current_restarts"
 			fi
 			if [ "$elapsed_seconds" -eq 0 ]; then
 				log_progress "waiting for stable state: unit=$unit current=$active_state sub=$sub_state"
@@ -1132,6 +1191,99 @@ unit_stable_state() {
 		*)
 			now="$(now_epoch)"
 			elapsed_seconds="$((now - started_at))"
+			if [ "$elapsed_seconds" -gt 0 ]; then
+				log_progress "stable state reached: unit=$unit state=$active_state sub=$sub_state"
+			fi
+			printf '%s\n' "$active_state"
+			return 0
+			;;
+		esac
+	done
+}
+
+unit_started_state() {
+	local unit timeout_seconds active_state sub_state result service_type job initial_restarts current_restarts last_reported_restarts restart_delta started_at now elapsed_seconds sleep_seconds
+	unit="$1"
+	timeout_seconds="${2:-$stable_state_timeout_seconds}"
+	initial_restarts="$(userctl show --property=NRestarts --value "$unit" 2>/dev/null || true)"
+	case "$initial_restarts" in
+	'' | *[!0-9]*) initial_restarts=0 ;;
+	esac
+	last_reported_restarts="$initial_restarts"
+	started_at="$(now_epoch)"
+	while true; do
+		active_state="$(userctl show --property=ActiveState --value "$unit")"
+		sub_state="$(userctl show --property=SubState --value "$unit")"
+		result="$(userctl show --property=Result --value "$unit")"
+		current_restarts="$(userctl show --property=NRestarts --value "$unit" 2>/dev/null || true)"
+		case "$current_restarts" in
+		'' | *[!0-9]*) current_restarts=0 ;;
+		esac
+		now="$(now_epoch)"
+		elapsed_seconds="$((now - started_at))"
+		case "$active_state" in
+		active | failed)
+			if [ "$elapsed_seconds" -gt 0 ]; then
+				log_progress "stable state reached: unit=$unit state=$active_state sub=$sub_state"
+			fi
+			printf '%s\n' "$active_state"
+			return 0
+			;;
+		inactive)
+			service_type="$(userctl show --property=Type --value "$unit" 2>/dev/null || true)"
+			if [ "$result" = success ] && [ "$service_type" = oneshot ]; then
+				if [ "$elapsed_seconds" -gt 0 ]; then
+					log_progress "successful oneshot completion reached: unit=$unit state=$active_state sub=$sub_state"
+				fi
+				printf '%s\n' "$active_state"
+				return 0
+			fi
+			job="$(userctl show --property=Job --value "$unit" 2>/dev/null || true)"
+			if [ -n "$job" ] && [ "$job" != 0 ]; then
+				if [ "$elapsed_seconds" -eq 0 ]; then
+					log_progress "waiting for start job: unit=$unit job=$job current=$active_state sub=$sub_state"
+				fi
+				if [ "$elapsed_seconds" -ge "$timeout_seconds" ]; then
+					printf '%s\n' "timed out waiting ${timeout_seconds}s for start job for $unit (active=$active_state sub=$sub_state result=$result job=$job)" >&2
+					return 1
+				fi
+				sleep_seconds="$(stable_state_backoff_seconds "$elapsed_seconds")"
+				sleep "$sleep_seconds"
+				continue
+			fi
+			if [ "$elapsed_seconds" -lt "$start_materialize_seconds" ]; then
+				if [ "$elapsed_seconds" -eq 0 ]; then
+					log_progress "waiting for start transaction: unit=$unit current=$active_state sub=$sub_state"
+				fi
+				sleep_seconds="$(stable_state_backoff_seconds "$elapsed_seconds")"
+				sleep "$sleep_seconds"
+				continue
+			fi
+			log_progress "stable state reached: unit=$unit state=$active_state sub=$sub_state"
+			printf '%s\n' "$active_state"
+			return 0
+			;;
+		activating | deactivating | reloading)
+			restart_delta="$((current_restarts - initial_restarts))"
+			if [ "$restart_delta" -ge 3 ]; then
+				printf '%s\n' "unit $unit entered repeated transitional failure state active=$active_state sub=$sub_state result=$result restarts=${current_restarts} initial_restarts=${initial_restarts}" >&2
+				return 1
+			fi
+			if [ "$current_restarts" -gt "$last_reported_restarts" ]; then
+				log_progress "unit $unit restarted while converging: active=$active_state sub=$sub_state result=$result restarts=${current_restarts} initial_restarts=${initial_restarts}"
+				last_reported_restarts="$current_restarts"
+			fi
+			if [ "$elapsed_seconds" -eq 0 ]; then
+				log_progress "waiting for stable state: unit=$unit current=$active_state sub=$sub_state"
+			fi
+			if [ "$elapsed_seconds" -ge "$timeout_seconds" ]; then
+				printf '%s\n' "timed out waiting ${timeout_seconds}s for stable ActiveState for $unit (active=$active_state sub=$sub_state result=$result)" >&2
+				return 1
+			fi
+			sleep_seconds="$(stable_state_backoff_seconds "$elapsed_seconds")"
+			sleep "$sleep_seconds"
+			;;
+		*)
 			if [ "$elapsed_seconds" -gt 0 ]; then
 				log_progress "stable state reached: unit=$unit state=$active_state sub=$sub_state"
 			fi
@@ -1225,11 +1377,12 @@ emit_new_journal() {
 }
 
 launch_managed_unit_action() {
-	local managed_name managed_unit action managed_started_at
+	local managed_name managed_unit action managed_started_at timeout_seconds active_state result service_type userctl_status
 	managed_name="$1"
 	managed_unit="$2"
 	action="$3"
 	managed_started_at="$4"
+	timeout_seconds="${5:-$stable_state_timeout_seconds}"
 	managed_unit_outcome="$action"
 
 	if [ "$dry_run" = 1 ]; then
@@ -1237,7 +1390,38 @@ launch_managed_unit_action() {
 	else
 		log_managed_unit "$systemd_user_manager_user" "$managed_name" "${action}ing"
 		(
-			userctl "$action" "$managed_unit"
+			userctl_status=0
+			userctl --no-block "$action" "$managed_unit" || userctl_status=$?
+			if [ "$userctl_status" -ne 0 ] && [ "$action" != start ]; then
+				printf '%s\n' "userctl $action $managed_unit failed before stable wait: status=$userctl_status" >&2
+				exit 1
+			fi
+			if ! active_state="$(unit_started_state "$managed_unit" "$timeout_seconds")"; then
+				if [ "$userctl_status" -ne 0 ]; then
+					printf '%s\n' "userctl $action $managed_unit returned status=$userctl_status and stable wait failed" >&2
+				fi
+				exit 1
+			fi
+			case "$active_state" in
+			active)
+				if [ "$userctl_status" -ne 0 ]; then
+					printf '%s\n' "userctl $action $managed_unit returned status=$userctl_status, accepting final active state" >&2
+				fi
+				exit 0
+				;;
+			inactive)
+				result="$(userctl show --property=Result --value "$managed_unit" 2>/dev/null || true)"
+				service_type="$(userctl show --property=Type --value "$managed_unit" 2>/dev/null || true)"
+				if [ "$result" = success ] && [ "$service_type" = oneshot ]; then
+					if [ "$userctl_status" -ne 0 ]; then
+						printf '%s\n' "userctl $action $managed_unit returned status=$userctl_status, accepting final successful oneshot state" >&2
+					fi
+					exit 0
+				fi
+				;;
+			esac
+			printf '%s\n' "unit $managed_unit reached stable non-active state after $action: $active_state" >&2
+			exit 1
 		) &
 		managed_unit_action_pid=$!
 		managed_unit_action_started_at="$managed_started_at"
@@ -1284,7 +1468,7 @@ start_managed_unit() {
 				return 1
 			fi
 			if [ "$restart_marker_state" = consumed ]; then
-				launch_managed_unit_action "$managed_name" "$managed_unit" restart "$managed_started_at"
+				launch_managed_unit_action "$managed_name" "$managed_unit" restart "$managed_started_at" "$timeout_seconds"
 				return 0
 			fi
 		fi
@@ -1326,7 +1510,7 @@ start_managed_unit() {
 			managed_unit_outcome="skip"
 			return 0
 		fi
-		launch_managed_unit_action "$managed_name" "$managed_unit" start "$managed_started_at"
+		launch_managed_unit_action "$managed_name" "$managed_unit" start "$managed_started_at" "$timeout_seconds"
 		return 0
 		;;
 	*)
@@ -1424,7 +1608,7 @@ verify_managed_units_from_metadata() {
 		if ! run_verify_command "$verify_command_b64"; then
 			managed_verified_at="$(now_epoch)"
 			log_managed_unit "$systemd_user_manager_user" "$managed_name" "verification failed; restarting"
-			if ! userctl restart "$managed_unit"; then
+			if ! userctl --no-block restart "$managed_unit"; then
 				log_managed_unit "$systemd_user_manager_user" "$managed_name" "failed to restart after verification failure"
 				failed_units="${failed_units} ${managed_name}"
 				continue
@@ -1491,7 +1675,7 @@ wait_for_reconciler() {
 			;;
 		esac
 		if [ $((i % 30)) -eq 0 ] && [ "$i" -gt 0 ]; then
-			log_user_progress "$systemd_user_manager_user" "still waiting; elapsed=$(elapsed_since "$wait_started_at")"
+			log_user_progress "$systemd_user_manager_user" "still waiting; elapsed=$(elapsed_since "$wait_started_at"); units=$(user_unit_progress_summary)"
 		fi
 		sleep 0.5
 		i=$((i + 1))
