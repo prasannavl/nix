@@ -291,6 +291,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-last30-port-2026-06-22.md`: Records the June
   22 last-30 Abird port audit, remaining shared Kanidm adoption, byte-parity
   audit, and skipped Abird topology units.
+- `.agents/docs/notes/tooling/abird-last35-port-2026-07.md`: Records the July 5
+  Abird newest-35 audit, shared byte-parity port set, local Ollama adaptation,
+  and skipped Abird topology/app units.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
