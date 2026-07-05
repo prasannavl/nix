@@ -1137,6 +1137,20 @@ shell_quote_argv() {
 	printf '\n'
 }
 
+emit_remote_function_command() {
+	local invoke_cmd="$1" remote_fn=""
+	shift
+
+	for remote_fn in "$@"; do
+		case "${remote_fn}" in
+		_remote_*) ;;
+		*) die "Remote command helper must use _remote_ prefix: ${remote_fn}" ;;
+		esac
+		declare -f "${remote_fn}" || die "Missing remote command helper: ${remote_fn}"
+	done
+	printf '%s\n' "${invoke_cmd}"
+}
+
 decode_ssh_command_args() {
 	local encoded_args="$1"
 
@@ -4912,9 +4926,9 @@ build_remote_install_file_cmd() {
 		"${after_install_cmd}" \
 		"${extra_vars}"
 
-	printf '%s\n%s\n' \
-		"$(declare -f _remote_install_managed_file)" \
-		"${invoke_cmd}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_install_managed_file
 }
 
 _remote_check_file_value() {
@@ -4952,9 +4966,9 @@ build_remote_file_value_check_cmd() {
 		"${read_cmd}" \
 		"${sudo_cmd}"
 
-	printf '%s\n%s\n' \
-		"$(declare -f _remote_check_file_value)" \
-		"${invoke_cmd}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_check_file_value
 }
 
 run_target_command() {
@@ -6348,9 +6362,9 @@ build_remote_activation_context_file_value_check_cmd() {
 		"${read_cmd}" \
 		"${sudo_cmd}"
 
-	printf '%s\n%s\n' \
-		"$(declare -f _remote_check_activation_context_file_value)" \
-		"${invoke_cmd}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_check_activation_context_file_value
 }
 
 wait_for_prepared_host_age_identity_activation_visibility() {
@@ -8092,11 +8106,10 @@ EOF_USER_RESET_UNITS
 }
 
 build_pre_switch_user_failed_state_reset_cmd() {
-	printf '%s\n%s\n%s\n%s\n' \
-		"$(declare -f _remote_pre_switch_system_failed_state_reset)" \
-		"$(declare -f _remote_pre_switch_user_failed_state_reset)" \
-		"_remote_pre_switch_system_failed_state_reset" \
-		"_remote_pre_switch_user_failed_state_reset"
+	emit_remote_function_command \
+		$'_remote_pre_switch_system_failed_state_reset\n_remote_pre_switch_user_failed_state_reset' \
+		_remote_pre_switch_system_failed_state_reset \
+		_remote_pre_switch_user_failed_state_reset
 }
 
 run_pre_switch_user_failed_state_reset() {
@@ -8167,74 +8180,79 @@ stop_remote_build_heartbeat() {
 	wait "${heartbeat_pid}" 2>/dev/null || true
 }
 
-activation_progress_probe_script() {
+_remote_activation_progress_probe() {
 	local node="$1" unit="$2" started_at="$3"
-	local node_q="" unit_q="" started_at_q=""
+	local now="" elapsed=0 active="" sub="" result="" main_pid="" jobs=""
+	local failed="" user_managers="" managed_users="" managed_user=""
+	local managed_unit="" managed_uid="" managed_runtime="" managed_home="" user_units=""
 
-	printf -v node_q "%q" "${node}"
-	printf -v unit_q "%q" "${unit}"
-	printf -v started_at_q "%q" "${started_at}"
-
-	cat <<EOF
-node=${node_q}
-unit=${unit_q}
-started_at=${started_at_q}
-now=\$(date +%s)
-elapsed=\$((now - started_at))
-active=\$(systemctl show "\$unit" --property=ActiveState --value 2>/dev/null || true)
-sub=\$(systemctl show "\$unit" --property=SubState --value 2>/dev/null || true)
-result=\$(systemctl show "\$unit" --property=Result --value 2>/dev/null || true)
-main_pid=\$(systemctl show "\$unit" --property=MainPID --value 2>/dev/null || true)
-printf '[activation] %s: unit=%s elapsed=%ss state=%s/%s result=%s main_pid=%s\n' "\$node" "\$unit" "\$elapsed" "\${active:-unknown}" "\${sub:-unknown}" "\${result:-unknown}" "\${main_pid:-0}"
-jobs=\$(systemctl list-jobs --no-legend --plain 2>/dev/null | head -5 || true)
-if [ -n "\$jobs" ]; then
-	printf '[activation] %s: active systemd jobs:\n%s\n' "\$node" "\$jobs"
-else
-	printf '[activation] %s: no active systemd jobs; waiting for activation process or remote systemd-run timeout\n' "\$node"
-fi
-failed=\$(systemctl --failed --no-legend --plain 2>/dev/null | head -5 || true)
-if [ -n "\$failed" ]; then
-	printf '[activation] %s: failed system units:\n%s\n' "\$node" "\$failed"
-fi
-user_managers=\$(systemctl list-units 'systemd-user-manager-*.service' --all --no-legend --plain 2>/dev/null | head -8 || true)
-if [ -n "\$user_managers" ]; then
-	printf '[activation] %s: systemd-user-manager units:\n%s\n' "\$node" "\$user_managers"
-fi
-EOF
-	cat <<'EOF'
-managed_users="$(
-	{
-		systemctl list-units 'systemd-user-manager-dispatcher-*.service' --all --no-legend --plain 2>/dev/null |
-			awk '{print $1}'
-		systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null |
-			awk '{print $1}'
-	} |
-	while IFS= read -r managed_unit; do
-		[ -n "$managed_unit" ] || continue
-		managed_user="$(systemctl show --property=Environment --value "$managed_unit" 2>/dev/null | grep -oP 'SYSTEMD_USER_MANAGER_USER=\K[^ ]+' || true)"
-		if [ -z "$managed_user" ]; then
-			managed_user="$(printf '%s\n' "$managed_unit" | sed -E 's/^systemd-user-manager-dispatcher-(.*)\.service$/\1/')"
-		fi
-		[ -n "$managed_user" ] && printf '%s\n' "$managed_user"
-	done |
-	sort -u
-)"
-for managed_user in $managed_users; do
-	managed_uid="$(id -u "$managed_user" 2>/dev/null || true)"
-	[ -n "$managed_uid" ] || continue
-	managed_runtime="/run/user/$managed_uid"
-	[ -d "$managed_runtime" ] || continue
-	managed_home="$(getent passwd "$managed_user" 2>/dev/null | awk -F: '{print $6}')"
-	user_units="$(
-		runuser -u "$managed_user" -- env HOME="${managed_home:-/}" XDG_RUNTIME_DIR="$managed_runtime" \
-			systemctl --user list-units --type=service --state=activating,failed --no-legend --plain 2>/dev/null |
-			head -8 || true
-	)"
-	if [ -n "$user_units" ]; then
-		printf '[activation] %s: pending/failed user units for %s:\n%s\n' "$node" "$managed_user" "$user_units"
+	now="$(date +%s)"
+	elapsed=$((now - started_at))
+	active="$(systemctl show "${unit}" --property=ActiveState --value 2>/dev/null || true)"
+	sub="$(systemctl show "${unit}" --property=SubState --value 2>/dev/null || true)"
+	result="$(systemctl show "${unit}" --property=Result --value 2>/dev/null || true)"
+	main_pid="$(systemctl show "${unit}" --property=MainPID --value 2>/dev/null || true)"
+	printf '[activation] %s: unit=%s elapsed=%ss state=%s/%s result=%s main_pid=%s\n' "${node}" "${unit}" "${elapsed}" "${active:-unknown}" "${sub:-unknown}" "${result:-unknown}" "${main_pid:-0}"
+	jobs="$(systemctl list-jobs --no-legend --plain 2>/dev/null | head -5 || true)"
+	if [ -n "${jobs}" ]; then
+		printf '[activation] %s: active systemd jobs:\n%s\n' "${node}" "${jobs}"
+	else
+		printf '[activation] %s: no active systemd jobs; waiting for activation process or remote systemd-run timeout\n' "${node}"
 	fi
-done
-EOF
+	failed="$(systemctl --failed --no-legend --plain 2>/dev/null | head -5 || true)"
+	if [ -n "${failed}" ]; then
+		printf '[activation] %s: failed system units:\n%s\n' "${node}" "${failed}"
+	fi
+	user_managers="$(systemctl list-units 'systemd-user-manager-*.service' --all --no-legend --plain 2>/dev/null | head -8 || true)"
+	if [ -n "${user_managers}" ]; then
+		printf '[activation] %s: systemd-user-manager units:\n%s\n' "${node}" "${user_managers}"
+	fi
+
+	managed_users="$(
+		{
+			systemctl list-units 'systemd-user-manager-dispatcher-*.service' --all --no-legend --plain 2>/dev/null |
+				awk '{print $1}'
+			systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null |
+				awk '{print $1}'
+		} |
+			while IFS= read -r managed_unit; do
+				[ -n "$managed_unit" ] || continue
+				managed_user="$(systemctl show --property=Environment --value "$managed_unit" 2>/dev/null | grep -oP 'SYSTEMD_USER_MANAGER_USER=\K[^ ]+' || true)"
+				if [ -z "$managed_user" ]; then
+					managed_user="$(printf '%s\n' "$managed_unit" | sed -E 's/^systemd-user-manager-dispatcher-(.*)\.service$/\1/')"
+				fi
+				[ -n "$managed_user" ] && printf '%s\n' "$managed_user"
+			done |
+			sort -u
+	)"
+	while IFS= read -r managed_user; do
+		[ -n "${managed_user}" ] || continue
+		managed_uid="$(id -u "${managed_user}" 2>/dev/null || true)"
+		[ -n "${managed_uid}" ] || continue
+		managed_runtime="/run/user/${managed_uid}"
+		[ -d "${managed_runtime}" ] || continue
+		managed_home="$(getent passwd "${managed_user}" 2>/dev/null | awk -F: '{print $6}')"
+		user_units="$(
+			runuser -u "${managed_user}" -- env HOME="${managed_home:-/}" XDG_RUNTIME_DIR="${managed_runtime}" \
+				systemctl --user list-units --type=service --state=activating,failed --no-legend --plain 2>/dev/null |
+				head -8 || true
+		)"
+		if [ -n "${user_units}" ]; then
+			printf '[activation] %s: pending/failed user units for %s:\n%s\n' "${node}" "${managed_user}" "${user_units}"
+		fi
+	done <<<"${managed_users}"
+}
+
+activation_progress_probe_script() {
+	local node="$1" unit="$2" started_at="$3" invoke_cmd=""
+
+	printf -v invoke_cmd '_remote_activation_progress_probe %q %q %q' \
+		"${node}" \
+		"${unit}" \
+		"${started_at}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_activation_progress_probe
 }
 
 start_activation_progress_heartbeat() {
@@ -8858,14 +8876,7 @@ run_clean_action() {
 	return "${rc}"
 }
 
-build_clear_remote_locks_command() {
-	local mode="$1"
-
-	printf 'clear_remote_locks_mode=%q\n' "${mode}"
-	cat <<'EOF'
-set -Eeuo pipefail
-
-remove_lock_path() {
+_remote_clear_lock_path() {
 	local path="$1"
 
 	if [ -e "$path" ] || [ -L "$path" ]; then
@@ -8876,35 +8887,35 @@ remove_lock_path() {
 	fi
 }
 
-remove_lock_paths_from_find() {
+_remote_clear_lock_paths_from_find() {
 	local path=""
 
 	while IFS= read -r path; do
 		[ -n "$path" ] || continue
-		remove_lock_path "$path"
+		_remote_clear_lock_path "$path"
 	done
 }
 
-clear_nixbot_locks() {
+_remote_clear_nixbot_locks() {
 	local root=""
 
 	for root in /dev/shm/nixbot "${TMPDIR:-/tmp}/nixbot"; do
 		[ -d "$root" ] || continue
 		find "$root" -xdev -depth -path '*/state-locks/*.lock' -type d -print 2>/dev/null |
-			remove_lock_paths_from_find
+			_remote_clear_lock_paths_from_find
 		find "$root" -xdev -depth -name 'ssh-tty.lock' -type d -print 2>/dev/null |
-			remove_lock_paths_from_find
+			_remote_clear_lock_paths_from_find
 	done
 
 	if [ -d /var/lib/nixbot ]; then
 		find /var/lib/nixbot -xdev -depth \
 			\( -name 'nixbot-worktree.lock' -o -name '.nixbot-worktree.lock' \) \
 			-type d -print 2>/dev/null |
-			remove_lock_paths_from_find
+			_remote_clear_lock_paths_from_find
 	fi
 }
 
-emit_declared_podman_lifecycle_locks() {
+_remote_clear_emit_declared_podman_lifecycle_locks() {
 	local registry="/run/current-system/share/podman-compose/control-registry.json"
 	local metadata_file="" working_dir=""
 
@@ -8920,35 +8931,53 @@ emit_declared_podman_lifecycle_locks() {
 	done < <(jq -r 'to_entries[]?.value.metadataFile // empty' "$registry" 2>/dev/null || true)
 }
 
-emit_fallback_podman_lifecycle_locks() {
+_remote_clear_emit_fallback_podman_lifecycle_locks() {
 	[ -d /var/lib ] || return 0
 	find /var/lib -xdev -path '*/.podman-compose/lifecycle.lock' -type f -print 2>/dev/null || true
 }
 
-clear_podman_locks() {
+_remote_clear_podman_locks() {
 	{
-		emit_declared_podman_lifecycle_locks
-		emit_fallback_podman_lifecycle_locks
-	} | awk 'NF && !seen[$0]++' | remove_lock_paths_from_find
+		_remote_clear_emit_declared_podman_lifecycle_locks
+		_remote_clear_emit_fallback_podman_lifecycle_locks
+	} | awk 'NF && !seen[$0]++' | _remote_clear_lock_paths_from_find
 }
 
-case "$clear_remote_locks_mode" in
-all)
-	clear_nixbot_locks
-	clear_podman_locks
-	;;
-nixbot)
-	clear_nixbot_locks
-	;;
-podman)
-	clear_podman_locks
-	;;
-*)
-	printf 'unsupported clear-remote-locks mode: %s\n' "$clear_remote_locks_mode" >&2
-	exit 2
-	;;
-esac
-EOF
+_remote_clear_remote_locks() {
+	local clear_remote_locks_mode="$1"
+
+	set -Eeuo pipefail
+	case "$clear_remote_locks_mode" in
+	all)
+		_remote_clear_nixbot_locks
+		_remote_clear_podman_locks
+		;;
+	nixbot)
+		_remote_clear_nixbot_locks
+		;;
+	podman)
+		_remote_clear_podman_locks
+		;;
+	*)
+		printf 'unsupported clear-remote-locks mode: %s\n' "$clear_remote_locks_mode" >&2
+		exit 2
+		;;
+	esac
+}
+
+build_clear_remote_locks_command() {
+	local mode="$1" invoke_cmd=""
+
+	printf -v invoke_cmd '_remote_clear_remote_locks %q' "${mode}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_clear_lock_path \
+		_remote_clear_lock_paths_from_find \
+		_remote_clear_nixbot_locks \
+		_remote_clear_emit_declared_podman_lifecycle_locks \
+		_remote_clear_emit_fallback_podman_lifecycle_locks \
+		_remote_clear_podman_locks \
+		_remote_clear_remote_locks
 }
 
 print_clear_remote_locks_dry_run() {
@@ -8991,8 +9020,6 @@ run_clear_remote_locks_for_host() {
 run_clear_remote_locks_action() {
 	local selected_json="$1" runnable_selected_json="" node="" final_rc=0 mode="${NIXBOT_CLEAR_REMOTE_LOCKS_MODE:-all}"
 	local -a selected_hosts=() cleared_hosts=() failed_hosts=()
-	# shellcheck disable=SC2034
-	local -a empty_hosts=()
 
 	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
 	json_array_to_bash_array "${runnable_selected_json}" selected_hosts
@@ -9473,16 +9500,16 @@ _remote_health_check_podman_starting_containers() {
 }
 
 build_post_switch_health_check_cmd() {
-	printf '%s\n' \
-		"$(declare -f _remote_health_check_filter_failed_units)" \
-		"$(declare -f _remote_health_check_ignored_failed_units)" \
-		"$(declare -f _remote_health_check_filter_transitional_units)" \
-		"$(declare -f _remote_health_check_podman_unhealthy_containers)" \
-		"$(declare -f _remote_health_check_podman_starting_containers)" \
-		"$(declare -f _remote_health_check_starting_timeout_seconds)" \
-		"$(declare -f _remote_post_switch_user_health_check_once)" \
-		"$(declare -f _remote_post_switch_user_health_check)" \
-		"_remote_post_switch_user_health_check"
+	emit_remote_function_command \
+		"_remote_post_switch_user_health_check" \
+		_remote_health_check_filter_failed_units \
+		_remote_health_check_ignored_failed_units \
+		_remote_health_check_filter_transitional_units \
+		_remote_health_check_podman_unhealthy_containers \
+		_remote_health_check_podman_starting_containers \
+		_remote_health_check_starting_timeout_seconds \
+		_remote_post_switch_user_health_check_once \
+		_remote_post_switch_user_health_check
 }
 
 run_prepared_post_switch_health_check() {
@@ -9601,15 +9628,17 @@ run_post_switch_health_check_phase() {
 
 build_systemd_user_manager_report_cmd() {
 	local since_epoch="$1"
+	local invoke_cmd=""
 
-	printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-		"$(declare -f _remote_systemd_user_manager_unit_is_terminal)" \
-		"$(declare -f _remote_systemd_user_manager_journal_line_is_noise)" \
-		"$(declare -f _remote_systemd_user_manager_emit_journal_file_lines)" \
-		"$(declare -f _remote_systemd_user_manager_emit_new_journal)" \
-		"$(declare -f _remote_systemd_user_manager_stream_unit)" \
-		"$(declare -f _remote_systemd_user_manager_report)" \
-		"_remote_systemd_user_manager_report '@${since_epoch}'"
+	printf -v invoke_cmd '_remote_systemd_user_manager_report %q' "@${since_epoch}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_systemd_user_manager_unit_is_terminal \
+		_remote_systemd_user_manager_journal_line_is_noise \
+		_remote_systemd_user_manager_emit_journal_file_lines \
+		_remote_systemd_user_manager_emit_new_journal \
+		_remote_systemd_user_manager_stream_unit \
+		_remote_systemd_user_manager_report
 }
 
 _remote_activation_lock_contention_report() {
@@ -9657,10 +9686,16 @@ _remote_activation_lock_contention_report() {
 
 build_activation_lock_contention_report_cmd() {
 	local node="$1" activation_unit="$2" since_epoch="$3" force_report="$4"
+	local invoke_cmd=""
 
-	printf '%s\n%s\n' \
-		"$(declare -f _remote_activation_lock_contention_report)" \
-		"_remote_activation_lock_contention_report $(printf '%q' "${node}") $(printf '%q' "${activation_unit}") $(printf '%q' "@${since_epoch}") $(printf '%q' "${force_report}")"
+	printf -v invoke_cmd '_remote_activation_lock_contention_report %q %q %q %q' \
+		"${node}" \
+		"${activation_unit}" \
+		"@${since_epoch}" \
+		"${force_report}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_activation_lock_contention_report
 }
 
 report_activation_lock_contention_if_present() {

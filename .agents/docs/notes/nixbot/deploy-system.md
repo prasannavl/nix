@@ -142,6 +142,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   `tofu`, or other potentially long-running commands; the runner owns the child
   process tree, temp stdout capture, optional stderr tee, and signal-status
   restoration.
+- Host-local remote scripts should be modeled as `_remote_*` Bash functions and
+  emitted through the shared remote-function command builder. Avoid adding new
+  large inline heredoc command bodies unless the payload is data, not reusable
+  remote behavior; tests should at least parse generated remote snippets with
+  `bash -n`.
 - Retry loops must test `is_signal_exit_status` before transport retry,
   parent-readiness retry, or post-failure verification. `130` and `143` are
   control flow, not ordinary operation failures.

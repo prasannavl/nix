@@ -261,12 +261,16 @@ class NixbotScriptTest(unittest.TestCase):
         result = self.run_script(
             """
             init_vars
-            build_clear_remote_locks_command all
+            command="$(build_clear_remote_locks_command all)"
+            bash -n <<<"$command"
+            printf '%s' "$command"
             """
         )
 
         command = result.stdout
-        self.assertIn("clear_remote_locks_mode=all", command)
+        self.assertIn("_remote_clear_remote_locks all", command)
+        self.assertIn("_remote_clear_nixbot_locks ()", command)
+        self.assertIn("_remote_clear_podman_locks ()", command)
         self.assertIn("state-locks/*.lock", command)
         self.assertIn("nixbot-worktree.lock", command)
         self.assertIn("/run/current-system/share/podman-compose/control-registry.json", command)
@@ -300,7 +304,7 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertIn("# app: clear podman locks", result.stdout)
         self.assertIn("# target: root@10.0.0.5", result.stdout)
         self.assertIn("# run inside the target host as root:", result.stdout)
-        self.assertIn("clear_remote_locks_mode=podman", result.stdout)
+        self.assertIn("_remote_clear_remote_locks podman", result.stdout)
         self.assertIn(".podman-compose/lifecycle.lock", result.stdout)
         self.assertNotIn("unexpected remote execution", result.stdout)
 
@@ -1107,10 +1111,13 @@ EOF_SWITCH
         result = self.run_script(
             """
             init_vars
-            activation_progress_probe_script app unit.service 123
+            command="$(activation_progress_probe_script app unit.service 123)"
+            bash -n <<<"$command"
+            printf '%s' "$command"
             """
         )
 
+        self.assertIn("_remote_activation_progress_probe app unit.service 123", result.stdout)
         self.assertIn("systemctl list-units 'systemd-user-manager-dispatcher-*.service'", result.stdout)
         self.assertIn("systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service'", result.stdout)
         self.assertIn("pending/failed user units for %s", result.stdout)
