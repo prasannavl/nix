@@ -170,6 +170,7 @@ Environment (Build Actions):
   NIXBOT_BUILD_JOBS           Same as --build-jobs
   NIXBOT_BUILD_LOGS           Same as --build-logs (bool)
   NIXBOT_BUILD_HEARTBEAT_SECS Remote build heartbeat interval; 0 disables (default: 30)
+  NIXBOT_ACTIVATION_HEARTBEAT_SECS Remote deploy/rollback activation heartbeat interval; 0 disables (default: 30)
 
 Environment (Deploy Actions):
   NIXBOT_GOAL                 Same as --goal
@@ -460,6 +461,7 @@ init_vars() {
 	BUILD_JOBS="${NIXBOT_BUILD_JOBS:-1}"
 	BUILD_LOGS=0
 	NIXBOT_BUILD_HEARTBEAT_SECS="${NIXBOT_BUILD_HEARTBEAT_SECS:-30}"
+	NIXBOT_ACTIVATION_HEARTBEAT_SECS="${NIXBOT_ACTIVATION_HEARTBEAT_SECS:-30}"
 	NIXBOT_BUILD_NIX_ARGS=()
 	NIXBOT_BUILD_PLAN_DIR=""
 	NIXBOT_PARALLEL_JOBS="${NIXBOT_JOBS:-8}"
@@ -1460,6 +1462,7 @@ parse_args() {
 	*) die "Unsupported NIXBOT_BUILD_PLAN_CACHE: ${BUILD_PLAN_CACHE_ENABLED}" ;;
 	esac
 	[[ "${NIXBOT_BUILD_HEARTBEAT_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_BUILD_HEARTBEAT_SECS: ${NIXBOT_BUILD_HEARTBEAT_SECS} (must be a non-negative integer)"
+	[[ "${NIXBOT_ACTIVATION_HEARTBEAT_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_ACTIVATION_HEARTBEAT_SECS: ${NIXBOT_ACTIVATION_HEARTBEAT_SECS} (must be a non-negative integer)"
 	[[ "${NIXBOT_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${NIXBOT_PARALLEL_JOBS} (must be a positive integer)"
 	[[ "${NIXBOT_VERIFY_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --verify-jobs: ${NIXBOT_VERIFY_JOBS} (must be a positive integer)"
 	[[ "${NIXBOT_PARENT_READINESS_SLOW_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_PARENT_READINESS_SLOW_SECS: ${NIXBOT_PARENT_READINESS_SLOW_SECS} (must be a non-negative integer)"
@@ -1685,6 +1688,7 @@ nixbot_activation_runner_command() {
 	local activation_script="$1" encoded_script="" runner_script=""
 
 	encoded_script="$(printf '%s' "${activation_script}" | base64 | tr -d '\n')"
+	# shellcheck disable=SC2016
 	printf -v runner_script \
 		'set -o pipefail; printf %%s "$1" | %q -d | %q -s' \
 		"${REMOTE_SYSTEM_BIN_DIR}/base64" \
@@ -7784,7 +7788,7 @@ rollback_host_to_snapshot() {
 
 	echo "${snapshot_path}" >&2
 	rollback_start_epoch="$(date +%s)"
-	if run_with_combined_stream_capture rollback_output run_prepared_root_command "${rollback_cmd}"; then
+	if run_activation_with_progress rollback_output "${node}" rollback "${rollback_unit}" "${rollback_start_epoch}" "${rollback_cmd}"; then
 		print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
 		return 0
 	else
@@ -8159,8 +8163,129 @@ stop_remote_build_heartbeat() {
 	local heartbeat_pid="${1:-}"
 
 	[ -n "${heartbeat_pid}" ] || return 0
-	kill "${heartbeat_pid}" 2>/dev/null || true
+	terminate_pid_tree "${heartbeat_pid}" TERM
 	wait "${heartbeat_pid}" 2>/dev/null || true
+}
+
+activation_progress_probe_script() {
+	local node="$1" unit="$2" started_at="$3"
+	local node_q="" unit_q="" started_at_q=""
+
+	printf -v node_q "%q" "${node}"
+	printf -v unit_q "%q" "${unit}"
+	printf -v started_at_q "%q" "${started_at}"
+
+	cat <<EOF
+node=${node_q}
+unit=${unit_q}
+started_at=${started_at_q}
+now=\$(date +%s)
+elapsed=\$((now - started_at))
+active=\$(systemctl show "\$unit" --property=ActiveState --value 2>/dev/null || true)
+sub=\$(systemctl show "\$unit" --property=SubState --value 2>/dev/null || true)
+result=\$(systemctl show "\$unit" --property=Result --value 2>/dev/null || true)
+main_pid=\$(systemctl show "\$unit" --property=MainPID --value 2>/dev/null || true)
+printf '[activation] %s: unit=%s elapsed=%ss state=%s/%s result=%s main_pid=%s\n' "\$node" "\$unit" "\$elapsed" "\${active:-unknown}" "\${sub:-unknown}" "\${result:-unknown}" "\${main_pid:-0}"
+jobs=\$(systemctl list-jobs --no-legend --plain 2>/dev/null | head -5 || true)
+if [ -n "\$jobs" ]; then
+	printf '[activation] %s: active systemd jobs:\n%s\n' "\$node" "\$jobs"
+else
+	printf '[activation] %s: no active systemd jobs; waiting for activation process or remote systemd-run timeout\n' "\$node"
+fi
+failed=\$(systemctl --failed --no-legend --plain 2>/dev/null | head -5 || true)
+if [ -n "\$failed" ]; then
+	printf '[activation] %s: failed system units:\n%s\n' "\$node" "\$failed"
+fi
+user_managers=\$(systemctl list-units 'systemd-user-manager-*.service' --all --no-legend --plain 2>/dev/null | head -8 || true)
+if [ -n "\$user_managers" ]; then
+	printf '[activation] %s: systemd-user-manager units:\n%s\n' "\$node" "\$user_managers"
+fi
+EOF
+	cat <<'EOF'
+managed_users="$(
+	{
+		systemctl list-units 'systemd-user-manager-dispatcher-*.service' --all --no-legend --plain 2>/dev/null |
+			awk '{print $1}'
+		systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null |
+			awk '{print $1}'
+	} |
+	while IFS= read -r managed_unit; do
+		[ -n "$managed_unit" ] || continue
+		managed_user="$(systemctl show --property=Environment --value "$managed_unit" 2>/dev/null | grep -oP 'SYSTEMD_USER_MANAGER_USER=\K[^ ]+' || true)"
+		if [ -z "$managed_user" ]; then
+			managed_user="$(printf '%s\n' "$managed_unit" | sed -E 's/^systemd-user-manager-dispatcher-(.*)\.service$/\1/')"
+		fi
+		[ -n "$managed_user" ] && printf '%s\n' "$managed_user"
+	done |
+	sort -u
+)"
+for managed_user in $managed_users; do
+	managed_uid="$(id -u "$managed_user" 2>/dev/null || true)"
+	[ -n "$managed_uid" ] || continue
+	managed_runtime="/run/user/$managed_uid"
+	[ -d "$managed_runtime" ] || continue
+	managed_home="$(getent passwd "$managed_user" 2>/dev/null | awk -F: '{print $6}')"
+	user_units="$(
+		runuser -u "$managed_user" -- env HOME="${managed_home:-/}" XDG_RUNTIME_DIR="$managed_runtime" \
+			systemctl --user list-units --type=service --state=activating,failed --no-legend --plain 2>/dev/null |
+			head -8 || true
+	)"
+	if [ -n "$user_units" ]; then
+		printf '[activation] %s: pending/failed user units for %s:\n%s\n' "$node" "$managed_user" "$user_units"
+	fi
+done
+EOF
+}
+
+start_activation_progress_heartbeat() {
+	local -n saph_pid_out_ref="$1"
+	local node="$2" unit="$3" started_at="$4" label="$5"
+	local interval="${NIXBOT_ACTIVATION_HEARTBEAT_SECS}" probe_script=""
+
+	saph_pid_out_ref=""
+	[ "${interval}" -gt 0 ] || return 1
+	probe_script="$(activation_progress_probe_script "${node}" "${unit}" "${started_at}")"
+
+	(
+		local remaining=0
+		trap 'exit 0' TERM INT
+		while :; do
+			remaining="${interval}"
+			while [ "${remaining}" -gt 0 ]; do
+				sleep 1 &
+				wait "$!" || exit 0
+				remaining=$((remaining - 1))
+			done
+			if ! run_prepared_root_command "${probe_script}" >&2; then
+				echo "[activation] ${node}: ${label} heartbeat probe failed; activation may still be running" >&2
+			fi
+		done
+	) >/dev/null &
+	# shellcheck disable=SC2034
+	saph_pid_out_ref="$!"
+}
+
+stop_activation_progress_heartbeat() {
+	local heartbeat_pid="${1:-}"
+
+	[ -n "${heartbeat_pid}" ] || return 0
+	terminate_pid_tree "${heartbeat_pid}" TERM
+	wait "${heartbeat_pid}" 2>/dev/null || true
+}
+
+run_activation_with_progress() {
+	# shellcheck disable=SC2034
+	local output_out_name="$1" node="$2" label="$3" unit="$4" started_at="$5" command="$6"
+	local heartbeat_pid="" rc=0
+
+	start_activation_progress_heartbeat heartbeat_pid "${node}" "${unit}" "${started_at}" "${label}" || true
+	if run_with_combined_stream_capture "${output_out_name}" run_prepared_root_command "${command}"; then
+		rc=0
+	else
+		rc="$?"
+	fi
+	stop_activation_progress_heartbeat "${heartbeat_pid}"
+	return "${rc}"
 }
 
 restore_saved_trap() {
@@ -8367,7 +8492,7 @@ activate_prepared_system_path() {
 
 	echo "${system_path}" >&2
 	activation_start_epoch="$(date +%s)"
-	if run_with_combined_stream_capture activation_output run_prepared_root_command "${activate_cmd}"; then
+	if run_activation_with_progress activation_output "${node}" deploy "${activation_unit}" "${activation_start_epoch}" "${activate_cmd}"; then
 		return 0
 	else
 		activation_rc="$?"
@@ -8866,6 +8991,7 @@ run_clear_remote_locks_for_host() {
 run_clear_remote_locks_action() {
 	local selected_json="$1" runnable_selected_json="" node="" final_rc=0 mode="${NIXBOT_CLEAR_REMOTE_LOCKS_MODE:-all}"
 	local -a selected_hosts=() cleared_hosts=() failed_hosts=()
+	# shellcheck disable=SC2034
 	local -a empty_hosts=()
 
 	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"

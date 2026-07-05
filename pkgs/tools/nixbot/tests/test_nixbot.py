@@ -1062,6 +1062,60 @@ EOF_SWITCH
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
 
+    def test_run_activation_with_progress_preserves_output_and_stops_heartbeat(self):
+        result = self.run_script(
+            """
+            init_vars
+            start_activation_progress_heartbeat() {
+              local -n pid_out="$1"
+              pid_out='heartbeat-pid'
+            }
+            stop_activation_progress_heartbeat() {
+              printf 'stopped:%s\\n' "$1"
+            }
+            run_with_combined_stream_capture() {
+              local -n out_ref="$1"
+              shift
+              printf 'capture-command:%s:%s\\n' "$1" "$2"
+              out_ref='activation output'
+              return "$CAPTURE_RC"
+            }
+            CAPTURE_RC=0
+            run_activation_with_progress output app deploy unit.service 123 'activate command'
+            printf 'success-rc:%s output:%s\\n' "$?" "$output"
+            set +e
+            CAPTURE_RC=42
+            run_activation_with_progress output app deploy unit.service 123 'activate command'
+            printf 'failure-rc:%s output:%s\\n' "$?" "$output"
+            set -e
+            """
+        )
+
+        self.assertEqual(
+            [
+                "capture-command:run_prepared_root_command:activate command",
+                "stopped:heartbeat-pid",
+                "success-rc:0 output:activation output",
+                "capture-command:run_prepared_root_command:activate command",
+                "stopped:heartbeat-pid",
+                "failure-rc:42 output:activation output",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_activation_progress_probe_reports_managed_user_units(self):
+        result = self.run_script(
+            """
+            init_vars
+            activation_progress_probe_script app unit.service 123
+            """
+        )
+
+        self.assertIn("systemctl list-units 'systemd-user-manager-dispatcher-*.service'", result.stdout)
+        self.assertIn("systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service'", result.stdout)
+        self.assertIn("pending/failed user units for %s", result.stdout)
+        self.assertIn("systemctl --user list-units --type=service --state=activating,failed", result.stdout)
+
     def test_activate_prepared_system_path_disables_bootloader_for_containers(self):
         cmd_file = self.work_dir / "activate-container-cmd"
         result = self.run_script(
