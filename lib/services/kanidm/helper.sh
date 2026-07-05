@@ -155,6 +155,23 @@ get_oauth_app() {
 	jq -e --arg name "$name" 'type == "object" and (((.attrs.name // []) | index($name)) != null)' <<<"$live" >/dev/null
 }
 
+oauth_app_type_matches() {
+	local name desired_type live desired_public
+	name="$1"
+	desired_type="$2"
+	live="$(kanidm_json_cmd system oauth2 get "$name")"
+
+	if [ "$desired_type" = public ]; then
+		desired_public=true
+	else
+		desired_public=false
+	fi
+
+	jq -e --argjson desired_public "$desired_public" '
+		((.attrs.class // []) | index("oauth2_resource_server_public") != null) == $desired_public
+	' <<<"$live" >/dev/null
+}
+
 get_service_account() {
 	local name live
 	name="$1"
@@ -949,8 +966,14 @@ apply_oauth_app() {
 	fi
 
 	if get_oauth_app "$name"; then
-		run system oauth2 set-displayname "$name" "$display_name"
-		run system oauth2 set-landing-url "$name" "$landing_url"
+		if oauth_app_type_matches "$name" "$type"; then
+			run system oauth2 set-displayname "$name" "$display_name"
+			run system oauth2 set-landing-url "$name" "$landing_url"
+		else
+			run system oauth2 delete "$name"
+			run system oauth2 "$create_command" "$name" "$display_name" "$origin"
+			run system oauth2 set-landing-url "$name" "$landing_url"
+		fi
 	else
 		run system oauth2 "$create_command" "$name" "$display_name" "$origin"
 		run system oauth2 set-landing-url "$name" "$landing_url"
