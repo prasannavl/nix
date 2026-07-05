@@ -22,10 +22,32 @@ main .abird-app-group-title {
 
 main .abird-app-group .card > a {
     height: 80px !important;
+    margin-top: 1rem !important;
 }
 
 main .abird-app-group .card img {
-    padding: 12px;
+    box-sizing: border-box;
+    height: 64px;
+    object-fit: contain;
+    padding: 6px;
+    width: 64px;
+}
+
+main .abird-app-icon-surface-light .card img,
+main .abird-app-icon-surface-dark .card img {
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+    padding: 9px;
+}
+
+main .abird-app-icon-surface-light .card img {
+    background: #ffffff;
+    border: 1px solid rgb(15 23 42 / 14%);
+}
+
+main .abird-app-icon-surface-dark .card img {
+    background: #111827;
+    border: 1px solid rgb(255 255 255 / 12%);
 }
 
 main .abird-app-group .card label {

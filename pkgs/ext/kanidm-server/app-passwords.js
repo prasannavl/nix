@@ -35,6 +35,7 @@
 
     async function requestJson(url, options = {}) {
         const response = await fetch(url, {
+            cache: "no-store",
             credentials: "include",
             headers: {
                 accept: "application/json",
