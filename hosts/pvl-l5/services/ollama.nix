@@ -44,7 +44,7 @@ in {
         ];
         unitConfig.ConditionUser = "pvl";
         serviceConfig = {
-          Type = "simple";
+          Type = "oneshot";
           RemainAfterExit = true;
           Environment = let
             ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;

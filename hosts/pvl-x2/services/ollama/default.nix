@@ -76,7 +76,7 @@ in {
       ];
       unitConfig.ConditionUser = "pvl";
       serviceConfig = {
-        Type = "simple";
+        Type = "oneshot";
         ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
       };
     };
