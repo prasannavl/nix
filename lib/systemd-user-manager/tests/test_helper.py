@@ -806,7 +806,8 @@ esac
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
         )
 
-        self.assertIn("waiting for start transaction", result.stderr)
+        active_calls = int((self.state_dir / "active-calls").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(active_calls, 3)
         self.assertIn("web: started in", result.stderr)
         self.assertIn("reconcile done", result.stderr)
 
@@ -938,7 +939,8 @@ esac
             SYSTEMD_USER_MANAGER_START_MATERIALIZE_SECONDS="1",
         )
 
-        self.assertIn("waiting for start job", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--property=Job --value web.service", systemctl_log)
         self.assertIn("web: started in", result.stderr)
         self.assertIn("reconcile done", result.stderr)
 
