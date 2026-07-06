@@ -128,6 +128,11 @@ class PodmanComposeHelperTest(unittest.TestCase):
             check=check,
         )
 
+    def test_compose_start_idle_timeout_default_is_operational_threshold(self):
+        result = self.run_helper("printf '%s\\n' \"$compose_start_idle_timeout_seconds\"")
+
+        self.assertEqual("120\n", result.stdout)
+
     def wait_for_pid_absent(self, pid: int, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

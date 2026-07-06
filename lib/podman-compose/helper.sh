@@ -30,7 +30,7 @@ init_vars() {
 	monitor_interval=10
 	podman_network_dns_repaired=0
 	compose_start_default_timeout_seconds=900
-	compose_start_idle_timeout_seconds=45
+	compose_start_idle_timeout_seconds=120
 	compose_stop_default_timeout_seconds=45
 
 	compose_args=()

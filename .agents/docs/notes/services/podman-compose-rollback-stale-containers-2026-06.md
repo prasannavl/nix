@@ -61,3 +61,13 @@ This intentionally runs only during `cmd_start`. The steady-state monitor still
 uses compose state, so runtime policy remains unchanged except that a later
 systemd/deploy start can repair stale Podman process state without requiring a
 manual recreate tag bump.
+
+## Start Idle Watchdog Follow-up
+
+Start idle detection must not be more aggressive than the operational
+activation threshold. A later `abird-corp` validation showed legitimate quiet
+image-pull work inside `podman compose up` being killed every 45s, which turned
+one slow start into repeated transitional failures for Forgejo, Outline,
+Stalwart, and Superset. The helper start-idle watchdog now defaults to 120s so
+it still catches silent wedges, but does not preempt normal quiet Podman work
+below the threshold used for live deploy investigation.
