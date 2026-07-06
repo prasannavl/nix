@@ -258,6 +258,17 @@ class PodmanComposeHelperTest(unittest.TestCase):
         )
         self.assertNotEqual(0, result.returncode)
 
+    def test_compose_stop_timeout_caps_systemd_timeout(self):
+        result = self.run_helper(
+            """
+            compose_stop_default_timeout_seconds=45
+            compose_stop_timeout_seconds
+            """,
+            TEST_TIMEOUT_VALUE="3min",
+        )
+
+        self.assertEqual("45\n", result.stdout)
+
     def test_compose_up_supervised_kills_idle_start_before_absolute_timeout(self):
         result = self.run_helper(
             """

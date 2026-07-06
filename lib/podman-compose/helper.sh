@@ -31,7 +31,7 @@ init_vars() {
 	podman_network_dns_repaired=0
 	compose_start_default_timeout_seconds=900
 	compose_start_idle_timeout_seconds=45
-	compose_stop_default_timeout_seconds=180
+	compose_stop_default_timeout_seconds=45
 
 	compose_args=()
 	compose_file_args=()
@@ -898,7 +898,12 @@ compose_start_timeout_seconds() {
 }
 
 compose_stop_timeout_seconds() {
-	compose_unit_timeout_seconds TimeoutStopUSec "$compose_stop_default_timeout_seconds"
+	local timeout_seconds
+	timeout_seconds="$(compose_unit_timeout_seconds TimeoutStopUSec "$compose_stop_default_timeout_seconds")"
+	if [ "$timeout_seconds" -gt "$compose_stop_default_timeout_seconds" ]; then
+		timeout_seconds="$compose_stop_default_timeout_seconds"
+	fi
+	printf '%s\n' "$timeout_seconds"
 }
 
 compose_cleanup_reserve_seconds() {
