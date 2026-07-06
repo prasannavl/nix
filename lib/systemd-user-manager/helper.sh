@@ -1388,6 +1388,10 @@ launch_managed_unit_action() {
 	if [ "$dry_run" = 1 ]; then
 		log_managed_unit "$systemd_user_manager_user" "$managed_name" "would $action"
 	else
+		if ! reset_failed_managed_unit "$managed_unit"; then
+			managed_unit_outcome="fail"
+			return 1
+		fi
 		log_managed_unit "$systemd_user_manager_user" "$managed_name" "${action}ing"
 		(
 			userctl_status=0
@@ -1468,7 +1472,9 @@ start_managed_unit() {
 				return 1
 			fi
 			if [ "$restart_marker_state" = consumed ]; then
-				launch_managed_unit_action "$managed_name" "$managed_unit" restart "$managed_started_at" "$timeout_seconds"
+				if ! launch_managed_unit_action "$managed_name" "$managed_unit" restart "$managed_started_at" "$timeout_seconds"; then
+					return 1
+				fi
 				return 0
 			fi
 		fi
@@ -1510,7 +1516,9 @@ start_managed_unit() {
 			managed_unit_outcome="skip"
 			return 0
 		fi
-		launch_managed_unit_action "$managed_name" "$managed_unit" start "$managed_started_at" "$timeout_seconds"
+		if ! launch_managed_unit_action "$managed_name" "$managed_unit" start "$managed_started_at" "$timeout_seconds"; then
+			return 1
+		fi
 		return 0
 		;;
 	*)

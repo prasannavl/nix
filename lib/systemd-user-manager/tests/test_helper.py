@@ -120,6 +120,9 @@ case "$cmd" in
   stop)
     printf '%s\\n' "inactive" > "$(unit_state_file "$1")"
     ;;
+  reset-failed)
+    printf '%s\\n' "inactive" > "$(unit_state_file "$1")"
+    ;;
   restart)
     if [ "${{FAKE_SYSTEMCTL_RESTART_FAIL-0}}" = 1 ]; then
       exit 1
@@ -611,7 +614,7 @@ esac
         self.assertIn("restarted while converging", result.stderr)
         self.assertIn("stable state reached", result.stderr)
 
-    def test_reconciler_start_fails_when_no_block_start_reaches_failed_state(self):
+    def test_reconciler_start_resets_stale_failed_state_before_no_block_start(self):
         self.write_fake_setpriv()
         self.write_fake_systemctl()
         state_file = self.state_dir / "systemctl-state/web.service.active"
@@ -636,9 +639,46 @@ esac
 
         result = self.run_helper(
             "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user reset-failed web.service", systemctl_log)
+        self.assertIn("--user --no-block start web.service", systemctl_log)
+        self.assertIn("web: started in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+
+    def test_reconciler_start_still_fails_when_new_start_reaches_failed_state(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("inactive\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "start-failed.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
             check=False,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="failed",
         )
 
         self.assertNotEqual(0, result.returncode)

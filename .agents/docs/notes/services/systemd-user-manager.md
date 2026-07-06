@@ -53,6 +53,12 @@ interaction with deploy-time service reconciliation.
 - Managed units carry `timeoutStableSeconds`, defaulting to 120 seconds. The
   helper uses that per-unit timeout for stable-state and stopped-state waits so
   slow services can extend their own convergence budget.
+- Before a monitored `start` or `restart`, clear the unit's stale failed state
+  with `systemctl --user reset-failed`. With `--no-block`, an old failed
+  `ActiveState` can otherwise be sampled before the new start transaction
+  materializes, causing the dispatcher to fail a healthy queued start. This was
+  observed on `abird-srv` when an interrupted `abird-ollama-models` oneshot left
+  the unit failed immediately before the next dispatcher run.
 - Removed users must be handled before account removal.
 
 ## Dispatcher behavior
