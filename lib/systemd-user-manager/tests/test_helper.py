@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -125,9 +126,12 @@ case "$cmd" in
       *) printf '%s\\n' "" ;;
     esac
     ;;
-  stop)
-    printf '%s\\n' "${{FAKE_SYSTEMCTL_STOP_STATE:-inactive}}" > "$(unit_state_file "$1")"
-    ;;
+	  stop)
+	    if [ -n "${{FAKE_SYSTEMCTL_STOP_SLEEP-}}" ]; then
+	      sleep "$FAKE_SYSTEMCTL_STOP_SLEEP"
+	    fi
+	    printf '%s\\n' "${{FAKE_SYSTEMCTL_STOP_STATE:-inactive}}" > "$(unit_state_file "$1")"
+	    ;;
   reset-failed)
     printf '%s\\n' "inactive" > "$(unit_state_file "$1")"
     ;;
@@ -309,6 +313,76 @@ esac
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
         self.assertIn("--user --no-block stop restart.service", systemctl_log)
         self.assertNotIn("--user --no-block stop removed.service", systemctl_log)
+
+    def test_apply_mode_stops_changed_units_concurrently(self):
+        self.write_fake_systemctl()
+        old_metadata = self.write_metadata(
+            "parallel-old.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "alpha",
+                        "unit": "alpha.service",
+                        "removalPolicy": "stop",
+                        "stamp": "old-alpha",
+                        "timeoutStableSeconds": 5,
+                    },
+                    {
+                        "name": "beta",
+                        "unit": "beta.service",
+                        "removalPolicy": "stop",
+                        "stamp": "old-beta",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+        new_metadata = self.write_metadata(
+            "parallel-new.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "alpha",
+                        "unit": "alpha.service",
+                        "removalPolicy": "stop",
+                        "stamp": "new-alpha",
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                    {
+                        "name": "beta",
+                        "unit": "beta.service",
+                        "removalPolicy": "stop",
+                        "stamp": "new-beta",
+                        "state": "running",
+                        "timeoutStableSeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        started = time.monotonic()
+        self.run_helper(
+            f"""
+            init_managed_user alice
+            old_tsv="$(read_metadata_stop_state_tsv {old_metadata})"
+            new_tsv="$(read_metadata_stop_state_tsv {new_metadata})"
+            diff_and_stop_units apply alice "$old_tsv" "$new_tsv"
+            """,
+            FAKE_SYSTEMCTL_STOP_SLEEP="0.6",
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 1.1)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user --no-block stop alpha.service", systemctl_log)
+        self.assertIn("--user --no-block stop beta.service", systemctl_log)
 
     def test_metadata_rows_and_migrator_gate_override_reconcile_state(self):
         metadata = self.write_metadata(

@@ -658,6 +658,30 @@ apply_stop_phase_action() {
 	log_managed_unit "$user" "$managed_name" "stopped in $(elapsed_since "$managed_stopped_at") ($stopped_state)"
 }
 
+queue_stop_phase_action() {
+	if [ "${1-}" = preview ]; then
+		apply_stop_phase_action "$@"
+		return
+	fi
+
+	(
+		apply_stop_phase_action "$@"
+	) &
+	stop_phase_action_pids+=("$!")
+}
+
+wait_for_stop_phase_actions() {
+	local pid stop_failed=0
+
+	for pid in "${stop_phase_action_pids[@]}"; do
+		if ! wait "$pid"; then
+			stop_failed=1
+		fi
+	done
+	stop_phase_action_pids=()
+	[ "$stop_failed" -eq 0 ]
+}
+
 encoded_command_args() {
 	local command_b64
 	command_b64="$1"
@@ -910,6 +934,7 @@ diff_and_stop_units() {
 	local record="" old_header="" new_header="" _old_version="" _old_user="" _new_version="" _new_user=""
 	local changed_stop_timeout="" policy_only_change=0 transition_stop=0 stamp_changed=0 should_stop=0
 	local new_metadata_present=0
+	local -a stop_phase_action_pids=()
 	local -A new_stamps_by_name=()
 	local -A new_reload_stamps_by_name=()
 	local -A new_auto_start_by_name=()
@@ -1003,14 +1028,14 @@ diff_and_stop_units() {
 				else
 					reset_failed=0
 				fi
-				if ! apply_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$changed_stop_timeout" "$reset_failed"; then
-					stop_failed=1
-				fi
-			elif [ -n "$new_reload_stamp" ] && [ "$old_reload_stamp" != "$new_reload_stamp" ]; then
-				if [ "$new_state" = "stopped" ]; then
-					if ! apply_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$managed_timeout" 1; then
+					if ! queue_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$changed_stop_timeout" "$reset_failed"; then
 						stop_failed=1
 					fi
+				elif [ -n "$new_reload_stamp" ] && [ "$old_reload_stamp" != "$new_reload_stamp" ]; then
+					if [ "$new_state" = "stopped" ]; then
+						if ! queue_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$managed_timeout" 1; then
+							stop_failed=1
+						fi
 				elif [ "$phase_mode" = preview ]; then
 					log_managed_unit "$user" "$managed_name" "would reload"
 				else
@@ -1020,9 +1045,12 @@ diff_and_stop_units() {
 		done <<<"$old_metadata_tsv"
 	fi
 
-	if [ "$phase_mode" = apply ] && [ "$stop_failed" -ne 0 ]; then
-		return 1
-	fi
+		if ! wait_for_stop_phase_actions; then
+			stop_failed=1
+		fi
+		if [ "$phase_mode" = apply ] && [ "$stop_failed" -ne 0 ]; then
+			return 1
+		fi
 	if [ "$new_metadata_present" -eq 1 ] && [ "$old_identity" != "$new_identity" ]; then
 		if [ "$phase_mode" = preview ]; then
 			log_user_progress "$user" "would restart user manager"
@@ -1120,6 +1148,7 @@ stop_changed_managed_units_from_applied_metadata() {
 
 stop_active_managed_units_without_applied_metadata() {
 	local managed_units_tsv="" managed_name="" managed_unit="" _removal_policy="" _removal_command_b64="" auto_start="" desired_state="" managed_timeout="" active_state="" stop_failed=0 reset_failed=0
+	local -a stop_phase_action_pids=()
 	require_env SYSTEMD_USER_MANAGER_METADATA
 	if ! managed_units_tsv="$(read_metadata_units_tsv "$systemd_user_manager_metadata")"; then
 		printf '%s\n' "[systemd-user-manager] failed to read managed units metadata: $systemd_user_manager_metadata" >&2
@@ -1144,10 +1173,13 @@ stop_active_managed_units_without_applied_metadata() {
 		else
 			reset_failed=0
 		fi
-		if ! apply_stop_phase_action apply "$systemd_user_manager_user" "$managed_name" "$managed_unit" "$managed_timeout" "$reset_failed"; then
+		if ! queue_stop_phase_action apply "$systemd_user_manager_user" "$managed_name" "$managed_unit" "$managed_timeout" "$reset_failed"; then
 			stop_failed=1
 		fi
 	done <<<"$managed_units_tsv"
+	if ! wait_for_stop_phase_actions; then
+		stop_failed=1
+	fi
 	[ "$stop_failed" -eq 0 ]
 }
 
