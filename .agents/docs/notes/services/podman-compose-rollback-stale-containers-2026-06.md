@@ -71,3 +71,12 @@ one slow start into repeated transitional failures for Forgejo, Outline,
 Stalwart, and Superset. The helper start-idle watchdog now defaults to 120s so
 it still catches silent wedges, but does not preempt normal quiet Podman work
 below the threshold used for live deploy investigation.
+
+## Explicit Image Pull Boundary Follow-up
+
+Image pulls must not be hidden inside managed service start. Superset then
+exposed the same nondeterminism by letting `podman compose up` pull
+`apache/superset`, `postgres`, and `redis` during activation. Services that need
+remote images during deploy should use the module `imageTag` pull unit and put
+`pull_policy: never` on the runtime compose services, so the start path is
+local-only and missing images fail at the explicit pull boundary.
