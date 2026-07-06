@@ -803,26 +803,25 @@ compose_state_json() {
 
 compose_up() {
 	local status=0
-	podman_network_dns_lock
 	remove_conflicting_compose_container_names || status="$?"
 	if [ "$status" -eq 0 ]; then
 		compose_up_supervised normal || status="$?"
 	fi
-	podman_network_dns_unlock
 	return "$status"
 }
 
 compose_up_force_recreate() {
 	local status=0
-	podman_network_dns_lock
 	remove_conflicting_compose_container_names || status="$?"
 	if [ "$status" -eq 0 ]; then
 		remove_compose_project_containers || status="$?"
 	fi
 	if [ "$status" -eq 0 ]; then
-		compose_up_supervised force || status="$?"
+		# Existing project containers have already been removed above. Avoid
+		# podman-compose's --force-recreate path; it can wedge before container
+		# creation after image lookup events on rootless Podman.
+		compose_up_supervised normal || status="$?"
 	fi
-	podman_network_dns_unlock
 	return "$status"
 }
 

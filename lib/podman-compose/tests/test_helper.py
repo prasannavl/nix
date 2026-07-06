@@ -240,6 +240,21 @@ class PodmanComposeHelperTest(unittest.TestCase):
             self.podman_args_file.read_text().strip(),
         )
 
+    def test_compose_up_force_recreate_removes_then_uses_normal_up(self):
+        self.run_helper(
+            """
+            compose_project_container_ids() { printf '%s\n' stale-container; }
+            remove_container_target() { printf 'removed %s\n' "$1"; }
+            compose_up_force_recreate
+            """,
+            TEST_PODMAN_MODE="success",
+            TEST_TIMEOUT_VALUE="5s",
+        )
+
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn("compose up -d --remove-orphans", history)
+        self.assertNotIn("compose up -d --remove-orphans --force-recreate", history)
+
     def test_compose_up_supervised_fails_fast_on_fatal_output(self):
         result = self.run_helper(
             "compose_up_supervised normal",
@@ -441,7 +456,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual(0, result.returncode)
         self.assertIn("removing stale podman aardvark DNS config", result.stdout)
         self.assertIn(
-            "compose up -d --remove-orphans --force-recreate",
+            "compose up -d --remove-orphans",
             self.podman_history_file.read_text(encoding="utf-8").splitlines(),
         )
 
@@ -1290,7 +1305,8 @@ class PodmanComposeHelperTest(unittest.TestCase):
         )
 
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertIn("compose up -d --remove-orphans --force-recreate", history)
+        self.assertIn("compose up -d --remove-orphans", history)
+        self.assertNotIn("compose up -d --remove-orphans --force-recreate", history)
         state = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual("restart", state["reconcilePolicy"])
         self.assertEqual("restart-a", state["restartStamp"])
@@ -1337,7 +1353,8 @@ class PodmanComposeHelperTest(unittest.TestCase):
             history,
         )
         self.assertIn("inspect --format {{json .State}} stale123", history)
-        self.assertIn("compose up -d --remove-orphans --force-recreate", history)
+        self.assertIn("compose up -d --remove-orphans", history)
+        self.assertNotIn("compose up -d --remove-orphans --force-recreate", history)
         self.assertIn("marked running but runtime pid 999999999 is not present", result.stderr)
         state = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual("recreate-a", state["recreateStamp"])
