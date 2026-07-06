@@ -8,16 +8,101 @@ init_vars() {
 	: "${OLLAMA_WAIT_DELAY_SECONDS:=2}"
 }
 
+probe_ollama_urls() {
+	local url
+
+	for url in $OLLAMA_URLS; do
+		if curl -fsS "$url/api/tags" >/dev/null 2>&1; then
+			OLLAMA_URL="$url"
+			return
+		fi
+	done
+
+	return 1
+}
+
+backend_unit_active_state() {
+	local unit="$1"
+
+	systemctl --user show --property=ActiveState --value "$unit" 2>/dev/null
+}
+
+current_systemd_user_unit() {
+	local unit=""
+
+	if [ -n "${OLLAMA_CURRENT_UNIT:-}" ]; then
+		printf '%s\n' "$OLLAMA_CURRENT_UNIT"
+		return
+	fi
+
+	unit="$(
+		awk -F: '{print $3}' /proc/self/cgroup |
+			tr '/' '\n' |
+			awk '/[.]service$/ { unit = $0 } END { if (unit != "") print unit; else exit 1 }'
+	)" || return 1
+
+	if [ -z "$unit" ]; then
+		return 1
+	fi
+
+	if command -v systemd-escape >/dev/null 2>&1; then
+		systemd-escape --unescape "$unit"
+	else
+		printf '%s\n' "$unit"
+	fi
+}
+
+after_service_dependencies() {
+	local unit="$1"
+
+	systemctl --user show --property=After --value "$unit" 2>/dev/null |
+		tr ' ' '\n' |
+		awk '/[.]service$/'
+}
+
+all_after_services_inactive() {
+	local current_unit dep saw_unit=0 state
+
+	if ! current_unit="$(current_systemd_user_unit)"; then
+		return 1
+	fi
+
+	while IFS= read -r dep; do
+		if [ -z "$dep" ] || [ "$dep" = "$current_unit" ]; then
+			continue
+		fi
+		saw_unit=1
+		if ! state="$(backend_unit_active_state "$dep")"; then
+			return 1
+		fi
+		case "$state" in
+		inactive | failed)
+			;;
+		*)
+			return 1
+			;;
+		esac
+	done < <(after_service_dependencies "$current_unit")
+
+	[ "$saw_unit" -eq 1 ]
+}
+
+should_skip_api_wait() {
+	all_after_services_inactive
+}
+
 wait_for_ollama() {
-	local attempt=1 url
+	local attempt=1
 
 	while [ "$attempt" -le "$OLLAMA_WAIT_ATTEMPTS" ]; do
-		for url in $OLLAMA_URLS; do
-			if curl -fsS "$url/api/tags" >/dev/null 2>&1; then
-				OLLAMA_URL="$url"
-				return
-			fi
-		done
+		if probe_ollama_urls; then
+			return
+		fi
+
+		if should_skip_api_wait; then
+			echo "ollama model pull: dependent service units are inactive; skipping API wait" >&2
+			return 2
+		fi
 
 		if [ "$attempt" -eq "$OLLAMA_WAIT_ATTEMPTS" ]; then
 			return 1
@@ -91,6 +176,8 @@ pull_required_models() {
 }
 
 main() {
+	local wait_status=0
+
 	init_vars
 
 	if [ "$#" -eq 0 ]; then
@@ -98,7 +185,11 @@ main() {
 		return
 	fi
 
-	if ! wait_for_ollama; then
+	wait_for_ollama || wait_status="$?"
+	if [ "$wait_status" -eq 2 ]; then
+		return
+	fi
+	if [ "$wait_status" -ne 0 ]; then
 		echo "ollama model pull: no Ollama API available in OLLAMA_URLS=$OLLAMA_URLS; skipping" >&2
 		return
 	fi

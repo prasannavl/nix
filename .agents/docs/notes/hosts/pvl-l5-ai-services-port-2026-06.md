@@ -145,13 +145,17 @@ Fixed separately by moving `OLLAMA_URLS` to the native host-local
 Environment="OLLAMA_URLS=http://127.0.0.1:11434 http://127.0.0.1:11435"
 ```
 
-Likely fixes:
+Structural fix:
 
-- Set `timeoutStableSeconds` for `pvl-ollama-models` above the helper's no-API
-  wait, or shorten the helper wait for this host.
-- Render `OLLAMA_URLS` as a single quoted environment assignment, or use a
-  separator that does not require systemd quoting.
-- If the desired behavior is "never run model pulls unless a backend is
-  explicitly started", make the unit state/stamp semantics reflect that instead
-  of relying only on `autoStart = false`; deferred restart markers intentionally
-  restart units that were live during the old generation.
+- `lib/services/ollama/helper.sh` now derives backend readiness from systemd
+  instead of host-local environment wiring.
+- The helper still probes `OLLAMA_URLS` once first, so an already reachable
+  manually started backend is used.
+- If no API is reachable, the helper asks systemd for the current user unit's
+  `After=` service dependencies. When every dependent service unit is inactive
+  or failed, it exits successfully immediately instead of spending the full
+  no-API wait window.
+- Active or activating dependencies keep the original wait behavior, so normal
+  startup races still get time to converge.
+
+The shared helper behavior is covered by `lib-ollama-helper` tests.
