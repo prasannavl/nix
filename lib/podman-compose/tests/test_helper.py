@@ -930,9 +930,9 @@ class PodmanComposeHelperTest(unittest.TestCase):
 
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
         self.assertIn("ps -a --filter label=com.docker.compose.project.working_dir=" + str(self.compose_dir) + " --format {{.ID}}", history)
-        self.assertIn("rm -f abc123", history)
-        self.assertIn("rm -f compose_web_1", history)
-        self.assertIn("rm -f compose_worker_1", history)
+        self.assertIn("rm -f --depend -v abc123", history)
+        self.assertIn("rm -f --depend -v compose_web_1", history)
+        self.assertIn("rm -f --depend -v compose_worker_1", history)
 
     def test_disable_compose_restart_policies_updates_live_ids_and_expected_names(self):
         self.run_helper(
@@ -992,8 +992,8 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assert_child_process_was_cleaned_up(child_pid_file)
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
         self.assertIn("compose down", history)
-        self.assertIn("rm -f abc123", history)
-        self.assertIn("rm -f compose_web_1", history)
+        self.assertIn("rm -f --depend -v abc123", history)
+        self.assertIn("rm -f --depend -v compose_web_1", history)
 
     def test_remove_compose_project_containers_removes_anonymous_volumes(self):
         anonymous_volume = "a" * 64
@@ -1016,6 +1016,20 @@ class PodmanComposeHelperTest(unittest.TestCase):
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
         self.assertIn(f"volume rm {anonymous_volume}", history)
         self.assertNotIn("volume rm named-data", history)
+
+    def test_remove_container_target_fails_when_podman_rm_leaves_name(self):
+        result = self.run_helper(
+            "remove_container_target compose_web_1",
+            check=False,
+            TEST_PODMAN_MODE="rm_zero_leaves_exists",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("podman container compose_web_1 still exists after removal", result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn("rm -f --depend -v compose_web_1", history)
+        self.assertIn("container cleanup --rm compose_web_1", history)
+        self.assertIn("container exists compose_web_1", history)
 
     def test_failed_start_cleanup_preserves_retryable_state(self):
         metadata = self.write_metadata(
@@ -1145,8 +1159,8 @@ class PodmanComposeHelperTest(unittest.TestCase):
         )
 
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertIn("rm -f abc123", history)
-        self.assertIn("rm -f compose_web_1", history)
+        self.assertIn("rm -f --depend -v abc123", history)
+        self.assertIn("rm -f --depend -v compose_web_1", history)
 
     def test_cmd_post_stop_failed_start_does_not_run_failed_stop_cleanup(self):
         metadata, staged_config, data_dir = self.write_staged_service_metadata(

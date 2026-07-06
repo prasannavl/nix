@@ -24,6 +24,7 @@ init_vars() {
 	stalwart_prune_sieve_system_scripts="${STALWART_PRUNE_SIEVE_SYSTEM_SCRIPTS-false}"
 	stalwart_prune_users="${STALWART_PRUNE_USERS-false}"
 	stalwart_recovery_container="${STALWART_RECOVERY_CONTAINER-}"
+	stalwart_recovery_wait_seconds="${STALWART_RECOVERY_WAIT_SECONDS-120}"
 	stalwart_recovery_url="${STALWART_RECOVERY_URL-}"
 	stalwart_service_name="${STALWART_SERVICE_NAME-}"
 	stalwart_shared_mailboxes_host_path="${STALWART_SHARED_GROUPS_HOST_PATH-}"
@@ -449,10 +450,10 @@ find_directory_id_by_desired() {
 					map(select((.description // "") == $description)) as $matches
 					| if ($matches | length) == 0 then
 						empty
-					elif ($matches | length) == 1 then
-						$matches[0].id // empty
-					else
+					elif ($matches | length) > 1 then
 						error("multiple Stalwart directories match description: " + $description)
+					else
+						($matches | sort_by(.id))[0].id // empty
 					end
 				end
 			end
@@ -681,13 +682,38 @@ with_recovery() {
 		"${extra_volume_args[@]}" \
 		"$stalwart_image" >/dev/null
 
-	sleep 5
+	wait_for_recovery_api
 	"$@"
 }
 
 apply_with_recovery() {
 	with_recovery \
 		apply_plan "$@"
+}
+
+wait_for_recovery_api() {
+	local elapsed output
+	elapsed=0
+
+	while true; do
+		if output="$(
+			stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
+				query Domain \
+				--fields id \
+				--json 2>&1 >/dev/null
+		)"; then
+			return 0
+		fi
+
+		if [ "$elapsed" -ge "$stalwart_recovery_wait_seconds" ]; then
+			printf '%s\n' "$output" >&2
+			printf 'Stalwart recovery API did not become ready after %ss\n' "$stalwart_recovery_wait_seconds" >&2
+			exit 1
+		fi
+
+		sleep 2
+		elapsed=$((elapsed + 2))
+	done
 }
 
 has_arg() {
@@ -774,7 +800,7 @@ reconcile_default_certificate() {
 	require_value "default certificate id" "$certificate_id"
 	patch="$(jq -n -c --arg id "$certificate_id" '{defaultCertificateId: $id}')"
 	stalwart_cli_for "$stalwart_recovery_container" "$stalwart_recovery_url" \
-		update SystemSettings singleton \
+		update SystemSettings \
 		--json "$patch" \
 		--no-color
 	printf 'Stalwart certificate: selected default certificate %s\n' "$certificate_id"

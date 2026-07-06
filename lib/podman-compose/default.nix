@@ -53,7 +53,7 @@
     workingDir = null;
     serviceName = null;
     serviceOverrides = {};
-    composeArgs = [];
+    composeArgs = ["--in-pod=false"];
     preStart = [];
     preStop = [];
     reload = {

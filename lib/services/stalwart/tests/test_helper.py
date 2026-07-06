@@ -88,6 +88,12 @@ class StalwartHelperTest(unittest.TestCase):
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
+    def test_recovery_api_probe_uses_list_object(self):
+        self.run_helper("wait_for_recovery_api")
+        log = self.log_file.read_text(encoding="utf-8")
+        self.assertIn("query Domain --fields id --json", log)
+        self.assertNotIn("query SystemSettings", log)
+
     def test_plan_string_file_substitution(self):
         value_file = self.work_dir / "ldap-token"
         value_file.write_text("secret-token\n", encoding="utf-8")

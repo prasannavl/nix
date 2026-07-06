@@ -31,6 +31,7 @@ init_vars() {
 	metadata_field_sep_json='\u001f'
 	stable_state_timeout_seconds="${SYSTEMD_USER_MANAGER_STABLE_STATE_TIMEOUT_SECONDS:-120}"
 	start_materialize_seconds="${SYSTEMD_USER_MANAGER_START_MATERIALIZE_SECONDS:-10}"
+	stop_kill_wait_seconds="${SYSTEMD_USER_MANAGER_STOP_KILL_WAIT_SECONDS:-30}"
 }
 
 require_env() {
@@ -504,7 +505,7 @@ stop_managed_unit() {
 	if ! systemctl is-active --quiet "user@${managed_user_uid}.service"; then
 		return 0
 	fi
-	if stop_error="$(userctl stop "$managed_unit" 2>&1 >/dev/null)"; then
+	if stop_error="$(userctl --no-block stop "$managed_unit" 2>&1 >/dev/null)"; then
 		return 0
 	fi
 	load_state="$(userctl_load_state "$managed_unit")"
@@ -532,6 +533,27 @@ reset_failed_managed_unit() {
 	reset_error="${reset_error:-systemctl returned an error}"
 	printf '%s\n' "[systemd-user-manager] failed to reset failed state for $managed_unit: $reset_error" >&2
 	return 1
+}
+
+kill_residual_managed_unit_processes() {
+	local managed_unit load_state kill_error
+	managed_unit="$1"
+	if [ "$userctl_mode" = root ] && ! systemctl is-active --quiet "user@${managed_user_uid}.service"; then
+		return 0
+	fi
+	load_state="$(userctl_load_state "$managed_unit")"
+	if [ "$load_state" = not-found ]; then
+		return 0
+	fi
+	if kill_error="$(userctl kill --kill-whom=all "$managed_unit" 2>&1 >/dev/null)"; then
+		return 0
+	fi
+	if printf '%s' "$kill_error" | grep -Eq 'No such process|not loaded|not be found|not found|No matching processes'; then
+		return 0
+	fi
+	kill_error="${kill_error:-systemctl returned an error}"
+	printf '%s\n' "[systemd-user-manager] warning: failed to kill residual processes for $managed_unit: $kill_error" >&2
+	return 0
 }
 
 wait_for_unit_stopped_state() {
@@ -572,10 +594,6 @@ wait_for_unit_stopped_state() {
 			fi
 			sleep_seconds="$(stable_state_backoff_seconds "$elapsed_seconds")"
 			sleep "$sleep_seconds"
-			;;
-		active)
-			printf '%s\n' "unit $unit remained active after stop request (sub=$sub_state result=$result)" >&2
-			return 1
 			;;
 		*)
 			now="$(now_epoch)"
@@ -626,9 +644,14 @@ apply_stop_phase_action() {
 		return 0
 	fi
 	if ! stopped_state="$(wait_for_unit_stopped_state "$managed_unit" "$timeout_seconds")"; then
-		log_managed_unit "$user" "$managed_name" "failed to stop after $(elapsed_since "$managed_stopped_at")"
-		return 1
+		log_managed_unit "$user" "$managed_name" "stop wait exceeded after $(elapsed_since "$managed_stopped_at"); killing residual processes"
+		kill_residual_managed_unit_processes "$managed_unit"
+		if ! stopped_state="$(wait_for_unit_stopped_state "$managed_unit" "$stop_kill_wait_seconds")"; then
+			log_managed_unit "$user" "$managed_name" "failed to stop after $(elapsed_since "$managed_stopped_at")"
+			return 1
+		fi
 	fi
+	kill_residual_managed_unit_processes "$managed_unit"
 	if [ "$reset_failed" = 1 ] && ! reset_failed_managed_unit "$managed_unit"; then
 		return 1
 	fi
@@ -1388,6 +1411,9 @@ launch_managed_unit_action() {
 	if [ "$dry_run" = 1 ]; then
 		log_managed_unit "$systemd_user_manager_user" "$managed_name" "would $action"
 	else
+		if [ "$action" = start ]; then
+			kill_residual_managed_unit_processes "$managed_unit"
+		fi
 		if ! reset_failed_managed_unit "$managed_unit"; then
 			managed_unit_outcome="fail"
 			return 1

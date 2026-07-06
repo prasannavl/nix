@@ -361,6 +361,7 @@ in
   assert textSourceMetadata.serviceName == "demo-text-source";
   assert textSourceMetadata.workingDir == "/srv/demo/text-source";
   assert textSourceMetadata.expectedComposeServices == [];
+  assert textSourceMetadata.composeArgs == ["--in-pod=false"];
   assert textSourceMetadata.composeFiles == ["/srv/demo/text-source/compose.yml"];
   assert textSourceMetadata.pullComposeFiles != textSourceMetadata.composeFiles;
   assert textRenderedCompose == sourceInlineText;

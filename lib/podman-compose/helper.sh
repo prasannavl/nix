@@ -30,7 +30,7 @@ init_vars() {
 	monitor_interval=10
 	podman_network_dns_repaired=0
 	compose_start_default_timeout_seconds=900
-	compose_start_idle_timeout_seconds=180
+	compose_start_idle_timeout_seconds=45
 	compose_stop_default_timeout_seconds=180
 
 	compose_args=()
@@ -804,7 +804,10 @@ compose_state_json() {
 compose_up() {
 	local status=0
 	podman_network_dns_lock
-	compose_up_supervised normal || status="$?"
+	remove_conflicting_compose_container_names || status="$?"
+	if [ "$status" -eq 0 ]; then
+		compose_up_supervised normal || status="$?"
+	fi
 	podman_network_dns_unlock
 	return "$status"
 }
@@ -812,7 +815,13 @@ compose_up() {
 compose_up_force_recreate() {
 	local status=0
 	podman_network_dns_lock
-	compose_up_supervised force || status="$?"
+	remove_conflicting_compose_container_names || status="$?"
+	if [ "$status" -eq 0 ]; then
+		remove_compose_project_containers || status="$?"
+	fi
+	if [ "$status" -eq 0 ]; then
+		compose_up_supervised force || status="$?"
+	fi
 	podman_network_dns_unlock
 	return "$status"
 }
@@ -1177,6 +1186,39 @@ compose_project_container_names() {
 	done
 }
 
+container_compose_working_dir_label() {
+	local container
+	container="$1"
+	podman_no_notify inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container" 2>/dev/null || true
+}
+
+remove_conflicting_compose_container_names() {
+	local container label volume failed=0 anonymous_volumes=()
+
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		if ! podman_no_notify container exists "$container"; then
+			continue
+		fi
+		label="$(container_compose_working_dir_label "$container")"
+		if [ "$label" = "$working_dir" ]; then
+			continue
+		fi
+		printf '%s\n' "removing conflicting podman compose container name for ${podman_compose_service_name}: ${container}"
+		while IFS= read -r volume; do
+			[ -n "$volume" ] || continue
+			anonymous_volumes+=("$volume")
+		done < <(container_anonymous_volume_names "$container")
+		remove_container_target "$container" || failed=1
+	done < <(compose_project_container_names)
+
+	for volume in "${anonymous_volumes[@]}"; do
+		remove_anonymous_volume_target "$volume" || failed=1
+	done
+
+	return "$failed"
+}
+
 container_state_json() {
 	local container
 	container="$1"
@@ -1257,18 +1299,47 @@ compose_running_container_pids_missing() {
 }
 
 remove_container_target() {
-	local target remove_error
+	local target remove_error cleanup_error
 	target="$1"
-	if remove_error="$(podman_no_notify rm -f "$target" 2>&1)"; then
+	if remove_error="$(podman_no_notify rm -f --depend -v "$target" 2>&1)"; then
 		[ -n "$remove_error" ] && printf '%s\n' "$remove_error"
-		return 0
+		if ! podman_no_notify container exists "$target"; then
+			return 0
+		fi
+		if cleanup_error="$(podman_no_notify container cleanup --rm "$target" 2>&1)"; then
+			[ -n "$cleanup_error" ] && printf '%s\n' "$cleanup_error"
+			if ! podman_no_notify container exists "$target"; then
+				return 0
+			fi
+		else
+			case "$cleanup_error" in
+			*"no such container"* | *"no container with name or ID"*) return 0 ;;
+			*) [ -n "$cleanup_error" ] && printf '%s\n' "$cleanup_error" >&2 ;;
+			esac
+		fi
+		printf '%s\n' "podman container $target still exists after removal for ${podman_compose_service_name}" >&2
+		return 1
 	fi
 	case "$remove_error" in
 	*"no such container"* | *"no container with name or ID"*)
 		return 0
 		;;
 	esac
+	if cleanup_error="$(podman_no_notify container cleanup --rm "$target" 2>&1)"; then
+		[ -n "$cleanup_error" ] && printf '%s\n' "$cleanup_error"
+		if ! podman_no_notify container exists "$target"; then
+			return 0
+		fi
+		printf '%s\n' "podman container $target still exists after cleanup for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+	case "$cleanup_error" in
+	*"no such container"* | *"no container with name or ID"*)
+		return 0
+		;;
+	esac
 	printf '%s\n' "$remove_error" >&2
+	[ -n "$cleanup_error" ] && printf '%s\n' "$cleanup_error" >&2
 	return 1
 }
 

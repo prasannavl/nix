@@ -69,6 +69,14 @@ unit_state_file() {{
 }}
 
 active_state_for() {{
+  sequence_file="$state_dir/active-sequence"
+  if [ -s "$sequence_file" ]; then
+    IFS= read -r state < "$sequence_file"
+    tail -n +2 "$sequence_file" > "$sequence_file.tmp"
+    mv "$sequence_file.tmp" "$sequence_file"
+    printf '%s\\n' "$state"
+    return 0
+  fi
   state_file="$(unit_state_file "$1")"
   if [ -f "$state_file" ]; then
     cat "$state_file"
@@ -118,10 +126,23 @@ case "$cmd" in
     esac
     ;;
   stop)
-    printf '%s\\n' "inactive" > "$(unit_state_file "$1")"
+    printf '%s\\n' "${{FAKE_SYSTEMCTL_STOP_STATE:-inactive}}" > "$(unit_state_file "$1")"
     ;;
   reset-failed)
     printf '%s\\n' "inactive" > "$(unit_state_file "$1")"
+    ;;
+  kill)
+    if [ -n "${{FAKE_SYSTEMCTL_KILL_STATE-}}" ]; then
+      unit=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --*) ;;
+          *) unit="$1" ;;
+        esac
+        shift
+      done
+      printf '%s\\n' "$FAKE_SYSTEMCTL_KILL_STATE" > "$(unit_state_file "$unit")"
+    fi
     ;;
   restart)
     if [ "${{FAKE_SYSTEMCTL_RESTART_FAIL-0}}" = 1 ]; then
@@ -286,8 +307,8 @@ esac
         )
         self.assertEqual("removed\n", removal_log.read_text(encoding="utf-8"))
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
-        self.assertIn("--user stop restart.service", systemctl_log)
-        self.assertNotIn("--user stop removed.service", systemctl_log)
+        self.assertIn("--user --no-block stop restart.service", systemctl_log)
+        self.assertNotIn("--user --no-block stop removed.service", systemctl_log)
 
     def test_metadata_rows_and_migrator_gate_override_reconcile_state(self):
         metadata = self.write_metadata(
@@ -645,6 +666,7 @@ esac
         )
 
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user kill --kill-whom=all web.service", systemctl_log)
         self.assertIn("--user reset-failed web.service", systemctl_log)
         self.assertIn("--user --no-block start web.service", systemctl_log)
         self.assertIn("web: started in", result.stderr)
@@ -1051,7 +1073,46 @@ esac
             (self.state_dir / "unit-restarts/alice/web").read_text(encoding="utf-8"),
         )
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
-        self.assertIn("--user stop web.service", systemctl_log)
+        self.assertIn("--user --no-block stop web.service", systemctl_log)
+
+    def test_stopped_state_wait_tolerates_queued_stop_gap(self):
+        self.write_fake_systemctl()
+        sequence = self.state_dir / "systemctl-state/active-sequence"
+        sequence.parent.mkdir(parents=True)
+        sequence.write_text("active\ninactive\n", encoding="utf-8")
+
+        result = self.run_helper(
+            """
+            userctl_mode=user
+            wait_for_unit_stopped_state web.service 3
+            """,
+        )
+
+        self.assertEqual("inactive\n", result.stdout)
+        self.assertIn(
+            "waiting for stopped state: unit=web.service current=active sub=dead",
+            result.stderr,
+        )
+
+    def test_stop_timeout_kills_residual_processes_and_rechecks(self):
+        self.write_fake_systemctl()
+
+        result = self.run_helper(
+            """
+            apply_stop_phase_action apply alice web web.service 1 0
+            """,
+            FAKE_SYSTEMCTL_STOP_STATE="active",
+            FAKE_SYSTEMCTL_KILL_STATE="inactive",
+            SYSTEMD_USER_MANAGER_STOP_KILL_WAIT_SECONDS="3",
+        )
+
+        self.assertIn(
+            "web: stop wait exceeded after",
+            result.stderr,
+        )
+        self.assertIn("web: stopped in", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user kill --kill-whom=all web.service", systemctl_log)
 
 
 if __name__ == "__main__":

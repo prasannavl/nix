@@ -69,6 +69,14 @@ def main():
     if args and args[0] == "rm":
         return
 
+    if args[:2] == ["container", "exists"]:
+        if mode in {"container_exists", "rm_zero_leaves_exists"}:
+            sys.exit(0)
+        sys.exit(1)
+
+    if args[:2] == ["container", "cleanup"]:
+        return
+
     if args and args[0] == "update":
         return
 
