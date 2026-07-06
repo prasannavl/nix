@@ -80,3 +80,11 @@ pull images during activation. Services that need remote images during deploy
 should use the module `imageTag` pull unit and put `pull_policy: never` on the
 runtime compose services, so the start path is local-only and missing images
 fail at the explicit pull boundary.
+
+## Rootless DNS Lock Scope Follow-up
+
+Rootless DNS repair locking must not wrap ordinary compose lifecycle commands.
+The helper lock exists to serialize helper-owned aardvark/rootless DNS repair,
+but holding it around `podman compose up`, `stop`, or `down` creates a global
+convoy when many managed services start together. Keep the lock inside DNS
+repair helpers and let Podman serialize its own runtime state.
