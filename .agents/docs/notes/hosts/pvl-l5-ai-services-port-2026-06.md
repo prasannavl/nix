@@ -163,3 +163,12 @@ Structural fix:
   stopped.
 
 The shared helper behavior is covered by `lib-ollama-helper` tests.
+
+Follow-up deploy validation caught a runtime dependency leak: the first
+systemd-introspection helper used `awk` while the model-puller wrapper only
+provided coreutils, curl, and jq. On `pvl-l5`, that made the helper log
+`awk: command not found` repeatedly and fall back into the full no-API wait
+until `systemd-user-manager` timed out again. The helper now uses shell builtins
+plus existing runtime tools for cgroup and `After=` parsing, and the helper
+tests put a failing `awk` in `PATH` to keep this dependency from returning
+unnoticed.

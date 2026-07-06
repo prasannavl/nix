@@ -29,18 +29,25 @@ backend_unit_active_state() {
 }
 
 current_systemd_user_unit() {
-	local unit=""
+	local old_ifs path part unit=""
 
 	if [ -n "${OLLAMA_CURRENT_UNIT:-}" ]; then
 		printf '%s\n' "$OLLAMA_CURRENT_UNIT"
 		return
 	fi
 
-	unit="$(
-		awk -F: '{print $3}' /proc/self/cgroup |
-			tr '/' '\n' |
-			awk '/[.]service$/ { unit = $0 } END { if (unit != "") print unit; else exit 1 }'
-	)" || return 1
+	while IFS=: read -r _hierarchy _controllers path; do
+		old_ifs="$IFS"
+		IFS='/'
+		for part in $path; do
+			case "$part" in
+			*.service)
+				unit="$part"
+				;;
+			esac
+		done
+		IFS="$old_ifs"
+	done </proc/self/cgroup
 
 	if [ -z "$unit" ]; then
 		return 1
@@ -56,9 +63,7 @@ current_systemd_user_unit() {
 after_service_dependencies() {
 	local unit="$1"
 
-	systemctl --user show --property=After --value "$unit" 2>/dev/null |
-		tr ' ' '\n' |
-		awk '/[.]service$/'
+	systemctl --user show --property=After --value "$unit" 2>/dev/null
 }
 
 dependent_service_units() {
@@ -68,12 +73,19 @@ dependent_service_units() {
 		return 1
 	fi
 
-	while IFS= read -r dep; do
+	for dep in $(after_service_dependencies "$current_unit"); do
 		if [ -z "$dep" ] || [ "$dep" = "$current_unit" ]; then
 			continue
 		fi
+		case "$dep" in
+		*.service)
+			;;
+		*)
+			continue
+			;;
+		esac
 		printf '%s\n' "$dep"
-	done < <(after_service_dependencies "$current_unit")
+	done
 }
 
 all_after_services_inactive() {

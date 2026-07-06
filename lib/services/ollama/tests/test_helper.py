@@ -23,6 +23,7 @@ class OllamaHelperTest(unittest.TestCase):
         self.write_fake_curl()
         self.write_fake_sleep()
         self.write_fake_systemctl()
+        self.write_fake_awk()
 
     def tearDown(self):
         shutil.rmtree(self.work_dir)
@@ -76,6 +77,15 @@ esac
             f"""#!/bin/sh
 printf '%s\\n' "$*" >> {log_path}
 exit "${{FAKE_SLEEP_STATUS:-0}}"
+""",
+        )
+
+    def write_fake_awk(self):
+        self.write_executable(
+            self.fake_bin / "awk",
+            """#!/bin/sh
+printf '%s\n' "awk should not be required" >&2
+exit 127
 """,
         )
 
