@@ -37,7 +37,35 @@ class OllamaHelperTest(unittest.TestCase):
             self.fake_bin / "curl",
             f"""#!/bin/sh
 printf '%s\\n' "$*" >> {log_path}
-exit 7
+url=""
+for arg in "$@"; do
+  url="$arg"
+done
+case "$url" in
+  */api/tags)
+    if [ "${{FAKE_CURL_TAGS_STATUS:-7}}" != 0 ]; then
+      exit "$FAKE_CURL_TAGS_STATUS"
+    fi
+    if [ -n "${{FAKE_CURL_TAGS_RESPONSE+x}}" ]; then
+      printf '%s\\n' "$FAKE_CURL_TAGS_RESPONSE"
+    else
+      printf '%s\\n' '{{"models":[]}}'
+    fi
+    ;;
+  */api/pull)
+    if [ "${{FAKE_CURL_PULL_STATUS:-0}}" != 0 ]; then
+      exit "$FAKE_CURL_PULL_STATUS"
+    fi
+    if [ -n "${{FAKE_CURL_PULL_RESPONSE+x}}" ]; then
+      printf '%s\\n' "$FAKE_CURL_PULL_RESPONSE"
+    else
+      printf '%s\\n' '{{"status":"success"}}'
+    fi
+    ;;
+  *)
+    exit 7
+    ;;
+esac
 """,
         )
 
@@ -97,6 +125,11 @@ case "$cmd" in
         esac
         ;;
     esac
+    ;;
+  try-restart)
+    if [ "${{FAKE_SYSTEMCTL_TRY_RESTART_STATUS:-0}}" != 0 ]; then
+      exit "$FAKE_SYSTEMCTL_TRY_RESTART_STATUS"
+    fi
     ;;
 esac
 """,
@@ -165,3 +198,30 @@ esac
         self.assertIn("no Ollama API available", result.stderr)
         self.assertEqual(len(self.read_log("curl.log")), 4)
         self.assertEqual(self.read_log("sleep.log"), ["0"])
+
+    def test_downloaded_model_try_restarts_dependent_services(self):
+        self.set_unit_state("pvl-ollama.service", "active")
+        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
+
+        result = self.run_helper(
+            FAKE_CURL_TAGS_STATUS="0",
+            FAKE_CURL_TAGS_RESPONSE='{"models":[]}',
+        )
+
+        self.assertEqual(result.returncode, 0)
+        systemctl_log = "\n".join(self.read_log("systemctl.log"))
+        self.assertIn("--user try-restart pvl-ollama.service", systemctl_log)
+        self.assertIn("--user try-restart pvl-ollama-nvidia.service", systemctl_log)
+
+    def test_existing_model_does_not_restart_dependencies(self):
+        self.set_unit_state("pvl-ollama.service", "active")
+        self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
+
+        result = self.run_helper(
+            FAKE_CURL_TAGS_STATUS="0",
+            FAKE_CURL_TAGS_RESPONSE='{"models":[{"name":"nomic-embed-text:latest"}]}',
+        )
+
+        self.assertEqual(result.returncode, 0)
+        systemctl_log = "\n".join(self.read_log("systemctl.log"))
+        self.assertNotIn("try-restart", systemctl_log)

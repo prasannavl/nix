@@ -4,6 +4,7 @@
       nativeBuildInputs = [
         pkgs.bash
         pkgs.coreutils
+        pkgs.jq
         pkgs.python3
       ];
     } ''

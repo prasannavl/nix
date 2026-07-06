@@ -6,6 +6,7 @@ init_vars() {
 	: "${OLLAMA_URLS:=$OLLAMA_URL}"
 	: "${OLLAMA_WAIT_ATTEMPTS:=120}"
 	: "${OLLAMA_WAIT_DELAY_SECONDS:=2}"
+	OLLAMA_MODELS_DOWNLOADED=0
 }
 
 probe_ollama_urls() {
@@ -60,8 +61,8 @@ after_service_dependencies() {
 		awk '/[.]service$/'
 }
 
-all_after_services_inactive() {
-	local current_unit dep saw_unit=0 state
+dependent_service_units() {
+	local current_unit dep
 
 	if ! current_unit="$(current_systemd_user_unit)"; then
 		return 1
@@ -71,6 +72,14 @@ all_after_services_inactive() {
 		if [ -z "$dep" ] || [ "$dep" = "$current_unit" ]; then
 			continue
 		fi
+		printf '%s\n' "$dep"
+	done < <(after_service_dependencies "$current_unit")
+}
+
+all_after_services_inactive() {
+	local dep saw_unit=0 state
+
+	while IFS= read -r dep; do
 		saw_unit=1
 		if ! state="$(backend_unit_active_state "$dep")"; then
 			return 1
@@ -82,7 +91,7 @@ all_after_services_inactive() {
 			return 1
 			;;
 		esac
-	done < <(after_service_dependencies "$current_unit")
+	done < <(dependent_service_units)
 
 	[ "$saw_unit" -eq 1 ]
 }
@@ -165,6 +174,8 @@ pull_model() {
 		echo "ollama model pull: failed to pull $model: $error_message" >&2
 		return 1
 	fi
+
+	OLLAMA_MODELS_DOWNLOADED=1
 }
 
 pull_required_models() {
@@ -173,6 +184,23 @@ pull_required_models() {
 	for model in "$@"; do
 		pull_model "$model"
 	done
+}
+
+restart_dependent_services_after_downloads() {
+	local dep saw_unit=0
+
+	while IFS= read -r dep; do
+		saw_unit=1
+		echo "ollama model pull: try-restarting dependent service unit $dep after model download"
+		if ! systemctl --user try-restart "$dep"; then
+			echo "ollama model pull: failed to try-restart dependent service unit $dep" >&2
+			return 1
+		fi
+	done < <(dependent_service_units)
+
+	if [ "$saw_unit" -eq 0 ]; then
+		echo "ollama model pull: no dependent service units found after model download; skipping restart"
+	fi
 }
 
 main() {
@@ -195,6 +223,9 @@ main() {
 	fi
 
 	pull_required_models "$@"
+	if [ "$OLLAMA_MODELS_DOWNLOADED" -eq 1 ]; then
+		restart_dependent_services_after_downloads
+	fi
 }
 
 main "$@"

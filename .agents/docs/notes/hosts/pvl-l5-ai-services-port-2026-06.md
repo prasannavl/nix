@@ -157,5 +157,9 @@ Structural fix:
   no-API wait window.
 - Active or activating dependencies keep the original wait behavior, so normal
   startup races still get time to converge.
+- When the helper completes after actually pulling at least one model, it
+  `try-restart`s the same dependent user service units. Active backends restart
+  to pick up the new model state, while intentionally stopped backends remain
+  stopped.
 
 The shared helper behavior is covered by `lib-ollama-helper` tests.
