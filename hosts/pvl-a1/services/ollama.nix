@@ -42,16 +42,16 @@ in {
         wants = [
           "network-online.target"
         ];
+        environment = let
+          ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
+          ollamaNvidiaPort = config.services.podman-compose.pvl.instances.ollama-nvidia.exposedPorts.main.port;
+        in {
+          OLLAMA_URLS = "http://127.0.0.1:${toString ollamaPort} http://127.0.0.1:${toString ollamaNvidiaPort}";
+        };
         unitConfig.ConditionUser = "pvl";
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          Environment = let
-            ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
-            ollamaNvidiaPort = config.services.podman-compose.pvl.instances.ollama-nvidia.exposedPorts.main.port;
-          in [
-            "OLLAMA_URLS=http://127.0.0.1:${toString ollamaPort} http://127.0.0.1:${toString ollamaNvidiaPort}"
-          ];
           ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
         };
       };

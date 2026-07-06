@@ -97,3 +97,61 @@ Likely fixes:
   `/var/lib/pvl/compose/ollama` helper shell or temporarily set `adopt = true`
   for one deploy. Do not keep `adopt = true` permanently unless the host is
   intentionally taking over an existing unmanaged compose directory.
+
+## 2026-07-05 model-puller deploy timeout
+
+A fresh deploy at current `master` head failed while starting
+`systemd-user-manager-dispatcher-pvl.service` because the dispatcher had to
+restart `pvl-ollama-models.service` and waited only the managed-unit default
+`timeoutStableSeconds = 120`.
+
+The model-puller was not cold-started by `autoStart`: it had been active from
+the previous generation, so the old-world stop phase touched it and wrote a
+deferred restart marker. During new-world reconcile, that marker made
+`systemd-user-manager` start it even though the declaration has
+`autoStart = false`.
+
+At that point both Ollama backends were declared `state = "stopped"`, so the
+model helper had no reachable API. `lib/services/ollama/helper.sh` waits
+`OLLAMA_WAIT_ATTEMPTS=120` with a 2-second delay, so the no-API success path
+takes about 240 seconds before it logs a skip. The dispatcher timed out halfway
+through that wait:
+
+```text
+timed out waiting 120s for stable ActiveState for pvl-ollama-models.service
+```
+
+The deploy therefore failed even though the helper would have exited
+successfully later. The live journal confirmed this: after the failed deploy
+window, the same unit eventually logged `no Ollama API available ...; skipping`
+around 240 seconds after start and ended `active (exited)`.
+
+There is also a separate rendering bug in the unit environment:
+
+```systemd
+Environment=OLLAMA_URLS=http://127.0.0.1:11434 http://127.0.0.1:11435
+```
+
+Systemd treats the second token as an invalid environment assignment, so the
+NVIDIA backend URL is ignored. Current HEAD evaluates the service as
+`Type = "oneshot"`, but this does not avoid the timeout because the unit remains
+`activating/start` until the helper exits.
+
+Fixed separately by moving `OLLAMA_URLS` to the native host-local
+`environment = { ...; }` attrset for both `pvl-l5` and the same duplicated
+`pvl-a1` model-puller unit. The rendered user unit now contains:
+
+```systemd
+Environment="OLLAMA_URLS=http://127.0.0.1:11434 http://127.0.0.1:11435"
+```
+
+Likely fixes:
+
+- Set `timeoutStableSeconds` for `pvl-ollama-models` above the helper's no-API
+  wait, or shorten the helper wait for this host.
+- Render `OLLAMA_URLS` as a single quoted environment assignment, or use a
+  separator that does not require systemd quoting.
+- If the desired behavior is "never run model pulls unless a backend is
+  explicitly started", make the unit state/stamp semantics reflect that instead
+  of relying only on `autoStart = false`; deferred restart markers intentionally
+  restart units that were live during the old generation.
