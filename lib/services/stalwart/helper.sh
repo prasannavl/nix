@@ -450,8 +450,6 @@ find_directory_id_by_desired() {
 					map(select((.description // "") == $description)) as $matches
 					| if ($matches | length) == 0 then
 						empty
-					elif ($matches | length) > 1 then
-						error("multiple Stalwart directories match description: " + $description)
 					else
 						($matches | sort_by(.id))[0].id // empty
 					end

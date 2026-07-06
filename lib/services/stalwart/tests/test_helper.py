@@ -168,21 +168,24 @@ class StalwartHelperTest(unittest.TestCase):
         self.assertNotIn("old-a", rendered)
         self.assertNotIn("old-b", rendered)
 
-    def test_directory_duplicate_match_fails(self):
+    def test_directory_duplicate_match_resolves_deterministically(self):
         plan = self.write_plan(
             "directory-duplicate.ndjson",
             '{"@type":"update","object":"Directory","id":"old-a","value":{"description":"A","url":"ldap://a"}}',
+            '{"@type":"update","object":"Authentication","value":{"directoryId":"old-a"}}',
         )
         result = self.run_helper(
             f"""
             stalwart_plan_host_path={plan}
             prepare_directory_apply_inputs
+            printf '%s\\n' "$stalwart_plan_host_path"
             """,
-            check=False,
             TEST_STALWART_DIRECTORY_MODE="duplicate",
         )
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn("multiple Stalwart directories match description: A", result.stderr)
+        rendered = Path(result.stdout.strip()).read_text(encoding="utf-8")
+        self.assertIn("live-a", rendered)
+        self.assertNotIn("old-a", rendered)
+        self.assertNotIn("live-a2", rendered)
 
     def test_directory_resolution_prefers_existing_id_over_duplicate_description(self):
         plan = self.write_plan(
