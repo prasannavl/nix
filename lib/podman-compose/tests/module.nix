@@ -162,7 +162,6 @@
   restartPolicy = stack.instances."restart-policy";
   recreatePolicy = stack.instances."recreate-policy";
   appUnit = config.systemd.user.services.demo-app;
-  dbUnit = config.systemd.user.services.demo-db;
   textSourceUnit = config.systemd.user.services.demo-text-source;
   fileSourceUnit = config.systemd.user.services.demo-file-source;
   opaqueSecretUnit = config.systemd.user.services.demo-opaque-secret;

@@ -39,10 +39,12 @@ ensure_runtime_dir() {
 
 	if [ "$(id -u)" = 0 ] && [ "$owner" != root ]; then
 		systemctl start "user@${uid}.service" 2>/dev/null || true
-		for attempt in $(seq 1 20); do
+		attempt=0
+		while [ "$attempt" -lt 20 ]; do
 			if [ -d "$runtime_dir" ]; then
 				return 0
 			fi
+			attempt=$((attempt + 1))
 			sleep 0.5
 		done
 	fi
