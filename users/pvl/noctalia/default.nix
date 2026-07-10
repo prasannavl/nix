@@ -71,6 +71,9 @@
             ];
             pinnedStatic = true;
             groupApps = true;
+            # bug: workaround for sway where onlySameOutput
+            # filters out valid elements
+            onlySameOutput = false;
             inactiveIndicators = true;
             showLauncherIcon = true;
             showDockIndicator = true;

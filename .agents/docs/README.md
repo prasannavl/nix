@@ -104,6 +104,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   `automatic-timezoned.service` appearing in deploy output but not live and the
   Noctalia dock-enabled settings being lost after rebooting into the older boot
   generation.
+- `.agents/docs/notes/hosts/pvl-l5-noctalia-sway-dock-2026-07.md`: Records the
+  `pvl-l5` Sway/Noctalia dock issue where Quickshell received Sway toplevels but
+  only the focused window had `screens=eDP-1`, so Noctalia's
+  `dock.onlySameOutput` filter hid running apps such as Chrome.
 - `.agents/docs/notes/hosts/pvl-l5-ai-services-port-2026-06.md`: Records the
   `pvl-a1` Ollama and Open WebUI service port onto `pvl-l5`, including the
   shared model directory and stopped optional NVIDIA Ollama backend.
