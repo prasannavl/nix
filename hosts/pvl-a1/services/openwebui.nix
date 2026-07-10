@@ -10,7 +10,7 @@ in {
     source = ''
       services:
         open-webui:
-          image: ghcr.io/open-webui/open-webui:main
+          image: ghcr.io/open-webui/open-webui:v0.10.2
           container_name: open-webui
           ports:
             - "${toString exposedPorts.http.port}:8080"
