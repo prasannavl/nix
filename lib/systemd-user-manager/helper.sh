@@ -1028,14 +1028,14 @@ diff_and_stop_units() {
 				else
 					reset_failed=0
 				fi
-					if ! queue_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$changed_stop_timeout" "$reset_failed"; then
+				if ! queue_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$changed_stop_timeout" "$reset_failed"; then
+					stop_failed=1
+				fi
+			elif [ -n "$new_reload_stamp" ] && [ "$old_reload_stamp" != "$new_reload_stamp" ]; then
+				if [ "$new_state" = "stopped" ]; then
+					if ! queue_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$managed_timeout" 1; then
 						stop_failed=1
 					fi
-				elif [ -n "$new_reload_stamp" ] && [ "$old_reload_stamp" != "$new_reload_stamp" ]; then
-					if [ "$new_state" = "stopped" ]; then
-						if ! queue_stop_phase_action "$phase_mode" "$user" "$managed_name" "$managed_unit" "$managed_timeout" 1; then
-							stop_failed=1
-						fi
 				elif [ "$phase_mode" = preview ]; then
 					log_managed_unit "$user" "$managed_name" "would reload"
 				else
@@ -1045,12 +1045,12 @@ diff_and_stop_units() {
 		done <<<"$old_metadata_tsv"
 	fi
 
-		if ! wait_for_stop_phase_actions; then
-			stop_failed=1
-		fi
-		if [ "$phase_mode" = apply ] && [ "$stop_failed" -ne 0 ]; then
-			return 1
-		fi
+	if ! wait_for_stop_phase_actions; then
+		stop_failed=1
+	fi
+	if [ "$phase_mode" = apply ] && [ "$stop_failed" -ne 0 ]; then
+		return 1
+	fi
 	if [ "$new_metadata_present" -eq 1 ] && [ "$old_identity" != "$new_identity" ]; then
 		if [ "$phase_mode" = preview ]; then
 			log_user_progress "$user" "would restart user manager"
