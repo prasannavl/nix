@@ -64,22 +64,23 @@ manual recreate tag bump.
 
 ## Start Idle Watchdog Follow-up
 
-Start idle detection must not be more aggressive than the operational
-activation threshold. A later `abird-corp` validation showed legitimate quiet
-image-pull work inside `podman compose up` being killed every 45s, which turned
-one slow start into repeated transitional failures for Forgejo, Outline,
-Stalwart, and Superset. The helper start-idle watchdog now defaults to 120s so
-it still catches silent wedges, but does not preempt normal quiet Podman work
-below the threshold used for live deploy investigation.
+Start idle detection must not be more aggressive than the operational activation
+threshold. A later `abird-corp` validation showed legitimate quiet image-pull
+work inside `podman compose up` being killed every 45s, which turned one slow
+start into repeated transitional failures for Forgejo, Outline, Stalwart, and
+Superset. The helper start-idle watchdog now defaults to 120s so it still
+catches silent wedges, but does not preempt normal quiet Podman work below the
+threshold used for live deploy investigation.
 
 ## Explicit Image Pull Boundary Follow-up
 
 Image pulls must not be hidden inside managed service start. Superset and
-Forgejo then exposed the same nondeterminism by letting `podman compose up`
-pull images during activation. Services that need remote images during deploy
-should use the module `imageTag` pull unit and put `pull_policy: never` on the
-runtime compose services, so the start path is local-only and missing images
-fail at the explicit pull boundary.
+Forgejo then exposed the same nondeterminism by letting `podman compose up` pull
+images during activation. Deploys now run the built system's
+`podman-compose-image-pull-all` helper before activation. The helper plan is
+derived from every compose-backed service with store-backed compose files, so
+the deploy pull boundary does not require per-service `imageTag` markers or
+runtime `pull_policy: never`.
 
 ## Rootless DNS Lock Scope Follow-up
 
