@@ -39,7 +39,7 @@ in {
       source = ''
         services:
           ollama:
-            image: ollama/ollama:rocm
+            image: docker.io/ollama/ollama:0.31.2-rocm
             container_name: ollama
             ports:
               - "${toString exposedPorts.main.port}:11434"
