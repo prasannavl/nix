@@ -281,6 +281,62 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertNotIn("podman pod rm", command)
         self.assertNotIn("state.json", command)
 
+    def test_pre_activation_podman_image_pull_command_uses_built_system_plan(self):
+        result = self.run_script(
+            """
+            init_vars
+            command="$(build_pre_activation_podman_image_pulls_cmd /nix/store/new-system)"
+            bash -n <<<"$command"
+            printf '%s' "$command"
+            """
+        )
+
+        command = result.stdout
+        self.assertIn("_remote_pre_activation_podman_image_pulls /nix/store/new-system", command)
+        self.assertIn('${system_path}/share/podman-compose/image-pulls.json', command)
+        self.assertIn('${system_path}/sw/bin/podman-compose-image-pull-all', command)
+        self.assertIn("NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN", command)
+
+    def test_deploy_host_prepulls_images_before_activation(self):
+        result = self.run_script(
+            """
+            init_vars
+            DRY_RUN=1
+            BUILD_HOST=local
+            NIXBOT_IF_CHANGED=0
+            GOAL=switch
+            PREP_DEPLOY_AGE_IDENTITY_KEY=
+            log_host_stage() { :; }
+            host_parent_for() { return 1; }
+            run_parented_host_operation_with_retry() {
+              shift 2
+              "$@"
+            }
+            prepare_host_transport_for_deploy() {
+              PREP_DEPLOY_LOCAL_EXEC=1
+              PREP_USING_BOOTSTRAP_FALLBACK=0
+              PREP_DEPLOY_SSH_TARGET=
+              PREP_DEPLOY_SSH_OPTS=()
+              return 0
+            }
+            run_pre_switch_user_failed_state_reset() { printf 'reset\\n'; }
+            copy_system_path_from_local_to_prepared_target() { printf 'copy:%s:%s\\n' "$1" "$2"; }
+            run_pre_activation_podman_image_pulls() { printf 'prepull:%s:%s\\n' "$1" "$2"; }
+            activate_prepared_system_path() { printf 'activate:%s:%s\\n' "$1" "$2"; }
+            deploy_host app /nix/store/new-system
+            """
+        )
+
+        self.assertEqual(
+            [
+                "reset",
+                "copy:app:/nix/store/new-system",
+                "prepull:app:/nix/store/new-system",
+                "activate:app:/nix/store/new-system",
+            ],
+            result.stdout.splitlines(),
+        )
+
     def test_clear_remote_locks_dry_run_prints_host_local_script(self):
         result = self.run_script(
             """

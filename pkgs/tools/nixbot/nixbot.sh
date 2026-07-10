@@ -8488,6 +8488,45 @@ require_remote_build_cache_for_deploy() {
 	require_build_host_cache_config "${BUILD_HOST}"
 }
 
+_remote_pre_activation_podman_image_pulls() {
+	local system_path="$1" plan="" runner=""
+
+	plan="${system_path}/share/podman-compose/image-pulls.json"
+	runner="${system_path}/sw/bin/podman-compose-image-pull-all"
+
+	if [ ! -e "${plan}" ] && [ ! -x "${runner}" ]; then
+		return 0
+	fi
+	if [ ! -s "${plan}" ]; then
+		return 0
+	fi
+	if [ ! -x "${runner}" ]; then
+		echo "podman compose image-pull plan exists but runner is missing: ${runner}" >&2
+		return 1
+	fi
+
+	echo "[pre-activation] pulling declared Podman Compose images from ${plan}" >&2
+	NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN="${plan}" "${runner}"
+}
+
+build_pre_activation_podman_image_pulls_cmd() {
+	local system_path="$1" invoke_cmd=""
+
+	printf -v invoke_cmd '_remote_pre_activation_podman_image_pulls %q' "${system_path}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_pre_activation_podman_image_pulls
+}
+
+run_pre_activation_podman_image_pulls() {
+	local node="$1" system_path="$2" pull_cmd=""
+
+	pull_cmd="$(build_pre_activation_podman_image_pulls_cmd "${system_path}")"
+	run_prepared_root_command_with_retry \
+		"Pre-activation Podman image pulls on ${node}" \
+		"${pull_cmd}"
+}
+
 activate_prepared_system_path() {
 	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_runner="" activation_unit="" systemd_run_properties=""
 	local post_promote_bootloader_goal="" persist_profile=0
@@ -8644,6 +8683,7 @@ deploy_remote_build_host_path() {
 
 	register_active_deploy "${node}"
 	if copy_system_path_from_build_cache_to_prepared_target "${node}" "${built_out_path}" &&
+		run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
 		mark_deploy_activation_started "${node}" &&
 		activate_prepared_system_path "${node}" "${built_out_path}"; then
 		deploy_rc=0
@@ -8675,6 +8715,7 @@ deploy_build_cache_via_local_client() {
 
 	register_active_deploy "${node}"
 	if copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${built_out_path}" &&
+		run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
 		mark_deploy_activation_started "${node}" &&
 		activate_prepared_system_path "${node}" "${built_out_path}"; then
 		deploy_rc=0
@@ -8741,10 +8782,12 @@ deploy_host() {
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
+			run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
 			activate_prepared_system_path "${node}" "${built_out_path}"
 	else
 		register_active_deploy "${node}"
 		if copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
+			run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
 			mark_deploy_activation_started "${node}" &&
 			activate_prepared_system_path "${node}" "${built_out_path}"; then
 			deploy_rc=0

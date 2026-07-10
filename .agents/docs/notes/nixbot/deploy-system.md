@@ -248,6 +248,15 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   way remain built-only in the final summary rather than becoming independent
   deploy failures. Completed failed-host rollbacks and subsequent unwind
   rollbacks share the same deploy parallelism budget.
+- Before activation, deploy jobs run the built target system's Podman Compose
+  image-pull plan after the Nix closure has been copied to the target and before
+  `switch-to-configuration` is submitted. The plan lives at
+  `<system>/share/podman-compose/image-pulls.json` and is executed through
+  `<system>/sw/bin/podman-compose-image-pull-all`. The plan is generated from
+  compose-backed service metadata, so it does not require a separate host-local
+  `imageTag` marker for deploy-time image pulls. This keeps remote image fetches
+  out of activation and out of managed service start, while preserving the
+  existing pre-activation cancellation behavior if a required host fails.
 - Host builds first evaluate selected NixOS toplevel derivation paths through
   the host-scoped flake output `nixbot.plans.${host}.drvPath`. The build-plan
   phase checks a persistent source-snapshot cache, evaluates cache misses with

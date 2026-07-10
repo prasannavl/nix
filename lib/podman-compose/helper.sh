@@ -31,6 +31,7 @@ init_vars() {
 	podman_network_dns_repaired=0
 	compose_start_default_timeout_seconds=900
 	compose_start_idle_timeout_seconds=120
+	compose_start_stuck_exit_status=75
 	compose_stop_default_timeout_seconds=45
 
 	compose_args=()
@@ -1083,10 +1084,11 @@ compose_command_supervised() {
 }
 
 compose_up_supervised() {
-	local mode timeout_seconds reserve_seconds deadline_seconds started_at last_progress_at now line fatal_seen=0 status=0
+	local mode timeout_seconds reserve_seconds deadline_seconds started_at last_progress_at now line fatal_seen=0 status=0 fatal_status
 	local compose_output_fd compose_up_pid compose_up_child_pid compose_up_pid_file
 	local -a up_args=()
 	mode="$1"
+	fatal_status="$compose_start_stuck_exit_status"
 	timeout_seconds="$(compose_start_timeout_seconds)"
 	reserve_seconds="$(compose_cleanup_reserve_seconds "$timeout_seconds")"
 	started_at="$(now_epoch)"
@@ -1121,6 +1123,7 @@ compose_up_supervised() {
 				printf '%s\n' "podman compose start hit fatal output for ${podman_compose_service_name}; terminating early" >&2
 				compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
 				terminate_compose_process "$compose_up_child_pid"
+				fatal_status="$compose_start_stuck_exit_status"
 				break
 			fi
 			continue
@@ -1132,14 +1135,16 @@ compose_up_supervised() {
 			compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
 			terminate_compose_process "$compose_up_child_pid"
 			fatal_seen=1
+			fatal_status="$compose_start_stuck_exit_status"
 			break
 		fi
 		if [ "$compose_start_idle_timeout_seconds" -gt 0 ] &&
 			[ "$now" -ge "$((last_progress_at + compose_start_idle_timeout_seconds))" ]; then
-			printf '%s\n' "podman compose start made no output progress for ${compose_start_idle_timeout_seconds}s for ${podman_compose_service_name}; treating as a stuck start and retrying" >&2
+			printf '%s\n' "podman compose start made no output progress for ${compose_start_idle_timeout_seconds}s for ${podman_compose_service_name}; treating as a stuck start" >&2
 			compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
 			terminate_compose_process "$compose_up_child_pid"
 			fatal_seen=1
+			fatal_status="$compose_start_stuck_exit_status"
 			break
 		fi
 
@@ -1157,7 +1162,7 @@ compose_up_supervised() {
 	rm -f "$compose_up_pid_file"
 
 	if [ "$fatal_seen" -eq 1 ]; then
-		return 1
+		return "$fatal_status"
 	fi
 	return "$status"
 }
@@ -1554,22 +1559,24 @@ post_stop_should_cleanup_failed_start() {
 }
 
 compose_up_checked() {
-	local mode dns_retried=0
+	local mode dns_retried=0 status=0
 	mode="$1"
 
 	while true; do
 		case "$mode" in
 		force)
-			if ! compose_up_force_recreate; then
+			compose_up_force_recreate || {
+				status="$?"
 				cleanup_failed_compose_start
-				return 1
-			fi
+				return "$status"
+			}
 			;;
 		normal)
-			if ! compose_up; then
+			compose_up || {
+				status="$?"
 				cleanup_failed_compose_start
-				return 1
-			fi
+				return "$status"
+			}
 			;;
 		*)
 			printf '%s\n' "unsupported podman compose up mode: $mode" >&2

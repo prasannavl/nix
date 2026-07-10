@@ -1730,6 +1730,7 @@
         KillMode = "control-group";
         Delegate = true;
         Restart = "on-failure";
+        RestartPreventExitStatus = "75";
         TimeoutStartSec = lib.mkDefault 900;
         TimeoutStopSec = lib.mkDefault 180;
       };
@@ -1773,7 +1774,7 @@
       value = imagePullSystemdService;
     };
     lifecyclePolicy = lifecyclePolicy;
-    inherit (service) state reconcilePolicy removalPolicy adopt autoStart longRunning timeoutStableSeconds imageTag recreateTag bootTag reloadTag waitForNetwork;
+    inherit (service) state reconcilePolicy removalPolicy adopt autoStart longRunning timeoutStableSeconds imageTag recreateTag bootTag reloadTag waitForNetwork hasComposeEntry;
   };
 
   resolvedServices = lib.concatLists (
@@ -1809,6 +1810,18 @@
       resolvedServices
     )
   ));
+  imagePullPlanFile = pkgs.writeText "podman-compose-image-pulls.json" (builtins.toJSON (
+    map
+    (service: {
+      user = service.systemdUser;
+      uid = userUidString service.systemdUser;
+      serviceName = service.systemdServiceName;
+      metadataFile = service.helperMetadata;
+      helper = helperScript;
+      imageTag = service.imageTag;
+    })
+    (builtins.filter (service: service.hasComposeEntry) resolvedServices)
+  ));
   controlPackage = pkgs.writeShellApplication {
     name = "podman-composectl";
     excludeShellChecks = [
@@ -1825,6 +1838,25 @@
       registry="''${NIX_PODMAN_COMPOSE_CONTROL_REGISTRY:-/run/current-system/share/podman-compose/control-registry.json}"
       helper=${lib.escapeShellArg helperScript}
       source ${./composectl.sh}
+      main "$@"
+    '';
+  };
+  imagePullAllPackage = pkgs.writeShellApplication {
+    name = "podman-compose-image-pull-all";
+    excludeShellChecks = [
+      "SC1091"
+      "SC2034"
+    ];
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.getent
+      pkgs.jq
+      pkgs.systemd
+      pkgs.util-linux
+    ];
+    text = ''
+      plan="''${NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN:-/run/current-system/share/podman-compose/image-pulls.json}"
+      source ${./image-pull-all.sh}
       main "$@"
     '';
   };
@@ -2550,7 +2582,9 @@ in {
   config = lib.mkIf hasStacks {
     system.systemBuilderCommands = ''
       install -Dm0444 ${lib.escapeShellArg controlRegistryFile} "$out/share/podman-compose/control-registry.json"
+      install -Dm0444 ${lib.escapeShellArg imagePullPlanFile} "$out/share/podman-compose/image-pulls.json"
     '';
+    system.build.podmanComposeImagePullPlan = imagePullPlanFile;
 
     environment.systemPackages = with pkgs;
       [
@@ -2559,6 +2593,7 @@ in {
       ]
       ++ [
         controlPackage
+        imagePullAllPackage
       ];
 
     networking.firewall.allowedTCPPorts = firewallPortsForProtocol "tcp";

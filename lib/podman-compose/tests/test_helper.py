@@ -301,8 +301,9 @@ class PodmanComposeHelperTest(unittest.TestCase):
             TEST_TIMEOUT_VALUE="20s",
         )
 
-        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(75, result.returncode)
         self.assertIn("podman compose start made no output progress for 2s", result.stderr)
+        self.assertIn("treating as a stuck start", result.stderr)
 
     def test_compose_up_fatal_line_matches_image_pull_errors(self):
         result = self.run_helper(

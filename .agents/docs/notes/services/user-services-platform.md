@@ -38,6 +38,10 @@ service-facing ingress policy.
   interpolation changes.
 - Startup success means the containers reached the expected running state, not
   merely that the compose command exited.
+- The helper's no-output start watchdog is a hard failed-start boundary. When
+  `podman compose up` makes no output progress for its idle timeout, the helper
+  exits with status `75` and generated units set `RestartPreventExitStatus=75`
+  so systemd does not turn one stuck start into an unbounded restart loop.
 
 ## Configuration and secrets
 
@@ -95,6 +99,13 @@ service-facing ingress policy.
 - `imageTag != "0"` enables the auxiliary image-pull unit before the managed
   service starts and is included in recreate intent so changed images are
   consumed automatically when policy allows recreate.
+- Systems with compose-backed services also export
+  `/run/current-system/share/podman-compose/image-pulls.json` and install
+  `podman-compose-image-pull-all`. The deploy-time plan is derived from every
+  resolved compose instance with store-backed compose files, not from
+  `imageTag`. Nixbot deploys run the built target system's version of that
+  helper before activation, so remote image fetches happen in a pre-activation
+  deploy phase instead of inside `podman compose up`.
 - Tag semantics should depend only on the declared tag value, not on incidental
   generated helper path churn.
 - Boots do not replay lifecycle tags. Tags are deploy-time triggers.

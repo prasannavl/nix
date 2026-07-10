@@ -175,6 +175,12 @@
 
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
 
+  imagePullPlanEntryByService = serviceName: let
+    matches = builtins.filter (entry: entry.serviceName == serviceName) imagePullPlan;
+  in
+    assert builtins.length matches == 1;
+      builtins.head matches;
+
   metadataPathFromEnv = env: let
     prefix = "NIX_PODMAN_COMPOSE_METADATA=";
     matches = builtins.filter (entry: lib.hasPrefix prefix entry) env;
@@ -218,6 +224,9 @@
   textRenderedCompose = builtins.readFile textSource.sourcePaths."compose.yml";
   fileRenderedCompose = builtins.readFile fileSource.sourcePaths."compose.yml";
   opaqueSecretFileSecretOverride = builtins.readFile opaqueSecret.sourcePaths."__podman-file-secrets.override.yml";
+  imagePullPlan = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeImagePullPlan));
+  appImagePullPlanEntry = imagePullPlanEntryByService "demo-app";
+  jobImagePullPlanEntry = imagePullPlanEntryByService "demo-custom-job";
 in
   assert failedAssertions == [];
   assert stack.user == "tester";
@@ -284,8 +293,21 @@ in
   assert lib.hasSuffix " reload" appUnit.serviceConfig.ExecReload;
   assert lib.hasSuffix " post-stop" appUnit.serviceConfig.ExecStopPost;
   assert appUnit.serviceConfig.KillMode == "control-group";
+  assert appUnit.serviceConfig.RestartPreventExitStatus == "75";
   assert imagePullUnit.serviceConfig.Type == "oneshot";
   assert lib.hasSuffix " image-pull" imagePullUnit.serviceConfig.ExecStart;
+  assert builtins.length imagePullPlan == 8;
+  assert appImagePullPlanEntry.user == "tester";
+  assert appImagePullPlanEntry.uid == "1234";
+  assert appImagePullPlanEntry.serviceName == "demo-app";
+  assert appImagePullPlanEntry.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
+  assert appImagePullPlanEntry.imageTag == "image-1";
+  assert lib.hasSuffix "/bin/podman-compose-helper" appImagePullPlanEntry.helper;
+  assert jobImagePullPlanEntry.user == "root";
+  assert jobImagePullPlanEntry.uid == "0";
+  assert jobImagePullPlanEntry.metadataFile == metadataPathFromEnv jobUnit.serviceConfig.Environment;
+  assert jobImagePullPlanEntry.imageTag == "0";
+  assert lib.hasSuffix "/bin/podman-compose-helper" jobImagePullPlanEntry.helper;
   assert appManagedUnit.user == "tester";
   assert appManagedUnit.unit == "demo-app.service";
   assert appManagedUnit.state == "running";

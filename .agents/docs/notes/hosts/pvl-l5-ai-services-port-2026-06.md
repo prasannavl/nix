@@ -172,3 +172,44 @@ until `systemd-user-manager` timed out again. The helper now uses shell builtins
 plus existing runtime tools for cgroup and `After=` parsing, and the helper
 tests put a failing `awk` in `PATH` to keep this dependency from returning
 unnoticed.
+
+## 2026-07-10 Open WebUI image-pull deploy timeout
+
+A deploy to
+`gmrzm8wx21kbdgcfbs9dkil8b85avxqk-nixos-system-pvl-l5-26.05.20260707.0ad6f47`
+failed because `pvl-openwebui.service` stayed in `activating/start` while
+`podman compose up` tried to create `ghcr.io/open-webui/open-webui:v0.10.2`. The
+host only had the older `ghcr.io/open-webui/open-webui:main` image, so the new
+tag had to be fetched during the managed service start path.
+
+The compose helper saw no output progress for 120 seconds, cleaned the partial
+network, and let systemd retry. After three repeated transitional start
+failures, `systemd-user-manager` marked `pvl-openwebui` failed after about 365
+seconds. The Ollama model-puller fix from July 5 worked correctly in this
+deploy: it detected inactive Ollama dependencies and exited successfully in
+about one second.
+
+Fix: keep compose image fetches at the deploy image-pull boundary. Nixbot now
+runs the built system's Podman Compose image-pull plan before activation. The
+plan is derived from compose-backed services, so `pvl-openwebui` is pulled
+before `pvl-openwebui.service` starts without setting host-local
+`pull_policy: never` or a separate `imageTag` marker. If the image is missing
+later because of manual removal or GC, a direct service start can still recover
+by pulling it.
+
+A follow-up dirty-staged deploy to
+`b6m7r7n0s0nc6f39n7qr6fvymvcifwcy-nixos-system-pvl-l5-26.05.20260707.0ad6f47`
+confirmed the failure mode: the pre-activation hook ran, but the deployed
+`image-pulls.json` was `[]`, so no image was pulled. The service then retried
+`podman compose up` against the old local `ghcr.io/open-webui/open-webui:main`
+state and hit the same 120-second no-output watchdog loop. The platform fix is
+to derive the pre-activation pull plan from compose metadata instead of a
+separate `imageTag` opt-in that can be missed by `--dirty-staged`.
+
+The same deploy exposed a second platform bug: the 120-second watchdog only
+ended one `podman compose up` attempt. The generated unit's `Restart=on-failure`
+then immediately launched another attempt, and the user-manager reconciler
+waited through several restarts before failing. The helper now exits with status
+`75` for stuck starts and generated units set `RestartPreventExitStatus=75`, so
+a watchdog trip fails the managed start once instead of looping beyond the
+watchdog boundary.
