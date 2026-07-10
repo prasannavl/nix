@@ -19,7 +19,7 @@ in {
     source = ''
       services:
         memos:
-          image: docker.io/neosmemo/memos:stable
+          image: docker.io/neosmemo/memos:0.29.1
           container_name: memos
           user: 0:0
           volumes:

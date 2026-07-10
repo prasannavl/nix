@@ -13,7 +13,7 @@
 
       services:
         portainer:
-          image: portainer/portainer-ce:lts
+          image: docker.io/portainer/portainer-ce:2.39.4
           container_name: portainer
           ports:
             - "${toString exposedPorts.http.port}:8000"

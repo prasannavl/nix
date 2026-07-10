@@ -13,7 +13,7 @@
       source = ''
         services:
           beszel:
-            image: henrygd/beszel:latest
+            image: docker.io/henrygd/beszel:0.18.7
             container_name: beszel
             user: 0:0
             ports:
@@ -23,7 +23,7 @@
               - ./beszel_socket:/beszel_socket
 
           beszel-agent:
-            image: henrygd/beszel-agent:latest
+            image: docker.io/henrygd/beszel-agent:0.18.7
             container_name: beszel-agent
             user: 0:0
             network_mode: host

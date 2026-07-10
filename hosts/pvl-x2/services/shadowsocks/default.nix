@@ -19,7 +19,7 @@ in {
       source = ''
         services:
           shadowsocks:
-            image: shadowsocks/shadowsocks-libev
+            image: docker.io/shadowsocks/shadowsocks-libev:v3.3.5
             ports:
               - "${toString exposedPorts.main.port}:8388/tcp"
               - "${toString exposedPorts.main.port}:8388/udp"
