@@ -363,7 +363,7 @@ class DeployPlanningTest(unittest.TestCase):
                 ),
                 mock.call(
                     [
-                        "migratorctl",
+                        "migration-manager",
                         "remote",
                         "off",
                         "--host",

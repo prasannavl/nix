@@ -299,6 +299,10 @@ rec {
             // spec.composedServices.extraServiceConfig cfg
             // extraServiceConfig cfg;
         in {
+          imports = [
+            ../services/migration-manager/options.nix
+          ];
+
           options.user-services.${resolvedUser}.${spec.resolvedName} =
             {
               enable = lib.mkEnableOption "${spec.resolvedName} user service";
@@ -342,6 +346,10 @@ rec {
                 _serviceModule.registeredPorts = lib.optional spec.hasPort {
                   name = "${resolvedUser}.${spec.resolvedName}";
                   port = cfg.port;
+                };
+
+                services.migration-manager.managedUnits.users.${resolvedUser}.services."${unitLabel}.service" = {
+                  startOnResume = resolvedWantedBy != [];
                 };
               }
             ]

@@ -3,8 +3,8 @@
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
 }: let
   tests = import ./tests {pkgs = pkgs;};
-  migratorctl = pkgs.writeShellApplication {
-    name = "migratorctl";
+  migrationManager = pkgs.writeShellApplication {
+    name = "migration-manager";
     runtimeInputs = with pkgs; [
       age
       coreutils
@@ -15,34 +15,34 @@
       openssh
       systemd
     ];
-    text = builtins.readFile ./migratorctl.sh;
+    text = builtins.readFile ./migration-manager.sh;
   };
 
-  migratorHelper = pkgs.writeShellApplication {
-    name = "migrator-helper";
+  migrationManagerHelper = pkgs.writeShellApplication {
+    name = "migration-manager-helper";
     runtimeInputs = with pkgs; [
       coreutils
       gnugrep
       jq
       systemd
+      util-linux
     ];
-    text = builtins.readFile ./migrator-helper.sh;
+    text = builtins.readFile ./helper.sh;
   };
-
   build = pkgs.symlinkJoin {
     name = "migration-manager";
     paths = [
-      migratorctl
-      migratorHelper
+      migrationManager
+      migrationManagerHelper
     ];
     postBuild = ''
-      install -Dm0644 ${./migratorctl.bash} \
-        $out/share/bash-completion/completions/migratorctl
+      install -Dm0644 ${./migration-manager.bash} \
+        $out/share/bash-completion/completions/migration-manager
     '';
     meta = {
       description = "Runtime migration gate control for repo-managed services";
       platforms = pkgs.lib.platforms.linux;
-      mainProgram = "migratorctl";
+      mainProgram = "migration-manager";
     };
   };
 in

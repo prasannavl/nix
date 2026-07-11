@@ -2,11 +2,11 @@
 set -Eeuo pipefail
 
 init_vars() {
-	gate_path="${MIGRATOR_GATE_PATH:-}"
-	apply_unit="migrator-apply.service"
+	gate_path="${MIGRATION_MANAGER_GATE_PATH:-}"
+	apply_unit="migration-manager-apply.service"
 	ssh_age_identity="${AGE_KEY_FILE:-${HOME}/.ssh/id_ed25519}"
-	repo_root="${MIGRATOR_REPO_ROOT:-$(pwd -P)}"
-	nixbot_config="${MIGRATOR_NIXBOT_CONFIG:-hosts/nixbot.nix}"
+	repo_root="${MIGRATION_MANAGER_REPO_ROOT:-$(pwd -P)}"
+	nixbot_config="${MIGRATION_MANAGER_NIXBOT_CONFIG:-hosts/nixbot.nix}"
 	tmp_files=()
 }
 
@@ -19,7 +19,7 @@ cleanup() {
 }
 
 log() {
-	printf '%s\n' "[migratorctl] $*" >&2
+	printf '%s\n' "[migration-manager] $*" >&2
 }
 
 make_temp_file() {
@@ -36,7 +36,7 @@ ensure_gate_parent() {
 
 require_gate_path() {
 	[ -n "$gate_path" ] || {
-		printf '%s\n' "missing MIGRATOR_GATE_PATH" >&2
+		printf '%s\n' "missing MIGRATION_MANAGER_GATE_PATH" >&2
 		exit 1
 	}
 }
@@ -237,7 +237,7 @@ remote_exec() {
 }
 
 remote_usage() {
-	printf '%s\n' "usage: migratorctl remote <on|off|apply|status> --host <nixbot-host>" >&2
+	printf '%s\n' "usage: migration-manager remote <on|off|apply|status> --host <nixbot-host>" >&2
 	exit 1
 }
 
@@ -273,7 +273,7 @@ remote_main() {
 
 	case "$action" in
 	on | off | apply | status)
-		remote_exec "$host" sudo /run/current-system/sw/bin/migratorctl "$action"
+		remote_exec "$host" sudo /run/current-system/sw/bin/migration-manager "$action"
 		;;
 	*)
 		remote_usage
@@ -306,7 +306,7 @@ main() {
 		remote_main "$@"
 		;;
 	*)
-		printf '%s\n' "usage: migratorctl {on|off|apply|status|remote}" >&2
+		printf '%s\n' "usage: migration-manager {on|off|apply|status|remote}" >&2
 		exit 1
 		;;
 	esac

@@ -26,7 +26,7 @@ init_vars() {
 	deferred_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_RESTART_REQUEST_DIR-}"
 	deferred_unit_restart_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RESTART_REQUEST_DIR-}"
 	deferred_unit_reload_request_dir="${SYSTEMD_USER_MANAGER_DEFERRED_UNIT_RELOAD_REQUEST_DIR-}"
-	migrator_gate_path="${SYSTEMD_USER_MANAGER_MIGRATOR_GATE_PATH-}"
+	migration_manager_gate_path="${SYSTEMD_USER_MANAGER_MIGRATION_MANAGER_GATE_PATH-}"
 	metadata_field_sep=$'\037'
 	metadata_field_sep_json='\u001f'
 	stable_state_timeout_seconds="${SYSTEMD_USER_MANAGER_STABLE_STATE_TIMEOUT_SECONDS:-120}"
@@ -69,8 +69,8 @@ log_managed_unit() {
 	printf '[systemd-user-manager/%s] %s: %s\n' "$user" "$managed_name" "$message" >&2
 }
 
-migrator_gate_on() {
-	[ -n "$migrator_gate_path" ] && [ -f "$migrator_gate_path" ]
+migration_manager_gate_on() {
+	[ -n "$migration_manager_gate_path" ] && [ -f "$migration_manager_gate_path" ]
 }
 
 restart_request_marker_path() {
@@ -905,7 +905,7 @@ read_metadata_reconcile_units_tsv() {
 		]
 	' "$metadata_file" |
 		while IFS="$metadata_field_sep" read -r managed_name managed_unit auto_start desired_state timeout_seconds reload_stamp start_mode repair_command_b64 verify_command_b64; do
-			if migrator_gate_on; then
+			if migration_manager_gate_on; then
 				auto_start="0"
 				desired_state="stopped"
 			fi
@@ -2258,7 +2258,7 @@ run_reconciler_apply() {
 		exit 1
 	fi
 
-	if [ "$dry_run" != 1 ] && migrator_gate_on; then
+	if [ "$dry_run" != 1 ] && migration_manager_gate_on; then
 		log_user_progress "$systemd_user_manager_user" "migration gate is on; not starting $boot_ready_target_name"
 	elif [ "$dry_run" != 1 ]; then
 		userctl start "$boot_ready_target_name"

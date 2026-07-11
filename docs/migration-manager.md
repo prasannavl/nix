@@ -12,25 +12,26 @@ a host. It is not a full host quarantine mechanism.
 The only live state is the transient gate marker:
 
 ```text
-/run/migrator/gate
+/run/migration-manager/gate
 ```
 
 When the file exists, the host is drained:
 
-- migrator-managed system services are stopped and blocked from cold-starting;
-- `systemd-user-manager` reconciles managed user units as stopped and avoids
-  starting its ready target;
-- user-manager-owned podman workloads stop through the same user-service control
-  plane;
-- registered dispatcher services are restarted so runtime state is reconciled
-  after each gate change.
+- migration-manager-managed system services are stopped and blocked from
+  cold-starting;
+- registered native `systemd.user` services are stopped and blocked from
+  cold-starting;
+- registered native `systemd.user` targets, including managed and ready targets,
+  are stopped and blocked from cold-starting;
+- podman-compose workloads drain through their generated user service units.
 
 When the file is absent, the host is resumed:
 
 - system services marked `startOnResume = true` can be started again;
-- user-manager reconciles managed user units back to their declared state;
-- dispatcher services run again to make the user-service state match the live
-  gate.
+- registered native `systemd.user` services marked `startOnResume = true` can be
+  started again;
+- registered native `systemd.user` targets marked `startOnResume = true`, such
+  as `<user>-managed-ready.target`, are started to converge the user graph.
 
 The normal declarative state is:
 
@@ -76,17 +77,17 @@ already have a generation with `services.migration-manager` installed, because
 the remote command calls:
 
 ```bash
-sudo /run/current-system/sw/bin/migratorctl on
+sudo /run/current-system/sw/bin/migration-manager on
 ```
 
 When already logged into the target host, use the local installed command
 directly:
 
 ```bash
-sudo /run/current-system/sw/bin/migratorctl status
-sudo /run/current-system/sw/bin/migratorctl on
-sudo /run/current-system/sw/bin/migratorctl apply
-sudo /run/current-system/sw/bin/migratorctl off
+sudo /run/current-system/sw/bin/migration-manager status
+sudo /run/current-system/sw/bin/migration-manager on
+sudo /run/current-system/sw/bin/migration-manager apply
+sudo /run/current-system/sw/bin/migration-manager off
 ```
 
 ## Data Migrator Concepts
@@ -99,8 +100,8 @@ Important names:
 
 - `--source-host` is the SSH host or address used for reading data.
 - `--target-host` is the SSH host used for writing data.
-- `--source-drain-host` is the nixbot host whose migrator gate should be turned
-  on before the final copy.
+- `--source-drain-host` is the nixbot host whose migration-manager gate should
+  be turned on before the final copy.
 - `--target-drain-host` is the nixbot host whose target generation should be
   bootstrapped drained, then resumed after the final copy.
 
@@ -120,11 +121,11 @@ A full file-copy migration does this:
 8. leave the source drained unless `--resume-source` is passed.
 
 `--warm` only runs the seed copy. It does not bootstrap the target and does not
-toggle either migrator gate.
+toggle either migration-manager gate.
 
 `--skip-deploy` means the tool will not run the target bootstrap deploy and will
-not call `migratorctl`. Use it only when the source and target are already in
-the desired drain state.
+not call `migration-manager`. Use it only when the source and target are already
+in the desired drain state.
 
 ## Existing Target Host
 
@@ -204,9 +205,9 @@ nix run .#data-migrator -- \
 ```
 
 The target bootstrap deploy uses a temporary worktree under `tmp/`, writes a
-private migrator bootstrap override for the target host, deploys that drained
-generation, and removes the temporary worktree after a successful deploy. If the
-bootstrap deploy fails, the worktree is kept for inspection.
+private migration-manager bootstrap override for the target host, deploys that
+drained generation, and removes the temporary worktree after a successful
+deploy. If the bootstrap deploy fails, the worktree is kept for inspection.
 
 ## Incus Migrations
 
@@ -262,7 +263,7 @@ snapshots.
 
 Before the final copy:
 
-- confirm the source host has a deployed generation with `migratorctl`;
+- confirm the source host has a deployed generation with `migration-manager`;
 - confirm the target host can be deployed by nixbot;
 - confirm the profile paths in `pkgs/tools/data-migrator/profiles.nix` include
   the state that must move and exclude volatile cache paths;
@@ -289,10 +290,10 @@ nix run .#migration-manager -- remote status --host TARGET_NIXBOT_HOST
 
 Expected target status after a normal successful cutover is `off`.
 
-Check migrator units:
+Check migration-manager units:
 
 ```bash
-ssh TARGET_NIXBOT_HOST 'sudo systemctl status migrator-sync.service migrator-apply.service'
+ssh TARGET_NIXBOT_HOST 'sudo systemctl status migration-manager-sync.service migration-manager-apply.service'
 ```
 
 Check for failed system units:
@@ -301,10 +302,10 @@ Check for failed system units:
 ssh TARGET_NIXBOT_HOST 'sudo systemctl --failed'
 ```
 
-Check the user-manager dispatcher:
+Check native user units and targets:
 
 ```bash
-ssh TARGET_NIXBOT_HOST 'sudo systemctl status systemd-user-manager-dispatcher-abird.service'
+ssh TARGET_NIXBOT_HOST 'uid=$(id -u abird); sudo -u abird XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user status abird-managed.target abird-managed-ready.target'
 ```
 
 For Incus migrations, check instance placement and state from the controller:

@@ -2,7 +2,7 @@
 
 `data-migrator` copies declared host state paths. In full migrations it can
 first deploy the target host into a declarative drained generation, then use
-runtime `migratorctl` drain/resume calls around the final cutover copy.
+runtime `migration-manager` drain/resume calls around the final cutover copy.
 
 Incus project move with automatic path selection:
 
@@ -41,24 +41,25 @@ That full flow does two distinct control actions:
 1. a one-time drained bootstrap deploy for the target host, so the new
    generation, secrets, users, and runtime directories exist before the seed
    copy, and
-2. runtime `migratorctl` gate toggles for the target and source hosts during the
-   final sync window.
+2. runtime `migration-manager` gate toggles for the target and source hosts
+   during the final sync window.
 
 When the target resumes, `data-migrator` deploys the normal target generation
 again, then flips the runtime gate off. That returns the host to the default
-runtime-owned mode with no drain marker and no persistent migrator state.
+runtime-owned mode with no drain marker and no persistent migration-manager
+state.
 
 Remote gate toggles require the remote host to already run a generation that
 contains `services.migration-manager` and
-`/run/current-system/sw/bin/migratorctl`. The target bootstrap deploy
+`/run/current-system/sw/bin/migration-manager`. The target bootstrap deploy
 establishes that for the target. Source drain hosts should be pre-deployed with
-migrator support, or already drained when using `--skip-deploy`.
+migration-manager support, or already drained when using `--skip-deploy`.
 
 `services.migration-manager.state` is tri-state. The normal default is
-`"runtime"`, which keeps `migratorctl on|off` state live across switch within
-the current boot. The target bootstrap deploy temporarily forces `"on"` in its
-private worktree; target resume deploys the normal generation and runs
-`migratorctl off` so the host returns to runtime-owned gate control.
+`"runtime"`, which keeps `migration-manager on|off` state live across switch
+within the current boot. The target bootstrap deploy temporarily forces `"on"`
+in its private worktree; target resume deploys the normal generation and runs
+`migration-manager off` so the host returns to runtime-owned gate control.
 
 Local staging copy:
 
@@ -171,10 +172,10 @@ project flags are omitted, the controller's default Incus project is used;
 `--target-project` is added to `incus copy` only for cross-project moves.
 
 When the target instance already exists, native Incus refreshes are guarded. The
-migrator stamps targets it creates or refreshes with `user.data-migrator.*`
-source markers. A later refresh is allowed only when those markers match the
-requested source. Use `--force-refresh-existing` to refresh an existing target
-without a matching marker.
+`data-migrator` stamps targets it creates or refreshes with
+`user.data-migrator.*` source markers. A later refresh is allowed only when
+those markers match the requested source. Use `--force-refresh-existing` to
+refresh an existing target without a matching marker.
 
 The fast path is selected only when the source and target Incus remote are the
 same and the target storage pool is the same btrfs pool as the source root disk.
@@ -184,7 +185,7 @@ The flow is:
 2. copy or refresh the target instance with `incus copy`,
 3. for full migrations, deploy the target host into a drained generation unless
    `--skip-deploy` is set,
-4. for full migrations, drain source writers with `migratorctl on` unless
+4. for full migrations, drain source writers with `migration-manager on` unless
    `--skip-deploy` is set,
 5. stop the source instance and stop the current target instance,
 6. create the final source snapshot and run a final `incus copy --refresh`,
@@ -198,6 +199,6 @@ target is the authoritative crash-consistent state; with nixbot drains enabled,
 service state is app-consistent before that stop.
 
 If the btrfs fast path is not available, file-copy fallback uses the same
-bootstrap/seed/final/drain ordering as the existing data migrator. It requires
-`--target-host` or `--target-dir` because there must be a destination filesystem
-to receive the declared profile paths.
+bootstrap/seed/final/drain ordering as the existing data migration flow. It
+requires `--target-host` or `--target-dir` because there must be a destination
+filesystem to receive the declared profile paths.

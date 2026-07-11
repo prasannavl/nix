@@ -56,7 +56,7 @@
 in {
   lib-flake-isolated = assert flakeLib.stacks == {};
   assert outputs.packages ? migration-manager;
-  assert outputs.packages.migration-manager.meta.mainProgram == "migratorctl";
+  assert outputs.packages.migration-manager.meta.mainProgram == "migration-manager";
   assert nativeClientCaDefaultsStack.defaultCaCertContainerPath == "/run/secrets/test-ca.crt";
   assert nativeClientCaDefaultsStack.srv.defaultPostgresCaCertPath == "/etc/ssl/certs/test-ca.crt";
   assert nativeClientCaDefaultsStack.srv.defaultNatsCaCertPath == "/etc/ssl/certs/test-ca.crt";

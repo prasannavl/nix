@@ -12,11 +12,10 @@ Supported delegated forms:
 
 - `nix run .#nixbot -- ...` -> `_nixbot`
 - `nix run .#data-migrator -- ...` -> `_data_migrator`
-- `nix run .#migration-manager -- ...` -> `_migratorctl`
+- `nix run .#migration-manager -- ...` -> `_migration_manager`
 
-`migratorctl` is provided by the root app `migration-manager`, whose package
-`meta.mainProgram` is `migratorctl`. Do not add `.#migratorctl` handling unless
-the root flake also exports that app name.
+`migration-manager` is provided by the root app `migration-manager`, whose
+package `meta.mainProgram` is `migration-manager`.
 
 ## Implementation Shape
 
@@ -25,7 +24,7 @@ the root flake also exports that app name.
 - Source existing package completion scripts from the bridge:
   - `pkgs/tools/nixbot/nixbot.bash`
   - `pkgs/tools/data-migrator/data-migrator.bash`
-  - `pkgs/tool/migration-manager/migratorctl.bash`
+  - `pkgs/tool/migration-manager/migration-manager.bash`
 - Capture the pre-existing completion function for `nix` when one is present.
 - Register a wrapper completion for `nix`.
 - Register direct script completion aliases for:
@@ -39,7 +38,7 @@ the root flake also exports that app name.
 - Match a fixed repo-local app table:
   - `nixbot` -> `_nixbot`
   - `data-migrator` -> `_data_migrator`
-  - `migration-manager` -> `_migratorctl`
+  - `migration-manager` -> `_migration_manager`
 - For a recognized app ref, temporarily rewrite Bash completion globals:
   - original: `COMP_WORDS=(nix run .#nixbot -- --hosts ab)`
   - synthetic: `COMP_WORDS=(nixbot --hosts ab)`

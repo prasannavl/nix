@@ -12,23 +12,24 @@ class MigratorScriptTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.repo_root = Path(__file__).resolve().parents[4]
-        cls.helper = cls.repo_root / "pkgs/tool/migration-manager/migrator-helper.sh"
-        cls.control = cls.repo_root / "pkgs/tool/migration-manager/migratorctl.sh"
+        cls.helper = cls.repo_root / "pkgs/tool/migration-manager/helper.sh"
+        cls.control = cls.repo_root / "pkgs/tool/migration-manager/migration-manager.sh"
         cls.tmp_root = cls.repo_root / "tmp"
         cls.tmp_root.mkdir(exist_ok=True)
 
     def setUp(self):
-        self.work_dir = Path(tempfile.mkdtemp(prefix="migrator-test.", dir=self.tmp_root))
+        self.work_dir = Path(tempfile.mkdtemp(prefix="migration-manager-test.", dir=self.tmp_root))
         self.fake_bin = self.work_dir / "bin"
         self.fake_bin.mkdir()
         self.systemctl_log = self.work_dir / "systemctl.log"
         self.manifest = self.work_dir / "manifest.json"
         self.gate = self.work_dir / "gate"
-        self.helper_source = self.strip_main(self.helper, "migrator-helper-test-source.sh")
-        self.control_source = self.strip_main(self.control, "migratorctl-test-source.sh")
+        self.test_user = os.environ.get("USER") or subprocess.check_output(["id", "-un"], text=True).strip()
+        self.helper_source = self.strip_main(self.helper, "migration-manager-helper-test-source.sh")
+        self.control_source = self.strip_main(self.control, "migration-manager-test-source.sh")
         self.write_executable(
             self.fake_bin / "systemctl",
-            "#!/bin/sh\nif [ \"$1\" = show ]; then printf 'loaded\\n'; else printf '%s\\n' \"$*\" >>\"$SYSTEMCTL_LOG\"; fi\n",
+            "#!/bin/sh\nif [ \"$1\" = show ] || { [ \"$1\" = --user ] && [ \"$2\" = show ]; }; then printf 'loaded\\n'; else printf '%s\\n' \"$*\" >>\"$SYSTEMCTL_LOG\"; fi\n",
         )
         self.write_executable(
             self.fake_bin / "ssh",
@@ -50,7 +51,35 @@ class MigratorScriptTest(unittest.TestCase):
                         },
                         {"unit": "defaulted.service"},
                     ],
-                    "dispatcherUnits": ["dispatcher.service"],
+                    "userServices": [
+                        {
+                            "user": self.test_user,
+                            "unit": "user-stop-only.service",
+                            "stopOnDrain": True,
+                            "startOnResume": False,
+                        },
+                        {
+                            "user": self.test_user,
+                            "unit": "user-start-only.service",
+                            "stopOnDrain": False,
+                            "startOnResume": True,
+                        },
+                        {"user": self.test_user, "unit": "user-defaulted.service"},
+                    ],
+                    "userTargets": [
+                        {
+                            "user": self.test_user,
+                            "target": "abird-managed.target",
+                            "stopOnDrain": True,
+                            "startOnResume": True,
+                        },
+                        {
+                            "user": self.test_user,
+                            "target": "abird-managed-ready.target",
+                            "stopOnDrain": True,
+                            "startOnResume": True,
+                        },
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -76,10 +105,11 @@ class MigratorScriptTest(unittest.TestCase):
         full_env.update(
             {
                 "PATH": f"{self.fake_bin}:{full_env['PATH']}",
-                "MIGRATOR_GATE_PATH": str(self.gate),
-                "MIGRATOR_MANIFEST": str(self.manifest),
+                "MIGRATION_MANAGER_GATE_PATH": str(self.gate),
+                "MIGRATION_MANAGER_MANIFEST": str(self.manifest),
                 "SYSTEMCTL_LOG": str(self.systemctl_log),
                 "SSH_LOG": str(self.work_dir / "ssh.log"),
+                "XDG_RUNTIME_DIR": str(self.work_dir / "run"),
             }
         )
         full_env.update(env or {})
@@ -103,7 +133,7 @@ class MigratorScriptTest(unittest.TestCase):
             check=check,
         )
 
-    def test_helper_apply_respects_gate_manifest_and_dispatchers(self):
+    def test_helper_apply_respects_gate_manifest_and_native_user_units(self):
         self.run_bash(
             self.helper_source,
             """
@@ -112,7 +142,14 @@ class MigratorScriptTest(unittest.TestCase):
             """,
         )
         self.assertEqual(
-            ["start start-only.service", "start defaulted.service", "restart dispatcher.service"],
+            [
+                "start start-only.service",
+                "start defaulted.service",
+                "--user start user-start-only.service",
+                "--user start user-defaulted.service",
+                "--user start abird-managed.target",
+                "--user start abird-managed-ready.target",
+            ],
             self.systemctl_log.read_text(encoding="utf-8").splitlines(),
         )
 
@@ -126,25 +163,32 @@ class MigratorScriptTest(unittest.TestCase):
             """,
         )
         self.assertEqual(
-            ["stop --wait stop-only.service", "stop --wait defaulted.service", "restart dispatcher.service"],
+            [
+                "stop --wait stop-only.service",
+                "stop --wait defaulted.service",
+                "--user stop --wait abird-managed.target",
+                "--user stop --wait abird-managed-ready.target",
+                "--user stop --wait user-stop-only.service",
+                "--user stop --wait user-defaulted.service",
+            ],
             self.systemctl_log.read_text(encoding="utf-8").splitlines(),
         )
 
     def test_helper_sync_accepts_declared_states_and_rejects_unknown_state(self):
-        self.run_bash(self.helper_source, "init_vars; set_declared_gate_state", env={"MIGRATOR_DECLARED_STATE": "on"})
+        self.run_bash(self.helper_source, "init_vars; set_declared_gate_state", env={"MIGRATION_MANAGER_DECLARED_STATE": "on"})
         self.assertTrue(self.gate.exists())
 
-        self.run_bash(self.helper_source, "init_vars; set_declared_gate_state", env={"MIGRATOR_DECLARED_STATE": "off"})
+        self.run_bash(self.helper_source, "init_vars; set_declared_gate_state", env={"MIGRATION_MANAGER_DECLARED_STATE": "off"})
         self.assertFalse(self.gate.exists())
 
         invalid = self.run_bash(
             self.helper_source,
             "init_vars; set_declared_gate_state",
             check=False,
-            env={"MIGRATOR_DECLARED_STATE": "broken"},
+            env={"MIGRATION_MANAGER_DECLARED_STATE": "broken"},
         )
         self.assertNotEqual(0, invalid.returncode)
-        self.assertIn("unsupported MIGRATOR_DECLARED_STATE", invalid.stderr)
+        self.assertIn("unsupported MIGRATION_MANAGER_DECLARED_STATE", invalid.stderr)
 
     def test_control_local_gate_status_and_apply(self):
         result = self.run_bash(
@@ -160,7 +204,7 @@ class MigratorScriptTest(unittest.TestCase):
         )
 
         self.assertEqual(["on", "off"], result.stdout.splitlines())
-        self.assertEqual(["restart --wait migrator-apply.service"], self.systemctl_log.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(["restart --wait migration-manager-apply.service"], self.systemctl_log.read_text(encoding="utf-8").splitlines())
 
     def test_control_remote_main_delegates_supported_actions(self):
         result = self.run_bash(
@@ -175,8 +219,8 @@ class MigratorScriptTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                "abird-corp sudo /run/current-system/sw/bin/migratorctl on",
-                "abird-data sudo /run/current-system/sw/bin/migratorctl apply",
+                "abird-corp sudo /run/current-system/sw/bin/migration-manager on",
+                "abird-data sudo /run/current-system/sw/bin/migration-manager apply",
             ],
             result.stdout.splitlines(),
         )

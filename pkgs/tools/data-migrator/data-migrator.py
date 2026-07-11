@@ -1102,7 +1102,7 @@ def write_bootstrap_hosts(repo_root, host):
 
 
 def nixbot_dirty_flag():
-    return os.environ.get("MIGRATOR_NIXBOT_DIRTY_FLAG", DEFAULT_NIXBOT_DIRTY_FLAG)
+    return os.environ.get("MIGRATION_MANAGER_NIXBOT_DIRTY_FLAG", DEFAULT_NIXBOT_DIRTY_FLAG)
 
 
 def deploy_target_prepared(args, host):
@@ -1123,7 +1123,7 @@ def deploy_target_prepared(args, host):
     try:
         if args.dry_run:
             info(
-                f"dry-run: would write migrator bootstrap host override for {host} in {worktree}"
+                f"dry-run: would write migration-manager bootstrap host override for {host} in {worktree}"
             )
         else:
             write_bootstrap_hosts(worktree, host)
@@ -1188,7 +1188,7 @@ def deploy_drain(args, host, enabled):
         return
 
     cmd = [
-        "migratorctl",
+        "migration-manager",
         "remote",
         state,
         "--host",
@@ -1202,7 +1202,7 @@ def deploy_drain(args, host, enabled):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="data-migrator",
-        description="Migrate declared host data with rsync, an optional drained target bootstrap deploy, and runtime migrator gate toggles.",
+        description="Migrate declared host data with rsync, an optional drained target bootstrap deploy, and runtime migration-manager gate toggles.",
     )
     parser.add_argument(
         "--profile",
@@ -1239,7 +1239,7 @@ def parse_args(argv):
     parser.add_argument(
         "--warm",
         action="store_true",
-        help="only run the seed copy; do not bootstrap the target or toggle migrator drain state",
+        help="only run the seed copy; do not bootstrap the target or toggle migration-manager drain state",
     )
     parser.add_argument(
         "--source-drain-host",
@@ -1267,7 +1267,7 @@ def parse_args(argv):
     parser.add_argument(
         "--skip-deploy",
         action="store_true",
-        help="do not bootstrap the target or call migratorctl; useful when hosts are already deployed and in the desired drain state",
+        help="do not bootstrap the target or call migration-manager; useful when hosts are already deployed and in the desired drain state",
     )
     parser.add_argument(
         "--nixbot-goal",
@@ -1277,7 +1277,7 @@ def parse_args(argv):
     parser.add_argument(
         "--nixbot-dry",
         action="store_true",
-        help="treat the bootstrap deploy and migratorctl runtime drain calls as dry-run",
+        help="treat the bootstrap deploy and migration-manager runtime drain calls as dry-run",
     )
     parser.add_argument("--repo-root", help="repo root; auto-detected by default")
     parser.add_argument(
@@ -1364,7 +1364,7 @@ def parse_args(argv):
     parser.add_argument(
         "--force-refresh-existing",
         action="store_true",
-        help="allow refreshing an existing target without a matching migrator marker",
+        help="allow refreshing an existing target without a matching data-migrator marker",
     )
     parser.add_argument(
         "--leave-source-running",

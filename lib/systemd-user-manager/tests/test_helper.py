@@ -519,7 +519,7 @@ esac
         self.assertNotIn("new-stopped: would start", result.stderr)
         self.assertNotIn("new-manual: would start", result.stderr)
 
-    def test_metadata_rows_and_migrator_gate_override_reconcile_state(self):
+    def test_metadata_rows_and_migration_manager_gate_override_reconcile_state(self):
         metadata = self.write_metadata(
             "metadata.json",
             {
@@ -560,7 +560,7 @@ esac
             f"""
             SYSTEMD_USER_MANAGER_METADATA={metadata}
             normal="$(read_metadata_reconcile_units_tsv "$SYSTEMD_USER_MANAGER_METADATA" | tr "$metadata_field_sep" '\\t')"
-            migrator_gate_path={gate}
+            migration_manager_gate_path={gate}
             gated="$(read_metadata_reconcile_units_tsv "$SYSTEMD_USER_MANAGER_METADATA" | tr "$metadata_field_sep" '\\t')"
             printf '%s\\n---\\n%s\\n' "$normal" "$gated"
             """

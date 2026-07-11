@@ -2,7 +2,7 @@
   pkgs ? import <nixpkgs> {},
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
   nixbot ? pkgs.callPackage ../nixbot/default.nix {inherit pkgHelper;},
-  migrator ? pkgs.callPackage ../../tool/migration-manager/default.nix {inherit pkgHelper;},
+  migrationManager ? pkgs.callPackage ../../tool/migration-manager/default.nix {inherit pkgHelper;},
 }: let
   lib = pkgs.lib;
   tests = import ./tests {pkgs = pkgs;};
@@ -31,7 +31,7 @@
       git
       gnutar
       incus
-      migrator
+      migrationManager
       nix
       openssh
       rsync

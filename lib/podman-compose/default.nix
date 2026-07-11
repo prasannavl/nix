@@ -264,7 +264,7 @@
           };
         };
         default = serviceDefaults.reload.trigger;
-        description = "Paths that may be handled by native reload instead of restart once the user-manager supports reload triggers.";
+        description = "Paths that may be handled by native reload instead of restart through systemd user-service reload triggers.";
       };
     };
   };
@@ -702,7 +702,7 @@
       autoStart = lib.mkOption {
         type = lib.types.nullOr lib.types.bool;
         default = serviceDefaults.autoStart;
-        description = "Whether this compose instance should be auto-started by the generated user-manager reconcile flow during deploy and boot-ready startup. When null, inherit the stack default.";
+        description = "Whether this compose instance should be auto-started by the generated native user targets during deploy and boot-ready startup. When null, inherit the stack default.";
       };
 
       longRunning = lib.mkOption {
@@ -714,7 +714,7 @@
       timeoutReadySeconds = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.positive;
         default = serviceDefaults.timeoutReadySeconds;
-        description = "Seconds the generated user-manager reconciliation should wait for this compose unit to become ready. When null, inherit the stack default.";
+        description = "Seconds native user-service convergence should wait for this compose unit to become ready. When null, inherit the stack default.";
       };
 
       startStateStallSeconds = lib.mkOption {
@@ -738,7 +738,7 @@
       reloadTag = lib.mkOption {
         type = lib.types.str;
         default = serviceDefaults.reloadTag;
-        description = "Declarative knob to reload this compose instance through systemd-user-manager reloadTriggers when native reload is enabled.";
+        description = "Declarative knob to reload this compose instance through native systemd user service reloadTriggers when native reload is enabled.";
       };
 
       imageTag = lib.mkOption {
@@ -2203,6 +2203,35 @@
       };
     };
   };
+  mkMigrationManagedUser = user: let
+    services = builtins.filter (service: service.systemdUser == user) resolvedServices;
+    autoStartServices = autoStartServicesForUser user;
+    targetIsActive = autoStartServices != [];
+  in {
+    ${user} = {
+      services = lib.listToAttrs (
+        map
+        (service: {
+          name = "${service.systemdServiceName}.service";
+          value = {
+            stopOnDrain = service.state == "running";
+            startOnResume = false;
+          };
+        })
+        services
+      );
+      targets = {
+        "${managedTargetNameForUser user}.target" = {
+          stopOnDrain = targetIsActive;
+          startOnResume = targetIsActive;
+        };
+        "${managedReadyTargetNameForUser user}.target" = {
+          stopOnDrain = targetIsActive;
+          startOnResume = targetIsActive;
+        };
+      };
+    };
+  };
   stackUsers = lib.unique (map (service: service.systemdUser) resolvedServices);
   rootlessStackUsers = builtins.filter (user: user != "root") stackUsers;
   rootlessStackUserHasConfig = user:
@@ -2270,6 +2299,10 @@
     then lib.concatStringsSep ", " entryFile
     else toString entryFile;
 in {
+  imports = [
+    ../services/migration-manager/options.nix
+  ];
+
   options.services.podman-compose = lib.mkOption {
     type = lib.types.attrsOf stackType;
     default = {};
@@ -2849,6 +2882,10 @@ in {
         controlPackage
         imagePullAllPackage
       ];
+
+    services.migration-manager.managedUnits.users = lib.mkMerge (
+      map mkMigrationManagedUser stackUsers
+    );
 
     networking.firewall.allowedTCPPorts = firewallPortsForProtocol "tcp";
     networking.firewall.allowedUDPPorts = firewallPortsForProtocol "udp";

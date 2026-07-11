@@ -1,6 +1,6 @@
 {pkgs}: {
   helper =
-    pkgs.runCommand "migrator-helper-test" {
+    pkgs.runCommand "migration-manager-helper-test" {
       nativeBuildInputs = [
         pkgs.bash
         pkgs.coreutils
@@ -16,7 +16,7 @@
       cp ${../../../manifest.nix} "$repo/pkgs/manifest.nix"
       cp ${../../../../flake.nix} "$repo/flake.nix"
       chmod -R u+w "$repo"
-      bash "$repo/pkgs/tool/migration-manager/tests/test_migrator_helper.sh"
+      bash "$repo/pkgs/tool/migration-manager/tests/test_helper.sh"
       python -m unittest discover \
         --start-directory "$repo/pkgs/tool/migration-manager/tests" \
         --pattern 'test_*.py'

@@ -217,11 +217,6 @@ in
   == [
     "services.systemd-user-manager: duplicate managed user units are not allowed: alice: dup.service"
   ];
-  assert config.services.migration-manager.managedUnits.dispatchers
-  == [
-    "systemd-user-manager-dispatcher-alice.service"
-    "systemd-user-manager-dispatcher-bob.service"
-  ];
   assert lib.hasInfix "activation-stop-applied" config.system.activationScripts.systemd-user-manager-stop-applied.text;
   assert lib.hasInfix "activation-dry-preview" config.system.activationScripts.systemd-user-manager-dry-activate-preview.text;
     pkgs.runCommand "systemd-user-manager-module-test" {} ''

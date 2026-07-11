@@ -1,11 +1,11 @@
-_migratorctl_repo_root() {
+_migration_manager_repo_root() {
 	local root
 
 	root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
 	printf '%s\n' "$root"
 }
 
-_migratorctl_config_path() {
+_migration_manager_config_path() {
 	local i word root
 
 	for ((i = 1; i < COMP_CWORD; i++)); do
@@ -24,19 +24,19 @@ _migratorctl_config_path() {
 		esac
 	done
 
-	root="$(_migratorctl_repo_root)" || return 1
-	printf '%s\n' "${root}/${MIGRATOR_NIXBOT_CONFIG:-hosts/nixbot.nix}"
+	root="$(_migration_manager_repo_root)" || return 1
+	printf '%s\n' "${root}/${MIGRATION_MANAGER_NIXBOT_CONFIG:-hosts/nixbot.nix}"
 }
 
-_migratorctl_hosts() {
+_migration_manager_hosts() {
 	local config
 
-	config="$(_migratorctl_config_path)" || return 0
+	config="$(_migration_manager_config_path)" || return 0
 	nix eval --json --file "$config" 2>/dev/null |
 		jq -r '(.hosts // {}) | keys[]' 2>/dev/null
 }
 
-_migratorctl_compgen_words() {
+_migration_manager_compgen_words() {
 	local cur="$1"
 	local words="$2"
 	local prefix="${3:-}"
@@ -48,7 +48,7 @@ _migratorctl_compgen_words() {
 	fi
 }
 
-_migratorctl_compgen_files() {
+_migration_manager_compgen_files() {
 	local cur="$1"
 	local prefix="${2:-}"
 
@@ -58,7 +58,7 @@ _migratorctl_compgen_files() {
 	fi
 }
 
-_migratorctl() {
+_migration_manager() {
 	local cur prev eq_opt action="" remote_action="" word
 	local -a actions remote_actions remote_options
 
@@ -96,46 +96,46 @@ _migratorctl() {
 
 	case "$prev" in
 	--host)
-		_migratorctl_compgen_words "$cur" "$(_migratorctl_hosts)"
+		_migration_manager_compgen_words "$cur" "$(_migration_manager_hosts)"
 		return 0
 		;;
 	--repo-root | --config)
-		_migratorctl_compgen_files "$cur"
+		_migration_manager_compgen_files "$cur"
 		return 0
 		;;
 	esac
 
 	case "$eq_opt" in
 	--host)
-		_migratorctl_compgen_words "$cur" "$(_migratorctl_hosts)"
+		_migration_manager_compgen_words "$cur" "$(_migration_manager_hosts)"
 		return 0
 		;;
 	--repo-root | --config)
-		_migratorctl_compgen_files "$cur"
+		_migration_manager_compgen_files "$cur"
 		return 0
 		;;
 	esac
 
 	case "$cur" in
 	--host=*)
-		_migratorctl_compgen_words "${cur#--host=}" "$(_migratorctl_hosts)" "--host="
+		_migration_manager_compgen_words "${cur#--host=}" "$(_migration_manager_hosts)" "--host="
 		;;
 	--repo-root=* | --config=*)
-		_migratorctl_compgen_files "${cur#*=}" "${cur%%=*}="
+		_migration_manager_compgen_files "${cur#*=}" "${cur%%=*}="
 		;;
 	-*)
 		if [ "$action" = "remote" ]; then
-			_migratorctl_compgen_words "$cur" "${remote_options[*]}"
+			_migration_manager_compgen_words "$cur" "${remote_options[*]}"
 		fi
 		;;
 	*)
 		if [ -z "$action" ]; then
-			_migratorctl_compgen_words "$cur" "${actions[*]}"
+			_migration_manager_compgen_words "$cur" "${actions[*]}"
 		elif [ "$action" = "remote" ] && [ -z "$remote_action" ]; then
-			_migratorctl_compgen_words "$cur" "${remote_actions[*]}"
+			_migration_manager_compgen_words "$cur" "${remote_actions[*]}"
 		fi
 		;;
 	esac
 }
 
-complete -F _migratorctl migratorctl
+complete -F _migration_manager migration-manager
