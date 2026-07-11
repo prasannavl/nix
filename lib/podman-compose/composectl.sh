@@ -6,7 +6,7 @@ usage() {
 usage:
   podman-composectl list
   podman-composectl <service> {start|stop|restart|reload|status}
-  podman-composectl <service> {link|clean|verify|logs} [args...]
+  podman-composectl <service> {link|clean|verify|repair|logs} [args...]
 
 services are generated systemd user service names without ".service".
 EOF
@@ -141,6 +141,9 @@ main() {
 		;;
 	verify)
 		run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" verify "$@"
+		;;
+	repair)
+		run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" repair "$@"
 		;;
 	logs)
 		run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" logs "$@"

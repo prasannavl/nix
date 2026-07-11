@@ -17,7 +17,7 @@ include only what applies, but keep the relative order stable.
 7. **env** / **envSecrets**
 8. **dirs**
 9. **fileSecrets** / **trustedCa** / **files**
-10. **preStart** / **preStop**
+10. **preStart** / **postStart** / **preStop**
 11. **serviceOverrides**
 
 ## Why
@@ -42,13 +42,15 @@ include only what applies, but keep the relative order stable.
   service needs both files. Keep app-native CA flags in `source` when an app
   requires a specific option such as `custom_ca_path`, `OC_LDAP_CACERT`, or
   `ssl.ca_file_path`.
-- `preStart` and `preStop` are helper-owned lifecycle hooks. `preStart` runs
-  after helper-managed dirs, files, env secrets, and file secrets are staged and
-  before `podman compose up`; use it for first-run env generation, image loads,
-  bootstrap commands, and other work that depends on the staged runtime tree.
-  `preStop` runs before the helper applies the compose stop policy and accepts a
-  leading `-` on a command to ignore failure. Keep raw `serviceOverrides` last
-  for true systemd-level overrides such as timeouts or `ExecStartPost`.
+- `preStart`, `postStart`, and `preStop` are helper-owned lifecycle hooks.
+  `preStart` runs after helper-managed dirs, files, env secrets, and file
+  secrets are staged and before `podman compose up`; use it for first-run env
+  generation, image loads, bootstrap commands, and other work that depends on
+  the staged runtime tree. `postStart` runs after compose readiness succeeds and
+  is the right place for app reconcile/apply helpers that must observe the live
+  service. `preStop` runs before the helper applies the compose stop policy and
+  accepts a leading `-` on a command to ignore failure. Keep raw
+  `serviceOverrides` last for true systemd-level overrides such as timeouts.
 
 ## Lifecycle Policy
 
@@ -133,7 +135,7 @@ inside the existing network model.
 
 ## Startup Timeouts
 
-Do not raise `timeoutStableSeconds`, `TimeoutStartSec`, or related service
+Do not raise `timeoutReadySeconds`, `TimeoutStartSec`, or related service
 settling windows just because a deploy is slow or a health check is stuck. A
 long start-post or health-settling delay usually means the service is failing
 elsewhere: an unreachable local port, a crashed container, a stale pod, a bad

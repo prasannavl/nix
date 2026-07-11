@@ -53,8 +53,9 @@
     workingDir = null;
     serviceName = null;
     serviceOverrides = {};
-    composeArgs = ["--in-pod=false"];
+    composeArgs = [];
     preStart = [];
+    postStart = [];
     preStop = [];
     reload = {
       method = "restart";
@@ -77,7 +78,8 @@
     adopt = false;
     autoStart = null;
     longRunning = true;
-    timeoutStableSeconds = null;
+    timeoutReadySeconds = null;
+    startStateStallSeconds = null;
     bootTag = "0";
     reloadTag = "0";
     recreateTag = "0";
@@ -92,7 +94,7 @@
     dirs = {};
     exposedPorts = {};
   };
-  stackDefaultTimeoutStableSeconds = 900;
+  stackDefaultTimeoutReadySeconds = 120;
   defaultComposeEntryFiles = [
     "compose.yml"
     "compose.yaml"
@@ -106,6 +108,33 @@
   envSecretsOverrideFileName = "__podman-env-secrets.override.yml";
   fileSecretsOverrideFileName = "__podman-file-secrets.override.yml";
   explicitSystemdUnitPattern = ".*\\.(service|target|socket|timer|path|mount)$";
+  composeServicesFromText = text: let
+    lines = lib.splitString "\n" text;
+    serviceLine = line:
+      builtins.match "[[:space:]][[:space:]]([A-Za-z0-9_.-]+):[[:space:]]*(#.*)?" line;
+    step = state: line: let
+      isBlank = builtins.match "[[:space:]]*" line != null;
+      startsServices = builtins.match "services:[[:space:]]*(#.*)?" line != null;
+      startsTopLevel = builtins.match "[^[:space:]].*" line != null;
+      match = serviceLine line;
+    in
+      if ! state.inServices
+      then state // {inServices = startsServices;}
+      else if isBlank
+      then state
+      else if startsTopLevel
+      then state // {inServices = startsServices;}
+      else if match != null
+      then state // {services = state.services ++ [(builtins.elemAt match 0)];}
+      else state;
+    parsed =
+      builtins.foldl' step {
+        inServices = false;
+        services = [];
+      }
+      lines;
+  in
+    lib.unique parsed.services;
 
   ownerRefType = lib.types.either lib.types.str lib.types.int;
   modeOptionType = lib.types.nullOr lib.types.str;
@@ -453,6 +482,8 @@
         pkgs.util-linux
       ];
       text = ''
+        export NIX_PODMAN_COMPOSE_HELPER_SELF="$0"
+        export NIX_PODMAN_COMPOSE_HELPER_TOPLEVEL=1
         source ${./helper.sh}
         main "$@"
       '';
@@ -593,6 +624,12 @@
         description = "Commands to run inside the compose helper after runtime dirs, files, and secrets are staged, and before `podman compose up`.";
       };
 
+      postStart = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = serviceDefaults.postStart;
+        description = "Commands to run inside the compose helper after `podman compose up` and helper start verification succeeds. Prefix a command with `-` to ignore failure.";
+      };
+
       preStop = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = serviceDefaults.preStop;
@@ -667,10 +704,16 @@
         description = "Whether this compose instance is expected to keep at least one container running. When false, all containers exiting cleanly is service success.";
       };
 
-      timeoutStableSeconds = lib.mkOption {
+      timeoutReadySeconds = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.positive;
-        default = serviceDefaults.timeoutStableSeconds;
-        description = "Seconds the generated user-manager reconciliation should wait for this compose unit to leave activating, deactivating, or reloading states. When null, inherit the stack default.";
+        default = serviceDefaults.timeoutReadySeconds;
+        description = "Seconds the generated user-manager reconciliation should wait for this compose unit to become ready. When null, inherit the stack default.";
+      };
+
+      startStateStallSeconds = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = serviceDefaults.startStateStallSeconds;
+        description = "Optional helper start guard for how long containers may remain non-running during `podman compose up` before the helper terminates the attempt. Leave null for the helper default.";
       };
 
       recreateTag = lib.mkOption {
@@ -1173,10 +1216,10 @@
         description = "Default upstream host for nginx proxy vhosts derived from this stack's instances.";
       };
 
-      timeoutStableSeconds = lib.mkOption {
+      timeoutReadySeconds = lib.mkOption {
         type = lib.types.ints.positive;
-        default = stackDefaultTimeoutStableSeconds;
-        description = "Default stable-state wait timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutStableSeconds.";
+        default = stackDefaultTimeoutReadySeconds;
+        description = "Default readiness timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutReadySeconds.";
       };
 
       autoStart = lib.mkOption {
@@ -1483,9 +1526,11 @@
       };
       restart =
         {
-          unit = restartSystemdService;
+          unit = restartStampSystemdService;
           reload = service.reload;
           preStart = service.preStart;
+          postStart = service.postStart;
+          startStateStallSeconds = service.startStateStallSeconds;
           files = stagedFileActionInputs restartStagedEntries;
           dirs = lib.mapAttrs (dirName: entry: dirPermsJson dirName entry) restartDirs;
           dirRuntimePaths = restartDirRuntimePaths;
@@ -1620,6 +1665,7 @@
         removalPolicy = service.removalPolicy;
         adopt = service.adopt;
         preStart = service.preStart;
+        postStart = service.postStart;
         preStop = service.preStop;
         composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
@@ -1671,6 +1717,7 @@
         restartStamp = actionStamps.restart;
         recreateStamp = lifecyclePolicy.helperRecreateStamp;
         recreateClassStamp = actionStamps.recreate;
+        startWorkerUnit = "";
         longRunning = service.longRunning;
         envSecretFiles = map (composeServiceName: let
           entry = service.envSecrets.${composeServiceName};
@@ -1686,11 +1733,13 @@
           // entryPermsJson entry) (builtins.attrNames service.envSecrets);
       }
     );
-    helperEnvironment = [
-      "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
-      "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
-      "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
-    ];
+    helperEnvironment =
+      [
+        "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+        "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
+        "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
+      ]
+      ++ lib.optional (service.startStateStallSeconds != null) "NIX_PODMAN_COMPOSE_START_STATE_STALL_SECONDS=${toString service.startStateStallSeconds}";
     stampHelperEnvironment = [
       "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
       "NIX_PODMAN_COMPOSE_METADATA=<generation-local-metadata>"
@@ -1711,11 +1760,10 @@
       wantedBy = [];
       restartIfChanged = false;
       stopIfChanged = false;
-      unitConfig.ConditionUser = resolvedUser;
       unitConfig.Requires = dependsOnUnits ++ lib.optional hasImagePullUnit imagePullUnit;
       serviceConfig = {
         Type = "notify";
-        NotifyAccess = "main";
+        NotifyAccess = "all";
         Environment = helperEnvironment;
         # Allow first start when the compose working directory doesn't exist yet.
         # ExecStart creates it before invoking podman compose.
@@ -1725,13 +1773,14 @@
         ExecReload = "${helperScript} reload";
         ExecStopPost = "${helperScript} post-stop";
         # Keep helper subprocesses in the service kill boundary. If a start
-        # times out while podman-compose or flock is blocked, leaving those
-        # children alive can wedge the lifecycle lock for the next activation.
+        # path times out while podman-compose or flock is blocked, leaving
+        # those children alive can wedge the lifecycle lock for the next
+        # activation.
         KillMode = "control-group";
         Delegate = true;
         Restart = "on-failure";
+        TimeoutStartSec = lib.mkDefault 120;
         RestartPreventExitStatus = "75";
-        TimeoutStartSec = lib.mkDefault 900;
         TimeoutStopSec = lib.mkDefault 180;
       };
     };
@@ -1739,7 +1788,6 @@
       description = "podman: ${resolvedUser}: ${serviceName} image pull";
       after = lib.unique networkOnlineUnits;
       wants = lib.unique networkOnlineUnits;
-      unitConfig.ConditionUser = resolvedUser;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = false;
@@ -1750,7 +1798,7 @@
           ];
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${helperScript} image-pull";
-        TimeoutStartSec = 900;
+        TimeoutStartSec = 120;
       };
     };
     mergedSystemdService = lib.recursiveUpdate baseSystemdService service.serviceOverrides;
@@ -1764,6 +1812,33 @@
           };
       };
     restartSystemdService = lib.recursiveUpdate stampBaseSystemdService service.serviceOverrides;
+    normalizeGeneratedHelperCommand = action: value:
+      if value == "${helperScript} ${action}"
+      then "<podman-compose-helper> ${action}"
+      else value;
+    normalizeGeneratedHelperServiceConfig = serviceConfig:
+      serviceConfig
+      // lib.optionalAttrs (serviceConfig ? ExecStart) {
+        ExecStart = normalizeGeneratedHelperCommand "start" serviceConfig.ExecStart;
+      }
+      // lib.optionalAttrs (serviceConfig ? ExecStop) {
+        ExecStop = normalizeGeneratedHelperCommand "stop" serviceConfig.ExecStop;
+      }
+      // lib.optionalAttrs (serviceConfig ? ExecReload) {
+        ExecReload = normalizeGeneratedHelperCommand "reload" serviceConfig.ExecReload;
+      }
+      // lib.optionalAttrs (serviceConfig ? ExecStopPost) {
+        ExecStopPost = normalizeGeneratedHelperCommand "post-stop" serviceConfig.ExecStopPost;
+      };
+    restartStampServiceConfig = normalizeGeneratedHelperServiceConfig (restartSystemdService.serviceConfig or {});
+    restartStampSystemdService =
+      restartSystemdService
+      // {
+        serviceConfig = builtins.removeAttrs restartStampServiceConfig [
+          "TimeoutStartSec"
+          "TimeoutStopSec"
+        ];
+      };
   in {
     systemdServiceName = resolvedSystemdServiceName;
     systemdUser = resolvedUser;
@@ -1774,7 +1849,7 @@
       value = imagePullSystemdService;
     };
     lifecyclePolicy = lifecyclePolicy;
-    inherit (service) state reconcilePolicy removalPolicy adopt autoStart longRunning timeoutStableSeconds imageTag recreateTag bootTag reloadTag waitForNetwork hasComposeEntry;
+    inherit (service) state reconcilePolicy removalPolicy adopt autoStart longRunning timeoutReadySeconds imageTag recreateTag bootTag reloadTag waitForNetwork hasComposeEntry;
   };
 
   resolvedServices = lib.concatLists (
@@ -1859,6 +1934,18 @@
       source ${./image-pull-all.sh}
       main "$@"
     '';
+  };
+  rootlessIdmapMigratePackage = pkgs.writeShellApplication {
+    name = "podman-rootless-idmap-migrate";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.diffutils
+      pkgs.gawk
+      pkgs.gnused
+      pkgs.jq
+      pkgs.podman
+    ];
+    text = builtins.readFile ./rootless-idmap-migrate.sh;
   };
 
   allExposedPortEntries = lib.concatLists (
@@ -1953,38 +2040,6 @@
     serviceName = rootlessIdmapMigrateServiceNameForUser user;
     dispatcherServiceName = dispatcherServiceNameForUser user;
     networkOnlineUnits = rootlessStackUserNetworkOnlineUnits user;
-    script = pkgs.writeShellScript "${serviceName}-script" ''
-      set -eu
-
-      user=${lib.escapeShellArg user}
-
-      has_subid_range() {
-        ${pkgs.gawk}/bin/awk -F: -v user="$user" '
-          $1 == user && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $3 > 0 {
-            found = 1
-          }
-          END {
-            exit found ? 0 : 1
-          }
-        ' "$1"
-      }
-
-      if ! has_subid_range /etc/subuid || ! has_subid_range /etc/subgid; then
-        echo "podman rootless idmap: no subordinate uid/gid range for $user; skipping migration"
-        exit 0
-      fi
-
-      idmap_json="$(${pkgs.podman}/bin/podman info --format json)"
-      uidmap_count="$(printf '%s\n' "$idmap_json" | ${pkgs.jq}/bin/jq -r '(.host.idMappings.uidmap // []) | length')"
-      gidmap_count="$(printf '%s\n' "$idmap_json" | ${pkgs.jq}/bin/jq -r '(.host.idMappings.gidmap // []) | length')"
-
-      if [ "$uidmap_count" -le 1 ] || [ "$gidmap_count" -le 1 ]; then
-        echo "podman rootless idmap: stale single-id map for $user; running podman system migrate"
-        ${pkgs.podman}/bin/podman system migrate
-      else
-        echo "podman rootless idmap: subordinate uid/gid map already active for $user"
-      fi
-    '';
   in {
     name = serviceName;
     value = {
@@ -2001,7 +2056,7 @@
           "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus"
           "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
         ];
-        ExecStart = script;
+        ExecStart = "${rootlessIdmapMigratePackage}/bin/podman-rootless-idmap-migrate ${lib.escapeShellArgs [user home]}";
       };
     };
   };
@@ -2279,7 +2334,7 @@ in {
               baseService =
                 serviceDefaults
                 // {
-                  timeoutStableSeconds = stack.timeoutStableSeconds;
+                  timeoutReadySeconds = stack.timeoutReadySeconds;
                 }
                 // service;
               effectiveReconcilePolicy =
@@ -2307,10 +2362,10 @@ in {
                     else if baseService.autoStart == null
                     then stack.autoStart
                     else baseService.autoStart;
-                  timeoutStableSeconds =
-                    if baseService.timeoutStableSeconds == null
-                    then stack.timeoutStableSeconds
-                    else baseService.timeoutStableSeconds;
+                  timeoutReadySeconds =
+                    if baseService.timeoutReadySeconds == null
+                    then stack.timeoutReadySeconds
+                    else baseService.timeoutReadySeconds;
                   dirs = lib.mapAttrs (_: applyEntryDefaults dirEntryDefaults) baseService.dirs;
                   envSecrets = lib.mapAttrs (_: normalizeEnvSecretEntry) baseService.envSecrets;
                   files = lib.mapAttrs (_: normalizeFileEntry) baseService.files;
@@ -2322,12 +2377,18 @@ in {
                 if builtins.isPath normalizedService.source
                 then builtins.readFile normalizedService.source
                 else normalizedService.source;
+              sourceTextComposeServices =
+                if builtins.isString sourceCompose
+                then composeServicesFromText sourceCompose
+                else [];
               sourceDeclaredComposeServices =
                 if
                   builtins.isAttrs sourceCompose
                   && builtins.hasAttr "services" sourceCompose
                   && builtins.isAttrs sourceCompose.services
                 then builtins.attrNames sourceCompose.services
+                else if sourceTextComposeServices != []
+                then sourceTextComposeServices
                 else [serviceName];
               knownSourceComposeServices =
                 if
@@ -2335,6 +2396,8 @@ in {
                   && builtins.hasAttr "services" sourceCompose
                   && builtins.isAttrs sourceCompose.services
                 then builtins.attrNames sourceCompose.services
+                else if sourceTextComposeServices != []
+                then sourceTextComposeServices
                 else [];
               envSecretsOverride =
                 if normalizedService.envSecrets == {}
@@ -2882,7 +2945,9 @@ in {
             helperScript
             "verify"
           ];
-          timeoutStableSeconds = s.timeoutStableSeconds;
+          repairCommand = [];
+          startMode = "wait";
+          timeoutReadySeconds = s.timeoutReadySeconds;
           inherit (s.lifecyclePolicy) restartTriggers reloadTriggers;
           inherit (s.lifecyclePolicy) transitionNeutralStamp stopOnTransitionFrom stopOnTransitionTo;
           stampPayload =

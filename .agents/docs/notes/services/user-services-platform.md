@@ -17,12 +17,14 @@ service-facing ingress policy.
   compose network IPAM is not parsed for collision checks.
 - Duplicate `exposedPorts` host port/protocol pairs are rejected at evaluation
   time.
-- `services.podman-compose.<stack>.timeoutStableSeconds` is the stack default
-  for generated user-manager stable-state waits; instances may override it with
-  `services.podman-compose.<stack>.instances.<name>.timeoutStableSeconds`.
+- `services.podman-compose.<stack>.timeoutReadySeconds` is the stack default for
+  generated user-manager readiness waits; instances may override it with
+  `services.podman-compose.<stack>.instances.<name>.timeoutReadySeconds`.
 - The main generated service is a long-running unit that uses
   `podman compose up -d --remove-orphans`, verifies startup state, and then
   monitors `podman compose ps --format json`.
+- `postStart` hooks run after compose readiness succeeds and are the preferred
+  place for app-native reconcile/apply helpers that depend on the live service.
 - Compose instances are long-running by default; set `longRunning = false` only
   for intentional run-to-completion compose jobs where all containers exiting
   with code 0 is service success.

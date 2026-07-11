@@ -121,10 +121,14 @@ existing working directory with missing or mismatched helper state. Adoption
 force-recreates containers so the adopted runtime starts from the declared
 compose shape, independent of `reconcilePolicy`.
 
-`timeoutStableSeconds` controls the generated user-manager wait for the compose
+`timeoutReadySeconds` controls the generated user-manager wait for the compose
 unit to leave transitional states such as `activating`, `deactivating`, or
 `reloading`. It defaults to 120 seconds at the stack level and can be overridden
 per instance.
+
+`startStateStallSeconds` optionally bounds how long the helper allows expected
+containers to remain non-running during `podman compose up`. Leave it unset
+unless a healthy startup path has a measured reason for a different guard.
 
 ## Operator Control
 
@@ -186,10 +190,11 @@ For each instance, the generated service:
 - removes managed file-versus-directory conflicts before restaging
 - runs supervised `podman compose up -d --remove-orphans`
 - verifies that containers reached a healthy running state
+- runs `postStart` hooks after compose readiness succeeds
 - stays attached with a monitor loop so systemd can observe failure
 
 Readiness is owned by the helper/monitor process only. Generated units use
-`NotifyAccess = "main"`, and helper-spawned `podman` commands scrub systemd
+`NotifyAccess = "all"`, and helper-spawned `podman` commands scrub systemd
 notify/watchdog environment so conmon or container children cannot satisfy
 readiness or become the effective `Type=notify` authority.
 
@@ -214,6 +219,13 @@ primary failure path.
 
 The user-service switching path is handled by
 [`docs/systemd-user-manager.md`](./systemd-user-manager.md).
+
+During user-manager reconciliation, Podman also supplies a provider verifier.
+The verifier checks staged runtime files, native-reload staged files, generated
+env-secret files, restart-class helper state, and pending recreate-class state.
+If an already-active unit skipped start but still has stale runtime material,
+the user-manager restarts it once and only records the new metadata as applied
+after Podman verification passes.
 
 ## Secret Model
 

@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+
 : "${plan:?missing podman-compose image pull plan path}"
 
 usage() {

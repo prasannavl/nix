@@ -67,7 +67,58 @@ def main():
         return
 
     if args and args[0] == "rm":
+        if mode == "storage_container":
+            if "--storage" in args:
+                return
+            print('Error: no container with name or ID "compose_web_1" found: no such container', file=sys.stderr)
+            sys.exit(1)
+        if mode == "mounted_storage_container":
+            mountpoint = Path(os.environ["TEST_PODMAN_STORAGE_MOUNTPOINT"])
+            if "--storage" in args:
+                if any(mountpoint.iterdir()):
+                    print(
+                        f'Error: removing storage for container "compose_web_1": replacing mount point "{mountpoint}": directory not empty',
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                return
+            print(
+                'Error: container "compose_web_1" is mounted and cannot be removed without using force: container state improper',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if mode == "mounted_container":
+            marker = Path(os.environ["TEST_PODMAN_HISTORY_FILE"]).with_name("mounted-rm-attempted")
+            if "--storage" in args or marker.exists():
+                return
+            marker.write_text("1\n", encoding="utf-8")
+            print(
+                'Error: container "compose_web_1" is mounted and cannot be removed without using force: container state improper',
+                file=sys.stderr,
+            )
+            sys.exit(1)
         return
+
+    if args and args[0] == "unmount":
+        if mode == "mounted_storage_container":
+            print('Error: no container with name or ID "compose_web_1" found: no such container', file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args[:2] == ["container", "list"]:
+        if "--storage" in args:
+            names = os.environ.get("TEST_PODMAN_STORAGE_NAMES")
+            if names is not None:
+                print(names)
+                return
+            if mode == "storage_container":
+                print("compose_web_1")
+                return
+        if mode == "mounted_storage_container":
+            mountpoint = Path(os.environ["TEST_PODMAN_STORAGE_MOUNTPOINT"])
+            if any(mountpoint.iterdir()):
+                print("compose_web_1")
+            return
 
     if args[:2] == ["container", "exists"]:
         if mode in {"container_exists", "rm_zero_leaves_exists"}:
@@ -114,6 +165,13 @@ def main():
             print(f"unknown TEST_PODMAN_MODE={mode}", file=sys.stderr)
             sys.exit(64)
         if "ps" in args:
+            after_up = os.environ.get("TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP")
+            history_file = os.environ.get("TEST_PODMAN_HISTORY_FILE")
+            if after_up is not None and history_file:
+                history = Path(history_file).read_text(encoding="utf-8")
+                if "compose up " in history:
+                    print(after_up)
+                    return
             print(os.environ.get("TEST_PODMAN_COMPOSE_PS_JSON", '[{"State":"running","Labels":{"io.podman.compose.service":"web"}}]'))
             return
         if "kill" in args:

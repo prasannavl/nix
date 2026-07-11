@@ -32,7 +32,7 @@
           reconcilePolicy = "auto";
           removalPolicy = "delete";
           autoStart = true;
-          timeoutStableSeconds = 45;
+          timeoutReadySeconds = 45;
 
           instances = {
             app = {
@@ -42,11 +42,13 @@
               wants = ["optional"];
               waitForNetwork = true;
               longRunning = false;
+              startStateStallSeconds = 75;
               imageTag = "image-1";
               bootTag = "boot-1";
               reloadTag = "reload-1";
               recreateTag = "recreate-1";
               preStart = ["printf start"];
+              postStart = ["printf post"];
               preStop = ["-printf stop"];
               reload = {
                 method = "signal";
@@ -162,15 +164,21 @@
   restartPolicy = stack.instances."restart-policy";
   recreatePolicy = stack.instances."recreate-policy";
   appUnit = config.systemd.user.services.demo-app;
+  dbUnit = config.systemd.user.services.demo-db;
   textSourceUnit = config.systemd.user.services.demo-text-source;
   fileSourceUnit = config.systemd.user.services.demo-file-source;
   opaqueSecretUnit = config.systemd.user.services.demo-opaque-secret;
   jobUnit = config.systemd.user.services.demo-custom-job;
   appManagedUnit = config.services.systemd-user-manager.instances.demo-app;
+  dbManagedUnit = config.services.systemd-user-manager.instances.demo-db;
   jobManagedUnit = config.services.systemd-user-manager.instances.demo-custom-job;
   restartPolicyManagedUnit = config.services.systemd-user-manager.instances.demo-restart-policy;
   recreatePolicyManagedUnit = config.services.systemd-user-manager.instances.demo-recreate-policy;
   imagePullUnit = config.systemd.user.services.demo-app-image-pull;
+  rootlessMigrateUnit = config.systemd.services.podman-rootless-idmap-migrate-tester;
+  rootlessMigrateScript =
+    builtins.readFile (builtins.head (lib.splitString " " rootlessMigrateUnit.serviceConfig.ExecStart));
+  rootlessDispatcher = config.systemd.services.systemd-user-manager-dispatcher-tester;
 
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
 
@@ -191,6 +199,7 @@
     builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile (metadataPathFromEnv unit.serviceConfig.Environment)));
 
   appMetadata = metadataFromUnit appUnit;
+  dbMetadata = metadataFromUnit dbUnit;
   textSourceMetadata = metadataFromUnit textSourceUnit;
   fileSourceMetadata = metadataFromUnit fileSourceUnit;
   opaqueSecretMetadata = metadataFromUnit opaqueSecretUnit;
@@ -235,16 +244,17 @@ in
   assert app.removalPolicy == "delete";
   assert app.autoStart == true;
   assert app.longRunning == false;
+  assert app.startStateStallSeconds == 75;
   assert app.knownSourceComposeServices == ["web" "worker"];
   assert db.resolvedWorkingDir == "/srv/demo/db";
   assert textSource.source == sourceInlineText;
   assert textSource.resolvedWorkingDir == "/srv/demo/text-source";
-  assert textSource.knownSourceComposeServices == [];
+  assert textSource.knownSourceComposeServices == ["text"];
   assert fileSource.source == sourceFile;
   assert fileSource.resolvedWorkingDir == "/srv/demo/file-source";
-  assert fileSource.knownSourceComposeServices == [];
-  assert opaqueSecret.knownSourceComposeServices == [];
-  assert opaqueSecretMetadata.expectedComposeServices == [];
+  assert fileSource.knownSourceComposeServices == ["file"];
+  assert opaqueSecret.knownSourceComposeServices == ["opaque-secret"];
+  assert opaqueSecretMetadata.expectedComposeServices == ["opaque-secret"];
   assert builtins.elem "/srv/demo/opaque-secret/__podman-file-secrets.override.yml" opaqueSecretMetadata.composeFiles;
   assert lib.hasInfix ''"opaque-secret"'' opaqueSecretFileSecretOverride;
   assert lib.hasInfix "/run/secrets/default-token" opaqueSecretFileSecretOverride;
@@ -284,17 +294,29 @@ in
   assert builtins.elem "demo-optional.service" appUnit.wants;
   assert textSourceUnit.serviceConfig.WorkingDirectory == "-/srv/demo/text-source";
   assert fileSourceUnit.serviceConfig.WorkingDirectory == "-/srv/demo/file-source";
+  assert !(appUnit.unitConfig ? ConditionUser);
   assert appUnit.serviceConfig.Type == "notify";
-  assert appUnit.serviceConfig.NotifyAccess == "main";
+  assert appUnit.serviceConfig.NotifyAccess == "all";
   assert appUnit.serviceConfig.WorkingDirectory == "-/srv/demo/app";
   assert lib.hasSuffix " start" appUnit.serviceConfig.ExecStart;
   assert lib.hasSuffix " stop" appUnit.serviceConfig.ExecStop;
   assert lib.hasSuffix " reload" appUnit.serviceConfig.ExecReload;
   assert lib.hasSuffix " post-stop" appUnit.serviceConfig.ExecStopPost;
   assert appUnit.serviceConfig.KillMode == "control-group";
+  assert builtins.elem "NIX_PODMAN_COMPOSE_START_STATE_STALL_SECONDS=75" appUnit.serviceConfig.Environment;
+  assert !(builtins.hasAttr "demo-app-start-worker" config.systemd.user.services);
+  assert !(builtins.hasAttr "demo-db-start-worker" config.systemd.user.services);
+  assert dbMetadata.longRunning == true;
+  assert dbMetadata.startWorkerUnit == "";
+  assert !(builtins.elem "repair" dbManagedUnit.repairCommand);
   assert appUnit.serviceConfig.RestartPreventExitStatus == "75";
   assert imagePullUnit.serviceConfig.Type == "oneshot";
+  assert !(imagePullUnit.unitConfig ? ConditionUser);
   assert lib.hasSuffix " image-pull" imagePullUnit.serviceConfig.ExecStart;
+  assert lib.hasInfix ".config/containers/storage.conf" rootlessMigrateScript;
+  assert lib.hasInfix "mount_program" rootlessMigrateScript;
+  assert builtins.elem "podman-rootless-idmap-migrate-tester.service" rootlessDispatcher.after;
+  assert rootlessDispatcher.requires == ["podman-rootless-idmap-migrate-tester.service"];
   assert builtins.length imagePullPlan == 8;
   assert appImagePullPlanEntry.user == "tester";
   assert appImagePullPlanEntry.uid == "1234";
@@ -311,7 +333,8 @@ in
   assert appManagedUnit.unit == "demo-app.service";
   assert appManagedUnit.state == "running";
   assert appManagedUnit.autoStart == true;
-  assert appManagedUnit.timeoutStableSeconds == 45;
+  assert appManagedUnit.startMode == "wait";
+  assert appManagedUnit.timeoutReadySeconds == 45;
   assert builtins.elem "boot-1" appManagedUnit.restartTriggers;
   assert builtins.elem "recreate-1" appManagedUnit.restartTriggers;
   assert builtins.elem "reload-1" appManagedUnit.reloadTriggers;
@@ -327,12 +350,14 @@ in
   assert appMetadata.reconcilePolicy == "auto";
   assert appMetadata.removalPolicy == "delete";
   assert appMetadata.longRunning == false;
+  assert appMetadata.startWorkerUnit == "";
   assert appMetadata.restartStamp != "";
   assert appMetadata.recreateStamp != "";
   assert appMetadata.recreateClassStamp != "";
   assert appMetadata.recreateStamp == appMetadata.recreateClassStamp;
   assert appMetadata.composeArgs == ["--project-name" "demo-app"];
   assert appMetadata.preStart == ["printf start"];
+  assert appMetadata.postStart == ["printf post"];
   assert appMetadata.preStop == ["-printf stop"];
   assert appMetadata.expectedComposeServices == ["web" "worker"];
   assert lib.hasInfix "docker.io/library/nginx:latest" appRenderedCompose;
@@ -381,14 +406,14 @@ in
   assert !(builtins.elem appOrdinaryFile.dst appReloadDsts);
   assert textSourceMetadata.serviceName == "demo-text-source";
   assert textSourceMetadata.workingDir == "/srv/demo/text-source";
-  assert textSourceMetadata.expectedComposeServices == [];
-  assert textSourceMetadata.composeArgs == ["--in-pod=false"];
+  assert textSourceMetadata.expectedComposeServices == ["text"];
+  assert textSourceMetadata.composeArgs == [];
   assert textSourceMetadata.composeFiles == ["/srv/demo/text-source/compose.yml"];
   assert textSourceMetadata.pullComposeFiles != textSourceMetadata.composeFiles;
   assert textRenderedCompose == sourceInlineText;
   assert fileSourceMetadata.serviceName == "demo-file-source";
   assert fileSourceMetadata.workingDir == "/srv/demo/file-source";
-  assert fileSourceMetadata.expectedComposeServices == [];
+  assert fileSourceMetadata.expectedComposeServices == ["file"];
   assert fileSourceMetadata.composeFiles == ["/srv/demo/file-source/compose.yml"];
   assert fileSourceMetadata.pullComposeFiles != fileSourceMetadata.composeFiles;
   assert fileRenderedCompose == builtins.readFile sourceFile;
