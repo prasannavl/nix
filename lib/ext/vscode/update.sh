@@ -155,14 +155,21 @@ print_report() {
 }
 
 get_release_metadata() {
-	local release_key
-	local metadata
+	local release_key releases commits version_index
 
-	release_key="${REQUESTED_VERSION:-latest}"
-	metadata="$(curl -fsSL "https://update.code.visualstudio.com/api/update/linux-x64/stable/${release_key}")"
-	RESOLVED_VERSION="$(jq -er '.productVersion' <<<"$metadata")"
-	RESOLVED_REV="$(jq -er '.version' <<<"$metadata")"
-	RELEASE_NOTES_URL="$(jq -r '.releaseNotesUrl // empty' <<<"$metadata")"
+	release_key="${REQUESTED_VERSION#v}"
+	releases="$(curl -fsSL "https://update.code.visualstudio.com/api/releases/stable")"
+	if [[ -n "$REQUESTED_VERSION" ]]; then
+		RESOLVED_VERSION="$release_key"
+		version_index="$(jq -er --arg version "$RESOLVED_VERSION" 'index($version)' <<<"$releases")"
+	else
+		RESOLVED_VERSION="$(jq -er '.[0]' <<<"$releases")"
+		version_index=0
+	fi
+
+	commits="$(curl -fsSL "https://update.code.visualstudio.com/api/commits/stable/linux-x64")"
+	RESOLVED_REV="$(jq -er --argjson index "$version_index" '.[$index]' <<<"$commits")"
+	RELEASE_NOTES_URL=""
 	[[ -n "$RESOLVED_VERSION" ]] || die "Could not resolve VS Code version"
 	[[ -n "$RESOLVED_REV" ]] || die "Could not resolve VS Code revision"
 }

@@ -11,6 +11,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 VERSION_RE = re.compile(r"^v?([0-9]+(?:[._-][0-9]+)*)(.*)$")
+RELEASE_TAG_REPOSITORIES = {
+    ("ghcr.io", "immich-app/immich-machine-learning"): "immich-app/immich",
+    ("ghcr.io", "immich-app/immich-server"): "immich-app/immich",
+}
 
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -265,6 +269,19 @@ def quay_tags(repository):
     return [tag["name"] for tag in data.get("tags", []) if tag.get("name")]
 
 
+def latest_release_tag(registry, repository):
+    source_repository = RELEASE_TAG_REPOSITORIES.get((registry, repository))
+    if source_repository is None:
+        return None
+    data = request_json(
+        f"https://api.github.com/repos/{source_repository}/releases/latest"
+    )
+    tag = data.get("tag_name")
+    if isinstance(tag, str) and tag:
+        return tag
+    return None
+
+
 def registry_tags(registry, repository):
     if registry == "localhost":
         return []
@@ -353,6 +370,15 @@ def is_attention_update(current, latest):
     return False
 
 
+def latest_known_tag(registry, repository, tag):
+    tags = []
+    release_tag = latest_release_tag(registry, repository)
+    if release_tag is not None:
+        tags.append(release_tag)
+    tags.extend(registry_tags(registry, repository))
+    return latest_comparable_tag(tag, tags)
+
+
 def image_report_line(ref, color):
     registry, repository, display_name, tag, digest = parse_image_ref(ref)
     if digest is not None:
@@ -363,8 +389,7 @@ def image_report_line(ref, color):
     if is_floating_tag(tag):
         return floating_line(f"{display_name}: {tag} [floating tag]", color)
     try:
-        tags = registry_tags(registry, repository)
-        latest = latest_comparable_tag(tag, tags)
+        latest = latest_known_tag(registry, repository, tag)
     except Exception:
         latest = tag
 

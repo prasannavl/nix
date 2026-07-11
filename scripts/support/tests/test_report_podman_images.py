@@ -2,6 +2,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest import mock
 
 
 SCRIPT_PATH = pathlib.Path(__file__).resolve().parents[1] / "report-podman-images.py"
@@ -48,6 +49,27 @@ class ReportPodmanImagesTest(unittest.TestCase):
             line,
             "- ghcr.io/immich-app/immich-server: release [floating tag]",
         )
+
+    def test_immich_uses_latest_github_release_tag(self):
+        with (
+            mock.patch.object(
+                report_podman_images,
+                "request_json",
+                return_value={"tag_name": "v3.0.2"},
+            ),
+            mock.patch.object(
+                report_podman_images,
+                "registry_tags",
+                return_value=["v1.91.1"],
+            ),
+        ):
+            latest = report_podman_images.latest_known_tag(
+                "ghcr.io",
+                "immich-app/immich-server",
+                "v2.0.0",
+            )
+
+        self.assertEqual(latest, "v3.0.2")
 
 
 if __name__ == "__main__":
