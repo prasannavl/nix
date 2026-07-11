@@ -12,7 +12,7 @@
 
     source = {
       services.dockge = {
-        image = "louislam/dockge:1";
+        image = "louislam/dockge:1.5.0";
         restart = "unless-stopped";
         user = "0:0";
         ports = ["${toString exposedPorts.http.port}:5001"];
