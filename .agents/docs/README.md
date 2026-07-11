@@ -309,6 +309,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   Records the July 11 Abird newest-5 audit, native Podman Compose user-graph
   port, nixbot native compose support, local Ollama adaptation, and parity
   audit.
+- `.agents/docs/notes/tooling/abird-last10-port-2026-07.md`: Records the July 11
+  Abird newest-10 audit, migration-manager native user-unit drain port, nixbot
+  lock/signal handling port, local docs adaptations, and byte-parity audit.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
@@ -324,8 +327,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/bash-completions-2026-06.md`: Records repo-local
   Bash completion sources for operator CLIs and root dev-shell loading.
 - `.agents/docs/notes/tooling/migration-manager-runtime-gate-2026-06.md`:
-  Records the runtime-owned `services.migration-manager` gate, `migratorctl`,
-  managed-unit registry, and data-migrator cutover integration.
+  Records the runtime-owned `services.migration-manager` gate,
+  `migration-manager`, managed-unit registry, and data-migrator cutover
+  integration.
 - `.agents/docs/notes/tooling/nix-run-completion-delegation-2026-06.md`: Records
   the repo-local Bash completion bridge for delegated root-flake `nix run`
   completions.
