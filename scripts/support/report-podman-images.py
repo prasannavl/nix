@@ -11,6 +11,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 VERSION_RE = re.compile(r"^v?([0-9]+(?:[._-][0-9]+)*)(.*)$")
+TIMESCALE_PG_TAG_RE = re.compile(
+    r"^pg([0-9]+(?:[._-][0-9]+)*)-ts([0-9]+(?:[._-][0-9]+)*)(.*)$"
+)
 RELEASE_TAG_REPOSITORIES = {
     ("ghcr.io", "immich-app/immich-machine-learning"): "immich-app/immich",
     ("ghcr.io", "immich-app/immich-server"): "immich-app/immich",
@@ -306,7 +309,51 @@ def version_parts(version):
     return tuple(int(part) for part in re.split(r"[._-]", version))
 
 
+def timescale_pg_tag_parts(tag):
+    match = TIMESCALE_PG_TAG_RE.match(tag)
+    if not match:
+        return None
+    pg_version, timescale_version, suffix = match.groups()
+    pg_parts = version_parts(pg_version)
+    timescale_parts = version_parts(timescale_version)
+    return pg_parts, timescale_parts, suffix
+
+
+def latest_timescale_pg_tag(current, tags):
+    current_parts = timescale_pg_tag_parts(current)
+    if current_parts is None:
+        return None
+
+    current_pg_parts, current_timescale_parts, current_suffix = current_parts
+    comparable = []
+    for tag in tags:
+        candidate_parts = timescale_pg_tag_parts(tag)
+        if candidate_parts is None:
+            continue
+        pg_parts, timescale_parts, suffix = candidate_parts
+        if suffix != current_suffix:
+            continue
+        if not pg_parts or pg_parts[0] != current_pg_parts[0]:
+            continue
+        if len(pg_parts) != len(current_pg_parts):
+            continue
+        if len(timescale_parts) != len(current_timescale_parts):
+            continue
+        comparable.append(((pg_parts, timescale_parts), tag))
+
+    if not comparable:
+        return current
+    latest_parts, latest_tag = max(comparable)
+    if latest_parts <= (current_pg_parts, current_timescale_parts):
+        return current
+    return latest_tag
+
+
 def latest_comparable_tag(current, tags):
+    timescale_latest = latest_timescale_pg_tag(current, tags)
+    if timescale_latest is not None:
+        return timescale_latest
+
     match = VERSION_RE.match(current)
     if not match:
         return None

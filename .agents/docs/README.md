@@ -388,7 +388,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   but skip large payload prefetches unless `--force` is requested.
 - `.agents/docs/notes/tooling/update-report-variable-tags-2026-07.md`: Records
   the report-only GNOME extension updater fix and Podman image reporter handling
-  for Compose variable tags such as Immich's `IMMICH_VERSION=release`.
+  for Compose variable tags such as Immich's `IMMICH_VERSION=release` and
+  Timescale `pg<version>-ts<version>` exact tags.
 - `.agents/docs/notes/tooling/pvl-tmux-extended-keys-2026-06.md`: Records the
   `pvl` Home Manager tmux extended-key settings needed for Codex `Shift+Enter`
   newline handling inside tmux.

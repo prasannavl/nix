@@ -71,6 +71,19 @@ class ReportPodmanImagesTest(unittest.TestCase):
 
         self.assertEqual(latest, "v3.0.2")
 
+    def test_timescale_pg_tag_compares_within_pg_major(self):
+        latest = report_podman_images.latest_comparable_tag(
+            "pg18.4-ts2.28.1",
+            [
+                "pg18.4-ts2.28.1",
+                "pg18.4-ts2.28.2",
+                "pg18.4-ts2.28.2-all",
+                "pg19.1-ts2.29.0",
+            ],
+        )
+
+        self.assertEqual(latest, "pg18.4-ts2.28.2")
+
 
 if __name__ == "__main__":
     unittest.main()

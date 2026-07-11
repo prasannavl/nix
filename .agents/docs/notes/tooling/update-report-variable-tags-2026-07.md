@@ -17,6 +17,10 @@ behavior and Podman image tags that come from Compose variable expansion.
 - Immich itself is not a comparable image-version case while it uses
   `IMMICH_VERSION=release`. The report should make that uncertainty explicit
   instead of marking the image as latest.
+- `timescale/timescaledb-ha` publishes exact tags such as `pg18.4-ts2.28.2`.
+  These are not floating tags, but they also do not start with the generic
+  numeric or `v` prefix expected by the original comparator. Reporting them as
+  `[latest]` without comparing sibling tags hid future updates.
 
 ## Behavior
 
@@ -26,6 +30,10 @@ behavior and Podman image tags that come from Compose variable expansion.
   expansions when finding the Docker tag separator.
 - Tags containing `$` are reported as `[variable tag]`. Literal `release` tags
   are reported as `[floating tag]`.
+- `timescale/timescaledb-ha` tags in the `pg<version>-ts<version>` form compare
+  within the same PostgreSQL major line and exact suffix. For example,
+  `pg18.4-ts2.28.1` can report an update to `pg18.4-ts2.28.2`, but it does not
+  auto-suggest a PostgreSQL major jump to `pg19`.
 
 ## Follow-up
 
