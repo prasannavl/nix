@@ -4,6 +4,7 @@
   ...
 }: let
   composeSecretUser = "pvl";
+  immichVersion = "v3.0.2";
 in {
   config = {
     services.podman-compose.pvl.instances.immich = rec {
@@ -18,7 +19,7 @@ in {
         services:
           immich-server:
             container_name: immich_server
-            image: ghcr.io/immich-app/immich-server:''${IMMICH_VERSION:-release}
+            image: ghcr.io/immich-app/immich-server:${immichVersion}
             user: 0:0
             extends:
               file: hwaccel.transcoding.yml
@@ -38,7 +39,7 @@ in {
 
           immich-machine-learning:
             container_name: immich_machine_learning
-            image: ghcr.io/immich-app/immich-machine-learning:''${IMMICH_VERSION:-release}
+            image: ghcr.io/immich-app/immich-machine-learning:${immichVersion}
             user: 0:0
             volumes:
               - model-cache:/cache
@@ -49,7 +50,7 @@ in {
 
           redis:
             container_name: immich_redis
-            image: docker.io/valkey/valkey:9@sha256:546304417feac0874c3dd576e0952c6bb8f06bb4093ea0c9ca303c73cf458f63
+            image: docker.io/valkey/valkey:9@sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9
             user: 0:0
             healthcheck:
               test: redis-cli ping || exit 1
@@ -81,7 +82,6 @@ in {
         ".env".text = ''
           UPLOAD_LOCATION=./data
           DB_DATA_LOCATION=./postgres
-          IMMICH_VERSION=release
           DB_USERNAME=postgres
           DB_DATABASE_NAME=immich
         '';
