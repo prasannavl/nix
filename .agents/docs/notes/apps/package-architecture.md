@@ -117,11 +117,11 @@ stack wiring.
   - `services.<name>.enable`
   - `services.<name>.package`
   - `systemd.services.<name>` when the resolved user is `root`
-  - `user-services.<user>.<name>` plus `systemd-user-manager` registration when
-    the resolved user is non-root
-- Generated user-service modules should materialize both:
-  - `systemd.user.services.<unit>`
-  - `services.systemd-user-manager.instances.<user>-<name>`
+  - `user-services.<user>.<name>` and `systemd.user.services.<unit>` when the
+    resolved user is non-root
+- Generated user-service modules should use native systemd user-unit wiring for
+  ordering and restart/reload triggers. Register only explicitly special
+  non-compose units with `services.systemd-user-manager.instances`.
 - Prefer direct systemd wiring fields such as `after`, `before`, `wants`,
   `requires`, and `wantedBy` instead of repo-specific dependency abstractions.
 - `mkTcpServiceModule` extends that model with listener address and port options

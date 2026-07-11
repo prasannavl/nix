@@ -301,6 +301,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-last25-port-2026-07.md`: Records the July 10
   Abird newest-25 audit, shared lifecycle/helper/nixbot parity port, local docs
   adaptations, and skipped Abird topology/secrets/plans.
+- `.agents/docs/notes/tooling/abird-last5-native-compose-port-2026-07.md`:
+  Records the July 11 Abird newest-5 audit, native Podman Compose user-graph
+  port, nixbot native compose support, local Ollama adaptation, and parity
+  audit.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.

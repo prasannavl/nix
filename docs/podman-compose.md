@@ -217,15 +217,10 @@ recovery remains an operator decision. `ExecStopPost` may call the same cleanup
 after a systemd timeout or helper crash, but it is a backstop rather than the
 primary failure path.
 
-The user-service switching path is handled by
-[`docs/systemd-user-manager.md`](./systemd-user-manager.md).
-
-During user-manager reconciliation, Podman also supplies a provider verifier.
-The verifier checks staged runtime files, native-reload staged files, generated
-env-secret files, restart-class helper state, and pending recreate-class state.
-If an already-active unit skipped start but still has stale runtime material,
-the user-manager restarts it once and only records the new metadata as applied
-after Podman verification passes.
+The user-service switching path is native systemd user-unit switching. Each
+compose instance has a generated verify unit that checks staged runtime files,
+native-reload staged files, generated env-secret files, restart-class helper
+state, and pending recreate-class state before its ready target is reached.
 
 ## Secret Model
 
@@ -241,7 +236,6 @@ images or repo-tracked compose files.
 
 ## Quick Links
 
-- [`docs/systemd-user-manager.md`](./systemd-user-manager.md)
 - [`docs/nginx.md`](./nginx.md)
 - [`docs/deployment.md`](./deployment.md)
 
@@ -382,9 +376,11 @@ Nix.
 
 ## Generated Runtime Model
 
-For each compose instance, the module generates a systemd user service that:
+For each compose instance, the module generates a systemd user service graph
+that:
 
-- stages rendered compose files into the working directory
+- starts after a generated stage unit has rendered compose files into the
+  working directory
 - removes manifest-managed file-versus-directory conflicts before restaging, so
   bind-mounted runtime paths can safely change shape across deploys
 - runs `podman compose up -d --remove-orphans`
@@ -402,8 +398,10 @@ The main generated service keeps only narrow helper state:
 
 - the helper stores the last successfully applied `recreateTag` in the compose
   working directory so force-recreate does not replay on later boots
-- boot-time startup is gated behind `systemd-user-manager-ready.target`, so the
-  main compose services do not start until the per-user reconciler has run once
+- boot-time startup is driven by generated `<user>-managed.target` and
+  `<user>-managed-ready.target` user targets; each compose instance has
+  `<service>-stage.service`, optional bootstrap/reconcile units,
+  `<service>-verify.service`, and `<service>-ready.target`
 
 ## Tags
 
@@ -411,7 +409,7 @@ The main generated service keeps only narrow helper state:
   - default is `"0"`
   - when the declared value changes, the main generated compose unit is treated
     as changed
-  - active stacks restart through the normal managed-unit path
+  - active stacks restart through native systemd user-unit switching
 - `reloadTag`:
   - default is `"0"`
   - when native reload is enabled, a declared value change reloads active stacks
@@ -421,7 +419,7 @@ The main generated service keeps only narrow helper state:
   - default is `"0"`
   - when the declared value changes, the main generated compose unit is treated
     as changed
-  - active stacks restart through the normal managed-unit path
+  - active stacks restart through native systemd user-unit switching
   - under `auto` or `recreate`, if the tag is nonzero and differs from the last
     successful helper state, the next start uses
     `podman compose up --force-recreate`
@@ -481,11 +479,11 @@ recreate-file list. A file may not be both reload-class and recreate-class; the
 module rejects overlaps with `reload.trigger.dirs` or
 `reload.trigger.externalFiles`.
 
-Deploy-time reload triggers are wired through `systemd-user-manager` for
+Deploy-time reload triggers are native systemd user-unit reload triggers for
 reload-capable instances. If only files under `reload.trigger.dirs` change, the
-dispatcher daemon-reloads the user manager and calls `systemctl --user reload`
-instead of old-world stop plus new-world start. Restart and recreate triggers
-still win when non-reload-safe inputs change.
+new generated unit definition can use `systemctl --user reload` instead of a
+full stop/start. Restart and recreate triggers still win when non-reload-safe
+inputs change.
 
 ## Drift Actions
 
@@ -518,10 +516,10 @@ payloads, with recreate-class files excluded from reload/restart payloads. The
 corresponding `reloadStamp`, `restartStamp`, and `recreateStamp` are hashes of
 those action payloads.
 
-`systemd-user-manager` receives restart/recreate inputs only through
-`restartTriggers` and `stampPayload`; reload-only inputs stay only in
-`reloadTriggers`. That lets a reload-only change reload an active stack without
-poisoning the helper's recreate state for a later start.
+Generated user units receive restart/recreate inputs through `restartTriggers`;
+reload-only inputs stay only in `reloadTriggers`. That lets a reload-only change
+reload an active stack without poisoning the helper's recreate state for a later
+start.
 
 `reconcilePolicy` controls how those action classes are consumed:
 
@@ -530,23 +528,23 @@ poisoning the helper's recreate state for a later start.
 - `restart` restarts for reload-class, restart-class, and recreate-class drift.
   The helper uses plain `podman compose up`; it does not force-recreate
   containers.
-- `recreate` is a blunt manual mode: any declarative drift restarts the managed
-  unit and the helper runs `podman compose up --force-recreate`.
+- `recreate` is a blunt manual mode: any declarative drift restarts the
+  generated unit and the helper runs `podman compose up --force-recreate`.
 
 Policy-only transitions are directional. `auto -> restart`, `auto -> recreate`,
 `recreate -> auto`, and `recreate -> restart` do not by themselves stop the
-managed unit. `restart -> auto` and `restart -> recreate` stop/start the managed
-unit once so pending recreate-class drift from restart mode is consumed with
-`podman compose up --force-recreate`. Podman expresses this to
-`systemd-user-manager` with provider-owned transition tokens; the lower-level
-manager does not know Podman policy names.
+generated unit. `restart -> auto` and `restart -> recreate` stop/start the
+generated unit once so pending recreate-class drift from restart mode is
+consumed with `podman compose up --force-recreate`. Podman expresses this
+through generated unit trigger stamps and helper state; generic user-service
+management does not need to know Podman policy names.
 
 ## What Changes Trigger
 
 - `bootTag` change:
   - changes the main generated user unit restart stamp
   - only the declared `bootTag` value participates in that tag-specific stamp
-  - active stacks restart through the normal managed-unit path
+  - active stacks restart through native systemd user-unit switching
 - `reloadTag` change:
   - changes the main generated user unit reload stamp when native reload is
     enabled
@@ -804,31 +802,33 @@ Secret rotation caveat:
 On host deploy:
 
 1. systemd reloads the affected user manager once
-2. changed bridge units stop
-3. changed bridge units start in the new generation
-4. reload-only bridge units are reloaded after the user manager sees the new
-   unit definitions
-5. the reconciler starts inactive managed units in the new generation
+2. generated stage/bootstrap/start/reconcile/verify units converge through the
+   normal user-service graph
+3. changed compose units restart or reload through native systemd user-unit
+   triggers
+4. `<service>-ready.target` marks each verified instance ready
+5. `<user>-managed-ready.target` aggregates ready targets for auto-started
+   instances
 
 That means:
 
 - Podman stacks must never make boot activation fail; boot-time ordering is
-  handled after activation through `systemd-user-manager`'s normal boot unit and
-  `systemd-user-manager-ready.target`
-- boot-time service startup waits for `systemd-user-manager-ready.target`, which
-  the reconciler starts after a successful per-user apply
+  handled after activation through generated user targets
+- boot-time service startup waits on each instance's generated ready target, and
+  per-user ready aggregation happens through `<user>-managed-ready.target`
 - `dry-activate` logs the starts it would perform, but does not actually mutate
   the running user services
 - `imageTag` is implemented as a normal helper unit plus recreate-stamp input;
   the image pull itself is not a reconciler action
 - `bootTag` and `recreateTag` are expressed as changes to the main unit itself
-- `removalPolicy = "keep"` maps to the lower-level user-manager takeover
-  behavior; it does not keep the generated unit in the new system generation,
-  and re-declaring that working directory requires matching
-  `.podman-compose/state.json` identity state or a one-time `adopt = true`
+- `removalPolicy = "keep"` keeps provider-owned runtime state without keeping
+  the generated unit in the new system generation, and re-declaring that working
+  directory requires matching `.podman-compose/state.json` identity state or a
+  one-time `adopt = true`
 - rootless stack users get a system-level `podman-rootless-idmap-migrate-<user>`
-  one-shot before their systemd-user-manager dispatcher; it runs
-  `podman system migrate` only when `/etc/subuid` and `/etc/subgid` exist and
+  user one-shot before compose stage/start units; it runs
+  `podman system
+  migrate` only when `/etc/subuid` and `/etc/subgid` exist and
   Podman's current id map is still a stale single-id map
 
 ## What A Host Must Provide
@@ -865,13 +865,14 @@ For each stack in the host's service module:
 ### What happens when I change compose source?
 
 The main generated user unit changes. If the stack was active, the deploy-time
-bridge restarts it. If it was inactive but still startable, reconcile starts it.
+systemd user switching path restarts it. If it is enabled for auto-start, the
+per-user managed target starts it.
 
 ### What happens when I bump `recreateTag`?
 
-The main generated unit changes, so active stacks restart through the normal
-managed-unit path. Under `auto` or `recreate`, if the new tag is not `"0"` and
-differs from the helper state recorded during the last successful
+The main generated unit changes, so active stacks restart through native
+systemd-user switching. Under `auto` or `recreate`, if the new tag is not `"0"`
+and differs from the helper state recorded during the last successful
 force-recreate, the helper uses `podman compose up --force-recreate` and records
 the new tag. Under `restart`, the tag restarts the unit but does not
 force-recreate containers. Later boots with the same applied tag do not force
@@ -879,29 +880,28 @@ another recreate.
 
 ### What happens when I bump `bootTag`?
 
-The managed unit stamp changes. If the stack was active, the normal
-systemd-user-manager reconciliation path restarts the main compose unit. This is
-keyed to the declared `bootTag` value itself, not helper script path or other
-generated unit churn.
+The generated unit restart stamp changes. If the stack was active, native
+systemd-user switching restarts the main compose unit. This is keyed to the
+declared `bootTag` value itself, not helper script path or other generated unit
+churn.
 
 ### What happens when I bump `reloadTag`?
 
-For native-reload-capable instances, the managed unit reload stamp changes. If
-the stack was active and no restart trigger also changed, systemd-user-manager
-reloads the main compose unit. If native reload is not enabled, `reloadTag` has
-no effect.
+For native-reload-capable instances, the generated unit reload stamp changes. If
+the stack was active and no restart trigger also changed, systemd reloads the
+main compose unit. If native reload is not enabled, `reloadTag` has no effect.
 
 ### What happens when I bump `imageTag`?
 
 The separate image-pull unit changes, and the tag participates in the generated
 drift stamps. Under `reconcilePolicy = "auto"`, image drift is recreate-class:
-systemd-user-manager restarts the main compose unit, the pull unit runs first,
-then the helper starts with `podman compose up --force-recreate`. Under
+systemd restarts the main compose unit, the pull unit runs first, then the
+helper starts with `podman compose up --force-recreate`. Under
 `reconcilePolicy = "restart"`, image drift still restarts the main compose unit,
 but the helper uses plain `podman compose up` instead of force-recreating
 containers. Under `reconcilePolicy = "recreate"`, any drift, including
 `imageTag`, force-recreates. Image pull reads store-backed compose files
-directly; runtime files and secrets are staged once by the main start path.
+directly; runtime files and secrets are staged once by the stage/start path.
 
 ### Why didn't a secret rotation restart my service?
 
@@ -911,17 +911,17 @@ file hash in the restart stamp. If the secret path is not represented in
 `config.age.secrets`, the restart stamp can only track the configured path and
 mapping; bump `bootTag` to force the normal reconcile restart path.
 
-### Does boot gating behind `systemd-user-manager-ready.target` create a deadlock?
+### Does boot gating behind `<user>-managed-ready.target` create a deadlock?
 
-No. That target only gates automatic boot startup. The reconciler still talks to
-the Podman unit directly with `systemctl --user start` or `restart` during
-apply, then starts `systemd-user-manager-ready.target` after a successful run.
+No. The target is a normal systemd user target that aggregates generated
+`<service>-ready.target` units for auto-started instances. Each ready target is
+reached only after the service has staged files, started compose, run any
+post-start reconcile, and verified readiness.
 
 ### What does `dry-activate` show for Podman stacks?
 
-It runs the `systemd-user-manager` preview path. That means you get log lines
-for the managed unit starts it would perform, but no actual compose action is
-run.
+It evaluates the generated units and activation preview, but no actual compose
+action is run.
 
 ### If a stack is intentionally inactive, do tag bumps wake it up?
 
@@ -938,8 +938,8 @@ need an explicit build flow if image refresh semantics need to cover them too.
 ## Further Reading
 
 - `docs/services.md`: Native service pattern for non-container workloads.
-- `docs/systemd-user-manager.md`: Deploy-time user-service bridge module used by
-  `lib/podman-compose/default.nix`.
+- `docs/systemd-user-manager.md`: Deploy-time user-service bridge module for
+  non-compose managed user units.
 - `docs/incus-vms.md`: Incus guest lifecycle (uses the same lifecycle tag
   conventions).
 - `docs/deployment.md`: Deploy architecture and secret model.
@@ -949,6 +949,5 @@ need an explicit build flow if image refresh semantics need to cover them too.
 - `lib/podman.nix`
 - `lib/podman-compose/default.nix`
 - `lib/podman-compose/helper.sh`
-- `lib/systemd-user-manager/default.nix`
 - the host service module that declares `services.podman-compose.<stack>`
 - `hosts/nixbot.nix`

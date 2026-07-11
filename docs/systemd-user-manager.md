@@ -1,7 +1,12 @@
 # Systemd User Manager
 
 This module bridges deploy-time switching for user services. It exists for
-workloads such as rootless Podman stacks that live under `systemd --user`.
+direct managed user services that live under `systemd --user`.
+
+Podman Compose no longer uses this module for generated compose instances; it
+emits native user services and ready targets from
+`lib/podman-compose/default.nix`. Keep this module for non-compose user units
+that still need generation-driven old/new reconciliation.
 
 ## What It Does
 
@@ -126,7 +131,9 @@ The reconciler is intentionally narrow:
   once when the provider reports unapplied runtime drift
 - uses each managed unit's `timeoutReadySeconds` for stable-state waits
 
-After success it starts `systemd-user-manager-ready.target`.
+After success it starts `systemd-user-manager-ready.target` for the users it
+manages. That target is independent from Podman Compose's generated
+`<user>-managed-ready.target`.
 
 ## Boot And Dry Activate
 
@@ -136,30 +143,22 @@ After success it starts `systemd-user-manager-ready.target`.
 - `dry-activate` skips preview for managed users whose live account does not
   exist yet.
 
-## Podman Integration
+## Podman Compose Boundary
 
-`lib/podman-compose/default.nix` is the main consumer.
+`lib/podman-compose/default.nix` now owns its own native user-service graph:
+stage, bootstrap, start, reconcile, verify, and ready targets. Compose
+`bootTag`, `reloadTag`, `recreateTag`, and `imageTag` are expressed through
+generated systemd user-unit triggers and helper state rather than
+`services.systemd-user-manager.instances`.
 
-- the main compose unit is managed here
-- `bootTag` changes the managed-unit stamp
-- `reloadTag` changes the managed-unit reload stamp when native reload is
-  enabled
-- `recreateTag` changes the compose unit and forces recreate behavior
-- `imageTag` is handled by a separate pull unit wired into the start path
-- reload-safe directory-mounted compose config can flow through
-  `reloadTriggers`; other changes keep using restart triggers
-- Podman supplies `verifyCommand` to detect unapplied staged runtime files or
-  helper state before user-manager metadata is marked applied
-
-This keeps `systemd-user-manager` generic. It switches units. Module-specific
-behavior stays in the unit definitions.
+This keeps `systemd-user-manager` generic for the remaining direct user-service
+callers. It switches declared units; module-specific behavior stays in the unit
+definitions.
 
 ## Source Files
 
 - `lib/systemd-user-manager/default.nix`
 - `lib/systemd-user-manager/helper.sh`
-- `lib/podman-compose/default.nix`
-- `lib/podman-compose/helper.sh`
 
 ## Detailed Reference
 

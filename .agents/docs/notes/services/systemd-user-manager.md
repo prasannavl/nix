@@ -3,7 +3,11 @@
 ## Scope
 
 Canonical design for the generation-driven `systemd-user-manager` bridge and its
-interaction with deploy-time service reconciliation.
+interaction with deploy-time reconciliation for direct non-compose user units.
+
+Podman Compose generated units are no longer managed through
+`services.systemd-user-manager.instances`; `lib/podman-compose/default.nix` owns
+native stage/start/verify/ready user units and per-user managed targets.
 
 ## Core model
 
@@ -19,10 +23,10 @@ interaction with deploy-time service reconciliation.
   applied state, not a desired-state database; it lets activation compare the
   last converged user-unit set with the new generation even when
   `/run/current-system` has already advanced.
-- Podman and other higher-level lifecycle semantics should be expressed through
-  normal units and dependencies, not through a generic action graph inside the
-  bridge. `reloadTriggers` are only a generic reload route; service-specific
-  staging and validation still belong inside the unit's `ExecReload`.
+- Higher-level lifecycle semantics should be expressed through normal units and
+  dependencies, not through a generic action graph inside the bridge.
+  `reloadTriggers` are only a generic reload route; service-specific staging and
+  validation still belong inside the unit's `ExecReload`.
 
 ## Switching rules
 

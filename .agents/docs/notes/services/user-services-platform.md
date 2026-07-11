@@ -18,11 +18,14 @@ service-facing ingress policy.
 - Duplicate `exposedPorts` host port/protocol pairs are rejected at evaluation
   time.
 - `services.podman-compose.<stack>.timeoutReadySeconds` is the stack default for
-  generated user-manager readiness waits; instances may override it with
+  generated compose readiness waits; instances may override it with
   `services.podman-compose.<stack>.instances.<name>.timeoutReadySeconds`.
 - The main generated service is a long-running unit that uses
   `podman compose up -d --remove-orphans`, verifies startup state, and then
   monitors `podman compose ps --format json`.
+- Podman Compose now owns its native user-service graph directly. Each instance
+  gets stage/start/verify/ready units, and auto-started services are aggregated
+  under `<user>-managed.target` and `<user>-managed-ready.target`.
 - `postStart` hooks run after compose readiness succeeds and are the preferred
   place for app-native reconcile/apply helpers that depend on the live service.
 - Compose instances are long-running by default; set `longRunning = false` only
@@ -62,11 +65,11 @@ service-facing ingress policy.
 
 - `state = "running" | "stopped"` is the public desired-state knob for
   `services.podman-compose.<stack>.instances.<name>`. Stopped instances still
-  render metadata and generated units, but the generated user-manager entry uses
-  `state = "stopped"` to stop the unit and avoid auto-starting it. Podman
-  runtime files are staged on manual or automatic start and cleaned after stop.
-  This cleanup is intentional: stopped state is still declared ownership, but it
-  must not leave stale staged files from an older generation. Resuming the unit
+  render metadata and generated units, but they are excluded from the managed
+  auto-start target and stay inactive unless manually started. Podman runtime
+  files are staged on manual or automatic start and cleaned after stop. This
+  cleanup is intentional: stopped state is still declared ownership, but it must
+  not leave stale staged files from an older generation. Resuming the unit
   stages the current generation again. Removal behavior is a separate
   `removalPolicy` path.
 - Stack `reconcilePolicy` defaults to `auto`; instance `reconcilePolicy`
@@ -88,8 +91,8 @@ service-facing ingress policy.
   knobs.
 - `reloadTag` routes through reloadTriggers for native-reload-capable instances
   and does not affect services where native reload is not enabled.
-- `recreateTag != "0"` restarts the managed unit through the reconciler. Under
-  `auto` or `recreate`, it makes the helper use
+- `recreateTag != "0"` restarts the generated unit through native systemd
+  user-unit switching. Under `auto` or `recreate`, it makes the helper use
   `podman compose up --force-recreate` once for each new tag value. Under
   `restart`, it restarts without force-recreating containers. The helper records
   the last successful tag in the compose working directory so later boots do not
@@ -102,17 +105,18 @@ service-facing ingress policy.
   service starts and is included in recreate intent so changed images are
   consumed automatically when policy allows recreate.
 - Systems with compose-backed services also export
+  `/run/current-system/share/podman-compose/control-registry.json`,
   `/run/current-system/share/podman-compose/image-pulls.json` and install
-  `podman-compose-image-pull-all`. The deploy-time plan is derived from every
-  resolved compose instance with store-backed compose files, not from
-  `imageTag`. Nixbot deploys run the built target system's version of that
-  helper before activation, so remote image fetches happen in a pre-activation
-  deploy phase instead of inside `podman compose up`.
+  `podman-composectl` and `podman-compose-image-pull-all`. The deploy-time pull
+  plan is derived from every resolved compose instance with store-backed compose
+  files, not from `imageTag`. Nixbot deploys run the built target system's
+  version of that helper before activation, so remote image fetches happen in a
+  pre-activation deploy phase instead of inside `podman compose up`.
 - Tag semantics should depend only on the declared tag value, not on incidental
   generated helper path churn.
 - Boots do not replay lifecycle tags. Tags are deploy-time triggers.
-- Rootless stack users get a system-level Podman idmap migration check before
-  their user-manager dispatcher. It runs `podman system migrate` only when
+- Rootless stack users get a user-level Podman idmap migration check before
+  compose stage/start units. It runs `podman system migrate` only when
   subordinate uid/gid ranges exist and Podman's active map is still the stale
   single-id form.
 
