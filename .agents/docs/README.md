@@ -336,6 +336,14 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-latest-incus-port-2026-07.md`: Records the
   July 12 Abird latest Incus audit where the preseed reactivation fix was
   already adopted locally with byte-identical shared code.
+- `.agents/docs/notes/tooling/abird-latest-post-19c-port-2026-07.md`: Records
+  the July 12 Abird post-`19c57198` newest-5 audit where update report tooling,
+  NVIDIA pin data, and nixbot test runtime were already local, while the newest
+  nixbot build-log trimming fix was ported.
+- `.agents/docs/notes/tooling/abird-latest-post-bd55-port-2026-07.md`: Records
+  the July 12 Abird post-`bd552f84` newest-3 audit where flake cleanup, flake
+  input refreshes, and external tool pin updates were already local or
+  byte-identical, with local-only flake input divergence preserved.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
