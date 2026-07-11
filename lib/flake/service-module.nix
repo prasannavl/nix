@@ -347,7 +347,6 @@ rec {
                   before = resolvedBefore;
                   wantedBy = resolvedWantedBy;
                   unitConfig = {
-                    ConditionUser = resolvedUser;
                     Requires = resolvedRequires;
                   };
                   environment = serviceEnvironment;
