@@ -10,6 +10,7 @@
         pkgs.gnugrep
         pkgs.jq
         pkgs.python3
+        pkgs.util-linux
       ];
     } ''
       repo="$TMPDIR/repo"

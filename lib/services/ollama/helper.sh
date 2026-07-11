@@ -215,7 +215,7 @@ restart_dependent_services_after_downloads() {
 	fi
 }
 
-main() {
+pull_main() {
 	local wait_status=0
 
 	init_vars
@@ -230,14 +230,79 @@ main() {
 		return
 	fi
 	if [ "$wait_status" -ne 0 ]; then
-		echo "ollama model pull: no Ollama API available in OLLAMA_URLS=$OLLAMA_URLS; skipping" >&2
-		return
+		echo "ollama model pull: no Ollama API available in OLLAMA_URLS=$OLLAMA_URLS" >&2
+		return 1
 	fi
 
 	pull_required_models "$@"
 	if [ "$OLLAMA_MODELS_DOWNLOADED" -eq 1 ]; then
 		restart_dependent_services_after_downloads
 	fi
+}
+
+dispatch_pull_worker() {
+	local worker_unit poll_deadline active_state sub_state result
+	worker_unit="$1"
+	shift
+
+	init_vars
+
+	if [ "$#" -eq 0 ]; then
+		echo "ollama model pull: no required models configured"
+		return
+	fi
+
+	systemctl --user reset-failed "$worker_unit" >/dev/null 2>&1 || true
+	systemctl --user start --no-block "$worker_unit"
+
+	poll_deadline="$(($(date +%s) + 10))"
+	while [ "$(date +%s)" -lt "$poll_deadline" ]; do
+		active_state="$(systemctl --user show --property=ActiveState --value "$worker_unit" 2>/dev/null || true)"
+		sub_state="$(systemctl --user show --property=SubState --value "$worker_unit" 2>/dev/null || true)"
+		result="$(systemctl --user show --property=Result --value "$worker_unit" 2>/dev/null || true)"
+
+		case "$active_state:$result" in
+		failed:*)
+			echo "ollama model pull: worker failed during dispatch (state=$active_state sub=$sub_state result=$result)" >&2
+			return 1
+			;;
+		inactive:success)
+			echo "ollama model pull: worker completed during dispatch"
+			return
+			;;
+		activating:* | active:*)
+			sleep 1
+			continue
+			;;
+		esac
+
+		echo "ollama model pull: worker entered unexpected state during dispatch (state=$active_state sub=$sub_state result=$result)" >&2
+		return 1
+	done
+
+	echo "ollama model pull: worker accepted; continuing asynchronously"
+}
+
+main() {
+	local command="${1:-pull}"
+
+	case "$command" in
+	pull)
+		shift
+		pull_main "$@"
+		;;
+	dispatch)
+		shift
+		if [ "$#" -lt 1 ]; then
+			echo "ollama model pull: dispatch requires a worker unit" >&2
+			return 64
+		fi
+		dispatch_pull_worker "$@"
+		;;
+	*)
+		pull_main "$@"
+		;;
+	esac
 }
 
 main "$@"

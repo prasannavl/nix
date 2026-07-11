@@ -5,6 +5,7 @@
     },
 }: let
   incusTests = import ../incus/tests {pkgs = pkgs;};
+  forgejoTests = import ../services/forgejo/tests {pkgs = pkgs;};
   ollamaTests = import ../services/ollama/tests {pkgs = pkgs;};
   podmanComposeTests = import ../podman-compose/tests {inherit pkgs;};
   stalwartLib = import ../services/stalwart {inherit pkgs;};
@@ -16,6 +17,7 @@
 in {
   lib-incus-helper = incusTests.helper;
   lib-incus-module = incusTests.module;
+  lib-forgejo-helper = forgejoTests.helper;
   lib-ollama-helper = ollamaTests.helper;
   lib-podman-compose-helper = podmanComposeTests.helper;
   lib-podman-compose-module = podmanComposeTests.module;

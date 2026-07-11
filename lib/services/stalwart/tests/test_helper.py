@@ -89,10 +89,94 @@ class StalwartHelperTest(unittest.TestCase):
         return path
 
     def test_recovery_api_probe_uses_list_object(self):
-        self.run_helper("wait_for_recovery_api")
+        self.run_helper(
+            "wait_for_recovery_api",
+            NOTIFY_SOCKET="/run/systemd/notify",
+            WATCHDOG_PID="123",
+            WATCHDOG_USEC="1000000",
+        )
         log = self.log_file.read_text(encoding="utf-8")
         self.assertIn("query Domain --fields id --json", log)
         self.assertNotIn("query SystemSettings", log)
+
+    def test_successful_recovery_cleans_up_before_function_scope_ends(self):
+        config = self.work_dir / "config.json"
+        plan = self.work_dir / "plan.json"
+        token = self.work_dir / "ldap-token"
+        data_dir = self.work_dir / "data"
+        config.write_text("{}\n", encoding="utf-8")
+        plan.write_text("{}\n", encoding="utf-8")
+        token.write_text("token\n", encoding="utf-8")
+        data_dir.mkdir()
+
+        result = self.run_helper(
+            f"""
+            stalwart_config_host_path={config}
+            stalwart_container=mock-stalwart
+            stalwart_data_dir={data_dir}
+            stalwart_kanidm_ldap_token_host_path={token}
+            stalwart_plan_container_path=/etc/stalwart/plan.json
+            stalwart_plan_host_path={plan}
+            stalwart_service_name=mock-stalwart
+            with_recovery true
+            printf 'recovery-complete\\n'
+            """
+        )
+
+        self.assertEqual("recovery-complete", result.stdout.strip())
+
+    def test_recovery_retries_transient_podman_engine_failures(self):
+        config = self.work_dir / "retry-config.json"
+        plan = self.work_dir / "retry-plan.json"
+        token = self.work_dir / "retry-ldap-token"
+        data_dir = self.work_dir / "retry-data"
+        config.write_text("{}\n", encoding="utf-8")
+        plan.write_text("{}\n", encoding="utf-8")
+        token.write_text("token\n", encoding="utf-8")
+        data_dir.mkdir()
+
+        result = self.run_helper(
+            f"""
+            stalwart_config_host_path={config}
+            stalwart_container=mock-stalwart
+            stalwart_data_dir={data_dir}
+            stalwart_kanidm_ldap_token_host_path={token}
+            stalwart_plan_container_path=/etc/stalwart/plan.json
+            stalwart_plan_host_path={plan}
+            stalwart_runtime_retry_delay_seconds=0
+            stalwart_service_name=mock-stalwart
+            with_recovery true
+            """,
+            TEST_STALWART_RECOVERY_FAILURES="2",
+            NOTIFY_SOCKET="/run/systemd/notify",
+            WATCHDOG_PID="123",
+            WATCHDOG_USEC="1000000",
+        )
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual(
+            "3",
+            (self.state_dir / "recovery-run-attempts").read_text(encoding="utf-8"),
+        )
+
+    def test_recovery_reports_final_podman_engine_error(self):
+        result = self.run_helper(
+            """
+            stalwart_runtime_retry_attempts=2
+            stalwart_runtime_retry_delay_seconds=0
+            runtime_run_recovery mock-image mock-recovery
+            """,
+            check=False,
+            TEST_STALWART_RECOVERY_FAILURES="2",
+        )
+
+        self.assertEqual(125, result.returncode)
+        self.assertIn("transient podman engine failure", result.stderr)
+        self.assertIn(
+            "failed to create Stalwart recovery container after 2 attempt(s): "
+            "mock-recovery (status 125)",
+            result.stderr,
+        )
 
     def test_plan_string_file_substitution(self):
         value_file = self.work_dir / "ldap-token"

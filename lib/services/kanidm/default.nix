@@ -212,6 +212,7 @@ in {
     passwordFile,
     command ? "apply-idm",
     acceptInvalidCerts ? false,
+    stampContract ? "kanidm-auto-apply-v1",
     waitSeconds ? 60,
   }: let
     mkRuntimeEnvExport = name: value: "export ${name}=${lib.escapeShellArg (toString value)}";
@@ -221,6 +222,7 @@ in {
         KANIDM_NAME = adminName;
         KANIDM_AUTO_APPLY_PASSWORD_FILE = passwordFile;
         KANIDM_AUTO_APPLY_COMMAND = command;
+        KANIDM_AUTO_APPLY_STAMP_CONTRACT = stampContract;
         KANIDM_AUTO_APPLY_WAIT_SECONDS = toString waitSeconds;
       }
       // lib.optionalAttrs (systemAdminName != null) {

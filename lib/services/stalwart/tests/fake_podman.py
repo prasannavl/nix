@@ -12,6 +12,10 @@ def fail(message, status=64):
 def parse_cli_args(args):
     if args[:2] == ["image", "exists"]:
         sys.exit(0)
+    if args and args[0] in {"stop", "start", "rm"}:
+        return [args[0]]
+    if args and args[0] == "inspect":
+        return ["inspect"]
     if not args or args[0] != "run":
         fail("unexpected podman args: " + " ".join(args))
 
@@ -19,7 +23,12 @@ def parse_cli_args(args):
     index = 0
     while index < len(args):
         arg = args[index]
-        if arg in {"--entrypoint", "--env", "--volume", "--network", "--name", "--publish"}:
+        if arg == "--":
+            index += 1
+            if index < len(args):
+                index += 1
+            break
+        if arg in {"--entrypoint", "--env", "--volume", "--network", "--name", "--publish", "--user"}:
             index += 2
         elif arg in {"--interactive", "--rm", "--detach"}:
             index += 1
@@ -107,9 +116,34 @@ def print_json_lines(rows):
 
 
 def main():
+    inherited_notify = [
+        name
+        for name in ("NOTIFY_SOCKET", "WATCHDOG_PID", "WATCHDOG_USEC")
+        if os.environ.get(name)
+    ]
+    if inherited_notify:
+        fail("podman inherited systemd notify environment: " + ", ".join(inherited_notify), 70)
+
+    if sys.argv[1:2] == ["run"] and "--detach" in sys.argv[1:]:
+        state_dir = Path(os.environ["TEST_STALWART_STATE_DIR"])
+        attempts_file = state_dir / "recovery-run-attempts"
+        attempts = int(attempts_file.read_text(encoding="utf-8")) if attempts_file.exists() else 0
+        attempts += 1
+        attempts_file.write_text(str(attempts), encoding="utf-8")
+        failures = int(os.environ.get("TEST_STALWART_RECOVERY_FAILURES", "0"))
+        if attempts <= failures:
+            fail("transient podman engine failure", 125)
+
     cli_args = parse_cli_args(sys.argv[1:])
     command = cli_args[0] if len(cli_args) > 0 else ""
     object_name = cli_args[1] if len(cli_args) > 1 else ""
+
+    if command in {"stop", "start", "rm"}:
+        return
+
+    if command == "inspect":
+        print("false")
+        return
 
     log_file = Path(os.environ["TEST_STALWART_LOG"])
     with log_file.open("a", encoding="utf-8") as handle:

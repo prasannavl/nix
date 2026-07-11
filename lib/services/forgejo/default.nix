@@ -8,6 +8,7 @@
     configPath ? "/var/lib/gitea/custom/conf/app.ini",
     containerName ? "forgejo_forgejo_1",
     groupClaimName ? "groups",
+    issuerHostAddress ? "",
     issuerUrl,
     workPath ? "/var/lib/gitea",
     waitSeconds ? 120,
@@ -30,6 +31,7 @@
         FORGEJO_CONFIG_PATH = configPath;
         FORGEJO_CONTAINER = containerName;
         FORGEJO_GROUP_CLAIM_NAME = groupClaimName;
+        FORGEJO_ISSUER_HOST_ADDRESS = issuerHostAddress;
         FORGEJO_ISSUER_URL = issuerUrl;
         FORGEJO_WAIT_SECONDS = toString waitSeconds;
         FORGEJO_WORK_PATH = workPath;

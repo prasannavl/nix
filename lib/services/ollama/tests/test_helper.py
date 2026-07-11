@@ -199,11 +199,12 @@ esac
         self.set_unit_state("pvl-ollama-nvidia.service", "inactive")
 
         result = self.run_helper(
+            check=False,
             OLLAMA_WAIT_ATTEMPTS="2",
             OLLAMA_WAIT_DELAY_SECONDS="0",
         )
 
-        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 1)
         self.assertNotIn("dependent service units are inactive", result.stderr)
         self.assertIn("no Ollama API available", result.stderr)
         self.assertEqual(len(self.read_log("curl.log")), 4)

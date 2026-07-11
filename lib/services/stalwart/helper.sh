@@ -24,6 +24,7 @@ init_vars() {
 	stalwart_prune_sieve_system_scripts="${STALWART_PRUNE_SIEVE_SYSTEM_SCRIPTS-false}"
 	stalwart_prune_users="${STALWART_PRUNE_USERS-false}"
 	stalwart_recovery_container="${STALWART_RECOVERY_CONTAINER-}"
+	stalwart_recovery_lock_wait_seconds="${STALWART_RECOVERY_LOCK_WAIT_SECONDS-120}"
 	stalwart_recovery_wait_seconds="${STALWART_RECOVERY_WAIT_SECONDS-120}"
 	stalwart_recovery_url="${STALWART_RECOVERY_URL-}"
 	stalwart_service_name="${STALWART_SERVICE_NAME-}"
@@ -33,6 +34,143 @@ init_vars() {
 	stalwart_mailing_lists_host_path="${STALWART_MAILING_LISTS_HOST_PATH-}"
 	stalwart_user="${STALWART_USER-admin}"
 	stalwart_password=""
+	stalwart_runtime="${STALWART_RUNTIME-podman}"
+	stalwart_runtime_retry_attempts="${STALWART_RUNTIME_RETRY_ATTEMPTS-5}"
+	stalwart_runtime_retry_delay_seconds="${STALWART_RUNTIME_RETRY_DELAY_SECONDS-1}"
+}
+
+runtime_podman() {
+	env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC podman "$@"
+}
+
+runtime_stop_instance() {
+	case "$stalwart_runtime" in
+	podman) runtime_podman stop "$1" >/dev/null ;;
+	systemd) systemctl --user stop "$1" || true ;;
+	esac
+}
+
+runtime_start_instance() {
+	case "$stalwart_runtime" in
+	podman) runtime_podman start "$1" >/dev/null ;;
+	systemd) systemctl --user start "$1" || true ;;
+	esac
+}
+
+runtime_instance_running() {
+	case "$stalwart_runtime" in
+	podman) [ "$(runtime_podman inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true)" = "true" ] ;;
+	systemd) systemctl --user is-active --quiet "$1" 2>/dev/null ;;
+	esac
+}
+
+runtime_remove_instance() {
+	case "$stalwart_runtime" in
+	podman) runtime_podman rm -f "$1" >/dev/null 2>&1 || true ;;
+	systemd) : ;;
+	esac
+}
+
+runtime_ensure_image() {
+	case "$stalwart_runtime" in
+	podman)
+		local image="$1" image_tar="${2-}" attempt=1 output="" status=0
+		while true; do
+			if output="$(runtime_podman image exists "$image" 2>&1)"; then
+				return 0
+			else
+				status=$?
+			fi
+			[ "$status" -eq 1 ] && break
+			if [ "$status" -ne 125 ] || [ "$attempt" -ge "$stalwart_runtime_retry_attempts" ]; then
+				[ -n "$output" ] && printf '%s\n' "$output" >&2
+				printf 'failed to inspect Stalwart image after %s attempt(s): %s (status %s)\n' "$attempt" "$image" "$status" >&2
+				return "$status"
+			fi
+			sleep "$stalwart_runtime_retry_delay_seconds"
+			attempt=$((attempt + 1))
+		done
+		if [ -z "$image_tar" ]; then
+			return 0
+		fi
+		if [ ! -r "$image_tar" ]; then
+			printf 'missing readable image tar: %s\n' "$image_tar" >&2
+			exit 1
+		fi
+		if output="$(runtime_podman load --input "$image_tar" 2>&1)"; then
+			return 0
+		else
+			status=$?
+		fi
+		[ -n "$output" ] && printf '%s\n' "$output" >&2
+		printf 'failed to load Stalwart image: %s (status %s)\n' "$image" "$status" >&2
+		return "$status"
+		;;
+	systemd) ;;
+	esac
+}
+
+runtime_run_cli() {
+	case "$stalwart_runtime" in
+	podman)
+		local image="$1" entrypoint="$2"
+		shift 2
+		local -a run_args=() cli_args=()
+		while [ "$#" -gt 0 ]; do
+			if [ "$1" = "--" ]; then
+				shift
+				cli_args=("$@")
+				break
+			fi
+			run_args+=("$1")
+			shift
+		done
+		runtime_podman run \
+			--interactive \
+			--rm \
+			--network host \
+			--entrypoint "$entrypoint" \
+			--env HOME=/tmp \
+			"${run_args[@]}" \
+			"$image" \
+			"${cli_args[@]}"
+		;;
+	systemd)
+		shift 2
+		"$@"
+		;;
+	esac
+}
+
+runtime_run_recovery() {
+	case "$stalwart_runtime" in
+	podman)
+		local image="$1" name="$2" attempt=1 output="" status=0
+		shift 2
+		while true; do
+			if output="$(runtime_podman run \
+				--detach \
+				--name "$name" \
+				--rm \
+				--user 0:0 \
+				"$@" \
+				"$image" 2>&1)"; then
+				return 0
+			else
+				status=$?
+			fi
+			if [ "$status" -ne 125 ] || [ "$attempt" -ge "$stalwart_runtime_retry_attempts" ]; then
+				[ -n "$output" ] && printf '%s\n' "$output" >&2
+				printf 'failed to create Stalwart recovery container after %s attempt(s): %s (status %s)\n' "$attempt" "$name" "$status" >&2
+				return "$status"
+			fi
+			runtime_remove_instance "$name"
+			sleep "$stalwart_runtime_retry_delay_seconds"
+			attempt=$((attempt + 1))
+		done
+		;;
+	systemd) ;;
+	esac
 }
 
 require_var() {
@@ -68,7 +206,7 @@ stalwart_cli() {
 
 stalwart_cli_for() {
 	local container url
-	local -a network_args volume_args
+	local -a volume_args
 	container="$1"
 	url="$2"
 	shift 2
@@ -80,43 +218,15 @@ stalwart_cli_for() {
 		printf 'missing executable Stalwart CLI: %s\n' "$stalwart_cli_bin" >&2
 		exit 1
 	fi
-	ensure_stalwart_image
+	runtime_ensure_image "$stalwart_image" "$stalwart_image_tar"
 
-	network_args=(--network host)
-
-	volume_args=()
+	volume_args=(--env "STALWART_URL=$url" --env "STALWART_USER=$stalwart_user" --env "STALWART_PASSWORD=$stalwart_password")
+	volume_args+=(--volume "$stalwart_cli_bin:/usr/local/bin/stalwart-cli:ro")
 	if [ -n "$stalwart_plan_host_path" ] && [ -n "$stalwart_plan_container_path" ]; then
 		volume_args+=(--volume "$stalwart_plan_host_path:$stalwart_plan_container_path:ro")
 	fi
 
-	podman run \
-		--interactive \
-		--rm \
-		"${network_args[@]}" \
-		--entrypoint /usr/local/bin/stalwart-cli \
-		--env HOME=/tmp \
-		--env "STALWART_URL=$url" \
-		--env "STALWART_USER=$stalwart_user" \
-		--env "STALWART_PASSWORD=$stalwart_password" \
-		--volume "$stalwart_cli_bin:/usr/local/bin/stalwart-cli:ro" \
-		"${volume_args[@]}" \
-		"$stalwart_image" \
-		"$@"
-}
-
-ensure_stalwart_image() {
-	require_var stalwart_image
-	if podman image exists "$stalwart_image"; then
-		return 0
-	fi
-	if [ -z "$stalwart_image_tar" ]; then
-		return 0
-	fi
-	if [ ! -r "$stalwart_image_tar" ]; then
-		printf 'missing readable Stalwart image tar: %s\n' "$stalwart_image_tar" >&2
-		exit 1
-	fi
-	podman load --input "$stalwart_image_tar" >/dev/null
+	runtime_run_cli "$stalwart_image" "/usr/local/bin/stalwart-cli" "${volume_args[@]}" -- "$@"
 }
 
 require_value() {
@@ -612,6 +722,33 @@ prepare_apply_inputs() {
 	fi
 }
 
+cleanup_recovery() {
+	local original_status="${1:-0}" cleanup_status=0
+
+	[ "$stalwart_recovery_cleanup_armed" -eq 1 ] || return "$original_status"
+	stalwart_recovery_cleanup_armed=0
+	runtime_remove_instance "$stalwart_recovery_container"
+	if [ "$stalwart_recovery_stopped_instance" -eq 1 ]; then
+		if ! runtime_start_instance "$stalwart_container"; then
+			printf 'failed to restore Stalwart instance after recovery: %s\n' "$stalwart_container" >&2
+			cleanup_status=1
+		fi
+	fi
+	rm -rf "$stalwart_recovery_secret_dir"
+	stalwart_recovery_secret_dir=""
+	stalwart_recovery_stopped_instance=0
+
+	[ "$original_status" -ne 0 ] && return "$original_status"
+	return "$cleanup_status"
+}
+
+cleanup_recovery_on_exit() {
+	local recovery_status
+	recovery_status="$?"
+	trap - EXIT
+	cleanup_recovery "$recovery_status"
+}
+
 with_recovery() {
 	require_var stalwart_config_host_path
 	require_var stalwart_container
@@ -622,18 +759,30 @@ with_recovery() {
 	require_var stalwart_plan_host_path
 	require_var stalwart_recovery_container
 	require_value stalwart_recovery_url "$stalwart_recovery_url"
-	require_var stalwart_service_name
 
-	local lock_name lock_path mount host_path container_path staged_kanidm_token staged_mount
+	local lock_name lock_path mount host_path container_path staged_kanidm_token staged_mount action_status
 	local extra_mount_index=0
 	local -a extra_volume_args=()
-	lock_name="${stalwart_service_name//[^A-Za-z0-9_.-]/_}"
+	lock_name="${stalwart_service_name:-stalwart-apply}"
+	lock_name="${lock_name//[^A-Za-z0-9_.-]/_}"
 	lock_path="${XDG_RUNTIME_DIR:-/tmp}/stalwart-apply-${lock_name}.lock"
 	exec 9>"$lock_path"
-	flock 9
+	if ! flock -w "$stalwart_recovery_lock_wait_seconds" 9; then
+		printf 'timed out waiting %ss for Stalwart apply lock: %s\n' "$stalwart_recovery_lock_wait_seconds" "$lock_path" >&2
+		exit 1
+	fi
 
 	stalwart_recovery_secret_dir="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/stalwart-recovery-secrets.XXXXXX")"
-	trap 'podman rm -f "$stalwart_recovery_container" >/dev/null 2>&1 || true; systemctl --user start "$stalwart_service_name" || true; rm -rf "$stalwart_recovery_secret_dir"' EXIT
+	stalwart_recovery_cleanup_armed=1
+	stalwart_recovery_stopped_instance=0
+	trap cleanup_recovery_on_exit EXIT
+	if runtime_instance_running "$stalwart_container"; then
+		if ! runtime_stop_instance "$stalwart_container"; then
+			printf 'failed to stop Stalwart instance for recovery: %s\n' "$stalwart_container" >&2
+			exit 1
+		fi
+		stalwart_recovery_stopped_instance=1
+	fi
 
 	while IFS= read -r mount; do
 		[ -n "$mount" ] || continue
@@ -663,13 +812,9 @@ with_recovery() {
 	staged_kanidm_token="$(stage_recovery_file "$stalwart_kanidm_ldap_token_host_path" "kanidm-ldap-token")"
 	stalwart_plan_host_path="$(prepare_plan_host_path)"
 
-	systemctl --user stop "$stalwart_service_name" || true
-	podman rm -f "$stalwart_recovery_container" >/dev/null 2>&1 || true
-	ensure_stalwart_image
-	podman run \
-		--detach \
-		--name "$stalwart_recovery_container" \
-		--rm \
+	runtime_remove_instance "$stalwart_recovery_container"
+	runtime_ensure_image "$stalwart_image" "$stalwart_image_tar"
+	if runtime_run_recovery "$stalwart_image" "$stalwart_recovery_container" \
 		--env STALWART_RECOVERY_MODE=1 \
 		--env "STALWART_RECOVERY_ADMIN=$stalwart_user:$stalwart_password" \
 		--publish 127.0.0.1:18081:8080 \
@@ -677,11 +822,25 @@ with_recovery() {
 		--volume "$stalwart_plan_host_path:$stalwart_plan_container_path:ro" \
 		--volume "$stalwart_data_dir:/var/lib/stalwart" \
 		--volume "$staged_kanidm_token:/run/secrets/kanidm-ldap-token:ro" \
-		"${extra_volume_args[@]}" \
-		"$stalwart_image" >/dev/null
+		"${extra_volume_args[@]}"; then
+		:
+	else
+		action_status=$?
+		printf 'failed to start Stalwart recovery container: %s\n' "$stalwart_recovery_container" >&2
+		trap - EXIT
+		cleanup_recovery "$action_status"
+		return $?
+	fi
 
 	wait_for_recovery_api
-	"$@"
+	if "$@"; then
+		action_status=0
+	else
+		action_status=$?
+		printf 'Stalwart recovery action failed with status %s\n' "$action_status" >&2
+	fi
+	trap - EXIT
+	cleanup_recovery "$action_status"
 }
 
 apply_with_recovery() {
@@ -1563,8 +1722,8 @@ Usage: $(basename "$0") <command> [args...]
 
 Commands:
   bootstrap   Compatibility alias for apply.
-  apply       Stop the normal service, apply through a recovery container, then restart it.
-  dry-run     Validate the rendered plan through a recovery container, then restart the service.
+  apply       Apply the rendered plan through a recovery container. Run before the service starts so the recovery container gets exclusive data-dir access without stopping a running instance.
+  dry-run     Validate the rendered plan through a recovery container.
   dns-zone    Print generated DNS zone data for the configured domain through recovery mode.
   cli ...     Run stalwart-cli beside the Stalwart container network namespace.
   recovery-cli ...

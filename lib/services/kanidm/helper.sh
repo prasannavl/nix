@@ -7,10 +7,12 @@ init_vars() {
 	kanidm_name="${KANIDM_NAME-}"
 	kanidm_system_name="${KANIDM_SYSTEM_NAME-}"
 	kanidm_container="${KANIDM_CONTAINER-}"
+	kanidm_config_path="${KANIDM_CONFIG_PATH-}"
 	kanidm_default_url=""
 	kanidm_default_name=""
 	kanidm_default_system_name=""
 	kanidm_default_container=""
+	kanidm_default_config_path="/data/server.toml"
 }
 
 require_env() {
@@ -33,6 +35,7 @@ load_metadata() {
 	: "${kanidm_name:=$kanidm_default_name}"
 	: "${kanidm_system_name:=$kanidm_default_system_name}"
 	: "${kanidm_container:=$kanidm_default_container}"
+	: "${kanidm_config_path:=$kanidm_default_config_path}"
 }
 
 kanidm_cmd_as() {
@@ -108,7 +111,7 @@ exec_in_container() {
 recover_account() {
 	local account
 	account="$1"
-	run_admin recover-account "$account"
+	run_admin recover-account --config-path "$kanidm_config_path" "$account"
 }
 
 run_admin() {
@@ -362,6 +365,55 @@ managed_group_members_file() {
 
 managed_ssh_public_keys_file() {
 	printf '%s/%s.ssh-public-keys' "$(state_dir)" "$(state_name)"
+}
+
+auto_apply_stamp_dir() {
+	printf '%s/auto-apply' "$(state_dir)"
+}
+
+auto_apply_stamp_file() {
+	local account_name command key
+	command="$1"
+	account_name="$2"
+	key="$(
+		{
+			printf '%s\0' "$(state_name)" "$command" "$account_name"
+		} | sha256sum | cut -d' ' -f1
+	)"
+	printf '%s/%s.stamp' "$(auto_apply_stamp_dir)" "$key"
+}
+
+auto_apply_desired_stamp() {
+	local account_name command stamp_contract
+	command="$1"
+	account_name="$2"
+	stamp_contract="${KANIDM_AUTO_APPLY_STAMP_CONTRACT:-kanidm-auto-apply-v1}"
+	{
+		printf '%s\0' "$stamp_contract"
+		printf '%s\0' "$command" "$account_name" "$kanidm_url" "$(kanidm_domain)"
+		cat "$kanidm_metadata"
+	} | sha256sum | cut -d' ' -f1
+}
+
+auto_apply_stamp_matches() {
+	local stamp_file desired_stamp current_stamp
+	stamp_file="$1"
+	desired_stamp="$2"
+
+	[ -r "$stamp_file" ] || return 1
+	current_stamp="$(cat "$stamp_file")"
+	[ "$current_stamp" = "$desired_stamp" ]
+}
+
+record_auto_apply_stamp() {
+	local stamp_file desired_stamp tmp_file
+	stamp_file="$1"
+	desired_stamp="$2"
+
+	install -d -m 0700 "$(dirname "$stamp_file")"
+	tmp_file="$(mktemp "${stamp_file}.tmp.XXXXXX")"
+	printf '%s\n' "$desired_stamp" >"$tmp_file"
+	mv "$tmp_file" "$stamp_file"
 }
 
 prune_missing_users_enabled() {
@@ -1058,7 +1110,8 @@ prune_oauth_scope_maps() {
 
 verify_fail() {
 	printf 'verify-idm: %s\n' "$*" >&2
-	return 1
+	kanidm_verify_failed=1
+	return 0
 }
 
 verify_person() {
@@ -1179,6 +1232,10 @@ verify_oauth_app() {
 	domain="$(kanidm_domain)"
 
 	live="$(kanidm_json_cmd system oauth2 get "$name")"
+	if ! jq -e 'type == "object" and (.attrs | type == "object")' <<<"$live" >/dev/null; then
+		verify_fail "oauth app $name missing"
+		return 0
+	fi
 
 	if [ -n "$icon_path" ] && ! jq -e '(.attrs.image // []) | length > 0' <<<"$live" >/dev/null; then
 		verify_fail "oauth app $name missing image"
@@ -1249,6 +1306,7 @@ verify_oauth_app() {
 verify_idm() {
 	local item
 	require_login
+	kanidm_verify_failed=0
 
 	while IFS= read -r item; do
 		[ -n "$item" ] || continue
@@ -1284,6 +1342,8 @@ verify_idm() {
 		[ -n "$item" ] || continue
 		verify_oauth_app "$item"
 	done < <(jq_state '.state.oauthApps[]?')
+
+	[ "$kanidm_verify_failed" -eq 0 ]
 }
 
 verify_service_account() {
@@ -1400,7 +1460,7 @@ wait_for_kanidm_status() {
 }
 
 auto_apply_idm() {
-	local account_name command login_started_epoch login_output login_rc password_file
+	local account_name command desired_stamp login_started_epoch login_output login_rc password_file stamp_file
 	command="${KANIDM_AUTO_APPLY_COMMAND:-apply-idm}"
 	password_file="${KANIDM_AUTO_APPLY_PASSWORD_FILE-}"
 
@@ -1423,6 +1483,13 @@ auto_apply_idm() {
 		exit 1
 	fi
 
+	desired_stamp="$(auto_apply_desired_stamp "$command" "$account_name")"
+	stamp_file="$(auto_apply_stamp_file "$command" "$account_name")"
+	if auto_apply_stamp_matches "$stamp_file" "$desired_stamp"; then
+		printf 'Kanidm %s declarative stamp is current; skipping auto-apply.\n' "$command"
+		return 0
+	fi
+
 	kanidm_auto_apply_token_dir="$(mktemp -d)"
 	trap 'rm -rf "$kanidm_auto_apply_token_dir"' EXIT
 	export KANIDM_TOKEN_CACHE_PATH="$kanidm_auto_apply_token_dir/tokens.json"
@@ -1430,28 +1497,38 @@ auto_apply_idm() {
 	wait_for_kanidm_status
 	login_started_epoch="$(date +%s)"
 	login_output="$(mktemp)"
-	if KANIDM_PASSWORD="$(tr -d '\n' <"$password_file")" kanidm_cmd_as "$account_name" login >"$login_output" 2>&1; then
+	set +e
+	KANIDM_PASSWORD="$(tr -d '\n' <"$password_file")" kanidm_cmd_as "$account_name" login >"$login_output" 2>&1
+	login_rc="$?"
+	set -e
+	if [ "$login_rc" -eq 0 ]; then
 		rm -f "$login_output"
 		case "$command" in
 		apply-idm)
+			if verify_idm; then
+				printf 'Kanidm declared IdM state is already applied; recording auto-apply stamp.\n'
+				record_auto_apply_stamp "$stamp_file" "$desired_stamp"
+				return
+			fi
 			apply_idm
 			;;
 		apply-system)
 			apply_domain
 			;;
 		esac
+		record_auto_apply_stamp "$stamp_file" "$desired_stamp"
 		return
 	fi
 
-	login_rc="$?"
 	if journalctl -b --since "@$login_started_epoch" --no-pager -o cat 2>/dev/null |
 		grep -F "Initiating Authentication Session | username: $account_name |" >/dev/null &&
 		journalctl -b --since "@$login_started_epoch" --no-pager -o cat 2>/dev/null |
 		grep -F "account has no available credentials" >/dev/null; then
-		printf 'Kanidm account %s is not bootstrapped; skipping %s until the password-backed account can log in.\n' \
+		printf 'Kanidm account %s is not bootstrapped; cannot run %s with the declared password.\n' \
 			"$account_name" "$command" >&2
+		printf '%s\n' "Recover the account, update the matching age secret, and redeploy before starting dependent OIDC services." >&2
 		rm -f "$login_output"
-		return 0
+		exit 1
 	fi
 
 	printf 'Kanidm auto-apply login failed for %s; refusing to skip.\n' "$account_name" >&2
