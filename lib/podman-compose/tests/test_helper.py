@@ -172,6 +172,25 @@ class PodmanComposeHelperTest(unittest.TestCase):
             check=check,
         )
 
+    def assert_compose_up_in_history(self, history, *, force_recreate=False):
+        suffix = " up --no-build -d --remove-orphans"
+        if force_recreate:
+            suffix += " --force-recreate"
+        self.assertTrue(
+            any(line.startswith("compose ") and suffix in line for line in history),
+            "\n".join(history),
+        )
+
+    def assert_compose_force_recreate_not_in_history(self, history):
+        self.assertFalse(
+            any(
+                line.startswith("compose ")
+                and " up --no-build -d --remove-orphans --force-recreate" in line
+                for line in history
+            ),
+            "\n".join(history),
+        )
+
     def wait_for_pid_absent(self, pid: int, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -312,6 +331,33 @@ class PodmanComposeHelperTest(unittest.TestCase):
             TEST_TIMEOUT_VALUE="5s",
         )
         self.assertEqual("compose up --no-build -d --remove-orphans", self.podman_args_file.read_text().strip())
+
+    def test_compose_up_supervised_forces_local_pull_policy_for_known_services(self):
+        self.run_helper(
+            """
+            generated_dir="$working_dir/.podman-compose"
+            expected_compose_services=(web worker)
+            compose_file_args=(-f compose.yml)
+            compose_up_supervised normal
+            """,
+            TEST_PODMAN_MODE="success",
+            TEST_TIMEOUT_VALUE="5s",
+        )
+
+        override = self.generated_dir / "local-pull-policy.override.json"
+        self.assertEqual(
+            {
+                "services": {
+                    "web": {"pull_policy": "never"},
+                    "worker": {"pull_policy": "never"},
+                }
+            },
+            json.loads(override.read_text(encoding="utf-8")),
+        )
+        self.assertEqual(
+            f"compose -f compose.yml -f {override} up --no-build -d --remove-orphans",
+            self.podman_args_file.read_text().strip(),
+        )
 
     def test_close_lifecycle_fds_for_child_closes_rootless_lock_fd(self):
         result = self.run_helper(
@@ -627,7 +673,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertIn("podman compose start made no healthy state progress", result.stderr)
         self.assertIn("compose_db_1: state=created", result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertIn("compose up --no-build -d --remove-orphans", history)
+        self.assert_compose_up_in_history(history)
         self.assertIn("compose ps --format json", history)
 
     def test_compose_up_checked_retries_when_up_never_creates_expected_containers(self):
@@ -652,7 +698,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertIn("web", result.stderr)
         self.assertIn("worker", result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertIn("compose up --no-build -d --remove-orphans", history)
+        self.assert_compose_up_in_history(history)
         self.assertIn("compose ps --format json", history)
 
     def test_compose_up_checked_retries_when_up_misses_expected_container(self):
@@ -686,7 +732,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertNotIn("web\n", result.stderr)
         self.assertIn("worker", result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertIn("compose up --no-build -d --remove-orphans", history)
+        self.assert_compose_up_in_history(history)
         self.assertIn("compose ps --format json", history)
 
     def test_compose_up_checked_kills_fatal_output_process_group_before_cleanup(self):
@@ -1132,6 +1178,41 @@ class PodmanComposeHelperTest(unittest.TestCase):
         pull_index = trace.index("compose-pulled")
         lock_index = trace.index("rootless-locked")
         self.assertLess(pull_index, lock_index, "compose_pull must run before rootless lifecycle lock")
+
+    def test_start_staged_does_not_pull_images_inline(self):
+        trace_log = self.compose_dir / "start-staged-no-pull-trace.log"
+        metadata = self.write_service_metadata(
+            "metadata-start-staged-no-pull.json",
+        )
+
+        self.run_helper(
+            """
+            podman_compose_metadata=$NIX_PODMAN_COMPOSE_METADATA
+            load_metadata
+            assert_adoption_allowed() { :; }
+            ensure_runtime_dirs() { :; }
+            clear_removal_policy_marker() { :; }
+            clear_start_in_progress() { :; }
+            verify_staged_runtime_files() { :; }
+            compose_start_plan_locked() { printf 'normal\t0\n'; }
+            compose_pull() { printf 'compose-pulled\n' >> "$working_dir/start-staged-no-pull-trace.log"; return 1; }
+            compose_up_checked() { printf 'compose-started\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
+            record_runtime_state() { printf 'state-recorded\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
+            lock_lifecycle_exclusive() { printf 'lifecycle-locked\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
+            unlock_lifecycle_exclusive() { printf 'lifecycle-unlocked\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
+            notify_ready_and_monitor() { :; }
+            cmd_start_staged
+            """,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_TIMEOUT_VALUE="5s",
+        )
+
+        trace = trace_log.read_text(encoding="utf-8").splitlines()
+        self.assertNotIn("compose-pulled", trace)
+        self.assertIn("compose-started", trace)
+        self.assertIn("state-recorded", trace)
 
     def test_stage_runtime_files_writes_files_env_secrets_and_manifest(self):
         src_config = self.state_dir / "config.yml"
@@ -2398,8 +2479,8 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertIn("compose_worker_1: state=exited exit=135", result.stderr)
         self.assertIn("rm -f --depend -v compose_web_1", history)
         self.assertIn("rm -f --depend -v compose_worker_1", history)
-        self.assertIn("compose up --no-build -d --remove-orphans", history)
-        self.assertNotIn("compose up --no-build -d --remove-orphans --force-recreate", history)
+        self.assert_compose_up_in_history(history)
+        self.assert_compose_force_recreate_not_in_history(history)
         state = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual("recreate-a", state["recreateStamp"])
         self.assertEqual("class-a", state["recreateClassStamp"])

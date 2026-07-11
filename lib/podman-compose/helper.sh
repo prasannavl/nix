@@ -982,6 +982,31 @@ compose_start_stall_probe_interval_seconds() {
 	printf '%s\n' "$interval"
 }
 
+json_string() {
+	jq -Rn --arg value "$1" '$value'
+}
+
+compose_local_pull_policy_override_file() {
+	local override_file tmp_file service sep
+	if [ "${#expected_compose_services[@]}" -eq 0 ]; then
+		return 0
+	fi
+	install -d -m 0700 "$generated_dir"
+	override_file="$generated_dir/local-pull-policy.override.json"
+	tmp_file="$(mktemp "${override_file}.tmp.XXXXXX")"
+	{
+		printf '{"services":{'
+		sep=""
+		for service in "${expected_compose_services[@]}"; do
+			printf '%s%s:{"pull_policy":"never"}' "$sep" "$(json_string "$service")"
+			sep=","
+		done
+		printf '}}\n'
+	} >"$tmp_file"
+	mv -f "$tmp_file" "$override_file"
+	printf '%s\n' "$override_file"
+}
+
 compose_up() {
 	local status=0
 	podman_rootless_lifecycle_lock
@@ -1318,7 +1343,8 @@ compose_up_supervised() {
 	local mode timeout_seconds reserve_seconds deadline_seconds started_at now line fatal_seen=0 status=0 fatal_status
 	local compose_output_fd compose_up_pid compose_up_child_pid compose_up_pid_file
 	local state_probe_interval last_state_probe=0 state_stall_since=0 state_json state_stall_report elapsed_state_stall
-	local -a up_args=()
+	local local_pull_policy_override=""
+	local -a local_compose_file_args=() up_args=()
 	mode="$1"
 	fatal_status="$compose_start_stuck_exit_status"
 	timeout_seconds="$(compose_start_timeout_seconds)"
@@ -1331,7 +1357,12 @@ compose_up_supervised() {
 	fi
 	state_probe_interval="$(compose_start_stall_probe_interval_seconds)"
 
-	up_args=(podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" up --no-build -d --remove-orphans)
+	local_compose_file_args=("${compose_file_args[@]}")
+	local_pull_policy_override="$(compose_local_pull_policy_override_file)"
+	if [ -n "$local_pull_policy_override" ]; then
+		local_compose_file_args+=(-f "$local_pull_policy_override")
+	fi
+	up_args=(podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${local_compose_file_args[@]}" up --no-build -d --remove-orphans)
 	if [ "$mode" = "force" ]; then
 		up_args+=(--force-recreate)
 	fi
@@ -2946,6 +2977,29 @@ cmd_link_files() {
 	unlock_lifecycle_exclusive
 }
 
+cmd_stage() {
+	cmd_link_files
+}
+
+cmd_bootstrap() {
+	load_metadata
+	if [ "$desired_state" = "stopped" ]; then
+		printf '%s\n' "podman compose instance desired state is stopped; skipping bootstrap"
+		return 0
+	fi
+	assert_adoption_allowed
+	lock_lifecycle_exclusive
+	if ! verify_staged_runtime_files; then
+		unlock_lifecycle_exclusive
+		return 1
+	fi
+	run_pre_start_hooks || {
+		unlock_lifecycle_exclusive
+		return 1
+	}
+	unlock_lifecycle_exclusive
+}
+
 cmd_verify() {
 	load_metadata
 	if start_in_progress_active; then
@@ -3084,6 +3138,49 @@ cmd_start() {
 	clear_start_in_progress
 	unlock_lifecycle_exclusive
 	notify_ready_and_monitor "podman compose running"
+}
+
+cmd_start_staged() {
+	local force_recreate=0 mode=normal request
+	load_metadata
+	assert_adoption_allowed
+	ensure_runtime_dirs
+	if helper_invoked_as_script && start_in_progress_active; then
+		notify_ready_and_monitor "podman compose start already in progress"
+		return 0
+	fi
+	lock_lifecycle_exclusive
+	clear_removal_policy_marker
+	if ! verify_staged_runtime_files; then
+		clear_start_in_progress
+		unlock_lifecycle_exclusive
+		return 1
+	fi
+	request="$(compose_start_plan_locked)"
+	IFS=$'\t' read -r mode force_recreate <<<"$request"
+	mark_start_in_progress "$$"
+	unlock_lifecycle_exclusive
+	if ! compose_up_checked "$mode"; then
+		return 1
+	fi
+	lock_lifecycle_exclusive
+	if [ "$force_recreate" -eq 1 ]; then
+		record_applied_recreate_state
+	else
+		record_runtime_state
+	fi
+	clear_start_in_progress
+	unlock_lifecycle_exclusive
+	notify_ready_and_monitor "podman compose running"
+}
+
+cmd_reconcile() {
+	load_metadata
+	if [ "$desired_state" = "stopped" ]; then
+		printf '%s\n' "podman compose instance desired state is stopped; skipping reconcile"
+		return 0
+	fi
+	run_post_start_hooks
 }
 
 cmd_repair() {
@@ -3242,6 +3339,12 @@ main() {
 	init_vars
 
 	case "${1-}" in
+	stage)
+		cmd_stage
+		;;
+	bootstrap)
+		cmd_bootstrap
+		;;
 	link-files)
 		cmd_link_files
 		;;
@@ -3263,6 +3366,12 @@ main() {
 	repair)
 		cmd_repair
 		;;
+	start-staged)
+		cmd_start_staged
+		;;
+	reconcile)
+		cmd_reconcile
+		;;
 	start)
 		cmd_start
 		;;
@@ -3280,7 +3389,7 @@ main() {
 		cmd_logs "$@"
 		;;
 	*)
-		printf '%s\n' "usage: $0 {link-files|cleanup-files|post-stop|verify|monitor|reload|repair|start|stop|remove|image-pull|logs}" >&2
+		printf '%s\n' "usage: $0 {stage|bootstrap|link-files|cleanup-files|post-stop|verify|monitor|reload|repair|start-staged|reconcile|start|stop|remove|image-pull|logs}" >&2
 		exit 1
 		;;
 	esac

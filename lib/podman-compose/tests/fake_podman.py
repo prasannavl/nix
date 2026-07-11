@@ -168,8 +168,8 @@ def main():
             after_up = os.environ.get("TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP")
             history_file = os.environ.get("TEST_PODMAN_HISTORY_FILE")
             if after_up is not None and history_file:
-                history = Path(history_file).read_text(encoding="utf-8")
-                if "compose up " in history:
+                history = Path(history_file).read_text(encoding="utf-8").splitlines()
+                if any(line.startswith("compose ") and " up " in line for line in history):
                     print(after_up)
                     return
             print(os.environ.get("TEST_PODMAN_COMPOSE_PS_JSON", '[{"State":"running","Labels":{"io.podman.compose.service":"web"}}]'))

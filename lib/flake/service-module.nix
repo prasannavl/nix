@@ -290,8 +290,6 @@ rec {
           resolvedRequires = lib.unique (map resolveUnitReference (requires ++ cfg.requires ++ partUnitConfig.requires));
           resolvedWantedBy = lib.unique (map resolveUnitReference (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy));
           unitLabel = cfg.unitName;
-          unitFile = "${unitLabel}.service";
-          instanceName = "${resolvedUser}-${spec.resolvedName}";
           serviceEnvironment = spec.composedServices.environment cfg // environment cfg;
           serviceConfig =
             {
@@ -300,19 +298,6 @@ rec {
             }
             // spec.composedServices.extraServiceConfig cfg
             // extraServiceConfig cfg;
-          stampPayload = {
-            kind = "user-service";
-            user = resolvedUser;
-            serviceName = spec.resolvedName;
-            unitName = unitLabel;
-            package = cfg.package;
-            wants = resolvedWants;
-            requires = resolvedRequires;
-            after = resolvedAfter;
-            wantedBy = resolvedWantedBy;
-            environment = serviceEnvironment;
-            serviceConfig = serviceConfig;
-          };
         in {
           options.user-services.${resolvedUser}.${spec.resolvedName} =
             {
@@ -347,19 +332,11 @@ rec {
                   before = resolvedBefore;
                   wantedBy = resolvedWantedBy;
                   unitConfig = {
+                    ConditionUser = resolvedUser;
                     Requires = resolvedRequires;
                   };
                   environment = serviceEnvironment;
                   inherit serviceConfig;
-                };
-
-                services.systemd-user-manager.instances.${instanceName} = {
-                  user = resolvedUser;
-                  unit = unitFile;
-                  restartTriggers = [
-                    cfg.package
-                  ];
-                  inherit stampPayload;
                 };
 
                 _serviceModule.registeredPorts = lib.optional spec.hasPort {

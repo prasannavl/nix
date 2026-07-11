@@ -169,16 +169,21 @@
   fileSourceUnit = config.systemd.user.services.demo-file-source;
   opaqueSecretUnit = config.systemd.user.services.demo-opaque-secret;
   jobUnit = config.systemd.user.services.demo-custom-job;
-  appManagedUnit = config.services.systemd-user-manager.instances.demo-app;
-  dbManagedUnit = config.services.systemd-user-manager.instances.demo-db;
-  jobManagedUnit = config.services.systemd-user-manager.instances.demo-custom-job;
-  restartPolicyManagedUnit = config.services.systemd-user-manager.instances.demo-restart-policy;
-  recreatePolicyManagedUnit = config.services.systemd-user-manager.instances.demo-recreate-policy;
+  appStageUnit = config.systemd.user.services.demo-app-stage;
+  appBootstrapUnit = config.systemd.user.services.demo-app-bootstrap;
+  appReconcileUnit = config.systemd.user.services.demo-app-reconcile;
+  appVerifyUnit = config.systemd.user.services.demo-app-verify;
+  appReadyTarget = config.systemd.user.targets.demo-app-ready;
+  testerManagedTarget = config.systemd.user.targets.tester-managed;
+  testerManagedReadyTarget = config.systemd.user.targets.tester-managed-ready;
+  rootManagedTarget = config.systemd.user.targets.root-managed;
+  rootManagedReadyTarget = config.systemd.user.targets.root-managed-ready;
+  restartPolicyVerifyUnit = config.systemd.user.services.demo-restart-policy-verify;
+  recreatePolicyVerifyUnit = config.systemd.user.services.demo-recreate-policy-verify;
   imagePullUnit = config.systemd.user.services.demo-app-image-pull;
-  rootlessMigrateUnit = config.systemd.services.podman-rootless-idmap-migrate-tester;
+  rootlessMigrateUnit = config.systemd.user.services.podman-rootless-idmap-migrate-tester;
   rootlessMigrateScript =
     builtins.readFile (builtins.head (lib.splitString " " rootlessMigrateUnit.serviceConfig.ExecStart));
-  rootlessDispatcher = config.systemd.services.systemd-user-manager-dispatcher-tester;
 
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
 
@@ -232,6 +237,7 @@
   textRenderedCompose = builtins.readFile textSource.sourcePaths."compose.yml";
   fileRenderedCompose = builtins.readFile fileSource.sourcePaths."compose.yml";
   opaqueSecretFileSecretOverride = builtins.readFile opaqueSecret.sourcePaths."__podman-file-secrets.override.yml";
+  controlRegistry = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeControlRegistry));
   imagePullPlan = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeImagePullPlan));
   appImagePullPlanEntry = imagePullPlanEntryByService "demo-app";
   jobImagePullPlanEntry = imagePullPlanEntryByService "demo-custom-job";
@@ -274,49 +280,85 @@ in
   };
   assert builtins.length stack.tunnelEndpoints == 2;
   assert (builtins.head (builtins.filter (endpoint: endpoint.name == "app-rathole") stack.tunnelEndpoints)).remotePort == 443;
-  assert appUnit.wantedBy == [];
-  assert appUnit.restartIfChanged == false;
-  assert appUnit.stopIfChanged == false;
+  assert appUnit.wantedBy == ["tester-managed.target"];
+  assert appUnit.restartIfChanged == true;
+  assert appUnit.stopIfChanged == true;
+  assert builtins.elem appMetadata.restartStamp appUnit.restartTriggers;
+  assert builtins.elem app.bootTag appUnit.restartTriggers;
+  assert builtins.elem appMetadata.recreateStamp appUnit.restartTriggers;
+  assert builtins.elem app.recreateTag appUnit.restartTriggers;
+  assert builtins.elem app.reloadTag appUnit.reloadTriggers;
+  assert builtins.length appUnit.reloadTriggers == 2;
   assert jobUnit.wantedBy == [];
   assert jobUnit.restartIfChanged == false;
   assert jobUnit.stopIfChanged == false;
-  assert builtins.elem "demo-db.service" appUnit.after;
-  assert builtins.elem "demo-optional.service" appUnit.after;
+  assert builtins.elem "demo-app-stage.service" appUnit.after;
+  assert builtins.elem "demo-app-bootstrap.service" appUnit.after;
+  assert builtins.elem "demo-db-ready.target" appUnit.after;
+  assert builtins.elem "demo-optional-ready.target" appUnit.after;
   assert builtins.elem "external-ready.service" appUnit.after;
   assert builtins.elem "network-online.target" appUnit.after;
+  assert builtins.elem "podman-rootless-idmap-migrate-tester.service" appUnit.after;
   assert appUnit.unitConfig.Requires
   == [
-    "demo-db.service"
+    "podman-rootless-idmap-migrate-tester.service"
+    "demo-app-stage.service"
+    "demo-app-bootstrap.service"
+    "demo-db-ready.target"
     "external-ready.service"
     "demo-app-image-pull.service"
   ];
   assert builtins.elem "network-online.target" appUnit.wants;
-  assert builtins.elem "demo-optional.service" appUnit.wants;
+  assert builtins.elem "demo-optional-ready.target" appUnit.wants;
   assert textSourceUnit.serviceConfig.WorkingDirectory == "-/srv/demo/text-source";
   assert fileSourceUnit.serviceConfig.WorkingDirectory == "-/srv/demo/file-source";
-  assert !(appUnit.unitConfig ? ConditionUser);
+  assert appUnit.unitConfig.ConditionUser == "tester";
   assert appUnit.serviceConfig.Type == "notify";
   assert appUnit.serviceConfig.NotifyAccess == "all";
   assert appUnit.serviceConfig.WorkingDirectory == "-/srv/demo/app";
-  assert lib.hasSuffix " start" appUnit.serviceConfig.ExecStart;
+  assert lib.hasSuffix " start-staged" appUnit.serviceConfig.ExecStart;
   assert lib.hasSuffix " stop" appUnit.serviceConfig.ExecStop;
   assert lib.hasSuffix " reload" appUnit.serviceConfig.ExecReload;
   assert lib.hasSuffix " post-stop" appUnit.serviceConfig.ExecStopPost;
   assert appUnit.serviceConfig.KillMode == "control-group";
   assert builtins.elem "NIX_PODMAN_COMPOSE_START_STATE_STALL_SECONDS=75" appUnit.serviceConfig.Environment;
+  assert appUnit.serviceConfig.TimeoutStartSec == 120;
   assert !(builtins.hasAttr "demo-app-start-worker" config.systemd.user.services);
   assert !(builtins.hasAttr "demo-db-start-worker" config.systemd.user.services);
   assert dbMetadata.longRunning == true;
   assert dbMetadata.startWorkerUnit == "";
-  assert !(builtins.elem "repair" dbManagedUnit.repairCommand);
   assert appUnit.serviceConfig.RestartPreventExitStatus == "75";
+  assert appStageUnit.serviceConfig.Type == "oneshot";
+  assert appStageUnit.unitConfig.ConditionUser == "tester";
+  assert appStageUnit.unitConfig.Requires == ["podman-rootless-idmap-migrate-tester.service"];
+  assert lib.hasSuffix " stage" appStageUnit.serviceConfig.ExecStart;
+  assert appBootstrapUnit.unitConfig.Requires == ["demo-app-stage.service"];
+  assert lib.hasSuffix " bootstrap" appBootstrapUnit.serviceConfig.ExecStart;
+  assert appReconcileUnit.unitConfig.Requires == ["demo-app.service"];
+  assert lib.hasSuffix " reconcile" appReconcileUnit.serviceConfig.ExecStart;
+  assert appVerifyUnit.unitConfig.Requires
+  == [
+    "demo-app.service"
+    "demo-app-reconcile.service"
+  ];
+  assert lib.hasSuffix " verify" appVerifyUnit.serviceConfig.ExecStart;
+  assert appReadyTarget.unitConfig.ConditionUser == "tester";
+  assert appReadyTarget.unitConfig."X-StopOnReconfiguration" == true;
+  assert appReadyTarget.unitConfig.Requires == ["demo-app-verify.service"];
+  assert testerManagedTarget.wantedBy == ["default.target"];
+  assert builtins.elem "demo-app.service" testerManagedTarget.wants;
+  assert testerManagedReadyTarget.wantedBy == ["default.target"];
+  assert builtins.elem "demo-app-ready.target" testerManagedReadyTarget.unitConfig.Requires;
+  assert rootManagedTarget.wantedBy == [];
+  assert rootManagedReadyTarget.wantedBy == [];
   assert imagePullUnit.serviceConfig.Type == "oneshot";
-  assert !(imagePullUnit.unitConfig ? ConditionUser);
+  assert imagePullUnit.unitConfig.ConditionUser == "tester";
   assert lib.hasSuffix " image-pull" imagePullUnit.serviceConfig.ExecStart;
+  assert rootlessMigrateUnit.unitConfig.ConditionUser == "tester";
   assert lib.hasInfix ".config/containers/storage.conf" rootlessMigrateScript;
   assert lib.hasInfix "mount_program" rootlessMigrateScript;
-  assert builtins.elem "podman-rootless-idmap-migrate-tester.service" rootlessDispatcher.after;
-  assert rootlessDispatcher.requires == ["podman-rootless-idmap-migrate-tester.service"];
+  assert config.users.manageLingering == true;
+  assert config.users.users.tester.linger == true;
   assert builtins.length imagePullPlan == 8;
   assert appImagePullPlanEntry.user == "tester";
   assert appImagePullPlanEntry.uid == "1234";
@@ -324,25 +366,15 @@ in
   assert appImagePullPlanEntry.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
   assert appImagePullPlanEntry.imageTag == "image-1";
   assert lib.hasSuffix "/bin/podman-compose-helper" appImagePullPlanEntry.helper;
+  assert controlRegistry.demo-app.timeoutReadySeconds == 45;
+  assert controlRegistry.demo-db.timeoutReadySeconds == 45;
+  assert controlRegistry.demo-custom-job.timeoutReadySeconds == 45;
+  assert controlRegistry.demo-app.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
   assert jobImagePullPlanEntry.user == "root";
   assert jobImagePullPlanEntry.uid == "0";
   assert jobImagePullPlanEntry.metadataFile == metadataPathFromEnv jobUnit.serviceConfig.Environment;
   assert jobImagePullPlanEntry.imageTag == "0";
   assert lib.hasSuffix "/bin/podman-compose-helper" jobImagePullPlanEntry.helper;
-  assert appManagedUnit.user == "tester";
-  assert appManagedUnit.unit == "demo-app.service";
-  assert appManagedUnit.state == "running";
-  assert appManagedUnit.autoStart == true;
-  assert appManagedUnit.startMode == "wait";
-  assert appManagedUnit.timeoutReadySeconds == 45;
-  assert builtins.elem "boot-1" appManagedUnit.restartTriggers;
-  assert builtins.elem "recreate-1" appManagedUnit.restartTriggers;
-  assert builtins.elem "reload-1" appManagedUnit.reloadTriggers;
-  assert appManagedUnit.stopOnTransitionFrom == null;
-  assert appManagedUnit.stopOnTransitionTo != null;
-  assert jobManagedUnit.user == "root";
-  assert jobManagedUnit.state == "stopped";
-  assert jobManagedUnit.autoStart == false;
   assert appMetadata.version == 10;
   assert appMetadata.serviceName == "demo-app";
   assert appMetadata.workingDir == "/srv/demo/app";
@@ -424,19 +456,13 @@ in
   assert restartPolicyMetadata.reconcilePolicy == "restart";
   assert restartPolicyMetadata.restartStamp != "";
   assert restartPolicyMetadata.recreateStamp == restartPolicyMetadata.recreateClassStamp;
-  assert restartPolicyManagedUnit.reloadTriggers == [];
-  assert builtins.length restartPolicyManagedUnit.restartTriggers == 1;
-  assert restartPolicyManagedUnit.stopOnTransitionFrom != null;
-  assert restartPolicyManagedUnit.stopOnTransitionTo == null;
+  assert restartPolicyVerifyUnit.unitConfig.Requires == ["demo-restart-policy.service"];
   assert recreatePolicy.reconcilePolicy == "recreate";
   assert recreatePolicyMetadata.reconcilePolicy == "recreate";
   assert recreatePolicyMetadata.restartStamp != "";
   assert recreatePolicyMetadata.recreateClassStamp != "";
   assert recreatePolicyMetadata.recreateStamp != recreatePolicyMetadata.recreateClassStamp;
-  assert recreatePolicyManagedUnit.reloadTriggers == [];
-  assert builtins.length recreatePolicyManagedUnit.restartTriggers == 1;
-  assert recreatePolicyManagedUnit.stopOnTransitionFrom == null;
-  assert recreatePolicyManagedUnit.stopOnTransitionTo != null;
+  assert recreatePolicyVerifyUnit.unitConfig.Requires == ["demo-recreate-policy.service"];
     pkgs.runCommand "podman-compose-module-test" {} ''
       touch "$out"
     ''

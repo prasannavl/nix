@@ -101,7 +101,6 @@
     "docker-compose.yml"
     "docker-compose.yaml"
   ];
-  bootReadyTargetName = "systemd-user-manager-ready.target";
   generatedRuntimeDirName = ".podman-compose";
   envSecretsRuntimeDirName = "${generatedRuntimeDirName}/env-secrets";
   fileSecretsRuntimeDirName = "${generatedRuntimeDirName}/file-secrets";
@@ -1341,20 +1340,40 @@
       then svc.serviceName
       else "${stack.servicePrefix}${svcName}";
 
+    readyTargetNameForServiceName = svcName: "${resolveGeneratedServiceName svcName}-ready.target";
     resolveDependencyUnit = dep:
       if builtins.hasAttr dep stack.instances
-      then "${resolveGeneratedServiceName dep}.service"
+      then readyTargetNameForServiceName dep
       else if builtins.match explicitSystemdUnitPattern dep != null
       then dep
-      else "${stack.servicePrefix}${dep}.service";
+      else "${stack.servicePrefix}${dep}-ready.target";
 
     dependsOnUnits = lib.unique (map resolveDependencyUnit service.dependsOn);
     wantsUnits = lib.unique (map resolveDependencyUnit service.wants);
     networkOnlineUnits = lib.optional service.waitForNetwork "network-online.target";
 
+    conditionUserConfig = {
+      ConditionUser = resolvedUser;
+    };
+    serviceAutoStarts = service.state == "running" && service.autoStart;
+    userManagedTargetName = managedTargetNameForUser resolvedUser;
+    userManagedReadyTargetName = managedReadyTargetNameForUser resolvedUser;
+    readyTargetName = "${resolvedSystemdServiceName}-ready";
+    stageServiceName = "${resolvedSystemdServiceName}-stage";
+    stageUnit = "${stageServiceName}.service";
+    bootstrapServiceName = "${resolvedSystemdServiceName}-bootstrap";
+    bootstrapUnit = "${bootstrapServiceName}.service";
+    hasBootstrapUnit = service.preStart != [];
+    reconcileServiceName = "${resolvedSystemdServiceName}-reconcile";
+    reconcileUnit = "${reconcileServiceName}.service";
+    hasReconcileUnit = service.postStart != [];
+    verifyServiceName = "${resolvedSystemdServiceName}-verify";
+    verifyUnit = "${verifyServiceName}.service";
     imagePullServiceName = "${resolvedSystemdServiceName}-image-pull";
     imagePullUnit = "${imagePullServiceName}.service";
     hasImagePullUnit = service.imageTag != "0";
+    rootlessIdmapMigrateUnit =
+      lib.optional (resolvedUser != "root") "${rootlessIdmapMigrateUserServiceNameForUser resolvedUser}.service";
     resolvedPullComposeFiles = map (file: service.sourcePaths.${file}) service.pullEntryFiles;
     nativeReloadEnabled = service.reload.method == "signal";
     reloadExternalFileEntries =
@@ -1749,18 +1768,28 @@
       description = "podman: ${resolvedUser}: ${serviceName}";
       after = lib.unique (
         networkOnlineUnits
+        ++ rootlessIdmapMigrateUnit
+        ++ [stageUnit]
+        ++ lib.optional hasBootstrapUnit bootstrapUnit
         ++ dependsOnUnits
         ++ wantsUnits
         ++ lib.optional hasImagePullUnit imagePullUnit
       );
       wants = lib.unique (networkOnlineUnits ++ wantsUnits ++ lib.optional hasImagePullUnit imagePullUnit);
-      # systemd-user-manager owns compose unit start/restart ordering. Attaching
-      # these units directly to a target lets NixOS user activation start them
-      # before the reconciler can apply its monitored, non-blocking lifecycle.
-      wantedBy = [];
-      restartIfChanged = false;
-      stopIfChanged = false;
-      unitConfig.Requires = dependsOnUnits ++ lib.optional hasImagePullUnit imagePullUnit;
+      wantedBy = lib.optional serviceAutoStarts "${userManagedTargetName}.target";
+      restartIfChanged = service.state == "running";
+      stopIfChanged = service.state == "running";
+      unitConfig =
+        conditionUserConfig
+        // {
+          Requires = lib.unique (
+            rootlessIdmapMigrateUnit
+            ++ [stageUnit]
+            ++ lib.optional hasBootstrapUnit bootstrapUnit
+            ++ dependsOnUnits
+            ++ lib.optional hasImagePullUnit imagePullUnit
+          );
+        };
       serviceConfig = {
         Type = "notify";
         NotifyAccess = "all";
@@ -1768,7 +1797,7 @@
         # Allow first start when the compose working directory doesn't exist yet.
         # ExecStart creates it before invoking podman compose.
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${helperScript} start";
+        ExecStart = "${helperScript} start-staged";
         ExecStop = "${helperScript} stop";
         ExecReload = "${helperScript} reload";
         ExecStopPost = "${helperScript} post-stop";
@@ -1788,6 +1817,7 @@
       description = "podman: ${resolvedUser}: ${serviceName} image pull";
       after = lib.unique networkOnlineUnits;
       wants = lib.unique networkOnlineUnits;
+      unitConfig = conditionUserConfig;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = false;
@@ -1801,7 +1831,92 @@
         TimeoutStartSec = 120;
       };
     };
-    mergedSystemdService = lib.recursiveUpdate baseSystemdService service.serviceOverrides;
+    stageSystemdService = {
+      description = "podman: ${resolvedUser}: ${serviceName} stage";
+      after = lib.unique (networkOnlineUnits ++ rootlessIdmapMigrateUnit);
+      wants = lib.unique networkOnlineUnits;
+      unitConfig =
+        conditionUserConfig
+        // lib.optionalAttrs (rootlessIdmapMigrateUnit != []) {
+          Requires = rootlessIdmapMigrateUnit;
+        };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = false;
+        Environment = helperEnvironment;
+        WorkingDirectory = "-${resolvedWorkingDir}";
+        ExecStart = "${helperScript} stage";
+        TimeoutStartSec = lib.mkDefault 120;
+      };
+    };
+    bootstrapSystemdService = lib.optionalAttrs hasBootstrapUnit {
+      description = "podman: ${resolvedUser}: ${serviceName} bootstrap";
+      after = [stageUnit];
+      unitConfig =
+        conditionUserConfig
+        // {
+          Requires = [stageUnit];
+        };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = false;
+        Environment = helperEnvironment;
+        WorkingDirectory = "-${resolvedWorkingDir}";
+        ExecStart = "${helperScript} bootstrap";
+        TimeoutStartSec = lib.mkDefault 120;
+      };
+    };
+    reconcileSystemdService = lib.optionalAttrs hasReconcileUnit {
+      description = "podman: ${resolvedUser}: ${serviceName} reconcile";
+      after = ["${resolvedSystemdServiceName}.service"];
+      unitConfig =
+        conditionUserConfig
+        // {
+          Requires = ["${resolvedSystemdServiceName}.service"];
+        };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = false;
+        Environment = helperEnvironment;
+        WorkingDirectory = "-${resolvedWorkingDir}";
+        ExecStart = "${helperScript} reconcile";
+        TimeoutStartSec = lib.mkDefault 120;
+      };
+    };
+    verifySystemdService = {
+      description = "podman: ${resolvedUser}: ${serviceName} verify";
+      after = ["${resolvedSystemdServiceName}.service"] ++ lib.optional hasReconcileUnit reconcileUnit;
+      unitConfig =
+        conditionUserConfig
+        // {
+          Requires = ["${resolvedSystemdServiceName}.service"] ++ lib.optional hasReconcileUnit reconcileUnit;
+        };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = false;
+        Environment = helperEnvironment;
+        WorkingDirectory = "-${resolvedWorkingDir}";
+        ExecStart = "${helperScript} verify";
+        TimeoutStartSec = lib.mkDefault 120;
+      };
+    };
+    readySystemdTarget = {
+      description = "podman: ${resolvedUser}: ${serviceName} ready";
+      unitConfig =
+        conditionUserConfig
+        // {
+          X-StopOnReconfiguration = true;
+          Requires = [verifyUnit];
+          After = [verifyUnit];
+        };
+    };
+    mergedSystemdServiceWithoutLifecycleTriggers = lib.recursiveUpdate baseSystemdService service.serviceOverrides;
+    mergedSystemdService =
+      mergedSystemdServiceWithoutLifecycleTriggers
+      // {
+        restartTriggers = lib.unique ((mergedSystemdServiceWithoutLifecycleTriggers.restartTriggers or []) ++ lifecyclePolicy.restartTriggers);
+        reloadTriggers = lib.unique ((mergedSystemdServiceWithoutLifecycleTriggers.reloadTriggers or []) ++ lifecyclePolicy.reloadTriggers);
+      };
     stampBaseSystemdService =
       baseSystemdService
       // {
@@ -1844,10 +1959,39 @@
     systemdUser = resolvedUser;
     helperMetadata = helperMetadata;
     systemdService = mergedSystemdService;
-    auxiliarySystemdUserServices = lib.optional hasImagePullUnit {
-      name = imagePullServiceName;
-      value = imagePullSystemdService;
-    };
+    systemdReadyTargetName = readyTargetName;
+    systemdUserManagedTargetName = userManagedTargetName;
+    systemdUserManagedReadyTargetName = userManagedReadyTargetName;
+    autoStartEnabled = serviceAutoStarts;
+    auxiliarySystemdUserServices =
+      [
+        {
+          name = stageServiceName;
+          value = stageSystemdService;
+        }
+        {
+          name = verifyServiceName;
+          value = verifySystemdService;
+        }
+      ]
+      ++ lib.optional hasBootstrapUnit {
+        name = bootstrapServiceName;
+        value = bootstrapSystemdService;
+      }
+      ++ lib.optional hasReconcileUnit {
+        name = reconcileServiceName;
+        value = reconcileSystemdService;
+      }
+      ++ lib.optional hasImagePullUnit {
+        name = imagePullServiceName;
+        value = imagePullSystemdService;
+      };
+    auxiliarySystemdUserTargets = [
+      {
+        name = readyTargetName;
+        value = readySystemdTarget;
+      }
+    ];
     lifecyclePolicy = lifecyclePolicy;
     inherit (service) state reconcilePolicy removalPolicy adopt autoStart longRunning timeoutReadySeconds imageTag recreateTag bootTag reloadTag waitForNetwork hasComposeEntry;
   };
@@ -1881,6 +2025,7 @@
           unit = "${service.systemdServiceName}.service";
           serviceName = service.systemdServiceName;
           metadataFile = service.helperMetadata;
+          timeoutReadySeconds = service.timeoutReadySeconds;
         })
       resolvedServices
     )
@@ -2006,13 +2151,52 @@
     (map (service: service.systemdServiceName) resolvedServices)
     ++ lib.concatMap
     (service: map (aux: aux.name) service.auxiliarySystemdUserServices)
-    resolvedServices;
+    resolvedServices
+    ++ (map rootlessIdmapMigrateUserServiceNameForUser rootlessStackUsersWithConfig);
   duplicateSystemdUserServiceNames = flakeUtils.duplicateValues generatedSystemdUserServiceNames;
-  rootlessStackUsers = lib.unique (
-    builtins.filter (user: user != "root") (
-      map (service: service.systemdUser) resolvedServices
+  generatedSystemdUserTargetNames =
+    lib.concatMap
+    (service: map (target: target.name) service.auxiliarySystemdUserTargets)
+    resolvedServices
+    ++ map managedTargetNameForUser stackUsers
+    ++ map managedReadyTargetNameForUser stackUsers;
+  duplicateSystemdUserTargetNames = flakeUtils.duplicateValues generatedSystemdUserTargetNames;
+  autoStartServicesForUser = user:
+    builtins.filter (
+      service:
+        service.systemdUser
+        == user
+        && service.autoStartEnabled
     )
-  );
+    resolvedServices;
+  mkManagedUserTarget = user: let
+    services = autoStartServicesForUser user;
+  in {
+    name = managedTargetNameForUser user;
+    value = {
+      description = "Managed ${user} user services";
+      wantedBy = lib.optional (services != []) "default.target";
+      wants = map (service: "${service.systemdServiceName}.service") services;
+      unitConfig.ConditionUser = user;
+    };
+  };
+  mkManagedReadyUserTarget = user: let
+    services = autoStartServicesForUser user;
+  in {
+    name = managedReadyTargetNameForUser user;
+    value = {
+      description = "Managed ${user} user services ready";
+      wantedBy = lib.optional (services != []) "default.target";
+      unitConfig = {
+        ConditionUser = user;
+        X-StopOnReconfiguration = true;
+        Requires = map (service: "${service.systemdReadyTargetName}.target") services;
+        After = map (service: "${service.systemdReadyTargetName}.target") services;
+      };
+    };
+  };
+  stackUsers = lib.unique (map (service: service.systemdUser) resolvedServices);
+  rootlessStackUsers = builtins.filter (user: user != "root") stackUsers;
   rootlessStackUserHasConfig = user:
     builtins.hasAttr user config.users.users
     && config.users.users.${user}.uid != null
@@ -2029,47 +2213,31 @@
   rootlessStackUserNetworkOnlineUnits = user:
     lib.optional (rootlessStackUserNeedsNetworkOnline user) "network-online.target";
   serviceNameUserKey = user: lib.strings.sanitizeDerivationName user;
-  rootlessIdmapMigrateServiceNameForUser = user: "podman-rootless-idmap-migrate-${serviceNameUserKey user}";
-  dispatcherServiceNameForUser = user: "systemd-user-manager-dispatcher-${serviceNameUserKey user}";
+  managedTargetNameForUser = user: "${serviceNameUserKey user}-managed";
+  managedReadyTargetNameForUser = user: "${serviceNameUserKey user}-managed-ready";
+  rootlessIdmapMigrateUserServiceNameForUser = user: "podman-rootless-idmap-migrate-${serviceNameUserKey user}";
   # Rootless Podman can keep a stale single-id namespace after subuid/subgid
   # ranges appear; migrate before compose starts so container ids can map.
-  mkRootlessIdmapMigrateService = user: let
+  mkRootlessIdmapMigrateUserService = user: let
     userCfg = config.users.users.${user};
-    uid = toString userCfg.uid;
     home = userCfg.home;
-    serviceName = rootlessIdmapMigrateServiceNameForUser user;
-    dispatcherServiceName = dispatcherServiceNameForUser user;
+    serviceName = rootlessIdmapMigrateUserServiceNameForUser user;
     networkOnlineUnits = rootlessStackUserNetworkOnlineUnits user;
   in {
     name = serviceName;
     value = {
       description = "Reconcile rootless Podman uid/gid map for ${user}";
-      after = networkOnlineUnits ++ ["user@${uid}.service"];
-      before = ["${dispatcherServiceName}.service"];
-      wants = networkOnlineUnits ++ ["user@${uid}.service"];
+      after = networkOnlineUnits;
+      wants = networkOnlineUnits;
+      unitConfig.ConditionUser = user;
       serviceConfig = {
         Type = "oneshot";
-        User = user;
         Environment = [
           "HOME=${home}"
-          "XDG_RUNTIME_DIR=/run/user/${uid}"
-          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus"
           "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
         ];
         ExecStart = "${rootlessIdmapMigratePackage}/bin/podman-rootless-idmap-migrate ${lib.escapeShellArgs [user home]}";
       };
-    };
-  };
-  mkDispatcherRootlessIdmapDependency = user: let
-    serviceName = rootlessIdmapMigrateServiceNameForUser user;
-    dispatcherServiceName = dispatcherServiceNameForUser user;
-    networkOnlineUnits = rootlessStackUserNetworkOnlineUnits user;
-  in {
-    name = dispatcherServiceName;
-    value = {
-      after = networkOnlineUnits ++ ["${serviceName}.service"];
-      wants = networkOnlineUnits;
-      requires = ["${serviceName}.service"];
     };
   };
   declaredSubnets = lib.concatLists (
@@ -2094,10 +2262,6 @@
     then lib.concatStringsSep ", " entryFile
     else toString entryFile;
 in {
-  imports = [
-    ../systemd-user-manager
-  ];
-
   options.services.podman-compose = lib.mkOption {
     type = lib.types.attrsOf stackType;
     default = {};
@@ -2643,11 +2807,16 @@ in {
   };
 
   config = lib.mkIf hasStacks {
-    system.systemBuilderCommands = ''
-      install -Dm0444 ${lib.escapeShellArg controlRegistryFile} "$out/share/podman-compose/control-registry.json"
-      install -Dm0444 ${lib.escapeShellArg imagePullPlanFile} "$out/share/podman-compose/image-pulls.json"
-    '';
-    system.build.podmanComposeImagePullPlan = imagePullPlanFile;
+    system = {
+      systemBuilderCommands = ''
+        install -Dm0444 ${lib.escapeShellArg controlRegistryFile} "$out/share/podman-compose/control-registry.json"
+        install -Dm0444 ${lib.escapeShellArg imagePullPlanFile} "$out/share/podman-compose/image-pulls.json"
+      '';
+      build = {
+        podmanComposeControlRegistry = controlRegistryFile;
+        podmanComposeImagePullPlan = imagePullPlanFile;
+      };
+    };
 
     environment.systemPackages = with pkgs;
       [
@@ -2661,6 +2830,13 @@ in {
 
     networking.firewall.allowedTCPPorts = firewallPortsForProtocol "tcp";
     networking.firewall.allowedUDPPorts = firewallPortsForProtocol "udp";
+
+    users.manageLingering = lib.mkIf (rootlessStackUsers != []) (lib.mkDefault true);
+    users.users = lib.listToAttrs (map (user: {
+        name = user;
+        value.linger = lib.mkDefault true;
+      })
+      rootlessStackUsers);
 
     systemd = {
       tmpfiles.rules = lib.concatLists (
@@ -2679,12 +2855,14 @@ in {
           })
           resolvedServices)
         ++ lib.concatMap (s: s.auxiliarySystemdUserServices) resolvedServices
+        ++ map mkRootlessIdmapMigrateUserService rootlessStackUsersWithConfig
       );
 
-      services = lib.mkMerge [
-        (lib.listToAttrs (map mkRootlessIdmapMigrateService rootlessStackUsersWithConfig))
-        (lib.listToAttrs (map mkDispatcherRootlessIdmapDependency rootlessStackUsersWithConfig))
-      ];
+      user.targets = lib.listToAttrs (
+        lib.concatMap (s: s.auxiliarySystemdUserTargets) resolvedServices
+        ++ map mkManagedUserTarget stackUsers
+        ++ map mkManagedReadyUserTarget stackUsers
+      );
     };
 
     assertions =
@@ -2692,6 +2870,10 @@ in {
         {
           assertion = duplicateSystemdUserServiceNames == [];
           message = "services.podman-compose: duplicate generated systemd.user service names: ${lib.concatStringsSep ", " duplicateSystemdUserServiceNames}";
+        }
+        {
+          assertion = duplicateSystemdUserTargetNames == [];
+          message = "services.podman-compose: duplicate generated systemd.user target names: ${lib.concatStringsSep ", " duplicateSystemdUserTargetNames}";
         }
         {
           assertion = duplicatedSubnets == [];
@@ -2921,42 +3103,5 @@ in {
           (builtins.attrNames stack.instances))
         cfg
       );
-
-    services.systemd-user-manager.instances = lib.listToAttrs (map
-      (s: {
-        name = s.systemdServiceName;
-        value = {
-          user = s.systemdUser;
-          unit = "${s.systemdServiceName}.service";
-          state = s.state;
-          autoStart = s.autoStart;
-          removalPolicy = "stop";
-          removalCommand = [
-            "${pkgs.coreutils}/bin/env"
-            "NIX_PODMAN_COMPOSE_METADATA=${s.helperMetadata}"
-            "NIX_PODMAN_COMPOSE_SERVICE_NAME=${s.systemdServiceName}"
-            helperScript
-            "remove"
-          ];
-          verifyCommand = [
-            "${pkgs.coreutils}/bin/env"
-            "NIX_PODMAN_COMPOSE_METADATA=${s.helperMetadata}"
-            "NIX_PODMAN_COMPOSE_SERVICE_NAME=${s.systemdServiceName}"
-            helperScript
-            "verify"
-          ];
-          repairCommand = [];
-          startMode = "wait";
-          timeoutReadySeconds = s.timeoutReadySeconds;
-          inherit (s.lifecyclePolicy) restartTriggers reloadTriggers;
-          inherit (s.lifecyclePolicy) transitionNeutralStamp stopOnTransitionFrom stopOnTransitionTo;
-          stampPayload =
-            s.lifecyclePolicy.stampPayload
-            // lib.optionalAttrs (s.systemdUser != "root" && s.waitForNetwork) {
-              rootlessNetworkReadiness = "network-online-before-rootless-netns-v1";
-            };
-        };
-      })
-      resolvedServices);
   };
 }
