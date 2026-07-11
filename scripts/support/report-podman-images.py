@@ -183,7 +183,7 @@ def parse_image_ref(ref):
         image, digest = image.rsplit("@", 1)
 
     slash = image.rfind("/")
-    colon = image.rfind(":")
+    colon = find_tag_separator(image)
     if colon > slash:
         name = image[:colon]
         tag = image[colon + 1 :]
@@ -203,6 +203,24 @@ def parse_image_ref(ref):
 
     display_name = name
     return registry, repository, display_name, tag, digest
+
+
+def find_tag_separator(image):
+    separator = -1
+    parameter_depth = 0
+    idx = 0
+    while idx < len(image):
+        if image.startswith("${", idx):
+            parameter_depth += 1
+            idx += 2
+            continue
+        char = image[idx]
+        if char == "}" and parameter_depth > 0:
+            parameter_depth -= 1
+        elif char == ":" and parameter_depth == 0:
+            separator = idx
+        idx += 1
+    return separator
 
 
 def request_json(url, token=None):
@@ -299,8 +317,14 @@ def latest_comparable_tag(current, tags):
     return latest_tag
 
 
+def is_variable_tag(tag):
+    return "$" in tag
+
+
 def is_floating_tag(tag):
-    return tag in {"latest", "main", "alpine", "rocm"} or re.match(r"^pg[0-9]+$", tag)
+    return tag in {"latest", "main", "alpine", "release", "rocm"} or re.match(
+        r"^pg[0-9]+$", tag
+    )
 
 
 def is_attention_update(current, latest):
@@ -334,14 +358,16 @@ def image_report_line(ref, color):
     if digest is not None:
         return f"- {display_name}: {tag}@{digest} [latest]"
 
+    if is_variable_tag(tag):
+        return floating_line(f"{display_name}: {tag} [variable tag]", color)
+    if is_floating_tag(tag):
+        return floating_line(f"{display_name}: {tag} [floating tag]", color)
     try:
         tags = registry_tags(registry, repository)
         latest = latest_comparable_tag(tag, tags)
     except Exception:
         latest = tag
 
-    if is_floating_tag(tag):
-        return floating_line(f"{display_name}: {tag} [floating tag]", color)
     if latest is None:
         return f"- {display_name}: {tag} [latest]"
     if latest == tag:

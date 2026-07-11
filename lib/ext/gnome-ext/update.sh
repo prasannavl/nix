@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: lib/ext/gnome-ext/update.sh [--file PATH] [--version VERSION]
+Usage: lib/ext/gnome-ext/update.sh [--file PATH] [--version VERSION] [--report] [--ansi|--color=WHEN]
 By default, updates all known extensions. Optionally specify a single file to update.
 Examples:
   lib/ext/gnome-ext/update.sh
@@ -25,6 +25,8 @@ init_vars() {
 	)
 	TARGET_FILE=""
 	REQUESTED_VERSION=""
+	REPORT=0
+	COLOR_MODE="auto"
 	RESOLVED_TARGET_FILE=""
 	UUID=""
 	SELECTED_VERSION=""
@@ -45,6 +47,22 @@ parse_args() {
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			REQUESTED_VERSION="$2"
 			shift 2
+			;;
+		--report)
+			REPORT=1
+			shift
+			;;
+		--ansi)
+			COLOR_MODE="always"
+			shift
+			;;
+		--color)
+			COLOR_MODE="always"
+			shift
+			;;
+		--color=*)
+			COLOR_MODE="${1#--color=}"
+			shift
 			;;
 		--help | -h)
 			usage
@@ -71,6 +89,10 @@ extract_uuid() {
 	[[ -n "$UUID" ]] || die "Could not find uuid in $RESOLVED_TARGET_FILE"
 }
 
+get_current_version() {
+	sed -nE 's/^[[:space:]]*version = "([^"]+)";.*/\1/p' "$RESOLVED_TARGET_FILE" | head -n1
+}
+
 resolve_version() {
 	local info
 
@@ -82,6 +104,36 @@ resolve_version() {
 	info="$(curl -fsSL "https://extensions.gnome.org/extension-info/?uuid=$UUID")"
 	SELECTED_VERSION="$(jq -er '.shell_version_map | to_entries | map(.value.version) | max' <<<"$info")"
 	[[ -n "$SELECTED_VERSION" ]] || die "Could not determine latest version for $UUID"
+}
+
+use_color() {
+	case "$COLOR_MODE" in
+	auto) [[ -t 1 ]] ;;
+	always) return 0 ;;
+	never) return 1 ;;
+	*) die "--color must be one of: auto, always, never" ;;
+	esac
+}
+
+print_update_line() {
+	local line="$1"
+	if use_color; then
+		printf -- '- \033[1;38;2;232;170;117m%s\033[0m\n' "$line"
+	else
+		printf -- '- %s\n' "$line"
+	fi
+}
+
+print_report() {
+	local current_version="$1"
+	local name
+
+	name="$(basename "$RESOLVED_TARGET_FILE" .nix)"
+	if [[ "$current_version" == "$SELECTED_VERSION" ]]; then
+		echo "- ${name}: ${current_version} [latest]"
+	else
+		print_update_line "${name}: ${current_version} -> ${SELECTED_VERSION}"
+	fi
 }
 
 build_url() {
@@ -122,6 +174,17 @@ update_extension() {
 	print_summary
 }
 
+report_extension() {
+	local current_version
+
+	resolve_target_file
+	extract_uuid
+	current_version="$(get_current_version)"
+	[[ -n "$current_version" ]] || die "Could not find version in $RESOLVED_TARGET_FILE"
+	resolve_version
+	print_report "$current_version"
+}
+
 ensure_runtime_shell() {
 	local runtime_shell_flag="${UPDATE_GNOME_EXT_IN_NIX_SHELL:-0}"
 	local script_path
@@ -154,13 +217,21 @@ main() {
 	parse_args "$@"
 
 	if [[ -n "$TARGET_FILE" ]]; then
+		if ((REPORT)); then
+			report_extension
+			return
+		fi
 		update_extension
 		return
 	fi
 
 	for file in "${DEFAULT_FILES[@]}"; do
 		TARGET_FILE="$file"
-		update_extension
+		if ((REPORT)); then
+			report_extension
+		else
+			update_extension
+		fi
 	done
 }
 
