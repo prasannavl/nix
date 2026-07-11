@@ -173,6 +173,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   to the still-live `10.10.30.0/24` subnet through `gap3-gondor`, and parent
   fabric `forwardRules` for narrow project-to-project exceptions, plus
   project-qualified readiness selectors for delegated projects.
+- `.agents/docs/notes/hosts/pvl-x2-incus-preseed-reactivation-2026-07.md`:
+  Records the `pvl-x2` deploy failure where `abird-stage` was missing from live
+  Incus while declared preseed already contained it, plus the fix that makes
+  `incus-preseed.service` participate in `sysinit-reactivation.target` before
+  dependent parent Incus helper units run.
 - `.agents/docs/notes/hosts/pvl-x2-nixos-26.05-transition-2026-06.md`: Records
   the June 15, 2026 `pvl-x2` NixOS 26.05 transition check, including stale
   graphical-session user-unit failures, the `xdg-document-portal` stop timeout,

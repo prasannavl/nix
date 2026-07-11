@@ -20,6 +20,13 @@
         };
         networking.hostName = "incus-test";
         networking.nftables.enable = true;
+        virtualisation.incus.preseed = {
+          config = {};
+          networks = [];
+          profiles = [];
+          projects = [];
+          storage_pools = [];
+        };
 
         services.incus-manager = {
           global = {
@@ -112,6 +119,7 @@
   vmUnit = config.systemd.services."incus-lab.vm";
   reconcilerUnit = config.systemd.services.incus-machines-reconciler;
   imagesUnit = config.systemd.services.incus-images;
+  preseedUnit = config.systemd.services.incus-preseed;
   certificatesUnit = config.systemd.services.incus-machines-certificates;
   delegationUnit = config.systemd.services.incus-cert-delegation-tenant;
 in
@@ -175,6 +183,9 @@ in
   assert envHasPrefix "INCUS_MACHINES_DECLARED_INSTANCES=" reconcilerUnit.serviceConfig.Environment;
   assert imagesUnit.wantedBy == ["sysinit-reactivation.target"];
   assert envHasPrefix "INCUS_MACHINES_IMAGE_TAG=image-1" imagesUnit.serviceConfig.Environment;
+  assert builtins.elem "sysinit-reactivation.target" preseedUnit.wantedBy;
+  assert preseedUnit.restartTriggers != [];
+  assert preseedUnit.restartIfChanged == true;
   assert certificatesUnit.wantedBy == ["sysinit-reactivation.target"];
   assert lib.hasSuffix " certificates" certificatesUnit.serviceConfig.ExecStart;
   assert delegationUnit.wantedBy == ["sysinit-reactivation.target"];

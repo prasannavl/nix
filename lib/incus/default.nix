@@ -194,6 +194,10 @@
   '';
 
   incusPreseed = config.virtualisation.incus.preseed;
+  incusPreseedFile =
+    if incusPreseed == null
+    then null
+    else (pkgs.formats.yaml {}).generate "incus-preseed.yaml" incusPreseed;
   preseedCertificates =
     if incusPreseed == null
     then []
@@ -2841,12 +2845,17 @@ in {
 
       services =
         {
-          incus-preseed = lib.mkIf hasPreseedMigrations {
-            preStart = lib.mkBefore ''
-              export INCUS_MACHINES_PRESEED_MIGRATIONS_FILE=${lib.escapeShellArg (toString preseedMigrationsFile)}
-              ${helperScript} preseed-migrations
-            '';
-          };
+          incus-preseed = lib.mkIf hasIncusPreseed ({
+              wantedBy = lib.mkAfter ["sysinit-reactivation.target"];
+              restartTriggers = [incusPreseedFile];
+              restartIfChanged = true;
+            }
+            // lib.optionalAttrs hasPreseedMigrations {
+              preStart = lib.mkBefore ''
+                export INCUS_MACHINES_PRESEED_MIGRATIONS_FILE=${lib.escapeShellArg (toString preseedMigrationsFile)}
+                ${helperScript} preseed-migrations
+              '';
+            });
           incus-machines-certificates = lib.mkIf (!globalCfg.remote.enable) {
             description = "Reconcile declared Incus trusted certificates";
             wantedBy = ["sysinit-reactivation.target"];
