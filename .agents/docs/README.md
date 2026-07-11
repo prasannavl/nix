@@ -333,6 +333,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-latest-post-4b6d-port-2026-07.md`: Records
   the July 11 Abird post-`4b6d3859` newest-10 audit, shared Podman Compose and
   nixbot parity port, local docs adaptations, and skipped Abird topology/plans.
+- `.agents/docs/notes/tooling/abird-latest-incus-port-2026-07.md`: Records the
+  July 12 Abird latest Incus audit where the preseed reactivation fix was
+  already adopted locally with byte-identical shared code.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
