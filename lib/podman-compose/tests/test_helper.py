@@ -1353,6 +1353,33 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual("recreate-new", state["recreateStamp"])
         self.assertEqual("class-new", state["recreateClassStamp"])
 
+    def test_assert_adoption_allowed_migrates_compatible_old_runtime_state(self):
+        metadata = self.write_metadata(
+            "metadata-adoption-old-runtime-state.json",
+            {
+                "adoptionStamp": "test-adoption-stamp",
+                "reconcilePolicy": "auto",
+                "restartStamp": "restart-new",
+            },
+        )
+        self.write_runtime_state(version=1, restartStamp="restart-old", startupPhase="staging")
+
+        self.run_helper(
+            f"""
+            podman_compose_metadata={metadata}
+            adoption_stamp=test-adoption-stamp
+            reconcile_policy=auto
+            restart_stamp=restart-new
+            assert_adoption_allowed
+            """
+        )
+
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(3, state["version"])
+        self.assertEqual("test-adoption-stamp", state["adoptionStamp"])
+        self.assertEqual("restart-new", state["restartStamp"])
+        self.assertNotIn("startupPhase", state)
+
     def test_assert_adoption_allowed_refuses_unexpected_file_in_helper_shell(self):
         metadata = self.write_metadata("metadata-adoption-extra-file.json", {})
         self.generated_dir.mkdir()

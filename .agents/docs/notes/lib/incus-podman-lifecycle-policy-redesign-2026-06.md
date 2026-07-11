@@ -586,6 +586,10 @@ Representative hosts and surfaces:
 - Podman instances can set `adopt = true` temporarily to reclaim an unmanaged
   working directory, including one previously handed off with
   `removalPolicy = "keep"`.
+- Podman helper state schema upgrades are not adoption events. If
+  `.podman-compose/state.json` has the current adoption stamp but an older
+  helper state version, the helper should migrate it before deciding whether the
+  working directory is incompatible.
 - Helper-owned `preStart` and `preStop` hooks run inside the compose helper, not
   as raw systemd overrides. Use them for staged-runtime-dependent bootstrap and
   pre-stop commands; keep `serviceOverrides` for true unit-level behavior.

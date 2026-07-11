@@ -369,6 +369,7 @@ assert_adoption_allowed() {
 	fi
 
 	migrate_legacy_runtime_state_if_needed
+	migrate_runtime_state_version_if_needed
 
 	if adoption_state_matches; then
 		return 0
