@@ -114,6 +114,23 @@
 
             "file-source".source = sourceFile;
 
+            extended = {
+              source = ''
+                services:
+                  web:
+                    image: docker.io/library/nginx:latest
+                    extends:
+                      file: sidecar.yml
+                      service: base
+              '';
+              files."sidecar.yml".text = ''
+                services:
+                  base:
+                    environment:
+                      FROM_SIDECAR: "1"
+              '';
+            };
+
             "opaque-secret" = {
               source = ''
                 services:
@@ -159,6 +176,7 @@
   db = stack.instances.db;
   textSource = stack.instances."text-source";
   fileSource = stack.instances."file-source";
+  extended = stack.instances.extended;
   opaqueSecret = stack.instances."opaque-secret";
   job = stack.instances.job;
   restartPolicy = stack.instances."restart-policy";
@@ -167,6 +185,7 @@
   dbUnit = config.systemd.user.services.demo-db;
   textSourceUnit = config.systemd.user.services.demo-text-source;
   fileSourceUnit = config.systemd.user.services.demo-file-source;
+  extendedUnit = config.systemd.user.services.demo-extended;
   opaqueSecretUnit = config.systemd.user.services.demo-opaque-secret;
   jobUnit = config.systemd.user.services.demo-custom-job;
   appStageUnit = config.systemd.user.services.demo-app-stage;
@@ -207,6 +226,7 @@
   dbMetadata = metadataFromUnit dbUnit;
   textSourceMetadata = metadataFromUnit textSourceUnit;
   fileSourceMetadata = metadataFromUnit fileSourceUnit;
+  extendedMetadata = metadataFromUnit extendedUnit;
   opaqueSecretMetadata = metadataFromUnit opaqueSecretUnit;
   jobMetadata = metadataFromUnit jobUnit;
   restartPolicyMetadata = metadataFromUnit config.systemd.user.services.demo-restart-policy;
@@ -236,6 +256,8 @@
   appRenderedCompose = builtins.readFile app.sourcePaths."compose.yml";
   textRenderedCompose = builtins.readFile textSource.sourcePaths."compose.yml";
   fileRenderedCompose = builtins.readFile fileSource.sourcePaths."compose.yml";
+  extendedPullDir = builtins.dirOf (builtins.head extendedMetadata.pullComposeFiles);
+  extendedPullSidecar = builtins.readFile "${extendedPullDir}/sidecar.yml";
   opaqueSecretFileSecretOverride = builtins.readFile opaqueSecret.sourcePaths."__podman-file-secrets.override.yml";
   controlRegistry = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeControlRegistry));
   imagePullPlan = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeImagePullPlan));
@@ -259,6 +281,8 @@ in
   assert fileSource.source == sourceFile;
   assert fileSource.resolvedWorkingDir == "/srv/demo/file-source";
   assert fileSource.knownSourceComposeServices == ["file"];
+  assert extended.resolvedWorkingDir == "/srv/demo/extended";
+  assert extended.knownSourceComposeServices == ["web"];
   assert opaqueSecret.knownSourceComposeServices == ["opaque-secret"];
   assert opaqueSecretMetadata.expectedComposeServices == ["opaque-secret"];
   assert builtins.elem "/srv/demo/opaque-secret/__podman-file-secrets.override.yml" opaqueSecretMetadata.composeFiles;
@@ -359,7 +383,7 @@ in
   assert lib.hasInfix "mount_program" rootlessMigrateScript;
   assert config.users.manageLingering == true;
   assert config.users.users.tester.linger == true;
-  assert builtins.length imagePullPlan == 8;
+  assert builtins.length imagePullPlan == 9;
   assert appImagePullPlanEntry.user == "tester";
   assert appImagePullPlanEntry.uid == "1234";
   assert appImagePullPlanEntry.serviceName == "demo-app";
@@ -400,7 +424,8 @@ in
   assert builtins.elem "/srv/demo/app/__podman-file-secrets.override.yml" appComposeFiles;
   assert appPullComposeFiles != appComposeFiles;
   assert builtins.length appPullComposeFiles == 1;
-  assert lib.hasSuffix "-compose_yml" (builtins.head appPullComposeFiles);
+  assert lib.hasSuffix "/compose.yml" (builtins.head appPullComposeFiles);
+  assert lib.hasPrefix (builtins.dirOf (builtins.head appPullComposeFiles)) app.pullSourcePaths."config/app.yml";
   assert builtins.elem "/srv/demo/app/compose.yml" appStagedDsts;
   assert builtins.elem "/srv/demo/app/config/app.yml" appStagedDsts;
   assert builtins.elem "/srv/demo/app/reload/web.conf" appStagedDsts;
@@ -449,6 +474,11 @@ in
   assert fileSourceMetadata.composeFiles == ["/srv/demo/file-source/compose.yml"];
   assert fileSourceMetadata.pullComposeFiles != fileSourceMetadata.composeFiles;
   assert fileRenderedCompose == builtins.readFile sourceFile;
+  assert extendedMetadata.expectedComposeServices == ["web"];
+  assert extendedMetadata.composeFiles == ["/srv/demo/extended/compose.yml"];
+  assert extendedMetadata.pullComposeFiles == [extended.pullSourcePaths."compose.yml"];
+  assert lib.hasPrefix extendedPullDir extended.pullSourcePaths."sidecar.yml";
+  assert lib.hasInfix "FROM_SIDECAR" extendedPullSidecar;
   assert jobMetadata.state == "stopped";
   assert jobMetadata.removalPolicy == "keep";
   assert jobMetadata.longRunning == false;

@@ -253,6 +253,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/services/podman-compose-rollback-stale-containers-2026-06.md`:
   Rootless Podman compose rollback incident where stale "Up" container metadata
   hid a dead compose dependency behind healthy unit state.
+- `.agents/docs/notes/services/podman-compose-pull-source-sidecars-2026-07.md`:
+  Records the `pvl-x2` Immich deploy failure where pre-activation image pulls
+  lost relative `extends.file` sidecars, plus the shared pull-source directory
+  invariant for generated Podman Compose metadata.
 - `.agents/docs/notes/services/podman-data-dir-ownership-2026-04.md`: Records
   the standard `dirs`/container-scope ownership model for service-local Podman
   data directories plus absolute `dirs` entries for external data roots.

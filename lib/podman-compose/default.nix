@@ -561,6 +561,14 @@
         description = "Resolved source paths by filename.";
       };
 
+      pullSourcePaths = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        readOnly = true;
+        internal = true;
+        description = "Store-backed source paths by filename for pre-activation image pulls.";
+      };
+
       envSecretRuntimePaths = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
         default = {};
@@ -1374,7 +1382,7 @@
     hasImagePullUnit = service.imageTag != "0";
     rootlessIdmapMigrateUnit =
       lib.optional (resolvedUser != "root") "${rootlessIdmapMigrateUserServiceNameForUser resolvedUser}.service";
-    resolvedPullComposeFiles = map (file: service.sourcePaths.${file}) service.pullEntryFiles;
+    resolvedPullComposeFiles = map (file: service.pullSourcePaths.${file}) service.pullEntryFiles;
     nativeReloadEnabled = service.reload.method == "signal";
     reloadExternalFileEntries =
       if nativeReloadEnabled
@@ -2405,6 +2413,18 @@ in {
               then lib.generators.toYAML {} composeSource
               else composeSource;
           };
+        mkPullSourceDir = serviceName: sourcePaths: let
+          installEntries =
+            lib.mapAttrsToList (
+              fileName: sourcePath: ''
+                install -Dm0444 ${sourcePath} "$out"/${lib.escapeShellArg fileName}
+              ''
+            )
+            sourcePaths;
+        in
+          pkgs.runCommand "podman-compose-${stackName}-${serviceName}-pull-sources" {} ''
+            ${lib.concatStringsSep "\n" installEntries}
+          '';
         stripVolumeSourceQuotes = source:
           builtins.replaceStrings ["\"" "'"] ["" ""] (toString source);
         volumeSourceFromShortSyntax = volume: let
@@ -2763,6 +2783,7 @@ in {
                 (composeServiceName: _: "${resolvedWorkingDir}/${envSecretsRuntimeDirName}/${composeServiceName}.env")
                 normalizedService.envSecrets;
               sourcePaths = lib.mapAttrs (fileName: entry: renderEntry serviceName fileName entry) effectiveEntries;
+              pullSourceDir = mkPullSourceDir serviceName sourcePaths;
             in
               normalizedService
               // {
@@ -2774,6 +2795,7 @@ in {
                 knownSourceComposeServices = knownSourceComposeServices;
                 stagedEntries = effectiveEntries;
                 sourcePaths = sourcePaths;
+                pullSourcePaths = lib.mapAttrs (fileName: _: "${pullSourceDir}/${fileName}") effectiveEntries;
                 runtimePaths = lib.mapAttrs (fileName: _: "${resolvedWorkingDir}/${fileName}") effectiveEntries;
                 entryFile = normalizedEntryFile;
                 pullEntryFiles = baseEntryFiles;
