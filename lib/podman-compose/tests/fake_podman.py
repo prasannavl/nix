@@ -125,6 +125,13 @@ def main():
             sys.exit(0)
         sys.exit(1)
 
+    if args[:2] == ["image", "exists"]:
+        image = args[2] if len(args) > 2 else ""
+        existing_images = os.environ.get("TEST_PODMAN_EXISTING_IMAGES", "")
+        if existing_images == "*" or image in existing_images.splitlines():
+            sys.exit(0)
+        sys.exit(1)
+
     if args[:2] == ["container", "cleanup"]:
         return
 
@@ -183,6 +190,28 @@ def main():
             if mode == f"{command}_timeout_child":
                 spawn_term_resistant_child()
                 block_until_supervisor_kills_us()
+            if command == "pull" and mode == "pull_fatal_zero":
+                print("Trying to pull docker.io/library/nats:2.14.0-alpine...")
+                print(
+                    "Error: unable to copy from source docker://nats:2.14.0-alpine: "
+                    "initializing source docker://nats:2.14.0-alpine: "
+                    "reading manifest 2.14.0-alpine in docker.io/library/nats: "
+                    "toomanyrequests: You have reached your unauthenticated pull rate limit."
+                )
+                return
+            if command == "pull" and mode == "pull_fatal_then_success":
+                count_file = Path(os.environ["TEST_PODMAN_HISTORY_FILE"]).with_name("pull-attempt-count")
+                count = int(count_file.read_text(encoding="utf-8").strip()) if count_file.exists() else 0
+                count += 1
+                count_file.write_text(f"{count}\n", encoding="utf-8")
+                succeed_after = int(os.environ.get("TEST_PODMAN_PULL_SUCCEED_AFTER", "3"))
+                if count < succeed_after:
+                    print("Trying to pull docker.io/library/nats:2.14.0-alpine...")
+                    print(
+                        "Error: unable to copy from source docker://nats:2.14.0-alpine: "
+                        "toomanyrequests: You have reached your unauthenticated pull rate limit."
+                    )
+                    return
             print("fake podman compose command ok")
             return
 

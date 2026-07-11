@@ -1,5 +1,6 @@
 import json
 import os
+import pwd
 import stat
 import shlex
 import shutil
@@ -612,6 +613,237 @@ class PodmanComposeHelperTest(unittest.TestCase):
 
         self.assertEqual(0, result.returncode)
 
+    def test_compose_pull_fatal_line_matches_false_success_copy_errors(self):
+        result = self.run_helper(
+            """
+            compose_pull_fatal_line 'Error: unable to copy from source docker://nats:2.14.0-alpine: toomanyrequests'
+            """
+        )
+
+        self.assertEqual(0, result.returncode)
+
+    def test_compose_pull_fails_on_fatal_output_even_when_podman_exits_zero(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+
+        result = self.run_helper(
+            f"""
+            pull_compose_file_args=(-f {shlex.quote(str(pull_file))})
+            ensure_runtime_dirs
+            compose_pull
+            """,
+            check=False,
+            TEST_PODMAN_MODE="pull_fatal_zero",
+        )
+
+        self.assertEqual(1, result.returncode)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([f"compose -f {pull_file} pull"], history)
+        self.assertIn("treating pull as failed", result.stderr)
+
+    def test_cmd_image_pull_retries_fatal_output_ten_times(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        self.compose_dir.rmdir()
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        metadata = self.write_service_metadata(
+            "metadata-image-pull-retry.json",
+            pullComposeFiles=[str(pull_file)],
+        )
+
+        result = self.run_helper(
+            """
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_DELAY_SECONDS="0",
+            TEST_PODMAN_MODE="pull_fatal_zero",
+        )
+
+        self.assertEqual(1, result.returncode)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([f"compose -f {pull_file} pull"] * 10, history)
+        self.assertIn("retrying attempt 10/10", result.stderr)
+        self.assertIn("failed for test-compose after 10 attempt(s)", result.stderr)
+
+    def test_cmd_image_pull_stops_retry_after_success(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        self.compose_dir.rmdir()
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        metadata = self.write_service_metadata(
+            "metadata-image-pull-eventual-success.json",
+            pullComposeFiles=[str(pull_file)],
+        )
+
+        result = self.run_helper(
+            """
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_DELAY_SECONDS="0",
+            TEST_PODMAN_MODE="pull_fatal_then_success",
+            TEST_PODMAN_PULL_SUCCEED_AFTER="3",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([f"compose -f {pull_file} pull"] * 3, history)
+        self.assertIn("retrying attempt 2/10", result.stderr)
+        self.assertIn("retrying attempt 3/10", result.stderr)
+
+    def test_cmd_image_pull_skips_when_image_pull_stamp_current(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        self.write_runtime_state(imagePullStamp="pull-a")
+        metadata = self.write_service_metadata(
+            "metadata-image-pull-current.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+            imagePullStamp="pull-a",
+        )
+
+        result = self.run_helper(
+            """
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            TEST_PODMAN_EXISTING_IMAGES="docker.io/library/nginx:latest",
+            TEST_PODMAN_MODE="pull_fatal_zero",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(["image exists docker.io/library/nginx:latest"], history)
+        self.assertEqual("", result.stdout)
+        self.assertEqual("skipped\n", status_file.read_text(encoding="utf-8"))
+
+    def test_cmd_image_pull_does_not_skip_when_stamp_current_but_image_missing(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        self.write_runtime_state(imagePullStamp="pull-a")
+        metadata = self.write_service_metadata(
+            "metadata-image-pull-current-image-missing.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+            imagePullStamp="pull-a",
+        )
+
+        result = self.run_helper(
+            """
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_DELAY_SECONDS="0",
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_ATTEMPTS="1",
+            TEST_PODMAN_MODE="success",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            [
+                "image exists docker.io/library/nginx:latest",
+                f"compose -f {pull_file} pull",
+            ],
+            history,
+        )
+
+    def test_cmd_image_pull_records_image_pull_stamp_after_success(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        self.write_runtime_state(imagePullStamp="pull-old")
+        metadata = self.write_service_metadata(
+            "metadata-image-pull-record.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+            imagePullStamp="pull-new",
+        )
+
+        result = self.run_helper(
+            """
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            TEST_PODMAN_MODE="success",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([f"compose -f {pull_file} pull"], history)
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual("pull-new", state["imagePullStamp"])
+        self.assertEqual("pulled\n", status_file.read_text(encoding="utf-8"))
+
+    def test_image_pull_all_is_quiet_when_all_entries_skip(self):
+        self.runtime_dir.mkdir()
+        owner = pwd.getpwuid(os.getuid()).pw_name
+        plan = self.state_dir / "image-pulls.json"
+        plan.write_text(
+            json.dumps(
+                [
+                    {
+                        "user": owner,
+                        "uid": os.getuid(),
+                        "serviceName": "test-compose",
+                        "metadataFile": str(self.state_dir / "metadata.json"),
+                        "helper": str(shutil.which("true")),
+                        "imageTag": "0",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                shutil.which("bash"),
+                "-c",
+                textwrap.dedent(
+                    f"""
+                    plan={shlex.quote(str(plan))}
+                    source lib/podman-compose/image-pull-all.sh
+                    runtime_dir_for_uid() {{
+                      printf '%s\n' {shlex.quote(str(self.runtime_dir))}
+                    }}
+                    home_for_user() {{
+                      printf '%s\n' {shlex.quote(str(self.work_dir))}
+                    }}
+                    run_as_owner() {{
+                      printf '%s\n' skipped >"$status_file"
+                    }}
+                    main
+                    """
+                ),
+            ],
+            cwd=self.repo_root,
+            env=self.helper_env(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stdout)
+
     def test_compose_up_fatal_line_matches_exhausted_podman_locks(self):
         result = self.run_helper(
             """
@@ -909,6 +1141,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
                 "composeArgs": ["--project-name", "demo"],
                 "composeFiles": [str(compose_file)],
                 "pullComposeFiles": [str(pull_file)],
+                "declaredImages": ["docker.io/library/nginx:latest"],
                 "expectedComposeServices": ["web", "worker"],
                 "reload": {
                     "method": "signal",
@@ -940,6 +1173,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
               --argjson composeArgs "$(array_json "${compose_args[@]}")" \
               --argjson composeFileArgs "$(array_json "${compose_file_args[@]}")" \
               --argjson pullComposeFileArgs "$(array_json "${pull_compose_file_args[@]}")" \
+              --argjson declaredImages "$(array_json "${declared_images[@]}")" \
               --argjson expectedComposeServices "$(array_json "${expected_compose_services[@]}")" \
               --argjson reloadServices "$(array_json "${reload_services[@]}")" \
               '{
@@ -958,6 +1192,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
                 composeArgs: $composeArgs,
                 composeFileArgs: $composeFileArgs,
                 pullComposeFileArgs: $pullComposeFileArgs,
+                declaredImages: $declaredImages,
                 expectedComposeServices: $expectedComposeServices,
                 reloadServices: $reloadServices
               }'
@@ -982,6 +1217,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual(["--project-name", "demo"], loaded["composeArgs"])
         self.assertEqual(["-f", str(compose_file)], loaded["composeFileArgs"])
         self.assertEqual(["-f", str(pull_file)], loaded["pullComposeFileArgs"])
+        self.assertEqual(["docker.io/library/nginx:latest"], loaded["declaredImages"])
         self.assertEqual(["web", "worker"], loaded["expectedComposeServices"])
         self.assertEqual(["web"], loaded["reloadServices"])
 
@@ -1479,7 +1715,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual("restart-new", state["restartStamp"])
         self.assertEqual("recreate-new", state["recreateStamp"])
 
-    def test_cmd_verify_accepts_active_start_pid(self):
+    def test_cmd_verify_rejects_active_start_pid(self):
         metadata = self.write_service_metadata("metadata-active-start-verify.json")
         self.generated_dir.mkdir()
         result = self.run_helper(
@@ -1490,11 +1726,14 @@ class PodmanComposeHelperTest(unittest.TestCase):
             cmd_verify
             kill "$sleep_pid" 2>/dev/null || true
             """,
+            check=False,
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             XDG_RUNTIME_DIR=str(self.runtime_dir),
         )
 
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("podman compose start is still in progress", result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8")
         self.assertNotIn("compose ps --format json", history)
 
@@ -1576,21 +1815,24 @@ class PodmanComposeHelperTest(unittest.TestCase):
         history = self.podman_history_file.read_text(encoding="utf-8")
         self.assertNotIn("compose down", history)
 
-    def test_cmd_verify_defers_full_check_during_main_unit_transition(self):
+    def test_cmd_verify_rejects_main_unit_transition(self):
         metadata, staged_config, _data_dir = self.write_staged_service_metadata(
             "metadata-main-unit-transition-verify.json"
         )
         self.write_runtime_state()
         self.assertFalse(staged_config.exists())
 
-        self.run_helper(
+        transitioning = self.run_helper(
             "cmd_verify",
+            check=False,
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             XDG_RUNTIME_DIR=str(self.runtime_dir),
             TEST_SYSTEMCTL_JOB="123/start",
         )
 
+        self.assertNotEqual(0, transitioning.returncode)
+        self.assertIn("podman compose unit is still transitioning", transitioning.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8")
         self.assertNotIn("compose ps --format json", history)
 
@@ -2060,12 +2302,41 @@ class PodmanComposeHelperTest(unittest.TestCase):
             TEST_PODMAN_PS_IDS="abc123",
         )
 
-        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(0, result.returncode)
         self.assert_child_process_was_cleaned_up(child_pid_file)
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
         self.assertIn("compose down", history)
         self.assertIn("rm -f --depend -v abc123", history)
         self.assertIn("rm -f --depend -v compose_web_1", history)
+
+    def test_cmd_stop_policy_stop_timeout_remains_failure(self):
+        metadata = self.write_service_metadata(
+            "metadata-stop-policy-timeout.json",
+            expectedComposeServices=["web"],
+            removalPolicy="stop",
+        )
+        self.write_runtime_state(removalPolicy="stop")
+        child_pid_file = self.state_dir / "cmd-stop-policy-child.pid"
+
+        result = self.run_helper(
+            "cmd_stop",
+            check=False,
+            timeout=20,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="stop_timeout_child",
+            TEST_TIMEOUT_VALUE="2s",
+            TEST_PODMAN_CHILD_PID_FILE=str(child_pid_file),
+            TEST_PODMAN_PS_IDS="abc123",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assert_child_process_was_cleaned_up(child_pid_file)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn("compose stop", history)
+        self.assertNotIn("rm -f --depend -v abc123", history)
+        self.assertNotIn("rm -f --depend -v compose_web_1", history)
 
     def test_remove_compose_project_containers_removes_anonymous_volumes(self):
         anonymous_volume = "a" * 64

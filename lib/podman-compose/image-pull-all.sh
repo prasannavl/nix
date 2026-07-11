@@ -94,7 +94,7 @@ run_as_owner() {
 }
 
 pull_entry() {
-	local entry owner uid service_name metadata helper image_tag runtime_dir home label
+	local entry owner uid service_name metadata helper image_tag runtime_dir home label status_file status
 	entry="$1"
 
 	owner="$(jq -r '.user' <<<"$entry")"
@@ -111,17 +111,35 @@ pull_entry() {
 	fi
 
 	ensure_runtime_dir "$owner" "$uid" "$runtime_dir"
-	printf '%s\n' "podman-compose-image-pull-all: pulling ${service_name} images (${label})"
-	run_as_owner "$owner" "$uid" "$runtime_dir" "$home" \
+	status_file="$(mktemp "${runtime_dir}/image-pull-status.XXXXXX")"
+	chown "$uid:$(id -g "$owner")" "$status_file" 2>/dev/null || true
+	chmod 0600 "$status_file"
+	if ! run_as_owner "$owner" "$uid" "$runtime_dir" "$home" \
 		env \
 		PATH=/run/wrappers/bin:/run/current-system/sw/bin \
 		NIX_PODMAN_COMPOSE_METADATA="$metadata" \
 		NIX_PODMAN_COMPOSE_SERVICE_NAME="$service_name" \
-		"$helper" image-pull
+		NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE="$status_file" \
+		"$helper" image-pull; then
+		rm -f "$status_file"
+		return 1
+	fi
+	status="$(cat "$status_file" 2>/dev/null || true)"
+	rm -f "$status_file"
+
+	if [ "$status" = pulled ]; then
+		printf '%s\n' "podman-compose-image-pull-all: pulled ${service_name} images (${label})"
+		return 0
+	fi
+	if [ "$status" = skipped ]; then
+		return 2
+	fi
+	printf '%s\n' "podman-compose-image-pull-all: checked ${service_name} images (${label})"
+	return 0
 }
 
 main() {
-	local entry count=0
+	local entry count=0 pulled_count=0 skipped_count=0
 
 	if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 		usage
@@ -139,11 +157,26 @@ main() {
 	while IFS= read -r entry; do
 		[ -n "$entry" ] || continue
 		count=$((count + 1))
-		pull_entry "$entry"
+		if pull_entry "$entry"; then
+			pulled_count=$((pulled_count + 1))
+		else
+			case "$?" in
+			2)
+				skipped_count=$((skipped_count + 1))
+				;;
+			*)
+				return 1
+				;;
+			esac
+		fi
 	done < <(plan_entries)
 
 	if [ "$count" -eq 0 ]; then
 		return 0
 	fi
-	printf '%s\n' "podman-compose-image-pull-all: completed ${count} image pull(s)"
+	if [ "$pulled_count" -gt 0 ]; then
+		printf '%s\n' "podman-compose-image-pull-all: completed ${pulled_count} image pull(s)"
+	elif [ "$skipped_count" -ne "$count" ]; then
+		printf '%s\n' "podman-compose-image-pull-all: checked ${count} image pull target(s)"
+	fi
 }

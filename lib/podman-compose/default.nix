@@ -6,6 +6,7 @@
 }: let
   cfg = config.services.podman-compose;
   hasStacks = cfg != {};
+  podmanHelperPath = "/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
   flakeUtils = import ../flake/utils.nix {lib = lib;};
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
@@ -134,6 +135,16 @@
       lines;
   in
     lib.unique parsed.services;
+
+  composeImagesFromText = text:
+    lib.unique (
+      lib.concatMap (
+        line: let
+          match = builtins.match "[[:space:]]*image:[[:space:]]*['\"]?([^'\"#[:space:]]+)['\"]?.*" line;
+        in
+          lib.optional (match != null) (builtins.head match)
+      ) (lib.splitString "\n" text)
+    );
 
   ownerRefType = lib.types.either lib.types.str lib.types.int;
   modeOptionType = lib.types.nullOr lib.types.str;
@@ -1568,12 +1579,19 @@
           composeArgs = service.composeArgs;
           composeFiles = resolvedComposeFiles;
           pullComposeFiles = resolvedPullComposeFiles;
+          helperPath = podmanHelperPath;
           entryFile = service.entryFile;
           expectedComposeServices = service.knownSourceComposeServices;
           files = stagedFileActionInputs recreateStagedEntries;
           imageTag = service.imageTag;
         }
         // secretRecreateInputs;
+      imagePull = {
+        composeArgs = service.composeArgs;
+        pullComposeFiles = resolvedPullComposeFiles;
+        declaredImages = service.declaredImages;
+        imageTag = service.imageTag;
+      };
     };
     hashActionInput = value: builtins.hashString "sha256" (builtins.toJSON value);
     actionStamps = rec {
@@ -1583,6 +1601,7 @@
         else "";
       restart = hashActionInput actionInputs.restart;
       recreate = hashActionInput actionInputs.recreate;
+      imagePull = hashActionInput actionInputs.imagePull;
       restartPolicy = hashActionInput {
         policy = service.reconcilePolicy;
         reload = actionInputs.reload;
@@ -1697,6 +1716,7 @@
         composeArgs = service.composeArgs;
         composeFiles = resolvedComposeFiles;
         pullComposeFiles = resolvedPullComposeFiles;
+        declaredImages = service.declaredImages;
         expectedComposeServices = service.knownSourceComposeServices;
         stagedDirs = map (dirName: let
           entry = service.dirs.${dirName};
@@ -1744,6 +1764,7 @@
         restartStamp = actionStamps.restart;
         recreateStamp = lifecyclePolicy.helperRecreateStamp;
         recreateClassStamp = actionStamps.recreate;
+        imagePullStamp = actionStamps.imagePull;
         startWorkerUnit = "";
         longRunning = service.longRunning;
         envSecretFiles = map (composeServiceName: let
@@ -1762,13 +1783,13 @@
     );
     helperEnvironment =
       [
-        "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+        "PATH=${podmanHelperPath}"
         "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
         "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
       ]
       ++ lib.optional (service.startStateStallSeconds != null) "NIX_PODMAN_COMPOSE_START_STATE_STALL_SECONDS=${toString service.startStateStallSeconds}";
     stampHelperEnvironment = [
-      "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+      "PATH=${podmanHelperPath}"
       "NIX_PODMAN_COMPOSE_METADATA=<generation-local-metadata>"
       "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
     ];
@@ -2266,12 +2287,16 @@
       description = "Reconcile rootless Podman uid/gid map for ${user}";
       after = networkOnlineUnits;
       wants = networkOnlineUnits;
+      restartTriggers = [rootlessIdmapMigratePackage];
+      restartIfChanged = true;
+      stopIfChanged = true;
       unitConfig.ConditionUser = user;
       serviceConfig = {
         Type = "oneshot";
+        RemainAfterExit = true;
         Environment = [
           "HOME=${home}"
-          "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+          "PATH=${podmanHelperPath}"
         ];
         ExecStart = "${rootlessIdmapMigratePackage}/bin/podman-rootless-idmap-migrate ${lib.escapeShellArgs [user home]}";
       };
@@ -2598,6 +2623,20 @@ in {
                 if builtins.isString sourceCompose
                 then composeServicesFromText sourceCompose
                 else [];
+              sourceDeclaredImages =
+                if
+                  builtins.isAttrs sourceCompose
+                  && builtins.hasAttr "services" sourceCompose
+                  && builtins.isAttrs sourceCompose.services
+                then
+                  lib.unique (
+                    lib.filter (image: image != null) (
+                      lib.mapAttrsToList (_: composeService: composeService.image or null) sourceCompose.services
+                    )
+                  )
+                else if builtins.isString sourceCompose
+                then composeImagesFromText sourceCompose
+                else [];
               sourceDeclaredComposeServices =
                 if
                   builtins.isAttrs sourceCompose
@@ -2826,6 +2865,7 @@ in {
                 dirRuntimePaths = dirRuntimePaths;
                 envSecretRuntimePaths = envSecretRuntimePaths;
                 knownSourceComposeServices = knownSourceComposeServices;
+                declaredImages = sourceDeclaredImages;
                 stagedEntries = effectiveEntries;
                 sourcePaths = sourcePaths;
                 pullSourcePaths = lib.mapAttrs (fileName: _: "${pullSourceDir}/${fileName}") effectiveEntries;

@@ -24,6 +24,7 @@ init_vars() {
 	recreate_tag="0"
 	recreate_stamp=""
 	recreate_class_stamp=""
+	image_pull_stamp=""
 	long_running="true"
 	reload_method="restart"
 	reload_signal="HUP"
@@ -39,11 +40,15 @@ init_vars() {
 	post_stop_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_POST_STOP_LOCK_TIMEOUT_SECONDS:-30}"
 	post_stop_rootless_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_POST_STOP_ROOTLESS_LOCK_TIMEOUT_SECONDS:-30}"
 	stop_rootless_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_STOP_ROOTLESS_LOCK_TIMEOUT_SECONDS:-180}"
+	image_pull_retry_attempts="${NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_ATTEMPTS:-10}"
+	image_pull_retry_delay_seconds="${NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_DELAY_SECONDS:-1}"
+	image_pull_status_file="${NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE:-}"
 
 	compose_args=()
 	podman_compose_base_args=()
 	compose_file_args=()
 	pull_compose_file_args=()
+	declared_images=()
 	expected_compose_services=()
 	reload_services=()
 	podman_network_dns_lock_depth=0
@@ -88,6 +93,7 @@ load_metadata() {
 	recreate_tag="$(jq -r '.recreateTag // "0"' "$podman_compose_metadata")"
 	recreate_stamp="$(jq -r '.recreateStamp // ""' "$podman_compose_metadata")"
 	recreate_class_stamp="$(jq -r '.recreateClassStamp // (.recreateStamp // "")' "$podman_compose_metadata")"
+	image_pull_stamp="$(jq -r '.imagePullStamp // ""' "$podman_compose_metadata")"
 	removal_policy="$(jq -r '.removalPolicy // "delete"' "$podman_compose_metadata")"
 	adopt_existing="$(jq -r '.adopt // false' "$podman_compose_metadata")"
 	long_running="$(jq -r 'if has("longRunning") then .longRunning else true end' "$podman_compose_metadata")"
@@ -110,6 +116,12 @@ load_metadata() {
 	while IFS= read -r compose_file; do
 		pull_compose_file_args+=(-f "$compose_file")
 	done < <(jq -r '.pullComposeFiles[]?' "$podman_compose_metadata")
+
+	declared_images=()
+	while IFS= read -r image; do
+		[ -n "$image" ] || continue
+		declared_images+=("$image")
+	done < <(jq -r '.declaredImages[]?' "$podman_compose_metadata")
 
 	expected_compose_services=()
 	while IFS= read -r compose_service; do
@@ -1044,6 +1056,38 @@ compose_up_fatal_line() {
 		<<<"$line"
 }
 
+compose_pull_fatal_line() {
+	local line
+	line="$1"
+	grep -Eq \
+		'(^|[[:space:]])image pull-error[[:space:]]|^Error: unable to copy from source docker://' \
+		<<<"$line"
+}
+
+positive_integer_or_default() {
+	local value default
+	value="$1"
+	default="$2"
+
+	if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+		printf '%s\n' "$value"
+	else
+		printf '%s\n' "$default"
+	fi
+}
+
+nonnegative_integer_or_default() {
+	local value default
+	value="$1"
+	default="$2"
+
+	if [[ "$value" =~ ^[0-9]+$ ]]; then
+		printf '%s\n' "$value"
+	else
+		printf '%s\n' "$default"
+	fi
+}
+
 parse_systemd_timespan_seconds() {
 	local value token number unit total=0
 	value="$1"
@@ -1953,6 +1997,20 @@ cleanup_failed_compose_stop() {
 	fi
 }
 
+failed_compose_stop_cleanup_satisfies_stop() {
+	local stop_policy
+	stop_policy="$1"
+
+	case "$stop_policy" in
+	delete | delete-all)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
 post_stop_should_cleanup_failed_stop() {
 	local stop_policy
 	stop_policy="$1"
@@ -2193,14 +2251,55 @@ compose_stop() {
 }
 
 compose_pull() {
+	local output_file line status=0 fatal_seen=0
+
 	if [ "${#pull_compose_file_args[@]}" -eq 0 ]; then
 		return 0
 	fi
+
+	output_file="$(mktemp "${generated_dir}/pull-output.XXXXXX")"
+	set +e
 	(
 		close_lifecycle_fds_for_child
 		cd "$working_dir"
 		podman_no_notify compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${pull_compose_file_args[@]}" pull 2>&1
-	)
+	) | tee "$output_file"
+	status="${PIPESTATUS[0]}"
+	set -e
+
+	while IFS= read -r line; do
+		if compose_pull_fatal_line "$line"; then
+			fatal_seen=1
+			break
+		fi
+	done <"$output_file"
+	rm -f "$output_file"
+
+	if [ "$fatal_seen" -eq 1 ]; then
+		printf '%s\n' "podman compose pull emitted fatal output for ${podman_compose_service_name}; treating pull as failed" >&2
+		return 1
+	fi
+	return "$status"
+}
+
+compose_pull_with_retry() {
+	local attempts delay_seconds attempt=1
+
+	attempts="$(positive_integer_or_default "$image_pull_retry_attempts" 10)"
+	delay_seconds="$(nonnegative_integer_or_default "$image_pull_retry_delay_seconds" 1)"
+	while :; do
+		if compose_pull; then
+			return 0
+		fi
+		if [ "$attempt" -ge "$attempts" ]; then
+			printf '%s\n' "podman compose pull failed for ${podman_compose_service_name} after ${attempts} attempt(s)" >&2
+			return 1
+		fi
+
+		attempt=$((attempt + 1))
+		printf '%s\n' "podman compose pull failed for ${podman_compose_service_name}; retrying attempt ${attempt}/${attempts} in ${delay_seconds}s" >&2
+		sleep "$delay_seconds"
+	done
 }
 
 compose_logs() {
@@ -2714,6 +2813,59 @@ last_applied_restart_stamp() {
 	runtime_state_field restartStamp ""
 }
 
+last_applied_image_pull_stamp() {
+	runtime_state_field imagePullStamp ""
+}
+
+declared_images_present() {
+	local image
+
+	[ "${#declared_images[@]}" -gt 0 ] || return 1
+	for image in "${declared_images[@]}"; do
+		if ! (
+			close_lifecycle_fds_for_child
+			podman_no_notify image exists "$image" >/dev/null 2>&1
+		); then
+			return 1
+		fi
+	done
+}
+
+image_pull_state_current() {
+	local applied_image_pull_stamp
+
+	[ -n "$image_pull_stamp" ] || return 1
+	migrate_legacy_runtime_state_if_needed
+	migrate_runtime_state_version_if_needed
+	applied_image_pull_stamp="$(last_applied_image_pull_stamp)"
+	[ "$applied_image_pull_stamp" = "$image_pull_stamp" ] || return 1
+	declared_images_present
+}
+
+record_image_pull_state() {
+	local tmp_state
+	install -d -m 0750 "$generated_dir"
+	tmp_state="${state_path}.tmp"
+	existing_runtime_state_json |
+		jq -c \
+			--argjson version "$runtime_state_version" \
+			--arg kind "$runtime_state_kind" \
+			--arg adoptionStamp "$adoption_stamp" \
+			--arg imagePullStamp "$image_pull_stamp" \
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, imagePullStamp: $imagePullStamp} | del(.startupPhase)' >"$tmp_state"
+	chmod 0640 "$tmp_state"
+	mv -f "$tmp_state" "$state_path"
+}
+
+record_image_pull_status() {
+	local status
+	status="$1"
+
+	if [ -n "$image_pull_status_file" ]; then
+		printf '%s\n' "$status" >"$image_pull_status_file"
+	fi
+}
+
 policy_transition_forces_recreate() {
 	local applied_reconcile_policy
 	applied_reconcile_policy="$(last_applied_reconcile_policy)"
@@ -3004,19 +3156,23 @@ cmd_bootstrap() {
 cmd_verify() {
 	load_metadata
 	if start_in_progress_active; then
-		return 0
+		printf '%s\n' "podman compose start is still in progress for ${podman_compose_service_name}; not ready" >&2
+		return 1
 	fi
 	if compose_unit_transition_active; then
-		return 0
+		printf '%s\n' "podman compose unit is still transitioning for ${podman_compose_service_name}; not ready" >&2
+		return 1
 	fi
 	lock_lifecycle_shared
 	if start_in_progress_active; then
 		unlock_lifecycle_shared
-		return 0
+		printf '%s\n' "podman compose start is still in progress for ${podman_compose_service_name}; not ready" >&2
+		return 1
 	fi
 	if compose_unit_transition_active; then
 		unlock_lifecycle_shared
-		return 0
+		printf '%s\n' "podman compose unit is still transitioning for ${podman_compose_service_name}; not ready" >&2
+		return 1
 	fi
 	if ! verify_staged_runtime_files ||
 		! verify_runtime_state_current ||
@@ -3189,7 +3345,7 @@ cmd_repair() {
 }
 
 cmd_stop() {
-	local stop_policy
+	local stop_policy cleanup_satisfied_stop=0
 	load_metadata
 	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
@@ -3203,10 +3359,19 @@ cmd_stop() {
 		printf '%s\n' "podman compose stop timed out waiting for rootless lifecycle lock for ${podman_compose_service_name}; proceeding with direct stop" >&2
 	fi
 	if ! apply_compose_stop_policy "$stop_policy"; then
-		cleanup_failed_compose_stop "$stop_policy" || true
+		if failed_compose_stop_cleanup_satisfies_stop "$stop_policy"; then
+			if cleanup_failed_compose_stop "$stop_policy"; then
+				cleanup_satisfied_stop=1
+			fi
+		else
+			cleanup_failed_compose_stop "$stop_policy" || true
+		fi
 		podman_rootless_lifecycle_unlock
 		clear_stop_in_progress
 		unlock_lifecycle_exclusive
+		if [ "$cleanup_satisfied_stop" -eq 1 ]; then
+			return 0
+		fi
 		return 1
 	fi
 	podman_rootless_lifecycle_unlock
@@ -3320,10 +3485,17 @@ cmd_image_pull() {
 	assert_adoption_allowed
 	ensure_runtime_dirs
 	lock_lifecycle_exclusive
-	if ! compose_pull; then
+	if image_pull_state_current; then
+		record_image_pull_status skipped
+		unlock_lifecycle_exclusive
+		return 0
+	fi
+	if ! compose_pull_with_retry; then
 		unlock_lifecycle_exclusive
 		return 1
 	fi
+	record_image_pull_state
+	record_image_pull_status pulled
 	unlock_lifecycle_exclusive
 }
 

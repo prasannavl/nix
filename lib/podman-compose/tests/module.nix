@@ -345,6 +345,7 @@ in
   assert lib.hasSuffix " reload" appUnit.serviceConfig.ExecReload;
   assert lib.hasSuffix " post-stop" appUnit.serviceConfig.ExecStopPost;
   assert appUnit.serviceConfig.KillMode == "control-group";
+  assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" appUnit.serviceConfig.Environment;
   assert builtins.elem "NIX_PODMAN_COMPOSE_START_STATE_STALL_SECONDS=75" appUnit.serviceConfig.Environment;
   assert appUnit.serviceConfig.TimeoutStartSec == 120;
   assert !(builtins.hasAttr "demo-app-start-worker" config.systemd.user.services);
@@ -377,7 +378,14 @@ in
   assert rootManagedReadyTarget.wantedBy == [];
   assert imagePullUnit.serviceConfig.Type == "oneshot";
   assert imagePullUnit.unitConfig.ConditionUser == "tester";
+  assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" imagePullUnit.serviceConfig.Environment;
   assert lib.hasSuffix " image-pull" imagePullUnit.serviceConfig.ExecStart;
+  assert rootlessMigrateUnit.restartIfChanged == true;
+  assert rootlessMigrateUnit.stopIfChanged == true;
+  assert map toString rootlessMigrateUnit.restartTriggers
+  == [(builtins.head (lib.splitString "/bin/" rootlessMigrateUnit.serviceConfig.ExecStart))];
+  assert rootlessMigrateUnit.serviceConfig.RemainAfterExit == true;
+  assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" rootlessMigrateUnit.serviceConfig.Environment;
   assert rootlessMigrateUnit.unitConfig.ConditionUser == "tester";
   assert lib.hasInfix ".config/containers/storage.conf" rootlessMigrateScript;
   assert lib.hasInfix "mount_program" rootlessMigrateScript;
@@ -390,6 +398,7 @@ in
   assert appImagePullPlanEntry.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
   assert appImagePullPlanEntry.imageTag == "image-1";
   assert lib.hasSuffix "/bin/podman-compose-helper" appImagePullPlanEntry.helper;
+  assert appMetadata.imagePullStamp != "";
   assert controlRegistry.demo-app.timeoutReadySeconds == 45;
   assert controlRegistry.demo-db.timeoutReadySeconds == 45;
   assert controlRegistry.demo-custom-job.timeoutReadySeconds == 45;
@@ -399,6 +408,7 @@ in
   assert jobImagePullPlanEntry.metadataFile == metadataPathFromEnv jobUnit.serviceConfig.Environment;
   assert jobImagePullPlanEntry.imageTag == "0";
   assert lib.hasSuffix "/bin/podman-compose-helper" jobImagePullPlanEntry.helper;
+  assert jobMetadata.imagePullStamp != "";
   assert appMetadata.version == 10;
   assert appMetadata.serviceName == "demo-app";
   assert appMetadata.workingDir == "/srv/demo/app";
@@ -416,6 +426,7 @@ in
   assert appMetadata.postStart == ["printf post"];
   assert appMetadata.preStop == ["-printf stop"];
   assert appMetadata.expectedComposeServices == ["web" "worker"];
+  assert appMetadata.declaredImages == ["docker.io/library/nginx:latest" "docker.io/library/busybox:latest"];
   assert lib.hasInfix "docker.io/library/nginx:latest" appRenderedCompose;
   assert lib.hasInfix "docker.io/library/busybox:latest" appRenderedCompose;
   assert builtins.length appComposeFiles == 3;
@@ -464,6 +475,7 @@ in
   assert textSourceMetadata.serviceName == "demo-text-source";
   assert textSourceMetadata.workingDir == "/srv/demo/text-source";
   assert textSourceMetadata.expectedComposeServices == ["text"];
+  assert textSourceMetadata.declaredImages == ["docker.io/library/busybox:latest"];
   assert textSourceMetadata.composeArgs == [];
   assert textSourceMetadata.composeFiles == ["/srv/demo/text-source/compose.yml"];
   assert textSourceMetadata.pullComposeFiles != textSourceMetadata.composeFiles;
@@ -471,6 +483,7 @@ in
   assert fileSourceMetadata.serviceName == "demo-file-source";
   assert fileSourceMetadata.workingDir == "/srv/demo/file-source";
   assert fileSourceMetadata.expectedComposeServices == ["file"];
+  assert fileSourceMetadata.declaredImages == ["docker.io/library/busybox:latest"];
   assert fileSourceMetadata.composeFiles == ["/srv/demo/file-source/compose.yml"];
   assert fileSourceMetadata.pullComposeFiles != fileSourceMetadata.composeFiles;
   assert fileRenderedCompose == builtins.readFile sourceFile;
