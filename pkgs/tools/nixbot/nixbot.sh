@@ -13064,6 +13064,11 @@ format_host_console_logs() {
 			emit("[copy] copying " count " store paths", "")
 			next
 		}
+		if (line ~ /^building '\''\/nix\/store\/.*\.drv'\''\.\.\.$/) {
+			path = quoted_field(line, 2)
+			emit("[build] " store_basename(path), "")
+			next
+		}
 		if (line ~ /^copying path '\''\/nix\/store\//) {
 			path = quoted_field(line, 2)
 			emit("[copy] " store_basename(path), "")
@@ -13379,7 +13384,7 @@ host_log_filter() {
 	local node="$1" phase="${2:-${_NIXBOT_HOST_LOG_PHASE:-}}"
 
 	if host_log_prefix_enabled; then
-		prefix_host_logs "${node}" "${phase}"
+		format_host_console_logs "${node}" "${phase}" | prefix_host_logs "${node}" "${phase}"
 	else
 		cat
 	fi

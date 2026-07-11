@@ -446,7 +446,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Host log prefixes are applied at stream boundaries. Helpers that may run
   inside an already-prefixed stream should emit raw lines through
   `host_log_filter`; the active prefix context suppresses redundant nested
-  prefixes instead of cleaning them up after formatting.
+  prefixes instead of cleaning them up after formatting. Prefixing also runs the
+  compact console formatter first, so repeated Nix build lines such as
+  `building '/nix/store/...drv'...` show as short `[build] <drv>` rows before
+  the host prefix is added.
 - Health-check success output is intentionally compact: the phase prints a short
   `Scanning..` line, each healthy host prints `[health-check] ok`, and there is
   no extra all-healthy footer.

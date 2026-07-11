@@ -3089,6 +3089,27 @@ EOF_SWITCH
 
         self.assertEqual(["| web | outer", "inner"], result.stdout.splitlines())
 
+    def test_host_log_filter_formats_build_output_when_prefixing(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            FORCE_PREFIX_HOST_LOGS=1
+            printf '%s\n' \
+              "building '/nix/store/yvvwqh01fjjxapp8pc428zv823fidr2y-0001-fix-paths.patch.drv'..." \
+              "copying path '/nix/store/7bwghrlajrnsxyz08fmfyaj23lp6c1cq-asar-3.2.4' from 'https://cache.nixos.org'..." |
+              host_log_filter pvl-l5 build
+            """
+        )
+
+        self.assertEqual(
+            [
+                "| pvl-l5 | [build] yvvwqh01fjjxapp8pc428zv823fidr2y-0001-fix-paths.patch.drv",
+                "| pvl-l5 | [copy] 7bwghrlajrnsxyz08fmfyaj23lp6c1cq-asar-3.2.4",
+            ],
+            result.stdout.splitlines(),
+        )
+
     def test_run_streamed_host_command_prefixes_nested_host_logs_once(self):
         log_file = self.work_dir / "streamed.log"
         result = self.run_script(
@@ -3284,6 +3305,28 @@ EOF_SWITCH
                 "[switch] inhibitors ok",
                 "[switch] activating configuration",
                 "[switch] updating /etc",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_normalizes_build_noise_rows(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              "building '/nix/store/yvvwqh01fjjxapp8pc428zv823fidr2y-0001-fix-paths.patch.drv'..." \
+              "copying path '/nix/store/7bwghrlajrnsxyz08fmfyaj23lp6c1cq-asar-3.2.4' from 'https://cache.nixos.org'..." \
+              "/nix/store/def456-nixos-system-pvl-l5" |
+              format_host_console_logs pvl-l5 build
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[build] yvvwqh01fjjxapp8pc428zv823fidr2y-0001-fix-paths.patch.drv",
+                "[copy] 7bwghrlajrnsxyz08fmfyaj23lp6c1cq-asar-3.2.4",
+                "[store] def456-nixos-system-pvl-l5",
             ],
             result.stdout.splitlines(),
         )
