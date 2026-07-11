@@ -97,8 +97,8 @@ Dev Build Action Options (`dev-build`):
 Deploy Action Options (`run`, `deploy`):
   --goal           switch|boot|test|dry-activate (default: switch)
   --deploy-jobs    Parallel deploys within a dependency wave (default: 8)
-  --verify-jobs    Parallel rollback snapshot work (default: 16);
-                   post-deploy health checks run sequentially
+  --verify-jobs    Parallel rollback snapshot and post-deploy health-check work
+                   (default: 16)
   --bootstrap      Always use bootstrap SSH user/key selection
   --no-rollback    Disable rollback if any deploy fails
   --no-verify      Skip post-deploy health checks; deploy failures can still roll back
@@ -11766,8 +11766,8 @@ run_hosts() {
 			"${rollback_status_dir}" \
 			"${health_log_dir}" \
 			"${health_status_dir}" \
-			0 \
-			1 \
+			"${verify_parallel}" \
+			"${NIXBOT_VERIFY_JOBS}" \
 			successful_hosts; then
 			:
 		else
@@ -12932,6 +12932,368 @@ prefix_host_logs_with_prefix() {
 	awk -v prefix="${prefix_str}" '{ if (length($0) == 0) { print ""; } else { print prefix $0; } fflush(); }'
 }
 
+should_format_host_console_logs() {
+	case "${LOG_FORMAT:-auto}" in
+	gh | github-actions)
+		return 1
+		;;
+	auto)
+		[ "${GITHUB_ACTIONS:-false}" = "true" ] && return 1
+		;;
+	esac
+	return 0
+}
+
+format_host_console_logs() {
+	local red="" yellow="" green="" reset=""
+
+	if ! should_format_host_console_logs; then
+		cat
+		return 0
+	fi
+
+	if should_use_color; then
+		red="${_NIXBOT_C_RED}"
+		yellow="${_NIXBOT_C_YELLOW}"
+		green="${_NIXBOT_C_GREEN}"
+		reset="${_NIXBOT_C_RESET}"
+	fi
+
+	awk \
+		-v red="${red}" \
+		-v yellow="${yellow}" \
+		-v green="${green}" \
+		-v reset="${reset}" '
+	function quote_value(value) {
+		gsub(/"/, "\\\"", value)
+		return "\"" value "\""
+	}
+
+	function store_basename(path, parts, count) {
+		count = split(path, parts, "/")
+		return parts[count]
+	}
+
+	function quoted_field(line, field_index, fields, count) {
+		count = split(line, fields, "'\''")
+		if (count >= field_index) {
+			return fields[field_index]
+		}
+		return ""
+	}
+
+	function list_count(list, items) {
+		if (list == "") {
+			return 0
+		}
+		return split(list, items, /, */)
+	}
+
+	function color_for(line) {
+		if (red != "" && line ~ /(^|[[:space:]])FAILED([[:space:]]|$)|state=failed\/|result=failed|unhealthy|Health check failed|Deploy failed|Rollback failed/) {
+			return red
+		}
+		if (yellow != "" && line ~ /pending\/failed|still settling|system_jobs=[1-9][0-9]*|result=exit-code|auto-restart|restart-queued|start-limit|transport (closed|unavailable)|Connection timed out|heartbeat probe failed|\(starting\)/) {
+			return yellow
+		}
+		if (green != "" && line ~ /\[health-check\] ok/) {
+			return green
+		}
+		return ""
+	}
+
+	function format_unit_action(action, list, user, count, out) {
+		count = list_count(list)
+		out = "[user-units]"
+		if (user != "") {
+			out = out " user=" user
+		}
+		return out " action=" action " count=" count " units=" quote_value(list)
+	}
+
+	function emit(line, color) {
+		if (color == "") {
+			color = color_for(line)
+		}
+		if (color != "") {
+			print color line reset
+		} else {
+			print line
+		}
+		fflush()
+	}
+
+	function format_unit_row(line, tag, scope, user, fields, count, desc, idx, out) {
+		count = split(line, fields, /[[:space:]]+/)
+		if (count < 4 || fields[1] !~ /\.(service|target)$/) {
+			return ""
+		}
+		desc = ""
+		for (idx = 5; idx <= count; idx++) {
+			desc = desc (desc == "" ? "" : " ") fields[idx]
+		}
+		if (scope == "user") {
+			out = tag " user=" user " unit=" fields[1] " load=" fields[2] " state=" fields[3] "/" fields[4]
+		} else {
+			out = tag " " scope " unit=" fields[1] " load=" fields[2] " state=" fields[3] "/" fields[4]
+		}
+		if (desc != "") {
+			out = out " desc=" quote_value(desc)
+		}
+		return out
+	}
+
+	function format_job_row(line, fields, count) {
+		count = split(line, fields, /[[:space:]]+/)
+		if (count < 4 || fields[1] !~ /^[0-9]+$/) {
+			return ""
+		}
+		return "[activation] system_job id=" fields[1] " unit=" fields[2] " type=" fields[3] " state=" fields[4]
+	}
+
+	{
+		line = $0
+		if (line ~ /^copying 0 paths\.\.\.$/) {
+			emit("[copy] closure already present", "")
+			next
+		}
+		if (match(line, /^copying [0-9]+ paths\.\.\.$/)) {
+			count = line
+			sub(/^copying /, "", count)
+			sub(/ paths\.\.\.$/, "", count)
+			emit("[copy] copying " count " store paths", "")
+			next
+		}
+		if (line ~ /^copying path '\''\/nix\/store\//) {
+			path = quoted_field(line, 2)
+			emit("[copy] " store_basename(path), "")
+			next
+		}
+		if (line ~ /^\/nix\/store\//) {
+			emit("[store] " store_basename(line), "")
+			next
+		}
+		if (line ~ /^\[pre-activation\] pulling declared Podman Compose images from \/nix\/store\//) {
+			emit("[pre-activation] pulling declared Podman Compose images", "")
+			next
+		}
+		if (line == "Checking switch inhibitors... done") {
+			emit("[switch] inhibitors ok", "")
+			next
+		}
+		if (line == "activating the configuration...") {
+			emit("[switch] activating configuration", "")
+			next
+		}
+		if (line == "setting up /etc...") {
+			emit("[switch] updating /etc", "")
+			next
+		}
+		if (match(line, /^\[agenix\] creating new generation in \/run\/agenix\.d\/[0-9]+$/)) {
+			generation = line
+			sub(/^.*\/run\/agenix\.d\//, "", generation)
+			emit("[agenix] creating generation=" generation, "")
+			next
+		}
+		if (line == "[agenix] decrypting secrets...") {
+			emit("[agenix] decrypting secrets", "")
+			next
+		}
+		if (line ~ /^decrypting '\''.*'\'' to '\''\/run\/agenix\.d\/[0-9]+\//) {
+			target = quoted_field(line, 4)
+			emit("[agenix] decrypted " store_basename(target), "")
+			next
+		}
+		if (match(line, /^\[agenix\] symlinking new secrets to \/run\/agenix \(generation [0-9]+\)\.\.\.$/)) {
+			generation = line
+			sub(/^.*\(generation /, "", generation)
+			sub(/\)\.\.\.$/, "", generation)
+			emit("[agenix] generation=" generation " active", "")
+			next
+		}
+		if (match(line, /^\[agenix\] removing old secrets \(generation [0-9]+\)\.\.\.$/)) {
+			generation = line
+			sub(/^.*\(generation /, "", generation)
+			sub(/\)\.\.\.$/, "", generation)
+			emit("[agenix] removed generation=" generation, "")
+			next
+		}
+		if (line == "[agenix] chowning...") {
+			emit("[agenix] fixing ownership", "")
+			next
+		}
+		if (match(line, /^reloading user units for [^ ]+\.\.\.$/)) {
+			current_user = line
+			sub(/^reloading user units for /, "", current_user)
+			sub(/\.\.\.$/, "", current_user)
+			emit("[user-units] user=" current_user " reload", "")
+			next
+		}
+		if (match(line, /^(reloading|restarting|starting|stopping) the following user units: /)) {
+			action = line
+			sub(/ the following user units: .*$/, "", action)
+			units = line
+			sub(/^[^:]+: /, "", units)
+			emit(format_unit_action(action, units, current_user), "")
+			next
+		}
+		if (match(line, /^(reloading|restarting|starting|stopping) the following units: /)) {
+			action = line
+			sub(/ the following units: .*$/, "", action)
+			units = line
+			sub(/^[^:]+: /, "", units)
+			emit("[system-units] action=" action " count=" list_count(units) " units=" quote_value(units), "")
+			next
+		}
+		if (match(line, /^restarting [-A-Za-z0-9_.@]+$/)) {
+			unit = line
+			sub(/^restarting /, "", unit)
+			emit("[system-units] action=restart count=1 units=" quote_value(unit), "")
+			next
+		}
+		if (line ~ /^\[activation\] /) {
+			context = ""
+			context_user = ""
+			if (line ~ /: no active systemd jobs; waiting for activation process or remote systemd-run timeout$/) {
+				emit("[activation] system_jobs=0 wait=" quote_value("activation process or remote systemd-run timeout"), "")
+				next
+			}
+			if (line ~ /: active systemd jobs:$/) {
+				context = "jobs"
+				emit("[activation] active systemd jobs:", yellow)
+				next
+			}
+			if (line ~ /: failed system units:$/) {
+				context = "failed-system"
+				emit("[activation] failed system units:", red)
+				next
+			}
+			if (match(line, /: pending\/failed user units for [^:]+:$/)) {
+				context = "user"
+				context_user = line
+				sub(/^.*: pending\/failed user units for /, "", context_user)
+				sub(/:$/, "", context_user)
+				emit("[activation] user=" context_user " pending/failed units:", yellow)
+				next
+			}
+			display_line = line
+			sub(/^\[activation\] [^:]+: /, "[activation] ", display_line)
+			emit(display_line, "")
+			next
+		}
+		if (line ~ /^\[health-check\] /) {
+			context = ""
+			context_user = ""
+			if (match(line, /^\[health-check\] transient Podman healthcheck units observed for user [^;]+;/)) {
+				context = "health-transient-user"
+				context_user = line
+				sub(/^\[health-check\] transient Podman healthcheck units observed for user /, "", context_user)
+				sub(/;.*/, "", context_user)
+				emit("[health-check] user=" context_user " transient Podman healthcheck units observed; checking current container health:", yellow)
+				next
+			}
+			if (match(line, /^\[health-check\] FAILED units for user [^:]+:$/)) {
+				context = "health-failed-user"
+				context_user = line
+				sub(/^\[health-check\] FAILED units for user /, "", context_user)
+				sub(/:$/, "", context_user)
+				emit("[health-check] user=" context_user " failed units:", red)
+				next
+			}
+			if (line ~ /^\[health-check\] FAILED system units:$/) {
+				context = "health-failed-system"
+				context_user = ""
+				emit("[health-check] failed system units:", red)
+				next
+			}
+			emit(line, "")
+			next
+		}
+		if (line ~ /^\[user [^]]+ units still settling\]$/) {
+			context = "health-user"
+			context_user = line
+			sub(/^\[user /, "", context_user)
+			sub(/ units still settling\]$/, "", context_user)
+			emit("[health-check] user=" context_user " units still settling:", yellow)
+			next
+		}
+		if (line ~ /^\[system units still settling\]$/) {
+			context = "health-system"
+			context_user = ""
+			emit("[health-check] system units still settling:", yellow)
+			next
+		}
+		if (line ~ /^\[user [^]]+\]$/) {
+			context = "health-podman-user"
+			context_user = line
+			sub(/^\[user /, "", context_user)
+			sub(/\]$/, "", context_user)
+			emit("[health-check] user=" context_user " Podman containers:", yellow)
+			next
+		}
+		if (context == "user") {
+			formatted = format_unit_row(line, "[activation]", "user", context_user)
+			if (formatted != "") {
+				emit(formatted, "")
+				next
+			}
+		} else if (context == "failed-system") {
+			formatted = format_unit_row(line, "[activation]", "failed-system", "")
+			if (formatted != "") {
+				emit(formatted, red)
+				next
+			}
+		} else if (context == "jobs") {
+			formatted = format_job_row(line)
+			if (formatted != "") {
+				emit(formatted, yellow)
+				next
+			}
+		} else if (context == "health-user") {
+			formatted = format_unit_row(line, "[health-check]", "user", context_user)
+			if (formatted != "") {
+				emit(formatted, "")
+				next
+			}
+		} else if (context == "health-system") {
+			formatted = format_unit_row(line, "[health-check]", "system", "")
+			if (formatted != "") {
+				emit(formatted, "")
+				next
+			}
+		} else if (context == "health-transient-user") {
+			formatted = format_unit_row(line, "[health-check]", "transient-podman-healthcheck", context_user)
+			if (formatted != "") {
+				emit(formatted, yellow)
+				next
+			}
+		} else if (context == "health-failed-user") {
+			formatted = format_unit_row(line, "[health-check]", "user", context_user)
+			if (formatted != "") {
+				emit(formatted, red)
+				next
+			}
+		} else if (context == "health-failed-system") {
+			formatted = format_unit_row(line, "[health-check]", "failed-system", "")
+			if (formatted != "") {
+				emit(formatted, red)
+				next
+			}
+		} else if (context == "health-podman-user") {
+			if (match(line, /^starting [^[:space:]]+ /)) {
+				container = line
+				sub(/^starting /, "", container)
+				sub(/ .*/, "", container)
+				status = line
+				sub(/^starting [^[:space:]]+ /, "", status)
+				emit("[health-check] user=" context_user " container=" container " health=starting status=" quote_value(status), "")
+				next
+			}
+		}
+		emit(line, "")
+	}'
+}
+
 prefix_host_logs() {
 	local node="$1" phase="${2:-${_NIXBOT_HOST_LOG_PHASE:-}}"
 	local color="" reset=""
@@ -12956,9 +13318,11 @@ tee_prefixed_host_logs() {
 
 	if should_use_color; then
 		tee >(strip_ansi_escape_sequences | prefix_host_logs_plain "${node}" >>"${log_file}") |
+			format_host_console_logs "${node}" "${phase}" |
 			prefix_host_logs "${node}" "${phase}"
 	else
 		tee >(strip_ansi_escape_sequences | prefix_host_logs_plain "${node}" >>"${log_file}") |
+			format_host_console_logs "${node}" "${phase}" |
 			prefix_host_logs_plain "${node}"
 	fi
 }
@@ -13007,7 +13371,7 @@ run_with_prefixed_combined_output() {
 			run_with_combined_output "$@" > >(tee_prefixed_host_logs "${node}" "${log_file}" "${phase}" >&2)
 	else
 		run_with_host_log_prefix_context "${phase}" \
-			run_with_combined_output "$@" > >(prefix_host_logs "${node}" "${phase}" >&2)
+			run_with_combined_output "$@" > >(format_host_console_logs "${node}" "${phase}" | prefix_host_logs "${node}" "${phase}" >&2)
 	fi
 }
 

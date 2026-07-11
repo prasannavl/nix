@@ -2887,6 +2887,52 @@ EOF_SWITCH
         self.assertNotIn("Scanning deployed hosts for failed units", result.stderr)
         self.assertNotIn("All deployed hosts healthy", result.stderr)
 
+    def test_run_hosts_uses_verify_jobs_for_health_check_fanout(self):
+        order_file = self.work_dir / "health-order"
+        result = self.run_script(
+            f"""
+            init_vars
+            ACTION=deploy
+            HOST_ACTION=deploy
+            VERIFY_AFTER_DEPLOY=1
+            ROLLBACK_ON_FAILURE=0
+            NIXBOT_VERIFY_JOBS=2
+            NIXBOT_PARALLEL_JOBS=1
+            BUILD_JOBS=1
+            DRY_RUN=0
+            selected='{{"required":{{"app":{{}},"db":{{}}}},"optional":{{}},"signaled":{{}},"canceled":{{}}}}'
+            selected_host_levels_json() {{ printf '%s\n' '[[\"app\",\"db\"]]'; }}
+            prepare_build_plan() {{ return 0; }}
+            run_build_phase() {{
+              local -n built_ref="$9"
+              built_ref=(app db)
+              return 0
+            }}
+            run_deploy_phase() {{
+              local -n successful_ref="${{14}}"
+              successful_ref=(app db)
+              return 0
+            }}
+            run_post_switch_health_check() {{
+              printf 'start:%s\n' "$1" >>{order_file}
+              if [ "$1" = app ]; then
+                while [ ! -e {self.work_dir / "db-started"} ]; do sleep 0.05; done
+              else
+                : >{self.work_dir / "db-started"}
+              fi
+              printf 'finish:%s\n' "$1" >>{order_file}
+              return 0
+            }}
+            run_hosts "$selected"
+            cat {order_file}
+            """
+        )
+
+        self.assertEqual(
+            ["start:app", "start:db", "finish:db", "finish:app"],
+            result.stdout.splitlines(),
+        )
+
     def test_deploy_failure_detection_ignores_optional_signal_and_pre_activation_cancel(self):
         result = self.run_script(
             f"""
@@ -3133,6 +3179,210 @@ EOF_SWITCH
         )
 
         self.assertEqual(["plain-log", "log:-------- web | rollback --------"], result.stdout.splitlines())
+
+    def test_format_host_console_logs_normalizes_activation_systemd_rows(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              '[activation] abird-gondor-corp: unit=nixbot-switch.service elapsed=254s state=active/running result=success main_pid=285969' \
+              '[activation] abird-gondor-corp: no active systemd jobs; waiting for activation process or remote systemd-run timeout' \
+              '[activation] abird-gondor-corp: pending/failed user units for abird:' \
+              'abird-librechat-verify.service                                                            loaded activating start  start podman: abird: librechat verify' \
+              'abird-stalwart.service                                                                    loaded activating start  start podman: abird: stalwart' |
+              format_host_console_logs abird-gondor-corp activation
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[activation] unit=nixbot-switch.service elapsed=254s state=active/running result=success main_pid=285969",
+                '[activation] system_jobs=0 wait="activation process or remote systemd-run timeout"',
+                "[activation] user=abird pending/failed units:",
+                '[activation] user=abird unit=abird-librechat-verify.service load=loaded state=activating/start desc="start podman: abird: librechat verify"',
+                '[activation] user=abird unit=abird-stalwart.service load=loaded state=activating/start desc="start podman: abird: stalwart"',
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_normalizes_health_check_settling_rows(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              '[health-check] deployment work still settling:' \
+              '[user abird units still settling]' \
+              'abird-graphiti.service      loaded activating   start        start podman: abird: graphiti' \
+              'abird-postgres.service      loaded deactivating stop-sigterm       podman: abird: postgres' \
+              '[user abird]' \
+              'starting graphiti_neo4j_1 Up 44 seconds (starting)' |
+              format_host_console_logs abird-gondor-data health
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[health-check] deployment work still settling:",
+                "[health-check] user=abird units still settling:",
+                '[health-check] user=abird unit=abird-graphiti.service load=loaded state=activating/start desc="start podman: abird: graphiti"',
+                '[health-check] user=abird unit=abird-postgres.service load=loaded state=deactivating/stop-sigterm desc="podman: abird: postgres"',
+                "[health-check] user=abird Podman containers:",
+                '[health-check] user=abird container=graphiti_neo4j_1 health=starting status="Up 44 seconds (starting)"',
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_normalizes_health_check_failed_unit_rows(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              '[health-check] FAILED units for user abird:' \
+              'abird-superset.service loaded failed failed podman: abird: superset' \
+              '[health-check] FAILED system units:' \
+              'nginx.service loaded failed failed Nginx' |
+              format_host_console_logs abird-gondor-corp health
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[health-check] user=abird failed units:",
+                '[health-check] user=abird unit=abird-superset.service load=loaded state=failed/failed desc="podman: abird: superset"',
+                "[health-check] failed system units:",
+                '[health-check] failed-system unit=nginx.service load=loaded state=failed/failed desc="Nginx"',
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_normalizes_deploy_noise_rows(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              "copying 0 paths..." \
+              "copying path '/nix/store/abc123-unit-abird-nginx.service' to 'ssh-ng://nixbot@10.10.30.20'..." \
+              "/nix/store/def456-nixos-system-abird-proxy-lxc" \
+              "[pre-activation] pulling declared Podman Compose images from /nix/store/def456-nixos-system/share/podman-compose/image-pulls.json" \
+              "Checking switch inhibitors... done" \
+              "activating the configuration..." \
+              "setting up /etc..." |
+              format_host_console_logs abird-gondor-proxy deploy
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[copy] closure already present",
+                "[copy] abc123-unit-abird-nginx.service",
+                "[store] def456-nixos-system-abird-proxy-lxc",
+                "[pre-activation] pulling declared Podman Compose images",
+                "[switch] inhibitors ok",
+                "[switch] activating configuration",
+                "[switch] updating /etc",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_normalizes_agenix_and_user_unit_rows(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              "[agenix] creating new generation in /run/agenix.d/9" \
+              "[agenix] decrypting secrets..." \
+              "decrypting '/nix/store/hash-secret.key.age' to '/run/agenix.d/9/service-secret'..." \
+              "[agenix] symlinking new secrets to /run/agenix (generation 9)..." \
+              "[agenix] removing old secrets (generation 8)..." \
+              "[agenix] chowning..." \
+              "reloading user units for abird..." \
+              "stopping the following user units: abird-managed-ready.target, abird-nginx-ready.target" \
+              "restarting the following user units: nixos-activation.service" \
+              "restarting sysinit-reactivation.target" |
+              format_host_console_logs abird-gondor-corp deploy
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[agenix] creating generation=9",
+                "[agenix] decrypting secrets",
+                "[agenix] decrypted service-secret",
+                "[agenix] generation=9 active",
+                "[agenix] removed generation=8",
+                "[agenix] fixing ownership",
+                "[user-units] user=abird reload",
+                '[user-units] user=abird action=stopping count=2 units="abird-managed-ready.target, abird-nginx-ready.target"',
+                '[user-units] user=abird action=restarting count=1 units="nixos-activation.service"',
+                '[system-units] action=restart count=1 units="sysinit-reactivation.target"',
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_is_passthrough_for_github_mode(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=gh
+            printf '%s\n' \
+              '[activation] app: no active systemd jobs; waiting for activation process or remote systemd-run timeout' \
+              '[activation] app: pending/failed user units for abird:' \
+              'abird-stalwart.service loaded activating start start podman: abird: stalwart' |
+              format_host_console_logs app activation
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[activation] app: no active systemd jobs; waiting for activation process or remote systemd-run timeout",
+                "[activation] app: pending/failed user units for abird:",
+                "abird-stalwart.service loaded activating start start podman: abird: stalwart",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_tee_prefixed_host_logs_keeps_raw_file_log_while_formatting_console(self):
+        log_file = self.work_dir / "display-filter.log"
+        result = self.run_script(
+            f"""
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              '[activation] app: no active systemd jobs; waiting for activation process or remote systemd-run timeout' |
+              tee_prefixed_host_logs app {log_file} activation
+            printf 'log:%s\n' "$(cat {log_file})"
+            """
+        )
+
+        self.assertEqual(
+            [
+                '| app | [activation] system_jobs=0 wait="activation process or remote systemd-run timeout"',
+                "log:| app | [activation] app: no active systemd jobs; waiting for activation process or remote systemd-run timeout",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_colors_failure_and_suspicious_output(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            printf '%s\n' \
+              '[health-check] FAILED service failures detected after deploy' \
+              'starting graphiti_neo4j_1 Up 44 seconds (starting)' |
+              format_host_console_logs app health
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertIn("\x1b[31m", lines[0])
+        self.assertIn("\x1b[33m", lines[1])
 
     def test_append_host_log_filter_keeps_persisted_log_plain_when_terminal_is_colored(self):
         log_file = self.work_dir / "append-color.log"
