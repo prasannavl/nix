@@ -7,7 +7,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 
 VERSION_RE = re.compile(r"^v?([0-9]+(?:[._-][0-9]+)*)(.*)$")
@@ -93,6 +93,12 @@ def title_line(line, color):
     return line
 
 
+def boundary_prefix(line, color):
+    if color:
+        return f"\033[38;2;151;190;205m{line}\033[0m"
+    return line
+
+
 def floating_line(line, color):
     if color:
         return f"- \033[1;38;2;215;215;215m{line}\033[0m"
@@ -104,11 +110,11 @@ def run_nix_eval():
         "cfgs: builtins.mapAttrs "
         "(_: cfg: { "
         "hostName = cfg.config.networking.hostName; "
-        "stackName = cfg._module.specialArgs.stack.stackName or \"\"; "
+        'stackName = cfg._module.specialArgs.stack.stackName or ""; '
         "podmanSources = builtins.mapAttrs "
         "(_: stack: builtins.mapAttrs "
-        "(_: inst: inst.source) stack.instances) "
-        "cfg.config.services.\"podman-compose\"; "
+        "(_: inst: { source = inst.source; }) stack.instances) "
+        'cfg.config.services."podman-compose"; '
         "}) cfgs"
     )
     result = subprocess.run(
@@ -159,7 +165,7 @@ def images_from_source(source):
     return images
 
 
-def collect_images_by_context(sources):
+def collect_images_by_context_and_instance(sources):
     contexts = {}
     for host_key, host in sources.items():
         if not isinstance(host, dict):
@@ -173,13 +179,17 @@ def collect_images_by_context(sources):
             if not isinstance(instances, dict):
                 continue
             context = (stack_name, host_name, podman_stack)
-            images = contexts.setdefault(context, set())
-            for source in instances.values():
-                images.update(images_from_source(source))
+            context_instances = contexts.setdefault(context, {})
+            for instance_name, instance in instances.items():
+                if not isinstance(instance, dict):
+                    continue
+                images = set(images_from_source(instance.get("source")))
+                if images:
+                    context_instances[instance_name] = sorted(images)
     return {
-        context: sorted(images)
-        for context, images in contexts.items()
-        if images
+        context: dict(sorted(instances.items()))
+        for context, instances in contexts.items()
+        if instances
     }
 
 
@@ -240,22 +250,18 @@ def request_json(url, token=None):
 
 
 def dockerhub_token(repository):
-    url = (
-        "https://auth.docker.io/token?"
-        + urllib.parse.urlencode(
-            {
-                "service": "registry.docker.io",
-                "scope": f"repository:{repository}:pull",
-            }
-        )
+    url = "https://auth.docker.io/token?" + urllib.parse.urlencode(
+        {
+            "service": "registry.docker.io",
+            "scope": f"repository:{repository}:pull",
+        }
     )
     return request_json(url).get("token")
 
 
 def ghcr_token(repository):
-    url = (
-        "https://ghcr.io/token?"
-        + urllib.parse.urlencode({"scope": f"repository:{repository}:pull"})
+    url = "https://ghcr.io/token?" + urllib.parse.urlencode(
+        {"scope": f"repository:{repository}:pull"}
     )
     try:
         return request_json(url).get("token")
@@ -450,6 +456,12 @@ def image_report_line(ref, color):
     return update_line(line, color)
 
 
+def prefix_image_report_line(line, instance_name, color):
+    if not line.startswith("- "):
+        return line
+    return f"- {boundary_prefix(instance_name, color)} | {line[2:]}"
+
+
 def image_context_key(context):
     stack_name, host_name, podman_stack = context
     has_stack = bool(stack_name)
@@ -466,7 +478,7 @@ def format_context(context):
 def main():
     jobs, color_mode = parse_args()
     color = use_color(color_mode)
-    contexts = collect_images_by_context(run_nix_eval())
+    contexts = collect_images_by_context_and_instance(run_nix_eval())
     first_context = True
     with ThreadPoolExecutor(max_workers=jobs) as executor:
         for context in sorted(contexts, key=image_context_key):
@@ -476,12 +488,15 @@ def main():
             first_context = False
             if header:
                 print(title_line(header, color), flush=True)
-            futures = [
-                executor.submit(image_report_line, image, color)
-                for image in contexts[context]
-            ]
-            for future in as_completed(futures):
-                print(future.result(), flush=True)
+            for instance_name, images in contexts[context].items():
+                futures = [
+                    executor.submit(image_report_line, image, color) for image in images
+                ]
+                for future in futures:
+                    print(
+                        prefix_image_report_line(future.result(), instance_name, color),
+                        flush=True,
+                    )
 
 
 if __name__ == "__main__":

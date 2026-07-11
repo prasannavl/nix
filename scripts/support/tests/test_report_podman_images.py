@@ -84,6 +84,55 @@ class ReportPodmanImagesTest(unittest.TestCase):
 
         self.assertEqual(latest, "pg18.4-ts2.28.2")
 
+    def test_collect_images_keeps_instance_boundary(self):
+        contexts = report_podman_images.collect_images_by_context_and_instance(
+            {
+                "nixos-host": {
+                    "hostName": "pvl-x2",
+                    "stackName": "pvl",
+                    "podmanSources": {
+                        "pvl": {
+                            "dockge": {
+                                "source": {
+                                    "services": {
+                                        "dockge": {
+                                            "image": "louislam/dockge:1.5.0",
+                                        },
+                                    },
+                                },
+                            },
+                            "immich": {
+                                "source": """
+                                  services:
+                                    valkey:
+                                      image: docker.io/valkey/valkey:9
+                                """,
+                            },
+                        },
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(
+            contexts,
+            {
+                ("pvl", "pvl-x2", "pvl"): {
+                    "dockge": ["louislam/dockge:1.5.0"],
+                    "immich": ["docker.io/valkey/valkey:9"],
+                },
+            },
+        )
+
+    def test_prefix_image_report_line_adds_instance_boundary(self):
+        line = report_podman_images.prefix_image_report_line(
+            "- louislam/dockge: 1.5.0 [latest]",
+            "dockge",
+            False,
+        )
+
+        self.assertEqual(line, "- dockge | louislam/dockge: 1.5.0 [latest]")
+
 
 if __name__ == "__main__":
     unittest.main()

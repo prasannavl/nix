@@ -34,6 +34,11 @@ behavior and Podman image tags that come from Compose variable expansion.
   within the same PostgreSQL major line and exact suffix. For example,
   `pg18.4-ts2.28.1` can report an update to `pg18.4-ts2.28.2`, but it does not
   auto-suggest a PostgreSQL major jump to `pg19`.
+- Podman image reporting preserves the evaluated
+  `services.podman-compose.<stack>.instances.<name>` boundary. Each image line
+  is prefixed with the owning instance name, so sidecars such as Immich's Valkey
+  and database images remain visibly attached to the Immich instance rather than
+  appearing as independent update surfaces.
 
 ## Follow-up
 
