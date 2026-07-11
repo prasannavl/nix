@@ -25,6 +25,13 @@
       exec ${lib.getExe pkgs.bash} ${../../../lib/services/ollama/helper.sh} "$@"
     '';
   };
+  modelPullStamp = builtins.hashString "sha256" (
+    builtins.toJSON {
+      models = requiredModels;
+      ollama = config.services.podman-compose.pvl.instances.ollama;
+      ollamaNvidia = config.services.podman-compose.pvl.instances.ollama-nvidia;
+    }
+  );
 in {
   systemd = {
     tmpfiles.rules = [
@@ -41,6 +48,10 @@ in {
         ];
         wants = [
           "network-online.target"
+        ];
+        restartTriggers = [
+          pullRequiredModels
+          modelPullStamp
         ];
         environment = let
           ollamaPort = config.services.podman-compose.pvl.instances.ollama.exposedPorts.main.port;
@@ -139,17 +150,5 @@ in {
                         - gpu
       '';
     };
-  };
-
-  services.systemd-user-manager.instances.pvl-ollama-models = {
-    user = "pvl";
-    unit = "pvl-ollama-models.service";
-    autoStart = false;
-    restartTriggers = [
-      pullRequiredModels
-      config.services.podman-compose.pvl.instances.ollama
-      config.services.podman-compose.pvl.instances.ollama-nvidia
-      requiredModels
-    ];
   };
 }

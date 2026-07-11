@@ -44,14 +44,15 @@ backend orchestration used on `pvl-l5`:
 - `After=` orders it behind both `pvl-ollama.service` and
   `pvl-ollama-nvidia.service`.
 - `Wants=` includes only `network-online.target`, so model pulls do not start a
-  stopped backend during `systemd-user-manager` reconcile.
-- `autoStart = false` keeps `systemd-user-manager` from immediately starting the
-  model-pull unit during boot; `pvl-ollama-models-boot.timer` starts it 2
-  minutes after boot instead, giving Ollama time to expose its API and keeping
-  model pulls out of the earliest startup work.
+  stopped backend during native user-service switching.
+- The model-pull unit is not attached to the Podman `pvl-managed-ready.target`;
+  `pvl-ollama-models-boot.timer` starts it 2 minutes after boot instead, giving
+  Ollama time to expose its API and keeping model pulls out of the earliest
+  startup work.
 - `OLLAMA_URLS` includes both local backend endpoints, `127.0.0.1:11434` and
   `127.0.0.1:11435`, letting `lib/services/ollama/helper.sh` pull through
   whichever backend API is reachable.
-- restart triggers include the normalized `ollama` and `ollama-nvidia` Podman
-  Compose instance configs so backend config changes rerun the model-pull
-  helper.
+- restart triggers include a stable string stamp derived from the required
+  models and normalized `ollama` / `ollama-nvidia` Podman Compose instance
+  configs so backend config changes rerun the model-pull helper when the unit is
+  active.

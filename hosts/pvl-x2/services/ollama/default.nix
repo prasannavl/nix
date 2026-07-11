@@ -28,6 +28,7 @@
       exec ${lib.getExe pkgs.bash} ${../../../../lib/services/ollama/helper.sh} "$@"
     '';
   };
+  requiredModelsStamp = builtins.hashString "sha256" (builtins.toJSON requiredModels);
 in {
   config = {
     services.podman-compose.pvl.instances.ollama = rec {
@@ -65,29 +66,53 @@ in {
     };
 
     systemd.user.services.pvl-ollama-models = {
-      description = "Pull required pvl-x2 Ollama models";
+      description = "Dispatch required pvl-x2 Ollama model pull";
       after = [
-        "pvl-ollama.service"
+        "pvl-ollama-ready.target"
         "network-online.target"
       ];
       wants = [
-        "pvl-ollama.service"
+        "pvl-ollama-ready.target"
         "network-online.target"
       ];
-      unitConfig.ConditionUser = "pvl";
+      restartTriggers = [
+        pullRequiredModels
+        requiredModelsStamp
+      ];
+      unitConfig = {
+        ConditionUser = "pvl";
+        Requires = ["pvl-ollama-ready.target"];
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${lib.getExe pullRequiredModels} dispatch pvl-ollama-models-worker.service ${lib.escapeShellArgs requiredModels}";
+      };
+    };
+
+    systemd.user.services.pvl-ollama-models-worker = {
+      description = "Pull required pvl-x2 Ollama models";
+      after = [
+        "pvl-ollama-ready.target"
+        "network-online.target"
+      ];
+      wants = [
+        "network-online.target"
+      ];
+      unitConfig = {
+        ConditionUser = "pvl";
+        Requires = ["pvl-ollama-ready.target"];
+      };
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
       };
     };
 
-    services.systemd-user-manager.instances.pvl-ollama-models = {
-      user = "pvl";
-      unit = "pvl-ollama-models.service";
-      restartTriggers = [
-        pullRequiredModels
-        requiredModels
-      ];
+    systemd.user.targets.pvl-managed-ready = {
+      unitConfig = {
+        Requires = ["pvl-ollama-models.service"];
+        After = ["pvl-ollama-models.service"];
+      };
     };
   };
 }

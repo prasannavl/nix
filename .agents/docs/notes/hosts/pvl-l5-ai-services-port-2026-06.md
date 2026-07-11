@@ -17,13 +17,14 @@ Service shape:
   `host.containers.internal:11434` and `host.containers.internal:11435`.
 - `pvl-ollama-models.service` pulls the same required model list as `pvl-a1`
   after both backend units in ordering only; it does not want either backend, so
-  it does not start a stopped backend during reconcile. It is not auto-started
-  by `systemd-user-manager`; instead, `pvl-ollama-models-boot.timer` starts it 2
-  minutes after boot. The boot delay gives the selected Ollama backend time to
-  expose its API and keeps model pulls from competing with early startup. Its
-  restart triggers include the normalized `ollama` and `ollama-nvidia` Podman
-  Compose instance configs, so backend config changes rerun the model-pull
-  helper.
+  it does not start a stopped backend during reconcile. It is not attached to
+  the Podman `pvl-managed-ready.target`; instead, `pvl-ollama-models-boot.timer`
+  starts it 2 minutes after boot. The boot delay gives the selected Ollama
+  backend time to expose its API and keeps model pulls from competing with early
+  startup. Its native user-service restart triggers include a stable hash of the
+  required models and normalized `ollama` / `ollama-nvidia` Podman Compose
+  instance configs, so backend config changes rerun the model-pull helper when
+  the unit is active.
 - The model-pull script lives at `lib/services/ollama/helper.sh`, matching
   Abird's helper behavior while keeping the reusable implementation under the
   shared service-helper namespace. `pvl-l5` sets `OLLAMA_URLS` to both local
@@ -125,6 +126,16 @@ The deploy therefore failed even though the helper would have exited
 successfully later. The live journal confirmed this: after the failed deploy
 window, the same unit eventually logged `no Ollama API available ...; skipping`
 around 240 seconds after start and ended `active (exited)`.
+
+The July 2026 native Podman Compose graph port removed
+`pvl-ollama-models.service` from `services.systemd-user-manager.instances` on
+`pvl-a1` and `pvl-l5`. The service keeps the boot timer and carries native
+`restartTriggers` via string stamps. Its ordering still references
+`pvl-ollama.service` and `pvl-ollama-nvidia.service` rather than ready targets,
+because `lib/services/ollama/helper.sh` uses `After=*.service` dependencies to
+detect intentionally inactive backends and skip the API wait. This preserves the
+delayed/manual model-pull behavior while avoiding the old dispatcher timeout
+path.
 
 There is also a separate rendering bug in the unit environment:
 
