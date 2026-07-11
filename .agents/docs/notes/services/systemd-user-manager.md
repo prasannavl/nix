@@ -50,9 +50,18 @@ interaction with deploy-time service reconciliation.
 - Managed entries are unique by `(user, unit)`. Two instance keys must not
   target the same user-owned systemd unit, because reconciliation semantics are
   defined per live unit, not per declaration alias.
-- Managed units carry `timeoutStableSeconds`, defaulting to 120 seconds. The
+- Managed units carry `timeoutReadySeconds`, defaulting to 120 seconds. The
   helper uses that per-unit timeout for stable-state and stopped-state waits so
   slow services can extend their own convergence budget.
+- Managed units may declare `verifyCommand`. Verification runs after a
+  desired-running unit is active, restarts the unit once on reported drift, and
+  blocks recording applied metadata if drift remains. Providers such as Podman
+  Compose should use this for generation-local runtime-state checks instead of
+  teaching `systemd-user-manager` provider-specific policy.
+- Dispatcher and reconciler systemd service timeouts are derived from the
+  largest managed-unit `timeoutReadySeconds` for that user plus dispatch
+  overhead, so a legitimate long reconcile is bounded by the managed unit's own
+  timeout instead of the wrapper's default.
 - Before a monitored `start` or `restart`, clear the unit's stale failed state
   with `systemctl --user reset-failed`. With `--no-block`, an old failed
   `ActiveState` can otherwise be sampled before the new start transaction

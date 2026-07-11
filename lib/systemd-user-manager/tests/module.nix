@@ -45,7 +45,7 @@
             removalPolicy = "keep";
             autoStart = false;
             state = "stopped";
-            timeoutStableSeconds = 17;
+            timeoutReadySeconds = 17;
             restartTriggers = ["restart-a"];
             reloadTriggers = ["reload-a"];
             verifyCommand = ["/bin/true"];
@@ -69,6 +69,14 @@
           beta = {
             user = "bob";
             restartTriggers = ["restart-c"];
+          };
+
+          slow-apply = {
+            user = "bob";
+            unit = "slow-apply.service";
+            startMode = "enqueue";
+            timeoutReadySeconds = 360;
+            restartTriggers = ["restart-d"];
           };
         };
       }
@@ -121,6 +129,7 @@
   alphaUnit = builtins.elemAt aliceMetadata.managedUnits 0;
   zetaUnit = builtins.elemAt aliceMetadata.managedUnits 1;
   bobUnit = builtins.head bobMetadata.managedUnits;
+  slowApplyUnit = builtins.elemAt bobMetadata.managedUnits 1;
 in
   assert failedAssertions == [];
   assert config.environment.etc."systemd-user-manager/dispatchers/systemd-user-manager-dispatcher-alice.metadata".text == "${metadataPathFromEnv aliceDispatcher.serviceConfig.Environment}\n";
@@ -143,14 +152,18 @@ in
     "SYSTEMD_USER_MANAGER_RECONCILER_SERVICE=systemd-user-manager-reconciler-alice.service"
   ];
   assert lib.hasSuffix " dispatcher-start" aliceDispatcher.serviceConfig.ExecStart;
+  assert aliceDispatcher.serviceConfig.TimeoutStartSec == 180;
+  assert aliceDispatcher.serviceConfig.TimeoutStopSec == 180;
   assert aliceReconciler.serviceConfig.Type == "oneshot";
   assert aliceReconciler.serviceConfig.RemainAfterExit == true;
+  assert aliceReconciler.serviceConfig.TimeoutStartSec == 180;
   assert lib.hasSuffix " reconciler-apply" aliceReconciler.serviceConfig.ExecStart;
   assert aliceReconciler.serviceConfig.Environment
   == [
     "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
     "SYSTEMD_USER_MANAGER_USER=alice"
     "SYSTEMD_USER_MANAGER_METADATA=${metadataPathFromEnv aliceReconciler.serviceConfig.Environment}"
+    "SYSTEMD_USER_MANAGER_START_PARALLELISM=4"
   ];
   assert bobDispatcher.serviceConfig.Environment
   == [
@@ -159,7 +172,10 @@ in
     "SYSTEMD_USER_MANAGER_METADATA=${metadataPathFromEnv bobDispatcher.serviceConfig.Environment}"
     "SYSTEMD_USER_MANAGER_RECONCILER_SERVICE=systemd-user-manager-reconciler-bob.service"
   ];
-  assert aliceMetadata.version == 5;
+  assert bobDispatcher.serviceConfig.TimeoutStartSec == 420;
+  assert bobDispatcher.serviceConfig.TimeoutStopSec == 420;
+  assert bobReconciler.serviceConfig.TimeoutStartSec == 420;
+  assert aliceMetadata.version == 9;
   assert aliceMetadata.user == "alice";
   assert aliceUnitNames == ["alpha" "zeta"];
   assert alphaUnit.unit == "alpha.timer";
@@ -167,8 +183,9 @@ in
   assert alphaUnit.removalCommand == ["/bin/systemctl" "--user" "stop" "alpha.timer"];
   assert alphaUnit.verifyCommand == ["/bin/true" "--alpha"];
   assert alphaUnit.autoStart == true;
+  assert alphaUnit.startMode == "wait";
   assert alphaUnit.state == "running";
-  assert alphaUnit.timeoutStableSeconds == 120;
+  assert alphaUnit.timeoutReadySeconds == 120;
   assert alphaUnit.reloadStamp == "";
   assert alphaUnit.stamp
   == builtins.hashString "sha256" (builtins.toJSON {
@@ -183,8 +200,9 @@ in
   assert zetaUnit.removalPolicy == "keep";
   assert zetaUnit.verifyCommand == ["/bin/true"];
   assert zetaUnit.autoStart == false;
+  assert zetaUnit.startMode == "wait";
   assert zetaUnit.state == "stopped";
-  assert zetaUnit.timeoutStableSeconds == 17;
+  assert zetaUnit.timeoutReadySeconds == 17;
   assert zetaUnit.reloadStamp != "";
   assert zetaUnit.transitionNeutralStamp == "neutral-a";
   assert zetaUnit.stopOnTransitionFrom == "old-token";
@@ -192,6 +210,8 @@ in
   assert bobMetadata.user == "bob";
   assert bobUnit.name == "beta";
   assert bobUnit.unit == "beta.service";
+  assert slowApplyUnit.name == "slow-apply";
+  assert slowApplyUnit.startMode == "enqueue";
   assert config.systemd.user.targets.systemd-user-manager-ready.description == "Managed user units ready target";
   assert duplicateFailedMessages
   == [

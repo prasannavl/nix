@@ -118,7 +118,9 @@ case "$cmd" in
 	      ActiveState) active_state_for "$unit" ;;
 	      LoadState) printf '%s\\n' "loaded" ;;
 	      SubState) printf '%s\\n' "dead" ;;
-	      Result) printf '%s\\n' "success" ;;
+	      Result) printf '%s\\n' "${{FAKE_SYSTEMCTL_RESULT:-success}}" ;;
+	      ExecMainCode) printf '%s\\n' "${{FAKE_SYSTEMCTL_EXEC_MAIN_CODE:-exited}}" ;;
+	      ExecMainStatus) printf '%s\\n' "${{FAKE_SYSTEMCTL_EXEC_MAIN_STATUS:-0}}" ;;
 	      Type) printf '%s\\n' "${{FAKE_SYSTEMCTL_SERVICE_TYPE:-simple}}" ;;
 	      NRestarts) printf '%s\\n' "0" ;;
 	      UnitFileState) printf '%s\\n' "enabled" ;;
@@ -239,7 +241,7 @@ esac
                         "reloadStamp": "same",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                     {
                         "name": "reload",
@@ -249,7 +251,7 @@ esac
                         "reloadStamp": "old-reload",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                     {
                         "name": "removed",
@@ -276,7 +278,7 @@ esac
                         "reloadStamp": "same",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                     {
                         "name": "reload",
@@ -286,7 +288,7 @@ esac
                         "reloadStamp": "new-reload",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
@@ -328,14 +330,14 @@ esac
                         "unit": "alpha.service",
                         "removalPolicy": "stop",
                         "stamp": "old-alpha",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                     {
                         "name": "beta",
                         "unit": "beta.service",
                         "removalPolicy": "stop",
                         "stamp": "old-beta",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
@@ -353,7 +355,7 @@ esac
                         "removalPolicy": "stop",
                         "stamp": "new-alpha",
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                     {
                         "name": "beta",
@@ -361,7 +363,7 @@ esac
                         "removalPolicy": "stop",
                         "stamp": "new-beta",
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
@@ -384,6 +386,139 @@ esac
         self.assertIn("--user --no-block stop alpha.service", systemctl_log)
         self.assertIn("--user --no-block stop beta.service", systemctl_log)
 
+    def test_apply_marks_changed_failed_units_for_restart(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("failed\n", encoding="utf-8")
+        old_metadata = self.write_metadata(
+            "failed-restart-old.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "removalPolicy": "stop",
+                        "stamp": "old-web",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+        new_metadata = self.write_metadata(
+            "failed-restart-new.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "removalPolicy": "stop",
+                        "stamp": "new-web",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            f"""
+            init_managed_user alice
+            old_tsv="$(read_metadata_stop_state_tsv {old_metadata})"
+            new_tsv="$(read_metadata_stop_state_tsv {new_metadata})"
+            diff_and_stop_units apply alice "$old_tsv" "$new_tsv"
+            consume_deferred_managed_unit_restart alice web
+            """
+        )
+
+        self.assertEqual("consumed\n", result.stdout)
+
+    def test_apply_marks_new_autostart_units_for_start(self):
+        old_metadata = self.write_metadata(
+            "new-unit-old.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "old",
+                        "unit": "old.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "stamp": "old",
+                    },
+                ],
+            },
+        )
+        new_metadata = self.write_metadata(
+            "new-unit-new.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "old",
+                        "unit": "old.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "stamp": "old",
+                    },
+                    {
+                        "name": "new-running",
+                        "unit": "new-running.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "stamp": "new-running",
+                    },
+                    {
+                        "name": "new-stopped",
+                        "unit": "new-stopped.service",
+                        "autoStart": True,
+                        "state": "stopped",
+                        "stamp": "new-stopped",
+                    },
+                    {
+                        "name": "new-manual",
+                        "unit": "new-manual.service",
+                        "autoStart": False,
+                        "state": "running",
+                        "stamp": "new-manual",
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            f"""
+            init_managed_user alice
+            old_tsv="$(read_metadata_stop_state_tsv {old_metadata})"
+            new_tsv="$(read_metadata_stop_state_tsv {new_metadata})"
+            diff_and_stop_units preview alice "$old_tsv" "$new_tsv"
+            diff_and_stop_units apply alice "$old_tsv" "$new_tsv"
+            consume_deferred_managed_unit_restart alice new-running
+            consume_deferred_managed_unit_restart alice old
+            consume_deferred_managed_unit_restart alice new-stopped
+            consume_deferred_managed_unit_restart alice new-manual
+            """
+        )
+
+        self.assertEqual(["consumed", "absent", "absent", "absent"], result.stdout.splitlines())
+        self.assertIn("new-running: would start", result.stderr)
+        self.assertNotIn("new-stopped: would start", result.stderr)
+        self.assertNotIn("new-manual: would start", result.stderr)
+
     def test_metadata_rows_and_migrator_gate_override_reconcile_state(self):
         metadata = self.write_metadata(
             "metadata.json",
@@ -397,8 +532,9 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 33,
+                        "timeoutReadySeconds": 33,
                         "reloadStamp": "reload-a",
+                        "repairCommand": ["/bin/echo", "repair"],
                         "verifyCommand": ["/bin/true"],
                     },
                     {
@@ -406,6 +542,13 @@ esac
                         "unit": "job.service",
                         "autoStart": False,
                         "state": "stopped",
+                    },
+                    {
+                        "name": "legacy",
+                        "unit": "legacy.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutStableSeconds": 44,
                     },
                 ],
             },
@@ -425,9 +568,12 @@ esac
 
         normal, gated = result.stdout.strip().split("\n---\n")
         self.assertIn("web\tweb.service\t1\trunning\t33\treload-a\t", normal)
+        self.assertIn(base64.b64encode(b'["/bin/echo","repair"]').decode(), normal)
         self.assertIn("job\tjob.service\t0\tstopped\t120\t\t", normal)
+        self.assertIn("legacy\tlegacy.service\t1\trunning\t44\t\t", normal)
         self.assertIn("web\tweb.service\t0\tstopped\t33\treload-a\t", gated)
         self.assertIn("job\tjob.service\t0\tstopped\t120\t\t", gated)
+        self.assertIn("legacy\tlegacy.service\t0\tstopped\t44\t\t", gated)
 
     def test_deferred_restart_and_reload_markers_are_sanitized_and_consumable(self):
         result = self.run_helper(
@@ -580,7 +726,7 @@ printf '%s\\n' "$count" > "$count_file"
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                         "verifyCommand": ["verify-web"],
                     },
                 ],
@@ -600,10 +746,535 @@ printf '%s\\n' "$count" > "$count_file"
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
         self.assertIn("--user --no-block restart web.service", systemctl_log)
 
-    def test_unit_stable_state_fails_when_restart_count_keeps_increasing(self):
+    def test_reconciler_verifies_unchanged_active_unit(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        verify_count = self.state_dir / "verify-active-count"
+        self._write_executable(
+            self.fake_bin / "verify-web",
+            f"""#!/bin/sh
+count_file={shlex.quote(str(verify_count))}
+count="$(cat "$count_file" 2>/dev/null || printf '%s\\n' 0)"
+count="$((count + 1))"
+printf '%s\\n' "$count" > "$count_file"
+[ "$count" -gt 1 ]
+""",
+        )
+        metadata = self.write_metadata(
+            "active-stale-verify.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                        "verifyCommand": ["verify-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertEqual("2\n", verify_count.read_text(encoding="utf-8"))
+        self.assertIn("web: verification failed; restarting", result.stderr)
+        self.assertIn("web: verified after restart", result.stderr)
+        self.assertIn("reconcile noop", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_enqueue_verification_failure_dispatches_repair_without_reverify(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        verify_count = self.state_dir / "verify-enqueue-count"
+        self._write_executable(
+            self.fake_bin / "verify-web",
+            f"""#!/bin/sh
+count_file={shlex.quote(str(verify_count))}
+count="$(cat "$count_file" 2>/dev/null || printf '%s\\n' 0)"
+count="$((count + 1))"
+printf '%s\\n' "$count" > "$count_file"
+exit 1
+""",
+        )
+        metadata = self.write_metadata(
+            "active-stale-verify-enqueue.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                        "startMode": "enqueue",
+                        "verifyCommand": ["verify-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertEqual("1\n", verify_count.read_text(encoding="utf-8"))
+        self.assertIn("web: verification failed; enqueueing restart", result.stderr)
+        self.assertIn("web: restart enqueued after verification failure", result.stderr)
+        self.assertNotIn("verified after restart", result.stderr)
+        self.assertIn("reconcile noop", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_enqueue_verification_failure_uses_repair_command(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        verify_count = self.state_dir / "verify-repair-count"
+        repair_log = self.state_dir / "repair.log"
+        self._write_executable(
+            self.fake_bin / "verify-web",
+            f"""#!/bin/sh
+count_file={shlex.quote(str(verify_count))}
+count="$(cat "$count_file" 2>/dev/null || printf '%s\\n' 0)"
+count="$((count + 1))"
+printf '%s\\n' "$count" > "$count_file"
+exit 1
+""",
+        )
+        self._write_executable(
+            self.fake_bin / "repair-web",
+            f"#!/bin/sh\nprintf 'repair\\n' >> {shlex.quote(str(repair_log))}\n",
+        )
+        metadata = self.write_metadata(
+            "active-stale-verify-repair.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                        "startMode": "enqueue",
+                        "repairCommand": ["repair-web"],
+                        "verifyCommand": ["verify-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertEqual("1\n", verify_count.read_text(encoding="utf-8"))
+        self.assertEqual("repair\n", repair_log.read_text(encoding="utf-8"))
+        self.assertIn("web: verification failed; enqueueing repair", result.stderr)
+        self.assertIn("web: repair enqueued after verification failure", result.stderr)
+        self.assertIn("reconcile noop", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertNotIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_enqueue_start_verification_failure_is_repaired_once_in_final_pass(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("inactive\n", encoding="utf-8")
+        verify_count = self.state_dir / "verify-enqueue-start-count"
+        self._write_executable(
+            self.fake_bin / "verify-web",
+            f"""#!/bin/sh
+count_file={shlex.quote(str(verify_count))}
+count="$(cat "$count_file" 2>/dev/null || printf '%s\\n' 0)"
+count="$((count + 1))"
+printf '%s\\n' "$count" > "$count_file"
+exit 1
+""",
+        )
+        metadata = self.write_metadata(
+            "start-stale-verify-enqueue.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                        "startMode": "enqueue",
+                        "verifyCommand": ["verify-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        self.assertEqual("1\n", verify_count.read_text(encoding="utf-8"))
+        self.assertIn("web: verification failed; enqueueing restart", result.stderr)
+        self.assertIn("web: restart enqueued after verification failure", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user --no-block start web.service", systemctl_log)
+        self.assertIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_enqueue_verification_does_not_wait_for_transitional_unit(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("deactivating\n", encoding="utf-8")
+        verify_log = self.state_dir / "verify-web.log"
+        self._write_executable(
+            self.fake_bin / "verify-web",
+            f"#!/bin/sh\nprintf 'verify\\n' >> {shlex.quote(str(verify_log))}\n",
+        )
+        metadata = self.write_metadata(
+            "verify-enqueue-transitional.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 1,
+                        "startMode": "enqueue",
+                        "verifyCommand": ["verify-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "verify_managed_units_from_metadata",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertEqual("verify\n", verify_log.read_text(encoding="utf-8"))
+        self.assertIn("web: verification deferred (state=deactivating)", result.stderr)
+        self.assertNotIn("timed out waiting", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertNotIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_reconciler_recovers_deactivating_unit_without_restart_marker(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("deactivating\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "transient-no-marker.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 1,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("web: recovering transitional state (state=deactivating)", result.stderr)
+        self.assertIn("web: stopping", result.stderr)
+        self.assertIn("web: started in", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user --no-block stop web.service", systemctl_log)
+        self.assertIn("--user --no-block start web.service", systemctl_log)
+        self.assertNotIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_reconciler_enqueues_deactivating_unit_recovery(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("deactivating\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "transient-enqueue-no-marker.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 1,
+                        "startMode": "enqueue",
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("web: recovering transitional state (state=deactivating)", result.stderr)
+        self.assertIn("web: started in", result.stderr)
+        self.assertNotIn("web: stopping", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertNotIn("--user --no-block stop web.service", systemctl_log)
+        self.assertIn("--user kill --kill-whom=all --signal=KILL web.service", systemctl_log)
+        self.assertIn("--user --no-block start web.service", systemctl_log)
+        self.assertNotIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_reconciler_joins_activating_unit_without_restart_marker(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        (self.state_dir / "systemctl-state").mkdir(parents=True)
+        (self.state_dir / "systemctl-state/active-sequence").write_text(
+            "activating\n"
+            "active\n",
+            encoding="utf-8",
+        )
+        metadata = self.write_metadata(
+            "transient-settles-active.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        self.assertNotIn("web: recovering transitional state", result.stderr)
+        self.assertIn("web: started in", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertNotIn("--user --no-block stop web.service", systemctl_log)
+        self.assertIn("--user --no-block start web.service", systemctl_log)
+        self.assertNotIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_reconciler_starts_failed_autostart_unit_without_restart_marker(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("failed\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "failed-no-marker.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            "run_reconciler_apply",
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user reset-failed web.service", systemctl_log)
+        self.assertIn("--user --no-block start web.service", systemctl_log)
+        self.assertIn("web: started in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+
+    def test_reconciler_verifies_marker_restarted_unit(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        verify_count = self.state_dir / "verify-restarted-count"
+        self._write_executable(
+            self.fake_bin / "verify-web",
+            f"""#!/bin/sh
+count_file={shlex.quote(str(verify_count))}
+count="$(cat "$count_file" 2>/dev/null || printf '%s\\n' 0)"
+count="$((count + 1))"
+printf '%s\\n' "$count" > "$count_file"
+exit 0
+""",
+        )
+        metadata = self.write_metadata(
+            "active-marker-restart-verify.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                        "verifyCommand": ["verify-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            f"""
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertEqual("1\n", verify_count.read_text(encoding="utf-8"))
+        self.assertIn("web: restarted in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_reconciler_active_restart_marker_uses_repair_command(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        repair_log = self.state_dir / "marker-repair.log"
+        self._write_executable(
+            self.fake_bin / "repair-web",
+            f"#!/bin/sh\nprintf 'repair\\n' >> {shlex.quote(str(repair_log))}\n",
+        )
+        metadata = self.write_metadata(
+            "active-marker-repair.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                        "startMode": "enqueue",
+                        "repairCommand": ["repair-web"],
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            f"""
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertEqual("repair\n", repair_log.read_text(encoding="utf-8"))
+        self.assertIn("web: enqueueing repair", result.stderr)
+        self.assertIn("web: repair enqueued", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertNotIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_reconciler_recovers_transitional_unit_with_restart_marker(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("activating\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "transitional-marker-restart.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            """
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        self.assertIn("web: recovering transitional state (state=activating)", result.stderr)
+        self.assertIn("web: started in", result.stderr)
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user --no-block stop web.service", systemctl_log)
+        self.assertIn("--user --no-block start web.service", systemctl_log)
+        self.assertNotIn("--user --no-block restart web.service", systemctl_log)
+
+    def test_unit_stable_state_waits_through_repeated_transitional_restarts(self):
         self.write_fake_setpriv()
         log_path = shlex.quote(str(self.state_dir / "systemctl.log"))
         restarts_path = shlex.quote(str(self.state_dir / "restarts"))
+        active_calls_path = shlex.quote(str(self.state_dir / "active-calls"))
         self._write_executable(
             self.fake_bin / "systemctl",
             f"""#!/bin/sh
@@ -622,7 +1293,16 @@ case "${{1-}}" in
       shift
     done
     case "$property" in
-      ActiveState) printf '%s\\n' "activating" ;;
+      ActiveState)
+        calls="$(cat {active_calls_path} 2>/dev/null || printf '%s\\n' 0)"
+        calls="$((calls + 1))"
+        printf '%s\\n' "$calls" > {active_calls_path}
+        if [ "$calls" -lt 5 ]; then
+          printf '%s\\n' "activating"
+        else
+          printf '%s\\n' "active"
+        fi
+        ;;
       SubState) printf '%s\\n' "start" ;;
       Result) printf '%s\\n' "success" ;;
       NRestarts)
@@ -638,14 +1318,10 @@ esac
 """,
         )
 
-        result = self.run_helper(
-            "unit_stable_state web.service 30",
-            check=False,
-            SYSTEMD_USER_MANAGER_USER="alice",
-        )
+        result = self.run_helper("unit_stable_state web.service 30", SYSTEMD_USER_MANAGER_USER="alice")
 
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn("repeated transitional failure state", result.stderr)
+        self.assertEqual("active\n", result.stdout)
+        self.assertIn("restarted while converging", result.stderr)
         self.assertIn("restarts=", result.stderr)
 
     def test_unit_stable_state_accepts_active_state_after_transient_restart(self):
@@ -726,29 +1402,256 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
         )
 
         result = self.run_helper(
-            "run_reconciler_apply",
+            """
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
             FAKE_SYSTEMCTL_START_STATE="active",
         )
 
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
-        self.assertIn("--user kill --kill-whom=all web.service", systemctl_log)
+        self.assertIn("--user kill --kill-whom=all --signal=TERM web.service", systemctl_log)
         self.assertIn("--user reset-failed web.service", systemctl_log)
         self.assertIn("--user --no-block start web.service", systemctl_log)
         self.assertIn("web: started in", result.stderr)
         self.assertIn("reconcile done", result.stderr)
 
+    def test_reconciler_launches_managed_unit_starts_before_waiting(self):
+        self.write_fake_setpriv()
+        log_path = shlex.quote(str(self.state_dir / "systemctl.log"))
+        alpha_done_path = shlex.quote(str(self.state_dir / "alpha.done"))
+        beta_before_alpha_path = shlex.quote(str(self.state_dir / "beta-before-alpha"))
+        started_dir = shlex.quote(str(self.state_dir / "started"))
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"""#!/bin/sh
+set -eu
+mkdir -p {started_dir}
+printf '%s\\n' "$*" >> {log_path}
+if [ "${{1-}}" = "is-active" ]; then
+  exit 0
+fi
+if [ "${{1-}}" = "--user" ]; then
+  shift
+fi
+if [ "${{1-}}" = "--no-block" ]; then
+  shift
+fi
+cmd="${{1-}}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+case "$cmd" in
+  show)
+    property=""
+    unit=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --property=*) property="${{1#--property=}}" ;;
+        --value) ;;
+        *) unit="$1" ;;
+      esac
+      shift
+    done
+    case "$property" in
+      ActiveState)
+        if [ -f "{started_dir}/$unit" ]; then
+          printf '%s\\n' "active"
+        else
+          printf '%s\\n' "inactive"
+        fi
+        ;;
+      LoadState) printf '%s\\n' "loaded" ;;
+      SubState) printf '%s\\n' "dead" ;;
+      Result) printf '%s\\n' "success" ;;
+      Type) printf '%s\\n' "simple" ;;
+      NRestarts) printf '%s\\n' "0" ;;
+      UnitFileState) printf '%s\\n' "enabled" ;;
+      InvocationID) printf '%s\\n' "fake-invocation" ;;
+      Job) printf '%s\\n' "" ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+  start)
+    if [ "$1" = alpha.service ]; then
+      sleep 1
+      touch {alpha_done_path}
+    elif [ "$1" = beta.service ] && [ ! -f {alpha_done_path} ]; then
+      touch {beta_before_alpha_path}
+    fi
+    touch "{started_dir}/$1"
+    ;;
+  daemon-reload|reset-failed|kill)
+    ;;
+esac
+""",
+        )
+        metadata = self.write_metadata(
+            "sequential-start.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "alpha",
+                        "unit": "alpha.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                    {
+                        "name": "beta",
+                        "unit": "beta.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            """
+            mark_deferred_managed_unit_restart alice alpha
+            mark_deferred_managed_unit_restart alice beta
+            run_reconciler_apply
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            SYSTEMD_USER_MANAGER_START_PARALLELISM="4",
+        )
+
+        self.assertIn("alpha: started in", result.stderr)
+        self.assertIn("beta: started in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+        self.assertTrue((self.state_dir / "beta-before-alpha").exists())
+
+    def test_reconciler_bounds_concurrent_managed_unit_starts(self):
+        self.write_fake_setpriv()
+        log_path = shlex.quote(str(self.state_dir / "systemctl.log"))
+        alpha_done_path = shlex.quote(str(self.state_dir / "alpha.done"))
+        beta_before_alpha_path = shlex.quote(str(self.state_dir / "beta-before-alpha"))
+        started_dir = shlex.quote(str(self.state_dir / "started"))
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"""#!/bin/sh
+set -eu
+mkdir -p {started_dir}
+printf '%s\\n' "$*" >> {log_path}
+if [ "${{1-}}" = "is-active" ]; then
+  exit 0
+fi
+if [ "${{1-}}" = "--user" ]; then
+  shift
+fi
+if [ "${{1-}}" = "--no-block" ]; then
+  shift
+fi
+cmd="${{1-}}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+case "$cmd" in
+  show)
+    property=""
+    unit=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --property=*) property="${{1#--property=}}" ;;
+        --value) ;;
+        *) unit="$1" ;;
+      esac
+      shift
+    done
+    case "$property" in
+      ActiveState)
+        if [ -f "{started_dir}/$unit" ]; then
+          printf '%s\\n' "active"
+        else
+          printf '%s\\n' "inactive"
+        fi
+        ;;
+      LoadState) printf '%s\\n' "loaded" ;;
+      SubState) printf '%s\\n' "dead" ;;
+      Result) printf '%s\\n' "success" ;;
+      Type) printf '%s\\n' "simple" ;;
+      NRestarts) printf '%s\\n' "0" ;;
+      UnitFileState) printf '%s\\n' "enabled" ;;
+      InvocationID) printf '%s\\n' "fake-invocation" ;;
+      Job) printf '%s\\n' "" ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+  start)
+    if [ "$1" = alpha.service ]; then
+      sleep 0.2
+      touch {alpha_done_path}
+    elif [ "$1" = beta.service ] && [ ! -f {alpha_done_path} ]; then
+      touch {beta_before_alpha_path}
+    fi
+    touch "{started_dir}/$1"
+    ;;
+  daemon-reload|reset-failed|kill)
+    ;;
+esac
+""",
+        )
+        metadata = self.write_metadata(
+            "bounded-start.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "alpha",
+                        "unit": "alpha.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                    {
+                        "name": "beta",
+                        "unit": "beta.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            """
+            mark_deferred_managed_unit_restart alice alpha
+            mark_deferred_managed_unit_restart alice beta
+            run_reconciler_apply
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            SYSTEMD_USER_MANAGER_START_PARALLELISM="1",
+        )
+
+        self.assertIn("alpha: started in", result.stderr)
+        self.assertIn("beta: started in", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+        self.assertFalse((self.state_dir / "beta-before-alpha").exists())
+
     def test_reconciler_start_still_fails_when_new_start_reaches_failed_state(self):
         self.write_fake_setpriv()
         self.write_fake_systemctl()
+        self._write_executable(
+            self.fake_bin / "journalctl",
+            "#!/bin/sh\nprintf '%s\\n' 'Stalwart recovery apply failed'\n",
+        )
         state_file = self.state_dir / "systemctl-state/web.service.active"
         state_file.parent.mkdir(parents=True)
         state_file.write_text("inactive\n", encoding="utf-8")
@@ -763,24 +1666,70 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
         )
 
         result = self.run_helper(
-            "run_reconciler_apply",
+            """
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
             check=False,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
             FAKE_SYSTEMCTL_START_STATE="failed",
+            FAKE_SYSTEMCTL_RESULT="exit-code",
+            FAKE_SYSTEMCTL_EXEC_MAIN_STATUS="1",
         )
 
         self.assertNotEqual(0, result.returncode)
         self.assertIn("unit web.service reached stable non-active state after start: failed", result.stderr)
         self.assertIn("web: failed to start after", result.stderr)
+        self.assertIn(
+            "managed unit failure: unit=web.service ActiveState=failed "
+            "SubState=dead Result=exit-code ExecMainCode=exited ExecMainStatus=1",
+            result.stderr,
+        )
+        self.assertIn("Stalwart recovery apply failed", result.stderr)
         self.assertIn("failed managed units: web", result.stderr)
+
+    def test_reconciler_starts_inactive_autostart_unit_without_marker(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("inactive\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "start-inactive-no-marker.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            """
+            run_reconciler_apply
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+            FAKE_SYSTEMCTL_START_STATE="active",
+        )
+
+        self.assertIn("web: started in", result.stderr)
+        self.assertIn("--no-block start web.service", (self.state_dir / "systemctl.log").read_text())
 
     def test_reconciler_start_accepts_active_state_after_no_block_failure(self):
         self.write_fake_setpriv()
@@ -799,14 +1748,17 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
         )
 
         result = self.run_helper(
-            "run_reconciler_apply",
+            """
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
             FAKE_SYSTEMCTL_START_FAIL="1",
@@ -890,14 +1842,17 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
         )
 
         result = self.run_helper(
-            "run_reconciler_apply",
+            """
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
         )
@@ -924,14 +1879,17 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
         )
 
         result = self.run_helper(
-            "run_reconciler_apply",
+            """
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
             check=False,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
@@ -941,6 +1899,86 @@ esac
         self.assertNotEqual(0, result.returncode)
         self.assertIn("unit web.service reached stable non-active state after start: inactive", result.stderr)
         self.assertIn("failed managed units: web", result.stderr)
+
+    def test_reconciler_accepts_unit_that_converges_after_start_wait_timeout(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("inactive\n", encoding="utf-8")
+        (self.state_dir / "systemctl-state/active-sequence").write_text(
+            "inactive\n"
+            "activating\n"
+            "active\n",
+            encoding="utf-8",
+        )
+        metadata = self.write_metadata(
+            "start-delayed-convergence.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 0,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            """
+            run_reconciler_apply
+            """,
+            check=False,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("web: failed to start after", result.stderr)
+        self.assertIn("web: recovered after delayed convergence", result.stderr)
+        self.assertIn("reconcile done", result.stderr)
+        self.assertNotIn("failed managed units: web", result.stderr)
+
+    def test_failed_unit_pruning_does_not_wait_for_a_second_timeout(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        state_file = self.state_dir / "systemctl-state/web.service.active"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text("activating\n", encoding="utf-8")
+        metadata = self.write_metadata(
+            "failed-prune.json",
+            {
+                "version": 5,
+                "user": "alice",
+                "managedUnits": [
+                    {
+                        "name": "web",
+                        "unit": "web.service",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 3,
+                    },
+                ],
+            },
+        )
+
+        started_at = time.monotonic()
+        result = self.run_helper(
+            """
+            managed_units_tsv="$(read_metadata_reconcile_units_tsv "$SYSTEMD_USER_MANAGER_METADATA")"
+            prune_converged_failed_units " web" "$managed_units_tsv"
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_METADATA=str(metadata),
+        )
+
+        self.assertLess(time.monotonic() - started_at, 2)
+        self.assertEqual("web", result.stdout.strip())
 
     def test_reconciler_start_waits_for_pending_start_job(self):
         self.write_fake_setpriv()
@@ -1022,14 +2060,17 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
         )
 
         result = self.run_helper(
-            "run_reconciler_apply",
+            """
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
             SYSTEMD_USER_MANAGER_START_MATERIALIZE_SECONDS="1",
@@ -1057,14 +2098,17 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
         )
 
         result = self.run_helper(
-            "run_reconciler_apply",
+            """
+            mark_deferred_managed_unit_restart alice web
+            run_reconciler_apply
+            """,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
             FAKE_SYSTEMCTL_SERVICE_TYPE="oneshot",
@@ -1076,7 +2120,20 @@ esac
     def test_verification_failure_reports_second_verify_failure(self):
         self.write_fake_setpriv()
         self.write_fake_systemctl()
-        self._write_executable(self.fake_bin / "verify-web", "#!/bin/sh\nexit 1\n")
+        verify_count = self.state_dir / "verify-fail-count"
+        self._write_executable(
+            self.fake_bin / "verify-web",
+            f"""#!/bin/sh
+count_file={shlex.quote(str(verify_count))}
+count="$(cat "$count_file" 2>/dev/null || printf '%s\\n' 0)"
+printf '%s\\n' "$((count + 1))" > "$count_file"
+exit 1
+""",
+        )
+        self._write_executable(
+            self.fake_bin / "journalctl",
+            "#!/bin/sh\nprintf '%s\\n' 'provider verification remained unhealthy'\n",
+        )
         metadata = self.write_metadata(
             "verify-fail.json",
             {
@@ -1088,7 +2145,7 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                         "verifyCommand": ["verify-web"],
                     },
                 ],
@@ -1096,15 +2153,20 @@ esac
         )
 
         result = self.run_helper(
-            "verify_managed_units_from_metadata",
+            "run_reconciler_apply",
             check=False,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
         )
 
         self.assertNotEqual(0, result.returncode)
+        self.assertEqual("2\n", verify_count.read_text(encoding="utf-8"))
         self.assertIn("web: verification still failed after restart", result.stderr)
         self.assertIn("failed managed unit verification: web", result.stderr)
+        self.assertIn("managed unit failure: unit=web.service", result.stderr)
+        self.assertIn("provider verification remained unhealthy", result.stderr)
+        self.assertIn("failed managed units: web", result.stderr)
+        self.assertNotIn("failed managed units: verification", result.stderr)
 
     def test_malformed_applied_metadata_is_discarded_and_current_metadata_is_stopped(self):
         self.write_fake_setpriv()
@@ -1120,7 +2182,7 @@ esac
                         "unit": "web.service",
                         "autoStart": True,
                         "state": "running",
-                        "timeoutStableSeconds": 5,
+                        "timeoutReadySeconds": 5,
                     },
                 ],
             },
@@ -1149,6 +2211,74 @@ esac
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
         self.assertIn("--user --no-block stop web.service", systemctl_log)
 
+    def test_metadata_version_change_stops_only_removed_units(self):
+        self.write_fake_setpriv()
+        self.write_fake_systemctl()
+        applied_metadata = {
+            "version": 5,
+            "user": "alice",
+            "identityStamp": "same",
+            "managedUnits": [
+                {
+                    "name": "kept",
+                    "unit": "kept.service",
+                    "removalPolicy": "stop",
+                    "stamp": "old-kept",
+                    "autoStart": True,
+                    "state": "running",
+                    "timeoutReadySeconds": 5,
+                },
+                {
+                    "name": "removed",
+                    "unit": "removed.service",
+                    "removalPolicy": "stop",
+                    "stamp": "old-removed",
+                    "autoStart": True,
+                    "state": "running",
+                    "timeoutReadySeconds": 5,
+                },
+            ],
+        }
+        applied_state = self.state_dir / "applied/alice.json"
+        applied_state.parent.mkdir(parents=True)
+        applied_state.write_text(json.dumps(applied_metadata), encoding="utf-8")
+        current_metadata = self.write_metadata(
+            "current-version.json",
+            {
+                "version": 6,
+                "user": "alice",
+                "identityStamp": "same",
+                "managedUnits": [
+                    {
+                        "name": "kept",
+                        "unit": "kept.service",
+                        "removalPolicy": "stop",
+                        "stamp": "new-kept",
+                        "autoStart": True,
+                        "state": "running",
+                        "timeoutReadySeconds": 5,
+                    },
+                ],
+            },
+        )
+
+        result = self.run_helper(
+            """
+            init_managed_user_from_env
+            userctl_mode=root
+            stop_changed_managed_units_from_applied_metadata
+            """,
+            SYSTEMD_USER_MANAGER_USER="alice",
+            SYSTEMD_USER_MANAGER_UID="1001",
+            SYSTEMD_USER_MANAGER_METADATA=str(current_metadata),
+        )
+
+        self.assertIn("applied metadata version changed; stopping removed units only", result.stderr)
+        self.assertFalse((self.state_dir / "unit-restarts/alice/kept").exists())
+        systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
+        self.assertIn("--user --no-block stop removed.service", systemctl_log)
+        self.assertNotIn("--user --no-block stop kept.service", systemctl_log)
+
     def test_stopped_state_wait_tolerates_queued_stop_gap(self):
         self.write_fake_systemctl()
         sequence = self.state_dir / "systemctl-state/active-sequence"
@@ -1163,10 +2293,6 @@ esac
         )
 
         self.assertEqual("inactive\n", result.stdout)
-        self.assertIn(
-            "waiting for stopped state: unit=web.service current=active sub=dead",
-            result.stderr,
-        )
 
     def test_stop_timeout_kills_residual_processes_and_rechecks(self):
         self.write_fake_systemctl()
@@ -1186,7 +2312,42 @@ esac
         )
         self.assertIn("web: stopped in", result.stderr)
         systemctl_log = (self.state_dir / "systemctl.log").read_text(encoding="utf-8")
-        self.assertIn("--user kill --kill-whom=all web.service", systemctl_log)
+        self.assertIn("--user kill --kill-whom=all --signal=KILL web.service", systemctl_log)
+
+    def test_stop_wait_uses_stop_cleanup_budget_not_stable_timeout(self):
+        self.write_fake_systemctl()
+        date_counter = self.state_dir / "date-counter"
+        date_counter.write_text("0\n", encoding="utf-8")
+        self._write_executable(
+            self.fake_bin / "date",
+            f"""#!/bin/sh
+set -eu
+if [ "${{1-}}" = "+%s" ]; then
+  count="$(cat {shlex.quote(str(date_counter))})"
+  count="$((count + 3))"
+  printf '%s\\n' "$count" > {shlex.quote(str(date_counter))}
+  printf '%s\\n' "$count"
+  exit 0
+fi
+exec /run/current-system/sw/bin/date "$@"
+""",
+        )
+
+        result = self.run_helper(
+            """
+            sleep() { :; }
+            apply_stop_phase_action apply alice web web.service 99 0
+            """,
+            FAKE_SYSTEMCTL_STOP_STATE="active",
+            FAKE_SYSTEMCTL_KILL_STATE="inactive",
+            SYSTEMD_USER_MANAGER_STOP_KILL_WAIT_SECONDS="3",
+        )
+
+        self.assertIn(
+            "timed out waiting 3s for stopped state for web.service",
+            result.stderr,
+        )
+        self.assertNotIn("timed out waiting 99s", result.stderr)
 
 
 if __name__ == "__main__":

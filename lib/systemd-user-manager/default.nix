@@ -8,7 +8,7 @@
   migratorEnabled = config.services.migration-manager.enable or false;
   migratorGatePath = config.services.migration-manager.gatePath;
   flakeUtils = import ../flake/utils.nix {lib = lib;};
-  metadataVersion = 5;
+  metadataVersion = 9;
 
   unitType = lib.types.submodule ({name, ...}: {
     options = {
@@ -53,6 +53,17 @@
         '';
       };
 
+      repairCommand = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        description = ''
+          Optional command to run as the managed user when an enqueue-mode unit
+          needs repair after verification failure or deferred restart. Providers
+          use this to dispatch long-running convergence without restarting the
+          parent service during system activation.
+        '';
+      };
+
       restartTriggers = lib.mkOption {
         type = lib.types.listOf lib.types.unspecified;
         default = [];
@@ -71,16 +82,27 @@
         description = "Whether the reconciler should automatically start this managed unit when it is inactive or failed.";
       };
 
+      startMode = lib.mkOption {
+        type = lib.types.enum ["wait" "enqueue"];
+        default = "wait";
+        description = ''
+          How the reconciler treats a started managed unit. `wait` blocks until
+          the unit reaches a stable state. `enqueue` accepts an active or
+          activating unit after a short start grace, for long-running dispatcher
+          units whose own work should not block system activation.
+        '';
+      };
+
       state = lib.mkOption {
         type = lib.types.enum ["running" "stopped"];
         default = "running";
         description = "Desired runtime state for this managed user unit.";
       };
 
-      timeoutStableSeconds = lib.mkOption {
+      timeoutReadySeconds = lib.mkOption {
         type = lib.types.ints.positive;
         default = 120;
-        description = "Seconds to wait for this managed unit to leave activating, deactivating, or reloading states during reconciliation.";
+        description = "Seconds to wait for this managed unit to become ready during reconciliation.";
       };
 
       stampPayload = lib.mkOption {
@@ -208,9 +230,11 @@
     removalPolicy = managedUnit.removalPolicy;
     removalCommand = managedUnit.removalCommand;
     verifyCommand = managedUnit.verifyCommand;
+    repairCommand = managedUnit.repairCommand;
     autoStart = managedUnit.autoStart;
+    startMode = managedUnit.startMode;
     state = managedUnit.state;
-    timeoutStableSeconds = managedUnit.timeoutStableSeconds;
+    timeoutReadySeconds = managedUnit.timeoutReadySeconds;
     stamp = stamp;
     reloadStamp = reloadStamp;
     transitionNeutralStamp = managedUnit.transitionNeutralStamp;
@@ -232,6 +256,18 @@
     instances;
 
   managedUsers = builtins.attrNames managedUnitsByUser;
+
+  defaultManagerServiceTimeoutSeconds = 120;
+  managerServiceEnvelopeSlackSeconds = 60;
+
+  managerServiceTimeoutForUser = user: let
+    maxManagedTimeout =
+      builtins.foldl'
+      (currentMax: managedUnit: lib.max currentMax managedUnit.timeoutReadySeconds)
+      defaultManagerServiceTimeoutSeconds
+      managedUnitsByUser.${user};
+  in
+    maxManagedTimeout + managerServiceEnvelopeSlackSeconds;
 
   generatedDispatcherServiceNames =
     map dispatcherServiceNameForUser managedUsers;
@@ -297,9 +333,11 @@
             removalPolicy = managedUnit.removalPolicy;
             removalCommand = managedUnit.removalCommand;
             verifyCommand = managedUnit.verifyCommand;
+            repairCommand = managedUnit.repairCommand;
             autoStart = managedUnit.autoStart;
+            startMode = managedUnit.startMode;
             state = managedUnit.state;
-            timeoutStableSeconds = managedUnit.timeoutStableSeconds;
+            timeoutReadySeconds = managedUnit.timeoutReadySeconds;
             stamp = managedUnit.stamp;
             reloadStamp = managedUnit.reloadStamp;
             transitionNeutralStamp = managedUnit.transitionNeutralStamp;
@@ -324,6 +362,7 @@
   mkUserReconciler = user: _: let
     metadata = userMetadataByUser.${user};
     serviceName = reconcilerServiceNameForUser user;
+    managerServiceTimeout = managerServiceTimeoutForUser user;
   in {
     metadataFile = metadata.file;
     metadataHash = metadata.hash;
@@ -332,7 +371,9 @@
     name = serviceName;
     value = {
       description = "Reconcile managed systemd --user units for ${user}";
-      unitConfig.ConditionUser = user;
+      restartIfChanged = false;
+      stopIfChanged = false;
+      wantedBy = [];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -340,8 +381,9 @@
           "PATH=${managedUserActionPath}"
           "SYSTEMD_USER_MANAGER_USER=${user}"
           "SYSTEMD_USER_MANAGER_METADATA=${metadata.file}"
+          "SYSTEMD_USER_MANAGER_START_PARALLELISM=${toString cfg.startParallelism}"
         ];
-        TimeoutStartSec = 900;
+        TimeoutStartSec = managerServiceTimeout;
         ExecStart = "${helperScript} reconciler-apply";
       };
     };
@@ -355,6 +397,7 @@
     reconciler = userReconcilersByUser.${user};
     metadata = userMetadataByUser.${user};
     serviceName = dispatcherServiceNameForUser user;
+    managerServiceTimeout = managerServiceTimeoutForUser user;
   in {
     name = serviceName;
     metadataFile = metadata.file;
@@ -385,8 +428,8 @@
           "SYSTEMD_USER_MANAGER_METADATA=${metadata.file}"
           "SYSTEMD_USER_MANAGER_RECONCILER_SERVICE=${reconciler.serviceName}.service"
         ];
-        TimeoutStartSec = 900;
-        TimeoutStopSec = 900;
+        TimeoutStartSec = managerServiceTimeout;
+        TimeoutStopSec = managerServiceTimeout;
         ExecStart = "${helperScript} dispatcher-start";
       };
     };
@@ -427,6 +470,17 @@ in {
   ];
 
   options.services.systemd-user-manager = {
+    startParallelism = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 4;
+      description = ''
+        Maximum number of managed unit start or restart actions the reconciler
+        launches at once per user. Keep this bounded because a single managed
+        unit can fan out into a full compose stack, but avoid serializing large
+        managed sets into the dispatcher service timeout.
+      '';
+    };
+
     instances = lib.mkOption {
       type = lib.types.attrsOf unitType;
       default = {};

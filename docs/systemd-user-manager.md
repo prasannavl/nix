@@ -33,7 +33,8 @@ Important options:
 - `autoStart`
 - `removalPolicy`
 - `removalCommand`
-- `timeoutStableSeconds`
+- `verifyCommand`
+- `timeoutReadySeconds`
 - `restartTriggers`
 - `reloadTriggers`
 - `stampPayload`
@@ -47,6 +48,8 @@ Applied old state:
 
 - handles removed units according to `removalPolicy`
 - stops units whose restart stamp changed
+- marks active restart-changed units for deferred restart, so reconcile still
+  performs explicit work if the unit remains active after daemon reload
 - defers reload for active units when only the reload stamp changed
 - restarts `user@<uid>.service` if the managed user identity changed
 
@@ -58,6 +61,7 @@ New generation:
 - reloads units with deferred reload-only changes
 - restarts the reconciler
 - waits for successful convergence
+- runs provider verification commands for active running units
 - records the new metadata as applied only after successful reconciliation
 
 The applied-state copy lives under
@@ -74,15 +78,27 @@ in the new world.
 unit and the reconciler keeps it inactive until the declaration returns to
 `state = "running"`.
 
-`timeoutStableSeconds` defaults to 120 seconds and bounds waits for a managed
+`timeoutReadySeconds` defaults to 120 seconds and bounds waits for a managed
 unit to leave `activating`, `deactivating`, or `reloading` states during
 reconcile and stop handling.
+
+The generated dispatcher and reconciler use
+`max(120, largest managed timeoutReadySeconds) + 60` as their systemd service
+timeout, so systemd does not kill an intentionally long bounded reconcile before
+the managed unit's own timeout can report success or failure.
 
 `removalPolicy = "keep"` leaves a removed managed entry alone. With
 `removalPolicy = "stop"`, the manager either stops the old unit directly or, if
 `removalCommand` is set, runs that command as the managed user. Provider
 commands are responsible for their own provider-specific stop, cleanup, or
 takeover behavior.
+
+`verifyCommand` is an optional provider-specific post-reconcile check. It runs
+as the managed user after a desired-running unit is active. If verification
+fails, the reconciler restarts that unit once and verifies again. Persistent
+verification failure fails the reconcile transaction, so the dispatcher does not
+record the generation as applied. Verification is skipped for intentionally
+inactive desired-running units, such as `autoStart = false`.
 
 `reloadTriggers` are opt-in. If restart and reload stamps both change, restart
 wins. Reload-only changes call `systemctl --user reload <unit>` after the new
@@ -103,9 +119,12 @@ The reconciler is intentionally narrow:
 - reads generation metadata
 - checks live `systemctl --user` state
 - leaves active units alone
+- restarts active units with a deferred restart marker from the stop phase
 - starts inactive or failed managed units unless `autoStart = false` or
   `state = "stopped"`
-- uses each managed unit's `timeoutStableSeconds` for stable-state waits
+- verifies active desired-running units that declare `verifyCommand`, restarting
+  once when the provider reports unapplied runtime drift
+- uses each managed unit's `timeoutReadySeconds` for stable-state waits
 
 After success it starts `systemd-user-manager-ready.target`.
 
@@ -114,6 +133,8 @@ After success it starts `systemd-user-manager-ready.target`.
 - Boot does not depend on mutable activation-time state.
 - The real work happens through ordinary systemd units after switch.
 - `dry-activate` runs the reconciler in preview mode.
+- `dry-activate` skips preview for managed users whose live account does not
+  exist yet.
 
 ## Podman Integration
 
@@ -127,6 +148,8 @@ After success it starts `systemd-user-manager-ready.target`.
 - `imageTag` is handled by a separate pull unit wired into the start path
 - reload-safe directory-mounted compose config can flow through
   `reloadTriggers`; other changes keep using restart triggers
+- Podman supplies `verifyCommand` to detect unapplied staged runtime files or
+  helper state before user-manager metadata is marked applied
 
 This keeps `systemd-user-manager` generic. It switches units. Module-specific
 behavior stays in the unit definitions.
