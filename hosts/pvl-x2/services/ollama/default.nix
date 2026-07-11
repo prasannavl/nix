@@ -66,52 +66,32 @@ in {
     };
 
     systemd.user.services.pvl-ollama-models = {
-      description = "Dispatch required pvl-x2 Ollama model pull";
+      description = "Pull required pvl-x2 Ollama models";
       after = [
-        "pvl-ollama-ready.target"
+        "pvl-ollama.service"
         "network-online.target"
       ];
       wants = [
-        "pvl-ollama-ready.target"
         "network-online.target"
       ];
       restartTriggers = [
         pullRequiredModels
         requiredModelsStamp
       ];
-      unitConfig = {
-        ConditionUser = "pvl";
-        Requires = ["pvl-ollama-ready.target"];
-      };
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${lib.getExe pullRequiredModels} dispatch pvl-ollama-models-worker.service ${lib.escapeShellArgs requiredModels}";
-      };
-    };
-
-    systemd.user.services.pvl-ollama-models-worker = {
-      description = "Pull required pvl-x2 Ollama models";
-      after = [
-        "pvl-ollama-ready.target"
-        "network-online.target"
-      ];
-      wants = [
-        "network-online.target"
-      ];
-      unitConfig = {
-        ConditionUser = "pvl";
-        Requires = ["pvl-ollama-ready.target"];
-      };
+      unitConfig.ConditionUser = "pvl";
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${lib.getExe pullRequiredModels} ${lib.escapeShellArgs requiredModels}";
       };
     };
 
-    systemd.user.targets.pvl-managed-ready = {
-      unitConfig = {
-        Requires = ["pvl-ollama-models.service"];
-        After = ["pvl-ollama-models.service"];
+    systemd.user.timers.pvl-ollama-models-boot = {
+      description = "Start pvl-x2 Ollama model pull after boot";
+      wantedBy = ["timers.target"];
+      unitConfig.ConditionUser = "pvl";
+      timerConfig = {
+        OnBootSec = "2min";
+        Unit = "pvl-ollama-models.service";
       };
     };
   };

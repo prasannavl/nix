@@ -29,11 +29,10 @@ surfaces, and explicitly record skipped Abird topology or docs-only units.
 - Root flake default profile: Abird's `machineProfiles.incusLxc` default was
   checked and intentionally skipped because it breaks local physical PVL hosts
   that rely on the `null` default unless a machine profile is explicitly set.
-- Local Ollama model-pull adaptation: `pvl-x2` now attaches a short
-  `pvl-ollama-models.service` dispatcher to `pvl-managed-ready` and performs
-  long model pulls in `pvl-ollama-models-worker.service`; `pvl-a1` and `pvl-l5`
-  keep their boot timers/manual behavior but move restart triggers onto the
-  native user service as string stamps and stop registering with
+- Local Ollama model-pull adaptation: `pvl-x2`, `pvl-a1`, and `pvl-l5` keep
+  model pulls as simple timer/manual user services outside
+  `<user>-managed-ready.target`; restart triggers live on the native user
+  service as string stamps, and the units no longer register with
   `systemd-user-manager`.
 
 ## Commit Ledger
