@@ -368,6 +368,31 @@ class NixbotScriptTest(unittest.TestCase):
             result.stdout.splitlines(),
         )
 
+    def test_health_starting_timeout_uses_native_podman_compose_registry(self):
+        legacy_metadata_dir = self.work_dir / "legacy-dispatchers"
+        legacy_metadata_dir.mkdir()
+        registry = self.work_dir / "control-registry.json"
+        registry.write_text(
+            json.dumps(
+                {
+                    "demo-app": {"timeoutReadySeconds": 45},
+                    "demo-db": {"timeoutReadySeconds": 120},
+                    "demo-worker": {"timeoutReadySeconds": 30},
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_SYSTEMD_USER_MANAGER_METADATA_DIR={legacy_metadata_dir}
+            NIXBOT_PODMAN_COMPOSE_CONTROL_REGISTRY={registry}
+            _remote_health_check_starting_timeout_seconds
+            """
+        )
+
+        self.assertEqual("180\n", result.stdout)
+
     def test_clear_remote_locks_dry_run_prints_host_local_script(self):
         result = self.run_script(
             """
@@ -813,6 +838,7 @@ class NixbotScriptTest(unittest.TestCase):
             mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
             prepare_deploy_context() {{ return 0; }}
             wait_for_in_flight_deploy_activation() {{ return 0; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
             print_deploy_systemd_user_manager_report() {{ return 0; }}
             report_activation_lock_contention_if_present() {{ return 0; }}
             host_boot_is_container() {{ return 1; }}
@@ -845,7 +871,8 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual("verify:app:/nix/store/snapshot path", lines[2])
         self.assertEqual("failed-rc:37", lines[3])
         command = lines[4]
-        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
         self.assertIn("--wait --collect --no-ask-password --pipe --quiet", command)
         self.assertIn("--service-type=exec", command)
         self.assertRegex(command, r"--unit=nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}")
@@ -854,6 +881,171 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertIn("nixbot-activation", command)
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
+
+    def test_parallel_rollback_activation_uses_wait_guard_and_shared_lock(self):
+        cmd_file = self.work_dir / "parallel-rollback-cmd"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            prepare_deploy_context() {{ return 0; }}
+            wait_for_in_flight_deploy_activation() {{ printf 'deploy-wait:%s\\n' "$1"; }}
+            wait_for_in_flight_nixbot_activation() {{ printf 'nixbot-wait:%s:%s:%s\\n' "$1" "$2" "$3"; }}
+            host_boot_is_container() {{ return 1; }}
+            run_with_combined_stream_capture() {{
+              local -n out_ref="$1"
+              shift
+              printf '%s\n' "$2" >{cmd_file}
+              out_ref=''
+              return 0
+            }}
+            rollback_host_to_snapshot app '/nix/store/snapshot path'
+            cat {cmd_file}
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("deploy-wait:app", lines[0])
+        self.assertRegex(
+            lines[1],
+            r"^nixbot-wait:app:nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}\.service:rollback$",
+        )
+        command = lines[2]
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w 150", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
+
+    def test_host_local_lock_waits_for_existing_holder(self):
+        sequence_file = self.work_dir / "host-local-lock-sequence"
+        lock_file = self.work_dir / "nixbot-host-local.lock"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
+            lock_file="$(host_local_lock_path)"
+            release_file={self.work_dir / "release-host-local-lock"}
+            sequence_file={sequence_file}
+            (
+              exec 9>"$lock_file"
+              flock 9
+              printf 'holder-acquired\\n' >>"$sequence_file"
+              while [ ! -e "$release_file" ]; do sleep 0.05; done
+              printf 'holder-release\\n' >>"$sequence_file"
+            ) &
+            holder_pid="$!"
+            for _ in $(seq 1 100); do
+              [ -s "$sequence_file" ] && break
+              sleep 0.05
+            done
+            printf 'parent-before\\n' >>"$sequence_file"
+            ( sleep 0.2; touch "$release_file" ) &
+            acquire_host_local_lock deploy
+            printf 'parent-acquired\\n' >>"$sequence_file"
+            release_host_local_lock
+            wait "$holder_pid"
+            cat "$sequence_file"
+            """
+        )
+
+        self.assertEqual(
+            ["holder-acquired", "parent-before", "holder-release", "parent-acquired"],
+            result.stdout.splitlines(),
+        )
+        self.assertIn("waiting for another host-local nixbot action before deploy", result.stderr)
+
+    def test_deploy_request_action_wraps_major_actions_with_host_local_lock(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            acquire_host_local_lock() { printf 'lock:%s\\n' "$1"; }
+            release_host_local_lock() { printf 'unlock\\n'; }
+            run_hosts() {
+              printf 'run:%s\\n' "$1"
+              return 7
+            }
+            set +e
+            run_deploy_request_action '["zeta","alpha"]'
+            printf 'rc:%s\\n' "$?"
+            set -e
+            """
+        )
+
+        self.assertEqual(
+            ["lock:deploy", 'run:["zeta","alpha"]', "unlock", "rc:7"],
+            result.stdout.splitlines(),
+        )
+
+    def test_host_local_lock_action_classification(self):
+        result = self.run_script(
+            """
+            init_vars
+            for action in run deploy build dev-build tf tf-dns tf-platform tf-apps tf/app clean; do
+              ACTION="$action"
+              if action_needs_host_local_lock; then
+                printf 'lock:%s\\n' "$action"
+              fi
+            done
+            for action in check-bootstrap clear-remote-locks list-hosts list-groups; do
+              ACTION="$action"
+              if ! action_needs_host_local_lock; then
+                printf 'pass:%s\\n' "$action"
+              fi
+            done
+            """
+        )
+
+        self.assertEqual(
+            [
+                "lock:run",
+                "lock:deploy",
+                "lock:build",
+                "lock:dev-build",
+                "lock:tf",
+                "lock:tf-dns",
+                "lock:tf-platform",
+                "lock:tf-apps",
+                "lock:tf/app",
+                "lock:clean",
+                "pass:check-bootstrap",
+                "pass:clear-remote-locks",
+                "pass:list-hosts",
+                "pass:list-groups",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_host_local_activation_lock_is_reentrant_for_self_target_execution(self):
+        lock_file = self.work_dir / "nixbot-host-local.lock"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
+            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
+            PREP_DEPLOY_LOCAL_EXEC=0
+            host_local_activation_lock_prefix
+            printf '\\n'
+            PREP_DEPLOY_LOCAL_EXEC=1
+            NIXBOT_HOST_LOCAL_LOCK_FD=9
+            host_local_activation_lock_prefix
+            printf '<local-empty>\\n'
+            PREP_DEPLOY_LOCAL_EXEC=0
+            PREP_DEPLOY_SELF_TARGET=1
+            host_local_activation_lock_prefix
+            printf '<self-empty>\\n'
+            """
+        )
+
+        self.assertEqual(
+            [f"flock -w 150 {lock_file} ", "<local-empty>", "<self-empty>"],
+            result.stdout.splitlines(),
+        )
 
 
     def test_wait_for_in_flight_deploy_activation_waits_then_proceeds(self):
@@ -915,6 +1107,63 @@ class NixbotScriptTest(unittest.TestCase):
         )
         lines = result.stdout.splitlines()
         self.assertEqual("wait-rc:0", lines[-1])
+
+    def test_remote_active_nixbot_activation_units_excludes_current_unit(self):
+        result = self.run_script(
+            """
+            init_vars
+            run_prepared_root_command_without_control_master() {
+              cat <<'EOF_UNITS'
+nixbot-switch-to-configuration-current.service loaded active running current
+nixbot-rollback-to-configuration-old.service loaded active running old
+EOF_UNITS
+            }
+            remote_active_nixbot_activation_units nixbot-switch-to-configuration-current.service
+            """
+        )
+
+        self.assertEqual(
+            ["nixbot-rollback-to-configuration-old.service loaded active running old"],
+            result.stdout.splitlines(),
+        )
+
+    def test_wait_for_in_flight_nixbot_activation_waits_for_other_units(self):
+        count_file = self.work_dir / "nixbot-activation-count"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
+            tick=0
+            printf '0\\n' > {count_file}
+            date() {{
+              if [ "${{1:-}}" = "+%s" ]; then
+                printf '%s\\n' "$tick"
+              else
+                command date "$@"
+              fi
+            }}
+            remote_active_nixbot_activation_units() {{
+              local n
+              n=$(($(cat {count_file}) + 1))
+              printf '%s\\n' "$n" > {count_file}
+              if [ "$n" -lt 3 ]; then
+                printf '%s\\n' 'nixbot-rollback-to-configuration-old.service loaded active running old'
+              fi
+            }}
+            sleep_for_retry_or_signal() {{
+              printf 'sleep:%s\\n' "$1"
+              tick=$((tick + 5))
+              return 0
+            }}
+            wait_for_in_flight_nixbot_activation app nixbot-switch-to-configuration-current.service deploy
+            printf 'rc:%s calls:%s\\n' "$?" "$(cat {count_file})"
+            """
+        )
+
+        self.assertEqual(["sleep:5", "sleep:5", "rc:0 calls:3"], result.stdout.splitlines())
+        self.assertIn("waiting for other nixbot activation unit(s) before deploy", result.stderr)
+        self.assertIn("other nixbot activation units settled after 10s", result.stderr)
 
     def test_nixbot_activation_command_promotes_profile_after_successful_switch(self):
         result = self.run_script(
@@ -1151,6 +1400,7 @@ EOF_SWITCH
             NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
             mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
             host_boot_is_container() {{ return 1; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
             run_with_combined_stream_capture() {{
               local -n out_ref="$1"
               shift
@@ -1167,7 +1417,8 @@ EOF_SWITCH
         lines = result.stdout.splitlines()
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
-        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
         self.assertIn("-E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK", command)
         self.assertIn("--property=RuntimeMaxSec=", command)
         self.assertIn("--property=TimeoutStopSec=", command)
@@ -1179,6 +1430,42 @@ EOF_SWITCH
         self.assertIn("nixbot-activation", command)
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
+
+    def test_parallel_switch_activation_uses_wait_guard_and_shared_lock(self):
+        cmd_file = self.work_dir / "parallel-switch-cmd"
+        result = self.run_script(
+            f"""
+            init_vars
+            GOAL=switch
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            host_boot_is_container() {{ return 0; }}
+            wait_for_in_flight_nixbot_activation() {{ printf 'nixbot-wait:%s:%s:%s\\n' "$1" "$2" "$3"; }}
+            run_with_combined_stream_capture() {{
+              local -n out_ref="$1"
+              shift
+              printf '%s\n' "$2" >{cmd_file}
+              out_ref=''
+              return 0
+            }}
+            activate_prepared_system_path app '/nix/store/system path'
+            cat {cmd_file}
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertRegex(
+            lines[0],
+            r"^nixbot-wait:app:nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}\.service:deploy$",
+        )
+        command = lines[1]
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w 150", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
 
     def test_activate_prepared_system_path_retries_when_transport_drops_before_switch(self):
         result = self.run_script(
@@ -1195,6 +1482,7 @@ EOF_SWITCH
             host_boot_is_container() {{ return 0; }}
             report_activation_lock_contention_if_present() {{ :; }}
             print_deploy_systemd_user_manager_report() {{ :; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
             sleep_for_retry_or_signal() {{
               printf 'sleep:%s\\n' "$1"
               return 0
@@ -1416,10 +1704,10 @@ EOF_SWITCH
         )
 
         self.assertIn("_remote_activation_progress_probe app unit.service 123", result.stdout)
-        self.assertIn("systemctl list-units 'systemd-user-manager-dispatcher-*.service'", result.stdout)
-        self.assertIn("systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service'", result.stdout)
+        self.assertIn("/etc/systemd/user/*-managed-ready.target", result.stdout)
+        self.assertIn("_remote_managed_user_names", result.stdout)
         self.assertIn("pending/failed user units for %s", result.stdout)
-        self.assertIn("systemctl --user list-units --type=service --state=activating,failed", result.stdout)
+        self.assertIn("systemctl --user list-units --type=service,target --state=activating,failed", result.stdout)
         self.assertIn("_remote_activation_filter_user_units", result.stdout)
 
     def test_activation_progress_filter_removes_transient_podman_healthchecks(self):
@@ -1451,6 +1739,7 @@ EOF_SWITCH
             NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
             mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
             host_boot_is_container() {{ return 0; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
             run_with_combined_stream_capture() {{
               local -n out_ref="$1"
               shift
@@ -1467,7 +1756,8 @@ EOF_SWITCH
         lines = result.stdout.splitlines()
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
-        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
         self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
         self.assertIn("nixbot-activation", command)
@@ -1485,6 +1775,7 @@ EOF_SWITCH
             RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
             NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
             mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
             host_boot_is_container() {{
               echo "unexpected container eval" >&2
               return 2
@@ -1505,7 +1796,8 @@ EOF_SWITCH
         lines = result.stdout.splitlines()
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
-        self.assertIn("NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
         self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
         self.assertIn("nixbot-activation", command)
