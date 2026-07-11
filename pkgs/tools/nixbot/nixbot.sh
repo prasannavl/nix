@@ -46,7 +46,7 @@ Usage:
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clear-remote-locks|clean> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--clear-remote-locks <all|nixbot|podman>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clear-remote-locks|clean> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--clear-remote-locks <all|nixbot|podman>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clear-remote-locks[=all|nixbot|podman] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--dry] [auth/config options]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
@@ -126,6 +126,10 @@ Workflow Behavior Options:
   --force          Bypass change-detection gates
   --dirty          Allow running from a dirty repo root (worktree = HEAD)
   --dirty-staged   Like --dirty, but overlay staged changes into the worktree
+  --skip-global-lock
+                   Skip the operator-machine action mutex for manual parallel
+                   nixbot runs. Deploy and rollback activation locks still
+                   apply on target hosts.
   --no-override    Skip the sibling *.override.nix config overlay
   --log-format     auto|gh|plain (default: auto)
 
@@ -188,6 +192,7 @@ Environment (Host Workflow Ordering):
 
 Environment (Workflow Behavior):
   NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
+  NIXBOT_SKIP_GLOBAL_LOCK     Same as --skip-global-lock (bool)
   NIXBOT_DIRTY                Same as --dirty (bool: 1/0, true/false, yes/no)
   NIXBOT_DIRTY_STAGED          Same as --dirty-staged (bool: 1/0, true/false, yes/no)
   NIXBOT_DRY                  Same as --dry (bool)
@@ -472,6 +477,7 @@ init_vars() {
 	NIXBOT_IF_CHANGED=1
 	TF_IF_CHANGED=1
 	FORCE_REQUESTED=0
+	SKIP_HOST_LOCAL_ACTION_LOCK=0
 	ALLOW_DIRTY_REPO=0
 	OVERLAY_STAGED=0
 	DIRTY_STAGED_PATCH_STDIN=0
@@ -568,6 +574,9 @@ init_vars() {
 
 	if parse_bool_env "${NIXBOT_FORCE:-0}"; then
 		enable_force_mode
+	fi
+	if parse_bool_env "${NIXBOT_SKIP_GLOBAL_LOCK:-0}"; then
+		SKIP_HOST_LOCAL_ACTION_LOCK=1
 	fi
 	if parse_bool_env "${NIXBOT_DIRTY:-0}"; then
 		ALLOW_DIRTY_REPO=1
@@ -1281,6 +1290,10 @@ parse_args() {
 			;;
 		--force)
 			enable_force_mode
+			shift
+			;;
+		--skip-global-lock)
+			SKIP_HOST_LOCAL_ACTION_LOCK=1
 			shift
 			;;
 		--dirty)
@@ -2389,6 +2402,11 @@ action_needs_host_local_lock() {
 	return 1
 }
 
+action_should_acquire_host_local_lock() {
+	[ "${SKIP_HOST_LOCAL_ACTION_LOCK:-0}" -eq 0 ] || return 1
+	action_needs_host_local_lock
+}
+
 release_host_local_lock() {
 	local fd=""
 
@@ -2399,7 +2417,8 @@ release_host_local_lock() {
 }
 
 acquire_host_local_lock() {
-	local label="${1:-${ACTION:-nixbot}}" lock_path="" lock_dir="" fd="" wait_start_epoch="" elapsed_secs=""
+	local label="${1:-${ACTION:-nixbot}}" lock_path="" lock_dir="" fd=""
+	local wait_start_epoch="" resume_epoch="" elapsed_secs=""
 
 	if [ -n "${NIXBOT_HOST_LOCAL_LOCK_FD:-}" ]; then
 		return 0
@@ -2411,14 +2430,15 @@ acquire_host_local_lock() {
 	exec {fd}>"${lock_path}" || die "Failed to open nixbot host-local lock: ${lock_path}"
 
 	if ! flock -n "${fd}"; then
-		echo "==> nixbot: waiting for another host-local nixbot action before ${label}" >&2
 		wait_start_epoch="$(date +%s)"
+		echo "==> nixbot: waiting for another host-local nixbot action before ${label} at $(format_epoch "${wait_start_epoch}")" >&2
 		if ! flock "${fd}"; then
 			eval "exec ${fd}>&-" || true
 			return 1
 		fi
-		elapsed_secs="$(elapsed_seconds "${wait_start_epoch}")"
-		echo "==> nixbot: previous host-local nixbot action finished after ${elapsed_secs}s; proceeding with ${label}" >&2
+		resume_epoch="$(date +%s)"
+		elapsed_secs="$(elapsed_seconds "${wait_start_epoch}" "${resume_epoch}")"
+		echo "==> nixbot: previous host-local nixbot action finished after ${elapsed_secs}s; proceeding with ${label} at $(format_epoch "${resume_epoch}")" >&2
 	fi
 
 	NIXBOT_HOST_LOCAL_LOCK_FD="${fd}"
@@ -8906,6 +8926,9 @@ activate_prepared_system_path() {
 		else
 			activation_rc="$?"
 		fi
+		if is_signal_exit_status "${activation_rc}"; then
+			return "${activation_rc}"
+		fi
 
 		report_activation_lock_contention_if_present "${node}" "${activation_unit}" "${activation_start_epoch}" "${activation_output}" || true
 		if command_output_is_transport_loss "${activation_output}" || transport_status_is_retryable "${activation_rc}"; then
@@ -10493,10 +10516,10 @@ read_duration_file() {
 }
 
 elapsed_seconds() {
-	local start_epoch="$1" now_epoch=""
+	local start_epoch="$1" now_epoch="${2:-}"
 
 	[ -n "${start_epoch}" ] || return 1
-	now_epoch="$(date +%s)"
+	[ -n "${now_epoch}" ] || now_epoch="$(date +%s)"
 	printf '%s\n' "$((now_epoch - start_epoch))"
 }
 
@@ -13533,7 +13556,7 @@ run_deploy_request_action() {
 	local selected_json="$1"
 	local action_rc=0 host_local_lock_acquired=0
 
-	if action_needs_host_local_lock; then
+	if action_should_acquire_host_local_lock; then
 		acquire_host_local_lock "${ACTION}" || return "$?"
 		host_local_lock_acquired=1
 	fi
@@ -13718,7 +13741,9 @@ main() {
 	fi
 	if [ "${ACTION}" = "clean" ]; then
 		local clean_rc=0
-		acquire_host_local_lock "${ACTION}" || return "$?"
+		if action_should_acquire_host_local_lock; then
+			acquire_host_local_lock "${ACTION}" || return "$?"
+		fi
 		run_clean_action || clean_rc="$?"
 		release_host_local_lock
 		return "${clean_rc}"

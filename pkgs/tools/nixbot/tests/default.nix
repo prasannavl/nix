@@ -10,6 +10,7 @@
         pkgs.jq
         pkgs.python3
         pkgs.procps
+        pkgs.util-linux
       ];
     } ''
       repo="$TMPDIR/repo"

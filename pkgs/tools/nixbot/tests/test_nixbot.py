@@ -68,6 +68,7 @@ class NixbotScriptTest(unittest.TestCase):
               --deploy-jobs 4 \
               --verify-jobs 5 \
               --dry \
+              --skip-global-lock \
               --no-rollback \
               --no-verify \
               --prefix-host-logs \
@@ -88,8 +89,9 @@ class NixbotScriptTest(unittest.TestCase):
               --arg rollback "$ROLLBACK_ON_FAILURE" \
               --arg verify "$VERIFY_AFTER_DEPLOY" \
               --arg prefix "$FORCE_PREFIX_HOST_LOGS" \
+              --arg skipGlobalLock "$SKIP_HOST_LOCAL_ACTION_LOCK" \
               --arg logFormat "$LOG_FORMAT" \
-              '{action:$action,hostAction:$hostAction,hosts:$hosts,groups:$groups,goal:$goal,buildHost:$buildHost,buildMode:$buildMode,buildPlanJobs:$buildPlanJobs,buildJobs:$buildJobs,deployJobs:$deployJobs,verifyJobs:$verifyJobs,dry:$dry,rollback:$rollback,verify:$verify,prefix:$prefix,logFormat:$logFormat}'
+              '{action:$action,hostAction:$hostAction,hosts:$hosts,groups:$groups,goal:$goal,buildHost:$buildHost,buildMode:$buildMode,buildPlanJobs:$buildPlanJobs,buildJobs:$buildJobs,deployJobs:$deployJobs,verifyJobs:$verifyJobs,dry:$dry,rollback:$rollback,verify:$verify,prefix:$prefix,skipGlobalLock:$skipGlobalLock,logFormat:$logFormat}'
             """
         )
 
@@ -111,6 +113,7 @@ class NixbotScriptTest(unittest.TestCase):
                 "rollback": "0",
                 "verify": "0",
                 "prefix": "1",
+                "skipGlobalLock": "1",
                 "logFormat": "plain",
             },
             parsed,
@@ -956,7 +959,16 @@ class NixbotScriptTest(unittest.TestCase):
             ["holder-acquired", "parent-before", "holder-release", "parent-acquired"],
             result.stdout.splitlines(),
         )
-        self.assertIn("waiting for another host-local nixbot action before deploy", result.stderr)
+        self.assertRegex(
+            result.stderr,
+            r"waiting for another host-local nixbot action before deploy at "
+            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}",
+        )
+        self.assertRegex(
+            result.stderr,
+            r"previous host-local nixbot action finished after \d+s; proceeding with deploy at "
+            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}",
+        )
 
     def test_deploy_request_action_wraps_major_actions_with_host_local_lock(self):
         result = self.run_script(
@@ -978,6 +990,30 @@ class NixbotScriptTest(unittest.TestCase):
 
         self.assertEqual(
             ["lock:deploy", 'run:["zeta","alpha"]', "unlock", "rc:7"],
+            result.stdout.splitlines(),
+        )
+
+    def test_skip_global_lock_allows_action_without_host_local_mutex(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            SKIP_HOST_LOCAL_ACTION_LOCK=1
+            acquire_host_local_lock() { printf 'unexpected-lock:%s\\n' "$1"; }
+            release_host_local_lock() { printf 'unexpected-unlock\\n'; }
+            run_hosts() {
+              printf 'run:%s\\n' "$1"
+              return 7
+            }
+            set +e
+            run_deploy_request_action '["zeta","alpha"]'
+            printf 'rc:%s\\n' "$?"
+            set -e
+            """
+        )
+
+        self.assertEqual(
+            ['run:["zeta","alpha"]', "rc:7"],
             result.stdout.splitlines(),
         )
 
@@ -1020,6 +1056,22 @@ class NixbotScriptTest(unittest.TestCase):
             result.stdout.splitlines(),
         )
 
+    def test_skip_global_lock_only_changes_action_lock_classification(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            SKIP_HOST_LOCAL_ACTION_LOCK=1
+            action_needs_host_local_lock && printf 'needs-action-lock\\n'
+            action_should_acquire_host_local_lock || printf 'skip-action-lock\\n'
+            """
+        )
+
+        self.assertEqual(
+            ["needs-action-lock", "skip-action-lock"],
+            result.stdout.splitlines(),
+        )
+
     def test_host_local_activation_lock_is_reentrant_for_self_target_execution(self):
         lock_file = self.work_dir / "nixbot-host-local.lock"
         result = self.run_script(
@@ -1044,6 +1096,26 @@ class NixbotScriptTest(unittest.TestCase):
 
         self.assertEqual(
             [f"flock -w 150 {lock_file} ", "<local-empty>", "<self-empty>"],
+            result.stdout.splitlines(),
+        )
+
+    def test_skip_global_lock_does_not_skip_activation_lock_prefix(self):
+        lock_file = self.work_dir / "nixbot-host-local.lock"
+        result = self.run_script(
+            f"""
+            init_vars
+            SKIP_HOST_LOCAL_ACTION_LOCK=1
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
+            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
+            PREP_DEPLOY_LOCAL_EXEC=0
+            host_local_activation_lock_prefix
+            printf '\\n'
+            """
+        )
+
+        self.assertEqual(
+            [f"flock -w 150 {lock_file} "],
             result.stdout.splitlines(),
         )
 
@@ -1525,6 +1597,47 @@ EOF_SWITCH
             "Deploy activation for app did not reach /nix/store/system path; retrying activation (2/2) in 1s",
             result.stderr,
         )
+
+    def test_activate_prepared_system_path_signal_does_not_recover_as_transport_loss(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            GOAL=switch
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            host_boot_is_container() {{ return 0; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
+            report_activation_lock_contention_if_present() {{
+              printf 'report:%s:%s\\n' "$1" "$2"
+            }}
+            verify_deploy_target_state_after_transport_loss() {{
+              printf 'verify:%s:%s\\n' "$1" "$2"
+              return 0
+            }}
+            run_activation_with_progress() {{
+              local -n out_ref="$1"
+              printf 'activation:%s:%s:%s\\n' "$2" "$3" "$4"
+              out_ref='Connection timed out during banner exchange'
+              return 143
+            }}
+            set +e
+            activate_prepared_system_path app '/nix/store/system path'
+            printf 'rc:%s\\n' "$?"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertRegex(
+            lines[0],
+            r"^activation:app:deploy:nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}$",
+        )
+        self.assertEqual("rc:143", lines[1])
+        self.assertNotIn("verify:", result.stdout)
+        self.assertNotIn("report:", result.stdout)
+        self.assertNotIn("Deploy transport closed or failed for app", result.stderr)
 
     def test_deploy_transport_verification_waits_for_activation_unit_to_settle(self):
         result = self.run_script(

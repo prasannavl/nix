@@ -183,6 +183,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Managed repo locking must cover the first clone path as well as steady-state
   repo refreshes.
 - Repo-root locks must recover from stale owners rather than spinning forever.
+- `--skip-global-lock` / `NIXBOT_SKIP_GLOBAL_LOCK=1` skips only the
+  operator-machine host-local action mutex for manual overlapping nixbot runs.
+  It does not bypass deploy activation locks, rollback locks, or target-host
+  systemd serialization.
 - `--dirty-staged` overlays must fail closed if the cached diff cannot be
   applied cleanly. Local runs generate the overlay from the staged index; CI
   host-triggered runs send a binary staged patch over SSH stdin and require the

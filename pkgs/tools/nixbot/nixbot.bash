@@ -154,6 +154,7 @@ _nixbot() {
 		--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
 		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
 		--deploy-jobs --verify-jobs --clear-remote-locks --clean --force --bootstrap --ci-first
+		--skip-global-lock
 		--dirty --dirty-staged --dry --no-override --no-rollback
 		--prefix-host-logs --log-format --user --ssh-key --known-hosts --config
 		--age-key-file --discover-keys --no-discover-keys --repo-url
