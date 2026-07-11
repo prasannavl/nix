@@ -225,6 +225,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/nixbot/repo-relative-secret-paths-2026-06.md`: Records the
   repo-root-relative secret path boundary for nixbot config, overrides, and SSH
   fallback path resolution.
+- `.agents/docs/notes/nixbot/health-check-transport-fanout-2026-07.md`: Records
+  bounded verify-job fanout for post-deploy health checks and console
+  normalization rules that keep persisted host logs raw.
 
 ### Reviews
 
@@ -256,7 +259,17 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/services/podman-compose-pull-source-sidecars-2026-07.md`:
   Records the `pvl-x2` Immich deploy failure where pre-activation image pulls
   lost relative `extends.file` sidecars, plus the shared pull-source directory
-  invariant for generated Podman Compose metadata.
+  invariant and explicit image-pull retry/skip behavior for generated Podman
+  Compose metadata.
+- `.agents/docs/notes/services/podman-compose-container-path-2026-07.md`:
+  Records the container-compatible helper `PATH` invariant and rootless idmap
+  preflight unit semantics.
+- `.agents/docs/notes/services/podman-compose-ready-target-transition-2026-07.md`:
+  Records that active start markers and transitioning compose units are not
+  ready states.
+- `.agents/docs/notes/services/podman-compose-stop-cleanup-rollback-2026-07.md`:
+  Records delete-policy stop cleanup as a successful stop when direct cleanup
+  removes project containers.
 - `.agents/docs/notes/services/podman-data-dir-ownership-2026-04.md`: Records
   the standard `dirs`/container-scope ownership model for service-local Podman
   data directories plus absolute `dirs` entries for external data roots.
@@ -312,6 +325,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-last10-port-2026-07.md`: Records the July 11
   Abird newest-10 audit, migration-manager native user-unit drain port, nixbot
   lock/signal handling port, local docs adaptations, and byte-parity audit.
+- `.agents/docs/notes/tooling/abird-latest-post-4b6d-port-2026-07.md`: Records
+  the July 11 Abird post-`4b6d3859` newest-10 audit, shared Podman Compose and
+  nixbot parity port, local docs adaptations, and skipped Abird topology/plans.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.

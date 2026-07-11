@@ -100,6 +100,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   output path files, rollback snapshots, and phase artifacts.
 - Diagnostics contains logs, status files, and stderr captures. It must stay
   safe to retain directly without a cleanup or sanitization pass.
+- Interactive host log output may normalize high-volume activation, closure
+  copy, agenix, unit-action, and health-check rows for readability. Persisted
+  per-host logs keep the raw unnormalized output, and GitHub log mode bypasses
+  the interactive formatter.
 - Parallel remote builds prewarm the build-host SSH ControlMaster before fanout
   so per-host builds reuse the same socket instead of racing to create it.
 - Remote builds use `--eval-store auto` with `--store ssh-ng://<build-host>`.
