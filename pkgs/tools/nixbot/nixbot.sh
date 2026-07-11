@@ -97,7 +97,8 @@ Dev Build Action Options (`dev-build`):
 Deploy Action Options (`run`, `deploy`):
   --goal           switch|boot|test|dry-activate (default: switch)
   --deploy-jobs    Parallel deploys within a dependency wave (default: 8)
-  --verify-jobs    Parallel rollback snapshot and health-check work (default: 16)
+  --verify-jobs    Parallel rollback snapshot work (default: 16);
+                   post-deploy health checks run sequentially
   --bootstrap      Always use bootstrap SSH user/key selection
   --no-rollback    Disable rollback if any deploy fails
   --no-verify      Skip post-deploy health checks; deploy failures can still roll back
@@ -114,8 +115,8 @@ Clear Remote Locks Action Options (`clear-remote-locks` or `--clear-remote-locks
                    nixbot removes nixbot runtime, SSH tty, and worktree lock
                    dirs; podman removes podman-compose lifecycle lock files
                    discovered from the current system registry.
-                   --dry prints the exact host-local shell script instead of
-                   mutating the hosts.
+                   --dry audits remote lock holders without mutating hosts.
+                   --force also unlinks held lock files after reporting holders.
 
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
   --ci-first  Prioritize CI host first when the CI host is selected
@@ -196,6 +197,8 @@ Environment (Auth / Config):
   NIXBOT_USER                 Same as --user
   NIXBOT_SSH_KEY              Same as --ssh-key
   NIXBOT_SSH_KNOWN_HOSTS      Same as --known-hosts
+  NIXBOT_SSH_CONNECT_TIMEOUT_SECS SSH TCP/banner timeout for deploy transport
+                              setup (default: 30)
   NIXBOT_CONFIG               Same as --config
   AGE_KEY_FILE                Same as --age-key-file
   NIXBOT_DISCOVER_KEYS        Same as --discover-keys (auto|on|off)
@@ -492,6 +495,7 @@ init_vars() {
 	NIXBOT_CLEAN_MODE="${NIXBOT_CLEAN:-}"
 	NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${NIXBOT_CLEAR_REMOTE_LOCKS:-}"
 	NIXBOT_CONTROL_PERSIST_SECS="${NIXBOT_CONTROL_PERSIST_SECS:-120}"
+	NIXBOT_SSH_CONNECT_TIMEOUT_SECS="${NIXBOT_SSH_CONNECT_TIMEOUT_SECS:-30}"
 	NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS="${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS:-5}"
 	NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX="${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX:-3}"
 	NIXBOT_REMOTE_READ_TIMEOUT_SECS="${NIXBOT_REMOTE_READ_TIMEOUT_SECS:-20}"
@@ -1655,6 +1659,17 @@ deploy_activation_unit_name() {
 	local node="$1"
 
 	nixbot_host_unit_name switch-to-configuration "${node}"
+}
+
+deploy_activation_attempt_unit_name() {
+	local node="$1" attempt="${2:-1}" unit_name=""
+
+	unit_name="$(deploy_activation_unit_name "${node}")"
+	if [ "${attempt}" -le 1 ]; then
+		printf '%s\n' "${unit_name}"
+	else
+		printf '%s-retry%s\n' "${unit_name}" "${attempt}"
+	fi
 }
 
 rollback_activation_unit_name() {
@@ -5345,7 +5360,7 @@ init_known_hosts_ssh_context() {
 
 	ikhsc_ssh_opts_out_ref=(
 		-F "${SSH_NULL_CONFIG_FILE}"
-		-o ConnectTimeout=10
+		-o "ConnectTimeout=${NIXBOT_SSH_CONNECT_TIMEOUT_SECS}"
 		-o ConnectionAttempts=1
 		-o "ServerAliveInterval=${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS}"
 		-o "ServerAliveCountMax=${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX}"
@@ -5354,7 +5369,7 @@ init_known_hosts_ssh_context() {
 		-o "UserKnownHostsFile=${known_hosts_file}"
 		-o "StrictHostKeyChecking=${host_key_check}"
 	)
-	ikhsc_nix_sshopts_out_ref="-F ${SSH_NULL_CONFIG_FILE} -o ConnectTimeout=10 -o ConnectionAttempts=1 -o ServerAliveInterval=${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS} -o ServerAliveCountMax=${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX} -o LogLevel=ERROR -o GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE} -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
+	ikhsc_nix_sshopts_out_ref="-F ${SSH_NULL_CONFIG_FILE} -o ConnectTimeout=${NIXBOT_SSH_CONNECT_TIMEOUT_SECS} -o ConnectionAttempts=1 -o ServerAliveInterval=${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS} -o ServerAliveCountMax=${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX} -o LogLevel=ERROR -o GlobalKnownHostsFile=${SSH_NULL_KNOWN_HOSTS_FILE} -o UserKnownHostsFile=${known_hosts_file} -o StrictHostKeyChecking=${host_key_check}"
 
 	if [ "${batch_mode}" -eq 1 ]; then
 		ikhsc_ssh_opts_out_ref=(-o BatchMode=yes "${ikhsc_ssh_opts_out_ref[@]}")
@@ -6215,6 +6230,7 @@ prepare_deploy_context() {
 
 run_prepared_deploy_command() {
 	local tty_mode="$1" target_cmd="$2"
+	local rc=0
 
 	if ! require_prepared_deploy_context "run_prepared_deploy_command"; then
 		return 1
@@ -6247,9 +6263,57 @@ run_prepared_deploy_command() {
 			mark_primary_ready "${PREP_DEPLOY_NODE}"
 		fi
 		return 0
+	else
+		rc="$?"
 	fi
 
-	return 1
+	return "${rc}"
+}
+
+ssh_opts_without_control_master() {
+	local out_name="$1"
+	shift
+	# shellcheck disable=SC2178
+	local -n sowcm_out_ref="${out_name}"
+	local opt="" value="" i=0
+	local -a opts=("$@")
+
+	sowcm_out_ref=()
+	for ((i = 0; i < ${#opts[@]}; i++)); do
+		opt="${opts[${i}]}"
+		if [ "${opt}" = "-o" ] && [ $((i + 1)) -lt "${#opts[@]}" ]; then
+			value="${opts[$((i + 1))]}"
+			case "${value}" in
+			ControlMaster=* | ControlPath=* | ControlPersist=*)
+				i=$((i + 1))
+				continue
+				;;
+			esac
+			sowcm_out_ref+=("${opt}" "${value}")
+			i=$((i + 1))
+			continue
+		fi
+
+		case "${opt}" in
+		-oControlMaster=* | -oControlPath=* | -oControlPersist=*)
+			continue
+			;;
+		esac
+		sowcm_out_ref+=("${opt}")
+	done
+
+	sowcm_out_ref+=(-o ControlMaster=no -o ControlPath=none)
+}
+
+run_prepared_deploy_command_without_control_master() {
+	local tty_mode="$1" target_cmd="$2" rc=0
+	local -a saved_ssh_opts=("${PREP_DEPLOY_SSH_OPTS[@]}") isolated_ssh_opts=()
+
+	ssh_opts_without_control_master isolated_ssh_opts "${saved_ssh_opts[@]}"
+	PREP_DEPLOY_SSH_OPTS=("${isolated_ssh_opts[@]}")
+	run_prepared_deploy_command "${tty_mode}" "${target_cmd}" || rc="$?"
+	PREP_DEPLOY_SSH_OPTS=("${saved_ssh_opts[@]}")
+	return "${rc}"
 }
 
 require_prepared_deploy_context() {
@@ -6309,6 +6373,13 @@ run_prepared_deploy_command_with_timeout() {
 
 	RUN_TARGET_COMMAND_TIMEOUT_SECS="${timeout_secs}" \
 		run_prepared_deploy_command "${tty_mode}" "${target_cmd}"
+}
+
+run_prepared_deploy_command_without_control_master_with_timeout() {
+	local tty_mode="$1" timeout_secs="$2" target_cmd="$3"
+
+	RUN_TARGET_COMMAND_TIMEOUT_SECS="${timeout_secs}" \
+		run_prepared_deploy_command_without_control_master "${tty_mode}" "${target_cmd}"
 }
 
 prepared_target_has_passwordless_sudo() {
@@ -6468,6 +6539,27 @@ run_prepared_root_command() {
 
 	wrapped_cmd="$(build_wrapped_root_command "${target_cmd}" "${deploy_user}" "${ask_sudo_password}")"
 	run_prepared_deploy_command "${tty_mode}" "${wrapped_cmd}"
+}
+
+run_prepared_root_command_without_control_master() {
+	local target_cmd="$1"
+	local using_bootstrap_fallback="" deploy_user="" ask_sudo_password=0 tty_mode=0
+	local wrapped_cmd=""
+	local -a sudo_policy=()
+
+	using_bootstrap_fallback="${PREP_USING_BOOTSTRAP_FALLBACK}"
+	mapfile -t sudo_policy < <(
+		resolve_target_sudo_policy \
+			"${PREP_DEPLOY_LOCAL_EXEC}" \
+			"${PREP_DEPLOY_SSH_TARGET}" \
+			"${using_bootstrap_fallback}"
+	)
+	deploy_user="${sudo_policy[0]:-}"
+	ask_sudo_password="${sudo_policy[1]:-0}"
+	tty_mode="${sudo_policy[2]:-0}"
+
+	wrapped_cmd="$(build_wrapped_root_command "${target_cmd}" "${deploy_user}" "${ask_sudo_password}")"
+	run_prepared_deploy_command_without_control_master "${tty_mode}" "${wrapped_cmd}"
 }
 
 run_prepared_root_command_with_retry() {
@@ -6747,6 +6839,13 @@ read_prepared_current_system_path() {
 	run_prepared_deploy_command_with_bounded_retry \
 		0 \
 		"Current system read for ${PREP_DEPLOY_NODE:-target}" \
+		"${NIXBOT_REMOTE_READ_TIMEOUT_SECS}" \
+		"${REMOTE_SYSTEM_BIN_DIR}/readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
+}
+
+read_prepared_current_system_path_without_control_master() {
+	run_prepared_deploy_command_without_control_master_with_timeout \
+		0 \
 		"${NIXBOT_REMOTE_READ_TIMEOUT_SECS}" \
 		"${REMOTE_SYSTEM_BIN_DIR}/readlink -f ${REMOTE_CURRENT_SYSTEM_PATH} 2>/dev/null || true"
 }
@@ -7812,7 +7911,7 @@ rollback_host_to_snapshot() {
 	report_activation_lock_contention_if_present "${node}" "${rollback_unit}" "${rollback_start_epoch}" "${rollback_output}" || true
 
 	echo "==> Rollback transport closed or failed for ${node}; verifying target state" >&2
-	if verify_rollback_target_state "${node}" "${snapshot_path}"; then
+	if verify_rollback_target_state "${node}" "${snapshot_path}" "${rollback_unit}" "${rollback_start_epoch}"; then
 		echo "==> Rollback for ${node} completed despite transport disconnect" >&2
 		print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
 		return 0
@@ -7821,23 +7920,113 @@ rollback_host_to_snapshot() {
 	return "${rollback_rc}"
 }
 
-verify_rollback_target_state() {
-	local node="$1" snapshot_path="$2" remote_current_path="" attempt="" max_attempts=15
+remote_activation_unit_state_is_running() {
+	local state="$1"
 
-	for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-		sleep_for_retry_or_signal 2 || return "$?"
-
-		if ! prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
-			continue
-		fi
-
-		remote_current_path="$(read_prepared_current_system_path 2>/dev/null || true)"
-		if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${snapshot_path}" ]; then
-			return 0
-		fi
-	done
-
+	case "${state}" in
+	active | activating | reloading | deactivating)
+		return 0
+		;;
+	esac
 	return 1
+}
+
+verify_rollback_target_state() {
+	local node="$1" snapshot_path="$2" rollback_unit="$3" rollback_start_epoch="$4"
+	local elapsed_secs=0 max_wait_secs=0 poll_secs=5 last_log_bucket=-1 bucket=0
+	local remote_current_path="" state="" state_cmd=""
+
+	max_wait_secs=$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))
+	printf -v state_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${rollback_unit}"
+
+	while :; do
+		elapsed_secs="$(($(date +%s) - rollback_start_epoch))"
+		bucket=$((elapsed_secs / 30))
+
+		if [ "${elapsed_secs}" -ge "${max_wait_secs}" ]; then
+			echo "==> Rollback transport verification for ${node} timed out after ${elapsed_secs}s" >&2
+			return 1
+		fi
+
+		if prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
+			remote_current_path="$(read_prepared_current_system_path_without_control_master 2>/dev/null || true)"
+			state="$(run_prepared_root_command_without_control_master "${state_cmd}" 2>/dev/null || true)"
+			if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${snapshot_path}" ]; then
+				if remote_activation_unit_state_is_running "${state}"; then
+					:
+				elif [ "${state}" = "failed" ]; then
+					echo "==> Rollback activation for ${node} settled as failed after switching to ${snapshot_path}" >&2
+					return 1
+				else
+					return 0
+				fi
+			elif [ -z "${state}" ] || [ "${state}" = "inactive" ] || [ "${state}" = "failed" ]; then
+				echo "==> Rollback activation for ${node} settled as ${state} without switching to ${snapshot_path}" >&2
+				return 1
+			fi
+		else
+			state="unreachable"
+		fi
+
+		if [ "${bucket}" -ne "${last_log_bucket}" ]; then
+			echo "==> Rollback transport closed for ${node}; waiting for activation result (elapsed=${elapsed_secs}s state=${state:-unknown})" >&2
+			last_log_bucket="${bucket}"
+		fi
+		sleep_for_retry_or_signal "${poll_secs}" || return "$?"
+	done
+}
+
+verify_deploy_target_state_after_transport_loss() {
+	local node="$1" system_path="$2" activation_unit="$3" activation_start_epoch="$4"
+	local elapsed_secs=0 max_wait_secs=0 poll_secs=5 last_log_bucket=-1 bucket=0
+	local remote_current_path="" state="" state_cmd=""
+
+	max_wait_secs=$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))
+	printf -v state_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${activation_unit}"
+
+	while :; do
+		elapsed_secs="$(($(date +%s) - activation_start_epoch))"
+		bucket=$((elapsed_secs / 30))
+
+		if [ "${elapsed_secs}" -ge "${max_wait_secs}" ]; then
+			echo "==> Deploy transport verification for ${node} timed out after ${elapsed_secs}s" >&2
+			return 1
+		fi
+
+		if prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
+			remote_current_path="$(read_prepared_current_system_path_without_control_master 2>/dev/null || true)"
+			if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${system_path}" ]; then
+				state="$(run_prepared_root_command_without_control_master "${state_cmd}" 2>/dev/null || true)"
+				if remote_activation_unit_state_is_running "${state}"; then
+					:
+				elif [ "${state}" = "failed" ]; then
+					echo "==> Deploy activation for ${node} settled as failed after switching to ${system_path}" >&2
+					return 1
+				else
+					return 0
+				fi
+			else
+				state="$(run_prepared_root_command_without_control_master "${state_cmd}" 2>/dev/null || true)"
+			fi
+
+			case "${state}" in
+			active | activating | reloading | deactivating)
+				;;
+			"" | inactive | failed)
+				echo "==> Deploy activation for ${node} settled as ${state} without switching to ${system_path}" >&2
+				return 2
+				;;
+			esac
+		else
+			state="unreachable"
+		fi
+
+		if [ "${bucket}" -ne "${last_log_bucket}" ]; then
+			echo "==> Deploy transport closed for ${node}; waiting for activation result (elapsed=${elapsed_secs}s state=${state:-unknown})" >&2
+			last_log_bucket="${bucket}"
+		fi
+		sleep_for_retry_or_signal "${poll_secs}" || return "$?"
+	done
 }
 
 rollback_successful_hosts() {
@@ -8065,7 +8254,7 @@ _remote_pre_switch_system_failed_state_reset() {
 	systemctl reset-failed
 }
 
-_remote_pre_switch_user_failed_state_reset() {
+_remote_pre_switch_user_failed_state_report() {
 	local units="" unit="" user="" uid="" runtime_dir="" bus="" failed_output=""
 
 	units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
@@ -8095,11 +8284,8 @@ _remote_pre_switch_user_failed_state_reset() {
 			continue
 		fi
 
-		echo "[pre-switch] resetting failed user units for ${user}:" >&2
+		echo "[pre-switch] preserving failed user units for ${user} for post-switch reconciliation:" >&2
 		echo "${failed_output}" >&2
-		setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
-			env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
-			systemctl --user reset-failed
 	done <<EOF_USER_RESET_UNITS
 ${units}
 EOF_USER_RESET_UNITS
@@ -8107,9 +8293,9 @@ EOF_USER_RESET_UNITS
 
 build_pre_switch_user_failed_state_reset_cmd() {
 	emit_remote_function_command \
-		$'_remote_pre_switch_system_failed_state_reset\n_remote_pre_switch_user_failed_state_reset' \
+		$'_remote_pre_switch_system_failed_state_reset\n_remote_pre_switch_user_failed_state_report' \
 		_remote_pre_switch_system_failed_state_reset \
-		_remote_pre_switch_user_failed_state_reset
+		_remote_pre_switch_user_failed_state_report
 }
 
 run_pre_switch_user_failed_state_reset() {
@@ -8128,22 +8314,37 @@ command_failure_is_host_key_verification() {
 
 	[ -s "${output_path}" ] || return 1
 
+	command_output_is_host_key_verification "$(<"${output_path}")"
+}
+
+command_output_is_host_key_verification() {
+	local output="$1"
+
+	[ -n "${output}" ] || return 1
+
 	grep -Eq \
 		"REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED|Offending .* key in " \
-		"${output_path}"
+		<<<"${output}"
+}
+
+command_output_is_transport_loss() {
+	local output="$1"
+
+	[ -n "${output}" ] || return 1
+	if command_output_is_host_key_verification "${output}"; then
+		return 1
+	fi
+
+	grep -Eq \
+		"failed to start SSH connection|mux_client_request_session|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|Connection closed by .* port [0-9]+|Received disconnect|client_loop: send disconnect: Broken pipe|Broken pipe|Bad file descriptor|stdio forwarding failed|Connection timed out|No route to host" \
+		<<<"${output}"
 }
 
 command_failure_is_transport_loss() {
 	local output_path="$1"
 
 	[ -s "${output_path}" ] || return 1
-	if command_failure_is_host_key_verification "${output_path}"; then
-		return 1
-	fi
-
-	grep -Eq \
-		"failed to start SSH connection|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|Connection closed by .* port [0-9]+|Received disconnect|client_loop: send disconnect: Broken pipe|Broken pipe|Bad file descriptor|stdio forwarding failed|Connection timed out|No route to host" \
-		"${output_path}"
+	command_output_is_transport_loss "$(<"${output_path}")"
 }
 
 remote_store_failure_is_transport_loss() {
@@ -8178,6 +8379,10 @@ stop_remote_build_heartbeat() {
 	[ -n "${heartbeat_pid}" ] || return 0
 	terminate_pid_tree "${heartbeat_pid}" TERM
 	wait "${heartbeat_pid}" 2>/dev/null || true
+}
+
+_remote_activation_filter_user_units() {
+	awk '!($0 ~ /\[systemd-run\].*podman.*healthcheck run / || $0 ~ /\.podman-wrapped healthcheck run /)'
 }
 
 _remote_activation_progress_probe() {
@@ -8235,6 +8440,7 @@ _remote_activation_progress_probe() {
 		user_units="$(
 			runuser -u "${managed_user}" -- env HOME="${managed_home:-/}" XDG_RUNTIME_DIR="${managed_runtime}" \
 				systemctl --user list-units --type=service --state=activating,failed --no-legend --plain 2>/dev/null |
+				_remote_activation_filter_user_units |
 				head -8 || true
 		)"
 		if [ -n "${user_units}" ]; then
@@ -8252,6 +8458,7 @@ activation_progress_probe_script() {
 		"${started_at}"
 	emit_remote_function_command \
 		"${invoke_cmd}" \
+		_remote_activation_filter_user_units \
 		_remote_activation_progress_probe
 }
 
@@ -8274,7 +8481,7 @@ start_activation_progress_heartbeat() {
 				wait "$!" || exit 0
 				remaining=$((remaining - 1))
 			done
-			if ! run_prepared_root_command "${probe_script}" >&2; then
+			if ! run_prepared_root_command_without_control_master "${probe_script}" >&2; then
 				echo "[activation] ${node}: ${label} heartbeat probe failed; activation may still be running" >&2
 			fi
 		done
@@ -8297,7 +8504,7 @@ run_activation_with_progress() {
 	local heartbeat_pid="" rc=0
 
 	start_activation_progress_heartbeat heartbeat_pid "${node}" "${unit}" "${started_at}" "${label}" || true
-	if run_with_combined_stream_capture "${output_out_name}" run_prepared_root_command "${command}"; then
+	if run_with_combined_stream_capture "${output_out_name}" run_prepared_root_command_without_control_master "${command}"; then
 		rc=0
 	else
 		rc="$?"
@@ -8530,9 +8737,9 @@ run_pre_activation_podman_image_pulls() {
 activate_prepared_system_path() {
 	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_runner="" activation_unit="" systemd_run_properties=""
 	local post_promote_bootloader_goal="" persist_profile=0
-	local activation_rc=0 activation_start_epoch="" activation_output=""
+	local activation_rc=0 activation_start_epoch="" activation_output="" verification_rc=0
+	local attempt=1 retry_sleep_secs=0
 
-	activation_unit="$(deploy_activation_unit_name "${node}")"
 	if activation_goal_persists_profile "${GOAL}"; then
 		persist_profile=1
 	fi
@@ -8540,23 +8747,43 @@ activate_prepared_system_path() {
 	activation_script="$(nixbot_activation_command "${system_path}" "${GOAL}" "${persist_profile}" "${post_promote_bootloader_goal}")"
 	activation_runner="$(nixbot_activation_runner_command "${activation_script}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
-	printf -v activate_cmd \
-		'NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
-		0 \
-		"${systemd_run_properties}" \
-		"${activation_unit}" \
-		"${activation_runner}"
 
 	echo "${system_path}" >&2
-	activation_start_epoch="$(date +%s)"
-	if run_activation_with_progress activation_output "${node}" deploy "${activation_unit}" "${activation_start_epoch}" "${activate_cmd}"; then
-		return 0
-	else
-		activation_rc="$?"
-	fi
+	while :; do
+		activation_unit="$(deploy_activation_attempt_unit_name "${node}" "${attempt}")"
+		printf -v activate_cmd \
+			'NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
+			0 \
+			"${systemd_run_properties}" \
+			"${activation_unit}" \
+			"${activation_runner}"
+		activation_start_epoch="$(date +%s)"
+		if run_activation_with_progress activation_output "${node}" deploy "${activation_unit}" "${activation_start_epoch}" "${activate_cmd}"; then
+			return 0
+		else
+			activation_rc="$?"
+		fi
 
-	report_activation_lock_contention_if_present "${node}" "${activation_unit}" "${activation_start_epoch}" "${activation_output}" || true
-	return "${activation_rc}"
+		report_activation_lock_contention_if_present "${node}" "${activation_unit}" "${activation_start_epoch}" "${activation_output}" || true
+		if command_output_is_transport_loss "${activation_output}" || transport_status_is_retryable "${activation_rc}"; then
+			echo "==> Deploy transport closed or failed for ${node}; verifying target state" >&2
+			if verify_deploy_target_state_after_transport_loss "${node}" "${system_path}" "${activation_unit}" "${activation_start_epoch}"; then
+				echo "==> Deploy for ${node} completed despite transport disconnect" >&2
+				print_deploy_systemd_user_manager_report "${node}" "${activation_start_epoch}" || true
+				return 0
+			else
+				verification_rc="$?"
+			fi
+			if [ "${verification_rc}" -eq 2 ] && [ "${attempt}" -lt "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+				attempt=$((attempt + 1))
+				retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+				echo "==> Deploy activation for ${node} did not reach ${system_path}; retrying activation (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+				sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
+				continue
+			fi
+		fi
+		return "${activation_rc}"
+	done
 }
 
 target_trusted_public_keys_for_copy() {
@@ -8920,7 +9147,22 @@ run_clean_action() {
 }
 
 _remote_clear_lock_path() {
-	local path="$1"
+	local path="$1" holders_file="${2:-}" force_held="${3:-0}" holders=""
+
+	if [ -n "$holders_file" ] && [ -f "$holders_file" ]; then
+		holders="$(_remote_lock_holder_lines_from_file "$holders_file" "$path")"
+	else
+		holders="$(_remote_lock_holder_lines_for_path "$path")"
+	fi
+	if [ -n "$holders" ]; then
+		if [ "$force_held" -eq 1 ]; then
+			printf 'force-remove held %s\n' "$path" >&2
+		else
+			printf 'held %s\n' "$path" >&2
+		fi
+		printf '%s\n' "$holders" >&2
+		[ "$force_held" -eq 1 ] || return 1
+	fi
 
 	if [ -e "$path" ] || [ -L "$path" ]; then
 		printf 'remove %s\n' "$path"
@@ -8931,31 +9173,116 @@ _remote_clear_lock_path() {
 }
 
 _remote_clear_lock_paths_from_find() {
-	local path=""
+	local holders_file="${1:-}" force_held="${2:-0}" path="" rc=0
 
 	while IFS= read -r path; do
 		[ -n "$path" ] || continue
-		_remote_clear_lock_path "$path"
+		_remote_clear_lock_path "$path" "$holders_file" "$force_held" || rc=1
+	done
+	return "$rc"
+}
+
+_remote_lock_fd_holder_line() {
+	local fd_path="$1" link_target="$2"
+	local pid="" fd="" user="" comm="" cgroup=""
+
+	pid="${fd_path#/proc/}"
+	pid="${pid%%/*}"
+	fd="${fd_path##*/}"
+	user="$(stat -c %U "/proc/$pid" 2>/dev/null || printf '?')"
+	comm="$(cat "/proc/$pid/comm" 2>/dev/null || printf '?')"
+	cgroup="$(sed -n 's|^[^:]*:[^:]*:||p' "/proc/$pid/cgroup" 2>/dev/null | tail -n 1)"
+	printf '  pid=%s fd=%s user=%s comm=%s cgroup=%s target=%s\n' \
+		"$pid" "$fd" "$user" "$comm" "${cgroup:-?}" "$link_target"
+}
+
+_remote_lock_holder_lines_for_path() {
+	local path="$1" fd_path="" link_target=""
+
+	for fd_path in /proc/[0-9]*/fd/*; do
+		[ -e "$fd_path" ] || continue
+		link_target="$(readlink "$fd_path" 2>/dev/null || true)"
+		case "$link_target" in
+		"$path" | "$path (deleted)")
+			_remote_lock_fd_holder_line "$fd_path" "$link_target"
+			;;
+		esac
 	done
 }
 
-_remote_clear_nixbot_locks() {
+_remote_collect_lock_holders_file() {
+	local holders_file="$1" fd_path="" link_target="" lock_path="" holder_line=""
+
+	: >"$holders_file"
+	for fd_path in /proc/[0-9]*/fd/*; do
+		[ -e "$fd_path" ] || continue
+		link_target="$(readlink "$fd_path" 2>/dev/null || true)"
+		case "$link_target" in
+		*'/.podman-compose/lifecycle.lock' | *'/podman-compose/rootless-lifecycle-v1.lock' | *'/state-locks/'*'.lock' | *'/ssh-tty.lock' | *'/nixbot-worktree.lock' | *'/.nixbot-worktree.lock')
+			lock_path="$link_target"
+			;;
+		*'/.podman-compose/lifecycle.lock (deleted)' | *'/podman-compose/rootless-lifecycle-v1.lock (deleted)' | *'/state-locks/'*'.lock (deleted)' | *'/ssh-tty.lock (deleted)' | *'/nixbot-worktree.lock (deleted)' | *'/.nixbot-worktree.lock (deleted)')
+			lock_path="${link_target% (deleted)}"
+			;;
+		*)
+			continue
+			;;
+		esac
+		holder_line="$(_remote_lock_fd_holder_line "$fd_path" "$link_target")"
+		printf '%s\t%s\n' "$lock_path" "$holder_line" >>"$holders_file"
+	done
+}
+
+_remote_lock_holder_lines_from_file() {
+	local holders_file="$1" path="$2"
+
+	awk -F '\t' -v path="$path" '$1 == path { sub(/^[^\t]*\t/, ""); print }' "$holders_file"
+}
+
+_remote_audit_lock_path() {
+	local path="$1" holders=""
+
+	holders="$(_remote_lock_holder_lines_for_path "$path")"
+	if [ -n "$holders" ]; then
+		printf 'held %s\n' "$path"
+		printf '%s\n' "$holders"
+		return 0
+	fi
+	return 1
+}
+
+_remote_clear_locks_from_emitter() {
+	local emitter="$1" force_held="${2:-0}" holders_file="" rc=0
+
+	holders_file="$(mktemp "${TMPDIR:-/tmp}/nixbot-lock-holders.XXXXXX")"
+	_remote_collect_lock_holders_file "$holders_file"
+	"$emitter" |
+		awk 'NF && !seen[$0]++' |
+		_remote_clear_lock_paths_from_find "$holders_file" "$force_held" || rc="$?"
+	rm -f "$holders_file"
+	return "$rc"
+}
+
+_remote_clear_emit_nixbot_locks() {
 	local root=""
 
 	for root in /dev/shm/nixbot "${TMPDIR:-/tmp}/nixbot"; do
 		[ -d "$root" ] || continue
-		find "$root" -xdev -depth -path '*/state-locks/*.lock' -type d -print 2>/dev/null |
-			_remote_clear_lock_paths_from_find
-		find "$root" -xdev -depth -name 'ssh-tty.lock' -type d -print 2>/dev/null |
-			_remote_clear_lock_paths_from_find
+		find "$root" -xdev -depth -path '*/state-locks/*.lock' -type d -print 2>/dev/null
+		find "$root" -xdev -depth -name 'ssh-tty.lock' -type d -print 2>/dev/null
 	done
 
 	if [ -d /var/lib/nixbot ]; then
 		find /var/lib/nixbot -xdev -depth \
 			\( -name 'nixbot-worktree.lock' -o -name '.nixbot-worktree.lock' \) \
-			-type d -print 2>/dev/null |
-			_remote_clear_lock_paths_from_find
+			-type d -print 2>/dev/null
 	fi
+}
+
+_remote_clear_nixbot_locks() {
+	local force_held="${1:-0}"
+
+	_remote_clear_locks_from_emitter _remote_clear_emit_nixbot_locks "$force_held"
 }
 
 _remote_clear_emit_declared_podman_lifecycle_locks() {
@@ -8979,27 +9306,101 @@ _remote_clear_emit_fallback_podman_lifecycle_locks() {
 	find /var/lib -xdev -path '*/.podman-compose/lifecycle.lock' -type f -print 2>/dev/null || true
 }
 
-_remote_clear_podman_locks() {
-	{
-		_remote_clear_emit_declared_podman_lifecycle_locks
-		_remote_clear_emit_fallback_podman_lifecycle_locks
-	} | awk 'NF && !seen[$0]++' | _remote_clear_lock_paths_from_find
+_remote_clear_emit_rootless_podman_lifecycle_locks() {
+	[ -d /run/user ] || return 0
+	find /run/user -xdev -path '*/podman-compose/rootless-lifecycle-v1.lock' -type f -print 2>/dev/null || true
 }
 
-_remote_clear_remote_locks() {
+_remote_clear_emit_podman_locks() {
+	{
+		_remote_clear_emit_rootless_podman_lifecycle_locks
+		_remote_clear_emit_declared_podman_lifecycle_locks
+		_remote_clear_emit_fallback_podman_lifecycle_locks
+	}
+}
+
+_remote_clear_podman_locks() {
+	local force_held="${1:-0}"
+
+	_remote_clear_locks_from_emitter _remote_clear_emit_podman_locks "$force_held"
+}
+
+_remote_audit_nixbot_locks() {
+	local emitted=0 path=""
+
+	while IFS= read -r path; do
+		[ -n "$path" ] || continue
+		_remote_audit_lock_path "$path" && emitted=1
+	done < <(_remote_clear_emit_nixbot_locks | awk 'NF && !seen[$0]++')
+	[ "$emitted" -eq 1 ] || printf 'no held nixbot locks\n'
+}
+
+_remote_audit_podman_locks() {
+	local emitted=0 fd_path="" link_target="" lock_path="" deleted=""
+
+	for fd_path in /proc/[0-9]*/fd/*; do
+		[ -e "$fd_path" ] || continue
+		link_target="$(readlink "$fd_path" 2>/dev/null || true)"
+		deleted=0
+		case "$link_target" in
+		*'/.podman-compose/lifecycle.lock' | *'/podman-compose/rootless-lifecycle-v1.lock')
+			lock_path="$link_target"
+			;;
+		*'/.podman-compose/lifecycle.lock (deleted)' | *'/podman-compose/rootless-lifecycle-v1.lock (deleted)')
+			lock_path="${link_target% (deleted)}"
+			deleted=1
+			;;
+		*)
+			continue
+			;;
+		esac
+		if [ "$deleted" -eq 1 ]; then
+			printf 'held deleted %s\n' "$lock_path"
+		else
+			printf 'held %s\n' "$lock_path"
+		fi
+		_remote_lock_fd_holder_line "$fd_path" "$link_target"
+		emitted=1
+	done
+	[ "$emitted" -eq 1 ] || printf 'no held podman lifecycle locks\n'
+}
+
+_remote_audit_remote_locks() {
 	local clear_remote_locks_mode="$1"
 
 	set -Eeuo pipefail
 	case "$clear_remote_locks_mode" in
 	all)
-		_remote_clear_nixbot_locks
-		_remote_clear_podman_locks
+		_remote_audit_nixbot_locks
+		_remote_audit_podman_locks
 		;;
 	nixbot)
-		_remote_clear_nixbot_locks
+		_remote_audit_nixbot_locks
 		;;
 	podman)
-		_remote_clear_podman_locks
+		_remote_audit_podman_locks
+		;;
+	*)
+		printf 'unsupported clear-remote-locks mode: %s\n' "$clear_remote_locks_mode" >&2
+		exit 2
+		;;
+	esac
+}
+
+_remote_clear_remote_locks() {
+	local clear_remote_locks_mode="$1" force_held="${2:-0}"
+
+	set -Eeuo pipefail
+	case "$clear_remote_locks_mode" in
+	all)
+		_remote_clear_nixbot_locks "$force_held"
+		_remote_clear_podman_locks "$force_held"
+		;;
+	nixbot)
+		_remote_clear_nixbot_locks "$force_held"
+		;;
+	podman)
+		_remote_clear_podman_locks "$force_held"
 		;;
 	*)
 		printf 'unsupported clear-remote-locks mode: %s\n' "$clear_remote_locks_mode" >&2
@@ -9009,35 +9410,49 @@ _remote_clear_remote_locks() {
 }
 
 build_clear_remote_locks_command() {
-	local mode="$1" invoke_cmd=""
+	local mode="$1" force_held="${2:-0}" invoke_cmd=""
 
-	printf -v invoke_cmd '_remote_clear_remote_locks %q' "${mode}"
+	printf -v invoke_cmd '_remote_clear_remote_locks %q %q' "${mode}" "${force_held}"
 	emit_remote_function_command \
 		"${invoke_cmd}" \
 		_remote_clear_lock_path \
 		_remote_clear_lock_paths_from_find \
+		_remote_lock_fd_holder_line \
+		_remote_lock_holder_lines_for_path \
+		_remote_collect_lock_holders_file \
+		_remote_lock_holder_lines_from_file \
+		_remote_audit_lock_path \
+		_remote_clear_locks_from_emitter \
+		_remote_clear_emit_nixbot_locks \
 		_remote_clear_nixbot_locks \
 		_remote_clear_emit_declared_podman_lifecycle_locks \
 		_remote_clear_emit_fallback_podman_lifecycle_locks \
+		_remote_clear_emit_rootless_podman_lifecycle_locks \
+		_remote_clear_emit_podman_locks \
 		_remote_clear_podman_locks \
 		_remote_clear_remote_locks
 }
 
-print_clear_remote_locks_dry_run() {
-	local node="$1" mode="$2" script="$3"
+build_audit_remote_locks_command() {
+	local mode="$1" invoke_cmd=""
 
-	printf '\n# %s: clear %s locks\n' "${node}" "${mode}"
-	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
-		printf '# target: local host\n'
-	else
-		printf '# target: %s\n' "${PREP_DEPLOY_SSH_TARGET}"
-	fi
-	printf '# run inside the target host as root:\n'
-	printf '%s\n' "${script}"
+	printf -v invoke_cmd '_remote_audit_remote_locks %q' "${mode}"
+	emit_remote_function_command \
+		"${invoke_cmd}" \
+		_remote_lock_fd_holder_line \
+		_remote_lock_holder_lines_for_path \
+		_remote_audit_lock_path \
+		_remote_clear_emit_nixbot_locks \
+		_remote_clear_emit_declared_podman_lifecycle_locks \
+		_remote_clear_emit_fallback_podman_lifecycle_locks \
+		_remote_clear_emit_rootless_podman_lifecycle_locks \
+		_remote_audit_nixbot_locks \
+		_remote_audit_podman_locks \
+		_remote_audit_remote_locks
 }
 
 run_clear_remote_locks_for_host() {
-	local node="$1" mode="${2:-all}" script=""
+	local node="$1" mode="${2:-all}" script="" action_label="Clear locks"
 
 	log_host_stage clear-remote-locks "${node}" "mode=${mode}"
 	if ! prepare_deploy_context "${node}" primary-only; then
@@ -9045,14 +9460,23 @@ run_clear_remote_locks_for_host() {
 		return 1
 	fi
 
-	script="$(build_clear_remote_locks_command "${mode}")"
 	if [ "${DRY_RUN}" -eq 1 ]; then
-		print_clear_remote_locks_dry_run "${node}" "${mode}" "${script}"
+		script="$(build_audit_remote_locks_command "${mode}")"
+		action_label="Audit held locks"
+		DRY_RUN=0
+		if run_prepared_root_command_with_retry "${action_label} on ${node}" "${script}"; then
+			DRY_RUN=1
+			log_group_end_host_stage clear-remote-locks
+			return 0
+		fi
+		DRY_RUN=1
 		log_group_end_host_stage clear-remote-locks
-		return 0
+		return 1
+	else
+		script="$(build_clear_remote_locks_command "${mode}" "${FORCE_REQUESTED}")"
 	fi
 
-	if run_prepared_root_command_with_retry "Clear locks on ${node}" "${script}"; then
+	if run_prepared_root_command_with_retry "${action_label} on ${node}" "${script}"; then
 		log_group_end_host_stage clear-remote-locks
 		return 0
 	fi
@@ -9060,23 +9484,96 @@ run_clear_remote_locks_for_host() {
 	return 1
 }
 
+run_clear_remote_locks_job() {
+	local node="$1" mode="$2" status_file="$3" rc=0
+
+	(
+		set +e
+		if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
+			run_with_prefixed_combined_output \
+				clear-remote-locks \
+				"${node}" \
+				"" \
+				run_clear_remote_locks_for_host \
+				"${node}" \
+				"${mode}"
+		else
+			run_clear_remote_locks_for_host "${node}" "${mode}"
+		fi
+		rc="$?"
+		write_status_file "${status_file}" "${rc}"
+		exit "${rc}"
+	)
+}
+
 run_clear_remote_locks_action() {
 	local selected_json="$1" runnable_selected_json="" node="" final_rc=0 mode="${NIXBOT_CLEAR_REMOTE_LOCKS_MODE:-all}"
+	local status_dir="" status_file="" active_jobs=0 clear_parallel=0 phase_rc=0
 	local -a selected_hosts=() cleared_hosts=() failed_hosts=()
 
 	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
 	json_array_to_bash_array "${runnable_selected_json}" selected_hosts
 
-	log_section "Phase: Clear Remote Locks"
+	ensure_tmp_dir
+	status_dir="${NIXBOT_TMP_DIR}/clear-remote-locks-status"
+	mkdir -p "${status_dir}"
+
+	if [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ] && [ "${#selected_hosts[@]}" -gt 1 ]; then
+		clear_parallel=1
+	fi
+
+	if [ "${clear_parallel}" -eq 1 ]; then
+		log_grouped_phase_section "Phase: Clear Remote Locks" "clear-remote-locks" 1
+	else
+		log_grouped_phase_section "Phase: Clear Remote Locks" "clear-remote-locks" 0
+	fi
+
 	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
-		if run_clear_remote_locks_for_host "${node}" "${mode}"; then
+
+		status_file="$(phase_dir_item_status_file "${status_dir}" "${node}")"
+		if [ "${clear_parallel}" -eq 1 ]; then
+			run_clear_remote_locks_job "${node}" "${mode}" "${status_file}" &
+			active_jobs=$((active_jobs + 1))
+			if wait_for_job_slot active_jobs "${NIXBOT_PARALLEL_JOBS}"; then
+				:
+			else
+				phase_rc="$?"
+				log_group_scope_end
+				return "${phase_rc}"
+			fi
+			continue
+		fi
+
+		if run_clear_remote_locks_job "${node}" "${mode}" "${status_file}"; then
+			:
+		else
+			:
+		fi
+	done
+
+	if [ "${clear_parallel}" -eq 1 ]; then
+		if drain_job_slots active_jobs; then
+			:
+		else
+			phase_rc="$?"
+			log_group_scope_end
+			return "${phase_rc}"
+		fi
+	fi
+
+	for node in "${selected_hosts[@]}"; do
+		[ -n "${node}" ] || continue
+
+		status_file="$(phase_dir_item_status_file "${status_dir}" "${node}")"
+		if [ "$(read_status_file "${status_file}" 2>/dev/null || printf '1')" = "0" ]; then
 			cleared_hosts+=("${node}")
 		else
 			failed_hosts+=("${node}")
 			final_rc=1
 		fi
 	done
+	log_group_scope_end
 
 	capture_current_run_summary_state \
 		"${ACTION}" \
@@ -9462,12 +9959,13 @@ EOF_HC_UNITS
 }
 
 _remote_health_check_starting_timeout_seconds() {
-	local pointer_file="" metadata_file="" timeout="" max_timeout=0
+	local pointer_file="" metadata_file="" timeout="" max_timeout=0 unit_count=0
 
 	for pointer_file in /etc/systemd-user-manager/dispatchers/*.metadata; do
 		[ -e "${pointer_file}" ] || continue
 		metadata_file="$(tr -d '\n' <"${pointer_file}")"
 		[ -r "${metadata_file}" ] || continue
+		unit_count="$((unit_count + $(grep -Eo '"timeout(Ready|Stable)Seconds":[[:space:]]*[0-9]+' "${metadata_file}" | wc -l)))"
 		while IFS= read -r timeout; do
 			case "${timeout}" in
 			"" | *[!0-9]*) continue ;;
@@ -9475,10 +9973,13 @@ _remote_health_check_starting_timeout_seconds() {
 			if [ "${timeout}" -gt "${max_timeout}" ]; then
 				max_timeout="${timeout}"
 			fi
-		done < <(grep -Eo '"timeoutStableSeconds":[[:space:]]*[0-9]+' "${metadata_file}" | sed -E 's/.*:[[:space:]]*//')
+		done < <(grep -Eo '"timeout(Ready|Stable)Seconds":[[:space:]]*[0-9]+' "${metadata_file}" | sed -E 's/.*:[[:space:]]*//')
 	done
 
 	if [ "${max_timeout}" -gt 0 ]; then
+		if [ "${unit_count}" -gt 1 ]; then
+			max_timeout="$((max_timeout + (unit_count - 1) * 30))"
+		fi
 		printf '%s\n' "${max_timeout}"
 		return 0
 	fi
@@ -9504,7 +10005,7 @@ _remote_post_switch_user_health_check() {
 
 		if [ -z "${timeout_seconds}" ]; then
 			if ! timeout_seconds="$(_remote_health_check_starting_timeout_seconds)"; then
-				echo "[health-check] FAILED — deployment work is still settling, but no service-owned timeoutStableSeconds metadata was found" >&2
+				echo "[health-check] FAILED — deployment work is still settling, but no service-owned timeoutReadySeconds metadata was found" >&2
 				return 1
 			fi
 			echo "[health-check] waiting up to ${timeout_seconds}s for deployment work to settle" >&2
@@ -11086,8 +11587,8 @@ run_hosts() {
 			"${rollback_status_dir}" \
 			"${health_log_dir}" \
 			"${health_status_dir}" \
-			"${verify_parallel}" \
-			"${NIXBOT_VERIFY_JOBS}" \
+			0 \
+			1 \
 			successful_hosts; then
 			:
 		else
@@ -12362,7 +12863,7 @@ append_host_log_filter() {
 }
 
 strip_ansi_escape_sequences() {
-	sed -E $'s/\x1B\\[[0-9;?]*[ -/]*[@-~]//g'
+	LC_ALL=C sed -E $'s|\x1B\\[[0-?]*[ -/]*[@-~]||g'
 }
 
 run_with_combined_output() {

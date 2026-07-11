@@ -172,8 +172,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   `nixbot --clear-remote-locks[=all|nixbot|podman]` remove only repo-managed
   remote lock paths for the selected hosts. The `nixbot` mode clears nixbot
   runtime, SSH TTY, and managed worktree locks; the `podman` mode clears
-  declared Podman Compose lifecycle lock files; `all` clears both. `--dry`
-  prints the exact host-local shell script and must not execute it.
+  declared Podman Compose lifecycle lock files plus rootless lifecycle lock
+  files under `/run/user`; `all` clears both. `--dry` audits held lock owners on
+  the selected hosts without unlinking files. `--force` also unlinks held lock
+  files after reporting holders.
 - Interrupt cleanup terminates registered background jobs, SSH control masters,
   and same-process-group nixbot wrapper processes. The wrapper cleanup is
   guarded so it only runs when nixbot has a distinct process group from its
@@ -304,7 +306,7 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   containers whose current health is `unhealthy`; containers still in `starting`
   are polled for a bounded window so healthcheck intervals do not trigger
   premature rollback. The wait budget comes from the maximum generated
-  `systemd-user-manager` `timeoutStableSeconds` metadata on the host, so service
+  `systemd-user-manager` `timeoutReadySeconds` metadata on the host, so service
   modules own convergence policy instead of nixbot carrying a separate service
   timeout. If starting containers are present but no service-owned timeout
   metadata exists, the health check fails rather than inventing an unmanaged
