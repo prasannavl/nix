@@ -3425,7 +3425,30 @@ EOF_SWITCH
 
         lines = result.stdout.splitlines()
         self.assertIn("\x1b[31m", lines[0])
-        self.assertIn("\x1b[33m", lines[1])
+        self.assertIn("\x1b[38;5;178m", lines[1])
+
+    def test_format_host_console_logs_colors_systemd_failure_shapes(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            NIXBOT_FORCE_COLOR=1
+            printf '%s\n' \
+              'Failed to start user unit abird-managed-ready.target' \
+              'warning: user activation for abird failed' \
+              '× migration-manager-apply.service - Apply runtime migration gate state' \
+              '     Active: failed (Result: exit-code) since Sun 2026-07-12 12:45:52 +08; 25ms ago' \
+              '    Process: 11485 ExecStart=/nix/store/helper apply (code=exited, status=1/FAILURE)' \
+              'deploy failed for abird-gondor-id; attempting host-local rollback' \
+              'warning: remote activation still settling' |
+              format_host_console_logs app deploy
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        for line in lines[:6]:
+            self.assertIn("\x1b[31m", line)
+        self.assertIn("\x1b[38;5;178m", lines[6])
 
     def test_append_host_log_filter_keeps_persisted_log_plain_when_terminal_is_colored(self):
         log_file = self.work_dir / "append-color.log"
@@ -3484,7 +3507,7 @@ EOF_SWITCH
         self.assertIn("  - okhost: \x1b[32mok\x1b[0m", lines)
         self.assertIn("\x1b[90m  - rolled: rolled back\x1b[0m", lines)
         self.assertIn("\x1b[90m  - skipped: ok (skip)\x1b[0m", lines)
-        self.assertIn("\x1b[33m  - optional: optional (rollback failed)\x1b[0m", lines)
+        self.assertIn("\x1b[38;5;178m  - optional: optional (rollback failed)\x1b[0m", lines)
         self.assertIn("\x1b[31m  - failed: FAIL (deploy)\x1b[0m", lines)
         self.assertNotIn("\x1b[90mokhost\x1b[0m", result.stderr)
         self.assertNotIn("\x1b[36mokhost\x1b[0m", result.stderr)

@@ -265,7 +265,7 @@ die() {
 _NIXBOT_C_RESET=$'\033[0m'
 _NIXBOT_C_RED=$'\033[31m'
 _NIXBOT_C_GREEN=$'\033[32m'
-_NIXBOT_C_YELLOW=$'\033[33m'
+_NIXBOT_C_YELLOW=$'\033[38;5;178m'
 _NIXBOT_C_GRAY=$'\033[90m'
 
 _NIXBOT_HOST_PALETTE=(
@@ -12990,10 +12990,10 @@ format_host_console_logs() {
 	}
 
 	function color_for(line) {
-		if (red != "" && line ~ /(^|[[:space:]])FAILED([[:space:]]|$)|state=failed\/|result=failed|unhealthy|Health check failed|Deploy failed|Rollback failed/) {
+		if (red != "" && line ~ /(^|[[:space:]])(FAILED|Failed|failed)([[:space:]:;.,'\''")]|$)|state=failed\/|result=failed|Active: failed|status=[0-9]+\/FAILURE|unhealthy|Health check failed|health check failed|Deploy failed|deploy failed|Rollback failed|rollback failed|Failed with result|failed with result|warning: .*failed|× /) {
 			return red
 		}
-		if (yellow != "" && line ~ /pending\/failed|still settling|system_jobs=[1-9][0-9]*|result=exit-code|auto-restart|restart-queued|start-limit|transport (closed|unavailable)|Connection timed out|heartbeat probe failed|\(starting\)/) {
+		if (yellow != "" && line ~ /warning:|pending\/failed|still settling|system_jobs=[1-9][0-9]*|result=exit-code|auto-restart|restart-queued|start-limit|transport (closed|unavailable)|Connection timed out|heartbeat probe failed|\(starting\)/) {
 			return yellow
 		}
 		if (green != "" && line ~ /\[health-check\] ok/) {
