@@ -54,6 +54,10 @@ include only what applies, but keep the relative order stable.
 
 ## Lifecycle Policy
 
+- Pin image references to exact upstream version tags whenever the registry
+  publishes a usable release tag. Use a `tag@sha256:<digest>` pin only for
+  channel-only images where no versioned tag exists, so deploys stay
+  reproducible without hiding normal version updates behind digest churn.
 - Use `state = "stopped"` when an instance should remain declared but should be
   stopped and skipped by automatic start/reconcile. The generated unit remains
   manually startable; runtime files are staged on start and cleaned after stop.
