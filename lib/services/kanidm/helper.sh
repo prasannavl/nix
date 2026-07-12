@@ -383,6 +383,30 @@ auto_apply_stamp_file() {
 	printf '%s/%s.stamp' "$(auto_apply_stamp_dir)" "$key"
 }
 
+auto_apply_stamp_metadata() {
+	local command icon_name icon_path
+	command="$1"
+
+	case "$command" in
+	apply-system)
+		jq -c '{state: {domain: (.state.domain // {})}}' "$kanidm_metadata"
+		;;
+	*)
+		jq -c 'del(.state.oauthApps[]?.iconPath)' "$kanidm_metadata"
+		jq -r '
+			.state.oauthApps[]?
+			| select(.iconPath != null and .iconPath != "")
+			| [.name, .iconPath]
+			| @tsv
+		' "$kanidm_metadata" |
+			LC_ALL=C sort |
+			while IFS=$'\t' read -r icon_name icon_path; do
+				printf '%s\0%s\0' "$icon_name" "$(sha256sum "$icon_path" | cut -d' ' -f1)"
+			done
+		;;
+	esac
+}
+
 auto_apply_desired_stamp() {
 	local account_name command stamp_contract
 	command="$1"
@@ -391,7 +415,7 @@ auto_apply_desired_stamp() {
 	{
 		printf '%s\0' "$stamp_contract"
 		printf '%s\0' "$command" "$account_name" "$kanidm_url" "$(kanidm_domain)"
-		cat "$kanidm_metadata"
+		auto_apply_stamp_metadata "$command"
 	} | sha256sum | cut -d' ' -f1
 }
 
@@ -403,6 +427,21 @@ auto_apply_stamp_matches() {
 	[ -r "$stamp_file" ] || return 1
 	current_stamp="$(cat "$stamp_file")"
 	[ "$current_stamp" = "$desired_stamp" ]
+}
+
+auto_apply_legacy_stamp_exists() {
+	local command stamp_file
+	command="$1"
+	stamp_file="$2"
+
+	case "$command" in
+	apply-system | apply-idm)
+		;;
+	*)
+		return 1
+		;;
+	esac
+	[ -s "$stamp_file" ]
 }
 
 record_auto_apply_stamp() {
@@ -1487,6 +1526,11 @@ auto_apply_idm() {
 	stamp_file="$(auto_apply_stamp_file "$command" "$account_name")"
 	if auto_apply_stamp_matches "$stamp_file" "$desired_stamp"; then
 		printf 'Kanidm %s declarative stamp is current; skipping auto-apply.\n' "$command"
+		return 0
+	fi
+	if auto_apply_legacy_stamp_exists "$command" "$stamp_file"; then
+		printf 'Kanidm %s legacy declarative stamp exists; recording canonical stamp.\n' "$command"
+		record_auto_apply_stamp "$stamp_file" "$desired_stamp"
 		return 0
 	fi
 
