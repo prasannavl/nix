@@ -28,10 +28,19 @@ budget before nixbot activation can continue. Normal start/reload pre-pulls
 remain best-effort because `podman compose up` can still perform the
 service-local pull under the managed start path.
 
-Repeated deploy pulls should skip registry traffic only when the generated
-`imagePullStamp` matches the helper runtime state and every declared image is
-present in the local Podman image store. Treat helper state as the generation
-marker, not as proof that images still exist locally.
+Repeated deploy pulls should skip registry traffic when every declared image is
+already present in the local Podman image store. If the generated
+`imagePullStamp` also matches the helper runtime state, the helper can skip
+immediately. If the stamp changed but the images are present, the helper should
+record the current stamp when it can briefly acquire the lifecycle lock, then
+skip the registry pull. If an old-generation start is holding the lifecycle
+lock, image-pull should still skip because the explicit pull's correctness
+boundary is local image availability, not forced upstream refresh.
+
+Treat helper state as the generation marker, not as proof that images still
+exist locally. This avoids making pre-activation depend on Docker Hub or another
+registry when a changed store-backed compose source only changes the pull hash
+and the declared images are already available on the host.
 
 Already-current deploy pulls should stay quiet. The batch
 `podman-compose-image-pull-all` driver may use helper-provided status markers

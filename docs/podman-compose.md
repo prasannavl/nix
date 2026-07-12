@@ -126,9 +126,11 @@ compose unit to leave transitional states such as `activating`, `deactivating`,
 or `reloading`. It defaults to 120 seconds at the stack level and can be
 overridden per instance.
 
-`startStateStallSeconds` optionally bounds how long the helper allows expected
-containers to remain non-running during `podman compose up`. Leave it unset
-unless a healthy startup path has a measured reason for a different guard.
+`composeUpNoProgressSeconds` optionally bounds how long the helper allows
+expected containers to make no healthy-state progress during
+`podman compose
+up`. Leave it unset unless a healthy startup path has a measured
+reason for a different guard.
 
 ## Operator Control
 

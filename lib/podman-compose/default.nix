@@ -80,7 +80,7 @@
     autoStart = null;
     longRunning = true;
     timeoutReadySeconds = null;
-    startStateStallSeconds = null;
+    composeUpNoProgressSeconds = null;
     bootTag = "0";
     reloadTag = "0";
     recreateTag = "0";
@@ -728,9 +728,9 @@
         description = "Seconds native user-service convergence should wait for this compose unit to become ready. When null, inherit the stack default.";
       };
 
-      startStateStallSeconds = lib.mkOption {
+      composeUpNoProgressSeconds = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.positive;
-        default = serviceDefaults.startStateStallSeconds;
+        default = serviceDefaults.composeUpNoProgressSeconds;
         description = "Optional helper start guard for how long containers may remain non-running during `podman compose up` before the helper terminates the attempt. Leave null for the helper default.";
       };
 
@@ -1568,7 +1568,7 @@
           reload = service.reload;
           preStart = service.preStart;
           postStart = service.postStart;
-          startStateStallSeconds = service.startStateStallSeconds;
+          composeUpNoProgressSeconds = service.composeUpNoProgressSeconds;
           files = stagedFileActionInputs restartStagedEntries;
           dirs = lib.mapAttrs (dirName: entry: dirPermsJson dirName entry) restartDirs;
           dirRuntimePaths = restartDirRuntimePaths;
@@ -1767,6 +1767,8 @@
         imagePullStamp = actionStamps.imagePull;
         startWorkerUnit = "";
         longRunning = service.longRunning;
+        timeoutReadySeconds = service.timeoutReadySeconds;
+        composeUpNoProgressSeconds = service.composeUpNoProgressSeconds;
         envSecretFiles = map (composeServiceName: let
           entry = service.envSecrets.${composeServiceName};
         in
@@ -1787,7 +1789,7 @@
         "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
         "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
       ]
-      ++ lib.optional (service.startStateStallSeconds != null) "NIX_PODMAN_COMPOSE_START_STATE_STALL_SECONDS=${toString service.startStateStallSeconds}";
+      ++ lib.optional (service.composeUpNoProgressSeconds != null) "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=${toString service.composeUpNoProgressSeconds}";
     stampHelperEnvironment = [
       "PATH=${podmanHelperPath}"
       "NIX_PODMAN_COMPOSE_METADATA=<generation-local-metadata>"

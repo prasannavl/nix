@@ -727,6 +727,76 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual("", result.stdout)
         self.assertEqual("skipped\n", status_file.read_text(encoding="utf-8"))
 
+    def test_cmd_image_pull_skips_when_images_exist_but_stamp_changed(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        self.write_runtime_state(imagePullStamp="pull-old")
+        metadata = self.write_service_metadata(
+            "metadata-image-pull-existing-image-new-stamp.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+            imagePullStamp="pull-new",
+        )
+
+        result = self.run_helper(
+            """
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            TEST_PODMAN_EXISTING_IMAGES="docker.io/library/nginx:latest",
+            TEST_PODMAN_MODE="pull_fatal_zero",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(["image exists docker.io/library/nginx:latest"], history)
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual("pull-new", state["imagePullStamp"])
+        self.assertEqual("skipped\n", status_file.read_text(encoding="utf-8"))
+
+    def test_cmd_image_pull_skips_present_images_when_lifecycle_lock_busy(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        self.write_runtime_state(imagePullStamp="pull-old")
+        metadata = self.write_service_metadata(
+            "metadata-image-pull-existing-image-busy-lock.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+            imagePullStamp="pull-new",
+        )
+
+        result = self.run_helper(
+            """
+            lock_lifecycle_exclusive_timeout() { return 1; }
+            lock_lifecycle_exclusive() {
+              printf 'unexpected blocking lock\n' >&2
+              return 1
+            }
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            TEST_PODMAN_EXISTING_IMAGES="docker.io/library/nginx:latest",
+            TEST_PODMAN_MODE="pull_fatal_zero",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("unexpected blocking lock", result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(["image exists docker.io/library/nginx:latest"], history)
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual("pull-old", state["imagePullStamp"])
+        self.assertEqual("skipped\n", status_file.read_text(encoding="utf-8"))
+
     def test_cmd_image_pull_does_not_skip_when_stamp_current_but_image_missing(self):
         pull_file = self.state_dir / "compose.pull.yml"
         pull_file.write_text("services: {}\n", encoding="utf-8")
@@ -755,6 +825,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
         self.assertEqual(
             [
+                "image exists docker.io/library/nginx:latest",
                 "image exists docker.io/library/nginx:latest",
                 f"compose -f {pull_file} pull",
             ],
@@ -787,7 +858,13 @@ class PodmanComposeHelperTest(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertEqual([f"compose -f {pull_file} pull"], history)
+        self.assertEqual(
+            [
+                "image exists docker.io/library/nginx:latest",
+                f"compose -f {pull_file} pull",
+            ],
+            history,
+        )
         state = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual("pull-new", state["imagePullStamp"])
         self.assertEqual("pulled\n", status_file.read_text(encoding="utf-8"))
@@ -881,7 +958,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         result = self.run_helper(
             """
             compose_start_default_timeout_seconds=20
-            compose_start_state_stall_seconds=1
+            compose_up_no_progress_seconds=1
             restart_aardvark_dns() { :; }
             compose_up_checked normal
             """,
@@ -912,7 +989,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         result = self.run_helper(
             """
             compose_start_default_timeout_seconds=20
-            compose_start_state_stall_seconds=1
+            compose_up_no_progress_seconds=1
             expected_compose_services=(web worker)
             restart_aardvark_dns() { :; }
             compose_up_checked normal
@@ -937,7 +1014,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         result = self.run_helper(
             """
             compose_start_default_timeout_seconds=20
-            compose_start_state_stall_seconds=1
+            compose_up_no_progress_seconds=1
             expected_compose_services=(web worker)
             restart_aardvark_dns() { :; }
             compose_up_checked normal

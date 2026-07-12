@@ -42,7 +42,7 @@
               wants = ["optional"];
               waitForNetwork = true;
               longRunning = false;
-              startStateStallSeconds = 75;
+              composeUpNoProgressSeconds = 75;
               imageTag = "image-1";
               bootTag = "boot-1";
               reloadTag = "reload-1";
@@ -272,7 +272,7 @@ in
   assert app.removalPolicy == "delete";
   assert app.autoStart == true;
   assert app.longRunning == false;
-  assert app.startStateStallSeconds == 75;
+  assert app.composeUpNoProgressSeconds == 75;
   assert app.knownSourceComposeServices == ["web" "worker"];
   assert db.resolvedWorkingDir == "/srv/demo/db";
   assert textSource.source == sourceInlineText;
@@ -346,7 +346,7 @@ in
   assert lib.hasSuffix " post-stop" appUnit.serviceConfig.ExecStopPost;
   assert appUnit.serviceConfig.KillMode == "control-group";
   assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" appUnit.serviceConfig.Environment;
-  assert builtins.elem "NIX_PODMAN_COMPOSE_START_STATE_STALL_SECONDS=75" appUnit.serviceConfig.Environment;
+  assert builtins.elem "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=75" appUnit.serviceConfig.Environment;
   assert appUnit.serviceConfig.TimeoutStartSec == 120;
   assert !(builtins.hasAttr "demo-app-start-worker" config.systemd.user.services);
   assert !(builtins.hasAttr "demo-db-start-worker" config.systemd.user.services);
@@ -416,6 +416,8 @@ in
   assert appMetadata.reconcilePolicy == "auto";
   assert appMetadata.removalPolicy == "delete";
   assert appMetadata.longRunning == false;
+  assert appMetadata.timeoutReadySeconds == 45;
+  assert appMetadata.composeUpNoProgressSeconds == 75;
   assert appMetadata.startWorkerUnit == "";
   assert appMetadata.restartStamp != "";
   assert appMetadata.recreateStamp != "";

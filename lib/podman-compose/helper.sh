@@ -31,7 +31,7 @@ init_vars() {
 	restart_stamp=""
 	monitor_interval=10
 	compose_start_default_timeout_seconds=900
-	compose_start_state_stall_seconds="${NIX_PODMAN_COMPOSE_START_STATE_STALL_SECONDS:-60}"
+	compose_up_no_progress_seconds="${NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS:-60}"
 	compose_start_stuck_exit_status=75
 	compose_monitor_timeout_seconds=20
 	compose_monitor_failure_grace_seconds=45
@@ -943,7 +943,7 @@ expected_compose_services_json() {
 	printf '%s\n' "${expected_compose_services[@]}" | jq -R . | jq -s -c .
 }
 
-compose_start_stall_report() {
+compose_up_no_progress_report() {
 	local state_json failing_states missing_services expected_services_json
 	state_json="$(cat)"
 	failing_states="$(printf '%s' "$state_json" | failing_states_report)"
@@ -985,11 +985,11 @@ compose_state_json() {
 	)
 }
 
-compose_start_stall_probe_interval_seconds() {
+compose_up_no_progress_probe_interval_seconds() {
 	local interval
 	interval=5
-	if [ "$compose_start_state_stall_seconds" -lt "$interval" ]; then
-		interval="$compose_start_state_stall_seconds"
+	if [ "$compose_up_no_progress_seconds" -lt "$interval" ]; then
+		interval="$compose_up_no_progress_seconds"
 	fi
 	[ "$interval" -gt 0 ] || interval=1
 	printf '%s\n' "$interval"
@@ -1387,7 +1387,7 @@ compose_command_supervised() {
 compose_up_supervised() {
 	local mode timeout_seconds reserve_seconds deadline_seconds started_at now line fatal_seen=0 status=0 fatal_status
 	local compose_output_fd compose_up_pid compose_up_child_pid compose_up_pid_file
-	local state_probe_interval last_state_probe=0 state_stall_since=0 state_json state_stall_report elapsed_state_stall
+	local state_probe_interval last_state_probe=0 no_progress_since=0 state_json no_progress_report elapsed_no_progress
 	local local_pull_policy_override=""
 	local -a local_compose_file_args=() up_args=()
 	mode="$1"
@@ -1400,7 +1400,7 @@ compose_up_supervised() {
 		reserve_seconds="$(compose_cleanup_reserve_seconds "$timeout_seconds")"
 		deadline_seconds="$((started_at + timeout_seconds - reserve_seconds))"
 	fi
-	state_probe_interval="$(compose_start_stall_probe_interval_seconds)"
+	state_probe_interval="$(compose_up_no_progress_probe_interval_seconds)"
 
 	local_compose_file_args=("${compose_file_args[@]}")
 	local_pull_policy_override="$(compose_local_pull_policy_override_file)"
@@ -1453,19 +1453,19 @@ compose_up_supervised() {
 		if ! kill -0 "$compose_up_pid" 2>/dev/null; then
 			break
 		fi
-		if [ "$long_running" = "true" ] && [ "$compose_start_state_stall_seconds" -gt 0 ] &&
+		if [ "$long_running" = "true" ] && [ "$compose_up_no_progress_seconds" -gt 0 ] &&
 			[ "$now" -ge "$((last_state_probe + state_probe_interval))" ]; then
 			last_state_probe="$now"
 			if state_json="$(compose_state_json 2>/dev/null)"; then
-				state_stall_report="$(printf '%s' "$state_json" | compose_start_stall_report)"
-				if [ -n "$state_stall_report" ]; then
-					if [ "$state_stall_since" -eq 0 ]; then
-						state_stall_since="$now"
+				no_progress_report="$(printf '%s' "$state_json" | compose_up_no_progress_report)"
+				if [ -n "$no_progress_report" ]; then
+					if [ "$no_progress_since" -eq 0 ]; then
+						no_progress_since="$now"
 					fi
-					elapsed_state_stall="$((now - state_stall_since))"
-					if [ "$elapsed_state_stall" -ge "$compose_start_state_stall_seconds" ]; then
-						printf '%s\n' "podman compose start made no healthy state progress for ${elapsed_state_stall}s; terminating ${podman_compose_service_name}" >&2
-						printf '%s\n' "$state_stall_report" >&2
+					elapsed_no_progress="$((now - no_progress_since))"
+					if [ "$elapsed_no_progress" -ge "$compose_up_no_progress_seconds" ]; then
+						printf '%s\n' "podman compose start made no healthy state progress for ${elapsed_no_progress}s; terminating ${podman_compose_service_name}" >&2
+						printf '%s\n' "$no_progress_report" >&2
 						compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
 						terminate_compose_process "$compose_up_child_pid"
 						fatal_seen=1
@@ -1473,7 +1473,7 @@ compose_up_supervised() {
 						break
 					fi
 				else
-					state_stall_since=0
+					no_progress_since=0
 				fi
 			fi
 		fi
@@ -3484,12 +3484,19 @@ cmd_image_pull() {
 	load_metadata
 	assert_adoption_allowed
 	ensure_runtime_dirs
-	lock_lifecycle_exclusive
 	if image_pull_state_current; then
 		record_image_pull_status skipped
-		unlock_lifecycle_exclusive
 		return 0
 	fi
+	if declared_images_present; then
+		if lock_lifecycle_exclusive_timeout 1; then
+			record_image_pull_state
+			unlock_lifecycle_exclusive
+		fi
+		record_image_pull_status skipped
+		return 0
+	fi
+	lock_lifecycle_exclusive
 	if ! compose_pull_with_retry; then
 		unlock_lifecycle_exclusive
 		return 1
