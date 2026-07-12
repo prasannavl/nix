@@ -25,6 +25,7 @@
         jq
         nix
         nixos-install-tools
+        openssh
       ];
       text = ''
         export HOST_MANAGER_IN_NIX_SHELL=1

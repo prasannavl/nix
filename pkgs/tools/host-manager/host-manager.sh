@@ -4,25 +4,32 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  scripts/host-manager.sh build --host HOST --store PATH
-  scripts/host-manager.sh generate --host HOST [--system=none|live|incus] [options]
-  scripts/host-manager.sh live-install --host HOST --wipe-disks [options]
-  scripts/host-manager.sh delete --host HOST [--force|--yes]
+  scripts/host-manager.sh build HOST --store PATH
+  scripts/host-manager.sh generate HOST [--system=none|live|incus] [options]
+  scripts/host-manager.sh live-install HOST --wipe-disks [options]
+  scripts/host-manager.sh delete HOST [--force|--yes]
+  scripts/host-manager.sh ssh HOST [-- ssh-args...]
+  scripts/host-manager.sh reboot HOST [--dry-run] [--yes]
+  scripts/host-manager.sh gc HOST [--delete-older-than AGE|--all] [--dry-run] [--yes]
+  scripts/host-manager.sh clean:podman HOST [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh clean:nixbot HOST [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh logs HOST [--service SERVICE] [--since WHEN] [--lines N] [--follow]
+  scripts/host-manager.sh service start|stop|restart|status|logs SERVICE [--stack STACK|--host HOST] [--user USER] [--since WHEN] [--lines N] [--follow]
 
 The flake package also provides an equivalent host-manager binary.
 
 Examples:
-  scripts/host-manager.sh generate --system=live --host pvl-a1 \
+  scripts/host-manager.sh generate pvl-a1 --system=live \
     --disk /dev/disk/by-id/nvme-Lexar_SSD_ARES_2TB_QEC053R000846P2222 \
     --swap-size-mib 65536
 
-  scripts/host-manager.sh build --host pvl-a1 --store /media/live-usb/nix-cache
+  scripts/host-manager.sh build pvl-a1 --store /media/live-usb/nix-cache
 
-  scripts/host-manager.sh live-install --host pvl-a1 --store /media/live-usb/nix-cache --wipe-disks
+  scripts/host-manager.sh live-install pvl-a1 --store /media/live-usb/nix-cache --wipe-disks
 
-  scripts/host-manager.sh generate --host pvl-new --disk /dev/disk/by-id/nvme-...
+  scripts/host-manager.sh generate pvl-new --disk /dev/disk/by-id/nvme-...
 
-  scripts/host-manager.sh generate --system=incus --incus-host pvl-x2 --host pvl-guest \
+  scripts/host-manager.sh generate pvl-guest --system=incus --incus-host pvl-x2 \
     --incus-ipv4 10.10.20.50
 
 Actions:
@@ -33,9 +40,20 @@ Actions:
   delete                   Remove host config, nixbot entry, age machine keys,
                            secret registration, and matching Incus instance
                            declaration.
+  ssh                      Open SSH to a host using the repo host inventory.
+  reboot                   Reboot the addressed host with systemctl reboot.
+  gc                       Run Nix garbage collection on a host.
+  clean:podman             Clear Podman compose lifecycle locks and unused
+                           anonymous Podman volumes on a host.
+  clean:nixbot             Clear nixbot-related lock directories on a host.
+  logs                     Show the host journal for a host, or one service on
+                           that host with --service.
+  service start|stop|restart|status|logs
+                           Control, inspect, or show logs for every registry
+                           instance of a service, or only --host HOST.
 
 Options:
-  --host HOST              Host name.
+  --host HOST              Host name compatibility alias. Prefer positional HOST.
   --stack STACK            Optional stack key from lib/stacks.
   --system SYSTEM          Generate target type: none, live, or incus.
                            Default: none.
@@ -58,8 +76,20 @@ Options:
   --swap-size-mib MIB      Add @swap and /swap/swap0 of this size. Default: 0
   --wipe-disks             Required for install. Confirms destructive disko run.
   --dry-run                For live-install, evaluate and print install commands.
+                           For remote maintenance commands, audit/print without
+                           mutating the host.
   --yes                    Skip all confirmations.
   --force                  Skip overwrite/delete/create confirmations.
+  --force-held             For remote lock cleanup, also remove lock paths that
+                           still have open file-descriptor holders.
+  --delete-older-than AGE  Nix GC deletion age. Default: 7d.
+  --all                    For gc, run nix-collect-garbage -d.
+  --user USER              SSH user for host operations; systemd-user account
+                           for service operations.
+  --service SERVICE        For logs HOST, show only this service on the host.
+  --since WHEN             journalctl --since value for logs.
+  --lines N                journalctl --lines value for logs. Default: 200.
+  --follow                 Follow logs.
   --yes-create-host        Skip confirmation for creating a new host.
   --keep-tmp               Keep tmp/host-manager.* for debugging.
   --help                   Show this help.
@@ -105,8 +135,18 @@ init_vars() {
 	DRY_RUN="0"
 	YES="0"
 	FORCE="0"
+	FORCE_HELD="0"
 	YES_CREATE_HOST="0"
 	KEEP_TMP="0"
+	DELETE_OLDER_THAN="7d"
+	GC_ALL="0"
+	OP_USER="${HOST_MANAGER_USER:-$(id -un 2>/dev/null || printf root)}"
+	SERVICE_NAME=""
+	LOG_USER=""
+	LOG_SINCE=""
+	LOG_LINES="200"
+	LOG_FOLLOW="0"
+	SSH_EXTRA_ARGS=()
 
 	RUN_DIR=""
 	SECRET_RUN_DIR=""
@@ -121,6 +161,10 @@ init_vars() {
 	NIXBOT_FILE="${REPO_ROOT}/hosts/nixbot.nix"
 	SECRETS_FILE="${REPO_ROOT}/data/secrets/default.nix"
 	MACHINE_SECRET_DIR="${REPO_ROOT}/data/secrets/globals/machine"
+	NIXBOT_CONFIG_JSON=""
+	NIXBOT_HOSTS_JSON=""
+	REMOTE_SSH_TARGET=""
+	REMOTE_SSH_ARGS=()
 
 	BOOT_PART_UUID=""
 	BIOS_PART_UUID=""
@@ -206,7 +250,8 @@ runtime_packages() {
 		nixpkgs#gnused \
 		nixpkgs#jq \
 		nixpkgs#nix \
-		nixpkgs#nixos-install-tools
+		nixpkgs#nixos-install-tools \
+		nixpkgs#openssh
 }
 
 preparse_store_arg() {
@@ -278,15 +323,38 @@ EOF
 }
 
 parse_args() {
+	local user_value
+
 	[[ $# -gt 0 ]] || {
 		usage
 		exit 1
 	}
 
 	case "$1" in
-	build | generate | live-install | delete)
+	build | generate | live-install | delete | ssh | reboot | gc | logs)
 		ACTION="$1"
 		shift
+		;;
+	clean:podman)
+		ACTION="podman-clean"
+		shift
+		;;
+	clean:nixbot)
+		ACTION="nixbot-clean"
+		shift
+		;;
+	service)
+		shift
+		[[ $# -gt 0 ]] || die "service requires an action: start, stop, restart, status, or logs"
+		case "$1" in
+		start | stop | restart | status | logs)
+			ACTION="service-$1"
+			shift
+			;;
+		*)
+			die "service supports only: start, stop, restart, status, logs"
+			;;
+		esac
 		;;
 	--help | -h)
 		usage
@@ -298,8 +366,31 @@ parse_args() {
 		;;
 	esac
 
+	case "$ACTION" in
+	build | generate | live-install | delete | ssh | reboot | gc | podman-clean | nixbot-clean | logs)
+		if [[ $# -gt 0 && "$1" != --* ]]; then
+			HOST="$1"
+			shift
+		fi
+		;;
+	service-start | service-stop | service-restart | service-status | service-logs)
+		if [[ $# -gt 0 && "$1" != --* ]]; then
+			SERVICE_NAME="$1"
+			shift
+		fi
+		;;
+	esac
+
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
+		--)
+			shift
+			if [[ "$ACTION" == "ssh" ]]; then
+				SSH_EXTRA_ARGS=("$@")
+				break
+			fi
+			die "-- is only supported by ssh"
+			;;
 		--host)
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			HOST="$2"
@@ -452,12 +543,80 @@ parse_args() {
 			DRY_RUN="1"
 			shift
 			;;
+		--delete-older-than)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			DELETE_OLDER_THAN="$2"
+			shift 2
+			;;
+		--delete-older-than=*)
+			DELETE_OLDER_THAN="${1#--delete-older-than=}"
+			shift
+			;;
+		--all)
+			GC_ALL="1"
+			shift
+			;;
 		--yes)
 			YES="1"
 			shift
 			;;
 		--force)
 			FORCE="1"
+			shift
+			;;
+		--force-held)
+			FORCE_HELD="1"
+			shift
+			;;
+		--user)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			if [[ "$ACTION" == service-* ]]; then
+				LOG_USER="$2"
+			else
+				OP_USER="$2"
+			fi
+			shift 2
+			;;
+		--user=*)
+			user_value="${1#--user=}"
+			if [[ "$ACTION" == service-* ]]; then
+				LOG_USER="$user_value"
+			else
+				OP_USER="$user_value"
+			fi
+			shift
+			;;
+		--service)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			[[ "$ACTION" == "logs" ]] || die "--service is only supported by logs HOST."
+			SERVICE_NAME="$2"
+			shift 2
+			;;
+		--service=*)
+			[[ "$ACTION" == "logs" ]] || die "--service is only supported by logs HOST."
+			SERVICE_NAME="${1#--service=}"
+			shift
+			;;
+		--since)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			LOG_SINCE="$2"
+			shift 2
+			;;
+		--since=*)
+			LOG_SINCE="${1#--since=}"
+			shift
+			;;
+		--lines)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			LOG_LINES="$2"
+			shift 2
+			;;
+		--lines=*)
+			LOG_LINES="${1#--lines=}"
+			shift
+			;;
+		--follow | -f)
+			LOG_FOLLOW="1"
 			shift
 			;;
 		--yes-create-host)
@@ -473,6 +632,22 @@ parse_args() {
 			exit 0
 			;;
 		*)
+			case "$ACTION" in
+			build | generate | live-install | delete | ssh | reboot | gc | podman-clean | nixbot-clean | logs)
+				if [[ -z "$HOST" && "$1" != --* ]]; then
+					HOST="$1"
+					shift
+					continue
+				fi
+				;;
+			service-start | service-stop | service-restart | service-status | service-logs)
+				if [[ -z "$SERVICE_NAME" && "$1" != --* ]]; then
+					SERVICE_NAME="$1"
+					shift
+					continue
+				fi
+				;;
+			esac
 			die "Unknown argument: $1"
 			;;
 		esac
@@ -480,8 +655,10 @@ parse_args() {
 }
 
 validate_common() {
-	[[ -n "$HOST" ]] || die "Missing required --host."
-	valid_host_name "$HOST" || die "--host must start and end with a letter or number, and use only letters, numbers, and hyphens."
+	if [[ "$ACTION" != service-* || -n "$HOST" ]]; then
+		[[ -n "$HOST" ]] || die "Missing required HOST."
+		valid_host_name "$HOST" || die "HOST must start and end with a letter or number, and use only letters, numbers, and hyphens."
+	fi
 	[[ "$HOST_SYSTEM" == "none" || "$HOST_SYSTEM" == "live" || "$HOST_SYSTEM" == "incus" ]] || die "--system must be one of: none, live, incus."
 	[[ "$BOOT_MODE" == "efi" || "$BOOT_MODE" == "uefi" || "$BOOT_MODE" == "bios" ]] || die "--boot-mode must be one of: efi, uefi, bios."
 	[[ "$SWAP_SIZE_MIB" =~ ^[0-9]+$ ]] || die "--swap-size-mib must be a non-negative integer."
@@ -489,8 +666,13 @@ validate_common() {
 	[[ -z "$INCUS_HOST" ]] || valid_host_name "$INCUS_HOST" || die "--incus-host must start and end with a letter or number, and use only letters, numbers, and hyphens."
 	[[ -z "$STORE_DIR" ]] || validate_store_dir "$STORE_DIR"
 	[[ -z "$HARDWARE_CONFIG" || -f "$HARDWARE_CONFIG" ]] || die "Hardware config not found: $HARDWARE_CONFIG"
-	HOST_DIR="${REPO_ROOT}/hosts/${HOST}"
-	infer_disk_device
+	[[ "$LOG_LINES" =~ ^[0-9]+$ ]] || die "--lines must be a non-negative integer."
+	if [[ -n "$HOST" ]]; then
+		HOST_DIR="${REPO_ROOT}/hosts/${HOST}"
+		infer_disk_device
+	else
+		HOST_DIR=""
+	fi
 }
 
 valid_host_name() {
@@ -546,7 +728,7 @@ validate_args() {
 		if [[ "$HOST_SYSTEM" == "incus" ]]; then
 			[[ -n "$INCUS_HOST" ]] || die "--system=incus requires --incus-host HOST."
 			[[ -n "$INCUS_IPV4" ]] || die "--system=incus requires --incus-ipv4 ADDRESS."
-			valid_incus_instance_name "$HOST" || die "--host must match Incus instance names for --system=incus: [a-z]([a-z0-9-]{0,61}[a-z0-9])?"
+			valid_incus_instance_name "$HOST" || die "HOST must match Incus instance names for --system=incus: [a-z]([a-z0-9-]{0,61}[a-z0-9])?"
 			[[ -d "${REPO_ROOT}/hosts/${INCUS_HOST}" ]] || die "Incus host not found: ${INCUS_HOST}"
 			[[ -f "${REPO_ROOT}/hosts/${INCUS_HOST}/incus.nix" ]] || die "Incus host has no incus.nix: ${INCUS_HOST}"
 		elif [[ "$HOST_SYSTEM" == "live" || -n "$HARDWARE_CONFIG" ]]; then
@@ -570,6 +752,15 @@ validate_args() {
 			! has_machine_key_files &&
 			! find_incus_parent_for_host >/dev/null; then
 			die "No host-related config found for: ${HOST}"
+		fi
+		;;
+	ssh | reboot | gc | logs | podman-clean | nixbot-clean)
+		nixbot_host_registered "$HOST" || die "Host is not in ${NIXBOT_FILE}: ${HOST}"
+		;;
+	service-start | service-stop | service-restart | service-status | service-logs)
+		[[ -n "$SERVICE_NAME" ]] || die "${ACTION#service-} requires a service or unit name."
+		if [[ -n "$HOST" ]]; then
+			nixbot_host_registered "$HOST" || die "Host is not in ${NIXBOT_FILE}: ${HOST}"
 		fi
 		;;
 	*)
@@ -925,6 +1116,114 @@ nix_attr_assignment_regex() {
 	name="$(regex_escape "$1")"
 
 	printf '^[[:space:]]*("%s"|%s)[[:space:]]*=' "$name" "$name"
+}
+
+load_nixbot_config_json() {
+	if [[ -n "$NIXBOT_CONFIG_JSON" ]]; then
+		printf '%s\n' "$NIXBOT_CONFIG_JSON"
+		return
+	fi
+
+	NIXBOT_CONFIG_JSON="$(nix eval --json --file "$NIXBOT_FILE")"
+	printf '%s\n' "$NIXBOT_CONFIG_JSON"
+}
+
+load_nixbot_hosts_json() {
+	local config_json
+
+	if [[ -n "$NIXBOT_HOSTS_JSON" ]]; then
+		printf '%s\n' "$NIXBOT_HOSTS_JSON"
+		return
+	fi
+
+	config_json="$(load_nixbot_config_json)"
+	NIXBOT_HOSTS_JSON="$(jq -c '.hosts // {}' <<<"$config_json")"
+	printf '%s\n' "$NIXBOT_HOSTS_JSON"
+}
+
+nixbot_host_json() {
+	local host="$1" hosts_json
+
+	hosts_json="$(load_nixbot_hosts_json)"
+	jq -cer --arg host "$host" '.[$host] // empty' <<<"$hosts_json"
+}
+
+nixbot_host_registered() {
+	local host="$1"
+
+	nixbot_host_json "$host" >/dev/null 2>&1
+}
+
+prepare_ssh_context() {
+	local host="$1" mode="${2:-remote}" host_json target proxy_jump proxy_command user
+
+	host_json="$(nixbot_host_json "$host")" || die "Host is not in ${NIXBOT_FILE}: ${host}"
+	target="$(jq -r --arg host "$host" '.target // $host' <<<"$host_json")"
+	proxy_jump="$(jq -r '.proxyJump // empty' <<<"$host_json")"
+	proxy_command="$(jq -r '.proxyCommand // empty' <<<"$host_json")"
+	user="$OP_USER"
+
+	REMOTE_SSH_ARGS=()
+	if [[ "$mode" == "remote" ]]; then
+		REMOTE_SSH_ARGS+=(
+			-o BatchMode=yes
+			-o ConnectTimeout=15
+			-o ConnectionAttempts=1
+		)
+	fi
+	if [[ -n "$proxy_command" ]]; then
+		REMOTE_SSH_ARGS+=(-o "ProxyCommand=${proxy_command}")
+	elif [[ -n "$proxy_jump" ]]; then
+		REMOTE_SSH_ARGS+=(-J "$proxy_jump")
+	fi
+
+	if [[ "$target" == *@* || -z "$user" ]]; then
+		REMOTE_SSH_TARGET="$target"
+	else
+		REMOTE_SSH_TARGET="${user}@${target}"
+	fi
+}
+
+run_remote_root_script() {
+	local host="$1" script="$2"
+	shift 2
+
+	prepare_ssh_context "$host" remote
+	ssh "${REMOTE_SSH_ARGS[@]}" "$REMOTE_SSH_TARGET" sudo -n env "$@" bash -s <<<"$script"
+}
+
+resolve_service_hosts_from_stack() {
+	local service="$1" stack="${2:-${HOST_STACK:-${HOST_MANAGER_SERVICE_STACK:-pvl}}}"
+	local stack_attr service_escaped stack_escaped
+
+	stack_attr="$(nix_attr_key "$stack")"
+	stack_escaped="$(nix_escape "$stack")"
+	service_escaped="$(nix_escape "$service")"
+
+	nix eval --json --file "${REPO_ROOT}/lib/stacks/default.nix" --apply "
+stacks: let
+  stack = stacks.${stack_attr} or (throw \"unknown stack: ${stack_escaped}\");
+  registry = stack.serviceRegistry;
+  service = registry.serviceFor \"${service_escaped}\";
+  hostForEndpoint = endpoint: endpoint.host;
+  endpointGroups =
+    if service ? placement
+    then [service.placement]
+    else builtins.attrNames registry.endpointGroups;
+  hosts = map (group: hostForEndpoint (registry.endpointForGroup service.role group)) endpointGroups;
+  uniqueHosts = builtins.attrNames (builtins.listToAttrs (map (host: {
+    name = host;
+    value = true;
+  }) hosts));
+in
+  uniqueHosts
+" | jq -r '.[]'
+}
+
+service_name_is_unit() {
+	local service="$1"
+
+	[[ "$service" == *.service || "$service" == *.target ]]
 }
 
 new_uuid() {
@@ -1639,6 +1938,492 @@ run_install() {
 	root_cmd nixos-install --flake "${REPO_ROOT}#${HOST}" --root "$ROOT_MOUNT" --no-root-passwd
 }
 
+run_ssh() {
+	prepare_ssh_context "$HOST" interactive
+	exec ssh "${REMOTE_SSH_ARGS[@]}" "$REMOTE_SSH_TARGET" "${SSH_EXTRA_ARGS[@]}"
+}
+
+run_gc() {
+	local script gc_mode
+
+	if [[ "$DRY_RUN" != "1" ]]; then
+		confirm_or_die "Run Nix garbage collection on ${HOST}?" "--yes"
+	fi
+
+	if [[ "$GC_ALL" == "1" ]]; then
+		gc_mode="all"
+	else
+		gc_mode="older"
+	fi
+
+	script="$(
+		cat <<'REMOTE_GC'
+set -Eeuo pipefail
+echo "Host: $(hostname)"
+echo "Current system: $(readlink /run/current-system 2>/dev/null || true)"
+if [[ "${HM_DRY_RUN}" == "1" ]]; then
+	if [[ "${HM_GC_MODE}" == "all" ]]; then
+		echo "DRY: nix-collect-garbage -d"
+	else
+		echo "DRY: nix-collect-garbage --delete-older-than ${HM_DELETE_OLDER_THAN}"
+	fi
+	nix store info 2>/dev/null || true
+	exit 0
+fi
+if [[ "${HM_GC_MODE}" == "all" ]]; then
+	nix-collect-garbage -d
+else
+	nix-collect-garbage --delete-older-than "${HM_DELETE_OLDER_THAN}"
+fi
+REMOTE_GC
+	)"
+	run_remote_root_script "$HOST" "$script" \
+		HM_DRY_RUN="$DRY_RUN" \
+		HM_GC_MODE="$gc_mode" \
+		HM_DELETE_OLDER_THAN="$DELETE_OLDER_THAN"
+}
+
+run_reboot() {
+	local script
+
+	if [[ "$DRY_RUN" != "1" ]]; then
+		confirm_or_die "Reboot ${HOST} by running systemctl reboot on the target host?" "--yes"
+	fi
+
+	script="$(
+		cat <<'REMOTE_REBOOT'
+set -Eeuo pipefail
+echo "Host: $(hostname)"
+echo "Current system: $(readlink /run/current-system 2>/dev/null || true)"
+if [[ "${HM_DRY_RUN}" == "1" ]]; then
+	echo "DRY: systemctl reboot"
+	exit 0
+fi
+systemctl reboot
+REMOTE_REBOOT
+	)"
+	run_remote_root_script "$HOST" "$script" HM_DRY_RUN="$DRY_RUN"
+}
+
+remote_lock_cleanup_script() {
+	cat <<'REMOTE_CLEAN'
+set -Eeuo pipefail
+
+dry="${HM_DRY_RUN:-1}"
+force_held="${HM_FORCE_HELD:-0}"
+kind="${HM_CLEAN_KIND:-all}"
+
+lock_holder_line() {
+	local fd_path="$1" link_target="$2"
+	local pid fd user comm cgroup
+
+	pid="${fd_path#/proc/}"
+	pid="${pid%%/*}"
+	fd="${fd_path##*/}"
+	user="$(stat -c %U "/proc/$pid" 2>/dev/null || printf '?')"
+	comm="$(cat "/proc/$pid/comm" 2>/dev/null || printf '?')"
+	cgroup="$(sed -n 's|^[^:]*:[^:]*:||p' "/proc/$pid/cgroup" 2>/dev/null | tail -n 1)"
+	printf '  pid=%s fd=%s user=%s comm=%s cgroup=%s target=%s\n' \
+		"$pid" "$fd" "$user" "$comm" "${cgroup:-?}" "$link_target"
+}
+
+lock_holder_lines_for_path() {
+	local path="$1" fd_path link_target
+
+	for fd_path in /proc/[0-9]*/fd/*; do
+		[[ -e "$fd_path" ]] || continue
+		link_target="$(readlink "$fd_path" 2>/dev/null || true)"
+		case "$link_target" in
+		"$path" | "$path (deleted)")
+			lock_holder_line "$fd_path" "$link_target"
+			;;
+		esac
+	done
+}
+
+clear_lock_path() {
+	local path="$1" holders
+
+	holders="$(lock_holder_lines_for_path "$path")"
+	if [[ -n "$holders" ]]; then
+		if [[ "$force_held" == "1" ]]; then
+			printf 'force-remove held %s\n' "$path" >&2
+		else
+			printf 'held %s\n' "$path" >&2
+		fi
+		printf '%s\n' "$holders" >&2
+		[[ "$force_held" == "1" ]] || return 1
+	fi
+
+	if [[ ! -e "$path" && ! -L "$path" ]]; then
+		printf 'absent %s\n' "$path"
+		return 0
+	fi
+	if [[ "$dry" == "1" ]]; then
+		printf 'DRY remove %s\n' "$path"
+	else
+		printf 'remove %s\n' "$path"
+		rm -rf -- "$path"
+	fi
+}
+
+emit_nixbot_locks() {
+	local root
+
+	for root in /dev/shm/nixbot "${TMPDIR:-/tmp}/nixbot"; do
+		[[ -d "$root" ]] || continue
+		find "$root" -xdev -depth -path '*/state-locks/*.lock' -type d -print 2>/dev/null
+		find "$root" -xdev -depth -name 'ssh-tty.lock' -type d -print 2>/dev/null
+	done
+
+	if [[ -d /var/lib/nixbot ]]; then
+		find /var/lib/nixbot -xdev -depth \
+			\( -name 'nixbot-worktree.lock' -o -name '.nixbot-worktree.lock' \) \
+			-type d -print 2>/dev/null
+	fi
+}
+
+emit_declared_podman_locks() {
+	local registry="/run/current-system/share/podman-compose/control-registry.json"
+	local metadata_file working_dir
+
+	[[ -f "$registry" ]] || return 0
+	command -v jq >/dev/null 2>&1 || return 0
+	while IFS= read -r metadata_file; do
+		[[ -n "$metadata_file" && -f "$metadata_file" ]] || continue
+		working_dir="$(jq -r '.workingDir // empty' "$metadata_file" 2>/dev/null || true)"
+		[[ -n "$working_dir" ]] || continue
+		printf '%s/.podman-compose/lifecycle.lock\n' "$working_dir"
+	done < <(jq -r 'to_entries[]?.value.metadataFile // empty' "$registry" 2>/dev/null || true)
+}
+
+emit_podman_locks() {
+	{
+		[[ -d /run/user ]] && find /run/user -xdev -path '*/podman-compose/rootless-lifecycle-v1.lock' -type f -print 2>/dev/null || true
+		emit_declared_podman_locks
+		[[ -d /var/lib ]] && find /var/lib -xdev -path '*/.podman-compose/lifecycle.lock' -type f -print 2>/dev/null || true
+	} | awk 'NF && !seen[$0]++'
+}
+
+clear_locks_from_emitter() {
+	local emitter="$1" label="$2" path rc=0 emitted=0
+
+	while IFS= read -r path; do
+		[[ -n "$path" ]] || continue
+		emitted=1
+		clear_lock_path "$path" || rc=1
+	done < <("$emitter" | awk 'NF && !seen[$0]++')
+	[[ "$emitted" == "1" ]] || printf 'no %s locks found\n' "$label"
+	return "$rc"
+}
+
+podman_users() {
+	{
+		if [[ -f /run/current-system/share/podman-compose/control-registry.json ]] && command -v jq >/dev/null 2>&1; then
+			jq -r 'to_entries[]?.value.user // empty' /run/current-system/share/podman-compose/control-registry.json 2>/dev/null || true
+		fi
+		if [[ -d /run/user ]]; then
+			for runtime in /run/user/[0-9]*; do
+				[[ -d "$runtime" ]] || continue
+				getent passwd "${runtime##*/}" | awk -F: '{print $1}'
+			done
+		fi
+		if [[ -d /var/lib ]]; then
+			for storage in /var/lib/*/.local/share/containers/storage; do
+				[[ -d "$storage" ]] || continue
+				stat -c %U "$storage" 2>/dev/null || true
+			done
+		fi
+	} | awk 'NF && $0 != "UNKNOWN" && !seen[$0]++'
+}
+
+clean_podman_user_store() {
+	local user="$1" home uid
+
+	home="$(getent passwd "$user" | awk -F: '{print $6}')"
+	uid="$(id -u "$user" 2>/dev/null || true)"
+	[[ -n "$home" && -n "$uid" ]] || return 0
+
+	HM_DRY_RUN="$dry" runuser -u "$user" -- env -i \
+		HOME="$home" \
+		USER="$user" \
+		LOGNAME="$user" \
+		SHELL=/run/current-system/sw/bin/bash \
+		PATH=/run/current-system/sw/bin:/run/wrappers/bin:/usr/bin:/bin \
+		XDG_RUNTIME_DIR="/run/user/${uid}" \
+		bash -s <<'USER_PODMAN_CLEAN'
+set -Eeuo pipefail
+dry="${HM_DRY_RUN:-1}"
+if ! command -v podman >/dev/null 2>&1 || ! podman info >/dev/null 2>&1; then
+	exit 0
+fi
+work="$(mktemp -d "${TMPDIR:-/tmp}/host-manager-podman.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+vols="${work}/volumes"
+hex="${work}/hex"
+used="${work}/used"
+unused="${work}/unused"
+podman volume ls --format '{{.Name}}' | sort -u >"$vols"
+grep -E '^[0-9a-f]{64}$' "$vols" >"$hex" || true
+: >"$used"
+ids="$(podman ps -aq || true)"
+if [[ -n "$ids" ]]; then
+	# shellcheck disable=SC2086
+	podman inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' $ids 2>/dev/null | sort -u >"$used" || true
+fi
+comm -23 "$hex" "$used" >"$unused" || true
+printf 'podman user=%s freeLocks=%s totalVolumes=%s anonymousVolumes=%s usedVolumes=%s unusedAnonymousVolumes=%s\n' \
+	"$(id -un)" \
+	"$(podman info --debug 2>/dev/null | awk '/freeLocks:/ {print $2; exit}')" \
+	"$(wc -l <"$vols")" \
+	"$(wc -l <"$hex")" \
+	"$(wc -l <"$used")" \
+	"$(wc -l <"$unused")"
+if [[ "$dry" == "1" ]]; then
+	sed 's/^/DRY volume rm /' "$unused"
+	exit 0
+fi
+while IFS= read -r volume; do
+	[[ -n "$volume" ]] || continue
+	podman volume rm "$volume" || true
+done <"$unused"
+USER_PODMAN_CLEAN
+}
+
+clean_podman_volumes() {
+	local user
+
+	while IFS= read -r user; do
+		[[ -n "$user" ]] || continue
+		clean_podman_user_store "$user"
+	done < <(podman_users)
+}
+
+case "$kind" in
+nixbot)
+	clear_locks_from_emitter emit_nixbot_locks nixbot
+	;;
+podman)
+	clear_locks_from_emitter emit_podman_locks podman
+	clean_podman_volumes
+	;;
+all)
+	clear_locks_from_emitter emit_nixbot_locks nixbot
+	clear_locks_from_emitter emit_podman_locks podman
+	clean_podman_volumes
+	;;
+*)
+	printf 'unsupported cleanup kind: %s\n' "$kind" >&2
+	exit 2
+	;;
+esac
+REMOTE_CLEAN
+}
+
+run_remote_clean() {
+	local kind="$1" script
+
+	if [[ "$DRY_RUN" != "1" ]]; then
+		confirm_or_die "Run ${kind} cleanup on ${HOST}?" "--yes"
+	fi
+
+	script="$(remote_lock_cleanup_script)"
+	run_remote_root_script "$HOST" "$script" \
+		HM_DRY_RUN="$DRY_RUN" \
+		HM_FORCE_HELD="$FORCE_HELD" \
+		HM_CLEAN_KIND="$kind"
+}
+
+run_logs() {
+	local script
+
+	if [[ -n "$SERVICE_NAME" ]]; then
+		run_service_action logs
+		return
+	fi
+
+	script="$(
+		cat <<'REMOTE_HOST_LOGS'
+set -Eeuo pipefail
+lines="${HM_LOG_LINES}"
+since="${HM_LOG_SINCE}"
+follow="${HM_LOG_FOLLOW}"
+
+args=(--no-pager --lines "$lines")
+[[ -z "$since" ]] || args+=(--since "$since")
+[[ "$follow" != "1" ]] || args+=(-f)
+
+printf 'host=%s journal=system\n' "$(hostname)" >&2
+journalctl "${args[@]}"
+REMOTE_HOST_LOGS
+	)"
+	run_remote_root_script "$HOST" "$script" \
+		HM_LOG_LINES="$LOG_LINES" \
+		HM_LOG_SINCE="$LOG_SINCE" \
+		HM_LOG_FOLLOW="$LOG_FOLLOW"
+}
+
+remote_service_action_script() {
+	cat <<'REMOTE_SERVICE'
+set -Eeuo pipefail
+service="${HM_LOG_SERVICE}"
+action="${HM_SERVICE_ACTION}"
+requested_user="${HM_LOG_USER}"
+lines="${HM_LOG_LINES}"
+since="${HM_LOG_SINCE}"
+follow="${HM_LOG_FOLLOW}"
+registry="/run/current-system/share/podman-compose/control-registry.json"
+unit=""
+user=""
+
+if [[ -f "$registry" ]] && command -v jq >/dev/null 2>&1; then
+	entry="$(jq -cer --arg service "$service" '
+		.[$service]
+		// .["pvl-" + $service]
+		// (to_entries[]? | select(
+			.key == $service
+			or .key == ("pvl-" + $service)
+			or .value.serviceName == $service
+			or .value.serviceName == ("pvl-" + $service)
+		) | .value)
+		// empty
+	' "$registry" 2>/dev/null || true)"
+	if [[ -n "$entry" ]]; then
+		unit="$(jq -r '.unit // empty' <<<"$entry")"
+		user="$(jq -r '.user // empty' <<<"$entry")"
+	fi
+fi
+
+if [[ -z "$unit" ]]; then
+	case "$service" in
+	*.service | *.target)
+		unit="$service"
+		user="$requested_user"
+		;;
+	*)
+		unit="pvl-${service}.service"
+		user="${requested_user:-pvl}"
+		;;
+	esac
+fi
+if [[ -n "$requested_user" ]]; then
+	user="$requested_user"
+fi
+
+run_unit_action_as_user() {
+	local target_user="$1"
+	shift
+	home="$(getent passwd "$target_user" | awk -F: '{print $6}')"
+	uid="$(id -u "$target_user")"
+	runuser -u "$target_user" -- env -i \
+		HOME="$home" \
+		USER="$target_user" \
+		LOGNAME="$target_user" \
+		SHELL=/run/current-system/sw/bin/bash \
+		PATH=/run/current-system/sw/bin:/run/wrappers/bin:/usr/bin:/bin \
+		XDG_RUNTIME_DIR="/run/user/${uid}" \
+		"$@"
+}
+
+printf 'host=%s action=%s user=%s unit=%s\n' "$(hostname)" "$action" "${user:-system}" "$unit" >&2
+
+case "$action" in
+logs)
+	args=(--no-pager --lines "$lines")
+	[[ -z "$since" ]] || args+=(--since "$since")
+	[[ "$follow" != "1" ]] || args+=(-f)
+	if [[ -n "$user" && "$user" != "root" && "$user" != "system" ]]; then
+		run_unit_action_as_user "$user" journalctl --user -u "$unit" "${args[@]}"
+	else
+		journalctl -u "$unit" "${args[@]}"
+	fi
+	;;
+status)
+	if [[ -n "$user" && "$user" != "root" && "$user" != "system" ]]; then
+		run_unit_action_as_user "$user" systemctl --user status "$unit" --no-pager
+	else
+		systemctl status "$unit" --no-pager
+	fi
+	;;
+start | stop | restart)
+	if [[ "${HM_DRY_RUN}" == "1" ]]; then
+		if [[ -n "$user" && "$user" != "root" && "$user" != "system" ]]; then
+			printf 'DRY: systemctl --user %s %s as %s\n' "$action" "$unit" "$user"
+		else
+			printf 'DRY: systemctl %s %s\n' "$action" "$unit"
+		fi
+		exit 0
+	fi
+	if [[ -n "$user" && "$user" != "root" && "$user" != "system" ]]; then
+		run_unit_action_as_user "$user" systemctl --user "$action" "$unit"
+	else
+		systemctl "$action" "$unit"
+	fi
+	;;
+*)
+	printf 'unsupported service action: %s\n' "$action" >&2
+	exit 2
+	;;
+esac
+REMOTE_SERVICE
+}
+
+run_service_action_on_host() {
+	local service_action="$1" service_host="$2" script
+
+	script="$(remote_service_action_script)"
+	run_remote_root_script "$service_host" "$script" \
+		HM_LOG_SERVICE="$SERVICE_NAME" \
+		HM_SERVICE_ACTION="$service_action" \
+		HM_DRY_RUN="$DRY_RUN" \
+		HM_LOG_USER="$LOG_USER" \
+		HM_LOG_LINES="$LOG_LINES" \
+		HM_LOG_SINCE="$LOG_SINCE" \
+		HM_LOG_FOLLOW="$LOG_FOLLOW"
+}
+
+run_service_action() {
+	local service_action="$1" stack="${HOST_STACK:-${HOST_MANAGER_SERVICE_STACK:-pvl}}" service_host
+	local -a service_hosts=()
+	local -a pids=()
+	local pid rc=0
+
+	if [[ -n "$HOST" ]]; then
+		service_hosts=("$HOST")
+	else
+		if service_name_is_unit "$SERVICE_NAME"; then
+			die "service ${service_action} for explicit unit names requires --host."
+		fi
+		mapfile -t service_hosts < <(resolve_service_hosts_from_stack "$SERVICE_NAME" "$stack") ||
+			die "Could not resolve service from stack registry: ${SERVICE_NAME}"
+		[[ "${#service_hosts[@]}" -gt 0 ]] || die "No hosts resolved for service: ${SERVICE_NAME}"
+		for service_host in "${service_hosts[@]}"; do
+			nixbot_host_registered "$service_host" || die "Resolved host is not in ${NIXBOT_FILE}: ${service_host}"
+		done
+	fi
+
+	if [[ "$service_action" != "logs" && "$service_action" != "status" && "$DRY_RUN" != "1" ]]; then
+		confirm_or_die "Run service ${service_action} for ${SERVICE_NAME} on ${service_hosts[*]}?" "--yes"
+	fi
+
+	if [[ "$service_action" == "logs" && "$LOG_FOLLOW" == "1" && "${#service_hosts[@]}" -gt 1 ]]; then
+		for service_host in "${service_hosts[@]}"; do
+			info "Following ${SERVICE_NAME} logs on ${service_host}"
+			run_service_action_on_host "$service_action" "$service_host" &
+			pids+=("$!")
+		done
+		for pid in "${pids[@]}"; do
+			wait "$pid" || rc=1
+		done
+		return "$rc"
+	fi
+
+	for service_host in "${service_hosts[@]}"; do
+		info "Running service ${service_action} for ${SERVICE_NAME} on ${service_host}"
+		run_service_action_on_host "$service_action" "$service_host"
+	done
+}
+
 print_install_commands() {
 	if [[ -n "$STORE_DIR" ]]; then
 		cat <<EOF
@@ -1799,6 +2584,17 @@ main() {
 	generate) run_generate ;;
 	live-install) run_install ;;
 	delete) delete_host ;;
+	ssh) run_ssh ;;
+	reboot) run_reboot ;;
+	gc) run_gc ;;
+	podman-clean) run_remote_clean podman ;;
+	nixbot-clean) run_remote_clean nixbot ;;
+	logs) run_logs ;;
+	service-start) run_service_action start ;;
+	service-stop) run_service_action stop ;;
+	service-restart) run_service_action restart ;;
+	service-status) run_service_action status ;;
+	service-logs) run_service_action logs ;;
 	esac
 }
 

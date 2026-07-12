@@ -65,7 +65,7 @@ class HostManagerScriptTest(unittest.TestCase):
             """
             init_vars
             stack_exists() { [ "$1" = "abird" ]; }
-            parse_args generate --host child-1 --stack abird --system incus --incus-host parent --incus-project lab --incus-ipv4 10.10.30.44
+            parse_args generate child-1 --stack abird --system incus --incus-host parent --incus-project lab --incus-ipv4 10.10.30.44
             validate_args
             jq -n \
               --arg action "$ACTION" \
@@ -100,13 +100,13 @@ class HostManagerScriptTest(unittest.TestCase):
         bad_host = self.run_script(
             """
             init_vars
-            parse_args generate --host '-bad'
+            parse_args generate '-bad'
             validate_common
             """,
             check=False,
         )
         self.assertNotEqual(0, bad_host.returncode)
-        self.assertIn("--host must start and end", bad_host.stderr)
+        self.assertIn("HOST must start and end", bad_host.stderr)
 
         bad_ip = self.run_script(
             """
@@ -216,6 +216,345 @@ class HostManagerScriptTest(unittest.TestCase):
         self.assertEqual("alpha-1", lines[0])
         self.assertEqual('"bad.name"', lines[1])
         self.assertIn('"bad\\.name"', lines[2])
+
+    def test_parse_remote_operations(self):
+        result = self.run_script(
+            """
+            init_vars
+            parse_args ssh app -- -tt journalctl
+            printf '%s %s %s\\n' "$ACTION" "$HOST" "${SSH_EXTRA_ARGS[*]}"
+            init_vars
+            parse_args reboot app --dry-run
+            printf '%s %s %s\\n' "$ACTION" "$HOST" "$DRY_RUN"
+            init_vars
+            parse_args gc app --delete-older-than 14d --dry-run
+            printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$DELETE_OLDER_THAN" "$DRY_RUN"
+            init_vars
+            parse_args clean:podman app --force-held --yes
+            printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$FORCE_HELD" "$YES"
+            init_vars
+            parse_args clean:nixbot app --dry-run
+            printf '%s %s %s\\n' "$ACTION" "$HOST" "$DRY_RUN"
+            init_vars
+            parse_args logs app --lines 50 --follow
+            printf '%s %s %s %s %s\\n' "$ACTION" "$HOST" "$SERVICE_NAME" "$LOG_LINES" "$LOG_FOLLOW"
+            init_vars
+            parse_args logs app --service stalwart --lines 50 --follow
+            printf '%s %s %s %s %s\\n' "$ACTION" "$HOST" "$SERVICE_NAME" "$LOG_LINES" "$LOG_FOLLOW"
+            init_vars
+            parse_args service logs postgres --stack pvl --lines 25 --follow --user pvl
+            printf '%s %s %s %s %s %s\\n' "$ACTION" "$SERVICE_NAME" "$HOST_STACK" "$LOG_LINES" "$LOG_FOLLOW" "$LOG_USER"
+            init_vars
+            parse_args service start stalwart --host=app --dry-run
+            printf '%s %s %s %s\\n' "$ACTION" "$SERVICE_NAME" "$HOST" "$DRY_RUN"
+            init_vars
+            parse_args service restart stalwart --host app --dry-run
+            printf '%s %s %s %s\\n' "$ACTION" "$SERVICE_NAME" "$HOST" "$DRY_RUN"
+            init_vars
+            parse_args service status stalwart --host app
+            printf '%s %s %s\\n' "$ACTION" "$SERVICE_NAME" "$HOST"
+            """
+        )
+
+        self.assertEqual(
+            [
+                "ssh app -tt journalctl",
+                "reboot app 1",
+                "gc app 14d 1",
+                "podman-clean app 1 1",
+                "nixbot-clean app 1",
+                "logs app  50 1",
+                "logs app stalwart 50 1",
+                "service-logs postgres pvl 25 1 pvl",
+                "service-start stalwart app 1",
+                "service-restart stalwart app 1",
+                "service-status stalwart app",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_parse_primary_actions_accept_positional_host(self):
+        result = self.run_script(
+            """
+            init_vars
+            parse_args build app --store cache
+            printf '%s %s %s\\n' "$ACTION" "$HOST" "$STORE_DIR"
+            init_vars
+            parse_args generate app --system live --disk /dev/disk/by-id/test
+            printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$HOST_SYSTEM" "$DISK_DEVICE"
+            init_vars
+            parse_args live-install app --wipe-disks --dry-run
+            printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$WIPE_DISKS" "$DRY_RUN"
+            init_vars
+            parse_args delete app --force
+            printf '%s %s %s\\n' "$ACTION" "$HOST" "$FORCE"
+            """
+        )
+
+        self.assertEqual(
+            [
+                f"build app {self.fake_repo}/cache",
+                "generate app live /dev/disk/by-id/test",
+                "live-install app 1 1",
+                "delete app 1",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_register_incus_host_uses_local_lxc_profile(self):
+        hosts_default = self.fake_repo / "hosts/default.nix"
+        hosts_default.write_text(
+            textwrap.dedent(
+                """
+                {
+                  machineProfiles,
+                  mkNixosSystem,
+                  stacks,
+                  ...
+                }: {
+                }
+                """
+            ).lstrip(),
+            encoding="utf-8",
+        )
+        result = self.run_script(
+            """
+            init_vars
+            HOST=child-1
+            HOST_SYSTEM=incus
+            RUN_DIR="$PWD/tmp-run"
+            STAGE_DIR="$RUN_DIR/staged"
+            MUTATION_LOCK_DIR="$RUN_DIR/locks"
+            mkdir -p "$RUN_DIR" "$STAGE_DIR" "$MUTATION_LOCK_DIR"
+            register_host
+            cat "$STAGE_DIR/hosts/default.nix"
+            """
+        )
+
+        self.assertIn("machineProfile = machineProfiles.incusLxc;", result.stdout)
+        self.assertNotIn("machineProfiles.vm", result.stdout)
+
+    def test_two_word_clean_aliases_are_not_supported(self):
+        result = self.run_script(
+            """
+            init_vars
+            parse_args podman clean app
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Unknown action: podman", result.stderr)
+
+    def test_prepare_ssh_context_uses_nixbot_inventory_route(self):
+        (self.fake_repo / "hosts/nixbot.nix").write_text(
+            textwrap.dedent(
+                """
+                {
+                  hosts = {
+                    app = {
+                      target = "10.10.0.2";
+                      proxyJump = "bastion";
+                    };
+                    edge = {
+                      target = "edge.example";
+                      proxyCommand = "cloudflared access ssh --hostname %h";
+                    };
+                  };
+                }
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_script(
+            """
+            init_vars
+            OP_USER=pvl
+            prepare_ssh_context app remote
+            printf 'target=%s\\n' "$REMOTE_SSH_TARGET"
+            printf 'args=%s\\n' "${REMOTE_SSH_ARGS[*]}"
+            prepare_ssh_context edge interactive
+            printf 'target=%s\\n' "$REMOTE_SSH_TARGET"
+            printf 'args=%s\\n' "${REMOTE_SSH_ARGS[*]}"
+            """
+        )
+
+        output = result.stdout
+        self.assertIn("target=pvl@10.10.0.2", output)
+        self.assertIn("-J bastion", output)
+        self.assertIn("target=pvl@edge.example", output)
+        self.assertIn("ProxyCommand=cloudflared access ssh --hostname %h", output)
+
+    def test_gc_and_clean_dispatch_remote_scripts_with_env(self):
+        result = self.run_script(
+            """
+            init_vars
+            HOST=app
+            DRY_RUN=1
+            DELETE_OLDER_THAN=21d
+            run_remote_root_script() {
+              printf 'remote:%s\\n' "$1"
+              shift
+              printf '%s\\n' "$@"
+            }
+            run_gc
+            run_remote_clean podman
+            """
+        )
+
+        self.assertIn("remote:app", result.stdout)
+        self.assertIn("HM_DRY_RUN=1", result.stdout)
+        self.assertIn("HM_DELETE_OLDER_THAN=21d", result.stdout)
+        self.assertIn("HM_CLEAN_KIND=podman", result.stdout)
+
+    def test_service_logs_resolves_all_service_hosts_and_uses_remote_script(self):
+        result = self.run_script(
+            """
+            init_vars
+            SERVICE_NAME=postgres
+            HOST_STACK=pvl
+            LOG_LINES=25
+            LOG_FOLLOW=1
+            resolve_service_hosts_from_stack() {
+              printf '%s\\n' pvl-x2
+            }
+            nixbot_host_registered() {
+              [ "$1" = pvl-x2 ]
+            }
+            run_remote_root_script() {
+              printf 'remote:%s\\n' "$1"
+              shift
+              printf '%s\\n' "$@"
+            }
+            run_service_action logs
+            """
+        )
+
+        self.assertIn("remote:pvl-x2", result.stdout)
+        self.assertIn("HM_LOG_SERVICE=postgres", result.stdout)
+        self.assertIn("HM_LOG_LINES=25", result.stdout)
+        self.assertIn("HM_LOG_FOLLOW=1", result.stdout)
+
+    def test_reboot_and_host_logs_dispatch_remote_scripts_with_env(self):
+        result = self.run_script(
+            """
+            init_vars
+            HOST=app
+            DRY_RUN=1
+            LOG_LINES=75
+            LOG_FOLLOW=1
+            run_remote_root_script() {
+              printf 'remote:%s\\n' "$1"
+              shift
+              printf '%s\\n' "$@"
+            }
+            run_reboot
+            run_logs
+            """
+        )
+
+        self.assertIn("remote:app", result.stdout)
+        self.assertIn("HM_DRY_RUN=1", result.stdout)
+        self.assertIn("HM_LOG_LINES=75", result.stdout)
+        self.assertIn("HM_LOG_FOLLOW=1", result.stdout)
+
+    def test_host_logs_service_filter_targets_only_that_host(self):
+        result = self.run_script(
+            """
+            init_vars
+            HOST=app
+            SERVICE_NAME=stalwart
+            LOG_LINES=75
+            run_remote_root_script() {
+              printf 'remote:%s\\n' "$1"
+              shift
+              printf '%s\\n' "$@"
+            }
+            run_logs
+            """
+        )
+
+        self.assertIn("remote:app", result.stdout)
+        self.assertIn("HM_LOG_SERVICE=stalwart", result.stdout)
+        self.assertIn("HM_SERVICE_ACTION=logs", result.stdout)
+        self.assertIn("HM_LOG_LINES=75", result.stdout)
+
+    def test_service_start_dispatches_remote_script_with_action(self):
+        result = self.run_script(
+            """
+            init_vars
+            HOST=app
+            SERVICE_NAME=stalwart
+            DRY_RUN=1
+            run_remote_root_script() {
+              printf 'remote:%s\\n' "$1"
+              shift
+              printf '%s\\n' "$@"
+            }
+            run_service_action start
+            run_service_action restart
+            run_service_action status
+            """
+        )
+
+        self.assertIn("remote:app", result.stdout)
+        self.assertIn("HM_LOG_SERVICE=stalwart", result.stdout)
+        self.assertIn("HM_SERVICE_ACTION=start", result.stdout)
+        self.assertIn("HM_SERVICE_ACTION=restart", result.stdout)
+        self.assertIn("HM_SERVICE_ACTION=status", result.stdout)
+        self.assertIn("HM_DRY_RUN=1", result.stdout)
+
+    def test_remote_service_fallback_uses_local_prefix_and_user(self):
+        result = self.run_script(
+            """
+            init_vars
+            remote_service_action_script
+            """
+        )
+
+        self.assertIn('unit="pvl-${service}.service"', result.stdout)
+        self.assertIn('user="${requested_user:-pvl}"', result.stdout)
+
+    def test_generated_remote_scripts_are_valid_bash(self):
+        result = self.run_script(
+            """
+            init_vars
+            HOST=app
+            SERVICE_NAME=stalwart
+            DRY_RUN=1
+            resolve_service_hosts_from_stack() { printf '%s\\n' app; }
+            nixbot_host_registered() { [ "$1" = app ]; }
+            run_remote_root_script() {
+              bash -n <<<"$2"
+              printf 'checked:%s\\n' "$1"
+            }
+            run_gc
+            run_reboot
+            run_remote_clean podman
+            run_remote_clean nixbot
+            run_logs
+            run_service_action logs
+            run_service_action start
+            run_service_action restart
+            run_service_action status
+            """
+        )
+
+        self.assertEqual(
+            [
+                "checked:app",
+                "checked:app",
+                "checked:app",
+                "checked:app",
+                "checked:app",
+                "checked:app",
+                "checked:app",
+                "checked:app",
+                "checked:app",
+            ],
+            result.stdout.splitlines(),
+        )
 
 
 if __name__ == "__main__":
