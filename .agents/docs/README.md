@@ -344,6 +344,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   the July 12 Abird post-`bd552f84` newest-3 audit where flake cleanup, flake
   input refreshes, and external tool pin updates were already local or
   byte-identical, with local-only flake input divergence preserved.
+- `.agents/docs/notes/tooling/abird-latest-post-928a-port-2026-07.md`: Records
+  the July 12 Abird post-`928a0a72` newest-7 audit where shared nixbot and
+  Kanidm updates were ported, generic image-pin policy was adopted, and
+  Abird-only Rust Tic-Tac-Toe plus host image pins were skipped.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
