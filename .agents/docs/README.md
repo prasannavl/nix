@@ -348,9 +348,17 @@ Use this index as the canonical map for `.agents/docs/**`.
   the July 12 Abird post-`928a0a72` newest-7 audit where shared nixbot and
   Kanidm updates were ported, generic image-pin policy was adopted, and
   Abird-only Rust Tic-Tac-Toe plus host image pins were skipped.
+- `.agents/docs/notes/tooling/abird-latest-post-4469-port-2026-07.md`: Records
+  the July 12 Abird post-`446992e9` newest-5 audit where shared Podman Compose
+  hardening was ported byte-identically, host-manager operations were adapted
+  for the local `pvl` stack, and Abird-only OpenDesign/Tic-Tac-Toe context was
+  skipped.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
+- `.agents/docs/notes/tooling/host-manager-operations-2026-07.md`: Records the
+  host-manager remote operation surface, nixbot SSH inventory routing, mutation
+  safety gates, and local `pvl` service-registry defaults.
 - `.agents/docs/notes/tooling/codex-wrapper-auth-2026-06.md`: Records the local
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.
