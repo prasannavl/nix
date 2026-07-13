@@ -275,6 +275,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/services/podman-compose-stop-cleanup-rollback-2026-07.md`:
   Records delete-policy stop cleanup as a successful stop when direct cleanup
   removes project containers.
+- `.agents/docs/notes/services/podman-compose-ready-repair-2026-07.md`: Records
+  ready-state verification repair, dependency-level start fanout, and local
+  image tarball support for generated Podman Compose instances.
 - `.agents/docs/notes/services/podman-data-dir-ownership-2026-04.md`: Records
   the standard `dirs`/container-scope ownership model for service-local Podman
   data directories plus absolute `dirs` entries for external data roots.
@@ -352,6 +355,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   the July 12 Abird post-`446992e9` newest-5 audit where shared Podman Compose
   hardening was ported byte-identically, host-manager operations were adapted
   for the local `pvl` stack, and Abird-only OpenDesign/Tic-Tac-Toe context was
+  skipped.
+- `.agents/docs/notes/tooling/abird-latest-post-a70e-port-2026-07.md`: Records
+  the July 13 Abird post-`a70ec656` newest-20 audit where shared Podman Compose
+  and nixbot files were ported byte-identically, host-manager was locally
+  adapted, and Abird-only OpenDesign/Stalwart/OBS/service callsites were
   skipped.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
