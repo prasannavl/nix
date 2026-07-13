@@ -48,3 +48,11 @@ from intra-stack `dependsOn` / `wants` edges and explicit generated unit
 references, then the `startParallelism` sliding window is applied only within a
 level. Declaration order is only a tie-breaker inside one dependency level; it
 must not create ordering cycles across provider/consumer relationships.
+
+Inline YAML local images need an additional closure root. An authoring-time
+`image: nix-store:${package}` string can be parsed from YAML in a way that keeps
+the literal `/nix/store/...` path in helper metadata but loses Nix string
+context for deployment. The module therefore preserves context while extracting
+inline image refs and emits a generated `*-local-images` link farm referenced by
+the service unit environment. That environment reference is what makes fresh
+targets receive the image tar before `podman-compose-helper` tries to load it.

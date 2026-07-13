@@ -361,6 +361,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   and nixbot files were ported byte-identically, host-manager was locally
   adapted, and Abird-only OpenDesign/Stalwart/OBS/service callsites were
   skipped.
+- `.agents/docs/notes/tooling/abird-latest-post-69ccd-port-2026-07.md`: Records
+  the July 13 Abird post-`69ccd060` newest-4 audit where the shared Podman
+  Compose local-image closure-root fix was ported byte-identically and
+  Excalidash host/helper work was skipped or deferred for lack of a local
+  consumer.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.

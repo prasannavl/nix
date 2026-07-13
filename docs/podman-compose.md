@@ -142,7 +142,10 @@ hooks. In structured sources, set `image = package;` when the package exposes
 `passthru.imageRef`; in inline YAML, use `image: nix-store:${package}`. The
 module rewrites that authoring-time ref to a generated local runtime tag that
 includes the image tar store hash, loads the tar before compose start, and keeps
-generated local refs out of deploy-time registry pulls and image reports.
+generated local refs out of deploy-time registry pulls and image reports. Inline
+YAML refs are retained through a generated local-image closure root in the
+systemd service environment, so the image tar is copied to fresh targets even
+when regex parsing would otherwise drop Nix string context.
 
 ## Operator Control
 

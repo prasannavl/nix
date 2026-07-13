@@ -68,7 +68,10 @@ include only what applies, but keep the relative order stable.
   Mixed local/remote compose instances pull only their declared remote image
   refs, so a generated local runtime tag is never sent to a registry. Use
   `localImages` only as an escape hatch for sources the module cannot infer
-  automatically.
+  automatically. Inline YAML `nix-store:` refs must also retain the source Nix
+  string context and keep the image tar reachable through the generated
+  local-image closure root in the service unit; helper metadata alone is not a
+  deployment closure root.
 - Use `state = "stopped"` when an instance should remain declared but should be
   stopped and skipped by automatic start/reconcile. The generated unit remains
   manually startable; runtime files are staged on start and cleaned after stop.
