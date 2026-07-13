@@ -151,6 +151,15 @@
           lib.optional (match != null) (builtins.head match)
       ) (lib.splitString "\n" text)
     );
+  composeImagesFromTextWithContext = text:
+    lib.unique (
+      lib.concatMap (
+        line: let
+          match = builtins.match "[[:space:]]*image:[[:space:]]*['\"]?([^'\"#[:space:]]+)['\"]?.*" line;
+        in
+          lib.optional (match != null) (lib.addContextFrom line (builtins.head match))
+      ) (lib.splitString "\n" text)
+    );
   localImageStoreHash = imageTar:
     builtins.substring 0 12 (builtins.baseNameOf (builtins.unsafeDiscardStringContext (toString imageTar)));
   localImageStorePrefix = "nix-store:";
@@ -169,9 +178,10 @@
   };
   packageLocalImageEntry = imageTar: explicitLocalImageEntry (localImagePackageRef imageTar) imageTar;
   storeLocalImageEntry = imageRef: let
-    imageTar = lib.removePrefix localImageStorePrefix imageRef;
+    imageRefText = builtins.unsafeDiscardStringContext imageRef;
+    imageTar = lib.addContextFrom imageRef (lib.removePrefix localImageStorePrefix imageRefText);
   in {
-    imageRef = imageRef;
+    imageRef = imageRefText;
     loadRef = "";
     runtimeRef = localImageStoreRuntimeRef imageTar;
     imageTar = imageTar;
@@ -1864,6 +1874,13 @@
       then 1
       else rawReserveSeconds;
     verifyTransitionWaitSeconds = lib.max 1 (startTimeoutSeconds - timeoutReserveSeconds);
+    localImageClosure = pkgs.linkFarm "podman-compose-${resolvedSystemdServiceName}-local-images" (
+      map (entry: {
+        name = entry.storeHash;
+        path = entry.imageTar;
+      })
+      service.localImageMetadata
+    );
     helperEnvironment =
       [
         "PATH=${podmanHelperPath}"
@@ -1871,6 +1888,7 @@
         "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
         "NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS=${toString verifyTransitionWaitSeconds}"
       ]
+      ++ lib.optional (service.localImageMetadata != []) "NIX_PODMAN_COMPOSE_LOCAL_IMAGE_CLOSURE=${localImageClosure}"
       ++ lib.optional (service.composeUpNoProgressSeconds != null) "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=${toString service.composeUpNoProgressSeconds}";
     stampHelperEnvironment = [
       "PATH=${podmanHelperPath}"
@@ -2828,7 +2846,7 @@ in {
                       rawSourceComposeServices
                     )
                   else if builtins.isString rawSourceCompose
-                  then composeImagesFromText rawSourceCompose
+                  then composeImagesFromTextWithContext rawSourceCompose
                   else []
                 )
               );

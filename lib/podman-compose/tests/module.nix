@@ -409,6 +409,7 @@ in
     }
   ];
   assert localImageStoreMetadata.localImages == localImageStoreInstance.localImageMetadata;
+  assert lib.any (lib.hasPrefix "NIX_PODMAN_COMPOSE_LOCAL_IMAGE_CLOSURE=") localImageStoreUnit.serviceConfig.Environment;
   assert job.user == "root";
   assert job.serviceName == "demo-custom-job";
   assert job.autoStart == false;
