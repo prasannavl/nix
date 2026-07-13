@@ -124,6 +124,43 @@ class ReportPodmanImagesTest(unittest.TestCase):
             },
         )
 
+    def test_collect_images_ignores_generated_nix_local_images(self):
+        contexts = report_podman_images.collect_images_by_context_and_instance(
+            {
+                "nixos-host": {
+                    "hostName": "pvl-x2",
+                    "stackName": "pvl",
+                    "podmanSources": {
+                        "pvl": {
+                            "local": {
+                                "source": """
+                                  services:
+                                    app:
+                                      image: localhost/nix-local/image:abc123
+                                """,
+                            },
+                            "remote": {
+                                "source": """
+                                  services:
+                                    app:
+                                      image: docker.io/library/nginx:1.29
+                                """,
+                            },
+                        },
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(
+            contexts,
+            {
+                ("pvl", "pvl-x2", "pvl"): {
+                    "remote": ["docker.io/library/nginx:1.29"],
+                },
+            },
+        )
+
     def test_prefix_image_report_line_adds_instance_boundary(self):
         line = report_podman_images.prefix_image_report_line(
             "- louislam/dockge: 1.5.0 [latest]",

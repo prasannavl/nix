@@ -40,6 +40,7 @@ init_vars() {
 	post_stop_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_POST_STOP_LOCK_TIMEOUT_SECONDS:-30}"
 	post_stop_rootless_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_POST_STOP_ROOTLESS_LOCK_TIMEOUT_SECONDS:-30}"
 	stop_rootless_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_STOP_ROOTLESS_LOCK_TIMEOUT_SECONDS:-180}"
+	verify_transition_wait_seconds="${NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS:-30}"
 	image_pull_retry_attempts="${NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_ATTEMPTS:-10}"
 	image_pull_retry_delay_seconds="${NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_DELAY_SECONDS:-1}"
 	image_pull_status_file="${NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE:-}"
@@ -49,6 +50,10 @@ init_vars() {
 	compose_file_args=()
 	pull_compose_file_args=()
 	declared_images=()
+	local_image_refs=()
+	local_image_runtime_refs=()
+	local_image_load_refs=()
+	local_image_tars=()
 	expected_compose_services=()
 	reload_services=()
 	podman_network_dns_lock_depth=0
@@ -122,6 +127,21 @@ load_metadata() {
 		[ -n "$image" ] || continue
 		declared_images+=("$image")
 	done < <(jq -r '.declaredImages[]?' "$podman_compose_metadata")
+
+	local_image_refs=()
+	local_image_runtime_refs=()
+	local_image_load_refs=()
+	local_image_tars=()
+	while IFS= read -r encoded; do
+		[ -n "$encoded" ] || continue
+		image_json="$(printf '%s' "$encoded" | base64 -d)"
+		image_ref="$(printf '%s' "$image_json" | jq -r '.imageRef')"
+		[ -n "$image_ref" ] || continue
+		local_image_refs+=("$image_ref")
+		local_image_runtime_refs+=("$(printf '%s' "$image_json" | jq -r '.runtimeRef')")
+		local_image_load_refs+=("$(printf '%s' "$image_json" | jq -r '.loadRef // ""')")
+		local_image_tars+=("$(printf '%s' "$image_json" | jq -r '.imageTar')")
+	done < <(jq -r '.localImages[]? | @base64' "$podman_compose_metadata")
 
 	expected_compose_services=()
 	while IFS= read -r compose_service; do
@@ -263,7 +283,48 @@ run_lifecycle_hooks() {
 	done < <(jq -r --arg key "$metadata_key" '.[$key][]? | @base64' "$podman_compose_metadata")
 }
 
+load_local_images() {
+	local index image_ref runtime_ref load_ref image_tar load_output loaded_ref
+
+	for index in "${!local_image_refs[@]}"; do
+		image_ref="${local_image_refs[$index]}"
+		runtime_ref="${local_image_runtime_refs[$index]}"
+		load_ref="${local_image_load_refs[$index]-}"
+		image_tar="${local_image_tars[$index]}"
+
+		if (
+			close_lifecycle_fds_for_child
+			podman_no_notify image exists "$runtime_ref" >/dev/null 2>&1
+		); then
+			continue
+		fi
+
+		printf '%s\n' "loading local image ${image_ref} from ${image_tar}"
+		(
+			close_lifecycle_fds_for_child
+			load_output="$(podman_no_notify load --input "$image_tar")"
+			printf '%s\n' "$load_output"
+			if [ -z "$load_ref" ]; then
+				loaded_ref="$(
+					printf '%s\n' "$load_output" |
+						sed -n -e 's/^Loaded image: //p' -e 's/^Loaded image(s): //p' |
+						tail -n 1
+				)"
+				load_ref="$loaded_ref"
+			fi
+			if [ -z "$load_ref" ]; then
+				printf '%s\n' "podman load did not report an image ref for ${image_tar}; cannot tag ${runtime_ref}" >&2
+				return 1
+			fi
+			if [ "$load_ref" != "$runtime_ref" ]; then
+				podman_no_notify tag "$load_ref" "$runtime_ref"
+			fi
+		)
+	done
+}
+
 run_pre_start_hooks() {
+	load_local_images
 	run_lifecycle_hooks preStart preStart
 }
 
@@ -2070,6 +2131,32 @@ compose_unit_transition_active() {
 	return 1
 }
 
+verify_transition_active() {
+	verify_transition_message=""
+	if start_in_progress_active; then
+		verify_transition_message="podman compose start is still in progress for ${podman_compose_service_name}; not ready"
+		return 0
+	fi
+	if compose_unit_transition_active; then
+		verify_transition_message="podman compose unit is still transitioning for ${podman_compose_service_name}; not ready"
+		return 0
+	fi
+	return 1
+}
+
+wait_for_verify_transition() {
+	local now started_at
+	started_at="$(now_epoch)"
+	while verify_transition_active; do
+		now="$(now_epoch)"
+		if [ "$now" -ge "$((started_at + verify_transition_wait_seconds))" ]; then
+			printf '%s\n' "$verify_transition_message" >&2
+			return 1
+		fi
+		sleep 1
+	done
+}
+
 start_in_progress_active() {
 	local pid
 	if [ -f "$start_in_progress_path" ]; then
@@ -2251,9 +2338,21 @@ compose_stop() {
 }
 
 compose_pull() {
-	local output_file line status=0 fatal_seen=0
+	local output_file line image status=0 fatal_seen=0
 
 	if [ "${#pull_compose_file_args[@]}" -eq 0 ]; then
+		return 0
+	fi
+	if [ "${#declared_images[@]}" -eq 0 ]; then
+		return 0
+	fi
+	if [ "${#local_image_refs[@]}" -gt 0 ]; then
+		for image in "${declared_images[@]}"; do
+			(
+				close_lifecycle_fds_for_child
+				podman_no_notify pull "$image"
+			)
+		done
 		return 0
 	fi
 
@@ -3154,33 +3253,32 @@ cmd_bootstrap() {
 }
 
 cmd_verify() {
+	local repaired=0
 	load_metadata
-	if start_in_progress_active; then
-		printf '%s\n' "podman compose start is still in progress for ${podman_compose_service_name}; not ready" >&2
-		return 1
-	fi
-	if compose_unit_transition_active; then
-		printf '%s\n' "podman compose unit is still transitioning for ${podman_compose_service_name}; not ready" >&2
-		return 1
-	fi
-	lock_lifecycle_shared
-	if start_in_progress_active; then
+	while true; do
+		if ! wait_for_verify_transition; then
+			return 1
+		fi
+		lock_lifecycle_shared
+		if verify_transition_active; then
+			unlock_lifecycle_shared
+			continue
+		fi
+		if verify_staged_runtime_files &&
+			verify_runtime_state_current &&
+			verify_compose_state; then
+			unlock_lifecycle_shared
+			return 0
+		fi
 		unlock_lifecycle_shared
-		printf '%s\n' "podman compose start is still in progress for ${podman_compose_service_name}; not ready" >&2
-		return 1
-	fi
-	if compose_unit_transition_active; then
-		unlock_lifecycle_shared
-		printf '%s\n' "podman compose unit is still transitioning for ${podman_compose_service_name}; not ready" >&2
-		return 1
-	fi
-	if ! verify_staged_runtime_files ||
-		! verify_runtime_state_current ||
-		! verify_compose_state; then
-		unlock_lifecycle_shared
-		return 1
-	fi
-	unlock_lifecycle_shared
+		if [ "$repaired" -eq 1 ] || [ "$desired_state" = "stopped" ]; then
+			return 1
+		fi
+		repaired=1
+		printf '%s\n' "podman compose runtime is stale for ${podman_compose_service_name}; restarting service before verify" >&2
+		systemctl --user restart "${podman_compose_service_name}.service" || return 1
+		run_post_start_hooks || return 1
+	done
 }
 
 cmd_monitor() {
@@ -3309,6 +3407,11 @@ cmd_start_staged() {
 	lock_lifecycle_exclusive
 	clear_removal_policy_marker
 	if ! verify_staged_runtime_files; then
+		clear_start_in_progress
+		unlock_lifecycle_exclusive
+		return 1
+	fi
+	if ! load_local_images; then
 		clear_start_in_progress
 		unlock_lifecycle_exclusive
 		return 1
@@ -3493,6 +3596,10 @@ cmd_image_pull() {
 			record_image_pull_state
 			unlock_lifecycle_exclusive
 		fi
+		record_image_pull_status skipped
+		return 0
+	fi
+	if [ "${#declared_images[@]}" -eq 0 ]; then
 		record_image_pull_status skipped
 		return 0
 	fi

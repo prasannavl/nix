@@ -113,7 +113,7 @@ def run_nix_eval():
         'stackName = cfg._module.specialArgs.stack.stackName or ""; '
         "podmanSources = builtins.mapAttrs "
         "(_: stack: builtins.mapAttrs "
-        "(_: inst: { source = inst.source; }) stack.instances) "
+        "(_: inst: { source = inst.renderedSource or inst.source; }) stack.instances) "
         'cfg.config.services."podman-compose"; '
         "}) cfgs"
     )
@@ -165,6 +165,10 @@ def images_from_source(source):
     return images
 
 
+def reportable_image(image):
+    return not image.startswith("localhost/nix-local/")
+
+
 def collect_images_by_context_and_instance(sources):
     contexts = {}
     for host_key, host in sources.items():
@@ -183,7 +187,7 @@ def collect_images_by_context_and_instance(sources):
             for instance_name, instance in instances.items():
                 if not isinstance(instance, dict):
                     continue
-                images = set(images_from_source(instance.get("source")))
+                images = set(filter(reportable_image, images_from_source(instance.get("source"))))
                 if images:
                     context_instances[instance_name] = sorted(images)
     return {

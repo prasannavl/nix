@@ -3,6 +3,21 @@
   sourceAttrs = import ./examples/source-attrs.nix;
   sourceInlineText = import ./examples/source-inline-text.nix;
   sourceFile = ./examples/source-file.compose.yml;
+  localImageTar = pkgs.runCommand "local-image.tar" {} ''
+    touch "$out"
+  '';
+  localImagePackage =
+    localImageTar
+    // {
+      passthru.imageRef = "localhost/demo/package:1";
+    };
+  localImageSourceRef = "localhost/demo/local:1";
+  localImageStoreHash =
+    builtins.substring 0 12 (builtins.baseNameOf (builtins.unsafeDiscardStringContext (toString localImageTar)));
+  localImageRuntimeRef = "${localImageSourceRef}-nix-${localImageStoreHash}";
+  localImagePackageRuntimeRef = "localhost/demo/package:1-nix-${localImageStoreHash}";
+  localImageStoreRef = "nix-store:${localImageTar}";
+  localImageStoreRuntimeRef = "localhost/nix-local/image:${localImageStoreHash}";
 
   evalConfig = import (pkgs.path + "/nixos/lib/eval-config.nix") {
     system = pkgs.stdenv.hostPlatform.system;
@@ -17,13 +32,26 @@
           fsType = "ext4";
         };
 
-        users.users.tester = {
-          isNormalUser = true;
-          uid = 1234;
-          group = "tester";
-          home = "/home/tester";
+        users = {
+          users = {
+            tester = {
+              isNormalUser = true;
+              uid = 1234;
+              group = "tester";
+              home = "/home/tester";
+            };
+            laner = {
+              isNormalUser = true;
+              uid = 1235;
+              group = "laner";
+              home = "/home/laner";
+            };
+          };
+          groups = {
+            tester.gid = 1234;
+            laner.gid = 1235;
+          };
         };
-        users.groups.tester.gid = 1234;
 
         services.podman-compose.demo = {
           user = "tester";
@@ -32,6 +60,7 @@
           reconcilePolicy = "auto";
           removalPolicy = "delete";
           autoStart = true;
+          startParallelism = 2;
           timeoutReadySeconds = 45;
 
           instances = {
@@ -143,6 +172,23 @@
               };
             };
 
+            "local-image" = {
+              source.services.local.image = localImageSourceRef;
+              localImages.${localImageSourceRef} = localImageTar;
+            };
+
+            "local-image-package" = {
+              source.services.local.image = localImagePackage;
+            };
+
+            "local-image-store" = {
+              source = ''
+                services:
+                  local:
+                    image: ${localImageStoreRef}
+              '';
+            };
+
             job = {
               user = "root";
               serviceName = "demo-custom-job";
@@ -166,6 +212,24 @@
             };
           };
         };
+
+        services.podman-compose.lane = {
+          user = "laner";
+          stackDir = "/srv/lane";
+          servicePrefix = "lane-";
+          startParallelism = 4;
+          instances = {
+            consumer = {
+              source.services.consumer.image = "docker.io/library/busybox:latest";
+              dependsOn = ["provider5"];
+            };
+            provider1.source.services.provider1.image = "docker.io/library/busybox:latest";
+            provider2.source.services.provider2.image = "docker.io/library/busybox:latest";
+            provider3.source.services.provider3.image = "docker.io/library/busybox:latest";
+            provider4.source.services.provider4.image = "docker.io/library/busybox:latest";
+            provider5.source.services.provider5.image = "docker.io/library/busybox:latest";
+          };
+        };
       }
     ];
   };
@@ -178,6 +242,9 @@
   fileSource = stack.instances."file-source";
   extended = stack.instances.extended;
   opaqueSecret = stack.instances."opaque-secret";
+  localImage = stack.instances."local-image";
+  localImagePackageInstance = stack.instances."local-image-package";
+  localImageStoreInstance = stack.instances."local-image-store";
   job = stack.instances.job;
   restartPolicy = stack.instances."restart-policy";
   recreatePolicy = stack.instances."recreate-policy";
@@ -187,6 +254,9 @@
   fileSourceUnit = config.systemd.user.services.demo-file-source;
   extendedUnit = config.systemd.user.services.demo-extended;
   opaqueSecretUnit = config.systemd.user.services.demo-opaque-secret;
+  localImageUnit = config.systemd.user.services.demo-local-image;
+  localImagePackageUnit = config.systemd.user.services.demo-local-image-package;
+  localImageStoreUnit = config.systemd.user.services.demo-local-image-store;
   jobUnit = config.systemd.user.services.demo-custom-job;
   appStageUnit = config.systemd.user.services.demo-app-stage;
   appBootstrapUnit = config.systemd.user.services.demo-app-bootstrap;
@@ -198,9 +268,14 @@
   rootManagedTarget = config.systemd.user.targets.root-managed;
   rootManagedReadyTarget = config.systemd.user.targets.root-managed-ready;
   restartPolicyVerifyUnit = config.systemd.user.services.demo-restart-policy-verify;
+  restartPolicyReadyTarget = config.systemd.user.targets.demo-restart-policy-ready;
   recreatePolicyVerifyUnit = config.systemd.user.services.demo-recreate-policy-verify;
+  recreatePolicyReadyTarget = config.systemd.user.targets.demo-recreate-policy-ready;
   imagePullUnit = config.systemd.user.services.demo-app-image-pull;
   rootlessMigrateUnit = config.systemd.user.services.podman-rootless-idmap-migrate-tester;
+  laneConsumerUnit = config.systemd.user.services.lane-consumer;
+  laneProvider1Unit = config.systemd.user.services.lane-provider1;
+  laneProvider5Unit = config.systemd.user.services.lane-provider5;
   rootlessMigrateScript =
     builtins.readFile (builtins.head (lib.splitString " " rootlessMigrateUnit.serviceConfig.ExecStart));
 
@@ -228,6 +303,9 @@
   fileSourceMetadata = metadataFromUnit fileSourceUnit;
   extendedMetadata = metadataFromUnit extendedUnit;
   opaqueSecretMetadata = metadataFromUnit opaqueSecretUnit;
+  localImageMetadata = metadataFromUnit localImageUnit;
+  localImagePackageMetadata = metadataFromUnit localImagePackageUnit;
+  localImageStoreMetadata = metadataFromUnit localImageStoreUnit;
   jobMetadata = metadataFromUnit jobUnit;
   restartPolicyMetadata = metadataFromUnit config.systemd.user.services.demo-restart-policy;
   recreatePolicyMetadata = metadataFromUnit config.systemd.user.services.demo-recreate-policy;
@@ -259,6 +337,9 @@
   extendedPullDir = builtins.dirOf (builtins.head extendedMetadata.pullComposeFiles);
   extendedPullSidecar = builtins.readFile "${extendedPullDir}/sidecar.yml";
   opaqueSecretFileSecretOverride = builtins.readFile opaqueSecret.sourcePaths."__podman-file-secrets.override.yml";
+  localImageCompose = builtins.unsafeDiscardStringContext (builtins.readFile localImage.sourcePaths."compose.yml");
+  localImagePackageCompose = builtins.unsafeDiscardStringContext (builtins.readFile localImagePackageInstance.sourcePaths."compose.yml");
+  localImageStoreCompose = builtins.unsafeDiscardStringContext (builtins.readFile localImageStoreInstance.sourcePaths."compose.yml");
   controlRegistry = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeControlRegistry));
   imagePullPlan = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeImagePullPlan));
   appImagePullPlanEntry = imagePullPlanEntryByService "demo-app";
@@ -266,6 +347,7 @@
 in
   assert failedAssertions == [];
   assert stack.user == "tester";
+  assert stack.startParallelism == 2;
   assert app.user == null;
   assert app.resolvedWorkingDir == "/srv/demo/app";
   assert app.reconcilePolicy == "auto";
@@ -288,6 +370,45 @@ in
   assert builtins.elem "/srv/demo/opaque-secret/__podman-file-secrets.override.yml" opaqueSecretMetadata.composeFiles;
   assert lib.hasInfix ''"opaque-secret"'' opaqueSecretFileSecretOverride;
   assert lib.hasInfix "/run/secrets/default-token" opaqueSecretFileSecretOverride;
+  assert localImage.declaredImages == [];
+  assert lib.hasInfix localImageRuntimeRef localImageCompose;
+  assert localImage.localImageMetadata
+  == [
+    {
+      imageRef = localImageSourceRef;
+      imageTar = toString localImageTar;
+      loadRef = localImageSourceRef;
+      runtimeRef = localImageRuntimeRef;
+      storeHash = localImageStoreHash;
+    }
+  ];
+  assert localImageMetadata.localImages == localImage.localImageMetadata;
+  assert localImagePackageInstance.declaredImages == [];
+  assert lib.hasInfix localImagePackageRuntimeRef localImagePackageCompose;
+  assert localImagePackageInstance.localImageMetadata
+  == [
+    {
+      imageRef = "localhost/demo/package:1";
+      imageTar = toString localImageTar;
+      loadRef = "localhost/demo/package:1";
+      runtimeRef = localImagePackageRuntimeRef;
+      storeHash = localImageStoreHash;
+    }
+  ];
+  assert localImagePackageMetadata.localImages == localImagePackageInstance.localImageMetadata;
+  assert localImageStoreInstance.declaredImages == [];
+  assert lib.hasInfix localImageStoreRuntimeRef localImageStoreCompose;
+  assert localImageStoreInstance.localImageMetadata
+  == [
+    {
+      imageRef = localImageStoreRef;
+      imageTar = toString localImageTar;
+      loadRef = "";
+      runtimeRef = localImageStoreRuntimeRef;
+      storeHash = localImageStoreHash;
+    }
+  ];
+  assert localImageStoreMetadata.localImages == localImageStoreInstance.localImageMetadata;
   assert job.user == "root";
   assert job.serviceName == "demo-custom-job";
   assert job.autoStart == false;
@@ -323,6 +444,8 @@ in
   assert builtins.elem "external-ready.service" appUnit.after;
   assert builtins.elem "network-online.target" appUnit.after;
   assert builtins.elem "podman-rootless-idmap-migrate-tester.service" appUnit.after;
+  assert !(builtins.elem "demo-app.service" appUnit.after);
+  assert !(builtins.elem "demo-app.service" extendedUnit.after);
   assert appUnit.unitConfig.Requires
   == [
     "podman-rootless-idmap-migrate-tester.service"
@@ -346,8 +469,9 @@ in
   assert lib.hasSuffix " post-stop" appUnit.serviceConfig.ExecStopPost;
   assert appUnit.serviceConfig.KillMode == "control-group";
   assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" appUnit.serviceConfig.Environment;
+  assert builtins.elem "NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS=40" appUnit.serviceConfig.Environment;
   assert builtins.elem "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=75" appUnit.serviceConfig.Environment;
-  assert appUnit.serviceConfig.TimeoutStartSec == 120;
+  assert appUnit.serviceConfig.TimeoutStartSec == 45;
   assert !(builtins.hasAttr "demo-app-start-worker" config.systemd.user.services);
   assert !(builtins.hasAttr "demo-db-start-worker" config.systemd.user.services);
   assert dbMetadata.longRunning == true;
@@ -362,20 +486,28 @@ in
   assert appReconcileUnit.unitConfig.Requires == ["demo-app.service"];
   assert lib.hasSuffix " reconcile" appReconcileUnit.serviceConfig.ExecStart;
   assert appVerifyUnit.unitConfig.Requires
-  == [
-    "demo-app.service"
-    "demo-app-reconcile.service"
-  ];
+  == ["demo-app-reconcile.service"];
   assert lib.hasSuffix " verify" appVerifyUnit.serviceConfig.ExecStart;
   assert appReadyTarget.unitConfig.ConditionUser == "tester";
   assert appReadyTarget.unitConfig."X-StopOnReconfiguration" == true;
-  assert appReadyTarget.unitConfig.Requires == ["demo-app-verify.service"];
+  assert appReadyTarget.unitConfig.Requires
+  == [
+    "demo-app-verify.service"
+  ];
+  assert appReadyTarget.unitConfig.After
+  == [
+    "demo-app-verify.service"
+  ];
   assert testerManagedTarget.wantedBy == ["default.target"];
   assert builtins.elem "demo-app.service" testerManagedTarget.wants;
   assert testerManagedReadyTarget.wantedBy == ["default.target"];
   assert builtins.elem "demo-app-ready.target" testerManagedReadyTarget.unitConfig.Requires;
   assert rootManagedTarget.wantedBy == [];
   assert rootManagedReadyTarget.wantedBy == [];
+  assert builtins.elem "lane-provider5-ready.target" laneConsumerUnit.after;
+  assert builtins.elem "lane-provider1.service" laneProvider5Unit.after;
+  assert !(builtins.elem "lane-consumer.service" laneProvider5Unit.after);
+  assert !(builtins.elem "lane-consumer.service" laneProvider1Unit.after);
   assert imagePullUnit.serviceConfig.Type == "oneshot";
   assert imagePullUnit.unitConfig.ConditionUser == "tester";
   assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" imagePullUnit.serviceConfig.Environment;
@@ -389,9 +521,15 @@ in
   assert rootlessMigrateUnit.unitConfig.ConditionUser == "tester";
   assert lib.hasInfix ".config/containers/storage.conf" rootlessMigrateScript;
   assert lib.hasInfix "mount_program" rootlessMigrateScript;
+  assert appBootstrapUnit.serviceConfig.TimeoutStartSec == 45;
+  assert appReconcileUnit.serviceConfig.TimeoutStartSec == 45;
+  assert appVerifyUnit.serviceConfig.TimeoutStartSec == 45;
   assert config.users.manageLingering == true;
   assert config.users.users.tester.linger == true;
-  assert builtins.length imagePullPlan == 9;
+  assert builtins.length imagePullPlan == 15;
+  assert builtins.filter (entry: entry.serviceName == "demo-local-image") imagePullPlan == [];
+  assert builtins.filter (entry: entry.serviceName == "demo-local-image-package") imagePullPlan == [];
+  assert builtins.filter (entry: entry.serviceName == "demo-local-image-store") imagePullPlan == [];
   assert appImagePullPlanEntry.user == "tester";
   assert appImagePullPlanEntry.uid == "1234";
   assert appImagePullPlanEntry.serviceName == "demo-app";
@@ -501,13 +639,21 @@ in
   assert restartPolicyMetadata.reconcilePolicy == "restart";
   assert restartPolicyMetadata.restartStamp != "";
   assert restartPolicyMetadata.recreateStamp == restartPolicyMetadata.recreateClassStamp;
-  assert restartPolicyVerifyUnit.unitConfig.Requires == ["demo-restart-policy.service"];
+  assert !(builtins.hasAttr "Requires" restartPolicyVerifyUnit.unitConfig);
+  assert restartPolicyReadyTarget.unitConfig.Requires
+  == [
+    "demo-restart-policy-verify.service"
+  ];
   assert recreatePolicy.reconcilePolicy == "recreate";
   assert recreatePolicyMetadata.reconcilePolicy == "recreate";
   assert recreatePolicyMetadata.restartStamp != "";
   assert recreatePolicyMetadata.recreateClassStamp != "";
   assert recreatePolicyMetadata.recreateStamp != recreatePolicyMetadata.recreateClassStamp;
-  assert recreatePolicyVerifyUnit.unitConfig.Requires == ["demo-recreate-policy.service"];
+  assert !(builtins.hasAttr "Requires" recreatePolicyVerifyUnit.unitConfig);
+  assert recreatePolicyReadyTarget.unitConfig.Requires
+  == [
+    "demo-recreate-policy-verify.service"
+  ];
     pkgs.runCommand "podman-compose-module-test" {} ''
       touch "$out"
     ''

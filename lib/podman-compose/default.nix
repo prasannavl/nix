@@ -78,6 +78,7 @@
     removalPolicy = "inherit";
     adopt = false;
     autoStart = null;
+    startParallelism = null;
     longRunning = true;
     timeoutReadySeconds = null;
     composeUpNoProgressSeconds = null;
@@ -85,6 +86,7 @@
     reloadTag = "0";
     recreateTag = "0";
     imageTag = "0";
+    localImages = {};
     dependsOn = [];
     wants = [];
     waitForNetwork = true;
@@ -108,6 +110,10 @@
   envSecretsOverrideFileName = "__podman-env-secrets.override.yml";
   fileSecretsOverrideFileName = "__podman-file-secrets.override.yml";
   explicitSystemdUnitPattern = ".*\\.(service|target|socket|timer|path|mount)$";
+  maxInt = a: b:
+    if a > b
+    then a
+    else b;
   composeServicesFromText = text: let
     lines = lib.splitString "\n" text;
     serviceLine = line:
@@ -144,6 +150,40 @@
         in
           lib.optional (match != null) (builtins.head match)
       ) (lib.splitString "\n" text)
+    );
+  localImageStoreHash = imageTar:
+    builtins.substring 0 12 (builtins.baseNameOf (builtins.unsafeDiscardStringContext (toString imageTar)));
+  localImageStorePrefix = "nix-store:";
+  localImageRuntimeRef = imageRef: imageTar: "${imageRef}-nix-${localImageStoreHash imageTar}";
+  localImageStoreRuntimeRef = imageTar: "localhost/nix-local/image:${localImageStoreHash imageTar}";
+  localImagePackageRef = imageTar:
+    if imageTar ? passthru && imageTar.passthru ? imageRef
+    then imageTar.passthru.imageRef
+    else throw "services.podman-compose: compose image derivations must expose passthru.imageRef";
+  explicitLocalImageEntry = imageRef: imageTar: {
+    imageRef = imageRef;
+    loadRef = imageRef;
+    runtimeRef = localImageRuntimeRef imageRef imageTar;
+    imageTar = toString imageTar;
+    storeHash = localImageStoreHash imageTar;
+  };
+  packageLocalImageEntry = imageTar: explicitLocalImageEntry (localImagePackageRef imageTar) imageTar;
+  storeLocalImageEntry = imageRef: let
+    imageTar = lib.removePrefix localImageStorePrefix imageRef;
+  in {
+    imageRef = imageRef;
+    loadRef = "";
+    runtimeRef = localImageStoreRuntimeRef imageTar;
+    imageTar = imageTar;
+    storeHash = localImageStoreHash imageTar;
+  };
+  localImageEntryByImageRef = entries:
+    lib.listToAttrs (
+      map (entry: {
+        name = entry.imageRef;
+        value = entry;
+      })
+      entries
     );
 
   ownerRefType = lib.types.either lib.types.str lib.types.int;
@@ -716,6 +756,12 @@
         description = "Whether this compose instance should be auto-started by the generated native user targets during deploy and boot-ready startup. When null, inherit the stack default.";
       };
 
+      startParallelism = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = serviceDefaults.startParallelism;
+        description = "Maximum native auto-start window for generated compose services in the same service user. When null, inherit the stack default.";
+      };
+
       longRunning = lib.mkOption {
         type = lib.types.bool;
         default = serviceDefaults.longRunning;
@@ -756,6 +802,23 @@
         type = lib.types.str;
         default = serviceDefaults.imageTag;
         description = "Declarative knob to enable a compose image refresh unit before this instance starts. Pair with bootTag or recreateTag when already-running containers must be restarted after the pull.";
+      };
+
+      localImages = lib.mkOption {
+        type = lib.types.attrsOf lib.types.package;
+        default = serviceDefaults.localImages;
+        description = ''
+          Local Docker image tar derivations keyed by the image ref used in the
+          compose source. The module rewrites each compose image ref to a
+          generated runtime tag that includes the Nix store hash of the tar,
+          loads the tar before startup, and tags it to that runtime ref so
+          packaging-only changes roll containers without manual tag bumps. For
+          structured compose sources, prefer setting a service `image` directly
+          to a derivation with `passthru.imageRef`; for string compose sources,
+          prefer `image: nix-store:''${package}`. This option remains available
+          for unusual sources where automatic discovery cannot see the local
+          image tar.
+        '';
       };
 
       dependsOn = lib.mkOption {
@@ -1246,6 +1309,12 @@
         description = "Default auto-start behavior for compose instances in this stack. Instances can override this with their own autoStart.";
       };
 
+      startParallelism = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 4;
+        description = "Maximum number of generated compose services for the same service user that may enter their start transaction at once.";
+      };
+
       reconcilePolicy = lib.mkOption {
         type = lib.types.enum ["auto" "restart" "recreate"];
         default = "auto";
@@ -1351,6 +1420,7 @@
       if service.serviceName != null
       then service.serviceName
       else "${stack.servicePrefix}${serviceName}";
+    startGateAfterUnits = startGateAfterUnitsBySystemdServiceName.${resolvedSystemdServiceName} or [];
 
     resolveGeneratedServiceName = svcName: let
       svc = stack.instances.${svcName};
@@ -1359,7 +1429,7 @@
       then svc.serviceName
       else "${stack.servicePrefix}${svcName}";
 
-    readyTargetNameForServiceName = svcName: "${resolveGeneratedServiceName svcName}-ready.target";
+    readyTargetNameForServiceName = svcName: "${(resolveGeneratedServiceName svcName)}-ready.target";
     resolveDependencyUnit = dep:
       if builtins.hasAttr dep stack.instances
       then readyTargetNameForServiceName dep
@@ -1369,6 +1439,7 @@
 
     dependsOnUnits = lib.unique (map resolveDependencyUnit service.dependsOn);
     wantsUnits = lib.unique (map resolveDependencyUnit service.wants);
+    topoDependencyUnits = lib.unique (dependsOnUnits ++ wantsUnits);
     networkOnlineUnits = lib.optional service.waitForNetwork "network-online.target";
 
     conditionUserConfig = {
@@ -1584,6 +1655,7 @@
           expectedComposeServices = service.knownSourceComposeServices;
           files = stagedFileActionInputs recreateStagedEntries;
           imageTag = service.imageTag;
+          localImages = service.localImageMetadata;
         }
         // secretRecreateInputs;
       imagePull = {
@@ -1717,6 +1789,7 @@
         composeFiles = resolvedComposeFiles;
         pullComposeFiles = resolvedPullComposeFiles;
         declaredImages = service.declaredImages;
+        localImages = service.localImageMetadata;
         expectedComposeServices = service.knownSourceComposeServices;
         stagedDirs = map (dirName: let
           entry = service.dirs.${dirName};
@@ -1783,11 +1856,20 @@
           // entryPermsJson entry) (builtins.attrNames service.envSecrets);
       }
     );
+    startTimeoutSeconds = service.timeoutReadySeconds;
+    timeoutReserveSeconds = let
+      rawReserveSeconds = lib.min 30 (lib.max 5 (builtins.div startTimeoutSeconds 10));
+    in
+      if startTimeoutSeconds <= rawReserveSeconds + 1
+      then 1
+      else rawReserveSeconds;
+    verifyTransitionWaitSeconds = lib.max 1 (startTimeoutSeconds - timeoutReserveSeconds);
     helperEnvironment =
       [
         "PATH=${podmanHelperPath}"
         "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
         "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
+        "NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS=${toString verifyTransitionWaitSeconds}"
       ]
       ++ lib.optional (service.composeUpNoProgressSeconds != null) "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=${toString service.composeUpNoProgressSeconds}";
     stampHelperEnvironment = [
@@ -1799,6 +1881,7 @@
       description = "podman: ${resolvedUser}: ${serviceName}";
       after = lib.unique (
         networkOnlineUnits
+        ++ startGateAfterUnits
         ++ rootlessIdmapMigrateUnit
         ++ [stageUnit]
         ++ lib.optional hasBootstrapUnit bootstrapUnit
@@ -1839,7 +1922,7 @@
         KillMode = "control-group";
         Delegate = true;
         Restart = "on-failure";
-        TimeoutStartSec = lib.mkDefault 120;
+        TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
         RestartPreventExitStatus = "75";
         TimeoutStopSec = lib.mkDefault 180;
       };
@@ -1894,7 +1977,7 @@
         Environment = helperEnvironment;
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${helperScript} bootstrap";
-        TimeoutStartSec = lib.mkDefault 120;
+        TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
     reconcileSystemdService = lib.optionalAttrs hasReconcileUnit {
@@ -1911,7 +1994,7 @@
         Environment = helperEnvironment;
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${helperScript} reconcile";
-        TimeoutStartSec = lib.mkDefault 120;
+        TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
     verifySystemdService = {
@@ -1919,8 +2002,8 @@
       after = ["${resolvedSystemdServiceName}.service"] ++ lib.optional hasReconcileUnit reconcileUnit;
       unitConfig =
         conditionUserConfig
-        // {
-          Requires = ["${resolvedSystemdServiceName}.service"] ++ lib.optional hasReconcileUnit reconcileUnit;
+        // lib.optionalAttrs hasReconcileUnit {
+          Requires = [reconcileUnit];
         };
       serviceConfig = {
         Type = "oneshot";
@@ -1928,7 +2011,7 @@
         Environment = helperEnvironment;
         WorkingDirectory = "-${resolvedWorkingDir}";
         ExecStart = "${helperScript} verify";
-        TimeoutStartSec = lib.mkDefault 120;
+        TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
     readySystemdTarget = {
@@ -2024,7 +2107,8 @@
       }
     ];
     lifecyclePolicy = lifecyclePolicy;
-    inherit (service) state reconcilePolicy removalPolicy adopt autoStart longRunning timeoutReadySeconds imageTag recreateTag bootTag reloadTag waitForNetwork hasComposeEntry;
+    topoDependencyUnits = topoDependencyUnits;
+    inherit (service) state reconcilePolicy removalPolicy adopt autoStart startParallelism longRunning timeoutReadySeconds imageTag recreateTag bootTag reloadTag waitForNetwork hasComposeEntry declaredImages localImageMetadata;
   };
 
   resolvedServices = lib.concatLists (
@@ -2071,7 +2155,7 @@
       helper = helperScript;
       imageTag = service.imageTag;
     })
-    (builtins.filter (service: service.hasComposeEntry) resolvedServices)
+    (builtins.filter (service: service.hasComposeEntry && (service.declaredImages or []) != []) resolvedServices)
   ));
   controlPackage = pkgs.writeShellApplication {
     name = "podman-composectl";
@@ -2200,6 +2284,86 @@
         && service.autoStartEnabled
     )
     resolvedServices;
+  startGateAfterUnitsBySystemdServiceName = let
+    gateEntriesForUser = user: let
+      services = autoStartServicesForUser user;
+      serviceByName = lib.listToAttrs (
+        map
+        (service: {
+          name = service.systemdServiceName;
+          value = service;
+        })
+        services
+      );
+      generatedTopoUnitsForService = service: [
+        "${service.systemdServiceName}.service"
+        "${service.systemdServiceName}-stage.service"
+        "${service.systemdServiceName}-bootstrap.service"
+        "${service.systemdServiceName}-reconcile.service"
+        "${service.systemdServiceName}-verify.service"
+        "${service.systemdServiceName}-image-pull.service"
+        "${service.systemdServiceName}-ready.target"
+      ];
+      serviceNameByGeneratedUnit = lib.listToAttrs (
+        lib.concatMap
+        (service:
+          map
+          (unit: {
+            name = unit;
+            value = service.systemdServiceName;
+          })
+          (generatedTopoUnitsForService service))
+        services
+      );
+      topoDependencyServiceNamesFor = service:
+        builtins.filter
+        (
+          dependencyName:
+            dependencyName
+            != service.systemdServiceName
+            && builtins.hasAttr dependencyName serviceByName
+        )
+        (
+          lib.unique (
+            builtins.filter
+            (dependencyName: dependencyName != null)
+            (map (unit: serviceNameByGeneratedUnit.${unit} or null) service.topoDependencyUnits)
+          )
+        );
+      levelForServiceName = serviceName: let
+        service = serviceByName.${serviceName};
+        dependencyLevels = map levelForServiceName (topoDependencyServiceNamesFor service);
+      in
+        if dependencyLevels == []
+        then 0
+        else 1 + builtins.foldl' maxInt 0 dependencyLevels;
+      servicesWithLevels =
+        map
+        (service:
+          service
+          // {
+            startThrottleLevel = levelForServiceName service.systemdServiceName;
+          })
+        services;
+      throttleLevels = lib.unique (
+        lib.sort (a: b: a < b) (map (service: service.startThrottleLevel) servicesWithLevels)
+      );
+      servicesForLevel = level:
+        builtins.filter (service: service.startThrottleLevel == level) servicesWithLevels;
+      gateEntriesForLevel = level:
+        lib.imap0
+        (index: service: {
+          name = service.systemdServiceName;
+          value =
+            if index < service.startParallelism
+            then []
+            else ["${(builtins.elemAt (servicesForLevel level) (index - service.startParallelism)).systemdServiceName}.service"];
+        })
+        (servicesForLevel level);
+    in
+      lib.concatMap gateEntriesForLevel throttleLevels;
+  in
+    lib.listToAttrs (lib.concatMap gateEntriesForUser stackUsers);
   mkManagedUserTarget = user: let
     services = autoStartServicesForUser user;
   in {
@@ -2606,6 +2770,10 @@ in {
                     else if baseService.autoStart == null
                     then stack.autoStart
                     else baseService.autoStart;
+                  startParallelism =
+                    if baseService.startParallelism == null
+                    then stack.startParallelism
+                    else baseService.startParallelism;
                   timeoutReadySeconds =
                     if baseService.timeoutReadySeconds == null
                     then stack.timeoutReadySeconds
@@ -2617,15 +2785,100 @@ in {
                   trustedCaCertificates = normalizedTrustedCaCertificates;
                 };
               useSource = normalizedService.source != null;
-              sourceCompose =
+              rawSourceCompose =
                 if builtins.isPath normalizedService.source
                 then builtins.readFile normalizedService.source
                 else normalizedService.source;
+              rawSourceComposeServices =
+                if
+                  builtins.isAttrs rawSourceCompose
+                  && builtins.hasAttr "services" rawSourceCompose
+                  && builtins.isAttrs rawSourceCompose.services
+                then rawSourceCompose.services
+                else {};
+              imageValueRef = imageValue:
+                if lib.isDerivation imageValue
+                then localImagePackageRef imageValue
+                else if builtins.isString imageValue
+                then imageValue
+                else null;
+              autoPackageLocalImageEntries = lib.filter (entry: entry != null) (
+                lib.mapAttrsToList (
+                  _: composeService:
+                    if
+                      builtins.isAttrs composeService
+                      && builtins.hasAttr "image" composeService
+                      && lib.isDerivation composeService.image
+                    then packageLocalImageEntry composeService.image
+                    else null
+                )
+                rawSourceComposeServices
+              );
+              autoStoreLocalImageEntries = map storeLocalImageEntry (
+                lib.filter (imageRef: lib.hasPrefix localImageStorePrefix imageRef) (
+                  if rawSourceComposeServices != {}
+                  then
+                    lib.filter (imageRef: imageRef != null) (
+                      lib.mapAttrsToList (
+                        _: composeService:
+                          if builtins.isAttrs composeService && builtins.hasAttr "image" composeService
+                          then imageValueRef composeService.image
+                          else null
+                      )
+                      rawSourceComposeServices
+                    )
+                  else if builtins.isString rawSourceCompose
+                  then composeImagesFromText rawSourceCompose
+                  else []
+                )
+              );
+              localImageEntriesByRef = localImageEntryByImageRef (
+                (lib.mapAttrsToList explicitLocalImageEntry normalizedService.localImages)
+                ++ autoPackageLocalImageEntries
+                ++ autoStoreLocalImageEntries
+              );
+              localImageRuntimeRefs = lib.mapAttrs (_: entry: entry.runtimeRef) localImageEntriesByRef;
+              rewriteComposeImageRef = imageRef:
+                if imageRef != null && builtins.hasAttr imageRef localImageRuntimeRefs
+                then localImageRuntimeRefs.${imageRef}
+                else imageRef;
+              rewriteComposeImageTextLine = line: let
+                match = builtins.match "([[:space:]]*image:[[:space:]]*['\"]?)([^'\"#[:space:]]+)(.*)" line;
+              in
+                if match != null
+                then let
+                  prefix = builtins.elemAt match 0;
+                  imageRef = builtins.elemAt match 1;
+                  suffix = builtins.elemAt match 2;
+                in "${prefix}${rewriteComposeImageRef imageRef}${suffix}"
+                else line;
+              rewriteComposeServiceImage = composeService:
+                if builtins.isAttrs composeService && builtins.hasAttr "image" composeService
+                then let
+                  rewrittenImage = rewriteComposeImageRef (imageValueRef composeService.image);
+                in
+                  if rewrittenImage == null
+                  then composeService
+                  else composeService // {image = rewrittenImage;}
+                else composeService;
+              sourceCompose =
+                if
+                  builtins.isAttrs rawSourceCompose
+                  && builtins.hasAttr "services" rawSourceCompose
+                  && builtins.isAttrs rawSourceCompose.services
+                then
+                  rawSourceCompose
+                  // {
+                    services = lib.mapAttrs (_: rewriteComposeServiceImage) rawSourceCompose.services;
+                  }
+                else if builtins.isString rawSourceCompose
+                then lib.concatStringsSep "\n" (map rewriteComposeImageTextLine (lib.splitString "\n" rawSourceCompose))
+                else rawSourceCompose;
               sourceTextComposeServices =
                 if builtins.isString sourceCompose
                 then composeServicesFromText sourceCompose
                 else [];
-              sourceDeclaredImages =
+              sourceDeclaredImagesAll =
                 if
                   builtins.isAttrs sourceCompose
                   && builtins.hasAttr "services" sourceCompose
@@ -2639,6 +2892,10 @@ in {
                 else if builtins.isString sourceCompose
                 then composeImagesFromText sourceCompose
                 else [];
+              sourceDeclaredImages =
+                lib.filter
+                (image: !(builtins.elem image (lib.attrValues localImageRuntimeRefs)))
+                sourceDeclaredImagesAll;
               sourceDeclaredComposeServices =
                 if
                   builtins.isAttrs sourceCompose
@@ -2858,6 +3115,7 @@ in {
                 normalizedService.envSecrets;
               sourcePaths = lib.mapAttrs (fileName: entry: renderEntry serviceName fileName entry) effectiveEntries;
               pullSourceDir = mkPullSourceDir serviceName sourcePaths;
+              localImageMetadata = lib.attrValues localImageEntriesByRef;
             in
               normalizedService
               // {
@@ -2868,6 +3126,8 @@ in {
                 envSecretRuntimePaths = envSecretRuntimePaths;
                 knownSourceComposeServices = knownSourceComposeServices;
                 declaredImages = sourceDeclaredImages;
+                localImageMetadata = localImageMetadata;
+                renderedSource = sourceCompose;
                 stagedEntries = effectiveEntries;
                 sourcePaths = sourcePaths;
                 pullSourcePaths = lib.mapAttrs (fileName: _: "${pullSourceDir}/${fileName}") effectiveEntries;

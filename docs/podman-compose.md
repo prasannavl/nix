@@ -132,6 +132,18 @@ expected containers to make no healthy-state progress during
 up`. Leave it unset unless a healthy startup path has a measured
 reason for a different guard.
 
+`startParallelism` controls how many generated compose services for the same
+service user may enter their start transaction at once. It defaults to four and
+is dependency-level aware, so providers still order before consumers declared in
+`dependsOn` or `wants`.
+
+Local image tar derivations can be used without service-local `podman load`
+hooks. In structured sources, set `image = package;` when the package exposes
+`passthru.imageRef`; in inline YAML, use `image: nix-store:${package}`. The
+module rewrites that authoring-time ref to a generated local runtime tag that
+includes the image tar store hash, loads the tar before compose start, and keeps
+generated local refs out of deploy-time registry pulls and image reports.
+
 ## Operator Control
 
 Hosts with Podman compose instances install `podman-composectl`, a generated
@@ -223,7 +235,9 @@ The user-service switching path is native `systemd.user` services plus generated
 per-user managed and ready targets. Each compose instance has a generated verify
 unit that checks staged runtime files, native-reload staged files, generated
 env-secret files, restart-class helper state, and pending recreate-class state
-before its ready target is reached.
+before its ready target is reached. Verify may restart the owning compose user
+service once to repair stale runtime state after a previous interrupted
+activation, then re-check before failing normally.
 
 ## Secret Model
 

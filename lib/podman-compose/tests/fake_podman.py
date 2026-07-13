@@ -152,6 +152,10 @@ def main():
         if len(args) > 1 and args[1] == "rm":
             return
 
+    if args and args[0] == "load":
+        print(os.environ.get("TEST_PODMAN_LOAD_OUTPUT", "Loaded image: localhost/demo/loaded:1"))
+        return
+
     if args and args[0] == "compose":
         if "up" in args:
             if mode == "success":

@@ -7,7 +7,7 @@ include only what applies, but keep the relative order stable.
 ## Attribute Order
 
 1. **Config flags** — `state`, `reconcilePolicy`, `removalPolicy`, `reload`,
-   `imageTag`, `bootTag`, `reloadTag`, `recreateTag`
+   `imageTag`, `bootTag`, `reloadTag`, `recreateTag`, `localImages`
 2. **exposedPorts**
 3. **network identity** — `subnet` when a stable compose default-network subnet
    is declared
@@ -58,6 +58,17 @@ include only what applies, but keep the relative order stable.
   publishes a usable release tag. Use a `tag@sha256:<digest>` pin only for
   channel-only images where no versioned tag exists, so deploys stay
   reproducible without hiding normal version updates behind digest churn.
+- For repo-built local Docker image tar derivations, do not load the tar in
+  `preStart`. In structured compose sources, set `image = package;` when the
+  package exposes `passthru.imageRef`. In inline YAML sources, use
+  `image: nix-store:${package}`. The module rewrites the compose image to a
+  normal generated runtime tag with the Nix image-tar store hash, loads the tar,
+  and tags it to that runtime ref before `podman compose up`. This avoids stale
+  Podman tags when the package changes without requiring manual image-tag bumps.
+  Mixed local/remote compose instances pull only their declared remote image
+  refs, so a generated local runtime tag is never sent to a registry. Use
+  `localImages` only as an escape hatch for sources the module cannot infer
+  automatically.
 - Use `state = "stopped"` when an instance should remain declared but should be
   stopped and skipped by automatic start/reconcile. The generated unit remains
   manually startable; runtime files are staged on start and cleaned after stop.
