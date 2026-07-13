@@ -4,16 +4,17 @@ set -Eeuo pipefail
 usage() {
 	cat <<'EOF'
 Usage:
-  scripts/host-manager.sh build HOST --store PATH
-  scripts/host-manager.sh generate HOST [--system=none|live|incus] [options]
-  scripts/host-manager.sh live-install HOST --wipe-disks [options]
-  scripts/host-manager.sh delete HOST [--force|--yes]
-  scripts/host-manager.sh ssh HOST [-- ssh-args...]
-  scripts/host-manager.sh reboot HOST [--dry-run] [--yes]
-  scripts/host-manager.sh gc HOST [--delete-older-than AGE|--all] [--dry-run] [--yes]
-  scripts/host-manager.sh clean:podman HOST [--dry-run] [--force-held] [--yes]
-  scripts/host-manager.sh clean:nixbot HOST [--dry-run] [--force-held] [--yes]
-  scripts/host-manager.sh logs HOST [--service SERVICE] [--since WHEN] [--lines N] [--follow]
+  scripts/host-manager.sh build HOST|--host=HOST --store PATH
+  scripts/host-manager.sh generate HOST|--host=HOST [--system=none|live|incus] [options]
+  scripts/host-manager.sh live-install HOST|--host=HOST --wipe-disks [options]
+  scripts/host-manager.sh delete HOST|--host=HOST [--force|--yes]
+  scripts/host-manager.sh ssh HOST|--host=HOST [-- ssh-args...]
+  scripts/host-manager.sh reboot HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--yes]
+  scripts/host-manager.sh gc HOST|--host=HOST|--host=all [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
+  scripts/host-manager.sh clean:deploy HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh clean:podman HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh clean:nixbot HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh logs HOST|--host=HOST [--service SERVICE] [--since WHEN] [--lines N] [--follow]
   scripts/host-manager.sh service start|stop|restart|status|logs SERVICE [--stack STACK|--host HOST] [--user USER] [--since WHEN] [--lines N] [--follow]
 
 The flake package also provides an equivalent host-manager binary.
@@ -43,6 +44,8 @@ Actions:
   ssh                      Open SSH to a host using the repo host inventory.
   reboot                   Reboot the addressed host with systemctl reboot.
   gc                       Run Nix garbage collection on a host.
+  clean:deploy             Clear nixbot and Podman deploy-related locks and
+                           unused anonymous Podman volumes on a host.
   clean:podman             Clear Podman compose lifecycle locks and unused
                            anonymous Podman volumes on a host.
   clean:nixbot             Clear nixbot-related lock directories on a host.
@@ -53,7 +56,11 @@ Actions:
                            instance of a service, or only --host HOST.
 
 Options:
-  --host HOST              Host name compatibility alias. Prefer positional HOST.
+  --host HOST              Host selector. Equivalent to positional HOST for
+                           host-targeted commands. Use --host=all only for
+                           reboot, gc, and clean:* fleet maintenance.
+  --jobs N                 Parallel host jobs for --host=all maintenance.
+                           Default: 8.
   --stack STACK            Optional stack key from lib/stacks.
   --system SYSTEM          Generate target type: none, live, or incus.
                            Default: none.
@@ -140,7 +147,13 @@ init_vars() {
 	KEEP_TMP="0"
 	DELETE_OLDER_THAN="7d"
 	GC_ALL="0"
+	HOST_FROM_FLAG="0"
+	HOST_JOBS="8"
 	OP_USER="${HOST_MANAGER_USER:-$(id -un 2>/dev/null || printf root)}"
+	OP_USER_EXPLICIT="0"
+	if [[ -n "${HOST_MANAGER_USER:-}" ]]; then
+		OP_USER_EXPLICIT="1"
+	fi
 	SERVICE_NAME=""
 	LOG_USER=""
 	LOG_SINCE=""
@@ -159,10 +172,12 @@ init_vars() {
 	HOST_DIR=""
 	HOSTS_DEFAULT_FILE="${REPO_ROOT}/hosts/default.nix"
 	NIXBOT_FILE="${REPO_ROOT}/hosts/nixbot.nix"
+	NIXBOT_OVERRIDE_FILE="${NIXBOT_FILE%.nix}.override.nix"
 	SECRETS_FILE="${REPO_ROOT}/data/secrets/default.nix"
 	MACHINE_SECRET_DIR="${REPO_ROOT}/data/secrets/globals/machine"
 	NIXBOT_CONFIG_JSON=""
 	NIXBOT_HOSTS_JSON=""
+	REMOTE_SSH_CONFIG=""
 	REMOTE_SSH_TARGET=""
 	REMOTE_SSH_ARGS=()
 
@@ -343,6 +358,10 @@ parse_args() {
 		ACTION="nixbot-clean"
 		shift
 		;;
+	clean:deploy)
+		ACTION="deploy-clean"
+		shift
+		;;
 	service)
 		shift
 		[[ $# -gt 0 ]] || die "service requires an action: start, stop, restart, status, or logs"
@@ -367,7 +386,7 @@ parse_args() {
 	esac
 
 	case "$ACTION" in
-	build | generate | live-install | delete | ssh | reboot | gc | podman-clean | nixbot-clean | logs)
+	build | generate | live-install | delete | ssh | reboot | gc | podman-clean | nixbot-clean | deploy-clean | logs)
 		if [[ $# -gt 0 && "$1" != --* ]]; then
 			HOST="$1"
 			shift
@@ -394,10 +413,12 @@ parse_args() {
 		--host)
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			HOST="$2"
+			HOST_FROM_FLAG="1"
 			shift 2
 			;;
 		--host=*)
 			HOST="${1#--host=}"
+			HOST_FROM_FLAG="1"
 			shift
 			;;
 		--system)
@@ -553,7 +574,20 @@ parse_args() {
 			shift
 			;;
 		--all)
-			GC_ALL="1"
+			if [[ "$ACTION" == "gc" ]]; then
+				GC_ALL="1"
+			else
+				die "--all is only supported by gc."
+			fi
+			shift
+			;;
+		--jobs)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			HOST_JOBS="$2"
+			shift 2
+			;;
+		--jobs=*)
+			HOST_JOBS="${1#--jobs=}"
 			shift
 			;;
 		--yes)
@@ -574,6 +608,7 @@ parse_args() {
 				LOG_USER="$2"
 			else
 				OP_USER="$2"
+				OP_USER_EXPLICIT="1"
 			fi
 			shift 2
 			;;
@@ -583,6 +618,7 @@ parse_args() {
 				LOG_USER="$user_value"
 			else
 				OP_USER="$user_value"
+				OP_USER_EXPLICIT="1"
 			fi
 			shift
 			;;
@@ -633,7 +669,7 @@ parse_args() {
 			;;
 		*)
 			case "$ACTION" in
-			build | generate | live-install | delete | ssh | reboot | gc | podman-clean | nixbot-clean | logs)
+			build | generate | live-install | delete | ssh | reboot | gc | podman-clean | nixbot-clean | deploy-clean | logs)
 				if [[ -z "$HOST" && "$1" != --* ]]; then
 					HOST="$1"
 					shift
@@ -654,10 +690,26 @@ parse_args() {
 	done
 }
 
+maintenance_action_supports_all() {
+	case "$ACTION" in
+	reboot | gc | podman-clean | nixbot-clean | deploy-clean)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
 validate_common() {
 	if [[ "$ACTION" != service-* || -n "$HOST" ]]; then
 		[[ -n "$HOST" ]] || die "Missing required HOST."
-		valid_host_name "$HOST" || die "HOST must start and end with a letter or number, and use only letters, numbers, and hyphens."
+		if [[ "$HOST" == "all" ]]; then
+			[[ "$HOST_FROM_FLAG" == "1" ]] || die "Use --host=all to target every nixbot inventory host."
+			maintenance_action_supports_all || die "HOST=all is only supported by reboot, gc, and clean commands."
+		else
+			valid_host_name "$HOST" || die "HOST must start and end with a letter or number, and use only letters, numbers, and hyphens."
+		fi
 	fi
 	[[ "$HOST_SYSTEM" == "none" || "$HOST_SYSTEM" == "live" || "$HOST_SYSTEM" == "incus" ]] || die "--system must be one of: none, live, incus."
 	[[ "$BOOT_MODE" == "efi" || "$BOOT_MODE" == "uefi" || "$BOOT_MODE" == "bios" ]] || die "--boot-mode must be one of: efi, uefi, bios."
@@ -667,6 +719,7 @@ validate_common() {
 	[[ -z "$STORE_DIR" ]] || validate_store_dir "$STORE_DIR"
 	[[ -z "$HARDWARE_CONFIG" || -f "$HARDWARE_CONFIG" ]] || die "Hardware config not found: $HARDWARE_CONFIG"
 	[[ "$LOG_LINES" =~ ^[0-9]+$ ]] || die "--lines must be a non-negative integer."
+	[[ "$HOST_JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer."
 	if [[ -n "$HOST" ]]; then
 		HOST_DIR="${REPO_ROOT}/hosts/${HOST}"
 		infer_disk_device
@@ -754,8 +807,15 @@ validate_args() {
 			die "No host-related config found for: ${HOST}"
 		fi
 		;;
-	ssh | reboot | gc | logs | podman-clean | nixbot-clean)
+	ssh | logs)
 		nixbot_host_registered "$HOST" || die "Host is not in ${NIXBOT_FILE}: ${HOST}"
+		;;
+	reboot | gc | podman-clean | nixbot-clean | deploy-clean)
+		if [[ "$HOST" == "all" ]]; then
+			nixbot_inventory_hosts >/dev/null
+		else
+			nixbot_host_registered "$HOST" || die "Host is not in ${NIXBOT_FILE}: ${HOST}"
+		fi
 		;;
 	service-start | service-stop | service-restart | service-status | service-logs)
 		[[ -n "$SERVICE_NAME" ]] || die "${ACTION#service-} requires a service or unit name."
@@ -1119,12 +1179,20 @@ nix_attr_assignment_regex() {
 }
 
 load_nixbot_config_json() {
+	local base_json override_json
+
 	if [[ -n "$NIXBOT_CONFIG_JSON" ]]; then
 		printf '%s\n' "$NIXBOT_CONFIG_JSON"
 		return
 	fi
 
-	NIXBOT_CONFIG_JSON="$(nix eval --json --file "$NIXBOT_FILE")"
+	base_json="$(nix eval --json --file "$NIXBOT_FILE")"
+	if [[ -f "$NIXBOT_OVERRIDE_FILE" ]]; then
+		override_json="$(nix eval --json --file "$NIXBOT_OVERRIDE_FILE")"
+		NIXBOT_CONFIG_JSON="$(jq -cs '.[0] * .[1]' <<<"${base_json}"$'\n'"${override_json}")"
+	else
+		NIXBOT_CONFIG_JSON="$base_json"
+	fi
 	printf '%s\n' "$NIXBOT_CONFIG_JSON"
 }
 
@@ -1141,6 +1209,15 @@ load_nixbot_hosts_json() {
 	printf '%s\n' "$NIXBOT_HOSTS_JSON"
 }
 
+nixbot_inventory_hosts() {
+	local hosts_json host_count
+
+	hosts_json="$(load_nixbot_hosts_json)"
+	host_count="$(jq -r 'keys | length' <<<"$hosts_json")"
+	[[ "$host_count" -gt 0 ]] || die "No hosts found in ${NIXBOT_FILE}."
+	jq -r 'keys[]' <<<"$hosts_json"
+}
+
 nixbot_host_json() {
 	local host="$1" hosts_json
 
@@ -1155,13 +1232,16 @@ nixbot_host_registered() {
 }
 
 prepare_ssh_context() {
-	local host="$1" mode="${2:-remote}" host_json target proxy_jump proxy_command user
+	local host="$1" mode="${2:-remote}" host_json target proxy_jump proxy_command user key_path
 
 	host_json="$(nixbot_host_json "$host")" || die "Host is not in ${NIXBOT_FILE}: ${host}"
 	target="$(jq -r --arg host "$host" '.target // $host' <<<"$host_json")"
 	proxy_jump="$(jq -r '.proxyJump // empty' <<<"$host_json")"
 	proxy_command="$(jq -r '.proxyCommand // empty' <<<"$host_json")"
-	user="$OP_USER"
+	{
+		read -r user
+		read -r key_path
+	} < <(nixbot_operator_context "$host")
 
 	REMOTE_SSH_ARGS=()
 	if [[ "$mode" == "remote" ]]; then
@@ -1174,9 +1254,21 @@ prepare_ssh_context() {
 	if [[ -n "$proxy_command" ]]; then
 		REMOTE_SSH_ARGS+=(-o "ProxyCommand=${proxy_command}")
 	elif [[ -n "$proxy_jump" ]]; then
-		REMOTE_SSH_ARGS+=(-J "$proxy_jump")
+		if nixbot_host_registered "$proxy_jump"; then
+			ensure_remote_ssh_config
+		else
+			REMOTE_SSH_ARGS+=(-J "$proxy_jump")
+		fi
+	fi
+	if [[ -n "$key_path" ]]; then
+		REMOTE_SSH_ARGS+=(-i "$(resolve_operator_key_path "$key_path")" -o IdentitiesOnly=yes)
 	fi
 
+	if [[ -n "$REMOTE_SSH_CONFIG" ]]; then
+		REMOTE_SSH_ARGS+=(-F "$REMOTE_SSH_CONFIG")
+		REMOTE_SSH_TARGET="$(ssh_inventory_alias "$host")"
+		return
+	fi
 	if [[ "$target" == *@* || -z "$user" ]]; then
 		REMOTE_SSH_TARGET="$target"
 	else
@@ -1184,12 +1276,133 @@ prepare_ssh_context() {
 	fi
 }
 
+ssh_inventory_alias() {
+	printf 'host-manager-%s\n' "$1"
+}
+
+ensure_remote_ssh_config() {
+	local config_json host
+
+	if [[ -n "$REMOTE_SSH_CONFIG" ]]; then
+		return
+	fi
+	[[ -n "$RUN_DIR" ]] || die "Internal error: RUN_DIR is required before preparing inventory SSH config."
+
+	REMOTE_SSH_CONFIG="${RUN_DIR}/ssh_config"
+	config_json="$(load_nixbot_config_json)"
+	: >"$REMOTE_SSH_CONFIG"
+	chmod 600 "$REMOTE_SSH_CONFIG"
+	while IFS= read -r host; do
+		[[ -n "$host" ]] || continue
+		append_ssh_config_host "$config_json" "$host" >>"$REMOTE_SSH_CONFIG"
+	done < <(jq -r '.hosts // {} | keys[]' <<<"$config_json")
+}
+
+append_ssh_config_host() {
+	local config_json="$1" host="$2"
+	local host_json target proxy_jump proxy_command user key_path
+
+	host_json="$(jq -cer --arg host "$host" '.hosts[$host]' <<<"$config_json")"
+	target="$(jq -r --arg host "$host" '.target // $host' <<<"$host_json")"
+	proxy_jump="$(jq -r '.proxyJump // empty' <<<"$host_json")"
+	proxy_command="$(jq -r '.proxyCommand // empty' <<<"$host_json")"
+	{
+		read -r user
+		read -r key_path
+	} < <(nixbot_operator_context_from_config "$config_json" "$host")
+
+	printf 'Host %s\n' "$(ssh_inventory_alias "$host")"
+	if ssh_known_host_exists "$host"; then
+		printf '  HostKeyAlias %s\n' "$host"
+	fi
+	if [[ "$target" == *@* ]]; then
+		printf '  User %s\n' "${target%@*}"
+		printf '  HostName %s\n' "${target#*@}"
+	else
+		printf '  HostName %s\n' "$target"
+		if [[ -n "$user" ]]; then
+			printf '  User %s\n' "$user"
+		fi
+	fi
+	if [[ -n "$key_path" ]]; then
+		printf '  IdentityFile %s\n' "$(resolve_operator_key_path "$key_path")"
+		printf '  IdentitiesOnly yes\n'
+	fi
+	if [[ -n "$proxy_command" ]]; then
+		printf '  ProxyCommand %s\n' "$proxy_command"
+	elif [[ -n "$proxy_jump" ]]; then
+		if jq -e --arg host "$proxy_jump" '.hosts // {} | has($host)' <<<"$config_json" >/dev/null; then
+			printf '  ProxyJump %s\n' "$(ssh_inventory_alias "$proxy_jump")"
+		else
+			printf '  ProxyJump %s\n' "$proxy_jump"
+		fi
+	fi
+	printf '\n'
+}
+
+nixbot_operator_context() {
+	local host="$1" config_json
+
+	config_json="$(load_nixbot_config_json)"
+	nixbot_operator_context_from_config "$config_json" "$host"
+}
+
+nixbot_operator_context_from_config() {
+	local config_json="$1" host="$2"
+
+	jq -r \
+		--arg host "$host" \
+		--arg fallbackUser "$OP_USER" \
+		--arg explicitUser "$OP_USER_EXPLICIT" '
+    def pick($values):
+      $values
+      | map((. // "") | tostring)
+      | map(select(. != ""))
+      | .[0] // "";
+    (.hosts[$host] // {}) as $hostCfg
+    | (.config.hostDefaults // {}) as $defaults
+    | (pick([$hostCfg.operatorUser, $defaults.operatorUser])) as $inventoryUser
+    | (pick([$hostCfg.operatorKey, $defaults.operatorKey])) as $inventoryKey
+    | if $explicitUser == "1" then
+        [$fallbackUser, (if $fallbackUser == $inventoryUser then $inventoryKey else "" end)]
+      else
+        [pick([$inventoryUser, $fallbackUser]), $inventoryKey]
+      end
+    | .[]
+	' <<<"$config_json"
+}
+
+resolve_operator_key_path() {
+	local key_path="$1"
+
+	if [[ -z "$key_path" || "$key_path" = /* ]]; then
+		printf '%s\n' "$key_path"
+	else
+		printf '%s/%s\n' "$REPO_ROOT" "$key_path"
+	fi
+}
+
+ssh_known_host_exists() {
+	ssh-keygen -F "$1" >/dev/null 2>&1
+}
+
 run_remote_root_script() {
 	local host="$1" script="$2"
+	local remote_command
 	shift 2
 
 	prepare_ssh_context "$host" remote
-	ssh "${REMOTE_SSH_ARGS[@]}" "$REMOTE_SSH_TARGET" sudo -n env "$@" bash -s <<<"$script"
+	remote_command="$(shell_quote_argv sudo -n env "$@" bash -s)"
+	ssh "${REMOTE_SSH_ARGS[@]}" "$REMOTE_SSH_TARGET" "$remote_command" <<<"$script"
+}
+
+shell_quote_argv() {
+	local arg
+	printf '%q' "$1"
+	shift
+	for arg in "$@"; do
+		printf ' %q' "$arg"
+	done
 }
 
 resolve_service_hosts_from_stack() {
@@ -1943,12 +2156,55 @@ run_ssh() {
 	exec ssh "${REMOTE_SSH_ARGS[@]}" "$REMOTE_SSH_TARGET" "${SSH_EXTRA_ARGS[@]}"
 }
 
-run_gc() {
-	local script gc_mode
-
-	if [[ "$DRY_RUN" != "1" ]]; then
-		confirm_or_die "Run Nix garbage collection on ${HOST}?" "--yes"
+maintenance_target_hosts() {
+	if [[ "$HOST" == "all" ]]; then
+		nixbot_inventory_hosts
+	else
+		printf '%s\n' "$HOST"
 	fi
+}
+
+drain_host_jobs() {
+	local rc=0 pid
+
+	for pid in "$@"; do
+		wait "$pid" || rc=1
+	done
+	return "$rc"
+}
+
+run_for_target_hosts() {
+	local label="$1" runner="$2" host active_jobs=0 rc=0
+	local -a pids=()
+
+	if [[ "$HOST" != "all" ]]; then
+		"$runner" "$HOST"
+		return
+	fi
+
+	while IFS= read -r host; do
+		[[ -n "$host" ]] || continue
+		(
+			info "==> ${host}: ${label}"
+			"$runner" "$host"
+		) &
+		pids+=("$!")
+		active_jobs=$((active_jobs + 1))
+		if [[ "$active_jobs" -ge "$HOST_JOBS" ]]; then
+			drain_host_jobs "${pids[@]}" || rc=1
+			pids=()
+			active_jobs=0
+		fi
+	done < <(maintenance_target_hosts)
+
+	if [[ "$active_jobs" -gt 0 ]]; then
+		drain_host_jobs "${pids[@]}" || rc=1
+	fi
+	return "$rc"
+}
+
+run_gc_host() {
+	local host="$1" script gc_mode
 
 	if [[ "$GC_ALL" == "1" ]]; then
 		gc_mode="all"
@@ -1977,18 +2233,30 @@ else
 fi
 REMOTE_GC
 	)"
-	run_remote_root_script "$HOST" "$script" \
+	run_remote_root_script "$host" "$script" \
 		HM_DRY_RUN="$DRY_RUN" \
 		HM_GC_MODE="$gc_mode" \
 		HM_DELETE_OLDER_THAN="$DELETE_OLDER_THAN"
 }
 
-run_reboot() {
-	local script
+run_gc() {
+	local host target_label
+
+	if [[ "$HOST" == "all" ]]; then
+		target_label="all nixbot inventory hosts"
+	else
+		target_label="$HOST"
+	fi
 
 	if [[ "$DRY_RUN" != "1" ]]; then
-		confirm_or_die "Reboot ${HOST} by running systemctl reboot on the target host?" "--yes"
+		confirm_or_die "Run Nix garbage collection on ${target_label}?" "--yes"
 	fi
+
+	run_for_target_hosts gc run_gc_host
+}
+
+run_reboot_host() {
+	local host="$1" script
 
 	script="$(
 		cat <<'REMOTE_REBOOT'
@@ -2002,7 +2270,23 @@ fi
 systemctl reboot
 REMOTE_REBOOT
 	)"
-	run_remote_root_script "$HOST" "$script" HM_DRY_RUN="$DRY_RUN"
+	run_remote_root_script "$host" "$script" HM_DRY_RUN="$DRY_RUN"
+}
+
+run_reboot() {
+	local host target_label
+
+	if [[ "$HOST" == "all" ]]; then
+		target_label="all nixbot inventory hosts"
+	else
+		target_label="$HOST"
+	fi
+
+	if [[ "$DRY_RUN" != "1" ]]; then
+		confirm_or_die "Reboot ${target_label} by running systemctl reboot on the target host(s)?" "--yes"
+	fi
+
+	run_for_target_hosts reboot run_reboot_host
 }
 
 remote_lock_cleanup_script() {
@@ -2220,18 +2504,47 @@ esac
 REMOTE_CLEAN
 }
 
-run_remote_clean() {
-	local kind="$1" script
-
-	if [[ "$DRY_RUN" != "1" ]]; then
-		confirm_or_die "Run ${kind} cleanup on ${HOST}?" "--yes"
-	fi
+run_remote_clean_host() {
+	local kind="$1" host="$2" script
 
 	script="$(remote_lock_cleanup_script)"
-	run_remote_root_script "$HOST" "$script" \
+	run_remote_root_script "$host" "$script" \
 		HM_DRY_RUN="$DRY_RUN" \
 		HM_FORCE_HELD="$FORCE_HELD" \
 		HM_CLEAN_KIND="$kind"
+}
+
+run_remote_clean_deploy_host() {
+	run_remote_clean_host all "$1"
+}
+
+run_remote_clean_nixbot_host() {
+	run_remote_clean_host nixbot "$1"
+}
+
+run_remote_clean_podman_host() {
+	run_remote_clean_host podman "$1"
+}
+
+run_remote_clean() {
+	local kind="$1" host target_label
+
+	if [[ "$HOST" == "all" ]]; then
+		target_label="all nixbot inventory hosts"
+	else
+		target_label="$HOST"
+	fi
+
+	if [[ "$DRY_RUN" != "1" ]]; then
+		confirm_or_die "Run ${kind} cleanup on ${target_label}?" "--yes"
+	fi
+
+	case "$kind" in
+	all) run_for_target_hosts "clean:deploy" run_remote_clean_deploy_host ;;
+	nixbot) run_for_target_hosts "clean:nixbot" run_remote_clean_nixbot_host ;;
+	podman) run_for_target_hosts "clean:podman" run_remote_clean_podman_host ;;
+	*) die "Unsupported cleanup kind: ${kind}" ;;
+	esac
 }
 
 run_logs() {
@@ -2587,6 +2900,7 @@ main() {
 	ssh) run_ssh ;;
 	reboot) run_reboot ;;
 	gc) run_gc ;;
+	deploy-clean) run_remote_clean all ;;
 	podman-clean) run_remote_clean podman ;;
 	nixbot-clean) run_remote_clean nixbot ;;
 	logs) run_logs ;;
