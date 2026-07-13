@@ -46,8 +46,7 @@ Usage:
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clear-remote-locks|clean> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--clear-remote-locks <all|nixbot|podman>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
-  nixbot --clear-remote-locks[=all|nixbot|podman] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--dry] [auth/config options]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -67,7 +66,6 @@ Workflow Actions:
   tf-apps         Run the apps Terraform phase.
   tf/<project>    Run one configured Terraform project.
   check-bootstrap Run bootstrap checks.
-  clear-remote-locks Remove repo-managed lock files on selected hosts.
   clean           Clean operator-machine nixbot runtime and diagnostic dirs.
 
 Local Wrapper Action:
@@ -110,14 +108,6 @@ Clean Action Options (`clean` or `--clean`):
                    dirs older than 1 day; all removes those roots entirely.
                    With --ci-trigger, runs the same cleanup on the CI host.
 
-Clear Remote Locks Action Options (`clear-remote-locks` or `--clear-remote-locks`):
-  --clear-remote-locks all|nixbot|podman (default for bare flag: all)
-                   nixbot removes nixbot runtime, SSH tty, and worktree lock
-                   dirs; podman removes podman-compose lifecycle lock files
-                   discovered from the current system registry.
-                   --dry audits remote lock holders without mutating hosts.
-                   --force also unlinks held lock files after reporting holders.
-
 Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
   --ci-first  Prioritize CI host first when the CI host is selected
 
@@ -136,6 +126,10 @@ Workflow Behavior Options:
 Auth / Config Options:
   --user           Default deploy user override
   --ssh-key        SSH key path for deploy target auth (.age or private key file)
+  --operator-user  Fallback/operator SSH user override
+  --operator-key   Fallback/operator SSH key path override
+  --bootstrap-key
+                   Deploy key material to install through the operator path
   --known-hosts    known_hosts override for all hosts
   --config         Nix deploy config path (default: hosts/nixbot.nix)
                    Per-host config supports proxyCommand for explicit SSH
@@ -201,6 +195,9 @@ Environment (Workflow Behavior):
 Environment (Auth / Config):
   NIXBOT_USER                 Same as --user
   NIXBOT_SSH_KEY              Same as --ssh-key
+  NIXBOT_OPERATOR_USER        Same as --operator-user
+  NIXBOT_OPERATOR_KEY         Same as --operator-key
+  NIXBOT_BOOTSTRAP_KEY        Same as --bootstrap-key
   NIXBOT_SSH_KNOWN_HOSTS      Same as --known-hosts
   NIXBOT_SSH_CONNECT_TIMEOUT_SECS SSH TCP/banner timeout for deploy transport
                               setup (default: 30)
@@ -258,6 +255,42 @@ USAGE
 die() {
 	echo "$*" >&2
 	exit 1
+}
+
+set_user_override() {
+	local value="$1" source="$2"
+
+	if [ -n "${NIXBOT_USER_OVERRIDE}" ] && [ "${NIXBOT_USER_OVERRIDE}" != "${value}" ]; then
+		die "Conflicting user overrides: ${source} differs from earlier value"
+	fi
+	NIXBOT_USER_OVERRIDE="${value}"
+}
+
+set_key_override() {
+	local value="$1" source="$2"
+
+	if [ -n "${NIXBOT_KEY_PATH_OVERRIDE}" ] && [ "${NIXBOT_KEY_PATH_OVERRIDE}" != "${value}" ]; then
+		die "Conflicting SSH key overrides: ${source} differs from earlier value"
+	fi
+	NIXBOT_KEY_PATH_OVERRIDE="${value}"
+}
+
+set_operator_user_override() {
+	local value="$1" source="$2"
+
+	if [ -n "${NIXBOT_OPERATOR_USER_OVERRIDE}" ] && [ "${NIXBOT_OPERATOR_USER_OVERRIDE}" != "${value}" ]; then
+		die "Conflicting operator user overrides: ${source} differs from earlier value"
+	fi
+	NIXBOT_OPERATOR_USER_OVERRIDE="${value}"
+}
+
+set_operator_key_override() {
+	local value="$1" source="$2"
+
+	if [ -n "${NIXBOT_OPERATOR_KEY_PATH_OVERRIDE}" ] && [ "${NIXBOT_OPERATOR_KEY_PATH_OVERRIDE}" != "${value}" ]; then
+		die "Conflicting operator key overrides: ${source} differs from earlier value"
+	fi
+	NIXBOT_OPERATOR_KEY_PATH_OVERRIDE="${value}"
 }
 
 ##### Color #####
@@ -499,7 +532,6 @@ init_vars() {
 	NIXBOT_PARENT_READINESS_SLOW_SECS="${NIXBOT_PARENT_READINESS_SLOW_SECS:-10}"
 	NIXBOT_PARENT_READINESS_LAST_ELAPSED_SECS=0
 	NIXBOT_CLEAN_MODE="${NIXBOT_CLEAN:-}"
-	NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${NIXBOT_CLEAR_REMOTE_LOCKS:-}"
 	NIXBOT_CONTROL_PERSIST_SECS="${NIXBOT_CONTROL_PERSIST_SECS:-120}"
 	NIXBOT_SSH_CONNECT_TIMEOUT_SECS="${NIXBOT_SSH_CONNECT_TIMEOUT_SECS:-30}"
 	NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS="${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS:-5}"
@@ -567,6 +599,9 @@ init_vars() {
 
 	NIXBOT_USER_OVERRIDE="${NIXBOT_USER:-}"
 	NIXBOT_KEY_PATH_OVERRIDE="${NIXBOT_SSH_KEY:-}"
+	NIXBOT_OPERATOR_USER_OVERRIDE="${NIXBOT_OPERATOR_USER:-}"
+	NIXBOT_OPERATOR_KEY_PATH_OVERRIDE="${NIXBOT_OPERATOR_KEY:-}"
+	NIXBOT_BOOTSTRAP_KEY_OVERRIDE="${NIXBOT_BOOTSTRAP_KEY:-}"
 	NIXBOT_KNOWN_HOSTS_OVERRIDE="${NIXBOT_SSH_KNOWN_HOSTS:-}"
 	NIXBOT_CI_KEY_PATH_OVERRIDE="${NIXBOT_CI_SSH_KEY_PATH:-}"
 
@@ -1035,7 +1070,7 @@ tf_project_name_is_configured() {
 
 action_is_supported() {
 	case "${1:-}" in
-	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clear-remote-locks | clean | list-hosts | list-groups) return 0 ;;
+	run | build | dev-build | deploy | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clean | list-hosts | list-groups) return 0 ;;
 	*)
 		if action_is_tf_project_only "${1:-}"; then
 			tf_project_name_is_configured "$(tf_action_project_name "${1:-}")"
@@ -1059,7 +1094,6 @@ resolved_host_action() {
 	case "${1:-}" in
 	run) printf 'deploy\n' ;;
 	dev-build) printf 'build\n' ;;
-	clear-remote-locks) printf 'clear-remote-locks\n' ;;
 	clean) printf 'clean\n' ;;
 	*) printf '%s\n' "${1:-}" ;;
 	esac
@@ -1272,22 +1306,6 @@ parse_args() {
 			NIXBOT_CLEAN_MODE="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
-		--clear-remote-locks)
-			ACTION="clear-remote-locks"
-			if [ "$#" -gt 1 ] && [[ "${2:-}" != --* ]]; then
-				NIXBOT_CLEAR_REMOTE_LOCKS_MODE="$2"
-				shift 2
-			else
-				NIXBOT_CLEAR_REMOTE_LOCKS_MODE="all"
-				shift
-			fi
-			;;
-		--clear-remote-locks=*)
-			take_optval "$@"
-			ACTION="clear-remote-locks"
-			NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${OPTVAL}"
-			shift "${OPTSHIFT}"
-			;;
 		--force)
 			enable_force_mode
 			shift
@@ -1350,14 +1368,29 @@ parse_args() {
 			set_log_format_mode "${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
+		--operator-user | --operator-user=*)
+			take_optval "$@"
+			set_operator_user_override "${OPTVAL}" "--operator-user"
+			shift "${OPTSHIFT}"
+			;;
+		--operator-key | --operator-key=*)
+			take_optval "$@"
+			set_operator_key_override "${OPTVAL}" "--operator-key"
+			shift "${OPTSHIFT}"
+			;;
+		--bootstrap-key | --bootstrap-key=*)
+			take_optval "$@"
+			NIXBOT_BOOTSTRAP_KEY_OVERRIDE="${OPTVAL}"
+			shift "${OPTSHIFT}"
+			;;
 		--user | --user=*)
 			take_optval "$@"
-			NIXBOT_USER_OVERRIDE="${OPTVAL}"
+			set_user_override "${OPTVAL}" "--user"
 			shift "${OPTSHIFT}"
 			;;
 		--ssh-key | --ssh-key=*)
 			take_optval "$@"
-			NIXBOT_KEY_PATH_OVERRIDE="${OPTVAL}"
+			set_key_override "${OPTVAL}" "--ssh-key"
 			shift "${OPTSHIFT}"
 			;;
 		--known-hosts | --known-hosts=*)
@@ -1463,14 +1496,6 @@ parse_args() {
 	"" | auto | all) ;;
 	*) die "Unsupported --clean: ${NIXBOT_CLEAN_MODE}" ;;
 	esac
-	if [ "${ACTION}" = "clear-remote-locks" ] && [ -z "${NIXBOT_CLEAR_REMOTE_LOCKS_MODE}" ]; then
-		NIXBOT_CLEAR_REMOTE_LOCKS_MODE="all"
-	fi
-	case "${NIXBOT_CLEAR_REMOTE_LOCKS_MODE}" in
-	"" | all | nixbot | podman) ;;
-	*) die "Unsupported --clear-remote-locks: ${NIXBOT_CLEAR_REMOTE_LOCKS_MODE}" ;;
-	esac
-
 	case "${GOAL}" in
 	switch | boot | test | dry-activate) ;;
 	*) die "Unsupported --goal: ${GOAL}" ;;
@@ -2885,16 +2910,11 @@ run_ci_trigger() {
 	# parsing support.
 	if is_clean_action; then
 		remote_args=("${ACTION}" --no-override --clean "${NIXBOT_CLEAN_MODE:-auto}")
-	elif is_clear_remote_locks_action; then
-		remote_args=("${ACTION}" --no-override)
 	else
 		remote_args=("${ACTION}" --sha "${trigger_sha}" --no-override)
 	fi
 	if ! is_clean_action; then
 		remote_args+=(--hosts "${trigger_hosts}")
-	fi
-	if is_clear_remote_locks_action; then
-		remote_args+=(--clear-remote-locks "${NIXBOT_CLEAR_REMOTE_LOCKS_MODE:-all}")
 	fi
 	if [ "${LOG_FORMAT}" != "auto" ]; then
 		remote_args+=(--log-format "${LOG_FORMAT}")
@@ -2962,10 +2982,6 @@ is_bootstrap_check_action() {
 
 is_clean_action() {
 	[ "${ACTION}" = "clean" ]
-}
-
-is_clear_remote_locks_action() {
-	[ "${ACTION}" = "clear-remote-locks" ]
 }
 
 # Resolve the source repo root exactly once. Local clean repo runs reuse the
@@ -3343,14 +3359,20 @@ init_deploy_settings() {
 		read -r NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH
 		read -r NIXBOT_DEFAULT_AGE_IDENTITY_KEY
 	} < <(jq -r '
+    def pick($values):
+      $values
+      | map((. // "") | tostring)
+      | map(select(. != ""))
+      | .[0] // "";
     (.config.hostDefaults // {}) as $hostDefaults
+    | (pick([$hostDefaults.key])) as $key
     | [
-      ($hostDefaults.user // "root"),
-      ($hostDefaults.key // ""),
+      pick([$hostDefaults.user, "root"]),
+      $key,
       ($hostDefaults.knownHosts // ""),
-      ($hostDefaults.bootstrapKey // ""),
-      ($hostDefaults.bootstrapUser // "root"),
-      ($hostDefaults.bootstrapKeyPath // ""),
+      pick([$hostDefaults.bootstrapKey, $key]),
+      pick([$hostDefaults.operatorUser]),
+      pick([$hostDefaults.operatorKey]),
       ($hostDefaults.ageIdentityKey // "")
     ]
     | .[]
@@ -3369,6 +3391,20 @@ init_deploy_settings() {
 	elif [ -n "${NIXBOT_USER_OVERRIDE}" ]; then
 		# If user override is set but key override is not, avoid forcing default key.
 		NIXBOT_DEFAULT_KEY_PATH=""
+	fi
+
+	if [ -n "${NIXBOT_OPERATOR_USER_OVERRIDE}" ]; then
+		NIXBOT_DEFAULT_BOOTSTRAP_USER="${NIXBOT_OPERATOR_USER_OVERRIDE}"
+	fi
+
+	if [ -n "${NIXBOT_OPERATOR_KEY_PATH_OVERRIDE}" ]; then
+		NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH="${NIXBOT_OPERATOR_KEY_PATH_OVERRIDE}"
+	elif [ -n "${NIXBOT_OPERATOR_USER_OVERRIDE}" ]; then
+		NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH=""
+	fi
+
+	if [ -n "${NIXBOT_BOOTSTRAP_KEY_OVERRIDE}" ]; then
+		NIXBOT_DEFAULT_BOOTSTRAP_KEY="${NIXBOT_BOOTSTRAP_KEY_OVERRIDE}"
 	fi
 
 	if [ -n "${NIXBOT_KNOWN_HOSTS_OVERRIDE}" ]; then
@@ -4245,11 +4281,6 @@ resolve_selected_hosts_json() {
 	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
 	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
 	direct_selected_json="${selected_json}"
-	if is_clear_remote_locks_action; then
-		validate_selected_host_execution_policies "${direct_selected_json}"
-		order_selected_hosts_json "${direct_selected_json}" "${all_hosts_json}"
-		return
-	fi
 	selected_json="$(expand_selected_hosts_json "${selected_json}" "${all_hosts_json}")"
 	selected_json="$(apply_dependency_exclusions_json "${selected_json}" "${direct_selected_json}" "${dependency_excluded_json}")"
 	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
@@ -4404,27 +4435,33 @@ resolve_deploy_target() {
 		--arg defKey "${NIXBOT_DEFAULT_KEY_PATH}" \
 		--arg defKnown "${NIXBOT_DEFAULT_KNOWN_HOSTS}" \
 		--arg defBKey "${NIXBOT_DEFAULT_BOOTSTRAP_KEY}" \
+		--arg bootstrapKeyOverride "${NIXBOT_BOOTSTRAP_KEY_OVERRIDE}" \
 		--arg defBUser "${NIXBOT_DEFAULT_BOOTSTRAP_USER}" \
 		--arg defBPort "${NIXBOT_DEFAULT_BOOTSTRAP_PORT}" \
 		--arg defBKeyPath "${NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH}" \
 		--arg defAgeKey "${NIXBOT_DEFAULT_AGE_IDENTITY_KEY}" \
 		'(.[$h] // {}) as $cfg |
-    def fb($v; $d): ($v // "") | if . == "" then $d else . end;
-    def portfb($v; $d): if ($v == null or $v == "") then $d else ($v | tostring) end;
-    {
-      user: fb($cfg.user; $defUser),
-      target: fb($cfg.target; $defTarget),
-      port: portfb($cfg.port; $defPort),
-      keyPath: fb($cfg.key; $defKey),
-      knownHosts: fb($cfg.knownHosts; $defKnown),
-      bootstrapKey: fb($cfg.bootstrapKey; $defBKey),
-      bootstrapUser: fb($cfg.bootstrapUser; $defBUser),
-      bootstrapPort: portfb($cfg.bootstrapPort; portfb($cfg.port; $defBPort)),
-      bootstrapKeyPath: fb($cfg.bootstrapKeyPath; $defBKeyPath),
-      ageIdentityKey: fb($cfg.ageIdentityKey; $defAgeKey),
-      proxyJump: ($cfg.proxyJump // ""),
-      proxyCommand: ($cfg.proxyCommand // "")
-    }' <<<"${NIXBOT_HOSTS_JSON}"
+	    def pick($values):
+	      $values
+	      | map((. // "") | tostring)
+	      | map(select(. != ""))
+	      | .[0] // "";
+	    def portfb($v; $d): if ($v == null or $v == "") then $d else ($v | tostring) end;
+	    (pick([$cfg.key, $defKey])) as $key |
+	    {
+	      user: pick([$cfg.user, $defUser]),
+	      target: pick([$cfg.target, $defTarget]),
+	      port: portfb($cfg.port; $defPort),
+	      keyPath: $key,
+	      knownHosts: pick([$cfg.knownHosts, $defKnown]),
+	      bootstrapKey: pick([$bootstrapKeyOverride, $cfg.bootstrapKey, $key, $defBKey]),
+	      bootstrapUser: pick([$cfg.operatorUser, $defBUser]),
+	      bootstrapPort: portfb($cfg.bootstrapPort; portfb($cfg.port; $defBPort)),
+	      bootstrapKeyPath: pick([$cfg.operatorKey, $defBKeyPath]),
+	      ageIdentityKey: pick([$cfg.ageIdentityKey, $defAgeKey]),
+	      proxyJump: ($cfg.proxyJump // ""),
+	      proxyCommand: ($cfg.proxyCommand // "")
+	    }' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
 resolve_proxy_chain() {
@@ -4437,20 +4474,24 @@ resolve_proxy_chain() {
 		--arg defUser "${NIXBOT_DEFAULT_USER}" \
 		--arg defPort "${NIXBOT_DEFAULT_PORT}" \
 		--arg defKey "${NIXBOT_DEFAULT_KEY_PATH}" '
-    def fb($v; $d): ($v // "") | if . == "" then $d else . end;
-    def portfb($v; $d): if ($v == null or $v == "") then $d else ($v | tostring) end;
-    def resolve_chain($h; $visited):
-      if $h == "" then []
-      elif ($visited | index($h)) then
-        error("proxyJump cycle detected: \($visited + [$h] | join(" -> "))")
-      else
-        (.[$h] // {}) as $cfg |
-        ($cfg.target // $h) as $target |
-        (fb($cfg.user; $defUser)) as $user |
-        (portfb($cfg.port; $defPort)) as $port |
-        (fb($cfg.key; $defKey)) as $keyPath |
-        ($cfg.proxyJump // "") as $next |
-        ($cfg.proxyCommand // "") as $proxyCommand |
+	    def pick($values):
+	      $values
+	      | map((. // "") | tostring)
+	      | map(select(. != ""))
+	      | .[0] // "";
+	    def portfb($v; $d): if ($v == null or $v == "") then $d else ($v | tostring) end;
+	    def resolve_chain($h; $visited):
+	      if $h == "" then []
+	      elif ($visited | index($h)) then
+	        error("proxyJump cycle detected: \($visited + [$h] | join(" -> "))")
+	      else
+	        (.[$h] // {}) as $cfg |
+	        ($cfg.target // $h) as $target |
+	        (pick([$cfg.operatorUser, $cfg.user, $defUser])) as $user |
+	        (portfb($cfg.port; $defPort)) as $port |
+	        (pick([$cfg.operatorKey, $cfg.key, $defKey])) as $keyPath |
+	        ($cfg.proxyJump // "") as $next |
+	        ($cfg.proxyCommand // "") as $proxyCommand |
         resolve_chain($next; $visited + [$h]) + [{
           node: $h,
           target: $target,
@@ -5991,6 +6032,10 @@ prepare_bootstrap_deploy_context() {
 	shift 5
 	local -a bootstrap_ssh_opts=("$@")
 
+	if [ -z "${bootstrap_ssh_target}" ] || [[ "${bootstrap_ssh_target}" == @* ]]; then
+		echo "Host ${node} has no operatorUser configured; bootstrap requires operatorUser/operatorKey in hosts/nixbot.override.nix or --operator-user/--operator-key" >&2
+		return 1
+	fi
 	ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
 	set_prepared_deploy_context \
 		"${node}" \
@@ -6134,7 +6179,11 @@ prepare_deploy_context() {
 	} < <(jq -r '[.user, .target, (.port // "22"), (.keyPath // ""), (.knownHosts // ""), (.bootstrapKey // ""), (.bootstrapUser // ""), (.bootstrapPort // .port // "22"), (.bootstrapKeyPath // ""), (.ageIdentityKey // ""), (.proxyJump // ""), (.proxyCommand // "")] | .[]' <<<"${target_info}")
 
 	ssh_target="${user}@${host}"
-	bootstrap_ssh_target="${bootstrap_user}@${host}"
+	if [ -n "${bootstrap_user}" ]; then
+		bootstrap_ssh_target="${bootstrap_user}@${host}"
+	else
+		bootstrap_ssh_target=""
+	fi
 
 	if should_use_local_self_target &&
 		{ local_host_matches_identifier "${node}" || local_host_matches_identifier "${host}"; }; then
@@ -6193,6 +6242,10 @@ prepare_deploy_context() {
 	if [ "${mode}" = "primary-only" ]; then
 		:
 	elif [ "${FORCE_BOOTSTRAP_PATH}" -eq 1 ]; then
+		if [ -z "${bootstrap_user}" ]; then
+			echo "Host ${node} has no operatorUser configured; --bootstrap requires operatorUser/operatorKey in hosts/nixbot.override.nix or --operator-user/--operator-key" >&2
+			return 1
+		fi
 		echo "==> Forcing bootstrap path for ${node}: ${bootstrap_ssh_target}"
 		prepare_bootstrap_deploy_context \
 			"${node}" \
@@ -6311,10 +6364,15 @@ prepare_deploy_context() {
 					"${bootstrap_ssh_opts[@]}" || return 1
 				return
 			fi
+		elif [ "${primary_target_ready}" -eq 0 ]; then
+			echo "==> Primary deploy target ${ssh_target} is unavailable; no operatorUser configured, skipping bootstrap fallback for ${node}" >&2
+			return 1
 		else
-			ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
+			if [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ]; then
+				ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
+			fi
 		fi
-	elif [ -n "${bootstrap_key}" ] && [ "${mode}" != "primary-only" ]; then
+	elif [ -n "${bootstrap_key}" ] && [ -n "${bootstrap_user}" ] && [ "${bootstrap_user}" != "${user}" ] && [ "${mode}" != "primary-only" ]; then
 		ensure_bootstrap_key_ready "${node}" "${bootstrap_ssh_target}" "${bootstrap_key}" "${bootstrap_ssh_opts[@]}" || return 1
 	fi
 }
@@ -8085,13 +8143,58 @@ remote_activation_unit_state_is_running() {
 	return 1
 }
 
+remote_activation_unit_state_is_unknown() {
+	local state="$1"
+
+	[ -z "${state}" ] || [ "${state}" = "unknown" ]
+}
+
+remote_activation_unit_state_is_settled() {
+	local state="$1"
+
+	case "${state}" in
+	inactive | failed)
+		return 0
+		;;
+	esac
+	return 1
+}
+
+remote_activation_state_log_value() {
+	local state="$1"
+
+	if remote_activation_unit_state_is_unknown "${state}"; then
+		printf '%s\n' "unknown"
+	else
+		printf '%s\n' "${state}"
+	fi
+}
+
+read_prepared_current_system_path_for_activation_verification() {
+	local current_path=""
+
+	if ! current_path="$(read_prepared_current_system_path_without_control_master 2>/dev/null)"; then
+		return 1
+	fi
+	extract_nixos_system_path "${current_path}"
+}
+
+read_remote_activation_unit_state() {
+	local activation_unit="$1" state_cmd="" state=""
+
+	printf -v state_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${activation_unit}"
+	if ! state="$(run_prepared_root_command_without_control_master "${state_cmd}" 2>/dev/null)"; then
+		return 1
+	fi
+	printf '%s\n' "${state}"
+}
+
 verify_rollback_target_state() {
 	local node="$1" snapshot_path="$2" rollback_unit="$3" rollback_start_epoch="$4"
 	local elapsed_secs=0 max_wait_secs=0 poll_secs=5 last_log_bucket=-1 bucket=0
-	local remote_current_path="" state="" state_cmd=""
+	local remote_current_path="" state=""
 
 	max_wait_secs=$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))
-	printf -v state_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${rollback_unit}"
 
 	while :; do
 		elapsed_secs="$(($(date +%s) - rollback_start_epoch))"
@@ -8103,19 +8206,21 @@ verify_rollback_target_state() {
 		fi
 
 		if prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
-			remote_current_path="$(read_prepared_current_system_path_without_control_master 2>/dev/null || true)"
-			state="$(run_prepared_root_command_without_control_master "${state_cmd}" 2>/dev/null || true)"
+			remote_current_path="$(read_prepared_current_system_path_for_activation_verification 2>/dev/null || true)"
+			state="$(read_remote_activation_unit_state "${rollback_unit}" 2>/dev/null || true)"
 			if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${snapshot_path}" ]; then
 				if remote_activation_unit_state_is_running "${state}"; then
 					:
 				elif [ "${state}" = "failed" ]; then
 					echo "==> Rollback activation for ${node} settled as failed after switching to ${snapshot_path}" >&2
 					return 1
+				elif remote_activation_unit_state_is_unknown "${state}"; then
+					:
 				else
 					return 0
 				fi
-			elif [ -z "${state}" ] || [ "${state}" = "inactive" ] || [ "${state}" = "failed" ]; then
-				echo "==> Rollback activation for ${node} settled as ${state} without switching to ${snapshot_path}" >&2
+			elif [ -n "${remote_current_path}" ] && remote_activation_unit_state_is_settled "${state}"; then
+				echo "==> Rollback activation for ${node} settled as ${state:-unknown} without switching to ${snapshot_path}" >&2
 				return 1
 			fi
 		else
@@ -8123,7 +8228,7 @@ verify_rollback_target_state() {
 		fi
 
 		if [ "${bucket}" -ne "${last_log_bucket}" ]; then
-			echo "==> Rollback transport closed for ${node}; waiting for activation result (elapsed=${elapsed_secs}s state=${state:-unknown})" >&2
+			echo "==> Rollback transport closed for ${node}; waiting for activation result (elapsed=${elapsed_secs}s state=$(remote_activation_state_log_value "${state}"))" >&2
 			last_log_bucket="${bucket}"
 		fi
 		sleep_for_retry_or_signal "${poll_secs}" || return "$?"
@@ -8133,10 +8238,9 @@ verify_rollback_target_state() {
 verify_deploy_target_state_after_transport_loss() {
 	local node="$1" system_path="$2" activation_unit="$3" activation_start_epoch="$4"
 	local elapsed_secs=0 max_wait_secs=0 poll_secs=5 last_log_bucket=-1 bucket=0
-	local remote_current_path="" state="" state_cmd=""
+	local remote_current_path="" state=""
 
 	max_wait_secs=$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))
-	printf -v state_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${activation_unit}"
 
 	while :; do
 		elapsed_secs="$(($(date +%s) - activation_start_epoch))"
@@ -8148,35 +8252,31 @@ verify_deploy_target_state_after_transport_loss() {
 		fi
 
 		if prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
-			remote_current_path="$(read_prepared_current_system_path_without_control_master 2>/dev/null || true)"
+			remote_current_path="$(read_prepared_current_system_path_for_activation_verification 2>/dev/null || true)"
+			state="$(read_remote_activation_unit_state "${activation_unit}" 2>/dev/null || true)"
 			if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${system_path}" ]; then
-				state="$(run_prepared_root_command_without_control_master "${state_cmd}" 2>/dev/null || true)"
 				if remote_activation_unit_state_is_running "${state}"; then
 					:
 				elif [ "${state}" = "failed" ]; then
 					echo "==> Deploy activation for ${node} settled as failed after switching to ${system_path}" >&2
 					return 1
+				elif remote_activation_unit_state_is_unknown "${state}"; then
+					:
 				else
 					return 0
 				fi
-			else
-				state="$(run_prepared_root_command_without_control_master "${state_cmd}" 2>/dev/null || true)"
 			fi
 
-			case "${state}" in
-			active | activating | reloading | deactivating)
-				;;
-			"" | inactive | failed)
-				echo "==> Deploy activation for ${node} settled as ${state} without switching to ${system_path}" >&2
+			if [ -n "${remote_current_path}" ] && remote_activation_unit_state_is_settled "${state}"; then
+				echo "==> Deploy activation for ${node} settled as ${state:-unknown} without switching to ${system_path}" >&2
 				return 2
-				;;
-			esac
+			fi
 		else
 			state="unreachable"
 		fi
 
 		if [ "${bucket}" -ne "${last_log_bucket}" ]; then
-			echo "==> Deploy transport closed for ${node}; waiting for activation result (elapsed=${elapsed_secs}s state=${state:-unknown})" >&2
+			echo "==> Deploy transport closed for ${node}; waiting for activation result (elapsed=${elapsed_secs}s state=$(remote_activation_state_log_value "${state}"))" >&2
 			last_log_bucket="${bucket}"
 		fi
 		sleep_for_retry_or_signal "${poll_secs}" || return "$?"
@@ -9310,447 +9410,6 @@ run_clean_action() {
 		echo "Result: failure" >&2
 	fi
 	return "${rc}"
-}
-
-_remote_clear_lock_path() {
-	local path="$1" holders_file="${2:-}" force_held="${3:-0}" holders=""
-
-	if [ -n "$holders_file" ] && [ -f "$holders_file" ]; then
-		holders="$(_remote_lock_holder_lines_from_file "$holders_file" "$path")"
-	else
-		holders="$(_remote_lock_holder_lines_for_path "$path")"
-	fi
-	if [ -n "$holders" ]; then
-		if [ "$force_held" -eq 1 ]; then
-			printf 'force-remove held %s\n' "$path" >&2
-		else
-			printf 'held %s\n' "$path" >&2
-		fi
-		printf '%s\n' "$holders" >&2
-		[ "$force_held" -eq 1 ] || return 1
-	fi
-
-	if [ -e "$path" ] || [ -L "$path" ]; then
-		printf 'remove %s\n' "$path"
-		rm -rf -- "$path"
-	else
-		printf 'absent %s\n' "$path"
-	fi
-}
-
-_remote_clear_lock_paths_from_find() {
-	local holders_file="${1:-}" force_held="${2:-0}" path="" rc=0
-
-	while IFS= read -r path; do
-		[ -n "$path" ] || continue
-		_remote_clear_lock_path "$path" "$holders_file" "$force_held" || rc=1
-	done
-	return "$rc"
-}
-
-_remote_lock_fd_holder_line() {
-	local fd_path="$1" link_target="$2"
-	local pid="" fd="" user="" comm="" cgroup=""
-
-	pid="${fd_path#/proc/}"
-	pid="${pid%%/*}"
-	fd="${fd_path##*/}"
-	user="$(stat -c %U "/proc/$pid" 2>/dev/null || printf '?')"
-	comm="$(cat "/proc/$pid/comm" 2>/dev/null || printf '?')"
-	cgroup="$(sed -n 's|^[^:]*:[^:]*:||p' "/proc/$pid/cgroup" 2>/dev/null | tail -n 1)"
-	printf '  pid=%s fd=%s user=%s comm=%s cgroup=%s target=%s\n' \
-		"$pid" "$fd" "$user" "$comm" "${cgroup:-?}" "$link_target"
-}
-
-_remote_lock_holder_lines_for_path() {
-	local path="$1" fd_path="" link_target=""
-
-	for fd_path in /proc/[0-9]*/fd/*; do
-		[ -e "$fd_path" ] || continue
-		link_target="$(readlink "$fd_path" 2>/dev/null || true)"
-		case "$link_target" in
-		"$path" | "$path (deleted)")
-			_remote_lock_fd_holder_line "$fd_path" "$link_target"
-			;;
-		esac
-	done
-}
-
-_remote_collect_lock_holders_file() {
-	local holders_file="$1" fd_path="" link_target="" lock_path="" holder_line=""
-
-	: >"$holders_file"
-	for fd_path in /proc/[0-9]*/fd/*; do
-		[ -e "$fd_path" ] || continue
-		link_target="$(readlink "$fd_path" 2>/dev/null || true)"
-		case "$link_target" in
-		*'/.podman-compose/lifecycle.lock' | *'/podman-compose/rootless-lifecycle-v1.lock' | *'/state-locks/'*'.lock' | *'/ssh-tty.lock' | *'/nixbot-worktree.lock' | *'/.nixbot-worktree.lock')
-			lock_path="$link_target"
-			;;
-		*'/.podman-compose/lifecycle.lock (deleted)' | *'/podman-compose/rootless-lifecycle-v1.lock (deleted)' | *'/state-locks/'*'.lock (deleted)' | *'/ssh-tty.lock (deleted)' | *'/nixbot-worktree.lock (deleted)' | *'/.nixbot-worktree.lock (deleted)')
-			lock_path="${link_target% (deleted)}"
-			;;
-		*)
-			continue
-			;;
-		esac
-		holder_line="$(_remote_lock_fd_holder_line "$fd_path" "$link_target")"
-		printf '%s\t%s\n' "$lock_path" "$holder_line" >>"$holders_file"
-	done
-}
-
-_remote_lock_holder_lines_from_file() {
-	local holders_file="$1" path="$2"
-
-	awk -F '\t' -v path="$path" '$1 == path { sub(/^[^\t]*\t/, ""); print }' "$holders_file"
-}
-
-_remote_audit_lock_path() {
-	local path="$1" holders=""
-
-	holders="$(_remote_lock_holder_lines_for_path "$path")"
-	if [ -n "$holders" ]; then
-		printf 'held %s\n' "$path"
-		printf '%s\n' "$holders"
-		return 0
-	fi
-	return 1
-}
-
-_remote_clear_locks_from_emitter() {
-	local emitter="$1" force_held="${2:-0}" holders_file="" rc=0
-
-	holders_file="$(mktemp "${TMPDIR:-/tmp}/nixbot-lock-holders.XXXXXX")"
-	_remote_collect_lock_holders_file "$holders_file"
-	"$emitter" |
-		awk 'NF && !seen[$0]++' |
-		_remote_clear_lock_paths_from_find "$holders_file" "$force_held" || rc="$?"
-	rm -f "$holders_file"
-	return "$rc"
-}
-
-_remote_clear_emit_nixbot_locks() {
-	local root=""
-
-	for root in /dev/shm/nixbot "${TMPDIR:-/tmp}/nixbot"; do
-		[ -d "$root" ] || continue
-		find "$root" -xdev -depth -path '*/state-locks/*.lock' -type d -print 2>/dev/null
-		find "$root" -xdev -depth -name 'ssh-tty.lock' -type d -print 2>/dev/null
-	done
-
-	if [ -d /var/lib/nixbot ]; then
-		find /var/lib/nixbot -xdev -depth \
-			\( -name 'nixbot-worktree.lock' -o -name '.nixbot-worktree.lock' \) \
-			-type d -print 2>/dev/null
-	fi
-}
-
-_remote_clear_nixbot_locks() {
-	local force_held="${1:-0}"
-
-	_remote_clear_locks_from_emitter _remote_clear_emit_nixbot_locks "$force_held"
-}
-
-_remote_clear_emit_declared_podman_lifecycle_locks() {
-	local registry="/run/current-system/share/podman-compose/control-registry.json"
-	local metadata_file="" working_dir=""
-
-	[ -f "$registry" ] || return 0
-	command -v jq >/dev/null 2>&1 || return 0
-
-	while IFS= read -r metadata_file; do
-		[ -n "$metadata_file" ] || continue
-		[ -f "$metadata_file" ] || continue
-		working_dir="$(jq -r '.workingDir // empty' "$metadata_file" 2>/dev/null || true)"
-		[ -n "$working_dir" ] || continue
-		printf '%s/.podman-compose/lifecycle.lock\n' "$working_dir"
-	done < <(jq -r 'to_entries[]?.value.metadataFile // empty' "$registry" 2>/dev/null || true)
-}
-
-_remote_clear_emit_fallback_podman_lifecycle_locks() {
-	[ -d /var/lib ] || return 0
-	find /var/lib -xdev -path '*/.podman-compose/lifecycle.lock' -type f -print 2>/dev/null || true
-}
-
-_remote_clear_emit_rootless_podman_lifecycle_locks() {
-	[ -d /run/user ] || return 0
-	find /run/user -xdev -path '*/podman-compose/rootless-lifecycle-v1.lock' -type f -print 2>/dev/null || true
-}
-
-_remote_clear_emit_podman_locks() {
-	{
-		_remote_clear_emit_rootless_podman_lifecycle_locks
-		_remote_clear_emit_declared_podman_lifecycle_locks
-		_remote_clear_emit_fallback_podman_lifecycle_locks
-	}
-}
-
-_remote_clear_podman_locks() {
-	local force_held="${1:-0}"
-
-	_remote_clear_locks_from_emitter _remote_clear_emit_podman_locks "$force_held"
-}
-
-_remote_audit_nixbot_locks() {
-	local emitted=0 path=""
-
-	while IFS= read -r path; do
-		[ -n "$path" ] || continue
-		_remote_audit_lock_path "$path" && emitted=1
-	done < <(_remote_clear_emit_nixbot_locks | awk 'NF && !seen[$0]++')
-	[ "$emitted" -eq 1 ] || printf 'no held nixbot locks\n'
-}
-
-_remote_audit_podman_locks() {
-	local emitted=0 fd_path="" link_target="" lock_path="" deleted=""
-
-	for fd_path in /proc/[0-9]*/fd/*; do
-		[ -e "$fd_path" ] || continue
-		link_target="$(readlink "$fd_path" 2>/dev/null || true)"
-		deleted=0
-		case "$link_target" in
-		*'/.podman-compose/lifecycle.lock' | *'/podman-compose/rootless-lifecycle-v1.lock')
-			lock_path="$link_target"
-			;;
-		*'/.podman-compose/lifecycle.lock (deleted)' | *'/podman-compose/rootless-lifecycle-v1.lock (deleted)')
-			lock_path="${link_target% (deleted)}"
-			deleted=1
-			;;
-		*)
-			continue
-			;;
-		esac
-		if [ "$deleted" -eq 1 ]; then
-			printf 'held deleted %s\n' "$lock_path"
-		else
-			printf 'held %s\n' "$lock_path"
-		fi
-		_remote_lock_fd_holder_line "$fd_path" "$link_target"
-		emitted=1
-	done
-	[ "$emitted" -eq 1 ] || printf 'no held podman lifecycle locks\n'
-}
-
-_remote_audit_remote_locks() {
-	local clear_remote_locks_mode="$1"
-
-	set -Eeuo pipefail
-	case "$clear_remote_locks_mode" in
-	all)
-		_remote_audit_nixbot_locks
-		_remote_audit_podman_locks
-		;;
-	nixbot)
-		_remote_audit_nixbot_locks
-		;;
-	podman)
-		_remote_audit_podman_locks
-		;;
-	*)
-		printf 'unsupported clear-remote-locks mode: %s\n' "$clear_remote_locks_mode" >&2
-		exit 2
-		;;
-	esac
-}
-
-_remote_clear_remote_locks() {
-	local clear_remote_locks_mode="$1" force_held="${2:-0}"
-
-	set -Eeuo pipefail
-	case "$clear_remote_locks_mode" in
-	all)
-		_remote_clear_nixbot_locks "$force_held"
-		_remote_clear_podman_locks "$force_held"
-		;;
-	nixbot)
-		_remote_clear_nixbot_locks "$force_held"
-		;;
-	podman)
-		_remote_clear_podman_locks "$force_held"
-		;;
-	*)
-		printf 'unsupported clear-remote-locks mode: %s\n' "$clear_remote_locks_mode" >&2
-		exit 2
-		;;
-	esac
-}
-
-build_clear_remote_locks_command() {
-	local mode="$1" force_held="${2:-0}" invoke_cmd=""
-
-	printf -v invoke_cmd '_remote_clear_remote_locks %q %q' "${mode}" "${force_held}"
-	emit_remote_function_command \
-		"${invoke_cmd}" \
-		_remote_clear_lock_path \
-		_remote_clear_lock_paths_from_find \
-		_remote_lock_fd_holder_line \
-		_remote_lock_holder_lines_for_path \
-		_remote_collect_lock_holders_file \
-		_remote_lock_holder_lines_from_file \
-		_remote_audit_lock_path \
-		_remote_clear_locks_from_emitter \
-		_remote_clear_emit_nixbot_locks \
-		_remote_clear_nixbot_locks \
-		_remote_clear_emit_declared_podman_lifecycle_locks \
-		_remote_clear_emit_fallback_podman_lifecycle_locks \
-		_remote_clear_emit_rootless_podman_lifecycle_locks \
-		_remote_clear_emit_podman_locks \
-		_remote_clear_podman_locks \
-		_remote_clear_remote_locks
-}
-
-build_audit_remote_locks_command() {
-	local mode="$1" invoke_cmd=""
-
-	printf -v invoke_cmd '_remote_audit_remote_locks %q' "${mode}"
-	emit_remote_function_command \
-		"${invoke_cmd}" \
-		_remote_lock_fd_holder_line \
-		_remote_lock_holder_lines_for_path \
-		_remote_audit_lock_path \
-		_remote_clear_emit_nixbot_locks \
-		_remote_clear_emit_declared_podman_lifecycle_locks \
-		_remote_clear_emit_fallback_podman_lifecycle_locks \
-		_remote_clear_emit_rootless_podman_lifecycle_locks \
-		_remote_audit_nixbot_locks \
-		_remote_audit_podman_locks \
-		_remote_audit_remote_locks
-}
-
-run_clear_remote_locks_for_host() {
-	local node="$1" mode="${2:-all}" script="" action_label="Clear locks"
-
-	log_host_stage clear-remote-locks "${node}" "mode=${mode}"
-	if ! prepare_deploy_context "${node}" primary-only; then
-		log_group_end_host_stage clear-remote-locks
-		return 1
-	fi
-
-	if [ "${DRY_RUN}" -eq 1 ]; then
-		script="$(build_audit_remote_locks_command "${mode}")"
-		action_label="Audit held locks"
-		DRY_RUN=0
-		if run_prepared_root_command_with_retry "${action_label} on ${node}" "${script}"; then
-			DRY_RUN=1
-			log_group_end_host_stage clear-remote-locks
-			return 0
-		fi
-		DRY_RUN=1
-		log_group_end_host_stage clear-remote-locks
-		return 1
-	else
-		script="$(build_clear_remote_locks_command "${mode}" "${FORCE_REQUESTED}")"
-	fi
-
-	if run_prepared_root_command_with_retry "${action_label} on ${node}" "${script}"; then
-		log_group_end_host_stage clear-remote-locks
-		return 0
-	fi
-	log_group_end_host_stage clear-remote-locks
-	return 1
-}
-
-run_clear_remote_locks_job() {
-	local node="$1" mode="$2" status_file="$3" rc=0
-
-	(
-		set +e
-		if [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-			run_with_prefixed_combined_output \
-				clear-remote-locks \
-				"${node}" \
-				"" \
-				run_clear_remote_locks_for_host \
-				"${node}" \
-				"${mode}"
-		else
-			run_clear_remote_locks_for_host "${node}" "${mode}"
-		fi
-		rc="$?"
-		write_status_file "${status_file}" "${rc}"
-		exit "${rc}"
-	)
-}
-
-run_clear_remote_locks_action() {
-	local selected_json="$1" runnable_selected_json="" node="" final_rc=0 mode="${NIXBOT_CLEAR_REMOTE_LOCKS_MODE:-all}"
-	local status_dir="" status_file="" active_jobs=0 clear_parallel=0 phase_rc=0
-	local -a selected_hosts=() cleared_hosts=() failed_hosts=()
-
-	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
-	json_array_to_bash_array "${runnable_selected_json}" selected_hosts
-
-	ensure_tmp_dir
-	status_dir="${NIXBOT_TMP_DIR}/clear-remote-locks-status"
-	mkdir -p "${status_dir}"
-
-	if [ "${NIXBOT_PARALLEL_JOBS}" -gt 1 ] && [ "${#selected_hosts[@]}" -gt 1 ]; then
-		clear_parallel=1
-	fi
-
-	if [ "${clear_parallel}" -eq 1 ]; then
-		log_grouped_phase_section "Phase: Clear Remote Locks" "clear-remote-locks" 1
-	else
-		log_grouped_phase_section "Phase: Clear Remote Locks" "clear-remote-locks" 0
-	fi
-
-	for node in "${selected_hosts[@]}"; do
-		[ -n "${node}" ] || continue
-
-		status_file="$(phase_dir_item_status_file "${status_dir}" "${node}")"
-		if [ "${clear_parallel}" -eq 1 ]; then
-			run_clear_remote_locks_job "${node}" "${mode}" "${status_file}" &
-			active_jobs=$((active_jobs + 1))
-			if wait_for_job_slot active_jobs "${NIXBOT_PARALLEL_JOBS}"; then
-				:
-			else
-				phase_rc="$?"
-				log_group_scope_end
-				return "${phase_rc}"
-			fi
-			continue
-		fi
-
-		if run_clear_remote_locks_job "${node}" "${mode}" "${status_file}"; then
-			:
-		else
-			:
-		fi
-	done
-
-	if [ "${clear_parallel}" -eq 1 ]; then
-		if drain_job_slots active_jobs; then
-			:
-		else
-			phase_rc="$?"
-			log_group_scope_end
-			return "${phase_rc}"
-		fi
-	fi
-
-	for node in "${selected_hosts[@]}"; do
-		[ -n "${node}" ] || continue
-
-		status_file="$(phase_dir_item_status_file "${status_dir}" "${node}")"
-		if [ "$(read_status_file "${status_file}" 2>/dev/null || printf '1')" = "0" ]; then
-			cleared_hosts+=("${node}")
-		else
-			failed_hosts+=("${node}")
-			final_rc=1
-		fi
-	done
-	log_group_scope_end
-
-	capture_current_run_summary_state \
-		"${ACTION}" \
-		selected_hosts \
-		cleared_hosts \
-		failed_hosts \
-		empty_hosts \
-		empty_hosts \
-		empty_hosts \
-		empty_hosts
-	return "${final_rc}"
 }
 
 ##### Host Phase Artifacts #####
@@ -11579,11 +11238,6 @@ run_hosts() {
 	runnable_selected_json="$(filter_runnable_hosts_json "${selected_json}")"
 	json_array_to_bash_array "${runnable_selected_json}" selected_hosts
 
-	if is_clear_remote_locks_action; then
-		run_clear_remote_locks_action "${runnable_selected_json}"
-		return
-	fi
-
 	if is_bootstrap_check_action; then
 		if ! run_bootstrap_key_checks "${runnable_selected_json}" bootstrap_ok_hosts bootstrap_failed_hosts; then
 			final_rc=1
@@ -13023,21 +12677,27 @@ format_host_console_logs() {
 		fflush()
 	}
 
-	function format_unit_row(line, tag, scope, user, fields, count, desc, idx, out) {
+	function format_unit_row(line, tag, scope, user, include_desc, fields, count, desc, idx, out) {
 		count = split(line, fields, /[[:space:]]+/)
 		if (count < 4 || fields[1] !~ /\.(service|target)$/) {
 			return ""
 		}
+		if (include_desc == "") {
+			include_desc = 1
+		}
 		desc = ""
 		for (idx = 5; idx <= count; idx++) {
 			desc = desc (desc == "" ? "" : " ") fields[idx]
+		}
+		if (fields[1] ~ /^[0-9a-f]+-[0-9a-f]+\.service$/ && desc ~ /healthcheck run /) {
+			fields[1] = "podman-healthcheck:" substr(fields[1], 1, 12)
 		}
 		if (scope == "user") {
 			out = tag " user=" user " unit=" fields[1] " load=" fields[2] " state=" fields[3] "/" fields[4]
 		} else {
 			out = tag " " scope " unit=" fields[1] " load=" fields[2] " state=" fields[3] "/" fields[4]
 		}
-		if (desc != "") {
+		if (include_desc && desc != "") {
 			out = out " desc=" quote_value(desc)
 		}
 		return out
@@ -13067,6 +12727,12 @@ format_host_console_logs() {
 		if (line ~ /^building '\''\/nix\/store\/.*\.drv'\''\.\.\.$/) {
 			path = quoted_field(line, 2)
 			emit("[build] " store_basename(path), "")
+			next
+		}
+		if (line ~ /^Copying built closure to [^:]+: \/nix\/store\//) {
+			path = line
+			sub(/^Copying built closure to [^:]+: /, "", path)
+			emit("[copy] built closure " store_basename(path), "")
 			next
 		}
 		if (line ~ /^copying path '\''\/nix\/store\//) {
@@ -13156,6 +12822,14 @@ format_host_console_logs() {
 			emit("[system-units] action=restart count=1 units=" quote_value(unit), "")
 			next
 		}
+		if (match(line, /^\[pre-switch\] preserving failed user units for [^ ]+ for post-switch reconciliation:$/)) {
+			context = "pre-switch-user"
+			context_user = line
+			sub(/^\[pre-switch\] preserving failed user units for /, "", context_user)
+			sub(/ for post-switch reconciliation:$/, "", context_user)
+			emit("[pre-switch] user=" context_user " preserving failed units for post-switch reconciliation:", yellow)
+			next
+		}
 		if (line ~ /^\[activation\] /) {
 			context = ""
 			context_user = ""
@@ -13237,7 +12911,13 @@ format_host_console_logs() {
 			next
 		}
 		if (context == "user") {
-			formatted = format_unit_row(line, "[activation]", "user", context_user)
+			formatted = format_unit_row(line, "[activation]", "user", context_user, 0)
+			if (formatted != "") {
+				emit(formatted, "")
+				next
+			}
+		} else if (context == "pre-switch-user") {
+			formatted = format_unit_row(line, "[pre-switch]", "user", context_user, 0)
 			if (formatted != "") {
 				emit(formatted, "")
 				next
@@ -13255,31 +12935,31 @@ format_host_console_logs() {
 				next
 			}
 		} else if (context == "health-user") {
-			formatted = format_unit_row(line, "[health-check]", "user", context_user)
+			formatted = format_unit_row(line, "[health-check]", "user", context_user, 0)
 			if (formatted != "") {
 				emit(formatted, "")
 				next
 			}
 		} else if (context == "health-system") {
-			formatted = format_unit_row(line, "[health-check]", "system", "")
+			formatted = format_unit_row(line, "[health-check]", "system", "", 0)
 			if (formatted != "") {
 				emit(formatted, "")
 				next
 			}
 		} else if (context == "health-transient-user") {
-			formatted = format_unit_row(line, "[health-check]", "transient-podman-healthcheck", context_user)
+			formatted = format_unit_row(line, "[health-check]", "transient-podman-healthcheck", context_user, 0)
 			if (formatted != "") {
 				emit(formatted, yellow)
 				next
 			}
 		} else if (context == "health-failed-user") {
-			formatted = format_unit_row(line, "[health-check]", "user", context_user)
+			formatted = format_unit_row(line, "[health-check]", "user", context_user, 0)
 			if (formatted != "") {
 				emit(formatted, red)
 				next
 			}
 		} else if (context == "health-failed-system") {
-			formatted = format_unit_row(line, "[health-check]", "failed-system", "")
+			formatted = format_unit_row(line, "[health-check]", "failed-system", "", 0)
 			if (formatted != "") {
 				emit(formatted, red)
 				next
@@ -13475,7 +13155,7 @@ host_final_status() {
 		return
 	fi
 
-	if [ "${action}" = "build" ] || [ "${action}" = "check-bootstrap" ] || [ "${action}" = "clear-remote-locks" ]; then
+	if [ "${action}" = "build" ] || [ "${action}" = "check-bootstrap" ]; then
 		if array_contains "${node}" "${hfs_build_ok_hosts_in_ref[@]}"; then
 			printf '%s' 'ok'
 		else
@@ -14011,21 +13691,6 @@ main() {
 		NIXBOT_CLEAN_MODE="${request_args[0]#--clean=}"
 		request_args=("${request_args[@]:1}")
 		;;
-	--clear-remote-locks)
-		ACTION="clear-remote-locks"
-		if [ "${#request_args[@]}" -gt 1 ] && [[ "${request_args[1]}" != --* ]]; then
-			NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${request_args[1]}"
-			request_args=("${request_args[@]:2}")
-		else
-			NIXBOT_CLEAR_REMOTE_LOCKS_MODE="all"
-			request_args=("${request_args[@]:1}")
-		fi
-		;;
-	--clear-remote-locks=*)
-		ACTION="clear-remote-locks"
-		NIXBOT_CLEAR_REMOTE_LOCKS_MODE="${request_args[0]#--clear-remote-locks=}"
-		request_args=("${request_args[@]:1}")
-		;;
 	--list-hosts)
 		ACTION="list-hosts"
 		request_args=("${request_args[@]:1}")
@@ -14061,7 +13726,7 @@ main() {
 		run_version_action
 		return
 		;;
-	run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clear-remote-locks | clean | tf/*)
+	run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clean | tf/*)
 		ACTION="${request_args[0]}"
 		request_args=("${request_args[@]:1}")
 		;;
@@ -14100,9 +13765,6 @@ main() {
 	if [ "${ACTION}" = "clean" ]; then
 		[ -z "${SHA}" ] || die "clean uses the current checkout; --sha is unsupported"
 	fi
-	if [ "${ACTION}" = "clear-remote-locks" ]; then
-		[ -z "${SHA}" ] || die "clear-remote-locks uses the current checkout; --sha is unsupported"
-	fi
 	if [ "${CI_TRIGGER}" -eq 1 ]; then
 		[ "${ACTION}" != "dev-build" ] || die "dev-build is local-only and cannot run through --ci-trigger"
 		run_ci_trigger
@@ -14118,7 +13780,7 @@ main() {
 		return "${clean_rc}"
 	fi
 
-	if [ "${ACTION}" != "dev-build" ] && [ "${ACTION}" != "clear-remote-locks" ]; then
+	if [ "${ACTION}" != "dev-build" ]; then
 		prepare_repo_worktree
 		reexec_repo_script_if_needed "${ACTION}" "${request_args[@]}"
 	else

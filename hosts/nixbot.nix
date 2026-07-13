@@ -66,8 +66,6 @@ in {
     hostDefaults = {
       user = "nixbot";
       key = nixbotKey;
-      bootstrapKey = nixbotKey;
-      bootstrapUser = "pvl";
       knownHosts = null;
       ageIdentityKey = "";
     };

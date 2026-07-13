@@ -145,21 +145,22 @@ _nixbot() {
 
 	commands=(
 		deps check-deps version run deploy build dev-build tf tf-dns
-		tf-platform tf-apps check-bootstrap clear-remote-locks clean tofu help --list-hosts
+		tf-platform tf-apps check-bootstrap clean tofu help --list-hosts
 	)
 	mapfile -t tf_projects < <(_nixbot_tf_projects)
 	commands+=("${tf_projects[@]}")
 
-	options=(
-		--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
-		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
-		--deploy-jobs --verify-jobs --clear-remote-locks --clean --force --bootstrap --ci-first
-		--skip-global-lock
-		--dirty --dirty-staged --dry --no-override --no-rollback
-		--prefix-host-logs --log-format --user --ssh-key --known-hosts --config
-		--age-key-file --discover-keys --no-discover-keys --repo-url
-		--repo-path --use-repo-script --ci-check-ssh-key-path --ci-trigger
-		--ci-host --ci-user --ci-ssh-key --ci-known-hosts --help
+		options=(
+			--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
+			--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
+			--deploy-jobs --verify-jobs --clean --force --bootstrap --ci-first
+			--skip-global-lock
+			--dirty --dirty-staged --dry --no-override --no-rollback
+			--prefix-host-logs --log-format --user --ssh-key
+			--operator-user --operator-key --bootstrap-key --known-hosts --config
+			--age-key-file --discover-keys --no-discover-keys --repo-url
+			--repo-path --use-repo-script --ci-check-ssh-key-path --ci-trigger
+			--ci-host --ci-user --ci-ssh-key --ci-known-hosts --help
 	)
 
 	case "$prev" in
@@ -187,18 +188,14 @@ _nixbot() {
 		_nixbot_compgen_words "$cur" "auto on off"
 		return 0
 		;;
-	--clear-remote-locks)
-		_nixbot_compgen_words "$cur" "all nixbot podman"
-		return 0
-		;;
 	--clean)
 		_nixbot_compgen_words "$cur" "auto all"
 		return 0
 		;;
-	--config | --ssh-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
-		_nixbot_compgen_files "$cur"
-		return 0
-		;;
+		--config | --ssh-key | --operator-key | --bootstrap-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
+			_nixbot_compgen_files "$cur"
+			return 0
+			;;
 	esac
 
 	case "$eq_opt" in
@@ -226,18 +223,14 @@ _nixbot() {
 		_nixbot_compgen_words "$cur" "auto on off"
 		return 0
 		;;
-	--clear-remote-locks)
-		_nixbot_compgen_words "$cur" "all nixbot podman"
-		return 0
-		;;
 	--clean)
 		_nixbot_compgen_words "$cur" "auto all"
 		return 0
 		;;
-	--config | --ssh-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
-		_nixbot_compgen_files "$cur"
-		return 0
-		;;
+		--config | --ssh-key | --operator-key | --bootstrap-key | --age-key-file | --ci-check-ssh-key-path | --repo-path)
+			_nixbot_compgen_files "$cur"
+			return 0
+			;;
 	esac
 
 	case "$cur" in
@@ -260,22 +253,19 @@ _nixbot() {
 	--discover-keys=*)
 		_nixbot_compgen_words "${cur#--discover-keys=}" "auto on off" "--discover-keys="
 		;;
-	--clear-remote-locks=*)
-		_nixbot_compgen_words "${cur#--clear-remote-locks=}" "all nixbot podman" "--clear-remote-locks="
-		;;
 	--clean=*)
 		_nixbot_compgen_words "${cur#--clean=}" "auto all" "--clean="
 		;;
-	--config=* | --ssh-key=* | --age-key-file=* | --ci-check-ssh-key-path=* | --repo-path=*)
-		_nixbot_compgen_files "${cur#*=}" "${cur%%=*}="
-		;;
+		--config=* | --ssh-key=* | --operator-key=* | --bootstrap-key=* | --age-key-file=* | --ci-check-ssh-key-path=* | --repo-path=*)
+			_nixbot_compgen_files "${cur#*=}" "${cur%%=*}="
+			;;
 	-*)
 		_nixbot_compgen_words "$cur" "${options[*]}"
 		;;
 	*)
 		for word in "${COMP_WORDS[@]:1:COMP_CWORD-1}"; do
 			case "$word" in
-			deps | check-deps | version | run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clear-remote-locks | clean | tofu | tf/*)
+			deps | check-deps | version | run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | check-bootstrap | clean | tofu | tf/*)
 				command="$word"
 				break
 				;;

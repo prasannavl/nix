@@ -66,14 +66,15 @@ Defaults:
 
 Optional per-host:
 
-- `bootstrapKey`, `bootstrapUser`, `bootstrapKeyPath`, `knownHosts`
+- `operatorUser`, `operatorKey`, `bootstrapKey`, `knownHosts`
 - `ageIdentityKey` (host machine age identity secret for activation-time
   decrypt)
 
 Defaults may also include:
 
+- `operatorUser`
+- `operatorKey`
 - `bootstrapKey`
-- `bootstrapUser`
 
 ## Runtime Behavior Notes
 
@@ -86,8 +87,8 @@ Defaults may also include:
 - Script keeps per-host prepared deploy state in `PREP_*`, but host phases
   should materialize that state through the helper readers instead of accessing
   globals ad hoc.
-- Bootstrap injection installs key material to `/var/lib/nixbot/.ssh/id_ed25519`
-  on the target.
+- Bootstrap injection uses the configured operator identity to install key
+  material to `/var/lib/nixbot/.ssh/id_ed25519` on the target.
 - When replacing `/var/lib/nixbot/.ssh/id_ed25519`, bootstrap preserves the
   previous key at `/var/lib/nixbot/.ssh/id_ed25519_legacy`.
 - On CI host, that path is also the deploy identity used for downstream host

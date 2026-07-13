@@ -58,9 +58,9 @@ Use it when the target does not yet have:
 
 `hosts/nixbot.nix` supports bootstrap-specific fields such as:
 
-- `bootstrapUser`
 - `bootstrapKey`
-- `bootstrapKeyPath`
+- `operatorUser`
+- `operatorKey`
 
 The steady-state goal is always the same: later deploys should use normal
 `nixbot@host` access, not the bootstrap path.
@@ -172,15 +172,15 @@ chain does not exist yet.
 `hosts/nixbot.nix` supports bootstrap fallback fields:
 
 - `bootstrapKey` (defaults + optional per-host override)
-- `bootstrapUser`
-- `bootstrapKeyPath`
+- `operatorUser`
+- `operatorKey`
 
 Those fields describe the non-steady-state access path used to get a host onto
 the normal `nixbot` path:
 
-- `bootstrapUser`: the account that already exists on the target and can sudo
-- `bootstrapKeyPath`: optional direct SSH key path for reaching that bootstrap
-  account
+- `operatorUser`: the account that already exists on the target and can sudo
+- `operatorKey`: optional direct SSH key path or age-encrypted key material for
+  reaching that operator account
 - `bootstrapKey`: the private key material that should be installed as
   `/var/lib/nixbot/.ssh/id_ed25519` on the target once bootstrap succeeds
 
@@ -190,8 +190,8 @@ During deploy, script behavior is:
 2. Attempt primary target (`nixbot@host`) shell reachability.
 3. If primary shell access fails, run forced-command bootstrap check
    (`check-bootstrap`) via CI host key.
-4. If bootstrap check still fails, inject bootstrap key using bootstrap user
-   path.
+4. If bootstrap check still fails, inject bootstrap key using the operator
+   identity.
 5. Continue deployment (currently via `nixos-rebuild --target-host`).
 6. `--bootstrap` skips step 2 probing and forces bootstrap target selection for
    deploy/snapshot/rollback operations.
@@ -212,12 +212,12 @@ shell access for `nixos-rebuild --target-host`.
 
 - Bootstrap fallback means the deploy script stops trying to use `nixbot@host`
   as the transport for the current step and temporarily uses
-  `${bootstrapUser}@host` instead.
+  `${operatorUser}@host` instead.
 - Over that fallback path it can:
   - install the shared `nixbot` deploy private key to
     `/var/lib/nixbot/.ssh/id_ed25519`
   - install the machine age identity to `/var/lib/nixbot/.age/identity`
-  - run `nixos-rebuild --target-host` using the bootstrap account's sudo path
+  - run `nixos-rebuild --target-host` using the operator account's sudo path
 - After the host has been switched successfully, later runs are expected to use
   normal `nixbot@host` access instead of bootstrap.
 
@@ -258,7 +258,7 @@ shell access for `nixos-rebuild --target-host`.
 - The exchange happens in `inject_bootstrap_nixbot_key()`:
   - the key is decrypted locally by the deploy script from the configured
     `bootstrapKey`
-  - copied to a temporary remote file over the bootstrap account
+  - copied to a temporary remote file over the operator account
   - installed remotely as `/var/lib/nixbot/.ssh/id_ed25519`
   - any previous key is preserved as `/var/lib/nixbot/.ssh/id_ed25519_legacy`
 - This is the key handoff that lets a fresh node start accepting `nixbot@host`
@@ -438,8 +438,8 @@ Use this order for a clean-room rebuild of the current model.
 7. Bootstrap the CI host first.
    - it is the CI host and the only host that can later decrypt the shared
      deploy key and Cloudflare/OpenTofu runtime secrets
-   - initial access still depends on the configured bootstrap account in
-     `hosts/nixbot.nix` (currently `defaults.bootstrapUser = "pvl"`)
+   - initial access still depends on the configured operator identity in
+     `hosts/nixbot.override.nix` or explicit CLI flags
    - once deployed, it becomes the place where `nixbot` holds the shared deploy
      private key and initiates downstream SSH to the rest of the fleet
    - this is the step that creates the CI/operator -> CI host -> fleet trust
@@ -481,8 +481,10 @@ sibling override for one run.
 
 - `defaults.user = "nixbot"`
 - `defaults.key = "data/secrets/globals/nixbot/nixbot.key.age"`
-- `defaults.bootstrapKey = "data/secrets/globals/nixbot/nixbot.key.age"`
-- `defaults.bootstrapUser = "pvl"` (or your chosen bootstrap account)
+- `defaults.operatorUser` / `defaults.operatorKey` should live in
+  `hosts/nixbot.override.nix` when they are machine-local operator choices.
+- `defaults.bootstrapKey` may point at the key material to install as
+  `/var/lib/nixbot/.ssh/id_ed25519`; if unset, nixbot uses the deploy key.
 - `knownHosts = null` means temporary `ssh-keyscan` host pinning.
 - `hosts.<name>.ageIdentityKey` can define the host-specific runtime age key
   secret to inject.
