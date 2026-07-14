@@ -116,12 +116,12 @@ in {
           require("conform").setup({
             formatters_by_ft = {
               bash = { "shfmt" },
-              css = { "prettierd", "prettier", stop_after_first = true },
+              css = { "prettierd" },
               go = { "goimports", "gofumpt" },
-              html = { "prettierd", "prettier", stop_after_first = true },
-              javascript = { "prettierd", "prettier", stop_after_first = true },
-              javascriptreact = { "prettierd", "prettier", stop_after_first = true },
-              json = { "biome", "prettierd", "prettier", stop_after_first = true },
+              html = { "prettierd" },
+              javascript = { "prettierd" },
+              javascriptreact = { "prettierd" },
+              json = { "biome", "prettierd", stop_after_first = true },
               lua = { "stylua" },
               markdown = { "deno_fmt" },
               nix = { "alejandra" },
@@ -131,9 +131,9 @@ in {
               sql = { "sqlfluff" },
               terraform = { "terraform_fmt" },
               toml = { "taplo" },
-              typescript = { "prettierd", "prettier", stop_after_first = true },
-              typescriptreact = { "prettierd", "prettier", stop_after_first = true },
-              yaml = { "prettierd", "prettier", stop_after_first = true },
+              typescript = { "prettierd" },
+              typescriptreact = { "prettierd" },
+              yaml = { "prettierd" },
             },
             format_on_save = function(bufnr)
               local disabled = { c = true, cpp = true }
@@ -899,7 +899,6 @@ in {
       deno
       gofumpt
       gotools
-      prettier
       prettierd
       ruff
       rustfmt

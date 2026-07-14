@@ -27,6 +27,12 @@ The dev profile layout is intentionally modular:
 - `neovimTools` owns Mason-replacement language servers, formatters, linters,
   and CLI helpers.
 
+Do not add `pkgs.prettier` back to `neovimTools` just to provide a conform.nvim
+fallback. After the July 2026 lockfile update, nixpkgs' `prettier` derivation
+forces a dependency path through `pnpm-9.15.9`, which is marked insecure. The
+dev profile uses `prettierd` for CSS, HTML, JavaScript, TypeScript, and YAML
+formatting instead. JSON formatting keeps `biome` first and `prettierd` second.
+
 When adding or disabling dev editor features, prefer updating those sections
 instead of appending more unrelated Lua to `initLua`.
 
