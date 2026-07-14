@@ -3,12 +3,13 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: lib/ext/gnome-ext/update.sh [--file PATH] [--version VERSION] [--report] [--ansi|--color=WHEN]
+Usage: lib/ext/gnome-ext/update.sh [--file PATH] [--version VERSION] [--force] [--report] [--ansi|--color=WHEN]
 By default, updates all known extensions. Optionally specify a single file to update.
 Examples:
   lib/ext/gnome-ext/update.sh
   lib/ext/gnome-ext/update.sh --file lib/ext/gnome-ext/p7-borders.nix
   lib/ext/gnome-ext/update.sh --file lib/ext/gnome-ext/p7-cmds.nix --version 30
+  lib/ext/gnome-ext/update.sh --force
 EOF
 }
 
@@ -25,6 +26,7 @@ init_vars() {
 	)
 	TARGET_FILE=""
 	REQUESTED_VERSION=""
+	FORCE=0
 	REPORT=0
 	COLOR_MODE="auto"
 	RESOLVED_TARGET_FILE=""
@@ -47,6 +49,10 @@ parse_args() {
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			REQUESTED_VERSION="$2"
 			shift 2
+			;;
+		--force)
+			FORCE=1
+			shift
 			;;
 		--report)
 			REPORT=1
@@ -93,6 +99,10 @@ get_current_version() {
 	sed -nE 's/^[[:space:]]*version = "([^"]+)";.*/\1/p' "$RESOLVED_TARGET_FILE" | head -n1
 }
 
+has_current_hash() {
+	grep -Eq '^[[:space:]]*sha256 = "sha256-[^"]+";' "$RESOLVED_TARGET_FILE"
+}
+
 resolve_version() {
 	local info
 
@@ -136,6 +146,15 @@ print_report() {
 	fi
 }
 
+print_no_update() {
+	local current_version="$1"
+	local name
+
+	name="$(basename "$RESOLVED_TARGET_FILE" .nix)"
+	echo "GNOME extension ${name} already at ${current_version}; skipping prefetch."
+	echo "Use --force to recompute hashes for the pinned version."
+}
+
 build_url() {
 	EXTENSION_DATA_UUID="${UUID//@/}"
 	ARCHIVE_URL="https://extensions.gnome.org/extension-data/${EXTENSION_DATA_UUID}.v${SELECTED_VERSION}.shell-extension.zip"
@@ -164,9 +183,16 @@ print_summary() {
 }
 
 update_extension() {
+	local current_version
+
 	resolve_target_file
 	extract_uuid
+	current_version="$(get_current_version)"
 	resolve_version
+	if ((!FORCE)) && [[ "$current_version" == "$SELECTED_VERSION" ]] && has_current_hash; then
+		print_no_update "$current_version"
+		return
+	fi
 	build_url
 	validate_url
 	compute_hash

@@ -3,10 +3,11 @@ set -Eeuo pipefail
 
 usage() {
 	cat <<EOF
-Usage: lib/ext/stalwart-cli/update.sh [--version VERSION] [--file PATH] [--report] [--ansi|--color=WHEN]
+Usage: lib/ext/stalwart-cli/update.sh [--version VERSION] [--file PATH] [--force] [--report] [--ansi|--color=WHEN]
 Examples:
   lib/ext/stalwart-cli/update.sh
   lib/ext/stalwart-cli/update.sh --version 1.0.6
+  lib/ext/stalwart-cli/update.sh --force
   lib/ext/stalwart-cli/update.sh --file lib/ext/stalwart-cli/default.nix
 EOF
 }
@@ -20,6 +21,7 @@ init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
 	TARGET_FILE="${REPO_ROOT}/lib/ext/stalwart-cli/default.nix"
 	REQUESTED_VERSION=""
+	FORCE=0
 	REPORT=0
 	COLOR_MODE="auto"
 	RESOLVED_TARGET_FILE=""
@@ -38,6 +40,10 @@ parse_args() {
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			REQUESTED_VERSION="$2"
 			shift 2
+			;;
+		--force)
+			FORCE=1
+			shift
 			;;
 		--file | -f)
 			[[ $# -ge 2 ]] || die "Missing value for $1"
@@ -134,6 +140,13 @@ get_current_version() {
 	sed -nE 's/^[[:space:]]*version = "([^"]+)";.*/\1/p' "$RESOLVED_TARGET_FILE" | head -n1
 }
 
+has_current_hashes() {
+	local hash_count
+
+	hash_count="$(grep -oE '"sha256-[^"]+"' "$RESOLVED_TARGET_FILE" | wc -l)"
+	((hash_count >= 4))
+}
+
 print_report() {
 	local current_version="$1"
 	local latest_version="$2"
@@ -143,6 +156,13 @@ print_report() {
 	else
 		print_update_line "stalwart-cli: ${current_version} -> ${latest_version}" "$current_version" "$latest_version"
 	fi
+}
+
+print_no_update() {
+	local current_version="$1"
+
+	echo "Stalwart CLI $(basename "$RESOLVED_TARGET_FILE") already at ${current_version}; skipping prefetch."
+	echo "Use --force to recompute hashes for the pinned version."
 }
 
 get_release_metadata() {
@@ -292,13 +312,20 @@ ensure_runtime_shell() {
 }
 
 main() {
+	local current_version
+
 	ensure_runtime_shell "$@"
 	init_vars
 	parse_args "$@"
 	resolve_target_file
 	get_release_metadata
+	current_version="$(get_current_version)"
 	if ((REPORT)); then
-		print_report "$(get_current_version)" "$RESOLVED_VERSION"
+		print_report "$current_version" "$RESOLVED_VERSION"
+		return
+	fi
+	if ((!FORCE)) && [[ "$current_version" == "$RESOLVED_VERSION" ]] && has_current_hashes; then
+		print_no_update "$current_version"
 		return
 	fi
 

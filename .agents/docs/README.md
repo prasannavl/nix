@@ -416,9 +416,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   applications.
 - `.agents/docs/notes/tooling/puppeteer-chrome-nix-ld-2026-04.md`: Records the
   `nix-ld` runtime-library fix for local Puppeteer Chrome binaries on NixOS.
-- `.agents/docs/notes/tooling/nvidia-updater-prefetch-skip-2026-06.md`: NVIDIA
-  updater rule: same-version `scripts/update.sh` runs may check `latest.txt`,
-  but skip large payload prefetches unless `--force` is requested.
+- `.agents/docs/notes/tooling/nvidia-updater-prefetch-skip-2026-06.md`: Updater
+  rule: same-version `scripts/update.sh` runs may perform lightweight version
+  checks, but skip artifact prefetches and fake-hash builds unless hashes are
+  missing or `--force` is requested.
 - `.agents/docs/notes/tooling/update-report-variable-tags-2026-07.md`: Records
   the report-only GNOME extension updater fix and Podman image reporter handling
   for Compose variable tags such as Immich's `IMMICH_VERSION=release` and

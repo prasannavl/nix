@@ -1,10 +1,13 @@
-# NVIDIA updater prefetch skip
+# Updater Prefetch Skip
 
-`lib/ext/nvidia/update.sh` checks NVIDIA `latest.txt` first, compares that
-version with `lib/ext/nvidia/default.nix`, and exits before URL validation or
-`nix store prefetch-file` when the pinned version is already current.
+`scripts/update.sh` should keep no-op extension updates cheap. An updater may
+perform lightweight release metadata checks to discover the latest version, but
+it should exit before artifact prefetches or fake-hash builds when the pinned
+version is already current and the target file already contains hashes.
 
-This keeps the normal `scripts/update.sh` flow from re-downloading the large
-`NVIDIA-Linux-x86_64-<version>.run` payload on every run. Use
-`lib/ext/nvidia/update.sh --force` when intentionally recomputing hashes for the
+This prevents normal maintenance runs from re-downloading large payloads such as
+the NVIDIA runfile, VS Code archives, Stalwart CLI archives, GNOME extension
+zips, or Tailscale source/vendor inputs every time the version is unchanged.
+
+Use each updater's `--force` flag when intentionally recomputing hashes for the
 same pinned version.
