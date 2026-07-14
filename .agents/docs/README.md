@@ -110,7 +110,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   `dock.onlySameOutput` filter hid running apps such as Chrome.
 - `.agents/docs/notes/hosts/pvl-l5-ai-services-port-2026-06.md`: Records the
   `pvl-a1` Ollama and Open WebUI service port onto `pvl-l5`, including the
-  shared model directory and stopped optional NVIDIA Ollama backend.
+  shared model directory, stopped optional NVIDIA Ollama backend, and the
+  host-local lock cleanup failure found during deployment.
 - `.agents/docs/notes/hosts/pvl-wm-idle-lock-2026-04.md`: Records the shared
   `swayidle` battery and AC lock policy for Sway and Niri plus the existing
   manual lock shortcuts.

@@ -826,12 +826,21 @@ class NixbotScriptTest(unittest.TestCase):
             printf 'parent-acquired\\n' >>"$sequence_file"
             release_host_local_lock
             wait "$holder_pid"
+            if [ ! -e "$lock_file" ]; then
+              printf 'lock-file-cleaned\\n' >>"$sequence_file"
+            fi
             cat "$sequence_file"
             """
         )
 
         self.assertEqual(
-            ["holder-acquired", "parent-before", "holder-release", "parent-acquired"],
+            [
+                "holder-acquired",
+                "parent-before",
+                "holder-release",
+                "parent-acquired",
+                "lock-file-cleaned",
+            ],
             result.stdout.splitlines(),
         )
         self.assertRegex(
@@ -844,6 +853,39 @@ class NixbotScriptTest(unittest.TestCase):
             r"previous host-local nixbot action finished after \d+s; proceeding with deploy at "
             r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}",
         )
+
+    def test_error_cleanup_removes_acquired_host_local_lock_file(self):
+        lock_file = self.work_dir / "nixbot-host-local.lock"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
+            acquire_host_local_lock deploy
+            cleanup_core 1
+            if [ ! -e {lock_file} ]; then
+              printf 'lock-file-cleaned\\n'
+            fi
+            """
+        )
+
+        self.assertEqual(["lock-file-cleaned"], result.stdout.splitlines())
+
+    def test_host_local_lock_release_preserves_replaced_path(self):
+        lock_file = self.work_dir / "nixbot-host-local.lock"
+        held_file = self.work_dir / "nixbot-host-local.held.lock"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
+            acquire_host_local_lock deploy
+            mv {lock_file} {held_file}
+            printf 'replacement\\n' >{lock_file}
+            release_host_local_lock
+            cat {lock_file}
+            """
+        )
+
+        self.assertEqual(["replacement"], result.stdout.splitlines())
 
     def test_deploy_request_action_wraps_major_actions_with_host_local_lock(self):
         result = self.run_script(

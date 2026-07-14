@@ -707,6 +707,7 @@ init_vars() {
 	OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=()
 	NIXBOT_HOST_LOCAL_LOCK_PATH="${NIXBOT_HOST_LOCAL_LOCK_PATH:-/dev/shm/nixbot-host-local.lock}"
 	NIXBOT_HOST_LOCAL_LOCK_FD=""
+	NIXBOT_HOST_LOCAL_LOCK_HELD_PATH=""
 
 	CI_TRIGGER_KEY_PATH="data/secrets/globals/ci/nixbot-ci-ssh.key.age"
 	REMOTE_NIXBOT_BASE="/var/lib/nixbot"
@@ -2433,12 +2434,17 @@ action_should_acquire_host_local_lock() {
 }
 
 release_host_local_lock() {
-	local fd=""
+	local fd="" lock_path=""
 
 	fd="${NIXBOT_HOST_LOCAL_LOCK_FD:-}"
 	[ -n "${fd}" ] || return 0
+	lock_path="${NIXBOT_HOST_LOCAL_LOCK_HELD_PATH:-}"
+	if [ -n "${lock_path}" ] && [ "${lock_path}" -ef "/proc/self/fd/${fd}" ]; then
+		rm -f -- "${lock_path}" || true
+	fi
 	eval "exec ${fd}>&-" || true
 	NIXBOT_HOST_LOCAL_LOCK_FD=""
+	NIXBOT_HOST_LOCAL_LOCK_HELD_PATH=""
 }
 
 acquire_host_local_lock() {
@@ -2467,6 +2473,7 @@ acquire_host_local_lock() {
 	fi
 
 	NIXBOT_HOST_LOCAL_LOCK_FD="${fd}"
+	NIXBOT_HOST_LOCAL_LOCK_HELD_PATH="${lock_path}"
 }
 
 host_local_activation_lock_prefix() {

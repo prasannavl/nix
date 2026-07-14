@@ -224,3 +224,37 @@ waited through several restarts before failing. The helper now exits with status
 `75` for stuck starts and generated units set `RestartPreventExitStatus=75`, so
 a watchdog trip fails the managed start once instead of looping beyond the
 watchdog boundary.
+
+## 2026-07-14 host-local activation lock permissions
+
+A `pvl-l5`, `pvl-x2` deploy wave failed on `pvl-l5` immediately after the
+pre-activation image-pull phase:
+
+```text
+[pre-activation] pulling declared Podman Compose images
+[store] p7pr5f819n510cpcdb3vnb7xfjc5nz13-nixos-system-pvl-l5-26.05.20260712.569d578
+flock: cannot open lock file /dev/shm/nixbot-host-local.lock: Permission denied
+```
+
+This was before `switch-to-configuration` was submitted. The failing command was
+the activation wrapper's path-based host-local lock prefix,
+`flock -w <seconds> /dev/shm/nixbot-host-local.lock systemd-run ...`, not a
+managed Podman Compose helper lock.
+
+Live state on `pvl-l5` showed `/dev/shm/nixbot-host-local.lock` as a `pvl:pvl`
+`0644` file created during the current deploy run, while the deploy target route
+used the `nixbot` SSH account. Reproducing through the deploy control socket as
+`nixbot` produced the same error and exit status `66`:
+
+```text
+uid=10000(nixbot) gid=10000(nixbot) groups=10000(nixbot)
+-rw-r--r-- 1 pvl pvl 0 Jul 14 14:10 /dev/shm/nixbot-host-local.lock
+flock: cannot open lock file /dev/shm/nixbot-host-local.lock: Permission denied
+```
+
+The ownership mismatch explains the immediate open failure, but the root cause
+was the previous failed nixbot run's cleanup: it closed the host-local lock
+descriptor without removing the lock pathname. The stale `pvl`-owned `0644` file
+then made the next self-deploy route through `nixbot` fail before it could
+acquire the lock. Host-local lock release and EXIT/error cleanup must remove the
+pathname only when the acquired descriptor still identifies that same file.
