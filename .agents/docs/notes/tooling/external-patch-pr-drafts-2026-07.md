@@ -99,6 +99,9 @@ AGPLv3 release statement.
 
 ---
 
+<!-- Independent copy-ready drafts intentionally reuse upstream template headings. -->
+<!-- markdownlint-disable MD024 -->
+
 ## Stalwart Draft 1: Normalize `mailto:` Case-Insensitively
 
 ### Proposed issue/PR title
@@ -852,6 +855,8 @@ Validation to complete on the rebased branch:
 - an empty name retains the current fallback;
 - ambiguous offset-only payloads behave exactly as before;
 - PHP syntax/static checks pass.
+
+<!-- markdownlint-enable MD024 -->
 
 ## Remaining Submission Gates
 
