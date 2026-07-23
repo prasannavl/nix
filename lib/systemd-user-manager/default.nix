@@ -381,7 +381,7 @@
           "PATH=${managedUserActionPath}"
           "SYSTEMD_USER_MANAGER_USER=${user}"
           "SYSTEMD_USER_MANAGER_METADATA=${metadata.file}"
-          "SYSTEMD_USER_MANAGER_START_PARALLELISM=${toString cfg.startParallelism}"
+          "SYSTEMD_USER_MANAGER_START_CONCURRENCY=${toString cfg.startConcurrency}"
         ];
         TimeoutStartSec = managerServiceTimeout;
         ExecStart = "${helperScript} reconciler-apply";
@@ -470,14 +470,15 @@ in {
   ];
 
   options.services.systemd-user-manager = {
-    startParallelism = lib.mkOption {
-      type = lib.types.ints.positive;
+    startConcurrency = lib.mkOption {
+      type = lib.types.addCheck lib.types.int (value: value == -1 || value > 0);
       default = 4;
       description = ''
         Maximum number of managed unit start or restart actions the reconciler
-        launches at once per user. Keep this bounded because a single managed
-        unit can fan out into a full compose stack, but avoid serializing large
-        managed sets into the dispatcher service timeout.
+        launches at once per user. Use -1 for unlimited concurrency. Keep this
+        bounded because a single managed unit can fan out into a full compose
+        stack, but avoid serializing large managed sets into the dispatcher
+        service timeout.
       '';
     };
 

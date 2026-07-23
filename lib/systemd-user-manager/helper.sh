@@ -33,10 +33,11 @@ init_vars() {
 	start_materialize_seconds="${SYSTEMD_USER_MANAGER_START_MATERIALIZE_SECONDS:-10}"
 	enqueue_start_grace_seconds="${SYSTEMD_USER_MANAGER_ENQUEUE_START_GRACE_SECONDS:-10}"
 	stop_kill_wait_seconds="${SYSTEMD_USER_MANAGER_STOP_KILL_WAIT_SECONDS:-30}"
-	start_parallelism="${SYSTEMD_USER_MANAGER_START_PARALLELISM:-1}"
+	start_concurrency="${SYSTEMD_USER_MANAGER_START_CONCURRENCY:-4}"
 	verification_failed_units=""
-	case "$start_parallelism" in
-	"" | *[!0-9]* | 0) start_parallelism=1 ;;
+	case "$start_concurrency" in
+	-1) ;;
+	"" | *[!0-9]* | 0) start_concurrency=4 ;;
 	esac
 }
 
@@ -2224,7 +2225,7 @@ run_reconciler_apply() {
 					managed_action_pids+=("$managed_unit_action_pid")
 					managed_action_started_ats+=("$managed_unit_action_started_at")
 					active_managed_actions="$((${#managed_action_pids[@]} - managed_action_wait_index))"
-					if [ "$active_managed_actions" -ge "$start_parallelism" ]; then
+					if [ "$start_concurrency" != -1 ] && [ "$active_managed_actions" -ge "$start_concurrency" ]; then
 						wait_for_managed_action_index "$managed_action_wait_index"
 						managed_action_wait_index="$((managed_action_wait_index + 1))"
 					fi

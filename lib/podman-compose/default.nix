@@ -11,6 +11,8 @@
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
   tunnelsLib = import ../services/tunnels {inherit lib;};
+  composeBackend = import ./compose.nix {inherit lib;};
+  quadletBackend = import ./quadlet.nix {inherit lib config pkgs;};
   secretFileSourceHash = file: let
     fileString = toString file;
   in
@@ -47,6 +49,7 @@
       secretFileSourceHash file
     );
   serviceDefaults = {
+    backend = null;
     source = null;
     files = {};
     entryFile = null;
@@ -57,6 +60,7 @@
     composeArgs = [];
     preStart = [];
     postStart = [];
+    verifyCommand = [];
     preStop = [];
     reload = {
       method = "restart";
@@ -78,9 +82,10 @@
     removalPolicy = "inherit";
     adopt = false;
     autoStart = null;
-    startParallelism = null;
+    startPriority = 0;
     longRunning = true;
     timeoutReadySeconds = null;
+    timeoutBootstrapSeconds = null;
     composeUpNoProgressSeconds = null;
     bootTag = "0";
     reloadTag = "0";
@@ -97,7 +102,17 @@
     dirs = {};
     exposedPorts = {};
   };
+  backendType = lib.types.enum ["compose" "quadlet"];
   stackDefaultTimeoutReadySeconds = 120;
+  stackDefaultTimeoutBootstrapSeconds = 300;
+  readinessTimeoutReserveSeconds = timeoutSeconds: let
+    rawReserveSeconds = lib.min 30 (lib.max 5 (builtins.div timeoutSeconds 10));
+  in
+    if timeoutSeconds <= rawReserveSeconds + 1
+    then 1
+    else rawReserveSeconds;
+  readinessProbeTimeoutSeconds = timeoutSeconds:
+    lib.max 1 (timeoutSeconds - readinessTimeoutReserveSeconds timeoutSeconds);
   defaultComposeEntryFiles = [
     "compose.yml"
     "compose.yaml"
@@ -116,26 +131,47 @@
     else b;
   composeServicesFromText = text: let
     lines = lib.splitString "\n" text;
-    serviceLine = line:
-      builtins.match "[[:space:]][[:space:]]([A-Za-z0-9_.-]+):[[:space:]]*(#.*)?" line;
     step = state: line: let
       isBlank = builtins.match "[[:space:]]*" line != null;
-      startsServices = builtins.match "services:[[:space:]]*(#.*)?" line != null;
-      startsTopLevel = builtins.match "[^[:space:]].*" line != null;
-      match = serviceLine line;
+      servicesMatch = builtins.match "([[:space:]]*)services:[[:space:]]*(#.*)?" line;
+      keyMatch = builtins.match "([[:space:]]*)([A-Za-z0-9_.-]+):[[:space:]]*(#.*)?" line;
+      servicesIndent =
+        if servicesMatch == null
+        then 0
+        else builtins.stringLength (builtins.elemAt servicesMatch 0);
+      keyIndent =
+        if keyMatch == null
+        then 0
+        else builtins.stringLength (builtins.elemAt keyMatch 0);
+      isService =
+        keyMatch
+        != null
+        && keyIndent == state.servicesIndent + 2;
+      leavesServices =
+        keyMatch
+        != null
+        && keyIndent <= state.servicesIndent;
     in
-      if ! state.inServices
-      then state // {inServices = startsServices;}
+      if servicesMatch != null
+      then
+        state
+        // {
+          inServices = true;
+          servicesIndent = servicesIndent;
+        }
+      else if ! state.inServices
+      then state
       else if isBlank
       then state
-      else if startsTopLevel
-      then state // {inServices = startsServices;}
-      else if match != null
-      then state // {services = state.services ++ [(builtins.elemAt match 0)];}
+      else if isService
+      then state // {services = state.services ++ [(builtins.elemAt keyMatch 1)];}
+      else if leavesServices
+      then state // {inServices = false;}
       else state;
     parsed =
       builtins.foldl' step {
         inServices = false;
+        servicesIndent = 0;
         services = [];
       }
       lines;
@@ -528,12 +564,16 @@
     else "-";
 
   tests = import ./tests {inherit pkgs;};
-  helperPackage =
+  mkHelperPackage = {
+    name,
+    withQuadlet,
+  }:
     (pkgs.writeShellApplication {
-      name = "podman-compose-helper";
+      inherit name;
       excludeShellChecks = ["SC1091"];
       runtimeInputs = [
         pkgs.coreutils
+        pkgs.dnsutils
         pkgs.findutils
         pkgs.jq
         pkgs.podman
@@ -545,6 +585,7 @@
         export NIX_PODMAN_COMPOSE_HELPER_SELF="$0"
         export NIX_PODMAN_COMPOSE_HELPER_TOPLEVEL=1
         source ${./helper.sh}
+        ${lib.optionalString withQuadlet "source ${./quadlet-helper.sh}"}
         main "$@"
       '';
     })
@@ -557,10 +598,27 @@
           tests = (oldPassthru.tests or {}) // tests;
         };
     });
-  helperScript = "${helperPackage}/bin/podman-compose-helper";
+  composeHelperPackage = mkHelperPackage {
+    name = "podman-compose-helper";
+    withQuadlet = false;
+  };
+  backendHelperPackage = mkHelperPackage {
+    name = "podman-backend-helper";
+    withQuadlet = true;
+  };
+  composeHelperScript = "${composeHelperPackage}/bin/podman-compose-helper";
+  backendHelperScript = "${backendHelperPackage}/bin/podman-backend-helper";
+  runtimeComposeHelperScript = "/etc/podman-compose/helpers/podman-compose-helper";
+  runtimeBackendHelperScript = "/etc/podman-compose/helpers/podman-backend-helper";
 
   serviceType = lib.types.submodule (_: {
     options = {
+      backend = lib.mkOption {
+        type = lib.types.nullOr backendType;
+        default = serviceDefaults.backend;
+        description = "Runtime backend. Null inherits the stack backend; Quadlet is an explicit strict-conversion opt-in.";
+      };
+
       source = lib.mkOption {
         type = lib.types.nullOr (lib.types.oneOf [lib.types.lines lib.types.attrs lib.types.path]);
         default = serviceDefaults.source;
@@ -620,6 +678,22 @@
         readOnly = true;
         internal = true;
         description = "Resolved source paths by filename.";
+      };
+
+      nativeConversion = lib.mkOption {
+        type = lib.types.attrs;
+        default = {};
+        readOnly = true;
+        internal = true;
+        description = "Strict native-backend conversion result.";
+      };
+
+      nativeQuadletFiles = lib.mkOption {
+        type = lib.types.attrsOf lib.types.lines;
+        default = {};
+        readOnly = true;
+        internal = true;
+        description = "Generated private Quadlet files keyed by filename.";
       };
 
       pullSourcePaths = lib.mkOption {
@@ -698,6 +772,12 @@
         description = "Commands to run inside the compose helper after `podman compose up` and helper start verification succeeds. Prefix a command with `-` to ignore failure.";
       };
 
+      verifyCommand = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = serviceDefaults.verifyCommand;
+        description = "Optional read-only target-local verification command and arguments. When empty, instances exposing an http port receive a generated local HTTP probe that accepts usable non-5xx responses.";
+      };
+
       preStop = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = serviceDefaults.preStop;
@@ -766,10 +846,10 @@
         description = "Whether this compose instance should be auto-started by the generated native user targets during deploy and boot-ready startup. When null, inherit the stack default.";
       };
 
-      startParallelism = lib.mkOption {
-        type = lib.types.nullOr lib.types.ints.positive;
-        default = serviceDefaults.startParallelism;
-        description = "Maximum native auto-start window for generated compose services in the same service user. When null, inherit the stack default.";
+      startPriority = lib.mkOption {
+        type = lib.types.ints.between (-100) 100;
+        default = serviceDefaults.startPriority;
+        description = "Priority hint for native auto-start lane ordering. Lower values start earlier; ties are ordered by generated systemd service name.";
       };
 
       longRunning = lib.mkOption {
@@ -782,6 +862,12 @@
         type = lib.types.nullOr lib.types.ints.positive;
         default = serviceDefaults.timeoutReadySeconds;
         description = "Seconds native user-service convergence should wait for this compose unit to become ready. When null, inherit the stack default.";
+      };
+
+      timeoutBootstrapSeconds = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = serviceDefaults.timeoutBootstrapSeconds;
+        description = "Seconds allowed for local image loading and pre-start preparation. When null, inherit the stack default.";
       };
 
       composeUpNoProgressSeconds = lib.mkOption {
@@ -1283,6 +1369,12 @@
 
   stackType = lib.types.submodule ({name, ...}: {
     options = {
+      backend = lib.mkOption {
+        type = backendType;
+        default = "compose";
+        description = "Default runtime backend for instances in this stack.";
+      };
+
       user = lib.mkOption {
         type = lib.types.str;
         default = "root";
@@ -1313,16 +1405,22 @@
         description = "Default readiness timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutReadySeconds.";
       };
 
+      timeoutBootstrapSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = stackDefaultTimeoutBootstrapSeconds;
+        description = "Default bootstrap preparation timeout, in seconds, for compose instances in this stack. Instances can override this with their own timeoutBootstrapSeconds.";
+      };
+
       autoStart = lib.mkOption {
         type = lib.types.bool;
         default = true;
         description = "Default auto-start behavior for compose instances in this stack. Instances can override this with their own autoStart.";
       };
 
-      startParallelism = lib.mkOption {
-        type = lib.types.ints.positive;
+      startConcurrency = lib.mkOption {
+        type = lib.types.addCheck lib.types.int (value: value == -1 || value > 0);
         default = 4;
-        description = "Maximum number of generated compose services for the same service user that may enter their start transaction at once.";
+        description = "Maximum number of generated compose services for the same service user that may enter their start transaction at once. Use -1 for unlimited concurrency. Services are sorted by startPriority and generated systemd service name, then throttled with After-only lane edges.";
       };
 
       reconcilePolicy = lib.mkOption {
@@ -1430,7 +1528,7 @@
       if service.serviceName != null
       then service.serviceName
       else "${stack.servicePrefix}${serviceName}";
-    startGateAfterUnits = startGateAfterUnitsBySystemdServiceName.${resolvedSystemdServiceName} or [];
+    startLaneAfterUnits = startLaneAfterUnitsBySystemdServiceName.${resolvedSystemdServiceName} or [];
 
     resolveGeneratedServiceName = svcName: let
       svc = stack.instances.${svcName};
@@ -1449,21 +1547,47 @@
 
     dependsOnUnits = lib.unique (map resolveDependencyUnit service.dependsOn);
     wantsUnits = lib.unique (map resolveDependencyUnit service.wants);
-    topoDependencyUnits = lib.unique (dependsOnUnits ++ wantsUnits);
+    generatedUnitsForServiceName = svcName: let
+      generatedServiceName = resolveGeneratedServiceName svcName;
+    in [
+      "${generatedServiceName}.service"
+      "${generatedServiceName}-stage.service"
+      "${generatedServiceName}-reconcile.service"
+      "${generatedServiceName}-verify.service"
+      "${generatedServiceName}-image-pull.service"
+      "${generatedServiceName}-ready.target"
+    ];
+    resolveDependencyServiceNames = dep:
+      if builtins.hasAttr dep stack.instances
+      then [(resolveGeneratedServiceName dep)]
+      else
+        lib.concatMap
+        (depServiceName:
+          lib.optional
+          (builtins.elem dep (generatedUnitsForServiceName depServiceName))
+          (resolveGeneratedServiceName depServiceName))
+        (builtins.attrNames stack.instances);
+    topoDependencyServiceNames = lib.unique (
+      lib.concatMap resolveDependencyServiceNames (service.dependsOn ++ service.wants)
+    );
     networkOnlineUnits = lib.optional service.waitForNetwork "network-online.target";
 
     conditionUserConfig = {
       ConditionUser = resolvedUser;
     };
     serviceAutoStarts = service.state == "running" && service.autoStart;
+    serviceHelperScript =
+      if service.backend == "quadlet"
+      then backendHelperScript
+      else composeHelperScript;
+    serviceUnitHelperScript =
+      if service.backend == "quadlet"
+      then runtimeBackendHelperScript
+      else runtimeComposeHelperScript;
     userManagedTargetName = managedTargetNameForUser resolvedUser;
-    userManagedReadyTargetName = managedReadyTargetNameForUser resolvedUser;
     readyTargetName = "${resolvedSystemdServiceName}-ready";
     stageServiceName = "${resolvedSystemdServiceName}-stage";
     stageUnit = "${stageServiceName}.service";
-    bootstrapServiceName = "${resolvedSystemdServiceName}-bootstrap";
-    bootstrapUnit = "${bootstrapServiceName}.service";
-    hasBootstrapUnit = service.preStart != [];
     reconcileServiceName = "${resolvedSystemdServiceName}-reconcile";
     reconcileUnit = "${reconcileServiceName}.service";
     hasReconcileUnit = service.postStart != [];
@@ -1471,9 +1595,16 @@
     verifyUnit = "${verifyServiceName}.service";
     imagePullServiceName = "${resolvedSystemdServiceName}-image-pull";
     imagePullUnit = "${imagePullServiceName}.service";
-    hasImagePullUnit = service.imageTag != "0";
+    hasImagePullUnit =
+      service.imageTag
+      != "0"
+      || (service.backend == "quadlet" && service.declaredImages != []);
     rootlessIdmapMigrateUnit =
       lib.optional (resolvedUser != "root") "${rootlessIdmapMigrateUserServiceNameForUser resolvedUser}.service";
+    rootlessRuntimePreflightUnit =
+      lib.optional
+      (resolvedUser != "root" && rootlessStackUserHasConfig resolvedUser)
+      "${rootlessRuntimePreflightUserServiceNameForUser resolvedUser}.service";
     resolvedPullComposeFiles = map (file: service.pullSourcePaths.${file}) service.pullEntryFiles;
     nativeReloadEnabled = service.reload.method == "signal";
     reloadExternalFileEntries =
@@ -1656,17 +1787,21 @@
         }
         // secretRestartInputs;
       recreate =
-        {
-          composeArgs = service.composeArgs;
-          composeFiles = resolvedComposeFiles;
-          pullComposeFiles = resolvedPullComposeFiles;
-          helperPath = podmanHelperPath;
-          entryFile = service.entryFile;
-          expectedComposeServices = service.knownSourceComposeServices;
-          files = stagedFileActionInputs recreateStagedEntries;
-          imageTag = service.imageTag;
-          localImages = service.localImageMetadata;
-        }
+        ({
+            composeArgs = service.composeArgs;
+            composeFiles = resolvedComposeFiles;
+            pullComposeFiles = resolvedPullComposeFiles;
+            helperPath = podmanHelperPath;
+            entryFile = service.entryFile;
+            expectedComposeServices = service.knownSourceComposeServices;
+            files = stagedFileActionInputs recreateStagedEntries;
+            imageTag = service.imageTag;
+            localImages = service.localImageMetadata;
+          }
+          // lib.optionalAttrs (service.backend == "quadlet") {
+            backend = service.backend;
+            nativeConversion = service.nativeConversion;
+          })
         // secretRecreateInputs;
       imagePull = {
         composeArgs = service.composeArgs;
@@ -1782,97 +1917,148 @@
       serviceName = resolvedSystemdServiceName;
       workingDir = resolvedWorkingDir;
     });
-    helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
-      builtins.toJSON {
-        version = 10;
-        serviceName = resolvedSystemdServiceName;
-        workingDir = resolvedWorkingDir;
-        adoptionStamp = adoptionStamp;
-        state = service.state;
-        reconcilePolicy = service.reconcilePolicy;
-        removalPolicy = service.removalPolicy;
-        adopt = service.adopt;
-        preStart = service.preStart;
-        postStart = service.postStart;
-        preStop = service.preStop;
-        composeArgs = service.composeArgs;
-        composeFiles = resolvedComposeFiles;
-        pullComposeFiles = resolvedPullComposeFiles;
-        declaredImages = service.declaredImages;
-        localImages = service.localImageMetadata;
-        expectedComposeServices = service.knownSourceComposeServices;
-        stagedDirs = map (dirName: let
-          entry = service.dirs.${dirName};
-        in
-          {
-            dst = service.dirRuntimePaths.${dirName};
-          }
-          // dirPermsJson dirName entry) (builtins.attrNames service.dirs);
-        stagedFiles =
-          map (fileName: let
-            entry = service.stagedEntries.${fileName};
-          in
-            {
-              src = service.sourcePaths.${fileName};
-              dst = service.runtimePaths.${fileName};
-              dstDir = builtins.dirOf service.runtimePaths.${fileName};
-              dstDirMode = "0750";
-            }
-            // entryPermsJson entry) (builtins.attrNames service.stagedEntries)
-          ++ map (secretName: let
-            entry = service.fileSecrets.${secretName};
-          in
-            {
-              src = entry.file;
-              dst = service.fileSecretRuntimePaths.${secretName};
-              dstDir = builtins.dirOf service.fileSecretRuntimePaths.${secretName};
-              dstDirMode = "0700";
-            }
-            // entryPermsJson entry) (builtins.attrNames service.fileSecrets);
-        reload = {
-          inherit (service.reload) method signal services;
-          dirs = map reloadDirMetadata service.reload.trigger.dirs;
-          stagedFiles = map (fileName: let
-            entry = reloadStagedEntries.${fileName};
-          in
-            {
-              src = service.sourcePaths.${fileName};
-              dst = service.runtimePaths.${fileName};
-              dstDir = builtins.dirOf service.runtimePaths.${fileName};
-              dstDirMode = "0750";
-            }
-            // entryPermsJson entry) (builtins.attrNames reloadStagedEntries);
+    quadletArtifacts =
+      if service.backend == "quadlet" && (service.nativeConversion.supported or false)
+      then
+        quadletBackend.mkArtifacts {
+          user = resolvedUser;
+          systemdServiceName = resolvedSystemdServiceName;
+          service = service;
+          conversion = service.nativeConversion;
+        }
+      else {
+        etcEntries = [];
+        files = {};
+        labels = {};
+        runtimeUnits = [];
+        containerName = null;
+        containerUnit = null;
+        sourcePath = null;
+        networkUnit = null;
+        metadata = {
+          kind = "quadlet";
+          quadlet = {};
         };
-        recreateTag = service.recreateTag;
-        restartStamp = actionStamps.restart;
-        recreateStamp = lifecyclePolicy.helperRecreateStamp;
-        recreateClassStamp = actionStamps.recreate;
-        imagePullStamp = actionStamps.imagePull;
-        startWorkerUnit = "";
-        longRunning = service.longRunning;
-        timeoutReadySeconds = service.timeoutReadySeconds;
-        composeUpNoProgressSeconds = service.composeUpNoProgressSeconds;
-        envSecretFiles = map (composeServiceName: let
-          entry = service.envSecrets.${composeServiceName};
+        expectedContainers = [];
+      };
+    backendMetadata =
+      if service.backend == "quadlet"
+      then quadletArtifacts.metadata
+      else
+        composeBackend.metadata {
+          composeFiles = resolvedComposeFiles;
+          pullComposeFiles = resolvedPullComposeFiles;
+          composeArgs = service.composeArgs;
+          expectedServices = service.knownSourceComposeServices;
+        };
+    expectedContainers =
+      if service.backend == "quadlet"
+      then quadletArtifacts.expectedContainers
+      else composeBackend.expectedContainers resolvedSystemdServiceName resolvedWorkingDir service.knownSourceComposeServices;
+    legacyHelperMetadata = {
+      version = 11;
+      serviceName = resolvedSystemdServiceName;
+      workingDir = resolvedWorkingDir;
+      adoptionStamp = adoptionStamp;
+      state = service.state;
+      reconcilePolicy = service.reconcilePolicy;
+      removalPolicy = service.removalPolicy;
+      adopt = service.adopt;
+      preStart = service.preStart;
+      postStart = service.postStart;
+      preStop = service.preStop;
+      composeArgs = service.composeArgs;
+      composeFiles = resolvedComposeFiles;
+      pullComposeFiles = resolvedPullComposeFiles;
+      declaredImages = service.declaredImages;
+      localImages = service.localImageMetadata;
+      expectedComposeServices = service.knownSourceComposeServices;
+      verifyCommand = service.verifyCommand;
+      stagedDirs = map (dirName: let
+        entry = service.dirs.${dirName};
+      in
+        {
+          dst = service.dirRuntimePaths.${dirName};
+        }
+        // dirPermsJson dirName entry) (builtins.attrNames service.dirs);
+      stagedFiles =
+        map (fileName: let
+          entry = service.stagedEntries.${fileName};
         in
           {
-            dst = service.envSecretRuntimePaths.${composeServiceName};
-            dstDir = builtins.dirOf service.envSecretRuntimePaths.${composeServiceName};
-            entries = map (envName: {
-              name = envName;
-              src = entry.entries.${envName};
-            }) (builtins.attrNames entry.entries);
+            src = service.sourcePaths.${fileName};
+            dst = service.runtimePaths.${fileName};
+            dstDir = builtins.dirOf service.runtimePaths.${fileName};
+            dstDirMode = "0750";
           }
-          // entryPermsJson entry) (builtins.attrNames service.envSecrets);
-      }
+          // entryPermsJson entry) (builtins.attrNames service.stagedEntries)
+        ++ map (secretName: let
+          entry = service.fileSecrets.${secretName};
+        in
+          {
+            src = entry.file;
+            dst = service.fileSecretRuntimePaths.${secretName};
+            dstDir = builtins.dirOf service.fileSecretRuntimePaths.${secretName};
+            dstDirMode = "0700";
+          }
+          // entryPermsJson entry) (builtins.attrNames service.fileSecrets);
+      reload = {
+        inherit (service.reload) method signal services;
+        dirs = map reloadDirMetadata service.reload.trigger.dirs;
+        stagedFiles = map (fileName: let
+          entry = reloadStagedEntries.${fileName};
+        in
+          {
+            src = service.sourcePaths.${fileName};
+            dst = service.runtimePaths.${fileName};
+            dstDir = builtins.dirOf service.runtimePaths.${fileName};
+            dstDirMode = "0750";
+          }
+          // entryPermsJson entry) (builtins.attrNames reloadStagedEntries);
+      };
+      recreateTag = service.recreateTag;
+      restartStamp = actionStamps.restart;
+      recreateStamp = lifecyclePolicy.helperRecreateStamp;
+      recreateClassStamp = actionStamps.recreate;
+      imagePullStamp = actionStamps.imagePull;
+      startWorkerUnit = "";
+      longRunning = service.longRunning;
+      timeoutReadySeconds = service.timeoutReadySeconds;
+      timeoutBootstrapSeconds = service.timeoutBootstrapSeconds;
+      composeUpNoProgressSeconds = service.composeUpNoProgressSeconds;
+      envSecretFiles = map (composeServiceName: let
+        entry = service.envSecrets.${composeServiceName};
+      in
+        {
+          dst = service.envSecretRuntimePaths.${composeServiceName};
+          dstDir = builtins.dirOf service.envSecretRuntimePaths.${composeServiceName};
+          entries = map (envName: {
+            name = envName;
+            src = entry.entries.${envName};
+          }) (builtins.attrNames entry.entries);
+        }
+        // entryPermsJson entry) (builtins.attrNames service.envSecrets);
+    };
+    helperMetadataPayload =
+      if service.backend == "quadlet"
+      then
+        legacyHelperMetadata
+        // {
+          version = 12;
+          backend = service.backend;
+          backendData = backendMetadata;
+        }
+      else legacyHelperMetadata;
+    helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
+      builtins.toJSON helperMetadataPayload
     );
     startTimeoutSeconds = service.timeoutReadySeconds;
-    timeoutReserveSeconds = let
-      rawReserveSeconds = lib.min 30 (lib.max 5 (builtins.div startTimeoutSeconds 10));
-    in
-      if startTimeoutSeconds <= rawReserveSeconds + 1
-      then 1
-      else rawReserveSeconds;
+    bootstrapTimeoutSeconds = service.timeoutBootstrapSeconds;
+    # The managed target bounds stop fan-out and systemd owns the aggregate
+    # deadline. Keep enough room for one bounded compose stop plus cleanup;
+    # dense services retain their larger readiness-derived timeout.
+    stopTimeoutSeconds = lib.max 240 startTimeoutSeconds;
+    timeoutReserveSeconds = readinessTimeoutReserveSeconds startTimeoutSeconds;
     verifyTransitionWaitSeconds = lib.max 1 (startTimeoutSeconds - timeoutReserveSeconds);
     localImageClosure = pkgs.linkFarm "podman-compose-${resolvedSystemdServiceName}-local-images" (
       map (entry: {
@@ -1886,8 +2072,12 @@
         "PATH=${podmanHelperPath}"
         "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
         "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
+        "NIX_PODMAN_COMPOSE_PROVIDER_TIMEOUT_SECONDS=${toString startTimeoutSeconds}"
         "NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS=${toString verifyTransitionWaitSeconds}"
       ]
+      ++ lib.optional
+      (resolvedUser != "root" && rootlessStackUserHasConfig resolvedUser)
+      "NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=${runtimePreflightMetadataPathForUser resolvedUser}"
       ++ lib.optional (service.localImageMetadata != []) "NIX_PODMAN_COMPOSE_LOCAL_IMAGE_CLOSURE=${localImageClosure}"
       ++ lib.optional (service.composeUpNoProgressSeconds != null) "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=${toString service.composeUpNoProgressSeconds}";
     stampHelperEnvironment = [
@@ -1899,57 +2089,67 @@
       description = "podman: ${resolvedUser}: ${serviceName}";
       after = lib.unique (
         networkOnlineUnits
-        ++ startGateAfterUnits
+        ++ startLaneAfterUnits
         ++ rootlessIdmapMigrateUnit
+        ++ rootlessRuntimePreflightUnit
         ++ [stageUnit]
-        ++ lib.optional hasBootstrapUnit bootstrapUnit
         ++ dependsOnUnits
         ++ wantsUnits
         ++ lib.optional hasImagePullUnit imagePullUnit
       );
       wants = lib.unique (networkOnlineUnits ++ wantsUnits ++ lib.optional hasImagePullUnit imagePullUnit);
-      wantedBy = lib.optional serviceAutoStarts "${userManagedTargetName}.target";
+      # NixOS owns change detection per service. The shared Podman mutation
+      # lock serializes the short runtime operation without draining unrelated
+      # projects through the managed target on every generation.
       restartIfChanged = service.state == "running";
       stopIfChanged = service.state == "running";
       unitConfig =
         conditionUserConfig
+        // lib.optionalAttrs serviceAutoStarts {
+          PartOf = ["${userManagedTargetName}.target"];
+        }
         // {
           Requires = lib.unique (
             rootlessIdmapMigrateUnit
+            ++ rootlessRuntimePreflightUnit
             ++ [stageUnit]
-            ++ lib.optional hasBootstrapUnit bootstrapUnit
             ++ dependsOnUnits
             ++ lib.optional hasImagePullUnit imagePullUnit
           );
         };
       serviceConfig = {
-        Type = "notify";
-        NotifyAccess = "all";
+        Type = "oneshot";
+        RemainAfterExit = true;
         Environment = helperEnvironment;
         # Allow first start when the compose working directory doesn't exist yet.
         # ExecStart creates it before invoking podman compose.
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${helperScript} start-staged";
-        ExecStop = "${helperScript} stop";
-        ExecReload = "${helperScript} reload";
-        ExecStopPost = "${helperScript} post-stop";
-        # Keep helper subprocesses in the service kill boundary. If a start
-        # path times out while podman-compose or flock is blocked, leaving
-        # those children alive can wedge the lifecycle lock for the next
-        # activation.
-        KillMode = "control-group";
+        ExecStart = "${serviceUnitHelperScript} start-staged";
+        ExecStop = "${serviceUnitHelperScript} stop";
+        ExecReload = "${serviceUnitHelperScript} reload";
+        ExecStopPost = "${serviceUnitHelperScript} post-stop";
+        # Gracefully signal only the helper. Rootless Podman's conmon and
+        # fuse-overlayfs processes remain in this cgroup; signalling them with
+        # the helper tears down live container mounts before ExecStop cleanup.
+        # The final SIGKILL boundary still covers the whole cgroup.
+        KillMode = "mixed";
         Delegate = true;
-        Restart = "on-failure";
-        TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
-        RestartPreventExitStatus = "75";
-        TimeoutStopSec = lib.mkDefault 180;
+        # Startup owns one bootstrap sub-deadline and exactly one Compose
+        # provider invocation. Readiness is owned by the verifier unit.
+        Restart = "no";
+        TimeoutStartSec = lib.mkDefault (bootstrapTimeoutSeconds + startTimeoutSeconds);
+        TimeoutStopSec = lib.mkDefault stopTimeoutSeconds;
       };
     };
     imagePullSystemdService = lib.optionalAttrs hasImagePullUnit {
       description = "podman: ${resolvedUser}: ${serviceName} image pull";
-      after = lib.unique networkOnlineUnits;
+      after = lib.unique (networkOnlineUnits ++ rootlessRuntimePreflightUnit);
       wants = lib.unique networkOnlineUnits;
-      unitConfig = conditionUserConfig;
+      unitConfig =
+        conditionUserConfig
+        // lib.optionalAttrs (rootlessRuntimePreflightUnit != []) {
+          Requires = rootlessRuntimePreflightUnit;
+        };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = false;
@@ -1959,7 +2159,7 @@
             "NIX_PODMAN_COMPOSE_IMAGE_TAG=${service.imageTag}"
           ];
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${helperScript} image-pull";
+        ExecStart = "${serviceHelperScript} image-pull";
         TimeoutStartSec = 120;
       };
     };
@@ -1977,24 +2177,7 @@
         RemainAfterExit = false;
         Environment = helperEnvironment;
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${helperScript} stage";
-        TimeoutStartSec = lib.mkDefault 120;
-      };
-    };
-    bootstrapSystemdService = lib.optionalAttrs hasBootstrapUnit {
-      description = "podman: ${resolvedUser}: ${serviceName} bootstrap";
-      after = [stageUnit];
-      unitConfig =
-        conditionUserConfig
-        // {
-          Requires = [stageUnit];
-        };
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = false;
-        Environment = helperEnvironment;
-        WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${helperScript} bootstrap";
+        ExecStart = "${serviceHelperScript} stage";
         TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
@@ -2011,7 +2194,7 @@
         RemainAfterExit = false;
         Environment = helperEnvironment;
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${helperScript} reconcile";
+        ExecStart = "${serviceHelperScript} reconcile";
         TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
@@ -2020,15 +2203,15 @@
       after = ["${resolvedSystemdServiceName}.service"] ++ lib.optional hasReconcileUnit reconcileUnit;
       unitConfig =
         conditionUserConfig
-        // lib.optionalAttrs hasReconcileUnit {
-          Requires = [reconcileUnit];
+        // {
+          Requires = ["${resolvedSystemdServiceName}.service"] ++ lib.optional hasReconcileUnit reconcileUnit;
         };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = false;
         Environment = helperEnvironment;
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart = "${helperScript} verify";
+        ExecStart = "${serviceHelperScript} verify";
         TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
@@ -2037,7 +2220,7 @@
       unitConfig =
         conditionUserConfig
         // {
-          X-StopOnReconfiguration = true;
+          PartOf = ["${resolvedSystemdServiceName}.service"];
           Requires = [verifyUnit];
           After = [verifyUnit];
         };
@@ -2060,7 +2243,7 @@
       };
     restartSystemdService = lib.recursiveUpdate stampBaseSystemdService service.serviceOverrides;
     normalizeGeneratedHelperCommand = action: value:
-      if value == "${helperScript} ${action}"
+      if value == "${serviceUnitHelperScript} ${action}"
       then "<podman-compose-helper> ${action}"
       else value;
     normalizeGeneratedHelperServiceConfig = serviceConfig:
@@ -2090,11 +2273,40 @@
     systemdServiceName = resolvedSystemdServiceName;
     systemdUser = resolvedUser;
     helperMetadata = helperMetadata;
+    helperScript = serviceHelperScript;
+    drainStamp = builtins.hashString "sha256" (builtins.toJSON mergedSystemdService);
     systemdService = mergedSystemdService;
     systemdReadyTargetName = readyTargetName;
     systemdUserManagedTargetName = userManagedTargetName;
-    systemdUserManagedReadyTargetName = userManagedReadyTargetName;
+    resolvedWorkingDir = resolvedWorkingDir;
+    backend = service.backend;
+    nativeQuadletFiles = quadletArtifacts.files;
+    nativeQuadletEtcEntries = quadletArtifacts.etcEntries;
+    privateRuntimeUnits = quadletArtifacts.runtimeUnits;
+    quadletContainerName = quadletArtifacts.containerName;
+    quadletSourcePath = quadletArtifacts.sourcePath;
+    expectedContainers = expectedContainers;
+    expectedComposeServices =
+      if service.backend == "compose"
+      then service.knownSourceComposeServices
+      else [];
+    explicitComposeContainerNames =
+      if service.backend == "compose" && builtins.isAttrs service.renderedSource
+      then
+        lib.concatMap (
+          composeService:
+            lib.optional
+            (builtins.isString (service.renderedSource.services.${composeService}.container_name or null))
+            service.renderedSource.services.${composeService}.container_name
+        )
+        (builtins.attrNames (service.renderedSource.services or {}))
+      else [];
+    verifyCommand = service.verifyCommand;
     autoStartEnabled = serviceAutoStarts;
+    migrationGateSystemdServiceNames =
+      [resolvedSystemdServiceName]
+      ++ lib.optional hasReconcileUnit reconcileServiceName
+      ++ [verifyServiceName];
     auxiliarySystemdUserServices =
       [
         {
@@ -2106,10 +2318,6 @@
           value = verifySystemdService;
         }
       ]
-      ++ lib.optional hasBootstrapUnit {
-        name = bootstrapServiceName;
-        value = bootstrapSystemdService;
-      }
       ++ lib.optional hasReconcileUnit {
         name = reconcileServiceName;
         value = reconcileSystemdService;
@@ -2125,8 +2333,8 @@
       }
     ];
     lifecyclePolicy = lifecyclePolicy;
-    topoDependencyUnits = topoDependencyUnits;
-    inherit (service) state reconcilePolicy removalPolicy adopt autoStart startParallelism longRunning timeoutReadySeconds imageTag recreateTag bootTag reloadTag waitForNetwork hasComposeEntry declaredImages localImageMetadata;
+    topoDependencyServiceNames = topoDependencyServiceNames;
+    inherit (service) state reconcilePolicy removalPolicy adopt autoStart startConcurrency startPriority longRunning timeoutReadySeconds timeoutBootstrapSeconds imageTag recreateTag bootTag reloadTag waitForNetwork hasComposeEntry declaredImages localImageMetadata;
   };
 
   resolvedServices = lib.concatLists (
@@ -2142,6 +2350,25 @@
     )
     cfg
   );
+  hasComposeBackend = builtins.any (service: service.backend == "compose") resolvedServices;
+  nativeQuadletEtcEntries = lib.concatMap (service: service.nativeQuadletEtcEntries) resolvedServices;
+  duplicateNativeQuadletEtcPaths = flakeUtils.duplicateValues (map (entry: entry.name) nativeQuadletEtcEntries);
+  duplicatePrivateRuntimeUnits = flakeUtils.duplicateValues (lib.concatMap (service: service.privateRuntimeUnits) resolvedServices);
+  privateRuntimeUnitNameCollisions =
+    lib.intersectLists
+    (map (lib.removeSuffix ".service") (lib.concatMap (service: service.privateRuntimeUnits) resolvedServices))
+    (builtins.attrNames config.systemd.user.services);
+  duplicateQuadletContainerNames = flakeUtils.duplicateValues (
+    map (service: "${service.systemdUser}:${service.quadletContainerName}") (
+      builtins.filter (service: service.quadletContainerName != null) resolvedServices
+    )
+  );
+  duplicateManagedContainerNames = flakeUtils.duplicateValues (
+    (lib.concatMap (service: map (name: "${service.systemdUser}:${name}") service.explicitComposeContainerNames) resolvedServices)
+    ++ map (service: "${service.systemdUser}:${service.quadletContainerName}") (
+      builtins.filter (service: service.quadletContainerName != null) resolvedServices
+    )
+  );
   userUidString = user:
     if user == "root"
     then "0"
@@ -2156,8 +2383,20 @@
           user = service.systemdUser;
           uid = userUidString service.systemdUser;
           unit = "${service.systemdServiceName}.service";
+          readyUnit = "${service.systemdReadyTargetName}.target";
+          managedUnit = "${service.systemdUserManagedTargetName}.target";
           serviceName = service.systemdServiceName;
           metadataFile = service.helperMetadata;
+          backend = service.backend;
+          drainStamp = service.drainStamp;
+          removalPolicy = service.removalPolicy;
+          privateRuntimeUnits = service.privateRuntimeUnits;
+          expectedContainers = service.expectedContainers;
+          workingDir = service.resolvedWorkingDir;
+          expectedComposeServices = service.expectedComposeServices;
+          verifyCommand = service.verifyCommand;
+          autoStart = service.autoStartEnabled;
+          state = service.state;
           timeoutReadySeconds = service.timeoutReadySeconds;
         })
       resolvedServices
@@ -2170,10 +2409,15 @@
       uid = userUidString service.systemdUser;
       serviceName = service.systemdServiceName;
       metadataFile = service.helperMetadata;
-      helper = helperScript;
+      runtimePreflightMetadata =
+        if service.systemdUser != "root" && rootlessStackUserHasConfig service.systemdUser
+        then runtimePreflightMetadataForUser service.systemdUser
+        else null;
+      helper = service.helperScript;
       imageTag = service.imageTag;
+      backend = service.backend;
     })
-    (builtins.filter (service: service.hasComposeEntry && (service.declaredImages or []) != []) resolvedServices)
+    (builtins.filter (service: (service.declaredImages or []) != []) resolvedServices)
   ));
   controlPackage = pkgs.writeShellApplication {
     name = "podman-composectl";
@@ -2183,13 +2427,15 @@
     ];
     runtimeInputs = [
       pkgs.coreutils
+      pkgs.getent
       pkgs.jq
+      pkgs.podman
       pkgs.systemd
       pkgs.util-linux
     ];
     text = ''
       registry="''${NIX_PODMAN_COMPOSE_CONTROL_REGISTRY:-/run/current-system/share/podman-compose/control-registry.json}"
-      helper=${lib.escapeShellArg helperScript}
+      helper=${lib.escapeShellArg backendHelperScript}
       source ${./composectl.sh}
       main "$@"
     '';
@@ -2212,6 +2458,16 @@
       source ${./image-pull-all.sh}
       main "$@"
     '';
+  };
+  drainChangedPackage = pkgs.writeShellApplication {
+    name = "podman-compose-drain-changed";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.jq
+      pkgs.systemd
+      pkgs.util-linux
+    ];
+    text = builtins.readFile ./drain-changed.sh;
   };
   rootlessIdmapMigratePackage = pkgs.writeShellApplication {
     name = "podman-rootless-idmap-migrate";
@@ -2282,18 +2538,23 @@
 
   generatedSystemdUserServiceNames =
     (map (service: service.systemdServiceName) resolvedServices)
+    ++ map (lib.removeSuffix ".service") (lib.concatMap (service: service.privateRuntimeUnits) resolvedServices)
     ++ lib.concatMap
     (service: map (aux: aux.name) service.auxiliarySystemdUserServices)
     resolvedServices
-    ++ (map rootlessIdmapMigrateUserServiceNameForUser rootlessStackUsersWithConfig);
+    ++ (map rootlessIdmapMigrateUserServiceNameForUser rootlessStackUsersWithConfig)
+    ++ (map rootlessRuntimePreflightUserServiceNameForUser rootlessStackUsersWithConfig);
   duplicateSystemdUserServiceNames = flakeUtils.duplicateValues generatedSystemdUserServiceNames;
   generatedSystemdUserTargetNames =
     lib.concatMap
     (service: map (target: target.name) service.auxiliarySystemdUserTargets)
     resolvedServices
-    ++ map managedTargetNameForUser stackUsers
-    ++ map managedReadyTargetNameForUser stackUsers;
+    ++ map managedTargetNameForUser stackUsers;
   duplicateSystemdUserTargetNames = flakeUtils.duplicateValues generatedSystemdUserTargetNames;
+  compareStartLaneServices = a: b:
+    if a.startPriority == b.startPriority
+    then a.systemdServiceName < b.systemdServiceName
+    else a.startPriority < b.startPriority;
   autoStartServicesForUser = user:
     builtins.filter (
       service:
@@ -2302,8 +2563,8 @@
         && service.autoStartEnabled
     )
     resolvedServices;
-  startGateAfterUnitsBySystemdServiceName = let
-    gateEntriesForUser = user: let
+  startLaneAfterUnitsBySystemdServiceName = let
+    laneEntriesForUser = user: let
       services = autoStartServicesForUser user;
       serviceByName = lib.listToAttrs (
         map
@@ -2311,26 +2572,6 @@
           name = service.systemdServiceName;
           value = service;
         })
-        services
-      );
-      generatedTopoUnitsForService = service: [
-        "${service.systemdServiceName}.service"
-        "${service.systemdServiceName}-stage.service"
-        "${service.systemdServiceName}-bootstrap.service"
-        "${service.systemdServiceName}-reconcile.service"
-        "${service.systemdServiceName}-verify.service"
-        "${service.systemdServiceName}-image-pull.service"
-        "${service.systemdServiceName}-ready.target"
-      ];
-      serviceNameByGeneratedUnit = lib.listToAttrs (
-        lib.concatMap
-        (service:
-          map
-          (unit: {
-            name = unit;
-            value = service.systemdServiceName;
-          })
-          (generatedTopoUnitsForService service))
         services
       );
       topoDependencyServiceNamesFor = service:
@@ -2341,47 +2582,44 @@
             != service.systemdServiceName
             && builtins.hasAttr dependencyName serviceByName
         )
-        (
-          lib.unique (
+        service.topoDependencyServiceNames;
+      topoSort = sorted: pending:
+        if pending == []
+        then sorted
+        else let
+          pendingNames = map (service: service.systemdServiceName) pending;
+          ready = builtins.sort compareStartLaneServices (
             builtins.filter
-            (dependencyName: dependencyName != null)
-            (map (unit: serviceNameByGeneratedUnit.${unit} or null) service.topoDependencyUnits)
-          )
-        );
-      levelForServiceName = serviceName: let
-        service = serviceByName.${serviceName};
-        dependencyLevels = map levelForServiceName (topoDependencyServiceNamesFor service);
-      in
-        if dependencyLevels == []
-        then 0
-        else 1 + builtins.foldl' maxInt 0 dependencyLevels;
-      servicesWithLevels =
-        map
-        (service:
-          service
-          // {
-            startThrottleLevel = levelForServiceName service.systemdServiceName;
-          })
-        services;
-      throttleLevels = lib.unique (
-        lib.sort (a: b: a < b) (map (service: service.startThrottleLevel) servicesWithLevels)
-      );
-      servicesForLevel = level:
-        builtins.filter (service: service.startThrottleLevel == level) servicesWithLevels;
-      gateEntriesForLevel = level:
-        lib.imap0
-        (index: service: {
-          name = service.systemdServiceName;
-          value =
-            if index < service.startParallelism
-            then []
-            else ["${(builtins.elemAt (servicesForLevel level) (index - service.startParallelism)).systemdServiceName}.service"];
-        })
-        (servicesForLevel level);
+            (service:
+              builtins.all
+              (dependencyName: !(builtins.elem dependencyName pendingNames))
+              (topoDependencyServiceNamesFor service))
+            pending
+          );
+          nextService = builtins.head ready;
+          remaining = builtins.filter (service: service.systemdServiceName != nextService.systemdServiceName) pending;
+        in
+          if ready == []
+          then throw "services.podman-compose: cyclic auto-start dependencies for user '${user}': ${lib.concatStringsSep ", " pendingNames}"
+          else topoSort (sorted ++ [nextService]) remaining;
+      sortedServices = topoSort [] services;
+      finiteConcurrencies = builtins.filter (value: value != -1) (map (service: service.startConcurrency) services);
+      startConcurrency =
+        if finiteConcurrencies == []
+        then -1
+        else lib.foldl' lib.min (builtins.head finiteConcurrencies) finiteConcurrencies;
     in
-      lib.concatMap gateEntriesForLevel throttleLevels;
+      lib.imap0
+      (index: service: {
+        name = service.systemdServiceName;
+        value =
+          if startConcurrency == -1 || index < startConcurrency
+          then []
+          else ["${(builtins.elemAt sortedServices (index - startConcurrency)).systemdReadyTargetName}.target"];
+      })
+      sortedServices;
   in
-    lib.listToAttrs (lib.concatMap gateEntriesForUser stackUsers);
+    lib.listToAttrs (lib.concatMap laneEntriesForUser stackUsers);
   mkManagedUserTarget = user: let
     services = autoStartServicesForUser user;
   in {
@@ -2389,52 +2627,65 @@
     value = {
       description = "Managed ${user} user services";
       wantedBy = lib.optional (services != []) "default.target";
-      wants = map (service: "${service.systemdServiceName}.service") services;
+      wants = map (service: "${service.systemdReadyTargetName}.target") services;
       unitConfig.ConditionUser = user;
     };
   };
-  mkManagedReadyUserTarget = user: let
-    services = autoStartServicesForUser user;
-  in {
-    name = managedReadyTargetNameForUser user;
-    value = {
-      description = "Managed ${user} user services ready";
-      wantedBy = lib.optional (services != []) "default.target";
-      unitConfig = {
-        ConditionUser = user;
-        X-StopOnReconfiguration = true;
-        Requires = map (service: "${service.systemdReadyTargetName}.target") services;
-        After = map (service: "${service.systemdReadyTargetName}.target") services;
-      };
-    };
-  };
   mkMigrationManagedUser = user: let
-    services = builtins.filter (service: service.systemdUser == user) resolvedServices;
+    manuallyManagedServices =
+      builtins.filter (
+        service:
+          service.systemdUser
+          == user
+          && !service.autoStartEnabled
+      )
+      resolvedServices;
     autoStartServices = autoStartServicesForUser user;
     targetIsActive = autoStartServices != [];
+    gateOnlyUnit = {
+      gateStart = true;
+      stopOnDrain = false;
+      startOnResume = false;
+    };
+    gateOnlyServiceNames =
+      lib.concatMap (service:
+        map (serviceName: "${serviceName}.service") service.migrationGateSystemdServiceNames)
+      autoStartServices
+      ++ lib.optional
+      (targetIsActive && rootlessStackUserHasConfig user)
+      "${rootlessRuntimePreflightUserServiceNameForUser user}.service";
   in {
     ${user} = {
       services = lib.listToAttrs (
-        map
-        (service: {
-          name = "${service.systemdServiceName}.service";
-          value = {
-            stopOnDrain = service.state == "running";
-            startOnResume = false;
-          };
+        (map
+          (service: {
+            name = "${service.systemdServiceName}.service";
+            value = {
+              stopOnDrain = service.state == "running";
+              startOnResume = false;
+            };
+          })
+          manuallyManagedServices)
+        ++ map (serviceName: {
+          name = serviceName;
+          value = gateOnlyUnit;
         })
-        services
+        gateOnlyServiceNames
       );
-      targets = {
-        "${managedTargetNameForUser user}.target" = {
-          stopOnDrain = targetIsActive;
-          startOnResume = targetIsActive;
-        };
-        "${managedReadyTargetNameForUser user}.target" = {
-          stopOnDrain = targetIsActive;
-          startOnResume = targetIsActive;
-        };
-      };
+      targets =
+        {
+          "${managedTargetNameForUser user}.target" = {
+            stopOnDrain = targetIsActive;
+            startOnResume = targetIsActive;
+          };
+        }
+        // lib.listToAttrs (
+          map (service: {
+            name = "${service.systemdReadyTargetName}.target";
+            value = gateOnlyUnit;
+          })
+          autoStartServices
+        );
     };
   };
   stackUsers = lib.unique (map (service: service.systemdUser) resolvedServices);
@@ -2455,9 +2706,60 @@
   rootlessStackUserNetworkOnlineUnits = user:
     lib.optional (rootlessStackUserNeedsNetworkOnline user) "network-online.target";
   serviceNameUserKey = user: lib.strings.sanitizeDerivationName user;
+  runtimePreflightMetadataPathForUser = user: "/etc/podman-compose/runtime-preflight/${serviceNameUserKey user}.json";
   managedTargetNameForUser = user: "${serviceNameUserKey user}-managed";
-  managedReadyTargetNameForUser = user: "${serviceNameUserKey user}-managed-ready";
+  managedTargetUnits = map (user: "${managedTargetNameForUser user}.target") stackUsers;
+  nativeQuadletFixtures =
+    map (entry: {
+      name = builtins.baseNameOf entry.name;
+      source = pkgs.writeText (builtins.baseNameOf entry.name) entry.value.text;
+    })
+    nativeQuadletEtcEntries;
+  quadletGeneratorCheck =
+    if nativeQuadletFixtures == []
+    then
+      pkgs.runCommand "podman-compose-quadlet-generator-check-empty" {} ''
+        touch "$out"
+      ''
+    else
+      pkgs.runCommand "podman-compose-quadlet-generator-check" {} ''
+        unit_dir="$TMPDIR/quadlet-units"
+        generated_dir="$TMPDIR/generated-units"
+        mkdir -p "$unit_dir" "$generated_dir"
+        ${lib.concatMapStringsSep "\n" (fixture: ''
+            cp ${lib.escapeShellArg fixture.source} "$unit_dir/${fixture.name}"
+          '')
+          nativeQuadletFixtures}
+
+        QUADLET_UNIT_DIRS="$unit_dir" \
+          ${pkgs.podman}/lib/systemd/user-generators/podman-user-generator \
+          --user "$generated_dir"
+
+        ${lib.concatMapStringsSep "\n" (fixture: ''
+            test -s "$generated_dir/${lib.removeSuffix ".container" fixture.name}.service"
+          '')
+          nativeQuadletFixtures}
+        touch "$out"
+      '';
+  systemdUserGraphCheck =
+    if managedTargetUnits == []
+    then
+      pkgs.runCommand "podman-compose-systemd-user-graph-check-empty" {} ''
+        touch "$out"
+      ''
+    else
+      pkgs.runCommand "podman-compose-systemd-user-graph-check" {
+        nativeBuildInputs = [pkgs.systemd];
+      } ''
+        export XDG_RUNTIME_DIR="$TMPDIR/systemd-runtime"
+        mkdir -p "$XDG_RUNTIME_DIR"
+        export SYSTEMD_LOG_TARGET=console
+        export SYSTEMD_UNIT_PATH=${config.environment.etc."systemd/user".source}
+        systemd-analyze --user verify ${lib.escapeShellArgs managedTargetUnits}
+        touch "$out"
+      '';
   rootlessIdmapMigrateUserServiceNameForUser = user: "podman-rootless-idmap-migrate-${serviceNameUserKey user}";
+  rootlessRuntimePreflightUserServiceNameForUser = user: "podman-runtime-preflight-${serviceNameUserKey user}";
   # Rootless Podman can keep a stale single-id namespace after subuid/subgid
   # ranges appear; migrate before compose starts so container ids can map.
   mkRootlessIdmapMigrateUserService = user: let
@@ -2483,6 +2785,61 @@
           "PATH=${podmanHelperPath}"
         ];
         ExecStart = "${rootlessIdmapMigratePackage}/bin/podman-rootless-idmap-migrate ${lib.escapeShellArgs [user home]}";
+      };
+    };
+  };
+  runtimePreflightServicesForUser = user:
+    builtins.filter (service: service.systemdUser == user) resolvedServices;
+  runtimePreflightMetadataForUser = user: let
+    services = map (service: {
+      serviceName = service.systemdServiceName;
+      metadataFile = service.helperMetadata;
+    }) (runtimePreflightServicesForUser user);
+    token = builtins.hashString "sha256" (builtins.toJSON {
+      version = 1;
+      services = services;
+    });
+  in
+    pkgs.writeText "podman-runtime-preflight-${serviceNameUserKey user}.json" (builtins.toJSON {
+      version = 1;
+      user = user;
+      token = token;
+      services = services;
+    });
+  runtimePreflightEtcEntries =
+    map (user: {
+      name = "podman-compose/runtime-preflight/${serviceNameUserKey user}.json";
+      value.source = runtimePreflightMetadataForUser user;
+    })
+    rootlessStackUsersWithConfig;
+  mkRootlessRuntimePreflightUserService = user: let
+    userCfg = config.users.users.${user};
+    home = userCfg.home;
+    serviceName = rootlessRuntimePreflightUserServiceNameForUser user;
+    idmapUnit = "${rootlessIdmapMigrateUserServiceNameForUser user}.service";
+    metadata = runtimePreflightMetadataForUser user;
+    networkOnlineUnits = rootlessStackUserNetworkOnlineUnits user;
+  in {
+    name = serviceName;
+    value = {
+      description = "Reconcile rootless Podman runtime for ${user}";
+      after = lib.unique (networkOnlineUnits ++ [idmapUnit]);
+      wants = networkOnlineUnits;
+      unitConfig = {
+        ConditionUser = user;
+        Requires = [idmapUnit];
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = false;
+        Environment = [
+          "HOME=${home}"
+          "PATH=${podmanHelperPath}"
+          "NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=${metadata}"
+          "NIX_PODMAN_COMPOSE_SERVICE_NAME=${serviceName}"
+        ];
+        ExecStart = "${runtimeBackendHelperScript} runtime-preflight";
+        TimeoutStartSec = 300;
       };
     };
   };
@@ -2725,6 +3082,19 @@ in {
             then null
             else normalizeTrustedCaDefaultEntry name entry)
           stack.trustedCaDefaults;
+          normalizeFunctionInstance = serviceName: value:
+            (lib.evalModules {
+              modules = [
+                {
+                  options.instances = lib.mkOption {
+                    type = lib.types.attrsOf serviceType;
+                  };
+                  config.instances.${serviceName} = value;
+                }
+              ];
+            }).config.instances.${
+              serviceName
+            };
           instancesWithContext =
             lib.mapAttrs
             (serviceName: serviceOrFn:
@@ -2742,7 +3112,7 @@ in {
                   then "/run/podman/podman.sock"
                   else "/run/user/${userUid}/podman/podman.sock";
               in
-                serviceOrFn {
+                normalizeFunctionInstance serviceName (serviceOrFn {
                   inherit stackName serviceName;
                   instanceName = serviceName;
                   user = resolvedUser;
@@ -2750,7 +3120,7 @@ in {
                   workDir = "${stack.stackDir}/${serviceName}";
                   stackDir = stack.stackDir;
                   podmanSocket = podmanSocket;
-                }
+                })
               else serviceOrFn)
             stack.instances;
 
@@ -2761,6 +3131,7 @@ in {
                 serviceDefaults
                 // {
                   timeoutReadySeconds = stack.timeoutReadySeconds;
+                  timeoutBootstrapSeconds = stack.timeoutBootstrapSeconds;
                 }
                 // service;
               effectiveReconcilePolicy =
@@ -2780,6 +3151,10 @@ in {
               normalizedService =
                 baseService
                 // {
+                  backend =
+                    if baseService.backend == null
+                    then stack.backend
+                    else baseService.backend;
                   reconcilePolicy = effectiveReconcilePolicy;
                   removalPolicy = effectiveRemovalPolicy;
                   autoStart =
@@ -2788,14 +3163,16 @@ in {
                     else if baseService.autoStart == null
                     then stack.autoStart
                     else baseService.autoStart;
-                  startParallelism =
-                    if baseService.startParallelism == null
-                    then stack.startParallelism
-                    else baseService.startParallelism;
+                  startConcurrency = stack.startConcurrency;
+                  startPriority = baseService.startPriority;
                   timeoutReadySeconds =
                     if baseService.timeoutReadySeconds == null
                     then stack.timeoutReadySeconds
                     else baseService.timeoutReadySeconds;
+                  timeoutBootstrapSeconds =
+                    if baseService.timeoutBootstrapSeconds == null
+                    then stack.timeoutBootstrapSeconds
+                    else baseService.timeoutBootstrapSeconds;
                   dirs = lib.mapAttrs (_: applyEntryDefaults dirEntryDefaults) baseService.dirs;
                   envSecrets = lib.mapAttrs (_: normalizeEnvSecretEntry) baseService.envSecrets;
                   files = lib.mapAttrs (_: normalizeFileEntry) baseService.files;
@@ -3134,6 +3511,102 @@ in {
               sourcePaths = lib.mapAttrs (fileName: entry: renderEntry serviceName fileName entry) effectiveEntries;
               pullSourceDir = mkPullSourceDir serviceName sourcePaths;
               localImageMetadata = lib.attrValues localImageEntriesByRef;
+              nativeConversion = quadletBackend.mkConversion {
+                source = sourceCompose;
+                service = normalizedService;
+                baseService = baseService;
+                systemdServiceName =
+                  if normalizedService.serviceName != null
+                  then normalizedService.serviceName
+                  else "${stack.servicePrefix}${serviceName}";
+                workingDir = resolvedWorkingDir;
+                envSecretRuntimePaths = envSecretRuntimePaths;
+                envSecretTargetServices = builtins.attrNames normalizedService.envSecrets;
+                fileSecretMountsForService = fileSecretMountsForService;
+                fileSecretTargetServices = fileSecretTargetServices;
+                trustedCaEnvironmentForService = trustedCaEnvironmentForService;
+              };
+              httpExposure = normalizedService.exposedPorts.http or null;
+              generatedProbeProtocol =
+                if httpExposure == null
+                then null
+                else httpExposure.upstreamProtocol;
+              generatedProbeOriginHost =
+                if httpExposure == null || httpExposure.upstreamHost == null
+                then "127.0.0.1"
+                else httpExposure.upstreamHost;
+              generatedProbeTlsName =
+                if httpExposure == null || httpExposure.upstreamTlsName == null
+                then null
+                else if httpExposure.upstreamTlsName == "auto"
+                then httpExposure.upstreamHost
+                else httpExposure.upstreamTlsName;
+              generatedProbeRequestHost =
+                if generatedProbeProtocol == "https"
+                then
+                  if generatedProbeTlsName == null
+                  then "127.0.0.1"
+                  else generatedProbeTlsName
+                else generatedProbeOriginHost;
+              generatedProbePort =
+                if httpExposure == null
+                then null
+                else toString httpExposure.port;
+              generatedProbeResolveArgs = lib.optionals (generatedProbeRequestHost != "127.0.0.1") [
+                "--resolve"
+                "${generatedProbeRequestHost}:${generatedProbePort}:127.0.0.1"
+              ];
+              generatedProbeHostArgs =
+                lib.optionals (
+                  httpExposure
+                  != null
+                  && httpExposure.upstreamHost != null
+                  && httpExposure.upstreamHost != generatedProbeRequestHost
+                ) [
+                  "--header"
+                  "Host: ${httpExposure.upstreamHost}"
+                ];
+              generatedProbeTlsArgs = lib.optionals (generatedProbeProtocol == "https") ["--insecure"];
+              generatedProbeTimeoutSeconds = readinessProbeTimeoutSeconds normalizedService.timeoutReadySeconds;
+              generatedHttpVerifyCommand = lib.optionals (lib.elem generatedProbeProtocol ["http" "https"]) [
+                (pkgs.writeShellScript "podman-compose-${serviceName}-origin-probe" ''
+                  probe_timeout_seconds=${toString generatedProbeTimeoutSeconds}
+                  deadline=$((SECONDS + probe_timeout_seconds))
+                  status=""
+                  curl_status=0
+                  while [ "$SECONDS" -lt "$deadline" ]; do
+                    remaining=$((deadline - SECONDS))
+                    attempt_timeout=10
+                    if [ "$remaining" -lt "$attempt_timeout" ]; then
+                      attempt_timeout="$remaining"
+                    fi
+                    curl_status=0
+                    status="$(${pkgs.curl}/bin/curl \
+                      --silent \
+                      --output /dev/null \
+                      --write-out '%{http_code}' \
+                      --connect-timeout 3 \
+                      --max-time "$attempt_timeout" \
+                      ${lib.escapeShellArgs (generatedProbeTlsArgs ++ generatedProbeResolveArgs ++ generatedProbeHostArgs)} \
+                      ${lib.escapeShellArg "${generatedProbeProtocol}://${generatedProbeRequestHost}:${generatedProbePort}/"})" || curl_status="$?"
+                    if [ "$curl_status" -eq 0 ]; then
+                      case "$status" in
+                        [1-4][0-9][0-9]) exit 0 ;;
+                      esac
+                    fi
+                    [ "$SECONDS" -lt "$deadline" ] || break
+                    sleep 1
+                  done
+                  if [ "$curl_status" -ne 0 ]; then
+                    printf 'local %s origin did not become reachable within %ss for %s\n' \
+                      ${lib.escapeShellArg generatedProbeProtocol} "$probe_timeout_seconds" ${lib.escapeShellArg serviceName} >&2
+                  else
+                    printf 'local %s origin probe returned unusable status %s for %s after %ss\n' \
+                      ${lib.escapeShellArg generatedProbeProtocol} "$status" ${lib.escapeShellArg serviceName} "$probe_timeout_seconds" >&2
+                  fi
+                  exit 1
+                '')
+              ];
             in
               normalizedService
               // {
@@ -3145,6 +3618,14 @@ in {
                 knownSourceComposeServices = knownSourceComposeServices;
                 declaredImages = sourceDeclaredImages;
                 localImageMetadata = localImageMetadata;
+                nativeConversion =
+                  if normalizedService.backend == "quadlet"
+                  then nativeConversion
+                  else {};
+                verifyCommand =
+                  if normalizedService.verifyCommand != []
+                  then normalizedService.verifyCommand
+                  else generatedHttpVerifyCommand;
                 renderedSource = sourceCompose;
                 stagedEntries = effectiveEntries;
                 sourcePaths = sourcePaths;
@@ -3190,18 +3671,53 @@ in {
       build = {
         podmanComposeControlRegistry = controlRegistryFile;
         podmanComposeImagePullPlan = imagePullPlanFile;
+        podmanComposeQuadletGeneratorCheck = quadletGeneratorCheck;
+        podmanComposeSystemdUserGraphCheck = systemdUserGraphCheck;
+      };
+      extraDependencies = [
+        quadletGeneratorCheck
+        systemdUserGraphCheck
+      ];
+      activationScripts.podman-compose-drain-changed = {
+        deps = ["users"];
+        supportsDryActivation = false;
+        text = ''
+          podman_compose_drain_changed() {
+            case "''${NIXOS_ACTION-}" in
+              switch|test) ;;
+              *) return 0 ;;
+            esac
+            old_system="$(${pkgs.coreutils}/bin/readlink -f /run/current-system 2>/dev/null || true)"
+            if [ -z "$old_system" ]; then
+              return 0
+            fi
+            old_registry="$old_system/share/podman-compose/control-registry.json"
+            new_registry="$systemConfig/share/podman-compose/control-registry.json"
+            NIX_PODMAN_COMPOSE_OLD_CONTROL_REGISTRY="$old_registry" \
+              NIX_PODMAN_COMPOSE_NEW_CONTROL_REGISTRY="$new_registry" \
+              ${lib.escapeShellArg "${drainChangedPackage}/bin/podman-compose-drain-changed"}
+          }
+          podman_compose_drain_changed
+        '';
       };
     };
 
-    environment.systemPackages = with pkgs;
-      [
-        podman
-        podman-compose
-      ]
-      ++ [
-        controlPackage
-        imagePullAllPackage
-      ];
+    environment = {
+      systemPackages =
+        [pkgs.podman]
+        ++ lib.optional hasComposeBackend pkgs.podman-compose
+        ++ [
+          controlPackage
+          drainChangedPackage
+          imagePullAllPackage
+        ];
+      etc =
+        lib.listToAttrs (nativeQuadletEtcEntries ++ runtimePreflightEtcEntries)
+        // {
+          "podman-compose/helpers/podman-compose-helper".source = composeHelperScript;
+          "podman-compose/helpers/podman-backend-helper".source = backendHelperScript;
+        };
+    };
 
     services.migration-manager.managedUnits.users = lib.mkMerge (
       map mkMigrationManagedUser stackUsers
@@ -3235,12 +3751,12 @@ in {
           resolvedServices)
         ++ lib.concatMap (s: s.auxiliarySystemdUserServices) resolvedServices
         ++ map mkRootlessIdmapMigrateUserService rootlessStackUsersWithConfig
+        ++ map mkRootlessRuntimePreflightUserService rootlessStackUsersWithConfig
       );
 
       user.targets = lib.listToAttrs (
         lib.concatMap (s: s.auxiliarySystemdUserTargets) resolvedServices
         ++ map mkManagedUserTarget stackUsers
-        ++ map mkManagedReadyUserTarget stackUsers
       );
     };
 
@@ -3253,6 +3769,26 @@ in {
         {
           assertion = duplicateSystemdUserTargetNames == [];
           message = "services.podman-compose: duplicate generated systemd.user target names: ${lib.concatStringsSep ", " duplicateSystemdUserTargetNames}";
+        }
+        {
+          assertion = duplicateNativeQuadletEtcPaths == [];
+          message = "services.podman-compose: duplicate generated Quadlet paths: ${lib.concatStringsSep ", " duplicateNativeQuadletEtcPaths}";
+        }
+        {
+          assertion = duplicatePrivateRuntimeUnits == [];
+          message = "services.podman-compose: duplicate generated private runtime units: ${lib.concatStringsSep ", " duplicatePrivateRuntimeUnits}";
+        }
+        {
+          assertion = privateRuntimeUnitNameCollisions == [];
+          message = "services.podman-compose: private Quadlet units collide with declared systemd.user services: ${lib.concatStringsSep ", " privateRuntimeUnitNameCollisions}";
+        }
+        {
+          assertion = duplicateQuadletContainerNames == [];
+          message = "services.podman-compose: duplicate generated Quadlet container names: ${lib.concatStringsSep ", " duplicateQuadletContainerNames}";
+        }
+        {
+          assertion = duplicateManagedContainerNames == [];
+          message = "services.podman-compose: duplicate explicit managed container names: ${lib.concatStringsSep ", " duplicateManagedContainerNames}";
         }
         {
           assertion = duplicatedSubnets == [];
@@ -3270,6 +3806,19 @@ in {
             + lib.concatStringsSep ", " reservedGeneratedPathViolations;
         }
       ]
+      ++ lib.concatLists (
+        lib.mapAttrsToList
+        (stackName: stack:
+          lib.mapAttrsToList
+          (serviceName: service: {
+            assertion = service.backend != "quadlet" || (service.nativeConversion.supported or false);
+            message =
+              "services.podman-compose.${stackName}.instances.${serviceName}: backend = \"quadlet\" cannot convert this declaration: "
+              + lib.concatStringsSep "; " (service.nativeConversion.unsupported or []);
+          })
+          stack.instances)
+        cfg
+      )
       ++ lib.concatLists (
         lib.mapAttrsToList
         (stackName: stack:

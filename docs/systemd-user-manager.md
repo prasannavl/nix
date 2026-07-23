@@ -133,7 +133,7 @@ The reconciler is intentionally narrow:
 
 After success it starts `systemd-user-manager-ready.target` for the users it
 manages. That target is independent from Podman Compose's generated
-`<user>-managed-ready.target`.
+`<user>-managed.target` and per-instance ready targets.
 
 ## Boot And Dry Activate
 
@@ -145,8 +145,10 @@ manages. That target is independent from Podman Compose's generated
 
 ## Podman Compose Boundary
 
-`lib/podman-compose/default.nix` now owns its own native user-service graph:
-stage, bootstrap, start, reconcile, verify, and ready targets. Compose
+`lib/podman-compose/default.nix` owns its own native user-service graph: one
+aggregate `<user>-managed.target`, then per-instance stage, main, optional
+reconcile, verify, and ready nodes. Bootstrap preparation runs inside the main
+provider transaction rather than through a separate bootstrap service. Compose
 `bootTag`, `reloadTag`, `recreateTag`, and `imageTag` are expressed through
 generated systemd user-unit triggers and helper state rather than
 `services.systemd-user-manager.instances`.

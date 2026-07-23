@@ -73,12 +73,6 @@ class MigratorScriptTest(unittest.TestCase):
                             "stopOnDrain": True,
                             "startOnResume": True,
                         },
-                        {
-                            "user": self.test_user,
-                            "target": "abird-managed-ready.target",
-                            "stopOnDrain": True,
-                            "startOnResume": True,
-                        },
                     ],
                 }
             ),
@@ -148,7 +142,6 @@ class MigratorScriptTest(unittest.TestCase):
                 "--user start user-start-only.service",
                 "--user start user-defaulted.service",
                 "--user start abird-managed.target",
-                "--user start abird-managed-ready.target",
             ],
             self.systemctl_log.read_text(encoding="utf-8").splitlines(),
         )
@@ -167,7 +160,6 @@ class MigratorScriptTest(unittest.TestCase):
                 "stop --wait stop-only.service",
                 "stop --wait defaulted.service",
                 "--user stop --wait abird-managed.target",
-                "--user stop --wait abird-managed-ready.target",
                 "--user stop --wait user-stop-only.service",
                 "--user stop --wait user-defaulted.service",
             ],

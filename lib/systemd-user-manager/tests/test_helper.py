@@ -215,6 +215,14 @@ esac
         path.write_text(json.dumps(metadata), encoding="utf-8")
         return path
 
+    def test_start_concurrency_accepts_unlimited_sentinel(self):
+        result = self.run_helper(
+            'printf "%s\n" "$start_concurrency"',
+            SYSTEMD_USER_MANAGER_START_CONCURRENCY="-1",
+        )
+
+        self.assertEqual("-1\n", result.stdout)
+
     def encoded_command(self, command):
         return base64.b64encode(json.dumps(command).encode()).decode()
 
@@ -1527,7 +1535,7 @@ esac
             """,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
-            SYSTEMD_USER_MANAGER_START_PARALLELISM="4",
+            SYSTEMD_USER_MANAGER_START_CONCURRENCY="4",
         )
 
         self.assertIn("alpha: started in", result.stderr)
@@ -1637,7 +1645,7 @@ esac
             """,
             SYSTEMD_USER_MANAGER_USER="alice",
             SYSTEMD_USER_MANAGER_METADATA=str(metadata),
-            SYSTEMD_USER_MANAGER_START_PARALLELISM="1",
+            SYSTEMD_USER_MANAGER_START_CONCURRENCY="1",
         )
 
         self.assertIn("alpha: started in", result.stderr)

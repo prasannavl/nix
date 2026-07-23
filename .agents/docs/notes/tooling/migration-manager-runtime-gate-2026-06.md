@@ -35,9 +35,12 @@ generation removes a stale marker before those services start. In the default
 marker untouched so `migration-manager on|off` remains live across switch within
 the current boot. Reboot clears runtime state unless the declared generation
 sets `state = "on"`. `migration-manager-sync.service` still runs before gated
-system-level units and queues `migration-manager-apply.service` with systemd
-`--no-block` so gated units are never started from inside the unit they are
-ordered after.
+system-level units, but runtime mode does not queue
+`migration-manager-apply.service`: a normal switch must not create a second
+full-user convergence owner after NixOS has already reconciled the native unit
+graph. Declarative `on` or `off` generations queue apply with systemd
+`--no-block`, and explicit `migration-manager on|off|apply` commands restart the
+apply unit directly.
 
 When the gate file is present:
 
@@ -52,11 +55,18 @@ When the gate file is present:
   explicitly and blocked from cold-starting with `ConditionPathExists=!<gate>`;
 - native `systemd.user` targets registered under
   `services.migration-manager.managedUnits.users.<user>.targets`, such as
-  `<user>-managed.target` and `<user>-managed-ready.target`, are stopped or
-  started according to their registration and blocked from cold-starting with
+  `<user>-managed.target`, are stopped or started according to their
+  registration and blocked from cold-starting with
   `ConditionPathExists=!<gate>`;
-- podman-compose registers concrete generated service units for drain and the
-  generated managed/ready targets for resume convergence;
+- podman-compose keeps `<user>-managed.target` as the only aggregate stop/start
+  owner for auto-start graphs. It also registers each auto-start main,
+  reconcile, verify, and ready node with `gateStart = true`,
+  `stopOnDrain = false`, and `startOnResume = false`, so direct NixOS
+  changed-unit starts cannot bypass the runtime gate or create duplicate
+  migration-manager orchestration. The shared mutating runtime preflight uses
+  the same gate-only registration and remains a hard requirement of main
+  execution. Stage and image-pull units stay available as non-live preparation
+  while drained;
 - host-managed Cloudflare tunnel units stay declared, but they are blocked at
   startup through the same service-owned registry and included in the
   migration-manager manifest.
@@ -78,6 +88,12 @@ around the key-specific default instead.
 `migration-manager` restarts it for each local or remote gate change. It talks
 directly to each registered user manager with `systemctl --user`; there is no
 dispatcher hop in the native model.
+
+Deploy `cjIpsc` confirmed why runtime sync must not auto-apply. A prior runtime
+apply was still resuming the complete managed target while the normal NixOS user
+switch started the changed native units, producing a duplicate full-stack start
+wave. The runtime sync unit now preserves gate state and ordering only; apply is
+reserved for an actual gate-state owner change.
 
 `data-migrator` now uses `migration-manager remote on|off --host <nixbot-host>`
 for source drain/resume instead of creating temporary worktrees that patch host

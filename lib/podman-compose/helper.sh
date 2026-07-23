@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 set -Eeuo pipefail
 
 init_vars() {
 	podman_compose_metadata="${NIX_PODMAN_COMPOSE_METADATA-}"
 	podman_compose_service_name="${NIX_PODMAN_COMPOSE_SERVICE_NAME-}"
+	backend="compose"
 
 	runtime_dir="${XDG_RUNTIME_DIR-}"
 	generated_dir=""
@@ -11,6 +13,10 @@ init_vars() {
 	lifecycle_lock_path=""
 	start_in_progress_path=""
 	stop_in_progress_path=""
+	failed_start_cleanup_complete_path=""
+	rootless_mutation_marker_path=""
+	rootless_runtime_dirty_path=""
+	compose_dns_correction_marker_path=""
 	state_path=""
 	runtime_state_version=3
 	runtime_state_kind="podman-compose-runtime-state"
@@ -31,19 +37,41 @@ init_vars() {
 	restart_stamp=""
 	monitor_interval=10
 	compose_start_default_timeout_seconds=900
+	compose_provider_timeout_seconds="${NIX_PODMAN_COMPOSE_PROVIDER_TIMEOUT_SECONDS:-}"
+	bootstrap_timeout_seconds=300
 	compose_up_no_progress_seconds="${NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS:-60}"
 	compose_start_stuck_exit_status=75
+	compose_start_project_dns_reloadable_exit_status=77
+	compose_dns_indeterminate_exit_status=79
+	compose_dns_lookup_failed_exit_status=42
 	compose_monitor_timeout_seconds=20
 	compose_monitor_failure_grace_seconds=45
 	compose_stop_default_timeout_seconds=45
 	podman_rootless_lifecycle_lock_depth=0
+	podman_rootless_observation_lock_depth=0
+	rootless_runtime_preflight_suppressed=0
 	post_stop_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_POST_STOP_LOCK_TIMEOUT_SECONDS:-30}"
 	post_stop_rootless_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_POST_STOP_ROOTLESS_LOCK_TIMEOUT_SECONDS:-30}"
-	stop_rootless_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_STOP_ROOTLESS_LOCK_TIMEOUT_SECONDS:-180}"
+	# Normal stop transactions are already bounded by systemd TimeoutStopSec.
+	# A second default deadline can fail queued graph members before their turn.
+	stop_rootless_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_STOP_ROOTLESS_LOCK_TIMEOUT_SECONDS:-0}"
 	verify_transition_wait_seconds="${NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS:-30}"
 	image_pull_retry_attempts="${NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_ATTEMPTS:-10}"
 	image_pull_retry_delay_seconds="${NIX_PODMAN_COMPOSE_IMAGE_PULL_RETRY_DELAY_SECONDS:-1}"
 	image_pull_status_file="${NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE:-}"
+	image_pull_preflight_policy="${NIX_PODMAN_COMPOSE_IMAGE_PULL_PREFLIGHT_POLICY:-current}"
+	prepare_lock_timeout_seconds="${NIX_PODMAN_COMPOSE_PREPARE_LOCK_TIMEOUT_SECONDS:-1}"
+	runtime_preflight_metadata="${NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA-}"
+	runtime_preflight_token=""
+	runtime_preflight_stamp_path=""
+	runtime_preflight_required_path=""
+	runtime_preflight_repaired=0
+	runtime_preflight_had_stale_marker=0
+	aardvark_dns_configs_pruned=0
+	compose_start_force_recreate=0
+	compose_up_project_dns_reload_attempted=0
+	compose_dns_dependencies_loaded=0
+	compose_dns_dependencies_json='[]'
 
 	compose_args=()
 	podman_compose_base_args=()
@@ -56,9 +84,34 @@ init_vars() {
 	local_image_tars=()
 	expected_compose_services=()
 	reload_services=()
-	podman_network_dns_lock_depth=0
+	verify_command=()
+	quadlet_runtime_units=()
+	quadlet_container_unit=""
+	quadlet_container_name=""
+	quadlet_source_path=""
+	quadlet_labels_json='{}'
 	supervised_active_pid=""
 	supervised_active_pid_file=""
+}
+
+load_runtime_preflight_metadata() {
+	require_env NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA
+	require_env NIX_PODMAN_COMPOSE_SERVICE_NAME
+	require_env XDG_RUNTIME_DIR
+
+	runtime_dir="$XDG_RUNTIME_DIR"
+	podman_compose_service_name="$NIX_PODMAN_COMPOSE_SERVICE_NAME"
+	runtime_preflight_token="$(jq -r '.token' "$runtime_preflight_metadata")"
+	rootless_mutation_marker_path="$runtime_dir/podman-compose/rootless-mutations/${podman_compose_service_name}"
+	rootless_runtime_dirty_path="$runtime_dir/podman-compose/runtime-dirty"
+	runtime_preflight_stamp_path="$runtime_dir/podman-compose/runtime-preflight.stamp"
+	runtime_preflight_required_path="$runtime_dir/podman-compose/runtime-preflight-required"
+	case "$runtime_preflight_token" in
+	"" | null)
+		printf '%s\n' "podman runtime preflight metadata has no token: $runtime_preflight_metadata" >&2
+		return 1
+		;;
+	esac
 }
 
 require_env() {
@@ -87,12 +140,19 @@ load_metadata() {
 
 	manifest_path="$runtime_dir/podman-compose/${podman_compose_service_name}.manifest"
 	working_dir="$(jq -r '.workingDir' "$podman_compose_metadata")"
+	backend="$(jq -r '.backend // "compose"' "$podman_compose_metadata")"
 	desired_state="$(jq -r '.state // "running"' "$podman_compose_metadata")"
 	reconcile_policy="$(jq -r '.reconcilePolicy // "auto"' "$podman_compose_metadata")"
 	generated_dir="$working_dir/.podman-compose"
 	lifecycle_lock_path="$generated_dir/lifecycle.lock"
 	start_in_progress_path="$generated_dir/start-in-progress"
 	stop_in_progress_path="$generated_dir/stop-in-progress"
+	failed_start_cleanup_complete_path="$generated_dir/failed-start-cleanup-complete"
+	rootless_mutation_marker_path="$runtime_dir/podman-compose/rootless-mutations/${podman_compose_service_name}"
+	rootless_runtime_dirty_path="$runtime_dir/podman-compose/runtime-dirty"
+	runtime_preflight_stamp_path="$runtime_dir/podman-compose/runtime-preflight.stamp"
+	runtime_preflight_required_path="$runtime_dir/podman-compose/runtime-preflight-required"
+	compose_dns_correction_marker_path="$generated_dir/dns-correction-attempted"
 	state_path="$generated_dir/state.json"
 	adoption_stamp="$(jq -r '.adoptionStamp // ""' "$podman_compose_metadata")"
 	recreate_tag="$(jq -r '.recreateTag // "0"' "$podman_compose_metadata")"
@@ -105,6 +165,7 @@ load_metadata() {
 	reload_method="$(jq -r '.reload.method // "restart"' "$podman_compose_metadata")"
 	reload_signal="$(jq -r '.reload.signal // "HUP"' "$podman_compose_metadata")"
 	restart_stamp="$(jq -r '.restartStamp // ""' "$podman_compose_metadata")"
+	bootstrap_timeout_seconds="$(jq -r '.timeoutBootstrapSeconds // 300' "$podman_compose_metadata")"
 
 	compose_args=()
 	while IFS= read -r compose_arg; do
@@ -154,6 +215,11 @@ load_metadata() {
 		[ -n "$compose_service" ] || continue
 		reload_services+=("$compose_service")
 	done < <(jq -r '.reload.services[]?' "$podman_compose_metadata")
+
+	verify_command=()
+	while IFS= read -r command_arg; do
+		verify_command+=("$command_arg")
+	done < <(jq -r '.verifyCommand[]?' "$podman_compose_metadata")
 }
 
 remove_path_if_exists() {
@@ -328,8 +394,42 @@ run_pre_start_hooks() {
 	run_lifecycle_hooks preStart preStart
 }
 
+run_bootstrap_phase() {
+	local status=0
+	if [ -z "${NIX_PODMAN_COMPOSE_HELPER_SELF-}" ]; then
+		# Unit tests and sourced operator shells do not have the packaged helper
+		# entrypoint. They still exercise the exact phase body.
+		run_pre_start_hooks
+		return
+	fi
+	timeout -k 5s "${bootstrap_timeout_seconds}s" "$NIX_PODMAN_COMPOSE_HELPER_SELF" bootstrap-internal || status="$?"
+	if [ "$status" -ne 0 ]; then
+		if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+			printf '%s\n' "podman compose bootstrap exceeded ${bootstrap_timeout_seconds}s for ${podman_compose_service_name}" >&2
+		fi
+		return "$status"
+	fi
+}
+
+mark_compose_dns_correction_attempted() {
+	if [ -z "$compose_dns_correction_marker_path" ]; then
+		compose_dns_correction_marker_path="$generated_dir/dns-correction-attempted"
+	fi
+	install -d -m 0750 "${compose_dns_correction_marker_path%/*}"
+	: >"$compose_dns_correction_marker_path"
+}
+
 run_post_start_hooks() {
 	run_lifecycle_hooks postStart postStart
+}
+
+run_verify_command() {
+	[ "${#verify_command[@]}" -gt 0 ] || return 0
+	(
+		close_lifecycle_fds_for_child
+		cd /
+		"${verify_command[@]}"
+	)
 }
 
 run_pre_stop_hooks() {
@@ -1041,8 +1141,10 @@ compose_up_no_progress_report() {
 compose_state_json() {
 	(
 		close_lifecycle_fds_for_child
-		cd "$working_dir"
-		podman_no_notify_timeout "$compose_monitor_timeout_seconds" compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" ps --format json
+		cd /
+		podman_no_notify_timeout "$compose_monitor_timeout_seconds" ps -a \
+			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+			--format json
 	)
 }
 
@@ -1060,19 +1162,19 @@ json_string() {
 	jq -Rn --arg value "$1" '$value'
 }
 
-compose_local_pull_policy_override_file() {
+compose_runtime_policy_override_file() {
 	local override_file tmp_file service sep
 	if [ "${#expected_compose_services[@]}" -eq 0 ]; then
 		return 0
 	fi
 	install -d -m 0700 "$generated_dir"
-	override_file="$generated_dir/local-pull-policy.override.json"
+	override_file="$generated_dir/runtime-policy.override.json"
 	tmp_file="$(mktemp "${override_file}.tmp.XXXXXX")"
 	{
 		printf '{"services":{'
 		sep=""
 		for service in "${expected_compose_services[@]}"; do
-			printf '%s%s:{"pull_policy":"never"}' "$sep" "$(json_string "$service")"
+			printf '%s%s:{"pull_policy":"never","restart":"no"}' "$sep" "$(json_string "$service")"
 			sep=","
 		done
 		printf '}}\n'
@@ -1081,30 +1183,50 @@ compose_local_pull_policy_override_file() {
 	printf '%s\n' "$override_file"
 }
 
+compose_up_once_mutating() {
+	local mode status=0
+	mode="$1"
+	case "$mode" in
+	force)
+		# Recreate drift is resolved before the provider starts. It never creates
+		# a second Compose attempt.
+		remove_compose_project_containers || status="$?"
+		;;
+	normal) ;;
+	*)
+		printf '%s\n' "unsupported podman compose start mode: $mode" >&2
+		return 1
+		;;
+	esac
+	if [ "$status" -eq 0 ]; then
+		remove_conflicting_compose_container_names || status="$?"
+	fi
+	if [ "$status" -eq 0 ]; then
+		compose_up_supervised || status="$?"
+	fi
+	return "$status"
+}
+
 compose_up() {
 	local status=0
-	podman_rootless_lifecycle_lock
-	remove_conflicting_compose_container_names || status="$?"
-	podman_rootless_lifecycle_unlock
+	begin_rootless_mutation "compose up"
+	compose_up_once_mutating normal || status="$?"
 	if [ "$status" -eq 0 ]; then
-		compose_up_supervised normal || status="$?"
+		commit_rootless_mutation
+	else
+		rollback_failed_compose_start "$status"
 	fi
 	return "$status"
 }
 
 compose_up_force_recreate() {
 	local status=0
-	podman_rootless_lifecycle_lock
-	remove_conflicting_compose_container_names || status="$?"
+	begin_rootless_mutation "compose up pre-clean recreate"
+	compose_up_once_mutating force || status="$?"
 	if [ "$status" -eq 0 ]; then
-		remove_compose_project_containers || status="$?"
-	fi
-	podman_rootless_lifecycle_unlock
-	if [ "$status" -eq 0 ]; then
-		# Existing project containers have already been removed above. Avoid
-		# podman-compose's --force-recreate path; it can wedge before container
-		# creation after image lookup events on rootless Podman.
-		compose_up_supervised normal || status="$?"
+		commit_rootless_mutation
+	else
+		rollback_failed_compose_start "$status"
 	fi
 	return "$status"
 }
@@ -1216,6 +1338,10 @@ compose_unit_timeout_seconds() {
 }
 
 compose_start_timeout_seconds() {
+	if [[ "$compose_provider_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+		printf '%s\n' "$compose_provider_timeout_seconds"
+		return 0
+	fi
 	compose_unit_timeout_seconds "${compose_start_timeout_unit:-${podman_compose_service_name}.service}" TimeoutStartUSec "$compose_start_default_timeout_seconds"
 }
 
@@ -1224,15 +1350,6 @@ compose_stop_timeout_seconds() {
 	timeout_seconds="$(compose_unit_timeout_seconds "${podman_compose_service_name}.service" TimeoutStopUSec "$compose_stop_default_timeout_seconds")"
 	if [ "$timeout_seconds" -gt "$compose_stop_default_timeout_seconds" ]; then
 		timeout_seconds="$compose_stop_default_timeout_seconds"
-	fi
-	printf '%s\n' "$timeout_seconds"
-}
-
-compose_restart_policy_update_timeout_seconds() {
-	local timeout_seconds
-	timeout_seconds="$(compose_stop_timeout_seconds)"
-	if [ "$timeout_seconds" -gt 10 ]; then
-		timeout_seconds=10
 	fi
 	printf '%s\n' "$timeout_seconds"
 }
@@ -1446,12 +1563,13 @@ compose_command_supervised() {
 }
 
 compose_up_supervised() {
-	local mode timeout_seconds reserve_seconds deadline_seconds started_at now line fatal_seen=0 status=0 fatal_status
+	local timeout_seconds reserve_seconds deadline_seconds started_at now line fatal_seen=0 status=0 fatal_status dns_status
 	local compose_output_fd compose_up_pid compose_up_child_pid compose_up_pid_file
-	local state_probe_interval last_state_probe=0 no_progress_since=0 state_json no_progress_report elapsed_no_progress
-	local local_pull_policy_override=""
+	local state_probe_interval last_state_probe=0 no_progress_since=0 state_json no_progress_report elapsed_no_progress terminal_failures
+	local runtime_policy_override=""
 	local -a local_compose_file_args=() up_args=()
-	mode="$1"
+	compose_up_project_dns_reload_attempted=0
+	load_compose_dns_dependencies
 	fatal_status="$compose_start_stuck_exit_status"
 	timeout_seconds="$(compose_start_timeout_seconds)"
 	started_at="$(now_epoch)"
@@ -1464,14 +1582,11 @@ compose_up_supervised() {
 	state_probe_interval="$(compose_up_no_progress_probe_interval_seconds)"
 
 	local_compose_file_args=("${compose_file_args[@]}")
-	local_pull_policy_override="$(compose_local_pull_policy_override_file)"
-	if [ -n "$local_pull_policy_override" ]; then
-		local_compose_file_args+=(-f "$local_pull_policy_override")
+	runtime_policy_override="$(compose_runtime_policy_override_file)"
+	if [ -n "$runtime_policy_override" ]; then
+		local_compose_file_args+=(-f "$runtime_policy_override")
 	fi
 	up_args=(podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${local_compose_file_args[@]}" up --no-build -d --remove-orphans)
-	if [ "$mode" = "force" ]; then
-		up_args+=(--force-recreate)
-	fi
 	compose_up_pid_file="$(supervised_pid_file)"
 
 	coproc COMPOSE_UP_PROC {
@@ -1518,6 +1633,44 @@ compose_up_supervised() {
 			[ "$now" -ge "$((last_state_probe + state_probe_interval))" ]; then
 			last_state_probe="$now"
 			if state_json="$(compose_state_json 2>/dev/null)"; then
+				terminal_failures="$(printf '%s' "$state_json" | compose_state_terminal_failure_report)"
+				if [ -n "$terminal_failures" ]; then
+					printf '%s\n' "podman compose reached a terminal container state while starting ${podman_compose_service_name}:" >&2
+					printf '%s\n' "$terminal_failures" >&2
+					compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
+					terminate_compose_process "$compose_up_child_pid"
+					fatal_seen=1
+					break
+				fi
+				if printf '%s' "$state_json" | compose_state_has_pending_health; then
+					dns_status=0
+					if verify_compose_dns; then
+						dns_status=0
+					else
+						dns_status="$?"
+					fi
+					if [ "$dns_status" -eq 1 ] &&
+						[ "$compose_up_project_dns_reload_attempted" -eq 0 ]; then
+						compose_up_project_dns_reload_attempted=1
+						mark_compose_dns_correction_attempted
+						printf '%s\n' \
+							"podman compose health-starting state has direct peer-service DNS evidence for ${podman_compose_service_name};" \
+							"reloading running project networks once in place" >&2
+						if reload_compose_project_networks_mutating; then
+							no_progress_since=0
+							continue
+						fi
+						printf '%s\n' "podman compose in-place project network reload failed for ${podman_compose_service_name}; terminating start" >&2
+						compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
+						terminate_compose_process "$compose_up_child_pid"
+						fatal_seen=1
+						break
+					fi
+					# A declared healthcheck start period is active progress. The unit's
+					# TimeoutStartSec remains the outer bound for health convergence.
+					no_progress_since=0
+					continue
+				fi
 				no_progress_report="$(printf '%s' "$state_json" | compose_up_no_progress_report)"
 				if [ -n "$no_progress_report" ]; then
 					if [ "$no_progress_since" -eq 0 ]; then
@@ -1530,7 +1683,6 @@ compose_up_supervised() {
 						compose_up_child_pid="$(supervised_child_pid "$compose_up_pid" "$compose_up_pid_file")"
 						terminate_compose_process "$compose_up_child_pid"
 						fatal_seen=1
-						fatal_status="$compose_start_stuck_exit_status"
 						break
 					fi
 				else
@@ -1551,6 +1703,9 @@ compose_up_supervised() {
 	if [ "$fatal_seen" -eq 1 ]; then
 		return "$fatal_status"
 	fi
+	if [ "$status" -eq 125 ]; then
+		printf '%s\n' "podman compose returned runtime status 125 for ${podman_compose_service_name}; failing the single provider attempt" >&2
+	fi
 	return "$status"
 }
 
@@ -1567,7 +1722,6 @@ compose_down() {
 		anonymous_volumes+=("$volume")
 	done < <(anonymous_volume_names_for_containers "${containers[@]}")
 
-	disable_compose_project_restart_policy_targets "${containers[@]}"
 	compose_command_supervised down "$(compose_stop_timeout_seconds)" podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" down || status="$?"
 	for volume in "${anonymous_volumes[@]}"; do
 		remove_anonymous_volume_target "$volume" || status=1
@@ -1904,41 +2058,6 @@ remove_container_target() {
 	return 1
 }
 
-disable_container_restart_policy_targets() {
-	local update_error
-	[ "$#" -gt 0 ] || return 0
-	if update_error="$(podman_no_notify_timeout "$(compose_restart_policy_update_timeout_seconds)" update --restart=no "$@" 2>&1)"; then
-		[ -n "$update_error" ] && printf '%s\n' "$update_error"
-		return 0
-	fi
-	case "$update_error" in
-	*"no such container"* | *"no container with name or ID"*)
-		return 0
-		;;
-	esac
-	printf '%s\n' "warning: failed to disable restart policies for ${podman_compose_service_name}: $update_error" >&2
-	return 0
-}
-
-disable_compose_project_restart_policies() {
-	local container targets=()
-
-	while IFS= read -r container; do
-		[ -n "$container" ] || continue
-		targets+=("$container")
-	done < <(compose_project_container_targets)
-	disable_compose_project_restart_policy_targets "${targets[@]}"
-}
-
-disable_compose_project_restart_policy_targets() {
-	[ "$#" -gt 0 ] || return 0
-	printf '%s\n' "disabling podman compose restart policies for ${podman_compose_service_name}"
-	(
-		close_lifecycle_fds_for_child
-		disable_container_restart_policy_targets "$@"
-	)
-}
-
 is_anonymous_volume_name() {
 	local volume_name
 	volume_name="$1"
@@ -2028,16 +2147,28 @@ remove_compose_project_containers() {
 }
 
 cleanup_failed_compose_start() {
-	printf '%s\n' "podman compose start failed for ${podman_compose_service_name}; cleaning project containers before retry" >&2
-	podman_rootless_lifecycle_lock
+	printf '%s\n' "podman compose start failed for ${podman_compose_service_name}; cleaning project containers after failed attempt" >&2
 	if ! compose_down; then
 		printf '%s\n' "podman compose down after failed start failed for ${podman_compose_service_name}; attempting direct container removal" >&2
 	fi
 	if ! remove_compose_project_containers; then
 		printf '%s\n' "direct removal of failed podman compose containers also failed for ${podman_compose_service_name}" >&2
 	fi
-	podman_rootless_lifecycle_unlock
-	clear_start_in_progress
+}
+
+rollback_failed_compose_start() {
+	local original_status
+	original_status="$1"
+	cleanup_failed_compose_start
+	if runtime_preflight_project_cleanup_complete; then
+		if [ -n "$failed_start_cleanup_complete_path" ]; then
+			install -d -m 0750 "${failed_start_cleanup_complete_path%/*}"
+			: >"$failed_start_cleanup_complete_path"
+		fi
+		rollback_rootless_mutation_clean
+	else
+		leave_rootless_runtime_dirty "failed Compose start status ${original_status}; rollback postcondition was indeterminate"
+	fi
 }
 
 cleanup_failed_compose_stop() {
@@ -2070,6 +2201,57 @@ failed_compose_stop_cleanup_satisfies_stop() {
 		return 1
 		;;
 	esac
+}
+
+compose_stop_postcondition_complete() {
+	local active_states state_json
+	if ! state_json="$(compose_state_json)"; then
+		printf '%s\n' "cannot verify stopped podman project state for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+	active_states="$(
+		jq -r '
+			.[]
+			| select((.State // "unknown") | IN("running", "paused", "restarting", "stopping", "unknown"))
+			| "\((.Names // ["<unknown>"])[0]): state=\(.State // "unknown") status=\(.Status // "")"
+		' <<<"$state_json"
+	)"
+	if [ -n "$active_states" ]; then
+		printf '%s\n' "podman project still has active containers after stop for ${podman_compose_service_name}:" >&2
+		printf '%s\n' "$active_states" >&2
+		return 1
+	fi
+}
+
+stop_policy_postcondition_complete() {
+	case "$1" in
+	stop)
+		compose_stop_postcondition_complete
+		;;
+	delete | delete-all)
+		runtime_preflight_project_cleanup_complete
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+finish_stop_mutation() {
+	local outcome reason stop_policy
+	stop_policy="$1"
+	reason="$2"
+	outcome="${3:-commit}"
+	if stop_policy_postcondition_complete "$stop_policy"; then
+		case "$outcome" in
+		commit) commit_rootless_mutation ;;
+		rollback) rollback_rootless_mutation_clean ;;
+		*) return 1 ;;
+		esac
+		return 0
+	fi
+	leave_rootless_runtime_dirty "$reason"
+	return 1
 }
 
 post_stop_should_cleanup_failed_stop() {
@@ -2244,95 +2426,91 @@ compose_start_plan() {
 	printf '%s\t%s\n' "$mode" "$force_recreate"
 }
 
-compose_start_plan_locked() {
-	local request status=0
-	podman_rootless_lifecycle_lock
-	request="$(compose_start_plan)" || status="$?"
-	podman_rootless_lifecycle_unlock
-	[ "$status" -eq 0 ] || return "$status"
-	printf '%s\n' "$request"
+validate_compose_provider_inventory() {
+	local state_json missing_services
+	if ! state_json="$(compose_state_json)"; then
+		printf '%s\n' "cannot query provider-created project inventory for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+	missing_services="$(
+		printf '%s' "$state_json" |
+			jq -r --argjson expected "$(expected_compose_services_json)" '
+				def compose_service:
+					.Labels["io.podman.compose.service"]
+					// .Labels["com.docker.compose.service"]
+					// empty;
+				($expected - ([.[] | compose_service] | unique))[]?
+			'
+	)"
+	if [ -n "$missing_services" ]; then
+		printf '%s\n' "Compose provider did not create every expected service for ${podman_compose_service_name}:" >&2
+		printf '%s\n' "$missing_services" >&2
+		return 1
+	fi
 }
 
-compose_up_checked() {
-	local mode retried=0 status=0
-	mode="$1"
-
-	while true; do
-		case "$mode" in
-		force)
-			compose_up_force_recreate
-			status="$?"
-			if [ "$status" -ne 0 ]; then
-				cleanup_failed_compose_start
-				if [ "$status" -eq "$compose_start_stuck_exit_status" ]; then
-					return "$status"
-				fi
-				if [ "$retried" -eq 0 ]; then
-					retried=1
-					restart_aardvark_dns "compose up failed (force)"
-					mode=force
-					continue
-				fi
-				return "$status"
-			fi
+compose_start_transaction() {
+	local requested_mode mode force_recreate status=0
+	requested_mode="${1:-auto}"
+	begin_rootless_mutation "compose start transaction" || return "$?"
+	if ! backend_transition_admit; then
+		rollback_rootless_mutation_clean
+		return 1
+	fi
+	rm -f -- "$compose_dns_correction_marker_path"
+	run_bootstrap_phase || status="$?"
+	if [ "$status" -eq 0 ]; then
+		case "$requested_mode" in
+		auto)
+			IFS=$'\t' read -r mode force_recreate < <(compose_start_plan)
 			;;
-		normal)
-			compose_up
-			status="$?"
-			if [ "$status" -ne 0 ]; then
-				cleanup_failed_compose_start
-				if [ "$status" -eq "$compose_start_stuck_exit_status" ]; then
-					return "$status"
-				fi
-				if [ "$retried" -eq 0 ]; then
-					retried=1
-					restart_aardvark_dns "compose up failed"
-					mode=force
-					continue
-				fi
-				return "$status"
-			fi
+		normal | force)
+			mode="$requested_mode"
+			force_recreate=0
+			[ "$mode" = force ] && force_recreate=1
 			;;
 		*)
-			printf '%s\n' "unsupported podman compose up mode: $mode" >&2
-			return 1
+			printf '%s\n' "unsupported podman compose start mode: $requested_mode" >&2
+			status=1
 			;;
 		esac
+	fi
+	if [ "$status" -eq 0 ]; then
+		compose_up_once_mutating "$mode" || status="$?"
+	fi
+	if [ "$status" -eq 0 ]; then
+		validate_compose_provider_inventory || status="$?"
+	fi
+	if [ "$status" -eq 0 ]; then
+		compose_start_force_recreate="$force_recreate"
+		commit_rootless_mutation
+		return 0
+	fi
+	rollback_failed_compose_start "$status"
+	return "$status"
+}
 
-		if ! verify_compose_state; then
-			cleanup_failed_compose_start
-			if [ "$retried" -eq 0 ]; then
-				retried=1
-				restart_aardvark_dns "containers failed to reach running state"
-				mode=force
-				continue
-			fi
-			return 1
-		fi
-		if verify_compose_dns; then
-			return 0
-		fi
-		if [ "$retried" -eq 0 ]; then
-			retried=1
-			restart_aardvark_dns "compose DNS probe failed"
-			mode=force
-			continue
-		fi
-		cleanup_failed_compose_start
+# Compatibility entrypoint for sourced callers. It is deliberately a single
+# provider attempt and never owns readiness or repair.
+compose_up_checked() {
+	case "$1" in
+	force) compose_up_force_recreate ;;
+	normal) compose_up ;;
+	*)
+		printf '%s\n' "unsupported podman compose start mode: $1" >&2
 		return 1
-	done
+		;;
+	esac
 }
 
 compose_down_volumes() {
 	local status=0
-	disable_compose_project_restart_policies
 	compose_command_supervised "down --volumes" "$(compose_stop_timeout_seconds)" podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" down --volumes || status="$?"
 	return "$status"
 }
 
 compose_stop() {
 	local status=0
-	disable_compose_project_restart_policies
 	compose_command_supervised stop "$(compose_stop_timeout_seconds)" podman compose "${podman_compose_base_args[@]}" "${compose_args[@]}" "${compose_file_args[@]}" stop || status="$?"
 	return "$status"
 }
@@ -2409,44 +2587,132 @@ compose_logs() {
 	)
 }
 
-podman_network_dns_lock() {
-	if [ "$podman_network_dns_lock_depth" -gt 0 ]; then
-		podman_network_dns_lock_depth="$((podman_network_dns_lock_depth + 1))"
+rootless_mutation_marker_file() {
+	if [ -n "$rootless_mutation_marker_path" ]; then
+		printf '%s\n' "$rootless_mutation_marker_path"
 		return 0
 	fi
-	install -d -m 0700 "$runtime_dir/podman-compose"
-	# v2 avoids live v1 locks leaked into older long-running rootless children.
-	exec 7>"$runtime_dir/podman-compose/rootless-network-dns-v2.lock"
-	flock -x 7
-	podman_network_dns_lock_depth=1
+	[ -n "$runtime_dir" ] || return 1
+	[ -n "$podman_compose_service_name" ] || return 1
+	printf '%s\n' "$runtime_dir/podman-compose/rootless-mutations/${podman_compose_service_name}"
 }
 
-podman_network_dns_unlock() {
-	if [ "$podman_network_dns_lock_depth" -le 0 ]; then
-		return 0
-	fi
-	podman_network_dns_lock_depth="$((podman_network_dns_lock_depth - 1))"
-	if [ "$podman_network_dns_lock_depth" -gt 0 ]; then
-		return 0
-	fi
-	flock -u 7
-	exec 7>&-
+process_start_ticks() {
+	local pid stat_line stat_after_comm
+	local -a stat_fields
+	pid="$1"
+	[ -r "/proc/$pid/stat" ] || return 1
+	IFS= read -r stat_line <"/proc/$pid/stat" || return 1
+	stat_after_comm="${stat_line##*) }"
+	read -r -a stat_fields <<<"$stat_after_comm"
+	[ "${#stat_fields[@]}" -ge 20 ] || return 1
+	printf '%s\n' "${stat_fields[19]}"
 }
 
-podman_rootless_lifecycle_lock() {
+mark_rootless_mutation_in_progress() {
+	local reason marker marker_dir tmp boot_id pid_start_ticks
+	reason="${1:-rootless podman mutation}"
+	marker="$(rootless_mutation_marker_file)" || return 0
+	marker_dir="${marker%/*}"
+	tmp="${marker}.tmp.$$"
+	boot_id="$(runtime_preflight_boot_id)" || return 1
+	pid_start_ticks="$(process_start_ticks "$$")" || return 1
+	install -d -m 0700 "$marker_dir"
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'pidStartTicks=%s\n' "$pid_start_ticks"
+		printf 'bootId=%s\n' "$boot_id"
+		printf 'service=%s\n' "$podman_compose_service_name"
+		printf 'reason=%s\n' "$reason"
+		printf 'startedAt=%s\n' "$(now_epoch)"
+	} >"$tmp"
+	mv -f "$tmp" "$marker"
+}
+
+clear_rootless_mutation_in_progress() {
+	local marker pid
+	marker="$(rootless_mutation_marker_file)" || return 0
+	[ -f "$marker" ] || return 0
+	pid="$(sed -n 's/^pid=//p' "$marker" 2>/dev/null | head -n 1)"
+	if [ -z "$pid" ] || [ "$pid" = "$$" ]; then
+		rm -f -- "$marker" "${marker}.tmp.$$"
+	fi
+}
+
+rootless_mutation_preflight_current() {
+	local policy
+	policy="${1:-current}"
+	case "$policy" in
+	current | drain | prepare) ;;
+	*)
+		printf 'unsupported rootless mutation preflight policy: %s\n' "$policy" >&2
+		return 1
+		;;
+	esac
+	if [ "$rootless_runtime_preflight_suppressed" -eq 1 ] ||
+		[ -z "$runtime_preflight_metadata" ]; then
+		return 0
+	fi
+	load_runtime_preflight_metadata
+	# Pre-activation image preparation may share the rootless image store lock,
+	# but it must never reconcile or recreate live projects. A generation-stamp
+	# mismatch alone is safe for an image pull. Durable dirty state is not: defer
+	# that pull to the activation graph, whose preflight unit owns repair.
+	if [ "$policy" = prepare ]; then
+		if [ -f "$runtime_preflight_required_path" ] ||
+			[ -f "$rootless_runtime_dirty_path" ] ||
+			stale_rootless_mutation_markers_present; then
+			printf '%s\n' \
+				"rootless Podman runtime needs activation preflight for ${podman_compose_service_name}; deferring image preparation" >&2
+			return 75
+		fi
+		return 0
+	fi
+	if ! runtime_preflight_needs_reconcile; then
+		return 0
+	fi
+	if [ "$policy" = drain ] &&
+		[ ! -f "$runtime_preflight_required_path" ] &&
+		[ ! -f "$rootless_runtime_dirty_path" ] &&
+		! stale_rootless_mutation_markers_present; then
+		printf '%s\n' "allowing clean rootless drain across preflight generation change for ${podman_compose_service_name}"
+		return 0
+	fi
+	printf '%s\n' \
+		"rootless Podman runtime is not preflight-clean for ${podman_compose_service_name}; refusing inline repair" \
+		"run the generated per-user runtime preflight before retrying this mutation" >&2
+	return 1
+}
+
+begin_rootless_mutation() {
+	local reason preflight_policy preflight_rc=0
+	reason="${1:-rootless podman mutation}"
+	preflight_policy="${2:-current}"
 	if [ "$podman_rootless_lifecycle_lock_depth" -gt 0 ]; then
 		podman_rootless_lifecycle_lock_depth="$((podman_rootless_lifecycle_lock_depth + 1))"
 		return 0
 	fi
 	install -d -m 0700 "$runtime_dir/podman-compose"
+	# Historical filename kept so host health tooling and older deployments
+	# observe the same per-user rootless mutation transaction.
 	exec 6>"$runtime_dir/podman-compose/rootless-lifecycle-v1.lock"
 	flock -x 6
 	podman_rootless_lifecycle_lock_depth=1
+	rootless_mutation_preflight_current "$preflight_policy" || preflight_rc="$?"
+	if [ "$preflight_rc" -ne 0 ]; then
+		podman_rootless_lifecycle_lock_depth=0
+		flock -u 6
+		exec 6>&-
+		return "$preflight_rc"
+	fi
+	mark_rootless_mutation_in_progress "$reason"
 }
 
-podman_rootless_lifecycle_lock_timeout() {
-	local timeout_seconds
+begin_rootless_mutation_timeout() {
+	local timeout_seconds reason preflight_policy preflight_rc=0
 	timeout_seconds="$1"
+	reason="${2:-rootless podman mutation}"
+	preflight_policy="${3:-current}"
 	if [ "$podman_rootless_lifecycle_lock_depth" -gt 0 ]; then
 		podman_rootless_lifecycle_lock_depth="$((podman_rootless_lifecycle_lock_depth + 1))"
 		return 0
@@ -2458,9 +2724,48 @@ podman_rootless_lifecycle_lock_timeout() {
 		return 1
 	fi
 	podman_rootless_lifecycle_lock_depth=1
+	rootless_mutation_preflight_current "$preflight_policy" || preflight_rc="$?"
+	if [ "$preflight_rc" -ne 0 ]; then
+		podman_rootless_lifecycle_lock_depth=0
+		flock -u 6
+		exec 6>&-
+		return "$preflight_rc"
+	fi
+	mark_rootless_mutation_in_progress "$reason"
 }
 
-podman_rootless_lifecycle_unlock() {
+begin_image_pull_mutation() {
+	local reason mutation_rc=0
+	reason="$1"
+	if [ "$image_pull_preflight_policy" = prepare ]; then
+		if ! lock_lifecycle_exclusive_timeout "$prepare_lock_timeout_seconds"; then
+			printf '%s\n' "image preparation deferred while lifecycle is busy for ${podman_compose_service_name}" >&2
+			return 75
+		fi
+		begin_rootless_mutation_timeout \
+			"$prepare_lock_timeout_seconds" "$reason" prepare || mutation_rc="$?"
+		if [ "$mutation_rc" -ne 0 ]; then
+			unlock_lifecycle_exclusive
+			printf '%s\n' "image preparation deferred while rootless Podman is busy for ${podman_compose_service_name}" >&2
+			return 75
+		fi
+		return 0
+	fi
+
+	lock_lifecycle_exclusive
+	begin_rootless_mutation "$reason" "$image_pull_preflight_policy" || mutation_rc="$?"
+	if [ "$mutation_rc" -ne 0 ]; then
+		unlock_lifecycle_exclusive
+		return "$mutation_rc"
+	fi
+}
+
+release_rootless_mutation_lock() {
+	flock -u 6
+	exec 6>&-
+}
+
+commit_rootless_mutation() {
 	if [ "$podman_rootless_lifecycle_lock_depth" -le 0 ]; then
 		return 0
 	fi
@@ -2468,242 +2773,717 @@ podman_rootless_lifecycle_unlock() {
 	if [ "$podman_rootless_lifecycle_lock_depth" -gt 0 ]; then
 		return 0
 	fi
-	flock -u 6
-	exec 6>&-
+	clear_rootless_mutation_in_progress
+	release_rootless_mutation_lock
 }
 
-process_cmdline_contains() {
-	local pid needle
-	pid="$1"
-	needle="$2"
-
-	[ -r "/proc/$pid/cmdline" ] || return 1
-	tr '\0' ' ' <"/proc/$pid/cmdline" | grep -Fq -- "$needle"
+rollback_rootless_mutation_clean() {
+	commit_rootless_mutation
 }
 
-process_uid_matches() {
-	local pid uid
-	pid="$1"
-	uid="$2"
-
-	[ -r "/proc/$pid/status" ] || return 1
-	awk -v uid="$uid" '$1 == "Uid:" { found = 1; ok = ($2 == uid) } END { exit !(found && ok) }' "/proc/$pid/status"
+leave_rootless_runtime_dirty() {
+	local reason tmp marker
+	reason="${1:-rootless mutation outcome could not be proven clean}"
+	[ "$podman_rootless_lifecycle_lock_depth" -gt 0 ] || return 0
+	install -d -m 0700 "$runtime_dir/podman-compose"
+	tmp="${rootless_runtime_dirty_path}.tmp.$$"
+	marker="$(rootless_mutation_marker_file 2>/dev/null || true)"
+	{
+		printf 'service=%s\n' "$podman_compose_service_name"
+		printf 'reason=%s\n' "$reason"
+		printf 'marker=%s\n' "$marker"
+		printf 'recordedAt=%s\n' "$(now_epoch)"
+	} >"$tmp"
+	mv -f "$tmp" "$rootless_runtime_dirty_path"
+	: >"$runtime_preflight_required_path"
+	podman_rootless_lifecycle_lock_depth=0
+	release_rootless_mutation_lock
 }
 
-process_comm_matches() {
-	local pid name comm
-	pid="$1"
-	name="$2"
-
-	[ -r "/proc/$pid/comm" ] || return 1
-	read -r comm <"/proc/$pid/comm" || return 1
-	[ "$comm" = "$name" ]
+# Compatibility names for out-of-tree helper consumers. New code uses the
+# explicit transaction outcome names above.
+podman_rootless_lifecycle_lock() {
+	begin_rootless_mutation "$@"
 }
 
-process_is_aardvark_dns_for_dir() {
-	local pid aardvark_dir
-	pid="$1"
-	aardvark_dir="$2"
-
-	process_comm_matches "$pid" "aardvark-dns" &&
-		process_cmdline_contains "$pid" "$aardvark_dir"
+podman_rootless_lifecycle_lock_timeout() {
+	begin_rootless_mutation_timeout "$@"
 }
 
-aardvark_dns_pids_for_dir() {
-	local aardvark_dir pid_dir pid
-	aardvark_dir="$1"
-
-	for pid_dir in /proc/[0-9]*; do
-		[ -d "$pid_dir" ] || continue
-		pid="${pid_dir##*/}"
-		if process_is_aardvark_dns_for_dir "$pid" "$aardvark_dir"; then
-			printf '%s\n' "$pid"
-		fi
-	done
+podman_rootless_lifecycle_unlock() {
+	commit_rootless_mutation
 }
 
-aardvark_dns_pids_for_current_user() {
-	local uid pid_dir pid
-	uid="$(id -u)"
-
-	for pid_dir in /proc/[0-9]*; do
-		[ -d "$pid_dir" ] || continue
-		pid="${pid_dir##*/}"
-		if process_comm_matches "$pid" "aardvark-dns" &&
-			process_uid_matches "$pid" "$uid"; then
-			printf '%s\n' "$pid"
-		fi
-	done
+podman_rootless_observation_lock() {
+	if [ "$podman_rootless_observation_lock_depth" -gt 0 ]; then
+		podman_rootless_observation_lock_depth="$((podman_rootless_observation_lock_depth + 1))"
+		return 0
+	fi
+	install -d -m 0700 "$runtime_dir/podman-compose"
+	exec 7>"$runtime_dir/podman-compose/rootless-lifecycle-v1.lock"
+	flock -s 7
+	podman_rootless_observation_lock_depth=1
 }
 
-read_pid_file() {
-	local pid_file pid
-	pid_file="$1"
-
-	[ -s "$pid_file" ] || return 1
-	read -r pid <"$pid_file" || return 1
-	case "$pid" in
-	"" | *[!0-9]*)
-		return 1
-		;;
-	esac
-	printf '%s\n' "$pid"
+podman_rootless_observation_unlock() {
+	if [ "$podman_rootless_observation_lock_depth" -le 0 ]; then
+		return 0
+	fi
+	podman_rootless_observation_lock_depth="$((podman_rootless_observation_lock_depth - 1))"
+	if [ "$podman_rootless_observation_lock_depth" -gt 0 ]; then
+		return 0
+	fi
+	flock -u 7
+	exec 7>&-
 }
 
-restart_aardvark_dns() {
-	local reason aardvark_dir pid_file pid candidate pids seen killed _
-	local running_ids config_file config_name line container_id has_running_entry
+prune_stale_aardvark_dns_configs_mutating() {
+	local aardvark_dir running_ids network_list network_json config_file config_name configured_gateway network_gateway
+	local attached_ids line container_id has_running_attached_entry network_name
+	local -a network_names=()
 
-	reason="$1"
-
+	aardvark_dns_configs_pruned=0
 	[ -n "$runtime_dir" ] || return 0
 	aardvark_dir="$runtime_dir/containers/networks/aardvark-dns"
-	pid_file="$aardvark_dir/aardvark.pid"
 	[ -d "$aardvark_dir" ] || return 0
-
-	podman_network_dns_lock
-
-	# Prune stale aardvark config files (no running container entries) before
-	# restarting the daemon so it only loads live network DNS state.
-	if running_ids="$(podman_no_notify ps -q --no-trunc 2>/dev/null || true)"; then
-		for config_file in "$aardvark_dir"/*; do
-			[ -f "$config_file" ] || continue
-			config_name="${config_file##*/}"
-			[ "$config_name" = "aardvark.pid" ] && continue
-			has_running_entry=0
-			while IFS= read -r line; do
-				container_id="${line%%[[:space:]]*}"
-				[ -n "$container_id" ] || continue
-				case "$container_id" in *.*.*.*) continue ;; esac
-				if grep -Fxq "$container_id" <<<"$running_ids" 2>/dev/null; then
-					has_running_entry=1
-					break
-				fi
-			done <"$config_file"
-			if [ "$has_running_entry" -eq 0 ]; then
-				printf '%s\n' "removing stale podman aardvark DNS config with no running containers for ${podman_compose_service_name}: ${config_file}"
-				rm -f -- "$config_file"
-			fi
-		done
+	if ! running_ids="$(podman_no_notify ps -q --no-trunc 2>/dev/null)"; then
+		printf '%s\n' "cannot query running containers while reconciling podman aardvark DNS for ${podman_compose_service_name}" >&2
+		return 1
 	fi
-
-	pids=""
-	seen=""
-	killed=0
-	if pid="$(read_pid_file "$pid_file")"; then
-		if [ -d "/proc/$pid" ] &&
-			process_is_aardvark_dns_for_dir "$pid" "$aardvark_dir"; then
-			pids="${pids}${pids:+ }${pid}"
-		else
-			printf '%s\n' "removing stale podman aardvark DNS pid file for ${podman_compose_service_name}: ${pid_file}"
+	if ! network_list="$(podman_no_notify network ls --format '{{.Name}}' 2>/dev/null)"; then
+		printf '%s\n' "cannot query podman networks while reconciling aardvark DNS for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+	while IFS= read -r network_name; do
+		[ -n "$network_name" ] || continue
+		network_names+=("$network_name")
+	done <<<"$network_list"
+	if [ "${#network_names[@]}" -gt 0 ]; then
+		if ! network_json="$(podman_no_notify network inspect "${network_names[@]}" 2>/dev/null)"; then
+			printf '%s\n' "cannot inspect podman networks while reconciling aardvark DNS for ${podman_compose_service_name}" >&2
+			return 1
 		fi
 	else
-		printf '%s\n' "podman aardvark DNS has no usable pid file for ${podman_compose_service_name}: ${pid_file}"
+		network_json='[]'
 	fi
 
-	while IFS= read -r candidate; do
-		[ -n "$candidate" ] || continue
-		pids="${pids}${pids:+ }${candidate}"
-	done < <(aardvark_dns_pids_for_dir "$aardvark_dir")
-	while IFS= read -r candidate; do
-		[ -n "$candidate" ] || continue
-		pids="${pids}${pids:+ }${candidate}"
-	done < <(aardvark_dns_pids_for_current_user)
-
-	for pid in $pids; do
-		case " $seen " in
-		*" $pid "*) continue ;;
-		esac
-		seen="${seen}${seen:+ }${pid}"
-		if [ -d "/proc/$pid" ]; then
-			if [ "$killed" -eq 0 ]; then
-				printf '%s\n' "restarting podman aardvark DNS for ${podman_compose_service_name}: ${reason}"
+	for config_file in "$aardvark_dir"/*; do
+		[ -f "$config_file" ] || continue
+		config_name="${config_file##*/}"
+		[ "$config_name" = "aardvark.pid" ] && continue
+		configured_gateway="$(sed -n '/[^[:space:]]/ { s/[[:space:]].*$//; p; q; }' "$config_file")"
+		network_gateway="$(
+			jq -r --arg name "$config_name" '
+				first(
+					.[]
+					| select((.name // .Name // "") == $name)
+					| (.subnets[0].gateway // .Subnets[0].Gateway // "")
+				) // empty
+			' <<<"$network_json"
+		)"
+		if [ -z "$network_gateway" ]; then
+			printf '%s\n' "removing stale podman aardvark DNS config with no matching network for ${podman_compose_service_name}: ${config_file}"
+			rm -f -- "$config_file"
+			aardvark_dns_configs_pruned=1
+			continue
+		fi
+		if [ -n "$configured_gateway" ] && [ "$configured_gateway" != "$network_gateway" ]; then
+			printf '%s\n' "removing stale podman aardvark DNS config with gateway ${configured_gateway}; network ${config_name} uses ${network_gateway}: ${config_file}"
+			rm -f -- "$config_file"
+			aardvark_dns_configs_pruned=1
+			continue
+		fi
+		attached_ids="$(
+			jq -r --arg name "$config_name" '
+				(
+					first(
+					.[]
+					| select((.name // .Name // "") == $name)
+					) // {}
+				)
+				| ((.containers // .Containers // {}) | keys[]?)
+			' <<<"$network_json"
+		)"
+		has_running_attached_entry=0
+		while IFS= read -r line; do
+			container_id="${line%%[[:space:]]*}"
+			[ -n "$container_id" ] || continue
+			case "$container_id" in *.*.*.*) continue ;; esac
+			if grep -Fxq "$container_id" <<<"$running_ids" 2>/dev/null &&
+				grep -Fxq "$container_id" <<<"$attached_ids" 2>/dev/null; then
+				has_running_attached_entry=1
+				break
 			fi
-			killed=1
-			kill "$pid" 2>/dev/null || true
+		done <"$config_file"
+		if [ "$has_running_attached_entry" -eq 0 ]; then
+			printf '%s\n' "removing stale podman aardvark DNS config with no running containers attached to ${config_name} for ${podman_compose_service_name}: ${config_file}"
+			rm -f -- "$config_file"
+			aardvark_dns_configs_pruned=1
 		fi
 	done
-
-	if [ "$killed" -eq 1 ]; then
-		for _ in 1 2 3 4 5 6 7 8 9 10; do
-			killed=0
-			for pid in $seen; do
-				if [ -d "/proc/$pid" ]; then
-					killed=1
-					break
-				fi
-			done
-			[ "$killed" -eq 0 ] && break
-			sleep 0.1
-		done
-		for pid in $seen; do
-			if [ -d "/proc/$pid" ]; then
-				printf '%s\n' "podman aardvark DNS pid $pid did not exit after TERM; sending KILL"
-				kill -KILL "$pid" 2>/dev/null || true
-			fi
-		done
-	fi
-	rm -f -- "$pid_file"
-	podman_network_dns_unlock
 }
 
-compose_dns_probe_pair() {
-	local container_id compose_service peer
+reload_compose_project_networks_mutating() {
+	local container container_ids
+	local -a containers=()
 
-	[ "$long_running" = "true" ] || return 1
-	[ "${#expected_compose_services[@]}" -gt 1 ] || return 1
+	if ! container_ids="$(running_compose_project_container_ids)"; then
+		printf '%s\n' "cannot query running project containers while reloading networks for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		containers+=("$container")
+	done <<<"$container_ids"
+	if [ "${#containers[@]}" -eq 0 ]; then
+		printf '%s\n' "cannot reload project networks for ${podman_compose_service_name}: no running project containers found" >&2
+		return 1
+	fi
 
-	while IFS=$'\t' read -r container_id compose_service; do
-		[ -n "$container_id" ] || continue
-		[ -n "$compose_service" ] || continue
-		for peer in "${expected_compose_services[@]}"; do
-			[ -n "$peer" ] || continue
-			if [ "$peer" != "$compose_service" ]; then
-				printf '%s\t%s\t%s\n' "$container_id" "$compose_service" "$peer"
-				return 0
-			fi
-		done
-	done < <(
+	printf '%s\n' "reloading Podman networks for ${podman_compose_service_name} after direct peer-service DNS failure"
+	podman_no_notify network reload "${containers[@]}"
+}
+
+running_compose_project_container_ids() {
+	(
 		close_lifecycle_fds_for_child
 		cd /
-		podman_no_notify ps \
+		podman_no_notify_timeout "$compose_monitor_timeout_seconds" ps \
 			--filter "label=com.docker.compose.project.working_dir=$working_dir" \
-			--format json |
-			jq -r '.[] | [.ID, (.Labels["io.podman.compose.service"] // .Labels["com.docker.compose.service"] // "")] | @tsv'
+			--format '{{.ID}}'
 	)
+}
+
+runtime_preflight_boot_id() {
+	if [ -n "${NIX_PODMAN_COMPOSE_BOOT_ID-}" ]; then
+		printf '%s\n' "$NIX_PODMAN_COMPOSE_BOOT_ID"
+		return 0
+	fi
+	cat /proc/sys/kernel/random/boot_id
+}
+
+runtime_preflight_stamp_current() {
+	local boot_id stamped_boot_id stamped_token
+
+	[ -f "$runtime_preflight_stamp_path" ] || return 1
+	boot_id="$(runtime_preflight_boot_id)" || return 1
+	stamped_boot_id="$(sed -n 's/^bootId=//p' "$runtime_preflight_stamp_path" | head -n 1)"
+	stamped_token="$(sed -n 's/^token=//p' "$runtime_preflight_stamp_path" | head -n 1)"
+	[ "$stamped_boot_id" = "$boot_id" ] && [ "$stamped_token" = "$runtime_preflight_token" ]
+}
+
+rootless_mutation_marker_is_stale() {
+	local marker pid marker_boot_id marker_pid_start_ticks boot_id pid_start_ticks
+	marker="$1"
+	[ -f "$marker" ] || return 1
+	pid="$(sed -n 's/^pid=//p' "$marker" 2>/dev/null | head -n 1)"
+	case "$pid" in
+	"" | *[!0-9]*) return 0 ;;
+	esac
+	marker_boot_id="$(sed -n 's/^bootId=//p' "$marker" 2>/dev/null | head -n 1)"
+	marker_pid_start_ticks="$(sed -n 's/^pidStartTicks=//p' "$marker" 2>/dev/null | head -n 1)"
+	[ -n "$marker_boot_id" ] || return 0
+	[ -n "$marker_pid_start_ticks" ] || return 0
+	boot_id="$(runtime_preflight_boot_id)" || return 0
+	[ "$marker_boot_id" = "$boot_id" ] || return 0
+	pid_start_ticks="$(process_start_ticks "$pid")" || return 0
+	[ "$marker_pid_start_ticks" != "$pid_start_ticks" ]
+}
+
+stale_rootless_mutation_markers_present() {
+	local marker marker_dir
+	marker_dir="$runtime_dir/podman-compose/rootless-mutations"
+	[ -d "$marker_dir" ] || return 1
+	for marker in "$marker_dir"/*; do
+		[ -f "$marker" ] || continue
+		rootless_mutation_marker_is_stale "$marker" && return 0
+	done
+	return 1
+}
+
+clear_stale_rootless_mutation_markers() {
+	local marker marker_dir
+	marker_dir="$runtime_dir/podman-compose/rootless-mutations"
+	[ -d "$marker_dir" ] || return 0
+	for marker in "$marker_dir"/*; do
+		[ -f "$marker" ] || continue
+		if rootless_mutation_marker_is_stale "$marker"; then
+			printf '%s\n' "clearing reconciled abandoned rootless podman mutation: ${marker##*/}"
+			rm -f -- "$marker"
+		fi
+	done
+}
+
+runtime_preflight_needs_reconcile() {
+	[ -f "$runtime_preflight_required_path" ] ||
+		[ -f "$rootless_runtime_dirty_path" ] ||
+		! runtime_preflight_stamp_current ||
+		stale_rootless_mutation_markers_present
+}
+
+load_runtime_preflight_service_entry() {
+	local metadata_file
+	metadata_file="$1"
+	podman_compose_metadata="$metadata_file"
+
+	podman_compose_service_name="$(jq -r '.serviceName' "$metadata_file")"
+	backend="$(jq -r '.backend // "compose"' "$metadata_file")"
+	working_dir="$(jq -r '.workingDir' "$metadata_file")"
+	adoption_stamp="$(jq -r '.adoptionStamp // ""' "$metadata_file")"
+	long_running="$(jq -r 'if has("longRunning") then .longRunning else true end' "$metadata_file")"
+	generated_dir="$working_dir/.podman-compose"
+	state_path="$generated_dir/state.json"
+	start_in_progress_path="$generated_dir/start-in-progress"
+	expected_compose_services=()
+	while IFS= read -r compose_service; do
+		[ -n "$compose_service" ] || continue
+		expected_compose_services+=("$compose_service")
+	done < <(jq -r '.expectedComposeServices[]?' "$metadata_file")
+	if [ "$backend" = quadlet ]; then
+		quadlet_load_backend_metadata
+	fi
+}
+
+runtime_preflight_project_recreate_status() {
+	local container container_ids state_json failing_states recreate=1
+
+	if [ "$backend" = quadlet ]; then
+		quadlet_runtime_preflight_recreate_status
+		return
+	fi
+
+	if ! container_ids="$(compose_project_container_ids)"; then
+		printf '%s\n' "cannot query podman containers during runtime preflight for ${podman_compose_service_name}" >&2
+		return 2
+	fi
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		if running_container_pid_missing "$container"; then
+			recreate=0
+		fi
+	done <<<"$container_ids"
+
+	if ! state_json="$(compose_state_json)"; then
+		printf '%s\n' "cannot query podman project state during runtime preflight for ${podman_compose_service_name}" >&2
+		return 2
+	fi
+	if [ "$long_running" = "true" ]; then
+		failing_states="$(printf '%s' "$state_json" | failing_states_report)"
+		if [ -n "$failing_states" ]; then
+			printf '%s\n' "podman compose project has non-running containers during runtime preflight for ${podman_compose_service_name}" >&2
+			printf '%s\n' "$failing_states" >&2
+			recreate=0
+		fi
+	fi
+	return "$recreate"
+}
+
+runtime_preflight_project_cleanup_complete() {
+	local container_ids normal_names storage_names container
+
+	if [ "$backend" = quadlet ]; then
+		quadlet_cleanup_postcondition
+		return
+	fi
+
+	if ! container_ids="$(compose_project_container_ids)"; then
+		printf '%s\n' "cannot verify podman project container cleanup during runtime preflight for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+	if [ -n "$container_ids" ]; then
+		printf '%s\n' "podman project containers remain after runtime preflight cleanup for ${podman_compose_service_name}:" >&2
+		printf '%s\n' "$container_ids" >&2
+		return 1
+	fi
+	if ! normal_names="$(podman_no_notify container list --all --format '{{.Names}}')"; then
+		printf '%s\n' "cannot verify podman container-name cleanup during runtime preflight for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+	if ! storage_names="$(podman_no_notify container list --all --storage --format '{{.Names}}')"; then
+		printf '%s\n' "cannot verify podman storage cleanup during runtime preflight for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+
+	while IFS= read -r container; do
+		[ -n "$container" ] || continue
+		if grep -Fxq "$container" <<<"$normal_names" ||
+			grep -Fxq "$container" <<<"$storage_names"; then
+			printf '%s\n' "podman container remains after runtime preflight cleanup for ${podman_compose_service_name}: ${container}" >&2
+			return 1
+		fi
+	done < <(compose_project_container_names)
+	return 0
+}
+
+runtime_preflight_reconcile_projects() {
+	local encoded entry metadata_file transition_status project_status cleanup_status failed=0
+
+	runtime_preflight_repaired=0
+	while IFS= read -r encoded; do
+		[ -n "$encoded" ] || continue
+		entry="$(printf '%s' "$encoded" | base64 -d)"
+		metadata_file="$(jq -r '.metadataFile' <<<"$entry")"
+		load_runtime_preflight_service_entry "$metadata_file"
+		transition_status=0
+		backend_transition_admit || transition_status="$?"
+		case "$transition_status" in
+		0) ;;
+		1)
+			printf 'podman runtime preflight is deferring service-local backend transition for %s\n' \
+				"$podman_compose_service_name" >&2
+			continue
+			;;
+		*)
+			failed=1
+			continue
+			;;
+		esac
+		project_status=0
+		runtime_preflight_project_recreate_status || project_status="$?"
+		case "$project_status" in
+		0)
+			printf '%s\n' "podman runtime preflight is recreating inconsistent project ${podman_compose_service_name}"
+			cleanup_status=0
+			if [ "$backend" = quadlet ]; then
+				quadlet_runtime_preflight_cleanup || cleanup_status="$?"
+			else
+				remove_compose_project_containers || cleanup_status="$?"
+			fi
+			if runtime_preflight_project_cleanup_complete; then
+				if [ "$cleanup_status" -ne 0 ]; then
+					printf '%s\n' "podman runtime preflight cleanup reported transient errors but reached a clean project state for ${podman_compose_service_name}"
+				fi
+				runtime_preflight_repaired=1
+			else
+				failed=1
+			fi
+			;;
+		1) ;;
+		*) failed=1 ;;
+		esac
+	done < <(jq -r '.services[] | @base64' "$runtime_preflight_metadata")
+	return "$failed"
+}
+
+runtime_preflight_reconcile_locked() {
+	local caller_service_name caller_marker_path
+
+	caller_service_name="$podman_compose_service_name"
+	caller_marker_path="$rootless_mutation_marker_path"
+	: >"$runtime_preflight_required_path"
+	runtime_preflight_had_stale_marker=0
+	if stale_rootless_mutation_markers_present; then
+		runtime_preflight_had_stale_marker=1
+	fi
+	if ! runtime_preflight_reconcile_projects; then
+		podman_compose_service_name="$caller_service_name"
+		rootless_mutation_marker_path="$caller_marker_path"
+		return 1
+	fi
+
+	podman_compose_service_name="$caller_service_name"
+	rootless_mutation_marker_path="$caller_marker_path"
+	if ! prune_stale_aardvark_dns_configs_mutating; then
+		return 1
+	fi
+	record_runtime_preflight_stamp
+	clear_stale_rootless_mutation_markers
+	rm -f -- "$runtime_preflight_required_path" "$rootless_runtime_dirty_path"
+}
+
+record_runtime_preflight_stamp() {
+	local boot_id tmp
+	boot_id="$(runtime_preflight_boot_id)"
+	tmp="${runtime_preflight_stamp_path}.tmp.$$"
+	{
+		printf 'bootId=%s\n' "$boot_id"
+		printf 'token=%s\n' "$runtime_preflight_token"
+		printf 'completedAt=%s\n' "$(now_epoch)"
+	} >"$tmp"
+	mv -f "$tmp" "$runtime_preflight_stamp_path"
+}
+
+cmd_runtime_preflight() {
+	load_runtime_preflight_metadata
+	install -d -m 0700 "$runtime_dir/podman-compose/rootless-mutations"
+	if ! runtime_preflight_needs_reconcile; then
+		return 0
+	fi
+
+	rootless_runtime_preflight_suppressed=1
+	begin_rootless_mutation "rootless runtime preflight"
+	rootless_runtime_preflight_suppressed=0
+	if ! runtime_preflight_needs_reconcile; then
+		commit_rootless_mutation
+		return 0
+	fi
+	if ! runtime_preflight_reconcile_locked; then
+		leave_rootless_runtime_dirty "per-user runtime preflight could not prove a clean runtime"
+		return 1
+	fi
+	commit_rootless_mutation
+}
+
+compose_dns_dependency_pairs() {
+	awk '
+		$0 == "services:" {
+			in_services = 1
+			next
+		}
+		in_services && /^[^[:space:]]/ { exit }
+		in_services && /^  [^[:space:]].*:$/ {
+			service = $0
+			sub(/^  /, "", service)
+			sub(/:$/, "", service)
+			in_dependencies = 0
+			next
+		}
+		service != "" && /^    depends_on:$/ {
+			in_dependencies = 1
+			next
+		}
+		in_dependencies && /^      [^[:space:]].*:$/ {
+			dependency = $0
+			sub(/^      /, "", dependency)
+			sub(/:$/, "", dependency)
+			print service "\t" dependency
+			next
+		}
+		in_dependencies && /^    [^[:space:]]/ { in_dependencies = 0 }
+	'
+}
+
+load_compose_dns_dependencies() {
+	local normalized_config dependency_pairs
+
+	[ "$compose_dns_dependencies_loaded" -eq 0 ] || return 0
+	compose_dns_dependencies_loaded=1
+	compose_dns_dependencies_json='[]'
+	[ "$long_running" = "true" ] || return 0
+
+	if ! normalized_config="$(
+		close_lifecycle_fds_for_child
+		cd "$working_dir"
+		podman_no_notify compose \
+			"${podman_compose_base_args[@]}" \
+			"${compose_args[@]}" \
+			"${compose_file_args[@]}" \
+			config 2>/dev/null
+	)"; then
+		printf '%s\n' \
+			"podman compose DNS probe skipped for ${podman_compose_service_name}:" \
+			"cannot read normalized dependency config" >&2
+		return 0
+	fi
+	dependency_pairs="$(printf '%s\n' "$normalized_config" | compose_dns_dependency_pairs)"
+	[ -n "$dependency_pairs" ] || return 0
+	compose_dns_dependencies_json="$(
+		printf '%s\n' "$dependency_pairs" |
+			jq -R 'split("\t") | select(length == 2) | {service: .[0], dependency: .[1]}' |
+			jq -s -c .
+	)"
+}
+
+compose_dns_probe_targets() {
+
+	[ "$long_running" = "true" ] || return 1
+	[ "$compose_dns_dependencies_json" != '[]' ] || return 0
+
+	close_lifecycle_fds_for_child
+	cd /
+	podman_no_notify ps \
+		--filter "label=com.docker.compose.project.working_dir=$working_dir" \
+		--format json |
+		jq -r --argjson dependencies "$compose_dns_dependencies_json" '
+			. as $containers
+			| .[]
+			| select((.State // "") == "running")
+			| (.ID // .Id // "") as $container_id
+			| (.Labels["io.podman.compose.service"] // .Labels["com.docker.compose.service"] // "") as $service
+			| $dependencies[]
+			| select(.service == $service and .dependency != $service)
+			| .dependency as $dependency
+			| first(
+				$containers[]
+				| select((.State // "") == "running")
+				| select((.Labels["io.podman.compose.service"] // .Labels["com.docker.compose.service"] // "") == $dependency)
+				| (.ID // .Id // "")
+			) as $dependency_container_id
+			| [$container_id, $dependency_container_id, $service, $dependency]
+			| select(all(.[]; . != ""))
+			| @tsv
+		'
+}
+
+compose_dns_network_checks() {
+	local container_id="$1" dependency_container_id="$2" inspect_json network_names network_json
+	local -a networks=()
+	if ! inspect_json="$(podman_no_notify inspect "$container_id" "$dependency_container_id")"; then
+		return 1
+	fi
+	if ! network_names="$(
+		printf '%s' "$inspect_json" |
+			jq -r --arg caller "$container_id" --arg dependency "$dependency_container_id" '
+				def id: (.Id // .ID // "");
+				([.[] | select(id == $caller) | (.NetworkSettings.Networks // {}) | keys[]] // []) as $caller_networks
+				| ([.[] | select(id == $dependency) | (.NetworkSettings.Networks // {}) | keys[]] // []) as $dependency_networks
+				| ($caller_networks - ($caller_networks - $dependency_networks))[]?
+			'
+	)"; then
+		return 1
+	fi
+	[ -n "$network_names" ] || return 0
+	mapfile -t networks <<<"$network_names"
+	if ! network_json="$(podman_no_notify network inspect "${networks[@]}")"; then
+		return 1
+	fi
+	jq -r \
+		--arg caller "$container_id" \
+		--arg dependency "$dependency_container_id" \
+		--argjson containers "$inspect_json" '
+			def id: (.Id // .ID // "");
+			def network_name: (.name // .Name // "");
+			def dns_enabled: (.dns_enabled // .DNSEnabled // false);
+			def gateways: [(.subnets // .Subnets // [])[]? | (.gateway // .Gateway // empty)];
+			def attachment($container; $network):
+				$containers[]
+				| select(id == $container)
+				| .NetworkSettings.Networks[$network];
+			.[]
+			| network_name as $network
+			| select($network != "" and dns_enabled)
+			| gateways[] as $gateway
+			| [
+				$containers[]
+				| select(id == $caller)
+				| (.State.Pid // .State.PID // 0)
+			][0] as $pid
+			| [
+				attachment($dependency; $network)
+				| (.IPAddress // empty),
+				  (.GlobalIPv6Address // empty),
+				  (.IP6Address // empty)
+				| select(. != "")
+			] as $expected
+			| select($pid > 0 and $gateway != "" and ($expected | length) > 0)
+			| {network: $network, pid: $pid, gateway: $gateway, expected: $expected}
+			| @base64
+		' <<<"$network_json"
+}
+
+compose_dns_query() {
+	local pid="$1" gateway="$2" dependency="$3" query_type="$4"
+	local -a namespace_command=(nsenter -t "$pid" -n --)
+	if [ "$(id -u)" -ne 0 ]; then
+		namespace_command=(podman unshare "${namespace_command[@]}")
+	fi
+	close_lifecycle_fds_for_child
+	cd /
+	timeout 5 env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC \
+		"${namespace_command[@]}" \
+		dig "@${gateway}" "$dependency" "$query_type" \
+		+time=2 +tries=1 +noall +comments +answer
+}
+
+verify_compose_dns_network() {
+	local encoded="$1" dependency="$2" check network pid gateway expected_json query_type output status dns_status answers
+	check="$(printf '%s' "$encoded" | base64 -d)"
+	network="$(jq -r '.network' <<<"$check")"
+	pid="$(jq -r '.pid' <<<"$check")"
+	gateway="$(jq -r '.gateway' <<<"$check")"
+	expected_json="$(jq -c '.expected' <<<"$check")"
+	for query_type in A AAAA; do
+		output=""
+		status=0
+		output="$(compose_dns_query "$pid" "$gateway" "$dependency" "$query_type" 2>&1)" || status="$?"
+		if [ "$status" -ne 0 ]; then
+			printf 'DNS namespace query failed for network %s with status %s\n' "$network" "$status" >&2
+			[ -n "$output" ] && printf '%s\n' "$output" >&2
+			return "$compose_dns_indeterminate_exit_status"
+		fi
+		dns_status="$(sed -n 's/.*status: \([A-Z]*\).*/\1/p' <<<"$output" | head -n 1)"
+		case "$dns_status" in
+		NOERROR | NXDOMAIN) ;;
+		*)
+			printf 'DNS namespace query returned indeterminate status %s on network %s\n' "${dns_status:-unknown}" "$network" >&2
+			return "$compose_dns_indeterminate_exit_status"
+			;;
+		esac
+		answers="$(awk '$1 !~ /^;/ && NF > 0 { print $NF }' <<<"$output")"
+		if jq -e --arg answers "$answers" 'any(.[]; . as $expected | ($answers | split("\n") | index($expected)) != null)' <<<"$expected_json" >/dev/null; then
+			return 0
+		fi
+	done
 	return 1
 }
 
 verify_compose_dns() {
-	local pair container_id compose_service peer output status
+	local targets container_id dependency_container_id compose_service dependency checks encoded status indeterminate=0 checked=0
 
-	if ! pair="$(compose_dns_probe_pair)"; then
-		return 0
+	load_compose_dns_dependencies
+	[ "$long_running" = "true" ] || return 0
+	[ "$compose_dns_dependencies_json" != '[]' ] || return 0
+	if ! targets="$(compose_dns_probe_targets)"; then
+		printf '%s\n' \
+			"podman compose DNS probe was indeterminate for ${podman_compose_service_name}:" \
+			"could not query running dependency probe targets" >&2
+		return "$compose_dns_indeterminate_exit_status"
 	fi
-	IFS=$'\t' read -r container_id compose_service peer <<<"$pair"
+	while IFS=$'\t' read -r container_id dependency_container_id compose_service dependency; do
+		[ -n "$container_id" ] && [ -n "$dependency_container_id" ] && [ -n "$compose_service" ] && [ -n "$dependency" ] || continue
+		if ! checks="$(compose_dns_network_checks "$container_id" "$dependency_container_id")"; then
+			printf '%s\n' \
+				"podman compose DNS probe was indeterminate for ${podman_compose_service_name}:" \
+				"could not inspect shared networks for ${compose_service} and ${dependency}" >&2
+			return "$compose_dns_indeterminate_exit_status"
+		fi
+		[ -n "$checks" ] || continue
+		while IFS= read -r encoded; do
+			[ -n "$encoded" ] || continue
+			checked=1
+			status=0
+			verify_compose_dns_network "$encoded" "$dependency" || status="$?"
+			case "$status" in
+			0) ;;
+			1)
+				printf '%s\n' \
+					"podman compose DNS probe failed for ${podman_compose_service_name}:" \
+					"${compose_service} cannot resolve declared dependency ${dependency}" >&2
+				return 1
+				;;
+			*) indeterminate=1 ;;
+			esac
+		done <<<"$checks"
+	done <<<"$targets"
+	if [ "$indeterminate" -eq 1 ]; then
+		return "$compose_dns_indeterminate_exit_status"
+	fi
+	if [ "$checked" -eq 0 ]; then
+		printf '%s\n' "podman compose DNS probe skipped for ${podman_compose_service_name}: no shared DNS-enabled network"
+	fi
+	return 0
+}
 
-	output="$(
-		close_lifecycle_fds_for_child
-		cd /
-		# shellcheck disable=SC2016 # $1 is expanded by the inner shell.
-		timeout 5 env -u NOTIFY_SOCKET -u WATCHDOG_PID -u WATCHDOG_USEC podman exec "$container_id" sh -c '
-			if ! command -v getent >/dev/null 2>&1; then
-				exit 77
-			fi
-			getent hosts "$1" >/dev/null
-		' sh "$peer" 2>&1
-	)" && return 0
-	status="$?"
-	if [ "$status" -eq 77 ]; then
-		printf '%s\n' "podman compose DNS probe skipped for ${podman_compose_service_name}: getent unavailable in ${compose_service}"
-		return 0
+verify_compose_dns_stable() {
+	local status=0
+
+	if [ "$podman_rootless_lifecycle_lock_depth" -gt 0 ]; then
+		if verify_compose_dns; then
+			return 0
+		else
+			status="$?"
+		fi
+		return "$status"
 	fi
 
-	printf '%s\n' "podman compose DNS probe failed for ${podman_compose_service_name}: ${compose_service} cannot resolve ${peer}" >&2
-	if [ -n "$output" ]; then
-		printf '%s\n' "$output" >&2
+	podman_rootless_observation_lock
+	if verify_compose_dns; then
+		status=0
+	else
+		status="$?"
 	fi
-	return 1
+	podman_rootless_observation_unlock
+	return "$status"
 }
 
 running_compose_services() {
@@ -2816,6 +3596,127 @@ existing_runtime_state_json() {
 	else
 		printf '{}'
 	fi
+}
+
+current_backend_data_json() {
+	jq -c '.backendData // {}' "$podman_compose_metadata" 2>/dev/null || printf '{}\n'
+}
+
+last_applied_backend() {
+	runtime_state_field appliedBackend compose
+}
+
+last_applied_backend_data() {
+	runtime_state_field appliedBackendData '{}'
+}
+
+backend_transition_compose_runtime_clean() {
+	local container_ids
+	if ! container_ids="$(compose_project_container_ids)"; then
+		printf 'cannot inspect prior Compose runtime for backend transition of %s\n' \
+			"$podman_compose_service_name" >&2
+		return 2
+	fi
+	[ -z "$container_ids" ] || {
+		printf 'prior Compose containers remain for backend transition of %s:\n%s\n' \
+			"$podman_compose_service_name" "$container_ids" >&2
+		return 1
+	}
+}
+
+backend_transition_quadlet_unit_clean() {
+	local active_state container_unit fragment_path load_state source_path source_path_actual state prior_data
+	prior_data="$1"
+	container_unit="$(jq -r '.quadlet.containerUnit // empty' <<<"$prior_data")"
+	source_path="$(jq -r '.quadlet.sourcePath // empty' <<<"$prior_data")"
+	[ -n "$container_unit" ] && [ -n "$source_path" ] || {
+		printf 'prior Quadlet unit identity is missing for backend transition of %s\n' \
+			"$podman_compose_service_name" >&2
+		return 1
+	}
+	state="$(systemctl --user show \
+		--property=LoadState \
+		--property=ActiveState \
+		--property=SourcePath \
+		--property=FragmentPath \
+		--value "$container_unit")" || {
+		printf 'cannot inspect prior Quadlet unit %s for backend transition\n' "$container_unit" >&2
+		return 2
+	}
+	load_state="$(sed -n '1p' <<<"$state")"
+	active_state="$(sed -n '2p' <<<"$state")"
+	source_path_actual="$(sed -n '3p' <<<"$state")"
+	fragment_path="$(sed -n '4p' <<<"$state")"
+	case "${load_state}:${active_state}" in
+	not-found:inactive) return 0 ;;
+	loaded:inactive)
+		[ "$source_path_actual" = "$source_path" ] || return 1
+		case "$fragment_path" in
+		"$runtime_dir/systemd/generator/$container_unit" | \
+			"$runtime_dir/systemd/generator.early/$container_unit" | \
+			"$runtime_dir/systemd/generator.late/$container_unit") return 0 ;;
+		esac
+		;;
+	esac
+	printf 'prior Quadlet unit is not clean for backend transition of %s (unit=%s load=%s active=%s)\n' \
+		"$podman_compose_service_name" "$container_unit" "$load_state" "$active_state" >&2
+	return 1
+}
+
+backend_transition_quadlet_containers_clean() {
+	local matches prior_data state_json
+	prior_data="$1"
+	if [ "$(jq -r '(.quadlet.labels // {}) | length' <<<"$prior_data")" -eq 0 ]; then
+		printf 'prior Quadlet container identity is missing for backend transition of %s\n' \
+			"$podman_compose_service_name" >&2
+		return 1
+	fi
+	if ! state_json="$(podman_no_notify ps -a --format json)"; then
+		printf 'cannot inspect prior Quadlet containers for backend transition of %s\n' \
+			"$podman_compose_service_name" >&2
+		return 2
+	fi
+	matches="$(jq -r --argjson prior "$prior_data" '
+		($prior.quadlet.labels // {}) as $expected
+		| [.[]
+			| (.Labels // {}) as $actual
+			| select(all($expected | to_entries[]; $actual[.key] == .value))
+			| (.Names[0] // .Name // .Id // .ID // "unknown")]
+		| .[]
+	' <<<"$state_json")" || return 2
+	[ -z "$matches" ] || {
+		printf 'prior Quadlet containers remain for backend transition of %s:\n%s\n' \
+			"$podman_compose_service_name" "$matches" >&2
+		return 1
+	}
+}
+
+backend_transition_admit() {
+	local applied_backend prior_data status
+	applied_backend="$(last_applied_backend)"
+	[ "$applied_backend" = "$backend" ] && return 0
+	prior_data="$(last_applied_backend_data)"
+	case "$applied_backend" in
+	compose)
+		status=0
+		backend_transition_compose_runtime_clean || status="$?"
+		[ "$status" -eq 0 ] || return "$status"
+		;;
+	quadlet)
+		status=0
+		backend_transition_quadlet_unit_clean "$prior_data" || status="$?"
+		[ "$status" -eq 0 ] || return "$status"
+		backend_transition_quadlet_containers_clean "$prior_data" || status="$?"
+		[ "$status" -eq 0 ] || return "$status"
+		;;
+	*)
+		printf 'unknown applied backend %s for transition of %s\n' \
+			"$applied_backend" "$podman_compose_service_name" >&2
+		return 1
+		;;
+	esac
+	printf 'backend transition admitted for %s: %s -> %s\n' \
+		"$podman_compose_service_name" "$applied_backend" "$backend"
 }
 
 write_runtime_state_with_filter() {
@@ -2999,17 +3900,20 @@ verify_runtime_state_current() {
 }
 
 record_runtime_state() {
-	local tmp_state
+	local backend_data tmp_state
 	install -d -m 0750 "$generated_dir"
 	tmp_state="${state_path}.tmp"
+	backend_data="$(current_backend_data_json)"
 	existing_runtime_state_json |
 		jq -c \
 			--argjson version "$runtime_state_version" \
 			--arg kind "$runtime_state_kind" \
 			--arg adoptionStamp "$adoption_stamp" \
+			--arg appliedBackend "$backend" \
+			--argjson appliedBackendData "$backend_data" \
 			--arg reconcilePolicy "$reconcile_policy" \
 			--arg restartStamp "$restart_stamp" \
-			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp} | del(.startupPhase)' >"$tmp_state"
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, appliedBackend: $appliedBackend, appliedBackendData: $appliedBackendData, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp} | del(.startupPhase)' >"$tmp_state"
 	chmod 0640 "$tmp_state"
 	mv -f "$tmp_state" "$state_path"
 }
@@ -3031,35 +3935,231 @@ record_staging_runtime_state() {
 }
 
 record_applied_recreate_state() {
-	local tmp_state
+	local backend_data tmp_state
 	install -d -m 0750 "$generated_dir"
 	tmp_state="${state_path}.tmp"
+	backend_data="$(current_backend_data_json)"
 	existing_runtime_state_json |
 		jq -c \
 			--argjson version "$runtime_state_version" \
 			--arg kind "$runtime_state_kind" \
 			--arg adoptionStamp "$adoption_stamp" \
+			--arg appliedBackend "$backend" \
+			--argjson appliedBackendData "$backend_data" \
 			--arg reconcilePolicy "$reconcile_policy" \
 			--arg restartStamp "$restart_stamp" \
 			--arg recreateTag "$recreate_tag" \
 			--arg recreateStamp "$recreate_stamp" \
 			--arg recreateClassStamp "$recreate_class_stamp" \
-			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp, recreateTag: $recreateTag, recreateStamp: $recreateStamp, recreateClassStamp: $recreateClassStamp} | del(.startupPhase)' >"$tmp_state"
+			'. + {version: $version, kind: $kind, adoptionStamp: $adoptionStamp, appliedBackend: $appliedBackend, appliedBackendData: $appliedBackendData, reconcilePolicy: $reconcilePolicy, restartStamp: $restartStamp, recreateTag: $recreateTag, recreateStamp: $recreateStamp, recreateClassStamp: $recreateClassStamp} | del(.startupPhase)' >"$tmp_state"
 	chmod 0640 "$tmp_state"
 	mv -f "$tmp_state" "$state_path"
 }
 
-verify_compose_state() {
-	local state_json failing_states state_counts total_count running_count
-	if ! state_json="$(compose_state_json)"; then
-		printf '%s\n' "podman compose state query failed or timed out for ${podman_compose_service_name}" >&2
+# shellcheck disable=SC2016 # jq program; shell expansion happens at use sites.
+compose_state_health_filter='def health:
+  ((.Health // .HealthStatus // "") | tostring | ascii_downcase) as $health
+  | if $health != "" and $health != "<nil>" then $health
+    elif ((.Status // "") | test("\\(unhealthy\\)$"; "i")) then "unhealthy"
+    elif ((.Status // "") | test("\\(starting\\)$"; "i")) then "starting"
+    elif ((.Status // "") | test("\\(healthy\\)$"; "i")) then "healthy"
+    else "none"
+    end;'
+
+compose_state_terminal_failure_report() {
+	jq -r "
+		$compose_state_health_filter
+		.[]
+		| (.State // \"unknown\") as \$state
+		| health as \$health
+		| select(
+			\$state == \"dead\"
+			or (\$state == \"exited\" and ((.ExitCode // 1) != 0))
+		)
+		| \"\\((.Names // [\"<unknown>\"])[0]): state=\\(\$state) health=\\(\$health) exit=\\(.ExitCode // \"n/a\") status=\\(.Status // \"\")\"
+	"
+}
+
+compose_state_has_pending_health() {
+	jq -e "
+		$compose_state_health_filter
+		any(.[]; health == \"starting\" or health == \"unhealthy\")
+	" >/dev/null
+}
+
+compose_state_running_count() {
+	jq -r '[.[] | select((.State // "") == "running")] | length'
+}
+
+compose_state_readiness_signature() {
+	jq -cS "
+		$compose_state_health_filter
+		[
+			.[]
+			| {
+				service: (.Labels[\"io.podman.compose.service\"] // .Labels[\"com.docker.compose.service\"] // ((.Names // [\"\"])[0])),
+				state: (.State // \"unknown\"),
+				exit: (.ExitCode // null),
+				health: health
+			}
+		]
+		| sort_by(.service)
+	"
+}
+
+compose_state_missing_expected_report() {
+	local expected_services_json
+	expected_services_json="$(expected_compose_services_json)"
+	jq -r --argjson expected "$expected_services_json" '
+		def compose_service:
+			.Labels["io.podman.compose.service"]
+			// .Labels["com.docker.compose.service"]
+			// empty;
+		($expected - ([.[] | select((.State // "") == "running") | compose_service] | unique))[]?
+	'
+}
+
+wait_for_compose_state() {
+	local require_all state_json signature last_signature="" terminal_failures missing_services
+	local started_at now last_progress_at query_failure_since=0 running_count dns_failure_since=0 dns_status
+	local readiness_timeout_seconds
+	require_all="$1"
+	started_at="$(now_epoch)"
+	last_progress_at="$started_at"
+	readiness_timeout_seconds="$(compose_start_timeout_seconds)"
+
+	while true; do
+		now="$(now_epoch)"
+		if ! state_json="$(compose_state_json 2>/dev/null)"; then
+			if [ "$query_failure_since" -eq 0 ]; then
+				query_failure_since="$now"
+				printf '%s\n' \
+					"podman compose state query is indeterminate for ${podman_compose_service_name};" \
+					"retrying within its ${readiness_timeout_seconds}s readiness budget" >&2
+			fi
+			if [ "$readiness_timeout_seconds" -gt 0 ] &&
+				[ "$((now - started_at))" -ge "$readiness_timeout_seconds" ]; then
+				printf '%s\n' "podman compose state query failed or timed out for ${podman_compose_service_name} for $((now - query_failure_since))s and exhausted its ${readiness_timeout_seconds}s readiness budget" >&2
+				return 1
+			fi
+			sleep 2
+			continue
+		fi
+		query_failure_since=0
+
+		terminal_failures="$(printf '%s' "$state_json" | compose_state_terminal_failure_report)"
+		if [ -n "$terminal_failures" ]; then
+			printf '%s\n' "podman compose reached a terminal container state for ${podman_compose_service_name}:" >&2
+			printf '%s\n' "$terminal_failures" >&2
+			return 1
+		fi
+
+		missing_services=""
+		if [ "$require_all" = "true" ]; then
+			missing_services="$(printf '%s' "$state_json" | compose_state_missing_expected_report)"
+		fi
+		running_count="$(printf '%s' "$state_json" | compose_state_running_count)"
+		if [ "$running_count" -gt 0 ] &&
+			[ -z "$missing_services" ] &&
+			! printf '%s' "$state_json" | compose_state_has_pending_health; then
+			dns_status=0
+			if verify_compose_dns_stable; then
+				return 0
+			else
+				dns_status="$?"
+			fi
+			if [ "$dns_status" -eq "$compose_dns_indeterminate_exit_status" ]; then
+				dns_failure_since=0
+				sleep 2
+				continue
+			fi
+			if [ "$compose_up_project_dns_reload_attempted" -eq 0 ]; then
+				return "$compose_start_project_dns_reloadable_exit_status"
+			fi
+			if [ "$dns_failure_since" -eq 0 ]; then
+				dns_failure_since="$now"
+				printf '%s\n' \
+					"podman compose peer-service DNS is still converging after in-place project network reload" \
+					"for ${podman_compose_service_name}" >&2
+			elif [ "$compose_up_no_progress_seconds" -gt 0 ] &&
+				[ "$((now - dns_failure_since))" -ge "$compose_up_no_progress_seconds" ]; then
+				return "$compose_start_project_dns_reloadable_exit_status"
+			fi
+			sleep 2
+			continue
+		fi
+		dns_failure_since=0
+
+		signature="$(printf '%s' "$state_json" | compose_state_readiness_signature)"
+		if [ "$signature" != "$last_signature" ]; then
+			last_signature="$signature"
+			last_progress_at="$now"
+		elif printf '%s' "$state_json" | compose_state_has_pending_health; then
+			# Starting and transiently unhealthy healthchecks are bounded by
+			# TimeoutStartSec, not the shorter missing-container no-progress guard.
+			last_progress_at="$now"
+		elif [ "$compose_up_no_progress_seconds" -gt 0 ] &&
+			[ "$((now - last_progress_at))" -ge "$compose_up_no_progress_seconds" ]; then
+			printf '%s\n' "podman compose readiness made no state progress for $((now - last_progress_at))s for ${podman_compose_service_name}" >&2
+			if [ -n "$missing_services" ]; then
+				printf '%s\n' "missing running compose services:" >&2
+				printf '%s\n' "$missing_services" >&2
+			fi
+			return "$compose_start_stuck_exit_status"
+		fi
+		sleep 2
+	done
+}
+
+wait_for_compose_readiness() {
+	wait_for_compose_state true
+}
+
+verify_compose_readiness_with_dns_correction() {
+	local status=0
+	if [ -f "$compose_dns_correction_marker_path" ]; then
+		compose_up_project_dns_reload_attempted=1
+	fi
+	wait_for_compose_readiness || status="$?"
+	[ "$status" -eq "$compose_start_project_dns_reloadable_exit_status" ] || return "$status"
+	if [ "$compose_up_project_dns_reload_attempted" -eq 1 ]; then
+		printf '%s\n' "podman compose peer-service DNS did not converge after the one project network correction for ${podman_compose_service_name}" >&2
+		return "$status"
+	fi
+	begin_rootless_mutation "compose project DNS correction" || return "$?"
+	compose_up_project_dns_reload_attempted=1
+	mark_compose_dns_correction_attempted
+	if ! reload_compose_project_networks_mutating; then
+		leave_rootless_runtime_dirty "project DNS correction failed for ${podman_compose_service_name}"
 		return 1
 	fi
+	commit_rootless_mutation
+	wait_for_compose_readiness
+}
+
+verify_compose_state_json() {
+	local state_json failing_states health_failures state_counts total_count running_count
+	state_json="$1"
 	failing_states="$(printf '%s' "$state_json" | failing_states_report)"
+	health_failures="$(
+		printf '%s' "$state_json" |
+			jq -r "
+				$compose_state_health_filter
+				.[]
+				| health as \$health
+				| select(\$health == \"starting\" or \$health == \"unhealthy\")
+				| \"\\((.Names // [\"<unknown>\"])[0]): health=\\(\$health) status=\\(.Status // \"\")\"
+			"
+	)"
 
 	if [ -n "$failing_states" ]; then
 		printf '%s\n' "podman compose left containers in a non-running state:" >&2
 		printf '%s\n' "$failing_states" >&2
+		return 1
+	fi
+	if [ -n "$health_failures" ]; then
+		printf '%s\n' "podman compose containers are not healthy:" >&2
+		printf '%s\n' "$health_failures" >&2
 		return 1
 	fi
 
@@ -3081,6 +4181,15 @@ verify_compose_state() {
 	fi
 
 	verify_expected_compose_services
+}
+
+verify_compose_state() {
+	local state_json
+	if ! state_json="$(compose_state_json)"; then
+		printf '%s\n' "podman compose state query failed or timed out for ${podman_compose_service_name}" >&2
+		return 1
+	fi
+	verify_compose_state_json "$state_json"
 }
 
 monitor_compose_state() {
@@ -3179,7 +4288,7 @@ monitor_compose_state() {
 			unlock_lifecycle_shared
 			exit 1
 		fi
-		if ! verify_compose_dns; then
+		if ! verify_compose_dns_stable; then
 			if monitor_transient_failure "podman compose monitor found broken compose DNS"; then
 				unlock_lifecycle_shared
 				sleep "$monitor_interval"
@@ -3199,18 +4308,6 @@ monitor_compose_state() {
 	done
 }
 
-notify_ready_and_monitor() {
-	local status helper_self
-	status="$1"
-	helper_self="${NIX_PODMAN_COMPOSE_HELPER_SELF:-$0}"
-	if [ -n "${NOTIFY_SOCKET-}" ]; then
-		systemd-notify \
-			--ready \
-			--status="$status"
-	fi
-	exec "$helper_self" monitor
-}
-
 cmd_cleanup_files() {
 	load_metadata
 	lock_lifecycle_exclusive
@@ -3225,7 +4322,6 @@ cmd_link_files() {
 	lock_lifecycle_exclusive
 	record_staging_runtime_state
 	stage_runtime_files
-	record_runtime_state
 	unlock_lifecycle_exclusive
 }
 
@@ -3233,27 +4329,16 @@ cmd_stage() {
 	cmd_link_files
 }
 
-cmd_bootstrap() {
+cmd_bootstrap_internal() {
 	load_metadata
 	if [ "$desired_state" = "stopped" ]; then
 		printf '%s\n' "podman compose instance desired state is stopped; skipping bootstrap"
 		return 0
 	fi
-	assert_adoption_allowed
-	lock_lifecycle_exclusive
-	if ! verify_staged_runtime_files; then
-		unlock_lifecycle_exclusive
-		return 1
-	fi
-	run_pre_start_hooks || {
-		unlock_lifecycle_exclusive
-		return 1
-	}
-	unlock_lifecycle_exclusive
+	run_pre_start_hooks
 }
 
 cmd_verify() {
-	local repaired=0
 	load_metadata
 	while true; do
 		if ! wait_for_verify_transition; then
@@ -3266,18 +4351,13 @@ cmd_verify() {
 		fi
 		if verify_staged_runtime_files &&
 			verify_runtime_state_current &&
-			verify_compose_state; then
+			verify_compose_readiness_with_dns_correction &&
+			run_verify_command; then
 			unlock_lifecycle_shared
 			return 0
 		fi
 		unlock_lifecycle_shared
-		if [ "$repaired" -eq 1 ] || [ "$desired_state" = "stopped" ]; then
-			return 1
-		fi
-		repaired=1
-		printf '%s\n' "podman compose runtime is stale for ${podman_compose_service_name}; restarting service before verify" >&2
-		systemctl --user restart "${podman_compose_service_name}.service" || return 1
-		run_post_start_hooks || return 1
+		return 1
 	done
 }
 
@@ -3299,38 +4379,44 @@ cmd_reload() {
 	ensure_runtime_dirs
 	case "$reload_method" in
 	restart)
-		podman_rootless_lifecycle_lock
+		begin_rootless_mutation "compose reload down"
 		if [ "$working_dir_exists" -eq 1 ]; then
 			if ! compose_down; then
-				podman_rootless_lifecycle_unlock
+				cleanup_failed_compose_stop delete || true
+				if ! finish_stop_mutation delete \
+					"compose reload teardown postcondition was indeterminate for ${podman_compose_service_name}" rollback; then
+					unlock_lifecycle_exclusive
+					return 1
+				fi
 				unlock_lifecycle_exclusive
 				return 1
 			fi
 		fi
-		podman_rootless_lifecycle_unlock
+		if ! finish_stop_mutation delete \
+			"compose reload teardown postcondition was indeterminate for ${podman_compose_service_name}"; then
+			unlock_lifecycle_exclusive
+			return 1
+		fi
 		cleanup_runtime_files
 		ensure_runtime_dirs
 		record_staging_runtime_state
 		stage_runtime_files
-		compose_pull || true
-		run_pre_start_hooks || {
+		if ! compose_start_transaction auto; then
 			unlock_lifecycle_exclusive
 			return 1
-		}
-		if ! compose_up_checked normal; then
-			unlock_lifecycle_exclusive
-			return 1
+		fi
+		if [ "$compose_start_force_recreate" -eq 1 ]; then
+			record_applied_recreate_state
+		else
+			record_runtime_state
 		fi
 		unlock_lifecycle_exclusive
 		if ! run_post_start_hooks; then
 			return 1
 		fi
-		lock_lifecycle_exclusive
-		record_runtime_state
-		unlock_lifecycle_exclusive
 		;;
 	signal)
-		podman_rootless_lifecycle_lock
+		begin_rootless_mutation "compose reload signal"
 		reload_old_manifest="${manifest_path}.reload-old.$$"
 		reload_selected_manifest="${manifest_path}.reload-selected.$$"
 		remove_path_if_exists "$reload_old_manifest"
@@ -3338,14 +4424,14 @@ cmd_reload() {
 		if ! stage_reload_files "$reload_old_manifest" "$reload_selected_manifest" ||
 			! compose_reload_signal ||
 			! verify_compose_state; then
-			podman_rootless_lifecycle_unlock
+			commit_rootless_mutation
 			unlock_lifecycle_exclusive
 			return 1
 		fi
 		cleanup_stale_reload_files "$reload_old_manifest" "$reload_selected_manifest"
 		write_reload_manifest "$reload_old_manifest" "$reload_selected_manifest" true
 		rm -f "$reload_old_manifest" "$reload_selected_manifest"
-		podman_rootless_lifecycle_unlock
+		commit_rootless_mutation
 		;;
 	*)
 		printf '%s\n' "unsupported podman compose reload method: $reload_method" >&2
@@ -3356,82 +4442,67 @@ cmd_reload() {
 }
 
 cmd_start() {
-	local force_recreate=0 mode=normal request
+	local status=0
 	load_metadata
 	assert_adoption_allowed
 	ensure_runtime_dirs
 	if helper_invoked_as_script && start_in_progress_active; then
-		notify_ready_and_monitor "podman compose start already in progress"
-		return 0
+		printf '%s\n' "podman compose start is already in progress for ${podman_compose_service_name}; refusing a concurrent lifecycle attempt" >&2
+		return "$compose_start_stuck_exit_status"
 	fi
 	lock_lifecycle_exclusive
+	rm -f -- "$failed_start_cleanup_complete_path"
 	clear_removal_policy_marker
 	record_staging_runtime_state
 	stage_runtime_files
-	run_pre_start_hooks || {
+	mark_start_in_progress "$$"
+	compose_start_transaction auto || {
+		status="$?"
 		clear_start_in_progress
 		unlock_lifecycle_exclusive
-		return 1
+		return "$status"
 	}
-	compose_pull || true
-	request="$(compose_start_plan_locked)"
-	IFS=$'\t' read -r mode force_recreate <<<"$request"
-	mark_start_in_progress "$$"
-	unlock_lifecycle_exclusive
-	if ! compose_up_checked "$mode"; then
-		return 1
-	fi
-	if ! run_post_start_hooks; then
-		return 1
-	fi
-	lock_lifecycle_exclusive
-	if [ "$force_recreate" -eq 1 ]; then
+	if [ "$compose_start_force_recreate" -eq 1 ]; then
 		record_applied_recreate_state
 	else
 		record_runtime_state
 	fi
 	clear_start_in_progress
 	unlock_lifecycle_exclusive
-	notify_ready_and_monitor "podman compose running"
+	run_post_start_hooks
 }
 
 cmd_start_staged() {
-	local force_recreate=0 mode=normal request
+	local status=0
 	load_metadata
 	assert_adoption_allowed
 	ensure_runtime_dirs
 	if helper_invoked_as_script && start_in_progress_active; then
-		notify_ready_and_monitor "podman compose start already in progress"
-		return 0
+		printf '%s\n' "podman compose start is already in progress for ${podman_compose_service_name}; refusing a concurrent lifecycle attempt" >&2
+		return "$compose_start_stuck_exit_status"
 	fi
 	lock_lifecycle_exclusive
+	rm -f -- "$failed_start_cleanup_complete_path"
 	clear_removal_policy_marker
 	if ! verify_staged_runtime_files; then
 		clear_start_in_progress
 		unlock_lifecycle_exclusive
 		return 1
 	fi
-	if ! load_local_images; then
+	mark_start_in_progress "$$"
+	compose_start_transaction auto || {
+		status="$?"
 		clear_start_in_progress
 		unlock_lifecycle_exclusive
-		return 1
-	fi
-	request="$(compose_start_plan_locked)"
-	IFS=$'\t' read -r mode force_recreate <<<"$request"
-	mark_start_in_progress "$$"
-	unlock_lifecycle_exclusive
-	if ! compose_up_checked "$mode"; then
-		return 1
-	fi
-	lock_lifecycle_exclusive
-	if [ "$force_recreate" -eq 1 ]; then
+		return "$status"
+	}
+	if [ "$compose_start_force_recreate" -eq 1 ]; then
 		record_applied_recreate_state
 	else
 		record_runtime_state
 	fi
 	clear_start_in_progress
 	unlock_lifecycle_exclusive
-	notify_ready_and_monitor "podman compose running"
 }
 
 cmd_reconcile() {
@@ -3453,14 +4524,22 @@ cmd_stop() {
 	stop_policy="$(current_stop_policy)"
 	lock_lifecycle_exclusive
 	mark_stop_in_progress
-	run_pre_stop_hooks || {
+	if [ "$stop_rootless_lock_timeout_seconds" -gt 0 ]; then
+		begin_rootless_mutation_timeout "$stop_rootless_lock_timeout_seconds" "compose stop" drain
+	else
+		begin_rootless_mutation "compose stop" drain
+	fi || {
+		printf '%s\n' "podman compose stop failed to acquire rootless mutation lock for ${podman_compose_service_name}; refusing unlocked stop" >&2
 		clear_stop_in_progress
 		unlock_lifecycle_exclusive
 		return 1
 	}
-	if ! podman_rootless_lifecycle_lock_timeout "$stop_rootless_lock_timeout_seconds"; then
-		printf '%s\n' "podman compose stop timed out waiting for rootless lifecycle lock for ${podman_compose_service_name}; proceeding with direct stop" >&2
-	fi
+	run_pre_stop_hooks || {
+		rollback_rootless_mutation_clean
+		clear_stop_in_progress
+		unlock_lifecycle_exclusive
+		return 1
+	}
 	if ! apply_compose_stop_policy "$stop_policy"; then
 		if failed_compose_stop_cleanup_satisfies_stop "$stop_policy"; then
 			if cleanup_failed_compose_stop "$stop_policy"; then
@@ -3469,7 +4548,10 @@ cmd_stop() {
 		else
 			cleanup_failed_compose_stop "$stop_policy" || true
 		fi
-		podman_rootless_lifecycle_unlock
+		if ! finish_stop_mutation "$stop_policy" \
+			"failed Compose stop for ${podman_compose_service_name}; cleanup postcondition was indeterminate" rollback; then
+			cleanup_satisfied_stop=0
+		fi
 		clear_stop_in_progress
 		unlock_lifecycle_exclusive
 		if [ "$cleanup_satisfied_stop" -eq 1 ]; then
@@ -3477,7 +4559,12 @@ cmd_stop() {
 		fi
 		return 1
 	fi
-	podman_rootless_lifecycle_unlock
+	if ! finish_stop_mutation "$stop_policy" \
+		"Compose stop returned success for ${podman_compose_service_name}, but its postcondition was indeterminate"; then
+		clear_stop_in_progress
+		unlock_lifecycle_exclusive
+		return 1
+	fi
 	clear_stop_in_progress
 	unlock_lifecycle_exclusive
 }
@@ -3485,6 +4572,15 @@ cmd_stop() {
 cmd_post_stop() {
 	local stop_policy failed_start_cleanup=0
 	load_metadata
+	if post_stop_should_cleanup_failed_start && [ -f "$failed_start_cleanup_complete_path" ]; then
+		lock_lifecycle_exclusive
+		printf '%s\n' "failed-start cleanup already completed for ${podman_compose_service_name}; skipping post-stop Podman cleanup"
+		rm -f -- "$failed_start_cleanup_complete_path"
+		clear_start_in_progress
+		clear_stop_in_progress
+		unlock_lifecycle_exclusive
+		return 0
+	fi
 	if post_stop_should_cleanup_failed_start && ! start_in_progress_marker_active "$start_in_progress_path"; then
 		failed_start_cleanup=1
 	fi
@@ -3508,33 +4604,40 @@ cmd_post_stop() {
 			printf '%s\n' "podman compose post-stop timed out waiting for lifecycle lock for ${podman_compose_service_name}; deferring cleanup" >&2
 			return 0
 		fi
-		if ! podman_rootless_lifecycle_lock_timeout "$post_stop_rootless_lock_timeout_seconds"; then
-			printf '%s\n' "podman compose post-stop timed out waiting for rootless lifecycle lock for ${podman_compose_service_name}; deferring cleanup" >&2
+		if ! begin_rootless_mutation_timeout "$post_stop_rootless_lock_timeout_seconds" "compose post-stop cleanup" drain; then
+			printf '%s\n' "podman compose post-stop timed out waiting for rootless mutation lock for ${podman_compose_service_name}; deferring cleanup" >&2
 			unlock_lifecycle_exclusive
 			return 0
 		fi
 	else
 		lock_lifecycle_exclusive
-		podman_rootless_lifecycle_lock
+		begin_rootless_mutation "compose post-stop cleanup" drain
 	fi
 	if [ "$failed_start_cleanup" -eq 1 ]; then
 		printf '%s\n' "systemd reported ${podman_compose_service_name}.service result=${SERVICE_RESULT}; running failed-start cleanup"
 		cleanup_failed_compose_start
-		podman_rootless_lifecycle_unlock
+		if ! finish_stop_mutation delete \
+			"post-stop failed-start cleanup was indeterminate for ${podman_compose_service_name}" rollback; then
+			unlock_lifecycle_exclusive
+			return 1
+		fi
 		unlock_lifecycle_exclusive
 		return 0
 	elif post_stop_should_cleanup_failed_stop "$stop_policy"; then
 		printf '%s\n' "systemd reported ${podman_compose_service_name}.service result=${SERVICE_RESULT}; running failed-stop cleanup"
 		cleanup_failed_compose_stop "$stop_policy" || true
 	fi
+	if ! finish_stop_mutation "$stop_policy" \
+		"post-stop cleanup postcondition was indeterminate for ${podman_compose_service_name}"; then
+		unlock_lifecycle_exclusive
+		return 1
+	fi
 	if ! apply_compose_post_stop_policy "$stop_policy"; then
-		podman_rootless_lifecycle_unlock
 		unlock_lifecycle_exclusive
 		return 1
 	fi
 	clear_start_in_progress
 	clear_stop_in_progress
-	podman_rootless_lifecycle_unlock
 	unlock_lifecycle_exclusive
 }
 
@@ -3570,20 +4673,27 @@ cmd_remove() {
 		fi
 		stop_policy="$(current_stop_policy)"
 		lock_lifecycle_exclusive
-		podman_rootless_lifecycle_lock
-		if ! apply_compose_stop_policy "$stop_policy" ||
-			! apply_compose_post_stop_policy "$stop_policy"; then
-			podman_rootless_lifecycle_unlock
+		begin_rootless_mutation "compose removal cleanup"
+		if ! apply_compose_stop_policy "$stop_policy"; then
+			cleanup_failed_compose_stop "$stop_policy" || true
+		fi
+		if ! finish_stop_mutation "$stop_policy" \
+			"compose removal cleanup postcondition was indeterminate for ${podman_compose_service_name}"; then
 			unlock_lifecycle_exclusive
 			clear_removal_policy_marker
 			return 1
 		fi
-		podman_rootless_lifecycle_unlock
+		if ! apply_compose_post_stop_policy "$stop_policy"; then
+			unlock_lifecycle_exclusive
+			clear_removal_policy_marker
+			return 1
+		fi
 		unlock_lifecycle_exclusive
 	fi
 }
 
 cmd_image_pull() {
+	local mutation_rc=0
 	load_metadata
 	assert_adoption_allowed
 	ensure_runtime_dirs
@@ -3603,11 +4713,20 @@ cmd_image_pull() {
 		record_image_pull_status skipped
 		return 0
 	fi
-	lock_lifecycle_exclusive
+	begin_image_pull_mutation "compose image pull" || mutation_rc="$?"
+	if [ "$mutation_rc" -ne 0 ]; then
+		if [ "$image_pull_preflight_policy" = prepare ] && [ "$mutation_rc" -eq 75 ]; then
+			record_image_pull_status deferred
+			return 0
+		fi
+		return "$mutation_rc"
+	fi
 	if ! compose_pull_with_retry; then
+		rollback_rootless_mutation_clean
 		unlock_lifecycle_exclusive
 		return 1
 	fi
+	commit_rootless_mutation
 	record_image_pull_state
 	record_image_pull_status pulled
 	unlock_lifecycle_exclusive
@@ -3623,14 +4742,26 @@ cmd_logs() {
 }
 
 main() {
+	local selected_backend="compose"
 	init_vars
 
+	if [ "${1-}" != runtime-preflight ] && [ -n "$podman_compose_metadata" ] && [ -r "$podman_compose_metadata" ]; then
+		selected_backend="$(jq -r '.backend // "compose"' "$podman_compose_metadata")"
+	fi
+	if [ "$selected_backend" = quadlet ]; then
+		quadlet_main "$@"
+		return
+	fi
+
 	case "${1-}" in
+	runtime-preflight)
+		cmd_runtime_preflight
+		;;
 	stage)
 		cmd_stage
 		;;
-	bootstrap)
-		cmd_bootstrap
+	bootstrap-internal)
+		cmd_bootstrap_internal
 		;;
 	link-files)
 		cmd_link_files
@@ -3676,7 +4807,7 @@ main() {
 		cmd_logs "$@"
 		;;
 	*)
-		printf '%s\n' "usage: $0 {stage|bootstrap|link-files|cleanup-files|post-stop|verify|monitor|reload|repair|start-staged|reconcile|start|stop|remove|image-pull|logs}" >&2
+		printf '%s\n' "usage: $0 {runtime-preflight|stage|link-files|cleanup-files|post-stop|verify|monitor|reload|repair|start-staged|reconcile|start|stop|remove|image-pull|logs}" >&2
 		exit 1
 		;;
 	esac

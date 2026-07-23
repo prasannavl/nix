@@ -33,8 +33,7 @@ main() {
     {"user": "${test_user}", "unit": "user-defaulted.service"}
   ],
   "userTargets": [
-    {"user": "${test_user}", "target": "abird-managed.target", "stopOnDrain": true, "startOnResume": true},
-    {"user": "${test_user}", "target": "abird-managed-ready.target", "stopOnDrain": true, "startOnResume": true}
+    {"user": "${test_user}", "target": "abird-managed.target", "stopOnDrain": true, "startOnResume": true}
   ]
 }
 JSON
@@ -63,7 +62,6 @@ start defaulted.service
 --user start user-start-only.service
 --user start user-defaulted.service
 --user start abird-managed.target
---user start abird-managed-ready.target
 EXPECTED
 
 	: >"$tmp_dir/gate"
@@ -79,7 +77,6 @@ EXPECTED
 stop --wait stop-only.service
 stop --wait defaulted.service
 --user stop --wait abird-managed.target
---user stop --wait abird-managed-ready.target
 --user stop --wait user-stop-only.service
 --user stop --wait user-defaulted.service
 EXPECTED

@@ -216,16 +216,19 @@ in {
               ];
               restartIfChanged = true;
               stopIfChanged = true;
-              serviceConfig = {
-                Type = "oneshot";
-                RemainAfterExit = true;
-                Environment = [
-                  "MIGRATION_MANAGER_MANIFEST=${manifest}"
-                  "MIGRATION_MANAGER_DECLARED_STATE=${cfg.state}"
-                ];
-                ExecStart = "${configuredPackage}/bin/migration-manager-helper sync";
-                ExecStartPost = "${pkgs.systemd}/bin/systemctl --no-block restart migration-manager-apply.service";
-              };
+              serviceConfig =
+                {
+                  Type = "oneshot";
+                  RemainAfterExit = true;
+                  Environment = [
+                    "MIGRATION_MANAGER_MANIFEST=${manifest}"
+                    "MIGRATION_MANAGER_DECLARED_STATE=${cfg.state}"
+                  ];
+                  ExecStart = "${configuredPackage}/bin/migration-manager-helper sync";
+                }
+                // lib.optionalAttrs (cfg.state != "runtime") {
+                  ExecStartPost = "${pkgs.systemd}/bin/systemctl --no-block restart migration-manager-apply.service";
+                };
             };
           }
           // lib.mapAttrs' gateSystemService systemUnits;

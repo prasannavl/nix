@@ -39,6 +39,7 @@
             bootTag = "boot-global";
             recreateTag = "recreate-global";
             autoReconcile = true;
+            startConcurrency = 1;
             certificates = [
               {
                 name = "ops";
@@ -66,6 +67,7 @@
           default.instances = {
             web = {
               ipv4Address = "10.10.30.20";
+              startPriority = -10;
               config."security.nesting" = "true";
               bootTag = "boot-local";
               recreateTag = "recreate-local";
@@ -104,6 +106,14 @@
   };
 
   config = evalConfig.config;
+  unlimitedConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.global.startConcurrency = lib.mkForce (-1);
+        }
+      ];
+    }).config;
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
 
   envHasPrefix = prefix: env:
@@ -116,14 +126,22 @@
   vmMeta = builtins.fromJSON vmState.userMeta."user.nixos-meta";
   webUnit = config.systemd.services.incus-web;
   ignoredUnit = config.systemd.services.incus-ignored;
+  unlimitedWebUnit = unlimitedConfig.systemd.services.incus-web;
   vmUnit = config.systemd.services."incus-lab.vm";
   reconcilerUnit = config.systemd.services.incus-machines-reconciler;
   imagesUnit = config.systemd.services.incus-images;
   preseedUnit = config.systemd.services.incus-preseed;
   certificatesUnit = config.systemd.services.incus-machines-certificates;
+  autoStartTarget = config.systemd.targets.incus-machines-autostart;
+  autoStartGate0 = config.systemd.targets.incus-machines-autostart-gate-0;
+  autoStartGate1 = config.systemd.targets.incus-machines-autostart-gate-1;
+  autoStartSettle0 = config.systemd.services.incus-machines-autostart-settle-0;
+  autoStartSettle1 = config.systemd.services.incus-machines-autostart-settle-1;
   delegationUnit = config.systemd.services.incus-cert-delegation-tenant;
 in
   assert failedAssertions == [];
+  assert unlimitedWebUnit.wantedBy == ["multi-user.target"];
+  assert !(builtins.hasAttr "incus-machines-autostart" unlimitedConfig.systemd.targets);
   assert config.virtualisation.incus.enable == true;
   assert config.virtualisation.incus.ui.enable == true;
   assert webState.name == "web";
@@ -163,7 +181,7 @@ in
   assert vmState.state == "stopped";
   assert vmState.autoStart == false;
   assert vmMeta.hostSuspendPolicy == "ignore";
-  assert webUnit.wantedBy == ["multi-user.target"];
+  assert webUnit.wantedBy == [];
   assert builtins.elem "incus-preseed.service" webUnit.after;
   assert builtins.elem "incus-images.service" webUnit.after;
   assert builtins.elem "network-online.target" webUnit.after;
@@ -171,7 +189,7 @@ in
   assert lib.hasInfix " stop-instance web default" webUnit.serviceConfig.ExecStop;
   assert webUnit.restartIfChanged == true;
   assert webUnit.stopIfChanged == true;
-  assert ignoredUnit.wantedBy == ["multi-user.target"];
+  assert ignoredUnit.wantedBy == [];
   assert lib.hasInfix " start-instance ignored default" ignoredUnit.serviceConfig.ExecStart;
   assert ignoredUnit.restartTriggers == [];
   assert ignoredUnit.restartIfChanged == false;
@@ -195,6 +213,18 @@ in
   assert builtins.elem "d /var/lib/incus-delegations/tenant - - - -" config.systemd.tmpfiles.rules;
   assert lib.hasInfix "incus-machines-host-suspend pre" config.powerManagement.powerDownCommands;
   assert lib.hasInfix "incus-machines-host-suspend post" config.powerManagement.resumeCommands;
+  assert autoStartTarget.wantedBy == ["multi-user.target"];
+  assert builtins.elem "incus-web.service" autoStartTarget.wants;
+  assert builtins.elem "incus-ignored.service" autoStartTarget.wants;
+  assert autoStartGate0.before == ["incus-web.service"];
+  assert autoStartGate1.after == ["incus-machines-autostart-settle-0.service"];
+  assert autoStartGate1.before == ["incus-ignored.service"];
+  assert autoStartSettle0.after == ["incus-web.service"];
+  assert autoStartSettle0.before == ["incus-machines-autostart-gate-1.target"];
+  assert lib.hasInfix "--machine web" autoStartSettle0.serviceConfig.ExecStart;
+  assert autoStartSettle1.after == ["incus-ignored.service"];
+  assert autoStartSettle1.before == [];
+  assert lib.hasInfix "--machine ignored" autoStartSettle1.serviceConfig.ExecStart;
     pkgs.runCommand "incus-module-test" {} ''
       touch "$out"
     ''

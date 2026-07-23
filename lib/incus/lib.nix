@@ -89,6 +89,7 @@
     name,
     ipv4Address,
     image ? null,
+    startPriority ? null,
     removalPolicy ? null,
     adopt ? null,
     recreateTag ? null,
@@ -138,6 +139,9 @@
     }
     // lib.optionalAttrs (image != null) {
       image = image;
+    }
+    // lib.optionalAttrs (startPriority != null) {
+      startPriority = startPriority;
     }
     // lib.optionalAttrs (removalPolicy != null) {
       removalPolicy = removalPolicy;

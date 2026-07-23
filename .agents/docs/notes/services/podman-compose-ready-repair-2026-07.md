@@ -1,58 +1,44 @@
-# Podman Compose Ready Repair 2026-07
+# Podman Compose Readiness and Runtime Containment 2026-07
 
-The generated Podman Compose graph keeps readiness narrow:
-
-```text
-<name>.service -> <name>-verify.service -> <name>-ready.target
-```
-
-For services with `postStart`, the reconcile edge remains:
+The generated Podman lifecycle graph has one public managed root per service
+user. The root weakly wants each instance ready target, while each leaf owns its
+full readiness chain:
 
 ```text
-<name>.service -> <name>-reconcile.service -> <name>-verify.service
+<user>-managed.target
+  Wants -> <name>-ready.target
+              Requires -> <name>-verify.service
+                            Requires -> <name>.service
 ```
 
-`cmd_verify` remains the readiness command. It waits briefly for an active start
-marker or systemd transition on the owning service to settle, then checks staged
-files, runtime stamps, and compose state. If runtime state is stale or compose
-state is unhealthy, verify may restart the owning user service once and then
-re-check. If the second check fails, verify fails normally.
+This keeps a failed verifier leaf-local instead of making one unhealthy instance
+cancel unrelated ready services. The main service is a bounded repo-owned
+lifecycle wrapper. Compose and Quadlet provider units remain private
+implementation details.
 
-The ready target should require only the verify unit. Do not make ready targets
-require the owning compose service directly; shared managed-ready targets fan
-out per-service ready targets, and a direct ready-to-service requirement can
-start every compose service in one systemd transaction. That bypasses the
-bounded service-start path and can overload dense rootless Podman hosts.
+`startConcurrency` replaces the older `startParallelism` surface. It defaults to
+four per managed user, accepts `-1` for unlimited concurrency, and spans the
+whole start-through-ready transaction. `startPriority` provides a deterministic
+tie-breaker but never overrides declared dependency edges.
 
-Keep verify ordered after the owning service, but do not make verify require the
-service directly. A direct verify-to-service requirement can fight the bounded
-restart that verify performs when repairing stale runtime state.
+Rootless Podman mutation is serialized per service user. Runtime preflight,
+image preparation, provider mutations, rollback, and evidence-scoped network
+repair share the same transaction boundary. Application verification is
+read-only and runs after the provider transaction commits. A provider start is
+never terminated and replayed merely because dependency health or DNS is still
+settling.
 
-The generated compose service, bootstrap, reconcile, and verify units use the
-instance's `timeoutReadySeconds` as `TimeoutStartSec`. Verify exports a
-transition wait derived from that budget, keeping a small reserve before
-systemd's timeout so readiness failures are reported cleanly.
+Readiness checks declared services, container state and health, and an optional
+`verifyCommand`. When `verifyCommand` is empty and `exposedPorts.http` declares
+an HTTP or HTTPS upstream protocol, the module generates a bounded local origin
+probe. TLS probes use the declared host metadata and loopback resolution.
 
-Set stack-level `timeoutReadySeconds` on dense hosts instead of scattering
-service-specific timeout overrides. Individual unusually slow services can still
-raise their own instance timeout next to the service declaration.
+Inline YAML local images retain a generated closure root. An authoring-time
+`image: nix-store:${package}` reference is rewritten to a stable runtime tag and
+the image tar remains reachable on fresh deploy targets even if parsing the YAML
+would otherwise lose Nix string context.
 
-The timeout budget is not sufficient by itself. If native switching starts every
-changed compose service at once, rootless Podman can be overloaded. The module
-therefore emits per-user `After=` edges between auto-starting compose services
-so at most `startParallelism` services for a service user enter their start
-transaction at once. The default is four, matching the old reconciler's default.
-
-Those throttle edges are dependency-level aware. Dependency levels are built
-from intra-stack `dependsOn` / `wants` edges and explicit generated unit
-references, then the `startParallelism` sliding window is applied only within a
-level. Declaration order is only a tie-breaker inside one dependency level; it
-must not create ordering cycles across provider/consumer relationships.
-
-Inline YAML local images need an additional closure root. An authoring-time
-`image: nix-store:${package}` string can be parsed from YAML in a way that keeps
-the literal `/nix/store/...` path in helper metadata but loses Nix string
-context for deployment. The module therefore preserves context while extracting
-inline image refs and emits a generated `*-local-images` link farm referenced by
-the service unit environment. That environment reference is what makes fresh
-targets receive the image tar before `podman-compose-helper` tries to load it.
+Quadlet is opt-in and supports only the strict, single-service conversion
+surface documented in the Podman Quadlet backend note. Existing Compose
+instances are not migrated automatically, and provider changes require a
+proven-clean handoff.

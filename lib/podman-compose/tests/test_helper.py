@@ -154,6 +154,10 @@ class PodmanComposeHelperTest(unittest.TestCase):
             state_path="${{generated_dir}}/state.json"
             podman_compose_service_name=test-compose
             manifest_path="${{runtime_dir}}/podman-compose/${{podman_compose_service_name}}.manifest"
+            rootless_mutation_marker_path="${{runtime_dir}}/podman-compose/rootless-mutations/${{podman_compose_service_name}}"
+            rootless_runtime_dirty_path="${{runtime_dir}}/podman-compose/runtime-dirty"
+            runtime_preflight_required_path="${{runtime_dir}}/podman-compose/runtime-preflight-required"
+            compose_dns_correction_marker_path="${{generated_dir}}/dns-correction-attempted"
             compose_start_default_timeout_seconds=5
             compose_args=()
             compose_file_args=()
@@ -182,6 +186,13 @@ class PodmanComposeHelperTest(unittest.TestCase):
             "\n".join(history),
         )
 
+    def assert_compose_up_count(self, history, expected):
+        suffix = " up --no-build -d --remove-orphans"
+        actual = sum(
+            line.startswith("compose ") and suffix in line for line in history
+        )
+        self.assertEqual(expected, actual, "\n".join(history))
+
     def assert_compose_force_recreate_not_in_history(self, history):
         self.assertFalse(
             any(
@@ -190,6 +201,13 @@ class PodmanComposeHelperTest(unittest.TestCase):
                 for line in history
             ),
             "\n".join(history),
+        )
+
+    def compose_state_history_entry(self):
+        return (
+            "ps -a --filter label=com.docker.compose.project.working_dir="
+            + str(self.compose_dir)
+            + " --format json"
         )
 
     def wait_for_pid_absent(self, pid: int, timeout: float = 5.0) -> bool:
@@ -231,31 +249,6 @@ class PodmanComposeHelperTest(unittest.TestCase):
         )
         self.assertEqual("top-level", wrapped.stdout.strip())
 
-    def test_notify_ready_and_monitor_execs_helper_self(self):
-        monitor_wrapper = self.state_dir / "monitor-wrapper"
-        self._write_executable(
-            monitor_wrapper,
-            textwrap.dedent(
-                f'''#!{shutil.which("bash")}
-                printf 'monitor:%s\n' "$*"
-                '''
-            ).lstrip(),
-        )
-
-        result = self.run_helper(
-            """
-            notify_ready_and_monitor "podman compose start dispatched"
-            """,
-            NIX_PODMAN_COMPOSE_HELPER_SELF=str(monitor_wrapper),
-        )
-
-        self.assertEqual(0, result.returncode)
-        self.assertTrue(result.stdout.strip().endswith("monitor:monitor"))
-        self.assertIn(
-            "--ready --status=podman compose start dispatched",
-            self.systemd_notify_history_file.read_text(encoding="utf-8"),
-        )
-
     def write_metadata(self, name: str, metadata: dict) -> Path:
         path = self.state_dir / name
         path.write_text(json.dumps(metadata), encoding="utf-8")
@@ -263,6 +256,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
 
     def write_service_metadata(self, name: str, **overrides) -> Path:
         metadata = {
+            "serviceName": "test-compose",
             "workingDir": str(self.compose_dir),
             "adoptionStamp": "test-adoption-stamp",
             "state": "running",
@@ -272,6 +266,22 @@ class PodmanComposeHelperTest(unittest.TestCase):
         }
         metadata.update(overrides)
         return self.write_metadata(name, metadata)
+
+    def write_runtime_preflight_metadata(self, service_metadata: Path, token="preflight-a") -> Path:
+        return self.write_metadata(
+            "runtime-preflight.json",
+            {
+                "version": 1,
+                "user": "tester",
+                "token": token,
+                "services": [
+                    {
+                        "serviceName": "test-compose",
+                        "metadataFile": str(service_metadata),
+                    }
+                ],
+            },
+        )
 
     def write_staged_service_metadata(self, name: str, **overrides):
         src_config = self.state_dir / f"{name}.config.yml"
@@ -333,7 +343,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         )
         self.assertEqual("compose up --no-build -d --remove-orphans", self.podman_args_file.read_text().strip())
 
-    def test_compose_up_supervised_forces_local_pull_policy_for_known_services(self):
+    def test_compose_up_supervised_forces_runtime_policy_for_known_services(self):
         self.run_helper(
             """
             generated_dir="$working_dir/.podman-compose"
@@ -345,12 +355,12 @@ class PodmanComposeHelperTest(unittest.TestCase):
             TEST_TIMEOUT_VALUE="5s",
         )
 
-        override = self.generated_dir / "local-pull-policy.override.json"
+        override = self.generated_dir / "runtime-policy.override.json"
         self.assertEqual(
             {
                 "services": {
-                    "web": {"pull_policy": "never"},
-                    "worker": {"pull_policy": "never"},
+                    "web": {"pull_policy": "never", "restart": "no"},
+                    "worker": {"pull_policy": "never", "restart": "no"},
                 }
             },
             json.loads(override.read_text(encoding="utf-8")),
@@ -385,20 +395,637 @@ class PodmanComposeHelperTest(unittest.TestCase):
             result.stdout.splitlines(),
         )
 
-    def test_compose_up_supervised_force_recreate_adds_force_recreate(self):
-        self.run_helper(
+    def test_rootless_mutation_lock_writes_active_marker(self):
+        result = self.run_helper(
             """
-            compose_args=(--project-name demo)
-            compose_file_args=(-f compose.yml)
-            compose_up_supervised force
-            """,
-            TEST_PODMAN_MODE="success",
-            TEST_TIMEOUT_VALUE="5s",
+            podman_rootless_lifecycle_lock "compose up"
+            marker="$runtime_dir/podman-compose/rootless-mutations/$podman_compose_service_name"
+            sed -n 's/^reason=//p; s/^service=//p' "$marker"
+            podman_rootless_lifecycle_unlock
+            if [ -e "$marker" ]; then
+              printf 'marker-still-present\n'
+            else
+              printf 'marker-cleared\n'
+            fi
+            """
         )
+
         self.assertEqual(
-            "compose --project-name demo -f compose.yml up --no-build -d --remove-orphans --force-recreate",
-            self.podman_args_file.read_text().strip(),
+            ["test-compose", "compose up", "marker-cleared"],
+            result.stdout.splitlines(),
         )
+
+    def test_normal_mutation_fails_closed_instead_of_running_preflight(self):
+        service_metadata = self.write_service_metadata("preflight-guard-service.json")
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+        preflight_dir = self.runtime_dir / "podman-compose"
+        marker_dir = preflight_dir / "rootless-mutations"
+        marker_dir.mkdir(parents=True)
+        (preflight_dir / "runtime-preflight.stamp").write_text(
+            "bootId=test-boot\ntoken=preflight-a\ncompletedAt=1\n",
+            encoding="utf-8",
+        )
+        (marker_dir / "abandoned").write_text("pid=999999999\n", encoding="utf-8")
+
+        result = self.run_helper(
+            "begin_rootless_mutation 'guarded start'",
+            check=False,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("refusing inline repair", result.stderr)
+        self.assertEqual("", self.podman_history_file.read_text(encoding="utf-8"))
+        self.assertTrue((marker_dir / "abandoned").exists())
+
+    def test_indeterminate_rollback_leaves_dirty_runtime_and_marker(self):
+        result = self.run_helper(
+            """
+            begin_rootless_mutation "failed start"
+            marker="$rootless_mutation_marker_path"
+            leave_rootless_runtime_dirty "rollback query failed"
+            test -e "$marker"
+            test -e "$rootless_runtime_dirty_path"
+            test -e "$runtime_preflight_required_path"
+            printf 'dirty\n'
+            """,
+        )
+
+        self.assertEqual("dirty", result.stdout.strip())
+
+    def test_clean_rollback_clears_transaction_marker(self):
+        result = self.run_helper(
+            """
+            begin_rootless_mutation "failed start"
+            marker="$rootless_mutation_marker_path"
+            cleanup_failed_compose_start() { :; }
+            runtime_preflight_project_cleanup_complete() { :; }
+            rollback_failed_compose_start 125
+            test ! -e "$marker"
+            test ! -e "$rootless_runtime_dirty_path"
+            printf 'clean\n'
+            """,
+        )
+
+        self.assertEqual("clean", result.stdout.strip())
+
+    def test_compose_backend_transition_rejection_releases_clean(self):
+        result = self.run_helper(
+            """
+            begin_rootless_mutation() { printf 'begin\n'; }
+            backend_transition_admit() { return 1; }
+            rollback_rootless_mutation_clean() { printf 'rollback-clean\n'; }
+            leave_rootless_runtime_dirty() { printf 'DIRTY:%s\n' "$1"; }
+            set +e
+            compose_start_transaction normal
+            status=$?
+            set -e
+            printf 'status:%s\n' "$status"
+            """
+        )
+
+        self.assertEqual(
+            ["begin", "rollback-clean", "status:1"], result.stdout.splitlines()
+        )
+        self.assertNotIn("DIRTY", result.stdout)
+
+    def test_start_transaction_keeps_bootstrap_and_provider_under_one_lock(self):
+        result = self.run_helper(
+            """
+            begin_rootless_mutation() { podman_rootless_lifecycle_lock_depth=1; }
+            commit_rootless_mutation() { podman_rootless_lifecycle_lock_depth=0; }
+            run_bootstrap_phase() { printf 'bootstrap-depth=%s\n' "$podman_rootless_lifecycle_lock_depth"; }
+            compose_up_once_mutating() { printf 'provider-depth=%s mode=%s\n' "$podman_rootless_lifecycle_lock_depth" "$1"; }
+            validate_compose_provider_inventory() { :; }
+            compose_start_transaction normal
+            printf 'return-depth=%s\n' "$podman_rootless_lifecycle_lock_depth"
+            """,
+        )
+
+        self.assertEqual(
+            ["bootstrap-depth=1", "provider-depth=1 mode=normal", "return-depth=0"],
+            result.stdout.splitlines(),
+        )
+
+    def test_provider_status_125_is_not_replayed(self):
+        result = self.run_helper(
+            """
+            expected_compose_services=(web)
+            run_bootstrap_phase() { :; }
+            compose_up_checked normal
+            """,
+            check=False,
+            TEST_PODMAN_MODE="runtime_125_then_success",
+            TEST_PODMAN_PS_JSON="[]",
+            TEST_TIMEOUT_VALUE="10s",
+        )
+
+        self.assertEqual(125, result.returncode)
+        self.assert_compose_up_count(
+            self.podman_history_file.read_text(encoding="utf-8").splitlines(), 1
+        )
+
+    def test_dns_correction_is_durable_across_verifier_attempts(self):
+        result = self.run_helper(
+            """
+            attempts=0
+            wait_for_compose_readiness() {
+              attempts=$((attempts + 1))
+              [ "$attempts" -gt 1 ] || return "$compose_start_project_dns_reloadable_exit_status"
+            }
+            reload_compose_project_networks_mutating() {
+              printf 'reload-depth=%s\n' "$podman_rootless_lifecycle_lock_depth"
+            }
+            verify_compose_readiness_with_dns_correction
+            compose_up_project_dns_reload_attempted=0
+            wait_for_compose_readiness() { return "$compose_start_project_dns_reloadable_exit_status"; }
+            status=0
+            verify_compose_readiness_with_dns_correction || status=$?
+            printf 'second-status=%s\n' "$status"
+            """,
+        )
+
+        self.assertEqual(
+            ["reload-depth=1", "second-status=77"], result.stdout.splitlines()
+        )
+
+    def test_provider_timeout_budget_is_separate_from_main_unit_timeout(self):
+        result = self.run_helper(
+            "compose_start_timeout_seconds",
+            NIX_PODMAN_COMPOSE_PROVIDER_TIMEOUT_SECONDS="45",
+            TEST_TIMEOUT_VALUE="225s",
+        )
+
+        self.assertEqual("45", result.stdout.strip())
+
+    def test_stable_dns_observation_waits_for_rootless_mutation_without_marker(self):
+        lock_dir = self.runtime_dir / "podman-compose"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "rootless-lifecycle-v1.lock"
+        holder_ready = self.state_dir / "holder-ready"
+        holder_release = self.state_dir / "holder-release"
+        holder = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                """
+                exec 6>"$1"
+                flock -x 6
+                : >"$2"
+                while [ ! -e "$3" ]; do sleep 0.05; done
+                """,
+                "bash",
+                str(lock_path),
+                str(holder_ready),
+                str(holder_release),
+            ],
+            cwd=self.repo_root,
+        )
+        observer = None
+        try:
+            deadline = time.monotonic() + 5
+            while not holder_ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(holder_ready.exists(), "exclusive lock holder did not start")
+
+            observer = subprocess.Popen(
+                [
+                    "bash",
+                    "-c",
+                    self.helper_script(
+                        """
+                        verify_compose_dns() {
+                          marker="$runtime_dir/podman-compose/rootless-mutations/$podman_compose_service_name"
+                          [ ! -e "$marker" ]
+                          printf 'observed\n'
+                        }
+                        verify_compose_dns_stable
+                        """
+                    ),
+                ],
+                cwd=self.repo_root,
+                env=self.helper_env(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            time.sleep(0.2)
+            self.assertIsNone(observer.poll(), "DNS observation bypassed exclusive mutation")
+            self.assertFalse((lock_dir / "rootless-mutations").exists())
+
+            holder_release.touch()
+            stdout, stderr = observer.communicate(timeout=5)
+            self.assertEqual(0, observer.returncode, stderr)
+            self.assertEqual("observed", stdout.strip())
+        finally:
+            holder_release.touch()
+            holder.wait(timeout=5)
+            if observer is not None and observer.poll() is None:
+                observer.kill()
+                observer.wait(timeout=5)
+
+    def test_stable_dns_observation_preserves_output_and_status(self):
+        result = self.run_helper(
+            """
+            verify_compose_dns() {
+              printf 'dns-output\n'
+              printf 'dns-error\n' >&2
+              return 23
+            }
+            status=0
+            verify_compose_dns_stable || status=$?
+            printf 'status=%s\n' "$status"
+            """,
+        )
+
+        self.assertEqual(["dns-output", "status=23"], result.stdout.splitlines())
+        self.assertEqual("dns-error", result.stderr.strip())
+
+    def test_stable_dns_observation_uses_raw_verification_under_mutation_lock(self):
+        result = self.run_helper(
+            """
+            podman_rootless_lifecycle_lock_depth=1
+            podman_rootless_observation_lock() {
+              printf 'unexpected-observation-lock\n'
+              return 1
+            }
+            verify_compose_dns() {
+              printf 'raw-verification\n'
+            }
+            verify_compose_dns_stable
+            """,
+        )
+
+        self.assertEqual("raw-verification", result.stdout.strip())
+
+    def test_dns_probe_classifies_outer_failures_as_indeterminate(self):
+        compose_state = [
+            {
+                "ID": "web-id",
+                "State": "running",
+                "Labels": {"io.podman.compose.service": "web"},
+            },
+            {
+                "ID": "db-id",
+                "State": "running",
+                "Labels": {"io.podman.compose.service": "db"},
+            },
+        ]
+        for status in (124, 125, 137):
+            with self.subTest(status=status):
+                result = self.run_helper(
+                    """
+                    long_running=true
+                    compose_dns_dependencies_loaded=1
+                    compose_dns_dependencies_json='[{"service":"web","dependency":"db"}]'
+                    status=0
+                    verify_compose_dns_stable || status=$?
+                    printf 'status=%s\n' "$status"
+                    """,
+                    TEST_PODMAN_PS_JSON=json.dumps(compose_state),
+                    TEST_PODMAN_EXEC_EXIT=str(status),
+                )
+
+                self.assertEqual("status=79", result.stdout.strip())
+                self.assertIn(
+                    f"DNS namespace query failed for network compose_default with status {status}",
+                    result.stderr,
+                )
+                self.assertNotIn("cannot resolve declared dependency", result.stderr)
+
+    def test_dns_probe_classifies_target_query_failure_as_indeterminate(self):
+        result = self.run_helper(
+            """
+            long_running=true
+            compose_dns_dependencies_loaded=1
+            compose_dns_dependencies_json='[{"service":"web","dependency":"db"}]'
+            status=0
+            verify_compose_dns_stable || status=$?
+            printf 'status=%s\n' "$status"
+            """,
+            TEST_PODMAN_MODE="ps_failure",
+        )
+
+        self.assertEqual("status=79", result.stdout.strip())
+        self.assertIn("could not query running dependency probe targets", result.stderr)
+
+    def test_rootless_mutation_marker_rejects_reused_pid_identity(self):
+        result = self.run_helper(
+            """
+            marker="$runtime_dir/reused-pid-marker"
+            mkdir -p "$runtime_dir"
+            {
+              printf 'pid=%s\n' "$$"
+              printf 'pidStartTicks=1\n'
+              printf 'bootId=%s\n' "$(runtime_preflight_boot_id)"
+            } >"$marker"
+            if rootless_mutation_marker_is_stale "$marker"; then
+              printf 'stale\n'
+            else
+              printf 'active\n'
+            fi
+            """,
+        )
+
+        self.assertEqual("stale", result.stdout.strip())
+
+    def test_runtime_preflight_fast_path_does_not_query_podman(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+        preflight_dir = self.runtime_dir / "podman-compose"
+        preflight_dir.mkdir(parents=True)
+        (preflight_dir / "runtime-preflight.stamp").write_text(
+            "bootId=test-boot\ntoken=preflight-a\ncompletedAt=1\n",
+            encoding="utf-8",
+        )
+
+        self.run_helper(
+            "cmd_runtime_preflight",
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+        )
+
+        self.assertEqual("", self.podman_history_file.read_text(encoding="utf-8"))
+
+    def test_runtime_preflight_defers_service_local_backend_transition(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            """
+            backend_transition_admit() { return 1; }
+            cmd_runtime_preflight
+            """,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+        )
+
+        self.assertIn("deferring service-local backend transition", result.stderr)
+        self.assertTrue(
+            (self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists()
+        )
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-dirty").exists())
+
+    def test_runtime_preflight_blocks_on_indeterminate_backend_transition(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            """
+            backend_transition_admit() { return 2; }
+            cmd_runtime_preflight
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-dirty").exists())
+        self.assertFalse(
+            (self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists()
+        )
+
+    def test_runtime_preflight_repairs_abandoned_project_before_success(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+        marker_dir = self.runtime_dir / "podman-compose/rootless-mutations"
+        marker_dir.mkdir(parents=True)
+        abandoned_marker = marker_dir / "test-compose"
+        abandoned_marker.write_text("pid=999999999\nreason=compose up\n", encoding="utf-8")
+        dirty_marker = self.runtime_dir / "podman-compose/runtime-dirty"
+        dirty_marker.write_text("reason=abandoned rollback\n", encoding="utf-8")
+
+        self.run_helper(
+            "cmd_runtime_preflight",
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_PS_IDS="stale123",
+            TEST_PODMAN_PS_IDS_AFTER_RM="",
+            TEST_PODMAN_INSPECT_STATE_JSON='{"Running":true,"Pid":999999999,"ConmonPid":1}',
+        )
+
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn("rm -f --depend -v stale123", history)
+        self.assertIn("rm -f --depend -v compose_web_1", history)
+        self.assertNotIn("network reload --all", history)
+        self.assertFalse(abandoned_marker.exists())
+        self.assertFalse(dirty_marker.exists())
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-preflight-required").exists())
+        stamp = (self.runtime_dir / "podman-compose/runtime-preflight.stamp").read_text(encoding="utf-8")
+        self.assertIn("bootId=test-boot", stamp)
+        self.assertIn("token=preflight-a", stamp)
+
+    def test_runtime_preflight_failure_remains_required(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            "cmd_runtime_preflight",
+            check=False,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="rm_zero_leaves_exists",
+            TEST_PODMAN_PS_IDS="stale123",
+            TEST_PODMAN_INSPECT_STATE_JSON='{"Running":true,"Pid":999999999,"ConmonPid":1}',
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-preflight-required").exists())
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-dirty").exists())
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists())
+
+    def test_runtime_preflight_accepts_clean_postcondition_after_cleanup_error(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            """
+            runtime_preflight_project_recreate_status() { return 0; }
+            remove_compose_project_containers() { return 125; }
+            cmd_runtime_preflight
+            """,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+        )
+
+        self.assertIn(
+            "cleanup reported transient errors but reached a clean project state",
+            result.stdout,
+        )
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-preflight-required").exists())
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists())
+
+    def test_runtime_preflight_rejects_residual_container_after_cleanup_error(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            """
+            runtime_preflight_project_recreate_status() { return 0; }
+            remove_compose_project_containers() { return 125; }
+            cmd_runtime_preflight
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_PS_IDS="residual123",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "project containers remain after runtime preflight cleanup",
+            result.stderr,
+        )
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-preflight-required").exists())
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists())
+
+    def test_runtime_preflight_rejects_residual_storage_name_after_cleanup_error(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            """
+            runtime_preflight_project_recreate_status() { return 0; }
+            remove_compose_project_containers() { return 125; }
+            cmd_runtime_preflight
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_STORAGE_NAMES="compose_web_1",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "container remains after runtime preflight cleanup",
+            result.stderr,
+        )
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-preflight-required").exists())
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists())
+
+    def test_runtime_preflight_rejects_residual_normal_name_after_cleanup_error(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            """
+            runtime_preflight_project_recreate_status() { return 0; }
+            remove_compose_project_containers() { return 125; }
+            cmd_runtime_preflight
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_CONTAINER_NAMES="compose_web_1",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "container remains after runtime preflight cleanup",
+            result.stderr,
+        )
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-preflight-required").exists())
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists())
+
+    def test_runtime_preflight_cleanup_inventory_query_failure_blocks_wave(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            """
+            runtime_preflight_project_recreate_status() { return 0; }
+            remove_compose_project_containers() { return 125; }
+            cmd_runtime_preflight
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="container_list_failure",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "cannot verify podman container-name cleanup during runtime preflight",
+            result.stderr,
+        )
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-preflight-required").exists())
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists())
+
+    def test_runtime_preflight_inventory_query_failure_blocks_wave(self):
+        service_metadata = self.write_service_metadata(
+            "runtime-preflight-service.json",
+            expectedComposeServices=["web"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            "cmd_runtime_preflight",
+            check=False,
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="podman-runtime-preflight-tester",
+            NIX_PODMAN_COMPOSE_BOOT_ID="test-boot",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="ps_failure",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("cannot query podman containers during runtime preflight", result.stderr)
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-preflight-required").exists())
+        self.assertFalse((self.runtime_dir / "podman-compose/runtime-preflight.stamp").exists())
 
     def test_compose_up_force_recreate_removes_then_uses_normal_up(self):
         self.run_helper(
@@ -438,66 +1065,6 @@ class PodmanComposeHelperTest(unittest.TestCase):
         )
         self.assertEqual(75, result.returncode)
 
-    def test_start_uses_service_timeout_budget(self):
-        metadata = self.write_service_metadata(
-            "metadata-start-timeout.json",
-        )
-
-        result = self.run_helper(
-            """
-            assert_adoption_allowed() { :; }
-            ensure_runtime_dirs() { :; }
-            stage_runtime_files() { :; }
-            record_staging_runtime_state() { :; }
-            clear_removal_policy_marker() { :; }
-            run_pre_start_hooks() { :; }
-            clear_start_in_progress() { :; }
-            compose_pull() { :; }
-            compose_up_checked() {
-              compose_start_timeout_seconds
-            }
-            record_runtime_state() { :; }
-            notify_ready_and_monitor() { :; }
-            cmd_start
-            """,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_TIMEOUT_VALUE="7min",
-        )
-
-        self.assertEqual("420\n", result.stdout)
-
-    def test_start_preserves_infinite_timeout_budget(self):
-        metadata = self.write_service_metadata(
-            "metadata-start-infinite-timeout.json",
-        )
-
-        result = self.run_helper(
-            """
-            assert_adoption_allowed() { :; }
-            ensure_runtime_dirs() { :; }
-            stage_runtime_files() { :; }
-            record_staging_runtime_state() { :; }
-            clear_removal_policy_marker() { :; }
-            run_pre_start_hooks() { :; }
-            clear_start_in_progress() { :; }
-            compose_pull() { :; }
-            compose_up_checked() {
-              compose_start_timeout_seconds
-            }
-            record_runtime_state() { :; }
-            notify_ready_and_monitor() { :; }
-            cmd_start
-            """,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_TIMEOUT_VALUE="infinity",
-        )
-
-        self.assertEqual("0\n", result.stdout)
-
     def test_compose_stop_timeout_caps_systemd_timeout(self):
         result = self.run_helper(
             """
@@ -509,33 +1076,13 @@ class PodmanComposeHelperTest(unittest.TestCase):
 
         self.assertEqual("45\n", result.stdout)
 
-    def test_compose_up_does_not_hold_dns_repair_lock(self):
+    def test_compose_up_holds_rootless_lock_during_start(self):
         result = self.run_helper(
             """
-            install -d -m 0700 "$runtime_dir/podman-compose"
-            (
-              exec 9>"$runtime_dir/podman-compose/rootless-network-dns-v2.lock"
-              flock -x 9
-              sleep 20
-            ) &
-            holder_pid="$!"
-            trap 'kill "$holder_pid" 2>/dev/null || true; wait "$holder_pid" 2>/dev/null || true' EXIT
-            compose_up
-            """,
-            timeout=5,
-            TEST_PODMAN_MODE="success",
-            TEST_TIMEOUT_VALUE="5s",
-        )
-
-        self.assertIn("fake podman compose up ok", result.stdout)
-
-    def test_compose_up_releases_rootless_lock_before_long_start(self):
-        result = self.run_helper(
-            """
-            podman_rootless_lifecycle_lock() {
+            begin_rootless_mutation() {
               podman_rootless_lifecycle_lock_depth=$((podman_rootless_lifecycle_lock_depth + 1))
             }
-            podman_rootless_lifecycle_unlock() {
+            commit_rootless_mutation() {
               podman_rootless_lifecycle_lock_depth=$((podman_rootless_lifecycle_lock_depth - 1))
             }
             remove_conflicting_compose_container_names() {
@@ -548,61 +1095,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
             """
         )
 
-        self.assertEqual(["preflight-depth=1", "up-depth=0"], result.stdout.splitlines())
-
-    def test_start_releases_lifecycle_locks_before_compose_up_checked(self):
-        metadata = self.write_service_metadata(
-            "metadata-start-rootless-critical-sections.json",
-        )
-
-        result = self.run_helper(
-            """
-            podman_compose_metadata=$NIX_PODMAN_COMPOSE_METADATA
-            load_metadata
-            assert_adoption_allowed() { :; }
-            ensure_runtime_dirs() { :; }
-            clear_removal_policy_marker() { :; }
-            stage_runtime_files() { :; }
-            record_staging_runtime_state() { :; }
-            run_pre_start_hooks() { :; }
-            clear_start_in_progress() { :; }
-            lifecycle_lock_depth=0
-            lock_lifecycle_exclusive() {
-              lifecycle_lock_depth=$((lifecycle_lock_depth + 1))
-            }
-            unlock_lifecycle_exclusive() {
-              lifecycle_lock_depth=$((lifecycle_lock_depth - 1))
-            }
-            podman_rootless_lifecycle_lock() {
-              podman_rootless_lifecycle_lock_depth=$((podman_rootless_lifecycle_lock_depth + 1))
-            }
-            podman_rootless_lifecycle_unlock() {
-              podman_rootless_lifecycle_lock_depth=$((podman_rootless_lifecycle_lock_depth - 1))
-            }
-            compose_start_plan() {
-              printf 'plan-depth=rootless:%s lifecycle:%s\n' "$podman_rootless_lifecycle_lock_depth" "$lifecycle_lock_depth" >&2
-              printf 'normal\t0\n'
-            }
-            compose_up_checked() {
-              printf 'up-depth=rootless:%s lifecycle:%s\n' "$podman_rootless_lifecycle_lock_depth" "$lifecycle_lock_depth" >&2
-            }
-            record_runtime_state() { :; }
-            notify_ready_and_monitor() { :; }
-            cmd_start
-            """,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_TIMEOUT_VALUE="5s",
-        )
-
-        self.assertEqual(
-            [
-                "plan-depth=rootless:1 lifecycle:1",
-                "up-depth=rootless:0 lifecycle:0",
-            ],
-            result.stderr.splitlines(),
-        )
+        self.assertEqual(["preflight-depth=1", "up-depth=1"], result.stdout.splitlines())
 
     def test_compose_up_fatal_line_matches_image_pull_errors(self):
         result = self.run_helper(
@@ -890,6 +1383,186 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual("pull-new", state["imagePullStamp"])
         self.assertEqual("pulled\n", status_file.read_text(encoding="utf-8"))
 
+    def test_prepare_image_pull_ignores_generation_stamp_without_runtime_repair(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        self.compose_dir.rmdir()
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        service_metadata = self.write_service_metadata(
+            "metadata-image-pull-prepare.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+
+        result = self.run_helper(
+            "cmd_image_pull",
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(service_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_PREFLIGHT_POLICY="prepare",
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="success",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [
+                "image exists docker.io/library/nginx:latest",
+                f"compose -f {pull_file} pull",
+            ],
+            self.podman_history_file.read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertEqual("pulled\n", status_file.read_text(encoding="utf-8"))
+
+    def test_prepare_image_pull_defers_when_service_lifecycle_is_busy(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        self.compose_dir.rmdir()
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        service_metadata = self.write_service_metadata(
+            "metadata-image-pull-prepare-service-busy.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+        )
+
+        result = self.run_helper(
+            """
+            lock_lifecycle_exclusive_timeout() { return 1; }
+            begin_rootless_mutation_timeout() {
+              printf 'unexpected rootless mutation\n' >&2
+              return 1
+            }
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(service_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_PREFLIGHT_POLICY="prepare",
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="success",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("lifecycle is busy", result.stderr)
+        self.assertNotIn("unexpected rootless mutation", result.stderr)
+        self.assertEqual(
+            ["image exists docker.io/library/nginx:latest"],
+            self.podman_history_file.read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertEqual("deferred\n", status_file.read_text(encoding="utf-8"))
+
+    def test_prepare_image_pull_defers_when_rootless_runtime_is_busy(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        self.compose_dir.rmdir()
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        service_metadata = self.write_service_metadata(
+            "metadata-image-pull-prepare-rootless-busy.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+        )
+
+        result = self.run_helper(
+            """
+            lock_lifecycle_exclusive_timeout() { :; }
+            begin_rootless_mutation_timeout() { return 1; }
+            unlock_lifecycle_exclusive() { printf 'unlocked\n'; }
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(service_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_PREFLIGHT_POLICY="prepare",
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="success",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("unlocked\n", result.stdout)
+        self.assertIn("rootless Podman is busy", result.stderr)
+        self.assertEqual(
+            ["image exists docker.io/library/nginx:latest"],
+            self.podman_history_file.read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertEqual("deferred\n", status_file.read_text(encoding="utf-8"))
+
+    def test_runtime_image_pull_keeps_blocking_fail_closed_lock_contract(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        self.compose_dir.rmdir()
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        service_metadata = self.write_service_metadata(
+            "metadata-image-pull-runtime-lock-contract.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+        )
+
+        result = self.run_helper(
+            """
+            lock_lifecycle_exclusive() { printf 'blocking-lifecycle\n'; }
+            lock_lifecycle_exclusive_timeout() {
+              printf 'unexpected bounded lifecycle lock\n' >&2
+              return 1
+            }
+            begin_rootless_mutation() { return 1; }
+            unlock_lifecycle_exclusive() { printf 'unlocked\n'; }
+            cmd_image_pull
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(service_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="success",
+        )
+
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertEqual(["blocking-lifecycle", "unlocked"], result.stdout.splitlines())
+        self.assertNotIn("unexpected bounded lifecycle lock", result.stderr)
+        self.assertFalse(status_file.exists())
+
+    def test_prepare_image_pull_defers_dirty_runtime_to_activation(self):
+        pull_file = self.state_dir / "compose.pull.yml"
+        status_file = self.state_dir / "image-pull-status"
+        self.compose_dir.rmdir()
+        pull_file.write_text("services: {}\n", encoding="utf-8")
+        service_metadata = self.write_service_metadata(
+            "metadata-image-pull-dirty-prepare.json",
+            pullComposeFiles=[str(pull_file)],
+            declaredImages=["docker.io/library/nginx:latest"],
+        )
+        preflight_metadata = self.write_runtime_preflight_metadata(service_metadata)
+        preflight_dir = self.runtime_dir / "podman-compose"
+        preflight_dir.mkdir(parents=True)
+        (preflight_dir / "runtime-dirty").write_text(
+            "reason=abandoned mutation\n", encoding="utf-8"
+        )
+
+        result = self.run_helper(
+            "cmd_image_pull",
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(service_metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=str(preflight_metadata),
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_PREFLIGHT_POLICY="prepare",
+            NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=str(status_file),
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_MODE="success",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("deferring image preparation", result.stderr)
+        self.assertEqual(
+            ["image exists docker.io/library/nginx:latest"],
+            self.podman_history_file.read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertEqual("deferred\n", status_file.read_text(encoding="utf-8"))
+
     def test_image_pull_all_is_quiet_when_all_entries_skip(self):
         self.runtime_dir.mkdir()
         owner = pwd.getpwuid(os.getuid()).pw_name
@@ -942,6 +1615,89 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("", result.stdout)
 
+    def test_image_pull_all_defers_runtime_repair_to_activation(self):
+        self.runtime_dir.mkdir()
+        owner = pwd.getpwuid(os.getuid()).pw_name
+        metadata = self.state_dir / "metadata.json"
+        preflight_metadata = self.state_dir / "runtime-preflight.json"
+        calls = self.state_dir / "image-pull-helper.calls"
+        helper = self.work_dir / "record-image-pull-helper"
+        helper.write_text(
+            textwrap.dedent(
+                f"""\
+                #!{shutil.which("bash")}
+                printf '%s|%s|%s|%s|%s\\n' \
+                  "$1" \
+                  "${{NIX_PODMAN_COMPOSE_SERVICE_NAME:-}}" \
+                  "${{NIX_PODMAN_COMPOSE_METADATA:-}}" \
+                  "${{NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA:-}}" \
+                  "${{NIX_PODMAN_COMPOSE_IMAGE_PULL_PREFLIGHT_POLICY:-}}" \
+                  >>"$TEST_HELPER_CALLS"
+                if [ "$1" = image-pull ]; then
+                  printf '%s\\n' deferred >"$NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE"
+                fi
+                """
+            ),
+            encoding="utf-8",
+        )
+        helper.chmod(0o755)
+        plan = self.state_dir / "image-pulls.json"
+        plan.write_text(
+            json.dumps(
+                [
+                    {
+                        "user": owner,
+                        "uid": os.getuid(),
+                        "serviceName": "test-compose",
+                        "metadataFile": str(metadata),
+                        "runtimePreflightMetadata": str(preflight_metadata),
+                        "helper": str(helper),
+                        "imageTag": "0",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                shutil.which("bash"),
+                "-c",
+                textwrap.dedent(
+                    f"""
+                    plan={shlex.quote(str(plan))}
+                    source lib/podman-compose/image-pull-all.sh
+                    runtime_dir_for_uid() {{
+                      printf '%s\n' {shlex.quote(str(self.runtime_dir))}
+                    }}
+                    home_for_user() {{
+                      printf '%s\n' {shlex.quote(str(self.work_dir))}
+                    }}
+                    main
+                    """
+                ),
+            ],
+            cwd=self.repo_root,
+            env=self.helper_env(TEST_HELPER_CALLS=str(calls)),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [
+                "podman-compose-image-pull-all: deferred test-compose images to activation preflight",
+                "podman-compose-image-pull-all: deferred 1 image pull(s) to activation",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertEqual(
+            [f"image-pull|test-compose|{metadata}|{preflight_metadata}|prepare"],
+            calls.read_text(encoding="utf-8").splitlines(),
+        )
+
     def test_compose_up_fatal_line_matches_exhausted_podman_locks(self):
         result = self.run_helper(
             """
@@ -951,141 +1707,348 @@ class PodmanComposeHelperTest(unittest.TestCase):
 
         self.assertEqual(0, result.returncode)
 
-    def test_compose_up_checked_kills_timeout_process_group_before_cleanup(self):
-        child_pid_file = self.state_dir / "compose-child.pid"
+    def test_compose_up_single_service_does_not_gate_on_its_own_dns_alias(self):
+        healthy_state = [
+            {
+                "ID": "kanidm-id",
+                "State": "running",
+                "Health": "healthy",
+                "Labels": {"io.podman.compose.service": "kanidm"},
+                "Names": ["kanidm_kanidm_1"],
+            }
+        ]
         result = self.run_helper(
             """
-            compose_start_default_timeout_seconds=2
-            restart_aardvark_dns() { :; }
+            long_running=true
+            compose_up_no_progress_seconds=5
+            expected_compose_services=(kanidm)
             compose_up_checked normal
             """,
-            check=False,
-            timeout=15,
-            TEST_PODMAN_MODE="timeout_child",
-            TEST_TIMEOUT_VALUE="2s",
-            TEST_PODMAN_CHILD_PID_FILE=str(child_pid_file),
+            timeout=10,
+            TEST_PODMAN_MODE="dependency_wait_then_success",
+            TEST_PODMAN_DEPENDENCY_WAIT_SECONDS="1",
+            TEST_TIMEOUT_VALUE="8s",
+            TEST_PODMAN_EXEC_EXIT="1",
+            TEST_PODMAN_EXEC_OUTPUT="kanidm self alias did not resolve",
+            TEST_PODMAN_COMPOSE_CONFIG=textwrap.dedent(
+                """\
+                services:
+                  kanidm:
+                    image: example.invalid/kanidm
+                """
+            ),
+            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP=json.dumps(healthy_state),
+            TEST_PODMAN_PS_JSON=json.dumps(healthy_state),
+            TEST_PODMAN_PS_IDS="kanidm-id",
         )
 
-        self.assertEqual(75, result.returncode)
-        self.assert_child_process_was_cleaned_up(child_pid_file)
-        self.assertIn("podman compose process group", result.stderr)
-        self.assertIn("still has live members", result.stderr)
+        self.assertEqual(0, result.returncode, result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        # Stuck starts exit with 75 before the DNS-repair retry path.
-        first_up = history.index("compose up --no-build -d --remove-orphans")
-        self.assertGreaterEqual(first_up, 0)
+        self.assert_compose_up_count(history, 1)
+        self.assertFalse(any(line.startswith("exec ") for line in history))
+        self.assertFalse(any(line.startswith("network reload") for line in history))
 
-    def test_compose_up_checked_retries_when_up_leaves_created_containers(self):
+    def test_compose_up_repairs_live_peer_dns_in_place_without_replaying_compose(self):
+        starting_state = [
+            {
+                "ID": "api-id",
+                "State": "running",
+                "Health": "starting",
+                "Labels": {"io.podman.compose.service": "api"},
+                "Names": ["novu_api_1"],
+            },
+            {
+                "ID": "mongodb-id",
+                "State": "running",
+                "Health": "starting",
+                "Labels": {"io.podman.compose.service": "mongodb"},
+                "Names": ["novu_mongodb_1"],
+            },
+            {
+                "ID": "redis-id",
+                "State": "running",
+                "Health": "starting",
+                "Labels": {"io.podman.compose.service": "redis"},
+                "Names": ["novu_redis_1"],
+            },
+        ]
+        healthy_state = [
+            {**container, "Health": "healthy"} for container in starting_state
+        ]
         result = self.run_helper(
             """
-            compose_start_default_timeout_seconds=20
+            long_running=true
             compose_up_no_progress_seconds=1
-            restart_aardvark_dns() { :; }
+            expected_compose_services=(api mongodb redis)
             compose_up_checked normal
+            """,
+            timeout=10,
+            TEST_PODMAN_MODE="dns_reload_then_success",
+            TEST_TIMEOUT_VALUE="8s",
+            TEST_PODMAN_EXEC_EXIT="42",
+            TEST_PODMAN_EXEC_OUTPUT="getaddrinfo EAI_AGAIN mongodb",
+            TEST_PODMAN_EXEC_EXIT_AFTER_NETWORK_RELOAD="0",
+            TEST_PODMAN_COMPOSE_CONFIG=textwrap.dedent(
+                """\
+                services:
+                  api:
+                    depends_on:
+                      mongodb:
+                        condition: service_healthy
+                      redis:
+                        condition: service_healthy
+                    image: example.invalid/api
+                  mongodb:
+                    image: example.invalid/mongodb
+                  redis:
+                    image: example.invalid/redis
+                """
+            ),
+            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP=json.dumps(starting_state),
+            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_NETWORK_RELOAD=json.dumps(
+                healthy_state
+            ),
+            TEST_PODMAN_PS_JSON=json.dumps(starting_state),
+            TEST_PODMAN_PS_JSON_AFTER_NETWORK_RELOAD=json.dumps(healthy_state),
+            TEST_PODMAN_PS_IDS="api-id\nmongodb-id\nredis-id",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("cannot resolve declared dependency mongodb", result.stderr)
+        self.assertIn("reloading running project networks once in place", result.stderr)
+        self.assertNotIn("terminal container state", result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assert_compose_up_count(history, 1)
+        self.assertEqual(1, history.count("network reload api-id mongodb-id redis-id"))
+        up_index = next(
+            index
+            for index, line in enumerate(history)
+            if line.startswith("compose ") and " up " in line
+        )
+        reload_index = history.index("network reload api-id mongodb-id redis-id")
+        dns_probe_indices = [
+            index
+            for index, line in enumerate(history)
+            if line.startswith("unshare nsenter -t 1000 -n -- dig")
+        ]
+        self.assertGreaterEqual(len(dns_probe_indices), 1)
+        self.assertLess(up_index, dns_probe_indices[0])
+        self.assertLess(dns_probe_indices[0], reload_index)
+
+    def test_compose_up_checks_only_declared_peer_service_dependencies(self):
+        starting_state = [
+            {
+                "ID": "api-id",
+                "State": "running",
+                "Health": "starting",
+                "Labels": {"io.podman.compose.service": "api"},
+                "Names": ["novu_api_1"],
+            },
+            {
+                "ID": "mongodb-id",
+                "State": "running",
+                "Health": "starting",
+                "Labels": {"io.podman.compose.service": "mongodb"},
+                "Names": ["novu_mongodb_1"],
+            },
+        ]
+        healthy_state = [
+            {**container, "Health": "healthy"} for container in starting_state
+        ]
+        result = self.run_helper(
+            """
+            long_running=true
+            compose_up_no_progress_seconds=1
+            expected_compose_services=(api mongodb)
+            compose_up_checked normal
+            """,
+            timeout=10,
+            TEST_PODMAN_MODE="dns_reload_then_success",
+            TEST_TIMEOUT_VALUE="8s",
+            TEST_PODMAN_EXEC_EXIT="42",
+            TEST_PODMAN_EXEC_OUTPUT="getaddrinfo EAI_AGAIN mongodb",
+            TEST_PODMAN_EXEC_EXIT_AFTER_NETWORK_RELOAD="0",
+            TEST_PODMAN_COMPOSE_CONFIG=textwrap.dedent(
+                """\
+                services:
+                  api:
+                    depends_on:
+                      mongodb:
+                        condition: service_healthy
+                    image: example.invalid/api
+                  mongodb:
+                    image: example.invalid/mongodb
+                """
+            ),
+            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP=json.dumps(starting_state),
+            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_NETWORK_RELOAD=json.dumps(healthy_state),
+            TEST_PODMAN_PS_JSON=json.dumps(starting_state),
+            TEST_PODMAN_PS_JSON_AFTER_NETWORK_RELOAD=json.dumps(healthy_state),
+            TEST_PODMAN_PS_IDS="api-id\nmongodb-id",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
+        self.assertTrue(
+            any(line.startswith("unshare nsenter -t 1000 -n -- dig") for line in history)
+        )
+        self.assertFalse(
+            any(line.startswith("unshare nsenter -t 1001 -n -- dig") for line in history)
+        )
+        self.assertFalse(any(line.startswith("exec ") for line in history))
+        self.assertEqual(1, history.count("network reload api-id mongodb-id"))
+        self.assert_compose_up_count(history, 1)
+
+    def test_compose_up_starting_health_keeps_unavailable_dns_probe_non_failing(
+        self,
+    ):
+        starting_state = [
+            {
+                "ID": "web-id",
+                "State": "running",
+                "Health": "starting",
+                "Labels": {"io.podman.compose.service": "web"},
+                "Names": ["compose_web_1"],
+            },
+            {
+                "ID": "db-id",
+                "State": "running",
+                "Health": "starting",
+                "Labels": {"io.podman.compose.service": "db"},
+                "Names": ["compose_db_1"],
+            },
+        ]
+        result = self.run_helper(
+            """
+            long_running=true
+            compose_up_no_progress_seconds=1
+            expected_compose_services=(web db)
+            compose_up_supervised normal
             """,
             check=False,
             timeout=10,
-            TEST_PODMAN_MODE="timeout",
-            TEST_TIMEOUT_VALUE="20s",
-            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP=json.dumps(
+            TEST_PODMAN_MODE="dependency_wait_then_success",
+            TEST_PODMAN_DEPENDENCY_WAIT_SECONDS="2",
+            TEST_TIMEOUT_VALUE="15s",
+            TEST_PODMAN_NETWORKS_JSON=json.dumps(
                 [
                     {
-                        "State": "created",
-                        "Labels": {"io.podman.compose.service": "db"},
-                        "Names": ["compose_db_1"],
+                        "name": "compose_default",
+                        "dns_enabled": False,
+                        "subnets": [{"gateway": "10.88.0.1"}],
                     }
                 ]
             ),
-            TEST_PODMAN_PS_IDS="compose_db_1",
-        )
-
-        self.assertEqual(75, result.returncode)
-        self.assertIn("podman compose start made no healthy state progress", result.stderr)
-        self.assertIn("compose_db_1: state=created", result.stderr)
-        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assert_compose_up_in_history(history)
-        self.assertIn("compose ps --format json", history)
-
-    def test_compose_up_checked_retries_when_up_never_creates_expected_containers(self):
-        result = self.run_helper(
-            """
-            compose_start_default_timeout_seconds=20
-            compose_up_no_progress_seconds=1
-            expected_compose_services=(web worker)
-            restart_aardvark_dns() { :; }
-            compose_up_checked normal
-            """,
-            check=False,
-            timeout=10,
-            TEST_PODMAN_MODE="timeout",
-            TEST_TIMEOUT_VALUE="20s",
-            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP="[]",
-        )
-
-        self.assertEqual(75, result.returncode)
-        self.assertIn("podman compose start made no healthy state progress", result.stderr)
-        self.assertIn("podman compose has no managed containers for expected services during start", result.stderr)
-        self.assertIn("web", result.stderr)
-        self.assertIn("worker", result.stderr)
-        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assert_compose_up_in_history(history)
-        self.assertIn("compose ps --format json", history)
-
-    def test_compose_up_checked_retries_when_up_misses_expected_container(self):
-        result = self.run_helper(
-            """
-            compose_start_default_timeout_seconds=20
-            compose_up_no_progress_seconds=1
-            expected_compose_services=(web worker)
-            restart_aardvark_dns() { :; }
-            compose_up_checked normal
-            """,
-            check=False,
-            timeout=10,
-            TEST_PODMAN_MODE="timeout",
-            TEST_TIMEOUT_VALUE="20s",
-            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP=json.dumps(
-                [
-                    {
-                        "State": "running",
-                        "Labels": {"io.podman.compose.service": "web"},
-                        "Names": ["compose_web_1"],
-                    }
-                ]
+            TEST_PODMAN_COMPOSE_CONFIG=textwrap.dedent(
+                """\
+                services:
+                  web:
+                    depends_on:
+                      db:
+                        condition: service_healthy
+                    image: example.invalid/web
+                  db:
+                    image: example.invalid/db
+                """
             ),
-            TEST_PODMAN_PS_IDS="compose_web_1",
+            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP=json.dumps(starting_state),
+            TEST_PODMAN_PS_JSON=json.dumps(starting_state),
         )
 
-        self.assertEqual(75, result.returncode)
-        self.assertIn("podman compose start made no healthy state progress", result.stderr)
-        self.assertIn("podman compose is missing running containers for expected services during start", result.stderr)
-        self.assertNotIn("web\n", result.stderr)
-        self.assertIn("worker", result.stderr)
-        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assert_compose_up_in_history(history)
-        self.assertIn("compose ps --format json", history)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("DNS probe skipped", result.stdout)
+        history = self.podman_history_file.read_text(encoding="utf-8")
+        self.assertNotIn("network reload", history)
 
-    def test_compose_up_checked_kills_fatal_output_process_group_before_cleanup(self):
-        child_pid_file = self.state_dir / "compose-fatal-child.pid"
+    def test_compose_up_supervised_terminal_peer_dns_failure_is_not_reloadable(self):
+        compose_state = [
+            {
+                "ID": "api-id",
+                "State": "exited",
+                "ExitCode": 1,
+                "Labels": {"io.podman.compose.service": "api"},
+                "Names": ["novu_api_1"],
+            },
+            {
+                "ID": "mongodb-id",
+                "State": "running",
+                "Labels": {"io.podman.compose.service": "mongodb"},
+                "Names": ["novu_mongodb_1"],
+            },
+            {
+                "ID": "redis-id",
+                "State": "running",
+                "Labels": {"io.podman.compose.service": "redis"},
+                "Names": ["novu_redis_1"],
+            },
+        ]
         result = self.run_helper(
             """
-            restart_aardvark_dns() { :; }
-            compose_up_checked normal
+            long_running=true
+            compose_up_no_progress_seconds=1
+            expected_compose_services=(api mongodb redis)
+            compose_up_supervised normal
             """,
             check=False,
-            timeout=15,
-            TEST_PODMAN_MODE="fatal_child",
-            TEST_TIMEOUT_VALUE="10s",
-            TEST_PODMAN_CHILD_PID_FILE=str(child_pid_file),
+            timeout=10,
+            TEST_PODMAN_MODE="timeout",
+            TEST_TIMEOUT_VALUE="20s",
+            TEST_PODMAN_EXEC_EXIT="1",
+            TEST_PODMAN_EXEC_OUTPUT="getaddrinfo EAI_AGAIN redis",
+            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP=json.dumps(compose_state),
+            TEST_PODMAN_PS_JSON=json.dumps(compose_state),
         )
 
-        self.assertNotEqual(0, result.returncode)
-        self.assert_child_process_was_cleaned_up(child_pid_file)
-        self.assertIn("podman compose start hit fatal output", result.stderr)
-        self.assertIn("podman compose process group", result.stderr)
-        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        first_up = history.index("compose up --no-build -d --remove-orphans")
-        self.assertGreaterEqual(first_up, 0)
+        self.assertEqual(75, result.returncode, result.stderr)
+        self.assertIn("terminal container state", result.stderr)
+        self.assertNotIn("direct service-alias DNS evidence", result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8")
+        self.assertNotIn("exec ", history)
+        self.assertNotIn("network reload", history)
+
+    def test_compose_up_supervised_keeps_dns_healthy_no_progress_terminal(self):
+        compose_state = [
+            {
+                "Id": "api-id",
+                "State": "exited",
+                "ExitCode": 1,
+                "Labels": {"io.podman.compose.service": "api"},
+                "Names": ["novu_api_1"],
+            },
+            {
+                "Id": "mongodb-id",
+                "State": "running",
+                "Labels": {"io.podman.compose.service": "mongodb"},
+                "Names": ["novu_mongodb_1"],
+            },
+            {
+                "Id": "redis-id",
+                "State": "running",
+                "Labels": {"io.podman.compose.service": "redis"},
+                "Names": ["novu_redis_1"],
+            },
+        ]
+        result = self.run_helper(
+            """
+            long_running=true
+            compose_up_no_progress_seconds=1
+            expected_compose_services=(api mongodb redis)
+            compose_up_supervised normal
+            """,
+            check=False,
+            timeout=10,
+            TEST_PODMAN_MODE="timeout",
+            TEST_TIMEOUT_VALUE="20s",
+            TEST_PODMAN_EXEC_EXIT="0",
+            TEST_PODMAN_COMPOSE_PS_JSON_AFTER_UP=json.dumps(compose_state),
+            TEST_PODMAN_PS_JSON=json.dumps(compose_state),
+        )
+
+        self.assertEqual(75, result.returncode, result.stderr)
+        self.assertNotIn("direct service-alias DNS evidence", result.stderr)
+        history = self.podman_history_file.read_text(encoding="utf-8")
+        self.assertNotIn("exec ", history)
+        self.assertNotIn("network reload", history)
 
     def test_compose_down_kills_timeout_process_group(self):
         child_pid_file = self.state_dir / "compose-down-child.pid"
@@ -1114,31 +2077,77 @@ class PodmanComposeHelperTest(unittest.TestCase):
             self.podman_history_file.read_text(encoding="utf-8").splitlines(),
         )
 
-    def test_restart_aardvark_dns_removes_stale_config_files(self):
+    def test_aardvark_prune_removes_running_container_detached_from_network(self):
         aardvark_dir = self.runtime_dir / "containers/networks/aardvark-dns"
         aardvark_dir.mkdir(parents=True)
-        stale_config = aardvark_dir / "stale_default"
-        live_config = aardvark_dir / "live_default"
-        stale_config.write_text(
-            "10.89.2.1\n"
-            "stale-container 10.89.2.2 stale_service,stale\n",
-            encoding="utf-8",
-        )
-        live_config.write_text(
-            "10.89.3.1\n"
-            "live-container 10.89.3.2 live_service,live\n",
+        config = aardvark_dir / "live_default"
+        config.write_text(
+            "10.89.3.1\nlive-container 10.89.3.2 live_service,live\n",
             encoding="utf-8",
         )
 
         result = self.run_helper(
-            "restart_aardvark_dns test-reason",
+            "prune_stale_aardvark_dns_configs_mutating",
             TEST_PODMAN_PS_IDS="live-container",
+            TEST_PODMAN_NETWORKS_JSON=json.dumps(
+                [
+                    {
+                        "name": "live_default",
+                        "subnets": [{"gateway": "10.89.3.1"}],
+                        "containers": {"other-container": {"name": "other"}},
+                    }
+                ]
+            ),
         )
 
-        self.assertEqual(0, result.returncode)
-        self.assertFalse(stale_config.exists())
-        self.assertTrue(live_config.exists())
-        self.assertIn("removing stale podman aardvark DNS config", result.stdout)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(config.exists())
+        self.assertIn("no running containers attached to live_default", result.stdout)
+
+    def test_aardvark_prune_keeps_configs_when_podman_query_fails(self):
+        aardvark_dir = self.runtime_dir / "containers/networks/aardvark-dns"
+        aardvark_dir.mkdir(parents=True)
+        config = aardvark_dir / "live_default"
+        config.write_text(
+            "10.89.3.1\nlive-container 10.89.3.2 live_service,live\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_helper(
+            "prune_stale_aardvark_dns_configs_mutating",
+            check=False,
+            TEST_PODMAN_MODE="ps_failure",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertTrue(config.exists())
+        self.assertIn("cannot query running containers", result.stderr)
+
+    def test_aardvark_prune_removes_config_with_mismatched_network_gateway(self):
+        aardvark_dir = self.runtime_dir / "containers/networks/aardvark-dns"
+        aardvark_dir.mkdir(parents=True)
+        config = aardvark_dir / "live_default"
+        config.write_text(
+            "10.89.2.1\nlive-container 10.89.2.2 live_service,live\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_helper(
+            "prune_stale_aardvark_dns_configs_mutating",
+            TEST_PODMAN_PS_IDS="live-container",
+            TEST_PODMAN_NETWORKS_JSON=json.dumps(
+                [
+                    {
+                        "name": "live_default",
+                        "subnets": [{"gateway": "10.89.3.1"}],
+                    }
+                ]
+            ),
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(config.exists())
+        self.assertIn("network live_default uses 10.89.3.1", result.stdout)
 
     def test_start_compose_up_does_not_trigger_dns_cleanup_when_healthy(self):
         metadata = self.write_service_metadata("dns-repair-start.json")
@@ -1153,106 +2162,22 @@ class PodmanComposeHelperTest(unittest.TestCase):
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             XDG_RUNTIME_DIR=str(self.runtime_dir),
             TEST_PODMAN_MODE="success",
+            TEST_PODMAN_PS_IDS="abc123",
         )
 
         self.assertEqual(0, result.returncode)
         self.assertNotIn("removing stale podman aardvark DNS config", result.stdout)
-        self.assertIn(
-            "compose up --no-build -d --remove-orphans",
-            self.podman_history_file.read_text(encoding="utf-8").splitlines(),
-        )
-
-    def test_cmd_start_pre_pulls_images_before_compose_up(self):
-        compose_file = self.state_dir / "compose.yml"
-        pull_file = self.state_dir / "compose.pull.yml"
-        self.compose_dir.rmdir()
-        compose_file.write_text("services: {}\n", encoding="utf-8")
-        pull_file.write_text("services: {}\n", encoding="utf-8")
-        metadata = self.write_service_metadata(
-            "metadata-start-pull.json",
-            composeFiles=[str(compose_file)],
-            pullComposeFiles=[str(pull_file)],
-            declaredImages=["docker.io/library/nginx:latest"],
-        )
-
-        result = self.run_helper(
-            """
-            notify_ready_and_monitor() { return 0; }
-            cmd_start
-            """,
-            check=False,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_PODMAN_MODE="success",
-        )
-
-        self.assertEqual(0, result.returncode, result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        pull_idx = history.index(f"compose -f {pull_file} pull")
-        up_idx = history.index(f"compose -f {compose_file} up --no-build -d --remove-orphans")
-        self.assertLess(pull_idx, up_idx, "compose pull must run before compose up")
-
-    def test_cmd_start_skips_pull_when_runtime_state_matches(self):
-        compose_file = self.state_dir / "compose.yml"
-        pull_file = self.state_dir / "compose.pull.yml"
-        compose_file.write_text("services: {}\n", encoding="utf-8")
-        pull_file.write_text("services: {}\n", encoding="utf-8")
-        self.write_runtime_state(restartStamp="restart-a")
-        metadata = self.write_service_metadata(
-            "metadata-start-no-pull.json",
-            composeFiles=[str(compose_file)],
-            pullComposeFiles=[str(pull_file)],
-            declaredImages=["docker.io/library/nginx:latest"],
-            restartStamp="restart-a",
+        self.assertIn("compose up --no-build -d --remove-orphans", history)
+        self.assertNotIn("update --restart=no abc123", history)
+        up_index = history.index("compose up --no-build -d --remove-orphans")
+        self.assertTrue(
+            any(
+                index > up_index
+                and entry == self.compose_state_history_entry()
+                for index, entry in enumerate(history)
+            )
         )
-
-        result = self.run_helper(
-            """
-            notify_ready_and_monitor() { return 0; }
-            cmd_start
-            """,
-            check=False,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_PODMAN_MODE="success",
-        )
-
-        self.assertEqual(0, result.returncode, result.stderr)
-        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertIn(f"compose -f {pull_file} pull", history)
-        self.assertIn(f"compose -f {compose_file} up --no-build -d --remove-orphans", history)
-
-    def test_cmd_start_skips_pull_for_local_only_images(self):
-        compose_file = self.state_dir / "compose.yml"
-        pull_file = self.state_dir / "compose.pull.yml"
-        self.compose_dir.rmdir()
-        compose_file.write_text("services: {}\n", encoding="utf-8")
-        pull_file.write_text("services: {}\n", encoding="utf-8")
-        metadata = self.write_service_metadata(
-            "metadata-start-local-only-no-pull.json",
-            composeFiles=[str(compose_file)],
-            pullComposeFiles=[str(pull_file)],
-            declaredImages=[],
-        )
-
-        result = self.run_helper(
-            """
-            notify_ready_and_monitor() { return 0; }
-            cmd_start
-            """,
-            check=False,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_PODMAN_MODE="success",
-        )
-
-        self.assertEqual(0, result.returncode, result.stderr)
-        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertNotIn(f"compose -f {pull_file} pull", history)
-        self.assertIn(f"compose -f {compose_file} up --no-build -d --remove-orphans", history)
 
     def test_load_metadata_populates_core_fields_and_arrays(self):
         compose_file = self.compose_dir / "compose.yml"
@@ -1520,156 +2445,6 @@ class PodmanComposeHelperTest(unittest.TestCase):
         )
 
         self.assertEqual(["post"], hook_log.read_text(encoding="utf-8").splitlines())
-
-    def test_post_start_hooks_run_outside_lifecycle_locks(self):
-        hook_log = self.compose_dir / "post-start-rootless.log"
-        metadata = self.write_service_metadata(
-            "metadata-post-start-rootless-lock.json",
-            postStart=[f"printf 'post\\n' >> {shlex.quote(str(hook_log))}"],
-        )
-
-        self.run_helper(
-            """
-            podman_compose_metadata=$NIX_PODMAN_COMPOSE_METADATA
-            load_metadata
-            assert_adoption_allowed() { :; }
-            ensure_runtime_dirs() { :; }
-            clear_removal_policy_marker() { :; }
-            stage_runtime_files() { :; }
-            record_staging_runtime_state() { :; }
-            run_pre_start_hooks() { :; }
-            clear_start_in_progress() { :; }
-            compose_up_checked() { printf 'compose-started\n'; }
-            compose_pull() { printf 'compose-pulled\n' >> "$working_dir/post-start-rootless-trace.log"; }
-            record_runtime_state() { printf 'state-recorded\n'; }
-            lock_lifecycle_exclusive() {
-              printf 'lifecycle-locked\n' >> "$working_dir/post-start-rootless-trace.log"
-            }
-            unlock_lifecycle_exclusive() {
-              printf 'lifecycle-unlocked\n' >> "$working_dir/post-start-rootless-trace.log"
-            }
-            podman_rootless_lifecycle_lock() {
-              if [ "$podman_rootless_lifecycle_lock_depth" -gt 0 ]; then
-                podman_rootless_lifecycle_lock_depth=$((podman_rootless_lifecycle_lock_depth + 1))
-                return 0
-              fi
-              printf 'rootless-locked\n' >> "$working_dir/post-start-rootless-trace.log"
-              podman_rootless_lifecycle_lock_depth=1
-            }
-            podman_rootless_lifecycle_unlock() {
-              if [ "$podman_rootless_lifecycle_lock_depth" -le 0 ]; then
-                return 0
-              fi
-              podman_rootless_lifecycle_lock_depth=$((podman_rootless_lifecycle_lock_depth - 1))
-              if [ "$podman_rootless_lifecycle_lock_depth" -gt 0 ]; then
-                return 0
-              fi
-              printf 'rootless-unlocked\n' >> "$working_dir/post-start-rootless-trace.log"
-            }
-            notify_ready_and_monitor() { :; }
-            cmd_start
-            """,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_TIMEOUT_VALUE="5s",
-        )
-
-        self.assertEqual(["post"], hook_log.read_text(encoding="utf-8").splitlines())
-        trace = (self.compose_dir / "post-start-rootless-trace.log").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(
-            ["lifecycle-locked", "compose-pulled", "rootless-locked", "rootless-unlocked", "lifecycle-unlocked", "lifecycle-locked", "lifecycle-unlocked"],
-            trace,
-        )
-
-    def test_compose_pull_runs_before_rootless_lifecycle_lock(self):
-        trace_log = self.compose_dir / "pre-pull-trace.log"
-        metadata = self.write_service_metadata(
-            "metadata-pre-pull-before-rootless-lock.json",
-        )
-
-        self.run_helper(
-            """
-            podman_compose_metadata=$NIX_PODMAN_COMPOSE_METADATA
-            load_metadata
-            assert_adoption_allowed() { :; }
-            ensure_runtime_dirs() { :; }
-            clear_removal_policy_marker() { :; }
-            stage_runtime_files() { :; }
-            record_staging_runtime_state() { :; }
-            run_pre_start_hooks() { :; }
-            clear_start_in_progress() { :; }
-            compose_up_checked() { printf 'compose-started\n'; }
-            compose_pull() { printf 'compose-pulled\n' >> "$working_dir/pre-pull-trace.log"; }
-            record_runtime_state() { printf 'state-recorded\n'; }
-            podman_rootless_lifecycle_lock() {
-              if [ "$podman_rootless_lifecycle_lock_depth" -gt 0 ]; then
-                podman_rootless_lifecycle_lock_depth=$((podman_rootless_lifecycle_lock_depth + 1))
-                return 0
-              fi
-              printf 'rootless-locked\n' >> "$working_dir/pre-pull-trace.log"
-              podman_rootless_lifecycle_lock_depth=1
-            }
-            podman_rootless_lifecycle_unlock() {
-              if [ "$podman_rootless_lifecycle_lock_depth" -le 0 ]; then
-                return 0
-              fi
-              podman_rootless_lifecycle_lock_depth=$((podman_rootless_lifecycle_lock_depth - 1))
-              if [ "$podman_rootless_lifecycle_lock_depth" -gt 0 ]; then
-                return 0
-              fi
-              printf 'rootless-unlocked\n' >> "$working_dir/pre-pull-trace.log"
-            }
-            notify_ready_and_monitor() { :; }
-            cmd_start
-            """,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_TIMEOUT_VALUE="5s",
-        )
-
-        trace = (self.compose_dir / "pre-pull-trace.log").read_text(encoding="utf-8").splitlines()
-        pull_index = trace.index("compose-pulled")
-        lock_index = trace.index("rootless-locked")
-        self.assertLess(pull_index, lock_index, "compose_pull must run before rootless lifecycle lock")
-
-    def test_start_staged_does_not_pull_images_inline(self):
-        trace_log = self.compose_dir / "start-staged-no-pull-trace.log"
-        metadata = self.write_service_metadata(
-            "metadata-start-staged-no-pull.json",
-        )
-
-        self.run_helper(
-            """
-            podman_compose_metadata=$NIX_PODMAN_COMPOSE_METADATA
-            load_metadata
-            assert_adoption_allowed() { :; }
-            ensure_runtime_dirs() { :; }
-            clear_removal_policy_marker() { :; }
-            clear_start_in_progress() { :; }
-            verify_staged_runtime_files() { :; }
-            load_local_images() { printf 'local-images-loaded\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
-            compose_start_plan_locked() { printf 'normal\t0\n'; }
-            compose_pull() { printf 'compose-pulled\n' >> "$working_dir/start-staged-no-pull-trace.log"; return 1; }
-            compose_up_checked() { printf 'compose-started\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
-            record_runtime_state() { printf 'state-recorded\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
-            lock_lifecycle_exclusive() { printf 'lifecycle-locked\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
-            unlock_lifecycle_exclusive() { printf 'lifecycle-unlocked\n' >> "$working_dir/start-staged-no-pull-trace.log"; }
-            notify_ready_and_monitor() { :; }
-            cmd_start_staged
-            """,
-            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
-            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
-            XDG_RUNTIME_DIR=str(self.runtime_dir),
-            TEST_TIMEOUT_VALUE="5s",
-        )
-
-        trace = trace_log.read_text(encoding="utf-8").splitlines()
-        self.assertNotIn("compose-pulled", trace)
-        self.assertLess(trace.index("local-images-loaded"), trace.index("compose-started"))
-        self.assertIn("compose-started", trace)
-        self.assertIn("state-recorded", trace)
 
     def test_stage_runtime_files_writes_files_env_secrets_and_manifest(self):
         src_config = self.state_dir / "config.yml"
@@ -1957,20 +2732,11 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("podman compose start is still in progress", result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8")
-        self.assertNotIn("compose ps --format json", history)
+        self.assertNotIn(self.compose_state_history_entry(), history)
 
-    def test_cmd_start_adopts_active_start_before_lifecycle_lock(self):
+    def test_cmd_start_rejects_active_start_before_lifecycle_lock(self):
         metadata = self.write_service_metadata(
             "metadata-active-start-before-lock-start.json",
-        )
-        monitor_wrapper = self.state_dir / "monitor-wrapper"
-        self._write_executable(
-            monitor_wrapper,
-            textwrap.dedent(
-                f'''#!{shutil.which("bash")}
-                printf 'monitor:%s\n' "$*"
-                '''
-            ).lstrip(),
         )
 
         result = self.run_helper(
@@ -1989,17 +2755,19 @@ class PodmanComposeHelperTest(unittest.TestCase):
             sleep 0.2
             cmd_start
             """,
+            check=False,
             timeout=10,
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             NIX_PODMAN_COMPOSE_HELPER_TOPLEVEL="1",
-            NIX_PODMAN_COMPOSE_HELPER_SELF=str(monitor_wrapper),
             XDG_RUNTIME_DIR=str(self.runtime_dir),
         )
+        self.assertEqual(75, result.returncode)
         self.assertIn(
-            "--ready --status=podman compose start already in progress",
-            self.systemd_notify_history_file.read_text(encoding="utf-8"),
+            "refusing a concurrent lifecycle attempt",
+            result.stderr,
         )
+        self.assertEqual("", self.systemd_notify_history_file.read_text(encoding="utf-8"))
         history = self.podman_history_file.read_text(encoding="utf-8")
         self.assertNotIn("compose up", history)
 
@@ -2057,7 +2825,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertNotEqual(0, transitioning.returncode)
         self.assertIn("podman compose unit is still transitioning", transitioning.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8")
-        self.assertNotIn("compose ps --format json", history)
+        self.assertNotIn(self.compose_state_history_entry(), history)
 
         stable = self.run_helper(
             "cmd_verify",
@@ -2112,7 +2880,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual(0, result.returncode)
         self.assertNotIn("podman compose unit is still transitioning", result.stderr)
         history = self.podman_history_file.read_text(encoding="utf-8")
-        self.assertIn("compose ps --format json", history)
+        self.assertIn(self.compose_state_history_entry(), history)
 
     def test_should_force_recreate_respects_auto_restart_recreate_policy_classes(self):
         cases = [
@@ -2211,6 +2979,138 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("podman compose found no running containers", result.stderr)
 
+    def test_verify_compose_state_rejects_starting_health(self):
+        result = self.run_helper(
+            "verify_compose_state",
+            check=False,
+            TEST_PODMAN_COMPOSE_PS_JSON=json.dumps(
+                [
+                    {
+                        "State": "running",
+                        "Health": "starting",
+                        "Status": "Up 5 seconds (starting)",
+                        "Names": ["compose_web_1"],
+                        "Labels": {"io.podman.compose.service": "web"},
+                    }
+                ]
+            ),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("health=starting", result.stderr)
+
+    def test_wait_for_compose_readiness_retries_state_query_and_starting_health(self):
+        query_count = self.state_dir / "readiness-query-count"
+        result = self.run_helper(
+            f"""
+            compose_up_no_progress_seconds=1
+            compose_monitor_failure_grace_seconds=5
+            expected_compose_services=(web)
+            compose_state_json() {{
+              count=0
+              [ ! -f {shlex.quote(str(query_count))} ] || count="$(cat {shlex.quote(str(query_count))})"
+              count=$((count + 1))
+              printf '%s\n' "$count" >{shlex.quote(str(query_count))}
+              case "$count" in
+                1) return 1 ;;
+                2|3) printf '%s\n' '[{{"State":"running","Health":"starting","Names":["compose_web_1"],"Labels":{{"io.podman.compose.service":"web"}}}}]' ;;
+                *) printf '%s\n' '[{{"State":"running","Health":"healthy","Names":["compose_web_1"],"Labels":{{"io.podman.compose.service":"web"}}}}]' ;;
+              esac
+            }}
+            verify_compose_dns() {{ return 0; }}
+            wait_for_compose_readiness
+            """,
+            timeout=10,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("4", query_count.read_text(encoding="utf-8").strip())
+
+    def test_wait_for_compose_readiness_retries_running_unhealthy_until_healthy(self):
+        query_count = self.state_dir / "readiness-unhealthy-query-count"
+        result = self.run_helper(
+            f"""
+            compose_up_no_progress_seconds=1
+            expected_compose_services=(web)
+            compose_state_json() {{
+              count=0
+              [ ! -f {shlex.quote(str(query_count))} ] || count="$(cat {shlex.quote(str(query_count))})"
+              count=$((count + 1))
+              printf '%s\n' "$count" >{shlex.quote(str(query_count))}
+              if [ "$count" -le 2 ]; then
+                printf '%s\n' '[{{"State":"running","Health":"unhealthy","Names":["compose_web_1"],"Labels":{{"io.podman.compose.service":"web"}}}}]'
+              else
+                printf '%s\n' '[{{"State":"running","Health":"healthy","Names":["compose_web_1"],"Labels":{{"io.podman.compose.service":"web"}}}}]'
+              fi
+            }}
+            verify_compose_dns() {{ return 0; }}
+            wait_for_compose_readiness
+            """,
+            timeout=10,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("3", query_count.read_text(encoding="utf-8").strip())
+        self.assertNotIn("terminal container state", result.stderr)
+
+    def test_wait_for_compose_readiness_uses_readiness_budget_for_query_failures(self):
+        query_count = self.state_dir / "readiness-query-budget-count"
+        clock = self.state_dir / "readiness-query-budget-clock"
+        result = self.run_helper(
+            f"""
+            compose_monitor_failure_grace_seconds=1
+            compose_provider_timeout_seconds=10
+            expected_compose_services=(web)
+            sleep() {{ :; }}
+            now_epoch() {{
+              now=0
+              [ ! -f {shlex.quote(str(clock))} ] || now="$(cat {shlex.quote(str(clock))})"
+              printf '%s\n' "$((now + 2))" >{shlex.quote(str(clock))}
+              printf '%s\n' "$now"
+            }}
+            compose_state_json() {{
+              count=0
+              [ ! -f {shlex.quote(str(query_count))} ] || count="$(cat {shlex.quote(str(query_count))})"
+              count=$((count + 1))
+              printf '%s\n' "$count" >{shlex.quote(str(query_count))}
+              if [ "$count" -le 3 ]; then
+                return 1
+              fi
+              printf '%s\n' '[{{"State":"running","Health":"healthy","Names":["compose_web_1"],"Labels":{{"io.podman.compose.service":"web"}}}}]'
+            }}
+            verify_compose_dns() {{ return 0; }}
+            wait_for_compose_readiness
+            """,
+            timeout=5,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("4", query_count.read_text(encoding="utf-8").strip())
+        self.assertIn("10s readiness budget", result.stderr)
+
+    def test_wait_for_compose_readiness_fails_when_query_exhausts_readiness_budget(self):
+        clock = self.state_dir / "readiness-query-timeout-clock"
+        result = self.run_helper(
+            f"""
+            compose_monitor_failure_grace_seconds=1
+            compose_provider_timeout_seconds=5
+            sleep() {{ :; }}
+            now_epoch() {{
+              now=0
+              [ ! -f {shlex.quote(str(clock))} ] || now="$(cat {shlex.quote(str(clock))})"
+              printf '%s\n' "$((now + 2))" >{shlex.quote(str(clock))}
+              printf '%s\n' "$now"
+            }}
+            compose_state_json() {{ return 1; }}
+            wait_for_compose_readiness
+            """,
+            check=False,
+            timeout=5,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("exhausted its 5s readiness budget", result.stderr)
+
     def test_verify_expected_compose_services_reports_missing_services(self):
         result = self.run_helper(
             """
@@ -2246,7 +3146,32 @@ class PodmanComposeHelperTest(unittest.TestCase):
 
         self.assertEqual("", self.systemctl_history_file.read_text(encoding="utf-8"))
 
-    def test_cmd_verify_restarts_service_once_when_runtime_state_is_stale(self):
+    def test_cmd_verify_runs_target_local_verify_command(self):
+        marker = self.state_dir / "verify-command-ran"
+        metadata = self.write_service_metadata(
+            "metadata-verify-command.json",
+            restartStamp="restart-a",
+            recreateTag="0",
+            recreateStamp="recreate-a",
+            recreateClassStamp="class-a",
+            verifyCommand=[
+                shutil.which("bash"),
+                "-c",
+                f"printf '%s\\n' verified >{shlex.quote(str(marker))}",
+            ],
+        )
+        self.write_runtime_state()
+
+        self.run_helper(
+            "cmd_verify",
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+        )
+
+        self.assertEqual("verified\n", marker.read_text(encoding="utf-8"))
+
+    def test_cmd_verify_reports_stale_runtime_without_restarting_service(self):
         metadata = self.write_service_metadata(
             "metadata-verify-stale.json",
             restartStamp="restart-new",
@@ -2257,36 +3182,19 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.write_runtime_state(restartStamp="restart-old")
 
         result = self.run_helper(
-            """
-            systemctl() {
-              if [ "${1-}" = "--user" ] && [ "${2-}" = "restart" ]; then
-                printf '%s\n' "$*" >>"$TEST_SYSTEMCTL_HISTORY_FILE"
-                tmp_state="${state_path}.test-tmp"
-                jq '.restartStamp = "restart-new"' "$state_path" >"$tmp_state"
-                mv -f "$tmp_state" "$state_path"
-                return 0
-              fi
-              command systemctl "$@"
-            }
-            cmd_verify
-            """,
+            "cmd_verify",
+            check=False,
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             XDG_RUNTIME_DIR=str(self.runtime_dir),
         )
 
+        self.assertNotEqual(0, result.returncode)
         self.assertIn(
             "podman compose restart-class metadata is not applied",
             result.stderr,
         )
-        self.assertIn(
-            "podman compose runtime is stale for test-compose; restarting service before verify",
-            result.stderr,
-        )
-        self.assertEqual(
-            "--user restart test-compose.service\n",
-            self.systemctl_history_file.read_text(encoding="utf-8"),
-        )
+        self.assertEqual("", self.systemctl_history_file.read_text(encoding="utf-8"))
 
     def test_monitor_compose_state_tolerates_transient_non_running_container(self):
         self.run_helper(
@@ -2579,36 +3487,53 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertIn("rm -f --depend -v compose_web_1", history)
         self.assertIn("rm --storage --force compose_web_1", history)
 
-    def test_disable_compose_restart_policies_updates_live_ids_and_expected_names(self):
-        self.run_helper(
-            """
-            expected_compose_services=(web worker)
-            disable_compose_project_restart_policies
-            """,
-            TEST_PODMAN_PS_IDS="abc123",
-        )
-
-        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertIn("ps -a --filter label=com.docker.compose.project.working_dir=" + str(self.compose_dir) + " --format {{.ID}}", history)
-        self.assertIn("update --restart=no abc123 compose_web_1 compose_worker_1", history)
-
-    def test_cmd_stop_disables_restart_policy_before_compose_down(self):
+    def test_cmd_stop_refuses_unlocked_rootless_mutation_after_lock_timeout(self):
         metadata = self.write_service_metadata(
-            "metadata-stop-restart-policy.json",
+            "metadata-stop-rootless-lock-timeout.json",
             expectedComposeServices=["web"],
         )
 
-        self.run_helper(
-            "cmd_stop",
+        result = self.run_helper(
+            """
+            begin_rootless_mutation_timeout() { return 1; }
+            cmd_stop
+            """,
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            NIX_PODMAN_COMPOSE_STOP_ROOTLESS_LOCK_TIMEOUT_SECONDS="1",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TEST_PODMAN_PS_IDS="abc123",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("refusing unlocked stop", result.stderr)
+        self.assertNotIn("compose down", self.podman_history_file.read_text(encoding="utf-8"))
+
+    def test_cmd_stop_uses_systemd_bounded_blocking_rootless_lock_by_default(self):
+        metadata = self.write_service_metadata(
+            "metadata-stop-rootless-lock-blocking.json",
+            expectedComposeServices=["web"],
+        )
+
+        result = self.run_helper(
+            """
+            begin_rootless_mutation_timeout() {
+                printf '%s\n' unexpected-timed-lock >&2
+                return 1
+            }
+            stop_policy_postcondition_complete() { return 0; }
+            cmd_stop
+            """,
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             XDG_RUNTIME_DIR=str(self.runtime_dir),
             TEST_PODMAN_PS_IDS="abc123",
         )
 
-        history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
-        self.assertIn("update --restart=no abc123 compose_web_1", history)
-        self.assertLess(history.index("update --restart=no abc123 compose_web_1"), history.index("compose down"))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("unexpected-timed-lock", result.stderr)
+        self.assertIn("compose down", self.podman_history_file.read_text(encoding="utf-8"))
 
     def test_cmd_stop_timeout_runs_direct_container_cleanup(self):
         metadata = self.write_service_metadata(
@@ -2618,7 +3543,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         child_pid_file = self.state_dir / "cmd-stop-child.pid"
 
         result = self.run_helper(
-            "cmd_stop",
+            "stop_policy_postcondition_complete() { return 0; }; cmd_stop",
             check=False,
             timeout=20,
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
@@ -2664,7 +3589,29 @@ class PodmanComposeHelperTest(unittest.TestCase):
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
         self.assertIn("compose stop", history)
         self.assertNotIn("rm -f --depend -v abc123", history)
-        self.assertNotIn("rm -f --depend -v compose_web_1", history)
+
+    def test_cmd_stop_leaves_runtime_dirty_when_postcondition_is_indeterminate(self):
+        metadata = self.write_service_metadata(
+            "metadata-stop-indeterminate.json",
+            expectedComposeServices=["web"],
+        )
+
+        result = self.run_helper(
+            "stop_policy_postcondition_complete() { return 1; }; cmd_stop",
+            check=False,
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertTrue((self.runtime_dir / "podman-compose/runtime-dirty").exists())
+        self.assertTrue(
+            (self.runtime_dir / "podman-compose/runtime-preflight-required").exists()
+        )
+        self.assertTrue(
+            (self.runtime_dir / "podman-compose/rootless-mutations/test-compose").exists()
+        )
 
     def test_remove_compose_project_containers_removes_anonymous_volumes(self):
         anonymous_volume = "a" * 64
@@ -2777,11 +3724,14 @@ class PodmanComposeHelperTest(unittest.TestCase):
             TEST_PODMAN_CHILD_PID_FILE=str(child_pid_file),
         )
 
-        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(75, result.returncode)
         self.assert_child_process_was_cleaned_up(child_pid_file)
         self.assertTrue(staged_config.exists())
         self.assertTrue(data_dir.exists())
         self.assertEqual("staging", json.loads(self.state_path.read_text(encoding="utf-8"))["startupPhase"])
+        self.assertTrue(
+            (self.compose_dir / ".podman-compose" / "failed-start-cleanup-complete").exists()
+        )
         history = self.podman_history_file.read_text(encoding="utf-8").splitlines()
         self.assertIn("compose up --no-build -d --remove-orphans", history)
         self.assertIn("compose down", history)
@@ -2805,6 +3755,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
 
         result = self.run_helper(
             """
+            stop_policy_postcondition_complete() { return 0; }
             cmd_post_stop
             """,
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
@@ -2834,6 +3785,31 @@ class PodmanComposeHelperTest(unittest.TestCase):
             self.podman_history_file.read_text(encoding="utf-8").splitlines(),
         )
 
+    def test_cmd_post_stop_skips_completed_failed_start_cleanup(self):
+        metadata = self.write_service_metadata(
+            "metadata-post-stop-cleanup-complete.json",
+            expectedComposeServices=["web"],
+        )
+        generated_dir = self.compose_dir / ".podman-compose"
+        generated_dir.mkdir(exist_ok=True)
+        start_marker = generated_dir / "start-in-progress"
+        cleanup_marker = generated_dir / "failed-start-cleanup-complete"
+        start_marker.write_text("pid=999999\n", encoding="utf-8")
+        cleanup_marker.touch()
+
+        result = self.run_helper(
+            "stop_policy_postcondition_complete() { return 0; }; cmd_post_stop",
+            NIX_PODMAN_COMPOSE_METADATA=str(metadata),
+            NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            SERVICE_RESULT="exit-code",
+        )
+
+        self.assertIn("failed-start cleanup already completed", result.stdout)
+        self.assertFalse(start_marker.exists())
+        self.assertFalse(cleanup_marker.exists())
+        self.assertEqual("", self.podman_history_file.read_text(encoding="utf-8"))
+
     def test_cmd_post_stop_failed_stop_runs_direct_cleanup_backstop(self):
         metadata = self.write_service_metadata(
             "metadata-post-stop-failed-stop.json",
@@ -2844,7 +3820,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         stop_marker.write_text("pid=1\n", encoding="utf-8")
 
         result = self.run_helper(
-            "cmd_post_stop",
+            "stop_policy_postcondition_complete() { return 0; }; cmd_post_stop",
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             XDG_RUNTIME_DIR=str(self.runtime_dir),
@@ -2871,7 +3847,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         (self.compose_dir / ".podman-compose" / "start-in-progress").write_text("pid=999999\n", encoding="utf-8")
 
         result = self.run_helper(
-            "cmd_post_stop",
+            "stop_policy_postcondition_complete() { return 0; }; cmd_post_stop",
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             XDG_RUNTIME_DIR=str(self.runtime_dir),
@@ -2923,7 +3899,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
         )
 
         self.run_helper(
-            "cmd_stop",
+            "stop_policy_postcondition_complete() { return 0; }; cmd_stop",
             NIX_PODMAN_COMPOSE_METADATA=str(metadata),
             NIX_PODMAN_COMPOSE_SERVICE_NAME="test-compose",
             XDG_RUNTIME_DIR=str(self.runtime_dir),

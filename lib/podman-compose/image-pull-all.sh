@@ -94,13 +94,15 @@ run_as_owner() {
 }
 
 pull_entry() {
-	local entry owner uid service_name metadata helper image_tag runtime_dir home label status_file status
+	local entry owner uid service_name metadata preflight_metadata helper image_tag runtime_dir home label status_file status
+	local -a helper_env=()
 	entry="$1"
 
 	owner="$(jq -r '.user' <<<"$entry")"
 	uid="$(jq -r '.uid' <<<"$entry")"
 	service_name="$(jq -r '.serviceName' <<<"$entry")"
 	metadata="$(jq -r '.metadataFile' <<<"$entry")"
+	preflight_metadata="$(jq -r '.runtimePreflightMetadata // empty' <<<"$entry")"
 	helper="$(jq -r '.helper' <<<"$entry")"
 	image_tag="$(jq -r '.imageTag' <<<"$entry")"
 	runtime_dir="$(runtime_dir_for_uid "$uid")"
@@ -114,13 +116,18 @@ pull_entry() {
 	status_file="$(mktemp "${runtime_dir}/image-pull-status.XXXXXX")"
 	chown "$uid:$(id -g "$owner")" "$status_file" 2>/dev/null || true
 	chmod 0600 "$status_file"
+	helper_env=(
+		"PATH=/run/wrappers/bin:/run/current-system/sw/bin"
+		"NIX_PODMAN_COMPOSE_METADATA=$metadata"
+		"NIX_PODMAN_COMPOSE_SERVICE_NAME=$service_name"
+		"NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE=$status_file"
+		"NIX_PODMAN_COMPOSE_IMAGE_PULL_PREFLIGHT_POLICY=prepare"
+	)
+	if [ -n "$preflight_metadata" ]; then
+		helper_env+=("NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=$preflight_metadata")
+	fi
 	if ! run_as_owner "$owner" "$uid" "$runtime_dir" "$home" \
-		env \
-		PATH=/run/wrappers/bin:/run/current-system/sw/bin \
-		NIX_PODMAN_COMPOSE_METADATA="$metadata" \
-		NIX_PODMAN_COMPOSE_SERVICE_NAME="$service_name" \
-		NIX_PODMAN_COMPOSE_IMAGE_PULL_STATUS_FILE="$status_file" \
-		"$helper" image-pull; then
+		env "${helper_env[@]}" "$helper" image-pull; then
 		rm -f "$status_file"
 		return 1
 	fi
@@ -134,12 +141,16 @@ pull_entry() {
 	if [ "$status" = skipped ]; then
 		return 2
 	fi
+	if [ "$status" = deferred ]; then
+		printf '%s\n' "podman-compose-image-pull-all: deferred ${service_name} images to activation preflight"
+		return 3
+	fi
 	printf '%s\n' "podman-compose-image-pull-all: checked ${service_name} images (${label})"
 	return 0
 }
 
 main() {
-	local entry count=0 pulled_count=0 skipped_count=0
+	local entry count=0 pulled_count=0 skipped_count=0 deferred_count=0
 
 	if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 		usage
@@ -164,6 +175,9 @@ main() {
 			2)
 				skipped_count=$((skipped_count + 1))
 				;;
+			3)
+				deferred_count=$((deferred_count + 1))
+				;;
 			*)
 				return 1
 				;;
@@ -176,6 +190,8 @@ main() {
 	fi
 	if [ "$pulled_count" -gt 0 ]; then
 		printf '%s\n' "podman-compose-image-pull-all: completed ${pulled_count} image pull(s)"
+	elif [ "$deferred_count" -gt 0 ]; then
+		printf '%s\n' "podman-compose-image-pull-all: deferred ${deferred_count} image pull(s) to activation"
 	elif [ "$skipped_count" -ne "$count" ]; then
 		printf '%s\n' "podman-compose-image-pull-all: checked ${count} image pull target(s)"
 	fi

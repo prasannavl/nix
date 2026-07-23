@@ -104,6 +104,7 @@
   };
 
   config = evalConfig.config;
+  startConcurrencyOption = evalConfig.options.services.systemd-user-manager.startConcurrency;
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
   duplicateConfig = duplicateEvalConfig.config;
   duplicateFailedAssertions = builtins.filter (assertion: ! assertion.assertion) duplicateConfig.assertions;
@@ -132,6 +133,9 @@
   slowApplyUnit = builtins.elemAt bobMetadata.managedUnits 1;
 in
   assert failedAssertions == [];
+  assert startConcurrencyOption.default == 4;
+  assert startConcurrencyOption.type.check (-1);
+  assert !(startConcurrencyOption.type.check 0);
   assert config.environment.etc."systemd-user-manager/dispatchers/systemd-user-manager-dispatcher-alice.metadata".text == "${metadataPathFromEnv aliceDispatcher.serviceConfig.Environment}\n";
   assert aliceDispatcher.after
   == [
@@ -163,7 +167,7 @@ in
     "PATH=/run/wrappers/bin:/run/current-system/sw/bin"
     "SYSTEMD_USER_MANAGER_USER=alice"
     "SYSTEMD_USER_MANAGER_METADATA=${metadataPathFromEnv aliceReconciler.serviceConfig.Environment}"
-    "SYSTEMD_USER_MANAGER_START_PARALLELISM=4"
+    "SYSTEMD_USER_MANAGER_START_CONCURRENCY=4"
   ];
   assert bobDispatcher.serviceConfig.Environment
   == [

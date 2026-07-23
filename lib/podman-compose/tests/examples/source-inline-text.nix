@@ -1,6 +1,1 @@
-''
-  services:
-    text:
-      image: docker.io/library/busybox:latest
-      command: ["sh", "-c", "printf text-source"]
-''
+"    services:\n      text:\n        image: docker.io/library/busybox:latest\n        command: [\"sh\", \"-c\", \"printf text-source\"]\n"

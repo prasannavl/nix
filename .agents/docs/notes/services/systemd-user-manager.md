@@ -3,121 +3,82 @@
 ## Scope
 
 Canonical design for the generation-driven `systemd-user-manager` bridge and its
-interaction with deploy-time reconciliation for direct non-compose user units.
-
-Podman Compose generated units are no longer managed through
-`services.systemd-user-manager.instances`; `lib/podman-compose/default.nix` owns
-native stage/start/verify/ready user units and per-user managed targets.
+deploy-time reconciliation of direct managed user units.
 
 ## Core model
 
-- Keep the abstraction narrow:
-  - old-world stop for managed user units
-  - new-world start and reconcile
-  - user-manager identity refresh
-  - dry-activate preview
-- Desired state comes from generation-local immutable metadata in the store, not
-  from mutable root-owned state under `/var/lib`.
-- The dispatcher records the last successfully reconciled metadata under
-  `/run/systemd-user-manager/applied-metadata/<user>.json`. This is runtime-only
-  applied state, not a desired-state database; it lets activation compare the
-  last converged user-unit set with the new generation even when
-  `/run/current-system` has already advanced.
-- Higher-level lifecycle semantics should be expressed through normal units and
-  dependencies, not through a generic action graph inside the bridge.
-  `reloadTriggers` are only a generic reload route; service-specific staging and
-  validation still belong inside the unit's `ExecReload`.
+- Desired state comes from immutable generation metadata in the Nix store.
+- `/run/systemd-user-manager/applied-metadata/<user>.json` records only the last
+  successfully reconciled runtime state; it is not a mutable desired-state
+  database.
+- Activation owns old-world stop and dry-activate preview. A normal dispatcher
+  owns user-manager reload, new-world start/reload, verification, and the final
+  applied-metadata commit.
+- Provider lifecycle semantics stay in provider-owned units and `verifyCommand`;
+  the bridge does not embed a generic action graph.
 
 ## Switching rules
 
-- Activation-time old-world stop compares last-applied metadata with new
-  generation metadata.
-- Applied metadata is versioned. Version mismatch skips old-versus-new diffing
-  for that state and lets the dispatcher run a fresh reconcile path.
-- New-world reconcile uses only the new desired metadata plus live
-  `systemctl --user` state.
-- Managed units have separate restart and reload stamps. Restart stamp changes
-  keep the old-world stop and new-world start behavior. For active changed
-  units, the stop phase also writes a deferred restart marker so the reconciler
-  treats the unit as explicit work if it is still active after daemon-reload.
-  Reload-only changes are deferred, then applied with
-  `systemctl --user reload <unit>` after the dispatcher's user-manager
-  `daemon-reload`.
-- Inactive or failed managed units are started unless they are disabled or
-  masked.
-- Managed units may opt out of cold-start through `autoStart = false`; they
-  still remain under old-versus-new diff management, and units that were running
-  when old-world stop touched them are restarted during new-world reconcile.
-- Managed units use `state = "running" | "stopped"` for desired runtime state.
-  `state = "stopped"` stops active units, keeps them inactive during
-  reconciliation, and is the only generic stopped-state API.
-- Managed entries are unique by `(user, unit)`. Two instance keys must not
-  target the same user-owned systemd unit, because reconciliation semantics are
-  defined per live unit, not per declaration alias.
-- Managed units carry `timeoutReadySeconds`, defaulting to 120 seconds. The
-  helper uses that per-unit timeout for stable-state and stopped-state waits so
-  slow services can extend their own convergence budget.
-- Managed units may declare `verifyCommand`. Verification runs after a
-  desired-running unit is active, restarts the unit once on reported drift, and
-  blocks recording applied metadata if drift remains. Providers such as Podman
-  Compose should use this for generation-local runtime-state checks instead of
-  teaching `systemd-user-manager` provider-specific policy.
-- Dispatcher and reconciler systemd service timeouts are derived from the
-  largest managed-unit `timeoutReadySeconds` for that user plus dispatch
-  overhead, so a legitimate long reconcile is bounded by the managed unit's own
-  timeout instead of the wrapper's default.
-- Before a monitored `start` or `restart`, clear the unit's stale failed state
-  with `systemctl --user reset-failed`. With `--no-block`, an old failed
-  `ActiveState` can otherwise be sampled before the new start transaction
-  materializes, causing the dispatcher to fail a healthy queued start. This was
-  observed on `abird-srv` when an interrupted `abird-ollama-models` oneshot left
-  the unit failed immediately before the next dispatcher run.
-- Removed users must be handled before account removal.
+- Restart and reload stamps are distinct. Restart drift participates in the
+  old-world stop/new-world start handoff; reload-only drift is applied after the
+  new user-manager definition is loaded.
+- `transitionNeutralStamp`, `stopOnTransitionFrom`, and `stopOnTransitionTo`
+  allow a provider to distinguish policy-only metadata churn from a transition
+  that requires one stop/start. The bridge does not interpret provider policy
+  names.
+- Desired state is `running` or `stopped`. `autoStart = false` suppresses cold
+  start without removing the unit from old/new generation comparison.
+- Active desired-running units with `verifyCommand` are verified before applied
+  metadata is committed. Failed provider verification may restart that unit once
+  inside the same deterministic reconcile transaction.
+- `startMode = "wait"` waits for stable active state. `startMode = "enqueue"`
+  accepts a queued start and requires a transition-aware, non-blocking verifier;
+  use it only for a short dispatcher whose long work has a separate explicit
+  owner.
+- `startConcurrency`, default four per managed user, bounds new-world start and
+  restart work. `-1` means unlimited concurrency.
+- Each managed unit carries its own `timeoutReadySeconds`. Dispatcher timeouts
+  are only outer envelopes around those per-unit budgets and bounded stop
+  cleanup.
+- Before start/restart, stale failed state and residual unit-cgroup processes
+  are cleared. Old-world stops are queued together and then waited as a group; a
+  stuck unit gets a bounded cgroup kill and one final stopped-state check.
+- Managed entries are unique by `(user, unit)`. Removed users are handled before
+  account removal.
 
 ## Dispatcher behavior
 
-- Identity-driven `user@<uid>.service` restarts should be detected during
-  metadata comparison but executed later by the dispatcher through ephemeral
-  `/run` markers.
-- The dispatcher rechecks applied metadata before running the reconciler.
-  Missing or version-mismatched applied metadata triggers a fresh reconcile path
-  that stops already-active managed units once, writing the same deferred
-  restart markers as the normal diff path when desired state remains running,
-  before starting them from new metadata, while normal fresh boots still start
-  inactive units normally.
-- Dispatcher system units must not add `After=` on the same target that pulls
-  them in via `WantedBy=`. In particular, `WantedBy=multi-user.target` must not
-  be paired with `After=multi-user.target`, or explicit deploy-time starts can
-  hit a systemd transaction ordering cycle.
-- Dispatcher progress should remain visible, but unit-state polling is the
-  authoritative wait path.
-- Bound journal polling with `timeout`, rate-limit journal reads, and emit
-  heartbeats while waiting so quiet or slow journald paths do not look hung.
-- Metadata parsing failures must be fatal; malformed JSON must not become a
-  silent noop because of process-substitution behavior.
-- Dry-activate preview may target future users that are not live accounts yet.
-  Preview should skip those users cleanly instead of failing the whole preview
-  transaction.
-- Old-world stop can run either from root activation or from inside the managed
-  user context. Initialize the target user before stopping and choose userctl
-  mode from the current UID, so managed-user helpers do not force a root
-  `machinectl`/`runuser` path back into themselves.
+- Reconciler user units are dispatcher-owned implementation details with no
+  install membership and no NixOS user-activation restart/stop handling.
+- Applied metadata is written only after start/reload reconciliation and
+  provider verification succeed.
+- Active `activating` units are joined unless an explicit restart marker says
+  they must be restarted. `deactivating` and `reloading` remain recoverable
+  transitional states.
+- Identity changes that require `user@<uid>.service` restart are recorded during
+  comparison and executed later by the dispatcher through runtime markers.
+- Metadata parsing failures are fatal. Empty fields must survive serialization
+  and shell parsing.
+- Dispatcher progress is visible, but live unit-state polling is authoritative.
+  Journal reads are bounded and rate-limited.
+- Dry-activate is non-mutating and skips future managed users whose live account
+  does not yet exist.
 
-## Operational refinements
+## Podman boundary
 
-- Keep dispatcher logs thin and useful.
-- Preserve remote dispatcher diagnostics in deploy logs instead of filtering
-  away the lines that explain the failure.
-- Parse metadata once per dispatcher where possible instead of re-running small
-  `jq` selections per managed unit.
+Podman Compose owns its own public managed root, per-instance stage/main/verify/
+ready graph, provider transaction, runtime preflight, and optional reconcile
+leaf. It no longer registers Compose instances with
+`services.systemd-user-manager.instances`. `systemd-user-manager` remains the
+generic bridge for direct non-Podman user services.
 
-## Source of truth files
+Podman main units use `KillMode=mixed`: the provider helper owns graceful
+container cleanup, while systemd is the hard-kill backstop for stuck helper
+children. Provider `postStart` hooks run after the rootless mutation transaction
+is released.
+
+## Source of truth
 
 - `lib/systemd-user-manager/default.nix`
 - `lib/systemd-user-manager/helper.sh`
 - `docs/systemd-user-manager.md`
-
-## Provenance
-
-- This note replaces the earlier dated bridge-architecture, dispatcher-fix, and
-  related follow-up notes for `systemd-user-manager`.

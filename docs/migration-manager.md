@@ -21,8 +21,8 @@ When the file exists, the host is drained:
   cold-starting;
 - registered native `systemd.user` services are stopped and blocked from
   cold-starting;
-- registered native `systemd.user` targets, including managed and ready targets,
-  are stopped and blocked from cold-starting;
+- registered native `systemd.user` targets, including managed and per-service
+  ready targets, are stopped and blocked from cold-starting;
 - podman-compose workloads drain through their generated user service units.
 
 When the file is absent, the host is resumed:
@@ -31,7 +31,7 @@ When the file is absent, the host is resumed:
 - registered native `systemd.user` services marked `startOnResume = true` can be
   started again;
 - registered native `systemd.user` targets marked `startOnResume = true`, such
-  as `<user>-managed-ready.target`, are started to converge the user graph.
+  as `<user>-managed.target`, are started to converge the user graph.
 
 The normal declarative state is:
 
@@ -305,7 +305,7 @@ ssh TARGET_NIXBOT_HOST 'sudo systemctl --failed'
 Check native user units and targets:
 
 ```bash
-ssh TARGET_NIXBOT_HOST 'uid=$(id -u abird); sudo -u abird XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user status abird-managed.target abird-managed-ready.target'
+ssh TARGET_NIXBOT_HOST 'uid=$(id -u abird); sudo -u abird XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user status abird-managed.target'
 ```
 
 For Incus migrations, check instance placement and state from the controller:

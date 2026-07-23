@@ -18,16 +18,12 @@ service-facing ingress policy.
 - Duplicate `exposedPorts` host port/protocol pairs are rejected at evaluation
   time.
 - `services.podman-compose.<stack>.timeoutReadySeconds` is the stack default for
-  generated compose readiness waits; instances may override it with
+  generated user-manager stable-state waits; instances may override it with
   `services.podman-compose.<stack>.instances.<name>.timeoutReadySeconds`.
-- The main generated service is a long-running unit that uses
-  `podman compose up -d --remove-orphans`, verifies startup state, and then
-  monitors `podman compose ps --format json`.
-- Podman Compose now owns its native user-service graph directly. Each instance
-  gets stage/start/verify/ready units, and auto-started services are aggregated
-  under `<user>-managed.target` and `<user>-managed-ready.target`.
-- `postStart` hooks run after compose readiness succeeds and are the preferred
-  place for app-native reconcile/apply helpers that depend on the live service.
+- The main generated service is a bounded `Type=oneshot` unit with
+  `RemainAfterExit=true` and `Restart=no`. It uses
+  `podman compose up -d --remove-orphans`, verifies startup state, and exits
+  successfully without retaining an automatic restart monitor.
 - Compose instances are long-running by default; set `longRunning = false` only
   for intentional run-to-completion compose jobs where all containers exiting
   with code 0 is service success.
@@ -43,10 +39,17 @@ service-facing ingress policy.
   interpolation changes.
 - Startup success means the containers reached the expected running state, not
   merely that the compose command exited.
-- The helper's no-output start watchdog is a hard failed-start boundary. When
-  `podman compose up` makes no output progress for its idle timeout, the helper
-  exits with status `75` and generated units set `RestartPreventExitStatus=75`
-  so systemd does not turn one stuck start into an unbounded restart loop.
+- Main compose units use `KillMode=mixed`: the helper receives the graceful stop
+  signal, while inherited `conmon` and `fuse-overlayfs` processes remain alive
+  for helper-owned compose cleanup. Systemd still applies the final hard kill to
+  the complete cgroup after the stop timeout.
+- `TimeoutStopSec` is at least 240 seconds and grows with `timeoutReadySeconds`,
+  leaving room for the 180-second shared rootless lock queue, the bounded
+  compose stop, and cleanup before the hard-kill boundary.
+- The helper's start-stall watchdog is a hard failed-start boundary. Startup
+  owns one initial attempt and one repair/recreate attempt. A failed second
+  attempt leaves the oneshot unit failed; systemd does not turn it into another
+  lifecycle wave.
 
 ## Configuration and secrets
 
@@ -57,19 +60,25 @@ service-facing ingress policy.
   paths directly.
 - `envSecrets` is the canonical file-backed secret injection mechanism.
 - Repo-managed age secret source changes are included in restart stamps when the
-  configured secret runtime path maps back to `config.age.secrets`; use
-  `bootTag` for secret files outside that model when a managed restart is
-  required.
+  configured secret runtime path maps back to `config.age.secrets`; the
+  encrypted age file is content-hashed even when it is reached through the
+  flake's store source path, so unrelated repo commits do not look like secret
+  rotations. Use `bootTag` for secret files outside that model when a managed
+  restart is required.
+- Trusted CA `sourceHashInputs` are content-hashed for the same reason. Do not
+  use Nix store path identity for repo source files here: dirty-staged deploys
+  create a generation-specific flake source path and would otherwise restart
+  every CA-consuming service on unrelated staged changes.
 
 ## Lifecycle tags
 
 - `state = "running" | "stopped"` is the public desired-state knob for
   `services.podman-compose.<stack>.instances.<name>`. Stopped instances still
-  render metadata and generated units, but they are excluded from the managed
-  auto-start target and stay inactive unless manually started. Podman runtime
-  files are staged on manual or automatic start and cleaned after stop. This
-  cleanup is intentional: stopped state is still declared ownership, but it must
-  not leave stale staged files from an older generation. Resuming the unit
+  render metadata and generated units, but the generated user-manager entry uses
+  `state = "stopped"` to stop the unit and avoid auto-starting it. Podman
+  runtime files are staged on manual or automatic start and cleaned after stop.
+  This cleanup is intentional: stopped state is still declared ownership, but it
+  must not leave stale staged files from an older generation. Resuming the unit
   stages the current generation again. Removal behavior is a separate
   `removalPolicy` path.
 - Stack `reconcilePolicy` defaults to `auto`; instance `reconcilePolicy`
@@ -91,8 +100,8 @@ service-facing ingress policy.
   knobs.
 - `reloadTag` routes through reloadTriggers for native-reload-capable instances
   and does not affect services where native reload is not enabled.
-- `recreateTag != "0"` restarts the generated unit through native systemd
-  user-unit switching. Under `auto` or `recreate`, it makes the helper use
+- `recreateTag != "0"` restarts the managed unit through the reconciler. Under
+  `auto` or `recreate`, it makes the helper use
   `podman compose up --force-recreate` once for each new tag value. Under
   `restart`, it restarts without force-recreating containers. The helper records
   the last successful tag in the compose working directory so later boots do not
@@ -105,18 +114,17 @@ service-facing ingress policy.
   service starts and is included in recreate intent so changed images are
   consumed automatically when policy allows recreate.
 - Systems with compose-backed services also export
-  `/run/current-system/share/podman-compose/control-registry.json`,
   `/run/current-system/share/podman-compose/image-pulls.json` and install
-  `podman-composectl` and `podman-compose-image-pull-all`. The deploy-time pull
-  plan is derived from every resolved compose instance with store-backed compose
-  files, not from `imageTag`. Nixbot deploys run the built target system's
-  version of that helper before activation, so remote image fetches happen in a
-  pre-activation deploy phase instead of inside `podman compose up`.
+  `podman-compose-image-pull-all`. The deploy-time plan is derived from every
+  resolved compose instance with store-backed compose files, not from
+  `imageTag`. Nixbot deploys run the built target system's version of that
+  helper before activation, so remote image fetches happen in a pre-activation
+  deploy phase instead of inside `podman compose up`.
 - Tag semantics should depend only on the declared tag value, not on incidental
   generated helper path churn.
 - Boots do not replay lifecycle tags. Tags are deploy-time triggers.
-- Rootless stack users get a user-level Podman idmap migration check before
-  compose stage/start units. It runs `podman system migrate` only when
+- Rootless stack users get a system-level Podman idmap migration check before
+  their user-manager dispatcher. It runs `podman system migrate` only when
   subordinate uid/gid ranges exist and Podman's active map is still the stale
   single-id form.
 
@@ -135,23 +143,6 @@ service-facing ingress policy.
   stay soft `Wants`-style startup edges, not hard `Requires`.
 - Backend outages should degrade to route-level `502` or `504` responses, not
   block nginx startup entirely.
-- Route and vhost proxy locations may declare extra `responseHeaders`. The
-  renderer must re-include the standard location security headers when it emits
-  any route-local `add_header`, because nginx `add_header` inheritance is
-  replace-not-merge.
-- Route and vhost proxy locations may also declare low-level proxy controls for
-  logout/callback glue: `requestHeaders`, `proxyMethod`, `proxyPassRequestBody`,
-  `proxySetBody`, `proxyRewritePath`, and `errorRedirects`. Prefer
-  ingress-composer helpers such as `mkLogoutChainRoutes` over hand-written route
-  attrs when chaining app logout endpoints through a shared edge-auth sign-out
-  flow.
-- oauth2-proxy forward-auth failures should redirect only likely top-level
-  document navigations to login. Unauthenticated asset, API, and background
-  requests should return `401` so SPA fanout does not create many abandoned
-  per-request CSRF cookies.
-- Shared nginx client-header buffers are intentionally above the upstream
-  defaults to tolerate domain-wide auth cookies. Treat that as a guardrail, not
-  the primary fix for OAuth cookie fanout.
 
 ## Rate limiting
 
@@ -177,7 +168,7 @@ service-facing ingress policy.
 
 ## Superseded notes
 
-- `.agents/docs/notes/services/nginx-soft-backend-deps-2026-04.md`
+- `docs/ai/notes/services/nginx-soft-backend-deps-2026-04.md`
 
 ## Provenance
 

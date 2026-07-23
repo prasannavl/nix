@@ -1208,6 +1208,15 @@
           the existing guest and does not create, recreate, or drift-reconcile it.
         '';
       };
+      startPriority = lib.mkOption {
+        type = lib.types.int;
+        default = 0;
+        description = ''
+          Scheduling priority for bounded automatic-start waves. Lower values
+          start first; equal priorities are ordered by the declaration key. This
+          affects only automatic start admission and never recreates the instance.
+        '';
+      };
       reconcilePolicy = lib.mkOption {
         type = lib.types.enum ["auto" "declarative" "ignore"];
         default = "auto";
@@ -2194,6 +2203,43 @@
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) allInstances);
   instanceStatesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.state) allInstances);
   instanceReconcilePoliciesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.reconcilePolicy) allInstances);
+  automaticInstanceNames = map (entry: entry.name) (
+    lib.sort
+    (left: right:
+      if left.priority == right.priority
+      then left.name < right.name
+      else left.priority < right.priority)
+    (
+      lib.mapAttrsToList
+      (name: machine: {
+        name = name;
+        priority = machine.startPriority;
+      })
+      (lib.filterAttrs (_name: machine: machine.autoStart && (machine.reconcilePolicy == "ignore" || machine.state == "running")) allInstances)
+    )
+  );
+  takeList = count: values:
+    builtins.genList (index: builtins.elemAt values index) (lib.min count (builtins.length values));
+  dropList = count: values:
+    builtins.genList
+    (index: builtins.elemAt values (index + count))
+    (lib.max 0 (builtins.length values - count));
+  chunkList = count: values:
+    if values == []
+    then []
+    else [(takeList count values)] ++ chunkList count (dropList count values);
+  autoStartWaves =
+    if globalCfg.startConcurrency == -1
+    then []
+    else chunkList globalCfg.startConcurrency automaticInstanceNames;
+  autoStartGateUnit = index: "incus-machines-autostart-gate-${toString index}.target";
+  autoStartSettlementUnit = index: "incus-machines-autostart-settle-${toString index}.service";
+  autoStartMachineUnits = wave: map (name: "incus-${name}.service") wave;
+  autoStartRootWants = lib.concatLists (
+    lib.imap0
+    (index: wave: [(autoStartGateUnit index)] ++ autoStartMachineUnits wave ++ [(autoStartSettlementUnit index)])
+    autoStartWaves
+  );
   gcProjects = lib.unique (
     lib.optionals globalCfg.remote.enable (
       builtins.attrNames effectiveRemoteProjects
@@ -2253,7 +2299,7 @@
   in
     lib.nameValuePair "incus-${name}" {
       description = "Incus instance lifecycle for ${resolveMachineProject machine}/${instanceName}";
-      wantedBy = lib.optional automaticStart "multi-user.target";
+      wantedBy = lib.optional (automaticStart && globalCfg.startConcurrency == -1) "multi-user.target";
       after = machineLifecycleDeps;
       wants = machineLifecycleDeps;
       requires = machineRequiredDeps;
@@ -2270,6 +2316,26 @@
           ++ remoteServiceEnvironment;
         ExecStop = "-${helperScript} stop-instance ${lib.escapeShellArg instanceName} ${lib.escapeShellArg (resolveMachineProject machine)}";
         ExecStart = execStart;
+      };
+    };
+
+  mkAutoStartGate = index: wave:
+    lib.nameValuePair (lib.removeSuffix ".target" (autoStartGateUnit index)) {
+      description = "Admit Incus automatic-start wave ${toString (index + 1)}";
+      before = autoStartMachineUnits wave;
+      after = lib.optional (index > 0) (autoStartSettlementUnit (index - 1));
+    };
+
+  mkAutoStartSettlement = index: wave: let
+    selectionArgs = lib.escapeShellArgs (lib.concatMap (name: ["--machine" name]) wave);
+  in
+    lib.nameValuePair (lib.removeSuffix ".service" (autoStartSettlementUnit index)) {
+      description = "Wait for Incus automatic-start wave ${toString (index + 1)}";
+      after = autoStartMachineUnits wave;
+      before = lib.optional (index + 1 < builtins.length autoStartWaves) (autoStartGateUnit (index + 1));
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${settlementCommand}/bin/incus-machines-settlement --timeout ${toString globalCfg.autoStartSettleTimeoutSec} ${selectionArgs}";
       };
     };
 
@@ -2558,6 +2624,23 @@ in {
             host activation and boot do not depend on child guest lifecycle
             convergence.
           '';
+        };
+
+        startConcurrency = lib.mkOption {
+          type = lib.types.addCheck lib.types.int (value: value == -1 || value > 0);
+          default = 4;
+          description = ''
+            Maximum number of declared instances admitted in one automatic-start
+            wave. `-1` preserves unlimited direct systemd startup. Bounded waves
+            wait for guest readiness before admitting the next wave without making
+            one guest failure a requirement failure for later waves.
+          '';
+        };
+
+        autoStartSettleTimeoutSec = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 180;
+          description = "Readiness timeout for each bounded automatic-start wave.";
         };
 
         hostSuspend = {
@@ -3031,7 +3114,19 @@ in {
               };
             };
           }
-          // lib.mapAttrs' mkMachineService allInstances);
+          // lib.mapAttrs' mkMachineService allInstances
+          // lib.optionalAttrs (autoStartWaves != []) (builtins.listToAttrs (lib.imap0 mkAutoStartSettlement autoStartWaves)));
+
+      targets = lib.mkIf (autoStartWaves != []) (
+        {
+          incus-machines-autostart = {
+            description = "Start declared Incus instances in bounded readiness waves";
+            wantedBy = ["multi-user.target"];
+            wants = autoStartRootWants;
+          };
+        }
+        // builtins.listToAttrs (lib.imap0 mkAutoStartGate autoStartWaves)
+      );
 
       paths = lib.mapAttrs' mkCertificateDelegationPath globalCfg.certificateDelegations;
     };
