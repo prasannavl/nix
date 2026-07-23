@@ -194,6 +194,8 @@ in {
   services = {
     incus-manager = {
       global = {
+        startConcurrency = 2;
+
         certificates = [
           {
             name = "pvl";
@@ -233,6 +235,7 @@ in {
           pvl-vlab = mkLxc {
             name = "pvl-vlab";
             ipv4Address = "10.10.20.10";
+            startPriority = 20;
             removalPolicy = "delete-all";
             privileged = true;
             nestedContainers = true;
@@ -242,6 +245,7 @@ in {
           pvl-vlab-1 = mkLxc {
             name = "pvl-vlab-1";
             ipv4Address = "10.10.20.30";
+            startPriority = 20;
             removalPolicy = "delete-all";
             privileged = true;
             nestedContainers = true;
@@ -260,6 +264,7 @@ in {
             recreateTag = "1";
             image = inputs.self.nixosImages.incus-lxc-base;
             ipv4Address = "10.10.20.20";
+            startPriority = 10;
             removalPolicy = "delete-all";
             privileged = true;
             nestedContainers = true;
@@ -272,6 +277,7 @@ in {
         abird-nest = mkLxc {
           name = "abird-nest";
           ipv4Address = "10.10.100.10";
+          startPriority = 10;
           removalPolicy = "delete-all";
           nestedContainers = true;
           extraDevices = {
