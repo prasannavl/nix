@@ -197,6 +197,39 @@ forgejo_cli_retry admin auth update-oauth
         self.assertEqual(count, "1")
         self.assertLess(elapsed, 5)
 
+    def test_cli_call_has_a_hard_per_attempt_timeout(self):
+        self.write_executable(
+            self.fake_bin / "podman",
+            "#!/bin/sh\ntrap 'exit 143' TERM\nsleep 30\n",
+        )
+        env = os.environ.copy()
+        env["PATH"] = f"{self.fake_bin}:{env['PATH']}"
+        script = f"""
+source {self.helper}
+forgejo_cli_timeout_seconds=1
+forgejo_container=forgejo_forgejo_1
+forgejo_work_path=/var/lib/gitea
+forgejo_config_path=/var/lib/gitea/custom/conf/app.ini
+forgejo_cli admin auth list
+"""
+
+        started = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=self.repo_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=5,
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(124, result.returncode, result.stderr)
+        self.assertIn("Forgejo CLI timed out after 1s", result.stderr)
+        self.assertLess(elapsed, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

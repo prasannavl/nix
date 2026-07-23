@@ -11,6 +11,7 @@ init_vars() {
 	forgejo_group_claim_name="${FORGEJO_GROUP_CLAIM_NAME-groups}"
 	forgejo_issuer_host_address="${FORGEJO_ISSUER_HOST_ADDRESS-}"
 	forgejo_issuer_url="${FORGEJO_ISSUER_URL-}"
+	forgejo_cli_timeout_seconds="${FORGEJO_CLI_TIMEOUT_SECONDS-10}"
 	forgejo_wait_seconds="${FORGEJO_WAIT_SECONDS-120}"
 	forgejo_work_path="${FORGEJO_WORK_PATH-/var/lib/gitea}"
 }
@@ -35,10 +36,18 @@ load_client_secret() {
 }
 
 forgejo_cli() {
-	podman exec "$forgejo_container" forgejo \
+	local status
+	timeout --kill-after=2 "$forgejo_cli_timeout_seconds" podman exec "$forgejo_container" forgejo \
 		--work-path "$forgejo_work_path" \
 		--config "$forgejo_config_path" \
-		"$@"
+		"$@" && return 0
+	status="$?"
+	case "$status" in
+	124 | 137)
+		printf 'Forgejo CLI timed out after %ss\n' "$forgejo_cli_timeout_seconds" >&2
+		;;
+	esac
+	return "$status"
 }
 
 deadline_after_wait() {
@@ -58,7 +67,8 @@ is_transient_forgejo_cli_error() {
 	[[ "$output" == *"lookup postgres"* ]] ||
 		[[ "$output" == *"i/o timeout"* ]] ||
 		[[ "$output" == *"connection refused"* ]] ||
-		[[ "$output" == *"database system is starting up"* ]]
+		[[ "$output" == *"database system is starting up"* ]] ||
+		[[ "$output" == *"Forgejo CLI timed out after"* ]]
 }
 
 forgejo_cli_retry() {
