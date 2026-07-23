@@ -9,11 +9,11 @@ scripts/host-manager.sh generate HOST|--host=HOST [--system=none|live|incus] [op
 scripts/host-manager.sh live-install HOST|--host=HOST --wipe-disks [options]
 scripts/host-manager.sh delete HOST|--host=HOST [--force|--yes]
 scripts/host-manager.sh ssh HOST|--host=HOST [-- ssh-args...]
-scripts/host-manager.sh reboot HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--yes]
-scripts/host-manager.sh gc HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
-scripts/host-manager.sh clean:deploy HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
-scripts/host-manager.sh clean:podman HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
-scripts/host-manager.sh clean:nixbot HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
+scripts/host-manager.sh reboot HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--dry-run] [--yes]
+scripts/host-manager.sh gc HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
+scripts/host-manager.sh clean:deploy HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--dry-run] [--force-held] [--yes]
+scripts/host-manager.sh clean:podman HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--dry-run] [--force-held] [--yes]
+scripts/host-manager.sh clean:nixbot HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--dry-run] [--force-held] [--yes]
 scripts/host-manager.sh logs HOST|--host=HOST [--service SERVICE] [--since WHEN] [--lines N] [--follow]
 scripts/host-manager.sh service start|stop|restart|status|logs SERVICE [--stack STACK|--host HOST] [--user USER] [--since WHEN] [--lines N] [--follow]
 ```
@@ -36,11 +36,12 @@ target address normally.
 Mutation safety:
 
 - For one-host commands, positional `HOST` and `--host=HOST` are equivalent.
-  Maintenance commands also accept nixbot-style `--hosts=SELECTORS`: comma- or
-  space-separated exact names, globs, `all`, and `-`-prefixed exclusions. Prefix
-  a selector with `group:` to resolve it against nixbot group names. Selector
-  sets containing only exclusions start from the full effective inventory,
-  matching nixbot.
+  Maintenance commands also accept `--group=GROUP` and nixbot-style
+  `--hosts=SELECTORS`. Groups supply the base host set; exact names, globs,
+  `all`, and `-`-prefixed host exclusions filter that set. An exclusion-only
+  selector starts from the group scope, or the full inventory when no group is
+  selected. Unknown groups, hosts, exclusions, and hosts outside an explicit
+  group scope fail closed.
 - `reboot`, `gc`, `clean:deploy`, `clean:podman`, and `clean:nixbot` require
   `--yes` before mutating a remote host.
 - `service start`, `service stop`, and `service restart` require `--yes` unless
@@ -48,10 +49,9 @@ Mutation safety:
 - `--dry-run` audits and prints intended cleanup without deleting state.
 - Held lock paths are reported and preserved unless `--force-held` is supplied.
 - `reboot`, `gc`, `clean:deploy`, `clean:podman`, and `clean:nixbot` accept
-  `--hosts=all` to target every effective nixbot inventory host. The former
-  `--host=all` spelling remains compatible. Bare `--all` remains a
-  command-specific flag; for `gc`, it runs `nix-collect-garbage -d` for every
-  selected host.
+  `--hosts=all` to target every effective nixbot inventory host. `--host`
+  requires one exact host in both tools. Bare `--all` remains a command-specific
+  flag; for `gc`, it runs `nix-collect-garbage -d` for every selected host.
 - Multi-host maintenance runs use `--jobs N` for host parallelism, defaulting to
   8. Every output line is prefixed as `| <host> | ...`. Single-host runs stay
   foreground without a prefix and ignore the parallelism setting.

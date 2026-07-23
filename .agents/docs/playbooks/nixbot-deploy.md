@@ -76,6 +76,17 @@ Defaults may also include:
 - `operatorKey`
 - `bootstrapKey`
 
+## Selection Contract
+
+- `--group=<name>` selects a workflow scope and base host set for group hooks,
+  Terraform projects, and integrated checks.
+- `--host=<name>` selects one exact host. It is mutually exclusive with
+  `--hosts` and does not accept `all`, groups, globs, lists, or exclusions.
+- `--hosts` filters the selected group scope, or the full inventory without a
+  group. Use it for lists, globs, `all`, and exclusions.
+- This repository declares no `defaultGroup` or `defaultHosts`, so omitting all
+  selectors retains the shared all-inventory fallback.
+
 ## Runtime Behavior Notes
 
 - Bootstrap-check success does not guarantee generic shell access.
@@ -134,11 +145,11 @@ Defaults may also include:
 ## Validation Commands
 
 - Forced-command help:
-  - `ssh -i <ci-host-key> nixbot@<ci-host> -- --hosts <host> --help`
+  - `ssh -i <ci-host-key> nixbot@<ci-host> -- --host <host> --help`
 - Bootstrap check:
-  - `ssh -i <ci-host-key> nixbot@<ci-host> -- check-bootstrap --hosts <host> --sha <commit> --config /var/lib/nixbot/nix/hosts/nixbot.nix`
+  - `ssh -i <ci-host-key> nixbot@<ci-host> -- check-bootstrap --host <host> --sha <commit> --config /var/lib/nixbot/nix/hosts/nixbot.nix`
 - Local orchestrator:
-  - `NIXBOT_CI_SSH_KEY_PATH=<...> nixbot deploy --hosts=<host> --force`
+  - `NIXBOT_CI_SSH_KEY_PATH=<...> nixbot deploy --host=<host> --force`
 
 ## Known Failure Signatures
 

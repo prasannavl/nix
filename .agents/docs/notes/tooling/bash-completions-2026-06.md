@@ -13,10 +13,12 @@ Added Bash completion sources for operator CLIs:
 - `pkgs/tools/nixbot/nixbot.bash`
   - installed by the `nixbot` package;
   - completes top-level actions, Terraform project actions, option names,
-    enumerated option values, file-path options, and `--hosts` selectors from
-    `hosts/nixbot.nix`;
+    enumerated option values, file-path options, and
+    `--group`/`--host`/`--hosts` selections from `hosts/nixbot.nix`;
+  - completes `--host value` and `--host=value` with exact hosts only;
+  - completes `--group value` and `--group=value` with exact groups;
   - supports `--hosts value`, `--hosts=value`, comma-separated host selectors,
-    quoted space-separated host selectors, and `-host` exclusions.
+    quoted space-separated host selectors, and host exclusions.
 - `pkgs/tools/data-migrator/data-migrator.bash`
   - installed by the `data-migrator` package;
   - completes profiles from packaged YAML profiles or

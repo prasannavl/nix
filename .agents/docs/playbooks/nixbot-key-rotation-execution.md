@@ -96,7 +96,7 @@ Expected outcome:
 Run:
 
 ```bash
-nixbot deploy --hosts <ci-host> --force
+nixbot deploy --host <ci-host> --force
 ```
 
 Expected outcome:
@@ -125,7 +125,7 @@ Expected outcome:
 Run:
 
 ```bash
-nixbot check-bootstrap --hosts <ci-host> --force
+nixbot check-bootstrap --host <ci-host> --force
 nixbot deploy --hosts all --force
 ```
 
@@ -189,7 +189,7 @@ Expected outcome:
 Run:
 
 ```bash
-nixbot deploy --hosts <ci-host> --force
+nixbot deploy --host <ci-host> --force
 ```
 
 Then rotate:

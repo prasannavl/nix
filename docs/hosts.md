@@ -362,7 +362,8 @@ need `sys.nix` from `nixos-generate-config`.
 
 ### Can I deploy a single host?
 
-Yes. `nixbot deploy --hosts <host-name>` targets a single host.
+Yes. `nixbot deploy --host <host-name>` targets one exact host. Use `--group`
+for workflow groups and `--hosts` for lists, globs, `all`, or exclusions.
 
 ## Further Reading
 

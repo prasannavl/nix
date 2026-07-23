@@ -226,7 +226,8 @@ Use this index as the canonical map for `.agents/docs/**`.
 ### Nixbot
 
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
-  bootstrap, SSH, worktree, Terraform, and CI behavior.
+  bootstrap, SSH, worktree, Terraform, CI, and distinct group-scope, exact-host,
+  and host-filter selection behavior.
 - `.agents/docs/notes/nixbot/abird-shared-port-parity-2026-06.md`: Records the
   June 2026 shared Abird port, byte-parity files, local adaptations, and skipped
   topology-owned units.
@@ -383,14 +384,15 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/tooling/abird-post-53a-port-2026-07.md`: Records the July
   18 audit of all 38 commits after `53a66371`, the cumulative shared lifecycle,
   Quadlet, nixbot, and fleet-selector ports, plus the July 23 rewritten-tip
-  follow-up, Ollama update, Incus startup-wave adaptation, per-commit
-  dispositions, and final parity contract.
+  follow-up, Ollama update, Incus startup-wave adaptation, later selector-scope
+  port, per-commit dispositions, and final parity contract.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
 - `.agents/docs/notes/tooling/host-manager-operations-2026-07.md`: Records the
   host-manager remote operation surface, nixbot SSH inventory routing, mutation
-  safety gates, and package-owned local `pvl` host-manager policy.
+  safety gates, first-class group scope with exact/plural host filtering, and
+  package-owned local `pvl` host-manager policy.
 - `.agents/docs/notes/tooling/shared-tooling-parity-2026-07.md`: Records the
   byte-identical Podman, nixbot, and host-manager contract, persistent directory
   lock, and repository-owned host generation and deployment-host policy.
@@ -409,7 +411,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   generic `data-migrator` port and the legacy generation-owned host drain
   semantics.
 - `.agents/docs/notes/tooling/bash-completions-2026-06.md`: Records repo-local
-  Bash completion sources for operator CLIs and root dev-shell loading.
+  Bash completion sources for operator CLIs, distinct group, exact-host, and
+  host-selector completion, and root dev-shell loading.
 - `.agents/docs/notes/tooling/migration-manager-runtime-gate-2026-06.md`:
   Records the runtime-owned `services.migration-manager` gate,
   `migration-manager`, managed-unit registry, and data-migrator cutover

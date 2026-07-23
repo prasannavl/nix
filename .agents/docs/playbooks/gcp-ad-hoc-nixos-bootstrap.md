@@ -161,7 +161,7 @@ configured nixbot deploy route, removes the public SSH tag from the GCP
 instance, and deletes the SSH fw rule if no instance still uses it.
 
 1. After nixify, continue with the normal deploy path.
-   - Run `./scripts/nixbot.sh deploy --hosts <host>` for the next steady-state
+   - Run `./scripts/nixbot.sh deploy --host <host>` for the next steady-state
      reconcile.
    - If `hosts/nixbot.nix` points at DNS or Tailscale instead of the bootstrap
      IP, finish that routing before depending on later deploys.

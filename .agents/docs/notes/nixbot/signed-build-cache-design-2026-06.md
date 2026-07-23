@@ -380,7 +380,7 @@ CLI negative tests:
 Dry deploy shape:
 
 ```bash
-./scripts/nixbot.sh deploy --hosts=<target> --build-host=pvl-x2 --dry
+./scripts/nixbot.sh deploy --host=<target> --build-host=pvl-x2 --dry
 ```
 
 Expected dry shape:
@@ -397,7 +397,7 @@ Live rollout later:
 1. Deploy trust/cache config to builder and one low-risk target.
 2. Build one target on builder.
 3. Verify target can pull path from cache manually.
-4. Run `nixbot deploy --hosts=<one target> --build-host=pvl-x2 --no-rollback`
+4. Run `nixbot deploy --host=<one target> --build-host=pvl-x2 --no-rollback`
    only after manual cache pull works.
 5. Expand to parented guests after parent/target cache reachability is
    confirmed.

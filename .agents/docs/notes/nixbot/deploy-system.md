@@ -16,11 +16,23 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - `run` is the explicit full-workflow entrypoint. Other top-level actions stay
   first-class modes: deploy, build, local dev-build, Terraform phases,
   dependency checks, and bootstrap checks.
-- `--hosts` accepts exact host names, comma/space-separated host lists, `all`,
-  shell-style globs, and `-`-prefixed exact or glob exclusions such as
-  `all,-pvl-a1`. A selector list containing only exclusions means all hosts
-  except those exclusions. Glob expansion and exclusions happen against the
-  NixOS configuration names before normal dependency expansion and ordering.
+- `--host=HOST` selects one exact host. It is mutually exclusive with `--hosts`
+  and does not accept `all`, groups, globs, lists, or exclusions.
+- `--group=GROUP` selects a deployment workflow scope. It is repeatable and
+  accepts comma- or space-separated exact group names. Selected groups remain
+  available to group-scoped hooks, Terraform projects, and integrated checks
+  while supplying the base host set.
+- `--hosts` filters the selected group scope, or the full inventory when no
+  group is selected. It accepts exact host names, comma/space-separated lists,
+  `all`, shell-style globs, and `-`-prefixed exact or glob exclusions such as
+  `all,-pvl-a1`. An exclusion-only selector starts from the current group scope
+  or the full inventory. Unknown hosts, exclusions, and hosts outside an
+  explicit group scope fail closed.
+- `config.defaultGroup` and `config.defaultHosts` supply omitted group and host
+  selection. This repository declares neither, so the shared fallback remains
+  every inventory host. A CLI `--host` or `--hosts` overrides `NIXBOT_HOSTS`.
+- `--ci-trigger` preserves group context and forwards singular `--host` or
+  plural `--hosts` filters instead of flattening groups into host names.
 - `dev-build` is local-only. It runs from the current checkout instead of the
   managed repo worktree, rejects `--sha` and `--ci-trigger`, and writes
   `result-dev/<host>` links in the repo root as temporary GC roots. Clearing

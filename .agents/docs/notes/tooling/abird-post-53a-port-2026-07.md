@@ -10,6 +10,9 @@
   commits after `6a5ad32f`; the replacement commits are patch-equivalent,
   followed by seven genuinely new commits.
 - Port worktree: `worktrees/abird-post-53a-port-20260718`.
+- Post-parity Abird source tip: `bdfe404f` on 2026-07-23, with two new commits
+  after the shared parity landing.
+- Follow-up worktree: `worktrees/abird-post-cad-port-20260723`.
 
 The audit was commit-by-commit before grouping. Final implementation used the
 source-tip file state for cumulative shared units because several later commits
@@ -78,6 +81,21 @@ Patch-equivalence, rather than ancestry, identifies the already-audited work.
 | `d3592291` | `style(docs): apply formatter`                 | Adopted through formatting the local capacity, host-manager, ledger, and index documents; repository-specific wording was retained.                                  |
 | `547f9163` | `feat(mail): add hello mailing list`           | Skipped. The list domain, members, group data, Stalwart deployment, and observability note are Abird-specific; no shared mail implementation changed.                |
 
+## 2026-07-23 Selector-Scope Follow-up
+
+| Commit     | Subject                                        | Disposition                                                                                                                                                                                          |
+| ---------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `f81509a9` | `feat(tooling): separate group and host scope` | Cleanly ported byte-for-byte across host-manager, nixbot, completion, and both test suites. Pvl declares no groups, `defaultGroup`, or `defaultHosts`, so no inventory policy adaptation was needed. |
+| `bdfe404f` | `docs(tooling): align selector guidance`       | Partially adopted. Generic selector semantics and Pvl command examples were updated; exact adopted and skipped logical units are listed below.                                                       |
+
+For `bdfe404f`, the local index, signed-build-cache design, Bash-completion and
+host-manager notes, GCP bootstrap, nixbot deploy and key-rotation playbooks, and
+`docs/hosts.md` were adopted with Pvl examples and policy. The Abird
+active-stack note; the absent host-selection-exclusions, consolidated nixbot
+operations, and signed-build-cache handoff notes; the service-registry DNS
+playbook; both Abird-stack/nixbot implementation plans; and the Gondor-to-Nest
+migration script's Abird-specific command change were skipped.
+
 ## Logical Port Units
 
 1. Podman Compose and Quadlet lifecycle, transaction containment, runtime
@@ -93,6 +111,9 @@ Patch-equivalence, rather than ancestry, identifies the already-audited work.
    policy.
 9. Pvl-x2 two-wide, readiness-settled Incus startup waves with explicit
    controller priority tiers.
+10. First-class group workflow scope, exact singular hosts, and plural host
+    filtering across nixbot, host-manager, completions, tests, and local
+    operator documentation.
 
 ## Parity Contract
 
@@ -105,6 +126,7 @@ parity completion:
 - the touched `lib/systemd-user-manager/**` code and tests;
 - the touched migration-manager, Forgejo, and global `lib/tests/**` files;
 - the touched nixbot implementation, module, and tests;
+- the nixbot Bash completion;
 - the host-manager shared script, package wiring, and tests;
 - the three updater scripts from `2cda3e0f`.
 
@@ -127,6 +149,11 @@ Intentional divergence:
 - Shell syntax and direct helper suites passed for Podman, Forgejo,
   `systemd-user-manager`, migration-manager, host-manager, and nixbot. After
   parity completion, host-manager passed 30 tests and nixbot passed 161 tests.
+- After the selector-scope follow-up, shell syntax passed again, host-manager
+  passed 31 tests, and nixbot passed 174 tests. The matching Nix sandbox helper
+  and package builds passed; the first nixbot helper run crossed a one-second
+  timing boundary in an existing fast-path assertion and the immediate fresh
+  build passed unchanged.
 - Nix checks passed for isolated flake evaluation, Forgejo, Incus, the Podman
   helper/module/conversion suites, both Podman lifecycle VMs, Incus profiles,
   and both `systemd-user-manager` suites.
@@ -145,3 +172,7 @@ Intentional divergence:
   and `pkgs/**`, including the package-owned host-manager policy. There was no
   unexplained shared-file divergence.
 - A final refresh confirmed the rewritten `abird/master` tip at `547f9163`.
+- The selector-scope refresh confirmed `abird/master` at `bdfe404f`. Its five
+  touched shared implementation/test files are byte-identical, and the
+  repository-wide common `lib/**` and `pkgs/**` result remains 310 identical
+  files plus the same 21 explained divergences.
