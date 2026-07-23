@@ -25,17 +25,58 @@ class HostManagerScriptTest(unittest.TestCase):
             encoding="utf-8",
         )
         self.fake_repo = self.work_dir / "repo"
-        (self.fake_repo / "pkgs").mkdir(parents=True)
+        (self.fake_repo / "pkgs/tools/host-manager").mkdir(parents=True)
         (self.fake_repo / "hosts").mkdir()
+        (self.fake_repo / "lib/stacks").mkdir(parents=True)
         (self.fake_repo / "data/secrets/globals/machine").mkdir(parents=True)
         (self.fake_repo / "flake.nix").write_text("{}\n", encoding="utf-8")
         (self.fake_repo / "pkgs/manifest.nix").write_text("{}\n", encoding="utf-8")
+        (self.fake_repo / "pkgs/tools/host-manager/policy.nix").write_text(
+            textwrap.dedent(
+                """
+                {
+                  defaultServiceStack = "test";
+                  serviceDeploymentHost = {endpoint, ...}: "deploy-${endpoint.host}";
+                  generatedHostModules = {...}: [];
+                }
+                """
+            ).lstrip(),
+            encoding="utf-8",
+        )
+        (self.fake_repo / "lib/stacks/default.nix").write_text(
+            textwrap.dedent(
+                """
+                let
+                  stack = {
+                    stackName = "test";
+                    srv.defaultUser = "svc";
+                    serviceRegistry = rec {
+                      endpointGroups = {
+                        primary = {};
+                        backup = {};
+                      };
+                      services.demo.role = "app";
+                      serviceFor = name: services.${name};
+                      endpointForGroup = _role: group:
+                        if group == "primary"
+                        then {host = "app-a";}
+                        else {host = "app-b";};
+                    };
+                  };
+                in {
+                  test = stack;
+                  abird = stack;
+                }
+                """
+            ).lstrip(),
+            encoding="utf-8",
+        )
 
     def tearDown(self):
         shutil.rmtree(self.work_dir)
 
     def run_script(self, body, *, check=True):
-        return subprocess.run(
+        result = subprocess.run(
             [
                 "bash",
                 "-c",
@@ -52,8 +93,13 @@ class HostManagerScriptTest(unittest.TestCase):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=check,
+            check=False,
         )
+        if check and result.returncode != 0:
+            self.fail(
+                f"script exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+        return result
 
     def test_parse_and_validate_common_for_incus_generation(self):
         (self.fake_repo / "hosts/parent").mkdir()
@@ -242,6 +288,9 @@ class HostManagerScriptTest(unittest.TestCase):
             parse_args clean:deploy --host=all --dry-run
             printf '%s %s %s\\n' "$ACTION" "$HOST" "$DRY_RUN"
             init_vars
+            parse_args clean:deploy --hosts='app,db' --dry-run
+            printf '%s %s %s\\n' "$ACTION" "$HOSTS_RAW" "$DRY_RUN"
+            init_vars
             parse_args clean:podman --host=all --force-held --yes
             printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$FORCE_HELD" "$YES"
             init_vars
@@ -254,7 +303,7 @@ class HostManagerScriptTest(unittest.TestCase):
             parse_args logs app --service stalwart --lines 50 --follow
             printf '%s %s %s %s %s\\n' "$ACTION" "$HOST" "$SERVICE_NAME" "$LOG_LINES" "$LOG_FOLLOW"
             init_vars
-            parse_args service logs postgres --stack pvl --lines 25 --follow --user pvl
+            parse_args service logs demo --stack test --lines 25 --follow --user svc
             printf '%s %s %s %s %s %s\\n' "$ACTION" "$SERVICE_NAME" "$HOST_STACK" "$LOG_LINES" "$LOG_FOLLOW" "$LOG_USER"
             init_vars
             parse_args service start stalwart --host=app --dry-run
@@ -277,11 +326,12 @@ class HostManagerScriptTest(unittest.TestCase):
                 "podman-clean app 1 1",
                 "nixbot-clean app 1",
                 "deploy-clean all 1",
+                "deploy-clean app,db 1",
                 "podman-clean all 1 1",
                 "gc all 1 1",
                 "logs app  50 1",
                 "logs app stalwart 50 1",
-                "service-logs postgres pvl 25 1 pvl",
+                "service-logs demo test 25 1 svc",
                 "service-start stalwart app 1",
                 "service-restart stalwart app 1",
                 "service-status stalwart app",
@@ -317,7 +367,7 @@ class HostManagerScriptTest(unittest.TestCase):
             result.stdout.splitlines(),
         )
 
-    def test_register_incus_host_uses_local_lxc_profile(self):
+    def test_register_incus_host_uses_generic_lxc_profile(self):
         hosts_default = self.fake_repo / "hosts/default.nix"
         hosts_default.write_text(
             textwrap.dedent(
@@ -350,6 +400,59 @@ class HostManagerScriptTest(unittest.TestCase):
         self.assertIn("machineProfile = machineProfiles.incusLxc;", result.stdout)
         self.assertNotIn("machineProfiles.vm", result.stdout)
 
+    def test_generated_host_modules_delegate_to_repo_policy(self):
+        result = self.run_script(
+            """
+            init_vars
+            RUN_DIR="$PWD/tmp-run"
+            STAGE_DIR="$RUN_DIR/staged"
+            MUTATION_LOCK_DIR="$RUN_DIR/locks"
+            mkdir -p "$RUN_DIR" "$STAGE_DIR" "$MUTATION_LOCK_DIR"
+            HOST_STACK=test
+            HOST_DIR="$REPO_ROOT/hosts/physical"
+            write_physical_host_default
+            HOST_DIR="$REPO_ROOT/hosts/guest"
+            write_lxc_host_default
+            cat "$STAGE_DIR/hosts/physical/default.nix"
+            cat "$STAGE_DIR/hosts/guest/default.nix"
+            """
+        )
+
+        self.assertEqual(
+            2,
+            result.stdout.count(
+                "import ../../pkgs/tools/host-manager/policy.nix"
+            ),
+        )
+        self.assertIn('stackName = "test";', result.stdout)
+        self.assertIn('system = "vm";', result.stdout)
+        self.assertIn('system = "incusLxc";', result.stdout)
+        self.assertNotIn("../../lib/profiles", result.stdout)
+        self.assertNotIn("../../lib/incus-vm.nix", result.stdout)
+
+    def test_default_service_stack_uses_policy_and_environment_override(self):
+        result = self.run_script(
+            """
+            init_vars
+            default_service_stack
+            HOST_MANAGER_SERVICE_STACK=override
+            default_service_stack
+            """
+        )
+
+        self.assertEqual(["test", "override"], result.stdout.splitlines())
+
+    def test_service_resolution_uses_stack_runtime_and_deployment_hosts(self):
+        result = self.run_script(
+            """
+            init_vars
+            resolve_service_hosts_from_stack demo test
+            resolve_service_runtime_from_stack test
+            """
+        )
+
+        self.assertEqual(["deploy-app-a", "deploy-app-b", "svc-", "svc"], result.stdout.splitlines())
+
     def test_two_word_clean_aliases_are_not_supported(self):
         result = self.run_script(
             """
@@ -373,7 +476,19 @@ class HostManagerScriptTest(unittest.TestCase):
         )
 
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("Use --host=all", result.stderr)
+        self.assertIn("Use --hosts=all", result.stderr)
+
+        wrong_action = self.run_script(
+            """
+            init_vars
+            parse_args logs --hosts=all
+            validate_common
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, wrong_action.returncode)
+        self.assertIn("--hosts is only supported by reboot, gc, and clean", wrong_action.stderr)
 
         clean_all = self.run_script(
             """
@@ -397,6 +512,99 @@ class HostManagerScriptTest(unittest.TestCase):
 
         self.assertNotEqual(0, bad_jobs.returncode)
         self.assertIn("--jobs must be a positive integer", bad_jobs.stderr)
+
+    def test_maintenance_host_selectors_match_nixbot_semantics(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{
+              "abird-corp": {},
+              "abird-data": {},
+              "abird-dev-ci": {},
+              "abird-dev-corp": {}
+            }'
+            resolve_maintenance_host_selectors 'abird-*,-abird-data,-abird-dev-*'
+            printf '%s\\n' separator
+            resolve_maintenance_host_selectors '-abird-data,-abird-dev-*'
+            """
+        )
+
+        explicit, implicit = result.stdout.split("separator\n")
+        self.assertEqual(["abird-corp"], explicit.splitlines())
+        self.assertEqual(["abird-corp"], implicit.splitlines())
+
+        missing = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{"app": {}}'
+            resolve_maintenance_host_selectors 'missing*'
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, missing.returncode)
+        self.assertIn("Unknown host selector: missing*", missing.stderr)
+
+    def test_maintenance_group_selectors_support_globs_and_exclusions(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{
+              "dev-app": {"groups": ["abird-dev", "abird"]},
+              "dev-db": {"groups": ["abird-dev", "abird"]},
+              "nest": {"groups": ["abird", "-abird-dev"]},
+              "stage-app": {"groups": ["abird-stage", "abird"]},
+              "ungrouped": {}
+            }'
+            resolve_maintenance_host_selectors 'group:abird-dev,-dev-db'
+            printf '%s\\n' separator
+            resolve_maintenance_host_selectors 'group:abird-*,-group:abird-stage'
+            printf '%s\\n' separator
+            resolve_maintenance_host_selectors '-group:abird-*'
+            printf '%s\\n' separator
+            resolve_maintenance_host_selectors 'group:all,-dev-db'
+            """
+        )
+
+        exact, wildcard, implicit, all_groups = result.stdout.split("separator\n")
+        self.assertEqual(["dev-app"], exact.splitlines())
+        self.assertEqual(["dev-app", "dev-db"], wildcard.splitlines())
+        self.assertEqual(["nest", "ungrouped"], implicit.splitlines())
+        self.assertEqual(["dev-app", "nest", "stage-app"], all_groups.splitlines())
+
+        missing = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{"app": {"groups": ["apps"]}}'
+            resolve_maintenance_host_selectors 'group:missing*'
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, missing.returncode)
+        self.assertIn("Unknown group selector: missing*", missing.stderr)
+
+        empty = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{"app": {"groups": ["apps"]}}'
+            resolve_maintenance_host_selectors 'group:'
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, empty.returncode)
+        self.assertIn("Group selector cannot be empty", empty.stderr)
+
+    def test_validate_multi_host_maintenance_selection(self):
+        result = self.run_script(
+            """
+            init_vars
+            parse_args clean:deploy --hosts='app,db' --dry-run
+            NIXBOT_HOSTS_JSON='{"app": {}, "db": {}}'
+            validate_args
+            printf 'validated\\n'
+            """
+        )
+
+        self.assertEqual("validated\n", result.stdout)
 
     def test_prepare_ssh_context_uses_nixbot_inventory_route(self):
         (self.fake_repo / "hosts/nixbot.nix").write_text(
@@ -683,19 +891,45 @@ class HostManagerScriptTest(unittest.TestCase):
         self.assertEqual(3, result.stdout.count("remote:app"))
         self.assertEqual(3, result.stdout.count("remote:db"))
 
+    def test_multi_host_maintenance_prefixes_every_output_line(self):
+        result = self.run_script(
+            """
+            init_vars
+            HOSTS_FROM_FLAG=1
+            HOSTS_RAW='app,db'
+            HOST_JOBS=2
+            maintenance_target_hosts() {
+              printf '%s\\n' app db
+            }
+            emit_host_output() {
+              printf 'stdout from %s\\n' "$1"
+              printf 'stderr from %s\\n' "$1" >&2
+            }
+            run_for_target_hosts test emit_host_output
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertIn("| app | ==> test", lines)
+        self.assertIn("| app | stdout from app", lines)
+        self.assertIn("| app | stderr from app", lines)
+        self.assertIn("| db | ==> test", lines)
+        self.assertIn("| db | stdout from db", lines)
+        self.assertIn("| db | stderr from db", lines)
+
     def test_service_logs_resolves_all_service_hosts_and_uses_remote_script(self):
         result = self.run_script(
             """
             init_vars
-            SERVICE_NAME=postgres
-            HOST_STACK=pvl
+            SERVICE_NAME=demo
+            HOST_STACK=test
             LOG_LINES=25
             LOG_FOLLOW=1
             resolve_service_hosts_from_stack() {
-              printf '%s\\n' pvl-x2
+              printf '%s\\n' app-a app-b
             }
             nixbot_host_registered() {
-              [ "$1" = pvl-x2 ]
+              [ "$1" = app-a ] || [ "$1" = app-b ]
             }
             run_remote_root_script() {
               printf 'remote:%s\\n' "$1"
@@ -706,8 +940,11 @@ class HostManagerScriptTest(unittest.TestCase):
             """
         )
 
-        self.assertIn("remote:pvl-x2", result.stdout)
-        self.assertIn("HM_LOG_SERVICE=postgres", result.stdout)
+        self.assertIn("remote:app-a", result.stdout)
+        self.assertIn("remote:app-b", result.stdout)
+        self.assertIn("HM_LOG_SERVICE=demo", result.stdout)
+        self.assertIn("HM_SERVICE_PREFIX=svc-", result.stdout)
+        self.assertIn("HM_SERVICE_DEFAULT_USER=svc", result.stdout)
         self.assertIn("HM_LOG_LINES=25", result.stdout)
         self.assertIn("HM_LOG_FOLLOW=1", result.stdout)
 
@@ -739,7 +976,7 @@ class HostManagerScriptTest(unittest.TestCase):
             """
             init_vars
             HOST=app
-            SERVICE_NAME=stalwart
+            SERVICE_NAME=demo
             LOG_LINES=75
             run_remote_root_script() {
               printf 'remote:%s\\n' "$1"
@@ -751,7 +988,7 @@ class HostManagerScriptTest(unittest.TestCase):
         )
 
         self.assertIn("remote:app", result.stdout)
-        self.assertIn("HM_LOG_SERVICE=stalwart", result.stdout)
+        self.assertIn("HM_LOG_SERVICE=demo", result.stdout)
         self.assertIn("HM_SERVICE_ACTION=logs", result.stdout)
         self.assertIn("HM_LOG_LINES=75", result.stdout)
 
@@ -760,7 +997,7 @@ class HostManagerScriptTest(unittest.TestCase):
             """
             init_vars
             HOST=app
-            SERVICE_NAME=stalwart
+            SERVICE_NAME=demo
             DRY_RUN=1
             run_remote_root_script() {
               printf 'remote:%s\\n' "$1"
@@ -774,29 +1011,47 @@ class HostManagerScriptTest(unittest.TestCase):
         )
 
         self.assertIn("remote:app", result.stdout)
-        self.assertIn("HM_LOG_SERVICE=stalwart", result.stdout)
+        self.assertIn("HM_LOG_SERVICE=demo", result.stdout)
         self.assertIn("HM_SERVICE_ACTION=start", result.stdout)
         self.assertIn("HM_SERVICE_ACTION=restart", result.stdout)
         self.assertIn("HM_SERVICE_ACTION=status", result.stdout)
         self.assertIn("HM_DRY_RUN=1", result.stdout)
 
-    def test_remote_service_fallback_uses_local_prefix_and_user(self):
+    def test_remote_service_fallback_uses_stack_prefix_and_user(self):
         result = self.run_script(
             """
             init_vars
-            remote_service_action_script
+            script="$(remote_service_action_script)"
+            for service in demo svc-demo; do
+              env \
+                HM_LOG_SERVICE="$service" \
+                HM_SERVICE_ACTION=start \
+                HM_DRY_RUN=1 \
+                HM_LOG_USER= \
+                HM_SERVICE_PREFIX=svc- \
+                HM_SERVICE_DEFAULT_USER=svc \
+                HM_LOG_LINES=25 \
+                HM_LOG_SINCE= \
+                HM_LOG_FOLLOW=0 \
+                bash -c "$script"
+            done
             """
         )
 
-        self.assertIn('unit="pvl-${service}.service"', result.stdout)
-        self.assertIn('user="${requested_user:-pvl}"', result.stdout)
+        self.assertEqual(
+            [
+                "DRY: systemctl --user start svc-demo.service as svc",
+                "DRY: systemctl --user start svc-demo.service as svc",
+            ],
+            result.stdout.splitlines(),
+        )
 
     def test_generated_remote_scripts_are_valid_bash(self):
         result = self.run_script(
             """
             init_vars
             HOST=app
-            SERVICE_NAME=stalwart
+            SERVICE_NAME=demo
             DRY_RUN=1
             resolve_service_hosts_from_stack() { printf '%s\\n' app; }
             nixbot_host_registered() { [ "$1" = app ]; }

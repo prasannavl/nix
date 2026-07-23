@@ -9,11 +9,11 @@ scripts/host-manager.sh generate HOST|--host=HOST [--system=none|live|incus] [op
 scripts/host-manager.sh live-install HOST|--host=HOST --wipe-disks [options]
 scripts/host-manager.sh delete HOST|--host=HOST [--force|--yes]
 scripts/host-manager.sh ssh HOST|--host=HOST [-- ssh-args...]
-scripts/host-manager.sh reboot HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--yes]
-scripts/host-manager.sh gc HOST|--host=HOST|--host=all [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
-scripts/host-manager.sh clean:deploy HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
-scripts/host-manager.sh clean:podman HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
-scripts/host-manager.sh clean:nixbot HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
+scripts/host-manager.sh reboot HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--yes]
+scripts/host-manager.sh gc HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
+scripts/host-manager.sh clean:deploy HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
+scripts/host-manager.sh clean:podman HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
+scripts/host-manager.sh clean:nixbot HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
 scripts/host-manager.sh logs HOST|--host=HOST [--service SERVICE] [--since WHEN] [--lines N] [--follow]
 scripts/host-manager.sh service start|stop|restart|status|logs SERVICE [--stack STACK|--host HOST] [--user USER] [--since WHEN] [--lines N] [--follow]
 ```
@@ -35,8 +35,12 @@ target address normally.
 
 Mutation safety:
 
-- For host-targeted commands, positional `HOST` and `--host=HOST` are
-  equivalent. Use the flag form for fleet selectors or generated command lines.
+- For one-host commands, positional `HOST` and `--host=HOST` are equivalent.
+  Maintenance commands also accept nixbot-style `--hosts=SELECTORS`: comma- or
+  space-separated exact names, globs, `all`, and `-`-prefixed exclusions. Prefix
+  a selector with `group:` to resolve it against nixbot group names. Selector
+  sets containing only exclusions start from the full effective inventory,
+  matching nixbot.
 - `reboot`, `gc`, `clean:deploy`, `clean:podman`, and `clean:nixbot` require
   `--yes` before mutating a remote host.
 - `service start`, `service stop`, and `service restart` require `--yes` unless
@@ -44,11 +48,13 @@ Mutation safety:
 - `--dry-run` audits and prints intended cleanup without deleting state.
 - Held lock paths are reported and preserved unless `--force-held` is supplied.
 - `reboot`, `gc`, `clean:deploy`, `clean:podman`, and `clean:nixbot` accept
-  `--host=all` to target every effective nixbot inventory host. Bare `--all`
-  remains a command-specific flag only; for `gc`, it runs
-  `nix-collect-garbage -d` for the selected host, including with `--host=all`.
-- `--host=all` maintenance runs use `--jobs N` for host parallelism, defaulting
-  to 8. Single-host runs stay foreground and ignore the parallelism setting.
+  `--hosts=all` to target every effective nixbot inventory host. The former
+  `--host=all` spelling remains compatible. Bare `--all` remains a
+  command-specific flag; for `gc`, it runs `nix-collect-garbage -d` for every
+  selected host.
+- Multi-host maintenance runs use `--jobs N` for host parallelism, defaulting to
+  8. Every output line is prefixed as `| <host> | ...`. Single-host runs stay
+  foreground without a prefix and ignore the parallelism setting.
 - `clean:deploy` runs the nixbot and Podman cleanup paths together.
 - `clean:podman` removes only unused anonymous 64-hex Podman volumes. It does
   not run global `podman volume prune` and does not remove named or mounted
@@ -64,9 +70,17 @@ does not call Incus on a parent host, so a guest target reboots itself.
 not perform service-registry host discovery.
 
 `service start|stop|restart|status|logs SERVICE` resolves the service through
-`lib/stacks/<stack>.nix` and defaults to the local `pvl` stack. Passing
-`--host HOST` disables registry discovery and targets only that host. Once on
-the host, host-manager prefers
-`/run/current-system/share/podman-compose/control-registry.json` to discover the
-generated systemd user, unit, and service name. If the registry entry is absent,
-the local fallback is `pvl-${SERVICE}.service` running as user `pvl`.
+the selected stack registry. `pkgs/tools/host-manager/policy.nix` owns the local
+default stack and generated-host module policy. Passing `--host HOST` disables
+registry discovery and targets only that host. Once on the host, host-manager
+prefers `/run/current-system/share/podman-compose/control-registry.json` to
+discover the generated systemd user, unit, and service name. If the registry
+entry is absent, the selected stack's existing `srv.defaultUser` provides the
+fallback user and host-manager derives the unit prefix from it.
+
+Repository policy is outside the byte-identical shared implementation:
+
+- `pkgs/tools/host-manager/policy.nix` owns the default stack, deployment-host
+  identity mapping, and extra modules for newly generated hosts.
+- New Incus hosts use `machineProfiles.incusLxc`; ordinary generated hosts use
+  `machineProfiles.vm`.

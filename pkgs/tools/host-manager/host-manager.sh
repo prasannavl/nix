@@ -9,11 +9,11 @@ Usage:
   scripts/host-manager.sh live-install HOST|--host=HOST --wipe-disks [options]
   scripts/host-manager.sh delete HOST|--host=HOST [--force|--yes]
   scripts/host-manager.sh ssh HOST|--host=HOST [-- ssh-args...]
-  scripts/host-manager.sh reboot HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--yes]
-  scripts/host-manager.sh gc HOST|--host=HOST|--host=all [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
-  scripts/host-manager.sh clean:deploy HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
-  scripts/host-manager.sh clean:podman HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
-  scripts/host-manager.sh clean:nixbot HOST|--host=HOST|--host=all [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh reboot HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--yes]
+  scripts/host-manager.sh gc HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
+  scripts/host-manager.sh clean:deploy HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh clean:podman HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh clean:nixbot HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
   scripts/host-manager.sh logs HOST|--host=HOST [--service SERVICE] [--since WHEN] [--lines N] [--follow]
   scripts/host-manager.sh service start|stop|restart|status|logs SERVICE [--stack STACK|--host HOST] [--user USER] [--since WHEN] [--lines N] [--follow]
 
@@ -56,10 +56,13 @@ Actions:
                            instance of a service, or only --host HOST.
 
 Options:
-  --host HOST              Host selector. Equivalent to positional HOST for
-                           host-targeted commands. Use --host=all only for
-                           reboot, gc, and clean:* fleet maintenance.
-  --jobs N                 Parallel host jobs for --host=all maintenance.
+  --host HOST              One host. Equivalent to positional HOST for
+                           host-targeted commands.
+  --hosts SELECTORS        Nixbot-style host selectors for reboot, gc, and
+                           clean:*: comma/space lists, globs, -exclusions, all,
+                           and group: selectors. Example:
+                           --hosts='group:abird-dev,-abird-dev-ci'.
+  --jobs N                 Parallel host jobs for multi-host maintenance.
                            Default: 8.
   --stack STACK            Optional stack key from lib/stacks.
   --system SYSTEM          Generate target type: none, live, or incus.
@@ -123,6 +126,7 @@ init_vars() {
 	REPO_ROOT="$(find_repo_root)"
 	ACTION=""
 	HOST=""
+	HOSTS_RAW=""
 	HOST_STACK=""
 	HOST_SYSTEM="none"
 	DISK_DEVICE=""
@@ -148,6 +152,7 @@ init_vars() {
 	DELETE_OLDER_THAN="7d"
 	GC_ALL="0"
 	HOST_FROM_FLAG="0"
+	HOSTS_FROM_FLAG="0"
 	HOST_JOBS="8"
 	OP_USER="${HOST_MANAGER_USER:-$(id -un 2>/dev/null || printf root)}"
 	OP_USER_EXPLICIT="0"
@@ -171,12 +176,14 @@ init_vars() {
 	GENERATED_SYS_FILE=""
 	HOST_DIR=""
 	HOSTS_DEFAULT_FILE="${REPO_ROOT}/hosts/default.nix"
+	HOST_MANAGER_POLICY_FILE="${REPO_ROOT}/pkgs/tools/host-manager/policy.nix"
 	NIXBOT_FILE="${REPO_ROOT}/hosts/nixbot.nix"
 	NIXBOT_OVERRIDE_FILE="${NIXBOT_FILE%.nix}.override.nix"
 	SECRETS_FILE="${REPO_ROOT}/data/secrets/default.nix"
 	MACHINE_SECRET_DIR="${REPO_ROOT}/data/secrets/globals/machine"
 	NIXBOT_CONFIG_JSON=""
 	NIXBOT_HOSTS_JSON=""
+	NIXBOT_GROUPS_JSON=""
 	REMOTE_SSH_CONFIG=""
 	REMOTE_SSH_TARGET=""
 	REMOTE_SSH_ARGS=()
@@ -419,6 +426,17 @@ parse_args() {
 		--host=*)
 			HOST="${1#--host=}"
 			HOST_FROM_FLAG="1"
+			shift
+			;;
+		--hosts)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			HOSTS_RAW="$2"
+			HOSTS_FROM_FLAG="1"
+			shift 2
+			;;
+		--hosts=*)
+			HOSTS_RAW="${1#--hosts=}"
+			HOSTS_FROM_FLAG="1"
 			shift
 			;;
 		--system)
@@ -702,10 +720,14 @@ maintenance_action_supports_all() {
 }
 
 validate_common() {
-	if [[ "$ACTION" != service-* || -n "$HOST" ]]; then
+	if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
+		maintenance_action_supports_all || die "--hosts is only supported by reboot, gc, and clean commands."
+		[[ -z "$HOST" ]] || die "Use either HOST/--host or --hosts, not both."
+		[[ -n "$HOSTS_RAW" ]] || die "--hosts cannot be empty."
+	elif [[ "$ACTION" != service-* || -n "$HOST" ]]; then
 		[[ -n "$HOST" ]] || die "Missing required HOST."
 		if [[ "$HOST" == "all" ]]; then
-			[[ "$HOST_FROM_FLAG" == "1" ]] || die "Use --host=all to target every nixbot inventory host."
+			[[ "$HOST_FROM_FLAG" == "1" ]] || die "Use --hosts=all to target every nixbot inventory host."
 			maintenance_action_supports_all || die "HOST=all is only supported by reboot, gc, and clean commands."
 		else
 			valid_host_name "$HOST" || die "HOST must start and end with a letter or number, and use only letters, numbers, and hyphens."
@@ -720,7 +742,7 @@ validate_common() {
 	[[ -z "$HARDWARE_CONFIG" || -f "$HARDWARE_CONFIG" ]] || die "Hardware config not found: $HARDWARE_CONFIG"
 	[[ "$LOG_LINES" =~ ^[0-9]+$ ]] || die "--lines must be a non-negative integer."
 	[[ "$HOST_JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer."
-	if [[ -n "$HOST" ]]; then
+	if [[ -n "$HOST" && "$HOST" != "all" ]]; then
 		HOST_DIR="${REPO_ROOT}/hosts/${HOST}"
 		infer_disk_device
 	else
@@ -744,6 +766,20 @@ stack_exists() {
 	local stack="$1"
 
 	[[ "$(nix eval --raw --file "${REPO_ROOT}/lib/stacks/default.nix" --apply "stacks: if builtins.hasAttr \"$(nix_escape "$stack")\" stacks then \"1\" else \"0\"")" == "1" ]]
+}
+
+default_service_stack() {
+	local stack
+
+	if [[ -n "${HOST_MANAGER_SERVICE_STACK:-}" ]]; then
+		printf '%s\n' "$HOST_MANAGER_SERVICE_STACK"
+		return
+	fi
+
+	[[ -f "$HOST_MANAGER_POLICY_FILE" ]] || die "Host-manager policy not found: ${HOST_MANAGER_POLICY_FILE}"
+	stack="$(nix eval --raw --file "$HOST_MANAGER_POLICY_FILE" --apply 'policy: policy.defaultServiceStack or ""')"
+	[[ -n "$stack" ]] || die "Host-manager policy must define defaultServiceStack."
+	printf '%s\n' "$stack"
 }
 
 valid_ipv4() {
@@ -811,7 +847,9 @@ validate_args() {
 		nixbot_host_registered "$HOST" || die "Host is not in ${NIXBOT_FILE}: ${HOST}"
 		;;
 	reboot | gc | podman-clean | nixbot-clean | deploy-clean)
-		if [[ "$HOST" == "all" ]]; then
+		if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
+			resolve_maintenance_host_selectors "$HOSTS_RAW" >/dev/null
+		elif [[ "$HOST" == "all" ]]; then
 			nixbot_inventory_hosts >/dev/null
 		else
 			nixbot_host_registered "$HOST" || die "Host is not in ${NIXBOT_FILE}: ${HOST}"
@@ -1209,6 +1247,42 @@ load_nixbot_hosts_json() {
 	printf '%s\n' "$NIXBOT_HOSTS_JSON"
 }
 
+load_nixbot_groups_json() {
+	local hosts_json
+
+	if [[ -n "$NIXBOT_GROUPS_JSON" ]]; then
+		printf '%s\n' "$NIXBOT_GROUPS_JSON"
+		return
+	fi
+
+	hosts_json="$(load_nixbot_hosts_json)"
+	NIXBOT_GROUPS_JSON="$(jq -ce '
+    def stable_unique:
+      reduce .[] as $item ([]; if index($item) then . else . + [$item] end);
+    if type == "object" then . else error("hosts must be an attrset") end
+    | to_entries
+    | reduce .[] as $host ({};
+        (
+          ($host.value.groups // [])
+          | if type == "array" then .
+            else error("host groups must be lists")
+            end
+          | map(
+              if type == "string" and length > 0 then .
+              else error("host groups must contain non-empty strings")
+              end
+            )
+          | map(select(startswith("-") | not))
+        ) as $groups
+        | reduce $groups[] as $group (.;
+            .[$group] = ((.[$group] // []) + [$host.key])
+          )
+      )
+    | with_entries(.value |= stable_unique)
+  ' <<<"$hosts_json")" || die "Nixbot host groups must be lists of non-empty strings."
+	printf '%s\n' "$NIXBOT_GROUPS_JSON"
+}
+
 nixbot_inventory_hosts() {
 	local hosts_json host_count
 
@@ -1216,6 +1290,161 @@ nixbot_inventory_hosts() {
 	host_count="$(jq -r 'keys | length' <<<"$hosts_json")"
 	[[ "$host_count" -gt 0 ]] || die "No hosts found in ${NIXBOT_FILE}."
 	jq -r 'keys[]' <<<"$hosts_json"
+}
+
+emit_normalized_hosts() {
+	local raw="$1"
+
+	printf '%s' "$raw" |
+		tr ', ' '\n' |
+		awk 'NF && !seen[$0]++'
+}
+
+host_token_is_glob() {
+	local token="$1"
+
+	case "$token" in
+	*'*'* | *'?'* | *'['*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+resolve_maintenance_host_selectors() {
+	local raw_selectors="$1" all_hosts_output groups_json="" token selector host matched exclusion=0
+	local group_selector group group_matches
+	local -a all_hosts=() group_names=() selected_hosts=() excluded_hosts=()
+	declare -A group_host_set=() selected_host_set=() excluded_host_set=() inventory_host_set=()
+
+	all_hosts_output="$(nixbot_inventory_hosts)" || return "$?"
+	mapfile -t all_hosts <<<"$all_hosts_output"
+	for host in "${all_hosts[@]}"; do
+		inventory_host_set["$host"]=1
+	done
+
+	# Keep selector semantics aligned with nixbot's parse_host_selectors_json.
+	while IFS= read -r token; do
+		[[ -n "$token" ]] || continue
+		exclusion=0
+		selector="$token"
+		if [[ "$token" == -* ]]; then
+			exclusion=1
+			selector="${token#-}"
+			[[ -n "$selector" ]] || selector="$token"
+		fi
+
+		if [[ "$selector" == group:* ]]; then
+			group_selector="${selector#group:}"
+			[[ -n "$group_selector" ]] || die "Group selector cannot be empty."
+			if [[ -z "$groups_json" ]]; then
+				groups_json="$(load_nixbot_groups_json)" || return "$?"
+				mapfile -t group_names < <(jq -r 'keys[]' <<<"$groups_json")
+			fi
+
+			matched=0
+			group_host_set=()
+			for group in "${group_names[@]}"; do
+				group_matches=0
+				if [[ "$group_selector" == "all" ]]; then
+					group_matches=1
+				elif host_token_is_glob "$group_selector"; then
+					# shellcheck disable=SC2053
+					if [[ "$group" == $group_selector ]]; then
+						group_matches=1
+					fi
+				elif [[ "$group" == "$group_selector" ]]; then
+					group_matches=1
+				fi
+				[[ "$group_matches" == "1" ]] || continue
+
+				matched=1
+				while IFS= read -r host; do
+					[[ -n "$host" ]] || continue
+					group_host_set["$host"]=1
+				done < <(jq -r --arg group "$group" '.[$group][]' <<<"$groups_json")
+			done
+
+			if [[ "$matched" == "0" ]]; then
+				[[ "$exclusion" == "1" ]] || die "Unknown group selector: ${group_selector}"
+				continue
+			fi
+
+			for host in "${all_hosts[@]}"; do
+				[[ -n "${group_host_set["$host"]+x}" ]] || continue
+				if [[ "$exclusion" == "1" ]]; then
+					if [[ -z "${excluded_host_set["$host"]+x}" ]]; then
+						excluded_host_set["$host"]=1
+						excluded_hosts+=("$host")
+					fi
+				elif [[ -z "${selected_host_set["$host"]+x}" ]]; then
+					selected_host_set["$host"]=1
+					selected_hosts+=("$host")
+				fi
+			done
+			continue
+		fi
+
+		if [[ "$selector" == "all" ]]; then
+			for host in "${all_hosts[@]}"; do
+				if [[ "$exclusion" == "1" ]]; then
+					if [[ -z "${excluded_host_set["$host"]+x}" ]]; then
+						excluded_host_set["$host"]=1
+						excluded_hosts+=("$host")
+					fi
+				elif [[ -z "${selected_host_set["$host"]+x}" ]]; then
+					selected_host_set["$host"]=1
+					selected_hosts+=("$host")
+				fi
+			done
+			continue
+		fi
+
+		if host_token_is_glob "$selector"; then
+			matched=0
+			for host in "${all_hosts[@]}"; do
+				# shellcheck disable=SC2053
+				if [[ "$host" == $selector ]]; then
+					matched=1
+					if [[ "$exclusion" == "1" ]]; then
+						if [[ -z "${excluded_host_set["$host"]+x}" ]]; then
+							excluded_host_set["$host"]=1
+							excluded_hosts+=("$host")
+						fi
+					elif [[ -z "${selected_host_set["$host"]+x}" ]]; then
+						selected_host_set["$host"]=1
+						selected_hosts+=("$host")
+					fi
+				fi
+			done
+			if [[ "$matched" == "0" && "$exclusion" == "0" ]]; then
+				die "Unknown host selector: ${selector}"
+			fi
+			continue
+		fi
+
+		if [[ "$exclusion" == "1" ]]; then
+			if [[ -z "${excluded_host_set["$selector"]+x}" ]]; then
+				excluded_host_set["$selector"]=1
+				excluded_hosts+=("$selector")
+			fi
+		elif [[ -z "${inventory_host_set["$selector"]+x}" ]]; then
+			die "Unknown host selector: ${selector}"
+		elif [[ -z "${selected_host_set["$selector"]+x}" ]]; then
+			selected_host_set["$selector"]=1
+			selected_hosts+=("$selector")
+		fi
+	done < <(emit_normalized_hosts "$raw_selectors")
+
+	if [[ "${#selected_hosts[@]}" == "0" && "${#excluded_hosts[@]}" -gt 0 ]]; then
+		selected_hosts=("${all_hosts[@]}")
+	fi
+
+	matched=0
+	for host in "${selected_hosts[@]}"; do
+		[[ -z "${excluded_host_set["$host"]+x}" ]] || continue
+		printf '%s\n' "$host"
+		matched=1
+	done
+	[[ "$matched" == "1" ]] || die "No hosts selected."
 }
 
 nixbot_host_json() {
@@ -1406,24 +1635,31 @@ shell_quote_argv() {
 }
 
 resolve_service_hosts_from_stack() {
-	local service="$1" stack="${2:-${HOST_STACK:-${HOST_MANAGER_SERVICE_STACK:-pvl}}}"
-	local stack_attr service_escaped stack_escaped
+	local service="$1" stack="$2"
+	local policy_path_escaped stack_attr service_escaped stack_escaped
 
+	policy_path_escaped="$(nix_escape "$HOST_MANAGER_POLICY_FILE")"
 	stack_attr="$(nix_attr_key "$stack")"
 	stack_escaped="$(nix_escape "$stack")"
 	service_escaped="$(nix_escape "$service")"
 
 	nix eval --json --file "${REPO_ROOT}/lib/stacks/default.nix" --apply "
 stacks: let
+  policy = import (builtins.toPath "${policy_path_escaped}");
   stack = stacks.${stack_attr} or (throw \"unknown stack: ${stack_escaped}\");
   registry = stack.serviceRegistry;
   service = registry.serviceFor \"${service_escaped}\";
-  hostForEndpoint = endpoint: endpoint.host;
   endpointGroups =
     if service ? placement
     then [service.placement]
     else builtins.attrNames registry.endpointGroups;
-  hosts = map (group: hostForEndpoint (registry.endpointForGroup service.role group)) endpointGroups;
+  hosts = map (
+    group:
+      policy.serviceDeploymentHost {
+        stackName = stack.stackName;
+        endpoint = registry.endpointForGroup service.role group;
+      }
+  ) endpointGroups;
   uniqueHosts = builtins.attrNames (builtins.listToAttrs (map (host: {
     name = host;
     value = true;
@@ -1431,6 +1667,22 @@ stacks: let
 in
   uniqueHosts
 " | jq -r '.[]'
+}
+
+resolve_service_runtime_from_stack() {
+	local stack="$1" stack_attr stack_escaped
+
+	stack_attr="$(nix_attr_key "$stack")"
+	stack_escaped="$(nix_escape "$stack")"
+
+	nix eval --json --file "${REPO_ROOT}/lib/stacks/default.nix" --apply "
+stacks: let
+  stack = stacks.${stack_attr} or (throw \"unknown stack: ${stack_escaped}\");
+in {
+  prefix = \"\${stack.srv.defaultUser}-\";
+  user = stack.srv.defaultUser;
+}
+" | jq -r '.prefix, .user'
 }
 
 service_name_is_unit() {
@@ -1494,23 +1746,30 @@ ensure_host_absent_or_confirm() {
 }
 
 write_physical_host_default() {
-	local target_file
+	local stack_expr="null" target_file
 
 	register_staged_target "${HOST_DIR}/default.nix"
 	target_file="$(stage_file_for_write "${HOST_DIR}/default.nix")"
-	cat >"$target_file" <<'EOF'
-{...}: {
-  imports = [
-    ../../lib/profiles/all.nix
-    ./sys.nix
-  ];
+	if [[ -n "$HOST_STACK" ]]; then
+		stack_expr="\"$(nix_escape "$HOST_STACK")\""
+	fi
+	cat >"$target_file" <<EOF
+{...}: let
+  policy = import ../../pkgs/tools/host-manager/policy.nix;
+in {
+  imports =
+    policy.generatedHostModules {
+      stackName = ${stack_expr};
+      system = "vm";
+    }
+    ++ [./sys.nix];
 }
 EOF
 	alejandra -q "$target_file"
 }
 
 write_lxc_host_default() {
-	local default_file packages_file users_file
+	local default_file packages_file stack_expr="null" users_file
 
 	register_staged_target "${HOST_DIR}/default.nix"
 	register_staged_target "${HOST_DIR}/packages.nix"
@@ -1518,12 +1777,22 @@ write_lxc_host_default() {
 	default_file="$(stage_file_for_write "${HOST_DIR}/default.nix")"
 	packages_file="$(stage_file_for_write "${HOST_DIR}/packages.nix")"
 	users_file="$(stage_file_for_write "${HOST_DIR}/users.nix")"
-	cat >"$default_file" <<'EOF'
-{...}: {
-  imports = [
-    ./packages.nix
-    ./users.nix
-  ];
+	if [[ -n "$HOST_STACK" ]]; then
+		stack_expr="\"$(nix_escape "$HOST_STACK")\""
+	fi
+	cat >"$default_file" <<EOF
+{...}: let
+  policy = import ../../pkgs/tools/host-manager/policy.nix;
+in {
+  imports =
+    policy.generatedHostModules {
+      stackName = ${stack_expr};
+      system = "incusLxc";
+    }
+    ++ [
+      ./packages.nix
+      ./users.nix
+    ];
 }
 EOF
 	printf '{...}: {}\n' >"$packages_file"
@@ -2157,11 +2426,29 @@ run_ssh() {
 }
 
 maintenance_target_hosts() {
-	if [[ "$HOST" == "all" ]]; then
-		nixbot_inventory_hosts
+	if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
+		resolve_maintenance_host_selectors "$HOSTS_RAW"
+	elif [[ "$HOST" == "all" ]]; then
+		resolve_maintenance_host_selectors all
 	else
 		printf '%s\n' "$HOST"
 	fi
+}
+
+maintenance_target_label() {
+	if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
+		printf 'selected nixbot inventory hosts (%s)\n' "$HOSTS_RAW"
+	elif [[ "$HOST" == "all" ]]; then
+		printf 'all nixbot inventory hosts\n'
+	else
+		printf '%s\n' "$HOST"
+	fi
+}
+
+prefix_host_stream() {
+	local host="$1"
+
+	awk -v prefix="| ${host} | " '{ print prefix $0; fflush() }'
 }
 
 drain_host_jobs() {
@@ -2174,20 +2461,21 @@ drain_host_jobs() {
 }
 
 run_for_target_hosts() {
-	local label="$1" runner="$2" host active_jobs=0 rc=0
-	local -a pids=()
+	local label="$1" runner="$2" host hosts_output active_jobs=0 rc=0
+	local -a hosts=() pids=()
 
-	if [[ "$HOST" != "all" ]]; then
-		"$runner" "$HOST"
+	hosts_output="$(maintenance_target_hosts)" || return "$?"
+	mapfile -t hosts <<<"$hosts_output"
+	if [[ "${#hosts[@]}" == "1" ]]; then
+		"$runner" "${hosts[0]}"
 		return
 	fi
 
-	while IFS= read -r host; do
-		[[ -n "$host" ]] || continue
+	for host in "${hosts[@]}"; do
 		(
-			info "==> ${host}: ${label}"
+			info "==> ${label}"
 			"$runner" "$host"
-		) &
+		) 2>&1 | prefix_host_stream "$host" &
 		pids+=("$!")
 		active_jobs=$((active_jobs + 1))
 		if [[ "$active_jobs" -ge "$HOST_JOBS" ]]; then
@@ -2195,7 +2483,7 @@ run_for_target_hosts() {
 			pids=()
 			active_jobs=0
 		fi
-	done < <(maintenance_target_hosts)
+	done
 
 	if [[ "$active_jobs" -gt 0 ]]; then
 		drain_host_jobs "${pids[@]}" || rc=1
@@ -2240,13 +2528,9 @@ REMOTE_GC
 }
 
 run_gc() {
-	local host target_label
+	local target_label
 
-	if [[ "$HOST" == "all" ]]; then
-		target_label="all nixbot inventory hosts"
-	else
-		target_label="$HOST"
-	fi
+	target_label="$(maintenance_target_label)"
 
 	if [[ "$DRY_RUN" != "1" ]]; then
 		confirm_or_die "Run Nix garbage collection on ${target_label}?" "--yes"
@@ -2274,13 +2558,9 @@ REMOTE_REBOOT
 }
 
 run_reboot() {
-	local host target_label
+	local target_label
 
-	if [[ "$HOST" == "all" ]]; then
-		target_label="all nixbot inventory hosts"
-	else
-		target_label="$HOST"
-	fi
+	target_label="$(maintenance_target_label)"
 
 	if [[ "$DRY_RUN" != "1" ]]; then
 		confirm_or_die "Reboot ${target_label} by running systemctl reboot on the target host(s)?" "--yes"
@@ -2527,13 +2807,9 @@ run_remote_clean_podman_host() {
 }
 
 run_remote_clean() {
-	local kind="$1" host target_label
+	local kind="$1" target_label
 
-	if [[ "$HOST" == "all" ]]; then
-		target_label="all nixbot inventory hosts"
-	else
-		target_label="$HOST"
-	fi
+	target_label="$(maintenance_target_label)"
 
 	if [[ "$DRY_RUN" != "1" ]]; then
 		confirm_or_die "Run ${kind} cleanup on ${target_label}?" "--yes"
@@ -2582,22 +2858,29 @@ set -Eeuo pipefail
 service="${HM_LOG_SERVICE}"
 action="${HM_SERVICE_ACTION}"
 requested_user="${HM_LOG_USER}"
+service_prefix="${HM_SERVICE_PREFIX}"
+service_default_user="${HM_SERVICE_DEFAULT_USER}"
 lines="${HM_LOG_LINES}"
 since="${HM_LOG_SINCE}"
 follow="${HM_LOG_FOLLOW}"
 registry="/run/current-system/share/podman-compose/control-registry.json"
 unit=""
 user=""
+if [[ -n "$service_prefix" && "$service" == "$service_prefix"* ]]; then
+	prefixed_service="$service"
+else
+	prefixed_service="${service_prefix}${service}"
+fi
 
 if [[ -f "$registry" ]] && command -v jq >/dev/null 2>&1; then
-	entry="$(jq -cer --arg service "$service" '
+	entry="$(jq -cer --arg service "$service" --arg prefixed_service "$prefixed_service" '
 		.[$service]
-		// .["pvl-" + $service]
+		// .[$prefixed_service]
 		// (to_entries[]? | select(
 			.key == $service
-			or .key == ("pvl-" + $service)
+			or .key == $prefixed_service
 			or .value.serviceName == $service
-			or .value.serviceName == ("pvl-" + $service)
+			or .value.serviceName == $prefixed_service
 		) | .value)
 		// empty
 	' "$registry" 2>/dev/null || true)"
@@ -2614,8 +2897,8 @@ if [[ -z "$unit" ]]; then
 		user="$requested_user"
 		;;
 	*)
-		unit="pvl-${service}.service"
-		user="${requested_user:-pvl}"
+		unit="${prefixed_service}.service"
+		user="${requested_user:-$service_default_user}"
 		;;
 	esac
 fi
@@ -2682,7 +2965,7 @@ REMOTE_SERVICE
 }
 
 run_service_action_on_host() {
-	local service_action="$1" service_host="$2" script
+	local service_action="$1" service_host="$2" service_prefix="$3" service_default_user="$4" script
 
 	script="$(remote_service_action_script)"
 	run_remote_root_script "$service_host" "$script" \
@@ -2690,16 +2973,28 @@ run_service_action_on_host() {
 		HM_SERVICE_ACTION="$service_action" \
 		HM_DRY_RUN="$DRY_RUN" \
 		HM_LOG_USER="$LOG_USER" \
+		HM_SERVICE_PREFIX="$service_prefix" \
+		HM_SERVICE_DEFAULT_USER="$service_default_user" \
 		HM_LOG_LINES="$LOG_LINES" \
 		HM_LOG_SINCE="$LOG_SINCE" \
 		HM_LOG_FOLLOW="$LOG_FOLLOW"
 }
 
 run_service_action() {
-	local service_action="$1" stack="${HOST_STACK:-${HOST_MANAGER_SERVICE_STACK:-pvl}}" service_host
+	local service_action="$1" service_default_user="" service_host service_prefix="" stack=""
+	local -a service_runtime=()
 	local -a service_hosts=()
 	local -a pids=()
 	local pid rc=0
+
+	if ! service_name_is_unit "$SERVICE_NAME"; then
+		stack="${HOST_STACK:-$(default_service_stack)}"
+		mapfile -t service_runtime < <(resolve_service_runtime_from_stack "$stack") ||
+			die "Could not resolve service runtime defaults from stack: ${stack}"
+		[[ "${#service_runtime[@]}" -eq 2 ]] || die "Invalid service runtime defaults from stack: ${stack}"
+		service_prefix="${service_runtime[0]}"
+		service_default_user="${service_runtime[1]}"
+	fi
 
 	if [[ -n "$HOST" ]]; then
 		service_hosts=("$HOST")
@@ -2722,7 +3017,7 @@ run_service_action() {
 	if [[ "$service_action" == "logs" && "$LOG_FOLLOW" == "1" && "${#service_hosts[@]}" -gt 1 ]]; then
 		for service_host in "${service_hosts[@]}"; do
 			info "Following ${SERVICE_NAME} logs on ${service_host}"
-			run_service_action_on_host "$service_action" "$service_host" &
+			run_service_action_on_host "$service_action" "$service_host" "$service_prefix" "$service_default_user" &
 			pids+=("$!")
 		done
 		for pid in "${pids[@]}"; do
@@ -2733,7 +3028,7 @@ run_service_action() {
 
 	for service_host in "${service_hosts[@]}"; do
 		info "Running service ${service_action} for ${SERVICE_NAME} on ${service_host}"
-		run_service_action_on_host "$service_action" "$service_host"
+		run_service_action_on_host "$service_action" "$service_host" "$service_prefix" "$service_default_user"
 	done
 }
 

@@ -1,15 +1,21 @@
 {pkgs}: {
   helper =
     pkgs.runCommand "host-manager-helper-test" {
+      NIX_CONFIG = "experimental-features = nix-command flakes";
       nativeBuildInputs = [
+        pkgs.alejandra
         pkgs.bash
         pkgs.coreutils
         pkgs.gnugrep
         pkgs.gnused
         pkgs.jq
+        pkgs.nix
+        pkgs.openssh
         pkgs.python3
       ];
     } ''
+      export HOME="$TMPDIR/home"
+      mkdir -p "$HOME"
       repo="$TMPDIR/repo"
       mkdir -p "$repo/pkgs/tools"
       cp -R ${../.} "$repo/pkgs/tools/host-manager"
