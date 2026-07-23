@@ -172,6 +172,7 @@
     systemd.tmpfiles.rules =
       [
         "d ${cfg.stateDir} 0755 ${cfg.user.name} ${cfg.user.group} -"
+        "d ${cfg.stateDir}/activation-results 0700 root root 30d"
       ]
       ++ optionals cfg.forcedCommands.enable repoTmpfiles;
   };

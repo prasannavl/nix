@@ -66,6 +66,7 @@ class NixbotScriptTest(unittest.TestCase):
               --build-plan-jobs 2 \
               --build-jobs 3 \
               --deploy-jobs 4 \
+              --deploy-jobs-per-domain 2 \
               --verify-jobs 5 \
               --dry \
               --skip-global-lock \
@@ -84,6 +85,7 @@ class NixbotScriptTest(unittest.TestCase):
               --arg buildPlanJobs "$BUILD_PLAN_JOBS" \
               --arg buildJobs "$BUILD_JOBS" \
               --arg deployJobs "$NIXBOT_PARALLEL_JOBS" \
+              --arg deployJobsPerDomain "$NIXBOT_PARALLEL_JOBS_PER_DOMAIN" \
               --arg verifyJobs "$NIXBOT_VERIFY_JOBS" \
               --arg dry "$DRY_RUN" \
               --arg rollback "$ROLLBACK_ON_FAILURE" \
@@ -91,7 +93,7 @@ class NixbotScriptTest(unittest.TestCase):
               --arg prefix "$FORCE_PREFIX_HOST_LOGS" \
               --arg skipGlobalLock "$SKIP_HOST_LOCAL_ACTION_LOCK" \
               --arg logFormat "$LOG_FORMAT" \
-              '{action:$action,hostAction:$hostAction,hosts:$hosts,groups:$groups,goal:$goal,buildHost:$buildHost,buildMode:$buildMode,buildPlanJobs:$buildPlanJobs,buildJobs:$buildJobs,deployJobs:$deployJobs,verifyJobs:$verifyJobs,dry:$dry,rollback:$rollback,verify:$verify,prefix:$prefix,skipGlobalLock:$skipGlobalLock,logFormat:$logFormat}'
+              '{action:$action,hostAction:$hostAction,hosts:$hosts,groups:$groups,goal:$goal,buildHost:$buildHost,buildMode:$buildMode,buildPlanJobs:$buildPlanJobs,buildJobs:$buildJobs,deployJobs:$deployJobs,deployJobsPerDomain:$deployJobsPerDomain,verifyJobs:$verifyJobs,dry:$dry,rollback:$rollback,verify:$verify,prefix:$prefix,skipGlobalLock:$skipGlobalLock,logFormat:$logFormat}'
             """
         )
 
@@ -108,6 +110,7 @@ class NixbotScriptTest(unittest.TestCase):
                 "buildPlanJobs": "2",
                 "buildJobs": "3",
                 "deployJobs": "4",
+                "deployJobsPerDomain": "2",
                 "verifyJobs": "5",
                 "dry": "1",
                 "rollback": "0",
@@ -126,11 +129,49 @@ class NixbotScriptTest(unittest.TestCase):
             ACTION=deploy
             normalize_host_action
             parse_args
-            printf '%s\n' "$NIXBOT_PARALLEL_JOBS"
+            printf '%s %s\n' \
+              "$NIXBOT_PARALLEL_JOBS" \
+              "$NIXBOT_PARALLEL_JOBS_PER_DOMAIN"
             """,
         )
 
-        self.assertEqual("8\n", result.stdout)
+        self.assertEqual("8 8\n", result.stdout)
+
+    def test_deploy_jobs_per_domain_config_and_cli_precedence(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --deploy-jobs 6
+            apply_config_defaults '{"config":{"deployJobsPerDomain":2}}'
+            printf 'config:%s\n' "$NIXBOT_PARALLEL_JOBS_PER_DOMAIN"
+
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --deploy-jobs 6 --deploy-jobs-per-domain 3
+            apply_config_defaults '{"config":{"deployJobsPerDomain":2}}'
+            printf 'cli:%s\n' "$NIXBOT_PARALLEL_JOBS_PER_DOMAIN"
+            """
+        )
+
+        self.assertEqual(["config:2", "cli:3"], result.stdout.splitlines())
+
+    def test_deploy_jobs_per_domain_rejects_invalid_config(self):
+        result = self.run_script(
+            """
+            init_vars
+            apply_config_defaults '{"config":{"deployJobsPerDomain":0}}'
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "Nixbot deployJobsPerDomain must be a positive integer",
+            result.stderr,
+        )
 
     def test_clean_argument_parsing_accepts_action_and_option_forms(self):
         result = self.run_script(
@@ -292,7 +333,7 @@ class NixbotScriptTest(unittest.TestCase):
               PREP_DEPLOY_SSH_OPTS=()
               return 0
             }
-            run_pre_switch_user_failed_state_reset() { printf 'reset\\n'; }
+            run_pre_switch_admission() { printf 'admit\\n'; }
             copy_system_path_from_local_to_prepared_target() { printf 'copy:%s:%s\\n' "$1" "$2"; }
             run_pre_activation_podman_image_pulls() { printf 'prepull:%s:%s\\n' "$1" "$2"; }
             activate_prepared_system_path() { printf 'activate:%s:%s\\n' "$1" "$2"; }
@@ -302,7 +343,7 @@ class NixbotScriptTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                "reset",
+                "admit",
                 "copy:app:/nix/store/new-system",
                 "prepull:app:/nix/store/new-system",
                 "activate:app:/nix/store/new-system",
@@ -524,6 +565,71 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual([["ci", "parent"], ["db"], ["app"], ["worker"]], normal)
         self.assertEqual([["ci"], ["parent", "db"], ["app"], ["worker"]], ci_first)
 
+    def test_deploy_concurrency_splits_levels_by_topmost_parent(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_PARALLEL_JOBS=8
+            NIXBOT_PARALLEL_JOBS_PER_DOMAIN=2
+            NIXBOT_HOSTS_JSON='{
+              "parent": {},
+              "app": {"parent":"parent"},
+              "db": {"parent":"parent"},
+              "worker": {"parent":"parent"},
+              "other-parent": {},
+              "other-a": {"parent":"other-parent"},
+              "other-b": {"parent":"other-parent"},
+              "independent": {}
+            }'
+            capacity_bound_host_levels_json \
+              '[["app","db","worker","other-a","other-b","independent"]]'
+            """
+        )
+
+        self.assertEqual(
+            [
+                ["app", "db", "other-a", "other-b", "independent"],
+                ["worker"],
+            ],
+            json.loads(result.stdout),
+        )
+
+    def test_deploy_domain_uses_topmost_parent_and_ignores_dependencies(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{
+              "root": {},
+              "parent": {"parent":"root"},
+              "dependency": {},
+              "app": {"parent":"parent","deps":["dependency"]}
+            }'
+            host_deploy_domain app
+            host_deploy_domain dependency
+            """
+        )
+
+        self.assertEqual(["parent:root", "parent:dependency"], result.stdout.splitlines())
+
+    def test_deploy_domain_rejects_parent_cycles(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{
+              "app": {"parent":"db"},
+              "db": {"parent":"app"}
+            }'
+            host_deploy_domain app
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "Host parent cycle detected while resolving deploy domain for app: app",
+            result.stderr,
+        )
+
     def test_runtime_line_state_persists_marks_and_keeps_cache_in_sync(self):
         result = self.run_script(
             f"""
@@ -715,14 +821,15 @@ class NixbotScriptTest(unittest.TestCase):
             wait_for_in_flight_deploy_activation() {{ return 0; }}
             wait_for_in_flight_nixbot_activation() {{ return 0; }}
             print_deploy_systemd_user_manager_report() {{ return 0; }}
+            reconcile_rollback_managed_user_targets() {{ printf 'converge:%s\n' "$1"; }}
             report_activation_lock_contention_if_present() {{ return 0; }}
             host_boot_is_container() {{ return 1; }}
             run_with_combined_stream_capture() {{
               local -n out_ref="$1"
               shift
               printf '%s\n' "$2" >{cmd_file}
-              out_ref='transport closed'
-              return 37
+              out_ref='client_loop: send disconnect: Broken pipe'
+              return 255
             }}
             verify_rollback_target_state() {{
               printf 'verify:%s:%s\n' "$1" "$2"
@@ -742,20 +849,103 @@ class NixbotScriptTest(unittest.TestCase):
 
         lines = result.stdout.splitlines()
         self.assertEqual("verify:app:/nix/store/snapshot path", lines[0])
-        self.assertEqual("verified-rc:0", lines[1])
-        self.assertEqual("verify:app:/nix/store/snapshot path", lines[2])
-        self.assertEqual("failed-rc:37", lines[3])
-        command = lines[4]
-        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
+        self.assertEqual("converge:app", lines[1])
+        self.assertEqual("verified-rc:0", lines[2])
+        self.assertEqual("verify:app:/nix/store/snapshot path", lines[3])
+        self.assertEqual("failed-rc:255", lines[4])
+        command = lines[5]
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
+        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
+        self.assertIn("--expand-environment=no", command)
         self.assertIn("--wait --collect --no-ask-password --pipe --quiet", command)
         self.assertIn("--service-type=exec", command)
         self.assertRegex(command, r"--unit=nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}")
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
-        self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
+        self.assertIn("/run/current-system/sw/bin/base64", command)
+        self.assertIn("/run/current-system/sw/bin/tee", command)
+        self.assertIn("--output-error=warn-nopipe", command)
         self.assertIn("nixbot-activation", command)
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
+
+    def test_rollback_preserves_signal_and_nontransport_failures_without_verification(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            prepare_deploy_context() {{ return 0; }}
+            wait_for_in_flight_deploy_activation() {{ return 0; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
+            report_activation_lock_contention_if_present() {{ return 0; }}
+            host_boot_is_container() {{ return 1; }}
+            reconcile_rollback_managed_user_targets() {{ return 0; }}
+            run_with_combined_stream_capture() {{
+              local -n out_ref="$1"
+              out_ref="$ROLLBACK_OUTPUT"
+              return "$ROLLBACK_RC"
+            }}
+            verify_rollback_target_state() {{ printf 'unexpected-verify\\n'; }}
+            set +e
+            ROLLBACK_OUTPUT='client_loop: send disconnect: Broken pipe'
+            ROLLBACK_RC=143
+            rollback_host_to_snapshot app /nix/store/snapshot
+            printf 'signal-rc:%s\\n' "$?"
+            ROLLBACK_OUTPUT='switch-to-configuration failed'
+            ROLLBACK_RC=42
+            rollback_host_to_snapshot app /nix/store/snapshot
+            printf 'nontransport-rc:%s\\n' "$?"
+            """
+        )
+
+        self.assertEqual(["signal-rc:143", "nontransport-rc:42"], result.stdout.splitlines())
+        self.assertNotIn("unexpected-verify", result.stdout)
+
+    def test_health_rollback_skips_same_generation_activation(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            prepare_deploy_context() {{ return 0; }}
+            wait_for_in_flight_deploy_activation() {{ return 0; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
+            read_prepared_current_system_path_for_activation_verification() {{
+              printf '/nix/store/snapshot\n'
+            }}
+            activation_post_promote_bootloader_goal() {{
+              printf 'unexpected-activation\n'
+              return 1
+            }}
+            NIXBOT_SKIP_MATCHING_SNAPSHOT_ROLLBACK=1
+            rollback_host_to_snapshot app /nix/store/snapshot
+            """
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("unexpected-activation", result.stdout)
+        self.assertIn("skipping same-generation activation", result.stderr)
+
+    def test_health_rollback_scopes_matching_snapshot_policy(self):
+        result = self.run_script(
+            """
+            init_vars
+            rollback_hosts_to_snapshots() {
+              printf 'during=%s\n' "${NIXBOT_SKIP_MATCHING_SNAPSHOT_ROLLBACK:-0}"
+            }
+            rollback_failed_health_hosts snapshots logs statuses app
+            printf 'after=%s\n' "${NIXBOT_SKIP_MATCHING_SNAPSHOT_ROLLBACK:-0}"
+            """
+        )
+
+        self.assertEqual(["during=1", "after=0"], result.stdout.splitlines())
 
     def test_parallel_rollback_activation_uses_wait_guard_and_shared_lock(self):
         cmd_file = self.work_dir / "parallel-rollback-cmd"
@@ -776,6 +966,7 @@ class NixbotScriptTest(unittest.TestCase):
             wait_for_in_flight_deploy_activation() {{ printf 'deploy-wait:%s\\n' "$1"; }}
             wait_for_in_flight_nixbot_activation() {{ printf 'nixbot-wait:%s:%s:%s\\n' "$1" "$2" "$3"; }}
             host_boot_is_container() {{ return 1; }}
+            reconcile_rollback_managed_user_targets() {{ return 0; }}
             run_with_combined_stream_capture() {{
               local -n out_ref="$1"
               shift
@@ -795,12 +986,55 @@ class NixbotScriptTest(unittest.TestCase):
             r"^nixbot-wait:app:nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}\.service:rollback$",
         )
         command = lines[2]
-        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w 150", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("flock -w 150 /dev/shm/nixbot-host-local.lock.d", command)
+        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
+
+    def test_rollback_reconvergence_starts_ready_targets_without_restarting_aggregate(self):
+        result = self.run_script(
+            """
+            init_vars
+            command="$(emit_remote_function_command \
+              '_remote_reconcile_managed_user_targets' \
+              _remote_reconcile_managed_user_targets)"
+            bash -n <<<"$command"
+            printf '%s' "$command"
+            """
+        )
+
+        self.assertIn("*-ready.target", result.stdout)
+        self.assertIn('systemctl --user start "${ready_targets[@]}"', result.stdout)
+        self.assertIn('systemctl start "user@${uid}.service"', result.stdout)
+        self.assertNotIn("systemctl --user restart", result.stdout)
+        self.assertNotIn('systemctl --user start "${managed_unit}"', result.stdout)
+
+    def test_rollback_fails_when_managed_user_targets_do_not_reconverge(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            prepare_deploy_context() {{ return 0; }}
+            wait_for_in_flight_deploy_activation() {{ return 0; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
+            host_boot_is_container() {{ return 1; }}
+            run_activation_with_progress() {{ return 0; }}
+            reconcile_rollback_managed_user_targets() {{ return 1; }}
+            set +e
+            rollback_host_to_snapshot app /nix/store/snapshot
+            printf 'rc:%s\n' "$?"
+            """
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("managed user services did not reconverge", result.stderr)
 
     def test_host_local_lock_waits_for_existing_holder(self):
         sequence_file = self.work_dir / "host-local-lock-sequence"
-        lock_file = self.work_dir / "nixbot-host-local.lock"
+        lock_file = self.work_dir / "nixbot-host-local.lock.d"
         result = self.run_script(
             f"""
             init_vars
@@ -809,7 +1043,8 @@ class NixbotScriptTest(unittest.TestCase):
             release_file={self.work_dir / "release-host-local-lock"}
             sequence_file={sequence_file}
             (
-              exec 9>"$lock_file"
+              mkdir -p -m 0755 "$lock_file"
+              exec 9<"$lock_file"
               flock 9
               printf 'holder-acquired\\n' >>"$sequence_file"
               while [ ! -e "$release_file" ]; do sleep 0.05; done
@@ -826,21 +1061,12 @@ class NixbotScriptTest(unittest.TestCase):
             printf 'parent-acquired\\n' >>"$sequence_file"
             release_host_local_lock
             wait "$holder_pid"
-            if [ ! -e "$lock_file" ]; then
-              printf 'lock-file-cleaned\\n' >>"$sequence_file"
-            fi
             cat "$sequence_file"
             """
         )
 
         self.assertEqual(
-            [
-                "holder-acquired",
-                "parent-before",
-                "holder-release",
-                "parent-acquired",
-                "lock-file-cleaned",
-            ],
+            ["holder-acquired", "parent-before", "holder-release", "parent-acquired"],
             result.stdout.splitlines(),
         )
         self.assertRegex(
@@ -854,39 +1080,72 @@ class NixbotScriptTest(unittest.TestCase):
             r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}",
         )
 
-    def test_error_cleanup_removes_acquired_host_local_lock_file(self):
-        lock_file = self.work_dir / "nixbot-host-local.lock"
+    def test_host_local_lock_directory_persists_across_waiter_handoff(self):
+        lock_dir = self.work_dir / "nixbot-host-local.lock.d"
+        sequence_file = self.work_dir / "host-local-lock-handoff"
         result = self.run_script(
             f"""
             init_vars
-            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
-            acquire_host_local_lock deploy
-            cleanup_core 1
-            if [ ! -e {lock_file} ]; then
-              printf 'lock-file-cleaned\\n'
+            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_dir}
+            sequence_file={sequence_file}
+            waiter_acquired={self.work_dir / "waiter-acquired"}
+            release_waiter={self.work_dir / "release-waiter"}
+
+            prepare_host_local_lock_path
+            printf 'mode:%s\\n' "$(stat -c %a "$NIXBOT_HOST_LOCAL_LOCK_PATH")" >>"$sequence_file"
+            exec 9<"$NIXBOT_HOST_LOCAL_LOCK_PATH"
+            flock 9
+            printf 'holder-acquired\\n' >>"$sequence_file"
+
+            (
+              acquire_host_local_lock waiter
+              printf 'waiter-acquired\\n' >>"$sequence_file"
+              touch "$waiter_acquired"
+              while [ ! -e "$release_waiter" ]; do sleep 0.05; done
+              printf 'waiter-release\\n' >>"$sequence_file"
+              release_host_local_lock
+            ) &
+            waiter_pid="$!"
+
+            flock -u 9
+            exec 9<&-
+            for _ in $(seq 1 100); do
+              [ -e "$waiter_acquired" ] && break
+              sleep 0.05
+            done
+
+            (
+              acquire_host_local_lock contender
+              printf 'contender-acquired\\n' >>"$sequence_file"
+              release_host_local_lock
+            ) &
+            contender_pid="$!"
+            sleep 0.2
+            if ! grep -q contender-acquired "$sequence_file"; then
+              printf 'contender-waiting\\n' >>"$sequence_file"
             fi
+            touch "$release_waiter"
+            wait "$waiter_pid" "$contender_pid"
+
+            acquire_host_local_lock cleanup
+            cleanup_core 1
+            [ -d "$NIXBOT_HOST_LOCAL_LOCK_PATH" ] && printf 'directory-persists\\n' >>"$sequence_file"
+            cat "$sequence_file"
             """
         )
 
-        self.assertEqual(["lock-file-cleaned"], result.stdout.splitlines())
-
-    def test_host_local_lock_release_preserves_replaced_path(self):
-        lock_file = self.work_dir / "nixbot-host-local.lock"
-        held_file = self.work_dir / "nixbot-host-local.held.lock"
-        result = self.run_script(
-            f"""
-            init_vars
-            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
-            acquire_host_local_lock deploy
-            mv {lock_file} {held_file}
-            printf 'replacement\\n' >{lock_file}
-            release_host_local_lock
-            cat {lock_file}
-            """
+        self.assertEqual(
+            [
+                "mode:755",
+                "holder-acquired",
+                "waiter-acquired",
+                "contender-waiting",
+                "waiter-release",
+                "contender-acquired",
+                "directory-persists",
+            ],
+            result.stdout.splitlines(),
         )
-
-        self.assertEqual(["replacement"], result.stdout.splitlines())
-
     def test_deploy_request_action_wraps_major_actions_with_host_local_lock(self):
         result = self.run_script(
             """
@@ -989,7 +1248,7 @@ class NixbotScriptTest(unittest.TestCase):
         )
 
     def test_host_local_activation_lock_is_reentrant_for_self_target_execution(self):
-        lock_file = self.work_dir / "nixbot-host-local.lock"
+        lock_file = self.work_dir / "nixbot-host-local.lock.d"
         result = self.run_script(
             f"""
             init_vars
@@ -997,26 +1256,27 @@ class NixbotScriptTest(unittest.TestCase):
             NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
             NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
             PREP_DEPLOY_LOCAL_EXEC=0
-            host_local_activation_lock_prefix
-            printf '\\n'
+            host_local_activation_lock_command activation-command
             PREP_DEPLOY_LOCAL_EXEC=1
             NIXBOT_HOST_LOCAL_LOCK_FD=9
-            host_local_activation_lock_prefix
-            printf '<local-empty>\\n'
+            host_local_activation_lock_command activation-command
             PREP_DEPLOY_LOCAL_EXEC=0
             PREP_DEPLOY_SELF_TARGET=1
-            host_local_activation_lock_prefix
-            printf '<self-empty>\\n'
+            host_local_activation_lock_command activation-command
             """
         )
 
         self.assertEqual(
-            [f"flock -w 150 {lock_file} ", "<local-empty>", "<self-empty>"],
+            [
+                f"mkdir -p -m 0755 {lock_file} && flock -w 150 {lock_file} activation-command",
+                "activation-command",
+                "activation-command",
+            ],
             result.stdout.splitlines(),
         )
 
-    def test_skip_global_lock_does_not_skip_activation_lock_prefix(self):
-        lock_file = self.work_dir / "nixbot-host-local.lock"
+    def test_skip_global_lock_does_not_skip_activation_lock_command(self):
+        lock_file = self.work_dir / "nixbot-host-local.lock.d"
         result = self.run_script(
             f"""
             init_vars
@@ -1025,13 +1285,14 @@ class NixbotScriptTest(unittest.TestCase):
             NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
             NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
             PREP_DEPLOY_LOCAL_EXEC=0
-            host_local_activation_lock_prefix
-            printf '\\n'
+            host_local_activation_lock_command activation-command
             """
         )
 
         self.assertEqual(
-            [f"flock -w 150 {lock_file} "],
+            [
+                f"mkdir -p -m 0755 {lock_file} && flock -w 150 {lock_file} activation-command"
+            ],
             result.stdout.splitlines(),
         )
 
@@ -1196,8 +1457,13 @@ EOF_UNITS
             mkdir -p "{remote_bin}"
             ln -s "$(command -v bash)" "{remote_bin}/bash"
             ln -s "$(command -v base64)" "{remote_bin}/base64"
+            ln -s "$(command -v install)" "{remote_bin}/install"
+            ln -s "$(command -v rm)" "{remote_bin}/rm"
+            ln -s "$(command -v mv)" "{remote_bin}/mv"
+            ln -s "$(command -v tee)" "{remote_bin}/tee"
             REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
             REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{self.work_dir}/activation-results"
             mkdir -p "{fake_system}/bin"
             touch "{fake_system}/nixos-version"
             cat >"{fake_system}/bin/switch-to-configuration" <<'EOF_SWITCH'
@@ -1206,19 +1472,166 @@ printf 'switched:%s\n' "$1"
 EOF_SWITCH
             chmod +x "{fake_system}/bin/switch-to-configuration"
             script="$(nixbot_activation_command "{fake_system}" test 0 '')"
-            runner="$(nixbot_activation_runner_command "$script")"
+            runner="$(nixbot_activation_runner_command "$script" test-activation)"
             printf 'runner:%s\n' "$runner"
             eval "$runner"
+            cat "{self.work_dir}/activation-results/test-activation.result"
+            cat "{self.work_dir}/activation-results/test-activation.log"
             """
         )
 
         lines = result.stdout.splitlines()
         self.assertIn(f"{remote_bin}/bash -c", lines[0])
-        self.assertIn(f"{remote_bin}/base64\\ -d", lines[0])
+        self.assertIn(f"{remote_bin}/base64", lines[0])
+        self.assertIn("--output-error=warn-nopipe", lines[0])
         self.assertIn("nixbot-activation", lines[0])
         self.assertNotIn(" -lc ", lines[0])
         self.assertNotIn("$'", lines[0])
         self.assertEqual("switched:test", lines[1])
+        self.assertEqual("OutcomeSource=marker", lines[2])
+        self.assertEqual("Result=success", lines[3])
+        self.assertEqual("ExecMainStatus=0", lines[4])
+        self.assertEqual("switched:test", lines[5])
+
+    def test_nixbot_activation_runner_creates_absolute_result_directory(self):
+        remote_bin = self.work_dir / "remote-bin"
+        absolute_result_dir = self.work_dir / "nested" / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}"
+            ln -s "$(command -v bash)" "{remote_bin}/bash"
+            ln -s "$(command -v base64)" "{remote_bin}/base64"
+            ln -s "$(command -v install)" "{remote_bin}/install"
+            ln -s "$(command -v rm)" "{remote_bin}/rm"
+            ln -s "$(command -v mv)" "{remote_bin}/mv"
+            ln -s "$(command -v tee)" "{remote_bin}/tee"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{absolute_result_dir}"
+            runner="$(nixbot_activation_runner_command 'printf absolute-path-ok' test-activation)"
+            eval "$runner" >/dev/null
+            [ -d "{absolute_result_dir}" ]
+            cat "{absolute_result_dir}/test-activation.result"
+            cat "{absolute_result_dir}/test-activation.log"
+            """
+        )
+
+        self.assertEqual(
+            [
+                "OutcomeSource=marker",
+                "Result=success",
+                "ExecMainStatus=0",
+                "absolute-path-ok",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_activation_runner_persists_an_in_progress_outcome_before_switch(self):
+        result_dir = self.work_dir / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            remote_bin={self.work_dir / "remote-bin"}
+            mkdir -p "$remote_bin"
+            for command in bash base64 install rm mv tee; do
+              ln -s "$(command -v "$command")" "$remote_bin/$command"
+            done
+            REMOTE_SYSTEM_BIN_DIR="$remote_bin"
+            REMOTE_SYSTEM_BASH="$remote_bin/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR={result_dir}
+            runner="$(nixbot_activation_runner_command \
+              'cat {result_dir}/test-activation.result' \
+              test-activation)"
+            eval "$runner" >/dev/null
+            cat {result_dir}/test-activation.log
+            printf '%s\n' final:
+            cat {result_dir}/test-activation.result
+            """
+        )
+
+        self.assertEqual(
+            [
+                "OutcomeSource=marker",
+                "Result=running",
+                "ExecMainStatus=255",
+                "final:",
+                "OutcomeSource=marker",
+                "Result=success",
+                "ExecMainStatus=0",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_activation_runner_defaults_to_persistent_remote_state(self):
+        result = self.run_script(
+            """
+            init_vars
+            nixbot_activation_runner_command ':' test-activation
+            """
+        )
+
+        self.assertIn(
+            "/var/lib/nixbot/activation-results/test-activation.result",
+            result.stdout,
+        )
+
+    def test_nixbot_activation_runner_survives_closed_output_reader(self):
+        remote_bin = self.work_dir / "remote-bin"
+        result_dir = self.work_dir / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}"
+            ln -s "$(command -v bash)" "{remote_bin}/bash"
+            ln -s "$(command -v base64)" "{remote_bin}/base64"
+            ln -s "$(command -v install)" "{remote_bin}/install"
+            ln -s "$(command -v rm)" "{remote_bin}/rm"
+            ln -s "$(command -v mv)" "{remote_bin}/mv"
+            ln -s "$(command -v tee)" "{remote_bin}/tee"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{result_dir}"
+            mkdir -p "{result_dir}"
+            printf stale-marker >"{result_dir}/test-activation.result"
+            printf stale-log >"{result_dir}/test-activation.log"
+            script=$(cat <<'EOF_SCRIPT'
+set -Eeuo pipefail
+printf 'first-line\n'
+sleep 0.1
+printf 'observer-closed-line\n'
+sleep 0.1
+printf 'trailing-line\n'
+exit 37
+EOF_SCRIPT
+            )
+            runner="$(nixbot_activation_runner_command "$script" test-activation)"
+            set +e
+            eval "$runner" | head -n 1
+            pipeline_status=("${{PIPESTATUS[@]}}")
+            runner_rc="${{pipeline_status[0]}}"
+            set -e
+            printf 'runner-rc:%s\n' "$runner_rc"
+            cat "{result_dir}/test-activation.result"
+            printf '%s\n' log:
+            cat "{result_dir}/test-activation.log"
+            """
+        )
+
+        self.assertEqual(
+            [
+                "first-line",
+                "runner-rc:37",
+                "OutcomeSource=marker",
+                "Result=exit-code",
+                "ExecMainStatus=37",
+                "log:",
+                "first-line",
+                "observer-closed-line",
+                "trailing-line",
+            ],
+            result.stdout.splitlines(),
+        )
 
     def test_host_boot_is_container_evaluates_boolean_as_json(self):
         result = self.run_script(
@@ -1405,16 +1818,20 @@ EOF_SWITCH
         lines = result.stdout.splitlines()
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
-        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
+        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
         self.assertIn("-E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK", command)
+        self.assertIn("--expand-environment=no", command)
         self.assertIn("--property=RuntimeMaxSec=", command)
         self.assertIn("--property=TimeoutStopSec=", command)
         self.assertIn("--property=KillMode=control-group", command)
         self.assertIn("--property=CollectMode=inactive-or-failed", command)
         self.assertRegex(command, r"--unit=nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}")
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
-        self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
+        self.assertIn("/run/current-system/sw/bin/base64", command)
+        self.assertIn("/run/current-system/sw/bin/tee", command)
+        self.assertIn("--output-error=warn-nopipe", command)
         self.assertIn("nixbot-activation", command)
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
@@ -1452,8 +1869,9 @@ EOF_SWITCH
             r"^nixbot-wait:app:nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}\.service:deploy$",
         )
         command = lines[1]
-        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w 150", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("flock -w 150 /dev/shm/nixbot-host-local.lock.d", command)
+        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
 
     def test_activate_prepared_system_path_retries_when_transport_drops_before_switch(self):
         result = self.run_script(
@@ -1487,10 +1905,7 @@ EOF_SWITCH
               out_ref=''
               return 0
             }}
-            verify_deploy_target_state_after_transport_loss() {{
-              printf 'verify:%s:%s\\n' "$1" "$2"
-              return 2
-            }}
+            verify_deploy_target_state_after_transport_loss() {{ printf 'unexpected-verify\\n'; }}
             activate_prepared_system_path app '/nix/store/system path'
             printf 'rc:%s attempts:%s\\n' "$?" "$attempts"
             """
@@ -1501,18 +1916,56 @@ EOF_SWITCH
             lines[0],
             r"^activation:1:app:deploy:nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}$",
         )
-        self.assertEqual("verify:app:/nix/store/system path", lines[1])
-        self.assertEqual("sleep:1", lines[2])
+        self.assertEqual("sleep:1", lines[1])
         self.assertRegex(
-            lines[3],
+            lines[2],
             r"^activation:2:app:deploy:nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}-retry2$",
         )
-        self.assertNotEqual(lines[0].replace("activation:1:", ""), lines[3].replace("activation:2:", ""))
-        self.assertEqual("rc:0 attempts:2", lines[4])
+        self.assertNotEqual(lines[0].replace("activation:1:", ""), lines[2].replace("activation:2:", ""))
+        self.assertEqual("rc:0 attempts:2", lines[3])
+        self.assertNotIn("unexpected-verify", result.stdout)
         self.assertIn(
-            "Deploy activation for app did not reach /nix/store/system path; retrying activation (2/2) in 1s",
+            "Deploy SSH connection for app failed before activation admission; retrying (2/2) in 1s",
             result.stderr,
         )
+
+    def test_activate_prepared_system_path_ambiguous_transport_loss_does_not_retry(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            GOAL=switch
+            NIXBOT_TRANSPORT_RETRY_ATTEMPTS=2
+            RUNTIME_WORK_ROOT={self.work_dir / "runtime"}
+            RUNTIME_WORK_FALLBACK_ROOT={self.work_dir / "runtime-fallback"}
+            RUNTIME_WORK_DIR={self.work_dir / "runtime" / "run-test.id"}
+            NIXBOT_DIAG_DIR={self.work_dir / "runtime" / "diag-test.id"}
+            mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
+            host_boot_is_container() {{ return 0; }}
+            report_activation_lock_contention_if_present() {{ :; }}
+            wait_for_in_flight_nixbot_activation() {{ return 0; }}
+            attempts=0
+            run_activation_with_progress() {{
+              local -n out_ref="$1"
+              attempts=$((attempts + 1))
+              out_ref='client_loop: send disconnect: Broken pipe'
+              return 255
+            }}
+            verify_deploy_target_state_after_transport_loss() {{
+              printf 'verified-inconclusive\\n'
+              return 1
+            }}
+            sleep_for_retry_or_signal() {{ printf 'unexpected-sleep\\n'; }}
+            set +e
+            activate_prepared_system_path app /nix/store/system
+            printf 'rc:%s attempts:%s\\n' "$?" "$attempts"
+            """
+        )
+
+        self.assertEqual(
+            ["verified-inconclusive", "rc:255 attempts:1"],
+            result.stdout.splitlines(),
+        )
+        self.assertNotIn("unexpected-sleep", result.stdout)
 
     def test_activate_prepared_system_path_signal_does_not_recover_as_transport_loss(self):
         result = self.run_script(
@@ -1555,6 +2008,28 @@ EOF_SWITCH
         self.assertNotIn("report:", result.stdout)
         self.assertNotIn("Deploy transport closed or failed for app", result.stderr)
 
+    def test_activation_verification_sample_reads_outcome_before_generation_once(self):
+        cmd_file = self.work_dir / "activation-verification-sample-cmd"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_REMOTE_READ_TIMEOUT_SECS=17
+            run_prepared_root_command_without_control_master_with_timeout() {{
+              printf '%s' "$2" >{cmd_file}
+              printf 'bounded-call:%s\\n' "$1"
+            }}
+            read_remote_activation_verification_sample unit.service
+            printf '\\n'
+            cat {cmd_file}
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("bounded-call:17", lines[0])
+        command = lines[-1]
+        self.assertLess(command.index("systemctl show"), command.index('printf "CurrentSystemPath="'))
+        self.assertLess(command.index('printf "CurrentSystemPath="'), command.index("readlink -f"))
+
     def test_deploy_transport_verification_waits_for_activation_unit_to_settle(self):
         result = self.run_script(
             """
@@ -1572,17 +2047,22 @@ EOF_SWITCH
               fi
             }
             prepare_deploy_context() { return 0; }
-            read_prepared_current_system_path_without_control_master() {
-              printf '%s\\n' '/nix/store/system-nixos-system-app'
-            }
-            run_prepared_root_command_without_control_master() {
+            read_remote_activation_verification_sample() {
               state_calls="$(cat "$state_file")"
               state_calls=$((state_calls + 1))
               printf '%s\\n' "$state_calls" > "$state_file"
               if [ "$state_calls" -eq 1 ]; then
-                printf '%s\\n' active
+                printf '%s\\n' \
+                  'LoadState=loaded' \
+                  'ActiveState=active' \
+                  'CurrentSystemPath=/nix/store/system-nixos-system-app'
               else
-                printf '%s\\n' inactive
+                printf '%s\\n' \
+                  'ActiveState=inactive' \
+                  'OutcomeSource=marker' \
+                  'Result=success' \
+                  'ExecMainStatus=0' \
+                  'CurrentSystemPath=/nix/store/system-nixos-system-app'
               fi
             }
             sleep_for_retry_or_signal() {
@@ -1602,7 +2082,7 @@ EOF_SWITCH
             result.stderr,
         )
 
-    def test_deploy_transport_verification_retries_when_unit_settled_before_switch(self):
+    def test_deploy_transport_verification_rejects_authoritative_settle_before_switch(self):
         result = self.run_script(
             """
             init_vars
@@ -1616,11 +2096,13 @@ EOF_SWITCH
               fi
             }
             prepare_deploy_context() { return 0; }
-            read_prepared_current_system_path_without_control_master() {
-              printf '%s\\n' '/nix/store/old-nixos-system-app'
-            }
-            run_prepared_root_command_without_control_master() {
-              printf '%s\\n' inactive
+            read_remote_activation_verification_sample() {
+              printf '%s\\n' \
+                'LoadState=loaded' \
+                'ActiveState=inactive' \
+                'Result=success' \
+                'ExecMainStatus=0' \
+                'CurrentSystemPath=/nix/store/old-nixos-system-app'
             }
             set +e
             verify_deploy_target_state_after_transport_loss app '/nix/store/system-nixos-system-app' unit.service 0
@@ -1628,7 +2110,7 @@ EOF_SWITCH
             """
         )
 
-        self.assertEqual(["rc:2"], result.stdout.splitlines())
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
         self.assertIn(
             "Deploy activation for app settled as inactive without switching to /nix/store/system-nixos-system-app",
             result.stderr,
@@ -1651,22 +2133,24 @@ EOF_SWITCH
               fi
             }
             prepare_deploy_context() { return 0; }
-            read_prepared_current_system_path_without_control_master() {
-              calls="$(cat "$calls_file")"
-              if [ "$calls" -eq 0 ]; then
-                printf '%s\\n' '/nix/store/old-nixos-system-app'
-              else
-                printf '%s\\n' '/nix/store/system-nixos-system-app'
-              fi
-            }
-            run_prepared_root_command_without_control_master() {
+            read_remote_activation_verification_sample() {
               calls="$(cat "$calls_file")"
               calls=$((calls + 1))
               printf '%s\\n' "$calls" > "$calls_file"
               if [ "$calls" -eq 1 ]; then
-                printf '\\n'
+                printf '%s\\n' \
+                  'LoadState=not-found' \
+                  'ActiveState=inactive' \
+                  'Result=success' \
+                  'ExecMainStatus=0' \
+                  'CurrentSystemPath=/nix/store/old-nixos-system-app'
               else
-                printf '%s\\n' inactive
+                printf '%s\\n' \
+                  'ActiveState=inactive' \
+                  'OutcomeSource=marker' \
+                  'Result=success' \
+                  'ExecMainStatus=0' \
+                  'CurrentSystemPath=/nix/store/system-nixos-system-app'
               fi
             }
             sleep_for_retry_or_signal() {
@@ -1703,17 +2187,22 @@ EOF_SWITCH
               fi
             }
             prepare_deploy_context() { return 0; }
-            read_prepared_current_system_path_without_control_master() {
-              printf '%s\\n' '/nix/store/snapshot-nixos-system-app'
-            }
-            run_prepared_root_command_without_control_master() {
+            read_remote_activation_verification_sample() {
               state_calls="$(cat "$state_file")"
               state_calls=$((state_calls + 1))
               printf '%s\\n' "$state_calls" > "$state_file"
               if [ "$state_calls" -eq 1 ]; then
-                printf '%s\\n' active
+                printf '%s\\n' \
+                  'LoadState=loaded' \
+                  'ActiveState=active' \
+                  'CurrentSystemPath=/nix/store/snapshot-nixos-system-app'
               else
-                printf '%s\\n' inactive
+                printf '%s\\n' \
+                  'ActiveState=inactive' \
+                  'OutcomeSource=marker' \
+                  'Result=success' \
+                  'ExecMainStatus=0' \
+                  'CurrentSystemPath=/nix/store/snapshot-nixos-system-app'
               fi
             }
             sleep_for_retry_or_signal() {
@@ -1732,6 +2221,103 @@ EOF_SWITCH
             "Rollback transport closed for app; waiting for activation result (elapsed=0s state=active)",
             result.stderr,
         )
+
+    def test_deploy_transport_verification_rejects_failed_activation_after_switch(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
+            date() {
+              if [ "${1:-}" = "+%s" ]; then printf '0\\n'; else command date "$@"; fi
+            }
+            prepare_deploy_context() { return 0; }
+            read_remote_activation_verification_sample() {
+              printf '%s\\n' \
+                'ActiveState=inactive' \
+                'OutcomeSource=marker' \
+                'Result=exit-code' \
+                'ExecMainStatus=101' \
+                  'CurrentSystemPath=/nix/store/system-nixos-system-app'
+            }
+            read_remote_activation_log_tail() {
+              printf '%s\n' 'retained-before-disconnect' 'retained-failure-detail'
+            }
+            set +e
+            verify_deploy_target_state_after_transport_loss app '/nix/store/system-nixos-system-app' unit.service 0
+            printf 'rc:%s\\n' "$?"
+            """
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("Deploy activation for app failed after switching", result.stderr)
+        self.assertIn("Result=exit-code", result.stderr)
+        self.assertIn("ExecMainStatus=101", result.stderr)
+        self.assertIn("Retained deploy activation log tail for app", result.stderr)
+        self.assertIn("retained-before-disconnect", result.stderr)
+        self.assertIn("retained-failure-detail", result.stderr)
+
+    def test_deploy_transport_verification_rejects_interrupted_persistent_activation(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
+            date() { printf '0\n'; }
+            prepare_deploy_context() { return 0; }
+            read_remote_activation_verification_sample() {
+              printf '%s\n' \
+                'OutcomeSource=marker' \
+                'Result=running' \
+                'ExecMainStatus=255' \
+                'LoadState=not-found' \
+                'ActiveState=inactive' \
+                'CurrentSystemPath=/nix/store/system-nixos-system-app'
+            }
+            set +e
+            verify_deploy_target_state_after_transport_loss \
+              app /nix/store/system-nixos-system-app unit.service 0
+            printf 'rc:%s\n' "$?"
+            """
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("failed after switching", result.stderr)
+        self.assertIn("Result=running", result.stderr)
+
+    def test_deploy_transport_verification_missing_unit_old_generation_is_inconclusive(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=1
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=1
+            tick=0
+            date() {
+              if [ "${1:-}" = "+%s" ]; then printf '%s\\n' "$tick"; else command date "$@"; fi
+            }
+            prepare_deploy_context() { return 0; }
+            read_remote_activation_verification_sample() {
+              printf '%s\\n' \
+                'LoadState=not-found' \
+                'ActiveState=inactive' \
+                'Result=success' \
+                'ExecMainStatus=0' \
+                'CurrentSystemPath=/nix/store/old-nixos-system-app'
+            }
+            sleep_for_retry_or_signal() {
+              printf 'sleep:%s\\n' "$1"
+              tick=$((tick + 5))
+            }
+            set +e
+            verify_deploy_target_state_after_transport_loss app '/nix/store/system-nixos-system-app' unit.service 0
+            printf 'rc:%s\\n' "$?"
+            """
+        )
+
+        self.assertEqual(["sleep:5", "rc:1"], result.stdout.splitlines())
+        self.assertIn("Deploy transport verification for app timed out", result.stderr)
+        self.assertNotIn("settled as inactive", result.stderr)
+        self.assertNotIn("failed after switching", result.stderr)
 
     def test_run_activation_with_progress_preserves_output_and_stops_heartbeat(self):
         result = self.run_script(
@@ -1785,10 +2371,15 @@ EOF_SWITCH
         )
 
         self.assertIn("_remote_activation_progress_probe app unit.service 123", result.stdout)
-        self.assertIn("/etc/systemd/user/*-managed-ready.target", result.stdout)
+        self.assertIn("/etc/systemd/user/*-managed.target", result.stdout)
         self.assertIn("_remote_managed_user_names", result.stdout)
-        self.assertIn("pending/failed user units for %s", result.stdout)
-        self.assertIn("systemctl --user list-units --type=service,target --state=activating,failed", result.stdout)
+        self.assertIn("pending user units for %s", result.stdout)
+        self.assertIn(
+            "systemctl --user list-units --type=service,target --state=activating,deactivating,reloading",
+            result.stdout,
+        )
+        self.assertIn("systemctl --user list-jobs --no-legend --plain", result.stdout)
+        self.assertIn("active user jobs for %s", result.stdout)
         self.assertIn("_remote_activation_filter_user_units", result.stdout)
 
     def test_activation_progress_filter_removes_transient_podman_healthchecks(self):
@@ -1837,10 +2428,13 @@ EOF_SWITCH
         lines = result.stdout.splitlines()
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
-        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
+        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
-        self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
+        self.assertIn("/run/current-system/sw/bin/base64", command)
+        self.assertIn("/run/current-system/sw/bin/tee", command)
+        self.assertIn("--output-error=warn-nopipe", command)
         self.assertIn("nixbot-activation", command)
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
@@ -1877,10 +2471,13 @@ EOF_SWITCH
         lines = result.stdout.splitlines()
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
-        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 flock -w", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock systemd-run", command)
+        self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
+        self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
+        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
-        self.assertIn("/run/current-system/sw/bin/base64\\ -d", command)
+        self.assertIn("/run/current-system/sw/bin/base64", command)
+        self.assertIn("/run/current-system/sw/bin/tee", command)
+        self.assertIn("--output-error=warn-nopipe", command)
         self.assertIn("nixbot-activation", command)
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
@@ -1966,6 +2563,95 @@ EOF_SWITCH
         self.assertIn("-o ConnectTimeout=42", lines[0])
         self.assertIn("-o ConnectTimeout=42", lines[1])
         self.assertNotIn("ConnectTimeout=10", result.stdout)
+
+    def test_bounded_ssh_timeout_terminates_proxy_process_group(self):
+        fake_bin = self.work_dir / "fake-bin"
+        fake_bin.mkdir()
+        proxy_pid_file = self.work_dir / "proxy.pid"
+        fake_ssh = fake_bin / "ssh"
+        fake_ssh.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                sleep 300 &
+                proxy_pid="$!"
+                printf '%s\n' "$proxy_pid" >"$TEST_PROXY_PID_FILE"
+                wait "$proxy_pid"
+                """
+            ),
+            encoding="utf-8",
+        )
+        fake_ssh.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            RUN_TARGET_COMMAND_TIMEOUT_SECS=1
+            set +e
+            run_target_command 0 nixbot@app 0 true
+            rc="$?"
+            set -e
+            proxy_pid="$(cat "$TEST_PROXY_PID_FILE")"
+            if kill -0 "$proxy_pid" 2>/dev/null; then
+              printf 'proxy=alive rc=%s\n' "$rc"
+              kill "$proxy_pid" 2>/dev/null || true
+            else
+              printf 'proxy=terminated rc=%s\n' "$rc"
+            fi
+            """,
+            env={
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "TEST_PROXY_PID_FILE": str(proxy_pid_file),
+            },
+        )
+
+        self.assertEqual("proxy=terminated rc=124\n", result.stdout)
+
+    def test_control_master_clear_retires_only_the_matching_socket(self):
+        control_dir = self.work_dir / "ssh"
+        result = self.run_script(
+            f"""
+            init_vars
+            TMP_SSH_DIR={control_dir}
+            mkdir -p "$TMP_SSH_DIR"
+            control_path="$(control_master_socket_path app primary)"
+            : >"$control_path"
+            pgrep() {{ printf '111\n222\n'; }}
+            control_master_process_uses_socket() {{ [ "$1" = 111 ]; }}
+            terminate_pid_tree() {{ printf 'terminate:%s:%s\n' "$1" "$2"; }}
+            sleep() {{ printf 'sleep:%s\n' "$1"; }}
+            kill() {{ [ "$1" != -0 ]; }}
+            clear_control_master_socket app primary
+            [ ! -e "$control_path" ] && printf 'socket=removed\n'
+            """
+        )
+
+        self.assertEqual(
+            ["terminate:111:TERM", "sleep:0.1", "socket=removed"],
+            result.stdout.splitlines(),
+        )
+
+    def test_generated_proxy_hop_has_bounded_transport_liveness(self):
+        proxy_script = self.work_dir / "proxy.sh"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_SSH_CONNECT_TIMEOUT_SECS=17
+            NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS=9
+            NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX=2
+            write_proxy_command_script \
+              {proxy_script} /tmp/known target:22 jump 22 '' ''
+            bash -n {proxy_script}
+            cat {proxy_script}
+            """
+        )
+
+        self.assertIn("-o BatchMode=yes", result.stdout)
+        self.assertIn("connect_timeout=17", result.stdout)
+        self.assertIn("server_alive_interval=9", result.stdout)
+        self.assertIn("server_alive_count_max=2", result.stdout)
+        self.assertIn('-o "ConnectTimeout=${connect_timeout}"', result.stdout)
 
     def test_retry_transport_command_retries_ssh_failures_and_stops_on_permanent_failures(self):
         result = self.run_script(
@@ -2092,6 +2778,286 @@ EOF_SWITCH
         )
         self.assertIn("[health-check] waiting up to 30s for deployment work to settle", result.stderr)
 
+    def test_remote_health_check_fails_isolated_unhealthy_podman(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() { :; }
+            _remote_managed_user_names() { :; }
+            _remote_health_check_podman_unhealthy_containers() {
+              printf 'unhealthy novu_worker_1 Up 3 minutes (unhealthy)\\n'
+            }
+            _remote_health_check_podman_starting_containers() { :; }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\\n' "$rc"
+            """,
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("[health-check] UNHEALTHY Podman containers after deploy:", result.stderr)
+        self.assertIn("unhealthy novu_worker_1 Up 3 minutes (unhealthy)", result.stderr)
+        self.assertIn("FAILED — service failures detected after deploy", result.stderr)
+
+    def test_remote_health_check_treats_unhealthy_podman_as_settling_during_transitions(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "list-units --state=activating,deactivating,reloading --type=service --no-legend --plain")
+                  printf 'abird-novu.service loaded activating start start podman: abird: novu\\n'
+                  ;;
+              esac
+            }
+            _remote_managed_user_names() { :; }
+            _remote_health_check_podman_unhealthy_containers() {
+              printf 'unhealthy novu_worker_1 Up 3 minutes (unhealthy)\\n'
+            }
+            _remote_health_check_podman_starting_containers() { :; }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\\n' "$rc"
+            """,
+        )
+
+        self.assertEqual(["rc:2"], result.stdout.splitlines())
+        self.assertIn("[health-check] deployment work still settling:", result.stderr)
+        self.assertIn("abird-novu.service loaded activating start start podman: abird: novu", result.stderr)
+        self.assertIn("unhealthy novu_worker_1 Up 3 minutes (unhealthy)", result.stderr)
+        self.assertNotIn("FAILED — service failures detected after deploy", result.stderr)
+
+    def test_remote_health_check_reports_active_rootless_mutation_markers(self):
+        runtime_dir = self.work_dir / "run-user-1000"
+        marker_dir = runtime_dir / "podman-compose/rootless-mutations"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / "abird-novu"
+
+        result = self.run_script(
+            f"""
+            init_vars
+            cat > {marker} <<EOF_MARKER
+            pid=$$
+            service=abird-novu
+            reason=compose up
+            startedAt=123
+            EOF_MARKER
+            _remote_health_check_rootless_mutations {runtime_dir}
+            """,
+        )
+
+        self.assertIn("rootless-mutation abird-novu pid=", result.stdout)
+        self.assertIn("reason=compose up startedAt=123", result.stdout)
+
+    def test_remote_health_check_rejects_inactive_declared_autostart_unit(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\\n'; }
+            _remote_health_check_expected_user_units() { printf 'abird-zulip.service\\n'; }
+            _remote_health_check_expected_runtime() { :; }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() { :; }
+            setpriv() {
+              case "$*" in
+                *"systemctl --user show"*)
+                  printf '%s\\n' \
+                    'LoadState=loaded' \
+                    'ActiveState=inactive' \
+                    'SubState=dead' \
+                    'NeedDaemonReload=yes'
+                  ;;
+              esac
+              return 0
+            }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\\n' "$rc"
+            """
+        )
+
+        self.assertEqual(["rc:3"], result.stdout.splitlines())
+        self.assertIn("[health-check] FAILED declared managed user units:", result.stderr)
+        self.assertIn("unit=abird-zulip.service", result.stderr)
+        self.assertIn("state=inactive/dead", result.stderr)
+        self.assertIn("need-daemon-reload=yes", result.stderr)
+        self.assertIn("rollback-eligible host failures detected", result.stderr)
+
+    def test_remote_health_check_fails_closed_when_declaration_query_fails(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\\n'; }
+            _remote_health_check_expected_user_units() { return 1; }
+            _remote_health_check_expected_runtime() { :; }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\\n' "$rc"
+            """
+        )
+
+        self.assertEqual(["rc:3"], result.stdout.splitlines())
+        self.assertIn("user=abird declaration-query=failed", result.stderr)
+        self.assertIn("FAILED — rollback-eligible host failures detected after deploy", result.stderr)
+
+    def test_remote_health_check_rejects_missing_expected_compose_runtime(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\\n'; }
+            _remote_health_check_expected_user_units() { :; }
+            _remote_health_check_expected_runtime() {
+              printf 'missing service=abird-penpot compose-service=backend\\n'
+            }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() { :; }
+            setpriv() { return 0; }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\\n' "$rc"
+            """,
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("[user abird expected compose runtime]", result.stderr)
+        self.assertIn(
+            "missing service=abird-penpot compose-service=backend", result.stderr
+        )
+
+    def test_remote_health_check_treats_unhealthy_podman_as_settling_during_rootless_mutation(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\\n'; }
+            _remote_health_check_expected_user_units() { :; }
+            _remote_health_check_expected_runtime() { :; }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() {
+              printf 'rootless-mutation abird-novu pid=123 reason=compose up startedAt=456\\n'
+            }
+            setpriv() {
+              case "$*" in
+                *"podman ps --filter health=unhealthy"*)
+                  printf 'unhealthy novu_worker_1 Up 3 minutes (unhealthy)\\n'
+                  return 0
+                  ;;
+              esac
+              while [ "$#" -gt 0 ]; do
+                case "$1" in
+                  --reuid=*|--regid=*|--init-groups) shift ;;
+                  env) shift; command env "$@"; return $? ;;
+                  *) shift ;;
+                esac
+              done
+            }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\\n' "$rc"
+            """,
+        )
+
+        self.assertEqual(["rc:2"], result.stdout.splitlines())
+        self.assertIn("[health-check] deployment work still settling:", result.stderr)
+        self.assertIn("[user abird rootless podman mutations]", result.stderr)
+        self.assertIn("rootless-mutation abird-novu pid=", result.stderr)
+        self.assertIn("unhealthy novu_worker_1 Up 3 minutes (unhealthy)", result.stderr)
+        self.assertNotIn("FAILED — service failures detected after deploy", result.stderr)
+
     def test_remote_health_check_reports_transitional_compose_services(self):
         result = self.run_script(
             """
@@ -2119,16 +3085,78 @@ EOF_SWITCH
 
         self.assertIn("abird-nginx.service loaded failed failed", result.stdout)
 
-    def test_pre_switch_preserves_user_failed_units_for_reconcile(self):
+    def test_pre_switch_admission_repairs_managers_and_preserves_failed_units(self):
         result = self.run_script(
             """
-            build_pre_switch_user_failed_state_reset_cmd
+            build_pre_switch_admission_cmd
             """,
         )
 
+        self.assertIn("loginctl list-users", result.stdout)
+        self.assertIn('systemctl start "user@${uid}.service"', result.stdout)
+        self.assertIn("manager=active bus=unreachable", result.stdout)
         self.assertIn("preserving failed user units", result.stdout)
         self.assertIn("systemctl reset-failed", result.stdout)
         self.assertNotIn("systemctl --user reset-failed", result.stdout)
+
+    def test_pre_switch_admission_starts_inactive_logind_user_manager(self):
+        result = self.run_script(
+            """
+            loginctl() { printf '1001 peter yes lingering\n'; }
+            id() {
+              [ "$1" = -g ] && [ "$2" = peter ] && printf '1001\n'
+            }
+            systemctl() {
+              case "$*" in
+                'is-active --quiet user@1001.service')
+                  [ -e "$TEST_WORK_DIR/manager-active" ]
+                  ;;
+                'start user@1001.service')
+                  printf 'start:%s\n' "$2"
+                  touch "$TEST_WORK_DIR/manager-active" "$TEST_WORK_DIR/bus-ready"
+                  ;;
+                *) return 1 ;;
+              esac
+            }
+            _remote_pre_switch_user_manager_bus_ready() {
+              [ -e "$TEST_WORK_DIR/bus-ready" ]
+            }
+            _remote_pre_switch_repair_logind_user_managers
+            """,
+            env={"TEST_WORK_DIR": str(self.work_dir)},
+        )
+
+        self.assertEqual(["start:user@1001.service"], result.stdout.splitlines())
+        self.assertIn(
+            "[pre-switch] user=peter manager=inactive action=starting",
+            result.stderr,
+        )
+
+    def test_pre_switch_admission_does_not_restart_active_manager_without_bus(self):
+        result = self.run_script(
+            """
+            loginctl() { printf '1001 peter yes lingering\n'; }
+            id() {
+              [ "$1" = -g ] && [ "$2" = peter ] && printf '1001\n'
+            }
+            systemctl() {
+              case "$*" in
+                'is-active --quiet user@1001.service') return 0 ;;
+                restart*) printf 'unexpected-restart\n'; return 0 ;;
+                *) return 1 ;;
+              esac
+            }
+            sleep() { :; }
+            _remote_pre_switch_user_manager_bus_ready() { return 1; }
+            set +e
+            _remote_pre_switch_repair_logind_user_managers
+            printf 'rc:%s\n' "$?"
+            """,
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertNotIn("unexpected-restart", result.stdout)
+        self.assertIn("manager=active bus=unreachable", result.stderr)
 
     def test_primary_probe_retries_ssh_transport_and_clears_control_master(self):
         result = self.run_script(
@@ -2546,6 +3574,7 @@ EOF_SWITCH
             success=()
             skipped=()
             failed=()
+            host_deploy_reached_activation() {{ return 0; }}
             rollback_hosts_to_snapshots() {{
               local ok_hosts_name="$4"
               shift 5
@@ -2733,6 +3762,83 @@ EOF_SWITCH
         self.assertEqual("deploy:same", lines[0])
         self.assertEqual(["same"], json.loads(lines[1]))
         self.assertEqual([], json.loads(lines[2]))
+
+    def test_deploy_failure_preserves_successful_hosts_for_health(self):
+        body = f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE="$ROLLBACK_MODE"
+            NIXBOT_IF_CHANGED=0
+            NIXBOT_HOSTS_JSON='{{"ok":{{}},"blocked":{{}}}}'
+            snapshot_dir={self.work_dir / "snapshot"}-$ROLLBACK_MODE
+            snapshot_log_dir={self.work_dir / "snapshot-log"}-$ROLLBACK_MODE
+            snapshot_status_dir={self.work_dir / "snapshot-status"}-$ROLLBACK_MODE
+            deploy_log_dir={self.work_dir / "deploy-log"}-$ROLLBACK_MODE
+            deploy_status_dir={self.work_dir / "deploy-status"}-$ROLLBACK_MODE
+            build_out_dir={self.work_dir / "build-out"}-$ROLLBACK_MODE
+            rollback_log_dir={self.work_dir / "rollback-log"}-$ROLLBACK_MODE
+            rollback_status_dir={self.work_dir / "rollback-status"}-$ROLLBACK_MODE
+            mkdir -p "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir"
+            printf '/nix/store/old-ok\n' >"$snapshot_dir/ok.path"
+            printf '/nix/store/new-ok\n' >"$build_out_dir/ok.path"
+            level_groups=('["ok"]' '["blocked"]')
+            success=()
+            skipped=()
+            snapshot_failed=()
+            failed=()
+            ensure_deploy_wave_parent_readiness() {{ [ "$1" != blocked ]; }}
+            ensure_wave_snapshots() {{ return 0; }}
+            run_deploy_job() {{ write_status_file "$3" 0; }}
+            maybe_rollback_successful_hosts() {{ printf 'unexpected rollback\n'; return 1; }}
+            set +e
+            run_deploy_phase \
+              0 1 0 1 \
+              "$snapshot_dir" "$snapshot_log_dir" "$snapshot_status_dir" \
+              "$deploy_log_dir" "$deploy_status_dir" "$build_out_dir" \
+              "$rollback_log_dir" "$rollback_status_dir" \
+              level_groups success skipped snapshot_failed failed
+            printf 'rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{success[@]}}"
+            """
+        result = self.run_script(body, env={"ROLLBACK_MODE": "1"})
+
+        self.assertEqual("rc:1", result.stdout.splitlines()[0])
+        self.assertEqual(["ok"], json.loads(result.stdout.splitlines()[1]))
+        self.assertNotIn("unexpected rollback", result.stdout)
+
+        no_rollback = self.run_script(body, env={"ROLLBACK_MODE": "0"})
+        self.assertEqual("rc:1", no_rollback.stdout.splitlines()[0])
+        self.assertEqual(["ok"], json.loads(no_rollback.stdout.splitlines()[1]))
+        self.assertNotIn("unexpected rollback", no_rollback.stdout)
+
+    def test_failed_deploy_rolls_back_only_after_activation_admission(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            DRY_RUN=0
+            ROLLBACK_ON_FAILURE=1
+            NIXBOT_HOSTS_JSON='{{"prepared":{{}},"activated":{{}}}}'
+            host_deploy_reached_activation() {{ [ "$1" = activated ]; }}
+            rollback_failed_hosts() {{
+              shift 6
+              printf 'rollback:%s\n' "$*"
+            }}
+            rollback_failed_deploy_hosts \
+              {self.work_dir / "snapshot"} \
+              {self.work_dir / "rollback-log"} \
+              {self.work_dir / "rollback-status"} \
+              prepared activated
+            """
+        )
+
+        self.assertEqual(["rollback:activated"], result.stdout.splitlines())
+        self.assertIn(
+            "deploy failed for prepared before activation; current generation unchanged, skipping rollback",
+            result.stderr,
+        )
 
     def test_deploy_wave_signal_short_circuits_before_rollbacks(self):
         result = self.run_script(
@@ -2956,7 +4062,7 @@ EOF_SWITCH
         self.assertEqual("missing-status:snapshot-missing", lines[3])
         self.assertEqual("nostatus-status:missing", lines[4])
 
-    def test_health_check_failure_rolls_back_failed_and_remaining_successful_hosts(self):
+    def test_leaf_health_failure_does_not_roll_back_hosts(self):
         result = self.run_script(
             f"""
             init_vars
@@ -2996,13 +4102,57 @@ EOF_SWITCH
         )
 
         lines = result.stdout.splitlines()
-        self.assertEqual("health-rollback:app", lines[0])
-        self.assertEqual("remaining-rollback:db", lines[1])
-        self.assertEqual("health-rc:1", lines[2])
+        self.assertEqual("health-rc:1", lines[0])
+        self.assertEqual(["db"], json.loads(lines[1]))
+        self.assertEqual(["app"], json.loads(lines[2]))
         self.assertEqual([], json.loads(lines[3]))
+        self.assertEqual([], json.loads(lines[4]))
+
+    def test_structural_health_failure_rolls_back_only_failed_host(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            ROLLBACK_ON_FAILURE=1
+            snapshot_dir={self.work_dir / "snapshot"}
+            rollback_log_dir={self.work_dir / "rollback-log"}
+            rollback_status_dir={self.work_dir / "rollback-status"}
+            health_log_dir={self.work_dir / "health-log"}
+            health_status_dir={self.work_dir / "health-status"}
+            mkdir -p "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" "$health_log_dir" "$health_status_dir"
+            successful=(app db)
+            run_post_switch_health_check() {{
+              [ "$1" = db ] && return 0
+              return 3
+            }}
+            rollback_failed_health_hosts() {{
+              shift 3
+              printf 'health-rollback:%s\n' "$*"
+              HEALTH_FAILED_ROLLBACK_OK_HOSTS+=("$@")
+            }}
+            maybe_rollback_successful_hosts() {{
+              printf 'unexpected-group-rollback\n'
+              return 1
+            }}
+            set +e
+            run_post_switch_health_check_phase \
+              "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
+              "$health_log_dir" "$health_status_dir" \
+              0 1 successful
+            printf 'health-rc:%s\n' "$?"
+            set -e
+            bash_args_to_json_array "${{successful[@]}}"
+            bash_args_to_json_array "${{HEALTH_FAILED_HOSTS[@]}}"
+            bash_args_to_json_array "${{HEALTH_FAILED_ROLLBACK_OK_HOSTS[@]}}"
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual("health-rollback:app", lines[0])
+        self.assertEqual("health-rc:1", lines[1])
+        self.assertEqual(["db"], json.loads(lines[2]))
+        self.assertEqual(["app"], json.loads(lines[3]))
         self.assertEqual(["app"], json.loads(lines[4]))
-        self.assertEqual(["app"], json.loads(lines[5]))
-        self.assertEqual(["db"], json.loads(lines[6]))
+        self.assertNotIn("unexpected-group-rollback", result.stdout)
 
     def test_health_check_success_output_is_concise(self):
         result = self.run_script(
@@ -3021,7 +4171,9 @@ EOF_SWITCH
               "$snapshot_dir" "$rollback_log_dir" "$rollback_status_dir" \
               "$health_log_dir" "$health_status_dir" \
               0 1 successful
-            build_post_switch_health_check_cmd | grep -F '[health-check] ok'
+            health_check_cmd="$(build_post_switch_health_check_cmd)"
+            grep -F '[health-check] ok' <<<"$health_check_cmd"
+            grep -F '_remote_health_check_expected_runtime ()' <<<"$health_check_cmd"
             """
         )
 
@@ -3352,7 +4504,7 @@ EOF_SWITCH
             printf '%s\n' \
               '[activation] abird-gondor-corp: unit=nixbot-switch.service elapsed=254s state=active/running result=success main_pid=285969' \
               '[activation] abird-gondor-corp: no active systemd jobs; waiting for activation process or remote systemd-run timeout' \
-              '[activation] abird-gondor-corp: pending/failed user units for abird:' \
+              '[activation] abird-gondor-corp: pending user units for abird:' \
               'abird-librechat-verify.service                                                            loaded activating start  start podman: abird: librechat verify' \
               'abird-stalwart.service                                                                    loaded activating start  start podman: abird: stalwart' |
               format_host_console_logs abird-gondor-corp activation
@@ -3363,7 +4515,7 @@ EOF_SWITCH
             [
                 "[activation] unit=nixbot-switch.service elapsed=254s state=active/running result=success main_pid=285969",
                 '[activation] system_jobs=0 wait="activation process or remote systemd-run timeout"',
-                "[activation] user=abird pending/failed units:",
+                "[activation] user=abird pending units:",
                 "[activation] user=abird unit=abird-librechat-verify.service load=loaded state=activating/start",
                 "[activation] user=abird unit=abird-stalwart.service load=loaded state=activating/start",
             ],
@@ -3403,7 +4555,8 @@ EOF_SWITCH
               'abird-graphiti.service      loaded activating   start        start podman: abird: graphiti' \
               'abird-postgres.service      loaded deactivating stop-sigterm       podman: abird: postgres' \
               '[user abird]' \
-              'starting graphiti_neo4j_1 Up 44 seconds (starting)' |
+              'starting graphiti_neo4j_1 Up 44 seconds (starting)' \
+              'unhealthy novu_worker_1 Up 3 minutes (unhealthy)' |
               format_host_console_logs abird-gondor-data health
             """
         )
@@ -3416,6 +4569,29 @@ EOF_SWITCH
                 "[health-check] user=abird unit=abird-postgres.service load=loaded state=deactivating/stop-sigterm",
                 "[health-check] user=abird Podman containers:",
                 '[health-check] user=abird container=graphiti_neo4j_1 health=starting status="Up 44 seconds (starting)"',
+                '[health-check] user=abird container=novu_worker_1 health=unhealthy status="Up 3 minutes (unhealthy)"',
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_format_host_console_logs_normalizes_health_check_rootless_mutation_rows(self):
+        result = self.run_script(
+            """
+            init_vars
+            LOG_FORMAT=plain
+            printf '%s\n' \
+              '[health-check] deployment work still settling:' \
+              '[user abird rootless podman mutations]' \
+              'rootless-mutation abird-novu pid=123 reason=compose up startedAt=456' |
+              format_host_console_logs abird-gondor-corp health
+            """
+        )
+
+        self.assertEqual(
+            [
+                "[health-check] deployment work still settling:",
+                "[health-check] user=abird rootless Podman mutations:",
+                "[health-check] user=abird rootless-mutation service=abird-novu pid=123 reason=compose up startedAt=456",
             ],
             result.stdout.splitlines(),
         )
@@ -3531,7 +4707,7 @@ EOF_SWITCH
               "[agenix] removing old secrets (generation 8)..." \
               "[agenix] chowning..." \
               "reloading user units for abird..." \
-              "stopping the following user units: abird-managed-ready.target, abird-nginx-ready.target" \
+              "stopping the following user units: abird-managed.target, abird-nginx-ready.target" \
               "restarting the following user units: nixos-activation.service" \
               "restarting sysinit-reactivation.target" |
               format_host_console_logs abird-gondor-corp deploy
@@ -3547,7 +4723,7 @@ EOF_SWITCH
                 "[agenix] removed generation=8",
                 "[agenix] fixing ownership",
                 "[user-units] user=abird reload",
-                '[user-units] user=abird action=stopping count=2 units="abird-managed-ready.target, abird-nginx-ready.target"',
+                '[user-units] user=abird action=stopping count=2 units="abird-managed.target, abird-nginx-ready.target"',
                 '[user-units] user=abird action=restarting count=1 units="nixos-activation.service"',
                 '[system-units] action=restart count=1 units="sysinit-reactivation.target"',
             ],
@@ -3561,7 +4737,7 @@ EOF_SWITCH
             LOG_FORMAT=gh
             printf '%s\n' \
               '[activation] app: no active systemd jobs; waiting for activation process or remote systemd-run timeout' \
-              '[activation] app: pending/failed user units for abird:' \
+              '[activation] app: pending user units for abird:' \
               'abird-stalwart.service loaded activating start start podman: abird: stalwart' |
               format_host_console_logs app activation
             """
@@ -3570,7 +4746,7 @@ EOF_SWITCH
         self.assertEqual(
             [
                 "[activation] app: no active systemd jobs; waiting for activation process or remote systemd-run timeout",
-                "[activation] app: pending/failed user units for abird:",
+                "[activation] app: pending user units for abird:",
                 "abird-stalwart.service loaded activating start start podman: abird: stalwart",
             ],
             result.stdout.splitlines(),
@@ -3584,7 +4760,7 @@ EOF_SWITCH
             LOG_FORMAT=plain
             printf '%s\n' \
               '[activation] app: no active systemd jobs; waiting for activation process or remote systemd-run timeout' \
-              '[activation] app: pending/failed user units for abird:' \
+              '[activation] app: pending user units for abird:' \
               'abird-stalwart.service loaded activating start start podman: abird: stalwart' |
               tee_prefixed_host_logs app {log_file} activation
             sed 's/^/log:/' {log_file}
@@ -3594,10 +4770,10 @@ EOF_SWITCH
         self.assertEqual(
             [
                 '| app | [activation] system_jobs=0 wait="activation process or remote systemd-run timeout"',
-                "| app | [activation] user=abird pending/failed units:",
+                "| app | [activation] user=abird pending units:",
                 "| app | [activation] user=abird unit=abird-stalwart.service load=loaded state=activating/start",
                 "log:| app | [activation] app: no active systemd jobs; waiting for activation process or remote systemd-run timeout",
-                "log:| app | [activation] app: pending/failed user units for abird:",
+                "log:| app | [activation] app: pending user units for abird:",
                 "log:| app | abird-stalwart.service loaded activating start start podman: abird: stalwart",
             ],
             result.stdout.splitlines(),
@@ -3627,7 +4803,7 @@ EOF_SWITCH
             LOG_FORMAT=plain
             NIXBOT_FORCE_COLOR=1
             printf '%s\n' \
-              'Failed to start user unit abird-managed-ready.target' \
+              'Failed to start user unit abird-managed.target' \
               'warning: user activation for abird failed' \
               '× migration-manager-apply.service - Apply runtime migration gate state' \
               '     Active: failed (Result: exit-code) since Sun 2026-07-12 12:45:52 +08; 25ms ago' \

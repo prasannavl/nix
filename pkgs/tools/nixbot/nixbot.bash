@@ -150,17 +150,17 @@ _nixbot() {
 	mapfile -t tf_projects < <(_nixbot_tf_projects)
 	commands+=("${tf_projects[@]}")
 
-		options=(
-			--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
-			--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
-			--deploy-jobs --verify-jobs --clean --force --bootstrap --ci-first
-			--skip-global-lock
-			--dirty --dirty-staged --dry --no-override --no-rollback
-			--prefix-host-logs --log-format --user --ssh-key
-			--operator-user --operator-key --bootstrap-key --known-hosts --config
-			--age-key-file --discover-keys --no-discover-keys --repo-url
-			--repo-path --use-repo-script --ci-check-ssh-key-path --ci-trigger
-			--ci-host --ci-user --ci-ssh-key --ci-known-hosts --help
+	options=(
+		--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
+		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
+		--deploy-jobs --deploy-jobs-per-domain --verify-jobs --clean --force --bootstrap --ci-first
+		--skip-global-lock
+		--dirty --dirty-staged --dry --no-override --no-rollback
+		--prefix-host-logs --log-format --user --ssh-key
+		--operator-user --operator-key --bootstrap-key --known-hosts --config
+		--age-key-file --discover-keys --no-discover-keys --repo-url
+		--repo-path --use-repo-script --ci-check-ssh-key-path --ci-trigger
+		--ci-host --ci-user --ci-ssh-key --ci-known-hosts --help
 	)
 
 	case "$prev" in

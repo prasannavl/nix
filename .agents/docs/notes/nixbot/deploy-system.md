@@ -186,11 +186,12 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   operator-machine host-local action mutex for manual overlapping nixbot runs.
   It does not bypass deploy activation locks, rollback locks, or target-host
   systemd serialization.
-- Releasing the operator-machine host-local action mutex must remove its lock
-  pathname while the acquired descriptor still identifies that same file. This
-  applies to normal release and EXIT/error cleanup so a failed run cannot leave
-  a principal-owned `/dev/shm/nixbot-host-local.lock` that a later self-deploy
-  route cannot open.
+- The operator-machine host-local action mutex uses the persistent
+  `/dev/shm/nixbot-host-local.lock.d` directory inode. It is created mode
+  `0755`, opened read-only, and never unlinked during release or EXIT/error
+  cleanup. This lets different local principals lock the same inode without
+  leaving an unwritable regular file or splitting waiters across replacement
+  inodes.
 - `--dirty-staged` overlays must fail closed if the cached diff cannot be
   applied cleanly. Local runs generate the overlay from the staged index; CI
   host-triggered runs send a binary staged patch over SSH stdin and require the

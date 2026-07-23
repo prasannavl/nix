@@ -46,7 +46,7 @@ Usage:
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -95,6 +95,9 @@ Dev Build Action Options (`dev-build`):
 Deploy Action Options (`run`, `deploy`):
   --goal           switch|boot|test|dry-activate (default: switch)
   --deploy-jobs    Parallel deploys within a dependency wave (default: 8)
+  --deploy-jobs-per-domain
+                   Parallel deploys sharing a topmost parent domain
+                   (default: --deploy-jobs)
   --verify-jobs    Parallel rollback snapshot and post-deploy health-check work
                    (default: 16)
   --bootstrap      Always use bootstrap SSH user/key selection
@@ -174,6 +177,7 @@ Environment (Build Actions):
 Environment (Deploy Actions):
   NIXBOT_GOAL                 Same as --goal
   NIXBOT_JOBS                 Same as --deploy-jobs
+  NIXBOT_JOBS_PER_DOMAIN      Same as --deploy-jobs-per-domain
   NIXBOT_VERIFY_JOBS          Same as --verify-jobs
   NIXBOT_NO_ROLLBACK          Same as --no-rollback (bool)
   NIXBOT_NO_VERIFY            Same as --no-verify (bool)
@@ -506,6 +510,11 @@ init_vars() {
 	NIXBOT_BUILD_NIX_ARGS=()
 	NIXBOT_BUILD_PLAN_DIR=""
 	NIXBOT_PARALLEL_JOBS="${NIXBOT_JOBS:-8}"
+	NIXBOT_PARALLEL_JOBS_PER_DOMAIN="${NIXBOT_JOBS_PER_DOMAIN:-${NIXBOT_JOBS:-8}}"
+	NIXBOT_JOBS_PER_DOMAIN_EXPLICIT=0
+	if [ -n "${NIXBOT_JOBS_PER_DOMAIN:-}" ]; then
+		NIXBOT_JOBS_PER_DOMAIN_EXPLICIT=1
+	fi
 	NIXBOT_VERIFY_JOBS="${NIXBOT_VERIFY_JOBS:-16}"
 	NIXBOT_IF_CHANGED=1
 	TF_IF_CHANGED=1
@@ -705,9 +714,8 @@ init_vars() {
 	OPTIONAL_DEPLOY_SNAPSHOT_SKIPPED_HOSTS=()
 	OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS=()
 	OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS=()
-	NIXBOT_HOST_LOCAL_LOCK_PATH="${NIXBOT_HOST_LOCAL_LOCK_PATH:-/dev/shm/nixbot-host-local.lock}"
+	NIXBOT_HOST_LOCAL_LOCK_PATH="${NIXBOT_HOST_LOCAL_LOCK_PATH:-/dev/shm/nixbot-host-local.lock.d}"
 	NIXBOT_HOST_LOCAL_LOCK_FD=""
-	NIXBOT_HOST_LOCAL_LOCK_HELD_PATH=""
 
 	CI_TRIGGER_KEY_PATH="data/secrets/globals/ci/nixbot-ci-ssh.key.age"
 	REMOTE_NIXBOT_BASE="/var/lib/nixbot"
@@ -1286,6 +1294,12 @@ parse_args() {
 			NIXBOT_PARALLEL_JOBS="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
+		--deploy-jobs-per-domain | --deploy-jobs-per-domain=*)
+			take_optval "$@"
+			NIXBOT_PARALLEL_JOBS_PER_DOMAIN="${OPTVAL}"
+			NIXBOT_JOBS_PER_DOMAIN_EXPLICIT=1
+			shift "${OPTSHIFT}"
+			;;
 		--verify-jobs | --verify-jobs=*)
 			take_optval "$@"
 			NIXBOT_VERIFY_JOBS="${OPTVAL}"
@@ -1524,6 +1538,10 @@ parse_args() {
 	[[ "${NIXBOT_BUILD_HEARTBEAT_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_BUILD_HEARTBEAT_SECS: ${NIXBOT_BUILD_HEARTBEAT_SECS} (must be a non-negative integer)"
 	[[ "${NIXBOT_ACTIVATION_HEARTBEAT_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_ACTIVATION_HEARTBEAT_SECS: ${NIXBOT_ACTIVATION_HEARTBEAT_SECS} (must be a non-negative integer)"
 	[[ "${NIXBOT_PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs: ${NIXBOT_PARALLEL_JOBS} (must be a positive integer)"
+	if [ "${NIXBOT_JOBS_PER_DOMAIN_EXPLICIT}" -eq 0 ]; then
+		NIXBOT_PARALLEL_JOBS_PER_DOMAIN="${NIXBOT_PARALLEL_JOBS}"
+	fi
+	[[ "${NIXBOT_PARALLEL_JOBS_PER_DOMAIN}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --deploy-jobs-per-domain: ${NIXBOT_PARALLEL_JOBS_PER_DOMAIN} (must be a positive integer)"
 	[[ "${NIXBOT_VERIFY_JOBS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported --verify-jobs: ${NIXBOT_VERIFY_JOBS} (must be a positive integer)"
 	[[ "${NIXBOT_PARENT_READINESS_SLOW_SECS}" =~ ^[0-9]+$ ]] || die "Unsupported NIXBOT_PARENT_READINESS_SLOW_SECS: ${NIXBOT_PARENT_READINESS_SLOW_SECS} (must be a non-negative integer)"
 	[[ "${NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS}" =~ ^[1-9][0-9]*$ ]] || die "Unsupported NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS: ${NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS} (must be a positive integer)"
@@ -1757,15 +1775,25 @@ EOF_ACTIVATION
 }
 
 nixbot_activation_runner_command() {
-	local activation_script="$1" encoded_script="" runner_script=""
+	local activation_script="$1" activation_unit="$2" encoded_script="" runner_script="" result_file=""
 
 	encoded_script="$(printf '%s' "${activation_script}" | base64 | tr -d '\n')"
+	result_file="${NIXBOT_REMOTE_ACTIVATION_RESULT_DIR:-${REMOTE_NIXBOT_BASE}/activation-results}/${activation_unit}.result"
 	# shellcheck disable=SC2016
-	printf -v runner_script \
-		'set -o pipefail; printf %%s "$1" | %q -d | %q -s' \
+	runner_script='set -o pipefail; result_file="$2"; result_dir="${result_file%/*}"; log_file="${result_file%.result}.log"; "$3" -d -m 0700 "$result_dir"; "$4" -f "$result_file" "$log_file"; tmp="${result_file}.tmp.$$"; printf "OutcomeSource=marker\nResult=running\nExecMainStatus=255\n" >"$tmp"; "$8" -f "$tmp" "$result_file"; set +e; printf %s "$1" | "$5" -d | "$6" -s 2>&1 | "$7" --output-error=warn-nopipe "$log_file"; pipeline_status=("${PIPESTATUS[@]}"); rc="${pipeline_status[2]}"; result=exit-code; [ "$rc" -ne 0 ] || result=success; tmp="${result_file}.tmp.$$"; printf "OutcomeSource=marker\nResult=%s\nExecMainStatus=%s\n" "$result" "$rc" >"$tmp"; "$8" -f "$tmp" "$result_file"; exit "$rc"'
+	shell_quote_argv \
+		"${REMOTE_SYSTEM_BASH}" \
+		-c \
+		"${runner_script}" \
+		nixbot-activation \
+		"${encoded_script}" \
+		"${result_file}" \
+		"${REMOTE_SYSTEM_BIN_DIR}/install" \
+		"${REMOTE_SYSTEM_BIN_DIR}/rm" \
 		"${REMOTE_SYSTEM_BIN_DIR}/base64" \
-		"${REMOTE_SYSTEM_BASH}"
-	shell_quote_argv "${REMOTE_SYSTEM_BASH}" -c "${runner_script}" nixbot-activation "${encoded_script}"
+		"${REMOTE_SYSTEM_BASH}" \
+		"${REMOTE_SYSTEM_BIN_DIR}/tee" \
+		"${REMOTE_SYSTEM_BIN_DIR}/mv"
 }
 
 activation_goal_persists_profile() {
@@ -2419,6 +2447,13 @@ host_local_lock_wait_secs() {
 	printf '%s\n' "$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))"
 }
 
+prepare_host_local_lock_path() {
+	local lock_path="${1:-$(host_local_lock_path)}"
+
+	mkdir -p -m 0755 "${lock_path}" || die "Failed to create nixbot host-local lock directory: ${lock_path}"
+	[ -d "${lock_path}" ] || die "Nixbot host-local lock path is not a directory: ${lock_path}"
+}
+
 action_needs_host_local_lock() {
 	case "${ACTION}" in
 	run | deploy | build | dev-build | tf | tf-dns | tf-platform | tf-apps | clean | tf/*)
@@ -2434,21 +2469,16 @@ action_should_acquire_host_local_lock() {
 }
 
 release_host_local_lock() {
-	local fd="" lock_path=""
+	local fd=""
 
 	fd="${NIXBOT_HOST_LOCAL_LOCK_FD:-}"
 	[ -n "${fd}" ] || return 0
-	lock_path="${NIXBOT_HOST_LOCAL_LOCK_HELD_PATH:-}"
-	if [ -n "${lock_path}" ] && [ "${lock_path}" -ef "/proc/self/fd/${fd}" ]; then
-		rm -f -- "${lock_path}" || true
-	fi
 	eval "exec ${fd}>&-" || true
 	NIXBOT_HOST_LOCAL_LOCK_FD=""
-	NIXBOT_HOST_LOCAL_LOCK_HELD_PATH=""
 }
 
 acquire_host_local_lock() {
-	local label="${1:-${ACTION:-nixbot}}" lock_path="" lock_dir="" fd=""
+	local label="${1:-${ACTION:-nixbot}}" lock_path="" fd=""
 	local wait_start_epoch="" resume_epoch="" elapsed_secs=""
 
 	if [ -n "${NIXBOT_HOST_LOCAL_LOCK_FD:-}" ]; then
@@ -2456,9 +2486,8 @@ acquire_host_local_lock() {
 	fi
 
 	lock_path="$(host_local_lock_path)"
-	lock_dir="$(dirname "${lock_path}")"
-	mkdir -p "${lock_dir}" || die "Failed to create nixbot host-local lock directory: ${lock_dir}"
-	exec {fd}>"${lock_path}" || die "Failed to open nixbot host-local lock: ${lock_path}"
+	prepare_host_local_lock_path "${lock_path}"
+	exec {fd}<"${lock_path}" || die "Failed to open nixbot host-local lock directory: ${lock_path}"
 
 	if ! flock -n "${fd}"; then
 		wait_start_epoch="$(date +%s)"
@@ -2473,20 +2502,20 @@ acquire_host_local_lock() {
 	fi
 
 	NIXBOT_HOST_LOCAL_LOCK_FD="${fd}"
-	NIXBOT_HOST_LOCAL_LOCK_HELD_PATH="${lock_path}"
 }
 
-host_local_activation_lock_prefix() {
-	local lock_wait_secs="" lock_path=""
+host_local_activation_lock_command() {
+	local target_cmd="$1" lock_wait_secs="" lock_path=""
 
 	if [ -n "${NIXBOT_HOST_LOCAL_LOCK_FD:-}" ] &&
 		{ [ "${PREP_DEPLOY_LOCAL_EXEC:-0}" -eq 1 ] || [ "${PREP_DEPLOY_SELF_TARGET:-0}" -eq 1 ]; }; then
-		return 0
+		printf '%s\n' "${target_cmd}"
+		return
 	fi
 
 	lock_wait_secs="$(host_local_lock_wait_secs)"
 	lock_path="$(host_local_lock_path)"
-	printf 'flock -w %q %q ' "${lock_wait_secs}" "${lock_path}"
+	printf 'mkdir -p -m 0755 %q && flock -w %q %q %s\n' "${lock_path}" "${lock_wait_secs}" "${lock_path}" "${target_cmd}"
 }
 
 ensure_runtime_work_dir() {
@@ -3420,9 +3449,23 @@ init_deploy_settings() {
 }
 
 apply_config_defaults() {
-	local config_json="$1" nixbot_config_json="" configured_default_group="" configured_ci_host="" configured_cache_host="" configured_cache_url="" configured_repo_url=""
+	local config_json="$1" nixbot_config_json="" configured_default_group="" configured_ci_host="" configured_cache_host="" configured_cache_url="" configured_repo_url="" configured_deploy_jobs_per_domain=""
 
 	nixbot_config_json="$(jq -c '.config // {}' <<<"${config_json}")"
+	if [ "${NIXBOT_JOBS_PER_DOMAIN_EXPLICIT}" -eq 0 ]; then
+		configured_deploy_jobs_per_domain="$(
+			jq -r '
+        .deployJobsPerDomain // ""
+        | if . == "" then ""
+          elif type == "number" and . > 0 and floor == . then tostring
+          else error("deployJobsPerDomain must be a positive integer")
+          end
+      ' <<<"${nixbot_config_json}"
+		)" || die "Nixbot deployJobsPerDomain must be a positive integer"
+		if [ -n "${configured_deploy_jobs_per_domain}" ]; then
+			NIXBOT_PARALLEL_JOBS_PER_DOMAIN="${configured_deploy_jobs_per_domain}"
+		fi
+	fi
 
 	if [ -z "${GROUPS_RAW}" ] && [ "${HOSTS_EXPLICIT}" -eq 0 ]; then
 		configured_default_group="$(
@@ -4175,6 +4218,56 @@ selected_host_levels_json() {
   '
 }
 
+host_deploy_domain() {
+	local node="$1" current="" parent=""
+	declare -A visited=()
+	current="${node}"
+
+	while true; do
+		if [ -n "${visited["${current}"]+x}" ]; then
+			die "Host parent cycle detected while resolving deploy domain for ${node}: ${current}"
+		fi
+		visited["${current}"]=1
+		parent="$(host_parent_for "${current}")"
+		if [ -z "${parent}" ]; then
+			printf 'parent:%s\n' "${current}"
+			return 0
+		fi
+		current="${parent}"
+	done
+}
+
+capacity_bound_host_levels_json() {
+	local levels_json="$1" level_group="" node="" domain="" count=0
+	local -a pending_hosts=() next_pending_hosts=() batch_hosts=()
+	declare -A domain_counts=()
+
+	{
+		while IFS= read -r level_group; do
+			[ -n "${level_group}" ] || continue
+			mapfile -t pending_hosts < <(jq -r '.[]' <<<"${level_group}")
+			while [ "${#pending_hosts[@]}" -gt 0 ]; do
+				next_pending_hosts=()
+				batch_hosts=()
+				domain_counts=()
+				for node in "${pending_hosts[@]}"; do
+					domain="$(host_deploy_domain "${node}")"
+					count="${domain_counts["${domain}"]:-0}"
+					if [ "${count}" -ge "${NIXBOT_PARALLEL_JOBS_PER_DOMAIN}" ]; then
+						next_pending_hosts+=("${node}")
+						continue
+					fi
+					batch_hosts+=("${node}")
+					domain_counts["${domain}"]=$((count + 1))
+				done
+				[ "${#batch_hosts[@]}" -gt 0 ] || die "Deploy concurrency policy produced an empty wave"
+				bash_args_to_json_array "${batch_hosts[@]}"
+				pending_hosts=("${next_pending_hosts[@]}")
+			done
+		done < <(jq -c '.[]' <<<"${levels_json}")
+	} | jq -sc '.'
+}
+
 validate_selected_hosts() {
 	local selected_json="$1" all_hosts_json="$2" invalid=""
 
@@ -4418,6 +4511,8 @@ log_run_context() {
 	print_selected_hosts_block "${selected_json}"
 	if is_deploy_style_action; then
 		echo "Goal: ${GOAL}" >&2
+		echo "Deploy jobs: ${NIXBOT_PARALLEL_JOBS}" >&2
+		echo "Deploy jobs per domain: ${NIXBOT_PARALLEL_JOBS_PER_DOMAIN}" >&2
 		echo "Build host: ${BUILD_HOST}" >&2
 		if [ "${BUILD_HOST}" != "local" ]; then
 			if [ "${BUILD_HOST_DEPLOY_MODE}" = "auto" ]; then
@@ -5133,7 +5228,9 @@ run_target_command() {
 	elif [ "${tty_mode}" -eq 1 ]; then
 		run_tty_target_command "${ssh_target}" "${target_cmd}" "${ssh_opts[@]}"
 	elif [ -n "${RUN_TARGET_COMMAND_TIMEOUT_SECS:-}" ]; then
-		timeout --foreground "${RUN_TARGET_COMMAND_TIMEOUT_SECS}s" ssh "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}"
+		# Keep SSH and every ProxyCommand helper in timeout's process group so a
+		# transport timeout cannot leave proxy hops behind to amplify retries.
+		timeout "${RUN_TARGET_COMMAND_TIMEOUT_SECS}s" ssh "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}"
 	else
 		# shellcheck disable=SC2029
 		ssh "${ssh_opts[@]}" "${ssh_target}" "${target_cmd}"
@@ -5522,7 +5619,8 @@ control_master_socket_path() {
 }
 
 clear_control_master_socket() {
-	local node="$1" role="$2" control_path=""
+	local node="$1" role="$2" control_path="" pid=""
+	local -a control_master_pids=()
 
 	[ -n "${node}" ] || return 0
 	[ -n "${role}" ] || return 0
@@ -5530,7 +5628,38 @@ clear_control_master_socket() {
 	[ -d "${TMP_SSH_DIR}" ] || return 0
 
 	control_path="$(control_master_socket_path "${node}" "${role}")"
+	while read -r pid; do
+		[ -n "${pid}" ] || continue
+		if control_master_process_uses_socket "${pid}" "${control_path}"; then
+			control_master_pids+=("${pid}")
+		fi
+	done < <(pgrep -x ssh 2>/dev/null || true)
+
+	for pid in "${control_master_pids[@]}"; do
+		terminate_pid_tree "${pid}" TERM
+	done
+	if [ "${#control_master_pids[@]}" -gt 0 ]; then
+		sleep 0.1 || true
+	fi
+	for pid in "${control_master_pids[@]}"; do
+		kill -0 "${pid}" 2>/dev/null || continue
+		terminate_pid_tree "${pid}" KILL
+	done
 	rm -f "${control_path}" || true
+}
+
+control_master_process_uses_socket() {
+	local pid="$1" control_path="$2" arg=""
+
+	[ -r "/proc/${pid}/cmdline" ] || return 1
+	while IFS= read -r -d '' arg; do
+		case "${arg}" in
+		"ControlPath=${control_path}" | "-oControlPath=${control_path}")
+			return 0
+			;;
+		esac
+	done <"/proc/${pid}/cmdline"
+	return 1
 }
 
 apply_control_master_to_ssh_context() {
@@ -5701,8 +5830,11 @@ write_proxy_command_script() {
 		printf 'connect_port=%q\n' "${connect_port}"
 		printf 'previous_proxy_script=%q\n' "${previous_proxy_script}"
 		printf 'identity_file=%q\n' "${identity_file}"
+		printf 'connect_timeout=%q\n' "${NIXBOT_SSH_CONNECT_TIMEOUT_SECS}"
+		printf 'server_alive_interval=%q\n' "${NIXBOT_SSH_SERVER_ALIVE_INTERVAL_SECS}"
+		printf 'server_alive_count_max=%q\n' "${NIXBOT_SSH_SERVER_ALIVE_COUNT_MAX}"
 		cat <<'EOF'
-cmd=(ssh -F /dev/null -o LogLevel=ERROR -o "GlobalKnownHostsFile=/dev/null" -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
+cmd=(ssh -F /dev/null -o BatchMode=yes -o LogLevel=ERROR -o "ConnectTimeout=${connect_timeout}" -o ConnectionAttempts=1 -o "ServerAliveInterval=${server_alive_interval}" -o "ServerAliveCountMax=${server_alive_count_max}" -o "GlobalKnownHostsFile=/dev/null" -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${known_hosts_file}")
 if [ -n "${identity_file}" ]; then
   cmd+=(-i "${identity_file}" -o IdentitiesOnly=yes)
 fi
@@ -6399,7 +6531,7 @@ run_prepared_deploy_command() {
 			if [ "${tty_mode}" -eq 1 ]; then
 				printf 'ssh -tt '
 			elif [ -n "${RUN_TARGET_COMMAND_TIMEOUT_SECS:-}" ]; then
-				printf 'timeout --foreground %q ssh ' "${RUN_TARGET_COMMAND_TIMEOUT_SECS}s"
+				printf 'timeout %q ssh ' "${RUN_TARGET_COMMAND_TIMEOUT_SECS}s"
 			else
 				printf 'ssh '
 			fi
@@ -6716,6 +6848,13 @@ run_prepared_root_command_without_control_master() {
 
 	wrapped_cmd="$(build_wrapped_root_command "${target_cmd}" "${deploy_user}" "${ask_sudo_password}")"
 	run_prepared_deploy_command_without_control_master "${tty_mode}" "${wrapped_cmd}"
+}
+
+run_prepared_root_command_without_control_master_with_timeout() {
+	local timeout_secs="$1" target_cmd="$2"
+
+	RUN_TARGET_COMMAND_TIMEOUT_SECS="${timeout_secs}" \
+		run_prepared_root_command_without_control_master "${target_cmd}"
 }
 
 run_prepared_root_command_with_retry() {
@@ -7221,20 +7360,39 @@ drain_job_slots() {
 }
 
 run_streamed_host_command() {
-	local phase="$1" node="$2" log_file="${3:-}"
+	local phase="$1" node="$2" log_file="${3:-}" output_pid="" rc=0
 	shift 3
 
 	if [ -n "${log_file}" ] && [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-		run_with_host_log_prefix_context "${phase}" \
-			run_with_combined_output "$@" > >(tee_prefixed_host_logs "${node}" "${log_file}" "${phase}")
+		if run_with_host_log_prefix_context "${phase}" \
+			run_with_combined_output "$@" > >(tee_prefixed_host_logs "${node}" "${log_file}" "${phase}"); then
+			:
+		else
+			rc="$?"
+		fi
+		output_pid="$!"
 	elif [ -n "${log_file}" ]; then
-		run_with_combined_output "$@" > >(tee_plain_host_logs "${log_file}")
+		if run_with_combined_output "$@" > >(tee_plain_host_logs "${log_file}"); then
+			:
+		else
+			rc="$?"
+		fi
+		output_pid="$!"
 	elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-		run_with_host_log_prefix_context "${phase}" \
-			run_with_combined_output "$@" > >(prefix_host_logs "${node}" "${phase}")
+		if run_with_host_log_prefix_context "${phase}" \
+			run_with_combined_output "$@" > >(prefix_host_logs "${node}" "${phase}"); then
+			:
+		else
+			rc="$?"
+		fi
+		output_pid="$!"
 	else
-		"$@"
+		"$@" || rc="$?"
 	fi
+	if [ -n "${output_pid}" ]; then
+		wait "${output_pid}" || true
+	fi
+	return "${rc}"
 }
 
 run_build_job() {
@@ -8092,8 +8250,7 @@ wait_for_in_flight_nixbot_activation() {
 rollback_host_to_snapshot() {
 	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_script="" rollback_runner="" rollback_unit="" systemd_run_properties=""
 	local post_promote_bootloader_goal=""
-	local rollback_rc=0 rollback_start_epoch="" rollback_output=""
-	local activation_lock_prefix=""
+	local rollback_rc=0 rollback_start_epoch="" rollback_output="" current_system_path=""
 
 	[ -n "${snapshot_path}" ] || {
 		echo "Rollback snapshot is empty for ${node}" >&2
@@ -8105,15 +8262,21 @@ rollback_host_to_snapshot() {
 	rollback_unit="$(rollback_activation_unit_name "${node}")"
 	wait_for_in_flight_deploy_activation "${node}" || return "$?"
 	wait_for_in_flight_nixbot_activation "${node}" "${rollback_unit}.service" rollback || return "$?"
+	if [ "${NIXBOT_SKIP_MATCHING_SNAPSHOT_ROLLBACK:-0}" -eq 1 ]; then
+		current_system_path="$(read_prepared_current_system_path_for_activation_verification 2>/dev/null || true)"
+		if [ -n "${current_system_path}" ] && [ "${current_system_path}" = "${snapshot_path}" ]; then
+			echo "==> ${node}: completed deploy already uses rollback snapshot; skipping same-generation activation" >&2
+			return 0
+		fi
+	fi
 	post_promote_bootloader_goal="$(activation_post_promote_bootloader_goal "${node}" switch)" || return "$?"
 	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1 "${post_promote_bootloader_goal}")"
-	rollback_runner="$(nixbot_activation_runner_command "${rollback_script}")"
+	rollback_runner="$(nixbot_activation_runner_command "${rollback_script}" "${rollback_unit}")"
+	rollback_runner="$(host_local_activation_lock_command "${rollback_runner}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
-	activation_lock_prefix="$(host_local_activation_lock_prefix)"
 	printf -v rollback_cmd \
-		'env NIXOS_INSTALL_BOOTLOADER=%q %ssystemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
+		'env NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --expand-environment=no --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
 		0 \
-		"${activation_lock_prefix}" \
 		"${systemd_run_properties}" \
 		"${rollback_unit}" \
 		"${rollback_runner}"
@@ -8121,6 +8284,10 @@ rollback_host_to_snapshot() {
 	echo "${snapshot_path}" >&2
 	rollback_start_epoch="$(date +%s)"
 	if run_activation_with_progress rollback_output "${node}" rollback "${rollback_unit}" "${rollback_start_epoch}" "${rollback_cmd}"; then
+		if ! reconcile_rollback_managed_user_targets "${node}"; then
+			echo "==> Rollback activation completed for ${node}, but managed user services did not reconverge" >&2
+			return 1
+		fi
 		print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
 		return 0
 	else
@@ -8128,9 +8295,20 @@ rollback_host_to_snapshot() {
 	fi
 
 	report_activation_lock_contention_if_present "${node}" "${rollback_unit}" "${rollback_start_epoch}" "${rollback_output}" || true
+	if is_signal_exit_status "${rollback_rc}"; then
+		return "${rollback_rc}"
+	fi
+	if ! command_output_is_transport_loss "${rollback_output}" &&
+		! transport_status_is_retryable "${rollback_rc}"; then
+		return "${rollback_rc}"
+	fi
 
-	echo "==> Rollback transport closed or failed for ${node}; verifying target state" >&2
+	echo "==> Rollback transport closed for ${node}; verifying target state" >&2
 	if verify_rollback_target_state "${node}" "${snapshot_path}" "${rollback_unit}" "${rollback_start_epoch}"; then
+		if ! reconcile_rollback_managed_user_targets "${node}"; then
+			echo "==> Rollback activation completed for ${node}, but managed user services did not reconverge" >&2
+			return 1
+		fi
 		echo "==> Rollback for ${node} completed despite transport disconnect" >&2
 		print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
 		return 0
@@ -8186,20 +8364,92 @@ read_prepared_current_system_path_for_activation_verification() {
 	extract_nixos_system_path "${current_path}"
 }
 
-read_remote_activation_unit_state() {
-	local activation_unit="$1" state_cmd="" state=""
+read_remote_activation_verification_sample() {
+	local activation_unit="$1" sample_cmd="" result_file=""
 
-	printf -v state_cmd 'systemctl show --property=ActiveState --value %q 2>/dev/null || true' "${activation_unit}"
-	if ! state="$(run_prepared_root_command_without_control_master "${state_cmd}" 2>/dev/null)"; then
-		return 1
-	fi
-	printf '%s\n' "${state}"
+	result_file="${NIXBOT_REMOTE_ACTIVATION_RESULT_DIR:-${REMOTE_NIXBOT_BASE}/activation-results}/${activation_unit}.result"
+	# shellcheck disable=SC2016 # remote shell program; expansion happens on the target.
+	printf -v sample_cmd \
+		'if [ -s %q ]; then marker_running=0; while IFS= read -r marker_line; do [ "$marker_line" != "Result=running" ] || marker_running=1; done < %q; if [ "$marker_running" -eq 1 ]; then cat %q; systemctl show --property=LoadState,ActiveState %q 2>/dev/null || true; else printf "ActiveState=inactive\\n"; cat %q; fi; else systemctl show --property=LoadState,ActiveState,Result,ExecMainStatus %q 2>/dev/null || true; fi; printf "CurrentSystemPath="; %q -f %q 2>/dev/null || true' \
+		"${result_file}" \
+		"${result_file}" \
+		"${result_file}" \
+		"${activation_unit}" \
+		"${result_file}" \
+		"${activation_unit}" \
+		"${REMOTE_SYSTEM_BIN_DIR}/readlink" \
+		"${REMOTE_CURRENT_SYSTEM_PATH}"
+	run_prepared_root_command_without_control_master_with_timeout \
+		"${NIXBOT_REMOTE_READ_TIMEOUT_SECS}" \
+		"${sample_cmd}"
+}
+
+read_remote_activation_log_tail() {
+	local activation_unit="$1" log_file="" tail_cmd=""
+
+	log_file="${NIXBOT_REMOTE_ACTIVATION_RESULT_DIR:-${REMOTE_NIXBOT_BASE}/activation-results}/${activation_unit}.log"
+	printf -v tail_cmd \
+		'if [ -s %q ]; then %q -n 80 -- %q; fi' \
+		"${log_file}" \
+		"${REMOTE_SYSTEM_BIN_DIR}/tail" \
+		"${log_file}"
+	run_prepared_root_command_without_control_master_with_timeout \
+		"${NIXBOT_REMOTE_READ_TIMEOUT_SECS}" \
+		"${tail_cmd}"
+}
+
+print_retained_activation_log_tail() {
+	local node="$1" activation_unit="$2" operation="$3" log_tail=""
+
+	log_tail="$(read_remote_activation_log_tail "${activation_unit}" 2>/dev/null || true)"
+	[ -n "${log_tail}" ] || return 0
+
+	echo "==> Retained ${operation} activation log tail for ${node}:" >&2
+	printf '%s\n' "${log_tail}" >&2
+}
+
+remote_activation_outcome_property() {
+	local outcome="$1" property="$2"
+
+	awk -F= -v property="${property}" '
+		$1 == property { sub(/^[^=]*=/, ""); print; found = 1; exit }
+		END {
+			if (!found && property == "ActiveState" && NR == 1 && index($0, "=") == 0) print $0
+		}
+	' <<<"${outcome}"
+}
+
+remote_activation_outcome_is_success() {
+	local outcome="$1" source="" load_state="" result="" exec_main_status=""
+
+	source="$(remote_activation_outcome_property "${outcome}" OutcomeSource)"
+	load_state="$(remote_activation_outcome_property "${outcome}" LoadState)"
+	result="$(remote_activation_outcome_property "${outcome}" Result)"
+	exec_main_status="$(remote_activation_outcome_property "${outcome}" ExecMainStatus)"
+	[ "${source}" = marker ] || [ "${load_state}" = loaded ] || return 1
+	[ "${result}" = "success" ] && [ "${exec_main_status}" = "0" ]
+}
+
+remote_activation_outcome_is_authoritative() {
+	local outcome="$1" source="" load_state=""
+
+	source="$(remote_activation_outcome_property "${outcome}" OutcomeSource)"
+	load_state="$(remote_activation_outcome_property "${outcome}" LoadState)"
+	[ "${source}" = marker ] || [ "${load_state}" = loaded ]
+}
+
+remote_activation_sample_current_system_path() {
+	local sample="$1" current_path=""
+
+	current_path="$(remote_activation_outcome_property "${sample}" CurrentSystemPath)"
+	[ -n "${current_path}" ] || return 1
+	extract_nixos_system_path "${current_path}"
 }
 
 verify_rollback_target_state() {
 	local node="$1" snapshot_path="$2" rollback_unit="$3" rollback_start_epoch="$4"
 	local elapsed_secs=0 max_wait_secs=0 poll_secs=5 last_log_bucket=-1 bucket=0
-	local remote_current_path="" state=""
+	local remote_current_path="" outcome="" state="" authoritative=0
 
 	max_wait_secs=$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))
 
@@ -8213,21 +8463,27 @@ verify_rollback_target_state() {
 		fi
 
 		if prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
-			remote_current_path="$(read_prepared_current_system_path_for_activation_verification 2>/dev/null || true)"
-			state="$(read_remote_activation_unit_state "${rollback_unit}" 2>/dev/null || true)"
-			if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${snapshot_path}" ]; then
+			outcome="$(read_remote_activation_verification_sample "${rollback_unit}" 2>/dev/null || true)"
+			remote_current_path="$(remote_activation_sample_current_system_path "${outcome}" 2>/dev/null || true)"
+			state="$(remote_activation_outcome_property "${outcome}" ActiveState)"
+			authoritative=0
+			remote_activation_outcome_is_authoritative "${outcome}" && authoritative=1
+			[ "${authoritative}" -eq 1 ] || state="unknown"
+			if [ "${authoritative}" -eq 1 ] && [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${snapshot_path}" ]; then
 				if remote_activation_unit_state_is_running "${state}"; then
 					:
-				elif [ "${state}" = "failed" ]; then
-					echo "==> Rollback activation for ${node} settled as failed after switching to ${snapshot_path}" >&2
+				elif remote_activation_unit_state_is_settled "${state}" && ! remote_activation_outcome_is_success "${outcome}"; then
+					echo "==> Rollback activation for ${node} failed after switching to ${snapshot_path} ($(tr '\n' ' ' <<<"${outcome}"))" >&2
+					print_retained_activation_log_tail "${node}" "${rollback_unit}" rollback
 					return 1
 				elif remote_activation_unit_state_is_unknown "${state}"; then
 					:
 				else
 					return 0
 				fi
-			elif [ -n "${remote_current_path}" ] && remote_activation_unit_state_is_settled "${state}"; then
+			elif [ "${authoritative}" -eq 1 ] && [ -n "${remote_current_path}" ] && remote_activation_unit_state_is_settled "${state}"; then
 				echo "==> Rollback activation for ${node} settled as ${state:-unknown} without switching to ${snapshot_path}" >&2
+				print_retained_activation_log_tail "${node}" "${rollback_unit}" rollback
 				return 1
 			fi
 		else
@@ -8245,7 +8501,7 @@ verify_rollback_target_state() {
 verify_deploy_target_state_after_transport_loss() {
 	local node="$1" system_path="$2" activation_unit="$3" activation_start_epoch="$4"
 	local elapsed_secs=0 max_wait_secs=0 poll_secs=5 last_log_bucket=-1 bucket=0
-	local remote_current_path="" state=""
+	local remote_current_path="" outcome="" state="" authoritative=0
 
 	max_wait_secs=$((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS))
 
@@ -8259,13 +8515,18 @@ verify_deploy_target_state_after_transport_loss() {
 		fi
 
 		if prepare_deploy_context "${node}" primary-only >/dev/null 2>&1; then
-			remote_current_path="$(read_prepared_current_system_path_for_activation_verification 2>/dev/null || true)"
-			state="$(read_remote_activation_unit_state "${activation_unit}" 2>/dev/null || true)"
-			if [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${system_path}" ]; then
+			outcome="$(read_remote_activation_verification_sample "${activation_unit}" 2>/dev/null || true)"
+			remote_current_path="$(remote_activation_sample_current_system_path "${outcome}" 2>/dev/null || true)"
+			state="$(remote_activation_outcome_property "${outcome}" ActiveState)"
+			authoritative=0
+			remote_activation_outcome_is_authoritative "${outcome}" && authoritative=1
+			[ "${authoritative}" -eq 1 ] || state="unknown"
+			if [ "${authoritative}" -eq 1 ] && [ -n "${remote_current_path}" ] && [ "${remote_current_path}" = "${system_path}" ]; then
 				if remote_activation_unit_state_is_running "${state}"; then
 					:
-				elif [ "${state}" = "failed" ]; then
-					echo "==> Deploy activation for ${node} settled as failed after switching to ${system_path}" >&2
+				elif remote_activation_unit_state_is_settled "${state}" && ! remote_activation_outcome_is_success "${outcome}"; then
+					echo "==> Deploy activation for ${node} failed after switching to ${system_path} ($(tr '\n' ' ' <<<"${outcome}"))" >&2
+					print_retained_activation_log_tail "${node}" "${activation_unit}" deploy
 					return 1
 				elif remote_activation_unit_state_is_unknown "${state}"; then
 					:
@@ -8274,9 +8535,10 @@ verify_deploy_target_state_after_transport_loss() {
 				fi
 			fi
 
-			if [ -n "${remote_current_path}" ] && remote_activation_unit_state_is_settled "${state}"; then
+			if [ "${authoritative}" -eq 1 ] && [ -n "${remote_current_path}" ] && remote_activation_unit_state_is_settled "${state}"; then
 				echo "==> Deploy activation for ${node} settled as ${state:-unknown} without switching to ${system_path}" >&2
-				return 2
+				print_retained_activation_log_tail "${node}" "${activation_unit}" deploy
+				return 1
 			fi
 		else
 			state="unreachable"
@@ -8424,6 +8686,7 @@ rollback_hosts_to_snapshots() {
 
 	selected_json="$(bash_args_to_json_array "$@")"
 	levels_json="$(selected_host_levels_json "${selected_json}")"
+	levels_json="$(capacity_bound_host_levels_json "${levels_json}")"
 	mapfile -t host_levels < <(jq -c '.[]' <<<"${levels_json}")
 
 	# Roll back dependency levels in reverse while preserving parallelism within
@@ -8452,18 +8715,25 @@ rollback_optional_deploy_hosts() {
 	shift 3
 
 	local node="" rc=0
+	local -a admitted_hosts=()
 
 	[ "$#" -gt 0 ] || return 0
 	for node in "$@"; do
+		if ! host_deploy_reached_activation "${node}"; then
+			echo "Optional deploy failed for ${node} before activation; current generation unchanged, skipping rollback" >&2
+			continue
+		fi
 		echo "Optional deploy failed for ${node}; attempting host-only rollback" >&2
+		admitted_hosts+=("${node}")
 	done
+	[ "${#admitted_hosts[@]}" -gt 0 ] || return 0
 	rollback_hosts_to_snapshots \
 		"${snapshot_dir}" \
 		"${rollback_log_dir}" \
 		"${rollback_status_dir}" \
 		OPTIONAL_DEPLOY_ROLLBACK_OK_HOSTS \
 		OPTIONAL_DEPLOY_ROLLBACK_FAILED_HOSTS \
-		"$@" || {
+		"${admitted_hosts[@]}" || {
 		rc="$?"
 		is_signal_exit_status "${rc}" && return "${rc}"
 	}
@@ -8471,11 +8741,38 @@ rollback_optional_deploy_hosts() {
 }
 
 rollback_failed_deploy_hosts() {
-	rollback_failed_hosts "$1" "$2" "$3" deploy DEPLOY_FAILED_ROLLBACK_OK_HOSTS DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS "${@:4}"
+	local snapshot_dir="$1" rollback_log_dir="$2" rollback_status_dir="$3"
+	shift 3
+
+	local node=""
+	local -a admitted_hosts=()
+
+	[ "$#" -gt 0 ] || return 0
+	for node in "$@"; do
+		if host_deploy_reached_activation "${node}"; then
+			admitted_hosts+=("${node}")
+		else
+			echo "deploy failed for ${node} before activation; current generation unchanged, skipping rollback" >&2
+		fi
+	done
+	[ "${#admitted_hosts[@]}" -gt 0 ] || return 0
+	rollback_failed_hosts \
+		"${snapshot_dir}" \
+		"${rollback_log_dir}" \
+		"${rollback_status_dir}" \
+		deploy \
+		DEPLOY_FAILED_ROLLBACK_OK_HOSTS \
+		DEPLOY_FAILED_ROLLBACK_FAILED_HOSTS \
+		"${admitted_hosts[@]}"
 }
 
 rollback_failed_health_hosts() {
-	rollback_failed_hosts "$1" "$2" "$3" health HEALTH_FAILED_ROLLBACK_OK_HOSTS HEALTH_FAILED_ROLLBACK_FAILED_HOSTS "${@:4}"
+	local previous_skip_matching_snapshot="${NIXBOT_SKIP_MATCHING_SNAPSHOT_ROLLBACK:-0}" rc=0
+
+	NIXBOT_SKIP_MATCHING_SNAPSHOT_ROLLBACK=1
+	rollback_failed_hosts "$1" "$2" "$3" health HEALTH_FAILED_ROLLBACK_OK_HOSTS HEALTH_FAILED_ROLLBACK_FAILED_HOSTS "${@:4}" || rc="$?"
+	NIXBOT_SKIP_MATCHING_SNAPSHOT_ROLLBACK="${previous_skip_matching_snapshot}"
+	return "${rc}"
 }
 
 rollback_failed_hosts() {
@@ -8517,7 +8814,7 @@ _remote_pre_switch_system_failed_state_reset() {
 
 _remote_pre_switch_managed_user_names() {
 	local unit_file="" user=""
-	for unit_file in /etc/systemd/user/*-managed-ready.target; do
+	for unit_file in /etc/systemd/user/*-managed.target; do
 		[ -e "${unit_file}" ] || continue
 		user="$(awk -F= '$1 == "ConditionUser" { print $2; exit }' "${unit_file}" 2>/dev/null || true)"
 		[ -n "${user}" ] || continue
@@ -8526,6 +8823,53 @@ _remote_pre_switch_managed_user_names() {
 		esac
 		printf '%s\n' "${user}"
 	done | sort -u
+}
+
+_remote_pre_switch_user_manager_bus_ready() {
+	local user="$1" uid="$2" gid="$3" runtime_dir="/run/user/$2"
+
+	setpriv --reuid="${uid}" --regid="${gid}" --init-groups \
+		env XDG_RUNTIME_DIR="${runtime_dir}" \
+		DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+		systemctl --user show-environment >/dev/null 2>&1
+}
+
+_remote_pre_switch_repair_logind_user_managers() {
+	local users="" uid="" user="" gid="" attempt=0
+
+	if ! users="$(loginctl list-users --no-legend --no-pager 2>/dev/null)"; then
+		echo "[pre-switch] unable to enumerate logind users" >&2
+		return 1
+	fi
+
+	while read -r uid user _; do
+		[[ "${uid}" =~ ^[0-9]+$ ]] || continue
+		[ -n "${user}" ] || continue
+		gid="$(id -g "${user}" 2>/dev/null || true)"
+		if [ -z "${gid}" ]; then
+			echo "[pre-switch] user=${user} uid=${uid} account=unavailable" >&2
+			return 1
+		fi
+
+		if ! systemctl is-active --quiet "user@${uid}.service" 2>/dev/null; then
+			echo "[pre-switch] user=${user} manager=inactive action=starting" >&2
+			if ! systemctl start "user@${uid}.service"; then
+				echo "[pre-switch] user=${user} manager=start-failed" >&2
+				return 1
+			fi
+		fi
+
+		for ((attempt = 0; attempt < 20; attempt++)); do
+			if _remote_pre_switch_user_manager_bus_ready "${user}" "${uid}" "${gid}"; then
+				break
+			fi
+			sleep 0.25
+		done
+		if [ "${attempt}" -eq 20 ]; then
+			echo "[pre-switch] user=${user} manager=active bus=unreachable" >&2
+			return 1
+		fi
+	done <<<"${users}"
 }
 
 _remote_pre_switch_user_failed_state_report() {
@@ -8563,23 +8907,25 @@ ${units}
 EOF_USER_RESET_UNITS
 }
 
-build_pre_switch_user_failed_state_reset_cmd() {
+build_pre_switch_admission_cmd() {
 	emit_remote_function_command \
-		$'_remote_pre_switch_system_failed_state_reset\n_remote_pre_switch_user_failed_state_report' \
+		$'_remote_pre_switch_system_failed_state_reset\n_remote_pre_switch_repair_logind_user_managers\n_remote_pre_switch_user_failed_state_report' \
 		_remote_pre_switch_system_failed_state_reset \
 		_remote_pre_switch_managed_user_names \
+		_remote_pre_switch_user_manager_bus_ready \
+		_remote_pre_switch_repair_logind_user_managers \
 		_remote_pre_switch_user_failed_state_report
 }
 
-run_pre_switch_user_failed_state_reset() {
-	local reset_cmd=""
+run_pre_switch_admission() {
+	local admission_cmd=""
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		return 0
 	fi
 
-	reset_cmd="$(build_pre_switch_user_failed_state_reset_cmd)"
-	run_prepared_root_command "${reset_cmd}"
+	admission_cmd="$(build_pre_switch_admission_cmd)"
+	run_prepared_root_command "${admission_cmd}"
 }
 
 command_failure_is_host_key_verification() {
@@ -8610,6 +8956,19 @@ command_output_is_transport_loss() {
 
 	grep -Eq \
 		"failed to start SSH connection|mux_client_request_session|kex_exchange_identification|ssh_exchange_identification|Connection reset by peer|Connection closed by remote host|Connection closed by .* port [0-9]+|Received disconnect|client_loop: send disconnect: Broken pipe|Broken pipe|Bad file descriptor|stdio forwarding failed|Connection timed out|No route to host" \
+		<<<"${output}"
+}
+
+command_output_is_pre_admission_ssh_failure() {
+	local output="$1"
+
+	[ -n "${output}" ] || return 1
+	if command_output_is_host_key_verification "${output}"; then
+		return 1
+	fi
+
+	grep -Eq \
+		"Connection timed out during banner exchange|ssh: connect to host .* port [0-9]+: (Connection refused|Connection timed out|No route to host|Network is unreachable)|kex_exchange_identification|ssh_exchange_identification" \
 		<<<"${output}"
 }
 
@@ -8660,7 +9019,7 @@ _remote_activation_filter_user_units() {
 
 _remote_managed_user_names() {
 	local unit_file="" user=""
-	for unit_file in /etc/systemd/user/*-managed-ready.target; do
+	for unit_file in /etc/systemd/user/*-managed.target; do
 		[ -e "${unit_file}" ] || continue
 		user="$(awk -F= '$1 == "ConditionUser" { print $2; exit }' "${unit_file}" 2>/dev/null || true)"
 		[ -n "${user}" ] || continue
@@ -8671,11 +9030,117 @@ _remote_managed_user_names() {
 	done | sort -u
 }
 
+_remote_reconcile_managed_user_targets() {
+	local unit_file="" managed_unit="" user="" uid="" runtime_dir="" home="" wants="" wanted_unit=""
+	local start_status=0 user_failed=0 failed=0
+	local -a ready_targets=()
+
+	for unit_file in /etc/systemd/user/*-managed.target; do
+		[ -e "${unit_file}" ] || continue
+		managed_unit="${unit_file##*/}"
+		user="$(awk -F= '$1 == "ConditionUser" { print $2; exit }' "${unit_file}" 2>/dev/null || true)"
+		[ -n "${user}" ] || continue
+		case "${user}" in
+		!* | *@*) continue ;;
+		esac
+
+		uid="$(id -u "${user}" 2>/dev/null || true)"
+		[ -n "${uid}" ] || {
+			echo "[rollback-converge] user=${user} error=missing-user" >&2
+			return 1
+		}
+		runtime_dir="/run/user/${uid}"
+		home="$(getent passwd "${user}" 2>/dev/null | awk -F: '{print $6}')"
+		if ! systemctl start "user@${uid}.service"; then
+			echo "[rollback-converge] user=${user} error=user-manager-start-failed" >&2
+			return 1
+		fi
+		if ! wants="$(runuser -u "${user}" -- env HOME="${home:-/}" XDG_RUNTIME_DIR="${runtime_dir}" \
+			systemctl --user show "${managed_unit}" --property=Wants --value 2>/dev/null)"; then
+			echo "[rollback-converge] user=${user} unit=${managed_unit} error=wants-query-failed" >&2
+			return 1
+		fi
+
+		ready_targets=()
+		for wanted_unit in ${wants}; do
+			case "${wanted_unit}" in
+			*-ready.target)
+				if ! runuser -u "${user}" -- env HOME="${home:-/}" XDG_RUNTIME_DIR="${runtime_dir}" \
+					systemctl --user is-active --quiet "${wanted_unit}"; then
+					ready_targets+=("${wanted_unit}")
+				fi
+				;;
+			esac
+		done
+		[ "${#ready_targets[@]}" -gt 0 ] || continue
+
+		printf '[rollback-converge] user=%s action=starting count=%s units="%s"\n' \
+			"${user}" "${#ready_targets[@]}" "$(
+				IFS=,
+				echo "${ready_targets[*]}"
+			)" >&2
+		start_status=0
+		user_failed=0
+		if ! runuser -u "${user}" -- env HOME="${home:-/}" XDG_RUNTIME_DIR="${runtime_dir}" \
+			systemctl --user start "${ready_targets[@]}"; then
+			start_status=1
+		fi
+		for wanted_unit in "${ready_targets[@]}"; do
+			if ! runuser -u "${user}" -- env HOME="${home:-/}" XDG_RUNTIME_DIR="${runtime_dir}" \
+				systemctl --user is-active --quiet "${wanted_unit}"; then
+				echo "[rollback-converge] user=${user} unit=${wanted_unit} error=not-active" >&2
+				user_failed=1
+				failed=1
+			fi
+		done
+		if [ "${start_status}" -ne 0 ] && [ "${user_failed}" -eq 0 ]; then
+			echo "[rollback-converge] user=${user} error=ready-target-start-failed-without-inactive-target" >&2
+			failed=1
+		fi
+	done
+	return "${failed}"
+}
+
+reconcile_rollback_managed_user_targets() {
+	local node="$1" command=""
+
+	command="$(emit_remote_function_command \
+		"_remote_reconcile_managed_user_targets" \
+		_remote_reconcile_managed_user_targets)"
+	if run_prepared_root_command_without_control_master "${command}"; then
+		return 0
+	fi
+	echo "==> ${node}: failed to reconverge managed user targets after rollback" >&2
+	return 1
+}
+
+_remote_health_check_expected_user_units() {
+	local user="$1"
+	local helper="${NIXBOT_PODMAN_COMPOSE_CONTROL:-/run/current-system/sw/bin/podman-composectl}"
+
+	[ -x "${helper}" ] || {
+		echo "missing podman compose control helper: ${helper}" >&2
+		return 1
+	}
+	"${helper}" expected-units "${user}"
+}
+
+_remote_health_check_expected_runtime() {
+	local user="$1"
+	local helper="${NIXBOT_PODMAN_COMPOSE_CONTROL:-/run/current-system/sw/bin/podman-composectl}"
+
+	[ -x "${helper}" ] || {
+		echo "missing podman compose control helper: ${helper}" >&2
+		return 1
+	}
+	"${helper}" expected-runtime "${user}"
+}
+
 _remote_activation_progress_probe() {
 	local node="$1" unit="$2" started_at="$3"
 	local now="" elapsed=0 active="" sub="" result="" main_pid="" jobs=""
 	local failed="" managed_users="" managed_user=""
-	local managed_uid="" managed_runtime="" managed_home="" user_units=""
+	local managed_uid="" managed_runtime="" managed_home="" user_units="" user_jobs=""
 
 	now="$(date +%s)"
 	elapsed=$((now - started_at))
@@ -8702,14 +9167,22 @@ _remote_activation_progress_probe() {
 		managed_runtime="/run/user/${managed_uid}"
 		[ -d "${managed_runtime}" ] || continue
 		managed_home="$(getent passwd "${managed_user}" 2>/dev/null | awk -F: '{print $6}')"
+		user_jobs="$(
+			runuser -u "${managed_user}" -- env HOME="${managed_home:-/}" XDG_RUNTIME_DIR="${managed_runtime}" \
+				systemctl --user list-jobs --no-legend --plain 2>/dev/null |
+				head -8 || true
+		)"
 		user_units="$(
 			runuser -u "${managed_user}" -- env HOME="${managed_home:-/}" XDG_RUNTIME_DIR="${managed_runtime}" \
-				systemctl --user list-units --type=service,target --state=activating,failed --no-legend --plain 2>/dev/null |
+				systemctl --user list-units --type=service,target --state=activating,deactivating,reloading --no-legend --plain 2>/dev/null |
 				_remote_activation_filter_user_units |
 				head -8 || true
 		)"
 		if [ -n "${user_units}" ]; then
-			printf '[activation] %s: pending/failed user units for %s:\n%s\n' "${node}" "${managed_user}" "${user_units}"
+			printf '[activation] %s: pending user units for %s:\n%s\n' "${node}" "${managed_user}" "${user_units}"
+		fi
+		if [ -n "${user_jobs}" ]; then
+			printf '[activation] %s: active user jobs for %s:\n%s\n' "${node}" "${managed_user}" "${user_jobs}"
 		fi
 	done <<<"${managed_users}"
 }
@@ -9003,27 +9476,25 @@ run_pre_activation_podman_image_pulls() {
 activate_prepared_system_path() {
 	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_runner="" activation_unit="" systemd_run_properties=""
 	local post_promote_bootloader_goal="" persist_profile=0
-	local activation_rc=0 activation_start_epoch="" activation_output="" verification_rc=0
+	local activation_rc=0 activation_start_epoch="" activation_output=""
 	local attempt=1 retry_sleep_secs=0
-	local activation_lock_prefix=""
 
 	if activation_goal_persists_profile "${GOAL}"; then
 		persist_profile=1
 	fi
 	post_promote_bootloader_goal="$(activation_post_promote_bootloader_goal "${node}" "${GOAL}")" || return "$?"
 	activation_script="$(nixbot_activation_command "${system_path}" "${GOAL}" "${persist_profile}" "${post_promote_bootloader_goal}")"
-	activation_runner="$(nixbot_activation_runner_command "${activation_script}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
-	activation_lock_prefix="$(host_local_activation_lock_prefix)"
 
 	echo "${system_path}" >&2
 	while :; do
 		activation_unit="$(deploy_activation_attempt_unit_name "${node}" "${attempt}")"
+		activation_runner="$(nixbot_activation_runner_command "${activation_script}" "${activation_unit}")"
+		activation_runner="$(host_local_activation_lock_command "${activation_runner}")"
 		wait_for_in_flight_nixbot_activation "${node}" "${activation_unit}.service" deploy || return "$?"
 		printf -v activate_cmd \
-			'env NIXOS_INSTALL_BOOTLOADER=%q %ssystemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
+			'env NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --expand-environment=no --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
 			0 \
-			"${activation_lock_prefix}" \
 			"${systemd_run_properties}" \
 			"${activation_unit}" \
 			"${activation_runner}"
@@ -9038,21 +9509,22 @@ activate_prepared_system_path() {
 		fi
 
 		report_activation_lock_contention_if_present "${node}" "${activation_unit}" "${activation_start_epoch}" "${activation_output}" || true
+		if command_output_is_pre_admission_ssh_failure "${activation_output}"; then
+			if [ "${attempt}" -lt "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+				attempt=$((attempt + 1))
+				retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+				echo "==> Deploy SSH connection for ${node} failed before activation admission; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+				sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
+				continue
+			fi
+			return "${activation_rc}"
+		fi
 		if command_output_is_transport_loss "${activation_output}" || transport_status_is_retryable "${activation_rc}"; then
 			echo "==> Deploy transport closed or failed for ${node}; verifying target state" >&2
 			if verify_deploy_target_state_after_transport_loss "${node}" "${system_path}" "${activation_unit}" "${activation_start_epoch}"; then
 				echo "==> Deploy for ${node} completed despite transport disconnect" >&2
 				print_deploy_systemd_user_manager_report "${node}" "${activation_start_epoch}" || true
 				return 0
-			else
-				verification_rc="$?"
-			fi
-			if [ "${verification_rc}" -eq 2 ] && [ "${attempt}" -lt "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
-				attempt=$((attempt + 1))
-				retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
-				echo "==> Deploy activation for ${node} did not reach ${system_path}; retrying activation (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
-				sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
-				continue
 			fi
 		fi
 		return "${activation_rc}"
@@ -9179,7 +9651,7 @@ deploy_remote_build_host_path() {
 		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
 	fi
 
-	run_pre_switch_user_failed_state_reset || return 1
+	run_pre_switch_admission || return 1
 
 	register_active_deploy "${node}"
 	if copy_system_path_from_build_cache_to_prepared_target "${node}" "${built_out_path}" &&
@@ -9211,7 +9683,7 @@ deploy_build_cache_via_local_client() {
 		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
 	fi
 
-	run_pre_switch_user_failed_state_reset || return 1
+	run_pre_switch_admission || return 1
 
 	register_active_deploy "${node}"
 	if copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${built_out_path}" &&
@@ -9278,7 +9750,7 @@ deploy_host() {
 		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
 	fi
 
-	run_pre_switch_user_failed_state_reset || return 1
+	run_pre_switch_admission || return 1
 
 	if [ "${DRY_RUN}" -eq 1 ]; then
 		copy_system_path_from_local_to_prepared_target "${node}" "${built_out_path}" &&
@@ -9665,14 +10137,19 @@ EOF_UNITS
 
 _remote_post_switch_user_health_check_once() {
 	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
+	local expected_units="" expected_unit="" expected_state=""
+	local load_state="" active_state="" sub_state="" need_daemon_reload=""
 	local raw_failed_output="" failed_output="" ignored_failed_output=""
 	local raw_system_failed_output="" system_failed_output="" ignored_system_failed_output=""
 	local raw_transitional_output="" transitional_output=""
 	local raw_system_transitional_output="" system_transitional_output=""
 	local podman_unhealthy_output="" podman_starting_output=""
+	local podman_mutation_output=""
+	local expected_runtime_output="" expected_runtime_status=0
+	local runtime_starting_output="" runtime_failure_output=""
 	local system_podman_unhealthy_output="" system_podman_starting_output=""
-	local had_failures=0 had_starting=0
-	local starting_output=""
+	local had_host_failures=0 had_service_failures=0 had_starting=0
+	local starting_output="" unhealthy_output="" expected_failure_output=""
 
 	raw_system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
 	system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_filter_failed_units)"
@@ -9682,7 +10159,7 @@ _remote_post_switch_user_health_check_once() {
 		echo "${ignored_system_failed_output}" >&2
 	fi
 	if [ -n "${system_failed_output}" ]; then
-		had_failures=1
+		had_service_failures=1
 		echo "[health-check] FAILED system units:" >&2
 		echo "${system_failed_output}" >&2
 	fi
@@ -9696,9 +10173,9 @@ ${system_transitional_output}"
 	fi
 	system_podman_unhealthy_output="$(_remote_health_check_podman_unhealthy_containers)"
 	if [ -n "${system_podman_unhealthy_output}" ]; then
-		had_failures=1
-		echo "[health-check] UNHEALTHY system Podman containers:" >&2
-		echo "${system_podman_unhealthy_output}" >&2
+		unhealthy_output="${unhealthy_output}${unhealthy_output:+
+}[system]
+${system_podman_unhealthy_output}"
 	fi
 	system_podman_starting_output="$(_remote_health_check_podman_starting_containers)"
 	if [ -n "${system_podman_starting_output}" ]; then
@@ -9715,11 +10192,58 @@ ${system_podman_starting_output}"
 		[ -n "${uid}" ] || continue
 		home="$(getent passwd "${user}" | cut -d: -f6 || true)"
 		[ -n "${home}" ] || home="/"
+		if ! expected_units="$(_remote_health_check_expected_user_units "${user}")"; then
+			had_host_failures=1
+			expected_failure_output="${expected_failure_output}${expected_failure_output:+
+}user=${user} declaration-query=failed"
+			continue
+		fi
 		if ! systemctl is-active --quiet "user@${uid}.service" 2>/dev/null; then
+			if [ -n "${expected_units}" ]; then
+				had_host_failures=1
+				expected_failure_output="${expected_failure_output}${expected_failure_output:+
+}user=${user} user-manager=inactive expected-units=$(wc -w <<<"${expected_units}")"
+			fi
 			continue
 		fi
 		runtime_dir="/run/user/${uid}"
 		bus="unix:path=${runtime_dir}/bus"
+		while IFS= read -r expected_unit; do
+			[ -n "${expected_unit}" ] || continue
+			expected_state="$(
+				setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+					env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+					systemctl --user show \
+					--property=LoadState,ActiveState,SubState,NeedDaemonReload \
+					"${expected_unit}" 2>/dev/null || true
+			)"
+			load_state="$(awk -F= '$1 == "LoadState" { print $2; exit }' <<<"${expected_state}")"
+			active_state="$(awk -F= '$1 == "ActiveState" { print $2; exit }' <<<"${expected_state}")"
+			sub_state="$(awk -F= '$1 == "SubState" { print $2; exit }' <<<"${expected_state}")"
+			need_daemon_reload="$(awk -F= '$1 == "NeedDaemonReload" { print $2; exit }' <<<"${expected_state}")"
+			if [ "${load_state}" != "loaded" ] || [ "${need_daemon_reload}" = "yes" ]; then
+				had_host_failures=1
+				expected_failure_output="${expected_failure_output}${expected_failure_output:+
+}user=${user} unit=${expected_unit} load=${load_state:-unknown} state=${active_state:-unknown}/${sub_state:-unknown} need-daemon-reload=${need_daemon_reload:-unknown}"
+				continue
+			fi
+			case "${active_state}" in
+			active) ;;
+			activating | deactivating | reloading)
+				had_starting=1
+				starting_output="${starting_output}${starting_output:+
+}[user ${user} expected units still settling]
+${expected_unit} loaded ${active_state} ${sub_state:-unknown}"
+				;;
+			*)
+				had_service_failures=1
+				expected_failure_output="${expected_failure_output}${expected_failure_output:+
+}user=${user} unit=${expected_unit} load=${load_state} state=${active_state:-unknown}/${sub_state:-unknown} need-daemon-reload=${need_daemon_reload:-unknown}"
+				;;
+			esac
+		done <<EOF_EXPECTED_UNITS
+${expected_units}
+EOF_EXPECTED_UNITS
 		raw_failed_output="$(
 			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
 				env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
@@ -9732,7 +10256,7 @@ ${system_podman_starting_output}"
 			echo "${ignored_failed_output}" >&2
 		fi
 		if [ -n "${failed_output}" ]; then
-			had_failures=1
+			had_service_failures=1
 			echo "[health-check] FAILED units for user ${user}:" >&2
 			echo "${failed_output}" >&2
 		fi
@@ -9748,6 +10272,34 @@ ${system_podman_starting_output}"
 }[user ${user} units still settling]
 ${transitional_output}"
 		fi
+		expected_runtime_status=0
+		expected_runtime_output="$(_remote_health_check_expected_runtime "${user}")" || expected_runtime_status="$?"
+		if [ "${expected_runtime_status}" -ne 0 ]; then
+			unhealthy_output="${unhealthy_output}${unhealthy_output:+
+}[user ${user} expected compose runtime]
+query-failed user=${user}"
+		elif [ -n "${expected_runtime_output}" ]; then
+			runtime_starting_output="$(grep '^starting ' <<<"${expected_runtime_output}" || true)"
+			runtime_failure_output="$(grep -v '^starting ' <<<"${expected_runtime_output}" || true)"
+			if [ -n "${runtime_starting_output}" ]; then
+				had_starting=1
+				starting_output="${starting_output}${starting_output:+
+}[user ${user} expected compose runtime still settling]
+${runtime_starting_output}"
+			fi
+			if [ -n "${runtime_failure_output}" ]; then
+				unhealthy_output="${unhealthy_output}${unhealthy_output:+
+}[user ${user} expected compose runtime]
+${runtime_failure_output}"
+			fi
+		fi
+		podman_mutation_output="$(_remote_health_check_rootless_mutations "${runtime_dir}")"
+		if [ -n "${podman_mutation_output}" ]; then
+			had_starting=1
+			starting_output="${starting_output}${starting_output:+
+}[user ${user} rootless podman mutations]
+${podman_mutation_output}"
+		fi
 		podman_unhealthy_output="$(
 			cd /
 			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
@@ -9755,9 +10307,9 @@ ${transitional_output}"
 				sh -c 'cd /; podman ps --filter health=unhealthy --format "unhealthy {{.Names}} {{.Status}}" 2>/dev/null || true'
 		)"
 		if [ -n "${podman_unhealthy_output}" ]; then
-			had_failures=1
-			echo "[health-check] UNHEALTHY Podman containers for user ${user}:" >&2
-			echo "${podman_unhealthy_output}" >&2
+			unhealthy_output="${unhealthy_output}${unhealthy_output:+
+}[user ${user}]
+${podman_unhealthy_output}"
 		fi
 		podman_starting_output="$(
 			cd /
@@ -9774,8 +10326,25 @@ ${podman_starting_output}"
 	done <<EOF_HC_UNITS
 ${units}
 EOF_HC_UNITS
+	if [ -n "${expected_failure_output}" ]; then
+		echo "[health-check] FAILED declared managed user units:" >&2
+		echo "${expected_failure_output}" >&2
+	fi
 
-	if [ "${had_failures}" -eq 1 ]; then
+	if [ -n "${unhealthy_output}" ] && [ "${had_starting}" -eq 1 ]; then
+		starting_output="${starting_output}${starting_output:+
+}${unhealthy_output}"
+	elif [ -n "${unhealthy_output}" ]; then
+		had_service_failures=1
+		echo "[health-check] UNHEALTHY Podman containers after deploy:" >&2
+		echo "${unhealthy_output}" >&2
+	fi
+
+	if [ "${had_host_failures}" -eq 1 ]; then
+		echo "[health-check] FAILED — rollback-eligible host failures detected after deploy" >&2
+		return 3
+	fi
+	if [ "${had_service_failures}" -eq 1 ]; then
 		echo "[health-check] FAILED — service failures detected after deploy" >&2
 		return 1
 	fi
@@ -9887,6 +10456,24 @@ _remote_health_check_podman_starting_containers() {
 	podman ps --filter health=starting --format 'starting {{.Names}} {{.Status}}' 2>/dev/null || true
 }
 
+_remote_health_check_rootless_mutations() {
+	local runtime_dir="$1" marker="" pid="" service="" reason="" started_at=""
+	[ -n "${runtime_dir}" ] || return 0
+	for marker in "${runtime_dir}"/podman-compose/rootless-mutations/*; do
+		[ -f "${marker}" ] || continue
+		pid="$(sed -n 's/^pid=//p' "${marker}" 2>/dev/null | head -n 1)"
+		case "${pid}" in
+		"" | *[!0-9]*) continue ;;
+		esac
+		kill -0 "${pid}" 2>/dev/null || continue
+		service="$(sed -n 's/^service=//p' "${marker}" 2>/dev/null | head -n 1)"
+		reason="$(sed -n 's/^reason=//p' "${marker}" 2>/dev/null | head -n 1)"
+		started_at="$(sed -n 's/^startedAt=//p' "${marker}" 2>/dev/null | head -n 1)"
+		[ -n "${service}" ] || service="${marker##*/}"
+		printf 'rootless-mutation %s pid=%s reason=%s startedAt=%s\n' "${service}" "${pid}" "${reason:-unknown}" "${started_at:-unknown}"
+	done
+}
+
 build_post_switch_health_check_cmd() {
 	emit_remote_function_command \
 		"_remote_post_switch_user_health_check" \
@@ -9895,8 +10482,11 @@ build_post_switch_health_check_cmd() {
 		_remote_health_check_filter_transitional_units \
 		_remote_health_check_podman_unhealthy_containers \
 		_remote_health_check_podman_starting_containers \
+		_remote_health_check_rootless_mutations \
 		_remote_health_check_starting_timeout_seconds \
 		_remote_managed_user_names \
+		_remote_health_check_expected_user_units \
+		_remote_health_check_expected_runtime \
 		_remote_post_switch_user_health_check_once \
 		_remote_post_switch_user_health_check
 }
@@ -9952,7 +10542,7 @@ run_post_switch_health_check_phase() {
 	# shellcheck disable=SC2178
 	local -n hcp_successful_hosts_ref="$8"
 	local node="" phase_rc=0 active_jobs=0 status_file="" log_file="" status=""
-	local -a health_check_failed_hosts=() remaining_successful=()
+	local -a health_check_failed_hosts=() health_check_rollback_hosts=() remaining_successful=()
 
 	log_section "Phase: Health Check"
 	echo "Scanning.." >&2
@@ -9967,11 +10557,14 @@ run_post_switch_health_check_phase() {
 			wait_for_job_slot active_jobs "${verify_parallel_jobs}" || return "$?"
 			continue
 		fi
+		status=0
 		if run_post_switch_health_check "${node}" "${log_file}"; then
 			remaining_successful+=("${node}")
 		else
+			status="$?"
 			echo "Health check failed for ${node}" >&2
 			health_check_failed_hosts+=("${node}")
+			[ "${status}" != "3" ] || health_check_rollback_hosts+=("${node}")
 		fi
 	done
 
@@ -9990,6 +10583,7 @@ run_post_switch_health_check_phase() {
 			else
 				echo "Health check failed for ${node}" >&2
 				health_check_failed_hosts+=("${node}")
+				[ "${status}" != "3" ] || health_check_rollback_hosts+=("${node}")
 			fi
 		done
 	fi
@@ -10001,16 +10595,11 @@ run_post_switch_health_check_phase() {
 	for node in "${health_check_failed_hosts[@]}"; do
 		append_unique_array_item HEALTH_FAILED_HOSTS "${node}"
 	done
-	if [ "${ROLLBACK_ON_FAILURE}" -eq 1 ]; then
-		rollback_failed_health_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${health_check_failed_hosts[@]}"
+	if [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#health_check_rollback_hosts[@]}" -gt 0 ]; then
+		rollback_failed_health_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${health_check_rollback_hosts[@]}"
 	fi
 
 	hcp_successful_hosts_ref=("${remaining_successful[@]}")
-
-	if [ "${ROLLBACK_ON_FAILURE}" -eq 1 ] && [ "${#remaining_successful[@]}" -gt 0 ]; then
-		maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${remaining_successful[@]}"
-		hcp_successful_hosts_ref=()
-	fi
 
 	return "${phase_rc}"
 }
@@ -10938,7 +11527,7 @@ run_deploy_phase() {
 	local deploy_log_dir="$8" deploy_status_dir="$9" build_out_dir="${10}"
 	local rollback_log_dir="${11}" rollback_status_dir="${12}"
 	local deploy_skipped_hosts_out_name="${15}" snapshot_failed_hosts_out_name="${16}"
-	local -n rdp_level_groups_in_ref="${13}" rdp_successful_hosts_out_ref="${14}"
+	local -n rdp_level_groups_in_ref="${13}"
 	# shellcheck disable=SC2178
 	local -n rdp_deploy_failed_hosts_out_ref="${17}"
 
@@ -10997,7 +11586,6 @@ run_deploy_phase() {
 				append_unique_array_item "${_failed_hosts_out_name}" "${node}"
 			done
 			echo "Deploy phase failed while waiting on parent readiness barriers" >&2
-			maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${rdp_successful_hosts_out_ref[@]}"
 			log_group_scope_end
 			return 1
 		fi
@@ -11010,7 +11598,6 @@ run_deploy_phase() {
 			"${deploy_level_hosts[@]}"; then
 			if ! process_snapshot_wave_results "${snapshot_dir}" "${snapshot_failed_hosts_out_name}" "${_failed_hosts_out_name}" "${deploy_skipped_hosts_out_name}" "${deploy_level_hosts[@]}"; then
 				print_host_failures "Deploy phase failed" snapshot "" "${rdp_deploy_failed_hosts_out_ref[@]}"
-				maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${rdp_successful_hosts_out_ref[@]}"
 				log_group_scope_end
 				return 1
 			fi
@@ -11171,7 +11758,6 @@ run_deploy_phase() {
 			else
 				print_host_failures "Deploy phase failed" plain "" "${rdp_deploy_failed_hosts_out_ref[@]}"
 			fi
-			maybe_rollback_successful_hosts "${snapshot_dir}" "${rollback_log_dir}" "${rollback_status_dir}" "${rdp_successful_hosts_out_ref[@]}"
 			log_group_scope_end
 			return 1
 		fi
@@ -11262,6 +11848,7 @@ run_hosts() {
 	fi
 
 	levels_json="$(selected_host_levels_json "${runnable_selected_json}")"
+	levels_json="$(capacity_bound_host_levels_json "${levels_json}")"
 	mapfile -t level_groups < <(jq -c '.[]' <<<"${levels_json}")
 	# shellcheck disable=SC2034
 	json_array_to_bash_array "${runnable_selected_json}" build_hosts
@@ -12854,6 +13441,14 @@ format_host_console_logs() {
 				emit("[activation] failed system units:", red)
 				next
 			}
+			if (match(line, /: pending user units for [^:]+:$/)) {
+				context = "user"
+				context_user = line
+				sub(/^.*: pending user units for /, "", context_user)
+				sub(/:$/, "", context_user)
+				emit("[activation] user=" context_user " pending units:", yellow)
+				next
+			}
 			if (match(line, /: pending\/failed user units for [^:]+:$/)) {
 				context = "user"
 				context_user = line
@@ -12907,6 +13502,20 @@ format_host_console_logs() {
 			context = "health-system"
 			context_user = ""
 			emit("[health-check] system units still settling:", yellow)
+			next
+		}
+		if (line ~ /^\[system\]$/) {
+			context = "health-podman-system"
+			context_user = ""
+			emit("[health-check] system Podman containers:", yellow)
+			next
+		}
+		if (line ~ /^\[user [^]]+ rootless podman mutations\]$/) {
+			context = "health-rootless-mutation-user"
+			context_user = line
+			sub(/^\[user /, "", context_user)
+			sub(/ rootless podman mutations\]$/, "", context_user)
+			emit("[health-check] user=" context_user " rootless Podman mutations:", yellow)
 			next
 		}
 		if (line ~ /^\[user [^]]+\]$/) {
@@ -12971,14 +13580,30 @@ format_host_console_logs() {
 				emit(formatted, red)
 				next
 			}
-		} else if (context == "health-podman-user") {
-			if (match(line, /^starting [^[:space:]]+ /)) {
+		} else if (context == "health-podman-user" || context == "health-podman-system") {
+			if (match(line, /^(starting|unhealthy) [^[:space:]]+ /)) {
+				health = line
+				sub(/ .*/, "", health)
 				container = line
-				sub(/^starting /, "", container)
+				sub(/^(starting|unhealthy) /, "", container)
 				sub(/ .*/, "", container)
 				status = line
-				sub(/^starting [^[:space:]]+ /, "", status)
-				emit("[health-check] user=" context_user " container=" container " health=starting status=" quote_value(status), "")
+				sub(/^(starting|unhealthy) [^[:space:]]+ /, "", status)
+				if (context == "health-podman-user") {
+					emit("[health-check] user=" context_user " container=" container " health=" health " status=" quote_value(status), "")
+				} else {
+					emit("[health-check] system container=" container " health=" health " status=" quote_value(status), "")
+				}
+				next
+			}
+		} else if (context == "health-rootless-mutation-user") {
+			if (match(line, /^rootless-mutation [^[:space:]]+ /)) {
+				service = line
+				sub(/^rootless-mutation /, "", service)
+				sub(/ .*/, "", service)
+				details = line
+				sub(/^rootless-mutation [^[:space:]]+ /, "", details)
+				emit("[health-check] user=" context_user " rootless-mutation service=" service " " details, yellow)
 				next
 			}
 		}

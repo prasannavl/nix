@@ -1,4 +1,8 @@
-{pkgs, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   imports = [
     ./all.nix
     ../../lib/incus
@@ -96,6 +100,20 @@
     atop.enable = true;
     iftop.enable = true;
     iotop.enable = true;
+  };
+
+  # User activation is controlled through the user's D-Bus connection. Do not
+  # let switch-to-configuration reload or restart that transport from inside
+  # the transaction that is using it.
+  systemd.user.services = {
+    dbus = {
+      reloadIfChanged = lib.mkForce false;
+      restartIfChanged = lib.mkForce false;
+    };
+    dbus-broker = {
+      reloadIfChanged = lib.mkForce false;
+      restartIfChanged = lib.mkForce false;
+    };
   };
 
   systemd.tmpfiles.rules = [
