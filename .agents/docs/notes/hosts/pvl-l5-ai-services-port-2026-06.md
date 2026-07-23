@@ -18,13 +18,13 @@ Service shape:
 - `pvl-ollama-models.service` pulls the same required model list as `pvl-a1`
   after both backend units in ordering only; it does not want either backend, so
   it does not start a stopped backend during reconcile. It is not attached to
-  the Podman `pvl-managed-ready.target`; instead, `pvl-ollama-models-boot.timer`
-  starts it 2 minutes after boot. The boot delay gives the selected Ollama
-  backend time to expose its API and keeps model pulls from competing with early
-  startup. Its native user-service restart triggers include a stable hash of the
-  required models and normalized `ollama` / `ollama-nvidia` Podman Compose
-  instance configs, so backend config changes rerun the model-pull helper when
-  the unit is active.
+  Podman's `pvl-managed.target` or any per-instance ready target; instead,
+  `pvl-ollama-models-boot.timer` starts it 2 minutes after boot. The boot delay
+  gives the selected Ollama backend time to expose its API and keeps model pulls
+  from competing with early startup. Its native user-service restart triggers
+  include a stable hash of the required models and normalized `ollama` /
+  `ollama-nvidia` Podman Compose instance configs, so backend config changes
+  rerun the model-pull helper when the unit is active.
 - The model-pull script lives at `lib/services/ollama/helper.sh`, matching
   Abird's helper behavior while keeping the reusable implementation under the
   shared service-helper namespace. `pvl-l5` sets `OLLAMA_URLS` to both local
@@ -40,6 +40,17 @@ Validation:
 
 The eval required temporary `git add -N` for the new service files because flake
 source filtering does not include untracked imported paths.
+
+## 2026-07-23 Ollama version and KV-cache policy
+
+The five Pvl Ollama image declarations on `pvl-x2`, `pvl-a1`, and `pvl-l5` use
+Ollama `0.32.0`, preserving the ROCm and generic image variants.
+
+The matching Abird source change also switched `OLLAMA_KV_CACHE_TYPE` from
+`q8_0` to `f16`. Pvl intentionally retains `q8_0`: its backends declare 64K-256K
+context windows, and an F16 KV cache would materially increase VRAM and
+system-memory pressure, especially on the mobile GPUs in `pvl-l5`. This is host
+hardware/capacity policy rather than shared-code divergence.
 
 ## 2026-06-21 deploy failure
 
@@ -252,9 +263,13 @@ uid=10000(nixbot) gid=10000(nixbot) groups=10000(nixbot)
 flock: cannot open lock file /dev/shm/nixbot-host-local.lock: Permission denied
 ```
 
-The ownership mismatch explains the immediate open failure, but the root cause
-was the previous failed nixbot run's cleanup: it closed the host-local lock
-descriptor without removing the lock pathname. The stale `pvl`-owned `0644` file
-then made the next self-deploy route through `nixbot` fail before it could
-acquire the lock. Host-local lock release and EXIT/error cleanup must remove the
-pathname only when the acquired descriptor still identifies that same file.
+The ownership mismatch explains the immediate open failure. The deeper issue was
+using a writable regular-file pathname for a mutex shared by different local
+principals. Unlinking that file on release is also unsafe: an existing waiter
+can retain the old inode while a later process creates and locks a new inode,
+breaking mutual exclusion.
+
+The durable fix is the persistent `/dev/shm/nixbot-host-local.lock.d` directory
+inode. Nixbot creates it mode `0755`, opens it read-only for `flock`, and never
+removes it during release or error cleanup. Activation wrappers prepare and lock
+the same directory before running the transient activation unit.

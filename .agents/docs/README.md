@@ -179,6 +179,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   Incus while declared preseed already contained it, plus the fix that makes
   `incus-preseed.service` participate in `sysinit-reactivation.target` before
   dependent parent Incus helper units run.
+- `.agents/docs/notes/hosts/pvl-x2-incus-capacity-admission-2026-07.md`:
+  Physical-host OOM/watchdog and Btrfs cold-boot storm evidence, the separation
+  between deploy and guest-start admission, bounded priority/readiness Incus
+  waves, and the remaining parent-owned resource-budget/storage boundary.
 - `.agents/docs/notes/hosts/pvl-x2-nixos-26.05-transition-2026-06.md`: Records
   the June 15, 2026 `pvl-x2` NixOS 26.05 transition check, including stale
   graphical-session user-unit failures, the `xdg-document-portal` stop timeout,
@@ -196,6 +200,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/lib/incus-podman-lifecycle-policy-redesign-2026-06.md`:
   Records the Incus, Podman Compose, and `systemd-user-manager` lifecycle policy
   redesign, rollout, and post-rollout cleanup model.
+- `.agents/docs/notes/lib/podman-quadlet-backend-2026-07.md`: Records the opt-in
+  strict single-service Quadlet backend, lifecycle ownership, clean provider
+  handoff, runtime health, and validation boundaries.
 - `.agents/docs/notes/lib/shared-helper-recovery-tests-2026-06.md`: Records the
   shared Abird helper-fix port for LXC boot profile alignment, Podman Compose
   stack timeout inheritance, Stalwart stable-ID recovery, and helper regression
@@ -234,6 +241,12 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/nixbot/health-check-transport-fanout-2026-07.md`: Records
   bounded verify-job fanout for post-deploy health checks and console
   normalization rules that keep persisted host logs raw.
+- `.agents/docs/notes/nixbot/activation-transport-verification-2026-07.md`:
+  Records durable activation outcomes, retained output, admission-aware retry,
+  user D-Bus transport, and proxy-process lifetime rules.
+- `.agents/docs/notes/nixbot/deploy-transport-fanout-2026-07.md`: Records the
+  per-parent-domain deploy capacity model and bounded SSH/proxy transport
+  behavior.
 
 ### Reviews
 
@@ -367,12 +380,25 @@ Use this index as the canonical map for `.agents/docs/**`.
   Compose local-image closure-root fix was ported byte-identically and
   Excalidash host/helper work was skipped or deferred for lack of a local
   consumer.
+- `.agents/docs/notes/tooling/abird-post-53a-port-2026-07.md`: Records the July
+  18 audit of all 38 commits after `53a66371`, the cumulative shared lifecycle,
+  Quadlet, nixbot, and fleet-selector ports, plus the July 23 rewritten-tip
+  follow-up, Ollama update, Incus startup-wave adaptation, per-commit
+  dispositions, and final parity contract.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
 - `.agents/docs/notes/tooling/host-manager-operations-2026-07.md`: Records the
   host-manager remote operation surface, nixbot SSH inventory routing, mutation
-  safety gates, and local `pvl` service-registry defaults.
+  safety gates, and package-owned local `pvl` host-manager policy.
+- `.agents/docs/notes/tooling/shared-tooling-parity-2026-07.md`: Records the
+  byte-identical Podman, nixbot, and host-manager contract, persistent directory
+  lock, and repository-owned host generation and deployment-host policy.
+- `.agents/docs/notes/tooling/external-patch-pr-drafts-2026-07.md`: Records the
+  draft upstream PR publication state for reusable external-package patches.
+- `.agents/docs/notes/tooling/external-patch-upstreamability-audit-2026-07.md`:
+  Records upstreamability decisions and validation for reusable external package
+  patches.
 - `.agents/docs/notes/tooling/codex-wrapper-auth-2026-06.md`: Records the local
   `cr`/`cra` Codex wrapper shortcuts for unrestricted mode and numbered
   auth-slot switching.
