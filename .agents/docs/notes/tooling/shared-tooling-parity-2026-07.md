@@ -4,8 +4,8 @@
 
 This parity pass reconciles the generic Podman, nixbot, and host-manager seams
 between Abird and the Pvl Nix repository. Shared implementation and tests stay
-byte-identical; repository policy remains in repository-owned stack and host
-configuration.
+byte-identical; repository policy is isolated in each repository's package-owned
+`pkgs/tools/host-manager/policy.nix`.
 
 ## Ownership Boundary
 
@@ -28,8 +28,9 @@ configuration.
 The shared Podman files, nixbot shell/test files, host-manager implementation,
 and host-manager tests must be byte-identical across the two worktrees. The
 host-manager refactor does not require changes to the stack library, service
-registry, shared flake tests, or repository stack definitions. Only the
-repository-owned `pkgs/tools/host-manager/policy.nix` intentionally differs.
+registry, shared flake tests, or repository stack definitions. Within the
+host-manager parity set, only the repository-owned
+`pkgs/tools/host-manager/policy.nix` intentionally differs.
 
 ## Validation
 
