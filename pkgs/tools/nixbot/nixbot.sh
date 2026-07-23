@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ##### Nixbot Deploy #####
 
 RUNTIME_SHELL_FLAG="${NIXBOT_IN_NIX_SHELL:-0}"
-readonly NIXBOT_VERSION="2026.06.20"
+readonly NIXBOT_VERSION="2026.07.23"
 readonly NIXBOT_DEFAULT_PARENT_RECONCILE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-reconciler{resourceArgs}"
 readonly NIXBOT_DEFAULT_PARENT_SETTLE_TEMPLATE_FALLBACK="/run/current-system/sw/bin/incus-machines-settlement --timeout {timeout}{resourceArgs}"
 readonly NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS="${NIXBOT_SSH_KEYSCAN_TIMEOUT_SECS:-5}"
@@ -44,9 +44,9 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
-  nixbot --list-hosts [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
+  nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group "group1,group2"] [--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -74,8 +74,12 @@ Local Wrapper Action:
 Workflow Selection Options:
   --list-hosts     List selected hosts using the same host block as the info banner
   --list-groups    List configured nixbot groups
-  --group          Deployment group(s) to target (comma/space-separated; repeatable)
-  --hosts          Hosts/context to target (comma/space-separated, globs, -exclusions, or `all`; default: all)
+  --group          Deployment workflow group(s); repeatable and comma/space-separated.
+                   Groups select hooks/tools and provide the base host set.
+  --host           One exact host; mutually exclusive with --hosts
+  --hosts          Host selectors (comma/space-separated; exact names, globs,
+                   -exclusions, or `all`). With --group, filters the group hosts;
+                   default: config.defaultHosts or all)
   --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
@@ -88,7 +92,9 @@ Build Action Options (`run`, `deploy`, `build`):
   --build-logs     Pass -L/--print-build-logs to nix build
 
 Dev Build Action Options (`dev-build`):
-  --hosts          Hosts/globs to build into result-dev/<host> links; -exclusions are supported (default: all)
+  --host           One exact host to build into result-dev/<host>
+  --hosts          Host selectors to build into result-dev/<host> links
+                   (default: config.defaultHosts or all)
   --build-plan-jobs Parallel host build-plan evals (default: auto = threads/2+1)
   --build-jobs     Parallel host builds (default: 1)
 
@@ -486,10 +492,14 @@ restore_initial_tty_state() {
 }
 
 init_vars() {
+	HOST=""
+	HOST_FROM_FLAG=0
+	HOSTS_FROM_FLAG=0
 	HOSTS_RAW="${NIXBOT_HOSTS:-all}"
 	HOSTS_EXPLICIT=0
 	[ -z "${NIXBOT_HOSTS+x}" ] || HOSTS_EXPLICIT=1
 	GROUPS_RAW="${NIXBOT_GROUPS:-}"
+	GROUP_FROM_FLAG=0
 	ACTION=""
 	HOST_ACTION=""
 	GOAL="${NIXBOT_GOAL:-switch}"
@@ -1125,6 +1135,12 @@ host_token_is_glob() {
 	esac
 }
 
+valid_host_name() {
+	local name="$1"
+
+	[[ "${name}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
+}
+
 normalize_hosts_input() {
 	local raw="$1"
 	if [ "${raw}" = "all" ]; then
@@ -1139,15 +1155,14 @@ normalize_groups_input() {
 	emit_normalized_hosts "$1" | paste -sd, -
 }
 
-append_selector_raw() {
-	local -n asr_target_ref="$1"
-	local value="$2"
+append_group_raw() {
+	local value="$1"
 
 	[ -n "${value}" ] || return 0
-	if [ -n "${asr_target_ref}" ]; then
-		asr_target_ref="${asr_target_ref},${value}"
+	if [ -n "${GROUPS_RAW}" ]; then
+		GROUPS_RAW="${GROUPS_RAW},${value}"
 	else
-		asr_target_ref="${value}"
+		GROUPS_RAW="${value}"
 	fi
 }
 
@@ -1235,15 +1250,23 @@ parse_args() {
 			SHA="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
+		--host | --host=*)
+			take_optval "$@"
+			HOST="${OPTVAL}"
+			HOST_FROM_FLAG=1
+			shift "${OPTSHIFT}"
+			;;
 		--hosts | --hosts=*)
 			take_optval "$@"
 			HOSTS_RAW="${OPTVAL}"
+			HOSTS_FROM_FLAG=1
 			HOSTS_EXPLICIT=1
 			shift "${OPTSHIFT}"
 			;;
 		--group | --group=*)
 			take_optval "$@"
-			append_selector_raw GROUPS_RAW "${OPTVAL}"
+			GROUP_FROM_FLAG=1
+			append_group_raw "${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
 		--goal | --goal=*)
@@ -1497,8 +1520,17 @@ parse_args() {
 		esac
 	done
 
+	if [ "${HOST_FROM_FLAG}" -eq 1 ]; then
+		[ "${HOSTS_FROM_FLAG}" -eq 0 ] || die "Use either --host or --hosts, not both"
+		[ -n "${HOST}" ] || die "--host cannot be empty"
+		[ "${HOST}" != "all" ] || die "--host requires one exact host; use --hosts=all for fleet selection"
+		valid_host_name "${HOST}" ||
+			die "--host must start and end with a letter or number, and use only letters, numbers, and hyphens"
+		HOSTS_RAW="${HOST}"
+		HOSTS_EXPLICIT=1
+	fi
 	[ -n "${HOSTS_RAW}" ] || die "--hosts cannot be empty"
-	if [ -n "${GROUPS_RAW}" ] && [ -z "$(normalize_groups_input "${GROUPS_RAW}")" ]; then
+	if [ "${GROUP_FROM_FLAG}" -eq 1 ] && [ -z "$(normalize_groups_input "${GROUPS_RAW}")" ]; then
 		die "--group cannot be empty"
 	fi
 
@@ -2887,7 +2919,6 @@ prepare_ci_trigger_dirty_staged_patch() {
 
 run_ci_trigger() {
 	local trigger_sha="${SHA}" trigger_groups="" trigger_hosts="" encoded_request="" config_json="" patch_bytes=""
-	local all_hosts_json="" selected_hosts_json=""
 	local -a remote_args=()
 	if ! is_clean_action && [ -z "${trigger_sha}" ]; then
 		trigger_sha="$(git rev-parse --verify HEAD 2>/dev/null || true)"
@@ -2903,13 +2934,7 @@ run_ci_trigger() {
 	init_deploy_settings "${config_json}"
 	if ! is_clean_action; then
 		trigger_groups="$(normalize_groups_input "${GROUPS_RAW}")"
-		if [ -n "${trigger_groups}" ]; then
-			all_hosts_json="$(load_all_hosts_json)"
-			selected_hosts_json="$(resolve_selected_hosts_json "${all_hosts_json}")" || exit "$?"
-			trigger_hosts="$(jq -r 'join(",")' <<<"${selected_hosts_json}")"
-		elif [ "${HOSTS_EXPLICIT}" -eq 1 ] || [ -z "${trigger_groups}" ]; then
-			trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
-		fi
+		trigger_hosts="$(normalize_hosts_input "${HOSTS_RAW}")"
 		[ -n "${trigger_hosts}" ] || die "No valid hosts after normalization"
 	fi
 
@@ -2928,11 +2953,13 @@ run_ci_trigger() {
 	log_section "Phase: Remote Trigger"
 	echo "CI host: ${CI_TRIGGER_USER}@${CI_TRIGGER_HOST}" >&2
 	echo "Action: ${ACTION}" >&2
-	if [ -n "${trigger_groups}" ]; then
-		echo "Groups: ${trigger_groups}" >&2
-	fi
 	if ! is_clean_action; then
-		echo "Hosts: ${trigger_hosts}" >&2
+		if [ -n "${trigger_groups}" ]; then
+			echo "Groups: ${trigger_groups}" >&2
+		fi
+		if [ "${HOSTS_EXPLICIT}" -eq 1 ] || [ -z "${trigger_groups}" ]; then
+			echo "Hosts: ${trigger_hosts}" >&2
+		fi
 		echo "SHA: ${trigger_sha}" >&2
 	fi
 	# Intentionally forward only the ci-trigger contract here. The remote side is
@@ -2941,16 +2968,22 @@ run_ci_trigger() {
 	# policy, and similar local overrides. Operator execution modifiers such as
 	# --dry, --force, --dirty, --no-verify, and --ci-first are explicit parts
 	# of this contract.
-	# Groups are resolved locally and forwarded as --hosts so an installed remote
-	# nixbot can accept the request even before it has been upgraded with group
-	# parsing support.
 	if is_clean_action; then
 		remote_args=("${ACTION}" --no-override --clean "${NIXBOT_CLEAN_MODE:-auto}")
 	else
 		remote_args=("${ACTION}" --sha "${trigger_sha}" --no-override)
 	fi
 	if ! is_clean_action; then
-		remote_args+=(--hosts "${trigger_hosts}")
+		if [ -n "${trigger_groups}" ]; then
+			remote_args+=(--group "${trigger_groups}")
+		fi
+		if [ "${HOSTS_EXPLICIT}" -eq 1 ] || [ -z "${trigger_groups}" ]; then
+			if [ "${HOST_FROM_FLAG}" -eq 1 ]; then
+				remote_args+=(--host "${trigger_hosts}")
+			else
+				remote_args+=(--hosts "${trigger_hosts}")
+			fi
+		fi
 	fi
 	if [ "${LOG_FORMAT}" != "auto" ]; then
 		remote_args+=(--log-format "${LOG_FORMAT}")
@@ -3449,7 +3482,7 @@ init_deploy_settings() {
 }
 
 apply_config_defaults() {
-	local config_json="$1" nixbot_config_json="" configured_default_group="" configured_ci_host="" configured_cache_host="" configured_cache_url="" configured_repo_url="" configured_deploy_jobs_per_domain=""
+	local config_json="$1" nixbot_config_json="" configured_default_group="" configured_default_hosts="" configured_ci_host="" configured_cache_host="" configured_cache_url="" configured_repo_url="" configured_deploy_jobs_per_domain=""
 
 	nixbot_config_json="$(jq -c '.config // {}' <<<"${config_json}")"
 	if [ "${NIXBOT_JOBS_PER_DOMAIN_EXPLICIT}" -eq 0 ]; then
@@ -3467,6 +3500,17 @@ apply_config_defaults() {
 		fi
 	fi
 
+	if [ "${HOSTS_EXPLICIT}" -eq 0 ]; then
+		configured_default_hosts="$(
+			jq -r '
+        .defaultHosts // "all"
+        | if type == "string" and length > 0 then .
+          else error("defaultHosts must be a non-empty string")
+          end
+      ' <<<"${nixbot_config_json}"
+		)" || die "Nixbot defaultHosts must be a non-empty string"
+		HOSTS_RAW="${configured_default_hosts}"
+	fi
 	if [ -z "${GROUPS_RAW}" ] && [ "${HOSTS_EXPLICIT}" -eq 0 ]; then
 		configured_default_group="$(
 			jq -r '
@@ -3475,7 +3519,7 @@ apply_config_defaults() {
           else error("defaultGroup must be a string")
           end
       ' <<<"${nixbot_config_json}"
-		)" || die "Nixbot default group must be a string"
+		)" || die "Nixbot defaultGroup must be a string"
 		if [ -n "${configured_default_group}" ]; then
 			GROUPS_RAW="${configured_default_group}"
 		fi
@@ -3613,8 +3657,7 @@ parse_host_selectors_json() {
 	local token="" selector="" host="" matched="" exclusion=0
 	local selected_json="" excluded_json=""
 	local -a all_hosts=() selected_hosts=() excluded_hosts=()
-	declare -A selected_host_set=()
-	declare -A excluded_host_set=()
+	declare -A selected_host_set=() excluded_host_set=()
 
 	if [ -z "${raw_selectors}" ]; then
 		jq -cn '{selected: [], excluded: []}'
@@ -3746,8 +3789,7 @@ validate_group_shapes() {
 }
 
 append_group_hosts() {
-	local group="$1"
-	local host=""
+	local group="$1" host=""
 
 	group_exists "${group}" || die "Unknown group requested: ${group}"
 	if [ -n "${GROUP_SELECTED_SET["${group}"]+x}" ]; then
@@ -3796,23 +3838,11 @@ parse_group_selectors_json() {
 	selected_json="$(bash_args_to_json_array "${GROUP_SELECTED_HOSTS[@]}")"
 	groups_json="$(bash_args_to_json_array "${GROUP_SELECTED_NAMES[@]}")"
 	dependency_excluded_json="$(bash_args_to_json_array "${GROUP_DEPENDENCY_EXCLUDED_HOSTS[@]}")"
-	jq -cn --argjson selected "${selected_json}" --argjson groups "${groups_json}" --argjson dependencyExcluded "${dependency_excluded_json}" \
+	jq -cn \
+		--argjson selected "${selected_json}" \
+		--argjson groups "${groups_json}" \
+		--argjson dependencyExcluded "${dependency_excluded_json}" \
 		'{selected: $selected, groups: $groups, dependencyExcluded: $dependencyExcluded}'
-}
-
-merge_selection_json() {
-	local group_selection_json="$1" host_selection_json="$2"
-
-	jq -cn --argjson groupSelection "${group_selection_json}" --argjson hostSelection "${host_selection_json}" '
-    def stable_unique:
-      reduce .[] as $item ([]; if index($item) then . else . + [$item] end);
-    {
-      selected: ((($groupSelection.selected // []) + ($hostSelection.selected // [])) | stable_unique),
-      excluded: ($hostSelection.excluded // []),
-      dependencyExcluded: ($groupSelection.dependencyExcluded // []),
-      groups: ($groupSelection.groups // [])
-    }
-  '
 }
 
 host_dependencies_for() {
@@ -4351,33 +4381,24 @@ filter_runnable_hosts_json() {
 }
 
 resolve_selected_hosts_json() {
-	local all_hosts_json="$1" group_selection_json="" host_selection_json="" selection_json="" direct_selected_json="" selected_json="" excluded_json="" dependency_excluded_json=""
-	local parse_hosts=0 imply_all_on_only_exclusions=1
+	local all_hosts_json="$1" group_selection_json="" host_scope_json="" host_selection_json=""
+	local direct_selected_json="" selected_json="" excluded_json="" dependency_excluded_json="[]"
 
+	host_scope_json="${all_hosts_json}"
 	if [ -n "${GROUPS_RAW}" ]; then
 		group_selection_json="$(parse_group_selectors_json)" || return "$?"
-		imply_all_on_only_exclusions=0
-	fi
-	if [ "${HOSTS_EXPLICIT}" -eq 1 ] || [ -z "${GROUPS_RAW}" ]; then
-		parse_hosts=1
-	fi
-	if [ "${parse_hosts}" -eq 1 ]; then
-		host_selection_json="$(parse_host_selectors_json "${all_hosts_json}" "${HOSTS_RAW}" "${imply_all_on_only_exclusions}")" || return "$?"
-	else
-		host_selection_json="$(jq -cn '{selected: [], excluded: []}')"
-	fi
-	if [ -z "${group_selection_json}" ]; then
-		group_selection_json="$(jq -cn '{selected: [], groups: []}')"
+		host_scope_json="$(jq -c '.selected' <<<"${group_selection_json}")"
+		dependency_excluded_json="$(jq -c '.dependencyExcluded' <<<"${group_selection_json}")"
+		validate_selected_hosts "${host_scope_json}" "${all_hosts_json}"
+		validate_excluded_hosts "${dependency_excluded_json}" "${all_hosts_json}"
 	fi
 
-	selection_json="$(merge_selection_json "${group_selection_json}" "${host_selection_json}")"
-	selected_json="$(jq -c '.selected' <<<"${selection_json}")"
+	host_selection_json="$(parse_host_selectors_json "${host_scope_json}" "${HOSTS_RAW}" 1)" || return "$?"
+	selected_json="$(jq -c '.selected' <<<"${host_selection_json}")"
 	direct_selected_json="${selected_json}"
-	excluded_json="$(jq -c '.excluded' <<<"${selection_json}")"
-	dependency_excluded_json="$(jq -c '.dependencyExcluded' <<<"${selection_json}")"
-	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
-	validate_excluded_hosts "${excluded_json}" "${all_hosts_json}"
-	validate_excluded_hosts "${dependency_excluded_json}" "${all_hosts_json}"
+	excluded_json="$(jq -c '.excluded' <<<"${host_selection_json}")"
+	validate_selected_hosts "${selected_json}" "${host_scope_json}"
+	validate_excluded_hosts "${excluded_json}" "${host_scope_json}"
 	selected_json="$(apply_host_exclusions_json "${selected_json}" "${excluded_json}")"
 	validate_selected_hosts "${selected_json}" "${all_hosts_json}"
 	direct_selected_json="${selected_json}"

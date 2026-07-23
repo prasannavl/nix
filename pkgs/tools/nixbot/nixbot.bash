@@ -55,6 +55,23 @@ _nixbot_hosts() {
 	"${cmd[@]}" 2>&1 | sed -n 's/^[[:space:]]*-[[:space:]]*\([^[:space:]()]*\).*/\1/p'
 }
 
+_nixbot_groups() {
+	local root config=""
+	local -a cmd=()
+
+	root="$(_nixbot_repo_root)" || return 0
+	config="$(_nixbot_explicit_config_path)"
+	cmd=("${root}/scripts/nixbot.sh" --list-groups --log-format plain)
+	if [ -n "$config" ]; then
+		cmd+=(--config "$config")
+	fi
+	if _nixbot_no_override_requested; then
+		cmd+=(--no-override)
+	fi
+
+	"${cmd[@]}" 2>&1 | sed -n 's/^  - \([^[:space:]()]*\).*/\1/p'
+}
+
 _nixbot_tf_projects() {
 	local root project
 
@@ -88,9 +105,11 @@ _nixbot_compgen_files() {
 	fi
 }
 
-_nixbot_complete_hosts_value() {
+_nixbot_complete_selector_value() {
 	local cur="$1"
-	local prefix="" stem="$cur" host
+	local values_fn="$2"
+	local include_all="${3:-0}"
+	local prefix="" stem="$cur" value
 	local comma_prefix="" comma_stem="" space_prefix="" space_stem=""
 	local -a candidates=()
 
@@ -112,20 +131,39 @@ _nixbot_complete_hosts_value() {
 	fi
 
 	if [[ "$stem" == -* ]]; then
-		while IFS= read -r host; do
-			candidates+=("-${host}")
-		done < <(_nixbot_hosts)
+		if [ "$include_all" = "1" ]; then
+			candidates+=("-all")
+		fi
+		while IFS= read -r value; do
+			candidates+=("-${value}")
+		done < <("$values_fn")
 	else
-		candidates+=(all)
-		while IFS= read -r host; do
-			candidates+=("$host")
-		done < <(_nixbot_hosts)
+		if [ "$include_all" = "1" ]; then
+			candidates+=(all)
+		fi
+		while IFS= read -r value; do
+			candidates+=("$value")
+		done < <("$values_fn")
 	fi
 
 	_nixbot_compgen_words "$stem" "${candidates[*]}"
 	for ((i = 0; i < ${#COMPREPLY[@]}; i++)); do
 		COMPREPLY[i]="${prefix}${COMPREPLY[i]}"
 	done
+}
+
+_nixbot_complete_hosts_value() {
+	_nixbot_complete_selector_value "$1" _nixbot_hosts 1
+}
+
+_nixbot_complete_group_value() {
+	_nixbot_compgen_words "$1" "$(_nixbot_groups)"
+}
+
+_nixbot_complete_host_value() {
+	local cur="$1"
+
+	_nixbot_compgen_words "$cur" "$(_nixbot_hosts)"
 }
 
 _nixbot() {
@@ -151,7 +189,7 @@ _nixbot() {
 	commands+=("${tf_projects[@]}")
 
 	options=(
-		--list-hosts --sha --hosts --goal --build-host --build-host-deploy-mode
+		--list-hosts --sha --group --host --hosts --goal --build-host --build-host-deploy-mode
 		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
 		--deploy-jobs --deploy-jobs-per-domain --verify-jobs --clean --force --bootstrap --ci-first
 		--skip-global-lock
@@ -164,6 +202,14 @@ _nixbot() {
 	)
 
 	case "$prev" in
+	--group)
+		_nixbot_complete_group_value "$cur"
+		return 0
+		;;
+	--host)
+		_nixbot_complete_host_value "$cur"
+		return 0
+		;;
 	--hosts)
 		_nixbot_complete_hosts_value "$cur"
 		return 0
@@ -199,6 +245,14 @@ _nixbot() {
 	esac
 
 	case "$eq_opt" in
+	--group)
+		_nixbot_complete_group_value "$cur"
+		return 0
+		;;
+	--host)
+		_nixbot_complete_host_value "$cur"
+		return 0
+		;;
 	--hosts)
 		_nixbot_complete_hosts_value "$cur"
 		return 0
@@ -234,6 +288,14 @@ _nixbot() {
 	esac
 
 	case "$cur" in
+	--group=*)
+		_nixbot_complete_group_value "${cur#--group=}"
+		COMPREPLY=("${COMPREPLY[@]/#/--group=}")
+		;;
+	--host=*)
+		_nixbot_complete_host_value "${cur#--host=}"
+		COMPREPLY=("${COMPREPLY[@]/#/--host=}")
+		;;
 	--hosts=*)
 		_nixbot_complete_hosts_value "${cur#--hosts=}"
 		COMPREPLY=("${COMPREPLY[@]/#/--hosts=}")

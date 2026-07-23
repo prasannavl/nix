@@ -9,11 +9,11 @@ Usage:
   scripts/host-manager.sh live-install HOST|--host=HOST --wipe-disks [options]
   scripts/host-manager.sh delete HOST|--host=HOST [--force|--yes]
   scripts/host-manager.sh ssh HOST|--host=HOST [-- ssh-args...]
-  scripts/host-manager.sh reboot HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--yes]
-  scripts/host-manager.sh gc HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
-  scripts/host-manager.sh clean:deploy HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
-  scripts/host-manager.sh clean:podman HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
-  scripts/host-manager.sh clean:nixbot HOST|--host=HOST|--hosts=SELECTORS [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh reboot HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--dry-run] [--yes]
+  scripts/host-manager.sh gc HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--delete-older-than AGE|--all] [--dry-run] [--yes]
+  scripts/host-manager.sh clean:deploy HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh clean:podman HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--dry-run] [--force-held] [--yes]
+  scripts/host-manager.sh clean:nixbot HOST|--group=GROUP [--host=HOST|--hosts=SELECTORS] [--jobs N] [--dry-run] [--force-held] [--yes]
   scripts/host-manager.sh logs HOST|--host=HOST [--service SERVICE] [--since WHEN] [--lines N] [--follow]
   scripts/host-manager.sh service start|stop|restart|status|logs SERVICE [--stack STACK|--host HOST] [--user USER] [--since WHEN] [--lines N] [--follow]
 
@@ -58,10 +58,11 @@ Actions:
 Options:
   --host HOST              One host. Equivalent to positional HOST for
                            host-targeted commands.
-  --hosts SELECTORS        Nixbot-style host selectors for reboot, gc, and
-                           clean:*: comma/space lists, globs, -exclusions, all,
-                           and group: selectors. Example:
-                           --hosts='group:abird-dev,-abird-dev-ci'.
+  --group GROUP            Nixbot deployment group(s) for reboot, gc, and
+                           clean:*; repeatable and comma/space-separated.
+  --hosts SELECTORS        Host selectors for reboot, gc, and clean:*:
+                           comma/space lists, globs, -exclusions, and all.
+                           With --group, filters the selected group hosts.
   --jobs N                 Parallel host jobs for multi-host maintenance.
                            Default: 8.
   --stack STACK            Optional stack key from lib/stacks.
@@ -127,6 +128,7 @@ init_vars() {
 	ACTION=""
 	HOST=""
 	HOSTS_RAW=""
+	GROUPS_RAW=""
 	HOST_STACK=""
 	HOST_SYSTEM="none"
 	DISK_DEVICE=""
@@ -151,8 +153,8 @@ init_vars() {
 	KEEP_TMP="0"
 	DELETE_OLDER_THAN="7d"
 	GC_ALL="0"
-	HOST_FROM_FLAG="0"
 	HOSTS_FROM_FLAG="0"
+	GROUP_FROM_FLAG="0"
 	HOST_JOBS="8"
 	OP_USER="${HOST_MANAGER_USER:-$(id -un 2>/dev/null || printf root)}"
 	OP_USER_EXPLICIT="0"
@@ -194,6 +196,17 @@ init_vars() {
 	LUKS_UUID=""
 	LUKS_NAME=""
 	STAGED_TARGETS=()
+}
+
+append_group_raw() {
+	local value="$1"
+
+	[[ -n "$value" ]] || return 0
+	if [[ -n "$GROUPS_RAW" ]]; then
+		GROUPS_RAW="${GROUPS_RAW},${value}"
+	else
+		GROUPS_RAW="$value"
+	fi
 }
 
 find_repo_root() {
@@ -420,12 +433,10 @@ parse_args() {
 		--host)
 			[[ $# -ge 2 ]] || die "Missing value for $1"
 			HOST="$2"
-			HOST_FROM_FLAG="1"
 			shift 2
 			;;
 		--host=*)
 			HOST="${1#--host=}"
-			HOST_FROM_FLAG="1"
 			shift
 			;;
 		--hosts)
@@ -437,6 +448,17 @@ parse_args() {
 		--hosts=*)
 			HOSTS_RAW="${1#--hosts=}"
 			HOSTS_FROM_FLAG="1"
+			shift
+			;;
+		--group)
+			[[ $# -ge 2 ]] || die "Missing value for $1"
+			GROUP_FROM_FLAG="1"
+			append_group_raw "$2"
+			shift 2
+			;;
+		--group=*)
+			GROUP_FROM_FLAG="1"
+			append_group_raw "${1#--group=}"
 			shift
 			;;
 		--system)
@@ -720,18 +742,23 @@ maintenance_action_supports_all() {
 }
 
 validate_common() {
+	if [[ "$GROUP_FROM_FLAG" == "1" && -z "$(emit_normalized_hosts "$GROUPS_RAW")" ]]; then
+		die "--group cannot be empty."
+	fi
+	if [[ -n "$GROUPS_RAW" ]]; then
+		maintenance_action_supports_all || die "--group is only supported by reboot, gc, and clean commands."
+		[[ -n "$(emit_normalized_hosts "$GROUPS_RAW")" ]] || die "--group cannot be empty."
+	fi
 	if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
 		maintenance_action_supports_all || die "--hosts is only supported by reboot, gc, and clean commands."
 		[[ -z "$HOST" ]] || die "Use either HOST/--host or --hosts, not both."
 		[[ -n "$HOSTS_RAW" ]] || die "--hosts cannot be empty."
-	elif [[ "$ACTION" != service-* || -n "$HOST" ]]; then
-		[[ -n "$HOST" ]] || die "Missing required HOST."
-		if [[ "$HOST" == "all" ]]; then
-			[[ "$HOST_FROM_FLAG" == "1" ]] || die "Use --hosts=all to target every nixbot inventory host."
-			maintenance_action_supports_all || die "HOST=all is only supported by reboot, gc, and clean commands."
-		else
-			valid_host_name "$HOST" || die "HOST must start and end with a letter or number, and use only letters, numbers, and hyphens."
-		fi
+	fi
+	if [[ -n "$HOST" ]]; then
+		[[ "$HOST" != "all" ]] || die "--host requires one exact host; use --hosts=all for fleet selection."
+		valid_host_name "$HOST" || die "HOST must start and end with a letter or number, and use only letters, numbers, and hyphens."
+	elif [[ "$HOSTS_FROM_FLAG" == "0" && -z "$GROUPS_RAW" && "$ACTION" != service-* ]]; then
+		die "Missing required HOST."
 	fi
 	[[ "$HOST_SYSTEM" == "none" || "$HOST_SYSTEM" == "live" || "$HOST_SYSTEM" == "incus" ]] || die "--system must be one of: none, live, incus."
 	[[ "$BOOT_MODE" == "efi" || "$BOOT_MODE" == "uefi" || "$BOOT_MODE" == "bios" ]] || die "--boot-mode must be one of: efi, uefi, bios."
@@ -742,7 +769,7 @@ validate_common() {
 	[[ -z "$HARDWARE_CONFIG" || -f "$HARDWARE_CONFIG" ]] || die "Hardware config not found: $HARDWARE_CONFIG"
 	[[ "$LOG_LINES" =~ ^[0-9]+$ ]] || die "--lines must be a non-negative integer."
 	[[ "$HOST_JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs must be a positive integer."
-	if [[ -n "$HOST" && "$HOST" != "all" ]]; then
+	if [[ -n "$HOST" ]]; then
 		HOST_DIR="${REPO_ROOT}/hosts/${HOST}"
 		infer_disk_device
 	else
@@ -847,13 +874,7 @@ validate_args() {
 		nixbot_host_registered "$HOST" || die "Host is not in ${NIXBOT_FILE}: ${HOST}"
 		;;
 	reboot | gc | podman-clean | nixbot-clean | deploy-clean)
-		if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
-			resolve_maintenance_host_selectors "$HOSTS_RAW" >/dev/null
-		elif [[ "$HOST" == "all" ]]; then
-			nixbot_inventory_hosts >/dev/null
-		else
-			nixbot_host_registered "$HOST" || die "Host is not in ${NIXBOT_FILE}: ${HOST}"
-		fi
+		maintenance_target_hosts >/dev/null
 		;;
 	service-start | service-stop | service-restart | service-status | service-logs)
 		[[ -n "$SERVICE_NAME" ]] || die "${ACTION#service-} requires a service or unit name."
@@ -1309,19 +1330,44 @@ host_token_is_glob() {
 	esac
 }
 
-resolve_maintenance_host_selectors() {
-	local raw_selectors="$1" all_hosts_output groups_json="" token selector host matched exclusion=0
-	local group_selector group group_matches
-	local -a all_hosts=() group_names=() selected_hosts=() excluded_hosts=()
-	declare -A group_host_set=() selected_host_set=() excluded_host_set=() inventory_host_set=()
+resolve_maintenance_group_hosts() {
+	local groups_json="" group="" host="" matched=0
+	local -a selected_hosts=()
+	declare -A selected_host_set=()
 
-	all_hosts_output="$(nixbot_inventory_hosts)" || return "$?"
+	groups_json="$(load_nixbot_groups_json)" || return "$?"
+	while IFS= read -r group; do
+		[[ -n "$group" ]] || continue
+		jq -e --arg group "$group" 'has($group)' <<<"$groups_json" >/dev/null ||
+			die "Unknown group requested: ${group}"
+		while IFS= read -r host; do
+			[[ -n "$host" ]] || continue
+			[[ -z "${selected_host_set["$host"]+x}" ]] || continue
+			selected_host_set["$host"]=1
+			selected_hosts+=("$host")
+		done < <(jq -r --arg group "$group" '.[$group][]' <<<"$groups_json")
+	done < <(emit_normalized_hosts "$GROUPS_RAW")
+
+	for host in "${selected_hosts[@]}"; do
+		printf '%s\n' "$host"
+		matched=1
+	done
+	[[ "$matched" == "1" ]] || die "Selected groups contain no hosts."
+}
+
+resolve_maintenance_host_selectors() {
+	local raw_selectors="$1" all_hosts_output="${2:-}" token selector host matched exclusion=0
+	local -a all_hosts=() selected_hosts=() excluded_hosts=()
+	declare -A selected_host_set=() excluded_host_set=() inventory_host_set=()
+
+	if [[ -z "$all_hosts_output" ]]; then
+		all_hosts_output="$(nixbot_inventory_hosts)" || return "$?"
+	fi
 	mapfile -t all_hosts <<<"$all_hosts_output"
 	for host in "${all_hosts[@]}"; do
 		inventory_host_set["$host"]=1
 	done
 
-	# Keep selector semantics aligned with nixbot's parse_host_selectors_json.
 	while IFS= read -r token; do
 		[[ -n "$token" ]] || continue
 		exclusion=0
@@ -1330,57 +1376,6 @@ resolve_maintenance_host_selectors() {
 			exclusion=1
 			selector="${token#-}"
 			[[ -n "$selector" ]] || selector="$token"
-		fi
-
-		if [[ "$selector" == group:* ]]; then
-			group_selector="${selector#group:}"
-			[[ -n "$group_selector" ]] || die "Group selector cannot be empty."
-			if [[ -z "$groups_json" ]]; then
-				groups_json="$(load_nixbot_groups_json)" || return "$?"
-				mapfile -t group_names < <(jq -r 'keys[]' <<<"$groups_json")
-			fi
-
-			matched=0
-			group_host_set=()
-			for group in "${group_names[@]}"; do
-				group_matches=0
-				if [[ "$group_selector" == "all" ]]; then
-					group_matches=1
-				elif host_token_is_glob "$group_selector"; then
-					# shellcheck disable=SC2053
-					if [[ "$group" == $group_selector ]]; then
-						group_matches=1
-					fi
-				elif [[ "$group" == "$group_selector" ]]; then
-					group_matches=1
-				fi
-				[[ "$group_matches" == "1" ]] || continue
-
-				matched=1
-				while IFS= read -r host; do
-					[[ -n "$host" ]] || continue
-					group_host_set["$host"]=1
-				done < <(jq -r --arg group "$group" '.[$group][]' <<<"$groups_json")
-			done
-
-			if [[ "$matched" == "0" ]]; then
-				[[ "$exclusion" == "1" ]] || die "Unknown group selector: ${group_selector}"
-				continue
-			fi
-
-			for host in "${all_hosts[@]}"; do
-				[[ -n "${group_host_set["$host"]+x}" ]] || continue
-				if [[ "$exclusion" == "1" ]]; then
-					if [[ -z "${excluded_host_set["$host"]+x}" ]]; then
-						excluded_host_set["$host"]=1
-						excluded_hosts+=("$host")
-					fi
-				elif [[ -z "${selected_host_set["$host"]+x}" ]]; then
-					selected_host_set["$host"]=1
-					selected_hosts+=("$host")
-				fi
-			done
-			continue
 		fi
 
 		if [[ "$selector" == "all" ]]; then
@@ -1415,19 +1410,20 @@ resolve_maintenance_host_selectors() {
 					fi
 				fi
 			done
-			if [[ "$matched" == "0" && "$exclusion" == "0" ]]; then
+			if [[ "$matched" == "0" ]]; then
 				die "Unknown host selector: ${selector}"
 			fi
 			continue
 		fi
 
+		if [[ -z "${inventory_host_set["$selector"]+x}" ]]; then
+			die "Unknown host selector: ${selector}"
+		fi
 		if [[ "$exclusion" == "1" ]]; then
 			if [[ -z "${excluded_host_set["$selector"]+x}" ]]; then
 				excluded_host_set["$selector"]=1
 				excluded_hosts+=("$selector")
 			fi
-		elif [[ -z "${inventory_host_set["$selector"]+x}" ]]; then
-			die "Unknown host selector: ${selector}"
 		elif [[ -z "${selected_host_set["$selector"]+x}" ]]; then
 			selected_host_set["$selector"]=1
 			selected_hosts+=("$selector")
@@ -2426,20 +2422,36 @@ run_ssh() {
 }
 
 maintenance_target_hosts() {
-	if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
-		resolve_maintenance_host_selectors "$HOSTS_RAW"
-	elif [[ "$HOST" == "all" ]]; then
-		resolve_maintenance_host_selectors all
-	else
+	local host_scope="" selectors="all"
+
+	if [[ -z "$GROUPS_RAW" && "$HOSTS_FROM_FLAG" == "0" && -n "$HOST" ]]; then
 		printf '%s\n' "$HOST"
+		return
+	fi
+	if [[ -n "$GROUPS_RAW" ]]; then
+		host_scope="$(resolve_maintenance_group_hosts)" || return "$?"
+	fi
+	if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
+		selectors="$HOSTS_RAW"
+	elif [[ -n "$HOST" ]]; then
+		selectors="$HOST"
+	fi
+	if [[ -n "$host_scope" ]]; then
+		resolve_maintenance_host_selectors "$selectors" "$host_scope"
+	else
+		resolve_maintenance_host_selectors "$selectors"
 	fi
 }
 
 maintenance_target_label() {
-	if [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
+	if [[ -n "$GROUPS_RAW" && "$HOSTS_FROM_FLAG" == "1" ]]; then
+		printf 'nixbot group(s) %s filtered by hosts (%s)\n' "$GROUPS_RAW" "$HOSTS_RAW"
+	elif [[ -n "$GROUPS_RAW" && -n "$HOST" ]]; then
+		printf 'host %s within nixbot group(s) %s\n' "$HOST" "$GROUPS_RAW"
+	elif [[ -n "$GROUPS_RAW" ]]; then
+		printf 'nixbot group(s) %s\n' "$GROUPS_RAW"
+	elif [[ "$HOSTS_FROM_FLAG" == "1" ]]; then
 		printf 'selected nixbot inventory hosts (%s)\n' "$HOSTS_RAW"
-	elif [[ "$HOST" == "all" ]]; then
-		printf 'all nixbot inventory hosts\n'
 	else
 		printf '%s\n' "$HOST"
 	fi

@@ -58,8 +58,8 @@ class NixbotScriptTest(unittest.TestCase):
             ACTION=deploy
             normalize_host_action
             parse_args \
+              --group 'prod ops' \
               --hosts 'web,db -old' \
-              --group 'abird ops' \
               --goal boot \
               --build-host builder \
               --build-host-deploy-mode local-copy \
@@ -77,8 +77,8 @@ class NixbotScriptTest(unittest.TestCase):
             jq -n \
               --arg action "$ACTION" \
               --arg hostAction "$HOST_ACTION" \
-              --arg hosts "$HOSTS_RAW" \
               --arg groups "$GROUPS_RAW" \
+              --arg hosts "$HOSTS_RAW" \
               --arg goal "$GOAL" \
               --arg buildHost "$BUILD_HOST" \
               --arg buildMode "$BUILD_HOST_DEPLOY_MODE" \
@@ -93,7 +93,7 @@ class NixbotScriptTest(unittest.TestCase):
               --arg prefix "$FORCE_PREFIX_HOST_LOGS" \
               --arg skipGlobalLock "$SKIP_HOST_LOCAL_ACTION_LOCK" \
               --arg logFormat "$LOG_FORMAT" \
-              '{action:$action,hostAction:$hostAction,hosts:$hosts,groups:$groups,goal:$goal,buildHost:$buildHost,buildMode:$buildMode,buildPlanJobs:$buildPlanJobs,buildJobs:$buildJobs,deployJobs:$deployJobs,deployJobsPerDomain:$deployJobsPerDomain,verifyJobs:$verifyJobs,dry:$dry,rollback:$rollback,verify:$verify,prefix:$prefix,skipGlobalLock:$skipGlobalLock,logFormat:$logFormat}'
+              '{action:$action,hostAction:$hostAction,groups:$groups,hosts:$hosts,goal:$goal,buildHost:$buildHost,buildMode:$buildMode,buildPlanJobs:$buildPlanJobs,buildJobs:$buildJobs,deployJobs:$deployJobs,deployJobsPerDomain:$deployJobsPerDomain,verifyJobs:$verifyJobs,dry:$dry,rollback:$rollback,verify:$verify,prefix:$prefix,skipGlobalLock:$skipGlobalLock,logFormat:$logFormat}'
             """
         )
 
@@ -102,8 +102,8 @@ class NixbotScriptTest(unittest.TestCase):
             {
                 "action": "deploy",
                 "hostAction": "deploy",
+                "groups": "prod ops",
                 "hosts": "web,db -old",
-                "groups": "abird ops",
                 "goal": "boot",
                 "buildHost": "builder",
                 "buildMode": "local-copy",
@@ -121,6 +121,111 @@ class NixbotScriptTest(unittest.TestCase):
             },
             parsed,
         )
+
+    def test_default_selection_uses_group_policy_and_generic_all_hosts(self):
+        result = self.run_script(
+            """
+            unset NIXBOT_HOSTS
+            init_vars
+            printf '%s|%s\n' "$GROUPS_RAW" "$HOSTS_RAW"
+
+            apply_config_defaults '{"config":{"defaultGroup":"prod"}}'
+            printf '%s|%s\n' "$GROUPS_RAW" "$HOSTS_RAW"
+
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --hosts app
+            apply_config_defaults '{"config":{"defaultGroup":"prod"}}'
+            printf '%s|%s\n' "$GROUPS_RAW" "$HOSTS_RAW"
+            """,
+        )
+
+        self.assertEqual(["|all", "prod|all", "|app"], result.stdout.splitlines())
+
+    def test_default_hosts_config_rejects_invalid_values(self):
+        result = self.run_script(
+            """
+            init_vars
+            apply_config_defaults '{"config":{"defaultHosts":[]}}'
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "Nixbot defaultHosts must be a non-empty string",
+            result.stderr,
+        )
+
+    def test_singular_host_option_accepts_one_exact_host_and_overrides_env(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --host app-1
+            printf '%s %s %s\n' "$HOST" "$HOSTS_RAW" "$HOSTS_EXPLICIT"
+
+            NIXBOT_HOSTS='env-app'
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --host=app-2
+            printf '%s %s %s\n' "$HOST" "$HOSTS_RAW" "$HOSTS_EXPLICIT"
+            """
+        )
+
+        self.assertEqual(
+            [
+                "app-1 app-1 1",
+                "app-2 app-2 1",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_singular_host_option_is_mutually_exclusive_with_host_selectors(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --host app --hosts app,db
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Use either --host or --hosts, not both", result.stderr)
+
+    def test_singular_host_option_rejects_selector_syntax(self):
+        for host in ("", "all", "group:prod", "app,db", "app-*", "-app"):
+            with self.subTest(host=host):
+                result = self.run_script(
+                    f"""
+                    init_vars
+                    ACTION=deploy
+                    normalize_host_action
+                    parse_args --host='{host}'
+                    """,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("--host", result.stderr)
+
+    def test_group_option_is_repeatable_and_composes_with_host_filter(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --group prod --group 'ops,edge' --host app
+            printf '%s|%s\n' "$GROUPS_RAW" "$HOSTS_RAW"
+            """,
+        )
+
+        self.assertEqual("prod,ops,edge|app\n", result.stdout)
 
     def test_default_deploy_jobs_preserves_operational_default(self):
         result = self.run_script(
@@ -282,6 +387,81 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertNotIn("--hosts", result.stdout)
         self.assertNotIn("--sha", result.stdout)
 
+    def test_ci_trigger_preserves_group_scope_and_host_filter(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            GROUPS_RAW='prod'
+            HOSTS_RAW='app,-old'
+            HOSTS_EXPLICIT=1
+            SHA=abcdef0
+            CI_TRIGGER_USER=ci
+            CI_TRIGGER_HOST=ci-host
+            load_deploy_config_json() { printf '{}'; }
+            init_deploy_settings() { :; }
+            configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
+            encode_ssh_command_args() { printf '%s\n' "$*"; }
+            ssh() {
+              printf '%s\n' "$*"
+            }
+            run_ci_trigger
+            """
+        )
+
+        self.assertIn("ci@ci-host", result.stdout)
+        self.assertIn("--group prod", result.stdout)
+        self.assertIn("--hosts app,-old", result.stdout)
+
+    def test_ci_trigger_does_not_flatten_group_only_selection(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --group prod
+            SHA=abcdef0
+            CI_TRIGGER_USER=ci
+            CI_TRIGGER_HOST=ci-host
+            load_deploy_config_json() { printf '{}'; }
+            init_deploy_settings() { :; }
+            configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
+            encode_ssh_command_args() { printf '%s\n' "$*"; }
+            ssh() {
+              printf '%s\n' "$*"
+            }
+            run_ci_trigger
+            """
+        )
+
+        self.assertIn("--group prod", result.stdout)
+        self.assertNotIn("--hosts", result.stdout)
+
+    def test_ci_trigger_preserves_singular_host_selection(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --host app
+            SHA=abcdef0
+            CI_TRIGGER_USER=ci
+            CI_TRIGGER_HOST=ci-host
+            load_deploy_config_json() { printf '{}'; }
+            init_deploy_settings() { :; }
+            configure_ci_trigger_ssh_opts() { CI_TRIGGER_SSH_OPTS=(); }
+            encode_ssh_command_args() { printf '%s\n' "$*"; }
+            ssh() {
+              printf '%s\n' "$*"
+            }
+            run_ci_trigger
+            """
+        )
+
+        self.assertIn("--host app", result.stdout)
+        self.assertNotIn("--hosts", result.stdout)
+
     def test_clear_remote_locks_is_no_longer_a_nixbot_action(self):
         result = self.run_script(
             """
@@ -402,6 +582,101 @@ class NixbotScriptTest(unittest.TestCase):
             implicit,
         )
 
+    def test_group_scope_is_filtered_by_host_selectors(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{"app":{},"db":{},"shared":{},"other":{}}'
+            NIXBOT_GROUPS_JSON='{"prod":["app","db","shared"]}'
+            NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON='{"prod":[]}'
+            GROUPS_RAW=prod
+            HOSTS_RAW='all,-db'
+            resolve_selected_hosts_json '["app","db","shared","other"]'
+            """
+        )
+
+        self.assertEqual(["app", "shared"], json.loads(result.stdout))
+
+    def test_group_scope_rejects_unknown_group_and_host_outside_group(self):
+        unknown = self.run_script(
+            """
+            init_vars
+            NIXBOT_GROUPS_JSON='{"prod":["app"]}'
+            GROUPS_RAW=missing
+            parse_group_selectors_json
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, unknown.returncode)
+        self.assertIn("Unknown group requested: missing", unknown.stderr)
+
+        outside = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{"app":{},"other":{}}'
+            NIXBOT_GROUPS_JSON='{"prod":["app"]}'
+            NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON='{"prod":[]}'
+            GROUPS_RAW=prod
+            HOSTS_RAW=other
+            resolve_selected_hosts_json '["app","other"]'
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, outside.returncode)
+        self.assertIn("Unknown hosts requested: other", outside.stderr)
+
+    def test_group_selection_rejects_members_missing_from_host_inventory(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{"app":{},"ghost":{}}'
+            NIXBOT_GROUPS_JSON='{"prod":["app","ghost"]}'
+            NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON='{"prod":[]}'
+            GROUPS_RAW=prod
+            HOSTS_RAW=all
+            resolve_selected_hosts_json '["app"]'
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Unknown hosts requested: ghost", result.stderr)
+
+    def test_bash_completion_separates_group_and_host_values(self):
+        completion = self.repo_root / "pkgs/tools/nixbot/nixbot.bash"
+        result = self.run_script(
+            f"""
+            source <(sed '$d' {completion})
+            _nixbot_hosts() {{ printf '%s\\n' app db; }}
+            _nixbot_groups() {{ printf '%s\\n' prod stage; }}
+            _nixbot_compgen_words() {{
+              local stem="$1" words="$2" candidate
+              COMPREPLY=()
+              for candidate in $words; do
+                [[ "$candidate" == "$stem"* ]] || continue
+                COMPREPLY+=("$candidate")
+              done
+            }}
+
+            COMPREPLY=()
+            _nixbot_complete_group_value 'pr'
+            printf 'group:%s\\n' "${{COMPREPLY[*]}}"
+
+            COMPREPLY=()
+            _nixbot_complete_hosts_value '-d'
+            printf 'negative:%s\\n' "${{COMPREPLY[*]}}"
+
+            COMPREPLY=()
+            _nixbot_complete_host_value 'a'
+            printf 'single:%s\\n' "${{COMPREPLY[*]}}"
+            """
+        )
+
+        self.assertIn("group:prod", result.stdout)
+        self.assertIn("negative:-db", result.stdout)
+        self.assertIn("single:app", result.stdout)
+        self.assertNotIn("single:all", result.stdout)
+
     def test_group_selection_dependency_expansion_and_ci_first_ordering(self):
         result = self.run_script(
             """
@@ -416,15 +691,14 @@ class NixbotScriptTest(unittest.TestCase):
             NIXBOT_GROUPS_JSON='{"prod":["app","skipped"]}'
             NIXBOT_GROUP_DEPENDENCY_EXCLUSIONS_JSON='{"prod":["db"]}'
             GROUPS_RAW=prod
-            HOSTS_RAW=ci
-            HOSTS_EXPLICIT=1
+            HOSTS_RAW=all
             PRIORITIZE_CI_FIRST=1
             CI_TRIGGER_HOST=ci
             resolve_selected_hosts_json '["ci","parent","app","db","skipped"]'
             """
         )
 
-        self.assertEqual(["ci", "parent", "app", "skipped"], json.loads(result.stdout))
+        self.assertEqual(["parent", "app", "skipped"], json.loads(result.stdout))
 
     def test_execution_policy_rejects_dependencies_on_skipped_or_optional_hosts(self):
         skipped = self.run_script(

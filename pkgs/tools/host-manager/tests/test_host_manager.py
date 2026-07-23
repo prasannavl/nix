@@ -273,8 +273,8 @@ class HostManagerScriptTest(unittest.TestCase):
             parse_args reboot app --dry-run
             printf '%s %s %s\\n' "$ACTION" "$HOST" "$DRY_RUN"
             init_vars
-            parse_args reboot --host=all --jobs=3 --dry-run
-            printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$HOST_JOBS" "$DRY_RUN"
+            parse_args reboot --hosts=all --jobs=3 --dry-run
+            printf '%s %s %s %s\\n' "$ACTION" "$HOSTS_RAW" "$HOST_JOBS" "$DRY_RUN"
             init_vars
             parse_args gc app --delete-older-than 14d --dry-run
             printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$DELETE_OLDER_THAN" "$DRY_RUN"
@@ -285,17 +285,17 @@ class HostManagerScriptTest(unittest.TestCase):
             parse_args clean:nixbot app --dry-run
             printf '%s %s %s\\n' "$ACTION" "$HOST" "$DRY_RUN"
             init_vars
-            parse_args clean:deploy --host=all --dry-run
-            printf '%s %s %s\\n' "$ACTION" "$HOST" "$DRY_RUN"
+            parse_args clean:deploy --hosts=all --dry-run
+            printf '%s %s %s\\n' "$ACTION" "$HOSTS_RAW" "$DRY_RUN"
             init_vars
             parse_args clean:deploy --hosts='app,db' --dry-run
             printf '%s %s %s\\n' "$ACTION" "$HOSTS_RAW" "$DRY_RUN"
             init_vars
-            parse_args clean:podman --host=all --force-held --yes
-            printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$FORCE_HELD" "$YES"
+            parse_args clean:podman --hosts=all --force-held --yes
+            printf '%s %s %s %s\\n' "$ACTION" "$HOSTS_RAW" "$FORCE_HELD" "$YES"
             init_vars
-            parse_args gc --host=all --all --dry-run
-            printf '%s %s %s %s\\n' "$ACTION" "$HOST" "$GC_ALL" "$DRY_RUN"
+            parse_args gc --hosts=all --all --dry-run
+            printf '%s %s %s %s\\n' "$ACTION" "$HOSTS_RAW" "$GC_ALL" "$DRY_RUN"
             init_vars
             parse_args logs app --lines 50 --follow
             printf '%s %s %s %s %s\\n' "$ACTION" "$HOST" "$SERVICE_NAME" "$LOG_LINES" "$LOG_FOLLOW"
@@ -476,7 +476,7 @@ class HostManagerScriptTest(unittest.TestCase):
         )
 
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("Use --hosts=all", result.stderr)
+        self.assertIn("--host requires one exact host", result.stderr)
 
         wrong_action = self.run_script(
             """
@@ -504,7 +504,7 @@ class HostManagerScriptTest(unittest.TestCase):
         bad_jobs = self.run_script(
             """
             init_vars
-            parse_args reboot --host=all --jobs=0
+            parse_args reboot --hosts=all --jobs=0
             validate_common
             """,
             check=False,
@@ -544,7 +544,23 @@ class HostManagerScriptTest(unittest.TestCase):
         self.assertNotEqual(0, missing.returncode)
         self.assertIn("Unknown host selector: missing*", missing.stderr)
 
-    def test_maintenance_group_selectors_support_globs_and_exclusions(self):
+        for selector in ("-missing", "-missing*"):
+            with self.subTest(selector=selector):
+                missing_exclusion = self.run_script(
+                    f"""
+                    init_vars
+                    NIXBOT_HOSTS_JSON='{{"app": {{}}}}'
+                    resolve_maintenance_host_selectors '{selector}'
+                    """,
+                    check=False,
+                )
+                self.assertNotEqual(0, missing_exclusion.returncode)
+                self.assertIn(
+                    f"Unknown host selector: {selector.removeprefix('-')}",
+                    missing_exclusion.stderr,
+                )
+
+    def test_maintenance_group_scope_is_filtered_by_host_selectors(self):
         result = self.run_script(
             """
             init_vars
@@ -555,56 +571,88 @@ class HostManagerScriptTest(unittest.TestCase):
               "stage-app": {"groups": ["abird-stage", "abird"]},
               "ungrouped": {}
             }'
-            resolve_maintenance_host_selectors 'group:abird-dev,-dev-db'
+            GROUPS_RAW=abird-dev
+            HOSTS_RAW='all,-dev-db'
+            HOSTS_FROM_FLAG=1
+            maintenance_target_hosts
             printf '%s\\n' separator
-            resolve_maintenance_host_selectors 'group:abird-*,-group:abird-stage'
-            printf '%s\\n' separator
-            resolve_maintenance_host_selectors '-group:abird-*'
-            printf '%s\\n' separator
-            resolve_maintenance_host_selectors 'group:all,-dev-db'
+            GROUPS_RAW='abird-dev,abird-stage'
+            HOSTS_RAW=all
+            maintenance_target_hosts
             """
         )
 
-        exact, wildcard, implicit, all_groups = result.stdout.split("separator\n")
-        self.assertEqual(["dev-app"], exact.splitlines())
-        self.assertEqual(["dev-app", "dev-db"], wildcard.splitlines())
-        self.assertEqual(["nest", "ungrouped"], implicit.splitlines())
-        self.assertEqual(["dev-app", "nest", "stage-app"], all_groups.splitlines())
+        filtered, multiple = result.stdout.split("separator\n")
+        self.assertEqual(["dev-app"], filtered.splitlines())
+        self.assertEqual(["dev-app", "dev-db", "stage-app"], multiple.splitlines())
 
         missing = self.run_script(
             """
             init_vars
             NIXBOT_HOSTS_JSON='{"app": {"groups": ["apps"]}}'
-            resolve_maintenance_host_selectors 'group:missing*'
+            GROUPS_RAW=missing
+            resolve_maintenance_group_hosts
             """,
             check=False,
         )
         self.assertNotEqual(0, missing.returncode)
-        self.assertIn("Unknown group selector: missing*", missing.stderr)
+        self.assertIn("Unknown group requested: missing", missing.stderr)
 
-        empty = self.run_script(
+        outside = self.run_script(
             """
             init_vars
-            NIXBOT_HOSTS_JSON='{"app": {"groups": ["apps"]}}'
-            resolve_maintenance_host_selectors 'group:'
+            NIXBOT_HOSTS_JSON='{
+              "app": {"groups": ["apps"]},
+              "other": {}
+            }'
+            GROUPS_RAW=apps
+            HOST=other
+            maintenance_target_hosts
             """,
             check=False,
         )
-        self.assertNotEqual(0, empty.returncode)
-        self.assertIn("Group selector cannot be empty", empty.stderr)
+        self.assertNotEqual(0, outside.returncode)
+        self.assertIn("Unknown host selector: other", outside.stderr)
 
     def test_validate_multi_host_maintenance_selection(self):
         result = self.run_script(
             """
             init_vars
-            parse_args clean:deploy --hosts='app,db' --dry-run
-            NIXBOT_HOSTS_JSON='{"app": {}, "db": {}}'
+            parse_args clean:deploy --group apps --hosts='all,-db' --dry-run
+            NIXBOT_HOSTS_JSON='{
+              "app": {"groups": ["apps"]},
+              "db": {"groups": ["apps"]},
+              "other": {}
+            }'
             validate_args
             printf 'validated\\n'
             """
         )
 
         self.assertEqual("validated\n", result.stdout)
+
+    def test_group_selection_is_maintenance_only_and_non_empty(self):
+        wrong_action = self.run_script(
+            """
+            init_vars
+            parse_args logs --group apps
+            validate_common
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, wrong_action.returncode)
+        self.assertIn("--group is only supported by reboot, gc, and clean", wrong_action.stderr)
+
+        empty = self.run_script(
+            """
+            init_vars
+            parse_args clean:nixbot --group=
+            validate_common
+            """,
+            check=False,
+        )
+        self.assertNotEqual(0, empty.returncode)
+        self.assertIn("--group cannot be empty", empty.stderr)
 
     def test_prepare_ssh_context_uses_nixbot_inventory_route(self):
         (self.fake_repo / "hosts/nixbot.nix").write_text(
