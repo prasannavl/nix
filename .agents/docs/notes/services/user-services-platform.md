@@ -143,6 +143,23 @@ service-facing ingress policy.
   stay soft `Wants`-style startup edges, not hard `Requires`.
 - Backend outages should degrade to route-level `502` or `504` responses, not
   block nginx startup entirely.
+- Route and vhost proxy locations may declare extra `responseHeaders`. The
+  renderer must re-include the standard location security headers when it emits
+  any route-local `add_header`, because nginx `add_header` inheritance is
+  replace-not-merge.
+- Route and vhost proxy locations may also declare low-level proxy controls for
+  logout/callback glue: `requestHeaders`, `proxyMethod`, `proxyPassRequestBody`,
+  `proxySetBody`, `proxyRewritePath`, and `errorRedirects`. Prefer
+  ingress-composer helpers such as `mkLogoutChainRoutes` over hand-written route
+  attrs when chaining app logout endpoints through a shared edge-auth sign-out
+  flow.
+- oauth2-proxy forward-auth failures should redirect only likely top-level
+  document navigations to login. Unauthenticated asset, API, and background
+  requests should return `401` so SPA fanout does not create many abandoned
+  per-request CSRF cookies.
+- Shared nginx client-header buffers are intentionally above the upstream
+  defaults to tolerate domain-wide auth cookies. Treat that as a guardrail, not
+  the primary fix for OAuth cookie fanout.
 
 ## Rate limiting
 
@@ -168,7 +185,7 @@ service-facing ingress policy.
 
 ## Superseded notes
 
-- `docs/ai/notes/services/nginx-soft-backend-deps-2026-04.md`
+- `.agents/docs/notes/services/nginx-soft-backend-deps-2026-04.md`
 
 ## Provenance
 
