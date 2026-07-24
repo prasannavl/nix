@@ -13,6 +13,9 @@
 - Post-parity Abird source tip: `bdfe404f` on 2026-07-23, with two new commits
   after the shared parity landing.
 - Follow-up worktree: `worktrees/abird-post-cad-port-20260723`.
+- Latest Abird source tip: `44dfc80f` on 2026-07-24, with two commits after the
+  selector-scope follow-up.
+- Latest follow-up worktree: `worktrees/abird-post-bdfe-port-20260724`.
 
 The audit was commit-by-commit before grouping. Final implementation used the
 source-tip file state for cumulative shared units because several later commits
@@ -96,6 +99,13 @@ operations, and signed-build-cache handoff notes; the service-registry DNS
 playbook; both Abird-stack/nixbot implementation plans; and the Gondor-to-Nest
 migration script's Abird-specific command change were skipped.
 
+## 2026-07-24 Dead-Binding and Mail-Alias Follow-up
+
+| Commit     | Subject                           | Disposition                                                                                                                                                                                          |
+| ---------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `07a47768` | `style(nix): remove dead binding` | Cleanly ported byte-for-byte. It removes the unused `maxInt` binding from the shared Podman Compose module and resolves its deadnix advisory without changing runtime behavior.                      |
+| `44dfc80f` | `feat(mail): add p alias for pvl` | Skipped. The alias creates an Abird mail/identity address, while Pvl deliberately sets `pvl.email = false`, has no live Kanidm/Stalwart consumer, and owns a substantially different user inventory. |
+
 ## Logical Port Units
 
 1. Podman Compose and Quadlet lifecycle, transaction containment, runtime
@@ -114,6 +124,8 @@ migration script's Abird-specific command change were skipped.
 10. First-class group workflow scope, exact singular hosts, and plural host
     filtering across nixbot, host-manager, completions, tests, and local
     operator documentation.
+11. Removal of the obsolete Podman Compose `maxInt` binding, restoring exact
+    shared-module parity without a behavior change.
 
 ## Parity Contract
 
@@ -176,3 +188,7 @@ Intentional divergence:
   touched shared implementation/test files are byte-identical, and the
   repository-wide common `lib/**` and `pkgs/**` result remains 310 identical
   files plus the same 21 explained divergences.
+- The 2026-07-24 refresh confirmed `abird/master` at `44dfc80f`. Porting
+  `07a47768` restores the same 310 identical common `lib/**` and `pkgs/**` files
+  plus 21 explained divergences; `44dfc80f` is repository-owned user/mail policy
+  outside that shared parity set.

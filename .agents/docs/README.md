@@ -389,7 +389,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   18 audit of all 38 commits after `53a66371`, the cumulative shared lifecycle,
   Quadlet, nixbot, and fleet-selector ports, plus the July 23 rewritten-tip
   follow-up, Ollama update, Incus startup-wave adaptation, later selector-scope
-  port, per-commit dispositions, and final parity contract.
+  port, the July 24 Podman dead-binding cleanup and Abird-only mail-alias skip,
+  per-commit dispositions, and final parity contract.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
