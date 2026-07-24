@@ -1,4 +1,4 @@
-{...}: {
+{lib, ...}: {
   imports = [
     ../common/pvl.nix
     ../../lib/devices/asus-fa401wv.nix
@@ -18,4 +18,7 @@
   x.panicReboot = 0;
 
   services.fail2ban.enable = true;
+
+  time.timeZone = lib.mkForce null;
+  services.automatic-timezoned.enable = true;
 }
