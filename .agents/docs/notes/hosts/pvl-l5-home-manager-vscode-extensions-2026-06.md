@@ -61,3 +61,23 @@ the top-level symlink back to the old per-extension layout.
 
 For future failures, check the `Existing file ...` line first; the preceding
 `mimeapps.list` path may be just an example, not the file that needs attention.
+
+## Local desktop versus Remote SSH extensions
+
+On 2026-07-24, `pvl-l5` evaluated 26 extension entries under
+`programs.vscode.profiles.default.extensions`, representing 25 unique extensions
+because `ms-azuretools.vscode-containers` appears twice. Home Manager had
+populated the immutable `/home/pvl/.vscode/extensions` tree, and the local
+desktop VS Code was actively running extensions from it.
+
+A concurrent Remote SSH session still reported no installed extensions. Remote
+SSH uses `/home/pvl/.vscode-server/extensions`, not the desktop
+`/home/pvl/.vscode/extensions` tree; its `extensions.json` was empty. The Home
+Manager declaration therefore fully owns the local desktop installation but does
+not provision the separate VS Code Server extension host.
+
+Future remote provisioning should distinguish client/UI extensions from
+workspace extensions. Suitable approaches include declaring
+`remote.SSH.defaultExtensions` on the connecting client or introducing an
+explicit remote-server extension-management boundary; do not assume the local
+immutable extension tree is consumed by VS Code Server.

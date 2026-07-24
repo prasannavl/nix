@@ -99,6 +99,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   `mutableExtensionsDir = false` made Home Manager own `.vscode/extensions`,
   while the `mimeapps.list` force path in the log was only Home Manager's
   generic example.
+- `.agents/docs/notes/hosts/pvl-vscode-profile-2026-07.md`: Records the
+  desktop-versus-Remote-SSH extension ownership split, the `pvl.profile`
+  defaults extension that preserves writable user settings, and the `pvl-a1`
+  client deployment boundary.
 - `.agents/docs/notes/hosts/pvl-l5-automatic-timezoned-generation-mismatch-2026-06.md`:
   Records `pvl-l5` generation/profile mismatch symptoms, including
   `automatic-timezoned.service` appearing in deploy output but not live and the
