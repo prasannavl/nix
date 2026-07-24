@@ -125,10 +125,6 @@
   envSecretsOverrideFileName = "__podman-env-secrets.override.yml";
   fileSecretsOverrideFileName = "__podman-file-secrets.override.yml";
   explicitSystemdUnitPattern = ".*\\.(service|target|socket|timer|path|mount)$";
-  maxInt = a: b:
-    if a > b
-    then a
-    else b;
   composeServicesFromText = text: let
     lines = lib.splitString "\n" text;
     step = state: line: let
