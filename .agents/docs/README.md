@@ -244,6 +244,9 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
   bootstrap, SSH, worktree, Terraform, CI, and distinct group-scope, exact-host,
   and host-filter selection behavior.
+- `.agents/docs/notes/nixbot/pvl-a1-copy-retry-2026-07.md`: Records the `pvl-a1`
+  Tailscale-path copy disconnect and safe `nix copy` retry boundary, separately
+  from the concurrent optional `pvl-l5` activation failure.
 - `.agents/docs/notes/nixbot/abird-shared-port-parity-2026-06.md`: Records the
   June 2026 shared Abird port, byte-parity files, local adaptations, and skipped
   topology-owned units.
