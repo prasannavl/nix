@@ -171,8 +171,12 @@ Use this index as the canonical map for `.agents/docs/**`.
   churn restarted declared guest lifecycle units during normal `switch`, plus
   the durable explicit-trigger fix.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-storage-pools-2026-05.md`:
-  Records the separate Btrfs storage pools for the `pvl`, `abird`,
-  `abird-stage`, and `abird-dev` Incus projects on `pvl-x2`.
+  Historical tenant-pool mechanics, now annotated with the current `pvl`, fresh
+  `abird-platform`, and empty application-project pool set.
+- `.agents/docs/notes/hosts/pvl-x2-abird-platform-project-2026-07.md`: Current
+  fresh-platform ownership, clean empty `abird`/`abird-dev` fabrics, Gondor DNS
+  exception, retirement of stage and old project contents, and destructive
+  rollout gates.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-routes-2026-06.md`: Records the
   project-owned Incus route API, helper-based route reconciler, `pvl-x2` route
   to the still-live `10.10.30.0/24` subnet through `gap3-gondor`, and parent

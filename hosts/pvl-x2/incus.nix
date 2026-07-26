@@ -9,10 +9,52 @@
   };
   incusSecrets = ../../data/secrets/globals/incus;
   fpp = incusLib.fabricPolicyProfiles;
-  abirdNestAddress = "10.10.100.10";
-  abirdCiAddress = "10.10.100.80";
-  abirdStageSubnet = "10.10.200.0/24";
-  abirdDevSubnet = "10.10.220.0/24";
+  abirdTopology = {
+    abird-platform = {
+      network = {
+        subnetOctet = 0;
+        allow = [
+          {
+            to = {
+              project = "default";
+              address = "10.10.30.20";
+            };
+            tcp = [53];
+            udp = [53];
+          }
+        ];
+      };
+      instances = {
+        nest.octet = 10;
+        ci.octet = 80;
+      };
+    };
+    abird.network = {
+      subnetOctet = 100;
+      allow = [];
+    };
+    abird-dev.network = {
+      subnetOctet = 220;
+      allow = [];
+    };
+  };
+  addressFor = stack: role: "10.10.${toString abirdTopology.${stack}.network.subnetOctet}.${toString abirdTopology.${stack}.instances.${role}.octet}";
+  abirdNestAddress = addressFor "abird-platform" "nest";
+  abirdCiAddress = addressFor "abird-platform" "ci";
+  resolveAccess = from: rule:
+    {
+      from = from;
+      to = rule.to.project;
+      destination = rule.to.address;
+    }
+    // lib.optionalAttrs (rule ? tcp) {tcpPorts = rule.tcp;}
+    // lib.optionalAttrs (rule ? udp) {udpPorts = rule.udp;};
+  abirdForwardRules = builtins.concatLists (
+    lib.mapAttrsToList (
+      from: stack: map (resolveAccess from) stack.network.allow
+    )
+    abirdTopology
+  );
   isolatedProjectConfig = {
     "features.images" = "true";
     "features.networks" = "false";
@@ -20,7 +62,7 @@
     "features.storage.buckets" = "true";
     "features.storage.volumes" = "true";
   };
-  projectNames = ["pvl" "abird" "abird-stage" "abird-dev"];
+  projectNames = ["pvl" "abird-platform" "abird" "abird-dev"];
   projects = {
     pvl = {
       pool = "pvl";
@@ -35,43 +77,34 @@
         "restricted.devices.proxy" = "allow";
       };
     };
-    abird = {
-      pool = "abird";
+    abird-platform = {
+      pool = "abird-platform";
       network = {
-        policy =
-          fpp.containedPublic
-          // {
-            # Temporary migration path
-            forwardTo = ["default"];
-          };
-        name = "iabirdbr0";
-        ipv4Address = "10.10.100.1/24";
-        dhcpRanges = "10.10.100.100-10.10.100.199";
+        policy = fpp.containedPublic;
+        name = "iabirdplatbr0";
+        ipv4Address = "10.10.0.1/24";
+        dhcpRanges = "10.10.0.100-10.10.0.199";
       };
       config = {
         "restricted.devices.disk" = "allow";
-        "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-stage,/var/lib/incus-delegations/abird-dev";
+        "restricted.devices.disk.paths" = "/var/lib/incus-delegations/abird-platform,/var/lib/incus-delegations/abird,/var/lib/incus-delegations/abird-dev";
         "restricted.devices.proxy" = "allow";
       };
     };
-    abird-stage = {
-      pool = "abird-stage";
+    abird = {
+      pool = "abird";
       network = {
         policy = fpp.containedPublic;
-        name = "iabirdbr1";
-        ipv4Address = "10.10.200.1/24";
-        dhcpRanges = "10.10.200.100-10.10.200.199";
+        name = "iabirdbr0";
+        ipv4Address = "10.10.100.1/24";
+        dhcpRanges = "10.10.100.100-10.10.100.199";
       };
       config = {};
     };
     abird-dev = {
       pool = "abird-dev";
       network = {
-        policy =
-          fpp.containedPublic
-          // {
-            forwardTo = ["abird-stage"];
-          };
+        policy = fpp.containedPublic;
         name = "iabirdbr2";
         ipv4Address = "10.10.220.1/24";
         dhcpRanges = "10.10.220.100-10.10.220.199";
@@ -81,34 +114,7 @@
   };
   fabricIsolation = incusLib.mkManagedFabricPolicy {
     defaultPolicy = fpp.open;
-    forwardRules = [
-      {
-        from = "abird";
-        source = abirdNestAddress;
-        to = "abird-stage";
-        destination = abirdStageSubnet;
-        tcpPorts = [22];
-      }
-      {
-        from = "abird";
-        source = abirdNestAddress;
-        to = "abird-dev";
-        destination = abirdDevSubnet;
-        tcpPorts = [22];
-      }
-      {
-        from = "abird-stage";
-        to = "abird";
-        destination = abirdCiAddress;
-        tcpPorts = [22 5000];
-      }
-      {
-        from = "abird-dev";
-        to = "abird";
-        destination = abirdCiAddress;
-        tcpPorts = [22 5000];
-      }
-    ];
+    forwardRules = abirdForwardRules;
     projects = projects;
   };
   mkBridgeNetwork = network: {
@@ -210,11 +216,11 @@ in {
           pvl = {
             project = "pvl";
           };
+          abird-platform = {
+            project = "abird-platform";
+          };
           abird = {
             project = "abird";
-          };
-          abird-stage = {
-            project = "abird-stage";
           };
           abird-dev = {
             project = "abird-dev";
@@ -273,10 +279,10 @@ in {
         };
       };
 
-      abird.instances = {
+      abird-platform.instances = {
         abird-nest = mkLxc {
           name = "abird-nest";
-          ipv4Address = "10.10.100.10";
+          ipv4Address = abirdNestAddress;
           startPriority = 10;
           removalPolicy = "delete-all";
           nestedContainers = true;
@@ -284,12 +290,15 @@ in {
             incus-api = incusLib.mkIncusProxy {
               connectHost = "10.10.20.1";
             };
-            delegated-certs = incusLib.mkCertDelegation "abird";
-            delegated-stage-certs = incusLib.mkCertDelegation "abird-stage";
+            delegated-platform-certs = incusLib.mkCertDelegation "abird-platform";
+            delegated-abird-certs = incusLib.mkCertDelegation "abird";
             delegated-dev-certs = incusLib.mkCertDelegation "abird-dev";
           };
         };
       };
+
+      abird.instances = {};
+      abird-dev.instances = {};
     };
   };
 

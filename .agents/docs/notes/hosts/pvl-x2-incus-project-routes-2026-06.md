@@ -1,5 +1,9 @@
 # pvl-x2 Incus Project Routes
 
+> The route API and general `forwardRules` guidance remain current. The Abird
+> stage-era exception list below is historical; the fresh platform boundary is
+> recorded in `pvl-x2-abird-platform-project-2026-07.md`.
+
 ## Context
 
 `pvl-x2` still uses the live `gap3-gondor` path for migrated Abird services that
@@ -41,14 +45,10 @@ helper renders these as explicit nft `accept` rules before the generated
 project-to-project deny matrix. Return traffic is still handled by connection
 tracking, so an exception grants only new flows in the declared direction.
 
-For the delegated Abird projects on `pvl-x2`, the parent fabric allows:
-
-- `abird-nest` (`10.10.100.10`) to SSH to `abird-stage` (`10.10.200.0/24`).
-- `abird-nest` (`10.10.100.10`) to SSH to `abird-dev` (`10.10.220.0/24`).
-- `abird-stage` to reach only `abird-ci` (`10.10.100.80`) on TCP `22` and `5000`
-  inside the `abird` fabric.
-- `abird-dev` to reach only `abird-ci` (`10.10.100.80`) on TCP `22` and `5000`
-  inside the `abird` fabric.
+For the current delegated Abird fabrics on `pvl-x2`, `abird-platform` may reach
+only the preserved Gondor DNS proxy at `10.10.30.20` on TCP/UDP 53 through the
+`default` fabric. The clean empty `abird` and `abird-dev` fabrics have no
+cross-project exceptions.
 
 ## Project-Qualified Readiness Selectors
 

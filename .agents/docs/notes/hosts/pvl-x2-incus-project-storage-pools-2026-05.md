@@ -1,11 +1,14 @@
 # pvl-x2 Incus Project Storage Pools 2026-05
 
+> Historical topology note. The current fresh platform project and destructive
+> reset boundary are recorded in `pvl-x2-abird-platform-project-2026-07.md`.
+
 `pvl-x2` now declares separate Btrfs storage pools for the tenant Incus
 projects:
 
 - `pvl`
+- `abird-platform`
 - `abird`
-- `abird-stage`
 - `abird-dev`
 
 The default Incus project keeps using the `default` pool. Each tenant project
