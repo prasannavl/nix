@@ -99,6 +99,14 @@ Use this index as the canonical map for `.agents/docs/**`.
   `mutableExtensionsDir = false` made Home Manager own `.vscode/extensions`,
   while the `mimeapps.list` force path in the log was only Home Manager's
   generic example.
+- `.agents/docs/notes/hosts/pvl-l5-user-switch-recurrence-2026-07.md`: Records
+  the recurring GDM-greeter and SSH-only lingered-user activation failures where
+  synthetic GNOME session restarts tear down the user D-Bus control path,
+  including the same failure during rollback.
+- `.agents/docs/notes/hosts/pvl-x2-greeter-incus-rollback-2026-07.md`: Separates
+  the `pvl-x2` GDM user-activation exit status from successful Incus readiness,
+  and records the confirmed no-swap OOM cascade, `incusd` panic, and recovered
+  old generation.
 - `.agents/docs/notes/hosts/pvl-vscode-profile-2026-07.md`: Records the
   desktop-versus-Remote-SSH extension ownership split, the `pvl.profile`
   defaults extension that preserves writable user settings, and the `pvl-a1`
