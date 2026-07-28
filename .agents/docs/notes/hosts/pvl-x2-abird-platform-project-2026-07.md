@@ -86,7 +86,30 @@ Deploy the parent configuration after cleanup. It recreates empty `abird` and
 transitional access or adoption metadata. Fresh Tailscale enrollment and SSH
 identity must be validated before the nested platform deployment proceeds.
 
-No live Incus mutation or deployment was performed while preparing this change.
+## Live Rollout Validation
+
+On 2026-07-28, the parent configuration booted successfully with the fresh
+platform fabric and Nest. The first Nest bootstrap exposed the shared
+fresh-project certificate enrollment cycle documented in
+`incus-remote-delegation-2026-05.md`; the corrected publisher then enrolled the
+Nest certificate without a manual parent trust mutation.
+
+Post-deploy readback through `pvl-x2` confirmed:
+
+- `abird-nest` is running the intended new closure at `10.10.0.10`;
+- the delegation payload contains `abird-nest`, `peter`, and `pvl`;
+- the Nest client trust entry is restricted to `abird-platform`, `abird`, and
+  `abird-dev`;
+- certificate publication, GC, readiness settlement, and the `abird-ci`
+  lifecycle unit all completed successfully;
+- configured `abird-ci` is running at `10.10.0.80`, with Harmonia serving the
+  binary cache on port 5000;
+- Nest has no failed system units.
+
+The subsequent z-side Gondor proxy deployment completed the DNS cutover.
+`ci.abird.internal` resolves to `10.10.0.80` from both platform hosts and serves
+the Harmonia cache, while the preserved Gondor instance inventory remains
+unchanged and fully running.
 
 ## Preparation Validation
 

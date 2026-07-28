@@ -59,9 +59,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   model, host docs structure, tunnel host wiring, LXC networking, and durable
   host incident findings.
 - `.agents/docs/notes/hosts/incus-remote-delegation-2026-05.md`: Records the
-  remote `services.incus-manager` target mode and the first `pvl-x2` delegation
-  into `pvl-vlab-1`, where lifecycle commands create instances on the parent
-  daemon.
+  remote `services.incus-manager` target mode, fresh-project enrollment
+  ordering, and the first `pvl-x2` delegation into `pvl-vlab-1`, where lifecycle
+  commands create instances on the parent daemon.
 - `.agents/docs/notes/hosts/incus-gpu-device-helpers-2026-04.md`: Records the
   shared explicit DRM/KFD Incus device helper shape for reusable
   card/render-number and group-aware passthrough declarations.
@@ -183,8 +183,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   `abird-platform`, and empty application-project pool set.
 - `.agents/docs/notes/hosts/pvl-x2-abird-platform-project-2026-07.md`: Current
   fresh-platform ownership, clean empty `abird`/`abird-dev` fabrics, Gondor DNS
-  exception, retirement of stage and old project contents, and destructive
-  rollout gates.
+  exception, retirement of stage and old project contents, destructive rollout
+  gates, and the validated Nest/CI bootstrap state.
 - `.agents/docs/notes/hosts/pvl-x2-incus-project-routes-2026-06.md`: Records the
   project-owned Incus route API, helper-based route reconciler, `pvl-x2` route
   to the still-live `10.10.30.0/24` subnet through `gap3-gondor`, and parent

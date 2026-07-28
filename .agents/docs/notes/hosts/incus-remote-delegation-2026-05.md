@@ -72,6 +72,26 @@ are not needed. For each remote project that includes the controller
 certificate, the writer waits until the parent API authorizes that certificate
 for the specific project before machine units start.
 
+Fresh project enrollment has a strict ordering boundary. The remote certificate
+publisher must write the mounted payload before configuring the Incus CLI
+remote. `incus remote add --project <project>` verifies project authorization,
+so running it first creates a cycle: the parent cannot authorize the client
+until it receives the payload, while the guest cannot configure the client until
+it is authorized. The `remote-project-delegations` helper command therefore
+skips Incus CLI setup, writes the payload, and polls the HTTPS API with the raw
+certificate and key until the parent watcher has imported the project scope. All
+later lifecycle commands configure the normal ephemeral Incus client after this
+enrollment service succeeds.
+
+The characteristic failure has three parts:
+
+- the publisher immediately reports `User does not have permission for project`;
+- GC and readiness units report the same authorization error;
+- the parent-side `certs.json` remains unchanged or empty.
+
+Fix this at the shared helper dispatch boundary; do not manually broaden the
+live trust entry as a permanent workaround.
+
 The delegated directory is parent-owned. The guest-side writer must not change
 ownership or permissions on `/var/lib/incus-delegation/<project>`; it writes the
 already provisioned `certs.json` file and only uses same-directory atomic rename
