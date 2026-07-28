@@ -3453,13 +3453,20 @@ host_suspend_main() {
 main() {
 	local command
 	init_vars
-	setup_incus_client
 	command="${1-}"
 	[ -n "$command" ] || {
 		echo "usage: incus-machines-helper <client|preseed-migrations|certificates|routes|certificate-delegation|certificate-delegations-gc|remote-project-delegations|reconciler|settlement|machine|start-instance|stop-instance|images|gc|host-suspend> [args...]" >&2
 		exit 1
 	}
 	shift
+
+	# A fresh delegated project cannot configure the Incus CLI remote until the
+	# parent has imported this client's certificate. Publish the mounted
+	# certificate payload first; this command uses curl for its trust poll and
+	# does not need the generated Incus client configuration.
+	if [ "$command" != "remote-project-delegations" ]; then
+		setup_incus_client
+	fi
 
 	case "$command" in
 	client)

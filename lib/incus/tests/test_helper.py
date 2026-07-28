@@ -273,6 +273,53 @@ class IncusHelperTest(unittest.TestCase):
         self.assertEqual(["server cert"], lines[marker_index + 1 :])
         self.assertEqual([], self.read_incus_log())
 
+    def test_remote_delegation_publishes_before_incus_client_setup(self):
+        delegation_dir = self.work_dir / "delegation"
+        delegation_dir.mkdir()
+        client_cert = self.work_dir / "client.crt"
+        client_key = self.work_dir / "client.key"
+        delegations_file = self.work_dir / "delegations.json"
+        client_cert.write_text("client cert\n", encoding="utf-8")
+        client_key.write_text("client key\n", encoding="utf-8")
+        delegations_file.write_text(
+            json.dumps(
+                {
+                    "abird-platform": {
+                        "directory": str(delegation_dir),
+                        "fileName": "certs.json",
+                        "certificates": [
+                            {"name": "abird-nest", "file": str(client_cert)}
+                        ],
+                        "waitForTrust": True,
+                        "waitTimeoutSeconds": 1,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._write_executable(self.fake_bin / "curl", "#!/bin/sh\nexit 0\n")
+
+        self.run_helper(
+            "main remote-project-delegations",
+            INCUS_MACHINES_REMOTE_PROJECT_DELEGATIONS_FILE=str(delegations_file),
+            INCUS_MACHINES_REMOTE_NAME="parent",
+            INCUS_MACHINES_REMOTE_ADDRESS="https://127.0.0.1:8443",
+            INCUS_MACHINES_REMOTE_PROJECT="abird-platform",
+            INCUS_MACHINES_REMOTE_CLIENT_CERT_FILE=str(client_cert),
+            INCUS_MACHINES_REMOTE_CLIENT_KEY_FILE=str(client_key),
+            INCUS_MACHINES_REMOTE_ACCEPT_CERTIFICATE="true",
+            TEST_INCUS_FAIL_PREFIXES=json.dumps([["remote", "add"]]),
+        )
+
+        payload = json.loads(
+            (delegation_dir / "certs.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(1, payload["version"])
+        self.assertEqual(
+            ["abird-nest"], [cert["name"] for cert in payload["certificates"]]
+        )
+        self.assertEqual([], self.read_incus_log())
+
     def test_routes_reconcile_removes_old_routes_applies_current_routes_and_persists_state(self):
         routes_file = self.work_dir / "routes.json"
         current_routes = [
