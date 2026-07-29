@@ -66,10 +66,12 @@ stronger parity signal.
 ## Local ownership correction
 
 Independently of the source commit window, the obsolete Abird-only local
-data-migrator inventory was retired by setting `profiles.nix` to `{}`. The
-shared migrator remains available, but concrete plans now require explicit YAML
-and path bases; operator documentation no longer publishes Abird hostnames,
-paths, projects, or controller policy.
+data-migrator inventory was initially retired by setting `profiles.nix` to `{}`.
+The later policy-boundary sync replaced that file with the generic
+`migrationProfiles` package argument and an empty Pvl-owned
+`policies/default.nix`. The shared migrator remains available, but concrete
+plans require explicit YAML and path bases; operator documentation does not
+publish Abird hostnames, paths, projects, or controller policy.
 
 ## Parity contract
 
@@ -88,8 +90,8 @@ The remaining 24 differences are intentional or target-newer:
   coverage, and the equivalent Incus module-test expression;
 - package catalog and encrypted Cloudflare application documentation;
 - package manifest membership;
-- NATS stream inventory, the generic local data-migrator policy, documentation,
-  and path-base guard, and host-manager policy.
+- NATS stream inventory, the empty local data-migrator policy entrypoint,
+  documentation, and path-base guard, and host-manager policy.
 
 Source-only Abird application, bot, lab, service, and topology packages were not
 counted as shared merely because they live under `pkgs/`. No shared

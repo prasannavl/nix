@@ -1,7 +1,7 @@
 # Migration Manager
 
 This is the operator guide for the repository migration drain. It explains what
-the migration manager gates, how to toggle it manually, and how to use
+migration manager gates, how to toggle it manually, and how to use
 `data-migrator` for live cutovers.
 
 ## Model
@@ -92,11 +92,10 @@ sudo /run/current-system/sw/bin/migration-manager off
 
 ## Data Migrator Concepts
 
-`data-migrator` copies host state paths declared in an explicit YAML migration
-plan passed with `--config`. It can do plain file-copy migrations or Incus
-instance/project migrations. The checked-in profile set is intentionally empty;
-concrete host inventory belongs to the repository that owns the migrating
-service stack.
+`data-migrator` copies host state paths declared in a migration plan. Repository
+owners may inject checked-in profiles when building the package, and callers can
+always pass an explicit YAML plan with `--config`. It can do plain file-copy
+migrations or Incus instance/project migrations.
 
 Important names:
 
@@ -276,8 +275,8 @@ Before the final copy:
 
 - confirm the source host has a deployed generation with `migration-manager`;
 - confirm the target host can be deployed by nixbot;
-- confirm the explicit migration plan includes the state that must move and
-  excludes volatile cache paths;
+- confirm the migration plan includes the state that must move and excludes
+  volatile cache paths;
 - run a warm seed for large data sets;
 - check there is enough disk space on the target;
 - decide whether the source should remain drained, be resumed, or be stopped

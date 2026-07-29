@@ -416,8 +416,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   per-commit dispositions, and final parity contract.
 - `.agents/docs/notes/tooling/abird-post-44df-port-2026-07.md`: Records the July
   29 audit of all 28 commits after `44dfc80f`, shared stack-set, package-helper,
-  nixbot, lint, and residual Cloudflare wrapper ports, local-only data-migrator
-  inventory retirement, target-newer review fixes, per-commit dispositions, and
+  nixbot, lint, and residual Cloudflare wrapper ports, empty local data-migrator
+  policy injection, target-newer review fixes, per-commit dispositions, and
   final byte-parity contract.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
@@ -441,8 +441,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   dotfiles sync user timer stopped scheduling after a failed first clone, and
   the calendar-timer replacement.
 - `.agents/docs/notes/tooling/data-migrator-host-drain-2026-05.md`: Records the
-  generic `data-migrator` port and the legacy generation-owned host drain
-  semantics.
+  generic `data-migrator` port, repository-owned policy injection boundary, and
+  the legacy generation-owned host drain semantics.
 - `.agents/docs/notes/tooling/bash-completions-2026-06.md`: Records repo-local
   Bash completion sources for operator CLIs, distinct group, exact-host, and
   host-selector completion, and root dev-shell loading.

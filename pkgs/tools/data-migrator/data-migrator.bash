@@ -15,7 +15,8 @@ _data_migrator_profiles() {
 	fi
 
 	root="$(_data_migrator_repo_root)" || return 0
-	profiles_file="${root}/pkgs/tools/data-migrator/profiles.nix"
+	profiles_file="${DATA_MIGRATOR_PROFILES_FILE:-${root}/pkgs/tools/data-migrator/policies/default.nix}"
+	[ -n "$profiles_file" ] && [ -f "$profiles_file" ] || return 0
 	nix eval --json --file "$profiles_file" 2>/dev/null |
 		jq -r 'keys[]' 2>/dev/null
 }

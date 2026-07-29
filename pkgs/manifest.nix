@@ -15,7 +15,12 @@
     }
     {
       id = "data-migrator";
-      path = ./tools/data-migrator/default.nix;
+      build = packages:
+        pkgs.callPackage ./tools/data-migrator/default.nix {
+          migrationProfiles = import ./tools/data-migrator/policies;
+          nixbot = packages.nixbot;
+          migrationManager = packages.migration-manager;
+        };
     }
     {
       id = "migration-manager";

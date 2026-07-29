@@ -58,7 +58,9 @@ package `meta.mainProgram` is `migration-manager`.
 - Source the bridge in `bashInteractive`.
 - Synthetic completion checks:
   - `nix run .#nixbot -- --hosts ab<TAB>` suggests Abird hosts.
-  - `nix run .#data-migrator -- --profile ab<TAB>` suggests profiles.
+  - `nix run .#data-migrator -- --profile <TAB>` returns no repository profiles
+    with Pvl's empty policy; an explicit `DATA_MIGRATOR_PROFILES_FILE` supplies
+    repository-local names when configured.
   - `nix run .#migration-manager -- remote on --host ab<TAB>` suggests nixbot
     hosts.
 - Verify fallback still works for ordinary `nix` and `nix run` completion when a

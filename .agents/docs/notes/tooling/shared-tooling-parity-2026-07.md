@@ -17,7 +17,7 @@ byte-identical; repository policy is isolated in each repository's package-owned
 - `pkgs/tools/host-manager/host-manager.sh` owns only generic mechanics.
 - `pkgs/tools/host-manager/policy.nix` owns the repository's default service
   stack, deployment-host mapping, and generated-host module imports, following
-  the package-owned policy pattern used by data-migrator's `profiles.nix`.
+  the package-owned policy pattern under `pkgs/tools/data-migrator/policies/`.
 - Existing stack data provides `srv.defaultUser`; host-manager derives the
   fallback unit prefix from it.
 - Generated Incus hosts use `machineProfiles.incusLxc`; ordinary generated hosts

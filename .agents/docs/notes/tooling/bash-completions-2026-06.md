@@ -22,7 +22,8 @@ Added Bash completion sources for operator CLIs:
 - `pkgs/tools/data-migrator/data-migrator.bash`
   - installed by the `data-migrator` package;
   - completes profiles from packaged YAML profiles or
-    `pkgs/tools/data-migrator/profiles.nix`;
+    `DATA_MIGRATOR_PROFILES_FILE`, with the repo-local policy convention at
+    `pkgs/tools/data-migrator/policies/default.nix` as its fallback;
   - completes nixbot-backed host arguments from `hosts/nixbot.nix`;
   - registers `data-migrator`.
 - `pkgs/tool/migration-manager/migration-manager.bash`

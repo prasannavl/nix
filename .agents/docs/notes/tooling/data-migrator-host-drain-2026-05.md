@@ -9,6 +9,10 @@ data-migrator and migration-drain commits.
 
 - Added the generic `pkgs/tools/data-migrator` package and root package/app
   export.
+- The package accepts `migrationProfiles ? {}` and serializes the injected
+  repository policy. The root manifest injects
+  `pkgs/tools/data-migrator/policies/default.nix`, which is intentionally empty
+  in Pvl.
 - Kept the file-copy and Incus-copy mechanics:
   - rsync with streamed aggregate progress
   - Nix-provided source-side rsync default
@@ -34,8 +38,11 @@ data-migrator and migration-drain commits.
 - `lib/incus/default.nix` and `lib/incus/helper.sh` are back to the upstream
   gap3 shape for the common files.
 
-## Deferred
+## Policy Boundary
 
-- Abird-specific data-migrator profiles, host names, paths, and examples remain
-  project-specific to gap3 unless a matching local service stack is explicitly
-  requested.
+- Concrete profiles, host names, paths, and controller defaults remain with the
+  repository that owns the migrating stack.
+- Abird policy lives under Abird's `pkgs/tools/data-migrator/policies/` and is
+  not ported here.
+- Pvl operators use an explicit YAML plan with `--config`, or may add a future
+  Pvl-owned policy without changing the shared engine.

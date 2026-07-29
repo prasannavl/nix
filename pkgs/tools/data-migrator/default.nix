@@ -3,6 +3,7 @@
   pkgHelper ? import ../../../lib/flake/pkg-helper.nix,
   nixbot ? pkgs.callPackage ../nixbot/default.nix {inherit pkgHelper;},
   migrationManager ? pkgs.callPackage ../../tool/migration-manager/default.nix {inherit pkgHelper;},
+  migrationProfiles ? {},
 }: let
   lib = pkgs.lib;
   tests = import ./tests {pkgs = pkgs;};
@@ -10,13 +11,12 @@
     ps.pyyaml
   ]);
   yaml = pkgs.formats.yaml {};
-  profiles = import ./profiles.nix;
   profileFiles = pkgs.linkFarm "data-migrator-profiles" (
     lib.mapAttrsToList (name: value: {
       name = "${name}.yaml";
       path = yaml.generate "${name}.yaml" value;
     })
-    profiles
+    migrationProfiles
   );
   app = pkgs.writeShellApplication {
     name = "data-migrator";

@@ -73,7 +73,8 @@ data-migrator --profile app \
   --warm
 ```
 
-The checked-in package intentionally has no concrete host profiles. Put each
+Concrete host profiles are repository policy rather than shared tool behavior.
+Use a checked-in profile name when the owning repository provides one, or put a
 migration plan in an explicit YAML file and pass it with `--config`.
 `--source-host` is optional when the plan declares `source_host`; the command
 line value wins when both are set. `target_path_base` is the destination root
@@ -96,10 +97,10 @@ Exclude patterns must either be full absolute paths, or relative patterns
 starting with `./`. `!./tmp/` applies inside every copied path, while
 `!/var/lib/app/uploads/cache/` applies only when copying `/var/lib/app/uploads`.
 
-The Nix package can serialize entries from `profiles.nix` into YAML files in the
-store and sets `DATA_MIGRATOR_CONFIG_DIR` for the Python tool. This repository
-keeps that set empty so concrete migration inventory stays with its owning
-project.
+The Nix package accepts a repository-provided `migrationProfiles` attribute set,
+serializes it into YAML files in the store, and sets `DATA_MIGRATOR_CONFIG_DIR`
+for the Python tool. Its default is empty. Concrete inventory remains owned by
+the repository that declares and injects it.
 
 Source-side reads default to running remote rsync through Nix:
 `sudo -n nix shell nixpkgs#rsync -c rsync`. This keeps migrations working from
