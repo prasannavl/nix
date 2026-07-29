@@ -335,8 +335,8 @@ run_manifest_command() {
 			local manifest_status
 			manifest_tmpdir="$(mktemp -d)"
 			if (
-				export TMPDIR="${manifest_tmpdir}"
-				run_manifest_command_body "${env_script}" "${command}"
+				run_manifest_command_with_tmpdir \
+					"${manifest_tmpdir}" "${env_script}" "${command}"
 			); then
 				manifest_status=0
 			else
@@ -349,6 +349,14 @@ run_manifest_command() {
 			return
 		fi
 	)
+}
+
+run_manifest_command_with_tmpdir() {
+	local manifest_tmpdir="$1"
+	shift
+
+	export TMPDIR="${manifest_tmpdir}"
+	run_manifest_command_body "$@"
 }
 
 run_manifest_command_body() {
