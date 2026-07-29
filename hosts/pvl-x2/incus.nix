@@ -109,7 +109,13 @@
         ipv4Address = "10.10.220.1/24";
         dhcpRanges = "10.10.220.100-10.10.220.199";
       };
-      config = {};
+      config = {
+        "limits.containers" = "7";
+        "limits.cpu" = "8";
+        "limits.disk" = "512GiB";
+        "limits.instances" = "7";
+        "limits.memory" = "8GiB";
+      };
     };
   };
   fabricIsolation = incusLib.mkManagedFabricPolicy {
@@ -274,6 +280,30 @@ in {
             removalPolicy = "delete-all";
             privileged = true;
             nestedContainers = true;
+            limits = {
+              cpu = {
+                count = 22;
+                priority = 7;
+              };
+              memory = {
+                max = "50GiB";
+                oomScoreAdjustment = -250;
+              };
+              disk = {
+                priority = 7;
+                devices = {
+                  root = {
+                    read = "1GiB";
+                    write = "500MiB";
+                  };
+                  state = {
+                    read = "1GiB";
+                    write = "500MiB";
+                  };
+                };
+              };
+              network.devices.eth0.rxtx = "600Mbit";
+            };
             extraDevices = amdGpuDevices;
           };
         };
