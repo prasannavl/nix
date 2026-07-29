@@ -35,8 +35,8 @@ Cold-start admission and deploy admission are separate boundaries:
   and adds no narrower per-domain override;
 - `services.incus-manager.global.startConcurrency` limits automatic Incus guest
   starts owned by one controller;
-- per-instance and per-project Incus resource budgets must contain steady-state
-  memory and I/O consumption;
+- per-instance and per-project Incus limits must contain steady-state memory and
+  I/O consumption;
 - the physical `pvl-x2` configuration in this repository owns outer-controller
   budgets, swap, and storage placement. Child repositories cannot guarantee
   parent safety alone.
@@ -112,18 +112,78 @@ fan-out nor per-guest start fan-out is the cause. Corp therefore returns to four
 start-through-ready lanes: serializing its graph slows recovery without
 containing the accumulated resident set that exhausted the physical host.
 
-## Remaining physical capacity work
+## Limit envelopes
 
 Boot and service admission remove synchronized recovery storms but do not create
-RAM. Before treating all full Corp replicas as safely co-resident, the physical
-`pvl-x2` must provide reclaim headroom such as host-owned swap and declare hard
-absolute memory budgets whose sum leaves host/Incus/cache reserve. It should
-also isolate high-read dev or stage storage onto the unused NVMe. Incus project
-memory limits require corresponding absolute instance memory limits. Resource
-limits must be reconciled live rather than folded into the current recreate
-hash.
+RAM. Incus limits therefore have two ownership layers:
+
+- the physical controller caps the `abird-dev` project at seven containers,
+  eight CPUs, 8 GiB memory, and 512 GiB storage;
+- the seven Abird-dev guests sum to eight CPUs and 7.5 GiB memory, leaving
+  project-level controller margin, with per-role network and disk-I/O limits;
+- the physical controller caps outer `gap3-gondor` at 22 CPUs, 50 GiB memory,
+  and 600 Mbit/s;
+- the eleven nested Gondor guests sum to 20 CPUs and 46 GiB memory, leaving two
+  CPUs and 4 GiB for the nested controller. Corp keeps a 24 GiB ceiling and
+  `gap3-rivendell` keeps 11.25 GiB, both above the observed resident set.
+
+The stack-facing instance API groups device limits under
+`limits.disk.devices.<name>` and `limits.network.devices.<name>`. Disk `read`
+and `write` are directional, while `rw` applies one combined value; network `rx`
+and `tx` are from the instance perspective, while `rxtx` applies one combined
+value. The renderer maps `rw` and `rxtx` to Incus device `limits.max`. Combined
+and directional forms are mutually exclusive for the same device.
+
+Priority-like settings retain their native domains instead of inventing a
+cross-subsystem scale. Explicit CPU and disk priorities use Incus `0` through
+`10`; null leaves Incus's effective defaults of CPU `10` and disk `5`.
+`limits.memory.oomScoreAdjustment` uses the kernel `-1000` through `1000`
+domain; null leaves the effective neutral value `0`. Network priority is not
+part of the public API because Incus only applies it for specific queued NIC
+types. Unset options remain unmanaged, so existing manual values are not claimed
+or removed.
+
+Container swap policy is typed as `limits.memory.swap.enable` plus optional
+`limits.memory.swap.max`. The default `{ enable = true; max = null; }` emits no
+Incus key and inherits native swap behavior. Disabling emits `false`; an enabled
+non-null maximum emits that size. A disabled policy cannot also declare a
+maximum, and virtual machines cannot override either swap field.
+
+The shared Incus module keeps limit state outside the recreate hash. A dedicated
+oneshot reconciles only the declared config and device limit keys on an existing
+owned guest, and the normal lifecycle path applies the same limits when creating
+or adopting one. Removing a declared limit unsets only keys previously recorded
+as module-owned.
+
+All pools remain on their existing physical storage by explicit policy; this
+change does not use or migrate to the unused NVMe. The deployed Incus 7.2
+servers do not advertise the `disk_io_limits_combined` API extension, so each
+disk direction accepts one byte/s or one IOPS value and the current declarations
+choose byte/s. A combined comma-separated value can be enabled after the fleet
+is upgraded to a server that advertises that extension.
+
+Nested `gap3-gondor` guests intentionally omit disk-I/O limits. Their Incus
+`dir` pool sits on a Btrfs mount passed down from `pvl-x2`; inside the nested
+host, `findmnt` exposes the parent LUKS mapper path but the corresponding block
+device is not present. Incus therefore rejects the guest start with `Invalid
+block device` when a disk limit is declared. The host sets
+`diskIoLimitsSupported = false`, so a future nested disk-limit declaration fails
+at Nix evaluation rather than during deployment.
+
+Direct `pvl-x2` Incus declarations can still carry disk-I/O limits because the
+host can resolve the backing device, including the outer `gap3-gondor` limit.
+However, the current Btrfs-over-device-mapper path can prevent the kernel
+block-I/O controller from enforcing them. Validate effective throttling under
+load instead of treating declaration as proof. True hard disk isolation still
+requires a separate physical device or host.
+
+Host-owned swap remains future reclaim work. The memory ceilings are hard
+absolute limits and their sums deliberately leave host and controller reserve.
 
 Reference:
 [Incus project limits](https://linuxcontainers.org/incus/docs/main/reference/projects/)
 and
-[Incus instance options](https://linuxcontainers.org/incus/docs/main/reference/instance_options/).
+[Incus instance options](https://linuxcontainers.org/incus/docs/main/reference/instance_options/),
+[disk devices](https://linuxcontainers.org/incus/docs/main/reference/devices_disk/),
+and
+[storage-volume I/O limits](https://linuxcontainers.org/incus/docs/main/howto/storage_volumes/).

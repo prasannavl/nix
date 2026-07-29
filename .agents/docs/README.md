@@ -202,7 +202,8 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-x2-incus-capacity-admission-2026-07.md`:
   Physical-host OOM/watchdog and Btrfs cold-boot storm evidence, the separation
   between deploy and guest-start admission, bounded priority/readiness Incus
-  waves, and the remaining parent-owned resource-budget/storage boundary.
+  waves, live-reconciled limit envelopes, and the remaining storage enforcement
+  boundary.
 - `.agents/docs/notes/hosts/pvl-x2-nixos-26.05-transition-2026-06.md`: Records
   the June 15, 2026 `pvl-x2` NixOS 26.05 transition check, including stale
   graphical-session user-unit failures, the `xdg-document-portal` stop timeout,
