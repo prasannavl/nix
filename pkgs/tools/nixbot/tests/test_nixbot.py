@@ -3129,6 +3129,124 @@ EOF_SCRIPT
         self.assertIn("rootless-mutation abird-novu pid=", result.stdout)
         self.assertIn("reason=compose up startedAt=123", result.stdout)
 
+    def test_remote_health_check_waits_for_inactive_unit_with_queued_start_job(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\n'; }
+            _remote_health_check_expected_user_units() { printf 'abird-zulip.service\n'; }
+            _remote_health_check_expected_runtime() { :; }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() { :; }
+            setpriv() {
+              case "$*" in
+                *"systemctl --user list-jobs"*)
+                  printf '42 abird-zulip.service start waiting\n'
+                  ;;
+                *"systemctl --user show"*)
+                  printf '%s\n' \
+                    'LoadState=loaded' \
+                    'ActiveState=inactive' \
+                    'SubState=dead' \
+                    'NeedDaemonReload=no'
+                  ;;
+              esac
+              return 0
+            }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\n' "$rc"
+            """
+        )
+
+        self.assertEqual(["rc:2"], result.stdout.splitlines())
+        self.assertIn("[user abird expected units queued for start]", result.stderr)
+        self.assertIn(
+            "abird-zulip.service loaded inactive dead id=42 type=start state=waiting",
+            result.stderr,
+        )
+        self.assertNotIn("FAILED declared managed user units", result.stderr)
+
+    def test_remote_health_check_rejects_inactive_unit_without_own_start_job(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\n'; }
+            _remote_health_check_expected_user_units() { printf 'abird-zulip.service\n'; }
+            _remote_health_check_expected_runtime() { :; }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() { :; }
+            setpriv() {
+              case "$*" in
+                *"systemctl --user list-jobs"*)
+                  printf '41 abird-novu.service start running\n'
+                  ;;
+                *"systemctl --user show"*)
+                  printf '%s\n' \
+                    'LoadState=loaded' \
+                    'ActiveState=inactive' \
+                    'SubState=dead' \
+                    'NeedDaemonReload=no'
+                  ;;
+              esac
+              return 0
+            }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\n' "$rc"
+            """
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("unit=abird-zulip.service", result.stderr)
+        self.assertIn("state=inactive/dead", result.stderr)
+        self.assertIn("job=none", result.stderr)
+        self.assertIn("FAILED — service failures detected", result.stderr)
+
     def test_remote_health_check_rejects_inactive_declared_autostart_unit(self):
         result = self.run_script(
             """
@@ -4448,6 +4566,7 @@ EOF_SCRIPT
             health_check_cmd="$(build_post_switch_health_check_cmd)"
             grep -F '[health-check] ok' <<<"$health_check_cmd"
             grep -F '_remote_health_check_expected_runtime ()' <<<"$health_check_cmd"
+            grep -F '_remote_health_check_pending_start_job_for_unit ()' <<<"$health_check_cmd"
             """
         )
 

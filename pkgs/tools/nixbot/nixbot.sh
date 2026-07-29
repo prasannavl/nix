@@ -9157,6 +9157,22 @@ _remote_health_check_expected_runtime() {
 	"${helper}" expected-runtime "${user}"
 }
 
+_remote_health_check_pending_start_job_for_unit() {
+	local expected_unit="$1"
+
+	awk -v expected_unit="${expected_unit}" '
+		$2 == expected_unit &&
+			($3 == "start" || $3 == "restart" ||
+				$3 == "try-restart" || $3 == "reload-or-start") &&
+			($4 == "waiting" || $4 == "running") {
+				printf "id=%s type=%s state=%s\n", $1, $3, $4
+				found = 1
+				exit
+			}
+		END { exit found ? 0 : 1 }
+	'
+}
+
 _remote_activation_progress_probe() {
 	local node="$1" unit="$2" started_at="$3"
 	local now="" elapsed=0 active="" sub="" result="" main_pid="" jobs=""
@@ -10160,6 +10176,7 @@ _remote_post_switch_user_health_check_once() {
 	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
 	local expected_units="" expected_unit="" expected_state=""
 	local load_state="" active_state="" sub_state="" need_daemon_reload=""
+	local raw_user_jobs="" pending_start_job=""
 	local raw_failed_output="" failed_output="" ignored_failed_output=""
 	local raw_system_failed_output="" system_failed_output="" ignored_system_failed_output=""
 	local raw_transitional_output="" transitional_output=""
@@ -10229,6 +10246,11 @@ ${system_podman_starting_output}"
 		fi
 		runtime_dir="/run/user/${uid}"
 		bus="unix:path=${runtime_dir}/bus"
+		raw_user_jobs="$(
+			setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+				env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+				systemctl --user list-jobs --no-legend --plain 2>/dev/null || true
+		)"
 		while IFS= read -r expected_unit; do
 			[ -n "${expected_unit}" ] || continue
 			expected_state="$(
@@ -10248,6 +10270,7 @@ ${system_podman_starting_output}"
 }user=${user} unit=${expected_unit} load=${load_state:-unknown} state=${active_state:-unknown}/${sub_state:-unknown} need-daemon-reload=${need_daemon_reload:-unknown}"
 				continue
 			fi
+			pending_start_job=""
 			case "${active_state}" in
 			active) ;;
 			activating | deactivating | reloading)
@@ -10255,6 +10278,19 @@ ${system_podman_starting_output}"
 				starting_output="${starting_output}${starting_output:+
 }[user ${user} expected units still settling]
 ${expected_unit} loaded ${active_state} ${sub_state:-unknown}"
+				;;
+			inactive)
+				if pending_start_job="$(_remote_health_check_pending_start_job_for_unit \
+					"${expected_unit}" <<<"${raw_user_jobs}")"; then
+					had_starting=1
+					starting_output="${starting_output}${starting_output:+
+}[user ${user} expected units queued for start]
+${expected_unit} loaded ${active_state} ${sub_state:-unknown} ${pending_start_job}"
+				else
+					had_service_failures=1
+					expected_failure_output="${expected_failure_output}${expected_failure_output:+
+}user=${user} unit=${expected_unit} load=${load_state} state=${active_state:-unknown}/${sub_state:-unknown} need-daemon-reload=${need_daemon_reload:-unknown} job=none"
+				fi
 				;;
 			*)
 				had_service_failures=1
@@ -10508,6 +10544,7 @@ build_post_switch_health_check_cmd() {
 		_remote_managed_user_names \
 		_remote_health_check_expected_user_units \
 		_remote_health_check_expected_runtime \
+		_remote_health_check_pending_start_job_for_unit \
 		_remote_post_switch_user_health_check_once \
 		_remote_post_switch_user_health_check
 }
