@@ -38,6 +38,17 @@
     stackProfiles = {};
   };
   outputs = flakeLib.withPkgs pkgs;
+  packageHelper = import ../pkg-helper.nix;
+  nestedRustPackage = packageHelper.mkRustDerivation {
+    pkgs = pkgs;
+    build = pkgs.runCommand "nested-rust-package" {} ''
+      touch "$out"
+    '';
+    src = ../../..;
+    pname = "nested-rust-package";
+    projectDir = "pkgs/examples/hello-rust/src";
+    projectPath = "pkgs/examples/hello-rust";
+  };
   nativeClientCaDefaultsStack = import ../stack/lib.nix {
     stackName = "test";
     org = "test";
@@ -187,6 +198,10 @@
     ${system} = outputs;
   };
 in {
+  lib-flake-nested-rust-package = assert toString nestedRustPackage.sourcePath == toString ../../../pkgs/examples/hello-rust/default.nix;
+    pkgs.runCommand "lib-flake-nested-rust-package-test" {} ''
+      touch "$out"
+    '';
   lib-flake-stack-set = assert stackSet.app.fixture.owned == ["proxy" "web"];
   assert stackSet.app.fixture.dependencies == ["db"];
   assert builtins.attrNames stackSet.app.serviceRegistry.domains == ["apex"];

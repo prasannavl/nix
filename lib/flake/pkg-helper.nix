@@ -1896,6 +1896,10 @@ in rec {
     pname ? deriveProjectName src,
     version ? "0.1.0",
     projectDir ? null,
+    projectPath ?
+      if projectDir == null
+      then deriveProjectPath src
+      else projectDir,
     deps ? [],
     cargoLock ? null,
     meta ? {},
@@ -1943,7 +1947,7 @@ in rec {
     sourcePath =
       if projectDir == null
       then null
-      else src + "/${projectDir}/default.nix";
+      else src + "/${projectPath}/default.nix";
     buildArgs = builtins.removeAttrs args [
       "pkgs"
       "build"
@@ -1951,6 +1955,7 @@ in rec {
       "pname"
       "version"
       "projectDir"
+      "projectPath"
       "deps"
       "cargoLock"
       "meta"
@@ -2099,11 +2104,7 @@ in rec {
       then build
       else rustBuildPlan.build;
     bundle = mkPackageOpsBundle {
-      inherit pkgs src pname;
-      projectPath =
-        if projectDir == null
-        then deriveProjectPath src
-        else projectDir;
+      inherit pkgs src pname projectPath;
       apps = {
         fmt = {
           parts = [
