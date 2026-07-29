@@ -157,6 +157,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   `pvl-a1` switch from the base `google-cloud-sdk` package to a
   `withExtraComponents` build that includes `log-streaming` for Cloud Run log
   tailing.
+- `.agents/docs/notes/hosts/pvl-a1-s2idle-hard-freeze-2026-07.md`: Records the
+  six terminal s2idle hangs across ten `pvl-a1` boots, the NVIDIA 595.84 hybrid
+  power-path diagnosis, the FA401WV-specific S0ix decision, the closed-lid wake
+  storm, and the wake-source, instrumentation, and fallback plan.
 - `.agents/docs/notes/hosts/pvl-a1-incus-client-cert-2026-05.md`: Records the
   `pvl-a1` pinned Incus client certificates and admin-only encrypted private
   keys used for deterministic TLS client login, the matching TCP `8443` firewall
