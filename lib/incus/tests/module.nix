@@ -137,15 +137,19 @@
     (evalConfig.extendModules {
       modules = [
         {
-          services.incus-manager.default.instances.web.limits.memory.max = lib.mkForce "3GiB";
-          services.incus-manager.default.instances.web.limits.memory.swap = {
-            enable = lib.mkForce true;
-            max = "1GiB";
-          };
-          services.incus-manager.default.instances.web.limits.network.devices.eth0 = {
-            rxtx = lib.mkForce null;
-            rx = "200Mbit";
-            tx = "100Mbit";
+          services.incus-manager.default.instances.web.limits = {
+            memory = {
+              max = lib.mkForce "3GiB";
+              swap = {
+                enable = lib.mkForce true;
+                max = "1GiB";
+              };
+            };
+            network.devices.eth0 = {
+              rxtx = lib.mkForce null;
+              rx = "200Mbit";
+              tx = "100Mbit";
+            };
           };
         }
       ];
@@ -166,7 +170,8 @@
         }
       ];
     }).config;
-  invalidCombinedDiskLimit = builtins.tryEval (
+  invalidCombinedDiskLimit =
+    builtins.tryEval
     (evalConfig.extendModules {
       modules = [
         {
@@ -174,8 +179,7 @@
             lib.mkForce "100MiB,2000iops";
         }
       ];
-    }).config.environment.etc."incus-machines/web.json".text
-  );
+    }).config.environment.etc."incus-machines/web.json".text;
   unsupportedDiskLimitConfig =
     (evalConfig.extendModules {
       modules = [
