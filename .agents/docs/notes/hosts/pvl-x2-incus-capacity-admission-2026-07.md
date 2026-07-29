@@ -165,7 +165,8 @@ is upgraded to a server that advertises that extension.
 Nested `gap3-gondor` guests intentionally omit disk-I/O limits. Their Incus
 `dir` pool sits on a Btrfs mount passed down from `pvl-x2`; inside the nested
 host, `findmnt` exposes the parent LUKS mapper path but the corresponding block
-device is not present. Incus therefore rejects the guest start with `Invalid
+device is not present. Incus therefore rejects the guest start with
+`Invalid
 block device` when a disk limit is declared. The host sets
 `diskIoLimitsSupported = false`, so a future nested disk-limit declaration fails
 at Nix evaluation rather than during deployment.
