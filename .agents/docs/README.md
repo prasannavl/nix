@@ -204,6 +204,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   between deploy and guest-start admission, bounded priority/readiness Incus
   waves, live-reconciled limit envelopes, and the remaining storage enforcement
   boundary.
+- `.agents/docs/notes/hosts/pvl-x2-host-network-qos-2026-07.md`: Records the
+  host-owned CAKE/IFB policy that keeps host traffic above forwarded Incus
+  traffic while allowing idle bandwidth borrowing.
 - `.agents/docs/notes/hosts/pvl-x2-nixos-26.05-transition-2026-06.md`: Records
   the June 15, 2026 `pvl-x2` NixOS 26.05 transition check, including stale
   graphical-session user-unit failures, the `xdg-document-portal` stop timeout,

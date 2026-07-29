@@ -16,6 +16,7 @@ in {
     ./sys.nix
     ./packages.nix
     ./firewall.nix
+    ./qos.nix
     ./services
     ./incus.nix
     ./users.nix
