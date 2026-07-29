@@ -59,6 +59,13 @@ one `mkStackRegistry (stack // base // data)` call. Keep normalization,
 placement derivation, endpoint policy wiring, and generated registry views in
 the shared service-registry library.
 
+For a family with multiple concrete stacks, keep the generic composition layer
+in `lib/flake/stack-set.nix`. It resolves owned roles, cross-stack dependency
+roles, selected domains, and the normalized service registry. The stack-family
+module remains responsible for profiles, addressing, secrets, dependency
+endpoint policy, and runtime projections. This keeps the shared helper free of
+organization-specific topology.
+
 ## Service Registry
 
 The service registry belongs inside each stack:

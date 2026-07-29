@@ -59,6 +59,9 @@ rec {
 
   roleOctets = roles: builtins.mapAttrs (_: role: role.octet) roles;
 
+  roleEndpoints = roles:
+    builtins.mapAttrs (_: role: role.endpoint or {}) roles;
+
   recursiveMerge = base: overrides:
     builtins.mapAttrs (
       name: value:
@@ -112,6 +115,7 @@ rec {
     enableExternalConnectors,
     tunnels,
     dnsEndpointGroups ? builtins.attrNames endpointGroups,
+    dnsRouteDomains ? ["~${internalDomain}" "~${domain}"],
     includePlacements ? true,
     extraRoles ? {},
     extraDomains ? {},
@@ -147,10 +151,11 @@ rec {
       domains = resolvedDomains;
       tunnelDomains = resolvedTunnelDomains;
       dnsEndpointGroups = dnsEndpointGroups;
-      dnsRouteDomains = ["~${internalDomain}" "~${domain}"];
+      dnsRouteDomains = dnsRouteDomains;
       internalDomain = internalDomain;
       roleHosts = roleHosts resolvedRoles;
       roleOctets = roleOctets resolvedRoles;
+      roleEndpoints = roleEndpoints resolvedRoles;
       splitHorizonRole = splitHorizonRole;
       trustedCidrs = trustedCidrs;
     };
@@ -212,6 +217,7 @@ rec {
     tunnelDomains ? builtins.attrValues domains,
     roleHosts,
     roleOctets,
+    roleEndpoints ? {},
     serviceSpecs ? {},
     splitHorizonRole ? "proxy",
     trustedCidrs ? [],
@@ -221,7 +227,8 @@ rec {
     endpointGroupFor = group: builtins.removeAttrs endpointGroups.${group} ["activeEndpointGroup" "enableExternalConnectors" "roles" "tunnels"];
     endpointSpecFor = role: group:
       (endpointGroupFor group)
-      // (endpointGroups.${group}.roles.${role} or {});
+      // (endpointGroups.${group}.roles.${role} or {})
+      // (roleEndpoints.${role} or {});
 
     mkEndpoint = group: spec: {
       project = spec.project;
