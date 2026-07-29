@@ -14,6 +14,42 @@ data_migrator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(data_migrator)
 
 
+class PathBaseTest(unittest.TestCase):
+    def test_file_migration_requires_an_explicit_path_base(self):
+        args = SimpleNamespace(source_base=None, target_base=None)
+
+        with (
+            self.assertRaises(SystemExit),
+            redirect_stderr(io.StringIO()) as stderr,
+        ):
+            data_migrator.migrate_one_path(
+                args,
+                {},
+                {"path": "/var/lib/app/data", "excludes": []},
+                "final",
+                [],
+            )
+
+        self.assertIn("pass --source-base", stderr.getvalue())
+
+    def test_file_migration_requires_an_explicit_target_base(self):
+        args = SimpleNamespace(source_base="/var/lib/app", target_base=None)
+
+        with (
+            self.assertRaises(SystemExit),
+            redirect_stderr(io.StringIO()) as stderr,
+        ):
+            data_migrator.migrate_one_path(
+                args,
+                {"source_path_base": "/var/lib/app"},
+                {"path": "/var/lib/app/data", "excludes": []},
+                "final",
+                [],
+            )
+
+        self.assertIn("pass --target-base", stderr.getvalue())
+
+
 class IncusPlanningTest(unittest.TestCase):
     def test_incus_controller_wraps_client_command(self):
         args = SimpleNamespace(incus_controller_host="abird-nest")

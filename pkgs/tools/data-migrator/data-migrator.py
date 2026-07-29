@@ -941,16 +941,24 @@ def migrate_one_path(args, plan, entry, phase, raw_excludes):
         or plan.get("base")
         or plan.get("target_path_base")
         or plan.get("target_base")
-        or "/var/lib/abird"
     )
     target_path_base = (
         args.target_base
         or plan.get("target_path_base")
         or plan.get("target_base")
         or plan.get("base")
-        or "/var/lib/abird"
     )
     source_path_base = args.source_base or configured_source_path_base
+    if not source_path_base:
+        die(
+            "pass --source-base or set source_path_base, target_path_base, "
+            "or base in the migration config"
+        )
+    if not target_path_base:
+        die(
+            "pass --target-base or set target_path_base or base in the "
+            "migration config"
+        )
     rel = ensure_under_base(entry["path"], source_path_base)
     destination = str(Path(target_path_base) / rel)
     excludes = excludes_for_path(raw_excludes + entry["excludes"], entry["path"])
@@ -1207,7 +1215,7 @@ def parse_args(argv):
     parser.add_argument(
         "--profile",
         required=True,
-        help="profile from pkgs/tools/data-migrator/profiles.nix",
+        help="migration profile name",
     )
     parser.add_argument("--config", help="explicit migration YAML path")
     parser.add_argument(
@@ -1222,7 +1230,7 @@ def parse_args(argv):
     )
     parser.add_argument(
         "--target-base",
-        help="target path base; defaults to config target_path_base or /var/lib/abird",
+        help="target path base; defaults to config target_path_base or base",
     )
     parser.add_argument(
         "--transport",
@@ -1282,7 +1290,7 @@ def parse_args(argv):
     parser.add_argument("--repo-root", help="repo root; auto-detected by default")
     parser.add_argument(
         "--rsync-ssh",
-        help="rsync remote shell command passed as -e, for example 'ssh -J gap3-gondor'",
+        help="rsync remote shell command passed as -e, for example 'ssh -J bastion'",
     )
     parser.add_argument(
         "--source-rsync-path",

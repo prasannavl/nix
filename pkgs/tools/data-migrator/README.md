@@ -7,33 +7,35 @@ runtime `migration-manager` drain/resume calls around the final cutover copy.
 Incus project move with automatic path selection:
 
 ```bash
-data-migrator --profile abird-corp \
-  --source-project abird \
-  --target-project abird-stage
+data-migrator --profile app \
+  --config ./tmp/app-migration.yaml \
+  --source-project old-project \
+  --target-project new-project
 ```
 
-The Abird profiles include `incus.controller_host = "abird-nest"`, so Incus
-operations run through the delegated controller by default. The instance name
-defaults to the profile name. If the source and target are on the same Incus
-remote and the root disk is on the same btrfs storage pool, the tool uses an
-Incus-native snapshot/refresh copy. Otherwise it falls back to the declared file
-paths, choosing `rsync` when available and `tar` streaming when it is not.
+The instance name defaults to the profile name. If the source and target are on
+the same Incus remote and the root disk is on the same btrfs storage pool, the
+tool uses an Incus-native snapshot/refresh copy. Otherwise it falls back to the
+declared file paths, choosing `rsync` when available and `tar` streaming when it
+is not.
 
 Warm seed only:
 
 ```bash
-data-migrator --profile abird-corp \
-  --target-host abird-corp \
+data-migrator --profile app \
+  --config ./tmp/app-migration.yaml \
+  --target-host new-host \
   --warm
 ```
 
 Full drain/copy/resume flow:
 
 ```bash
-data-migrator --profile abird-corp \
-  --source-host old-abird-corp \
-  --source-drain-host old-abird-corp \
-  --target-host abird-corp
+data-migrator --profile app \
+  --config ./tmp/app-migration.yaml \
+  --source-host old-host \
+  --source-drain-host old-host \
+  --target-host new-host
 ```
 
 That full flow does two distinct control actions:
@@ -64,36 +66,40 @@ in its private worktree; target resume deploys the normal generation and runs
 Local staging copy:
 
 ```bash
-data-migrator --profile abird-corp \
-  --source-host old-abird-corp \
-  --target-dir /srv/migration/abird-corp \
+data-migrator --profile app \
+  --config ./tmp/app-migration.yaml \
+  --source-host old-host \
+  --target-dir /srv/migration/app \
   --warm
 ```
 
-Host plans are defined in `pkgs/tools/data-migrator/profiles.nix`.
+The checked-in package intentionally has no concrete host profiles. Put each
+migration plan in an explicit YAML file and pass it with `--config`.
 `--source-host` is optional when the plan declares `source_host`; the command
 line value wins when both are set. `target_path_base` is the destination root
-used to map each copied source path onto the target.
+used to map each copied source path onto the target and is required unless
+`--target-base` is passed.
 
 ```yaml
-source_host: 10.10.30.60
+source_host: old-host
 source_paths:
-  - /var/lib/abird/open-webui
+  - /var/lib/app/postgres
+  - /var/lib/app/uploads
   - "!./compose/"
-  - "!/var/lib/abird/open-webui/cache/"
-target_path_base: /var/lib/abird
+  - "!/var/lib/app/uploads/cache/"
+target_path_base: /var/lib/app
 ```
 
 Plain `source_paths` entries are copied. Entries beginning with `!` are exclude
 patterns; quote them because YAML treats an unquoted `!` as a tag marker.
 Exclude patterns must either be full absolute paths, or relative patterns
 starting with `./`. `!./tmp/` applies inside every copied path, while
-`!/var/lib/abird/open-webui/cache/` applies only when copying
-`/var/lib/abird/open-webui`.
+`!/var/lib/app/uploads/cache/` applies only when copying `/var/lib/app/uploads`.
 
-The Nix package serializes `profiles.nix` into YAML files in the store and sets
-`DATA_MIGRATOR_CONFIG_DIR` for the Python tool. `--config` can still point at an
-explicit YAML file for ad hoc runs.
+The Nix package can serialize entries from `profiles.nix` into YAML files in the
+store and sets `DATA_MIGRATOR_CONFIG_DIR` for the Python tool. This repository
+keeps that set empty so concrete migration inventory stays with its owning
+project.
 
 Source-side reads default to running remote rsync through Nix:
 `sudo -n nix shell nixpkgs#rsync -c rsync`. This keeps migrations working from
@@ -115,10 +121,11 @@ When the source host is reachable only through a bastion, pass an rsync remote
 shell:
 
 ```bash
-data-migrator --profile abird-data \
+data-migrator --profile app \
+  --config ./tmp/app-migration.yaml \
   --target-dir ./tmp/data/ \
   --skip-deploy \
-  --rsync-ssh 'ssh -J gap3-gondor -o HostKeyAlias=abird-data'
+  --rsync-ssh 'ssh -J bastion -o HostKeyAlias=old-host'
 ```
 
 ## Incus project migration
@@ -128,48 +135,41 @@ Incus mode is enabled by `--target-project`, `--source-project`, or
 controller whose default Incus project is already correct is:
 
 ```bash
-data-migrator --profile HOST \
-  --incus-controller-host abird-nest \
+data-migrator --profile app \
+  --config ./tmp/app-migration.yaml \
+  --incus-controller-host parent-host \
   --source-instance old-instance \
   --target-instance new-instance
-```
-
-For Abird, the controller-only profile already knows that controller:
-
-```bash
-data-migrator --profile abird-nest \
-  --source-instance abird-corp \
-  --target-instance abird-corp-2
 ```
 
 For explicit cross-project moves, pass the project names:
 
 ```bash
-data-migrator --profile HOST \
+data-migrator --profile app \
+  --config ./tmp/app-migration.yaml \
   --source-project old-project \
   --target-project new-project
 ```
 
-The profile still supplies repo-specific host data paths and the default
-`source_host`. The checked-in Abird profiles also supply the controller host;
-the Incus settings can be declared in YAML under `incus`:
+The migration plan can supply host data paths, the default `source_host`, and
+Incus settings under `incus`:
 
 ```yaml
 incus:
-  controller_host: abird-nest
-  instance: abird-corp
-  source_project: abird
-  target_project: abird-stage
+  controller_host: parent-host
+  instance: old-instance
+  source_project: old-project
+  target_project: new-project
   remote: local
 ```
 
 When `controller_host` or `--incus-controller-host` is set, all Incus client
 operations run over SSH on that host. This is useful for delegated controllers
-such as `abird-nest`, where the Incus remotes, client certificates, and project
-access are already configured on the controller. `remote: local` then means the
-controller's local/default Incus client context, not the operator laptop. When
-project flags are omitted, the controller's default Incus project is used;
-`--target-project` is added to `incus copy` only for cross-project moves.
+where the Incus remotes, client certificates, and project access are already
+configured. `remote: local` then means the controller's local/default Incus
+client context, not the operator laptop. When project flags are omitted, the
+controller's default Incus project is used; `--target-project` is added to
+`incus copy` only for cross-project moves.
 
 When the target instance already exists, native Incus refreshes are guarded. The
 `data-migrator` stamps targets it creates or refreshes with

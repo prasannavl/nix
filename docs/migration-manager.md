@@ -1,7 +1,7 @@
 # Migration Manager
 
-This is the operator guide for the Abird migration drain. It explains what the
-migration manager gates, how to toggle it manually, and how to use
+This is the operator guide for the repository migration drain. It explains what
+the migration manager gates, how to toggle it manually, and how to use
 `data-migrator` for live cutovers.
 
 ## Model
@@ -92,9 +92,11 @@ sudo /run/current-system/sw/bin/migration-manager off
 
 ## Data Migrator Concepts
 
-`data-migrator` copies host state paths declared in
-`pkgs/tools/data-migrator/profiles.nix`. It can do plain file-copy migrations or
-Incus instance/project migrations.
+`data-migrator` copies host state paths declared in an explicit YAML migration
+plan passed with `--config`. It can do plain file-copy migrations or Incus
+instance/project migrations. The checked-in profile set is intentionally empty;
+concrete host inventory belongs to the repository that owns the migrating
+service stack.
 
 Important names:
 
@@ -105,9 +107,9 @@ Important names:
 - `--target-drain-host` is the nixbot host whose target generation should be
   bootstrapped drained, then resumed after the final copy.
 
-Those are often the same strings, but not always. Abird profiles commonly use an
-IP address as `source_host`; that works for rsync, but drain/resume should use
-the nixbot host name.
+Those are often the same strings, but not always. A plan may use an IP address
+as `source_host`; that works for rsync, but drain/resume should use the nixbot
+host name.
 
 A full file-copy migration does this:
 
@@ -136,7 +138,8 @@ Seed only:
 
 ```bash
 nix run .#data-migrator -- \
-  --profile abird-corp \
+  --profile app \
+  --config ./tmp/app-migration.yaml \
   --source-host OLD_COPY_SSH_HOST \
   --target-host TARGET_NIXBOT_HOST \
   --warm
@@ -146,7 +149,8 @@ Full live cutover:
 
 ```bash
 nix run .#data-migrator -- \
-  --profile abird-corp \
+  --profile app \
+  --config ./tmp/app-migration.yaml \
   --source-host OLD_COPY_SSH_HOST \
   --source-drain-host OLD_NIXBOT_HOST \
   --target-host TARGET_NIXBOT_HOST \
@@ -162,7 +166,8 @@ the right state, run only the copy logic:
 
 ```bash
 nix run .#data-migrator -- \
-  --profile abird-corp \
+  --profile app \
+  --config ./tmp/app-migration.yaml \
   --source-host OLD_COPY_SSH_HOST \
   --target-host TARGET_NIXBOT_HOST \
   --source-drain-host OLD_NIXBOT_HOST \
@@ -187,7 +192,8 @@ Run a seed first when the data set is large:
 
 ```bash
 nix run .#data-migrator -- \
-  --profile abird-corp \
+  --profile app \
+  --config ./tmp/app-migration.yaml \
   --source-host OLD_COPY_SSH_HOST \
   --target-host NEW_NIXBOT_HOST \
   --warm
@@ -197,7 +203,8 @@ Run the full cutover:
 
 ```bash
 nix run .#data-migrator -- \
-  --profile abird-corp \
+  --profile app \
+  --config ./tmp/app-migration.yaml \
   --source-host OLD_COPY_SSH_HOST \
   --source-drain-host OLD_NIXBOT_HOST \
   --target-host NEW_NIXBOT_HOST \
@@ -214,26 +221,29 @@ deploy. If the bootstrap deploy fails, the worktree is kept for inspection.
 Incus mode is enabled by `--source-project`, `--target-project`,
 `--source-instance`, `--incus-instance`, or `--target-instance`.
 
-For Abird profiles, Incus commands run on the delegated controller `abird-nest`
-by default. The profile name is also the default source instance name.
+Declare `incus.controller_host` in the migration plan or pass
+`--incus-controller-host` when Incus commands must run through a delegated
+controller. The profile name is the default source instance name.
 
 Move or refresh an instance into another project:
 
 ```bash
 nix run .#data-migrator -- \
-  --profile abird-corp \
-  --source-project abird \
-  --target-project abird-stage
+  --profile app \
+  --config ./tmp/app-migration.yaml \
+  --source-project old-project \
+  --target-project new-project
 ```
 
 Move to a new target instance name:
 
 ```bash
 nix run .#data-migrator -- \
-  --profile abird-corp \
-  --source-project abird \
-  --target-project abird-stage \
-  --target-instance abird-corp-next
+  --profile app \
+  --config ./tmp/app-migration.yaml \
+  --source-project old-project \
+  --target-project new-project \
+  --target-instance app-next
 ```
 
 Refresh an existing target only when it was previously created or refreshed from
@@ -243,9 +253,10 @@ only after verifying the target is safe to overwrite:
 
 ```bash
 nix run .#data-migrator -- \
-  --profile abird-corp \
-  --source-project abird \
-  --target-project abird-stage \
+  --profile app \
+  --config ./tmp/app-migration.yaml \
+  --source-project old-project \
+  --target-project new-project \
   --force-refresh-existing
 ```
 
@@ -265,8 +276,8 @@ Before the final copy:
 
 - confirm the source host has a deployed generation with `migration-manager`;
 - confirm the target host can be deployed by nixbot;
-- confirm the profile paths in `pkgs/tools/data-migrator/profiles.nix` include
-  the state that must move and exclude volatile cache paths;
+- confirm the explicit migration plan includes the state that must move and
+  excludes volatile cache paths;
 - run a warm seed for large data sets;
 - check there is enough disk space on the target;
 - decide whether the source should remain drained, be resumed, or be stopped
@@ -305,14 +316,14 @@ ssh TARGET_NIXBOT_HOST 'sudo systemctl --failed'
 Check native user units and targets:
 
 ```bash
-ssh TARGET_NIXBOT_HOST 'uid=$(id -u abird); sudo -u abird XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user status abird-managed.target'
+ssh TARGET_NIXBOT_HOST 'uid=$(id -u SERVICE_USER); sudo -u SERVICE_USER XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus systemctl --user status SERVICE_USER-managed.target'
 ```
 
 For Incus migrations, check instance placement and state from the controller:
 
 ```bash
-ssh abird-nest 'incus list --project TARGET_PROJECT'
-ssh abird-nest 'incus info --project TARGET_PROJECT TARGET_INSTANCE'
+ssh CONTROLLER_HOST 'incus list --project TARGET_PROJECT'
+ssh CONTROLLER_HOST 'incus info --project TARGET_PROJECT TARGET_INSTANCE'
 ```
 
 Then verify service-specific health:
