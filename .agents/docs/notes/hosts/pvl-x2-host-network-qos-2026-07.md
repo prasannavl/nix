@@ -19,6 +19,27 @@ DiffServ CS1 and stores that classification in the connection mark. CAKE
 host remains unmarked in Best Effort. Bulk can borrow otherwise-idle capacity,
 but host traffic wins when the shaped link is contended.
 
+Bridge names are declared once in `hosts/pvl-x2/incus.nix` as Incus preseed
+networks. Incus creates and reconciles those managed Linux bridges at runtime.
+`hosts/pvl-x2/qos.nix` derives `bulkInterfaces` from every preseed network whose
+type is `bridge`, so adding or removing a declared bridge updates the QoS
+classification in the same NixOS generation. This is evaluation-time discovery
+from declarative state; unmanaged loopback and physical networks are excluded.
+
+## Ordering
+
+The nftables policy uses interface-name matches rather than interface indexes,
+so it can be loaded before Incus creates any bridge. The rules begin matching as
+soon as a bridge with a declared name appears. The QoS service therefore has no
+dependency on `incus.service` or `incus-preseed.service`, and adding one would
+unnecessarily delay host-level shaping behind guest infrastructure.
+
+The actual runtime prerequisites are the physical uplink, the CAKE/IFB kernel
+modules, and the nftables policy. On `pvl-x2`, the fixed PCI `eno1` device is
+present before NetworkManager reaches `network.target`; the service starts after
+that target, NetworkManager, and `nftables.service`. The helper creates its own
+IFB and verifies both qdiscs plus the ingress redirect before reporting success.
+
 Upload CAKE uses NAT-aware `dual-srchost` isolation. Download traffic is
 redirected through an IFB; the kernel `ctinfo` action restores the saved DSCP
 classification before NAT-aware `dual-dsthost` CAKE. `wash` clears the DSCP
