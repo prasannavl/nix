@@ -332,10 +332,18 @@ run_manifest_command() {
 		export repo_root="${REPO_ROOT}"
 		if [ -z "${TMPDIR:-}" ]; then
 			local manifest_tmpdir
+			local manifest_status
 			manifest_tmpdir="$(mktemp -d)"
-			trap 'rm -rf "$manifest_tmpdir"' EXIT
-			TMPDIR="${manifest_tmpdir}" run_manifest_command_body "${env_script}" "${command}"
-			return
+			if (
+				export TMPDIR="${manifest_tmpdir}"
+				run_manifest_command_body "${env_script}" "${command}"
+			); then
+				manifest_status=0
+			else
+				manifest_status=$?
+			fi
+			rm -rf "${manifest_tmpdir}"
+			return "${manifest_status}"
 		else
 			run_manifest_command_body "${env_script}" "${command}"
 			return
