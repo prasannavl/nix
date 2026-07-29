@@ -15,10 +15,11 @@ Application-layer Cloudflare phase that runs after host build and deploy.
 
 ## Build Model
 
-- app phases may declare an aggregate package at `pkgs/<project>/flake.nix`
-- `nixbot` prepares the phase with `nix build ./pkgs/<project>#build --no-link`
-- for this project, the aggregate entrypoint is `pkgs/cloudflare-apps/flake.nix`
-- child app directories are resolved to their `#build` outputs during plan/apply
+- the aggregate package source lives under `pkgs/cloudflare-apps/`
+- `nixbot` prepares the phase by building the canonical package
+  `pkgs/cloudflare-apps/default.nix` directly
+- child app directories are resolved to their package outputs during plan/apply,
+  without depending on repo-local `result` symlinks
 
 Inputs live in `workers.auto.tfvars` plus encrypted provider-level inputs under
 `data/secrets/globals/tf/cloudflare/` and project-level worker inputs under

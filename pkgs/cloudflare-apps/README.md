@@ -5,19 +5,20 @@ This directory holds repo-managed Cloudflare application source trees used by
 
 ## Layout
 
-- `pkgs/cloudflare-apps/flake.nix`: aggregate build/deploy entrypoint for the
+- `pkgs/cloudflare-apps/default.nix`: aggregate build/deploy entrypoint for the
   whole `cloudflare-apps` Terraform phase
+- `pkgs/cloudflare-apps/flake.nix`: local wrapper flake for focused package
+  commands
 - `pkgs/cloudflare-apps/<app>/`: per-app source tree
 - `pkgs/cloudflare-apps/<app>/flake.nix`: optional per-app build helper when
   that app needs generated output in the Nix store
 
 ## Conventions
 
-- `tf/*-apps` projects may have a matching package namespace at
-  `pkgs/<project>/flake.nix`.
-- `nixbot` prepares those projects generically by running
-  `nix build ./pkgs/<project>#build --no-link` before OpenTofu plan/apply.
-- For `tf/cloudflare-apps`, that means `pkgs/cloudflare-apps/flake.nix` is the
+- `tf/*-apps` projects may have a matching package namespace under `pkgs/`.
+- `nixbot` prepares those projects by building the canonical package
+  `default.nix` directly before OpenTofu plan/apply.
+- For `tf/cloudflare-apps`, that means `pkgs/cloudflare-apps/default.nix` is the
   single aggregate entrypoint.
 - Source-only apps can live under `pkgs/cloudflare-apps/<app>/` without a child
   `flake.nix` if they do not need a pre-Terraform build step.
@@ -73,5 +74,5 @@ workers = {
 }
 ```
 
-For child flakes under `pkgs/cloudflare-apps/*`, Terraform now resolves app
-directories to their real `#build` outputs at plan/apply time.
+For child flakes under `pkgs/cloudflare-apps/*`, Terraform resolves app
+directories to their real package outputs at plan/apply time.

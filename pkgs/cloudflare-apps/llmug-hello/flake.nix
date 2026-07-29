@@ -10,11 +10,10 @@
     (import ../../../lib/flake/stack/package.nix).mkFlakeOutputs ./default.nix (inputs
       // {
         stdFlakeOutputArgs = {
+          pkgs,
           build,
           pkgHelper,
-          pkgs,
         }: {
-          inherit (build) devShell;
           extraPackages = {
             "wrangler-deploy" = build.wrangler-deploy;
           };
