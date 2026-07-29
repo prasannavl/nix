@@ -414,6 +414,11 @@ Use this index as the canonical map for `.agents/docs/**`.
   follow-up, Ollama update, Incus startup-wave adaptation, later selector-scope
   port, the July 24 Podman dead-binding cleanup and Abird-only mail-alias skip,
   per-commit dispositions, and final parity contract.
+- `.agents/docs/notes/tooling/abird-post-44df-port-2026-07.md`: Records the July
+  29 audit of all 28 commits after `44dfc80f`, shared stack-set, package-helper,
+  nixbot, lint, and residual Cloudflare wrapper ports, local-only data-migrator
+  inventory retirement, target-newer review fixes, per-commit dispositions, and
+  final byte-parity contract.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
