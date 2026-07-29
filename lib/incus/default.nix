@@ -118,6 +118,7 @@
         pkgs.gawk
         pkgs.git
         pkgs.gnutar
+        pkgs.gnugrep
         pkgs.iproute2
         pkgs.jq
         pkgs.nix
@@ -484,6 +485,129 @@
           instance. The named `services.incus-manager.global.certificateDelegations`
           entry owns the host directory and project binding.
         '';
+      };
+    };
+  });
+
+  diskIoLimitValueType = lib.types.strMatching "[1-9][0-9]*(B|kB|MB|GB|TB|PB|EB|KiB|MiB|GiB|TiB|PiB|EiB|iops)";
+  diskLimitType = lib.types.submodule (_: {
+    options = {
+      read = lib.mkOption {
+        type = lib.types.nullOr diskIoLimitValueType;
+        default = null;
+        description = "Maximum read throughput or IOPS for this disk device.";
+      };
+
+      write = lib.mkOption {
+        type = lib.types.nullOr diskIoLimitValueType;
+        default = null;
+        description = "Maximum write throughput or IOPS for this disk device.";
+      };
+
+      rw = lib.mkOption {
+        type = lib.types.nullOr diskIoLimitValueType;
+        default = null;
+        description = "Combined read/write throughput or IOPS limit for this disk device.";
+      };
+    };
+  });
+
+  networkLimitType = lib.types.submodule (_: {
+    options = {
+      rx = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Maximum receive bandwidth for this NIC device.";
+      };
+
+      tx = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Maximum transmit bandwidth for this NIC device.";
+      };
+
+      rxtx = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Combined receive/transmit bandwidth limit for this NIC device.";
+      };
+    };
+  });
+
+  limitType = lib.types.submodule (_: {
+    options = {
+      cpu = {
+        count = lib.mkOption {
+          type = lib.types.nullOr lib.types.ints.positive;
+          default = null;
+          description = "Maximum number of dynamically selected host CPUs exposed to the instance.";
+        };
+
+        allowance = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Optional Incus CPU allowance such as 50% or 25ms/100ms.";
+        };
+
+        priority = lib.mkOption {
+          type = lib.types.nullOr (lib.types.ints.between 0 10);
+          default = null;
+          description = "Native Incus CPU scheduling priority from 0 to 10; null leaves the effective Incus default of 10.";
+        };
+      };
+
+      memory = {
+        max = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Hard or soft absolute memory ceiling for the instance.";
+        };
+
+        enforce = lib.mkOption {
+          type = lib.types.enum ["hard" "soft"];
+          default = "hard";
+          description = "Whether the declared memory ceiling is hard or soft.";
+        };
+
+        swap = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Whether this container may use host swap; true with no max leaves the native Incus default unmanaged.";
+          };
+
+          max = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Optional absolute host-swap ceiling for this container; null leaves the native Incus default unmanaged.";
+          };
+        };
+
+        oomScoreAdjustment = lib.mkOption {
+          type = lib.types.nullOr (lib.types.ints.between (-1000) 1000);
+          default = null;
+          description = "Kernel OOM score adjustment from -1000 to 1000; null leaves the effective neutral default of 0.";
+        };
+      };
+
+      disk = {
+        priority = lib.mkOption {
+          type = lib.types.nullOr (lib.types.ints.between 0 10);
+          default = null;
+          description = "Native Incus disk-I/O priority from 0 to 10; null leaves the effective Incus default of 5.";
+        };
+
+        devices = lib.mkOption {
+          type = lib.types.attrsOf diskLimitType;
+          default = {};
+          description = "Live I/O limits keyed by declared or profile-inherited disk device name.";
+        };
+      };
+
+      network.devices = lib.mkOption {
+        type = lib.types.attrsOf networkLimitType;
+        default = {};
+        description = "Live bandwidth limits keyed by declared or profile-inherited NIC device name.";
       };
     };
   });
@@ -1247,6 +1371,14 @@
         default = {};
         description = "Incus instance config keys. Changes trigger stop+delete+recreate.";
       };
+      limits = lib.mkOption {
+        type = limitType;
+        default = {};
+        description = ''
+          CPU, memory, disk-I/O, and network-I/O limits reconciled live without
+          participating in the instance recreate hash.
+        '';
+      };
       removalPolicy = lib.mkOption {
         type = lib.types.enum ["keep" "stop" "delete" "delete-all"];
         default = "delete";
@@ -1400,6 +1532,76 @@
   syncableDevices = machine:
     lib.filterAttrs (_: dev: dev.type == "disk") machine.devices;
 
+  limitValue = value:
+    if builtins.isBool value
+    then lib.boolToString value
+    else toString value;
+
+  optionalLimitProperty = name: value:
+    lib.optionalAttrs (value != null) {
+      ${name} = limitValue value;
+    };
+
+  memorySwapLimit = machine:
+    if machine.limits.memory.swap.enable
+    then machine.limits.memory.swap.max
+    else false;
+
+  limitConfig = machine:
+    optionalLimitProperty "limits.cpu" machine.limits.cpu.count
+    // optionalLimitProperty "limits.cpu.allowance" machine.limits.cpu.allowance
+    // optionalLimitProperty "limits.cpu.priority" machine.limits.cpu.priority
+    // optionalLimitProperty "limits.memory" machine.limits.memory.max
+    // lib.optionalAttrs (machine.limits.memory.max != null) {
+      "limits.memory.enforce" = machine.limits.memory.enforce;
+    }
+    // optionalLimitProperty "limits.memory.swap" (memorySwapLimit machine)
+    // optionalLimitProperty "limits.memory.oom_priority" machine.limits.memory.oomScoreAdjustment
+    // optionalLimitProperty "limits.disk.priority" machine.limits.disk.priority;
+
+  diskLimitProperties = machine:
+    lib.mapAttrs (
+      _name: limit:
+        optionalLimitProperty "limits.read" limit.read
+        // optionalLimitProperty "limits.write" limit.write
+        // optionalLimitProperty "limits.max" limit.rw
+    )
+    machine.limits.disk.devices;
+
+  networkLimitProperties = machine:
+    lib.mapAttrs (
+      _name: limit:
+        optionalLimitProperty "limits.ingress" limit.rx
+        // optionalLimitProperty "limits.egress" limit.tx
+        // optionalLimitProperty "limits.max" limit.rxtx
+    )
+    machine.limits.network.devices;
+
+  limitDeviceProperties = machine:
+    lib.filterAttrs (_name: properties: properties != {}) (
+      diskLimitProperties machine // networkLimitProperties machine
+    );
+
+  limitMetadata = machine: let
+    configKeys = builtins.attrNames (limitConfig machine);
+    deviceProperties = lib.mapAttrs (_name: builtins.attrNames) (limitDeviceProperties machine);
+  in
+    lib.optionalAttrs (configKeys != [] || deviceProperties != {}) {
+      limits = {
+        inherit configKeys deviceProperties;
+      };
+    };
+
+  resolvedSyncableDevices = machine: let
+    diskLimits = diskLimitProperties machine;
+  in
+    lib.mapAttrs (
+      name: dev:
+        resolveDeviceProperties machine name dev
+        // (diskLimits.${name} or {})
+    )
+    (syncableDevices machine);
+
   configHashPayload = name: machine: {
     preseedTag = globalCfg.preseedTag;
     inherit (machine) config kind;
@@ -1431,7 +1633,13 @@
     });
 
   diskDeviceSpecJson = machine:
-    builtins.toJSON (lib.mapAttrs (resolveDeviceProperties machine) (syncableDevices machine));
+    builtins.toJSON (resolvedSyncableDevices machine);
+
+  limitConfigJson = machine:
+    builtins.toJSON (limitConfig machine);
+
+  limitDeviceSpecJson = machine:
+    builtins.toJSON (limitDeviceProperties machine);
 
   diskGcMetadataJson = machine:
     builtins.toJSON (
@@ -1462,6 +1670,8 @@
     createOnlyDevSpec = createOnlyDeviceSpecJson machine;
     userMetaJson = builtins.toJSON (mkUserMetadata name machine);
     configJson = builtins.toJSON machine.config;
+    limitsConfigJson = limitConfigJson machine;
+    limitDevicesJson = limitDeviceSpecJson machine;
   in
     builtins.toJSON {
       name = instanceName;
@@ -1484,6 +1694,8 @@
       createOnlyDevices = builtins.fromJSON createOnlyDevSpec;
       userMeta = builtins.fromJSON userMetaJson;
       config = builtins.fromJSON configJson;
+      limitConfig = builtins.fromJSON limitsConfigJson;
+      limitDevices = builtins.fromJSON limitDevicesJson;
     };
 
   machineLifecycleStateJson = name: machine: let
@@ -1509,21 +1721,23 @@
       desiredDiskGcMetadata = builtins.fromJSON diskGcMetadata;
     };
 
-  mkNixosMeta = name: machine: {
-    version = incusNixosMetaVersion;
-    kind = "incus-machine";
-    controller = globalCfg.controllerId;
-    configHash = configHash name machine;
-    instanceKind = machine.kind;
-    state = machine.state;
-    autoStart = machine.autoStart;
-    reconcilePolicy = machine.reconcilePolicy;
-    bootTag = effectiveBootTag machine;
-    recreateTag = effectiveRecreateTag machine;
-    removalPolicy = machine.removalPolicy;
-    hostSuspendPolicy = machine.hostSuspendPolicy;
-    devices = builtins.fromJSON (diskGcMetadataJson machine);
-  };
+  mkNixosMeta = name: machine:
+    {
+      version = incusNixosMetaVersion;
+      kind = "incus-machine";
+      controller = globalCfg.controllerId;
+      configHash = configHash name machine;
+      instanceKind = machine.kind;
+      state = machine.state;
+      autoStart = machine.autoStart;
+      reconcilePolicy = machine.reconcilePolicy;
+      bootTag = effectiveBootTag machine;
+      recreateTag = effectiveRecreateTag machine;
+      removalPolicy = machine.removalPolicy;
+      hostSuspendPolicy = machine.hostSuspendPolicy;
+      devices = builtins.fromJSON (diskGcMetadataJson machine);
+    }
+    // limitMetadata machine;
 
   mkUserMetadata = name: machine: {
     "user.nixos-meta" = builtins.toJSON (mkNixosMeta name machine);
@@ -1912,6 +2126,122 @@
     allInstances
   );
 
+  invalidLimitDiskDevices = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.concatMap (
+          deviceName:
+            lib.optional
+            (
+              deviceName
+              != "root"
+              && (
+                !builtins.hasAttr deviceName machine.devices
+                || machine.devices.${deviceName}.type != "disk"
+              )
+            )
+            "${machineName}.${deviceName}"
+        )
+        (builtins.attrNames machine.limits.disk.devices)
+    )
+    allInstances
+  );
+
+  invalidLimitNetworkDevices = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.concatMap (
+          deviceName:
+            lib.optional
+            (
+              deviceName
+              != "eth0"
+              && (
+                !builtins.hasAttr deviceName machine.devices
+                || machine.devices.${deviceName}.type != "nic"
+              )
+            )
+            "${machineName}.${deviceName}"
+        )
+        (builtins.attrNames machine.limits.network.devices)
+    )
+    allInstances
+  );
+
+  conflictingLimitDeviceKinds = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        map
+        (deviceName: "${machineName}.${deviceName}")
+        (lib.intersectLists
+          (builtins.attrNames machine.limits.disk.devices)
+          (builtins.attrNames machine.limits.network.devices))
+    )
+    allInstances
+  );
+
+  conflictingCombinedLimits = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.concatLists [
+          (lib.concatLists (lib.mapAttrsToList (
+              deviceName: limit:
+                lib.optional
+                (limit.rw != null && (limit.read != null || limit.write != null))
+                "${machineName}.disk.devices.${deviceName}"
+            )
+            machine.limits.disk.devices))
+          (lib.concatLists (lib.mapAttrsToList (
+              deviceName: limit:
+                lib.optional
+                (limit.rxtx != null && (limit.rx != null || limit.tx != null))
+                "${machineName}.network.devices.${deviceName}"
+            )
+            machine.limits.network.devices))
+        ]
+    )
+    allInstances
+  );
+
+  unsupportedDiskLimitInstances = lib.attrNames (
+    lib.filterAttrs (
+      _: machine:
+        !globalCfg.diskIoLimitsSupported
+        && (
+          machine.limits.disk.priority
+          != null
+          || machine.limits.disk.devices != {}
+        )
+    )
+    allInstances
+  );
+
+  invalidDisabledSwapMax = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.optional
+        (!machine.limits.memory.swap.enable && machine.limits.memory.swap.max != null)
+        "${machineName}.memory.swap.max"
+    )
+    allInstances
+  );
+
+  invalidVmLimitOptions = lib.concatLists (
+    lib.mapAttrsToList (
+      machineName: machine:
+        lib.optionals (machine.kind == "vm") (
+          lib.optional (machine.limits.cpu.allowance != null) "${machineName}.cpu.allowance"
+          ++ lib.optional (machine.limits.cpu.priority != null) "${machineName}.cpu.priority"
+          ++ lib.optional (machine.limits.memory.max != null && machine.limits.memory.enforce != "hard") "${machineName}.memory.enforce"
+          ++ lib.optional
+          (!machine.limits.memory.swap.enable || machine.limits.memory.swap.max != null)
+          "${machineName}.memory.swap"
+          ++ lib.optional (machine.limits.memory.oomScoreAdjustment != null) "${machineName}.memory.oomScoreAdjustment"
+        )
+    )
+    allInstances
+  );
+
   hasParentPathSegment = source:
     builtins.elem ".." (lib.splitString "/" source);
   isManagedGcDir = source:
@@ -2203,6 +2533,17 @@
   instanceWaitForSshJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.waitForSsh) allInstances);
   instanceStatesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.state) allInstances);
   instanceReconcilePoliciesJson = builtins.toJSON (lib.mapAttrs (_name: instance: instance.reconcilePolicy) allInstances);
+  incusLimitsStateFile = pkgs.writeText "incus-machines-limits-state.json" (builtins.toJSON (
+    lib.mapAttrs (
+      name: machine: {
+        instanceName = resolveMachineName name machine;
+        project = resolveMachineProject machine;
+        config = limitConfig machine;
+        devices = limitDeviceProperties machine;
+      }
+    )
+    allInstances
+  ));
   automaticInstanceNames = map (entry: entry.name) (
     lib.sort
     (left: right:
@@ -2626,6 +2967,17 @@ in {
           '';
         };
 
+        diskIoLimitsSupported = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Whether the target Incus daemon can resolve instance storage to
+            usable local block devices for disk-I/O limits. Set this to false
+            for nested or virtual-device-backed storage that cannot support
+            these limits; declarations then fail during evaluation.
+          '';
+        };
+
         startConcurrency = lib.mkOption {
           type = lib.types.addCheck lib.types.int (value: value == -1 || value > 0);
           default = 4;
@@ -2785,6 +3137,48 @@ in {
         message =
           "services.incus-manager VM instances do not yet support GPU/unix-char devices in this repo helper: "
           + lib.concatStringsSep ", " invalidVmDevices;
+      }
+      {
+        assertion = invalidLimitDiskDevices == [];
+        message =
+          "services.incus-manager disk limits must target root or declared disk devices: "
+          + lib.concatStringsSep ", " invalidLimitDiskDevices;
+      }
+      {
+        assertion = invalidLimitNetworkDevices == [];
+        message =
+          "services.incus-manager network limits must target eth0 or declared NIC devices: "
+          + lib.concatStringsSep ", " invalidLimitNetworkDevices;
+      }
+      {
+        assertion = conflictingLimitDeviceKinds == [];
+        message =
+          "services.incus-manager limit device names cannot be both disks and networks: "
+          + lib.concatStringsSep ", " conflictingLimitDeviceKinds;
+      }
+      {
+        assertion = conflictingCombinedLimits == [];
+        message =
+          "services.incus-manager limits cannot combine rw/rxtx with directional limits: "
+          + lib.concatStringsSep ", " conflictingCombinedLimits;
+      }
+      {
+        assertion = unsupportedDiskLimitInstances == [];
+        message =
+          "services.incus-manager disk limits are unsupported by this target Incus storage: "
+          + lib.concatStringsSep ", " unsupportedDiskLimitInstances;
+      }
+      {
+        assertion = invalidDisabledSwapMax == [];
+        message =
+          "services.incus-manager memory.swap.max requires memory.swap.enable = true: "
+          + lib.concatStringsSep ", " invalidDisabledSwapMax;
+      }
+      {
+        assertion = invalidVmLimitOptions == [];
+        message =
+          "services.incus-manager VM instances cannot use container-only limit options: "
+          + lib.concatStringsSep ", " invalidVmLimitOptions;
       }
       {
         assertion = unsafeDeleteHostDirs == [];
@@ -3042,6 +3436,32 @@ in {
             };
           }
           // lib.optionalAttrs hasInstances {
+            incus-machines-limits = {
+              description = "Reconcile live Incus instance limits";
+              wantedBy = ["sysinit-reactivation.target"];
+              before = map (name: "incus-${name}.service") (builtins.attrNames allInstances);
+              after = localIncusDeps ++ remoteProjectDelegationDeps ++ ["network-online.target"];
+              wants = localIncusDeps ++ remoteProjectDelegationDeps ++ ["network-online.target"];
+              restartTriggers = [incusLimitsStateFile];
+              restartIfChanged = true;
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                Environment =
+                  [
+                    (mkEnvAssignment "INCUS_MACHINES_DECLARED_INSTANCES" declaredInstancesJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_NAMES" instanceNamesJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_PROJECTS" instanceProjectsJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES" instanceReconcilePoliciesJson)
+                    (mkEnvAssignment "INCUS_MACHINES_INSTANCE_STATE_DIR" "/etc/incus-machines")
+                    (mkEnvAssignment "INCUS_MACHINES_NIXOS_META_VERSION" incusNixosMetaVersion)
+                    (mkEnvAssignment "INCUS_MACHINES_CONTROLLER_ID" globalCfg.controllerId)
+                  ]
+                  ++ remoteServiceEnvironment;
+                ExecStart = "${helperScript} limits --all";
+              };
+            };
+
             incus-machines-reconciler = lib.mkIf hasActionableInstances {
               description = "Reconciler for declared Incus guests";
               wantedBy = lib.optional globalCfg.autoReconcile "multi-user.target";

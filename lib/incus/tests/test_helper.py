@@ -69,6 +69,8 @@ class IncusHelperTest(unittest.TestCase):
                 "INCUS_MACHINES_HOST_SUSPEND_STATE_DIR": str(self.state_dir / "host-suspend"),
                 "INCUS_MACHINES_MANAGED_GC_DIR_ROOT": str(self.state_dir / "managed-dirs"),
                 "INCUS_MACHINES_ROUTES_STATE_FILE": str(self.state_dir / "routes.json"),
+                "INCUS_MACHINES_ETAG_RETRY_DELAY_SEC": "0",
+                "TEST_INCUS_FAIL_ONCE_STATE_FILE": str(self.state_dir / "fail-once"),
             }
         )
         env.update(overrides)
@@ -150,6 +152,8 @@ class IncusHelperTest(unittest.TestCase):
             "createOnlyDevices": {},
             "userMeta": {"user.nixos-meta": json.dumps(meta, separators=(",", ":"))},
             "config": {},
+            "limitConfig": {},
+            "limitDevices": {},
             "ipv4Address": "10.10.30.20",
             "adopt": False,
         }
@@ -570,6 +574,144 @@ class IncusHelperTest(unittest.TestCase):
         forced_mutations = [command for _, command in self.mutation_commands()]
         self.assertIn(["create", "local:nixos-test", "web"], forced_mutations)
         self.assertIn(["start", "web"], forced_mutations)
+
+    def test_limits_main_reconciles_limits_live_and_unsets_only_previously_managed_keys(self):
+        current_meta = self.machine_meta()
+        current_meta.update(
+            {
+                "controller": "controller-a",
+                "limits": {
+                    "configKeys": [
+                        "limits.cpu",
+                        "limits.memory",
+                        "limits.memory.enforce",
+                        "limits.memory.swap",
+                    ],
+                    "deviceProperties": {
+                        "eth0": ["limits.max"],
+                        "root": ["limits.read"],
+                    },
+                },
+            }
+        )
+        desired_meta = self.machine_meta()
+        desired_meta.update(
+            {
+                "controller": "controller-a",
+                "limits": {
+                    "configKeys": [
+                        "limits.cpu",
+                        "limits.memory",
+                        "limits.memory.enforce",
+                    ],
+                    "deviceProperties": {
+                        "eth0": ["limits.egress", "limits.ingress"],
+                        "root": ["limits.read"],
+                    },
+                },
+            }
+        )
+        state = self.machine_state()
+        state["limitConfig"] = {
+            "limits.cpu": "2",
+            "limits.memory": "4GiB",
+            "limits.memory.enforce": "hard",
+        }
+        state["limitDevices"] = {
+            "eth0": {"limits.ingress": "200Mbit", "limits.egress": "100Mbit"},
+            "root": {"limits.read": "100MiB"},
+        }
+        state["userMeta"] = {
+            "user.nixos-meta": json.dumps(desired_meta, separators=(",", ":"))
+        }
+        self.write_machine_state(state)
+
+        response = self.instance_response()
+        response["metadata"]["config"] = {
+            "limits.cpu": "1",
+            "limits.memory": "3GiB",
+            "limits.memory.enforce": "hard",
+            "limits.memory.swap": "false",
+            "security.nesting": "true",
+            "user.nixos-meta": json.dumps(current_meta, separators=(",", ":")),
+        }
+        response["metadata"]["devices"] = {
+            "eth0": {
+                "type": "nic",
+                "ipv4.address": "10.10.30.20",
+                "limits.max": "50Mbit",
+                "limits.priority": "7",
+            },
+            "root": {"type": "disk", "path": "/", "limits.read": "50MiB"},
+        }
+
+        self.run_helper(
+            "limits_main --all",
+            INCUS_MACHINES_CONTROLLER_ID="controller-a",
+            INCUS_MACHINES_DECLARED_INSTANCES='["web"]',
+            INCUS_MACHINES_INSTANCE_NAMES='{"web":"web"}',
+            INCUS_MACHINES_INSTANCE_PROJECTS='{"web":"default"}',
+            INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES='{"web":"auto"}',
+            INCUS_MACHINES_INSTANCE_STATE_DIR=str(self.work_dir),
+            TEST_INCUS_QUERY_RESPONSES=json.dumps(self.machine_query_responses(response=response)),
+        )
+
+        mutations = [command for _, command in self.mutation_commands()]
+        self.assertIn(["config", "unset", "web", "limits.memory.swap"], mutations)
+        self.assertIn(
+            ["config", "set", "web", "limits.cpu=2", "limits.memory=4GiB"],
+            mutations,
+        )
+        self.assertIn(["config", "device", "unset", "web", "eth0", "limits.max"], mutations)
+        self.assertIn(
+            [
+                "config",
+                "device",
+                "set",
+                "web",
+                "eth0",
+                "limits.ingress=200Mbit",
+                "limits.egress=100Mbit",
+            ],
+            mutations,
+        )
+        self.assertIn(
+            ["config", "device", "set", "web", "root", "limits.read=100MiB"],
+            mutations,
+        )
+        flattened = "\n".join(" ".join(command) for command in mutations)
+        self.assertNotIn("security.nesting", flattened)
+        self.assertNotIn("limits.priority", flattened)
+        self.assertNotIn("stop web", flattened)
+        self.assertNotIn("delete web", flattened)
+        self.assertNotIn("create local:nixos-test web", flattened)
+
+    def test_device_update_retries_one_etag_conflict(self):
+        result = self.run_helper(
+            """
+            set_device_config_json_if_changed \
+                web root \
+                '{"type":"disk","path":"/","limits.read":"50MiB"}' \
+                '{"limits.read":"100MiB"}'
+            """,
+            TEST_INCUS_FAIL_ONCE_PREFIXES=json.dumps(
+                [["--project", "default", "config", "device", "set", "web", "root"]]
+            ),
+        )
+
+        commands = self.read_incus_log()
+        expected = [
+            "--project",
+            "default",
+            "config",
+            "device",
+            "set",
+            "web",
+            "root",
+            "limits.read=100MiB",
+        ]
+        self.assertEqual(2, commands.count(expected))
+        self.assertIn("retrying (1/3)", result.stderr)
 
     def test_settlement_skips_ignored_instances_broadly_but_checks_explicit_selection(self):
         broad_result = self.run_helper(

@@ -69,6 +69,25 @@
               ipv4Address = "10.10.30.20";
               startPriority = -10;
               config."security.nesting" = "true";
+              limits = {
+                cpu = {
+                  count = 2;
+                  priority = 4;
+                };
+                memory = {
+                  max = "2GiB";
+                  swap.enable = false;
+                  oomScoreAdjustment = 250;
+                };
+                disk = {
+                  priority = 4;
+                  devices = {
+                    root.read = "100MiB";
+                    data.rw = "1000iops";
+                  };
+                };
+                network.devices.eth0.rxtx = "250Mbit";
+              };
               bootTag = "boot-local";
               recreateTag = "recreate-local";
               devices = {
@@ -114,7 +133,62 @@
         }
       ];
     }).config;
+  changedLimitConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.default.instances.web.limits.memory.max = lib.mkForce "3GiB";
+          services.incus-manager.default.instances.web.limits.memory.swap = {
+            enable = lib.mkForce true;
+            max = "1GiB";
+          };
+          services.incus-manager.default.instances.web.limits.network.devices.eth0 = {
+            rxtx = lib.mkForce null;
+            rx = "200Mbit";
+            tx = "100Mbit";
+          };
+        }
+      ];
+    }).config;
+  invalidSwapConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.default.instances.web.limits.memory.swap.max = "1GiB";
+        }
+      ];
+    }).config;
+  invalidVmSwapConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.lab.instances.vm.limits.memory.swap.enable = false;
+        }
+      ];
+    }).config;
+  invalidCombinedDiskLimit = builtins.tryEval (
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.default.instances.web.limits.disk.devices.root.read =
+            lib.mkForce "100MiB,2000iops";
+        }
+      ];
+    }).config.environment.etc."incus-machines/web.json".text
+  );
+  unsupportedDiskLimitConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.global.diskIoLimitsSupported = false;
+        }
+      ];
+    }).config;
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
+  invalidSwapAssertions = builtins.filter (assertion: ! assertion.assertion) invalidSwapConfig.assertions;
+  invalidVmSwapAssertions = builtins.filter (assertion: ! assertion.assertion) invalidVmSwapConfig.assertions;
+  unsupportedDiskLimitAssertions =
+    builtins.filter (assertion: ! assertion.assertion) unsupportedDiskLimitConfig.assertions;
 
   envHasPrefix = prefix: env:
     builtins.any (entry: lib.hasPrefix prefix entry) env;
@@ -122,7 +196,9 @@
   webState = builtins.fromJSON config.environment.etc."incus-machines/web.json".text;
   ignoredState = builtins.fromJSON config.environment.etc."incus-machines/ignored.json".text;
   vmState = builtins.fromJSON config.environment.etc."incus-machines/lab.vm.json".text;
+  changedLimitWebState = builtins.fromJSON changedLimitConfig.environment.etc."incus-machines/web.json".text;
   webMeta = builtins.fromJSON webState.userMeta."user.nixos-meta";
+  ignoredMeta = builtins.fromJSON ignoredState.userMeta."user.nixos-meta";
   vmMeta = builtins.fromJSON vmState.userMeta."user.nixos-meta";
   webUnit = config.systemd.services.incus-web;
   ignoredUnit = config.systemd.services.incus-ignored;
@@ -132,6 +208,7 @@
   imagesUnit = config.systemd.services.incus-images;
   preseedUnit = config.systemd.services.incus-preseed;
   certificatesUnit = config.systemd.services.incus-machines-certificates;
+  limitsUnit = config.systemd.services.incus-machines-limits;
   autoStartTarget = config.systemd.targets.incus-machines-autostart;
   autoStartGate0 = config.systemd.targets.incus-machines-autostart-gate-0;
   autoStartGate1 = config.systemd.targets.incus-machines-autostart-gate-1;
@@ -140,6 +217,9 @@
   delegationUnit = config.systemd.services.incus-cert-delegation-tenant;
 in
   assert failedAssertions == [];
+  assert invalidCombinedDiskLimit.success == false;
+  assert builtins.length unsupportedDiskLimitAssertions == 1;
+  assert lib.hasInfix "disk limits are unsupported" (builtins.head unsupportedDiskLimitAssertions).message;
   assert unlimitedWebUnit.wantedBy == ["multi-user.target"];
   assert !(builtins.hasAttr "incus-machines-autostart" unlimitedConfig.systemd.targets);
   assert config.virtualisation.incus.enable == true;
@@ -155,11 +235,35 @@ in
   assert webState.bootTag == "boot-global:boot-local";
   assert webState.recreateTag == "recreate-global:recreate-local";
   assert webState.config."security.nesting" == "true";
+  assert webState.limitConfig
+  == {
+    "limits.cpu" = "2";
+    "limits.cpu.priority" = "4";
+    "limits.disk.priority" = "4";
+    "limits.memory" = "2GiB";
+    "limits.memory.enforce" = "hard";
+    "limits.memory.oom_priority" = "250";
+    "limits.memory.swap" = "false";
+  };
+  assert webState.limitDevices.root."limits.read" == "100MiB";
+  assert webState.limitDevices.data."limits.max" == "1000iops";
+  assert webState.limitDevices.eth0."limits.max" == "250Mbit";
+  assert changedLimitWebState.configHash == webState.configHash;
+  assert changedLimitWebState.limitConfig."limits.memory" == "3GiB";
+  assert changedLimitWebState.limitConfig."limits.memory.swap" == "1GiB";
+  assert changedLimitWebState.limitDevices.eth0."limits.ingress" == "200Mbit";
+  assert changedLimitWebState.limitDevices.eth0."limits.egress" == "100Mbit";
+  assert ignoredState.limitConfig == {};
+  assert ignoredState.limitDevices == {};
+  assert !(builtins.hasAttr "limits" ignoredMeta);
+  assert builtins.any (assertion: lib.hasInfix "memory.swap.max requires" assertion.message) invalidSwapAssertions;
+  assert builtins.any (assertion: lib.hasInfix "lab.vm.memory.swap" assertion.message) invalidVmSwapAssertions;
   assert webState.desiredDisks.data
   == {
     type = "disk";
     source = "/var/lib/incus-machines/managed-dirs/web-data";
     path = "/data";
+    "limits.max" = "1000iops";
   };
   assert webState.desiredDisks.delegated
   == {
@@ -205,6 +309,9 @@ in
   assert preseedUnit.restartTriggers != [];
   assert preseedUnit.restartIfChanged == true;
   assert certificatesUnit.wantedBy == ["sysinit-reactivation.target"];
+  assert limitsUnit.wantedBy == ["sysinit-reactivation.target"];
+  assert limitsUnit.restartTriggers != [];
+  assert lib.hasSuffix " limits --all" limitsUnit.serviceConfig.ExecStart;
   assert lib.hasSuffix " certificates" certificatesUnit.serviceConfig.ExecStart;
   assert delegationUnit.wantedBy == ["sysinit-reactivation.target"];
   assert envHasPrefix "INCUS_MACHINES_CERTIFICATE_DELEGATION_NAME=tenant" delegationUnit.serviceConfig.Environment;

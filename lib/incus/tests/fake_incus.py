@@ -19,6 +19,20 @@ def should_fail(args):
     return False
 
 
+def should_fail_once(args):
+    prefixes = json.loads(os.environ.get("TEST_INCUS_FAIL_ONCE_PREFIXES", "[]"))
+    state_file_value = os.environ.get("TEST_INCUS_FAIL_ONCE_STATE_FILE")
+    if not state_file_value:
+        return False
+
+    state_file = Path(state_file_value)
+    for prefix in prefixes:
+        if args[: len(prefix)] == prefix and not state_file.exists():
+            state_file.write_text("failed\n", encoding="utf-8")
+            return True
+    return False
+
+
 def query_response(path):
     responses = json.loads(os.environ.get("TEST_INCUS_QUERY_RESPONSES", "{}"))
     if path in responses:
@@ -37,6 +51,10 @@ def main():
 
     if should_fail(args):
         print(os.environ.get("TEST_INCUS_FAIL_MESSAGE", "fake incus failure"), file=sys.stderr)
+        return 1
+
+    if should_fail_once(args):
+        print(os.environ.get("TEST_INCUS_FAIL_ONCE_MESSAGE", "ETag doesn't match"), file=sys.stderr)
         return 1
 
     if not args:

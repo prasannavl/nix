@@ -97,12 +97,14 @@
     nestedContainers ? false,
     interceptMounts ? false,
     interceptMountShift ? true,
+    limits ? {},
     extraConfig ? {},
     extraDevices ? {},
   }:
     {
       name = name;
       ipv4Address = ipv4Address;
+      limits = limits;
       config =
         {
           "security.privileged" =
