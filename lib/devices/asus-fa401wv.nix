@@ -14,9 +14,6 @@
   hardware.cpu.amd.updateMicrocode = false;
 
   hardware.nvidia = {
-    # The FA401WV exposes only s2idle, and both the platform and GPU report
-    # support for NVIDIA's S0ix power-management path.
-    moduleParams.nvidia.NVreg_EnableS0ixPowerManagement = 1;
     nvidiaPersistenced = false;
     dynamicBoost.enable = false;
     prime = {
@@ -25,6 +22,9 @@
       amdgpuBusId = "PCI:102:0:0";
       nvidiaBusId = "PCI:100:0:0";
     };
+    # The FA401WV exposes only s2idle, and both the platform and GPU report
+    # support for NVIDIA's S0ix power-management path.
+    moduleParams.nvidia.NVreg_EnableS0ixPowerManagement = 1;
   };
 
   boot.extraModprobeConfig = ''
