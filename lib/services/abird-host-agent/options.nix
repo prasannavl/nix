@@ -406,6 +406,15 @@ in {
       description = "Tar executable used by fallback copy jobs.";
     };
 
+    sshHostEd25519PublicKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Public Ed25519 host-key path returned to authenticated transfer
+        controllers. Null derives it from services.openssh.hostKeys.
+      '';
+    };
+
     brokerTransfer = lib.mkOption {
       type = lib.types.nullOr (lib.types.submodule {
         options = {

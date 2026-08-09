@@ -31,10 +31,11 @@ use abird_host_manager::selector::select_hosts;
 use abird_host_manager::service_registry::{resolve_service_host, resolve_service_resource};
 use abird_host_manager::workflow::{
     BackupDestination, BackupItem, BackupSpec, HostEndpoint, InstanceBackupPolicy,
-    InstanceEndpoint, InstanceMovePolicy, MoveItem, TransactionSpec,
+    InstanceEndpoint, InstanceMovePolicy, MoveItem, TransactionSpec, wipe_id,
 };
 use abird_host_manager::workflow_runtime::{
-    TransactionRecord, WorkflowStore, execute_workflow_action,
+    InitialMoveContinuation, TransactionRecord, WorkflowRegistration, WorkflowStore,
+    execute_workflow_action, preflight_new_workflow, preflight_workflow_action,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -444,7 +445,7 @@ struct MoveArgs {
     id: Option<String>,
 
     #[command(flatten)]
-    guard: ExecutionGuard,
+    guard: MoveGuard,
 }
 
 #[derive(Debug, Args)]
@@ -459,7 +460,7 @@ struct HostMoveArgs {
     #[arg(long)]
     id: Option<String>,
     #[command(flatten)]
-    guard: ExecutionGuard,
+    guard: MoveGuard,
 }
 
 #[derive(Debug, Args)]
@@ -506,7 +507,17 @@ struct InstanceMoveArgs {
     #[arg(long)]
     id: Option<String>,
     #[command(flatten)]
-    guard: ExecutionGuard,
+    guard: MoveGuard,
+}
+
+#[derive(Debug, Args)]
+struct MoveGuard {
+    /// Attach an advanced existing transaction and resume only its pending authorized phase.
+    #[arg(long)]
+    force_existing: bool,
+
+    #[command(flatten)]
+    execution: ExecutionGuard,
 }
 
 #[derive(Debug, Args)]
@@ -515,7 +526,7 @@ struct ExecutionGuard {
     #[arg(long, conflicts_with = "dry_run")]
     execute: bool,
 
-    /// Print the intended action without writing a journal or contacting hosts.
+    /// Validate the intended action without writing a journal or mutating hosts.
     #[arg(long, conflicts_with = "execute")]
     dry_run: bool,
 }
@@ -829,6 +840,39 @@ struct LogOptions {
     since: Option<String>,
     #[arg(short = 'f', long)]
     follow: bool,
+    /// Journal entry encoding; JSON is emitted as one object per line.
+    #[arg(short = 'o', long, value_enum, default_value_t = LogOutput::Text)]
+    output: LogOutput,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LogOutput {
+    Text,
+    Json,
+}
+
+impl LogOutput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+}
+
+fn append_log_options(arguments: &mut Vec<String>, options: &LogOptions) {
+    arguments.extend([
+        "--lines".to_owned(),
+        options.lines.to_string(),
+        "--output".to_owned(),
+        options.output.as_str().to_owned(),
+    ]);
+    if let Some(since) = &options.since {
+        arguments.extend(["--since".to_owned(), since.clone()]);
+    }
+    if options.follow {
+        arguments.push("--follow".to_owned());
+    }
 }
 
 #[derive(Debug, Args)]
@@ -887,6 +931,8 @@ enum ServiceCommand {
     Restart(ServiceMutationArgs),
     /// Reload one logical service.
     Reload(ServiceMutationArgs),
+    /// Irreversibly clear one logical service's declared data and remain held.
+    Wipe(ServiceWipeArgs),
     /// Show one logical service's status.
     Status(LogicalServiceArgs),
     /// Read one logical service's journal.
@@ -897,6 +943,20 @@ enum ServiceCommand {
 struct ServiceMutationArgs {
     #[command(flatten)]
     service: LogicalServiceArgs,
+    #[command(flatten)]
+    guard: ExecutionGuard,
+}
+
+#[derive(Debug, Args)]
+struct ServiceWipeArgs {
+    #[command(flatten)]
+    service: LogicalServiceArgs,
+    /// Optional stable idempotency key; otherwise a sortable wipe ID is generated.
+    #[arg(long)]
+    id: Option<String>,
+    /// Existing transaction that owns the resource hold; defaults to the wipe ID.
+    #[arg(long)]
+    owner: Option<String>,
     #[command(flatten)]
     guard: ExecutionGuard,
 }
@@ -966,6 +1026,8 @@ enum ResourceCommand {
     Restart(ResourceMutationArgs),
     /// Reload every unit owned by one resource.
     Reload(ResourceMutationArgs),
+    /// Irreversibly clear one resource's declared data and remain held.
+    Wipe(ResourceWipeArgs),
     /// Show one resource's unit status.
     Status(ResourceArgs),
     /// Run one resource's declared readiness checks.
@@ -993,6 +1055,20 @@ enum ResourceHoldCommand {
 struct ResourceMutationArgs {
     #[command(flatten)]
     resource: ResourceArgs,
+    #[command(flatten)]
+    guard: ExecutionGuard,
+}
+
+#[derive(Debug, Args)]
+struct ResourceWipeArgs {
+    #[command(flatten)]
+    resource: ResourceArgs,
+    /// Optional stable idempotency key; otherwise a sortable wipe ID is generated.
+    #[arg(long)]
+    id: Option<String>,
+    /// Existing transaction that owns the resource hold; defaults to the wipe ID.
+    #[arg(long)]
+    owner: Option<String>,
     #[command(flatten)]
     guard: ExecutionGuard,
 }
@@ -1148,7 +1224,7 @@ fn instance_command(
 }
 
 fn move_instances(state_dir: PathBuf, config: PathBuf, args: InstanceMoveArgs) -> Result<()> {
-    require_guard(&args.guard, "instance move")?;
+    require_guard(&args.guard.execution, "instance move")?;
     let items = args
         .instances
         .iter()
@@ -1314,7 +1390,7 @@ fn move_resource(
     args: MoveArgs,
     resource_type: ResourceType,
 ) -> Result<()> {
-    require_guard(&args.guard, "move")?;
+    require_guard(&args.guard.execution, "move")?;
     let source = HostEndpoint {
         host: args.source.clone(),
         instance: None,
@@ -1361,20 +1437,34 @@ fn execute_new_move(
     config: PathBuf,
     caller_id: Option<&str>,
     items: Vec<MoveItem>,
-    guard: &ExecutionGuard,
+    guard: &MoveGuard,
 ) -> Result<()> {
     let spec = TransactionSpec::new(caller_id, items, Vec::new(), Vec::new())?;
-    let mut record = TransactionRecord::new(spec, config)?;
-    if guard.dry_run {
+    let mut candidate = TransactionRecord::new(spec, config)?;
+
+    if guard.execution.dry_run {
+        if let Some(mut record) = WorkflowStore::load_matching(&state_dir, &candidate)? {
+            return dry_run_existing_move(&mut record, guard.force_existing);
+        }
+        let mut adapter = NativeAdapter::load(&candidate.config)?;
+        let preflight = preflight_new_workflow(&mut candidate, &mut adapter)?;
         return print_json(&json!({
             "dry_run": true,
-            "transaction": record,
+            "preflight": preflight,
+            "transaction": candidate,
             "authorized_phases": ["setup", "seed"],
             "stops_before": "prepare",
         }));
     }
+
     let store = WorkflowStore::open(state_dir)?;
-    store.create(&record)?;
+    let mut record = match store.register(candidate)? {
+        WorkflowRegistration::Created(record) => record,
+        WorkflowRegistration::Existing(record) => {
+            return execute_existing_move(&store, record, guard.force_existing);
+        }
+    };
+
     eprintln!(
         "transaction {} persisted; beginning setup and seed",
         record.id()
@@ -1382,6 +1472,89 @@ fn execute_new_move(
     let mut adapter = NativeAdapter::load(&record.config)?;
     execute_workflow_action(&store, &mut record, Action::Setup, &mut adapter)?;
     execute_workflow_action(&store, &mut record, Action::Seed, &mut adapter)?;
+    print_json(&record)
+}
+
+fn dry_run_existing_move(record: &mut TransactionRecord, force_existing: bool) -> Result<()> {
+    let continuation = record.initial_move_continuation();
+    let requires_force = matches!(continuation, InitialMoveContinuation::RequiresForce(_));
+    let would_resume = match continuation {
+        InitialMoveContinuation::Resume(action) => Some(action),
+        InitialMoveContinuation::RequiresForce(Some(action)) if force_existing => Some(action),
+        InitialMoveContinuation::Complete | InitialMoveContinuation::RequiresForce(_) => None,
+    };
+    if let Some(action) = would_resume {
+        let mut adapter = NativeAdapter::load(&record.config)?;
+        preflight_workflow_action(record, action, &mut adapter)?;
+    }
+    print_json(&json!({
+        "dry_run": true,
+        "existing": true,
+        "force_existing": force_existing,
+        "requires_force_existing": requires_force,
+        "would_resume": would_resume,
+        "transaction": record,
+    }))
+}
+
+fn execute_existing_move(
+    store: &WorkflowStore,
+    mut record: TransactionRecord,
+    force_existing: bool,
+) -> Result<()> {
+    let continuation = record.initial_move_continuation();
+    if let InitialMoveContinuation::RequiresForce(pending) = continuation
+        && !force_existing
+    {
+        let pending = pending
+            .map(|action| format!(" with pending {}", action.as_str()))
+            .unwrap_or_default();
+        bail!(
+            "move transaction {:?} was reinvoked in {:?} phase{pending}; inspect it with \
+             `transaction show {}` and repeat the move with --force-existing to attach without \
+             resetting its journal",
+            record.id(),
+            record.phase,
+            record.id()
+        );
+    }
+
+    let continuation_message = match continuation {
+        InitialMoveContinuation::Resume(action) => format!(
+            "move command reinvoked; attached to existing transaction and resuming {}",
+            action.as_str()
+        ),
+        InitialMoveContinuation::Complete => {
+            "move command reinvoked; initial setup and seed are already complete".to_owned()
+        }
+        InitialMoveContinuation::RequiresForce(Some(action)) => format!(
+            "move command reinvoked with --force-existing; attached to existing transaction and \
+             resuming previously authorized {}",
+            action.as_str()
+        ),
+        InitialMoveContinuation::RequiresForce(None) => format!(
+            "move command reinvoked with --force-existing; attached to existing {:?} transaction \
+             with no pending action",
+            record.phase
+        ),
+    };
+    eprintln!("{}", continuation_message);
+    record.record_reinvocation(continuation_message)?;
+    store.save(&record)?;
+
+    match continuation {
+        InitialMoveContinuation::Resume(Action::Setup) => {
+            let mut adapter = NativeAdapter::load(&record.config)?;
+            execute_workflow_action(store, &mut record, Action::Setup, &mut adapter)?;
+            execute_workflow_action(store, &mut record, Action::Seed, &mut adapter)?;
+        }
+        InitialMoveContinuation::Resume(action)
+        | InitialMoveContinuation::RequiresForce(Some(action)) => {
+            let mut adapter = NativeAdapter::load(&record.config)?;
+            execute_workflow_action(store, &mut record, action, &mut adapter)?;
+        }
+        InitialMoveContinuation::Complete | InitialMoveContinuation::RequiresForce(None) => {}
+    }
     print_json(&record)
 }
 
@@ -1399,15 +1572,26 @@ fn transaction_command(
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let mut record = TransactionRecord::new(spec, config)?;
             if args.guard.dry_run {
+                let mut adapter = NativeAdapter::load(&record.config)?;
+                let preflight = preflight_new_workflow(&mut record, &mut adapter)?;
                 return print_json(&json!({
                     "dry_run": true,
+                    "preflight": preflight,
                     "transaction": record,
                     "authorized_phases": ["setup", "seed"],
                     "stops_before": "prepare",
                 }));
             }
             let store = WorkflowStore::open(state_dir)?;
-            store.create(&record)?;
+            record = match store.register(record)? {
+                WorkflowRegistration::Created(record) => record,
+                WorkflowRegistration::Existing(record) => bail!(
+                    "transaction {:?} already exists in {:?} phase; use an explicit transaction \
+                     command to inspect or continue it",
+                    record.id(),
+                    record.phase
+                ),
+            };
             eprintln!(
                 "transaction {} persisted; beginning setup and seed",
                 record.id()
@@ -1444,8 +1628,11 @@ fn transaction_command(
                 .pending_action
                 .context("transaction has no pending action to resume")?;
             if should_dry_run(action, &args.guard)? {
+                let mut adapter = NativeAdapter::load(&record.config)?;
+                preflight_workflow_action(&mut record, action, &mut adapter)?;
                 return print_json(&json!({
                     "dry_run": true,
+                    "validated_phase": action,
                     "transaction": record,
                     "action": action,
                 }));
@@ -1464,8 +1651,11 @@ fn transaction_phase(
 ) -> Result<()> {
     let mut record = store.load(&args.id)?;
     if should_dry_run(action, &args.guard)? {
+        let mut adapter = NativeAdapter::load(&record.config)?;
+        preflight_workflow_action(&mut record, action, &mut adapter)?;
         return print_json(&json!({
             "dry_run": true,
+            "validated_phase": action,
             "transaction": record,
             "action": action,
         }));
@@ -1493,24 +1683,9 @@ fn host_command(config: &HostManagerConfig, command: HostCommand) -> Result<()> 
         HostCommand::Exec { host, argv } => config.run_host_command_interactive(&host, &argv),
         HostCommand::Ssh(args) => config.open_ssh(&args.host, &args.args),
         HostCommand::Logs(args) => {
-            let mut agent_args = Vec::new();
-            if !args.logs.follow {
-                agent_args.push("--json".to_owned());
-            }
-            agent_args.extend([
-                "logs".to_owned(),
-                "--lines".to_owned(),
-                args.logs.lines.to_string(),
-            ]);
-            if let Some(since) = args.logs.since {
-                agent_args.extend(["--since".to_owned(), since]);
-            }
-            if args.logs.follow {
-                agent_args.push("--follow".to_owned());
-                config.run_agent_interactive(&args.host, &agent_args)
-            } else {
-                print_json(&config.run_agent(&args.host, &agent_args)?)
-            }
+            let mut agent_args = vec!["logs".to_owned()];
+            append_log_options(&mut agent_args, &args.logs);
+            config.run_agent_interactive(&args.host, &agent_args)
         }
         HostCommand::Holds { host } => hold_list(config, host),
         HostCommand::Drain(args) => durable_host_action(config, args, "hold"),
@@ -1949,20 +2124,26 @@ fn service_command(
     command: ServiceCommand,
 ) -> Result<()> {
     let command = match command {
+        ServiceCommand::Wipe(args) => {
+            let target = resolve_logical_service(config, repo_root, nix_program, args.service)?;
+            let ResolvedServiceTarget::Resource { host, resource } = target else {
+                bail!("logical service wipe requires a declared host-agent resource");
+            };
+            let adapter = NativeAdapter::from_config(config.clone());
+            return wipe_resource(
+                &adapter,
+                &host,
+                &resource,
+                args.id.as_deref(),
+                args.owner.as_deref(),
+                &args.guard,
+            );
+        }
         ServiceCommand::Logs(args) => {
             let target = resolve_logical_service(config, repo_root, nix_program, args.service)?;
-            let mut agent_args = service_agent_args("logs", target, !args.logs.follow)?;
-            agent_args.push("--lines".to_owned());
-            agent_args.push(args.logs.lines.to_string());
-            if let Some(since) = args.logs.since {
-                agent_args.push("--since".to_owned());
-                agent_args.push(since);
-            }
-            if args.logs.follow {
-                agent_args.push("--follow".to_owned());
-                return config.run_agent_interactive(&agent_args[0], &agent_args[1..]);
-            }
-            return print_json(&config.run_agent(&agent_args[0], &agent_args[1..])?);
+            let mut agent_args = service_agent_args("logs", target, false)?;
+            append_log_options(&mut agent_args, &args.logs);
+            return config.run_agent_interactive(&agent_args[0], &agent_args[1..]);
         }
         command => command,
     };
@@ -1972,7 +2153,9 @@ fn service_command(
         ServiceCommand::Restart(args) => ("restart", args.service, Some(args.guard)),
         ServiceCommand::Reload(args) => ("reload", args.service, Some(args.guard)),
         ServiceCommand::Status(args) => ("status", args, None),
-        ServiceCommand::Move(_) | ServiceCommand::Logs(_) => unreachable!(),
+        ServiceCommand::Move(_) | ServiceCommand::Wipe(_) | ServiceCommand::Logs(_) => {
+            unreachable!()
+        }
     };
     let target = resolve_logical_service(config, repo_root, nix_program, args)?;
     if let Some(guard) = guard
@@ -1988,16 +2171,9 @@ fn unit_command(config: &HostManagerConfig, command: UnitCommand) -> Result<()> 
     let command = match command {
         UnitCommand::Logs(args) => {
             let target = resolve_unit(args.unit)?;
-            let mut agent_args = service_agent_args("logs", target, !args.logs.follow)?;
-            agent_args.extend(["--lines".to_owned(), args.logs.lines.to_string()]);
-            if let Some(since) = args.logs.since {
-                agent_args.extend(["--since".to_owned(), since]);
-            }
-            if args.logs.follow {
-                agent_args.push("--follow".to_owned());
-                return config.run_agent_interactive(&agent_args[0], &agent_args[1..]);
-            }
-            return print_json(&config.run_agent(&agent_args[0], &agent_args[1..])?);
+            let mut agent_args = service_agent_args("logs", target, false)?;
+            append_log_options(&mut agent_args, &args.logs);
+            return config.run_agent_interactive(&agent_args[0], &agent_args[1..]);
         }
         command => command,
     };
@@ -2150,26 +2326,13 @@ fn resource_command(adapter: &NativeAdapter, command: ResourceCommand) -> Result
     let config = adapter.config();
     let command = match command {
         ResourceCommand::Logs(args) => {
-            let mut agent_args = Vec::new();
-            if !args.logs.follow {
-                agent_args.push("--json".to_owned());
-            }
-            agent_args.extend([
+            let mut agent_args = vec![
                 "logs".to_owned(),
                 "--resource".to_owned(),
                 args.resource.resource,
-                "--lines".to_owned(),
-                args.logs.lines.to_string(),
-            ]);
-            if let Some(since) = args.logs.since {
-                agent_args.push("--since".to_owned());
-                agent_args.push(since);
-            }
-            if args.logs.follow {
-                agent_args.push("--follow".to_owned());
-                return config.run_agent_interactive(&args.resource.host, &agent_args);
-            }
-            return print_json(&config.run_agent(&args.resource.host, &agent_args)?);
+            ];
+            append_log_options(&mut agent_args, &args.logs);
+            return config.run_agent_interactive(&args.resource.host, &agent_args);
         }
         ResourceCommand::Hold { command } => {
             return match command {
@@ -2181,6 +2344,16 @@ fn resource_command(adapter: &NativeAdapter, command: ResourceCommand) -> Result
         }
         ResourceCommand::Activate(args) => {
             return durable_resource_action_with_config(config, args, "activate");
+        }
+        ResourceCommand::Wipe(args) => {
+            return wipe_resource(
+                adapter,
+                &args.resource.host,
+                &args.resource.resource,
+                args.id.as_deref(),
+                args.owner.as_deref(),
+                &args.guard,
+            );
         }
         command => command,
     };
@@ -2194,6 +2367,7 @@ fn resource_command(adapter: &NativeAdapter, command: ResourceCommand) -> Result
         ResourceCommand::Ready(args) => ("ready", args, None),
         ResourceCommand::Move(_)
         | ResourceCommand::Logs(_)
+        | ResourceCommand::Wipe(_)
         | ResourceCommand::Hold { .. }
         | ResourceCommand::Activate(_) => unreachable!(),
     };
@@ -2221,6 +2395,74 @@ fn resource_command(adapter: &NativeAdapter, command: ResourceCommand) -> Result
             args.resource,
         ],
     )?)
+}
+
+fn wipe_resource(
+    adapter: &NativeAdapter,
+    host: &str,
+    resource: &str,
+    caller_id: Option<&str>,
+    hold_owner: Option<&str>,
+    guard: &ExecutionGuard,
+) -> Result<()> {
+    adapter.config().host(host)?;
+    let wipe = wipe_id(caller_id)?;
+    let owner = hold_owner.map_or_else(|| wipe.clone(), str::to_owned);
+    abird_host_manager::workflow::validate_workflow_id(&owner)?;
+    if !guard.execute {
+        if !guard.dry_run {
+            bail!("service data wipe is mutating; pass --execute or --dry-run");
+        }
+        return print_json(&json!({
+            "dry_run": true,
+            "operation": "wipe-and-remain-held",
+            "host": host,
+            "resource": resource,
+            "wipe_id": wipe,
+            "hold_owner": owner,
+            "data_roots": "resolved by the target host agent from its immutable declaration",
+        }));
+    }
+
+    eprintln!("wipe {wipe} selected; acquiring durable hold owned by {owner}");
+    adapter.run_profile_job(
+        host,
+        &format!("{wipe}-hold"),
+        &owner,
+        resource,
+        &["--operation".to_owned(), "hold".to_owned()],
+    )?;
+    adapter.run_profile_job(
+        host,
+        &format!("{wipe}-inactive"),
+        &owner,
+        resource,
+        &[
+            "--operation".to_owned(),
+            "status".to_owned(),
+            "--expect".to_owned(),
+            "inactive".to_owned(),
+        ],
+    )?;
+    let job_id = format!("{wipe}-wipe");
+    let job = adapter.run_profile_job_result(
+        host,
+        &job_id,
+        &owner,
+        resource,
+        &["--operation".to_owned(), "wipe-data".to_owned()],
+    )?;
+    print_json(&json!({
+        "ok": true,
+        "operation": "wipe-and-remain-held",
+        "host": host,
+        "resource": resource,
+        "wipe_id": wipe,
+        "hold_owner": owner,
+        "job_id": job_id,
+        "held": true,
+        "job": job,
+    }))
 }
 
 fn durable_resource_action_with_config(
@@ -4177,7 +4419,14 @@ fn resolve_config_from(
     current: &Path,
 ) -> Result<PathBuf> {
     if let Some(config) = config {
-        return Ok(config.to_path_buf());
+        let config = if config.is_absolute() {
+            config.to_path_buf()
+        } else {
+            current.join(config)
+        };
+        return config
+            .canonicalize()
+            .with_context(|| format!("resolve manager config {}", config.display()));
     }
     Repository::discover_from(repo_root.map(Path::to_path_buf), current)
         .map(|repository| repository.nixbot_config_path())
@@ -4212,10 +4461,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_follow_for_every_remote_log_scope() {
+    fn parses_output_for_every_remote_log_scope_and_follow_mode() {
         for arguments in [
-            vec!["abird-host-manager", "host", "logs", "target", "-f"],
-            vec!["abird-host-manager", "service", "logs", "zulip", "--follow"],
+            vec![
+                "abird-host-manager",
+                "host",
+                "logs",
+                "target",
+                "--output",
+                "json",
+            ],
+            vec![
+                "abird-host-manager",
+                "service",
+                "logs",
+                "zulip",
+                "--follow",
+                "--output",
+                "text",
+            ],
             vec![
                 "abird-host-manager",
                 "unit",
@@ -4223,6 +4487,8 @@ mod tests {
                 "target",
                 "zulip.service",
                 "-f",
+                "--output",
+                "json",
             ],
             vec![
                 "abird-host-manager",
@@ -4231,10 +4497,44 @@ mod tests {
                 "target",
                 "service:zulip",
                 "-f",
+                "--output",
+                "text",
             ],
         ] {
             Cli::try_parse_from(arguments).unwrap();
         }
+    }
+
+    #[test]
+    fn log_options_encode_text_snapshots_and_json_follow_identically() {
+        let mut snapshot = vec!["logs".to_owned()];
+        append_log_options(
+            &mut snapshot,
+            &LogOptions {
+                lines: 50,
+                since: None,
+                follow: false,
+                output: LogOutput::Text,
+            },
+        );
+        assert_eq!(snapshot, ["logs", "--lines", "50", "--output", "text"]);
+
+        let mut follow = vec!["logs".to_owned()];
+        append_log_options(
+            &mut follow,
+            &LogOptions {
+                lines: 10,
+                since: Some("today".to_owned()),
+                follow: true,
+                output: LogOutput::Json,
+            },
+        );
+        assert_eq!(
+            follow,
+            [
+                "logs", "--lines", "10", "--output", "json", "--since", "today", "--follow",
+            ]
+        );
     }
 
     #[test]
@@ -4270,6 +4570,133 @@ mod tests {
                 "zulip.service",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn repeated_typed_moves_accept_an_explicit_existing_transaction_guard() {
+        for arguments in [
+            vec![
+                "abird-host-manager",
+                "service",
+                "move",
+                "zulip",
+                "--from",
+                "source",
+                "--to",
+                "target",
+                "--id",
+                "move-zulip",
+                "--force-existing",
+                "--execute",
+            ],
+            vec![
+                "abird-host-manager",
+                "resource",
+                "move",
+                "service:zulip",
+                "--from",
+                "source",
+                "--to",
+                "target",
+                "--force-existing",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "host",
+                "move",
+                "--from",
+                "source",
+                "--to",
+                "target",
+                "--force-existing",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "instance",
+                "move",
+                "zulip",
+                "--from-controller",
+                "source",
+                "--to-controller",
+                "target",
+                "--force-existing",
+                "--dry-run",
+            ],
+        ] {
+            Cli::try_parse_from(arguments).unwrap();
+        }
+    }
+
+    #[test]
+    fn repeated_move_preserves_seeded_and_advanced_journals() {
+        let state = tempfile::tempdir().unwrap();
+        let store = WorkflowStore::open(state.path().to_path_buf()).unwrap();
+        let spec = TransactionSpec::new(
+            Some("move-repeated"),
+            vec![MoveItem::Service {
+                id: "item-001".to_owned(),
+                service: "zulip".to_owned(),
+                source: HostEndpoint {
+                    host: "source".to_owned(),
+                    instance: None,
+                },
+                target: HostEndpoint {
+                    host: "target".to_owned(),
+                    instance: None,
+                },
+                data_roots: Vec::new(),
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let candidate = TransactionRecord::new(spec, "/missing/config.json".into()).unwrap();
+        let WorkflowRegistration::Created(mut record) = store.register(candidate).unwrap() else {
+            panic!("first registration should create the transaction");
+        };
+
+        record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Seeded;
+        store.save(&record).unwrap();
+        execute_existing_move(&store, record, false).unwrap();
+        let seeded = store.load("move-repeated").unwrap();
+        assert_eq!(
+            seeded.phase,
+            abird_host_manager::workflow_runtime::WorkflowPhase::Seeded
+        );
+        assert!(
+            seeded
+                .events
+                .last()
+                .unwrap()
+                .message
+                .contains("already complete")
+        );
+
+        let mut prepared = seeded;
+        prepared.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Prepared;
+        store.save(&prepared).unwrap();
+        assert!(
+            execute_existing_move(&store, prepared.clone(), false)
+                .unwrap_err()
+                .to_string()
+                .contains("--force-existing")
+        );
+        execute_existing_move(&store, prepared, true).unwrap();
+        let attached = store.load("move-repeated").unwrap();
+        assert_eq!(
+            attached.phase,
+            abird_host_manager::workflow_runtime::WorkflowPhase::Prepared
+        );
+        assert!(
+            attached
+                .events
+                .last()
+                .unwrap()
+                .message
+                .contains("with no pending action")
         );
     }
 
@@ -4611,6 +5038,27 @@ mod tests {
                 "service:zulip",
                 "--execute",
             ],
+            vec![
+                "abird-host-manager",
+                "service",
+                "wipe",
+                "zulip",
+                "--host",
+                "target",
+                "--id",
+                "wipe-zulip",
+                "--owner",
+                "move-zulip",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "resource",
+                "wipe",
+                "target",
+                "service:zulip",
+                "--execute",
+            ],
         ] {
             Cli::try_parse_from(arguments).unwrap();
         }
@@ -4858,16 +5306,18 @@ mod tests {
 
     #[test]
     fn explicit_config_takes_precedence_over_repository_discovery() {
-        let config = Path::new("/etc/abird-host-manager.json");
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("manager.json");
+        fs::write(&config, "{}\n").unwrap();
 
         assert_eq!(
             resolve_config_from(
-                Some(config),
+                Some(Path::new("manager.json")),
                 Some(Path::new("/does/not/exist")),
-                Path::new("/also/missing"),
+                temp.path(),
             )
             .unwrap(),
-            config
+            config.canonicalize().unwrap()
         );
     }
 

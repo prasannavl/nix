@@ -15,6 +15,7 @@ pub mod instance_backup;
 pub mod offline_store;
 pub mod physical;
 pub mod programs;
+pub mod progress;
 pub mod repository;
 pub mod selector;
 pub mod service_registry;
@@ -542,12 +543,7 @@ fn steps_for(action: Action, transaction: &Transaction) -> Vec<&'static str> {
             "hold-target",
             "assert-target-stopped",
         ],
-        Action::Seed => vec![
-            "hold-target",
-            "assert-target-stopped",
-            "seed",
-            "verify-seed",
-        ],
+        Action::Seed => vec!["hold-target", "assert-target-stopped", "seed"],
         Action::Prepare => vec![
             "hold-target",
             "assert-target-stopped",
@@ -752,12 +748,7 @@ mod tests {
         execute_action(&store, &mut transaction, Action::Seed, &mut adapter)?;
         assert_eq!(
             adapter.calls,
-            [
-                "hold-target",
-                "assert-target-stopped",
-                "seed",
-                "verify-seed"
-            ]
+            ["hold-target", "assert-target-stopped", "seed"]
         );
         assert!(!adapter.calls.iter().any(|step| step.contains("source")));
         Ok(())

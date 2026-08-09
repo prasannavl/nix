@@ -18,7 +18,7 @@ use crate::instance::{
 };
 use crate::instance_backup::{InstanceBackupAction, run_instance_backup, validate_instance_backup};
 use crate::job::{JobExecution, JobOperation, JobSpec, JobStatus, JobStore};
-use crate::journal::Journalctl;
+use crate::journal::{JournalOutput, JournalStreamResult, Journalctl};
 use crate::maintenance::{CleanKind, clean};
 use crate::manifest::{create_manifest, create_manifest_roots};
 use crate::programs::nix::NixCollectGarbage;
@@ -33,15 +33,17 @@ use crate::service::{ServiceOperation, ServiceResult, ServiceScope, ServiceTarge
 use crate::sha256::digest_bytes;
 use crate::state::{HoldRecord, StateStore};
 use crate::transfer::{
-    RemoteSource, TransferDefinition, clear_directory_contents_except,
-    transfer_with_excludes_progress, transfer_with_progress, verify_transfer,
-    verify_transfer_with_excludes,
+    PostCopyVerification, RemoteSource, TransferDefinition, clear_directory_contents_except,
+    transfer_with_excludes_progress, transfer_with_excludes_progress_policy,
+    transfer_with_progress, verify_transfer, verify_transfer_with_excludes,
 };
+use crate::wipe::wipe_data_roots;
 
 const DEFAULT_STATE_DIR: &str = "/var/lib/abird-host-agent";
 const DEFAULT_RESOURCE_MANIFEST: &str = "/etc/abird-host-agent/resources.json";
 const DEFAULT_PODMAN: &str = "/run/current-system/sw/bin/podman";
 const DEFAULT_NIX_COLLECT_GARBAGE: &str = "/run/current-system/sw/bin/nix-collect-garbage";
+const DEFAULT_SSH_HOST_ED25519_PUBLIC_KEY: &str = "/etc/ssh/ssh_host_ed25519_key.pub";
 const JOB_SPEC_LIMIT: u64 = 4 * 1024 * 1024;
 #[derive(Debug)]
 struct ResolvedJobInputs {
@@ -82,6 +84,16 @@ pub struct Cli {
         global = true
     )]
     pub resource_manifest: PathBuf,
+
+    /// Public Ed25519 host key advertised to authenticated transfer controllers.
+    #[arg(
+        long,
+        env = "ABIRD_HOST_AGENT_SSH_HOST_ED25519_PUBLIC_KEY",
+        default_value = DEFAULT_SSH_HOST_ED25519_PUBLIC_KEY,
+        global = true,
+        hide = true
+    )]
+    pub ssh_host_ed25519_public_key: PathBuf,
 
     /// systemctl-compatible executable, primarily overridable for tests.
     #[arg(
@@ -228,6 +240,9 @@ struct LogArgs {
     since: Option<String>,
     #[arg(short = 'f', long)]
     follow: bool,
+    /// Journal entry encoding; JSON is emitted as one object per line.
+    #[arg(short = 'o', long, value_enum, default_value_t = JournalOutput::Text)]
+    output: JournalOutput,
 }
 
 #[derive(Debug, Args)]
@@ -354,8 +369,8 @@ enum JobCommand {
     /// Show one durable job.
     #[command(alias = "status")]
     Show(JobIdArgs),
-    /// Explicitly reset a terminal failed job to pending without changing its specification.
-    Retry(JobIdArgs),
+    /// Explicitly reset a terminal failed job to pending.
+    Retry(JobRetryArgs),
     List,
     /// Run every pending job and recover jobs interrupted while running.
     #[command(hide = true)]
@@ -372,6 +387,7 @@ enum BuiltinJobOperation {
     Start,
     Status,
     Manifest,
+    WipeData,
     Ready,
 }
 
@@ -386,6 +402,7 @@ impl From<BuiltinJobOperation> for JobOperation {
             BuiltinJobOperation::Start => Self::Start,
             BuiltinJobOperation::Status => Self::Status,
             BuiltinJobOperation::Manifest => Self::Manifest,
+            BuiltinJobOperation::WipeData => Self::WipeData,
             BuiltinJobOperation::Ready => Self::Ready,
         }
     }
@@ -400,6 +417,16 @@ struct JobSpecSubmitArgs {
     /// Persist the job without running it in this process; boot reconciliation will resume it.
     #[arg(long)]
     defer: bool,
+}
+
+#[derive(Debug, Args)]
+struct JobRetryArgs {
+    #[arg(long)]
+    job_id: String,
+
+    /// Optional replacement JobSpec. Only missing broker host-key pins may be added.
+    #[arg(long, value_name = "FILE", hide = true)]
+    spec: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -552,6 +579,8 @@ struct LogServiceArgs {
     since: Option<String>,
     #[arg(short = 'f', long)]
     follow: bool,
+    #[arg(short = 'o', long, value_enum, default_value_t = JournalOutput::Text)]
+    output: JournalOutput,
 }
 
 #[derive(Debug, Args)]
@@ -564,6 +593,8 @@ struct LogResourceArgs {
     since: Option<String>,
     #[arg(short = 'f', long)]
     follow: bool,
+    #[arg(short = 'o', long, value_enum, default_value_t = JournalOutput::Text)]
+    output: JournalOutput,
 }
 
 #[derive(Debug, Subcommand)]
@@ -602,9 +633,10 @@ struct DataReceiveArgs {
     #[arg(long)]
     destination: PathBuf,
 
-    /// Absolute tar executable used to extract stdin.
-    #[arg(long)]
-    tar_program: PathBuf,
+    /// Compatibility-only peer hint. The receiver always uses its locally
+    /// declared tar executable.
+    #[arg(long = "tar-program", hide = true)]
+    _legacy_tar_program: Option<PathBuf>,
 
     /// Clear existing destination entries before extracting the archive.
     #[arg(long)]
@@ -620,8 +652,10 @@ struct DataReceiveRsyncArgs {
     #[arg(long)]
     destination: PathBuf,
 
-    #[arg(long)]
-    rsync_program: PathBuf,
+    /// Compatibility-only peer hint. The receiver always uses its locally
+    /// declared rsync executable.
+    #[arg(long = "rsync-program", hide = true)]
+    _legacy_rsync_program: Option<PathBuf>,
 
     #[arg(long = "exclude")]
     excludes: Vec<PathBuf>,
@@ -710,16 +744,16 @@ pub struct CommandOutput {
 
 impl Cli {
     pub fn streams_output(&self) -> bool {
-        match &self.command {
-            Command::Logs(args) => args.follow,
-            Command::Unit {
-                command: ServiceCommand::Logs(args),
-            } => args.follow,
-            Command::Resource {
-                command: ResourceCommand::Logs(args),
-            } => args.follow,
-            _ => false,
-        }
+        matches!(
+            &self.command,
+            Command::Logs(_)
+                | Command::Unit {
+                    command: ServiceCommand::Logs(_),
+                }
+                | Command::Resource {
+                    command: ResourceCommand::Logs(_),
+                }
+        )
     }
 }
 
@@ -732,6 +766,7 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
     let podman = cli.podman;
     let nix_collect_garbage = cli.nix_collect_garbage;
     let resource_manifest = cli.resource_manifest;
+    let ssh_host_ed25519_public_key = cli.ssh_host_ed25519_public_key;
 
     match cli.command {
         Command::Status => execute_agent_status(&store, &jobs, &resource_manifest),
@@ -758,7 +793,9 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
         Command::Job { command } => {
             execute_job(command, &jobs, &store, &systemctl, &resource_manifest)
         }
-        Command::Transport { command } => execute_data(command, &resource_manifest),
+        Command::Transport { command } => {
+            execute_data(command, &resource_manifest, &ssh_host_ed25519_public_key)
+        }
         Command::Reconcile { command } => match command {
             ReconcileCommand::Hold { command } => execute_hold(
                 match command {
@@ -846,6 +883,7 @@ fn execute_logs(
                 lines: args.lines,
                 since: args.since,
                 follow: args.follow,
+                output: args.output,
             }),
             store,
             systemctl,
@@ -865,6 +903,7 @@ fn execute_logs(
                 lines: args.lines,
                 since: args.since,
                 follow: args.follow,
+                output: args.output,
             }),
             store,
             systemctl,
@@ -875,39 +914,34 @@ fn execute_logs(
     if args.selector.user.is_some() || args.selector.scope != ServiceScope::System {
         bail!("--scope and --user are valid only with --unit");
     }
-    if args.follow {
-        if json_output {
-            bail!("--json cannot be combined with --follow");
-        }
-        let result = journalctl.follow_host(args.lines, args.since.as_deref())?;
-        if !result.success {
-            bail!(
-                "{} journal follow failed with exit code {:?}",
-                result
-                    .failed_context
-                    .as_deref()
-                    .unwrap_or("unknown-context"),
-                result.exit_code,
-            );
-        }
-        return Ok(CommandOutput {
-            human: "host journal follow completed".to_owned(),
-            value: json!({
-                "ok": true,
-                "operation": "host_logs_follow",
-                "result": result,
-            }),
-        });
+    if json_output {
+        bail!("--json cannot be combined with logs; use --output json");
     }
-    let result = journalctl.host_logs(args.lines, args.since.as_deref())?;
+    let result =
+        journalctl.stream_host(args.lines, args.since.as_deref(), args.follow, args.output)?;
+    ensure_journal_stream_succeeded(&result)?;
     Ok(CommandOutput {
-        human: format!("read {} host journal entries", result.entries.len()),
+        human: "host journal stream completed".to_owned(),
         value: json!({
-            "ok": result.success,
-            "operation": "host_logs",
+            "ok": true,
+            "operation": "host_logs_stream",
             "result": result,
         }),
     })
+}
+
+fn ensure_journal_stream_succeeded(result: &JournalStreamResult) -> Result<()> {
+    if result.success {
+        return Ok(());
+    }
+    bail!(
+        "{} journal stream failed with exit code {:?}",
+        result
+            .failed_context
+            .as_deref()
+            .unwrap_or("unknown-context"),
+        result.exit_code,
+    )
 }
 
 fn execute_maintenance(
@@ -1127,40 +1161,22 @@ fn execute_service(
 ) -> Result<CommandOutput> {
     if let ServiceCommand::Logs(args) = command {
         let target = ServiceTarget::new(args.service.scope, args.service.user, args.service.unit)?;
-        if args.follow {
-            if json_output {
-                bail!("--json cannot be combined with --follow");
-            }
-            let result = journalctl.follow_targets(
-                std::slice::from_ref(&target),
-                args.lines,
-                args.since.as_deref(),
-            )?;
-            if !result.success {
-                bail!(
-                    "{} journal follow failed with exit code {:?}",
-                    result
-                        .failed_context
-                        .as_deref()
-                        .unwrap_or("unknown-context"),
-                    result.exit_code,
-                );
-            }
-            return Ok(CommandOutput {
-                human: format!("journal follow completed for {target}"),
-                value: json!({
-                    "ok": true,
-                    "operation": "service_logs_follow",
-                    "result": result,
-                }),
-            });
+        if json_output {
+            bail!("--json cannot be combined with logs; use --output json");
         }
-        let result = journalctl.logs(&target, args.lines, args.since.as_deref())?;
+        let result = journalctl.stream_targets(
+            std::slice::from_ref(&target),
+            args.lines,
+            args.since.as_deref(),
+            args.follow,
+            args.output,
+        )?;
+        ensure_journal_stream_succeeded(&result)?;
         return Ok(CommandOutput {
-            human: format!("read {} journal entries for {target}", result.entries.len()),
+            human: format!("journal stream completed for {target}"),
             value: json!({
-                "ok": result.success,
-                "operation": "service_logs",
+                "ok": true,
+                "operation": "service_logs_stream",
                 "result": result,
             }),
         });
@@ -1229,46 +1245,23 @@ fn execute_resource(
     if let ResourceCommand::Logs(args) = command {
         let manifest = ResourceManifest::load(resource_manifest_path)?;
         let resource = manifest.resource(&args.resource)?;
-        if args.follow {
-            if json_output {
-                bail!("--json cannot be combined with --follow");
-            }
-            let result =
-                journalctl.follow_targets(&resource.services, args.lines, args.since.as_deref())?;
-            if !result.success {
-                bail!(
-                    "{} journal follow failed with exit code {:?}",
-                    result
-                        .failed_context
-                        .as_deref()
-                        .unwrap_or("unknown-context"),
-                    result.exit_code,
-                );
-            }
-            return Ok(CommandOutput {
-                human: format!("journal follow completed for resource {:?}", args.resource),
-                value: json!({
-                    "ok": true,
-                    "operation": "resource_logs_follow",
-                    "result": result,
-                }),
-            });
+        if json_output {
+            bail!("--json cannot be combined with logs; use --output json");
         }
-        let results = resource
-            .services
-            .iter()
-            .map(|target| journalctl.logs(target, args.lines, args.since.as_deref()))
-            .collect::<Result<Vec<_>>>()?;
-        let success = results.iter().all(|result| result.success);
+        let result = journalctl.stream_targets(
+            &resource.services,
+            args.lines,
+            args.since.as_deref(),
+            args.follow,
+            args.output,
+        )?;
+        ensure_journal_stream_succeeded(&result)?;
         return Ok(CommandOutput {
-            human: format!("read logs for resource {:?}", args.resource),
+            human: format!("journal stream completed for resource {:?}", args.resource),
             value: json!({
-                "ok": success,
-                "operation": "resource_logs",
-                "result": {
-                    "resource": args.resource,
-                    "journals": results,
-                },
+                "ok": true,
+                "operation": "resource_logs_stream",
+                "result": result,
             }),
         });
     }
@@ -1443,7 +1436,8 @@ fn execute_job(
             })
         }
         JobCommand::Retry(args) => {
-            let retried = jobs.retry(&args.job_id)?;
+            let replacement = args.spec.as_deref().map(read_job_spec).transpose()?;
+            let retried = jobs.retry_with_spec(&args.job_id, replacement)?;
             Ok(CommandOutput {
                 human: format!(
                     "job {:?} is {:?}",
@@ -1661,6 +1655,20 @@ fn materialize_job_spec(args: JobIntentArgs, resource_manifest_path: &Path) -> R
             })
             .collect();
     }
+    if data_root_plan.is_empty() && matches!(&operation, JobOperation::WipeData) {
+        let manifest = ResourceManifest::load(resource_manifest_path)?;
+        data_root_plan = manifest
+            .resource(&resource_id)?
+            .effective_data_roots()
+            .into_iter()
+            .map(|root| DataRootPlan {
+                name: root.name,
+                source: root.path.clone(),
+                target: root.path,
+                excludes: root.excludes,
+            })
+            .collect();
+    }
     Ok(JobSpec {
         schema_version: 1,
         job_id,
@@ -1776,6 +1784,34 @@ fn validate_materialized_backup_job(spec: &JobSpec, manifest_path: &Path) -> Res
     Ok(())
 }
 
+fn validate_materialized_wipe_job(spec: &JobSpec, manifest_path: &Path) -> Result<()> {
+    let expected = resolve_job_inputs(
+        &JobOperation::WipeData,
+        &spec.resource,
+        &spec.job_id,
+        manifest_path,
+    )?;
+    let roots = ResourceManifest::load(manifest_path)?
+        .resource(&spec.resource)?
+        .effective_data_roots();
+    let expected_plan = roots
+        .into_iter()
+        .map(|root| DataRootPlan {
+            name: root.name,
+            source: root.path.clone(),
+            target: root.path,
+            excludes: root.excludes,
+        })
+        .collect::<Vec<_>>();
+    if spec.services != expected.services
+        || spec.data_paths != expected.data_paths
+        || spec.data_root_plan != expected_plan
+    {
+        bail!("data-wipe job inputs differ from the current immutable host declaration");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn execute_job_spec(
     spec: &JobSpec,
@@ -1884,6 +1920,18 @@ fn execute_job_spec_with_progress(
                 )?
             };
             Ok(JobExecution::succeeded(json!({ "manifest": manifest })))
+        }
+        JobOperation::WipeData => {
+            validate_materialized_wipe_job(spec, resource_manifest_path)?;
+            require_owned_inactive_hold(spec, store, systemctl, "data wipe")?;
+            let roots = spec
+                .data_root_plan
+                .iter()
+                .map(DataRootPlan::target_root)
+                .collect::<Vec<_>>();
+            Ok(JobExecution::succeeded(json!({
+                "wipe": wipe_data_roots(&roots, &mut progress)?,
+            })))
         }
         JobOperation::Ready => {
             let services =
@@ -2356,6 +2404,25 @@ fn resolve_job_inputs(
             instance_migration: None,
             deployment: None,
         }),
+        JobOperation::WipeData => {
+            let roots = resource.effective_data_roots();
+            if roots.is_empty() {
+                bail!("resource {resource_id:?} has no declared data roots");
+            }
+            Ok(ResolvedJobInputs {
+                services: resource.services.clone(),
+                data_paths: roots.into_iter().map(|root| root.path).collect(),
+                argv: None,
+                readiness: Vec::new(),
+                transfer: None,
+                resource_transfers: Vec::new(),
+                backup_consistency: None,
+                file_state: None,
+                instance: None,
+                instance_migration: None,
+                deployment: None,
+            })
+        }
         JobOperation::Named { name } => {
             let operation = resource.operations.get(name).with_context(|| {
                 format!("operation {name:?} is not allowlisted for resource {resource_id:?}")
@@ -2610,7 +2677,11 @@ fn execute_named_operation(spec: &JobSpec) -> Result<JobExecution> {
     }
 }
 
-fn execute_data(command: DataCommand, resource_manifest_path: &Path) -> Result<CommandOutput> {
+fn execute_data(
+    command: DataCommand,
+    resource_manifest_path: &Path,
+    ssh_host_ed25519_public_key: &Path,
+) -> Result<CommandOutput> {
     match command {
         DataCommand::Manifest(args) => {
             let (resource, roots) = match args.resource {
@@ -2654,7 +2725,7 @@ fn execute_data(command: DataCommand, resource_manifest_path: &Path) -> Result<C
                     "ok": true,
                     "operation": "data_manifest",
                     "resource": resource,
-                    "result": manifest,
+                    "result": { "manifest": manifest },
                 }),
             })
         }
@@ -2663,17 +2734,19 @@ fn execute_data(command: DataCommand, resource_manifest_path: &Path) -> Result<C
         DataCommand::ReceiveRsync(args) => receive_rsync(args, resource_manifest_path),
         DataCommand::Push(args) => push_data(args, resource_manifest_path),
         DataCommand::Serve(args) => serve_data(args, resource_manifest_path),
-        DataCommand::SshHostKey => ssh_host_key(),
+        DataCommand::SshHostKey => ssh_host_key(ssh_host_ed25519_public_key),
     }
 }
 
-fn ssh_host_key() -> Result<CommandOutput> {
-    let path = Path::new("/etc/ssh/ssh_host_ed25519_key.pub");
+fn ssh_host_key(path: &Path) -> Result<CommandOutput> {
+    if !path.is_absolute() || path == Path::new("/") {
+        bail!("public SSH host-key path must be absolute and cannot be root");
+    }
     let public_key = std::fs::read_to_string(path)
         .with_context(|| format!("read public SSH host key {}", path.display()))?;
     let fields = public_key.split_whitespace().take(2).collect::<Vec<_>>();
-    if fields.len() != 2 || !fields[0].starts_with("ssh-") {
-        bail!("public SSH host key has an invalid format");
+    if fields.len() != 2 || fields[0] != "ssh-ed25519" {
+        bail!("public SSH host key is not a valid Ed25519 key");
     }
     let public_key = fields.join(" ");
     Ok(CommandOutput {
@@ -2690,45 +2763,50 @@ fn receive_rsync(
     args: DataReceiveRsyncArgs,
     resource_manifest_path: &Path,
 ) -> Result<CommandOutput> {
-    if !args.rsync_program.is_absolute() {
-        bail!("data receive rsync program must be absolute");
-    }
-    validate_receive_destination(&args.destination, &args.excludes, resource_manifest_path)?;
-    let requested = args
-        .server_args
+    let manifest = ResourceManifest::load(resource_manifest_path)?;
+    validate_receive_destination(&args.destination, &args.excludes, &manifest)?;
+    validate_rsync_receiver_args(&args.destination, &args.server_args)?;
+    let error = ProcessCommand::new(&manifest.rsync_program)
+        .args(&args.server_args)
+        .exec();
+    Err(error).with_context(|| format!("exec {}", manifest.rsync_program.display()))
+}
+
+fn validate_rsync_receiver_args(destination: &Path, server_args: &[String]) -> Result<()> {
+    let requested = server_args
         .last()
         .map(|value| PathBuf::from(value.trim_end_matches('/')))
         .context("rsync receiver argv has no destination")?;
-    if requested != args.destination
-        || !args
-            .server_args
-            .iter()
-            .any(|argument| argument == "--server")
-        || args
-            .server_args
-            .iter()
-            .any(|argument| argument == "--sender")
-        || args.server_args[..args.server_args.len() - 1]
+    if requested != destination {
+        if server_args
+            .last()
+            .is_some_and(|argument| argument.starts_with('-'))
+        {
+            bail!(
+                "rsync receiver did not expose its destination in argv; protected-args mode is not supported by the guarded receiver"
+            );
+        }
+        bail!("rsync receiver argv does not name the exact allowed destination");
+    }
+    if !server_args.iter().any(|argument| argument == "--server")
+        || server_args.iter().any(|argument| argument == "--sender")
+        || server_args[..server_args.len() - 1]
             .iter()
             .any(|argument| argument.contains('/') || argument.contains(".."))
     {
         bail!("rsync receiver argv is not an allowed destination request");
     }
-    let error = ProcessCommand::new(&args.rsync_program)
-        .args(&args.server_args)
-        .exec();
-    Err(error).with_context(|| format!("exec {}", args.rsync_program.display()))
+    Ok(())
 }
 
 fn validate_receive_destination(
     destination: &Path,
     excludes: &[PathBuf],
-    resource_manifest_path: &Path,
+    manifest: &ResourceManifest,
 ) -> Result<()> {
     if !destination.is_absolute() || destination == Path::new("/") {
         bail!("data receive destination must be an absolute non-root path");
     }
-    let manifest = ResourceManifest::load(resource_manifest_path)?;
     let declared = manifest
         .resources
         .iter()
@@ -2792,16 +2870,14 @@ fn backup_plan(args: DataBackupPlanArgs, resource_manifest_path: &Path) -> Resul
 }
 
 fn receive_data(args: DataReceiveArgs, resource_manifest_path: &Path) -> Result<CommandOutput> {
-    validate_receive_destination(&args.destination, &args.excludes, resource_manifest_path)?;
-    if !args.tar_program.is_absolute() {
-        bail!("data receive tar program must be absolute");
-    }
+    let manifest = ResourceManifest::load(resource_manifest_path)?;
+    validate_receive_destination(&args.destination, &args.excludes, &manifest)?;
     std::fs::create_dir_all(&args.destination)
         .with_context(|| format!("create data receive root {}", args.destination.display()))?;
     if args.delete {
         clear_directory_contents_except(&args.destination, &args.excludes)?;
     }
-    let error = ProcessCommand::new(&args.tar_program)
+    let error = ProcessCommand::new(&manifest.tar_program)
         .args([
             "--acls",
             "--xattrs",
@@ -2813,12 +2889,14 @@ fn receive_data(args: DataReceiveArgs, resource_manifest_path: &Path) -> Result<
         .arg(&args.destination)
         .args(["-xpf", "-"])
         .exec();
-    Err(error).with_context(|| format!("exec {}", args.tar_program.display()))
+    Err(error).with_context(|| format!("exec {}", manifest.tar_program.display()))
 }
 
 fn push_data(args: DataPushArgs, resource_manifest_path: &Path) -> Result<CommandOutput> {
     if env::var_os("SSH_AUTH_SOCK").is_none() {
-        bail!("direct peer transfer requires a controller-forwarded SSH_AUTH_SOCK");
+        bail!(
+            "source received no controller-forwarded SSH_AUTH_SOCK; allow agent forwarding for the transfer account and preserve SSH_AUTH_SOCK through its privilege boundary"
+        );
     }
     let mut endpoint: RemoteSource =
         serde_json::from_str(&args.target_endpoint).context("parse broker target endpoint")?;
@@ -2929,13 +3007,18 @@ fn push_data(args: DataPushArgs, resource_manifest_path: &Path) -> Result<Comman
             .iter()
             .zip(&plans)
             .map(|(transfer, plan)| {
-                transfer_with_excludes_progress(transfer, &plan.excludes, |progress| {
-                    eprintln!(
-                        "abird-host-agent-progress {}",
-                        serde_json::to_string(progress)?
-                    );
-                    Ok(())
-                })
+                transfer_with_excludes_progress_policy(
+                    transfer,
+                    &plan.excludes,
+                    PostCopyVerification::AllowSourceDrift,
+                    |progress| {
+                        eprintln!(
+                            "abird-host-agent-progress {}",
+                            serde_json::to_string(progress)?
+                        );
+                        Ok(())
+                    },
+                )
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(CommandOutput {
@@ -3238,11 +3321,34 @@ mod tests {
             "service:zulip",
             "--state-dir",
             "/tmp/test-state",
+            "--ssh-host-ed25519-public-key",
+            "/var/lib/machine/ssh_host_ed25519_key.pub",
             "--json",
         ])
         .unwrap();
         assert_eq!(cli.state_dir, PathBuf::from("/tmp/test-state"));
+        assert_eq!(
+            cli.ssh_host_ed25519_public_key,
+            PathBuf::from("/var/lib/machine/ssh_host_ed25519_key.pub")
+        );
         assert!(cli.json);
+    }
+
+    #[test]
+    fn ssh_host_key_uses_the_configured_ed25519_public_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("host-key.pub");
+        fs::write(&path, "ssh-ed25519 configured-key host\n").unwrap();
+
+        let output = ssh_host_key(&path).unwrap();
+        assert_eq!(
+            output.value["result"]["public_key"],
+            "ssh-ed25519 configured-key"
+        );
+
+        fs::write(&path, "ssh-rsa wrong-key host\n").unwrap();
+        assert!(ssh_host_key(&path).is_err());
+        assert!(ssh_host_key(Path::new("relative-key.pub")).is_err());
     }
 
     #[test]
@@ -3378,6 +3484,100 @@ mod tests {
     }
 
     #[test]
+    fn data_manifest_uses_the_canonical_nested_response_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("data");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("value"), b"zulip").unwrap();
+
+        let cli = Cli::try_parse_from([
+            "abird-host-agent",
+            "--json",
+            "data",
+            "manifest",
+            "--diagnostic-path",
+            root.to_str().unwrap(),
+        ])
+        .unwrap();
+        let output = execute(cli).unwrap();
+
+        assert_eq!(output.value["operation"], "data_manifest");
+        assert_eq!(output.value["result"]["manifest"]["schema_version"], 1);
+        assert!(output.value["result"]["roots"].is_null());
+    }
+
+    #[test]
+    fn guarded_rsync_receiver_requires_an_explicit_exact_destination() {
+        let destination = Path::new("/var/lib/abird/zulip");
+        let visible_destination = vec![
+            "--server".to_owned(),
+            "-logDtpre.iLfxCIvu".to_owned(),
+            ".".to_owned(),
+            "/var/lib/abird/zulip/".to_owned(),
+        ];
+        validate_rsync_receiver_args(destination, &visible_destination).unwrap();
+
+        let protected_args = vec!["--server".to_owned(), "-slHogDtpAXre.iLsfxCIvu".to_owned()];
+        assert!(
+            validate_rsync_receiver_args(destination, &protected_args)
+                .unwrap_err()
+                .to_string()
+                .contains("protected-args")
+        );
+
+        let wrong_destination = vec![
+            "--server".to_owned(),
+            "-logDtpre.iLfxCIvu".to_owned(),
+            ".".to_owned(),
+            "/var/lib/abird/other/".to_owned(),
+        ];
+        assert!(validate_rsync_receiver_args(destination, &wrong_destination).is_err());
+    }
+
+    #[test]
+    fn guarded_receiver_owns_its_declared_rsync_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("zulip");
+        let manifest_path = temp.path().join("resources.json");
+        let declared_rsync = temp.path().join("declared-rsync");
+        fs::create_dir(&destination).unwrap();
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "backup_root": temp.path().join("backups"),
+                "rsync_program": declared_rsync.clone(),
+                "tar_program": "/run/current-system/sw/bin/tar",
+                "resources": [{
+                    "id": "service:zulip",
+                    "data_paths": [destination.clone()]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let error = receive_rsync(
+            DataReceiveRsyncArgs {
+                destination: destination.clone(),
+                _legacy_rsync_program: Some(PathBuf::from("/peer/selected/rsync")),
+                excludes: Vec::new(),
+                server_args: vec![
+                    "--server".to_owned(),
+                    "-logDtpre.iLfxCIvu".to_owned(),
+                    ".".to_owned(),
+                    format!("{}/", destination.display()),
+                ],
+            },
+            &manifest_path,
+        )
+        .unwrap_err();
+
+        let error = format!("{error:#}");
+        assert!(error.contains(declared_rsync.to_str().unwrap()));
+        assert!(!error.contains("/peer/selected/rsync"));
+    }
+
+    #[test]
     fn top_level_status_summarizes_validated_durable_state() {
         let temp = tempfile::tempdir().unwrap();
         let manifest_path = temp.path().join("resources.json");
@@ -3413,9 +3613,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_follow_for_every_log_scope() {
+    fn parses_output_for_every_log_scope_and_follow_mode() {
         for arguments in [
-            vec!["abird-host-agent", "logs", "-f"],
+            vec!["abird-host-agent", "logs", "--output", "json"],
             vec![
                 "abird-host-agent",
                 "service",
@@ -3423,6 +3623,8 @@ mod tests {
                 "--unit",
                 "zulip.service",
                 "--follow",
+                "--output",
+                "text",
             ],
             vec![
                 "abird-host-agent",
@@ -3431,6 +3633,8 @@ mod tests {
                 "--resource",
                 "service:zulip",
                 "-f",
+                "--output",
+                "json",
             ],
         ] {
             let cli = Cli::try_parse_from(arguments).unwrap();
@@ -3439,20 +3643,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_single_json_document_mode_for_follow() {
+    fn rejects_single_document_json_for_streamed_logs() {
         let cli = Cli::try_parse_from([
             "abird-host-agent",
             "--json",
             "--journalctl",
             "/bin/true",
             "logs",
-            "--follow",
         ])
         .unwrap();
 
         assert_eq!(
             execute(cli).unwrap_err().to_string(),
-            "--json cannot be combined with --follow"
+            "--json cannot be combined with logs; use --output json"
         );
     }
 
@@ -4158,6 +4361,97 @@ mod tests {
         let mut escaped = restore_plan;
         escaped.source = backup_root.join("other-resource/backup-1/zulip");
         assert!(validate_backup_source_plans(&manifest, "service:zulip", &[escaped]).is_err());
+    }
+
+    #[test]
+    fn data_wipe_requires_its_hold_and_preserves_declared_excludes() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let manifest_path = temp.path().join("resources.json");
+        let data_path = temp.path().join("zulip");
+        fs::create_dir_all(data_path.join("runtime/cache")).unwrap();
+        fs::write(data_path.join("database"), b"remove").unwrap();
+        fs::write(data_path.join("runtime/cache/keep"), b"keep").unwrap();
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "resources": [{
+                    "id": "service:zulip",
+                    "data_roots": [{
+                        "name": "data",
+                        "path": data_path,
+                        "excludes": ["runtime/cache"]
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let inputs = resolve_job_inputs(
+            &JobOperation::WipeData,
+            "service:zulip",
+            "wipe-1",
+            &manifest_path,
+        )
+        .unwrap();
+        let root = ResourceManifest::load(&manifest_path)
+            .unwrap()
+            .resource("service:zulip")
+            .unwrap()
+            .effective_data_roots()
+            .remove(0);
+        let spec = JobSpec {
+            schema_version: 1,
+            job_id: "wipe-1".to_owned(),
+            transaction_id: "wipe-owner".to_owned(),
+            resource: "service:zulip".to_owned(),
+            operation: JobOperation::WipeData,
+            expected_state: ExpectedState::Any,
+            services: inputs.services,
+            data_paths: inputs.data_paths,
+            data_root_plan: vec![DataRootPlan {
+                name: root.name,
+                source: root.path.clone(),
+                target: root.path,
+                excludes: root.excludes,
+            }],
+            argv: None,
+            readiness: Vec::new(),
+            transfer: None,
+            resource_transfers: Vec::new(),
+            backup_consistency: None,
+            broker_transfer: None,
+            file_state: None,
+            instance: None,
+            instance_migration: None,
+            deployment: None,
+            nixbot_deploy: None,
+        };
+        let store = StateStore::new(&state_dir);
+        let systemctl = Systemctl::new("/does/not/exist");
+
+        let error =
+            execute_job_spec_with_progress(&spec, &store, &systemctl, &manifest_path, |_| Ok(()))
+                .unwrap_err();
+        assert!(error.to_string().contains("requires resource"));
+        assert!(data_path.join("database").exists());
+
+        store
+            .acquire_and_apply("service:zulip", "wipe-owner", Vec::new(), |_| Ok(()))
+            .unwrap();
+        let result =
+            execute_job_spec_with_progress(&spec, &store, &systemctl, &manifest_path, |_| Ok(()))
+                .unwrap();
+
+        assert!(result.result["wipe"]["verified_empty"].as_bool().unwrap());
+        assert!(!data_path.join("database").exists());
+        assert_eq!(
+            fs::read(data_path.join("runtime/cache/keep")).unwrap(),
+            b"keep"
+        );
+        assert!(store.status("service:zulip").unwrap().held);
     }
 
     #[test]

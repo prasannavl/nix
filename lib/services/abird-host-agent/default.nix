@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.services.abird-host-agent;
+  runuserProgram = lib.getExe' pkgs.util-linux "runuser";
   normalizeManagedResource = resource:
     builtins.removeAttrs resource ["units"]
     // {
@@ -61,6 +62,13 @@
   nixbotDeployEnabled = cfg.nixbotDeploy.enable;
   nixbotRepository = config.services.nixbot.repos.${cfg.nixbotDeploy.repository};
   nixbotIdentityFiles = config.services.nixbot.sshClient.identityFiles;
+  opensshEd25519HostKeys = builtins.filter (key: key.type == "ed25519") config.services.openssh.hostKeys;
+  sshHostEd25519PublicKey =
+    if cfg.sshHostEd25519PublicKey != null
+    then cfg.sshHostEd25519PublicKey
+    else if opensshEd25519HostKeys != []
+    then "${(builtins.head opensshEd25519HostKeys).path}.pub"
+    else "/etc/ssh/ssh_host_ed25519_key.pub";
   effectiveBrokerTransfer =
     if cfg.brokerTransfer != null
     then cfg.brokerTransfer
@@ -100,14 +108,17 @@
     paths = [cfg.package];
     nativeBuildInputs = [pkgs.makeWrapper];
     postBuild = ''
+      ln -sfn ${lib.escapeShellArg cfg.rsyncProgram} "$out/bin/rsync"
+      ln -sfn ${lib.escapeShellArg cfg.tarProgram} "$out/bin/tar"
       wrapProgram "$out/bin/abird-host-agent" \
         --set ABIRD_HOST_AGENT_STATE_DIR ${lib.escapeShellArg cfg.stateDirectory} \
         --set ABIRD_HOST_AGENT_RESOURCE_MANIFEST ${lib.escapeShellArg cfg.manifestPath} \
         --set ABIRD_HOST_AGENT_SYSTEMCTL ${lib.escapeShellArg "${pkgs.systemd}/bin/systemctl"} \
         --set ABIRD_HOST_AGENT_JOURNALCTL ${lib.escapeShellArg "${pkgs.systemd}/bin/journalctl"} \
-        --set ABIRD_HOST_AGENT_RUNUSER ${lib.escapeShellArg "${pkgs.shadow}/bin/runuser"} \
+        --set ABIRD_HOST_AGENT_RUNUSER ${lib.escapeShellArg runuserProgram} \
         --set ABIRD_HOST_AGENT_PODMAN ${lib.escapeShellArg "${pkgs.podman}/bin/podman"} \
-        --set ABIRD_HOST_AGENT_NIX_COLLECT_GARBAGE ${lib.escapeShellArg "${pkgs.nix}/bin/nix-collect-garbage"}
+        --set ABIRD_HOST_AGENT_NIX_COLLECT_GARBAGE ${lib.escapeShellArg "${pkgs.nix}/bin/nix-collect-garbage"} \
+        --set ABIRD_HOST_AGENT_SSH_HOST_ED25519_PUBLIC_KEY ${lib.escapeShellArg sshHostEd25519PublicKey}
     '';
   };
   resourceManifest = pkgs.writeText "abird-host-agent-resources.json" (builtins.toJSON {
@@ -130,12 +141,13 @@
       then null
       else {
         program = "${config.services.nixbot.package}/bin/nixbot";
-        runuser_program = "${pkgs.shadow}/bin/runuser";
+        runuser_program = runuserProgram;
         env_program = "${pkgs.coreutils}/bin/env";
         user = config.services.nixbot.user.name;
         home = config.services.nixbot.stateDir;
         repository_url = nixbotRepository.url;
         repository_path = nixbotRepository.path;
+        repository_ssh_key_paths = nixbotRepository.sshIdentityFiles;
         revision =
           if config.system.configurationRevision == null
           then "UNCOMMITTED-CONTROLLER-GENERATION"
@@ -413,6 +425,10 @@ in {
         message = "services.abird-host-agent backup and copy paths must be absolute and backupRoot cannot be root.";
       }
       {
+        assertion = lib.hasPrefix "/" sshHostEd25519PublicKey && sshHostEd25519PublicKey != "/";
+        message = "services.abird-host-agent SSH host public key must be an absolute non-root path.";
+      }
+      {
         assertion = cfg.brokerTransfer == null || (lib.hasPrefix "/" cfg.brokerTransfer.identityFile && lib.hasPrefix "/" cfg.brokerTransfer.sshProgram && lib.hasPrefix "/" cfg.brokerTransfer.sshAgentProgram && lib.hasPrefix "/" cfg.brokerTransfer.sshAddProgram);
         message = "services.abird-host-agent broker transfer identity and programs must use absolute paths.";
       }
@@ -518,7 +534,7 @@ in {
         description = "Watch for accepted Abird host-agent jobs";
         wantedBy = ["multi-user.target"];
         pathConfig = {
-          PathChanged = "${cfg.stateDirectory}/jobs";
+          PathExists = "${cfg.stateDirectory}/jobs-wakeup";
           Unit = "abird-host-agent-jobs.service";
         };
       };

@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
@@ -17,6 +18,7 @@ use crate::sha256::digest_bytes;
 use crate::transfer::{RemoteSource, TransferProgress};
 
 const AGENT_START_TIMEOUT: Duration = Duration::from_secs(5);
+const UNIX_SOCKET_PATH_MAX: usize = 107;
 const OUTPUT_LIMIT: usize = 256 * 1024;
 const PROGRESS_FRAME_LIMIT: usize = 64 * 1024;
 const PROGRESS_PREFIX: &str = "abird-host-agent-progress ";
@@ -66,15 +68,13 @@ pub fn run_broker_transfer_with_progress(
         .mode(0o700)
         .create(runtime_root)
         .with_context(|| format!("create broker runtime root {}", runtime_root.display()))?;
-    let socket = runtime_root.join(format!(
-        "agent-{}-{}.sock",
-        digest_bytes(job_id.as_bytes()),
-        std::process::id()
-    ));
+    let socket = broker_agent_socket(runtime_root, job_id, std::process::id())?;
     let mut agent = AgentGuard::start(policy, socket)?;
     agent.add_identity(policy)?;
-    let source_host_key = read_authenticated_host_key(policy, &agent, source)?;
-    let target_host_key = read_authenticated_host_key(policy, &agent, target)?;
+    let source_host_key =
+        read_authenticated_host_key(policy, &agent, source, runtime_root, "source")?;
+    let target_host_key =
+        read_authenticated_host_key(policy, &agent, target, runtime_root, "target")?;
     agent.constrain_identity(
         policy,
         source,
@@ -83,6 +83,17 @@ pub fn run_broker_transfer_with_progress(
         &target_host_key,
         runtime_root,
     )?;
+    let known_hosts = TransferKnownHosts::create(
+        runtime_root,
+        job_id,
+        source,
+        target,
+        &source_host_key,
+        &target_host_key,
+    )?;
+    let mut source = source.clone();
+    pin_endpoint(&mut source, known_hosts.path());
+    source.host_public_keys = vec![source_host_key];
     let mut target = target.clone();
     target.host_public_keys = vec![target_host_key];
 
@@ -117,12 +128,13 @@ pub fn run_broker_transfer_with_progress(
     }
 
     let mut command = Command::new(&policy.ssh_program);
+    append_pinned_host_key_options(&mut command, known_hosts.path());
     command
         .args(&policy.ssh_args)
         .args(["-o", "BatchMode=yes", "-A"])
         .env("SSH_AUTH_SOCK", agent.socket())
         .env_remove("SSH_AGENT_PID");
-    append_endpoint_connection(&mut command, source);
+    append_endpoint_connection(&mut command, &source);
     let mut child = command
         .arg(shell_join(&source_argv)?)
         .stdout(Stdio::piped())
@@ -219,7 +231,12 @@ fn read_authenticated_host_key(
     policy: &BrokerTransferPolicy,
     agent: &AgentGuard,
     endpoint: &RemoteSource,
+    runtime_root: &Path,
+    label: &str,
 ) -> Result<String> {
+    let known_hosts = DiscoveryKnownHosts::create(runtime_root, endpoint, label)?;
+    let mut endpoint = endpoint.clone();
+    pin_endpoint(&mut endpoint, known_hosts.path());
     let mut argv = endpoint.agent_prefix.clone();
     argv.retain(|argument| argument != "--preserve-env=SSH_AUTH_SOCK");
     argv.extend([
@@ -229,12 +246,13 @@ fn read_authenticated_host_key(
         "ssh-host-key".to_owned(),
     ]);
     let mut command = Command::new(&policy.ssh_program);
+    append_pinned_host_key_options(&mut command, known_hosts.path());
     command
         .args(&policy.ssh_args)
         .args(["-o", "BatchMode=yes"])
         .env("SSH_AUTH_SOCK", agent.socket())
         .env_remove("SSH_AGENT_PID");
-    append_endpoint_connection(&mut command, endpoint);
+    append_endpoint_connection(&mut command, &endpoint);
     let output = command
         .arg(shell_join(&argv)?)
         .output()
@@ -255,7 +273,170 @@ fn read_authenticated_host_key(
     if public_key.contains(['\0', '\r', '\n']) || !public_key.starts_with("ssh-") {
         bail!("host returned an invalid public SSH host key");
     }
+    if !known_hosts.contains(public_key)? {
+        bail!("host-agent SSH host key does not match the key used by the SSH transport");
+    }
+    if !endpoint.host_public_keys.is_empty()
+        && !endpoint
+            .host_public_keys
+            .iter()
+            .any(|expected| expected == public_key)
+    {
+        bail!("host-agent SSH host key does not match the manager-pinned key");
+    }
     Ok(public_key.to_owned())
+}
+
+fn pin_endpoint(endpoint: &mut RemoteSource, known_hosts: &Path) {
+    let mut pinned = pinned_host_key_options(known_hosts);
+    pinned.append(&mut endpoint.ssh_args);
+    endpoint.ssh_args = pinned;
+}
+
+fn append_pinned_host_key_options(command: &mut Command, known_hosts: &Path) {
+    command.args(pinned_host_key_options(known_hosts));
+}
+
+fn pinned_host_key_options(known_hosts: &Path) -> Vec<String> {
+    vec![
+        "-o".to_owned(),
+        "GlobalKnownHostsFile=/dev/null".to_owned(),
+        "-o".to_owned(),
+        format!("UserKnownHostsFile={}", known_hosts.display()),
+        "-o".to_owned(),
+        "StrictHostKeyChecking=yes".to_owned(),
+        "-o".to_owned(),
+        "HashKnownHosts=no".to_owned(),
+    ]
+}
+
+struct DiscoveryKnownHosts {
+    path: PathBuf,
+}
+
+impl DiscoveryKnownHosts {
+    fn create(runtime_root: &Path, endpoint: &RemoteSource, label: &str) -> Result<Self> {
+        if endpoint.host_public_keys.is_empty() {
+            bail!("broker {label} endpoint has no manager-authenticated SSH host-key pin");
+        }
+        let path = runtime_root.join(format!(
+            "discover-{label}-{}-{}.known-hosts",
+            &digest_bytes(
+                format!(
+                    "{}\0{:?}\0{:?}",
+                    endpoint.host, endpoint.port, endpoint.user
+                )
+                .as_bytes()
+            )[..24],
+            std::process::id()
+        ));
+        write_known_hosts(
+            &path,
+            [(
+                endpoint,
+                endpoint
+                    .host_public_keys
+                    .iter()
+                    .map(String::as_str)
+                    .collect(),
+            )],
+        )?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn contains(&self, public_key: &str) -> Result<bool> {
+        let contents = fs::read_to_string(&self.path)
+            .with_context(|| format!("read {}", self.path.display()))?;
+        Ok(contents.lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            let _host = fields.next();
+            let Some(kind) = fields.next() else {
+                return false;
+            };
+            let Some(key) = fields.next() else {
+                return false;
+            };
+            format!("{kind} {key}") == public_key
+        }))
+    }
+}
+
+impl Drop for DiscoveryKnownHosts {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+struct TransferKnownHosts {
+    path: PathBuf,
+}
+
+impl TransferKnownHosts {
+    fn create(
+        runtime_root: &Path,
+        job_id: &str,
+        source: &RemoteSource,
+        target: &RemoteSource,
+        source_key: &str,
+        target_key: &str,
+    ) -> Result<Self> {
+        let path = runtime_root.join(format!(
+            "peers-{}-{}.known-hosts",
+            &digest_bytes(job_id.as_bytes())[..24],
+            std::process::id()
+        ));
+        write_known_hosts(
+            &path,
+            [(source, vec![source_key]), (target, vec![target_key])],
+        )?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TransferKnownHosts {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn write_known_hosts<'a>(
+    path: &Path,
+    endpoints: impl IntoIterator<Item = (&'a RemoteSource, Vec<&'a str>)>,
+) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("create {}", path.display()))?;
+    for (endpoint, keys) in endpoints {
+        for key in keys {
+            validate_public_host_key(key)?;
+            writeln!(file, "{} {key}", known_host_name(endpoint))?;
+        }
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+fn validate_public_host_key(public_key: &str) -> Result<()> {
+    let fields = public_key.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 2
+        || !fields[0].starts_with("ssh-")
+        || public_key.contains(['\0', '\r', '\n'])
+    {
+        bail!("broker endpoint has an invalid public SSH host key");
+    }
+    Ok(())
 }
 
 fn validate_endpoint(label: &str, endpoint: &RemoteSource) -> Result<()> {
@@ -323,6 +504,7 @@ impl AgentGuard {
         let parent_pid = std::process::id() as libc::pid_t;
         let mut command = Command::new(&policy.ssh_agent_program);
         command.args(["-D", "-a"]).arg(&socket);
+        command.stdout(Stdio::null()).stderr(Stdio::piped());
         // SAFETY: prctl, getppid, and kill are async-signal-safe syscalls. No
         // allocation or lock-taking occurs between fork and exec.
         unsafe {
@@ -339,9 +521,25 @@ impl AgentGuard {
         let child = command
             .spawn()
             .with_context(|| format!("start {}", policy.ssh_agent_program.display()))?;
-        let guard = Self { child, socket };
+        let mut guard = Self { child, socket };
         let deadline = Instant::now() + AGENT_START_TIMEOUT;
         while !guard.socket.exists() {
+            if let Some(status) = guard
+                .child
+                .try_wait()
+                .context("inspect broker ssh-agent startup")?
+            {
+                let mut stderr = String::new();
+                if let Some(mut child_stderr) = guard.child.stderr.take() {
+                    child_stderr
+                        .read_to_string(&mut stderr)
+                        .context("read broker ssh-agent startup diagnostics")?;
+                }
+                bail!(
+                    "broker ssh-agent exited during startup with {status}: {}",
+                    stderr.trim()
+                );
+            }
             if Instant::now() >= deadline {
                 bail!("timed out waiting for broker ssh-agent socket");
             }
@@ -433,6 +631,19 @@ impl AgentGuard {
     }
 }
 
+fn broker_agent_socket(runtime_root: &Path, job_id: &str, process_id: u32) -> Result<PathBuf> {
+    let digest = digest_bytes(job_id.as_bytes());
+    let socket = runtime_root.join(format!("agent-{}-{process_id}.sock", &digest[..24]));
+    let length = socket.as_os_str().as_bytes().len();
+    if length > UNIX_SOCKET_PATH_MAX {
+        bail!(
+            "broker ssh-agent socket path is {length} bytes; maximum is {UNIX_SOCKET_PATH_MAX}: {}",
+            socket.display()
+        );
+    }
+    Ok(socket)
+}
+
 fn destination_name(endpoint: &RemoteSource) -> String {
     match &endpoint.user {
         Some(user) => format!("{user}@{}", endpoint.host),
@@ -478,6 +689,17 @@ mod progress_tests {
     use super::*;
 
     #[test]
+    fn broker_socket_fits_the_linux_unix_socket_limit() {
+        let socket = broker_agent_socket(
+            Path::new("/run/abird-host-agent/broker"),
+            "zulip-tearoff-20260804--item-001-seed-seed",
+            4_294_967_295,
+        )
+        .unwrap();
+        assert!(socket.as_os_str().as_bytes().len() <= UNIX_SOCKET_PATH_MAX);
+    }
+
+    #[test]
     fn progress_frames_are_separated_from_bounded_diagnostics() {
         let progress = TransferProgress {
             stage: "copying".to_owned(),
@@ -506,11 +728,74 @@ mod progress_tests {
 mod tests {
     use super::*;
 
+    fn endpoint(host: &str, key: Option<&str>) -> RemoteSource {
+        RemoteSource {
+            host: host.to_owned(),
+            host_public_keys: key.into_iter().map(str::to_owned).collect(),
+            user: Some("nixbot".to_owned()),
+            port: None,
+            identity_file: None,
+            ssh_program: PathBuf::from("/bin/ssh"),
+            ssh_args: Vec::new(),
+            agent_program: PathBuf::from("/bin/agent"),
+            agent_prefix: Vec::new(),
+            rsync_program: PathBuf::from("/bin/rsync"),
+            rsync_prefix: Vec::new(),
+            tar_program: PathBuf::from("/bin/tar"),
+        }
+    }
+
     #[test]
     fn shell_join_quotes_every_argument() {
         assert_eq!(
             shell_join(&["a b".to_owned(), "c'd".to_owned()]).unwrap(),
             "'a b' 'c'\\''d'"
         );
+    }
+
+    #[test]
+    fn transfer_known_hosts_pins_both_peers_in_a_private_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = endpoint("10.0.0.2", None);
+        let target = endpoint("10.0.0.3", None);
+        let known_hosts = TransferKnownHosts::create(
+            temp.path(),
+            "move-seed",
+            &source,
+            &target,
+            "ssh-ed25519 source-key",
+            "ssh-ed25519 target-key",
+        )
+        .unwrap();
+        let contents = fs::read_to_string(known_hosts.path()).unwrap();
+        assert!(contents.contains("10.0.0.2 ssh-ed25519 source-key"));
+        assert!(contents.contains("10.0.0.3 ssh-ed25519 target-key"));
+
+        let mut pinned = source;
+        pin_endpoint(&mut pinned, known_hosts.path());
+        assert_eq!(
+            &pinned.ssh_args[..8],
+            pinned_host_key_options(known_hosts.path())
+        );
+    }
+
+    #[test]
+    fn discovery_uses_supplied_manager_pin_when_available() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = endpoint("10.0.0.2", Some("ssh-ed25519 manager-key"));
+        let known_hosts = DiscoveryKnownHosts::create(temp.path(), &endpoint, "source").unwrap();
+        assert!(known_hosts.contains("ssh-ed25519 manager-key").unwrap());
+        assert!(!known_hosts.contains("ssh-ed25519 other-key").unwrap());
+    }
+
+    #[test]
+    fn discovery_fails_closed_without_a_manager_pin() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = endpoint("10.0.0.2", None);
+        let error = match DiscoveryKnownHosts::create(temp.path(), &endpoint, "source") {
+            Ok(_) => panic!("empty endpoint pin unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("no manager-authenticated"));
     }
 }

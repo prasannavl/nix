@@ -124,6 +124,7 @@ mod tests {
             ssh_args: Vec::new(),
             proxy_jump: None,
             proxy_command: None,
+            parent: None,
             broker_ssh_args: Vec::new(),
             agent_program: "/bin/agent".into(),
             agent_prefix: Vec::new(),

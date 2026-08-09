@@ -1,13 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{self, IsTerminal, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use abird_host_agent::deployment::{NixbotDeployRequest, validate_nixbot_deploy_request};
+use abird_host_agent::deployment::{
+    NixbotDeployRequest, UNCOMMITTED_CONTROLLER_REVISION, validate_nixbot_deploy_request,
+};
 use abird_host_agent::instance::{
     InstanceControlAction, InstanceControlRequest, InstanceMigrationPhase, InstanceMigrationRequest,
 };
@@ -19,6 +21,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::programs::nix::Nix;
+use crate::progress::{ProgressReporter, StepProgress};
+use crate::repository::Repository;
+use crate::service_registry::resolve_service_host;
 use crate::ssh_runtime::SshRuntime;
 use crate::workflow::{InstanceEndpoint, MoveItem};
 use crate::{Action, Adapter, ResourceKind, Transaction};
@@ -85,6 +90,9 @@ pub struct Host {
     pub proxy_jump: Option<String>,
     #[serde(default)]
     pub proxy_command: Option<String>,
+    /// Inventory parent whose declarative deployment creates this host.
+    #[serde(default)]
+    pub parent: Option<String>,
     /// SSH arguments used from the controller and peers on the managed network.
     #[serde(default)]
     pub broker_ssh_args: Vec<String>,
@@ -129,6 +137,8 @@ pub struct OperationRoute {
 #[serde(untagged)]
 pub enum NixbotDeployRoute {
     Endpoint(NixbotDeployEndpointRoute),
+    Parent(NixbotDeployParentRoute),
+    SharedRole(NixbotDeploySharedRoleRoute),
     Request(NixbotDeployRequest),
 }
 
@@ -136,6 +146,18 @@ pub enum NixbotDeployRoute {
 #[serde(deny_unknown_fields)]
 pub struct NixbotDeployEndpointRoute {
     pub endpoint: NixbotDeployEndpoint,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NixbotDeployParentRoute {
+    pub parent_of: NixbotDeployEndpoint,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NixbotDeploySharedRoleRoute {
+    pub shared_role: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -172,7 +194,7 @@ pub struct HostSummary<'a> {
 
 pub struct NativeAdapter {
     config: HostManagerConfig,
-    show_progress: bool,
+    progress: ProgressReporter,
 }
 
 #[derive(Clone, Copy)]
@@ -199,9 +221,7 @@ impl HostManagerConfig {
         let path = path
             .canonicalize()
             .with_context(|| format!("resolve Nixbot config {}", path.display()))?;
-        let nix_program = std::env::var_os("ABIRD_HOST_MANAGER_NIX")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix"));
+        let nix_program = manager_nix_program();
         let ssh_program = std::env::var_os("ABIRD_HOST_MANAGER_SSH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/ssh"));
@@ -287,6 +307,10 @@ impl HostManagerConfig {
                 .get("proxyCommand")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
+            let parent = value
+                .get("parent")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             let configured_known_hosts_file = value
                 .get("knownHosts")
                 .and_then(Value::as_str)
@@ -333,6 +357,7 @@ impl HostManagerConfig {
                     ssh_args: Vec::new(),
                     proxy_jump,
                     proxy_command,
+                    parent: parent.clone(),
                     broker_ssh_args: Vec::new(),
                     agent_program: default_agent_program(),
                     agent_prefix: vec!["/run/wrappers/bin/sudo".to_owned(), "-n".to_owned()],
@@ -341,7 +366,7 @@ impl HostManagerConfig {
                     nixbot_deploy: Some(NixbotDeployRequest {
                         host: name.clone(),
                         nix_config: None,
-                        exclude_hosts: Vec::new(),
+                        exclude_hosts: parent.into_iter().collect(),
                     }),
                     rsync_program: default_rsync_program(),
                     rsync_prefix: None,
@@ -349,7 +374,7 @@ impl HostManagerConfig {
                 },
             );
         }
-        let config = Self {
+        let mut config = Self {
             schema_version: 1,
             ssh: SshConfig {
                 program: ssh_program,
@@ -365,8 +390,77 @@ impl HostManagerConfig {
             operation_routes: BTreeMap::new(),
             ssh_runtime: Some(ssh_runtime),
         };
+        config.derive_repository_defaults(&value)?;
         config.validate()?;
         Ok(config)
+    }
+
+    fn derive_repository_defaults(&mut self, inventory: &Value) -> Result<()> {
+        let Some(controller_resource) = inventory
+            .pointer("/config/ci/host")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(());
+        };
+        let controller_resource = format!("host:{controller_resource}");
+        let controllers = self
+            .hosts
+            .iter()
+            .filter_map(|(name, host)| {
+                (host.host_resource.as_deref() == Some(controller_resource.as_str()))
+                    .then_some(name.clone())
+            })
+            .collect::<Vec<_>>();
+        let controller = match controllers.as_slice() {
+            [controller] => controller.clone(),
+            [] => return Ok(()),
+            _ => {
+                bail!(
+                    "Nixbot CI host resource {controller_resource:?} has multiple inventory endpoints"
+                )
+            }
+        };
+
+        self.transfer_broker = Some(controller.clone());
+        for (operation, nixbot_deploy) in [
+            (
+                "provision-target",
+                NixbotDeployRoute::Parent(NixbotDeployParentRoute {
+                    parent_of: NixbotDeployEndpoint::Target,
+                }),
+            ),
+            (
+                "deploy-target-gated",
+                NixbotDeployRoute::Endpoint(NixbotDeployEndpointRoute {
+                    endpoint: NixbotDeployEndpoint::Target,
+                }),
+            ),
+            (
+                "deploy-cutover",
+                NixbotDeployRoute::SharedRole(NixbotDeploySharedRoleRoute {
+                    shared_role: "proxy".to_owned(),
+                }),
+            ),
+            (
+                "deploy-rollback",
+                NixbotDeployRoute::SharedRole(NixbotDeploySharedRoleRoute {
+                    shared_role: "proxy".to_owned(),
+                }),
+            ),
+        ] {
+            self.operation_routes.insert(
+                operation.to_owned(),
+                OperationRoute {
+                    executor: controller.clone(),
+                    resource: Some("controller:nixbot".to_owned()),
+                    agent_operation: None,
+                    kind: RoutedOperationKind::NixbotDeploy,
+                    nixbot_deploy: Some(nixbot_deploy),
+                },
+            );
+        }
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -480,6 +574,12 @@ impl HostManagerConfig {
             if host.proxy_jump.is_some() && host.proxy_command.is_some() {
                 bail!("host {name:?} cannot define both proxy_jump and proxy_command");
             }
+            if let Some(parent) = &host.parent {
+                validate_name("parent host inventory name", parent)?;
+                if parent == name || !self.hosts.contains_key(parent) {
+                    bail!("host {name:?} has invalid parent host {parent:?}");
+                }
+            }
             if host
                 .proxy_command
                 .as_ref()
@@ -540,7 +640,21 @@ impl HostManagerConfig {
                         );
                     }
                 }
-                (RoutedOperationKind::NixbotDeploy, Some(NixbotDeployRoute::Endpoint(_))) => {
+                (
+                    RoutedOperationKind::NixbotDeploy,
+                    Some(NixbotDeployRoute::Endpoint(_) | NixbotDeployRoute::Parent(_)),
+                ) => {
+                    if route.agent_operation.is_some() {
+                        bail!(
+                            "operation {operation:?} cannot combine Nixbot deployment with an agent operation"
+                        );
+                    }
+                }
+                (
+                    RoutedOperationKind::NixbotDeploy,
+                    Some(NixbotDeployRoute::SharedRole(shared_role)),
+                ) => {
+                    validate_name("shared deployment role", &shared_role.shared_role)?;
                     if route.agent_operation.is_some() {
                         bail!(
                             "operation {operation:?} cannot combine Nixbot deployment with an agent operation"
@@ -618,7 +732,70 @@ impl HostManagerConfig {
                         )
                     })
             }
+            NixbotDeployRoute::Parent(route) => {
+                let inventory_name = match route.parent_of {
+                    NixbotDeployEndpoint::Source => &transaction.source,
+                    NixbotDeployEndpoint::Target => &transaction.target,
+                };
+                let parent = self
+                    .host(inventory_name)?
+                    .parent
+                    .as_deref()
+                    .with_context(|| {
+                        format!("host {inventory_name:?} has no declarative parent")
+                    })?;
+                self.host(parent)?.nixbot_deploy.clone().with_context(|| {
+                    format!("parent host {parent:?} has no Nixbot deployment identity")
+                })
+            }
+            NixbotDeployRoute::SharedRole(route) => {
+                self.shared_role_deploy_request(transaction, &route.shared_role)
+            }
         }
+    }
+
+    fn shared_role_deploy_request(
+        &self,
+        transaction: &Transaction,
+        role: &str,
+    ) -> Result<NixbotDeployRequest> {
+        let source = self.host_resource(&transaction.source)?;
+        let target = self.host_resource(&transaction.target)?;
+        let source_namespace = host_resource_namespace(&source).with_context(|| {
+            format!("source host resource {source:?} has no repository role suffix")
+        })?;
+        let target_namespace = host_resource_namespace(&target).with_context(|| {
+            format!("target host resource {target:?} has no repository role suffix")
+        })?;
+        if source_namespace != target_namespace {
+            bail!(
+                "source and target host resources do not share a deployment namespace; provide an explicit migration config"
+            );
+        }
+        let resource = format!("host:{source_namespace}-{role}");
+        let candidates = self
+            .hosts
+            .iter()
+            .filter_map(|(name, host)| {
+                (host.host_resource.as_deref() == Some(resource.as_str())).then_some((name, host))
+            })
+            .collect::<Vec<_>>();
+        let (name, host) = match candidates.as_slice() {
+            [(name, host)] => (*name, *host),
+            [] => {
+                bail!(
+                    "no inventory host owns derived deployment role resource {resource:?}; provide an explicit migration config"
+                )
+            }
+            _ => {
+                bail!(
+                    "multiple inventory hosts own derived deployment role resource {resource:?}; provide an explicit migration config"
+                )
+            }
+        };
+        host.nixbot_deploy.clone().with_context(|| {
+            format!("derived deployment host {name:?} has no Nixbot deployment identity")
+        })
     }
 
     pub fn host_summary(&self, name: &str) -> Result<HostSummary<'_>> {
@@ -710,6 +887,31 @@ impl HostManagerConfig {
                 .unwrap_or_else(|| host.agent_prefix.clone()),
             tar_program: host.tar_program.clone(),
         })
+    }
+
+    /// Build a peer-transfer endpoint and bind it to the host key observed over
+    /// the manager's already authenticated inventory transport.  The durable
+    /// broker job can then connect from a different machine without depending
+    /// on that machine's ambient known-hosts state.
+    pub fn pinned_broker_endpoint(&self, name: &str, preserve_agent: bool) -> Result<RemoteSource> {
+        let mut endpoint = self.broker_endpoint(name, preserve_agent)?;
+        let response = self.run_agent(
+            name,
+            &[
+                "--json".to_owned(),
+                "data".to_owned(),
+                "ssh-host-key".to_owned(),
+            ],
+        )?;
+        let public_key = response
+            .pointer("/result/public_key")
+            .and_then(Value::as_str)
+            .with_context(|| format!("host {name:?} returned no public SSH host key"))?;
+        if public_key.contains(['\0', '\r', '\n']) || !public_key.starts_with("ssh-") {
+            bail!("host {name:?} returned an invalid public SSH host key");
+        }
+        endpoint.host_public_keys = vec![public_key.to_owned()];
+        Ok(endpoint)
     }
 
     pub fn run_agent(&self, host_name: &str, agent_args: &[String]) -> Result<Value> {
@@ -924,7 +1126,7 @@ impl HostManagerConfig {
         &self,
         host_name: &str,
         host: &Host,
-        _role: TransportRole,
+        role: TransportRole,
     ) -> Result<Vec<String>> {
         let mut args = host_ssh_options(host);
         args.extend(self.ssh.args.clone());
@@ -939,7 +1141,12 @@ impl HostManagerConfig {
                 "-o".to_owned(),
                 format!(
                     "ProxyCommand={}",
-                    self.proxy_command(proxy, &mut BTreeSet::from([host_name.to_owned()]))?
+                    self.proxy_command(
+                        proxy,
+                        &host.address,
+                        ssh_port(host, role).unwrap_or(22),
+                        &mut BTreeSet::from([host_name.to_owned()]),
+                    )?
                 ),
             ]);
         } else if let Some(command) = &host.proxy_command {
@@ -948,7 +1155,13 @@ impl HostManagerConfig {
         Ok(args)
     }
 
-    fn proxy_command(&self, proxy_name: &str, visiting: &mut BTreeSet<String>) -> Result<String> {
+    fn proxy_command(
+        &self,
+        proxy_name: &str,
+        forward_host: &str,
+        forward_port: u16,
+        visiting: &mut BTreeSet<String>,
+    ) -> Result<String> {
         if !visiting.insert(proxy_name.to_owned()) {
             bail!("manager proxy chain contains a cycle at {proxy_name:?}");
         }
@@ -975,16 +1188,25 @@ impl HostManagerConfig {
             ]);
         }
         if let Some(next_proxy) = &proxy.proxy_jump {
+            let nested = self.proxy_command(
+                next_proxy,
+                &proxy.address,
+                ssh_port(proxy, role).unwrap_or(22),
+                visiting,
+            )?;
             argv.extend([
                 "-o".to_owned(),
-                format!("ProxyCommand={}", self.proxy_command(next_proxy, visiting)?),
+                format!("ProxyCommand={}", escape_proxy_tokens(&nested)),
             ]);
         } else if let Some(command) = &proxy.proxy_command {
-            argv.extend(["-o".to_owned(), format!("ProxyCommand={command}")]);
+            argv.extend([
+                "-o".to_owned(),
+                format!("ProxyCommand={}", escape_proxy_tokens(command)),
+            ]);
         }
         argv.extend([
             "-W".to_owned(),
-            "%h:%p".to_owned(),
+            ssh_forward_destination(forward_host, forward_port),
             "--".to_owned(),
             ssh_destination(proxy, role),
         ]);
@@ -1053,6 +1275,29 @@ fn nixbot_overlay_path(config: &Path) -> Result<Option<PathBuf>> {
     Ok(overlay.is_file().then_some(overlay))
 }
 
+fn manager_nix_program() -> PathBuf {
+    std::env::var_os("ABIRD_HOST_MANAGER_NIX")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/run/current-system/sw/bin/nix"))
+}
+
+fn repository_for_config(config: &Path) -> Result<Option<Repository>> {
+    if config.file_name().and_then(|name| name.to_str()) != Some("nixbot.nix")
+        || config
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some("hosts")
+    {
+        return Ok(None);
+    }
+    let root = config
+        .parent()
+        .and_then(Path::parent)
+        .context("repository Nixbot config has no repository root")?;
+    Repository::from_root(root.to_path_buf()).map(Some)
+}
+
 fn resolve_nixbot_path(config: &Path, value: &str) -> Result<PathBuf> {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -1112,6 +1357,18 @@ fn ssh_port(host: &Host, role: TransportRole) -> Option<u16> {
     }
 }
 
+fn ssh_forward_destination(host: &str, port: u16) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn escape_proxy_tokens(command: &str) -> String {
+    command.replace('%', "%%")
+}
+
 fn host_ssh_options(host: &Host) -> Vec<String> {
     let mut options = host.ssh_args.clone();
     if let Some(known_hosts) = &host.known_hosts_file {
@@ -1133,20 +1390,24 @@ impl NativeAdapter {
     pub fn load(path: &Path) -> Result<Self> {
         Ok(Self {
             config: HostManagerConfig::load(path)?,
-            show_progress: io::stderr().is_terminal(),
+            progress: ProgressReporter::new(true),
         })
     }
 
     pub fn from_config(config: HostManagerConfig) -> Self {
         Self {
             config,
-            show_progress: false,
+            progress: ProgressReporter::new(false),
         }
     }
 
     pub fn with_progress(mut self, show_progress: bool) -> Self {
-        self.show_progress = show_progress;
+        self.progress = ProgressReporter::new(show_progress);
         self
+    }
+
+    pub fn progress(&self) -> &ProgressReporter {
+        &self.progress
     }
 
     pub fn config(&self) -> &HostManagerConfig {
@@ -1179,15 +1440,36 @@ impl NativeAdapter {
                 &transaction.target,
                 &["--json".to_owned(), "job".to_owned(), "list".to_owned()],
             );
-            if let Err(error) = target_probe
-                && !self
+            if let Err(error) = &target_probe {
+                if !self
                     .config
                     .operation_routes
                     .contains_key("provision-target")
+                {
+                    bail!(
+                        "target agent is unreachable and no provision-target route is configured: {error:#}"
+                    );
+                }
+                self.preflight_route_with_cache(
+                    transaction,
+                    "provision-target",
+                    &mut declarations,
+                )?;
+            }
+            if target_probe.is_err()
+                || !target_setup_satisfied(
+                    &self.config,
+                    transaction,
+                    &target_resource,
+                    &source,
+                    &mut declarations,
+                )
             {
-                bail!(
-                    "target agent is unreachable and no provision-target route is configured: {error:#}"
-                );
+                self.preflight_route_with_cache(
+                    transaction,
+                    "deploy-target-gated",
+                    &mut declarations,
+                )?;
             }
         }
 
@@ -1214,16 +1496,24 @@ impl NativeAdapter {
             }
         }
 
-        let mut routes = required_routes(action).to_vec();
-        if action == Action::Setup
-            && self
-                .config
-                .operation_routes
-                .contains_key("provision-target")
-        {
-            routes.push("provision-target");
+        if matches!(
+            action,
+            Action::Seed | Action::Prepare | Action::Verify | Action::Rollback
+        ) {
+            self.preflight_broker_transfer(transaction, &source_resource)?;
         }
-        for operation in routes {
+
+        match action {
+            Action::Cutover => {
+                self.preflight_repository_service_placement(transaction, &transaction.target)?
+            }
+            Action::Rollback => {
+                self.preflight_repository_service_placement(transaction, &transaction.source)?
+            }
+            _ => {}
+        }
+
+        for operation in required_routes(action) {
             self.preflight_route_with_cache(transaction, operation, &mut declarations)?;
         }
         Ok(())
@@ -1231,6 +1521,45 @@ impl NativeAdapter {
 
     fn preflight_route(&self, transaction: &Transaction, operation: &str) -> Result<()> {
         self.preflight_route_with_cache(transaction, operation, &mut BTreeMap::new())
+    }
+
+    fn preflight_broker_transfer(&self, transaction: &Transaction, resource: &str) -> Result<()> {
+        let broker = self
+            .config
+            .transfer_broker
+            .as_deref()
+            .context("manager inventory has no transfer_broker")?;
+        let source = self
+            .config
+            .pinned_broker_endpoint(&transaction.source, true)?;
+        let target = self
+            .config
+            .pinned_broker_endpoint(&transaction.target, false)?;
+        let job_id = format!(
+            "preflight-{}",
+            &digest_bytes(transaction.id.as_bytes())[..24]
+        );
+        self.config.run_agent(
+            broker,
+            &[
+                "--json".to_owned(),
+                "job".to_owned(),
+                "_materialize".to_owned(),
+                "--job-id".to_owned(),
+                job_id,
+                "--transaction".to_owned(),
+                transaction.id.clone(),
+                "--resource".to_owned(),
+                resource.to_owned(),
+                "--broker-copy".to_owned(),
+                serde_json::to_string(&source)?,
+                "--target-endpoint".to_owned(),
+                serde_json::to_string(&target)?,
+                "--data-root-plan".to_owned(),
+                serde_json::to_string(&transaction.data_root_plan)?,
+            ],
+        )?;
+        Ok(())
     }
 
     fn preflight_route_with_cache(
@@ -1246,21 +1575,141 @@ impl NativeAdapter {
             .with_context(|| format!("migration operation route {operation:?} is missing"))?;
         let executor = resolve_executor(&route.executor, transaction);
         self.config.host(executor)?;
-        if route.kind == RoutedOperationKind::NixbotDeploy {
-            self.config.resolve_nixbot_deploy_request(
-                route
-                    .nixbot_deploy
-                    .as_ref()
-                    .context("validated Nixbot route has no deployment request")?,
-                transaction,
-            )?;
-        }
+        let nixbot_request = if route.kind == RoutedOperationKind::NixbotDeploy {
+            Some(
+                self.config.resolve_nixbot_deploy_request(
+                    route
+                        .nixbot_deploy
+                        .as_ref()
+                        .context("validated Nixbot route has no deployment request")?,
+                    transaction,
+                )?,
+            )
+        } else {
+            None
+        };
         let executor_resource = self.transaction_resource_for_host(transaction, executor)?;
         let resource = route.resource.as_deref().unwrap_or(&executor_resource);
         let declaration =
             load_resource_declaration(&self.config, executor, resource, declarations)?;
         let profile = route.agent_operation.as_deref().unwrap_or(operation);
-        ensure_profile(declaration, operation, route.kind, profile)
+        ensure_profile(declaration, operation, route.kind, profile)?;
+        if let Some(request) = nixbot_request {
+            let response = self.config.run_agent(
+                executor,
+                &[
+                    "--json".to_owned(),
+                    "job".to_owned(),
+                    "_materialize".to_owned(),
+                    "--job-id".to_owned(),
+                    format!(
+                        "preflight-{}",
+                        &digest_bytes(format!("{}:{operation}", transaction.id).as_bytes())[..24]
+                    ),
+                    "--transaction".to_owned(),
+                    transaction.id.clone(),
+                    "--resource".to_owned(),
+                    resource.to_owned(),
+                    "--nixbot-deploy".to_owned(),
+                    serde_json::to_string(&request)?,
+                ],
+            )?;
+            let revision = response
+                .pointer("/result/spec/nixbot_deploy/revision")
+                .and_then(Value::as_str)
+                .context("controller did not materialize a pinned Nixbot revision")?;
+            if revision == UNCOMMITTED_CONTROLLER_REVISION {
+                bail!(
+                    "controller generation is uncommitted; deploy a committed controller generation before {operation}"
+                );
+            }
+            if let Some(expected) = self.repository_revision(transaction)?
+                && revision != expected
+            {
+                bail!(
+                    "controller generation revision {revision:?} does not match repository revision {expected:?}; deploy the controller from the intended committed revision before {operation}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn repository_revision(&self, transaction: &Transaction) -> Result<Option<String>> {
+        let Some(repository) = repository_for_config(&transaction.config)? else {
+            return Ok(None);
+        };
+        let controller = self
+            .config
+            .transfer_broker
+            .as_deref()
+            .context("repository-native deployment has no derived controller")?;
+        let controller = self
+            .config
+            .host(controller)?
+            .nixbot_deploy
+            .as_ref()
+            .context("derived controller has no Nixbot deployment identity")?;
+        let installable = format!(
+            ".#nixosConfigurations.{}.config.system.configurationRevision",
+            controller.host
+        );
+        let value = Nix::new(manager_nix_program())?.eval_installable_apply_json(
+            repository.root(),
+            &installable,
+            "value: value",
+        )?;
+        value
+            .as_str()
+            .map(|revision| Some(revision.to_owned()))
+            .context(
+                "repository has no committed system.configurationRevision; commit the intended placement before deployment",
+            )
+    }
+
+    fn preflight_repository_service_placement(
+        &self,
+        transaction: &Transaction,
+        expected_host: &str,
+    ) -> Result<()> {
+        if transaction.resource_kind != ResourceKind::Service {
+            return Ok(());
+        }
+        let Some(repository) = repository_for_config(&transaction.config)? else {
+            return Ok(());
+        };
+        let source = self.config.host_resource(&transaction.source)?;
+        let target = self.config.host_resource(&transaction.target)?;
+        let source_namespace = host_resource_namespace(&source).with_context(|| {
+            format!("source host resource {source:?} has no repository role suffix")
+        })?;
+        let target_namespace = host_resource_namespace(&target).with_context(|| {
+            format!("target host resource {target:?} has no repository role suffix")
+        })?;
+        if source_namespace != target_namespace {
+            bail!(
+                "source and target do not share a repository stack; provide an explicit migration config"
+            );
+        }
+        let logical_service = transaction
+            .resource
+            .strip_prefix(&format!("{source_namespace}-"))
+            .unwrap_or(&transaction.resource);
+        let placement = resolve_service_host(
+            &repository,
+            &manager_nix_program(),
+            &self.config,
+            source_namespace,
+            logical_service,
+        )?;
+        if placement.host != expected_host {
+            bail!(
+                "repository places service {:?} on {:?}, but this phase requires {:?}; commit the intended declarative placement first",
+                transaction.resource,
+                placement.host,
+                expected_host
+            );
+        }
+        Ok(())
     }
 
     fn transaction_resource_for_host(
@@ -1333,45 +1782,6 @@ impl NativeAdapter {
         let spec = materialized
             .pointer("/result/spec")
             .context("agent job materialization response has no immutable spec")?;
-        let encoded_spec =
-            serde_json::to_vec(spec).context("serialize materialized agent job spec")?;
-        let value = self.config.run_agent_with_input(
-            host,
-            &[
-                "--json".to_owned(),
-                "job".to_owned(),
-                "submit".to_owned(),
-                "--spec".to_owned(),
-                "-".to_owned(),
-                "--defer".to_owned(),
-            ],
-            &encoded_spec,
-        )?;
-        match submission_job_status(&value)? {
-            "succeeded" => {
-                return value
-                    .pointer("/result/job")
-                    .cloned()
-                    .context("agent job submission response has no job record");
-            }
-            "failed" => {
-                self.config.run_agent(
-                    host,
-                    &[
-                        "--json".to_owned(),
-                        "job".to_owned(),
-                        "retry".to_owned(),
-                        "--job-id".to_owned(),
-                        job_id.to_owned(),
-                    ],
-                )?;
-            }
-            "pending" | "running" => {}
-            status => bail!("host-agent job {job_id:?} returned invalid status {status:?}"),
-        }
-
-        let deadline = Instant::now() + Duration::from_secs(self.config.ssh.job_timeout_seconds);
-        let poll_interval = Duration::from_millis(self.config.ssh.agent_poll_interval_ms);
         let status_args = [
             "--json".to_owned(),
             "job".to_owned(),
@@ -1379,6 +1789,79 @@ impl NativeAdapter {
             "--job-id".to_owned(),
             job_id.to_owned(),
         ];
+        let existing = self.config.run_agent(host, &status_args).ok();
+        if let Some(existing) = &existing {
+            let existing_spec = existing
+                .pointer("/result/spec")
+                .context("existing agent job status has no immutable spec")?;
+            if !retry_spec_matches(existing_spec, spec) {
+                bail!(
+                    "host-agent job {job_id:?} already exists with a different immutable specification"
+                );
+            }
+        }
+        let encoded_spec =
+            serde_json::to_vec(spec).context("serialize materialized agent job spec")?;
+        let existing_job = existing.is_some();
+        let value = match existing {
+            Some(value) => value,
+            None => self.config.run_agent_with_input(
+                host,
+                &[
+                    "--json".to_owned(),
+                    "job".to_owned(),
+                    "submit".to_owned(),
+                    "--spec".to_owned(),
+                    "-".to_owned(),
+                    "--defer".to_owned(),
+                ],
+                &encoded_spec,
+            )?,
+        };
+        let status = if existing_job {
+            value
+                .pointer("/result/status")
+                .and_then(Value::as_str)
+                .context("existing agent job status has no status")?
+        } else {
+            submission_job_status(&value)?
+        };
+        match status {
+            "succeeded" => {
+                let pointer = if existing_job {
+                    "/result"
+                } else {
+                    "/result/job"
+                };
+                return value
+                    .pointer(pointer)
+                    .cloned()
+                    .with_context(|| format!("agent job response has no job record at {pointer}"));
+            }
+            "failed" => {
+                self.config.run_agent_with_input(
+                    host,
+                    &[
+                        "--json".to_owned(),
+                        "job".to_owned(),
+                        "retry".to_owned(),
+                        "--job-id".to_owned(),
+                        job_id.to_owned(),
+                        "--spec".to_owned(),
+                        "-".to_owned(),
+                    ],
+                    &encoded_spec,
+                )?;
+            }
+            "pending" | "running" => {}
+            status => bail!("host-agent job {job_id:?} returned invalid status {status:?}"),
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(self.config.ssh.job_timeout_seconds);
+        let polling_started = Instant::now();
+        let heartbeat_interval = Duration::from_secs(10);
+        let mut last_report = Instant::now();
+        let poll_interval = Duration::from_millis(self.config.ssh.agent_poll_interval_ms);
         let mut last_transport_error = None;
         let mut last_progress = None;
         loop {
@@ -1407,16 +1890,24 @@ impl NativeAdapter {
                 && progress != &Value::Null
                 && last_progress.as_ref() != Some(progress)
             {
-                if self.show_progress {
+                if self.progress.enabled() {
                     eprintln!("{}", format_job_progress(host, job_id, progress));
                 }
                 last_progress = Some(progress.clone());
+                last_report = Instant::now();
             }
-            match value
+            let status = value
                 .pointer("/result/status")
                 .and_then(Value::as_str)
-                .context("agent job status response has no status")?
-            {
+                .context("agent job status response has no status")?;
+            if self.progress.enabled() && last_report.elapsed() >= heartbeat_interval {
+                eprintln!(
+                    "[{host}][job {job_id}] {status}; waiting for {}",
+                    format_wait_duration(polling_started.elapsed())
+                );
+                last_report = Instant::now();
+            }
+            match status {
                 "succeeded" => {
                     return value
                         .pointer("/result")
@@ -1560,8 +2051,8 @@ impl NativeAdapter {
             .transfer_broker
             .as_deref()
             .context("manager inventory has no transfer_broker")?;
-        let source = self.config.broker_endpoint(source, true)?;
-        let target = self.config.broker_endpoint(target, false)?;
+        let source = self.config.pinned_broker_endpoint(source, true)?;
+        let target = self.config.pinned_broker_endpoint(target, false)?;
         let mut arguments = vec![
             if verify {
                 "--broker-verify".to_owned()
@@ -1586,6 +2077,33 @@ impl NativeAdapter {
         }
         self.run_profile_job_result(broker, job_id, transaction_id, resource, &arguments)
     }
+}
+
+/// Job specifications stay immutable across retries.  The sole compatibility
+/// enrichment accepted here is adding manager-authenticated host keys to an
+/// older broker endpoint that was persisted before endpoint pinning existed.
+fn retry_spec_matches(existing: &Value, desired: &Value) -> bool {
+    if existing == desired {
+        return true;
+    }
+    let mut enriched = existing.clone();
+    for endpoint in ["source", "target"] {
+        let pointer = format!("/operation/{endpoint}/host_public_keys");
+        let Some(old_keys) = existing.pointer(&pointer).and_then(Value::as_array) else {
+            return false;
+        };
+        let Some(new_keys) = desired.pointer(&pointer).and_then(Value::as_array) else {
+            return false;
+        };
+        if !old_keys.is_empty() || new_keys.is_empty() {
+            return false;
+        }
+        let Some(slot) = enriched.pointer_mut(&pointer) else {
+            return false;
+        };
+        *slot = Value::Array(new_keys.clone());
+    }
+    enriched == *desired
 }
 
 fn format_job_progress(host: &str, job_id: &str, progress: &Value) -> String {
@@ -1619,9 +2137,21 @@ fn format_job_progress(host: &str, job_id: &str, progress: &Value) -> String {
     format!("[{host} {job_id}] {stage}{engine}{entries}{bytes}{detail}")
 }
 
+fn format_wait_duration(duration: Duration) -> String {
+    if duration.as_secs() < 60 {
+        format!("{}s", duration.as_secs())
+    } else {
+        format!(
+            "{}m{:02}s",
+            duration.as_secs() / 60,
+            duration.as_secs() % 60
+        )
+    }
+}
+
 fn required_routes(action: Action) -> &'static [&'static str] {
     match action {
-        Action::Setup => &["deploy-target-gated"],
+        Action::Setup => &[],
         Action::Cutover => &["deploy-cutover"],
         Action::Rollback => &["deploy-rollback"],
         Action::Plan | Action::Seed | Action::Prepare | Action::Verify | Action::Close => &[],
@@ -1720,6 +2250,29 @@ fn load_resource_declaration<'a>(
     Ok(&declarations[&key])
 }
 
+fn target_setup_satisfied(
+    config: &HostManagerConfig,
+    transaction: &mut Transaction,
+    target_resource: &str,
+    source: &Value,
+    declarations: &mut BTreeMap<String, Value>,
+) -> bool {
+    let Ok(target) =
+        load_resource_declaration(config, &transaction.target, target_resource, declarations)
+    else {
+        return false;
+    };
+    let Ok(plan) = resolve_data_root_plan(source, target) else {
+        return false;
+    };
+    if transaction.data_root_plan.is_empty() {
+        transaction.data_root_plan = plan;
+        true
+    } else {
+        transaction.data_root_plan == plan
+    }
+}
+
 fn ensure_profile(
     declaration: &Value,
     operation: &str,
@@ -1765,6 +2318,10 @@ impl<'a> WorkflowItemAdapter<'a> {
         Self { native, item }
     }
 
+    pub fn native_progress(&self) -> &ProgressReporter {
+        self.native.progress()
+    }
+
     pub fn preflight(&self, transaction: &mut Transaction, action: Action) -> Result<()> {
         match self.item {
             MoveItem::Instance {
@@ -1786,6 +2343,15 @@ impl<'a> WorkflowItemAdapter<'a> {
                 {
                     routes.push("provision-target");
                 }
+                if action == Action::Setup
+                    && self
+                        .native
+                        .config
+                        .operation_routes
+                        .contains_key("deploy-target-gated")
+                {
+                    routes.push("deploy-target-gated");
+                }
                 for operation in routes {
                     if self.native.config.operation_routes.contains_key(operation) {
                         self.native
@@ -1798,6 +2364,67 @@ impl<'a> WorkflowItemAdapter<'a> {
                 Ok(())
             }
             _ => self.native.preflight_transaction(transaction, action),
+        }
+    }
+
+    fn step_progress(&self, operation: &str, transaction: &Transaction) -> StepProgress {
+        StepProgress {
+            transaction: transaction.id.clone(),
+            item: self.item.id().to_owned(),
+            action: transaction.pending_action.unwrap_or(Action::Plan),
+            step: operation.to_owned(),
+            description: step_description(operation).to_owned(),
+            location: self.step_location(operation, transaction),
+        }
+    }
+
+    fn step_location(&self, operation: &str, transaction: &Transaction) -> String {
+        if let MoveItem::Instance { source, policy, .. } = self.item {
+            return policy.executor(source).to_owned();
+        }
+        if matches!(
+            operation,
+            "seed" | "final-transfer" | "verify-final" | "reverse-transfer" | "verify-reverse"
+        ) {
+            return format!(
+                "{} ({} -> {})",
+                self.native
+                    .config
+                    .transfer_broker
+                    .as_deref()
+                    .unwrap_or("transfer broker"),
+                transaction.source,
+                transaction.target
+            );
+        }
+        if let Some(route) = self.native.config.operation_routes.get(operation) {
+            return resolve_executor(&route.executor, transaction).to_owned();
+        }
+        if matches!(
+            operation,
+            "probe"
+                | "hold-source"
+                | "assert-source-stopped"
+                | "backup-source"
+                | "activate-source"
+                | "verify-source-ready"
+                | "release-source"
+        ) {
+            transaction.source.clone()
+        } else if matches!(
+            operation,
+            "provision-target"
+                | "reserve-target"
+                | "deploy-target-gated"
+                | "hold-target"
+                | "assert-target-stopped"
+                | "activate-target"
+                | "verify-target-ready"
+                | "release-target"
+        ) {
+            transaction.target.clone()
+        } else {
+            "manager".to_owned()
         }
     }
 
@@ -1943,20 +2570,6 @@ impl<'a> WorkflowItemAdapter<'a> {
                 true,
                 InstanceMigrationPhase::Final,
             ),
-            "verify-seed" => self
-                .assert_stopped(executor, transaction, &target_resource, target, false)
-                .and_then(|()| {
-                    self.verify_migration_target(
-                        executor,
-                        transaction,
-                        &target_resource,
-                        "verify-seed-target",
-                        source,
-                        target,
-                        policy,
-                        false,
-                    )
-                }),
             "verify-final" => {
                 self.assert_stopped(executor, transaction, &source_resource, source, false)?;
                 self.assert_stopped(executor, transaction, &target_resource, target, false)?;
@@ -2297,7 +2910,10 @@ impl<'a> WorkflowItemAdapter<'a> {
 
 impl Adapter for WorkflowItemAdapter<'_> {
     fn run(&mut self, operation: &str, transaction: &mut Transaction) -> Result<()> {
-        match self.item {
+        let progress = self.step_progress(operation, transaction);
+        let started = Instant::now();
+        self.native.progress.step_started(&progress);
+        let result = match self.item {
             MoveItem::Instance {
                 source,
                 target,
@@ -2305,7 +2921,46 @@ impl Adapter for WorkflowItemAdapter<'_> {
                 ..
             } => self.run_instance(operation, transaction, source, target, policy),
             _ => self.native.run(operation, transaction),
+        };
+        match &result {
+            Ok(()) => self
+                .native
+                .progress
+                .step_completed(&progress, started.elapsed()),
+            Err(error) => self
+                .native
+                .progress
+                .step_failed(&progress, started.elapsed(), error),
         }
+        result
+    }
+}
+
+fn step_description(operation: &str) -> &str {
+    match operation {
+        "probe" => "inspect source resource",
+        "provision-target" => "check or provision target host",
+        "reserve-target" => "reserve target hold",
+        "deploy-target-gated" => "check or deploy held target",
+        "hold-source" => "hold source writer",
+        "hold-target" => "hold target writer",
+        "assert-source-stopped" => "verify source writer is stopped",
+        "assert-target-stopped" => "verify target writer is stopped",
+        "seed" => "copy live source data to held target",
+        "backup-source" => "create source safety backup",
+        "final-transfer" => "copy final quiesced source data",
+        "verify-final" => "verify final target data",
+        "deploy-cutover" => "deploy target placement and ingress",
+        "activate-target" => "release and start target writer",
+        "verify-target-ready" => "verify target readiness",
+        "reverse-transfer" => "copy target changes back to source",
+        "verify-reverse" => "verify restored source data",
+        "deploy-rollback" => "deploy source placement and ingress",
+        "activate-source" => "release and start source writer",
+        "verify-source-ready" => "verify source readiness",
+        "release-target" => "release inactive target hold",
+        "release-source" => "release inactive source hold",
+        _ => operation,
     }
 }
 
@@ -2369,7 +3024,28 @@ impl Adapter for NativeAdapter {
                 &target_resource,
                 &["--operation".to_owned(), "reserve".to_owned()],
             ),
-            "deploy-target-gated" | "deploy-cutover" | "deploy-rollback" => {
+            "deploy-target-gated" => {
+                let mut declarations = BTreeMap::new();
+                let source = load_resource_declaration(
+                    &self.config,
+                    &transaction.source,
+                    &source_resource,
+                    &mut declarations,
+                )?
+                .clone();
+                if target_setup_satisfied(
+                    &self.config,
+                    transaction,
+                    &target_resource,
+                    &source,
+                    &mut declarations,
+                ) {
+                    Ok(())
+                } else {
+                    self.route_job(operation, transaction, &target_resource)
+                }
+            }
+            "deploy-cutover" | "deploy-rollback" => {
                 self.route_job(operation, transaction, &target_resource)
             }
             "hold-source" => self.run_job(
@@ -2437,7 +3113,7 @@ impl Adapter for NativeAdapter {
                 &transaction.target,
                 false,
             ),
-            "verify-seed" | "verify-final" => self.run_broker_job(
+            "verify-final" => self.run_broker_job(
                 transaction,
                 &source_resource,
                 &transaction.source,
@@ -2487,6 +3163,14 @@ fn resolve_executor<'a>(executor: &'a str, transaction: &'a Transaction) -> &'a 
         "$target" => &transaction.target,
         host => host,
     }
+}
+
+fn host_resource_namespace(resource: &str) -> Option<&str> {
+    resource
+        .strip_prefix("host:")?
+        .rsplit_once('-')
+        .map(|(namespace, _)| namespace)
+        .filter(|namespace| !namespace.is_empty())
 }
 
 fn validate_name(label: &str, value: &str) -> Result<()> {
@@ -2597,6 +3281,8 @@ mod tests {
             ),
             "[target copy-1] copying via rsync; entries 7/10; bytes 4096/8192; receiving files"
         );
+        assert_eq!(format_wait_duration(Duration::from_secs(42)), "42s");
+        assert_eq!(format_wait_duration(Duration::from_secs(125)), "2m05s");
     }
 
     #[test]
@@ -2697,6 +3383,139 @@ mod tests {
                 .iter()
                 .any(|argument| argument == "HostKeyAlias=corp")
         );
+    }
+
+    #[test]
+    fn derives_repository_move_policy_from_existing_nixbot_inventory() {
+        let mut config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {"program": "/usr/bin/ssh"},
+            "hosts": {
+                "gap3-gondor": {
+                    "address": "gateway",
+                    "host_resource": "host:gap3-gondor",
+                    "nixbot_deploy": {"host": "gap3-gondor"}
+                },
+                "abird-gondor-ci": {
+                    "address": "ci",
+                    "host_resource": "host:abird-ci",
+                    "nixbot_deploy": {"host": "abird-gondor-ci"}
+                },
+                "abird-gondor-corp": {
+                    "address": "source",
+                    "parent": "gap3-gondor",
+                    "host_resource": "host:abird-corp",
+                    "nixbot_deploy": {
+                        "host": "abird-gondor-corp",
+                        "exclude_hosts": ["gap3-gondor"]
+                    }
+                },
+                "abird-gondor-zulip": {
+                    "address": "target",
+                    "parent": "gap3-gondor",
+                    "host_resource": "host:abird-zulip",
+                    "nixbot_deploy": {
+                        "host": "abird-gondor-zulip",
+                        "exclude_hosts": ["gap3-gondor"]
+                    }
+                },
+                "abird-gondor-proxy": {
+                    "address": "proxy",
+                    "parent": "gap3-gondor",
+                    "host_resource": "host:abird-proxy",
+                    "nixbot_deploy": {
+                        "host": "abird-gondor-proxy",
+                        "exclude_hosts": ["gap3-gondor"]
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        config
+            .derive_repository_defaults(&serde_json::json!({
+                "config": {"ci": {"host": "abird-ci"}}
+            }))
+            .unwrap();
+        config.validate().unwrap();
+
+        assert_eq!(config.transfer_broker.as_deref(), Some("abird-gondor-ci"));
+        let transaction = Transaction::new_service(
+            "abird-zulip".to_owned(),
+            "abird-gondor-corp".to_owned(),
+            "abird-gondor-zulip".to_owned(),
+            PathBuf::from("/hosts/nixbot.nix"),
+        )
+        .unwrap();
+        let request = |operation: &str| {
+            config
+                .resolve_nixbot_deploy_request(
+                    config.operation_routes[operation]
+                        .nixbot_deploy
+                        .as_ref()
+                        .unwrap(),
+                    &transaction,
+                )
+                .unwrap()
+        };
+        assert_eq!(request("provision-target").host, "gap3-gondor");
+        assert_eq!(request("deploy-target-gated").host, "abird-gondor-zulip");
+        assert_eq!(request("deploy-cutover").host, "abird-gondor-proxy");
+        assert_eq!(request("deploy-rollback").host, "abird-gondor-proxy");
+    }
+
+    #[test]
+    fn setup_accepts_an_existing_matching_target_without_a_deploy_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_agent = temp.path().join("source-agent");
+        let target_agent = temp.path().join("target-agent");
+        let declaration = r#"{"ok":true,"result":{"resource":{"data_paths":[],"data_roots":[{"name":"state","path":"/var/lib/state","excludes":[]}]}}}"#;
+        fs::write(
+            &source_agent,
+            format!("#!/bin/sh\nprintf '%s\\n' '{declaration}'\n"),
+        )
+        .unwrap();
+        fs::write(
+            &target_agent,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n  *\"job list\"*) printf '%s\\n' '{{\"ok\":true}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&source_agent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&target_agent, fs::Permissions::from_mode(0o700)).unwrap();
+        let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {"program": "/bin/false"},
+            "hosts": {
+                "source": {
+                    "address": "local-source",
+                    "local": true,
+                    "agent_program": source_agent,
+                    "agent_prefix": []
+                },
+                "target": {
+                    "address": "local-target",
+                    "local": true,
+                    "agent_program": target_agent,
+                    "agent_prefix": []
+                }
+            }
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        let adapter = NativeAdapter::from_config(config);
+        let mut transaction = Transaction::new_service(
+            "zulip".to_owned(),
+            "source".to_owned(),
+            "target".to_owned(),
+            PathBuf::from("/hosts/nixbot.nix"),
+        )
+        .unwrap();
+
+        adapter
+            .preflight_transaction(&mut transaction, Action::Setup)
+            .unwrap();
+        assert_eq!(transaction.data_root_plan.len(), 1);
     }
 
     #[test]
@@ -2896,7 +3715,8 @@ mod tests {
             .map(|pair| &pair[1])
             .unwrap();
         assert!(proxy.contains("nixbot@bastion.example.test"));
-        assert!(proxy.contains("cloudflared access ssh --hostname %h"));
+        assert!(proxy.contains("cloudflared access ssh --hostname %%h"));
+        assert!(proxy.contains("10.0.0.3:22"));
         assert!(proxy.contains("/var/lib/nixbot/.ssh/config"));
         assert!(!proxy.contains("nixbot@bastion -W"));
     }
@@ -2949,6 +3769,25 @@ mod tests {
         assert!(proxy.contains("operator@10.0.0.10"));
         assert!(proxy.contains(identity.to_string_lossy().as_ref()));
         assert!(proxy.contains("IdentitiesOnly=yes"));
+        assert!(proxy.contains("10.0.1.20:22"));
+        assert!(proxy.contains("10.0.0.10:22"));
+        assert!(!proxy.contains("%h:%p"));
+    }
+
+    #[test]
+    fn proxy_forwarding_formats_ipv6_and_preserves_nested_tokens() {
+        assert_eq!(
+            ssh_forward_destination("2001:db8::10", 2222),
+            "[2001:db8::10]:2222"
+        );
+        assert_eq!(
+            ssh_forward_destination("host.example", 22),
+            "host.example:22"
+        );
+        assert_eq!(
+            escape_proxy_tokens("cloudflared access ssh --hostname %h"),
+            "cloudflared access ssh --hostname %%h"
+        );
     }
 
     #[test]
@@ -3175,5 +4014,86 @@ esac
         assert!(calls.contains("move-prepare-hold-source-reserve-source"));
         assert!(calls.contains("move-prepare-hold-source-inspect-source-before-stop"));
         assert!(calls.contains("move-prepare-hold-source-stop-source"));
+    }
+
+    #[test]
+    fn failed_broker_job_retry_accepts_only_host_key_enrichment() {
+        let existing = serde_json::json!({
+            "schema_version": 1,
+            "job_id": "move-seed",
+            "operation": {
+                "kind": "broker_copy",
+                "source": {"host": "source", "host_public_keys": []},
+                "target": {"host": "target", "host_public_keys": []}
+            }
+        });
+        let desired = serde_json::json!({
+            "schema_version": 1,
+            "job_id": "move-seed",
+            "operation": {
+                "kind": "broker_copy",
+                "source": {"host": "source", "host_public_keys": ["ssh-ed25519 source"]},
+                "target": {"host": "target", "host_public_keys": ["ssh-ed25519 target"]}
+            }
+        });
+        assert!(retry_spec_matches(&existing, &desired));
+
+        let mut drifted = desired.clone();
+        drifted["operation"]["target"]["host"] = serde_json::json!("other-target");
+        assert!(!retry_spec_matches(&existing, &drifted));
+    }
+
+    #[test]
+    fn broker_job_retry_rejects_replacing_an_existing_host_key_pin() {
+        let existing = serde_json::json!({
+            "operation": {
+                "source": {"host_public_keys": ["ssh-ed25519 old-source"]},
+                "target": {"host_public_keys": ["ssh-ed25519 old-target"]}
+            }
+        });
+        let desired = serde_json::json!({
+            "operation": {
+                "source": {"host_public_keys": ["ssh-ed25519 new-source"]},
+                "target": {"host_public_keys": ["ssh-ed25519 new-target"]}
+            }
+        });
+        assert!(!retry_spec_matches(&existing, &desired));
+    }
+
+    #[test]
+    fn broker_endpoint_carries_the_key_observed_over_inventory_transport() {
+        let temp = tempfile::tempdir().unwrap();
+        let ssh = temp.path().join("ssh");
+        fs::write(
+            &ssh,
+            "#!/bin/sh\nprintf '%s\\n' '{\"ok\":true,\"result\":{\"public_key\":\"ssh-ed25519 observed-key\"}}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+        let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {"program": ssh},
+            "hosts": {
+                "source": {
+                    "address": "10.0.0.2",
+                    "user": "nixbot",
+                    "agent_program": "/bin/abird-host-agent",
+                    "agent_prefix": ["/bin/sudo", "-n"]
+                }
+            }
+        }))
+        .unwrap();
+
+        let endpoint = config.pinned_broker_endpoint("source", true).unwrap();
+        assert_eq!(
+            endpoint.host_public_keys,
+            ["ssh-ed25519 observed-key".to_owned()]
+        );
+        assert!(
+            endpoint
+                .agent_prefix
+                .iter()
+                .any(|argument| argument == "--preserve-env=SSH_AUTH_SOCK")
+        );
     }
 }

@@ -22,6 +22,7 @@ use crate::sha256::digest_bytes;
 
 static COPY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CAPTURE_LIMIT: usize = 256 * 1024;
+const MAX_TRANSIENT_RSYNC_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +78,12 @@ pub enum CopyEngine {
     TarOverSsh,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PostCopyVerification {
+    RequireMatch,
+    AllowSourceDrift,
+}
+
 #[derive(Debug, Serialize)]
 pub struct TransferResult {
     pub source: PathBuf,
@@ -85,13 +92,18 @@ pub struct TransferResult {
     pub source_entries: usize,
     pub source_bytes: u64,
     pub rsync_attempted: bool,
+    pub rsync_attempts: usize,
     pub rsync_exit_code: Option<i32>,
     pub rsync_stdout: String,
     pub rsync_stderr: String,
     pub rsync_stdout_truncated_bytes: u64,
     pub rsync_stderr_truncated_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub rsync_warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
+    pub source_changed_during_copy: bool,
+    pub verification_deferred: bool,
     pub verification: VerificationResult,
 }
 
@@ -218,6 +230,20 @@ pub fn transfer_with_progress(
 pub fn transfer_with_excludes_progress(
     transfer: &TransferDefinition,
     excludes: &[PathBuf],
+    progress: impl FnMut(&TransferProgress) -> Result<()>,
+) -> Result<TransferResult> {
+    transfer_with_excludes_progress_policy(
+        transfer,
+        excludes,
+        PostCopyVerification::RequireMatch,
+        progress,
+    )
+}
+
+pub fn transfer_with_excludes_progress_policy(
+    transfer: &TransferDefinition,
+    excludes: &[PathBuf],
+    verification_policy: PostCopyVerification,
     mut progress: impl FnMut(&TransferProgress) -> Result<()>,
 ) -> Result<TransferResult> {
     validate_transfer(transfer)?;
@@ -248,72 +274,122 @@ pub fn transfer_with_excludes_progress(
         "starting preferred rsync engine",
     )?;
 
-    let output = run_rsync(
-        transfer,
-        excludes,
-        source_entries,
-        source_bytes,
-        &mut progress,
-    );
+    let mut rsync_attempts = 0;
+    let output = loop {
+        rsync_attempts += 1;
+        let output = run_rsync(
+            transfer,
+            excludes,
+            source_entries,
+            source_bytes,
+            &mut progress,
+        );
+        let retryable = output.as_ref().is_ok_and(|output| {
+            !output.success
+                && is_transient_rsync_exit_code(output.exit_code)
+                && rsync_attempts < MAX_TRANSIENT_RSYNC_ATTEMPTS
+        });
+        if !retryable {
+            break output;
+        }
+        let output = output.expect("checked successful result");
+        report(
+            &mut progress,
+            "copying",
+            Some(CopyEngine::Rsync),
+            0,
+            0,
+            source_entries,
+            source_bytes,
+            format!(
+                "rsync pass {rsync_attempts} saw transient live-tree changes (exit {}); retrying an incremental pass",
+                output.exit_code.expect("checked transient exit code")
+            ),
+        )?;
+    };
 
-    let (
-        engine,
-        rsync_attempted,
-        rsync_exit_code,
-        rsync_stdout,
-        rsync_stderr,
-        rsync_stdout_truncated_bytes,
-        rsync_stderr_truncated_bytes,
-        fallback_reason,
-    ) = match output {
-        Ok(output) if output.success => (
-            CopyEngine::Rsync,
-            true,
-            output.exit_code,
-            output.stdout,
-            output.stderr,
-            output.stdout_truncated_bytes,
-            output.stderr_truncated_bytes,
-            None,
-        ),
+    let execution = match output {
+        Ok(output) if output.success => CopyExecution {
+            engine: CopyEngine::Rsync,
+            rsync_attempted: true,
+            rsync_output: Some(output),
+            rsync_warning: None,
+            fallback_reason: None,
+            verified_outcome: None,
+        },
         Ok(output) => {
             let reason = format!(
-                "rsync exited with status {:?}: {}",
+                "rsync exited after {rsync_attempts} attempt(s) with status {:?}: {}",
                 output.exit_code,
                 output.stderr.trim()
             );
-            if !transfer.fallback_copy {
-                bail!("{reason}");
-            }
-            let engine = fallback_engine(transfer);
             report(
                 &mut progress,
-                "copying",
-                Some(engine),
-                0,
-                0,
+                "verifying",
+                Some(CopyEngine::Rsync),
                 source_entries,
                 source_bytes,
-                &reason,
+                source_entries,
+                source_bytes,
+                format!("{reason}; independently verifying the rsync result before fallback"),
             )?;
-            fallback_copy(
+            let verification = verify_copy_outcome(
                 transfer,
                 excludes,
-                source_entries,
-                source_bytes,
-                &mut progress,
-            )
-            .with_context(|| format!("native fallback after {reason}"))?;
-            (
-                engine,
-                true,
-                output.exit_code,
-                output.stdout,
-                output.stderr,
-                output.stdout_truncated_bytes,
-                output.stderr_truncated_bytes,
-                Some(reason),
-            )
+                &initial_source_manifest,
+                verification_policy,
+            );
+            match verification {
+                Ok(outcome) if outcome.accepted() => CopyExecution {
+                    engine: CopyEngine::Rsync,
+                    rsync_attempted: true,
+                    rsync_output: Some(output),
+                    rsync_warning: Some(reason),
+                    fallback_reason: None,
+                    verified_outcome: Some(outcome),
+                },
+                verification => {
+                    let reason = match &verification {
+                        Ok(outcome) => format!(
+                            "{reason}; rsync result did not verify: {}",
+                            verification_summary(&outcome.verification)
+                        ),
+                        Err(error) => {
+                            format!("{reason}; could not verify rsync result: {error:#}")
+                        }
+                    };
+                    if !transfer.fallback_copy {
+                        bail!("{reason}");
+                    }
+                    let engine = fallback_engine(transfer);
+                    report(
+                        &mut progress,
+                        "copying",
+                        Some(engine),
+                        0,
+                        0,
+                        source_entries,
+                        source_bytes,
+                        &reason,
+                    )?;
+                    fallback_copy(
+                        transfer,
+                        excludes,
+                        source_entries,
+                        source_bytes,
+                        &mut progress,
+                    )
+                    .with_context(|| format!("native fallback after {reason}"))?;
+                    CopyExecution {
+                        engine,
+                        rsync_attempted: true,
+                        rsync_output: Some(output),
+                        rsync_warning: None,
+                        fallback_reason: Some(reason),
+                        verified_outcome: None,
+                    }
+                }
+            }
         }
         Err(error) => {
             let reason = format!(
@@ -343,66 +419,218 @@ pub fn transfer_with_excludes_progress(
                 &mut progress,
             )
             .with_context(|| format!("native fallback after {reason}"))?;
-            (
+            CopyExecution {
                 engine,
-                false,
-                None,
-                String::new(),
-                String::new(),
-                0,
-                0,
-                Some(reason),
-            )
+                rsync_attempted: false,
+                rsync_output: None,
+                rsync_warning: None,
+                fallback_reason: Some(reason),
+                verified_outcome: None,
+            }
         }
     };
 
-    report(
-        &mut progress,
-        "verifying",
-        Some(engine),
-        source_entries,
-        source_bytes,
-        source_entries,
-        source_bytes,
-        "hashing source and destination content and metadata",
-    )?;
-    // Re-manifest the source after the copy. The initial manifest is only a
-    // progress estimate; using it for verification would guarantee false
-    // mismatches whenever an online seed legitimately changed during rsync.
-    let final_source_manifest = source_manifest(transfer, excludes)?;
-    let (verified_source_entries, verified_source_bytes) = manifest_stats(&final_source_manifest)?;
-    let verification = verify_with_source_manifest(transfer, excludes, final_source_manifest)?;
-    if !verification.matches {
+    let engine_note = execution.engine_note();
+    let outcome = if let Some(outcome) = execution.verified_outcome {
+        outcome
+    } else {
+        report(
+            &mut progress,
+            "verifying",
+            Some(execution.engine),
+            source_entries,
+            source_bytes,
+            source_entries,
+            source_bytes,
+            format!("hashing source and destination content and metadata{engine_note}"),
+        )?;
+        verify_copy_outcome(
+            transfer,
+            excludes,
+            &initial_source_manifest,
+            verification_policy,
+        )?
+    };
+    if !outcome.accepted() {
         bail!(
-            "post-copy verification failed: {}",
-            verification.mismatches.join("; ")
+            "post-copy verification failed{}: {}",
+            engine_note,
+            verification_summary(&outcome.verification)
         );
     }
+    let detail = if outcome.verification_deferred {
+        format!(
+            "copy completed; all mismatches were limited to paths changed at the source during the live copy; exact verification is deferred until the source is quiesced{engine_note}"
+        )
+    } else if outcome.source_changed_during_copy {
+        format!(
+            "copy and independent verification succeeded despite source changes during the copy{engine_note}"
+        )
+    } else {
+        format!("copy and independent verification succeeded{engine_note}")
+    };
     report(
         &mut progress,
         "completed",
-        Some(engine),
-        verified_source_entries,
-        verified_source_bytes,
-        verified_source_entries,
-        verified_source_bytes,
-        "copy and independent verification succeeded",
+        Some(execution.engine),
+        outcome.source_entries,
+        outcome.source_bytes,
+        outcome.source_entries,
+        outcome.source_bytes,
+        detail,
     )?;
-    Ok(TransferResult {
-        source: transfer.source.clone(),
-        destination: transfer.destination.clone(),
-        engine,
-        source_entries: verified_source_entries,
-        source_bytes: verified_source_bytes,
-        rsync_attempted,
+    let (
         rsync_exit_code,
         rsync_stdout,
         rsync_stderr,
         rsync_stdout_truncated_bytes,
         rsync_stderr_truncated_bytes,
-        fallback_reason,
+    ) = execution.rsync_output.map_or_else(
+        || (None, String::new(), String::new(), 0, 0),
+        |output| {
+            (
+                output.exit_code,
+                output.stdout,
+                output.stderr,
+                output.stdout_truncated_bytes,
+                output.stderr_truncated_bytes,
+            )
+        },
+    );
+    Ok(TransferResult {
+        source: transfer.source.clone(),
+        destination: transfer.destination.clone(),
+        engine: execution.engine,
+        source_entries: outcome.source_entries,
+        source_bytes: outcome.source_bytes,
+        rsync_attempted: execution.rsync_attempted,
+        rsync_attempts,
+        rsync_exit_code,
+        rsync_stdout,
+        rsync_stderr,
+        rsync_stdout_truncated_bytes,
+        rsync_stderr_truncated_bytes,
+        rsync_warning: execution.rsync_warning,
+        fallback_reason: execution.fallback_reason,
+        source_changed_during_copy: outcome.source_changed_during_copy,
+        verification_deferred: outcome.verification_deferred,
+        verification: outcome.verification,
+    })
+}
+
+struct CopyExecution {
+    engine: CopyEngine,
+    rsync_attempted: bool,
+    rsync_output: Option<RsyncOutput>,
+    rsync_warning: Option<String>,
+    fallback_reason: Option<String>,
+    verified_outcome: Option<PostCopyOutcome>,
+}
+
+impl CopyExecution {
+    fn engine_note(&self) -> String {
+        if let Some(reason) = &self.fallback_reason {
+            format!("; rsync fallback: {}", summarize_fallback_reason(reason))
+        } else if let Some(reason) = &self.rsync_warning {
+            format!(
+                "; non-zero rsync result accepted by independent verification: {}",
+                summarize_fallback_reason(reason)
+            )
+        } else {
+            String::new()
+        }
+    }
+}
+
+struct PostCopyOutcome {
+    source_entries: usize,
+    source_bytes: u64,
+    source_changed_during_copy: bool,
+    verification_deferred: bool,
+    verification: VerificationResult,
+}
+
+impl PostCopyOutcome {
+    fn accepted(&self) -> bool {
+        self.verification.matches || self.verification_deferred
+    }
+}
+
+fn verify_copy_outcome(
+    transfer: &TransferDefinition,
+    excludes: &[PathBuf],
+    initial_source_manifest: &DataManifest,
+    verification_policy: PostCopyVerification,
+) -> Result<PostCopyOutcome> {
+    // Re-manifest the source after the copy. The initial manifest is only a
+    // progress estimate; using it for verification would guarantee false
+    // mismatches whenever an online seed legitimately changed during rsync.
+    let final_source_manifest = source_manifest(transfer, excludes)?;
+    let (source_entries, source_bytes) = manifest_stats(&final_source_manifest)?;
+    let source_drift = compare_manifests(initial_source_manifest, &final_source_manifest)?;
+    let verification = verify_with_source_manifest(transfer, excludes, final_source_manifest)?;
+    let source_changed_during_copy = !source_drift.matches;
+    let verification_deferred = !verification.matches
+        && verification_policy == PostCopyVerification::AllowSourceDrift
+        && verification_is_explained_by_source_drift(&verification, &source_drift);
+    Ok(PostCopyOutcome {
+        source_entries,
+        source_bytes,
+        source_changed_during_copy,
+        verification_deferred,
         verification,
     })
+}
+
+fn is_transient_rsync_exit_code(exit_code: Option<i32>) -> bool {
+    matches!(exit_code, Some(23 | 24))
+}
+
+fn verification_is_explained_by_source_drift(
+    verification: &VerificationResult,
+    source_drift: &VerificationResult,
+) -> bool {
+    if verification.truncated_mismatches != 0 || source_drift.truncated_mismatches != 0 {
+        return false;
+    }
+    let changed_source_paths = mismatch_paths(source_drift);
+    let mismatched_destination_paths = mismatch_paths(verification);
+    !mismatched_destination_paths.is_empty()
+        && mismatched_destination_paths.is_subset(&changed_source_paths)
+}
+
+fn mismatch_paths(verification: &VerificationResult) -> BTreeSet<&str> {
+    verification
+        .mismatches
+        .iter()
+        .filter_map(|mismatch| mismatch.split_once(": ").map(|(path, _)| path))
+        .collect()
+}
+
+fn verification_summary(verification: &VerificationResult) -> String {
+    let mut summary = verification.mismatches.join("; ");
+    if verification.truncated_mismatches != 0 {
+        summary.push_str(&format!(
+            "; {} additional mismatches omitted",
+            verification.truncated_mismatches
+        ));
+    }
+    summary
+}
+
+fn summarize_fallback_reason(reason: &str) -> String {
+    const LIMIT: usize = 2048;
+    let normalized = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.len() <= LIMIT {
+        return normalized;
+    }
+    let boundary = normalized
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= LIMIT)
+        .last()
+        .unwrap_or(0);
+    format!("{}...", &normalized[..boundary])
 }
 
 struct RsyncOutput {
@@ -432,7 +660,6 @@ fn run_rsync(
             "--partial",
             "--itemize-changes",
             "--out-format=%i|%l|%n%L",
-            "--protect-args",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -475,8 +702,6 @@ fn run_rsync(
             "receive-rsync".to_owned(),
             "--destination".to_owned(),
             transfer.destination.to_string_lossy().into_owned(),
-            "--rsync-program".to_owned(),
-            remote.rsync_program.to_string_lossy().into_owned(),
         ]);
         append_exclude_args(&mut remote_rsync, excludes);
         remote_rsync.push("--".to_owned());
@@ -929,13 +1154,7 @@ fn source_manifest(transfer: &TransferDefinition, excludes: &[PathBuf]) -> Resul
             }
             let value: serde_json::Value = serde_json::from_slice(&output.stdout)
                 .context("parse remote source manifest response")?;
-            serde_json::from_value(
-                value
-                    .pointer("/result/manifest")
-                    .cloned()
-                    .context("remote source response has no manifest")?,
-            )
-            .context("decode remote source manifest")
+            decode_remote_manifest_response(&value, "source")
         }
     }
 }
@@ -980,13 +1199,22 @@ fn remote_manifest(
     }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout)
         .with_context(|| format!("parse remote {direction} manifest response"))?;
-    serde_json::from_value(
-        value
-            .pointer("/result/manifest")
-            .cloned()
-            .with_context(|| format!("remote {direction} response has no manifest"))?,
-    )
-    .with_context(|| format!("decode remote {direction} manifest"))
+    decode_remote_manifest_response(&value, direction)
+}
+
+fn decode_remote_manifest_response(
+    value: &serde_json::Value,
+    direction: &str,
+) -> Result<DataManifest> {
+    let manifest = value
+        .pointer("/result/manifest")
+        // Agents deployed before the canonical response envelope returned the
+        // DataManifest directly as `result`. Accept that shape so either peer
+        // can be upgraded first without interrupting a transfer retry.
+        .or_else(|| value.pointer("/result"))
+        .cloned()
+        .with_context(|| format!("remote {direction} response has no manifest"))?;
+    serde_json::from_value(manifest).with_context(|| format!("decode remote {direction} manifest"))
 }
 
 fn remote_tar_copy(
@@ -1068,8 +1296,6 @@ fn remote_tar_push(
         "receive".to_owned(),
         "--destination".to_owned(),
         transfer.destination.to_string_lossy().into_owned(),
-        "--tar-program".to_owned(),
-        remote.tar_program.to_string_lossy().into_owned(),
     ]);
     if transfer.delete {
         remote_argv.push("--delete".to_owned());
@@ -1587,6 +1813,13 @@ mod tests {
     use super::*;
     use crate::manifest::create_manifest;
 
+    fn executable_in_path(name: &str) -> PathBuf {
+        std::env::split_paths(&std::env::var_os("PATH").expect("test PATH"))
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| panic!("{name} is not available in the test PATH"))
+    }
+
     #[test]
     fn filesystem_fallback_copies_deletes_and_verifies() {
         let temp = tempfile::tempdir().unwrap();
@@ -1685,7 +1918,7 @@ mod tests {
         let definition = TransferDefinition {
             source,
             destination,
-            rsync_program: PathBuf::from("/bin/false"),
+            rsync_program: executable_in_path("false"),
             remote_source: None,
             remote_destination: None,
             tar_program: PathBuf::from("/bin/tar"),
@@ -1695,6 +1928,152 @@ mod tests {
         let result = verify_transfer(&definition).unwrap();
         assert!(!result.matches);
         assert!(!result.mismatches.is_empty());
+    }
+
+    #[test]
+    fn independently_verified_rsync_result_outweighs_its_exit_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("data"), b"already copied").unwrap();
+        fs::copy(source.join("data"), destination.join("data")).unwrap();
+        for relative in [Path::new(""), Path::new("data")] {
+            let metadata = fs::metadata(source.join(relative)).unwrap();
+            copy_times(
+                &destination.join(relative),
+                metadata.atime(),
+                metadata.atime_nsec(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                false,
+            )
+            .unwrap();
+        }
+        let definition = TransferDefinition {
+            source,
+            destination,
+            rsync_program: executable_in_path("false"),
+            remote_source: None,
+            remote_destination: None,
+            tar_program: PathBuf::from("/bin/tar"),
+            delete: true,
+            fallback_copy: false,
+        };
+
+        let result = transfer_with_progress(&definition, |_| Ok(())).unwrap();
+
+        assert_eq!(result.engine, CopyEngine::Rsync);
+        assert_eq!(result.rsync_exit_code, Some(1));
+        assert!(result.rsync_warning.is_some());
+        assert!(result.fallback_reason.is_none());
+        assert!(result.verification.matches);
+    }
+
+    #[test]
+    fn unverified_rsync_result_uses_the_declared_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("data"), b"new").unwrap();
+        fs::write(destination.join("data"), b"stale").unwrap();
+        let definition = TransferDefinition {
+            source,
+            destination,
+            rsync_program: executable_in_path("false"),
+            remote_source: None,
+            remote_destination: None,
+            tar_program: PathBuf::from("/bin/tar"),
+            delete: true,
+            fallback_copy: true,
+        };
+
+        let result = transfer_with_progress(&definition, |_| Ok(())).unwrap();
+
+        assert_eq!(result.engine, CopyEngine::Filesystem);
+        assert_eq!(result.rsync_exit_code, Some(1));
+        assert!(result.rsync_warning.is_none());
+        assert!(result.fallback_reason.is_some());
+        assert!(result.verification.matches);
+    }
+
+    #[test]
+    fn live_copy_defers_only_mismatches_explained_by_source_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("data"), b"before").unwrap();
+        let definition = TransferDefinition {
+            source: source.clone(),
+            destination,
+            rsync_program: temp.path().join("missing-rsync"),
+            remote_source: None,
+            remote_destination: None,
+            tar_program: PathBuf::from("/bin/tar"),
+            delete: true,
+            fallback_copy: true,
+        };
+
+        let mut changed = false;
+        let result = transfer_with_excludes_progress_policy(
+            &definition,
+            &[],
+            PostCopyVerification::AllowSourceDrift,
+            |progress| {
+                if progress.stage == "verifying" && !changed {
+                    fs::write(source.join("data"), b"after").unwrap();
+                    changed = true;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(result.source_changed_during_copy);
+        assert!(result.verification_deferred);
+        assert!(!result.verification.matches);
+    }
+
+    #[test]
+    fn live_copy_rejects_destination_damage_not_explained_by_source_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("data"), b"stable").unwrap();
+        let definition = TransferDefinition {
+            source,
+            destination: destination.clone(),
+            rsync_program: temp.path().join("missing-rsync"),
+            remote_source: None,
+            remote_destination: None,
+            tar_program: PathBuf::from("/bin/tar"),
+            delete: true,
+            fallback_copy: true,
+        };
+
+        let mut damaged = false;
+        let error = transfer_with_excludes_progress_policy(
+            &definition,
+            &[],
+            PostCopyVerification::AllowSourceDrift,
+            |progress| {
+                if progress.stage == "verifying" && !damaged {
+                    fs::write(destination.join("data"), b"damaged").unwrap();
+                    damaged = true;
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("post-copy verification failed"));
     }
 
     #[test]
@@ -1718,11 +2097,38 @@ mod tests {
     }
 
     #[test]
+    fn remote_manifest_decoder_accepts_canonical_and_legacy_envelopes() {
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "hash_algorithm": "sha256",
+            "roots": [],
+        });
+        for response in [
+            serde_json::json!({ "result": { "manifest": manifest.clone() } }),
+            serde_json::json!({ "result": manifest.clone() }),
+        ] {
+            let decoded = decode_remote_manifest_response(&response, "destination").unwrap();
+            assert_eq!(decoded.schema_version, 1);
+            assert_eq!(decoded.hash_algorithm, "sha256");
+            assert!(decoded.roots.is_empty());
+        }
+    }
+
+    #[test]
     fn bounded_capture_drains_without_growing_the_record() {
         let mut capture = BoundedCapture::new(4);
         capture.push(b"abcdef");
         capture.push(b"gh");
         assert_eq!(capture.bytes, b"abcd");
         assert_eq!(capture.truncated_bytes, 4);
+    }
+
+    #[test]
+    fn only_partial_and_vanished_file_rsync_results_are_retried() {
+        assert!(is_transient_rsync_exit_code(Some(23)));
+        assert!(is_transient_rsync_exit_code(Some(24)));
+        assert!(!is_transient_rsync_exit_code(Some(12)));
+        assert!(!is_transient_rsync_exit_code(Some(255)));
+        assert!(!is_transient_rsync_exit_code(None));
     }
 }

@@ -20,11 +20,21 @@ pub fn deploy(policy: &NixbotDeployPolicy, request: &NixbotDeployRequest) -> Res
         format!("HOME={}", policy.home.display()),
         format!("NIXBOT_REPO_URL={}", policy.repository_url),
         format!("NIXBOT_REPO_PATH={}", policy.repository_path.display()),
-        &policy.program,
-        "deploy",
-        "--sha",
-        &policy.revision,
     );
+    if !policy.repository_ssh_key_paths.is_empty() {
+        command = command.arg(format!(
+            "NIXBOT_REPO_SSH_KEY_PATHS={}",
+            policy
+                .repository_ssh_key_paths
+                .iter()
+                .map(|path| path.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(":")
+        ));
+    }
+    command = command
+        .arg(&policy.program)
+        .args(["deploy", "--sha", &policy.revision]);
     if request.exclude_hosts.is_empty() {
         command = command.args(["--host", request.host.as_str()]);
     } else {
@@ -67,7 +77,7 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-        let policy = NixbotDeployPolicy {
+        let mut policy = NixbotDeployPolicy {
             program: PathBuf::from("/nix/store/nixbot/bin/nixbot"),
             runuser_program: fake,
             env_program: PathBuf::from("/run/current-system/sw/bin/env"),
@@ -75,19 +85,23 @@ mod tests {
             home: PathBuf::from("/var/lib/nixbot"),
             repository_url: "ssh://git@example.test/repo".to_owned(),
             repository_path: PathBuf::from("/var/lib/nixbot/repo"),
+            repository_ssh_key_paths: vec![PathBuf::from("/var/lib/nixbot/.ssh/repo-example")],
             revision: "0123456789abcdef".to_owned(),
         };
-        deploy(
-            &policy,
-            &NixbotDeployRequest {
-                host: "abird-gondor-proxy".to_owned(),
-                nix_config: Some("abird-gondor-proxy-zulip-target".to_owned()),
-                exclude_hosts: vec!["gap3-gondor".to_owned()],
-            },
-        )
-        .unwrap();
-        let argv = fs::read_to_string(capture).unwrap();
+        let request = NixbotDeployRequest {
+            host: "abird-gondor-proxy".to_owned(),
+            nix_config: Some("abird-gondor-proxy-zulip-target".to_owned()),
+            exclude_hosts: vec!["gap3-gondor".to_owned()],
+        };
+        deploy(&policy, &request).unwrap();
+        let argv = fs::read_to_string(&capture).unwrap();
+        assert!(argv.contains("NIXBOT_REPO_SSH_KEY_PATHS=/var/lib/nixbot/.ssh/repo-example"));
         assert!(argv.contains("abird-gondor-proxy,-gap3-gondor"));
         assert!(argv.contains("abird-gondor-proxy-zulip-target"));
+
+        policy.repository_ssh_key_paths.clear();
+        deploy(&policy, &request).unwrap();
+        let argv = fs::read_to_string(&capture).unwrap();
+        assert!(!argv.contains("NIXBOT_REPO_SSH_KEY_PATHS="));
     }
 }

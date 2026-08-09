@@ -21,7 +21,8 @@ create -> setup -> seed -> prepare -> verify -> cutover -> close
 
 - `create` validates immutable intent. With `--execute`, it persists the
   transaction ID before mutation, runs `setup` and `seed`, and stops before
-  `prepare`; `--dry-run` writes no state and contacts no host.
+  `prepare`; `--dry-run` writes no state and performs an online, read-only
+  preflight against the relevant agents.
 - `setup` optionally provisions the target, reserves its hold before the target
   service exists, runs the controller's declarative target deployment, then
   reconciles and verifies the target hold.
@@ -76,9 +77,13 @@ It maps Nixbot targets, users, nested proxy hops, groups, resource IDs, and
 deployment identities without a generated mirror file. Proxy hops are resolved
 from inventory to concrete OpenSSH commands, with an explicit null OpenSSH
 configuration and global trust store, so they do not depend on ambient aliases
-or credentials. JSON is used only when an operation needs additional runtime
-policy such as a local transfer broker, polling timeouts, or deployment routes.
-A JSON configuration contains:
+or credentials. For moves, the repository adapter also derives the existing CI
+host as the durable transfer/deployment controller, the target's existing
+parent as its provisioning endpoint, endpoint deployments for target setup, and
+the stack's shared proxy role for cutover and rollback. An explicit JSON policy
+is therefore optional and is reserved for standalone or unusual infrastructure
+whose controller, routes, or polling policy cannot be inferred safely. A JSON
+configuration contains:
 
 ```json
 {
@@ -151,9 +156,10 @@ corresponding Nixbot CLI uses `--host`/`--hosts` and `--nix-config`. For
 reusable move inventories, `{"endpoint":"source"}` and `{"endpoint":"target"}`
 resolve the selected host's `nixbot_deploy` request; literal requests remain
 available for fixed infrastructure or ingress routes. Only declarative boundary
-actions are routed: setup requires `deploy-target-gated`, cutover requires
-`deploy-cutover`, rollback requires `deploy-rollback`, and `provision-target` is
-optional. A controller host agent can therefore continue an accepted
+actions are routed. Setup skips deployment when the target agent is reachable
+and exposes matching named data roots; otherwise it optionally provisions the
+target and deploys it held. Cutover and rollback require their respective
+deployment routes. A controller host agent can therefore continue an accepted
 Nixbot/repository deployment if the manager disconnects.
 
 Seed, final copy, reverse copy, verification, and backup are not profiles. The
@@ -161,7 +167,7 @@ manager resolves source and target data roots by stable name, requires identical
 exact-subtree exclusions, and persists the immutable path mapping in its
 transaction before the first copy. Legacy `data_paths` remain an identical-path
 shorthand. The manager then submits the mapping and source/target endpoints to
-the configured local controller agent. Its durable broker job delegates the
+the configured or repository-derived controller agent. Its durable broker job delegates the
 existing Nixbot identity through a short-lived forwarded SSH agent; rsync and
 tar payloads travel directly source-to-target. No peer key, target-side
 credential, controller staging tree, or additional listener is required.
@@ -195,8 +201,8 @@ abird-host-manager --config /etc/abird-host-manager.json host list
 abird-host-manager --config /etc/abird-host-manager.json host list \
   --group abird --hosts 'all,-*dev*'
 abird-host-manager --config /etc/abird-host-manager.json host show target
-abird-host-manager --config /etc/abird-host-manager.json host logs target --since today
-abird-host-manager --config /etc/abird-host-manager.json host logs target --since today -f
+abird-host-manager --config /etc/abird-host-manager.json host logs target --since today --output text
+abird-host-manager --config /etc/abird-host-manager.json host logs target --since today -f --output json
 abird-host-manager --config /etc/abird-host-manager.json host ssh target
 abird-host-manager --config /etc/abird-host-manager.json host exec target -- uname -a
 abird-host-manager --config /etc/abird-host-manager.json host reboot \
@@ -213,7 +219,8 @@ abird-host-manager --config /etc/abird-host-manager.json host activate target \
   --owner maintenance-20260801 --execute
 abird-host-manager --config /etc/abird-host-manager.json host holds target
 abird-host-manager service status zulip
-abird-host-manager service logs zulip -f
+abird-host-manager service logs zulip --output text
+abird-host-manager service logs zulip -f --output json
 abird-host-manager --config /etc/abird-host-manager.json service status zulip --host target
 abird-host-manager --config /etc/abird-host-manager.json service restart zulip \
   --host target --execute
@@ -230,8 +237,10 @@ abird-host-manager --config /etc/abird-host-manager.json resource hold acquire \
   target service:abird-zulip \
   --owner move-20260801 --execute
 
-abird-host-manager --config /etc/abird-host-manager.json \
-  service move abird-zulip mail --from source --to target --execute
+abird-host-manager service move abird-zulip mail \
+  --from source --to target --dry-run
+abird-host-manager service move abird-zulip mail \
+  --from source --to target --execute
 abird-host-manager --config /etc/abird-host-manager.json \
   host move --from old-corp --to new-corp --dry-run
 abird-host-manager --config /etc/abird-host-manager.json \
@@ -264,6 +273,14 @@ abird-host-manager transaction resume TRANSACTION_ID --execute
 abird-host-manager transaction close TRANSACTION_ID --execute
 abird-host-manager transaction show TRANSACTION_ID
 
+abird-host-manager service wipe abird-zulip \
+  --host abird-gondor-zulip --id reset-zulip-target --dry-run
+abird-host-manager service wipe abird-zulip \
+  --host abird-gondor-zulip --id reset-zulip-target \
+  --owner EXISTING_MIGRATION_ID --execute
+abird-host-manager resource wipe abird-gondor-zulip service:abird-zulip \
+  --id reset-zulip-target --execute
+
 abird-host-manager --config /etc/abird-host-manager.json \
   backup create resource service:abird-zulip --from source --to source \
   --id backup-20260801 --execute
@@ -295,14 +312,16 @@ abird-host-manager --config /etc/abird-host-manager.json job retry source \
   --job-id backup-20260731 --execute
 ```
 
-Log snapshots remain structured, bounded agent calls. `--follow`/`-f` instead
-uses the same resolved Nixbot transport but keeps stdio attached end to end, so
-Ctrl-C behaves normally and a non-zero remote status fails the command.
-Streaming follow output is intentionally not wrapped in manager JSON.
-User-scoped targets run in their declared user-manager owner's journal context;
-mixed resources use one concurrent stream for the system and for each distinct
-user. `host holds` lists all enforced holds and `resource hold show` inspects
-one without mutation. Transaction-owned `host drain`/`activate` and
+All host, service, unit, and resource log commands support `--output text|json`
+for both bounded snapshots and `--follow`/`-f`; text is the default. JSON is
+emitted as one journal object per line rather than an unbounded array. Both
+snapshot and follow keep stdio attached through the resolved Nixbot transport,
+so Ctrl-C behaves normally and a non-zero remote status fails the command.
+`--lines` bounds snapshots and selects the initial followed entries. User-scoped
+targets run in their declared user-manager owner's journal context; mixed
+resources use one concurrent stream for the system and for each distinct user.
+`host holds` lists all enforced holds and `resource hold show` inspects one
+without mutation. Transaction-owned `host drain`/`activate` and
 `resource hold acquire`/`activate` remain the explicit manager mutation
 boundaries.
 
@@ -314,6 +333,19 @@ placement while still resolving the declared resource when a repository is
 available. Raw systemd operations are deliberately separate under
 `unit <verb> HOST UNIT`; this standalone surface cannot be confused with a
 logical service lookup.
+
+`service wipe` and `resource wipe` are destructive, metadata-owned reset
+operations. The manager generates or accepts one stable wipe ID. By default it
+uses that ID to own the durable hold; `--owner` instead reuses an existing hold
+such as the target side of an open migration. It proves every declared service
+inactive, then submits one recoverable agent wipe job. The agent accepts only
+its current declared data roots, preserves each root directory and exact
+excluded subtrees, removes all other contents, verifies emptiness, and leaves
+the resource held. Repeating the same `--id` and `--owner` is idempotent;
+changing its resolved declaration is rejected as job drift. Wipe never creates a
+backup and never releases or starts the resource. It is not required before
+`backup restore`, whose exact-mirror copy already replaces existing contents
+after creating a pre-restore safety snapshot.
 
 Physical generation uses typed partition sizes and existing `lib/disko`
 primitives. Storage and LUKS UUIDs survive forced unrelated updates and rotate
@@ -339,15 +371,15 @@ stopped. The typed stop request is part of each hold, so controller boot
 reconciliation re-enforces it after Incus starts. Only `cutover` starts the
 target. Rollback starts the source only when it was active before prepare;
 otherwise it releases the source still stopped, while the inactive target stays
-held until `close`. The safety snapshot is deleted only by `close`. Existing unmarked targets fail
-closed unless the initial record explicitly uses `--adopt-existing-target`.
-Before close releases the inactive endpoint, it disables that instance's Incus
-autostart flag so a later controller reboot cannot revive the old writer.
-Stateful VM runtime preservation remains available to the low-level Incus
-primitive but is intentionally rejected by the orchestrated move because its
-prepare contract proves the source stopped before final copy. Whole-instance
-snapshot/export backups remain fail-closed until their typed artifact adapter
-is implemented.
+held until `close`. The safety snapshot is deleted only by `close`. Existing
+unmarked targets fail closed unless the initial record explicitly uses
+`--adopt-existing-target`. Before close releases the inactive endpoint, it
+disables that instance's Incus autostart flag so a later controller reboot
+cannot revive the old writer. Stateful VM runtime preservation remains available
+to the low-level Incus primitive but is intentionally rejected by the
+orchestrated move because its prepare contract proves the source stopped before
+final copy. Whole-instance snapshot/export backups remain fail-closed until
+their typed artifact adapter is implemented.
 
 `backup create resource` reads the resource's `backup_consistency`. Live
 resources are copied directly. Quiesced resources are durably held, proven
@@ -394,11 +426,14 @@ groups records by their exact authority set and destinations, keeps the newest
 `--keep-last` records in each group, and selects only terminal records older
 than `--older-than`. Use `--dry-run` to inspect the exact selected IDs first.
 
-Mutating migration and backup actions require `--execute`. Creation `--dry-run`
-writes no journal and contacts no host. Before submitting a mutation, the
-manager asks the selected agent to materialize resource policy into one complete
-versioned `JobSpec`, then submits that exact document. The agent persists the
-specification before execution and rejects same-ID drift.
+Mutating migration and backup actions require `--execute`. Move creation
+`--dry-run` writes no journal and asks the relevant agents only to describe
+resources and materialize the exact jobs they would accept. If setup must first
+create an unreachable target, the report validates setup and marks seed
+preflight as deferred until that target exists. Before submitting a mutation,
+the manager asks the selected agent to materialize resource policy into one
+complete versioned `JobSpec`, then submits that exact document. The agent
+persists the specification before execution and rejects same-ID drift.
 
 External processes are invoked through structured Rust adapters. A shared
 `CommandSpec` and `cmd!` builder preserve argv and environment boundaries, bound

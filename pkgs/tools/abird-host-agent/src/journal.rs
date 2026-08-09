@@ -11,6 +11,21 @@ use serde_json::Value;
 
 use crate::service::{ServiceScope, ServiceTarget};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum JournalOutput {
+    Text,
+    Json,
+}
+
+impl JournalOutput {
+    fn journalctl_value(self) -> &'static str {
+        match self {
+            Self::Text => "short-iso-precise",
+            Self::Json => "json",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Journalctl {
     executable: PathBuf,
@@ -41,16 +56,16 @@ pub struct HostJournalResult {
 }
 
 #[derive(Debug, Serialize)]
-pub struct JournalFollowResult {
+pub struct JournalStreamResult {
     pub success: bool,
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed_context: Option<String>,
-    pub invocations: Vec<JournalFollowInvocation>,
+    pub invocations: Vec<JournalStreamInvocation>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct JournalFollowInvocation {
+pub struct JournalStreamInvocation {
     pub context: String,
     pub executable: PathBuf,
     pub arguments: Vec<String>,
@@ -82,7 +97,7 @@ struct JournalInvocation {
     arguments: Vec<String>,
 }
 
-struct FollowChild {
+struct StreamChild {
     invocation: JournalInvocation,
     child: Child,
     status: Option<ExitStatus>,
@@ -104,7 +119,14 @@ impl Journalctl {
     ) -> Result<JournalResult> {
         validate_request(lines, since)?;
         let context = context_for(target);
-        let arguments = journal_arguments(&context, &[target.unit.as_str()], lines, since, false);
+        let arguments = journal_arguments(
+            &context,
+            &[target.unit.as_str()],
+            lines,
+            since,
+            false,
+            JournalOutput::Json,
+        );
         let invocation = self.invocation(context, arguments);
         let output = self.run(&invocation)?;
         let (entries, malformed_lines) = parse_entries(&output.stdout);
@@ -123,7 +145,7 @@ impl Journalctl {
     pub fn host_logs(&self, lines: usize, since: Option<&str>) -> Result<HostJournalResult> {
         validate_request(lines, since)?;
         let context = JournalContext::System;
-        let arguments = journal_arguments(&context, &[], lines, since, false);
+        let arguments = journal_arguments(&context, &[], lines, since, false, JournalOutput::Json);
         let invocation = self.invocation(context, arguments);
         let output = self.run(&invocation)?;
         let (entries, malformed_lines) = parse_entries(&output.stdout);
@@ -138,21 +160,29 @@ impl Journalctl {
         })
     }
 
-    pub fn follow_host(&self, lines: usize, since: Option<&str>) -> Result<JournalFollowResult> {
+    pub fn stream_host(
+        &self,
+        lines: usize,
+        since: Option<&str>,
+        follow: bool,
+        output: JournalOutput,
+    ) -> Result<JournalStreamResult> {
         validate_request(lines, since)?;
         let context = JournalContext::System;
-        let arguments = journal_arguments(&context, &[], lines, since, true);
-        self.run_follow(vec![self.invocation(context, arguments)])
+        let arguments = journal_arguments(&context, &[], lines, since, follow, output);
+        self.run_stream(vec![self.invocation(context, arguments)])
     }
 
-    pub fn follow_targets(
+    pub fn stream_targets(
         &self,
         targets: &[ServiceTarget],
         lines: usize,
         since: Option<&str>,
-    ) -> Result<JournalFollowResult> {
+        follow: bool,
+        output: JournalOutput,
+    ) -> Result<JournalStreamResult> {
         if targets.is_empty() {
-            bail!("cannot follow logs without at least one service target");
+            bail!("cannot stream logs without at least one service target");
         }
         validate_request(lines, since)?;
         let grouped = group_targets(targets);
@@ -160,11 +190,11 @@ impl Journalctl {
             .into_iter()
             .map(|(context, units)| {
                 let units = units.iter().map(String::as_str).collect::<Vec<_>>();
-                let arguments = journal_arguments(&context, &units, lines, since, true);
+                let arguments = journal_arguments(&context, &units, lines, since, follow, output);
                 self.invocation(context, arguments)
             })
             .collect();
-        self.run_follow(invocations)
+        self.run_stream(invocations)
     }
 
     fn invocation(
@@ -194,7 +224,7 @@ impl Journalctl {
         }
     }
 
-    fn run_follow(&self, invocations: Vec<JournalInvocation>) -> Result<JournalFollowResult> {
+    fn run_stream(&self, invocations: Vec<JournalInvocation>) -> Result<JournalStreamResult> {
         let mut children = Vec::with_capacity(invocations.len());
         for invocation in invocations {
             let child = match Command::new(&invocation.executable)
@@ -206,17 +236,17 @@ impl Journalctl {
             {
                 Ok(child) => child,
                 Err(error) => {
-                    terminate_followers(&mut children);
+                    terminate_streams(&mut children);
                     return Err(error).with_context(|| {
                         format!(
-                            "follow {} journal with {}",
+                            "stream {} journal with {}",
                             invocation.context,
                             invocation.executable.display()
                         )
                     });
                 }
             };
-            children.push(FollowChild {
+            children.push(StreamChild {
                 invocation,
                 child,
                 status: None,
@@ -234,9 +264,9 @@ impl Journalctl {
                     Ok(status) => status,
                     Err(error) => {
                         let context = children[index].invocation.context.to_string();
-                        terminate_followers(&mut children);
+                        terminate_streams(&mut children);
                         return Err(error)
-                            .with_context(|| format!("wait for {context} journal follow"));
+                            .with_context(|| format!("wait for {context} journal stream"));
                     }
                 };
                 match status {
@@ -256,12 +286,12 @@ impl Journalctl {
         }
 
         if failed.is_some() {
-            terminate_followers(&mut children);
+            terminate_streams(&mut children);
         }
         for follower in &mut children {
             if follower.status.is_none() {
                 follower.status = Some(follower.child.wait().with_context(|| {
-                    format!("reap {} journal follow", follower.invocation.context)
+                    format!("reap {} journal stream", follower.invocation.context)
                 })?);
             }
         }
@@ -275,7 +305,7 @@ impl Journalctl {
                 let status = follower
                     .status
                     .expect("every journal follower must have a terminal status");
-                JournalFollowInvocation {
+                JournalStreamInvocation {
                     context: follower.invocation.context.to_string(),
                     executable: follower.invocation.executable,
                     arguments: follower.invocation.arguments,
@@ -284,7 +314,7 @@ impl Journalctl {
                 }
             })
             .collect::<Vec<_>>();
-        Ok(JournalFollowResult {
+        Ok(JournalStreamResult {
             success: failed.is_none(),
             exit_code: failed_exit_code,
             failed_context,
@@ -331,6 +361,7 @@ fn journal_arguments(
     lines: usize,
     since: Option<&str>,
     follow: bool,
+    output: JournalOutput,
 ) -> Vec<String> {
     let mut arguments = vec!["--no-pager".to_owned()];
     arguments.push(
@@ -340,10 +371,9 @@ fn journal_arguments(
         }
         .to_owned(),
     );
+    arguments.push(format!("--output={}", output.journalctl_value()));
     if follow {
         arguments.push("--follow".to_owned());
-    } else {
-        arguments.push("--output=json".to_owned());
     }
     arguments.extend(["--lines".to_owned(), lines.to_string()]);
     for unit in units {
@@ -365,7 +395,7 @@ fn validate_request(lines: usize, since: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn terminate_followers(followers: &mut [FollowChild]) {
+fn terminate_streams(followers: &mut [StreamChild]) {
     for follower in followers {
         if follower.status.is_none() {
             let _ = follower.child.kill();
@@ -541,14 +571,14 @@ mod tests {
     }
 
     #[test]
-    fn follows_multiple_contexts_without_buffering_json() {
+    fn streams_multiple_contexts_as_text_without_buffering() {
         let temp = tempfile::tempdir().unwrap();
         let journalctl = temp.path().join("journalctl");
         let runuser = temp.path().join("runuser");
         executable(&journalctl, "exit 0");
         executable(&runuser, "shift 3; exec \"$@\"");
         let result = Journalctl::new(&journalctl, &runuser)
-            .follow_targets(
+            .stream_targets(
                 &[
                     ServiceTarget::system("zulip.service"),
                     ServiceTarget::new(
@@ -560,6 +590,8 @@ mod tests {
                 ],
                 25,
                 Some("today"),
+                true,
+                JournalOutput::Text,
             )
             .unwrap();
 
@@ -570,10 +602,10 @@ mod tests {
                 .arguments
                 .iter()
                 .any(|argument| argument == "--follow")
-                && !invocation
+                && invocation
                     .arguments
                     .iter()
-                    .any(|argument| argument == "--output=json")
+                    .any(|argument| argument == "--output=short-iso-precise")
         }));
         assert!(result.invocations.iter().any(|invocation| {
             invocation.context == "system"
@@ -592,6 +624,38 @@ mod tests {
     }
 
     #[test]
+    fn streams_finite_json_snapshots_with_the_same_output_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let journalctl = temp.path().join("journalctl");
+        executable(&journalctl, "exit 0");
+
+        let result = Journalctl::new(&journalctl, "/does/not/exist")
+            .stream_targets(
+                &[ServiceTarget::system("zulip.service")],
+                50,
+                None,
+                false,
+                JournalOutput::Json,
+            )
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.invocations.len(), 1);
+        assert!(
+            result.invocations[0]
+                .arguments
+                .iter()
+                .any(|argument| argument == "--output=json")
+        );
+        assert!(
+            !result.invocations[0]
+                .arguments
+                .iter()
+                .any(|argument| argument == "--follow")
+        );
+    }
+
+    #[test]
     fn a_failed_follow_context_terminates_its_peers() {
         let temp = tempfile::tempdir().unwrap();
         let journalctl = temp.path().join("journalctl");
@@ -600,7 +664,7 @@ mod tests {
         executable(&runuser, "exit 7");
         let started = Instant::now();
         let result = Journalctl::new(&journalctl, &runuser)
-            .follow_targets(
+            .stream_targets(
                 &[
                     ServiceTarget::system("api.service"),
                     ServiceTarget::new(
@@ -612,6 +676,8 @@ mod tests {
                 ],
                 10,
                 None,
+                true,
+                JournalOutput::Json,
             )
             .unwrap();
 
@@ -619,5 +685,15 @@ mod tests {
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(7));
         assert_eq!(result.failed_context.as_deref(), Some("user:bob"));
+        assert!(result.invocations.iter().all(|invocation| {
+            invocation
+                .arguments
+                .iter()
+                .any(|argument| argument == "--output=json")
+                && invocation
+                    .arguments
+                    .iter()
+                    .any(|argument| argument == "--follow")
+        }));
     }
 }

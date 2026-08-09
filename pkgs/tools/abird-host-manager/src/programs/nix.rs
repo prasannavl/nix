@@ -236,6 +236,7 @@ fn merge_json(base: &mut Value, overlay: Value) {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 
     use serde_json::json;
@@ -245,7 +246,10 @@ mod tests {
 
     fn executable(path: &Path, body: String) {
         let staging = path.with_extension("tmp");
-        fs::write(&staging, body).unwrap();
+        let mut file = fs::File::create(&staging).unwrap();
+        file.write_all(body.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
         fs::set_permissions(&staging, fs::Permissions::from_mode(0o755)).unwrap();
         fs::rename(staging, path).unwrap();
     }

@@ -61,11 +61,11 @@ abird-host-agent hold acquire --resource service:zulip --owner tx-123
 abird-host-agent hold status --resource service:zulip --json
 abird-host-agent hold release --resource service:zulip --owner tx-123
 
-abird-host-agent logs --lines 200 --since today
-abird-host-agent logs --lines 200 --since today --follow
-abird-host-agent logs --resource service:zulip --follow
-abird-host-agent logs --unit nginx.service --lines 200
-abird-host-agent logs --unit zulip.service --scope user --user abird --follow
+abird-host-agent logs --lines 200 --since today --output text
+abird-host-agent logs --lines 200 --since today --output json
+abird-host-agent logs --resource service:zulip --follow --output text
+abird-host-agent logs --unit nginx.service --lines 200 --output json
+abird-host-agent logs --unit zulip.service --scope user --user abird --follow --output json
 abird-host-agent unit start --scope system --unit nginx.service
 abird-host-agent unit restart --scope system --unit nginx.service
 abird-host-agent unit reload --scope system --unit nginx.service
@@ -75,17 +75,20 @@ abird-host-agent resource reload --resource service:zulip
 abird-host-agent resource ready --resource service:zulip
 ```
 
-Log snapshots are bounded structured results and support `--json`. Follow mode
-streams `journalctl` directly until interrupted or the journal process exits; it
-does not buffer an unbounded result and therefore cannot be combined with
-`--json`. One `logs` command owns host, resource, and explicit-unit selection;
-the selectors are mutually exclusive. Named user units execute through `runuser`
-in that user's journal context. A mixed resource follows system units and each
-distinct user context through separate concurrent journal processes; units are
-combined only when they share the same execution identity. Declarative
-user-scoped units must name their user-manager owner. A direct standalone
-`unit logs --scope user` without `--user` deliberately uses the agent process's
-current user context.
+Every log scope supports `--output text|json` for both finite snapshots and
+`--follow`; text is the default. JSON uses newline-delimited journal objects, so
+the same format remains streamable in follow mode without buffering an unbounded
+document. `--lines` bounds a snapshot and selects the initial entries for
+follow. The command inherits stdio in both modes, preserving Ctrl-C and
+propagating journal failures directly; the agent's single-document global
+`--json` mode is therefore not valid for logs. One `logs` command owns host,
+resource, and explicit-unit selection; the selectors are mutually exclusive.
+Named user units execute through `runuser` in that user's journal context. A
+mixed resource streams system units and each distinct user context through
+separate concurrent journal processes; units are combined only when they share
+the same execution identity. Declarative user-scoped units must name their
+user-manager owner. A direct standalone `unit logs --scope user` without
+`--user` deliberately uses the agent process's current user context.
 
 Acquisition persists the hold before stopping declared units. Release never
 starts a service. `activate` is the only transaction operation that releases a
@@ -133,6 +136,16 @@ verify it. Snapshot deletion also re-derives one exact
 `backup_root/resource-digest/snapshot` path at execution time and is idempotent.
 Neither operation accepts a caller-supplied filesystem path.
 
+Data-wipe jobs have the same authority boundary without creating or consuming a
+backup artifact. The accepted job embeds the manifest-derived roots and exact
+relative excludes. Execution requires the same transaction to own the durable
+resource hold and proves every declared service inactive before deletion. It
+preserves each root directory, its ownership, mode, and extended attributes,
+removes only owned contents, retains excluded subtrees, independently verifies
+the remaining owned tree is empty, and leaves the hold in place. Directory
+modification times naturally change when entries are removed. Missing,
+symlinked, root, or overlapping data roots fail before deletion begins.
+
 Cross-host copies are controller-brokered durable jobs. Only the controller
 manifest contains `broker_transfer`, which points at its existing Nixbot
 identity. For each job the controller agent starts a private ephemeral
@@ -178,10 +191,10 @@ consumer. Retries reload even when the file already matches, because an earlier
 attempt may have durably replaced the file but lost the reload.
 
 The `JobSpec.operation` tagged union carries resource lifecycle, transfer,
-backup/restore, file-state, instance, deployment, and allowlisted named
-operations. Backup restore snapshots the previously active declared services,
-validates that each belongs to the held resource, releases the hold, and starts
-only that subset as one durable job.
+backup/restore, data wipe, file-state, instance, deployment, and allowlisted
+named operations. Backup restore snapshots the previously active declared
+services, validates that each belongs to the held resource, releases the hold,
+and starts only that subset as one durable job.
 
 For rolling deployment compatibility, the previous `service`, `data`,
 `job status`, selector-style `job submit`, `hold declare/apply`,

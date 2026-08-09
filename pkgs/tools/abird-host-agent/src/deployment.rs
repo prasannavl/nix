@@ -41,6 +41,8 @@ pub struct NixbotDeployPolicy {
     pub home: PathBuf,
     pub repository_url: String,
     pub repository_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repository_ssh_key_paths: Vec<PathBuf>,
     pub revision: String,
 }
 
@@ -82,6 +84,11 @@ pub fn validate_nixbot_deploy_policy(policy: &NixbotDeployPolicy) -> Result<()> 
     if policy.repository_url.trim().is_empty() || policy.repository_url.contains(['\0', '\r', '\n'])
     {
         bail!("Nixbot repository URL is invalid");
+    }
+    for path in &policy.repository_ssh_key_paths {
+        if !path.is_absolute() || path.as_os_str().as_encoded_bytes().contains(&b':') {
+            bail!("Nixbot repository SSH identity path must be absolute and cannot contain ':'");
+        }
     }
     if !is_commit_revision(&policy.revision) && policy.revision != UNCOMMITTED_CONTROLLER_REVISION {
         bail!("Nixbot deployment revision must be a commit ID or the fail-closed sentinel");
@@ -189,6 +196,7 @@ mod tests {
             home: PathBuf::from("/var/lib/nixbot"),
             repository_url: "ssh://git@example.test/repo".to_owned(),
             repository_path: PathBuf::from("/var/lib/nixbot/repo"),
+            repository_ssh_key_paths: vec![PathBuf::from("/var/lib/nixbot/.ssh/repo-example")],
             revision: "0123456789abcdef".to_owned(),
         };
         let request = NixbotDeployRequest {

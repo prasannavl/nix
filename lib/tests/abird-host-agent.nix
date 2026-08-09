@@ -145,7 +145,10 @@
     "!${hostHoldFile}"
   ];
   holdCommands = config.systemd.services.abird-host-agent-holds.serviceConfig.ExecStart;
+  configuredAgent = builtins.head (lib.splitString " " config.systemd.services.abird-host-agent-jobs.serviceConfig.ExecStart);
+  configuredRoot = builtins.dirOf (builtins.dirOf configuredAgent);
   resourceManifest = config.environment.etc."abird-host-agent/resources.json".source;
+  runuserProgram = lib.getExe' pkgs.util-linux "runuser";
 in
   assert !collisionResult.success;
   assert !rootPathResult.success;
@@ -159,7 +162,7 @@ in
   assert builtins.length holdCommands == 2;
   assert lib.hasInfix "_reconcile hold declare" (builtins.head holdCommands);
   assert lib.hasInfix "_reconcile hold apply" (builtins.elemAt holdCommands 1);
-  assert config.systemd.paths.abird-host-agent-jobs.pathConfig.PathChanged == "/var/lib/abird-host-agent/jobs";
+  assert config.systemd.paths.abird-host-agent-jobs.pathConfig.PathExists == "/var/lib/abird-host-agent/jobs-wakeup";
   assert config.systemd.services.abird-host-agent-jobs.serviceConfig.Restart == "on-failure";
   assert lib.hasInfix "_reconcile jobs" config.systemd.services.abird-host-agent-jobs.serviceConfig.ExecStart;
   assert config.systemd.services.abird-host-agent-jobs.serviceConfig.TimeoutStartSec == "infinity";
@@ -167,7 +170,13 @@ in
     pkgs.runCommand "abird-host-agent-module-test" {
       nativeBuildInputs = [pkgs.jq];
     } ''
+      test -x ${runuserProgram}
+      test -x ${configuredRoot}/bin/rsync
+      test -x ${configuredRoot}/bin/tar
+      grep -F -- ${lib.escapeShellArg "ABIRD_HOST_AGENT_RUNUSER"} ${configuredAgent}
+      grep -F -- ${lib.escapeShellArg runuserProgram} ${configuredAgent}
       jq -e '.resources | any(.id == "service:demo" and .services[0].unit == "demo.service")' ${resourceManifest}
+      jq -e '.rsync_program == "${pkgs.rsync}/bin/rsync" and .tar_program == "${pkgs.gnutar}/bin/tar"' ${resourceManifest}
       jq -e '.resources | any(.id == "${instanceResource}" and .data_paths == ["/var/lib/demo-instance"])' ${resourceManifest}
       jq -e '.resources | any(.id == "${extraResource}" and .operations.inspect.argv == ["${pkgs.coreutils}/bin/true", "--inspect"])' ${resourceManifest}
       jq -e '.resources | any(.id == "${hostResource}" and (.data_paths | index("/var/lib/demo")) != null and (.data_paths | index("/var/lib/demo-instance")) != null)' ${resourceManifest}

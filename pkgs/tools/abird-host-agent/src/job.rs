@@ -42,6 +42,7 @@ pub enum JobOperation {
     Start,
     Status,
     Manifest,
+    WipeData,
     Ready,
     Transfer {
         name: String,
@@ -201,7 +202,7 @@ impl JobStore {
 
     pub fn submit(&self, spec: JobSpec) -> Result<SubmitOutcome> {
         validate_spec(&spec)?;
-        self.with_job_lock(|| {
+        let outcome = self.with_job_lock(|| {
             if let Some(existing) = self.read_unlocked(&spec.job_id)? {
                 if existing.spec != spec {
                     bail!(
@@ -227,7 +228,11 @@ impl JobStore {
             };
             self.write_unlocked(&job)?;
             Ok(SubmitOutcome { changed: true, job })
-        })
+        })?;
+        if outcome.job.status == JobStatus::Pending {
+            self.wake_worker()?;
+        }
+        Ok(outcome)
     }
 
     pub fn status(&self, job_id: &str) -> Result<JobRecord> {
@@ -239,13 +244,33 @@ impl JobStore {
     }
 
     pub fn retry(&self, job_id: &str) -> Result<SubmitOutcome> {
+        self.retry_with_spec(job_id, None)
+    }
+
+    pub fn retry_with_spec(
+        &self,
+        job_id: &str,
+        replacement: Option<JobSpec>,
+    ) -> Result<SubmitOutcome> {
         validate_identifier("job ID", job_id)?;
-        self.with_job_lock(|| {
+        if let Some(replacement) = &replacement {
+            validate_spec(replacement)?;
+            if replacement.job_id != job_id {
+                bail!(
+                    "replacement job specification ID {:?} does not match retry ID {job_id:?}",
+                    replacement.job_id
+                );
+            }
+        }
+        let outcome = self.with_job_lock(|| {
             let mut job = self
                 .read_unlocked(job_id)?
                 .with_context(|| format!("job {job_id:?} does not exist"))?;
             match job.status {
                 JobStatus::Failed => {
+                    if let Some(replacement) = &replacement {
+                        job.spec = retry_spec_with_host_key_enrichment(&job.spec, replacement)?;
+                    }
                     job.status = JobStatus::Pending;
                     job.started_at = None;
                     job.finished_at = None;
@@ -255,15 +280,27 @@ impl JobStore {
                     self.write_unlocked(&job)?;
                     Ok(SubmitOutcome { changed: true, job })
                 }
-                JobStatus::Pending | JobStatus::Running => Ok(SubmitOutcome {
-                    changed: false,
-                    job,
-                }),
+                JobStatus::Pending | JobStatus::Running => {
+                    if replacement
+                        .as_ref()
+                        .is_some_and(|replacement| replacement != &job.spec)
+                    {
+                        bail!("retry replacement may enrich only a terminal failed broker job");
+                    }
+                    Ok(SubmitOutcome {
+                        changed: false,
+                        job,
+                    })
+                }
                 JobStatus::Succeeded => {
                     bail!("refusing to retry succeeded job {job_id:?}")
                 }
             }
-        })
+        })?;
+        if outcome.job.status == JobStatus::Pending {
+            self.wake_worker()?;
+        }
+        Ok(outcome)
     }
 
     pub fn list(&self) -> Result<Vec<JobRecord>> {
@@ -297,6 +334,7 @@ impl JobStore {
         F: FnMut(&JobSpec) -> Result<JobExecution>,
     {
         self.with_execution_lock(|| {
+            self.clear_worker_wakeup()?;
             let job_ids = self.with_job_lock(|| {
                 Ok(self
                     .list_unlocked()?
@@ -390,6 +428,33 @@ impl JobStore {
         self.root.join("jobs")
     }
 
+    fn worker_wakeup_path(&self) -> PathBuf {
+        self.root.join("jobs-wakeup")
+    }
+
+    fn wake_worker(&self) -> Result<()> {
+        self.prepare_directories()?;
+        let path = self.worker_wakeup_path();
+        OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("create job worker wakeup {}", path.display()))?
+            .sync_all()
+            .with_context(|| format!("sync job worker wakeup {}", path.display()))
+    }
+
+    fn clear_worker_wakeup(&self) -> Result<()> {
+        let path = self.worker_wakeup_path();
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| format!("remove {}", path.display())),
+        }
+    }
+
     fn job_path(&self, job_id: &str) -> PathBuf {
         self.jobs_dir().join(job_file_name(job_id))
     }
@@ -478,6 +543,54 @@ impl JobStore {
     }
 }
 
+fn retry_spec_with_host_key_enrichment(
+    existing: &JobSpec,
+    replacement: &JobSpec,
+) -> Result<JobSpec> {
+    if existing == replacement {
+        return Ok(existing.clone());
+    }
+    let mut enriched = existing.clone();
+    let (old_source, old_target, new_source, new_target) =
+        match (&mut enriched.operation, &replacement.operation) {
+            (
+                JobOperation::BrokerCopy {
+                    source: old_source,
+                    target: old_target,
+                    ..
+                },
+                JobOperation::BrokerCopy {
+                    source: new_source,
+                    target: new_target,
+                    ..
+                },
+            )
+            | (
+                JobOperation::BrokerVerify {
+                    source: old_source,
+                    target: old_target,
+                    ..
+                },
+                JobOperation::BrokerVerify {
+                    source: new_source,
+                    target: new_target,
+                    ..
+                },
+            ) => (old_source, old_target, new_source, new_target),
+            _ => bail!("retry replacement changes the immutable job specification"),
+        };
+    for (old, new) in [(old_source, new_source), (old_target, new_target)] {
+        if !old.host_public_keys.is_empty() || new.host_public_keys.is_empty() {
+            bail!("retry replacement may only add missing broker endpoint host-key pins");
+        }
+        old.host_public_keys = new.host_public_keys.clone();
+    }
+    if enriched != *replacement {
+        bail!("retry replacement changes fields other than missing broker endpoint host-key pins");
+    }
+    Ok(enriched)
+}
+
 pub fn job_file_name(job_id: &str) -> String {
     format!("{}.json", digest_bytes(job_id.as_bytes()))
 }
@@ -549,6 +662,9 @@ fn validate_spec(spec: &JobSpec) -> Result<()> {
         }
         JobOperation::Manifest if spec.data_paths.is_empty() => {
             bail!("manifest job requires declared data paths")
+        }
+        JobOperation::WipeData if spec.data_paths.is_empty() || spec.data_root_plan.is_empty() => {
+            bail!("data-wipe job requires declared data roots")
         }
         JobOperation::Named { .. } => {
             let argv = spec
@@ -697,6 +813,43 @@ fn sync_directory(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn broker_endpoint(host: &str, keys: Vec<String>) -> crate::transfer::RemoteSource {
+        crate::transfer::RemoteSource {
+            host: host.to_owned(),
+            host_public_keys: keys,
+            user: Some("nixbot".to_owned()),
+            port: None,
+            identity_file: None,
+            ssh_program: PathBuf::from("/bin/ssh"),
+            ssh_args: Vec::new(),
+            agent_program: PathBuf::from("/bin/abird-host-agent"),
+            agent_prefix: Vec::new(),
+            rsync_program: PathBuf::from("/bin/rsync"),
+            rsync_prefix: Vec::new(),
+            tar_program: PathBuf::from("/bin/tar"),
+        }
+    }
+
+    fn broker_spec(job_id: &str, source_keys: Vec<String>, target_keys: Vec<String>) -> JobSpec {
+        let mut spec = spec(
+            job_id,
+            JobOperation::BrokerCopy {
+                source: broker_endpoint("source", source_keys),
+                target: broker_endpoint("target", target_keys),
+                destination_root: None,
+                backup_source: false,
+            },
+        );
+        spec.broker_transfer = Some(BrokerTransferPolicy {
+            identity_file: PathBuf::from("/identity"),
+            ssh_program: PathBuf::from("/bin/ssh"),
+            ssh_agent_program: PathBuf::from("/bin/ssh-agent"),
+            ssh_add_program: PathBuf::from("/bin/ssh-add"),
+            ssh_args: Vec::new(),
+        });
+        spec
+    }
+
     fn spec(job_id: &str, operation: JobOperation) -> JobSpec {
         let services = if matches!(
             &operation,
@@ -711,7 +864,7 @@ mod tests {
         } else {
             Vec::new()
         };
-        let data_paths = if matches!(&operation, JobOperation::Manifest) {
+        let data_paths = if matches!(&operation, JobOperation::Manifest | JobOperation::WipeData) {
             vec![PathBuf::from("/var/lib/zulip")]
         } else {
             Vec::new()
@@ -817,6 +970,50 @@ mod tests {
     }
 
     #[test]
+    fn failed_broker_job_can_atomically_add_missing_authenticated_host_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = JobStore::new(temp.path());
+        store
+            .submit(broker_spec("job-1", Vec::new(), Vec::new()))
+            .unwrap();
+        store
+            .run_job("job-1", |_| bail!("injected failure before copy"))
+            .unwrap();
+
+        let replacement = broker_spec(
+            "job-1",
+            vec!["ssh-ed25519 source-key".to_owned()],
+            vec!["ssh-ed25519 target-key".to_owned()],
+        );
+        let retried = store
+            .retry_with_spec("job-1", Some(replacement.clone()))
+            .unwrap();
+        assert_eq!(retried.job.status, JobStatus::Pending);
+        assert_eq!(retried.job.spec, replacement);
+        assert_eq!(store.status("job-1").unwrap().spec, replacement);
+    }
+
+    #[test]
+    fn broker_retry_enrichment_rejects_every_other_specification_change() {
+        let mut existing = broker_spec("job-1", Vec::new(), Vec::new());
+        let mut replacement = broker_spec(
+            "job-1",
+            vec!["ssh-ed25519 source-key".to_owned()],
+            vec!["ssh-ed25519 target-key".to_owned()],
+        );
+        replacement.resource = "service:other".to_owned();
+        assert!(retry_spec_with_host_key_enrichment(&existing, &replacement).is_err());
+
+        existing = replacement.clone();
+        let mut rotated = replacement;
+        let JobOperation::BrokerCopy { source, .. } = &mut rotated.operation else {
+            unreachable!()
+        };
+        source.host_public_keys = vec!["ssh-ed25519 rotated-key".to_owned()];
+        assert!(retry_spec_with_host_key_enrichment(&existing, &rotated).is_err());
+    }
+
+    #[test]
     fn running_job_progress_is_durable_and_terminal_safe() {
         let temp = tempfile::tempdir().unwrap();
         let store = JobStore::new(temp.path());
@@ -861,5 +1058,19 @@ mod tests {
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].status, JobStatus::Succeeded);
         assert_eq!(completed[0].attempts, 2);
+    }
+
+    #[test]
+    fn pending_jobs_use_a_separate_consumable_worker_wakeup() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = JobStore::new(temp.path());
+        store.submit(spec("job-1", JobOperation::Status)).unwrap();
+        assert!(store.worker_wakeup_path().is_file());
+
+        let completed = store
+            .run_pending(|_| Ok(JobExecution::succeeded(serde_json::json!({}))))
+            .unwrap();
+        assert_eq!(completed.len(), 1);
+        assert!(!store.worker_wakeup_path().exists());
     }
 }

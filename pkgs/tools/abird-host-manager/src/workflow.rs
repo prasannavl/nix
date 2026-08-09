@@ -818,6 +818,10 @@ pub fn backup_id(caller_id: Option<&str>) -> Result<String> {
     workflow_id("backup", caller_id)
 }
 
+pub fn wipe_id(caller_id: Option<&str>) -> Result<String> {
+    workflow_id("wipe", caller_id)
+}
+
 pub fn validate_workflow_id(id: &str) -> Result<()> {
     if id.is_empty()
         || id.len() > 128
@@ -1312,10 +1316,12 @@ mod tests {
         assert!(early < late);
         assert!(transaction_id(None).unwrap().starts_with("move-"));
         assert!(backup_id(None).unwrap().starts_with("backup-"));
+        assert!(wipe_id(None).unwrap().starts_with("wipe-"));
         assert_eq!(
             transaction_id(Some("operator_retry_1")).unwrap(),
             "operator_retry_1"
         );
+        assert_eq!(wipe_id(Some("operator_wipe_1")).unwrap(), "operator_wipe_1");
         assert!(transaction_id(Some("bad/id")).is_err());
     }
 
