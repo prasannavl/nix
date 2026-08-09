@@ -160,6 +160,38 @@ rec {
       trustedCidrs = trustedCidrs;
     };
 
+    withServiceRoles = roleOverrides: let
+      unknownServices = builtins.filter (name: !(builtins.hasAttr name serviceSpecs)) (builtins.attrNames roleOverrides);
+      unknownRoles = builtins.filter (role: !(builtins.hasAttr role resolvedRoles)) (builtins.attrValues roleOverrides);
+      remappedServices =
+        builtins.mapAttrs (
+          name: spec:
+            spec
+            // {
+              role = roleOverrides.${name} or spec.role;
+            }
+        )
+        serviceSpecs;
+      servicesByRole =
+        builtins.mapAttrs (
+          role: _:
+            builtins.listToAttrs (
+              map (
+                name: {
+                  inherit name;
+                  value = builtins.removeAttrs remappedServices.${name} ["role"];
+                }
+              ) (builtins.filter (name: remappedServices.${name}.role == role) (builtins.attrNames remappedServices))
+            )
+        )
+        resolvedRoles;
+    in
+      if unknownServices != []
+      then throw "Unknown service role override(s): ${builtins.concatStringsSep ", " unknownServices}"
+      else if unknownRoles != []
+      then throw "Unknown target service role(s): ${builtins.concatStringsSep ", " unknownRoles}"
+      else constructor {services = servicesByRole;};
+
     base = import ./stack/lib.nix (stackBaseArgs
       // {
         stackName = stackName;
@@ -171,7 +203,7 @@ rec {
         secretScope = secretScope;
       });
 
-    stack = base // {inherit enableExternalConnectors secretNamespace serviceRegistry tunnels;};
+    stack = base // {inherit enableExternalConnectors secretNamespace serviceRegistry tunnels withServiceRoles;};
     registryOnlyArgs = [
       "constructor"
       "roles"

@@ -1,127 +1,57 @@
-{pkgs}: {
-  packageEntries = [
-    {
-      id = "host-manager";
-      path = ./tools/host-manager/default.nix;
-    }
-    {
-      id = "nixbot";
+{
+  packages = {
+    abird-host-agent = ./tools/abird-host-agent/default.nix;
+    abird-host-manager = {
+      path = ./tools/abird-host-manager/default.nix;
+      rootApp = true;
+    };
+    nixbot = {
       path = ./tools/nixbot/default.nix;
-    }
-    {
-      id = "codex-wrapper";
+      rootApp = true;
+    };
+    codex-wrapper = {
       path = ./tools/codex-wrapper/default.nix;
-      appName = "cr";
-    }
-    {
-      id = "data-migrator";
-      build = packages:
-        pkgs.callPackage ./tools/data-migrator/default.nix {
-          migrationProfiles = import ./tools/data-migrator/policies;
-          nixbot = packages.nixbot;
-          migrationManager = packages.migration-manager;
-        };
-    }
-    {
-      id = "migration-manager";
-      path = ./tool/migration-manager/default.nix;
-    }
-    {
-      id = "nats-wrecking-ball";
-      path = ./tools/nats-wrecking-ball/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "nats-http-bridge";
-      path = ./support/nats-http-bridge/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "nats-streams";
-      path = ./support/nats-streams/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "zep-graphiti";
-      path = ./support/zep-graphiti/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "zep-cloud-compat";
-      path = ./support/zep-cloud-compat/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "cloudflare-apps";
-      rootApp = false;
-      build = packages:
-        pkgs.callPackage ./cloudflare-apps/default.nix {
-          nixbot = packages.nixbot;
-        };
-      extraStdPackages = packages: {
-        "cloudflare-apps/llmug-hello" = packages.cloudflare-apps.llmug-hello;
+      apps.cr = [];
+    };
+    nats-wrecking-ball = ./tools/nats-wrecking-ball/default.nix;
+    nats-http-bridge = ./support/nats-http-bridge/default.nix;
+    nats-streams = ./support/nats-streams/default.nix;
+    zep-graphiti = ./support/zep-graphiti/default.nix;
+    zep-cloud-compat = ./support/zep-cloud-compat/default.nix;
+    cloudflare-apps = {
+      path = ./cloudflare-apps/default.nix;
+      args = packages: {
+        nixbot = packages.nixbot;
       };
-      extraRootApps = packages: [
-        {
-          name = "cloudflare-apps-deploy";
-          package = packages.cloudflare-apps.deploy;
-        }
-      ];
-    }
-    {
-      id = "kanidm-server";
-      path = ./ext/kanidm-server/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "bulwarkmail";
-      path = ./ext/bulwarkmail/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "stalwart-server";
-      path = ./ext/stalwart-server/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "z-push";
-      path = ./ext/z-push/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "awl";
-      path = ./ext/awl/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "mirofish";
-      path = ./ext/mirofish/default.nix;
-      rootApp = false;
-    }
-    {
-      id = "example-hello-go";
+      toolingPackages."cloudflare-apps/llmug-hello" = ["llmug-hello"];
+      apps.cloudflare-apps-deploy = ["deploy"];
+    };
+    kanidm-server = ./ext/kanidm-server/default.nix;
+    bulwarkmail = ./ext/bulwarkmail/default.nix;
+    stalwart-server = ./ext/stalwart-server/default.nix;
+    z-push = ./ext/z-push/default.nix;
+    awl = ./ext/awl/default.nix;
+    mirofish = ./ext/mirofish/default.nix;
+    example-hello-go = {
       path = ./examples/hello-go/default.nix;
-    }
-    {
-      id = "example-hello-node";
+      rootApp = true;
+    };
+    example-hello-node = {
       path = ./examples/hello-node/default.nix;
-    }
-    {
-      id = "example-hello-python";
+      rootApp = true;
+    };
+    example-hello-python = {
       path = ./examples/hello-python/default.nix;
-    }
-    {
-      id = "example-hello-rust";
+      rootApp = true;
+    };
+    example-hello-rust = {
       path = ./examples/hello-rust/default.nix;
-    }
-    {
-      id = "example-hello-rust-isolated";
+      rootApp = true;
+    };
+    example-hello-rust-isolated = {
       path = ./examples/hello-rust-isolated/default.nix;
-    }
-    {
-      id = "example-hello-web-static";
-      path = ./examples/hello-web-static/default.nix;
-      rootApp = false;
-    }
-  ];
+      rootApp = true;
+    };
+    example-hello-web-static = ./examples/hello-web-static/default.nix;
+  };
 }

@@ -37,7 +37,9 @@
     overlays = [];
     stackProfiles = {};
   };
+  manifest = import ../../../pkgs/manifest.nix;
   outputs = flakeLib.withPkgs pkgs;
+  packageOutputs = import ../packages.nix {inherit pkgs;};
   packageHelper = import ../pkg-helper.nix;
   nestedRustPackage = packageHelper.mkRustDerivation {
     pkgs = pkgs;
@@ -194,6 +196,7 @@
       };
     };
   };
+  remappedAppStack = stackSet.app.withServiceRoles {app = "proxy";};
   standardOutputs = flakeLib.standardOutputsFrom [system] {
     ${system} = outputs;
   };
@@ -209,16 +212,31 @@ in {
   assert (builtins.head stackSet.app.serviceRegistry.roles.web.endpoints.live).project == "role-project";
   assert (builtins.head stackSet.app.serviceRegistry.roles.web.endpoints.live).weight == 70;
   assert (builtins.head stackSet.app.serviceRegistry.roles.db.endpoints.live).project == "platform";
+  assert stackSet.app.serviceRegistry.roleForService "app" == "web";
+  assert remappedAppStack.serviceRegistry.roleForService "app" == "proxy";
+  assert remappedAppStack.serviceRegistry.upstreamForService "app" "http" == "10.10.10.10:8080";
     pkgs.runCommand "lib-flake-stack-set-test" {} ''
       touch "$out"
     '';
   lib-flake-isolated = assert flakeLib.stacks == {};
-  assert outputs.packages ? migration-manager;
-  assert outputs.packages.migration-manager.meta.mainProgram == "migration-manager";
+  assert builtins.all (
+    entry:
+      builtins.isPath entry
+      || (builtins.isAttrs entry && builtins.isPath entry.path)
+  ) (builtins.attrValues manifest.packages);
+  assert !(outputs.packages ? migration-manager);
+  assert !(outputs.packages ? data-migrator);
+  assert !(outputs.packages ? host-manager);
+  assert outputs.packages.abird-host-agent.meta.mainProgram == "abird-host-agent";
+  assert outputs.packages.abird-host-manager.meta.mainProgram == "abird-host-manager";
+  assert outputs.apps.cr.program == "${outputs.packages.codex-wrapper}/bin/cr";
+  assert outputs.apps.cloudflare-apps-deploy.program == "${outputs.packages.cloudflare-apps.deploy}/bin/cloudflare-apps-deploy";
+  assert packageOutputs.stdPackages."cloudflare-apps/llmug-hello".drvPath == packageOutputs.packages.cloudflare-apps.llmug-hello.drvPath;
   assert nativeClientCaDefaultsStack.defaultCaCertContainerPath == "/run/secrets/test-ca.crt";
   assert nativeClientCaDefaultsStack.srv.defaultPostgresCaCertPath == "/etc/ssl/certs/test-ca.crt";
   assert nativeClientCaDefaultsStack.srv.defaultNatsCaCertPath == "/etc/ssl/certs/test-ca.crt";
-  assert standardOutputs.packages.${system} ? migration-manager;
+  assert !(standardOutputs.packages.${system} ? migration-manager);
+  assert standardOutputs.apps.${system} ? abird-host-manager;
     pkgs.runCommand "lib-flake-isolated-test" {} ''
       touch "$out"
     '';

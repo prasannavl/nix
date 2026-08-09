@@ -1582,12 +1582,16 @@ in rec {
       inherit pkgs build src pname fmtCargoArgs lintFixCargoArgs checkCargoArgs testCargoArgs cargoBuildArgs;
       inherit nativeCheckInputs fmtNativeBuildInputs lintNativeBuildInputs checkEnv;
     };
+    baseDrv = wirePassthru drv {
+      dev = dev;
+      devShell = devShell;
+    };
+    resolvedExtraPassthru =
+      if builtins.isFunction extraPassthru
+      then extraPassthru baseDrv
+      else extraPassthru;
   in
-    wirePassthru drv ({
-        dev = dev;
-        devShell = devShell;
-      }
-      // extraPassthru);
+    wirePassthru baseDrv resolvedExtraPassthru;
 
   mkCraneRustPackage = {
     attrs,

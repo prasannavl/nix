@@ -177,7 +177,7 @@ rec {
           resolvedWantedBy = lib.unique (wantedBy ++ cfg.wantedBy ++ partUnitConfig.wantedBy);
         in {
           imports = [
-            ../services/migration-manager/options.nix
+            ../services/abird-host-agent/options.nix
           ];
 
           options.services.${spec.resolvedName} =
@@ -221,9 +221,13 @@ rec {
                   name = spec.resolvedName;
                   port = cfg.port;
                 };
-                services.migration-manager.managedUnits.system."${spec.resolvedName}.service" = {
-                  startOnResume = resolvedWantedBy != [];
-                };
+                services.abird-host-agent.services.${spec.resolvedName}.units = [
+                  {
+                    scope = "system";
+                    user = null;
+                    unit = "${spec.resolvedName}.service";
+                  }
+                ];
               }
             ]
             ++ spec.composedServices.extraConfigs cfg));
@@ -300,7 +304,7 @@ rec {
             // extraServiceConfig cfg;
         in {
           imports = [
-            ../services/migration-manager/options.nix
+            ../services/abird-host-agent/options.nix
           ];
 
           options.user-services.${resolvedUser}.${spec.resolvedName} =
@@ -348,9 +352,13 @@ rec {
                   port = cfg.port;
                 };
 
-                services.migration-manager.managedUnits.users.${resolvedUser}.services."${unitLabel}.service" = {
-                  startOnResume = resolvedWantedBy != [];
-                };
+                services.abird-host-agent.services."${resolvedUser}:${spec.resolvedName}".units = [
+                  {
+                    scope = "user";
+                    user = resolvedUser;
+                    unit = "${unitLabel}.service";
+                  }
+                ];
               }
             ]
             ++ spec.composedServices.extraConfigs cfg));
