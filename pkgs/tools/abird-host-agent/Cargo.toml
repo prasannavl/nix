@@ -1,0 +1,15 @@
+[package]
+name = "abird-host-agent"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+libc = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+shlex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
