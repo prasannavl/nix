@@ -198,6 +198,68 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("Use either --host or --hosts, not both", result.stderr)
 
+    def test_nix_config_keeps_build_identity_separate_from_connection_host(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args \
+              --hosts 'abird-gondor-proxy,-gap3-gondor' \
+              --nix-config abird-gondor-proxy-zulip-target
+            printf '%s|%s|%s\n' \
+              "$NIXBOT_NIX_CONFIG_HOST" \
+              "$(host_nix_config_for abird-gondor-proxy)" \
+              "$(host_nix_config_for gap3-gondor)"
+            """
+        )
+
+        self.assertEqual(
+            "abird-gondor-proxy|abird-gondor-proxy-zulip-target|gap3-gondor",
+            result.stdout.strip(),
+        )
+
+    def test_nix_config_rejects_ambiguous_host_selection(self):
+        for selectors in ("app,db", "app-*", "all", "-old"):
+            with self.subTest(selectors=selectors):
+                result = self.run_script(
+                    f"""
+                    init_vars
+                    ACTION=deploy
+                    normalize_host_action
+                    parse_args --hosts '{selectors}' --nix-config app-target
+                    """,
+                    check=False,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("--nix-config requires exactly one", result.stderr)
+
+    def test_build_plan_uses_nix_config_but_keeps_host_label(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            normalize_host_action
+            parse_args --host proxy --nix-config proxy-target
+            NIXBOT_BUILD_PLAN_ATTR_BASE=nixosConfigurations
+            NIXBOT_BUILD_PLAN_ATTR_SUFFIX=config.system.build.toplevel.drvPath
+            run_supervised_stdout_capture() {
+              local -n output_ref="$1"
+              shift 2
+              printf '%s\n' "$*" >&2
+              output_ref=/nix/store/target.drv
+            }
+            eval_host_build_plan_drv_path proxy
+            """
+        )
+
+        self.assertEqual("/nix/store/target.drv", result.stdout.strip())
+        self.assertIn(
+            ".#nixosConfigurations.proxy-target.config.system.build.toplevel.drvPath",
+            result.stderr,
+        )
+
     def test_singular_host_option_rejects_selector_syntax(self):
         for host in ("", "all", "group:prod", "app,db", "app-*", "-app"):
             with self.subTest(host=host):
@@ -532,8 +594,6 @@ class NixbotScriptTest(unittest.TestCase):
         )
 
     def test_health_starting_timeout_uses_native_podman_compose_registry(self):
-        legacy_metadata_dir = self.work_dir / "legacy-dispatchers"
-        legacy_metadata_dir.mkdir()
         registry = self.work_dir / "control-registry.json"
         registry.write_text(
             json.dumps(
@@ -548,7 +608,6 @@ class NixbotScriptTest(unittest.TestCase):
         result = self.run_script(
             f"""
             init_vars
-            NIXBOT_SYSTEMD_USER_MANAGER_METADATA_DIR={legacy_metadata_dir}
             NIXBOT_PODMAN_COMPOSE_CONTROL_REGISTRY={registry}
             _remote_health_check_starting_timeout_seconds
             """
@@ -1094,7 +1153,6 @@ class NixbotScriptTest(unittest.TestCase):
             }}
             wait_for_in_flight_deploy_activation() {{ return 0; }}
             wait_for_in_flight_nixbot_activation() {{ return 0; }}
-            print_deploy_systemd_user_manager_report() {{ return 0; }}
             reconcile_rollback_managed_user_targets() {{ printf 'converge:%s\n' "$1"; }}
             report_activation_lock_contention_if_present() {{ return 0; }}
             host_boot_is_container() {{ return 1; }}
@@ -2161,7 +2219,6 @@ EOF_SCRIPT
             mkdir -p "$RUNTIME_WORK_DIR" "$NIXBOT_DIAG_DIR"
             host_boot_is_container() {{ return 0; }}
             report_activation_lock_contention_if_present() {{ :; }}
-            print_deploy_systemd_user_manager_report() {{ :; }}
             wait_for_in_flight_nixbot_activation() {{ return 0; }}
             sleep_for_retry_or_signal() {{
               printf 'sleep:%s\\n' "$1"
@@ -5198,7 +5255,7 @@ EOF_SCRIPT
             printf '%s\n' \
               'Failed to start user unit abird-managed.target' \
               'warning: user activation for abird failed' \
-              '× migration-manager-apply.service - Apply runtime migration gate state' \
+              '× abird-host-agent-holds.service - Reconcile durable host-agent holds' \
               '     Active: failed (Result: exit-code) since Sun 2026-07-12 12:45:52 +08; 25ms ago' \
               '    Process: 11485 ExecStart=/nix/store/helper apply (code=exited, status=1/FAILURE)' \
               'deploy failed for abird-gondor-id; attempting host-local rollback' \

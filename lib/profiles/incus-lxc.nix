@@ -23,7 +23,7 @@ in {
     ../openssh.nix
     ../options.nix
     ../services/machine-id
-    ../services/migration-manager
+    ../services/abird-host-agent
     ../services/fail2ban-helper
     ../nix.nix
     ../systemd.nix

@@ -26,7 +26,7 @@ in {
     ../systemd.nix
     ../security.nix
     ../sudo.nix
-    ../services/migration-manager
+    ../services/abird-host-agent
     ../services/fail2ban-helper
     ../nix-ld.nix
     ../users.nix

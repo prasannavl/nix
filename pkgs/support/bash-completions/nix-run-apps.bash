@@ -104,8 +104,6 @@ _repo_nix_run_completion_init() {
 
 	repo_root="$(_repo_nix_run_completion_bridge_dir)"
 	_repo_nix_run_completion_source_once "${repo_root}/pkgs/tools/nixbot/nixbot.bash"
-	_repo_nix_run_completion_source_once "${repo_root}/pkgs/tools/data-migrator/data-migrator.bash"
-	_repo_nix_run_completion_source_once "${repo_root}/pkgs/tool/migration-manager/migration-manager.bash"
 
 	existing_func="${_REPO_NIX_RUN_COMPLETION_PREV_NIX:-}"
 	if ! _repo_nix_run_completion_func_is_usable "$existing_func"; then
@@ -120,12 +118,6 @@ _repo_nix_run_completion_app_completion() {
 	case "$app_ref" in
 	.#nixbot | ./#nixbot | /*"#nixbot")
 		printf '%s\n%s\n' nixbot _nixbot
-		;;
-	.#data-migrator | ./#data-migrator | /*"#data-migrator")
-		printf '%s\n%s\n' data-migrator _data_migrator
-		;;
-	.#migration-manager | ./#migration-manager | /*"#migration-manager")
-		printf '%s\n%s\n' migration-manager _migration_manager
 		;;
 	esac
 }

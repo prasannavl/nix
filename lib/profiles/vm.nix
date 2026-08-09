@@ -9,7 +9,7 @@
     ../network.nix
     ../security.nix
     ../sudo.nix
-    ../services/migration-manager
+    ../services/abird-host-agent
     ../systemd.nix
     ../sysctl-inotify.nix
     ../sysctl-kernel-coredump.nix

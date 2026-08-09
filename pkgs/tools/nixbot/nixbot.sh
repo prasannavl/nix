@@ -46,7 +46,7 @@ Usage:
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -80,6 +80,8 @@ Workflow Selection Options:
   --hosts          Host selectors (comma/space-separated; exact names, globs,
                    -exclusions, or `all`). With --group, filters the group hosts;
                    default: config.defaultHosts or all)
+  --nix-config     Build one NixOS configuration for the single positively
+                   selected connection host; exclusions remain connection-only
   --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
@@ -165,6 +167,7 @@ Repo Options:
 Environment (Workflow Selection):
   NIXBOT_GROUPS               Same as --group
   NIXBOT_HOSTS                Same as --hosts
+  NIXBOT_NIX_CONFIG           Same as --nix-config
   NIXBOT_SHA                  Same as --sha
 
 Environment (Build Actions):
@@ -498,6 +501,8 @@ init_vars() {
 	HOSTS_RAW="${NIXBOT_HOSTS:-all}"
 	HOSTS_EXPLICIT=0
 	[ -z "${NIXBOT_HOSTS+x}" ] || HOSTS_EXPLICIT=1
+	NIXBOT_NIX_CONFIG="${NIXBOT_NIX_CONFIG:-}"
+	NIXBOT_NIX_CONFIG_HOST=""
 	GROUPS_RAW="${NIXBOT_GROUPS:-}"
 	GROUP_FROM_FLAG=0
 	ACTION=""
@@ -1151,6 +1156,35 @@ normalize_hosts_input() {
 	emit_normalized_hosts "${raw}" | paste -sd, -
 }
 
+nix_config_host_from_selectors() {
+	local raw="$1" token="" selected=""
+
+	while IFS= read -r token; do
+		[ -n "${token}" ] || continue
+		case "${token}" in
+		-*) continue ;;
+		all) return 1 ;;
+		esac
+		host_token_is_glob "${token}" && return 1
+		valid_host_name "${token}" || return 1
+		[ -z "${selected}" ] || return 1
+		selected="${token}"
+	done < <(emit_normalized_hosts "${raw}")
+
+	[ -n "${selected}" ] || return 1
+	printf '%s\n' "${selected}"
+}
+
+host_nix_config_for() {
+	local node="$1"
+
+	if [ -n "${NIXBOT_NIX_CONFIG}" ] && [ "${node}" = "${NIXBOT_NIX_CONFIG_HOST}" ]; then
+		printf '%s\n' "${NIXBOT_NIX_CONFIG}"
+	else
+		printf '%s\n' "${node}"
+	fi
+}
+
 normalize_groups_input() {
 	emit_normalized_hosts "$1" | paste -sd, -
 }
@@ -1261,6 +1295,11 @@ parse_args() {
 			HOSTS_RAW="${OPTVAL}"
 			HOSTS_FROM_FLAG=1
 			HOSTS_EXPLICIT=1
+			shift "${OPTSHIFT}"
+			;;
+		--nix-config | --nix-config=*)
+			take_optval "$@"
+			NIXBOT_NIX_CONFIG="${OPTVAL}"
 			shift "${OPTSHIFT}"
 			;;
 		--group | --group=*)
@@ -1530,6 +1569,12 @@ parse_args() {
 		HOSTS_EXPLICIT=1
 	fi
 	[ -n "${HOSTS_RAW}" ] || die "--hosts cannot be empty"
+	if [ -n "${NIXBOT_NIX_CONFIG}" ]; then
+		valid_host_name "${NIXBOT_NIX_CONFIG}" ||
+			die "--nix-config must be a valid NixOS configuration name"
+		NIXBOT_NIX_CONFIG_HOST="$(nix_config_host_from_selectors "${HOSTS_RAW}")" ||
+			die "--nix-config requires exactly one positive, exact host selector"
+	fi
 	if [ "${GROUP_FROM_FLAG}" -eq 1 ] && [ -z "$(normalize_groups_input "${GROUPS_RAW}")" ]; then
 		die "--group cannot be empty"
 	fi
@@ -1838,10 +1883,12 @@ activation_goal_persists_profile() {
 }
 
 host_boot_is_container() {
-	local node="$1" is_container=""
+	local node="$1" configuration="" is_container=""
+
+	configuration="$(host_nix_config_for "${node}")"
 
 	if ! run_supervised_stdout_capture is_container "" \
-		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --option warn-dirty false --json --no-write-lock-file ".#nixosConfigurations.${node}.config.boot.isContainer"; then
+		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --option warn-dirty false --json --no-write-lock-file ".#nixosConfigurations.${configuration}.config.boot.isContainer"; then
 		echo "Failed to evaluate boot.isContainer for ${node}" >&2
 		return 2
 	fi
@@ -2983,6 +3030,9 @@ run_ci_trigger() {
 			else
 				remote_args+=(--hosts "${trigger_hosts}")
 			fi
+		fi
+		if [ -n "${NIXBOT_NIX_CONFIG}" ]; then
+			remote_args+=(--nix-config "${NIXBOT_NIX_CONFIG}")
 		fi
 	fi
 	if [ "${LOG_FORMAT}" != "auto" ]; then
@@ -7822,9 +7872,6 @@ run_deploy_job() {
 		duration_secs="$(elapsed_seconds "${deploy_start_epoch}")"
 		write_duration_file "${duration_file}" "${duration_secs}"
 		log_host_phase_duration "${node}" deploy "${duration_secs}" "${log_file}"
-		if [ "${rc}" = "0" ] && [ ! -e "${skip_marker}" ]; then
-			print_deploy_systemd_user_manager_report "${node}" "${deploy_start_epoch}" "${log_file}" || true
-		fi
 		rm -f "${skip_marker}"
 		exit "${rc}"
 	)
@@ -8309,7 +8356,6 @@ rollback_host_to_snapshot() {
 			echo "==> Rollback activation completed for ${node}, but managed user services did not reconverge" >&2
 			return 1
 		fi
-		print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
 		return 0
 	else
 		rollback_rc="$?"
@@ -8331,7 +8377,6 @@ rollback_host_to_snapshot() {
 			return 1
 		fi
 		echo "==> Rollback for ${node} completed despite transport disconnect" >&2
-		print_deploy_systemd_user_manager_report "${node}" "${rollback_start_epoch}" || true
 		return 0
 	fi
 
@@ -9560,7 +9605,6 @@ activate_prepared_system_path() {
 			echo "==> Deploy transport closed or failed for ${node}; verifying target state" >&2
 			if verify_deploy_target_state_after_transport_loss "${node}" "${system_path}" "${activation_unit}" "${activation_start_epoch}"; then
 				echo "==> Deploy for ${node} completed despite transport disconnect" >&2
-				print_deploy_systemd_user_manager_report "${node}" "${activation_start_epoch}" || true
 				return 0
 			fi
 		fi
@@ -9569,9 +9613,10 @@ activate_prepared_system_path() {
 }
 
 target_trusted_public_keys_for_copy() {
-	local node="$1" settings_json=""
+	local node="$1" configuration="" settings_json=""
 
-	run_supervised_stdout_capture settings_json "" nix eval --json --no-write-lock-file ".#nixosConfigurations.${node}.config.nix.settings" || return 1
+	configuration="$(host_nix_config_for "${node}")"
+	run_supervised_stdout_capture settings_json "" nix eval --json --no-write-lock-file ".#nixosConfigurations.${configuration}.config.nix.settings" || return 1
 	jq -r '
 		[
 			(."trusted-public-keys" // []),
@@ -10020,158 +10065,6 @@ phase_dir_item_duration_file() {
 	printf '%s/%s.duration\n' "${status_dir}" "${item}"
 }
 
-_remote_systemd_user_manager_unit_is_terminal() {
-	local unit="$1" active_state="" sub_state="" result=""
-
-	active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
-	sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
-	result="$(systemctl show --property=Result --value "${unit}" 2>/dev/null || true)"
-	case "${active_state}:${sub_state}:${result}" in
-	active:exited:success | inactive:dead:success | failed:failed:* | inactive:dead:failed)
-		return 0
-		;;
-	esac
-	return 1
-}
-
-_remote_systemd_user_manager_journal_line_is_noise() {
-	local line="$1"
-	local journal_noise_re='^(Starting |Started |Finished |Stopped |systemd-user-manager-(dispatcher|reconciler)-.*: Deactivated successfully\.)'
-
-	[[ "${line}" =~ ${journal_noise_re} ]]
-}
-
-_remote_systemd_user_manager_emit_journal_file_lines() {
-	local journal_file="$1" line=""
-
-	[ -s "${journal_file}" ] || return 0
-
-	while IFS= read -r line || [ -n "${line}" ]; do
-		if _remote_systemd_user_manager_journal_line_is_noise "${line}"; then
-			continue
-		fi
-		printf '  %s\n' "${line}"
-	done <"${journal_file}"
-}
-
-_remote_systemd_user_manager_emit_new_journal() {
-	local cursor_file="$1"
-	shift
-	local tmp_file="" content_file="" last_line="" cursor="" journalctl_rc=0
-
-	tmp_file="$(mktemp)"
-	if [ -s "${cursor_file}" ]; then
-		if timeout 1s \
-			journalctl \
-			--after-cursor "$(cat "${cursor_file}")" \
-			--show-cursor \
-			--no-pager \
-			-o cat \
-			"$@" >"${tmp_file}" 2>/dev/null; then
-			:
-		else
-			journalctl_rc=$?
-		fi
-	else
-		if timeout 1s \
-			journalctl \
-			--show-cursor \
-			--no-pager \
-			-o cat \
-			"$@" >"${tmp_file}" 2>/dev/null; then
-			:
-		else
-			journalctl_rc=$?
-		fi
-	fi
-
-	if [ "${journalctl_rc}" -eq 124 ]; then
-		rm -f "${tmp_file}"
-		return 124
-	fi
-
-	if [ ! -s "${tmp_file}" ]; then
-		rm -f "${tmp_file}"
-		return 1
-	fi
-
-	content_file="${tmp_file}"
-	last_line="$(tail -n 1 "${tmp_file}")"
-	if [[ "${last_line}" == --\ cursor:\ * ]]; then
-		cursor="${last_line#-- cursor: }"
-		printf '%s\n' "${cursor}" >"${cursor_file}"
-		content_file="$(mktemp)"
-		sed '$d' "${tmp_file}" >"${content_file}"
-		rm -f "${tmp_file}"
-	fi
-
-	_remote_systemd_user_manager_emit_journal_file_lines "${content_file}"
-	rm -f "${content_file}"
-	return 0
-}
-
-_remote_systemd_user_manager_stream_unit() {
-	local unit="$1"
-	local active_state="" sub_state="" result="" exec_main_status="" summary=""
-	local dispatcher_invocation_id="" dispatcher_cursor_file=""
-
-	dispatcher_invocation_id="$(systemctl show --property=InvocationID --value "${unit}" 2>/dev/null || true)"
-	dispatcher_cursor_file="$(mktemp)"
-
-	while :; do
-		if [ -n "${dispatcher_invocation_id}" ]; then
-			_remote_systemd_user_manager_emit_new_journal \
-				"${dispatcher_cursor_file}" \
-				_SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" ||
-				true
-		fi
-
-		if _remote_systemd_user_manager_unit_is_terminal "${unit}"; then
-			break
-		fi
-
-		sleep 0.5
-	done
-
-	if [ -n "${dispatcher_invocation_id}" ]; then
-		_remote_systemd_user_manager_emit_new_journal \
-			"${dispatcher_cursor_file}" \
-			_SYSTEMD_INVOCATION_ID="${dispatcher_invocation_id}" ||
-			true
-	fi
-
-	active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
-	sub_state="$(systemctl show --property=SubState --value "${unit}" 2>/dev/null || true)"
-	result="$(systemctl show --property=Result --value "${unit}" 2>/dev/null || true)"
-	exec_main_status="$(systemctl show --property=ExecMainStatus --value "${unit}" 2>/dev/null || true)"
-	if [ "${result}" = "success" ] || [ -z "${result}" ]; then
-		summary='ok'
-	else
-		summary='FAIL'
-	fi
-	printf '%s\n' "${unit}: ${summary} (${active_state}/${sub_state}, result=${result:-unknown}, exec=${exec_main_status:-unknown})"
-
-	rm -f "${dispatcher_cursor_file}"
-}
-
-_remote_systemd_user_manager_report() {
-	local since="$1" units="" unit="" recent=""
-
-	units="$(systemctl list-unit-files 'systemd-user-manager-dispatcher-*.service' --type=service --no-legend --plain 2>/dev/null | awk '{print $1}' | sort -u || true)"
-	if [ -z "${units}" ]; then
-		return 0
-	fi
-
-	while IFS= read -r unit; do
-		[ -n "${unit}" ] || continue
-		recent="$(journalctl -u "${unit}" --since "${since}" --no-pager -n 1 -o cat 2>/dev/null || true)"
-		[ -n "${recent}" ] || continue
-		_remote_systemd_user_manager_stream_unit "${unit}"
-	done <<EOF_UNITS
-${units}
-EOF_UNITS
-}
-
 _remote_post_switch_user_health_check_once() {
 	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
 	local expected_units="" expected_unit="" expected_state=""
@@ -10415,24 +10308,8 @@ EOF_HC_UNITS
 }
 
 _remote_health_check_starting_timeout_seconds() {
-	local pointer_file="" metadata_file="" timeout="" max_timeout=0 unit_count=0
-	local legacy_metadata_dir="${NIXBOT_SYSTEMD_USER_MANAGER_METADATA_DIR:-/etc/systemd-user-manager/dispatchers}"
+	local timeout="" max_timeout=0 unit_count=0
 	local control_registry="${NIXBOT_PODMAN_COMPOSE_CONTROL_REGISTRY:-/run/current-system/share/podman-compose/control-registry.json}"
-
-	for pointer_file in "${legacy_metadata_dir}"/*.metadata; do
-		[ -e "${pointer_file}" ] || continue
-		metadata_file="$(tr -d '\n' <"${pointer_file}")"
-		[ -r "${metadata_file}" ] || continue
-		unit_count="$((unit_count + $(grep -Eo '"timeout(Ready|Stable)Seconds":[[:space:]]*[0-9]+' "${metadata_file}" | wc -l)))"
-		while IFS= read -r timeout; do
-			case "${timeout}" in
-			"" | *[!0-9]*) continue ;;
-			esac
-			if [ "${timeout}" -gt "${max_timeout}" ]; then
-				max_timeout="${timeout}"
-			fi
-		done < <(grep -Eo '"timeout(Ready|Stable)Seconds":[[:space:]]*[0-9]+' "${metadata_file}" | sed -E 's/.*:[[:space:]]*//')
-	done
 
 	if [ -r "${control_registry}" ]; then
 		unit_count="$((unit_count + $(grep -Eo '"timeoutReadySeconds":[[:space:]]*[0-9]+' "${control_registry}" | wc -l)))"
@@ -10662,21 +10539,6 @@ run_post_switch_health_check_phase() {
 	return "${phase_rc}"
 }
 
-build_systemd_user_manager_report_cmd() {
-	local since_epoch="$1"
-	local invoke_cmd=""
-
-	printf -v invoke_cmd '_remote_systemd_user_manager_report %q' "@${since_epoch}"
-	emit_remote_function_command \
-		"${invoke_cmd}" \
-		_remote_systemd_user_manager_unit_is_terminal \
-		_remote_systemd_user_manager_journal_line_is_noise \
-		_remote_systemd_user_manager_emit_journal_file_lines \
-		_remote_systemd_user_manager_emit_new_journal \
-		_remote_systemd_user_manager_stream_unit \
-		_remote_systemd_user_manager_report
-}
-
 _remote_activation_lock_contention_report() {
 	local node="$1" activation_unit="$2" since="$3" force_report="$4"
 	local journal_unit="" unit_log="" units="" recent=""
@@ -10750,55 +10612,6 @@ report_activation_lock_contention_if_present() {
 	if run_supervised_combined_capture report_output run_prepared_root_command "${report_cmd}" &&
 		[ -n "${report_output}" ]; then
 		printf '%s\n' "${report_output}" >&2
-	fi
-}
-
-run_deploy_systemd_user_manager_report_command() {
-	local node="$1" report_cmd="$2" report_rc=0
-
-	if prepare_deploy_context "${node}"; then
-		:
-	else
-		report_rc="$?"
-		echo "systemd-user-manager report unavailable for ${node}: failed to prepare deploy context" >&2
-		return "${report_rc}"
-	fi
-
-	if run_prepared_root_command "${report_cmd}"; then
-		return 0
-	else
-		report_rc="$?"
-	fi
-
-	echo "systemd-user-manager report unavailable for ${node}: remote report collection failed (exit=${report_rc})" >&2
-	return "${report_rc}"
-}
-
-print_deploy_systemd_user_manager_report() {
-	local node="$1" since_epoch="$2" log_file="${3:-}"
-	local report_cmd=""
-
-	if [ "${DRY_RUN}" -eq 1 ]; then
-		return 0
-	fi
-
-	report_cmd="$(build_systemd_user_manager_report_cmd "${since_epoch}")"
-
-	if [ -n "${log_file}" ]; then
-		run_with_combined_output \
-			run_deploy_systemd_user_manager_report_command \
-			"${node}" \
-			"${report_cmd}" > >(tee_host_log_filter "${node}" "${log_file}" report >&2)
-	elif [ "${FORCE_PREFIX_HOST_LOGS}" -eq 1 ]; then
-		run_with_combined_output \
-			run_deploy_systemd_user_manager_report_command \
-			"${node}" \
-			"${report_cmd}" > >(host_log_filter "${node}" report >&2)
-	else
-		run_with_combined_output \
-			run_deploy_systemd_user_manager_report_command \
-			"${node}" \
-			"${report_cmd}" >&2
 	fi
 }
 
@@ -11105,11 +10918,12 @@ prepare_build_plan_cache_context() {
 }
 
 host_build_plan_cache_file() {
-	local node="$1" cache_root="" context_key="" safe_node=""
+	local node="$1" configuration="" cache_root="" context_key="" safe_node=""
 
 	cache_root="$(host_build_plan_cache_root)" || return 1
 	context_key="$(build_plan_cache_context_key)" || return 1
-	safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}")"
+	configuration="$(host_nix_config_for "${node}")"
+	safe_node="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${node}--${configuration}")"
 	printf '%s/%s/%s.drv-path\n' "${cache_root}" "${context_key}" "${safe_node}"
 }
 
@@ -11150,10 +10964,12 @@ validate_build_plan_drv_path() {
 }
 
 eval_host_build_plan_drv_path() {
-	local node="$1" drv_path="" rc=0
+	local node="$1" configuration="" drv_path="" rc=0
+
+	configuration="$(host_nix_config_for "${node}")"
 
 	if ! run_supervised_stdout_capture drv_path "" \
-		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --raw --no-write-lock-file ".#${NIXBOT_BUILD_PLAN_ATTR_BASE}.${node}.${NIXBOT_BUILD_PLAN_ATTR_SUFFIX}"; then
+		nix eval "${NIXBOT_BUILD_PLAN_NIX_ARGS[@]}" --raw --no-write-lock-file ".#${NIXBOT_BUILD_PLAN_ATTR_BASE}.${configuration}.${NIXBOT_BUILD_PLAN_ATTR_SUFFIX}"; then
 		rc="$?"
 		if is_signal_exit_status "${rc}"; then
 			return "${rc}"

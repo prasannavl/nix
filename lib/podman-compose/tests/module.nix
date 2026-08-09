@@ -24,9 +24,10 @@
     pkgs = pkgs;
     modules = [
       ../default.nix
-      ../../services/migration-manager
+      ../../services/abird-host-agent
       {
         system.stateVersion = "26.05";
+        networking.hostName = "podman-compose-test";
         boot.loader.grub.enable = false;
         fileSystems."/" = {
           device = "/dev/disk/by-label/nixos";
@@ -63,7 +64,7 @@
         };
 
         services = {
-          migration-manager.enable = true;
+          abird-host-agent.enable = true;
 
           podman-compose = {
             demo = {
@@ -348,13 +349,13 @@
   imagePullUnit = config.systemd.user.services.demo-app-image-pull;
   rootlessMigrateUnit = config.systemd.user.services.podman-rootless-idmap-migrate-tester;
   runtimePreflightUnit = config.systemd.user.services.podman-runtime-preflight-tester;
-  testerMigrationUnits = config.services.migration-manager.managedUnits.users.tester;
-  migrationGateCondition = "!${config.services.migration-manager.gatePath}";
-  gateOnlyMigrationUnit = {
-    gateStart = true;
-    stopOnDrain = false;
-    startOnResume = false;
-  };
+  appHoldPath = "/var/lib/abird-host-agent/holds/${builtins.hashString "sha256" "service:demo-app"}.json";
+  hostHoldPath = "/var/lib/abird-host-agent/holds/${builtins.hashString "sha256" "host:podman-compose-test"}.json";
+  migrationGateCondition = ["!${appHoldPath}" "!${hostHoldPath}"];
+  hasMigrationGateConditions = conditions:
+    builtins.length conditions
+    == builtins.length migrationGateCondition
+    && builtins.all (condition: builtins.elem condition conditions) migrationGateCondition;
   laneConsumer = config.services.podman-compose.lane.instances.consumer;
   laneConsumerUnit = config.systemd.user.services.lane-consumer;
   laneProvider1Unit = config.systemd.user.services.lane-provider1;
@@ -610,7 +611,7 @@ in
   assert builtins.elem "NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS=40" appUnit.serviceConfig.Environment;
   assert builtins.elem "NIX_PODMAN_COMPOSE_PROVIDER_TIMEOUT_SECONDS=45" appUnit.serviceConfig.Environment;
   assert builtins.elem "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=75" appUnit.serviceConfig.Environment;
-  assert appUnit.unitConfig.ConditionPathExists == migrationGateCondition;
+  assert hasMigrationGateConditions appUnit.unitConfig.ConditionPathExists;
   assert appUnit.serviceConfig.TimeoutStartSec == 225;
   assert appUnit.serviceConfig.TimeoutStopSec == 240;
   assert !(builtins.hasAttr "demo-app-start-worker" config.systemd.user.services);
@@ -625,17 +626,17 @@ in
   assert appStageUnit.serviceConfig.TimeoutStartSec == 45;
   assert !(builtins.hasAttr "demo-app-bootstrap" config.systemd.user.services);
   assert appReconcileUnit.unitConfig.Requires == ["demo-app.service"];
-  assert appReconcileUnit.unitConfig.ConditionPathExists == migrationGateCondition;
+  assert hasMigrationGateConditions appReconcileUnit.unitConfig.ConditionPathExists;
   assert lib.hasSuffix " reconcile" appReconcileUnit.serviceConfig.ExecStart;
   assert appVerifyUnit.unitConfig.Requires
   == [
     "demo-app.service"
     "demo-app-reconcile.service"
   ];
-  assert appVerifyUnit.unitConfig.ConditionPathExists == migrationGateCondition;
+  assert hasMigrationGateConditions appVerifyUnit.unitConfig.ConditionPathExists;
   assert lib.hasSuffix " verify" appVerifyUnit.serviceConfig.ExecStart;
   assert appReadyTarget.unitConfig.ConditionUser == "tester";
-  assert appReadyTarget.unitConfig.ConditionPathExists == migrationGateCondition;
+  assert hasMigrationGateConditions appReadyTarget.unitConfig.ConditionPathExists;
   assert !(builtins.hasAttr "X-StopOnReconfiguration" appReadyTarget.unitConfig);
   assert appReadyTarget.unitConfig.PartOf == ["demo-app.service"];
   assert appReadyTarget.unitConfig.Requires
@@ -692,7 +693,7 @@ in
   assert runtimePreflightUnit.serviceConfig.TimeoutStartSec == 300;
   assert lib.hasSuffix " runtime-preflight" runtimePreflightUnit.serviceConfig.ExecStart;
   assert runtimePreflightUnit.serviceConfig.ExecStart == "/etc/podman-compose/helpers/podman-backend-helper runtime-preflight";
-  assert runtimePreflightUnit.unitConfig.ConditionPathExists == migrationGateCondition;
+  assert builtins.elem (builtins.head migrationGateCondition) runtimePreflightUnit.unitConfig.ConditionPathExists;
   assert !(appStageUnit.unitConfig ? ConditionPathExists);
   assert !(imagePullUnit.unitConfig ? ConditionPathExists);
   assert runtimePreflightMetadata.version == 1;
@@ -701,16 +702,6 @@ in
   assert builtins.all (entry: !(entry ? backend)) runtimePreflightMetadata.services;
   assert builtins.any (entry: entry.serviceName == "demo-app") runtimePreflightMetadata.services;
   assert !(builtins.hasAttr "podman-managed-graph-migrate-tester" config.systemd.user.services);
-  assert testerMigrationUnits.services."demo-app.service" == gateOnlyMigrationUnit;
-  assert !(builtins.hasAttr "demo-app-bootstrap.service" testerMigrationUnits.services);
-  assert testerMigrationUnits.services."demo-app-reconcile.service" == gateOnlyMigrationUnit;
-  assert testerMigrationUnits.services."demo-app-verify.service" == gateOnlyMigrationUnit;
-  assert testerMigrationUnits.services."podman-runtime-preflight-tester.service" == gateOnlyMigrationUnit;
-  assert testerMigrationUnits.targets."demo-app-ready.target" == gateOnlyMigrationUnit;
-  assert testerMigrationUnits.targets."tester-managed.target".stopOnDrain == true;
-  assert testerMigrationUnits.targets."tester-managed.target".startOnResume == true;
-  assert builtins.hasAttr "tester-managed.target" testerMigrationUnits.targets;
-  assert !(builtins.hasAttr "tester-managed-ready.target" testerMigrationUnits.targets);
   assert runtimePreflightMetadataPathFromEnv appUnit.serviceConfig.Environment
   == "/etc/podman-compose/runtime-preflight/tester.json";
   assert runtimePreflightMetadataPathFromEnv appUnit.serviceConfig.Environment != runtimePreflightStorePath;

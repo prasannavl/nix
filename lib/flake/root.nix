@@ -76,7 +76,7 @@
     flakeProfile.agenix.nixosModules.default
     {nixpkgs.overlays = flakeProfile.overlays;}
     ../podman-compose
-    ../systemd-user-manager
+    ../services/abird-host-agent
     ../../pkgs/tools/nixbot/nixos-module.nix
     rootLib.serviceModule.portCheckModule
     {imports = builtins.attrValues (builtins.removeAttrs rootLib.nixosModules ["default"]);}

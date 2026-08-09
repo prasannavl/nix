@@ -39,24 +39,32 @@ in {
     tunnelUnitName = "cloudflared-tunnel-${tunnelId}";
   in
     {
-      services.cloudflared = lib.mkIf (credentials != null) {
-        enable = true;
-        tunnels.${tunnelId} =
-          {
-            credentialsFile = config.age.secrets.${resolvedAgeSecretName}.path;
-            default = defaultService;
-            ingress = ingress;
-          }
-          // lib.optionalAttrs (edgeIPVersion != null) {
-            edgeIPVersion = edgeIPVersion;
-          }
-          // lib.optionalAttrs (originRequest != {}) {
-            originRequest = originRequest;
-          };
-      };
+      services = {
+        cloudflared = lib.mkIf (credentials != null) {
+          enable = true;
+          tunnels.${tunnelId} =
+            {
+              credentialsFile = config.age.secrets.${resolvedAgeSecretName}.path;
+              default = defaultService;
+              ingress = ingress;
+            }
+            // lib.optionalAttrs (edgeIPVersion != null) {
+              edgeIPVersion = edgeIPVersion;
+            }
+            // lib.optionalAttrs (originRequest != {}) {
+              originRequest = originRequest;
+            };
+        };
 
-      services.migration-manager.managedUnits.system = lib.optionalAttrs (credentials != null) {
-        "${tunnelUnitName}.service" = {};
+        abird-host-agent.services = lib.optionalAttrs (credentials != null) {
+          ${tunnelUnitName}.units = [
+            {
+              scope = "system";
+              user = null;
+              unit = "${tunnelUnitName}.service";
+            }
+          ];
+        };
       };
     }
     // {

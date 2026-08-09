@@ -103,24 +103,32 @@
   mkRatholeTunnel = {tunnel}: let
     rathole = ratholeConfigFor tunnel;
   in {
-    services.rathole =
-      {
-        enable = true;
-        role =
-          rathole.role
-          or (throw "rathole tunnel requires rathole.role or role");
-        settings =
-          rathole.settings
-          or (throw "rathole tunnel requires rathole.settings or settings");
-      }
-      // lib.optionalAttrs (rathole ? package) {
-        package = rathole.package;
-      }
-      // lib.optionalAttrs (rathole ? credentialsFile) {
-        credentialsFile = rathole.credentialsFile;
-      };
+    services = {
+      rathole =
+        {
+          enable = true;
+          role =
+            rathole.role
+            or (throw "rathole tunnel requires rathole.role or role");
+          settings =
+            rathole.settings
+            or (throw "rathole tunnel requires rathole.settings or settings");
+        }
+        // lib.optionalAttrs (rathole ? package) {
+          package = rathole.package;
+        }
+        // lib.optionalAttrs (rathole ? credentialsFile) {
+          credentialsFile = rathole.credentialsFile;
+        };
 
-    services.migration-manager.managedUnits.system."rathole.service" = {};
+      abird-host-agent.services.rathole.units = [
+        {
+          scope = "system";
+          user = null;
+          unit = "rathole.service";
+        }
+      ];
+    };
   };
 in {
   inherit tunnelKinds;

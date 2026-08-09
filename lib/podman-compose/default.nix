@@ -100,6 +100,7 @@
     trustedCa = false;
     trustedCaCertificates = {};
     dirs = {};
+    hostAgentDataPaths = null;
     exposedPorts = {};
   };
   backendType = lib.types.enum ["compose" "quadlet"];
@@ -647,6 +648,17 @@
           mounts can avoid world traversal bits. The helper runs as the stack
           user, so absolute path parents must already exist and be
           searchable/writable by that user.
+        '';
+      };
+
+      hostAgentDataPaths = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = serviceDefaults.hostAgentDataPaths;
+        description = ''
+          Data roots owned by this compose resource for host-agent moves and
+          backups. When null, absolute managed dirs explicitly marked
+          `once = true` are derived automatically. Set this when one parent
+          directory is the actual consistency boundary.
         '';
       };
 
@@ -2276,6 +2288,8 @@
     systemdUserManagedTargetName = userManagedTargetName;
     resolvedWorkingDir = resolvedWorkingDir;
     backend = service.backend;
+    hostAgentDataPaths = service.hostAgentDataPaths;
+    dirs = service.dirs;
     nativeQuadletFiles = quadletArtifacts.files;
     nativeQuadletEtcEntries = quadletArtifacts.etcEntries;
     privateRuntimeUnits = quadletArtifacts.runtimeUnits;
@@ -2299,10 +2313,13 @@
       else [];
     verifyCommand = service.verifyCommand;
     autoStartEnabled = serviceAutoStarts;
-    migrationGateSystemdServiceNames =
-      [resolvedSystemdServiceName]
-      ++ lib.optional hasReconcileUnit reconcileServiceName
-      ++ [verifyServiceName];
+    holdGatedUserUnits =
+      ["${resolvedSystemdServiceName}.service"]
+      ++ lib.optional hasReconcileUnit "${reconcileServiceName}.service"
+      ++ [
+        "${verifyServiceName}.service"
+        "${readyTargetName}.target"
+      ];
     auxiliarySystemdUserServices =
       [
         {
@@ -2627,63 +2644,6 @@
       unitConfig.ConditionUser = user;
     };
   };
-  mkMigrationManagedUser = user: let
-    manuallyManagedServices =
-      builtins.filter (
-        service:
-          service.systemdUser
-          == user
-          && !service.autoStartEnabled
-      )
-      resolvedServices;
-    autoStartServices = autoStartServicesForUser user;
-    targetIsActive = autoStartServices != [];
-    gateOnlyUnit = {
-      gateStart = true;
-      stopOnDrain = false;
-      startOnResume = false;
-    };
-    gateOnlyServiceNames =
-      lib.concatMap (service:
-        map (serviceName: "${serviceName}.service") service.migrationGateSystemdServiceNames)
-      autoStartServices
-      ++ lib.optional
-      (targetIsActive && rootlessStackUserHasConfig user)
-      "${rootlessRuntimePreflightUserServiceNameForUser user}.service";
-  in {
-    ${user} = {
-      services = lib.listToAttrs (
-        (map
-          (service: {
-            name = "${service.systemdServiceName}.service";
-            value = {
-              stopOnDrain = service.state == "running";
-              startOnResume = false;
-            };
-          })
-          manuallyManagedServices)
-        ++ map (serviceName: {
-          name = serviceName;
-          value = gateOnlyUnit;
-        })
-        gateOnlyServiceNames
-      );
-      targets =
-        {
-          "${managedTargetNameForUser user}.target" = {
-            stopOnDrain = targetIsActive;
-            startOnResume = targetIsActive;
-          };
-        }
-        // lib.listToAttrs (
-          map (service: {
-            name = "${service.systemdReadyTargetName}.target";
-            value = gateOnlyUnit;
-          })
-          autoStartServices
-        );
-    };
-  };
   stackUsers = lib.unique (map (service: service.systemdUser) resolvedServices);
   rootlessStackUsers = builtins.filter (user: user != "root") stackUsers;
   rootlessStackUserHasConfig = user:
@@ -2862,7 +2822,7 @@
     else toString entryFile;
 in {
   imports = [
-    ../services/migration-manager/options.nix
+    ../services/abird-host-agent/options.nix
   ];
 
   options.services.podman-compose = lib.mkOption {
@@ -3715,8 +3675,35 @@ in {
         };
     };
 
-    services.migration-manager.managedUnits.users = lib.mkMerge (
-      map mkMigrationManagedUser stackUsers
+    services.abird-host-agent.services = lib.listToAttrs (
+      map
+      (service: {
+        name = service.systemdServiceName;
+        value = {
+          units = [
+            {
+              scope = "user";
+              user = service.systemdUser;
+              unit = "${service.systemdServiceName}.service";
+            }
+          ];
+          dataPaths =
+            if service.hostAgentDataPaths != null
+            then service.hostAgentDataPaths
+            else
+              builtins.attrNames (
+                lib.filterAttrs
+                (path: entry: lib.hasPrefix "/" path && entry.once == true)
+                service.dirs
+              );
+          gatedUserUnits.${service.systemdUser} =
+            service.holdGatedUserUnits
+            ++ lib.optional
+            (service.systemdUser != "root" && rootlessStackUserHasConfig service.systemdUser)
+            "${rootlessRuntimePreflightUserServiceNameForUser service.systemdUser}.service";
+        };
+      })
+      resolvedServices
     );
 
     networking.firewall.allowedTCPPorts = firewallPortsForProtocol "tcp";

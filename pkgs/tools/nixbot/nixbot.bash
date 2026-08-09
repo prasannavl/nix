@@ -189,7 +189,7 @@ _nixbot() {
 	commands+=("${tf_projects[@]}")
 
 	options=(
-		--list-hosts --sha --group --host --hosts --goal --build-host --build-host-deploy-mode
+		--list-hosts --sha --group --host --hosts --nix-config --goal --build-host --build-host-deploy-mode
 		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
 		--deploy-jobs --deploy-jobs-per-domain --verify-jobs --clean --force --bootstrap --ci-first
 		--skip-global-lock
