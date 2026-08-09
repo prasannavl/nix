@@ -425,6 +425,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   August 3 audit of all 86 commits after `af4cf51f`, native host-control
   cutover, complete per-commit dispositions, byte-parity boundary, and
   validation.
+- `.agents/docs/notes/tooling/abird-post-bf4-port-2026-08.md`: Records the
+  August 9 audit of all 130 commits after `bf4e406a`, cumulative native
+  host-control, transfer, OpenSSH, Nixbot authentication ports, per-commit
+  dispositions, and final byte-parity boundary.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.

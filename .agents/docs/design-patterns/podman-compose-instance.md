@@ -278,6 +278,11 @@ such as `exposedPorts` and tunnels therefore apply identically in both forms.
   `/etc/podman-compose/helpers`. Keep exact store-qualified helpers for
   pre-activation plans and other generation-explicit commands, but do not embed
   helper derivation paths in long-lived main/preflight unit definitions.
+- A pre-activation image-pull plan belongs to the candidate generation, while it
+  executes against the currently active users and runtime directories. If the
+  candidate owner does not exist yet, defer that entry to service activation; do
+  not synthesize the user or fail a first deployment. Failure to prepare a
+  runtime directory for an existing owner remains a hard error.
 - Normal stop waits for the shared rootless mutation lock without a second
   helper deadline; systemd's `TimeoutStopSec` is the authoritative bound for the
   whole operation. Keep at least 240 seconds, or the larger instance readiness
@@ -315,6 +320,12 @@ such as `exposedPorts` and tunnels therefore apply identically in both forms.
   snapshot per user with that declaration, then runs bounded local probes in
   parallel. Missing/exited containers and unusable origins are leaf-local
   failures; they do not change the managed root or siblings.
+- Deploy health consumes durable user-service holds from `abird-host-agent` when
+  the agent is installed. A held unit must be loaded, current, and stopped;
+  active held units fail health, while stopped held units are excluded from
+  ready-target, container, and readiness expectations. Hosts without the agent
+  retain ordinary health behavior. An installed agent with unreadable or
+  malformed hold state fails closed instead of guessing.
 - `verifyCommand` is an explicit read-only argv list. When omitted for an
   instance with `exposedPorts.http`, generate a local HTTP probe that rejects
   connection failures and 5xx while accepting usable 1xx-4xx responses.
