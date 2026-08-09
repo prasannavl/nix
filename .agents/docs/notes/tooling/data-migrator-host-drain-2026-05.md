@@ -1,5 +1,9 @@
 # Data Migrator And Host Drain, 2026-05
 
+> Superseded by native durable host-agent jobs and manager-owned migration
+> transactions. This file remains as historical evidence for the retired Python
+> data-migrator and transient drain gate.
+
 ## Scope
 
 This note records the local selective port of the post-`8314da5b` gap3

@@ -2,7 +2,10 @@
 
 ## Scope
 
-This parity pass reconciles the generic Podman, nixbot, and host-manager seams
+> Superseded by the native `abird-host-manager` and `abird-host-agent` control
+> plane. This file records the retired Bash host-manager parity boundary.
+
+This parity pass reconciled the generic Podman, nixbot, and host-manager seams
 between Abird and the Pvl Nix repository. Shared implementation and tests stay
 byte-identical; repository policy is isolated in each repository's package-owned
 `pkgs/tools/host-manager/policy.nix`.

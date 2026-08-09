@@ -1,5 +1,9 @@
 # Migration Manager Runtime Gate 2026-06
 
+> Superseded by persistent `abird-host-agent` resource holds and explicit
+> activation jobs. This file remains as historical evidence for the retired
+> transient runtime gate.
+
 `services.migration-manager` is the runtime-owned migration drain for
 repo-managed host services.
 

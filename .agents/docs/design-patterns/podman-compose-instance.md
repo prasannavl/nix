@@ -158,17 +158,16 @@ such as `exposedPorts` and tunnels therefore apply identically in both forms.
   while those fields turn target definition churn into a full fleet drain.
 - Do not add a target-wanted oneshot that stops or starts its own target. That
   creates a second lifecycle owner inside the target transaction and can
-  deadlock or repeat a drain. The separate migration-manager gate owns explicit
-  full-user drain/resume through the managed target. Register the target's
-  auto-start main/reconcile/verify nodes, per-service ready target, and shared
-  mutating preflight as gate-only units so direct NixOS starts still receive
-  `ConditionPathExists`; set both stop-on-drain and start-on-resume false on
-  those child registrations so they never become independent orchestration
-  owners. Do not add a child-to-root ordering edge: target dependency semantics
-  already order the aggregate root after its wanted readiness graph, so a
-  reverse edge creates an ordering cycle. Every generated managed graph must
-  pass `systemd-analyze --user verify` while building the host closure. Keep
-  stage and image-pull preparation outside the execution gate.
+  deadlock or repeat a drain. Durable `abird-host-agent` resource holds own
+  explicit drain and activation. Register the target's lifecycle root and
+  generated reconcile, verify, ready-target, and runtime-preflight gates with
+  one service resource so the aggregate host resource can drain them without a
+  second lifecycle authority. Do not add a child-to-root ordering edge: target
+  dependency semantics already order the aggregate root after its wanted
+  readiness graph, so a reverse edge creates an ordering cycle. Every generated
+  managed graph must pass `systemd-analyze --user verify` while building the
+  host closure. Keep stage and image-pull preparation outside the execution
+  gate.
 - Main compose services are bounded `Type=oneshot` units with
   `RemainAfterExit=true` and `Restart=no`. The helper owns exactly one Compose
   provider invocation. Provider bind/Aardvark failure, raw status 125, timeout,

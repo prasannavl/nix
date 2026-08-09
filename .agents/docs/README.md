@@ -337,8 +337,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   Records the `pvl-a1` decision to share one staged Ollama models directory
   across the ROCm and NVIDIA instances while keeping separate per-instance
   Ollama homes.
-- `.agents/docs/notes/services/systemd-user-manager.md`: Canonical
-  generation-driven `systemd-user-manager` model and dispatcher behavior.
+- `.agents/docs/notes/services/native-user-graph-legacy-manager-removal-2026-07.md`:
+  Records the final removal of the superseded `systemd-user-manager` module,
+  checks, documentation, and nixbot compatibility path after native
+  `systemd.user` graph adoption.
 - `.agents/docs/notes/services/home-manager-systemd-user-manager-ordering-2026-04.md`:
   Records the false-positive lingering-user restart on `pvl-x2`, the Home
   Manager versus dispatcher race during dconf activation, and the durable
@@ -419,16 +421,23 @@ Use this index as the canonical map for `.agents/docs/**`.
   nixbot, lint, and residual Cloudflare wrapper ports, empty local data-migrator
   policy injection, target-newer review fixes, per-commit dispositions, and
   final byte-parity contract.
+- `.agents/docs/notes/tooling/abird-post-af4-port-2026-08.md`: Records the
+  August 3 audit of all 86 commits after `af4cf51f`, native host-control
+  cutover, complete per-commit dispositions, byte-parity boundary, and
+  validation.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
 - `.agents/docs/notes/tooling/host-manager-operations-2026-07.md`: Records the
-  host-manager remote operation surface, nixbot SSH inventory routing, mutation
-  safety gates, first-class group scope with exact/plural host filtering, and
-  package-owned local `pvl` host-manager policy.
+  superseded Bash host-manager remote operation surface, nixbot SSH inventory
+  routing, mutation safety gates, and package-owned local Pvl policy.
+- `.agents/docs/notes/tooling/native-host-control-plane-2026-08.md`: Records the
+  native Rust manager/agent ownership split, retired compatibility surfaces,
+  durable hold boundary, and narrow Pvl workspace, manifest, stack, and host
+  generation adaptations.
 - `.agents/docs/notes/tooling/shared-tooling-parity-2026-07.md`: Records the
-  byte-identical Podman, nixbot, and host-manager contract, persistent directory
-  lock, and repository-owned host generation and deployment-host policy.
+  superseded Bash host-manager parity contract and repository-owned host
+  generation policy.
 - `.agents/docs/notes/tooling/external-patch-pr-drafts-2026-07.md`: Records the
   draft upstream PR publication state for reusable external-package patches.
 - `.agents/docs/notes/tooling/external-patch-upstreamability-audit-2026-07.md`:
@@ -441,15 +450,14 @@ Use this index as the canonical map for `.agents/docs/**`.
   dotfiles sync user timer stopped scheduling after a failed first clone, and
   the calendar-timer replacement.
 - `.agents/docs/notes/tooling/data-migrator-host-drain-2026-05.md`: Records the
-  generic `data-migrator` port, repository-owned policy injection boundary, and
-  the legacy generation-owned host drain semantics.
+  superseded Python data-migrator, repository policy injection boundary, and
+  legacy generation-owned host drain semantics.
 - `.agents/docs/notes/tooling/bash-completions-2026-06.md`: Records repo-local
   Bash completion sources for operator CLIs, distinct group, exact-host, and
   host-selector completion, and root dev-shell loading.
 - `.agents/docs/notes/tooling/migration-manager-runtime-gate-2026-06.md`:
-  Records the runtime-owned `services.migration-manager` gate,
-  `migration-manager`, managed-unit registry, and data-migrator cutover
-  integration.
+  Records the superseded transient runtime gate, managed-unit registry, and
+  data-migrator cutover integration.
 - `.agents/docs/notes/tooling/nix-run-completion-delegation-2026-06.md`: Records
   the repo-local Bash completion bridge for delegated root-flake `nix run`
   completions.

@@ -241,7 +241,7 @@ nix eval --raw \
   .#nixosConfigurations.<host>.config.age.secrets.<name>.path
 
 nix eval --json \
-  .#nixosConfigurations.<host>.config.services.systemd-user-manager.instances.<unit>.restartTriggers
+  .#nixosConfigurations.<host>.config.systemd.user.services.<unit>.restartTriggers
 ```
 
 For mounted runtime bytes, verify metadata without printing contents:

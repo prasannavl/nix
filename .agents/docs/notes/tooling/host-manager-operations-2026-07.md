@@ -1,6 +1,9 @@
 # Host Manager Operations 2026-07
 
-`host-manager` supports host operations in addition to host generation, build,
+> Superseded by the native `abird-host-manager` and `abird-host-agent` control
+> plane. This file remains as historical evidence for the retired Bash surface.
+
+`host-manager` supported host operations in addition to host generation, build,
 live install, and delete:
 
 ```bash

@@ -18,6 +18,13 @@ stack wiring.
   - root package registration
   - curated root apps
   - the root `stdPackages` set used by lint and fmt orchestration
+- The manifest is a self-contained `packages` attrset. Simple entries map an ID
+  directly to a package path; enriched entries may use only `path`, `args`,
+  `aliases`, `rootApp`, `apps`, and `toolingPackages`.
+- `args` injects caller-owned package dependencies or repository policy that
+  cannot come from standalone package defaults. `apps` and `toolingPackages`
+  select attribute paths relative to the canonical package, and `rootApp = true`
+  exposes the canonical package as a root app.
 - Root app exposure should derive from package metadata and manifest policy, not
   from open-coded per-package flake wiring.
 - When Terraform or other repo automation needs to build a package directory, it
@@ -121,7 +128,7 @@ stack wiring.
     resolved user is non-root
 - Generated user-service modules should use native systemd user-unit wiring for
   ordering and restart/reload triggers. Register only explicitly special
-  non-compose units with `services.systemd-user-manager.instances`.
+  lifecycle roots with `services.abird-host-agent.services`.
 - Prefer direct systemd wiring fields such as `after`, `before`, `wants`,
   `requires`, and `wantedBy` instead of repo-specific dependency abstractions.
 - `mkTcpServiceModule` extends that model with listener address and port options

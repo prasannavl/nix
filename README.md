@@ -51,10 +51,8 @@ NixOS module:
 - Shared Podman base config lives in `lib/podman.nix`.
 - Shared compose lifecycle logic lives in `lib/podman-compose/default.nix` with
   shared shell logic in `lib/podman-compose/helper.sh`.
-- Deploy-time user-manager orchestration lives in
-  `lib/systemd-user-manager/default.nix` with shared shell logic in
-  `lib/systemd-user-manager/helper.sh` (documented in
-  `docs/systemd-user-manager.md`).
+- Deploy-time orchestration uses native `systemd.user` services, generated
+  managed/ready targets, and NixOS' user-unit switch logic.
 - Hosts declare stacks under `services.podman-compose.<stack>` in a host service
   module, commonly `hosts/<host>/services.nix` or
   `hosts/<host>/services/default.nix`.

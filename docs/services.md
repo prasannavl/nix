@@ -103,7 +103,6 @@ config = lib.mkIf cfg.enable {
 
 - [`docs/podman-compose.md`](./podman-compose.md)
 - [`docs/incus-vms.md`](./incus-vms.md)
-- [`docs/systemd-user-manager.md`](./systemd-user-manager.md)
 
 ## Detailed Reference
 
@@ -179,7 +178,6 @@ With the native NixOS option exposed by the module:
 
 - `docs/podman-compose.md`: Podman compose container workloads.
 - `docs/incus-vms.md`: Incus guest lifecycle.
-- `docs/systemd-user-manager.md`: Deploy-time user-service bridge module.
 - `docs/deployment.md`: Deploy architecture and secret model.
 
 ## Source Of Truth Files

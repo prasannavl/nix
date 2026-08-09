@@ -592,4 +592,3 @@ Optional overlap (only for unusual partial/out-of-band flows):
 - `docs/incus-vms.md`: Incus guest lifecycle.
 - `docs/incus-readiness.md`: Readiness checks and deploy barriers for Incus
   guests.
-- `docs/systemd-user-manager.md`: Deploy-time user-service bridge module.

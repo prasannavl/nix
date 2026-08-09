@@ -924,10 +924,12 @@ That means:
   hash of generation-local unit definitions; NixOS re-submits active targets
   after daemon reload to pull new dependencies without draining the full user
   fleet
-- no target-wanted helper may stop or start its own managed target; the explicit
-  migration-manager gate is the only full-user drain/resume owner
-- migration-manager registers the managed target rather than also registering
-  every auto-start child, avoiding duplicate stop transactions
+- no target-wanted helper may stop or start its own managed target; durable
+  `abird-host-agent` resource holds are the only explicit drain/resume owner
+- each service resource registers its lifecycle root and generated reconcile,
+  verify, ready-target, and runtime-preflight gates with the host agent, while
+  the aggregate host resource drains all lifecycle roots without duplicate stop
+  transactions
 - each ready target requires its verifier, and each verifier requires and orders
   after the main compose service plus its optional reconciler; this makes the
   readiness graph atomic; each main service's static lane edge targets the prior
