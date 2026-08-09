@@ -14,6 +14,7 @@
       age
       coreutils
       findutils
+      gawk
       git
       jq
       nix

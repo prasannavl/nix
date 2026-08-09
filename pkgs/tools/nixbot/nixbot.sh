@@ -3198,6 +3198,21 @@ ensure_repo_root_exists() {
 	fi
 }
 
+reconcile_managed_repo_origin() {
+	local origin_url=""
+
+	[ -n "${REPO_URL}" ] || return 0
+
+	origin_url="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
+	if [ -z "${origin_url}" ]; then
+		echo "Adding configured origin to managed repo root" >&2
+		git -C "${REPO_ROOT}" remote add origin "${REPO_URL}"
+	elif [ "${origin_url}" != "${REPO_URL}" ]; then
+		echo "Reconciling managed repo origin with configured repo URL" >&2
+		git -C "${REPO_ROOT}" remote set-url origin "${REPO_URL}"
+	fi
+}
+
 ensure_clean_repo_root() {
 	local status_output=""
 
@@ -3271,6 +3286,9 @@ prepare_repo_worktree() {
 
 	acquire_repo_root_lock
 	ensure_repo_root_exists
+	if [ "${REPO_ROOT_MANAGED}" -eq 1 ]; then
+		reconcile_managed_repo_origin
+	fi
 	ensure_clean_repo_root
 
 	if [ "${REPO_ROOT_MANAGED}" -eq 1 ]; then
@@ -4818,7 +4836,10 @@ build_repo_git_ssh_command_for_url() {
 	IFS=':' read -r -a repo_ssh_key_paths <<<"${REPO_SSH_KEY_PATHS}"
 	for key_path in "${repo_ssh_key_paths[@]}"; do
 		[ -n "${key_path}" ] || continue
-		[ -f "${key_path}" ] || continue
+		if [ ! -f "${key_path}" ]; then
+			echo "Configured repository SSH identity does not exist: ${key_path}" >&2
+			return 1
+		fi
 		printf -v git_ssh_command '%s -i %q -o IdentitiesOnly=yes' \
 			"${git_ssh_command}" \
 			"${key_path}"
@@ -9181,25 +9202,60 @@ reconcile_rollback_managed_user_targets() {
 }
 
 _remote_health_check_expected_user_units() {
-	local user="$1"
+	local user="$1" held_units="${2:-}" held_unit=""
 	local helper="${NIXBOT_PODMAN_COMPOSE_CONTROL:-/run/current-system/sw/bin/podman-composectl}"
+	local -a args=(expected-units "${user}")
 
 	[ -x "${helper}" ] || {
 		echo "missing podman compose control helper: ${helper}" >&2
 		return 1
 	}
-	"${helper}" expected-units "${user}"
+	while IFS= read -r held_unit; do
+		[ -n "${held_unit}" ] || continue
+		args+=(--exclude-unit "${held_unit}")
+	done <<<"${held_units}"
+	"${helper}" "${args[@]}"
 }
 
 _remote_health_check_expected_runtime() {
-	local user="$1"
+	local user="$1" held_units="${2:-}" held_unit=""
 	local helper="${NIXBOT_PODMAN_COMPOSE_CONTROL:-/run/current-system/sw/bin/podman-composectl}"
+	local -a args=(expected-runtime "${user}")
 
 	[ -x "${helper}" ] || {
 		echo "missing podman compose control helper: ${helper}" >&2
 		return 1
 	}
-	"${helper}" expected-runtime "${user}"
+	while IFS= read -r held_unit; do
+		[ -n "${held_unit}" ] || continue
+		args+=(--exclude-unit "${held_unit}")
+	done <<<"${held_units}"
+	"${helper}" "${args[@]}"
+}
+
+_remote_health_check_held_user_units() {
+	local agent="${NIXBOT_HOST_AGENT:-/run/current-system/sw/bin/abird-host-agent}" output=""
+
+	[ -x "${agent}" ] || return 0
+	if ! output="$("${agent}" --json hold list)"; then
+		echo "[health-check] unable to query durable host-agent holds" >&2
+		return 1
+	fi
+	if ! jq -e '
+		.ok == true
+		and .operation == "hold_list"
+		and (.result.holds | type == "array")
+	' >/dev/null <<<"${output}"; then
+		echo "[health-check] invalid durable host-agent hold response" >&2
+		return 1
+	fi
+	jq -r '
+		.result.holds[]
+		| .services[]?
+		| select(.scope == "user" and (.user | type == "string") and (.unit | type == "string"))
+		| [.user, .unit]
+		| @tsv
+	' <<<"${output}" | sort -u
 }
 
 _remote_health_check_pending_start_job_for_unit() {
@@ -9216,6 +9272,16 @@ _remote_health_check_pending_start_job_for_unit() {
 			}
 		END { exit found ? 0 : 1 }
 	'
+}
+
+_remote_health_check_user_unit_state() {
+	local user="$1" runtime_dir="$2" bus="$3" unit="$4"
+
+	setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+		env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+		systemctl --user show \
+		--property=LoadState,ActiveState,SubState,NeedDaemonReload \
+		"${unit}" 2>/dev/null || true
 }
 
 _remote_activation_progress_probe() {
@@ -10067,6 +10133,7 @@ phase_dir_item_duration_file() {
 
 _remote_post_switch_user_health_check_once() {
 	local units="" unit="" user="" uid="" home="" runtime_dir="" bus=""
+	local held_user_units="" held_units="" held_unit="" held_state=""
 	local expected_units="" expected_unit="" expected_state=""
 	local load_state="" active_state="" sub_state="" need_daemon_reload=""
 	local raw_user_jobs="" pending_start_job=""
@@ -10081,6 +10148,12 @@ _remote_post_switch_user_health_check_once() {
 	local system_podman_unhealthy_output="" system_podman_starting_output=""
 	local had_host_failures=0 had_service_failures=0 had_starting=0
 	local starting_output="" unhealthy_output="" expected_failure_output=""
+	local held_output="" held_failure_output=""
+
+	if ! held_user_units="$(_remote_health_check_held_user_units)"; then
+		echo "[health-check] FAILED — durable hold state is unavailable" >&2
+		return 1
+	fi
 
 	raw_system_failed_output="$(systemctl list-units --failed --no-legend --plain 2>/dev/null || true)"
 	system_failed_output="$(printf '%s\n' "${raw_system_failed_output}" | _remote_health_check_filter_failed_units)"
@@ -10116,24 +10189,37 @@ ${system_podman_unhealthy_output}"
 ${system_podman_starting_output}"
 	fi
 
-	units="$(_remote_managed_user_names)"
+	units="$(
+		{
+			_remote_managed_user_names
+			cut -f1 <<<"${held_user_units}"
+		} | sed '/^$/d' | sort -u
+	)"
 	while IFS= read -r user; do
 		[ -n "${user}" ] || continue
+		held_units="$(awk -F '\t' -v user="${user}" '$1 == user { print $2 }' <<<"${held_user_units}")"
 		uid="$(id -u "${user}" 2>/dev/null || true)"
-		[ -n "${uid}" ] || continue
+		if [ -z "${uid}" ]; then
+			if [ -n "${held_units}" ]; then
+				had_host_failures=1
+				held_failure_output="${held_failure_output}${held_failure_output:+
+}user=${user} hold=active account=missing"
+			fi
+			continue
+		fi
 		home="$(getent passwd "${user}" | cut -d: -f6 || true)"
 		[ -n "${home}" ] || home="/"
-		if ! expected_units="$(_remote_health_check_expected_user_units "${user}")"; then
+		if ! expected_units="$(_remote_health_check_expected_user_units "${user}" "${held_units}")"; then
 			had_host_failures=1
 			expected_failure_output="${expected_failure_output}${expected_failure_output:+
 }user=${user} declaration-query=failed"
 			continue
 		fi
 		if ! systemctl is-active --quiet "user@${uid}.service" 2>/dev/null; then
-			if [ -n "${expected_units}" ]; then
+			if [ -n "${expected_units}" ] || [ -n "${held_units}" ]; then
 				had_host_failures=1
 				expected_failure_output="${expected_failure_output}${expected_failure_output:+
-}user=${user} user-manager=inactive expected-units=$(wc -w <<<"${expected_units}")"
+}user=${user} user-manager=inactive expected-units=$(wc -w <<<"${expected_units}") held-units=$(wc -w <<<"${held_units}")"
 			fi
 			continue
 		fi
@@ -10144,15 +10230,42 @@ ${system_podman_starting_output}"
 				env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
 				systemctl --user list-jobs --no-legend --plain 2>/dev/null || true
 		)"
+		while IFS= read -r held_unit; do
+			[ -n "${held_unit}" ] || continue
+			held_state="$(_remote_health_check_user_unit_state \
+				"${user}" "${runtime_dir}" "${bus}" "${held_unit}")"
+			load_state="$(awk -F= '$1 == "LoadState" { print $2; exit }' <<<"${held_state}")"
+			active_state="$(awk -F= '$1 == "ActiveState" { print $2; exit }' <<<"${held_state}")"
+			sub_state="$(awk -F= '$1 == "SubState" { print $2; exit }' <<<"${held_state}")"
+			need_daemon_reload="$(awk -F= '$1 == "NeedDaemonReload" { print $2; exit }' <<<"${held_state}")"
+			if [ "${load_state}" != "loaded" ] || [ "${need_daemon_reload}" = "yes" ]; then
+				had_host_failures=1
+				held_failure_output="${held_failure_output}${held_failure_output:+
+}user=${user} unit=${held_unit} hold=active load=${load_state:-unknown} state=${active_state:-unknown}/${sub_state:-unknown} need-daemon-reload=${need_daemon_reload:-unknown}"
+				continue
+			fi
+			case "${active_state}" in
+			inactive)
+				held_output="${held_output}${held_output:+
+}user=${user} unit=${held_unit} hold=active state=${active_state}/${sub_state:-unknown}"
+				;;
+			deactivating)
+				had_starting=1
+				starting_output="${starting_output}${starting_output:+
+}[user ${user} held units still stopping]
+${held_unit} loaded ${active_state} ${sub_state:-unknown}"
+				;;
+			*)
+				had_service_failures=1
+				held_failure_output="${held_failure_output}${held_failure_output:+
+}user=${user} unit=${held_unit} hold=active state=${active_state:-unknown}/${sub_state:-unknown}"
+				;;
+			esac
+		done <<<"${held_units}"
 		while IFS= read -r expected_unit; do
 			[ -n "${expected_unit}" ] || continue
-			expected_state="$(
-				setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
-					env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
-					systemctl --user show \
-					--property=LoadState,ActiveState,SubState,NeedDaemonReload \
-					"${expected_unit}" 2>/dev/null || true
-			)"
+			expected_state="$(_remote_health_check_user_unit_state \
+				"${user}" "${runtime_dir}" "${bus}" "${expected_unit}")"
 			load_state="$(awk -F= '$1 == "LoadState" { print $2; exit }' <<<"${expected_state}")"
 			active_state="$(awk -F= '$1 == "ActiveState" { print $2; exit }' <<<"${expected_state}")"
 			sub_state="$(awk -F= '$1 == "SubState" { print $2; exit }' <<<"${expected_state}")"
@@ -10223,7 +10336,8 @@ EOF_EXPECTED_UNITS
 ${transitional_output}"
 		fi
 		expected_runtime_status=0
-		expected_runtime_output="$(_remote_health_check_expected_runtime "${user}")" || expected_runtime_status="$?"
+		expected_runtime_output="$(_remote_health_check_expected_runtime \
+			"${user}" "${held_units}")" || expected_runtime_status="$?"
 		if [ "${expected_runtime_status}" -ne 0 ]; then
 			unhealthy_output="${unhealthy_output}${unhealthy_output:+
 }[user ${user} expected compose runtime]
@@ -10276,6 +10390,14 @@ ${podman_starting_output}"
 	done <<EOF_HC_UNITS
 ${units}
 EOF_HC_UNITS
+	if [ -n "${held_output}" ]; then
+		echo "[health-check] durable held user units are stopped:" >&2
+		echo "${held_output}" >&2
+	fi
+	if [ -n "${held_failure_output}" ]; then
+		echo "[health-check] FAILED durable held user units:" >&2
+		echo "${held_failure_output}" >&2
+	fi
 	if [ -n "${expected_failure_output}" ]; then
 		echo "[health-check] FAILED declared managed user units:" >&2
 		echo "${expected_failure_output}" >&2
@@ -10419,9 +10541,11 @@ build_post_switch_health_check_cmd() {
 		_remote_health_check_rootless_mutations \
 		_remote_health_check_starting_timeout_seconds \
 		_remote_managed_user_names \
+		_remote_health_check_held_user_units \
 		_remote_health_check_expected_user_units \
 		_remote_health_check_expected_runtime \
 		_remote_health_check_pending_start_job_for_unit \
+		_remote_health_check_user_unit_state \
 		_remote_post_switch_user_health_check_once \
 		_remote_post_switch_user_health_check
 }

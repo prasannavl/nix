@@ -77,7 +77,6 @@
     {nixpkgs.overlays = flakeProfile.overlays;}
     ../podman-compose
     ../services/abird-host-agent
-    ../../pkgs/tools/nixbot/nixos-module.nix
     rootLib.serviceModule.portCheckModule
     {imports = builtins.attrValues (builtins.removeAttrs rootLib.nixosModules ["default"]);}
   ];
@@ -120,6 +119,7 @@
         commonModulesFor flakeProfile
         ++ [
           {
+            system.configurationRevision = inputs.self.rev or null;
             home-manager.extraSpecialArgs = {
               inherit flakeProfile flakeProfiles machineProfile machineProfiles;
               inputs = selectedInputs;

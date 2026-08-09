@@ -1615,6 +1615,130 @@ class PodmanComposeHelperTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("", result.stdout)
 
+    def test_image_pull_all_defers_when_owner_is_absent(self):
+        owner = "abird-image-pull-owner-does-not-exist"
+        helper_calls = self.state_dir / "image-pull-helper.calls"
+        helper = self.work_dir / "unexpected-image-pull-helper"
+        helper.write_text(
+            textwrap.dedent(
+                f"""\
+                #!{shutil.which("bash")}
+                printf '%s\n' "$*" >>"$TEST_HELPER_CALLS"
+                """
+            ),
+            encoding="utf-8",
+        )
+        helper.chmod(0o755)
+        plan = self.state_dir / "image-pulls.json"
+        plan.write_text(
+            json.dumps(
+                [
+                    {
+                        "user": owner,
+                        "uid": 2000,
+                        "serviceName": "test-compose",
+                        "metadataFile": str(self.state_dir / "metadata.json"),
+                        "helper": str(helper),
+                        "imageTag": "0",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                shutil.which("bash"),
+                "-c",
+                textwrap.dedent(
+                    f"""
+                    plan={shlex.quote(str(plan))}
+                    source lib/podman-compose/image-pull-all.sh
+                    runtime_dir_for_uid() {{
+                      printf '%s\n' {shlex.quote(str(self.runtime_dir))}
+                    }}
+                    main
+                    """
+                ),
+            ],
+            cwd=self.repo_root,
+            env=self.helper_env(TEST_HELPER_CALLS=str(helper_calls)),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [
+                "podman-compose-image-pull-all: skipping pre-activation pull "
+                f"for test-compose; owner {owner} is absent, so service activation "
+                "will pull it",
+                "podman-compose-image-pull-all: deferred 1 image pull(s) to activation",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertFalse(helper_calls.exists())
+        self.assertFalse(self.runtime_dir.exists())
+
+    def test_image_pull_all_stops_when_runtime_dir_cannot_be_prepared(self):
+        owner = pwd.getpwuid(os.getuid()).pw_name
+        helper_calls = self.state_dir / "image-pull-helper.calls"
+        plan = self.state_dir / "image-pulls.json"
+        plan.write_text(
+            json.dumps(
+                [
+                    {
+                        "user": owner,
+                        "uid": os.getuid(),
+                        "serviceName": "test-compose",
+                        "metadataFile": str(self.state_dir / "metadata.json"),
+                        "helper": str(shutil.which("true")),
+                        "imageTag": "0",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                shutil.which("bash"),
+                "-c",
+                textwrap.dedent(
+                    f"""
+                    plan={shlex.quote(str(plan))}
+                    source lib/podman-compose/image-pull-all.sh
+                    runtime_dir_for_uid() {{
+                      printf '%s\n' {shlex.quote(str(self.runtime_dir))}
+                    }}
+                    ensure_runtime_dir() {{
+                      printf '%s\n' ensure-runtime-dir >>{shlex.quote(str(helper_calls))}
+                      return 1
+                    }}
+                    run_as_owner() {{
+                      printf '%s\n' unexpected-helper-call >>{shlex.quote(str(helper_calls))}
+                    }}
+                    main
+                    """
+                ),
+            ],
+            cwd=self.repo_root,
+            env=self.helper_env(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertEqual(
+            ["ensure-runtime-dir"],
+            helper_calls.read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertNotIn("mktemp:", result.stderr)
+
     def test_image_pull_all_defers_runtime_repair_to_activation(self):
         self.runtime_dir.mkdir()
         owner = pwd.getpwuid(os.getuid()).pw_name

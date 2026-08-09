@@ -67,6 +67,24 @@ class PodmanComposeCtlTest(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 check=True,
             )
+            held_result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        'registry="$1" helper=/bin/true; source "$2"; '
+                        "main expected-units alice --exclude-unit alice-web.service"
+                    ),
+                    "podman-composectl-test",
+                    str(registry),
+                    str(self.script),
+                ],
+                cwd=self.repo_root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
 
         self.assertEqual(
             [
@@ -77,6 +95,7 @@ class PodmanComposeCtlTest(unittest.TestCase):
             ],
             result.stdout.splitlines(),
         )
+        self.assertEqual(["alice-managed.target"], held_result.stdout.splitlines())
 
     def test_expected_runtime_matches_quadlet_containers_by_stable_labels(self):
         owner = pwd.getpwuid(os.getuid()).pw_name
@@ -94,6 +113,7 @@ class PodmanComposeCtlTest(unittest.TestCase):
                             "backend": "quadlet",
                             "user": owner,
                             "uid": str(os.getuid()),
+                            "unit": "native.service",
                             "serviceName": "native",
                             "expectedContainers": [
                                 {"name": "native-container", "labels": expected_labels}
@@ -144,11 +164,34 @@ class PodmanComposeCtlTest(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 check=True,
             )
+            held_result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    """
+                    registry="$1"
+                    helper=/bin/true
+                    source "$2"
+                    run_as_owner() { printf '%s\n' unexpected-runtime-query; return 1; }
+                    main expected-runtime "$3" --exclude-unit native.service
+                    """,
+                    "podman-composectl-test",
+                    str(registry),
+                    str(self.script),
+                    owner,
+                ],
+                cwd=self.repo_root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
 
         self.assertEqual(
             ["unhealthy service=native runtime-service=native-container"],
             result.stdout.splitlines(),
         )
+        self.assertEqual([], held_result.stdout.splitlines())
 
     def test_expected_runtime_reads_state_larger_than_arg_max_without_argv(self):
         owner = pwd.getpwuid(os.getuid()).pw_name

@@ -5,6 +5,8 @@
 }: let
   userdata = stacks.all.users.nixbot;
 in {
+  x.sshAgentForwardingUsers = lib.mkAfter ["nixbot"];
+
   services.abird-host-agent.enable = lib.mkDefault true;
 
   services.nixbot = {

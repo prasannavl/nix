@@ -17,13 +17,13 @@
 
   mkRestrictedKey = command: key: ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="${command}" ${key}'';
 
-  repoSshKeyPaths = lib.concatStringsSep ":" cfg.sshClient.identityFiles;
-
-  mkForcedCommand = name: repo:
+  mkForcedCommand = name: repo: let
+    repoSshKeyPaths = lib.concatStringsSep ":" repo.sshIdentityFiles;
+  in
     toString (pkgs.writeShellScript "nixbot-${name}-forced-command" ''
       export NIXBOT_REPO_URL=${lib.escapeShellArg repo.url}
       export NIXBOT_REPO_PATH=${lib.escapeShellArg repo.path}
-      ${lib.optionalString (cfg.sshClient.identityFiles != []) ''
+      ${lib.optionalString (repo.sshIdentityFiles != []) ''
         export NIXBOT_REPO_SSH_KEY_PATHS=${lib.escapeShellArg repoSshKeyPaths}
       ''}
       exec ${cfg.package}/bin/nixbot "$@"
@@ -55,6 +55,13 @@
         default = "nixbot-${name}";
         defaultText = lib.literalExpression ''"nixbot-<name>"'';
         description = "SSH user that receives this repo's forced-command keys.";
+      };
+
+      sshIdentityFiles = mkOption {
+        type = types.listOf types.str;
+        default = cfg.sshClient.identityFiles;
+        defaultText = lib.literalExpression "config.services.nixbot.sshClient.identityFiles";
+        description = "Private SSH identity files used only to clone and fetch this repository.";
       };
     };
   });

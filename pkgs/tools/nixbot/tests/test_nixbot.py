@@ -3078,6 +3078,220 @@ EOF_SCRIPT
         self.assertIn("Prepared deploy for app transport unavailable; retrying (2/3) in 1s", result.stderr)
         self.assertIn("Prepared deploy for app transport unavailable; retrying (3/3) in 2s", result.stderr)
 
+    def test_remote_health_check_reads_durable_user_holds_from_host_agent(self):
+        agent = self.work_dir / "abird-host-agent"
+        response = {
+            "ok": True,
+            "operation": "hold_list",
+            "result": {
+                "count": 2,
+                "holds": [
+                    {
+                        "resource": "service:zulip",
+                        "services": [
+                            {
+                                "scope": "user",
+                                "user": "abird",
+                                "unit": "abird-zulip.service",
+                            },
+                            {"scope": "system", "unit": "postgresql.service"},
+                        ],
+                    },
+                    {
+                        "resource": "service:duplicate",
+                        "services": [
+                            {
+                                "scope": "user",
+                                "user": "abird",
+                                "unit": "abird-zulip.service",
+                            }
+                        ],
+                    },
+                ],
+            },
+        }
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' \"$TEST_HOLD_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+            _remote_health_check_held_user_units
+            """,
+            env={
+                "TEST_HOST_AGENT": str(agent),
+                "TEST_HOLD_RESPONSE": json.dumps(response),
+            },
+        )
+
+        self.assertEqual(["abird\tabird-zulip.service"], result.stdout.splitlines())
+
+    def test_remote_health_check_skips_hold_integration_when_agent_is_absent(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_MISSING_HOST_AGENT"
+            output="$(_remote_health_check_held_user_units)"
+            printf 'rc:%s output:%s\n' "$?" "$output"
+            """,
+            env={"TEST_MISSING_HOST_AGENT": str(self.work_dir / "missing-host-agent")},
+        )
+
+        self.assertEqual(["rc:0 output:"], result.stdout.splitlines())
+        self.assertEqual("", result.stderr)
+
+    def test_remote_health_check_rejects_invalid_installed_agent_hold_state(self):
+        agent = self.work_dir / "abird-host-agent"
+        agent.write_text(
+            f"#!{shutil.which('bash')}\nprintf '%s\\n' '{{\"ok\":true}}'\n",
+            encoding="utf-8",
+        )
+        agent.chmod(0o755)
+
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOST_AGENT="$TEST_HOST_AGENT"
+            _remote_health_check_held_user_units
+            """,
+            check=False,
+            env={"TEST_HOST_AGENT": str(agent)},
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("invalid durable host-agent hold response", result.stderr)
+
+    def test_remote_health_check_accepts_inactive_held_service(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { :; }
+            _remote_health_check_held_user_units() {
+              printf 'abird\tabird-zulip.service\n'
+            }
+            _remote_health_check_expected_user_units() {
+              [ "$1" = abird ] && [ "$2" = abird-zulip.service ] || return 1
+              printf 'abird-managed.target\n'
+            }
+            _remote_health_check_expected_runtime() {
+              [ "$1" = abird ] && [ "$2" = abird-zulip.service ]
+            }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() { :; }
+            setpriv() {
+              case "$*" in
+                *"systemctl --user show"*"abird-zulip.service"*)
+                  printf '%s\n' \
+                    'LoadState=loaded' \
+                    'ActiveState=inactive' \
+                    'SubState=dead' \
+                    'NeedDaemonReload=no'
+                  ;;
+                *"systemctl --user show"*"abird-managed.target"*)
+                  printf '%s\n' \
+                    'LoadState=loaded' \
+                    'ActiveState=active' \
+                    'SubState=active' \
+                    'NeedDaemonReload=no'
+                  ;;
+              esac
+              return 0
+            }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\n' "$rc"
+            """
+        )
+
+        self.assertEqual(["rc:0"], result.stdout.splitlines())
+        self.assertIn("durable held user units are stopped", result.stderr)
+        self.assertIn("unit=abird-zulip.service hold=active", result.stderr)
+        self.assertIn("[health-check] ok", result.stderr)
+        self.assertNotIn("expected compose runtime", result.stderr)
+
+    def test_remote_health_check_rejects_active_held_service(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\n'; }
+            _remote_health_check_held_user_units() {
+              printf 'abird\tabird-zulip.service\n'
+            }
+            _remote_health_check_expected_user_units() { :; }
+            _remote_health_check_expected_runtime() { :; }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() { :; }
+            setpriv() {
+              case "$*" in
+                *"systemctl --user show"*"abird-zulip.service"*)
+                  printf '%s\n' \
+                    'LoadState=loaded' \
+                    'ActiveState=active' \
+                    'SubState=running' \
+                    'NeedDaemonReload=no'
+                  ;;
+              esac
+              return 0
+            }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            printf 'rc:%s\n' "$rc"
+            """
+        )
+
+        self.assertEqual(["rc:1"], result.stdout.splitlines())
+        self.assertIn("FAILED durable held user units", result.stderr)
+        self.assertIn("hold=active state=active/running", result.stderr)
+        self.assertIn("FAILED — service failures detected", result.stderr)
+
     def test_remote_health_check_waits_through_starting_state(self):
         result = self.run_script(
             """
@@ -3790,6 +4004,86 @@ EOF_SCRIPT
         self.assertEqual(str(self.work_dir / "config" / "../missing-key"), lines[4])
         self.assertEqual("plain-age-rc:1", lines[5])
         self.assertIn("Provided key path must point to an .age file", result.stderr)
+
+    def test_managed_repo_reconciles_existing_origin_to_declared_url(self):
+        repo = self.work_dir / "repo"
+        result = self.run_script(
+            f"""
+            init_vars
+            git init -q {repo}
+            git -C {repo} remote add origin ssh://git@github.com/unrelated/repo
+            REPO_ROOT={repo}
+            REPO_URL=ssh://git@github.com/abird-ai/z
+            reconcile_managed_repo_origin
+            git -C {repo} remote get-url origin
+            """
+        )
+
+        self.assertEqual(
+            "ssh://git@github.com/abird-ai/z",
+            result.stdout.strip(),
+        )
+        self.assertIn(
+            "Reconciling managed repo origin with configured repo URL",
+            result.stderr,
+        )
+
+    def test_managed_repo_adds_missing_origin_from_declared_url(self):
+        repo = self.work_dir / "repo"
+        result = self.run_script(
+            f"""
+            init_vars
+            git init -q {repo}
+            REPO_ROOT={repo}
+            REPO_URL=ssh://git@github.com/abird-ai/z
+            reconcile_managed_repo_origin
+            git -C {repo} remote get-url origin
+            """
+        )
+
+        self.assertEqual(
+            "ssh://git@github.com/abird-ai/z",
+            result.stdout.strip(),
+        )
+        self.assertIn("Adding configured origin to managed repo root", result.stderr)
+
+    def test_managed_repo_without_declared_url_preserves_existing_origin(self):
+        repo = self.work_dir / "repo"
+        result = self.run_script(
+            f"""
+            init_vars
+            git init -q {repo}
+            git -C {repo} remote add origin ssh://git@example.test/existing
+            REPO_ROOT={repo}
+            REPO_URL=''
+            reconcile_managed_repo_origin
+            git -C {repo} remote get-url origin
+            """
+        )
+
+        self.assertEqual(
+            "ssh://git@example.test/existing",
+            result.stdout.strip(),
+        )
+        self.assertEqual("", result.stderr)
+
+    def test_repo_ssh_command_rejects_a_missing_declared_identity(self):
+        result = self.run_script(
+            f"""
+            init_vars
+            REPO_SSH_KEY_PATHS={self.work_dir / "missing-repo-key"}
+            ensure_repo_known_hosts_file_for_url() {{ printf '/dev/null\n'; }}
+            set +e
+            build_repo_git_ssh_command_for_url ssh://git@github.com/abird-ai/z
+            printf 'rc:%s\n' "$?"
+            """,
+        )
+
+        self.assertEqual("rc:1", result.stdout.strip())
+        self.assertIn(
+            "Configured repository SSH identity does not exist",
+            result.stderr,
+        )
 
     def test_auth_config_normalizes_user_key_operator_and_proxy_contexts(self):
         result = self.run_script(

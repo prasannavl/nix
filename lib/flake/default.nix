@@ -92,7 +92,8 @@ in rec {
     };
 
     packages = packageSet // lint.packages;
-    nixosModules = moduleAttrsFor packageSet;
+    # Package availability must not hide reusable NixOS module declarations.
+    nixosModules = moduleAttrsFor packageOutputs.packages;
   in {
     inherit apps checks lint nixosModules packages;
     inherit (lint) formatter;

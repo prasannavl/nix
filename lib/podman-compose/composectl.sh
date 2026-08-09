@@ -7,8 +7,8 @@ usage() {
 	cat >&2 <<'EOF'
 usage:
   podman-composectl list
-  podman-composectl expected-units USER
-  podman-composectl expected-runtime USER
+  podman-composectl expected-units USER [--exclude-unit UNIT]...
+  podman-composectl expected-runtime USER [--exclude-unit UNIT]...
   podman-composectl <service> {start|stop|restart|reload|status}
   podman-composectl <service> {link|clean|verify|repair|logs} [args...]
 
@@ -21,26 +21,36 @@ list_services() {
 }
 
 expected_units() {
-	local owner="$1"
+	local owner excluded_units
+	owner="$1"
+	shift
+	excluded_units="$(jq -cn --args '$ARGS.positional' "$@")"
 
-	jq -r --arg owner "$owner" '
+	jq -r --arg owner "$owner" --argjson excludedUnits "$excluded_units" '
 		to_entries[]
 		| .value
 		| select(.user == $owner and (.autoStart // false) and ((.state // "running") == "running"))
-		| .unit, .readyUnit, .managedUnit, (.privateRuntimeUnits[]?)
+		| . as $service
+		| $service.managedUnit,
+		  ($service
+		    | select(.unit as $unit | ($excludedUnits | index($unit)) == null)
+		    | .unit, .readyUnit, (.privateRuntimeUnits[]?))
 		| select(. != null and . != "")
 	' "$registry" | sort -u
 }
 
 expected_runtime() {
-	local bus_path encoded entries entry home owner probe_pid runtime_dir service_name state_json uid
+	local bus_path encoded entries entry excluded_units home owner probe_pid runtime_dir service_name state_json uid
 	local -a probe_pids=() verify_command=()
 	owner="$1"
+	shift
+	excluded_units="$(jq -cn --args '$ARGS.positional' "$@")"
 	entries="$(
-		jq -c --arg owner "$owner" '[
+		jq -c --arg owner "$owner" --argjson excludedUnits "$excluded_units" '[
 			to_entries[]
 			| .value
 			| select(.user == $owner and (.autoStart // false) and ((.state // "running") == "running"))
+			| select(.unit as $unit | ($excludedUnits | index($unit)) == null)
 			| select(
 				((.expectedComposeServices // []) | length) > 0
 				or ((.expectedContainers // []) | length) > 0
@@ -139,6 +149,33 @@ expected_runtime() {
 	done
 }
 
+expected_command() {
+	local action owner
+	local -a excluded_units=()
+	action="$1"
+	owner="$2"
+	shift 2
+
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--exclude-unit)
+			[ "$#" -ge 2 ] || {
+				usage
+				return 1
+			}
+			excluded_units+=("$2")
+			shift 2
+			;;
+		*)
+			usage
+			return 1
+			;;
+		esac
+	done
+
+	"$action" "$owner" "${excluded_units[@]}"
+}
+
 service_json() {
 	local service
 	service="$1"
@@ -223,12 +260,12 @@ main() {
 		list_services
 		return
 	fi
-	if [ "$#" -eq 2 ] && [ "$1" = expected-units ]; then
-		expected_units "$2"
+	if [ "$#" -ge 2 ] && [ "$1" = expected-units ]; then
+		expected_command expected_units "${@:2}"
 		return
 	fi
-	if [ "$#" -eq 2 ] && [ "$1" = expected-runtime ]; then
-		expected_runtime "$2"
+	if [ "$#" -ge 2 ] && [ "$1" = expected-runtime ]; then
+		expected_command expected_runtime "${@:2}"
 		return
 	fi
 

@@ -106,16 +106,30 @@ pull_entry() {
 	helper="$(jq -r '.helper' <<<"$entry")"
 	image_tag="$(jq -r '.imageTag' <<<"$entry")"
 	runtime_dir="$(runtime_dir_for_uid "$uid")"
-	home="$(home_for_user "$owner")"
 	label="declared compose images"
 	if [ -n "$image_tag" ] && [ "$image_tag" != "0" ] && [ "$image_tag" != "null" ]; then
 		label="tag=${image_tag}"
 	fi
 
-	ensure_runtime_dir "$owner" "$uid" "$runtime_dir"
-	status_file="$(mktemp "${runtime_dir}/image-pull-status.XXXXXX")"
+	if ! getent passwd "$owner" >/dev/null; then
+		printf '%s%s\n' \
+			"podman-compose-image-pull-all: skipping pre-activation pull for ${service_name}; " \
+			"owner ${owner} is absent, so service activation will pull it"
+		return 3
+	fi
+
+	home="$(home_for_user "$owner")"
+	if ! ensure_runtime_dir "$owner" "$uid" "$runtime_dir"; then
+		return 1
+	fi
+	if ! status_file="$(mktemp "${runtime_dir}/image-pull-status.XXXXXX")"; then
+		return 1
+	fi
 	chown "$uid:$(id -g "$owner")" "$status_file" 2>/dev/null || true
-	chmod 0600 "$status_file"
+	if ! chmod 0600 "$status_file"; then
+		rm -f "$status_file"
+		return 1
+	fi
 	helper_env=(
 		"PATH=/run/wrappers/bin:/run/current-system/sw/bin"
 		"NIX_PODMAN_COMPOSE_METADATA=$metadata"

@@ -46,6 +46,7 @@ in
     lib-host-network-qos-helper = hostNetworkQosTests.helper;
     lib-host-network-qos-module = hostNetworkQosTests.module;
     lib-lint-manifest-temp-cleanup = lintManifestTempCleanupTest;
+    lib-openssh = import ./openssh.nix {inherit pkgs;};
     lib-ollama-helper = ollamaTests.helper;
     lib-podman-compose-helper = podmanComposeTests.helper;
     lib-podman-compose-module = podmanComposeTests.module;
