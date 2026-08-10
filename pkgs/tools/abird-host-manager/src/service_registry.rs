@@ -10,6 +10,8 @@ use crate::repository::Repository;
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ServicePlacement {
+    stack: String,
+    env: Option<String>,
     address: String,
     group: String,
     role: String,
@@ -25,36 +27,101 @@ pub fn resolve_service_host(
     repository: &Repository,
     nix_program: &Path,
     inventory: &HostManagerConfig,
-    stack: &str,
+    stack: Option<&str>,
     service: &str,
 ) -> Result<ResolvedLogicalService> {
-    validate_registry_name("stack", stack)?;
+    if let Some(stack) = stack {
+        validate_registry_name("stack", stack)?;
+    }
     validate_registry_name("service", service)?;
-    let stack_literal = serde_json::to_string(stack).context("encode stack name for Nix")?;
+    let stack_literal = serde_json::to_string(&stack).context("encode stack name for Nix")?;
     let service_literal = serde_json::to_string(service).context("encode service name for Nix")?;
     let expression = format!(
         r#"stacks: let
-  stackName = {stack_literal};
+  requestedStack = {stack_literal};
   serviceName = {service_literal};
-  stack = if builtins.hasAttr stackName stacks then builtins.getAttr stackName stacks else throw "unknown stack";
-  registry = stack.serviceRegistry;
-  spec = registry.serviceFor serviceName;
-  group = registry.placementForService serviceName;
-  endpoint = registry.endpointForGroup spec.role group;
-in {{ address = endpoint.address; inherit group; role = spec.role; }}"#
+  concreteStacks = builtins.removeAttrs stacks ["all"];
+  declaresService = stackName: let
+    stack = builtins.getAttr stackName concreteStacks;
+  in stack ? serviceRegistry && builtins.hasAttr serviceName stack.serviceRegistry.services;
+  candidates =
+    if requestedStack == null
+    then builtins.filter declaresService (builtins.attrNames concreteStacks)
+    else if builtins.hasAttr requestedStack concreteStacks && declaresService requestedStack
+    then [requestedStack]
+    else [];
+  placementFor = stackName: let
+    stack = builtins.getAttr stackName concreteStacks;
+    registry = stack.serviceRegistry;
+    spec = registry.serviceFor serviceName;
+    group = registry.placementForService serviceName;
+    endpoint = registry.endpointForGroup spec.role group;
+  in {{
+    env = stack.env or null;
+    stack = stackName;
+    address = endpoint.address;
+    inherit group;
+    role = spec.role;
+  }};
+in map placementFor candidates"#
     );
     let value = Nix::new(nix_program.to_path_buf())?.eval_file_apply_json(
         &repository.root().join("lib/stacks/default.nix"),
         &expression,
     )?;
-    let placement: ServicePlacement =
+    let placements: Vec<ServicePlacement> =
         serde_json::from_value(value).context("decode service placement from stack registry")?;
+    let placement = select_service_placement(stack, service, placements)?;
     let host = inventory.host_name_for_address(&placement.address)?;
     let resource = resolve_service_resource(repository, nix_program, host, service)?;
     Ok(ResolvedLogicalService {
         host: host.to_owned(),
         resource,
     })
+}
+
+fn select_service_placement(
+    requested_stack: Option<&str>,
+    service: &str,
+    mut placements: Vec<ServicePlacement>,
+) -> Result<ServicePlacement> {
+    if let Some(stack) = requested_stack {
+        return match placements.as_slice() {
+            [] => bail!("stack {stack:?} does not declare service {service:?}"),
+            [_] => Ok(placements.remove(0)),
+            _ => bail!("stack {stack:?} produced multiple placements for service {service:?}"),
+        };
+    }
+    if placements.len() == 1 {
+        return Ok(placements.remove(0));
+    }
+    let production = placements
+        .iter()
+        .enumerate()
+        .filter_map(|(index, placement)| {
+            (placement.env.as_deref() == Some("prod")).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if let [index] = production.as_slice() {
+        return Ok(placements.remove(*index));
+    }
+    if placements.is_empty() {
+        bail!("no repository stack declares service {service:?}");
+    }
+    let candidates = placements
+        .iter()
+        .map(|placement| {
+            format!(
+                "{} ({})",
+                placement.stack,
+                placement.env.as_deref().unwrap_or("unknown environment")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "service {service:?} has no unique production stack; candidates: {candidates}; pass --stack to select explicitly"
+    )
 }
 
 pub fn resolve_service_resource(
@@ -105,10 +172,71 @@ fn validate_registry_name(kind: &str, value: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn placement(stack: &str, env: Option<&str>) -> ServicePlacement {
+        ServicePlacement {
+            stack: stack.to_owned(),
+            env: env.map(str::to_owned),
+            address: format!("{stack}.example.test"),
+            group: "default".to_owned(),
+            role: "app".to_owned(),
+        }
+    }
+
     #[test]
     fn registry_names_are_deliberately_narrow() {
         assert!(validate_registry_name("service", "zulip-main_2").is_ok());
         assert!(validate_registry_name("service", "zulip; builtins.abort").is_err());
         assert!(validate_registry_name("service", "").is_err());
+    }
+
+    #[test]
+    fn repository_service_selection_prefers_unique_then_production() {
+        let unique =
+            select_service_placement(None, "chat", vec![placement("demo-dev", Some("dev"))])
+                .unwrap();
+        assert_eq!(unique.stack, "demo-dev");
+
+        let production = select_service_placement(
+            None,
+            "chat",
+            vec![
+                placement("demo", Some("prod")),
+                placement("demo-dev", Some("dev")),
+            ],
+        )
+        .unwrap();
+        assert_eq!(production.stack, "demo");
+    }
+
+    #[test]
+    fn repository_service_selection_is_explicit_or_fails_closed() {
+        let explicit = select_service_placement(
+            Some("demo-dev"),
+            "chat",
+            vec![placement("demo-dev", Some("dev"))],
+        )
+        .unwrap();
+        assert_eq!(explicit.stack, "demo-dev");
+
+        let ambiguous = select_service_placement(
+            None,
+            "chat",
+            vec![
+                placement("alpha", Some("prod")),
+                placement("beta", Some("prod")),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(ambiguous.contains("alpha (prod)"));
+        assert!(ambiguous.contains("beta (prod)"));
+        assert!(ambiguous.contains("pass --stack"));
+
+        assert!(
+            select_service_placement(Some("missing"), "chat", Vec::new())
+                .unwrap_err()
+                .to_string()
+                .contains("does not declare service")
+        );
     }
 }

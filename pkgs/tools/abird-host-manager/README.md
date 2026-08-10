@@ -78,10 +78,10 @@ deployment identities without a generated mirror file. Proxy hops are resolved
 from inventory to concrete OpenSSH commands, with an explicit null OpenSSH
 configuration and global trust store, so they do not depend on ambient aliases
 or credentials. For moves, the repository adapter also derives the existing CI
-host as the durable transfer/deployment controller, the target's existing
-parent as its provisioning endpoint, endpoint deployments for target setup, and
-the stack's shared proxy role for cutover and rollback. An explicit JSON policy
-is therefore optional and is reserved for standalone or unusual infrastructure
+host as the durable transfer/deployment controller, the target's existing parent
+as its provisioning endpoint, endpoint deployments for target setup, and the
+stack's shared proxy role for cutover and rollback. An explicit JSON policy is
+therefore optional and is reserved for standalone or unusual infrastructure
 whose controller, routes, or polling policy cannot be inferred safely. A JSON
 configuration contains:
 
@@ -167,12 +167,12 @@ manager resolves source and target data roots by stable name, requires identical
 exact-subtree exclusions, and persists the immutable path mapping in its
 transaction before the first copy. Legacy `data_paths` remain an identical-path
 shorthand. The manager then submits the mapping and source/target endpoints to
-the configured or repository-derived controller agent. Its durable broker job delegates the
-existing Nixbot identity through a short-lived forwarded SSH agent; rsync and
-tar payloads travel directly source-to-target. No peer key, target-side
-credential, controller staging tree, or additional listener is required.
-`broker_ssh_args` describes reachability from within the managed network
-independently from the manager's ordinary SSH path.
+the configured or repository-derived controller agent. Its durable broker job
+delegates the existing Nixbot identity through a short-lived forwarded SSH
+agent; rsync and tar payloads travel directly source-to-target. No peer key,
+target-side credential, controller staging tree, or additional listener is
+required. `broker_ssh_args` describes reachability from within the managed
+network independently from the manager's ordinary SSH path.
 
 Each inventory host may set `host_resource` to the Nix-generated aggregate
 resource ID for whole-host backups and moves. It defaults to
@@ -329,19 +329,21 @@ boundaries.
 
 Ordinary `transaction resume` reattaches only to the same durable job ID and
 immutable specification. If controller or repository policy intentionally
-changes after that job has terminally failed, add `--supersede-failed-job`.
-The manager proves the old host-agent job is `failed`, preserves its record,
-and assigns the same logical step a new attempt ID; it refuses to supersede a
+changes after that job has terminally failed, add `--supersede-failed-job`. The
+manager proves the old host-agent job is `failed`, preserves its record, and
+assigns the same logical step a new attempt ID; it refuses to supersede a
 pending or running job.
 
-The one-argument service form is repository-aware: it resolves the stack's
-declared active endpoint, then requires that host's evaluated agent declaration
-to identify exactly one canonical resource (for example, `service:abird-zulip`).
-Grouped units and user ownership remain agent metadata. `--host` bypasses
-placement while still resolving the declared resource when a repository is
-available. Raw systemd operations are deliberately separate under
-`unit <verb> HOST UNIT`; this standalone surface cannot be confused with a
-logical service lookup.
+The one-argument service form is repository-aware. Without `--stack`, it selects
+the only stack declaring the service, or the unique `env = "prod"` candidate
+when development or platform stacks declare it too. Ambiguous repositories fail
+closed and require `--stack`. It then resolves the selected stack's active
+endpoint and requires that host's evaluated agent declaration to identify
+exactly one canonical resource (for example, `service:abird-zulip`). Grouped
+units and user ownership remain agent metadata. `--host` bypasses placement
+while still resolving the declared resource when a repository is available. Raw
+systemd operations are deliberately separate under `unit <verb> HOST UNIT`; this
+standalone surface cannot be confused with a logical service lookup.
 
 `service wipe` and `resource wipe` are destructive, metadata-owned reset
 operations. The manager generates or accepts one stable wipe ID. By default it

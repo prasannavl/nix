@@ -925,7 +925,7 @@ struct LogicalServiceArgs {
     /// Override the host for a logical service without consulting a repository.
     #[arg(long)]
     host: Option<String>,
-    /// Stack whose service registry supplies logical placement (defaults to pvl).
+    /// Stack for logical placement; otherwise discover the unique production stack.
     #[arg(long)]
     stack: Option<String>,
 }
@@ -2282,7 +2282,7 @@ fn resolve_logical_service(
             &repository,
             nix_program,
             config,
-            args.stack.as_deref().unwrap_or("pvl"),
+            args.stack.as_deref(),
             &args.service,
         )?;
         (resolved.host, resolved.resource)

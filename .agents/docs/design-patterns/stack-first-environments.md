@@ -66,6 +66,23 @@ module remains responsible for profiles, addressing, secrets, dependency
 endpoint policy, and runtime projections. This keeps the shared helper free of
 organization-specific topology.
 
+## Repository-Aware Host Management
+
+Shared host-management code must not encode repository stack names. Logical
+service lookup follows this order:
+
+1. An explicit `--stack` selects that stack.
+2. Otherwise, the only concrete stack declaring the service is selected.
+3. If several stacks declare it, the unique `env = "prod"` stack is selected.
+4. Zero candidates or multiple production candidates fail closed; ambiguity is
+   resolved by the operator with `--stack`, not by a hidden repository default.
+
+Generated host modules derive organization-wide policy from the injected
+`stack.org` and the repository convention `hosts/common/<org>.nix`. A stack
+without `org` receives no organization module; a declared organization whose
+module is absent fails evaluation. Do not duplicate these existing stack facts
+in host-manager JSON or Nixbot configuration.
+
 ## Service Registry
 
 The service registry belongs inside each stack:

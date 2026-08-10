@@ -791,21 +791,30 @@ fn validate_record(record: &ManagedHost) -> Result<()> {
 }
 
 fn default_module(record: &ManagedHost) -> String {
-    let common = match record.stack.as_deref() {
-        Some("gap3") => Some("../common/gap3.nix"),
-        Some("pvl") => Some("../common/pvl.nix"),
-        Some(stack) if stack.starts_with("abird") => Some("../common/abird.nix"),
-        _ => None,
-    };
     let local_modules = if record.system == ManagedHostSystem::Incus {
-        "./packages.nix\n    ./users.nix"
+        "      ./packages.nix\n      ./users.nix"
     } else {
-        "./sys.nix"
+        "      ./sys.nix"
     };
-    let common = common
-        .map(|module| format!("    {module}\n"))
-        .unwrap_or_default();
-    format!("{{...}}: {{\n  imports = [\n{common}    {local_modules}\n  ];\n}}\n")
+    format!(
+        r#"{{lib, stack, ...}}: let
+  commonModule =
+    if stack ? org
+    then lib.path.append ../common "${{stack.org}}.nix"
+    else null;
+in {{
+  imports =
+    lib.optional (commonModule != null) (
+      if builtins.pathExists commonModule
+      then commonModule
+      else throw "no common host module for stack organization ${{stack.org}}"
+    )
+    ++ [
+{local_modules}
+    ];
+}}
+"#
+    )
 }
 
 fn minimal_system_module() -> &'static str {
@@ -919,11 +928,16 @@ mod tests {
     }
 
     #[test]
-    fn pvl_hosts_import_the_pvl_common_module() {
-        let mut host = record(ManagedHostSystem::Live);
-        host.stack = Some("pvl".to_owned());
+    fn generated_hosts_derive_common_modules_from_stack_organization() {
+        let generated = default_module(&record(ManagedHostSystem::Live));
 
-        assert!(default_module(&host).contains("../common/pvl.nix"));
+        assert!(generated.contains("lib.path.append ../common \"${stack.org}.nix\""));
+        assert!(generated.contains("builtins.pathExists commonModule"));
+        assert!(
+            !generated
+                .lines()
+                .any(|line| line.trim_start().starts_with("../common/"))
+        );
     }
 
     #[test]

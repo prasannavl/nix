@@ -1698,7 +1698,7 @@ impl NativeAdapter {
             &repository,
             &manager_nix_program(),
             &self.config,
-            source_namespace,
+            Some(source_namespace),
             logical_service,
         )?;
         if placement.host != expected_host {

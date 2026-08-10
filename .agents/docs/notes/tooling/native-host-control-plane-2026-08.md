@@ -13,6 +13,10 @@ Pvl adopts the native Rust host-control architecture from Abird through
 - native `systemd.user` services plus generated managed/ready targets own
   ordinary switch-time convergence.
 
+The host-manager package is additionally synchronized through Abird's `3588b7b7`
+failed-job supersession fix and the subsequent shared repository-neutral
+discovery refactor.
+
 The retired `systemd-user-manager`, Bash `host-manager`, Python `data-migrator`,
 and runtime `migration-manager` have no compatibility fallback. Historical notes
 remain indexed as superseded evidence, not executable guidance.
@@ -28,9 +32,12 @@ to Abird. Pvl owns these narrow integration differences:
   `abird-host-agent` and the `abird-host-manager` root app;
 - the common host module enables the agent for physical and Incus Pvl hosts;
 - the root flake retains a direct host-agent import because Pvl physical hosts
-  use `machineProfile = null`, while Nixbot uses package module discovery;
-- logical service lookup defaults to stack `pvl`, not `abird`; and
-- generated Pvl host modules import `../common/pvl.nix`.
+  use `machineProfile = null`, while Nixbot uses package module discovery.
+
+The complete `pkgs/tools/abird-host-manager/**` package is byte-identical
+between Pvl and Abird. Logical service lookup discovers the unique production
+stack from repository metadata, and generated host modules select
+`hosts/common/<org>.nix` from the injected `stack.org`.
 
 No Abird/Gondor migration inventory, host topology, checked-in secrets, or
 application-control-plane packages are imported by this port.
@@ -46,6 +53,8 @@ Abird migration inventory or application-controller code:
 - agent and manager logs share symmetric text/JSON snapshot and follow modes;
 - deferred jobs use a consumable wakeup marker, broker endpoints are pinned,
   move progress is durable, and matching pre-prepare moves can resume safely;
+- terminal failed jobs can be preserved and explicitly superseded with a new
+  durable attempt ID;
 - live transfers distinguish source drift from destination damage, require
   independent verification, and execute receiver tools from the configured agent
   closure; and
@@ -63,7 +72,7 @@ Abird migration inventory or application-controller code:
 - Pvl host creation continues to edit the canonical `hosts/default.nix`,
   `hosts/nixbot.nix`, `data/secrets/default.nix`, and host module directories.
 - Exact shared package bytes are preferred. Pvl policy stays limited to root
-  workspace/catalog wiring and the two manager defaults above.
+  workspace, catalog, flake, host, and stack wiring outside the shared package.
 
 ## Validation Contract
 
