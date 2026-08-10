@@ -13,7 +13,7 @@ use crate::agent_adapter::{NativeAdapter, WorkflowItemAdapter};
 use crate::backup_runtime::{BackupPhase, BackupRecord};
 use crate::progress::StepProgress;
 use crate::workflow::{AuthorityKey, MoveItem, TransactionSpec, validate_workflow_id};
-use crate::{Action, Store, Transaction, execute_action};
+use crate::{Action, Store, Transaction, execute_action, supersede_active_job};
 
 pub const TRANSACTION_RECORD_SCHEMA_VERSION: u32 = 1;
 
@@ -350,12 +350,35 @@ fn read_transaction_record(path: &Path, expected_id: &str) -> Result<Transaction
     Ok(record)
 }
 
+fn refresh_child_journals(store: &WorkflowStore, record: &mut TransactionRecord) -> Result<()> {
+    let child_store = store.child_store(record.id())?;
+    for (item_id, child) in &mut record.items {
+        let Some(persisted) = child_store.load_optional(&child.id)? else {
+            continue;
+        };
+        if persisted.id != child.id
+            || persisted.resource_kind != child.resource_kind
+            || persisted.resource != child.resource
+            || persisted.source != child.source
+            || persisted.target != child.target
+            || persisted.config != child.config
+        {
+            bail!(
+                "persisted child journal for item {item_id:?} does not match immutable transaction intent"
+            );
+        }
+        *child = persisted;
+    }
+    Ok(())
+}
+
 pub fn execute_workflow_action(
     store: &WorkflowStore,
     record: &mut TransactionRecord,
     action: Action,
     adapter: &mut NativeAdapter,
 ) -> Result<()> {
+    refresh_child_journals(store, record)?;
     validate_workflow_transition(record, action)?;
     match record.pending_action {
         Some(pending) if pending != action && action != Action::Rollback => bail!(
@@ -418,9 +441,12 @@ pub fn execute_workflow_action(
         item_adapter
             .native_progress()
             .step_completed(&preflight, preflight_started.elapsed());
-        execute_action(&child_store, child, action, &mut item_adapter)
-            .with_context(|| format!("execute transaction item {item_id:?}"))?;
+        let result = execute_action(&child_store, child, action, &mut item_adapter)
+            .with_context(|| format!("execute transaction item {item_id:?}"));
+        let persisted = child_store.load(&child.id)?;
+        record.items.insert(item_id.clone(), persisted);
         store.save(record)?;
+        result?;
     }
 
     record.phase = workflow_phase_after(action);
@@ -431,6 +457,74 @@ pub fn execute_workflow_action(
         .progress()
         .phase_completed(record.id(), action, phase_started.elapsed());
     Ok(())
+}
+
+pub fn supersede_failed_workflow_jobs(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    adapter: &mut NativeAdapter,
+) -> Result<Vec<(String, String)>> {
+    let candidates = validate_failed_workflow_jobs(store, record, adapter)?;
+    let action = record
+        .pending_action
+        .context("validated transaction lost its pending action")?;
+    let child_store = store.child_store(record.id())?;
+    let mut superseded = Vec::with_capacity(candidates.len());
+
+    for item_id in candidates {
+        let child = record
+            .items
+            .get_mut(&item_id)
+            .with_context(|| format!("validated transaction item {item_id:?} disappeared"))?;
+        let (old_job_id, new_job_id) =
+            supersede_active_job(&child_store, child, |_job_id, _transaction| Ok(()))?;
+        event(
+            record,
+            action,
+            format!("item {item_id} superseded terminal failed job {old_job_id} with {new_job_id}"),
+        )?;
+        superseded.push((old_job_id, new_job_id));
+    }
+
+    store.save(record)?;
+    Ok(superseded)
+}
+
+pub fn validate_failed_workflow_jobs(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    adapter: &mut NativeAdapter,
+) -> Result<Vec<String>> {
+    refresh_child_journals(store, record)?;
+    let action = record
+        .pending_action
+        .context("transaction has no pending action with a job to supersede")?;
+    let mut candidates = Vec::new();
+
+    for item_id in ordered_items(record, action)? {
+        let item = record
+            .spec
+            .items
+            .iter()
+            .find(|item| item.id() == item_id)
+            .cloned()
+            .with_context(|| format!("transaction item {item_id:?} has no immutable spec"))?;
+        let child = record
+            .items
+            .get_mut(&item_id)
+            .with_context(|| format!("transaction item {item_id:?} has no journal"))?;
+        if child.active_job_id.is_none() {
+            continue;
+        }
+        let item_adapter = WorkflowItemAdapter::new(adapter, &item);
+        item_adapter.assert_active_job_failed(child)?;
+        candidates.push(item_id);
+    }
+
+    if candidates.is_empty() {
+        bail!("transaction has no active terminal failed job to supersede");
+    }
+    Ok(candidates)
 }
 
 pub fn preflight_new_workflow(
@@ -815,6 +909,45 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("overlaps open transaction")
+        );
+    }
+
+    #[test]
+    fn parent_record_refreshes_durable_child_progress_after_interruption() {
+        let state = TempDir::new().unwrap();
+        let store = WorkflowStore::open(state.path().to_path_buf()).unwrap();
+        let mut record = TransactionRecord::new(
+            TransactionSpec::new(
+                Some("move-refresh"),
+                vec![service("chat", "zulip", "source", "target")],
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap(),
+            "/tmp/config.json".into(),
+        )
+        .unwrap();
+        store.save(&record).unwrap();
+
+        let child_store = store.child_store(record.id()).unwrap();
+        let child = record.items.get_mut("chat").unwrap();
+        child.pending_action = Some(Action::Rollback);
+        child.active_step = Some("deploy-rollback".to_owned());
+        child.active_job_id = Some("move-refresh--chat-rollback-deploy-rollback".to_owned());
+        child_store.save(child).unwrap();
+        drop(child_store);
+
+        record.items.get_mut("chat").unwrap().active_step = None;
+        record.items.get_mut("chat").unwrap().active_job_id = None;
+        refresh_child_journals(&store, &mut record).unwrap();
+
+        assert_eq!(
+            record.items["chat"].active_step.as_deref(),
+            Some("deploy-rollback")
+        );
+        assert_eq!(
+            record.items["chat"].active_job_id.as_deref(),
+            Some("move-refresh--chat-rollback-deploy-rollback")
         );
     }
 

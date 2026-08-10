@@ -36,6 +36,7 @@ use abird_host_manager::workflow::{
 use abird_host_manager::workflow_runtime::{
     InitialMoveContinuation, TransactionRecord, WorkflowRegistration, WorkflowStore,
     execute_workflow_action, preflight_new_workflow, preflight_workflow_action,
+    supersede_failed_workflow_jobs, validate_failed_workflow_jobs,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -550,7 +551,7 @@ enum TransactionCommand {
     /// Restore and explicitly activate the source writer.
     Rollback(TransactionPhaseArgs),
     /// Resume the exact pending action after an interrupted or failed step.
-    Resume(TransactionPhaseArgs),
+    Resume(TransactionResumeArgs),
     /// End the rollback window and release the inactive side without starting it.
     Close(TransactionPhaseArgs),
 }
@@ -567,6 +568,16 @@ struct TransactionCreateArgs {
 #[derive(Debug, Args)]
 struct TransactionPhaseArgs {
     id: String,
+    #[command(flatten)]
+    guard: ExecutionGuard,
+}
+
+#[derive(Debug, Args)]
+struct TransactionResumeArgs {
+    id: String,
+    /// Preserve a terminal failed job and continue the same logical step with a new durable attempt ID.
+    #[arg(long)]
+    supersede_failed_job: bool,
     #[command(flatten)]
     guard: ExecutionGuard,
 }
@@ -1630,14 +1641,33 @@ fn transaction_command(
             if should_dry_run(action, &args.guard)? {
                 let mut adapter = NativeAdapter::load(&record.config)?;
                 preflight_workflow_action(&mut record, action, &mut adapter)?;
+                let supersede_candidates = if args.supersede_failed_job {
+                    validate_failed_workflow_jobs(&store, &mut record, &mut adapter)?
+                } else {
+                    Vec::new()
+                };
                 return print_json(&json!({
                     "dry_run": true,
                     "validated_phase": action,
                     "transaction": record,
                     "action": action,
+                    "supersede_failed_job": args.supersede_failed_job,
+                    "supersede_candidates": supersede_candidates,
                 }));
             }
             let mut adapter = NativeAdapter::load(&record.config)?;
+            if args.supersede_failed_job {
+                preflight_workflow_action(&mut record, action, &mut adapter)?;
+                let superseded = supersede_failed_workflow_jobs(&store, &mut record, &mut adapter)?;
+                for (old_job_id, new_job_id) in superseded {
+                    eprintln!(
+                        "transaction {} superseded terminal failed job {} with {}",
+                        record.id(),
+                        old_job_id,
+                        new_job_id
+                    );
+                }
+            }
             execute_workflow_action(&store, &mut record, action, &mut adapter)?;
             print_json(&record)
         }

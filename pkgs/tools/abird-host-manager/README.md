@@ -270,6 +270,8 @@ abird-host-manager transaction verify TRANSACTION_ID --execute
 abird-host-manager transaction cutover TRANSACTION_ID --execute
 abird-host-manager transaction rollback TRANSACTION_ID --execute
 abird-host-manager transaction resume TRANSACTION_ID --execute
+abird-host-manager transaction resume TRANSACTION_ID \
+  --supersede-failed-job --execute
 abird-host-manager transaction close TRANSACTION_ID --execute
 abird-host-manager transaction show TRANSACTION_ID
 
@@ -324,6 +326,13 @@ resources use one concurrent stream for the system and for each distinct user.
 without mutation. Transaction-owned `host drain`/`activate` and
 `resource hold acquire`/`activate` remain the explicit manager mutation
 boundaries.
+
+Ordinary `transaction resume` reattaches only to the same durable job ID and
+immutable specification. If controller or repository policy intentionally
+changes after that job has terminally failed, add `--supersede-failed-job`.
+The manager proves the old host-agent job is `failed`, preserves its record,
+and assigns the same logical step a new attempt ID; it refuses to supersede a
+pending or running job.
 
 The one-argument service form is repository-aware: it resolves the stack's
 declared active endpoint, then requires that host's evaluated agent declaration

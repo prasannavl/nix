@@ -1796,7 +1796,7 @@ impl NativeAdapter {
                 .context("existing agent job status has no immutable spec")?;
             if !retry_spec_matches(existing_spec, spec) {
                 bail!(
-                    "host-agent job {job_id:?} already exists with a different immutable specification"
+                    "host-agent job {job_id:?} already exists with a different immutable specification; if a terminal failed job must adopt intentionally changed policy, resume the owning transaction with --supersede-failed-job"
                 );
             }
         }
@@ -2365,6 +2365,38 @@ impl<'a> WorkflowItemAdapter<'a> {
             }
             _ => self.native.preflight_transaction(transaction, action),
         }
+    }
+
+    pub fn assert_active_job_failed(&self, transaction: &Transaction) -> Result<()> {
+        let operation = transaction
+            .active_step
+            .as_deref()
+            .context("transaction item has no active step to supersede")?;
+        let job_id = transaction
+            .active_job_id
+            .as_deref()
+            .context("transaction item has no active job to supersede")?;
+        let host = self.step_location(operation, transaction);
+        let status = self.native.config.run_agent(
+            &host,
+            &[
+                "--json".to_owned(),
+                "job".to_owned(),
+                "status".to_owned(),
+                "--job-id".to_owned(),
+                job_id.to_owned(),
+            ],
+        )?;
+        let state = status
+            .pointer("/result/status")
+            .and_then(Value::as_str)
+            .context("host-agent job status response has no status")?;
+        if state != "failed" {
+            bail!(
+                "host-agent job {job_id:?} on {host:?} is {state:?}; only a terminal failed job can be superseded"
+            );
+        }
+        Ok(())
     }
 
     fn step_progress(&self, operation: &str, transaction: &Transaction) -> StepProgress {

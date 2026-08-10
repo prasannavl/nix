@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
@@ -113,6 +113,10 @@ pub struct Transaction {
     pub active_step: Option<String>,
     #[serde(default)]
     pub active_job_id: Option<String>,
+    /// Per-step generations for explicit replacement of terminal failed jobs.
+    /// Generation zero retains the original deterministic job ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub job_generations: BTreeMap<String, u32>,
     /// Immutable named source/target data-root mapping resolved before the first copy.
     #[serde(default)]
     pub data_root_plan: Vec<DataRootPlan>,
@@ -192,6 +196,7 @@ impl Transaction {
             completed_steps: BTreeSet::new(),
             active_step: None,
             active_job_id: None,
+            job_generations: BTreeMap::new(),
             data_root_plan: Vec::new(),
             source_was_active: None,
             target_ever_started: false,
@@ -285,6 +290,15 @@ impl Store {
             bail!("transaction journal ID does not match its filename");
         }
         Ok(transaction)
+    }
+
+    pub fn load_optional(&self, id: &str) -> Result<Option<Transaction>> {
+        validate_id(id)?;
+        let path = self.root.join("transactions").join(format!("{id}.json"));
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load(id).map(Some)
     }
 
     pub fn list(&self) -> Result<Vec<Transaction>> {
@@ -415,6 +429,51 @@ fn prepare_active_job(
     }
 }
 
+pub fn supersede_active_job(
+    store: &Store,
+    transaction: &mut Transaction,
+    assert_terminal_failure: impl FnOnce(&str, &Transaction) -> Result<()>,
+) -> Result<(String, String)> {
+    let action = transaction
+        .pending_action
+        .context("transaction has no pending action with a job to supersede")?;
+    let operation = transaction
+        .active_step
+        .clone()
+        .context("transaction has no active step with a job to supersede")?;
+    let old_job_id = transaction
+        .active_job_id
+        .clone()
+        .context("transaction has no active job to supersede")?;
+    let expected_job_id = job_id(transaction, action, &operation);
+    if old_job_id != expected_job_id {
+        bail!(
+            "active job ID {old_job_id:?} does not match the journal generation for step {operation:?}"
+        );
+    }
+    assert_terminal_failure(&old_job_id, transaction)?;
+
+    let step_id = format!("{}:{operation}", action.as_str());
+    let generation = transaction
+        .job_generations
+        .get(&step_id)
+        .copied()
+        .unwrap_or(0)
+        .checked_add(1)
+        .context("job generation overflow")?;
+    transaction.job_generations.insert(step_id, generation);
+    let new_job_id = job_id(transaction, action, &operation);
+    transaction.active_job_id = Some(new_job_id.clone());
+    transaction.last_error = None;
+    record(
+        transaction,
+        action,
+        format!("terminal failed job {old_job_id} superseded by durable attempt {new_job_id}"),
+    )?;
+    store.save(transaction)?;
+    Ok((old_job_id, new_job_id))
+}
+
 fn reconcile_active_job<A: Adapter>(
     store: &Store,
     transaction: &mut Transaction,
@@ -460,7 +519,17 @@ fn reconcile_active_job<A: Adapter>(
 }
 
 fn job_id(transaction: &Transaction, action: Action, operation: &str) -> String {
-    format!("{}-{}-{operation}", transaction.id, action.as_str())
+    let base = format!("{}-{}-{operation}", transaction.id, action.as_str());
+    let step_id = format!("{}:{operation}", action.as_str());
+    match transaction
+        .job_generations
+        .get(&step_id)
+        .copied()
+        .unwrap_or(0)
+    {
+        0 => base,
+        generation => format!("{base}-attempt-{generation}"),
+    }
 }
 
 fn validate_action_request(transaction: &Transaction, action: Action) -> Result<()> {
@@ -882,6 +951,43 @@ mod tests {
         assert_eq!(transaction.active_step, None);
         assert_eq!(transaction.active_job_id, None);
         assert_eq!(transaction.phase, Phase::Prepared);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_failed_job_can_be_preserved_and_superseded_explicitly() -> Result<()> {
+        let (_temporary, store, mut transaction) = fixture()?;
+        let mut adapter = FakeAdapter {
+            fail_once_at: Some("final-transfer".into()),
+            ..FakeAdapter::default()
+        };
+        setup(&store, &mut transaction, &mut adapter)?;
+        assert!(execute_action(&store, &mut transaction, Action::Prepare, &mut adapter).is_err());
+        let failed_job_id = transaction.active_job_id.clone().unwrap();
+
+        let (old_job_id, new_job_id) =
+            supersede_active_job(&store, &mut transaction, |job_id, _transaction| {
+                assert_eq!(job_id, failed_job_id);
+                Ok(())
+            })?;
+
+        assert_eq!(old_job_id, failed_job_id);
+        assert_eq!(new_job_id, format!("{failed_job_id}-attempt-1"));
+        assert_eq!(
+            transaction.active_job_id.as_deref(),
+            Some(new_job_id.as_str())
+        );
+        adapter.calls.clear();
+        adapter.job_ids.clear();
+
+        execute_action(&store, &mut transaction, Action::Prepare, &mut adapter)?;
+
+        assert_eq!(adapter.calls, ["final-transfer", "verify-final"]);
+        assert_eq!(adapter.job_ids.first(), Some(&new_job_id));
+        assert_eq!(transaction.phase, Phase::Prepared);
+        assert!(transaction.events.iter().any(|event| {
+            event.message.contains(&failed_job_id) && event.message.contains(&new_job_id)
+        }));
         Ok(())
     }
 
