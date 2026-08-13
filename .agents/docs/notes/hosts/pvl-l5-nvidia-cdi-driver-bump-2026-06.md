@@ -71,3 +71,33 @@ mt7921e: unknown parameter 'power_save' ignored
 The current `mt7921e` module exposes only `disable_aspm`, while `mt7921_common`
 exposes `disable_clc`, so the stale `power_save=0` line was removed from the
 `mt7921e` options.
+
+## Boot validation on 2026-08-12
+
+After a boot-goal deployment and reboot, direct validation on `pvl-l5` confirmed
+that `/run/current-system`, `/run/booted-system`, the persistent system profile,
+the kernel `init=` argument, and the current checkout's evaluated toplevel all
+resolved to
+`4y5jbbs0k3l3cq0s76jrijckwkfzb20b-nixos-system-pvl-l5-26.05.20260808.8b8c811`.
+Systemd reported `running` with no pending jobs or failed system or `pvl` user
+units.
+
+The NVIDIA kernel module and `nvidia-smi` both reported `595.91.07`. The CDI
+generator completed with status 0, generated a non-empty version 1.1.0 spec, and
+exposed device names `0` and `all`. No driver/library mismatch or NVRM Xid
+appeared after startup.
+
+GDM had an active Wayland greeter session without the recurring user-switch
+failure signatures. Automatic time-zone services were running, Open WebUI's
+ready target was active and returned HTTP 200, and the intentionally stopped
+Ollama backends remained inactive with successful unit results. The host had
+about 23 GiB available memory, 64 GiB unused swap, and no memory pressure.
+
+The earlier `power_save=0` cleanup described above is not present in the current
+repository state: `lib/hardware/mt7921e.nix` still declares the rejected option,
+and this boot again logged `mt7921e: unknown parameter 'power_save' ignored`.
+Wi-Fi remained connected and the warning did not recur after module startup, so
+this is a non-blocking configuration follow-up rather than a failed deployment.
+Early ACPI, I2C controller, Bluetooth setup, NVIDIA device-node, and CDI
+discovery warnings also settled; Bluetooth, touchpad, Wi-Fi, NVIDIA, and the CDI
+spec were functional afterward.

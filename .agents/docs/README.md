@@ -256,6 +256,14 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/nixbot/pvl-a1-copy-retry-2026-07.md`: Records the `pvl-a1`
   Tailscale-path copy disconnect and safe `nix copy` retry boundary, separately
   from the concurrent optional `pvl-l5` activation failure.
+- `.agents/docs/notes/nixbot/pvl-a1-fstrim-health-timeout-2026-08.md`: Records
+  the successful deploy obscured by an unrelated long fstrim health timeout, the
+  concurrent superseding activation, and the remaining NVIDIA reboot and Ollama
+  iGPU validation gates.
+- `.agents/docs/notes/nixbot/local-self-deploy-network-race-2026-08.md`: Records
+  the `pvl-l5` self-deploy NetworkManager outage that broke a parallel `pvl-x2`
+  closure copy, the unchanged target boundary, and required self-target
+  isolation.
 - `.agents/docs/notes/nixbot/abird-shared-port-parity-2026-06.md`: Records the
   June 2026 shared Abird port, byte-parity files, local adaptations, and skipped
   topology-owned units.

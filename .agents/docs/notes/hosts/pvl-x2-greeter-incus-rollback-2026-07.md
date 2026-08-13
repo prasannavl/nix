@@ -90,6 +90,134 @@ GiB, wrote about 4.5 GiB, and timed out. `atop.service`, `atop-rotate.service`,
 and several coredump units remained failed after recovery because their work ran
 inside the already exhausted host.
 
+## August 10 recurrence
+
+Nixbot run `zeJbAm`, started August 10, 2026 at `17:51:42 +0800`, selected only
+`pvl-x2`. It copied 3,153 store paths and submitted the new generation's
+activation. Most of the reported `27m37s` deploy duration was closure transfer;
+the activation reached its final Incus work in about two minutes.
+
+At `18:18:48`, reloading the active UID 60578 `gdm-greeter` manager shut down
+GNOME Shell. The shell dumped core with `SIGSEGV`. The reexecuted manager then
+tried to start `gnome-session@gnome-login.target`, but GNOME Shell reported
+`Failed to find any matching session`. The dependent SettingsDaemon, IBus, and
+portal failures made `switch-to-configuration-ng` return status 4. Both Incus
+automatic-start waves completed successfully in three to four seconds.
+
+Rollback activated the saved
+`wrmnr5b0za3zp9hsdpn3v927f1fjk92k-nixos-system-pvl-x2-26.05.20260724.597283a`
+generation. It returned status 4 after the same no-matching-session failure in
+the UID 60579 `gdm-greeter-2` manager. Two additional rollback transitions did
+not persist:
+
+- `incus-gap3-gondor.service` timed out after 90 seconds while stopping, then
+  restarted successfully with the restored graph;
+- `systemd-hostnamed.socket` briefly refused to start while
+  `systemd-hostnamed.service` was already active, then cleared when the service
+  exited.
+
+Live readback proved both current-system and the persistent system profile
+pointed to the saved generation. The system reported `running` with no failed
+units, every declared Incus lifecycle unit was active, all three parent
+instances were running, and both Incus settlement services had succeeded. The
+host had about 35 GiB available memory with no memory pressure or OOM event, so
+the July capacity collapse did not recur.
+
+This recurrence confirms the GDM failure is deterministic enough to block an
+otherwise healthy deploy. The narrow correction belongs in user-switch planning:
+transient, display-manager-owned greeter managers must not synthesize
+graphical-session targets after their logind session has been torn down. Do not
+ignore status 4 globally; activation failures for ordinary users must remain
+visible and fatal.
+
+## Resolution design
+
+The failed generation's exact `switch-to-configuration-ng` source has two
+generic rules that combine badly for a display-manager greeter:
+
+1. the system-scope parent iterates every result from `logind.list_users()` and
+   runs the user-switch child without classifying the user;
+2. the child records every active target for a later start unless the target has
+   `RefuseManualStart=yes` or the NixOS-specific `X-OnlyManualStart=yes`
+   directive.
+
+The preferred correction is to exclude display-manager-owned transient greeter
+identities from the generic per-user switch. The exclusion should be generated
+from display-manager configuration rather than inferred from a username pattern.
+GDM remains responsible for replacing its greeter and establishing the matching
+logind session. Regular and lingered user managers must still run the normal
+switch, and their status 4 failures must remain fatal.
+
+If that boundary cannot be added immediately, a narrower package/module
+mitigation is to mark every unit in the greeter's session-owned graph with
+`X-OnlyManualStart=yes`. Marking only `gnome-session@gnome-login.target` is
+insufficient because the switch independently snapshots and restarts active
+SettingsDaemon, X11-session, IBus, and portal units.
+
+The operational workaround is a maintenance-window switch with the display
+manager stopped and its greeter manager fully exited, followed by an explicit
+display-manager start. It is disruptive and should not become the normal deploy
+path.
+
+### Boot-goal workaround
+
+A `boot` goal avoids the live user-switch path entirely. The target
+`switch-to-configuration` installs the boot entry, syncs the store, and exits
+before system or user units are migrated. Nixbot persists the target system
+profile and bootloader entry but does not reboot the host.
+
+Current nixbot behavior needs two guardrails for this workaround:
+
+- post-deploy health checks inspect the still-running old generation and are not
+  evidence that the target generation booted successfully;
+- rollback is hard-coded to use the `switch` goal, even when the failed deploy
+  requested `boot`, so automatic rollback can re-enter the GDM failure.
+
+Use the boot goal with immediate verification and automatic rollback disabled,
+then perform a controlled reboot with the saved generation available for boot
+menu recovery. After reboot, verify current-system and the persistent profile
+both point to the target, system state is healthy, and the Incus and Podman
+graphs have converged.
+
+A durable nixbot improvement should make rollback goal-aware (`boot` restores
+the previous boot default without live activation) and represent boot-goal
+verification as pending until a post-reboot observer confirms the target
+generation.
+
+### Boot-goal validation on 2026-08-11
+
+After staging the generation with the `boot` goal and rebooting, direct LAN SSH
+validation confirmed that `/run/current-system` and the persistent system
+profile both resolved to
+`pwrcbjlnz5scbwi4xg5dqj1lhr866ckb-nixos-system-pvl-x2-26.05.20260808.8b8c811`.
+The host booted kernel `7.1.7`; systemd reported `running`, had no pending jobs,
+and had no failed system or `pvl` user units.
+
+GDM was active with a fresh `gdm-greeter` Wayland session. The journal contained
+none of the live-switch failure signatures: no greeter segmentation fault, no
+missing matching session, no failed `gnome-login` target, and no status 4 user
+switch result.
+
+Both Incus automatic-start settlement jobs completed successfully with status 0
+at `14:49:15` and `14:49:20 +08`. The preseed, reconciler, limits, and routes
+jobs also reported success, `incus.service` was running, and all six listed
+instances were running. All 18 rootless Podman containers were running and all
+12 declared application-ready targets were active. Immich Redis's first health
+check failed while the container was starting, then became healthy about 30
+seconds later and remained healthy; this was startup convergence rather than a
+persistent unit failure.
+
+No boot-scoped kernel error, OOM, Incus panic, or watchdog failure was present.
+Available memory stabilized around 29 GiB and load fell from 17.22 to 7.10 over
+the observation window. The host still has no swap, so the previously recorded
+capacity risk remains even though this boot had healthy headroom.
+
+Two non-blocking application warnings remain outside the boot-goal result.
+`docmost_redis_1` reported that memory overcommit is disabled, confirmed by
+`vm.overcommit_memory=0`, and Portainer reported that no administrator account
+is configured. Both applications reached their declared ready targets, but the
+warnings need separate configuration and security review.
+
 ## Classification
 
 - Fix the GDM and session-scoped user-switch ownership boundary to remove the
