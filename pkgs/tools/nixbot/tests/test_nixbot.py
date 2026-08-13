@@ -3298,6 +3298,7 @@ EOF_SCRIPT
             init_vars
             calls=0
             sleep() { printf 'sleep:%s\n' "$1"; }
+            _remote_health_check_baseline_timer_units() { :; }
             _remote_health_check_starting_timeout_seconds() { printf '30\n'; }
             _remote_post_switch_user_health_check_once() {
               calls=$((calls + 1))
@@ -3322,6 +3323,37 @@ EOF_SCRIPT
             result.stdout.splitlines(),
         )
         self.assertIn("[health-check] waiting up to 30s for deployment work to settle", result.stderr)
+
+    def test_remote_health_check_ignores_preexisting_timer_work(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "list-units --state=activating,deactivating,reloading --type=service --no-legend --plain")
+                  printf 'fstrim.service loaded activating start start Discard unused blocks\n'
+                  ;;
+                "show fstrim.service --property=TriggeredBy --value")
+                  printf 'fstrim.timer\n'
+                  ;;
+              esac
+            }
+            _remote_managed_user_names() { :; }
+            _remote_health_check_held_user_units() { :; }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+
+            _remote_post_switch_user_health_check
+            """,
+        )
+
+        self.assertIn("[health-check] ok", result.stderr)
+        self.assertIn(
+            "[health-check] pre-existing timer work does not block deployment health:",
+            result.stderr,
+        )
+        self.assertIn("fstrim.service", result.stderr)
+        self.assertNotIn("deployment work still settling", result.stderr)
 
     def test_remote_health_check_fails_isolated_unhealthy_podman(self):
         result = self.run_script(
@@ -3359,6 +3391,7 @@ EOF_SCRIPT
               esac
             }
             _remote_managed_user_names() { :; }
+            _remote_health_check_held_user_units() { :; }
             _remote_health_check_podman_unhealthy_containers() {
               printf 'unhealthy novu_worker_1 Up 3 minutes (unhealthy)\\n'
             }
@@ -3734,6 +3767,21 @@ EOF_SCRIPT
             [
                 "abird-nginx.service loaded activating start start podman: abird: nginx",
             ],
+            result.stdout.splitlines(),
+        )
+
+    def test_remote_health_check_ignores_only_baseline_timer_units(self):
+        result = self.run_script(
+            """
+            cat <<'EOF_UNITS' | _remote_health_check_filter_transitional_units fstrim.service
+            fstrim.service loaded activating start start Discard unused blocks
+            nix-gc.service loaded activating start start Delete old store paths
+            EOF_UNITS
+            """,
+        )
+
+        self.assertEqual(
+            ["nix-gc.service loaded activating start start Delete old store paths"],
             result.stdout.splitlines(),
         )
 

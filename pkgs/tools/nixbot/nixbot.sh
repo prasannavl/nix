@@ -10168,7 +10168,10 @@ _remote_post_switch_user_health_check_once() {
 		echo "${system_failed_output}" >&2
 	fi
 	raw_system_transitional_output="$(systemctl list-units --state=activating,deactivating,reloading --type=service --no-legend --plain 2>/dev/null || true)"
-	system_transitional_output="$(printf '%s\n' "${raw_system_transitional_output}" | _remote_health_check_filter_transitional_units)"
+	system_transitional_output="$(
+		printf '%s\n' "${raw_system_transitional_output}" |
+			_remote_health_check_filter_transitional_units "${NIXBOT_HEALTH_BASELINE_TIMER_UNITS:-}"
+	)"
 	if [ -n "${system_transitional_output}" ]; then
 		had_starting=1
 		starting_output="${starting_output}${starting_output:+
@@ -10458,8 +10461,14 @@ _remote_health_check_starting_timeout_seconds() {
 
 _remote_post_switch_user_health_check() {
 	local timeout_seconds="" poll_seconds=5 start_epoch="" now_epoch="" rc=0
+	local NIXBOT_HEALTH_BASELINE_TIMER_UNITS=""
 
 	start_epoch="$(date +%s)"
+	NIXBOT_HEALTH_BASELINE_TIMER_UNITS="$(_remote_health_check_baseline_timer_units)"
+	if [ -n "${NIXBOT_HEALTH_BASELINE_TIMER_UNITS}" ]; then
+		echo "[health-check] pre-existing timer work does not block deployment health:" >&2
+		echo "${NIXBOT_HEALTH_BASELINE_TIMER_UNITS}" >&2
+	fi
 
 	while :; do
 		if _remote_post_switch_user_health_check_once; then
@@ -10499,7 +10508,35 @@ _remote_health_check_ignored_failed_units() {
 }
 
 _remote_health_check_filter_transitional_units() {
-	awk '!($0 ~ /\[systemd-run\].*podman.*healthcheck run / || $0 ~ /\.podman-wrapped healthcheck run /)'
+	local ignored_units="${1:-}"
+
+	awk -v ignored_units="${ignored_units}" '
+		BEGIN {
+			count = split(ignored_units, units, "\n")
+			for (unit_index = 1; unit_index <= count; unit_index++) {
+				if (units[unit_index] != "") {
+					ignored[units[unit_index]] = 1
+				}
+			}
+		}
+		!($0 ~ /\[systemd-run\].*podman.*healthcheck run / ||
+			$0 ~ /\.podman-wrapped healthcheck run / ||
+			$1 in ignored)
+	'
+}
+
+_remote_health_check_baseline_timer_units() {
+	local raw_output="" line="" unit="" triggered_by=""
+
+	raw_output="$(systemctl list-units --state=activating,deactivating,reloading --type=service --no-legend --plain 2>/dev/null || true)"
+	while IFS= read -r line; do
+		[ -n "${line}" ] || continue
+		unit="${line%% *}"
+		triggered_by="$(systemctl show "${unit}" --property=TriggeredBy --value 2>/dev/null || true)"
+		if grep -Eq '(^|[[:space:]])[^[:space:]]+\.timer($|[[:space:]])' <<<"${triggered_by}"; then
+			printf '%s\n' "${unit}"
+		fi
+	done <<<"${raw_output}"
 }
 
 _remote_health_check_podman_unhealthy_containers() {
@@ -10536,6 +10573,7 @@ build_post_switch_health_check_cmd() {
 		_remote_health_check_filter_failed_units \
 		_remote_health_check_ignored_failed_units \
 		_remote_health_check_filter_transitional_units \
+		_remote_health_check_baseline_timer_units \
 		_remote_health_check_podman_unhealthy_containers \
 		_remote_health_check_podman_starting_containers \
 		_remote_health_check_rootless_mutations \

@@ -16,11 +16,16 @@ It had only 7 seconds of CPU time and no failure result. The health result was
 therefore a timeout false positive, not evidence of a failed trim or activation.
 
 The weekly persistent fstrim timer became due as activation completed. Current
-nixbot health logic treats any non-filtered transitional system service as
-deployment work, so unrelated maintenance can consume the timeout derived from
-service readiness metadata. A durable correction should distinguish deploy-
-owned convergence from independent timer work, or give known successful
-maintenance services a separate observation policy.
+nixbot health logic previously treated any non-filtered transitional system
+service as deployment work, so unrelated maintenance could consume the timeout
+derived from service readiness metadata.
+
+The health phase now snapshots timer-owned system services that are already
+transitional when observation begins. Those baseline units remain visible in the
+health log but do not block deployment settlement. Other transitional units and
+timer work that begins after the snapshot still block normally. The exemption
+applies only to transitional settlement; failed units observed during the health
+pass remain ordinary health failures.
 
 ## Superseding activation during validation
 

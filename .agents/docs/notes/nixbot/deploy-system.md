@@ -333,6 +333,12 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   metadata exists, the health check fails rather than inventing an unmanaged
   wait budget. Health-check failures are tracked separately in the final summary
   and roll back using health-specific rollback status buckets.
+- Timer-owned system services that are already transitional when the health
+  phase begins are observed but excluded from deployment settlement. This keeps
+  unrelated maintenance such as an in-flight `fstrim.service` from consuming the
+  service-owned readiness timeout. Other transitional system services and timer
+  work that starts after the baseline snapshot still block normally, and
+  failed-unit checks remain authoritative.
 - Post-switch health checks require primary `nixbot@host` transport and use the
   parent-settle transport-preparation retry plus bounded SSH transport retry, so
   nested hosts that briefly close SSH during parent or guest reactivation do not
