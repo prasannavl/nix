@@ -28,6 +28,11 @@ in {
 
   networking.firewall.allowedTCPPorts = [5000];
 
+  services.tailscale = {
+    useRoutingFeatures = "both";
+    extraSetFlags = ["--advertise-exit-node"];
+  };
+
   services.harmonia = let
     cacheConfig = {
       enable = true;

@@ -151,3 +151,18 @@ That evidence points away from NixOS firewall/rpfilter and toward Tailscale's
 tailnet policy/filtering for the user-owned `pvl-l5 -> pvl-x2` direction. If
 this recurs, first check the Tailscale ACL or node policy for user-device to
 user-device traffic before changing host firewall rules.
+
+## 2026-08-13 Follow-up: pvl-x2 Exit Node
+
+`pvl-x2` is declared as a Tailscale exit node at the host boundary:
+
+- `services.tailscale.useRoutingFeatures = "both"` enables server-side IP
+  forwarding while retaining the loose reverse-path filtering required by its
+  client traffic.
+- `services.tailscale.extraSetFlags = ["--advertise-exit-node"]` advertises the
+  capability on the already-enrolled node without depending on auth-key-backed
+  `tailscale up` behavior.
+
+The common physical-host network profile keeps `"client"` as an overridable
+`lib.mkDefault`, so other hosts retain client-only behavior unless they opt into
+server routing explicitly.

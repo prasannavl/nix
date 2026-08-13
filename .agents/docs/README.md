@@ -215,7 +215,8 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/hosts/pvl-tailnet-rpfilter-2026-06.md`: Records the
   `pvl-a1`/`pvl-l5` to `pvl-x2` tailnet timeout root cause: strict NixOS
   rpfilter with Tailscale fwmark routing, and the
-  `services.tailscale.useRoutingFeatures` fix.
+  `services.tailscale.useRoutingFeatures` fix, plus the later `pvl-x2` exit-node
+  declaration.
 
 ### Lib
 
