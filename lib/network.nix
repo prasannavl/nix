@@ -1,4 +1,8 @@
-{hostName, ...}: {
+{
+  hostName,
+  lib,
+  ...
+}: {
   imports = [
     ./openssh.nix
     ./services/fail2ban-helper
@@ -19,7 +23,7 @@
     resolved.enable = true;
     tailscale = {
       enable = true;
-      useRoutingFeatures = "client";
+      useRoutingFeatures = lib.mkDefault "client";
     };
   };
 }
