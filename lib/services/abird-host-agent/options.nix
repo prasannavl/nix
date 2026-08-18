@@ -459,6 +459,24 @@ in {
         type = lib.types.str;
         description = "services.nixbot.repos entry used for controller deployments.";
       };
+      configOverride = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          Optional controller-local Nixbot inventory override. This is passed
+          through NIXBOT_CONFIG_OVERRIDE_PATH while the repository's canonical
+          nixbot.nix remains the primary configuration.
+        '';
+      };
+      hostLocalLockPath = lib.mkOption {
+        type = lib.types.str;
+        default = "/dev/shm/nixbot-host-local.lock.d";
+        description = ''
+          Nixbot host-local action lock. Durable job recovery defers while a
+          controller activation holds this lock, avoiding nested deploy
+          deadlocks.
+        '';
+      };
     };
 
     manifestPath = lib.mkOption {

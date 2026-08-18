@@ -61,6 +61,19 @@ Abird migration inventory or application-controller code:
 - Nixbot repository authentication is scoped per repository, while SSH agent
   forwarding stays denied globally except for the explicit `nixbot` user.
 
+Controller-owned deployments are deliberately single-host and single-lane. The
+agent adapter passes one build-plan, build, deploy, and verify job to Nixbot,
+bounding controller memory independently of operator-oriented defaults. Nixbot's
+runtime closure owns `flock` through `util-linux`; controller system packages
+are not an implicit dependency.
+
+Durable controller-job recovery defers while Nixbot's host-local action lock is
+held. The module uses a consumable wakeup marker plus a bounded retry timer, and
+may pass one typed, immutable `configOverride` path as
+`NIXBOT_CONFIG_OVERRIDE_PATH`. The agent rejects a missing or relative override
+instead of exposing arbitrary environment injection. Pvl does not add Abird's
+Gondor routes, guest-memory policy, or host-specific override.
+
 ## Ownership Rules
 
 - Holds are persistent host-agent state. Disconnects and elapsed time never

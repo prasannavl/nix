@@ -43,6 +43,8 @@ pub struct NixbotDeployPolicy {
     pub repository_path: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repository_ssh_key_paths: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_override_path: Option<PathBuf>,
     pub revision: String,
 }
 
@@ -89,6 +91,13 @@ pub fn validate_nixbot_deploy_policy(policy: &NixbotDeployPolicy) -> Result<()> 
         if !path.is_absolute() || path.as_os_str().as_encoded_bytes().contains(&b':') {
             bail!("Nixbot repository SSH identity path must be absolute and cannot contain ':'");
         }
+    }
+    if policy
+        .config_override_path
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        bail!("Nixbot configuration override path must be absolute");
     }
     if !is_commit_revision(&policy.revision) && policy.revision != UNCOMMITTED_CONTROLLER_REVISION {
         bail!("Nixbot deployment revision must be a commit ID or the fail-closed sentinel");
@@ -197,6 +206,7 @@ mod tests {
             repository_url: "ssh://git@example.test/repo".to_owned(),
             repository_path: PathBuf::from("/var/lib/nixbot/repo"),
             repository_ssh_key_paths: vec![PathBuf::from("/var/lib/nixbot/.ssh/repo-example")],
+            config_override_path: Some(PathBuf::from("/etc/nixbot/controller.override.nix")),
             revision: "0123456789abcdef".to_owned(),
         };
         let request = NixbotDeployRequest {

@@ -148,6 +148,7 @@
         repository_url = nixbotRepository.url;
         repository_path = nixbotRepository.path;
         repository_ssh_key_paths = nixbotRepository.sshIdentityFiles;
+        config_override_path = cfg.nixbotDeploy.configOverride;
         revision =
           if config.system.configurationRevision == null
           then "UNCOMMITTED-CONTROLLER-GENERATION"
@@ -445,6 +446,10 @@ in {
         message = "services.abird-host-agent.nixbotDeploy requires a Nixbot SSH client identity.";
       }
       {
+        assertion = !nixbotDeployEnabled || (lib.hasPrefix "/" cfg.nixbotDeploy.hostLocalLockPath && cfg.nixbotDeploy.hostLocalLockPath != "/");
+        message = "services.abird-host-agent.nixbotDeploy.hostLocalLockPath must be a concrete absolute path.";
+      }
+      {
         assertion = lib.all (resource: lib.all (argv: argv != [] && lib.hasPrefix "/" (builtins.head argv)) (builtins.attrValues resource.operations)) declaredResources;
         message = "services.abird-host-agent resource operations require a non-empty argv with an absolute executable.";
       }
@@ -485,15 +490,17 @@ in {
     };
 
     systemd = {
-      tmpfiles.rules = [
-        "d ${cfg.stateDirectory} 0711 root root -"
-        "d ${cfg.stateDirectory}/holds 0711 root root -"
-        "d ${cfg.stateDirectory}/declaration-releases 0700 root root -"
-        "d ${cfg.stateDirectory}/jobs 0700 root root -"
-        "d ${cfg.backupRoot} 0700 root root -"
-        "d /run/abird-host-agent 0700 root root -"
-        "d /run/abird-host-agent/broker 0700 root root -"
-      ];
+      tmpfiles.rules =
+        [
+          "d ${cfg.stateDirectory} 0711 root root -"
+          "d ${cfg.stateDirectory}/holds 0711 root root -"
+          "d ${cfg.stateDirectory}/declaration-releases 0700 root root -"
+          "d ${cfg.stateDirectory}/jobs 0700 root root -"
+          "d ${cfg.backupRoot} 0700 root root -"
+          "d /run/abird-host-agent 0700 root root -"
+          "d /run/abird-host-agent/broker 0700 root root -"
+        ]
+        ++ lib.optional nixbotDeployEnabled "d ${cfg.nixbotDeploy.hostLocalLockPath} 0755 ${config.services.nixbot.user.name} ${config.services.nixbot.user.group} -";
 
       services = lib.mkMerge (
         [
@@ -512,11 +519,13 @@ in {
 
             abird-host-agent-jobs = {
               description = "Resume durable Abird host-agent jobs";
-              wantedBy = ["multi-user.target"];
+              wantedBy = lib.optional (!nixbotDeployEnabled) "multi-user.target";
               wants = ["network-online.target"];
               after = ["abird-host-agent-holds.service" "network-online.target"];
+              unitConfig.ConditionPathExists = "${cfg.stateDirectory}/jobs-wakeup";
               serviceConfig = {
                 Type = "oneshot";
+                ExecCondition = lib.optional nixbotDeployEnabled "${lib.getExe' pkgs.util-linux "flock"} -n ${cfg.nixbotDeploy.hostLocalLockPath} ${lib.getExe' pkgs.coreutils "true"}";
                 ExecStart = "${configuredPackage}/bin/abird-host-agent _reconcile jobs";
                 Restart = "on-failure";
                 RestartSec = "5s";
@@ -534,7 +543,17 @@ in {
         description = "Watch for accepted Abird host-agent jobs";
         wantedBy = ["multi-user.target"];
         pathConfig = {
-          PathExists = "${cfg.stateDirectory}/jobs-wakeup";
+          PathChanged = "${cfg.stateDirectory}/jobs-wakeup";
+          Unit = "abird-host-agent-jobs.service";
+        };
+      };
+
+      timers.abird-host-agent-jobs = lib.mkIf nixbotDeployEnabled {
+        description = "Retry deferred Abird host-agent jobs";
+        wantedBy = ["timers.target"];
+        timerConfig = {
+          OnBootSec = "15s";
+          OnUnitInactiveSec = "15s";
           Unit = "abird-host-agent-jobs.service";
         };
       };

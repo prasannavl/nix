@@ -162,7 +162,9 @@ in
   assert builtins.length holdCommands == 2;
   assert lib.hasInfix "_reconcile hold declare" (builtins.head holdCommands);
   assert lib.hasInfix "_reconcile hold apply" (builtins.elemAt holdCommands 1);
-  assert config.systemd.paths.abird-host-agent-jobs.pathConfig.PathExists == "/var/lib/abird-host-agent/jobs-wakeup";
+  assert config.systemd.paths.abird-host-agent-jobs.pathConfig.PathChanged == "/var/lib/abird-host-agent/jobs-wakeup";
+  assert config.systemd.services.abird-host-agent-jobs.unitConfig.ConditionPathExists == "/var/lib/abird-host-agent/jobs-wakeup";
+  assert config.systemd.services.abird-host-agent-jobs.wantedBy == ["multi-user.target"];
   assert config.systemd.services.abird-host-agent-jobs.serviceConfig.Restart == "on-failure";
   assert lib.hasInfix "_reconcile jobs" config.systemd.services.abird-host-agent-jobs.serviceConfig.ExecStart;
   assert config.systemd.services.abird-host-agent-jobs.serviceConfig.TimeoutStartSec == "infinity";
