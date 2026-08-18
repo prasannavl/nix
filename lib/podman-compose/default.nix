@@ -1,6 +1,7 @@
 {
   lib,
   config,
+  options,
   pkgs,
   ...
 }: let
@@ -12,8 +13,15 @@
   nginxLib = import ../services/nginx {inherit lib;};
   tunnelsLib = import ../services/tunnels {inherit lib;};
   composeBackend = import ./compose.nix {inherit lib;};
-  quadletBackend = import ./quadlet.nix {inherit lib config pkgs;};
-  secretFileSourceHash = file: let
+  quadletBackend = import ./quadlet.nix {inherit lib pkgs;};
+  writeJSON = name: value: let
+    file = pkgs.writeText name (builtins.toJSON value);
+  in
+    file
+    // {
+      passthru = (file.passthru or {}) // {inherit value;};
+    };
+  sourceFileHash = file: let
     fileString = toString file;
   in
     if lib.hasPrefix (builtins.storeDir + "/") fileString
@@ -21,12 +29,8 @@
     else if builtins.pathExists file
     then builtins.hashFile "sha256" file
     else null;
-  fileContentSourceHash = file:
-    if builtins.pathExists file
-    then builtins.hashFile "sha256" file
-    else null;
   sourceHashFromInputs = inputs: let
-    inputHashes = builtins.filter (hash: hash != null) (map fileContentSourceHash inputs);
+    inputHashes = builtins.filter (hash: hash != null) (map sourceFileHash inputs);
   in
     if inputHashes == []
     then null
@@ -37,7 +41,7 @@
       (toString (secret.path or "/run/agenix/${name}"))
       (
         if (secret ? file) && secret.file != null
-        then fileContentSourceHash secret.file
+        then sourceFileHash secret.file
         else null
       )
   ) (config.age.secrets or {});
@@ -46,7 +50,7 @@
       toString file
     }
     or (
-      secretFileSourceHash file
+      sourceFileHash file
     );
   serviceDefaults = {
     backend = null;
@@ -480,12 +484,12 @@
       sourceHashInputs = lib.mkOption {
         type = lib.types.listOf (lib.types.either lib.types.path lib.types.str);
         default = trustedCaCertificateEntryDefaults.sourceHashInputs;
-        description = "Optional Nix-visible files whose contents should drive restart detection for this CA entry.";
+        description = "Optional Nix-visible files whose identities should drive restart detection for this CA entry. Evaluator-visible files use content hashes; store files use their immutable store paths without realising them during evaluation.";
       };
       sourceHashFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = trustedCaCertificateEntryDefaults.sourceHashFile;
-        description = "Optional Nix source file to hash for restart detection when `file` is a stable host runtime path.";
+        description = "Optional Nix source file whose identity drives restart detection when `file` is a stable host runtime path. Evaluator-visible files use a content hash; store files use their store-path identity.";
       };
       sourceHash = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -561,10 +565,7 @@
     else "-";
 
   tests = import ./tests {inherit pkgs;};
-  mkHelperPackage = {
-    name,
-    withQuadlet,
-  }:
+  mkComposeHelperPackage = name:
     (pkgs.writeShellApplication {
       inherit name;
       excludeShellChecks = ["SC1091"];
@@ -581,8 +582,7 @@
       text = ''
         export NIX_PODMAN_COMPOSE_HELPER_SELF="$0"
         export NIX_PODMAN_COMPOSE_HELPER_TOPLEVEL=1
-        source ${./helper.sh}
-        ${lib.optionalString withQuadlet "source ${./quadlet-helper.sh}"}
+        source ${./compose-helper.sh}
         main "$@"
       '';
     })
@@ -595,18 +595,15 @@
           tests = (oldPassthru.tests or {}) // tests;
         };
     });
-  composeHelperPackage = mkHelperPackage {
-    name = "podman-compose-helper";
-    withQuadlet = false;
-  };
-  backendHelperPackage = mkHelperPackage {
-    name = "podman-backend-helper";
-    withQuadlet = true;
-  };
+  composeHelperPackage = mkComposeHelperPackage "podman-compose-helper";
   composeHelperScript = "${composeHelperPackage}/bin/podman-compose-helper";
-  backendHelperScript = "${backendHelperPackage}/bin/podman-backend-helper";
   runtimeComposeHelperScript = "/etc/podman-compose/helpers/podman-compose-helper";
-  runtimeBackendHelperScript = "/etc/podman-compose/helpers/podman-backend-helper";
+  quadletHelperPackage = pkgs.writeShellApplication {
+    name = "podman-quadlet-helper";
+    runtimeInputs = [pkgs.coreutils pkgs.podman];
+    text = builtins.readFile ./quadlet-helper.sh;
+  };
+  quadletHelperScript = "${quadletHelperPackage}/bin/podman-quadlet-helper";
 
   serviceType = lib.types.submodule (_: {
     options = {
@@ -688,20 +685,12 @@
         description = "Resolved source paths by filename.";
       };
 
-      nativeConversion = lib.mkOption {
-        type = lib.types.attrs;
-        default = {};
+      nativeBundle = lib.mkOption {
+        type = lib.types.nullOr lib.types.package;
+        default = null;
         readOnly = true;
         internal = true;
-        description = "Strict native-backend conversion result.";
-      };
-
-      nativeQuadletFiles = lib.mkOption {
-        type = lib.types.attrsOf lib.types.lines;
-        default = {};
-        readOnly = true;
-        internal = true;
-        description = "Generated private Quadlet files keyed by filename.";
+        description = "Build-time compiled Quadlet bundle and manifest.";
       };
 
       pullSourcePaths = lib.mkOption {
@@ -1583,15 +1572,10 @@
     conditionUserConfig = {
       ConditionUser = resolvedUser;
     };
+    isQuadlet = service.backend == "quadlet";
     serviceAutoStarts = service.state == "running" && service.autoStart;
-    serviceHelperScript =
-      if service.backend == "quadlet"
-      then backendHelperScript
-      else composeHelperScript;
-    serviceUnitHelperScript =
-      if service.backend == "quadlet"
-      then runtimeBackendHelperScript
-      else runtimeComposeHelperScript;
+    serviceHelperScript = composeHelperScript;
+    serviceUnitHelperScript = runtimeComposeHelperScript;
     userManagedTargetName = managedTargetNameForUser resolvedUser;
     readyTargetName = "${resolvedSystemdServiceName}-ready";
     stageServiceName = "${resolvedSystemdServiceName}-stage";
@@ -1604,14 +1588,12 @@
     imagePullServiceName = "${resolvedSystemdServiceName}-image-pull";
     imagePullUnit = "${imagePullServiceName}.service";
     hasImagePullUnit =
-      service.imageTag
-      != "0"
-      || (service.backend == "quadlet" && service.declaredImages != []);
+      !isQuadlet && service.imageTag != "0";
     rootlessIdmapMigrateUnit =
       lib.optional (resolvedUser != "root") "${rootlessIdmapMigrateUserServiceNameForUser resolvedUser}.service";
     rootlessRuntimePreflightUnit =
       lib.optional
-      (resolvedUser != "root" && rootlessStackUserHasConfig resolvedUser)
+      (!isQuadlet && resolvedUser != "root" && rootlessStackUserHasConfig resolvedUser)
       "${rootlessRuntimePreflightUserServiceNameForUser resolvedUser}.service";
     resolvedPullComposeFiles = map (file: service.pullSourcePaths.${file}) service.pullEntryFiles;
     nativeReloadEnabled = service.reload.method == "signal";
@@ -1808,7 +1790,7 @@
           }
           // lib.optionalAttrs (service.backend == "quadlet") {
             backend = service.backend;
-            nativeConversion = service.nativeConversion;
+            nativeBundle = service.nativeBundle;
           })
         // secretRecreateInputs;
       imagePull = {
@@ -1925,43 +1907,9 @@
       serviceName = resolvedSystemdServiceName;
       workingDir = resolvedWorkingDir;
     });
-    quadletArtifacts =
-      if service.backend == "quadlet" && (service.nativeConversion.supported or false)
-      then
-        quadletBackend.mkArtifacts {
-          user = resolvedUser;
-          systemdServiceName = resolvedSystemdServiceName;
-          service = service;
-          conversion = service.nativeConversion;
-        }
-      else {
-        etcEntries = [];
-        files = {};
-        labels = {};
-        runtimeUnits = [];
-        containerName = null;
-        containerUnit = null;
-        sourcePath = null;
-        networkUnit = null;
-        metadata = {
-          kind = "quadlet";
-          quadlet = {};
-        };
-        expectedContainers = [];
-      };
-    backendMetadata =
-      if service.backend == "quadlet"
-      then quadletArtifacts.metadata
-      else
-        composeBackend.metadata {
-          composeFiles = resolvedComposeFiles;
-          pullComposeFiles = resolvedPullComposeFiles;
-          composeArgs = service.composeArgs;
-          expectedServices = service.knownSourceComposeServices;
-        };
     expectedContainers =
-      if service.backend == "quadlet"
-      then quadletArtifacts.expectedContainers
+      if isQuadlet
+      then []
       else composeBackend.expectedContainers resolvedSystemdServiceName resolvedWorkingDir service.knownSourceComposeServices;
     legacyHelperMetadata = {
       version = 11;
@@ -2047,18 +1995,110 @@
         }
         // entryPermsJson entry) (builtins.attrNames service.envSecrets);
     };
-    helperMetadataPayload =
-      if service.backend == "quadlet"
-      then
-        legacyHelperMetadata
-        // {
-          version = 12;
-          backend = service.backend;
-          backendData = backendMetadata;
-        }
-      else legacyHelperMetadata;
-    helperMetadata = pkgs.writeText "podman-compose-${resolvedSystemdServiceName}.json" (
-      builtins.toJSON helperMetadataPayload
+    # Compose keeps its established runtime contract.  Native Quadlet services
+    # deliberately have no helper metadata: their generated systemd graph is
+    # the runtime contract.
+    helperMetadata =
+      if isQuadlet
+      then null
+      else writeJSON "podman-compose-${resolvedSystemdServiceName}.json" legacyHelperMetadata;
+
+    shellOwner = value:
+      if value == null
+      then "-"
+      else ownerRefToString value;
+    shellMode = value:
+      if value == null || value == "none"
+      then "-"
+      else value;
+    comparePathLength = a: b:
+      if builtins.stringLength a == builtins.stringLength b
+      then a < b
+      else builtins.stringLength a < builtins.stringLength b;
+    stagedDirNamesAscending = lib.sort comparePathLength (builtins.attrNames service.dirs);
+    stagedDirNamesDescending = lib.reverseList stagedDirNamesAscending;
+    nativeHookCommand = hookName: commands: let
+      commandFiles = lib.imap0 (index: command:
+        pkgs.writeText
+        "podman-quadlet-${resolvedSystemdServiceName}-${hookName}-${toString index}"
+        command)
+      commands;
+    in
+      lib.escapeShellArgs ([quadletHelperScript "hook" hookName resolvedWorkingDir] ++ map toString commandFiles);
+    nativeStageCommand = action: args:
+      lib.escapeShellArgs ([quadletHelperScript "stage" action] ++ args);
+    nativeStageExecStart =
+      [
+        (nativeStageCommand "init" [resolvedWorkingDir])
+      ]
+      ++ map (dirName: let
+        entry = service.dirs.${dirName};
+      in
+        nativeStageCommand "prepare-dir" [
+          service.dirRuntimePaths.${dirName}
+          (shellMode entry.mode)
+          (shellOwner entry.user)
+          (shellOwner entry.group)
+          entry.scope
+          (lib.boolToString (dirOnce dirName entry))
+        ])
+      stagedDirNamesAscending
+      ++ map (fileName: let
+        entry = service.stagedEntries.${fileName};
+      in
+        nativeStageCommand "stage-file" [
+          service.sourcePaths.${fileName}
+          service.runtimePaths.${fileName}
+          (shellMode entry.mode)
+          (shellOwner entry.user)
+          (shellOwner entry.group)
+          entry.scope
+        ])
+      (builtins.attrNames service.stagedEntries)
+      ++ map (secretName: let
+        entry = service.fileSecrets.${secretName};
+      in
+        nativeStageCommand "stage-file" [
+          entry.file
+          service.fileSecretRuntimePaths.${secretName}
+          (shellMode entry.mode)
+          (shellOwner entry.user)
+          (shellOwner entry.group)
+          entry.scope
+        ])
+      (builtins.attrNames service.fileSecrets)
+      ++ map (composeServiceName: let
+        entry = service.envSecrets.${composeServiceName};
+      in
+        nativeStageCommand "stage-env" (
+          [
+            service.envSecretRuntimePaths.${composeServiceName}
+            (shellMode entry.mode)
+            (shellOwner entry.user)
+            (shellOwner entry.group)
+            entry.scope
+          ]
+          ++ map (envName: "${envName}=${entry.entries.${envName}}") (builtins.attrNames entry.entries)
+        ))
+      (builtins.attrNames service.envSecrets)
+      ++ map (dirName: let
+        entry = service.dirs.${dirName};
+      in
+        nativeStageCommand "finalize-dir" [
+          service.dirRuntimePaths.${dirName}
+          (shellMode entry.mode)
+          (shellOwner entry.user)
+          (shellOwner entry.group)
+          entry.scope
+          (lib.boolToString (dirOnce dirName entry))
+        ])
+      stagedDirNamesDescending
+      ++ lib.optional (service.preStart != []) (nativeHookCommand "pre-start" service.preStart);
+    nativeStageExecStop = nativeStageCommand "cleanup" (
+      ["${resolvedWorkingDir}/.podman-compose"]
+      ++ map (fileName: service.runtimePaths.${fileName}) (builtins.attrNames service.stagedEntries)
+      ++ map (secretName: service.fileSecretRuntimePaths.${secretName}) (builtins.attrNames service.fileSecrets)
+      ++ map (composeServiceName: service.envSecretRuntimePaths.${composeServiceName}) (builtins.attrNames service.envSecrets)
     );
     startTimeoutSeconds = service.timeoutReadySeconds;
     bootstrapTimeoutSeconds = service.timeoutBootstrapSeconds;
@@ -2076,24 +2116,27 @@
       service.localImageMetadata
     );
     helperEnvironment =
-      [
-        "PATH=${podmanHelperPath}"
-        "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
-        "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
-        "NIX_PODMAN_COMPOSE_PROVIDER_TIMEOUT_SECONDS=${toString startTimeoutSeconds}"
-        "NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS=${toString verifyTransitionWaitSeconds}"
-      ]
-      ++ lib.optional
-      (resolvedUser != "root" && rootlessStackUserHasConfig resolvedUser)
-      "NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=${runtimePreflightMetadataPathForUser resolvedUser}"
-      ++ lib.optional (service.localImageMetadata != []) "NIX_PODMAN_COMPOSE_LOCAL_IMAGE_CLOSURE=${localImageClosure}"
-      ++ lib.optional (service.composeUpNoProgressSeconds != null) "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=${toString service.composeUpNoProgressSeconds}";
+      if isQuadlet
+      then []
+      else
+        [
+          "PATH=${podmanHelperPath}"
+          "NIX_PODMAN_COMPOSE_METADATA=${helperMetadata}"
+          "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
+          "NIX_PODMAN_COMPOSE_PROVIDER_TIMEOUT_SECONDS=${toString startTimeoutSeconds}"
+          "NIX_PODMAN_COMPOSE_VERIFY_TRANSITION_WAIT_SECONDS=${toString verifyTransitionWaitSeconds}"
+        ]
+        ++ lib.optional
+        (resolvedUser != "root" && rootlessStackUserHasConfig resolvedUser)
+        "NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=${runtimePreflightMetadataPathForUser resolvedUser}"
+        ++ lib.optional (service.localImageMetadata != []) "NIX_PODMAN_COMPOSE_LOCAL_IMAGE_CLOSURE=${localImageClosure}"
+        ++ lib.optional (service.composeUpNoProgressSeconds != null) "NIX_PODMAN_COMPOSE_UP_NO_PROGRESS_SECONDS=${toString service.composeUpNoProgressSeconds}";
     stampHelperEnvironment = [
       "PATH=${podmanHelperPath}"
       "NIX_PODMAN_COMPOSE_METADATA=<generation-local-metadata>"
       "NIX_PODMAN_COMPOSE_SERVICE_NAME=${resolvedSystemdServiceName}"
     ];
-    baseSystemdService = {
+    composeBaseSystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName}";
       after = lib.unique (
         networkOnlineUnits
@@ -2149,6 +2192,45 @@
         TimeoutStopSec = lib.mkDefault stopTimeoutSeconds;
       };
     };
+    nativeBaseSystemdService = {
+      description = "podman Quadlet: ${resolvedUser}: ${serviceName}";
+      after = lib.unique (
+        networkOnlineUnits
+        ++ startLaneAfterUnits
+        ++ rootlessIdmapMigrateUnit
+        ++ [stageUnit]
+        ++ dependsOnUnits
+        ++ wantsUnits
+      );
+      wants = lib.unique (networkOnlineUnits ++ wantsUnits);
+      restartIfChanged = service.state == "running";
+      stopIfChanged = service.state == "running";
+      unitConfig =
+        conditionUserConfig
+        // lib.optionalAttrs serviceAutoStarts {
+          PartOf = ["${userManagedTargetName}.target"];
+        }
+        // {
+          Requires = lib.unique (rootlessIdmapMigrateUnit ++ [stageUnit] ++ dependsOnUnits);
+        };
+      serviceConfig =
+        {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          WorkingDirectory = "-${resolvedWorkingDir}";
+          ExecStart = "${pkgs.coreutils}/bin/true";
+          Restart = "no";
+          TimeoutStartSec = lib.mkDefault (bootstrapTimeoutSeconds + startTimeoutSeconds);
+          TimeoutStopSec = lib.mkDefault stopTimeoutSeconds;
+        }
+        // lib.optionalAttrs (service.preStop != []) {
+          ExecStop = nativeHookCommand "pre-stop" service.preStop;
+        };
+    };
+    baseSystemdService =
+      if isQuadlet
+      then nativeBaseSystemdService
+      else composeBaseSystemdService;
     imagePullSystemdService = lib.optionalAttrs hasImagePullUnit {
       description = "podman: ${resolvedUser}: ${serviceName} image pull";
       after = lib.unique (networkOnlineUnits ++ rootlessRuntimePreflightUnit);
@@ -2171,7 +2253,7 @@
         TimeoutStartSec = 120;
       };
     };
-    stageSystemdService = {
+    composeStageSystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName} stage";
       after = lib.unique (networkOnlineUnits ++ rootlessIdmapMigrateUnit);
       wants = lib.unique networkOnlineUnits;
@@ -2189,7 +2271,36 @@
         TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
-    reconcileSystemdService = lib.optionalAttrs hasReconcileUnit {
+    nativeStageSystemdService = {
+      description = "podman Quadlet: ${resolvedUser}: ${serviceName} stage";
+      after = lib.unique (networkOnlineUnits ++ rootlessIdmapMigrateUnit);
+      wants = lib.unique networkOnlineUnits;
+      unitConfig =
+        conditionUserConfig
+        // {
+          PartOf = ["${resolvedSystemdServiceName}.service"];
+          StopWhenUnneeded = true;
+        }
+        // lib.optionalAttrs (rootlessIdmapMigrateUnit != []) {
+          Requires = rootlessIdmapMigrateUnit;
+        };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        WorkingDirectory = "-${resolvedWorkingDir}";
+        ExecStart = nativeStageExecStart;
+        # ExecStop= is skipped when one of the ordered staging commands fails.
+        # ExecStopPost= runs for both failed starts and normal stops, so staged
+        # runtime material never outlives the stage unit.
+        ExecStopPost = nativeStageExecStop;
+        TimeoutStartSec = lib.mkDefault bootstrapTimeoutSeconds;
+      };
+    };
+    stageSystemdService =
+      if isQuadlet
+      then nativeStageSystemdService
+      else composeStageSystemdService;
+    composeReconcileSystemdService = lib.optionalAttrs hasReconcileUnit {
       description = "podman: ${resolvedUser}: ${serviceName} reconcile";
       after = ["${resolvedSystemdServiceName}.service"];
       unitConfig =
@@ -2206,7 +2317,23 @@
         TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
-    verifySystemdService = {
+    nativeReconcileSystemdService = lib.optionalAttrs hasReconcileUnit {
+      description = "podman Quadlet: ${resolvedUser}: ${serviceName} reconcile";
+      after = ["${resolvedSystemdServiceName}.service"];
+      unitConfig = conditionUserConfig // {Requires = ["${resolvedSystemdServiceName}.service"];};
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = false;
+        WorkingDirectory = "-${resolvedWorkingDir}";
+        ExecStart = nativeHookCommand "post-start" service.postStart;
+        TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
+      };
+    };
+    reconcileSystemdService =
+      if isQuadlet
+      then nativeReconcileSystemdService
+      else composeReconcileSystemdService;
+    composeVerifySystemdService = {
       description = "podman: ${resolvedUser}: ${serviceName} verify";
       after = ["${resolvedSystemdServiceName}.service"] ++ lib.optional hasReconcileUnit reconcileUnit;
       unitConfig =
@@ -2223,13 +2350,39 @@
         TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
+    nativeVerifySystemdService = {
+      description = "podman Quadlet: ${resolvedUser}: ${serviceName} verify";
+      after = ["${resolvedSystemdServiceName}.service"] ++ lib.optional hasReconcileUnit reconcileUnit;
+      unitConfig =
+        conditionUserConfig
+        // {
+          Requisite = ["${resolvedSystemdServiceName}.service"];
+        };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = false;
+        WorkingDirectory = "-${resolvedWorkingDir}";
+        ExecStart =
+          if service.verifyCommand == []
+          then "${pkgs.coreutils}/bin/true"
+          else lib.escapeShellArgs service.verifyCommand;
+        TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
+      };
+    };
+    verifySystemdService =
+      if isQuadlet
+      then nativeVerifySystemdService
+      else composeVerifySystemdService;
     readySystemdTarget = {
       description = "podman: ${resolvedUser}: ${serviceName} ready";
       unitConfig =
         conditionUserConfig
         // {
           PartOf = ["${resolvedSystemdServiceName}.service"];
-          Requires = [verifyUnit];
+          Requires =
+            [verifyUnit]
+            ++ lib.optional isQuadlet "${resolvedSystemdServiceName}.service"
+            ++ lib.optional (isQuadlet && hasReconcileUnit) reconcileUnit;
           After = [verifyUnit];
         };
     };
@@ -2281,7 +2434,10 @@
     systemdServiceName = resolvedSystemdServiceName;
     systemdUser = resolvedUser;
     helperMetadata = helperMetadata;
-    helperScript = serviceHelperScript;
+    helperScript =
+      if isQuadlet
+      then null
+      else serviceHelperScript;
     drainStamp = builtins.hashString "sha256" (builtins.toJSON mergedSystemdService);
     systemdService = mergedSystemdService;
     systemdReadyTargetName = readyTargetName;
@@ -2290,11 +2446,7 @@
     backend = service.backend;
     hostAgentDataPaths = service.hostAgentDataPaths;
     dirs = service.dirs;
-    nativeQuadletFiles = quadletArtifacts.files;
-    nativeQuadletEtcEntries = quadletArtifacts.etcEntries;
-    privateRuntimeUnits = quadletArtifacts.runtimeUnits;
-    quadletContainerName = quadletArtifacts.containerName;
-    quadletSourcePath = quadletArtifacts.sourcePath;
+    nativeBundle = service.nativeBundle;
     expectedContainers = expectedContainers;
     expectedComposeServices =
       if service.backend == "compose"
@@ -2364,58 +2516,70 @@
     cfg
   );
   hasComposeBackend = builtins.any (service: service.backend == "compose") resolvedServices;
-  nativeQuadletEtcEntries = lib.concatMap (service: service.nativeQuadletEtcEntries) resolvedServices;
-  duplicateNativeQuadletEtcPaths = flakeUtils.duplicateValues (map (entry: entry.name) nativeQuadletEtcEntries);
-  duplicatePrivateRuntimeUnits = flakeUtils.duplicateValues (lib.concatMap (service: service.privateRuntimeUnits) resolvedServices);
-  privateRuntimeUnitNameCollisions =
-    lib.intersectLists
-    (map (lib.removeSuffix ".service") (lib.concatMap (service: service.privateRuntimeUnits) resolvedServices))
-    (builtins.attrNames config.systemd.user.services);
-  duplicateQuadletContainerNames = flakeUtils.duplicateValues (
-    map (service: "${service.systemdUser}:${service.quadletContainerName}") (
-      builtins.filter (service: service.quadletContainerName != null) resolvedServices
-    )
-  );
-  duplicateManagedContainerNames = flakeUtils.duplicateValues (
-    (lib.concatMap (service: map (name: "${service.systemdUser}:${name}") service.explicitComposeContainerNames) resolvedServices)
-    ++ map (service: "${service.systemdUser}:${service.quadletContainerName}") (
-      builtins.filter (service: service.quadletContainerName != null) resolvedServices
-    )
-  );
   userUidString = user:
     if user == "root"
     then "0"
     else if builtins.hasAttr user config.users.users && config.users.users.${user}.uid != null
     then toString config.users.users.${user}.uid
     else throw "services.podman-compose: rootless stack user '${user}' must exist in users.users with a non-null uid.";
-  controlRegistryFile = pkgs.writeText "podman-compose-control-registry.json" (builtins.toJSON (
-    lib.listToAttrs (
-      map
-      (service:
-        lib.nameValuePair service.systemdServiceName {
+  nativeQuadletUsers = lib.unique (map (service: service.systemdUser) (
+    builtins.filter (service: service.backend == "quadlet") resolvedServices
+  ));
+  nativeQuadletBundleForUser = user:
+    quadletBackend.mkUserBundle {
+      inherit user;
+      uid = userUidString user;
+      bundles = map (service: service.nativeBundle) (
+        builtins.filter (service: service.backend == "quadlet" && service.systemdUser == user) resolvedServices
+      );
+      reservedUnits = map (name: "${name}.service") (builtins.attrNames config.systemd.user.services);
+      reservedContainers = lib.concatMap (service: service.explicitComposeContainerNames) (
+        builtins.filter (service: service.backend == "compose" && service.systemdUser == user) resolvedServices
+      );
+    };
+  nativeQuadletUserBundles = lib.listToAttrs (map (user: lib.nameValuePair user (nativeQuadletBundleForUser user)) nativeQuadletUsers);
+  nativeQuadletEtcEntries =
+    map (user: {
+      name = "containers/systemd/users/${userUidString user}";
+      # Link the files into a real /etc directory.  Linking the directory itself
+      # makes Quadlet canonicalize SourcePath to the store bundle, which breaks
+      # lifecycle ownership checks across generations.
+      value.source = "${nativeQuadletUserBundles.${user}}/*";
+    })
+    nativeQuadletUsers;
+  controlRegistryValue = lib.listToAttrs (
+    map
+    (service:
+      lib.nameValuePair service.systemdServiceName (
+        {
           user = service.systemdUser;
           uid = userUidString service.systemdUser;
           unit = "${service.systemdServiceName}.service";
           readyUnit = "${service.systemdReadyTargetName}.target";
           managedUnit = "${service.systemdUserManagedTargetName}.target";
           serviceName = service.systemdServiceName;
-          metadataFile = service.helperMetadata;
           backend = service.backend;
           drainStamp = service.drainStamp;
           removalPolicy = service.removalPolicy;
-          privateRuntimeUnits = service.privateRuntimeUnits;
+          autoStart = service.autoStartEnabled;
+          state = service.state;
+        }
+        // lib.optionalAttrs (service.backend == "compose") {
+          metadataFile = service.helperMetadata;
+          manifestFile = null;
+          privateRuntimeUnits = [];
           expectedContainers = service.expectedContainers;
           workingDir = service.resolvedWorkingDir;
           expectedComposeServices = service.expectedComposeServices;
           verifyCommand = service.verifyCommand;
-          autoStart = service.autoStartEnabled;
-          state = service.state;
           timeoutReadySeconds = service.timeoutReadySeconds;
-        })
-      resolvedServices
-    )
-  ));
-  imagePullPlanFile = pkgs.writeText "podman-compose-image-pulls.json" (builtins.toJSON (
+        }
+      ))
+    resolvedServices
+  );
+  controlRegistryBaseFile = writeJSON "podman-compose-control-registry-base.json" controlRegistryValue;
+  controlRegistryFile = controlRegistryBaseFile;
+  imagePullPlanValue =
     map
     (service: {
       user = service.systemdUser;
@@ -2430,30 +2594,31 @@
       imageTag = service.imageTag;
       backend = service.backend;
     })
-    (builtins.filter (service: (service.declaredImages or []) != []) resolvedServices)
-  ));
+    (builtins.filter (service: service.backend == "compose" && (service.declaredImages or []) != []) resolvedServices);
+  imagePullPlanFile = writeJSON "podman-compose-image-pulls.json" imagePullPlanValue;
   controlPackage = pkgs.writeShellApplication {
     name = "podman-composectl";
     excludeShellChecks = [
       "SC1091"
       "SC2034"
     ];
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.getent
-      pkgs.jq
-      pkgs.podman
-      pkgs.systemd
-      pkgs.util-linux
-    ];
+    runtimeInputs =
+      [
+        pkgs.coreutils
+        pkgs.getent
+        pkgs.jq
+        pkgs.systemd
+        pkgs.util-linux
+      ]
+      ++ lib.optional hasComposeBackend pkgs.podman;
     text = ''
       registry="''${NIX_PODMAN_COMPOSE_CONTROL_REGISTRY:-/run/current-system/share/podman-compose/control-registry.json}"
-      helper=${lib.escapeShellArg backendHelperScript}
+      helper=/etc/podman-compose/helpers/podman-compose-helper
       source ${./composectl.sh}
       main "$@"
     '';
   };
-  imagePullAllPackage = pkgs.writeShellApplication {
+  imageHelperPackage = pkgs.writeShellApplication {
     name = "podman-compose-image-pull-all";
     excludeShellChecks = [
       "SC1091"
@@ -2468,22 +2633,12 @@
     ];
     text = ''
       plan="''${NIX_PODMAN_COMPOSE_IMAGE_PULL_PLAN:-/run/current-system/share/podman-compose/image-pulls.json}"
-      source ${./image-pull-all.sh}
+      source ${./image-helper.sh}
       main "$@"
     '';
   };
-  drainChangedPackage = pkgs.writeShellApplication {
-    name = "podman-compose-drain-changed";
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.jq
-      pkgs.systemd
-      pkgs.util-linux
-    ];
-    text = builtins.readFile ./drain-changed.sh;
-  };
-  rootlessIdmapMigratePackage = pkgs.writeShellApplication {
-    name = "podman-rootless-idmap-migrate";
+  globalHelperPackage = pkgs.writeShellApplication {
+    name = "podman-helper";
     runtimeInputs = [
       pkgs.coreutils
       pkgs.diffutils
@@ -2491,8 +2646,9 @@
       pkgs.gnused
       pkgs.jq
       pkgs.podman
+      pkgs.systemd
     ];
-    text = builtins.readFile ./rootless-idmap-migrate.sh;
+    text = builtins.readFile ./helper.sh;
   };
 
   allExposedPortEntries = lib.concatLists (
@@ -2551,12 +2707,11 @@
 
   generatedSystemdUserServiceNames =
     (map (service: service.systemdServiceName) resolvedServices)
-    ++ map (lib.removeSuffix ".service") (lib.concatMap (service: service.privateRuntimeUnits) resolvedServices)
     ++ lib.concatMap
     (service: map (aux: aux.name) service.auxiliarySystemdUserServices)
     resolvedServices
     ++ (map rootlessIdmapMigrateUserServiceNameForUser rootlessStackUsersWithConfig)
-    ++ (map rootlessRuntimePreflightUserServiceNameForUser rootlessStackUsersWithConfig);
+    ++ (map rootlessRuntimePreflightUserServiceNameForUser rootlessComposeUsersWithConfig);
   duplicateSystemdUserServiceNames = flakeUtils.duplicateValues generatedSystemdUserServiceNames;
   generatedSystemdUserTargetNames =
     lib.concatMap
@@ -2651,6 +2806,10 @@
     && config.users.users.${user}.uid != null
     && config.users.users.${user}.home != null;
   rootlessStackUsersWithConfig = builtins.filter rootlessStackUserHasConfig rootlessStackUsers;
+  rootlessComposeUsersWithConfig =
+    builtins.filter
+    (user: builtins.any (service: service.backend == "compose" && service.systemdUser == user) resolvedServices)
+    rootlessStackUsersWithConfig;
   rootlessStackUserNeedsNetworkOnline = user:
     builtins.any (
       service:
@@ -2665,36 +2824,56 @@
   runtimePreflightMetadataPathForUser = user: "/etc/podman-compose/runtime-preflight/${serviceNameUserKey user}.json";
   managedTargetNameForUser = user: "${serviceNameUserKey user}-managed";
   managedTargetUnits = map (user: "${managedTargetNameForUser user}.target") stackUsers;
-  nativeQuadletFixtures =
-    map (entry: {
-      name = builtins.baseNameOf entry.name;
-      source = pkgs.writeText (builtins.baseNameOf entry.name) entry.value.text;
-    })
-    nativeQuadletEtcEntries;
   quadletGeneratorCheck =
-    if nativeQuadletFixtures == []
+    if nativeQuadletUsers == []
     then
       pkgs.runCommand "podman-compose-quadlet-generator-check-empty" {} ''
         touch "$out"
       ''
     else
-      pkgs.runCommand "podman-compose-quadlet-generator-check" {} ''
-        unit_dir="$TMPDIR/quadlet-units"
-        generated_dir="$TMPDIR/generated-units"
-        mkdir -p "$unit_dir" "$generated_dir"
-        ${lib.concatMapStringsSep "\n" (fixture: ''
-            cp ${lib.escapeShellArg fixture.source} "$unit_dir/${fixture.name}"
-          '')
-          nativeQuadletFixtures}
+      pkgs.runCommand "podman-compose-quadlet-generator-check" {
+        nativeBuildInputs = [pkgs.coreutils pkgs.findutils pkgs.jq pkgs.systemd];
+      } ''
+        ${lib.concatMapStringsSep "\n" (user: ''
+            unit_dir="$TMPDIR/quadlet-units-${serviceNameUserKey user}"
+            generated_dir="$TMPDIR/generated-units-${serviceNameUserKey user}"
+            mkdir -p "$unit_dir" "$generated_dir"
+            cp -L ${nativeQuadletUserBundles.${user}}/* "$unit_dir/"
+            QUADLET_UNIT_DIRS="$unit_dir" \
+              ${pkgs.podman}/lib/systemd/user-generators/podman-user-generator \
+              --user "$generated_dir"
 
-        QUADLET_UNIT_DIRS="$unit_dir" \
-          ${pkgs.podman}/lib/systemd/user-generators/podman-user-generator \
-          --user "$generated_dir"
+            for source in "$unit_dir"/*; do
+              name="$(basename "$source")"
+              case "$name" in
+                *.container) generated_unit="''${name%.container}.service" ;;
+                *.image) generated_unit="''${name%.image}-image.service" ;;
+                *.network) generated_unit="''${name%.network}-network.service" ;;
+                *) echo "unsupported Quadlet fixture: $name" >&2; exit 1 ;;
+              esac
+              generated="$generated_dir/$generated_unit"
+              test -s "$generated"
+              grep -F "SourcePath=$unit_dir/$name" "$generated"
+              case "$name" in
+                *.container)
+                  grep -F '${pkgs.podman}/bin/podman run' "$generated"
+                  grep -F -- '--pull never' "$generated"
+                  ! grep -Fq -- '--restart=' "$generated"
+                  find "$generated_dir" -path '*.service.requires/*' -name "$generated_unit" -type l | grep -q .
+                  ;;
+                *.image) grep -F '${pkgs.podman}/bin/podman image' "$generated" ;;
+                *.network) grep -F '${pkgs.podman}/bin/podman network create' "$generated" ;;
+              esac
+            done
 
-        ${lib.concatMapStringsSep "\n" (fixture: ''
-            test -s "$generated_dir/${lib.removeSuffix ".container" fixture.name}.service"
+            export XDG_RUNTIME_DIR="$TMPDIR/systemd-runtime-${serviceNameUserKey user}"
+            mkdir -p "$XDG_RUNTIME_DIR"
+            SYSTEMD_UNIT_PATH="$generated_dir:${config.environment.etc."systemd/user".source}:${pkgs.podman}/share/systemd/user:" \
+              systemd-analyze --user verify ${lib.escapeShellArgs (map (service: "${service.systemdServiceName}.service") (
+              builtins.filter (service: service.backend == "quadlet" && service.systemdUser == user) resolvedServices
+            ))}
           '')
-          nativeQuadletFixtures}
+          nativeQuadletUsers}
         touch "$out"
       '';
   systemdUserGraphCheck =
@@ -2716,12 +2895,48 @@
       '';
   rootlessIdmapMigrateUserServiceNameForUser = user: "podman-rootless-idmap-migrate-${serviceNameUserKey user}";
   rootlessRuntimePreflightUserServiceNameForUser = user: "podman-runtime-preflight-${serviceNameUserKey user}";
+  rootlessSubidAllocationSemantics =
+    lib.mapAttrs
+    (_: userCfg: {
+      uid = userCfg.uid;
+      autoSubUidGidRange = userCfg.autoSubUidGidRange;
+      subUidRanges = userCfg.subUidRanges;
+      subGidRanges = userCfg.subGidRanges;
+    })
+    (lib.filterAttrs
+      (_: userCfg:
+        userCfg.autoSubUidGidRange
+        || userCfg.subUidRanges != []
+        || userCfg.subGidRanges != [])
+      config.users.users);
+  rootlessIdmapSemanticsForUser = user: let
+    userCfg = config.users.users.${user};
+    storageSettings =
+      if options.virtualisation.containers.storage.settings.isDefined
+      then config.virtualisation.containers.storage.settings
+      else {};
+  in {
+    version = 1;
+    user = user;
+    uid = userCfg.uid;
+    home = userCfg.home;
+    autoSubUidGidRange = userCfg.autoSubUidGidRange;
+    subUidRanges = userCfg.subUidRanges;
+    subGidRanges = userCfg.subGidRanges;
+    subidAllocation = rootlessSubidAllocationSemantics;
+    mountProgram = lib.attrByPath ["storage" "options" "overlay" "mount_program"] null storageSettings;
+  };
+  rootlessIdmapSemanticStampForUser = user:
+    builtins.hashString "sha256" (builtins.toJSON (rootlessIdmapSemanticsForUser user));
   # Rootless Podman can keep a stale single-id namespace after subuid/subgid
-  # ranges appear; migrate before compose starts so container ids can map.
+  # ranges appear. Keep the successful gate active so service starts fail closed,
+  # but reload it in place so helper and declared mapping changes do not stop the
+  # entire dependent graph. A real migration cycles the managed target itself.
   mkRootlessIdmapMigrateUserService = user: let
     userCfg = config.users.users.${user};
     home = userCfg.home;
     serviceName = rootlessIdmapMigrateUserServiceNameForUser user;
+    managedTarget = "${managedTargetNameForUser user}.target";
     networkOnlineUnits = rootlessStackUserNetworkOnlineUnits user;
   in {
     name = serviceName;
@@ -2729,9 +2944,11 @@
       description = "Reconcile rootless Podman uid/gid map for ${user}";
       after = networkOnlineUnits;
       wants = networkOnlineUnits;
-      restartTriggers = [rootlessIdmapMigratePackage];
-      restartIfChanged = true;
-      stopIfChanged = true;
+      reloadTriggers = [
+        globalHelperPackage
+        (rootlessIdmapSemanticStampForUser user)
+      ];
+      reloadIfChanged = true;
       unitConfig.ConditionUser = user;
       serviceConfig = {
         Type = "oneshot";
@@ -2740,12 +2957,13 @@
           "HOME=${home}"
           "PATH=${podmanHelperPath}"
         ];
-        ExecStart = "${rootlessIdmapMigratePackage}/bin/podman-rootless-idmap-migrate ${lib.escapeShellArgs [user home]}";
+        ExecStart = "${globalHelperPackage}/bin/podman-helper rootless-idmap-migrate ${lib.escapeShellArgs [user home]}";
+        ExecReload = "${globalHelperPackage}/bin/podman-helper rootless-idmap-reconcile ${lib.escapeShellArgs [user home managedTarget]}";
       };
     };
   };
   runtimePreflightServicesForUser = user:
-    builtins.filter (service: service.systemdUser == user) resolvedServices;
+    builtins.filter (service: service.backend == "compose" && service.systemdUser == user) resolvedServices;
   runtimePreflightMetadataForUser = user: let
     services = map (service: {
       serviceName = service.systemdServiceName;
@@ -2755,19 +2973,20 @@
       version = 1;
       services = services;
     });
-  in
-    pkgs.writeText "podman-runtime-preflight-${serviceNameUserKey user}.json" (builtins.toJSON {
+    value = {
       version = 1;
       user = user;
       token = token;
       services = services;
-    });
+    };
+  in
+    writeJSON "podman-runtime-preflight-${serviceNameUserKey user}.json" value;
   runtimePreflightEtcEntries =
     map (user: {
       name = "podman-compose/runtime-preflight/${serviceNameUserKey user}.json";
       value.source = runtimePreflightMetadataForUser user;
     })
-    rootlessStackUsersWithConfig;
+    rootlessComposeUsersWithConfig;
   mkRootlessRuntimePreflightUserService = user: let
     userCfg = config.users.users.${user};
     home = userCfg.home;
@@ -2794,7 +3013,7 @@
           "NIX_PODMAN_COMPOSE_RUNTIME_PREFLIGHT_METADATA=${metadata}"
           "NIX_PODMAN_COMPOSE_SERVICE_NAME=${serviceName}"
         ];
-        ExecStart = "${runtimeBackendHelperScript} runtime-preflight";
+        ExecStart = "${runtimeComposeHelperScript} runtime-preflight";
         TimeoutStartSec = 300;
       };
     };
@@ -2921,7 +3140,7 @@ in {
             then sourceHashFromInputs entry.sourceHashInputs
             else if entry.sourceHashFile == null
             then null
-            else builtins.hashFile "sha256" entry.sourceHashFile;
+            else sourceFileHash entry.sourceHashFile;
         };
         normalizeEnvSecretEntry = entry:
           envSecretEntryDefaults // {entries = entry;};
@@ -2962,12 +3181,16 @@ in {
           else {"${dstPrefix}" = entry;};
         mkGeneratedEntry = composeSource:
           fileEntryDefaults
-          // {
-            text =
-              if builtins.isAttrs composeSource
-              then lib.generators.toYAML {} composeSource
-              else composeSource;
-          };
+          // (
+            if builtins.isPath composeSource
+            then {source = composeSource;}
+            else {
+              text =
+                if builtins.isAttrs composeSource
+                then lib.generators.toYAML {} composeSource
+                else composeSource;
+            }
+          );
         mkPullSourceDir = serviceName: sourcePaths: let
           installEntries =
             lib.mapAttrsToList (
@@ -3137,7 +3360,7 @@ in {
                 };
               useSource = normalizedService.source != null;
               rawSourceCompose =
-                if builtins.isPath normalizedService.source
+                if builtins.isPath normalizedService.source && normalizedService.backend != "quadlet"
                 then builtins.readFile normalizedService.source
                 else normalizedService.source;
               rawSourceComposeServices =
@@ -3165,7 +3388,7 @@ in {
                 )
                 rawSourceComposeServices
               );
-              autoStoreLocalImageEntries = map storeLocalImageEntry (
+              autoStoreLocalImageEntries = lib.optionals (normalizedService.backend != "quadlet") (map storeLocalImageEntry (
                 lib.filter (imageRef: lib.hasPrefix localImageStorePrefix imageRef) (
                   if rawSourceComposeServices != {}
                   then
@@ -3182,7 +3405,7 @@ in {
                   then composeImagesFromTextWithContext rawSourceCompose
                   else []
                 )
-              );
+              ));
               localImageEntriesByRef = localImageEntryByImageRef (
                 (lib.mapAttrsToList explicitLocalImageEntry normalizedService.localImages)
                 ++ autoPackageLocalImageEntries
@@ -3213,7 +3436,9 @@ in {
                   else composeService // {image = rewrittenImage;}
                 else composeService;
               sourceCompose =
-                if
+                if normalizedService.backend == "quadlet"
+                then rawSourceCompose
+                else if
                   builtins.isAttrs rawSourceCompose
                   && builtins.hasAttr "services" rawSourceCompose
                   && builtins.isAttrs rawSourceCompose.services
@@ -3244,11 +3469,16 @@ in {
                 then composeImagesFromText sourceCompose
                 else [];
               sourceDeclaredImages =
-                lib.filter
-                (image: !(builtins.elem image (lib.attrValues localImageRuntimeRefs)))
-                sourceDeclaredImagesAll;
+                if normalizedService.backend == "quadlet"
+                then []
+                else
+                  lib.filter
+                  (image: !(builtins.elem image (lib.attrValues localImageRuntimeRefs)))
+                  sourceDeclaredImagesAll;
               sourceDeclaredComposeServices =
-                if
+                if normalizedService.backend == "quadlet"
+                then []
+                else if
                   builtins.isAttrs sourceCompose
                   && builtins.hasAttr "services" sourceCompose
                   && builtins.isAttrs sourceCompose.services
@@ -3257,7 +3487,9 @@ in {
                 then sourceTextComposeServices
                 else [serviceName];
               knownSourceComposeServices =
-                if
+                if normalizedService.backend == "quadlet"
+                then []
+                else if
                   builtins.isAttrs sourceCompose
                   && builtins.hasAttr "services" sourceCompose
                   && builtins.isAttrs sourceCompose.services
@@ -3266,7 +3498,7 @@ in {
                 then sourceTextComposeServices
                 else [];
               envSecretsOverride =
-                if normalizedService.envSecrets == {}
+                if normalizedService.backend == "quadlet" || normalizedService.envSecrets == {}
                 then {}
                 else {
                   services =
@@ -3318,7 +3550,7 @@ in {
                   ) (builtins.attrNames normalizedService.trustedCaCertificates)
                 );
               fileSecretsOverride =
-                if fileSecretTargetServices == []
+                if normalizedService.backend == "quadlet" || fileSecretTargetServices == []
                 then {}
                 else {
                   services = lib.listToAttrs (
@@ -3423,9 +3655,12 @@ in {
                 (fileName: !(builtins.hasAttr fileName filesExpanded))
                 normalizedService.reload.trigger.externalFiles;
               bindMountedStagedEntries =
-                lib.filter
-                (fileName: builtins.elem fileName composeBindSources)
-                (builtins.attrNames effectiveEntries);
+                if normalizedService.backend == "quadlet"
+                then builtins.attrNames effectiveEntries
+                else
+                  lib.filter
+                  (fileName: builtins.elem fileName composeBindSources)
+                  (builtins.attrNames effectiveEntries);
               invalidRecreateTriggerFiles =
                 lib.filter
                 (fileName: !(builtins.hasAttr fileName filesExpanded))
@@ -3467,21 +3702,63 @@ in {
               sourcePaths = lib.mapAttrs (fileName: entry: renderEntry serviceName fileName entry) effectiveEntries;
               pullSourceDir = mkPullSourceDir serviceName sourcePaths;
               localImageMetadata = lib.attrValues localImageEntriesByRef;
-              nativeConversion = quadletBackend.mkConversion {
-                source = sourceCompose;
-                service = normalizedService;
-                baseService = baseService;
-                systemdServiceName =
-                  if normalizedService.serviceName != null
-                  then normalizedService.serviceName
-                  else "${stack.servicePrefix}${serviceName}";
-                workingDir = resolvedWorkingDir;
-                envSecretRuntimePaths = envSecretRuntimePaths;
-                envSecretTargetServices = builtins.attrNames normalizedService.envSecrets;
-                fileSecretMountsForService = fileSecretMountsForService;
-                fileSecretTargetServices = fileSecretTargetServices;
-                trustedCaEnvironmentForService = trustedCaEnvironmentForService;
-              };
+              nativeSystemdServiceName =
+                if normalizedService.serviceName != null
+                then normalizedService.serviceName
+                else "${stack.servicePrefix}${serviceName}";
+              nativeUser =
+                if normalizedService.user != null
+                then normalizedService.user
+                else stack.user;
+              nativeUid =
+                if nativeUser == "root"
+                then "0"
+                else if builtins.hasAttr nativeUser config.users.users && config.users.users.${nativeUser}.uid != null
+                then toString config.users.users.${nativeUser}.uid
+                else throw "services.podman-compose: rootless stack user '${nativeUser}' must exist in users.users with a non-null uid.";
+              nativeComposeEntryFiles = baseEntryFiles ++ generatedOverrideFiles;
+              nativeBundle =
+                if normalizedService.backend == "quadlet"
+                then
+                  quadletBackend.mkBundle {
+                    name = nativeSystemdServiceName;
+                    config = {
+                      systemdServiceName = nativeSystemdServiceName;
+                      workingDir = resolvedWorkingDir;
+                      etcDir = "/etc/containers/systemd/users/${nativeUid}";
+                      composeFiles = map (fileName: sourcePaths.${fileName}) nativeComposeEntryFiles;
+                      projectEnvFile = sourcePaths.".env" or null;
+                      subnet = normalizedService.subnet;
+                      imageRewrites =
+                        localImageRuntimeRefs
+                        // lib.listToAttrs (map (entry: lib.nameValuePair (builtins.unsafeDiscardStringContext (toString entry.imageTar)) entry.runtimeRef) localImageMetadata);
+                      localImages = localImageMetadata;
+                      envSecretRuntimePaths = envSecretRuntimePaths;
+                      timeoutReadySeconds = normalizedService.timeoutReadySeconds;
+                      fileSecrets =
+                        lib.mapAttrsToList (secretName: entry: {
+                          name = secretName;
+                          runtimePath = fileSecretRuntimePaths.${secretName};
+                          mount = entry.mount;
+                          mountPath = fileSecretMountPath secretName entry;
+                          readOnly = entry.readOnly;
+                          services = entry.services;
+                          environment =
+                            if builtins.hasAttr secretName normalizedService.trustedCaCertificates
+                            then lib.genAttrs normalizedService.trustedCaCertificates.${secretName}.envVars (_: fileSecretMountPath secretName entry)
+                            else {};
+                        })
+                        normalizedService.fileSecrets;
+                      policy = {
+                        composeArgs = normalizedService.composeArgs;
+                        reloadMethod = normalizedService.reload.method;
+                        removalPolicy = normalizedService.removalPolicy;
+                        adopt = normalizedService.adopt;
+                        longRunning = normalizedService.longRunning;
+                      };
+                    };
+                  }
+                else null;
               httpExposure = normalizedService.exposedPorts.http or null;
               generatedProbeProtocol =
                 if httpExposure == null
@@ -3574,10 +3851,7 @@ in {
                 knownSourceComposeServices = knownSourceComposeServices;
                 declaredImages = sourceDeclaredImages;
                 localImageMetadata = localImageMetadata;
-                nativeConversion =
-                  if normalizedService.backend == "quadlet"
-                  then nativeConversion
-                  else {};
+                nativeBundle = nativeBundle;
                 verifyCommand =
                   if normalizedService.verifyCommand != []
                   then normalizedService.verifyCommand
@@ -3622,7 +3896,9 @@ in {
     system = {
       systemBuilderCommands = ''
         install -Dm0444 ${lib.escapeShellArg controlRegistryFile} "$out/share/podman-compose/control-registry.json"
-        install -Dm0444 ${lib.escapeShellArg imagePullPlanFile} "$out/share/podman-compose/image-pulls.json"
+        ${lib.optionalString hasComposeBackend ''
+          install -Dm0444 ${lib.escapeShellArg imagePullPlanFile} "$out/share/podman-compose/image-pulls.json"
+        ''}
       '';
       build = {
         podmanComposeControlRegistry = controlRegistryFile;
@@ -3651,7 +3927,7 @@ in {
             new_registry="$systemConfig/share/podman-compose/control-registry.json"
             NIX_PODMAN_COMPOSE_OLD_CONTROL_REGISTRY="$old_registry" \
               NIX_PODMAN_COMPOSE_NEW_CONTROL_REGISTRY="$new_registry" \
-              ${lib.escapeShellArg "${drainChangedPackage}/bin/podman-compose-drain-changed"}
+              ${lib.escapeShellArg "${controlPackage}/bin/podman-composectl"} drain-changed
           }
           podman_compose_drain_changed
         '';
@@ -3662,16 +3938,12 @@ in {
       systemPackages =
         [pkgs.podman]
         ++ lib.optional hasComposeBackend pkgs.podman-compose
-        ++ [
-          controlPackage
-          drainChangedPackage
-          imagePullAllPackage
-        ];
+        ++ [controlPackage]
+        ++ lib.optional hasComposeBackend imageHelperPackage;
       etc =
         lib.listToAttrs (nativeQuadletEtcEntries ++ runtimePreflightEtcEntries)
-        // {
+        // lib.optionalAttrs hasComposeBackend {
           "podman-compose/helpers/podman-compose-helper".source = composeHelperScript;
-          "podman-compose/helpers/podman-backend-helper".source = backendHelperScript;
         };
     };
 
@@ -3699,7 +3971,7 @@ in {
           gatedUserUnits.${service.systemdUser} =
             service.holdGatedUserUnits
             ++ lib.optional
-            (service.systemdUser != "root" && rootlessStackUserHasConfig service.systemdUser)
+            (service.backend == "compose" && service.systemdUser != "root" && rootlessStackUserHasConfig service.systemdUser)
             "${rootlessRuntimePreflightUserServiceNameForUser service.systemdUser}.service";
         };
       })
@@ -3734,7 +4006,7 @@ in {
           resolvedServices)
         ++ lib.concatMap (s: s.auxiliarySystemdUserServices) resolvedServices
         ++ map mkRootlessIdmapMigrateUserService rootlessStackUsersWithConfig
-        ++ map mkRootlessRuntimePreflightUserService rootlessStackUsersWithConfig
+        ++ map mkRootlessRuntimePreflightUserService rootlessComposeUsersWithConfig
       );
 
       user.targets = lib.listToAttrs (
@@ -3752,26 +4024,6 @@ in {
         {
           assertion = duplicateSystemdUserTargetNames == [];
           message = "services.podman-compose: duplicate generated systemd.user target names: ${lib.concatStringsSep ", " duplicateSystemdUserTargetNames}";
-        }
-        {
-          assertion = duplicateNativeQuadletEtcPaths == [];
-          message = "services.podman-compose: duplicate generated Quadlet paths: ${lib.concatStringsSep ", " duplicateNativeQuadletEtcPaths}";
-        }
-        {
-          assertion = duplicatePrivateRuntimeUnits == [];
-          message = "services.podman-compose: duplicate generated private runtime units: ${lib.concatStringsSep ", " duplicatePrivateRuntimeUnits}";
-        }
-        {
-          assertion = privateRuntimeUnitNameCollisions == [];
-          message = "services.podman-compose: private Quadlet units collide with declared systemd.user services: ${lib.concatStringsSep ", " privateRuntimeUnitNameCollisions}";
-        }
-        {
-          assertion = duplicateQuadletContainerNames == [];
-          message = "services.podman-compose: duplicate generated Quadlet container names: ${lib.concatStringsSep ", " duplicateQuadletContainerNames}";
-        }
-        {
-          assertion = duplicateManagedContainerNames == [];
-          message = "services.podman-compose: duplicate explicit managed container names: ${lib.concatStringsSep ", " duplicateManagedContainerNames}";
         }
         {
           assertion = duplicatedSubnets == [];
@@ -3793,11 +4045,18 @@ in {
         lib.mapAttrsToList
         (stackName: stack:
           lib.mapAttrsToList
-          (serviceName: service: {
-            assertion = service.backend != "quadlet" || (service.nativeConversion.supported or false);
+          (serviceName: service: let
+            backend =
+              if service.backend == null
+              then stack.backend
+              else service.backend;
+            unsupportedHooks = builtins.filter (command: !lib.hasPrefix "-" command) service.preStop;
+          in {
+            assertion = backend != "quadlet" || unsupportedHooks == [];
             message =
-              "services.podman-compose.${stackName}.instances.${serviceName}: backend = \"quadlet\" cannot convert this declaration: "
-              + lib.concatStringsSep "; " (service.nativeConversion.unsupported or []);
+              "services.podman-compose.${stackName}.instances.${serviceName}.preStop: "
+              + "Quadlet preStop hooks must be best-effort commands prefixed with '-'; "
+              + "systemd stop transactions cannot be cancelled by a failed ExecStop command.";
           })
           stack.instances)
         cfg

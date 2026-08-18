@@ -12,7 +12,7 @@ class PodmanComposeDrainChangedTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.repo_root = Path(__file__).resolve().parents[3]
-        cls.script = cls.repo_root / "lib/podman-compose/drain-changed.sh"
+        cls.script = cls.repo_root / "lib/podman-compose/composectl.sh"
 
     def setUp(self):
         self.work_dir = Path(
@@ -71,6 +71,7 @@ class PodmanComposeDrainChangedTest(unittest.TestCase):
             textwrap.dedent(
                 f"""\
                 #!{bash}
+                if [ "$1" = -u ]; then printf '%s\n' 0; exit 0; fi
                 if [ "$1" = -g ]; then printf '%s\n' 1234; exit 0; fi
                 exit 64
                 """
@@ -108,7 +109,14 @@ class PodmanComposeDrainChangedTest(unittest.TestCase):
         if fail_unit is not None:
             env["TEST_DRAIN_FAIL_UNIT"] = fail_unit
         return subprocess.run(
-            ["bash", str(self.script)],
+            [
+                "bash",
+                "-c",
+                'registry="$1"; helper=/bin/true; source "$2"; main drain-changed',
+                "podman-composectl-test",
+                str(self.new_registry),
+                str(self.script),
+            ],
             cwd=self.repo_root,
             env=env,
             text=True,

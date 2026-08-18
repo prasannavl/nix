@@ -76,5 +76,6 @@ in
   }
   // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
     lib-podman-compose-quadlet-generator-lifecycle = podmanComposeTests.quadlet-generator-lifecycle;
+    lib-podman-compose-quadlet-provider-transition = podmanComposeTests.quadlet-provider-transition;
     lib-podman-compose-systemd-user-lifecycle = podmanComposeTests.systemd-user-lifecycle;
   }

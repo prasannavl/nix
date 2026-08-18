@@ -225,9 +225,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/lib/incus-podman-lifecycle-policy-redesign-2026-06.md`:
   Records the Incus, Podman Compose, and `systemd-user-manager` lifecycle policy
   redesign, rollout, and post-rollout cleanup model.
-- `.agents/docs/notes/lib/podman-quadlet-backend-2026-07.md`: Records the opt-in
-  strict single-service Quadlet backend, lifecycle ownership, clean provider
-  handoff, runtime health, and validation boundaries.
+- `.agents/docs/notes/lib/podman-quadlet-backend-2026-07.md`: Records the
+  Compose-shaped native Quadlet backend, build-time compiler, lifecycle and
+  staging ownership, provider handoff, runtime health, and no-IFD validation
+  boundaries.
 - `.agents/docs/notes/lib/shared-helper-recovery-tests-2026-06.md`: Records the
   shared Abird helper-fix port for LXC boot profile alignment, Podman Compose
   stack timeout inheritance, Stalwart stable-ID recovery, and helper regression

@@ -12,6 +12,9 @@ usage:
   podman-composectl <service> {start|stop|restart|reload|status}
   podman-composectl <service> {link|clean|verify|repair|logs} [args...]
 
+internal:
+  podman-composectl drain-changed
+
 services are generated systemd user service names without ".service".
 EOF
 }
@@ -20,26 +23,93 @@ list_services() {
 	jq -r 'keys[]' "$registry"
 }
 
+quadlet_runtime_units() {
+	local owner="$1" uid="$2" runtime_dir="$3" bus_path="$4" home="$5" service_name="$6" unit="$7"
+	local dependencies dependency
+	local -a runtime_units=()
+
+	if ! dependencies="$(
+		run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+			env HOME="$home" systemctl --user list-dependencies --plain --no-legend --no-pager "$unit"
+	)"; then
+		printf 'podman-composectl: unable to discover Quadlet runtime units for %s\n' "$unit" >&2
+		return 1
+	fi
+
+	while IFS= read -r dependency; do
+		dependency="${dependency#"${dependency%%[![:space:]]*}"}"
+		dependency="${dependency%"${dependency##*[![:space:]]}"}"
+		case "$dependency" in
+		"$service_name"-*.service) runtime_units+=("$dependency") ;;
+		esac
+	done <<<"$dependencies"
+
+	if ((${#runtime_units[@]} == 0)); then
+		printf 'podman-composectl: Quadlet runtime graph is empty for %s\n' "$unit" >&2
+		return 1
+	fi
+	printf '%s\n' "${runtime_units[@]}"
+}
+
 expected_units() {
-	local owner excluded_units
+	local owner excluded_units encoded entry service_name unit uid runtime_dir bus_path home dependency excluded base_units dependencies
+	local -a units=()
 	owner="$1"
 	shift
 	excluded_units="$(jq -cn --args '$ARGS.positional' "$@")"
 
-	jq -r --arg owner "$owner" --argjson excludedUnits "$excluded_units" '
-		to_entries[]
-		| .value
-		| select(.user == $owner and (.autoStart // false) and ((.state // "running") == "running"))
-		| . as $service
-		| $service.managedUnit,
-		  ($service
-		    | select(.unit as $unit | ($excludedUnits | index($unit)) == null)
-		    | .unit, .readyUnit, (.privateRuntimeUnits[]?))
-		| select(. != null and . != "")
-	' "$registry" | sort -u
+	if ! base_units="$(
+		jq -r --arg owner "$owner" --argjson excludedUnits "$excluded_units" '
+			to_entries[]
+			| .value
+			| select(.user == $owner and (.autoStart // false) and ((.state // "running") == "running"))
+			| . as $service
+			| $service.managedUnit,
+			  ($service
+			    | select(.unit as $unit | ($excludedUnits | index($unit)) == null)
+			    | .unit, .readyUnit, (.privateRuntimeUnits[]?))
+			| select(. != null and . != "")
+		' "$registry"
+	)"; then
+		return 1
+	fi
+	mapfile -t units <<<"$base_units"
+
+	while IFS= read -r encoded; do
+		[ -n "$encoded" ] || continue
+		entry="$(base64 -d <<<"$encoded")"
+		service_name="$(jq -r '.serviceName' <<<"$entry")"
+		unit="$(jq -r '.unit' <<<"$entry")"
+		excluded=false
+		for dependency in "$@"; do
+			[ "$dependency" != "$unit" ] || excluded=true
+		done
+		[ "$excluded" = false ] || continue
+		uid="$(jq -r '.uid' <<<"$entry")"
+		runtime_dir="/run/user/$uid"
+		bus_path="$runtime_dir/bus"
+		home="$(getent passwd "$owner" | cut -d: -f6)"
+		[ -n "$home" ] || home=/
+		if ! dependencies="$(quadlet_runtime_units "$owner" "$uid" "$runtime_dir" "$bus_path" "$home" "$service_name" "$unit")"; then
+			return 1
+		fi
+		while IFS= read -r dependency; do
+			[ -n "$dependency" ] || continue
+			units+=("$dependency")
+		done <<<"$dependencies"
+	done < <(
+		jq -r --arg owner "$owner" '
+			to_entries[]
+			| .value
+			| select(.backend == "quadlet" and .user == $owner and (.autoStart // false) and ((.state // "running") == "running"))
+			| @base64
+		' "$registry"
+	)
+
+	printf '%s\n' "${units[@]}" | sed '/^$/d' | sort -u
 }
 
-expected_runtime() {
+expected_compose_runtime() {
 	local bus_path encoded entries entry excluded_units home owner probe_pid runtime_dir service_name state_json uid
 	local -a probe_pids=() verify_command=()
 	owner="$1"
@@ -50,6 +120,7 @@ expected_runtime() {
 			to_entries[]
 			| .value
 			| select(.user == $owner and (.autoStart // false) and ((.state // "running") == "running"))
+			| select((.backend // "compose") != "quadlet")
 			| select(.unit as $unit | ($excludedUnits | index($unit)) == null)
 			| select(
 				((.expectedComposeServices // []) | length) > 0
@@ -149,6 +220,67 @@ expected_runtime() {
 	done
 }
 
+expected_quadlet_runtime() {
+	local owner excluded_units encoded entry uid runtime_dir bus_path home service_name unit verify_unit probe_pid runtime_units runtime_unit
+	local -a probe_pids=()
+	owner="$1"
+	shift
+	excluded_units="$(jq -cn --args '$ARGS.positional' "$@")"
+
+	while IFS= read -r encoded; do
+		[ -n "$encoded" ] || continue
+		entry="$(base64 -d <<<"$encoded")"
+		uid="$(jq -r '.uid' <<<"$entry")"
+		service_name="$(jq -r '.serviceName' <<<"$entry")"
+		unit="$(jq -r '.unit' <<<"$entry")"
+		verify_unit="${service_name}-verify.service"
+		runtime_dir="/run/user/$uid"
+		bus_path="$runtime_dir/bus"
+		home="$(getent passwd "$owner" | cut -d: -f6)"
+		[ -n "$home" ] || home=/
+		require_runtime_dir "$runtime_dir"
+		require_user_bus "$bus_path"
+		(
+			if ! run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				env HOME="$home" systemctl --user is-active --quiet "$unit"; then
+				printf '%s\n' "inactive-unit service=$service_name unit=$unit"
+			elif ! run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				env HOME="$home" systemctl --user start "$verify_unit" >/dev/null 2>&1; then
+				printf '%s\n' "probe-failed service=$service_name"
+			elif ! runtime_units="$(quadlet_runtime_units "$owner" "$uid" "$runtime_dir" "$bus_path" "$home" "$service_name" "$unit")"; then
+				printf '%s\n' "graph-query-failed service=$service_name"
+			else
+				while IFS= read -r runtime_unit; do
+					[ -n "$runtime_unit" ] || continue
+					if ! run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+						env HOME="$home" systemctl --user is-active --quiet "$runtime_unit"; then
+						printf '%s\n' "inactive-unit service=$service_name unit=$runtime_unit"
+					fi
+				done <<<"$runtime_units"
+			fi
+		) &
+		probe_pids+=("$!")
+	done < <(
+		jq -r --arg owner "$owner" --argjson excludedUnits "$excluded_units" '
+			to_entries[]
+			| .value
+			| select(.backend == "quadlet" and .user == $owner and (.autoStart // false) and ((.state // "running") == "running"))
+			| select(.unit as $unit | ($excludedUnits | index($unit)) == null)
+			| @base64
+		' "$registry"
+	)
+	for probe_pid in "${probe_pids[@]}"; do
+		wait "$probe_pid" || true
+	done
+}
+
+expected_runtime() {
+	local status=0
+	expected_compose_runtime "$@" || status=1
+	expected_quadlet_runtime "$@" || status=1
+	return "$status"
+}
+
 expected_command() {
 	local action owner
 	local -a excluded_units=()
@@ -234,6 +366,88 @@ run_as_owner() {
 		"$@"
 }
 
+drain_log() {
+	printf '[podman-drain] %s\n' "$*" >&2
+}
+
+drain_unit_active_state() {
+	local owner="$1" uid="$2" unit="$3" runtime_dir bus_path
+	runtime_dir="/run/user/$uid"
+	bus_path="$runtime_dir/bus"
+	run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+		systemctl --user show --property=ActiveState --value "$unit" 2>/dev/null || true
+}
+
+drain_entry_needs_drain() {
+	local service_name="$1" old_stamp="$2" removal_policy="$3" new_registry="$4"
+	local new_entry new_stamp
+
+	new_entry="$(jq -c --arg service "$service_name" '.[$service] // null' "$new_registry")"
+	if [[ $new_entry == null ]]; then
+		[[ $removal_policy != keep ]]
+		return
+	fi
+	new_stamp="$(jq -r '.drainStamp // ""' <<<"$new_entry")"
+	[[ -z $old_stamp || $old_stamp != "$new_stamp" ]]
+}
+
+drain_entry() {
+	local service_name="$1" owner="$2" uid="$3" unit="$4" old_stamp="$5" removal_policy="$6" new_registry="$7"
+	local active_state
+
+	drain_entry_needs_drain "$service_name" "$old_stamp" "$removal_policy" "$new_registry" || return 0
+	if ! systemctl is-active --quiet "user@${uid}.service"; then
+		drain_log "user=$owner unit=$unit skipped: user manager inactive"
+		return 0
+	fi
+	if ! id -g "$owner" >/dev/null; then
+		drain_log "user=$owner unit=$unit failed: account unavailable"
+		return 1
+	fi
+	active_state="$(drain_unit_active_state "$owner" "$uid" "$unit")"
+	case "$active_state" in
+	active | activating | deactivating | reloading) ;;
+	*) return 0 ;;
+	esac
+
+	drain_log "user=$owner unit=$unit action=draining"
+	if ! run_as_owner "$owner" "$uid" "/run/user/$uid" "/run/user/$uid/bus" \
+		systemctl --user stop "$unit"; then
+		drain_log "user=$owner unit=$unit drain failed; later units were left untouched"
+		return 1
+	fi
+	drain_log "user=$owner unit=$unit drained"
+}
+
+drain_changed_units() {
+	local old_registry="$1" new_registry="$2"
+	local row service_name owner uid unit old_stamp removal_policy
+
+	[[ -f $old_registry ]] || return 0
+	if [[ ! -f $new_registry ]]; then
+		drain_log "new control registry is missing: $new_registry"
+		return 1
+	fi
+
+	while IFS= read -r row; do
+		[[ -n $row ]] || continue
+		IFS=$'\t' read -r service_name owner uid unit old_stamp removal_policy < <(
+			printf '%s' "$row" | base64 -d | jq -r '[.key, .value.user, .value.uid, .value.unit, (.value.drainStamp // ""), (.value.removalPolicy // "stop")] | @tsv'
+		)
+		drain_entry "$service_name" "$owner" "$uid" "$unit" "$old_stamp" "$removal_policy" "$new_registry" || return 1
+	done < <(jq -r 'to_entries | sort_by(.value.user, .key)[] | @base64' "$old_registry")
+}
+
+drain_changed_main() {
+	local old_registry="${NIX_PODMAN_COMPOSE_OLD_CONTROL_REGISTRY:-}"
+	local new_registry="${NIX_PODMAN_COMPOSE_NEW_CONTROL_REGISTRY:-}"
+	if [[ -z $old_registry || -z $new_registry ]]; then
+		printf '%s\n' 'NIX_PODMAN_COMPOSE_OLD_CONTROL_REGISTRY and NIX_PODMAN_COMPOSE_NEW_CONTROL_REGISTRY are required' >&2
+		return 2
+	fi
+	drain_changed_units "$old_registry" "$new_registry"
+}
+
 run_helper_action() {
 	local owner uid runtime_dir bus_path metadata service_name helper_action
 	owner="$1"
@@ -254,10 +468,14 @@ run_helper_action() {
 }
 
 main() {
-	local service action entry owner uid unit service_name metadata runtime_dir bus_path
+	local service action entry owner uid unit service_name metadata backend verify_unit runtime_dir bus_path
 
 	if [ "$#" -eq 1 ] && [ "$1" = list ]; then
 		list_services
+		return
+	fi
+	if [ "$#" -eq 1 ] && [ "$1" = drain-changed ]; then
+		drain_changed_main
 		return
 	fi
 	if [ "$#" -ge 2 ] && [ "$1" = expected-units ]; then
@@ -289,32 +507,79 @@ main() {
 	uid="$(jq -r '.uid' <<<"$entry")"
 	unit="$(jq -r '.unit' <<<"$entry")"
 	service_name="$(jq -r '.serviceName' <<<"$entry")"
-	metadata="$(jq -r '.metadataFile' <<<"$entry")"
+	backend="$(jq -r '.backend // "compose"' <<<"$entry")"
+	metadata="$(jq -r '.metadataFile // empty' <<<"$entry")"
+	verify_unit="$(jq -r '.verifyUnit // empty' <<<"$entry")"
+	if [ "$backend" = quadlet ]; then
+		verify_unit="${service_name}-verify.service"
+	fi
 	runtime_dir="/run/user/$uid"
 	bus_path="$runtime_dir/bus"
 
 	require_runtime_dir "$runtime_dir"
 
 	case "$action" in
-	start | stop | restart | reload | status)
+	start | stop | restart | status)
 		require_user_bus "$bus_path"
 		run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
 			systemctl --user "$action" "$unit" "$@"
 		;;
+	reload)
+		require_user_bus "$bus_path"
+		if [ "$backend" = quadlet ]; then
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user restart "$unit" "$@"
+		else
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user reload "$unit" "$@"
+		fi
+		;;
 	link | link-files)
-		run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" link-files "$@"
+		if [ "$backend" = quadlet ]; then
+			require_user_bus "$bus_path"
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user restart "$unit" "$@"
+		else
+			run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" link-files "$@"
+		fi
 		;;
 	clean | cleanup | cleanup-files)
-		run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" cleanup-files "$@"
+		if [ "$backend" = quadlet ]; then
+			require_user_bus "$bus_path"
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user stop "$unit" "${service_name}-stage.service" "$@"
+		else
+			run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" cleanup-files "$@"
+		fi
 		;;
 	verify)
-		run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" verify "$@"
+		if [ "$backend" = quadlet ]; then
+			require_user_bus "$bus_path"
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user start "$verify_unit" "$@"
+		else
+			run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" verify "$@"
+		fi
 		;;
 	repair)
-		run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" repair "$@"
+		if [ "$backend" = quadlet ]; then
+			require_user_bus "$bus_path"
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user reset-failed "$unit" "$verify_unit" "${service_name}-*.service"
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user restart "$unit" "$@"
+		else
+			run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" repair "$@"
+		fi
 		;;
 	logs)
-		run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" logs "$@"
+		if [ "$backend" = quadlet ]; then
+			require_user_bus "$bus_path"
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				journalctl --user --unit "$unit" --unit "${service_name}-*" "$@"
+		else
+			run_helper_action "$owner" "$uid" "$runtime_dir" "$bus_path" "$metadata" "$service_name" logs "$@"
+		fi
 		;;
 	*)
 		usage

@@ -2,100 +2,192 @@
 
 ## Decision
 
-`services.podman-compose` supports an explicit `backend = "compose" | "quadlet"`
-at stack or instance scope. Compose remains the default and no existing workload
-is migrated automatically.
+`services.podman-compose` keeps one Compose-shaped declaration contract. A stack
+or instance selects `backend = "compose" | "quadlet"`; changing the backend does
+not require rewriting `source`, `files`, secrets, hooks, or service metadata.
 
-Both backends keep the same public lifecycle graph:
+The backends intentionally diverge below that declaration boundary:
+
+- Compose keeps metadata schema v11, `podman-compose-helper`, runtime state,
+  rootless runtime preflight, and the deploy image-pull plan unchanged.
+- Quadlet is a build-time translation into native `.container`, `.network`, and
+  `.image` units. Systemd and Quadlet own runtime lifecycle, dependencies,
+  readiness, restart policy, image acquisition, and cleanup. Small stateless
+  source helpers perform Nix-owned staging and hook execution from explicit
+  systemd arguments; no helper reads compiler output or runtime metadata, and no
+  `.podman-compose/state.json` is written.
+
+The checked-in shell ownership is deliberately limited to five source files:
+
+- `helper.sh` contains backend-neutral Podman host bootstrap only; currently it
+  provides the rootless ID-map/storage migration command.
+- `composectl.sh` is the shared operator control plane for both backends and
+  owns the internal activation-time changed-unit drain command.
+- `compose-helper.sh` contains the existing metadata-driven Compose lifecycle,
+  state, reconciliation, and per-instance image-pull implementation.
+- `quadlet-helper.sh` contains only stateless, argv-driven `stage` and `hook`
+  commands used by generated systemd units.
+- `image-helper.sh` fans out the Compose deploy image-pull plan and delegates
+  each instance pull to `compose-helper.sh`.
+
+Do not move Compose metadata or lifecycle policy into the shared, Quadlet, or
+image helpers. Do not add a Quadlet image fan-out path: native `.image` units
+already own image acquisition.
+
+The public graph remains stable for callers:
 
 ```text
 <user>-managed.target
   Wants -> <name>-ready.target
               Requires -> <name>-verify.service
-                            Requires -> <name>.service
+              Requires -> <name>.service       # Quadlet
+              <name>-verify.service
+                Requisite -> <name>.service    # Quadlet, never pulls it in
 ```
 
-The public `<name>.service` stays the bounded, repo-owned lifecycle owner. For a
-Quadlet instance it starts and stops one private generated container unit while
-holding the same per-user rootless mutation transaction used by Compose. The
-private unit has no install membership and `Restart=no`; it is an implementation
-detail rather than a second lifecycle or restart owner.
+For Quadlet, generated containers use `[Install] RequiredBy=<name>.service`,
+`Before=<name>.service`, and `PartOf=<name>.service`. The generator therefore
+materializes the dynamic container set as native systemd dependencies without
+importing compiler output into Nix evaluation. Containers require the fixed
+`<name>-stage.service`; referenced `.network` and `.image` units add their own
+native dependencies. Every private native unit uses `StopWhenUnneeded=yes`, so a
+failed public activation automatically unwinds containers that already started,
+then their network/image dependencies and staging. `PartOf=` continues to own
+normal public stop/restart propagation.
 
-## Phase-One Conversion Contract
+## Build-Time Compilation Boundary
 
-Quadlet is deliberately strict:
+Compose-to-Quadlet translation is a normal Nix build, not Nix evaluation:
 
-- structured sources with exactly one service
-- short-string ports
-- primitive argv lists for `command` and `entrypoint`
-- primitive environment values or `KEY=VALUE` strings
-- bind mounts only; relative sources and env files become absolute paths under
-  the staged working directory
-- optional container name, user, and working directory
-- pre-start/bootstrap and pre-stop hooks through the shared wrapper
+1. Nix passes the existing Compose entry files and a small JSON compiler input
+   to a hermetic Python/PyYAML derivation.
+2. The compiler parses Compose YAML, interpolates values per file, merges the
+   resulting models in order, validates the supported subset, and emits Quadlet
+   source files. Mapping keys are never interpolated.
+3. It also emits `report.json`, containing only unit paths, container names, and
+   image classifications needed by the later per-user collision check.
+4. Nix evaluation never imports the report. Runtime services never read it.
 
-Evaluation rejects unsupported top-level keys, multi-service sources, Compose
-dependencies, healthchecks, networks, named or anonymous volumes, string shell
-commands, signal reload, adoption, custom subnets, provider-specific compose
-arguments, `longRunning = false`, unmatched secret target-service names, and
-removal policies other than `delete`. There is no silent Compose fallback.
+This avoids IFD, keeps every existing Compose source authoritative, and leaves
+our layer responsible mainly for translation and Nix-owned staging/hooks.
 
-## Runtime and Health Guarantees
+Quadlet files are installed as individual links under
+`/etc/containers/systemd/users/<uid>/`. Do not replace that directory with one
+store-directory link: Podman's generator would canonicalize `SourcePath` to the
+store directory instead of the stable `/etc` path used for transition and
+diagnostic evidence.
 
-- The wrapper commits start only after both the private unit and the exact
-  labeled container are running.
-- Before touching a private unit, the adapter verifies both its declared
-  `SourcePath` and its fragment under the user generator directories. A
-  same-named hand-written or differently generated unit is not mutated.
-- Failed cleanup rolls back cleanly only after fresh unit/container absence is
-  proven. Podman query errors are indeterminate and leave the per-user runtime
-  dirty, blocking later mutations.
-- Provider changes are clean-only handoffs. Staging preserves the last applied
-  backend; start and preflight refuse Compose-to-Quadlet or Quadlet-to-Compose
-  admission while the prior provider still owns a unit or container. Only a
-  successful start commits the new provider identity.
-- Images use the existing deploy preparation plan. Generated Quadlet units use
-  `Pull=never`, preventing hidden pull ownership.
-- Verification honors an image-defined Podman healthcheck: `starting` is polled
-  within the existing readiness deadline and `unhealthy` fails only that
-  instance's verifier.
-- Health reads one Podman inventory snapshot per user and matches stable
-  repo-owned backend, instance, working-directory, and service labels.
-- `podman-composectl expected-units` includes private runtime units, while the
-  public wrapper/main/ready interface remains the operator surface.
-- A failed verifier remains leaf-local because the managed root weakly wants
-  each ready target; it does not require every child.
+## Runtime Ownership
 
-## Origin-Probe Transport
+- Remote images use `.image` units with `Policy=newer`; store-built images use
+  `Image=docker-archive:<store-path>` plus `ImageTag=<runtime-ref>`. Containers
+  reference the `.image` file and use `Pull=never`, avoiding a second pull path.
+- Compose `restart:` maps to systemd `[Service] Restart=`: `no -> no`,
+  `always -> always`, `on-failure -> on-failure`, and
+  `unless-stopped -> always`. Explicit `systemctl stop` still suppresses
+  restart, which is the systemd equivalent of the intended stopped state.
+- Healthchecked containers use `Notify=healthy` and `HealthOnFailure=kill`.
+  Every generated container service also receives the instance
+  `timeoutReadySeconds` as `TimeoutStartSec`, so Quadlet readiness is bounded by
+  the declared contract instead of the user manager's shorter default. Public
+  activation waits for native readiness, and systemd owns recovery.
+- Quadlet's default rootless network-online dependency remains enabled. Do not
+  add `DefaultDependencies=false` merely to reproduce the wrapper graph.
+- The Nix-generated stage service expresses each ordered operation as an
+  explicit systemd `ExecStart=` invocation of the checked-in, argv-driven
+  `quadlet-helper.sh stage` command. It atomically stages non-compiler runtime
+  files, file secrets, and environment-secret files and preserves the existing
+  host vs container ownership rules. Reverse systemd ordering stops containers
+  before stage cleanup. The stage uses the bootstrap timeout and performs
+  cleanup through `ExecStopPost`, which covers failed starts as well as normal
+  stops and removes both final destinations and temporary siblings.
+  `podman-composectl link` restarts the public service; ordinary dependency and
+  reverse ordering then stop containers, clean staging, restage, and restart the
+  complete native graph without exposing a private unit through the control
+  plane.
+- `preStart`, `preStop`, and `postStart` use explicit systemd commands through
+  `quadlet-helper.sh hook`. Systemd passes immutable build-time command file
+  paths, avoiding multiline unit-file quoting; verification executes its
+  configured argv directly. The helper contains no per-instance data and reads
+  no runtime JSON metadata. Quadlet accepts only best-effort `preStop` commands
+  prefixed with `-`: systemd cannot cancel an already queued stop transaction
+  when `ExecStop` fails, so hard veto hooks are rejected during evaluation
+  instead of silently changing their Compose semantics.
+- Activation uses the small control-registry `drainStamp` to stop a changed old
+  public unit before switching generations. Native staging removes any stale
+  Compose state while retaining the lifecycle-lock shell needed for clean
+  rollback admission.
 
-Automatic local origin probes are backend-neutral and derive `http` versus
-`https` from `exposedPorts.http.upstreamProtocol`. HTTPS probes use declared
-host/SNI metadata with loopback resolution and tolerate local certificate
-verification because they are liveness probes; an explicit `verifyCommand`
-remains the strict semantic/trust escape hatch. Generated probes retry bounded
-transport failures and 5xx responses within the declared readiness budget, but
-explicit commands are not implicitly retried.
+## Minimal Runtime Registry
 
-This rule fixed the 2026-07-15 Kanidm false failure where cleartext HTTP was
-sent to its ready TLS listener. The same latent declaration issue was corrected
-for VictoriaMetrics and VictoriaTraces.
+Compose registry entries retain their existing fields. Quadlet entries contain
+only operator/control-plane identity and fixed unit names:
+
+- `user`, `uid`, `serviceName`, `backend`;
+- public `unit`, `readyUnit`, and `managedUnit`;
+- `autoStart`, `state`, `drainStamp`, and `removalPolicy`.
+
+They do not contain helper metadata, a compiler report path, private unit or
+container inventories, working-directory state, verification argv, image-pull
+metadata, or timeout metadata. `podman-composectl expected-units` discovers the
+generated private graph from systemd and filters it by the instance prefix;
+graph-query failures are fatal. `expected-runtime` first requires the public
+unit to already be active, starts a verify unit whose `Requisite=` cannot pull
+the public unit in, rediscovers the same graph, and requires every generated
+runtime unit to be active. Health inspection is therefore non-mutating. This
+catches a container that exits independently while the public aggregate remains
+active, without restoring runtime inventory metadata. Quadlet containers also
+carry no repo-owned backend/inventory labels; unit and container names provide
+the declared identity.
+
+On Quadlet-only systems, the Compose helper, Compose runtime-preflight metadata,
+and pre-activation Compose image-pull plan are absent from the system closure.
+
+## Supported Compose Subset
+
+The compiler deliberately supports the fleet's explicit subset:
+
+- one or more services on one private default network, including subnet,
+  aliases, and static IPv4 addresses;
+- short-string ports, primitive exposed ports, bind mounts, environment,
+  environment files, file secrets, and trusted-CA injection;
+- string or primitive-argv commands and primitive-argv entrypoints;
+- `depends_on` ordering and `service_healthy` dependencies;
+- health checks, host aliases, capabilities, devices, supplementary groups, host
+  IPC, memory/PID/shared-memory limits, read-only roots, tmpfs, ulimits,
+  supported security options, restart declarations, user/group, and working
+  directory;
+- recursive Compose interpolation for unbraced and braced forms, including all
+  `-`, `+`, and `?` empty/unset variants, lazy nested expressions, literal
+  dollars, value-only interpolation, Compose `.env` quoting/comments/escapes,
+  inherited or unresolved environment entries, Compose/YAML-1.2 boolean parsing,
+  and ordered Compose-compatible multi-file merges; and
+- explicit local image mappings plus compiler-discovered `nix-store:` image
+  references, which must resolve at build time to an existing archive output
+  directly under `/nix/store`.
+
+Unsupported top-level or nested keys, non-default networks, named or anonymous
+volumes, signal reload, adoption, provider-specific Compose arguments,
+`longRunning = false`, unmatched secret targets, or removal policies other than
+`delete` fail the bundle build. There is no silent Compose fallback.
 
 ## Validation Boundary
 
-The module test runs the exact evaluated `.container` artifact through Podman's
-real Quadlet generator. Conversion tests cover accepted and rejected shapes;
-helper tests cover clean commit, proven rollback, indeterminate cleanup,
-generated-unit ownership, and backend transition admission across staging; the
-existing lifecycle VM proves verifier failure isolation and explicit
-managed-root drain/resume; and a focused VM proves that user-manager reload adds
-and removes the generated private unit without install membership. Real workload
-migration still requires a separate service-specific review.
+Compiler tests cover multi-file merge, nested/lazy/value-only interpolation,
+literal dollars, `.env` syntax, unresolved environment entries, strict
+rejection, local-image path validation, native remote/local image units,
+health/restart mapping, dependencies, and network rendering. Every fleet bundle
+runs through Podman's pinned generator, and the generated units are verified
+together with the Nix public graph by `systemd-analyze --user verify`.
 
-Compose compatibility is kept deliberately narrow: existing Compose metadata
-remains schema v11 and uses the Compose-only helper package, while Quadlet uses
-schema v12 and the backend-aware helper. Generated services call stable helper
-names from `/etc/podman-compose/helpers`, so implementation-only package churn
-no longer changes every unit. The first transition from older store-qualified
-commands is protected by the pre-switch sequential drain. Selecting Quadlet
-changes the stable helper name and still performs an explicit, clean provider
-handoff; selecting no backend does not silently migrate a service.
+Lifecycle VMs prove generated-unit removal, partial-start graph unwinding,
+non-mutating runtime verification, and a complete Compose-to-Quadlet-to-Compose
+transition without native runtime state. The compiler check also evaluates with
+`allow-import-from-derivation = false`. Compose restart identities content-hash
+evaluator-visible files and use immutable store-path identities for generated
+store files, so trusted-CA and secret restart detection never realizes a
+derivation during evaluation. Generated-file assertions in the module test run
+inside its derivation rather than importing outputs back into Nix evaluation.
+All exported packages, checks, and host configurations evaluate with IFD
+disabled. Fleet graph and host-closure builds are code-level evidence only; live
+rollout and post-switch observation still require separate human approval.

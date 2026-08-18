@@ -18,6 +18,10 @@
   localImagePackageRuntimeRef = "localhost/demo/package:1-nix-${localImageStoreHash}";
   localImageStoreRef = "nix-store:${localImageTar}";
   localImageStoreRuntimeRef = "localhost/nix-local/image:${localImageStoreHash}";
+  testCaSourceHash = builtins.hashString "sha256" (builtins.toJSON [
+    (builtins.hashString "sha256" (builtins.unsafeDiscardStringContext (toString sourceFile)))
+    (builtins.hashString "sha256" (builtins.unsafeDiscardStringContext (toString localImageTar)))
+  ]);
 
   evalConfig = import (pkgs.path + "/nixos/lib/eval-config.nix") {
     system = pkgs.stdenv.hostPlatform.system;
@@ -150,6 +154,12 @@
                     mountPath = "/run/app/db-password";
                     services = ["web"];
                   };
+                  trustedCaCertificates."test-ca" = {
+                    file = "/run/secrets/test-ca";
+                    sourceHashInputs = [sourceFile localImageTar];
+                    services = ["web"];
+                    envVars = [];
+                  };
                 };
 
                 db = {
@@ -241,7 +251,7 @@
                   };
                   source.services.web = {
                     image = "docker.io/library/busybox:latest";
-                    command = ["printf" "%s" "$HOME" "100%"];
+                    command = ["printf" "%s" "$$HOME" "100%"];
                     environment = {
                       MESSAGE = "hello world";
                       ENABLED = true;
@@ -255,7 +265,7 @@
                   dirs.data = {};
                   files."app.env".text = "TOKEN=test\n";
                   preStart = ["printf native-start"];
-                  preStop = ["printf native-stop"];
+                  preStop = ["-printf native-stop"];
                 };
               };
             };
@@ -307,6 +317,15 @@
         }
       ];
     }).config;
+  invalidNativePreStopConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.podman-compose.demo.instances.native.preStop = lib.mkForce ["false"];
+        }
+      ];
+    }).config;
+  invalidNativePreStopAssertions = builtins.filter (assertion: !assertion.assertion) invalidNativePreStopConfig.assertions;
   stack = config.services.podman-compose.demo;
   app = stack.instances.app;
   db = stack.instances.db;
@@ -345,7 +364,10 @@
   recreatePolicyVerifyUnit = config.systemd.user.services.demo-recreate-policy-verify;
   recreatePolicyReadyTarget = config.systemd.user.targets.demo-recreate-policy-ready;
   nativeUnit = config.systemd.user.services.demo-native;
+  nativeStageUnit = config.systemd.user.services.demo-native-stage;
+  nativeStageCommands = lib.toList nativeStageUnit.serviceConfig.ExecStart;
   nativeVerifyUnit = config.systemd.user.services.demo-native-verify;
+  nativeReadyTarget = config.systemd.user.targets.demo-native-ready;
   imagePullUnit = config.systemd.user.services.demo-app-image-pull;
   rootlessMigrateUnit = config.systemd.user.services.podman-rootless-idmap-migrate-tester;
   runtimePreflightUnit = config.systemd.user.services.podman-runtime-preflight-tester;
@@ -366,8 +388,7 @@
   laneProvider5Unit = config.systemd.user.services.lane-provider5;
   unlimitedLaneProvider3Unit = unlimitedConfig.systemd.user.services.lane-provider3;
   unlimitedLaneProvider4Unit = unlimitedConfig.systemd.user.services.lane-provider4;
-  rootlessMigrateScript =
-    builtins.readFile (builtins.head (lib.splitString " " rootlessMigrateUnit.serviceConfig.ExecStart));
+  rootlessMigrateScriptPath = builtins.head (lib.splitString " " rootlessMigrateUnit.serviceConfig.ExecStart);
 
   failedAssertions = builtins.filter (assertion: ! assertion.assertion) config.assertions;
 
@@ -390,14 +411,22 @@
     assert builtins.length matches == 1;
       lib.removePrefix prefix (builtins.head matches);
   runtimePreflightStorePath = runtimePreflightMetadataPathFromEnv runtimePreflightUnit.serviceConfig.Environment;
-  runtimePreflightMetadata = builtins.fromJSON (
-    builtins.unsafeDiscardStringContext (
-      builtins.readFile runtimePreflightStorePath
-    )
-  );
+  runtimePreflightSource = config.environment.etc."podman-compose/runtime-preflight/tester.json".source;
+  runtimePreflightMetadata = runtimePreflightSource.passthru.value;
 
-  metadataFromUnit = unit:
-    builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile (metadataPathFromEnv unit.serviceConfig.Environment)));
+  controlRegistry = config.system.build.podmanComposeControlRegistry.passthru.value;
+  imagePullPlan = config.system.build.podmanComposeImagePullPlan.passthru.value;
+  metadataFromUnit = unit: let
+    path = metadataPathFromEnv unit.serviceConfig.Environment;
+    matches = builtins.filter (
+      entry:
+        (entry ? metadataFile)
+        && entry.metadataFile != null
+        && toString entry.metadataFile == path
+    ) (lib.attrValues controlRegistry);
+  in
+    assert builtins.length matches == 1;
+      (builtins.head matches).metadataFile.passthru.value;
 
   appMetadata = metadataFromUnit appUnit;
   dbMetadata = metadataFromUnit dbUnit;
@@ -411,7 +440,6 @@
   jobMetadata = metadataFromUnit jobUnit;
   restartPolicyMetadata = metadataFromUnit config.systemd.user.services.demo-restart-policy;
   recreatePolicyMetadata = metadataFromUnit config.systemd.user.services.demo-recreate-policy;
-  nativeMetadata = metadataFromUnit nativeUnit;
 
   entryByDst = dst: entries: let
     matches = builtins.filter (entry: entry.dst == dst) entries;
@@ -434,34 +462,17 @@
   appReloadDir = entryByDst "/srv/demo/app/reload" appMetadata.reload.dirs;
   appManualRecreate = entryByDst "/srv/demo/app/manual-recreate.txt" appMetadata.stagedFiles;
   appOrdinaryFile = entryByDst "/srv/demo/app/other.txt" appMetadata.stagedFiles;
-  appRenderedCompose = builtins.readFile app.sourcePaths."compose.yml";
-  textRenderedCompose = builtins.readFile textSource.sourcePaths."compose.yml";
-  fileRenderedCompose = builtins.readFile fileSource.sourcePaths."compose.yml";
   extendedPullDir = builtins.dirOf (builtins.head extendedMetadata.pullComposeFiles);
-  extendedPullSidecar = builtins.readFile "${extendedPullDir}/sidecar.yml";
-  opaqueSecretFileSecretOverride = builtins.readFile opaqueSecret.sourcePaths."__podman-file-secrets.override.yml";
-  localImageCompose = builtins.unsafeDiscardStringContext (builtins.readFile localImage.sourcePaths."compose.yml");
-  localImagePackageCompose = builtins.unsafeDiscardStringContext (builtins.readFile localImagePackageInstance.sourcePaths."compose.yml");
-  localImageStoreCompose = builtins.unsafeDiscardStringContext (builtins.readFile localImageStoreInstance.sourcePaths."compose.yml");
-  controlRegistry = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeControlRegistry));
-  imagePullPlan = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile config.system.build.podmanComposeImagePullPlan));
   systemdUserGraphCheck = config.system.build.podmanComposeSystemdUserGraphCheck;
   quadletGeneratorCheck = config.system.build.podmanComposeQuadletGeneratorCheck;
   appImagePullPlanEntry = imagePullPlanEntryByService "demo-app";
   jobImagePullPlanEntry = imagePullPlanEntryByService "demo-custom-job";
-  nativeImagePullPlanEntry = imagePullPlanEntryByService "demo-native";
-  nativeQuadletPath = "containers/systemd/users/1234/demo-native-container.container";
-  nativeQuadlet = config.environment.etc.${nativeQuadletPath}.text;
-  nativeExpectedAdoptionStamp = builtins.hashString "sha256" (builtins.toJSON {
-    kind = "podman-compose-adoption";
-    serviceName = "demo-native";
-    workingDir = "/srv/demo/native";
-  });
-  appGeneratedProbe = builtins.readFile (builtins.head controlRegistry.demo-app.verifyCommand);
-  nativeGeneratedProbe = builtins.readFile (builtins.head controlRegistry.demo-native.verifyCommand);
+  appGeneratedProbePath = builtins.head controlRegistry.demo-app.verifyCommand;
+  nativeGeneratedProbePath = nativeVerifyUnit.serviceConfig.ExecStart;
 in
   assert failedAssertions == [];
   assert stack.user == "tester";
+  assert stack.backend == "compose";
   assert stack.startConcurrency == 2;
   assert inheritedStack.startConcurrency == 4;
   assert unlimitedLaneStack.startConcurrency == -1;
@@ -478,6 +489,7 @@ in
   assert app.longRunning == false;
   assert app.composeUpNoProgressSeconds == 75;
   assert app.knownSourceComposeServices == ["web" "worker"];
+  assert app.fileSecrets."test-ca".sourceHash == testCaSourceHash;
   assert db.resolvedWorkingDir == "/srv/demo/db";
   assert textSource.source == sourceInlineText;
   assert textSource.resolvedWorkingDir == "/srv/demo/text-source";
@@ -491,10 +503,7 @@ in
   assert opaqueSecret.knownSourceComposeServices == ["opaque-secret"];
   assert opaqueSecretMetadata.expectedComposeServices == ["opaque-secret"];
   assert builtins.elem "/srv/demo/opaque-secret/__podman-file-secrets.override.yml" opaqueSecretMetadata.composeFiles;
-  assert lib.hasInfix ''"opaque-secret"'' opaqueSecretFileSecretOverride;
-  assert lib.hasInfix "/run/secrets/default-token" opaqueSecretFileSecretOverride;
   assert localImage.declaredImages == [];
-  assert lib.hasInfix localImageRuntimeRef localImageCompose;
   assert localImage.localImageMetadata
   == [
     {
@@ -507,7 +516,6 @@ in
   ];
   assert localImageMetadata.localImages == localImage.localImageMetadata;
   assert localImagePackageInstance.declaredImages == [];
-  assert lib.hasInfix localImagePackageRuntimeRef localImagePackageCompose;
   assert localImagePackageInstance.localImageMetadata
   == [
     {
@@ -520,7 +528,6 @@ in
   ];
   assert localImagePackageMetadata.localImages == localImagePackageInstance.localImageMetadata;
   assert localImageStoreInstance.declaredImages == [];
-  assert lib.hasInfix localImageStoreRuntimeRef localImageStoreCompose;
   assert localImageStoreInstance.localImageMetadata
   == [
     {
@@ -605,6 +612,7 @@ in
   assert lib.hasSuffix " reload" appUnit.serviceConfig.ExecReload;
   assert lib.hasSuffix " post-stop" appUnit.serviceConfig.ExecStopPost;
   assert appUnit.serviceConfig.ExecStart == "/etc/podman-compose/helpers/podman-compose-helper start-staged";
+  assert builtins.hasAttr "podman-compose/helpers/podman-compose-helper" config.environment.etc;
   assert appUnit.serviceConfig.ExecStop == "/etc/podman-compose/helpers/podman-compose-helper stop";
   assert appUnit.serviceConfig.KillMode == "mixed";
   assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" appUnit.serviceConfig.Environment;
@@ -676,15 +684,18 @@ in
   assert builtins.elem "podman-runtime-preflight-tester.service" imagePullUnit.after;
   assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" imagePullUnit.serviceConfig.Environment;
   assert lib.hasSuffix " image-pull" imagePullUnit.serviceConfig.ExecStart;
-  assert rootlessMigrateUnit.restartIfChanged == true;
-  assert rootlessMigrateUnit.stopIfChanged == true;
-  assert map toString rootlessMigrateUnit.restartTriggers
-  == [(builtins.head (lib.splitString "/bin/" rootlessMigrateUnit.serviceConfig.ExecStart))];
+  assert rootlessMigrateUnit.reloadIfChanged == true;
+  assert rootlessMigrateUnit.restartTriggers == [];
+  assert builtins.length rootlessMigrateUnit.reloadTriggers == 2;
+  assert builtins.elem
+  (builtins.head (lib.splitString "/bin/" rootlessMigrateUnit.serviceConfig.ExecStart))
+  (map toString rootlessMigrateUnit.reloadTriggers);
   assert rootlessMigrateUnit.serviceConfig.RemainAfterExit == true;
+  assert lib.hasSuffix
+  " rootless-idmap-reconcile tester /home/tester tester-managed.target"
+  rootlessMigrateUnit.serviceConfig.ExecReload;
   assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" rootlessMigrateUnit.serviceConfig.Environment;
   assert rootlessMigrateUnit.unitConfig.ConditionUser == "tester";
-  assert lib.hasInfix ".config/containers/storage.conf" rootlessMigrateScript;
-  assert lib.hasInfix "mount_program" rootlessMigrateScript;
   assert runtimePreflightUnit.unitConfig.ConditionUser == "tester";
   assert runtimePreflightUnit.unitConfig.Requires == ["podman-rootless-idmap-migrate-tester.service"];
   assert builtins.elem "podman-rootless-idmap-migrate-tester.service" runtimePreflightUnit.after;
@@ -692,15 +703,17 @@ in
   assert runtimePreflightUnit.serviceConfig.RemainAfterExit == false;
   assert runtimePreflightUnit.serviceConfig.TimeoutStartSec == 300;
   assert lib.hasSuffix " runtime-preflight" runtimePreflightUnit.serviceConfig.ExecStart;
-  assert runtimePreflightUnit.serviceConfig.ExecStart == "/etc/podman-compose/helpers/podman-backend-helper runtime-preflight";
+  assert runtimePreflightUnit.serviceConfig.ExecStart == "/etc/podman-compose/helpers/podman-compose-helper runtime-preflight";
   assert builtins.elem (builtins.head migrationGateCondition) runtimePreflightUnit.unitConfig.ConditionPathExists;
   assert !(appStageUnit.unitConfig ? ConditionPathExists);
   assert !(imagePullUnit.unitConfig ? ConditionPathExists);
   assert runtimePreflightMetadata.version == 1;
   assert runtimePreflightMetadata.user == "tester";
-  assert builtins.length runtimePreflightMetadata.services == 13;
+  assert builtins.length runtimePreflightMetadata.services == 11;
   assert builtins.all (entry: !(entry ? backend)) runtimePreflightMetadata.services;
   assert builtins.any (entry: entry.serviceName == "demo-app") runtimePreflightMetadata.services;
+  assert !(builtins.any (entry: entry.serviceName == "demo-native") runtimePreflightMetadata.services);
+  assert !(builtins.any (entry: entry.serviceName == "inherited-worker") runtimePreflightMetadata.services);
   assert !(builtins.hasAttr "podman-managed-graph-migrate-tester" config.systemd.user.services);
   assert runtimePreflightMetadataPathFromEnv appUnit.serviceConfig.Environment
   == "/etc/podman-compose/runtime-preflight/tester.json";
@@ -710,15 +723,17 @@ in
   assert appVerifyUnit.serviceConfig.TimeoutStartSec == 45;
   assert config.users.manageLingering == true;
   assert config.users.users.tester.linger == true;
-  assert builtins.length imagePullPlan == 17;
+  assert builtins.length imagePullPlan == 15;
   assert builtins.filter (entry: entry.serviceName == "demo-local-image") imagePullPlan == [];
   assert builtins.filter (entry: entry.serviceName == "demo-local-image-package") imagePullPlan == [];
   assert builtins.filter (entry: entry.serviceName == "demo-local-image-store") imagePullPlan == [];
+  assert builtins.filter (entry: entry.serviceName == "demo-native") imagePullPlan == [];
+  assert builtins.filter (entry: entry.serviceName == "inherited-worker") imagePullPlan == [];
   assert appImagePullPlanEntry.user == "tester";
   assert appImagePullPlanEntry.uid == "1234";
   assert appImagePullPlanEntry.serviceName == "demo-app";
-  assert appImagePullPlanEntry.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
-  assert appImagePullPlanEntry.runtimePreflightMetadata == runtimePreflightStorePath;
+  assert toString appImagePullPlanEntry.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
+  assert toString appImagePullPlanEntry.runtimePreflightMetadata == runtimePreflightStorePath;
   assert appImagePullPlanEntry.imageTag == "image-1";
   assert lib.hasSuffix "/bin/podman-compose-helper" appImagePullPlanEntry.helper;
   assert appMetadata.imagePullStamp != "";
@@ -729,9 +744,6 @@ in
   assert builtins.stringLength controlRegistry.demo-app.drainStamp == 64;
   assert controlRegistry.demo-app.removalPolicy == "delete";
   assert builtins.length controlRegistry.demo-app.verifyCommand == 1;
-  assert lib.hasInfix "http://127.0.0.1:18080/" appGeneratedProbe;
-  assert lib.hasInfix "probe_timeout_seconds=40" appGeneratedProbe;
-  assert lib.hasInfix "while [ \"$SECONDS\" -lt \"$deadline\" ]" appGeneratedProbe;
   assert controlRegistry.demo-app.autoStart == true;
   assert controlRegistry.demo-app.state == "running";
   assert controlRegistry.demo-custom-job.autoStart == false;
@@ -740,10 +752,10 @@ in
   assert controlRegistry.demo-db.verifyCommand == ["${pkgs.coreutils}/bin/true"];
   assert controlRegistry.demo-text-source.verifyCommand == [];
   assert controlRegistry.demo-custom-job.timeoutReadySeconds == 45;
-  assert controlRegistry.demo-app.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
+  assert toString controlRegistry.demo-app.metadataFile == metadataPathFromEnv appUnit.serviceConfig.Environment;
   assert jobImagePullPlanEntry.user == "root";
   assert jobImagePullPlanEntry.uid == "0";
-  assert jobImagePullPlanEntry.metadataFile == metadataPathFromEnv jobUnit.serviceConfig.Environment;
+  assert toString jobImagePullPlanEntry.metadataFile == metadataPathFromEnv jobUnit.serviceConfig.Environment;
   assert jobImagePullPlanEntry.runtimePreflightMetadata == null;
   assert jobImagePullPlanEntry.imageTag == "0";
   assert lib.hasSuffix "/bin/podman-compose-helper" jobImagePullPlanEntry.helper;
@@ -772,8 +784,6 @@ in
   assert appMetadata.preStop == ["-printf stop"];
   assert appMetadata.expectedComposeServices == ["web" "worker"];
   assert appMetadata.declaredImages == ["docker.io/library/nginx:latest" "docker.io/library/busybox:latest"];
-  assert lib.hasInfix "docker.io/library/nginx:latest" appRenderedCompose;
-  assert lib.hasInfix "docker.io/library/busybox:latest" appRenderedCompose;
   assert builtins.length appComposeFiles == 3;
   assert builtins.elem "/srv/demo/app/compose.yml" appComposeFiles;
   assert builtins.elem "/srv/demo/app/__podman-env-secrets.override.yml" appComposeFiles;
@@ -824,19 +834,16 @@ in
   assert textSourceMetadata.composeArgs == [];
   assert textSourceMetadata.composeFiles == ["/srv/demo/text-source/compose.yml"];
   assert textSourceMetadata.pullComposeFiles != textSourceMetadata.composeFiles;
-  assert textRenderedCompose == sourceInlineText;
   assert fileSourceMetadata.serviceName == "demo-file-source";
   assert fileSourceMetadata.workingDir == "/srv/demo/file-source";
   assert fileSourceMetadata.expectedComposeServices == ["file"];
   assert fileSourceMetadata.declaredImages == ["docker.io/library/busybox:latest"];
   assert fileSourceMetadata.composeFiles == ["/srv/demo/file-source/compose.yml"];
   assert fileSourceMetadata.pullComposeFiles != fileSourceMetadata.composeFiles;
-  assert fileRenderedCompose == builtins.readFile sourceFile;
   assert extendedMetadata.expectedComposeServices == ["web"];
   assert extendedMetadata.composeFiles == ["/srv/demo/extended/compose.yml"];
   assert extendedMetadata.pullComposeFiles == [extended.pullSourcePaths."compose.yml"];
   assert lib.hasPrefix extendedPullDir extended.pullSourcePaths."sidecar.yml";
-  assert lib.hasInfix "FROM_SIDECAR" extendedPullSidecar;
   assert jobMetadata.state == "stopped";
   assert jobMetadata.removalPolicy == "keep";
   assert jobMetadata.longRunning == false;
@@ -860,63 +867,131 @@ in
     "demo-recreate-policy-verify.service"
   ];
   assert native.backend == "quadlet";
-  assert native.nativeConversion.supported == true;
+  assert native.nativeBundle != null;
   assert nativeUnit.wantedBy == [];
   assert nativeUnit.unitConfig.PartOf == ["tester-managed.target"];
   assert nativeUnit.serviceConfig.Type == "oneshot";
   assert nativeUnit.serviceConfig.Restart == "no";
-  assert nativeVerifyUnit.unitConfig.Requires == ["demo-native.service"];
-  assert nativeMetadata.version == 12;
-  assert nativeMetadata.backend == "quadlet";
-  assert nativeMetadata.adoptionStamp == nativeExpectedAdoptionStamp;
-  assert nativeMetadata.backendData.kind == "quadlet";
-  assert nativeMetadata.backendData.quadlet.containerUnit == "demo-native-container.service";
-  assert nativeMetadata.backendData.quadlet.runtimeUnits == ["demo-native-container.service"];
-  assert nativeMetadata.backendData.quadlet.sourcePath == "/etc/${nativeQuadletPath}";
+  assert !(nativeUnit.serviceConfig ? Environment);
+  assert lib.hasSuffix "/bin/true" nativeUnit.serviceConfig.ExecStart;
+  assert lib.hasInfix "/bin/podman-quadlet-helper hook pre-stop " nativeUnit.serviceConfig.ExecStop;
+  assert !(nativeUnit.serviceConfig ? ExecReload);
+  assert builtins.elem "demo-native-stage.service" nativeUnit.unitConfig.Requires;
+  assert builtins.elem "podman-rootless-idmap-migrate-tester.service" nativeUnit.unitConfig.Requires;
+  assert !(builtins.elem "podman-runtime-preflight-tester.service" nativeUnit.unitConfig.Requires);
+  assert !(builtins.hasAttr "demo-native-image-pull" config.systemd.user.services);
+  assert nativeStageUnit.serviceConfig.Type == "oneshot";
+  assert nativeStageUnit.serviceConfig.RemainAfterExit == true;
+  assert nativeStageUnit.serviceConfig.TimeoutStartSec == 180;
+  assert nativeStageUnit.unitConfig.StopWhenUnneeded == true;
+  assert lib.hasInfix "/bin/podman-quadlet-helper stage init " (builtins.head nativeStageCommands);
+  assert builtins.all (command:
+    lib.hasInfix "/bin/podman-quadlet-helper stage " command
+    || lib.hasInfix "/bin/podman-quadlet-helper hook pre-start " command)
+  nativeStageCommands;
+  assert !(nativeStageUnit.serviceConfig ? ExecStop);
+  assert lib.hasInfix "/bin/podman-quadlet-helper stage cleanup " nativeStageUnit.serviceConfig.ExecStopPost;
+  assert nativeStageUnit.unitConfig.PartOf == ["demo-native.service"];
+  assert nativeVerifyUnit.unitConfig.Requisite == ["demo-native.service"];
+  assert !(nativeVerifyUnit.unitConfig ? Requires);
+  assert nativeReadyTarget.unitConfig.Requires
+  == [
+    "demo-native-verify.service"
+    "demo-native.service"
+  ];
   assert appUnit.serviceConfig.ExecStart == "/etc/podman-compose/helpers/podman-compose-helper start-staged";
-  assert nativeUnit.serviceConfig.ExecStart == "/etc/podman-compose/helpers/podman-backend-helper start-staged";
-  assert lib.hasInfix "podman-compose-drain-changed" config.system.activationScripts.podman-compose-drain-changed.text;
+  assert lib.hasInfix "/bin/podman-composectl" config.system.activationScripts.podman-compose-drain-changed.text;
+  assert lib.hasInfix "drain-changed" config.system.activationScripts.podman-compose-drain-changed.text;
   assert controlRegistry.demo-native.backend == "quadlet";
-  assert controlRegistry.demo-native.privateRuntimeUnits == ["demo-native-container.service"];
-  assert builtins.length controlRegistry.demo-native.expectedContainers == 1;
-  assert builtins.length controlRegistry.demo-native.verifyCommand == 1;
-  assert lib.hasInfix "--insecure" nativeGeneratedProbe;
-  assert lib.hasInfix "--resolve native.example.test:18081:127.0.0.1" nativeGeneratedProbe;
-  assert lib.hasInfix "https://native.example.test:18081/" nativeGeneratedProbe;
-  assert nativeImagePullPlanEntry.backend == "quadlet";
-  assert nativeImagePullPlanEntry.imageTag == "0";
-  assert lib.hasInfix "Image=docker.io/library/busybox:latest" nativeQuadlet;
-  assert lib.hasInfix "Pull=never" nativeQuadlet;
-  assert lib.hasInfix "Volume=/srv/demo/native/data:/data:ro" nativeQuadlet;
-  assert lib.hasInfix "EnvironmentFile=/srv/demo/native/app.env" nativeQuadlet;
-  assert lib.hasInfix ''Exec="printf"'' nativeQuadlet;
-  assert lib.hasInfix "$$HOME" nativeQuadlet;
-  assert lib.hasInfix "100%%" nativeQuadlet;
-  assert !(lib.hasInfix "$$$$HOME" nativeQuadlet);
-  assert !(lib.hasInfix "100%%%%" nativeQuadlet);
-  assert lib.hasInfix "Restart=no" nativeQuadlet;
-  assert !(lib.hasInfix "[Install]" nativeQuadlet); let
-    nativeQuadletFixture = pkgs.writeText "demo-native-container.container" nativeQuadlet;
+  assert builtins.attrNames controlRegistry.demo-native
+  == ["autoStart" "backend" "drainStamp" "managedUnit" "readyUnit" "removalPolicy" "serviceName" "state" "uid" "unit" "user"];
+  assert !(controlRegistry.demo-native ? metadataFile);
+  assert !(controlRegistry.demo-native ? manifestFile);
+  assert !(controlRegistry.demo-native ? privateRuntimeUnits);
+  assert !(controlRegistry.demo-native ? expectedContainers);
+  assert !(controlRegistry.demo-native ? workingDir);
+  assert !(controlRegistry.demo-native ? verifyCommand);
+  assert builtins.length invalidNativePreStopAssertions == 1;
+  assert lib.hasInfix "Quadlet preStop hooks must be best-effort" (builtins.head invalidNativePreStopAssertions).message; let
+    sourceInlineTextFixture = pkgs.writeText "source-inline-text.compose.yml" sourceInlineText;
   in
     pkgs.runCommand "podman-compose-module-test" {} ''
       unit_dir="$TMPDIR/quadlet-units"
       generated_dir="$TMPDIR/generated-units"
       mkdir -p "$unit_dir" "$generated_dir"
-      cp ${nativeQuadletFixture} "$unit_dir/demo-native-container.container"
+      cp -L ${native.nativeBundle}/quadlet/* "$unit_dir/"
+
+      native_quadlet="$unit_dir/demo-native-web-container.container"
+      native_image_file="$(${pkgs.jq}/bin/jq -er '.units[] | select(.kind == "remote-image") | .sourcePath | split("/") | last' ${native.nativeBundle}/report.json)"
+      native_image="$unit_dir/$native_image_file"
+      image_unit="''${native_image_file%.image}-image.service"
+
+      ${pkgs.jq}/bin/jq -e '
+        .kind == "quadlet-build-report"
+        and .containers == [{"name": "demo-native-web"}]
+        and [.units[].kind] == ["network", "remote-image", "container"]
+        and (has("expectedContainers") | not)
+        and (has("labels") | not)
+      ' ${native.nativeBundle}/report.json
+
+      grep -F '"opaque-secret"' ${opaqueSecret.sourcePaths."__podman-file-secrets.override.yml"}
+      grep -F '/run/secrets/default-token' ${opaqueSecret.sourcePaths."__podman-file-secrets.override.yml"}
+      grep -F ${lib.escapeShellArg localImageRuntimeRef} ${localImage.sourcePaths."compose.yml"}
+      grep -F ${lib.escapeShellArg localImagePackageRuntimeRef} ${localImagePackageInstance.sourcePaths."compose.yml"}
+      grep -F ${lib.escapeShellArg localImageStoreRuntimeRef} ${localImageStoreInstance.sourcePaths."compose.yml"}
+      grep -F '.config/containers/storage.conf' ${rootlessMigrateScriptPath}
+      grep -F 'mount_program' ${rootlessMigrateScriptPath}
+      grep -F 'http://127.0.0.1:18080/' ${appGeneratedProbePath}
+      grep -F 'probe_timeout_seconds=40' ${appGeneratedProbePath}
+      grep -F 'while [ "$SECONDS" -lt "$deadline" ]' ${appGeneratedProbePath}
+      grep -F 'docker.io/library/nginx:latest' ${app.sourcePaths."compose.yml"}
+      grep -F 'docker.io/library/busybox:latest' ${app.sourcePaths."compose.yml"}
+      cmp ${textSource.sourcePaths."compose.yml"} ${sourceInlineTextFixture}
+      cmp ${fileSource.sourcePaths."compose.yml"} ${sourceFile}
+      grep -F 'FROM_SIDECAR' ${extended.pullSourcePaths."sidecar.yml"}
+
+      grep -F -- '--insecure' ${nativeGeneratedProbePath}
+      grep -F -- '--resolve native.example.test:18081:127.0.0.1' ${nativeGeneratedProbePath}
+      grep -F 'https://native.example.test:18081/' ${nativeGeneratedProbePath}
+      grep -F "Image=$native_image_file" "$native_quadlet"
+      grep -F 'Image=docker.io/library/busybox:latest' "$native_image"
+      grep -F 'Policy=newer' "$native_image"
+      grep -F 'Pull=never' "$native_quadlet"
+      ! grep -Fq '[Quadlet]' "$native_quadlet"
+      grep -F 'Volume=/srv/demo/native/data:/data:ro' "$native_quadlet"
+      grep -F 'EnvironmentFile=/srv/demo/native/app.env' "$native_quadlet"
+      grep -F 'Exec="printf"' "$native_quadlet"
+      grep -F '$$HOME' "$native_quadlet"
+      grep -F '100%%' "$native_quadlet"
+      ! grep -Fq '$$$$HOME' "$native_quadlet"
+      ! grep -Fq '100%%%%' "$native_quadlet"
+      grep -F 'Restart=always' "$native_quadlet"
+      grep -F 'PartOf=demo-native.service' "$native_quadlet"
+      grep -F 'Requires=demo-native-stage.service' "$native_quadlet"
+      grep -F 'StopWhenUnneeded=true' "$native_quadlet"
+      grep -F 'Before=demo-native.service' "$native_quadlet"
+      grep -F 'RequiredBy=demo-native.service' "$native_quadlet"
+      grep -F 'Network=demo-native-network.network' "$native_quadlet"
+      grep -F '[Install]' "$native_quadlet"
 
       QUADLET_UNIT_DIRS="$unit_dir" \
         ${pkgs.podman}/lib/systemd/system-generators/podman-system-generator \
         --user "$generated_dir"
 
-      generated="$generated_dir/demo-native-container.service"
+      generated="$generated_dir/demo-native-web-container.service"
       test -s "$generated"
-      grep -F 'Restart=no' "$generated"
+      test -s "$generated_dir/demo-native-network-network.service"
+      test -s "$generated_dir/$image_unit"
+      test -L "$generated_dir/demo-native.service.requires/demo-native-web-container.service"
+      grep -F 'Requires=demo-native-network-network.service' "$generated"
+      grep -F 'After=demo-native-network-network.service' "$generated"
+      grep -F 'Restart=always' "$generated"
+      grep -F 'TimeoutStartSec=45' "$generated"
+      grep -F "Requires=$image_unit" "$generated"
       grep -F '${pkgs.podman}/bin/podman run' "$generated"
       grep -F -- '--pull never' "$generated"
-      grep -F -- '--label io.abird.podman-compose.backend=quadlet' "$generated"
-      grep -F -- '--label io.abird.podman-compose.instance=demo-native' "$generated"
-      grep -F -- '--label io.abird.podman-compose.project-working-dir=/srv/demo/native' "$generated"
-      grep -F -- '--label io.abird.podman-compose.service=web' "$generated"
+      ! grep -Fq -- '--label io.abird.podman-compose.' "$generated"
+      grep -F 'mv -fT -- "$tmp" "$dst"' ${../quadlet-helper.sh}
       test -e ${systemdUserGraphCheck}
       test -e ${quadletGeneratorCheck}
       touch "$out"

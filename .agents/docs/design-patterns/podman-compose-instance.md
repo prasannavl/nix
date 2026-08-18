@@ -9,11 +9,17 @@ that function, the module evaluates its result through the same service
 submodule as an ordinary attribute-set instance. Nested defaults under options
 such as `exposedPorts` and tunnels therefore apply identically in both forms.
 
+Backend selection does not change the instance specification. Keep `source` in
+its natural Compose form; do not rewrite textual or path-backed Compose into a
+structured Nix attrset merely to select Quadlet. The Quadlet backend compiles
+the staged Compose entry files in a normal Nix build and keeps its manifest
+opaque to evaluation, avoiding IFD.
+
 ## Attribute Order
 
-1. **Config flags** — `state`, `autoStart`, `startPriority`, `reconcilePolicy`,
-   `removalPolicy`, `reload`, `imageTag`, `bootTag`, `reloadTag`, `recreateTag`,
-   `localImages`
+1. **Config flags** — `backend`, `state`, `autoStart`, `startPriority`,
+   `reconcilePolicy`, `removalPolicy`, `reload`, `imageTag`, `bootTag`,
+   `reloadTag`, `recreateTag`, `localImages`
 2. **exposedPorts**
 3. **network identity** — `subnet` when a stable compose default-network subnet
    is declared
@@ -53,10 +59,39 @@ such as `exposedPorts` and tunnels therefore apply identically in both forms.
   before `podman compose up`; use it for first-run env generation, image loads,
   bootstrap commands, and other work that depends on the staged runtime tree.
   `preStop` runs before the helper applies the compose stop policy and accepts a
-  leading `-` on a command to ignore failure. Keep raw `serviceOverrides` last
-  for true systemd-level overrides such as timeouts or `ExecStartPost`.
+  leading `-` on a command to ignore failure. Quadlet instances require that
+  prefix on every `preStop` command because systemd cannot use a failed
+  `ExecStop` to cancel the rest of an already queued stop transaction. Keep raw
+  `serviceOverrides` last for true systemd-level overrides such as timeouts or
+  `ExecStartPost`.
 
 ## Lifecycle Policy
+
+### Rootless ID-map convergence
+
+Treat the per-user rootless ID-map unit as an active start gate, not as a reason
+to restart every dependent stack when its implementation changes.
+
+- Keep `Requires=` and `After=` from managed services to the successful
+  `RemainAfterExit` gate so initial starts fail closed.
+- Apply helper-package and declared mapping changes with
+  `reloadIfChanged = true`, `reloadTriggers`, and an idempotent `ExecReload`.
+  Reloading preserves the gate's active state, so systemd does not propagate a
+  stop through the reverse `Requires=` graph.
+- Fingerprint semantic inputs separately from the helper derivation: the
+  complete declared subordinate-ID allocation, the owning user's identity and
+  home, and the configured rootless overlay mount program.
+- Compare Podman's effective UID/GID map with `/etc/subuid` and `/etc/subgid` at
+  runtime. Packaging churn is a no-op. If a real migration is required, stop the
+  per-user managed target, run `podman system migrate`, then queue the target to
+  start after the reload job exits. Always queue recovery after a failed stop or
+  migration attempt.
+- Keep ordinary service restart and drain stamps independent. Compose source,
+  images, secrets, environment, and service-unit changes continue to restart
+  only the affected managed services.
+
+This preserves automatic convergence while preventing control-plane path changes
+from becoming fleet-wide data-plane restarts.
 
 - Pin image references to exact upstream version tags whenever the registry
   publishes a usable release tag. Use a `tag@sha256:<digest>` pin only for
@@ -66,13 +101,14 @@ such as `exposedPorts` and tunnels therefore apply identically in both forms.
   `preStart`. In structured compose sources, set `image = package;` when the
   package exposes `passthru.imageRef`. In inline YAML sources, use
   `image: nix-store:${package}`. The module rewrites the compose image to a
-  normal generated runtime tag with the Nix image-tar store hash, loads the tar,
-  and tags it to that runtime ref before `podman compose up`. This avoids stale
-  Podman tags when the package changes without requiring manual image-tag bumps.
-  Mixed local/remote compose instances pull only their declared remote image
-  refs, so a generated local runtime tag is never sent to a registry. Use
-  `localImages` only as an escape hatch for sources the module cannot infer
-  automatically.
+  normal generated runtime tag with the Nix image-tar store hash. For Quadlet,
+  the build-time compiler discovers the `nix-store:` reference and records it in
+  the opaque runtime manifest. The helper loads and tags the tar before start.
+  This avoids stale Podman tags when the package changes without requiring
+  manual image-tag bumps. Mixed local/remote compose instances pull only their
+  declared remote image refs, so a generated local runtime tag is never sent to
+  a registry. Use `localImages` only as an escape hatch for sources the module
+  cannot infer automatically.
 - Use `state = "stopped"` when an instance should remain declared but should be
   stopped and skipped by automatic start/reconcile. The generated unit remains
   manually startable; runtime files are staged on start and cleaned after stop.
@@ -177,22 +213,31 @@ such as `exposedPorts` and tunnels therefore apply identically in both forms.
   Self-alias, public ingress, missing peers, and indeterminate Podman
   observations never authorize mutation. The correction marker is durable for
   the start generation so the provider and verifier cannot each correct once.
-- One-shot ownership deliberately separates startup readiness from steady-state
-  liveness. A container that exits after its ready target passed leaves that
-  leaf unhealthy; it must not make the main unit fail later or restart the
-  aggregate root. Deploy health and external monitoring should report and repair
-  only that leaf by stopping its main service and starting its ready target. If
-  automatic self-healing is added, give it a dedicated leaf-scoped owner with
-  bounded backoff and an explicit mutation transaction. Never restore a
-  persistent observer as the main process, and never let a query timeout invoke
-  project teardown. Penpot's post-ready exit during the July storage incident is
-  the reference failure for this boundary.
-- Override Compose-defined restart policies to `restart: no` in the generated
-  runtime policy file passed to `compose up`, so newly created containers never
-  enter an independently restarting state. This declarative provider input is
-  authoritative; do not follow it with a second Podman update pass. Derive
-  service names centrally from structured or inline Compose sources; inline
-  parsing must preserve documents whose top-level keys have common indentation.
+- Compose-backend one-shot ownership deliberately separates startup readiness
+  from steady-state liveness. A container that exits after its ready target
+  passed leaves that leaf unhealthy; it must not make the main unit fail later
+  or restart the aggregate root. Deploy health and external monitoring should
+  report and repair only that leaf by stopping its main service and starting its
+  ready target. If automatic self-healing is added, give it a dedicated
+  leaf-scoped owner with bounded backoff and an explicit mutation transaction.
+  Never restore a persistent observer as the main process, and never let a query
+  timeout invoke project teardown. Penpot's post-ready exit during the July
+  storage incident is the reference failure for this boundary. Native Quadlet
+  instead uses the generated container services as its steady-state lifecycle
+  owners.
+- For the Compose backend, override Compose-defined restart policies to
+  `restart: no` in the generated runtime policy file passed to `compose up`, so
+  newly created containers never enter an independently restarting state. This
+  declarative provider input is authoritative; do not follow it with a second
+  Podman update pass. For native Quadlet, translate Compose `restart:` into the
+  generated unit's `[Service] Restart=`: `no` stays `no`, `on-failure` stays
+  `on-failure`, and `always` / `unless-stopped` map to `always`. Systemd is the
+  sole restart owner; never emit Podman's `--restart` flag. Generated container
+  failures propagate through the public service graph, and `StopWhenUnneeded`
+  releases its stage, image, and network resources when that graph unwinds.
+  Derive service names centrally from structured or inline Compose sources;
+  inline parsing must preserve documents whose top-level keys have common
+  indentation.
 - Keep long compose readiness waits outside the rootless mutation transaction.
   The helper releases the per-user lock after `podman compose up -d`, so
   independent applications can warm in parallel. Short Podman control-plane
@@ -301,14 +346,17 @@ such as `exposedPorts` and tunnels therefore apply identically in both forms.
   admitted deploy failure may roll back only its own host. Ordinary failure on
   one host never rolls back successful peers; those hosts remain eligible for
   candidate-generation health checks.
-- A per-service ready target requires only its verifier, while the verifier
-  requires and orders after the main compose service and optional reconciler.
-  This pulls the complete readiness graph into one systemd transaction without
-  bypassing the main services' static start-lane edges. Each lane successor
-  orders after the predecessor's ready target rather than its main service, so
-  `startConcurrency` spans the full readiness boundary. Verifiers are read-only:
-  they report stale stamps or unhealthy state and fail rather than restarting a
-  service and creating a second lifecycle wave.
+- A Compose-backend ready target requires its verifier, while the verifier
+  requires and orders after the main service and optional reconciler. A native
+  Quadlet ready target explicitly requires the public service, optional
+  reconciler, and verifier; its verifier uses `Requisite=` plus `After=` so a
+  direct health query cannot start an inactive application. This pulls the
+  complete readiness graph into one systemd transaction without bypassing the
+  main services' static start-lane edges. Each lane successor orders after the
+  predecessor's ready target rather than its main service, so `startConcurrency`
+  spans the full readiness boundary. Verifiers are read-only: they report stale
+  stamps or unhealthy state and fail rather than restarting a service and
+  creating a second lifecycle wave.
 - Inspect compose project state with direct, label-filtered
   `podman ps -a
   --format json`. Do not add per-project monitor loops that

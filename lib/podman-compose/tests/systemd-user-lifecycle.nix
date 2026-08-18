@@ -16,6 +16,11 @@
 
     [ ! -e "$failure_file" ]
   '';
+  idmapGateScript = pkgs.writeShellScript "systemd-user-lifecycle-idmap-gate" ''
+    set -eu
+
+    printf '%s\n' "$1" >"$2"
+  '';
 in {
   name = "podman-compose-systemd-user-lifecycle";
 
@@ -33,10 +38,22 @@ in {
 
     systemd.user = {
       services = {
+        test-idmap-gate = {
+          unitConfig.ConditionUser = "tester";
+          reloadIfChanged = true;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${idmapGateScript} start %t/test-idmap-gate-state";
+            ExecReload = "${idmapGateScript} reload %t/test-idmap-gate-state";
+          };
+        };
         test-alpha = {
+          after = ["test-idmap-gate.service"];
           unitConfig = {
             ConditionUser = "tester";
             PartOf = ["test-managed.target"];
+            Requires = ["test-idmap-gate.service"];
           };
           serviceConfig = {
             Type = "simple";
@@ -44,9 +61,11 @@ in {
           };
         };
         test-beta = {
+          after = ["test-idmap-gate.service"];
           unitConfig = {
             ConditionUser = "tester";
             PartOf = ["test-managed.target"];
+            Requires = ["test-idmap-gate.service"];
           };
           serviceConfig = {
             Type = "simple";
@@ -120,6 +139,7 @@ in {
     alpha_verify = "test-alpha-verify.service"
     beta = "test-beta.service"
     beta_ready = "test-beta-ready.target"
+    idmap_gate = "test-idmap-gate.service"
 
     def show(unit, prop):
         return machine.succeed(f"{ctl} show --property={prop} --value {unit}").strip()
@@ -130,8 +150,8 @@ in {
     def assert_active(*units):
         machine.succeed(f"{ctl} is-active --quiet {' '.join(units)}")
 
-    for unit in [root, alpha, alpha_ready, beta, beta_ready]:
-        machine.wait_for_unit(unit, "tester")
+    for unit in [root, idmap_gate, alpha, alpha_ready, beta, beta_ready]:
+      machine.wait_for_unit(unit, "tester")
 
     with subtest("root uses weak readiness edges with implicit target ordering"):
         root_wants = show(root, "Wants").split()
@@ -149,6 +169,14 @@ in {
     beta_ready_entered = show(beta_ready, "ActiveEnterTimestampMonotonic")
     assert verifier_count("test-alpha") == 1
     assert verifier_count("test-beta") == 1
+
+    with subtest("reloading an active prerequisite preserves dependents"):
+        machine.succeed(f"{ctl} reload {idmap_gate}")
+
+        assert_active(idmap_gate, alpha, alpha_ready, beta, beta_ready)
+        assert show(alpha, "MainPID") == alpha_pid
+        assert show(beta, "MainPID") == beta_pid
+        assert machine.succeed(f"cat {runtime_dir}/test-idmap-gate-state").strip() == "reload"
 
     with subtest("restarting one service reruns only its readiness graph"):
         machine.succeed(f"{ctl} restart {alpha}")

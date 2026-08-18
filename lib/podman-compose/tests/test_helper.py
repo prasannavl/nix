@@ -17,7 +17,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.repo_root = Path(__file__).resolve().parents[3]
-        cls.helper = cls.repo_root / "lib/podman-compose/helper.sh"
+        cls.helper = cls.repo_root / "lib/podman-compose/compose-helper.sh"
         cls.tmp_root = cls.repo_root / "tmp"
         cls.tmp_root.mkdir(exist_ok=True)
 
@@ -1590,7 +1590,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
                 textwrap.dedent(
                     f"""
                     plan={shlex.quote(str(plan))}
-                    source lib/podman-compose/image-pull-all.sh
+                    source lib/podman-compose/image-helper.sh
                     runtime_dir_for_uid() {{
                       printf '%s\n' {shlex.quote(str(self.runtime_dir))}
                     }}
@@ -1653,7 +1653,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
                 textwrap.dedent(
                     f"""
                     plan={shlex.quote(str(plan))}
-                    source lib/podman-compose/image-pull-all.sh
+                    source lib/podman-compose/image-helper.sh
                     runtime_dir_for_uid() {{
                       printf '%s\n' {shlex.quote(str(self.runtime_dir))}
                     }}
@@ -1709,7 +1709,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
                 textwrap.dedent(
                     f"""
                     plan={shlex.quote(str(plan))}
-                    source lib/podman-compose/image-pull-all.sh
+                    source lib/podman-compose/image-helper.sh
                     runtime_dir_for_uid() {{
                       printf '%s\n' {shlex.quote(str(self.runtime_dir))}
                     }}
@@ -1790,7 +1790,7 @@ class PodmanComposeHelperTest(unittest.TestCase):
                 textwrap.dedent(
                     f"""
                     plan={shlex.quote(str(plan))}
-                    source lib/podman-compose/image-pull-all.sh
+                    source lib/podman-compose/image-helper.sh
                     runtime_dir_for_uid() {{
                       printf '%s\n' {shlex.quote(str(self.runtime_dir))}
                     }}

@@ -178,7 +178,7 @@ service-facing ingress policy.
 
 - `lib/podman.nix`
 - `lib/podman-compose/default.nix`
-- `lib/podman-compose/helper.sh`
+- `lib/podman-compose/compose-helper.sh`
 - `lib/services/nginx/default.nix`
 - `lib/services/tunnels/cloudflare.nix`
 - the host service module that declares `services.podman-compose.<stack>`
