@@ -12,6 +12,7 @@
     };
     runtimeInputs = with pkgs; [
       age
+      cloudflared
       coreutils
       findutils
       gawk
@@ -21,7 +22,7 @@
       openssh
       opentofu
       procps
-      cloudflared
+      util-linux
     ];
     text = ''
       export NIXBOT_IN_NIX_SHELL=1
