@@ -448,6 +448,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   native Rust manager/agent ownership split, retired compatibility surfaces,
   durable hold boundary, and narrow Pvl workspace, manifest, stack, and host
   generation adaptations.
+- `.agents/docs/notes/tooling/cargo-workspace-2026-04.md`: Records the root Rust
+  workspace, filtered Crane source and dependency boundaries, derivation-backed
+  vendoring, and no-IFD external-source contract.
 - `.agents/docs/notes/tooling/shared-tooling-parity-2026-07.md`: Records the
   superseded Bash host-manager parity contract and repository-owned host
   generation policy.

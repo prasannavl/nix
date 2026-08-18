@@ -172,6 +172,12 @@
   `nixosModules`.
 - Use `.` for root-flake `nix build` and `nix run` examples (e.g.,
   `nix run .#lint`).
+- Lint evaluation is a no-IFD gate. The pre-push hook must invoke the outer
+  `nix run .#lint` with `--option allow-import-from-derivation false`, and the
+  lint script must propagate `allow-import-from-derivation = false` through
+  `NIX_CONFIG` so root checks, parallel host evaluations, and child-package
+  commands cannot use IFD. Keep both boundaries: an option applied only to the
+  outer `nix run` is not inherited automatically by nested `nix` processes.
 - For AI-driven validation, do not use `path:` as the live-untracked escape
   hatch. Use `.`, an absolute repo path, or an intentional `git+file:///...`
   ref; if untracked files seem required, stop and make the state explicit first.

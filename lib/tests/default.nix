@@ -31,6 +31,22 @@
       [ ! -e "$test_tmpdir" ]
       touch "$out"
     '';
+  lintNoIfdTest =
+    pkgs.runCommand "lint-no-ifd-test" {
+      nativeBuildInputs = [pkgs.bash pkgs.gnused pkgs.nix];
+    } ''
+      sed '$d' ${../../scripts/lint.sh} > lint-functions.sh
+      source ./lint-functions.sh
+
+      NIX_CONFIG='allow-import-from-derivation = true'
+      enforce_no_ifd
+
+      [ "$NIX_CONFIG" = $'allow-import-from-derivation = true\nallow-import-from-derivation = false' ]
+      effective_ifd="$(nix --extra-experimental-features nix-command config show 2>/dev/null |
+        sed -n 's/^allow-import-from-derivation = //p')"
+      [ "$effective_ifd" = false ]
+      touch "$out"
+    '';
   ollamaTests = import ../services/ollama/tests {pkgs = pkgs;};
   podmanComposeTests = import ../podman-compose/tests {inherit pkgs;};
   stalwartLib = import ../services/stalwart {inherit pkgs;};
@@ -46,6 +62,7 @@ in
     lib-host-network-qos-helper = hostNetworkQosTests.helper;
     lib-host-network-qos-module = hostNetworkQosTests.module;
     lib-lint-manifest-temp-cleanup = lintManifestTempCleanupTest;
+    lib-lint-no-ifd = lintNoIfdTest;
     lib-openssh = import ./openssh.nix {inherit pkgs;};
     lib-ollama-helper = ollamaTests.helper;
     lib-podman-compose-helper = podmanComposeTests.helper;

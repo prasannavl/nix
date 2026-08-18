@@ -38,6 +38,15 @@ die() {
 	exit 1
 }
 
+enforce_no_ifd() {
+	local nix_config="${NIX_CONFIG:-}"
+
+	if [ -n "${nix_config}" ]; then
+		nix_config+=$'\n'
+	fi
+	export NIX_CONFIG="${nix_config}allow-import-from-derivation = false"
+}
+
 detect_default_lint_system() {
 	nix eval --impure --raw --expr builtins.currentSystem 2>/dev/null || printf 'x86_64-linux\n'
 }
@@ -847,6 +856,7 @@ main() {
 	local -a request_args=("$@")
 
 	trap 'report_exit "$?"' EXIT
+	enforce_no_ifd
 	ensure_runtime_shell "$@"
 	init_vars
 

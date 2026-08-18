@@ -23,6 +23,10 @@ let
   deriveProjectName = src:
     builtins.baseNameOf (builtins.toString src);
 
+  isDerivation = value:
+    builtins.isAttrs value
+    && (value.type or null) == "derivation";
+
   shellWords = parts:
     builtins.concatStringsSep " " (map builtins.toJSON parts);
 
@@ -85,7 +89,18 @@ let
         );
     };
   in
-    filtered;
+    pkgs.runCommandLocal "cargo-workspace-source" {src = filtered;} ''
+      forbidden="$(find "$src" \
+        \( -type d -name .git -o -type d -name target -o -type d -name dist \) \
+        -print -quit)"
+      if [ -n "$forbidden" ]; then
+        printf 'mkCargoWorkspaceSource: forbidden generated or VCS directory passed source filter: %s\n' "$forbidden" >&2
+        exit 1
+      fi
+
+      mkdir -p "$out"
+      cp -a "$src"/. "$out"/
+    '';
 
   mkCraneCargoLockAttrs = {
     src,
@@ -96,7 +111,10 @@ let
       if builtins.isAttrs cargoLock && builtins.hasAttr "lockFileContents" cargoLock
       then {cargoLockContents = cargoLock.lockFileContents;}
       else {inherit cargoLock;}
-    else if builtins.pathExists (src + "/Cargo.lock")
+    # Only inspect evaluator-visible sources. Probing a fetched derivation here
+    # would realise it during evaluation (IFD); Crane can consume its lockfile
+    # from the source tree inside the build instead.
+    else if builtins.isPath src && builtins.pathExists (src + "/Cargo.lock")
     then {cargoLockContents = builtins.readFile (src + "/Cargo.lock");}
     else {};
 
@@ -1552,17 +1570,26 @@ in rec {
         };
 
       craneLib = pkgs.craneLib or null;
+      craneCargoVendorDir =
+        if craneLib == null
+        then null
+        else craneLib.vendorCargoDeps resolvedCraneCargoLockAttrs;
+      craneAttrs = value:
+        value
+        // resolvedCraneCargoLockAttrs
+        // {cargoVendorDir = craneCargoVendorDir;};
+      craneDepsAttrs =
+        builtins.removeAttrs (craneAttrs cargoBuildAttrs) ["src"]
+        // {dummySrc = buildSrc;};
     in
       if craneLib != null && !(builtins.hasAttr "cargoDeps" buildAttrs)
       then
         craneLib.buildPackage (
-          trunkBuildAttrs
-          // resolvedCraneCargoLockAttrs
+          craneAttrs trunkBuildAttrs
           // {
             cargoExtraArgs = cargoExtraArgs;
             cargoArtifacts = craneLib.buildDepsOnly (
-              cargoBuildAttrs
-              // resolvedCraneCargoLockAttrs
+              craneDepsAttrs
               // {
                 cargoExtraArgs = cargoExtraArgs;
               }
@@ -1602,6 +1629,47 @@ in rec {
     rustPlatform,
     fallbackAttrs ? finalAttrs,
   }: let
+    sourceIsDerivation =
+      builtins.hasAttr "src" attrs
+      && isDerivation attrs.src;
+    needsFetchedCargoDeps =
+      sourceIsDerivation
+      && (attrs.cargoHash or null) != null
+      && !(builtins.hasAttr "cargoDeps" attrs)
+      && !(builtins.hasAttr "cargoVendorDir" attrs);
+    cargoVendorSourceAttrs =
+      builtins.intersectAttrs {
+        cargoRoot = null;
+        name = null;
+        pname = null;
+        postUnpack = null;
+        preUnpack = null;
+        sourceRoot = null;
+        src = null;
+        srcs = null;
+        unpackPhase = null;
+        version = null;
+      }
+      attrs;
+    resolvedCargoVendorAttrs =
+      if needsFetchedCargoDeps
+      then let
+        cargoDeps = rustPlatform.fetchCargoVendor (
+          cargoVendorSourceAttrs
+          // {
+            hash = attrs.cargoHash;
+            patches = attrs.cargoPatches or [];
+          }
+        );
+      in {
+        # fetchCargoVendor carries its own Cargo source configuration (including
+        # Git dependencies). Let cargoSetupHook install that configuration and
+        # tell Crane not to synthesize a second vendor tree from the fetched
+        # source during evaluation.
+        cargoDeps = cargoDeps;
+        cargoVendorDir = null;
+      }
+      else {};
     resolvedCraneCargoLockAttrs =
       if builtins.hasAttr "src" attrs
       then
@@ -1611,14 +1679,35 @@ in rec {
         }
       else {};
     attrsNoCargoLock = builtins.removeAttrs attrs ["cargoLock"];
+    depsOnlyBaseAttrs =
+      if sourceIsDerivation
+      then
+        builtins.removeAttrs attrsNoCargoLock ["src"]
+        // {dummySrc = attrs.src;}
+      else attrsNoCargoLock;
+    depsOnlyMergedAttrs =
+      depsOnlyBaseAttrs
+      // resolvedCargoVendorAttrs
+      // resolvedCraneCargoLockAttrs
+      // depsOnlyAttrs;
+    finalMergedAttrs =
+      attrsNoCargoLock
+      // resolvedCargoVendorAttrs
+      // resolvedCraneCargoLockAttrs
+      // finalAttrs;
+    withCargoSetupHook = mergedAttrs:
+      mergedAttrs
+      // (
+        if needsFetchedCargoDeps
+        then {nativeBuildInputs = (mergedAttrs.nativeBuildInputs or []) ++ [rustPlatform.cargoSetupHook];}
+        else {}
+      );
     cargoArtifacts =
       if craneLib == null
       then null
       else
         craneLib.buildDepsOnly (
-          attrsNoCargoLock
-          // resolvedCraneCargoLockAttrs
-          // depsOnlyAttrs
+          withCargoSetupHook depsOnlyMergedAttrs
           // {
             cargoExtraArgs = cargoExtraArgs;
           }
@@ -1628,9 +1717,7 @@ in rec {
     then rustPlatform.buildRustPackage (attrs // fallbackAttrs)
     else
       craneLib.buildPackage (
-        attrsNoCargoLock
-        // resolvedCraneCargoLockAttrs
-        // finalAttrs
+        withCargoSetupHook finalMergedAttrs
         // {
           inherit cargoArtifacts;
           cargoExtraArgs = cargoExtraArgs;
@@ -2036,20 +2123,32 @@ in rec {
           // buildArgs
           // buildAttrsNoPrePatch;
         craneLib = pkgs.craneLib or null;
+        craneCargoVendorDir =
+          if craneLib == null
+          then null
+          else craneLib.vendorCargoDeps resolvedCraneCargoLockAttrs;
+        craneCommonAttrs =
+          commonAttrs
+          // resolvedCraneCargoLockAttrs
+          // {cargoVendorDir = craneCargoVendorDir;};
+        craneDepsAttrs =
+          if isDerivation buildSrc
+          then
+            builtins.removeAttrs craneCommonAttrs ["src"]
+            // {dummySrc = buildSrc;}
+          else craneCommonAttrs;
         cargoArtifacts =
           if craneLib == null
           then null
           else
             craneLib.buildDepsOnly (
-              commonAttrs
-              // resolvedCraneCargoLockAttrs
+              craneDepsAttrs
               // {
                 cargoExtraArgs = shellWords resolvedCraneBuildCargoArgs;
               }
             );
         mkCraneCheckAttrs = extra:
-          commonAttrs
-          // resolvedCraneCargoLockAttrs
+          craneCommonAttrs
           // {
             inherit cargoArtifacts;
             doInstallCargoArtifacts = false;
@@ -2061,8 +2160,7 @@ in rec {
           if craneLib != null
           then
             craneLib.buildPackage (
-              commonAttrs
-              // resolvedCraneCargoLockAttrs
+              craneCommonAttrs
               // {
                 inherit cargoArtifacts;
                 cargoExtraArgs = shellWords resolvedCraneBuildCargoArgs;
@@ -2085,8 +2183,7 @@ in rec {
               then null
               else build;
             fmt = craneLib.cargoFmt (
-              commonAttrs
-              // resolvedCraneCargoLockAttrs
+              craneCommonAttrs
               // {
                 cargoExtraArgs = shellWords resolvedFmtCargoArgs;
                 nativeBuildInputs = (commonAttrs.nativeBuildInputs or []) ++ resolvedFmtNativeBuildInputs;
