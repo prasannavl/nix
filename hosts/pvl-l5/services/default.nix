@@ -9,6 +9,7 @@
   ];
 
   services.podman-compose.pvl = {
+    backend = "compose";
     user = "pvl";
     stackDir = "/var/lib/pvl/compose";
     servicePrefix = "pvl-";
