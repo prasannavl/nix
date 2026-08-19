@@ -1368,7 +1368,7 @@
     options = {
       backend = lib.mkOption {
         type = backendType;
-        default = "compose";
+        default = "quadlet";
         description = "Default runtime backend for instances in this stack.";
       };
 
@@ -2024,7 +2024,7 @@
         command)
       commands;
     in
-      lib.escapeShellArgs ([quadletHelperScript "hook" hookName resolvedWorkingDir] ++ map toString commandFiles);
+      lib.escapeShellArgs ([quadletHelperScript "hook" hookName resolvedWorkingDir podmanHelperPath] ++ map toString commandFiles);
     nativeStageCommand = action: args:
       lib.escapeShellArgs ([quadletHelperScript "stage" action] ++ args);
     nativeStageExecStart =
@@ -2047,7 +2047,7 @@
         entry = service.stagedEntries.${fileName};
       in
         nativeStageCommand "stage-file" [
-          service.sourcePaths.${fileName}
+          service.pullSourcePaths.${fileName}
           service.runtimePaths.${fileName}
           (shellMode entry.mode)
           (shellOwner entry.user)
@@ -3724,6 +3724,7 @@ in {
                     name = nativeSystemdServiceName;
                     config = {
                       systemdServiceName = nativeSystemdServiceName;
+                      composeProjectName = builtins.baseNameOf resolvedWorkingDir;
                       workingDir = resolvedWorkingDir;
                       etcDir = "/etc/containers/systemd/users/${nativeUid}";
                       composeFiles = map (fileName: sourcePaths.${fileName}) nativeComposeEntryFiles;
@@ -3942,7 +3943,12 @@ in {
         ++ lib.optional hasComposeBackend imageHelperPackage;
       etc =
         lib.listToAttrs (nativeQuadletEtcEntries ++ runtimePreflightEtcEntries)
-        // lib.optionalAttrs hasComposeBackend {
+        // {
+          # Active units from the previous generation may still need their
+          # immutable Compose stop implementation while activation drains a
+          # Compose -> Quadlet provider transition.  Keep this compatibility
+          # path even on a Quadlet-only generation; native steady-state units
+          # never call it and still carry no Compose metadata.
           "podman-compose/helpers/podman-compose-helper".source = composeHelperScript;
         };
     };

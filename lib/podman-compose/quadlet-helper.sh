@@ -229,15 +229,16 @@ stage_main() {
 
 hook_usage() {
 	cat >&2 <<'EOF'
-usage: podman-quadlet-helper hook <pre-start|post-start|pre-stop> <working-dir> [command-file ...]
+usage: podman-quadlet-helper hook <pre-start|post-start|pre-stop> <working-dir> <path> [command-file ...]
 EOF
 }
 
 run_hook() {
-	local hook_name command working_dir ignore_failure=0 status=0
+	local hook_name command hook_path working_dir ignore_failure=0 status=0
 	hook_name="$1"
 	working_dir="$2"
-	command="$3"
+	hook_path="$3"
+	command="$4"
 
 	if [[ ${command#-} != "$command" ]]; then
 		ignore_failure=1
@@ -246,6 +247,7 @@ run_hook() {
 	[[ -n $command ]] || return 0
 
 	if (
+		export PATH="$hook_path"
 		if [[ -d $working_dir ]]; then
 			cd "$working_dir"
 		else
@@ -267,14 +269,15 @@ run_hook() {
 }
 
 hook_main() {
-	local hook_name working_dir command command_file
-	if (($# < 2)); then
+	local hook_name hook_path working_dir command command_file
+	if (($# < 3)); then
 		hook_usage
 		return 2
 	fi
 	hook_name="$1"
 	working_dir="$2"
-	shift 2
+	hook_path="$3"
+	shift 3
 
 	case "$hook_name" in
 	pre-start | post-start | pre-stop) ;;
@@ -290,7 +293,7 @@ hook_main() {
 			return 2
 		fi
 		command="$(<"$command_file")"
-		run_hook "$hook_name" "$working_dir" "$command"
+		run_hook "$hook_name" "$working_dir" "$hook_path" "$command"
 	done
 }
 

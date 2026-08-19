@@ -24,6 +24,16 @@ class QuadletRuntimeTest(unittest.TestCase):
             check=check,
         )
 
+    def run_hook(self, hook, working_dir, *commands, check=True, path=None):
+        return self.run_script(
+            "hook",
+            hook,
+            working_dir,
+            path or os.environ["PATH"],
+            *commands,
+            check=check,
+        )
+
     def test_stage_actions_install_atomically_and_cleanup(self):
         with tempfile.TemporaryDirectory(prefix="quadlet-stage-test.", dir=self.tmp_root) as tmp:
             root = Path(tmp)
@@ -151,8 +161,7 @@ class QuadletRuntimeTest(unittest.TestCase):
                 command_file = working_dir / f"command-{index}"
                 command_file.write_text(command, encoding="utf-8")
                 commands.append(command_file)
-            result = self.run_script(
-                "hook",
+            result = self.run_hook(
                 "pre-start",
                 working_dir,
                 *commands,
@@ -167,8 +176,7 @@ class QuadletRuntimeTest(unittest.TestCase):
             trailing_command = Path(tmp) / "trailing-command"
             failing_command.write_text("false", encoding="utf-8")
             trailing_command.write_text(f"touch {marker}", encoding="utf-8")
-            result = self.run_script(
-                "hook",
+            result = self.run_hook(
                 "post-start",
                 tmp,
                 failing_command,
@@ -183,11 +191,36 @@ class QuadletRuntimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="quadlet-hook-root-test.", dir=self.tmp_root) as tmp:
             command = Path(tmp) / "command"
             command.write_text('test "$(pwd)" = /', encoding="utf-8")
-            self.run_script(
-                "hook",
+            self.run_hook(
                 "pre-stop",
                 "/path/that/does/not/exist",
                 command,
+            )
+
+    def test_hook_uses_the_declared_backend_neutral_path(self):
+        with tempfile.TemporaryDirectory(prefix="quadlet-hook-path-test.", dir=self.tmp_root) as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            tool = bin_dir / "backend-neutral-tool"
+            tool.write_text("#!/bin/sh\nprintf compatible > \"$1\"\n", encoding="utf-8")
+            tool.chmod(0o755)
+            command = root / "command"
+            command.write_text(
+                "backend-neutral-tool hook-result",
+                encoding="utf-8",
+            )
+
+            self.run_hook(
+                "pre-start",
+                root,
+                command,
+                path=str(bin_dir),
+            )
+
+            self.assertEqual(
+                "compatible",
+                (root / "hook-result").read_text(encoding="utf-8"),
             )
 
 

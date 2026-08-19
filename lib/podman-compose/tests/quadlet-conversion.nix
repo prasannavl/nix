@@ -58,12 +58,14 @@
         ports: [127.0.0.1:18080:80/tcp, 127.0.0.1:18081:80]
   '';
   projectEnv = pkgs.writeText "compose.env" ''
+    COMPOSE_PROJECT_NAME=env-project
     REGISTRY=docker.io/library
     TAG=stable
     FROM_PROJECT=resolved
   '';
   bundleConfig = {
     systemdServiceName = "test-native";
+    composeProjectName = "Test.Project";
     workingDir = "/srv/test/native";
     etcDir = "/etc/containers/systemd/users/1234";
     composeFiles = [composeBase composeOverride];
@@ -162,6 +164,8 @@ in
     grep -F 'NetworkDeleteOnStop=true' "$network"
     grep -F 'StopWhenUnneeded=true' "$network"
     grep -F 'Notify=healthy' "$db"
+    grep -F 'ContainerName=env-project_db_1' "$db"
+    grep -F 'ContainerName=env-project_web_1' "$web"
     grep -F 'HealthOnFailure=kill' "$db"
     grep -F 'TimeoutStartSec=75' "$db"
     grep -F 'TimeoutStartSec=75' "$web"
@@ -216,7 +220,7 @@ in
     fi
     grep -F 'PublishPort=127.0.0.1:18081:80' "$web"
     jq -e '.kind == "quadlet-build-report"' "$report"
-    jq -e '.containers | map(.name) == ["test-native-db", "test-native-web"]' "$report"
+    jq -e '.containers | map(.name) == ["env-project_db_1", "env-project_web_1"]' "$report"
     jq -e '.units | map(.kind) | sort == ["container", "container", "network", "remote-image", "remote-image"]' "$report"
     jq -e 'has("expectedContainers") | not' "$report"
     jq -e 'has("labels") | not' "$report"
@@ -227,6 +231,7 @@ in
     local_image_name=$(sed -n 's/^Image=\(.*\.image\)$/\1/p' "$local_container")
     local_image=${localBundle}/quadlet/$local_image_name
     test "$local_runtime" != null
+    grep -F 'ContainerName=testproject_app_1' "$local_container"
     jq -e '.localImages | length == 1' "$local_report"
     jq -e '.declaredImages == []' "$local_report"
     grep -F "Image=docker-archive:${localImageTar}" "$local_image"

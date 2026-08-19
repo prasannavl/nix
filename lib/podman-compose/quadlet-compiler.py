@@ -718,6 +718,18 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
         fail("declared subnet conflicts with the Compose default network subnet")
 
     systemd_name = config["systemdServiceName"]
+    default_project_name = config["composeProjectName"]
+    if not isinstance(default_project_name, str) or not default_project_name:
+        fail("composeProjectName must be a nonempty string")
+    configured_project_name = env.get("COMPOSE_PROJECT_NAME")
+    compose_project_name = (
+        configured_project_name
+        if configured_project_name
+        else default_project_name.lower()
+    )
+    compose_project_name = re.sub(r"[^-_a-z0-9]", "", compose_project_name)
+    if not compose_project_name:
+        fail("Compose project name normalizes to an empty string")
     working_dir = config["workingDir"]
     etc_dir = config["etcDir"].rstrip("/")
     network_base = f"{systemd_name}-network"
@@ -866,7 +878,9 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
             local_images.append(local_entry)
             local_image_by_runtime_ref[image] = local_entry
         image_file = image_file_for(image)
-        container_name = raw.get("container_name", f"{systemd_name}-{name}")
+        container_name = raw.get(
+            "container_name", f"{compose_project_name}_{name}_1"
+        )
         if not isinstance(container_name, str) or not container_name:
             fail(f"service {name} container_name must be a nonempty string")
         unit_part = sanitize_unit_part(name)

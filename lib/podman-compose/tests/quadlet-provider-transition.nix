@@ -42,6 +42,7 @@ in {
     };
 
     services.podman-compose.mixed = {
+      backend = "compose";
       user = "tester";
       stackDir = "/srv/mixed";
       servicePrefix = "mixed-";
@@ -78,7 +79,10 @@ in {
         };
         consumer = {
           backend = "compose";
-          source.services.consumer = mkService "mixed-consumer";
+          source.services.consumer = {
+            image = imagePackage;
+            command = ["/bin/sleep" "infinity"];
+          };
           dependsOn = ["provider"];
         };
       };
@@ -98,6 +102,7 @@ in {
     provider = "mixed-provider.service"
     provider_ready = "mixed-provider-ready.target"
     consumer = "mixed-consumer.service"
+    consumer_container = "consumer_consumer_1"
     consumer_ready = "mixed-consumer-ready.target"
     consumer_stage = "mixed-consumer-stage.service"
     broken = "mixed-broken.service"
@@ -169,11 +174,11 @@ in {
     with subtest("base generation owns both services through Compose"):
         assert applied_backend() == "compose"
         provider_id = container_id("mixed-provider")
-        consumer_id = container_id("mixed-consumer")
+        consumer_id = container_id(consumer_container)
         assert provider_id
         assert consumer_id
         assert container_label(
-            "mixed-consumer", "com.docker.compose.service"
+            consumer_container, "com.docker.compose.service"
         ) == "consumer"
         assert show(private_container, "LoadState") == "not-found"
         assert show(private_network, "LoadState") == "not-found"
@@ -194,9 +199,9 @@ in {
 
         machine.fail(f"test -e {state}")
         assert container_id("mixed-provider") == provider_id
-        assert container_id("mixed-consumer") != consumer_id
+        assert container_id(consumer_container) != consumer_id
         assert container_label(
-            "mixed-consumer", "com.docker.compose.service"
+            consumer_container, "com.docker.compose.service"
         ) == ""
         assert show(private_container, "UnitFileState") == "generated"
         assert show(private_container, "Restart") == "no"
@@ -270,13 +275,13 @@ in {
         )
         assert show(consumer, "ActiveState") == "inactive"
         machine.fail(
-            f"{podman} ps --format '{{{{.Names}}}}' | grep -Fx mixed-consumer"
+            f"{podman} ps --format '{{{{.Names}}}}' | grep -Fx {consumer_container}"
         )
         machine.succeed(f"{ctl} start {consumer_ready}")
         wait_active(consumer, consumer_ready, private_container)
 
     with subtest("a private unit exit unwinds the public graph"):
-        machine.succeed(f"{podman} stop mixed-consumer")
+        machine.succeed(f"{podman} stop {consumer_container}")
         machine.wait_until_succeeds(
             f'test "$({ctl} show --property=ActiveState --value {private_container})" = failed',
             timeout=30,
@@ -305,7 +310,7 @@ in {
         wait_active(consumer, consumer_ready, private_container)
 
     with subtest("rollback restores Compose and removes the private unit"):
-        quadlet_consumer_id = container_id("mixed-consumer")
+        quadlet_consumer_id = container_id(consumer_container)
         machine.succeed("/run/booted-system/bin/switch-to-configuration test")
         wait_active(root, provider, provider_ready, consumer, consumer_ready)
         machine.wait_until_succeeds(
@@ -319,9 +324,9 @@ in {
 
         assert applied_backend() == "compose"
         assert container_id("mixed-provider") == provider_id
-        assert container_id("mixed-consumer") != quadlet_consumer_id
+        assert container_id(consumer_container) != quadlet_consumer_id
         assert container_label(
-            "mixed-consumer", "com.docker.compose.service"
+            consumer_container, "com.docker.compose.service"
         ) == "consumer"
   '';
 }

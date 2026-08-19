@@ -72,6 +72,7 @@
 
           podman-compose = {
             demo = {
+              backend = "compose";
               user = "tester";
               stackDir = "/srv/demo";
               servicePrefix = "demo-";
@@ -293,8 +294,8 @@
             };
 
             inherited = {
-              user = "tester";
               backend = "quadlet";
+              user = "tester";
               stackDir = "/srv/inherited";
               servicePrefix = "inherited-";
               instances.worker.source.services.worker = {
@@ -326,7 +327,22 @@
       ];
     }).config;
   invalidNativePreStopAssertions = builtins.filter (assertion: !assertion.assertion) invalidNativePreStopConfig.assertions;
+  quadletOnlyConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.podman-compose = lib.mkForce {
+            native = {
+              backend = "quadlet";
+              user = "tester";
+              instances.app.source.services.app.image = "docker.io/library/busybox:latest";
+            };
+          };
+        }
+      ];
+    }).config;
   stack = config.services.podman-compose.demo;
+  laneStack = config.services.podman-compose.lane;
   app = stack.instances.app;
   db = stack.instances.db;
   textSource = stack.instances."text-source";
@@ -473,12 +489,15 @@ in
   assert failedAssertions == [];
   assert stack.user == "tester";
   assert stack.backend == "compose";
+  assert laneStack.backend == "quadlet";
   assert stack.startConcurrency == 2;
   assert inheritedStack.startConcurrency == 4;
   assert unlimitedLaneStack.startConcurrency == -1;
   assert !(builtins.elem "lane-provider5-ready.target" unlimitedLaneProvider3Unit.after);
   assert !(builtins.elem "lane-consumer-ready.target" unlimitedLaneProvider4Unit.after);
   assert app.backend == "compose";
+  assert laneConsumer.backend == "quadlet";
+  assert inheritedStack.backend == "quadlet";
   assert inheritedNative.backend == "quadlet";
   assert app.user == null;
   assert app.startPriority == 0;
@@ -723,7 +742,8 @@ in
   assert appVerifyUnit.serviceConfig.TimeoutStartSec == 45;
   assert config.users.manageLingering == true;
   assert config.users.users.tester.linger == true;
-  assert builtins.length imagePullPlan == 15;
+  assert builtins.length imagePullPlan == 9;
+  assert builtins.all (entry: lib.hasPrefix "demo-" entry.serviceName) imagePullPlan;
   assert builtins.filter (entry: entry.serviceName == "demo-local-image") imagePullPlan == [];
   assert builtins.filter (entry: entry.serviceName == "demo-local-image-package") imagePullPlan == [];
   assert builtins.filter (entry: entry.serviceName == "demo-local-image-store") imagePullPlan == [];
@@ -885,6 +905,9 @@ in
   assert nativeStageUnit.serviceConfig.TimeoutStartSec == 180;
   assert nativeStageUnit.unitConfig.StopWhenUnneeded == true;
   assert lib.hasInfix "/bin/podman-quadlet-helper stage init " (builtins.head nativeStageCommands);
+  assert builtins.any
+  (command: lib.hasInfix (builtins.unsafeDiscardStringContext native.pullSourcePaths."app.env") command)
+  nativeStageCommands;
   assert builtins.all (command:
     lib.hasInfix "/bin/podman-quadlet-helper stage " command
     || lib.hasInfix "/bin/podman-quadlet-helper hook pre-start " command)
@@ -900,6 +923,9 @@ in
     "demo-native.service"
   ];
   assert appUnit.serviceConfig.ExecStart == "/etc/podman-compose/helpers/podman-compose-helper start-staged";
+  assert lib.hasSuffix
+  "/bin/podman-compose-helper"
+  (toString quadletOnlyConfig.environment.etc."podman-compose/helpers/podman-compose-helper".source);
   assert lib.hasInfix "/bin/podman-composectl" config.system.activationScripts.podman-compose-drain-changed.text;
   assert lib.hasInfix "drain-changed" config.system.activationScripts.podman-compose-drain-changed.text;
   assert controlRegistry.demo-native.backend == "quadlet";
@@ -928,11 +954,13 @@ in
 
       ${pkgs.jq}/bin/jq -e '
         .kind == "quadlet-build-report"
-        and .containers == [{"name": "demo-native-web"}]
+        and .containers == [{"name": "native_web_1"}]
         and [.units[].kind] == ["network", "remote-image", "container"]
         and (has("expectedContainers") | not)
         and (has("labels") | not)
       ' ${native.nativeBundle}/report.json
+
+      grep -F 'ContainerName=native_web_1' "$native_quadlet"
 
       grep -F '"opaque-secret"' ${opaqueSecret.sourcePaths."__podman-file-secrets.override.yml"}
       grep -F '/run/secrets/default-token' ${opaqueSecret.sourcePaths."__podman-file-secrets.override.yml"}

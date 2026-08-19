@@ -5,6 +5,8 @@
 `services.podman-compose` keeps one Compose-shaped declaration contract. A stack
 or instance selects `backend = "compose" | "quadlet"`; changing the backend does
 not require rewriting `source`, `files`, secrets, hooks, or service metadata.
+Quadlet is the module default; stacks or instances that require the
+compatibility backend select `backend = "compose"` explicitly.
 
 The backends intentionally diverge below that declaration boundary:
 
@@ -109,10 +111,20 @@ diagnostic evidence.
   `quadlet-helper.sh hook`. Systemd passes immutable build-time command file
   paths, avoiding multiline unit-file quoting; verification executes its
   configured argv directly. The helper contains no per-instance data and reads
-  no runtime JSON metadata. Quadlet accepts only best-effort `preStop` commands
-  prefixed with `-`: systemd cannot cancel an already queued stop transaction
-  when `ExecStop` fails, so hard veto hooks are rejected during evaluation
-  instead of silently changing their Compose semantics.
+  no runtime JSON metadata. Hook commands receive the same declared host PATH as
+  Compose lifecycle hooks, so selecting a backend does not silently remove
+  standard tools from an unchanged service hook. Quadlet accepts only
+  best-effort `preStop` commands prefixed with `-`: systemd cannot cancel an
+  already queued stop transaction when `ExecStop` fails, so hard veto hooks are
+  rejected during evaluation instead of silently changing their Compose
+  semantics.
+- Quadlet keeps native private systemd unit names but preserves Compose's
+  implicit runtime container identity, `<project>_<service>_1`; an explicit
+  `container_name` still wins. The project name follows Compose precedence for
+  `COMPOSE_PROJECT_NAME` from `.env`, otherwise using the normalized working
+  directory basename. Existing service-local tools can therefore address the
+  same container through either backend without per-instance rewrites or native
+  runtime metadata.
 - Activation uses the small control-registry `drainStamp` to stop a changed old
   public unit before switching generations. Native staging removes any stale
   Compose state while retaining the lifecycle-lock shell needed for clean
@@ -130,18 +142,23 @@ only operator/control-plane identity and fixed unit names:
 They do not contain helper metadata, a compiler report path, private unit or
 container inventories, working-directory state, verification argv, image-pull
 metadata, or timeout metadata. `podman-composectl expected-units` discovers the
-generated private graph from systemd and filters it by the instance prefix;
-graph-query failures are fatal. `expected-runtime` first requires the public
-unit to already be active, starts a verify unit whose `Requisite=` cannot pull
-the public unit in, rediscovers the same graph, and requires every generated
-runtime unit to be active. Health inspection is therefore non-mutating. This
-catches a container that exits independently while the public aggregate remains
-active, without restoring runtime inventory metadata. Quadlet containers also
-carry no repo-owned backend/inventory labels; unit and container names provide
-the declared identity.
+generated private graph from systemd. It includes the fixed stage service and
+accepts other private services only when their systemd `SourcePath` belongs to
+`/etc/containers/systemd/users/<uid>/`; graph-query and provenance-query
+failures are fatal. `expected-runtime` first requires the public unit to already
+be active, starts a verify unit whose `Requisite=` cannot pull the public unit
+in, rediscovers the same graph, and requires every persistent runtime unit to be
+active. Successful inactive verifier oneshots are therefore excluded. Health
+inspection is non-mutating and catches a container that exits independently
+while the public aggregate remains active, without restoring runtime inventory
+metadata. Quadlet containers also carry no repo-owned backend/inventory labels;
+systemd's generated-unit provenance provides the declared identity.
 
-On Quadlet-only systems, the Compose helper, Compose runtime-preflight metadata,
-and pre-activation Compose image-pull plan are absent from the system closure.
+On Quadlet-only systems, Compose runtime-preflight metadata and the
+pre-activation Compose image-pull plan are absent. The immutable Compose helper
+is retained only at the previous-generation `ExecStop=` compatibility path so a
+single deploy can drain an active Compose provider before `/etc` switches; no
+native steady-state unit calls it.
 
 ## Supported Compose Subset
 
