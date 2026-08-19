@@ -7,6 +7,7 @@ usage() {
 	cat >&2 <<'EOF'
 usage:
   podman-composectl list
+  podman-composectl restart-managed [USER]
   podman-composectl expected-units USER [--exclude-unit UNIT]...
   podman-composectl expected-runtime USER [--exclude-unit UNIT]...
   podman-composectl <service> {start|stop|restart|reload|status}
@@ -23,9 +24,256 @@ list_services() {
 	jq -r 'keys[]' "$registry"
 }
 
+user_bus_available() {
+	[ -d "$1" ] && [ -S "$2" ]
+}
+
+restart_managed_stable_state() {
+	local owner="$1" uid="$2" runtime_dir="$3" bus_path="$4" unit="$5" deadline="$6"
+	local unit_state property value load_state active_state job waiting_logged=0
+	local load_state_seen active_state_seen job_seen
+
+	while true; do
+		if ! unit_state="$(
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user show --property=LoadState --property=ActiveState --property=Job "$unit"
+		)"; then
+			printf 'podman-composectl: unable to inspect managed unit %s\n' "$unit" >&2
+			return 1
+		fi
+
+		load_state=""
+		active_state=""
+		job=""
+		load_state_seen=0
+		active_state_seen=0
+		job_seen=0
+		while IFS='=' read -r property value; do
+			case "$property" in
+			LoadState)
+				load_state="$value"
+				load_state_seen=1
+				;;
+			ActiveState)
+				active_state="$value"
+				active_state_seen=1
+				;;
+			Job)
+				job="$value"
+				job_seen=1
+				;;
+			esac
+		done <<<"$unit_state"
+		if [ "$load_state_seen" -ne 1 ] || [ "$active_state_seen" -ne 1 ] || [ "$job_seen" -ne 1 ]; then
+			printf 'podman-composectl: incomplete runtime state for managed unit %s\n' "$unit" >&2
+			return 1
+		fi
+		case "$load_state" in
+		loaded | masked) ;;
+		*)
+			printf 'podman-composectl: managed unit %s is not loaded: %s\n' \
+				"$unit" "${load_state:-<empty>}" >&2
+			return 1
+			;;
+		esac
+
+		if [ -z "$job" ]; then
+			case "$active_state" in
+			active | failed | inactive)
+				if [ "$load_state" = masked ] && [ "$active_state" != inactive ]; then
+					printf 'podman-composectl: masked managed unit %s has unexpected runtime state: %s\n' \
+						"$unit" "$active_state" >&2
+					return 1
+				fi
+				if [ "$waiting_logged" -eq 1 ]; then
+					printf '[managed-restart] user=%s unit=%s settled state=%s\n' \
+						"$owner" "$unit" "$active_state" >&2
+				fi
+				printf '%s\n' "$active_state"
+				return
+				;;
+			activating | deactivating | maintenance | refreshing | reloading) ;;
+			*)
+				printf 'podman-composectl: unexpected runtime state for managed unit %s: %s\n' \
+					"$unit" "${active_state:-<empty>}" >&2
+				return 1
+				;;
+			esac
+		fi
+
+		if [ "$waiting_logged" -eq 0 ]; then
+			printf '[managed-restart] user=%s unit=%s waiting state=%s job=%s\n' \
+				"$owner" "$unit" "${active_state:-<empty>}" "${job:-<none>}" >&2
+			waiting_logged=1
+		fi
+		if [ "$SECONDS" -ge "$deadline" ]; then
+			printf 'podman-composectl: timed out waiting for managed unit %s to settle\n' "$unit" >&2
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user show \
+				--property=LoadState \
+				--property=ActiveState \
+				--property=SubState \
+				--property=Job \
+				--property=Result \
+				"$unit" >&2 || true
+			return 1
+		fi
+		sleep 1
+	done
+}
+
+restart_managed() {
+	local owner_filter="${1:-}" encoded_group group owner uid runtime_dir bus_path encoded entry unit auto_start
+	local active_state unit_list has_autostart encoded_groups encoded_entries settle_timeout_seconds settle_deadline post_settle_deadline final_settle_deadline
+	local -a restart_units=() try_restart_units=()
+
+	settle_timeout_seconds="${NIX_PODMAN_COMPOSE_RESTART_SETTLE_TIMEOUT_SECONDS:-600}"
+	case "$settle_timeout_seconds" in
+	"" | *[!0-9]*)
+		printf 'podman-composectl: invalid managed restart settle timeout: %s\n' "$settle_timeout_seconds" >&2
+		return 1
+		;;
+	esac
+	if [ "${#settle_timeout_seconds}" -gt 9 ]; then
+		printf 'podman-composectl: invalid managed restart settle timeout: %s\n' "$settle_timeout_seconds" >&2
+		return 1
+	fi
+	settle_timeout_seconds=$((10#$settle_timeout_seconds))
+
+	if ! encoded_groups="$(
+		jq -r --arg owner "$owner_filter" '
+			[
+				to_entries[].value
+				| select((.state // "running") == "running")
+				| select($owner == "" or .user == $owner)
+			]
+			| sort_by(.user, .unit)
+			| group_by([.user, .uid])[]
+			| {
+				user: .[0].user,
+				uid: .[0].uid,
+				services: map({unit, autoStart})
+			}
+			| @base64
+		' "$registry"
+	)"; then
+		printf 'podman-composectl: unable to read control registry: %s\n' "$registry" >&2
+		return 1
+	fi
+
+	while IFS= read -r encoded_group; do
+		[ -n "$encoded_group" ] || continue
+		group="$(base64 -d <<<"$encoded_group")"
+		owner="$(jq -r '.user' <<<"$group")"
+		uid="$(jq -r '.uid' <<<"$group")"
+		runtime_dir="/run/user/$uid"
+		bus_path="$runtime_dir/bus"
+		has_autostart="$(jq -r 'any(.services[]; .autoStart // false)' <<<"$group")"
+
+		if ! user_bus_available "$runtime_dir" "$bus_path"; then
+			if [ "$has_autostart" = true ]; then
+				require_runtime_dir "$runtime_dir"
+				require_user_bus "$bus_path"
+			else
+				printf '[managed-restart] user=%s skipped: user manager inactive and no auto-start services\n' "$owner" >&2
+				continue
+			fi
+		fi
+
+		settle_deadline=$((SECONDS + settle_timeout_seconds))
+		restart_units=()
+		try_restart_units=()
+		if ! encoded_entries="$(jq -r '.services[] | @base64' <<<"$group")"; then
+			printf 'podman-composectl: invalid managed service group for user %s\n' "$owner" >&2
+			return 1
+		fi
+		while IFS= read -r encoded; do
+			[ -n "$encoded" ] || continue
+			entry="$(base64 -d <<<"$encoded")"
+			unit="$(jq -r '.unit' <<<"$entry")"
+			auto_start="$(jq -r '.autoStart // false' <<<"$entry")"
+			if [ "$auto_start" = true ]; then
+				restart_units+=("$unit")
+				continue
+			fi
+			if ! active_state="$(
+				restart_managed_stable_state \
+					"$owner" "$uid" "$runtime_dir" "$bus_path" "$unit" "$settle_deadline"
+			)"; then
+				return 1
+			fi
+			case "$active_state" in
+			active) try_restart_units+=("$unit") ;;
+			failed) restart_units+=("$unit") ;;
+			esac
+		done <<<"$encoded_entries"
+
+		[ "${#restart_units[@]}" -gt 0 ] || [ "${#try_restart_units[@]}" -gt 0 ] || {
+			printf '[managed-restart] user=%s skipped: no active or auto-start services\n' "$owner" >&2
+			continue
+		}
+		if [ "${#try_restart_units[@]}" -gt 0 ]; then
+			unit_list="${try_restart_units[*]}"
+			unit_list="${unit_list// /, }"
+			printf '[managed-restart] user=%s action=try-restarting count=%d units="%s"\n' \
+				"$owner" "${#try_restart_units[@]}" "$unit_list" >&2
+			if ! run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user try-restart "${try_restart_units[@]}"; then
+				printf 'podman-composectl: managed conditional restart failed for user %s\n' "$owner" >&2
+				return 1
+			fi
+
+			post_settle_deadline=$((SECONDS + settle_timeout_seconds))
+			for unit in "${try_restart_units[@]}"; do
+				if ! active_state="$(
+					restart_managed_stable_state \
+						"$owner" "$uid" "$runtime_dir" "$bus_path" "$unit" "$post_settle_deadline"
+				)"; then
+					return 1
+				fi
+				case "$active_state" in
+				failed) restart_units+=("$unit") ;;
+				esac
+			done
+		fi
+		if [ "${#restart_units[@]}" -gt 0 ]; then
+			unit_list="${restart_units[*]}"
+			unit_list="${unit_list// /, }"
+			printf '[managed-restart] user=%s action=restarting count=%d units="%s"\n' \
+				"$owner" "${#restart_units[@]}" "$unit_list" >&2
+			if ! run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				systemctl --user restart "${restart_units[@]}"; then
+				printf 'podman-composectl: managed restart failed for user %s\n' "$owner" >&2
+				return 1
+			fi
+		fi
+		if [ "${#try_restart_units[@]}" -gt 0 ]; then
+			final_settle_deadline=$((SECONDS + settle_timeout_seconds))
+			for unit in "${try_restart_units[@]}"; do
+				if ! active_state="$(
+					restart_managed_stable_state \
+						"$owner" "$uid" "$runtime_dir" "$bus_path" "$unit" "$final_settle_deadline"
+				)"; then
+					return 1
+				fi
+				case "$active_state" in
+				failed)
+					printf 'podman-composectl: managed unit %s failed after restart convergence\n' "$unit" >&2
+					return 1
+					;;
+				inactive)
+					printf '[managed-restart] user=%s unit=%s preserved state=inactive after restart convergence\n' \
+						"$owner" "$unit" >&2
+					;;
+				esac
+			done
+		fi
+	done <<<"$encoded_groups"
+}
+
 quadlet_runtime_units() {
 	local owner="$1" uid="$2" runtime_dir="$3" bus_path="$4" home="$5" service_name="$6" unit="$7"
-	local dependencies dependency
+	local dependencies dependency source_path
 	local -a runtime_units=()
 
 	if ! dependencies="$(
@@ -40,7 +288,27 @@ quadlet_runtime_units() {
 		dependency="${dependency#"${dependency%%[![:space:]]*}"}"
 		dependency="${dependency%"${dependency##*[![:space:]]}"}"
 		case "$dependency" in
-		"$service_name"-*.service) runtime_units+=("$dependency") ;;
+		"$service_name-stage.service")
+			runtime_units+=("$dependency")
+			continue
+			;;
+		"$service_name"-*.service) ;;
+		*) continue ;;
+		esac
+
+		if ! source_path="$(
+			run_as_owner "$owner" "$uid" "$runtime_dir" "$bus_path" \
+				env HOME="$home" systemctl --user show --property=SourcePath --value "$dependency"
+		)"; then
+			printf 'podman-composectl: unable to inspect Quadlet runtime unit %s\n' "$dependency" >&2
+			return 1
+		fi
+		case "$source_path" in
+		"/etc/containers/systemd/users/$uid/"*.container | \
+			"/etc/containers/systemd/users/$uid/"*.network | \
+			"/etc/containers/systemd/users/$uid/"*.image)
+			runtime_units+=("$dependency")
+			;;
 		esac
 	done <<<"$dependencies"
 
@@ -472,6 +740,14 @@ main() {
 
 	if [ "$#" -eq 1 ] && [ "$1" = list ]; then
 		list_services
+		return
+	fi
+	if [ "$#" -ge 1 ] && [ "$1" = restart-managed ]; then
+		[ "$#" -le 2 ] || {
+			usage
+			return 1
+		}
+		restart_managed "${2:-}"
 		return
 	fi
 	if [ "$#" -eq 1 ] && [ "$1" = drain-changed ]; then

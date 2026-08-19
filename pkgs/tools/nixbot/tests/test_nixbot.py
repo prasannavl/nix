@@ -122,6 +122,44 @@ class NixbotScriptTest(unittest.TestCase):
             parsed,
         )
 
+    def test_restart_managed_forces_only_host_deploy_change_detection(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            parse_args --restart-managed
+            printf '%s|%s|%s\n' "$RESTART_MANAGED" "$NIXBOT_IF_CHANGED" "$TF_IF_CHANGED"
+            """
+        )
+
+        self.assertEqual("1|0|1", result.stdout.strip())
+
+    def test_restart_managed_rejects_non_deploy_actions(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=build
+            parse_args --restart-managed
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("--restart-managed requires the run or deploy action", result.stderr)
+
+    def test_restart_managed_rejects_non_activating_goals(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            parse_args --restart-managed --goal boot
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("--restart-managed requires --goal switch or --goal test", result.stderr)
+
     def test_default_selection_uses_group_policy_and_generic_all_hosts(self):
         result = self.run_script(
             """
@@ -482,7 +520,7 @@ class NixbotScriptTest(unittest.TestCase):
             init_vars
             ACTION=deploy
             normalize_host_action
-            parse_args --group prod
+            parse_args --group prod --restart-managed
             SHA=abcdef0
             CI_TRIGGER_USER=ci
             CI_TRIGGER_HOST=ci-host
@@ -498,6 +536,7 @@ class NixbotScriptTest(unittest.TestCase):
         )
 
         self.assertIn("--group prod", result.stdout)
+        self.assertIn("--restart-managed", result.stdout)
         self.assertNotIn("--hosts", result.stdout)
 
     def test_ci_trigger_preserves_singular_host_selection(self):
@@ -1750,7 +1789,7 @@ EOF_UNITS
         result = self.run_script(
             """
             init_vars
-            nixbot_activation_command '/nix/store/system path' switch 1 boot
+            nixbot_activation_command '/nix/store/system path' switch 1 boot 1
             """
         )
 
@@ -1758,9 +1797,13 @@ EOF_UNITS
         switch_index = command.index('NIXOS_INSTALL_BOOTLOADER=0 "${system_path}/bin/switch-to-configuration" "${goal}"')
         profile_index = command.index('"${nix_env_path}" -p /nix/var/nix/profiles/system --set')
         boot_index = command.index('NIXOS_INSTALL_BOOTLOADER=1 "${system_path}/bin/switch-to-configuration" "${post_promote_bootloader_goal}"')
+        restart_index = command.index('"${control}" restart-managed')
         self.assertLess(switch_index, profile_index)
         self.assertLess(profile_index, boot_index)
+        self.assertLess(boot_index, restart_index)
         self.assertIn("post_promote_bootloader_goal=boot", command)
+        self.assertIn("restart_managed=1", command)
+        self.assertIn('NIX_PODMAN_COMPOSE_CONTROL_REGISTRY="${registry}"', command)
         self.assertIn('nix_env_path="${system_path}/sw/bin/nix-env"', command)
         self.assertIn('system path is missing nix-env: ${nix_env_path}', command)
 

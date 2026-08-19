@@ -191,7 +191,7 @@ _nixbot() {
 	options=(
 		--list-hosts --sha --group --host --hosts --nix-config --goal --build-host --build-host-deploy-mode
 		--build-cache-url --build-cache-host --build-jobs --build-logs --no-build-logs
-		--deploy-jobs --deploy-jobs-per-domain --verify-jobs --clean --force --bootstrap --ci-first
+		--deploy-jobs --deploy-jobs-per-domain --verify-jobs --clean --force --restart-managed --bootstrap --ci-first
 		--skip-global-lock
 		--dirty --dirty-staged --dry --no-override --no-rollback
 		--prefix-host-logs --log-format --user --ssh-key

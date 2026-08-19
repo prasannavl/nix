@@ -46,7 +46,7 @@ Usage:
   nixbot <deps|check-deps|version>
   nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
   nixbot --list-groups [--config <path>] [--no-override]
-  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
+  nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
   nixbot --clean[=auto|all] [--dry] [--ci-trigger] [ci/auth/config options]
   nixbot tofu <tofu-args...>
 
@@ -125,6 +125,9 @@ Host Workflow Ordering Options (`run`, `deploy`, `build`, `check-bootstrap`):
 Workflow Behavior Options:
   --dry            Print commands without applying changes
   --force          Bypass change-detection gates
+  --restart-managed
+                   Redeploy selected hosts and restart their active or
+                   auto-start managed services after activation
   --dirty          Allow running from a dirty repo root (worktree = HEAD)
   --dirty-staged   Like --dirty, but overlay staged changes into the worktree
   --skip-global-lock
@@ -199,6 +202,7 @@ Environment (Host Workflow Ordering):
 
 Environment (Workflow Behavior):
   NIXBOT_FORCE                Same as --force (bool: 1/0, true/false, yes/no)
+  NIXBOT_RESTART_MANAGED      Same as --restart-managed (bool)
   NIXBOT_SKIP_GLOBAL_LOCK     Same as --skip-global-lock (bool)
   NIXBOT_DIRTY                Same as --dirty (bool: 1/0, true/false, yes/no)
   NIXBOT_DIRTY_STAGED          Same as --dirty-staged (bool: 1/0, true/false, yes/no)
@@ -534,6 +538,7 @@ init_vars() {
 	NIXBOT_IF_CHANGED=1
 	TF_IF_CHANGED=1
 	FORCE_REQUESTED=0
+	RESTART_MANAGED=0
 	SKIP_HOST_LOCAL_ACTION_LOCK=0
 	ALLOW_DIRTY_REPO=0
 	OVERLAY_STAGED=0
@@ -633,6 +638,9 @@ init_vars() {
 
 	if parse_bool_env "${NIXBOT_FORCE:-0}"; then
 		enable_force_mode
+	fi
+	if parse_bool_env "${NIXBOT_RESTART_MANAGED:-0}"; then
+		enable_restart_managed_mode
 	fi
 	if parse_bool_env "${NIXBOT_SKIP_GLOBAL_LOCK:-0}"; then
 		SKIP_HOST_LOCAL_ACTION_LOCK=1
@@ -934,6 +942,11 @@ enable_force_mode() {
 	NIXBOT_IF_CHANGED=0
 	TF_IF_CHANGED=0
 	FORCE_REQUESTED=1
+}
+
+enable_restart_managed_mode() {
+	NIXBOT_IF_CHANGED=0
+	RESTART_MANAGED=1
 }
 
 enable_dry_run_mode() {
@@ -1387,6 +1400,10 @@ parse_args() {
 			enable_force_mode
 			shift
 			;;
+		--restart-managed)
+			enable_restart_managed_mode
+			shift
+			;;
 		--skip-global-lock)
 			SKIP_HOST_LOCAL_ACTION_LOCK=1
 			shift
@@ -1581,6 +1598,12 @@ parse_args() {
 
 	action_is_supported "${ACTION}" || die "Unsupported action: ${ACTION}"
 	normalize_host_action
+	if [ "${RESTART_MANAGED}" -eq 1 ] && [ "${HOST_ACTION}" != deploy ]; then
+		die "--restart-managed requires the run or deploy action"
+	fi
+	if [ "${RESTART_MANAGED}" -eq 1 ] && [ "${GOAL}" != switch ] && [ "${GOAL}" != test ]; then
+		die "--restart-managed requires --goal switch or --goal test"
+	fi
 	if [ "${ACTION}" = "clean" ] && [ -z "${NIXBOT_CLEAN_MODE}" ]; then
 		NIXBOT_CLEAN_MODE="auto"
 	fi
@@ -1817,13 +1840,14 @@ rollback_activation_unit_name() {
 }
 
 nixbot_activation_command() {
-	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4"
+	local system_path="$1" goal="$2" persist_profile="$3" post_promote_bootloader_goal="$4" restart_managed="${5:-0}"
 
 	printf 'set -Eeuo pipefail\n'
 	printf 'system_path=%q\n' "${system_path}"
 	printf 'goal=%q\n' "${goal}"
 	printf 'persist_profile=%q\n' "${persist_profile}"
 	printf 'post_promote_bootloader_goal=%q\n' "${post_promote_bootloader_goal}"
+	printf 'restart_managed=%q\n' "${restart_managed}"
 	cat <<'EOF_ACTIVATION'
 nix_env_path="${system_path}/sw/bin/nix-env"
 
@@ -1846,6 +1870,16 @@ if [ "${persist_profile}" -eq 1 ]; then
 	"${nix_env_path}" -p /nix/var/nix/profiles/system --set "${system_path}"
 	if [ -n "${post_promote_bootloader_goal}" ]; then
 		NIXOS_INSTALL_BOOTLOADER=1 "${system_path}/bin/switch-to-configuration" "${post_promote_bootloader_goal}"
+	fi
+fi
+
+if [ "${restart_managed}" -eq 1 ]; then
+	control="${system_path}/sw/bin/podman-composectl"
+	registry="${system_path}/share/podman-compose/control-registry.json"
+	if [ -x "${control}" ]; then
+		NIX_PODMAN_COMPOSE_CONTROL_REGISTRY="${registry}" "${control}" restart-managed
+	else
+		echo "[managed-restart] no managed service control plane; skipping" >&2
 	fi
 fi
 EOF_ACTIVATION
@@ -3047,6 +3081,10 @@ run_ci_trigger() {
 	if [ "${FORCE_REQUESTED}" -eq 1 ]; then
 		remote_args+=(--force)
 		echo "Force: true" >&2
+	fi
+	if [ "${RESTART_MANAGED}" -eq 1 ]; then
+		remote_args+=(--restart-managed)
+		echo "Managed service restart: true" >&2
 	fi
 	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ]; then
 		remote_args+=(--ci-first)
@@ -9631,7 +9669,7 @@ activate_prepared_system_path() {
 		persist_profile=1
 	fi
 	post_promote_bootloader_goal="$(activation_post_promote_bootloader_goal "${node}" "${GOAL}")" || return "$?"
-	activation_script="$(nixbot_activation_command "${system_path}" "${GOAL}" "${persist_profile}" "${post_promote_bootloader_goal}")"
+	activation_script="$(nixbot_activation_command "${system_path}" "${GOAL}" "${persist_profile}" "${post_promote_bootloader_goal}" "${RESTART_MANAGED}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 
 	echo "${system_path}" >&2

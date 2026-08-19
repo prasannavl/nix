@@ -246,6 +246,29 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Host `deploy = "skip"` is narrower: the host stays buildable/evaluable, but
   nixbot must not touch the live target. Rollback snapshots and deploy/switch
   work are skipped because no activation can require rollback.
+- `--restart-managed` / `NIXBOT_RESTART_MANAGED=1` is an explicit disruptive
+  deploy mode for `run` or `deploy` with the `switch` or `test` goal. It
+  bypasses host generation-match skipping without forcing Terraform, activates
+  the selected closure, then invokes that closure's
+  `podman-composectl
+  restart-managed` before the normal health phase.
+- Managed restarts operate on public systemd service facades, never private
+  Compose or Quadlet runtime units. Declaratively running auto-start services
+  always join an unconditional restart. Before selecting a manual service, the
+  control plane waits within one bounded per-user deadline for any systemd job
+  or transitional state to settle. A terminal failed service joins the
+  unconditional restart, and an active service is conditionally restarted. The
+  control plane re-observes conditional units before and after the unconditional
+  recovery batch: a concurrent inactive stop is preserved, an early failed
+  result joins that batch, and a final failed result fails closed. An initially
+  inactive or masked-inactive service stays inactive. Unknown, incomplete, or
+  unsettled runtime state also fails closed. Systemd propagates each
+  public-facade operation through the backend-owned graph and preserves
+  dependency ordering.
+- A host without the managed-service control plane is an explicit no-op. A
+  registry, user-manager, unit-inspection, settlement, or restart failure fails
+  activation and enters the ordinary deploy rollback path. `--no-verify` retains
+  its existing meaning and can still suppress the subsequent health phase.
 - Snapshot work, deploy work, and rollback execution use the deploy parallelism
   budget within a dependency wave. Rollback execution walks dependency levels in
   reverse, so child/dependent hosts roll back before parents while hosts inside
