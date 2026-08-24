@@ -152,6 +152,10 @@ in {
         '';
       };
 
+      diffview = {
+        package = pkgs.vimPlugins.diffview-nvim;
+      };
+
       dressing = {
         package = pkgs.vimPlugins.dressing-nvim;
         config = ''
@@ -180,6 +184,18 @@ in {
 
       friendlySnippets = {
         package = pkgs.vimPlugins.friendly-snippets;
+      };
+
+      fugitive = {
+        package = pkgs.vimPlugins.vim-fugitive;
+      };
+
+      gitlogdiff = {
+        package = pkgs.pvl.vimPlugins.gitlogdiff-nvim;
+      };
+
+      gitWorktree = {
+        package = pkgs.vimPlugins.git-worktree-nvim;
       };
 
       gitsigns = {
@@ -344,6 +360,10 @@ in {
         config = ''
           require("mini.trailspace").setup()
         '';
+      };
+
+      neoTree = {
+        package = pkgs.vimPlugins.neo-tree-nvim;
       };
 
       noice = {
@@ -793,6 +813,13 @@ in {
         '';
       };
 
+      worktrees = {
+        package = pkgs.pvl.vimPlugins.worktrees-nvim;
+        config = ''
+          require("worktrees").setup()
+        '';
+      };
+
       yanky = {
         package = pkgs.vimPlugins.yanky-nvim;
         config = ''
@@ -817,9 +844,13 @@ in {
       "bufferline"
       "codecompanion"
       "conform"
+      "diffview"
       "dressing"
       "flash"
+      "fugitive"
+      "gitWorktree"
       "gitsigns"
+      "gitlogdiff"
       "grugFar"
       "lazydev"
       "lualine"
@@ -831,6 +862,7 @@ in {
       "miniPairs"
       "miniSurround"
       "miniTrailspace"
+      "neoTree"
       "noice"
       "nvimLint"
       "nvimLspconfig"
@@ -846,6 +878,7 @@ in {
       "trouble"
       "vimIlluminate"
       "whichKey"
+      "worktrees"
       "yanky"
     ];
 
