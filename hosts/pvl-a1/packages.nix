@@ -6,6 +6,7 @@
 }: let
   inherit (pkgs.stdenv.hostPlatform) system;
   antigravity-pkgs = inputs.antigravity.packages.${system};
+  llm-agents-pkgs = inputs.llm-agents.packages.${system};
 in {
   environment.systemPackages = with pkgs; [
     # Core
@@ -140,6 +141,7 @@ in {
     jan
     gemini-cli
     claude-code
+    llm-agents-pkgs.chatgpt
 
     # Custom packages
     (python3.withPackages (ps: with ps; [pip setuptools virtualenv numpy]))
