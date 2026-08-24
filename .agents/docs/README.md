@@ -96,7 +96,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   non-fatal activation fix.
 - `.agents/docs/notes/hosts/pvl-neovim-git-plugins-2026-08.md`: Records the
   declarative Pvl Neovim Git plugin set, repo-owned external plugin source pins,
-  dependency reuse, and unchanged explorer keybinding.
+  dependency reuse, and categorized Snacks picker shortcuts.
+- `.agents/docs/notes/hosts/pvl-a1-desktop-media-apps-2026-08.md`: Records the
+  `pvl-a1` desktop media and ChatGPT package set, unconditional `pvl` MIME
+  policy, and Euphonica file-handler boundary.
 - `.agents/docs/notes/hosts/pvl-l5-home-manager-vscode-extensions-2026-06.md`:
   Records the `pvl-l5` Home Manager activation conflict where
   `mutableExtensionsDir = false` made Home Manager own `.vscode/extensions`,
