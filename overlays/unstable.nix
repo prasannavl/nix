@@ -19,7 +19,6 @@ in {
 
   # ai tools
   inherit (unstable) codex;
-  inherit (unstable) gemini-cli;
   inherit (unstable) claude-code;
   inherit (unstable) github-copilot-cli;
   inherit (unstable) jan;

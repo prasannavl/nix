@@ -138,7 +138,6 @@ in {
 
     # AI
     jan
-    gemini-cli
     claude-code
 
     # Custom packages

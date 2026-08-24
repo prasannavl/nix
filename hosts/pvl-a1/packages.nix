@@ -140,7 +140,6 @@ in {
 
     # AI
     jan
-    gemini-cli
     claude-code
     llm-agents-pkgs.chatgpt
 
