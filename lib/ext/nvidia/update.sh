@@ -20,6 +20,7 @@ die() {
 init_vars() {
 	REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd -P)"
 	BASE_INDEX_URL="https://download.nvidia.com/XFree86/Linux-x86_64/"
+	UNIX_DRIVER_ARCHIVE_URL="https://www.nvidia.com/en-us/drivers/unix/"
 	TARGET_FILE="${REPO_ROOT}/lib/ext/nvidia/default.nix"
 	REQUESTED_VERSION=""
 	FORCE=0
@@ -142,13 +143,29 @@ get_current_version() {
 	sed -nE 's/^[[:space:]]*version = "([^"]+)";.*/\1/p' "$TARGET_FILE" | head -n1
 }
 
+parse_unix_archive_production_version() {
+	awk '
+		BEGIN { RS = "<strong>" }
+		/^Linux x86_64\/AMD64\/EM64T<\/strong>/ {
+			if (!found && match($0, /Latest Production Branch Version:<\/span>[[:space:]]*<a[^>]*>[[:space:]]*([0-9]+([.][0-9]+)+)[[:space:]]*<\/a>/, version)) {
+				print version[1]
+				found = 1
+			}
+		}
+	'
+}
+
 get_version() {
+	local version
+
 	if [[ -n "$REQUESTED_VERSION" ]]; then
 		echo "$REQUESTED_VERSION"
 		return
 	fi
 
-	curl -fsSL "${BASE_INDEX_URL}latest.txt" | awk '{print $1}'
+	version="$(curl -fsSL "$UNIX_DRIVER_ARCHIVE_URL" | parse_unix_archive_production_version)"
+	[[ -n "$version" ]] || die "Could not parse the latest Linux x86_64 production branch version from $UNIX_DRIVER_ARCHIVE_URL"
+	echo "$version"
 }
 
 print_report() {

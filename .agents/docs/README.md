@@ -522,6 +522,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   rule: same-version `scripts/update.sh` runs may perform lightweight version
   checks, but skip artifact prefetches and fake-hash builds unless hashes are
   missing or `--force` is requested.
+- `.agents/docs/notes/tooling/nvidia-production-branch-source-2026-08.md`:
+  Records the Linux x86_64 production-branch source for automatic NVIDIA updates
+  and why the generic `latest.txt` pointer is not authoritative.
 - `.agents/docs/notes/tooling/update-report-variable-tags-2026-07.md`: Records
   the report-only GNOME extension updater fix and Podman image reporter handling
   for Compose variable tags such as Immich's `IMMICH_VERSION=release` and
