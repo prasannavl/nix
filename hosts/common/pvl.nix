@@ -35,6 +35,11 @@
     # Media
     vlc
     mpv
+    imv
+    vimiv-qt
+    lollypop
+    amberol
+    recordbox
     pavucontrol
     alsa-utils
     restic

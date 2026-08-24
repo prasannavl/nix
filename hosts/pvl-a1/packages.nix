@@ -37,6 +37,8 @@ in {
     shotcut
     kdePackages.kdenlive
     blender
+    imv
+    euphonica
 
     # Terminal recording
     asciinema
@@ -82,7 +84,6 @@ in {
     patchelf
     fzf
     zathura
-    imv
     kitty
     deno
     awscli2

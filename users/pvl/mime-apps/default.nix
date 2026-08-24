@@ -38,22 +38,41 @@
 
       images = rec {
         default = loupe;
-        associations = [loupe];
+        associations = [
+          loupe
+          imv
+          vimiv
+        ];
+        imv = "imv.desktop";
         loupe = "org.gnome.Loupe.desktop";
+        vimiv = "vimiv.desktop";
       };
 
       media = {
         mpv = "mpv.desktop";
+        vlc = "vlc.desktop";
       };
 
       audio = rec {
         default = media.mpv;
-        associations = [media.mpv];
+        associations = [
+          media.mpv
+          media.vlc
+          lollypop
+          amberol
+          recordbox
+        ];
+        amberol = "io.bassi.Amberol.desktop";
+        lollypop = "org.gnome.Lollypop.desktop";
+        recordbox = "ca.edestcroix.Recordbox.desktop";
       };
 
       video = rec {
         default = media.mpv;
-        associations = [media.mpv];
+        associations = [
+          media.mpv
+          media.vlc
+        ];
       };
 
       misc = {
@@ -71,10 +90,43 @@
 
       editors = ["text/plain"];
       fileManagers = ["inode/directory"];
-      images = ["image/png"];
+      audio = [
+        "audio/aac"
+        "audio/flac"
+        "audio/mp4"
+        "audio/mpeg"
+        "audio/ogg"
+        "audio/opus"
+        "audio/vnd.wave"
+        "audio/webm"
+        "audio/x-matroska"
+        "audio/x-ms-wma"
+      ];
+      images = [
+        "image/avif"
+        "image/bmp"
+        "image/gif"
+        "image/heif"
+        "image/jpeg"
+        "image/png"
+        "image/svg+xml"
+        "image/tiff"
+        "image/vnd.microsoft.icon"
+        "image/webp"
+      ];
       video = [
+        "video/3gpp"
+        "video/3gpp2"
+        "video/mp2t"
         "video/mp4"
+        "video/mpeg"
+        "video/ogg"
+        "video/quicktime"
+        "video/vnd.avi"
+        "video/webm"
+        "video/x-flv"
         "video/x-matroska"
+        "video/x-ms-wmv"
       ];
     };
 
