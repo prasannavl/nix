@@ -30,9 +30,24 @@ git-worktree.nvim use Plenary, while Neo-tree uses Plenary and nui.nvim, with
 nvim-web-devicons available for icons. Git is already present in the Neovim
 runtime tools.
 
-No default keymaps changed. The existing Snacks explorer remains on `<leader>e`;
-Neo-tree is available through `:Neotree`, gitlogdiff.nvim through `:GitLogDiff`,
-git-worktree.nvim through its Lua API, and worktrees.nvim through
+Snacks picker shortcuts follow the existing WhichKey categories:
+
+- `<leader>f` finds navigation targets: buffers, regular and Git files,
+  projects, and recent files;
+- `<leader>g` covers repository state and history: grep, branches, diff hunks,
+  file/log/line history, status, stash, and Lazygit;
+- `<leader>s` searches text and editor state: buffer lines, open buffers,
+  commands, diagnostics, grep, help, jumps, keymaps, lists, marks, symbols, and
+  picker history.
+
+The top-level `<leader><space>`, `<leader>,`, `<leader>/`, `<leader>:`, and
+`<leader>e` shortcuts remain direct access to files, buffers, grep, command
+history, and the Snacks explorer. Git log uses `<leader>gl`, and word or visual
+selection grep uses `<leader>sw`, keeping both operations in their matching
+categories instead of the previous `<leader>gc` and `<leader>fw` locations.
+
+Neo-tree remains available through `:Neotree`, gitlogdiff.nvim through
+`:GitLogDiff`, git-worktree.nvim through its Lua API, and worktrees.nvim through
 `:WorktreeCreate`, `:WorktreeDelete`, and `:WorktreeSwitch`.
 
 Validation:
