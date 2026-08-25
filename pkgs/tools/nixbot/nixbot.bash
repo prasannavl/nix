@@ -182,7 +182,7 @@ _nixbot() {
 	fi
 
 	commands=(
-		deps check-deps version run deploy build dev-build tf tf-dns
+		deps check-deps version repo run deploy build dev-build tf tf-dns
 		tf-platform tf-apps check-bootstrap clean tofu help --list-hosts
 	)
 	mapfile -t tf_projects < <(_nixbot_tf_projects)
@@ -202,6 +202,10 @@ _nixbot() {
 	)
 
 	case "$prev" in
+	repo)
+		_nixbot_compgen_words "$cur" "sync"
+		return 0
+		;;
 	--group)
 		_nixbot_complete_group_value "$cur"
 		return 0

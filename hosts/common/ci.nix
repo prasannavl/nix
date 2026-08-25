@@ -69,6 +69,7 @@ in {
       path = "/var/lib/nixbot/nix";
       sshUser = "nixbot";
       sshKeys = userdata.ciSshKeys;
+      syncOnBoot = true;
     };
   };
 

@@ -79,7 +79,9 @@ The steady-state goal is always the same: later deploys should use normal
 
 ## Remote Build Cache Deploys
 
-By default, `nixbot run`, `nixbot deploy`, and `nixbot build` use local builds.
+By default, `nixbot run`, `nixbot deploy`, and `nixbot build` use the first host
+listed in `config.builders`; Pvl currently selects `pvl-x2`. Pass
+`--build-host local` to force a local build.
 
 Use `--build-host <ssh-host>` to build the closure on a remote Nix store using
 `ssh-ng://<ssh-host>`. For build-only actions, `nixbot` copies that built
@@ -89,7 +91,7 @@ falls back to the raw `ssh-ng://` store.
 
 For deploy actions with non-local `--build-host`, the build host entry in
 `hosts/nixbot.nix` must resolve through the normal host inventory. `nixbot` uses
-the explicit `globals.buildCache.url`. The builder's Nix daemon signs locally
+the explicit `config.registries.nix.url`. The builder's Nix daemon signs locally
 built paths through host-side `nix.settings.secret-key-files`; Harmonia serves
 the builder's `/nix/store` as the signed binary cache on that port. `nixbot`
 verifies that the exact built path is available from the builder cache, prepares
@@ -103,7 +105,7 @@ configuration to `nix copy`. This supports the first rollout of cache trust
 before the target has activated the new Nix daemon settings.
 
 The default `--build-host-deploy-mode auto` chooses `cache` when `--build-host`
-resolves to the configured `globals.buildCache.host`; otherwise it chooses
+resolves to the configured `config.registries.nix.host`; otherwise it chooses
 `local-copy`. Use `--build-host-deploy-mode local-copy` explicitly when targets
 cannot reach the build host cache. In that mode, `nixbot` still builds on
 `--build-host`, verifies the signed build-host cache, and uses the local client
@@ -112,6 +114,10 @@ activation. Deploy local-copy mode does not import the raw `ssh-ng://` closure
 into the operator store; build-only copy-back also prefers the signed build-host
 cache when available. `--build-host-deploy-mode cache` is more direct when
 targets can reach the build-host Harmonia endpoint.
+
+The same inventory separates controller, transfer-broker, builder, and registry
+roles. Pvl currently maps all four capabilities to `pvl-x2`, but callers consume
+the named capability instead of assuming those placements remain identical.
 
 ## Further Reading
 
@@ -124,11 +130,12 @@ targets can reach the build-host Harmonia endpoint.
 The sections below cover bootstrap mechanics, key exchange, and deploy
 internals.
 
-## CI host Wiring Requirements
+## Controller Host Wiring Requirements
 
-`hosts/nixbot.nix` declares repo defaults under `globals`, including the default
-CI trigger endpoint, CI cache port, and managed repo URL. Explicit CLI flags or
-matching environment variables still override them for one run.
+`hosts/nixbot.nix` declares `config.controller`, `config.transferBroker`,
+`config.builders`, `config.registries.nix`, `config.repoUrl`, and
+`config.hostDefaults`. Explicit CLI flags or matching environment variables
+still override them for one run.
 
 In `hosts/common/ci.nix` through `services.nixbot.repos`:
 
@@ -325,17 +332,19 @@ shell access for `nixos-rebuild --target-host`.
   - host also consumes `data/secrets/globals/tailscale/<incus-guest>.key.age`
     directly through the selected Incus machine profile
 
-### CI host identities and secrets
+### Controller host identities and secrets
 
-- CI host is the configured `hosts/nixbot.nix` `globals.ci.host` target.
-- CI host ingress identity is the SSH key whose public half is listed under the
-  relevant `services.nixbot.repos.<name>.sshKeys` entry and forced into the
-  packaged `nixbot` binary by `pkgs/tools/nixbot/nixos-module.nix`.
+- Controller host is the configured `hosts/nixbot.nix` `config.controller`
+  target. The Nix cache endpoint is independently selected through
+  `config.registries.nix`.
+- Controller host ingress identity is the SSH key whose public half is listed
+  under the relevant `services.nixbot.repos.<name>.sshKeys` entry and forced
+  into the packaged `nixbot` binary by `pkgs/tools/nixbot/nixos-module.nix`.
 - The private half of that ingress key is stored as
   `data/secrets/globals/ci/nixbot-ci-ssh.key.age`.
   - recipients: admins only
   - consumers: CI or an operator initiating a CI host-triggered deploy
-- CI host's downstream deploy identity is the private key in
+- Controller host's downstream deploy identity is the private key in
   `data/secrets/globals/nixbot/nixbot.key.age`.
   - recipients: admins + current `nixbot` deploy keys + the CI host machine age
     recipient
@@ -479,13 +488,15 @@ file when it exists. The override file only needs the partial overrides, for
 example `hosts.<name>.target = "...";`. Pass `--no-override` to ignore the
 sibling override for one run.
 
-- `defaults.user = "nixbot"`
-- `defaults.key = "data/secrets/globals/nixbot/nixbot.key.age"`
-- `defaults.operatorUser` / `defaults.operatorKey` should live in
-  `hosts/nixbot.override.nix` when they are machine-local operator choices.
-- `defaults.bootstrapKey` may point at the key material to install as
+- `config.hostDefaults.user = "nixbot"`
+- `config.hostDefaults.key = "data/secrets/globals/nixbot/nixbot.key.age"`
+- `config.hostDefaults.operatorUser` / `config.hostDefaults.operatorKey` should
+  live in `hosts/nixbot.override.nix` when they are machine-local operator
+  choices.
+- `config.hostDefaults.bootstrapKey` may point at the key material to install as
   `/var/lib/nixbot/.ssh/id_ed25519`; if unset, nixbot uses the deploy key.
-- `knownHosts = null` means temporary `ssh-keyscan` host pinning.
+- `config.hostDefaults.knownHosts = null` means temporary `ssh-keyscan` host
+  pinning.
 - `hosts.<name>.ageIdentityKey` can define the host-specific runtime age key
   secret to inject.
 

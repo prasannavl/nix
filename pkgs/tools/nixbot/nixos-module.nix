@@ -17,19 +17,52 @@
 
   mkRestrictedKey = command: key: ''restrict,no-pty,no-agent-forwarding,no-port-forwarding,no-user-rc,no-X11-forwarding,command="${command}" ${key}'';
 
+  repoKnownHostsFile = name: repo: "${cfg.stateDir}/.ssh/known_hosts-${name}-${builtins.substring 0 16 (builtins.hashString "sha256" repo.url)}";
+
+  repoGitSshCommand = repo:
+    lib.escapeShellArgs (
+      [
+        "${pkgs.openssh}/bin/ssh"
+        "-F"
+        "/dev/null"
+        "-o"
+        "GlobalKnownHostsFile=/dev/null"
+        "-o"
+        "UserKnownHostsFile=${repo.knownHostsFile}"
+        "-o"
+        "StrictHostKeyChecking=yes"
+      ]
+      ++ lib.concatMap (identity: ["-i" identity "-o" "IdentitiesOnly=yes"]) repo.sshIdentityFiles
+    );
+
+  repoEnvironment = repo:
+    {
+      NIXBOT_REPO_URL = repo.url;
+      NIXBOT_REPO_PATH = repo.path;
+      NIXBOT_REPO_KNOWN_HOSTS_FILE = repo.knownHostsFile;
+    }
+    // lib.optionalAttrs (repo.sshIdentityFiles != []) {
+      NIXBOT_REPO_SSH_KEY_PATHS = lib.concatStringsSep ":" repo.sshIdentityFiles;
+    };
+
   mkForcedCommand = name: repo: let
     repoSshKeyPaths = lib.concatStringsSep ":" repo.sshIdentityFiles;
   in
     toString (pkgs.writeShellScript "nixbot-${name}-forced-command" ''
       export NIXBOT_REPO_URL=${lib.escapeShellArg repo.url}
       export NIXBOT_REPO_PATH=${lib.escapeShellArg repo.path}
+      export NIXBOT_REPO_KNOWN_HOSTS_FILE=${lib.escapeShellArg repo.knownHostsFile}
       ${lib.optionalString (repo.sshIdentityFiles != []) ''
         export NIXBOT_REPO_SSH_KEY_PATHS=${lib.escapeShellArg repoSshKeyPaths}
       ''}
       exec ${cfg.package}/bin/nixbot "$@"
     '');
 
-  repoType = types.submodule ({name, ...}: {
+  repoType = types.submodule ({
+    config,
+    name,
+    ...
+  }: {
     options = {
       url = mkOption {
         type = types.str;
@@ -40,7 +73,7 @@
       path = mkOption {
         type = types.str;
         default = "${cfg.stateDir}/${name}";
-        defaultText = lib.literalExpression ''"${config.services.nixbot.stateDir}/<name>"'';
+        defaultText = lib.literalExpression ''config.services.nixbot.stateDir + "/<name>"'';
         description = "Persistent managed mirror path exported as NIXBOT_REPO_PATH.";
       };
 
@@ -63,8 +96,52 @@
         defaultText = lib.literalExpression "config.services.nixbot.sshClient.identityFiles";
         description = "Private SSH identity files used only to clone and fetch this repository.";
       };
+
+      syncOnBoot = mkBoolOption false "Refresh this managed repository mirror after network readiness on every boot and deployment.";
+
+      knownHostsFile = mkOption {
+        type = types.str;
+        readOnly = true;
+        default = repoKnownHostsFile name config;
+        description = "Repository-specific persistent SSH host-key database derived by nixbot.";
+      };
+
+      gitSshCommand = mkOption {
+        type = types.str;
+        readOnly = true;
+        default = repoGitSshCommand config;
+        description = "Repository-specific SSH transport automatically inherited by matching Git consumers.";
+      };
     };
   });
+
+  repositorySyncServices = lib.mapAttrs' (name: repo:
+    lib.nameValuePair "nixbot-repo-${name}-ready" {
+      description = "Refresh nixbot managed repository ${name}";
+      wantedBy = ["multi-user.target"];
+      wants = ["network-online.target"];
+      after = ["network-online.target"];
+      restartTriggers = lib.optional (config.system.configurationRevision != null) (
+        pkgs.writeText "nixbot-repo-${name}-revision" config.system.configurationRevision
+      );
+      environment =
+        repoEnvironment repo
+        // {
+          HOME =
+            if repo.sshUser == cfg.user.name
+            then cfg.stateDir
+            else "/var/lib/${repo.sshUser}";
+        };
+      script = ''
+        exec ${cfg.package}/bin/nixbot repo sync
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        User = repo.sshUser;
+        Group = cfg.user.group;
+        RemainAfterExit = true;
+      };
+    }) (lib.filterAttrs (_: repo: repo.syncOnBoot) cfg.repos);
 
   repoEntries =
     lib.mapAttrsToList (name: repo: let
@@ -316,5 +393,6 @@ in {
     (mkIf cfg.manage.stateDirs stateDirConfig)
     (mkIf cfg.sshClient.enable sshClientConfigFragment)
     (mkIf cfg.cli cliExposureConfig)
+    {systemd.services = repositorySyncServices;}
   ]);
 }

@@ -54,10 +54,10 @@ in {
   };
 
   config = {
-    ci = {
-      host = "pvl-x2";
-    };
-    buildCache = {
+    controller = "pvl-x2";
+    transferBroker = "pvl-x2";
+    builders = ["pvl-x2"];
+    registries.nix = {
       host = "pvl-x2";
       url = "http://pvl-x2:5000";
     };

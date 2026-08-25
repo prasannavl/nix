@@ -51,6 +51,11 @@ class NixbotScriptTest(unittest.TestCase):
             check=check,
         )
 
+    def assert_activation_lock_is_supervised(self, command):
+        self.assertIn("nixbot-activation-lock", command)
+        self.assertNotIn(" && flock -w ", command)
+        self.assertLess(command.index("systemd-run"), command.index("nixbot-activation-lock"))
+
     def test_argument_parsing_normalizes_modes_and_env_overrides(self):
         result = self.run_script(
             """
@@ -195,6 +200,105 @@ class NixbotScriptTest(unittest.TestCase):
             "Nixbot defaultHosts must be a non-empty string",
             result.stderr,
         )
+
+    def test_capability_config_selects_controller_builder_and_nix_registry(self):
+        result = self.run_script(
+            """
+            init_vars
+            apply_config_defaults '{
+              "hosts": {
+                "abird-gondor-ci": {"resourceId": "abird-ci"},
+                "abird-gondor-data": {"resourceId": "abird-data"}
+              },
+              "config": {
+                "controller": "abird-ci",
+                "transferBroker": "abird-data",
+                "builders": ["abird-ci"],
+                "registries": {
+                  "nix": {"host": "abird-ci", "url": "http://cache:5000"},
+                  "podman": {"host": "abird-data", "url": "https://registry.example"}
+                }
+              }
+            }'
+            printf '%s|%s|%s|%s\n' "$CI_TRIGGER_HOST" "$BUILD_HOST" "$BUILD_CACHE_HOST" "$BUILD_CACHE_URL"
+            """
+        )
+
+        self.assertEqual(
+            "abird-ci|abird-ci|abird-ci|http://cache:5000",
+            result.stdout.strip(),
+        )
+
+    def test_canonical_capability_uses_exact_inventory_endpoint(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_DEFAULT_USER=nixbot
+            NIXBOT_DEFAULT_KEY_PATH=/key
+            NIXBOT_DEFAULT_KNOWN_HOSTS=/known-hosts
+            NIXBOT_DEFAULT_BOOTSTRAP_KEY=/bootstrap-key
+            NIXBOT_DEFAULT_BOOTSTRAP_USER=root
+            NIXBOT_DEFAULT_BOOTSTRAP_PORT=22
+            NIXBOT_DEFAULT_BOOTSTRAP_KEY_PATH=/bootstrap-key
+            NIXBOT_DEFAULT_AGE_IDENTITY_KEY=''
+            NIXBOT_HOSTS_JSON='{
+              "gateway": {"target": "gateway.example"},
+              "abird-ci": {
+                "resourceId": "abird-platform.abird-ci",
+                "target": "10.10.0.80"
+              },
+              "abird-gondor-ci": {
+                "resourceId": "abird-ci",
+                "target": "10.10.30.80",
+                "proxyJump": "gateway"
+              }
+            }'
+            resolve_deploy_target abird-ci | jq -r '[.target, .proxyJump] | join("|")'
+            """
+        )
+
+        self.assertEqual("10.10.30.80|gateway", result.stdout.strip())
+
+    def test_explicit_build_host_overrides_capability_default(self):
+        result = self.run_script(
+            """
+            init_vars
+            ACTION=deploy
+            parse_args --build-host local
+            apply_config_defaults '{
+              "hosts": {"abird-gondor-ci": {"resourceId": "abird-ci"}},
+              "config": {
+                "controller": "abird-ci",
+                "transferBroker": "abird-ci",
+                "builders": ["abird-ci"],
+                "registries": {"nix": {"host": "abird-ci", "url": "http://cache:5000"}}
+              }
+            }'
+            printf '%s\n' "$BUILD_HOST"
+            """
+        )
+
+        self.assertEqual("local", result.stdout.strip())
+
+    def test_capability_config_rejects_unknown_or_duplicate_hosts(self):
+        result = self.run_script(
+            """
+            init_vars
+            apply_config_defaults '{
+              "hosts": {"abird-gondor-ci": {"resourceId": "abird-ci"}},
+              "config": {
+                "controller": "abird-ci",
+                "transferBroker": "missing",
+                "builders": ["abird-ci", "abird-ci"],
+                "registries": {"nix": {"host": "abird-ci", "url": "http://cache:5000"}}
+              }
+            }'
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Nixbot capability config requires", result.stderr)
 
     def test_singular_host_option_accepts_one_exact_host_and_overrides_env(self):
         result = self.run_script(
@@ -653,6 +757,64 @@ class NixbotScriptTest(unittest.TestCase):
         )
 
         self.assertEqual("180\n", result.stdout)
+
+    def test_health_uses_timeout_from_observed_transitional_user_unit(self):
+        result = self.run_script(
+            """
+            init_vars
+            systemctl() {
+              case "$*" in
+                "is-active --quiet user@1000.service") return 0 ;;
+              esac
+              return 0
+            }
+            id() {
+              case "$*" in
+                "-u abird"|"-g abird") printf '1000\n'; return 0 ;;
+              esac
+              command id "$@"
+            }
+            getent() {
+              case "$*" in
+                "passwd abird") printf 'abird:x:1000:1000::/home/abird:/bin/bash\n'; return 0 ;;
+              esac
+              command getent "$@"
+            }
+            _remote_managed_user_names() { printf 'abird\n'; }
+            _remote_health_check_held_user_units() { :; }
+            _remote_health_check_expected_user_units() { :; }
+            _remote_health_check_expected_runtime() { :; }
+            _remote_health_check_podman_unhealthy_containers() { :; }
+            _remote_health_check_podman_starting_containers() { :; }
+            _remote_health_check_rootless_mutations() { :; }
+            setpriv() {
+              case "$*" in
+                *"systemctl --user list-units --state=activating,deactivating,reloading"*)
+                  printf 'abird-ollama-models-pull.service loaded activating start start Reconcile declarative Ollama models\n'
+                  ;;
+                *"systemctl --user show --property=Environment --value abird-ollama-models-pull.service"*)
+                  printf 'NIXBOT_TIMEOUT_READY_SECONDS=3600\n'
+                  ;;
+              esac
+              return 0
+            }
+
+            set +e
+            _remote_post_switch_user_health_check_once
+            rc=$?
+            set -e
+            NIXBOT_PODMAN_COMPOSE_CONTROL_REGISTRY=/nonexistent/nixbot-control-registry.json
+            budget="$(_remote_health_check_starting_timeout_seconds)"
+            printf 'rc:%s timeout:%s count:%s budget:%s\n' \
+              "$rc" \
+              "$NIXBOT_HEALTH_SETTLING_TIMEOUT_SECONDS" \
+              "$NIXBOT_HEALTH_SETTLING_TIMEOUT_UNIT_COUNT" \
+              "$budget"
+            """
+        )
+
+        self.assertEqual("rc:2 timeout:3600 count:1 budget:3600\n", result.stdout)
+        self.assertIn("abird-ollama-models-pull.service", result.stderr)
 
     def test_host_selector_parsing_supports_globs_exclusions_and_implicit_all(self):
         result = self.run_script(
@@ -1226,17 +1388,7 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual("failed-rc:255", lines[4])
         command = lines[5]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn(
-            "/run/current-system/sw/bin/bash -c mkdir\\ -p\\ -m\\ 0755\\ "
-            "/dev/shm/nixbot-host-local.lock.d",
-            command,
-        )
-        self.assertIn(
-            "/dev/shm/nixbot-host-local.lock.d\\ "
-            "/run/current-system/sw/bin/bash\\ -c",
-            command,
-        )
-        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
+        self.assert_activation_lock_is_supervised(command)
         self.assertIn("--expand-environment=no", command)
         self.assertIn("--collect --no-block --no-ask-password --quiet", command)
         self.assertNotIn(" --wait ", command)
@@ -1371,8 +1523,7 @@ class NixbotScriptTest(unittest.TestCase):
         )
         command = lines[2]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("flock\\ -w\\ 150\\ /dev/shm/nixbot-host-local.lock.d", command)
-        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
+        self.assert_activation_lock_is_supervised(command)
 
     def test_rollback_reconvergence_starts_ready_targets_without_restarting_aggregate(self):
         result = self.run_script(
@@ -1650,16 +1801,11 @@ class NixbotScriptTest(unittest.TestCase):
             """
         )
 
-        wrapped_command = (
-            "/run/current-system/sw/bin/bash -c "
-            f"mkdir\\ -p\\ -m\\ 0755\\ {lock_file}\\ \\&\\&\\ "
-            f"\\[\\ -d\\ {lock_file}\\ \\]\\ \\&\\&\\ "
-            f"exec\\ flock\\ -w\\ 150\\ {lock_file}\\ activation-command"
-        )
-        self.assertEqual(
-            [wrapped_command, "activation-command", "activation-command"],
-            result.stdout.splitlines(),
-        )
+        lines = result.stdout.splitlines()
+        self.assertIn("nixbot-activation-lock", lines[0])
+        self.assertNotIn(" && ", lines[0])
+        self.assertTrue(lines[0].endswith(" activation-command"))
+        self.assertEqual(["activation-command", "activation-command"], lines[1:])
 
     def test_skip_global_lock_does_not_skip_activation_lock_command(self):
         lock_file = self.work_dir / "nixbot-host-local.lock.d"
@@ -1675,38 +1821,46 @@ class NixbotScriptTest(unittest.TestCase):
             """
         )
 
-        wrapped_command = (
-            "/run/current-system/sw/bin/bash -c "
-            f"mkdir\\ -p\\ -m\\ 0755\\ {lock_file}\\ \\&\\&\\ "
-            f"\\[\\ -d\\ {lock_file}\\ \\]\\ \\&\\&\\ "
-            f"exec\\ flock\\ -w\\ 150\\ {lock_file}\\ activation-command"
-        )
-        self.assertEqual([wrapped_command], result.stdout.splitlines())
+        command = result.stdout.strip()
+        self.assertIn("nixbot-activation-lock", command)
+        self.assertNotIn(" && ", command)
+        self.assertTrue(command.endswith(" activation-command"))
 
-    def test_host_local_activation_lock_prepares_directory_before_flock(self):
-        lock_dir = self.work_dir / "nixbot-host-local.lock.d"
+    def test_host_local_activation_lock_cannot_escape_its_supervisor(self):
+        lock_file = self.work_dir / "nixbot-host-local.lock.d"
+        marker = self.work_dir / "activation-ran"
+        remote_bin = self.work_dir / "remote-bin"
+        supervisor = self.work_dir / "fake-systemd-run"
         result = self.run_script(
             f"""
             init_vars
             NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
             NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
-            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_dir}
+            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_file}
             PREP_DEPLOY_LOCAL_EXEC=0
+            mkdir -p {remote_bin}
+            ln -s "$(command -v install)" {remote_bin}/install
+            ln -s "$(command -v flock)" {remote_bin}/flock
+            REMOTE_SYSTEM_BIN_DIR={remote_bin}
             REMOTE_SYSTEM_BASH="$(command -v bash)"
-            target_command="$(shell_quote_argv \
-              "$(command -v stat)" -c 'target-type:%F' \
-              "$NIXBOT_HOST_LOCAL_LOCK_PATH")"
-            locked_command="$(host_local_activation_lock_command "$target_command")"
-            eval "$locked_command"
-            printf 'type:%s\\n' "$(stat -c %F "$NIXBOT_HOST_LOCAL_LOCK_PATH")"
+            target="$(shell_quote_argv "$REMOTE_SYSTEM_BASH" -c 'printf reached >"$1"' nixbot-test {marker})"
+            supervised="$(host_local_activation_lock_command "$target")"
+
+            bash -c "$supervised"
+            test -s {marker}
+            test -d {lock_file}
+            rm {marker}
+
+            printf '#!%s\nexit 0\n' "$REMOTE_SYSTEM_BASH" >{supervisor}
+            chmod +x {supervisor}
+            supervisor_command="$(shell_quote_argv {supervisor}) $supervised"
+            bash -c "$supervisor_command"
+            test ! -e {marker}
+            printf 'contained\n'
             """
         )
 
-        self.assertEqual(
-            ["target-type:directory", "type:directory"],
-            result.stdout.splitlines(),
-        )
-
+        self.assertEqual("contained", result.stdout.strip())
 
     def test_wait_for_in_flight_deploy_activation_waits_then_proceeds(self):
         count_file = self.work_dir / "call-count"
@@ -1998,7 +2152,7 @@ EOF_SWITCH
             f"""
             init_vars
             mkdir -p "{remote_bin}" "{result_dir}"
-            for command in bash cat; do
+            for command in bash base64 cat; do
               ln -s "$(command -v "$command")" "{remote_bin}/$command"
             done
             REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
@@ -2032,11 +2186,11 @@ EOF_SWITCH
             f"""
             init_vars
             mkdir -p "{remote_bin}" "{result_dir}"
-            for command in bash cat sleep tail; do
+            for command in bash base64 cat sleep tail; do
               ln -s "$(command -v "$command")" "{remote_bin}/$command"
             done
             printf '%s\n' \
-              '#!/usr/bin/env bash' \
+              '#!{remote_bin}/bash' \
               'printf "%s\\n" "${{FAKE_MAIN_PID}}"' \
               >"{remote_bin}/systemctl"
             chmod +x "{remote_bin}/systemctl"
@@ -2070,6 +2224,192 @@ EOF_SWITCH
             ["first-line", "final-line", "observer-rc:0"],
             result.stdout.splitlines(),
         )
+
+    def test_activation_observer_fails_when_unit_terminates_before_marker(self):
+        remote_bin = self.work_dir / "remote-bin"
+        result_dir = self.work_dir / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}" "{result_dir}"
+            for command in bash base64 cat sleep tail; do
+              ln -s "$(command -v "$command")" "{remote_bin}/$command"
+            done
+            cat >"{remote_bin}/systemctl" <<'EOF_SYSTEMCTL'
+#!{remote_bin}/bash
+case "$*" in
+  *--property=Job*) : ;;
+  *--property=LoadState*) printf '%s\n' loaded ;;
+  *--property=ActiveState*) printf '%s\n' failed ;;
+  *) printf '%s\n' 0 ;;
+esac
+EOF_SYSTEMCTL
+            chmod +x "{remote_bin}/systemctl"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{result_dir}"
+            observer="$(nixbot_activation_observer_command test-activation)"
+            set +e
+            eval "$observer"
+            observer_rc="$?"
+            set -e
+            printf 'observer-rc:%s\n' "$observer_rc"
+            """
+        )
+
+        self.assertEqual(["observer-rc:255"], result.stdout.splitlines())
+
+    def test_activation_observer_fails_when_running_marker_never_gets_log(self):
+        remote_bin = self.work_dir / "remote-bin"
+        result_dir = self.work_dir / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}" "{result_dir}"
+            for command in bash base64 cat sleep tail; do
+              ln -s "$(command -v "$command")" "{remote_bin}/$command"
+            done
+            cat >"{remote_bin}/systemctl" <<'EOF_SYSTEMCTL'
+#!{remote_bin}/bash
+case "$*" in
+  *--property=Job*) : ;;
+  *--property=MainPID*) printf '%s\n' 0 ;;
+  *--property=LoadState*) printf '%s\n' loaded ;;
+  *--property=ActiveState*) printf '%s\n' failed ;;
+esac
+EOF_SYSTEMCTL
+            chmod +x "{remote_bin}/systemctl"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{result_dir}"
+            printf '%s\n' \
+              OutcomeSource=marker \
+              Result=running \
+              ExecMainStatus=255 \
+              >"{result_dir}/test-activation.result"
+            observer="$(nixbot_activation_observer_command test-activation)"
+            set +e
+            eval "$observer"
+            observer_rc="$?"
+            set -e
+            printf 'observer-rc:%s\n' "$observer_rc"
+            """
+        )
+
+        self.assertEqual(["observer-rc:255"], result.stdout.splitlines())
+
+    def test_activation_observer_waits_for_queued_inactive_unit(self):
+        remote_bin = self.work_dir / "remote-bin"
+        result_dir = self.work_dir / "activation-results"
+        state_file = self.work_dir / "activation-observer-state"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}" "{result_dir}"
+            for command in bash base64 cat sleep tail; do
+              ln -s "$(command -v "$command")" "{remote_bin}/$command"
+            done
+            printf '%s\n' 0 >"{state_file}"
+            cat >"{remote_bin}/systemctl" <<'EOF_SYSTEMCTL'
+#!{remote_bin}/bash
+state_file="$FAKE_STATE_FILE"
+case "$*" in
+  *--property=Job*)
+    count="$(cat "$state_file")"
+    count="$((count + 1))"
+    printf '%s\n' "$count" >"$state_file"
+    if [ "$count" -lt 3 ]; then
+      printf '%s\n' /org/freedesktop/systemd1/job/1
+    fi
+    ;;
+  *--property=LoadState*) printf '%s\n' loaded ;;
+  *--property=ActiveState*) printf '%s\n' active ;;
+  *--property=MainPID*) printf '%s\n' 0 ;;
+esac
+EOF_SYSTEMCTL
+            chmod +x "{remote_bin}/systemctl"
+            export FAKE_STATE_FILE="{state_file}"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{result_dir}"
+            (
+              sleep 0.4
+              printf '%s\n' queued-unit-output \
+                >"{result_dir}/test-activation.log"
+              printf '%s\n' \
+                OutcomeSource=marker \
+                Result=success \
+                ExecMainStatus=0 \
+                >"{result_dir}/test-activation.result"
+            ) &
+            observer="$(nixbot_activation_observer_command test-activation)"
+            eval "$observer"
+            printf 'observer-rc:%s\n' "$?"
+            """
+        )
+
+        self.assertEqual(
+            ["queued-unit-output", "observer-rc:0"],
+            result.stdout.splitlines(),
+        )
+
+    def test_activation_observer_fails_when_runtime_bound_expires(self):
+        remote_bin = self.work_dir / "remote-bin"
+        result_dir = self.work_dir / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}" "{result_dir}"
+            for command in bash base64 cat sleep tail; do
+              ln -s "$(command -v "$command")" "{remote_bin}/$command"
+            done
+            cat >"{remote_bin}/systemctl" <<'EOF_SYSTEMCTL'
+#!{remote_bin}/bash
+case "$*" in
+  *--property=Job*) : ;;
+  *--property=LoadState*) printf '%s\n' loaded ;;
+  *--property=ActiveState*) printf '%s\n' active ;;
+esac
+EOF_SYSTEMCTL
+            chmod +x "{remote_bin}/systemctl"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{result_dir}"
+            observer="$(nixbot_activation_observer_command test-activation)"
+            # Replace the generated runtime-derived final argument so this unit
+            # test exercises the same bound without waiting for production timeouts.
+            observer="${{observer% *}} 2"
+            set +e
+            eval "$observer"
+            observer_rc="$?"
+            set -e
+            printf 'observer-rc:%s\n' "$observer_rc"
+            """
+        )
+
+        self.assertEqual(["observer-rc:255"], result.stdout.splitlines())
+
+    def test_activation_observer_wrapper_propagates_decode_failure(self):
+        remote_bin = self.work_dir / "remote-bin"
+        result_dir = self.work_dir / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}" "{result_dir}"
+            ln -s "$(command -v bash)" "{remote_bin}/bash"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{result_dir}"
+            observer="$(nixbot_activation_observer_command test-activation)"
+            set +e
+            eval "$observer" 2>/dev/null
+            observer_rc="$?"
+            set -e
+            printf 'observer-rc:%s\n' "$observer_rc"
+            """
+        )
+
+        self.assertEqual(["observer-rc:127"], result.stdout.splitlines())
 
     def test_nixbot_activation_runner_survives_closed_output_reader(self):
         remote_bin = self.work_dir / "remote-bin"
@@ -2314,17 +2654,7 @@ EOF_SCRIPT
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn(
-            "/run/current-system/sw/bin/bash -c mkdir\\ -p\\ -m\\ 0755\\ "
-            "/dev/shm/nixbot-host-local.lock.d",
-            command,
-        )
-        self.assertIn(
-            "/dev/shm/nixbot-host-local.lock.d\\ "
-            "/run/current-system/sw/bin/bash\\ -c",
-            command,
-        )
-        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
+        self.assert_activation_lock_is_supervised(command)
         self.assertIn("-E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK", command)
         self.assertIn("--expand-environment=no", command)
         self.assertIn("--property=RuntimeMaxSec=", command)
@@ -2379,8 +2709,7 @@ EOF_SCRIPT
         )
         command = lines[1]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("flock\\ -w\\ 150\\ /dev/shm/nixbot-host-local.lock.d", command)
-        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
+        self.assert_activation_lock_is_supervised(command)
 
     def test_activate_prepared_system_path_retries_when_transport_drops_before_switch(self):
         result = self.run_script(
@@ -2937,12 +3266,7 @@ EOF_SCRIPT
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn(
-            "/dev/shm/nixbot-host-local.lock.d\\ "
-            "/run/current-system/sw/bin/bash\\ -c",
-            command,
-        )
-        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
+        self.assert_activation_lock_is_supervised(command)
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
         self.assertIn("/run/current-system/sw/bin/base64", command)
         self.assertIn("/run/current-system/sw/bin/tee", command)
@@ -2984,12 +3308,7 @@ EOF_SCRIPT
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn(
-            "/dev/shm/nixbot-host-local.lock.d\\ "
-            "/run/current-system/sw/bin/bash\\ -c",
-            command,
-        )
-        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
+        self.assert_activation_lock_is_supervised(command)
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
         self.assertIn("/run/current-system/sw/bin/base64", command)
         self.assertIn("/run/current-system/sw/bin/tee", command)
@@ -3062,6 +3381,37 @@ EOF_SCRIPT
                 "activation=permanent",
             ],
             result.stdout.splitlines(),
+        )
+
+    def test_build_cache_copy_retries_cold_cache_failure(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_TRANSPORT_RETRY_ATTEMPTS=3
+            NIXBOT_TRANSPORT_RETRY_DELAY_SECS=2
+            attempts=0
+            refreshes=0
+            run_prepared_root_command_with_retry() {
+              attempts=$((attempts + 1))
+              [ "$attempts" -ge 2 ]
+            }
+            sleep_for_retry_or_signal() {
+              printf 'sleep=%s\n' "$1"
+            }
+            refresh_prepared_primary_target() {
+              refreshes=$((refreshes + 1))
+            }
+            run_prepared_cache_copy_with_retry abird-ci 'nix copy system'
+            printf 'attempts=%s refreshes=%s\n' "$attempts" "$refreshes"
+            """
+        )
+
+        self.assertEqual(
+            ["sleep=2", "attempts=2 refreshes=1"], result.stdout.splitlines()
+        )
+        self.assertIn(
+            "Build-cache copy to abird-ci failed; retrying (2/3) in 2s",
+            result.stderr,
         )
 
     def test_ssh_context_uses_configured_connect_timeout(self):
@@ -4299,6 +4649,67 @@ EOF_SCRIPT
             result.stdout.strip(),
         )
         self.assertEqual("", result.stderr)
+
+    def test_repo_sync_refreshes_the_managed_mirror(self):
+        remote = self.work_dir / "remote.git"
+        seed = self.work_dir / "seed"
+        mirror = self.work_dir / "mirror"
+        result = self.run_script(
+            f"""
+            git init -q --bare {remote}
+            git init -q {seed}
+            git -C {seed} config user.name test
+            git -C {seed} config user.email test@example.invalid
+            git -C {seed} config commit.gpgsign false
+            printf first >{seed}/state
+            git -C {seed} add state
+            git -C {seed} commit -qm first
+            git -C {seed} remote add origin {remote}
+            git -C {seed} push -q origin HEAD:master
+            git -C {remote} symbolic-ref HEAD refs/heads/master
+
+            export NIXBOT_REPO_URL={remote}
+            export NIXBOT_REPO_PATH={mirror}
+            init_vars
+            first_revision="$(run_repo_sync_action)"
+
+            printf second >{seed}/state
+            git -C {seed} commit -qam second
+            git -C {seed} push -q origin HEAD:master
+            second_revision="$(run_repo_sync_action)"
+
+            printf '%s\n%s\n%s\n' \
+              "$first_revision" \
+              "$second_revision" \
+              "$(git -C {mirror} status --porcelain=v1 --untracked-files=all)"
+            """,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        first, second, status = result.stdout.splitlines()
+        self.assertNotEqual(first, second)
+        self.assertEqual("", status)
+
+    def test_repo_ssh_command_uses_persistent_known_hosts_and_declared_identity(self):
+        identity = self.work_dir / "repo-key"
+        known_hosts = self.work_dir / "ssh" / "known_hosts-z"
+        identity.write_text("test", encoding="utf-8")
+        known_hosts.parent.mkdir()
+        known_hosts.write_text("github.com test\n", encoding="utf-8")
+        result = self.run_script(
+            f"""
+            export NIXBOT_REPO_KNOWN_HOSTS_FILE={known_hosts}
+            init_vars
+            REPO_SSH_KEY_PATHS={identity}
+            build_repo_git_ssh_command_for_url ssh://git@github.com/abird-ai/z
+            """,
+        )
+
+        self.assertIn(f"UserKnownHostsFile={known_hosts}", result.stdout)
+        self.assertIn(f"-i {identity}", result.stdout)
+        self.assertIn("StrictHostKeyChecking=yes", result.stdout)
 
     def test_repo_ssh_command_rejects_a_missing_declared_identity(self):
         result = self.run_script(

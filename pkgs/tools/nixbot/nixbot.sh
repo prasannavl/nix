@@ -44,6 +44,7 @@ usage() {
 Usage:
   nixbot
   nixbot <deps|check-deps|version>
+  nixbot repo sync
   nixbot --list-hosts [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--config <path>] [--no-override] [--ci-first]
   nixbot --list-groups [--config <path>] [--no-override]
   nixbot <run|deploy|build|dev-build|tf|tf-dns|tf-platform|tf-apps|tf/<project>|check-bootstrap|clean> [--sha <commit>] [--group <group>] [--host <host>|--hosts "host1,host2|all|-host"] [--nix-config <name>] [--goal <goal>] [--build-host <local|host>] [--build-host-deploy-mode <auto|cache|local-copy>] [--build-cache-url <url>] [--build-cache-host <host>] [--build-plan-jobs <n|auto>] [--build-jobs <n>] [--build-logs] [--deploy-jobs <n>] [--deploy-jobs-per-domain <n>] [--verify-jobs <n>] [--clean <auto|all>] [--force] [--restart-managed] [--bootstrap] [--ci-first] [--skip-global-lock] [--dirty] [--dirty-staged] [--dry] [--no-override] [--no-rollback] [--no-verify] [--prefix-host-logs] [--log-format <auto|gh|plain>] [--user <name>] [--ssh-key <path>] [--operator-user <name>] [--operator-key <path>] [--bootstrap-key <path>] [--known-hosts <contents>] [--config <path>] [--age-key-file <path>] [--discover-keys[=auto|on|off]] [--repo-url <url>] [--repo-path <path>] [--use-repo-script] [--ci-check-ssh-key-path <path>] [--ci-trigger] [--ci-host <host>] [--ci-user <user>] [--ci-ssh-key <key-content>] [--ci-known-hosts <known-hosts-content>]
@@ -54,6 +55,9 @@ Dependency Actions:
   deps            Enter the nixbot runtime shell, verify tools, and exit.
   check-deps      Verify required commands in the current environment.
   version         Print the nixbot script version and exit.
+
+Repository Actions:
+  repo sync       Refresh the configured managed repository mirror in place.
 
 Workflow Actions:
   run             Run the full workflow.
@@ -85,7 +89,7 @@ Workflow Selection Options:
   --sha            Commit to check out before running
 
 Build Action Options (`run`, `deploy`, `build`):
-  --build-host     local|<ssh-host> (default: local)
+  --build-host     local|<ssh-host> (default: first config.builders entry, else local)
   --build-host-deploy-mode auto|cache|local-copy (default: auto)
   --build-cache-url Signed cache URL for remote deploy builds
   --build-cache-host Host identity that owns --build-cache-url
@@ -237,6 +241,7 @@ Environment (Repo):
   NIXBOT_REPO_URL             Same as --repo-url
   NIXBOT_REPO_PATH            Same as --repo-path
   NIXBOT_REPO_SSH_KEY_PATHS   Colon-separated SSH key paths used for Git repo clone/fetch
+  NIXBOT_REPO_KNOWN_HOSTS_FILE Persistent known_hosts file for repository Git transport
   NIXBOT_USE_REPO_SCRIPT      Same as --use-repo-script (bool)
 
 Environment (Terraform actions):
@@ -513,6 +518,8 @@ init_vars() {
 	HOST_ACTION=""
 	GOAL="${NIXBOT_GOAL:-switch}"
 	BUILD_HOST="${NIXBOT_BUILD_HOST:-local}"
+	BUILD_HOST_EXPLICIT=0
+	[ -z "${NIXBOT_BUILD_HOST+x}" ] || BUILD_HOST_EXPLICIT=1
 	BUILD_HOST_DEPLOY_MODE="${NIXBOT_BUILD_HOST_DEPLOY_MODE:-auto}"
 	BUILD_CACHE_URL="${NIXBOT_BUILD_CACHE_URL:-}"
 	BUILD_CACHE_HOST="${NIXBOT_BUILD_CACHE_HOST:-}"
@@ -611,6 +618,7 @@ init_vars() {
 	DISCOVER_DECRYPT_KEYS_MODE="${NIXBOT_DISCOVER_KEYS:-auto}"
 	REEXEC_FROM_REPO=0
 	REPO_PATH_EXPLICIT=0
+	[ -n "${NIXBOT_REPO_PATH:-}" ] && REPO_PATH_EXPLICIT=1
 	NIXBOT_REPO_ROOT_LOCK_TIMEOUT="${NIXBOT_REPO_ROOT_LOCK_TIMEOUT:-60}"
 	NIXBOT_STATE_LOCK_TIMEOUT="${NIXBOT_STATE_LOCK_TIMEOUT:-30}"
 	NIXBOT_TRANSPORT_RETRY_ATTEMPTS="${NIXBOT_TRANSPORT_RETRY_ATTEMPTS:-3}"
@@ -1329,6 +1337,7 @@ parse_args() {
 		--build-host | --build-host=*)
 			take_optval "$@"
 			BUILD_HOST="${OPTVAL}"
+			BUILD_HOST_EXPLICIT=1
 			shift "${OPTSHIFT}"
 			;;
 		--build-cache-url | --build-cache-url=*)
@@ -1908,25 +1917,121 @@ nixbot_activation_runner_command() {
 }
 
 nixbot_activation_observer_command() {
-	local activation_unit="$1" observer_script="" result_file=""
+	local activation_unit="$1" encoded_observer_script="" observer_max_polls="" observer_script="" observer_wrapper="" result_file=""
 
 	result_file="${NIXBOT_REMOTE_ACTIVATION_RESULT_DIR:-${REMOTE_NIXBOT_BASE}/activation-results}/${activation_unit}.result"
+	observer_max_polls=$(((NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS + NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS + 10) * 10))
 	# The activation unit is submitted without attaching its lifetime to this
 	# observer. If SSH disappears, only this log reader is lost; the target-local
 	# runner keeps the activation lock and records the authoritative result.
 	# shellcheck disable=SC2016
-	observer_script='result_file="$1"; activation_unit="$2"; systemctl_bin="$3"; tail_bin="$4"; sleep_bin="$5"; cat_bin="$6"; log_file="${result_file%.result}.log"; result=running; exec_main_status=255; read_outcome() { result=running; exec_main_status=255; [ -s "$result_file" ] || return 1; while IFS= read -r line; do case "$line" in Result=*) result="${line#Result=}" ;; ExecMainStatus=*) exec_main_status="${line#ExecMainStatus=}" ;; esac; done <"$result_file"; }; while ! read_outcome; do "$sleep_bin" 0.1; done; main_pid=0; while [ "$result" = running ]; do main_pid="$("$systemctl_bin" show --property=MainPID --value "$activation_unit" 2>/dev/null || true)"; case "$main_pid" in ""|*[!0-9]*) main_pid=0 ;; esac; [ "$main_pid" -le 0 ] || break; "$sleep_bin" 0.1; read_outcome || true; done; while [ ! -e "$log_file" ] && [ "$result" = running ]; do "$sleep_bin" 0.1; read_outcome || true; done; if [ -e "$log_file" ]; then if [ "$main_pid" -gt 0 ]; then "$tail_bin" --pid="$main_pid" --lines=+1 --follow=name "$log_file" || true; else "$cat_bin" "$log_file"; fi; fi; read_outcome || true; case "$exec_main_status" in ""|*[!0-9]*) exit 255 ;; *) exit "$exec_main_status" ;; esac'
+	observer_script='
+result_file="$1"
+activation_unit="$2"
+systemctl_bin="$3"
+tail_bin="$4"
+sleep_bin="$5"
+cat_bin="$6"
+max_polls="$7"
+log_file="${result_file%.result}.log"
+result=running
+exec_main_status=255
+polls=0
+
+read_outcome() {
+	result=running
+	exec_main_status=255
+	[ -s "$result_file" ] || return 1
+	while IFS= read -r line; do
+		case "$line" in
+		Result=*) result="${line#Result=}" ;;
+		ExecMainStatus=*) exec_main_status="${line#ExecMainStatus=}" ;;
+		esac
+	done <"$result_file"
+}
+
+unit_is_terminal() {
+	local active_state="" job="" load_state=""
+	job="$("$systemctl_bin" show --property=Job --value "$activation_unit" 2>/dev/null || true)"
+	[ -z "$job" ] || return 1
+	load_state="$("$systemctl_bin" show --property=LoadState --value "$activation_unit" 2>/dev/null || true)"
+	active_state="$("$systemctl_bin" show --property=ActiveState --value "$activation_unit" 2>/dev/null || true)"
+	case "${load_state}:${active_state}" in
+	not-found:* | *:inactive | *:failed) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+wait_for_change() {
+	polls=$((polls + 1))
+	[ "$polls" -lt "$max_polls" ] || return 1
+	"$sleep_bin" 0.1
+}
+
+while ! read_outcome; do
+	if unit_is_terminal || ! wait_for_change; then
+		read_outcome || exit 255
+	fi
+done
+
+main_pid=0
+while [ "$result" = running ]; do
+	main_pid="$("$systemctl_bin" show --property=MainPID --value "$activation_unit" 2>/dev/null || true)"
+	case "$main_pid" in
+	"" | *[!0-9]*) main_pid=0 ;;
+	esac
+	[ "$main_pid" -le 0 ] || break
+	read_outcome || true
+	[ "$result" = running ] || break
+	if unit_is_terminal || ! wait_for_change; then
+		read_outcome || true
+		break
+	fi
+done
+
+while [ ! -e "$log_file" ] && [ "$result" = running ]; do
+	read_outcome || true
+	[ "$result" = running ] || break
+	if unit_is_terminal || ! wait_for_change; then
+		read_outcome || true
+		break
+	fi
+done
+
+if [ -e "$log_file" ]; then
+	if [ "$main_pid" -gt 0 ]; then
+		"$tail_bin" --pid="$main_pid" --lines=+1 --follow=name "$log_file" || true
+	else
+		"$cat_bin" "$log_file"
+	fi
+fi
+
+read_outcome || true
+case "$exec_main_status" in
+"" | *[!0-9]*) exit 255 ;;
+*) exit "$exec_main_status" ;;
+esac
+'
+	encoded_observer_script="$(printf '%s' "${observer_script}" | base64 | tr -d '\n')"
+	# Keep the multiline observer readable without relying on ANSI-C shell
+	# quoting in the SSH command interpreted by the remote login shell.
+	# shellcheck disable=SC2016
+	observer_wrapper='set -o pipefail; printf %s "$1" | "$2" -d | "$3" -s -- "${@:4}"'
 	shell_quote_argv \
 		"${REMOTE_SYSTEM_BASH}" \
 		-c \
-		"${observer_script}" \
+		"${observer_wrapper}" \
 		nixbot-activation-observer \
+		"${encoded_observer_script}" \
+		"${REMOTE_SYSTEM_BIN_DIR}/base64" \
+		"${REMOTE_SYSTEM_BASH}" \
 		"${result_file}" \
 		"${activation_unit}" \
 		"${REMOTE_SYSTEM_BIN_DIR}/systemctl" \
 		"${REMOTE_SYSTEM_BIN_DIR}/tail" \
 		"${REMOTE_SYSTEM_BIN_DIR}/sleep" \
-		"${REMOTE_SYSTEM_BIN_DIR}/cat"
+		"${REMOTE_SYSTEM_BIN_DIR}/cat" \
+		"${observer_max_polls}"
 }
 
 activation_goal_persists_profile() {
@@ -2585,7 +2690,7 @@ host_local_lock_wait_secs() {
 prepare_host_local_lock_path() {
 	local lock_path="${1:-$(host_local_lock_path)}"
 
-	mkdir -p -m 0755 "${lock_path}" || die "Failed to create nixbot host-local lock directory: ${lock_path}"
+	install -d -m 0755 "${lock_path}" || die "Failed to create nixbot host-local lock directory: ${lock_path}"
 	[ -d "${lock_path}" ] || die "Nixbot host-local lock path is not a directory: ${lock_path}"
 }
 
@@ -2640,7 +2745,7 @@ acquire_host_local_lock() {
 }
 
 host_local_activation_lock_command() {
-	local target_cmd="$1" lock_wait_secs="" lock_path="" lock_script=""
+	local target_cmd="$1" lock_wait_secs="" lock_path="" lock_runner=""
 
 	if [ -n "${NIXBOT_HOST_LOCAL_LOCK_FD:-}" ] &&
 		{ [ "${PREP_DEPLOY_LOCAL_EXEC:-0}" -eq 1 ] || [ "${PREP_DEPLOY_SELF_TARGET:-0}" -eq 1 ]; }; then
@@ -2650,16 +2755,22 @@ host_local_activation_lock_command() {
 
 	lock_wait_secs="$(host_local_lock_wait_secs)"
 	lock_path="$(host_local_lock_path)"
-	# Keep preparation and locking in one systemd-run argv. With --no-block,
-	# an outer-shell && would race the transient unit's directory creation.
-	printf -v lock_script \
-		'mkdir -p -m 0755 %q && [ -d %q ] && exec flock -w %q %q %s' \
-		"${lock_path}" \
-		"${lock_path}" \
-		"${lock_wait_secs}" \
-		"${lock_path}" \
-		"${target_cmd}"
-	shell_quote_argv "${REMOTE_SYSTEM_BASH}" -c "${lock_script}"
+	# Keep lock preparation and acquisition in one argv command. Callers place
+	# this complete command beneath systemd-run; emitting a top-level `&&` here
+	# would let the shell run the activation outside the supervised unit.
+	# shellcheck disable=SC2016
+	lock_runner="$(
+		shell_quote_argv \
+			"${REMOTE_SYSTEM_BASH}" \
+			-c \
+			'set -Eeuo pipefail; install_cmd="$1"; flock_cmd="$2"; lock_path="$3"; lock_wait_secs="$4"; shift 4; "$install_cmd" -d -m 0755 "$lock_path"; exec "$flock_cmd" -w "$lock_wait_secs" "$lock_path" "$@"' \
+			nixbot-activation-lock \
+			"${REMOTE_SYSTEM_BIN_DIR}/install" \
+			"${REMOTE_SYSTEM_BIN_DIR}/flock" \
+			"${lock_path}" \
+			"${lock_wait_secs}"
+	)"
+	printf '%s %s\n' "${lock_runner}" "${target_cmd}"
 }
 
 ensure_runtime_work_dir() {
@@ -3619,9 +3730,39 @@ init_deploy_settings() {
 }
 
 apply_config_defaults() {
-	local config_json="$1" nixbot_config_json="" configured_default_group="" configured_default_hosts="" configured_ci_host="" configured_cache_host="" configured_cache_url="" configured_repo_url="" configured_deploy_jobs_per_domain=""
+	local config_json="$1" nixbot_config_json="" configured_default_group="" configured_default_hosts="" configured_controller="" configured_builder="" configured_cache_host="" configured_cache_url="" configured_repo_url="" configured_deploy_jobs_per_domain=""
 
 	nixbot_config_json="$(jq -c '.config // {}' <<<"${config_json}")"
+	jq -e '
+      . as $inventory
+      | (.config // {}) as $config
+      | def nonempty: type == "string" and length > 0;
+      def known_host($name):
+        ([($inventory.hosts // {})
+          | to_entries[]
+          | select((.value.resourceId // .key) == $name)
+          | .key] | unique) as $resources
+        | if ($resources | length) > 0
+          then ($resources | length) == 1
+          else (($inventory.hosts // {}) | has($name))
+          end;
+      if ($config | has("controller") or has("transferBroker") or has("builders") or has("registries")) then
+        ($config.controller | nonempty)
+        and ($config.transferBroker | nonempty)
+        and ($config.builders | type == "array" and length > 0)
+        and (all($config.builders[]; nonempty))
+        and (($config.builders | unique | length) == ($config.builders | length))
+        and ($config.registries | type == "object")
+        and ($config.registries.nix | type == "object")
+        and (all($config.registries[]; type == "object" and (.host | nonempty) and (.url | nonempty)))
+        and known_host($config.controller)
+        and known_host($config.transferBroker)
+        and all($config.builders[]; known_host(.))
+        and all($config.registries[].host; known_host(.))
+      else true
+      end
+    ' <<<"${config_json}" >/dev/null ||
+		die "Nixbot capability config requires known controller/transferBroker hosts, unique known builders, and registries with known host and non-empty url"
 	if [ "${NIXBOT_JOBS_PER_DOMAIN_EXPLICIT}" -eq 0 ]; then
 		configured_deploy_jobs_per_domain="$(
 			jq -r '
@@ -3663,17 +3804,24 @@ apply_config_defaults() {
 	fi
 
 	if [ -z "${CI_TRIGGER_HOST}" ]; then
-		configured_ci_host="$(jq -r '.ci.host // empty' <<<"${nixbot_config_json}")"
-		CI_TRIGGER_HOST="${configured_ci_host}"
+		configured_controller="$(jq -r '.controller // .ci.host // empty' <<<"${nixbot_config_json}")"
+		CI_TRIGGER_HOST="${configured_controller}"
+	fi
+
+	if [ "${BUILD_HOST_EXPLICIT}" -eq 0 ]; then
+		configured_builder="$(jq -r '.builders[0] // empty' <<<"${nixbot_config_json}")"
+		if [ -n "${configured_builder}" ]; then
+			BUILD_HOST="${configured_builder}"
+		fi
 	fi
 
 	if [ -z "${BUILD_CACHE_URL}" ]; then
-		configured_cache_url="$(jq -r '.buildCache.url // empty' <<<"${nixbot_config_json}")"
+		configured_cache_url="$(jq -r '.registries.nix.url // .buildCache.url // empty' <<<"${nixbot_config_json}")"
 		BUILD_CACHE_URL="${configured_cache_url}"
 	fi
 
 	if [ -z "${BUILD_CACHE_HOST}" ]; then
-		configured_cache_host="$(jq -r '.buildCache.host // empty' <<<"${nixbot_config_json}")"
+		configured_cache_host="$(jq -r '.registries.nix.host // .buildCache.host // empty' <<<"${nixbot_config_json}")"
 		BUILD_CACHE_HOST="${configured_cache_host}"
 	fi
 
@@ -4097,20 +4245,20 @@ require_build_host_cache_config() {
 	fi
 
 	if [ -z "${BUILD_CACHE_URL}" ] && [ -z "${BUILD_CACHE_HOST}" ]; then
-		die "Remote deploy build on ${build_host} requires config.buildCache.url" \
-			"and config.buildCache.host in ${NIXBOT_CONFIG_PATH}"
+		die "Remote deploy build on ${build_host} requires config.registries.nix.url" \
+			"and config.registries.nix.host in ${NIXBOT_CONFIG_PATH}"
 	fi
 	if [ -z "${BUILD_CACHE_URL}" ]; then
-		die "Remote deploy build on ${build_host} requires config.buildCache.url" \
-			"in ${NIXBOT_CONFIG_PATH} (config.buildCache.host='${BUILD_CACHE_HOST}')"
+		die "Remote deploy build on ${build_host} requires config.registries.nix.url" \
+			"in ${NIXBOT_CONFIG_PATH} (config.registries.nix.host='${BUILD_CACHE_HOST}')"
 	fi
 	if [ -z "${BUILD_CACHE_HOST}" ]; then
-		die "Remote deploy build on ${build_host} requires config.buildCache.host" \
+		die "Remote deploy build on ${build_host} requires config.registries.nix.host" \
 			"in ${NIXBOT_CONFIG_PATH} for cache '${BUILD_CACHE_URL}'"
 	fi
 
 	die "Remote deploy build on ${build_host} cannot use cache '${BUILD_CACHE_URL}':" \
-		"config.buildCache.host is '${BUILD_CACHE_HOST}'." \
+		"config.registries.nix.host is '${BUILD_CACHE_HOST}'." \
 		"Use --build-host ${BUILD_CACHE_HOST} or set --build-cache-host ${build_host}."
 }
 
@@ -4685,10 +4833,29 @@ log_run_context() {
 
 ##### Deploy Target / SSH Context #####
 
-resolve_deploy_target() {
-	local node="$1"
+inventory_host_for_role() {
+	local role="$1"
 
-	jq -c --arg h "${node}" \
+	jq -r --arg role "${role}" '
+    ([to_entries[]
+      | select((.value.resourceId // .key) == $role)
+      | .key] | unique) as $resources
+    | if ($resources | length) == 1 then $resources[0]
+      elif ($resources | length) > 1
+      then error("host resource maps to multiple inventory endpoints: \($role)")
+      elif has($role) then $role
+      else $role
+      end
+  ' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
+resolve_deploy_target() {
+	local node="$1" inventory_host=""
+
+	inventory_host="$(inventory_host_for_role "${node}")" ||
+		die "Cannot resolve host capability ${node} to one inventory endpoint"
+
+	jq -c --arg h "${inventory_host}" \
 		--arg defUser "${NIXBOT_DEFAULT_USER}" \
 		--arg defTarget "${node}" \
 		--arg defPort "${NIXBOT_DEFAULT_PORT}" \
@@ -4869,9 +5036,14 @@ ensure_repo_known_hosts_file_for_url() {
 		read -r repo_port
 	} < <(extract_ssh_endpoint_from_repo_url "${repo_url}") || return 1
 
-	ensure_tmp_dir
-	safe_host="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${repo_host}")"
-	known_hosts_file="${TMP_SSH_DIR}/${REPO_KNOWN_HOSTS_PREFIX}.${safe_host}"
+	if [ -n "${NIXBOT_REPO_KNOWN_HOSTS_FILE:-}" ]; then
+		known_hosts_file="${NIXBOT_REPO_KNOWN_HOSTS_FILE}"
+		mkdir -p "$(dirname "${known_hosts_file}")"
+	else
+		ensure_tmp_dir
+		safe_host="$(tr -c 'a-zA-Z0-9._-' '_' <<<"${repo_host}")"
+		known_hosts_file="${TMP_SSH_DIR}/${REPO_KNOWN_HOSTS_PREFIX}.${safe_host}"
+	fi
 
 	if [ ! -s "${known_hosts_file}" ]; then
 		if [ -n "${repo_port}" ] && [ "${repo_port}" != "22" ]; then
@@ -4915,6 +5087,21 @@ build_repo_git_ssh_command_for_url() {
 	done
 
 	printf '%s\n' "${git_ssh_command}"
+}
+
+run_repo_sync_action() {
+	resolve_repo_root
+	[ "${REPO_ROOT_MANAGED}" -eq 1 ] || die "repo sync requires a managed repository path"
+	[ -n "${REPO_URL}" ] || die "repo sync requires NIXBOT_REPO_URL"
+
+	acquire_repo_root_lock
+	ensure_repo_root_exists
+	reconcile_managed_repo_origin
+	ensure_clean_repo_root
+	sync_managed_repo_root
+	release_repo_root_lock
+
+	git -C "${REPO_ROOT}" rev-parse HEAD
 }
 
 ssh_host_from_target() {
@@ -7026,6 +7213,30 @@ run_prepared_root_command_with_retry() {
 		refresh_prepared_primary_target \
 		run_prepared_root_command \
 		"${target_cmd}"
+}
+
+run_prepared_cache_copy_with_retry() {
+	local node="$1" target_cmd="$2"
+	local attempt=1 rc=0 retry_sleep_secs=0
+
+	while :; do
+		if run_prepared_root_command_with_retry \
+			"Build-cache copy to ${node}" \
+			"${target_cmd}"; then
+			return 0
+		else
+			rc="$?"
+		fi
+		if is_signal_exit_status "${rc}" || [ "${attempt}" -ge "${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}" ]; then
+			return "${rc}"
+		fi
+
+		attempt=$((attempt + 1))
+		retry_sleep_secs="$(transport_retry_backoff_seconds "${attempt}")"
+		echo "Build-cache copy to ${node} failed; retrying (${attempt}/${NIXBOT_TRANSPORT_RETRY_ATTEMPTS}) in ${retry_sleep_secs}s" >&2
+		sleep_for_retry_or_signal "${retry_sleep_secs}" || return "$?"
+		refresh_prepared_primary_target || return "$?"
+	done
 }
 
 run_named_prepared_root_command() {
@@ -9355,6 +9566,26 @@ _remote_health_check_user_unit_state() {
 		"${unit}" 2>/dev/null || true
 }
 
+_remote_health_check_record_user_unit_timeout() {
+	local user="$1" runtime_dir="$2" bus="$3" unit="$4" timeout=""
+
+	timeout="$(
+		setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups \
+			env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+			systemctl --user show --property=Environment --value "${unit}" 2>/dev/null |
+			grep -Eo 'NIXBOT_TIMEOUT_READY_SECONDS=[0-9]+' |
+			sed -n '1s/^[^=]*=//p'
+	)" || true
+	case "${timeout}" in
+	"" | *[!0-9]* | 0) return 0 ;;
+	esac
+
+	NIXBOT_HEALTH_SETTLING_TIMEOUT_UNIT_COUNT="$((${NIXBOT_HEALTH_SETTLING_TIMEOUT_UNIT_COUNT:-0} + 1))"
+	if [ "${timeout}" -gt "${NIXBOT_HEALTH_SETTLING_TIMEOUT_SECONDS:-0}" ]; then
+		NIXBOT_HEALTH_SETTLING_TIMEOUT_SECONDS="${timeout}"
+	fi
+}
+
 _remote_activation_progress_probe() {
 	local node="$1" unit="$2" started_at="$3"
 	local now="" elapsed=0 active="" sub="" result="" main_pid="" jobs=""
@@ -9789,9 +10020,7 @@ copy_system_path_from_build_cache_to_prepared_target() {
 	copy_cmd+=(copy --from "${cache_url}" "${system_path}")
 	copy_script="$(shell_quote_argv "${copy_cmd[@]}")"
 	echo "Copying built closure to ${node} from ${BUILD_HOST} cache: ${system_path}" >&2
-	run_prepared_root_command_with_retry \
-		"Build-cache copy to ${node}" \
-		"${copy_script}"
+	run_prepared_cache_copy_with_retry "${node}" "${copy_script}"
 }
 
 copy_system_path_from_build_cache_via_local_to_prepared_target() {
@@ -10222,6 +10451,8 @@ _remote_post_switch_user_health_check_once() {
 	local had_host_failures=0 had_service_failures=0 had_starting=0
 	local starting_output="" unhealthy_output="" expected_failure_output=""
 	local held_output="" held_failure_output=""
+	NIXBOT_HEALTH_SETTLING_TIMEOUT_SECONDS=0
+	NIXBOT_HEALTH_SETTLING_TIMEOUT_UNIT_COUNT=0
 
 	if ! held_user_units="$(_remote_health_check_held_user_units)"; then
 		echo "[health-check] FAILED — durable hold state is unavailable" >&2
@@ -10410,6 +10641,11 @@ EOF_EXPECTED_UNITS
 			starting_output="${starting_output}${starting_output:+
 }[user ${user} units still settling]
 ${transitional_output}"
+			while read -r unit _; do
+				[ -n "${unit}" ] || continue
+				_remote_health_check_record_user_unit_timeout \
+					"${user}" "${runtime_dir}" "${bus}" "${unit}"
+			done <<<"${transitional_output}"
 		fi
 		expected_runtime_status=0
 		expected_runtime_output="$(_remote_health_check_expected_runtime \
@@ -10506,7 +10742,9 @@ EOF_HC_UNITS
 }
 
 _remote_health_check_starting_timeout_seconds() {
-	local timeout="" max_timeout=0 unit_count=0
+	local timeout=""
+	local max_timeout="${NIXBOT_HEALTH_SETTLING_TIMEOUT_SECONDS:-0}"
+	local unit_count="${NIXBOT_HEALTH_SETTLING_TIMEOUT_UNIT_COUNT:-0}"
 	local control_registry="${NIXBOT_PODMAN_COMPOSE_CONTROL_REGISTRY:-/run/current-system/share/podman-compose/control-registry.json}"
 
 	if [ -r "${control_registry}" ]; then
@@ -10657,6 +10895,7 @@ build_post_switch_health_check_cmd() {
 		_remote_health_check_expected_runtime \
 		_remote_health_check_pending_start_job_for_unit \
 		_remote_health_check_user_unit_state \
+		_remote_health_check_record_user_unit_timeout \
 		_remote_post_switch_user_health_check_once \
 		_remote_post_switch_user_health_check
 }
@@ -14417,6 +14656,12 @@ main() {
 	fi
 
 	case "${request_args[0]}" in
+	repo)
+		[ "${#request_args[@]}" -eq 2 ] || die "Usage: nixbot repo sync"
+		[ "${request_args[1]}" = "sync" ] || die "Unknown repo action: ${request_args[1]}"
+		run_repo_sync_action
+		return
+		;;
 	--clean)
 		ACTION="clean"
 		if [ "${#request_args[@]}" -gt 1 ] && [[ "${request_args[1]}" != --* ]]; then
