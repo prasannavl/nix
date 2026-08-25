@@ -1907,6 +1907,28 @@ nixbot_activation_runner_command() {
 		"${REMOTE_SYSTEM_BIN_DIR}/mv"
 }
 
+nixbot_activation_observer_command() {
+	local activation_unit="$1" observer_script="" result_file=""
+
+	result_file="${NIXBOT_REMOTE_ACTIVATION_RESULT_DIR:-${REMOTE_NIXBOT_BASE}/activation-results}/${activation_unit}.result"
+	# The activation unit is submitted without attaching its lifetime to this
+	# observer. If SSH disappears, only this log reader is lost; the target-local
+	# runner keeps the activation lock and records the authoritative result.
+	# shellcheck disable=SC2016
+	observer_script='result_file="$1"; activation_unit="$2"; systemctl_bin="$3"; tail_bin="$4"; sleep_bin="$5"; cat_bin="$6"; log_file="${result_file%.result}.log"; result=running; exec_main_status=255; read_outcome() { result=running; exec_main_status=255; [ -s "$result_file" ] || return 1; while IFS= read -r line; do case "$line" in Result=*) result="${line#Result=}" ;; ExecMainStatus=*) exec_main_status="${line#ExecMainStatus=}" ;; esac; done <"$result_file"; }; while ! read_outcome; do "$sleep_bin" 0.1; done; main_pid=0; while [ "$result" = running ]; do main_pid="$("$systemctl_bin" show --property=MainPID --value "$activation_unit" 2>/dev/null || true)"; case "$main_pid" in ""|*[!0-9]*) main_pid=0 ;; esac; [ "$main_pid" -le 0 ] || break; "$sleep_bin" 0.1; read_outcome || true; done; while [ ! -e "$log_file" ] && [ "$result" = running ]; do "$sleep_bin" 0.1; read_outcome || true; done; if [ -e "$log_file" ]; then if [ "$main_pid" -gt 0 ]; then "$tail_bin" --pid="$main_pid" --lines=+1 --follow=name "$log_file" || true; else "$cat_bin" "$log_file"; fi; fi; read_outcome || true; case "$exec_main_status" in ""|*[!0-9]*) exit 255 ;; *) exit "$exec_main_status" ;; esac'
+	shell_quote_argv \
+		"${REMOTE_SYSTEM_BASH}" \
+		-c \
+		"${observer_script}" \
+		nixbot-activation-observer \
+		"${result_file}" \
+		"${activation_unit}" \
+		"${REMOTE_SYSTEM_BIN_DIR}/systemctl" \
+		"${REMOTE_SYSTEM_BIN_DIR}/tail" \
+		"${REMOTE_SYSTEM_BIN_DIR}/sleep" \
+		"${REMOTE_SYSTEM_BIN_DIR}/cat"
+}
+
 activation_goal_persists_profile() {
 	local goal="$1"
 
@@ -8375,7 +8397,7 @@ wait_for_in_flight_nixbot_activation() {
 }
 
 rollback_host_to_snapshot() {
-	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_script="" rollback_runner="" rollback_unit="" systemd_run_properties=""
+	local node="$1" snapshot_path="$2" rollback_cmd="" rollback_observer="" rollback_script="" rollback_runner="" rollback_unit="" systemd_run_properties=""
 	local post_promote_bootloader_goal=""
 	local rollback_rc=0 rollback_start_epoch="" rollback_output="" current_system_path=""
 
@@ -8400,13 +8422,15 @@ rollback_host_to_snapshot() {
 	rollback_script="$(nixbot_activation_command "${snapshot_path}" switch 1 "${post_promote_bootloader_goal}")"
 	rollback_runner="$(nixbot_activation_runner_command "${rollback_script}" "${rollback_unit}")"
 	rollback_runner="$(host_local_activation_lock_command "${rollback_runner}")"
+	rollback_observer="$(nixbot_activation_observer_command "${rollback_unit}")"
 	systemd_run_properties="$(nixbot_activation_systemd_run_properties)"
 	printf -v rollback_cmd \
-		'env NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --expand-environment=no --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
+		'env NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --expand-environment=no --collect --no-block --no-ask-password --quiet --service-type=exec %s--unit=%q %s && %s' \
 		0 \
 		"${systemd_run_properties}" \
 		"${rollback_unit}" \
-		"${rollback_runner}"
+		"${rollback_runner}" \
+		"${rollback_observer}"
 
 	echo "${snapshot_path}" >&2
 	rollback_start_epoch="$(date +%s)"
@@ -9660,7 +9684,7 @@ run_pre_activation_podman_image_pulls() {
 }
 
 activate_prepared_system_path() {
-	local node="$1" system_path="$2" activate_cmd="" activation_script="" activation_runner="" activation_unit="" systemd_run_properties=""
+	local node="$1" system_path="$2" activate_cmd="" activation_observer="" activation_script="" activation_runner="" activation_unit="" systemd_run_properties=""
 	local post_promote_bootloader_goal="" persist_profile=0
 	local activation_rc=0 activation_start_epoch="" activation_output=""
 	local attempt=1 retry_sleep_secs=0
@@ -9677,13 +9701,15 @@ activate_prepared_system_path() {
 		activation_unit="$(deploy_activation_attempt_unit_name "${node}" "${attempt}")"
 		activation_runner="$(nixbot_activation_runner_command "${activation_script}" "${activation_unit}")"
 		activation_runner="$(host_local_activation_lock_command "${activation_runner}")"
+		activation_observer="$(nixbot_activation_observer_command "${activation_unit}")"
 		wait_for_in_flight_nixbot_activation "${node}" "${activation_unit}.service" deploy || return "$?"
 		printf -v activate_cmd \
-			'env NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --expand-environment=no --wait --collect --no-ask-password --pipe --quiet --service-type=exec %s--unit=%q %s' \
+			'env NIXOS_INSTALL_BOOTLOADER=%q systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK --expand-environment=no --collect --no-block --no-ask-password --quiet --service-type=exec %s--unit=%q %s && %s' \
 			0 \
 			"${systemd_run_properties}" \
 			"${activation_unit}" \
-			"${activation_runner}"
+			"${activation_runner}" \
+			"${activation_observer}"
 		activation_start_epoch="$(date +%s)"
 		if run_activation_with_progress activation_output "${node}" deploy "${activation_unit}" "${activation_start_epoch}" "${activate_cmd}"; then
 			return 0

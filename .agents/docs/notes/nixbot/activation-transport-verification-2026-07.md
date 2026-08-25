@@ -92,11 +92,11 @@ loss after admission is ambiguous: verify the original unit and generation, but
 never replay activation from a missing-unit sample.
 
 The host-local activation `flock` belongs to the transient unit command, inside
-`systemd-run`, rather than to the SSH-side `systemd-run --wait --pipe` client.
-The unit therefore retains the lock if the transport process exits while
-activation continues. Rollback uses the same placement and performs target-state
-recovery only for transport-class failures. Signals and ordinary activation
-failures preserve their original status without recovery overriding them.
+`systemd-run`, rather than to the SSH observer. The unit therefore retains the
+lock if the transport process exits while activation continues. Rollback uses
+the same placement and performs target-state recovery only for transport-class
+failures. Signals and ordinary activation failures preserve their original
+status without recovery overriding them.
 
 The `LxNE05` activation showed that host-local execution alone does not isolate
 the activation from its observer. `switch-to-configuration-ng` ignores SIGPIPE;
@@ -105,14 +105,24 @@ after the SSH reader disappeared, its final diagnostic write reached a closed
 normal user-activation failure status would have been 4, and the stream carried
 the only detailed failure output.
 
-Keep the direct `systemd-run --wait --pipe` path because it provides immediate,
-ordered switch output. On the target, route the decoded activation through GNU
-`tee --output-error=warn-nopipe` to an activation-specific log beside the result
-marker, and derive the marker status from the activation process's pipeline slot
-rather than from `tee`. The retained writer continues draining activation output
-when the SSH reader closes, so the switch process never inherits the observer's
-broken pipe. On authoritative failure after transport loss, replay a bounded
-tail of that retained log before returning failure.
+The August 24 `pvl-l5` retry proved that protecting the output pipeline was not
+enough. Its forward switch correctly skipped the GDM greeter, then stopped
+NetworkManager while crossing generations. When SSH timed out, the attached
+`systemd-run --wait --pipe` client was terminated and systemd canceled the
+transient activation with it. The durable marker remained at `Result=running`
+and `ExecMainStatus=255` while the collected unit became `LoadState=not-found`.
+The system profile had already been promoted, but the interrupted activation
+correctly could not be accepted as success.
+
+Submit the transient unit with `systemd-run --no-block` so admission completes
+before observing it. A separate SSH-side observer follows the retained log using
+the admitted unit's main PID and returns the durable marker status during the
+normal connected path. Losing that observer no longer owns or cancels the unit;
+the runner continues draining output through GNU
+`tee --output-error=warn-nopipe`, holds the activation lock, and atomically
+records the result. Transport recovery continues to use that marker and the
+generation as its authority, and replays a bounded log tail on authoritative
+failure.
 
 ## User D-Bus is activation transport
 

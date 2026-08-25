@@ -1229,7 +1229,10 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
         self.assertLess(command.index("systemd-run"), command.index("flock -w"))
         self.assertIn("--expand-environment=no", command)
-        self.assertIn("--wait --collect --no-ask-password --pipe --quiet", command)
+        self.assertIn("--collect --no-block --no-ask-password --quiet", command)
+        self.assertNotIn(" --wait ", command)
+        self.assertNotIn(" --pipe ", command)
+        self.assertLess(command.index(" --no-block "), command.index("nixbot-activation-observer"))
         self.assertIn("--service-type=exec", command)
         self.assertRegex(command, r"--unit=nixbot-rollback-to-configuration-test\.id-[0-9a-f]{16}")
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
@@ -1237,6 +1240,7 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertIn("/run/current-system/sw/bin/tee", command)
         self.assertIn("--output-error=warn-nopipe", command)
         self.assertIn("nixbot-activation", command)
+        self.assertIn("nixbot-activation-observer", command)
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
 
@@ -1951,6 +1955,86 @@ EOF_SWITCH
             result.stdout,
         )
 
+    def test_activation_observer_replays_log_and_returns_marker_status(self):
+        remote_bin = self.work_dir / "remote-bin"
+        result_dir = self.work_dir / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}" "{result_dir}"
+            for command in bash cat; do
+              ln -s "$(command -v "$command")" "{remote_bin}/$command"
+            done
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{result_dir}"
+            printf '%s\n' retained-activation-output \
+              >"{result_dir}/test-activation.log"
+            printf '%s\n' \
+              OutcomeSource=marker \
+              Result=exit-code \
+              ExecMainStatus=37 \
+              >"{result_dir}/test-activation.result"
+            observer="$(nixbot_activation_observer_command test-activation)"
+            set +e
+            eval "$observer"
+            observer_rc="$?"
+            set -e
+            printf 'observer-rc:%s\n' "$observer_rc"
+            """
+        )
+
+        self.assertEqual(
+            ["retained-activation-output", "observer-rc:37"],
+            result.stdout.splitlines(),
+        )
+
+    def test_activation_observer_follows_running_unit_to_final_marker(self):
+        remote_bin = self.work_dir / "remote-bin"
+        result_dir = self.work_dir / "activation-results"
+        result = self.run_script(
+            f"""
+            init_vars
+            mkdir -p "{remote_bin}" "{result_dir}"
+            for command in bash cat sleep tail; do
+              ln -s "$(command -v "$command")" "{remote_bin}/$command"
+            done
+            printf '%s\n' \
+              '#!/usr/bin/env bash' \
+              'printf "%s\\n" "${{FAKE_MAIN_PID}}"' \
+              >"{remote_bin}/systemctl"
+            chmod +x "{remote_bin}/systemctl"
+            REMOTE_SYSTEM_BIN_DIR="{remote_bin}"
+            REMOTE_SYSTEM_BASH="{remote_bin}/bash"
+            NIXBOT_REMOTE_ACTIVATION_RESULT_DIR="{result_dir}"
+            printf '%s\n' first-line >"{result_dir}/test-activation.log"
+            printf '%s\n' \
+              OutcomeSource=marker \
+              Result=running \
+              ExecMainStatus=255 \
+              >"{result_dir}/test-activation.result"
+            (
+              sleep 0.2
+              printf '%s\n' final-line >>"{result_dir}/test-activation.log"
+              printf '%s\n' \
+                OutcomeSource=marker \
+                Result=success \
+                ExecMainStatus=0 \
+                >"{result_dir}/test-activation.result"
+            ) &
+            FAKE_MAIN_PID="$!"
+            export FAKE_MAIN_PID
+            observer="$(nixbot_activation_observer_command test-activation)"
+            eval "$observer"
+            printf 'observer-rc:%s\n' "$?"
+            """
+        )
+
+        self.assertEqual(
+            ["first-line", "final-line", "observer-rc:0"],
+            result.stdout.splitlines(),
+        )
+
     def test_nixbot_activation_runner_survives_closed_output_reader(self):
         remote_bin = self.work_dir / "remote-bin"
         result_dir = self.work_dir / "activation-results"
@@ -2202,12 +2286,17 @@ EOF_SCRIPT
         self.assertIn("--property=TimeoutStopSec=", command)
         self.assertIn("--property=KillMode=control-group", command)
         self.assertIn("--property=CollectMode=inactive-or-failed", command)
+        self.assertIn("--collect --no-block --no-ask-password --quiet", command)
+        self.assertNotIn(" --wait ", command)
+        self.assertNotIn(" --pipe ", command)
+        self.assertLess(command.index(" --no-block "), command.index("nixbot-activation-observer"))
         self.assertRegex(command, r"--unit=nixbot-switch-to-configuration-test\.id-[0-9a-f]{16}")
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
         self.assertIn("/run/current-system/sw/bin/base64", command)
         self.assertIn("/run/current-system/sw/bin/tee", command)
         self.assertIn("--output-error=warn-nopipe", command)
         self.assertIn("nixbot-activation", command)
+        self.assertIn("nixbot-activation-observer", command)
         self.assertNotIn(" -lc ", command)
         self.assertNotIn("$'", command)
 
