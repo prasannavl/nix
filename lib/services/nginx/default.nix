@@ -1921,6 +1921,7 @@ in rec {
     redirectVhosts ? {},
     staticSites ? {},
     includeHttpPreamble ? true,
+    includeSharedHttpPreamble ? true,
     listenDirectives ? ["listen 80;"],
     serverExtraDirectives ? "",
   }: let
@@ -1953,7 +1954,9 @@ in rec {
     rateLimitZones =
       renderRateLimitZones (staticVhosts // staticRoutes // nginxRoutes // proxyVhosts);
     rateLimitPreamble =
-      lib.optionalString (rateLimitZones != "") "${mkClientAddrPrefixKeyMap}\n";
+      lib.optionalString
+      (includeSharedHttpPreamble && rateLimitZones != "")
+      "${mkClientAddrPrefixKeyMap}\n";
     proxyUpstreamBlocks =
       lib.concatStringsSep "\n"
       (lib.mapAttrsToList (name: proxy: mkUpstreamBlock name proxy.upstreams) proxyVhosts);
@@ -2000,6 +2003,11 @@ in rec {
       (rateLimitZones == "")
       "${proxyUpstreamBlocks}\n${routeUpstreamBlocks}\n${servers}"
     else servers;
+
+  # HTTP-scope singleton required by every rate-limit zone that uses the
+  # normalized client-prefix key. Composable route fragments suppress their
+  # inline copy and include this once in the enclosing configuration.
+  renderHttpSharedPreamble = mkClientAddrPrefixKeyMap;
 
   staticSiteComposeOverride = staticSites:
     lib.generators.toYAML {} {
@@ -2057,6 +2065,37 @@ in rec {
 
   # Render a TLS server config (listen 443 ssl + cert directives).
   # Shorthand for renderServers with TLS listen directives and cert paths.
+  renderTlsPreamble = {
+    certPath,
+    keyPath,
+    deferCertificateLoad ? false,
+    certPathVariable ? "nginx_tls_certificate",
+    keyPathVariable ? "nginx_tls_certificate_key",
+    listenPort ? 443,
+    rejectUnknownServerNames ? false,
+  }: let
+    certVariableRef = "$" + certPathVariable;
+    keyVariableRef = "$" + keyPathVariable;
+    deferredCertificateMaps = lib.optionalString deferCertificateLoad ''
+      map $ssl_server_name ${certVariableRef} {
+          default ${certPath};
+      }
+
+      map $ssl_server_name ${keyVariableRef} {
+          default ${keyPath};
+      }
+
+    '';
+    unknownServerNameRejector = lib.optionalString rejectUnknownServerNames ''
+      server {
+          listen ${toString listenPort} ssl default_server;
+          ssl_reject_handshake on;
+      }
+
+    '';
+  in
+    deferredCertificateMaps + unknownServerNameRejector;
+
   renderTlsServers = {
     rateLimit ? null,
     nginxRoutes ? {},
@@ -2070,6 +2109,7 @@ in rec {
     keyPathVariable ? "nginx_tls_certificate_key",
     listenPort ? 443,
     rejectUnknownServerNames ? false,
+    includeTlsPreamble ? true,
   }: let
     tlsDirectives = [
       "listen ${toString listenPort} ssl;"
@@ -2085,26 +2125,19 @@ in rec {
       if deferCertificateLoad
       then keyVariableRef
       else keyPath;
-    deferredCertificateMaps = lib.optionalString deferCertificateLoad ''
-      map $ssl_server_name ${certVariableRef} {
-          default ${certPath};
-      }
-
-      map $ssl_server_name ${keyVariableRef} {
-          default ${keyPath};
-      }
-
-    '';
-    unknownServerNameRejector = lib.optionalString rejectUnknownServerNames ''
-      server {
-          listen 443 ssl default_server;
-          ssl_reject_handshake on;
-      }
-
-    '';
+    tlsPreamble = renderTlsPreamble {
+      inherit
+        certPath
+        certPathVariable
+        deferCertificateLoad
+        keyPath
+        keyPathVariable
+        listenPort
+        rejectUnknownServerNames
+        ;
+    };
   in
-    deferredCertificateMaps
-    + unknownServerNameRejector
+    lib.optionalString includeTlsPreamble tlsPreamble
     + renderServers {
       inherit rateLimit nginxRoutes proxyVhosts redirectVhosts staticSites;
       includeHttpPreamble = false;
