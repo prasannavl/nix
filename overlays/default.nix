@@ -11,8 +11,11 @@
   (import ./pvl.nix {inherit inputs;})
   (import ./pkgs.nix {inherit inputs;})
   (
-    final: _prev: {
+    final: prev: {
       handbrake-wrapped = final.callPackage ../lib/ext/handbrake.nix {};
+      switch-to-configuration-ng = final.callPackage ../lib/ext/switch-to-configuration {
+        switch-to-configuration-ng = prev.switch-to-configuration-ng;
+      };
       tailscale-upstream = final.callPackage ../lib/ext/tailscale {
         tailscale = final.unstable.tailscale;
       };

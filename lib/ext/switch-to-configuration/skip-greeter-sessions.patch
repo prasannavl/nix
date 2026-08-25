@@ -1,0 +1,96 @@
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1750,3 +1750,48 @@ fn do_user_switch(parent_exe: String) -> anyhow::Result<()> {
++fn only_greeter_sessions<'a>(classes: impl IntoIterator<Item = &'a str>) -> bool {
++    let mut found_greeter = false;
++
++    for class in classes {
++        match class {
++            "greeter" => found_greeter = true,
++            // Every user manager has a synthetic manager session. It does not
++            // make a greeter user eligible for changed-unit reconciliation.
++            "manager" | "manager-early" => {}
++            _ => return false,
++        }
++    }
++
++    found_greeter
++}
++
++fn user_has_only_greeter_sessions(
++    dbus_conn: &LocalConnection,
++    user_dbus_path: &dbus::Path<'_>,
++) -> Result<bool> {
++    let user = dbus_conn.with_proxy(
++        "org.freedesktop.login1",
++        user_dbus_path,
++        Duration::from_millis(5000),
++    );
++    let sessions: Vec<(String, dbus::Path<'static>)> = user
++        .get("org.freedesktop.login1.User", "Sessions")
++        .context("Failed to get logind user sessions")?;
++    let mut classes = Vec::with_capacity(sessions.len());
++
++    for (id, path) in sessions {
++        let session = dbus_conn.with_proxy(
++            "org.freedesktop.login1",
++            path,
++            Duration::from_millis(5000),
++        );
++        let class: String = session
++            .get("org.freedesktop.login1.Session", "Class")
++            .with_context(|| format!("Failed to get class for logind session {id}"))?;
++        classes.push(class);
++    }
++
++    Ok(only_greeter_sessions(classes.iter().map(String::as_str)))
++}
++
+ fn usage(argv0: &str) -> ! {
+     eprintln!(
+         r#"Usage: {argv0} [check|switch|boot|test|dry-activate]
+@@ -2390,6 +2435,19 @@ fn do_system_switch(action: Action) -> anyhow::Result<()> {
+         }
+         Ok(users) => {
+             for (uid, name, user_dbus_path) in users {
++                match user_has_only_greeter_sessions(&dbus_conn, &user_dbus_path) {
++                    Ok(true) => {
++                        eprintln!(
++                            "skipping user units for {name}: only greeter-class logind sessions are active"
++                        );
++                        continue;
++                    }
++                    Ok(false) => {}
++                    Err(err) => eprintln!(
++                        "warning: failed to classify logind sessions for {name}; continuing user activation: {err:#}"
++                    ),
++                }
++
+                 let proxy = dbus_conn.with_proxy(
+                     "org.freedesktop.login1",
+                     &user_dbus_path,
+@@ -2720,3 +2778,23 @@ fn main() -> anyhow::Result<()> {
++    #[test]
++    fn greeter_session_detection() {
++        assert!(super::only_greeter_sessions(["manager-early", "greeter"]));
++        assert!(super::only_greeter_sessions(["greeter", "manager"]));
++
++        // A manager without a greeter session is a normal lingered or logged-in
++        // user and must still receive activation.
++        assert!(!super::only_greeter_sessions(["manager"]));
++        assert!(!super::only_greeter_sessions([]));
++
++        // Never skip a user that also has a non-greeter session, even if a
++        // greeter-class session is present.
++        assert!(!super::only_greeter_sessions(["manager", "user"]));
++        assert!(!super::only_greeter_sessions([
++            "manager-early",
++            "greeter",
++            "user"
++        ]));
++    }
++
+     #[test]
+     fn parse_fstab() {
+         {
