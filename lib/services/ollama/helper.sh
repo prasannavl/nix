@@ -6,7 +6,39 @@ init_vars() {
 	: "${OLLAMA_URLS:=$OLLAMA_URL}"
 	: "${OLLAMA_WAIT_ATTEMPTS:=120}"
 	: "${OLLAMA_WAIT_DELAY_SECONDS:=2}"
-	OLLAMA_MODELS_DOWNLOADED=0
+	: "${OLLAMA_RETIRED_MODELS:=}"
+	OLLAMA_MODELS_CHANGED=0
+}
+
+canonical_model_name() {
+	local model="$1" final_component
+
+	final_component="${model##*/}"
+	case "$final_component" in
+	*:*)
+		printf '%s\n' "$model"
+		;;
+	*)
+		printf '%s:latest\n' "$model"
+		;;
+	esac
+}
+
+model_is_required() {
+	local model required_model
+
+	model="$(canonical_model_name "$1")"
+	shift
+	for required_model in "$@"; do
+		if [ "$model" = "$(canonical_model_name "$required_model")" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+reconciliation_requested() {
+	[ "$#" -gt 0 ] || [ -n "$OLLAMA_RETIRED_MODELS" ]
 }
 
 probe_ollama_urls() {
@@ -187,7 +219,7 @@ pull_model() {
 		return 1
 	fi
 
-	OLLAMA_MODELS_DOWNLOADED=1
+	OLLAMA_MODELS_CHANGED=1
 }
 
 pull_required_models() {
@@ -198,20 +230,61 @@ pull_required_models() {
 	done
 }
 
-restart_dependent_services_after_downloads() {
+remove_model() {
+	local model="$1"
+	local payload
+
+	if ! has_model "$model"; then
+		echo "ollama model reconcile: model $model already absent"
+		return
+	fi
+
+	echo "ollama model reconcile: removing model $model"
+	payload="$(jq -n --arg model "$model" '{model: $model}')"
+	curl -fsS \
+		-X DELETE \
+		-H 'Content-Type: application/json' \
+		--data "$payload" \
+		"$OLLAMA_URL/api/delete" >/dev/null
+	OLLAMA_MODELS_CHANGED=1
+}
+
+remove_retired_models() {
+	local model
+
+	while IFS= read -r model; do
+		[ -n "$model" ] || continue
+		remove_model "$model"
+	done <<<"$OLLAMA_RETIRED_MODELS"
+	return 0
+}
+
+validate_retired_models() {
+	local model
+
+	while IFS= read -r model; do
+		[ -n "$model" ] || continue
+		if model_is_required "$model" "$@"; then
+			echo "ollama model reconcile: model $model cannot be both required and retired" >&2
+			return 1
+		fi
+	done <<<"$OLLAMA_RETIRED_MODELS"
+}
+
+restart_dependent_services_after_changes() {
 	local dep saw_unit=0
 
 	while IFS= read -r dep; do
 		saw_unit=1
-		echo "ollama model pull: try-restarting dependent service unit $dep after model download"
+		echo "ollama model reconcile: try-restarting dependent service unit $dep after model changes"
 		if ! systemctl --user try-restart "$dep"; then
-			echo "ollama model pull: failed to try-restart dependent service unit $dep" >&2
+			echo "ollama model reconcile: failed to try-restart dependent service unit $dep" >&2
 			return 1
 		fi
 	done < <(dependent_service_units)
 
 	if [ "$saw_unit" -eq 0 ]; then
-		echo "ollama model pull: no dependent service units found after model download; skipping restart"
+		echo "ollama model reconcile: no dependent service units found after model changes; skipping restart"
 	fi
 }
 
@@ -220,8 +293,8 @@ pull_main() {
 
 	init_vars
 
-	if [ "$#" -eq 0 ]; then
-		echo "ollama model pull: no required models configured"
+	if ! reconciliation_requested "$@"; then
+		echo "ollama model reconcile: no required or retired models configured"
 		return
 	fi
 
@@ -234,9 +307,11 @@ pull_main() {
 		return 1
 	fi
 
+	validate_retired_models "$@"
 	pull_required_models "$@"
-	if [ "$OLLAMA_MODELS_DOWNLOADED" -eq 1 ]; then
-		restart_dependent_services_after_downloads
+	remove_retired_models "$@"
+	if [ "$OLLAMA_MODELS_CHANGED" -eq 1 ]; then
+		restart_dependent_services_after_changes
 	fi
 }
 
@@ -247,8 +322,8 @@ dispatch_pull_worker() {
 
 	init_vars
 
-	if [ "$#" -eq 0 ]; then
-		echo "ollama model pull: no required models configured"
+	if ! reconciliation_requested "$@"; then
+		echo "ollama model reconcile: no required or retired models configured"
 		return
 	fi
 
@@ -276,7 +351,8 @@ dispatch_pull_worker() {
 			;;
 		esac
 
-		echo "ollama model pull: worker entered unexpected state during dispatch (state=$active_state sub=$sub_state result=$result)" >&2
+		printf 'ollama model pull: worker entered unexpected state during dispatch (state=%s sub=%s result=%s)\n' \
+			"$active_state" "$sub_state" "$result" >&2
 		return 1
 	done
 

@@ -17,4 +17,5 @@
         --pattern 'test_*.py'
       touch "$out"
     '';
+  module = import ./module.nix {inherit pkgs;};
 }
