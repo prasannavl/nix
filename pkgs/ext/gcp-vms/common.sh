@@ -103,6 +103,11 @@ gcp_init_firewall_defaults() {
 	GCP_DEFAULT_HTTPS_TARGET_TAG="${GCP_DEFAULT_HTTPS_TARGET_TAG:-allow-https}"
 	GCP_DEFAULT_HTTPS_SOURCE_RANGES="${GCP_DEFAULT_HTTPS_SOURCE_RANGES:-0.0.0.0/0}"
 	GCP_DEFAULT_HTTPS_ALLOW="${GCP_DEFAULT_HTTPS_ALLOW:-tcp:443}"
+	GCP_DEFAULT_ENSURE_JITSI_MEDIA_FW="${GCP_DEFAULT_ENSURE_JITSI_MEDIA_FW:-0}"
+	GCP_DEFAULT_JITSI_MEDIA_FW_RULE_NAME="${GCP_DEFAULT_JITSI_MEDIA_FW_RULE_NAME:-allow-jitsi-media}"
+	GCP_DEFAULT_JITSI_MEDIA_TARGET_TAG="${GCP_DEFAULT_JITSI_MEDIA_TARGET_TAG:-allow-jitsi-media}"
+	GCP_DEFAULT_JITSI_MEDIA_SOURCE_RANGES="${GCP_DEFAULT_JITSI_MEDIA_SOURCE_RANGES:-0.0.0.0/0}"
+	GCP_DEFAULT_JITSI_MEDIA_ALLOW="${GCP_DEFAULT_JITSI_MEDIA_ALLOW:-udp:10000}"
 }
 
 # -----------------------------------------------------------------------------
@@ -182,6 +187,11 @@ gcp_init_vm_config_defaults() {
 	GCP_HTTPS_TARGET_TAG="${GCP_DEFAULT_HTTPS_TARGET_TAG}"
 	GCP_HTTPS_SOURCE_RANGES="${GCP_DEFAULT_HTTPS_SOURCE_RANGES}"
 	GCP_HTTPS_ALLOW="${GCP_DEFAULT_HTTPS_ALLOW}"
+	GCP_ENSURE_JITSI_MEDIA_FW="${GCP_DEFAULT_ENSURE_JITSI_MEDIA_FW}"
+	GCP_JITSI_MEDIA_FW_RULE_NAME="${GCP_DEFAULT_JITSI_MEDIA_FW_RULE_NAME}"
+	GCP_JITSI_MEDIA_TARGET_TAG="${GCP_DEFAULT_JITSI_MEDIA_TARGET_TAG}"
+	GCP_JITSI_MEDIA_SOURCE_RANGES="${GCP_DEFAULT_JITSI_MEDIA_SOURCE_RANGES}"
+	GCP_JITSI_MEDIA_ALLOW="${GCP_DEFAULT_JITSI_MEDIA_ALLOW}"
 	GCP_FREE_TIER_MAX_MODE="0"
 	GCP_VM_ARG_ZONE_SEEN="0"
 	GCP_VM_ARG_MACHINE_TYPE_SEEN="0"
@@ -270,6 +280,10 @@ gcp_apply_vm_value_arg() {
 	--https-target-tag) GCP_HTTPS_TARGET_TAG="${value}" ;;
 	--https-source-ranges) GCP_HTTPS_SOURCE_RANGES="${value}" ;;
 	--https-allow) GCP_HTTPS_ALLOW="${value}" ;;
+	--jitsi-media-fw-rule-name) GCP_JITSI_MEDIA_FW_RULE_NAME="${value}" ;;
+	--jitsi-media-target-tag) GCP_JITSI_MEDIA_TARGET_TAG="${value}" ;;
+	--jitsi-media-source-ranges) GCP_JITSI_MEDIA_SOURCE_RANGES="${value}" ;;
+	--jitsi-media-allow) GCP_JITSI_MEDIA_ALLOW="${value}" ;;
 	*) return 1 ;;
 	esac
 }
@@ -291,6 +305,7 @@ gcp_apply_vm_flag_arg() {
 	--ensure-imap-fw) GCP_ENSURE_IMAP_FW="1" ;;
 	--ensure-imaps-fw) GCP_ENSURE_IMAPS_FW="1" ;;
 	--ensure-https-fw) GCP_ENSURE_HTTPS_FW="1" ;;
+	--ensure-jitsi-media-fw) GCP_ENSURE_JITSI_MEDIA_FW="1" ;;
 	*) return 1 ;;
 	esac
 }
@@ -401,6 +416,9 @@ gcp_finalize_vm_config() {
 	fi
 	if [ "${GCP_ENSURE_HTTPS_FW}" = "1" ]; then
 		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_HTTPS_TARGET_TAG}")"
+	fi
+	if [ "${GCP_ENSURE_JITSI_MEDIA_FW}" = "1" ]; then
+		GCP_TAGS="$(gcp_append_csv_unique "${GCP_TAGS}" "${GCP_JITSI_MEDIA_TARGET_TAG}")"
 	fi
 }
 
@@ -629,15 +647,17 @@ gcp_instance_ip() {
 
 gcp_instance_has_tag() {
 	local project_id="$1" zone="$2" instance_name="$3" tag="$4"
+	local instance_json=""
 
-	gcloud compute instances describe \
+	instance_json="$(gcloud compute instances describe \
 		"${instance_name}" \
 		--project "${project_id}" \
 		--zone "${zone}" \
-		--format=json |
-		jq -e --arg tag "${tag}" '
+		--format=json)" || gcp_die "Unable to inspect tags on ${instance_name} in ${project_id}/${zone}"
+
+	jq -e --arg tag "${tag}" '
 			(.tags.items // []) | index($tag)
-		' >/dev/null
+		' <<<"${instance_json}" >/dev/null
 }
 
 gcp_add_instance_tag_if_missing() {
@@ -645,6 +665,10 @@ gcp_add_instance_tag_if_missing() {
 
 	[ -n "${tag}" ] || return 0
 	if gcp_instance_has_tag "${project_id}" "${zone}" "${instance_name}" "${tag}"; then
+		return 0
+	fi
+	if [ "${GCP_FIREWALL_DRY_RUN:-0}" = "1" ]; then
+		gcp_log "Would add tag ${tag} to ${instance_name}"
 		return 0
 	fi
 
@@ -696,19 +720,99 @@ gcp_subnet_cidr() {
 # Firewall helpers
 # -----------------------------------------------------------------------------
 
+gcp_find_fw_rule_json() {
+	local project_id="$1" rule_name="$2" rules_json="" match_count=""
+
+	rules_json="$(gcloud compute firewall-rules list \
+		--project "${project_id}" \
+		--filter="name=${rule_name}" \
+		--format=json)" || return 2
+	match_count="$(jq -er --arg name "${rule_name}" '[.[] | select(.name == $name)] | length' <<<"${rules_json}")" || return 2
+
+	case "${match_count}" in
+	0) return 1 ;;
+	1) jq -cer --arg name "${rule_name}" '.[] | select(.name == $name)' <<<"${rules_json}" ;;
+	*) return 2 ;;
+	esac
+}
+
+gcp_validate_fw_rule_contract() {
+	local rule_json="$1" network="$2" target_tag="$3" source_ranges="$4"
+	local allow_spec="$5" contract_diff=""
+
+	contract_diff="$({
+		jq -cr \
+			--arg network "${network}" \
+			--arg target_tag "${target_tag}" \
+			--arg source_ranges "${source_ranges}" \
+			--arg allow_spec "${allow_spec}" '
+				def csv($value):
+					$value | split(",") | map(select(length > 0)) | sort;
+				def expected_allowed($value):
+					($value | split(":")) as $parts
+					| if ($parts | length) != 2 then
+						error("allow spec must be protocol:ports")
+					else
+						[{protocol: $parts[0], ports: (csv($parts[1]))}]
+					end;
+				def actual_allowed:
+					[.allowed[]? | {
+						protocol: .IPProtocol,
+						ports: ((.ports // []) | sort)
+					}] | sort_by(.protocol, (.ports | join(",")));
+				{
+					expected: {
+						network: $network,
+						direction: "INGRESS",
+						disabled: false,
+						sourceRanges: csv($source_ranges),
+						targetTags: [$target_tag],
+						allowed: expected_allowed($allow_spec)
+					},
+					actual: {
+						network: (.network | split("/")[-1]),
+						direction: .direction,
+						disabled: (.disabled // false),
+						sourceRanges: ((.sourceRanges // []) | sort),
+						targetTags: ((.targetTags // []) | sort),
+						allowed: actual_allowed
+					}
+				}
+				| select(.actual != .expected)
+			' <<<"${rule_json}"
+	} 2>&1)" || gcp_die "Unable to validate fw rule contract: ${contract_diff}"
+
+	if [ -n "${contract_diff}" ]; then
+		printf 'Firewall rule drift detected:\n%s\n' "${contract_diff}" >&2
+		return 1
+	fi
+}
+
 gcp_maybe_create_fw_rule() {
 	local project_id="$1" network="$2" fw_rule_name="$3" target_tag="$4"
-	local source_ranges="$5" allow_spec="$6"
+	local source_ranges="$5" allow_spec="$6" rule_json="" find_status=""
 
 	[ -n "${network}" ] || gcp_die "Fw rule ${fw_rule_name} requires --network"
 	[ -n "${target_tag}" ] || gcp_die "Fw rule ${fw_rule_name} requires a target tag"
 	[ -n "${source_ranges}" ] || gcp_die "Fw rule ${fw_rule_name} requires source ranges"
 	[ -n "${allow_spec}" ] || gcp_die "Fw rule ${fw_rule_name} requires allow spec"
 
-	if gcloud compute firewall-rules describe \
-		"${fw_rule_name}" \
-		--project "${project_id}" >/dev/null 2>&1; then
-		gcp_log "Reusing fw rule ${fw_rule_name}"
+	if rule_json="$(gcp_find_fw_rule_json "${project_id}" "${fw_rule_name}")"; then
+		gcp_validate_fw_rule_contract \
+			"${rule_json}" \
+			"${network}" \
+			"${target_tag}" \
+			"${source_ranges}" \
+			"${allow_spec}" || gcp_die "Refusing to reuse drifted fw rule ${fw_rule_name}"
+		gcp_log "Validated existing fw rule ${fw_rule_name}"
+		return 0
+	else
+		find_status="$?"
+		[ "${find_status}" = "1" ] ||
+			gcp_die "Unable to inspect fw rule ${fw_rule_name} in ${project_id}"
+	fi
+	if [ "${GCP_FIREWALL_DRY_RUN:-0}" = "1" ]; then
+		gcp_log "Would create fw rule ${fw_rule_name}: ${allow_spec} from ${source_ranges} to tag ${target_tag} on ${network}"
 		return 0
 	fi
 
@@ -720,6 +824,15 @@ gcp_maybe_create_fw_rule() {
 		--allow "${allow_spec}" \
 		--source-ranges "${source_ranges}" \
 		--target-tags "${target_tag}" >/dev/null
+
+	rule_json="$(gcp_fw_rule_json "${project_id}" "${fw_rule_name}")" ||
+		gcp_die "Unable to read back newly created fw rule ${fw_rule_name}"
+	gcp_validate_fw_rule_contract \
+		"${rule_json}" \
+		"${network}" \
+		"${target_tag}" \
+		"${source_ranges}" \
+		"${allow_spec}" || gcp_die "New fw rule ${fw_rule_name} failed read-back validation"
 }
 
 gcp_maybe_create_ssh_fw() {
@@ -782,8 +895,8 @@ gcp_fw_rule_has_tag_user() {
 			gcloud compute instances list \
 				--project "${project_id}" \
 				--filter="tags.items=${tag}" \
-				--format='value(name)' 2>/dev/null || true
-		)"
+				--format='value(name)'
+		)" || gcp_die "Unable to inspect users of fw target tag ${tag} in ${project_id}"
 		if [ -n "${users}" ]; then
 			return 0
 		fi
@@ -801,11 +914,17 @@ gcp_fw_rule_targets_expected_tag() {
 }
 
 gcp_delete_fw_rule_if_unused() {
-	local project_id="$1" rule_name="$2" expected_tag="$3" rule_json=""
+	local project_id="$1" rule_name="$2" expected_tag="$3" rule_json="" find_status=""
 
 	[ -n "${rule_name}" ] || return 0
-	if ! rule_json="$(gcp_fw_rule_json "${project_id}" "${rule_name}" 2>/dev/null)"; then
-		return 0
+	if rule_json="$(gcp_find_fw_rule_json "${project_id}" "${rule_name}")"; then
+		:
+	else
+		find_status="$?"
+		if [ "${find_status}" = "1" ]; then
+			return 0
+		fi
+		gcp_die "Unable to inspect fw rule ${rule_name} in ${project_id}"
 	fi
 	if ! gcp_fw_rule_targets_expected_tag "${rule_json}" "${expected_tag}"; then
 		gcp_log "Keeping fw rule ${rule_name}; target tag does not match ${expected_tag}"

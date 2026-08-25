@@ -68,6 +68,10 @@ Options:
   --imap-target-tag <tag>
   --imaps-fw-rule-name <name>
   --imaps-target-tag <tag>
+  --https-fw-rule-name <name>
+  --https-target-tag <tag>
+  --jitsi-media-fw-rule-name <name>
+  --jitsi-media-target-tag <tag>
                                   Defaults configured in pkgs/ext/gcp-vms/common.sh
   -h, --help
 EOF
@@ -84,7 +88,7 @@ parse_args() {
 			GCP_INSTANCE_NAME="${2:-}"
 			shift 2
 			;;
-		--project | --zone | --fw-target-tag | --fw-rule-name | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name | --wireguard-fw-rule-name | --wireguard-target-tag | --smtp-fw-rule-name | --smtp-target-tag | --smtps-fw-rule-name | --smtps-target-tag | --imap-fw-rule-name | --imap-target-tag | --imaps-fw-rule-name | --imaps-target-tag)
+		--project | --zone | --fw-target-tag | --fw-rule-name | --observability-fw-rule-name | --postgres-fw-rule-name | --nats-fw-rule-name | --wireguard-fw-rule-name | --wireguard-target-tag | --smtp-fw-rule-name | --smtp-target-tag | --smtps-fw-rule-name | --smtps-target-tag | --imap-fw-rule-name | --imap-target-tag | --imaps-fw-rule-name | --imaps-target-tag | --https-fw-rule-name | --https-target-tag | --jitsi-media-fw-rule-name | --jitsi-media-target-tag)
 			gcp_apply_vm_value_arg "$1" "${2:-}"
 			shift 2
 			;;
@@ -267,6 +271,8 @@ delete_created_fw_rules() {
 	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_SMTPS_FW_RULE_NAME}" "${GCP_SMTPS_TARGET_TAG}"
 	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_IMAP_FW_RULE_NAME}" "${GCP_IMAP_TARGET_TAG}"
 	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_IMAPS_FW_RULE_NAME}" "${GCP_IMAPS_TARGET_TAG}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_HTTPS_FW_RULE_NAME}" "${GCP_HTTPS_TARGET_TAG}"
+	gcp_delete_fw_rule_if_unused "${GCP_PROJECT_ID}" "${GCP_JITSI_MEDIA_FW_RULE_NAME}" "${GCP_JITSI_MEDIA_TARGET_TAG}"
 }
 
 # -----------------------------------------------------------------------------

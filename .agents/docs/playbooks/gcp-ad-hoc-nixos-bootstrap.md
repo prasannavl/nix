@@ -191,10 +191,20 @@ boot disk. Use `--keep-fw-rules` to preserve fw rules.
   - can create subnet-scoped observability, Postgres, and NATS fw rules using
     the VM subnet CIDR as the ingress source range
   - can create public protocol-scoped fw rules and automatically add their
-    target tags to the VM with `--ensure-wireguard-fw` and `--ensure-smtp-fw`
+    target tags to the VM with `--ensure-wireguard-fw`, `--ensure-smtp-fw`,
+    `--ensure-smtps-fw`, `--ensure-imap-fw`, `--ensure-imaps-fw`,
+    `--ensure-https-fw`, and `--ensure-jitsi-media-fw`
   - can run `nixify-vm.sh` immediately after creation with `--nix`
   - can remove bootstrap public SSH after repo-mode `--nix` with
     `--drop-ssh-fw-after`
+- `pkgs/ext/gcp-vms/ensure-firewall.sh`
+  - creates the same reusable firewall rules as `create-vm.sh`
+  - validates the complete network, direction, enabled state, source ranges,
+    target tags, and protocol/port tuple before reusing an existing rule; drift
+    fails closed
+  - can add the matching target tags to an existing VM with `--name <instance>`
+  - supports `--dry-run` to validate existing rules and show missing rule/tag
+    mutations without changing GCP
 - `pkgs/ext/gcp-vms/nixify-vm.sh`
   - resolves the VM by GCE instance name when `--target-host` is omitted
   - defaults the repo flake host to the instance name
@@ -244,6 +254,12 @@ The bootstrap VM defaults are centralized in `pkgs/ext/gcp-vms/common.sh`:
 - NATS fw rule: `allow-nats-subnet`
 - WireGuard fw rule/tag: `allow-wireguard` / `allow-wireguard`, `udp:51820`
 - SMTP fw rule/tag: `allow-smtp` / `allow-smtp`, `tcp:25`
+- SMTPS fw rule/tag: `allow-smtps` / `allow-smtps`, `tcp:465`
+- IMAP fw rule/tag: `allow-imap` / `allow-imap`, `tcp:143`
+- IMAPS fw rule/tag: `allow-imaps` / `allow-imaps`, `tcp:993`
+- HTTPS fw rule/tag: `allow-https` / `allow-https`, `tcp:443`
+- Jitsi media fw rule/tag: `allow-jitsi-media` / `allow-jitsi-media`,
+  `udp:10000`
 - subnet-scoped observability ports: `6000,6001,6002`
 - subnet-scoped Postgres ports: `5432`
 - subnet-scoped NATS ports: `4222,7422`
