@@ -85,7 +85,16 @@
     name = "test-native";
     config = bundleConfig;
   };
-  localImageTar = pkgs.writeText "local-image.tar" "test image archive";
+  localImageTag = "localhost/test/local:1";
+  localImageTar = pkgs.runCommand "local-image.tar" {} ''
+    mkdir archive
+    printf '%s\n' \
+      '[{"Config":"config.json","RepoTags":["${localImageTag}"],"Layers":[]}]' \
+      > archive/manifest.json
+    printf '{}\n' > archive/config.json
+    tar -C archive -cf "$out" manifest.json config.json
+  '';
+  malformedLocalImageTar = pkgs.writeText "malformed-local-image.tar" "not an archive";
   localCompose = pkgs.writeText "local-compose.yml" ''
     services:
       app:
@@ -147,6 +156,19 @@
     bundleConfig
     // {
       composeFiles = [invalidStoreCompose];
+      projectEnvFile = null;
+      subnet = null;
+    }
+  ));
+  malformedStoreCompose = pkgs.writeText "malformed-store-compose.yml" ''
+    services:
+      app:
+        image: nix-store:${malformedLocalImageTar}
+  '';
+  malformedStoreConfig = pkgs.writeText "malformed-store-quadlet-input.json" (builtins.toJSON (
+    bundleConfig
+    // {
+      composeFiles = [malformedStoreCompose];
       projectEnvFile = null;
       subnet = null;
     }
@@ -230,7 +252,7 @@ in
     local_runtime=$(jq -r '.localImages[0].runtimeRef' "$local_report")
     local_image_name=$(sed -n 's/^Image=\(.*\.image\)$/\1/p' "$local_container")
     local_image=${localBundle}/quadlet/$local_image_name
-    test "$local_runtime" != null
+    test "$local_runtime" = ${lib.escapeShellArg localImageTag}
     grep -F 'ContainerName=testproject_app_1' "$local_container"
     jq -e '.localImages | length == 1' "$local_report"
     jq -e '.declaredImages == []' "$local_report"
@@ -264,5 +286,14 @@ in
       exit 1
     fi
     grep -F 'nix-store image must reference an existing archive file under /nix/store' "$TMPDIR/invalid-store.err"
+
+    if python ${../quadlet-compiler.py} \
+      --config ${malformedStoreConfig} \
+      --output "$TMPDIR/malformed-store" \
+      2> "$TMPDIR/malformed-store.err"; then
+      echo "malformed nix-store image archive unexpectedly compiled" >&2
+      exit 1
+    fi
+    grep -F 'unable to read Docker archive manifest' "$TMPDIR/malformed-store.err"
     touch "$out"
   ''

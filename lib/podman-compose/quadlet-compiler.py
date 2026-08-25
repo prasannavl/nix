@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -93,6 +94,57 @@ class CompileError(RuntimeError):
 
 def fail(message: str) -> None:
     raise CompileError(message)
+
+
+def docker_archive_tags(image_path: Path) -> list[str]:
+    """Return the nonempty image tags declared by a Docker archive."""
+
+    try:
+        with tarfile.open(image_path, mode="r:*") as archive:
+            manifest_file = archive.extractfile("manifest.json")
+            if manifest_file is None:
+                fail(f"Docker archive has no readable manifest.json: {image_path}")
+            manifest = json.load(manifest_file)
+    except CompileError:
+        raise
+    except (json.JSONDecodeError, KeyError, OSError, tarfile.TarError) as error:
+        fail(f"unable to read Docker archive manifest {image_path}: {error}")
+
+    if not isinstance(manifest, list) or not manifest:
+        fail(f"Docker archive manifest must be a nonempty list: {image_path}")
+    tags: list[str] = []
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            fail(f"Docker archive manifest entry must be a mapping: {image_path}")
+        repo_tags = entry.get("RepoTags")
+        if not isinstance(repo_tags, list):
+            fail(f"Docker archive manifest entry has no RepoTags list: {image_path}")
+        for tag in repo_tags:
+            if not isinstance(tag, str) or not tag:
+                fail(
+                    f"Docker archive manifest contains an invalid image tag: {image_path}"
+                )
+            if tag not in tags:
+                tags.append(tag)
+    if not tags:
+        fail(f"Docker archive contains no tagged image: {image_path}")
+    return tags
+
+
+def docker_archive_runtime_ref(image_path: Path, load_ref: str) -> str:
+    """Resolve the archive tag that Quadlet's ImageTag must reference."""
+
+    tags = docker_archive_tags(image_path)
+    if load_ref:
+        if load_ref not in tags:
+            fail(
+                f"Docker archive {image_path} does not contain declared image "
+                f"tag {load_ref!r}; available tags: {', '.join(tags)}"
+            )
+        return load_ref
+    if len(tags) != 1:
+        fail(f"Docker archive {image_path} has ambiguous image tags: {', '.join(tags)}")
+    return tags[0]
 
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -789,14 +841,25 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
     ]
     container_records: list[dict[str, Any]] = []
     declared_images: list[str] = []
-    local_images: list[dict[str, Any]] = list(config.get("localImages", []))
-    local_image_by_runtime_ref = {
-        entry["runtimeRef"]: entry
-        for entry in local_images
-        if isinstance(entry, dict)
-        and isinstance(entry.get("runtimeRef"), str)
-        and isinstance(entry.get("imageTar"), str)
-    }
+    local_images: list[dict[str, Any]] = []
+    local_image_by_runtime_ref: dict[str, dict[str, Any]] = {}
+    for raw_entry in config.get("localImages", []):
+        if (
+            not isinstance(raw_entry, dict)
+            or not isinstance(raw_entry.get("runtimeRef"), str)
+            or not isinstance(raw_entry.get("imageTar"), str)
+        ):
+            fail("local image metadata must contain string runtimeRef and imageTar")
+        lookup_ref = raw_entry["runtimeRef"]
+        entry = dict(raw_entry)
+        load_ref = entry.get("loadRef", "")
+        if not isinstance(load_ref, str):
+            fail("local image metadata loadRef must be a string")
+        entry["runtimeRef"] = docker_archive_runtime_ref(
+            Path(entry["imageTar"]), load_ref
+        )
+        local_images.append(entry)
+        local_image_by_runtime_ref[lookup_ref] = entry
     image_files: dict[str, str] = {}
 
     def image_file_for(image: str) -> str:
@@ -816,7 +879,7 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
         else:
             image_entries = [
                 ("Image", f"docker-archive:{local['imageTar']}", False),
-                ("ImageTag", image, False),
+                ("ImageTag", local["runtimeRef"], False),
             ]
             kind = "local-image"
         image_text = render_quadlet(
@@ -867,7 +930,7 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
                     f"archive file under /nix/store: {image_tar!r}"
                 )
             store_hash = store_hash[:12]
-            image = f"localhost/nix-local/image:{store_hash}"
+            image = docker_archive_runtime_ref(image_path, "")
             local_entry = {
                 "imageRef": source_image,
                 "imageTar": image_tar,

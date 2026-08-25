@@ -82,8 +82,13 @@ diagnostic evidence.
 ## Runtime Ownership
 
 - Remote images use `.image` units with `Policy=newer`; store-built images use
-  `Image=docker-archive:<store-path>` plus `ImageTag=<runtime-ref>`. Containers
-  reference the `.image` file and use `Pull=never`, avoiding a second pull path.
+  `Image=docker-archive:<store-path>` plus the archive's existing repository tag
+  as `ImageTag`. `ImageTag` does not create an alias: Quadlet uses it to resolve
+  the selected image already present in a file archive. The compiler reads only
+  `manifest.json`, verifies explicit local-image tags against `RepoTags`, and
+  requires compiler-discovered `nix-store:` archives to contain one unambiguous
+  tag. Containers reference the `.image` file and use `Pull=never`, avoiding a
+  second pull path.
 - Compose `restart:` maps to systemd `[Service] Restart=`: `no -> no`,
   `always -> always`, `on-failure -> on-failure`, and
   `unless-stopped -> always`. Explicit `systemctl stop` still suppresses
