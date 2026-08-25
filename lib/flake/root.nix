@@ -4,6 +4,7 @@
   nixpkgs ? inputs.nixpkgs,
   systems ? flake-utils.lib.defaultSystems,
   stackProfiles ? import ../stacks,
+  phaseProjectionDirectory ? null,
 }: let
   flakeProfileInputNames = {
     default = {
@@ -65,8 +66,15 @@
 
   overlays = flakeProfiles.default.overlays;
 
+  phaseProjection = import ./phase-projection.nix {
+    inherit (nixpkgs) lib;
+    directory = phaseProjectionDirectory;
+  };
+  effectiveStackProfiles = phaseProjection.applyToStacks stackProfiles;
+
   rootLib = import ./. {
-    inherit flake-utils inputs nixpkgs overlays stackProfiles;
+    inherit flake-utils inputs nixpkgs overlays;
+    stackProfiles = effectiveStackProfiles;
   };
 
   packageOutputs = rootLib.outputsFor systems;
@@ -113,7 +121,8 @@
         inherit flakeProfile flakeProfiles hostName machineProfile machineProfiles system;
         inputs = selectedInputs;
         stack = effectiveStack;
-        stacks = stackProfiles;
+        stacks = effectiveStackProfiles;
+        phaseProjections = phaseProjection.documents;
       };
       modules =
         commonModulesFor flakeProfile
@@ -124,7 +133,7 @@
               inherit flakeProfile flakeProfiles machineProfile machineProfiles;
               inputs = selectedInputs;
               stack = effectiveStack;
-              stacks = stackProfiles;
+              stacks = effectiveStackProfiles;
             };
           }
         ]
