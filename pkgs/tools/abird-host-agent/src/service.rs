@@ -1,7 +1,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::str::FromStr;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
@@ -62,18 +64,31 @@ impl ServiceTarget {
     }
 
     fn systemctl_args(&self, operation: ServiceOperation) -> Vec<String> {
+        let mut args = self.systemctl_scope_args();
+        args.push(operation.systemctl_verb().to_owned());
+        args.push("--".to_owned());
+        args.push(self.unit.clone());
+        args
+    }
+
+    fn systemctl_scope_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if self.scope == ServiceScope::User {
             args.push("--user".to_owned());
             if let Some(user) = &self.user {
                 args.push("--machine".to_owned());
-                args.push(format!("{user}@.host"));
+                // An empty machine component selects the local user's manager
+                // directly. Routing the same request through `.host` adds a
+                // systemd-machined transport that can disconnect while a NixOS
+                // generation reexecutes systemd.
+                args.push(format!("{user}@"));
             }
         }
-        args.push(operation.systemctl_verb().to_owned());
-        args.push("--".to_owned());
-        args.push(self.unit.clone());
         args
+    }
+
+    fn with_unit(&self, unit: String) -> Result<Self> {
+        Self::new(self.scope, self.user.clone(), unit)
     }
 }
 
@@ -114,6 +129,7 @@ pub enum ServiceOperation {
     Stop,
     Restart,
     Reload,
+    TryReloadOrRestart,
     Status,
 }
 
@@ -124,6 +140,7 @@ impl ServiceOperation {
             Self::Stop => "stop",
             Self::Restart => "restart",
             Self::Reload => "reload",
+            Self::TryReloadOrRestart => "try-reload-or-restart",
             Self::Status => "is-active",
         }
     }
@@ -157,16 +174,35 @@ impl Systemctl {
         &self.executable
     }
 
+    fn query_with_retry(&self, arguments: &[String]) -> Result<Output> {
+        const ATTEMPTS: usize = 9;
+        const DELAY: Duration = Duration::from_millis(250);
+
+        let mut last_output = None;
+        for attempt in 0..ATTEMPTS {
+            let output = Command::new(&self.executable)
+                .args(arguments)
+                .output()
+                .with_context(|| format!("run {}", self.executable.display()))?;
+            if output.status.success() {
+                return Ok(output);
+            }
+            last_output = Some(output);
+            if attempt + 1 < ATTEMPTS {
+                thread::sleep(DELAY);
+            }
+        }
+
+        Ok(last_output.expect("query loop always runs at least once"))
+    }
+
     pub fn run(
         &self,
         operation: ServiceOperation,
         target: &ServiceTarget,
     ) -> Result<ServiceResult> {
         let arguments = target.systemctl_args(operation);
-        let output = Command::new(&self.executable)
-            .args(&arguments)
-            .output()
-            .with_context(|| format!("run {}", self.executable.display()))?;
+        let output = self.query_with_retry(&arguments)?;
 
         let result = ServiceResult {
             operation,
@@ -189,6 +225,116 @@ impl Systemctl {
             );
         }
         Ok(result)
+    }
+
+    /// Return the systemd units whose lifecycle is owned by `target` through
+    /// `PartOf=`. Quadlet exposes generated container and network units through
+    /// this `ConsistsOf` relationship on the public service.
+    pub fn consists_of(&self, target: &ServiceTarget) -> Result<Vec<ServiceTarget>> {
+        let mut arguments = target.systemctl_scope_args();
+        arguments.extend([
+            "show".to_owned(),
+            "--property=ConsistsOf".to_owned(),
+            "--value".to_owned(),
+            "--".to_owned(),
+            target.unit.clone(),
+        ]);
+        let output = self.query_with_retry(&arguments)?;
+        if !output.status.success() {
+            bail!(
+                "query owned units for {target} failed with status {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+
+        String::from_utf8_lossy(&output.stdout)
+            .split_ascii_whitespace()
+            .map(|unit| target.with_unit(unit.to_owned()))
+            .collect()
+    }
+
+    /// Clear failure state only after a successful explicit stop, and only for
+    /// the stopped service plus units systemd declares it owns.
+    pub fn reset_failed(&self, targets: &[ServiceTarget]) -> Result<()> {
+        let Some(first) = targets.first() else {
+            return Ok(());
+        };
+        if targets
+            .iter()
+            .any(|target| target.scope != first.scope || target.user != first.user)
+        {
+            bail!("reset-failed targets must share one systemd manager");
+        }
+
+        let failed = self.failed_targets(targets)?;
+        if failed.is_empty() {
+            return Ok(());
+        }
+
+        let mut arguments = first.systemctl_scope_args();
+        arguments.push("reset-failed".to_owned());
+        arguments.push("--".to_owned());
+        for target in &failed {
+            arguments.push(target.unit.clone());
+        }
+        let output = Command::new(&self.executable)
+            .args(&arguments)
+            .output()
+            .with_context(|| format!("run {}", self.executable.display()))?;
+        if !output.status.success() {
+            let remaining = self.failed_targets(&failed)?;
+            if remaining.is_empty() {
+                return Ok(());
+            }
+            bail!(
+                "reset failure state for {first} failed with status {:?}; still failed: {}: {}",
+                output.status.code(),
+                remaining
+                    .iter()
+                    .map(|target| target.unit.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    fn failed_targets(&self, targets: &[ServiceTarget]) -> Result<Vec<ServiceTarget>> {
+        let Some(first) = targets.first() else {
+            return Ok(Vec::new());
+        };
+
+        let mut arguments = first.systemctl_scope_args();
+        arguments.extend([
+            "list-units".to_owned(),
+            "--state=failed".to_owned(),
+            "--plain".to_owned(),
+            "--no-legend".to_owned(),
+            "--no-pager".to_owned(),
+            "--".to_owned(),
+        ]);
+        arguments.extend(targets.iter().map(|target| target.unit.clone()));
+        let output = self.query_with_retry(&arguments)?;
+        if !output.status.success() {
+            bail!(
+                "query failed units for {first} failed with status {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let listed = stdout
+            .lines()
+            .filter_map(|line| line.split_ascii_whitespace().next())
+            .collect::<std::collections::HashSet<_>>();
+        Ok(targets
+            .iter()
+            .filter(|target| listed.contains(target.unit.as_str()))
+            .cloned()
+            .collect())
     }
 }
 
@@ -220,11 +366,46 @@ mod tests {
             [
                 "--user",
                 "--machine",
-                "abird@.host",
+                "abird@",
                 "stop",
                 "--",
                 "zulip.target"
             ]
+        );
+    }
+
+    #[test]
+    fn builds_reload_or_restart_systemctl_arguments() {
+        let target = "user:abird:abird-nginx.service"
+            .parse::<ServiceTarget>()
+            .unwrap();
+        assert_eq!(
+            target.systemctl_args(ServiceOperation::TryReloadOrRestart),
+            [
+                "--user",
+                "--machine",
+                "abird@",
+                "try-reload-or-restart",
+                "--",
+                "abird-nginx.service"
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_named_user_systemctl_scope_arguments() {
+        let target = "user:abird:zulip.target".parse::<ServiceTarget>().unwrap();
+        assert_eq!(
+            target.systemctl_scope_args(),
+            ["--user", "--machine", "abird@"]
+        );
+        assert_eq!(
+            target
+                .with_unit("zulip-container.service".to_owned())
+                .unwrap(),
+            "user:abird:zulip-container.service"
+                .parse::<ServiceTarget>()
+                .unwrap()
         );
     }
 

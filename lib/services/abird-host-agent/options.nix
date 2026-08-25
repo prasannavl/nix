@@ -63,7 +63,7 @@
       timeoutMs = lib.mkOption {
         type = lib.types.ints.between 1 300000;
         default = 5000;
-        description = "Network readiness timeout in milliseconds.";
+        description = "Maximum time for this network check to become ready, in milliseconds.";
       };
     };
   };
@@ -178,10 +178,35 @@
         default = 420;
         description = "State file mode as an integer (420 is 0644).";
       };
+      expectedPreviousSha256 = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional lowercase SHA-256 digest required for the existing state bytes.";
+      };
+      acceptedPreviousSha256 = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          Allowlisted lowercase SHA-256 digests for transitions from any other
+          valid state. Mutually exclusive with expectedPreviousSha256.
+        '';
+      };
+      validationArgv = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          Candidate validator argv without shell expansion. The agent appends
+          the candidate temporary path as the final argument.
+        '';
+      };
       reloadServices = lib.mkOption {
         type = lib.types.listOf serviceTargetType;
         default = [];
-        description = "Services reloaded only after the state file changes successfully.";
+        description = ''
+          Services synchronously reloaded, or restarted when reload is not
+          supported, after the durable state is confirmed. This also runs on
+          an idempotent retry so consumer state is proven, not assumed.
+        '';
       };
     };
   };
@@ -256,6 +281,68 @@
           Exact normalized relative subtrees omitted consistently from copy,
           deletion, backup manifests, and verification.
         '';
+      };
+    };
+  };
+
+  desiredResourceStateType = lib.types.submodule {
+    options = {
+      state = lib.mkOption {
+        type = lib.types.enum ["held" "active" "inactive" "unheld"];
+        description = "Desired local lifecycle state from a phase projection. Unheld releases the exact projected hold without starting the resource.";
+      };
+      projectionId = lib.mkOption {
+        type = lib.types.str;
+        description = "Stable state-machine projection identity owning this declaration.";
+      };
+      intentDigest = lib.mkOption {
+        type = lib.types.str;
+        description = "SHA-256 digest of the immutable state-machine intent.";
+      };
+      phase = lib.mkOption {
+        type = lib.types.str;
+        description = "Opaque desired state-machine phase.";
+      };
+      projectionDigest = lib.mkOption {
+        type = lib.types.str;
+        description = "SHA-256 digest of the complete desired phase projection.";
+      };
+      generation = lib.mkOption {
+        type = lib.types.ints.positive;
+        description = "Monotonic generation within the projection state machine.";
+      };
+      holdEpoch = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Opaque stable hold epoch. The module scopes it beneath projectionId
+          when deriving the agent declaration ID. Consecutive phases that
+          retain one hold use the same epoch; activation releases that exact
+          epoch, and a later
+          reacquisition uses a new ID so the old release cannot unlock it. The
+          initial active resources may leave this null when no activation latch
+          is required.
+        '';
+      };
+      transactionId = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Canonical host-agent transaction owning the projected hold.";
+      };
+      activationJobId = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Canonical host-agent job shared by deploy and controller activation.";
+      };
+      activationRequirementDigest = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Required evidence SHA-256 digest before activation.";
+      };
+      activationRequirementKind = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Opaque activation-evidence policy kind.";
       };
     };
   };
@@ -493,6 +580,20 @@ in {
       description = "Immutable cold-start markers for declaratively held resources.";
     };
 
+    desiredResourceStateManifestPath = lib.mkOption {
+      type = lib.types.str;
+      default = "/etc/abird-host-agent/desired-resource-states.json";
+      readOnly = true;
+      description = "Nix-generated immutable desired-resource-state manifest.";
+    };
+
+    desiredResourceStateDirectory = lib.mkOption {
+      type = lib.types.str;
+      default = "/etc/abird-host-agent/desired-resource-states";
+      readOnly = true;
+      description = "Immutable per-resource phase-projection declarations.";
+    };
+
     services = lib.mkOption {
       type = lib.types.attrsOf managedResourceType;
       default = {};
@@ -548,6 +649,28 @@ in {
         the resource. Only transaction activation persists the matching release
         latch, removes the runtime hold, and starts the resource. Removing a
         declaration never releases an existing durable hold.
+      '';
+    };
+
+    desiredResourceStates = lib.mkOption {
+      type = lib.types.attrsOf desiredResourceStateType;
+      default = {};
+      description = ''
+        Phase-projection declarations keyed by canonical local resource ID.
+        Each non-null hold epoch installs a projection-scoped cold-start latch.
+        Runtime may release an active declaration only after matching the exact
+        projection and its activation-evidence requirement; removing the
+        declaration never releases an existing durable hold.
+      '';
+    };
+
+    phaseProjections = lib.mkOption {
+      type = lib.types.listOf lib.types.attrs;
+      default = [];
+      description = ''
+        Generic schema-versioned phase projection documents supplied directly
+        for standalone use. Repository integrations should inject equivalent
+        documents through the module's phaseProjections special argument.
       '';
     };
   };

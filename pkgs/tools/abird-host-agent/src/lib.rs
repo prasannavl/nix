@@ -2,6 +2,7 @@ pub mod broker;
 pub mod cli;
 pub mod command;
 pub mod deployment;
+pub mod desired_state;
 pub mod file_state;
 pub mod instance;
 pub mod instance_backup;

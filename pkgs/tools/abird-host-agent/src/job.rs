@@ -103,6 +103,32 @@ pub struct JobExecution {
     pub error: Option<String>,
 }
 
+/// Immutable repository projection evidence bound into a deterministic job.
+///
+/// The transaction identity remains `JobSpec::transaction_id`; this binding
+/// proves which immutable transaction specification and desired projection
+/// authorized the job.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobProjectionBinding {
+    #[serde(alias = "transaction_digest")]
+    pub intent_digest: String,
+    pub projection_digest: String,
+    pub generation: u64,
+    #[serde(
+        default,
+        alias = "hold_declaration_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hold_epoch: Option<String>,
+    #[serde(
+        default,
+        alias = "prepared_receipt_requirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub activation_requirement_digest: Option<String>,
+}
+
 impl JobExecution {
     pub fn succeeded(result: Value) -> Self {
         Self {
@@ -124,6 +150,8 @@ pub struct JobSpec {
     pub schema_version: u32,
     pub job_id: String,
     pub transaction_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<JobProjectionBinding>,
     pub resource: String,
     pub operation: JobOperation,
     pub expected_state: ExpectedState,
@@ -241,6 +269,11 @@ impl JobStore {
             self.read_unlocked(job_id)?
                 .with_context(|| format!("job {job_id:?} does not exist"))
         })
+    }
+
+    pub fn status_optional(&self, job_id: &str) -> Result<Option<JobRecord>> {
+        validate_identifier("job ID", job_id)?;
+        self.with_job_lock(|| self.read_unlocked(job_id))
     }
 
     pub fn retry(&self, job_id: &str) -> Result<SubmitOutcome> {
@@ -595,6 +628,27 @@ pub fn job_file_name(job_id: &str) -> String {
     format!("{}.json", digest_bytes(job_id.as_bytes()))
 }
 
+/// Canonical bounded job identity shared by deploy and controller reconciliation
+/// for an exact projected unhold.
+pub fn projected_release_job_id(projection_id: &str, resource: &str, hold_epoch: &str) -> String {
+    let digest =
+        digest_bytes(format!("{projection_id}\0{resource}\0{hold_epoch}\0unheld").as_bytes());
+    format!("projection-unhold-{}", &digest[..32])
+}
+
+/// Canonical bounded manager job identity for one projected hold epoch.
+pub fn projected_hold_job_id(
+    projection_id: &str,
+    resource: &str,
+    hold_epoch: &str,
+    projection_digest: &str,
+) -> String {
+    let digest = digest_bytes(
+        format!("{projection_id}\0{resource}\0{hold_epoch}\0{projection_digest}\0held").as_bytes(),
+    );
+    format!("projection-hold-{}", &digest[..32])
+}
+
 fn validate_spec(spec: &JobSpec) -> Result<()> {
     if spec.schema_version != 1 {
         bail!(
@@ -604,6 +658,31 @@ fn validate_spec(spec: &JobSpec) -> Result<()> {
     }
     validate_identifier("job ID", &spec.job_id)?;
     validate_identifier("transaction ID", &spec.transaction_id)?;
+    if let Some(projection) = &spec.projection {
+        validate_digest("intent digest", &projection.intent_digest)?;
+        validate_digest("projection digest", &projection.projection_digest)?;
+        if projection.generation == 0 {
+            bail!("projection generation must be greater than zero");
+        }
+        if let Some(epoch) = &projection.hold_epoch {
+            validate_identifier("hold epoch", epoch)?;
+        }
+        if let Some(requirement) = &projection.activation_requirement_digest {
+            validate_digest("activation requirement digest", requirement)?;
+        }
+        if matches!(&spec.operation, JobOperation::Activate)
+            && projection.activation_requirement_digest.is_none()
+        {
+            bail!("projection-bound activation requires an activation requirement digest");
+        }
+        if matches!(
+            &spec.operation,
+            JobOperation::Reserve | JobOperation::Hold | JobOperation::Activate
+        ) && projection.hold_epoch.is_none()
+        {
+            bail!("projection-bound hold and activation jobs require a hold epoch");
+        }
+    }
     validate_identifier("resource", &spec.resource)?;
     if let JobOperation::Named { name } = &spec.operation {
         validate_identifier("named operation", name)?;
@@ -762,6 +841,17 @@ fn validate_spec(spec: &JobSpec) -> Result<()> {
     Ok(())
 }
 
+fn validate_digest(label: &str, value: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        bail!("{label} must be a lowercase SHA-256 digest");
+    }
+    Ok(())
+}
+
 fn validate_stored_job(job: &JobRecord, path: &Path) -> Result<()> {
     validate_spec(&job.spec).with_context(|| format!("invalid job in {}", path.display()))
 }
@@ -812,6 +902,22 @@ fn sync_directory(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projected_hold_job_ids_rotate_with_the_epoch() {
+        let digest_v1 = "1".repeat(64);
+        let digest_v2 = "2".repeat(64);
+        let held_v1 = projected_hold_job_id("hold-zulip", "service:zulip", "hold-v1", &digest_v1);
+        let held_v1_next =
+            projected_hold_job_id("hold-zulip", "service:zulip", "hold-v1", &digest_v2);
+        let held_v3 = projected_hold_job_id("hold-zulip", "service:zulip", "hold-v3", &digest_v1);
+        let clear_v1 = projected_release_job_id("hold-zulip", "service:zulip", "hold-v1");
+        let clear_v3 = projected_release_job_id("hold-zulip", "service:zulip", "hold-v3");
+        assert_ne!(held_v1, held_v3);
+        assert_ne!(held_v1, held_v1_next);
+        assert_ne!(clear_v1, clear_v3);
+        assert_ne!(held_v1, clear_v1);
+    }
 
     fn broker_endpoint(host: &str, keys: Vec<String>) -> crate::transfer::RemoteSource {
         crate::transfer::RemoteSource {
@@ -873,6 +979,7 @@ mod tests {
             schema_version: 1,
             job_id: job_id.to_owned(),
             transaction_id: "tx-1".to_owned(),
+            projection: None,
             resource: "service:zulip".to_owned(),
             operation,
             expected_state: ExpectedState::Any,
@@ -919,6 +1026,82 @@ mod tests {
                 .changed
         );
         assert!(store.submit(spec("job-1", JobOperation::Start)).is_err());
+    }
+
+    #[test]
+    fn legacy_job_spec_deserializes_without_projection_binding() {
+        let mut value = serde_json::to_value(spec("job-1", JobOperation::Status)).unwrap();
+        value.as_object_mut().unwrap().remove("projection");
+        let decoded: JobSpec = serde_json::from_value(value).unwrap();
+        assert!(decoded.projection.is_none());
+        validate_spec(&decoded).unwrap();
+    }
+
+    #[test]
+    fn legacy_projection_fields_decode_but_serialize_with_generic_names() {
+        let digest = "a".repeat(64);
+        let binding: JobProjectionBinding = serde_json::from_value(serde_json::json!({
+            "transaction_digest": digest,
+            "projection_digest": "b".repeat(64),
+            "generation": 3,
+            "hold_declaration_id": "tx-1:target:g3",
+            "prepared_receipt_requirement": "c".repeat(64)
+        }))
+        .unwrap();
+        assert_eq!(binding.intent_digest, "a".repeat(64));
+        assert_eq!(binding.hold_epoch.as_deref(), Some("tx-1:target:g3"));
+        let encoded = serde_json::to_value(binding).unwrap();
+        assert!(encoded.get("transaction_digest").is_none());
+        assert!(encoded.get("hold_declaration_id").is_none());
+        assert!(encoded.get("prepared_receipt_requirement").is_none());
+        assert_eq!(encoded["intent_digest"], "a".repeat(64));
+        assert_eq!(encoded["hold_epoch"], "tx-1:target:g3");
+        assert_eq!(encoded["activation_requirement_digest"], "c".repeat(64));
+    }
+
+    #[test]
+    fn projection_binding_validates_digests_generation_and_activation_requirement() {
+        let digest = "a".repeat(64);
+        let mut bound = spec("job-1", JobOperation::Status);
+        bound.projection = Some(JobProjectionBinding {
+            intent_digest: digest.clone(),
+            projection_digest: digest.clone(),
+            generation: 1,
+            hold_epoch: None,
+            activation_requirement_digest: None,
+        });
+        validate_spec(&bound).unwrap();
+
+        bound.projection.as_mut().unwrap().generation = 0;
+        assert!(validate_spec(&bound).is_err());
+        bound.projection.as_mut().unwrap().generation = 1;
+        bound.projection.as_mut().unwrap().projection_digest = "ABC".to_owned();
+        assert!(validate_spec(&bound).is_err());
+
+        let mut activation = spec("activate-1", JobOperation::Activate);
+        activation.projection = Some(JobProjectionBinding {
+            intent_digest: digest.clone(),
+            projection_digest: digest.clone(),
+            generation: 2,
+            hold_epoch: Some("target:epoch-1".to_owned()),
+            activation_requirement_digest: None,
+        });
+        assert!(validate_spec(&activation).is_err());
+        activation
+            .projection
+            .as_mut()
+            .unwrap()
+            .activation_requirement_digest = Some(digest);
+        validate_spec(&activation).unwrap();
+
+        let mut hold = spec("hold-1", JobOperation::Hold);
+        hold.projection = activation.projection.clone();
+        hold.projection.as_mut().unwrap().hold_epoch = None;
+        assert!(validate_spec(&hold).is_err());
+        hold.projection.as_mut().unwrap().hold_epoch = Some(String::new());
+        assert!(validate_spec(&hold).is_err());
+        hold.projection.as_mut().unwrap().hold_epoch = Some("target:epoch-1".to_owned());
+        validate_spec(&hold).unwrap();
     }
 
     #[test]

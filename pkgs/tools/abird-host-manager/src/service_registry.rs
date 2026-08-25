@@ -19,6 +19,7 @@ struct ServicePlacement {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ResolvedLogicalService {
+    pub stack: String,
     pub host: String,
     pub resource: String,
 }
@@ -75,6 +76,7 @@ in map placementFor candidates"#
     let host = inventory.host_name_for_address(&placement.address)?;
     let resource = resolve_service_resource(repository, nix_program, host, service)?;
     Ok(ResolvedLogicalService {
+        stack: placement.stack,
         host: host.to_owned(),
         resource,
     })

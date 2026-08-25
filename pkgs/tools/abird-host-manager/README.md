@@ -6,10 +6,30 @@ service, whole-host, or instance moves. The former Bash host manager, Python
 data migrator, and transient migration manager are retired; there is no legacy
 provider or fallback path.
 
-The manager owns ordering and its local transaction journal. Every mutation is
-accepted and persisted by the selected host agent before it runs. The manager
-then polls the immutable job ID. Reconnecting after an SSH failure submits or
-queries the same specification; it cannot create a second mutation.
+The manager owns ordering and a durable transaction journal. Repository-backed
+fleet workflows keep that journal on the configured controller from the first
+command; normal operator commands transparently dispatch there, and deployment
+reconciliation uses the same state. `--controller local` selects local
+execution, while `--controller HOST --state-dir RUN` selects an isolated state
+directory beneath the remote controller's manager state root. A bare
+`--state-dir` retains standalone-local compatibility. Every mutation is accepted
+and persisted by the selected host agent before it runs. The manager then polls
+the immutable job ID. Reconnecting after an SSH failure submits or queries the
+same specification; it cannot create a second mutation.
+
+For an ad hoc repository-local run, `--local-run NAME` is shorthand for local
+execution with state at `.agents/runs/NAME/host-manager`. It is intentionally
+incompatible with both `--controller` and `--state-dir`; run names are bounded,
+path-safe identifiers and temporary run contents are ignored by Git.
+
+The controller repository mirror is intentionally read-only. Its dedicated
+Nixbot identity performs fetches and boot/deploy-time mirror refreshes, but can
+never publish. An explicit operator-dispatched phase command temporarily
+forwards the operator's existing SSH agent; after validation and commit, the
+controller uses that agent only for the fast-forward projection push. It stores
+no write-capable repository key. If no agent is available, no loaded key may
+write the repository, or the push is rejected, the command fails before any
+runtime handoff.
 
 ## Migration states
 
@@ -35,10 +55,100 @@ create -> setup -> seed -> prepare -> verify -> cutover -> close
   both resources remain held, then activates and verifies only the target.
 - `rollback` is the only transition that activates the source. If target
   activation may have occurred, it first performs a verified reverse copy.
-- `close` ends the rollback window and releases the inactive endpoint hold
-  without starting it.
+- `close` ends the rollback window for legacy transactions and releases the
+  inactive endpoint hold without starting it. Projected transactions fail closed
+  here: the inactive endpoint remains held pending a canonical projection
+  fold/archive operation.
 
 Nothing automatically starts after `prepare`, timeout, failure, or disconnect.
+
+## Phase projections
+
+Repository-backed moves publish one canonical phase projection under
+`data/phase-projections/` before runtime reconciliation. The flake and the live
+manager consume the same projection digest, so an ordinary deploy and immediate
+host-agent reconciliation select identical placement, resource states, and route
+profiles. Git records desired state and stable prerequisite identity, never an
+observed receipt. The controller journal retains observed work and activation
+authority.
+
+Publication and deployment reconciliation have deliberately different Git
+capabilities. Operator phase decisions may publish through their ephemeral
+forwarded SSH agent. Deployment reconciliation only consumes a projection that
+is already present in the read-only controller mirror; it never commits or
+pushes and needs no forwarded agent or write Git access. In both runtime and
+`--skip-runtime` modes, successful publication is required before the command
+may continue. `--skip-runtime` stops immediately after that durable publication.
+
+The normal move has three mutating commands:
+
+```console
+abird-host-manager service move zulip \
+  --from abird-gondor-corp --to abird-gondor-zulip \
+  --id zulip-tearoff-20260820 --execute
+abird-host-manager transaction prepare zulip-tearoff-20260820 --execute
+abird-host-manager transaction cutover zulip-tearoff-20260820 --execute
+```
+
+Use `transaction rollback` for the third decision. All three decisions accept
+`--skip-runtime`, which publishes and validates only the declarative projection.
+A later controller deployment or explicit `transaction reconcile` applies the
+exact same desired phase.
+
+Standalone holds are minimal phase projections, not a separate runtime-only
+mechanism:
+
+```console
+abird-host-manager resource hold set abird-gondor-zulip service:abird-zulip \
+  --id zulip-maintenance-20260821 --execute
+abird-host-manager resource hold clear abird-gondor-zulip service:abird-zulip \
+  --id zulip-maintenance-20260821 --execute
+```
+
+Both commands publish desired state first. `--skip-runtime` defers the exact
+same change to deployment. `clear` releases the matching epoch without starting
+the service; normal declarative lifecycle or a later projected activation owns
+any start. The same hold can therefore be added through the manager and removed
+by deploy, or added by deploy and removed through the manager.
+
+Deployment and immediate reconciliation submit the same deterministic host-agent
+transaction and activation job. They may therefore be intermixed at every
+boundary: a deployment adopts a job already completed by the controller, and the
+controller adopts the identical job already completed during deploy. A reviewed
+Nix deployment is authorized by repository provenance. Dynamic manager
+activation must first retain the matching brokered receipt. Both remain bounded
+by the exact projection, hold epoch, local resource allowlist, and unrelated
+holds.
+
+Cutover activates and verifies the target before applying the allowlisted route
+profile. Manager-brokered rollback from an activated target holds the target,
+reverse-copies and verifies data, persists a rollback receipt, and only then
+activates the source and restores its route. Before deriving that compensation,
+the manager adopts an exact deployment-first cutover job so a target start is
+not lost. The inactive endpoint remains held after cutover or rollback.
+Projected `transaction close` deliberately fails closed until a canonical
+projection fold/archive operation exists, so deploying an older projection
+cannot silently reintroduce a released hold. After an interruption, use
+`transaction reconcile ID --execute`; projected `transaction resume` is rejected
+because it cannot establish projected activation authority.
+
+A publication authentication failure is safe to retry. Load a write-authorized
+key into the operator's local SSH agent and repeat the same phase command. If an
+initial move remains planned with no published projection, repeat the exact move
+and ID without `--force-existing`; that is the normal setup/publication retry.
+Reserve `--force-existing` for an advanced or ambiguous existing transaction
+that the operator has inspected and explicitly chooses to attach to. The
+controller refreshes from the authoritative branch, adopts an exact commit if
+the prior push actually landed, or recreates the same deterministic projection
+if it did not. Runtime reconciliation cannot start until that exact revision is
+confirmed published, so the retry neither creates a second transaction nor
+replays a migration job.
+
+The operator checkout may be behind the authoritative branch because the
+controller publishes projection commits. It may not have unpublished commits or
+divergent history; the dispatcher fails closed on either condition. The
+controller's private checkout, not the operator checkout, remains the only
+publication worktree.
 
 ## Native configuration
 
@@ -77,17 +187,38 @@ It maps Nixbot targets, users, nested proxy hops, groups, resource IDs, and
 deployment identities without a generated mirror file. Proxy hops are resolved
 from inventory to concrete OpenSSH commands, with an explicit null OpenSSH
 configuration and global trust store, so they do not depend on ambient aliases
-or credentials. For moves, the repository adapter also derives the existing CI
-host as the durable transfer/deployment controller, the target's existing parent
-as its provisioning endpoint, endpoint deployments for target setup, and the
-stack's shared proxy role for cutover and rollback. An explicit JSON policy is
-therefore optional and is reserved for standalone or unusual infrastructure
-whose controller, routes, or polling policy cannot be inferred safely. A JSON
-configuration contains:
+or credentials. The repository config names controller and transfer-broker
+capabilities independently; both currently resolve to `abird-ci`, but workflow
+and deploy routes use only the controller while data movement uses only the
+transfer broker. For moves, the adapter also derives the target's existing
+parent as its provisioning endpoint, endpoint deployments for target setup, and
+the stack's shared proxy role for cutover and rollback. An explicit JSON policy
+is therefore optional and is reserved for standalone or unusual infrastructure
+whose controller, routes, or polling policy cannot be inferred safely. The
+repository inventory uses the following capability shape:
+
+```nix
+config = {
+  controller = "controller";
+  transferBroker = "broker";
+  builders = ["builder"];
+  registries.nix = {
+    host = "builder";
+    url = "https://cache.example.invalid";
+  };
+};
+```
+
+These values are canonical host resource IDs, not SSH aliases. The first builder
+is Nixbot's default unless the operator passes `--build-host`. Registry entries
+remain protocol-specific so a future `registries.podman` does not inherit Nix
+cache semantics. A bounded compatibility reader accepts the former `ci.host` and
+`buildCache` shape during rollout; new configuration must use this schema.
 
 ```json
 {
   "schema_version": 1,
+  "controller": "controller",
   "transfer_broker": "controller",
   "ssh": {
     "program": "/run/current-system/sw/bin/ssh",
@@ -150,17 +281,20 @@ configuration contains:
 
 Executors are inventory names, `$source`, or `$target`. Routed kinds are
 `named`, `transfer`, `verify_transfer`, `file_state`, `ready`, `provision`, and
-`deploy`, plus the typed `nixbot_deploy` controller capability. A Nixbot request
-keeps the real connection `host` separate from its optional `nix_config`; the
-corresponding Nixbot CLI uses `--host`/`--hosts` and `--nix-config`. For
-reusable move inventories, `{"endpoint":"source"}` and `{"endpoint":"target"}`
-resolve the selected host's `nixbot_deploy` request; literal requests remain
-available for fixed infrastructure or ingress routes. Only declarative boundary
-actions are routed. Setup skips deployment when the target agent is reachable
-and exposes matching named data roots; otherwise it optionally provisions the
-target and deploys it held. Cutover and rollback require their respective
-deployment routes. A controller host agent can therefore continue an accepted
-Nixbot/repository deployment if the manager disconnects.
+`deploy`, plus the typed `nixbot_deploy` controller capability. A routed phase
+boundary may also name its `phase_projection` executor and resource; that owner
+applies the allowlisted effect directly instead of initiating a deployment. A
+Nixbot request keeps the real connection `host` separate from its optional
+`nix_config`; the corresponding Nixbot CLI uses `--host`/`--hosts` and
+`--nix-config`. For reusable move inventories, `{"endpoint":"source"}` and
+`{"endpoint":"target"}` resolve the selected host's `nixbot_deploy` request;
+literal requests remain available for fixed infrastructure or ingress routes.
+Only declarative boundary actions are routed. Setup skips deployment when the
+target agent is reachable and exposes matching named data roots; otherwise it
+optionally provisions the target and deploys it held. Cutover and rollback
+require their respective deployment routes. A controller host agent can
+therefore continue an accepted Nixbot/repository deployment if the manager
+disconnects.
 
 Seed, final copy, reverse copy, verification, and backup are not profiles. The
 manager resolves source and target data roots by stable name, requires identical
@@ -169,10 +303,12 @@ transaction before the first copy. Legacy `data_paths` remain an identical-path
 shorthand. The manager then submits the mapping and source/target endpoints to
 the configured or repository-derived controller agent. Its durable broker job
 delegates the existing Nixbot identity through a short-lived forwarded SSH
-agent; rsync and tar payloads travel directly source-to-target. No peer key,
-target-side credential, controller staging tree, or additional listener is
-required. `broker_ssh_args` describes reachability from within the managed
-network independently from the manager's ordinary SSH path.
+agent; this broker-scoped transfer credential is separate from the operator
+agent lent to a phase command for Git publication. Rsync and tar payloads travel
+directly source-to-target. No peer key, target-side credential, controller
+staging tree, or additional listener is required. `broker_ssh_args` describes
+reachability from within the managed network independently from the manager's
+ordinary SSH path.
 
 Each inventory host may set `host_resource` to the Nix-generated aggregate
 resource ID for whole-host backups and moves. It defaults to
@@ -237,9 +373,9 @@ abird-host-manager --config /etc/abird-host-manager.json resource hold acquire \
   target service:abird-zulip \
   --owner move-20260801 --execute
 
-abird-host-manager service move abird-zulip mail \
+abird-host-manager service move zulip mail \
   --from source --to target --dry-run
-abird-host-manager service move abird-zulip mail \
+abird-host-manager service move zulip mail \
   --from source --to target --execute
 abird-host-manager --config /etc/abird-host-manager.json \
   host move --from old-corp --to new-corp --dry-run
@@ -272,6 +408,7 @@ abird-host-manager transaction rollback TRANSACTION_ID --execute
 abird-host-manager transaction resume TRANSACTION_ID --execute
 abird-host-manager transaction resume TRANSACTION_ID \
   --supersede-failed-job --execute
+# Legacy journals only; projected transactions retain the inactive hold.
 abird-host-manager transaction close TRANSACTION_ID --execute
 abird-host-manager transaction show TRANSACTION_ID
 

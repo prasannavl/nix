@@ -16,6 +16,7 @@ pub mod offline_store;
 pub mod physical;
 pub mod programs;
 pub mod progress;
+pub mod projection;
 pub mod repository;
 pub mod selector;
 pub mod service_registry;
@@ -105,10 +106,19 @@ pub struct Transaction {
     pub resource: String,
     pub source: String,
     pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_resource: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_resource: Option<String>,
     pub config: PathBuf,
     pub phase: Phase,
     pub pending_action: Option<Action>,
     pub completed_steps: BTreeSet<String>,
+    /// Steps intentionally accepted through a trusted repository-deploy
+    /// override. They are terminal for scheduling but are not observations and
+    /// must never be reported as completed evidence.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub overridden_steps: BTreeSet<String>,
     #[serde(default)]
     pub active_step: Option<String>,
     #[serde(default)]
@@ -190,10 +200,13 @@ impl Transaction {
             resource,
             source,
             target,
+            source_resource: None,
+            target_resource: None,
             config,
             phase: Phase::Planned,
             pending_action: None,
             completed_steps: BTreeSet::new(),
+            overridden_steps: BTreeSet::new(),
             active_step: None,
             active_job_id: None,
             job_generations: BTreeMap::new(),
@@ -325,6 +338,19 @@ pub fn execute_action<A: Adapter>(
     action: Action,
     adapter: &mut A,
 ) -> Result<()> {
+    if !execute_action_until(store, transaction, action, adapter, None)? {
+        unreachable!("unbounded action execution must complete");
+    }
+    Ok(())
+}
+
+pub fn execute_action_until<A: Adapter>(
+    store: &Store,
+    transaction: &mut Transaction,
+    action: Action,
+    adapter: &mut A,
+    stop_before: Option<&str>,
+) -> Result<bool> {
     validate_action_request(transaction, action)?;
 
     if action == Action::Rollback
@@ -361,8 +387,13 @@ pub fn execute_action<A: Adapter>(
     let steps = steps_for(action, transaction);
     for operation in steps {
         let step_id = format!("{}:{operation}", action.as_str());
-        if transaction.completed_steps.contains(&step_id) {
+        if transaction.completed_steps.contains(&step_id)
+            || transaction.overridden_steps.contains(&step_id)
+        {
             continue;
+        }
+        if stop_before == Some(operation) {
+            return Ok(false);
         }
 
         prepare_active_job(store, transaction, action, operation)?;
@@ -395,7 +426,8 @@ pub fn execute_action<A: Adapter>(
     transaction.pending_action = None;
     transaction.last_error = None;
     record(transaction, action, "action completed")?;
-    store.save(transaction)
+    store.save(transaction)?;
+    Ok(true)
 }
 
 fn prepare_active_job(
@@ -404,7 +436,7 @@ fn prepare_active_job(
     action: Action,
     operation: &str,
 ) -> Result<()> {
-    let expected_job_id = job_id(transaction, action, operation);
+    let expected_job_id = deterministic_job_id(transaction, action, operation);
     match (&transaction.active_step, &transaction.active_job_id) {
         (None, None) => {
             transaction.active_step = Some(operation.to_owned());
@@ -445,7 +477,7 @@ pub fn supersede_active_job(
         .active_job_id
         .clone()
         .context("transaction has no active job to supersede")?;
-    let expected_job_id = job_id(transaction, action, &operation);
+    let expected_job_id = deterministic_job_id(transaction, action, &operation);
     if old_job_id != expected_job_id {
         bail!(
             "active job ID {old_job_id:?} does not match the journal generation for step {operation:?}"
@@ -462,7 +494,7 @@ pub fn supersede_active_job(
         .checked_add(1)
         .context("job generation overflow")?;
     transaction.job_generations.insert(step_id, generation);
-    let new_job_id = job_id(transaction, action, &operation);
+    let new_job_id = deterministic_job_id(transaction, action, &operation);
     transaction.active_job_id = Some(new_job_id.clone());
     transaction.last_error = None;
     record(
@@ -486,7 +518,7 @@ fn reconcile_active_job<A: Adapter>(
         .active_step
         .clone()
         .context("active job exists without an active step")?;
-    let expected_job_id = job_id(transaction, pending, &operation);
+    let expected_job_id = deterministic_job_id(transaction, pending, &operation);
     if transaction.active_job_id.as_deref() != Some(expected_job_id.as_str()) {
         bail!("active job ID does not match transaction, action, and step");
     }
@@ -518,7 +550,7 @@ fn reconcile_active_job<A: Adapter>(
     store.save(transaction)
 }
 
-fn job_id(transaction: &Transaction, action: Action, operation: &str) -> String {
+pub fn deterministic_job_id(transaction: &Transaction, action: Action, operation: &str) -> String {
     let base = format!("{}-{}-{operation}", transaction.id, action.as_str());
     let step_id = format!("{}:{operation}", action.as_str());
     match transaction
@@ -576,7 +608,12 @@ fn validate_transition(transaction: &Transaction, action: Action) -> Result<()> 
         Action::Rollback => {
             matches!(
                 transaction.phase,
-                Phase::Setup | Phase::Seeded | Phase::Prepared | Phase::Verified | Phase::Cutover
+                Phase::Planned
+                    | Phase::Setup
+                    | Phase::Seeded
+                    | Phase::Prepared
+                    | Phase::Verified
+                    | Phase::Cutover
             ) || matches!(
                 transaction.pending_action,
                 Some(
@@ -630,29 +667,27 @@ fn steps_for(action: Action, transaction: &Transaction) -> Vec<&'static str> {
         Action::Cutover => vec![
             "assert-source-stopped",
             "assert-target-stopped",
-            "deploy-cutover",
             "activate-target",
             "verify-target-ready",
+            "deploy-cutover",
         ],
         Action::Rollback if transaction.target_ever_started => vec![
             "hold-target",
             "assert-target-stopped",
             "reverse-transfer",
             "verify-reverse",
-            "deploy-rollback",
-            "release-target",
             "activate-source",
             "verify-source-ready",
+            "deploy-rollback",
         ],
         Action::Rollback if source_is_held => vec![
             "hold-target",
             "assert-target-stopped",
-            "deploy-rollback",
-            "release-target",
             "activate-source",
             "verify-source-ready",
+            "deploy-rollback",
         ],
-        Action::Rollback => vec!["deploy-rollback", "release-target"],
+        Action::Rollback => vec!["deploy-rollback"],
         Action::Close if transaction.phase == Phase::Cutover => vec!["release-source"],
         Action::Close => vec!["release-target"],
     }
@@ -831,8 +866,20 @@ mod tests {
 
         execute_action(&store, &mut transaction, Action::Rollback, &mut adapter)?;
 
-        assert_eq!(adapter.calls, ["deploy-rollback", "release-target"]);
+        assert_eq!(adapter.calls, ["deploy-rollback"]);
         assert!(!adapter.calls.iter().any(|step| step.contains("source")));
+        Ok(())
+    }
+
+    #[test]
+    fn declarative_only_warmup_can_roll_back_without_runtime_setup() -> Result<()> {
+        let (_temporary, store, mut transaction) = fixture()?;
+        let mut adapter = FakeAdapter::default();
+
+        execute_action(&store, &mut transaction, Action::Rollback, &mut adapter)?;
+
+        assert_eq!(transaction.phase, Phase::RolledBack);
+        assert_eq!(adapter.calls, ["deploy-rollback"]);
         Ok(())
     }
 
@@ -853,9 +900,9 @@ mod tests {
             [
                 "assert-source-stopped",
                 "assert-target-stopped",
-                "deploy-cutover",
                 "activate-target",
                 "verify-target-ready",
+                "deploy-cutover",
             ]
         );
         assert!(
@@ -864,6 +911,20 @@ mod tests {
                 .iter()
                 .any(|step| step.contains("source-ready"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_target_readiness_never_changes_the_route() -> Result<()> {
+        let (_temporary, store, mut transaction) = fixture()?;
+        let mut adapter = FakeAdapter::default();
+        setup(&store, &mut transaction, &mut adapter)?;
+        execute_action(&store, &mut transaction, Action::Prepare, &mut adapter)?;
+        adapter.calls.clear();
+        adapter.fail_once_at = Some("verify-target-ready".to_owned());
+
+        assert!(execute_action(&store, &mut transaction, Action::Cutover, &mut adapter).is_err());
+        assert!(!adapter.calls.iter().any(|step| step == "deploy-cutover"));
         Ok(())
     }
 
@@ -886,12 +947,12 @@ mod tests {
                 "assert-target-stopped",
                 "reverse-transfer",
                 "verify-reverse",
-                "deploy-rollback",
-                "release-target",
                 "activate-source",
                 "verify-source-ready",
+                "deploy-rollback",
             ]
         );
+        assert!(!adapter.calls.iter().any(|step| step == "release-target"));
         Ok(())
     }
 
@@ -910,13 +971,51 @@ mod tests {
             [
                 "hold-target",
                 "assert-target-stopped",
-                "deploy-rollback",
-                "release-target",
                 "activate-source",
                 "verify-source-ready",
+                "deploy-rollback",
             ]
         );
+        assert!(!adapter.calls.iter().any(|step| step == "release-target"));
         assert_eq!(transaction.phase, Phase::RolledBack);
+        Ok(())
+    }
+
+    #[test]
+    fn rollback_barrier_persists_prerequisites_before_activation_and_resumes() -> Result<()> {
+        let (_temporary, store, mut transaction) = fixture()?;
+        let mut adapter = FakeAdapter::default();
+        setup(&store, &mut transaction, &mut adapter)?;
+        execute_action(&store, &mut transaction, Action::Prepare, &mut adapter)?;
+        execute_action(&store, &mut transaction, Action::Cutover, &mut adapter)?;
+        adapter.calls.clear();
+
+        assert!(!execute_action_until(
+            &store,
+            &mut transaction,
+            Action::Rollback,
+            &mut adapter,
+            Some("activate-source"),
+        )?);
+        assert_eq!(
+            adapter.calls,
+            [
+                "hold-target",
+                "assert-target-stopped",
+                "reverse-transfer",
+                "verify-reverse",
+            ]
+        );
+        assert_eq!(transaction.pending_action, Some(Action::Rollback));
+        assert_eq!(transaction.phase, Phase::Cutover);
+
+        adapter.calls.clear();
+        execute_action(&store, &mut transaction, Action::Rollback, &mut adapter)?;
+        assert_eq!(
+            adapter.calls,
+            ["activate-source", "verify-source-ready", "deploy-rollback"]
+        );
+        assert!(!adapter.calls.iter().any(|step| step == "release-target"));
         Ok(())
     }
 
@@ -951,6 +1050,40 @@ mod tests {
         assert_eq!(transaction.active_step, None);
         assert_eq!(transaction.active_job_id, None);
         assert_eq!(transaction.phase, Phase::Prepared);
+        Ok(())
+    }
+
+    #[test]
+    fn repository_overrides_advance_scheduling_without_fabricating_completion() -> Result<()> {
+        let (_temporary, store, mut transaction) = fixture()?;
+        let mut adapter = FakeAdapter::default();
+        setup(&store, &mut transaction, &mut adapter)?;
+        execute_action(&store, &mut transaction, Action::Prepare, &mut adapter)?;
+        let overridden = [
+            "cutover:assert-source-stopped",
+            "cutover:assert-target-stopped",
+            "cutover:activate-target",
+            "cutover:verify-target-ready",
+        ];
+        transaction
+            .overridden_steps
+            .extend(overridden.iter().map(|step| (*step).to_owned()));
+        store.save(&transaction)?;
+        adapter.calls.clear();
+
+        execute_action(&store, &mut transaction, Action::Cutover, &mut adapter)?;
+
+        assert_eq!(adapter.calls, ["deploy-cutover"]);
+        assert!(
+            overridden
+                .iter()
+                .all(|step| transaction.overridden_steps.contains(*step))
+        );
+        assert!(
+            overridden
+                .iter()
+                .all(|step| !transaction.completed_steps.contains(*step))
+        );
         Ok(())
     }
 
@@ -1006,6 +1139,107 @@ mod tests {
         execute_action(&store, &mut transaction, Action::Rollback, &mut adapter)?;
 
         assert!(adapter.calls.contains(&"reverse-transfer".to_owned()));
+        Ok(())
+    }
+
+    fn execute_from_issuer(
+        store: &Store,
+        transaction: &mut Transaction,
+        adapter: &mut FakeAdapter,
+        action: Action,
+        deploy_issuer: bool,
+    ) -> Result<()> {
+        if deploy_issuer {
+            *transaction = store.load(&transaction.id)?;
+        }
+        execute_action(store, transaction, action, adapter)?;
+        *transaction = store.load(&transaction.id)?;
+        Ok(())
+    }
+
+    fn mixed_issuer_sequence(mask: u8, final_action: Action) -> Result<(Transaction, Vec<String>)> {
+        let (_temporary, store, mut transaction) = fixture()?;
+        let mut adapter = FakeAdapter::default();
+        transaction.id = "move-issuer-matrix".to_owned();
+        store.save(&transaction)?;
+
+        // The operator's first move command is one decision even though its
+        // durable runtime implementation consists of setup followed by seed.
+        execute_from_issuer(
+            &store,
+            &mut transaction,
+            &mut adapter,
+            Action::Setup,
+            mask & 0b001 != 0,
+        )?;
+        execute_from_issuer(
+            &store,
+            &mut transaction,
+            &mut adapter,
+            Action::Seed,
+            mask & 0b001 != 0,
+        )?;
+        execute_from_issuer(
+            &store,
+            &mut transaction,
+            &mut adapter,
+            Action::Prepare,
+            mask & 0b010 != 0,
+        )?;
+        execute_from_issuer(
+            &store,
+            &mut transaction,
+            &mut adapter,
+            final_action,
+            mask & 0b100 != 0,
+        )?;
+
+        Ok((transaction, adapter.job_ids))
+    }
+
+    #[test]
+    fn all_eight_agent_deploy_phase_combinations_converge() -> Result<()> {
+        for final_action in [Action::Cutover, Action::Rollback] {
+            let (baseline, baseline_jobs) = mixed_issuer_sequence(0, final_action)?;
+            for mask in 1..8 {
+                let (actual, actual_jobs) = mixed_issuer_sequence(mask, final_action)?;
+                assert_eq!(actual.phase, baseline.phase, "issuer mask {mask:03b}");
+                assert_eq!(
+                    actual.completed_steps, baseline.completed_steps,
+                    "issuer mask {mask:03b}"
+                );
+                assert_eq!(actual_jobs, baseline_jobs, "issuer mask {mask:03b}");
+                assert_eq!(actual.pending_action, None, "issuer mask {mask:03b}");
+                assert_eq!(actual.active_step, None, "issuer mask {mask:03b}");
+                assert_eq!(actual.active_job_id, None, "issuer mask {mask:03b}");
+            }
+        }
+
+        // Rollback after a successful target start always performs the reverse
+        // transfer, even when every preceding phase came from a fresh deployed
+        // controller process.
+        let (_temporary, store, mut transaction) = fixture()?;
+        let mut adapter = FakeAdapter::default();
+        transaction.id = "move-rollback-after-start".to_owned();
+        store.save(&transaction)?;
+        for action in [
+            Action::Setup,
+            Action::Seed,
+            Action::Prepare,
+            Action::Cutover,
+        ] {
+            execute_from_issuer(&store, &mut transaction, &mut adapter, action, true)?;
+        }
+        adapter.calls.clear();
+        execute_from_issuer(
+            &store,
+            &mut transaction,
+            &mut adapter,
+            Action::Rollback,
+            false,
+        )?;
+        assert!(adapter.calls.contains(&"reverse-transfer".to_owned()));
+        assert_eq!(transaction.phase, Phase::RolledBack);
         Ok(())
     }
 

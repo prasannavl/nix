@@ -2,7 +2,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,35 @@ pub fn run_checks(checks: &[ReadinessCheck]) -> Vec<ReadinessResult> {
             },
         })
         .collect()
+}
+
+/// Wait for a newly activated resource to converge within its declared
+/// readiness timeout. Refused and reset connections commonly occur while a
+/// service is still binding its listener; they are observations, not terminal
+/// activation failures.
+pub fn wait_for_checks(checks: &[ReadinessCheck]) -> Vec<ReadinessResult> {
+    const PATH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+    const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+    let timeout = checks
+        .iter()
+        .map(|check| match check {
+            ReadinessCheck::Path { .. } => PATH_CHECK_TIMEOUT,
+            ReadinessCheck::Tcp { timeout_ms, .. } | ReadinessCheck::Http { timeout_ms, .. } => {
+                Duration::from_millis(*timeout_ms)
+            }
+        })
+        .max()
+        .unwrap_or_default();
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let results = run_checks(checks);
+        if results.iter().all(|result| result.success) || Instant::now() >= deadline {
+            return results;
+        }
+        thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+    }
 }
 
 fn validate_network_check(address: &str, timeout_ms: u64) -> Result<()> {
@@ -231,7 +261,7 @@ fn default_expected_statuses() -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
+    use std::net::{SocketAddr, TcpListener};
     use std::thread;
 
     use super::*;
@@ -281,6 +311,34 @@ mod tests {
             expected_statuses: vec![204],
             timeout_ms: 1_000,
         }]);
+        server.join().unwrap();
+        assert!(results[0].success, "{}", results[0].detail);
+    }
+
+    #[test]
+    fn activation_waits_for_a_late_http_listener() {
+        let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address: SocketAddr = reservation.local_addr().unwrap();
+        drop(reservation);
+        let server = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            let listener = TcpListener::bind(address).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+
+        let results = wait_for_checks(&[ReadinessCheck::Http {
+            address: address.to_string(),
+            host: "zulip.internal".to_owned(),
+            path: "/".to_owned(),
+            expected_statuses: vec![200],
+            timeout_ms: 2_000,
+        }]);
+
         server.join().unwrap();
         assert!(results[0].success, "{}", results[0].detail);
     }

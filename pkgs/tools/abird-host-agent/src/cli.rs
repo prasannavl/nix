@@ -11,27 +11,34 @@ use serde_json::{Value, json};
 
 use crate::broker::{BrokerTransferRequest, run_broker_transfer_with_progress};
 use crate::deployment::{DeploymentDefinition, activate};
-use crate::file_state::{FileStateDefinition, apply_file_state};
+use crate::desired_state::{
+    DesiredResourceState, DesiredResourceStateKind, DesiredResourceStateManifest,
+    DesiredResourceStateReceiptStore,
+};
+use crate::file_state::{FileStateDefinition, apply_file_state_with_reload};
 use crate::instance::{
     InstanceControlAction, InstanceDefinition, InstanceMigrationRequest, control_instance,
     ensure_instance, migrate_instance,
 };
 use crate::instance_backup::{InstanceBackupAction, run_instance_backup, validate_instance_backup};
-use crate::job::{JobExecution, JobOperation, JobSpec, JobStatus, JobStore};
+use crate::job::{
+    JobExecution, JobOperation, JobProjectionBinding, JobSpec, JobStatus, JobStore,
+    projected_hold_job_id, projected_release_job_id,
+};
 use crate::journal::{JournalOutput, JournalStreamResult, Journalctl};
 use crate::maintenance::{CleanKind, clean};
 use crate::manifest::{create_manifest, create_manifest_roots};
 use crate::programs::nix::NixCollectGarbage;
 use crate::programs::nixbot;
 use crate::programs::systemd::Systemd;
-use crate::readiness::{ReadinessCheck, run_checks};
+use crate::readiness::{ReadinessCheck, run_checks, wait_for_checks};
 use crate::resource::{
     BackupConsistency, DataRoot, DataRootPlan, ExpectedState, ResourceManifest,
     validate_data_root_plan,
 };
 use crate::service::{ServiceOperation, ServiceResult, ServiceScope, ServiceTarget, Systemctl};
 use crate::sha256::digest_bytes;
-use crate::state::{HoldRecord, StateStore};
+use crate::state::{ActivationReleaseEvidence, HoldRecord, StateStore};
 use crate::transfer::{
     PostCopyVerification, RemoteSource, TransferDefinition, clear_directory_contents_except,
     transfer_with_excludes_progress, transfer_with_excludes_progress_policy,
@@ -41,6 +48,8 @@ use crate::wipe::wipe_data_roots;
 
 const DEFAULT_STATE_DIR: &str = "/var/lib/abird-host-agent";
 const DEFAULT_RESOURCE_MANIFEST: &str = "/etc/abird-host-agent/resources.json";
+const DEFAULT_DESIRED_RESOURCE_STATE_MANIFEST: &str =
+    "/etc/abird-host-agent/desired-resource-states.json";
 const DEFAULT_PODMAN: &str = "/run/current-system/sw/bin/podman";
 const DEFAULT_NIX_COLLECT_GARBAGE: &str = "/run/current-system/sw/bin/nix-collect-garbage";
 const DEFAULT_SSH_HOST_ED25519_PUBLIC_KEY: &str = "/etc/ssh/ssh_host_ed25519_key.pub";
@@ -289,6 +298,10 @@ struct HoldDeclareArgs {
 
     #[arg(long)]
     declaration: String,
+
+    /// Persist the cold-start latch before the shared enforcement pass.
+    #[arg(long, hide = true)]
+    defer_enforcement: bool,
 }
 
 #[derive(Debug, Args)]
@@ -346,6 +359,15 @@ enum ReconcileCommand {
     Hold {
         #[command(subcommand)]
         command: ReconcileHoldCommand,
+    },
+    DesiredResourceStates {
+        #[arg(long, default_value = DEFAULT_DESIRED_RESOURCE_STATE_MANIFEST)]
+        manifest: PathBuf,
+    },
+    /// Establish or hand off projected hold epochs before ordinary units start.
+    DesiredResourceHolds {
+        #[arg(long, default_value = DEFAULT_DESIRED_RESOURCE_STATE_MANIFEST)]
+        manifest: PathBuf,
     },
     Jobs,
 }
@@ -436,6 +458,10 @@ struct JobIntentArgs {
 
     #[arg(long, hide = true)]
     transaction: Option<String>,
+
+    /// JSON-encoded immutable repository projection binding.
+    #[arg(long, hide = true)]
+    projection: Option<String>,
 
     #[arg(long, hide = true)]
     resource: Option<String>,
@@ -760,6 +786,7 @@ impl Cli {
 pub fn execute(cli: Cli) -> Result<CommandOutput> {
     let json_output = cli.json;
     let store = StateStore::new(&cli.state_dir);
+    let desired_receipts = DesiredResourceStateReceiptStore::new(&cli.state_dir);
     let jobs = JobStore::new(&cli.state_dir);
     let systemctl = Systemctl::new(&cli.systemctl);
     let journalctl = Journalctl::new(&cli.journalctl, &cli.runuser);
@@ -813,11 +840,612 @@ pub fn execute(cli: Cli) -> Result<CommandOutput> {
                 &systemctl,
                 &resource_manifest,
             ),
+            ReconcileCommand::DesiredResourceStates { manifest } => {
+                execute_desired_resource_states(
+                    &manifest,
+                    &resource_manifest,
+                    &store,
+                    &jobs,
+                    &desired_receipts,
+                    &systemctl,
+                )
+            }
+            ReconcileCommand::DesiredResourceHolds { manifest } => {
+                execute_desired_resource_holds(&manifest, &resource_manifest, &store, &systemctl)
+            }
         },
         Command::Maintenance { command } => {
             execute_maintenance(command, &systemctl, &podman, &nix_collect_garbage)
         }
     }
+}
+
+fn desired_release_evidence(
+    desired: &DesiredResourceState,
+    include_activation_requirement: bool,
+) -> ActivationReleaseEvidence {
+    ActivationReleaseEvidence {
+        intent_digest: desired.intent_digest.clone(),
+        projection_digest: desired.projection_digest.clone(),
+        generation: desired.generation,
+        activation_requirement_digest: include_activation_requirement
+            .then(|| desired.activation_requirement_digest.clone())
+            .flatten(),
+    }
+}
+
+/// Persist only the durable latches represented by desired resource states.
+/// This runs early in boot, before the shared enforcement pass, so every user
+/// manager can be released only after the complete projected hold set exists.
+/// The subsequent `hold apply` enforces all latches uniformly.
+fn execute_desired_resource_holds(
+    desired_manifest_path: &Path,
+    resource_manifest_path: &Path,
+    store: &StateStore,
+    _systemctl: &Systemctl,
+) -> Result<CommandOutput> {
+    let desired_manifest = DesiredResourceStateManifest::load(desired_manifest_path)?;
+    let resources = ResourceManifest::load(resource_manifest_path)?;
+    let mut reconciled = Vec::new();
+
+    for desired in &desired_manifest.resources {
+        let Some(declaration_id) = desired.hold_declaration_id() else {
+            continue;
+        };
+        let resource = resources.resource(&desired.id)?;
+        let transaction_id = desired
+            .transaction_id
+            .as_deref()
+            .context("projected hold has no transaction identity")?;
+        let result = match desired.state {
+            DesiredResourceStateKind::Unheld => json!({
+                "release": store.release_projected(
+                    &desired.id,
+                    transaction_id,
+                    &declaration_id,
+                    desired_release_evidence(desired, false),
+                )?
+            }),
+            DesiredResourceStateKind::Active
+                if !store.status(&desired.id)?.held
+                    && store
+                        .declaration_release(&desired.id, &declaration_id)?
+                        .is_some() =>
+            {
+                let evidence = desired_release_evidence(desired, true);
+                let release = store
+                    .declaration_release(&desired.id, &declaration_id)?
+                    .context("projected activation release disappeared")?;
+                if release.transaction_id != transaction_id
+                    || release.projection.as_ref() != Some(&evidence)
+                {
+                    bail!(
+                        "active resource {:?} release does not match the exact desired projection",
+                        desired.id
+                    );
+                }
+                json!({ "release": release, "already_released": true })
+            }
+            DesiredResourceStateKind::Held
+            | DesiredResourceStateKind::Inactive
+            | DesiredResourceStateKind::Active => json!({
+                "hold": store.acquire_projected_and_apply(
+                    &desired.id,
+                    transaction_id,
+                    &declaration_id,
+                    resource.services.clone(),
+                    desired_release_evidence(desired, true),
+                    |_| Ok(()),
+                )?
+            }),
+        };
+        reconciled.push(json!({
+            "resource": desired.id,
+            "state": desired.state,
+            "result": result,
+        }));
+    }
+
+    Ok(CommandOutput {
+        human: format!("reconciled {} projected resource hold(s)", reconciled.len()),
+        value: json!({
+            "ok": true,
+            "operation": "desired_resource_holds_reconcile",
+            "result": {
+                "count": reconciled.len(),
+                "resources": reconciled,
+            },
+        }),
+    })
+}
+
+fn execute_desired_resource_states(
+    desired_manifest_path: &Path,
+    resource_manifest_path: &Path,
+    store: &StateStore,
+    jobs: &JobStore,
+    receipts: &DesiredResourceStateReceiptStore,
+    systemctl: &Systemctl,
+) -> Result<CommandOutput> {
+    let desired_manifest = DesiredResourceStateManifest::load(desired_manifest_path)?;
+    let resources = ResourceManifest::load(resource_manifest_path)?;
+
+    // Fail before mutation when any declaration is unknown or regresses its
+    // last applied projection. Runtime state is rechecked per resource below.
+    for desired in &desired_manifest.resources {
+        resources.resource(&desired.id)?;
+        receipts.check_transition(desired)?;
+        if desired.state == DesiredResourceStateKind::Active {
+            preflight_desired_active_resource(
+                desired,
+                resources.resource(&desired.id)?,
+                store,
+                jobs,
+            )?;
+        } else if desired.state == DesiredResourceStateKind::Unheld {
+            preflight_desired_unheld_resource(desired, resources.resource(&desired.id)?, store)?;
+        }
+    }
+
+    let mut reconciled = Vec::with_capacity(desired_manifest.resources.len());
+    for desired in &desired_manifest.resources {
+        let resource = resources.resource(&desired.id)?;
+        let result = match desired.state {
+            DesiredResourceStateKind::Held | DesiredResourceStateKind::Inactive => {
+                let declaration_id = desired
+                    .hold_declaration_id()
+                    .context("held desired resource has no hold epoch")?;
+                let hold_job = desired_hold_job_spec(desired, resource)?;
+                let submitted = jobs.submit(hold_job.clone())?;
+                let job = jobs.run_job(&hold_job.job_id, |spec| {
+                    execute_job_spec_with_progress(
+                        spec,
+                        store,
+                        systemctl,
+                        resource_manifest_path,
+                        |progress| {
+                            jobs.update_progress(&spec.job_id, serde_json::to_value(progress)?)
+                        },
+                    )
+                })?;
+                if job.status != JobStatus::Succeeded {
+                    bail!(
+                        "canonical hold job {:?} failed: {}",
+                        hold_job.job_id,
+                        job.error.as_deref().unwrap_or("unknown hold failure")
+                    );
+                }
+                let hold = store
+                    .status(&desired.id)?
+                    .hold
+                    .context("canonical hold job retained no durable hold")?;
+                if hold.declaration_id.as_deref() != Some(&declaration_id)
+                    || hold.projection.as_ref() != Some(&desired_release_evidence(desired, true))
+                {
+                    bail!("canonical hold job retained mismatched projection evidence");
+                }
+                json!({
+                    "hold": hold,
+                    "hold_job": job,
+                    "replayed": !submitted.changed,
+                })
+            }
+            DesiredResourceStateKind::Active => reconcile_desired_active_resource(
+                desired,
+                resource,
+                resource_manifest_path,
+                store,
+                jobs,
+                systemctl,
+            )?,
+            DesiredResourceStateKind::Unheld => {
+                let declaration_id = desired
+                    .hold_declaration_id()
+                    .context("unheld desired resource has no hold epoch")?;
+                let release_job = desired_release_job_spec(desired)?;
+                let submitted = jobs.submit(release_job.clone())?;
+                let job = jobs.run_job(&release_job.job_id, |spec| {
+                    execute_job_spec_with_progress(
+                        spec,
+                        store,
+                        systemctl,
+                        resource_manifest_path,
+                        |progress| {
+                            jobs.update_progress(&spec.job_id, serde_json::to_value(progress)?)
+                        },
+                    )
+                })?;
+                if job.status != JobStatus::Succeeded {
+                    bail!(
+                        "canonical unhold job {:?} failed: {}",
+                        release_job.job_id,
+                        job.error.as_deref().unwrap_or("unknown unhold failure")
+                    );
+                }
+                let release = store
+                    .declaration_release(&desired.id, &declaration_id)?
+                    .context("canonical unhold job retained no release evidence")?;
+                json!({
+                    "release": release,
+                    "release_job": job,
+                    "replayed": !submitted.changed,
+                })
+            }
+        };
+        let receipt = receipts.record(desired)?;
+        reconciled.push(json!({
+            "resource": desired.id,
+            "state": desired.state,
+            "projection_id": desired.projection_id,
+            "projection_digest": desired.projection_digest,
+            "generation": desired.generation,
+            "result": result,
+            "receipt": receipt,
+        }));
+    }
+
+    Ok(CommandOutput {
+        human: format!("reconciled {} desired resource state(s)", reconciled.len()),
+        value: json!({
+            "ok": true,
+            "operation": "desired_resource_states_reconcile",
+            "result": {
+                "count": reconciled.len(),
+                "resources": reconciled,
+            },
+        }),
+    })
+}
+
+fn preflight_desired_unheld_resource(
+    desired: &DesiredResourceState,
+    resource: &crate::resource::ResourceDefinition,
+    store: &StateStore,
+) -> Result<()> {
+    let declaration_id = desired
+        .hold_declaration_id()
+        .context("unheld desired resource has no hold epoch")?;
+    let transaction_id = desired
+        .transaction_id
+        .as_deref()
+        .context("unheld desired resource has no transaction identity")?;
+    let evidence = desired_release_evidence(desired, false);
+    let status = store.status(&desired.id)?;
+    if let Some(hold) = status.hold {
+        if hold.transaction_id != transaction_id
+            || hold.declaration_id.as_deref() != Some(&declaration_id)
+            || hold.services != resource.services
+        {
+            bail!(
+                "unheld resource {:?} does not own the exact projected hold epoch",
+                desired.id
+            );
+        }
+        return Ok(());
+    }
+    let release = store
+        .declaration_release(&desired.id, &declaration_id)?
+        .with_context(|| {
+            format!(
+                "unheld resource {:?} has no exact projected release evidence",
+                desired.id
+            )
+        })?;
+    if release.transaction_id != transaction_id || release.projection.as_ref() != Some(&evidence) {
+        bail!(
+            "unheld resource {:?} release does not match the exact desired projection",
+            desired.id
+        );
+    }
+    Ok(())
+}
+
+fn preflight_desired_active_resource(
+    desired: &DesiredResourceState,
+    resource: &crate::resource::ResourceDefinition,
+    store: &StateStore,
+    jobs: &JobStore,
+) -> Result<()> {
+    let status = store.status(&desired.id)?;
+    let Some(declaration_id) = desired.hold_declaration_id() else {
+        if status.held {
+            bail!(
+                "active resource {:?} is held without a matching projected activation declaration",
+                desired.id
+            );
+        }
+        return Ok(());
+    };
+    let activation_requirement_digest = desired
+        .activation_requirement_digest
+        .clone()
+        .context("activating a held resource requires an activation requirement digest")?;
+    let evidence = ActivationReleaseEvidence {
+        intent_digest: desired.intent_digest.clone(),
+        projection_digest: desired.projection_digest.clone(),
+        generation: desired.generation,
+        activation_requirement_digest: Some(activation_requirement_digest),
+    };
+    let transaction_id = desired
+        .transaction_id
+        .as_deref()
+        .context("active projected hold has no transaction identity")?;
+    let activation_job = desired_activation_job_spec(desired, resource)?;
+    if let Some(existing) = jobs.status_optional(&activation_job.job_id)?
+        && existing.spec != activation_job
+    {
+        bail!(
+            "activation job {:?} already exists with a different immutable specification",
+            existing.spec.job_id
+        );
+    }
+    if let Some(hold) = status.hold {
+        if hold.transaction_id != transaction_id {
+            bail!(
+                "active resource {:?} is held by transaction {:?}, not {:?}",
+                desired.id,
+                hold.transaction_id,
+                transaction_id
+            );
+        }
+        if hold.declaration_id.as_deref() != Some(&declaration_id) {
+            bail!(
+                "active resource {:?} is held for declaration {:?}, not {:?}",
+                desired.id,
+                hold.declaration_id,
+                declaration_id
+            );
+        }
+        if hold.services != resource.services {
+            bail!(
+                "active resource {:?} has different service targets in its projected hold",
+                desired.id
+            );
+        }
+        return Ok(());
+    }
+    let release = store
+        .declaration_release(&desired.id, &declaration_id)?
+        .with_context(|| {
+            format!(
+                "active resource {:?} has no exact projected release evidence",
+                desired.id
+            )
+        })?;
+    if release.transaction_id != transaction_id || release.projection.as_ref() != Some(&evidence) {
+        bail!(
+            "active resource {:?} release does not match the exact desired projection",
+            desired.id
+        );
+    }
+    Ok(())
+}
+
+fn reconcile_desired_active_resource(
+    desired: &DesiredResourceState,
+    resource: &crate::resource::ResourceDefinition,
+    resource_manifest_path: &Path,
+    store: &StateStore,
+    jobs: &JobStore,
+    systemctl: &Systemctl,
+) -> Result<Value> {
+    if let Some(declaration_id) = desired.hold_declaration_id() {
+        let activation_requirement_digest = desired
+            .activation_requirement_digest
+            .clone()
+            .context("activating a held resource requires an activation requirement digest")?;
+        let evidence = ActivationReleaseEvidence {
+            intent_digest: desired.intent_digest.clone(),
+            projection_digest: desired.projection_digest.clone(),
+            generation: desired.generation,
+            activation_requirement_digest: Some(activation_requirement_digest.clone()),
+        };
+        let activation_job = desired_activation_job_spec(desired, resource)?;
+        let submitted = jobs.submit(activation_job.clone())?;
+        let job = jobs.run_job(&activation_job.job_id, |spec| {
+            execute_job_spec_with_progress(
+                spec,
+                store,
+                systemctl,
+                resource_manifest_path,
+                |progress| jobs.update_progress(&spec.job_id, serde_json::to_value(progress)?),
+            )
+        })?;
+        if job.status != JobStatus::Succeeded {
+            bail!(
+                "canonical activation job {:?} failed: {}",
+                activation_job.job_id,
+                job.error.as_deref().unwrap_or("unknown activation failure")
+            );
+        }
+        let release = store
+            .declaration_release(&desired.id, &declaration_id)?
+            .with_context(|| {
+                format!(
+                    "canonical activation job {:?} retained no release evidence",
+                    activation_job.job_id
+                )
+            })?;
+        if release.transaction_id != activation_job.transaction_id
+            || release.projection.as_ref() != Some(&evidence)
+        {
+            bail!("canonical activation job retained mismatched release evidence");
+        }
+        return Ok(json!({
+            "release": release,
+            "activation_job": job,
+            "activation_requirement_digest": activation_requirement_digest,
+            "authorization_issuer": "repository_deploy",
+            "replayed": !submitted.changed,
+        }));
+    }
+
+    let activation = store.run_if_resource_unheld(&desired.id, || {
+        activate_and_verify_declared_resource(resource, systemctl)
+    })?;
+    Ok(json!({
+        "activation": activation,
+        "initial_active": true,
+    }))
+}
+
+fn desired_activation_job_spec(
+    desired: &DesiredResourceState,
+    resource: &crate::resource::ResourceDefinition,
+) -> Result<JobSpec> {
+    let job_id = desired
+        .activation_job_id
+        .as_ref()
+        .context("active held resource has no canonical activation job identity")?;
+    let transaction_id = desired
+        .transaction_id
+        .as_ref()
+        .context("active held resource has no transaction identity")?;
+    Ok(JobSpec {
+        schema_version: 1,
+        job_id: job_id.clone(),
+        transaction_id: transaction_id.clone(),
+        projection: Some(JobProjectionBinding {
+            intent_digest: desired.intent_digest.clone(),
+            projection_digest: desired.projection_digest.clone(),
+            generation: desired.generation,
+            hold_epoch: desired.hold_epoch.clone(),
+            activation_requirement_digest: desired.activation_requirement_digest.clone(),
+        }),
+        resource: desired.id.clone(),
+        operation: JobOperation::Activate,
+        expected_state: ExpectedState::Any,
+        services: resource.services.clone(),
+        data_paths: Vec::new(),
+        data_root_plan: Vec::new(),
+        argv: None,
+        readiness: resource.readiness.clone(),
+        transfer: None,
+        resource_transfers: Vec::new(),
+        backup_consistency: None,
+        broker_transfer: None,
+        file_state: None,
+        instance: None,
+        instance_migration: None,
+        deployment: None,
+        nixbot_deploy: None,
+    })
+}
+
+fn desired_hold_job_spec(
+    desired: &DesiredResourceState,
+    resource: &crate::resource::ResourceDefinition,
+) -> Result<JobSpec> {
+    let hold_epoch = desired
+        .hold_epoch
+        .as_deref()
+        .context("held projected resource has no hold epoch")?;
+    let transaction_id = desired
+        .transaction_id
+        .as_ref()
+        .context("held projected resource has no transaction identity")?;
+    Ok(JobSpec {
+        schema_version: 1,
+        job_id: projected_hold_job_id(
+            &desired.projection_id,
+            &desired.id,
+            hold_epoch,
+            &desired.projection_digest,
+        ),
+        transaction_id: transaction_id.clone(),
+        projection: Some(JobProjectionBinding {
+            intent_digest: desired.intent_digest.clone(),
+            projection_digest: desired.projection_digest.clone(),
+            generation: desired.generation,
+            hold_epoch: desired.hold_epoch.clone(),
+            activation_requirement_digest: desired.activation_requirement_digest.clone(),
+        }),
+        resource: desired.id.clone(),
+        operation: JobOperation::Hold,
+        expected_state: ExpectedState::Any,
+        services: resource.services.clone(),
+        data_paths: Vec::new(),
+        data_root_plan: Vec::new(),
+        argv: None,
+        readiness: Vec::new(),
+        transfer: None,
+        resource_transfers: Vec::new(),
+        backup_consistency: None,
+        broker_transfer: None,
+        file_state: None,
+        instance: None,
+        instance_migration: None,
+        deployment: None,
+        nixbot_deploy: None,
+    })
+}
+
+fn desired_release_job_spec(desired: &DesiredResourceState) -> Result<JobSpec> {
+    let transaction_id = desired
+        .transaction_id
+        .as_ref()
+        .context("unheld projected resource has no transaction identity")?;
+    Ok(JobSpec {
+        schema_version: 1,
+        job_id: projected_release_job_id(
+            &desired.projection_id,
+            &desired.id,
+            desired
+                .hold_epoch
+                .as_deref()
+                .context("unheld projected resource has no hold epoch")?,
+        ),
+        transaction_id: transaction_id.clone(),
+        projection: Some(JobProjectionBinding {
+            intent_digest: desired.intent_digest.clone(),
+            projection_digest: desired.projection_digest.clone(),
+            generation: desired.generation,
+            hold_epoch: desired.hold_epoch.clone(),
+            activation_requirement_digest: None,
+        }),
+        resource: desired.id.clone(),
+        operation: JobOperation::Release,
+        expected_state: ExpectedState::Any,
+        services: Vec::new(),
+        data_paths: Vec::new(),
+        data_root_plan: Vec::new(),
+        argv: None,
+        readiness: Vec::new(),
+        transfer: None,
+        resource_transfers: Vec::new(),
+        backup_consistency: None,
+        broker_transfer: None,
+        file_state: None,
+        instance: None,
+        instance_migration: None,
+        deployment: None,
+        nixbot_deploy: None,
+    })
+}
+
+fn activate_and_verify_declared_resource(
+    resource: &crate::resource::ResourceDefinition,
+    systemctl: &Systemctl,
+) -> Result<Value> {
+    let services = run_resource_services(ServiceOperation::Start, &resource.services, systemctl)?;
+    let checks = wait_for_checks(&resource.readiness);
+    if checks.iter().any(|check| !check.success) {
+        let stop_error =
+            run_resource_services(ServiceOperation::Stop, &resource.services, systemctl)
+                .err()
+                .map(|error| format!("{error:#}"));
+        match stop_error {
+            Some(stop_error) => bail!(
+                "resource readiness failed after activation and stopping it also failed: {stop_error}"
+            ),
+            None => bail!("resource readiness failed after activation; services were stopped"),
+        }
+    }
+    Ok(json!({
+        "services": services,
+        "checks": checks,
+        "ready": true,
+    }))
 }
 
 fn execute_agent_status(
@@ -1028,11 +1656,18 @@ fn execute_hold(
         HoldCommand::Declare(args) => {
             let manifest = ResourceManifest::load(resource_manifest_path)?;
             let resource = manifest.resource(&args.resource)?;
+            let defer_enforcement = args.defer_enforcement;
             let outcome = store.declare_and_apply(
                 &args.resource,
                 &args.declaration,
                 resource.services.clone(),
-                |hold| enforce_hold(hold, systemctl),
+                |hold| {
+                    if defer_enforcement {
+                        Ok(())
+                    } else {
+                        enforce_hold(hold, systemctl)
+                    }
+                },
             )?;
             Ok(CommandOutput {
                 human: if outcome.released {
@@ -1042,8 +1677,14 @@ fn execute_hold(
                     )
                 } else {
                     format!(
-                        "declared and enforced latch {:?} for resource {:?}",
-                        args.declaration, args.resource
+                        "declared{} latch {:?} for resource {:?}",
+                        if defer_enforcement {
+                            ""
+                        } else {
+                            " and enforced"
+                        },
+                        args.declaration,
+                        args.resource
                     )
                 },
                 value: json!({
@@ -1139,7 +1780,14 @@ fn execute_hold(
 
 fn enforce_hold(hold: &HoldRecord, systemctl: &Systemctl) -> Result<()> {
     for service in &hold.services {
+        let mut stopped_units = vec![service.clone()];
+        for owned in systemctl.consists_of(service)? {
+            if !stopped_units.iter().any(|target| target == &owned) {
+                stopped_units.push(owned);
+            }
+        }
         systemctl.run(ServiceOperation::Stop, service)?;
+        systemctl.reset_failed(&stopped_units)?;
     }
     if let Some(request) = &hold.instance_gate {
         control_instance(request).with_context(|| {
@@ -1336,6 +1984,9 @@ fn execute_resource(
             ServiceOperation::Stop => format!("stopped resource {resource_id:?}"),
             ServiceOperation::Restart => format!("restarted resource {resource_id:?}"),
             ServiceOperation::Reload => format!("reloaded resource {resource_id:?}"),
+            ServiceOperation::TryReloadOrRestart => {
+                format!("reloaded or restarted resource {resource_id:?}")
+            }
             ServiceOperation::Status => format!(
                 "resource {resource_id:?}: all_active={all_active}, all_inactive={all_inactive}"
             ),
@@ -1347,6 +1998,7 @@ fn execute_resource(
                 ServiceOperation::Stop => "resource_stop",
                 ServiceOperation::Restart => "resource_restart",
                 ServiceOperation::Reload => "resource_reload",
+                ServiceOperation::TryReloadOrRestart => "resource_try_reload_or_restart",
                 ServiceOperation::Status => "resource_status",
             },
             "result": {
@@ -1376,6 +2028,7 @@ fn operation_name(operation: ServiceOperation) -> &'static str {
         ServiceOperation::Stop => "service_stop",
         ServiceOperation::Restart => "service_restart",
         ServiceOperation::Reload => "service_reload",
+        ServiceOperation::TryReloadOrRestart => "service_try_reload_or_restart",
         ServiceOperation::Status => "service_status",
     }
 }
@@ -1495,6 +2148,12 @@ fn materialize_job_spec(args: JobIntentArgs, resource_manifest_path: &Path) -> R
         .transaction
         .clone()
         .context("job intent requires --transaction")?;
+    let projection: Option<JobProjectionBinding> = args
+        .projection
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .context("parse immutable projection binding")?;
     let resource_id = args
         .resource
         .clone()
@@ -1673,6 +2332,7 @@ fn materialize_job_spec(args: JobIntentArgs, resource_manifest_path: &Path) -> R
         schema_version: 1,
         job_id,
         transaction_id: transaction,
+        projection,
         resource: resource_id,
         operation,
         expected_state: args.expect,
@@ -1832,37 +2492,153 @@ fn execute_job_spec_with_progress(
 ) -> Result<JobExecution> {
     match &spec.operation {
         JobOperation::Reserve => {
-            let outcome = store.acquire_and_apply(
-                &spec.resource,
-                &spec.transaction_id,
-                Vec::new(),
-                |_| Ok(()),
-            )?;
+            let outcome = match projection_hold_declaration_id(spec) {
+                Some(declaration_id) => store.acquire_projected_and_apply(
+                    &spec.resource,
+                    &spec.transaction_id,
+                    &declaration_id,
+                    Vec::new(),
+                    projection_hold_evidence(spec)?,
+                    |_| Ok(()),
+                )?,
+                None => store.acquire_and_apply(
+                    &spec.resource,
+                    &spec.transaction_id,
+                    Vec::new(),
+                    |_| Ok(()),
+                )?,
+            };
             Ok(JobExecution::succeeded(json!({ "hold": outcome })))
         }
         JobOperation::Hold => {
-            let outcome = store.acquire_and_apply(
-                &spec.resource,
-                &spec.transaction_id,
-                spec.services.clone(),
-                |hold| enforce_hold(hold, systemctl),
-            )?;
+            let outcome = match projection_hold_declaration_id(spec) {
+                Some(declaration_id) => store.acquire_projected_and_apply(
+                    &spec.resource,
+                    &spec.transaction_id,
+                    &declaration_id,
+                    spec.services.clone(),
+                    projection_hold_evidence(spec)?,
+                    |hold| enforce_hold(hold, systemctl),
+                )?,
+                None => store.acquire_and_apply(
+                    &spec.resource,
+                    &spec.transaction_id,
+                    spec.services.clone(),
+                    |hold| enforce_hold(hold, systemctl),
+                )?,
+            };
             Ok(JobExecution::succeeded(json!({ "hold": outcome })))
         }
         JobOperation::Release => {
-            let outcome = store.release(&spec.resource, &spec.transaction_id)?;
+            let outcome = match projection_hold_declaration_id(spec) {
+                Some(declaration_id) => {
+                    let projection = spec.projection.as_ref().context(
+                        "projection hold declaration requires an immutable projection binding",
+                    )?;
+                    store.release_projected(
+                        &spec.resource,
+                        &spec.transaction_id,
+                        &declaration_id,
+                        ActivationReleaseEvidence {
+                            intent_digest: projection.intent_digest.clone(),
+                            projection_digest: projection.projection_digest.clone(),
+                            generation: projection.generation,
+                            activation_requirement_digest: None,
+                        },
+                    )?
+                }
+                None => store.release(&spec.resource, &spec.transaction_id)?,
+            };
             Ok(JobExecution::succeeded(json!({ "release": outcome })))
         }
         JobOperation::Activate => {
-            let (release, services) = store.activate_and_apply(
-                &spec.resource,
-                &spec.transaction_id,
-                &spec.services,
-                || run_resource_services(ServiceOperation::Start, &spec.services, systemctl),
-            )?;
+            let (release, (services, checks)) = match projection_hold_declaration_id(spec) {
+                Some(declaration_id) => {
+                    let projection = spec.projection.as_ref().context(
+                        "projection hold declaration requires an immutable projection binding",
+                    )?;
+                    store.activate_projected_and_apply(
+                        &spec.resource,
+                        &spec.transaction_id,
+                        &declaration_id,
+                        &spec.services,
+                        ActivationReleaseEvidence {
+                            intent_digest: projection.intent_digest.clone(),
+                            projection_digest: projection.projection_digest.clone(),
+                            generation: projection.generation,
+                            activation_requirement_digest: Some(
+                                projection
+                                    .activation_requirement_digest
+                                    .clone()
+                                    .context(
+                                        "projection activation requires a requirement digest",
+                                    )?,
+                            ),
+                        },
+                        || {
+                            let services = run_resource_services(
+                                ServiceOperation::Start,
+                                &spec.services,
+                                systemctl,
+                            )?;
+                            let checks = wait_for_checks(&spec.readiness);
+                            if checks.iter().any(|check| !check.success) {
+                                let stop_error = run_resource_services(
+                                    ServiceOperation::Stop,
+                                    &spec.services,
+                                    systemctl,
+                                )
+                                .err()
+                                .map(|error| format!("{error:#}"));
+                                match stop_error {
+                                    Some(stop_error) => bail!(
+                                        "resource readiness failed after activation and stopping it also failed: {stop_error}"
+                                    ),
+                                    None => bail!(
+                                        "resource readiness failed after activation; services were stopped"
+                                    ),
+                                }
+                            }
+                            Ok((services, checks))
+                        },
+                    )?
+                }
+                None => store.activate_and_apply(
+                    &spec.resource,
+                    &spec.transaction_id,
+                    &spec.services,
+                    || {
+                        let services = run_resource_services(
+                            ServiceOperation::Start,
+                            &spec.services,
+                            systemctl,
+                        )?;
+                        let checks = wait_for_checks(&spec.readiness);
+                        if checks.iter().any(|check| !check.success) {
+                            let stop_error = run_resource_services(
+                                ServiceOperation::Stop,
+                                &spec.services,
+                                systemctl,
+                            )
+                            .err()
+                            .map(|error| format!("{error:#}"));
+                            match stop_error {
+                                Some(stop_error) => bail!(
+                                    "resource readiness failed after activation and stopping it also failed: {stop_error}"
+                                ),
+                                None => bail!(
+                                    "resource readiness failed after activation; services were stopped"
+                                ),
+                            }
+                        }
+                        Ok((services, checks))
+                    },
+                )?,
+            };
             Ok(JobExecution::succeeded(json!({
                 "release": release,
                 "services": services,
+                "checks": checks,
             })))
         }
         JobOperation::Restore { active_services } => {
@@ -2105,20 +2881,22 @@ fn execute_job_spec_with_progress(
                 .file_state
                 .as_ref()
                 .context("file-state job has no resolved definition")?;
-            let result = apply_file_state(state)?;
             // Always reload after confirming the durable file state. A previous
             // attempt may have replaced the file and then lost the reload, so
             // changed=false cannot be treated as proof that the consumer
             // applied this state.
-            let reloads = state
-                .reload_services
-                .iter()
-                .map(|service| systemctl.run(ServiceOperation::Reload, service))
-                .collect::<Result<Vec<_>>>()?;
-            Ok(JobExecution::succeeded(json!({
-                "file_state": result,
-                "reloads": reloads,
-            })))
+            let result = apply_file_state_with_reload(state, |service| {
+                systemctl.run(ServiceOperation::TryReloadOrRestart, service)
+            })?;
+            let value = json!({
+                "file_state": result.file_state,
+                "reloads": result.reloads,
+                "rollback_reloads": result.rollback_reloads,
+            });
+            match result.error {
+                Some(error) => Ok(JobExecution::failed(value, error)),
+                None => Ok(JobExecution::succeeded(value)),
+            }
         }
         JobOperation::Provision { .. } => Ok(JobExecution::succeeded(json!({
             "instance": ensure_instance(
@@ -2261,6 +3039,32 @@ fn execute_job_spec_with_progress(
     }
 }
 
+fn projection_hold_declaration_id(spec: &JobSpec) -> Option<String> {
+    spec.projection.as_ref()?.hold_epoch.as_ref().map(|epoch| {
+        let prefix = format!("{}:", spec.transaction_id);
+        if epoch.starts_with(&prefix) {
+            // Compatibility with the former public `hold_declaration_id`,
+            // which carried the already-qualified declaration identifier.
+            epoch.clone()
+        } else {
+            format!("{prefix}{epoch}")
+        }
+    })
+}
+
+fn projection_hold_evidence(spec: &JobSpec) -> Result<ActivationReleaseEvidence> {
+    let projection = spec
+        .projection
+        .as_ref()
+        .context("projected hold requires an immutable projection binding")?;
+    Ok(ActivationReleaseEvidence {
+        intent_digest: projection.intent_digest.clone(),
+        projection_digest: projection.projection_digest.clone(),
+        generation: projection.generation,
+        activation_requirement_digest: projection.activation_requirement_digest.clone(),
+    })
+}
+
 fn resolve_job_inputs(
     operation: &JobOperation,
     resource_id: &str,
@@ -2361,7 +3165,6 @@ fn resolve_job_inputs(
     let resource = manifest.resource(resource_id)?;
     match operation {
         JobOperation::Hold
-        | JobOperation::Activate
         | JobOperation::Restore { .. }
         | JobOperation::Stop
         | JobOperation::Start
@@ -2370,6 +3173,19 @@ fn resolve_job_inputs(
             data_paths: Vec::new(),
             argv: None,
             readiness: Vec::new(),
+            transfer: None,
+            resource_transfers: Vec::new(),
+            backup_consistency: None,
+            file_state: None,
+            instance: None,
+            instance_migration: None,
+            deployment: None,
+        }),
+        JobOperation::Activate => Ok(ResolvedJobInputs {
+            services: resource.services.clone(),
+            data_paths: Vec::new(),
+            argv: None,
+            readiness: resource.readiness.clone(),
             transfer: None,
             resource_transfers: Vec::new(),
             backup_consistency: None,
@@ -3311,6 +4127,74 @@ mod tests {
 
     use super::*;
 
+    fn write_reconcile_resource_manifest(directory: &Path) -> PathBuf {
+        let path = directory.join("resources.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "resources": [{
+                    "id": "service:zulip",
+                    "services": [{
+                        "scope": "system",
+                        "unit": "zulip.service"
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    fn desired_resource(
+        generation: u64,
+        state: DesiredResourceStateKind,
+        hold_epoch: Option<&str>,
+    ) -> DesiredResourceState {
+        DesiredResourceState {
+            id: "service:zulip".to_owned(),
+            state,
+            projection_id: "move-1".to_owned(),
+            intent_digest: "a".repeat(64),
+            phase: format!("opaque-{generation}"),
+            projection_digest: format!("{:064x}", generation),
+            generation,
+            hold_epoch: hold_epoch.map(str::to_owned),
+            transaction_id: hold_epoch.map(|_| "move-1--item-001".to_owned()),
+            activation_job_id: if matches!(state, DesiredResourceStateKind::Active)
+                && hold_epoch.is_some()
+            {
+                Some("move-1--item-001-cutover-activate-target".to_owned())
+            } else {
+                None
+            },
+            activation_requirement_kind: hold_epoch.map(|_| "opaque-proof".to_owned()),
+            activation_requirement_digest: hold_epoch.map(|_| "b".repeat(64)),
+        }
+    }
+
+    fn write_desired_manifest(directory: &Path, desired: DesiredResourceState) -> PathBuf {
+        let path = directory.join("desired.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&DesiredResourceStateManifest {
+                schema_version: 1,
+                resources: vec![desired],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    fn fake_systemctl(directory: &Path) -> Systemctl {
+        let path = directory.join("systemctl");
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        Systemctl::new(path)
+    }
+
     #[test]
     fn parses_global_configuration_after_subcommands() {
         let cli = Cli::try_parse_from([
@@ -3332,6 +4216,367 @@ mod tests {
             PathBuf::from("/var/lib/machine/ssh_host_ed25519_key.pub")
         );
         assert!(cli.json);
+    }
+
+    #[test]
+    fn desired_reconcile_replays_activation_interrupted_after_release() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+
+        let held = desired_resource(1, DesiredResourceStateKind::Held, Some("target"));
+        let held_manifest = write_desired_manifest(temp.path(), held.clone());
+        execute_desired_resource_states(
+            &held_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+        assert!(store.status(&held.id).unwrap().held);
+
+        // Simulate interruption after exact release/start but before the
+        // desired-state receipt advances to the active generation.
+        let declaration = held.hold_declaration_id().unwrap();
+        let active = desired_resource(2, DesiredResourceStateKind::Active, Some("target"));
+        store
+            .activate_projected_and_apply(
+                &held.id,
+                active.transaction_id.as_deref().unwrap(),
+                &declaration,
+                &[ServiceTarget::system("zulip.service")],
+                ActivationReleaseEvidence {
+                    intent_digest: active.intent_digest.clone(),
+                    projection_digest: active.projection_digest.clone(),
+                    generation: active.generation,
+                    activation_requirement_digest: active.activation_requirement_digest.clone(),
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        assert!(!store.status(&held.id).unwrap().held);
+        assert_eq!(receipts.read(&held.id).unwrap().unwrap().desired, held);
+        let release = store
+            .declaration_release(&active.id, &declaration)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            release.projection.unwrap().projection_digest,
+            active.projection_digest
+        );
+
+        let active_manifest = write_desired_manifest(temp.path(), active.clone());
+        execute_desired_resource_states(
+            &active_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+        assert_eq!(receipts.read(&active.id).unwrap().unwrap().desired, active);
+    }
+
+    #[test]
+    fn desired_reconcile_issues_exact_activation_from_projected_requirement() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+
+        let held = desired_resource(1, DesiredResourceStateKind::Held, Some("target"));
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), held.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+
+        let active = desired_resource(2, DesiredResourceStateKind::Active, Some("target"));
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), active.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+
+        assert!(!store.status(&held.id).unwrap().held);
+        let evidence = ActivationReleaseEvidence {
+            intent_digest: active.intent_digest.clone(),
+            projection_digest: active.projection_digest.clone(),
+            generation: active.generation,
+            activation_requirement_digest: active.activation_requirement_digest.clone(),
+        };
+        let release = store
+            .declaration_release(&held.id, &held.hold_declaration_id().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(release.projection.as_ref(), Some(&evidence));
+        assert!(
+            store
+                .activation_authorization_path(&held.id)
+                .try_exists()
+                .unwrap()
+        );
+        assert_eq!(receipts.read(&active.id).unwrap().unwrap().desired, active);
+        let job = jobs
+            .status("move-1--item-001-cutover-activate-target")
+            .unwrap();
+        assert_eq!(job.status, JobStatus::Succeeded);
+        assert_eq!(job.spec.transaction_id, "move-1--item-001");
+
+        // A controller attaching after deploy sees the same terminal job, and
+        // another deploy is an exact no-op rather than a second activation.
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), active),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+        assert_eq!(
+            jobs.status("move-1--item-001-cutover-activate-target")
+                .unwrap()
+                .attempts,
+            1
+        );
+    }
+
+    #[test]
+    fn early_projected_hold_atomically_claims_a_bootstrap_latch() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let store = StateStore::new(temp.path().join("state"));
+        let resource = "service:zulip";
+        store
+            .declare_and_apply(
+                resource,
+                "zulip-target-bootstrap-v1",
+                vec![ServiceTarget::system("zulip.service")],
+                |_| Ok(()),
+            )
+            .unwrap();
+        let desired = desired_resource(1, DesiredResourceStateKind::Held, Some("hold-v1"));
+
+        execute_desired_resource_holds(
+            &write_desired_manifest(temp.path(), desired.clone()),
+            &resource_manifest,
+            &store,
+            &systemctl,
+        )
+        .unwrap();
+
+        let hold = store.status(resource).unwrap().hold.unwrap();
+        assert_eq!(
+            hold.transaction_id,
+            desired.transaction_id.as_deref().unwrap()
+        );
+        assert_eq!(
+            hold.declaration_id,
+            Some(desired.hold_declaration_id().unwrap())
+        );
+    }
+
+    #[test]
+    fn desired_unheld_releases_without_creating_activation_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+        let held = desired_resource(1, DesiredResourceStateKind::Held, Some("hold-v1"));
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), held.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+
+        let mut unheld = desired_resource(2, DesiredResourceStateKind::Unheld, Some("hold-v1"));
+        unheld.activation_requirement_kind = None;
+        unheld.activation_requirement_digest = None;
+        let output = execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), unheld.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+
+        assert!(!store.status(&unheld.id).unwrap().held);
+        assert_eq!(
+            output
+                .value
+                .pointer("/result/resources/0/result/release_job/result/release/services_started",),
+            Some(&json!(false))
+        );
+        assert!(
+            !store
+                .activation_authorization_path(&unheld.id)
+                .try_exists()
+                .unwrap()
+        );
+        let release = store
+            .declaration_release(&unheld.id, &unheld.hold_declaration_id().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            release.projection.unwrap().activation_requirement_digest,
+            None
+        );
+        assert_eq!(
+            jobs.status(&projected_release_job_id(
+                &unheld.projection_id,
+                &unheld.id,
+                unheld.hold_epoch.as_deref().unwrap(),
+            ))
+            .unwrap()
+            .status,
+            JobStatus::Succeeded
+        );
+        assert_eq!(receipts.read(&unheld.id).unwrap().unwrap().desired, unheld);
+    }
+
+    #[test]
+    fn desired_reconcile_adopts_the_controller_activation_job() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+
+        let held = desired_resource(1, DesiredResourceStateKind::Held, Some("target"));
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), held),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+
+        let active = desired_resource(2, DesiredResourceStateKind::Active, Some("target"));
+        let resources = ResourceManifest::load(&resource_manifest).unwrap();
+        let spec =
+            desired_activation_job_spec(&active, resources.resource("service:zulip").unwrap())
+                .unwrap();
+        jobs.submit(spec.clone()).unwrap();
+        let controller_job = jobs
+            .run_job(&spec.job_id, |spec| {
+                execute_job_spec(spec, &store, &systemctl)
+            })
+            .unwrap();
+        assert_eq!(controller_job.status, JobStatus::Succeeded);
+
+        execute_desired_resource_states(
+            &write_desired_manifest(temp.path(), active.clone()),
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+        assert_eq!(receipts.read(&active.id).unwrap().unwrap().desired, active);
+        assert_eq!(jobs.status(&spec.job_id).unwrap().attempts, 1);
+    }
+
+    #[test]
+    fn desired_reconcile_rejects_epoch_mismatch_without_releasing_hold() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+        let first = desired_resource(1, DesiredResourceStateKind::Held, Some("source-1"));
+        let first_manifest = write_desired_manifest(temp.path(), first.clone());
+        execute_desired_resource_states(
+            &first_manifest,
+            &resource_manifest,
+            &store,
+            &jobs,
+            &receipts,
+            &systemctl,
+        )
+        .unwrap();
+
+        let mismatch = desired_resource(2, DesiredResourceStateKind::Held, Some("source-2"));
+        let mismatch_manifest = write_desired_manifest(temp.path(), mismatch);
+        assert!(
+            execute_desired_resource_states(
+                &mismatch_manifest,
+                &resource_manifest,
+                &store,
+                &jobs,
+                &receipts,
+                &systemctl,
+            )
+            .is_err()
+        );
+        let hold = store.status(&first.id).unwrap().hold.unwrap();
+        assert_eq!(
+            hold.declaration_id.as_deref(),
+            first.hold_declaration_id().as_deref()
+        );
+    }
+
+    #[test]
+    fn desired_reconcile_rejects_missing_activation_requirement_before_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let resource_manifest = write_reconcile_resource_manifest(temp.path());
+        let systemctl = fake_systemctl(temp.path());
+        let state_root = temp.path().join("state");
+        let store = StateStore::new(&state_root);
+        let jobs = JobStore::new(&state_root);
+        let receipts = DesiredResourceStateReceiptStore::new(&state_root);
+        let mut active = desired_resource(2, DesiredResourceStateKind::Active, Some("target"));
+        active.activation_requirement_kind = None;
+        active.activation_requirement_digest = None;
+        let active_manifest = write_desired_manifest(temp.path(), active);
+
+        assert!(
+            execute_desired_resource_states(
+                &active_manifest,
+                &resource_manifest,
+                &store,
+                &jobs,
+                &receipts,
+                &systemctl,
+            )
+            .is_err()
+        );
+        assert!(!store.status("service:zulip").unwrap().held);
     }
 
     #[test]
@@ -3473,6 +4718,14 @@ mod tests {
         ])
         .unwrap();
         Cli::try_parse_from(["abird-host-agent", "_reconcile", "jobs"]).unwrap();
+        Cli::try_parse_from([
+            "abird-host-agent",
+            "_reconcile",
+            "desired-resource-states",
+            "--manifest",
+            "/etc/abird-host-agent/desired-resource-states.json",
+        ])
+        .unwrap();
         Cli::try_parse_from([
             "abird-host-agent",
             "_transport",
@@ -3748,6 +5001,43 @@ mod tests {
     }
 
     #[test]
+    fn projection_hold_epochs_are_qualified_once_for_new_and_legacy_specs() {
+        let base = json!({
+            "schema_version": 1,
+            "job_id": "hold-1",
+            "transaction_id": "tx-1",
+            "resource": "service:zulip",
+            "operation": { "kind": "hold" },
+            "expected_state": "any"
+        });
+        let mut current = base.clone();
+        current["projection"] = json!({
+            "intent_digest": "a".repeat(64),
+            "projection_digest": "b".repeat(64),
+            "generation": 3,
+            "hold_epoch": "target:g3"
+        });
+        let current: JobSpec = serde_json::from_value(current).unwrap();
+        assert_eq!(
+            projection_hold_declaration_id(&current).as_deref(),
+            Some("tx-1:target:g3")
+        );
+
+        let mut legacy = base;
+        legacy["projection"] = json!({
+            "transaction_digest": "a".repeat(64),
+            "projection_digest": "b".repeat(64),
+            "generation": 3,
+            "hold_declaration_id": "tx-1:target:g3"
+        });
+        let legacy: JobSpec = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            projection_hold_declaration_id(&legacy).as_deref(),
+            Some("tx-1:target:g3")
+        );
+    }
+
+    #[test]
     fn stable_job_spec_submission_persists_the_exact_versioned_spec() {
         let temp = tempfile::tempdir().unwrap();
         let state_dir = temp.path().join("state");
@@ -3756,6 +5046,7 @@ mod tests {
             schema_version: 1,
             job_id: "reserve-1".to_owned(),
             transaction_id: "tx-1".to_owned(),
+            projection: None,
             resource: "service:zulip".to_owned(),
             operation: JobOperation::Reserve,
             expected_state: ExpectedState::Any,
@@ -4013,6 +5304,7 @@ mod tests {
                 schema_version: 1,
                 job_id: "release-1".to_owned(),
                 transaction_id: "tx-1".to_owned(),
+                projection: None,
                 resource: "service:zulip".to_owned(),
                 operation: JobOperation::Release,
                 expected_state: ExpectedState::Any,
@@ -4058,6 +5350,7 @@ mod tests {
             schema_version: 1,
             job_id: "activate-1".to_owned(),
             transaction_id: "tx-1".to_owned(),
+            projection: None,
             resource: "service:zulip".to_owned(),
             operation: JobOperation::Activate,
             expected_state: ExpectedState::Any,
@@ -4093,6 +5386,77 @@ mod tests {
     }
 
     #[test]
+    fn file_state_job_reloads_or_restarts_consumers() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_path = temp.path().join("route");
+        let calls = temp.path().join("systemctl-calls");
+        let fake_systemctl = temp.path().join("systemctl");
+        fs::write(
+            &fake_systemctl,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_systemctl, fs::Permissions::from_mode(0o700)).unwrap();
+        let spec = JobSpec {
+            schema_version: 1,
+            job_id: "route-1".to_owned(),
+            transaction_id: "move-1".to_owned(),
+            projection: None,
+            resource: "service:abird-nginx".to_owned(),
+            operation: JobOperation::FileState {
+                name: "route-corp".to_owned(),
+            },
+            expected_state: ExpectedState::Any,
+            services: Vec::new(),
+            data_paths: Vec::new(),
+            data_root_plan: Vec::new(),
+            argv: None,
+            readiness: Vec::new(),
+            transfer: None,
+            resource_transfers: Vec::new(),
+            backup_consistency: None,
+            broker_transfer: None,
+            file_state: Some(crate::file_state::FileStateDefinition {
+                path: state_path.clone(),
+                content: "corp\n".to_owned(),
+                mode: 0o644,
+                reload_services: vec![
+                    ServiceTarget::new(
+                        crate::service::ServiceScope::User,
+                        Some("abird".to_owned()),
+                        "abird-nginx.service".to_owned(),
+                    )
+                    .unwrap(),
+                ],
+                expected_previous_sha256: None,
+                accepted_previous_sha256: Vec::new(),
+                validation_argv: Vec::new(),
+            }),
+            instance: None,
+            instance_migration: None,
+            deployment: None,
+            nixbot_deploy: None,
+        };
+
+        let execution = execute_job_spec(
+            &spec,
+            &StateStore::new(temp.path().join("state")),
+            &Systemctl::new(fake_systemctl),
+        )
+        .unwrap();
+
+        assert!(execution.error.is_none());
+        assert_eq!(fs::read_to_string(state_path).unwrap(), "corp\n");
+        assert_eq!(
+            fs::read_to_string(calls).unwrap(),
+            "--user --machine abird@ try-reload-or-restart -- abird-nginx.service\n"
+        );
+    }
+
+    #[test]
     fn restore_job_starts_only_services_active_before_backup() {
         let temp = tempfile::tempdir().unwrap();
         let state_dir = temp.path().join("state");
@@ -4108,6 +5472,7 @@ mod tests {
             schema_version: 1,
             job_id: "restore-1".to_owned(),
             transaction_id: "backup-1".to_owned(),
+            projection: None,
             resource: "host:demo".to_owned(),
             operation: JobOperation::Restore {
                 active_services: vec![active],
@@ -4188,6 +5553,7 @@ mod tests {
             schema_version: 1,
             job_id: "seed-1".to_owned(),
             transaction_id: "tx-1".to_owned(),
+            projection: None,
             resource: "service:zulip".to_owned(),
             operation,
             expected_state: ExpectedState::Any,
@@ -4311,6 +5677,7 @@ mod tests {
             schema_version: 1,
             job_id: "delete-1".to_owned(),
             transaction_id: "backup-1".to_owned(),
+            projection: None,
             resource: "service:zulip".to_owned(),
             operation: JobOperation::DeleteBackup {
                 snapshot: "backup-1".to_owned(),
@@ -4406,6 +5773,7 @@ mod tests {
             schema_version: 1,
             job_id: "wipe-1".to_owned(),
             transaction_id: "wipe-owner".to_owned(),
+            projection: None,
             resource: "service:zulip".to_owned(),
             operation: JobOperation::WipeData,
             expected_state: ExpectedState::Any,

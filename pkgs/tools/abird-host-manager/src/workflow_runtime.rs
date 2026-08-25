@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::agent_adapter::{NativeAdapter, WorkflowItemAdapter};
 use crate::backup_runtime::{BackupPhase, BackupRecord};
 use crate::progress::StepProgress;
+use crate::projection::{ActivationReceipt, PhaseProjection};
 use crate::workflow::{AuthorityKey, MoveItem, TransactionSpec, validate_workflow_id};
-use crate::{Action, Store, Transaction, execute_action, supersede_active_job};
+use crate::{Action, Store, Transaction, execute_action_until, supersede_active_job};
 
 pub const TRANSACTION_RECORD_SCHEMA_VERSION: u32 = 1;
 
@@ -57,6 +58,22 @@ pub struct WorkflowEvent {
     pub message: String,
 }
 
+/// Durable proof of which authority released a projected activation latch.
+/// The immutable job is identical for both issuers; only the controller-side
+/// authorization evidence differs.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "issuer", rename_all = "snake_case")]
+pub enum ActivationAuthorization {
+    RepositoryDeploy {
+        projection_digest: String,
+        generation: u64,
+        evidence_sha256: String,
+    },
+    BrokeredReceipt {
+        receipt: ActivationReceipt,
+    },
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransactionRecord {
@@ -67,6 +84,20 @@ pub struct TransactionRecord {
     pub pending_action: Option<Action>,
     #[serde(default)]
     pub items: BTreeMap<String, Transaction>,
+    /// Last desired projection published for new repository-backed moves.
+    /// Missing means this is a legacy runtime-only transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<PhaseProjection>,
+    /// Superseded projections retained by digest so mixed deploy/runtime
+    /// reconciliation can inspect the exact prior generation after Git has
+    /// advanced to a compensating phase.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projection_history: BTreeMap<String, PhaseProjection>,
+    /// Concrete authority evidence retained independently from desired state.
+    /// Repository deployment and manager-brokered receipt are co-equal
+    /// issuers, but only the latter proves runtime preparation.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub activation_authorizations: BTreeMap<String, ActivationAuthorization>,
     pub created_at_unix_ms: u128,
     pub updated_at_unix_ms: u128,
     #[serde(default)]
@@ -101,6 +132,9 @@ impl TransactionRecord {
             phase: WorkflowPhase::Planned,
             pending_action: None,
             items,
+            projection: None,
+            projection_history: BTreeMap::new(),
+            activation_authorizations: BTreeMap::new(),
             created_at_unix_ms: now,
             updated_at_unix_ms: now,
             events: Vec::new(),
@@ -148,6 +182,33 @@ impl TransactionRecord {
         event(self, action, message)
     }
 
+    pub fn record_authorization_event(
+        &mut self,
+        action: Action,
+        message: impl Into<String>,
+    ) -> Result<()> {
+        event(self, action, message)
+    }
+
+    pub fn set_projection(&mut self, projection: PhaseProjection) -> Result<()> {
+        projection.validate()?;
+        if let Some(previous) = self.projection.take()
+            && previous.projection_sha256 != projection.projection_sha256
+        {
+            self.projection_history
+                .insert(previous.projection_sha256.clone(), previous);
+        }
+        self.projection = Some(projection);
+        Ok(())
+    }
+
+    pub fn projection_by_digest(&self, digest: &str) -> Option<&PhaseProjection> {
+        self.projection
+            .as_ref()
+            .filter(|projection| projection.projection_sha256 == digest)
+            .or_else(|| self.projection_history.get(digest))
+    }
+
     fn authorities(&self) -> Vec<(&str, AuthorityKey)> {
         self.spec
             .items
@@ -168,6 +229,10 @@ pub struct WorkflowStore {
 }
 
 impl WorkflowStore {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn load_matching(
         root: &Path,
         candidate: &TransactionRecord,
@@ -378,6 +443,19 @@ pub fn execute_workflow_action(
     action: Action,
     adapter: &mut NativeAdapter,
 ) -> Result<()> {
+    if !execute_workflow_action_until(store, record, action, adapter, None)? {
+        unreachable!("unbounded workflow action execution must complete");
+    }
+    Ok(())
+}
+
+pub fn execute_workflow_action_until(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    action: Action,
+    adapter: &mut NativeAdapter,
+    stop_before: Option<&str>,
+) -> Result<bool> {
     refresh_child_journals(store, record)?;
     validate_workflow_transition(record, action)?;
     match record.pending_action {
@@ -407,6 +485,7 @@ pub fn execute_workflow_action(
         .progress()
         .phase_started(record.id(), action, item_ids.len());
     let child_store = store.child_store(record.id())?;
+    let mut completed = true;
     for item_id in item_ids {
         let item = record
             .spec
@@ -441,12 +520,17 @@ pub fn execute_workflow_action(
         item_adapter
             .native_progress()
             .step_completed(&preflight, preflight_started.elapsed());
-        let result = execute_action(&child_store, child, action, &mut item_adapter)
-            .with_context(|| format!("execute transaction item {item_id:?}"));
+        let result =
+            execute_action_until(&child_store, child, action, &mut item_adapter, stop_before)
+                .with_context(|| format!("execute transaction item {item_id:?}"));
         let persisted = child_store.load(&child.id)?;
         record.items.insert(item_id.clone(), persisted);
         store.save(record)?;
-        result?;
+        completed &= result?;
+    }
+
+    if !completed {
+        return Ok(false);
     }
 
     record.phase = workflow_phase_after(action);
@@ -456,7 +540,7 @@ pub fn execute_workflow_action(
     adapter
         .progress()
         .phase_completed(record.id(), action, phase_started.elapsed());
-    Ok(())
+    Ok(true)
 }
 
 pub fn supersede_failed_workflow_jobs(
@@ -601,15 +685,22 @@ fn item_transaction(parent_id: &str, item: &MoveItem, config: &Path) -> Result<T
         )?,
         MoveItem::Service {
             service,
+            source_resource,
+            target_resource,
             source,
             target,
             ..
-        } => Transaction::new_service(
-            service.clone(),
-            source.host.clone(),
-            target.host.clone(),
-            config.to_path_buf(),
-        )?,
+        } => {
+            let mut transaction = Transaction::new_service(
+                service.clone(),
+                source.host.clone(),
+                target.host.clone(),
+                config.to_path_buf(),
+            )?;
+            transaction.source_resource = source_resource.clone();
+            transaction.target_resource = target_resource.clone();
+            transaction
+        }
         MoveItem::Resource {
             resource,
             source,
@@ -709,6 +800,87 @@ fn validate_record(record: &TransactionRecord) -> Result<()> {
             bail!("transaction item {item:?} journal does not match its parent record");
         }
     }
+    if let Some(projection) = &record.projection {
+        projection.validate()?;
+        if projection.projection_id != record.spec.id
+            || projection.intent != serde_json::to_value(&record.spec)?
+        {
+            bail!("transaction projection does not match immutable transaction intent");
+        }
+        for (digest, historical) in &record.projection_history {
+            historical.validate()?;
+            if digest != &historical.projection_sha256
+                || historical.projection_id != record.spec.id
+                || historical.intent != serde_json::to_value(&record.spec)?
+                || digest == &projection.projection_sha256
+            {
+                bail!("transaction projection history does not match immutable intent");
+            }
+        }
+        for (requirement_digest, authorization) in &record.activation_authorizations {
+            validate_sha256(requirement_digest, "activation authorization requirement")?;
+            match authorization {
+                ActivationAuthorization::RepositoryDeploy {
+                    projection_digest,
+                    generation,
+                    evidence_sha256,
+                } => {
+                    validate_sha256(projection_digest, "repository activation projection")?;
+                    validate_sha256(evidence_sha256, "repository activation evidence")?;
+                    if *generation == 0 {
+                        bail!("repository activation generation must be greater than zero");
+                    }
+                    let authorized_projection =
+                        record.projection_by_digest(projection_digest).context(
+                            "repository activation authorization references an unknown projection",
+                        )?;
+                    if authorized_projection.generation != *generation
+                        || authorized_projection
+                            .activation_requirement
+                            .as_ref()
+                            .map(|requirement| requirement.requirement_sha256.as_str())
+                            != Some(requirement_digest.as_str())
+                    {
+                        bail!(
+                            "repository activation authorization does not match its exact projected generation and requirement"
+                        );
+                    }
+                }
+                ActivationAuthorization::BrokeredReceipt { receipt } => {
+                    if requirement_digest != &receipt.requirement_digest {
+                        bail!(
+                            "activation authorization key does not match its receipt requirement"
+                        );
+                    }
+                    receipt
+                        .validate_identity(&projection.projection_id, &projection.intent_sha256)?;
+                    if projection
+                        .activation_requirement
+                        .as_ref()
+                        .is_some_and(|requirement| {
+                            requirement.requirement_sha256 == *requirement_digest
+                        })
+                    {
+                        receipt.validate_for(projection)?;
+                    }
+                }
+            }
+        }
+    } else if !record.activation_authorizations.is_empty() || !record.projection_history.is_empty()
+    {
+        bail!("legacy transaction cannot retain projection history or activation authorizations");
+    }
+    Ok(())
+}
+
+fn validate_sha256(value: &str, label: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("{label} must be a lowercase SHA-256 digest");
+    }
     Ok(())
 }
 
@@ -729,7 +901,8 @@ fn validate_workflow_transition(record: &TransactionRecord, action: Action) -> R
         Action::Rollback => {
             matches!(
                 record.phase,
-                WorkflowPhase::Setup
+                WorkflowPhase::Planned
+                    | WorkflowPhase::Setup
                     | WorkflowPhase::Seeded
                     | WorkflowPhase::Prepared
                     | WorkflowPhase::Verified
@@ -816,7 +989,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::agent_adapter::HostManagerConfig;
     use crate::backup_runtime::{BackupRecord, BackupStore};
+    use crate::projection::{
+        MoveItemObservation, MovePhase, MoveProjectionObservation, MoveProjector,
+    };
     use crate::workflow::{
         BackupDestination, BackupItem, BackupSpec, HostEndpoint, MoveItem, TransactionSpec,
     };
@@ -825,6 +1002,8 @@ mod tests {
         MoveItem::Service {
             id: id.to_owned(),
             service: name.to_owned(),
+            source_resource: None,
+            target_resource: None,
             source: HostEndpoint {
                 host: source.to_owned(),
                 instance: None,
@@ -851,6 +1030,116 @@ mod tests {
         assert_eq!(
             record.items["chat"].config,
             PathBuf::from("/tmp/config.json")
+        );
+    }
+
+    #[test]
+    fn legacy_transaction_record_without_projection_remains_readable() {
+        let spec = TransactionSpec::new(
+            Some("move-legacy"),
+            vec![service("chat", "zulip", "source", "target")],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let record = TransactionRecord::new(spec, "/tmp/config.json".into()).unwrap();
+        let mut value = serde_json::to_value(record).unwrap();
+        value.as_object_mut().unwrap().remove("projection");
+        let decoded: TransactionRecord = serde_json::from_value(value).unwrap();
+        assert!(decoded.projection.is_none());
+        validate_record(&decoded).unwrap();
+    }
+
+    #[test]
+    fn projection_history_binds_repository_authorization_to_its_exact_generation() {
+        let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {
+                "program": "/bin/false",
+                "connect_timeout_seconds": 1,
+                "agent_poll_interval_ms": 1,
+                "job_timeout_seconds": 1,
+                "rsync_program": "/bin/false",
+                "tar_program": "/bin/false"
+            },
+            "hosts": {
+                "source": {"address": "source", "host_resource": "host:source"},
+                "target": {"address": "target", "host_resource": "host:target"},
+                "proxy": {"address": "proxy", "host_resource": "host:proxy"}
+            },
+            "operation_routes": {
+                "deploy-cutover": {
+                    "executor": "source",
+                    "phase_projection": {"executor": "proxy", "resource": "service:nginx"}
+                },
+                "deploy-rollback": {
+                    "executor": "source",
+                    "phase_projection": {"executor": "proxy", "resource": "service:nginx"}
+                }
+            }
+        }))
+        .unwrap();
+        let mut spec = TransactionSpec::new(
+            Some("move-history"),
+            vec![service("chat", "zulip", "source", "target")],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        spec.declarative_scope = Some("demo".to_owned());
+        let seeded = MoveProjector::derive(&spec, &config, MovePhase::Seeded, None, None).unwrap();
+        let prepared =
+            MoveProjector::derive(&spec, &config, MovePhase::Prepared, Some(&seeded), None)
+                .unwrap();
+        let cutover =
+            MoveProjector::derive(&spec, &config, MovePhase::Cutover, Some(&prepared), None)
+                .unwrap();
+        let mut observation = MoveProjectionObservation::default();
+        observation.insert(
+            "chat",
+            MoveItemObservation {
+                source_held: true,
+                target_ever_started: true,
+            },
+        );
+        let rolled_back = MoveProjector::derive_with_observation(
+            &spec,
+            &config,
+            MovePhase::RolledBack,
+            Some(&cutover),
+            None,
+            &observation,
+        )
+        .unwrap();
+        let mut record = TransactionRecord::new(spec, "/tmp/config.json".into()).unwrap();
+        record.set_projection(seeded).unwrap();
+        record.set_projection(prepared).unwrap();
+        record.set_projection(cutover.clone()).unwrap();
+        record.set_projection(rolled_back).unwrap();
+        let requirement = cutover.activation_requirement.as_ref().unwrap();
+        record.activation_authorizations.insert(
+            requirement.requirement_sha256.clone(),
+            ActivationAuthorization::RepositoryDeploy {
+                projection_digest: cutover.projection_sha256.clone(),
+                generation: cutover.generation,
+                evidence_sha256: "a".repeat(64),
+            },
+        );
+        validate_record(&record).unwrap();
+
+        let ActivationAuthorization::RepositoryDeploy { generation, .. } = record
+            .activation_authorizations
+            .get_mut(&requirement.requirement_sha256)
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        *generation += 1;
+        assert!(
+            validate_record(&record)
+                .unwrap_err()
+                .to_string()
+                .contains("exact projected generation")
         );
     }
 

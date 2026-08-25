@@ -18,15 +18,17 @@ use abird_host_agent::sha256::digest_bytes;
 use abird_host_agent::transfer::RemoteSource;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::programs::nix::Nix;
 use crate::progress::{ProgressReporter, StepProgress};
+use crate::projection::{DesiredResourceState, PhaseProjection, ProjectionEffect};
 use crate::repository::Repository;
 use crate::service_registry::resolve_service_host;
 use crate::ssh_runtime::SshRuntime;
 use crate::workflow::{InstanceEndpoint, MoveItem};
-use crate::{Action, Adapter, ResourceKind, Transaction};
+use crate::workflow_runtime::TransactionRecord;
+use crate::{Action, Adapter, ResourceKind, Transaction, deterministic_job_id};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +36,8 @@ pub struct HostManagerConfig {
     pub schema_version: u32,
     pub ssh: SshConfig,
     pub hosts: BTreeMap<String, Host>,
+    #[serde(default)]
+    pub controller: Option<String>,
     #[serde(default)]
     pub transfer_broker: Option<String>,
     #[serde(default)]
@@ -131,6 +135,19 @@ pub struct OperationRoute {
     pub kind: RoutedOperationKind,
     #[serde(default)]
     pub nixbot_deploy: Option<NixbotDeployRoute>,
+    /// Runtime owner of the repository phase-projection effect. This is
+    /// deliberately independent from the controller/deploy route above.
+    #[serde(default)]
+    pub phase_projection: Option<ProjectedOperationRoute>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectedOperationRoute {
+    /// Inventory host, "$source", "$target", or "$shared:<role>".
+    pub executor: String,
+    /// Exact host-agent resource owning the projected file-state profile.
+    pub resource: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -195,6 +212,7 @@ pub struct HostSummary<'a> {
 pub struct NativeAdapter {
     config: HostManagerConfig,
     progress: ProgressReporter,
+    projection: Option<PhaseProjection>,
 }
 
 #[derive(Clone, Copy)]
@@ -386,6 +404,7 @@ impl HostManagerConfig {
                 tar_program: default_tar_program(),
             },
             hosts: inventory,
+            controller: None,
             transfer_broker: None,
             operation_routes: BTreeMap::new(),
             ssh_runtime: Some(ssh_runtime),
@@ -396,33 +415,35 @@ impl HostManagerConfig {
     }
 
     fn derive_repository_defaults(&mut self, inventory: &Value) -> Result<()> {
-        let Some(controller_resource) = inventory
-            .pointer("/config/ci/host")
+        let new_config = inventory.pointer("/config/controller").is_some()
+            || inventory.pointer("/config/transferBroker").is_some();
+        let controller_resource = inventory
+            .pointer("/config/controller")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
-        else {
+            .or_else(|| {
+                inventory
+                    .pointer("/config/ci/host")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+            });
+        let Some(controller_resource) = controller_resource else {
+            if new_config {
+                bail!("Nixbot config.controller must name one canonical host resource");
+            }
             return Ok(());
         };
-        let controller_resource = format!("host:{controller_resource}");
-        let controllers = self
-            .hosts
-            .iter()
-            .filter_map(|(name, host)| {
-                (host.host_resource.as_deref() == Some(controller_resource.as_str()))
-                    .then_some(name.clone())
-            })
-            .collect::<Vec<_>>();
-        let controller = match controllers.as_slice() {
-            [controller] => controller.clone(),
-            [] => return Ok(()),
-            _ => {
-                bail!(
-                    "Nixbot CI host resource {controller_resource:?} has multiple inventory endpoints"
-                )
-            }
-        };
+        let controller = self.resolve_repository_host(controller_resource, "controller")?;
+        let broker_resource = inventory
+            .pointer("/config/transferBroker")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .or((!new_config).then_some(controller_resource))
+            .context("Nixbot config.transferBroker must name one canonical host resource")?;
+        let transfer_broker = self.resolve_repository_host(broker_resource, "transfer broker")?;
 
-        self.transfer_broker = Some(controller.clone());
+        self.controller = Some(controller.clone());
+        self.transfer_broker = Some(transfer_broker);
         for (operation, nixbot_deploy) in [
             (
                 "provision-target",
@@ -457,10 +478,50 @@ impl HostManagerConfig {
                     agent_operation: None,
                     kind: RoutedOperationKind::NixbotDeploy,
                     nixbot_deploy: Some(nixbot_deploy),
+                    phase_projection: matches!(operation, "deploy-cutover" | "deploy-rollback")
+                        .then(|| ProjectedOperationRoute {
+                            executor: "$shared:proxy".to_owned(),
+                            resource: "service:abird-nginx".to_owned(),
+                        }),
                 },
             );
         }
         Ok(())
+    }
+
+    fn resolve_repository_host(&self, selector: &str, role: &str) -> Result<String> {
+        let resource = selector.strip_prefix("host:").unwrap_or(selector);
+        let canonical = format!("host:{resource}");
+        let resource_matches = self
+            .hosts
+            .iter()
+            .filter_map(|(name, host)| {
+                (host.host_resource.as_deref() == Some(canonical.as_str())).then_some(name.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        let matches = if resource_matches.is_empty() && !selector.starts_with("host:") {
+            if self.hosts.contains_key(selector) {
+                BTreeSet::from([selector.to_owned()])
+            } else {
+                BTreeSet::new()
+            }
+        } else {
+            resource_matches
+        };
+        match matches.into_iter().collect::<Vec<_>>().as_slice() {
+            [host] => Ok(host.clone()),
+            [] => bail!(
+                "Nixbot {role} host reference {selector:?} does not match an inventory endpoint"
+            ),
+            hosts => bail!(
+                "Nixbot {role} host reference {selector:?} is ambiguous across inventory endpoints: {}",
+                hosts.join(", ")
+            ),
+        }
+    }
+
+    pub fn resolve_host_reference(&self, selector: &str) -> Result<String> {
+        self.resolve_repository_host(selector, "controller")
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -600,10 +661,15 @@ impl HostManagerConfig {
             self.ssh_transport_args(name, host, TransportRole::Primary)
                 .with_context(|| format!("host {name:?} SSH transport"))?;
         }
-        if let Some(broker) = &self.transfer_broker
-            && !self.hosts.contains_key(broker)
-        {
-            bail!("transfer broker {broker:?} is not an inventory host");
+        for (role, host) in [
+            ("controller", &self.controller),
+            ("transfer broker", &self.transfer_broker),
+        ] {
+            if let Some(host) = host
+                && !self.hosts.contains_key(host)
+            {
+                bail!("{role} {host:?} is not an inventory host");
+            }
         }
         for (operation, route) in &self.operation_routes {
             validate_name("operation route", operation)?;
@@ -628,6 +694,23 @@ impl HostManagerConfig {
                 .is_some_and(|value| value.is_empty())
             {
                 bail!("operation {operation:?} has an empty agent operation");
+            }
+            if let Some(projected) = &route.phase_projection {
+                if projected.resource.is_empty() {
+                    bail!("operation {operation:?} has an empty phase-projection resource");
+                }
+                let executor = projected.executor.as_str();
+                if !matches!(executor, "$source" | "$target")
+                    && !executor.starts_with("$shared:")
+                    && !self.hosts.contains_key(executor)
+                {
+                    bail!(
+                        "operation {operation:?} phase-projection executor {executor:?} is not an inventory host or supported selector"
+                    );
+                }
+                if let Some(role) = executor.strip_prefix("$shared:") {
+                    validate_name("shared phase-projection role", role)?;
+                }
             }
             match (&route.kind, &route.nixbot_deploy) {
                 (RoutedOperationKind::NixbotDeploy, Some(NixbotDeployRoute::Request(request))) => {
@@ -759,8 +842,15 @@ impl HostManagerConfig {
         transaction: &Transaction,
         role: &str,
     ) -> Result<NixbotDeployRequest> {
-        let source = self.host_resource(&transaction.source)?;
-        let target = self.host_resource(&transaction.target)?;
+        let (name, host) = self.shared_role_host(&transaction.source, &transaction.target, role)?;
+        host.nixbot_deploy.clone().with_context(|| {
+            format!("derived deployment host {name:?} has no Nixbot deployment identity")
+        })
+    }
+
+    fn shared_role_host(&self, source: &str, target: &str, role: &str) -> Result<(&str, &Host)> {
+        let source = self.host_resource(source)?;
+        let target = self.host_resource(target)?;
         let source_namespace = host_resource_namespace(&source).with_context(|| {
             format!("source host resource {source:?} has no repository role suffix")
         })?;
@@ -780,8 +870,8 @@ impl HostManagerConfig {
                 (host.host_resource.as_deref() == Some(resource.as_str())).then_some((name, host))
             })
             .collect::<Vec<_>>();
-        let (name, host) = match candidates.as_slice() {
-            [(name, host)] => (*name, *host),
+        match candidates.as_slice() {
+            [(name, host)] => Ok((name.as_str(), *host)),
             [] => {
                 bail!(
                     "no inventory host owns derived deployment role resource {resource:?}; provide an explicit migration config"
@@ -792,10 +882,35 @@ impl HostManagerConfig {
                     "multiple inventory hosts own derived deployment role resource {resource:?}; provide an explicit migration config"
                 )
             }
+        }
+    }
+
+    pub fn projected_operation_owner(
+        &self,
+        operation: &str,
+        source: &str,
+        target: &str,
+    ) -> Result<(String, String)> {
+        let projected = self
+            .operation_routes
+            .get(operation)
+            .with_context(|| format!("migration operation route {operation:?} is missing"))?
+            .phase_projection
+            .as_ref()
+            .with_context(|| {
+                format!("migration operation route {operation:?} has no phase-projection owner")
+            })?;
+        let executor = match projected.executor.as_str() {
+            "$source" => source,
+            "$target" => target,
+            selector if selector.starts_with("$shared:") => {
+                self.shared_role_host(source, target, selector.trim_start_matches("$shared:"))?
+                    .0
+            }
+            executor => executor,
         };
-        host.nixbot_deploy.clone().with_context(|| {
-            format!("derived deployment host {name:?} has no Nixbot deployment identity")
-        })
+        self.host(executor)?;
+        Ok((executor.to_owned(), projected.resource.clone()))
     }
 
     pub fn host_summary(&self, name: &str) -> Result<HostSummary<'_>> {
@@ -1050,6 +1165,70 @@ impl HostManagerConfig {
             bail!("remote command on host {host_name:?} failed with {status}");
         }
         Ok(())
+    }
+
+    /// Run a manager command as the inventory account (the Nixbot controller
+    /// user for repository-derived inventory), preserving the same pinned SSH
+    /// transport used by native agent operations.
+    pub fn run_inventory_command_interactive(
+        &self,
+        host_name: &str,
+        argv: &[String],
+        forward_agent: bool,
+    ) -> Result<()> {
+        if argv.is_empty() {
+            bail!("remote inventory command argv cannot be empty");
+        }
+        validate_argv("remote inventory command", argv)?;
+        let host = self.host(host_name)?;
+        if host.local {
+            let status = Command::new(&argv[0])
+                .args(&argv[1..])
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()
+                .with_context(|| format!("run local inventory command for {host_name:?}"))?;
+            if !status.success() {
+                bail!("local inventory command for host {host_name:?} failed with {status}");
+            }
+            return Ok(());
+        }
+        let remote = shell_join(argv)?;
+        let status = self
+            .inventory_ssh_command(host_name, host, forward_agent)?
+            .arg(remote)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .with_context(|| format!("run inventory command on host {host_name:?}"))?;
+        if !status.success() {
+            bail!("inventory command on host {host_name:?} failed with {status}");
+        }
+        Ok(())
+    }
+
+    fn inventory_ssh_command(
+        &self,
+        host_name: &str,
+        host: &Host,
+        forward_agent: bool,
+    ) -> Result<Command> {
+        let mut command = self.ssh_base_command(host_name, host, TransportRole::Primary)?;
+        if forward_agent {
+            command.arg("-A");
+        }
+        command
+            .arg("--")
+            .arg(ssh_destination(host, TransportRole::Primary));
+        Ok(command)
+    }
+
+    pub fn controller_host(&self) -> Result<&str> {
+        self.controller
+            .as_deref()
+            .context("manager inventory has no controller")
     }
 
     pub fn open_ssh(&self, host_name: &str, extra_args: &[String]) -> Result<()> {
@@ -1391,6 +1570,7 @@ impl NativeAdapter {
         Ok(Self {
             config: HostManagerConfig::load(path)?,
             progress: ProgressReporter::new(true),
+            projection: None,
         })
     }
 
@@ -1398,12 +1578,145 @@ impl NativeAdapter {
         Self {
             config,
             progress: ProgressReporter::new(false),
+            projection: None,
         }
     }
 
     pub fn with_progress(mut self, show_progress: bool) -> Self {
         self.progress = ProgressReporter::new(show_progress);
         self
+    }
+
+    pub fn bind_projection(&mut self, projection: PhaseProjection) -> Result<()> {
+        projection.validate()?;
+        self.projection = Some(projection);
+        Ok(())
+    }
+
+    /// Re-read the immutable final-verification jobs that completed Prepare.
+    /// The returned evidence intentionally excludes timestamps and retry
+    /// counters so an interrupted manager can derive the same receipt without
+    /// replaying any runtime operation.
+    pub fn retained_prepare_evidence(&mut self, record: &TransactionRecord) -> Result<Vec<Value>> {
+        let projection = self
+            .projection
+            .clone()
+            .context("runtime adapter has no phase projection")?;
+        record
+            .spec
+            .items
+            .iter()
+            .map(|item| {
+                let transaction = record.items.get(item.id()).with_context(|| {
+                    format!("transaction item {:?} has no durable journal", item.id())
+                })?;
+                WorkflowItemAdapter::new(self, item)
+                    .retained_prepare_evidence(transaction, &projection)
+            })
+            .collect()
+    }
+
+    pub fn retained_rollback_evidence(&mut self, record: &TransactionRecord) -> Result<Vec<Value>> {
+        let projection = self
+            .projection
+            .clone()
+            .context("runtime adapter has no phase projection")?;
+        record
+            .spec
+            .items
+            .iter()
+            .map(|item| {
+                let transaction = record.items.get(item.id()).with_context(|| {
+                    format!("transaction item {:?} has no durable journal", item.id())
+                })?;
+                WorkflowItemAdapter::new(self, item)
+                    .retained_rollback_evidence(transaction, &projection)
+            })
+            .collect()
+    }
+
+    /// Return exact succeeded activation jobs already materialized by the
+    /// repository desired-state reconciler. Absence is not authorization: it
+    /// merely tells the manager to follow its normal receipt-gated path.
+    pub fn retained_repository_activation(&self, role: &str) -> Result<Option<Vec<Value>>> {
+        let projection = self
+            .projection
+            .as_ref()
+            .context("runtime adapter has no phase projection")?;
+        let endpoints = projection
+            .resources
+            .iter()
+            .filter(|resource| {
+                resource.role == role
+                    && resource.endpoint.desired_state == DesiredResourceState::Active
+                    && resource.endpoint.hold_epoch.is_some()
+            })
+            .collect::<Vec<_>>();
+        if endpoints.is_empty() {
+            return Ok(None);
+        }
+        let mut evidence = Vec::with_capacity(endpoints.len());
+        for projected in endpoints {
+            let endpoint = &projected.endpoint;
+            let job_id = endpoint
+                .activation_job_id
+                .as_deref()
+                .context("active projected endpoint has no activation job identity")?;
+            let transaction_id = endpoint
+                .transaction_id
+                .as_deref()
+                .context("active projected endpoint has no transaction identity")?;
+            let expected = self.materialize_profile_job_spec(
+                &endpoint.host,
+                job_id,
+                transaction_id,
+                &endpoint.resource,
+                &["--operation".to_owned(), "activate".to_owned()],
+            )?;
+            let Some(status) = self
+                .config
+                .run_agent(
+                    &endpoint.host,
+                    &[
+                        "--json".to_owned(),
+                        "job".to_owned(),
+                        "status".to_owned(),
+                        "--job-id".to_owned(),
+                        job_id.to_owned(),
+                    ],
+                )
+                .ok()
+            else {
+                return Ok(None);
+            };
+            let actual = status
+                .pointer("/result/spec")
+                .context("repository activation job has no immutable specification")?;
+            if !retry_spec_matches(actual, &expected) {
+                bail!(
+                    "repository activation job {job_id:?} differs from the canonical projected job"
+                );
+            }
+            match status.pointer("/result/status").and_then(Value::as_str) {
+                Some("succeeded") => {
+                    let result = status.pointer("/result/result").unwrap_or(&Value::Null);
+                    evidence.push(json!({
+                        "host": endpoint.host,
+                        "job_id": job_id,
+                        "result_sha256": digest_bytes(&serde_json::to_vec(result)?),
+                        "spec_sha256": digest_bytes(&serde_json::to_vec(actual)?),
+                    }));
+                }
+                Some("pending" | "running") => return Ok(None),
+                Some("failed") => {
+                    bail!("repository activation job {job_id:?} failed and cannot be adopted")
+                }
+                status => {
+                    bail!("repository activation job {job_id:?} returned invalid status {status:?}")
+                }
+            }
+        }
+        Ok(Some(evidence))
     }
 
     pub fn progress(&self) -> &ProgressReporter {
@@ -1505,10 +1818,10 @@ impl NativeAdapter {
 
         match action {
             Action::Cutover => {
-                self.preflight_repository_service_placement(transaction, &transaction.target)?
+                self.preflight_service_placement(transaction, &transaction.target)?
             }
             Action::Rollback => {
-                self.preflight_repository_service_placement(transaction, &transaction.source)?
+                self.preflight_service_placement(transaction, &transaction.source)?
             }
             _ => {}
         }
@@ -1568,6 +1881,29 @@ impl NativeAdapter {
         operation: &str,
         declarations: &mut BTreeMap<String, Value>,
     ) -> Result<()> {
+        if self.projection.is_some() && matches!(operation, "deploy-cutover" | "deploy-rollback") {
+            let endpoint = if operation == "deploy-rollback" {
+                &transaction.source
+            } else {
+                &transaction.target
+            };
+            let transaction_resource = self.transaction_resource_for_host(transaction, endpoint)?;
+            let Some((executor, resource, profile)) =
+                self.projected_route_effect(&transaction_resource)?
+            else {
+                return Ok(());
+            };
+            self.config.host(&executor)?;
+            let declaration =
+                load_resource_declaration(&self.config, &executor, &resource, declarations)?;
+            ensure_profile(
+                declaration,
+                operation,
+                RoutedOperationKind::FileState,
+                &profile,
+            )?;
+            return Ok(());
+        }
         let route = self
             .config
             .operation_routes
@@ -1712,11 +2048,61 @@ impl NativeAdapter {
         Ok(())
     }
 
+    fn preflight_service_placement(
+        &self,
+        transaction: &Transaction,
+        expected_host: &str,
+    ) -> Result<()> {
+        if transaction.resource_kind != ResourceKind::Service {
+            return Ok(());
+        }
+        let Some(projection) = &self.projection else {
+            return self.preflight_repository_service_placement(transaction, expected_host);
+        };
+        let placements = projection
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                ProjectionEffect::ServicePlacement { service, host, .. }
+                    if service == &transaction.resource =>
+                {
+                    Some(host.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        match placements.as_slice() {
+            [host] if *host == expected_host => Ok(()),
+            [host] => bail!(
+                "bound phase projection places service {:?} on {host:?}, not required host {expected_host:?}",
+                transaction.resource
+            ),
+            [] => bail!(
+                "bound phase projection has no placement for logical service {:?}",
+                transaction.resource
+            ),
+            _ => bail!(
+                "bound phase projection has multiple placements for logical service {:?}",
+                transaction.resource
+            ),
+        }
+    }
+
     fn transaction_resource_for_host(
         &self,
         transaction: &Transaction,
         host: &str,
     ) -> Result<String> {
+        if host == transaction.source
+            && let Some(resource) = &transaction.source_resource
+        {
+            return Ok(resource.clone());
+        }
+        if host == transaction.target
+            && let Some(resource) = &transaction.target_resource
+        {
+            return Ok(resource.clone());
+        }
         if transaction.resource_kind == ResourceKind::Host
             && (host == transaction.source || host == transaction.target)
         {
@@ -1730,6 +2116,25 @@ impl NativeAdapter {
                 transaction.resource
             ))
         }
+    }
+
+    /// Resolve retained evidence through the same endpoint resource used when
+    /// the job was submitted. Broker jobs execute on a third host, but their
+    /// immutable resource identity still belongs to the data-producing
+    /// endpoint.
+    fn retained_evidence_resource(
+        &self,
+        transaction: &Transaction,
+        operation: &str,
+    ) -> Result<String> {
+        let endpoint = match operation {
+            "hold-source" | "assert-source-stopped" | "verify-final" => &transaction.source,
+            "hold-target" | "assert-target-stopped" | "reverse-transfer" | "verify-reverse" => {
+                &transaction.target
+            }
+            _ => bail!("unsupported retained evidence operation {operation:?}"),
+        };
+        self.transaction_resource_for_host(transaction, endpoint)
     }
 
     fn run_job(
@@ -1766,22 +2171,13 @@ impl NativeAdapter {
         resource: &str,
         operation_args: &[String],
     ) -> Result<Value> {
-        let mut materialize_args = vec![
-            "--json".to_owned(),
-            "job".to_owned(),
-            "_materialize".to_owned(),
-            "--job-id".to_owned(),
-            job_id.to_owned(),
-            "--transaction".to_owned(),
-            transaction_id.to_owned(),
-            "--resource".to_owned(),
-            resource.to_owned(),
-        ];
-        materialize_args.extend_from_slice(operation_args);
-        let materialized = self.config.run_agent(host, &materialize_args)?;
-        let spec = materialized
-            .pointer("/result/spec")
-            .context("agent job materialization response has no immutable spec")?;
+        let spec = self.materialize_profile_job_spec(
+            host,
+            job_id,
+            transaction_id,
+            resource,
+            operation_args,
+        )?;
         let status_args = [
             "--json".to_owned(),
             "job".to_owned(),
@@ -1794,14 +2190,14 @@ impl NativeAdapter {
             let existing_spec = existing
                 .pointer("/result/spec")
                 .context("existing agent job status has no immutable spec")?;
-            if !retry_spec_matches(existing_spec, spec) {
+            if !retry_spec_matches(existing_spec, &spec) {
                 bail!(
                     "host-agent job {job_id:?} already exists with a different immutable specification; if a terminal failed job must adopt intentionally changed policy, resume the owning transaction with --supersede-failed-job"
                 );
             }
         }
         let encoded_spec =
-            serde_json::to_vec(spec).context("serialize materialized agent job spec")?;
+            serde_json::to_vec(&spec).context("serialize materialized agent job spec")?;
         let existing_job = existing.is_some();
         let value = match existing {
             Some(value) => value,
@@ -1924,12 +2320,57 @@ impl NativeAdapter {
         }
     }
 
+    fn materialize_profile_job_spec(
+        &self,
+        host: &str,
+        job_id: &str,
+        transaction_id: &str,
+        resource: &str,
+        operation_args: &[String],
+    ) -> Result<Value> {
+        let mut materialize_args = vec![
+            "--json".to_owned(),
+            "job".to_owned(),
+            "_materialize".to_owned(),
+            "--job-id".to_owned(),
+            job_id.to_owned(),
+            "--transaction".to_owned(),
+            transaction_id.to_owned(),
+            "--resource".to_owned(),
+            resource.to_owned(),
+        ];
+        if let Some(projection) = &self.projection {
+            let hold_epoch = projection.hold_epoch_for_execution(host, resource)?;
+            materialize_args.extend([
+                "--projection".to_owned(),
+                serde_json::to_string(&projection.job_binding(hold_epoch))?,
+            ]);
+        }
+        materialize_args.extend_from_slice(operation_args);
+        let materialized = self.config.run_agent(host, &materialize_args)?;
+        materialized
+            .pointer("/result/spec")
+            .cloned()
+            .context("agent job materialization response has no immutable spec")
+    }
+
     fn route_job(
         &self,
         operation: &str,
         transaction: &Transaction,
         default_resource: &str,
     ) -> Result<()> {
+        if self.projection.is_some() && matches!(operation, "deploy-cutover" | "deploy-rollback") {
+            return match self.projected_route_effect(default_resource)? {
+                Some((executor, resource, profile)) => self.run_job(
+                    &executor,
+                    transaction,
+                    &resource,
+                    &["--file-state".to_owned(), profile],
+                ),
+                None => Ok(()),
+            };
+        }
         let route = self
             .config
             .operation_routes
@@ -1982,11 +2423,49 @@ impl NativeAdapter {
         transaction: &Transaction,
         default_resource: &str,
     ) -> Result<()> {
-        if self.config.operation_routes.contains_key(operation) {
+        if (self.projection.is_some() && matches!(operation, "deploy-cutover" | "deploy-rollback"))
+            || self.config.operation_routes.contains_key(operation)
+        {
             self.route_job(operation, transaction, default_resource)
         } else {
             Ok(())
         }
+    }
+
+    fn projected_route_effect(
+        &self,
+        transaction_resource: &str,
+    ) -> Result<Option<(String, String, String)>> {
+        let projection = self
+            .projection
+            .as_ref()
+            .context("runtime adapter has no phase projection")?;
+        let mut routes = projection.effects.iter().filter_map(|effect| match effect {
+            ProjectionEffect::RouteProfile {
+                executor_host,
+                executor_resource,
+                profile,
+                profiles,
+                ..
+            } => profiles
+                .iter()
+                .find(|candidate| {
+                    candidate.profile == *profile && candidate.resource == transaction_resource
+                })
+                .map(|_| {
+                    (
+                        executor_host.clone(),
+                        executor_resource.clone(),
+                        profile.clone(),
+                    )
+                }),
+            _ => None,
+        });
+        let route = routes.next();
+        if routes.next().is_some() {
+            bail!("phase projection has multiple route_profile effects for one runtime item");
+        }
+        Ok(route)
     }
 
     fn run_broker_job(
@@ -2367,6 +2846,383 @@ impl<'a> WorkflowItemAdapter<'a> {
         }
     }
 
+    fn retained_prepare_evidence(
+        &self,
+        transaction: &Transaction,
+        projection: &PhaseProjection,
+    ) -> Result<Value> {
+        let operations = [
+            "hold-source",
+            "hold-target",
+            "assert-source-stopped",
+            "assert-target-stopped",
+            "verify-final",
+        ];
+        let jobs = match self.item {
+            MoveItem::Instance { source, policy, .. } => {
+                let host = policy.executor(source).to_owned();
+                operations
+                    .iter()
+                    .map(|operation| {
+                        let suffix = match *operation {
+                            "hold-source" => "reserve-source",
+                            "hold-target" => "reserve-target",
+                            "assert-source-stopped" => "assert-source-stopped",
+                            "assert-target-stopped" => "assert-target-stopped",
+                            "verify-final" => "verify-final-target",
+                            _ => unreachable!("fixed prepare evidence operation"),
+                        };
+                        let job_id = format!(
+                            "{}-{suffix}",
+                            deterministic_job_id(transaction, Action::Prepare, operation)
+                        );
+                        self.retained_job_evidence(
+                            operation,
+                            host.clone(),
+                            job_id,
+                            transaction,
+                            projection,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+            _ => {
+                let broker = self
+                    .native
+                    .config
+                    .transfer_broker
+                    .clone()
+                    .context("manager inventory has no transfer_broker")?;
+                operations
+                    .iter()
+                    .map(|operation| {
+                        let host = match *operation {
+                            "hold-source" | "assert-source-stopped" => transaction.source.clone(),
+                            "hold-target" | "assert-target-stopped" => transaction.target.clone(),
+                            "verify-final" => broker.clone(),
+                            _ => unreachable!("fixed prepare evidence operation"),
+                        };
+                        self.retained_job_evidence(
+                            operation,
+                            host,
+                            deterministic_job_id(transaction, Action::Prepare, operation),
+                            transaction,
+                            projection,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+        };
+        Ok(json!({"item_id": self.item.id(), "jobs": jobs}))
+    }
+
+    fn retained_rollback_evidence(
+        &self,
+        transaction: &Transaction,
+        projection: &PhaseProjection,
+    ) -> Result<Value> {
+        let operations = if transaction.target_ever_started {
+            vec![
+                "hold-target",
+                "assert-target-stopped",
+                "reverse-transfer",
+                "verify-reverse",
+            ]
+        } else {
+            vec!["hold-target", "assert-target-stopped"]
+        };
+        let jobs = match self.item {
+            MoveItem::Instance { source, policy, .. } => {
+                let host = policy.executor(source).to_owned();
+                operations
+                    .iter()
+                    .map(|operation| {
+                        let suffix = match *operation {
+                            "hold-target" => "reserve-target",
+                            "assert-target-stopped" => "assert-target-stopped",
+                            "reverse-transfer" => "reverse-copy",
+                            "verify-reverse" => "verify-reverse-target",
+                            _ => unreachable!("fixed rollback evidence operation"),
+                        };
+                        self.retained_job_evidence(
+                            operation,
+                            host.clone(),
+                            format!(
+                                "{}-{suffix}",
+                                deterministic_job_id(transaction, Action::Rollback, operation)
+                            ),
+                            transaction,
+                            projection,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+            _ => {
+                let broker = self
+                    .native
+                    .config
+                    .transfer_broker
+                    .clone()
+                    .context("manager inventory has no transfer_broker")?;
+                operations
+                    .iter()
+                    .map(|operation| {
+                        let host = match *operation {
+                            "hold-target" | "assert-target-stopped" => transaction.target.clone(),
+                            "reverse-transfer" | "verify-reverse" => broker.clone(),
+                            _ => unreachable!("fixed rollback evidence operation"),
+                        };
+                        self.retained_job_evidence(
+                            operation,
+                            host,
+                            deterministic_job_id(transaction, Action::Rollback, operation),
+                            transaction,
+                            projection,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+        };
+        Ok(json!({
+            "item_id": self.item.id(),
+            "target_started": transaction.target_ever_started,
+            "jobs": jobs,
+        }))
+    }
+
+    fn retained_job_evidence(
+        &self,
+        operation: &str,
+        host: String,
+        job_id: String,
+        transaction: &Transaction,
+        projection: &PhaseProjection,
+    ) -> Result<Value> {
+        let status = self.native.config.run_agent(
+            &host,
+            &[
+                "--json".to_owned(),
+                "job".to_owned(),
+                "status".to_owned(),
+                "--job-id".to_owned(),
+                job_id.clone(),
+            ],
+        )?;
+        if status.pointer("/result/status").and_then(Value::as_str) != Some("succeeded") {
+            bail!("retained prepare job {job_id:?} on {host:?} is not succeeded");
+        }
+        let spec = status
+            .pointer("/result/spec")
+            .context("retained prepare job has no immutable job spec")?;
+        if spec.get("job_id").and_then(Value::as_str) != Some(job_id.as_str())
+            || spec.get("transaction_id").and_then(Value::as_str) != Some(transaction.id.as_str())
+        {
+            bail!("retained prepare job {job_id:?} has mismatched job or transaction identity");
+        }
+        let binding = spec
+            .pointer("/projection")
+            .context("retained prepare job has no projection binding")?;
+        let expected_resource = match self.item {
+            MoveItem::Instance { source, target, .. } => match operation {
+                "hold-source" | "assert-source-stopped" => instance_resource(source)?,
+                "hold-target" | "assert-target-stopped" | "verify-final" => {
+                    instance_resource(target)?
+                }
+                "reverse-transfer" | "verify-reverse" => instance_resource(source)?,
+                _ => bail!("unsupported retained evidence operation {operation:?}"),
+            },
+            _ => self
+                .native
+                .retained_evidence_resource(transaction, operation)?,
+        };
+        if spec.get("resource").and_then(Value::as_str) != Some(expected_resource.as_str()) {
+            bail!("retained prepare job {job_id:?} has mismatched resource");
+        }
+        self.validate_retained_job_operation(operation, spec, transaction, &job_id)?;
+        for (field, expected) in [
+            ("intent_digest", projection.intent_sha256.as_str()),
+            ("projection_digest", projection.projection_sha256.as_str()),
+        ] {
+            if binding.get(field).and_then(Value::as_str) != Some(expected) {
+                bail!("retained prepare job {job_id:?} has mismatched {field}");
+            }
+        }
+        if binding.get("generation").and_then(Value::as_u64) != Some(projection.generation) {
+            bail!("retained prepare job {job_id:?} has mismatched generation");
+        }
+        let requirement = projection
+            .activation_requirement
+            .as_ref()
+            .context("phase projection has no activation requirement")?;
+        if binding
+            .get("activation_requirement_digest")
+            .and_then(Value::as_str)
+            != Some(requirement.requirement_sha256.as_str())
+        {
+            bail!("retained prepare job {job_id:?} has mismatched activation requirement");
+        }
+        let expected_epoch = projection.hold_epoch_for_execution(&host, &expected_resource)?;
+        if binding.get("hold_epoch").and_then(Value::as_str) != expected_epoch.as_deref() {
+            bail!("retained prepare job {job_id:?} has mismatched hold epoch");
+        }
+        let result = status.pointer("/result/result").unwrap_or(&Value::Null);
+        let spec_sha256 = digest_bytes(&serde_json::to_vec(spec)?);
+        let result_sha256 = digest_bytes(&serde_json::to_vec(result)?);
+        Ok(json!({
+            "host": host,
+            "job_id": job_id,
+            "operation": operation,
+            "result_sha256": result_sha256,
+            "spec_sha256": spec_sha256,
+        }))
+    }
+
+    fn validate_retained_job_operation(
+        &self,
+        operation: &str,
+        spec: &Value,
+        transaction: &Transaction,
+        job_id: &str,
+    ) -> Result<()> {
+        if let MoveItem::Instance {
+            source,
+            target,
+            policy,
+            ..
+        } = self.item
+        {
+            let control = |endpoint: &InstanceEndpoint, action: InstanceControlAction| {
+                json!({
+                    "kind": "control_instance",
+                    "request": InstanceControlRequest {
+                        program: policy.program.clone(),
+                        remote: endpoint.remote.clone(),
+                        project: endpoint.project.clone(),
+                        instance: endpoint.instance.clone(),
+                        stop_timeout_seconds: policy.stop_timeout_seconds,
+                        force_after_timeout: policy.force_after_timeout,
+                        operation: action,
+                    },
+                })
+            };
+            let expected = match operation {
+                "hold-source" | "hold-target" => json!({"kind": "reserve"}),
+                "assert-source-stopped" => control(
+                    source,
+                    InstanceControlAction::AssertStopped {
+                        allow_absent: false,
+                    },
+                ),
+                "assert-target-stopped" => control(
+                    target,
+                    InstanceControlAction::AssertStopped {
+                        allow_absent: transaction.pending_action == Some(Action::Setup),
+                    },
+                ),
+                "verify-final" => control(
+                    target,
+                    InstanceControlAction::VerifyMigrationTarget {
+                        source_instance: source.instance.clone(),
+                        source_remote: source.remote.clone(),
+                        source_project: source.project.clone(),
+                        storage_pool: policy.target_storage_pool.clone(),
+                    },
+                ),
+                "verify-reverse" => control(
+                    source,
+                    InstanceControlAction::VerifyMigrationTarget {
+                        source_instance: target.instance.clone(),
+                        source_remote: target.remote.clone(),
+                        source_project: target.project.clone(),
+                        storage_pool: policy.rollback_storage_pool.clone(),
+                    },
+                ),
+                "reverse-transfer" => json!({
+                    "kind": "migrate_instance",
+                    "request": InstanceMigrationRequest {
+                        program: policy.program.clone(),
+                        phase: InstanceMigrationPhase::Final,
+                        source_instance: target.instance.clone(),
+                        target_instance: source.instance.clone(),
+                        source_remote: target.remote.clone(),
+                        target_remote: source.remote.clone(),
+                        source_project: target.project.clone(),
+                        target_project: source.project.clone(),
+                        snapshot: migration_snapshot(transaction, "reverse-copy"),
+                        force_refresh_existing: true,
+                        policy: policy.migration_policy(true),
+                        start_target: false,
+                    },
+                }),
+                _ => bail!("unsupported retained evidence operation {operation:?}"),
+            };
+            if spec.get("operation") != Some(&expected) {
+                bail!("retained prepare job {job_id:?} has mismatched typed operation");
+            }
+            return Ok(());
+        }
+
+        let expected_kind = match operation {
+            "hold-source" | "hold-target" => "hold",
+            "assert-source-stopped" | "assert-target-stopped" => "status",
+            "verify-final" | "verify-reverse" => "broker_verify",
+            "reverse-transfer" => "broker_copy",
+            _ => bail!("unsupported retained evidence operation {operation:?}"),
+        };
+        if spec.pointer("/operation/kind").and_then(Value::as_str) != Some(expected_kind) {
+            bail!("retained prepare job {job_id:?} has mismatched operation");
+        }
+        if matches!(
+            operation,
+            "verify-final" | "verify-reverse" | "reverse-transfer"
+        ) {
+            let reverse = matches!(operation, "verify-reverse" | "reverse-transfer");
+            let (source_host, target_host) = if reverse {
+                (&transaction.target, &transaction.source)
+            } else {
+                (&transaction.source, &transaction.target)
+            };
+            let source = serde_json::to_value(
+                self.native
+                    .config
+                    .pinned_broker_endpoint(source_host, true)?,
+            )?;
+            let target = serde_json::to_value(
+                self.native
+                    .config
+                    .pinned_broker_endpoint(target_host, false)?,
+            )?;
+            if spec.pointer("/operation/source") != Some(&source)
+                || spec.pointer("/operation/target") != Some(&target)
+                || spec.pointer("/operation/destination_root") != Some(&Value::Null)
+                || spec
+                    .pointer("/operation/backup_source")
+                    .and_then(Value::as_bool)
+                    != Some(false)
+            {
+                bail!("retained prepare job {job_id:?} has mismatched broker endpoints");
+            }
+            let plan = if reverse {
+                transaction
+                    .data_root_plan
+                    .iter()
+                    .map(|root| DataRootPlan {
+                        name: root.name.clone(),
+                        source: root.target.clone(),
+                        target: root.source.clone(),
+                        excludes: root.excludes.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                transaction.data_root_plan.clone()
+            };
+            if spec.get("data_root_plan") != Some(&serde_json::to_value(plan)?) {
+                bail!("retained prepare job {job_id:?} has mismatched data-root plan");
+            }
+        }
+        Ok(())
+    }
+
     pub fn assert_active_job_failed(&self, transaction: &Transaction) -> Result<()> {
         let operation = transaction
             .active_step
@@ -2491,8 +3347,13 @@ impl<'a> WorkflowItemAdapter<'a> {
                 Ok(())
             }
             "provision-target" | "deploy-target-gated" | "deploy-cutover" | "deploy-rollback" => {
+                let route_resource = if operation == "deploy-rollback" {
+                    &source_resource
+                } else {
+                    &target_resource
+                };
                 self.native
-                    .route_job_if_configured(operation, transaction, &target_resource)
+                    .route_job_if_configured(operation, transaction, route_resource)
             }
             "reserve-target" => {
                 self.reserve_job(executor, transaction, &target_resource, "reserve-target")
@@ -3078,7 +3939,12 @@ impl Adapter for NativeAdapter {
                 }
             }
             "deploy-cutover" | "deploy-rollback" => {
-                self.route_job(operation, transaction, &target_resource)
+                let route_resource = if operation == "deploy-rollback" {
+                    &source_resource
+                } else {
+                    &target_resource
+                };
+                self.route_job(operation, transaction, route_resource)
             }
             "hold-source" => self.run_job(
                 &transaction.source,
@@ -3366,7 +4232,112 @@ mod tests {
             .is_err()
         );
     }
+    use crate::projection::{MovePhase, MoveProjector};
+    use crate::workflow::{HostEndpoint, MoveItem, TransactionSpec};
     use crate::{Action, Transaction};
+
+    #[test]
+    fn projection_bound_placement_ignores_the_operator_checkout() {
+        let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {"program":"/bin/false"},
+            "hosts": {
+                "source": {"address":"127.0.0.1","host_resource":"host:source-system"},
+                "target": {"address":"127.0.0.2","host_resource":"host:target-system"}
+            },
+            "operation_routes": {
+                "deploy-cutover": {
+                    "executor":"source",
+                    "phase_projection": {"executor":"source","resource":"service:router"}
+                },
+                "deploy-rollback": {
+                    "executor":"source",
+                    "phase_projection": {"executor":"source","resource":"service:router"}
+                }
+            }
+        }))
+        .unwrap();
+        let mut spec = TransactionSpec::new(
+            Some("move-zulip"),
+            vec![MoveItem::Service {
+                id: "item-001".to_owned(),
+                service: "zulip".to_owned(),
+                source_resource: Some("service:abird-zulip".to_owned()),
+                target_resource: Some("service:abird-zulip".to_owned()),
+                source: HostEndpoint {
+                    host: "source".to_owned(),
+                    instance: None,
+                },
+                target: HostEndpoint {
+                    host: "target".to_owned(),
+                    instance: None,
+                },
+                data_roots: Vec::new(),
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        spec.declarative_scope = Some("abird".to_owned());
+        let projection =
+            MoveProjector::derive(&spec, &config, MovePhase::Seeded, None, None).unwrap();
+        let mut adapter = NativeAdapter::from_config(config);
+        adapter.bind_projection(projection).unwrap();
+        let transaction = Transaction::new_service(
+            "zulip".to_owned(),
+            "source".to_owned(),
+            "target".to_owned(),
+            PathBuf::from("/stale/operator/checkout/hosts/nixbot.nix"),
+        )
+        .unwrap();
+
+        adapter
+            .preflight_service_placement(&transaction, "source")
+            .unwrap();
+        assert!(
+            adapter
+                .preflight_service_placement(&transaction, "target")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retained_transfer_evidence_uses_exact_endpoint_resources() {
+        let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {"program":"/bin/false"},
+            "hosts": {
+                "source": {"address":"127.0.0.1"},
+                "target": {"address":"127.0.0.2"}
+            }
+        }))
+        .unwrap();
+        let adapter = NativeAdapter::from_config(config);
+        let mut transaction = Transaction::new_service(
+            "zulip".to_owned(),
+            "source".to_owned(),
+            "target".to_owned(),
+            PathBuf::from("/hosts/nixbot.nix"),
+        )
+        .unwrap();
+        transaction.source_resource = Some("service:abird-zulip-source".to_owned());
+        transaction.target_resource = Some("service:abird-zulip-target".to_owned());
+
+        assert_eq!(
+            adapter
+                .retained_evidence_resource(&transaction, "verify-final")
+                .unwrap(),
+            "service:abird-zulip-source"
+        );
+        for operation in ["reverse-transfer", "verify-reverse"] {
+            assert_eq!(
+                adapter
+                    .retained_evidence_resource(&transaction, operation)
+                    .unwrap(),
+                "service:abird-zulip-target"
+            );
+        }
+    }
 
     #[test]
     fn validates_native_inventory_and_routes() {
@@ -3418,11 +4389,34 @@ mod tests {
     }
 
     #[test]
+    fn inventory_agent_forwarding_is_explicit() {
+        let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {"program": "/usr/bin/ssh"},
+            "hosts": {"controller": {"address": "controller.example", "user": "nixbot"}}
+        }))
+        .unwrap();
+        let host = config.host("controller").unwrap();
+        let forwarded = config
+            .inventory_ssh_command("controller", host, true)
+            .unwrap();
+        let ordinary = config
+            .inventory_ssh_command("controller", host, false)
+            .unwrap();
+        assert!(forwarded.get_args().any(|argument| argument == "-A"));
+        assert!(!ordinary.get_args().any(|argument| argument == "-A"));
+    }
+
+    #[test]
     fn derives_repository_move_policy_from_existing_nixbot_inventory() {
         let mut config: HostManagerConfig = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "ssh": {"program": "/usr/bin/ssh"},
             "hosts": {
+                "abird-ci": {
+                    "address": "legacy-ci",
+                    "host_resource": "host:abird-platform.abird-ci"
+                },
                 "gap3-gondor": {
                     "address": "gateway",
                     "host_resource": "host:gap3-gondor",
@@ -3465,12 +4459,16 @@ mod tests {
         .unwrap();
         config
             .derive_repository_defaults(&serde_json::json!({
-                "config": {"ci": {"host": "abird-ci"}}
+                "config": {
+                    "controller": "abird-ci",
+                    "transferBroker": "abird-corp"
+                }
             }))
             .unwrap();
         config.validate().unwrap();
 
-        assert_eq!(config.transfer_broker.as_deref(), Some("abird-gondor-ci"));
+        assert_eq!(config.controller.as_deref(), Some("abird-gondor-ci"));
+        assert_eq!(config.transfer_broker.as_deref(), Some("abird-gondor-corp"));
         let transaction = Transaction::new_service(
             "abird-zulip".to_owned(),
             "abird-gondor-corp".to_owned(),
@@ -3493,6 +4491,79 @@ mod tests {
         assert_eq!(request("deploy-target-gated").host, "abird-gondor-zulip");
         assert_eq!(request("deploy-cutover").host, "abird-gondor-proxy");
         assert_eq!(request("deploy-rollback").host, "abird-gondor-proxy");
+        assert_eq!(
+            config
+                .projected_operation_owner(
+                    "deploy-cutover",
+                    "abird-gondor-corp",
+                    "abird-gondor-zulip",
+                )
+                .unwrap(),
+            (
+                "abird-gondor-proxy".to_owned(),
+                "service:abird-nginx".to_owned(),
+            )
+        );
+    }
+
+    #[test]
+    fn repository_inventory_temporarily_accepts_legacy_ci_as_both_roles() {
+        let mut config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {"program": "/usr/bin/ssh"},
+            "hosts": {
+                "abird-gondor-ci": {
+                    "address": "ci",
+                    "host_resource": "host:abird-ci"
+                }
+            }
+        }))
+        .unwrap();
+
+        config
+            .derive_repository_defaults(&serde_json::json!({
+                "config": {"ci": {"host": "abird-ci"}}
+            }))
+            .unwrap();
+
+        assert_eq!(config.controller.as_deref(), Some("abird-gondor-ci"));
+        assert_eq!(config.transfer_broker.as_deref(), Some("abird-gondor-ci"));
+    }
+
+    #[test]
+    fn repository_inventory_rejects_partial_new_capability_config() {
+        let config = || -> HostManagerConfig {
+            serde_json::from_value(serde_json::json!({
+                "schema_version": 1,
+                "ssh": {"program": "/usr/bin/ssh"},
+                "hosts": {
+                    "abird-gondor-ci": {
+                        "address": "ci",
+                        "host_resource": "host:abird-ci"
+                    }
+                }
+            }))
+            .unwrap()
+        };
+
+        assert!(
+            config()
+                .derive_repository_defaults(&serde_json::json!({
+                    "config": {"transferBroker": "abird-ci"}
+                }))
+                .unwrap_err()
+                .to_string()
+                .contains("config.controller")
+        );
+        assert!(
+            config()
+                .derive_repository_defaults(&serde_json::json!({
+                    "config": {"controller": "abird-ci"}
+                }))
+                .unwrap_err()
+                .to_string()
+                .contains("config.transferBroker")
+        );
     }
 
     #[test]
@@ -3631,7 +4702,10 @@ mod tests {
             r#"{
               "schema_version": 1,
               "ssh": {"program": "/usr/bin/ssh"},
-              "hosts": {"controller": {"address": "local", "local": true}},
+              "hosts": {
+                "controller": {"address": "local", "local": true},
+                "abird-gondor-proxy": {"address": "proxy"}
+              },
               "operation_routes": {
                 "deploy-cutover": {
                   "executor": "controller",
@@ -3641,6 +4715,10 @@ mod tests {
                     "host": "abird-gondor-proxy",
                     "nix_config": "abird-gondor-proxy-zulip-target",
                     "exclude_hosts": ["gap3-gondor"]
+                  },
+                  "phase_projection": {
+                    "executor": "abird-gondor-proxy",
+                    "resource": "service:abird-nginx"
                   }
                 }
               }
@@ -3659,6 +4737,15 @@ mod tests {
         assert_eq!(
             request.nix_config.as_deref(),
             Some("abird-gondor-proxy-zulip-target")
+        );
+        assert_eq!(
+            config
+                .projected_operation_owner("deploy-cutover", "controller", "controller")
+                .unwrap(),
+            (
+                "abird-gondor-proxy".to_owned(),
+                "service:abird-nginx".to_owned(),
+            )
         );
     }
 

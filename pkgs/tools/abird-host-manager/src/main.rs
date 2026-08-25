@@ -1,6 +1,8 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -8,9 +10,9 @@ use abird_host_agent::instance::{
     IncusCopyMode, InstanceMigrationPhase, InstanceMigrationPolicy, InstanceMigrationRequest,
     RuntimeStateMode, SeedConsistency,
 };
+use abird_host_agent::job::{projected_hold_job_id, projected_release_job_id};
 use abird_host_agent::sha256::digest_bytes;
 use abird_host_agent::transfer::{TransferDefinition, transfer_with_excludes_progress};
-use abird_host_manager::Action;
 use abird_host_manager::agent_adapter::{
     HostManagerConfig, NativeAdapter, declared_data_roots, instance_resource,
 };
@@ -24,8 +26,13 @@ use abird_host_manager::physical::{
 };
 use abird_host_manager::programs::nixos_generate_config::NixosGenerateConfig;
 use abird_host_manager::programs::privilege::Privilege;
+use abird_host_manager::projection::{
+    MoveItemObservation, MovePhase, MoveProjectionObservation, MoveProjector, PhaseProjection,
+    ResourceHoldIntent, ResourceHoldPhase, ResourceHoldProjector, canonical_sha256,
+};
 use abird_host_manager::repository::{
-    ManagedHost, ManagedHostSystem, ManagedIncus, Repository, RepositoryPrograms,
+    ManagedHost, ManagedHostSystem, ManagedIncus, ProjectionPublisher, Repository,
+    RepositoryPrograms,
 };
 use abird_host_manager::selector::select_hosts;
 use abird_host_manager::service_registry::{resolve_service_host, resolve_service_resource};
@@ -34,10 +41,11 @@ use abird_host_manager::workflow::{
     InstanceEndpoint, InstanceMovePolicy, MoveItem, TransactionSpec, wipe_id,
 };
 use abird_host_manager::workflow_runtime::{
-    InitialMoveContinuation, TransactionRecord, WorkflowRegistration, WorkflowStore,
-    execute_workflow_action, preflight_new_workflow, preflight_workflow_action,
-    supersede_failed_workflow_jobs, validate_failed_workflow_jobs,
+    ActivationAuthorization, InitialMoveContinuation, TransactionRecord, WorkflowRegistration,
+    WorkflowStore, execute_workflow_action, execute_workflow_action_until, preflight_new_workflow,
+    preflight_workflow_action, supersede_failed_workflow_jobs, validate_failed_workflow_jobs,
 };
+use abird_host_manager::{Action, Phase as ItemPhase};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -51,9 +59,31 @@ struct Cli {
         long,
         global = true,
         env = "ABIRD_HOST_MANAGER_STATE_DIR",
+        conflicts_with = "local_run",
         help_heading = "Global options"
     )]
     state_dir: Option<PathBuf>,
+
+    /// Execute stateful commands locally and keep state under .agents/runs/NAME.
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        conflicts_with_all = ["controller", "state_dir"],
+        help_heading = "Global options"
+    )]
+    local_run: Option<String>,
+
+    /// Workflow controller host resource, inventory name, or "local".
+    #[arg(
+        long,
+        global = true,
+        env = "ABIRD_HOST_MANAGER_CONTROLLER",
+        value_name = "HOST|local",
+        conflicts_with = "local_run",
+        help_heading = "Global options"
+    )]
+    controller: Option<String>,
 
     /// Native configuration; defaults to hosts/nixbot.nix in the enclosing Abird repository.
     #[arg(
@@ -112,6 +142,35 @@ struct Cli {
         help_heading = "Global options"
     )]
     nixos_generate_config_program: PathBuf,
+
+    /// Git executable used only by the manager-owned projection publisher.
+    #[arg(
+        long,
+        global = true,
+        env = "ABIRD_HOST_MANAGER_GIT",
+        default_value = "git",
+        help_heading = "Global options"
+    )]
+    git_program: PathBuf,
+
+    /// SSH command reserved for authenticated projection publication.
+    #[arg(
+        long,
+        global = true,
+        env = "ABIRD_HOST_MANAGER_PUBLISH_GIT_SSH_COMMAND",
+        hide = true
+    )]
+    publish_git_ssh_command: Option<String>,
+
+    /// Authoritative fast-forward branch for migration projections.
+    #[arg(
+        long,
+        global = true,
+        env = "ABIRD_HOST_MANAGER_PROJECTION_BRANCH",
+        default_value = "master",
+        help_heading = "Global options"
+    )]
+    projection_branch: String,
 
     #[command(subcommand)]
     command: Command,
@@ -441,6 +500,10 @@ struct MoveArgs {
     #[arg(long = "to", alias = "target")]
     target: String,
 
+    /// Declarative stack namespace; otherwise require one unique production stack.
+    #[arg(long)]
+    stack: Option<String>,
+
     /// Optional caller idempotency key; otherwise a sortable ID is generated.
     #[arg(long)]
     id: Option<String>,
@@ -517,6 +580,10 @@ struct MoveGuard {
     #[arg(long)]
     force_existing: bool,
 
+    /// Persist only repository desired state; do not construct a runtime adapter or contact agents.
+    #[arg(long)]
+    skip_runtime: bool,
+
     #[command(flatten)]
     execution: ExecutionGuard,
 }
@@ -543,13 +610,15 @@ enum TransactionCommand {
     /// Refresh the verified non-authoritative seed copy.
     Seed(TransactionPhaseArgs),
     /// Stop all writers, finish and verify the authoritative copy, and remain held.
-    Prepare(TransactionPhaseArgs),
+    Prepare(ProjectedTransactionPhaseArgs),
     /// Reverify the prepared data while both sides remain held.
     Verify(TransactionPhaseArgs),
     /// Declaratively select and explicitly activate the target writer.
-    Cutover(TransactionPhaseArgs),
+    Cutover(ProjectedTransactionPhaseArgs),
     /// Restore and explicitly activate the source writer.
-    Rollback(TransactionPhaseArgs),
+    Rollback(ProjectedTransactionPhaseArgs),
+    /// Reconcile runtime to the already-published desired projection.
+    Reconcile(TransactionReconcileArgs),
     /// Resume the exact pending action after an interrupted or failed step.
     Resume(TransactionResumeArgs),
     /// End the rollback window and release the inactive side without starting it.
@@ -568,6 +637,27 @@ struct TransactionCreateArgs {
 #[derive(Debug, Args)]
 struct TransactionPhaseArgs {
     id: String,
+    #[command(flatten)]
+    guard: ExecutionGuard,
+}
+
+#[derive(Debug, Args)]
+struct ProjectedTransactionPhaseArgs {
+    id: String,
+    /// Persist only repository desired state; do not construct a runtime adapter or contact agents.
+    #[arg(long)]
+    skip_runtime: bool,
+    #[command(flatten)]
+    guard: ExecutionGuard,
+}
+
+#[derive(Debug, Args)]
+struct TransactionReconcileArgs {
+    id: String,
+    /// Require the repository document consumed by this reconciliation to be
+    /// exactly the digest injected into the deployed controller generation.
+    #[arg(long)]
+    expected_projection_sha256: Option<String>,
     #[command(flatten)]
     guard: ExecutionGuard,
 }
@@ -1051,6 +1141,7 @@ enum ResourceCommand {
         command: ResourceHoldCommand,
     },
     /// Release the matching hold and explicitly start the resource.
+    #[command(hide = true)]
     Activate(DurableResourceActionArgs),
 }
 
@@ -1059,7 +1150,26 @@ enum ResourceHoldCommand {
     /// Show the durable hold for one resource on one host.
     Show(ResourceArgs),
     /// Persist a transaction-owned hold before stopping the resource.
+    #[command(hide = true)]
     Acquire(DurableResourceActionArgs),
+    /// Publish a held phase projection and optionally reconcile it immediately.
+    Set(ProjectedResourceHoldArgs),
+    /// Publish the unheld phase and optionally release it immediately.
+    Clear(ProjectedResourceHoldArgs),
+}
+
+#[derive(Debug, Args)]
+struct ProjectedResourceHoldArgs {
+    #[command(flatten)]
+    resource: ResourceArgs,
+    /// Stable phase-projection identity reused across hold and unhold phases.
+    #[arg(long)]
+    id: String,
+    /// Publish only repository desired state; let a later deploy reconcile it.
+    #[arg(long)]
+    skip_runtime: bool,
+    #[command(flatten)]
+    guard: ExecutionGuard,
 }
 
 #[derive(Debug, Args)]
@@ -1118,8 +1228,18 @@ struct ResourceLogArgs {
     logs: LogOptions,
 }
 
+const CONTROLLER_EXECUTION_ENV: &str = "ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION";
+const CONTROLLER_REPOSITORY: &str = "/var/lib/nixbot/nix";
+const CONTROLLER_CONFIG: &str = "/var/lib/nixbot/nix/hosts/nixbot.nix";
+const CONTROLLER_STATE_DIR: &str = "/var/lib/nixbot/abird-host-manager";
+const CONTROLLER_MANAGER: &str = "/run/current-system/sw/bin/abird-host-manager";
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    select_local_run(&mut cli)?;
+    if should_dispatch_to_controller(&cli) {
+        return dispatch_to_controller(&cli);
+    }
     let repository_programs = RepositoryPrograms {
         nix: cli.nix_program,
         privilege: cli.privilege_program,
@@ -1128,23 +1248,47 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Instance { command } => {
             let config = resolve_config(cli.config.as_deref(), cli.repo_root.as_deref())?;
-            let adapter = NativeAdapter::load(&config)?;
-            instance_command(resolve_state_dir(cli.state_dir)?, config, &adapter, command)
+            instance_command(
+                resolve_state_dir(cli.state_dir)?,
+                config,
+                ProjectionExecution {
+                    repo_root: cli.repo_root,
+                    git_program: cli.git_program,
+                    nix_program: repository_programs.nix.clone(),
+                    branch: cli.projection_branch,
+                    publish_git_ssh_command: cli.publish_git_ssh_command,
+                },
+                command,
+            )
         }
         Command::Transaction { command } => transaction_command(
             resolve_state_dir(cli.state_dir)?,
             cli.config,
-            cli.repo_root,
+            ProjectionExecution {
+                repo_root: cli.repo_root,
+                git_program: cli.git_program,
+                nix_program: repository_programs.nix,
+                branch: cli.projection_branch,
+                publish_git_ssh_command: cli.publish_git_ssh_command,
+            },
             command,
         ),
         Command::Host { command } => match command {
             HostCommand::Move(args) => move_resource(
                 resolve_state_dir(cli.state_dir)?,
                 resolve_config(cli.config.as_deref(), cli.repo_root.as_deref())?,
+                ProjectionExecution {
+                    repo_root: cli.repo_root,
+                    git_program: cli.git_program,
+                    nix_program: repository_programs.nix.clone(),
+                    branch: cli.projection_branch,
+                    publish_git_ssh_command: cli.publish_git_ssh_command,
+                },
                 MoveArgs {
                     entities: vec![args.source.clone()],
                     source: args.source,
                     target: args.target,
+                    stack: None,
                     id: args.id,
                     guard: args.guard,
                 },
@@ -1173,6 +1317,13 @@ fn main() -> Result<()> {
             ServiceCommand::Move(args) => move_resource(
                 resolve_state_dir(cli.state_dir)?,
                 resolve_config(cli.config.as_deref(), cli.repo_root.as_deref())?,
+                ProjectionExecution {
+                    repo_root: cli.repo_root,
+                    git_program: cli.git_program,
+                    nix_program: repository_programs.nix.clone(),
+                    branch: cli.projection_branch,
+                    publish_git_ssh_command: cli.publish_git_ssh_command,
+                },
                 args,
                 ResourceType::Service,
             ),
@@ -1195,8 +1346,45 @@ fn main() -> Result<()> {
             ResourceCommand::Move(args) => move_resource(
                 resolve_state_dir(cli.state_dir)?,
                 resolve_config(cli.config.as_deref(), cli.repo_root.as_deref())?,
+                ProjectionExecution {
+                    repo_root: cli.repo_root,
+                    git_program: cli.git_program,
+                    nix_program: repository_programs.nix.clone(),
+                    branch: cli.projection_branch,
+                    publish_git_ssh_command: cli.publish_git_ssh_command,
+                },
                 args,
                 ResourceType::Resource,
+            ),
+            ResourceCommand::Hold {
+                command: ResourceHoldCommand::Set(args),
+            } => project_resource_hold(
+                resolve_state_dir(cli.state_dir)?,
+                resolve_config(cli.config.as_deref(), cli.repo_root.as_deref())?,
+                ProjectionExecution {
+                    repo_root: cli.repo_root,
+                    git_program: cli.git_program,
+                    nix_program: repository_programs.nix.clone(),
+                    branch: cli.projection_branch,
+                    publish_git_ssh_command: cli.publish_git_ssh_command,
+                },
+                args,
+                ResourceHoldPhase::Held,
+            ),
+            ResourceCommand::Hold {
+                command: ResourceHoldCommand::Clear(args),
+            } => project_resource_hold(
+                resolve_state_dir(cli.state_dir)?,
+                resolve_config(cli.config.as_deref(), cli.repo_root.as_deref())?,
+                ProjectionExecution {
+                    repo_root: cli.repo_root,
+                    git_program: cli.git_program,
+                    nix_program: repository_programs.nix.clone(),
+                    branch: cli.projection_branch,
+                    publish_git_ssh_command: cli.publish_git_ssh_command,
+                },
+                args,
+                ResourceHoldPhase::Unheld,
             ),
             command => {
                 let adapter = NativeAdapter::load(&resolve_config(
@@ -1222,19 +1410,198 @@ fn main() -> Result<()> {
     }
 }
 
-fn instance_command(
-    state_dir: PathBuf,
-    config: PathBuf,
-    adapter: &NativeAdapter,
-    command: InstanceCommand,
-) -> Result<()> {
+fn should_dispatch_to_controller(cli: &Cli) -> bool {
+    if env::var_os(CONTROLLER_EXECUTION_ENV).is_some() || cli.controller.as_deref() == Some("local")
+    {
+        return false;
+    }
+    if cli.controller.is_none() && (cli.config.is_some() || cli.state_dir.is_some()) {
+        return false;
+    }
+    is_controller_authority_command(&cli.command)
+}
+
+fn is_controller_authority_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Instance {
+            command: InstanceCommand::Move(_),
+        } | Command::Host {
+            command: HostCommand::Move(_),
+        } | Command::Service {
+            command: ServiceCommand::Move(_),
+        } | Command::Resource {
+            command: ResourceCommand::Move(_),
+        } | Command::Resource {
+            command: ResourceCommand::Hold {
+                command: ResourceHoldCommand::Set(_) | ResourceHoldCommand::Clear(_),
+            },
+        } | Command::Transaction { .. }
+    )
+}
+
+fn dispatch_to_controller(cli: &Cli) -> Result<()> {
+    let publication_authority = controller_publication_authority(&cli.command);
+    let forward_agent = match publication_authority {
+        PublicationAuthority::Required => {
+            require_local_ssh_agent()?;
+            true
+        }
+        PublicationAuthority::Possible => local_ssh_agent_available()?,
+        PublicationAuthority::None => false,
+    };
+    if forward_agent {
+        Repository::discover(cli.repo_root.clone())?
+            .verify_projection_publication_base(&cli.git_program, &cli.projection_branch)?;
+    }
+    let config_path = resolve_config(None, cli.repo_root.as_deref())?;
+    let config = HostManagerConfig::load(&config_path)?;
+    let controller = match cli.controller.as_deref() {
+        Some(selector) => config.resolve_host_reference(selector)?,
+        None => config.controller_host()?.to_owned(),
+    };
+    let state_dir = remote_controller_state_dir(cli.state_dir.as_deref())?;
+    let mut argv = vec![
+        "/usr/bin/env".to_owned(),
+        format!("{CONTROLLER_EXECUTION_ENV}=1"),
+        CONTROLLER_MANAGER.to_owned(),
+        "--repo-root".to_owned(),
+        CONTROLLER_REPOSITORY.to_owned(),
+        "--config".to_owned(),
+        CONTROLLER_CONFIG.to_owned(),
+        "--state-dir".to_owned(),
+        state_dir,
+    ];
+    argv.extend(controller_command_arguments(env::args().skip(1))?);
+    config.run_inventory_command_interactive(&controller, &argv, forward_agent)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationAuthority {
+    Required,
+    Possible,
+    None,
+}
+
+fn controller_publication_authority(command: &Command) -> PublicationAuthority {
     match command {
-        InstanceCommand::Move(args) => move_instances(state_dir, config, args),
-        InstanceCommand::Sync(args) => sync_instance_command(adapter, args),
+        Command::Instance {
+            command: InstanceCommand::Move(args),
+        } if args.guard.execution.execute => PublicationAuthority::Required,
+        Command::Host {
+            command: HostCommand::Move(args),
+        } if args.guard.execution.execute => PublicationAuthority::Required,
+        Command::Service {
+            command: ServiceCommand::Move(args),
+        }
+        | Command::Resource {
+            command: ResourceCommand::Move(args),
+        } if args.guard.execution.execute => PublicationAuthority::Required,
+        Command::Resource {
+            command:
+                ResourceCommand::Hold {
+                    command: ResourceHoldCommand::Set(args) | ResourceHoldCommand::Clear(args),
+                },
+        } if args.guard.execute => PublicationAuthority::Required,
+        Command::Transaction { command } => match command {
+            TransactionCommand::Create(args) if args.guard.execute => {
+                PublicationAuthority::Required
+            }
+            TransactionCommand::Prepare(args)
+            | TransactionCommand::Cutover(args)
+            | TransactionCommand::Rollback(args)
+                if args.guard.execute =>
+            {
+                PublicationAuthority::Possible
+            }
+            _ => PublicationAuthority::None,
+        },
+        _ => PublicationAuthority::None,
     }
 }
 
-fn move_instances(state_dir: PathBuf, config: PathBuf, args: InstanceMoveArgs) -> Result<()> {
+fn require_local_ssh_agent() -> Result<()> {
+    let socket = env::var_os("SSH_AUTH_SOCK")
+        .filter(|socket| !socket.is_empty())
+        .context("projection publication requires a local SSH_AUTH_SOCK")?;
+    let metadata = fs::metadata(&socket).with_context(|| {
+        format!(
+            "inspect local SSH_AUTH_SOCK {}",
+            Path::new(&socket).display()
+        )
+    })?;
+    if !metadata.file_type().is_socket() {
+        bail!(
+            "local SSH_AUTH_SOCK {} is not a Unix socket",
+            Path::new(&socket).display()
+        );
+    }
+    Ok(())
+}
+
+fn local_ssh_agent_available() -> Result<bool> {
+    match env::var_os("SSH_AUTH_SOCK").filter(|socket| !socket.is_empty()) {
+        Some(_) => require_local_ssh_agent().map(|()| true),
+        None => Ok(false),
+    }
+}
+
+fn controller_command_arguments(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<Vec<String>> {
+    let mut filtered = Vec::new();
+    let mut arguments = arguments.into_iter();
+    while let Some(argument) = arguments.next() {
+        if matches!(
+            argument.as_str(),
+            "--repo-root"
+                | "--config"
+                | "--state-dir"
+                | "--controller"
+                | "--local-run"
+                | "--publish-git-ssh-command"
+        ) {
+            arguments
+                .next()
+                .with_context(|| format!("global option {argument} has no value"))?;
+            continue;
+        }
+        if [
+            "--repo-root=",
+            "--config=",
+            "--state-dir=",
+            "--controller=",
+            "--local-run=",
+            "--publish-git-ssh-command=",
+        ]
+        .iter()
+        .any(|prefix| argument.starts_with(prefix))
+        {
+            continue;
+        }
+        filtered.push(argument);
+    }
+    Ok(filtered)
+}
+
+fn instance_command(
+    state_dir: PathBuf,
+    config: PathBuf,
+    projection: ProjectionExecution,
+    command: InstanceCommand,
+) -> Result<()> {
+    match command {
+        InstanceCommand::Move(args) => move_instances(state_dir, config, projection, args),
+        InstanceCommand::Sync(args) => sync_instance_command(&NativeAdapter::load(&config)?, args),
+    }
+}
+
+fn move_instances(
+    state_dir: PathBuf,
+    config: PathBuf,
+    projection: ProjectionExecution,
+    args: InstanceMoveArgs,
+) -> Result<()> {
     require_guard(&args.guard.execution, "instance move")?;
     let items = args
         .instances
@@ -1268,7 +1635,15 @@ fn move_instances(state_dir: PathBuf, config: PathBuf, args: InstanceMoveArgs) -
             },
         })
         .collect();
-    execute_new_move(state_dir, config, args.id.as_deref(), items, &args.guard)
+    execute_new_move(
+        state_dir,
+        config,
+        projection,
+        None,
+        args.id.as_deref(),
+        items,
+        &args.guard,
+    )
 }
 
 fn sync_instance_command(adapter: &NativeAdapter, args: InstanceSyncArgs) -> Result<()> {
@@ -1395,13 +1770,67 @@ enum ResourceType {
     Resource,
 }
 
+struct ProjectionExecution {
+    repo_root: Option<PathBuf>,
+    git_program: PathBuf,
+    nix_program: PathBuf,
+    branch: String,
+    publish_git_ssh_command: Option<String>,
+}
+
 fn move_resource(
     state_dir: PathBuf,
     config: PathBuf,
+    projection: ProjectionExecution,
     args: MoveArgs,
     resource_type: ResourceType,
 ) -> Result<()> {
     require_guard(&args.guard.execution, "move")?;
+    let mut service_resources = BTreeMap::new();
+    let declarative_scope = if matches!(resource_type, ResourceType::Service) {
+        let repository = Repository::discover(projection.repo_root.clone())?;
+        let inventory = HostManagerConfig::load(&config)?;
+        let mut scopes = BTreeSet::new();
+        for service in &args.entities {
+            let resolved = resolve_service_host(
+                &repository,
+                &projection.nix_program,
+                &inventory,
+                args.stack.as_deref(),
+                service,
+            )?;
+            if resolved.host != args.source {
+                bail!(
+                    "service {service:?} is declared on {:?}, not requested source {:?}",
+                    resolved.host,
+                    args.source
+                );
+            }
+            let source_resource = resolve_service_resource(
+                &repository,
+                &projection.nix_program,
+                &args.source,
+                service,
+            )?;
+            let target_resource = resolve_service_resource(
+                &repository,
+                &projection.nix_program,
+                &args.target,
+                service,
+            )?;
+            service_resources.insert(service.clone(), (source_resource, target_resource));
+            scopes.insert(resolved.stack);
+        }
+        if scopes.len() != 1 {
+            bail!("one service move transaction must use exactly one declarative stack scope");
+        }
+        scopes.into_iter().next()
+    } else {
+        if args.stack.is_some() {
+            bail!("--stack is valid only for logical service moves");
+        }
+        None
+    };
     let source = HostEndpoint {
         host: args.source.clone(),
         instance: None,
@@ -1426,6 +1855,12 @@ fn move_resource(
                 ResourceType::Service => MoveItem::Service {
                     id,
                     service: name.clone(),
+                    source_resource: service_resources
+                        .get(name)
+                        .map(|resources| resources.0.clone()),
+                    target_resource: service_resources
+                        .get(name)
+                        .map(|resources| resources.1.clone()),
                     source: source.clone(),
                     target: target.clone(),
                     data_roots: Vec::new(),
@@ -1440,22 +1875,135 @@ fn move_resource(
             }
         })
         .collect();
-    execute_new_move(state_dir, config, args.id.as_deref(), items, &args.guard)
+    execute_new_move(
+        state_dir,
+        config,
+        projection,
+        declarative_scope,
+        args.id.as_deref(),
+        items,
+        &args.guard,
+    )
+}
+
+fn project_resource_hold(
+    state_dir: PathBuf,
+    config_path: PathBuf,
+    execution: ProjectionExecution,
+    args: ProjectedResourceHoldArgs,
+    phase: ResourceHoldPhase,
+) -> Result<()> {
+    require_guard(&args.guard, "resource hold projection")?;
+    let config = HostManagerConfig::load(&config_path)?;
+    let intent = ResourceHoldIntent {
+        projection_id: args.id.clone(),
+        host: args.resource.host.clone(),
+        host_resource: config.host_resource(&args.resource.host)?,
+        resource: args.resource.resource.clone(),
+    };
+    let source_repository = Repository::discover(execution.repo_root.clone())?;
+
+    if args.guard.dry_run {
+        let previous = source_repository.load_phase_projection(&args.id)?;
+        let projection = ResourceHoldProjector::derive(&intent, phase, previous.as_ref(), None)?;
+        return print_json(&json!({
+            "dry_run": true,
+            "projection": projection,
+            "repository_path": format!("data/phase-projections/{}.json", args.id),
+            "runtime": if args.skip_runtime { "skipped" } else { "planned" },
+        }));
+    }
+
+    // Every projection kind shares this authority lock from repository
+    // publication through the runtime handoff. This serializes the one
+    // manager-owned checkout and prevents cross-kind publication races.
+    let authority = WorkflowStore::open(state_dir.clone())?;
+    let publisher = ProjectionPublisher::prepare(
+        &source_repository,
+        &authority,
+        &state_dir,
+        &execution.branch,
+        execution.git_program,
+        execution.nix_program,
+        execution.publish_git_ssh_command,
+    )?;
+    let previous = publisher.repository().load_phase_projection(&args.id)?;
+    let projection = ResourceHoldProjector::derive(
+        &intent,
+        phase,
+        previous.as_ref(),
+        Some(publisher.revision()?),
+    )?;
+    let publication = publisher.publish(&projection, config.controller_host()?)?;
+    if args.skip_runtime {
+        return print_json(&json!({
+            "projection": projection,
+            "repository": publication,
+            "runtime": "skipped",
+        }));
+    }
+
+    let mut adapter = NativeAdapter::load(&config_path)?;
+    let hold_epoch = projection
+        .hold_epoch_for_execution(&args.resource.host, &args.resource.resource)?
+        .context("resource-hold projection has no hold epoch")?;
+    adapter.bind_projection(projection.clone())?;
+    let (operation, job_id) = match phase {
+        ResourceHoldPhase::Held => (
+            "hold",
+            projected_hold_job_id(
+                &args.id,
+                &args.resource.resource,
+                &hold_epoch,
+                &projection.projection_sha256,
+            ),
+        ),
+        ResourceHoldPhase::Unheld => (
+            "release",
+            projected_release_job_id(&args.id, &args.resource.resource, &hold_epoch),
+        ),
+    };
+    let job = adapter.run_profile_job_result(
+        &args.resource.host,
+        &job_id,
+        &args.id,
+        &args.resource.resource,
+        &["--operation".to_owned(), operation.to_owned()],
+    )?;
+    print_json(&json!({
+        "projection": projection,
+        "repository": publication,
+        "runtime": "reconciled",
+        "job": job,
+    }))
 }
 
 fn execute_new_move(
     state_dir: PathBuf,
     config: PathBuf,
+    projection_execution: ProjectionExecution,
+    declarative_scope: Option<String>,
     caller_id: Option<&str>,
     items: Vec<MoveItem>,
     guard: &MoveGuard,
 ) -> Result<()> {
-    let spec = TransactionSpec::new(caller_id, items, Vec::new(), Vec::new())?;
+    let mut spec = TransactionSpec::new(caller_id, items, Vec::new(), Vec::new())?;
+    spec.declarative_scope = declarative_scope;
+    spec.validate()?;
     let mut candidate = TransactionRecord::new(spec, config)?;
 
     if guard.execution.dry_run {
         if let Some(mut record) = WorkflowStore::load_matching(&state_dir, &candidate)? {
-            return dry_run_existing_move(&mut record, guard.force_existing);
+            return dry_run_existing_move(&mut record, guard.force_existing, guard.skip_runtime);
+        }
+        if guard.skip_runtime {
+            return print_json(&json!({
+                "dry_run": true,
+                "runtime": "skipped",
+                "transaction": candidate,
+                "authorized_phases": ["setup", "seed"],
+                "stops_before": "prepare",
+            }));
         }
         let mut adapter = NativeAdapter::load(&candidate.config)?;
         let preflight = preflight_new_workflow(&mut candidate, &mut adapter)?;
@@ -1468,25 +2016,94 @@ fn execute_new_move(
         }));
     }
 
-    let store = WorkflowStore::open(state_dir)?;
+    let store = WorkflowStore::open(state_dir.clone())?;
     let mut record = match store.register(candidate)? {
         WorkflowRegistration::Created(record) => record,
-        WorkflowRegistration::Existing(record) => {
-            return execute_existing_move(&store, record, guard.force_existing);
+        WorkflowRegistration::Existing(mut record) => {
+            if record.projection.is_none()
+                && record.phase == abird_host_manager::workflow_runtime::WorkflowPhase::Planned
+            {
+                publish_seeded_projection(&store, &mut record, &state_dir, projection_execution)?;
+            }
+            return execute_existing_move(&store, record, guard.force_existing, guard.skip_runtime);
         }
     };
+
+    let publication =
+        publish_seeded_projection(&store, &mut record, &state_dir, projection_execution)?;
+
+    if guard.skip_runtime {
+        return print_json(&json!({
+            "repository": publication,
+            "runtime": "skipped",
+            "transaction": record,
+        }));
+    }
 
     eprintln!(
         "transaction {} persisted; beginning setup and seed",
         record.id()
     );
     let mut adapter = NativeAdapter::load(&record.config)?;
+    adapter.bind_projection(
+        record
+            .projection
+            .clone()
+            .context("new move has no published phase projection")?,
+    )?;
     execute_workflow_action(&store, &mut record, Action::Setup, &mut adapter)?;
     execute_workflow_action(&store, &mut record, Action::Seed, &mut adapter)?;
-    print_json(&record)
+    print_json(&json!({
+        "repository": publication,
+        "runtime": "reconciled",
+        "transaction": record,
+    }))
 }
 
-fn dry_run_existing_move(record: &mut TransactionRecord, force_existing: bool) -> Result<()> {
+fn publish_seeded_projection(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    state_dir: &Path,
+    execution: ProjectionExecution,
+) -> Result<abird_host_manager::repository::ProjectionPublication> {
+    let source_repository = Repository::discover(execution.repo_root)?;
+    let publisher = ProjectionPublisher::prepare(
+        &source_repository,
+        store,
+        state_dir,
+        &execution.branch,
+        execution.git_program,
+        execution.nix_program,
+        execution.publish_git_ssh_command,
+    )?;
+    let manager_config = HostManagerConfig::load(&record.config)?;
+    let existing = publisher.repository().load_phase_projection(record.id())?;
+    let projection = if let Some(existing) = existing {
+        existing.validate()?;
+        if existing.intent != serde_json::to_value(&record.spec)? || existing.phase != "seeded" {
+            bail!("existing repository projection does not match new seeded transaction intent");
+        }
+        existing
+    } else {
+        MoveProjector::derive(
+            &record.spec,
+            &manager_config,
+            MovePhase::Seeded,
+            None,
+            Some(publisher.revision()?),
+        )?
+    };
+    let publication = publisher.publish(&projection, manager_config.controller_host()?)?;
+    record.set_projection(projection)?;
+    store.save(record)?;
+    Ok(publication)
+}
+
+fn dry_run_existing_move(
+    record: &mut TransactionRecord,
+    force_existing: bool,
+    skip_runtime: bool,
+) -> Result<()> {
     let continuation = record.initial_move_continuation();
     let requires_force = matches!(continuation, InitialMoveContinuation::RequiresForce(_));
     let would_resume = match continuation {
@@ -1494,8 +2111,10 @@ fn dry_run_existing_move(record: &mut TransactionRecord, force_existing: bool) -
         InitialMoveContinuation::RequiresForce(Some(action)) if force_existing => Some(action),
         InitialMoveContinuation::Complete | InitialMoveContinuation::RequiresForce(_) => None,
     };
-    if let Some(action) = would_resume {
-        let mut adapter = NativeAdapter::load(&record.config)?;
+    if let Some(action) = would_resume
+        && !skip_runtime
+    {
+        let mut adapter = load_workflow_adapter(record)?;
         preflight_workflow_action(record, action, &mut adapter)?;
     }
     print_json(&json!({
@@ -1504,6 +2123,7 @@ fn dry_run_existing_move(record: &mut TransactionRecord, force_existing: bool) -
         "force_existing": force_existing,
         "requires_force_existing": requires_force,
         "would_resume": would_resume,
+        "runtime": if skip_runtime { "skipped" } else { "planned" },
         "transaction": record,
     }))
 }
@@ -1512,6 +2132,7 @@ fn execute_existing_move(
     store: &WorkflowStore,
     mut record: TransactionRecord,
     force_existing: bool,
+    skip_runtime: bool,
 ) -> Result<()> {
     let continuation = record.initial_move_continuation();
     if let InitialMoveContinuation::RequiresForce(pending) = continuation
@@ -1553,15 +2174,22 @@ fn execute_existing_move(
     record.record_reinvocation(continuation_message)?;
     store.save(&record)?;
 
+    if skip_runtime {
+        return print_json(&json!({
+            "runtime": "skipped",
+            "transaction": record,
+        }));
+    }
+
     match continuation {
         InitialMoveContinuation::Resume(Action::Setup) => {
-            let mut adapter = NativeAdapter::load(&record.config)?;
+            let mut adapter = load_workflow_adapter(&record)?;
             execute_workflow_action(store, &mut record, Action::Setup, &mut adapter)?;
             execute_workflow_action(store, &mut record, Action::Seed, &mut adapter)?;
         }
         InitialMoveContinuation::Resume(action)
         | InitialMoveContinuation::RequiresForce(Some(action)) => {
-            let mut adapter = NativeAdapter::load(&record.config)?;
+            let mut adapter = load_workflow_adapter(&record)?;
             execute_workflow_action(store, &mut record, action, &mut adapter)?;
         }
         InitialMoveContinuation::Complete | InitialMoveContinuation::RequiresForce(None) => {}
@@ -1572,7 +2200,7 @@ fn execute_existing_move(
 fn transaction_command(
     state_dir: PathBuf,
     config: Option<PathBuf>,
-    repo_root: Option<PathBuf>,
+    projection: ProjectionExecution,
     command: TransactionCommand,
 ) -> Result<()> {
     match command {
@@ -1580,7 +2208,7 @@ fn transaction_command(
             require_guard(&args.guard, "transaction create")?;
             let spec: TransactionSpec = read_json_document(&args.spec, "transaction spec")?;
             spec.validate()?;
-            let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
+            let config = resolve_config(config.as_deref(), projection.repo_root.as_deref())?;
             let mut record = TransactionRecord::new(spec, config)?;
             if args.guard.dry_run {
                 let mut adapter = NativeAdapter::load(&record.config)?;
@@ -1593,7 +2221,7 @@ fn transaction_command(
                     "stops_before": "prepare",
                 }));
             }
-            let store = WorkflowStore::open(state_dir)?;
+            let store = WorkflowStore::open(state_dir.clone())?;
             record = match store.register(record)? {
                 WorkflowRegistration::Created(record) => record,
                 WorkflowRegistration::Existing(record) => bail!(
@@ -1603,32 +2231,59 @@ fn transaction_command(
                     record.phase
                 ),
             };
+            let publication =
+                publish_seeded_projection(&store, &mut record, &state_dir, projection)?;
             eprintln!(
                 "transaction {} persisted; beginning setup and seed",
                 record.id()
             );
-            let mut adapter = NativeAdapter::load(&record.config)?;
+            let mut adapter = load_workflow_adapter(&record)?;
             execute_workflow_action(&store, &mut record, Action::Setup, &mut adapter)?;
             execute_workflow_action(&store, &mut record, Action::Seed, &mut adapter)?;
-            print_json(&record)
+            print_json(&json!({
+                "repository": publication,
+                "runtime": "reconciled",
+                "transaction": record,
+            }))
         }
         TransactionCommand::Show { id } => print_json(&WorkflowStore::open(state_dir)?.load(&id)?),
         TransactionCommand::List => print_json(&WorkflowStore::open(state_dir)?.list()?),
         TransactionCommand::Seed(args) => {
             transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Seed)
         }
-        TransactionCommand::Prepare(args) => {
-            transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Prepare)
-        }
+        TransactionCommand::Prepare(args) => projected_transaction_phase(
+            &WorkflowStore::open(state_dir.clone())?,
+            args,
+            Action::Prepare,
+            MovePhase::Prepared,
+            &state_dir,
+            projection,
+        ),
         TransactionCommand::Verify(args) => {
             transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Verify)
         }
-        TransactionCommand::Cutover(args) => {
-            transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Cutover)
-        }
-        TransactionCommand::Rollback(args) => {
-            transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Rollback)
-        }
+        TransactionCommand::Cutover(args) => projected_transaction_phase(
+            &WorkflowStore::open(state_dir.clone())?,
+            args,
+            Action::Cutover,
+            MovePhase::Cutover,
+            &state_dir,
+            projection,
+        ),
+        TransactionCommand::Rollback(args) => projected_transaction_phase(
+            &WorkflowStore::open(state_dir.clone())?,
+            args,
+            Action::Rollback,
+            MovePhase::RolledBack,
+            &state_dir,
+            projection,
+        ),
+        TransactionCommand::Reconcile(args) => reconcile_projected_transaction(
+            &WorkflowStore::open(state_dir.clone())?,
+            args,
+            &state_dir,
+            projection,
+        ),
         TransactionCommand::Close(args) => {
             transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Close)
         }
@@ -1638,8 +2293,14 @@ fn transaction_command(
             let action = record
                 .pending_action
                 .context("transaction has no pending action to resume")?;
+            ensure_legacy_projection_boundary(
+                record.id(),
+                record.projection.is_some(),
+                action,
+                true,
+            )?;
             if should_dry_run(action, &args.guard)? {
-                let mut adapter = NativeAdapter::load(&record.config)?;
+                let mut adapter = load_workflow_adapter(&record)?;
                 preflight_workflow_action(&mut record, action, &mut adapter)?;
                 let supersede_candidates = if args.supersede_failed_job {
                     validate_failed_workflow_jobs(&store, &mut record, &mut adapter)?
@@ -1655,7 +2316,7 @@ fn transaction_command(
                     "supersede_candidates": supersede_candidates,
                 }));
             }
-            let mut adapter = NativeAdapter::load(&record.config)?;
+            let mut adapter = load_workflow_adapter(&record)?;
             if args.supersede_failed_job {
                 preflight_workflow_action(&mut record, action, &mut adapter)?;
                 let superseded = supersede_failed_workflow_jobs(&store, &mut record, &mut adapter)?;
@@ -1680,8 +2341,9 @@ fn transaction_phase(
     action: Action,
 ) -> Result<()> {
     let mut record = store.load(&args.id)?;
+    ensure_legacy_projection_boundary(record.id(), record.projection.is_some(), action, false)?;
     if should_dry_run(action, &args.guard)? {
-        let mut adapter = NativeAdapter::load(&record.config)?;
+        let mut adapter = load_workflow_adapter(&record)?;
         preflight_workflow_action(&mut record, action, &mut adapter)?;
         return print_json(&json!({
             "dry_run": true,
@@ -1690,9 +2352,634 @@ fn transaction_phase(
             "action": action,
         }));
     }
-    let mut adapter = NativeAdapter::load(&record.config)?;
+    let mut adapter = load_workflow_adapter(&record)?;
     execute_workflow_action(store, &mut record, action, &mut adapter)?;
     print_json(&record)
+}
+
+fn ensure_legacy_projection_boundary(
+    transaction_id: &str,
+    has_projection: bool,
+    action: Action,
+    resume: bool,
+) -> Result<()> {
+    if !has_projection {
+        return Ok(());
+    }
+    if resume {
+        bail!(
+            "projected transaction {transaction_id:?} cannot use transaction resume because activation authorization must run through projected reconciliation; run `abird-host-manager transaction reconcile {transaction_id} --execute`"
+        );
+    }
+    if action == Action::Close {
+        bail!(
+            "projected transaction {transaction_id:?} cannot be closed until canonical projection closeout is implemented; its inactive endpoint must remain held"
+        );
+    }
+    Ok(())
+}
+
+fn load_workflow_adapter(record: &TransactionRecord) -> Result<NativeAdapter> {
+    let mut adapter = NativeAdapter::load(&record.config)?;
+    if let Some(projection) = &record.projection {
+        adapter.bind_projection(projection.clone())?;
+    }
+    Ok(adapter)
+}
+
+fn projected_transaction_phase(
+    store: &WorkflowStore,
+    args: ProjectedTransactionPhaseArgs,
+    action: Action,
+    desired_phase: MovePhase,
+    state_dir: &Path,
+    execution: ProjectionExecution,
+) -> Result<()> {
+    let mut record = store.load(&args.id)?;
+    let dry_run = should_dry_run(action, &args.guard)?;
+    let source_repository = Repository::discover(execution.repo_root)?;
+    if record.projection.is_none() {
+        let source_has_projection = source_repository
+            .load_phase_projection(record.id())?
+            .is_some();
+        let owned_has_projection = Repository::from_root(state_dir.join("projection-repository"))
+            .and_then(|repository| repository.load_phase_projection(record.id()))
+            .ok()
+            .flatten()
+            .is_some();
+        if !source_has_projection && !owned_has_projection {
+            if args.skip_runtime {
+                bail!(
+                    "--skip-runtime requires a repository-backed transaction; this legacy journal has no move projection"
+                );
+            }
+            return transaction_phase(
+                store,
+                TransactionPhaseArgs {
+                    id: args.id,
+                    guard: args.guard,
+                },
+                action,
+            );
+        }
+    }
+    let publisher = ProjectionPublisher::prepare(
+        &source_repository,
+        store,
+        state_dir,
+        &execution.branch,
+        execution.git_program,
+        execution.nix_program,
+        execution.publish_git_ssh_command,
+    )?;
+    let repository_projection = publisher.repository().load_phase_projection(record.id())?;
+    if record.projection.is_none() {
+        if let Some(published) = &repository_projection {
+            validate_projection_adoption(None, published, &record.spec)?;
+            record.set_projection(published.clone())?;
+            if !dry_run {
+                store.save(&record)?;
+            }
+        } else {
+            bail!("repository-backed transaction projection disappeared during refresh");
+        }
+    }
+    if let (Some(journal), Some(published)) =
+        (record.projection.as_ref(), repository_projection.as_ref())
+        && journal.projection_sha256 != published.projection_sha256
+    {
+        validate_projection_adoption(Some(journal), published, &record.spec)?;
+        record.set_projection(published.clone())?;
+        store.save(&record)?;
+    }
+    let previous = repository_projection
+        .as_ref()
+        .or(record.projection.as_ref())
+        .context("repository-backed transaction has no prior projection")?
+        .clone();
+    if desired_phase == MovePhase::RolledBack
+        && !dry_run
+        && !args.skip_runtime
+        && previous.move_phase()? == MovePhase::Cutover
+    {
+        let mut adoption_adapter = NativeAdapter::load(&record.config)?;
+        adoption_adapter.bind_projection(previous.clone())?;
+        adopt_repository_activation(
+            store,
+            &mut record,
+            MovePhase::Cutover,
+            &previous,
+            &adoption_adapter,
+        )?;
+    }
+    let manager_config = HostManagerConfig::load(&record.config)?;
+    let observation = move_projection_observation(&record);
+    let projection = MoveProjector::derive_with_observation(
+        &record.spec,
+        &manager_config,
+        desired_phase,
+        Some(&previous),
+        Some(publisher.revision()?),
+        &observation,
+    )?;
+    let runtime_actions = reconciliation_actions(&record, desired_phase)?;
+
+    if dry_run {
+        if !args.skip_runtime
+            && let Some(first_action) = runtime_actions.first().copied()
+        {
+            let mut adapter = NativeAdapter::load(&record.config)?;
+            adapter.bind_projection(projection.clone())?;
+            preflight_workflow_action(&mut record, first_action, &mut adapter)?;
+        }
+        return print_json(&json!({
+            "dry_run": true,
+            "action": action,
+            "projection": projection,
+            "repository_path": format!("data/phase-projections/{}.json", record.id()),
+            "runtime_actions": runtime_actions,
+            "runtime": if args.skip_runtime { "skipped" } else { "planned" },
+            "transaction": record,
+        }));
+    }
+
+    let repository_publication =
+        publisher.publish(&projection, manager_config.controller_host()?)?;
+    record.set_projection(projection.clone())?;
+    store.save(&record)?;
+    if args.skip_runtime {
+        return print_json(&json!({
+            "projection": projection,
+            "repository": repository_publication,
+            "runtime": "skipped",
+            "transaction": record,
+        }));
+    }
+    let mut adapter = NativeAdapter::load(&record.config)?;
+    adapter.bind_projection(projection.clone())?;
+    reconcile_projected_runtime(
+        store,
+        &mut record,
+        desired_phase,
+        runtime_actions,
+        &mut adapter,
+    )?;
+    print_json(&json!({
+        "projection": record.projection,
+        "repository": repository_publication,
+        "runtime": "reconciled",
+        "transaction": record,
+    }))
+}
+
+fn reconcile_projected_transaction(
+    store: &WorkflowStore,
+    args: TransactionReconcileArgs,
+    state_dir: &Path,
+    execution: ProjectionExecution,
+) -> Result<()> {
+    require_guard(&args.guard, "transaction reconcile")?;
+    let mut record = store.load(&args.id)?;
+    let desired_phase = record
+        .projection
+        .as_ref()
+        .map(|projection| projection.move_phase())
+        .transpose()?
+        .context("transaction has no repository-backed desired projection")?;
+    let actions = reconciliation_actions(&record, desired_phase)?;
+    if args.guard.dry_run {
+        return print_json(&json!({
+            "dry_run": true,
+            "desired_phase": desired_phase,
+            "actions": actions,
+            "projection": record.projection,
+            "runtime": "planned",
+            "transaction": record,
+        }));
+    }
+    let source_repository = Repository::discover(execution.repo_root)?;
+    let publisher = ProjectionPublisher::prepare(
+        &source_repository,
+        store,
+        state_dir,
+        &execution.branch,
+        execution.git_program,
+        execution.nix_program,
+        execution.publish_git_ssh_command,
+    )?;
+    let published = publisher
+        .repository()
+        .load_phase_projection(record.id())?
+        .context("repository-backed transaction projection disappeared during refresh")?;
+    if let Some(expected) = &args.expected_projection_sha256
+        && published.projection_sha256 != *expected
+    {
+        bail!(
+            "repository projection digest {} does not match deployed controller digest {expected}",
+            published.projection_sha256
+        );
+    }
+    validate_projection_adoption(record.projection.as_ref(), &published, &record.spec)?;
+    if record
+        .projection
+        .as_ref()
+        .is_none_or(|projection| projection.projection_sha256 != published.projection_sha256)
+    {
+        record.set_projection(published)?;
+        store.save(&record)?;
+    }
+    let desired_phase = record
+        .projection
+        .as_ref()
+        .context("transaction has no repository-backed desired projection")?
+        .move_phase()?;
+    let actions = reconciliation_actions(&record, desired_phase)?;
+    let mut adapter = NativeAdapter::load(&record.config)?;
+    adapter.bind_projection(
+        record
+            .projection
+            .clone()
+            .context("transaction has no phase projection")?,
+    )?;
+    reconcile_projected_runtime(store, &mut record, desired_phase, actions, &mut adapter)?;
+    print_json(&json!({
+        "desired_phase": desired_phase,
+        "projection": record.projection,
+        "runtime": "reconciled",
+        "transaction": record,
+    }))
+}
+
+fn reconcile_projected_runtime(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    desired_phase: MovePhase,
+    mut actions: Vec<Action>,
+    adapter: &mut NativeAdapter,
+) -> Result<()> {
+    if desired_phase == MovePhase::RolledBack {
+        adopt_prior_cutover_activation(store, record, adapter)?;
+        actions = reconciliation_actions(record, desired_phase)?;
+    }
+    let projection = record
+        .projection
+        .clone()
+        .context("projected reconciliation requires a current projection")?;
+    adapter.bind_projection(projection.clone())?;
+    if adopt_repository_activation(store, record, desired_phase, &projection, adapter)? {
+        actions = reconciliation_actions(record, desired_phase)?;
+    }
+    for action in actions {
+        if action == Action::Cutover {
+            ensure_activation_receipt(store, record, adapter)?;
+        }
+        if action == Action::Rollback
+            && record
+                .projection
+                .as_ref()
+                .and_then(|projection| projection.activation_requirement.as_ref())
+                .is_some_and(|requirement| {
+                    requirement.kind == "rollback_receipt"
+                        && !matches!(
+                            record
+                                .activation_authorizations
+                                .get(&requirement.requirement_sha256),
+                            Some(ActivationAuthorization::RepositoryDeploy { .. })
+                        )
+                })
+        {
+            let completed = execute_workflow_action_until(
+                store,
+                record,
+                action,
+                adapter,
+                Some("activate-source"),
+            )?;
+            if completed {
+                bail!("rollback activation barrier was not reached");
+            }
+            ensure_rollback_receipt(store, record, adapter)?;
+            execute_workflow_action(store, record, action, adapter)?;
+            continue;
+        }
+        execute_workflow_action(store, record, action, adapter)?;
+        if action == Action::Prepare {
+            ensure_activation_receipt(store, record, adapter)?;
+        }
+    }
+    if matches!(desired_phase, MovePhase::Prepared | MovePhase::Cutover) {
+        ensure_activation_receipt(store, record, adapter)?;
+    }
+    Ok(())
+}
+
+fn adopt_prior_cutover_activation(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    adapter: &mut NativeAdapter,
+) -> Result<()> {
+    let current = record
+        .projection
+        .clone()
+        .context("rollback reconciliation requires a current projection")?;
+    let Some(previous_digest) = current.previous_projection_sha256.as_deref() else {
+        return Ok(());
+    };
+    let Some(previous) = record.projection_by_digest(previous_digest).cloned() else {
+        bail!(
+            "rollback projection references prior generation {previous_digest}, but the manager journal does not retain it"
+        );
+    };
+    if previous.move_phase()? != MovePhase::Cutover {
+        return Ok(());
+    }
+    adapter.bind_projection(previous.clone())?;
+    adopt_repository_activation(store, record, MovePhase::Cutover, &previous, adapter)?;
+    adapter.bind_projection(current)?;
+    Ok(())
+}
+
+fn adopt_repository_activation(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    desired_phase: MovePhase,
+    projection: &PhaseProjection,
+    adapter: &NativeAdapter,
+) -> Result<bool> {
+    use abird_host_manager::workflow_runtime::WorkflowPhase;
+
+    let (role, action) = match desired_phase {
+        MovePhase::Cutover if record.phase != WorkflowPhase::Cutover => ("target", Action::Cutover),
+        MovePhase::RolledBack if record.phase != WorkflowPhase::RolledBack => {
+            ("source", Action::Rollback)
+        }
+        _ => return Ok(false),
+    };
+    let Some(evidence) = adapter.retained_repository_activation(role)? else {
+        return Ok(false);
+    };
+    let requirement = projection
+        .activation_requirement
+        .as_ref()
+        .context("repository activation adoption requires an activation requirement")?;
+    let evidence_sha256 = canonical_sha256(&evidence)?;
+    record.activation_authorizations.insert(
+        requirement.requirement_sha256.clone(),
+        ActivationAuthorization::RepositoryDeploy {
+            projection_digest: projection.projection_sha256.clone(),
+            generation: projection.generation,
+            evidence_sha256,
+        },
+    );
+
+    let child_store = store.child_store(record.id())?;
+    for child in record.items.values_mut() {
+        let completed = match action {
+            Action::Cutover => [
+                "cutover:assert-source-stopped",
+                "cutover:assert-target-stopped",
+                "cutover:activate-target",
+                "cutover:verify-target-ready",
+            ]
+            .as_slice(),
+            Action::Rollback => [
+                "rollback:hold-target",
+                "rollback:assert-target-stopped",
+                "rollback:reverse-transfer",
+                "rollback:verify-reverse",
+                "rollback:activate-source",
+                "rollback:verify-source-ready",
+            ]
+            .as_slice(),
+            _ => unreachable!("repository adoption supports only activation actions"),
+        };
+        child
+            .overridden_steps
+            .extend(completed.iter().map(|step| (*step).to_owned()));
+        child.pending_action = None;
+        child.active_step = None;
+        child.active_job_id = None;
+        child.last_error = None;
+        if action == Action::Cutover {
+            child.phase = ItemPhase::Prepared;
+            child.target_ever_started = true;
+        } else if matches!(child.phase, ItemPhase::Planned | ItemPhase::Setup) {
+            child.phase = ItemPhase::Seeded;
+        }
+        child_store.save(child)?;
+    }
+    if action == Action::Cutover {
+        record.phase = WorkflowPhase::Prepared;
+    } else if matches!(record.phase, WorkflowPhase::Planned | WorkflowPhase::Setup) {
+        record.phase = WorkflowPhase::Seeded;
+    }
+    record.pending_action = None;
+    record.record_authorization_event(
+        action,
+        format!(
+            "adopted trusted repository deployment activation for projection {}",
+            projection.projection_sha256
+        ),
+    )?;
+    store.save(record)?;
+    Ok(true)
+}
+
+fn ensure_rollback_receipt(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    adapter: &mut NativeAdapter,
+) -> Result<()> {
+    let projection = record
+        .projection
+        .clone()
+        .context("transaction has no rollback projection")?;
+    let requirement = projection
+        .activation_requirement
+        .as_ref()
+        .filter(|requirement| requirement.kind == "rollback_receipt")
+        .context("rollback projection has no rollback activation requirement")?;
+    if let Some(authorization) = record
+        .activation_authorizations
+        .get(&requirement.requirement_sha256)
+        .cloned()
+    {
+        match authorization {
+            ActivationAuthorization::BrokeredReceipt { receipt } => {
+                receipt.validate_for(&projection)?
+            }
+            ActivationAuthorization::RepositoryDeploy { .. } => return Ok(()),
+        }
+    } else {
+        let evidence = adapter.retained_rollback_evidence(record)?;
+        let receipt = MoveProjector::derive_rollback_receipt(&projection, &evidence)?;
+        record.activation_authorizations.insert(
+            receipt.requirement_digest.clone(),
+            ActivationAuthorization::BrokeredReceipt { receipt },
+        );
+    }
+    store.save(record)?;
+    Ok(())
+}
+
+fn ensure_activation_receipt(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    adapter: &mut NativeAdapter,
+) -> Result<()> {
+    use abird_host_manager::workflow_runtime::WorkflowPhase;
+
+    if !matches!(
+        record.phase,
+        WorkflowPhase::Prepared | WorkflowPhase::Verified | WorkflowPhase::Cutover
+    ) {
+        bail!("activation receipt requires successfully completed prepare runtime state");
+    }
+    let projection = record
+        .projection
+        .clone()
+        .context("transaction has no phase projection")?;
+    let requirement = projection
+        .activation_requirement
+        .as_ref()
+        .context("phase projection has no activation requirement")?;
+    if let Some(authorization) = record
+        .activation_authorizations
+        .get(&requirement.requirement_sha256)
+        .cloned()
+    {
+        match authorization {
+            ActivationAuthorization::BrokeredReceipt { receipt } => {
+                receipt.validate_for(&projection)?
+            }
+            ActivationAuthorization::RepositoryDeploy { .. } => return Ok(()),
+        }
+    } else {
+        let evidence = adapter.retained_prepare_evidence(record)?;
+        let receipt = MoveProjector::derive_activation_receipt(&projection, &evidence)?;
+        record.activation_authorizations.insert(
+            receipt.requirement_digest.clone(),
+            ActivationAuthorization::BrokeredReceipt { receipt },
+        );
+    }
+    store.save(record)?;
+    Ok(())
+}
+
+fn reconciliation_actions(
+    record: &TransactionRecord,
+    desired_phase: MovePhase,
+) -> Result<Vec<Action>> {
+    use abird_host_manager::workflow_runtime::WorkflowPhase;
+
+    if desired_phase == MovePhase::RolledBack {
+        return match record.phase {
+            WorkflowPhase::RolledBack => Ok(Vec::new()),
+            WorkflowPhase::Closed => bail!("closed transaction cannot be reconciled"),
+            _ => Ok(vec![Action::Rollback]),
+        };
+    }
+    let rank = |phase: MovePhase| match phase {
+        MovePhase::Seeded => 1,
+        MovePhase::Prepared => 2,
+        MovePhase::Cutover => 3,
+        MovePhase::RolledBack => unreachable!(),
+    };
+    let target = rank(desired_phase);
+    let mut actions = Vec::new();
+    match record.phase {
+        WorkflowPhase::Planned => {
+            actions.push(Action::Setup);
+            actions.push(Action::Seed);
+            if target >= 2 {
+                actions.push(Action::Prepare);
+            }
+            if target >= 3 {
+                actions.push(Action::Cutover);
+            }
+        }
+        WorkflowPhase::Setup => {
+            actions.push(Action::Seed);
+            if target >= 2 {
+                actions.push(Action::Prepare);
+            }
+            if target >= 3 {
+                actions.push(Action::Cutover);
+            }
+        }
+        WorkflowPhase::Seeded => {
+            if target >= 2 {
+                actions.push(Action::Prepare);
+            }
+            if target >= 3 {
+                actions.push(Action::Cutover);
+            }
+        }
+        WorkflowPhase::Prepared | WorkflowPhase::Verified => {
+            if target >= 3 {
+                actions.push(Action::Cutover);
+            }
+        }
+        WorkflowPhase::Cutover if target == 3 => {}
+        WorkflowPhase::Cutover => bail!("repository desired phase is behind observed cutover"),
+        WorkflowPhase::RolledBack => bail!("rolled-back transaction cannot reconcile forward"),
+        WorkflowPhase::Closed => bail!("closed transaction cannot be reconciled"),
+    }
+    if let Some(pending) = record.pending_action
+        && actions.first().copied() != Some(pending)
+    {
+        bail!(
+            "transaction has pending {} outside the projected reconciliation path",
+            pending.as_str()
+        );
+    }
+    Ok(actions)
+}
+
+fn move_projection_observation(record: &TransactionRecord) -> MoveProjectionObservation {
+    let mut observation = MoveProjectionObservation::default();
+    for (item_id, item) in &record.items {
+        observation.insert(
+            item_id,
+            MoveItemObservation {
+                source_held: item.completed_steps.contains("prepare:hold-source"),
+                target_ever_started: item.target_ever_started,
+            },
+        );
+    }
+    observation
+}
+
+fn validate_projection_adoption(
+    journal: Option<&abird_host_manager::projection::PhaseProjection>,
+    published: &abird_host_manager::projection::PhaseProjection,
+    spec: &TransactionSpec,
+) -> Result<()> {
+    published.validate()?;
+    if published.intent != serde_json::to_value(spec)? || published.projection_id != spec.id {
+        bail!("repository projection does not match immutable transaction intent");
+    }
+    let Some(journal) = journal else {
+        if published.generation != 1 || published.previous_projection_sha256.is_some() {
+            bail!("controller can adopt only a first-generation projection without a predecessor");
+        }
+        return Ok(());
+    };
+    if journal.projection_sha256 == published.projection_sha256 {
+        return Ok(());
+    }
+    if published.generation != journal.generation + 1
+        || published.previous_projection_sha256.as_deref()
+            != Some(journal.projection_sha256.as_str())
+        || !published.move_phase()?.can_follow(journal.move_phase()?)
+    {
+        bail!(
+            "repository projection generation {} does not directly and validly follow controller generation {}",
+            published.generation,
+            journal.generation
+        );
+    }
+    Ok(())
 }
 
 fn host_command(config: &HostManagerConfig, command: HostCommand) -> Result<()> {
@@ -2370,6 +3657,7 @@ fn resource_command(adapter: &NativeAdapter, command: ResourceCommand) -> Result
                 ResourceHoldCommand::Acquire(args) => {
                     durable_resource_action_with_config(config, args, "hold")
                 }
+                ResourceHoldCommand::Set(_) | ResourceHoldCommand::Clear(_) => unreachable!(),
             };
         }
         ResourceCommand::Activate(args) => {
@@ -4482,13 +5770,546 @@ fn resolve_state_dir(configured: Option<PathBuf>) -> Result<PathBuf> {
     configured.map(Ok).unwrap_or_else(default_state_dir)
 }
 
+fn select_local_run(cli: &mut Cli) -> Result<()> {
+    let Some(name) = cli.local_run.as_deref() else {
+        return Ok(());
+    };
+    validate_local_run_name(name)?;
+    let repository = Repository::discover(cli.repo_root.clone())?;
+    cli.controller = Some("local".to_owned());
+    cli.state_dir = Some(
+        repository
+            .root()
+            .join(".agents")
+            .join("runs")
+            .join(name)
+            .join("host-manager"),
+    );
+    Ok(())
+}
+
+fn validate_local_run_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || name == "locks"
+        || name.starts_with('-')
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        bail!(
+            "--local-run must be 1-128 lowercase letters, digits, or non-leading hyphens, and cannot be 'locks'"
+        );
+    }
+    Ok(())
+}
+
+fn remote_controller_state_dir(configured: Option<&Path>) -> Result<String> {
+    let Some(configured) = configured else {
+        return Ok(CONTROLLER_STATE_DIR.to_owned());
+    };
+    if configured.is_absolute()
+        || configured.as_os_str().is_empty()
+        || !configured
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("remote --state-dir must be a safe relative path below {CONTROLLER_STATE_DIR}");
+    }
+    Ok(Path::new(CONTROLLER_STATE_DIR)
+        .join(configured)
+        .to_string_lossy()
+        .into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
+    use abird_host_manager::workflow::HostEndpoint;
     use clap::CommandFactory;
 
     use super::*;
+
+    fn projection_test_spec() -> TransactionSpec {
+        let mut spec = TransactionSpec::new(
+            Some("move-lineage"),
+            vec![MoveItem::Service {
+                id: "zulip".to_owned(),
+                service: "zulip".to_owned(),
+                source_resource: None,
+                target_resource: None,
+                source: HostEndpoint {
+                    host: "source".to_owned(),
+                    instance: None,
+                },
+                target: HostEndpoint {
+                    host: "target".to_owned(),
+                    instance: None,
+                },
+                data_roots: Vec::new(),
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        spec.declarative_scope = Some("abird".to_owned());
+        spec
+    }
+
+    fn projection_test_config() -> HostManagerConfig {
+        serde_json::from_value(json!({
+            "schema_version": 1,
+            "ssh": {
+                "program": "/bin/false",
+                "connect_timeout_seconds": 1,
+                "agent_poll_interval_ms": 1,
+                "job_timeout_seconds": 1,
+                "rsync_program": "/bin/false",
+                "tar_program": "/bin/false"
+            },
+            "hosts": {
+                "source": {"address": "source", "host_resource": "host:source"},
+                "target": {"address": "target", "host_resource": "host:target"},
+                "proxy": {"address": "proxy", "host_resource": "host:proxy"}
+            },
+            "operation_routes": {
+                "deploy-cutover": {
+                    "executor": "proxy",
+                    "phase_projection": {"executor": "proxy", "resource": "service:proxy"}
+                },
+                "deploy-rollback": {
+                    "executor": "proxy",
+                    "phase_projection": {"executor": "proxy", "resource": "service:proxy"}
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn projection_adoption_requires_direct_valid_lineage() {
+        let spec = projection_test_spec();
+        let config = projection_test_config();
+        let seeded = MoveProjector::derive(&spec, &config, MovePhase::Seeded, None, None).unwrap();
+        let prepared = MoveProjector::derive(
+            &spec,
+            &config,
+            MovePhase::Prepared,
+            Some(&seeded),
+            Some("seeded-revision".to_owned()),
+        )
+        .unwrap();
+        let cutover = MoveProjector::derive(
+            &spec,
+            &config,
+            MovePhase::Cutover,
+            Some(&prepared),
+            Some("prepared-revision".to_owned()),
+        )
+        .unwrap();
+
+        validate_projection_adoption(None, &seeded, &spec).unwrap();
+        validate_projection_adoption(Some(&seeded), &prepared, &spec).unwrap();
+        assert!(validate_projection_adoption(None, &prepared, &spec).is_err());
+        assert!(validate_projection_adoption(Some(&seeded), &cutover, &spec).is_err());
+        assert!(validate_projection_adoption(Some(&prepared), &seeded, &spec).is_err());
+    }
+
+    #[test]
+    fn stateful_repository_moves_and_three_phase_commands_use_controller_authority() {
+        for argv in [
+            vec![
+                "abird-host-manager",
+                "service",
+                "move",
+                "zulip",
+                "--from",
+                "source",
+                "--to",
+                "target",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "transaction",
+                "create",
+                "--spec",
+                "/tmp/move.json",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "transaction",
+                "prepare",
+                "move-zulip",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "transaction",
+                "cutover",
+                "move-zulip",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "transaction",
+                "rollback",
+                "move-zulip",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "transaction",
+                "reconcile",
+                "move-zulip",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "resource",
+                "hold",
+                "set",
+                "target",
+                "service:zulip",
+                "--id",
+                "hold-zulip",
+                "--dry-run",
+            ],
+            vec![
+                "abird-host-manager",
+                "resource",
+                "hold",
+                "clear",
+                "target",
+                "service:zulip",
+                "--id",
+                "hold-zulip",
+                "--skip-runtime",
+                "--execute",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(is_controller_authority_command(&cli.command));
+        }
+        let local = Cli::try_parse_from([
+            "abird-host-manager",
+            "--state-dir",
+            "/tmp/state",
+            "transaction",
+            "prepare",
+            "move-zulip",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(!should_dispatch_to_controller(&local));
+    }
+
+    #[test]
+    fn explicit_controller_and_remote_state_keep_controller_dispatch() {
+        let cli = Cli::try_parse_from([
+            "abird-host-manager",
+            "--controller",
+            "abird-ci",
+            "--state-dir",
+            "zulip-move",
+            "transaction",
+            "prepare",
+            "move-zulip",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        assert!(should_dispatch_to_controller(&cli));
+        assert_eq!(
+            remote_controller_state_dir(cli.state_dir.as_deref()).unwrap(),
+            "/var/lib/nixbot/abird-host-manager/zulip-move"
+        );
+        assert!(remote_controller_state_dir(Some(Path::new("../escape"))).is_err());
+        assert!(remote_controller_state_dir(Some(Path::new("/absolute"))).is_err());
+    }
+
+    #[test]
+    fn local_run_is_a_safe_repo_run_state_shortcut() {
+        for invalid in ["", "locks", "-bad", "Bad", "slash/name", "under_score"] {
+            assert!(
+                validate_local_run_name(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        validate_local_run_name("zulip-move-20260824").unwrap();
+
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .unwrap();
+        let mut cli = Cli::try_parse_from([
+            "abird-host-manager",
+            "--repo-root",
+            repo_root.to_str().unwrap(),
+            "--local-run",
+            "zulip-move-20260824",
+            "transaction",
+            "show",
+            "move-zulip",
+        ])
+        .unwrap();
+        select_local_run(&mut cli).unwrap();
+
+        assert_eq!(cli.controller.as_deref(), Some("local"));
+        assert_eq!(
+            cli.state_dir.as_deref(),
+            Some(
+                repo_root
+                    .join(".agents/runs/zulip-move-20260824/host-manager")
+                    .as_path()
+            )
+        );
+        assert!(!should_dispatch_to_controller(&cli));
+    }
+
+    #[test]
+    fn local_run_rejects_explicit_controller_or_state() {
+        for conflict in [
+            vec!["--local-run", "run", "--controller", "local"],
+            vec!["--local-run", "run", "--state-dir", "state"],
+        ] {
+            let mut argv = vec!["abird-host-manager"];
+            argv.extend(conflict);
+            argv.extend(["transaction", "show", "move-zulip"]);
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
+    }
+
+    #[test]
+    fn controller_dispatch_strips_only_locally_selected_authority_paths() {
+        assert_eq!(
+            controller_command_arguments(
+                [
+                    "--repo-root",
+                    "/operator/repo",
+                    "--controller=abird-ci",
+                    "--git-program=/bin/git",
+                    "transaction",
+                    "cutover",
+                    "move-zulip",
+                    "--execute",
+                ]
+                .into_iter()
+                .map(str::to_owned),
+            )
+            .unwrap(),
+            [
+                "--git-program=/bin/git",
+                "transaction",
+                "cutover",
+                "move-zulip",
+                "--execute",
+            ]
+        );
+    }
+
+    #[test]
+    fn publication_authority_is_lent_only_to_executed_publishers() {
+        for argv in [
+            vec![
+                "abird-host-manager",
+                "service",
+                "move",
+                "zulip",
+                "--from",
+                "source",
+                "--to",
+                "target",
+                "--execute",
+            ],
+            vec![
+                "abird-host-manager",
+                "resource",
+                "hold",
+                "set",
+                "target",
+                "service:zulip",
+                "--id",
+                "hold-zulip",
+                "--execute",
+            ],
+            vec![
+                "abird-host-manager",
+                "transaction",
+                "prepare",
+                "move-zulip",
+                "--execute",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert_ne!(
+                controller_publication_authority(&cli.command),
+                PublicationAuthority::None
+            );
+        }
+        for argv in [
+            vec![
+                "abird-host-manager",
+                "service",
+                "move",
+                "zulip",
+                "--from",
+                "source",
+                "--to",
+                "target",
+                "--dry-run",
+            ],
+            vec!["abird-host-manager", "transaction", "show", "move-zulip"],
+            vec![
+                "abird-host-manager",
+                "transaction",
+                "reconcile",
+                "move-zulip",
+                "--execute",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert_eq!(
+                controller_publication_authority(&cli.command),
+                PublicationAuthority::None
+            );
+        }
+        let cli = Cli::try_parse_from([
+            "abird-host-manager",
+            "transaction",
+            "prepare",
+            "move-zulip",
+            "--execute",
+        ])
+        .unwrap();
+        assert_eq!(
+            controller_publication_authority(&cli.command),
+            PublicationAuthority::Possible
+        );
+    }
+
+    #[test]
+    fn controller_arguments_do_not_forward_local_publication_transport() {
+        assert_eq!(
+            controller_command_arguments(
+                [
+                    "--publish-git-ssh-command",
+                    "operator-ssh",
+                    "transaction",
+                    "prepare",
+                    "move-zulip",
+                    "--execute",
+                ]
+                .into_iter()
+                .map(str::to_owned),
+            )
+            .unwrap(),
+            ["transaction", "prepare", "move-zulip", "--execute"]
+        );
+    }
+
+    #[test]
+    fn all_three_operator_decisions_accept_declarative_only_execution() {
+        Cli::try_parse_from([
+            "abird-host-manager",
+            "service",
+            "move",
+            "zulip",
+            "--from",
+            "source",
+            "--to",
+            "target",
+            "--skip-runtime",
+            "--execute",
+        ])
+        .unwrap();
+        for phase in ["prepare", "cutover", "rollback"] {
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                phase,
+                "move-zulip",
+                "--skip-runtime",
+                "--execute",
+            ])
+            .unwrap();
+        }
+        assert!(
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "seed",
+                "move-zulip",
+                "--skip-runtime",
+                "--execute",
+            ])
+            .is_err()
+        );
+        Cli::try_parse_from([
+            "abird-host-manager",
+            "transaction",
+            "reconcile",
+            "move-zulip",
+            "--execute",
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn cutover_reconciliation_includes_skipped_prepare() {
+        let spec = TransactionSpec::new(
+            Some("move-reconcile"),
+            vec![MoveItem::Service {
+                id: "item-001".to_owned(),
+                service: "zulip".to_owned(),
+                source_resource: None,
+                target_resource: None,
+                source: HostEndpoint {
+                    host: "source".to_owned(),
+                    instance: None,
+                },
+                target: HostEndpoint {
+                    host: "target".to_owned(),
+                    instance: None,
+                },
+                data_roots: Vec::new(),
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut record = TransactionRecord::new(spec, "/tmp/config.json".into()).unwrap();
+        record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Seeded;
+        assert_eq!(
+            reconciliation_actions(&record, MovePhase::Cutover).unwrap(),
+            vec![Action::Prepare, Action::Cutover]
+        );
+
+        record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Cutover;
+        record.pending_action = Some(Action::Rollback);
+        assert_eq!(
+            reconciliation_actions(&record, MovePhase::RolledBack).unwrap(),
+            vec![Action::Rollback]
+        );
+    }
+
+    #[test]
+    fn projected_resume_and_close_fail_closed_at_the_legacy_boundary() {
+        assert!(
+            ensure_legacy_projection_boundary("move-zulip", false, Action::Close, false).is_ok()
+        );
+        let close = ensure_legacy_projection_boundary("move-zulip", true, Action::Close, false)
+            .unwrap_err()
+            .to_string();
+        assert!(close.contains("inactive endpoint must remain held"));
+
+        let resume = ensure_legacy_projection_boundary("move-zulip", true, Action::Rollback, true)
+            .unwrap_err()
+            .to_string();
+        assert!(resume.contains("transaction reconcile move-zulip --execute"));
+    }
 
     #[test]
     fn parses_output_for_every_remote_log_scope_and_follow_mode() {
@@ -4669,6 +6490,8 @@ mod tests {
             vec![MoveItem::Service {
                 id: "item-001".to_owned(),
                 service: "zulip".to_owned(),
+                source_resource: None,
+                target_resource: None,
                 source: HostEndpoint {
                     host: "source".to_owned(),
                     instance: None,
@@ -4690,7 +6513,7 @@ mod tests {
 
         record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Seeded;
         store.save(&record).unwrap();
-        execute_existing_move(&store, record, false).unwrap();
+        execute_existing_move(&store, record, false, false).unwrap();
         let seeded = store.load("move-repeated").unwrap();
         assert_eq!(
             seeded.phase,
@@ -4709,12 +6532,12 @@ mod tests {
         prepared.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Prepared;
         store.save(&prepared).unwrap();
         assert!(
-            execute_existing_move(&store, prepared.clone(), false)
+            execute_existing_move(&store, prepared.clone(), false, false)
                 .unwrap_err()
                 .to_string()
                 .contains("--force-existing")
         );
-        execute_existing_move(&store, prepared, true).unwrap();
+        execute_existing_move(&store, prepared, true, false).unwrap();
         let attached = store.load("move-repeated").unwrap();
         assert_eq!(
             attached.phase,

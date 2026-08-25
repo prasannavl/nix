@@ -305,6 +305,12 @@ pub enum MoveItem {
     Service {
         id: String,
         service: String,
+        /// Exact source host-agent resource resolved from the logical service.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_resource: Option<String>,
+        /// Exact target host-agent resource resolved from the logical service.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_resource: Option<String>,
         source: HostEndpoint,
         target: HostEndpoint,
         #[serde(default)]
@@ -407,12 +413,24 @@ impl MoveItem {
             }
             Self::Service {
                 service,
+                source_resource,
+                target_resource,
                 source,
                 target,
                 data_roots,
                 ..
             } => {
                 validate_name("service name", service)?;
+                match (source_resource, target_resource) {
+                    (Some(source_resource), Some(target_resource)) => {
+                        validate_resource_id(source_resource)?;
+                        validate_resource_id(target_resource)?;
+                    }
+                    (None, None) => {}
+                    _ => bail!(
+                        "service move must resolve both source and target host-agent resources"
+                    ),
+                }
                 validate_host_move_endpoints(source, target)?;
                 validate_mapped_roots(data_roots)
             }
@@ -507,6 +525,9 @@ pub struct ActivationWave {
 pub struct TransactionSpec {
     pub schema_version: u32,
     pub id: String,
+    /// Stable declarative namespace for projection effects, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declarative_scope: Option<String>,
     pub items: Vec<MoveItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consistency_groups: Vec<ConsistencyGroup>,
@@ -524,6 +545,7 @@ impl TransactionSpec {
         let spec = Self {
             schema_version: TRANSACTION_SPEC_SCHEMA_VERSION,
             id: transaction_id(caller_id)?,
+            declarative_scope: None,
             items,
             consistency_groups,
             activation_waves,
@@ -540,6 +562,9 @@ impl TransactionSpec {
             );
         }
         validate_workflow_id(&self.id)?;
+        if let Some(scope) = &self.declarative_scope {
+            validate_name("declarative scope", scope)?;
+        }
         if self.items.is_empty() {
             bail!("transaction spec must contain at least one move item");
         }
@@ -564,7 +589,28 @@ impl TransactionSpec {
         validate_root_claims(self.items.iter().flat_map(MoveItem::root_claims))?;
 
         validate_consistency_groups(&self.consistency_groups, &item_ids)?;
-        validate_activation_waves(&self.activation_waves, &item_ids, &self.consistency_groups)
+        validate_activation_waves(&self.activation_waves, &item_ids, &self.consistency_groups)?;
+        if let Some(group) = self
+            .consistency_groups
+            .iter()
+            .find(|group| group.items.len() > 1)
+        {
+            bail!(
+                "consistency group {:?} requests atomic coordination across multiple items, which is not yet supported; split the move into independently safe transactions",
+                group.id
+            );
+        }
+        if let Some(wave) = self
+            .activation_waves
+            .iter()
+            .find(|wave| wave.items.len() > 1)
+        {
+            bail!(
+                "activation wave {:?} requests multi-item atomic activation, which is not yet supported; use one independently recoverable item per wave",
+                wave.id
+            );
+        }
+        Ok(())
     }
 }
 
@@ -1233,6 +1279,8 @@ mod tests {
         MoveItem::Service {
             id: id.to_owned(),
             service: service.to_owned(),
+            source_resource: None,
+            target_resource: None,
             source: host(source),
             target: host(target),
             data_roots: vec![mapping(
@@ -1247,6 +1295,7 @@ mod tests {
         TransactionSpec {
             schema_version: TRANSACTION_SPEC_SCHEMA_VERSION,
             id: "move-test".to_owned(),
+            declarative_scope: None,
             items,
             consistency_groups: Vec::new(),
             activation_waves: Vec::new(),
@@ -1276,12 +1325,16 @@ mod tests {
             items,
             vec![ConsistencyGroup {
                 id: "application-state".to_owned(),
-                items: vec!["zulip".to_owned(), "mail-data".to_owned()],
+                items: vec!["zulip".to_owned()],
             }],
             vec![
                 ActivationWave {
-                    id: "applications".to_owned(),
-                    items: vec!["zulip".to_owned(), "mail-data".to_owned()],
+                    id: "zulip".to_owned(),
+                    items: vec!["zulip".to_owned()],
+                },
+                ActivationWave {
+                    id: "mail".to_owned(),
+                    items: vec!["mail-data".to_owned()],
                 },
                 ActivationWave {
                     id: "database".to_owned(),
@@ -1293,7 +1346,7 @@ mod tests {
 
         assert_eq!(spec.id, "move-heterogeneous");
         assert_eq!(spec.items.len(), 3);
-        assert_eq!(spec.activation_waves.len(), 2);
+        assert_eq!(spec.activation_waves.len(), 3);
 
         let encoded = serde_json::to_string(&spec).unwrap();
         assert_eq!(
@@ -1307,6 +1360,37 @@ mod tests {
             .unwrap()
             .insert("unknown".to_owned(), serde_json::Value::Bool(true));
         assert!(serde_json::from_value::<TransactionSpec>(value).is_err());
+    }
+
+    #[test]
+    fn rejects_multi_item_atomicity_until_a_real_group_barrier_exists() {
+        let items = vec![
+            service_move("zulip", "zulip", "corp", "zulip-new"),
+            service_move("mail", "mail", "corp", "mail-new"),
+        ];
+        let error = TransactionSpec::new(
+            Some("move-grouped"),
+            items.clone(),
+            vec![ConsistencyGroup {
+                id: "application".to_owned(),
+                items: vec!["zulip".to_owned(), "mail".to_owned()],
+            }],
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("atomic coordination"));
+
+        let error = TransactionSpec::new(
+            Some("move-waved"),
+            items,
+            Vec::new(),
+            vec![ActivationWave {
+                id: "application".to_owned(),
+                items: vec!["zulip".to_owned(), "mail".to_owned()],
+            }],
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("multi-item atomic activation"));
     }
 
     #[test]
@@ -1543,6 +1627,8 @@ mod tests {
         let first = MoveItem::Service {
             id: "zulip".to_owned(),
             service: "zulip".to_owned(),
+            source_resource: None,
+            target_resource: None,
             source: instance_host("corp", container),
             target: host("zulip-new"),
             data_roots: Vec::new(),
@@ -1550,6 +1636,8 @@ mod tests {
         let second = MoveItem::Service {
             id: "mail".to_owned(),
             service: "mail".to_owned(),
+            source_resource: None,
+            target_resource: None,
             source: host("corp"),
             target: host("mail-new"),
             data_roots: Vec::new(),
@@ -1609,6 +1697,8 @@ mod tests {
         let child = MoveItem::Service {
             id: "zulip".to_owned(),
             service: "zulip".to_owned(),
+            source_resource: None,
+            target_resource: None,
             source: instance_host("corp", source_instance),
             target: host("zulip-new"),
             data_roots: Vec::new(),
@@ -1646,6 +1736,8 @@ mod tests {
         let duplicate_names = MoveItem::Service {
             id: "zulip".to_owned(),
             service: "zulip".to_owned(),
+            source_resource: None,
+            target_resource: None,
             source: host("source"),
             target: host("target"),
             data_roots: vec![
@@ -1660,6 +1752,8 @@ mod tests {
         let second = MoveItem::Service {
             id: "mail".to_owned(),
             service: "mail".to_owned(),
+            source_resource: None,
+            target_resource: None,
             source: host("source"),
             target: host("target-b"),
             data_roots: vec![mapping("queue", "/srv/zulip/queue", "/srv/mail")],

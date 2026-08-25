@@ -8,6 +8,7 @@ pkgHelper.mkRustDerivation {
   version = "0.1.0";
   projectDir = "pkgs/tools/abird-host-manager";
   deps = ["pkgs/tools/abird-host-agent"];
+  nativeCheckInputs = [pkgs.gitMinimal];
   # Several tests execute freshly published fixture programs. Serial execution
   # avoids overlay-backed Nix sandboxes spuriously returning ETXTBSY.
   testCargoArgs = ["-p" "abird-host-manager" "--" "--test-threads=1"];

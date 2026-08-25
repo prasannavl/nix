@@ -2,10 +2,17 @@
   config,
   lib,
   pkgs,
+  specialArgs,
   ...
 }: let
   cfg = config.services.abird-host-agent;
+  phaseProjection = import ./phase-projection.nix {lib = lib;};
   runuserProgram = lib.getExe' pkgs.util-linux "runuser";
+  systemctlProgram = pkgs.writeShellApplication {
+    name = "abird-host-agent-systemctl";
+    runtimeInputs = [pkgs.coreutils pkgs.systemd pkgs.util-linux];
+    text = builtins.readFile ./systemctl.sh;
+  };
   normalizeManagedResource = resource:
     builtins.removeAttrs resource ["units"]
     // {
@@ -28,7 +35,42 @@
   resourceIdCollisions = lib.intersectLists (builtins.attrNames cfg.extraResources) (builtins.attrNames typedResources);
   declaredResourcesById = cfg.extraResources // typedResources;
   declaredResources = builtins.attrValues declaredResourcesById;
-  declaredGatedUsers = lib.unique (lib.concatMap (resource: builtins.attrNames resource.gatedUserUnits) declaredResources);
+  effectivePhaseProjections = (specialArgs.phaseProjections or []) ++ cfg.phaseProjections;
+  projectedResourceStateSets = map (projection:
+    phaseProjection.localDesiredResourceStates {
+      hostResource = "host:${config.networking.hostName}";
+      projection = projection;
+    })
+  effectivePhaseProjections;
+  phaseProjectionIds = map (projection: projection.projection_id) effectivePhaseProjections;
+  projectedResourceStateNames = lib.concatMap builtins.attrNames projectedResourceStateSets;
+  projectedResourceStates = lib.foldl' (states: projected: states // projected) {} projectedResourceStateSets;
+  effectiveDesiredResourceStates = projectedResourceStates // cfg.desiredResourceStates;
+  desiredResourceStateNames = builtins.attrNames effectiveDesiredResourceStates;
+  declaredGatedUsers = lib.unique (lib.concatMap (resource:
+    builtins.attrNames resource.gatedUserUnits
+    ++ map (service: service.user) (builtins.filter (service: service.scope == "user" && service.user != null) resource.services))
+  declaredResources);
+  gatedUserIds = lib.genAttrs declaredGatedUsers (
+    user: lib.attrByPath [user "uid"] null config.users.users
+  );
+  gatedUserManagerUnits =
+    lib.concatMap (
+      user: let
+        uid = gatedUserIds.${user};
+      in
+        lib.optional (builtins.isInt uid) "user@${toString uid}.service"
+    )
+    declaredGatedUsers;
+  userHoldReadyUnit = "abird-host-agent-holds-ready.service";
+  userHoldReadyGeneration = builtins.substring 0 16 (builtins.hashString "sha256" (builtins.unsafeDiscardStringContext "${resourceManifest}\n${desiredResourceStateManifest}\n${builtins.toJSON effectiveDeclaredHolds}"));
+  userHoldReadyMarker = "/run/abird-host-agent-holds-ready-${userHoldReadyGeneration}";
+  waitForUserHoldReady = pkgs.writeShellScript "abird-host-agent-wait-for-holds" ''
+    set -eu
+    while [ ! -e ${lib.escapeShellArg userHoldReadyMarker} ]; do
+      ${pkgs.coreutils}/bin/sleep 0.1
+    done
+  '';
   compactPaths = paths: let
     uniquePaths = lib.unique paths;
   in
@@ -101,8 +143,26 @@
       && lib.all (component: component != "" && component != "." && component != "..") (lib.splitString "/" exclude))
     root.excludes;
   holdFile = resource: "${cfg.stateDirectory}/holds/${holdFileName resource}";
-  declaredHoldMarker = resource: "${cfg.declaredHoldDirectory}/${holdFileName resource}";
-  declarationRelease = resource: declaration: "${cfg.stateDirectory}/declaration-releases/${builtins.hashString "sha256" resource}/${builtins.hashString "sha256" declaration}.json";
+  activationAuthorization = resource: "${cfg.stateDirectory}/activation-authorizations/${builtins.hashString "sha256" resource}.json";
+  desiredStateDocument = resource: desired: {
+    id = resource;
+    state = desired.state;
+    projection_id = desired.projectionId;
+    intent_digest = desired.intentDigest;
+    phase = desired.phase;
+    projection_digest = desired.projectionDigest;
+    generation = desired.generation;
+    hold_epoch = desired.holdEpoch;
+    transaction_id = desired.transactionId;
+    activation_job_id = desired.activationJobId;
+    activation_requirement_kind = desired.activationRequirementKind;
+    activation_requirement_digest = desired.activationRequirementDigest;
+  };
+  projectedHoldResources = builtins.attrNames (
+    lib.filterAttrs (_: desired: desired.holdEpoch != null) effectiveDesiredResourceStates
+  );
+  declaredProjectedHoldCollisions = lib.intersectLists (builtins.attrNames cfg.declaredHolds) projectedHoldResources;
+  effectiveDeclaredHolds = cfg.declaredHolds;
   configuredPackage = pkgs.symlinkJoin {
     name = "abird-host-agent-configured";
     paths = [cfg.package];
@@ -113,7 +173,7 @@
       wrapProgram "$out/bin/abird-host-agent" \
         --set ABIRD_HOST_AGENT_STATE_DIR ${lib.escapeShellArg cfg.stateDirectory} \
         --set ABIRD_HOST_AGENT_RESOURCE_MANIFEST ${lib.escapeShellArg cfg.manifestPath} \
-        --set ABIRD_HOST_AGENT_SYSTEMCTL ${lib.escapeShellArg "${pkgs.systemd}/bin/systemctl"} \
+        --set ABIRD_HOST_AGENT_SYSTEMCTL ${lib.escapeShellArg (lib.getExe systemctlProgram)} \
         --set ABIRD_HOST_AGENT_JOURNALCTL ${lib.escapeShellArg "${pkgs.systemd}/bin/journalctl"} \
         --set ABIRD_HOST_AGENT_RUNUSER ${lib.escapeShellArg runuserProgram} \
         --set ABIRD_HOST_AGENT_PODMAN ${lib.escapeShellArg "${pkgs.podman}/bin/podman"} \
@@ -214,6 +274,9 @@
         file_states =
           lib.mapAttrs (_: state: {
             inherit (state) path content mode;
+            expected_previous_sha256 = state.expectedPreviousSha256;
+            accepted_previous_sha256 = state.acceptedPreviousSha256;
+            validation_argv = state.validationArgv;
             reload_services = state.reloadServices;
           })
           resource.fileStates;
@@ -245,11 +308,22 @@
         nixbot_deploy = true;
       };
   });
+  desiredResourceStateManifest = pkgs.writeText "abird-host-agent-desired-resource-states.json" (builtins.toJSON {
+    schema_version = 1;
+    resources =
+      lib.mapAttrsToList
+      desiredStateDocument
+      effectiveDesiredResourceStates;
+  });
+  # An unheld resource starts normally. A held resource starts only while the
+  # host agent has installed its stable, exact-evidence capability. The agent
+  # clears that capability whenever any new hold is acquired.
   conditionsFor = resource:
-    ["!${holdFile resource}"]
-    ++ lib.optionals (builtins.hasAttr resource cfg.declaredHolds) [
-      "|!${declaredHoldMarker resource}"
-      "|${declarationRelease resource cfg.declaredHolds.${resource}}"
+    if resource == hostResourceId
+    then ["!${holdFile resource}"]
+    else [
+      "|!${holdFile resource}"
+      "|${activationAuthorization resource}"
     ];
   systemServicesFor = spec:
     lib.unique (
@@ -306,6 +380,20 @@
       (builtins.filter (service: service.scope == "user" && service.user != null) spec.services)
       ++ builtins.attrNames spec.gatedUserUnits
     );
+  userServiceNames = lib.unique (lib.concatMap (spec:
+    lib.concatMap (user: userServicesFor user spec) (userNamesFor spec))
+  (builtins.attrValues effectiveResources));
+  userTargetNames = lib.unique (lib.concatMap (spec:
+    lib.concatMap (user: userTargetsFor user spec) (userNamesFor spec))
+  (builtins.attrValues effectiveResources));
+  userReadinessServiceGates = lib.genAttrs (map (lib.removeSuffix ".service") userServiceNames) (_: {
+    after = [userHoldReadyUnit];
+    requires = [userHoldReadyUnit];
+  });
+  userReadinessTargetGates = lib.genAttrs (map (lib.removeSuffix ".target") userTargetNames) (_: {
+    after = [userHoldReadyUnit];
+    requires = [userHoldReadyUnit];
+  });
   mkSystemServiceGates = resource: spec:
     lib.listToAttrs (
       map
@@ -362,8 +450,15 @@
     );
   declaredHoldCommands =
     lib.mapAttrsToList
-    (resource: declaration: "${configuredPackage}/bin/abird-host-agent _reconcile hold declare --resource ${lib.escapeShellArg resource} --declaration ${lib.escapeShellArg declaration}")
-    cfg.declaredHolds;
+    (resource: declaration: "${configuredPackage}/bin/abird-host-agent _reconcile hold declare --resource ${lib.escapeShellArg resource} --declaration ${lib.escapeShellArg declaration} --defer-enforcement")
+    effectiveDeclaredHolds;
+  holdReconcileCommands =
+    declaredHoldCommands
+    ++ [
+      "${configuredPackage}/bin/abird-host-agent _reconcile desired-resource-holds --manifest ${lib.escapeShellArg desiredResourceStateManifest}"
+      "${configuredPackage}/bin/abird-host-agent _reconcile hold apply"
+      "${pkgs.coreutils}/bin/touch ${userHoldReadyMarker}"
+    ];
 in {
   imports = [./options.nix];
 
@@ -388,6 +483,60 @@ in {
       {
         assertion = lib.all (resource: builtins.hasAttr resource declaredResourcesById) (builtins.attrNames cfg.declaredHolds);
         message = "services.abird-host-agent.declaredHolds keys must refer to declared resources.";
+      }
+      {
+        assertion = lib.all (user: builtins.isInt gatedUserIds.${user}) declaredGatedUsers;
+        message = "services.abird-host-agent user-scoped resources require users.users entries with fixed integer UIDs.";
+      }
+      {
+        assertion = declaredProjectedHoldCollisions == [];
+        message = "services.abird-host-agent.declaredHolds is a legacy/bootstrap latch and cannot overlap phase-projected holds: ${lib.concatStringsSep ", " declaredProjectedHoldCollisions}";
+      }
+      {
+        assertion = lib.length projectedResourceStateNames == lib.length (lib.unique projectedResourceStateNames);
+        message = "services.abird-host-agent.phaseProjections must not declare the same local resource more than once.";
+      }
+      {
+        assertion = lib.length phaseProjectionIds == lib.length (lib.unique phaseProjectionIds);
+        message = "services.abird-host-agent phase projections must have unique projection IDs.";
+      }
+      {
+        assertion = lib.intersectLists projectedResourceStateNames (builtins.attrNames cfg.desiredResourceStates) == [];
+        message = "services.abird-host-agent desiredResourceStates must not override phaseProjections.";
+      }
+      {
+        assertion = lib.all (resource: builtins.hasAttr resource declaredResourcesById) desiredResourceStateNames;
+        message = "services.abird-host-agent.desiredResourceStates keys must refer to declared resources.";
+      }
+      {
+        assertion = lib.all (desired:
+          desired.projectionId
+          != ""
+          && desired.phase != ""
+          && builtins.match "[0-9a-f]{64}" desired.intentDigest != null
+          && builtins.match "[0-9a-f]{64}" desired.projectionDigest != null
+          && (desired.activationRequirementKind == null) == (desired.activationRequirementDigest == null)
+          && (desired.activationRequirementKind == null || desired.activationRequirementKind != "")
+          && (desired.activationRequirementDigest == null || builtins.match "[0-9a-f]{64}" desired.activationRequirementDigest != null)
+          && (desired.holdEpoch != null || desired.activationRequirementDigest == null)
+          && (desired.holdEpoch == null) == (desired.transactionId == null)
+          && (desired.transactionId == null || desired.transactionId != "")
+          && (desired.activationJobId == null || desired.activationJobId != "")
+          && ((desired.state == "active" && desired.holdEpoch != null) == (desired.activationJobId != null)))
+        (builtins.attrValues effectiveDesiredResourceStates);
+        message = "services.abird-host-agent desired resource states require a projection ID and lowercase SHA-256 digests.";
+      }
+      {
+        assertion = lib.all (desired:
+          desired.holdEpoch == null || desired.holdEpoch != "")
+        (builtins.attrValues effectiveDesiredResourceStates);
+        message = "services.abird-host-agent holdEpoch must be null or non-empty and must carry its canonical transaction and activation job identities.";
+      }
+      {
+        assertion = lib.all (desired:
+          desired.state == "active" || desired.holdEpoch != null)
+        (builtins.attrValues effectiveDesiredResourceStates);
+        message = "services.abird-host-agent held and inactive desired resource states require a stable holdEpoch.";
       }
       {
         assertion = lib.all (resource: resource.services != [] || resource.dataPaths != [] || resource.dataRoots != {} || resource.operations != {} || resource.readiness != [] || resource.transfers != {} || resource.fileStates != {} || resource.instances != {} || resource.deployments != {}) declaredResources;
@@ -424,6 +573,13 @@ in {
       {
         assertion = lib.hasPrefix "/" cfg.backupRoot && cfg.backupRoot != "/" && lib.hasPrefix "/" cfg.rsyncProgram && lib.hasPrefix "/" cfg.tarProgram;
         message = "services.abird-host-agent backup and copy paths must be absolute and backupRoot cannot be root.";
+      }
+      {
+        assertion = lib.all (path: lib.hasPrefix "/" path && path != "/") [
+          cfg.desiredResourceStateManifestPath
+          cfg.desiredResourceStateDirectory
+        ];
+        message = "services.abird-host-agent desired resource state paths must be absolute and cannot be root.";
       }
       {
         assertion = lib.hasPrefix "/" sshHostEd25519PublicKey && sshHostEd25519PublicKey != "/";
@@ -466,6 +622,18 @@ in {
         message = "services.abird-host-agent file states require absolute paths.";
       }
       {
+        assertion = lib.all (resource:
+          lib.all (state:
+            (state.expectedPreviousSha256 == null || builtins.match "[0-9a-f]{64}" state.expectedPreviousSha256 != null)
+            && lib.all (digest: builtins.match "[0-9a-f]{64}" digest != null) state.acceptedPreviousSha256
+            && lib.length state.acceptedPreviousSha256 == lib.length (lib.unique state.acceptedPreviousSha256)
+            && (state.expectedPreviousSha256 == null || state.acceptedPreviousSha256 == [])
+            && (state.validationArgv == [] || lib.hasPrefix "/" (builtins.head state.validationArgv)))
+          (builtins.attrValues resource.fileStates))
+        declaredResources;
+        message = "services.abird-host-agent file states require unique lowercase SHA-256 compare-and-swap digests, one guard form, and an absolute validator executable.";
+      }
+      {
         assertion = lib.all (resource: lib.all (instance: lib.hasPrefix "/" instance.program) (builtins.attrValues resource.instances)) declaredResources;
         message = "services.abird-host-agent instance programs must be absolute.";
       }
@@ -480,13 +648,39 @@ in {
       etc =
         {
           "abird-host-agent/resources.json".source = resourceManifest;
+          "abird-host-agent/desired-resource-states.json".source = desiredResourceStateManifest;
         }
         // lib.mapAttrs' (resource: transaction:
           lib.nameValuePair "abird-host-agent/declared-holds/${holdFileName resource}" {
             text = "${transaction}\n";
             mode = "0444";
           })
-        cfg.declaredHolds;
+        effectiveDeclaredHolds
+        // lib.mapAttrs' (resource: desired:
+          lib.nameValuePair "abird-host-agent/desired-resource-states/${holdFileName resource}" {
+            text = "${builtins.toJSON (desiredStateDocument resource desired)}\n";
+            mode = "0444";
+          })
+        effectiveDesiredResourceStates;
+    };
+
+    # switch-to-configuration waits for user generation jobs before restarting
+    # changed system units. Reconcile holds and publish the generation marker
+    # during activation so the user readiness barrier cannot wait on the later
+    # abird-host-agent-holds.service restart.
+    system.activationScripts.abird-host-agent-holds = {
+      deps = ["etc" "users"];
+      supportsDryActivation = false;
+      text = ''
+        case "''${NIXOS_ACTION-}" in
+          switch|test)
+            ${pkgs.systemd}/bin/systemd-tmpfiles --create \
+              --prefix=${lib.escapeShellArg cfg.stateDirectory} \
+              --prefix=/run/abird-host-agent
+            ${lib.concatStringsSep "\n" holdReconcileCommands}
+            ;;
+        esac
+      '';
     };
 
     systemd = {
@@ -495,6 +689,11 @@ in {
           "d ${cfg.stateDirectory} 0711 root root -"
           "d ${cfg.stateDirectory}/holds 0711 root root -"
           "d ${cfg.stateDirectory}/declaration-releases 0700 root root -"
+          # User managers evaluate activation ConditionPathExists entries. They
+          # need search permission on this directory, while root-owned 0600
+          # authorization receipts remain unreadable and unlistable.
+          "d ${cfg.stateDirectory}/activation-authorizations 0711 root root -"
+          "d ${cfg.stateDirectory}/desired-resource-state-receipts 0700 root root -"
           "d ${cfg.stateDirectory}/jobs 0700 root root -"
           "d ${cfg.backupRoot} 0700 root root -"
           "d /run/abird-host-agent 0700 root root -"
@@ -508,12 +707,15 @@ in {
             abird-host-agent-holds = {
               description = "Persist and enforce Abird host resource holds";
               wantedBy = ["multi-user.target"];
-              after = ["local-fs.target" "systemd-tmpfiles-setup.service" "incus.service"];
+              wants = gatedUserManagerUnits;
+              after = ["local-fs.target" "systemd-tmpfiles-setup.service" "incus.service"] ++ gatedUserManagerUnits;
               before = ["multi-user.target"];
+              restartTriggers = [desiredResourceStateManifest];
               serviceConfig = {
                 Type = "oneshot";
                 RemainAfterExit = true;
-                ExecStart = declaredHoldCommands ++ ["${configuredPackage}/bin/abird-host-agent _reconcile hold apply"];
+                ExecStart = holdReconcileCommands;
+                ExecStopPost = "${pkgs.coreutils}/bin/rm -f ${userHoldReadyMarker}";
               };
             };
 
@@ -521,12 +723,27 @@ in {
               description = "Resume durable Abird host-agent jobs";
               wantedBy = lib.optional (!nixbotDeployEnabled) "multi-user.target";
               wants = ["network-online.target"];
-              after = ["abird-host-agent-holds.service" "network-online.target"];
+              after = ["abird-host-agent-desired-resource-states.service" "abird-host-agent-holds.service" "network-online.target"];
               unitConfig.ConditionPathExists = "${cfg.stateDirectory}/jobs-wakeup";
               serviceConfig = {
                 Type = "oneshot";
                 ExecCondition = lib.optional nixbotDeployEnabled "${lib.getExe' pkgs.util-linux "flock"} -n ${cfg.nixbotDeploy.hostLocalLockPath} ${lib.getExe' pkgs.coreutils "true"}";
                 ExecStart = "${configuredPackage}/bin/abird-host-agent _reconcile jobs";
+                Restart = "on-failure";
+                RestartSec = "5s";
+                TimeoutStartSec = "infinity";
+              };
+            };
+
+            abird-host-agent-desired-resource-states = {
+              description = "Converge Abird host desired resource states";
+              wantedBy = ["multi-user.target"];
+              requires = ["abird-host-agent-holds.service"];
+              after = ["abird-host-agent-holds.service"];
+              restartTriggers = [desiredResourceStateManifest];
+              serviceConfig = {
+                Type = "oneshot";
+                ExecStart = "${configuredPackage}/bin/abird-host-agent _reconcile desired-resource-states --manifest ${lib.escapeShellArg cfg.desiredResourceStateManifestPath}";
                 Restart = "on-failure";
                 RestartSec = "5s";
                 TimeoutStartSec = "infinity";
@@ -548,6 +765,15 @@ in {
         };
       };
 
+      paths.abird-host-agent-desired-resource-states = {
+        description = "Watch Abird host desired resource states";
+        wantedBy = ["multi-user.target"];
+        pathConfig = {
+          PathChanged = cfg.desiredResourceStateManifestPath;
+          Unit = "abird-host-agent-desired-resource-states.service";
+        };
+      };
+
       timers.abird-host-agent-jobs = lib.mkIf nixbotDeployEnabled {
         description = "Retry deferred Abird host-agent jobs";
         wantedBy = ["timers.target"];
@@ -559,8 +785,28 @@ in {
       };
 
       user = {
-        services = lib.mkMerge (lib.mapAttrsToList mkUserServiceGates effectiveResources);
-        targets = lib.mkMerge (lib.mapAttrsToList mkUserTargetGates effectiveResources);
+        services = lib.mkMerge (
+          [
+            (lib.optionalAttrs (declaredGatedUsers != []) {
+              abird-host-agent-holds-ready = {
+                description = "Wait for Abird host hold reconciliation";
+                restartIfChanged = true;
+                restartTriggers = [resourceManifest desiredResourceStateManifest];
+                serviceConfig = {
+                  Type = "oneshot";
+                  ExecStart = waitForUserHoldReady;
+                  RemainAfterExit = true;
+                };
+              };
+            })
+            userReadinessServiceGates
+          ]
+          ++ lib.mapAttrsToList mkUserServiceGates effectiveResources
+        );
+        targets = lib.mkMerge (
+          [userReadinessTargetGates]
+          ++ lib.mapAttrsToList mkUserTargetGates effectiveResources
+        );
       };
     };
   };
