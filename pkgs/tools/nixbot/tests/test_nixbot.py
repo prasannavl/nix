@@ -3332,17 +3332,59 @@ EOF_SCRIPT
                 *) return 1 ;;
               esac
             }
-            effective_build_host_deploy_mode
+            host_uses_indirect_operator_transport() {
+              [ "$1" = proxied ]
+            }
+            effective_build_host_deploy_mode direct
+            effective_build_host_deploy_mode proxied
             BUILD_HOST=other
-            effective_build_host_deploy_mode
+            effective_build_host_deploy_mode direct
             BUILD_HOST_DEPLOY_MODE=cache
-            effective_build_host_deploy_mode
+            effective_build_host_deploy_mode proxied
             BUILD_HOST_DEPLOY_MODE=local-copy
-            effective_build_host_deploy_mode
+            effective_build_host_deploy_mode direct
             """
         )
 
-        self.assertEqual(["cache", "local-copy", "cache", "local-copy"], result.stdout.splitlines())
+        self.assertEqual(
+            ["cache", "local-copy", "local-copy", "cache", "local-copy"],
+            result.stdout.splitlines(),
+        )
+
+    def test_indirect_operator_transport_uses_resolved_inventory_endpoint(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{
+              "guest-endpoint": {
+                "resourceId": "guest",
+                "proxyJump": "parent"
+              },
+              "command-endpoint": {
+                "resourceId": "command-guest",
+                "proxyCommand": "proxy-helper"
+              },
+              "direct": {}
+            }'
+            for node in guest guest-endpoint command-guest direct; do
+              if host_uses_indirect_operator_transport "$node"; then
+                printf '%s=indirect\n' "$node"
+              else
+                printf '%s=direct\n' "$node"
+              fi
+            done
+            """
+        )
+
+        self.assertEqual(
+            [
+                "guest=indirect",
+                "guest-endpoint=indirect",
+                "command-guest=indirect",
+                "direct=direct",
+            ],
+            result.stdout.splitlines(),
+        )
 
     def test_build_host_store_identity_uses_canonical_resource(self):
         result = self.run_script(
@@ -3436,6 +3478,106 @@ EOF_SCRIPT
             ],
             result.stdout.splitlines(),
         )
+
+    def test_auto_remote_build_path_falls_back_to_local_relay(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=auto
+            build_host_shares_store_with_node() { return 1; }
+            remote_build_deploy_uses_local_relay() {
+              [ "$1" = proxied ]
+            }
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'cache:%s:%s:%s\n' "$1" "$2" "$3"
+              case "$1" in
+                fallback) return 7 ;;
+                interrupted) return 130 ;;
+              esac
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {
+              printf 'relay:%s:%s\n' "$1" "$2"
+            }
+            prepare_remote_build_system_path_on_prepared_target proxied /nix/store/system
+            prepare_remote_build_system_path_on_prepared_target direct /nix/store/system
+            prepare_remote_build_system_path_on_prepared_target fallback /nix/store/system
+            if prepare_remote_build_system_path_on_prepared_target interrupted /nix/store/system; then
+              printf 'interrupted=unexpected-success\n'
+            else
+              printf 'interrupted=%s\n' "$?"
+            fi
+            """
+        )
+
+        self.assertEqual(
+            [
+                "relay:proxied:/nix/store/system",
+                "cache:direct:/nix/store/system:once",
+                "cache:fallback:/nix/store/system:once",
+                "relay:fallback:/nix/store/system",
+                "cache:interrupted:/nix/store/system:once",
+                "interrupted=130",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertIn(
+            "Target-side build-cache copy to fallback failed in auto mode",
+            result.stderr,
+        )
+
+    def test_explicit_cache_mode_does_not_fall_back_to_local_relay(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=cache
+            build_host_shares_store_with_node() { return 1; }
+            remote_build_deploy_uses_local_relay() { return 1; }
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'cache:%s:%s:%s\n' "$1" "$2" "${3:-retry}"
+              return 7
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {
+              printf 'unexpected-relay\n'
+            }
+            if prepare_remote_build_system_path_on_prepared_target target /nix/store/system; then
+              printf 'rc=unexpected-success\n'
+            else
+              printf 'rc=%s\n' "$?"
+            fi
+            """
+        )
+
+        self.assertEqual(
+            ["cache:target:/nix/store/system:retry", "rc=7"],
+            result.stdout.splitlines(),
+        )
+
+    def test_target_cache_copy_retry_policy_selects_outer_retry(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
+            target_trusted_public_keys_for_copy() { printf 'cache-key\n'; }
+            run_prepared_cache_copy_with_retry() {
+              printf 'retry:%s:%s\n' "$1" "$2"
+            }
+            run_prepared_root_command_with_retry() {
+              printf 'once:%s:%s\n' "$1" "$2"
+            }
+            copy_system_path_from_build_cache_to_prepared_target target /nix/store/system
+            copy_system_path_from_build_cache_to_prepared_target target /nix/store/system once
+            """
+        )
+
+        lines = result.stdout.splitlines()
+        self.assertEqual(2, len(lines))
+        self.assertTrue(lines[0].startswith("retry:target:nix "))
+        self.assertIn("copy --from http://cache:5000 /nix/store/system", lines[0])
+        self.assertTrue(lines[1].startswith("once:Build-cache copy to target:nix "))
+        self.assertIn("copy --from http://cache:5000 /nix/store/system", lines[1])
 
     def test_transport_retry_policy_and_backoff_are_narrow(self):
         result = self.run_script(

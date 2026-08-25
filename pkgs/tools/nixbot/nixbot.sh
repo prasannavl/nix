@@ -4263,7 +4263,9 @@ require_build_host_cache_config() {
 }
 
 remote_build_deploy_uses_local_relay() {
-	[ "${BUILD_HOST}" != "local" ] && [ "$(effective_build_host_deploy_mode)" = "local-copy" ]
+	local node="${1:-}"
+
+	[ "${BUILD_HOST}" != "local" ] && [ "$(effective_build_host_deploy_mode "${node}")" = "local-copy" ]
 }
 
 resolved_target_host_for_role() {
@@ -4296,6 +4298,16 @@ host_resource_for_role() {
 	jq -r --arg h "${inventory_host}" '.[$h].resourceId // $h' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
+host_uses_indirect_operator_transport() {
+	local role="$1" inventory_host=""
+
+	inventory_host="$(inventory_host_for_role "${role}")" || return 1
+	jq -e --arg h "${inventory_host}" '
+    ((.[$h].proxyJump // "") != "") or
+    ((.[$h].proxyCommand // "") != "")
+  ' <<<"${NIXBOT_HOSTS_JSON}" >/dev/null
+}
+
 build_host_shares_store_with_node() {
 	local node="$1" build_resource="" node_resource=""
 
@@ -4312,15 +4324,18 @@ build_host_matches_cache_host() {
 }
 
 effective_build_host_deploy_mode() {
+	local node="${1:-}"
+
 	case "${BUILD_HOST_DEPLOY_MODE}" in
 	cache | local-copy)
 		printf '%s\n' "${BUILD_HOST_DEPLOY_MODE}"
 		;;
 	auto)
-		if build_host_matches_cache_host; then
-			printf 'cache\n'
-		else
+		if ! build_host_matches_cache_host ||
+			{ [ -n "${node}" ] && host_uses_indirect_operator_transport "${node}"; }; then
 			printf 'local-copy\n'
+		else
+			printf 'cache\n'
 		fi
 		;;
 	esac
@@ -4838,7 +4853,7 @@ log_run_context() {
 		echo "Build host: ${BUILD_HOST}" >&2
 		if [ "${BUILD_HOST}" != "local" ]; then
 			if [ "${BUILD_HOST_DEPLOY_MODE}" = "auto" ]; then
-				echo "Build-host deploy mode: auto ($(effective_build_host_deploy_mode))" >&2
+				echo "Build-host deploy mode: auto (per-target)" >&2
 			else
 				echo "Build-host deploy mode: ${BUILD_HOST_DEPLOY_MODE}" >&2
 			fi
@@ -7570,7 +7585,7 @@ require_local_build_primary_deploy_context() {
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -ne 0 ] ||
 		[ "${PREP_USING_BOOTSTRAP_FALLBACK}" -ne 1 ] ||
-		{ [ "${BUILD_HOST}" != "local" ] && ! remote_build_deploy_uses_local_relay; }; then
+		{ [ "${BUILD_HOST}" != "local" ] && ! remote_build_deploy_uses_local_relay "${node}"; }; then
 		return 0
 	fi
 
@@ -10026,7 +10041,8 @@ append_extra_trusted_public_keys_option() {
 }
 
 copy_system_path_from_build_cache_to_prepared_target() {
-	local node="$1" system_path="$2" cache_url="" copy_script="" trusted_public_keys=""
+	local node="$1" system_path="$2" retry_policy="${3:-retry}"
+	local cache_url="" copy_script="" trusted_public_keys=""
 	local -a copy_cmd=()
 
 	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
@@ -10036,7 +10052,13 @@ copy_system_path_from_build_cache_to_prepared_target() {
 	copy_cmd+=(copy --from "${cache_url}" "${system_path}")
 	copy_script="$(shell_quote_argv "${copy_cmd[@]}")"
 	echo "Copying built closure to ${node} from ${BUILD_HOST} cache: ${system_path}" >&2
-	run_prepared_cache_copy_with_retry "${node}" "${copy_script}"
+	if [ "${retry_policy}" = "retry" ]; then
+		run_prepared_cache_copy_with_retry "${node}" "${copy_script}"
+	else
+		run_prepared_root_command_with_retry \
+			"Build-cache copy to ${node}" \
+			"${copy_script}"
+	fi
 }
 
 copy_system_path_from_build_cache_via_local_to_prepared_target() {
@@ -10089,14 +10111,23 @@ validate_build_host_closure_on_prepared_target() {
 }
 
 prepare_remote_build_system_path_on_prepared_target() {
-	local node="$1" system_path="$2"
+	local node="$1" system_path="$2" cache_rc=0
 
 	if build_host_shares_store_with_node "${node}"; then
 		validate_build_host_closure_on_prepared_target "${node}" "${system_path}"
-	elif remote_build_deploy_uses_local_relay; then
+	elif remote_build_deploy_uses_local_relay "${node}"; then
 		copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${system_path}"
-	else
+	elif [ "${BUILD_HOST_DEPLOY_MODE}" != "auto" ]; then
 		copy_system_path_from_build_cache_to_prepared_target "${node}" "${system_path}"
+	elif copy_system_path_from_build_cache_to_prepared_target "${node}" "${system_path}" once; then
+		return 0
+	else
+		cache_rc="$?"
+		if is_signal_exit_status "${cache_rc}"; then
+			return "${cache_rc}"
+		fi
+		echo "==> Target-side build-cache copy to ${node} failed in auto mode; relaying through local client" >&2
+		copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${system_path}"
 	fi
 }
 

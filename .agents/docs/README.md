@@ -279,6 +279,9 @@ Use this index as the canonical map for `.agents/docs/**`.
   Records the `pvl-x2` self-cache handoff failure where a one-hour negative
   narinfo entry hid an already-valid new closure member, plus the canonical
   same-store validation fix.
+- `.agents/docs/notes/nixbot/pvl-vlab-1-cache-dns-relay-2026-08.md`: Records the
+  `pvl-vlab-1` target-side cache DNS failure, the invalid global reachability
+  assumption in `auto`, and per-target proxy-aware relay and fallback behavior.
 - `.agents/docs/notes/nixbot/abird-shared-port-parity-2026-06.md`: Records the
   June 2026 shared Abird port, byte-parity files, local adaptations, and skipped
   topology-owned units.

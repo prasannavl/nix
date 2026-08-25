@@ -122,21 +122,24 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   Evaluation should stay local while realization happens on the build host;
   otherwise Nix can spend minutes materializing evaluation inputs through the
   remote store before the build host has CPU-heavy derivation work.
-- Remote deploy builds default to `--build-host-deploy-mode auto`: use `cache`
-  when `--build-host` resolves to the configured `globals.buildCache.host`;
-  otherwise use `local-copy`. For distinct stores, `cache` verifies the
-  build-host cache, makes the target copy the exact path from that cache, then
-  activates it. `local-copy` verifies the same signed cache path, then relays it
-  from the build-host cache to the target with the local client and the same
-  temporary target trust-key bridge. When the build host and target resolve to
-  the same canonical inventory resource, both modes skip the redundant HTTP
-  handoff and instead run an offline, recursive, metadata-only closure
-  verification in that store before activation. Deploy local-copy mode
-  intentionally avoids raw `ssh-ng://` copy-back into the operator store.
-  Build-only copy-back uses the signed build-host cache when it is configured,
-  and falls back to raw `ssh-ng://` only when there is no cache. Use
-  `local-copy` when the operator can reach both sides but the target cannot
-  reach the build-host cache.
+- Remote deploy builds default to `--build-host-deploy-mode auto`, resolved per
+  target. A target behind `proxyJump` or `proxyCommand` uses `local-copy`
+  because operator reachability does not imply that the target can resolve or
+  reach the operator-facing cache URL. A direct target first uses `cache`; if
+  that target-side command fails, `auto` falls back to `local-copy` unless the
+  failure is an interrupt. The target-side command is not outer-retried before
+  fallback because Nix owns its own download retries and the signed relay is the
+  available alternative. Explicit `cache` remains strict and keeps the bounded
+  outer retries; explicit `local-copy` always relays. For distinct stores,
+  `cache` makes the target copy the exact path from the build-host cache.
+  `local-copy` sources the same signed cache path through the local client and
+  the same temporary target trust-key bridge. When the build host and target
+  resolve to the same canonical inventory resource, every mode skips HTTP and
+  instead runs an offline, recursive, metadata-only closure verification in that
+  store before activation. Deploy local-copy mode intentionally avoids raw
+  `ssh-ng://` copy-back into the operator store. Build-only copy-back uses the
+  signed build-host cache when it is configured, and falls back to raw
+  `ssh-ng://` only when there is no cache.
 - Build-cache config validation is fail-fast and specific: missing URL, missing
   host, and selected-build-host/cache-owner mismatches should each produce a
   distinct pre-activation error.
@@ -394,6 +397,10 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Cache-pull transport to the target uses the prepared target transport retry
   path, while activation itself remains a single mutating operation. `nixbot`
   must not take ownership of builder signing commands.
+- Cache distribution is a per-target decision. Indirect operator transports
+  default to the local-client relay, while direct target-side cache failures in
+  `auto` fall back to that relay. Both paths source the configured signed cache;
+  the fallback changes transport, not artifact identity or trust policy.
 - Direct store-path activation intentionally uses promote-after-success ordering
   for `switch` and `boot`: first run the target's `bin/switch-to-configuration`,
   then set `/nix/var/nix/profiles/system` to the target system with
