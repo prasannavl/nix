@@ -78,7 +78,11 @@ in rec {
     packageSet = available packageOutputs.packages;
     stdPackageSet = available packageOutputs.stdPackages;
     rootAppSet = available packageOutputs.rootApps;
-    checks = (libTestsFn {pkgs = pkgs;}) // (flakeTestsFn {pkgs = pkgs;});
+    # This repository's checks exercise NixOS modules and Linux VM tests.
+    # Portable packages and development shells remain available on Darwin.
+    checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
+      (libTestsFn {pkgs = pkgs;}) // (flakeTestsFn {pkgs = pkgs;})
+    );
 
     lint = lintFn {
       inherit pkgs;
