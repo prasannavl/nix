@@ -1331,6 +1331,56 @@ set_instance_config_json_if_changed() {
 	fi
 }
 
+available_cpu_count() {
+	local configured count
+	configured="${1:-}"
+
+	if [ -n "$configured" ]; then
+		count="$configured"
+	elif is_remote_target; then
+		echo "Relative CPU counts for remote Incus targets require an explicit CPU capacity" >&2
+		return 1
+	else
+		count="$(nproc)"
+	fi
+
+	case "$count" in
+	'' | *[!0-9]* | 0)
+		echo "Invalid available CPU count: $count" >&2
+		return 1
+		;;
+	esac
+	printf '%s\n' "$count"
+}
+
+resolve_relative_limit_config() {
+	local instance_name config_json configured_capacity cpu_value percent available resolved
+	instance_name="$1"
+	config_json="$2"
+	configured_capacity="${3:-}"
+	cpu_value="$(printf '%s' "$config_json" | jq -r '."limits.cpu" // empty')"
+
+	case "$cpu_value" in
+	*%)
+		if ! [[ "$cpu_value" =~ ^([1-9]|[1-9][0-9]|100)%$ ]]; then
+			echo "Invalid relative CPU count for $instance_name: $cpu_value" >&2
+			return 1
+		fi
+		percent="${cpu_value%\%}"
+		available="$(available_cpu_count "$configured_capacity")" || return 1
+		resolved=$((available * percent / 100))
+		if [ "$resolved" -lt 1 ]; then
+			resolved=1
+		fi
+		echo "Resolved CPU count for $instance_name: $cpu_value of $available available CPUs = $resolved" >&2
+		printf '%s' "$config_json" | jq -c --arg value "$resolved" '."limits.cpu" = $value'
+		;;
+	*)
+		printf '%s\n' "$config_json"
+		;;
+	esac
+}
+
 obsolete_metadata_keys() {
 	jq -r '
 		keys[]
@@ -1564,7 +1614,7 @@ reconcile_instance_limits() {
 
 limits_main() {
 	local id name state_file state_json reconcile_policy current_instance current_config current_devices
-	local current_meta current_controller current_managed_by desired_config desired_devices desired_limits updated_meta
+	local current_meta current_controller current_managed_by desired_config desired_devices desired_limits updated_meta cpu_capacity
 
 	parse_machine_selection_args "$@"
 	incus_server_info >/dev/null
@@ -1596,6 +1646,7 @@ limits_main() {
 		fi
 
 		state_json="$(cat "$state_file")"
+		cpu_capacity="$(printf '%s' "$state_json" | jq -r '.cpuCapacity // empty')"
 		current_instance="$(incus query "$(query_ref "$(instance_query_path "$name")")" --raw)"
 		current_config="$(printf '%s' "$current_instance" | jq -c '.metadata.config // {}')"
 		current_devices="$(printf '%s' "$current_instance" | jq -c '.metadata.devices // {}')"
@@ -1611,7 +1662,12 @@ limits_main() {
 			exit 1
 		fi
 
-		desired_config="$(printf '%s' "$state_json" | jq -c '.limitConfig // {}')"
+		desired_config="$(
+			resolve_relative_limit_config \
+				"$name" \
+				"$(printf '%s' "$state_json" | jq -c '.limitConfig // {}')" \
+				"$cpu_capacity"
+		)"
 		desired_devices="$(printf '%s' "$state_json" | jq -c '.limitDevices // {}')"
 		reconcile_instance_limits "$name" "$current_config" "$current_devices" "$current_meta" "$desired_config" "$desired_devices"
 
@@ -2709,7 +2765,7 @@ machine_main() {
 	local current_instance current_devices current_config current_status desired_disks desired_disk_gc_metadata
 	local current_ipv4 current_managed_by current_project desired_props current_props dev dev_exists dev_source dev_pool key props query_name image_tag
 	local current_controller current_meta desired_meta_json desired_user_meta_json
-	local instance_image image_alias create_only_devices user_meta_json nixos_meta_json config_json limit_config limit_devices desired_ipv4 desired_adopt
+	local instance_image image_alias create_only_devices user_meta_json nixos_meta_json config_json limit_config limit_devices desired_ipv4 desired_adopt cpu_capacity
 	local desired_kind desired_incus_type current_incus_type recovery_attempted start_output
 	local -a create_args create_only_device_names current_disk_names desired_disk_names current_prop_keys
 
@@ -2748,6 +2804,7 @@ machine_main() {
 	user_meta_json="$(printf '%s' "$state_json" | jq -c '.userMeta')"
 	nixos_meta_json="$(printf '%s' "$state_json" | jq -c '.userMeta["user.nixos-meta"] | fromjson')"
 	config_json="$(printf '%s' "$state_json" | jq -c '.config')"
+	cpu_capacity="$(printf '%s' "$state_json" | jq -r '.cpuCapacity // empty')"
 	limit_config="$(printf '%s' "$state_json" | jq -c '.limitConfig // {}')"
 	limit_devices="$(printf '%s' "$state_json" | jq -c '.limitDevices // {}')"
 	desired_ipv4="$(printf '%s' "$state_json" | jq -r '.ipv4Address')"
@@ -2759,6 +2816,13 @@ machine_main() {
 		echo "Skipping ignored Incus instance $current_project/$name"
 		return 0
 	fi
+
+	limit_config="$(
+		resolve_relative_limit_config \
+			"$name" \
+			"$limit_config" \
+			"$cpu_capacity"
+	)"
 
 	while :; do
 		needs_create=0

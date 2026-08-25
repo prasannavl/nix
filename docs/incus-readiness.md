@@ -89,6 +89,27 @@ Per-guest settings that affect settlement:
 - `sshPort`
 - `waitForSsh`
 
+## Relative CPU Counts
+
+Incus guest CPU counts can be exact or relative to the controller's effective
+CPU set:
+
+```nix
+limits.cpu.count = 8;
+limits.cpu.count = "80%";
+```
+
+Percentage counts accept `1%` through `100%`. Reconciliation resolves the
+percentage against the CPUs currently available to the local Incus controller,
+rounds down to avoid exceeding the requested share, and grants at least one CPU.
+Remote Incus management must declare
+`services.incus-manager.global.cpuCapacity`, because the remote hardware
+inventory might not reflect an outer container cpuset.
+
+This is distinct from `limits.cpu.allowance`: allowance percentages control
+Incus scheduler weight, while relative counts control how many CPUs are exposed
+to the guest.
+
 ## `nixbot` Deploy Barrier
 
 Before each deploy wave, `nixbot` checks hosts that declare a `parent` in

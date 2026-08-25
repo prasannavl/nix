@@ -50,6 +50,10 @@ class IncusHelperTest(unittest.TestCase):
                 """
             ),
         )
+        self._write_executable(
+            self.fake_bin / "nproc",
+            '#!/bin/sh\nprintf \'%s\\n\' "${TEST_NPROC:-8}"\n',
+        )
 
     def tearDown(self):
         shutil.rmtree(self.work_dir)
@@ -154,6 +158,7 @@ class IncusHelperTest(unittest.TestCase):
             "config": {},
             "limitConfig": {},
             "limitDevices": {},
+            "cpuCapacity": None,
             "ipv4Address": "10.10.30.20",
             "adopt": False,
         }
@@ -685,6 +690,99 @@ class IncusHelperTest(unittest.TestCase):
         self.assertNotIn("stop web", flattened)
         self.assertNotIn("delete web", flattened)
         self.assertNotIn("create local:nixos-test web", flattened)
+
+    def test_limits_main_resolves_relative_cpu_count_against_effective_parent_cpus(self):
+        current_meta = self.machine_meta()
+        current_meta["limits"] = {
+            "configKeys": ["limits.cpu"],
+            "deviceProperties": {},
+        }
+        desired_meta = self.machine_meta()
+        desired_meta["limits"] = {
+            "configKeys": ["limits.cpu"],
+            "deviceProperties": {},
+        }
+        state = self.machine_state()
+        state["limitConfig"] = {"limits.cpu": "80%"}
+        state["userMeta"] = {
+            "user.nixos-meta": json.dumps(desired_meta, separators=(",", ":"))
+        }
+        self.write_machine_state(state)
+
+        response = self.instance_response()
+        response["metadata"]["config"] = {
+            "limits.cpu": "2",
+            "user.nixos-meta": json.dumps(current_meta, separators=(",", ":")),
+        }
+
+        result = self.run_helper(
+            "limits_main --all",
+            INCUS_MACHINES_DECLARED_INSTANCES='["web"]',
+            INCUS_MACHINES_INSTANCE_NAMES='{"web":"web"}',
+            INCUS_MACHINES_INSTANCE_PROJECTS='{"web":"default"}',
+            INCUS_MACHINES_INSTANCE_RECONCILE_POLICIES='{"web":"auto"}',
+            INCUS_MACHINES_INSTANCE_STATE_DIR=str(self.work_dir),
+            TEST_INCUS_QUERY_RESPONSES=json.dumps(self.machine_query_responses(response=response)),
+            TEST_NPROC="22",
+        )
+
+        mutations = [command for _, command in self.mutation_commands()]
+        self.assertIn(["config", "set", "web", "limits.cpu=17"], mutations)
+        self.assertIn(
+            "Resolved CPU count for web: 80% of 22 available CPUs = 17",
+            result.stderr,
+        )
+
+    def test_relative_cpu_count_fails_closed_for_invalid_runtime_state(self):
+        result = self.run_helper(
+            "resolve_relative_limit_config web '{\"limits.cpu\":\"101%\"}' ''",
+            check=False,
+            TEST_NPROC="22",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Invalid relative CPU count for web: 101%", result.stderr)
+
+    def test_machine_creation_resolves_relative_cpu_count_before_incus_mutation(self):
+        state = self.machine_state()
+        state["limitConfig"] = {"limits.cpu": "80%"}
+        state_file = self.write_machine_state(state)
+
+        self.run_helper(
+            "machine_main",
+            INCUS_MACHINES_INSTANCE_STATE_FILE=str(state_file),
+            TEST_INCUS_FAIL_PREFIXES=json.dumps(
+                [["--project", "default", "info", "web"]]
+            ),
+            TEST_INCUS_QUERY_RESPONSES=json.dumps(
+                self.machine_query_responses(
+                    response=self.instance_response(status="Stopped")
+                )
+            ),
+            TEST_NPROC="22",
+        )
+
+        mutations = [command for _, command in self.mutation_commands()]
+        self.assertIn(["config", "set", "web", "limits.cpu=17"], mutations)
+
+    def test_remote_relative_cpu_count_requires_explicit_capacity(self):
+        result = self.run_helper(
+            "resolve_relative_limit_config web '{\"limits.cpu\":\"80%\"}' ''",
+            check=False,
+            INCUS_MACHINES_REMOTE_NAME="parent",
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "remote Incus targets require an explicit CPU capacity",
+            result.stderr,
+        )
+
+        resolved = self.run_helper(
+            "resolve_relative_limit_config web '{\"limits.cpu\":\"80%\"}' 22",
+            INCUS_MACHINES_REMOTE_NAME="parent",
+        )
+        self.assertEqual('{"limits.cpu":"17"}', resolved.stdout.strip())
 
     def test_device_update_retries_one_etag_conflict(self):
         result = self.run_helper(

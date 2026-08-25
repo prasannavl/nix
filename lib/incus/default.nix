@@ -31,6 +31,9 @@
   allInstances = lib.listToAttrs (
     map (entry: lib.nameValuePair entry.logicalName entry.machine) projectInstanceEntries
   );
+  hasRelativeCpuCounts = lib.any (
+    machine: builtins.isString machine.limits.cpu.count
+  ) (builtins.attrValues allInstances);
   actionableInstances = lib.filterAttrs (_name: machine: machine.reconcilePolicy != "ignore") allInstances;
   instanceProjectConfigs = lib.listToAttrs (
     map (entry: lib.nameValuePair entry.logicalName entry.projectCfg) projectInstanceEntries
@@ -534,13 +537,20 @@
     };
   });
 
+  relativeCpuCountType = lib.types.strMatching "([1-9]|[1-9][0-9]|100)%";
+
   limitType = lib.types.submodule (_: {
     options = {
       cpu = {
         count = lib.mkOption {
-          type = lib.types.nullOr lib.types.ints.positive;
+          type = lib.types.nullOr (lib.types.either lib.types.ints.positive relativeCpuCountType);
           default = null;
-          description = "Maximum number of dynamically selected host CPUs exposed to the instance.";
+          description = ''
+            Maximum dynamically selected host CPUs exposed to the instance.
+            A positive integer is an exact count. A percentage such as 80%
+            resolves at reconciliation time against the Incus controller's
+            effective CPU set, rounds down, and always grants at least one CPU.
+          '';
         };
 
         allowance = lib.mkOption {
@@ -1696,6 +1706,7 @@
       config = builtins.fromJSON configJson;
       limitConfig = builtins.fromJSON limitsConfigJson;
       limitDevices = builtins.fromJSON limitDevicesJson;
+      cpuCapacity = globalCfg.cpuCapacity;
     };
 
   machineLifecycleStateJson = name: machine: let
@@ -2540,6 +2551,7 @@
         project = resolveMachineProject machine;
         config = limitConfig machine;
         devices = limitDeviceProperties machine;
+        cpuCapacity = globalCfg.cpuCapacity;
       }
     )
     allInstances
@@ -2803,6 +2815,17 @@ in {
           '';
         };
 
+        cpuCapacity = lib.mkOption {
+          type = lib.types.nullOr lib.types.ints.positive;
+          default = null;
+          description = ''
+            Optional denominator for relative instance CPU counts. Local Incus
+            management defaults to the controller's effective CPU set. Remote
+            Incus management must set this explicitly because the server's
+            hardware inventory does not reliably reflect an outer cpuset.
+          '';
+        };
+
         imageTag = lib.mkOption {
           type = lib.types.str;
           default = "0";
@@ -3048,6 +3071,10 @@ in {
 
   config = lib.mkIf hasHostHooks {
     assertions = [
+      {
+        assertion = !globalCfg.remote.enable || !hasRelativeCpuCounts || globalCfg.cpuCapacity != null;
+        message = "services.incus-manager.global.cpuCapacity is required for relative CPU counts when managing a remote Incus daemon";
+      }
       {
         assertion = imageAliasConflicts == [];
         message =

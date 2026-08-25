@@ -154,6 +154,23 @@
         }
       ];
     }).config;
+  relativeCpuConfig =
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.default.instances.web.limits.cpu.count = lib.mkForce "80%";
+        }
+      ];
+    }).config;
+  invalidRelativeCpuConfig =
+    builtins.tryEval
+    (evalConfig.extendModules {
+      modules = [
+        {
+          services.incus-manager.default.instances.web.limits.cpu.count = lib.mkForce "101%";
+        }
+      ];
+    }).config.environment.etc."incus-machines/web.json".text;
   invalidSwapConfig =
     (evalConfig.extendModules {
       modules = [
@@ -201,6 +218,7 @@
   ignoredState = builtins.fromJSON config.environment.etc."incus-machines/ignored.json".text;
   vmState = builtins.fromJSON config.environment.etc."incus-machines/lab.vm.json".text;
   changedLimitWebState = builtins.fromJSON changedLimitConfig.environment.etc."incus-machines/web.json".text;
+  relativeCpuWebState = builtins.fromJSON relativeCpuConfig.environment.etc."incus-machines/web.json".text;
   webMeta = builtins.fromJSON webState.userMeta."user.nixos-meta";
   ignoredMeta = builtins.fromJSON ignoredState.userMeta."user.nixos-meta";
   vmMeta = builtins.fromJSON vmState.userMeta."user.nixos-meta";
@@ -222,6 +240,7 @@
 in
   assert failedAssertions == [];
   assert invalidCombinedDiskLimit.success == false;
+  assert invalidRelativeCpuConfig.success == false;
   assert builtins.length unsupportedDiskLimitAssertions == 1;
   assert lib.hasInfix "disk limits are unsupported" (builtins.head unsupportedDiskLimitAssertions).message;
   assert unlimitedWebUnit.wantedBy == ["multi-user.target"];
@@ -254,6 +273,9 @@ in
   assert webState.limitDevices.eth0."limits.max" == "250Mbit";
   assert changedLimitWebState.configHash == webState.configHash;
   assert changedLimitWebState.limitConfig."limits.memory" == "3GiB";
+  assert relativeCpuWebState.limitConfig."limits.cpu" == "80%";
+  assert relativeCpuWebState.cpuCapacity == null;
+  assert relativeCpuWebState.configHash == webState.configHash;
   assert changedLimitWebState.limitConfig."limits.memory.swap" == "1GiB";
   assert changedLimitWebState.limitDevices.eth0."limits.ingress" == "200Mbit";
   assert changedLimitWebState.limitDevices.eth0."limits.egress" == "100Mbit";
