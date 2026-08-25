@@ -1,5 +1,7 @@
 # Git
 /worktrees/
+/.agents/runs/*
+!/.agents/runs/README.md
 
 # Nix
 result/
