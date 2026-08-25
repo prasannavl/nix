@@ -1226,8 +1226,17 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual("failed-rc:255", lines[4])
         command = lines[5]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
-        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
+        self.assertIn(
+            "/run/current-system/sw/bin/bash -c mkdir\\ -p\\ -m\\ 0755\\ "
+            "/dev/shm/nixbot-host-local.lock.d",
+            command,
+        )
+        self.assertIn(
+            "/dev/shm/nixbot-host-local.lock.d\\ "
+            "/run/current-system/sw/bin/bash\\ -c",
+            command,
+        )
+        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
         self.assertIn("--expand-environment=no", command)
         self.assertIn("--collect --no-block --no-ask-password --quiet", command)
         self.assertNotIn(" --wait ", command)
@@ -1362,8 +1371,8 @@ class NixbotScriptTest(unittest.TestCase):
         )
         command = lines[2]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("flock -w 150 /dev/shm/nixbot-host-local.lock.d", command)
-        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
+        self.assertIn("flock\\ -w\\ 150\\ /dev/shm/nixbot-host-local.lock.d", command)
+        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
 
     def test_rollback_reconvergence_starts_ready_targets_without_restarting_aggregate(self):
         result = self.run_script(
@@ -1641,12 +1650,14 @@ class NixbotScriptTest(unittest.TestCase):
             """
         )
 
+        wrapped_command = (
+            "/run/current-system/sw/bin/bash -c "
+            f"mkdir\\ -p\\ -m\\ 0755\\ {lock_file}\\ \\&\\&\\ "
+            f"\\[\\ -d\\ {lock_file}\\ \\]\\ \\&\\&\\ "
+            f"exec\\ flock\\ -w\\ 150\\ {lock_file}\\ activation-command"
+        )
         self.assertEqual(
-            [
-                f"mkdir -p -m 0755 {lock_file} && flock -w 150 {lock_file} activation-command",
-                "activation-command",
-                "activation-command",
-            ],
+            [wrapped_command, "activation-command", "activation-command"],
             result.stdout.splitlines(),
         )
 
@@ -1664,10 +1675,35 @@ class NixbotScriptTest(unittest.TestCase):
             """
         )
 
+        wrapped_command = (
+            "/run/current-system/sw/bin/bash -c "
+            f"mkdir\\ -p\\ -m\\ 0755\\ {lock_file}\\ \\&\\&\\ "
+            f"\\[\\ -d\\ {lock_file}\\ \\]\\ \\&\\&\\ "
+            f"exec\\ flock\\ -w\\ 150\\ {lock_file}\\ activation-command"
+        )
+        self.assertEqual([wrapped_command], result.stdout.splitlines())
+
+    def test_host_local_activation_lock_prepares_directory_before_flock(self):
+        lock_dir = self.work_dir / "nixbot-host-local.lock.d"
+        result = self.run_script(
+            f"""
+            init_vars
+            NIXBOT_REMOTE_ACTIVATION_RUNTIME_MAX_SECS=120
+            NIXBOT_REMOTE_ACTIVATION_STOP_TIMEOUT_SECS=30
+            NIXBOT_HOST_LOCAL_LOCK_PATH={lock_dir}
+            PREP_DEPLOY_LOCAL_EXEC=0
+            REMOTE_SYSTEM_BASH="$(command -v bash)"
+            target_command="$(shell_quote_argv \
+              "$(command -v stat)" -c 'target-type:%F' \
+              "$NIXBOT_HOST_LOCAL_LOCK_PATH")"
+            locked_command="$(host_local_activation_lock_command "$target_command")"
+            eval "$locked_command"
+            printf 'type:%s\\n' "$(stat -c %F "$NIXBOT_HOST_LOCAL_LOCK_PATH")"
+            """
+        )
+
         self.assertEqual(
-            [
-                f"mkdir -p -m 0755 {lock_file} && flock -w 150 {lock_file} activation-command"
-            ],
+            ["target-type:directory", "type:directory"],
             result.stdout.splitlines(),
         )
 
@@ -2278,8 +2314,17 @@ EOF_SCRIPT
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
-        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
+        self.assertIn(
+            "/run/current-system/sw/bin/bash -c mkdir\\ -p\\ -m\\ 0755\\ "
+            "/dev/shm/nixbot-host-local.lock.d",
+            command,
+        )
+        self.assertIn(
+            "/dev/shm/nixbot-host-local.lock.d\\ "
+            "/run/current-system/sw/bin/bash\\ -c",
+            command,
+        )
+        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
         self.assertIn("-E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER -E NIXOS_NO_CHECK", command)
         self.assertIn("--expand-environment=no", command)
         self.assertIn("--property=RuntimeMaxSec=", command)
@@ -2334,8 +2379,8 @@ EOF_SCRIPT
         )
         command = lines[1]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("flock -w 150 /dev/shm/nixbot-host-local.lock.d", command)
-        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
+        self.assertIn("flock\\ -w\\ 150\\ /dev/shm/nixbot-host-local.lock.d", command)
+        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
 
     def test_activate_prepared_system_path_retries_when_transport_drops_before_switch(self):
         result = self.run_script(
@@ -2892,8 +2937,12 @@ EOF_SCRIPT
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
-        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
+        self.assertIn(
+            "/dev/shm/nixbot-host-local.lock.d\\ "
+            "/run/current-system/sw/bin/bash\\ -c",
+            command,
+        )
+        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
         self.assertIn("/run/current-system/sw/bin/base64", command)
         self.assertIn("/run/current-system/sw/bin/tee", command)
@@ -2935,8 +2984,12 @@ EOF_SCRIPT
         self.assertEqual("activate-rc:0", lines[0])
         command = lines[1]
         self.assertIn("env NIXOS_INSTALL_BOOTLOADER=0 systemd-run", command)
-        self.assertIn("/dev/shm/nixbot-host-local.lock.d /run/current-system/sw/bin/bash", command)
-        self.assertLess(command.index("systemd-run"), command.index("flock -w"))
+        self.assertIn(
+            "/dev/shm/nixbot-host-local.lock.d\\ "
+            "/run/current-system/sw/bin/bash\\ -c",
+            command,
+        )
+        self.assertLess(command.index("systemd-run"), command.index("flock\\ -w"))
         self.assertIn("/run/current-system/sw/bin/bash -c", command)
         self.assertIn("/run/current-system/sw/bin/base64", command)
         self.assertIn("/run/current-system/sw/bin/tee", command)

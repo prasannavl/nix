@@ -2640,7 +2640,7 @@ acquire_host_local_lock() {
 }
 
 host_local_activation_lock_command() {
-	local target_cmd="$1" lock_wait_secs="" lock_path=""
+	local target_cmd="$1" lock_wait_secs="" lock_path="" lock_script=""
 
 	if [ -n "${NIXBOT_HOST_LOCAL_LOCK_FD:-}" ] &&
 		{ [ "${PREP_DEPLOY_LOCAL_EXEC:-0}" -eq 1 ] || [ "${PREP_DEPLOY_SELF_TARGET:-0}" -eq 1 ]; }; then
@@ -2650,7 +2650,16 @@ host_local_activation_lock_command() {
 
 	lock_wait_secs="$(host_local_lock_wait_secs)"
 	lock_path="$(host_local_lock_path)"
-	printf 'mkdir -p -m 0755 %q && flock -w %q %q %s\n' "${lock_path}" "${lock_wait_secs}" "${lock_path}" "${target_cmd}"
+	# Keep preparation and locking in one systemd-run argv. With --no-block,
+	# an outer-shell && would race the transient unit's directory creation.
+	printf -v lock_script \
+		'mkdir -p -m 0755 %q && [ -d %q ] && exec flock -w %q %q %s' \
+		"${lock_path}" \
+		"${lock_path}" \
+		"${lock_wait_secs}" \
+		"${lock_path}" \
+		"${target_cmd}"
+	shell_quote_argv "${REMOTE_SYSTEM_BASH}" -c "${lock_script}"
 }
 
 ensure_runtime_work_dir() {

@@ -260,6 +260,10 @@ Use this index as the canonical map for `.agents/docs/**`.
 - `.agents/docs/notes/nixbot/deploy-system.md`: Canonical `nixbot` deploy,
   bootstrap, SSH, worktree, Terraform, CI, and distinct group-scope, exact-host,
   and host-filter selection behavior.
+- `.agents/docs/notes/nixbot/host-local-lock-no-block-race-2026-08.md`: Records
+  the detached activation command-composition race that let `flock` create a
+  regular file at the directory lock path, plus the quoted-wrapper fix and live
+  repair.
 - `.agents/docs/notes/nixbot/pvl-a1-copy-retry-2026-07.md`: Records the `pvl-a1`
   Tailscale-path copy disconnect and safe `nix copy` retry boundary, separately
   from the concurrent optional `pvl-l5` activation failure.
