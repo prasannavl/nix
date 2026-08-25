@@ -14,6 +14,7 @@ VERSION_RE = re.compile(r"^v?([0-9]+(?:[._-][0-9]+)*)(.*)$")
 TIMESCALE_PG_TAG_RE = re.compile(
     r"^pg([0-9]+(?:[._-][0-9]+)*)-ts([0-9]+(?:[._-][0-9]+)*)(.*)$"
 )
+STABLE_BUILD_TAG_RE = re.compile(r"^stable-([0-9]+)(?:-([0-9]+))?$")
 RELEASE_TAG_REPOSITORIES = {
     ("ghcr.io", "immich-app/immich-machine-learning"): "immich-app/immich",
     ("ghcr.io", "immich-app/immich-server"): "immich-app/immich",
@@ -359,10 +360,40 @@ def latest_timescale_pg_tag(current, tags):
     return latest_tag
 
 
+def stable_build_tag_parts(tag):
+    match = STABLE_BUILD_TAG_RE.match(tag)
+    if not match:
+        return None
+    build, revision = match.groups()
+    return int(build), int(revision or 0)
+
+
+def latest_stable_build_tag(current, tags):
+    current_parts = stable_build_tag_parts(current)
+    if current_parts is None:
+        return None
+
+    comparable = [
+        (parts, tag)
+        for tag in tags
+        if (parts := stable_build_tag_parts(tag)) is not None
+    ]
+    if not comparable:
+        return current
+    latest_parts, latest_tag = max(comparable)
+    if latest_parts <= current_parts:
+        return current
+    return latest_tag
+
+
 def latest_comparable_tag(current, tags):
     timescale_latest = latest_timescale_pg_tag(current, tags)
     if timescale_latest is not None:
         return timescale_latest
+
+    stable_build_latest = latest_stable_build_tag(current, tags)
+    if stable_build_latest is not None:
+        return stable_build_latest
 
     match = VERSION_RE.match(current)
     if not match:
@@ -396,7 +427,7 @@ def is_variable_tag(tag):
 
 
 def is_floating_tag(tag):
-    return tag in {"latest", "main", "alpine", "release", "rocm"} or re.match(
+    return tag in {"latest", "main", "alpine", "release", "rocm", "stable"} or re.match(
         r"^pg[0-9]+$", tag
     )
 
@@ -439,7 +470,7 @@ def latest_known_tag(registry, repository, tag):
 def image_report_line(ref, color):
     registry, repository, display_name, tag, digest = parse_image_ref(ref)
     if digest is not None:
-        return f"- {display_name}: {tag}@{digest} [latest]"
+        return f"- {display_name}: {tag}@{digest} [digest pinned]"
 
     if is_variable_tag(tag):
         return floating_line(f"{display_name}: {tag} [variable tag]", color)

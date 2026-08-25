@@ -50,6 +50,25 @@ class ReportPodmanImagesTest(unittest.TestCase):
             "- ghcr.io/immich-app/immich-server: release [floating tag]",
         )
 
+    def test_stable_tag_reports_as_floating_tag(self):
+        line = report_podman_images.image_report_line(
+            "docker.io/jitsi/jvb:stable",
+            False,
+        )
+
+        self.assertEqual(line, "- docker.io/jitsi/jvb: stable [floating tag]")
+
+    def test_digest_reports_as_pinned_without_claiming_latest(self):
+        line = report_podman_images.image_report_line(
+            "docker.io/jitsi/jvb@sha256:abc123",
+            False,
+        )
+
+        self.assertEqual(
+            line,
+            "- docker.io/jitsi/jvb: latest@sha256:abc123 [digest pinned]",
+        )
+
     def test_immich_uses_latest_github_release_tag(self):
         with (
             mock.patch.object(
@@ -83,6 +102,44 @@ class ReportPodmanImagesTest(unittest.TestCase):
         )
 
         self.assertEqual(latest, "pg18.4-ts2.28.2")
+
+    def test_stable_build_tag_compares_build_numbers(self):
+        latest = report_podman_images.latest_comparable_tag(
+            "stable-10978",
+            [
+                "stable",
+                "stable-10532-1",
+                "stable-10978",
+                "stable-11031",
+                "unstable-12000",
+            ],
+        )
+
+        self.assertEqual(latest, "stable-11031")
+
+    def test_stable_build_tag_compares_release_revisions(self):
+        latest = report_podman_images.latest_comparable_tag(
+            "stable-10532",
+            ["stable-10532", "stable-10532-1"],
+        )
+
+        self.assertEqual(latest, "stable-10532-1")
+
+    def test_stable_build_image_reports_new_release(self):
+        with mock.patch.object(
+            report_podman_images,
+            "registry_tags",
+            return_value=["stable", "stable-10978", "stable-11031"],
+        ):
+            line = report_podman_images.image_report_line(
+                "docker.io/jitsi/jvb:stable-10978",
+                False,
+            )
+
+        self.assertEqual(
+            line,
+            "- docker.io/jitsi/jvb: stable-10978 -> stable-11031",
+        )
 
     def test_collect_images_keeps_instance_boundary(self):
         contexts = report_podman_images.collect_images_by_context_and_instance(
