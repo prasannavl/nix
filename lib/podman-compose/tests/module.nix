@@ -388,8 +388,9 @@
   rootlessMigrateUnit = config.systemd.user.services.podman-rootless-idmap-migrate-tester;
   runtimePreflightUnit = config.systemd.user.services.podman-runtime-preflight-tester;
   appHoldPath = "/var/lib/abird-host-agent/holds/${builtins.hashString "sha256" "service:demo-app"}.json";
+  appActivationPath = "/var/lib/abird-host-agent/activation-authorizations/${builtins.hashString "sha256" "service:demo-app"}.json";
   hostHoldPath = "/var/lib/abird-host-agent/holds/${builtins.hashString "sha256" "host:podman-compose-test"}.json";
-  migrationGateCondition = ["!${appHoldPath}" "!${hostHoldPath}"];
+  migrationGateCondition = ["|!${appHoldPath}" "|${appActivationPath}" "!${hostHoldPath}"];
   hasMigrationGateConditions = conditions:
     builtins.length conditions
     == builtins.length migrationGateCondition
@@ -597,6 +598,7 @@ in
   assert builtins.elem "network-online.target" appUnit.after;
   assert builtins.elem "podman-rootless-idmap-migrate-tester.service" appUnit.after;
   assert builtins.elem "podman-runtime-preflight-tester.service" appUnit.after;
+  assert builtins.elem "abird-host-agent-holds-ready.service" appUnit.after;
   assert !(builtins.elem "podman-managed-graph-migrate-tester.service" appUnit.after);
   assert !(builtins.elem "demo-app.service" appUnit.after);
   assert !(builtins.elem "demo-app.service" extendedUnit.after);
@@ -607,6 +609,7 @@ in
   assert !(builtins.elem "demo-extended.service" dbUnit.unitConfig.Requires);
   assert appUnit.unitConfig.Requires
   == [
+    "abird-host-agent-holds-ready.service"
     "podman-rootless-idmap-migrate-tester.service"
     "podman-runtime-preflight-tester.service"
     "demo-app-stage.service"
@@ -648,15 +651,23 @@ in
   assert !(builtins.hasAttr "RestartPreventExitStatus" appUnit.serviceConfig);
   assert appStageUnit.serviceConfig.Type == "oneshot";
   assert appStageUnit.unitConfig.ConditionUser == "tester";
-  assert appStageUnit.unitConfig.Requires == ["podman-rootless-idmap-migrate-tester.service"];
+  assert appStageUnit.unitConfig.Requires
+  == [
+    "podman-rootless-idmap-migrate-tester.service"
+  ];
   assert lib.hasSuffix " stage" appStageUnit.serviceConfig.ExecStart;
   assert appStageUnit.serviceConfig.TimeoutStartSec == 45;
   assert !(builtins.hasAttr "demo-app-bootstrap" config.systemd.user.services);
-  assert appReconcileUnit.unitConfig.Requires == ["demo-app.service"];
+  assert appReconcileUnit.unitConfig.Requires
+  == [
+    "abird-host-agent-holds-ready.service"
+    "demo-app.service"
+  ];
   assert hasMigrationGateConditions appReconcileUnit.unitConfig.ConditionPathExists;
   assert lib.hasSuffix " reconcile" appReconcileUnit.serviceConfig.ExecStart;
   assert appVerifyUnit.unitConfig.Requires
   == [
+    "abird-host-agent-holds-ready.service"
     "demo-app.service"
     "demo-app-reconcile.service"
   ];
@@ -668,10 +679,12 @@ in
   assert appReadyTarget.unitConfig.PartOf == ["demo-app.service"];
   assert appReadyTarget.unitConfig.Requires
   == [
+    "abird-host-agent-holds-ready.service"
     "demo-app-verify.service"
   ];
   assert appReadyTarget.unitConfig.After
   == [
+    "abird-host-agent-holds-ready.service"
     "demo-app-verify.service"
   ];
   assert testerManagedTarget.wantedBy == ["default.target"];
@@ -699,7 +712,10 @@ in
   assert !(builtins.elem "lane-consumer.service" laneProvider4StageUnit.after);
   assert imagePullUnit.serviceConfig.Type == "oneshot";
   assert imagePullUnit.unitConfig.ConditionUser == "tester";
-  assert imagePullUnit.unitConfig.Requires == ["podman-runtime-preflight-tester.service"];
+  assert imagePullUnit.unitConfig.Requires
+  == [
+    "podman-runtime-preflight-tester.service"
+  ];
   assert builtins.elem "podman-runtime-preflight-tester.service" imagePullUnit.after;
   assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" imagePullUnit.serviceConfig.Environment;
   assert lib.hasSuffix " image-pull" imagePullUnit.serviceConfig.ExecStart;
@@ -716,7 +732,11 @@ in
   assert builtins.elem "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" rootlessMigrateUnit.serviceConfig.Environment;
   assert rootlessMigrateUnit.unitConfig.ConditionUser == "tester";
   assert runtimePreflightUnit.unitConfig.ConditionUser == "tester";
-  assert runtimePreflightUnit.unitConfig.Requires == ["podman-rootless-idmap-migrate-tester.service"];
+  assert runtimePreflightUnit.unitConfig.Requires
+  == [
+    "abird-host-agent-holds-ready.service"
+    "podman-rootless-idmap-migrate-tester.service"
+  ];
   assert builtins.elem "podman-rootless-idmap-migrate-tester.service" runtimePreflightUnit.after;
   assert runtimePreflightUnit.serviceConfig.Type == "oneshot";
   assert runtimePreflightUnit.serviceConfig.RemainAfterExit == false;
@@ -871,9 +891,14 @@ in
   assert restartPolicyMetadata.reconcilePolicy == "restart";
   assert restartPolicyMetadata.restartStamp != "";
   assert restartPolicyMetadata.recreateStamp == restartPolicyMetadata.recreateClassStamp;
-  assert restartPolicyVerifyUnit.unitConfig.Requires == ["demo-restart-policy.service"];
+  assert restartPolicyVerifyUnit.unitConfig.Requires
+  == [
+    "abird-host-agent-holds-ready.service"
+    "demo-restart-policy.service"
+  ];
   assert restartPolicyReadyTarget.unitConfig.Requires
   == [
+    "abird-host-agent-holds-ready.service"
     "demo-restart-policy-verify.service"
   ];
   assert recreatePolicy.reconcilePolicy == "recreate";
@@ -881,9 +906,14 @@ in
   assert recreatePolicyMetadata.restartStamp != "";
   assert recreatePolicyMetadata.recreateClassStamp != "";
   assert recreatePolicyMetadata.recreateStamp != recreatePolicyMetadata.recreateClassStamp;
-  assert recreatePolicyVerifyUnit.unitConfig.Requires == ["demo-recreate-policy.service"];
+  assert recreatePolicyVerifyUnit.unitConfig.Requires
+  == [
+    "abird-host-agent-holds-ready.service"
+    "demo-recreate-policy.service"
+  ];
   assert recreatePolicyReadyTarget.unitConfig.Requires
   == [
+    "abird-host-agent-holds-ready.service"
     "demo-recreate-policy-verify.service"
   ];
   assert native.backend == "quadlet";
@@ -916,9 +946,10 @@ in
   assert lib.hasInfix "/bin/podman-quadlet-helper stage cleanup " nativeStageUnit.serviceConfig.ExecStopPost;
   assert nativeStageUnit.unitConfig.PartOf == ["demo-native.service"];
   assert nativeVerifyUnit.unitConfig.Requisite == ["demo-native.service"];
-  assert !(nativeVerifyUnit.unitConfig ? Requires);
+  assert nativeVerifyUnit.unitConfig.Requires == "abird-host-agent-holds-ready.service";
   assert nativeReadyTarget.unitConfig.Requires
   == [
+    "abird-host-agent-holds-ready.service"
     "demo-native-verify.service"
     "demo-native.service"
   ];
@@ -929,8 +960,9 @@ in
   assert lib.hasInfix "/bin/podman-composectl" config.system.activationScripts.podman-compose-drain-changed.text;
   assert lib.hasInfix "drain-changed" config.system.activationScripts.podman-compose-drain-changed.text;
   assert controlRegistry.demo-native.backend == "quadlet";
+  assert controlRegistry.demo-native.timeoutReadySeconds == 45;
   assert builtins.attrNames controlRegistry.demo-native
-  == ["autoStart" "backend" "drainStamp" "managedUnit" "readyUnit" "removalPolicy" "serviceName" "state" "uid" "unit" "user"];
+  == ["autoStart" "backend" "drainStamp" "managedUnit" "readyUnit" "removalPolicy" "serviceName" "state" "timeoutReadySeconds" "uid" "unit" "user"];
   assert !(controlRegistry.demo-native ? metadataFile);
   assert !(controlRegistry.demo-native ? manifestFile);
   assert !(controlRegistry.demo-native ? privateRuntimeUnits);

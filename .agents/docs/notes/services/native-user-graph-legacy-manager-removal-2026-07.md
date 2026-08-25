@@ -36,6 +36,10 @@ configuration or compatibility support.
 - Each service user has one `<user>-managed.target` convergence root.
 - Per-instance ready targets and the generated control registry own health
   reporting.
+- Every backend must publish its resolved `timeoutReadySeconds` in that control
+  registry. The timeout is health-settling metadata for the common native user
+  graph, not Compose-helper metadata; omitting it for Quadlet makes Nixbot fail
+  immediately when a valid post-deploy start is still converging.
 - The host agent owns durable managed-root holds; the host manager sequences
   explicit release and activation across hosts.
 - Nixbot observes native graph and registry state without submitting a separate
@@ -47,6 +51,8 @@ The removal must retain:
 
 - passing nixbot tests and Bash syntax checks;
 - passing remaining library checks;
+- control-registry coverage proving Compose and Quadlet entries both retain
+  their resolved readiness timeout;
 - representative host evaluation with no generated legacy units; and
 - a source scan showing no active code/configuration references outside
   historical documentation.

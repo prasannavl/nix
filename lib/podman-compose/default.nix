@@ -2563,6 +2563,7 @@
           removalPolicy = service.removalPolicy;
           autoStart = service.autoStartEnabled;
           state = service.state;
+          timeoutReadySeconds = service.timeoutReadySeconds;
         }
         // lib.optionalAttrs (service.backend == "compose") {
           metadataFile = service.helperMetadata;
@@ -2572,7 +2573,6 @@
           workingDir = service.resolvedWorkingDir;
           expectedComposeServices = service.expectedComposeServices;
           verifyCommand = service.verifyCommand;
-          timeoutReadySeconds = service.timeoutReadySeconds;
         }
       ))
     resolvedServices
