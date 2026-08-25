@@ -3344,6 +3344,99 @@ EOF_SCRIPT
 
         self.assertEqual(["cache", "local-copy", "cache", "local-copy"], result.stdout.splitlines())
 
+    def test_build_host_store_identity_uses_canonical_resource(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=builder
+            NIXBOT_HOSTS_JSON='{
+              "builder-endpoint": {
+                "resourceId": "builder",
+                "target": "10.0.0.5"
+              },
+              "other-store": {
+                "resourceId": "other",
+                "target": "10.0.0.5"
+              },
+              "plain": {"target": "10.0.0.6"}
+            }'
+            for node in builder builder-endpoint other-store plain; do
+              if build_host_shares_store_with_node "$node"; then
+                printf '%s=same\n' "$node"
+              else
+                printf '%s=different\n' "$node"
+              fi
+            done
+            """
+        )
+
+        self.assertEqual(
+            [
+                "builder=same",
+                "builder-endpoint=same",
+                "other-store=different",
+                "plain=different",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_same_store_closure_validation_is_offline_and_recursive(self):
+        result = self.run_script(
+            """
+            init_vars
+            run_prepared_root_command_with_retry() {
+              printf 'label=%s\ncommand=%s\n' "$1" "$2"
+            }
+            validate_build_host_closure_on_prepared_target pvl-x2 /nix/store/system
+            """
+        )
+
+        self.assertEqual(
+            [
+                "label=Build-host closure validation on pvl-x2",
+                "command=nix --offline --quiet store verify --no-contents --no-trust --recursive /nix/store/system",
+            ],
+            result.stdout.splitlines(),
+        )
+        self.assertIn(
+            "Validating built closure already present on pvl-x2 build-host store",
+            result.stderr,
+        )
+
+    def test_remote_build_path_preparation_routes_by_store_identity(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=local-copy
+            build_host_shares_store_with_node() {
+              [ "$1" = builder ]
+            }
+            validate_build_host_closure_on_prepared_target() {
+              printf 'validate:%s:%s\n' "$1" "$2"
+            }
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'cache:%s:%s\n' "$1" "$2"
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {
+              printf 'relay:%s:%s\n' "$1" "$2"
+            }
+            prepare_remote_build_system_path_on_prepared_target builder /nix/store/system
+            prepare_remote_build_system_path_on_prepared_target relay-target /nix/store/system
+            BUILD_HOST_DEPLOY_MODE=cache
+            prepare_remote_build_system_path_on_prepared_target cache-target /nix/store/system
+            """
+        )
+
+        self.assertEqual(
+            [
+                "validate:builder:/nix/store/system",
+                "relay:relay-target:/nix/store/system",
+                "cache:cache-target:/nix/store/system",
+            ],
+            result.stdout.splitlines(),
+        )
+
     def test_transport_retry_policy_and_backoff_are_narrow(self):
         result = self.run_script(
             """

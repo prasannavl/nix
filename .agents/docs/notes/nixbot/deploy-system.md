@@ -124,15 +124,19 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
   remote store before the build host has CPU-heavy derivation work.
 - Remote deploy builds default to `--build-host-deploy-mode auto`: use `cache`
   when `--build-host` resolves to the configured `globals.buildCache.host`;
-  otherwise use `local-copy`. `cache` verifies the build-host cache, makes the
-  target copy the exact path from that cache, then activates it. `local-copy`
-  verifies the same signed cache path, then relays it from the build-host cache
-  to the target with the local client and the same temporary target trust-key
-  bridge. Deploy local-copy mode intentionally avoids raw `ssh-ng://` copy-back
-  into the operator store. Build-only copy-back uses the signed build-host cache
-  when it is configured, and falls back to raw `ssh-ng://` only when there is no
-  cache. Use `local-copy` when the operator can reach both sides but the target
-  cannot reach the build-host cache.
+  otherwise use `local-copy`. For distinct stores, `cache` verifies the
+  build-host cache, makes the target copy the exact path from that cache, then
+  activates it. `local-copy` verifies the same signed cache path, then relays it
+  from the build-host cache to the target with the local client and the same
+  temporary target trust-key bridge. When the build host and target resolve to
+  the same canonical inventory resource, both modes skip the redundant HTTP
+  handoff and instead run an offline, recursive, metadata-only closure
+  verification in that store before activation. Deploy local-copy mode
+  intentionally avoids raw `ssh-ng://` copy-back into the operator store.
+  Build-only copy-back uses the signed build-host cache when it is configured,
+  and falls back to raw `ssh-ng://` only when there is no cache. Use
+  `local-copy` when the operator can reach both sides but the target cannot
+  reach the build-host cache.
 - Build-cache config validation is fail-fast and specific: missing URL, missing
   host, and selected-build-host/cache-owner mismatches should each produce a
   distinct pre-activation error.
@@ -382,9 +386,11 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Deploys with non-local `--build-host` require a configured builder cache in
   `hosts/nixbot.nix`. The builder's Nix daemon signs locally built paths through
   host-side `nix.settings.secret-key-files`; local `nixbot` verifies the path is
-  visible through the builder cache, the target pulls that path from the cache,
-  and local `nixbot` activates that exact path over the prepared target SSH
-  context.
+  visible through the builder cache, distinct target stores pull that path from
+  the cache, and local `nixbot` activates that exact path over the prepared
+  target SSH context. A target that owns the builder store validates its exact
+  closure locally and offline so a stale negative narinfo entry cannot mask a
+  path the same store just built.
 - Cache-pull transport to the target uses the prepared target transport retry
   path, while activation itself remains a single mutating operation. `nixbot`
   must not take ownership of builder signing commands.

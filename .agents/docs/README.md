@@ -275,6 +275,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   the `pvl-l5` self-deploy NetworkManager outage that broke a parallel `pvl-x2`
   closure copy, the unchanged target boundary, and required self-target
   isolation.
+- `.agents/docs/notes/nixbot/pvl-x2-self-cache-negative-narinfo-2026-08.md`:
+  Records the `pvl-x2` self-cache handoff failure where a one-hour negative
+  narinfo entry hid an already-valid new closure member, plus the canonical
+  same-store validation fix.
 - `.agents/docs/notes/nixbot/abird-shared-port-parity-2026-06.md`: Records the
   June 2026 shared Abird port, byte-parity files, local adaptations, and skipped
   topology-owned units.

@@ -4289,6 +4289,22 @@ build_host_matches_configured_host() {
 		[ "${build_target}" = "${configured_target}" ]
 }
 
+host_resource_for_role() {
+	local role="$1" inventory_host=""
+
+	inventory_host="$(inventory_host_for_role "${role}")" || return 1
+	jq -r --arg h "${inventory_host}" '.[$h].resourceId // $h' <<<"${NIXBOT_HOSTS_JSON}"
+}
+
+build_host_shares_store_with_node() {
+	local node="$1" build_resource="" node_resource=""
+
+	build_resource="$(host_resource_for_role "${BUILD_HOST}")" || return 1
+	node_resource="$(host_resource_for_role "${node}")" || return 1
+
+	[ -n "${build_resource}" ] && [ "${build_resource}" = "${node_resource}" ]
+}
+
 build_host_matches_cache_host() {
 	local build_host="${1:-${BUILD_HOST}}"
 
@@ -10051,6 +10067,39 @@ copy_system_path_from_build_cache_via_local_to_prepared_target() {
 		"${copy_cmd[@]}"
 }
 
+validate_build_host_closure_on_prepared_target() {
+	local node="$1" system_path="$2" validate_script=""
+	local -a validate_cmd=(
+		nix
+		--offline
+		--quiet
+		store
+		verify
+		--no-contents
+		--no-trust
+		--recursive
+		"${system_path}"
+	)
+
+	validate_script="$(shell_quote_argv "${validate_cmd[@]}")"
+	echo "Validating built closure already present on ${node} build-host store: ${system_path}" >&2
+	run_prepared_root_command_with_retry \
+		"Build-host closure validation on ${node}" \
+		"${validate_script}"
+}
+
+prepare_remote_build_system_path_on_prepared_target() {
+	local node="$1" system_path="$2"
+
+	if build_host_shares_store_with_node "${node}"; then
+		validate_build_host_closure_on_prepared_target "${node}" "${system_path}"
+	elif remote_build_deploy_uses_local_relay; then
+		copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${system_path}"
+	else
+		copy_system_path_from_build_cache_to_prepared_target "${node}" "${system_path}"
+	fi
+}
+
 copy_system_path_from_local_to_prepared_target() {
 	local node="$1" system_path="$2" target_store_uri="" copy_nix_sshopts="" copy_output=""
 	local -a copy_cmd=()
@@ -10104,7 +10153,7 @@ deploy_remote_build_host_path() {
 	run_pre_switch_admission || return 1
 
 	register_active_deploy "${node}"
-	if copy_system_path_from_build_cache_to_prepared_target "${node}" "${built_out_path}" &&
+	if prepare_remote_build_system_path_on_prepared_target "${node}" "${built_out_path}" &&
 		run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
 		mark_deploy_activation_started "${node}" &&
 		activate_prepared_system_path "${node}" "${built_out_path}"; then
@@ -10112,39 +10161,6 @@ deploy_remote_build_host_path() {
 	else
 		deploy_rc="$?"
 	fi
-	unregister_active_deploy "${node}"
-	return "${deploy_rc}"
-}
-
-deploy_build_cache_via_local_client() {
-	local node="$1" built_out_path="$2"
-	local age_identity_key="" deploy_rc=0
-
-	run_parented_host_operation_with_retry \
-		"${node}" \
-		"deploy transport preparation" \
-		prepare_host_transport_for_deploy \
-		"${node}" \
-		1 || return 1
-
-	age_identity_key="${PREP_DEPLOY_AGE_IDENTITY_KEY}"
-
-	if [ -n "${age_identity_key}" ]; then
-		ensure_prepared_host_age_identity_material "${node}" "${age_identity_key}" || return 1
-	fi
-
-	run_pre_switch_admission || return 1
-
-	register_active_deploy "${node}"
-	if copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${built_out_path}" &&
-		run_pre_activation_podman_image_pulls "${node}" "${built_out_path}" &&
-		mark_deploy_activation_started "${node}" &&
-		activate_prepared_system_path "${node}" "${built_out_path}"; then
-		deploy_rc=0
-	else
-		deploy_rc="$?"
-	fi
-
 	unregister_active_deploy "${node}"
 	return "${deploy_rc}"
 }
@@ -10177,10 +10193,6 @@ deploy_host() {
 	fi
 
 	if [ "${BUILD_HOST}" != "local" ]; then
-		if remote_build_deploy_uses_local_relay; then
-			deploy_build_cache_via_local_client "${node}" "${built_out_path}"
-			return "$?"
-		fi
 		deploy_remote_build_host_path "${node}" "${built_out_path}"
 		return "$?"
 	fi

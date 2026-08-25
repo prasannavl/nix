@@ -305,15 +305,20 @@ Implemented in the pvl repo:
   the remote store and make the build host look idle before derivations start.
 - Remote deploy builds default to `--build-host-deploy-mode auto`: use `cache`
   when `--build-host` resolves to the configured `globals.buildCache.host`;
-  otherwise use `local-copy`. `cache` verifies the build-host cache, makes the
-  target copy the exact path from that cache, then activates it. `local-copy`
-  verifies the same signed cache path, then relays it from the build-host cache
-  to the target with the local client and the same temporary target trust-key
-  bridge. Deploy local-copy mode intentionally avoids raw `ssh-ng://` copy-back
-  into the operator store. Build-only copy-back uses the signed build-host cache
-  when it is configured, and falls back to raw `ssh-ng://` only when there is no
-  cache. Use `local-copy` when the operator can reach both sides but the target
-  cannot reach the build-host cache.
+  otherwise use `local-copy`. For distinct stores, `cache` verifies the
+  build-host cache, makes the target copy the exact path from that cache, then
+  activates it. `local-copy` verifies the same signed cache path, then relays it
+  from the build-host cache to the target with the local client and the same
+  temporary target trust-key bridge. When the build host and deploy target map
+  to the same canonical inventory resource, both modes skip the redundant HTTP
+  copy and run an offline recursive metadata verification of the exact closure
+  in that store. This avoids self-cache negative-narinfo races without weakening
+  signed-cache enforcement for distinct targets. Deploy local-copy mode
+  intentionally avoids raw `ssh-ng://` copy-back into the operator store.
+  Build-only copy-back uses the signed build-host cache when it is configured,
+  and falls back to raw `ssh-ng://` only when there is no cache. Use
+  `local-copy` when the operator can reach both sides but the target cannot
+  reach the build-host cache.
 - Remote deploy build-cache validation fails before activation when
   `globals.buildCache.url` or `globals.buildCache.host` is missing, or when the
   selected `--build-host` does not match the configured cache owner. The
