@@ -460,6 +460,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   August 19 audit of all six commits after `d7a763f0`, shared backend-contract
   repairs, the Quadlet-default policy with Pvl compatibility pins, complete
   per-commit dispositions, and final parity.
+- `.agents/docs/notes/tooling/abird-post-b37-port-2026-08.md`: Records the
+  August 25 audit of all 77 commits after `b37e3919`, projection-aware host
+  control, Nixbot, Ollama, GCP, Incus, Podman, Stalwart, input-refresh ports,
+  complete per-commit dispositions, and final byte parity.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
