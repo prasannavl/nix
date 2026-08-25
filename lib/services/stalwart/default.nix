@@ -111,8 +111,9 @@ in {
     mailingListsHostPath ? "",
     sharedGroupsHostPath ? "",
     recoveryContainerName ? "stalwart-recovery",
+    recoveryHostPort ? 18081,
     recoveryWaitSeconds ? 120,
-    recoveryUrl ? "http://127.0.0.1:8080",
+    recoveryUrl ? "http://127.0.0.1:${toString recoveryHostPort}",
     serviceName ? "stalwart.service",
     url ? "http://127.0.0.1:8080",
     credentialsFile ? "/run/agenix/stalwart-recovery-admin",
@@ -143,7 +144,7 @@ in {
           pkgs.util-linux
         ]
         ++ lib.optional (runtime == "podman") pkgs.podman
-        ++ lib.optional (runtime == "systemd") pkgs.systemd;
+        ++ lib.optional (runtime == "systemd" || serviceName != "") pkgs.systemd;
       runtimeEnv =
         {
           STALWART_CLI_BIN = "${pkgs.stalwart-cli}/bin/stalwart-cli";
@@ -187,6 +188,7 @@ in {
             then "true"
             else "false";
           STALWART_RECOVERY_CONTAINER = recoveryContainerName;
+          STALWART_RECOVERY_HOST_PORT = toString recoveryHostPort;
           STALWART_RECOVERY_WAIT_SECONDS = toString recoveryWaitSeconds;
           STALWART_RECOVERY_URL = recoveryUrl;
           STALWART_RUNTIME = runtime;

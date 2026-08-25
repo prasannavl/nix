@@ -26,7 +26,12 @@ class StalwartHelperTest(unittest.TestCase):
         self.secret_dir.mkdir()
         self.log_file = self.state_dir / "stalwart.log"
         self.log_file.touch()
+        self.runtime_log_file = self.state_dir / "runtime.log"
+        self.runtime_log_file.touch()
+        self.systemctl_log_file = self.state_dir / "systemctl.log"
+        self.systemctl_log_file.touch()
         self._write_fake_podman()
+        self._write_fake_systemctl()
         self._write_fake_stalwart_cli()
 
     def tearDown(self):
@@ -48,16 +53,32 @@ class StalwartHelperTest(unittest.TestCase):
             f"#!{shutil.which('bash')}\nexec {sys.executable} {Path(__file__).with_name('fake_podman.py')} \"$@\"\n",
         )
 
+    def _write_fake_systemctl(self):
+        self._write_executable(
+            self.fake_bin / "systemctl",
+            f"#!{shutil.which('bash')}\n"
+            'printf \'%s\\n\' "$*" >>"$TEST_STALWART_SYSTEMCTL_LOG"\n'
+            'case "$*" in\n'
+            '  "--user is-active --quiet mock-stalwart.service") exit 0 ;;\n'
+            '  "--user stop mock-stalwart.service") exit 0 ;;\n'
+            '  "--user start mock-stalwart.service") exit 0 ;;\n'
+            "esac\n"
+            "exit 64\n",
+        )
+
     def helper_env(self, **overrides):
         env = os.environ.copy()
         env.update(
             {
                 "PATH": f"{self.fake_bin}:{env['PATH']}",
                 "TEST_STALWART_LOG": str(self.log_file),
+                "TEST_STALWART_RUNTIME_LOG": str(self.runtime_log_file),
                 "TEST_STALWART_STATE_DIR": str(self.state_dir),
+                "TEST_STALWART_SYSTEMCTL_LOG": str(self.systemctl_log_file),
                 "STALWART_CLI_BIN": str(self.fake_bin / "stalwart-cli"),
                 "STALWART_IMAGE": "mock-image",
                 "STALWART_RECOVERY_CONTAINER": "mock-recovery",
+                "STALWART_RECOVERY_HOST_PORT": "18081",
                 "STALWART_RECOVERY_URL": "http://127.0.0.1:18081",
                 "STALWART_DOMAIN_ID": "__domain__",
                 "STALWART_DOMAIN_NAME": "abird.ai",
@@ -117,13 +138,50 @@ class StalwartHelperTest(unittest.TestCase):
             stalwart_kanidm_ldap_token_host_path={token}
             stalwart_plan_container_path=/etc/stalwart/plan.json
             stalwart_plan_host_path={plan}
-            stalwart_service_name=mock-stalwart
             with_recovery true
             printf 'recovery-complete\\n'
             """
         )
 
         self.assertEqual("recovery-complete", result.stdout.strip())
+
+    def test_recovery_uses_declared_systemd_lifecycle_owner(self):
+        config = self.work_dir / "managed-config.json"
+        plan = self.work_dir / "managed-plan.json"
+        token = self.work_dir / "managed-ldap-token"
+        data_dir = self.work_dir / "managed-data"
+        config.write_text("{}\n", encoding="utf-8")
+        plan.write_text("{}\n", encoding="utf-8")
+        token.write_text("token\n", encoding="utf-8")
+        data_dir.mkdir()
+
+        self.run_helper(
+            f"""
+            stalwart_config_host_path={config}
+            stalwart_container=mock-stalwart
+            stalwart_data_dir={data_dir}
+            stalwart_kanidm_ldap_token_host_path={token}
+            stalwart_service_name=mock-stalwart.service
+            stalwart_plan_container_path=/etc/stalwart/plan.json
+            stalwart_plan_host_path={plan}
+            stalwart_recovery_host_port=28081
+            stalwart_recovery_url=http://127.0.0.1:28081
+            with_recovery true
+            """
+        )
+
+        self.assertEqual(
+            [
+                "--user is-active --quiet mock-stalwart.service",
+                "--user stop mock-stalwart.service",
+                "--user start mock-stalwart.service",
+            ],
+            self.systemctl_log_file.read_text(encoding="utf-8").splitlines(),
+        )
+        runtime_log = self.runtime_log_file.read_text(encoding="utf-8")
+        self.assertIn("--publish 127.0.0.1:28081:8080", runtime_log)
+        self.assertNotIn("stop mock-stalwart", runtime_log)
+        self.assertNotIn("start mock-stalwart", runtime_log)
 
     def test_recovery_retries_transient_podman_engine_failures(self):
         config = self.work_dir / "retry-config.json"
@@ -144,7 +202,6 @@ class StalwartHelperTest(unittest.TestCase):
             stalwart_plan_container_path=/etc/stalwart/plan.json
             stalwart_plan_host_path={plan}
             stalwart_runtime_retry_delay_seconds=0
-            stalwart_service_name=mock-stalwart
             with_recovery true
             """,
             TEST_STALWART_RECOVERY_FAILURES="2",

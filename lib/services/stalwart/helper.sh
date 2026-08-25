@@ -24,6 +24,7 @@ init_vars() {
 	stalwart_prune_sieve_system_scripts="${STALWART_PRUNE_SIEVE_SYSTEM_SCRIPTS-false}"
 	stalwart_prune_users="${STALWART_PRUNE_USERS-false}"
 	stalwart_recovery_container="${STALWART_RECOVERY_CONTAINER-}"
+	stalwart_recovery_host_port="${STALWART_RECOVERY_HOST_PORT-18081}"
 	stalwart_recovery_lock_wait_seconds="${STALWART_RECOVERY_LOCK_WAIT_SECONDS-120}"
 	stalwart_recovery_wait_seconds="${STALWART_RECOVERY_WAIT_SECONDS-120}"
 	stalwart_recovery_url="${STALWART_RECOVERY_URL-}"
@@ -44,20 +45,32 @@ runtime_podman() {
 }
 
 runtime_stop_instance() {
+	if [ -n "$stalwart_service_name" ]; then
+		systemctl --user stop "$stalwart_service_name"
+		return
+	fi
 	case "$stalwart_runtime" in
 	podman) runtime_podman stop "$1" >/dev/null ;;
-	systemd) systemctl --user stop "$1" || true ;;
+	systemd) systemctl --user stop "$1" ;;
 	esac
 }
 
 runtime_start_instance() {
+	if [ -n "$stalwart_service_name" ]; then
+		systemctl --user start "$stalwart_service_name"
+		return
+	fi
 	case "$stalwart_runtime" in
 	podman) runtime_podman start "$1" >/dev/null ;;
-	systemd) systemctl --user start "$1" || true ;;
+	systemd) systemctl --user start "$1" ;;
 	esac
 }
 
 runtime_instance_running() {
+	if [ -n "$stalwart_service_name" ]; then
+		systemctl --user is-active --quiet "$stalwart_service_name" 2>/dev/null
+		return
+	fi
 	case "$stalwart_runtime" in
 	podman) [ "$(runtime_podman inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true)" = "true" ] ;;
 	systemd) systemctl --user is-active --quiet "$1" 2>/dev/null ;;
@@ -758,7 +771,18 @@ with_recovery() {
 	require_var stalwart_plan_container_path
 	require_var stalwart_plan_host_path
 	require_var stalwart_recovery_container
+	require_value recovery_host_port "$stalwart_recovery_host_port"
 	require_value stalwart_recovery_url "$stalwart_recovery_url"
+	case "$stalwart_recovery_host_port" in
+	"" | *[!0-9]*)
+		printf 'invalid Stalwart recovery host port: %s\n' "$stalwart_recovery_host_port" >&2
+		exit 1
+		;;
+	esac
+	if [ "$stalwart_recovery_host_port" -lt 1 ] || [ "$stalwart_recovery_host_port" -gt 65535 ]; then
+		printf 'invalid Stalwart recovery host port: %s\n' "$stalwart_recovery_host_port" >&2
+		exit 1
+	fi
 
 	local lock_name lock_path mount host_path container_path staged_kanidm_token staged_mount action_status
 	local extra_mount_index=0
@@ -817,7 +841,7 @@ with_recovery() {
 	if runtime_run_recovery "$stalwart_image" "$stalwart_recovery_container" \
 		--env STALWART_RECOVERY_MODE=1 \
 		--env "STALWART_RECOVERY_ADMIN=$stalwart_user:$stalwart_password" \
-		--publish 127.0.0.1:18081:8080 \
+		--publish "127.0.0.1:$stalwart_recovery_host_port:8080" \
 		--volume "$stalwart_config_host_path:/etc/stalwart/config.json:ro" \
 		--volume "$stalwart_plan_host_path:$stalwart_plan_container_path:ro" \
 		--volume "$stalwart_data_dir:/var/lib/stalwart" \

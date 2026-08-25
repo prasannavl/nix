@@ -116,6 +116,11 @@ def print_json_lines(rows):
 
 
 def main():
+    runtime_log = os.environ.get("TEST_STALWART_RUNTIME_LOG")
+    if runtime_log:
+        with Path(runtime_log).open("a", encoding="utf-8") as handle:
+            handle.write(" ".join(sys.argv[1:]) + "\n")
+
     inherited_notify = [
         name
         for name in ("NOTIFY_SOCKET", "WATCHDOG_PID", "WATCHDOG_USEC")
