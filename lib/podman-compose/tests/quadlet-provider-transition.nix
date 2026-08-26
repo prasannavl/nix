@@ -60,6 +60,7 @@ in {
         partial = {
           backend = "quadlet";
           autoStart = false;
+          timeoutReadySeconds = 5;
           source.services = {
             good = mkService "mixed-partial-good";
             bad =
@@ -109,7 +110,9 @@ in {
     broken_stage = "mixed-broken-stage.service"
     broken_config = "/srv/mixed/broken/config.txt"
     partial = "mixed-partial.service"
+    partial_ready = "mixed-partial-ready.target"
     partial_stage = "mixed-partial-stage.service"
+    partial_verify = "mixed-partial-verify.service"
     partial_good = "mixed-partial-good-container.service"
     partial_bad = "mixed-partial-bad-container.service"
     partial_network = "mixed-partial-network-network.service"
@@ -148,8 +151,10 @@ in {
         machine.fail(f"test -e {broken_config}.tmp")
         machine.succeed(f"{ctl} reset-failed {broken} {broken_stage}")
 
-    with subtest("failed native container startup unwinds the private graph"):
-        machine.fail(f"{ctl} start {partial}")
+    with subtest("failed native health readiness leaves the graph restartable"):
+        machine.fail(f"{ctl} start {partial_ready}")
+        machine.succeed(f"{ctl} is-active --quiet {partial}")
+        machine.succeed(f"{ctl} stop {partial}")
         machine.wait_until_succeeds(
             f"! {ctl} is-active --quiet {partial_good}",
             timeout=30,
@@ -166,7 +171,8 @@ in {
         machine.fail(f"test -e {partial_config}.tmp")
         machine.fail(f"{podman} container inspect mixed-partial-good")
         machine.succeed(
-            f"{ctl} reset-failed {partial} {partial_bad} {partial_good}"
+            f"{ctl} reset-failed {partial_verify} {partial} {partial_bad} "
+            f"{partial_good}"
         )
 
     wait_active(root, provider, provider_ready, consumer, consumer_ready)
