@@ -471,6 +471,10 @@ Use this index as the canonical map for `.agents/docs/**`.
   August 25 audit of all 77 commits after `b37e3919`, projection-aware host
   control, Nixbot, Ollama, GCP, Incus, Podman, Stalwart, input-refresh ports,
   complete per-commit dispositions, and final byte parity.
+- `.agents/docs/notes/tooling/abird-post-179-port-2026-08.md`: Records the
+  August 26 audit of all 11 commits after `17986f2a`, Nixbot routing,
+  projection-aware host control, Quadlet readiness, complete per-commit
+  dispositions, the provider-transition test correction, and final parity.
 - `.agents/docs/notes/tooling/abird-final-plus-recent-port-2026-06.md`: Records
   the final original last-60 Abird batch plus newer commits beyond the anchor,
   including shared nginx, Stalwart, mail-directory, and Cloudflare module ports.
