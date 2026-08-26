@@ -141,6 +141,7 @@ in {
     # AI
     jan
     claude-code
+    llm-agents-pkgs.claude-desktop
     llm-agents-pkgs.chatgpt
 
     # Custom packages

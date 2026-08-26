@@ -31,7 +31,7 @@
             "google-chrome"
             "code"
             "org.gnome.Nautilus"
-            "chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default"
+            "chatgpt"
             "org.gnome.Calendar"
             "org.gnome.clocks"
             "org.gnome.Characters"
@@ -67,7 +67,7 @@
               "code"
               "org.gnome.Calendar"
               "org.gnome.clocks"
-              "chrome-cadlkienfkclaiaibeoongdcgmdikeeg-Default"
+              "chatgpt"
             ];
             pinnedStatic = true;
             groupApps = true;
