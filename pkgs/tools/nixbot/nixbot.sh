@@ -3543,6 +3543,49 @@ resolve_config_path() {
 	printf '%s/%s\n' "$(pwd -P)" "${path}"
 }
 
+merge_deploy_dependencies_json() {
+	local config_json="$1" dependencies_json="$2"
+
+	jq -cn --argjson config "${config_json}" --argjson dependencies "${dependencies_json}" '
+    if ($dependencies | type) != "object" then
+      error("deploy dependencies output must be an attrset")
+    else
+      reduce ($dependencies | to_entries[]) as $entry ($config;
+        if (.hosts[$entry.key] // null) == null then
+          error("deploy dependencies name unknown controller host \($entry.key)")
+        elif ($entry.value | type) != "array"
+          or any($entry.value[]; (type != "string") or length == 0) then
+          error("deploy dependencies for \($entry.key) must be a list of non-empty host names")
+        elif any($entry.value[]; ($config.hosts[.] // null) == null) then
+          error("deploy dependencies for \($entry.key) name an unknown host")
+        else
+          .hosts[$entry.key].deps = (((.hosts[$entry.key].deps // []) + $entry.value) | unique)
+        end
+      )
+    end
+  '
+}
+
+apply_configured_deploy_dependencies_json() {
+	local config_json="$1" config_path="$2" attr="" dependencies_json="" flake_root=""
+
+	attr="$(jq -r '.config.deployDependenciesAttr // empty' <<<"${config_json}")"
+	if [ -z "${attr}" ]; then
+		printf '%s\n' "${config_json}"
+		return 0
+	fi
+	if [[ ! "${attr}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+		die "config.deployDependenciesAttr must be a non-empty flake attribute path"
+	fi
+	flake_root="$(git -C "$(dirname "${config_path}")" rev-parse --show-toplevel 2>/dev/null)" ||
+		die "config.deployDependenciesAttr requires the deploy config to belong to a flake worktree"
+	run_supervised_stdout_capture \
+		dependencies_json \
+		"" \
+		nix eval --json --no-write-lock-file "${flake_root}#${attr}" || return "$?"
+	merge_deploy_dependencies_json "${config_json}" "${dependencies_json}"
+}
+
 load_deploy_config_json() {
 	local path="$1" override_path="${2-${NIXBOT_CONFIG_OVERRIDE_PATH:-}}"
 	local resolved_path="" resolved_override_path="" expr="" output=""
@@ -3551,7 +3594,7 @@ load_deploy_config_json() {
 	[ -f "${resolved_path}" ] || die "Deploy config not found: ${path} (resolved: ${resolved_path})"
 	if [ -z "${override_path}" ] || [ ! -f "${override_path}" ]; then
 		run_supervised_stdout_capture output "" nix eval --json --file "${resolved_path}" || return "$?"
-		printf '%s\n' "${output}"
+		apply_configured_deploy_dependencies_json "${output}" "${resolved_path}"
 		return
 	fi
 
@@ -3577,7 +3620,7 @@ in
   recursiveUpdate (import ${resolved_path}) (import ${resolved_override_path})
 "
 	run_supervised_stdout_capture output "" nix eval --impure --json --expr "${expr}" || return "$?"
-	printf '%s\n' "${output}"
+	apply_configured_deploy_dependencies_json "${output}" "${resolved_path}"
 }
 
 apply_config_defaults_if_config_available() {
@@ -4263,9 +4306,7 @@ require_build_host_cache_config() {
 }
 
 remote_build_deploy_uses_local_relay() {
-	local node="${1:-}"
-
-	[ "${BUILD_HOST}" != "local" ] && [ "$(effective_build_host_deploy_mode "${node}")" = "local-copy" ]
+	[ "${BUILD_HOST}" != "local" ] && [ "$(effective_build_host_deploy_mode)" = "local-copy" ]
 }
 
 resolved_target_host_for_role() {
@@ -4298,16 +4339,6 @@ host_resource_for_role() {
 	jq -r --arg h "${inventory_host}" '.[$h].resourceId // $h' <<<"${NIXBOT_HOSTS_JSON}"
 }
 
-host_uses_indirect_operator_transport() {
-	local role="$1" inventory_host=""
-
-	inventory_host="$(inventory_host_for_role "${role}")" || return 1
-	jq -e --arg h "${inventory_host}" '
-    ((.[$h].proxyJump // "") != "") or
-    ((.[$h].proxyCommand // "") != "")
-  ' <<<"${NIXBOT_HOSTS_JSON}" >/dev/null
-}
-
 build_host_shares_store_with_node() {
 	local node="$1" build_resource="" node_resource=""
 
@@ -4324,15 +4355,12 @@ build_host_matches_cache_host() {
 }
 
 effective_build_host_deploy_mode() {
-	local node="${1:-}"
-
 	case "${BUILD_HOST_DEPLOY_MODE}" in
 	cache | local-copy)
 		printf '%s\n' "${BUILD_HOST_DEPLOY_MODE}"
 		;;
 	auto)
-		if ! build_host_matches_cache_host ||
-			{ [ -n "${node}" ] && host_uses_indirect_operator_transport "${node}"; }; then
+		if ! build_host_matches_cache_host; then
 			printf 'local-copy\n'
 		else
 			printf 'cache\n'
@@ -4445,9 +4473,6 @@ order_selected_hosts_json() {
 		[ -n "${node}" ] || continue
 		while IFS= read -r dep; do
 			[ -n "${dep}" ] || continue
-			if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
-				continue
-			fi
 			if [ -z "${all_host_set["${dep}"]+x}" ]; then
 				die "Unknown dependency/ordering host declared for ${node}: ${dep}"
 			fi
@@ -4458,7 +4483,9 @@ order_selected_hosts_json() {
 		done < <(host_predecessors_for "${node}")
 	done
 
-	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${ci_host}"]+x}" ]; then
+	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] &&
+		[ -n "${selected_host_set["${ci_host}"]+x}" ] &&
+		[ "${indegree["${ci_host}"]}" -eq 0 ]; then
 		emitted_host_set["${ci_host}"]=1
 		ordered_hosts+=("${ci_host}")
 		while IFS= read -r dep; do
@@ -4507,18 +4534,28 @@ order_selected_hosts_json() {
 
 selected_host_levels_json() {
 	local selected_json="$1" node="" dep="" dep_level="" node_level=""
-	local max_level="" level="" ci_host="${CI_TRIGGER_HOST}"
+	local max_level="" level="" ci_host="${CI_TRIGGER_HOST}" ci_first_ready=0
 	local -a selected_hosts=()
 	declare -A selected_host_set=()
 	declare -A host_level=()
 
 	json_array_to_bash_array "${selected_json}" selected_hosts
 	json_array_to_bash_set "${selected_json}" selected_host_set
+	if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${ci_host}"]+x}" ]; then
+		ci_first_ready=1
+		while IFS= read -r dep; do
+			[ -n "${dep}" ] || continue
+			if [ -n "${selected_host_set["${dep}"]+x}" ]; then
+				ci_first_ready=0
+				break
+			fi
+		done < <(host_predecessors_for "${ci_host}")
+	fi
 
 	max_level=0
 	for node in "${selected_hosts[@]}"; do
 		[ -n "${node}" ] || continue
-		if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
+		if [ "${ci_first_ready}" -eq 1 ] && [ "${node}" = "${ci_host}" ]; then
 			host_level["${node}"]=0
 			continue
 		fi
@@ -4534,7 +4571,7 @@ selected_host_levels_json() {
 			fi
 		done < <(host_predecessors_for "${node}")
 
-		if [ "${PRIORITIZE_CI_FIRST}" -eq 1 ] && [ -n "${selected_host_set["${ci_host}"]+x}" ] && [ "${node_level}" -lt 1 ]; then
+		if [ "${ci_first_ready}" -eq 1 ] && [ "${node_level}" -lt 1 ]; then
 			node_level=1
 		fi
 
@@ -4853,7 +4890,7 @@ log_run_context() {
 		echo "Build host: ${BUILD_HOST}" >&2
 		if [ "${BUILD_HOST}" != "local" ]; then
 			if [ "${BUILD_HOST_DEPLOY_MODE}" = "auto" ]; then
-				echo "Build-host deploy mode: auto (per-target)" >&2
+				echo "Build-host deploy mode: auto (target cache, local relay fallback)" >&2
 			else
 				echo "Build-host deploy mode: ${BUILD_HOST_DEPLOY_MODE}" >&2
 			fi
@@ -7580,12 +7617,11 @@ prepare_host_age_identity_for_deploy() {
 	fi
 }
 
-require_local_build_primary_deploy_context() {
+require_local_copy_primary_deploy_context() {
 	local node="$1" prepared_user=""
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -ne 0 ] ||
-		[ "${PREP_USING_BOOTSTRAP_FALLBACK}" -ne 1 ] ||
-		{ [ "${BUILD_HOST}" != "local" ] && ! remote_build_deploy_uses_local_relay "${node}"; }; then
+		[ "${PREP_USING_BOOTSTRAP_FALLBACK}" -ne 1 ]; then
 		return 0
 	fi
 
@@ -7602,7 +7638,9 @@ prepare_host_transport_for_deploy() {
 	local node="$1" require_age_identity_activation_visibility="${2:-0}"
 
 	prepare_host_age_identity_for_deploy "${node}" "${require_age_identity_activation_visibility}" || return 1
-	require_local_build_primary_deploy_context "${node}"
+	if [ "${BUILD_HOST}" = "local" ]; then
+		require_local_copy_primary_deploy_context "${node}"
+	fi
 }
 
 ##### Host Phases #####
@@ -10017,7 +10055,11 @@ target_trusted_public_keys_for_copy() {
 	local node="$1" configuration="" settings_json=""
 
 	configuration="$(host_nix_config_for "${node}")"
-	run_supervised_stdout_capture settings_json "" nix eval --json --no-write-lock-file ".#nixosConfigurations.${configuration}.config.nix.settings" || return 1
+	run_supervised_stdout_capture \
+		settings_json \
+		"" \
+		nix eval --json --no-write-lock-file \
+		".#nixosConfigurations.${configuration}.config.nix.settings" || return "$?"
 	jq -r '
 		[
 			(."trusted-public-keys" // []),
@@ -10041,12 +10083,10 @@ append_extra_trusted_public_keys_option() {
 }
 
 copy_system_path_from_build_cache_to_prepared_target() {
-	local node="$1" system_path="$2" retry_policy="${3:-retry}"
-	local cache_url="" copy_script="" trusted_public_keys=""
+	local node="$1" system_path="$2" retry_policy="$3" cache_url="$4" trusted_public_keys="$5"
+	local copy_script=""
 	local -a copy_cmd=()
 
-	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
-	trusted_public_keys="$(target_trusted_public_keys_for_copy "${node}")" || return 1
 	copy_cmd=(nix)
 	append_extra_trusted_public_keys_option "${trusted_public_keys}" copy_cmd
 	copy_cmd+=(copy --from "${cache_url}" "${system_path}")
@@ -10063,15 +10103,21 @@ copy_system_path_from_build_cache_to_prepared_target() {
 
 copy_system_path_from_build_cache_via_local_to_prepared_target() {
 	# shellcheck disable=SC2034
-	local node="$1" system_path="$2" cache_url="" target_store_uri="" copy_nix_sshopts="" remote_copy_output="" trusted_public_keys=""
+	local node="$1" system_path="$2" cache_url="$3" trusted_public_keys="$4"
+	local target_store_uri="" copy_nix_sshopts="" remote_copy_output=""
 	local -a copy_cmd=()
 
 	if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
-		return 0
+		copy_system_path_from_build_cache_to_prepared_target \
+			"${node}" \
+			"${system_path}" \
+			retry \
+			"${cache_url}" \
+			"${trusted_public_keys}"
+		return
 	fi
+	require_local_copy_primary_deploy_context "${node}" || return "$?"
 
-	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
-	trusted_public_keys="$(target_trusted_public_keys_for_copy "${node}")" || return 1
 	target_store_uri="$(format_ssh_store_uri "${PREP_DEPLOY_SSH_TARGET}")"
 	copy_nix_sshopts="${PREP_DEPLOY_NIX_SSHOPTS}"
 	if [ -n "${copy_nix_sshopts}" ]; then
@@ -10111,23 +10157,50 @@ validate_build_host_closure_on_prepared_target() {
 }
 
 prepare_remote_build_system_path_on_prepared_target() {
-	local node="$1" system_path="$2" cache_rc=0
+	local node="$1" system_path="$2" cache_rc=0 cache_url="" trusted_public_keys=""
 
 	if build_host_shares_store_with_node "${node}"; then
 		validate_build_host_closure_on_prepared_target "${node}" "${system_path}"
-	elif remote_build_deploy_uses_local_relay "${node}"; then
-		copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${system_path}"
+		return
+	fi
+
+	cache_url="$(build_host_cache_url_for "${BUILD_HOST}")"
+	trusted_public_keys="$(target_trusted_public_keys_for_copy "${node}")" || return "$?"
+
+	if remote_build_deploy_uses_local_relay; then
+		copy_system_path_from_build_cache_via_local_to_prepared_target \
+			"${node}" \
+			"${system_path}" \
+			"${cache_url}" \
+			"${trusted_public_keys}"
 	elif [ "${BUILD_HOST_DEPLOY_MODE}" != "auto" ]; then
-		copy_system_path_from_build_cache_to_prepared_target "${node}" "${system_path}"
-	elif copy_system_path_from_build_cache_to_prepared_target "${node}" "${system_path}" once; then
+		copy_system_path_from_build_cache_to_prepared_target \
+			"${node}" \
+			"${system_path}" \
+			retry \
+			"${cache_url}" \
+			"${trusted_public_keys}"
+	elif copy_system_path_from_build_cache_to_prepared_target \
+		"${node}" \
+		"${system_path}" \
+		once \
+		"${cache_url}" \
+		"${trusted_public_keys}"; then
 		return 0
 	else
 		cache_rc="$?"
 		if is_signal_exit_status "${cache_rc}"; then
 			return "${cache_rc}"
 		fi
+		if [ "${PREP_DEPLOY_LOCAL_EXEC}" -eq 1 ]; then
+			return "${cache_rc}"
+		fi
 		echo "==> Target-side build-cache copy to ${node} failed in auto mode; relaying through local client" >&2
-		copy_system_path_from_build_cache_via_local_to_prepared_target "${node}" "${system_path}"
+		copy_system_path_from_build_cache_via_local_to_prepared_target \
+			"${node}" \
+			"${system_path}" \
+			"${cache_url}" \
+			"${trusted_public_keys}"
 	fi
 }
 

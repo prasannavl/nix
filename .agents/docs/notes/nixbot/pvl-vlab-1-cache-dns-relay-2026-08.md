@@ -60,19 +60,24 @@ without requesting `nix-cache-info`.
 
 ## Resolution
 
-Automatic distribution is now per-target:
+The first repair selected the relay immediately for targets with `proxyJump` or
+`proxyCommand`. A later Abird incident demonstrated the inverse reachability
+case: the target could fetch its cache while the operator could not resolve it.
+Proxy metadata therefore cannot choose the cache client.
+
+The final shared distribution order is:
 
 - Same canonical build-host and target resources validate the already-present
   closure locally and offline.
-- Targets declared with `proxyJump` or `proxyCommand` relay the signed cache
-  path through the operator immediately.
-- Direct targets keep the efficient target-side cache copy. On a non-interrupt
-  failure, `auto` falls back once to the signed local-client relay.
-- The first direct target-side command does not receive Nixbot's outer command
-  retries before fallback. Nix still owns its internal download retries and SSH
+- Every distinct-store target first uses the target-side cache copy. On a
+  non-interrupt failure, `auto` falls back once to the signed local-client
+  relay.
+- The first target-side command does not receive Nixbot's outer command retries
+  before fallback. Nix still owns its internal download retries and SSH
   transport failures retain the prepared transport retry policy.
 - Explicit `cache` remains strict and outer-retried. Explicit `local-copy`
-  remains an unconditional relay.
+  remains an unconditional relay for a remote target; a local self-target
+  imports directly because both contexts use the local Nix client.
 
 Both distinct-store paths source the configured signed build-host cache and use
 the target's temporary trusted-public-key bridge. The fallback changes only the

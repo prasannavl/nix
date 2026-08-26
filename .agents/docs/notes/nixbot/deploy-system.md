@@ -397,10 +397,14 @@ and locking rules, Terraform dispatch, and operator trust boundaries.
 - Cache-pull transport to the target uses the prepared target transport retry
   path, while activation itself remains a single mutating operation. `nixbot`
   must not take ownership of builder signing commands.
-- Cache distribution is a per-target decision. Indirect operator transports
-  default to the local-client relay, while direct target-side cache failures in
-  `auto` fall back to that relay. Both paths source the configured signed cache;
-  the fallback changes transport, not artifact identity or trust policy.
+- Automatic cache distribution uses the target as the canonical cache client for
+  every distinct store, regardless of `proxyJump` or `proxyCommand`. A
+  non-interrupt target-side copy failure falls back once to the signed local
+  relay. Proxy metadata describes operator SSH reachability, not cache
+  reachability in either network context. Explicit `cache` remains strict and
+  outer-retried; explicit `local-copy` always uses the relay route for a remote
+  target. A local self-target imports directly because the relay and target
+  contexts are the same Nix client.
 - Direct store-path activation intentionally uses promote-after-success ordering
   for `switch` and `boot`: first run the target's `bin/switch-to-configuration`,
   then set `/nix/var/nix/profiles/system` to the target system with

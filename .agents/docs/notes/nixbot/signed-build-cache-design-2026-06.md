@@ -303,22 +303,24 @@ Implemented in the pvl repo:
   flake evaluation stays on the workstation while realization happens on the
   build host. Without that split, Nix can materialize evaluation inputs through
   the remote store and make the build host look idle before derivations start.
-- Remote deploy builds default to `--build-host-deploy-mode auto`, resolved per
-  target. A target using `proxyJump` or `proxyCommand` defaults to `local-copy`:
-  the operator's access to both endpoints is known, while target access to the
-  operator-facing cache URL is not. Direct targets first use `cache`, then fall
-  back to the same signed local-client relay on a non-interrupt failure. The
-  first target-side command is not outer-retried in `auto`; Nix retains its own
-  download retries, and the relay is the convergence path. Explicit `cache`
-  remains strict with bounded outer retries, while explicit `local-copy` always
-  relays. When the build host and deploy target map to the same canonical
-  inventory resource, every mode skips HTTP and runs an offline recursive
-  metadata verification of the exact closure in that store. This avoids
-  self-cache negative-narinfo races without weakening signed-cache enforcement
-  for distinct targets. Deploy local-copy mode intentionally avoids raw
-  `ssh-ng://` copy-back into the operator store. Build-only copy-back uses the
-  signed build-host cache when it is configured, and falls back to raw
-  `ssh-ng://` only when there is no cache.
+- Remote deploy builds default to `--build-host-deploy-mode auto`. Cache reads
+  use the explicit configured build-cache URL, not the build-host SSH target. A
+  distinct-store target first uses `cache`, then falls back to the same signed
+  local-client relay on a non-interrupt failure. `proxyJump` and `proxyCommand`
+  describe SSH routing only and do not predict cache reachability in either
+  network context. The first target-side command is not outer-retried in `auto`;
+  Nix retains its own download retries, and the relay is the convergence path.
+  Explicit `cache` remains strict with bounded outer retries, while explicit
+  `local-copy` always uses the relay route for a remote target. A local
+  self-target imports directly because both contexts are the local Nix client.
+  When the build host and deploy target map to the same canonical inventory
+  resource, every mode skips HTTP and runs an offline recursive metadata
+  verification of the exact closure in that store. This avoids self-cache
+  negative-narinfo races without weakening signed-cache enforcement for distinct
+  targets. Deploy local-copy mode intentionally avoids raw `ssh-ng://` copy-back
+  into the operator store. Build-only copy-back uses the signed build-host cache
+  when it is configured, and falls back to raw `ssh-ng://` only when there is no
+  cache.
 - Remote deploy build-cache validation fails before activation when
   `globals.buildCache.url` or `globals.buildCache.host` is missing, or when the
   selected `--build-host` does not match the configured cache owner. The

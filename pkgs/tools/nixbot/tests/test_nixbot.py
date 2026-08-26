@@ -1099,6 +1099,61 @@ class NixbotScriptTest(unittest.TestCase):
         self.assertEqual([["ci", "parent"], ["db"], ["app"], ["worker"]], normal)
         self.assertEqual([["ci"], ["parent", "db"], ["app"], ["worker"]], ci_first)
 
+    def test_ci_first_preserves_controller_dependencies(self):
+        result = self.run_script(
+            """
+            init_vars
+            NIXBOT_HOSTS_JSON='{
+              "ci": {"deps":["proxy"]},
+              "id": {},
+              "proxy": {"after":["id"]},
+              "app": {}
+            }'
+            PRIORITIZE_CI_FIRST=1
+            CI_TRIGGER_HOST=ci
+            selected='["ci","id","proxy","app"]'
+            ordered="$(order_selected_hosts_json "$selected" "$selected")"
+            printf '%s\n' "$ordered"
+            selected_host_levels_json "$ordered" | jq -c .
+            """
+        )
+
+        ordered, levels = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertLess(ordered.index("proxy"), ordered.index("ci"))
+        self.assertEqual([["id", "app"], ["proxy"], ["ci"]], levels)
+
+    def test_deploy_dependencies_merge_into_inventory_edges(self):
+        result = self.run_script(
+            """
+            config='{
+              "hosts": {
+                "ci": {"deps":["id"]},
+                "id": {},
+                "proxy": {},
+                "zulip": {}
+              },
+              "config": {}
+            }'
+            dependencies='{"ci":["proxy","zulip","proxy"]}'
+            merge_deploy_dependencies_json "$config" "$dependencies" | jq -c .hosts.ci.deps
+            """
+        )
+
+        self.assertEqual(["id", "proxy", "zulip"], json.loads(result.stdout))
+
+    def test_deploy_dependencies_reject_unknown_inventory_hosts(self):
+        result = self.run_script(
+            """
+            merge_deploy_dependencies_json \
+              '{"hosts":{"ci":{},"proxy":{}},"config":{}}' \
+              '{"ci":["missing"]}'
+            """,
+            check=False,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("name an unknown host", result.stderr)
+
     def test_deploy_concurrency_splits_levels_by_topmost_parent(self):
         result = self.run_script(
             """
@@ -3332,57 +3387,18 @@ EOF_SCRIPT
                 *) return 1 ;;
               esac
             }
-            host_uses_indirect_operator_transport() {
-              [ "$1" = proxied ]
-            }
-            effective_build_host_deploy_mode direct
-            effective_build_host_deploy_mode proxied
+            effective_build_host_deploy_mode
             BUILD_HOST=other
-            effective_build_host_deploy_mode direct
+            effective_build_host_deploy_mode
             BUILD_HOST_DEPLOY_MODE=cache
-            effective_build_host_deploy_mode proxied
+            effective_build_host_deploy_mode
             BUILD_HOST_DEPLOY_MODE=local-copy
-            effective_build_host_deploy_mode direct
+            effective_build_host_deploy_mode
             """
         )
 
         self.assertEqual(
-            ["cache", "local-copy", "local-copy", "cache", "local-copy"],
-            result.stdout.splitlines(),
-        )
-
-    def test_indirect_operator_transport_uses_resolved_inventory_endpoint(self):
-        result = self.run_script(
-            """
-            init_vars
-            NIXBOT_HOSTS_JSON='{
-              "guest-endpoint": {
-                "resourceId": "guest",
-                "proxyJump": "parent"
-              },
-              "command-endpoint": {
-                "resourceId": "command-guest",
-                "proxyCommand": "proxy-helper"
-              },
-              "direct": {}
-            }'
-            for node in guest guest-endpoint command-guest direct; do
-              if host_uses_indirect_operator_transport "$node"; then
-                printf '%s=indirect\n' "$node"
-              else
-                printf '%s=direct\n' "$node"
-              fi
-            done
-            """
-        )
-
-        self.assertEqual(
-            [
-                "guest=indirect",
-                "guest-endpoint=indirect",
-                "command-guest=indirect",
-                "direct=direct",
-            ],
+            ["cache", "local-copy", "cache", "local-copy"],
             result.stdout.splitlines(),
         )
 
@@ -3451,6 +3467,8 @@ EOF_SCRIPT
             init_vars
             BUILD_HOST=build-host
             BUILD_HOST_DEPLOY_MODE=local-copy
+            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
+            target_trusted_public_keys_for_copy() { printf 'cache-key\n'; }
             build_host_shares_store_with_node() {
               [ "$1" = builder ]
             }
@@ -3479,51 +3497,308 @@ EOF_SCRIPT
             result.stdout.splitlines(),
         )
 
-    def test_auto_remote_build_path_falls_back_to_local_relay(self):
+    def test_local_relay_prepares_primary_deploy_context(self):
         result = self.run_script(
             """
             init_vars
             BUILD_HOST=build-host
-            BUILD_HOST_DEPLOY_MODE=auto
-            build_host_shares_store_with_node() { return 1; }
-            remote_build_deploy_uses_local_relay() {
-              [ "$1" = proxied ]
+            PREP_DEPLOY_LOCAL_EXEC=0
+            PREP_USING_BOOTSTRAP_FALLBACK=1
+            PREP_DEPLOY_SSH_TARGET=operator@target
+            PREP_DEPLOY_NIX_SSHOPTS=
+            prepare_deploy_context() {
+              printf 'prepare:%s:%s\n' "$1" "$2"
+              PREP_USING_BOOTSTRAP_FALLBACK=0
+              PREP_DEPLOY_SSH_TARGET=nixbot@target
             }
-            copy_system_path_from_build_cache_to_prepared_target() {
-              printf 'cache:%s:%s:%s\n' "$1" "$2" "$3"
-              case "$1" in
-                fallback) return 7 ;;
-                interrupted) return 130 ;;
-              esac
+            format_ssh_store_uri() { printf 'ssh-ng://%s\n' "$1"; }
+            run_remote_store_command_with_retry() {
+              printf 'relay:%s:%s:%s\n' "$2" "${10}" "${12}"
             }
-            copy_system_path_from_build_cache_via_local_to_prepared_target() {
-              printf 'relay:%s:%s\n' "$1" "$2"
+            copy_system_path_from_build_cache_via_local_to_prepared_target \
+              target /nix/store/system http://cache:5000 cache-key
+            """
+        )
+
+        self.assertEqual(
+            [
+                "==> Local relay deploy for target needs primary deploy user; rechecking primary target",
+                "prepare:target:primary-only",
+                "relay:Build-cache relay to target:http://cache:5000:ssh-ng://nixbot@target",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_local_relay_preserves_primary_context_failure(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            PREP_DEPLOY_LOCAL_EXEC=0
+            PREP_USING_BOOTSTRAP_FALLBACK=1
+            PREP_DEPLOY_SSH_TARGET=operator@target
+            prepare_deploy_context() {
+              printf 'prepare:%s:%s\n' "$1" "$2"
+              return 143
             }
-            prepare_remote_build_system_path_on_prepared_target proxied /nix/store/system
-            prepare_remote_build_system_path_on_prepared_target direct /nix/store/system
-            prepare_remote_build_system_path_on_prepared_target fallback /nix/store/system
-            if prepare_remote_build_system_path_on_prepared_target interrupted /nix/store/system; then
-              printf 'interrupted=unexpected-success\n'
+            if copy_system_path_from_build_cache_via_local_to_prepared_target \
+              target /nix/store/system http://cache:5000 cache-key; then
+              printf 'rc=unexpected-success\n'
             else
-              printf 'interrupted=%s\n' "$?"
+              printf 'rc=%s\n' "$?"
             fi
             """
         )
 
         self.assertEqual(
             [
-                "relay:proxied:/nix/store/system",
-                "cache:direct:/nix/store/system:once",
-                "cache:fallback:/nix/store/system:once",
-                "relay:fallback:/nix/store/system",
+                "==> Local relay deploy for target needs primary deploy user; rechecking primary target",
+                "prepare:target:primary-only",
+                "rc=143",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_local_relay_imports_remote_build_for_local_target(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            PREP_DEPLOY_LOCAL_EXEC=1
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'cache:%s:%s:%s:%s:%s\n' "$1" "$2" "$3" "$4" "$5"
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target \
+              target /nix/store/system http://cache:5000 cache-key
+            """
+        )
+
+        self.assertEqual(
+            ["cache:target:/nix/store/system:retry:http://cache:5000:cache-key"],
+            result.stdout.splitlines(),
+        )
+
+    def test_auto_remote_build_path_prefers_target_and_falls_back_to_local_relay(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=auto
+            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
+            target_trusted_public_keys_for_copy() { printf 'cache-key\n'; }
+            build_host_shares_store_with_node() { return 1; }
+            remote_build_deploy_uses_local_relay() { return 1; }
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'cache:%s:%s:%s\n' "$1" "$2" "$3"
+              case "$1" in
+                target-unreachable|both-unreachable|relay-interrupted) return 7 ;;
+                interrupted) return 130 ;;
+              esac
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {
+              printf 'relay:%s:%s\n' "$1" "$2"
+              case "$1" in
+                both-unreachable) return 8 ;;
+                relay-interrupted) return 143 ;;
+              esac
+            }
+            prepare_remote_build_system_path_on_prepared_target target-reachable /nix/store/system
+            prepare_remote_build_system_path_on_prepared_target target-unreachable /nix/store/system
+            if prepare_remote_build_system_path_on_prepared_target both-unreachable /nix/store/system; then
+              printf 'both-unreachable=unexpected-success\n'
+            else
+              printf 'both-unreachable=%s\n' "$?"
+            fi
+            if prepare_remote_build_system_path_on_prepared_target interrupted /nix/store/system; then
+              printf 'interrupted=unexpected-success\n'
+            else
+              printf 'interrupted=%s\n' "$?"
+            fi
+            if prepare_remote_build_system_path_on_prepared_target relay-interrupted /nix/store/system; then
+              printf 'relay-interrupted=unexpected-success\n'
+            else
+              printf 'relay-interrupted=%s\n' "$?"
+            fi
+            """
+        )
+
+        self.assertEqual(
+            [
+                "cache:target-reachable:/nix/store/system:once",
+                "cache:target-unreachable:/nix/store/system:once",
+                "relay:target-unreachable:/nix/store/system",
+                "cache:both-unreachable:/nix/store/system:once",
+                "relay:both-unreachable:/nix/store/system",
+                "both-unreachable=8",
                 "cache:interrupted:/nix/store/system:once",
                 "interrupted=130",
+                "cache:relay-interrupted:/nix/store/system:once",
+                "relay:relay-interrupted:/nix/store/system",
+                "relay-interrupted=143",
             ],
             result.stdout.splitlines(),
         )
         self.assertIn(
-            "Target-side build-cache copy to fallback failed in auto mode",
+            "Target-side build-cache copy to target-unreachable failed in auto mode",
             result.stderr,
+        )
+
+    def test_auto_proxy_metadata_does_not_select_local_relay(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=auto
+            NIXBOT_HOSTS_JSON='{
+              "jump-target": {"proxyJump": "parent"},
+              "command-target": {"proxyCommand": "proxy-helper"}
+            }'
+            build_host_matches_cache_host() { return 0; }
+            build_host_shares_store_with_node() { return 1; }
+            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
+            target_trusted_public_keys_for_copy() { printf 'cache-key\n'; }
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'cache:%s:%s:%s\n' "$1" "$2" "$3"
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {
+              printf 'unexpected-relay:%s\n' "$1"
+            }
+            prepare_remote_build_system_path_on_prepared_target jump-target /nix/store/system
+            prepare_remote_build_system_path_on_prepared_target command-target /nix/store/system
+            """
+        )
+
+        self.assertEqual(
+            [
+                "cache:jump-target:/nix/store/system:once",
+                "cache:command-target:/nix/store/system:once",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_auto_resolves_common_cache_context_once_across_fallback(self):
+        calls = self.work_dir / "cache-context-calls"
+        result = self.run_script(
+            f"""
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=auto
+            PREP_DEPLOY_LOCAL_EXEC=0
+            build_host_shares_store_with_node() {{ return 1; }}
+            remote_build_deploy_uses_local_relay() {{ return 1; }}
+            build_host_cache_url_for() {{
+              printf 'cache-url\n' >>{calls}
+              printf 'http://cache:5000\n'
+            }}
+            target_trusted_public_keys_for_copy() {{
+              printf 'trust\n' >>{calls}
+              printf 'cache-key\n'
+            }}
+            copy_system_path_from_build_cache_to_prepared_target() {{
+              printf 'cache:%s:%s:%s\n' "$1" "$2" "$3"
+              return 7
+            }}
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {{
+              printf 'relay:%s:%s:%s:%s\n' "$1" "$2" "$3" "$4"
+            }}
+            prepare_remote_build_system_path_on_prepared_target target /nix/store/system
+            cat {calls}
+            """
+        )
+
+        self.assertEqual(
+            [
+                "cache:target:/nix/store/system:once",
+                "relay:target:/nix/store/system:http://cache:5000:cache-key",
+                "cache-url",
+                "trust",
+            ],
+            result.stdout.splitlines(),
+        )
+
+    def test_auto_common_cache_context_failure_does_not_fall_back(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=auto
+            build_host_shares_store_with_node() { return 1; }
+            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
+            target_trusted_public_keys_for_copy() { return 7; }
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'unexpected-cache\n'
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {
+              printf 'unexpected-relay\n'
+            }
+            if prepare_remote_build_system_path_on_prepared_target target /nix/store/system; then
+              printf 'rc=unexpected-success\n'
+            else
+              printf 'rc=%s\n' "$?"
+            fi
+            """
+        )
+
+        self.assertEqual(["rc=7"], result.stdout.splitlines())
+
+    def test_auto_local_target_does_not_repeat_failed_cache_route(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=auto
+            PREP_DEPLOY_LOCAL_EXEC=1
+            build_host_shares_store_with_node() { return 1; }
+            remote_build_deploy_uses_local_relay() { return 1; }
+            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
+            target_trusted_public_keys_for_copy() { printf 'cache-key\n'; }
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'cache:%s:%s:%s\n' "$1" "$2" "$3"
+              return 7
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {
+              printf 'unexpected-relay\n'
+            }
+            if prepare_remote_build_system_path_on_prepared_target target /nix/store/system; then
+              printf 'rc=unexpected-success\n'
+            else
+              printf 'rc=%s\n' "$?"
+            fi
+            """
+        )
+
+        self.assertEqual(
+            ["cache:target:/nix/store/system:once", "rc=7"],
+            result.stdout.splitlines(),
+        )
+
+    def test_explicit_local_copy_mode_does_not_fall_back_to_target_cache(self):
+        result = self.run_script(
+            """
+            init_vars
+            BUILD_HOST=build-host
+            BUILD_HOST_DEPLOY_MODE=local-copy
+            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
+            target_trusted_public_keys_for_copy() { printf 'cache-key\n'; }
+            build_host_shares_store_with_node() { return 1; }
+            copy_system_path_from_build_cache_to_prepared_target() {
+              printf 'unexpected-cache\n'
+            }
+            copy_system_path_from_build_cache_via_local_to_prepared_target() {
+              printf 'relay:%s:%s\n' "$1" "$2"
+              return 7
+            }
+            if prepare_remote_build_system_path_on_prepared_target target /nix/store/system; then
+              printf 'rc=unexpected-success\n'
+            else
+              printf 'rc=%s\n' "$?"
+            fi
+            """
+        )
+
+        self.assertEqual(
+            ["relay:target:/nix/store/system", "rc=7"],
+            result.stdout.splitlines(),
         )
 
     def test_explicit_cache_mode_does_not_fall_back_to_local_relay(self):
@@ -3532,6 +3807,8 @@ EOF_SCRIPT
             init_vars
             BUILD_HOST=build-host
             BUILD_HOST_DEPLOY_MODE=cache
+            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
+            target_trusted_public_keys_for_copy() { printf 'cache-key\n'; }
             build_host_shares_store_with_node() { return 1; }
             remote_build_deploy_uses_local_relay() { return 1; }
             copy_system_path_from_build_cache_to_prepared_target() {
@@ -3559,16 +3836,16 @@ EOF_SCRIPT
             """
             init_vars
             BUILD_HOST=build-host
-            build_host_cache_url_for() { printf 'http://cache:5000\n'; }
-            target_trusted_public_keys_for_copy() { printf 'cache-key\n'; }
             run_prepared_cache_copy_with_retry() {
               printf 'retry:%s:%s\n' "$1" "$2"
             }
             run_prepared_root_command_with_retry() {
               printf 'once:%s:%s\n' "$1" "$2"
             }
-            copy_system_path_from_build_cache_to_prepared_target target /nix/store/system
-            copy_system_path_from_build_cache_to_prepared_target target /nix/store/system once
+            copy_system_path_from_build_cache_to_prepared_target \
+              target /nix/store/system retry http://cache:5000 cache-key
+            copy_system_path_from_build_cache_to_prepared_target \
+              target /nix/store/system once http://cache:5000 cache-key
             """
         )
 
@@ -3578,6 +3855,24 @@ EOF_SCRIPT
         self.assertIn("copy --from http://cache:5000 /nix/store/system", lines[0])
         self.assertTrue(lines[1].startswith("once:Build-cache copy to target:nix "))
         self.assertIn("copy --from http://cache:5000 /nix/store/system", lines[1])
+
+    def test_target_cache_trust_evaluation_preserves_signals(self):
+        result = self.run_script(
+            """
+            init_vars
+            host_nix_config_for() { printf 'target\n'; }
+            run_supervised_stdout_capture() { return "$SIGNAL_RC"; }
+            for SIGNAL_RC in 130 143; do
+              if target_trusted_public_keys_for_copy target; then
+                printf '%s=unexpected-success\n' "$SIGNAL_RC"
+              else
+                printf '%s=%s\n' "$SIGNAL_RC" "$?"
+              fi
+            done
+            """
+        )
+
+        self.assertEqual(["130=130", "143=143"], result.stdout.splitlines())
 
     def test_transport_retry_policy_and_backoff_are_narrow(self):
         result = self.run_script(
