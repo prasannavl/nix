@@ -14,15 +14,86 @@ class QuadletRuntimeTest(unittest.TestCase):
         cls.tmp_root = cls.repo_root / "tmp"
         cls.tmp_root.mkdir(exist_ok=True)
 
-    def run_script(self, command, *args, check=True):
+    def run_script(self, command, *args, check=True, env=None):
         return subprocess.run(
             ["bash", str(self.helper), command, *map(str, args)],
             cwd=self.repo_root,
+            env=env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=check,
         )
+
+    def test_health_wait_allows_transient_starting_state(self):
+        with tempfile.TemporaryDirectory(prefix="quadlet-health-test.", dir=self.tmp_root) as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            counter = root / "counter"
+            podman = bin_dir / "podman"
+            podman.write_text(
+                "#!/bin/sh\n"
+                f"counter={counter}\n"
+                "count=0\n"
+                "test ! -f \"$counter\" || count=$(cat \"$counter\")\n"
+                "count=$((count + 1))\n"
+                "printf '%s\\n' \"$count\" > \"$counter\"\n"
+                "test \"$count\" -gt 1 && printf 'healthy\\n' || printf 'starting\\n'\n",
+                encoding="utf-8",
+            )
+            podman.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+            self.run_script("health", "wait", "app", "3", env=env)
+
+            self.assertEqual("2\n", counter.read_text(encoding="utf-8"))
+
+    def test_health_wait_reports_timeout(self):
+        with tempfile.TemporaryDirectory(prefix="quadlet-health-timeout.", dir=self.tmp_root) as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            podman = bin_dir / "podman"
+            podman.write_text("#!/bin/sh\nprintf 'starting\\n'\n", encoding="utf-8")
+            podman.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+            result = self.run_script(
+                "health", "wait", "app", "1", check=False, env=env
+            )
+
+            self.assertEqual(1, result.returncode)
+            self.assertIn("did not become healthy within 1s", result.stderr)
+
+    def test_bundle_health_wait_tolerates_container_restart(self):
+        with tempfile.TemporaryDirectory(prefix="quadlet-health-bundle.", dir=self.tmp_root) as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            manifest = root / "healthchecks.json"
+            manifest.write_text('["app"]\n', encoding="utf-8")
+            counter = root / "counter"
+            podman = bin_dir / "podman"
+            podman.write_text(
+                "#!/bin/sh\n"
+                f"counter={counter}\n"
+                "count=0\n"
+                "test ! -f \"$counter\" || count=$(cat \"$counter\")\n"
+                "count=$((count + 1))\n"
+                "printf '%s\\n' \"$count\" > \"$counter\"\n"
+                "test \"$count\" -gt 1 && printf 'healthy\\n' || exit 1\n",
+                encoding="utf-8",
+            )
+            podman.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+            self.run_script("health", "wait-bundle", manifest, "3", env=env)
+
+            self.assertEqual("2\n", counter.read_text(encoding="utf-8"))
 
     def run_hook(self, hook, working_dir, *commands, check=True, path=None):
         return self.run_script(

@@ -307,6 +307,20 @@ from becoming fleet-wide data-plane restarts.
   state-query failures, treats `health=starting` as settling, and fails on
   `health=unhealthy` or missing expected services. A ready target must never
   succeed from container `State=running` alone when a healthcheck is present.
+- Compose `healthcheck.test: [CMD, ...]` is exec-form input, but Quadlet's
+  `HealthCmd=` is passed through Podman's shell-command surface. Compile every
+  CMD argument with shell-safe argv joining; never emit the Compose JSON array
+  literally, because Podman will try to execute the entire bracketed value as
+  one filename. Preserve `CMD-SHELL` as the explicit raw shell form.
+- Quadlet container units use `Notify=conmon`; never block their `ExecStartPost`
+  on application health. This lets systemd apply the declared restart policy
+  when a process exits during startup. The stack's existing `*-verify.service`
+  waits for every declared container healthcheck before its ready target can
+  succeed. A dependent container with Compose `condition: service_healthy`
+  performs the same bounded wait in `ExecStartPre`. Transient missing/starting
+  state remains eligible for container restart and health retries.
+  `HealthOnFailure=kill` plus the unit's restart policy owns recovery after a
+  terminal unhealthy result. Bound all waiters by `timeoutReadySeconds`.
 - Main compose units use `KillMode=mixed`. Rootless Podman's `conmon` and
   `fuse-overlayfs` processes inherit the unit cgroup, so `control-group` would
   send them the graceful stop signal alongside the helper and invalidate live

@@ -31,6 +31,8 @@
         depends_on:
           db:
             condition: service_healthy
+        healthcheck:
+          test: [CMD, sh, -c, echo healthy]
         ports: [127.0.0.1:18080:80]
     networks:
       default:
@@ -72,6 +74,7 @@
     projectEnvFile = projectEnv;
     subnet = "10.77.0.0/24";
     timeoutReadySeconds = 75;
+    healthWaitProgram = "/nix/store/test-podman-quadlet-helper";
     imageRewrites = {};
     policy = {
       composeArgs = [];
@@ -185,13 +188,28 @@ in
     grep -F 'Subnet=10.77.0.0/24' "$network"
     grep -F 'NetworkDeleteOnStop=true' "$network"
     grep -F 'StopWhenUnneeded=true' "$network"
-    grep -F 'Notify=healthy' "$db"
+    grep -F 'Notify=conmon' "$db"
+    if grep -F 'Notify=healthy' "$db"; then
+      echo "Quadlet healthcheck unexpectedly binds readiness to the first health result" >&2
+      exit 1
+    fi
     grep -F 'ContainerName=env-project_db_1' "$db"
     grep -F 'ContainerName=env-project_web_1' "$web"
     grep -F 'HealthOnFailure=kill' "$db"
+    if grep -F 'ExecStartPost=' "$db" "$web"; then
+      echo "container health wait unexpectedly blocks systemd restart handling" >&2
+      exit 1
+    fi
+    grep -F 'ExecStartPre="/nix/store/test-podman-quadlet-helper" "health" "wait" "env-project_db_1" "75"' "$web"
+    jq -e '. == ["env-project_db_1", "env-project_web_1"]' ${bundle}/healthchecks.json
     grep -F 'TimeoutStartSec=75' "$db"
     grep -F 'TimeoutStartSec=75' "$web"
     grep -F 'HealthCmd=pg_isready -U postgres' "$db"
+    grep -F "HealthCmd=sh -c 'echo healthy'" "$web"
+    if grep -F 'HealthCmd=[' "$web"; then
+      echo "Compose CMD healthcheck unexpectedly compiled as a literal JSON executable" >&2
+      exit 1
+    fi
     grep -F 'Ulimit=nofile=1024:2048' "$db"
     grep -F 'Requires=test-native-db-container.service' "$web"
     grep -F 'After=test-native-db-container.service' "$web"

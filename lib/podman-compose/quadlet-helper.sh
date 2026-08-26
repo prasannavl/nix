@@ -297,9 +297,114 @@ hook_main() {
 	done
 }
 
+health_usage() {
+	cat >&2 <<'EOF'
+usage: podman-quadlet-helper health wait <container> <timeout-seconds>
+       podman-quadlet-helper health wait-bundle <manifest> <timeout-seconds>
+EOF
+}
+
+validate_health_timeout() {
+	local timeout_seconds="$1"
+	if [[ ! $timeout_seconds =~ ^[1-9][0-9]*$ ]]; then
+		printf 'invalid Quadlet health timeout: %s\n' "$timeout_seconds" >&2
+		return 2
+	fi
+}
+
+health_status() {
+	local container="$1" status
+	if ! status="$({
+		podman inspect \
+			--format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+			"$container" 2>/dev/null
+	})"; then
+		status="missing"
+	fi
+	printf '%s\n' "$status"
+}
+
+health_wait() {
+	local container="$1" timeout_seconds="$2" deadline status="unknown"
+	validate_health_timeout "$timeout_seconds"
+	deadline=$((SECONDS + timeout_seconds))
+	while ((SECONDS < deadline)); do
+		status="$(health_status "$container")"
+		if [[ $status == healthy ]]; then
+			return 0
+		fi
+		sleep 1
+	done
+	printf 'Quadlet container %s did not become healthy within %ss; last status: %s\n' \
+		"$container" "$timeout_seconds" "$status" >&2
+	return 1
+}
+
+health_wait_bundle() {
+	local manifest="$1" timeout_seconds="$2" deadline container manifest_json status pending
+	local -a containers=()
+	validate_health_timeout "$timeout_seconds"
+	if [[ ! -f $manifest ]]; then
+		printf 'missing Quadlet health manifest: %s\n' "$manifest" >&2
+		return 2
+	fi
+	manifest_json="$(
+		jq -ce \
+			'if type == "array" and all(.[]; type == "string" and length > 0) then . else error("invalid health manifest") end' \
+			"$manifest"
+	)"
+	mapfile -t containers < <(jq -r '.[]' <<<"$manifest_json")
+	deadline=$((SECONDS + timeout_seconds))
+	while ((SECONDS < deadline)); do
+		pending=0
+		for container in "${containers[@]}"; do
+			status="$(health_status "$container")"
+			if [[ $status != healthy ]]; then
+				pending=1
+			fi
+		done
+		if ((pending == 0)); then
+			return 0
+		fi
+		sleep 1
+	done
+	printf 'Quadlet bundle did not become healthy within %ss: %s\n' \
+		"$timeout_seconds" "$manifest" >&2
+	return 1
+}
+
+health_main() {
+	local action="${1:-}"
+	[[ -n $action ]] || {
+		health_usage
+		return 2
+	}
+	shift
+	case "$action" in
+	wait)
+		if (($# != 2)); then
+			health_usage
+			return 2
+		fi
+		health_wait "$@"
+		;;
+	wait-bundle)
+		if (($# != 2)); then
+			health_usage
+			return 2
+		fi
+		health_wait_bundle "$@"
+		;;
+	*)
+		health_usage
+		return 2
+		;;
+	esac
+}
+
 usage() {
 	cat >&2 <<'EOF'
-usage: podman-quadlet-helper <hook|stage> ...
+usage: podman-quadlet-helper <health|hook|stage> ...
 EOF
 }
 
@@ -312,6 +417,9 @@ main() {
 	shift
 
 	case "$command" in
+	health)
+		health_main "$@"
+		;;
 	hook)
 		hook_main "$@"
 		;;

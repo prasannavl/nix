@@ -600,7 +600,7 @@
   runtimeComposeHelperScript = "/etc/podman-compose/helpers/podman-compose-helper";
   quadletHelperPackage = pkgs.writeShellApplication {
     name = "podman-quadlet-helper";
-    runtimeInputs = [pkgs.coreutils pkgs.podman];
+    runtimeInputs = [pkgs.coreutils pkgs.jq pkgs.podman];
     text = builtins.readFile ./quadlet-helper.sh;
   };
   quadletHelperScript = "${quadletHelperPackage}/bin/podman-quadlet-helper";
@@ -2362,10 +2362,19 @@
         Type = "oneshot";
         RemainAfterExit = false;
         WorkingDirectory = "-${resolvedWorkingDir}";
-        ExecStart =
-          if service.verifyCommand == []
-          then "${pkgs.coreutils}/bin/true"
-          else lib.escapeShellArgs service.verifyCommand;
+        ExecStart = pkgs.writeShellScript "podman-quadlet-${resolvedSystemdServiceName}-verify" ''
+          set -eu
+          ${lib.escapeShellArgs [
+            quadletHelperScript
+            "health"
+            "wait-bundle"
+            "${service.nativeBundle}/healthchecks.json"
+            (toString startTimeoutSeconds)
+          ]}
+          ${lib.optionalString (service.verifyCommand != []) ''
+            exec ${lib.escapeShellArgs service.verifyCommand}
+          ''}
+        '';
         TimeoutStartSec = lib.mkDefault startTimeoutSeconds;
       };
     };
@@ -3736,6 +3745,7 @@ in {
                       localImages = localImageMetadata;
                       envSecretRuntimePaths = envSecretRuntimePaths;
                       timeoutReadySeconds = normalizedService.timeoutReadySeconds;
+                      healthWaitProgram = quadletHelperScript;
                       fileSecrets =
                         lib.mapAttrsToList (secretName: entry: {
                           name = secretName;

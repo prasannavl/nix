@@ -93,11 +93,13 @@ diagnostic evidence.
   `always -> always`, `on-failure -> on-failure`, and
   `unless-stopped -> always`. Explicit `systemctl stop` still suppresses
   restart, which is the systemd equivalent of the intended stopped state.
-- Healthchecked containers use `Notify=healthy` and `HealthOnFailure=kill`.
-  Every generated container service also receives the instance
-  `timeoutReadySeconds` as `TimeoutStartSec`, so Quadlet readiness is bounded by
-  the declared contract instead of the user manager's shorter default. Public
-  activation waits for native readiness, and systemd owns recovery.
+- Healthchecked containers use `Notify=conmon` and `HealthOnFailure=kill` so a
+  process that exits during application startup remains eligible for its systemd
+  restart policy. Every generated container service receives the instance
+  `timeoutReadySeconds` as `TimeoutStartSec`. The bounded verify unit waits for
+  all declared healthchecks before public readiness, while
+  `condition: service_healthy` dependencies wait in `ExecStartPre`; application
+  health never blocks the container unit's `ExecStartPost`.
 - Quadlet's default rootless network-online dependency remains enabled. Do not
   add `DefaultDependencies=false` merely to reproduce the wrapper graph.
 - The Nix-generated stage service expresses each ordered operation as an

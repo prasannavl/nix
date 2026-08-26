@@ -485,7 +485,8 @@
   appImagePullPlanEntry = imagePullPlanEntryByService "demo-app";
   jobImagePullPlanEntry = imagePullPlanEntryByService "demo-custom-job";
   appGeneratedProbePath = builtins.head controlRegistry.demo-app.verifyCommand;
-  nativeGeneratedProbePath = nativeVerifyUnit.serviceConfig.ExecStart;
+  nativeGeneratedProbePath = builtins.head native.verifyCommand;
+  nativeVerifyScriptPath = nativeVerifyUnit.serviceConfig.ExecStart;
 in
   assert failedAssertions == [];
   assert stack.user == "tester";
@@ -1013,6 +1014,8 @@ in
       grep -F -- '--insecure' ${nativeGeneratedProbePath}
       grep -F -- '--resolve native.example.test:18081:127.0.0.1' ${nativeGeneratedProbePath}
       grep -F 'https://native.example.test:18081/' ${nativeGeneratedProbePath}
+      grep -F '/bin/podman-quadlet-helper health wait-bundle ' ${nativeVerifyScriptPath}
+      grep -F '/healthchecks.json' ${nativeVerifyScriptPath}
       grep -F "Image=$native_image_file" "$native_quadlet"
       grep -F 'Image=docker.io/library/busybox:latest' "$native_image"
       grep -F 'Policy=newer' "$native_image"

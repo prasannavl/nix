@@ -644,9 +644,11 @@ def health_entries(service_name: str, value: Any) -> list[tuple[str, Any, bool]]
     if test[0] == "CMD-SHELL" and len(test) == 2:
         command = compose_string(test[1]).replace("\n", " ")
     elif test[0] == "CMD":
-        command = json.dumps(
-            [compose_string(item) for item in test[1:]], separators=(",", ":")
-        )
+        # Quadlet passes HealthCmd through Podman's shell-command healthcheck
+        # surface. A Compose exec-form JSON array would be treated as one
+        # literal executable name, so render an injection-safe shell command
+        # that reconstructs the exact argv instead.
+        command = shlex.join([compose_string(item) for item in test[1:]])
     else:
         fail(f"service {service_name} healthcheck must use CMD or CMD-SHELL")
     result: list[tuple[str, Any, bool]] = [("HealthCmd", command, False)]
@@ -659,13 +661,15 @@ def health_entries(service_name: str, value: Any) -> list[tuple[str, Any, bool]]
     for field, key in health_fields:
         if field in value:
             result.append((key, value[field], False))
-    # Quadlet makes the generated systemd service READY only after the
-    # container healthcheck succeeds.  An unhealthy container is killed so the
-    # service's systemd Restart= policy, rather than Podman, owns recovery.
+    # Conmon owns container-unit readiness so systemd can restart a process
+    # that exits during application startup. Stack readiness and
+    # service_healthy dependencies are gated by separate bounded waiters.
+    # An unhealthy container is killed so the service's Restart= policy owns
+    # recovery.
     result.extend(
         [
             ("HealthOnFailure", "kill", False),
-            ("Notify", "healthy", False),
+            ("Notify", "conmon", False),
         ]
     )
     return result
@@ -697,6 +701,11 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
         or timeout_ready_seconds <= 0
     ):
         fail("timeoutReadySeconds must be a positive integer")
+    health_wait_program = config.get("healthWaitProgram")
+    if not isinstance(health_wait_program, str) or not health_wait_program.startswith(
+        "/"
+    ):
+        fail("healthWaitProgram must be an absolute path")
     env = load_dotenv(config.get("projectEnvFile"))
     compose = load_compose(config["composeFiles"], env)
     unexpected = set(compose) - ALLOWED_TOP_LEVEL
@@ -813,6 +822,7 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
     )
 
     dependencies: dict[str, list[str]] = {}
+    healthy_dependencies: dict[str, set[str]] = {}
     health_waited_on: set[str] = set()
     for name, raw in services.items():
         if not isinstance(raw, dict):
@@ -824,10 +834,20 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
             fail(f"service {name} attach must be a boolean")
         deps, healthy = dependency_info(name, raw.get("depends_on", []), known)
         dependencies[name] = deps
+        healthy_dependencies[name] = healthy
         health_waited_on |= healthy
     for name in sorted(health_waited_on):
         if services[name].get("healthcheck") is None:
             fail(f"service_healthy dependency target {name} has no healthcheck")
+
+    container_names: dict[str, str] = {}
+    for name, raw in services.items():
+        container_name = raw.get(
+            "container_name", f"{compose_project_name}_{name}_1"
+        )
+        if not isinstance(container_name, str) or not container_name:
+            fail(f"service {name} container_name must be a nonempty string")
+        container_names[name] = container_name
 
     units_dir = output / "quadlet"
     units_dir.mkdir(parents=True)
@@ -840,6 +860,7 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
         }
     ]
     container_records: list[dict[str, Any]] = []
+    healthcheck_containers: list[str] = []
     declared_images: list[str] = []
     local_images: list[dict[str, Any]] = []
     local_image_by_runtime_ref: dict[str, dict[str, Any]] = {}
@@ -941,11 +962,7 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
             local_images.append(local_entry)
             local_image_by_runtime_ref[image] = local_entry
         image_file = image_file_for(image)
-        container_name = raw.get(
-            "container_name", f"{compose_project_name}_{name}_1"
-        )
-        if not isinstance(container_name, str) or not container_name:
-            fail(f"service {name} container_name must be a nonempty string")
+        container_name = container_names[name]
         unit_part = sanitize_unit_part(name)
         container_base = f"{systemd_name}-{unit_part}-container"
         container_file = f"{container_base}.container"
@@ -1134,18 +1151,35 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
                     f"service {name} ulimits must contain scalars or soft/hard mappings"
                 )
             container_entries.append(("Ulimit", rendered, False))
-        container_entries.extend(health_entries(name, raw.get("healthcheck")))
+        healthcheck = raw.get("healthcheck")
+        container_entries.extend(health_entries(name, healthcheck))
+        service_entries: list[tuple[str, Any, bool]] = [
+            ("Restart", restart_policy, False),
+            ("TimeoutStartSec", timeout_ready_seconds, False),
+        ]
+        for dependency in sorted(healthy_dependencies[name]):
+            service_entries.append(
+                (
+                    "ExecStartPre",
+                    exec_args(
+                        [
+                            health_wait_program,
+                            "health",
+                            "wait",
+                            container_names[dependency],
+                            timeout_ready_seconds,
+                        ]
+                    ),
+                    True,
+                )
+            )
+        if healthcheck is not None:
+            healthcheck_containers.append(container_name)
         container_text = render_quadlet(
             [
                 ("Unit", unit_entries),
                 ("Container", container_entries),
-                (
-                    "Service",
-                    [
-                        ("Restart", restart_policy, False),
-                        ("TimeoutStartSec", timeout_ready_seconds, False),
-                    ],
-                ),
+                ("Service", service_entries),
                 ("Install", [("RequiredBy", public_unit, False)]),
             ]
         )
@@ -1188,6 +1222,9 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
     }
     (output / "report.json").write_text(
         json.dumps(report, sort_keys=True, indent=2) + "\n"
+    )
+    (output / "healthchecks.json").write_text(
+        json.dumps(sorted(healthcheck_containers), indent=2) + "\n"
     )
 
 
