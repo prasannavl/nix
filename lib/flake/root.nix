@@ -71,6 +71,27 @@
     directory = phaseProjectionDirectory;
   };
   effectiveStackProfiles = phaseProjection.applyToStacks stackProfiles;
+  nixbotInventory = import ../../hosts/nixbot.nix;
+  nixbotControllerCapability = nixbotInventory.config.controller;
+  nixbotInventoryHosts = builtins.attrNames nixbotInventory.hosts;
+  nixbotControllerCandidates =
+    builtins.filter (
+      host:
+        (nixbotInventory.hosts.${host}.resourceId or host)
+        == nixbotControllerCapability
+    )
+    nixbotInventoryHosts;
+  nixbotControllerHost = assert builtins.length nixbotControllerCandidates == 1;
+    builtins.head nixbotControllerCandidates;
+  projectionRuntimeHosts =
+    builtins.filter (
+      host: host != nixbotControllerHost
+    )
+    phaseProjection.runtimeHosts;
+  validatedProjectionRuntimeHosts = assert nixpkgs.lib.all (
+    host: builtins.elem host nixbotInventoryHosts
+  )
+  projectionRuntimeHosts; projectionRuntimeHosts;
 
   rootLib = import ./. {
     inherit flake-utils inputs nixpkgs overlays;
@@ -181,6 +202,9 @@
   # We use this for build plan cache.
   # It's entirely optional and non necessary.
   nixbot = {
+    deployDependencies = {
+      ${nixbotControllerHost} = validatedProjectionRuntimeHosts;
+    };
     plans =
       nixpkgs.lib.mapAttrs (_: nixosConfig: {
         drvPath = nixosConfig.config.system.build.toplevel.drvPath;

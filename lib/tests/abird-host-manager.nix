@@ -1,9 +1,15 @@
 {pkgs}: let
   lib = pkgs.lib;
   digest = builtins.concatStringsSep "" (lib.replicate 64 "a");
+  controllerOverride = pkgs.writeText "controller.override.nix" ''
+    {
+      hosts.controller.proxyCommand = null;
+    }
+  '';
   fakeNixbot = pkgs.writeShellScriptBin "nixbot" "exit 0";
   fakeManager = pkgs.writeShellScriptBin "abird-host-manager" ''
     test -z "''${ABIRD_HOST_MANAGER_GIT:-}"
+    test "''${ABIRD_HOST_MANAGER_CONFIG_OVERRIDE:-}" = ${lib.escapeShellArg (toString controllerOverride)}
     test -n "''${GIT_SSH_COMMAND:-}"
     case "$GIT_SSH_COMMAND" in
       *'/var/lib/nixbot/.ssh/id_ed25519_z'*) ;;
@@ -58,6 +64,8 @@
         services.abird-host-manager = {
           enable = true;
           package = fakeManager;
+          configOverride = controllerOverride;
+          failedJobSupersessionProjections = ["move-zulip"];
         };
       }
     ];
@@ -65,13 +73,30 @@
   services = builtins.attrValues evaluated.config.systemd.services;
   matching = builtins.filter (service: lib.hasPrefix "Reconcile exact Abird host-manager projection" (service.description or "")) services;
   service = builtins.head matching;
+  evaluatedWithoutSupersession = evaluated.extendModules {
+    modules = [
+      {
+        services.abird-host-manager.failedJobSupersessionProjections = lib.mkForce [];
+      }
+    ];
+  };
+  servicesWithoutSupersession = builtins.attrValues evaluatedWithoutSupersession.config.systemd.services;
+  matchingWithoutSupersession = builtins.filter (candidate: lib.hasPrefix "Reconcile exact Abird host-manager projection" (candidate.description or "")) servicesWithoutSupersession;
+  serviceWithoutSupersession = builtins.head matchingWithoutSupersession;
   managerRuntime = lib.findFirst (package: lib.getName package == "abird-host-manager-runtime") null evaluated.config.environment.systemPackages;
 in
   assert builtins.length matching == 1;
   assert !(lib.hasInfix "hold-zulip" service.script);
   assert lib.hasInfix "transaction reconcile move-zulip" service.script;
   assert lib.hasInfix "--expected-projection-sha256 ${digest}" service.script;
+  assert lib.hasInfix "--supersede-failed-job" service.script;
+  assert lib.hasInfix "--execute" service.script;
+  assert builtins.length matchingWithoutSupersession == 1;
+  assert lib.hasInfix "transaction reconcile move-zulip" serviceWithoutSupersession.script;
+  assert lib.hasInfix "--execute" serviceWithoutSupersession.script;
+  assert !(lib.hasInfix "--supersede-failed-job" serviceWithoutSupersession.script);
   assert service.serviceConfig.User == "nixbot";
+  assert service.environment.ABIRD_HOST_MANAGER_CONFIG_OVERRIDE == toString controllerOverride;
   assert service.requires == ["nixbot-repo-z-ready.service"];
   assert lib.elem "nixbot-repo-z-ready.service" service.after;
   assert managerRuntime != null;

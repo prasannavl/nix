@@ -55,6 +55,7 @@ in {
 
   config = {
     controller = "pvl-x2";
+    deployDependenciesAttr = "nixbot.deployDependencies";
     transferBroker = "pvl-x2";
     builders = ["pvl-x2"];
     registries.nix = {

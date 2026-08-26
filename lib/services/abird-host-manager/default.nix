@@ -11,11 +11,20 @@
   # remain in the registry with no controller command, so adding a projection
   # cannot accidentally route it through a move transaction reconciler.
   projectionAdapters = {
-    move.reconcile = projection: ''
-      transaction reconcile ${lib.escapeShellArg projection.projection_id} \
-        --expected-projection-sha256 ${lib.escapeShellArg projection.projection_sha256} \
-        --execute
-    '';
+    move.reconcile = projection:
+      lib.escapeShellArgs (
+        [
+          "transaction"
+          "reconcile"
+          projection.projection_id
+          "--expected-projection-sha256"
+          projection.projection_sha256
+        ]
+        ++ lib.optional
+        (builtins.elem projection.projection_id cfg.failedJobSupersessionProjections)
+        "--supersede-failed-job"
+        ++ ["--execute"]
+      );
     resource_hold.reconcile = null;
   };
   projectionAdapter = projection:
@@ -30,6 +39,7 @@
   in
     adapter != null && adapter.reconcile != null)
   cfg.phaseProjections;
+  projectionIds = map (projection: projection.projection_id) cfg.phaseProjections;
   nixbotRepositories =
     if lib.hasAttrByPath ["services" "nixbot" "repos"] options
     then config.services.nixbot.repos
@@ -71,14 +81,26 @@
         "-o"
         "IdentitiesOnly=no"
       ];
+  managerWrapperArgs =
+    lib.optionals (matchingRepository != null) [
+      "--set-default"
+      "GIT_SSH_COMMAND"
+      matchingRepository.gitSshCommand
+      "--set-default"
+      "ABIRD_HOST_MANAGER_PUBLISH_GIT_SSH_COMMAND"
+      publishGitSshCommand
+    ]
+    ++ lib.optionals (cfg.configOverride != null) [
+      "--set-default"
+      "ABIRD_HOST_MANAGER_CONFIG_OVERRIDE"
+      (toString cfg.configOverride)
+    ];
   managerPackage = pkgs.symlinkJoin {
     name = "abird-host-manager-runtime";
     paths = [cfg.package];
     nativeBuildInputs = [pkgs.makeWrapper];
-    postBuild = lib.optionalString (matchingRepository != null) ''
-      wrapProgram "$out/bin/abird-host-manager" \
-        --set-default GIT_SSH_COMMAND ${lib.escapeShellArg matchingRepository.gitSshCommand} \
-        --set-default ABIRD_HOST_MANAGER_PUBLISH_GIT_SSH_COMMAND ${lib.escapeShellArg publishGitSshCommand}
+    postBuild = lib.optionalString (managerWrapperArgs != []) ''
+      wrapProgram "$out/bin/abird-host-manager" ${lib.escapeShellArgs managerWrapperArgs}
     '';
   };
   reconcileService = projection: let
@@ -94,10 +116,14 @@
       after = ["network-online.target" "nixbot.service"] ++ lib.optional (repoReadyUnit != null) repoReadyUnit;
       restartTriggers = [manifest];
       path = [pkgs.gitMinimal pkgs.nix];
-      environment = {
-        ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION = "1";
-        HOME = "/var/lib/${cfg.user}";
-      };
+      environment =
+        {
+          ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION = "1";
+          HOME = "/var/lib/${cfg.user}";
+        }
+        // lib.optionalAttrs (cfg.configOverride != null) {
+          ABIRD_HOST_MANAGER_CONFIG_OVERRIDE = toString cfg.configOverride;
+        };
       script = ''
         set -eu
         ${lib.getExe' managerPackage "abird-host-manager"} \
@@ -130,6 +156,16 @@ in {
       '';
     };
 
+    failedJobSupersessionProjections = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      description = ''
+        Projection IDs explicitly authorized by this controller generation to
+        preserve a terminal failed host-agent job and retry the same logical
+        step under the projection's current immutable policy.
+      '';
+    };
+
     repository = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/nixbot/nix";
@@ -140,6 +176,16 @@ in {
       type = lib.types.str;
       default = "${cfg.repository}/hosts/nixbot.nix";
       description = "Repository-derived host-manager inventory.";
+    };
+
+    configOverride = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        Optional controller-local inventory override evaluated on top of
+        configPath for both projected reconciliation units and remotely
+        dispatched controller commands.
+      '';
     };
 
     stateDirectory = lib.mkOption {
@@ -167,6 +213,14 @@ in {
         {
           assertion = builtins.length matchingRepositoryNames <= 1;
           message = "services.abird-host-manager.repository matches more than one services.nixbot.repos path";
+        }
+        {
+          assertion = builtins.length cfg.failedJobSupersessionProjections == builtins.length (lib.unique cfg.failedJobSupersessionProjections);
+          message = "services.abird-host-manager.failedJobSupersessionProjections must be unique";
+        }
+        {
+          assertion = lib.all (projectionId: builtins.elem projectionId projectionIds) cfg.failedJobSupersessionProjections;
+          message = "services.abird-host-manager.failedJobSupersessionProjections must name active phase projections";
         }
       ]
       ++ lib.concatMap (projection: [

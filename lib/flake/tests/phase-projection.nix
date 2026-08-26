@@ -181,6 +181,7 @@
   projected = phaseProjection.applyToStacks {demo = stack;};
 in
   assert builtins.length phaseProjection.documents == 1;
+  assert phaseProjection.runtimeHosts == ["source" "target" "proxy"];
   assert (builtins.head unheldPhaseProjection.documents).phase == "unheld";
   assert !(builtins.tryEval (builtins.deepSeq invalidPhaseProjection.documents true)).success;
   assert pkgs.lib.all (invalid: !(builtins.tryEval (builtins.deepSeq invalid.documents true)).success) invalidDocuments;

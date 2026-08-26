@@ -74,6 +74,21 @@ may pass one typed, immutable `configOverride` path as
 instead of exposing arbitrary environment injection. Pvl does not add Abird's
 Gondor routes, guest-memory policy, or host-specific override.
 
+Projected reconciliation also keeps routing and recovery authority explicit:
+
+- deploy cutover and rollback execute through the route derived from the exact
+  projected source or target resource rather than a stale base-inventory route;
+- the controller module can give operator-dispatched commands and reconciliation
+  units one `configOverride`, and only projection IDs listed in
+  `failedJobSupersessionProjections` receive `--supersede-failed-job`;
+- reconciliation always retains `--execute`; supersession is an additional
+  authorization, not a dry-run escape; and
+- the flake derives every projection endpoint and effect-executor host,
+  validates it against Nixbot inventory, and exports those hosts as controller
+  deployment dependencies. Nixbot merges that evaluated edge set before
+  ordering, so `--ci-first` cannot activate a controller ahead of its projection
+  hosts.
+
 ## Ownership Rules
 
 - Holds are persistent host-agent state. Disconnects and elapsed time never

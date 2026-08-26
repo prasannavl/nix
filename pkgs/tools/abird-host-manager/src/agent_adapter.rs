@@ -2192,7 +2192,7 @@ impl NativeAdapter {
                 .context("existing agent job status has no immutable spec")?;
             if !retry_spec_matches(existing_spec, &spec) {
                 bail!(
-                    "host-agent job {job_id:?} already exists with a different immutable specification; if a terminal failed job must adopt intentionally changed policy, resume the owning transaction with --supersede-failed-job"
+                    "host-agent job {job_id:?} already exists with a different immutable specification; if a terminal failed job must adopt intentionally changed policy, explicitly supersede it through the owning transaction's resume or projected reconcile command"
                 );
             }
         }
@@ -2466,6 +2466,26 @@ impl NativeAdapter {
             bail!("phase projection has multiple route_profile effects for one runtime item");
         }
         Ok(route)
+    }
+
+    fn projected_step_location(
+        &self,
+        operation: &str,
+        transaction: &Transaction,
+    ) -> Option<String> {
+        if self.projection.is_none() || !matches!(operation, "deploy-cutover" | "deploy-rollback") {
+            return None;
+        }
+        let endpoint = if operation == "deploy-rollback" {
+            &transaction.source
+        } else {
+            &transaction.target
+        };
+        let resource = self
+            .transaction_resource_for_host(transaction, endpoint)
+            .ok()?;
+        let (executor, _, _) = self.projected_route_effect(&resource).ok()??;
+        Some(executor)
     }
 
     fn run_broker_job(
@@ -3284,6 +3304,9 @@ impl<'a> WorkflowItemAdapter<'a> {
                 transaction.source,
                 transaction.target
             );
+        }
+        if let Some(executor) = self.native.projected_step_location(operation, transaction) {
+            return executor;
         }
         if let Some(route) = self.native.config.operation_routes.get(operation) {
             return resolve_executor(&route.executor, transaction).to_owned();
@@ -4243,16 +4266,17 @@ mod tests {
             "ssh": {"program":"/bin/false"},
             "hosts": {
                 "source": {"address":"127.0.0.1","host_resource":"host:source-system"},
-                "target": {"address":"127.0.0.2","host_resource":"host:target-system"}
+                "target": {"address":"127.0.0.2","host_resource":"host:target-system"},
+                "proxy": {"address":"127.0.0.3","host_resource":"host:proxy-system"}
             },
             "operation_routes": {
                 "deploy-cutover": {
                     "executor":"source",
-                    "phase_projection": {"executor":"source","resource":"service:router"}
+                    "phase_projection": {"executor":"proxy","resource":"service:router"}
                 },
                 "deploy-rollback": {
                     "executor":"source",
-                    "phase_projection": {"executor":"source","resource":"service:router"}
+                    "phase_projection": {"executor":"proxy","resource":"service:router"}
                 }
             }
         }))
@@ -4262,8 +4286,8 @@ mod tests {
             vec![MoveItem::Service {
                 id: "item-001".to_owned(),
                 service: "zulip".to_owned(),
-                source_resource: Some("service:abird-zulip".to_owned()),
-                target_resource: Some("service:abird-zulip".to_owned()),
+                source_resource: Some("service:abird-zulip-source".to_owned()),
+                target_resource: Some("service:abird-zulip-target".to_owned()),
                 source: HostEndpoint {
                     host: "source".to_owned(),
                     instance: None,
@@ -4283,17 +4307,23 @@ mod tests {
             MoveProjector::derive(&spec, &config, MovePhase::Seeded, None, None).unwrap();
         let mut adapter = NativeAdapter::from_config(config);
         adapter.bind_projection(projection).unwrap();
-        let transaction = Transaction::new_service(
+        let mut transaction = Transaction::new_service(
             "zulip".to_owned(),
             "source".to_owned(),
             "target".to_owned(),
             PathBuf::from("/stale/operator/checkout/hosts/nixbot.nix"),
         )
         .unwrap();
+        transaction.source_resource = Some("service:abird-zulip-source".to_owned());
+        transaction.target_resource = Some("service:abird-zulip-target".to_owned());
 
         adapter
             .preflight_service_placement(&transaction, "source")
             .unwrap();
+        assert_eq!(
+            adapter.projected_step_location("deploy-rollback", &transaction),
+            Some("proxy".to_owned())
+        );
         assert!(
             adapter
                 .preflight_service_placement(&transaction, "target")

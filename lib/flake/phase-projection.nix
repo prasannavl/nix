@@ -215,6 +215,14 @@ in rec {
   documents = assert require (lib.length projectionIds == lib.length (lib.unique projectionIds)) "projection_id values must be unique";
   assert require (lib.all (projection: lib.length (resourceIds projection) == lib.length (lib.unique (resourceIds projection))) validatedDocuments) "resource IDs must be unique within a projection"; validatedDocuments;
 
+  runtimeHosts = lib.unique (builtins.concatMap (projection:
+    (map (resource: resource.endpoint.host) projection.resources)
+    ++ (builtins.concatMap (effect:
+      lib.optional (effect ? host) effect.host
+      ++ lib.optional (effect ? executor_host) effect.executor_host)
+    projection.effects))
+  documents);
+
   serviceRoleOverridesFor = scope: stack:
     builtins.foldl'
     (overrides: effect: let

@@ -658,6 +658,9 @@ struct TransactionReconcileArgs {
     /// exactly the digest injected into the deployed controller generation.
     #[arg(long)]
     expected_projection_sha256: Option<String>,
+    /// Preserve a terminal failed job whose immutable policy changed and continue with a new durable attempt ID.
+    #[arg(long)]
+    supersede_failed_job: bool,
     #[command(flatten)]
     guard: ExecutionGuard,
 }
@@ -2548,11 +2551,29 @@ fn reconcile_projected_transaction(
         .context("transaction has no repository-backed desired projection")?;
     let actions = reconciliation_actions(&record, desired_phase)?;
     if args.guard.dry_run {
+        let supersede_candidates = if args.supersede_failed_job {
+            let action = record
+                .pending_action
+                .context("transaction has no pending action to supersede")?;
+            let mut adapter = NativeAdapter::load(&record.config)?;
+            adapter.bind_projection(
+                record
+                    .projection
+                    .clone()
+                    .context("transaction has no phase projection")?,
+            )?;
+            preflight_workflow_action(&mut record, action, &mut adapter)?;
+            validate_failed_workflow_jobs(store, &mut record, &mut adapter)?
+        } else {
+            Vec::new()
+        };
         return print_json(&json!({
             "dry_run": true,
             "desired_phase": desired_phase,
             "actions": actions,
             "projection": record.projection,
+            "supersede_failed_job": args.supersede_failed_job,
+            "supersede_candidates": supersede_candidates,
             "runtime": "planned",
             "transaction": record,
         }));
@@ -2601,6 +2622,21 @@ fn reconcile_projected_transaction(
             .clone()
             .context("transaction has no phase projection")?,
     )?;
+    if args.supersede_failed_job {
+        let action = record
+            .pending_action
+            .context("transaction has no pending action to supersede")?;
+        preflight_workflow_action(&mut record, action, &mut adapter)?;
+        let superseded = supersede_failed_workflow_jobs(store, &mut record, &mut adapter)?;
+        for (old_job_id, new_job_id) in superseded {
+            eprintln!(
+                "transaction {} superseded terminal failed job {} with {}",
+                record.id(),
+                old_job_id,
+                new_job_id
+            );
+        }
+    }
     reconcile_projected_runtime(store, &mut record, desired_phase, actions, &mut adapter)?;
     print_json(&json!({
         "desired_phase": desired_phase,
@@ -6252,6 +6288,7 @@ mod tests {
             "transaction",
             "reconcile",
             "move-zulip",
+            "--supersede-failed-job",
             "--execute",
         ])
         .unwrap();
