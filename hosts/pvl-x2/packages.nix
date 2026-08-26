@@ -1,5 +1,6 @@
 {pkgs, ...}: {
-  environment.systemPackages = with pkgs; [
-    # Additional packages
+  environment.systemPackages = [
+    pkgs.kodi-wayland
+    pkgs.stremio-linux-shell
   ];
 }

@@ -1,15 +1,23 @@
 {...}: {
   imports = [
+    ./audiobookshelf
     ./beszel
     ./dockge.nix
     ./docmost
+    ./feishin
     ./immich
+    ./jellyfin
+    ./kavita
+    ./media.nix
     ./memos
+    ./navidrome
     ./nginx.nix
     ./ollama
     ./openwebui
+    ./paperless
     ./portainer
     ./shadowsocks
+    ./stirling-pdf
     ./vaultwarden
     ./postgres.nix
   ];

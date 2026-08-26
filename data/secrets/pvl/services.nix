@@ -11,5 +11,7 @@ in {
   ${secrets.serviceKey "docmost" "database-url"}.publicKeys = admins ++ pvl-x2;
   ${secrets.serviceKey "docmost" "postgres-password"}.publicKeys = admins ++ pvl-x2;
   ${secrets.serviceKey "immich" "db-password"}.publicKeys = admins ++ pvl-x2;
+  ${secrets.serviceKey "paperless" "secret-key"}.publicKeys = admins ++ pvl-x2;
   ${secrets.serviceKey "shadowsocks" "password"}.publicKeys = admins ++ pvl-x2;
+  ${secrets.serviceKey "stirling-pdf" "admin-password"}.publicKeys = admins ++ pvl-x2;
 }

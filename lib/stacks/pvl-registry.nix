@@ -63,17 +63,28 @@
 
     domains = {
       apex = [domain (subDomain "www")];
+      audiobookshelf = [(subDomain "audiobooks")];
       beszel = [(subDomain "beszel")];
       docs = [(subDomain "docs") (subDomain "docmost-x")];
+      feishin = [(subDomain "music")];
       immich = [(subDomain "photos")];
+      jellyfin = [(subDomain "jellyfin")];
+      kavita = [(subDomain "books")];
       memos = [(subDomain "memos-x")];
+      navidrome = [(subDomain "navidrome")];
       open-webui = [(subDomain "chat")];
+      paperless = [(subDomain "paperless")];
       portainer = [(subDomain "portainer")];
+      stirling-pdf = [(subDomain "pdf")];
       vaultwarden = [(subDomain "vault") (subDomain "vaultwarden-x")];
     };
 
     services = {
       x2 = {
+        audiobookshelf = {
+          domain = "audiobookshelf";
+          ports.http.port = 13378;
+        };
         beszel = {
           domain = "beszel";
           ports.http.port = 8090;
@@ -82,19 +93,42 @@
           domain = "docs";
           ports.http.port = 3000;
         };
+        feishin = {
+          domain = "feishin";
+          ports.http.port = 9180;
+        };
         immich = {
           domain = "immich";
           ports.http.port = 2283;
         };
+        jellyfin = {
+          domain = "jellyfin";
+          ports = {
+            discovery.port = 7359;
+            http.port = 8096;
+          };
+        };
+        kavita = {
+          domain = "kavita";
+          ports.http.port = 5002;
+        };
         memos = {
           domain = "memos";
           ports.http.port = 5230;
+        };
+        navidrome = {
+          domain = "navidrome";
+          ports.http.port = 4533;
         };
         nginx.ports.http.port = 10800;
         ollama.ports.main.port = 11434;
         open-webui = {
           domain = "open-webui";
           ports.http.port = 4000;
+        };
+        paperless = {
+          domain = "paperless";
+          ports.http.port = 8000;
         };
         portainer = {
           domain = "portainer";
@@ -105,6 +139,10 @@
         };
         postgres.ports.main.port = 5432;
         shadowsocks.ports.main.port = 8388;
+        stirling-pdf = {
+          domain = "stirling-pdf";
+          ports.http.port = 8080;
+        };
         vaultwarden = {
           domain = "vaultwarden";
           ports.http.port = 2000;
@@ -114,12 +152,19 @@
 
     tunnelDomains = with domains; [
       apex
+      audiobookshelf
       beszel
       docs
+      feishin
       immich
+      jellyfin
+      kavita
       memos
+      navidrome
       open-webui
+      paperless
       portainer
+      stirling-pdf
       vaultwarden
     ];
   };
