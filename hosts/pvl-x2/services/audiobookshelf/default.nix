@@ -11,6 +11,7 @@ in {
     exposedPorts.http = {
       port = registry.portFor "audiobookshelf" "http";
       openFirewall = true;
+      useUpstreamCsp = true;
       nginxHostNames = registry.domains.audiobookshelf;
       tunnels = [
         {

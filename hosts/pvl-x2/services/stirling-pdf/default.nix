@@ -12,6 +12,7 @@ in {
       exposedPorts.http = {
         port = registry.portFor "stirling-pdf" "http";
         openFirewall = true;
+        useUpstreamCsp = true;
         nginxHostNames = registry.domains.stirling-pdf;
         tunnels = [
           {

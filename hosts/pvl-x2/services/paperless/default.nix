@@ -12,6 +12,7 @@ in {
       exposedPorts.http = {
         port = registry.portFor "paperless" "http";
         openFirewall = true;
+        useUpstreamCsp = true;
         nginxHostNames = registry.domains.paperless;
         tunnels = [
           {

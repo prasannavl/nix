@@ -17,6 +17,7 @@ in {
       http = {
         port = registry.portFor "jellyfin" "http";
         openFirewall = true;
+        useUpstreamCsp = true;
         nginxHostNames = registry.domains.jellyfin;
         tunnels = [
           {

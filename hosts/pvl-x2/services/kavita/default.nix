@@ -11,6 +11,7 @@ in {
     exposedPorts.http = {
       port = registry.portFor "kavita" "http";
       openFirewall = true;
+      useUpstreamCsp = true;
       nginxHostNames = registry.domains.kavita;
       tunnels = [
         {

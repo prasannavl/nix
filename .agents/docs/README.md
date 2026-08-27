@@ -184,7 +184,8 @@ Use this index as the canonical map for `.agents/docs/**`.
   `pvl-x2` video, music, book, PDF, and document service boundaries; native
   desktop clients; shared read-only libraries; public ingress; secret-backed
   bootstrap values; rootless GPU access; and the initial bind-path ordering and
-  bcrypt bootstrap-password deployment repairs.
+  bcrypt bootstrap-password deployment repairs, plus the per-route browser CSP
+  compatibility boundary.
 - `.agents/docs/notes/hosts/pvl-x2-inline-compose-2026-04.md`: Records the
   migration of `pvl-x2` service-local `docker.compose.yaml` files into inline
   Nix compose sources, with Immich helper YAML retained and Zulip kept as a

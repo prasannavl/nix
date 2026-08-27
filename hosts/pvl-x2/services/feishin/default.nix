@@ -10,6 +10,7 @@ in {
     exposedPorts.http = {
       port = registry.portFor "feishin" "http";
       openFirewall = true;
+      useUpstreamCsp = true;
       nginxHostNames = registry.domains.feishin;
       tunnels = [
         {

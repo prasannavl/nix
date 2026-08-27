@@ -11,6 +11,7 @@ in {
     exposedPorts.http = {
       port = registry.portFor "navidrome" "http";
       openFirewall = true;
+      useUpstreamCsp = true;
       nginxHostNames = registry.domains.navidrome;
       tunnels = [
         {

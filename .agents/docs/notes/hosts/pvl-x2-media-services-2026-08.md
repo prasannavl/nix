@@ -17,6 +17,23 @@ All hosted services use the `pvl` rootless Podman compose stack. Public nginx
 and Cloudflare tunnel routes are derived from the Pvl service registry rather
 than embedded independently in each proxy configuration.
 
+## Browser security boundary
+
+The hosted applications own their browser Content Security Policy boundary.
+Their generated pages require inline bootstrap code or event handlers: for
+example, Navidrome initializes `window.process` and application configuration
+inline, Jellyfin attaches runtime inline handlers, and the other application
+frontends contain comparable startup or feature-specific snippets. Applying
+nginx's global CSP to these routes blocks application code; Navidrome then fails
+with `process is not defined` and renders a blank page.
+
+Each application route therefore sets `useUpstreamCsp = true`. This suppresses
+only the global nginx CSP at that proxy location, allowing an upstream CSP to
+pass through when the application emits one. Nginx continues to apply the shared
+content-type, referrer, and permissions-policy headers. This is a per-route
+compatibility boundary, not a relaxation of the global default for unrelated
+virtual hosts.
+
 ## Storage boundary
 
 - `/var/lib/pvl/media` is the host-owned shared library root. Its declared
