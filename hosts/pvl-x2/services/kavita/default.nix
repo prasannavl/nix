@@ -1,9 +1,11 @@
 {
   config,
+  lib,
   stack,
   ...
 }: let
   registry = stack.serviceRegistry;
+  nginxLib = import ../../../../lib/services/nginx {inherit lib;};
   nginxPort = config.services.podman-compose.pvl.instances.nginx.exposedPorts.http.port;
   mediaDir = "/var/lib/pvl/media";
 in {
@@ -11,6 +13,7 @@ in {
     exposedPorts.http = {
       port = registry.portFor "kavita" "http";
       openFirewall = true;
+      rateLimit = nginxLib.rateLimitProfiles.web;
       useUpstreamCsp = true;
       nginxHostNames = registry.domains.kavita;
       tunnels = [

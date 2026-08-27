@@ -34,6 +34,15 @@ content-type, referrer, and permissions-policy headers. This is a per-route
 compatibility boundary, not a relaxation of the global default for unrelated
 virtual hosts.
 
+Jellyfin and Kavita use nginx's browser-oriented `web` rate-limit profile. Their
+frontends load many versioned JavaScript chunks in parallel; the generic
+dynamic/API default of 10 requests per second with a burst of 30 rejected
+legitimate startup requests with HTTP 429. The `web` profile retains per-client
+rate limiting while allowing 30 requests per second and a burst of 300, and it
+removes the redundant minute window. Live nginx logs identified rejected startup
+chunks only for these two application hostnames, so the remaining frontends
+retain the stricter default profile.
+
 ## Storage boundary
 
 - `/var/lib/pvl/media` is the host-owned shared library root. Its declared
