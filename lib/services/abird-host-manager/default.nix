@@ -8,6 +8,7 @@ args @ {
   cfg = config.services.abird-host-manager;
   phaseProjections = args.phaseProjections or [];
   servicePlacements = args.servicePlacements or {closeouts = {};};
+  serviceMoveContract = args.serviceMoveContract or {moves = {};};
   # Projection kinds register exactly one controller adapter. Host-local kinds
   # remain in the registry with no controller command, so adding a projection
   # cannot accidentally route it through a move transaction reconciler.
@@ -177,7 +178,17 @@ args @ {
         RemainAfterExit = true;
       };
     };
-  controllerCloseouts = lib.filterAttrs (_: closeout: closeout.controller_reconcile or true) (servicePlacements.closeouts or {});
+  nixNativeCloseouts = lib.mapAttrs (_: move: {
+    inherit (move) affected_hosts;
+    # Adoption intentionally retains the inactive-side lease. Cleanup moves
+    # the closeout record into stable placement state; only that clean
+    # generation may run the digest-bound controller finalizer.
+    controller_reconcile = false;
+    decision = move.declaration.decision;
+    projection_sha256 = move.projection.projection_sha256;
+  }) (lib.filterAttrs (_: move: move.declaration.decision != null) serviceMoveContract.moves);
+  allCloseouts = (servicePlacements.closeouts or {}) // nixNativeCloseouts;
+  controllerCloseouts = lib.filterAttrs (_: closeout: closeout.controller_reconcile or true) allCloseouts;
 in {
   options.services.abird-host-manager = {
     enable = lib.mkEnableOption "controller-authoritative Abird host-manager reconciliation";
@@ -251,6 +262,10 @@ in {
         {
           assertion = builtins.length matchingRepositoryNames <= 1;
           message = "services.abird-host-manager.repository matches more than one services.nixbot.repos path";
+        }
+        {
+          assertion = lib.intersectLists (builtins.attrNames (servicePlacements.closeouts or {})) (builtins.attrNames nixNativeCloseouts) == [];
+          message = "legacy and Nix-native host-manager closeouts must not share a transaction ID";
         }
         {
           assertion = builtins.length cfg.failedJobSupersessionProjections == builtins.length (lib.unique cfg.failedJobSupersessionProjections);

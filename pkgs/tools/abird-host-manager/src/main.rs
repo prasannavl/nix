@@ -39,9 +39,10 @@ use abird_host_manager::projection::{
 };
 use abird_host_manager::repository::{
     CanonicalProjectionCloseout, ManagedHost, ManagedHostSystem, ManagedIncus,
-    ProjectionCloseoutEvent, ProjectionCloseoutPublication, ProjectionCloseoutStage,
-    ProjectionPublication, ProjectionPublicationEvent, ProjectionPublicationMode,
-    ProjectionPublicationStage, ProjectionPublisher, Repository, RepositoryPrograms,
+    ProjectionCleanupEvent, ProjectionCleanupStage, ProjectionCloseoutEvent,
+    ProjectionCloseoutPublication, ProjectionCloseoutStage, ProjectionPublication,
+    ProjectionPublicationEvent, ProjectionPublicationMode, ProjectionPublicationStage,
+    ProjectionPublisher, Repository, RepositoryPrograms, is_nix_native_service_move,
 };
 use abird_host_manager::selector::select_hosts;
 use abird_host_manager::service_registry::{resolve_service_host, resolve_service_resource};
@@ -3026,7 +3027,7 @@ fn publish_seeded_projection(
     } else {
         command_reporter().started("Render seeded projection");
     }
-    let existing = publisher.repository().load_phase_projection(record.id())?;
+    let existing = publisher.load_projection(record.id())?;
     let projection = if let Some(existing) = existing {
         existing.validate()?;
         if existing.intent != serde_json::to_value(&record.spec)? || existing.phase != "seeded" {
@@ -3057,7 +3058,7 @@ fn publish_seeded_projection(
         command_execution,
         execution.mode,
     )?;
-    record.set_projection(projection)?;
+    record.set_projection(publication.projection.clone())?;
     store.save(record)?;
     Ok(publication)
 }
@@ -3274,7 +3275,7 @@ fn transaction_command(
                 command_name: "transaction _reconcile",
             };
             let store = workflow_store(state_dir.clone(), request.guard.dry_run)?;
-            reconcile_projected_transaction(&store, request, &state_dir, projection)
+            reconcile_projected_transaction(&store, request, &state_dir, projection, config)
         }
         TransactionCommand::CloseReconcileInternal(args) => {
             reconcile_deployed_closeout(&WorkflowStore::open(state_dir)?, args)
@@ -3337,7 +3338,7 @@ fn transaction_resume_strategy(record: &TransactionRecord) -> Result<Transaction
             execution.command == LifecycleCommand::Close
                 && execution.status == CommandStatus::Running
                 && execution.steps.iter().any(|step| {
-                    step.id == "nixbot.deploy-closeout" && step.status == StepStatus::Succeeded
+                    is_adoption_deploy_step(&step.id) && step.status == StepStatus::Succeeded
                 })
         })
     {
@@ -3468,6 +3469,7 @@ fn resume_transaction(
                     },
                     state_dir,
                     projection,
+                    None,
                 )
             }
         }
@@ -3479,7 +3481,7 @@ fn resume_transaction(
                 guard: args.guard,
                 command_name: "transaction resume",
             };
-            reconcile_projected_transaction(&store, request, state_dir, projection)
+            reconcile_projected_transaction(&store, request, state_dir, projection, None)
         }
         TransactionResumeStrategy::PendingAction(action) => {
             if should_dry_run(action, &args.guard)? {
@@ -3552,6 +3554,11 @@ fn close_transaction(
         .as_ref()
         .context("transaction has no repository-backed projection to close")?
         .clone();
+    let repository_kind = if is_nix_native_service_move(&current) {
+        CloseoutRepositoryKind::NixNative
+    } else {
+        CloseoutRepositoryKind::Legacy
+    };
     let current_phase = current.move_phase()?;
     if requested.is_none() && record.pending_action == Some(Action::Cutover) {
         if args.guard.dry_run {
@@ -3666,7 +3673,7 @@ fn close_transaction(
         LifecycleCommand::Close,
         desired_state,
         Some(decision),
-        close_command_steps(publication_mode),
+        close_command_steps(publication_mode, repository_kind),
     )?;
     for step in ["state.reconcile-current-run", "close.select-outcome"] {
         record.start_command_step(command_execution, step)?;
@@ -3715,15 +3722,7 @@ fn close_transaction(
             "dry_run": true,
             "decision": decision,
             "terminal_projection": terminal_projection,
-            "repository_steps": [
-                "write_canonical_service_placements",
-                "remove_phase_projection",
-                "git_stage",
-                "nix_evaluate",
-                "git_commit",
-                if publication_mode == ProjectionPublicationMode::Local { "retain_local_commit" } else { "git_push" },
-                if publication_mode == ProjectionPublicationMode::Local { "verify_local_commit" } else { "verify_remote_revision" },
-            ],
+            "repository_steps": close_command_steps(publication_mode, repository_kind),
             "runtime": if args.skip_runtime { "skipped" } else { "planned" },
             "deployment": if args.manual_deploy { "manual handoff" } else if args.yes { "managed without prompt" } else { "managed after interactive confirmation" },
             "forced_live_verification": forced_live_verification,
@@ -3780,40 +3779,50 @@ fn close_transaction(
                 return Err(error);
             }
         };
-    let published = match publisher.repository().load_phase_projection(record.id())? {
+    let published = match publisher.load_projection(record.id())? {
         Some(published) => published,
         None => {
-            let closeout = publisher
-                .repository()
-                .load_projection_closeout(record.id())?
-                .context("transaction projection disappeared without a canonical closeout")?;
-            if closeout.projection_sha256 != current.projection_sha256
-                || closeout.decision
-                    != match decision {
-                        CloseDecision::Complete => "complete",
-                        CloseDecision::Rollback => "rollback",
-                    }
-            {
-                bail!("canonical closeout does not match the retained close decision");
+            let decision_name = match decision {
+                CloseDecision::Complete => "complete",
+                CloseDecision::Rollback => "rollback",
+            };
+            if repository_kind == CloseoutRepositoryKind::NixNative {
+                publisher.validate_clean_nix_service_move(
+                    &current,
+                    decision_name,
+                    HostManagerConfig::load(&record.config)?.controller_host()?,
+                )?;
+            } else {
+                let closeout = publisher
+                    .load_closeout(record.id())?
+                    .context("transaction projection disappeared without a canonical closeout")?;
+                if closeout.projection_sha256 != current.projection_sha256
+                    || closeout.decision != decision_name
+                {
+                    bail!("canonical closeout does not match the retained close decision");
+                }
             }
             let revision = publisher.revision()?;
             let publication = ProjectionCloseoutPublication {
-                placement_path: publisher
-                    .repository()
-                    .root()
-                    .join("data/service-placements.json"),
-                projection_path: publisher
-                    .repository()
-                    .root()
-                    .join("data/phase-projections")
-                    .join(format!("{}.json", record.id())),
+                placement_path: publisher.repository().root().join(match repository_kind {
+                    CloseoutRepositoryKind::Legacy => "data/service-placements.json",
+                    CloseoutRepositoryKind::NixNative => "data/service-placements.nix",
+                }),
+                projection_path: publisher.repository().root().join(match repository_kind {
+                    CloseoutRepositoryKind::Legacy => {
+                        format!("data/phase-projections/{}.json", record.id())
+                    }
+                    CloseoutRepositoryKind::NixNative => {
+                        format!("data/service-moves/{}.nix", record.id())
+                    }
+                }),
                 branch: execution.branch.clone(),
                 revision,
                 pushed: publisher.pushed(),
             };
-            for step in close_command_steps(publication_mode)
+            for step in close_command_steps(publication_mode, repository_kind)
                 .into_iter()
-                .take_while(|step| *step != "nixbot.deploy-closeout")
+                .take_while(|step| !is_adoption_deploy_step(step))
                 .skip(3)
             {
                 record.start_command_step(command_execution, step)?;
@@ -3834,6 +3843,7 @@ fn close_transaction(
                     state_dir,
                     manager_config: &manager_config,
                     nix_program: &nix_program,
+                    publisher: &publisher,
                 },
                 record,
                 command_execution,
@@ -3966,6 +3976,7 @@ fn close_transaction(
             state_dir,
             manager_config: &manager_config,
             nix_program: &nix_program,
+            publisher: &publisher,
         },
         record,
         command_execution,
@@ -4003,6 +4014,7 @@ struct CloseoutDeployContext<'a> {
     state_dir: &'a Path,
     manager_config: &'a HostManagerConfig,
     nix_program: &'a Path,
+    publisher: &'a ProjectionPublisher,
 }
 
 struct CloseoutDeployOptions {
@@ -4023,6 +4035,7 @@ fn deploy_closeout_and_wait(
         state_dir,
         manager_config,
         nix_program,
+        publisher,
     } = context;
     let controller = manager_config.controller_host()?.to_owned();
     let mut deploy_request = manager_config
@@ -4040,16 +4053,32 @@ fn deploy_closeout_and_wait(
         serde_json::to_string(&deploy_request)?,
     ];
     let manual_command = render_manual_nixbot_deploy_command(&deploy_request)?;
+    let nix_native = publication
+        .projection_path
+        .extension()
+        .and_then(|value| value.to_str())
+        == Some("nix");
+    let cleanup_already_published = nix_native && !publication.projection_path.exists();
+    let adoption_deploy_step = adoption_deploy_step(nix_native);
+    let terminal_projection = record
+        .projection
+        .clone()
+        .context("closeout has no retained terminal projection")?;
+    let decision_name = match decision {
+        CloseDecision::Complete => "complete",
+        CloseDecision::Rollback => "rollback",
+    };
     let deploy_mode = select_closeout_deploy_mode(
         options.yes,
         options.manual,
         &publication.revision,
         !publication.pushed,
+        nix_native,
     )?;
     if deploy_mode == CloseoutDeployMode::Manual {
         record.annotate_command_step(
             command_execution,
-            "nixbot.deploy-closeout",
+            adoption_deploy_step,
             json!({
                 "mode": if publication.pushed { "manual" } else { "local_manual" },
                 "revision": publication.revision,
@@ -4059,8 +4088,14 @@ fn deploy_closeout_and_wait(
             }),
         )?;
         store.save(&record)?;
+        let stage = if nix_native { "Adoption" } else { "Closeout" };
+        let continuation = if nix_native {
+            "verify the adoption, publish and deploy cleanup, then release recovery holds"
+        } else {
+            "deploy idempotently and finalize it"
+        };
         command_reporter().message(format!(
-            "\nCloseout {}. From this repository root, deploy it manually:\n\n  {manual_command}\n\nThe journal remains pending; rerun `transaction close {} {}--yes` to deploy idempotently and finalize it.",
+            "\n{stage} {}. From this repository root, deploy it manually:\n\n  {manual_command}\n\nThe journal remains pending; rerun `transaction close {} {}--yes` to {continuation}.",
             if publication.pushed { "published" } else { "committed locally" },
             record.id(),
             if publication.pushed { "" } else { "--local " },
@@ -4082,14 +4117,52 @@ fn deploy_closeout_and_wait(
         }));
     }
     if !publication.pushed {
-        record.start_command_step(command_execution, "nixbot.deploy-closeout")?;
+        record.start_command_step(command_execution, adoption_deploy_step)?;
         store.save(&record)?;
         let repository_root = publication
             .placement_path
             .parent()
             .and_then(Path::parent)
             .context("local closeout placement path has no repository root")?;
-        run_local_nixbot_deploy(nix_program, repository_root, &deploy_request)?;
+        if !cleanup_already_published {
+            run_local_nixbot_deploy(nix_program, repository_root, &deploy_request)?;
+        }
+        record.complete_command_step(
+            command_execution,
+            adoption_deploy_step,
+            Some(json!({
+                "revision": publication.revision,
+                "adopted_from_cleanup_lineage": cleanup_already_published,
+            })),
+        )?;
+        store.save(&record)?;
+        if nix_native {
+            let cleanup = if cleanup_already_published {
+                publication.clone()
+            } else {
+                publish_cleanup_with_progress(
+                    publisher,
+                    &terminal_projection,
+                    decision_name,
+                    manager_config.controller_host()?,
+                    &store,
+                    &mut record,
+                    command_execution,
+                    ProjectionPublicationMode::Local,
+                )?
+            };
+            let mut cleanup_request = deploy_request.clone();
+            cleanup_request.revision = Some(cleanup.revision.clone());
+            record.start_command_step(command_execution, "nixbot.deploy-cleanup")?;
+            store.save(&record)?;
+            run_local_nixbot_deploy(nix_program, repository_root, &cleanup_request)?;
+            record.complete_command_step(
+                command_execution,
+                "nixbot.deploy-cleanup",
+                Some(json!({"revision": cleanup.revision})),
+            )?;
+            store.save(&record)?;
+        }
         return reconcile_deployed_closeout(
             &store,
             TransactionCloseReconcileArgs {
@@ -4103,42 +4176,142 @@ fn deploy_closeout_and_wait(
             },
         );
     }
-    record.start_command_step(command_execution, "nixbot.deploy-closeout")?;
-    record.bind_command_step_job(
-        command_execution,
-        "nixbot.deploy-closeout",
-        &deploy_job_id,
-        Some(json!({
-            "revision": publication.revision,
-            "controller": controller,
-            "request": deploy_request,
-        })),
-    )?;
+    record.start_command_step(command_execution, adoption_deploy_step)?;
+    if !cleanup_already_published {
+        record.bind_command_step_job(
+            command_execution,
+            adoption_deploy_step,
+            &deploy_job_id,
+            Some(json!({
+                "revision": publication.revision,
+                "controller": controller,
+                "request": deploy_request,
+            })),
+        )?;
+    }
     store.save(&record)?;
     let deploy_adapter = NativeAdapter::load(&record.config)?;
-    deploy_adapter.submit_profile_job_deferred(
-        &controller,
-        &deploy_job_id,
-        record.id(),
-        "controller:nixbot",
-        &deploy_arguments,
-    )?;
+    if !cleanup_already_published {
+        deploy_adapter.submit_profile_job_deferred(
+            &controller,
+            &deploy_job_id,
+            record.id(),
+            "controller:nixbot",
+            &deploy_arguments,
+        )?;
+    }
 
-    // The new controller generation must acquire this authority lock to run
-    // its digest-bound closeout unit. Release it only after the exact durable
-    // deployment job is safely retained by the host agent.
+    // The durable Nixbot job owns deployment while the command releases its
+    // journal lock. Nix-native closeout is finalized only after the separate
+    // cleanup deployment returns successfully.
     drop(store);
-    deploy_adapter.run_profile_job_result(
-        &controller,
-        &deploy_job_id,
-        record.id(),
-        "controller:nixbot",
-        &deploy_arguments,
-    )?;
-    let final_record = WorkflowStore::open(state_dir.to_path_buf())?.load(record.id())?;
-    if final_record.phase != abird_host_manager::workflow_runtime::WorkflowPhase::Closed {
+    if !cleanup_already_published {
+        deploy_adapter.run_profile_job_result(
+            &controller,
+            &deploy_job_id,
+            record.id(),
+            "controller:nixbot",
+            &deploy_arguments,
+        )?;
+    }
+    let store = WorkflowStore::open(state_dir.to_path_buf())?;
+    let mut adoption_record = store.load(record.id())?;
+    if !nix_native
+        && adoption_record.phase != abird_host_manager::workflow_runtime::WorkflowPhase::Closed
+    {
         bail!(
             "closeout revision deployed, but transaction {} is not closed; rerun `transaction close {}` to reconcile the retained close command",
+            record.id(),
+            record.id()
+        );
+    }
+    if nix_native {
+        adoption_record.complete_command_step(
+            command_execution,
+            adoption_deploy_step,
+            Some(json!({
+                "revision": publication.revision,
+                "adopted_from_cleanup_lineage": cleanup_already_published,
+            })),
+        )?;
+        store.save(&adoption_record)?;
+    }
+    let cleanup = if nix_native {
+        let cleanup = if cleanup_already_published {
+            publication.clone()
+        } else {
+            publish_cleanup_with_progress(
+                publisher,
+                &terminal_projection,
+                decision_name,
+                manager_config.controller_host()?,
+                &store,
+                &mut adoption_record,
+                command_execution,
+                ProjectionPublicationMode::Remote,
+            )?
+        };
+        let mut cleanup_request = deploy_request.clone();
+        cleanup_request.revision = Some(cleanup.revision.clone());
+        let cleanup_arguments = [
+            "--nixbot-deploy".to_owned(),
+            serde_json::to_string(&cleanup_request)?,
+        ];
+        let cleanup_job_id = format!(
+            "closeout-cleanup-deploy-{}",
+            &digest_bytes(format!("{}\0{}", record.id(), cleanup.revision).as_bytes())[..24]
+        );
+        adoption_record.start_command_step(command_execution, "nixbot.deploy-cleanup")?;
+        adoption_record.bind_command_step_job(
+            command_execution,
+            "nixbot.deploy-cleanup",
+            &cleanup_job_id,
+            Some(json!({
+                "revision": cleanup.revision,
+                "controller": controller,
+                "request": cleanup_request,
+            })),
+        )?;
+        store.save(&adoption_record)?;
+        deploy_adapter.submit_profile_job_deferred(
+            &controller,
+            &cleanup_job_id,
+            record.id(),
+            "controller:nixbot",
+            &cleanup_arguments,
+        )?;
+        deploy_adapter.run_profile_job_result(
+            &controller,
+            &cleanup_job_id,
+            record.id(),
+            "controller:nixbot",
+            &cleanup_arguments,
+        )?;
+        adoption_record = store.load(record.id())?;
+        adoption_record.complete_command_step(
+            command_execution,
+            "nixbot.deploy-cleanup",
+            Some(json!({"revision": cleanup.revision})),
+        )?;
+        store.save(&adoption_record)?;
+        Some(cleanup)
+    } else {
+        None
+    };
+    let final_record = if nix_native {
+        reconcile_deployed_closeout_record(
+            &store,
+            TransactionCloseReconcileArgs {
+                id: record.id().to_owned(),
+                expected_projection_sha256: terminal_projection.projection_sha256.clone(),
+            },
+        )?
+    } else {
+        store.load(record.id())?
+    };
+    if final_record.phase != abird_host_manager::workflow_runtime::WorkflowPhase::Closed {
+        bail!(
+            "clean closeout revision deployed, but transaction {} is not closed; rerun `transaction close {}` to reconcile the retained close command",
             record.id(),
             record.id()
         );
@@ -4146,6 +4319,7 @@ fn deploy_closeout_and_wait(
     emit_result(&json!({
         "decision": decision,
         "repository": publication,
+        "cleanup": cleanup,
         "deployment_job_id": deploy_job_id,
         "runtime": "closeout deployed and journal closed",
         "transaction": final_record,
@@ -4163,6 +4337,7 @@ fn select_closeout_deploy_mode(
     manual: bool,
     revision: &str,
     local: bool,
+    nix_native: bool,
 ) -> Result<CloseoutDeployMode> {
     if manual {
         return Ok(CloseoutDeployMode::Manual);
@@ -4172,8 +4347,9 @@ fn select_closeout_deploy_mode(
     }
     loop {
         let prompt = format!(
-            "Deploy {} closeout {} now? [Y/m]",
+            "Deploy {} {} {} now? [Y/m]",
             if local { "local" } else { "published" },
+            if nix_native { "adoption" } else { "closeout" },
             &revision[..revision.len().min(12)]
         );
         eprint!(
@@ -4309,10 +4485,10 @@ fn reconcile_current_run_before_close(
     Ok(())
 }
 
-fn reconcile_deployed_closeout(
+fn reconcile_deployed_closeout_record(
     store: &WorkflowStore,
     args: TransactionCloseReconcileArgs,
-) -> Result<()> {
+) -> Result<TransactionRecord> {
     let mut record = store.load(&args.id)?;
     if record.phase == abird_host_manager::workflow_runtime::WorkflowPhase::Closed {
         if !record
@@ -4321,10 +4497,7 @@ fn reconcile_deployed_closeout(
         {
             bail!("deployed closeout digest is not retained by the closed transaction");
         }
-        return emit_result(&json!({
-            "already_closed": true,
-            "transaction": record,
-        }));
+        return Ok(record);
     }
     let decision = record
         .close_decision
@@ -4349,6 +4522,15 @@ fn reconcile_deployed_closeout(
             }
         })
         .unwrap_or(ProjectionPublicationMode::Remote);
+    let projection = record
+        .projection
+        .clone()
+        .context("deployed closeout journal has no terminal projection")?;
+    let repository_kind = if is_nix_native_service_move(&projection) {
+        CloseoutRepositoryKind::NixNative
+    } else {
+        CloseoutRepositoryKind::Legacy
+    };
     let command_execution = record.begin_command(
         LifecycleCommand::Close,
         match decision {
@@ -4356,12 +4538,8 @@ fn reconcile_deployed_closeout(
             CloseDecision::Rollback => LifecycleState::ClosedOnSource,
         },
         Some(decision),
-        close_command_steps(publication_mode),
+        close_command_steps(publication_mode, repository_kind),
     )?;
-    let projection = record
-        .projection
-        .clone()
-        .context("deployed closeout journal has no terminal projection")?;
     if projection.projection_sha256 != args.expected_projection_sha256 {
         bail!(
             "deployed closeout digest {} does not match journal terminal projection {}",
@@ -4387,7 +4565,10 @@ fn reconcile_deployed_closeout(
             expected_runtime_phase
         );
     }
-    for step in close_command_steps(publication_mode).into_iter().take(10) {
+    for step in close_command_steps(publication_mode, repository_kind)
+        .into_iter()
+        .take_while(|step| *step != "inactive.release-projection-hold")
+    {
         record.start_command_step(command_execution, step)?;
         record.complete_command_step(
             command_execution,
@@ -4398,12 +4579,6 @@ fn reconcile_deployed_closeout(
             })),
         )?;
     }
-    record.start_command_step(command_execution, "nixbot.deploy-closeout")?;
-    record.complete_command_step(
-        command_execution,
-        "nixbot.deploy-closeout",
-        Some(json!({"projection_sha256": args.expected_projection_sha256})),
-    )?;
     store.save(&record)?;
     let mut adapter = NativeAdapter::load(&record.config)?;
     adapter.bind_projection(projection.clone())?;
@@ -4438,14 +4613,31 @@ fn reconcile_deployed_closeout(
     )?;
     record.complete_command(command_execution)?;
     store.save(&record)?;
+    Ok(record)
+}
+
+fn reconcile_deployed_closeout(
+    store: &WorkflowStore,
+    args: TransactionCloseReconcileArgs,
+) -> Result<()> {
+    let record = reconcile_deployed_closeout_record(store, args)?;
     emit_result(&json!({
         "deployed_closeout": true,
-        "decision": decision,
+        "decision": record.close_decision,
         "transaction": record,
     }))
 }
 
-fn close_command_steps(mode: ProjectionPublicationMode) -> Vec<&'static str> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloseoutRepositoryKind {
+    Legacy,
+    NixNative,
+}
+
+fn close_command_steps(
+    mode: ProjectionPublicationMode,
+    kind: CloseoutRepositoryKind,
+) -> Vec<&'static str> {
     let mut steps = vec![
         "state.reconcile-current-run",
         "close.select-outcome",
@@ -4453,17 +4645,42 @@ fn close_command_steps(mode: ProjectionPublicationMode) -> Vec<&'static str> {
         "repository.prepare-publication",
         "authority.ensure-terminal",
         "repository.fold-placement",
-        "projection.remove",
-        "repository.validate-closeout",
     ];
+    match kind {
+        CloseoutRepositoryKind::Legacy => {
+            steps.extend(["projection.remove", "repository.validate-closeout"])
+        }
+        CloseoutRepositoryKind::NixNative => {
+            steps.extend(["move.retain-adoption", "repository.validate-adoption"])
+        }
+    }
     steps.extend(closeout_publication_steps(mode));
+    steps.push(adoption_deploy_step(
+        kind == CloseoutRepositoryKind::NixNative,
+    ));
+    if kind == CloseoutRepositoryKind::NixNative {
+        steps.extend(["move.remove-adopted", "repository.validate-cleanup"]);
+        steps.extend(cleanup_publication_steps(mode));
+        steps.push("nixbot.deploy-cleanup");
+    }
     steps.extend([
-        "nixbot.deploy-closeout",
         "inactive.release-projection-hold",
         "transaction.archive",
         "state.verify-closed",
     ]);
     steps
+}
+
+fn adoption_deploy_step(nix_native: bool) -> &'static str {
+    if nix_native {
+        "nixbot.deploy-adoption"
+    } else {
+        "nixbot.deploy-closeout"
+    }
+}
+
+fn is_adoption_deploy_step(step: &str) -> bool {
+    matches!(step, "nixbot.deploy-adoption" | "nixbot.deploy-closeout")
 }
 
 fn closeout_publication_steps(mode: ProjectionPublicationMode) -> [&'static str; 3] {
@@ -4481,13 +4698,30 @@ fn closeout_publication_steps(mode: ProjectionPublicationMode) -> [&'static str;
     }
 }
 
+fn cleanup_publication_steps(mode: ProjectionPublicationMode) -> [&'static str; 3] {
+    match mode {
+        ProjectionPublicationMode::Remote => [
+            "git.commit-cleanup",
+            "git.push-cleanup",
+            "git.verify-remote-cleanup",
+        ],
+        ProjectionPublicationMode::Local => [
+            "git.commit-cleanup",
+            "git.retain-local-cleanup",
+            "git.verify-local-cleanup",
+        ],
+    }
+}
+
 fn closeout_publication_step(
     stage: ProjectionCloseoutStage,
     mode: ProjectionPublicationMode,
 ) -> &'static str {
     match stage {
         ProjectionCloseoutStage::FoldPlacement => "repository.fold-placement",
+        ProjectionCloseoutStage::RetainAdoption => "move.retain-adoption",
         ProjectionCloseoutStage::RemoveProjection => "projection.remove",
+        ProjectionCloseoutStage::ValidateAdoption => "repository.validate-adoption",
         ProjectionCloseoutStage::Validate => "repository.validate-closeout",
         ProjectionCloseoutStage::Commit => "git.commit-closeout",
         ProjectionCloseoutStage::RetainLocal => "git.retain-local-closeout",
@@ -4495,6 +4729,23 @@ fn closeout_publication_step(
         ProjectionCloseoutStage::Verify => match mode {
             ProjectionPublicationMode::Remote => "git.verify-remote",
             ProjectionPublicationMode::Local => "git.verify-local-commit",
+        },
+    }
+}
+
+fn cleanup_publication_step(
+    stage: ProjectionCleanupStage,
+    mode: ProjectionPublicationMode,
+) -> &'static str {
+    match stage {
+        ProjectionCleanupStage::RemoveAdoptedMove => "move.remove-adopted",
+        ProjectionCleanupStage::Validate => "repository.validate-cleanup",
+        ProjectionCleanupStage::Commit => "git.commit-cleanup",
+        ProjectionCleanupStage::RetainLocal => "git.retain-local-cleanup",
+        ProjectionCleanupStage::Push => "git.push-cleanup",
+        ProjectionCleanupStage::Verify => match mode {
+            ProjectionPublicationMode::Remote => "git.verify-remote-cleanup",
+            ProjectionPublicationMode::Local => "git.verify-local-cleanup",
         },
     }
 }
@@ -4521,7 +4772,11 @@ fn publish_closeout_with_progress(
                     store.save(record)?;
                 }
                 ProjectionCloseoutEvent::Progress { stage, detail } => {
-                    debug_assert_eq!(stage, ProjectionCloseoutStage::Validate);
+                    debug_assert!(matches!(
+                        stage,
+                        ProjectionCloseoutStage::Validate
+                            | ProjectionCloseoutStage::ValidateAdoption
+                    ));
                     command_reporter().detail(detail);
                 }
                 ProjectionCloseoutEvent::Completed { stage, revision } => {
@@ -4537,6 +4792,62 @@ fn publish_closeout_with_progress(
             }
             Ok(())
         });
+    if let Err(error) = &result
+        && let Some(step) = active_step
+        && record
+            .command_executions
+            .get(command_execution)
+            .and_then(|command| command.steps.iter().find(|candidate| candidate.id == step))
+            .is_some_and(|step| step.status == StepStatus::Running)
+    {
+        record.fail_command_step(command_execution, step, format!("{error:#}"))?;
+        store.save(record)?;
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_cleanup_with_progress(
+    publisher: &ProjectionPublisher,
+    projection: &PhaseProjection,
+    decision: &str,
+    controller_host: &str,
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    command_execution: usize,
+    mode: ProjectionPublicationMode,
+) -> Result<ProjectionCloseoutPublication> {
+    let mut active_step = None;
+    let result = publisher.cleanup_nix_service_move_observed(
+        projection,
+        decision,
+        controller_host,
+        |event| {
+            match event {
+                ProjectionCleanupEvent::Started(stage) => {
+                    let step = cleanup_publication_step(stage, mode);
+                    active_step = Some(step);
+                    record.start_command_step(command_execution, step)?;
+                    store.save(record)?;
+                }
+                ProjectionCleanupEvent::Progress { stage, detail } => {
+                    debug_assert_eq!(stage, ProjectionCleanupStage::Validate);
+                    command_reporter().detail(detail);
+                }
+                ProjectionCleanupEvent::Completed { stage, revision } => {
+                    let step = cleanup_publication_step(stage, mode);
+                    record.complete_command_step(
+                        command_execution,
+                        step,
+                        revision.map(|revision| json!({"revision": revision})),
+                    )?;
+                    store.save(record)?;
+                    active_step = None;
+                }
+            }
+            Ok(())
+        },
+    );
     if let Err(error) = &result
         && let Some(step) = active_step
         && record
@@ -4693,7 +5004,11 @@ fn projected_transaction_phase(
             "dry_run": true,
             "action": action,
             "projection": projection,
-            "repository_path": format!("data/phase-projections/{}.json", record.id()),
+            "repository_path": if is_nix_native_service_move(&projection) {
+                format!("data/service-moves/{}.nix", record.id())
+            } else {
+                format!("data/phase-projections/{}.json", record.id())
+            },
             "runtime_actions": runtime_actions,
             "retired_run_jobs": retired_run_jobs,
             "runtime": if args.skip_runtime { "skipped" } else { "planned" },
@@ -4803,7 +5118,7 @@ fn projected_transaction_phase(
                 return Err(error);
             }
         };
-    let repository_projection = publisher.repository().load_phase_projection(record.id())?;
+    let repository_projection = publisher.load_projection(record.id())?;
     if record.projection.is_none() {
         if let Some(published) = &repository_projection {
             validate_projection_adoption(None, published, &record.spec)?;
@@ -4891,6 +5206,7 @@ fn projected_transaction_phase(
         Some(command_execution),
         publication_mode,
     )?;
+    let projection = repository_publication.projection.clone();
     record.set_projection(projection.clone())?;
     store.save(&record)?;
     if args.skip_runtime {
@@ -5073,18 +5389,26 @@ fn reconcile_projected_transaction(
     args: ProjectedReconcileRequest,
     state_dir: &Path,
     execution: ProjectionExecution,
+    config: Option<PathBuf>,
 ) -> Result<()> {
     let publication_mode = execution.mode;
     require_guard(&args.guard, args.command_name)?;
-    let mut record = store.load(&args.id)?;
-    let desired_phase = record
-        .projection
-        .as_ref()
-        .map(|projection| projection.move_phase())
-        .transpose()?
-        .context("transaction has no repository-backed desired projection")?;
-    let actions = reconciliation_actions(&record, desired_phase)?;
+    let existing_record = if store.contains(&args.id)? {
+        Some(store.load(&args.id)?)
+    } else {
+        None
+    };
     if args.guard.dry_run {
+        let mut record = existing_record.context(
+            "a dry projected reconcile requires an existing runtime journal; deploy nonterminal Nix intent to initialize it",
+        )?;
+        let desired_phase = record
+            .projection
+            .as_ref()
+            .map(|projection| projection.move_phase())
+            .transpose()?
+            .context("transaction has no repository-backed desired projection")?;
+        let actions = reconciliation_actions(&record, desired_phase)?;
         let supersede_candidates = if args.supersede_failed_job {
             let action = record
                 .pending_action
@@ -5114,12 +5438,58 @@ fn reconcile_projected_transaction(
     }
     let source_repository = Repository::discover(execution.repo_root.clone())?;
     let publisher = prepare_projection_publisher(&source_repository, store, state_dir, &execution)?;
-    let published = match publisher.repository().load_phase_projection(record.id())? {
+    let (published, requires_existing_journal) = publisher.load_projection_admission(&args.id)?;
+    let mut record = if let Some(record) = existing_record {
+        record
+    } else {
+        let projection = published.as_ref().with_context(|| {
+            format!(
+                "transaction {:?} has neither a runtime journal nor a Nix-native move declaration",
+                args.id
+            )
+        })?;
+        if !is_nix_native_service_move(projection) {
+            bail!(
+                "legacy repository projection {:?} cannot create a runtime journal; start it through host-manager",
+                args.id
+            );
+        }
+        if requires_existing_journal {
+            bail!(
+                "Nix-native adoption {:?} has no retained runtime journal; terminal placement changes require proven run or rollback evidence",
+                args.id
+            );
+        }
+        if let Some(expected) = &args.expected_projection_sha256
+            && projection.projection_sha256 != *expected
+        {
+            bail!(
+                "repository projection digest {} does not match deployed controller digest {expected}",
+                projection.projection_sha256
+            );
+        }
+        let spec: TransactionSpec = serde_json::from_value(projection.intent.clone())
+            .context("decode Nix-native move intent into a runtime transaction")?;
+        let config = resolve_config(config.as_deref(), execution.repo_root.as_deref())?;
+        let mut candidate = TransactionRecord::new(spec, config)?;
+        candidate.set_projection(projection.clone())?;
+        let created = match store.register(candidate)? {
+            WorkflowRegistration::Created(record) => record,
+            WorkflowRegistration::Existing(_) => {
+                bail!("Nix-native transaction journal appeared during exclusive registration")
+            }
+        };
+        human_status(format!(
+            "Transaction {} · initialized runtime journal from committed Nix intent",
+            created.id()
+        ));
+        created
+    };
+    let published = match published {
         Some(published) => published,
         None => {
             let closeout = publisher
-                .repository()
-                .load_projection_closeout(record.id())?
+                .load_closeout(record.id())?
                 .context("repository-backed transaction projection disappeared during refresh")?;
             validate_canonical_closeout_supersedes_projection(
                 &record,
@@ -8680,11 +9050,11 @@ mod tests {
     #[test]
     fn closeout_deploy_flags_choose_noninteractive_modes() {
         assert_eq!(
-            select_closeout_deploy_mode(true, false, "0123456789abcdef", false).unwrap(),
+            select_closeout_deploy_mode(true, false, "0123456789abcdef", false, true).unwrap(),
             CloseoutDeployMode::Managed
         );
         assert_eq!(
-            select_closeout_deploy_mode(false, true, "0123456789abcdef", false).unwrap(),
+            select_closeout_deploy_mode(false, true, "0123456789abcdef", false, false).unwrap(),
             CloseoutDeployMode::Manual
         );
     }
@@ -8728,12 +9098,38 @@ mod tests {
         for steps in [
             move_command_steps(ProjectionPublicationMode::Local),
             projected_command_steps(LifecycleCommand::Prepare, ProjectionPublicationMode::Local),
-            close_command_steps(ProjectionPublicationMode::Local),
+            close_command_steps(
+                ProjectionPublicationMode::Local,
+                CloseoutRepositoryKind::Legacy,
+            ),
+            close_command_steps(
+                ProjectionPublicationMode::Local,
+                CloseoutRepositoryKind::NixNative,
+            ),
         ] {
             assert!(steps.iter().any(|step| step.contains("retain-local")));
             assert!(!steps.iter().any(|step| step.contains("push")));
             assert!(!steps.iter().any(|step| step.contains("remote")));
         }
+    }
+
+    #[test]
+    fn nix_native_closeout_releases_recovery_only_after_clean_deployment() {
+        let steps = close_command_steps(
+            ProjectionPublicationMode::Remote,
+            CloseoutRepositoryKind::NixNative,
+        );
+        let position = |step| {
+            steps
+                .iter()
+                .position(|candidate| *candidate == step)
+                .unwrap()
+        };
+
+        assert!(position("move.retain-adoption") < position("nixbot.deploy-adoption"));
+        assert!(position("nixbot.deploy-adoption") < position("move.remove-adopted"));
+        assert!(position("move.remove-adopted") < position("nixbot.deploy-cleanup"));
+        assert!(position("nixbot.deploy-cleanup") < position("inactive.release-projection-hold"));
     }
 
     #[test]
@@ -8807,7 +9203,7 @@ mod tests {
                 move_command_steps(mode),
                 projected_command_steps(LifecycleCommand::Prepare, mode),
                 projected_command_steps(LifecycleCommand::Run, mode),
-                close_command_steps(mode),
+                close_command_steps(mode, CloseoutRepositoryKind::Legacy),
             ] {
                 let prepare = steps
                     .iter()
@@ -9635,10 +10031,16 @@ mod tests {
                 LifecycleCommand::Close,
                 LifecycleState::ClosedOnSource,
                 Some(CloseDecision::Rollback),
-                close_command_steps(ProjectionPublicationMode::Remote),
+                close_command_steps(
+                    ProjectionPublicationMode::Remote,
+                    CloseoutRepositoryKind::Legacy,
+                ),
             )
             .unwrap();
-        for step in close_command_steps(ProjectionPublicationMode::Remote) {
+        for step in close_command_steps(
+            ProjectionPublicationMode::Remote,
+            CloseoutRepositoryKind::Legacy,
+        ) {
             record.start_command_step(execution, step).unwrap();
             record.complete_command_step(execution, step, None).unwrap();
             if step == "nixbot.deploy-closeout" {

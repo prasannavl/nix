@@ -18,6 +18,7 @@ use crate::programs::nix::Nix;
 use crate::programs::nixos_install::NixosInstall;
 use crate::programs::privilege::Privilege;
 use crate::projection::{PhaseProjection, ProjectionEffect};
+use crate::workflow::{MoveItem, TransactionSpec};
 use crate::workflow_runtime::WorkflowStore;
 
 const HOSTS_FILE: &str = "hosts/default.nix";
@@ -116,6 +117,7 @@ pub struct ProjectionWrite {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProjectionPublication {
     pub write: ProjectionWrite,
+    pub projection: PhaseProjection,
     pub branch: String,
     pub revision: String,
     pub pushed: bool,
@@ -174,8 +176,37 @@ pub struct CanonicalProjectionCloseout {
     pub projection_sha256: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NixServicePlacement {
+    role: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NixServicePlacements {
+    schema_version: u32,
+    #[serde(default)]
+    closeouts: BTreeMap<String, CanonicalProjectionCloseout>,
+    #[serde(default)]
+    controller_reconcile_exclusions: BTreeSet<String>,
+    #[serde(default)]
+    placements: BTreeMap<String, BTreeMap<String, NixServicePlacement>>,
+}
+
 fn default_controller_reconcile() -> bool {
     true
+}
+
+pub fn is_nix_native_service_move(projection: &PhaseProjection) -> bool {
+    projection.intent_kind == "move"
+        && serde_json::from_value::<TransactionSpec>(projection.intent.clone()).is_ok_and(|spec| {
+            !spec.items.is_empty()
+                && spec
+                    .items
+                    .iter()
+                    .all(|item| matches!(item, MoveItem::Service { .. }))
+        })
 }
 
 impl Default for CanonicalServicePlacements {
@@ -201,12 +232,37 @@ pub struct ProjectionCloseoutPublication {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectionCloseoutStage {
     FoldPlacement,
+    RetainAdoption,
     RemoveProjection,
+    ValidateAdoption,
     Validate,
     Commit,
     RetainLocal,
     Push,
     Verify,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionCleanupStage {
+    RemoveAdoptedMove,
+    Validate,
+    Commit,
+    RetainLocal,
+    Push,
+    Verify,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionCleanupEvent {
+    Started(ProjectionCleanupStage),
+    Progress {
+        stage: ProjectionCleanupStage,
+        detail: String,
+    },
+    Completed {
+        stage: ProjectionCleanupStage,
+        revision: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -236,6 +292,30 @@ pub struct ProjectionPublisher {
     branch: String,
     publish_git_ssh_command: Option<String>,
     mode: ProjectionPublicationMode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NixServiceMoveContract {
+    schema_version: u32,
+    #[serde(default)]
+    controller_reconcile_exclusions: Vec<String>,
+    moves: BTreeMap<String, NixServiceMoveContractEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NixServiceMoveContractEntry {
+    #[serde(rename = "affected_hosts")]
+    _affected_hosts: Vec<String>,
+    declaration: serde_json::Value,
+    projection: PhaseProjection,
+    #[serde(rename = "selected_role")]
+    _selected_role: String,
+    #[serde(rename = "stable_role")]
+    _stable_role: String,
+    #[serde(rename = "services")]
+    _services: Vec<serde_json::Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -1163,6 +1243,520 @@ impl ProjectionPublisher {
         self.mode == ProjectionPublicationMode::Remote
     }
 
+    fn nix_service_move_contract(&self) -> Result<NixServiceMoveContract> {
+        let output = Command::new(&self.nix)
+            .current_dir(self.repository.root())
+            .args([
+                "eval",
+                "--json",
+                ".#hostManager.serviceMoves",
+                "--option",
+                "allow-import-from-derivation",
+                "false",
+            ])
+            .output()
+            .context("start Nix-native service-move evaluation")?;
+        if !output.status.success() {
+            return require_command_success(output, "evaluate Nix-native service moves")
+                .map(|()| unreachable!());
+        }
+        let contract: NixServiceMoveContract = serde_json::from_slice(&output.stdout)
+            .context("decode Nix-native service-move contract")?;
+        if contract.schema_version != 1 {
+            bail!(
+                "unsupported Nix-native service-move contract schema {}",
+                contract.schema_version
+            );
+        }
+        Ok(contract)
+    }
+
+    pub fn load_projection_admission(
+        &self,
+        projection_id: &str,
+    ) -> Result<(Option<PhaseProjection>, bool)> {
+        let legacy = self.repository.load_phase_projection(projection_id)?;
+        let contract = self.nix_service_move_contract()?;
+        let native = contract.moves.get(projection_id);
+        if legacy.is_some() && native.is_some() {
+            bail!("projection exists in both legacy JSON and Nix-native authority");
+        }
+        let Some(entry) = native else {
+            return Ok((legacy, false));
+        };
+        entry.projection.validate()?;
+        if entry.projection.projection_id != projection_id {
+            bail!("Nix-native projection ID does not match its declaration filename");
+        }
+        let requires_existing_journal = entry
+            .declaration
+            .get("decision")
+            .is_some_and(|decision| !decision.is_null());
+        Ok((Some(entry.projection.clone()), requires_existing_journal))
+    }
+
+    pub fn load_projection(&self, projection_id: &str) -> Result<Option<PhaseProjection>> {
+        self.load_projection_admission(projection_id)
+            .map(|(projection, _)| projection)
+    }
+
+    pub fn load_closeout(
+        &self,
+        projection_id: &str,
+    ) -> Result<Option<CanonicalProjectionCloseout>> {
+        let legacy = self.repository.load_projection_closeout(projection_id)?;
+        let native = self
+            .load_nix_service_placements()?
+            .closeouts
+            .get(projection_id)
+            .cloned();
+        if legacy.is_some() && native.is_some() {
+            bail!("closeout exists in both legacy JSON and Nix authority");
+        }
+        Ok(native.or(legacy))
+    }
+
+    fn resolve_move_roles(
+        &self,
+        scope: &str,
+        source_host_resource: &str,
+        target_host_resource: &str,
+    ) -> Result<(String, String)> {
+        let scope = serde_json::to_string(scope)?;
+        let resources = serde_json::to_string(&[source_host_resource, target_host_resource])?;
+        let expression = format!(
+            r#"stacks: let
+  stack = builtins.getAttr {scope} stacks;
+  roleFor = hostResource: let
+    roles = builtins.attrNames stack.serviceRegistry.roles;
+    matches = builtins.filter (role:
+      "host:${{stack.serviceRegistry.roles.${{role}}.host}}" == hostResource
+    ) roles;
+  in if builtins.length matches == 1
+     then builtins.head matches
+     else throw "host resource does not resolve to exactly one stack role";
+in map roleFor {resources}"#
+        );
+        let output = Command::new(&self.nix)
+            .current_dir(self.repository.root())
+            .args([
+                "eval",
+                "--json",
+                ".#hostManager.stacks",
+                "--apply",
+                &expression,
+                "--option",
+                "allow-import-from-derivation",
+                "false",
+            ])
+            .output()
+            .context("start service-move role evaluation")?;
+        if !output.status.success() {
+            return require_command_success(output, "resolve service-move endpoint roles")
+                .map(|()| unreachable!());
+        }
+        let roles: Vec<String> =
+            serde_json::from_slice(&output.stdout).context("decode service-move endpoint roles")?;
+        match roles.as_slice() {
+            [source, target] if source != target => Ok((source.clone(), target.clone())),
+            _ => bail!("service-move endpoints do not resolve to two distinct roles"),
+        }
+    }
+
+    fn load_nix_service_placements(&self) -> Result<NixServicePlacements> {
+        let path = self.repository.root().join("data/service-placements.nix");
+        let output = Command::new(&self.nix)
+            .current_dir(self.repository.root())
+            .args(["eval", "--json", "--file"])
+            .arg(&path)
+            .output()
+            .context("start Nix service-placement evaluation")?;
+        if !output.status.success() {
+            return require_command_success(output, "evaluate Nix service placements")
+                .map(|()| unreachable!());
+        }
+        let placements: NixServicePlacements =
+            serde_json::from_slice(&output.stdout).context("decode Nix service placements")?;
+        if placements.schema_version != 2 {
+            bail!(
+                "unsupported Nix service-placement schema {}",
+                placements.schema_version
+            );
+        }
+        Ok(placements)
+    }
+
+    fn render_nix_service_placements(placements: &NixServicePlacements) -> Result<String> {
+        let quote = |value: &str| serde_json::to_string(value).expect("string encodes");
+        let mut output = String::from("{\n  schema_version = 2;\n\n  closeouts = {\n");
+        for (transaction, closeout) in &placements.closeouts {
+            output.push_str(&format!(
+                "    {} = {{\n      affected_hosts = [\n",
+                quote(transaction)
+            ));
+            for host in &closeout.affected_hosts {
+                output.push_str(&format!("        {}\n", quote(host)));
+            }
+            output.push_str(&format!(
+                "      ];\n      controller_reconcile = {};\n      decision = {};\n      projection_sha256 = {};\n    }};\n",
+                closeout.controller_reconcile,
+                quote(&closeout.decision),
+                quote(&closeout.projection_sha256),
+            ));
+        }
+        output.push_str("  };\n\n  controller_reconcile_exclusions = [\n");
+        for projection_id in &placements.controller_reconcile_exclusions {
+            output.push_str(&format!("    {}\n", quote(projection_id)));
+        }
+        output.push_str("  ];\n\n  placements = {\n");
+        for (scope, services) in &placements.placements {
+            output.push_str(&format!("    {} = {{\n", quote(scope)));
+            for (service, placement) in services {
+                output.push_str(&format!(
+                    "      {} = {{ role = {}; }};\n",
+                    quote(service),
+                    quote(&placement.role)
+                ));
+            }
+            output.push_str("    };\n");
+        }
+        output.push_str("  };\n}\n");
+        Ok(output)
+    }
+
+    fn write_nix_service_adoption(
+        &self,
+        projection: &PhaseProjection,
+        decision: &str,
+    ) -> Result<(PathBuf, PathBuf, PhaseProjection)> {
+        let contract = self.nix_service_move_contract()?;
+        let entry = contract
+            .moves
+            .get(&projection.projection_id)
+            .context("cannot adopt an absent Nix service move")?;
+        if entry.projection != *projection {
+            bail!("Nix service-move adoption does not match its terminal projection");
+        }
+        let placement_path = self.repository.root().join("data/service-placements.nix");
+        let move_path = self
+            .repository
+            .root()
+            .join("data/service-moves")
+            .join(format!("{}.nix", projection.projection_id));
+        let already_adopted = if let Some(existing_decision) = entry
+            .declaration
+            .get("decision")
+            .and_then(serde_json::Value::as_str)
+        {
+            if existing_decision != decision {
+                bail!("Nix service move already retains a different terminal decision");
+            }
+            true
+        } else {
+            false
+        };
+        let role = match decision {
+            "complete" => entry
+                .declaration
+                .get("to")
+                .and_then(serde_json::Value::as_str)
+                .context("Nix service move has no target role")?,
+            "rollback" => entry
+                .declaration
+                .get("from")
+                .and_then(serde_json::Value::as_str)
+                .context("Nix service move has no source role")?,
+            _ => bail!("Nix service-move adoption decision is unsupported"),
+        };
+        let scope = entry
+            .declaration
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .context("Nix service move has no scope")?;
+        let services = entry
+            .declaration
+            .get("services")
+            .and_then(serde_json::Value::as_array)
+            .context("Nix service move has no service list")?;
+        let mut placements = self.load_nix_service_placements()?;
+        for service in services {
+            let service = service
+                .as_str()
+                .context("Nix service move contains a non-string service")?;
+            placements
+                .placements
+                .entry(scope.to_owned())
+                .or_default()
+                .insert(
+                    service.to_owned(),
+                    NixServicePlacement {
+                        role: role.to_owned(),
+                    },
+                );
+        }
+        let mut move_source = fs::read_to_string(&move_path)
+            .with_context(|| format!("read Nix service move {}", move_path.display()))?;
+        if !already_adopted {
+            let (old_phase, new_phase) = match decision {
+                "complete" => ("target-active", "adopting-target"),
+                "rollback" => ("rolled-back", "adopting-source"),
+                _ => unreachable!(),
+            };
+            let old_phase = format!("    phase = {old_phase:?};");
+            let new_phase = format!("    phase = {new_phase:?};");
+            if move_source.matches(&old_phase).count() != 1
+                || move_source.matches("  decision = null;").count() != 1
+            {
+                bail!("Nix service move is not in its canonical terminal manager-owned form");
+            }
+            move_source = move_source.replacen(&old_phase, &new_phase, 1).replacen(
+                "  decision = null;",
+                &format!("  decision = {decision:?};"),
+                1,
+            );
+        }
+        atomic_write(
+            &placement_path,
+            Self::render_nix_service_placements(&placements)?.as_bytes(),
+            0o644,
+        )?;
+        atomic_write(&move_path, move_source.as_bytes(), 0o644)?;
+        let adopted = self
+            .nix_service_move_contract()?
+            .moves
+            .get(&projection.projection_id)
+            .context("adopted Nix service move disappeared during evaluation")?
+            .projection
+            .clone();
+        if adopted != *projection {
+            bail!("Nix service-move adoption changed the terminal runtime contract");
+        }
+        Ok((placement_path, move_path, adopted))
+    }
+
+    fn write_nix_service_move(
+        &self,
+        requested: &PhaseProjection,
+        decision: Option<&str>,
+    ) -> Result<(ProjectionWrite, PhaseProjection, PathBuf)> {
+        requested.validate()?;
+        let spec: TransactionSpec = serde_json::from_value(requested.intent.clone())
+            .context("service-move projection intent is not a transaction specification")?;
+        let scope = spec
+            .declarative_scope
+            .as_deref()
+            .context("Nix-native service move requires one declarative scope")?;
+        if !spec.consistency_groups.is_empty() || !spec.activation_waves.is_empty() {
+            bail!("Nix-native service moves do not yet accept explicit groups or waves");
+        }
+        let mut services = Vec::with_capacity(spec.items.len());
+        let mut source_host = None;
+        let mut target_host = None;
+        for (index, item) in spec.items.iter().enumerate() {
+            let MoveItem::Service {
+                id,
+                service,
+                source_resource,
+                target_resource,
+                source,
+                target,
+                data_roots,
+            } = item
+            else {
+                bail!("only logical service transactions use Nix-native move declarations");
+            };
+            let expected_id = format!("item-{:03}", index + 1);
+            if id != &expected_id || !data_roots.is_empty() {
+                bail!(
+                    "Nix-native service moves require canonical item IDs and agent-resolved data roots"
+                );
+            }
+            let source_resource = source_resource
+                .as_deref()
+                .context("Nix-native service move has no source writer resource")?;
+            let target_resource = target_resource
+                .as_deref()
+                .context("Nix-native service move has no target writer resource")?;
+            if source_resource != target_resource {
+                bail!("Nix-native service move requires one stable writer resource identity");
+            }
+            if source_host.get_or_insert(&source.host) != &&source.host
+                || target_host.get_or_insert(&target.host) != &&target.host
+            {
+                bail!("one Nix-native move must use one source and target endpoint pair");
+            }
+            services.push(service.clone());
+        }
+        if services.is_empty() {
+            bail!("Nix-native service move must contain at least one service");
+        }
+
+        let source_resource = requested
+            .resources
+            .iter()
+            .find(|resource| resource.role == "source")
+            .context("service-move projection has no source resource")?;
+        let target_resource = requested
+            .resources
+            .iter()
+            .find(|resource| resource.role == "target")
+            .context("service-move projection has no target resource")?;
+        let (source_role, target_role) = self.resolve_move_roles(
+            scope,
+            &source_resource.endpoint.host_resource,
+            &target_resource.endpoint.host_resource,
+        )?;
+
+        let existing_contract = self.nix_service_move_contract()?;
+        let existing = existing_contract.moves.get(&requested.projection_id);
+        if let Some(existing) = existing {
+            if existing.projection.intent != requested.intent
+                || existing.projection.intent_sha256 != requested.intent_sha256
+            {
+                bail!("refusing to replace Nix service move with different immutable intent");
+            }
+            if requested.generation == existing.projection.generation
+                && requested.phase == existing.projection.phase
+                && decision.is_none()
+            {
+                let path = self
+                    .repository
+                    .root()
+                    .join("data/service-moves")
+                    .join(format!("{}.nix", requested.projection_id));
+                return Ok((
+                    ProjectionWrite {
+                        path: path.clone(),
+                        changed: false,
+                        generation: existing.projection.generation,
+                        projection_sha256: existing.projection.projection_sha256.clone(),
+                    },
+                    existing.projection.clone(),
+                    path,
+                ));
+            }
+            if decision.is_some() {
+                if requested != &existing.projection {
+                    bail!("Nix service-move adoption must preserve the exact terminal projection");
+                }
+            } else if requested.generation != existing.projection.generation + 1
+                || requested.previous_projection_sha256.as_deref()
+                    != Some(existing.projection.projection_sha256.as_str())
+            {
+                bail!("Nix service-move successor does not advance exact projection lineage");
+            }
+        } else if requested.generation != 1 || requested.previous_projection_sha256.is_some() {
+            bail!("first Nix service-move generation must be 1 without a predecessor");
+        }
+
+        let desired_phase = match (decision, requested.move_phase()?) {
+            (Some("complete"), crate::projection::MovePhase::Cutover) => "adopting-target",
+            (Some("rollback"), crate::projection::MovePhase::RolledBack) => "adopting-source",
+            (Some(value), _) => bail!("decision {value:?} does not match terminal move phase"),
+            (None, crate::projection::MovePhase::Seeded) => "moved",
+            (None, crate::projection::MovePhase::Prepared) => "prepared",
+            (None, crate::projection::MovePhase::Cutover) => "target-active",
+            (None, crate::projection::MovePhase::RolledBack) => "rolled-back",
+        };
+        let previous_declaration = existing.map(|entry| &entry.declaration);
+        let previous_phase = previous_declaration
+            .and_then(|value| value.pointer("/desired/phase"))
+            .and_then(serde_json::Value::as_str);
+        let previous_source_lease = previous_declaration
+            .and_then(|value| value.pointer("/desired/leases/source"))
+            .and_then(serde_json::Value::as_u64);
+        let previous_target_lease = previous_declaration
+            .and_then(|value| value.pointer("/desired/leases/target"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1);
+        let previous_attempt = previous_declaration
+            .and_then(|value| value.pointer("/desired/activationAttempt"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let source_lease = if desired_phase == "moved" {
+            None
+        } else {
+            Some(previous_source_lease.unwrap_or(1))
+        };
+        let target_lease = if matches!(desired_phase, "rolled-back" | "adopting-source")
+            && matches!(previous_phase, Some("target-active" | "adopting-target"))
+        {
+            previous_target_lease + 1
+        } else {
+            previous_target_lease
+        };
+        let activation_attempt = if matches!(desired_phase, "target-active" | "rolled-back")
+            && previous_phase != Some(desired_phase)
+        {
+            previous_attempt + 1
+        } else {
+            previous_attempt
+        };
+        let authority = match self.mode {
+            ProjectionPublicationMode::Remote => "controller",
+            ProjectionPublicationMode::Local => "local",
+        };
+        let nix_string = |value: &str| serde_json::to_string(value).expect("string encodes");
+        let service_list = services
+            .iter()
+            .map(|service| format!("    {}", nix_string(service)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let optional_string =
+            |value: Option<&str>| value.map_or_else(|| "null".to_owned(), nix_string);
+        let rendered = format!(
+            "{{\n  schema_version = 1;\n  id = {};\n  authority = {};\n  scope = {};\n  services = [\n{}\n  ];\n  from = {};\n  to = {};\n  desired = {{\n    phase = {};\n    generation = {};\n    activationAttempt = {};\n    leases = {{\n      source = {};\n      target = {};\n    }};\n  }};\n  decision = {};\n  previous = {{\n    contract_sha256 = {};\n    repository_revision = {};\n  }};\n}}\n",
+            nix_string(&requested.projection_id),
+            nix_string(authority),
+            nix_string(scope),
+            service_list,
+            nix_string(&source_role),
+            nix_string(&target_role),
+            nix_string(desired_phase),
+            requested.generation,
+            activation_attempt,
+            source_lease.map_or_else(|| "null".to_owned(), |lease| lease.to_string()),
+            target_lease,
+            optional_string(decision),
+            optional_string(requested.previous_projection_sha256.as_deref()),
+            optional_string(requested.previous_repository_revision.as_deref()),
+        );
+        let path = self
+            .repository
+            .root()
+            .join("data/service-moves")
+            .join(format!("{}.nix", requested.projection_id));
+        fs::create_dir_all(path.parent().context("service-move path has no parent")?)?;
+        atomic_write(&path, rendered.as_bytes(), 0o644)?;
+
+        let contract = self.nix_service_move_contract()?;
+        let evaluated = contract
+            .moves
+            .get(&requested.projection_id)
+            .context("written Nix service move was not returned by evaluation")?
+            .projection
+            .clone();
+        evaluated.validate()?;
+        if evaluated.intent != requested.intent
+            || evaluated.phase != requested.phase
+            || evaluated.generation != requested.generation
+            || evaluated.previous_projection_sha256 != requested.previous_projection_sha256
+            || evaluated.previous_repository_revision != requested.previous_repository_revision
+        {
+            bail!("evaluated Nix service move does not match requested transition identity");
+        }
+        Ok((
+            ProjectionWrite {
+                path: path.clone(),
+                changed: true,
+                generation: evaluated.generation,
+                projection_sha256: evaluated.projection_sha256.clone(),
+            },
+            evaluated,
+            path,
+        ))
+    }
+
     /// Exercise the exact publication transport and ref update without changing
     /// the remote. Lifecycle commands run this before mutating their journal.
     pub fn verify_push_access(&self) -> Result<()> {
@@ -1199,9 +1793,20 @@ impl ProjectionPublisher {
         observe(ProjectionPublicationEvent::Started(
             ProjectionPublicationStage::Validate,
         ))?;
-        let write = self.repository.write_phase_projection(projection)?;
-        let relative = PathBuf::from("data/phase-projections")
-            .join(format!("{}.json", projection.projection_id));
+        let nix_native = is_nix_native_service_move(projection);
+        let (write, evaluated, relative) = if nix_native {
+            let (write, evaluated, path) = self.write_nix_service_move(projection, None)?;
+            let relative = path
+                .strip_prefix(self.repository.root())
+                .context("Nix service-move path is outside repository")?
+                .to_path_buf();
+            (write, evaluated, relative)
+        } else {
+            let write = self.repository.write_phase_projection(projection)?;
+            let relative = PathBuf::from("data/phase-projections")
+                .join(format!("{}.json", projection.projection_id));
+            (write, projection.clone(), relative)
+        };
         let placement_relative = PathBuf::from("data/service-placements.json");
         run_git_path(
             &self.git,
@@ -1210,7 +1815,7 @@ impl ProjectionPublisher {
             &relative,
             "stage phase projection",
         )?;
-        if self.mode == ProjectionPublicationMode::Local {
+        if self.mode == ProjectionPublicationMode::Local && !nix_native {
             self.repository
                 .retain_local_projection_authority(&projection.projection_id)?;
             run_git_path(
@@ -1227,7 +1832,7 @@ impl ProjectionPublisher {
             &["diff", "--cached", "--check"],
             "validate staged projection diff",
         )?;
-        self.validate_staged_projection(projection, controller_host, |detail| {
+        self.validate_staged_projection(&evaluated, controller_host, |detail| {
             observe(ProjectionPublicationEvent::Progress {
                 stage: ProjectionPublicationStage::Validate,
                 detail,
@@ -1245,14 +1850,14 @@ impl ProjectionPublisher {
         staged
             .args(["diff", "--cached", "--quiet", "--exit-code", "--"])
             .arg(&relative);
-        if self.mode == ProjectionPublicationMode::Local {
+        if self.mode == ProjectionPublicationMode::Local && !nix_native {
             staged.arg(&placement_relative);
         }
         let staged = staged.status().context("inspect staged projection")?;
         if !staged.success() {
             let message = format!(
                 "chore(projection): project {} {:?}",
-                projection.projection_id, projection.phase
+                evaluated.projection_id, evaluated.phase
             );
             let mut arguments = vec![
                 "-c",
@@ -1267,7 +1872,7 @@ impl ProjectionPublisher {
                 "--",
                 relative.to_str().unwrap(),
             ];
-            if self.mode == ProjectionPublicationMode::Local {
+            if self.mode == ProjectionPublicationMode::Local && !nix_native {
                 arguments.push(placement_relative.to_str().unwrap());
             }
             run_git(
@@ -1331,11 +1936,17 @@ impl ProjectionPublisher {
             observe(ProjectionPublicationEvent::Started(
                 ProjectionPublicationStage::RetainLocal,
             ))?;
-            let retained = self
-                .repository
-                .load_canonical_service_placements()?
-                .controller_reconcile_exclusions
-                .contains(&projection.projection_id);
+            let retained = if nix_native {
+                self.nix_service_move_contract()?
+                    .controller_reconcile_exclusions
+                    .iter()
+                    .any(|projection_id| projection_id == &evaluated.projection_id)
+            } else {
+                self.repository
+                    .load_canonical_service_placements()?
+                    .controller_reconcile_exclusions
+                    .contains(&evaluated.projection_id)
+            };
             if !retained {
                 bail!("local projection commit did not retain local controller authority");
             }
@@ -1359,6 +1970,7 @@ impl ProjectionPublisher {
         }
         Ok(ProjectionPublication {
             write,
+            projection: evaluated,
             branch: self.branch.clone(),
             revision,
             pushed: self.pushed(),
@@ -1376,6 +1988,199 @@ impl ProjectionPublisher {
         self.publish_closeout_observed(projection, decision, controller_host, |_| Ok(()))
     }
 
+    pub fn cleanup_nix_service_move(
+        &self,
+        projection: &PhaseProjection,
+        decision: &str,
+        controller_host: &str,
+    ) -> Result<ProjectionCloseoutPublication> {
+        self.cleanup_nix_service_move_observed(projection, decision, controller_host, |_| Ok(()))
+    }
+
+    pub fn cleanup_nix_service_move_observed(
+        &self,
+        projection: &PhaseProjection,
+        decision: &str,
+        controller_host: &str,
+        mut observe: impl FnMut(ProjectionCleanupEvent) -> Result<()>,
+    ) -> Result<ProjectionCloseoutPublication> {
+        let contract = self.nix_service_move_contract()?;
+        let entry = contract
+            .moves
+            .get(&projection.projection_id)
+            .context("cannot clean an absent Nix service move")?;
+        if entry.projection != *projection
+            || entry
+                .declaration
+                .get("decision")
+                .and_then(serde_json::Value::as_str)
+                != Some(decision)
+        {
+            bail!("Nix service-move cleanup does not match its adopted terminal contract");
+        }
+        let placement_path = self.repository.root().join("data/service-placements.nix");
+        let projection_path = self
+            .repository
+            .root()
+            .join("data/service-moves")
+            .join(format!("{}.nix", projection.projection_id));
+        observe(ProjectionCleanupEvent::Started(
+            ProjectionCleanupStage::RemoveAdoptedMove,
+        ))?;
+        fs::remove_file(&projection_path).with_context(|| {
+            format!(
+                "remove adopted Nix service move {}",
+                projection_path.display()
+            )
+        })?;
+        observe(ProjectionCleanupEvent::Completed {
+            stage: ProjectionCleanupStage::RemoveAdoptedMove,
+            revision: None,
+        })?;
+        let projection_relative = projection_path
+            .strip_prefix(self.repository.root())
+            .context("Nix service-move cleanup path is outside repository")?;
+        run_git_path(
+            &self.git,
+            self.repository.root(),
+            &["add", "--"],
+            projection_relative,
+            "stage Nix service-move cleanup",
+        )?;
+        observe(ProjectionCleanupEvent::Started(
+            ProjectionCleanupStage::Validate,
+        ))?;
+        run_git(
+            &self.git,
+            self.repository.root(),
+            &["diff", "--cached", "--check"],
+            "validate staged Nix service-move cleanup diff",
+        )?;
+        self.validate_staged_closeout(projection, decision, false, controller_host, |detail| {
+            observe(ProjectionCleanupEvent::Progress {
+                stage: ProjectionCleanupStage::Validate,
+                detail,
+            })
+        })?;
+        observe(ProjectionCleanupEvent::Completed {
+            stage: ProjectionCleanupStage::Validate,
+            revision: None,
+        })?;
+        observe(ProjectionCleanupEvent::Started(
+            ProjectionCleanupStage::Commit,
+        ))?;
+        let message = format!("chore(move): clean {}", projection.projection_id);
+        run_git(
+            &self.git,
+            self.repository.root(),
+            &[
+                "-c",
+                "user.name=abird-host-manager",
+                "-c",
+                "user.email=host-manager@abird.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                &message,
+                "--",
+                projection_relative
+                    .to_str()
+                    .context("Nix service-move cleanup path is not UTF-8")?,
+            ],
+            "commit Nix service-move cleanup",
+        )?;
+        let revision = git_stdout(
+            &self.git,
+            self.repository.root(),
+            &["rev-parse", "HEAD"],
+            "resolve Nix service-move cleanup commit",
+        )?;
+        observe(ProjectionCleanupEvent::Completed {
+            stage: ProjectionCleanupStage::Commit,
+            revision: Some(revision.clone()),
+        })?;
+        if self.mode == ProjectionPublicationMode::Remote {
+            observe(ProjectionCleanupEvent::Started(
+                ProjectionCleanupStage::Push,
+            ))?;
+            self.run_publication_git(
+                &[
+                    "push",
+                    "origin",
+                    &format!("HEAD:refs/heads/{}", self.branch),
+                ],
+                "publish Nix service-move cleanup",
+            )?;
+            observe(ProjectionCleanupEvent::Completed {
+                stage: ProjectionCleanupStage::Push,
+                revision: Some(revision.clone()),
+            })?;
+            observe(ProjectionCleanupEvent::Started(
+                ProjectionCleanupStage::Verify,
+            ))?;
+            let remote = self.publication_git_stdout(
+                &[
+                    "ls-remote",
+                    "origin",
+                    &format!("refs/heads/{}", self.branch),
+                ],
+                "verify Nix service-move cleanup revision",
+            )?;
+            if remote.split_whitespace().next() != Some(revision.as_str()) {
+                bail!("published Nix service-move cleanup revision mismatch");
+            }
+            observe(ProjectionCleanupEvent::Completed {
+                stage: ProjectionCleanupStage::Verify,
+                revision: Some(revision.clone()),
+            })?;
+        } else {
+            observe(ProjectionCleanupEvent::Started(
+                ProjectionCleanupStage::RetainLocal,
+            ))?;
+            observe(ProjectionCleanupEvent::Completed {
+                stage: ProjectionCleanupStage::RetainLocal,
+                revision: Some(revision.clone()),
+            })?;
+            observe(ProjectionCleanupEvent::Started(
+                ProjectionCleanupStage::Verify,
+            ))?;
+            run_git(
+                &self.git,
+                self.repository.root(),
+                &["diff", "--quiet", "HEAD", "--"],
+                "verify clean local Nix service-move cleanup commit",
+            )?;
+            observe(ProjectionCleanupEvent::Completed {
+                stage: ProjectionCleanupStage::Verify,
+                revision: Some(revision.clone()),
+            })?;
+        }
+        Ok(ProjectionCloseoutPublication {
+            placement_path,
+            projection_path,
+            branch: self.branch.clone(),
+            revision,
+            pushed: self.pushed(),
+        })
+    }
+
+    pub fn validate_clean_nix_service_move(
+        &self,
+        projection: &PhaseProjection,
+        decision: &str,
+        controller_host: &str,
+    ) -> Result<()> {
+        if self
+            .nix_service_move_contract()?
+            .moves
+            .contains_key(&projection.projection_id)
+        {
+            bail!("clean Nix service-move state still contains its temporary declaration");
+        }
+        self.validate_staged_closeout(projection, decision, false, controller_host, |_| Ok(()))
+    }
+
     pub fn publish_closeout_observed(
         &self,
         projection: &PhaseProjection,
@@ -1383,34 +2188,55 @@ impl ProjectionPublisher {
         controller_host: &str,
         mut observe: impl FnMut(ProjectionCloseoutEvent) -> Result<()>,
     ) -> Result<ProjectionCloseoutPublication> {
+        let nix_native = self
+            .nix_service_move_contract()?
+            .moves
+            .contains_key(&projection.projection_id);
         observe(ProjectionCloseoutEvent::Started(
             ProjectionCloseoutStage::FoldPlacement,
         ))?;
-        let (placement_path, projection_path) = self.repository.write_projection_closeout(
-            projection,
-            decision,
-            self.mode == ProjectionPublicationMode::Remote,
-        )?;
+        let (placement_path, projection_path) = if nix_native {
+            let (placement, move_path, _) =
+                self.write_nix_service_adoption(projection, decision)?;
+            (placement, move_path)
+        } else {
+            self.repository.write_projection_closeout(
+                projection,
+                decision,
+                self.mode == ProjectionPublicationMode::Remote,
+            )?
+        };
         observe(ProjectionCloseoutEvent::Completed {
             stage: ProjectionCloseoutStage::FoldPlacement,
             revision: None,
         })?;
-        observe(ProjectionCloseoutEvent::Started(
-            ProjectionCloseoutStage::RemoveProjection,
-        ))?;
-        if projection_path.exists() {
+        let declaration_stage = if nix_native {
+            ProjectionCloseoutStage::RetainAdoption
+        } else {
+            ProjectionCloseoutStage::RemoveProjection
+        };
+        observe(ProjectionCloseoutEvent::Started(declaration_stage))?;
+        if !nix_native && projection_path.exists() {
             bail!("closed phase projection still exists after repository closeout fold");
         }
         observe(ProjectionCloseoutEvent::Completed {
-            stage: ProjectionCloseoutStage::RemoveProjection,
+            stage: declaration_stage,
             revision: None,
         })?;
-        observe(ProjectionCloseoutEvent::Started(
-            ProjectionCloseoutStage::Validate,
-        ))?;
-        let placement_relative = PathBuf::from("data/service-placements.json");
-        let projection_relative = PathBuf::from("data/phase-projections")
-            .join(format!("{}.json", projection.projection_id));
+        let validation_stage = if nix_native {
+            ProjectionCloseoutStage::ValidateAdoption
+        } else {
+            ProjectionCloseoutStage::Validate
+        };
+        observe(ProjectionCloseoutEvent::Started(validation_stage))?;
+        let placement_relative = placement_path
+            .strip_prefix(self.repository.root())
+            .context("closeout placement path is outside repository")?
+            .to_path_buf();
+        let projection_relative = projection_path
+            .strip_prefix(self.repository.root())
+            .context("closeout move path is outside repository")?
+            .to_path_buf();
         run_git_path(
             &self.git,
             self.repository.root(),
@@ -1431,40 +2257,54 @@ impl ProjectionPublisher {
             &["diff", "--cached", "--check"],
             "validate staged projection closeout diff",
         )?;
-        self.validate_staged_closeout(projection, controller_host, |detail| {
-            observe(ProjectionCloseoutEvent::Progress {
-                stage: ProjectionCloseoutStage::Validate,
-                detail,
-            })
-        })?;
+        self.validate_staged_closeout(
+            projection,
+            decision,
+            nix_native,
+            controller_host,
+            |detail| {
+                observe(ProjectionCloseoutEvent::Progress {
+                    stage: validation_stage,
+                    detail,
+                })
+            },
+        )?;
         observe(ProjectionCloseoutEvent::Completed {
-            stage: ProjectionCloseoutStage::Validate,
+            stage: validation_stage,
             revision: None,
         })?;
 
         observe(ProjectionCloseoutEvent::Started(
             ProjectionCloseoutStage::Commit,
         ))?;
-        let message = format!("chore(projection): close {}", projection.projection_id);
-        run_git(
-            &self.git,
-            self.repository.root(),
-            &[
-                "-c",
-                "user.name=abird-host-manager",
-                "-c",
-                "user.email=host-manager@abird.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-m",
-                &message,
-                "--",
-                placement_relative.to_str().unwrap(),
-                projection_relative.to_str().unwrap(),
-            ],
-            "commit projection closeout",
-        )?;
+        let staged = repository_git_command(&self.git, self.repository.root())
+            .args(["diff", "--cached", "--quiet", "--exit-code", "--"])
+            .arg(&placement_relative)
+            .arg(&projection_relative)
+            .status()
+            .context("inspect staged projection closeout")?;
+        if !staged.success() {
+            let message = format!("chore(projection): close {}", projection.projection_id);
+            run_git(
+                &self.git,
+                self.repository.root(),
+                &[
+                    "-c",
+                    "user.name=abird-host-manager",
+                    "-c",
+                    "user.email=host-manager@abird.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    &message,
+                    "--",
+                    placement_relative.to_str().unwrap(),
+                    projection_relative.to_str().unwrap(),
+                ],
+                "commit projection closeout",
+            )?;
+        }
         let revision = git_stdout(
             &self.git,
             self.repository.root(),
@@ -1519,12 +2359,28 @@ impl ProjectionPublisher {
             observe(ProjectionCloseoutEvent::Started(
                 ProjectionCloseoutStage::RetainLocal,
             ))?;
-            let closeout = self
-                .repository
-                .load_projection_closeout(&projection.projection_id)?
-                .context("local projection closeout was not retained")?;
-            if closeout.controller_reconcile {
-                bail!("local projection closeout incorrectly retained controller authority");
+            if nix_native {
+                let contract = self.nix_service_move_contract()?;
+                let entry = contract
+                    .moves
+                    .get(&projection.projection_id)
+                    .context("local Nix service-move adoption was not retained")?;
+                if entry
+                    .declaration
+                    .get("authority")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("local")
+                {
+                    bail!("local Nix service-move adoption lost local authority");
+                }
+            } else {
+                let closeout = self
+                    .repository
+                    .load_projection_closeout(&projection.projection_id)?
+                    .context("local projection closeout was not retained")?;
+                if closeout.controller_reconcile {
+                    bail!("local projection closeout incorrectly retained controller authority");
+                }
             }
             observe(ProjectionCloseoutEvent::Completed {
                 stage: ProjectionCloseoutStage::RetainLocal,
@@ -1650,6 +2506,8 @@ impl ProjectionPublisher {
     fn validate_staged_closeout(
         &self,
         projection: &PhaseProjection,
+        decision: &str,
+        nix_native: bool,
         controller_host: &str,
         progress: impl FnMut(String) -> Result<()>,
     ) -> Result<()> {
@@ -1677,10 +2535,35 @@ impl ProjectionPublisher {
         }
         let documents: Vec<PhaseProjection> = serde_json::from_slice(&documents.stdout)
             .context("parse staged phase projections after closeout")?;
-        if documents
+        let matching = documents
             .iter()
-            .any(|document| document.projection_id == projection.projection_id)
-        {
+            .filter(|document| document.projection_id == projection.projection_id)
+            .collect::<Vec<_>>();
+        if nix_native {
+            match matching.as_slice() {
+                [document] if *document == projection => {}
+                [document] => bail!(
+                    "adopted Nix service move changed terminal projection {} to {}",
+                    projection.projection_sha256,
+                    document.projection_sha256
+                ),
+                [] => bail!("adopted Nix service move disappeared from the flake"),
+                _ => bail!("adopted Nix service move was returned more than once"),
+            }
+            let contract = self.nix_service_move_contract()?;
+            let declaration = &contract
+                .moves
+                .get(&projection.projection_id)
+                .context("adopted Nix service move is absent from shared contract")?
+                .declaration;
+            if declaration
+                .get("decision")
+                .and_then(serde_json::Value::as_str)
+                != Some(decision)
+            {
+                bail!("Nix service-move adoption did not retain its terminal decision");
+            }
+        } else if !matching.is_empty() {
             bail!("closed phase projection remains visible to the flake");
         }
 
@@ -2296,13 +3179,43 @@ mod tests {
     }
 
     fn seeded_projection(previous_revision: String) -> PhaseProjection {
+        let spec = TransactionSpec::new(
+            Some("move-publisher"),
+            vec![MoveItem::Resource {
+                id: "item-001".to_owned(),
+                resource: "volume:data".to_owned(),
+                source: HostEndpoint {
+                    host: "source".to_owned(),
+                    instance: None,
+                },
+                target: HostEndpoint {
+                    host: "target".to_owned(),
+                    instance: None,
+                },
+                data_roots: Vec::new(),
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        MoveProjector::derive(
+            &spec,
+            &projection_config(),
+            MovePhase::Seeded,
+            None,
+            Some(previous_revision),
+        )
+        .unwrap()
+    }
+
+    fn seeded_service_projection(previous_revision: String) -> PhaseProjection {
         let mut spec = TransactionSpec::new(
             Some("move-publisher"),
             vec![MoveItem::Service {
                 id: "item-001".to_owned(),
                 service: "zulip".to_owned(),
-                source_resource: None,
-                target_resource: None,
+                source_resource: Some("service:zulip".to_owned()),
+                target_resource: Some("service:zulip".to_owned()),
                 source: HostEndpoint {
                     host: "source".to_owned(),
                     instance: None,
@@ -2514,7 +3427,7 @@ mod tests {
         );
         assert_eq!(
             nix_invocations.collect::<BTreeSet<_>>(),
-            ["controller", "router", "source", "target"]
+            ["controller", "source", "target"]
                 .map(|host| format!(
                     "eval --raw .#nixosConfigurations.\"{host}\".config.system.build.toplevel.drvPath --option allow-import-from-derivation false"
                 ))
@@ -2696,6 +3609,278 @@ mod tests {
                 "local publisher unexpectedly invoked {forbidden}: {invocations}"
             );
         }
+    }
+
+    #[test]
+    fn local_service_move_publishes_nix_and_consumes_evaluated_contract() {
+        let source = fixture();
+        let state = tempfile::tempdir().unwrap();
+        let git = PathBuf::from("git");
+        fs::write(
+            source.path().join("data/service-placements.nix"),
+            "{ schema_version = 2; closeouts = {}; controller_reconcile_exclusions = []; placements.abird.zulip.role = \"source-role\"; }\n",
+        )
+        .unwrap();
+        run_git(
+            &git,
+            source.path(),
+            &["init", "-b", "master"],
+            "init local source",
+        )
+        .unwrap();
+        run_git(&git, source.path(), &["add", "--", "."], "stage fixture").unwrap();
+        run_git(
+            &git,
+            source.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "initial",
+            ],
+            "commit fixture",
+        )
+        .unwrap();
+
+        let source_repository = Repository::from_root(source.path().to_path_buf()).unwrap();
+        let authority = WorkflowStore::open(state.path().to_path_buf()).unwrap();
+        let revision = source_repository.revision(&git).unwrap();
+        let projection = seeded_service_projection(revision);
+        let seeded_projection_json = state.path().join("seeded-projection.json");
+        let prepared_projection_json = state.path().join("prepared-projection.json");
+        let cutover_projection_json = state.path().join("cutover-projection.json");
+        let seeded_declaration_json = state.path().join("seeded-declaration.json");
+        let prepared_declaration_json = state.path().join("prepared-declaration.json");
+        let cutover_declaration_json = state.path().join("cutover-declaration.json");
+        fs::write(
+            &seeded_projection_json,
+            serde_json::to_vec(&projection).unwrap(),
+        )
+        .unwrap();
+        let write_declaration = |path: &Path,
+                                 projection: &PhaseProjection,
+                                 phase: &str,
+                                 activation_attempt: u64,
+                                 decision: Option<&str>| {
+            fs::write(
+                path,
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 1,
+                    "id": "move-publisher",
+                    "authority": "local",
+                    "scope": "abird",
+                    "services": ["zulip"],
+                    "from": "source-role",
+                    "to": "target-role",
+                    "desired": {
+                        "phase": phase,
+                        "generation": projection.generation,
+                        "activationAttempt": activation_attempt,
+                        "leases": {
+                            "source": if phase == "moved" { serde_json::Value::Null } else { serde_json::json!(1) },
+                            "target": 1,
+                        },
+                    },
+                    "decision": decision,
+                    "previous": {
+                        "contract_sha256": projection.previous_projection_sha256,
+                        "repository_revision": projection.previous_repository_revision,
+                    },
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_declaration(&seeded_declaration_json, &projection, "moved", 0, None);
+        let fake_nix = state.path().join("fake-nix");
+        fs::write(
+            &fake_nix,
+            format!(
+                r#"#!/bin/sh
+set -eu
+case "$1 $2 $3" in
+  'eval --json .#hostManager.serviceMoves')
+    if [ -f data/service-moves/move-publisher.nix ]; then
+      projection='{}'
+      declaration='{}'
+      if grep -q 'phase = "prepared"' data/service-moves/move-publisher.nix; then
+        projection='{}'
+        declaration='{}'
+      elif grep -q -E 'phase = "(target-active|adopting-target)"' data/service-moves/move-publisher.nix; then
+        projection='{}'
+        declaration='{}'
+      fi
+      printf '{{"schema_version":1,"controller_reconcile_exclusions":["move-publisher"],"moves":{{"move-publisher":{{"affected_hosts":["source","target","router"],"declaration":'
+      if grep -q 'phase = "adopting-target"' data/service-moves/move-publisher.nix; then
+        jq -c '.desired.phase = "adopting-target" | .decision = "complete"' "$declaration"
+      else
+        cat "$declaration"
+      fi
+      printf ',"projection":'
+      cat "$projection"
+      if grep -q 'phase = "adopting-target"' data/service-moves/move-publisher.nix; then
+        printf ',"selected_role":"target-role","stable_role":"target-role","services":[]}}}}}}'
+      else
+        printf ',"selected_role":"source-role","stable_role":"source-role","services":[]}}}}}}'
+      fi
+    else
+      printf '{{"schema_version":1,"controller_reconcile_exclusions":[],"moves":{{}}}}'
+    fi
+    ;;
+  'eval --json --file')
+    role=source-role
+    grep -q 'role = "target-role"' data/service-placements.nix && role=target-role
+    if grep -q 'move-publisher' data/service-placements.nix; then
+      digest=$(jq -r .projection_sha256 '{}')
+      closeouts='"move-publisher":{{"affected_hosts":["source","target","router"],"controller_reconcile":false,"decision":"complete","projection_sha256":"'"$digest"'"}}'
+    else
+      closeouts=''
+    fi
+    printf '{{"schema_version":2,"closeouts":{{%s}},"controller_reconcile_exclusions":[],"placements":{{"abird":{{"zulip":{{"role":"%s"}}}}}}}}' "$closeouts" "$role"
+    ;;
+  'eval --json .#hostManager.stacks') printf '["source-role","target-role"]' ;;
+  eval\ --json\ .#nixosConfigurations.*)
+    if [ -f data/service-moves/move-publisher.nix ]; then
+      projection='{}'
+      grep -q 'phase = "prepared"' data/service-moves/move-publisher.nix && projection='{}'
+      grep -q -E 'phase = "(target-active|adopting-target)"' data/service-moves/move-publisher.nix && projection='{}'
+      printf '['; cat "$projection"; printf ']'
+    else
+      printf '[]'
+    fi
+    ;;
+  'eval --raw .#hostManager.stacks')
+    if grep -q 'role = "target-role"' data/service-placements.nix; then printf target; else printf source; fi
+    ;;
+  eval\ --raw\ .#nixosConfigurations.*) printf '/nix/store/fake-system.drv' ;;
+  *) exit 64 ;;
+esac
+"#,
+                seeded_projection_json.display(),
+                seeded_declaration_json.display(),
+                prepared_projection_json.display(),
+                prepared_declaration_json.display(),
+                cutover_projection_json.display(),
+                cutover_declaration_json.display(),
+                cutover_projection_json.display(),
+                seeded_projection_json.display(),
+                prepared_projection_json.display(),
+                cutover_projection_json.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_nix, fs::Permissions::from_mode(0o755)).unwrap();
+        let publisher = ProjectionPublisher::prepare_local(
+            &source_repository,
+            &authority,
+            state.path(),
+            "master",
+            git,
+            fake_nix,
+        )
+        .unwrap();
+        let publication = publisher.publish(&projection, "controller").unwrap();
+
+        assert_eq!(publication.projection, projection);
+        assert_eq!(
+            publisher
+                .load_projection_admission("move-publisher")
+                .unwrap(),
+            (Some(projection.clone()), false)
+        );
+        assert!(
+            source
+                .path()
+                .join("data/service-moves/move-publisher.nix")
+                .is_file()
+        );
+        assert!(!source.path().join("data/phase-projections").exists());
+        let declaration =
+            fs::read_to_string(source.path().join("data/service-moves/move-publisher.nix"))
+                .unwrap();
+        assert!(declaration.contains("authority = \"local\";"));
+        assert!(declaration.contains("services = [\n    \"zulip\"\n  ];"));
+        assert!(!declaration.contains("projection_sha256"));
+
+        let spec: TransactionSpec = serde_json::from_value(projection.intent.clone()).unwrap();
+        let prepared = MoveProjector::derive(
+            &spec,
+            &projection_config(),
+            MovePhase::Prepared,
+            Some(&projection),
+            Some(publisher.revision().unwrap()),
+        )
+        .unwrap();
+        fs::write(
+            &prepared_projection_json,
+            serde_json::to_vec(&prepared).unwrap(),
+        )
+        .unwrap();
+        write_declaration(&prepared_declaration_json, &prepared, "prepared", 0, None);
+        let prepared_publication = publisher.publish(&prepared, "controller").unwrap();
+        assert_eq!(prepared_publication.projection, prepared);
+
+        let cutover = MoveProjector::derive(
+            &spec,
+            &projection_config(),
+            MovePhase::Cutover,
+            Some(&prepared),
+            Some(publisher.revision().unwrap()),
+        )
+        .unwrap();
+        fs::write(
+            &cutover_projection_json,
+            serde_json::to_vec(&cutover).unwrap(),
+        )
+        .unwrap();
+        write_declaration(
+            &cutover_declaration_json,
+            &cutover,
+            "target-active",
+            1,
+            None,
+        );
+        let cutover_publication = publisher.publish(&cutover, "controller").unwrap();
+        assert_eq!(cutover_publication.projection, cutover);
+
+        let adoption = publisher
+            .publish_closeout(&cutover, "complete", "controller")
+            .unwrap();
+        assert!(adoption.projection_path.is_file());
+        assert!(
+            fs::read_to_string(&adoption.projection_path)
+                .unwrap()
+                .contains("phase = \"adopting-target\";")
+        );
+        assert_eq!(publisher.load_closeout("move-publisher").unwrap(), None);
+        assert_eq!(
+            publisher
+                .load_projection_admission("move-publisher")
+                .unwrap(),
+            (Some(cutover.clone()), true)
+        );
+
+        let cleanup = publisher
+            .cleanup_nix_service_move(&cutover, "complete", "controller")
+            .unwrap();
+        assert!(!cleanup.projection_path.exists());
+        assert!(
+            fs::read_to_string(&cleanup.placement_path)
+                .unwrap()
+                .contains("role = \"target-role\";")
+        );
+        assert_eq!(publisher.load_closeout("move-publisher").unwrap(), None);
+        assert_eq!(
+            publisher
+                .load_projection_admission("move-publisher")
+                .unwrap(),
+            (None, false)
+        );
     }
 
     #[test]

@@ -68,14 +68,14 @@ prepared or target_active --close--> closing_complete|closing_rollback
   bypassing safety. `--complete --force` is break glass for an already-published
   target-active projection: it verifies exact holds, source inactivity, target
   readiness and routing, then records the missing run evidence. Rollback
-  performs reverse synchronization when target may have written. Close
-  atomically folds placement into `data/service-placements.json`, removes the
-  temporary projection, and records a digest-bound closeout. In normal mode it
-  submits and waits for an exact revision-bound durable controller Nixbot
-  deployment. In `--local` mode it runs that exact deployment from the invoking
-  checkout and the invoking manager releases the inactive-side hold and closes
-  the local journal; the committed closeout explicitly does not arm a
-  controller-side reconciler.
+  performs reverse synchronization when target may have written. Close first
+  folds placement into `data/service-placements.nix` and retains the temporary
+  move in an adoption phase with the exact terminal lease contract. After that
+  revision deploys successfully, it commits and deploys a clean stable revision
+  with the move removed. Only successful cleanup deployment may release the
+  inactive-side hold and archive the journal. In normal mode both revisions use
+  exact revision-bound durable controller Nixbot jobs. In `--local` mode they
+  deploy from the invoking checkout without a push or controller-owned journal.
 
 Each command snapshots an ordered, versioned step plan in the transaction
 journal. Completed steps are adopted, ambiguous jobs are reconciled by exact ID,
@@ -129,15 +129,39 @@ and `host exec` are byte-transparent passthrough contracts. Global `--json` is
 rejected for these streaming and passthrough commands rather than wrapping,
 buffering, or corrupting their output.
 
-## Phase projections
+## Nix-native service moves
 
-Repository-backed moves publish one canonical phase projection under
-`data/phase-projections/` before runtime reconciliation. The flake and the live
-manager consume the same projection digest, so an ordinary deploy and immediate
-host-agent reconciliation select identical placement, resource states, and route
-profiles. Git records desired state and stable prerequisite identity, never an
-observed receipt. The controller journal retains observed work and activation
-authority.
+New logical service moves commit one high-level declaration under
+`data/service-moves/`. The stable role lives in `data/service-placements.nix`.
+Nix evaluates those declarations with the service capsule's migration contract
+and derives the exact placement, holds, activation identity, route, affected
+hosts, and transition digest. Host-manager executes only that evaluated result;
+JSON used at the Nix/Rust boundary is ephemeral transport and is never committed
+configuration.
+
+`move`, `prepare`, and `run` commit their requested Nix state and reconcile the
+fine-grained resources directly, without a NixOS deployment. `close` uses two
+deployments: an adoption revision which keeps the recovery lease, then a clean
+stable revision which removes the temporary move. Stateful placement changes are
+also guarded at the NixOS pre-switch boundary: a candidate role change must
+carry exactly one matching adoption transition, and the existing desired-state
+preflight must prove the corresponding runtime hold and activation evidence.
+Deploying controller-authoritative nonterminal Nix intent can initialize its
+runtime journal and invoke the same reconciler. Terminal adoption without an
+existing evidence-bearing journal is rejected.
+
+## Legacy phase projections
+
+Existing resource projections and historical JSON-backed transactions retain a
+compatibility path under `data/phase-projections/`. New logical service moves do
+not write JSON phase projections. The compatibility adapter remains digest
+strict and must not reinterpret an old transaction as a Nix-native move.
+
+Pvl keeps the placement and move inputs disabled by default because it has no
+service migration capsule or multi-role placement topology. The shared
+evaluator, admission check, and manager implementation are present, but
+authoring a move requires Pvl-owned schema-2 placement state, a move directory,
+and an eligible service migration contract.
 
 Publication and deployment reconciliation have deliberately different Git
 capabilities. Operator phase decisions may publish through their ephemeral

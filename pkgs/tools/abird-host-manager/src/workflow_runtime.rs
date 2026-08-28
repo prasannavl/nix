@@ -860,6 +860,11 @@ impl WorkflowStore {
         read_transaction_record(&path, id)
     }
 
+    pub fn contains(&self, id: &str) -> Result<bool> {
+        validate_workflow_id(id)?;
+        Ok(self.path(id).is_file())
+    }
+
     pub fn list(&self) -> Result<Vec<TransactionRecord>> {
         let mut records = Vec::new();
         let directory = self.root.join("workflow-transactions");

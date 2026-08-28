@@ -125,6 +125,14 @@
     system = pkgs.stdenv.hostPlatform.system;
     inherit pkgs;
     specialArgs.phaseProjections = [activePhaseProjection];
+    specialArgs.servicePlacementAdmission = {
+      schema_version = 1;
+      placements.abird.zulip = {
+        migration_kind = "stateful";
+        role = "corp";
+      };
+      moves = {};
+    };
     modules = [
       ../services/abird-host-agent
       {
@@ -297,6 +305,8 @@
   configuredRoot = builtins.dirOf (builtins.dirOf configuredAgent);
   resourceManifest = config.environment.etc."abird-host-agent/resources.json".source;
   desiredResourceStateManifest = config.environment.etc."abird-host-agent/desired-resource-states.json".source;
+  servicePlacementAdmissionManifest = config.environment.etc."abird-host-agent/service-placement-contract.json".source;
+  servicePlacementPreflight = lib.findFirst (package: lib.hasInfix "abird-host-agent-service-placement-preflight" package.name) null config.environment.systemPackages;
   desiredTargetDeclaration = builtins.fromJSON config.environment.etc."abird-host-agent/desired-resource-states/${moveTargetHoldFileName}".text;
   runuserProgram = lib.getExe' pkgs.util-linux "runuser";
 in
@@ -351,6 +361,8 @@ in
   assert lib.hasInfix "/run/abird-host-agent-holds-ready" holdActivation.text;
   assert lib.hasInfix "abird-host-agent-projection-preflight" projectionPreSwitchCheck;
   assert lib.hasInfix "abird-host-agent-projection-preflight" projectionPreflightPackage.name;
+  assert lib.hasInfix "abird-host-agent-service-placement-preflight" projectionPreSwitchCheck;
+  assert servicePlacementPreflight != null;
   assert config.systemd.paths.abird-host-agent-jobs.pathConfig.PathChanged == "/var/lib/abird-host-agent/jobs-wakeup";
   assert config.systemd.services.abird-host-agent-jobs.unitConfig.ConditionPathExists == "/var/lib/abird-host-agent/jobs-wakeup";
   assert config.systemd.services.abird-host-agent-jobs.wantedBy == ["multi-user.target"];
@@ -389,6 +401,23 @@ in
       jq -e '.resources | any(.id == "${hostResource}" and (.data_paths | index("/var/lib/demo")) != null and (.data_paths | index("/var/lib/demo-instance")) != null)' ${resourceManifest}
       jq -e '.schema_version == 1 and (.resources | any(.id == "${moveTargetResource}" and .state == "held" and .phase == "cutover" and .generation == 3 and .projection_digest == "${projectionDigest}" and .hold_epoch == "move:source-prepared"))' ${desiredResourceStateManifest}
       jq -e '.resources | any(.id == "${moveSourceResource}" and .state == "active" and .transaction_id == "move-demo--item-001" and .activation_job_id == "move-demo--item-001-cutover-activate-target" and .activation_requirement_digest == "${receiptRequirement}")' ${desiredResourceStateManifest}
+      jq -e '.schema_version == 1 and .placements.abird.zulip == {migration_kind: "stateful", role: "corp"} and .moves == {}' ${servicePlacementAdmissionManifest}
+
+      mkdir -p current/etc/abird-host-agent same/etc/abird-host-agent changed/etc/abird-host-agent adopted/etc/abird-host-agent
+      cp ${servicePlacementAdmissionManifest} current/etc/abird-host-agent/service-placement-contract.json
+      cp ${servicePlacementAdmissionManifest} same/etc/abird-host-agent/service-placement-contract.json
+      ABIRD_HOST_AGENT_CURRENT_SYSTEM="$PWD/current" ${servicePlacementPreflight}/bin/abird-host-agent-service-placement-preflight "$PWD/same" switch
+      jq '.placements.abird.zulip.role = "zulip"' ${servicePlacementAdmissionManifest} >changed/etc/abird-host-agent/service-placement-contract.json
+      if ABIRD_HOST_AGENT_CURRENT_SYSTEM="$PWD/current" ${servicePlacementPreflight}/bin/abird-host-agent-service-placement-preflight "$PWD/changed" switch; then
+        echo "unsafe stateful placement change was admitted" >&2
+        exit 1
+      fi
+      jq '.placements.abird.zulip.role = "zulip" | .moves.move = {scope: "abird", services: ["zulip"], from: "corp", to: "zulip", phase: "adopting-target", decision: "complete", projection_sha256: "${projectionDigest}"}' ${servicePlacementAdmissionManifest} >adopted/etc/abird-host-agent/service-placement-contract.json
+      ABIRD_HOST_AGENT_CURRENT_SYSTEM="$PWD/current" ${servicePlacementPreflight}/bin/abird-host-agent-service-placement-preflight "$PWD/adopted" switch
+      if ABIRD_HOST_AGENT_CURRENT_SYSTEM="$PWD/current" ${servicePlacementPreflight}/bin/abird-host-agent-service-placement-preflight "$PWD/missing" switch; then
+        echo "placement admission contract removal was admitted" >&2
+        exit 1
+      fi
 
       preflight=${projectionPreflightPackage}/bin/abird-host-agent-projection-preflight
       grep -F -- 'incoming system path is missing host-agent projection authority' "$preflight"

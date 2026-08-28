@@ -60,6 +60,14 @@
           };
         };
       };
+      serviceMoveContract.moves.move-native = {
+        affected_hosts = ["source" "target"];
+        declaration = {
+          authority = "controller";
+          decision = "complete";
+        };
+        projection.projection_sha256 = builtins.concatStringsSep "" (lib.replicate 64 "e");
+      };
     };
     modules = [
       ../../pkgs/tools/nixbot/nixos-module.nix
@@ -119,6 +127,7 @@ in
   assert lib.hasInfix "transaction _reconcile move-zulip" serviceWithoutSupersession.script;
   assert !(lib.hasInfix "--supersede-failed-job" serviceWithoutSupersession.script);
   assert builtins.length closeoutMatching == 1;
+  assert !(lib.any (candidate: lib.hasInfix "move-native" (candidate.script or "")) closeoutMatching);
   assert lib.hasInfix "transaction _close-reconcile" closeoutService.script;
   assert lib.hasInfix "--expected-projection-sha256 ${digest}" closeoutService.script;
   assert service.serviceConfig.User == "nixbot";

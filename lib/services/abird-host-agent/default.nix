@@ -37,6 +37,12 @@
   declaredResourcesById = cfg.extraResources // typedResources;
   declaredResources = builtins.attrValues declaredResourcesById;
   effectivePhaseProjections = (specialArgs.phaseProjections or []) ++ cfg.phaseProjections;
+  servicePlacementAdmission =
+    specialArgs.servicePlacementAdmission or {
+      schema_version = 1;
+      placements = {};
+      moves = {};
+    };
   projectedResourceStateSets = map (projection:
     phaseProjection.localDesiredResourceStates {
       hostResource = "host:${config.networking.hostName}";
@@ -217,6 +223,16 @@
       esac
     '';
   };
+  servicePlacementPreflight = pkgs.writeShellApplication {
+    name = "abird-host-agent-service-placement-preflight";
+    runtimeInputs = [pkgs.jq];
+    text =
+      builtins.replaceStrings
+      ["\${JQ}"]
+      ["${lib.getExe pkgs.jq}"]
+      (builtins.readFile ./service-placement-preflight.sh);
+  };
+  servicePlacementAdmissionManifest = pkgs.writeText "abird-host-agent-service-placement-contract.json" (builtins.toJSON servicePlacementAdmission);
   resourceManifest = pkgs.writeText "abird-host-agent-resources.json" (builtins.toJSON {
     schema_version = 1;
     backup_root = cfg.backupRoot;
@@ -679,11 +695,12 @@ in {
     ];
 
     environment = {
-      systemPackages = [configuredPackage projectionPreflight];
+      systemPackages = [configuredPackage projectionPreflight servicePlacementPreflight];
       etc =
         {
           "abird-host-agent/resources.json".source = resourceManifest;
           "abird-host-agent/desired-resource-states.json".source = desiredResourceStateManifest;
+          "abird-host-agent/service-placement-contract.json".source = servicePlacementAdmissionManifest;
         }
         // lib.mapAttrs' (resource: transaction:
           lib.nameValuePair "abird-host-agent/declared-holds/${holdGate.holdFileName resource}" {
@@ -725,6 +742,7 @@ in {
     # This remains the rollback safety boundary: an older NixOS snapshot may
     # never overwrite a newer durable host-agent hold epoch.
     system.preSwitchChecks.abird-host-agent-projection = ''
+      ${servicePlacementPreflight}/bin/abird-host-agent-service-placement-preflight "$1" "$2"
       ${projectionPreflight}/bin/abird-host-agent-projection-preflight "$1" "$2"
     '';
 
