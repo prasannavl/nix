@@ -5,6 +5,7 @@
   systems ? flake-utils.lib.defaultSystems,
   stackProfiles ? import ../stacks,
   servicePlacementFile ? null,
+  serviceMoveDirectory ? null,
   phaseProjectionDirectory ? null,
 }: let
   flakeProfileInputNames = {
@@ -71,11 +72,35 @@
     inherit (nixpkgs) lib;
     file = servicePlacementFile;
   };
-  phaseProjection = import ./phase-projection.nix {
+  canonicalStackProfiles = servicePlacement.applyToStacks stackProfiles;
+  legacyPhaseProjection = import ./phase-projection.nix {
     inherit (nixpkgs) lib;
     directory = phaseProjectionDirectory;
   };
-  canonicalStackProfiles = servicePlacement.applyToStacks stackProfiles;
+  serviceMoves = import ./service-moves.nix {
+    inherit (nixpkgs) lib;
+    stacks = canonicalStackProfiles;
+    inventory = nixbotInventory;
+    directory = serviceMoveDirectory;
+  };
+  servicePlacementAdmission = import ./service-placement-admission.nix {
+    inherit (nixpkgs) lib;
+    baselineStacks = stackProfiles;
+    effectiveStacks = canonicalStackProfiles;
+    moveContract = serviceMoves.contract;
+  };
+  phaseProjection = import ./phase-projection.nix {
+    inherit (nixpkgs) lib;
+    documents = legacyPhaseProjection.documents ++ serviceMoves.projections;
+  };
+  effectiveServicePlacements =
+    servicePlacement.document
+    // {
+      controller_reconcile_exclusions = nixpkgs.lib.unique (
+        servicePlacement.document.controller_reconcile_exclusions
+        ++ serviceMoves.contract.controller_reconcile_exclusions
+      );
+    };
   effectiveStackProfiles = phaseProjection.applyToStacks canonicalStackProfiles;
   nixbotInventory = import ../../hosts/nixbot.nix;
   nixbotControllerCapability = nixbotInventory.config.controller;
@@ -154,7 +179,9 @@
         inputs = selectedInputs;
         stack = effectiveStack;
         stacks = effectiveStackProfiles;
-        servicePlacements = servicePlacement.document;
+        servicePlacements = effectiveServicePlacements;
+        serviceMoveContract = serviceMoves.contract;
+        inherit servicePlacementAdmission;
         phaseProjections = phaseProjection.documents;
       };
       modules =
@@ -231,7 +258,9 @@
       inherit (rootLib) nixosModules;
       hostManager = {
         stacks = effectiveStackProfiles;
-        servicePlacements = servicePlacement.document;
+        servicePlacements = effectiveServicePlacements;
+        serviceMoves = serviceMoves.contract;
+        inherit servicePlacementAdmission;
       };
       overlays.default = overlay;
     };

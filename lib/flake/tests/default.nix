@@ -203,6 +203,7 @@
 in {
   lib-flake-phase-projection = import ./phase-projection.nix {inherit pkgs;};
   lib-flake-service-placements = import ./service-placements.nix {inherit pkgs;};
+  lib-flake-service-moves = import ./service-moves.nix {inherit pkgs;};
   lib-flake-nested-rust-package = assert toString nestedRustPackage.sourcePath == toString ../../../pkgs/examples/hello-rust/default.nix;
     pkgs.runCommand "lib-flake-nested-rust-package-test" {} ''
       touch "$out"

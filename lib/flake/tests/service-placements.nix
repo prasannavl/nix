@@ -1,18 +1,13 @@
 {pkgs}: let
   document = {
-    schema_version = 1;
+    schema_version = 2;
     controller_reconcile_exclusions = ["move-local"];
     closeouts.move-app = {
       affected_hosts = ["source" "target" "proxy"];
       decision = "complete";
       projection_sha256 = builtins.hashString "sha256" "projection";
     };
-    placements.demo.app = {
-      host = "target";
-      host_resource = "host:demo-target";
-      transaction_id = "move-app";
-      projection_sha256 = builtins.hashString "sha256" "projection";
-    };
+    placements.demo.app.role = "target";
   };
   servicePlacements = import ../service-placements.nix {
     inherit (pkgs) lib;
@@ -42,12 +37,27 @@
           };
       };
   };
+  legacy = import ../service-placements.nix {
+    inherit (pkgs) lib;
+    document = {
+      schema_version = 1;
+      closeouts = {};
+      controller_reconcile_exclusions = [];
+      placements.demo.app = {
+        host = "target";
+        host_resource = "host:demo-target";
+        transaction_id = "move-app";
+        projection_sha256 = builtins.hashString "sha256" "projection";
+      };
+    };
+  };
 in
   assert servicePlacements.document.closeouts.move-app.decision == "complete";
   assert servicePlacements.document.closeouts.move-app.controller_reconcile;
   assert servicePlacements.document.controller_reconcile_exclusions == ["move-local"];
   assert placed.demo.appliedOverrides == {app = "target";};
   assert placed.demo.placements.primary.appliedOverrides == {app = "target";};
+  assert (legacy.applyToStacks {demo = stack;}).demo.appliedOverrides == {app = "target";};
   assert !(builtins.tryEval (builtins.deepSeq invalid.document true)).success;
     pkgs.runCommand "service-placements-flake-test" {} ''
       touch "$out"

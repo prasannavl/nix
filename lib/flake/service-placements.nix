@@ -12,11 +12,15 @@
     unknown = builtins.filter (name: !builtins.elem name allowed) (builtins.attrNames value);
   in
     require (unknown == []) "${context} has unknown fields: ${lib.concatStringsSep ", " unknown}";
+  loadFile = path:
+    if builtins.match ".*\\.json" (toString path) != null
+    then builtins.fromJSON (builtins.readFile path)
+    else import path;
   loaded =
     if document != null
     then document
     else if file != null && builtins.pathExists file
-    then builtins.fromJSON (builtins.readFile file)
+    then loadFile file
     else {
       schema_version = 1;
       closeouts = {};
@@ -25,11 +29,16 @@
     };
   validatePlacement = scope: service: placement:
     assert require (builtins.isAttrs placement) "placement ${scope}:${service} must be an object";
-    assert requireOnly ["host" "host_resource" "projection_sha256" "transaction_id"] placement "placement ${scope}:${service}";
-    assert require (builtins.isString placement.host && placement.host != "") "placement ${scope}:${service} host must be non-empty";
-    assert require (builtins.isString placement.host_resource && builtins.match "host:.+" placement.host_resource != null) "placement ${scope}:${service} host_resource must be canonical";
-    assert require (builtins.isString placement.transaction_id && placement.transaction_id != "") "placement ${scope}:${service} transaction_id must be non-empty";
-    assert require (builtins.isString placement.projection_sha256 && builtins.match "[0-9a-f]{64}" placement.projection_sha256 != null) "placement ${scope}:${service} projection_sha256 must be lowercase SHA-256"; placement;
+      if validatedSchemaVersion == 1
+      then
+        assert requireOnly ["host" "host_resource" "projection_sha256" "transaction_id"] placement "placement ${scope}:${service}";
+        assert require (builtins.isString placement.host && placement.host != "") "placement ${scope}:${service} host must be non-empty";
+        assert require (builtins.isString placement.host_resource && builtins.match "host:.+" placement.host_resource != null) "placement ${scope}:${service} host_resource must be canonical";
+        assert require (builtins.isString placement.transaction_id && placement.transaction_id != "") "placement ${scope}:${service} transaction_id must be non-empty";
+        assert require (builtins.isString placement.projection_sha256 && builtins.match "[0-9a-f]{64}" placement.projection_sha256 != null) "placement ${scope}:${service} projection_sha256 must be lowercase SHA-256"; placement
+      else
+        assert requireOnly ["role"] placement "placement ${scope}:${service}";
+        assert require (builtins.isString placement.role && placement.role != "") "placement ${scope}:${service} role must be non-empty"; placement;
   validateScope = scope: services:
     assert require (builtins.isString scope && scope != "") "placement scope must be non-empty";
     assert require (builtins.isAttrs services) "placement scope ${scope} must contain an attribute set";
@@ -44,9 +53,10 @@
     assert require (builtins.elem closeout.decision ["complete" "rollback"]) "closeout ${transaction} decision is unsupported";
     assert require (builtins.isString closeout.projection_sha256 && builtins.match "[0-9a-f]{64}" closeout.projection_sha256 != null) "closeout ${transaction} projection_sha256 must be lowercase SHA-256";
       closeout // {controller_reconcile = closeout.controller_reconcile or true;};
-  validated = assert require (builtins.isAttrs loaded) "document must be an object";
+  validatedSchemaVersion = assert require (builtins.isAttrs loaded) "document must be an object";
+    loaded.schema_version or null;
+  validated = assert require (builtins.elem validatedSchemaVersion [1 2]) "schema_version must be 1 or 2";
   assert requireOnly ["schema_version" "closeouts" "controller_reconcile_exclusions" "placements"] loaded "document";
-  assert require (loaded.schema_version == 1) "schema_version must be 1";
   assert require (builtins.isAttrs loaded.closeouts) "closeouts must be an attribute set";
   assert require (builtins.isList (loaded.controller_reconcile_exclusions or [])) "controller_reconcile_exclusions must be a list";
   assert require (lib.all (projection: builtins.isString projection && projection != "") (loaded.controller_reconcile_exclusions or [])) "controller_reconcile_exclusions must contain non-empty strings";
@@ -72,7 +82,8 @@ in rec {
 
   serviceRoleOverridesFor = scope: stack:
     builtins.mapAttrs
-    (_service: placement: roleForHostResource stack placement.host_resource)
+    (_service: placement:
+      placement.role or (roleForHostResource stack placement.host_resource))
     (validated.placements.${scope} or {});
 
   applyToStack = scope: stack: let
