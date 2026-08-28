@@ -2195,6 +2195,7 @@ in rec {
               nativeBuildInputs = (commonAttrs.nativeBuildInputs or []) ++ resolvedLintNativeBuildInputs;
             });
             test = craneLib.cargoTest (mkCraneCheckAttrs {
+              doCheck = true;
               cargoExtraArgs = shellWords resolvedCraneTestCargoArgs;
               nativeBuildInputs = (commonAttrs.nativeBuildInputs or []) ++ resolvedNativeCheckInputs;
             });

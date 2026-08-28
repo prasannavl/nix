@@ -20,7 +20,10 @@ The generated Rust check derivations follow the same model. `checks.fmt` uses
 `craneLib.cargoFmt`, while `checks.lint` and `checks.test` use
 `craneLib.cargoClippy` and `craneLib.cargoTest` with the shared `cargoArtifacts`
 dependency output. This keeps formatting, linting, testing, and the final
-package build separately cacheable.
+package build separately cacheable. The generated `checks.test` derivation
+forces `doCheck = true` after package build attributes are merged; a final
+package may deliberately set `doCheck = false` without silently turning its
+separate Cargo test gate into a no-op.
 
 The helper uses a filtered workspace source containing the root `Cargo.toml`,
 root `Cargo.lock`, and the selected package directory. During `prePatch`, the
