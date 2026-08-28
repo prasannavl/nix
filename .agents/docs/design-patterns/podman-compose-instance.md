@@ -15,6 +15,12 @@ structured Nix attrset merely to select Quadlet. The Quadlet backend compiles
 the staged Compose entry files in a normal Nix build and keeps its manifest
 opaque to evaluation, avoiding IFD.
 
+Compose `hostname` and `container_name` remain separate identities under the
+Quadlet backend. Compile `hostname` to Quadlet `HostName=` for applications such
+as RabbitMQ whose persisted node identity depends on the in-container hostname;
+compile `container_name` to `ContainerName=` for runtime ownership and operator
+addressing. Do not substitute one for the other.
+
 ## Attribute Order
 
 1. **Config flags** — `backend`, `state`, `autoStart`, `startPriority`,
@@ -235,9 +241,15 @@ from becoming fleet-wide data-plane restarts.
   sole restart owner; never emit Podman's `--restart` flag. Generated container
   failures propagate through the public service graph, and `StopWhenUnneeded`
   releases its stage, image, and network resources when that graph unwinds.
-  Derive service names centrally from structured or inline Compose sources;
-  inline parsing must preserve documents whose top-level keys have common
-  indentation.
+  Every generated container unit is also an independent runtime lifecycle owner,
+  so it must require the host-agent hold-readiness barrier and carry the same
+  service hold/activation and optional whole-host hold conditions as the public
+  service. Keep stage, image, and network units outside this execution gate so a
+  held target can still be prepared. Hold enforcement explicitly stops the
+  public unit and its current `ConsistsOf=` closure together; do not rely on
+  propagated `PartOf=` alone to suppress `Restart=always` children. Derive
+  service names centrally from structured or inline Compose sources; inline
+  parsing must preserve documents whose top-level keys have common indentation.
 - Keep long compose readiness waits outside the rootless mutation transaction.
   The helper releases the per-user lock after `podman compose up -d`, so
   independent applications can warm in parallel. Short Podman control-plane

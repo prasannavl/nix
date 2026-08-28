@@ -15,6 +15,7 @@
         healthcheck:
           test: [CMD-SHELL, pg_isready -U postgres]
           interval: 5s
+        hostname: stable-db
         networks:
           default:
             aliases: [database]
@@ -75,6 +76,14 @@
     subnet = "10.77.0.0/24";
     timeoutReadySeconds = 75;
     healthWaitProgram = "/nix/store/test-podman-quadlet-helper";
+    runtimeGate = {
+      readinessUnit = "abird-host-agent-holds-ready.service";
+      conditionPathExists = [
+        "|!/var/lib/abird-host-agent/holds/service.json"
+        "|/var/lib/abird-host-agent/activation-authorizations/service.json"
+        "!/var/lib/abird-host-agent/holds/host.json"
+      ];
+    };
     imageRewrites = {};
     policy = {
       composeArgs = [];
@@ -150,6 +159,20 @@
       subnet = null;
     }
   ));
+  invalidHostnameCompose = pkgs.writeText "invalid-hostname-compose.yml" ''
+    services:
+      app:
+        image: docker.io/library/busybox:latest
+        hostname: false
+  '';
+  invalidHostnameConfig = pkgs.writeText "invalid-hostname-quadlet-input.json" (builtins.toJSON (
+    bundleConfig
+    // {
+      composeFiles = [invalidHostnameCompose];
+      projectEnvFile = null;
+      subnet = null;
+    }
+  ));
   invalidStoreCompose = pkgs.writeText "invalid-store-compose.yml" ''
     services:
       app:
@@ -195,6 +218,7 @@ in
     fi
     grep -F 'ContainerName=env-project_db_1' "$db"
     grep -F 'ContainerName=env-project_web_1' "$web"
+    grep -F 'HostName=stable-db' "$db"
     grep -F 'HealthOnFailure=kill' "$db"
     if grep -F 'ExecStartPost=' "$db" "$web"; then
       echo "container health wait unexpectedly blocks systemd restart handling" >&2
@@ -232,6 +256,11 @@ in
     fi
     grep -F 'Restart=always' "$db"
     grep -F 'PartOf=test-native.service' "$db"
+    grep -F 'Requires=abird-host-agent-holds-ready.service' "$db"
+    grep -F 'After=abird-host-agent-holds-ready.service' "$db"
+    grep -F 'ConditionPathExists=|!/var/lib/abird-host-agent/holds/service.json' "$db"
+    grep -F 'ConditionPathExists=|/var/lib/abird-host-agent/activation-authorizations/service.json' "$db"
+    grep -F 'ConditionPathExists=!/var/lib/abird-host-agent/holds/host.json' "$db"
     grep -F 'StopWhenUnneeded=true' "$db"
     grep -F 'Requires=test-native-stage.service' "$db"
     grep -F 'Before=test-native.service' "$db"
@@ -295,6 +324,15 @@ in
       exit 1
     fi
     grep -F 'service_healthy dependency target db has no healthcheck' "$TMPDIR/invalid-health.err"
+
+    if python ${../quadlet-compiler.py} \
+      --config ${invalidHostnameConfig} \
+      --output "$TMPDIR/invalid-hostname" \
+      2> "$TMPDIR/invalid-hostname.err"; then
+      echo "non-string Compose hostname unexpectedly compiled" >&2
+      exit 1
+    fi
+    grep -F 'service app hostname must be a nonempty string' "$TMPDIR/invalid-hostname.err"
 
     if python ${../quadlet-compiler.py} \
       --config ${invalidStoreConfig} \

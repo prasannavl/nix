@@ -12,6 +12,7 @@
   exposedPortsLib = import ../services/exposed-ports {inherit lib;};
   nginxLib = import ../services/nginx {inherit lib;};
   tunnelsLib = import ../services/tunnels {inherit lib;};
+  hostAgentHoldGate = import ../services/abird-host-agent/hold-gate.nix;
   composeBackend = import ./compose.nix {inherit lib;};
   quadletBackend = import ./quadlet.nix {inherit lib pkgs;};
   writeJSON = name: value: let
@@ -3728,7 +3729,9 @@ in {
               nativeComposeEntryFiles = baseEntryFiles ++ generatedOverrideFiles;
               nativeBundle =
                 if normalizedService.backend == "quadlet"
-                then
+                then let
+                  hostAgentResource = "service:${nativeSystemdServiceName}";
+                in
                   quadletBackend.mkBundle {
                     name = nativeSystemdServiceName;
                     config = {
@@ -3746,6 +3749,22 @@ in {
                       envSecretRuntimePaths = envSecretRuntimePaths;
                       timeoutReadySeconds = normalizedService.timeoutReadySeconds;
                       healthWaitProgram = quadletHelperScript;
+                      runtimeGate =
+                        if config.services.abird-host-agent.enable
+                        then {
+                          readinessUnit = hostAgentHoldGate.userReadinessUnit;
+                          conditionPathExists =
+                            hostAgentHoldGate.conditionsFor {
+                              stateDirectory = config.services.abird-host-agent.stateDirectory;
+                              resource = hostAgentResource;
+                            }
+                            ++ lib.optionals config.services.abird-host-agent.manageHostResource (hostAgentHoldGate.conditionsFor {
+                              stateDirectory = config.services.abird-host-agent.stateDirectory;
+                              resource = "host:${config.networking.hostName}";
+                              isHostResource = true;
+                            });
+                        }
+                        else null;
                       fileSecrets =
                         lib.mapAttrsToList (secretName: entry: {
                           name = secretName;

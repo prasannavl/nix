@@ -135,6 +135,54 @@ UNSET
         )
         self.assertEqual(entries, list_entries)
 
+    def test_runtime_gate_is_strict_and_runtime_scoped(self):
+        entries = self.module.runtime_gate_entries(
+            {
+                "runtimeGate": {
+                    "readinessUnit": "abird-host-agent-holds-ready.service",
+                    "conditionPathExists": [
+                        "|!/var/lib/abird-host-agent/holds/service.json",
+                        "|/var/lib/abird-host-agent/activation-authorizations/service.json",
+                    ],
+                }
+            }
+        )
+        self.assertEqual(
+            [
+                ("Requires", "abird-host-agent-holds-ready.service", False),
+                ("After", "abird-host-agent-holds-ready.service", False),
+                (
+                    "ConditionPathExists",
+                    "|!/var/lib/abird-host-agent/holds/service.json",
+                    False,
+                ),
+                (
+                    "ConditionPathExists",
+                    "|/var/lib/abird-host-agent/activation-authorizations/service.json",
+                    False,
+                ),
+            ],
+            entries,
+        )
+        with self.assertRaisesRegex(self.module.CompileError, "absolute paths"):
+            self.module.runtime_gate_entries(
+                {
+                    "runtimeGate": {
+                        "readinessUnit": "abird-host-agent-holds-ready.service",
+                        "conditionPathExists": ["relative/path"],
+                    }
+                }
+            )
+        with self.assertRaisesRegex(self.module.CompileError, "valid service unit"):
+            self.module.runtime_gate_entries(
+                {
+                    "runtimeGate": {
+                        "readinessUnit": "/tmp/holds-ready.service",
+                        "conditionPathExists": ["!/var/lib/holds/service.json"],
+                    }
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

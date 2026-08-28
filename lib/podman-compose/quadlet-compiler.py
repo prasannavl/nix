@@ -37,6 +37,7 @@ ALLOWED_SERVICE_KEYS = {
     "extra_hosts",
     "group_add",
     "healthcheck",
+    "hostname",
     "image",
     "ipc",
     "mem_limit",
@@ -692,8 +693,49 @@ def validate_policy(config: dict[str, Any]) -> None:
         fail("; ".join(reasons))
 
 
+def runtime_gate_entries(config: dict[str, Any]) -> list[tuple[str, Any, bool]]:
+    gate = config.get("runtimeGate")
+    if gate is None:
+        return []
+    if not isinstance(gate, dict) or set(gate) != {
+        "conditionPathExists",
+        "readinessUnit",
+    }:
+        fail("runtimeGate must contain readinessUnit and conditionPathExists")
+
+    readiness_unit = gate["readinessUnit"]
+    if (
+        not isinstance(readiness_unit, str)
+        or not readiness_unit.endswith(".service")
+        or readiness_unit.startswith("-")
+        or "/" in readiness_unit
+        or "\0" in readiness_unit
+        or any(character.isspace() for character in readiness_unit)
+    ):
+        fail("runtimeGate readinessUnit must be a valid service unit")
+
+    conditions = gate["conditionPathExists"]
+    if not isinstance(conditions, list) or not conditions:
+        fail("runtimeGate conditionPathExists must be a nonempty string list")
+    for condition in conditions:
+        if not isinstance(condition, str) or not condition:
+            fail("runtimeGate conditionPathExists must be a nonempty string list")
+        path = condition.removeprefix("|").removeprefix("!")
+        if not path.startswith("/") or any(
+            character in condition for character in "\0\r\n"
+        ):
+            fail("runtimeGate conditions must contain absolute paths")
+
+    return [
+        ("Requires", readiness_unit, False),
+        ("After", readiness_unit, False),
+        *[("ConditionPathExists", condition, False) for condition in conditions],
+    ]
+
+
 def compile_bundle(config: dict[str, Any], output: Path) -> None:
     validate_policy(config)
+    runtime_gate = runtime_gate_entries(config)
     timeout_ready_seconds = config.get("timeoutReadySeconds")
     if (
         isinstance(timeout_ready_seconds, bool)
@@ -832,6 +874,10 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
             fail(f"service {name} has unsupported keys: {', '.join(sorted(unknown))}")
         if "attach" in raw and not isinstance(raw["attach"], bool):
             fail(f"service {name} attach must be a boolean")
+        if "hostname" in raw and (
+            not isinstance(raw["hostname"], str) or not raw["hostname"]
+        ):
+            fail(f"service {name} hostname must be a nonempty string")
         deps, healthy = dependency_info(name, raw.get("depends_on", []), known)
         dependencies[name] = deps
         healthy_dependencies[name] = healthy
@@ -980,7 +1026,7 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
             ("Requires", stage_unit, False),
             ("After", stage_unit, False),
             ("Before", public_unit, False),
-        ]
+        ] + runtime_gate
         if dependency_units:
             joined = " ".join(dependency_units)
             unit_entries.extend([("Requires", joined, False), ("After", joined, False)])
@@ -992,6 +1038,8 @@ def compile_bundle(config: dict[str, Any], output: Path) -> None:
             ("Network", network_file, False),
             ("NetworkAlias", name, False),
         ]
+        if "hostname" in raw:
+            container_entries.append(("HostName", raw["hostname"], False))
         service_networks = raw.get("networks", {})
         if isinstance(service_networks, list):
             if service_networks not in ([], ["default"]):

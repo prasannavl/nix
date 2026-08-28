@@ -389,6 +389,8 @@
   runtimePreflightUnit = config.systemd.user.services.podman-runtime-preflight-tester;
   appHoldPath = "/var/lib/abird-host-agent/holds/${builtins.hashString "sha256" "service:demo-app"}.json";
   appActivationPath = "/var/lib/abird-host-agent/activation-authorizations/${builtins.hashString "sha256" "service:demo-app"}.json";
+  nativeHoldPath = "/var/lib/abird-host-agent/holds/${builtins.hashString "sha256" "service:demo-native"}.json";
+  nativeActivationPath = "/var/lib/abird-host-agent/activation-authorizations/${builtins.hashString "sha256" "service:demo-native"}.json";
   hostHoldPath = "/var/lib/abird-host-agent/holds/${builtins.hashString "sha256" "host:podman-compose-test"}.json";
   migrationGateCondition = ["|!${appHoldPath}" "|${appActivationPath}" "!${hostHoldPath}"];
   hasMigrationGateConditions = conditions:
@@ -1030,6 +1032,11 @@ in
       ! grep -Fq '100%%%%' "$native_quadlet"
       grep -F 'Restart=always' "$native_quadlet"
       grep -F 'PartOf=demo-native.service' "$native_quadlet"
+      grep -F 'Requires=abird-host-agent-holds-ready.service' "$native_quadlet"
+      grep -F 'After=abird-host-agent-holds-ready.service' "$native_quadlet"
+      grep -F 'ConditionPathExists=|!${nativeHoldPath}' "$native_quadlet"
+      grep -F 'ConditionPathExists=|${nativeActivationPath}' "$native_quadlet"
+      grep -F 'ConditionPathExists=!${hostHoldPath}' "$native_quadlet"
       grep -F 'Requires=demo-native-stage.service' "$native_quadlet"
       grep -F 'StopWhenUnneeded=true' "$native_quadlet"
       grep -F 'Before=demo-native.service' "$native_quadlet"
@@ -1049,6 +1056,11 @@ in
       grep -F 'Requires=demo-native-network-network.service' "$generated"
       grep -F 'After=demo-native-network-network.service' "$generated"
       grep -F 'Restart=always' "$generated"
+      grep -F 'Requires=abird-host-agent-holds-ready.service' "$generated"
+      grep -F 'After=abird-host-agent-holds-ready.service' "$generated"
+      grep -F 'ConditionPathExists=|!${nativeHoldPath}' "$generated"
+      grep -F 'ConditionPathExists=|${nativeActivationPath}' "$generated"
+      grep -F 'ConditionPathExists=!${hostHoldPath}' "$generated"
       grep -F 'TimeoutStartSec=45' "$generated"
       grep -F "Requires=$image_unit" "$generated"
       grep -F '${pkgs.podman}/bin/podman run' "$generated"
