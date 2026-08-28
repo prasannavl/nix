@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::Write;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::programs::nix::Nix;
-use crate::progress::{ProgressReporter, StepProgress};
+use crate::progress::{ProgressReporter, StepProgress, command_reporter};
 use crate::projection::{DesiredResourceState, PhaseProjection, ProjectionEffect};
 use crate::repository::Repository;
 use crate::service_registry::resolve_service_host;
@@ -29,6 +29,17 @@ use crate::ssh_runtime::SshRuntime;
 use crate::workflow::{InstanceEndpoint, MoveItem};
 use crate::workflow_runtime::TransactionRecord;
 use crate::{Action, Adapter, ResourceKind, Transaction, deterministic_job_id};
+
+#[derive(Debug)]
+pub struct RenderedInventoryCommandFailure;
+
+impl std::fmt::Display for RenderedInventoryCommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("inventory command failure was already rendered")
+    }
+}
+
+impl std::error::Error for RenderedInventoryCommandFailure {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -213,6 +224,14 @@ pub struct NativeAdapter {
     config: HostManagerConfig,
     progress: ProgressReporter,
     projection: Option<PhaseProjection>,
+    local_nixbot: Option<LocalNixbotExecution>,
+}
+
+#[derive(Clone, Debug)]
+struct LocalNixbotExecution {
+    repository_root: PathBuf,
+    nix_program: PathBuf,
+    revision: String,
 }
 
 #[derive(Clone, Copy)]
@@ -383,6 +402,7 @@ impl HostManagerConfig {
                     groups,
                     nixbot_deploy: Some(NixbotDeployRequest {
                         host: name.clone(),
+                        revision: None,
                         nix_config: None,
                         exclude_hosts: parent.into_iter().collect(),
                     }),
@@ -1195,8 +1215,11 @@ impl HostManagerConfig {
             return Ok(());
         }
         let remote = shell_join(argv)?;
+        let allocate_tty = std::io::stdin().is_terminal()
+            && std::io::stdout().is_terminal()
+            && std::io::stderr().is_terminal();
         let status = self
-            .inventory_ssh_command(host_name, host, forward_agent)?
+            .inventory_ssh_command(host_name, host, forward_agent, allocate_tty)?
             .arg(remote)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -1204,9 +1227,33 @@ impl HostManagerConfig {
             .status()
             .with_context(|| format!("run inventory command on host {host_name:?}"))?;
         if !status.success() {
-            bail!("inventory command on host {host_name:?} failed with {status}");
+            return Err(RenderedInventoryCommandFailure.into());
         }
         Ok(())
+    }
+
+    pub fn run_inventory_command(
+        &self,
+        host_name: &str,
+        argv: &[String],
+        forward_agent: bool,
+    ) -> Result<Output> {
+        if argv.is_empty() {
+            bail!("remote inventory command argv cannot be empty");
+        }
+        validate_argv("remote inventory command", argv)?;
+        let host = self.host(host_name)?;
+        if host.local {
+            return Command::new(&argv[0])
+                .args(&argv[1..])
+                .output()
+                .with_context(|| format!("run local inventory command for {host_name:?}"));
+        }
+        let remote = shell_join(argv)?;
+        self.inventory_ssh_command(host_name, host, forward_agent, false)?
+            .arg(remote)
+            .output()
+            .with_context(|| format!("run inventory command on host {host_name:?}"))
     }
 
     fn inventory_ssh_command(
@@ -1214,10 +1261,14 @@ impl HostManagerConfig {
         host_name: &str,
         host: &Host,
         forward_agent: bool,
+        allocate_tty: bool,
     ) -> Result<Command> {
         let mut command = self.ssh_base_command(host_name, host, TransportRole::Primary)?;
         if forward_agent {
             command.arg("-A");
+        }
+        if allocate_tty {
+            command.arg("-t");
         }
         command
             .arg("--")
@@ -1548,6 +1599,51 @@ fn escape_proxy_tokens(command: &str) -> String {
     command.replace('%', "%%")
 }
 
+pub fn run_local_nixbot_deploy(
+    nix_program: &Path,
+    repository_root: &Path,
+    request: &NixbotDeployRequest,
+) -> Result<()> {
+    let revision = request
+        .revision
+        .as_deref()
+        .context("local Nixbot deploy request has no committed revision")?;
+    let mut command = Command::new(nix_program);
+    command
+        .current_dir(repository_root)
+        .args(["run", ".#nixbot", "--", "deploy", "--sha", revision]);
+    if request.exclude_hosts.is_empty() {
+        command.args(["--host", request.host.as_str()]);
+    } else {
+        let hosts = std::iter::once(request.host.clone())
+            .chain(request.exclude_hosts.iter().map(|host| format!("-{host}")))
+            .collect::<Vec<_>>()
+            .join(",");
+        command.args(["--hosts", &hosts]);
+    }
+    if let Some(nix_config) = &request.nix_config {
+        command.args(["--nix-config", nix_config]);
+    }
+    let status = command
+        .args([
+            "--build-plan-jobs",
+            "1",
+            "--build-jobs",
+            "1",
+            "--deploy-jobs",
+            "1",
+            "--verify-jobs",
+            "1",
+            "--no-rollback",
+        ])
+        .status()
+        .context("run Nixbot from the local repository checkout")?;
+    if !status.success() {
+        bail!("local Nixbot deployment failed with {status}");
+    }
+    Ok(())
+}
+
 fn host_ssh_options(host: &Host) -> Vec<String> {
     let mut options = host.ssh_args.clone();
     if let Some(known_hosts) = &host.known_hosts_file {
@@ -1569,8 +1665,9 @@ impl NativeAdapter {
     pub fn load(path: &Path) -> Result<Self> {
         Ok(Self {
             config: HostManagerConfig::load(path)?,
-            progress: ProgressReporter::new(true),
+            progress: command_reporter().clone(),
             projection: None,
+            local_nixbot: None,
         })
     }
 
@@ -1579,11 +1676,16 @@ impl NativeAdapter {
             config,
             progress: ProgressReporter::new(false),
             projection: None,
+            local_nixbot: None,
         }
     }
 
     pub fn with_progress(mut self, show_progress: bool) -> Self {
-        self.progress = ProgressReporter::new(show_progress);
+        self.progress = if show_progress {
+            command_reporter().clone()
+        } else {
+            ProgressReporter::new(false)
+        };
         self
     }
 
@@ -1591,6 +1693,30 @@ impl NativeAdapter {
         projection.validate()?;
         self.projection = Some(projection);
         Ok(())
+    }
+
+    pub fn bind_local_nixbot(
+        &mut self,
+        repository_root: PathBuf,
+        nix_program: PathBuf,
+        revision: String,
+    ) -> Result<()> {
+        if revision.is_empty() {
+            bail!("local Nixbot execution requires a committed repository revision");
+        }
+        self.local_nixbot = Some(LocalNixbotExecution {
+            repository_root,
+            nix_program,
+            revision,
+        });
+        Ok(())
+    }
+
+    fn localize_nixbot_request(&self, mut request: NixbotDeployRequest) -> NixbotDeployRequest {
+        if let Some(local) = &self.local_nixbot {
+            request.revision = Some(local.revision.clone());
+        }
+        request
     }
 
     /// Re-read the immutable final-verification jobs that completed Prepare.
@@ -1719,6 +1845,124 @@ impl NativeAdapter {
         Ok(Some(evidence))
     }
 
+    /// Break-glass completion deliberately does not manufacture run evidence.
+    /// It does, however, prove the currently projected endpoint/hold posture
+    /// and idempotently converge every projected route before closeout.
+    pub fn verify_forced_completion(&self, converge_routes: bool) -> Result<Value> {
+        let projection = self
+            .projection
+            .as_ref()
+            .context("forced completion requires a bound projection")?;
+        let mut endpoints = Vec::new();
+        for projected in &projection.resources {
+            if !matches!(
+                projected.endpoint.desired_state,
+                DesiredResourceState::Held | DesiredResourceState::Active
+            ) {
+                continue;
+            }
+            let endpoint = &projected.endpoint;
+            let hold = self.config.run_agent(
+                &endpoint.host,
+                &[
+                    "--json".to_owned(),
+                    "hold".to_owned(),
+                    "status".to_owned(),
+                    "--resource".to_owned(),
+                    endpoint.resource.clone(),
+                ],
+            )?;
+            let retained = hold
+                .pointer("/result/hold")
+                .context("forced completion endpoint is not projection-held")?;
+            if retained
+                .pointer("/projection/projection_digest")
+                .and_then(Value::as_str)
+                != Some(projection.projection_sha256.as_str())
+                || retained
+                    .pointer("/projection/generation")
+                    .and_then(Value::as_u64)
+                    != Some(projection.generation)
+                || retained.get("transaction_id").and_then(Value::as_str)
+                    != endpoint.transaction_id.as_deref()
+            {
+                bail!(
+                    "forced completion endpoint {:?} does not retain the exact projected hold",
+                    endpoint.resource
+                );
+            }
+            let operation = match endpoint.desired_state {
+                DesiredResourceState::Held => vec![
+                    "--json".to_owned(),
+                    "resource".to_owned(),
+                    "status".to_owned(),
+                    "--resource".to_owned(),
+                    endpoint.resource.clone(),
+                    "--expect".to_owned(),
+                    "inactive".to_owned(),
+                ],
+                DesiredResourceState::Active => vec![
+                    "--json".to_owned(),
+                    "resource".to_owned(),
+                    "ready".to_owned(),
+                    "--resource".to_owned(),
+                    endpoint.resource.clone(),
+                ],
+                _ => unreachable!(),
+            };
+            let observed = self.config.run_agent(&endpoint.host, &operation)?;
+            endpoints.push(json!({
+                "host": endpoint.host,
+                "resource": endpoint.resource,
+                "desired_state": endpoint.desired_state,
+                "observed_sha256": digest_bytes(&serde_json::to_vec(&observed)?),
+            }));
+        }
+
+        let mut routes = Vec::new();
+        for effect in &projection.effects {
+            let ProjectionEffect::RouteProfile {
+                profile,
+                executor_host,
+                executor_resource,
+                ..
+            } = effect
+            else {
+                continue;
+            };
+            let job_id = format!(
+                "forced-close-route-{}",
+                &digest_bytes(
+                    format!(
+                        "{}\0{}\0{}\0{}",
+                        projection.projection_id,
+                        projection.projection_sha256,
+                        executor_resource,
+                        profile
+                    )
+                    .as_bytes()
+                )[..24]
+            );
+            if converge_routes {
+                self.run_profile_job(
+                    executor_host,
+                    &job_id,
+                    &projection.projection_id,
+                    executor_resource,
+                    &["--file-state".to_owned(), profile.clone()],
+                )?;
+            }
+            routes.push(json!({
+                "executor_host": executor_host,
+                "executor_resource": executor_resource,
+                "profile": profile,
+                "job_id": job_id,
+                "status": if converge_routes { "converged" } else { "deferred" },
+            }));
+        }
+        Ok(json!({"endpoints": endpoints, "routes": routes}))
+    }
+
     pub fn progress(&self) -> &ProgressReporter {
         &self.progress
     }
@@ -1749,6 +1993,22 @@ impl NativeAdapter {
         ensure_data_paths(&source, &transaction.source, &source_resource)?;
 
         if action == Action::Setup {
+            let readiness = self.config.run_agent(
+                &transaction.source,
+                &[
+                    "--json".to_owned(),
+                    "resource".to_owned(),
+                    "ready".to_owned(),
+                    "--resource".to_owned(),
+                    source_resource.clone(),
+                ],
+            )?;
+            if readiness.pointer("/result/ready").and_then(Value::as_bool) != Some(true) {
+                bail!(
+                    "source resource {source_resource:?} on {:?} is not ready",
+                    transaction.source
+                );
+            }
             let target_probe = self.config.run_agent(
                 &transaction.target,
                 &["--json".to_owned(), "job".to_owned(), "list".to_owned()],
@@ -1913,17 +2173,26 @@ impl NativeAdapter {
         self.config.host(executor)?;
         let nixbot_request = if route.kind == RoutedOperationKind::NixbotDeploy {
             Some(
-                self.config.resolve_nixbot_deploy_request(
-                    route
-                        .nixbot_deploy
-                        .as_ref()
-                        .context("validated Nixbot route has no deployment request")?,
-                    transaction,
-                )?,
+                self.localize_nixbot_request(
+                    self.config.resolve_nixbot_deploy_request(
+                        route
+                            .nixbot_deploy
+                            .as_ref()
+                            .context("validated Nixbot route has no deployment request")?,
+                        transaction,
+                    )?,
+                ),
             )
         } else {
             None
         };
+        if let (Some(local), Some(request)) = (&self.local_nixbot, &nixbot_request) {
+            validate_nixbot_deploy_request(request)?;
+            if request.revision.as_deref() != Some(local.revision.as_str()) {
+                bail!("local Nixbot route did not resolve the invoking repository revision");
+            }
+            return Ok(());
+        }
         let executor_resource = self.transaction_resource_for_host(transaction, executor)?;
         let resource = route.resource.as_deref().unwrap_or(&executor_resource);
         let declaration =
@@ -2163,6 +2432,65 @@ impl NativeAdapter {
         Ok(())
     }
 
+    /// Persist an exact host-agent job without waiting for it. This is the
+    /// handoff used by controller self-deployment: the manager releases its
+    /// authority lock before the new generation's closeout reconciler runs.
+    pub fn submit_profile_job_deferred(
+        &self,
+        host: &str,
+        job_id: &str,
+        transaction_id: &str,
+        resource: &str,
+        operation_args: &[String],
+    ) -> Result<Value> {
+        let spec = self.materialize_profile_job_spec(
+            host,
+            job_id,
+            transaction_id,
+            resource,
+            operation_args,
+        )?;
+        let status_args = [
+            "--json".to_owned(),
+            "job".to_owned(),
+            "status".to_owned(),
+            "--job-id".to_owned(),
+            job_id.to_owned(),
+        ];
+        if let Ok(existing) = self.config.run_agent(host, &status_args) {
+            let existing_spec = existing
+                .pointer("/result/spec")
+                .context("existing agent job status has no immutable spec")?;
+            if !retry_spec_matches(existing_spec, &spec) {
+                bail!(
+                    "host-agent job {job_id:?} already exists with a different immutable specification"
+                );
+            }
+            return existing
+                .pointer("/result")
+                .cloned()
+                .context("existing agent job status has no job record");
+        }
+        let encoded_spec =
+            serde_json::to_vec(&spec).context("serialize materialized agent job spec")?;
+        let submitted = self.config.run_agent_with_input(
+            host,
+            &[
+                "--json".to_owned(),
+                "job".to_owned(),
+                "submit".to_owned(),
+                "--spec".to_owned(),
+                "-".to_owned(),
+                "--defer".to_owned(),
+            ],
+            &encoded_spec,
+        )?;
+        submitted
+            .pointer("/result/job")
+            .cloned()
+            .context("agent job submission has no job record")
+    }
+
     pub fn run_profile_job_result(
         &self,
         host: &str,
@@ -2258,18 +2586,35 @@ impl NativeAdapter {
         let heartbeat_interval = Duration::from_secs(10);
         let mut last_report = Instant::now();
         let poll_interval = Duration::from_millis(self.config.ssh.agent_poll_interval_ms);
+        let deploy_logs = operation_args
+            .iter()
+            .any(|argument| argument == "--nixbot-deploy");
+        let mut log_toggle = InteractiveLogToggle::new(deploy_logs && self.progress.enabled());
+        let mut logs_visible = false;
+        let mut last_log_sequence = 0_u64;
+        if log_toggle.active() {
+            self.progress.detail("Waiting · press l for deploy logs");
+        }
         let mut last_transport_error = None;
         let mut last_progress = None;
         loop {
             if Instant::now() >= deadline {
                 let progress = last_progress
                     .as_ref()
-                    .map(|progress| format_job_progress(host, job_id, progress))
+                    .map(|progress| format_job_progress(progress, polling_started.elapsed()))
                     .unwrap_or_else(|| "none".to_owned());
                 bail!(
                     "timed out waiting for host-agent job {job_id:?}; last progress: {progress}; last transport error: {}",
                     last_transport_error.as_deref().unwrap_or("none")
                 );
+            }
+            if log_toggle.poll_toggle() {
+                logs_visible = !logs_visible;
+                self.progress.message(if logs_visible {
+                    "  Deploy logs visible · press l to hide"
+                } else {
+                    "  Deploy logs hidden · press l to show"
+                });
             }
             thread::sleep(poll_interval);
             let value = match self.config.run_agent(host, &status_args) {
@@ -2286,9 +2631,21 @@ impl NativeAdapter {
                 && progress != &Value::Null
                 && last_progress.as_ref() != Some(progress)
             {
-                if self.progress.enabled() {
-                    eprintln!("{}", format_job_progress(host, job_id, progress));
+                if logs_visible {
+                    for (sequence, _stream, line) in
+                        command_log_lines_after(progress, last_log_sequence)
+                    {
+                        self.progress.message(format!("  │ {line}"));
+                        last_log_sequence = last_log_sequence.max(sequence);
+                    }
                 }
+                let mut detail = format_job_progress(progress, polling_started.elapsed());
+                if log_toggle.active()
+                    && progress.get("kind").and_then(Value::as_str) == Some("command_log")
+                {
+                    detail.push_str(" · l logs");
+                }
+                self.progress.detail(detail);
                 last_progress = Some(progress.clone());
                 last_report = Instant::now();
             }
@@ -2297,10 +2654,10 @@ impl NativeAdapter {
                 .and_then(Value::as_str)
                 .context("agent job status response has no status")?;
             if self.progress.enabled() && last_report.elapsed() >= heartbeat_interval {
-                eprintln!(
-                    "[{host}][job {job_id}] {status}; waiting for {}",
+                self.progress.detail(format!(
+                    "Waiting · {status} · {}",
                     format_wait_duration(polling_started.elapsed())
-                );
+                ));
                 last_report = Instant::now();
             }
             match status {
@@ -2401,18 +2758,25 @@ impl NativeAdapter {
             RoutedOperationKind::Deploy => {
                 vec!["--deploy".to_owned(), agent_operation.to_owned()]
             }
-            RoutedOperationKind::NixbotDeploy => vec![
-                "--nixbot-deploy".to_owned(),
-                serde_json::to_string(
-                    &self.config.resolve_nixbot_deploy_request(
+            RoutedOperationKind::NixbotDeploy => {
+                let request = self.localize_nixbot_request(
+                    self.config.resolve_nixbot_deploy_request(
                         route
                             .nixbot_deploy
                             .as_ref()
                             .context("validated Nixbot deployment route has no request")?,
                         transaction,
                     )?,
-                )?,
-            ],
+                );
+                if let Some(local) = &self.local_nixbot {
+                    run_local_nixbot_deploy(&local.nix_program, &local.repository_root, &request)?;
+                    return Ok(());
+                }
+                vec![
+                    "--nixbot-deploy".to_owned(),
+                    serde_json::to_string(&request)?,
+                ]
+            }
         };
         self.run_job(executor, transaction, resource, &arguments)
     }
@@ -2605,7 +2969,18 @@ fn retry_spec_matches(existing: &Value, desired: &Value) -> bool {
     enriched == *desired
 }
 
-fn format_job_progress(host: &str, job_id: &str, progress: &Value) -> String {
+pub fn format_job_progress(progress: &Value, elapsed: Duration) -> String {
+    if progress.get("kind").and_then(Value::as_str) == Some("command_log") {
+        let detail = progress
+            .get("tail")
+            .and_then(Value::as_array)
+            .and_then(|tail| tail.last())
+            .and_then(|entry| entry.get("line"))
+            .and_then(Value::as_str)
+            .map(|line| format!(" · {}", truncate_display(line, 96)))
+            .unwrap_or_default();
+        return format!("Deploying{detail}");
+    }
     let stage = progress
         .get("stage")
         .and_then(Value::as_str)
@@ -2613,27 +2988,177 @@ fn format_job_progress(host: &str, job_id: &str, progress: &Value) -> String {
     let engine = progress
         .get("engine")
         .and_then(Value::as_str)
-        .map(|value| format!(" via {value}"))
+        .map(|value| format!(" · {value}"))
         .unwrap_or_default();
     let entries = progress
         .get("entries_completed")
         .and_then(Value::as_u64)
         .zip(progress.get("total_entries").and_then(Value::as_u64))
-        .map(|(completed, total)| format!("; entries {completed}/{total}"))
+        .filter(|(_, total)| *total > 0)
+        .map(|(completed, total)| format!(" · {completed}/{total} entries"))
         .unwrap_or_default();
-    let bytes = progress
-        .get("bytes_completed")
-        .and_then(Value::as_u64)
-        .zip(progress.get("total_bytes").and_then(Value::as_u64))
-        .map(|(completed, total)| format!("; bytes {completed}/{total}"))
+    let bytes_completed = progress.get("bytes_completed").and_then(Value::as_u64);
+    let total_bytes = progress.get("total_bytes").and_then(Value::as_u64);
+    let bytes = bytes_completed
+        .zip(total_bytes)
+        .filter(|(_, total)| *total > 0)
+        .map(|(completed, total)| {
+            format!(
+                " · {}% · {} / {}",
+                completed.saturating_mul(100) / total,
+                format_bytes(completed),
+                format_bytes(total)
+            )
+        })
+        .unwrap_or_default();
+    let rate_and_eta = bytes_completed
+        .zip(total_bytes)
+        .filter(|(completed, total)| *completed > 0 && *completed < *total)
+        .and_then(|(completed, total)| {
+            let seconds = elapsed.as_secs_f64();
+            (seconds >= 0.5).then(|| {
+                let bytes_per_second = completed as f64 / seconds;
+                let remaining_seconds = (total - completed) as f64 / bytes_per_second;
+                format!(
+                    " · {}/s · {} left",
+                    format_bytes(bytes_per_second as u64),
+                    format_wait_duration(Duration::from_secs_f64(remaining_seconds))
+                )
+            })
+        })
         .unwrap_or_default();
     let detail = progress
         .get("detail")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .map(|value| format!("; {value}"))
+        .map(|value| format!(" · {value}"))
         .unwrap_or_default();
-    format!("[{host} {job_id}] {stage}{engine}{entries}{bytes}{detail}")
+    format!(
+        "{}{engine}{bytes}{rate_and_eta}{entries}{detail}",
+        sentence_case(stage)
+    )
+}
+
+fn command_log_lines_after(progress: &Value, after: u64) -> Vec<(u64, &str, &str)> {
+    progress
+        .get("tail")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let sequence = entry.get("sequence")?.as_u64()?;
+            (sequence > after).then(|| {
+                (
+                    sequence,
+                    entry
+                        .get("stream")
+                        .and_then(Value::as_str)
+                        .unwrap_or("stdout"),
+                    entry.get("line").and_then(Value::as_str).unwrap_or(""),
+                )
+            })
+        })
+        .collect()
+}
+
+fn truncate_display(value: &str, limit: usize) -> String {
+    let mut characters = value.chars();
+    let prefix = characters.by_ref().take(limit).collect::<String>();
+    if characters.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+struct InteractiveLogToggle {
+    original: Option<libc::termios>,
+}
+
+impl InteractiveLogToggle {
+    fn new(requested: bool) -> Self {
+        if !requested || !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+            return Self { original: None };
+        }
+        let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
+        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
+            return Self { original: None };
+        }
+        let mut raw = original;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        raw.c_cc[libc::VMIN] = 0;
+        raw.c_cc[libc::VTIME] = 0;
+        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
+            return Self { original: None };
+        }
+        Self {
+            original: Some(original),
+        }
+    }
+
+    fn active(&self) -> bool {
+        self.original.is_some()
+    }
+
+    fn poll_toggle(&mut self) -> bool {
+        if !self.active() {
+            return false;
+        }
+        let mut descriptor = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut descriptor, 1, 0) } <= 0 {
+            return false;
+        }
+        let mut toggle = false;
+        let mut byte = 0_u8;
+        while unsafe {
+            libc::read(
+                libc::STDIN_FILENO,
+                (&mut byte as *mut u8).cast(),
+                std::mem::size_of::<u8>(),
+            )
+        } == 1
+        {
+            toggle |= matches!(byte, b'l' | b'L');
+        }
+        toggle
+    }
+}
+
+impl Drop for InteractiveLogToggle {
+    fn drop(&mut self) {
+        if let Some(original) = &self.original {
+            let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
+        }
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else if value >= 10.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn sentence_case(value: &str) -> String {
+    let mut characters = value.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => String::new(),
+    }
 }
 
 fn format_wait_duration(duration: Duration) -> String {
@@ -2871,13 +3396,23 @@ impl<'a> WorkflowItemAdapter<'a> {
         transaction: &Transaction,
         projection: &PhaseProjection,
     ) -> Result<Value> {
-        let operations = [
-            "hold-source",
-            "hold-target",
-            "assert-source-stopped",
-            "assert-target-stopped",
-            "verify-final",
-        ];
+        let operations = if transaction.target_ever_started {
+            [
+                "hold-source",
+                "hold-target",
+                "assert-source-stopped",
+                "assert-target-stopped",
+                "verify-reverse",
+            ]
+        } else {
+            [
+                "hold-source",
+                "hold-target",
+                "assert-source-stopped",
+                "assert-target-stopped",
+                "verify-final",
+            ]
+        };
         let jobs = match self.item {
             MoveItem::Instance { source, policy, .. } => {
                 let host = policy.executor(source).to_owned();
@@ -2890,6 +3425,7 @@ impl<'a> WorkflowItemAdapter<'a> {
                             "assert-source-stopped" => "assert-source-stopped",
                             "assert-target-stopped" => "assert-target-stopped",
                             "verify-final" => "verify-final-target",
+                            "verify-reverse" => "verify-reverse-target",
                             _ => unreachable!("fixed prepare evidence operation"),
                         };
                         let job_id = format!(
@@ -2919,7 +3455,7 @@ impl<'a> WorkflowItemAdapter<'a> {
                         let host = match *operation {
                             "hold-source" | "assert-source-stopped" => transaction.source.clone(),
                             "hold-target" | "assert-target-stopped" => transaction.target.clone(),
-                            "verify-final" => broker.clone(),
+                            "verify-final" | "verify-reverse" => broker.clone(),
                             _ => unreachable!("fixed prepare evidence operation"),
                         };
                         self.retained_job_evidence(
@@ -2933,7 +3469,11 @@ impl<'a> WorkflowItemAdapter<'a> {
                     .collect::<Result<Vec<_>>>()?
             }
         };
-        Ok(json!({"item_id": self.item.id(), "jobs": jobs}))
+        Ok(json!({
+            "item_id": self.item.id(),
+            "target_started": transaction.target_ever_started,
+            "jobs": jobs,
+        }))
     }
 
     fn retained_rollback_evidence(
@@ -3244,6 +3784,16 @@ impl<'a> WorkflowItemAdapter<'a> {
     }
 
     pub fn assert_active_job_failed(&self, transaction: &Transaction) -> Result<()> {
+        let (host, job_id, state) = self.active_job_status(transaction)?;
+        if state != "failed" {
+            bail!(
+                "host-agent job {job_id:?} on {host:?} is {state:?}; only a terminal failed job can be superseded"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn active_job_status(&self, transaction: &Transaction) -> Result<(String, String, String)> {
         let operation = transaction
             .active_step
             .as_deref()
@@ -3267,12 +3817,7 @@ impl<'a> WorkflowItemAdapter<'a> {
             .pointer("/result/status")
             .and_then(Value::as_str)
             .context("host-agent job status response has no status")?;
-        if state != "failed" {
-            bail!(
-                "host-agent job {job_id:?} on {host:?} is {state:?}; only a terminal failed job can be superseded"
-            );
-        }
-        Ok(())
+        Ok((host, job_id.to_owned(), state.to_owned()))
     }
 
     fn step_progress(&self, operation: &str, transaction: &Transaction) -> StepProgress {
@@ -3329,6 +3874,7 @@ impl<'a> WorkflowItemAdapter<'a> {
                 | "deploy-target-gated"
                 | "hold-target"
                 | "assert-target-stopped"
+                | "backup-target"
                 | "activate-target"
                 | "verify-target-ready"
                 | "release-target"
@@ -3449,6 +3995,19 @@ impl<'a> WorkflowItemAdapter<'a> {
                     source,
                     InstanceControlAction::SnapshotCreate {
                         snapshot: safety_snapshot(transaction),
+                    },
+                )?;
+                Ok(())
+            }
+            "backup-target" => {
+                self.control_job(
+                    executor,
+                    transaction,
+                    &target_resource,
+                    "safety-snapshot-target",
+                    target,
+                    InstanceControlAction::SnapshotCreate {
+                        snapshot: migration_snapshot(transaction, "target-safety"),
                     },
                 )?;
                 Ok(())
@@ -3864,6 +4423,7 @@ fn step_description(operation: &str) -> &str {
         "assert-target-stopped" => "verify target writer is stopped",
         "seed" => "copy live source data to held target",
         "backup-source" => "create source safety backup",
+        "backup-target" => "create target safety backup",
         "final-transfer" => "copy final quiesced source data",
         "verify-final" => "verify final target data",
         "deploy-cutover" => "deploy target placement and ingress",
@@ -4047,6 +4607,12 @@ impl Adapter for NativeAdapter {
                 &source_resource,
                 &["--backup".to_owned()],
             ),
+            "backup-target" => self.run_job(
+                &transaction.target,
+                transaction,
+                &target_resource,
+                &["--backup".to_owned()],
+            ),
             "reverse-transfer" => self.run_broker_job(
                 transaction,
                 &target_resource,
@@ -4188,8 +4754,6 @@ mod tests {
     fn formats_durable_transfer_progress_for_humans() {
         assert_eq!(
             format_job_progress(
-                "target",
-                "copy-1",
                 &serde_json::json!({
                     "stage": "copying",
                     "engine": "rsync",
@@ -4199,11 +4763,34 @@ mod tests {
                     "total_bytes": 8192,
                     "detail": "receiving files"
                 }),
+                Duration::from_secs(2),
             ),
-            "[target copy-1] copying via rsync; entries 7/10; bytes 4096/8192; receiving files"
+            "Copying · rsync · 50% · 4.0 KiB / 8.0 KiB · 2.0 KiB/s · 2s left · 7/10 entries · receiving files"
         );
+        assert_eq!(format_bytes(29_100_000_000), "27 GiB");
         assert_eq!(format_wait_duration(Duration::from_secs(42)), "42s");
         assert_eq!(format_wait_duration(Duration::from_secs(125)), "2m05s");
+    }
+
+    #[test]
+    fn formats_and_filters_durable_deploy_logs() {
+        let progress = serde_json::json!({
+            "kind": "command_log",
+            "stage": "deploying",
+            "sequence": 2,
+            "tail": [
+                {"sequence": 1, "stream": "stdout", "line": "building controller"},
+                {"sequence": 2, "stream": "stderr", "line": "activating controller"}
+            ]
+        });
+        assert_eq!(
+            format_job_progress(&progress, Duration::ZERO),
+            "Deploying · activating controller"
+        );
+        assert_eq!(
+            command_log_lines_after(&progress, 1),
+            vec![(2, "stderr", "activating controller")]
+        );
     }
 
     #[test]
@@ -4428,13 +5015,15 @@ mod tests {
         .unwrap();
         let host = config.host("controller").unwrap();
         let forwarded = config
-            .inventory_ssh_command("controller", host, true)
+            .inventory_ssh_command("controller", host, true, true)
             .unwrap();
         let ordinary = config
-            .inventory_ssh_command("controller", host, false)
+            .inventory_ssh_command("controller", host, false, false)
             .unwrap();
         assert!(forwarded.get_args().any(|argument| argument == "-A"));
+        assert!(forwarded.get_args().any(|argument| argument == "-t"));
         assert!(!ordinary.get_args().any(|argument| argument == "-A"));
+        assert!(!ordinary.get_args().any(|argument| argument == "-t"));
     }
 
     #[test]
@@ -4604,7 +5193,9 @@ mod tests {
         let declaration = r#"{"ok":true,"result":{"resource":{"data_paths":[],"data_roots":[{"name":"state","path":"/var/lib/state","excludes":[]}]}}}"#;
         fs::write(
             &source_agent,
-            format!("#!/bin/sh\nprintf '%s\\n' '{declaration}'\n"),
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n  *\"resource ready\"*) printf '%s\\n' '{{\"ok\":true,\"result\":{{\"ready\":true}}}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
+            ),
         )
         .unwrap();
         fs::write(
@@ -4649,6 +5240,28 @@ mod tests {
             .preflight_transaction(&mut transaction, Action::Setup)
             .unwrap();
         assert_eq!(transaction.data_root_plan.len(), 1);
+
+        fs::write(
+            &source_agent,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n  *\"resource ready\"*) printf '%s\\n' '{{\"ok\":true,\"result\":{{\"ready\":false}}}}' ;;\n  *) printf '%s\\n' '{declaration}' ;;\nesac\n"
+            ),
+        )
+        .unwrap();
+        let mut not_ready = Transaction::new_service(
+            "zulip-not-ready".to_owned(),
+            "source".to_owned(),
+            "target".to_owned(),
+            PathBuf::from("/hosts/nixbot.nix"),
+        )
+        .unwrap();
+        assert!(
+            adapter
+                .preflight_transaction(&mut not_ready, Action::Setup)
+                .unwrap_err()
+                .to_string()
+                .contains("is not ready")
+        );
     }
 
     #[test]
@@ -4776,6 +5389,79 @@ mod tests {
                 "abird-gondor-proxy".to_owned(),
                 "service:abird-nginx".to_owned(),
             )
+        );
+    }
+
+    #[test]
+    fn local_nixbot_route_uses_local_head_without_a_controller_job() {
+        let temp = tempfile::tempdir().unwrap();
+        let arguments = temp.path().join("arguments");
+        let working_directory = temp.path().join("working-directory");
+        let nix = temp.path().join("nix");
+        fs::write(
+            &nix,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\npwd > '{}'\n",
+                arguments.display(),
+                working_directory.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&nix, fs::Permissions::from_mode(0o700)).unwrap();
+        let config: HostManagerConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "ssh": {"program": "/bin/false"},
+            "hosts": {
+                "source": {"address": "source"},
+                "target": {"address": "target"},
+                "controller": {"address": "controller"}
+            },
+            "operation_routes": {
+                "deploy-cutover": {
+                    "executor": "controller",
+                    "kind": "nixbot_deploy",
+                    "nixbot_deploy": {
+                        "host": "target-system",
+                        "revision": "fedcba9876543210",
+                        "nix_config": "target-generation",
+                        "exclude_hosts": ["old-system"]
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        let mut adapter = NativeAdapter::from_config(config);
+        adapter
+            .bind_local_nixbot(
+                temp.path().to_path_buf(),
+                nix,
+                "0123456789abcdef".to_owned(),
+            )
+            .unwrap();
+        let transaction = Transaction::new_host(
+            "local-move".to_owned(),
+            "source".to_owned(),
+            "target".to_owned(),
+            PathBuf::from("/config.json"),
+        )
+        .unwrap();
+
+        adapter
+            .preflight_route(&transaction, "deploy-cutover")
+            .unwrap();
+        adapter
+            .route_job("deploy-cutover", &transaction, "host:target")
+            .unwrap();
+
+        let arguments = fs::read_to_string(arguments).unwrap();
+        assert!(arguments.contains("run\n.#nixbot\n--\ndeploy\n--sha\n0123456789abcdef\n"));
+        assert!(arguments.contains("--hosts\ntarget-system,-old-system\n"));
+        assert!(arguments.contains("--nix-config\ntarget-generation\n"));
+        assert!(!arguments.contains("fedcba9876543210"));
+        assert_eq!(
+            fs::read_to_string(working_directory).unwrap().trim(),
+            temp.path().to_string_lossy(),
         );
     }
 

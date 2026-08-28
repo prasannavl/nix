@@ -1,12 +1,13 @@
-{
+args @ {
   config,
   lib,
   options,
   pkgs,
-  phaseProjections ? [],
   ...
 }: let
   cfg = config.services.abird-host-manager;
+  phaseProjections = args.phaseProjections or [];
+  servicePlacements = args.servicePlacements or {closeouts = {};};
   # Projection kinds register exactly one controller adapter. Host-local kinds
   # remain in the registry with no controller command, so adding a projection
   # cannot accidentally route it through a move transaction reconciler.
@@ -15,7 +16,7 @@
       lib.escapeShellArgs (
         [
           "transaction"
-          "reconcile"
+          "_reconcile"
           projection.projection_id
           "--expected-projection-sha256"
           projection.projection_sha256
@@ -23,7 +24,6 @@
         ++ lib.optional
         (builtins.elem projection.projection_id cfg.failedJobSupersessionProjections)
         "--supersede-failed-job"
-        ++ ["--execute"]
       );
     resource_hold.reconcile = null;
   };
@@ -37,7 +37,10 @@
   controllerProjections = builtins.filter (projection: let
     adapter = projectionAdapter projection;
   in
-    adapter != null && adapter.reconcile != null)
+    adapter
+    != null
+    && adapter.reconcile != null
+    && !(builtins.elem projection.projection_id (servicePlacements.controller_reconcile_exclusions or [])))
   cfg.phaseProjections;
   projectionIds = map (projection: projection.projection_id) cfg.phaseProjections;
   nixbotRepositories =
@@ -140,6 +143,41 @@
         RemainAfterExit = true;
       };
     };
+  closeoutReconcileService = transactionId: closeout: let
+    suffix = builtins.substring 0 16 (builtins.hashString "sha256" transactionId);
+    manifest = pkgs.writeText "abird-host-manager-closeout-${suffix}.json" (builtins.toJSON closeout);
+  in
+    lib.nameValuePair "abird-host-manager-closeout-${suffix}" {
+      description = "Finalize deployed Abird host-manager closeout ${transactionId}";
+      wantedBy = ["multi-user.target"];
+      wants = ["network-online.target"];
+      requires = lib.optional (repoReadyUnit != null) repoReadyUnit;
+      after = ["network-online.target" "nixbot.service"] ++ lib.optional (repoReadyUnit != null) repoReadyUnit;
+      restartTriggers = [manifest];
+      path = [pkgs.gitMinimal pkgs.nix];
+      environment = {
+        ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION = "1";
+        HOME = "/var/lib/${cfg.user}";
+      };
+      script = ''
+        set -eu
+        ${lib.getExe' managerPackage "abird-host-manager"} \
+          --repo-root ${lib.escapeShellArg cfg.repository} \
+          --config ${lib.escapeShellArg cfg.configPath} \
+          --state-dir ${lib.escapeShellArg cfg.stateDirectory} \
+          transaction _close-reconcile \
+          ${lib.escapeShellArg transactionId} \
+          --expected-projection-sha256 ${lib.escapeShellArg closeout.projection_sha256}
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        User = cfg.user;
+        Group = cfg.group;
+        WorkingDirectory = cfg.repository;
+        RemainAfterExit = true;
+      };
+    };
+  controllerCloseouts = lib.filterAttrs (_: closeout: closeout.controller_reconcile or true) (servicePlacements.closeouts or {});
 in {
   options.services.abird-host-manager = {
     enable = lib.mkEnableOption "controller-authoritative Abird host-manager reconciliation";
@@ -245,6 +283,9 @@ in {
 
     environment.systemPackages = [managerPackage];
 
-    systemd.services = builtins.listToAttrs (map reconcileService controllerProjections);
+    systemd.services = builtins.listToAttrs (
+      (map reconcileService controllerProjections)
+      ++ (lib.mapAttrsToList closeoutReconcileService controllerCloseouts)
+    );
   };
 }

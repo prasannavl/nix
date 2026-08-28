@@ -14,6 +14,7 @@ pub mod backup_runtime;
 pub mod instance_backup;
 pub mod offline_store;
 pub mod physical;
+pub mod presentation;
 pub mod programs;
 pub mod progress;
 pub mod projection;
@@ -21,6 +22,7 @@ pub mod repository;
 pub mod selector;
 pub mod service_registry;
 pub mod ssh_runtime;
+pub mod terminal_style;
 pub mod workflow;
 pub mod workflow_runtime;
 
@@ -232,7 +234,7 @@ pub trait Adapter {
 
 pub struct Store {
     root: PathBuf,
-    _lock: File,
+    _lock: Option<File>,
 }
 
 impl Store {
@@ -249,10 +251,20 @@ impl Store {
             .with_context(|| format!("failed to open state lock {}", lock_path.display()))?;
         lock.lock()
             .with_context(|| format!("failed to lock state directory {}", root.display()))?;
-        Ok(Self { root, _lock: lock })
+        Ok(Self {
+            root,
+            _lock: Some(lock),
+        })
+    }
+
+    pub fn read_only(root: PathBuf) -> Self {
+        Self { root, _lock: None }
     }
 
     pub fn save(&self, transaction: &Transaction) -> Result<()> {
+        if self._lock.is_none() {
+            bail!("read-only transaction store cannot mutate manager state");
+        }
         validate_id(&transaction.id)?;
         let directory = self.root.join("transactions");
         let destination = directory.join(format!("{}.json", transaction.id));
@@ -316,7 +328,11 @@ impl Store {
 
     pub fn list(&self) -> Result<Vec<Transaction>> {
         let mut transactions = Vec::new();
-        for entry in fs::read_dir(self.root.join("transactions"))? {
+        let directory = self.root.join("transactions");
+        if !directory.exists() {
+            return Ok(transactions);
+        }
+        for entry in fs::read_dir(directory)? {
             let entry = entry?;
             let path = entry.path();
             if path.extension() != Some(OsStr::new("json")) {
@@ -506,6 +522,93 @@ pub fn supersede_active_job(
     Ok((old_job_id, new_job_id))
 }
 
+/// Retire one pending action after its active job is proven terminal failed.
+///
+/// This is distinct from `supersede_active_job`: the caller is abandoning the
+/// action in favor of another lifecycle command, so no successor job is
+/// allocated for the old action.
+pub fn plan_retire_pending_action(
+    transaction: &mut Transaction,
+    expected: Action,
+    assert_terminal_failure: impl FnOnce(&str, &Transaction) -> Result<()>,
+) -> Result<Option<String>> {
+    match transaction.pending_action {
+        None if transaction.active_step.is_none() && transaction.active_job_id.is_none() => {
+            return Ok(None);
+        }
+        Some(action) if action == expected => {}
+        Some(action) => bail!(
+            "transaction has pending {} action, expected {}",
+            action.as_str(),
+            expected.as_str()
+        ),
+        None => bail!("transaction has active work without a pending action"),
+    }
+
+    let retired_job = match (&transaction.active_step, &transaction.active_job_id) {
+        (None, None) => None,
+        (Some(operation), Some(job_id)) => {
+            let expected_job_id = deterministic_job_id(transaction, expected, operation);
+            if job_id != &expected_job_id {
+                bail!(
+                    "active job ID {job_id:?} does not match the journal generation for step {operation:?}"
+                );
+            }
+            assert_terminal_failure(job_id, transaction)?;
+            Some(job_id.clone())
+        }
+        _ => bail!("journal has an incomplete active job record; refusing to retire it"),
+    };
+
+    let message = retired_job.as_ref().map_or_else(
+        || {
+            format!(
+                "pending {} action retired before another job started",
+                expected.as_str()
+            )
+        },
+        |job_id| {
+            format!(
+                "terminal failed job {job_id} retired with pending {} action",
+                expected.as_str()
+            )
+        },
+    );
+    record(transaction, expected, message)?;
+    transaction.pending_action = None;
+    transaction.active_step = None;
+    transaction.active_job_id = None;
+    transaction.last_error = None;
+    Ok(retired_job)
+}
+
+/// Start a new occurrence of a previously completed action without reusing its
+/// completed-step markers or immutable remote job IDs. Active work must be
+/// reconciled before a new epoch can begin.
+pub fn reset_action_epoch(transaction: &mut Transaction, action: Action) -> Result<()> {
+    if transaction.pending_action.is_some()
+        || transaction.active_step.is_some()
+        || transaction.active_job_id.is_some()
+    {
+        bail!("cannot start a new action epoch while work is pending");
+    }
+    for operation in steps_for(action, transaction) {
+        let step_id = format!("{}:{operation}", action.as_str());
+        transaction.completed_steps.remove(&step_id);
+        transaction.overridden_steps.remove(&step_id);
+        let generation = transaction
+            .job_generations
+            .get(&step_id)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .context("job generation overflow")?;
+        transaction.job_generations.insert(step_id, generation);
+    }
+    record(transaction, action, "new action epoch started")?;
+    Ok(())
+}
+
 fn reconcile_active_job<A: Adapter>(
     store: &Store,
     transaction: &mut Transaction,
@@ -602,7 +705,10 @@ fn validate_transition(transaction: &Transaction, action: Action) -> Result<()> 
         Action::Plan => transaction.phase == Phase::Planned,
         Action::Setup => transaction.phase == Phase::Planned,
         Action::Seed => matches!(transaction.phase, Phase::Setup | Phase::Seeded),
-        Action::Prepare => matches!(transaction.phase, Phase::Setup | Phase::Seeded),
+        Action::Prepare => matches!(
+            transaction.phase,
+            Phase::Setup | Phase::Seeded | Phase::Prepared | Phase::Cutover
+        ),
         Action::Verify => matches!(transaction.phase, Phase::Prepared | Phase::Verified),
         Action::Cutover => matches!(transaction.phase, Phase::Prepared | Phase::Verified),
         Action::Rollback => {
@@ -650,6 +756,15 @@ fn steps_for(action: Action, transaction: &Transaction) -> Vec<&'static str> {
             "assert-target-stopped",
         ],
         Action::Seed => vec!["hold-target", "assert-target-stopped", "seed"],
+        Action::Prepare if transaction.target_ever_started => vec![
+            "hold-source",
+            "assert-source-stopped",
+            "hold-target",
+            "assert-target-stopped",
+            "backup-target",
+            "reverse-transfer",
+            "verify-reverse",
+        ],
         Action::Prepare => vec![
             "hold-target",
             "assert-target-stopped",
@@ -829,6 +944,34 @@ mod tests {
         );
         assert!(!adapter.calls.iter().any(|step| step.contains("start")));
         assert!(!adapter.calls.iter().any(|step| step.contains("release")));
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_after_run_synchronizes_target_back_to_source() -> Result<()> {
+        let (_temporary, store, mut transaction) = fixture()?;
+        let mut adapter = FakeAdapter::default();
+        setup(&store, &mut transaction, &mut adapter)?;
+        execute_action(&store, &mut transaction, Action::Prepare, &mut adapter)?;
+        execute_action(&store, &mut transaction, Action::Cutover, &mut adapter)?;
+        adapter.calls.clear();
+
+        reset_action_epoch(&mut transaction, Action::Prepare)?;
+        execute_action(&store, &mut transaction, Action::Prepare, &mut adapter)?;
+
+        assert_eq!(transaction.phase, Phase::Prepared);
+        assert_eq!(
+            adapter.calls,
+            [
+                "hold-source",
+                "assert-source-stopped",
+                "hold-target",
+                "assert-target-stopped",
+                "backup-target",
+                "reverse-transfer",
+                "verify-reverse",
+            ]
+        );
         Ok(())
     }
 

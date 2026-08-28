@@ -22,6 +22,17 @@ execution with state at `.agents/runs/NAME/host-manager`. It is intentionally
 incompatible with both `--controller` and `--state-dir`; run names are bounded,
 path-safe identifiers and temporary run contents are ignored by Git.
 
+Global `--local` is the complete no-push lifecycle mode. It always uses the
+invoking repository checkout, its current branch, and the journal at
+`.agents/runs/local/host-manager`; it never dispatches to a controller, creates
+a controller-owned publication checkout, performs a push preflight, pushes, or
+verifies a remote ref. Projection and closeout commits are created directly in
+the clean invoking checkout. Any Nixbot workflow step runs synchronously from
+that checkout at its exact committed `HEAD`, with logs attached to the local
+terminal and outcomes retained only in the local manager journal. Local phase
+commits also retain an explicit controller-reconcile exclusion, so deploying a
+local commit cannot cause the controller to adopt the invoking journal.
+
 The controller repository mirror is intentionally read-only. Its dedicated
 Nixbot identity performs fetches and boot/deploy-time mirror refreshes, but can
 never publish. An explicit operator-dispatched phase command temporarily
@@ -31,36 +42,92 @@ no write-capable repository key. If no agent is available, no loaded key may
 write the repository, or the push is rejected, the command fails before any
 runtime handoff.
 
-## Migration states
+## Migration commands and states
 
 ```text
-create -> setup -> seed -> prepare -> verify -> cutover -> close
-                   \          \                 \-> rollback -> close
-                    \----------\--------------------> rollback -> close
+source_active --move--> moved --prepare--> prepared --run--> target_active
+                                      ^                 |
+                                      |---- prepare ----|
+
+prepared or target_active --close--> closing_complete|closing_rollback
+                                      --deployed closeout--> closed
 ```
 
-- `create` validates immutable intent. With `--execute`, it persists the
-  transaction ID before mutation, runs `setup` and `seed`, and stops before
-  `prepare`; `--dry-run` writes no state and performs an online, read-only
-  preflight against the relevant agents.
-- `setup` optionally provisions the target, reserves its hold before the target
-  service exists, runs the controller's declarative target deployment, then
-  reconciles and verifies the target hold.
-- `seed` holds the target and performs a verified non-authoritative copy while
-  the source remains live.
-- `prepare` holds the source, verifies both writers are stopped, creates a
-  verified source backup, performs the final copy, and leaves both sides held.
-- `verify` repeats the prepared-data verification without releasing either side.
-- `cutover` runs the controller's declarative placement/ingress deployment while
-  both resources remain held, then activates and verifies only the target.
-- `rollback` is the only transition that activates the source. If target
-  activation may have occurred, it first performs a verified reverse copy.
-- `close` ends the rollback window for legacy transactions and releases the
-  inactive endpoint hold without starting it. Projected transactions fail closed
-  here: the inactive endpoint remains held pending a canonical projection
-  fold/archive operation.
+- `move` validates source placement, agent, resource, data paths and readiness;
+  validates the declared target or its provisioning route; publishes the seeded
+  projection; holds the target; and performs a verified warm seed while source
+  remains active.
+- `prepare` holds both writers and creates a verified checkpoint. Before the
+  first run it copies source to target. After target has run, it backs up target
+  and synchronizes target back to source, preserving the newest authority.
+- `run` publishes target-active placement, activates and verifies target, and
+  applies and verifies routing while source remains held for recovery. The old
+  name `cutover` remains a compatibility alias.
+- `close` selects completion after a successful current run, otherwise rollback.
+  `--complete`/`-c` and `--rollback`/`-r` persist an explicit direction without
+  bypassing safety. `--complete --force` is break glass for an already-published
+  target-active projection: it verifies exact holds, source inactivity, target
+  readiness and routing, then records the missing run evidence. Rollback
+  performs reverse synchronization when target may have written. Close
+  atomically folds placement into `data/service-placements.json`, removes the
+  temporary projection, and records a digest-bound closeout. In normal mode it
+  submits and waits for an exact revision-bound durable controller Nixbot
+  deployment. In `--local` mode it runs that exact deployment from the invoking
+  checkout and the invoking manager releases the inactive-side hold and closes
+  the local journal; the committed closeout explicitly does not arm a
+  controller-side reconciler.
 
-Nothing automatically starts after `prepare`, timeout, failure, or disconnect.
+Each command snapshots an ordered, versioned step plan in the transaction
+journal. Completed steps are adopted, ambiguous jobs are reconciled by exact ID,
+and explicitly repeating `run` automatically gives terminal failed jobs durable
+successor attempt IDs. `transaction resume` is a generic recovery convenience;
+commands reconcile their own incomplete executions.
+
+Mutating commands execute by default. `--dry` (alias `--dry-run`) is strictly
+read-only. The hidden `--execute` flag is accepted only for compatibility.
+
+## Output
+
+Human-readable output is the default. Interactive terminals update the active
+step in place; redirected output and systemd journals receive the same events as
+stable lines without terminal control sequences. Completed steps stay visible,
+and the final summary reports the durable state and safe next command.
+
+Every public command has an explicit output contract. Structured inspection,
+collection, action, fleet, workflow, backup, and job commands use the same
+visual grammar while retaining their own domain states. Read-only inspection
+shows facts without a success glyph. Actions distinguish completed,
+accepted/running, already-satisfied, failed, and dry-run outcomes; durable job
+submission is never presented as completion until the retained job is terminally
+successful. Repository lifecycle operations, direct service/unit/resource
+actions, wipes, backups, and instance synchronization expose timed transient
+steps without pretending those operations belong to the durable move transaction
+state machine.
+
+Seed, final-transfer, reverse-transfer, and backup copy steps show the transfer
+stage, engine, percentage, copied and total bytes, average throughput, estimated
+time remaining, entry counts, and agent detail whenever the retained job
+provides those fields. Warm seed therefore remains observable while the source
+continues serving traffic:
+
+```text
+Warm seed zulip-tearoff-20260826
+
+✓ Validate endpoints, resources, routes, and job policy  0.8s
+● Copy live source data to held target  Copying · rsync · 63% · 18 GiB / 29 GiB · 112 MiB/s · 1m 37s left · 84,201/132,440 entries
+```
+
+Use global `--json` for one stable machine-readable JSON document on stdout.
+JSON mode suppresses human progress rendering; command and step status,
+attempts, evidence, and failures remain in the final document. Controller
+dispatch forwards the selected mode, while host-manager-to-agent calls continue
+to use their private JSON protocol independently.
+
+Logs are an intentional streaming contract: use their `--output text|json`
+option for text or JSONL snapshots and follow streams. Interactive `host ssh`
+and `host exec` are byte-transparent passthrough contracts. Global `--json` is
+rejected for these streaming and passthrough commands rather than wrapping,
+buffering, or corrupting their output.
 
 ## Phase projections
 
@@ -80,29 +147,84 @@ pushes and needs no forwarded agent or write Git access. In both runtime and
 `--skip-runtime` modes, successful publication is required before the command
 may continue. `--skip-runtime` stops immediately after that durable publication.
 
-The normal move has three mutating commands:
+For every remotely dispatched non-dry `move`, `prepare`, `run`, rollback, and
+`close`, the dispatcher forwards a valid local SSH agent when one is available.
+Before the lifecycle journal is mutated, the controller refreshes its owned
+publication checkout and runs `git push --dry-run` against the exact branch with
+the exact configured publication transport. This catches authentication,
+transport, and obvious ref-update failures without changing the remote; the real
+push remains authoritative for server-side hooks and branch policy. A specific
+credential mechanism is not the gate. Read-only inspection, `--dry`, and
+`transaction resume` run no write preflight.
+
+The normal move has four commands:
 
 ```console
 abird-host-manager service move zulip \
   --from abird-gondor-corp --to abird-gondor-zulip \
-  --id zulip-tearoff-20260820 --execute
-abird-host-manager transaction prepare zulip-tearoff-20260820 --execute
-abird-host-manager transaction cutover zulip-tearoff-20260820 --execute
+  --id zulip-tearoff-20260820
+abird-host-manager transaction prepare zulip-tearoff-20260820
+abird-host-manager transaction run zulip-tearoff-20260820
+abird-host-manager transaction close zulip-tearoff-20260820
 ```
 
-Use `transaction rollback` for the third decision. All three decisions accept
-`--skip-runtime`, which publishes and validates only the declarative projection.
-A later controller deployment or explicit `transaction reconcile` applies the
-exact same desired phase.
+To keep the entire lifecycle in the invoking checkout with local commits and no
+push, add global `--local` to every invocation:
+
+```console
+abird-host-manager --local service move zulip \
+  --from abird-gondor-corp --to abird-gondor-zulip \
+  --id zulip-tearoff-20260820
+abird-host-manager --local transaction prepare zulip-tearoff-20260820
+abird-host-manager --local transaction run zulip-tearoff-20260820
+abird-host-manager --local transaction close zulip-tearoff-20260820
+```
+
+The checkout must be on the configured projection branch and clean before each
+commit-producing command. Each successful phase leaves a normal Git commit in
+that checkout. Nixbot may read or best-effort fetch ordinary refs while
+preparing its isolated execution tree, but host-manager performs no Git push and
+does not require the commit to exist on a remote.
+
+At any point after `move`, `prepare` and `run` may alternate. Use
+`transaction close --rollback` to force rollback or `close --complete` to force
+safe target completion with normal run evidence. Use `close --complete --force`
+only as the recorded break-glass evidence override. `--skip-runtime` publishes
+and validates declarative intent while leaving runtime reconciliation to
+deployment; it cannot be combined with forced completion.
+
+After close publishes and verifies its exact Git revision, an interactive
+terminal asks whether to run the required Nixbot deployment. Enter or `y` keeps
+the deployment managed and followed by host-manager; `m` leaves the deployment
+step pending and prints the exact bounded `nix run .#nixbot -- deploy ...`
+command for an operator handoff. `close --yes` selects managed deployment
+without prompting, while `close --manual-deploy` selects the handoff directly.
+Automation and `--json` default to managed deployment unless `--manual-deploy`
+is explicit.
+
+While host-manager follows a managed deployment, the one-line status includes
+the latest retained Nixbot line. Press `l` to show or hide the durable live log
+tail; `Ctrl-C` retains its normal signal behavior. The log tail belongs to the
+host-agent job, so a reconnect can recover recent output rather than depending
+on the original SSH stream.
+
+Without `--local`, both managed and manual deployment consume an exact revision
+that must already exist and be verified on the authoritative remote;
+`--manual-deploy` changes who runs it, not publication. With `--local`, both
+choices consume the exact local commit instead: Enter/`y` or `--yes` runs Nixbot
+synchronously from this checkout, while `m` or `--manual-deploy` prints the
+exact local command and leaves the local close step pending. For `prepare` and
+`run`, `--skip-runtime` stops after the local commit in `--local` mode and after
+verified publication in normal mode.
 
 Standalone holds are minimal phase projections, not a separate runtime-only
 mechanism:
 
 ```console
 abird-host-manager resource hold set abird-gondor-zulip service:abird-zulip \
-  --id zulip-maintenance-20260821 --execute
+  --id zulip-maintenance-20260821
 abird-host-manager resource hold clear abird-gondor-zulip service:abird-zulip \
-  --id zulip-maintenance-20260821 --execute
+  --id zulip-maintenance-20260821
 ```
 
 Both commands publish desired state first. `--skip-runtime` defers the exact
@@ -120,29 +242,41 @@ activation must first retain the matching brokered receipt. Both remain bounded
 by the exact projection, hold epoch, local resource allowlist, and unrelated
 holds.
 
-Cutover activates and verifies the target before applying the allowlisted route
+Run activates and verifies the target before applying the allowlisted route
 profile. Manager-brokered rollback from an activated target holds the target,
 reverse-copies and verifies data, persists a rollback receipt, and only then
 activates the source and restores its route. Before deriving that compensation,
 the manager adopts an exact deployment-first cutover job so a target start is
-not lost. The inactive endpoint remains held after cutover or rollback.
-Projected `transaction close` deliberately fails closed until a canonical
-projection fold/archive operation exists, so deploying an older projection
-cannot silently reintroduce a released hold. After an interruption, use
-`transaction reconcile ID --execute`; projected `transaction resume` is rejected
-because it cannot establish projected activation authority.
+not lost. The inactive endpoint remains held after run or rollback. Projected
+`transaction close` persists canonical placement and a deployed closeout
+reconciler, so an older controller cannot release the final safety hold. The
+exact closeout revision must then be deployed to the source, target, effect
+hosts, and controller: their running generations otherwise still retain the old
+projection and may reassert its holds or route. The final inactive hold is
+released and the journal archived only after that deploy succeeds. After an
+interruption, use `transaction resume ID`. Resume inspects the journal:
+projected transactions reconcile to their already-published desired phase with
+full activation-authority validation, while legacy transactions continue only
+their exact pending action. It never chooses or publishes a new phase.
 
-A publication authentication failure is safe to retry. Load a write-authorized
-key into the operator's local SSH agent and repeat the same phase command. If an
-initial move remains planned with no published projection, repeat the exact move
-and ID without `--force-existing`; that is the normal setup/publication retry.
-Reserve `--force-existing` for an advanced or ambiguous existing transaction
-that the operator has inspected and explicitly chooses to attach to. The
-controller refreshes from the authoritative branch, adopts an exact commit if
-the prior push actually landed, or recreates the same deterministic projection
-if it did not. Runtime reconciliation cannot start until that exact revision is
-confirmed published, so the retry neither creates a second transaction nor
-replays a migration job.
+A publication authentication failure is safe to retry. Make a write-authorized
+credential available to the configured publication transport and repeat the same
+phase command; a forwarded local SSH agent is the normal controller setup, not a
+protocol requirement. If an initial move remains planned with no published
+projection, repeat the exact move and ID without `--force-existing`; that is the
+normal setup/publication retry. Reserve `--force-existing` for an advanced or
+ambiguous existing transaction that the operator has inspected and explicitly
+chooses to attach to. The controller refreshes from the authoritative branch,
+adopts an exact commit if the prior push actually landed, or recreates the same
+deterministic projection if it did not. Runtime reconciliation cannot start
+until that exact revision is confirmed published, so the retry neither creates a
+second transaction nor replays a migration job.
+
+The Nixbot package explicitly carries the hostname and address-discovery tools
+used to classify a controller self-deployment. A self-target reuses the outer
+host-local deployment lock instead of attempting to acquire it again inside its
+transient activation unit. This keeps controller closeout deployment serialized
+without allowing a nested lock to deadlock its own deploy.
 
 The operator checkout may be behind the authoritative branch because the
 controller publishes projection commits. It may not have unpublished commits or
@@ -326,10 +460,10 @@ reads root-owned data while retaining numeric owners, ACLs, and xattrs. Set
 The explicit `--config` examples below also work outside the repository. From
 inside the repository, omit `--config` to use the discovered Nixbot inventory.
 The public surface is noun-first: each movable entity owns `move`, durable
-continuations are named transaction phases, and logical services cannot be
-mistaken for raw systemd units. Every direct mutation requires exactly one of
-`--execute` or `--dry-run`; inspection and log commands require neither.
-Host-agent job submission is an internal orchestration protocol. Operators use
+continuations use `prepare`, `run`, and `close`, and logical services cannot be
+mistaken for raw systemd units. Mutations execute by default; pass `--dry` for a
+strictly read-only plan. Inspection and log commands require neither. Host-agent
+job submission is an internal orchestration protocol. Operators use
 `job show|list|retry` to inspect or explicitly retry its durable records.
 
 ```console
@@ -400,16 +534,14 @@ abird-host-manager --repo-root "$PWD" host install example \
   --root /mnt --offline-cache /media/live-usb/nix-cache --wipe-disks --dry-run
 abird-host-manager --repo-root "$PWD" host delete example --dry-run
 
-abird-host-manager transaction seed TRANSACTION_ID --execute
-abird-host-manager transaction prepare TRANSACTION_ID --execute
-abird-host-manager transaction verify TRANSACTION_ID --execute
-abird-host-manager transaction cutover TRANSACTION_ID --execute
-abird-host-manager transaction rollback TRANSACTION_ID --execute
-abird-host-manager transaction resume TRANSACTION_ID --execute
+abird-host-manager transaction prepare TRANSACTION_ID
+abird-host-manager transaction run TRANSACTION_ID
+abird-host-manager transaction close TRANSACTION_ID
+abird-host-manager transaction close TRANSACTION_ID --rollback
+abird-host-manager transaction close TRANSACTION_ID --complete --force
+abird-host-manager transaction resume TRANSACTION_ID
 abird-host-manager transaction resume TRANSACTION_ID \
-  --supersede-failed-job --execute
-# Legacy journals only; projected transactions retain the inactive hold.
-abird-host-manager transaction close TRANSACTION_ID --execute
+  --supersede-failed-job
 abird-host-manager transaction show TRANSACTION_ID
 
 abird-host-manager service wipe abird-zulip \
@@ -464,12 +596,14 @@ without mutation. Transaction-owned `host drain`/`activate` and
 `resource hold acquire`/`activate` remain the explicit manager mutation
 boundaries.
 
-Ordinary `transaction resume` reattaches only to the same durable job ID and
-immutable specification. If controller or repository policy intentionally
-changes after that job has terminally failed, add `--supersede-failed-job`. The
-manager proves the old host-agent job is `failed`, preserves its record, and
-assigns the same logical step a new attempt ID; it refuses to supersede a
-pending or running job.
+`transaction resume` is the single operator recovery command. For a projected
+transaction it refreshes and validates the already-published projection, then
+converges only the missing actions up to that desired phase. For a legacy
+transaction it reattaches only to the exact pending action and durable job ID.
+If controller or repository policy intentionally changes after a job has
+terminally failed, add `--supersede-failed-job`. The manager proves the old
+host-agent job is `failed`, preserves its record, and assigns the same logical
+step a new attempt ID; it refuses to supersede a pending or running job.
 
 The one-argument service form is repository-aware. Without `--stack`, it selects
 the only stack declaring the service, or the unique `env = "prod"` candidate
@@ -574,14 +708,14 @@ groups records by their exact authority set and destinations, keeps the newest
 `--keep-last` records in each group, and selects only terminal records older
 than `--older-than`. Use `--dry-run` to inspect the exact selected IDs first.
 
-Mutating migration and backup actions require `--execute`. Move creation
-`--dry-run` writes no journal and asks the relevant agents only to describe
-resources and materialize the exact jobs they would accept. If setup must first
-create an unreachable target, the report validates setup and marks seed
-preflight as deferred until that target exists. Before submitting a mutation,
-the manager asks the selected agent to materialize resource policy into one
-complete versioned `JobSpec`, then submits that exact document. The agent
-persists the specification before execution and rejects same-ID drift.
+Mutating migration and backup actions execute by default. Move creation `--dry`
+writes no journal and asks the relevant agents only to describe and
+readiness-check resources. If setup must first create an unreachable target, the
+report validates setup and marks seed preflight as deferred until that target
+exists. Before submitting a mutation, the manager asks the selected agent to
+materialize resource policy into one complete versioned `JobSpec`, then submits
+that exact document. The agent persists the specification before execution and
+rejects same-ID drift.
 
 External processes are invoked through structured Rust adapters. A shared
 `CommandSpec` and `cmd!` builder preserve argv and environment boundaries, bound

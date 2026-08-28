@@ -1,8 +1,12 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::thread;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -13,7 +17,7 @@ use crate::programs::disko::DiskoScript;
 use crate::programs::nix::Nix;
 use crate::programs::nixos_install::NixosInstall;
 use crate::programs::privilege::Privilege;
-use crate::projection::PhaseProjection;
+use crate::projection::{PhaseProjection, ProjectionEffect};
 use crate::workflow_runtime::WorkflowStore;
 
 const HOSTS_FILE: &str = "hosts/default.nix";
@@ -21,6 +25,19 @@ const NIXBOT_FILE: &str = "hosts/nixbot.nix";
 const SECRETS_FILE: &str = "data/secrets/default.nix";
 const MARKER_NAME: &str = ".abird-host-manager.json";
 const MARKER_VERSION: u32 = 2;
+const GIT_REPOSITORY_ENVIRONMENT: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +121,113 @@ pub struct ProjectionPublication {
     pub pushed: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionPublicationStage {
+    Validate,
+    Commit,
+    RetainLocal,
+    Push,
+    Verify,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionPublicationEvent {
+    Started(ProjectionPublicationStage),
+    Progress {
+        stage: ProjectionPublicationStage,
+        detail: String,
+    },
+    Completed {
+        stage: ProjectionPublicationStage,
+        revision: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalServicePlacement {
+    pub host: String,
+    pub host_resource: String,
+    pub transaction_id: String,
+    pub projection_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalServicePlacements {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub closeouts: BTreeMap<String, CanonicalProjectionCloseout>,
+    #[serde(default)]
+    pub controller_reconcile_exclusions: BTreeSet<String>,
+    #[serde(default)]
+    pub placements: BTreeMap<String, BTreeMap<String, CanonicalServicePlacement>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalProjectionCloseout {
+    pub affected_hosts: Vec<String>,
+    #[serde(default = "default_controller_reconcile")]
+    pub controller_reconcile: bool,
+    pub decision: String,
+    pub projection_sha256: String,
+}
+
+fn default_controller_reconcile() -> bool {
+    true
+}
+
+impl Default for CanonicalServicePlacements {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            closeouts: BTreeMap::new(),
+            controller_reconcile_exclusions: BTreeSet::new(),
+            placements: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectionCloseoutPublication {
+    pub placement_path: PathBuf,
+    pub projection_path: PathBuf,
+    pub branch: String,
+    pub revision: String,
+    pub pushed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionCloseoutStage {
+    FoldPlacement,
+    RemoveProjection,
+    Validate,
+    Commit,
+    RetainLocal,
+    Push,
+    Verify,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionCloseoutEvent {
+    Started(ProjectionCloseoutStage),
+    Progress {
+        stage: ProjectionCloseoutStage,
+        detail: String,
+    },
+    Completed {
+        stage: ProjectionCloseoutStage,
+        revision: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionPublicationMode {
+    Remote,
+    Local,
+}
+
 #[derive(Debug)]
 pub struct ProjectionPublisher {
     repository: Repository,
@@ -111,6 +235,7 @@ pub struct ProjectionPublisher {
     nix: PathBuf,
     branch: String,
     publish_git_ssh_command: Option<String>,
+    mode: ProjectionPublicationMode,
 }
 
 #[derive(Clone, Debug)]
@@ -214,8 +339,7 @@ impl Repository {
             &["fetch", "--no-tags", "origin", &refspec],
             "refresh authoritative projection branch",
         )?;
-        let ancestry = Command::new(git)
-            .current_dir(self.root())
+        let ancestry = repository_git_command(git, self.root())
             .args(["merge-base", "--is-ancestor", "HEAD", &remote_ref])
             .status()
             .context("compare operator repository with authoritative projection branch")?;
@@ -234,6 +358,17 @@ impl Repository {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Resolve the checked-out revision without fetching, refreshing, or
+    /// otherwise changing repository state.
+    pub fn revision(&self, git: &Path) -> Result<String> {
+        git_stdout(
+            git,
+            self.root(),
+            &["rev-parse", "HEAD"],
+            "resolve repository revision",
+        )
     }
 
     pub fn nixbot_config_path(&self) -> PathBuf {
@@ -309,6 +444,112 @@ impl Repository {
             generation: projection.generation,
             projection_sha256: projection.projection_sha256.clone(),
         })
+    }
+
+    fn load_canonical_service_placements(&self) -> Result<CanonicalServicePlacements> {
+        let path = self.root.join("data/service-placements.json");
+        if !path.exists() {
+            return Ok(CanonicalServicePlacements::default());
+        }
+        let catalog: CanonicalServicePlacements =
+            serde_json::from_reader(File::open(&path).with_context(|| {
+                format!("open canonical service placements {}", path.display())
+            })?)
+            .with_context(|| format!("parse canonical service placements {}", path.display()))?;
+        if catalog.schema_version != 1 {
+            bail!(
+                "unsupported canonical service placement schema version {}",
+                catalog.schema_version
+            );
+        }
+        Ok(catalog)
+    }
+
+    pub fn load_projection_closeout(
+        &self,
+        projection_id: &str,
+    ) -> Result<Option<CanonicalProjectionCloseout>> {
+        Ok(self
+            .load_canonical_service_placements()?
+            .closeouts
+            .get(projection_id)
+            .cloned())
+    }
+
+    fn retain_local_projection_authority(&self, projection_id: &str) -> Result<PathBuf> {
+        let placement_path = self.root.join("data/service-placements.json");
+        let mut catalog = self.load_canonical_service_placements()?;
+        catalog
+            .controller_reconcile_exclusions
+            .insert(projection_id.to_owned());
+        let mut bytes = serde_json::to_vec_pretty(&catalog)?;
+        bytes.push(b'\n');
+        atomic_write(&placement_path, &bytes, 0o644)?;
+        Ok(placement_path)
+    }
+
+    fn write_projection_closeout(
+        &self,
+        projection: &PhaseProjection,
+        decision: &str,
+        controller_reconcile: bool,
+    ) -> Result<(PathBuf, PathBuf)> {
+        projection.validate()?;
+        let projection_path = self.phase_projection_path(&projection.projection_id);
+        let published = self
+            .load_phase_projection(&projection.projection_id)?
+            .context("cannot close a projection that is absent from the repository")?;
+        if published.projection_sha256 != projection.projection_sha256 {
+            bail!("refusing to close a projection generation that is not currently published");
+        }
+
+        let placement_path = self.root.join("data/service-placements.json");
+        let mut catalog = self.load_canonical_service_placements()?;
+        catalog
+            .controller_reconcile_exclusions
+            .remove(&projection.projection_id);
+        if !matches!(decision, "complete" | "rollback") {
+            bail!("projection closeout decision is unsupported");
+        }
+        catalog.closeouts.insert(
+            projection.projection_id.clone(),
+            CanonicalProjectionCloseout {
+                affected_hosts: projection
+                    .declarative_effect_hosts()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                controller_reconcile,
+                decision: decision.to_owned(),
+                projection_sha256: projection.projection_sha256.clone(),
+            },
+        );
+        for effect in &projection.effects {
+            let ProjectionEffect::ServicePlacement {
+                scope,
+                service,
+                host,
+                host_resource,
+            } = effect
+            else {
+                continue;
+            };
+            catalog.placements.entry(scope.clone()).or_default().insert(
+                service.clone(),
+                CanonicalServicePlacement {
+                    host: host.clone(),
+                    host_resource: host_resource.clone(),
+                    transaction_id: projection.projection_id.clone(),
+                    projection_sha256: projection.projection_sha256.clone(),
+                },
+            );
+        }
+        let mut bytes = serde_json::to_vec_pretty(&catalog)?;
+        bytes.push(b'\n');
+        atomic_write(&placement_path, &bytes, 0o644)?;
+        fs::remove_file(&projection_path)
+            .with_context(|| format!("remove closed projection {}", projection_path.display()))?;
+        Ok((placement_path, projection_path))
     }
 
     fn phase_projection_path(&self, projection_id: &str) -> PathBuf {
@@ -844,6 +1085,60 @@ impl ProjectionPublisher {
             nix,
             branch: branch.to_owned(),
             publish_git_ssh_command,
+            mode: ProjectionPublicationMode::Remote,
+        })
+    }
+
+    /// Use the invoking clean checkout as both the source and publication
+    /// repository. This mode commits locally and never contacts or updates a
+    /// Git remote.
+    pub fn prepare_local(
+        source_repository: &Repository,
+        authority: &WorkflowStore,
+        state_dir: &Path,
+        branch: &str,
+        git: PathBuf,
+        nix: PathBuf,
+    ) -> Result<Self> {
+        validate_git_branch(branch)?;
+        if authority.root().canonicalize().with_context(|| {
+            format!(
+                "resolve projection authority root {}",
+                authority.root().display()
+            )
+        })? != state_dir
+            .canonicalize()
+            .with_context(|| format!("resolve manager state directory {}", state_dir.display()))?
+        {
+            bail!("projection publisher authority does not own the manager state directory");
+        }
+        let branch_name = git_stdout(
+            &git,
+            source_repository.root(),
+            &["branch", "--show-current"],
+            "resolve local publication branch",
+        )?;
+        if branch_name != branch {
+            bail!("local publication checkout is on branch {branch_name:?}, expected {branch:?}");
+        }
+        let dirty = git_stdout(
+            &git,
+            source_repository.root(),
+            &["status", "--porcelain", "--untracked-files=normal"],
+            "inspect local publication checkout",
+        )?;
+        if !dirty.is_empty() {
+            bail!(
+                "--local requires a clean repository checkout before host-manager creates its commit"
+            );
+        }
+        Ok(Self {
+            repository: Repository::from_root(source_repository.root().to_path_buf())?,
+            git,
+            nix,
+            branch: branch.to_owned(),
+            publish_git_ssh_command: None,
+            mode: ProjectionPublicationMode::Local,
         })
     }
 
@@ -860,16 +1155,54 @@ impl ProjectionPublisher {
         )
     }
 
-    /// Stage, evaluate, commit, push, and verify exactly one projection file.
+    pub fn mode(&self) -> ProjectionPublicationMode {
+        self.mode
+    }
+
+    pub fn pushed(&self) -> bool {
+        self.mode == ProjectionPublicationMode::Remote
+    }
+
+    /// Exercise the exact publication transport and ref update without changing
+    /// the remote. Lifecycle commands run this before mutating their journal.
+    pub fn verify_push_access(&self) -> Result<()> {
+        if self.mode == ProjectionPublicationMode::Local {
+            return Ok(());
+        }
+        self.run_publication_git(
+            &[
+                "push",
+                "--dry-run",
+                "origin",
+                &format!("HEAD:refs/heads/{}", self.branch),
+            ],
+            "validate Git publication access",
+        )
+    }
+
+    /// Stage, evaluate, commit, and retain exactly one projection generation.
     /// Runtime callers must wait for this method to succeed.
     pub fn publish(
         &self,
         projection: &PhaseProjection,
         controller_host: &str,
     ) -> Result<ProjectionPublication> {
+        self.publish_observed(projection, controller_host, |_| Ok(()))
+    }
+
+    pub fn publish_observed(
+        &self,
+        projection: &PhaseProjection,
+        controller_host: &str,
+        mut observe: impl FnMut(ProjectionPublicationEvent) -> Result<()>,
+    ) -> Result<ProjectionPublication> {
+        observe(ProjectionPublicationEvent::Started(
+            ProjectionPublicationStage::Validate,
+        ))?;
         let write = self.repository.write_phase_projection(projection)?;
         let relative = PathBuf::from("data/phase-projections")
             .join(format!("{}.json", projection.projection_id));
+        let placement_relative = PathBuf::from("data/service-placements.json");
         run_git_path(
             &self.git,
             self.repository.root(),
@@ -877,41 +1210,70 @@ impl ProjectionPublisher {
             &relative,
             "stage phase projection",
         )?;
+        if self.mode == ProjectionPublicationMode::Local {
+            self.repository
+                .retain_local_projection_authority(&projection.projection_id)?;
+            run_git_path(
+                &self.git,
+                self.repository.root(),
+                &["add", "--"],
+                &placement_relative,
+                "stage local projection authority",
+            )?;
+        }
         run_git(
             &self.git,
             self.repository.root(),
             &["diff", "--cached", "--check"],
             "validate staged projection diff",
         )?;
-        self.validate_staged_projection(projection, controller_host)?;
+        self.validate_staged_projection(projection, controller_host, |detail| {
+            observe(ProjectionPublicationEvent::Progress {
+                stage: ProjectionPublicationStage::Validate,
+                detail,
+            })
+        })?;
+        observe(ProjectionPublicationEvent::Completed {
+            stage: ProjectionPublicationStage::Validate,
+            revision: None,
+        })?;
 
-        let staged = Command::new(&self.git)
-            .current_dir(self.repository.root())
+        observe(ProjectionPublicationEvent::Started(
+            ProjectionPublicationStage::Commit,
+        ))?;
+        let mut staged = repository_git_command(&self.git, self.repository.root());
+        staged
             .args(["diff", "--cached", "--quiet", "--exit-code", "--"])
-            .arg(&relative)
-            .status()
-            .context("inspect staged projection")?;
+            .arg(&relative);
+        if self.mode == ProjectionPublicationMode::Local {
+            staged.arg(&placement_relative);
+        }
+        let staged = staged.status().context("inspect staged projection")?;
         if !staged.success() {
             let message = format!(
                 "chore(projection): project {} {:?}",
                 projection.projection_id, projection.phase
             );
+            let mut arguments = vec![
+                "-c",
+                "user.name=abird-host-manager",
+                "-c",
+                "user.email=host-manager@abird.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                &message,
+                "--",
+                relative.to_str().unwrap(),
+            ];
+            if self.mode == ProjectionPublicationMode::Local {
+                arguments.push(placement_relative.to_str().unwrap());
+            }
             run_git(
                 &self.git,
                 self.repository.root(),
-                &[
-                    "-c",
-                    "user.name=abird-host-manager",
-                    "-c",
-                    "user.email=host-manager@abird.invalid",
-                    "-c",
-                    "commit.gpgsign=false",
-                    "commit",
-                    "-m",
-                    &message,
-                    "--",
-                    relative.to_str().unwrap(),
-                ],
+                &arguments,
                 "commit phase projection",
             )?;
         }
@@ -921,42 +1283,278 @@ impl ProjectionPublisher {
             &["rev-parse", "HEAD"],
             "resolve projection commit",
         )?;
-        self.run_publication_git(
-            &[
-                "push",
-                "origin",
-                &format!("HEAD:refs/heads/{}", self.branch),
-            ],
-            "publish move projection",
-        )?;
-        let remote = self.publication_git_stdout(
-            &[
-                "ls-remote",
-                "origin",
-                &format!("refs/heads/{}", self.branch),
-            ],
-            "verify published projection revision",
-        )?;
-        let remote_revision = remote
-            .split_whitespace()
-            .next()
-            .context("published branch has no remote revision")?;
-        if remote_revision != revision {
-            bail!(
-                "published projection revision mismatch: local {revision}, remote {remote_revision}"
-            );
+        observe(ProjectionPublicationEvent::Completed {
+            stage: ProjectionPublicationStage::Commit,
+            revision: Some(revision.clone()),
+        })?;
+        if self.mode == ProjectionPublicationMode::Remote {
+            observe(ProjectionPublicationEvent::Started(
+                ProjectionPublicationStage::Push,
+            ))?;
+            self.run_publication_git(
+                &[
+                    "push",
+                    "origin",
+                    &format!("HEAD:refs/heads/{}", self.branch),
+                ],
+                "publish move projection",
+            )?;
+            observe(ProjectionPublicationEvent::Completed {
+                stage: ProjectionPublicationStage::Push,
+                revision: Some(revision.clone()),
+            })?;
+            observe(ProjectionPublicationEvent::Started(
+                ProjectionPublicationStage::Verify,
+            ))?;
+            let remote = self.publication_git_stdout(
+                &[
+                    "ls-remote",
+                    "origin",
+                    &format!("refs/heads/{}", self.branch),
+                ],
+                "verify published projection revision",
+            )?;
+            let remote_revision = remote
+                .split_whitespace()
+                .next()
+                .context("published branch has no remote revision")?;
+            if remote_revision != revision {
+                bail!(
+                    "published projection revision mismatch: local {revision}, remote {remote_revision}"
+                );
+            }
+            observe(ProjectionPublicationEvent::Completed {
+                stage: ProjectionPublicationStage::Verify,
+                revision: Some(revision.clone()),
+            })?;
+        } else {
+            observe(ProjectionPublicationEvent::Started(
+                ProjectionPublicationStage::RetainLocal,
+            ))?;
+            let retained = self
+                .repository
+                .load_canonical_service_placements()?
+                .controller_reconcile_exclusions
+                .contains(&projection.projection_id);
+            if !retained {
+                bail!("local projection commit did not retain local controller authority");
+            }
+            observe(ProjectionPublicationEvent::Completed {
+                stage: ProjectionPublicationStage::RetainLocal,
+                revision: Some(revision.clone()),
+            })?;
+            observe(ProjectionPublicationEvent::Started(
+                ProjectionPublicationStage::Verify,
+            ))?;
+            run_git(
+                &self.git,
+                self.repository.root(),
+                &["diff", "--quiet", "HEAD", "--"],
+                "verify clean local projection commit",
+            )?;
+            observe(ProjectionPublicationEvent::Completed {
+                stage: ProjectionPublicationStage::Verify,
+                revision: Some(revision.clone()),
+            })?;
         }
         Ok(ProjectionPublication {
             write,
             branch: self.branch.clone(),
             revision,
-            pushed: true,
+            pushed: self.pushed(),
+        })
+    }
+
+    /// Atomically publish the selected service placement as canonical state
+    /// and retire its temporary phase projection in the same Git commit.
+    pub fn publish_closeout(
+        &self,
+        projection: &PhaseProjection,
+        decision: &str,
+        controller_host: &str,
+    ) -> Result<ProjectionCloseoutPublication> {
+        self.publish_closeout_observed(projection, decision, controller_host, |_| Ok(()))
+    }
+
+    pub fn publish_closeout_observed(
+        &self,
+        projection: &PhaseProjection,
+        decision: &str,
+        controller_host: &str,
+        mut observe: impl FnMut(ProjectionCloseoutEvent) -> Result<()>,
+    ) -> Result<ProjectionCloseoutPublication> {
+        observe(ProjectionCloseoutEvent::Started(
+            ProjectionCloseoutStage::FoldPlacement,
+        ))?;
+        let (placement_path, projection_path) = self.repository.write_projection_closeout(
+            projection,
+            decision,
+            self.mode == ProjectionPublicationMode::Remote,
+        )?;
+        observe(ProjectionCloseoutEvent::Completed {
+            stage: ProjectionCloseoutStage::FoldPlacement,
+            revision: None,
+        })?;
+        observe(ProjectionCloseoutEvent::Started(
+            ProjectionCloseoutStage::RemoveProjection,
+        ))?;
+        if projection_path.exists() {
+            bail!("closed phase projection still exists after repository closeout fold");
+        }
+        observe(ProjectionCloseoutEvent::Completed {
+            stage: ProjectionCloseoutStage::RemoveProjection,
+            revision: None,
+        })?;
+        observe(ProjectionCloseoutEvent::Started(
+            ProjectionCloseoutStage::Validate,
+        ))?;
+        let placement_relative = PathBuf::from("data/service-placements.json");
+        let projection_relative = PathBuf::from("data/phase-projections")
+            .join(format!("{}.json", projection.projection_id));
+        run_git_path(
+            &self.git,
+            self.repository.root(),
+            &["add", "--"],
+            &placement_relative,
+            "stage canonical service placements",
+        )?;
+        run_git_path(
+            &self.git,
+            self.repository.root(),
+            &["add", "--"],
+            &projection_relative,
+            "stage closed projection removal",
+        )?;
+        run_git(
+            &self.git,
+            self.repository.root(),
+            &["diff", "--cached", "--check"],
+            "validate staged projection closeout diff",
+        )?;
+        self.validate_staged_closeout(projection, controller_host, |detail| {
+            observe(ProjectionCloseoutEvent::Progress {
+                stage: ProjectionCloseoutStage::Validate,
+                detail,
+            })
+        })?;
+        observe(ProjectionCloseoutEvent::Completed {
+            stage: ProjectionCloseoutStage::Validate,
+            revision: None,
+        })?;
+
+        observe(ProjectionCloseoutEvent::Started(
+            ProjectionCloseoutStage::Commit,
+        ))?;
+        let message = format!("chore(projection): close {}", projection.projection_id);
+        run_git(
+            &self.git,
+            self.repository.root(),
+            &[
+                "-c",
+                "user.name=abird-host-manager",
+                "-c",
+                "user.email=host-manager@abird.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                &message,
+                "--",
+                placement_relative.to_str().unwrap(),
+                projection_relative.to_str().unwrap(),
+            ],
+            "commit projection closeout",
+        )?;
+        let revision = git_stdout(
+            &self.git,
+            self.repository.root(),
+            &["rev-parse", "HEAD"],
+            "resolve projection closeout commit",
+        )?;
+        observe(ProjectionCloseoutEvent::Completed {
+            stage: ProjectionCloseoutStage::Commit,
+            revision: Some(revision.clone()),
+        })?;
+        if self.mode == ProjectionPublicationMode::Remote {
+            observe(ProjectionCloseoutEvent::Started(
+                ProjectionCloseoutStage::Push,
+            ))?;
+            self.run_publication_git(
+                &[
+                    "push",
+                    "origin",
+                    &format!("HEAD:refs/heads/{}", self.branch),
+                ],
+                "publish projection closeout",
+            )?;
+            observe(ProjectionCloseoutEvent::Completed {
+                stage: ProjectionCloseoutStage::Push,
+                revision: Some(revision.clone()),
+            })?;
+            observe(ProjectionCloseoutEvent::Started(
+                ProjectionCloseoutStage::Verify,
+            ))?;
+            let remote = self.publication_git_stdout(
+                &[
+                    "ls-remote",
+                    "origin",
+                    &format!("refs/heads/{}", self.branch),
+                ],
+                "verify published projection closeout revision",
+            )?;
+            let remote_revision = remote
+                .split_whitespace()
+                .next()
+                .context("published branch has no remote revision")?;
+            if remote_revision != revision {
+                bail!(
+                    "published projection closeout revision mismatch: local {revision}, remote {remote_revision}"
+                );
+            }
+            observe(ProjectionCloseoutEvent::Completed {
+                stage: ProjectionCloseoutStage::Verify,
+                revision: Some(revision.clone()),
+            })?;
+        } else {
+            observe(ProjectionCloseoutEvent::Started(
+                ProjectionCloseoutStage::RetainLocal,
+            ))?;
+            let closeout = self
+                .repository
+                .load_projection_closeout(&projection.projection_id)?
+                .context("local projection closeout was not retained")?;
+            if closeout.controller_reconcile {
+                bail!("local projection closeout incorrectly retained controller authority");
+            }
+            observe(ProjectionCloseoutEvent::Completed {
+                stage: ProjectionCloseoutStage::RetainLocal,
+                revision: Some(revision.clone()),
+            })?;
+            observe(ProjectionCloseoutEvent::Started(
+                ProjectionCloseoutStage::Verify,
+            ))?;
+            run_git(
+                &self.git,
+                self.repository.root(),
+                &["diff", "--quiet", "HEAD", "--"],
+                "verify clean local projection closeout commit",
+            )?;
+            observe(ProjectionCloseoutEvent::Completed {
+                stage: ProjectionCloseoutStage::Verify,
+                revision: Some(revision.clone()),
+            })?;
+        }
+        Ok(ProjectionCloseoutPublication {
+            placement_path,
+            projection_path,
+            branch: self.branch.clone(),
+            revision,
+            pushed: self.pushed(),
         })
     }
 
     fn publication_git_command(&self) -> Command {
-        let mut command = Command::new(&self.git);
-        command.current_dir(self.repository.root());
+        let mut command = repository_git_command(&self.git, self.repository.root());
         if let Some(ssh_command) = &self.publish_git_ssh_command {
             command.env("GIT_SSH_COMMAND", ssh_command);
         }
@@ -990,6 +1588,7 @@ impl ProjectionPublisher {
         &self,
         projection: &PhaseProjection,
         controller_host: &str,
+        progress: impl FnMut(String) -> Result<()>,
     ) -> Result<()> {
         if controller_host.is_empty() {
             bail!("projection publication requires a non-empty controller host");
@@ -1039,29 +1638,206 @@ impl ProjectionPublisher {
 
         let mut hosts = projection.declarative_effect_hosts();
         hosts.insert(controller_host);
-        for host in hosts {
-            let installable = nixos_config_installable(host, "system.build.toplevel.drvPath")?;
-            let evaluation = Command::new(&self.nix)
+        evaluate_affected_configurations(
+            &self.nix,
+            self.repository.root(),
+            hosts,
+            "projection",
+            progress,
+        )
+    }
+
+    fn validate_staged_closeout(
+        &self,
+        projection: &PhaseProjection,
+        controller_host: &str,
+        progress: impl FnMut(String) -> Result<()>,
+    ) -> Result<()> {
+        if controller_host.is_empty() {
+            bail!("projection closeout requires a non-empty controller host");
+        }
+        let documents_installable = nixos_config_installable(
+            controller_host,
+            "services.abird-host-manager.phaseProjections",
+        )?;
+        let documents = Command::new(&self.nix)
+            .current_dir(self.repository.root())
+            .args([
+                "eval",
+                "--json",
+                &documents_installable,
+                "--option",
+                "allow-import-from-derivation",
+                "false",
+            ])
+            .output()
+            .context("start staged projection closeout evaluation")?;
+        if !documents.status.success() {
+            return require_command_success(documents, "evaluate staged projection closeout");
+        }
+        let documents: Vec<PhaseProjection> = serde_json::from_slice(&documents.stdout)
+            .context("parse staged phase projections after closeout")?;
+        if documents
+            .iter()
+            .any(|document| document.projection_id == projection.projection_id)
+        {
+            bail!("closed phase projection remains visible to the flake");
+        }
+
+        for effect in &projection.effects {
+            let ProjectionEffect::ServicePlacement {
+                scope,
+                service,
+                host_resource,
+                ..
+            } = effect
+            else {
+                continue;
+            };
+            let scope = serde_json::to_string(scope)?;
+            let service = serde_json::to_string(service)?;
+            let expression = format!(
+                "stacks: let stack = builtins.getAttr {scope} stacks; spec = stack.serviceRegistry.serviceFor {service}; in stack.serviceRegistry.roles.${{spec.role}}.host"
+            );
+            let placement = Command::new(&self.nix)
                 .current_dir(self.repository.root())
                 .args([
                     "eval",
                     "--raw",
-                    &installable,
+                    ".#hostManager.stacks",
+                    "--apply",
+                    &expression,
                     "--option",
                     "allow-import-from-derivation",
                     "false",
                 ])
                 .output()
-                .with_context(|| {
-                    format!("start staged projection configuration evaluation for {host:?}")
-                })?;
-            require_command_success(
-                evaluation,
-                &format!("evaluate staged projection configuration for {host:?}"),
-            )?;
+                .context("start canonical service placement evaluation")?;
+            if !placement.status.success() {
+                return require_command_success(placement, "evaluate canonical service placement");
+            }
+            let evaluated = String::from_utf8(placement.stdout)
+                .context("decode canonical service placement")?;
+            let expected_host = host_resource
+                .strip_prefix("host:")
+                .context("canonical placement host resource is not canonical")?;
+            if evaluated.trim() != expected_host {
+                bail!(
+                    "canonical placement for {scope}:{service} evaluated to {:?}, expected host resource {host_resource:?}",
+                    evaluated.trim(),
+                );
+            }
+        }
+
+        let mut hosts = projection.declarative_effect_hosts();
+        hosts.insert(controller_host);
+        evaluate_affected_configurations(
+            &self.nix,
+            self.repository.root(),
+            hosts,
+            "closeout",
+            progress,
+        )
+    }
+}
+
+const MAX_CONFIGURATION_EVALUATIONS: usize = 4;
+
+fn evaluate_affected_configurations(
+    nix: &Path,
+    repository_root: &Path,
+    hosts: BTreeSet<&str>,
+    validation: &str,
+    mut progress: impl FnMut(String) -> Result<()>,
+) -> Result<()> {
+    let hosts = hosts.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let total = hosts.len();
+    if total == 0 {
+        return Ok(());
+    }
+    let parallelism = total.min(MAX_CONFIGURATION_EVALUATIONS);
+    progress(format!(
+        "Evaluating {total} affected configurations · {parallelism} in parallel"
+    ))?;
+
+    let next = AtomicUsize::new(0);
+    let mut results = Vec::with_capacity(total);
+    results.resize_with(total, || None);
+    thread::scope(|scope| -> Result<()> {
+        let (sender, receiver) = mpsc::channel();
+        for _ in 0..parallelism {
+            let sender = sender.clone();
+            let hosts = &hosts;
+            let next = &next;
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(host) = hosts.get(index) else {
+                        break;
+                    };
+                    let result = evaluate_configuration(nix, repository_root, host, validation);
+                    if sender.send((index, result)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+
+        for completed in 1..=total {
+            let (index, result) = receiver
+                .recv()
+                .context("affected configuration evaluation worker stopped unexpectedly")?;
+            let host = hosts[index].clone();
+            results[index] = Some(result);
+            progress(format!(
+                "Evaluating affected configurations · {completed}/{total} · {host} finished"
+            ))?;
         }
         Ok(())
+    })?;
+
+    let mut failures = Vec::new();
+    for (host, result) in hosts.iter().zip(results) {
+        let result = result.context("affected configuration evaluation result is absent")?;
+        if let Err(error) = result {
+            failures.push(format!("{host}: {error:#}"));
+        }
     }
+    if !failures.is_empty() {
+        bail!(
+            "affected {validation} configuration evaluation failed:\n  - {}",
+            failures.join("\n  - ")
+        );
+    }
+    Ok(())
+}
+
+fn evaluate_configuration(
+    nix: &Path,
+    repository_root: &Path,
+    host: &str,
+    validation: &str,
+) -> Result<()> {
+    let installable = nixos_config_installable(host, "system.build.toplevel.drvPath")?;
+    let evaluation = Command::new(nix)
+        .current_dir(repository_root)
+        .args([
+            "eval",
+            "--raw",
+            &installable,
+            "--option",
+            "allow-import-from-derivation",
+            "false",
+        ])
+        .output()
+        .with_context(|| {
+            format!("start staged {validation} configuration evaluation for {host:?}")
+        })?;
+    require_command_success(
+        evaluation,
+        &format!("evaluate staged {validation} configuration for {host:?}"),
+    )
 }
 
 fn nixos_config_installable(host: &str, attribute: &str) -> Result<String> {
@@ -1082,9 +1858,17 @@ fn validate_git_branch(branch: &str) -> Result<()> {
     Ok(())
 }
 
+fn repository_git_command(git: &Path, root: &Path) -> Command {
+    let mut command = Command::new(git);
+    command.current_dir(root);
+    for variable in GIT_REPOSITORY_ENVIRONMENT {
+        command.env_remove(variable);
+    }
+    command
+}
+
 fn run_git(git: &Path, root: &Path, args: &[&str], label: &str) -> Result<()> {
-    let output = Command::new(git)
-        .current_dir(root)
+    let output = repository_git_command(git, root)
         .args(args)
         .output()
         .with_context(|| format!("start {label}"))?;
@@ -1092,8 +1876,7 @@ fn run_git(git: &Path, root: &Path, args: &[&str], label: &str) -> Result<()> {
 }
 
 fn run_git_path(git: &Path, root: &Path, args: &[&str], path: &Path, label: &str) -> Result<()> {
-    let output = Command::new(git)
-        .current_dir(root)
+    let output = repository_git_command(git, root)
         .args(args)
         .arg(path)
         .output()
@@ -1102,8 +1885,7 @@ fn run_git_path(git: &Path, root: &Path, args: &[&str], path: &Path, label: &str
 }
 
 fn git_stdout(git: &Path, root: &Path, args: &[&str], label: &str) -> Result<String> {
-    let output = Command::new(git)
-        .current_dir(root)
+    let output = repository_git_command(git, root)
         .args(args)
         .output()
         .with_context(|| format!("start {label}"))?;
@@ -1439,6 +2221,29 @@ mod tests {
         temp
     }
 
+    #[test]
+    fn repository_git_commands_ignore_inherited_repository_selection() {
+        let command = repository_git_command(Path::new("git"), Path::new("/tmp/repository"));
+        let removed = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.is_none().then(|| name.to_string_lossy().into_owned())
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            removed,
+            GIT_REPOSITORY_ENVIRONMENT
+                .iter()
+                .map(|variable| (*variable).to_owned())
+                .collect()
+        );
+        assert_eq!(
+            command.get_current_dir(),
+            Some(Path::new("/tmp/repository"))
+        );
+    }
+
     fn record(system: ManagedHostSystem) -> ManagedHost {
         ManagedHost {
             system,
@@ -1589,8 +2394,7 @@ mod tests {
         fs::write(
             &fake_nix,
             format!(
-                "#!/bin/sh\nset -eu\nprintf 'CALL\\n' >> '{}'\nprintf '%s\\n' \"$@\" >> '{}'\ncase \"$1 $2\" in\n  'eval --json')\n    printf '['\n    cat data/phase-projections/move-publisher.json\n    printf ']'\n    ;;\n  'eval --raw') printf '/nix/store/fake-system.drv' ;;\n  *) exit 64 ;;\nesac\n",
-                nix_arguments.display(),
+                "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1 $2\" in\n  'eval --json')\n    printf '['\n    cat data/phase-projections/move-publisher.json\n    printf ']'\n    ;;\n  'eval --raw') printf '/nix/store/fake-system.drv' ;;\n  *) exit 64 ;;\nesac\n",
                 nix_arguments.display()
             ),
         )
@@ -1645,7 +2449,7 @@ mod tests {
         fs::write(
             &publisher_git,
             format!(
-                "#!/bin/sh\nprintf '%s|%s\\n' \"$1\" \"${{GIT_SSH_COMMAND-<unset>}}\" >> '{}'\nexec git \"$@\"\n",
+                "#!/bin/sh\nprintf '%s|%s\\n' \"$*\" \"${{GIT_SSH_COMMAND-<unset>}}\" >> '{}'\nexec git \"$@\"\n",
                 git_invocations.display()
             ),
         )
@@ -1666,6 +2470,7 @@ mod tests {
             Some("operator-publication-ssh".to_owned()),
         )
         .unwrap();
+        publisher.verify_push_access().unwrap();
         let projection = seeded_projection(publisher.revision().unwrap());
         let publication = publisher.publish(&projection, "controller").unwrap();
         assert!(publication.pushed);
@@ -1683,56 +2488,39 @@ mod tests {
         assert!(remote_document.contains(&projection.projection_sha256));
         assert!(!source.path().join("data/phase-projections").exists());
         let git_invocations = fs::read_to_string(&git_invocations).unwrap();
-        assert!(git_invocations.contains("push|operator-publication-ssh"));
-        assert!(git_invocations.contains("ls-remote|operator-publication-ssh"));
+        assert!(
+            git_invocations
+                .contains("push --dry-run origin HEAD:refs/heads/master|operator-publication-ssh")
+        );
+        assert!(
+            git_invocations.contains("push origin HEAD:refs/heads/master|operator-publication-ssh")
+        );
+        assert!(
+            git_invocations.contains("ls-remote origin refs/heads/master|operator-publication-ssh")
+        );
         assert!(
             git_invocations
                 .lines()
-                .filter(|line| line.starts_with("clone|") || line.starts_with("fetch|"))
+                .filter(|line| line.starts_with("clone ") || line.starts_with("fetch "))
                 .all(|line| !line.ends_with("|operator-publication-ssh"))
         );
+        let nix_invocations = fs::read_to_string(nix_arguments).unwrap();
+        let mut nix_invocations = nix_invocations.lines();
         assert_eq!(
-            fs::read_to_string(nix_arguments)
-                .unwrap()
-                .lines()
-                .collect::<Vec<_>>(),
-            [
-                "CALL",
-                "eval",
-                "--json",
-                ".#nixosConfigurations.\"controller\".config.services.abird-host-manager.phaseProjections",
-                "--option",
-                "allow-import-from-derivation",
-                "false",
-                "CALL",
-                "eval",
-                "--raw",
-                ".#nixosConfigurations.\"controller\".config.system.build.toplevel.drvPath",
-                "--option",
-                "allow-import-from-derivation",
-                "false",
-                "CALL",
-                "eval",
-                "--raw",
-                ".#nixosConfigurations.\"router\".config.system.build.toplevel.drvPath",
-                "--option",
-                "allow-import-from-derivation",
-                "false",
-                "CALL",
-                "eval",
-                "--raw",
-                ".#nixosConfigurations.\"source\".config.system.build.toplevel.drvPath",
-                "--option",
-                "allow-import-from-derivation",
-                "false",
-                "CALL",
-                "eval",
-                "--raw",
-                ".#nixosConfigurations.\"target\".config.system.build.toplevel.drvPath",
-                "--option",
-                "allow-import-from-derivation",
-                "false",
-            ]
+            nix_invocations.next(),
+            Some(
+                "eval --json .#nixosConfigurations.\"controller\".config.services.abird-host-manager.phaseProjections --option allow-import-from-derivation false"
+            )
+        );
+        assert_eq!(
+            nix_invocations.collect::<BTreeSet<_>>(),
+            ["controller", "router", "source", "target"]
+                .map(|host| format!(
+                    "eval --raw .#nixosConfigurations.\"{host}\".config.system.build.toplevel.drvPath --option allow-import-from-derivation false"
+                ))
+                .iter()
+                .map(String::as_str)
+                .collect()
         );
 
         let checkout = state.path().join("projection-repository");
@@ -1778,6 +2566,203 @@ mod tests {
             fs::read_to_string(checkout.join("flake.nix")).unwrap(),
             "# interrupted tracked write\n"
         );
+    }
+
+    #[test]
+    fn local_projection_publisher_commits_in_source_without_remote_operations() {
+        let source = fixture();
+        let state = tempfile::tempdir().unwrap();
+        let git = PathBuf::from("git");
+        run_git(
+            &git,
+            source.path(),
+            &["init", "-b", "master"],
+            "init local source",
+        )
+        .unwrap();
+        run_git(&git, source.path(), &["add", "--", "."], "stage fixture").unwrap();
+        run_git(
+            &git,
+            source.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "initial",
+            ],
+            "commit fixture",
+        )
+        .unwrap();
+
+        let fake_nix = state.path().join("fake-nix");
+        fs::write(
+            &fake_nix,
+            "#!/bin/sh\nset -eu\ncase \"$1 $2\" in\n  'eval --json') printf '['; cat data/phase-projections/move-publisher.json; printf ']' ;;\n  'eval --raw') printf '/nix/store/fake-system.drv' ;;\n  *) exit 64 ;;\nesac\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_nix, fs::Permissions::from_mode(0o755)).unwrap();
+        let invocations = state.path().join("git-invocations");
+        let publisher_git = state.path().join("publisher-git");
+        fs::write(
+            &publisher_git,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                invocations.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&publisher_git, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let source_repository = Repository::from_root(source.path().to_path_buf()).unwrap();
+        let authority = WorkflowStore::open(state.path().to_path_buf()).unwrap();
+        let publisher = ProjectionPublisher::prepare_local(
+            &source_repository,
+            &authority,
+            state.path(),
+            "master",
+            publisher_git,
+            fake_nix,
+        )
+        .unwrap();
+        assert_eq!(publisher.mode(), ProjectionPublicationMode::Local);
+        publisher.verify_push_access().unwrap();
+        let projection = seeded_projection(publisher.revision().unwrap());
+        let mut events = Vec::new();
+        let publication = publisher
+            .publish_observed(&projection, "controller", |event| {
+                events.push(event);
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(!publication.pushed);
+        assert!(source.path().join(&publication.write.path).is_file());
+        assert_eq!(publisher.revision().unwrap(), publication.revision);
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    ProjectionPublicationEvent::Started(stage)
+                    | ProjectionPublicationEvent::Completed { stage, .. } => Some(*stage),
+                    ProjectionPublicationEvent::Progress { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            [
+                ProjectionPublicationStage::Validate,
+                ProjectionPublicationStage::Validate,
+                ProjectionPublicationStage::Commit,
+                ProjectionPublicationStage::Commit,
+                ProjectionPublicationStage::RetainLocal,
+                ProjectionPublicationStage::RetainLocal,
+                ProjectionPublicationStage::Verify,
+                ProjectionPublicationStage::Verify,
+            ]
+        );
+        assert!(
+            source_repository
+                .load_canonical_service_placements()
+                .unwrap()
+                .controller_reconcile_exclusions
+                .contains(&projection.projection_id)
+        );
+        source_repository
+            .write_projection_closeout(&projection, "complete", false)
+            .unwrap();
+        assert!(
+            !source_repository
+                .load_canonical_service_placements()
+                .unwrap()
+                .controller_reconcile_exclusions
+                .contains(&projection.projection_id)
+        );
+        assert!(
+            !source_repository
+                .load_projection_closeout(&projection.projection_id)
+                .unwrap()
+                .unwrap()
+                .controller_reconcile
+        );
+        let invocations = fs::read_to_string(invocations).unwrap();
+        for forbidden in ["push", "fetch", "clone", "ls-remote"] {
+            assert!(
+                !invocations
+                    .lines()
+                    .any(|line| line.split_whitespace().next() == Some(forbidden)),
+                "local publisher unexpectedly invoked {forbidden}: {invocations}"
+            );
+        }
+    }
+
+    #[test]
+    fn affected_configuration_validation_runs_hosts_in_parallel_with_live_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let markers = temp.path().join("markers");
+        fs::create_dir(&markers).unwrap();
+        let fake_nix = temp.path().join("fake-nix");
+        fs::write(
+            &fake_nix,
+            format!(
+                "#!/bin/sh\nset -eu\ntouch '{}/'\"$$\"\nfor _attempt in $(seq 1 100); do\n  count=$(find '{}' -type f | wc -l)\n  if [ \"$count\" -ge 4 ]; then\n    printf '/nix/store/fake-system.drv'\n    exit 0\n  fi\n  sleep 0.05\ndone\nexit 70\n",
+                markers.display(),
+                markers.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_nix, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut progress = Vec::new();
+        evaluate_affected_configurations(
+            &fake_nix,
+            temp.path(),
+            ["alpha", "beta", "gamma", "delta"].into_iter().collect(),
+            "projection",
+            |detail| {
+                progress.push(detail);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            progress.first().map(String::as_str),
+            Some("Evaluating 4 affected configurations · 4 in parallel")
+        );
+        assert_eq!(progress.len(), 5);
+        for host in ["alpha", "beta", "gamma", "delta"] {
+            assert!(progress.iter().any(|detail| detail.contains(host)));
+        }
+    }
+
+    #[test]
+    fn affected_configuration_validation_reports_failures_in_host_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_nix = temp.path().join("fake-nix");
+        fs::write(
+            &fake_nix,
+            "#!/bin/sh\nset -eu\ncase \"$3\" in\n  *alpha*) printf 'alpha failed' >&2; exit 41 ;;\n  *zeta*) printf 'zeta failed' >&2; exit 42 ;;\n  *) printf '/nix/store/fake-system.drv' ;;\nesac\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_nix, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = evaluate_affected_configurations(
+            &fake_nix,
+            temp.path(),
+            ["zeta", "alpha"].into_iter().collect(),
+            "projection",
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+        let alpha = error.find("alpha: ").unwrap();
+        let zeta = error.find("zeta: ").unwrap();
+        assert!(alpha < zeta, "failure order was not deterministic: {error}");
+        assert!(error.contains("alpha failed"));
+        assert!(error.contains("zeta failed"));
     }
 
     #[test]

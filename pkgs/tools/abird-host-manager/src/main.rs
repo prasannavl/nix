@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::ExitCode;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use abird_host_agent::instance::{
     IncusCopyMode, InstanceMigrationPhase, InstanceMigrationPolicy, InstanceMigrationRequest,
@@ -14,7 +16,8 @@ use abird_host_agent::job::{projected_hold_job_id, projected_release_job_id};
 use abird_host_agent::sha256::digest_bytes;
 use abird_host_agent::transfer::{TransferDefinition, transfer_with_excludes_progress};
 use abird_host_manager::agent_adapter::{
-    HostManagerConfig, NativeAdapter, declared_data_roots, instance_resource,
+    HostManagerConfig, NativeAdapter, RenderedInventoryCommandFailure, WorkflowItemAdapter,
+    declared_data_roots, format_job_progress, instance_resource, run_local_nixbot_deploy,
 };
 use abird_host_manager::backup_runtime::{
     ArtifactDeletionStatus, BackupArtifact, BackupPhase, BackupRecord, BackupStore,
@@ -24,36 +27,62 @@ use abird_host_manager::instance_backup::{self, InstanceBackupContext};
 use abird_host_manager::physical::{
     BootMode, HardwareProjection, PartitionSize, PhysicalLayoutRequest,
 };
+use abird_host_manager::presentation::{
+    CommandPresentation, OutputContract, PresentationKind, render as render_presentation,
+};
 use abird_host_manager::programs::nixos_generate_config::NixosGenerateConfig;
 use abird_host_manager::programs::privilege::Privilege;
+use abird_host_manager::progress::{command_reporter, json_output, set_json_output};
 use abird_host_manager::projection::{
     MoveItemObservation, MovePhase, MoveProjectionObservation, MoveProjector, PhaseProjection,
     ResourceHoldIntent, ResourceHoldPhase, ResourceHoldProjector, canonical_sha256,
 };
 use abird_host_manager::repository::{
-    ManagedHost, ManagedHostSystem, ManagedIncus, ProjectionPublisher, Repository,
-    RepositoryPrograms,
+    CanonicalProjectionCloseout, ManagedHost, ManagedHostSystem, ManagedIncus,
+    ProjectionCloseoutEvent, ProjectionCloseoutPublication, ProjectionCloseoutStage,
+    ProjectionPublication, ProjectionPublicationEvent, ProjectionPublicationMode,
+    ProjectionPublicationStage, ProjectionPublisher, Repository, RepositoryPrograms,
 };
 use abird_host_manager::selector::select_hosts;
 use abird_host_manager::service_registry::{resolve_service_host, resolve_service_resource};
+use abird_host_manager::terminal_style::{TerminalStyle, Tone};
 use abird_host_manager::workflow::{
     BackupDestination, BackupItem, BackupSpec, HostEndpoint, InstanceBackupPolicy,
     InstanceEndpoint, InstanceMovePolicy, MoveItem, TransactionSpec, wipe_id,
 };
 use abird_host_manager::workflow_runtime::{
-    ActivationAuthorization, InitialMoveContinuation, TransactionRecord, WorkflowRegistration,
-    WorkflowStore, execute_workflow_action, execute_workflow_action_until, preflight_new_workflow,
-    preflight_workflow_action, supersede_failed_workflow_jobs, validate_failed_workflow_jobs,
+    ActivationAuthorization, CloseDecision, CommandStatus, InitialMoveContinuation,
+    LifecycleCommand, LifecycleState, StepStatus, TransactionRecord, WorkflowRegistration,
+    WorkflowStore, begin_workflow_action, execute_workflow_action, execute_workflow_action_until,
+    has_pending_close_workflow_action, plan_terminal_failed_run_for_prepare, plan_workflow_action,
+    preflight_new_workflow, preflight_workflow_action, supersede_failed_workflow_jobs,
+    supersede_terminal_failed_run_for_prepare, supersede_terminal_failed_workflow_jobs,
+    validate_failed_workflow_jobs,
 };
-use abird_host_manager::{Action, Phase as ItemPhase};
+use abird_host_manager::{Action, Phase as ItemPhase, deterministic_job_id};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+static COMMAND_PRESENTATION: OnceLock<CommandPresentation> = OnceLock::new();
+
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Cli {
+    /// Emit one stable JSON document instead of human-readable output.
+    #[arg(long, global = true, help_heading = "Global options")]
+    json: bool,
+
+    /// Keep the controller, journal, commits, and deployment source in this checkout; never push.
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "local_run",
+        help_heading = "Global options"
+    )]
+    local: bool,
+
     /// Durable manager state directory.
     #[arg(
         long,
@@ -366,11 +395,16 @@ struct BackupCreateArgs {
     /// Optional caller idempotency key for a typed backup.
     #[arg(long, global = true)]
     id: Option<String>,
-    /// Authorize backup creation and copy.
-    #[arg(long, global = true, conflicts_with = "dry_run")]
+    /// Deprecated compatibility flag; mutating commands execute by default.
+    #[arg(long, global = true, conflicts_with = "dry_run", hide = true)]
     execute: bool,
     /// Print the immutable record without persisting it or contacting hosts.
-    #[arg(long, global = true, conflicts_with = "execute")]
+    #[arg(
+        long = "dry",
+        visible_alias = "dry-run",
+        global = true,
+        conflicts_with = "execute"
+    )]
     dry_run: bool,
     #[command(subcommand)]
     resource: Option<BackupCreateResource>,
@@ -590,12 +624,12 @@ struct MoveGuard {
 
 #[derive(Debug, Args)]
 struct ExecutionGuard {
-    /// Authorize the requested infrastructure mutation.
-    #[arg(long, conflicts_with = "dry_run")]
+    /// Deprecated compatibility flag; mutating commands execute by default.
+    #[arg(long, conflicts_with = "dry_run", hide = true)]
     execute: bool,
 
     /// Validate the intended action without writing a journal or mutating hosts.
-    #[arg(long, conflicts_with = "execute")]
+    #[arg(long = "dry", visible_alias = "dry-run", conflicts_with = "execute")]
     dry_run: bool,
 }
 
@@ -608,21 +642,29 @@ enum TransactionCommand {
     /// List transaction journals.
     List,
     /// Refresh the verified non-authoritative seed copy.
+    #[command(hide = true)]
     Seed(TransactionPhaseArgs),
     /// Stop all writers, finish and verify the authoritative copy, and remain held.
     Prepare(ProjectedTransactionPhaseArgs),
     /// Reverify the prepared data while both sides remain held.
+    #[command(hide = true)]
     Verify(TransactionPhaseArgs),
-    /// Declaratively select and explicitly activate the target writer.
-    Cutover(ProjectedTransactionPhaseArgs),
-    /// Restore and explicitly activate the source writer.
+    /// Activate and verify the target writer, retaining source for recovery.
+    #[command(visible_alias = "cutover")]
+    Run(ProjectedTransactionPhaseArgs),
+    /// Deprecated alias for `close --rollback`.
+    #[command(hide = true)]
     Rollback(ProjectedTransactionPhaseArgs),
-    /// Reconcile runtime to the already-published desired projection.
-    Reconcile(TransactionReconcileArgs),
-    /// Resume the exact pending action after an interrupted or failed step.
+    /// Reconcile one deployed projection. Reserved for the controller service.
+    #[command(name = "_reconcile", hide = true)]
+    ReconcileInternal(TransactionInternalReconcileArgs),
+    /// Finalize a close only after its canonical placement generation is deployed.
+    #[command(name = "_close-reconcile", hide = true)]
+    CloseReconcileInternal(TransactionCloseReconcileArgs),
+    /// Resume interrupted work without choosing a new transaction phase.
     Resume(TransactionResumeArgs),
-    /// End the rollback window and release the inactive side without starting it.
-    Close(TransactionPhaseArgs),
+    /// Finish on the successful target or roll back to source.
+    Close(TransactionCloseArgs),
 }
 
 #[derive(Debug, Args)]
@@ -652,17 +694,50 @@ struct ProjectedTransactionPhaseArgs {
 }
 
 #[derive(Debug, Args)]
-struct TransactionReconcileArgs {
+struct TransactionCloseArgs {
+    id: String,
+    /// Select target as the terminal authority; safety checks remain mandatory.
+    #[arg(short = 'c', long, conflicts_with = "rollback")]
+    complete: bool,
+    /// Select source as the terminal authority.
+    #[arg(short = 'r', long, conflicts_with = "complete")]
+    rollback: bool,
+    /// Break glass: complete a published target-active projection without a
+    /// successful current-run journal. Live terminal checks remain mandatory.
+    #[arg(long, requires = "complete", conflicts_with = "rollback")]
+    force: bool,
+    /// Persist repository intent only and leave runtime steps for deployment.
+    #[arg(long)]
+    skip_runtime: bool,
+    /// Deploy the published closeout without an interactive confirmation.
+    #[arg(long, conflicts_with = "manual_deploy")]
+    yes: bool,
+    /// Stop after verified publication and print the exact Nixbot deploy command.
+    #[arg(long, conflicts_with = "yes")]
+    manual_deploy: bool,
+    #[command(flatten)]
+    guard: ExecutionGuard,
+}
+
+#[derive(Debug, Args)]
+struct TransactionInternalReconcileArgs {
     id: String,
     /// Require the repository document consumed by this reconciliation to be
     /// exactly the digest injected into the deployed controller generation.
     #[arg(long)]
-    expected_projection_sha256: Option<String>,
+    expected_projection_sha256: String,
     /// Preserve a terminal failed job whose immutable policy changed and continue with a new durable attempt ID.
     #[arg(long)]
     supersede_failed_job: bool,
     #[command(flatten)]
     guard: ExecutionGuard,
+}
+
+#[derive(Debug, Args)]
+struct TransactionCloseReconcileArgs {
+    id: String,
+    #[arg(long)]
+    expected_projection_sha256: String,
 }
 
 #[derive(Debug, Args)]
@@ -673,6 +748,14 @@ struct TransactionResumeArgs {
     supersede_failed_job: bool,
     #[command(flatten)]
     guard: ExecutionGuard,
+}
+
+struct ProjectedReconcileRequest {
+    id: String,
+    expected_projection_sha256: Option<String>,
+    supersede_failed_job: bool,
+    guard: ExecutionGuard,
+    command_name: &'static str,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1231,17 +1314,511 @@ struct ResourceLogArgs {
     logs: LogOptions,
 }
 
+fn command_presentation(command: &Command) -> CommandPresentation {
+    match command {
+        Command::Instance { command } => match command {
+            InstanceCommand::Move(args) => workflow_presentation(
+                format!("Move {}", named_subjects("instance", &args.instances)),
+                format!(
+                    "Initialized migration for {}",
+                    named_subjects("instance", &args.instances)
+                ),
+                args.guard.execution.dry_run,
+            ),
+            InstanceCommand::Sync(args) => mutation_presentation(
+                format!("Synchronize instance {}", args.source_instance),
+                format!("Synchronized instance {}", args.source_instance),
+                args.guard.dry_run,
+            ),
+        },
+        Command::Transaction { command } => match command {
+            TransactionCommand::Create(args) => workflow_presentation(
+                "Create transaction",
+                "Created transaction",
+                args.guard.dry_run,
+            ),
+            TransactionCommand::Show { id } => CommandPresentation::inspect(
+                format!("Transaction {id}"),
+                PresentationKind::Workflow,
+            ),
+            TransactionCommand::List => specialized_collection_presentation(
+                "Transactions",
+                PresentationKind::WorkflowCollection,
+            ),
+            TransactionCommand::Seed(args) => workflow_presentation(
+                format!("Refresh warm seed for {}", args.id),
+                format!("Refreshed warm seed for {}", args.id),
+                args.guard.dry_run,
+            ),
+            TransactionCommand::Prepare(args) => workflow_presentation(
+                format!("Prepare {}", args.id),
+                format!("Prepared checkpoint for {}", args.id),
+                args.guard.dry_run,
+            ),
+            TransactionCommand::Verify(args) => workflow_presentation(
+                format!("Verify {}", args.id),
+                format!("Verified checkpoint for {}", args.id),
+                args.guard.dry_run,
+            ),
+            TransactionCommand::Run(args) => workflow_presentation(
+                format!("Run {}", args.id),
+                format!("Moved traffic to target for {}", args.id),
+                args.guard.dry_run,
+            ),
+            TransactionCommand::Rollback(args) => workflow_presentation(
+                format!("Roll back {}", args.id),
+                format!("Restored source for {}", args.id),
+                args.guard.dry_run,
+            ),
+            TransactionCommand::ReconcileInternal(args) => workflow_presentation(
+                format!("Reconcile {}", args.id),
+                format!("Reconciled desired state for {}", args.id),
+                args.guard.dry_run,
+            ),
+            TransactionCommand::CloseReconcileInternal(args) => workflow_presentation(
+                format!("Finalize closeout for {}", args.id),
+                format!("Finalized closeout for {}", args.id),
+                false,
+            ),
+            TransactionCommand::Resume(args) => workflow_presentation(
+                format!("Resume {}", args.id),
+                format!("Reconciled transaction {}", args.id),
+                args.guard.dry_run,
+            ),
+            TransactionCommand::Close(args) => workflow_presentation(
+                format!("Close {}", args.id),
+                format!("Closed migration {}", args.id),
+                args.guard.dry_run,
+            ),
+        },
+        Command::Host { command } => match command {
+            HostCommand::List(_) => collection_presentation("Hosts"),
+            HostCommand::Show { host } => inspect_presentation(format!("Host {host}")),
+            HostCommand::Move(args) => workflow_presentation(
+                format!("Move host {}", args.source),
+                format!("Initialized migration for host {}", args.source),
+                args.guard.execution.dry_run,
+            ),
+            HostCommand::Exec { host, .. } => {
+                CommandPresentation::passthrough(format!("Execute command on {host}"))
+            }
+            HostCommand::Ssh(args) => {
+                CommandPresentation::passthrough(format!("SSH to {}", args.host))
+            }
+            HostCommand::Logs(args) => {
+                CommandPresentation::stream(format!("Logs for {}", args.host))
+            }
+            HostCommand::Holds { host } => collection_presentation(format!("Holds on {host}")),
+            HostCommand::Drain(args) => mutation_presentation(
+                format!("Drain host {}", args.host),
+                format!("Drained host {}", args.host),
+                args.guard.dry_run,
+            ),
+            HostCommand::Activate(args) => mutation_presentation(
+                format!("Activate host {}", args.host),
+                format!("Activated host {}", args.host),
+                args.guard.dry_run,
+            ),
+            HostCommand::Reboot(args) => fleet_presentation(
+                "Submit reboot for hosts",
+                "Submitted reboot for hosts",
+                args.guard.dry_run,
+            ),
+            HostCommand::Gc(args) => fleet_presentation(
+                "Collect garbage on hosts",
+                "Collected garbage on hosts",
+                args.fleet.guard.dry_run,
+            ),
+            HostCommand::Clean(args) => fleet_presentation(
+                format!("Clean {} state on hosts", clean_kind(args.scope)),
+                format!("Cleaned {} state on hosts", clean_kind(args.scope)),
+                args.fleet.guard.dry_run,
+            ),
+            HostCommand::Create { kind } => {
+                let (kind_name, common) = match kind {
+                    HostCreateKind::External(args) => ("external", &args.common),
+                    HostCreateKind::Incus(args) => ("Incus", &args.common),
+                    HostCreateKind::Physical(args) => ("physical", &args.common),
+                };
+                mutation_presentation(
+                    format!("Create {kind_name} host {}", common.host),
+                    format!("Created {kind_name} host {}", common.host),
+                    common.guard.dry_run,
+                )
+            }
+            HostCommand::Build(args) => mutation_presentation(
+                format!("Build host {}", args.host),
+                format!("Built host {}", args.host),
+                args.guard.dry_run,
+            ),
+            HostCommand::Install(args) => mutation_presentation(
+                format!("Install host {}", args.host),
+                format!("Installed host {}", args.host),
+                args.guard.dry_run,
+            ),
+            HostCommand::Delete(args) => mutation_presentation(
+                format!("Delete host {}", args.host),
+                format!("Deleted host {}", args.host),
+                args.guard.dry_run,
+            ),
+        },
+        Command::Service { command } => match command {
+            ServiceCommand::Move(args) => workflow_presentation(
+                format!("Move {}", named_subjects("service", &args.entities)),
+                format!(
+                    "Initialized migration for {}",
+                    named_subjects("service", &args.entities)
+                ),
+                args.guard.execution.dry_run,
+            ),
+            ServiceCommand::Start(args) => service_mutation("Start", "Started", args),
+            ServiceCommand::Stop(args) => service_mutation("Stop", "Stopped", args),
+            ServiceCommand::Restart(args) => service_mutation("Restart", "Restarted", args),
+            ServiceCommand::Reload(args) => service_mutation("Reload", "Reloaded", args),
+            ServiceCommand::Wipe(args) => mutation_presentation(
+                format!("Wipe service {}", args.service.service),
+                format!("Wiped service {} · hold retained", args.service.service),
+                args.guard.dry_run,
+            ),
+            ServiceCommand::Status(args) => {
+                inspect_presentation(format!("Service {}", args.service))
+            }
+            ServiceCommand::Logs(args) => {
+                CommandPresentation::stream(format!("Logs for service {}", args.service.service))
+            }
+        },
+        Command::Unit { command } => match command {
+            UnitCommand::Start(args) => unit_mutation("Start", "Started", args),
+            UnitCommand::Stop(args) => unit_mutation("Stop", "Stopped", args),
+            UnitCommand::Restart(args) => unit_mutation("Restart", "Restarted", args),
+            UnitCommand::Reload(args) => unit_mutation("Reload", "Reloaded", args),
+            UnitCommand::Status(args) => {
+                inspect_presentation(format!("Unit {} · {}", args.unit, args.host))
+            }
+            UnitCommand::Logs(args) => CommandPresentation::stream(format!(
+                "Logs for unit {} · {}",
+                args.unit.unit, args.unit.host
+            )),
+        },
+        Command::Resource { command } => match command {
+            ResourceCommand::Move(args) => workflow_presentation(
+                format!("Move {}", named_subjects("resource", &args.entities)),
+                format!(
+                    "Initialized migration for {}",
+                    named_subjects("resource", &args.entities)
+                ),
+                args.guard.execution.dry_run,
+            ),
+            ResourceCommand::Describe(args) => {
+                inspect_presentation(format!("Resource {} · {}", args.resource, args.host))
+            }
+            ResourceCommand::Start(args) => resource_mutation("Start", "Started", args),
+            ResourceCommand::Stop(args) => resource_mutation("Stop", "Stopped", args),
+            ResourceCommand::Restart(args) => resource_mutation("Restart", "Restarted", args),
+            ResourceCommand::Reload(args) => resource_mutation("Reload", "Reloaded", args),
+            ResourceCommand::Wipe(args) => mutation_presentation(
+                format!(
+                    "Wipe resource {} · {}",
+                    args.resource.resource, args.resource.host
+                ),
+                format!("Wiped resource {} · hold retained", args.resource.resource),
+                args.guard.dry_run,
+            ),
+            ResourceCommand::Status(args) => {
+                inspect_presentation(format!("Resource {} · {}", args.resource, args.host))
+            }
+            ResourceCommand::Ready(args) => {
+                inspect_presentation(format!("Readiness for {} · {}", args.resource, args.host))
+            }
+            ResourceCommand::Logs(args) => CommandPresentation::stream(format!(
+                "Logs for resource {} · {}",
+                args.resource.resource, args.resource.host
+            )),
+            ResourceCommand::Hold { command } => match command {
+                ResourceHoldCommand::Show(args) => {
+                    inspect_presentation(format!("Hold for {} · {}", args.resource, args.host))
+                }
+                ResourceHoldCommand::Acquire(args) => {
+                    resource_action_presentation("Acquire hold for", "Acquired hold for", args)
+                }
+                ResourceHoldCommand::Set(args) => mutation_presentation(
+                    format!(
+                        "Set hold for {} · {}",
+                        args.resource.resource, args.resource.host
+                    ),
+                    format!("Set hold for {}", args.resource.resource),
+                    args.guard.dry_run,
+                ),
+                ResourceHoldCommand::Clear(args) => mutation_presentation(
+                    format!(
+                        "Clear hold for {} · {}",
+                        args.resource.resource, args.resource.host
+                    ),
+                    format!("Cleared hold for {}", args.resource.resource),
+                    args.guard.dry_run,
+                ),
+            },
+            ResourceCommand::Activate(args) => {
+                resource_action_presentation("Activate", "Activated", args)
+            }
+        },
+        Command::Backup { command } => match command {
+            BackupCommand::Create(args) => {
+                backup_presentation("Create backup", "Created backup", args.dry_run)
+            }
+            BackupCommand::Show { id } => {
+                CommandPresentation::inspect(format!("Backup {id}"), PresentationKind::Backup)
+            }
+            BackupCommand::List => {
+                specialized_collection_presentation("Backups", PresentationKind::BackupCollection)
+            }
+            BackupCommand::Verify { id } => backup_presentation(
+                format!("Verify backup {id}"),
+                format!("Verified backup {id}"),
+                false,
+            ),
+            BackupCommand::Resume(args) => backup_mutation("Resume", "Resumed", args),
+            BackupCommand::Abort(args) => backup_mutation("Abort", "Aborted", args),
+            BackupCommand::Restore(args) => backup_presentation(
+                format!("Restore backup {}", args.id),
+                format!("Restored backup {} · resources held", args.id),
+                args.guard.dry_run,
+            ),
+            BackupCommand::Rollback(args) => backup_mutation("Roll back", "Rolled back", args),
+            BackupCommand::Activate(args) => backup_mutation("Activate", "Activated", args),
+            BackupCommand::Delete(args) => backup_mutation("Delete", "Deleted", args),
+            BackupCommand::Prune(args) => {
+                backup_presentation("Prune backups", "Pruned backups", args.guard.dry_run)
+            }
+        },
+        Command::Job { command } => match command {
+            JobCommand::Show(args) => CommandPresentation::inspect(
+                format!("Job {} · {}", args.job_id, args.host),
+                PresentationKind::Job,
+            ),
+            JobCommand::List { host } => specialized_collection_presentation(
+                format!("Jobs on {host}"),
+                PresentationKind::JobCollection,
+            ),
+            JobCommand::Retry(args) => job_presentation(
+                format!("Retry job {} · {}", args.job.job_id, args.job.host),
+                format!("Retried job {}", args.job.job_id),
+                args.guard.dry_run,
+            ),
+        },
+    }
+}
+
+fn inspect_presentation(heading: impl Into<String>) -> CommandPresentation {
+    CommandPresentation::inspect(heading, PresentationKind::Inspect)
+}
+
+fn collection_presentation(heading: impl Into<String>) -> CommandPresentation {
+    CommandPresentation::collection(heading, PresentationKind::Collection)
+}
+
+fn specialized_collection_presentation(
+    heading: impl Into<String>,
+    kind: PresentationKind,
+) -> CommandPresentation {
+    CommandPresentation::collection(heading, kind)
+}
+
+fn mutation_presentation(
+    heading: impl Into<String>,
+    completed: impl Into<String>,
+    dry_run: bool,
+) -> CommandPresentation {
+    CommandPresentation::structured(heading, completed, PresentationKind::Mutation, dry_run)
+}
+
+fn fleet_presentation(
+    heading: impl Into<String>,
+    completed: impl Into<String>,
+    dry_run: bool,
+) -> CommandPresentation {
+    CommandPresentation::structured(heading, completed, PresentationKind::Fleet, dry_run)
+}
+
+fn workflow_presentation(
+    heading: impl Into<String>,
+    completed: impl Into<String>,
+    dry_run: bool,
+) -> CommandPresentation {
+    CommandPresentation::structured(heading, completed, PresentationKind::Workflow, dry_run)
+}
+
+fn backup_presentation(
+    heading: impl Into<String>,
+    completed: impl Into<String>,
+    dry_run: bool,
+) -> CommandPresentation {
+    CommandPresentation::structured(heading, completed, PresentationKind::Backup, dry_run)
+}
+
+fn job_presentation(
+    heading: impl Into<String>,
+    completed: impl Into<String>,
+    dry_run: bool,
+) -> CommandPresentation {
+    CommandPresentation::structured(heading, completed, PresentationKind::Job, dry_run)
+}
+
+fn named_subjects(kind: &str, names: &[String]) -> String {
+    match names {
+        [] => format!("{kind}s"),
+        [name] => format!("{kind} {name}"),
+        names => format!("{} {kind}s", names.len()),
+    }
+}
+
+fn service_mutation(
+    action: &str,
+    completed: &str,
+    args: &ServiceMutationArgs,
+) -> CommandPresentation {
+    mutation_presentation(
+        format!("{action} service {}", args.service.service),
+        format!("{completed} service {}", args.service.service),
+        args.guard.dry_run,
+    )
+}
+
+fn unit_mutation(action: &str, completed: &str, args: &UnitMutationArgs) -> CommandPresentation {
+    mutation_presentation(
+        format!("{action} unit {} · {}", args.unit.unit, args.unit.host),
+        format!("{completed} unit {}", args.unit.unit),
+        args.guard.dry_run,
+    )
+}
+
+fn resource_mutation(
+    action: &str,
+    completed: &str,
+    args: &ResourceMutationArgs,
+) -> CommandPresentation {
+    mutation_presentation(
+        format!(
+            "{action} resource {} · {}",
+            args.resource.resource, args.resource.host
+        ),
+        format!("{completed} resource {}", args.resource.resource),
+        args.guard.dry_run,
+    )
+}
+
+fn resource_action_presentation(
+    action: &str,
+    completed: &str,
+    args: &DurableResourceActionArgs,
+) -> CommandPresentation {
+    mutation_presentation(
+        format!(
+            "{action} {} · {}",
+            args.resource.resource, args.resource.host
+        ),
+        format!("{completed} {}", args.resource.resource),
+        args.guard.dry_run,
+    )
+}
+
+fn backup_mutation(
+    action: &str,
+    completed: &str,
+    args: &BackupRecordMutationArgs,
+) -> CommandPresentation {
+    backup_presentation(
+        format!("{action} backup {}", args.id),
+        format!("{completed} backup {}", args.id),
+        args.guard.dry_run,
+    )
+}
+
+fn clean_kind(kind: CleanKind) -> &'static str {
+    match kind {
+        CleanKind::Deploy => "deploy",
+        CleanKind::Podman => "Podman",
+        CleanKind::Nixbot => "Nixbot",
+    }
+}
+
 const CONTROLLER_EXECUTION_ENV: &str = "ABIRD_HOST_MANAGER_CONTROLLER_EXECUTION";
 const CONTROLLER_REPOSITORY: &str = "/var/lib/nixbot/nix";
 const CONTROLLER_CONFIG: &str = "/var/lib/nixbot/nix/hosts/nixbot.nix";
 const CONTROLLER_STATE_DIR: &str = "/var/lib/nixbot/abird-host-manager";
 const CONTROLLER_MANAGER: &str = "/run/current-system/sw/bin/abird-host-manager";
 
-fn main() -> Result<()> {
+#[derive(Debug)]
+struct RenderedControllerJsonFailure;
+
+impl std::fmt::Display for RenderedControllerJsonFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("controller returned a rendered JSON failure")
+    }
+}
+
+impl std::error::Error for RenderedControllerJsonFailure {}
+
+#[derive(Debug)]
+struct RenderedCommandFailure;
+
+impl std::fmt::Display for RenderedCommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("command failure was already rendered")
+    }
+}
+
+impl std::error::Error for RenderedCommandFailure {}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            if error
+                .downcast_ref::<RenderedControllerJsonFailure>()
+                .is_some()
+                || error.downcast_ref::<RenderedCommandFailure>().is_some()
+                || error
+                    .downcast_ref::<RenderedInventoryCommandFailure>()
+                    .is_some()
+            {
+                // The controller's one authoritative JSON document was
+                // already forwarded verbatim.
+            } else if json_output() {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "schema_version": 1,
+                        "ok": false,
+                        "error": {"message": format!("{error:#}")},
+                    }))
+                    .expect("serialize bounded command error")
+                );
+            } else {
+                command_reporter().fail_active("Command stopped", &format!("{error:#}"));
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let mut cli = Cli::parse();
+    set_json_output(cli.json);
+    select_local_mode(&mut cli)?;
     select_local_run(&mut cli)?;
+    let presentation = command_presentation(&cli.command);
+    validate_output_contract(cli.json, &presentation)?;
+    COMMAND_PRESENTATION
+        .set(presentation)
+        .map_err(|_| anyhow::anyhow!("command presentation was initialized more than once"))?;
     if should_dispatch_to_controller(&cli) {
         return dispatch_to_controller(&cli);
+    }
+    if controller_publication_authority(&cli.command) == PublicationAuthority::Required {
+        transient_step("Verify projection publication access", || {
+            preflight_projection_publication(&cli)
+        })?;
     }
     let repository_programs = RepositoryPrograms {
         nix: cli.nix_program,
@@ -1260,6 +1837,7 @@ fn main() -> Result<()> {
                     nix_program: repository_programs.nix.clone(),
                     branch: cli.projection_branch,
                     publish_git_ssh_command: cli.publish_git_ssh_command,
+                    mode: publication_mode(cli.local),
                 },
                 command,
             )
@@ -1273,6 +1851,7 @@ fn main() -> Result<()> {
                 nix_program: repository_programs.nix,
                 branch: cli.projection_branch,
                 publish_git_ssh_command: cli.publish_git_ssh_command,
+                mode: publication_mode(cli.local),
             },
             command,
         ),
@@ -1286,6 +1865,7 @@ fn main() -> Result<()> {
                     nix_program: repository_programs.nix.clone(),
                     branch: cli.projection_branch,
                     publish_git_ssh_command: cli.publish_git_ssh_command,
+                    mode: publication_mode(cli.local),
                 },
                 MoveArgs {
                     entities: vec![args.source.clone()],
@@ -1326,6 +1906,7 @@ fn main() -> Result<()> {
                     nix_program: repository_programs.nix.clone(),
                     branch: cli.projection_branch,
                     publish_git_ssh_command: cli.publish_git_ssh_command,
+                    mode: publication_mode(cli.local),
                 },
                 args,
                 ResourceType::Service,
@@ -1355,6 +1936,7 @@ fn main() -> Result<()> {
                     nix_program: repository_programs.nix.clone(),
                     branch: cli.projection_branch,
                     publish_git_ssh_command: cli.publish_git_ssh_command,
+                    mode: publication_mode(cli.local),
                 },
                 args,
                 ResourceType::Resource,
@@ -1370,6 +1952,7 @@ fn main() -> Result<()> {
                     nix_program: repository_programs.nix.clone(),
                     branch: cli.projection_branch,
                     publish_git_ssh_command: cli.publish_git_ssh_command,
+                    mode: publication_mode(cli.local),
                 },
                 args,
                 ResourceHoldPhase::Held,
@@ -1385,6 +1968,7 @@ fn main() -> Result<()> {
                     nix_program: repository_programs.nix.clone(),
                     branch: cli.projection_branch,
                     publish_git_ssh_command: cli.publish_git_ssh_command,
+                    mode: publication_mode(cli.local),
                 },
                 args,
                 ResourceHoldPhase::Unheld,
@@ -1410,6 +1994,23 @@ fn main() -> Result<()> {
             )?)?,
             command,
         ),
+    }
+}
+
+fn validate_output_contract(json: bool, presentation: &CommandPresentation) -> Result<()> {
+    if !json || presentation.contract == OutputContract::Structured {
+        return Ok(());
+    }
+    match presentation.contract {
+        OutputContract::Stream => bail!(
+            "global --json is unavailable for {}; use the command's --output json option for the JSONL stream",
+            presentation.heading
+        ),
+        OutputContract::Passthrough => bail!(
+            "global --json is unavailable for {}; this command preserves the remote byte stream",
+            presentation.heading
+        ),
+        OutputContract::Structured => Ok(()),
     }
 }
 
@@ -1446,11 +2047,7 @@ fn is_controller_authority_command(command: &Command) -> bool {
 fn dispatch_to_controller(cli: &Cli) -> Result<()> {
     let publication_authority = controller_publication_authority(&cli.command);
     let forward_agent = match publication_authority {
-        PublicationAuthority::Required => {
-            require_local_ssh_agent()?;
-            true
-        }
-        PublicationAuthority::Possible => local_ssh_agent_available()?,
+        PublicationAuthority::Required => local_ssh_agent_available()?,
         PublicationAuthority::None => false,
     };
     if forward_agent {
@@ -1476,13 +2073,30 @@ fn dispatch_to_controller(cli: &Cli) -> Result<()> {
         state_dir,
     ];
     argv.extend(controller_command_arguments(env::args().skip(1))?);
-    config.run_inventory_command_interactive(&controller, &argv, forward_agent)
+    if cli.json {
+        let output = config.run_inventory_command(&controller, &argv, forward_agent)?;
+        serde_json::from_slice::<Value>(&output.stdout).with_context(|| {
+            format!(
+                "controller returned invalid JSON: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        })?;
+        io::stdout().write_all(&output.stdout)?;
+        if !output.stdout.ends_with(b"\n") {
+            println!();
+        }
+        if !output.status.success() {
+            return Err(RenderedControllerJsonFailure.into());
+        }
+        Ok(())
+    } else {
+        config.run_inventory_command_interactive(&controller, &argv, forward_agent)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublicationAuthority {
     Required,
-    Possible,
     None,
 }
 
@@ -1490,32 +2104,35 @@ fn controller_publication_authority(command: &Command) -> PublicationAuthority {
     match command {
         Command::Instance {
             command: InstanceCommand::Move(args),
-        } if args.guard.execution.execute => PublicationAuthority::Required,
+        } if !args.guard.execution.dry_run => PublicationAuthority::Required,
         Command::Host {
             command: HostCommand::Move(args),
-        } if args.guard.execution.execute => PublicationAuthority::Required,
+        } if !args.guard.execution.dry_run => PublicationAuthority::Required,
         Command::Service {
             command: ServiceCommand::Move(args),
         }
         | Command::Resource {
             command: ResourceCommand::Move(args),
-        } if args.guard.execution.execute => PublicationAuthority::Required,
+        } if !args.guard.execution.dry_run => PublicationAuthority::Required,
         Command::Resource {
             command:
                 ResourceCommand::Hold {
                     command: ResourceHoldCommand::Set(args) | ResourceHoldCommand::Clear(args),
                 },
-        } if args.guard.execute => PublicationAuthority::Required,
+        } if !args.guard.dry_run => PublicationAuthority::Required,
         Command::Transaction { command } => match command {
-            TransactionCommand::Create(args) if args.guard.execute => {
+            TransactionCommand::Create(args) if !args.guard.dry_run => {
                 PublicationAuthority::Required
             }
             TransactionCommand::Prepare(args)
-            | TransactionCommand::Cutover(args)
+            | TransactionCommand::Run(args)
             | TransactionCommand::Rollback(args)
-                if args.guard.execute =>
+                if !args.guard.dry_run =>
             {
-                PublicationAuthority::Possible
+                PublicationAuthority::Required
+            }
+            TransactionCommand::Close(args) if !args.guard.dry_run => {
+                PublicationAuthority::Required
             }
             _ => PublicationAuthority::None,
         },
@@ -1523,10 +2140,10 @@ fn controller_publication_authority(command: &Command) -> PublicationAuthority {
     }
 }
 
-fn require_local_ssh_agent() -> Result<()> {
-    let socket = env::var_os("SSH_AUTH_SOCK")
-        .filter(|socket| !socket.is_empty())
-        .context("projection publication requires a local SSH_AUTH_SOCK")?;
+fn local_ssh_agent_available() -> Result<bool> {
+    let Some(socket) = env::var_os("SSH_AUTH_SOCK").filter(|socket| !socket.is_empty()) else {
+        return Ok(false);
+    };
     let metadata = fs::metadata(&socket).with_context(|| {
         format!(
             "inspect local SSH_AUTH_SOCK {}",
@@ -1539,14 +2156,39 @@ fn require_local_ssh_agent() -> Result<()> {
             Path::new(&socket).display()
         );
     }
-    Ok(())
+    Ok(true)
 }
 
-fn local_ssh_agent_available() -> Result<bool> {
-    match env::var_os("SSH_AUTH_SOCK").filter(|socket| !socket.is_empty()) {
-        Some(_) => require_local_ssh_agent().map(|()| true),
-        None => Ok(false),
+fn preflight_projection_publication(cli: &Cli) -> Result<()> {
+    if controller_publication_authority(&cli.command) == PublicationAuthority::None {
+        return Ok(());
     }
+    let source_repository = Repository::discover(cli.repo_root.clone())?;
+    let state_dir = resolve_state_dir(cli.state_dir.clone())?;
+    let authority = WorkflowStore::open(state_dir.clone())?;
+    let publisher = if cli.local {
+        ProjectionPublisher::prepare_local(
+            &source_repository,
+            &authority,
+            &state_dir,
+            &cli.projection_branch,
+            cli.git_program.clone(),
+            cli.nix_program.clone(),
+        )?
+    } else {
+        ProjectionPublisher::prepare(
+            &source_repository,
+            &authority,
+            &state_dir,
+            &cli.projection_branch,
+            cli.git_program.clone(),
+            cli.nix_program.clone(),
+            cli.publish_git_ssh_command.clone(),
+        )?
+    };
+    publisher
+        .verify_push_access()
+        .context("Git publication preflight failed before lifecycle journal mutation")
 }
 
 fn controller_command_arguments(
@@ -1680,11 +2322,8 @@ fn sync_instance_command(adapter: &NativeAdapter, args: InstanceSyncArgs) -> Res
             runtime_state: args.runtime_state.into(),
         },
     };
-    if !args.guard.execute {
-        if !args.guard.dry_run {
-            bail!("instance migration is mutating; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+    if args.guard.dry_run {
+        return emit_result(&json!({
             "dry_run": true,
             "controller": args.controller,
             "transaction": args.transaction,
@@ -1701,21 +2340,25 @@ fn sync_instance_command(adapter: &NativeAdapter, args: InstanceSyncArgs) -> Res
     );
     let encoded = serde_json::to_string(&request)?;
     let resource = format!("instance:{}", request.target_instance);
-    adapter.run_profile_job(
-        &args.controller,
-        &format!("{job_id}-reserve"),
-        &args.transaction,
-        &resource,
-        &["--operation".to_owned(), "reserve".to_owned()],
-    )?;
-    let job = adapter.run_profile_job_result(
-        &args.controller,
-        &job_id,
-        &args.transaction,
-        &resource,
-        &["--migrate-instance".to_owned(), encoded],
-    )?;
-    print_json(&json!({
+    transient_step("Reserve target instance", || {
+        adapter.run_profile_job(
+            &args.controller,
+            &format!("{job_id}-reserve"),
+            &args.transaction,
+            &resource,
+            &["--operation".to_owned(), "reserve".to_owned()],
+        )
+    })?;
+    let job = transient_step("Synchronize and verify instance", || {
+        adapter.run_profile_job_result(
+            &args.controller,
+            &job_id,
+            &args.transaction,
+            &resource,
+            &["--migrate-instance".to_owned(), encoded],
+        )
+    })?;
+    emit_result(&json!({
         "ok": true,
         "controller": args.controller,
         "transaction": args.transaction,
@@ -1725,7 +2368,7 @@ fn sync_instance_command(adapter: &NativeAdapter, args: InstanceSyncArgs) -> Res
 }
 
 fn job_command(config: &HostManagerConfig, command: JobCommand) -> Result<()> {
-    let (host, arguments) = match command {
+    let (host, arguments, retry) = match command {
         JobCommand::Show(args) => (
             args.host,
             vec![
@@ -1735,17 +2378,16 @@ fn job_command(config: &HostManagerConfig, command: JobCommand) -> Result<()> {
                 "--job-id".to_owned(),
                 args.job_id,
             ],
+            false,
         ),
         JobCommand::List { host } => (
             host,
             vec!["--json".to_owned(), "job".to_owned(), "list".to_owned()],
+            false,
         ),
         JobCommand::Retry(args) => {
-            if !args.guard.execute {
-                if !args.guard.dry_run {
-                    bail!("job retry is mutating; pass --execute or --dry-run");
-                }
-                return print_json(&json!({
+            if args.guard.dry_run {
+                return emit_result(&json!({
                     "dry_run": true,
                     "operation": "job_retry",
                     "host": args.job.host,
@@ -1761,10 +2403,18 @@ fn job_command(config: &HostManagerConfig, command: JobCommand) -> Result<()> {
                     "--job-id".to_owned(),
                     args.job.job_id,
                 ],
+                true,
             )
         }
     };
-    print_json(&config.run_agent(&host, &arguments)?)
+    let result = if retry {
+        transient_step("Submit durable host-agent retry", || {
+            config.run_agent(&host, &arguments)
+        })?
+    } else {
+        config.run_agent(&host, &arguments)?
+    };
+    emit_result(&result)
 }
 
 enum ResourceType {
@@ -1773,12 +2423,63 @@ enum ResourceType {
     Resource,
 }
 
+#[derive(Clone, Debug)]
 struct ProjectionExecution {
     repo_root: Option<PathBuf>,
     git_program: PathBuf,
     nix_program: PathBuf,
     branch: String,
     publish_git_ssh_command: Option<String>,
+    mode: ProjectionPublicationMode,
+}
+
+fn publication_mode(local: bool) -> ProjectionPublicationMode {
+    if local {
+        ProjectionPublicationMode::Local
+    } else {
+        ProjectionPublicationMode::Remote
+    }
+}
+
+fn prepare_projection_publisher(
+    source_repository: &Repository,
+    authority: &WorkflowStore,
+    state_dir: &Path,
+    execution: &ProjectionExecution,
+) -> Result<ProjectionPublisher> {
+    match execution.mode {
+        ProjectionPublicationMode::Remote => ProjectionPublisher::prepare(
+            source_repository,
+            authority,
+            state_dir,
+            &execution.branch,
+            execution.git_program.clone(),
+            execution.nix_program.clone(),
+            execution.publish_git_ssh_command.clone(),
+        ),
+        ProjectionPublicationMode::Local => ProjectionPublisher::prepare_local(
+            source_repository,
+            authority,
+            state_dir,
+            &execution.branch,
+            execution.git_program.clone(),
+            execution.nix_program.clone(),
+        ),
+    }
+}
+
+fn load_execution_adapter(config: &Path, execution: &ProjectionExecution) -> Result<NativeAdapter> {
+    let mut adapter = NativeAdapter::load(config)?;
+    if execution.mode == ProjectionPublicationMode::Local {
+        let repository = Repository::discover(execution.repo_root.clone())?;
+        let revision = repository.revision(&execution.git_program)?;
+        adapter.bind_local_nixbot(
+            repository.root().to_path_buf(),
+            execution.nix_program.clone(),
+            revision,
+        )?;
+    }
+    Ok(adapter)
 }
 
 fn move_resource(
@@ -1909,7 +2610,7 @@ fn project_resource_hold(
     if args.guard.dry_run {
         let previous = source_repository.load_phase_projection(&args.id)?;
         let projection = ResourceHoldProjector::derive(&intent, phase, previous.as_ref(), None)?;
-        return print_json(&json!({
+        return emit_result(&json!({
             "dry_run": true,
             "projection": projection,
             "repository_path": format!("data/phase-projections/{}.json", args.id),
@@ -1921,25 +2622,21 @@ fn project_resource_hold(
     // publication through the runtime handoff. This serializes the one
     // manager-owned checkout and prevents cross-kind publication races.
     let authority = WorkflowStore::open(state_dir.clone())?;
-    let publisher = ProjectionPublisher::prepare(
-        &source_repository,
-        &authority,
-        &state_dir,
-        &execution.branch,
-        execution.git_program,
-        execution.nix_program,
-        execution.publish_git_ssh_command,
-    )?;
-    let previous = publisher.repository().load_phase_projection(&args.id)?;
-    let projection = ResourceHoldProjector::derive(
-        &intent,
-        phase,
-        previous.as_ref(),
-        Some(publisher.revision()?),
-    )?;
-    let publication = publisher.publish(&projection, config.controller_host()?)?;
+    let (projection, publication) = transient_step("Publish resource hold projection", || {
+        let publisher =
+            prepare_projection_publisher(&source_repository, &authority, &state_dir, &execution)?;
+        let previous = publisher.repository().load_phase_projection(&args.id)?;
+        let projection = ResourceHoldProjector::derive(
+            &intent,
+            phase,
+            previous.as_ref(),
+            Some(publisher.revision()?),
+        )?;
+        let publication = publisher.publish(&projection, config.controller_host()?)?;
+        Ok((projection, publication))
+    })?;
     if args.skip_runtime {
-        return print_json(&json!({
+        return emit_result(&json!({
             "projection": projection,
             "repository": publication,
             "runtime": "skipped",
@@ -1966,14 +2663,16 @@ fn project_resource_hold(
             projected_release_job_id(&args.id, &args.resource.resource, &hold_epoch),
         ),
     };
-    let job = adapter.run_profile_job_result(
-        &args.resource.host,
-        &job_id,
-        &args.id,
-        &args.resource.resource,
-        &["--operation".to_owned(), operation.to_owned()],
-    )?;
-    print_json(&json!({
+    let job = transient_step("Reconcile projected resource hold", || {
+        adapter.run_profile_job_result(
+            &args.resource.host,
+            &job_id,
+            &args.id,
+            &args.resource.resource,
+            &["--operation".to_owned(), operation.to_owned()],
+        )
+    })?;
+    emit_result(&json!({
         "projection": projection,
         "repository": publication,
         "runtime": "reconciled",
@@ -1990,27 +2689,34 @@ fn execute_new_move(
     items: Vec<MoveItem>,
     guard: &MoveGuard,
 ) -> Result<()> {
+    let publication_mode = projection_execution.mode;
     let mut spec = TransactionSpec::new(caller_id, items, Vec::new(), Vec::new())?;
     spec.declarative_scope = declarative_scope;
     spec.validate()?;
     let mut candidate = TransactionRecord::new(spec, config)?;
+    let command_execution = candidate.begin_command(
+        LifecycleCommand::Move,
+        LifecycleState::Moved,
+        None,
+        move_command_steps(publication_mode),
+    )?;
 
     if guard.execution.dry_run {
         if let Some(mut record) = WorkflowStore::load_matching(&state_dir, &candidate)? {
-            return dry_run_existing_move(&mut record, guard.force_existing, guard.skip_runtime);
+            return dry_run_existing_move(
+                &mut record,
+                guard.force_existing,
+                guard.skip_runtime,
+                &projection_execution,
+            );
         }
-        if guard.skip_runtime {
-            return print_json(&json!({
-                "dry_run": true,
-                "runtime": "skipped",
-                "transaction": candidate,
-                "authorized_phases": ["setup", "seed"],
-                "stops_before": "prepare",
-            }));
-        }
-        let mut adapter = NativeAdapter::load(&candidate.config)?;
-        let preflight = preflight_new_workflow(&mut candidate, &mut adapter)?;
-        return print_json(&json!({
+        WorkflowStore::validate_registration(&state_dir, &candidate)?;
+        let mut adapter = load_execution_adapter(&candidate.config, &projection_execution)?;
+        let preflight = transient_step("Check move endpoints and readiness", || {
+            preflight_new_workflow(&mut candidate, &mut adapter)
+        })?;
+        complete_move_prepublication_steps(&mut candidate, command_execution)?;
+        return emit_result(&json!({
             "dry_run": true,
             "preflight": preflight,
             "transaction": candidate,
@@ -2019,67 +2725,307 @@ fn execute_new_move(
         }));
     }
 
+    if let Some(mut record) = WorkflowStore::load_matching(&state_dir, &candidate)? {
+        let store = WorkflowStore::open(state_dir.clone())?;
+        if record.projection.is_none()
+            && record.phase == abird_host_manager::workflow_runtime::WorkflowPhase::Planned
+        {
+            publish_seeded_projection(&store, &mut record, &state_dir, &projection_execution)?;
+        }
+        return execute_existing_move(
+            &store,
+            record,
+            guard.force_existing,
+            guard.skip_runtime,
+            &projection_execution,
+        );
+    }
+    let mut adapter = load_execution_adapter(&candidate.config, &projection_execution)?;
+    let preflight = transient_step("Check move endpoints and readiness", || {
+        preflight_new_workflow(&mut candidate, &mut adapter)
+    })?;
+    complete_move_prepublication_steps(&mut candidate, command_execution)?;
     let store = WorkflowStore::open(state_dir.clone())?;
     let mut record = match store.register(candidate)? {
         WorkflowRegistration::Created(record) => record,
-        WorkflowRegistration::Existing(mut record) => {
-            if record.projection.is_none()
-                && record.phase == abird_host_manager::workflow_runtime::WorkflowPhase::Planned
-            {
-                publish_seeded_projection(&store, &mut record, &state_dir, projection_execution)?;
-            }
-            return execute_existing_move(&store, record, guard.force_existing, guard.skip_runtime);
+        WorkflowRegistration::Existing(_) => {
+            unreachable!("matching workflows were handled before new-move preflight")
         }
     };
 
     let publication =
-        publish_seeded_projection(&store, &mut record, &state_dir, projection_execution)?;
+        publish_seeded_projection(&store, &mut record, &state_dir, &projection_execution)?;
 
     if guard.skip_runtime {
-        return print_json(&json!({
+        return emit_result(&json!({
             "repository": publication,
             "runtime": "skipped",
             "transaction": record,
         }));
     }
 
-    eprintln!(
-        "transaction {} persisted; beginning setup and seed",
+    human_status(format!(
+        "Transaction {} persisted · beginning setup and warm seed",
         record.id()
-    );
-    let mut adapter = NativeAdapter::load(&record.config)?;
+    ));
+    let mut adapter = load_execution_adapter(&record.config, &projection_execution)?;
     adapter.bind_projection(
         record
             .projection
             .clone()
             .context("new move has no published phase projection")?,
     )?;
-    execute_workflow_action(&store, &mut record, Action::Setup, &mut adapter)?;
-    execute_workflow_action(&store, &mut record, Action::Seed, &mut adapter)?;
-    print_json(&json!({
+    record.start_command_step(command_execution, "target.provision-or-adopt")?;
+    store.save(&record)?;
+    let runtime_result = execute_workflow_action(&store, &mut record, Action::Setup, &mut adapter)
+        .and_then(|()| execute_workflow_action(&store, &mut record, Action::Seed, &mut adapter));
+    if let Err(error) = runtime_result {
+        let terminal_failure = matches!(
+            validate_failed_workflow_jobs(&store, &mut record, &mut adapter),
+            Ok(failed) if !failed.is_empty()
+        );
+        if terminal_failure {
+            record.fail_running_command(format!("{error:#}"))?;
+            store.save(&record)?;
+        }
+        return Err(error);
+    }
+    for step in move_command_runtime_steps() {
+        record.start_command_step(command_execution, step)?;
+        record.complete_command_step(command_execution, step, None)?;
+    }
+    record.complete_command(command_execution)?;
+    store.save(&record)?;
+    emit_result(&json!({
+        "preflight": preflight,
         "repository": publication,
         "runtime": "reconciled",
         "transaction": record,
     }))
 }
 
+fn move_command_steps(mode: ProjectionPublicationMode) -> Vec<&'static str> {
+    let mut steps = vec![
+        "source.resolve-placement",
+        "target.resolve-placement",
+        "intent.validate",
+        "transaction.check-overlap",
+        "source.check-agent",
+        "source.check-resource",
+        "source.check-data-paths",
+        "source.check-readiness",
+        "target.check-agent-or-provision-route",
+        "target.check-deployment-route",
+        "repository.prepare-publication",
+        "projection.render-seeded",
+        "projection.validate",
+    ];
+    steps.extend(projection_publication_steps(mode));
+    steps.extend([
+        "target.provision-or-adopt",
+        "target.reserve-hold",
+        "target.deploy-gated",
+        "target.apply-hold",
+        "target.verify-stopped",
+        "data.warm-seed",
+        "data.verify-warm-seed",
+        "state.verify-moved",
+    ]);
+    steps
+}
+
+fn complete_move_prepublication_steps(
+    record: &mut TransactionRecord,
+    execution: usize,
+) -> Result<()> {
+    for step in move_command_steps(ProjectionPublicationMode::Remote)
+        .into_iter()
+        .take(10)
+    {
+        record.start_command_step(execution, step)?;
+        record.complete_command_step(execution, step, None)?;
+    }
+    Ok(())
+}
+
+fn move_command_runtime_steps() -> [&'static str; 8] {
+    [
+        "target.provision-or-adopt",
+        "target.reserve-hold",
+        "target.deploy-gated",
+        "target.apply-hold",
+        "target.verify-stopped",
+        "data.warm-seed",
+        "data.verify-warm-seed",
+        "state.verify-moved",
+    ]
+}
+
+fn projection_publication_steps(mode: ProjectionPublicationMode) -> [&'static str; 3] {
+    match mode {
+        ProjectionPublicationMode::Remote => [
+            "git.commit-projection",
+            "git.push-projection",
+            "git.verify-remote",
+        ],
+        ProjectionPublicationMode::Local => [
+            "git.commit-projection",
+            "git.retain-local-projection",
+            "git.verify-local-commit",
+        ],
+    }
+}
+
+fn projection_publication_step(
+    stage: ProjectionPublicationStage,
+    mode: ProjectionPublicationMode,
+) -> &'static str {
+    match stage {
+        ProjectionPublicationStage::Validate => "projection.validate",
+        ProjectionPublicationStage::Commit => "git.commit-projection",
+        ProjectionPublicationStage::RetainLocal => "git.retain-local-projection",
+        ProjectionPublicationStage::Push => "git.push-projection",
+        ProjectionPublicationStage::Verify => match mode {
+            ProjectionPublicationMode::Remote => "git.verify-remote",
+            ProjectionPublicationMode::Local => "git.verify-local-commit",
+        },
+    }
+}
+
+fn command_has_step(record: &TransactionRecord, execution: usize, step_id: &str) -> bool {
+    record
+        .command_executions
+        .get(execution)
+        .is_some_and(|command| command.steps.iter().any(|step| step.id == step_id))
+}
+
+fn publish_projection_with_progress(
+    publisher: &ProjectionPublisher,
+    projection: &PhaseProjection,
+    controller_host: &str,
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    command_execution: Option<usize>,
+    mode: ProjectionPublicationMode,
+) -> Result<ProjectionPublication> {
+    let mut active_step = None;
+    let mut transient_started = None;
+    let result = publisher.publish_observed(projection, controller_host, |event| {
+        match event {
+            ProjectionPublicationEvent::Started(stage) => {
+                let step = projection_publication_step(stage, mode);
+                active_step = Some(step);
+                if let Some(execution) = command_execution {
+                    record.start_command_step(execution, step)?;
+                    store.save(record)?;
+                } else {
+                    command_reporter().started(step.replace(['.', '-'], " "));
+                    transient_started = Some(Instant::now());
+                }
+            }
+            ProjectionPublicationEvent::Progress { stage, detail } => {
+                debug_assert_eq!(stage, ProjectionPublicationStage::Validate);
+                command_reporter().detail(detail);
+            }
+            ProjectionPublicationEvent::Completed { stage, revision } => {
+                let step = projection_publication_step(stage, mode);
+                if let Some(execution) = command_execution {
+                    record.complete_command_step(
+                        execution,
+                        step,
+                        revision.map(|revision| json!({"revision": revision})),
+                    )?;
+                    store.save(record)?;
+                } else {
+                    command_reporter().completed(
+                        step.replace(['.', '-'], " "),
+                        transient_started
+                            .take()
+                            .map(|started| started.elapsed())
+                            .unwrap_or_default(),
+                    );
+                }
+                active_step = None;
+            }
+        }
+        Ok(())
+    });
+    if let Err(error) = &result
+        && let Some(step) = active_step
+    {
+        if let Some(execution) = command_execution {
+            if record
+                .command_executions
+                .get(execution)
+                .and_then(|command| command.steps.iter().find(|candidate| candidate.id == step))
+                .is_some_and(|step| step.status == StepStatus::Running)
+            {
+                record.fail_command_step(execution, step, format!("{error:#}"))?;
+                store.save(record)?;
+            }
+        } else {
+            command_reporter().fail_active(step.replace(['.', '-'], " "), &format!("{error:#}"));
+        }
+    }
+    result
+}
+
 fn publish_seeded_projection(
     store: &WorkflowStore,
     record: &mut TransactionRecord,
     state_dir: &Path,
-    execution: ProjectionExecution,
+    execution: &ProjectionExecution,
 ) -> Result<abird_host_manager::repository::ProjectionPublication> {
-    let source_repository = Repository::discover(execution.repo_root)?;
-    let publisher = ProjectionPublisher::prepare(
-        &source_repository,
-        store,
-        state_dir,
-        &execution.branch,
-        execution.git_program,
-        execution.nix_program,
-        execution.publish_git_ssh_command,
-    )?;
+    let command_execution = record.command_executions.iter().rposition(|command| {
+        command.command == LifecycleCommand::Move && command.status == CommandStatus::Running
+    });
+    let preparation_execution = command_execution
+        .filter(|execution| command_has_step(record, *execution, "repository.prepare-publication"));
+    let source_repository = Repository::discover(execution.repo_root.clone())?;
+    if let Some(command_execution) = preparation_execution {
+        record.start_command_step(command_execution, "repository.prepare-publication")?;
+        store.save(record)?;
+    } else {
+        command_reporter().started("Prepare publication repository");
+    }
+    let publisher_result =
+        prepare_projection_publisher(&source_repository, store, state_dir, execution);
+    let publisher = match publisher_result {
+        Ok(publisher) => {
+            if let Some(command_execution) = preparation_execution {
+                record.complete_command_step(
+                    command_execution,
+                    "repository.prepare-publication",
+                    None,
+                )?;
+                store.save(record)?;
+            } else {
+                command_reporter().complete_active("Prepare publication repository");
+            }
+            publisher
+        }
+        Err(error) => {
+            if let Some(command_execution) = preparation_execution {
+                record.fail_command_step(
+                    command_execution,
+                    "repository.prepare-publication",
+                    format!("{error:#}"),
+                )?;
+                store.save(record)?;
+            } else {
+                command_reporter()
+                    .fail_active("Prepare publication repository", &format!("{error:#}"));
+            }
+            return Err(error);
+        }
+    };
     let manager_config = HostManagerConfig::load(&record.config)?;
+    if let Some(command_execution) = command_execution {
+        record.start_command_step(command_execution, "projection.render-seeded")?;
+        store.save(record)?;
+    } else {
+        command_reporter().started("Render seeded projection");
+    }
     let existing = publisher.repository().load_phase_projection(record.id())?;
     let projection = if let Some(existing) = existing {
         existing.validate()?;
@@ -2096,7 +3042,21 @@ fn publish_seeded_projection(
             Some(publisher.revision()?),
         )?
     };
-    let publication = publisher.publish(&projection, manager_config.controller_host()?)?;
+    if let Some(command_execution) = command_execution {
+        record.complete_command_step(command_execution, "projection.render-seeded", None)?;
+        store.save(record)?;
+    } else {
+        command_reporter().complete_active("Render seeded projection");
+    }
+    let publication = publish_projection_with_progress(
+        &publisher,
+        &projection,
+        manager_config.controller_host()?,
+        store,
+        record,
+        command_execution,
+        execution.mode,
+    )?;
     record.set_projection(projection)?;
     store.save(record)?;
     Ok(publication)
@@ -2106,6 +3066,7 @@ fn dry_run_existing_move(
     record: &mut TransactionRecord,
     force_existing: bool,
     skip_runtime: bool,
+    execution: &ProjectionExecution,
 ) -> Result<()> {
     let continuation = record.initial_move_continuation();
     let requires_force = matches!(continuation, InitialMoveContinuation::RequiresForce(_));
@@ -2117,10 +3078,10 @@ fn dry_run_existing_move(
     if let Some(action) = would_resume
         && !skip_runtime
     {
-        let mut adapter = load_workflow_adapter(record)?;
+        let mut adapter = load_workflow_adapter(record, execution)?;
         preflight_workflow_action(record, action, &mut adapter)?;
     }
-    print_json(&json!({
+    emit_result(&json!({
         "dry_run": true,
         "existing": true,
         "force_existing": force_existing,
@@ -2136,6 +3097,7 @@ fn execute_existing_move(
     mut record: TransactionRecord,
     force_existing: bool,
     skip_runtime: bool,
+    execution: &ProjectionExecution,
 ) -> Result<()> {
     let continuation = record.initial_move_continuation();
     if let InitialMoveContinuation::RequiresForce(pending) = continuation
@@ -2173,12 +3135,12 @@ fn execute_existing_move(
             record.phase
         ),
     };
-    eprintln!("{}", continuation_message);
+    human_status(&continuation_message);
     record.record_reinvocation(continuation_message)?;
     store.save(&record)?;
 
     if skip_runtime {
-        return print_json(&json!({
+        return emit_result(&json!({
             "runtime": "skipped",
             "transaction": record,
         }));
@@ -2186,18 +3148,18 @@ fn execute_existing_move(
 
     match continuation {
         InitialMoveContinuation::Resume(Action::Setup) => {
-            let mut adapter = load_workflow_adapter(&record)?;
+            let mut adapter = load_workflow_adapter(&record, execution)?;
             execute_workflow_action(store, &mut record, Action::Setup, &mut adapter)?;
             execute_workflow_action(store, &mut record, Action::Seed, &mut adapter)?;
         }
         InitialMoveContinuation::Resume(action)
         | InitialMoveContinuation::RequiresForce(Some(action)) => {
-            let mut adapter = load_workflow_adapter(&record)?;
+            let mut adapter = load_workflow_adapter(&record, execution)?;
             execute_workflow_action(store, &mut record, action, &mut adapter)?;
         }
         InitialMoveContinuation::Complete | InitialMoveContinuation::RequiresForce(None) => {}
     }
-    print_json(&record)
+    emit_result(&record)
 }
 
 fn transaction_command(
@@ -2214,9 +3176,11 @@ fn transaction_command(
             let config = resolve_config(config.as_deref(), projection.repo_root.as_deref())?;
             let mut record = TransactionRecord::new(spec, config)?;
             if args.guard.dry_run {
-                let mut adapter = NativeAdapter::load(&record.config)?;
-                let preflight = preflight_new_workflow(&mut record, &mut adapter)?;
-                return print_json(&json!({
+                let mut adapter = load_execution_adapter(&record.config, &projection)?;
+                let preflight = transient_step("Check move endpoints and readiness", || {
+                    preflight_new_workflow(&mut record, &mut adapter)
+                })?;
+                return emit_result(&json!({
                     "dry_run": true,
                     "preflight": preflight,
                     "transaction": record,
@@ -2235,82 +3199,298 @@ fn transaction_command(
                 ),
             };
             let publication =
-                publish_seeded_projection(&store, &mut record, &state_dir, projection)?;
-            eprintln!(
-                "transaction {} persisted; beginning setup and seed",
+                publish_seeded_projection(&store, &mut record, &state_dir, &projection)?;
+            human_status(format!(
+                "Transaction {} persisted · beginning setup and warm seed",
                 record.id()
-            );
-            let mut adapter = load_workflow_adapter(&record)?;
+            ));
+            let mut adapter = load_workflow_adapter(&record, &projection)?;
             execute_workflow_action(&store, &mut record, Action::Setup, &mut adapter)?;
             execute_workflow_action(&store, &mut record, Action::Seed, &mut adapter)?;
-            print_json(&json!({
+            emit_result(&json!({
                 "repository": publication,
                 "runtime": "reconciled",
                 "transaction": record,
             }))
         }
-        TransactionCommand::Show { id } => print_json(&WorkflowStore::open(state_dir)?.load(&id)?),
-        TransactionCommand::List => print_json(&WorkflowStore::open(state_dir)?.list()?),
+        TransactionCommand::Show { id } => {
+            emit_result(&WorkflowStore::read_only(state_dir).load(&id)?)
+        }
+        TransactionCommand::List => emit_result(&WorkflowStore::read_only(state_dir).list()?),
         TransactionCommand::Seed(args) => {
-            transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Seed)
+            let store = workflow_store(state_dir, args.guard.dry_run)?;
+            transaction_phase(&store, args, Action::Seed, &projection)
         }
-        TransactionCommand::Prepare(args) => projected_transaction_phase(
-            &WorkflowStore::open(state_dir.clone())?,
-            args,
-            Action::Prepare,
-            MovePhase::Prepared,
-            &state_dir,
-            projection,
-        ),
+        TransactionCommand::Prepare(args) => {
+            let store = workflow_store(state_dir.clone(), args.guard.dry_run)?;
+            projected_transaction_phase(
+                &store,
+                args,
+                Action::Prepare,
+                MovePhase::Prepared,
+                &state_dir,
+                projection,
+            )
+        }
         TransactionCommand::Verify(args) => {
-            transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Verify)
+            let store = workflow_store(state_dir, args.guard.dry_run)?;
+            transaction_phase(&store, args, Action::Verify, &projection)
         }
-        TransactionCommand::Cutover(args) => projected_transaction_phase(
-            &WorkflowStore::open(state_dir.clone())?,
-            args,
-            Action::Cutover,
-            MovePhase::Cutover,
-            &state_dir,
-            projection,
-        ),
-        TransactionCommand::Rollback(args) => projected_transaction_phase(
-            &WorkflowStore::open(state_dir.clone())?,
-            args,
-            Action::Rollback,
-            MovePhase::RolledBack,
-            &state_dir,
-            projection,
-        ),
-        TransactionCommand::Reconcile(args) => reconcile_projected_transaction(
-            &WorkflowStore::open(state_dir.clone())?,
-            args,
-            &state_dir,
-            projection,
-        ),
+        TransactionCommand::Run(args) => {
+            let store = workflow_store(state_dir.clone(), args.guard.dry_run)?;
+            projected_transaction_phase(
+                &store,
+                args,
+                Action::Cutover,
+                MovePhase::Cutover,
+                &state_dir,
+                projection,
+            )
+        }
+        TransactionCommand::Rollback(args) => {
+            let dry_run = args.guard.dry_run;
+            close_transaction(
+                workflow_store(state_dir.clone(), dry_run)?,
+                TransactionCloseArgs {
+                    id: args.id,
+                    complete: false,
+                    rollback: true,
+                    force: false,
+                    skip_runtime: args.skip_runtime,
+                    yes: false,
+                    manual_deploy: false,
+                    guard: args.guard,
+                },
+                &state_dir,
+                projection,
+            )
+        }
+        TransactionCommand::ReconcileInternal(args) => {
+            let request = ProjectedReconcileRequest {
+                id: args.id,
+                expected_projection_sha256: Some(args.expected_projection_sha256),
+                supersede_failed_job: args.supersede_failed_job,
+                guard: args.guard,
+                command_name: "transaction _reconcile",
+            };
+            let store = workflow_store(state_dir.clone(), request.guard.dry_run)?;
+            reconcile_projected_transaction(&store, request, &state_dir, projection)
+        }
+        TransactionCommand::CloseReconcileInternal(args) => {
+            reconcile_deployed_closeout(&WorkflowStore::open(state_dir)?, args)
+        }
         TransactionCommand::Close(args) => {
-            transaction_phase(&WorkflowStore::open(state_dir)?, args, Action::Close)
+            let store = workflow_store(state_dir.clone(), args.guard.dry_run)?;
+            close_transaction(store, args, &state_dir, projection)
         }
         TransactionCommand::Resume(args) => {
-            let store = WorkflowStore::open(state_dir)?;
-            let mut record = store.load(&args.id)?;
-            let action = record
-                .pending_action
-                .context("transaction has no pending action to resume")?;
-            ensure_legacy_projection_boundary(
-                record.id(),
-                record.projection.is_some(),
-                action,
-                true,
-            )?;
+            let store = workflow_store(state_dir.clone(), args.guard.dry_run)?;
+            resume_transaction(store, args, &state_dir, projection)
+        }
+    }
+}
+
+fn workflow_store(state_dir: PathBuf, read_only: bool) -> Result<WorkflowStore> {
+    if read_only {
+        Ok(WorkflowStore::read_only(state_dir))
+    } else {
+        WorkflowStore::open(state_dir)
+    }
+}
+
+fn load_read_only_controller_projection(
+    state_dir: &Path,
+    source_repository: &Repository,
+    projection_id: &str,
+    journal_projection: Option<&PhaseProjection>,
+) -> Result<Option<PhaseProjection>> {
+    let owned = Repository::from_root(state_dir.join("projection-repository"))
+        .and_then(|repository| repository.load_phase_projection(projection_id))
+        .ok()
+        .flatten();
+    if owned.is_some() {
+        return Ok(owned);
+    }
+    if let Some(journal) = journal_projection {
+        return Ok(Some(journal.clone()));
+    }
+    source_repository.load_phase_projection(projection_id)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TransactionResumeStrategy {
+    DeployedCloseout {
+        projection_sha256: String,
+    },
+    ActiveCommand {
+        command: LifecycleCommand,
+        close_decision: Option<CloseDecision>,
+    },
+    PendingAction(Action),
+    ProjectedReconciliation,
+}
+
+fn transaction_resume_strategy(record: &TransactionRecord) -> Result<TransactionResumeStrategy> {
+    if record.close_decision.is_some()
+        && let Some(projection) = &record.projection
+        && record.command_executions.iter().rev().any(|execution| {
+            execution.command == LifecycleCommand::Close
+                && execution.status == CommandStatus::Running
+                && execution.steps.iter().any(|step| {
+                    step.id == "nixbot.deploy-closeout" && step.status == StepStatus::Succeeded
+                })
+        })
+    {
+        return Ok(TransactionResumeStrategy::DeployedCloseout {
+            projection_sha256: projection.projection_sha256.clone(),
+        });
+    }
+    if let Some(execution) = record
+        .command_executions
+        .iter()
+        .rev()
+        .find(|execution| execution.status == CommandStatus::Running)
+    {
+        return Ok(TransactionResumeStrategy::ActiveCommand {
+            command: execution.command,
+            close_decision: execution.close_decision,
+        });
+    }
+    if record.projection.is_some() {
+        return Ok(TransactionResumeStrategy::ProjectedReconciliation);
+    }
+    record
+        .pending_action
+        .map(TransactionResumeStrategy::PendingAction)
+        .context("transaction has neither a desired projection nor a pending action to resume")
+}
+
+fn resume_transaction(
+    store: WorkflowStore,
+    args: TransactionResumeArgs,
+    state_dir: &Path,
+    projection: ProjectionExecution,
+) -> Result<()> {
+    let mut record = store.load(&args.id)?;
+    match transaction_resume_strategy(&record)? {
+        TransactionResumeStrategy::DeployedCloseout { projection_sha256 } => {
+            require_guard(&args.guard, "transaction resume")?;
+            if args.guard.dry_run {
+                return emit_result(&json!({
+                    "dry_run": true,
+                    "resume": "deployed_closeout",
+                    "projection_sha256": projection_sha256,
+                    "transaction": record,
+                }));
+            }
+            reconcile_deployed_closeout(
+                &store,
+                TransactionCloseReconcileArgs {
+                    id: args.id,
+                    expected_projection_sha256: projection_sha256,
+                },
+            )
+        }
+        TransactionResumeStrategy::ActiveCommand {
+            command: LifecycleCommand::Prepare,
+            ..
+        } => projected_transaction_phase(
+            &store,
+            ProjectedTransactionPhaseArgs {
+                id: args.id,
+                skip_runtime: false,
+                guard: args.guard,
+            },
+            Action::Prepare,
+            MovePhase::Prepared,
+            state_dir,
+            projection,
+        ),
+        TransactionResumeStrategy::ActiveCommand {
+            command: LifecycleCommand::Run,
+            ..
+        } => projected_transaction_phase(
+            &store,
+            ProjectedTransactionPhaseArgs {
+                id: args.id,
+                skip_runtime: false,
+                guard: args.guard,
+            },
+            Action::Cutover,
+            MovePhase::Cutover,
+            state_dir,
+            projection,
+        ),
+        TransactionResumeStrategy::ActiveCommand {
+            command: LifecycleCommand::Close,
+            close_decision,
+        } => close_transaction(
+            store,
+            TransactionCloseArgs {
+                id: args.id,
+                complete: close_decision == Some(CloseDecision::Complete),
+                rollback: close_decision == Some(CloseDecision::Rollback),
+                force: false,
+                skip_runtime: false,
+                yes: false,
+                manual_deploy: false,
+                guard: args.guard,
+            },
+            state_dir,
+            projection,
+        ),
+        TransactionResumeStrategy::ActiveCommand {
+            command: LifecycleCommand::Move,
+            ..
+        } => {
+            if record.projection.is_none() {
+                let action = record
+                    .pending_action
+                    .context("running move has neither a projection nor a pending action")?;
+                transaction_phase(
+                    &store,
+                    TransactionPhaseArgs {
+                        id: args.id,
+                        guard: args.guard,
+                    },
+                    action,
+                    &projection,
+                )
+            } else {
+                reconcile_projected_transaction(
+                    &store,
+                    ProjectedReconcileRequest {
+                        id: args.id,
+                        expected_projection_sha256: None,
+                        supersede_failed_job: args.supersede_failed_job,
+                        guard: args.guard,
+                        command_name: "transaction resume",
+                    },
+                    state_dir,
+                    projection,
+                )
+            }
+        }
+        TransactionResumeStrategy::ProjectedReconciliation => {
+            let request = ProjectedReconcileRequest {
+                id: args.id,
+                expected_projection_sha256: None,
+                supersede_failed_job: args.supersede_failed_job,
+                guard: args.guard,
+                command_name: "transaction resume",
+            };
+            reconcile_projected_transaction(&store, request, state_dir, projection)
+        }
+        TransactionResumeStrategy::PendingAction(action) => {
             if should_dry_run(action, &args.guard)? {
-                let mut adapter = load_workflow_adapter(&record)?;
+                let mut adapter = load_workflow_adapter(&record, &projection)?;
                 preflight_workflow_action(&mut record, action, &mut adapter)?;
                 let supersede_candidates = if args.supersede_failed_job {
                     validate_failed_workflow_jobs(&store, &mut record, &mut adapter)?
                 } else {
                     Vec::new()
                 };
-                return print_json(&json!({
+                return emit_result(&json!({
                     "dry_run": true,
                     "validated_phase": action,
                     "transaction": record,
@@ -2319,71 +3499,1085 @@ fn transaction_command(
                     "supersede_candidates": supersede_candidates,
                 }));
             }
-            let mut adapter = load_workflow_adapter(&record)?;
+            let mut adapter = load_workflow_adapter(&record, &projection)?;
             if args.supersede_failed_job {
                 preflight_workflow_action(&mut record, action, &mut adapter)?;
                 let superseded = supersede_failed_workflow_jobs(&store, &mut record, &mut adapter)?;
                 for (old_job_id, new_job_id) in superseded {
-                    eprintln!(
-                        "transaction {} superseded terminal failed job {} with {}",
+                    human_status(format!(
+                        "Transaction {} · retrying failed job {} as {}",
                         record.id(),
                         old_job_id,
                         new_job_id
-                    );
+                    ));
                 }
             }
             execute_workflow_action(&store, &mut record, action, &mut adapter)?;
-            print_json(&record)
+            emit_result(&record)
         }
     }
+}
+
+fn close_transaction(
+    store: WorkflowStore,
+    args: TransactionCloseArgs,
+    state_dir: &Path,
+    execution: ProjectionExecution,
+) -> Result<()> {
+    let publication_mode = execution.mode;
+    let nix_program = execution.nix_program.clone();
+    require_guard(&args.guard, "transaction close")?;
+    let mut record = store.load(&args.id)?;
+    if record.phase == abird_host_manager::workflow_runtime::WorkflowPhase::Closed {
+        return emit_result(&json!({
+            "already_closed": true,
+            "transaction": record,
+        }));
+    }
+    let requested = if args.complete {
+        Some(CloseDecision::Complete)
+    } else if args.rollback {
+        Some(CloseDecision::Rollback)
+    } else {
+        None
+    };
+    let source_repository = Repository::discover(execution.repo_root.clone())?;
+    let repository_projection = load_read_only_controller_projection(
+        state_dir,
+        &source_repository,
+        record.id(),
+        record.projection.as_ref(),
+    )?;
+    let current = repository_projection
+        .as_ref()
+        .context("transaction has no repository-backed projection to close")?
+        .clone();
+    let current_phase = current.move_phase()?;
+    if requested.is_none() && record.pending_action == Some(Action::Cutover) {
+        if args.guard.dry_run {
+            return emit_result(&json!({
+                "dry_run": true,
+                "decision": null,
+                "selection": "deferred_until_current_run_reconciles",
+                "next": "close will complete if the current run succeeds, roll back on proven terminal failure, and block while outcome remains ambiguous",
+                "transaction": record,
+            }));
+        }
+        reconcile_current_run_before_close(&store, &mut record)?;
+    }
+
+    let interrupt_run_for_rollback = record.pending_action == Some(Action::Cutover)
+        && (args.rollback || requested.is_none() && !record.current_run_succeeded);
+    if interrupt_run_for_rollback {
+        if args.guard.dry_run {
+            mark_interrupted_run_as_potential_writer(None, &mut record)?;
+        } else {
+            if current_phase == MovePhase::Cutover {
+                let mut adapter = load_execution_adapter(&record.config, &execution)?;
+                adapter.bind_projection(current.clone())?;
+                if let Err(error) = adopt_repository_activation(
+                    &store,
+                    &mut record,
+                    MovePhase::Cutover,
+                    &current,
+                    &adapter,
+                ) {
+                    let terminal_failure = matches!(
+                        validate_failed_workflow_jobs(&store, &mut record, &mut adapter),
+                        Ok(failed) if !failed.is_empty()
+                    );
+                    if !terminal_failure {
+                        return Err(error)
+                            .context("cannot safely classify the interrupted target activation");
+                    }
+                }
+            }
+            mark_interrupted_run_as_potential_writer(Some(&store), &mut record)?;
+            record.fail_running_command_if(
+                LifecycleCommand::Run,
+                "close rollback superseded the unfinished run attempt",
+            )?;
+            store.save(&record)?;
+        }
+    }
+
+    let run_succeeded = current_phase == MovePhase::Cutover && record.current_run_succeeded;
+    if args.complete && !args.force && !run_succeeded {
+        bail!(
+            "completion requires successful current-run evidence; retry `transaction run {}` first, choose `close --rollback`, or use break-glass `close --complete --force` after independently verifying the target",
+            record.id()
+        );
+    }
+    if args.force && current_phase != MovePhase::Cutover {
+        bail!(
+            "forced completion requires the currently published projection to be target-active; publish and verify `transaction run {}` first",
+            record.id()
+        );
+    }
+    if args.force && args.skip_runtime {
+        bail!(
+            "--complete --force requires live endpoint and route verification; remove --skip-runtime"
+        );
+    }
+    let forced_evidence = if args.force && !args.guard.dry_run {
+        let mut adapter = load_execution_adapter(&record.config, &execution)?;
+        adapter.bind_projection(current.clone())?;
+        let evidence = transient_step("Verify forced completion safety", || {
+            adapter.verify_forced_completion(true)
+        })?;
+        record.fail_running_command_if(
+            LifecycleCommand::Run,
+            "forced completion superseded the unfinished run attempt",
+        )?;
+        record.record_authorization_event(
+            Action::Close,
+            "operator forced completion without successful current-run evidence",
+        )?;
+        store.save(&record)?;
+        Some(evidence)
+    } else {
+        None
+    };
+    let decision = record.select_close_decision(requested)?;
+
+    match decision {
+        CloseDecision::Complete if !run_succeeded && !args.force => {
+            bail!(
+                "completion requires a successful run; retry `transaction run {}` first, or choose `close --rollback`",
+                record.id()
+            );
+        }
+        CloseDecision::Rollback
+            if args.skip_runtime
+                && record.phase
+                    != abird_host_manager::workflow_runtime::WorkflowPhase::RolledBack =>
+        {
+            bail!(
+                "--skip-runtime cannot omit the rollback data path; run close without it, or resume until rollback runtime is complete"
+            );
+        }
+        _ => {}
+    }
+    let desired_state = match decision {
+        CloseDecision::Complete => LifecycleState::ClosedOnTarget,
+        CloseDecision::Rollback => LifecycleState::ClosedOnSource,
+    };
+    let command_execution = record.begin_command(
+        LifecycleCommand::Close,
+        desired_state,
+        Some(decision),
+        close_command_steps(publication_mode),
+    )?;
+    for step in ["state.reconcile-current-run", "close.select-outcome"] {
+        record.start_command_step(command_execution, step)?;
+        record.complete_command_step(command_execution, step, None)?;
+    }
+
+    if args.guard.dry_run {
+        let manager_config = HostManagerConfig::load(&record.config)?;
+        let terminal_projection = match decision {
+            CloseDecision::Complete => current.clone(),
+            CloseDecision::Rollback if current_phase == MovePhase::RolledBack => current.clone(),
+            CloseDecision::Rollback => MoveProjector::derive_with_observation(
+                &record.spec,
+                &manager_config,
+                MovePhase::RolledBack,
+                Some(&current),
+                None,
+                &move_projection_observation(&record),
+            )?,
+        };
+        if !args.skip_runtime {
+            let action = match decision {
+                CloseDecision::Complete => Action::Close,
+                CloseDecision::Rollback
+                    if record.phase
+                        != abird_host_manager::workflow_runtime::WorkflowPhase::RolledBack =>
+                {
+                    Action::Rollback
+                }
+                _ => Action::Close,
+            };
+            let mut adapter = load_execution_adapter(&record.config, &execution)?;
+            adapter.bind_projection(terminal_projection.clone())?;
+            preflight_workflow_action(&mut record, action, &mut adapter)?;
+        }
+        let forced_live_verification = if args.force {
+            let mut adapter = load_execution_adapter(&record.config, &execution)?;
+            adapter.bind_projection(terminal_projection.clone())?;
+            Some(transient_step("Verify forced completion safety", || {
+                adapter.verify_forced_completion(false)
+            })?)
+        } else {
+            None
+        };
+        return emit_result(&json!({
+            "dry_run": true,
+            "decision": decision,
+            "terminal_projection": terminal_projection,
+            "repository_steps": [
+                "write_canonical_service_placements",
+                "remove_phase_projection",
+                "git_stage",
+                "nix_evaluate",
+                "git_commit",
+                if publication_mode == ProjectionPublicationMode::Local { "retain_local_commit" } else { "git_push" },
+                if publication_mode == ProjectionPublicationMode::Local { "verify_local_commit" } else { "verify_remote_revision" },
+            ],
+            "runtime": if args.skip_runtime { "skipped" } else { "planned" },
+            "deployment": if args.manual_deploy { "manual handoff" } else if args.yes { "managed without prompt" } else { "managed after interactive confirmation" },
+            "forced_live_verification": forced_live_verification,
+            "transaction": record,
+        }));
+    }
+
+    record.start_command_step(command_execution, "close.persist-decision")?;
+    record.complete_command_step(
+        command_execution,
+        "close.persist-decision",
+        Some(json!({
+            "decision": decision,
+            "forced": args.force,
+            "forced_live_verification": forced_evidence,
+        })),
+    )?;
+    store.save(&record)?;
+    let journal_repository_preparation =
+        command_has_step(&record, command_execution, "repository.prepare-publication");
+    if journal_repository_preparation {
+        record.start_command_step(command_execution, "repository.prepare-publication")?;
+        store.save(&record)?;
+    } else {
+        command_reporter().started("Prepare publication repository");
+    }
+    let publisher =
+        match prepare_projection_publisher(&source_repository, &store, state_dir, &execution) {
+            Ok(publisher) => {
+                if journal_repository_preparation {
+                    record.complete_command_step(
+                        command_execution,
+                        "repository.prepare-publication",
+                        None,
+                    )?;
+                    store.save(&record)?;
+                } else {
+                    command_reporter().complete_active("Prepare publication repository");
+                }
+                publisher
+            }
+            Err(error) => {
+                if journal_repository_preparation {
+                    record.fail_command_step(
+                        command_execution,
+                        "repository.prepare-publication",
+                        format!("{error:#}"),
+                    )?;
+                    store.save(&record)?;
+                } else {
+                    command_reporter()
+                        .fail_active("Prepare publication repository", &format!("{error:#}"));
+                }
+                return Err(error);
+            }
+        };
+    let published = match publisher.repository().load_phase_projection(record.id())? {
+        Some(published) => published,
+        None => {
+            let closeout = publisher
+                .repository()
+                .load_projection_closeout(record.id())?
+                .context("transaction projection disappeared without a canonical closeout")?;
+            if closeout.projection_sha256 != current.projection_sha256
+                || closeout.decision
+                    != match decision {
+                        CloseDecision::Complete => "complete",
+                        CloseDecision::Rollback => "rollback",
+                    }
+            {
+                bail!("canonical closeout does not match the retained close decision");
+            }
+            let revision = publisher.revision()?;
+            let publication = ProjectionCloseoutPublication {
+                placement_path: publisher
+                    .repository()
+                    .root()
+                    .join("data/service-placements.json"),
+                projection_path: publisher
+                    .repository()
+                    .root()
+                    .join("data/phase-projections")
+                    .join(format!("{}.json", record.id())),
+                branch: execution.branch.clone(),
+                revision,
+                pushed: publisher.pushed(),
+            };
+            for step in close_command_steps(publication_mode)
+                .into_iter()
+                .take_while(|step| *step != "nixbot.deploy-closeout")
+                .skip(3)
+            {
+                record.start_command_step(command_execution, step)?;
+                record.complete_command_step(
+                    command_execution,
+                    step,
+                    Some(json!({
+                        "adopted_from_canonical_closeout": true,
+                        "revision": publication.revision,
+                    })),
+                )?;
+            }
+            store.save(&record)?;
+            let manager_config = HostManagerConfig::load(&record.config)?;
+            return deploy_closeout_and_wait(
+                CloseoutDeployContext {
+                    store,
+                    state_dir,
+                    manager_config: &manager_config,
+                    nix_program: &nix_program,
+                },
+                record,
+                command_execution,
+                decision,
+                publication,
+                CloseoutDeployOptions {
+                    yes: args.yes,
+                    manual: args.manual_deploy,
+                },
+            );
+        }
+    };
+    validate_projection_adoption(record.projection.as_ref(), &published, &record.spec)?;
+    record.set_projection(published.clone())?;
+    store.save(&record)?;
+
+    let manager_config = HostManagerConfig::load(&record.config)?;
+    let terminal_projection = match decision {
+        CloseDecision::Complete if published.move_phase()? == MovePhase::Cutover => published,
+        CloseDecision::Complete => bail!(
+            "completion requires the published target-active projection; retry `transaction run {}`",
+            record.id()
+        ),
+        CloseDecision::Rollback if published.move_phase()? == MovePhase::RolledBack => published,
+        CloseDecision::Rollback => {
+            if published.move_phase()? == MovePhase::Cutover {
+                let mut adoption_adapter = load_execution_adapter(&record.config, &execution)?;
+                adoption_adapter.bind_projection(published.clone())?;
+                adopt_repository_activation(
+                    &store,
+                    &mut record,
+                    MovePhase::Cutover,
+                    &published,
+                    &adoption_adapter,
+                )?;
+            }
+            let rollback = MoveProjector::derive_with_observation(
+                &record.spec,
+                &manager_config,
+                MovePhase::RolledBack,
+                Some(&published),
+                Some(publisher.revision()?),
+                &move_projection_observation(&record),
+            )?;
+            publish_projection_with_progress(
+                &publisher,
+                &rollback,
+                manager_config.controller_host()?,
+                &store,
+                &mut record,
+                None,
+                publication_mode,
+            )?;
+            record.set_projection(rollback.clone())?;
+            store.save(&record)?;
+            rollback
+        }
+    };
+    record.start_command_step(command_execution, "authority.ensure-terminal")?;
+    store.save(&record)?;
+    if !args.skip_runtime {
+        let mut adapter = load_execution_adapter(&record.config, &execution)?;
+        adapter.bind_projection(terminal_projection.clone())?;
+        if decision == CloseDecision::Rollback
+            && record.phase != abird_host_manager::workflow_runtime::WorkflowPhase::RolledBack
+        {
+            let actions = reconciliation_actions(&record, MovePhase::RolledBack)?;
+            if let Err(error) = reconcile_projected_runtime(
+                &store,
+                &mut record,
+                MovePhase::RolledBack,
+                actions,
+                &mut adapter,
+            ) {
+                let terminal_failure = matches!(
+                    validate_failed_workflow_jobs(&store, &mut record, &mut adapter),
+                    Ok(failed) if !failed.is_empty()
+                );
+                if terminal_failure {
+                    record.fail_command_step(
+                        command_execution,
+                        "authority.ensure-terminal",
+                        format!("{error:#}"),
+                    )?;
+                    store.save(&record)?;
+                }
+                return Err(error);
+            }
+        }
+    }
+    record.complete_command_step(
+        command_execution,
+        "authority.ensure-terminal",
+        Some(json!({
+            "decision": decision,
+            "phase": terminal_projection.phase,
+            "projection_sha256": terminal_projection.projection_sha256,
+            "runtime_phase": record.phase,
+        })),
+    )?;
+    store.save(&record)?;
+
+    let decision_name = match decision {
+        CloseDecision::Complete => "complete",
+        CloseDecision::Rollback => "rollback",
+    };
+    let publication = publish_closeout_with_progress(
+        &publisher,
+        &terminal_projection,
+        decision_name,
+        manager_config.controller_host()?,
+        &store,
+        &mut record,
+        command_execution,
+        publication_mode,
+    )?;
+    record.lifecycle_state = Some(match decision {
+        CloseDecision::Complete => {
+            abird_host_manager::workflow_runtime::LifecycleState::ClosingComplete
+        }
+        CloseDecision::Rollback => {
+            abird_host_manager::workflow_runtime::LifecycleState::ClosingRollback
+        }
+    });
+    store.save(&record)?;
+
+    deploy_closeout_and_wait(
+        CloseoutDeployContext {
+            store,
+            state_dir,
+            manager_config: &manager_config,
+            nix_program: &nix_program,
+        },
+        record,
+        command_execution,
+        decision,
+        publication,
+        CloseoutDeployOptions {
+            yes: args.yes,
+            manual: args.manual_deploy,
+        },
+    )
+}
+
+fn mark_interrupted_run_as_potential_writer(
+    store: Option<&WorkflowStore>,
+    record: &mut TransactionRecord,
+) -> Result<()> {
+    let child_store = store
+        .map(|store| store.child_store(record.id()))
+        .transpose()?;
+    for child in record.items.values_mut() {
+        child.target_ever_started = true;
+        if let Some(child_store) = &child_store {
+            child_store.save(child)?;
+        }
+    }
+    record.data_authority = Some(abird_host_manager::workflow_runtime::DataAuthority::Target);
+    record.record_authorization_event(
+        Action::Rollback,
+        "interrupted run conservatively treated target as a potential writer",
+    )
+}
+
+struct CloseoutDeployContext<'a> {
+    store: WorkflowStore,
+    state_dir: &'a Path,
+    manager_config: &'a HostManagerConfig,
+    nix_program: &'a Path,
+}
+
+struct CloseoutDeployOptions {
+    yes: bool,
+    manual: bool,
+}
+
+fn deploy_closeout_and_wait(
+    context: CloseoutDeployContext<'_>,
+    mut record: TransactionRecord,
+    command_execution: usize,
+    decision: CloseDecision,
+    publication: ProjectionCloseoutPublication,
+    options: CloseoutDeployOptions,
+) -> Result<()> {
+    let CloseoutDeployContext {
+        store,
+        state_dir,
+        manager_config,
+        nix_program,
+    } = context;
+    let controller = manager_config.controller_host()?.to_owned();
+    let mut deploy_request = manager_config
+        .host(&controller)?
+        .nixbot_deploy
+        .clone()
+        .context("controller has no durable Nixbot deployment identity")?;
+    deploy_request.revision = Some(publication.revision.clone());
+    let deploy_job_id = format!(
+        "closeout-deploy-{}",
+        &digest_bytes(format!("{}\0{}", record.id(), publication.revision).as_bytes())[..24]
+    );
+    let deploy_arguments = [
+        "--nixbot-deploy".to_owned(),
+        serde_json::to_string(&deploy_request)?,
+    ];
+    let manual_command = render_manual_nixbot_deploy_command(&deploy_request)?;
+    let deploy_mode = select_closeout_deploy_mode(
+        options.yes,
+        options.manual,
+        &publication.revision,
+        !publication.pushed,
+    )?;
+    if deploy_mode == CloseoutDeployMode::Manual {
+        record.annotate_command_step(
+            command_execution,
+            "nixbot.deploy-closeout",
+            json!({
+                "mode": if publication.pushed { "manual" } else { "local_manual" },
+                "revision": publication.revision,
+                "controller": controller,
+                "request": deploy_request,
+                "command": manual_command,
+            }),
+        )?;
+        store.save(&record)?;
+        command_reporter().message(format!(
+            "\nCloseout {}. From this repository root, deploy it manually:\n\n  {manual_command}\n\nThe journal remains pending; rerun `transaction close {} {}--yes` to deploy idempotently and finalize it.",
+            if publication.pushed { "published" } else { "committed locally" },
+            record.id(),
+            if publication.pushed { "" } else { "--local " },
+        ));
+        return emit_result(&json!({
+            "decision": decision,
+            "repository": publication,
+            "deployment": {
+                "mode": if publication.pushed { "manual" } else { "local_manual" },
+                "command": manual_command,
+                "request": deploy_request,
+            },
+            "next": format!(
+                "run the deploy command, then transaction close {} {}--yes",
+                record.id(),
+                if publication.pushed { "" } else { "--local " },
+            ),
+            "transaction": record,
+        }));
+    }
+    if !publication.pushed {
+        record.start_command_step(command_execution, "nixbot.deploy-closeout")?;
+        store.save(&record)?;
+        let repository_root = publication
+            .placement_path
+            .parent()
+            .and_then(Path::parent)
+            .context("local closeout placement path has no repository root")?;
+        run_local_nixbot_deploy(nix_program, repository_root, &deploy_request)?;
+        return reconcile_deployed_closeout(
+            &store,
+            TransactionCloseReconcileArgs {
+                id: record.id().to_owned(),
+                expected_projection_sha256: record
+                    .projection
+                    .as_ref()
+                    .context("local closeout has no retained terminal projection")?
+                    .projection_sha256
+                    .clone(),
+            },
+        );
+    }
+    record.start_command_step(command_execution, "nixbot.deploy-closeout")?;
+    record.bind_command_step_job(
+        command_execution,
+        "nixbot.deploy-closeout",
+        &deploy_job_id,
+        Some(json!({
+            "revision": publication.revision,
+            "controller": controller,
+            "request": deploy_request,
+        })),
+    )?;
+    store.save(&record)?;
+    let deploy_adapter = NativeAdapter::load(&record.config)?;
+    deploy_adapter.submit_profile_job_deferred(
+        &controller,
+        &deploy_job_id,
+        record.id(),
+        "controller:nixbot",
+        &deploy_arguments,
+    )?;
+
+    // The new controller generation must acquire this authority lock to run
+    // its digest-bound closeout unit. Release it only after the exact durable
+    // deployment job is safely retained by the host agent.
+    drop(store);
+    deploy_adapter.run_profile_job_result(
+        &controller,
+        &deploy_job_id,
+        record.id(),
+        "controller:nixbot",
+        &deploy_arguments,
+    )?;
+    let final_record = WorkflowStore::open(state_dir.to_path_buf())?.load(record.id())?;
+    if final_record.phase != abird_host_manager::workflow_runtime::WorkflowPhase::Closed {
+        bail!(
+            "closeout revision deployed, but transaction {} is not closed; rerun `transaction close {}` to reconcile the retained close command",
+            record.id(),
+            record.id()
+        );
+    }
+    emit_result(&json!({
+        "decision": decision,
+        "repository": publication,
+        "deployment_job_id": deploy_job_id,
+        "runtime": "closeout deployed and journal closed",
+        "transaction": final_record,
+    }))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloseoutDeployMode {
+    Managed,
+    Manual,
+}
+
+fn select_closeout_deploy_mode(
+    yes: bool,
+    manual: bool,
+    revision: &str,
+    local: bool,
+) -> Result<CloseoutDeployMode> {
+    if manual {
+        return Ok(CloseoutDeployMode::Manual);
+    }
+    if yes || json_output() || !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Ok(CloseoutDeployMode::Managed);
+    }
+    loop {
+        let prompt = format!(
+            "Deploy {} closeout {} now? [Y/m]",
+            if local { "local" } else { "published" },
+            &revision[..revision.len().min(12)]
+        );
+        eprint!(
+            "\n{} ",
+            TerminalStyle::for_stderr().paint(Tone::Active, prompt)
+        );
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer)? == 0 {
+            bail!(
+                "deployment confirmation ended without a choice; rerun with --yes or --manual-deploy"
+            );
+        }
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "" | "y" | "yes" => return Ok(CloseoutDeployMode::Managed),
+            "m" | "manual" => return Ok(CloseoutDeployMode::Manual),
+            _ => {
+                terminal_warning("Choose Enter/y to deploy here, or m for a manual deploy handoff.")
+            }
+        }
+    }
+}
+
+fn render_manual_nixbot_deploy_command(
+    request: &abird_host_agent::deployment::NixbotDeployRequest,
+) -> Result<String> {
+    let revision = request
+        .revision
+        .as_deref()
+        .context("closeout deploy request has no published revision")?;
+    let mut arguments = vec![
+        "nix run .#nixbot -- deploy".to_owned(),
+        format!("--sha {}", shell_word(revision)),
+    ];
+    if request.exclude_hosts.is_empty() {
+        arguments.push(format!("--host {}", shell_word(&request.host)));
+    } else {
+        let hosts = std::iter::once(request.host.clone())
+            .chain(request.exclude_hosts.iter().map(|host| format!("-{host}")))
+            .collect::<Vec<_>>()
+            .join(",");
+        arguments.push(format!("--hosts {}", shell_word(&hosts)));
+    }
+    if let Some(nix_config) = &request.nix_config {
+        arguments.push(format!("--nix-config {}", shell_word(nix_config)));
+    }
+    arguments.extend([
+        "--build-plan-jobs 1".to_owned(),
+        "--build-jobs 1".to_owned(),
+        "--deploy-jobs 1".to_owned(),
+        "--verify-jobs 1".to_owned(),
+        "--no-rollback".to_owned(),
+    ]);
+    Ok(arguments.join(" \\\n    "))
+}
+
+fn shell_word(value: &str) -> String {
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn reconcile_current_run_before_close(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+) -> Result<()> {
+    let projection = record
+        .projection
+        .clone()
+        .context("pending run has no target-active projection")?;
+    if projection.move_phase()? != MovePhase::Cutover {
+        bail!("pending run is not bound to a target-active projection");
+    }
+    let mut adapter = NativeAdapter::load(&record.config)?;
+    adapter.bind_projection(projection)?;
+    let terminal_failure = matches!(
+        validate_failed_workflow_jobs(store, record, &mut adapter),
+        Ok(failed) if !failed.is_empty()
+    );
+    if terminal_failure {
+        record.current_run_succeeded = false;
+        let _ = record.fail_running_command("current run has a terminal failed host-agent job");
+        record.record_authorization_event(
+            Action::Cutover,
+            "bare close observed terminal failure in the current run attempt",
+        )?;
+        return store.save(record);
+    }
+
+    let actions = reconciliation_actions(record, MovePhase::Cutover)?;
+    if let Err(error) =
+        reconcile_projected_runtime(store, record, MovePhase::Cutover, actions, &mut adapter)
+    {
+        let terminal_failure = matches!(
+            validate_failed_workflow_jobs(store, record, &mut adapter),
+            Ok(failed) if !failed.is_empty()
+        );
+        if !terminal_failure {
+            return Err(error).context("current run outcome remains incomplete or ambiguous");
+        }
+        record.current_run_succeeded = false;
+        let _ = record.fail_running_command("current run reconciled to terminal failure");
+        record.record_authorization_event(
+            Action::Cutover,
+            "bare close reconciled the current run to a proven terminal failure",
+        )?;
+        store.save(record)?;
+    } else {
+        let execution = record.begin_command(
+            LifecycleCommand::Run,
+            LifecycleState::TargetActive,
+            None,
+            projected_command_steps(LifecycleCommand::Run, ProjectionPublicationMode::Remote),
+        )?;
+        for step in projected_command_published_steps(
+            LifecycleCommand::Run,
+            ProjectionPublicationMode::Remote,
+        ) {
+            record.start_command_step(execution, step)?;
+            record.complete_command_step(
+                execution,
+                step,
+                Some(json!({"adopted_during_close_reconciliation": true})),
+            )?;
+        }
+        complete_projected_command(store, record, execution, LifecycleCommand::Run)?;
+    }
+    Ok(())
+}
+
+fn reconcile_deployed_closeout(
+    store: &WorkflowStore,
+    args: TransactionCloseReconcileArgs,
+) -> Result<()> {
+    let mut record = store.load(&args.id)?;
+    if record.phase == abird_host_manager::workflow_runtime::WorkflowPhase::Closed {
+        if !record
+            .projection_history
+            .contains_key(&args.expected_projection_sha256)
+        {
+            bail!("deployed closeout digest is not retained by the closed transaction");
+        }
+        return emit_result(&json!({
+            "already_closed": true,
+            "transaction": record,
+        }));
+    }
+    let decision = record
+        .close_decision
+        .context("deployed closeout has no persisted terminal decision")?;
+    let publication_mode = record
+        .command_executions
+        .iter()
+        .rev()
+        .find(|execution| {
+            execution.command == LifecycleCommand::Close
+                && execution.status == abird_host_manager::workflow_runtime::CommandStatus::Running
+        })
+        .map(|execution| {
+            if execution
+                .steps
+                .iter()
+                .any(|step| step.id == "git.retain-local-closeout")
+            {
+                ProjectionPublicationMode::Local
+            } else {
+                ProjectionPublicationMode::Remote
+            }
+        })
+        .unwrap_or(ProjectionPublicationMode::Remote);
+    let command_execution = record.begin_command(
+        LifecycleCommand::Close,
+        match decision {
+            CloseDecision::Complete => LifecycleState::ClosedOnTarget,
+            CloseDecision::Rollback => LifecycleState::ClosedOnSource,
+        },
+        Some(decision),
+        close_command_steps(publication_mode),
+    )?;
+    let projection = record
+        .projection
+        .clone()
+        .context("deployed closeout journal has no terminal projection")?;
+    if projection.projection_sha256 != args.expected_projection_sha256 {
+        bail!(
+            "deployed closeout digest {} does not match journal terminal projection {}",
+            args.expected_projection_sha256,
+            projection.projection_sha256
+        );
+    }
+    let expected_phase = match decision {
+        CloseDecision::Complete => MovePhase::Cutover,
+        CloseDecision::Rollback => MovePhase::RolledBack,
+    };
+    if projection.move_phase()? != expected_phase {
+        bail!("deployed closeout projection does not match its terminal decision");
+    }
+    let expected_runtime_phase = match decision {
+        CloseDecision::Complete => abird_host_manager::workflow_runtime::WorkflowPhase::Cutover,
+        CloseDecision::Rollback => abird_host_manager::workflow_runtime::WorkflowPhase::RolledBack,
+    };
+    if record.phase != expected_runtime_phase {
+        bail!(
+            "deployed closeout runtime is {:?}, expected {:?}; resume terminal reconciliation before releasing holds",
+            record.phase,
+            expected_runtime_phase
+        );
+    }
+    for step in close_command_steps(publication_mode).into_iter().take(10) {
+        record.start_command_step(command_execution, step)?;
+        record.complete_command_step(
+            command_execution,
+            step,
+            Some(json!({
+                "adopted_from_deployed_closeout": true,
+                "projection_sha256": args.expected_projection_sha256,
+            })),
+        )?;
+    }
+    record.start_command_step(command_execution, "nixbot.deploy-closeout")?;
+    record.complete_command_step(
+        command_execution,
+        "nixbot.deploy-closeout",
+        Some(json!({"projection_sha256": args.expected_projection_sha256})),
+    )?;
+    store.save(&record)?;
+    let mut adapter = NativeAdapter::load(&record.config)?;
+    adapter.bind_projection(projection.clone())?;
+    let superseded = if has_pending_close_workflow_action(store, &mut record)? {
+        supersede_terminal_failed_workflow_jobs(store, &mut record, &mut adapter)?
+    } else {
+        Vec::new()
+    };
+    for (old_job_id, new_job_id) in superseded {
+        human_status(format!(
+            "Transaction {} · retrying failed close job {} as {}",
+            record.id(),
+            old_job_id,
+            new_job_id
+        ));
+    }
+    execute_workflow_action(store, &mut record, Action::Close, &mut adapter)?;
+    record.start_command_step(command_execution, "inactive.release-projection-hold")?;
+    record.complete_command_step(command_execution, "inactive.release-projection-hold", None)?;
+    if let Some(projection) = record.projection.take() {
+        record
+            .projection_history
+            .insert(projection.projection_sha256.clone(), projection);
+    }
+    record.start_command_step(command_execution, "transaction.archive")?;
+    record.complete_command_step(command_execution, "transaction.archive", None)?;
+    record.start_command_step(command_execution, "state.verify-closed")?;
+    record.complete_command_step(
+        command_execution,
+        "state.verify-closed",
+        Some(json!({"state": record.effective_lifecycle_state()})),
+    )?;
+    record.complete_command(command_execution)?;
+    store.save(&record)?;
+    emit_result(&json!({
+        "deployed_closeout": true,
+        "decision": decision,
+        "transaction": record,
+    }))
+}
+
+fn close_command_steps(mode: ProjectionPublicationMode) -> Vec<&'static str> {
+    let mut steps = vec![
+        "state.reconcile-current-run",
+        "close.select-outcome",
+        "close.persist-decision",
+        "repository.prepare-publication",
+        "authority.ensure-terminal",
+        "repository.fold-placement",
+        "projection.remove",
+        "repository.validate-closeout",
+    ];
+    steps.extend(closeout_publication_steps(mode));
+    steps.extend([
+        "nixbot.deploy-closeout",
+        "inactive.release-projection-hold",
+        "transaction.archive",
+        "state.verify-closed",
+    ]);
+    steps
+}
+
+fn closeout_publication_steps(mode: ProjectionPublicationMode) -> [&'static str; 3] {
+    match mode {
+        ProjectionPublicationMode::Remote => [
+            "git.commit-closeout",
+            "git.push-closeout",
+            "git.verify-remote",
+        ],
+        ProjectionPublicationMode::Local => [
+            "git.commit-closeout",
+            "git.retain-local-closeout",
+            "git.verify-local-commit",
+        ],
+    }
+}
+
+fn closeout_publication_step(
+    stage: ProjectionCloseoutStage,
+    mode: ProjectionPublicationMode,
+) -> &'static str {
+    match stage {
+        ProjectionCloseoutStage::FoldPlacement => "repository.fold-placement",
+        ProjectionCloseoutStage::RemoveProjection => "projection.remove",
+        ProjectionCloseoutStage::Validate => "repository.validate-closeout",
+        ProjectionCloseoutStage::Commit => "git.commit-closeout",
+        ProjectionCloseoutStage::RetainLocal => "git.retain-local-closeout",
+        ProjectionCloseoutStage::Push => "git.push-closeout",
+        ProjectionCloseoutStage::Verify => match mode {
+            ProjectionPublicationMode::Remote => "git.verify-remote",
+            ProjectionPublicationMode::Local => "git.verify-local-commit",
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_closeout_with_progress(
+    publisher: &ProjectionPublisher,
+    projection: &PhaseProjection,
+    decision: &str,
+    controller_host: &str,
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    command_execution: usize,
+    mode: ProjectionPublicationMode,
+) -> Result<ProjectionCloseoutPublication> {
+    let mut active_step = None;
+    let result =
+        publisher.publish_closeout_observed(projection, decision, controller_host, |event| {
+            match event {
+                ProjectionCloseoutEvent::Started(stage) => {
+                    let step = closeout_publication_step(stage, mode);
+                    active_step = Some(step);
+                    record.start_command_step(command_execution, step)?;
+                    store.save(record)?;
+                }
+                ProjectionCloseoutEvent::Progress { stage, detail } => {
+                    debug_assert_eq!(stage, ProjectionCloseoutStage::Validate);
+                    command_reporter().detail(detail);
+                }
+                ProjectionCloseoutEvent::Completed { stage, revision } => {
+                    let step = closeout_publication_step(stage, mode);
+                    record.complete_command_step(
+                        command_execution,
+                        step,
+                        revision.map(|revision| json!({"revision": revision})),
+                    )?;
+                    store.save(record)?;
+                    active_step = None;
+                }
+            }
+            Ok(())
+        });
+    if let Err(error) = &result
+        && let Some(step) = active_step
+        && record
+            .command_executions
+            .get(command_execution)
+            .and_then(|command| command.steps.iter().find(|candidate| candidate.id == step))
+            .is_some_and(|step| step.status == StepStatus::Running)
+    {
+        record.fail_command_step(command_execution, step, format!("{error:#}"))?;
+        store.save(record)?;
+    }
+    result
 }
 
 fn transaction_phase(
     store: &WorkflowStore,
     args: TransactionPhaseArgs,
     action: Action,
+    execution: &ProjectionExecution,
 ) -> Result<()> {
     let mut record = store.load(&args.id)?;
-    ensure_legacy_projection_boundary(record.id(), record.projection.is_some(), action, false)?;
     if should_dry_run(action, &args.guard)? {
-        let mut adapter = load_workflow_adapter(&record)?;
+        let mut adapter = load_workflow_adapter(&record, execution)?;
         preflight_workflow_action(&mut record, action, &mut adapter)?;
-        return print_json(&json!({
+        return emit_result(&json!({
             "dry_run": true,
             "validated_phase": action,
             "transaction": record,
             "action": action,
         }));
     }
-    let mut adapter = load_workflow_adapter(&record)?;
+    let mut adapter = load_workflow_adapter(&record, execution)?;
     execute_workflow_action(store, &mut record, action, &mut adapter)?;
-    print_json(&record)
+    emit_result(&record)
 }
 
-fn ensure_legacy_projection_boundary(
-    transaction_id: &str,
-    has_projection: bool,
-    action: Action,
-    resume: bool,
-) -> Result<()> {
-    if !has_projection {
-        return Ok(());
-    }
-    if resume {
-        bail!(
-            "projected transaction {transaction_id:?} cannot use transaction resume because activation authorization must run through projected reconciliation; run `abird-host-manager transaction reconcile {transaction_id} --execute`"
-        );
-    }
-    if action == Action::Close {
-        bail!(
-            "projected transaction {transaction_id:?} cannot be closed until canonical projection closeout is implemented; its inactive endpoint must remain held"
-        );
-    }
-    Ok(())
-}
-
-fn load_workflow_adapter(record: &TransactionRecord) -> Result<NativeAdapter> {
-    let mut adapter = NativeAdapter::load(&record.config)?;
+fn load_workflow_adapter(
+    record: &TransactionRecord,
+    execution: &ProjectionExecution,
+) -> Result<NativeAdapter> {
+    let mut adapter = load_execution_adapter(&record.config, execution)?;
     if let Some(projection) = &record.projection {
         adapter.bind_projection(projection.clone())?;
     }
@@ -2398,9 +4592,10 @@ fn projected_transaction_phase(
     state_dir: &Path,
     execution: ProjectionExecution,
 ) -> Result<()> {
+    let publication_mode = execution.mode;
     let mut record = store.load(&args.id)?;
     let dry_run = should_dry_run(action, &args.guard)?;
-    let source_repository = Repository::discover(execution.repo_root)?;
+    let source_repository = Repository::discover(execution.repo_root.clone())?;
     if record.projection.is_none() {
         let source_has_projection = source_repository
             .load_phase_projection(record.id())?
@@ -2423,26 +4618,197 @@ fn projected_transaction_phase(
                     guard: args.guard,
                 },
                 action,
+                &execution,
             );
         }
     }
-    let publisher = ProjectionPublisher::prepare(
-        &source_repository,
-        store,
-        state_dir,
-        &execution.branch,
-        execution.git_program,
-        execution.nix_program,
-        execution.publish_git_ssh_command,
+    if dry_run {
+        let repository_projection = load_read_only_controller_projection(
+            state_dir,
+            &source_repository,
+            record.id(),
+            record.projection.as_ref(),
+        )?;
+        if let Some(published) = &repository_projection {
+            validate_projection_adoption(record.projection.as_ref(), published, &record.spec)?;
+            record.set_projection(published.clone())?;
+        }
+        let previous = repository_projection
+            .as_ref()
+            .or(record.projection.as_ref())
+            .context("repository-backed transaction has no prior projection")?
+            .clone();
+        let lifecycle_command = match action {
+            Action::Prepare => LifecycleCommand::Prepare,
+            Action::Cutover => LifecycleCommand::Run,
+            _ => unreachable!("projected public phases are prepare and run"),
+        };
+        let desired_state = match action {
+            Action::Prepare => LifecycleState::Prepared,
+            Action::Cutover => LifecycleState::TargetActive,
+            _ => unreachable!("projected public phases are prepare and run"),
+        };
+        let mut retired_run_jobs = Vec::new();
+        if action == Action::Prepare && record.pending_action == Some(Action::Cutover) {
+            if previous.move_phase()? != MovePhase::Cutover {
+                bail!("pending run is not bound to a target-active projection");
+            }
+            let mut transition_adapter = load_execution_adapter(&record.config, &execution)?;
+            transition_adapter.bind_projection(previous.clone())?;
+            retired_run_jobs = plan_terminal_failed_run_for_prepare(&mut record, |item, child| {
+                let item_adapter = WorkflowItemAdapter::new(&mut transition_adapter, item);
+                let (_, _, status) = item_adapter.active_job_status(child)?;
+                Ok(status)
+            })?;
+        }
+        let command_execution = record.begin_command(
+            lifecycle_command,
+            desired_state,
+            None,
+            projected_command_steps(lifecycle_command, publication_mode),
+        )?;
+        plan_workflow_action(&mut record, action)?;
+        let manager_config = HostManagerConfig::load(&record.config)?;
+        let projection = MoveProjector::derive_with_observation(
+            &record.spec,
+            &manager_config,
+            desired_phase,
+            Some(&previous),
+            Some(source_repository.revision(&execution.git_program)?),
+            &move_projection_observation(&record),
+        )?;
+        let runtime_actions = reconciliation_actions(&record, desired_phase)?;
+        for step in projected_command_prepublication_steps(lifecycle_command) {
+            record.start_command_step(command_execution, step)?;
+            record.complete_command_step(command_execution, step, None)?;
+        }
+        if !args.skip_runtime
+            && let Some(first_action) = runtime_actions.first().copied()
+        {
+            let mut adapter = load_execution_adapter(&record.config, &execution)?;
+            adapter.bind_projection(projection.clone())?;
+            preflight_workflow_action(&mut record, first_action, &mut adapter)?;
+        }
+        return emit_result(&json!({
+            "dry_run": true,
+            "action": action,
+            "projection": projection,
+            "repository_path": format!("data/phase-projections/{}.json", record.id()),
+            "runtime_actions": runtime_actions,
+            "retired_run_jobs": retired_run_jobs,
+            "runtime": if args.skip_runtime { "skipped" } else { "planned" },
+            "transaction": record,
+        }));
+    }
+    let lifecycle_command = match action {
+        Action::Prepare => LifecycleCommand::Prepare,
+        Action::Cutover => LifecycleCommand::Run,
+        _ => unreachable!("projected public phases are prepare and run"),
+    };
+    let desired_state = match action {
+        Action::Prepare => LifecycleState::Prepared,
+        Action::Cutover => LifecycleState::TargetActive,
+        _ => unreachable!("projected public phases are prepare and run"),
+    };
+    if action == Action::Prepare && record.pending_action == Some(Action::Cutover) {
+        let current_projection = record
+            .projection
+            .clone()
+            .context("pending run has no retained target-active projection")?;
+        if current_projection.move_phase()? != MovePhase::Cutover {
+            bail!("pending run is not bound to a target-active projection");
+        }
+        let mut transition_adapter = load_execution_adapter(&record.config, &execution)?;
+        transition_adapter.bind_projection(current_projection)?;
+        command_reporter().started("Resolve terminal failed run");
+        let retired_jobs =
+            match supersede_terminal_failed_run_for_prepare(store, &mut record, |item, child| {
+                let item_adapter = WorkflowItemAdapter::new(&mut transition_adapter, item);
+                let (_, _, status) = item_adapter.active_job_status(child)?;
+                Ok(status)
+            }) {
+                Ok(retired_jobs) => {
+                    command_reporter().complete_active("Resolve terminal failed run");
+                    retired_jobs
+                }
+                Err(error) => {
+                    command_reporter()
+                        .fail_active("Resolve terminal failed run", &format!("{error:#}"));
+                    return Err(error);
+                }
+            };
+        if retired_jobs.is_empty() {
+            human_status(format!(
+                "Transaction {} · prepare is replacing the resolved failed run",
+                record.id()
+            ));
+        } else {
+            for job_id in retired_jobs {
+                human_status(format!(
+                    "Transaction {} · prepare retired terminal failed run job {}",
+                    record.id(),
+                    job_id
+                ));
+            }
+        }
+    }
+    let mut transition_preview = record.clone();
+    plan_workflow_action(&mut transition_preview, action)?;
+    let command_execution = record.begin_command(
+        lifecycle_command,
+        desired_state,
+        None,
+        projected_command_steps(lifecycle_command, publication_mode),
     )?;
+    let prepublication_steps = projected_command_prepublication_steps(lifecycle_command);
+    for step in &prepublication_steps[..2] {
+        record.start_command_step(command_execution, step)?;
+        record.complete_command_step(command_execution, step, None)?;
+    }
+    let journal_repository_preparation =
+        command_has_step(&record, command_execution, "repository.prepare-publication");
+    if journal_repository_preparation {
+        record.start_command_step(command_execution, "repository.prepare-publication")?;
+        store.save(&record)?;
+    } else {
+        command_reporter().started("Prepare publication repository");
+    }
+    let publisher =
+        match prepare_projection_publisher(&source_repository, store, state_dir, &execution) {
+            Ok(publisher) => {
+                if journal_repository_preparation {
+                    record.complete_command_step(
+                        command_execution,
+                        "repository.prepare-publication",
+                        None,
+                    )?;
+                    store.save(&record)?;
+                } else {
+                    command_reporter().complete_active("Prepare publication repository");
+                }
+                publisher
+            }
+            Err(error) => {
+                if journal_repository_preparation {
+                    record.fail_command_step(
+                        command_execution,
+                        "repository.prepare-publication",
+                        format!("{error:#}"),
+                    )?;
+                    store.save(&record)?;
+                } else {
+                    command_reporter()
+                        .fail_active("Prepare publication repository", &format!("{error:#}"));
+                }
+                return Err(error);
+            }
+        };
     let repository_projection = publisher.repository().load_phase_projection(record.id())?;
     if record.projection.is_none() {
         if let Some(published) = &repository_projection {
             validate_projection_adoption(None, published, &record.spec)?;
             record.set_projection(published.clone())?;
-            if !dry_run {
-                store.save(&record)?;
-            }
+            store.save(&record)?;
         } else {
             bail!("repository-backed transaction projection disappeared during refresh");
         }
@@ -2465,7 +4831,7 @@ fn projected_transaction_phase(
         && !args.skip_runtime
         && previous.move_phase()? == MovePhase::Cutover
     {
-        let mut adoption_adapter = NativeAdapter::load(&record.config)?;
+        let mut adoption_adapter = load_execution_adapter(&record.config, &execution)?;
         adoption_adapter.bind_projection(previous.clone())?;
         adopt_repository_activation(
             store,
@@ -2475,8 +4841,36 @@ fn projected_transaction_phase(
             &adoption_adapter,
         )?;
     }
+    let mut identity_adapter = load_execution_adapter(&record.config, &execution)?;
+    identity_adapter.bind_projection(previous.clone())?;
+    if should_auto_supersede_projected_action(action, record.pending_action) {
+        let superseded =
+            supersede_terminal_failed_workflow_jobs(store, &mut record, &mut identity_adapter)?;
+        let command_name = match lifecycle_command {
+            LifecycleCommand::Prepare => "prepare",
+            LifecycleCommand::Run => "run",
+            _ => unreachable!("only prepare and run reconcile projected runtime"),
+        };
+        for (old_job_id, new_job_id) in superseded {
+            human_status(format!(
+                "Transaction {} · retrying failed {} job {} as {}",
+                record.id(),
+                command_name,
+                old_job_id,
+                new_job_id
+            ));
+        }
+    }
+    begin_workflow_action(store, &mut record, action)?;
     let manager_config = HostManagerConfig::load(&record.config)?;
     let observation = move_projection_observation(&record);
+    let render_step = match lifecycle_command {
+        LifecycleCommand::Prepare => "projection.render-prepared",
+        LifecycleCommand::Run => "projection.render-target-active",
+        _ => unreachable!(),
+    };
+    record.start_command_step(command_execution, render_step)?;
+    store.save(&record)?;
     let projection = MoveProjector::derive_with_observation(
         &record.spec,
         &manager_config,
@@ -2485,49 +4879,56 @@ fn projected_transaction_phase(
         Some(publisher.revision()?),
         &observation,
     )?;
+    record.complete_command_step(command_execution, render_step, None)?;
     let runtime_actions = reconciliation_actions(&record, desired_phase)?;
-
-    if dry_run {
-        if !args.skip_runtime
-            && let Some(first_action) = runtime_actions.first().copied()
-        {
-            let mut adapter = NativeAdapter::load(&record.config)?;
-            adapter.bind_projection(projection.clone())?;
-            preflight_workflow_action(&mut record, first_action, &mut adapter)?;
-        }
-        return print_json(&json!({
-            "dry_run": true,
-            "action": action,
-            "projection": projection,
-            "repository_path": format!("data/phase-projections/{}.json", record.id()),
-            "runtime_actions": runtime_actions,
-            "runtime": if args.skip_runtime { "skipped" } else { "planned" },
-            "transaction": record,
-        }));
-    }
-
-    let repository_publication =
-        publisher.publish(&projection, manager_config.controller_host()?)?;
+    store.save(&record)?;
+    let repository_publication = publish_projection_with_progress(
+        &publisher,
+        &projection,
+        manager_config.controller_host()?,
+        store,
+        &mut record,
+        Some(command_execution),
+        publication_mode,
+    )?;
     record.set_projection(projection.clone())?;
     store.save(&record)?;
     if args.skip_runtime {
-        return print_json(&json!({
+        return emit_result(&json!({
             "projection": projection,
             "repository": repository_publication,
             "runtime": "skipped",
             "transaction": record,
         }));
     }
-    let mut adapter = NativeAdapter::load(&record.config)?;
+    let mut adapter = load_execution_adapter(&record.config, &execution)?;
     adapter.bind_projection(projection.clone())?;
-    reconcile_projected_runtime(
+    let runtime_step = match lifecycle_command {
+        LifecycleCommand::Prepare => "runtime.reconcile-prepared",
+        LifecycleCommand::Run => "runtime.reconcile-target-active",
+        _ => unreachable!(),
+    };
+    record.start_command_step(command_execution, runtime_step)?;
+    store.save(&record)?;
+    if let Err(error) = reconcile_projected_runtime(
         store,
         &mut record,
         desired_phase,
         runtime_actions,
         &mut adapter,
-    )?;
-    print_json(&json!({
+    ) {
+        let terminal_failure = matches!(
+            validate_failed_workflow_jobs(store, &mut record, &mut adapter),
+            Ok(failed) if !failed.is_empty()
+        );
+        if terminal_failure {
+            record.fail_command_step(command_execution, runtime_step, format!("{error:#}"))?;
+            store.save(&record)?;
+        }
+        return Err(error);
+    }
+    complete_projected_command(store, &mut record, command_execution, lifecycle_command)?;
+    emit_result(&json!({
         "projection": record.projection,
         "repository": repository_publication,
         "runtime": "reconciled",
@@ -2535,13 +4936,146 @@ fn projected_transaction_phase(
     }))
 }
 
+fn should_auto_supersede_projected_action(action: Action, pending: Option<Action>) -> bool {
+    matches!(action, Action::Prepare | Action::Cutover) && pending == Some(action)
+}
+
+fn projected_command_steps(
+    command: LifecycleCommand,
+    mode: ProjectionPublicationMode,
+) -> Vec<&'static str> {
+    let (mut steps, runtime): (Vec<&'static str>, [&'static str; 3]) = match command {
+        LifecycleCommand::Prepare => (
+            vec![
+                "state.check-transition",
+                "authority.determine",
+                "repository.prepare-publication",
+                "projection.render-prepared",
+                "projection.validate",
+            ],
+            [
+                "runtime.reconcile-prepared",
+                "checkpoint.record",
+                "state.verify-prepared",
+            ],
+        ),
+        LifecycleCommand::Run => (
+            vec![
+                "state.check-prepared",
+                "checkpoint.verify",
+                "repository.prepare-publication",
+                "projection.render-target-active",
+                "projection.validate",
+            ],
+            [
+                "runtime.reconcile-target-active",
+                "state.record-run-success",
+                "state.verify-target-active",
+            ],
+        ),
+        _ => unreachable!("only prepare and run have projected command plans"),
+    };
+    steps.extend(projection_publication_steps(mode));
+    steps.extend(runtime);
+    steps
+}
+
+fn projected_command_prepublication_steps(command: LifecycleCommand) -> Vec<&'static str> {
+    projected_command_steps(command, ProjectionPublicationMode::Remote)
+        .into_iter()
+        .take(4)
+        .collect()
+}
+
+fn projected_command_published_steps(
+    command: LifecycleCommand,
+    mode: ProjectionPublicationMode,
+) -> Vec<&'static str> {
+    projected_command_prepublication_steps(command)
+        .into_iter()
+        .chain(["projection.validate"])
+        .chain(projection_publication_steps(mode))
+        .collect()
+}
+
+fn complete_projected_command(
+    store: &WorkflowStore,
+    record: &mut TransactionRecord,
+    execution: usize,
+    command: LifecycleCommand,
+) -> Result<()> {
+    let steps: &[&str] = match command {
+        LifecycleCommand::Prepare => &[
+            "runtime.reconcile-prepared",
+            "checkpoint.record",
+            "state.verify-prepared",
+        ],
+        LifecycleCommand::Run => &[
+            "runtime.reconcile-target-active",
+            "state.record-run-success",
+            "state.verify-target-active",
+        ],
+        _ => unreachable!("only prepare and run complete projected command plans"),
+    };
+    for step in steps {
+        record.start_command_step(execution, step)?;
+        record.complete_command_step(execution, step, None)?;
+    }
+    record.complete_command(execution)?;
+    store.save(record)
+}
+
+fn validate_canonical_closeout_supersedes_projection(
+    record: &TransactionRecord,
+    closeout: &CanonicalProjectionCloseout,
+    expected_projection_sha256: Option<&str>,
+) -> Result<()> {
+    let projection = record
+        .projection
+        .as_ref()
+        .context("canonical closeout has no retained journal projection to supersede")?;
+    if closeout.projection_sha256 != projection.projection_sha256 {
+        bail!(
+            "canonical closeout digest {} does not match retained journal projection {}",
+            closeout.projection_sha256,
+            projection.projection_sha256
+        );
+    }
+    if let Some(expected) = expected_projection_sha256
+        && closeout.projection_sha256 != expected
+    {
+        bail!(
+            "canonical closeout digest {} does not match deployed controller digest {expected}",
+            closeout.projection_sha256
+        );
+    }
+    let decision = record
+        .close_decision
+        .context("canonical closeout has no persisted journal decision")?;
+    let (expected_decision, expected_phase) = match decision {
+        CloseDecision::Complete => ("complete", MovePhase::Cutover),
+        CloseDecision::Rollback => ("rollback", MovePhase::RolledBack),
+    };
+    if closeout.decision != expected_decision {
+        bail!(
+            "canonical closeout decision {:?} does not match persisted journal decision {expected_decision:?}",
+            closeout.decision
+        );
+    }
+    if projection.move_phase()? != expected_phase {
+        bail!("canonical closeout does not match the retained terminal projection phase");
+    }
+    Ok(())
+}
+
 fn reconcile_projected_transaction(
     store: &WorkflowStore,
-    args: TransactionReconcileArgs,
+    args: ProjectedReconcileRequest,
     state_dir: &Path,
     execution: ProjectionExecution,
 ) -> Result<()> {
-    require_guard(&args.guard, "transaction reconcile")?;
+    let publication_mode = execution.mode;
+    require_guard(&args.guard, args.command_name)?;
     let mut record = store.load(&args.id)?;
     let desired_phase = record
         .projection
@@ -2555,7 +5089,7 @@ fn reconcile_projected_transaction(
             let action = record
                 .pending_action
                 .context("transaction has no pending action to supersede")?;
-            let mut adapter = NativeAdapter::load(&record.config)?;
+            let mut adapter = load_execution_adapter(&record.config, &execution)?;
             adapter.bind_projection(
                 record
                     .projection
@@ -2567,7 +5101,7 @@ fn reconcile_projected_transaction(
         } else {
             Vec::new()
         };
-        return print_json(&json!({
+        return emit_result(&json!({
             "dry_run": true,
             "desired_phase": desired_phase,
             "actions": actions,
@@ -2578,20 +5112,27 @@ fn reconcile_projected_transaction(
             "transaction": record,
         }));
     }
-    let source_repository = Repository::discover(execution.repo_root)?;
-    let publisher = ProjectionPublisher::prepare(
-        &source_repository,
-        store,
-        state_dir,
-        &execution.branch,
-        execution.git_program,
-        execution.nix_program,
-        execution.publish_git_ssh_command,
-    )?;
-    let published = publisher
-        .repository()
-        .load_phase_projection(record.id())?
-        .context("repository-backed transaction projection disappeared during refresh")?;
+    let source_repository = Repository::discover(execution.repo_root.clone())?;
+    let publisher = prepare_projection_publisher(&source_repository, store, state_dir, &execution)?;
+    let published = match publisher.repository().load_phase_projection(record.id())? {
+        Some(published) => published,
+        None => {
+            let closeout = publisher
+                .repository()
+                .load_projection_closeout(record.id())?
+                .context("repository-backed transaction projection disappeared during refresh")?;
+            validate_canonical_closeout_supersedes_projection(
+                &record,
+                &closeout,
+                args.expected_projection_sha256.as_deref(),
+            )?;
+            return emit_result(&json!({
+                "superseded_by_closeout": true,
+                "closeout": closeout,
+                "transaction": record,
+            }));
+        }
+    };
     if let Some(expected) = &args.expected_projection_sha256
         && published.projection_sha256 != *expected
     {
@@ -2615,7 +5156,7 @@ fn reconcile_projected_transaction(
         .context("transaction has no repository-backed desired projection")?
         .move_phase()?;
     let actions = reconciliation_actions(&record, desired_phase)?;
-    let mut adapter = NativeAdapter::load(&record.config)?;
+    let mut adapter = load_execution_adapter(&record.config, &execution)?;
     adapter.bind_projection(
         record
             .projection
@@ -2629,16 +5170,83 @@ fn reconcile_projected_transaction(
         preflight_workflow_action(&mut record, action, &mut adapter)?;
         let superseded = supersede_failed_workflow_jobs(store, &mut record, &mut adapter)?;
         for (old_job_id, new_job_id) in superseded {
-            eprintln!(
-                "transaction {} superseded terminal failed job {} with {}",
+            human_status(format!(
+                "Transaction {} · retrying failed job {} as {}",
                 record.id(),
                 old_job_id,
                 new_job_id
-            );
+            ));
         }
     }
+    let projected_command = match desired_phase {
+        MovePhase::Seeded => Some((LifecycleCommand::Move, LifecycleState::Moved)),
+        MovePhase::Prepared => Some((LifecycleCommand::Prepare, LifecycleState::Prepared)),
+        MovePhase::Cutover => Some((LifecycleCommand::Run, LifecycleState::TargetActive)),
+        MovePhase::RolledBack => None,
+    };
+    let command_execution = if let Some((command, state)) = projected_command {
+        let plan = match command {
+            LifecycleCommand::Move => move_command_steps(publication_mode),
+            LifecycleCommand::Prepare | LifecycleCommand::Run => {
+                projected_command_steps(command, publication_mode)
+            }
+            LifecycleCommand::Close => unreachable!(),
+        };
+        let execution = record.begin_command(command, state, None, plan)?;
+        let adopted_steps: Vec<&str> = match command {
+            LifecycleCommand::Move => move_command_steps(publication_mode)
+                .into_iter()
+                .take_while(|step| *step != "target.provision-or-adopt")
+                .collect(),
+            LifecycleCommand::Prepare | LifecycleCommand::Run => {
+                projected_command_published_steps(command, publication_mode)
+            }
+            LifecycleCommand::Close => unreachable!(),
+        };
+        for step in adopted_steps {
+            record.start_command_step(execution, step)?;
+            record.complete_command_step(
+                execution,
+                step,
+                Some(json!({
+                    "adopted": true,
+                    "projection_sha256": record.projection.as_ref().map(|value| &value.projection_sha256),
+                })),
+            )?;
+        }
+        store.save(&record)?;
+        Some((execution, command))
+    } else {
+        None
+    };
+    if let Some((execution, command)) = command_execution {
+        let runtime_step = match command {
+            LifecycleCommand::Move => "target.provision-or-adopt",
+            LifecycleCommand::Prepare => "runtime.reconcile-prepared",
+            LifecycleCommand::Run => "runtime.reconcile-target-active",
+            LifecycleCommand::Close => unreachable!(),
+        };
+        record.start_command_step(execution, runtime_step)?;
+        store.save(&record)?;
+    }
     reconcile_projected_runtime(store, &mut record, desired_phase, actions, &mut adapter)?;
-    print_json(&json!({
+    if let Some((execution, command)) = command_execution {
+        match command {
+            LifecycleCommand::Move => {
+                for step in move_command_runtime_steps() {
+                    record.start_command_step(execution, step)?;
+                    record.complete_command_step(execution, step, None)?;
+                }
+                record.complete_command(execution)?;
+                store.save(&record)?;
+            }
+            LifecycleCommand::Prepare | LifecycleCommand::Run => {
+                complete_projected_command(store, &mut record, execution, command)?;
+            }
+            LifecycleCommand::Close => unreachable!(),
+        }
+    }
+    emit_result(&json!({
         "desired_phase": desired_phase,
         "projection": record.projection,
         "runtime": "reconciled",
@@ -2952,11 +5560,16 @@ fn reconciliation_actions(
             }
         }
         WorkflowPhase::Prepared | WorkflowPhase::Verified => {
-            if target >= 3 {
+            if desired_phase == MovePhase::Prepared
+                && record.pending_action == Some(Action::Prepare)
+            {
+                actions.push(Action::Prepare);
+            } else if target >= 3 {
                 actions.push(Action::Cutover);
             }
         }
         WorkflowPhase::Cutover if target == 3 => {}
+        WorkflowPhase::Cutover if target == 2 => actions.push(Action::Prepare),
         WorkflowPhase::Cutover => bail!("repository desired phase is behind observed cutover"),
         WorkflowPhase::RolledBack => bail!("rolled-back transaction cannot reconcile forward"),
         WorkflowPhase::Closed => bail!("closed transaction cannot be reconciled"),
@@ -2980,6 +5593,16 @@ fn move_projection_observation(record: &TransactionRecord) -> MoveProjectionObse
             MoveItemObservation {
                 source_held: item.completed_steps.contains("prepare:hold-source"),
                 target_ever_started: item.target_ever_started,
+                source_activation_job_id: Some(deterministic_job_id(
+                    item,
+                    Action::Rollback,
+                    "activate-source",
+                )),
+                target_activation_job_id: Some(deterministic_job_id(
+                    item,
+                    Action::Cutover,
+                    "activate-target",
+                )),
             },
         );
     }
@@ -3030,9 +5653,9 @@ fn host_command(config: &HostManagerConfig, command: HostCommand) -> Result<()> 
                 .into_iter()
                 .map(|name| config.host_summary(name))
                 .collect::<Result<Vec<_>>>()?;
-            print_json(&summaries)
+            emit_result(&summaries)
         }
-        HostCommand::Show { host } => print_json(config.host(&host)?),
+        HostCommand::Show { host } => emit_result(config.host(&host)?),
         HostCommand::Exec { host, argv } => config.run_host_command_interactive(&host, &argv),
         HostCommand::Ssh(args) => config.open_ssh(&args.host, &args.args),
         HostCommand::Logs(args) => {
@@ -3216,11 +5839,8 @@ fn repository_generate(
             request.swap_size_mib = args.swap_size_mib;
             request
         });
-    if !args.guard.execute {
-        if !args.guard.dry_run {
-            bail!("host generation mutates the repository; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+    if args.guard.dry_run {
+        return emit_result(&json!({
             "dry_run": true,
             "operation": "host_generate",
             "repository": repository.root(),
@@ -3239,32 +5859,37 @@ fn repository_generate(
             "force": args.force,
         }));
     }
-    let change = if let Some(request) = physical_request {
-        let hardware_source = if let Some(path) = args.hardware_config {
-            fs::read_to_string(&path)
-                .with_context(|| format!("read hardware config {}", path.display()))?
+    let change = transient_step("Generate host declaration", || {
+        if let Some(request) = physical_request {
+            let hardware_source = if let Some(path) = args.hardware_config {
+                fs::read_to_string(&path)
+                    .with_context(|| format!("read hardware config {}", path.display()))?
+            } else {
+                NixosGenerateConfig::new(nixos_generate_config_program.to_path_buf())?
+                    .show_hardware_config(
+                        &Privilege::new(&programs.privilege)?,
+                        repository.root(),
+                    )?
+            };
+            let hardware = HardwareProjection::from_nixos_hardware_config(&hardware_source)?;
+            repository.generate_physical(
+                &args.host,
+                record,
+                request,
+                &hardware,
+                args.fresh_storage_ids,
+                args.force,
+            )
         } else {
-            NixosGenerateConfig::new(nixos_generate_config_program.to_path_buf())?
-                .show_hardware_config(&Privilege::new(&programs.privilege)?, repository.root())?
-        };
-        let hardware = HardwareProjection::from_nixos_hardware_config(&hardware_source)?;
-        repository.generate_physical(
-            &args.host,
-            record,
-            request,
-            &hardware,
-            args.fresh_storage_ids,
-            args.force,
-        )?
-    } else {
-        repository.generate(
-            &args.host,
-            record,
-            args.system_module.as_deref(),
-            args.force,
-        )?
-    };
-    print_json(&change)
+            repository.generate(
+                &args.host,
+                record,
+                args.system_module.as_deref(),
+                args.force,
+            )
+        }
+    })?;
+    emit_result(&change)
 }
 
 fn repository_build(
@@ -3273,11 +5898,8 @@ fn repository_build(
     args: HostBuildArgs,
 ) -> Result<()> {
     let repository = Repository::discover(repo_root)?;
-    if !args.guard.execute {
-        if !args.guard.dry_run {
-            bail!("host build writes the Nix store; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+    if args.guard.dry_run {
+        return emit_result(&json!({
             "dry_run": true,
             "operation": "host_build",
             "repository": repository.root(),
@@ -3285,7 +5907,10 @@ fn repository_build(
             "offline_cache": args.offline_cache,
         }));
     }
-    print_json(&repository.build_artifacts(programs, &args.host, args.offline_cache.as_deref())?)
+    let artifacts = transient_step("Build host system", || {
+        repository.build_artifacts(programs, &args.host, args.offline_cache.as_deref())
+    })?;
+    emit_result(&artifacts)
 }
 
 fn repository_install(
@@ -3294,11 +5919,8 @@ fn repository_install(
     args: HostInstallArgs,
 ) -> Result<()> {
     let repository = Repository::discover(repo_root)?;
-    if !args.guard.execute {
-        if !args.guard.dry_run {
-            bail!("live install is destructive; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+    if args.guard.dry_run {
+        return emit_result(&json!({
             "dry_run": true,
             "operation": "host_live_install",
             "repository": repository.root(),
@@ -3308,30 +5930,34 @@ fn repository_install(
             "wipe_disks": args.wipe_disks,
         }));
     }
-    let prepared = repository.prepare_live_install(
-        programs,
-        &args.host,
-        &args.root,
-        args.offline_cache.as_deref(),
-    )?;
-    repository.execute_prepared_install(programs, &prepared, args.wipe_disks)?;
-    print_json(&prepared)
+    let prepared = transient_step("Resolve exact offline installation", || {
+        repository.prepare_live_install(
+            programs,
+            &args.host,
+            &args.root,
+            args.offline_cache.as_deref(),
+        )
+    })?;
+    transient_step("Install prepared host system", || {
+        repository.execute_prepared_install(programs, &prepared, args.wipe_disks)
+    })?;
+    emit_result(&prepared)
 }
 
 fn repository_delete(repo_root: Option<PathBuf>, args: HostDeleteArgs) -> Result<()> {
     let repository = Repository::discover(repo_root)?;
-    if !args.guard.execute {
-        if !args.guard.dry_run {
-            bail!("host deletion mutates the repository; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+    if args.guard.dry_run {
+        return emit_result(&json!({
             "dry_run": true,
             "operation": "host_delete",
             "repository": repository.root(),
             "host": args.host,
         }));
     }
-    print_json(&repository.delete(&args.host)?)
+    let change = transient_step("Remove manager-owned host registration", || {
+        repository.delete(&args.host)
+    })?;
+    emit_result(&change)
 }
 
 fn host_gc(config: &HostManagerConfig, args: HostGcArgs) -> Result<()> {
@@ -3378,11 +6004,8 @@ fn fleet_agent_action(
         args.selection.group.as_deref(),
         args.selection.hosts.as_deref(),
     )?;
-    if !args.guard.execute {
-        if !args.guard.dry_run {
-            bail!("host {operation} is mutating; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+    if args.guard.dry_run {
+        return emit_result(&json!({
             "dry_run": true,
             "operation": operation,
             "hosts": hosts,
@@ -3396,6 +6019,10 @@ fn fleet_agent_action(
     let mut results = Vec::with_capacity(hosts.len());
     let mut failures = 0_usize;
     for batch in hosts.chunks(args.jobs) {
+        let batch_label = fleet_batch_label(operation, batch.len());
+        let batch_started = Instant::now();
+        command_reporter().started(batch_label.clone());
+        let failures_before = failures;
         let handles = batch
             .iter()
             .map(|host| {
@@ -3428,8 +6055,16 @@ fn fleet_agent_action(
                 }
             }
         }
+        if failures == failures_before {
+            command_reporter().completed(batch_label, batch_started.elapsed());
+        } else {
+            command_reporter().fail_active(
+                batch_label,
+                &format!("{} host operations failed", failures - failures_before),
+            );
+        }
     }
-    print_json(&json!({
+    emit_result(&json!({
         "ok": failures == 0,
         "operation": operation,
         "jobs": args.jobs,
@@ -3437,9 +6072,17 @@ fn fleet_agent_action(
         "results": results,
     }))?;
     if failures != 0 {
-        bail!("{operation} failed on {failures} host(s)");
+        return Err(RenderedCommandFailure.into());
     }
     Ok(())
+}
+
+fn fleet_batch_label(operation: &str, hosts: usize) -> String {
+    if operation == "reboot" {
+        format!("Submit reboot request to {hosts} hosts")
+    } else {
+        format!("Apply {operation} on {hosts} hosts")
+    }
 }
 
 fn safe_age(value: &str) -> bool {
@@ -3482,7 +6125,7 @@ fn service_command(
             let ResolvedServiceTarget::Resource { host, resource } = target else {
                 bail!("logical service wipe requires a declared host-agent resource");
             };
-            let adapter = NativeAdapter::from_config(config.clone());
+            let adapter = NativeAdapter::from_config(config.clone()).with_progress(true);
             return wipe_resource(
                 &adapter,
                 &host,
@@ -3511,13 +6154,22 @@ fn service_command(
         }
     };
     let target = resolve_logical_service(config, repo_root, nix_program, args)?;
+    let mutating = guard.is_some();
     if let Some(guard) = guard
         && direct_mutation_guard("service", operation, &target, &guard)?
     {
         return Ok(());
     }
     let agent_args = service_agent_args(operation, target, true)?;
-    print_json(&config.run_agent(&agent_args[0], &agent_args[1..])?)
+    let result = if mutating {
+        transient_step(
+            format!("{} logical service", operation_title(operation)),
+            || config.run_agent(&agent_args[0], &agent_args[1..]),
+        )?
+    } else {
+        config.run_agent(&agent_args[0], &agent_args[1..])?
+    };
+    emit_result(&result)
 }
 
 fn unit_command(config: &HostManagerConfig, command: UnitCommand) -> Result<()> {
@@ -3539,13 +6191,22 @@ fn unit_command(config: &HostManagerConfig, command: UnitCommand) -> Result<()> 
         UnitCommand::Logs(_) => unreachable!(),
     };
     let target = resolve_unit(args)?;
+    let mutating = guard.is_some();
     if let Some(guard) = guard
         && direct_mutation_guard("unit", operation, &target, &guard)?
     {
         return Ok(());
     }
     let agent_args = service_agent_args(operation, target, true)?;
-    print_json(&config.run_agent(&agent_args[0], &agent_args[1..])?)
+    let result = if mutating {
+        transient_step(
+            format!("{} systemd unit", operation_title(operation)),
+            || config.run_agent(&agent_args[0], &agent_args[1..]),
+        )?
+    } else {
+        config.run_agent(&agent_args[0], &agent_args[1..])?
+    };
+    emit_result(&result)
 }
 
 fn direct_mutation_guard(
@@ -3554,17 +6215,14 @@ fn direct_mutation_guard(
     target: &ResolvedServiceTarget,
     guard: &ExecutionGuard,
 ) -> Result<bool> {
-    if guard.execute {
+    if !guard.dry_run {
         return Ok(false);
     }
-    if !guard.dry_run {
-        bail!("{kind} {operation} is mutating; pass --execute or --dry-run");
-    }
-    print_json(&json!({
+    emit_result(&json!({
         "dry_run": true,
         "kind": kind,
         "operation": operation,
-        "target": format!("{target:?}"),
+        "target": resolved_target_value(target),
     }))?;
     Ok(true)
 }
@@ -3581,6 +6239,28 @@ enum ResolvedServiceTarget {
         host: String,
         resource: String,
     },
+}
+
+fn resolved_target_value(target: &ResolvedServiceTarget) -> Value {
+    match target {
+        ResolvedServiceTarget::Unit {
+            host,
+            unit,
+            scope,
+            user,
+        } => json!({
+            "kind": "unit",
+            "host": host,
+            "unit": unit,
+            "scope": scope.as_str(),
+            "user": user,
+        }),
+        ResolvedServiceTarget::Resource { host, resource } => json!({
+            "kind": "resource",
+            "host": host,
+            "resource": resource,
+        }),
+    }
 }
 
 fn resolve_logical_service(
@@ -3725,13 +6405,11 @@ fn resource_command(adapter: &NativeAdapter, command: ResourceCommand) -> Result
         | ResourceCommand::Hold { .. }
         | ResourceCommand::Activate(_) => unreachable!(),
     };
+    let mutating = guard.is_some();
     if let Some(guard) = guard
-        && !guard.execute
+        && guard.dry_run
     {
-        if !guard.dry_run {
-            bail!("resource {operation} is mutating; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+        return emit_result(&json!({
             "dry_run": true,
             "kind": "resource",
             "operation": operation,
@@ -3739,16 +6417,35 @@ fn resource_command(adapter: &NativeAdapter, command: ResourceCommand) -> Result
             "resource": args.resource,
         }));
     }
-    print_json(&config.run_agent(
-        &args.host,
-        &[
-            "--json".to_owned(),
-            "resource".to_owned(),
-            operation.to_owned(),
-            "--resource".to_owned(),
-            args.resource,
-        ],
-    )?)
+    let run = || {
+        config.run_agent(
+            &args.host,
+            &[
+                "--json".to_owned(),
+                "resource".to_owned(),
+                operation.to_owned(),
+                "--resource".to_owned(),
+                args.resource,
+            ],
+        )
+    };
+    let result = if mutating {
+        transient_step(
+            format!("{} declared resource", operation_title(operation)),
+            run,
+        )?
+    } else {
+        run()?
+    };
+    emit_result(&result)
+}
+
+fn operation_title(operation: &str) -> String {
+    let mut characters = operation.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => String::new(),
+    }
 }
 
 fn wipe_resource(
@@ -3763,11 +6460,8 @@ fn wipe_resource(
     let wipe = wipe_id(caller_id)?;
     let owner = hold_owner.map_or_else(|| wipe.clone(), str::to_owned);
     abird_host_manager::workflow::validate_workflow_id(&owner)?;
-    if !guard.execute {
-        if !guard.dry_run {
-            bail!("service data wipe is mutating; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+    if guard.dry_run {
+        return emit_result(&json!({
             "dry_run": true,
             "operation": "wipe-and-remain-held",
             "host": host,
@@ -3778,35 +6472,40 @@ fn wipe_resource(
         }));
     }
 
-    eprintln!("wipe {wipe} selected; acquiring durable hold owned by {owner}");
-    adapter.run_profile_job(
-        host,
-        &format!("{wipe}-hold"),
-        &owner,
-        resource,
-        &["--operation".to_owned(), "hold".to_owned()],
-    )?;
-    adapter.run_profile_job(
-        host,
-        &format!("{wipe}-inactive"),
-        &owner,
-        resource,
-        &[
-            "--operation".to_owned(),
-            "status".to_owned(),
-            "--expect".to_owned(),
-            "inactive".to_owned(),
-        ],
-    )?;
+    transient_step("Acquire durable resource hold", || {
+        adapter.run_profile_job(
+            host,
+            &format!("{wipe}-hold"),
+            &owner,
+            resource,
+            &["--operation".to_owned(), "hold".to_owned()],
+        )
+    })?;
+    transient_step("Verify every declared writer is inactive", || {
+        adapter.run_profile_job(
+            host,
+            &format!("{wipe}-inactive"),
+            &owner,
+            resource,
+            &[
+                "--operation".to_owned(),
+                "status".to_owned(),
+                "--expect".to_owned(),
+                "inactive".to_owned(),
+            ],
+        )
+    })?;
     let job_id = format!("{wipe}-wipe");
-    let job = adapter.run_profile_job_result(
-        host,
-        &job_id,
-        &owner,
-        resource,
-        &["--operation".to_owned(), "wipe-data".to_owned()],
-    )?;
-    print_json(&json!({
+    let job = transient_step("Clear declared data and retain hold", || {
+        adapter.run_profile_job_result(
+            host,
+            &job_id,
+            &owner,
+            resource,
+            &["--operation".to_owned(), "wipe-data".to_owned()],
+        )
+    })?;
+    emit_result(&json!({
         "ok": true,
         "operation": "wipe-and-remain-held",
         "host": host,
@@ -3825,11 +6524,8 @@ fn durable_resource_action_with_config(
     operation: &str,
 ) -> Result<()> {
     config.host(&args.resource.host)?;
-    if !args.guard.execute {
-        if !args.guard.dry_run {
-            bail!("resource {operation} is mutating; pass --execute or --dry-run");
-        }
-        return print_json(&json!({
+    if args.guard.dry_run {
+        return emit_result(&json!({
             "dry_run": true,
             "host": args.resource.host,
             "resource": args.resource.resource,
@@ -3837,7 +6533,7 @@ fn durable_resource_action_with_config(
             "operation": operation,
         }));
     }
-    let adapter = NativeAdapter::from_config(config.clone());
+    let adapter = NativeAdapter::from_config(config.clone()).with_progress(true);
     let digest = digest_bytes(
         format!(
             "{}\0{}\0{}\0{}",
@@ -3845,14 +6541,23 @@ fn durable_resource_action_with_config(
         )
         .as_bytes(),
     );
-    adapter.run_profile_job(
-        &args.resource.host,
-        &format!("resource-{operation}-{}", &digest[..24]),
-        &args.transaction,
-        &args.resource.resource,
-        &["--operation".to_owned(), operation.to_owned()],
+    transient_step(
+        match operation {
+            "hold" => "Acquire durable resource hold",
+            "activate" => "Release hold and activate resource",
+            _ => "Apply durable resource action",
+        },
+        || {
+            adapter.run_profile_job(
+                &args.resource.host,
+                &format!("resource-{operation}-{}", &digest[..24]),
+                &args.transaction,
+                &args.resource.resource,
+                &["--operation".to_owned(), operation.to_owned()],
+            )
+        },
     )?;
-    print_json(&json!({
+    emit_result(&json!({
         "ok": true,
         "host": args.resource.host,
         "resource": args.resource.resource,
@@ -3862,14 +6567,14 @@ fn durable_resource_action_with_config(
 }
 
 fn hold_list(config: &HostManagerConfig, host: String) -> Result<()> {
-    print_json(&config.run_agent(
+    emit_result(&config.run_agent(
         &host,
         &["--json".to_owned(), "hold".to_owned(), "list".to_owned()],
     )?)
 }
 
 fn hold_show(config: &HostManagerConfig, resource: ResourceArgs) -> Result<()> {
-    print_json(&config.run_agent(
+    emit_result(&config.run_agent(
         &resource.host,
         &[
             "--json".to_owned(),
@@ -3888,17 +6593,20 @@ fn backup_command(
     command: BackupCommand,
 ) -> Result<()> {
     match command {
-        BackupCommand::Show { id } => print_json(&BackupStore::open(state_dir)?.load(&id)?),
-        BackupCommand::List => print_json(&BackupStore::open(state_dir)?.list()?),
+        BackupCommand::Show { id } => emit_result(&BackupStore::read_only(state_dir).load(&id)?),
+        BackupCommand::List => emit_result(&BackupStore::read_only(state_dir).list()?),
         BackupCommand::Verify { id } => {
-            let record = BackupStore::open(state_dir)?.load(&id)?;
-            record.verify_evidence()?;
+            let record = BackupStore::read_only(state_dir).load(&id)?;
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let adapter = NativeAdapter::load(&config)?;
-            for index in 0..record.copies.len() {
-                validate_backup_artifact(&adapter, &record, index, true)?;
-            }
-            print_json(&json!({
+            transient_step("Verify retained evidence and live backup artifacts", || {
+                record.verify_evidence()?;
+                for index in 0..record.copies.len() {
+                    validate_backup_artifact(&adapter, &record, index, true)?;
+                }
+                Ok(())
+            })?;
+            emit_result(&json!({
                 "ok": true,
                 "backup": record,
                 "verification": "persisted_evidence_and_live_artifacts_complete",
@@ -3911,26 +6619,27 @@ fn backup_command(
                 backup_spec_from_args(args.spec.as_deref(), args.id.as_deref(), args.resource)?;
             let mut record = BackupRecord::new(spec)?;
             if args.dry_run {
-                return print_json(&json!({
+                return emit_result(&json!({
                     "dry_run": true,
                     "backup": record,
                 }));
             }
             ensure_backup_execution_supported(&record.spec)?;
-            let store = BackupStore::open(state_dir)?;
+            let store = backup_store(state_dir, false)?;
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let adapter = NativeAdapter::load(&config)?;
             store.create(&record)?;
-            eprintln!("backup {} persisted; beginning copy", record.id());
-            execute_backup_record(&store, &mut record, &adapter)?;
-            print_json(&record)
+            transient_step("Copy and verify backup artifacts", || {
+                execute_backup_record(&store, &mut record, &adapter)
+            })?;
+            emit_result(&record)
         }
         BackupCommand::Resume(args) => {
             require_guard(&args.guard, "backup resume")?;
-            let store = BackupStore::open(state_dir)?;
+            let store = backup_store(state_dir, args.guard.dry_run)?;
             let mut record = store.load(&args.id)?;
             if args.guard.dry_run {
-                return print_json(&json!({
+                return emit_result(&json!({
                     "dry_run": true,
                     "backup": record,
                     "pending_copies": record.copies.iter().filter(|copy| copy.status != abird_host_manager::backup_runtime::BackupCopyStatus::Complete).count(),
@@ -3939,41 +6648,45 @@ fn backup_command(
             ensure_backup_execution_supported(&record.spec)?;
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let adapter = NativeAdapter::load(&config)?;
-            match record.restore.as_ref().map(|restore| restore.phase) {
-                Some(RestorePhase::Holding | RestorePhase::Restoring) => {
-                    execute_backup_restore(&store, &mut record, &adapter)?;
+            transient_step("Resume pending backup work", || {
+                match record.restore.as_ref().map(|restore| restore.phase) {
+                    Some(RestorePhase::Holding | RestorePhase::Restoring) => {
+                        execute_backup_restore(&store, &mut record, &adapter)
+                    }
+                    Some(RestorePhase::RollingBack) => {
+                        execute_backup_restore_rollback(&store, &mut record, &adapter)
+                    }
+                    Some(RestorePhase::RestoredHeld) => {
+                        bail!(
+                            "restore is complete and held; use backup activate or backup rollback"
+                        )
+                    }
+                    Some(RestorePhase::RolledBackHeld) => {
+                        bail!("restore rollback is complete and held; use backup activate")
+                    }
+                    Some(RestorePhase::Activated) => {
+                        bail!("backup restore has no pending operation")
+                    }
+                    _ if record.copies.iter().any(|copy| {
+                        matches!(
+                            copy.deletion.status,
+                            ArtifactDeletionStatus::Running | ArtifactDeletionStatus::Failed
+                        )
+                    }) =>
+                    {
+                        delete_backup_artifacts(&store, &mut record, &adapter)
+                    }
+                    _ => execute_backup_record(&store, &mut record, &adapter),
                 }
-                Some(RestorePhase::RollingBack) => {
-                    execute_backup_restore_rollback(&store, &mut record, &adapter)?;
-                }
-                Some(RestorePhase::RestoredHeld) => {
-                    bail!("restore is complete and held; use backup activate or backup rollback")
-                }
-                Some(RestorePhase::RolledBackHeld) => {
-                    bail!("restore rollback is complete and held; use backup activate")
-                }
-                Some(RestorePhase::Activated) => {
-                    bail!("backup restore has no pending operation")
-                }
-                _ if record.copies.iter().any(|copy| {
-                    matches!(
-                        copy.deletion.status,
-                        ArtifactDeletionStatus::Running | ArtifactDeletionStatus::Failed
-                    )
-                }) =>
-                {
-                    delete_backup_artifacts(&store, &mut record, &adapter)?
-                }
-                _ => execute_backup_record(&store, &mut record, &adapter)?,
-            }
-            print_json(&record)
+            })?;
+            emit_result(&record)
         }
         BackupCommand::Abort(args) => {
             require_guard(&args.guard, "backup abort")?;
-            let store = BackupStore::open(state_dir)?;
+            let store = backup_store(state_dir, args.guard.dry_run)?;
             let mut record = store.load(&args.id)?;
             if args.guard.dry_run {
-                return print_json(&json!({
+                return emit_result(&json!({
                     "dry_run": true,
                     "backup": record,
                     "operation": "restore-held-sources-and-abort",
@@ -3981,20 +6694,22 @@ fn backup_command(
             }
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let adapter = NativeAdapter::load(&config)?;
-            restore_backup_holds(&store, &mut record, &adapter)?;
-            record.abort()?;
-            store.save(&record)?;
-            print_json(&record)
+            transient_step("Restore source holds and abort backup", || {
+                restore_backup_holds(&store, &mut record, &adapter)?;
+                record.abort()?;
+                store.save(&record)
+            })?;
+            emit_result(&record)
         }
         BackupCommand::Restore(args) => {
             require_guard(&args.guard, "backup restore")?;
-            let store = BackupStore::open(state_dir)?;
+            let store = backup_store(state_dir, args.guard.dry_run)?;
             let mut record = store.load(&args.id)?;
             let destination = parse_backup_destination(&args.source);
             record.begin_restore(destination)?;
             store.ensure_authority_available(&record)?;
             if args.guard.dry_run {
-                return print_json(&json!({
+                return emit_result(&json!({
                     "dry_run": true,
                     "backup": record,
                     "operation": "restore-and-remain-held",
@@ -4004,16 +6719,18 @@ fn backup_command(
             store.save(&record)?;
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let adapter = NativeAdapter::load(&config)?;
-            execute_backup_restore(&store, &mut record, &adapter)?;
-            print_json(&record)
+            transient_step("Restore exact backup and retain resource holds", || {
+                execute_backup_restore(&store, &mut record, &adapter)
+            })?;
+            emit_result(&record)
         }
         BackupCommand::Rollback(args) => {
             require_guard(&args.guard, "backup rollback")?;
-            let store = BackupStore::open(state_dir)?;
+            let store = backup_store(state_dir, args.guard.dry_run)?;
             let mut record = store.load(&args.id)?;
             record.ensure_restore_rollbackable()?;
             if args.guard.dry_run {
-                return print_json(&json!({
+                return emit_result(&json!({
                     "dry_run": true,
                     "backup": record,
                     "operation": "restore-pre-restore-safety-snapshots-and-remain-held",
@@ -4021,16 +6738,18 @@ fn backup_command(
             }
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let adapter = NativeAdapter::load(&config)?;
-            execute_backup_restore_rollback(&store, &mut record, &adapter)?;
-            print_json(&record)
+            transient_step("Restore pre-restore safety snapshots", || {
+                execute_backup_restore_rollback(&store, &mut record, &adapter)
+            })?;
+            emit_result(&record)
         }
         BackupCommand::Activate(args) => {
             require_guard(&args.guard, "backup activate")?;
-            let store = BackupStore::open(state_dir)?;
+            let store = backup_store(state_dir, args.guard.dry_run)?;
             let mut record = store.load(&args.id)?;
             record.ensure_restore_activatable()?;
             if args.guard.dry_run {
-                return print_json(&json!({
+                return emit_result(&json!({
                     "dry_run": true,
                     "backup": record,
                     "operation": "release-restore-holds-and-restore-prior-writers",
@@ -4038,16 +6757,18 @@ fn backup_command(
             }
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let adapter = NativeAdapter::load(&config)?;
-            activate_backup_restore(&store, &mut record, &adapter)?;
-            print_json(&record)
+            transient_step("Release restore holds and restore prior writers", || {
+                activate_backup_restore(&store, &mut record, &adapter)
+            })?;
+            emit_result(&record)
         }
         BackupCommand::Delete(args) => {
             require_guard(&args.guard, "backup delete")?;
-            let store = BackupStore::open(state_dir)?;
+            let store = backup_store(state_dir, args.guard.dry_run)?;
             let mut record = store.load(&args.id)?;
             record.ensure_artifacts_deletable()?;
             if args.guard.dry_run {
-                return print_json(&json!({
+                return emit_result(&json!({
                     "dry_run": true,
                     "backup": record,
                     "operation": "delete-artifacts-and-retain-tombstone",
@@ -4055,13 +6776,23 @@ fn backup_command(
             }
             let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
             let adapter = NativeAdapter::load(&config)?;
-            delete_backup_artifacts(&store, &mut record, &adapter)?;
-            print_json(&record)
+            transient_step("Delete backup artifacts and retain tombstone", || {
+                delete_backup_artifacts(&store, &mut record, &adapter)
+            })?;
+            emit_result(&record)
         }
         BackupCommand::Prune(args) => {
             require_guard(&args.guard, "backup prune")?;
             prune_backups(state_dir, config, repo_root, args)
         }
+    }
+}
+
+fn backup_store(state_dir: PathBuf, read_only: bool) -> Result<BackupStore> {
+    if read_only {
+        Ok(BackupStore::read_only(state_dir))
+    } else {
+        BackupStore::open(state_dir)
     }
 }
 
@@ -4922,7 +7653,7 @@ fn prune_backups(
     repo_root: Option<PathBuf>,
     args: BackupPruneArgs,
 ) -> Result<()> {
-    let store = BackupStore::open(state_dir)?;
+    let store = backup_store(state_dir, args.guard.dry_run)?;
     let records = store.list()?;
     let age_ms = args.older_than.as_millis();
     let now_ms = std::time::SystemTime::now()
@@ -4965,7 +7696,7 @@ fn prune_backups(
     }
     selected.sort();
     if args.guard.dry_run {
-        return print_json(&json!({
+        return emit_result(&json!({
             "dry_run": true,
             "older_than_ms": age_ms,
             "keep_last_per_equivalent_set": args.keep_last,
@@ -4973,18 +7704,21 @@ fn prune_backups(
         }));
     }
     if selected.is_empty() {
-        return print_json(&json!({
+        return emit_result(&json!({
             "ok": true,
             "deleted": [],
         }));
     }
     let config = resolve_config(config.as_deref(), repo_root.as_deref())?;
     let adapter = NativeAdapter::load(&config)?;
-    for id in &selected {
-        let mut record = store.load(id)?;
-        delete_backup_artifacts(&store, &mut record, &adapter)?;
-    }
-    print_json(&json!({
+    transient_step("Delete selected backup artifacts", || {
+        for id in &selected {
+            let mut record = store.load(id)?;
+            delete_backup_artifacts(&store, &mut record, &adapter)?;
+        }
+        Ok(())
+    })?;
+    emit_result(&json!({
         "ok": true,
         "deleted": selected,
     }))
@@ -5446,14 +8180,14 @@ fn backup_from_to(
                     delete: true,
                     fallback_copy: true,
                 };
+                let transfer_started = Instant::now();
                 transfer_with_excludes_progress(&definition, &root.excludes, |progress| {
-                    if io::stderr().is_terminal() {
-                        eprintln!(
-                            "[controller backup {}] {}",
-                            root.name,
-                            serde_json::to_string(progress)?
-                        );
-                    }
+                    let progress = serde_json::to_value(progress)?;
+                    command_reporter().detail(format!(
+                        "{} · {}",
+                        root.name,
+                        format_job_progress(&progress, transfer_started.elapsed())
+                    ));
                     Ok(())
                 })
             })
@@ -5714,21 +8448,17 @@ fn require_controller_backup_privileges() -> Result<()> {
 }
 
 fn should_dry_run(action: Action, guard: &ExecutionGuard) -> Result<bool> {
-    if action.is_mutating() && !guard.execute {
-        if !guard.dry_run {
-            bail!(
-                "{} is mutating; pass --execute or --dry-run",
-                action.as_str()
-            );
-        }
-        return Ok(true);
+    let _ = action;
+    if guard.execute {
+        terminal_warning("warning: --execute is deprecated; mutating commands execute by default");
     }
     Ok(guard.dry_run)
 }
 
 fn require_guard(guard: &ExecutionGuard, operation: &str) -> Result<()> {
-    if !guard.execute && !guard.dry_run {
-        bail!("{operation} is mutating; pass --execute or --dry-run");
+    let _ = operation;
+    if guard.execute {
+        terminal_warning("warning: --execute is deprecated; mutating commands execute by default");
     }
     Ok(())
 }
@@ -5757,9 +8487,53 @@ fn read_json_document<T: serde::de::DeserializeOwned>(source: &str, label: &str)
     serde_json::from_slice(&bytes).with_context(|| format!("parse {label} as JSON"))
 }
 
-fn print_json(value: &impl Serialize) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+fn emit_result(value: &impl Serialize) -> Result<()> {
+    let value = serde_json::to_value(value)?;
+    if json_output() {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        let fallback = inspect_presentation("Result");
+        let presentation = COMMAND_PRESENTATION.get().unwrap_or(&fallback);
+        let rendered = render_presentation(presentation, &value);
+        print!(
+            "{}",
+            TerminalStyle::for_stdout().semantic_document(&rendered)
+        );
+    }
     Ok(())
+}
+
+fn human_status(message: impl std::fmt::Display) {
+    if !json_output() {
+        command_reporter().message(message);
+    }
+}
+
+fn terminal_warning(message: &str) {
+    eprintln!(
+        "{}",
+        TerminalStyle::for_stderr().paint(Tone::Warning, message)
+    );
+}
+
+fn transient_step<T>(
+    description: impl Into<String>,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let description = description.into();
+    let started = Instant::now();
+    command_reporter().started(description.clone());
+    match operation() {
+        Ok(value) => {
+            command_reporter().completed(description, started.elapsed());
+            Ok(value)
+        }
+        Err(error) if json_output() => Err(error),
+        Err(error) => {
+            command_reporter().fail_active(description, &format!("{error:#}"));
+            Err(RenderedCommandFailure.into())
+        }
+    }
 }
 
 fn resolve_config(config: Option<&Path>, repo_root: Option<&Path>) -> Result<PathBuf> {
@@ -5824,6 +8598,24 @@ fn select_local_run(cli: &mut Cli) -> Result<()> {
     Ok(())
 }
 
+fn select_local_mode(cli: &mut Cli) -> Result<()> {
+    if !cli.local {
+        return Ok(());
+    }
+    let repository = Repository::discover(cli.repo_root.clone())?;
+    cli.controller = Some("local".to_owned());
+    cli.state_dir = Some(
+        repository
+            .root()
+            .join(".agents")
+            .join("runs")
+            .join("local")
+            .join("host-manager"),
+    );
+    cli.publish_git_ssh_command = None;
+    Ok(())
+}
+
 fn validate_local_run_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.len() > 128
@@ -5866,6 +8658,372 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    fn parsed_presentation(arguments: &[&str]) -> CommandPresentation {
+        let mut argv = vec!["abird-host-manager"];
+        argv.extend_from_slice(arguments);
+        let cli = Cli::try_parse_from(argv).unwrap();
+        command_presentation(&cli.command)
+    }
+
+    fn remote_test_execution() -> ProjectionExecution {
+        ProjectionExecution {
+            repo_root: None,
+            git_program: PathBuf::from("git"),
+            nix_program: PathBuf::from("nix"),
+            branch: "master".to_owned(),
+            publish_git_ssh_command: None,
+            mode: ProjectionPublicationMode::Remote,
+        }
+    }
+
+    #[test]
+    fn closeout_deploy_flags_choose_noninteractive_modes() {
+        assert_eq!(
+            select_closeout_deploy_mode(true, false, "0123456789abcdef", false).unwrap(),
+            CloseoutDeployMode::Managed
+        );
+        assert_eq!(
+            select_closeout_deploy_mode(false, true, "0123456789abcdef", false).unwrap(),
+            CloseoutDeployMode::Manual
+        );
+    }
+
+    #[test]
+    fn local_mode_uses_an_isolated_local_controller_journal() {
+        let temp = tempfile::tempdir().unwrap();
+        for directory in ["pkgs", "hosts", "data/secrets"] {
+            fs::create_dir_all(temp.path().join(directory)).unwrap();
+        }
+        for file in [
+            "flake.nix",
+            "pkgs/manifest.nix",
+            "hosts/default.nix",
+            "hosts/nixbot.nix",
+            "data/secrets/default.nix",
+        ] {
+            fs::write(temp.path().join(file), "{}\n").unwrap();
+        }
+        let mut cli = Cli::try_parse_from([
+            "abird-host-manager",
+            "--repo-root",
+            temp.path().to_str().unwrap(),
+            "transaction",
+            "list",
+            "--local",
+        ])
+        .unwrap();
+
+        select_local_mode(&mut cli).unwrap();
+        assert_eq!(cli.controller.as_deref(), Some("local"));
+        assert_eq!(
+            cli.state_dir,
+            Some(temp.path().join(".agents/runs/local/host-manager"))
+        );
+        assert!(!should_dispatch_to_controller(&cli));
+    }
+
+    #[test]
+    fn local_command_plans_never_claim_a_git_push() {
+        for steps in [
+            move_command_steps(ProjectionPublicationMode::Local),
+            projected_command_steps(LifecycleCommand::Prepare, ProjectionPublicationMode::Local),
+            close_command_steps(ProjectionPublicationMode::Local),
+        ] {
+            assert!(steps.iter().any(|step| step.contains("retain-local")));
+            assert!(!steps.iter().any(|step| step.contains("push")));
+            assert!(!steps.iter().any(|step| step.contains("remote")));
+        }
+    }
+
+    #[test]
+    fn repeated_prepare_and_run_supersede_only_their_terminal_failed_attempts() {
+        assert!(should_auto_supersede_projected_action(
+            Action::Prepare,
+            Some(Action::Prepare)
+        ));
+        assert!(should_auto_supersede_projected_action(
+            Action::Cutover,
+            Some(Action::Cutover)
+        ));
+        assert!(!should_auto_supersede_projected_action(
+            Action::Prepare,
+            Some(Action::Cutover)
+        ));
+        assert!(!should_auto_supersede_projected_action(
+            Action::Close,
+            Some(Action::Close)
+        ));
+    }
+
+    #[test]
+    fn lifecycle_headings_report_achieved_state_without_claiming_early_cutover() {
+        for (arguments, expected) in [
+            (
+                vec!["service", "move", "zulip", "--from", "a", "--to", "b"],
+                "Initialized migration for service zulip",
+            ),
+            (
+                vec![
+                    "resource",
+                    "move",
+                    "service:zulip",
+                    "--from",
+                    "a",
+                    "--to",
+                    "b",
+                ],
+                "Initialized migration for resource service:zulip",
+            ),
+            (
+                vec!["host", "move", "--from", "a", "--to", "b"],
+                "Initialized migration for host a",
+            ),
+            (
+                vec!["transaction", "prepare", "move-zulip"],
+                "Prepared checkpoint for move-zulip",
+            ),
+            (
+                vec!["transaction", "run", "move-zulip"],
+                "Moved traffic to target for move-zulip",
+            ),
+            (
+                vec!["transaction", "close", "move-zulip"],
+                "Closed migration move-zulip",
+            ),
+        ] {
+            let presentation = parsed_presentation(&arguments);
+            assert_eq!(presentation.completed_heading, expected);
+        }
+    }
+
+    #[test]
+    fn every_lifecycle_publication_plan_exposes_repository_work_in_execution_order() {
+        for mode in [
+            ProjectionPublicationMode::Remote,
+            ProjectionPublicationMode::Local,
+        ] {
+            for steps in [
+                move_command_steps(mode),
+                projected_command_steps(LifecycleCommand::Prepare, mode),
+                projected_command_steps(LifecycleCommand::Run, mode),
+                close_command_steps(mode),
+            ] {
+                let prepare = steps
+                    .iter()
+                    .position(|step| *step == "repository.prepare-publication")
+                    .unwrap();
+                let commit = steps
+                    .iter()
+                    .position(|step| step.starts_with("git.commit"))
+                    .unwrap();
+                assert!(prepare < commit, "invalid publication plan: {steps:?}");
+                assert!(
+                    steps[prepare + 1..commit]
+                        .iter()
+                        .any(|step| step.contains("validate")),
+                    "publication plan validates no staged state: {steps:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn manual_closeout_handoff_renders_the_exact_bounded_deploy() {
+        let request = abird_host_agent::deployment::NixbotDeployRequest {
+            host: "abird-ci".to_owned(),
+            revision: Some("0123456789abcdef".to_owned()),
+            nix_config: Some("abird-ci-closeout".to_owned()),
+            exclude_hosts: vec!["gap3-gondor".to_owned()],
+        };
+        assert_eq!(
+            render_manual_nixbot_deploy_command(&request).unwrap(),
+            "nix run .#nixbot -- deploy \\\n    --sha 0123456789abcdef \\\n    --hosts abird-ci,-gap3-gondor \\\n    --nix-config abird-ci-closeout \\\n    --build-plan-jobs 1 \\\n    --build-jobs 1 \\\n    --deploy-jobs 1 \\\n    --verify-jobs 1 \\\n    --no-rollback"
+        );
+    }
+
+    #[test]
+    fn every_public_command_family_has_an_explicit_output_contract() {
+        let structured = [
+            vec![
+                "instance",
+                "move",
+                "guest",
+                "--from-controller",
+                "a",
+                "--to-controller",
+                "b",
+            ],
+            vec!["transaction", "create", "--spec", "/tmp/spec.json", "--dry"],
+            vec!["transaction", "show", "move-1"],
+            vec!["transaction", "list"],
+            vec!["transaction", "prepare", "move-1", "--dry"],
+            vec!["transaction", "run", "move-1", "--dry"],
+            vec!["transaction", "resume", "move-1", "--dry"],
+            vec!["transaction", "close", "move-1", "--dry"],
+            vec!["host", "list"],
+            vec!["host", "show", "target"],
+            vec!["host", "move", "--from", "a", "--to", "b", "--dry"],
+            vec!["host", "holds", "target"],
+            vec!["host", "drain", "target", "--owner", "maintenance", "--dry"],
+            vec![
+                "host",
+                "activate",
+                "target",
+                "--owner",
+                "maintenance",
+                "--dry",
+            ],
+            vec!["host", "reboot", "--hosts", "target", "--dry"],
+            vec!["host", "gc", "--hosts", "target", "--dry"],
+            vec!["host", "clean", "--hosts", "target", "--dry"],
+            vec!["host", "create", "external", "external", "--dry"],
+            vec![
+                "host",
+                "create",
+                "incus",
+                "guest",
+                "--incus-parent",
+                "parent",
+                "--incus-ipv4",
+                "10.0.0.2",
+                "--dry",
+            ],
+            vec![
+                "host",
+                "create",
+                "physical",
+                "physical",
+                "--disk",
+                "/dev/example",
+                "--dry",
+            ],
+            vec!["host", "build", "target", "--dry"],
+            vec!["host", "install", "target", "--dry"],
+            vec!["host", "delete", "target", "--dry"],
+            vec![
+                "service", "move", "mail", "--from", "a", "--to", "b", "--dry",
+            ],
+            vec!["service", "start", "mail", "--dry"],
+            vec!["service", "stop", "mail", "--dry"],
+            vec!["service", "restart", "mail", "--dry"],
+            vec!["service", "reload", "mail", "--dry"],
+            vec!["service", "wipe", "mail", "--host", "target", "--dry"],
+            vec!["service", "status", "mail"],
+            vec!["unit", "start", "target", "mail.service", "--dry"],
+            vec!["unit", "stop", "target", "mail.service", "--dry"],
+            vec!["unit", "restart", "target", "mail.service", "--dry"],
+            vec!["unit", "reload", "target", "mail.service", "--dry"],
+            vec!["unit", "status", "target", "mail.service"],
+            vec![
+                "resource",
+                "move",
+                "service:mail",
+                "--from",
+                "a",
+                "--to",
+                "b",
+                "--dry",
+            ],
+            vec!["resource", "describe", "target", "service:mail"],
+            vec!["resource", "start", "target", "service:mail", "--dry"],
+            vec!["resource", "stop", "target", "service:mail", "--dry"],
+            vec!["resource", "restart", "target", "service:mail", "--dry"],
+            vec!["resource", "reload", "target", "service:mail", "--dry"],
+            vec!["resource", "wipe", "target", "service:mail", "--dry"],
+            vec!["resource", "status", "target", "service:mail"],
+            vec!["resource", "ready", "target", "service:mail"],
+            vec!["resource", "hold", "show", "target", "service:mail"],
+            vec![
+                "resource",
+                "hold",
+                "set",
+                "target",
+                "service:mail",
+                "--id",
+                "maintenance",
+                "--dry",
+            ],
+            vec![
+                "resource",
+                "hold",
+                "clear",
+                "target",
+                "service:mail",
+                "--id",
+                "maintenance",
+                "--dry",
+            ],
+            vec!["backup", "create", "--spec", "/tmp/spec.json", "--dry"],
+            vec!["backup", "show", "backup-1"],
+            vec!["backup", "list"],
+            vec!["backup", "verify", "backup-1"],
+            vec!["backup", "resume", "backup-1", "--dry"],
+            vec!["backup", "abort", "backup-1", "--dry"],
+            vec!["backup", "restore", "backup-1", "--from", "target", "--dry"],
+            vec!["backup", "rollback", "backup-1", "--dry"],
+            vec!["backup", "activate", "backup-1", "--dry"],
+            vec!["backup", "delete", "backup-1", "--dry"],
+            vec!["backup", "prune", "--older-than", "30d", "--dry"],
+            vec!["job", "show", "target", "--job-id", "job-1"],
+            vec!["job", "list", "target"],
+            vec!["job", "retry", "target", "--job-id", "job-1", "--dry"],
+        ];
+        for arguments in structured {
+            let presentation = parsed_presentation(&arguments);
+            assert_eq!(
+                presentation.contract,
+                OutputContract::Structured,
+                "unexpected contract for {arguments:?}"
+            );
+        }
+
+        for arguments in [
+            vec!["host", "logs", "target"],
+            vec!["service", "logs", "mail"],
+            vec!["unit", "logs", "target", "mail.service"],
+            vec!["resource", "logs", "target", "service:mail"],
+        ] {
+            assert_eq!(
+                parsed_presentation(&arguments).contract,
+                OutputContract::Stream
+            );
+        }
+        for arguments in [
+            vec!["host", "exec", "target", "--", "true"],
+            vec!["host", "ssh", "target"],
+        ] {
+            assert_eq!(
+                parsed_presentation(&arguments).contract,
+                OutputContract::Passthrough
+            );
+        }
+    }
+
+    #[test]
+    fn global_json_rejects_stream_and_passthrough_contracts() {
+        let stream = parsed_presentation(&["service", "logs", "mail"]);
+        let error = validate_output_contract(true, &stream).unwrap_err();
+        assert!(format!("{error:#}").contains("--output json"));
+
+        let passthrough = parsed_presentation(&["host", "ssh", "target"]);
+        let error = validate_output_contract(true, &passthrough).unwrap_err();
+        assert!(format!("{error:#}").contains("preserves the remote byte stream"));
+
+        let structured = parsed_presentation(&["host", "show", "target"]);
+        validate_output_contract(true, &structured).unwrap();
+    }
+
+    #[test]
+    fn reboot_reports_submission_instead_of_unobserved_completion() {
+        let presentation = parsed_presentation(&["host", "reboot", "--hosts", "target"]);
+        assert_eq!(presentation.heading, "Submit reboot for hosts");
+        assert_eq!(presentation.completed_heading, "Submitted reboot for hosts");
+        assert_eq!(
+            fleet_batch_label("reboot", 3),
+            "Submit reboot request to 3 hosts"
+        );
+    }
 
     fn projection_test_spec() -> TransactionSpec {
         let mut spec = TransactionSpec::new(
@@ -5998,7 +9156,7 @@ mod tests {
             vec![
                 "abird-host-manager",
                 "transaction",
-                "reconcile",
+                "resume",
                 "move-zulip",
                 "--dry-run",
             ],
@@ -6043,6 +9201,48 @@ mod tests {
     }
 
     #[test]
+    fn forced_close_is_break_glass_completion_only() {
+        let cli = Cli::try_parse_from([
+            "abird-host-manager",
+            "transaction",
+            "close",
+            "move-zulip",
+            "--complete",
+            "--force",
+        ])
+        .unwrap();
+        let Command::Transaction {
+            command: TransactionCommand::Close(args),
+        } = cli.command
+        else {
+            panic!("expected close command");
+        };
+        assert!(args.complete);
+        assert!(args.force);
+        assert!(
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "close",
+                "move-zulip",
+                "--force",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "close",
+                "move-zulip",
+                "--rollback",
+                "--force",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn explicit_controller_and_remote_state_keep_controller_dispatch() {
         let cli = Cli::try_parse_from([
             "abird-host-manager",
@@ -6076,10 +9276,20 @@ mod tests {
         }
         validate_local_run_name("zulip-move-20260824").unwrap();
 
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        for directory in ["pkgs", "hosts", "data/secrets"] {
+            fs::create_dir_all(fixture.path().join(directory)).unwrap();
+        }
+        for file in [
+            "flake.nix",
+            "pkgs/manifest.nix",
+            "hosts/default.nix",
+            "hosts/nixbot.nix",
+            "data/secrets/default.nix",
+        ] {
+            fs::write(fixture.path().join(file), "").unwrap();
+        }
+        let repo_root = fixture.path().canonicalize().unwrap();
         let mut cli = Cli::try_parse_from([
             "abird-host-manager",
             "--repo-root",
@@ -6171,18 +9381,21 @@ mod tests {
                 "hold-zulip",
                 "--execute",
             ],
-            vec![
-                "abird-host-manager",
-                "transaction",
-                "prepare",
-                "move-zulip",
-                "--execute",
-            ],
         ] {
             let cli = Cli::try_parse_from(argv).unwrap();
-            assert_ne!(
+            assert_eq!(
                 controller_publication_authority(&cli.command),
-                PublicationAuthority::None
+                PublicationAuthority::Required
+            );
+        }
+        for command in ["prepare", "run", "rollback", "close"] {
+            let cli =
+                Cli::try_parse_from(["abird-host-manager", "transaction", command, "move-zulip"])
+                    .unwrap();
+            assert_eq!(
+                controller_publication_authority(&cli.command),
+                PublicationAuthority::Required,
+                "non-dry transaction {command} must preflight publication access",
             );
         }
         for argv in [
@@ -6201,7 +9414,7 @@ mod tests {
             vec![
                 "abird-host-manager",
                 "transaction",
-                "reconcile",
+                "resume",
                 "move-zulip",
                 "--execute",
             ],
@@ -6212,18 +9425,21 @@ mod tests {
                 PublicationAuthority::None
             );
         }
-        let cli = Cli::try_parse_from([
-            "abird-host-manager",
-            "transaction",
-            "prepare",
-            "move-zulip",
-            "--execute",
-        ])
-        .unwrap();
-        assert_eq!(
-            controller_publication_authority(&cli.command),
-            PublicationAuthority::Possible
-        );
+        for command in ["prepare", "run", "rollback", "close"] {
+            let cli = Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                command,
+                "move-zulip",
+                "--dry",
+            ])
+            .unwrap();
+            assert_eq!(
+                controller_publication_authority(&cli.command),
+                PublicationAuthority::None,
+                "dry transaction {command} must not preflight publication access",
+            );
+        }
     }
 
     #[test]
@@ -6286,9 +9502,39 @@ mod tests {
         Cli::try_parse_from([
             "abird-host-manager",
             "transaction",
-            "reconcile",
+            "resume",
             "move-zulip",
             "--supersede-failed-job",
+            "--execute",
+        ])
+        .unwrap();
+        assert!(
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "reconcile",
+                "move-zulip",
+                "--execute",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "_reconcile",
+                "move-zulip",
+                "--execute",
+            ])
+            .is_err()
+        );
+        Cli::try_parse_from([
+            "abird-host-manager",
+            "transaction",
+            "_reconcile",
+            "move-zulip",
+            "--expected-projection-sha256",
+            &"a".repeat(64),
             "--execute",
         ])
         .unwrap();
@@ -6325,6 +9571,17 @@ mod tests {
         );
 
         record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Cutover;
+        record.pending_action = None;
+        assert_eq!(
+            reconciliation_actions(&record, MovePhase::Prepared).unwrap(),
+            vec![Action::Prepare]
+        );
+        record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Prepared;
+        record.pending_action = Some(Action::Prepare);
+        assert_eq!(
+            reconciliation_actions(&record, MovePhase::Prepared).unwrap(),
+            vec![Action::Prepare]
+        );
         record.pending_action = Some(Action::Rollback);
         assert_eq!(
             reconciliation_actions(&record, MovePhase::RolledBack).unwrap(),
@@ -6333,19 +9590,236 @@ mod tests {
     }
 
     #[test]
-    fn projected_resume_and_close_fail_closed_at_the_legacy_boundary() {
-        assert!(
-            ensure_legacy_projection_boundary("move-zulip", false, Action::Close, false).is_ok()
-        );
-        let close = ensure_legacy_projection_boundary("move-zulip", true, Action::Close, false)
-            .unwrap_err()
-            .to_string();
-        assert!(close.contains("inactive endpoint must remain held"));
+    fn resume_selects_pending_legacy_work_or_projected_reconciliation() {
+        let spec = projection_test_spec();
+        let mut record = TransactionRecord::new(spec.clone(), "/tmp/config.json".into()).unwrap();
+        assert!(transaction_resume_strategy(&record).is_err());
 
-        let resume = ensure_legacy_projection_boundary("move-zulip", true, Action::Rollback, true)
-            .unwrap_err()
-            .to_string();
-        assert!(resume.contains("transaction reconcile move-zulip --execute"));
+        record.pending_action = Some(Action::Prepare);
+        assert_eq!(
+            transaction_resume_strategy(&record).unwrap(),
+            TransactionResumeStrategy::PendingAction(Action::Prepare)
+        );
+
+        record.projection = Some(
+            MoveProjector::derive(
+                &spec,
+                &projection_test_config(),
+                MovePhase::Seeded,
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            transaction_resume_strategy(&record).unwrap(),
+            TransactionResumeStrategy::ProjectedReconciliation
+        );
+
+        let terminal = MoveProjector::derive(
+            &spec,
+            &projection_test_config(),
+            MovePhase::RolledBack,
+            record.projection.as_ref(),
+            None,
+        )
+        .unwrap();
+        let terminal_digest = terminal.projection_sha256.clone();
+        record.projection = Some(terminal);
+        record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::RolledBack;
+        record.pending_action = Some(Action::Close);
+        record.close_decision = Some(CloseDecision::Rollback);
+        record.lifecycle_state = Some(LifecycleState::ClosingRollback);
+        let execution = record
+            .begin_command(
+                LifecycleCommand::Close,
+                LifecycleState::ClosedOnSource,
+                Some(CloseDecision::Rollback),
+                close_command_steps(ProjectionPublicationMode::Remote),
+            )
+            .unwrap();
+        for step in close_command_steps(ProjectionPublicationMode::Remote) {
+            record.start_command_step(execution, step).unwrap();
+            record.complete_command_step(execution, step, None).unwrap();
+            if step == "nixbot.deploy-closeout" {
+                break;
+            }
+        }
+        assert_eq!(
+            transaction_resume_strategy(&record).unwrap(),
+            TransactionResumeStrategy::DeployedCloseout {
+                projection_sha256: terminal_digest.clone(),
+            }
+        );
+        record.pending_action = None;
+        assert_eq!(
+            transaction_resume_strategy(&record).unwrap(),
+            TransactionResumeStrategy::DeployedCloseout {
+                projection_sha256: terminal_digest,
+            }
+        );
+    }
+
+    #[test]
+    fn resume_routes_to_the_running_command_before_the_published_projection() {
+        let spec = projection_test_spec();
+        let mut record = TransactionRecord::new(spec.clone(), "/tmp/config.json".into()).unwrap();
+        record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Prepared;
+        record.projection = Some(
+            MoveProjector::derive(
+                &spec,
+                &projection_test_config(),
+                MovePhase::Cutover,
+                Some(
+                    &MoveProjector::derive(
+                        &spec,
+                        &projection_test_config(),
+                        MovePhase::Prepared,
+                        Some(
+                            &MoveProjector::derive(
+                                &spec,
+                                &projection_test_config(),
+                                MovePhase::Seeded,
+                                None,
+                                None,
+                            )
+                            .unwrap(),
+                        ),
+                        None,
+                    )
+                    .unwrap(),
+                ),
+                None,
+            )
+            .unwrap(),
+        );
+        record
+            .begin_command(
+                LifecycleCommand::Prepare,
+                LifecycleState::Prepared,
+                None,
+                ["state.check-transition", "runtime.reconcile-prepared"],
+            )
+            .unwrap();
+
+        assert_eq!(
+            transaction_resume_strategy(&record).unwrap(),
+            TransactionResumeStrategy::ActiveCommand {
+                command: LifecycleCommand::Prepare,
+                close_decision: None,
+            }
+        );
+    }
+
+    #[test]
+    fn canonical_closeout_supersedes_only_its_exact_terminal_projection() {
+        let spec = projection_test_spec();
+        let mut record = TransactionRecord::new(spec.clone(), "/tmp/config.json".into()).unwrap();
+        let seeded = MoveProjector::derive(
+            &spec,
+            &projection_test_config(),
+            MovePhase::Seeded,
+            None,
+            None,
+        )
+        .unwrap();
+        let projection = MoveProjector::derive(
+            &spec,
+            &projection_test_config(),
+            MovePhase::RolledBack,
+            Some(&seeded),
+            None,
+        )
+        .unwrap();
+        let digest = projection.projection_sha256.clone();
+        record.projection = Some(projection);
+        record.close_decision = Some(CloseDecision::Rollback);
+        let closeout = CanonicalProjectionCloseout {
+            affected_hosts: vec!["source".to_owned(), "target".to_owned()],
+            controller_reconcile: true,
+            decision: "rollback".to_owned(),
+            projection_sha256: digest.clone(),
+        };
+
+        validate_canonical_closeout_supersedes_projection(&record, &closeout, Some(&digest))
+            .unwrap();
+
+        let mut mismatched = closeout;
+        mismatched.decision = "complete".to_owned();
+        assert!(
+            validate_canonical_closeout_supersedes_projection(&record, &mismatched, Some(&digest),)
+                .unwrap_err()
+                .to_string()
+                .contains("persisted journal decision")
+        );
+    }
+
+    #[test]
+    fn interrupted_run_is_conservatively_target_authoritative_for_rollback() {
+        let mut record =
+            TransactionRecord::new(projection_test_spec(), "/tmp/config.json".into()).unwrap();
+        assert!(record.items.values().all(|item| !item.target_ever_started));
+        mark_interrupted_run_as_potential_writer(None, &mut record).unwrap();
+        assert!(record.items.values().all(|item| item.target_ever_started));
+        assert_eq!(
+            record.data_authority,
+            Some(abird_host_manager::workflow_runtime::DataAuthority::Target)
+        );
+    }
+
+    #[test]
+    fn close_flags_are_explicit_or_automatic_and_have_short_aliases() {
+        for flag in [
+            None,
+            Some("--complete"),
+            Some("-c"),
+            Some("--rollback"),
+            Some("-r"),
+        ] {
+            let mut argv = vec![
+                "abird-host-manager",
+                "transaction",
+                "close",
+                "move-zulip",
+                "--dry",
+            ];
+            if let Some(flag) = flag {
+                argv.push(flag);
+            }
+            Cli::try_parse_from(argv).unwrap();
+        }
+        assert!(
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "close",
+                "move-zulip",
+                "--complete",
+                "--rollback",
+            ])
+            .is_err()
+        );
+        for flag in ["--yes", "--manual-deploy"] {
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "close",
+                "move-zulip",
+                flag,
+            ])
+            .unwrap();
+        }
+        assert!(
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "close",
+                "move-zulip",
+                "--yes",
+                "--manual-deploy",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -6550,7 +10024,7 @@ mod tests {
 
         record.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Seeded;
         store.save(&record).unwrap();
-        execute_existing_move(&store, record, false, false).unwrap();
+        execute_existing_move(&store, record, false, false, &remote_test_execution()).unwrap();
         let seeded = store.load("move-repeated").unwrap();
         assert_eq!(
             seeded.phase,
@@ -6569,12 +10043,18 @@ mod tests {
         prepared.phase = abird_host_manager::workflow_runtime::WorkflowPhase::Prepared;
         store.save(&prepared).unwrap();
         assert!(
-            execute_existing_move(&store, prepared.clone(), false, false)
-                .unwrap_err()
-                .to_string()
-                .contains("--force-existing")
+            execute_existing_move(
+                &store,
+                prepared.clone(),
+                false,
+                false,
+                &remote_test_execution(),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("--force-existing")
         );
-        execute_existing_move(&store, prepared, true, false).unwrap();
+        execute_existing_move(&store, prepared, true, false, &remote_test_execution()).unwrap();
         let attached = store.load("move-repeated").unwrap();
         assert_eq!(
             attached.phase,
@@ -6761,15 +10241,23 @@ mod tests {
 
     #[test]
     fn transaction_phases_are_explicit_commands() {
-        for phase in [
-            "seed", "prepare", "verify", "cutover", "rollback", "resume", "close",
-        ] {
+        for phase in ["prepare", "run", "resume", "close"] {
             Cli::try_parse_from([
                 "abird-host-manager",
                 "transaction",
                 phase,
                 "migration-1",
                 "--dry-run",
+            ])
+            .unwrap();
+        }
+        for compatibility_alias in ["cutover", "rollback"] {
+            Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                compatibility_alias,
+                "migration-1",
+                "--dry",
             ])
             .unwrap();
         }
@@ -6967,6 +10455,40 @@ mod tests {
     }
 
     #[test]
+    fn mutations_execute_by_default_and_dry_is_explicit() {
+        let cli = Cli::try_parse_from([
+            "abird-host-manager",
+            "service",
+            "move",
+            "zulip",
+            "--from",
+            "source",
+            "--to",
+            "target",
+        ])
+        .unwrap();
+        assert_eq!(
+            controller_publication_authority(&cli.command),
+            PublicationAuthority::Required
+        );
+
+        for dry in ["--dry", "--dry-run"] {
+            let cli = Cli::try_parse_from([
+                "abird-host-manager",
+                "transaction",
+                "run",
+                "move-zulip",
+                dry,
+            ])
+            .unwrap();
+            assert_eq!(
+                controller_publication_authority(&cli.command),
+                PublicationAuthority::None
+            );
+        }
+    }
+
+    #[test]
     fn logical_services_use_declared_agent_resources() {
         assert_eq!(
             service_agent_args(
@@ -7110,6 +10632,49 @@ mod tests {
             !help
                 .lines()
                 .any(|line| line.trim_start().starts_with("hold "))
+        );
+    }
+
+    #[test]
+    fn json_is_an_explicit_global_output_mode() {
+        let before = Cli::try_parse_from([
+            "abird-host-manager",
+            "--json",
+            "transaction",
+            "show",
+            "move-zulip",
+        ])
+        .unwrap();
+        assert!(before.json);
+
+        let after = Cli::try_parse_from([
+            "abird-host-manager",
+            "transaction",
+            "show",
+            "move-zulip",
+            "--json",
+        ])
+        .unwrap();
+        assert!(after.json);
+    }
+
+    #[test]
+    fn transaction_help_exposes_one_recovery_command() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("transaction")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(
+            help.lines()
+                .any(|line| line.trim_start().starts_with("resume "))
+        );
+        assert!(!help.contains("_reconcile"));
+        assert!(
+            !help
+                .lines()
+                .any(|line| { line.trim_start().starts_with("reconcile ") })
         );
     }
 

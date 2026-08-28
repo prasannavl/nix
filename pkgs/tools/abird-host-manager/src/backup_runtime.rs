@@ -530,7 +530,7 @@ impl BackupRecord {
 
 pub struct BackupStore {
     root: PathBuf,
-    _lock: File,
+    _lock: Option<File>,
 }
 
 impl BackupStore {
@@ -548,10 +548,25 @@ impl BackupStore {
             .with_context(|| format!("failed to open backup lock {}", lock_path.display()))?;
         lock.lock()
             .with_context(|| format!("failed to lock backup state {}", root.display()))?;
-        Ok(Self { root, _lock: lock })
+        Ok(Self {
+            root,
+            _lock: Some(lock),
+        })
+    }
+
+    pub fn read_only(root: PathBuf) -> Self {
+        Self { root, _lock: None }
+    }
+
+    fn require_write_authority(&self) -> Result<()> {
+        if self._lock.is_none() {
+            bail!("read-only backup store cannot mutate manager state");
+        }
+        Ok(())
     }
 
     pub fn create(&self, record: &BackupRecord) -> Result<()> {
+        self.require_write_authority()?;
         if self.path(record.id()).exists() {
             let existing = self.load(record.id())?;
             if existing.spec == record.spec {
@@ -571,6 +586,7 @@ impl BackupStore {
     }
 
     pub fn save(&self, record: &BackupRecord) -> Result<()> {
+        self.require_write_authority()?;
         validate_record(record)?;
         atomic_json(&self.path(record.id()), record)
     }
@@ -591,7 +607,11 @@ impl BackupStore {
 
     pub fn list(&self) -> Result<Vec<BackupRecord>> {
         let mut records = Vec::new();
-        for entry in fs::read_dir(self.root.join("backups"))? {
+        let backups = self.root.join("backups");
+        if !backups.exists() {
+            return Ok(records);
+        }
+        for entry in fs::read_dir(backups)? {
             let path = entry?.path();
             if path.extension() != Some(OsStr::new("json")) {
                 continue;
@@ -843,6 +863,19 @@ mod tests {
             store.load("backup-demo").unwrap().phase,
             BackupPhase::Complete
         );
+    }
+
+    #[test]
+    fn read_only_store_never_creates_manager_state() {
+        let parent = TempDir::new().unwrap();
+        let state = parent.path().join("missing-state");
+        let store = BackupStore::read_only(state.clone());
+        assert!(store.list().unwrap().is_empty());
+        assert!(!state.exists());
+
+        let record = BackupRecord::new(spec("backup-demo")).unwrap();
+        assert!(store.save(&record).is_err());
+        assert!(!state.exists());
     }
 
     #[test]

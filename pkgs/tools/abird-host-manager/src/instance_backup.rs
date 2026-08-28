@@ -10,8 +10,11 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::agent_adapter::{HostManagerConfig, NativeAdapter, instance_resource};
+use crate::agent_adapter::{
+    HostManagerConfig, NativeAdapter, format_job_progress, instance_resource,
+};
 use crate::backup_runtime::{BackupArtifact, InstanceExportLocation};
+use crate::progress::command_reporter;
 use crate::workflow::{InstanceBackupPolicy, InstanceEndpoint};
 
 const ARCHIVE_PATH: &str = "/instance.tar.gz";
@@ -204,6 +207,7 @@ pub fn copy(
         } else {
             Some(adapter.config().remote_source(&context.executor)?)
         };
+        let transfer_started = std::time::Instant::now();
         let transfer = transfer_with_excludes_progress(
             &TransferDefinition {
                 source: staging_root.clone(),
@@ -216,7 +220,12 @@ pub fn copy(
                 fallback_copy: true,
             },
             &[],
-            |_| Ok(()),
+            |progress| {
+                let progress = serde_json::to_value(progress)?;
+                command_reporter()
+                    .detail(format_job_progress(&progress, transfer_started.elapsed()));
+                Ok(())
+            },
         )?;
         json!({ "engine": "controller", "transfer": transfer, "export": export })
     } else {
@@ -455,6 +464,7 @@ pub fn restore(
                     } else {
                         Some(adapter.config().remote_source(&context.executor)?)
                     };
+                    let transfer_started = std::time::Instant::now();
                     let transfer = transfer_with_excludes_progress(
                         &TransferDefinition {
                             source: root.clone(),
@@ -467,7 +477,12 @@ pub fn restore(
                             fallback_copy: true,
                         },
                         &[],
-                        |_| Ok(()),
+                        |progress| {
+                            let progress = serde_json::to_value(progress)?;
+                            command_reporter()
+                                .detail(format_job_progress(&progress, transfer_started.elapsed()));
+                            Ok(())
+                        },
                     )?;
                     json!({ "engine": "controller", "transfer": transfer })
                 }

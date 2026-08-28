@@ -10,6 +10,7 @@ abird-host-agent = { path = "../abird-host-agent" }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 humantime = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

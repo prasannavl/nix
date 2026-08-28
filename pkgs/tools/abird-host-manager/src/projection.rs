@@ -704,6 +704,7 @@ impl MovePhase {
                 (previous, self),
                 (Self::Seeded, Self::Prepared | Self::RolledBack)
                     | (Self::Prepared, Self::Cutover | Self::RolledBack)
+                    | (Self::Cutover, Self::Prepared)
                     | (Self::Cutover, Self::RolledBack)
             )
     }
@@ -718,10 +719,12 @@ pub struct MoveProjector;
 /// epoch or whether the source must remain held behind a compensation barrier.
 /// Those answers come from the controller journal, never from the previous Git
 /// phase.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MoveItemObservation {
     pub source_held: bool,
     pub target_ever_started: bool,
+    pub source_activation_job_id: Option<String>,
+    pub target_activation_job_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -735,7 +738,7 @@ impl MoveProjectionObservation {
     }
 
     fn item(&self, item_id: &str) -> MoveItemObservation {
-        self.items.get(item_id).copied().unwrap_or_default()
+        self.items.get(item_id).cloned().unwrap_or_default()
     }
 
     fn rollback_requires_barrier(&self) -> bool {
@@ -814,22 +817,10 @@ impl MoveProjector {
             if !phase.can_follow(previous_phase) {
                 bail!("move phase {phase:?} cannot follow {previous_phase:?}");
             }
-            let same_requirement = previous
-                .activation_requirement
-                .as_ref()
-                .map(|requirement| requirement.kind.as_str())
-                == activation_kind;
-            if previous.phase == phase.as_str() && same_requirement {
-                return Ok(previous.clone());
-            }
         } else if phase != MovePhase::Seeded {
             bail!("the first move projection must select seeded desired state");
         }
 
-        // Exact idempotent retries returned above. Every projection that reaches
-        // this point is a new durable document and therefore advances both
-        // generation and lineage.
-        let generation = previous.map_or(1, |previous| previous.generation + 1);
         let mut resources = Vec::with_capacity(spec.items.len() * 2);
         let mut effects = Vec::new();
         for item in &spec.items {
@@ -842,6 +833,25 @@ impl MoveProjector {
             };
             project_move_item(item, context, &mut resources, &mut effects)?;
         }
+        if let Some(previous) = previous {
+            let same_requirement = previous
+                .activation_requirement
+                .as_ref()
+                .map(|requirement| requirement.kind.as_str())
+                == activation_kind;
+            if previous.phase == phase.as_str()
+                && same_requirement
+                && previous.resources == resources
+                && previous.effects == effects
+            {
+                return Ok(previous.clone());
+            }
+        }
+
+        // Exact idempotent retries returned above. Every projection that reaches
+        // this point is a new durable document and therefore advances both
+        // generation and lineage.
+        let generation = previous.map_or(1, |previous| previous.generation + 1);
         let activation_requirement = match activation_kind {
             Some(kind) => Some(ActivationRequirement {
                 kind: kind.to_owned(),
@@ -890,13 +900,23 @@ impl MoveProjector {
         for value in evidence {
             let item: MoveActivationEvidence = serde_json::from_value(value.clone())
                 .context("invalid retained move activation evidence")?;
-            let expected_operations = [
-                "hold-source",
-                "hold-target",
-                "assert-source-stopped",
-                "assert-target-stopped",
-                "verify-final",
-            ]
+            let expected_operations = if item.target_started {
+                [
+                    "hold-source",
+                    "hold-target",
+                    "assert-source-stopped",
+                    "assert-target-stopped",
+                    "verify-reverse",
+                ]
+            } else {
+                [
+                    "hold-source",
+                    "hold-target",
+                    "assert-source-stopped",
+                    "assert-target-stopped",
+                    "verify-final",
+                ]
+            }
             .into_iter()
             .map(str::to_owned)
             .collect::<BTreeSet<_>>();
@@ -1107,7 +1127,7 @@ fn project_move_item(
         }
     ));
     let transaction_id = format!("{projection_id}--{}", item.id());
-    let activation_job_id = |role: &str| {
+    let default_activation_job_id = |role: &str| {
         let operation = if role == "source" {
             "rollback-activate-source"
         } else {
@@ -1116,9 +1136,18 @@ fn project_move_item(
         format!("{transaction_id}-{operation}")
     };
     let source_activation = (source_state == DesiredResourceState::Active && source_hold.is_some())
-        .then(|| activation_job_id("source"));
-    let target_activation =
-        (target_state == DesiredResourceState::Active).then(|| activation_job_id("target"));
+        .then(|| {
+            observation
+                .source_activation_job_id
+                .clone()
+                .unwrap_or_else(|| default_activation_job_id("source"))
+        });
+    let target_activation = (target_state == DesiredResourceState::Active).then(|| {
+        observation
+            .target_activation_job_id
+            .clone()
+            .unwrap_or_else(|| default_activation_job_id("target"))
+    });
     resources.push(ProjectedResource {
         id: format!("{}:source", item.id()),
         role: "source".to_owned(),
@@ -1492,6 +1521,75 @@ mod tests {
             cutover.resources[1].endpoint.desired_state,
             DesiredResourceState::Active
         );
+        let prepared_again = MoveProjector::derive_with_observation(
+            &spec(),
+            &config(),
+            MovePhase::Prepared,
+            Some(&cutover),
+            None,
+            &MoveProjectionObservation {
+                items: BTreeMap::from([(
+                    "item-001".to_owned(),
+                    MoveItemObservation {
+                        target_ever_started: true,
+                        source_held: true,
+                        ..MoveItemObservation::default()
+                    },
+                )]),
+            },
+        )
+        .unwrap();
+        assert_eq!(prepared_again.generation, cutover.generation + 1);
+        assert_eq!(prepared_again.phase, "prepared");
+    }
+
+    #[test]
+    fn same_phase_retry_projects_the_exact_successor_activation_attempt() {
+        let seeded =
+            MoveProjector::derive(&spec(), &config(), MovePhase::Seeded, None, None).unwrap();
+        let prepared =
+            MoveProjector::derive(&spec(), &config(), MovePhase::Prepared, Some(&seeded), None)
+                .unwrap();
+        let cutover = MoveProjector::derive(
+            &spec(),
+            &config(),
+            MovePhase::Cutover,
+            Some(&prepared),
+            None,
+        )
+        .unwrap();
+        let mut observation = MoveProjectionObservation::default();
+        observation.insert(
+            "item-001",
+            MoveItemObservation {
+                source_held: true,
+                target_ever_started: true,
+                target_activation_job_id: Some(
+                    "move-zulip--item-001-cutover-activate-target-attempt-1".to_owned(),
+                ),
+                ..MoveItemObservation::default()
+            },
+        );
+
+        let retry = MoveProjector::derive_with_observation(
+            &spec(),
+            &config(),
+            MovePhase::Cutover,
+            Some(&cutover),
+            Some("retry-revision".to_owned()),
+            &observation,
+        )
+        .unwrap();
+
+        assert_eq!(retry.generation, cutover.generation + 1);
+        assert_eq!(
+            retry.resources[1].endpoint.activation_job_id.as_deref(),
+            Some("move-zulip--item-001-cutover-activate-target-attempt-1")
+        );
+        assert_eq!(
+            retry.previous_projection_sha256.as_deref(),
+            Some(cutover.projection_sha256.as_str())
+        );
     }
 
     #[test]
@@ -1626,6 +1724,7 @@ mod tests {
             MoveItemObservation {
                 source_held: true,
                 target_ever_started: false,
+                ..MoveItemObservation::default()
             },
         );
         let prepared_rollback = MoveProjector::derive_with_observation(
@@ -1686,6 +1785,7 @@ mod tests {
             MoveItemObservation {
                 source_held: true,
                 target_ever_started: true,
+                ..MoveItemObservation::default()
             },
         );
         let blocked = MoveProjector::derive_with_observation(

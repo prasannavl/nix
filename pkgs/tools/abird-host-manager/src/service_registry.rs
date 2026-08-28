@@ -66,8 +66,9 @@ pub fn resolve_service_host(
   }};
 in map placementFor candidates"#
     );
-    let value = Nix::new(nix_program.to_path_buf())?.eval_file_apply_json(
-        &repository.root().join("lib/stacks/default.nix"),
+    let value = Nix::new(nix_program.to_path_buf())?.eval_installable_apply_json(
+        repository.root(),
+        ".#hostManager.stacks",
         &expression,
     )?;
     let placements: Vec<ServicePlacement> =
