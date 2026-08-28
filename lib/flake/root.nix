@@ -4,6 +4,7 @@
   nixpkgs ? inputs.nixpkgs,
   systems ? flake-utils.lib.defaultSystems,
   stackProfiles ? import ../stacks,
+  servicePlacementFile ? null,
   phaseProjectionDirectory ? null,
 }: let
   flakeProfileInputNames = {
@@ -66,11 +67,16 @@
 
   overlays = flakeProfiles.default.overlays;
 
+  servicePlacement = import ./service-placements.nix {
+    inherit (nixpkgs) lib;
+    file = servicePlacementFile;
+  };
   phaseProjection = import ./phase-projection.nix {
     inherit (nixpkgs) lib;
     directory = phaseProjectionDirectory;
   };
-  effectiveStackProfiles = phaseProjection.applyToStacks stackProfiles;
+  canonicalStackProfiles = servicePlacement.applyToStacks stackProfiles;
+  effectiveStackProfiles = phaseProjection.applyToStacks canonicalStackProfiles;
   nixbotInventory = import ../../hosts/nixbot.nix;
   nixbotControllerCapability = nixbotInventory.config.controller;
   nixbotInventoryHosts = builtins.attrNames nixbotInventory.hosts;
@@ -83,11 +89,16 @@
     nixbotInventoryHosts;
   nixbotControllerHost = assert builtins.length nixbotControllerCandidates == 1;
     builtins.head nixbotControllerCandidates;
+  closeoutRuntimeHosts = nixpkgs.lib.unique (
+    builtins.concatMap
+    (closeout: closeout.affected_hosts)
+    (builtins.attrValues servicePlacement.document.closeouts)
+  );
   projectionRuntimeHosts =
     builtins.filter (
       host: host != nixbotControllerHost
     )
-    phaseProjection.runtimeHosts;
+    (nixpkgs.lib.unique (phaseProjection.runtimeHosts ++ closeoutRuntimeHosts));
   validatedProjectionRuntimeHosts = assert nixpkgs.lib.all (
     host: builtins.elem host nixbotInventoryHosts
   )
@@ -143,6 +154,7 @@
         inputs = selectedInputs;
         stack = effectiveStack;
         stacks = effectiveStackProfiles;
+        servicePlacements = servicePlacement.document;
         phaseProjections = phaseProjection.documents;
       };
       modules =
@@ -217,6 +229,10 @@
     // {
       inherit devShells nixbot nixosConfigurations nixosImages pkgs;
       inherit (rootLib) nixosModules;
+      hostManager = {
+        stacks = effectiveStackProfiles;
+        servicePlacements = servicePlacement.document;
+      };
       overlays.default = overlay;
     };
 in {
